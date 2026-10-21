@@ -74,11 +74,11 @@ use std::time::{Duration, Instant};
 use viso_dev_protocol::headless::Reported;
 use viso_dev_protocol::inspect::{InspectAsk, SourceTable};
 use viso_dev_protocol::wire::{
-    BlobRef, Blobs, CommitCounts, Domain, GameAnswer, GameAsk, GameQuery, GameRefusal, GameReply,
-    HostMessage, MAX_FRAME, PatchAck, PatchBundle, PatchNack, PatchSection, Rebuild, ResourceAsset,
-    ResourcePatch, RestoreBundle, RestoreReport, Revision, RuntimeHello, RuntimeMessage,
-    RuntimeSessionId, RuntimeTarget, ShaderLang, Stage, SystemPatch, UiPatch, WindowGeometry,
-    blob_chunks, source_hash,
+    BlobRef, Blobs, BuildId, CommitCounts, Domain, GameAnswer, GameAsk, GameQuery, GameRefusal,
+    GameReply, HostMessage, MAX_FRAME, PatchAck, PatchBundle, PatchNack, PatchSection, Rebuild,
+    ResourceAsset, ResourcePatch, RestoreBundle, RestoreReport, Revision, RuntimeHello,
+    RuntimeMessage, RuntimeSessionId, RuntimeTarget, ShaderLang, Stage, SystemPatch, UiPatch,
+    WindowGeometry, blob_chunks, source_hash,
 };
 use viso_dsl::Diagnostic;
 use viso_dsl::assets::{ASSET_ERROR, ResourceId};
@@ -127,6 +127,8 @@ struct Runtime {
     hello: RuntimeHello,
     /// Its `RuntimeSessionId` as the events spell it.
     id: String,
+    /// The build it runs, as the events spell it.
+    build: String,
     writer: Sender<HostMessage>,
     /// What its connection carried.
     traffic: Arc<Traffic>,
@@ -274,16 +276,20 @@ struct Pass {
 /// The dev session.
 pub struct DevSession {
     root: PathBuf,
-    /// The session and build ids as the `dev` events spell them.
+    /// The session id, and the first lane's build id, as the `dev` events
+    /// spell them.
     session: String,
     build: String,
-    _lock: LockGuard,
+    /// The first lane's build, whose app takes what names no runtime.
+    lead: Option<BuildId>,
+    /// The dev lock of each lane.
+    locks: Vec<LockGuard>,
     _watcher: Watcher,
     sources: Sources,
     /// The hash of `Viso.toml` as the build read it.
     manifest: Option<u64>,
-    /// The runtimes connected, in the order they connected: the first is the
-    /// app the session launched, which a Rust edit restarts.
+    /// The runtimes connected, in the order they connected; a Rust edit
+    /// restarts the app a lane launched, the first runtime of its build.
     runtimes: Vec<Runtime>,
     batch: Option<Batch>,
     /// Whether a batch is to be taken now: a runtime reported its mounts
@@ -299,10 +305,10 @@ pub struct DevSession {
     rust: RustState,
     /// The latest snapshot the app sent.
     held: Option<HeldSnapshot>,
-    /// The runtime asked for the snapshot, and the target the restart
-    /// relaunches.
+    /// The runtime asked for the snapshot, and the build of the lane the
+    /// restart relaunches.
     snapshot_from: Option<RuntimeSessionId>,
-    restart_target: Option<RuntimeTarget>,
+    restart_build: Option<BuildId>,
     /// Whether the next app of that target to report its mounts was launched
     /// to restore it.
     restore_next: bool,
@@ -322,13 +328,13 @@ pub struct DevSession {
 }
 
 impl DevSession {
-    /// Starts the session watching `scope`, holding `lock`; the watcher
-    /// hands each change to `deliver`. `apply` is whether candidates are sent
-    /// to the app.
+    /// Starts the session watching `scope`, holding each lane's lock in
+    /// `locks`; the watcher hands each change to `deliver`. `apply` is
+    /// whether candidates are sent to the apps.
     pub(crate) fn start(
         scope: WatchScope,
         expect: &Expect,
-        lock: LockGuard,
+        locks: Vec<LockGuard>,
         apply: bool,
         deliver: impl FnMut(Change) -> bool + Send + 'static,
     ) -> Self {
@@ -337,8 +343,12 @@ impl DevSession {
         DevSession {
             root,
             session: expect.dev_session.to_hex(),
-            build: expect.build_id.to_hex(),
-            _lock: lock,
+            build: expect
+                .builds
+                .first()
+                .map_or_else(String::new, |build| build.to_hex()),
+            lead: expect.builds.first().copied(),
+            locks,
             _watcher: watcher,
             sources: Sources::default(),
             manifest: None,
@@ -351,7 +361,7 @@ impl DevSession {
             rust: RustState::Idle,
             held: None,
             snapshot_from: None,
-            restart_target: None,
+            restart_build: None,
             restore_next: false,
             restoring: None,
             landing: false,
@@ -432,10 +442,10 @@ impl DevSession {
     /// failure keeps the app running; one that relinked nothing changes
     /// nothing. Whether the app is to restart on the new executable: its
     /// event waits for the restart to land.
-    pub(crate) fn rebuilt(&mut self, build: &Build, out: &mut Output) -> bool {
+    pub(crate) fn rebuilt(&mut self, lane: BuildId, build: &Build, out: &mut Output) -> bool {
         if build.unchanged {
             out.log("info", "tool", "the Rust edit changed nothing the app runs");
-            self.set_rust(RustState::Idle, out);
+            self.settle_rust(out);
             return false;
         }
         let (outcome, codes) = match &build.result {
@@ -455,10 +465,8 @@ impl DevSession {
                 (Outcome::Rejected, codes)
             }
         };
-        let revision = self
-            .runtimes
-            .first()
-            .map_or(Revision::LAUNCH, |r| r.revision);
+        let app = self.app_of(lane);
+        let revision = app.map_or(Revision::LAUNCH, |at| self.runtimes[at].revision);
         let candidate = self.next_revision;
         self.next_revision += 1;
         let files = build
@@ -498,9 +506,23 @@ impl DevSession {
             self.set_rust(RustState::Restarting, out);
             return true;
         }
-        out.rebuild(&self.ids_of(self.runtimes.first()), &event);
-        self.set_rust(RustState::Idle, out);
+        out.rebuild(&self.ids_of(app.map(|at| &self.runtimes[at])), &event);
+        self.settle_rust(out);
         false
+    }
+
+    /// A build that restarts no app ended: the Rust state is idle, unless
+    /// another lane's restart runs.
+    fn settle_rust(&mut self, out: &mut Output) {
+        if self.restarting.is_none() {
+            self.set_rust(RustState::Idle, out);
+        }
+    }
+
+    /// The runtime of the app the lane of build `lane` launched: the first
+    /// connected of its build.
+    fn app_of(&self, lane: BuildId) -> Option<usize> {
+        self.runtimes.iter().position(|r| r.hello.build_id == lane)
     }
 
     /// The app restarted on the new executable: with no snapshot to restore
@@ -511,10 +533,10 @@ impl DevSession {
         self.snapshot_from = None;
         // The old app's channels may outlive it (a page's closes once the
         // new build is served): they are no longer the session's.
-        let target = self.restart_target;
+        let lane = self.restart_build;
         let mut at = 0;
         while at < self.runtimes.len() {
-            if target.is_none_or(|t| t == self.runtimes[at].hello.target) {
+            if lane.is_none_or(|b| b == self.runtimes[at].hello.build_id) {
                 let runtime = self.runtimes.remove(at);
                 profile::gone(&runtime);
                 self.report_status(&runtime, false, out);
@@ -523,7 +545,7 @@ impl DevSession {
             }
         }
         // The new build embeds every asset as it is now; the runtimes of
-        // other targets keep what theirs embedded.
+        // other lanes keep what theirs embedded.
         self.sources
             .rebuilt(self.runtimes.iter_mut().map(|runtime| &mut runtime.mounts));
         if self.restore_next {
@@ -567,7 +589,7 @@ impl DevSession {
     ) {
         self.landing = false;
         let restoring = self.restoring.take();
-        self.restart_target = None;
+        let lane = self.restart_build.take();
         let Some(mut event) = self.restarting.take() else {
             return;
         };
@@ -596,6 +618,7 @@ impl DevSession {
         };
         let runtime = restoring
             .and_then(|id| self.index(id))
+            .or_else(|| lane.and_then(|lane| self.app_of(lane)))
             .or((!self.runtimes.is_empty()).then_some(0))
             .map(|at| &self.runtimes[at]);
         out.rebuild(&self.ids_of(runtime), &event);
@@ -633,6 +656,7 @@ impl DevSession {
                 );
                 self.runtimes.push(Runtime {
                     id: hello.runtime_session.to_hex(),
+                    build: hello.build_id.to_hex(),
                     revision: hello.current_revision,
                     hello,
                     writer: connection.writer,
@@ -666,7 +690,7 @@ impl DevSession {
                 let runtime = self.runtimes.remove(at);
                 profile::gone(&runtime);
                 self.report_status(&runtime, false, out);
-                if self.landing && self.restarts(runtime.hello.target) {
+                if self.landing && self.restarts(runtime.hello.build_id) {
                     out.log(
                         "warn",
                         "tool",
@@ -679,7 +703,10 @@ impl DevSession {
                 out.log("warn", "tool", &reason);
                 // The app launched to restore is the one refused: it runs
                 // the new build fresh, out of the session's reach.
-                let connected = self.runtimes.iter().any(|r| self.restarts(r.hello.target));
+                let connected = self
+                    .runtimes
+                    .iter()
+                    .any(|r| self.restarts(r.hello.build_id));
                 if self.landing && !connected {
                     self.restore_next = false;
                     self.finish_restart(Outcome::WarmRestarted, false, Vec::new(), out);
@@ -695,16 +722,17 @@ impl DevSession {
             .position(|runtime| runtime.hello.runtime_session == launch)
     }
 
-    /// Whether a runtime of `target` runs the app the restart under way
-    /// relaunches.
-    fn restarts(&self, target: RuntimeTarget) -> bool {
-        self.restart_target.is_none_or(|t| t == target)
+    /// Whether a runtime of build `build` runs the app the restart under
+    /// way relaunches.
+    fn restarts(&self, build: BuildId) -> bool {
+        self.restart_build.is_none_or(|b| b == build)
     }
 
     /// Whom an event about `runtime` names.
     fn ids_of<'a>(&'a self, runtime: Option<&'a Runtime>) -> DevIds<'a> {
+        let build = runtime.map_or(self.build.as_str(), |r| r.build.as_str());
         let runtime = runtime.map(|r| (r.id.as_str(), r.hello.target));
-        ids(&self.session, &self.build, runtime, self.runtimes.len() > 1)
+        ids(&self.session, build, runtime, self.runtimes.len() > 1)
     }
 
     /// Reports the status of runtime `at`.
@@ -780,8 +808,8 @@ impl DevSession {
                 for &view in &mounted {
                     let _ = self.sources.baseline(&mut runtime.mounts, view);
                 }
-                let target = runtime.hello.target;
-                if self.restore_next && self.restarts(target) {
+                let build = runtime.hello.build_id;
+                if self.restore_next && self.restarts(build) {
                     if self.clock.mounted.is_none() {
                         self.clock.mounted = Some(Instant::now());
                     }
@@ -895,9 +923,10 @@ impl DevSession {
         let named = self.runtimes.len() > 1;
         let runtime = &mut self.runtimes[at];
         let id = runtime.id.clone();
+        let build = runtime.build.clone();
         let ids = ids(
             &self.session,
-            &self.build,
+            &build,
             Some((&id, runtime.hello.target)),
             named,
         );
@@ -1013,9 +1042,10 @@ impl DevSession {
         let runtime = &mut self.runtimes[at];
         runtime.revision = nack.last_good_revision;
         let id = runtime.id.clone();
+        let build = runtime.build.clone();
         let ids = ids(
             &self.session,
-            &self.build,
+            &build,
             Some((&id, runtime.hello.target)),
             named,
         );
@@ -1075,9 +1105,9 @@ impl DevSession {
         self.status(at, out);
     }
 
-    /// Asks the app for its snapshot, dropping the one held; whether an app
-    /// runs to be asked.
-    pub(crate) fn request_snapshot(&mut self) -> bool {
+    /// Asks the app the lane of build `lane` launched for its snapshot,
+    /// dropping the one held; whether that app runs to be asked.
+    pub(crate) fn request_snapshot(&mut self, lane: BuildId) -> bool {
         self.held = None;
         self.windows.clear();
         self.clock = RestartClock {
@@ -1085,11 +1115,12 @@ impl DevSession {
             asked: Some(Instant::now()),
             ..RestartClock::default()
         };
-        let Some(app) = self.runtimes.first() else {
+        self.restart_build = Some(lane);
+        let Some(at) = self.app_of(lane) else {
             return false;
         };
+        let app = &self.runtimes[at];
         self.snapshot_from = Some(app.hello.runtime_session);
-        self.restart_target = Some(app.hello.target);
         app.writer.send(HostMessage::Snapshot).is_ok()
     }
 
@@ -1202,9 +1233,15 @@ impl DevSession {
         &self.root
     }
 
-    /// The lock this session holds, to publish its control endpoint in.
-    pub fn lock_mut(&mut self) -> &mut LockGuard {
-        &mut self._lock
+    /// The lane locks this session holds, to publish its control endpoint
+    /// in.
+    pub fn locks_mut(&mut self) -> &mut [LockGuard] {
+        &mut self.locks
+    }
+
+    /// Whether a restart is under way, which a lane's restart waits for.
+    pub(crate) fn restarting(&self) -> bool {
+        self.restart_build.is_some() || self.restarting.is_some() || self.landing
     }
 
     /// Relays what `viso game` or `viso inspect` asks to the runtime it is
@@ -1218,7 +1255,15 @@ impl DevSession {
         }
     }
 
-    /// Hands the first runtime connected the scenario `script` to play,
+    /// The runtime that takes what names none: the first lane's app, or
+    /// the first runtime connected.
+    fn lead(&self) -> Option<usize> {
+        self.lead
+            .and_then(|lead| self.app_of(lead))
+            .or((!self.runtimes.is_empty()).then_some(0))
+    }
+
+    /// Hands the first lane's app the scenario `script` to play,
     /// with the table of the views it mounts for its inspector selectors;
     /// [`played`](Self::played) answers once its report ends.
     fn play(&mut self, script: &str, reply: Sender<ControlReply>) {
@@ -1228,19 +1273,19 @@ impl DevSession {
                 "the app is not connected to `viso run`",
             ));
         };
-        if self.runtimes.is_empty() {
+        let Some(at) = self.lead() else {
             return refuse(reply);
-        }
-        if !self.runtimes[0].mounted {
-            self.runtimes[0]
+        };
+        if !self.runtimes[at].mounted {
+            self.runtimes[at]
                 .held_scenarios
                 .push((script.to_owned(), reply));
             return;
         }
-        let sources = self.source_table(0);
+        let sources = self.source_table(at);
         let id = self.next_query;
         self.next_query = self.next_query.wrapping_add(1);
-        let runtime = &mut self.runtimes[0];
+        let runtime = &mut self.runtimes[at];
         let message = HostMessage::Scenario {
             id,
             script: BlobRef::of(script.as_bytes()),
@@ -1286,10 +1331,10 @@ impl DevSession {
         SourceTable { files }.to_bytes()
     }
 
-    /// Asks the first runtime connected what `ask` asks, which
+    /// Asks the first lane's app what `ask` asks, which
     /// [`inspected`](Self::inspected) answers.
     fn inspect(&mut self, ask: InspectAsk, reply: Sender<ControlReply>) {
-        let Some(runtime) = self.runtimes.first_mut() else {
+        let Some(runtime) = self.lead().map(|at| &mut self.runtimes[at]) else {
             let _ = reply.send(ControlReply::refused(
                 control::ENV_NO_DEV_SESSION,
                 "the app is not connected to `viso run`",
@@ -1570,9 +1615,10 @@ impl DevSession {
         let named = self.runtimes.len() > 1;
         let runtime = &mut self.runtimes[at];
         let id = runtime.id.clone();
+        let build = runtime.build.clone();
         let ids = ids(
             &self.session,
-            &self.build,
+            &build,
             Some((&id, runtime.hello.target)),
             named,
         );
@@ -2087,7 +2133,7 @@ mod tests {
             let expect = Expect {
                 token: "t".into(),
                 dev_session: DevSessionId(1),
-                build_id: BuildId(2),
+                builds: vec![BuildId(2)],
                 project: ProjectFingerprint(3),
                 schema: SchemaFingerprint(4),
             };
@@ -2095,7 +2141,7 @@ mod tests {
                 project: root.clone(),
                 rust: RustScope::default(),
             };
-            let mut dev = DevSession::start(scope, &expect, lock, apply, |_| true);
+            let mut dev = DevSession::start(scope, &expect, vec![lock], apply, |_| true);
             let global = Global {
                 quiet: true,
                 json: true,
@@ -3002,8 +3048,11 @@ mod tests {
             files: Vec::new(),
             unchanged: false,
         };
-        assert!(f.dev.rebuilt(&built, &mut f.out), "the app restarts on it");
-        assert!(f.dev.request_snapshot());
+        assert!(
+            f.dev.rebuilt(BuildId(2), &built, &mut f.out),
+            "the app restarts on it"
+        );
+        assert!(f.dev.request_snapshot(BuildId(2)));
         assert!(matches!(f.sent.try_recv(), Ok(HostMessage::Snapshot)));
         assert!(!f.dev.has_snapshot());
         let bytes: Vec<u8> = (0..BLOB_CHUNK + 9).map(|i| i as u8).collect();
@@ -3093,8 +3142,8 @@ mod tests {
             files: Vec::new(),
             unchanged: false,
         };
-        assert!(f.dev.rebuilt(&built, &mut f.out));
-        assert!(f.dev.request_snapshot());
+        assert!(f.dev.rebuilt(BuildId(2), &built, &mut f.out));
+        assert!(f.dev.request_snapshot(BuildId(2)));
         let bytes = [1, 2, 3];
         for chunk in blob_chunks(&bytes) {
             f.runtime(RuntimeMessage::Blob(chunk));
@@ -3134,7 +3183,7 @@ mod tests {
             files: Vec::new(),
             unchanged: false,
         };
-        assert!(f.dev.rebuilt(&built, &mut f.out));
+        assert!(f.dev.rebuilt(BuildId(2), &built, &mut f.out));
         f.dev.ended(&mut f.out);
         assert!(f.dev.restarting.is_none());
     }
@@ -3150,8 +3199,8 @@ mod tests {
             files: Vec::new(),
             unchanged: false,
         };
-        assert!(f.dev.rebuilt(&built, &mut f.out));
-        assert!(f.dev.request_snapshot());
+        assert!(f.dev.rebuilt(BuildId(2), &built, &mut f.out));
+        assert!(f.dev.request_snapshot(BuildId(2)));
         let bytes = [1, 2, 3];
         for chunk in blob_chunks(&bytes) {
             f.runtime(RuntimeMessage::Blob(chunk));
@@ -3193,14 +3242,15 @@ mod tests {
         }
     }
 
-    /// `f` with a web runtime connected beside its desktop one, mounting
-    /// `view.vs` as built; returns what the web runtime is sent.
+    /// `f` with a page of its web lane, a build of its own, connected
+    /// beside its desktop app, mounting `view.vs` as built; returns what
+    /// the page is sent.
     fn with_web(f: &mut Fixture) -> Receiver<HostMessage> {
-        let sent = connect(
-            &mut f.dev,
-            &mut f.out,
-            hello(11, RuntimeTarget::Web, Domains::NONE),
-        );
+        let page = RuntimeHello {
+            build_id: BuildId(3),
+            ..hello(11, RuntimeTarget::Web, Domains::NONE)
+        };
+        let sent = connect(&mut f.dev, &mut f.out, page);
         let entry = mount_entry(&f.path, VIEW, None);
         f.dev.link(
             LinkEvent::Runtime(RuntimeSessionId(11), RuntimeMessage::Mounts(vec![entry])),
@@ -3379,7 +3429,7 @@ mod tests {
     }
 
     #[test]
-    fn a_restart_lets_go_of_the_runtimes_of_its_target_alone() {
+    fn a_restart_lets_go_of_the_runtimes_of_its_lane_alone() {
         let mut f = Fixture::new("restart-matrix");
         let web = with_web(&mut f);
         let built = Build {
@@ -3388,9 +3438,12 @@ mod tests {
             files: Vec::new(),
             unchanged: false,
         };
-        assert!(f.dev.rebuilt(&built, &mut f.out));
+        assert!(f.dev.rebuilt(BuildId(2), &built, &mut f.out));
         assert_eq!(f.dev.rust, RustState::Restarting);
-        assert!(f.dev.request_snapshot(), "the app launched is asked");
+        assert!(
+            f.dev.request_snapshot(BuildId(2)),
+            "the app launched is asked"
+        );
         assert!(matches!(f.sent.try_recv(), Ok(HostMessage::Snapshot)));
         assert!(web.try_iter().next().is_none(), "the page is not");
         f.dev.relaunched(&mut f.out);

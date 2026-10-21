@@ -867,7 +867,7 @@ Global options:
 $ viso run --help
 Build a dev artifact and run it, hot reloading edits as they are saved
 
-Usage: viso run [OPTIONS] [TARGET] [-- <APP_ARGS>...]
+Usage: viso run [OPTIONS] [TARGET]... [-- <APP_ARGS>...]
 
 Examples:
   viso run                         # on this machine
@@ -875,10 +875,11 @@ Examples:
   viso run web-gpu --browser none  # serve it, opening no browser
 
 Arguments:
-  [TARGET]       Where to run: this machine when omitted; a device target of `Viso.toml` by its name, on the board its `deploy` names, or here when this machine is the board [possible values: ios, android, web-gpu, web-dom, web-hybrid]
+  [TARGET]...    Where to run: this machine when omitted; a device target of `Viso.toml` by its name, on the board its `deploy` names, or here when this machine is the board. Several run side by side in one session, each edit compiled once for them all [possible values: ios, android, web-gpu, web-dom, web-hybrid]
   [APP_ARGS]...  Arguments for the app, after `--`
 
 Options:
+      --desktop          Run on this machine too, beside the targets named: its app is the session's first
       --device <ID>      The simulator or emulator profile (`ios` and `android` only)
       --browser <NAME>   The browser to open (`web-*` only): `chrome`, `safari`, `firefox`, or `none` to only serve
       --no-hot-reload    Keep the dev session up but apply no edit to the app: each is compiled and reported, not sent
@@ -910,6 +911,8 @@ Notes:
   reports its frames as `viso profile` measures them. A device target runs on the
   board its `deploy` names, over SSH; `--emulate` runs an `embedded-cpu` one in a
   window on a Mac; without either it runs only where this machine is its board.
+  Several targets run side by side in one session, `--desktop` adding this
+  machine: `viso run web-gpu --desktop`.
 
 $ viso build --help
 Build the app for a target and write it to `dist/`, without running it

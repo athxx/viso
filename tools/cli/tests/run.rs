@@ -2,7 +2,7 @@
 //! with and exits: `--env` reaches it, `--cwd` is where it runs, and the
 //! options a target does not take, and `headless`, are usage errors; a
 //! device target's session runs on its board over a fake SSH, or emulated
-//! on a Mac.
+//! on a Mac, beside this machine's app in one session.
 
 mod stand_in;
 
@@ -84,6 +84,9 @@ fn an_option_the_target_does_not_take_is_a_usage_error() {
             "viso build --profile release",
         ),
         (&["run", "headless"], "viso test ui"),
+        (&["run", "web-gpu", "web-gpu"], "named twice"),
+        (&["run", "ios", "android"], "one simulator or emulator"),
+        (&["run", "web-gpu", "web-dom"], "one web target"),
     ] {
         let out = viso(&root, args);
         assert_eq!(out.status.code(), Some(2), "{args:?}");
@@ -255,4 +258,45 @@ fn an_embedded_cpu_target_is_emulated_on_a_mac() {
     // `--emulate` is a device target's.
     let out = viso(&root, &["run", "--emulate"]);
     assert_eq!(out.status.code(), Some(2), "{}", text(&out.stderr));
+}
+
+/// This machine and an emulated board run side by side in one session:
+/// each lane builds its own artifact, under its own build id, and its app's
+/// lines are named by its target.
+#[test]
+fn a_session_runs_this_machine_beside_an_emulated_board() {
+    if !cfg!(target_os = "macos") {
+        return;
+    }
+    let root = project("run-lanes");
+    fs::write(root.join("Cargo.toml"), CARGO).unwrap();
+    fs::write(
+        root.join("Viso.toml"),
+        "[package]\nname = \"probe\"\nversion = \"1.2.0\"\n\n\
+         [target.kiosk]\nprofile = \"embedded-cpu\"\n\
+         display = { width = 480, height = 272, format = \"rgb565\" }\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/main.rs"),
+        "fn main() {\n    println!(\"{} {}\", viso::EMULATE, viso::HOT_RELOAD);\n}\n",
+    )
+    .unwrap();
+    let out = viso(&root, &["run", "kiosk", "--emulate", "--desktop", "--json"]);
+    let stdout = text(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{stdout}{}", text(&out.stderr));
+    let mut lines = app_lines(&stdout);
+    lines.sort_unstable();
+    assert_eq!(
+        lines,
+        ["[host] false true", "[kiosk] true true"],
+        "{stdout}"
+    );
+    let artifacts = events(&stdout, "artifact");
+    assert_eq!(artifacts.len(), 2, "{stdout}");
+    assert_ne!(
+        field(artifacts[0], "build_id"),
+        field(artifacts[1], "build_id"),
+        "each lane runs a build of its own"
+    );
 }

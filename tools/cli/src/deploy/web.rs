@@ -1238,7 +1238,7 @@ mod tests {
         let expect = Expect {
             token: "token".into(),
             dev_session: DevSessionId(1),
-            build_id: BuildId(2),
+            builds: vec![BuildId(2)],
             project: ProjectFingerprint(3),
             schema: SchemaFingerprint(4),
         };
@@ -1407,7 +1407,7 @@ mod tests {
         let expect = Expect {
             token: "token".into(),
             dev_session: DevSessionId(1),
-            build_id: BuildId(2),
+            builds: vec![BuildId(2)],
             project: ProjectFingerprint(3),
             schema: SchemaFingerprint(4),
         };
@@ -1471,7 +1471,7 @@ mod tests {
         let expect = Expect {
             token: "token".into(),
             dev_session: DevSessionId(1),
-            build_id: BuildId(2),
+            builds: vec![BuildId(2)],
             project: ProjectFingerprint(3),
             schema: SchemaFingerprint(4),
         };

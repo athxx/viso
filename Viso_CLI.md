@@ -1087,7 +1087,7 @@ Dev Runtime transport
 structured diagnostics/logs
 ```
 
-`viso run host|macos|windows|linux|headless` 与 `viso run --target ...` 均为 usage error（§1、§3.5）；`viso run headless` 建议 `viso test ui` 与 `viso build headless`。
+`viso run host|macos|windows|linux|headless` 与 `viso run --target ...` 均为 usage error（§1、§3.5），本机与其他 target 同时运行用 `--desktop`（§13.3A）；`viso run headless` 建议 `viso test ui` 与 `viso build headless`。
 
 ### 13.2 iOS / Android emulator development
 
@@ -1138,6 +1138,23 @@ viso run web-dom --browser safari
 ```
 
 浏览器选择不是 mobile `--device` 的复用概念。
+
+### 13.3A 一个 session 多个 target
+
+```bash
+viso run web-gpu --desktop
+viso run kiosk --emulate --desktop
+viso run ios web-gpu
+```
+
+`viso run [TARGET]...` 把每个 target 作为同一 Dev Session 的一条 lane 运行（ADR 0046）；`--desktop` 再加上本机，作为第一条 lane（本机仍不是 positional target，§1）。共享一个 session id/token、watcher、source graph、control endpoint 和输出流，一次编辑只 parse/type-check 一次，按 runtime 各自 plan；每条 lane 有自己的 dev lock（全部在任何 build 开始前、按 lane 顺序取得）、Rust plan 与 `RustBuild`、build id、deploy、dev listener 和 restart 状态。两条 lane 构建同一 Rust triple 时，后者用 `<target-dir>/viso/lanes/<target>/`，不会启动另一条 lane 的可执行文件。
+
+- 同一 target 写两次、多于一个 simulator/emulator、多于一个 web target 均为 usage error；`--device`、`--browser`/`--open`、`--emulate`、`--cwd` 作用于合适的 lane，没有合适 lane 时为 usage error；
+- Rust 编辑重建 scope 含该文件的每条 lane；warm restart 一次一条 lane（snapshot、close、launch、restore 属于该 lane 直到落地或失败），其余 lane 的新 build 排队；一条 lane 的 build 或 restart 失败不影响其他 lane；
+- 多 lane 时 app 日志行以 `[target] ` 开头；`viso game`/`viso inspect` 未指定 runtime 时交给第一条 lane 的 app；
+- 所有 lane 的 app 都结束时 session 结束，exit code 取第一条 lane；中途结束的 lane 报告一行，其 runtime 离开 session；第一次中断关闭所有 app，第二次 kill。
+
+`viso serve` 仍是单 lane。
 
 ### 13.4 App arguments
 

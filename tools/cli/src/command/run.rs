@@ -54,7 +54,7 @@ use crate::build::{
 };
 use crate::context::{Context, Loaded, in_its_file};
 use crate::deploy::{self, App, Deploy, Ended, Lines, Vars, board::Board, web};
-use crate::dev::build::{BuildEvent, RustBuild};
+use crate::dev::build::{Build, BuildEvent, RustBuild};
 use crate::dev::cargo::RustScope;
 use crate::dev::{
     self, Control, ControlCall, ControlDeliver, Deliver, DevSession, Expect, LinkEvent, WatchScope,
@@ -120,8 +120,8 @@ enum Incoming {
         source: &'static str,
         line: String,
     },
-    /// What a build of the dev artifact said.
-    Build(BuildEvent),
+    /// What a build of a lane's dev artifact said, by the lane's index.
+    Build(usize, BuildEvent),
     /// A file of the watch scope changed.
     Change(dev::Change),
     /// What a dev connection delivered.
@@ -135,19 +135,83 @@ enum Incoming {
     Inspected(inspect::Streamed),
 }
 
-/// Where a run goes, as the command line asks: the target, and the device
+/// Where one target of the command line runs: the target, and the device
 /// platform of a simulator or emulator target.
-fn target_of(args: &RunArgs) -> (Target, Option<Platform>) {
-    match &args.target {
-        None => (Target::Host, None),
-        Some(TargetArg::Builtin(RunTarget::Ios)) => (Target::Ios, Some(Platform::Ios)),
-        Some(TargetArg::Builtin(RunTarget::Android)) => (Target::Android, Some(Platform::Android)),
-        Some(TargetArg::Builtin(RunTarget::WebGpu)) => (Target::WebGpu, None),
-        Some(TargetArg::Builtin(RunTarget::WebDom)) => (Target::WebDom, None),
-        Some(TargetArg::Builtin(RunTarget::WebHybrid)) => (Target::WebHybrid, None),
-        Some(TargetArg::Builtin(RunTarget::Headless)) => (Target::Headless, None),
-        Some(TargetArg::Device(name)) => (Target::device(name), None),
+fn target_of(arg: &TargetArg<RunTarget>) -> (Target, Option<Platform>) {
+    match arg {
+        TargetArg::Builtin(RunTarget::Ios) => (Target::Ios, Some(Platform::Ios)),
+        TargetArg::Builtin(RunTarget::Android) => (Target::Android, Some(Platform::Android)),
+        TargetArg::Builtin(RunTarget::WebGpu) => (Target::WebGpu, None),
+        TargetArg::Builtin(RunTarget::WebDom) => (Target::WebDom, None),
+        TargetArg::Builtin(RunTarget::WebHybrid) => (Target::WebHybrid, None),
+        TargetArg::Builtin(RunTarget::Headless) => (Target::Headless, None),
+        TargetArg::Device(name) => (Target::device(name), None),
     }
+}
+
+/// The lanes a run asks for: this machine first when it names no target or
+/// `--desktop`, then the targets in command-line order.
+fn targets_of(args: &RunArgs) -> Vec<(Target, Option<Platform>)> {
+    let desktop = args.desktop || args.targets.is_empty();
+    desktop
+        .then_some((Target::Host, None))
+        .into_iter()
+        .chain(args.targets.iter().map(target_of))
+        .collect()
+}
+
+/// One target of the session: what is per build.
+struct Lane {
+    target: Target,
+    /// The simulator or emulator profile it runs on.
+    profile: Option<DeviceProfile>,
+    deploy: Deploy,
+    /// Its build id as the events and the launch spell it, and on the wire.
+    build_id: String,
+    wire: wire::BuildId,
+    /// The Rust its artifact is built from.
+    rust: RustScope,
+    builds: RustBuild,
+    /// The listener its app's dev channel connects to; a page's comes
+    /// through the web dev server.
+    listener: Option<TcpListener>,
+    /// The dev channel's address its app is launched with.
+    address: String,
+    /// The app it launched, and how that ended.
+    app: Option<App>,
+    ended: Option<std::io::Result<Ended>>,
+    restart: Option<Restart>,
+    /// A build whose restart waits for another lane's to land.
+    waiting: Option<Build>,
+}
+
+impl Lane {
+    fn live(&self) -> bool {
+        self.ended.is_none()
+    }
+
+    /// Takes `build`, a newer build than the one waiting: the restart runs
+    /// on it and names every file since the app last restarted.
+    fn wait_for(&mut self, build: Build) {
+        let mut build = build;
+        if let Some(earlier) = self.waiting.take() {
+            for file in earlier.files {
+                if !build.files.contains(&file) {
+                    build.files.push(file);
+                }
+            }
+        }
+        self.waiting = Some(build);
+    }
+}
+
+/// The Rust scope the watcher watches: every lane's.
+fn watched_rust(lanes: &[Lane]) -> RustScope {
+    let mut scope = RustScope::default();
+    for lane in lanes {
+        scope.union(&lane.rust);
+    }
+    scope
 }
 
 /// Where a device target's dev session runs.
@@ -256,10 +320,37 @@ fn elsewhere(device: &DeviceTarget, host: Option<&str>) -> Option<String> {
     })
 }
 
-/// The usage error of an option the target does not take.
-fn misplaced(args: &RunArgs, platform: Option<Platform>, target: Target) -> Option<String> {
-    let web = target.is_web();
-    if args.device.is_some() && platform.is_none() {
+/// The usage error of a set of lanes the session cannot run, or of an
+/// option no lane takes.
+fn misplaced(args: &RunArgs, lanes: &[(Target, Option<Platform>)]) -> Option<String> {
+    for (at, (target, _)) in lanes.iter().enumerate() {
+        if lanes[..at].iter().any(|(earlier, _)| earlier == target) {
+            return Some(format!(
+                "`{target}` is named twice: a session runs each target once"
+            ));
+        }
+    }
+    if lanes
+        .iter()
+        .filter(|(_, platform)| platform.is_some())
+        .count()
+        > 1
+    {
+        return Some(
+            "a session runs one simulator or emulator: `ios` and `android` run in two sessions"
+                .into(),
+        );
+    }
+    if lanes.iter().filter(|(target, _)| target.is_web()).count() > 1 {
+        return Some("a session serves one web target, from its one page server".into());
+    }
+    let any = |fits: fn(Target, Option<Platform>) -> bool| {
+        lanes
+            .iter()
+            .any(|&(target, platform)| fits(target, platform))
+    };
+    let web = any(|target, _| target.is_web());
+    if args.device.is_some() && !any(|_, platform| platform.is_some()) {
         return Some("`--device` takes a simulator or emulator profile: `viso run ios|android --device <id>`".into());
     }
     if args.browser.is_some() && !web {
@@ -271,13 +362,13 @@ fn misplaced(args: &RunArgs, platform: Option<Platform>, target: Target) -> Opti
     if args.open && args.browser.as_deref() == Some("none") {
         return Some("`--open` and `--browser none` ask for opposite things".into());
     }
-    if args.emulate && !matches!(target, Target::Device(_)) {
+    if args.emulate && !any(|target, _| matches!(target, Target::Device(_))) {
         return Some(
             "`--emulate` runs a device target on this desktop: `viso run <device-target> --emulate`"
                 .into(),
         );
     }
-    if args.cwd.is_some() && !matches!(target, Target::Host | Target::Device(_)) {
+    if args.cwd.is_some() && !any(|target, _| matches!(target, Target::Host | Target::Device(_))) {
         return Some(
             "`--cwd` is the working directory of an app on this machine: `viso run --cwd <dir>`"
                 .into(),
@@ -290,6 +381,18 @@ pub fn run(ctx: &Context<'_>, args: &RunArgs, out: &mut Output) -> u8 {
     session(ctx, args, web::Listen::loopback(), None, out)
 }
 
+/// What a lane is before its deploy: the target as the project resolves
+/// it, where it runs, and its build's identity.
+struct Prep {
+    target: Target,
+    resolved: viso_project::Resolved,
+    runs_on: Option<OnBoard>,
+    device_plan: Option<build::RustPlan>,
+    profile: Option<DeviceProfile>,
+    sdk: Option<Sdk>,
+    identity: viso_project::BuildId,
+}
+
 /// The session of `viso run` and `viso serve`: a page's server listens as
 /// `listen` asks and is opened as `open` says, by `--browser` when `None`.
 pub(super) fn session(
@@ -299,8 +402,11 @@ pub(super) fn session(
     open: Option<bool>,
     out: &mut Output,
 ) -> u8 {
-    let (target, platform) = target_of(args);
-    if target == Target::Headless {
+    let targets = targets_of(args);
+    if targets
+        .iter()
+        .any(|(target, _)| *target == Target::Headless)
+    {
         return out.failure_next(
             CLI_USAGE,
             "`headless` is not a target `viso run` runs on",
@@ -308,15 +414,17 @@ pub(super) fn session(
             &["viso test ui".to_owned(), "viso build headless".to_owned()],
         );
     }
-    if let Some(why) = misplaced(args, platform, target) {
+    if let Some(why) = misplaced(args, &targets) {
         return out.failure(CLI_USAGE, &why, &[]);
     }
-    if let Err(diagnostic) = target.require_available() {
-        out.config(None, &diagnostic);
-        return diagnostic.code.exit_code();
-    }
-    if platform == Some(Platform::Ios) && !cfg!(target_os = "macos") {
-        return out.failure(ENV_DEVICE, "the iOS Simulator runs on macOS only", &[]);
+    for (target, platform) in &targets {
+        if let Err(diagnostic) = target.require_available() {
+            out.config(None, &diagnostic);
+            return diagnostic.code.exit_code();
+        }
+        if *platform == Some(Platform::Ios) && !cfg!(target_os = "macos") {
+            return out.failure(ENV_DEVICE, "the iOS Simulator runs on macOS only", &[]);
+        }
     }
     // `--cwd` is taken from where `viso` runs, as a shell would.
     let cwd = match &args.cwd {
@@ -337,25 +445,115 @@ pub(super) fn session(
         None => None,
     };
     let command = if open.is_some() { "serve" } else { "run" };
-    let Loaded {
-        project,
-        resolved,
-        layout,
-    } = match ctx.load_dev(command, target, out) {
-        Ok(loaded) => loaded,
-        Err(code) => return code,
-    };
-    let device = resolved.config.device.as_ref();
-    let runs_on = match device {
-        Some(device) => {
-            match on_board(device, args.emulate, build::host_triple().as_deref(), out) {
-                Ok(runs_on) => Some(runs_on),
-                Err(code) => return code,
+    let mut preps = Vec::with_capacity(targets.len());
+    let mut locks = Vec::with_capacity(targets.len());
+    let mut loaded = None;
+    let mut project_print = None;
+    for &(target, platform) in &targets {
+        let Loaded {
+            project,
+            resolved,
+            layout,
+        } = match ctx.load_dev(command, target, out) {
+            Ok(loaded) => loaded,
+            Err(code) => return code,
+        };
+        let device = resolved.config.device.as_ref();
+        let runs_on = match device {
+            Some(device) => {
+                match on_board(device, args.emulate, build::host_triple().as_deref(), out) {
+                    Ok(runs_on) => Some(runs_on),
+                    Err(code) => return code,
+                }
             }
+            None => None,
+        };
+        // A device target builds as its table says: for its board, or for
+        // this desktop with the emulated panel.
+        let device_plan = device.map(|device| {
+            let mut plan = build::rust_plan(target, Some(device), Profile::Dev, None);
+            if runs_on == Some(OnBoard::Emulated) {
+                plan.target = build::host_triple();
+                plan.features.push(cargo::EMULATE);
+            }
+            plan
+        });
+        let root = project.root.clone();
+        if !root.join("Cargo.toml").is_file() {
+            return out.failure(
+                ENV_CARGO_MANIFEST,
+                &format!(
+                    "no `Cargo.toml` next to `{}`",
+                    project.manifest_path().display()
+                ),
+                &[format!(
+                    "`viso {command}` builds the Cargo package at the project root"
+                )],
+            );
         }
-        None => None,
+        // The simulator or emulator profile, by `--device`, the default or
+        // the only one.
+        let profile = match platform {
+            Some(platform) => {
+                let store = match devices::store(out) {
+                    Ok(store) => store,
+                    Err(code) => return code,
+                };
+                match devices::select(out, &store, platform, args.device.as_deref(), &root) {
+                    Ok(profile) => Some(profile),
+                    Err(code) => return code,
+                }
+            }
+            None => None,
+        };
+        let sdk = match platform {
+            Some(Platform::Android) => match crate::toolchain::android::sdk() {
+                Ok(sdk) => Some(sdk),
+                Err(why) => return crate::toolchain::android::no_sdk(out, &why),
+            },
+            _ => None,
+        };
+        // One dev session per project, target and device at a time.
+        match ctx.lock(
+            &layout,
+            LockKind::DevSession {
+                target,
+                device: profile.as_ref().map(|p| p.id.as_str()),
+            },
+            out,
+        ) {
+            Ok(lock) => locks.push(lock),
+            Err(code) => return code,
+        }
+        let fingerprint = match project_print {
+            Some(fingerprint) => fingerprint,
+            None => match ProjectFingerprint::compute(&root) {
+                Ok(computed) => *project_print.insert(computed),
+                Err(diagnostic) => {
+                    in_its_file(out, &diagnostic);
+                    return diagnostic.code.exit_code();
+                }
+            },
+        };
+        let identity = resolved.config.build_id(fingerprint, &build::toolchain());
+        preps.push(Prep {
+            target,
+            resolved,
+            runs_on,
+            device_plan,
+            profile,
+            sdk,
+            identity,
+        });
+        loaded.get_or_insert((project, layout));
+    }
+    let (project, layout) = loaded.expect("a run has a lane");
+    let fingerprint = project_print.expect("a run has a lane");
+    let local = |prep: &Prep| {
+        prep.target == Target::Host
+            || matches!(prep.runs_on, Some(OnBoard::Here | OnBoard::Emulated))
     };
-    if args.cwd.is_some() && matches!(runs_on, Some(OnBoard::Remote(_))) {
+    if args.cwd.is_some() && !preps.iter().any(local) {
         return out.failure(
             CLI_USAGE,
             "`--cwd` is the working directory of an app on this machine; a board's app runs in \
@@ -363,257 +561,279 @@ pub(super) fn session(
             &[],
         );
     }
-    // A device target builds as its table says: for its board, or for this
-    // desktop with the emulated panel.
-    let device_plan = device.map(|device| {
-        let mut plan = build::rust_plan(target, Some(device), Profile::Dev, None);
-        if runs_on == Some(OnBoard::Emulated) {
-            plan.target = build::host_triple();
-            plan.features.push(cargo::EMULATE);
-        }
-        plan
-    });
     let root = project.root.clone();
-    let cargo_manifest = root.join("Cargo.toml");
-    if !cargo_manifest.is_file() {
-        return out.failure(
-            ENV_CARGO_MANIFEST,
-            &format!(
-                "no `Cargo.toml` next to `{}`",
-                project.manifest_path().display()
-            ),
-            &[format!(
-                "`viso {command}` builds the Cargo package at the project root"
-            )],
-        );
-    }
-    // The simulator or emulator profile, by `--device`, the default or the
-    // only one.
-    let profile = match platform {
-        Some(platform) => {
-            let store = match devices::store(out) {
-                Ok(store) => store,
-                Err(code) => return code,
-            };
-            match devices::select(out, &store, platform, args.device.as_deref(), &root) {
-                Ok(profile) => Some(profile),
-                Err(code) => return code,
-            }
-        }
-        None => None,
-    };
-    let sdk = match platform {
-        Some(Platform::Android) => match crate::toolchain::android::sdk() {
-            Ok(sdk) => Some(sdk),
-            Err(why) => return crate::toolchain::android::no_sdk(out, &why),
-        },
-        _ => None,
-    };
-
-    // One dev session per project, target and device at a time.
-    let lock = match ctx.lock(
-        &layout,
-        LockKind::DevSession {
-            target,
-            device: profile.as_ref().map(|p| p.id.as_str()),
-        },
-        out,
-    ) {
-        Ok(lock) => lock,
-        Err(code) => return code,
-    };
-    let fingerprint = match ProjectFingerprint::compute(&root) {
-        Ok(fingerprint) => fingerprint,
-        Err(diagnostic) => {
-            in_its_file(out, &diagnostic);
-            return diagnostic.code.exit_code();
-        }
-    };
-    let build_identity = resolved.config.build_id(fingerprint, &build::toolchain());
-    let build_id = build_identity.to_hex();
     let token = random_hex();
     let session = random_hex();
     let wide = |hash: viso_project::Hash128| (u128::from(hash.hi) << 64) | u128::from(hash.lo);
     let expect = Expect {
         token: token.clone(),
         dev_session: DevSessionId::from_hex(&session).expect("32 hex digits"),
-        build_id: wire::BuildId(wide(build_identity.hash())),
+        builds: preps
+            .iter()
+            .map(|prep| wire::BuildId(wide(prep.identity.hash())))
+            .collect(),
         project: WireProject(wide(fingerprint.hash())),
         schema: SchemaFingerprint(viso_dsl::hotreload::schema_fingerprint()),
     };
 
     interrupt::catch();
 
-    // The Rust the artifact is built from, as Cargo resolves it for the
-    // device; without it the session still runs, and a Rust edit needs
-    // `viso run` again.
     let canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
     let manifest = canonical.join("Cargo.toml");
-    let triple = match &device_plan {
-        Some(plan) => plan.target.clone(),
-        None => build::rust_plan(target, None, Profile::Dev, None).target,
-    };
-    let rust = match RustScope::read(&manifest, triple.as_deref(), &ctx.cargo_args()) {
-        Ok(rust) => rust,
-        Err(why) => {
-            out.log(
-                "warn",
-                "tool",
-                &format!("Rust edits do not rebuild the app: {why}"),
-            );
-            RustScope::default()
-        }
-    };
     let (tx, rx) = mpsc::channel();
-    // The device boots while the app builds.
-    if let Some(profile) = &profile {
-        boot(profile.clone(), sdk.clone(), tx.clone(), out);
-    }
     let deliver: Deliver = {
         let tx = tx.clone();
         Arc::new(move |event| tx.send(Incoming::Link(event)).is_ok())
     };
-    let board = match &runs_on {
-        Some(OnBoard::Remote(address)) => Some(Board::new(
-            address.clone(),
-            project.name().unwrap_or("app"),
-            Some(root.join(viso_dsl::assets::ASSET_DIR)),
-        )),
-        _ => None,
-    };
-    let mut deploy = match (&profile, sdk, board) {
-        (_, _, Some(board)) => Deploy::Board(Box::new(board)),
-        (None, _, None) if target == Target::WebGpu => {
-            let port = project
-                .manifest
-                .web
-                .serve
-                .port
-                .as_ref()
-                .map_or(web::DEFAULT_PORT, |port| port.value);
-            let log: web::PageLog = {
-                let tx = tx.clone();
-                Arc::new(move |level, line| {
-                    tx.send(Incoming::Log {
-                        level,
-                        source: "app",
-                        line,
-                    })
-                    .is_ok()
-                })
-            };
-            match web::WebServer::bind(listen, port, expect.clone(), Arc::clone(&deliver), log) {
-                Ok(server) => Deploy::Browser {
-                    server,
-                    browser: args.browser.clone().filter(|b| b != "none"),
-                    open: open.unwrap_or_else(|| {
-                        args.open
-                            || (args.browser.as_deref() != Some("none")
-                                && (!ctx.global.json || args.browser.is_some()))
-                    }),
-                    launched: false,
-                },
-                Err(error) => {
-                    return out.failure(
-                        ENV_DEV_CHANNEL,
-                        &format!("cannot open the web dev server: {error}"),
-                        &[],
-                    );
-                }
-            }
-        }
-        (None, _, None) => Deploy::Host {
-            cwd: cwd.unwrap_or_else(|| root.clone()),
-        },
-        (Some(profile), _, None) if profile.platform == Platform::Ios => Deploy::Simulator {
-            profile: profile.clone(),
-        },
-        (Some(_), Some(sdk), None) => match deploy::android_shell(&rust.linked) {
-            Ok(shell) => Deploy::Emulator {
-                device: emulator::Device {
-                    adb: sdk.adb.clone(),
-                    serial: String::new(),
-                },
-                sdk: Box::new(sdk),
-                shell,
-                reversed: None,
-            },
+    let named = preps.len() > 1;
+    let mut listen = Some(listen);
+    let mut triples: Vec<Option<String>> = Vec::with_capacity(preps.len());
+    let mut lanes = Vec::with_capacity(preps.len());
+    let mut channels = Vec::with_capacity(preps.len());
+    for (at, prep) in preps.into_iter().enumerate() {
+        let Prep {
+            target,
+            resolved,
+            runs_on,
+            device_plan,
+            profile,
+            sdk,
+            identity,
+        } = prep;
+        // The Rust the artifact is built from, as Cargo resolves it for the
+        // lane's device; without it the session still runs, and a Rust edit
+        // needs `viso run` again.
+        let triple = match &device_plan {
+            Some(plan) => plan.target.clone(),
+            None => build::rust_plan(target, None, Profile::Dev, None).target,
+        };
+        let rust = match RustScope::read(&manifest, triple.as_deref(), &ctx.cargo_args()) {
+            Ok(rust) => rust,
             Err(why) => {
-                return out.failure(ENV_DEVICE, &why, &[]);
-            }
-        },
-        (Some(_), None, None) => unreachable!("an emulator profile has its SDK"),
-    };
-    // The board is reached before the build, so one that cannot be fails
-    // at once; the dev channel listens on this machine's address on the
-    // route to it.
-    let channel_ip: IpAddr =
-        match &deploy {
-            Deploy::Board(board) => {
-                out.progress(
-                    "deploy",
-                    &format!("opening the session on `{}`", board.address()),
+                out.log(
+                    "warn",
+                    "tool",
+                    &format!("Rust edits do not rebuild the `{target}` app: {why}"),
                 );
-                match board.open() {
-                    Ok(ip) if dev_host(ip) => ip,
-                    Ok(ip) => {
+                RustScope::default()
+            }
+        };
+        // The device boots while the app builds.
+        if let Some(profile) = &profile {
+            boot(profile.clone(), sdk.clone(), tx.clone(), out);
+        }
+        let board = match &runs_on {
+            Some(OnBoard::Remote(address)) => Some(Board::new(
+                address.clone(),
+                project.name().unwrap_or("app"),
+                Some(root.join(viso_dsl::assets::ASSET_DIR)),
+            )),
+            _ => None,
+        };
+        let deploy = match (&profile, sdk, board) {
+            (_, _, Some(board)) => Deploy::Board(Box::new(board)),
+            (None, _, None) if target == Target::WebGpu => {
+                let port = project
+                    .manifest
+                    .web
+                    .serve
+                    .port
+                    .as_ref()
+                    .map_or(web::DEFAULT_PORT, |port| port.value);
+                let log: web::PageLog = {
+                    let tx = tx.clone();
+                    let prefix = lane_prefix(named, target);
+                    Arc::new(move |level, line| {
+                        tx.send(Incoming::Log {
+                            level,
+                            source: "app",
+                            line: format!("{prefix}{line}"),
+                        })
+                        .is_ok()
+                    })
+                };
+                let listen = listen.take().expect("a session has one web lane");
+                match web::WebServer::bind(listen, port, expect.clone(), Arc::clone(&deliver), log)
+                {
+                    Ok(server) => Deploy::Browser {
+                        server,
+                        browser: args.browser.clone().filter(|b| b != "none"),
+                        open: open.unwrap_or_else(|| {
+                            args.open
+                                || (args.browser.as_deref() != Some("none")
+                                    && (!ctx.global.json || args.browser.is_some()))
+                        }),
+                        launched: false,
+                    },
+                    Err(error) => {
                         return out.failure(
-                        ENV_DEV_CHANNEL,
-                        &format!(
-                            "the route to `{}` leaves this machine from {ip}, which is not on a \
-                             local network",
-                            board.address()
-                        ),
-                        &["the app takes a dev channel on a loopback, private, link-local or \
-                           unique-local address alone"
-                            .to_owned()],
-                    );
-                    }
-                    Err(why) => {
-                        return out.failure(
-                            ENV_DEPLOY,
-                            &why,
-                            &[format!(
-                                "`ssh {}` must log in without a password: the board takes this \
-                             machine's key, or an agent's",
-                                board.address()
-                            )],
+                            ENV_DEV_CHANNEL,
+                            &format!("cannot open the web dev server: {error}"),
+                            &[],
                         );
                     }
                 }
             }
-            _ => Ipv4Addr::LOCALHOST.into(),
+            (None, _, None) => Deploy::Host {
+                cwd: cwd.clone().unwrap_or_else(|| root.clone()),
+            },
+            (Some(profile), _, None) if profile.platform == Platform::Ios => Deploy::Simulator {
+                profile: profile.clone(),
+            },
+            (Some(_), Some(sdk), None) => match deploy::android_shell(&rust.linked) {
+                Ok(shell) => Deploy::Emulator {
+                    device: emulator::Device {
+                        adb: sdk.adb.clone(),
+                        serial: String::new(),
+                    },
+                    sdk: Box::new(sdk),
+                    shell,
+                    reversed: None,
+                },
+                Err(why) => {
+                    return out.failure(ENV_DEVICE, &why, &[]);
+                }
+            },
+            (Some(_), None, None) => unreachable!("an emulator profile has its SDK"),
         };
-    if matches!(deploy, Deploy::Emulator { .. } | Deploy::Browser { .. })
-        && !args.app_args.is_empty()
-    {
-        out.log(
-            "warn",
-            "tool",
-            "an Android or web app takes no command-line arguments; those after `--` are not passed",
-        );
+        // The board is reached before the build, so one that cannot be
+        // fails at once; the dev channel listens on this machine's address
+        // on the route to it.
+        let channel_ip: IpAddr =
+            match &deploy {
+                Deploy::Board(board) => {
+                    out.progress(
+                        "deploy",
+                        &format!("opening the session on `{}`", board.address()),
+                    );
+                    match board.open() {
+                        Ok(ip) if dev_host(ip) => ip,
+                        Ok(ip) => {
+                            return out.failure(
+                            ENV_DEV_CHANNEL,
+                            &format!(
+                                "the route to `{}` leaves this machine from {ip}, which is not \
+                                 on a local network",
+                                board.address()
+                            ),
+                            &["the app takes a dev channel on a loopback, private, link-local \
+                               or unique-local address alone"
+                                .to_owned()],
+                        );
+                        }
+                        Err(why) => {
+                            return out.failure(
+                                ENV_DEPLOY,
+                                &why,
+                                &[format!(
+                                    "`ssh {}` must log in without a password: the board takes this \
+                                 machine's key, or an agent's",
+                                    board.address()
+                                )],
+                            );
+                        }
+                    }
+                }
+                _ => Ipv4Addr::LOCALHOST.into(),
+            };
+        if matches!(deploy, Deploy::Emulator { .. } | Deploy::Browser { .. })
+            && !args.app_args.is_empty()
+        {
+            out.log(
+                "warn",
+                "tool",
+                "an Android or web app takes no command-line arguments; those after `--` are not \
+                 passed",
+            );
+        }
+        let mut plan = deploy.plan();
+        if let Some(device_plan) = device_plan {
+            plan.rust = device_plan;
+            let device = resolved.config.device.as_ref();
+            if let Err(why) = build::add_text_data(&mut plan.rust, device, &project, &layout) {
+                return out.failure(ENV_BUILD_WRITE, &why, &[]);
+            }
+        }
+        super::build::warn_kept_defaults(plan.rust.no_default_features, &manifest, ctx, out);
+        let mut features = plan.rust.features;
+        features.push(cargo::HOT_RELOAD);
+        // Lanes building for one Rust target link one executable path: a
+        // later one builds in a directory of its own, so no lane launches
+        // another's build.
+        let target_dir = if triples.contains(&plan.rust.target) {
+            let base = ctx
+                .target_dir()
+                .or_else(|| std::env::var_os("CARGO_TARGET_DIR").map(PathBuf::from))
+                .unwrap_or_else(|| root.join("target"));
+            Some(base.join("viso").join("lanes").join(target.as_str()))
+        } else {
+            ctx.target_dir()
+        };
+        triples.push(plan.rust.target.clone());
+        let built = Mutex::new(tx.clone());
+        let command = BuildCommand {
+            cargo: cargo::program(),
+            manifest: manifest.clone(),
+            quiet: ctx.global.quiet,
+            piped: ctx.global.json,
+            target_dir,
+            cargo_args: ctx.cargo_args(),
+            build_args: ctx.cargo_build_args(),
+            profile: Profile::Dev,
+            profile_args: cargo::profile_args(Profile::Dev, &resolved.config.settings, target),
+            features,
+            no_default_features: plan.rust.no_default_features,
+            target: plan.rust.target,
+            rustc_args: plan.rust.rustc_args,
+            env: plan.rust.env,
+            package: plan.package,
+            // `viso build` of the target waits while this one builds.
+            lock: Some((layout.clone(), target)),
+        };
+        let builds = RustBuild::new(command, move |event| {
+            built
+                .lock()
+                .is_ok_and(|tx| tx.send(Incoming::Build(at, event)).is_ok())
+        });
+        channels.push(channel_ip);
+        lanes.push(Lane {
+            target,
+            profile,
+            deploy,
+            build_id: identity.to_hex(),
+            wire: expect.builds[at],
+            rust,
+            builds,
+            listener: None,
+            address: String::new(),
+            app: None,
+            ended: None,
+            restart: None,
+            waiting: None,
+        });
     }
-    // The watcher starts before the build, so an edit saved while the app
-    // builds reaches the session.
+    // The watcher starts before the builds, so an edit saved while the apps
+    // build reaches the session.
     let watched = tx.clone();
     let scope = WatchScope {
         project: canonical,
-        rust,
+        rust: watched_rust(&lanes),
     };
-    let mut dev = DevSession::start(scope, &expect, lock, !args.no_hot_reload, move |change| {
+    let mut dev = DevSession::start(scope, &expect, locks, !args.no_hot_reload, move |change| {
         watched.send(Incoming::Change(change)).is_ok()
     });
     if args.profile_frame {
         dev.stream_profiles();
     }
-    // `viso game` finds the endpoint in the lock; a session without one
-    // still runs, and says why `viso game` cannot reach it.
+    // `viso game` finds the endpoint in every lane's lock; a session without
+    // one still runs, and says why `viso game` cannot reach it.
     let control = Control::bind(random_hex())
         .and_then(|control| Ok((control.endpoint()?, control)))
         .map_err(|error| error.to_string())
         .and_then(|(endpoint, control)| {
-            dev.lock_mut()
-                .publish(&endpoint, Some(&session))
+            dev.locks_mut()
+                .iter_mut()
+                .try_for_each(|lock| lock.publish(&endpoint, Some(&session)))
                 .map(|()| control)
                 .map_err(|diagnostic| diagnostic.message)
         });
@@ -638,184 +858,181 @@ pub(super) fn session(
         }
     };
 
-    let mut plan = deploy.plan();
-    if let Some(device_plan) = device_plan {
-        plan.rust = device_plan;
-        if let Err(why) = build::add_text_data(&mut plan.rust, device, &project, &layout) {
-            return out.failure(ENV_BUILD_WRITE, &why, &[]);
-        }
+    out.progress(
+        "build",
+        &if named {
+            let names: Vec<String> = lanes.iter().map(|l| format!("`{}`", l.target)).collect();
+            format!("building the dev artifacts of {}", names.join(", "))
+        } else {
+            "building the dev artifact".to_owned()
+        },
+    );
+    for lane in &mut lanes {
+        lane.builds.start();
     }
-    super::build::warn_kept_defaults(plan.rust.no_default_features, &manifest, ctx, out);
-    let mut features = plan.rust.features;
-    features.push(cargo::HOT_RELOAD);
-    let built = Mutex::new(tx.clone());
-    let build = BuildCommand {
-        cargo: cargo::program(),
-        manifest,
-        quiet: ctx.global.quiet,
-        piped: ctx.global.json,
-        target_dir: ctx.target_dir(),
-        cargo_args: ctx.cargo_args(),
-        build_args: ctx.cargo_build_args(),
-        profile: Profile::Dev,
-        profile_args: cargo::profile_args(Profile::Dev, &resolved.config.settings, target),
-        features,
-        no_default_features: plan.rust.no_default_features,
-        target: plan.rust.target,
-        rustc_args: plan.rust.rustc_args,
-        env: plan.rust.env,
-        package: plan.package,
-        // `viso build` of the target waits while this one builds.
-        lock: Some((layout.clone(), target)),
-    };
-    let mut builds = RustBuild::new(build, move |event| {
-        built
-            .lock()
-            .is_ok_and(|tx| tx.send(Incoming::Build(event)).is_ok())
-    });
-    out.progress("build", "building the dev artifact");
-    builds.start();
-    let (exe, serial) = match launch_build(out, &mut dev, &mut builds, &rx, profile.as_ref()) {
+    let (exes, serial) = match launch_builds(out, &mut dev, &mut lanes, &rx) {
         Ok(launch) => launch,
         Err(code) => return code,
     };
-    builds.launched(&exe);
-    if let Deploy::Emulator { device, .. } = &mut deploy {
-        device.serial = serial;
-    }
-    if !out.human() {
-        dev_artifact(out, &deploy, &exe, &root, &layout, target, &build_id);
-    }
-
-    // A page's dev channel comes through the web dev server; any other app
-    // connects to a listener of its own, on the loopback interface or, for a
-    // board, on the address on the route to it.
-    let listener = match &deploy {
-        Deploy::Browser { .. } => None,
-        _ => match TcpListener::bind((channel_ip, 0))
-            .and_then(|listener| listener.set_nonblocking(true).map(|()| listener))
-        {
-            Ok(listener) => Some(listener),
+    let mut threads = Vec::new();
+    for ((lane, exe), channel_ip) in lanes.iter_mut().zip(&exes).zip(channels) {
+        lane.builds.launched(exe);
+        if let Deploy::Emulator { device, .. } = &mut lane.deploy {
+            device.serial = serial.clone();
+        }
+        if !out.human() {
+            dev_artifact(
+                out,
+                &lane.deploy,
+                exe,
+                &root,
+                &layout,
+                lane.target,
+                &lane.build_id,
+            );
+        }
+        // A page's dev channel comes through the web dev server; any other
+        // app connects to a listener of its own, on the loopback interface
+        // or, for a board, on the address on the route to it.
+        lane.listener = match &lane.deploy {
+            Deploy::Browser { .. } => None,
+            _ => match TcpListener::bind((channel_ip, 0))
+                .and_then(|listener| listener.set_nonblocking(true).map(|()| listener))
+            {
+                Ok(listener) => Some(listener),
+                Err(error) => {
+                    return out.failure(
+                        ENV_DEV_CHANNEL,
+                        &format!("cannot open the dev channel on {channel_ip}: {error}"),
+                        &[],
+                    );
+                }
+            },
+        };
+        let address = match (&lane.listener, &lane.deploy) {
+            (Some(listener), _) => listener.local_addr(),
+            (None, Deploy::Browser { server, .. }) => Ok(server.addr()),
+            (None, _) => unreachable!("only a page has no listener"),
+        };
+        lane.address = match address {
+            Ok(address) => address.to_string(),
             Err(error) => {
                 return out.failure(
                     ENV_DEV_CHANNEL,
-                    &format!("cannot open the dev channel on {channel_ip}: {error}"),
+                    &format!("cannot read the dev channel's address: {error}"),
                     &[],
                 );
             }
-        },
-    };
-    let address = match (&listener, &deploy) {
-        (Some(listener), _) => listener.local_addr(),
-        (None, Deploy::Browser { server, .. }) => Ok(server.addr()),
-        (None, _) => unreachable!("only a page has no listener"),
-    };
-    let address = match address {
-        Ok(address) => address,
-        Err(error) => {
-            return out.failure(
-                ENV_DEV_CHANNEL,
-                &format!("cannot read the dev channel's address: {error}"),
-                &[],
-            );
-        }
-    };
-    out.progress(
-        "launch",
-        &format!("launching `{}`", relative(&root, &exe).display()),
-    );
-    let vars = Vars {
-        address: address.to_string(),
-        token: &token,
-        session: &session,
-        build_id: &build_id,
-        env: &args.env,
-    };
-    let device_event = |out: &mut Output, state: &str| {
-        if let Some(profile) = &profile {
-            out.device(
-                profile.platform.as_str(),
-                &profile.id,
-                &profile.device,
-                state,
-            );
-        }
-    };
-    let mut app = match deploy.launch(&exe, &args.app_args, &vars, false, None, ctx.global.json) {
-        Ok(app) => app,
-        Err(why) => {
-            deploy.ended();
-            return out.failure(RUN_APP_FAILED, &why, &[]);
-        }
-    };
-    device_event(out, "launched");
-    if let Deploy::Board(board) = &deploy {
-        out.log(
-            "warn",
-            "tool",
-            &format!(
-                "the dev channel to `{}` is unencrypted on the local network: a device on it \
-                 sees the patches this session sends",
-                board.address()
-            ),
+        };
+        out.progress(
+            "launch",
+            &format!("launching `{}`", relative(&root, exe).display()),
         );
-    }
-    if let Deploy::Browser { server, .. } = &deploy {
-        out.server(server.addr(), server.network_addr());
-        if server.network_addr().is_some() {
+        let vars = Vars {
+            address: lane.address.clone(),
+            token: &token,
+            session: &session,
+            build_id: &lane.build_id,
+            env: &args.env,
+        };
+        let mut app =
+            match lane
+                .deploy
+                .launch(exe, &args.app_args, &vars, false, None, ctx.global.json)
+            {
+                Ok(app) => app,
+                Err(why) => {
+                    for lane in &mut lanes {
+                        lane.deploy.ended();
+                    }
+                    return out.failure(RUN_APP_FAILED, &why, &[]);
+                }
+            };
+        device_event(out, lane.profile.as_ref(), "launched");
+        if let Deploy::Board(board) = &lane.deploy {
             out.log(
                 "warn",
                 "tool",
-                "the page is served to the network: any device on it can load it and \
-                 drive this session",
+                &format!(
+                    "the dev channel to `{}` is unencrypted on the local network: a device on it \
+                     sees the patches this session sends",
+                    board.address()
+                ),
             );
-            if target == Target::WebGpu {
+        }
+        if let Deploy::Browser { server, .. } = &lane.deploy {
+            out.server(server.addr(), server.network_addr());
+            if server.network_addr().is_some() {
                 out.log(
                     "warn",
                     "tool",
-                    "another device's browser offers WebGPU only to a secure context, which \
-                     a page over plain HTTP is not",
+                    "the page is served to the network: any device on it can load it and \
+                     drive this session",
                 );
+                if lane.target == Target::WebGpu {
+                    out.log(
+                        "warn",
+                        "tool",
+                        "another device's browser offers WebGPU only to a secure context, which \
+                         a page over plain HTTP is not",
+                    );
+                }
             }
         }
+        threads.extend(pipe_logs(&mut app, lane_prefix(named, lane.target), &tx));
+        lane.app = Some(app);
     }
 
-    let mut threads = pipe_logs(&mut app, &tx);
     let ask: ControlDeliver = {
         let tx = tx.clone();
         Arc::new(move |call| tx.send(Incoming::Control(call)).is_ok())
     };
     let mut asking = Vec::new();
     // The interrupts acted on: the first stops the session, the second kills
-    // the app.
+    // the apps.
     let mut interrupts = 0;
-    let mut restart: Option<Restart> = None;
-    let status = loop {
-        if let Some(listener) = &listener {
-            dev::link::accept(listener, &expect, &deliver, &mut threads);
+    loop {
+        for lane in &lanes {
+            if let Some(listener) = &lane.listener {
+                dev::link::accept(listener, &expect, &deliver, &mut threads);
+            }
         }
         if let Some(control) = &control {
             control.accept(&ask, &mut asking);
         }
         let caught = interrupt::count();
         if caught > interrupts {
+            for lane in &mut lanes {
+                if interrupts == 0 {
+                    lane.builds.stop();
+                    lane.waiting = None;
+                    if let Some(restart) = lane.restart.take() {
+                        restart.into_exe();
+                    }
+                    if let Some(app) = &lane.app {
+                        app.close();
+                    }
+                }
+                if caught >= 2
+                    && let Some(app) = &mut lane.app
+                {
+                    app.kill();
+                }
+            }
             if interrupts == 0 {
                 out.progress("cancel", "stopping the session");
-                builds.stop();
-                restart = None;
-                app.close();
-            }
-            if caught >= 2 {
-                app.kill();
             }
             interrupts = caught;
         }
-        let poll = match restart {
-            Some(Restart::Prewarm { .. } | Restart::Closing { .. }) => CLOSING_POLL,
-            _ => POLL,
-        };
-        let wait = [dev.deadline(), builds.deadline()]
-            .into_iter()
+        let closing = lanes.iter().any(|lane| {
+            matches!(
+                lane.restart,
+                Some(Restart::Prewarm { .. } | Restart::Closing { .. })
+            )
+        });
+        let poll = if closing { CLOSING_POLL } else { POLL };
+        let wait = std::iter::once(dev.deadline())
+            .chain(lanes.iter().map(|lane| lane.builds.deadline()))
             .flatten()
             .min()
             .map_or(poll, |due| {
@@ -823,21 +1040,10 @@ pub(super) fn session(
             });
         match rx.recv_timeout(wait) {
             Ok(message) => {
-                if let Some(exe) = relay(out, &mut dev, &mut builds, message)
+                if let Some((at, build)) = relay(out, &mut dev, &mut lanes, message)
                     && interrupts == 0
                 {
-                    restart = Some(match restart.take() {
-                        // A newer build while the restart runs: the app
-                        // restarts on it, prewarmed if the old app still runs.
-                        Some(Restart::Prewarm { mut run, .. }) => {
-                            let _ = run.kill();
-                            let _ = run.wait();
-                            prewarm(&deploy, &args.app_args, exe, &mut dev, &app, out)
-                        }
-                        Some(Restart::Snapshot { since, .. }) => Restart::Snapshot { exe, since },
-                        Some(Restart::Closing { since, .. }) => Restart::Closing { exe, since },
-                        None => prewarm(&deploy, &args.app_args, exe, &mut dev, &app, out),
-                    });
+                    rebuilt(out, &mut dev, &mut lanes, at, build, &args.app_args);
                 }
             }
             Err(RecvTimeoutError::Timeout) => {}
@@ -846,96 +1052,129 @@ pub(super) fn session(
         }
         dev.tick(out);
         if interrupts == 0 {
-            builds.tick(Instant::now());
-        }
-        restart = match restart.take() {
-            Some(Restart::Prewarm {
-                exe,
-                mut run,
-                since,
-            }) => {
-                let done = matches!(run.try_wait(), Ok(Some(_)) | Err(_));
-                if done || since.elapsed() >= deploy.prewarm_says().1 {
-                    let _ = run.kill();
-                    let _ = run.wait();
-                    Some(snapshot(exe, &mut dev, &app, out))
-                } else {
-                    Some(Restart::Prewarm { exe, run, since })
-                }
+            let now = Instant::now();
+            for lane in &mut lanes {
+                lane.builds.tick(now);
             }
-            Some(Restart::Snapshot { exe, since })
-                if dev.has_snapshot() || since.elapsed() >= SNAPSHOT_WAIT =>
-            {
-                app.close();
-                Some(Restart::Closing {
+            schedule(out, &mut dev, &mut lanes, &args.app_args);
+        }
+        for lane in &mut lanes {
+            let Some(app) = &mut lane.app else {
+                continue;
+            };
+            lane.restart = match lane.restart.take() {
+                Some(Restart::Prewarm {
                     exe,
-                    since: Instant::now(),
-                })
-            }
-            Some(Restart::Closing { exe, since }) => {
-                if since.elapsed() >= CLOSE_WAIT {
-                    app.kill();
-                }
-                Some(Restart::Closing { exe, since })
-            }
-            other => other,
-        };
-        match app.try_wait() {
-            Ok(Some(status)) => {
-                // The old app closed for the restart: the new one starts.
-                let Some(restart) = restart.take().filter(|_| interrupts == 0) else {
-                    break Ok(status);
-                };
-                let exe = restart.into_exe();
-                let restore = dev.restore_next();
-                out.progress(
-                    "launch",
-                    &format!("restarting `{}`", relative(&root, &exe).display()),
-                );
-                match deploy.launch(
-                    &exe,
-                    &args.app_args,
-                    &vars,
-                    restore,
-                    dev.launch_window(),
-                    ctx.global.json,
-                ) {
-                    Ok(next) => {
-                        app = next;
-                        threads.extend(pipe_logs(&mut app, &tx));
-                        builds.launched(&exe);
-                        device_event(out, "launched");
-                        dev.relaunched(out);
-                    }
-                    Err(why) => {
-                        dev.restart_failed(&why, out);
-                        break Ok(status);
+                    mut run,
+                    since,
+                }) => {
+                    let done = matches!(run.try_wait(), Ok(Some(_)) | Err(_));
+                    if done || since.elapsed() >= lane.deploy.prewarm_says().1 {
+                        let _ = run.kill();
+                        let _ = run.wait();
+                        Some(snapshot(exe, &mut dev, lane.wire, app, out))
+                    } else {
+                        Some(Restart::Prewarm { exe, run, since })
                     }
                 }
-            }
-            Ok(None) => {}
-            Err(error) => break Err(error),
+                Some(Restart::Snapshot { exe, since })
+                    if dev.has_snapshot() || since.elapsed() >= SNAPSHOT_WAIT =>
+                {
+                    app.close();
+                    Some(Restart::Closing {
+                        exe,
+                        since: Instant::now(),
+                    })
+                }
+                Some(Restart::Closing { exe, since }) => {
+                    if since.elapsed() >= CLOSE_WAIT {
+                        app.kill();
+                    }
+                    Some(Restart::Closing { exe, since })
+                }
+                other => other,
+            };
         }
-    };
+        for lane in &mut lanes {
+            if !lane.live() {
+                continue;
+            }
+            let Some(app) = &mut lane.app else {
+                continue;
+            };
+            let status = match app.try_wait() {
+                Ok(Some(status)) => status,
+                Ok(None) => continue,
+                Err(error) => {
+                    end(out, lane, Err(error), named);
+                    continue;
+                }
+            };
+            // The old app closed for the restart: the new one starts.
+            let Some(restart) = lane.restart.take().filter(|_| interrupts == 0) else {
+                end(out, lane, Ok(status), named);
+                continue;
+            };
+            let exe = restart.into_exe();
+            let restore = dev.restore_next();
+            out.progress(
+                "launch",
+                &format!("restarting `{}`", relative(&root, &exe).display()),
+            );
+            let vars = Vars {
+                address: lane.address.clone(),
+                token: &token,
+                session: &session,
+                build_id: &lane.build_id,
+                env: &args.env,
+            };
+            match lane.deploy.launch(
+                &exe,
+                &args.app_args,
+                &vars,
+                restore,
+                dev.launch_window(),
+                ctx.global.json,
+            ) {
+                Ok(mut next) => {
+                    threads.extend(pipe_logs(&mut next, lane_prefix(named, lane.target), &tx));
+                    *app = next;
+                    lane.builds.launched(&exe);
+                    device_event(out, lane.profile.as_ref(), "launched");
+                    dev.relaunched(out);
+                }
+                Err(why) => {
+                    dev.restart_failed(&why, out);
+                    end(out, lane, Ok(status), named);
+                }
+            }
+        }
+        if lanes.iter().all(|lane| !lane.live()) {
+            break;
+        }
+    }
     // The session's end stops a prewarm run and a build still running.
-    if let Some(restart) = restart.take() {
-        restart.into_exe();
+    for lane in &mut lanes {
+        if let Some(restart) = lane.restart.take() {
+            restart.into_exe();
+        }
+        lane.builds.stop();
+        lane.deploy.ended();
+        // The app is gone: a connection it opened is waiting in the
+        // listener's backlog or being read to its end, and its pipes are
+        // at their end.
+        if let Some(listener) = &lane.listener {
+            dev::link::accept(listener, &expect, &deliver, &mut threads);
+        }
+        lane.app = None;
     }
-    builds.stop();
-    deploy.ended();
-    // The app is gone: a connection it opened is waiting in the listener's
-    // backlog or being read to its end, and its pipes are at their end.
-    if let Some(listener) = &listener {
-        dev::link::accept(listener, &expect, &deliver, &mut threads);
-    }
-    drop(app);
     drop(deliver);
     drop(tx);
     for thread in threads {
         let _ = thread.join();
     }
     while let Ok(message) = rx.try_recv() {
-        let _ = relay(out, &mut dev, &mut builds, message);
+        let _ = relay(out, &mut dev, &mut lanes, message);
     }
     dev.ended(out);
     // A question that arrives now finds the queue gone and is refused.
@@ -947,7 +1186,104 @@ pub(super) fn session(
     if interrupts > 0 {
         return INTERRUPTED;
     }
+    let status = lanes
+        .swap_remove(0)
+        .ended
+        .expect("the session ends once every app has");
     exit_code(out, status)
+}
+
+/// Lane `lane`'s app ended with `status`: the lane builds no more, and, while
+/// other lanes run on, says so.
+fn end(out: &mut Output, lane: &mut Lane, status: std::io::Result<Ended>, named: bool) {
+    lane.builds.stop();
+    lane.waiting = None;
+    if named {
+        let how = match &status {
+            Ok(status) => format!("exited with {status}"),
+            Err(error) => format!("cannot be waited for: {error}"),
+        };
+        out.log("info", "tool", &format!("the `{}` app {how}", lane.target));
+    }
+    lane.ended = Some(status);
+}
+
+/// What starts a lane's log lines: its target, when the session has more
+/// than one.
+fn lane_prefix(named: bool, target: Target) -> String {
+    if named {
+        format!("[{target}] ")
+    } else {
+        String::new()
+    }
+}
+
+/// Reports a device event of the simulator or emulator of `profile`.
+fn device_event(out: &mut Output, profile: Option<&DeviceProfile>, state: &str) {
+    if let Some(profile) = profile {
+        out.device(
+            profile.platform.as_str(),
+            &profile.id,
+            &profile.device,
+            state,
+        );
+    }
+}
+
+/// Takes `build`, a build lane `at` finished after its launch: one the app
+/// restarts on waits while another lane's restart runs; a newer build of the
+/// lane restarting joins its restart.
+fn rebuilt(
+    out: &mut Output,
+    dev: &mut DevSession,
+    lanes: &mut [Lane],
+    at: usize,
+    build: Build,
+    args: &[OsString],
+) {
+    let lane = &mut lanes[at];
+    if !lane.live() {
+        return;
+    }
+    let restarts = build.result.is_ok() && !build.unchanged;
+    if restarts && lane.restart.is_none() && (dev.restarting() || lane.waiting.is_some()) {
+        lane.wait_for(build);
+        return;
+    }
+    if !dev.rebuilt(lane.wire, &build, out) {
+        return;
+    }
+    let Ok(exe) = build.result else {
+        return;
+    };
+    let Some(app) = &lane.app else {
+        return;
+    };
+    lane.restart = Some(match lane.restart.take() {
+        // A newer build while the restart runs: the app restarts on it,
+        // prewarmed if the old app still runs.
+        Some(Restart::Prewarm { mut run, .. }) => {
+            let _ = run.kill();
+            let _ = run.wait();
+            prewarm(&lane.deploy, args, exe, dev, lane.wire, app, out)
+        }
+        Some(Restart::Snapshot { since, .. }) => Restart::Snapshot { exe, since },
+        Some(Restart::Closing { since, .. }) => Restart::Closing { exe, since },
+        None => prewarm(&lane.deploy, args, exe, dev, lane.wire, app, out),
+    });
+}
+
+/// Starts the restart of the first lane whose build waits, once no restart
+/// runs: one lane restarts at a time.
+fn schedule(out: &mut Output, dev: &mut DevSession, lanes: &mut [Lane], args: &[OsString]) {
+    if dev.restarting() || lanes.iter().any(|lane| lane.restart.is_some()) {
+        return;
+    }
+    let Some(at) = lanes.iter().position(|lane| lane.waiting.is_some()) else {
+        return;
+    };
+    let build = lanes[at].waiting.take().expect("the lane's build waits");
+    rebuilt(out, dev, lanes, at, build, args);
 }
 
 /// Boots the device of `profile` on a thread, saying so, and hands the
@@ -969,31 +1305,34 @@ fn boot(profile: DeviceProfile, sdk: Option<Sdk>, tx: Sender<Incoming>, out: &mu
     });
 }
 
-/// Waits for the launch build, which a Rust edit while it runs starts again,
-/// and for the boot of the device of `booting`, and returns the build's
-/// executable and the device's serial, or the exit code of the failure it
-/// reported. The edits of the other domains wait for the app.
-fn launch_build(
+/// Waits for every lane's launch build, which a Rust edit while it runs
+/// starts again, and for the boot of a lane's simulator or emulator, and
+/// returns each lane's executable and the device's serial, or the exit code
+/// of the failure it reported. The edits of the other domains wait for the
+/// apps.
+fn launch_builds(
     out: &mut Output,
     dev: &mut DevSession,
-    builds: &mut RustBuild,
+    lanes: &mut [Lane],
     rx: &Receiver<Incoming>,
-    mut booting: Option<&DeviceProfile>,
-) -> Result<(PathBuf, String), u8> {
-    let mut built = None;
+) -> Result<(Vec<PathBuf>, String), u8> {
+    let mut built: Vec<Option<PathBuf>> = vec![None; lanes.len()];
+    let mut booting = lanes.iter().find_map(|lane| lane.profile.clone());
     let mut serial = String::new();
     loop {
         if interrupt::count() > 0 {
             return Err(INTERRUPTED);
         }
-        if booting.is_none()
-            && let Some(exe) = built.take()
-        {
-            return Ok((exe, serial));
+        if booting.is_none() && built.iter().all(Option::is_some) {
+            return Ok((built.into_iter().flatten().collect(), serial));
         }
-        let wait = builds.deadline().map_or(POLL, |due| {
-            due.saturating_duration_since(Instant::now()).min(POLL)
-        });
+        let wait = lanes
+            .iter()
+            .filter_map(|lane| lane.builds.deadline())
+            .min()
+            .map_or(POLL, |due| {
+                due.saturating_duration_since(Instant::now()).min(POLL)
+            });
         match rx.recv_timeout(wait) {
             Ok(Incoming::Booted(booted)) => {
                 let Some(profile) = booting.take() else {
@@ -1002,19 +1341,18 @@ fn launch_build(
                 match booted {
                     Ok(booted) => {
                         serial = booted;
-                        let (platform, id) = (profile.platform.as_str(), &profile.id);
-                        out.device(platform, id, &profile.device, "ready");
+                        device_event(out, Some(&profile), "ready");
                     }
                     Err(why) => {
                         return Err(out.failure(ENV_DEVICE, &why, &[]));
                     }
                 }
             }
-            Ok(Incoming::Build(BuildEvent::Finished(finished))) => {
-                let Some(build) = builds.finished(finished) else {
+            Ok(Incoming::Build(at, BuildEvent::Finished(finished))) => {
+                let Some(build) = lanes[at].builds.finished(finished) else {
                     continue;
                 };
-                built = Some(build.result.map_err(|failure| {
+                built[at] = Some(build.result.map_err(|failure| {
                     let code = match &failure {
                         BuildFailure::Spawn(_) => ENV_CARGO,
                         BuildFailure::Failed { .. } | BuildFailure::Cancelled => BUILD_FAILED,
@@ -1037,22 +1375,27 @@ fn launch_build(
                 continue;
             }
             Ok(message) => {
-                let _ = relay(out, dev, builds, message);
+                let _ = relay(out, dev, lanes, message);
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {}
         }
-        builds.tick(Instant::now());
+        let now = Instant::now();
+        for lane in lanes.iter_mut() {
+            lane.builds.tick(now);
+        }
     }
 }
 
-/// Starts the restart on `exe`: its prewarm run while the old app runs on,
-/// or, where there is none or it does not start, the snapshot right away.
+/// Starts the restart of the lane of build `lane` on `exe`: its prewarm run
+/// while the old app runs on, or, where there is none or it does not start,
+/// the snapshot right away.
 fn prewarm(
     deploy: &Deploy,
     args: &[OsString],
     exe: PathBuf,
     dev: &mut DevSession,
+    lane: wire::BuildId,
     app: &App,
     out: &mut Output,
 ) -> Restart {
@@ -1066,16 +1409,22 @@ fn prewarm(
                 since: Instant::now(),
             }
         }
-        Some(Err(_)) | None => snapshot(exe, dev, app, out),
+        Some(Err(_)) | None => snapshot(exe, dev, lane, app, out),
     }
 }
 
-/// Asks the old app for its snapshot before the restart on `exe`; with no
-/// app connected to ask, asks it to close.
-fn snapshot(exe: PathBuf, dev: &mut DevSession, app: &App, out: &mut Output) -> Restart {
+/// Asks the old app of the lane of build `lane` for its snapshot before the
+/// restart on `exe`; with no app connected to ask, asks it to close.
+fn snapshot(
+    exe: PathBuf,
+    dev: &mut DevSession,
+    lane: wire::BuildId,
+    app: &App,
+    out: &mut Output,
+) -> Restart {
     out.progress("restart", "taking the app's snapshot");
     let since = Instant::now();
-    if dev.request_snapshot() {
+    if dev.request_snapshot(lane) {
         Restart::Snapshot { exe, since }
     } else {
         app.close();
@@ -1084,19 +1433,20 @@ fn snapshot(exe: PathBuf, dev: &mut DevSession, app: &App, out: &mut Output) -> 
 }
 
 /// Starts a thread per piped output of the app, turning each line into a `log`
-/// message.
-fn pipe_logs(app: &mut App, tx: &Sender<Incoming>) -> Vec<JoinHandle<()>> {
+/// message that starts with `prefix`.
+fn pipe_logs(app: &mut App, prefix: String, tx: &Sender<Incoming>) -> Vec<JoinHandle<()>> {
     app.outputs()
         .into_iter()
-        .map(|(output, lines)| line_reader(output, "app", lines, tx.clone()))
+        .map(|(output, lines)| line_reader(output, "app", prefix.clone(), lines, tx.clone()))
         .collect()
 }
 
 /// Starts a thread that sends each line of `input` as a `log` message from
-/// `source`, read as `lines` reads it.
+/// `source`, read as `lines` reads it and started with `prefix`.
 fn line_reader(
     input: impl Read + Send + 'static,
     source: &'static str,
+    prefix: String,
     lines: Lines,
     tx: Sender<Incoming>,
 ) -> JoinHandle<()> {
@@ -1107,6 +1457,11 @@ fn line_reader(
             };
             let Some((level, line)) = lines.read(line) else {
                 continue;
+            };
+            let line = if prefix.is_empty() {
+                line
+            } else {
+                format!("{prefix}{line}")
             };
             if tx
                 .send(Incoming::Log {
@@ -1122,14 +1477,14 @@ fn line_reader(
     })
 }
 
-/// Hands one message of the running session to where it goes; the executable
-/// of a build the app is to restart on.
+/// Hands one message of the running session to where it goes; a build a
+/// lane finished, by the lane's index, for the restart it may start.
 fn relay(
     out: &mut Output,
     dev: &mut DevSession,
-    builds: &mut RustBuild,
+    lanes: &mut [Lane],
     message: Incoming,
-) -> Option<PathBuf> {
+) -> Option<(usize, Build)> {
     match message {
         Incoming::Log {
             level,
@@ -1137,31 +1492,42 @@ fn relay(
             line,
         } => out.log(level, source, &line),
         Incoming::Change(change) if change.rust => {
-            builds.change(change.path, Instant::now());
-            dev.rust_changed(out);
+            // Each lane whose Rust holds the file rebuilds.
+            let now = Instant::now();
+            let mut taken = false;
+            for lane in lanes.iter_mut() {
+                if lane.live() && lane.rust.contains(&change.path) {
+                    lane.builds.change(change.path.clone(), now);
+                    taken = true;
+                }
+            }
+            if taken {
+                dev.rust_changed(out);
+            }
         }
         Incoming::Change(change) => dev.change(change, out),
         Incoming::Link(event) => dev.link(event, out),
         Incoming::Control(call) => dev.control(call, out),
         Incoming::Booted(_) => {}
         Incoming::Inspected(streamed) => streamed.report(out),
-        Incoming::Build(BuildEvent::Cargo(CargoEvent::Log { level, line })) => {
+        Incoming::Build(_, BuildEvent::Cargo(CargoEvent::Log { level, line })) => {
             out.log(level, "tool", &line)
         }
-        Incoming::Build(BuildEvent::Cargo(CargoEvent::Diagnostic(diagnostic))) => {
+        Incoming::Build(_, BuildEvent::Cargo(CargoEvent::Diagnostic(diagnostic))) => {
             out.rust(dev.root(), &diagnostic)
         }
-        Incoming::Build(BuildEvent::Rescoped(Ok(rust))) => dev.rescope(rust),
-        Incoming::Build(BuildEvent::Rescoped(Err(why))) => out.log(
+        Incoming::Build(at, BuildEvent::Rescoped(Ok(rust))) => {
+            lanes[at].rust = rust;
+            dev.rescope(watched_rust(lanes));
+        }
+        Incoming::Build(_, BuildEvent::Rescoped(Err(why))) => out.log(
             "warn",
             "tool",
             &format!("the Rust scope stays as it was: {why}"),
         ),
-        Incoming::Build(BuildEvent::Finished(finished)) => {
-            let build = builds.finished(finished)?;
-            if dev.rebuilt(&build, out) {
-                return build.result.ok();
-            }
+        Incoming::Build(at, BuildEvent::Finished(finished)) => {
+            let build = lanes[at].builds.finished(finished)?;
+            return Some((at, build));
         }
     }
     None

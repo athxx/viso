@@ -113,7 +113,7 @@ error[CLI_USAGE]: unexpected argument '--bogus' found
 
 
 $ viso run macos
-error[CLI_USAGE]: invalid value 'macos' for '[TARGET]' [possible values: ios, android, web-gpu, web-dom, web-hybrid]
+error[CLI_USAGE]: invalid value 'macos' for '[TARGET]...' [possible values: ios, android, web-gpu, web-dom, web-hybrid]
  = help: run `viso run --help`
 
 

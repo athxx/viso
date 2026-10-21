@@ -25,11 +25,12 @@ pub fn run(ctx: &Context<'_>, args: &ServeArgs, out: &mut Output) -> u8 {
         },
     };
     let run = RunArgs {
-        target: Some(TargetArg::Builtin(match target {
+        targets: vec![TargetArg::Builtin(match target {
             WebTarget::Gpu => RunTarget::WebGpu,
             WebTarget::Dom => RunTarget::WebDom,
             WebTarget::Hybrid => RunTarget::WebHybrid,
-        })),
+        })],
+        desktop: false,
         device: None,
         browser: None,
         no_hot_reload: args.no_hot_reload,

@@ -1516,7 +1516,7 @@ DOM/WebGPU lowering
 
 这为 Studio Device Matrix 留出架构空间，但不要求 CLI 1.0 一条命令同时启动所有平台。
 
-已实现（`tools/cli/src/dev/`）：`DevSession` 持有所有已连接的 runtime（按连接顺序，第一个是 session 启动的 app，Rust warm restart 只重启它的 target）；source graph（文本、增量 parse、catalog、asset 内容）全 session 共享，每个 runtime 有自己的 `Mounts`：它挂载的文件、各自的 running/last-good 编译结果、它持有的资源及其运行内容。一次 batch 的 pass 中，挂载同一文件且 profile 相同（origin、capability 授权、catalog、asset 目录）的 runtime 共用一次编译（`Memo`），asset decode 也每内容一次；plan、按 runtime GPU backend 打包 shader（`shader_lang`）、它是否接受资源/游戏 system、patch 与 ACK/NACK 都是每个 runtime 自己的。同一诊断每个 pass 只报告一次；`dev` event 与 failure overlay 每个 runtime 一份。新 build 只替换重启的 target 的 runtime；其他 target 的 runtime 继续把未被 patch 过的资源当作它们的 build 嵌入的内容。连接层仍只接受 session 自己的 build id，所以 CLI 下多个 runtime 是同一 build 的多个实例（多个页面、多个进程）；不同 target 的 build 同时接入留给 Studio。
+已实现（`tools/cli/src/dev/`）：`DevSession` 持有所有已连接的 runtime（按连接顺序；Rust warm restart 重启的是某条 lane 启动的 app，即该 lane build 的第一个 runtime）；source graph（文本、增量 parse、catalog、asset 内容）全 session 共享，每个 runtime 有自己的 `Mounts`：它挂载的文件、各自的 running/last-good 编译结果、它持有的资源及其运行内容。一次 batch 的 pass 中，挂载同一文件且 profile 相同（origin、capability 授权、catalog、asset 目录）的 runtime 共用一次编译（`Memo`），asset decode 也每内容一次；plan、按 runtime GPU backend 打包 shader（`shader_lang`）、它是否接受资源/游戏 system、patch 与 ACK/NACK 都是每个 runtime 自己的。同一诊断每个 pass 只报告一次；`dev` event 与 failure overlay 每个 runtime 一份。新 build 只替换重启的 lane 的 runtime；其他 lane 的 runtime 继续把未被 patch 过的资源当作它们的 build 嵌入的内容。连接层接受 session 每条 lane 的 build id（`Expect.builds`，ADR 0046）：`viso run web-gpu --desktop` 等一个 session 同时接入多个 build，每个 runtime 属于它运行的 build 的 lane；warm restart 一次一条 lane，`viso game`/`inspect` 未指定 runtime 时交给第一条 lane 的 app。
 
 ---
 

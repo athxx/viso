@@ -165,6 +165,24 @@ impl RustScope {
         Some(scope)
     }
 
+    /// Takes in `other`'s packages and files: the scope of the artifacts of
+    /// both. A package one links and the other does not is linked.
+    pub(crate) fn union(&mut self, other: &RustScope) {
+        let add = |into: &mut Vec<PathBuf>, from: &[PathBuf]| {
+            for path in from {
+                if !into.contains(path) {
+                    into.push(path.clone());
+                }
+            }
+        };
+        add(&mut self.packages, &other.packages);
+        add(&mut self.unlinked, &other.unlinked);
+        add(&mut self.files, &other.files);
+        add(&mut self.linked, &other.linked);
+        let packages = &self.packages;
+        self.unlinked.retain(|dir| !packages.contains(dir));
+    }
+
     /// Whether a change of `path` changes the artifact: a Rust source,
     /// manifest or build script of a linked package — the innermost package
     /// holding it — or one of the files Cargo reads beside them.

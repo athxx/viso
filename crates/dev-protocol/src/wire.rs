@@ -1083,7 +1083,8 @@ pub fn same_token(offered: &str, token: &str) -> bool {
 pub struct HostExpect<'a> {
     pub token: &'a str,
     pub dev_session: DevSessionId,
-    pub build_id: BuildId,
+    /// The builds the session launched, any of which a runtime may run.
+    pub builds: &'a [BuildId],
     /// The compiler schema the host compiles patches with.
     pub schema: SchemaFingerprint,
 }
@@ -1098,7 +1099,7 @@ pub fn accept_runtime(hello: &RuntimeHello, expect: &HostExpect<'_>) -> Result<(
     if hello.dev_session != expect.dev_session {
         return Err(Some(Reject::Session));
     }
-    if hello.build_id != expect.build_id {
+    if !expect.builds.contains(&hello.build_id) {
         return Err(Some(Reject::Build));
     }
     if hello.schema_fingerprint != expect.schema {
@@ -3387,13 +3388,23 @@ mod tests {
     #[test]
     fn the_handshake_binds_token_session_and_build() {
         let hello = runtime_hello();
+        let builds = [BuildId(9), hello.build_id];
         let expect = HostExpect {
             token: &hello.token,
             dev_session: hello.dev_session,
-            build_id: hello.build_id,
+            builds: &builds,
             schema: hello.schema_fingerprint,
         };
         assert_eq!(accept_runtime(&hello, &expect), Ok(()));
+        let second = RuntimeHello {
+            build_id: BuildId(9),
+            ..hello.clone()
+        };
+        assert_eq!(
+            accept_runtime(&second, &expect),
+            Ok(()),
+            "any build the session launched"
+        );
         let wrong_token = RuntimeHello {
             token: "0123456789abcdef0123456789abcdee".into(),
             ..hello.clone()

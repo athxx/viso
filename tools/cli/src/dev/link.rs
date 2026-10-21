@@ -33,7 +33,8 @@ const HELLO_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct Expect {
     pub token: String,
     pub dev_session: DevSessionId,
-    pub build_id: BuildId,
+    /// The build of each lane the session launched, in lane order.
+    pub builds: Vec<BuildId>,
     pub project: ProjectFingerprint,
     pub schema: SchemaFingerprint,
 }
@@ -186,7 +187,7 @@ pub fn serve(mut stream: impl DevStream, expect: &Expect, deliver: &dyn Fn(LinkE
     let host = HostExpect {
         token: &expect.token,
         dev_session: expect.dev_session,
-        build_id: expect.build_id,
+        builds: &expect.builds,
         schema: expect.schema,
     };
     match accept_runtime(&hello, &host) {
@@ -202,7 +203,7 @@ pub fn serve(mut stream: impl DevStream, expect: &Expect, deliver: &dyn Fn(LinkE
         dev_session: expect.dev_session,
         runtime_session: hello.runtime_session,
         project_fingerprint: expect.project,
-        expected_build_id: expect.build_id,
+        expected_build_id: hello.build_id,
     });
     if write_frame(&mut stream, &accepted).is_err() || stream.set_read_timeout(None).is_err() {
         return;
@@ -268,7 +269,7 @@ mod tests {
         Expect {
             token: "token".into(),
             dev_session: DevSessionId(11),
-            build_id: BuildId(22),
+            builds: vec![BuildId(22)],
             project: ProjectFingerprint(33),
             schema: SchemaFingerprint(55),
         }

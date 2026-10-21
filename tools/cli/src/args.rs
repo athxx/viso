@@ -1115,13 +1115,18 @@ pub enum RunTarget {
 pub struct RunArgs {
     /// Where to run: this machine when omitted; a device target of
     /// `Viso.toml` by its name, on the board its `deploy` names, or here
-    /// when this machine is the board.
+    /// when this machine is the board. Several run side by side in one
+    /// session, each edit compiled once for them all.
     #[arg(
         value_name = "TARGET",
         value_parser = TargetParser::<RunTarget>::new(),
         add = ArgValueCandidates::new(complete::targets::<RunTarget>),
     )]
-    pub target: Option<TargetArg<RunTarget>>,
+    pub targets: Vec<TargetArg<RunTarget>>,
+    /// Run on this machine too, beside the targets named: its app is the
+    /// session's first.
+    #[arg(long)]
+    pub desktop: bool,
     /// The simulator or emulator profile (`ios` and `android` only).
     #[arg(long, value_name = "ID", add = ArgValueCandidates::new(complete::device_ids))]
     pub device: Option<String>,
@@ -1649,7 +1654,7 @@ mod tests {
             Cli::try_parse_from(["viso", "run", "--json", "--", "--open", "demo.vs"]).unwrap();
         assert!(cli.global.json);
         assert!(
-            matches!(&cli.command, Command::Run(RunArgs { app_args, no_hot_reload: false, target: None, .. }) if app_args == &["--open", "demo.vs"])
+            matches!(&cli.command, Command::Run(RunArgs { app_args, no_hot_reload: false, targets, .. }) if app_args == &["--open", "demo.vs"] && targets.is_empty())
         );
         let cli = Cli::try_parse_from(["viso", "run", "--no-hot-reload"]).unwrap();
         assert!(matches!(
@@ -1660,31 +1665,35 @@ mod tests {
             })
         ));
         assert!(Cli::try_parse_from(["viso", "run", "host"]).is_err());
+        let cli = Cli::try_parse_from(["viso", "run", "web-gpu", "panel", "--desktop"]).unwrap();
+        assert!(matches!(
+            &cli.command,
+            Command::Run(RunArgs { targets, desktop: true, .. })
+                if targets[..] == [TargetArg::Builtin(RunTarget::WebGpu), TargetArg::Device("panel".into())]
+        ));
         // Parsed only for the command to say where headless runs.
         assert!(matches!(
             Cli::try_parse_from(["viso", "run", "headless"])
                 .unwrap()
                 .command,
-            Command::Run(RunArgs {
-                target: Some(TargetArg::Builtin(RunTarget::Headless)),
-                ..
-            })
+            Command::Run(RunArgs { targets, .. })
+                if targets[..] == [TargetArg::Builtin(RunTarget::Headless)]
         ));
         assert!(Cli::try_parse_from(["viso", "run", "--target", "ios"]).is_err());
         let cli =
             Cli::try_parse_from(["viso", "run", "android", "--device", "pixel-local"]).unwrap();
         assert!(matches!(
             &cli.command,
-            Command::Run(RunArgs { target: Some(TargetArg::Builtin(RunTarget::Android)), device: Some(d), .. }) if d == "pixel-local"
+            Command::Run(RunArgs { targets, device: Some(d), .. }) if d == "pixel-local" && targets[..] == [TargetArg::Builtin(RunTarget::Android)]
         ));
         let cli = Cli::try_parse_from(["viso", "run", "web-gpu", "--browser", "none"]).unwrap();
         assert!(matches!(
             &cli.command,
             Command::Run(RunArgs {
-                target: Some(TargetArg::Builtin(RunTarget::WebGpu)),
+                targets,
                 browser: Some(_),
                 ..
-            })
+            }) if targets[..] == [TargetArg::Builtin(RunTarget::WebGpu)]
         ));
         assert!(!wants_json(&["run", "--", "--json"]));
     }
@@ -1710,7 +1719,7 @@ mod tests {
         let cli = Cli::try_parse_from(["viso", "run", "panel"]).unwrap();
         assert!(matches!(
             &cli.command,
-            Command::Run(RunArgs { target: Some(TargetArg::Device(name)), .. }) if name == "panel"
+            Command::Run(RunArgs { targets, .. }) if targets[..] == [TargetArg::Device("panel".into())]
         ));
         let cli = Cli::try_parse_from(["viso", "check", "kiosk-2"]).unwrap();
         assert!(matches!(

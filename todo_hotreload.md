@@ -1147,9 +1147,11 @@ Goal: one source graph serves several running runtimes with per-runtime revision
       rebuild state, connection state — as a stable JSON stream. `runtime` event;
       `dev` events carry `target`; human lines are prefixed `[target]` with more than
       one runtime.
-- [ ] Accept runtimes of several builds in one session (the link checks one build id):
-      Studio launching desktop and web builds side by side. Waits for Studio: CLI 1.0
-      launches one target per session (§43), so nothing would join a second build.
+- [x] Accept runtimes of several builds in one session (ADR 0046): `viso run [TARGET]...
+      [--desktop]` runs each target as a lane (own lock, Rust build, build id, deploy,
+      listener, restart); the link admits every lane's build; restarts run one lane at a
+      time; app lines are prefixed `[target]`; a later lane of a repeated triple builds in
+      `target/viso/lanes/<target>/`.
 - [ ] Studio Device Matrix over the `runtime` stream.
 
 ### Done

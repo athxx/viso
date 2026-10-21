@@ -929,7 +929,9 @@ const NOTES: &[(&str, &str)] = &[
          follow `--`. `--profile-frame` draws the frame time over the app's windows and\n\
          reports its frames as `viso profile` measures them. A device target runs on the\n\
          board its `deploy` names, over SSH; `--emulate` runs an `embedded-cpu` one in a\n\
-         window on a Mac; without either it runs only where this machine is its board.",
+         window on a Mac; without either it runs only where this machine is its board.\n\
+         Several targets run side by side in one session, `--desktop` adding this\n\
+         machine: `viso run web-gpu --desktop`.",
     ),
     (
         "serve",
