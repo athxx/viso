@@ -1107,15 +1107,12 @@ differ.
       each whole line to the page's console on the web (`console.log`/`console.error`),
       which the page's channel forwards. A glob import cannot shadow `std`'s macros,
       so they are named by path or imported by name.
-- [ ] `view!` builds the host platform stack for every cross build (the proc macro
-      reaches `viso-platform` through `viso-dsl` → `viso-ui`); cut that edge. Measured:
-      the macro's host graph is 124 crates, 23 of them native (objc2/AppKit/Metal,
-      accesskit). Gating the native backends behind a feature the macro leaves off
-      would make every cold desktop build compile dsl/ui/render/gpu/platform twice
-      (resolver 2 resolves proc-macro features apart), so the cut is splitting the
-      compiler's schema and AOT types (`viso_ui::aot`, `StateKey`, `DirtyClass`, the
-      layout terms, `viso_gpu::InstanceSchema`) out of the runtime crates: a crate
-      dependency change, which needs its ADR first.
+- [x] `view!` no longer builds the host platform stack for a cross build: the
+      compiler's schema and AOT types moved to `viso-schema` and `viso-gpu-abi`
+      (ADR 0042), so the macro's host graph is `dsl → schema / dev-protocol /
+      behavior / shader` — 101 crates, none native (no objc2/AppKit/Metal or
+      accesskit, was 124 with 23 native); `check-deps` keeps runtime, platform and
+      gpu out of the compiler's closure.
 - [x] Android fake: `deploy::android_fake` drives the deploy layer against scripted
       `emulator`/`adb` (boot, install, reverse, launch with the dev extras, logcat,
       clean stop, panic exit status, one forward per port, unreverse).
