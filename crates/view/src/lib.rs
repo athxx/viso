@@ -49,7 +49,8 @@ mod values;
 pub use attach::{Route, attach, attach_node};
 pub use control::{
     Control, ControlInput, ControlKind, LayoutSlot, Look, LookArm, NodeEntries, SOURCE_ROLES,
-    SemanticEntries, TextEntries, When, source_live, source_name, source_role, widget_role,
+    SemanticEntries, Switched, TextEntries, When, source_live, source_name, source_role,
+    widget_role,
 };
 pub use effects::{__mount_effects, mount_effects, release_effects};
 pub use env::{__link_env, env_value};

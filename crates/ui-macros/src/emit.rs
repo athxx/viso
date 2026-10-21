@@ -36,7 +36,7 @@ use viso_dsl::ir::ui_ir::{
     NodeKind, Placement, StyleIr, TermsIr, TrackMax, TrackSizing, UiItem, UiNode, UiTree,
 };
 use viso_dsl::resolve::SymbolId;
-use viso_dsl::view_behavior::{Control, ControlInput, ViewBehavior, When};
+use viso_dsl::view_behavior::{Control, Switched, ViewBehavior, When};
 
 /// Lowers a view's [`UiTree`] + [`BindingIr`] to the builder expression.
 ///
@@ -676,11 +676,23 @@ fn control_tokens(control: Control) -> TokenStream {
         quote! { (::viso::__private::viso_view::LayoutSlot::#slot, #entry) }
     });
     let arms = control.arms.iter().map(|arm| {
-        let input = match arm.input {
-            ControlInput::Opacity => quote! { Opacity },
-            ControlInput::CornerRadius => quote! { CornerRadius },
-            ControlInput::Border => quote! { Border },
-            _ => quote! { Background },
+        let target = match arm.target {
+            Switched::Input(input) => {
+                let input = Ident::new(&format!("{input:?}"), Span::call_site());
+                quote! {
+                    ::viso::__private::viso_view::Switched::Input(
+                        ::viso::__private::viso_view::ControlInput::#input
+                    )
+                }
+            }
+            Switched::Layout(slot) => {
+                let slot = Ident::new(slot.variant(), Span::call_site());
+                quote! {
+                    ::viso::__private::viso_view::Switched::Layout(
+                        ::viso::__private::viso_view::LayoutSlot::#slot
+                    )
+                }
+            }
         };
         let when = arm.when.iter().map(|step| match *step {
             When::State(state) => {
@@ -695,7 +707,7 @@ fn control_tokens(control: Control) -> TokenStream {
         let entry = arm.entry;
         quote! {
             ::viso::__private::viso_view::LookArm {
-                input: ::viso::__private::viso_view::ControlInput::#input,
+                target: #target,
                 when: ::std::boxed::Box::new([#(#when),*]),
                 entry: #entry,
             }

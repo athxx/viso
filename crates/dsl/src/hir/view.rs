@@ -681,7 +681,7 @@ impl<'a> ViewWalk<'a> {
         if list.is_empty() {
             return;
         }
-        let plan = style::plan(book, &list, &style::own_bindings(&members));
+        let plan = style::plan(book, &list, &style::own_bindings(&members), &owner.name);
         let at = value.syntax().text_range();
         for part in &plan.parts {
             let site = Site::styled(at, part.part);

@@ -1,6 +1,6 @@
 //! Styles: a node's `styles` apply each style after its bases, a later binding
 //! over an earlier one and the node's own properties over them all; a `when`
-//! switches `background`, `opacity`, `corner_radius` and `border` while its
+//! switches a look, a transform, a text's color or a layout value while its
 //! selector holds — hover, pressed, focus, or the node's own `enabled` — on
 //! the hot-reloaded and the packaged view and inside a region. And the
 //! checks: a target the file names (`E2001`), bases of the file for the same
@@ -305,6 +305,78 @@ fn a_hot_reload_restyles_the_kept_nodes() {
     assert_eq!(look(&rt, 0).0, rgba(0x00ff_ffff));
     rt.reload(&SOURCE.replace("styles: [Dim]; enabled: !off; ", ""));
     assert_eq!(look(&rt, 0).1, 1.0, "no style, no look");
+}
+
+/// Styles whose `when` switches a layout value, a translate and a text's
+/// color, beside a color read from the theme.
+const SWITCHES: &str = r#"
+style Pad for Column {
+    padding: EdgeInsets::all(0dp);
+    when hover {
+        padding: EdgeInsets::all(4dp);
+        translate: Offset { x: 0dp, y: 2dp };
+    }
+}
+style Ink for Text {
+    color: theme.colors.primary;
+    when hover { color: #ff0000; }
+}
+export component Probe {
+    view {
+        Column {
+            width: 400dp;
+            height: 100dp;
+            Column {
+                width: 20dp;
+                height: 20dp;
+                styles: [Pad];
+                Text { width: 10dp; height: 10dp; text: "a"; styles: [Ink]; }
+            }
+        }
+    }
+}
+"#;
+
+fn switches(rt: &mut Rt) {
+    let pad = children(rt)[0];
+    let text = rt.children(pad)[0];
+    let ink = |rt: &Rt| rt.store.text_request(text).map(|r| r.color);
+    let rest = ink(rt);
+    assert_eq!(
+        rest,
+        Some(rgba(0x3b6c_f0ff)),
+        "a style's theme color reaches the text"
+    );
+    assert_eq!(rt.store.translate(pad).y, 0.0);
+    assert_eq!(rt.store.bounds(text).x, rt.store.bounds(pad).x);
+    pointer(rt, 0, PointerPhase::Move);
+    assert_eq!(rt.store.translate(pad).y, 2.0, "a `when` moves it");
+    assert_eq!(ink(rt), Some(rgba(0xff00_00ff)), "and colors the text");
+    assert_eq!(
+        rt.store.bounds(text).x,
+        rt.store.bounds(pad).x + 4.0,
+        "and pads it"
+    );
+    pointer(rt, 2, PointerPhase::Move);
+    assert_eq!(rt.store.translate(pad).y, 0.0);
+    assert_eq!(rt.store.bounds(text).x, rt.store.bounds(pad).x);
+    assert_eq!(ink(rt), rest);
+    assert_eq!(rt.fault(), None);
+}
+
+#[test]
+fn a_when_switches_layout_transform_and_text_values() {
+    switches(&mut Rt::mount(SWITCHES));
+    switches(&mut Rt::packaged(SWITCHES));
+}
+
+#[test]
+fn a_switched_layout_value_needs_a_base() {
+    let codes = codes(
+        "style S for Text { when hover { padding: EdgeInsets::all(4dp); } }",
+        "Text { styles: [S]; }",
+    );
+    assert_eq!(codes, ["E3711"]);
 }
 
 #[test]

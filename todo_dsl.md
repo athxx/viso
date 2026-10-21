@@ -1185,8 +1185,12 @@ timers (§104–§111).
         macros alike.
   - [ ] Styles on user-component nodes (`@styleable` inputs, `@selector`
         members) and styles imported from another file (`E3711` today).
-  - [ ] `when` on properties besides `background`/`opacity`, and runtime
-        delivery of non-constant layout/text style values.
+  - [x] `when` on properties besides `background`/`opacity`, and runtime
+        delivery of non-constant layout/text style values: a style's property
+        takes the node's own delivery path (a constant folds, a read value is
+        an entry), any delivered value or layout slot switches (`Switched`),
+        a switched layout value needs a base; the web export switches the
+        looks, transforms and a text's color.
   - [ ] `selected`, `expanded`, `dragging`; `pressed` cancelled by the gesture
         arena or by the pointer leaving the node.
   - [x] Theme: the standard `Theme` schema (U12.2); `theme X { }` builds a typed

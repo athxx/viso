@@ -19,6 +19,7 @@ use std::collections::HashMap;
 
 use viso_behavior::native::NativeWidget;
 use viso_schema::Interaction;
+use viso_schema::view::{ControlKind, LayoutSlot};
 
 use crate::ast::{
     AssignablePath, AstNode, BinaryExpr, Expr, Item, ParenExpr, PathExpr, PropertyBinding,
@@ -58,13 +59,13 @@ pub(crate) const RESERVED_SELECTORS: [&str; 6] = [
     "dragging",
 ];
 
-/// The look properties the runtime delivers per node, which a selector may
-/// switch.
-const SWITCHED: [&str; 4] = ["background", "opacity", "corner_radius", "border"];
-
-/// The look properties the runtime delivers per node that a selector does
-/// not switch.
-const DELIVERED: [&str; 2] = ["transition.background", "transition.opacity"];
+/// Whether the runtime delivers property `name` of a native node of type
+/// `target` from a value it evaluates: a value its control reads, or one it
+/// lays out by. A selector may switch such a property, and a value that is no
+/// constant reaches the node.
+fn delivers(target: &str, name: &str) -> bool {
+    ControlKind::of(target).input(name).is_some() || LayoutSlot::of(name).is_some()
+}
 
 /// The selectors the native widget `widget` supports.
 pub(crate) fn widget_selectors(widget: &NativeWidget) -> Vec<&'static str> {
@@ -428,12 +429,14 @@ pub(crate) enum PartValue {
 /// What a native node's styles give it.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct NodePlan {
-    /// The look properties the runtime delivers.
-    pub(crate) looks: Vec<UiLook>,
+    /// The properties the runtime delivers, each with the unconditional
+    /// binding its base value comes from, which also folds like the node's
+    /// own.
+    pub(crate) looks: Vec<(UiLook, Option<PropertyBinding>)>,
     /// The value of each part the looks name.
     pub(crate) parts: Vec<Part>,
-    /// The unconditional bindings of every property, folded like the node's
-    /// own.
+    /// The unconditional bindings of the properties the runtime does not
+    /// deliver, folded like the node's own.
     pub(crate) constants: Vec<PropertyBinding>,
     /// What does not mount, and why.
     pub(crate) unmounted: Vec<(TextRange, String)>,
@@ -452,13 +455,14 @@ pub(crate) fn own_bindings(members: &[ViewItem]) -> Vec<(String, Own)> {
         .collect()
 }
 
-/// What the styles `list` give a native node whose own bindings are `own`. A
-/// selector that folds to `false` drops its arm; one that folds to `true`
-/// makes its value the base.
+/// What the styles `list` give a native node of type `target` whose own
+/// bindings are `own`. A selector that folds to `false` drops its arm; one
+/// that folds to `true` makes its value the base.
 pub(crate) fn plan(
     book: &StyleBook,
     list: &[(SymbolId, StyleDecl)],
     own: &[(String, Own)],
+    target: &str,
 ) -> NodePlan {
     let explicit: Vec<String> = own.iter().map(|(name, _)| name.clone()).collect();
     let own = |name: &str| {
@@ -474,44 +478,50 @@ pub(crate) fn plan(
     };
     for property in styled(applied(book, list), &explicit) {
         let name = property.name;
-        let switched = SWITCHED.contains(&name.as_str());
-        if !switched {
+        if !delivers(target, &name) {
             for (when, _) in &property.arms {
                 plan.unmounted.push((
                     when.syntax().text_range(),
-                    format!(
-                        "a style's `when` switches `background`, `opacity`, `corner_radius` and `border`, not `{name}` yet"
-                    ),
+                    format!("a style's `when` does not switch `{name}` of a `{target}`"),
                 ));
             }
-        }
-        if !switched && !DELIVERED.contains(&name.as_str()) {
             plan.constants.extend(property.base);
             continue;
         }
         let mut base = property.base;
         let mut arms = Vec::new();
-        if switched {
-            for (when, binding) in property.arms {
-                let Ok(selector) = Selector::of(&when) else {
-                    continue;
-                };
-                match fold(&selector, &own) {
-                    Folded::Const(false) => {}
-                    Folded::Const(true) => {
-                        base = Some(binding);
-                        break;
-                    }
-                    Folded::Steps(steps) => arms.push((steps, binding)),
+        for (when, binding) in property.arms {
+            let Ok(selector) = Selector::of(&when) else {
+                continue;
+            };
+            match fold(&selector, &own) {
+                Folded::Const(false) => {}
+                Folded::Const(true) => {
+                    base = Some(binding);
+                    break;
                 }
+                Folded::Steps(steps) => arms.push((steps, binding, when.syntax().text_range())),
             }
+        }
+        // A layout value has no default to fall back to while no arm holds.
+        if base.is_none()
+            && let Some(&(_, _, at)) = arms.first()
+            && LayoutSlot::of(&name).is_some()
+        {
+            plan.unmounted.push((
+                at,
+                format!(
+                    "a `when` that switches `{name}` needs the style to set `{name}` outside any `when` too"
+                ),
+            ));
+            continue;
         }
         let mut look = UiLook {
             property: name.clone(),
             base: None,
             arms: Vec::new(),
         };
-        if let Some(binding) = base {
+        if let Some(binding) = &base {
             let part = next();
             look.base = Some(part);
             plan.parts.push(Part {
@@ -521,9 +531,8 @@ pub(crate) fn plan(
                     value: binding.value().expect("an applied binding has a value"),
                 },
             });
-            plan.constants.push(binding);
         }
-        for (steps, binding) in arms {
+        for (steps, binding, _) in arms {
             let mut when = Vec::with_capacity(steps.len());
             for step in steps {
                 when.push(match step {
@@ -551,7 +560,7 @@ pub(crate) fn plan(
             });
             look.arms.push(UiLookArm { when, part });
         }
-        plan.looks.push(look);
+        plan.looks.push((look, base));
     }
     plan
 }

@@ -735,7 +735,12 @@ impl<'a, 'l> Lowering<'a, 'l> {
         if list.is_empty() {
             return None;
         }
-        let plan = style::plan(&self.library.styles, &list, &style::own_bindings(members));
+        let plan = style::plan(
+            &self.library.styles,
+            &list,
+            &style::own_bindings(members),
+            type_name,
+        );
         for binding in &plan.constants {
             let (Some(name), Some(value)) = (dotted(binding.path()), binding.value()) else {
                 continue;
@@ -757,9 +762,33 @@ impl<'a, 'l> Lowering<'a, 'l> {
         for unmounted in plan.unmounted {
             self.unmount(unmounted);
         }
-        (!plan.looks.is_empty()).then(|| UiStyled {
+        // A delivered property's base folds like the node's own too, so the
+        // node is built with it; one that folds and that no arm switches
+        // needs no delivery.
+        let mut looks = Vec::with_capacity(plan.looks.len());
+        for (look, base) in plan.looks {
+            if let Some(binding) = &base
+                && let Some(value) = binding.value()
+            {
+                let at = value.syntax().text_range();
+                match fold_property(
+                    binding,
+                    (kind, &self.library.consts),
+                    instance,
+                    style,
+                    pending,
+                ) {
+                    Fold::Folded if look.arms.is_empty() => continue,
+                    Fold::Folded | Fold::Pending => {}
+                    Fold::Unsupported(reason) => self.unmount((at, reason)),
+                    Fold::Invalid(reason) => self.misplace((at, reason)),
+                }
+            }
+            looks.push(look);
+        }
+        (!looks.is_empty()).then(|| UiStyled {
             at: value.syntax().text_range(),
-            looks: plan.looks,
+            looks,
         })
     }
 

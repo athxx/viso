@@ -10,7 +10,7 @@ use std::rc::Rc;
 
 use viso_behavior::native::Natives;
 use viso_behavior::{Budget, Module, Vm};
-pub use viso_schema::view::{Control, ControlInput, LookArm, When};
+pub use viso_schema::view::{Control, ControlInput, LookArm, Switched, When};
 use viso_schema::view::{ControlKind, EventRoute, LayoutSlot, Route, ViewRegions};
 use viso_schema::{EnvField, StateValue};
 use viso_shader::program::BrushLayout;
@@ -494,11 +494,16 @@ fn styled_look(
     };
     let mut arms = Vec::new();
     for look in &styled.looks {
-        let Some(input) = kind.input(&look.property) else {
-            continue;
+        let target = match (kind.input(&look.property), LayoutSlot::of(&look.property)) {
+            (Some(input), _) => Switched::Input(input),
+            (None, Some(slot)) => Switched::Layout(slot),
+            (None, None) => continue,
         };
         if let Some(index) = look.base.and_then(|part| entry(part, errors)) {
-            control.set_entry(input, index);
+            match target {
+                Switched::Input(input) => control.set_entry(input, index),
+                Switched::Layout(slot) => control.set_layout(slot, index),
+            }
         }
         for arm in &look.arms {
             let mut when = Vec::with_capacity(arm.when.len());
@@ -518,7 +523,7 @@ fn styled_look(
                 return;
             };
             arms.push(LookArm {
-                input,
+                target,
                 when: when.into(),
                 entry: index,
             });

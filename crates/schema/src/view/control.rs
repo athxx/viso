@@ -492,7 +492,7 @@ impl LayoutSlot {
 }
 
 /// A value a control reads from the view.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ControlInput {
     /// Its current value: `checked`, `value`, `selected`, a label's `text`,
     /// an image's `source` or a shader view's `shader`.
@@ -737,8 +737,8 @@ impl SemanticEntries {
 /// the value of entry `entry`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LookArm {
-    /// One of [`LookArm::SWITCHED`].
-    pub input: ControlInput,
+    /// What it switches.
+    pub target: Switched,
     /// The condition, in postfix order.
     pub when: Box<[When]>,
     /// The entry of the value.
@@ -760,15 +760,78 @@ pub enum When {
     Or,
 }
 
-impl LookArm {
-    /// The look values a style's `when` switches, by wire tag.
-    pub const SWITCHED: [ControlInput; 4] = [
+/// What a style's `when` switches: a value the control reads, or one it lays
+/// out by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Switched {
+    Input(ControlInput),
+    Layout(LayoutSlot),
+}
+
+impl ControlInput {
+    /// Every input, by wire tag.
+    pub const ALL: [ControlInput; 44] = [
+        ControlInput::Value,
+        ControlInput::Min,
+        ControlInput::Max,
+        ControlInput::Step,
+        ControlInput::Fit,
+        ControlInput::Tint,
         ControlInput::Background,
         ControlInput::Opacity,
         ControlInput::CornerRadius,
         ControlInput::Border,
+        ControlInput::BackgroundTransition,
+        ControlInput::OpacityTransition,
+        ControlInput::Translate,
+        ControlInput::TranslateTransition,
+        ControlInput::Scale,
+        ControlInput::ScaleTransition,
+        ControlInput::Rotation,
+        ControlInput::RotationTransition,
+        ControlInput::TransformOrigin,
+        ControlInput::CornerRadiusTransition,
+        ControlInput::ColorTransition,
+        ControlInput::WidthTransition,
+        ControlInput::HeightTransition,
+        ControlInput::Label,
+        ControlInput::Hint,
+        ControlInput::SpokenValue,
+        ControlInput::Hidden,
+        ControlInput::HeadingLevel,
+        ControlInput::Visible,
+        ControlInput::Focusable,
+        ControlInput::Enabled,
+        ControlInput::Autofocus,
+        ControlInput::Clip,
+        ControlInput::TextColor,
+        ControlInput::SoftWrap,
+        ControlInput::FontWeight,
+        ControlInput::FontFamily,
+        ControlInput::LineHeight,
+        ControlInput::MaxLines,
+        ControlInput::Overflow,
+        ControlInput::TextAlign,
+        ControlInput::Placeholder,
+        ControlInput::Secure,
+        ControlInput::Caption,
     ];
 
+    /// Its wire tag: its place in [`ControlInput::ALL`].
+    pub fn tag(self) -> u8 {
+        ControlInput::ALL
+            .iter()
+            .position(|&input| input == self)
+            .map_or(0, |at| at as u8)
+    }
+
+    /// The input of wire tag `tag`.
+    pub fn from_tag(tag: u8) -> Option<ControlInput> {
+        ControlInput::ALL.get(usize::from(tag)).copied()
+    }
+}
+
+impl LookArm {
     /// Whether its condition reads an interaction state.
     pub fn reads_state(&self) -> bool {
         self.when.iter().any(|w| matches!(w, When::State(_)))
@@ -1011,8 +1074,16 @@ impl Encode for Control {
         }
         enc.write_varint(self.arms.len() as u64);
         for arm in self.arms.iter() {
-            let tag = LookArm::SWITCHED.iter().position(|&i| i == arm.input);
-            enc.write_u8(tag.unwrap_or(0) as u8);
+            match arm.target {
+                Switched::Input(input) => {
+                    enc.write_u8(0);
+                    enc.write_u8(input.tag());
+                }
+                Switched::Layout(slot) => {
+                    enc.write_u8(1);
+                    enc.write_u8(slot as u8);
+                }
+            }
             enc.write_varint(arm.when.len() as u64);
             for step in arm.when.iter() {
                 match *step {
@@ -1132,9 +1203,12 @@ impl Decode for Control {
         let mut decoded = Vec::new();
         for _ in 0..arms {
             let offset = dec.position();
-            let input = *LookArm::SWITCHED
-                .get(usize::from(dec.read_u8()?))
-                .ok_or(DecodeError::Malformed { offset })?;
+            let target = match (dec.read_u8()?, dec.read_u8()?) {
+                (0, tag) => ControlInput::from_tag(tag).map(Switched::Input),
+                (1, tag) => LayoutSlot::from_u8(tag).map(Switched::Layout),
+                _ => None,
+            }
+            .ok_or(DecodeError::Malformed { offset })?;
             let steps = index(dec)?;
             let mut when = Vec::new();
             for _ in 0..steps {
@@ -1155,7 +1229,7 @@ impl Decode for Control {
                 });
             }
             decoded.push(LookArm {
-                input,
+                target,
                 when: when.into(),
                 entry: index(dec)?,
             });
@@ -1344,7 +1418,7 @@ mod tests {
                 transform_origin: Some(25),
             },
             arms: Box::new([LookArm {
-                input: ControlInput::Border,
+                target: Switched::Input(ControlInput::Border),
                 when: Box::new([
                     When::State(Interaction::Hovered),
                     When::Entry(5),

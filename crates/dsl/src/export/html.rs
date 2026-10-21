@@ -1242,7 +1242,8 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 let value = self.look_value(wires, entry, var, token, at);
                 decls.push((property, value));
             }
-            let arms: Vec<_> = control.arms.iter().filter(|a| a.input == input).collect();
+            let input = viso_schema::view::Switched::Input(input);
+            let arms: Vec<_> = control.arms.iter().filter(|a| a.target == input).collect();
             // The first arm that holds wins: the rules are written last first,
             // so an earlier one of equal specificity overrides the later.
             for (index, arm) in arms.iter().enumerate().rev() {
@@ -1256,6 +1257,48 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                     .rule(None, format!(".{own}{selector}"), &[(property, value)]);
                 el.own_class = true;
             }
+        }
+        // A text's color switches as its look does; the arms of a value with
+        // no CSS rule of its own here do not export.
+        let switched = |input| viso_schema::view::Switched::Input(input);
+        let arms: Vec<_> = control
+            .arms
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| a.target == switched(viso_schema::view::ControlInput::TextColor))
+            .collect();
+        for &(index, arm) in arms.iter().rev() {
+            let Some(selector) = self.selector(&arm.when, key, at, wires) else {
+                continue;
+            };
+            let var = format!("--v{key}-color-{index}");
+            let value = self.look_value(wires, arm.entry, var, VarToken::Color, at);
+            self.out
+                .sheet
+                .rule(None, format!(".{own}{selector}"), &[("color", value)]);
+            el.own_class = true;
+        }
+        const LOOKS: [viso_schema::view::ControlInput; 8] = [
+            viso_schema::view::ControlInput::Background,
+            viso_schema::view::ControlInput::Opacity,
+            viso_schema::view::ControlInput::CornerRadius,
+            viso_schema::view::ControlInput::Border,
+            viso_schema::view::ControlInput::Translate,
+            viso_schema::view::ControlInput::Scale,
+            viso_schema::view::ControlInput::Rotation,
+            viso_schema::view::ControlInput::TextColor,
+        ];
+        if control.arms.iter().any(|a| {
+            !matches!(a.target, viso_schema::view::Switched::Input(input) if LOOKS.contains(&input))
+        }) {
+            self.need(
+                Need::Unsupported,
+                at,
+                "a style's `when` switches a value the export does not switch yet: \
+                 `background`, `opacity`, `corner_radius`, `border`, `translate`, `scale`, \
+                 `rotation` and a text's `color` do",
+                Vec::new(),
+            );
         }
         // A start or end origin is the other side of the box right to left.
         if let Some(entry) = look.transform_origin {

@@ -38,7 +38,7 @@ use viso_ui::{
     StructureCx, TextRequest, Timing, focus_node,
 };
 
-use crate::control::{Control, ControlInput, ControlKind, Holds, LayoutSlot, When};
+use crate::control::{Control, ControlInput, ControlKind, Holds, LayoutSlot, Switched, When};
 use crate::host::ViewHost;
 use crate::layout_values::{alignment, layout_value, length};
 use crate::scope::Scope;
@@ -223,6 +223,44 @@ pub(crate) fn control_cells(
 /// its `translate`, `scale`, `rotation` and `transform_origin`.
 const SHOWN: usize = 34;
 
+/// The input of each value a node shows, in order.
+const SHOWN_INPUTS: [ControlInput; SHOWN] = [
+    ControlInput::Value,
+    ControlInput::Min,
+    ControlInput::Max,
+    ControlInput::Fit,
+    ControlInput::Tint,
+    ControlInput::Background,
+    ControlInput::Opacity,
+    ControlInput::CornerRadius,
+    ControlInput::Border,
+    ControlInput::Label,
+    ControlInput::Hint,
+    ControlInput::SpokenValue,
+    ControlInput::Hidden,
+    ControlInput::HeadingLevel,
+    ControlInput::Visible,
+    ControlInput::Focusable,
+    ControlInput::Enabled,
+    ControlInput::Autofocus,
+    ControlInput::Clip,
+    ControlInput::TextColor,
+    ControlInput::SoftWrap,
+    ControlInput::FontWeight,
+    ControlInput::FontFamily,
+    ControlInput::LineHeight,
+    ControlInput::MaxLines,
+    ControlInput::Overflow,
+    ControlInput::TextAlign,
+    ControlInput::Placeholder,
+    ControlInput::Secure,
+    ControlInput::Caption,
+    ControlInput::Translate,
+    ControlInput::Scale,
+    ControlInput::Rotation,
+    ControlInput::TransformOrigin,
+];
+
 /// Where its `translate` sits among the values a node shows.
 const TRANSLATE: usize = 30;
 
@@ -336,52 +374,20 @@ impl Shown {
         if !self.lay_out(cx, host) {
             return;
         }
+        let mut entries = SHOWN_INPUTS.map(|input| self.control.entry(input));
+        if !self.control.arms.is_empty() {
+            for (at, &input) in SHOWN_INPUTS.iter().enumerate() {
+                match self.pick(Switched::Input(input), entries[at], cx, host) {
+                    Ok(entry) => entries[at] = entry,
+                    Err(()) => return,
+                }
+            }
+        }
         let control = &self.control;
         let look = control.look;
-        let (Ok(background), Ok(opacity), Ok(corner_radius), Ok(border)) = (
-            self.pick(ControlInput::Background, look.background, cx, host),
-            self.pick(ControlInput::Opacity, look.opacity, cx, host),
-            self.pick(ControlInput::CornerRadius, look.corner_radius, cx, host),
-            self.pick(ControlInput::Border, look.border, cx, host),
-        ) else {
-            return;
-        };
         let semantics = control.semantics;
         let mut shows: [Value; SHOWN] = std::array::from_fn(|_| Value::default());
-        for (value, entry) in shows.iter_mut().zip(
-            [
-                control.value,
-                control.min,
-                control.max,
-                control.fit,
-                control.tint,
-                background,
-                opacity,
-                corner_radius,
-                border,
-                semantics.label,
-                semantics.hint,
-                semantics.value,
-                semantics.hidden,
-                semantics.heading_level,
-                control.node.visible,
-                control.node.focusable,
-                control.node.enabled,
-                control.node.autofocus,
-                control.node.clip,
-            ]
-            .into_iter()
-            .chain(control.text.all())
-            .chain([
-                control.placeholder,
-                control.secure,
-                control.caption,
-                look.translate,
-                look.scale,
-                look.rotation,
-                look.transform_origin,
-            ]),
-        ) {
+        for (value, entry) in shows.iter_mut().zip(entries) {
             let Some(entry) = entry else { continue };
             match host.evaluate(entry, &self.scope, None, &*cx.states) {
                 Ok(evaluated) => *value = evaluated,
@@ -408,14 +414,18 @@ impl Shown {
         // entry, no arm holding shows the property's default. A value shown
         // before that a reload gives no entry shows the default too: it is
         // the one value that changes with no entry.
-        let styled = |input: ControlInput| control.arms.iter().any(|a| a.input == input);
         let held = prior.is_some();
-        let shown_background =
-            (held || background.is_some() || styled(ControlInput::Background)).then_some(());
-        let shown_opacity =
-            (held || opacity.is_some() || styled(ControlInput::Opacity)).then_some(());
-        let shown_radius = held || corner_radius.is_some() || styled(ControlInput::CornerRadius);
-        let shown_border = held || border.is_some() || styled(ControlInput::Border);
+        // Whether the value at `at` is given, by an entry or an arm.
+        let given = |at: usize| {
+            let input = Switched::Input(SHOWN_INPUTS[at]);
+            entries[at].is_some() || control.arms.iter().any(|a| a.target == input)
+        };
+        // Whether the value at `at` shows: it is given, or it showed before.
+        let shown = |at: usize| held || given(at);
+        let shown_background = shown(LOOK).then_some(());
+        let shown_opacity = shown(LOOK + 1).then_some(());
+        let shown_radius = shown(LOOK + 2);
+        let shown_border = shown(LOOK + 3);
         let [
             value,
             min,
@@ -506,24 +516,22 @@ impl Shown {
             move_of(TURN + 1, look.rotation_transition),
         ];
         let color_move = match control.kind {
-            ControlKind::Label | ControlKind::TextInput => move_of(
-                TEXT,
-                look.color_transition
-                    .filter(|_| control.text.color.is_some()),
-            ),
+            ControlKind::Label | ControlKind::TextInput => {
+                move_of(TEXT, look.color_transition.filter(|_| given(TEXT)))
+            }
             _ => None,
         };
         let store = &mut *cx.store;
-        if (held || control.node.visible.is_some()) && changed(NODE) {
+        if shown(NODE) && changed(NODE) {
             store.set_hidden(self.node, !truth(visible, true));
         }
-        if control.node.focusable.is_some() && changed(NODE + 1) {
+        if given(NODE + 1) && changed(NODE + 1) {
             store.set_focusable(self.node, truth(focusable, false));
         }
-        if (held || control.node.enabled.is_some()) && changed(NODE + 2) {
+        if shown(NODE + 2) && changed(NODE + 2) {
             store.set_enabled(self.node, truth(enabled, true));
         }
-        if (held || control.node.clip.is_some()) && changed(NODE + 4) {
+        if shown(NODE + 4) && changed(NODE + 4) {
             store.set_clip(self.node, truth(clip, false));
         }
         // An autofocus node takes the focus as it mounts, unless something
@@ -538,23 +546,22 @@ impl Shown {
                 None => store.set_corner_radius(self.node, radius),
             }
         }
-        if (held || look.translate.is_some()) && changed(TRANSLATE) {
+        if shown(TRANSLATE) && changed(TRANSLATE) {
             let [x, y] = offset(translate);
             store.set_translate_terms(self.node, x, y, translate_move);
         }
-        if (held || look.transform_origin.is_some()) && changed(TURN + 2) {
+        if shown(TURN + 2) && changed(TURN + 2) {
             let origin = alignment(origin).unwrap_or(Alignment2D::Center);
             store.set_transform_origin(self.node, origin);
         }
-        for (at, entry, value) in [
-            (TURN, look.scale, LookValue::Scale(float(scale, 1.0))),
+        for (at, value) in [
+            (TURN, LookValue::Scale(float(scale, 1.0))),
             (
                 TURN + 1,
-                look.rotation,
                 LookValue::Rotation(float(rotation, 0.0).to_radians()),
             ),
         ] {
-            if !(held || entry.is_some()) || !changed(at) {
+            if !shown(at) || !changed(at) {
                 continue;
             }
             match turn_moves[at - TURN] {
@@ -591,9 +598,10 @@ impl Shown {
         let text = |shown: &Value| TextRequest {
             text: shown.as_str().unwrap_or_default().to_owned(),
             font_size: FontSize::Inherited,
-            color: match control.text.color {
-                Some(_) => color(text_color),
-                None => COLOR,
+            color: if given(TEXT) {
+                color(text_color)
+            } else {
+                COLOR
             },
             soft_wrap: truth(soft_wrap, false),
             locale: None,
@@ -654,7 +662,7 @@ impl Shown {
                 store.set_check_mark(self.node, Some(CheckMark { shape, checked }));
                 // A check with no caption still shapes an empty one, which
                 // sizes and inks its mark.
-                if first || (control.caption.is_some() && changed(FIELD + 2)) {
+                if first || (given(FIELD + 2) && changed(FIELD + 2)) {
                     store.set_text_request(self.node, text(caption));
                 }
             }
@@ -683,7 +691,10 @@ impl Shown {
             return true;
         }
         let mut laid = Vec::with_capacity(self.control.layout.len());
-        for &(_, entry) in self.control.layout.iter() {
+        for &(slot, base) in self.control.layout.iter() {
+            let Ok(Some(entry)) = self.pick(Switched::Layout(slot), Some(base), cx, host) else {
+                return false;
+            };
             match host.evaluate(entry, &self.scope, None, &*cx.states) {
                 Ok(value) => laid.push(value),
                 Err(fault) => {
@@ -745,12 +756,12 @@ impl Shown {
     /// keeps.
     fn pick(
         &self,
-        input: ControlInput,
+        target: Switched,
         base: Option<u32>,
         cx: &StructureCx<'_>,
         host: &mut ViewHost,
     ) -> Result<Option<u32>, ()> {
-        for arm in self.control.arms.iter().filter(|arm| arm.input == input) {
+        for arm in self.control.arms.iter().filter(|arm| arm.target == target) {
             match arm.holds(self.node, cx.store, host, &self.scope, &*cx.states) {
                 Ok(true) => return Ok(Some(arm.entry)),
                 Ok(false) => {}
