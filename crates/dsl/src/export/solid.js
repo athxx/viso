@@ -65,7 +65,7 @@ class Store {
     this.pending.push([event, args]);
   }
   node(action, key, args) {
-    this.nodes.push([action, key, args]);
+    return request(this.nodes, action, key, args);
   }
   start(task, args, done, cancelled, instance, slot, policy) {
     this.starts.push({ task, args, done, cancelled, instance, slot, policy });

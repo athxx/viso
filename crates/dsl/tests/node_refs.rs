@@ -1,13 +1,17 @@
-//! A component's named nodes as a `NodeRef`: its handlers focus, blur and
-//! scroll them once the view settles, each component instance of a `for`
-//! reaches its own, and a named node outside handlers and actions is `E2001`.
+//! A component's named nodes as a `NodeRef`: its handlers focus, blur,
+//! scroll and animate them once the view settles, each component instance of
+//! a `for` reaches its own, and a named node outside handlers and actions is
+//! `E2001`.
 
+use std::collections::HashMap;
+use std::time::Duration;
 use viso_dsl::aot::build_view_package;
 use viso_dsl::frontend::Origin;
 use viso_ui::virtual_list::VirtualLists;
+
 use viso_ui::{
     BindingTable, EffectStore, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase,
-    PointerRouter, Rect, StateStore, Vec2, run_structure_hooks,
+    PointerRouter, Rect, StateStore, Vec2, deliver_notices, run_structure_hooks,
 };
 use viso_view::load_view;
 
@@ -26,6 +30,8 @@ struct Page {
     bindings: BindingTable,
     effects: EffectStore,
     root: NodeId,
+    /// The text each node shows, as last requested.
+    texts: HashMap<NodeId, String>,
 }
 
 impl Page {
@@ -43,6 +49,7 @@ impl Page {
             bindings,
             effects: EffectStore::default(),
             root: view.root.expect("a root"),
+            texts: HashMap::new(),
         };
         page.layout();
         page
@@ -56,6 +63,40 @@ impl Page {
             h: 300.0,
         };
         self.store.layout(self.root, surface, &mut Vec::new());
+        let mut requests = Vec::new();
+        self.store.take_text_requests(&mut requests);
+        for (id, request) in requests {
+            self.texts.insert(id, request.text);
+        }
+    }
+
+    /// A frame `ms` on: the moves tick, the view lays out and hears its
+    /// notices, and what they wrote flushes.
+    fn frame(&mut self, ms: u64) {
+        self.store.tick_transitions(Duration::from_millis(ms));
+        self.layout();
+        deliver_notices(&mut self.store, &VirtualLists::new(), &mut self.states);
+        self.settle();
+        self.layout();
+    }
+
+    fn settle(&mut self) {
+        let mut changed = Vec::new();
+        self.states.take_pending(&mut changed);
+        self.store
+            .flush_state_transactions(&changed, &self.bindings);
+        run_structure_hooks(
+            &mut self.store,
+            &mut self.states,
+            &mut self.bindings,
+            &mut self.effects,
+            &mut VirtualLists::new(),
+            &changed,
+        );
+    }
+
+    fn text(&self, node: NodeId) -> &str {
+        self.texts.get(&node).map_or("", String::as_str)
     }
 
     /// A primary click in the middle of `node`, the state flush, and layout.
@@ -79,18 +120,7 @@ impl Page {
                 &mut chain,
             );
         }
-        let mut changed = Vec::new();
-        self.states.take_pending(&mut changed);
-        self.store
-            .flush_state_transactions(&changed, &self.bindings);
-        run_structure_hooks(
-            &mut self.store,
-            &mut self.states,
-            &mut self.bindings,
-            &mut self.effects,
-            &mut VirtualLists::new(),
-            &changed,
-        );
+        self.settle();
         self.layout();
     }
 
@@ -173,6 +203,79 @@ fn each_instance_of_a_for_reaches_its_own_named_node() {
         page.click(edit);
         assert_eq!(page.store.focused(), Some(field), "entry {at}");
     }
+}
+
+const SHAKE: &str = "component Shake {
+    state shaking: Option<Animation> = Option::None;
+    state ended = \"\";
+    state running = false;
+    view {
+        Column {
+            width: 200dp;
+            height: 300dp;
+            Button {
+                width: 100dp; height: 20dp; text: \"shake\";
+                on click {
+                    let spec = Transition { duration: 100ms, easing: Easing::linear };
+                    shaking = Option::Some(card.animate(Animate::translate(Offset { x: 8dp, y: 0dp }), spec));
+                    running = match shaking { Option::Some(a) => a.is_running(), Option::None => false };
+                }
+            }
+            Button {
+                width: 100dp; height: 20dp; text: \"stop\";
+                on click {
+                    match shaking { Option::Some(a) => a.cancel(), Option::None => {} }
+                    running = match shaking { Option::Some(a) => a.is_running(), Option::None => false };
+                }
+            }
+            Button {
+                width: 100dp; height: 20dp; text: \"check\";
+                on click { running = match shaking { Option::Some(a) => a.is_running(), Option::None => false }; }
+            }
+            node card: Column {
+                width: 50dp; height: 20dp;
+                on animation_end(e) {
+                    ended = match e.target {
+                        Animate::translate(_) => format(\"translate {}\", e.finished),
+                        _ => \"other\",
+                    };
+                }
+            }
+            Text { width: 100dp; height: 20dp; text: ended; }
+            Text { width: 100dp; height: 20dp; text: format(\"{}\", running); }
+        }
+    }
+}";
+
+#[test]
+fn an_animation_moves_its_node_and_returns_it_and_its_end_reaches_the_node() {
+    let mut page = Page::load(SHAKE);
+    let [shake, stop, check, card, ended, running] =
+        [0, 1, 2, 3, 4, 5].map(|at| page.child(page.root, at));
+    page.click(shake);
+    assert_eq!(page.text(running), "true", "running as the call returns");
+    assert_eq!(page.store.translate(card).x, 0.0);
+    page.frame(50);
+    assert_eq!(page.store.translate(card).x, 4.0, "halfway there");
+    page.frame(50);
+    assert_eq!(
+        page.store.translate(card).x,
+        0.0,
+        "back at its model value once it ends"
+    );
+    assert_eq!(page.text(ended), "translate true");
+    page.click(check);
+    assert_eq!(page.text(running), "false");
+
+    page.click(shake);
+    page.frame(30);
+    assert!(page.store.translate(card).x > 0.0);
+    page.click(stop);
+    assert_eq!(page.text(running), "false", "cancelled at once");
+    page.frame(16);
+    assert_eq!(page.store.translate(card).x, 0.0);
+    assert_eq!(page.text(ended), "translate false");
+    assert!(!page.store.is_transitioning());
 }
 
 #[test]

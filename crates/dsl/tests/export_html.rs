@@ -232,6 +232,42 @@ fn a_scale_rotation_and_origin_export_as_css_and_the_origin_follows_the_directio
     assert!(script.contains("P.vorigin("), "{script}");
 }
 
+const SHAKEN: &str = r#"
+export component Shaken {
+    state ended = false;
+    view {
+        Column {
+            Button {
+                width: 40dp; height: 20dp; text: "Shake";
+                on click {
+                    let shake = card.animate(Animate::rotation(10deg), Transition { duration: 80ms });
+                    if shake.is_running() { shake.finish(); }
+                }
+            }
+            node card: Text {
+                width: 40dp; height: 20dp; text: "card";
+                on animation_end(e) { ended = e.finished; }
+            }
+        }
+    }
+}
+"#;
+
+#[test]
+fn an_animation_exports_as_a_web_animation_and_its_end_as_an_event() {
+    let page = export(SHAKEN, false).unwrap();
+    let script = page.script.as_deref().unwrap();
+    for want in [
+        ".node(7, ",
+        ".node(10, ",
+        ".node(9, ",
+        "el.animate(",
+        "viso-animationend",
+    ] {
+        assert!(script.contains(want), "{want}: {script}");
+    }
+}
+
 const GUARDED: &str = r#"
 export component Guarded {
     state on = true;

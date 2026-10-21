@@ -886,7 +886,7 @@ fn color(value: &Value) -> Rgba {
 /// The timing of a `Transition` value (`duration`, `delay`, `easing`,
 /// `reduced`): instant when `reduced_motion` holds and its `reduced` is
 /// `instant`. A negative or non-finite time is zero.
-fn timing(spec: &Value, reduced_motion: bool) -> Timing {
+pub(crate) fn timing(spec: &Value, reduced_motion: bool) -> Timing {
     let Value::Agg(spec) = spec else {
         return Timing::default();
     };
@@ -912,7 +912,6 @@ fn timing(spec: &Value, reduced_motion: bool) -> Timing {
     }
 }
 
-/// A `Float` value as `f32`, `default` for any other.
 /// A `Bool` value, `default` when it is none.
 fn truth(value: &Value, default: bool) -> bool {
     value.as_int().map_or(default, |v| v != 0)
@@ -927,6 +926,7 @@ fn offset(value: &Value) -> [LengthTerms; 2] {
     [term(0), term(1)]
 }
 
+/// A `Float` value as `f32`, `default` for any other.
 fn float(value: &Value, default: f32) -> f32 {
     value.as_float().map_or(default, |v| v as f32)
 }

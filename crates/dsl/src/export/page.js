@@ -6,7 +6,7 @@ let nodes = [];
 // The element whose handler runs, which its node requests start from.
 let origin = null;
 $.emit = (event, args) => pending.push([event, args]);
-$.node = (action, key, args) => nodes.push([action, key, args]);
+$.node = (action, key, args) => request(nodes, action, key, args);
 $.start = (task, args, done, cancelled, instance, slot, policy) =>
   starts.push({ task, args, done, cancelled, instance, slot, policy });
 $.tr = (m, a) => translate(T, m, a);

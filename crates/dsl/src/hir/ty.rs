@@ -108,6 +108,8 @@ pub enum Ty {
     /// `NodeRef<T>`: a named node of a component's view, by the widget or
     /// component type it names.
     NodeRef(Box<str>),
+    /// `Animation`: an animation `NodeRef::animate` started (U6.3).
+    Animation,
 
     // --- inference placeholders ---------------------------------------------
     /// An undetermined integer literal (host default `I64` if no context pins it).
@@ -207,6 +209,7 @@ impl Ty {
             "Duration" => Ty::Duration,
             "Angle" => Ty::Angle,
             "Frequency" => Ty::Frequency,
+            "Animation" => Ty::Animation,
             "Float" => return Err(TypeError::FloatRemoved),
             _ => return Ok(None),
         }))

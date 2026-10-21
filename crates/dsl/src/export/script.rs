@@ -1132,7 +1132,7 @@ fn inst_js(
             node,
             args,
         } => format!(
-            "{} = 0n; {}.node({}, {}, [{}]);",
+            "{} = {}.node({}, {}, [{}]);",
             r(*dst),
             if solid { "st" } else { "$" },
             *action as u32,

@@ -11,19 +11,23 @@
 //! reached. The hook finds each node by its key and applies the request; a
 //! node no longer mounted takes none.
 //!
+//! An `animate` request starts an animation on its node and keeps which one
+//! answers to the VM's `Animation` id, until it ends and the VM hears so;
+//! `cancel` and `finish` reach it by that id.
+//!
 //! The static nodes, and those a region mounts outside any `for` item, are
 //! found in the host's table. A `for` item mounting component instances keeps
 //! a table of its own, which its content's scope carries, so each item's
 //! instances reach their own nodes.
 
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
-use viso_behavior::{NodeAction, NodeRequest, Value};
+use viso_behavior::{NodeAction, NodeRequest, Value, animation_of};
 use viso_ui::virtual_list::{ItemKey, VirtualLists};
 use viso_ui::{
-    NodeId, NodeStore, ScrollRequest, StateId, StateStore, StateValue, StructureCx, Vec2,
-    blur_node, focus_quietly,
+    AnimationId, NodeId, NodeStore, ScrollRequest, StateId, StateStore, StateValue, StructureCx,
+    Vec2, blur_node, focus_quietly,
 };
 
 use crate::host::{StateCells, ViewHost};
@@ -82,6 +86,8 @@ pub(crate) struct NodeRefs {
     pulse: Option<StateId>,
     /// The hook applying the requests.
     hook: Option<viso_ui::StructureHookId>,
+    /// The animations its calls started that run, by the VM's id.
+    animations: Vec<(u64, AnimationId)>,
 }
 
 impl ViewHost {
@@ -177,15 +183,87 @@ pub fn mount_nodes(
             return;
         };
         let pending = std::mem::take(&mut view.nodes.pending);
+        let reduced = cx.states.env().environment().reduced_motion;
         for PendingRequest { request, items } in pending {
-            if let Some(node) = view.named_node(request.node, &items)
-                && mounted(cx.store, node, view.root)
-            {
-                apply(cx.store, cx.lists, node, &request);
+            if request.action.on_animation() {
+                view.stop_animation(cx.store, &request);
+                continue;
+            }
+            let Some(node) = view.named_node(request.node, &items) else {
+                continue;
+            };
+            if !mounted(cx.store, node, view.root) {
+                // The handle names an animation that never runs.
+                if let Some(id) = animation_of(&request) {
+                    view.vm.animation_ended(id);
+                }
+                continue;
+            }
+            match request.action {
+                NodeAction::Animate => {
+                    view.start_animation(cx.store, node, &request, reduced, Rc::downgrade(&keep));
+                }
+                _ => apply(cx.store, cx.lists, node, &request),
             }
         }
     });
     host.borrow_mut().nodes.hook = Some(hook);
+}
+
+impl ViewHost {
+    /// Starts the animation `request` asks of `node`, as the VM's id it
+    /// carries, which the VM forgets once the animation ends.
+    fn start_animation(
+        &mut self,
+        store: &mut NodeStore,
+        node: NodeId,
+        request: &NodeRequest,
+        reduced: bool,
+        host: Weak<RefCell<ViewHost>>,
+    ) {
+        let Some(id) = animation_of(request) else {
+            return;
+        };
+        let started = match (
+            request
+                .args
+                .first()
+                .and_then(|target| crate::route::look_of(store, node, target)),
+            request.args.get(1),
+        ) {
+            (Some(target), Some(spec)) => {
+                let timing = crate::values::timing(spec, reduced);
+                let on_end = Box::new(move |_: &viso_ui::AnimationEnd, _: &mut StateStore| {
+                    if let Some(host) = host.upgrade()
+                        && let Ok(mut host) = host.try_borrow_mut()
+                    {
+                        host.vm.animation_ended(id);
+                        host.nodes.animations.retain(|&(vm, _)| vm != id);
+                    }
+                });
+                store.animate(node, target, timing, Some(on_end))
+            }
+            _ => None,
+        };
+        match started {
+            Some(animation) => self.nodes.animations.push((id, animation)),
+            None => self.vm.animation_ended(id),
+        }
+    }
+
+    /// Cancels or finishes the animation `request` names by the VM's id.
+    fn stop_animation(&mut self, store: &mut NodeStore, request: &NodeRequest) {
+        let Some(id) = animation_of(request) else {
+            return;
+        };
+        let Some(&(_, animation)) = self.nodes.animations.iter().find(|&&(vm, _)| vm == id) else {
+            return;
+        };
+        match request.action {
+            NodeAction::Finish => store.finish_animation(animation),
+            _ => store.cancel_animation(animation),
+        }
+    }
 }
 
 /// Whether a view whose static named nodes are `named` and whose regions are
@@ -278,6 +356,7 @@ fn apply(store: &mut NodeStore, lists: &mut VirtualLists, node: NodeId, request:
                 list.scroll_to_index(index);
             }
         }
+        NodeAction::Animate | NodeAction::Cancel | NodeAction::Finish | NodeAction::IsRunning => {}
     }
 }
 

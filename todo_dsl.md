@@ -545,8 +545,11 @@ Goal: every Core view construct reaches a live tree through all three lowering t
       the renderer and the CPU raster; hit testing maps the pointer into each
       node's local space; the web export writes CSS `scale`, `rotate` and a
       direction-aware `transform-origin`.
-- [ ] `NodeRef::animate` returning an `Animation` handle, with `animation_end`
-      (§U6.3).
+- [x] `NodeRef::animate` returning an `Animation` handle, with `animation_end`
+      (§U6.3): the VM returns the handle at the call and answers `is_running`
+      from what committed and what the call queued; the store moves the
+      presented value and holds model writes until the end; the web export
+      plays a Web Animation.
 
 ### D2.7 — Semantics
 

@@ -9,8 +9,11 @@ use std::rc::Rc;
 
 use viso_behavior::{Aggregate, Value};
 use viso_ui::{
-    EventCx, Key, KeyEvent, Modifiers, Notice, PointerButtons, PointerId, PointerPhase, Vec2,
+    EventCx, Key, KeyEvent, LookValue, Modifiers, NodeId, NodeStore, Notice, PointerButtons,
+    PointerId, PointerPhase, Vec2,
 };
+
+use crate::layout_values::length;
 
 pub use viso_schema::view::route::{EventRoute, PAYLOAD_ENUMS, PAYLOAD_RECORDS};
 
@@ -74,7 +77,43 @@ pub fn notice_payload(notice: &Notice) -> (EventRoute, Value) {
             EventRoute::VisibleRangeChanged,
             record([first, last, count].map(|n| Value::Int(n as i64))),
         ),
+        Notice::AnimationEnd { target, finished } => (
+            EventRoute::AnimationEnd,
+            record([animate(target), Value::Int(i64::from(finished))]),
+        ),
     }
+}
+
+/// The `Animate` an animation moved toward `target`.
+fn animate(target: LookValue) -> Value {
+    let float = |v: f32| Value::Float(f64::from(v));
+    match target {
+        LookValue::Translate(v) => variant(0, record([mixed(v.x), mixed(v.y)])),
+        LookValue::Scale(v) => variant(1, float(v)),
+        LookValue::Rotation(v) => variant(2, float(v.to_degrees())),
+        LookValue::Opacity(v) => variant(3, float(v)),
+        _ => Value::Nil,
+    }
+}
+
+/// The value an `Animate` names, folded at `node`.
+pub(crate) fn look_of(store: &NodeStore, node: NodeId, target: &Value) -> Option<LookValue> {
+    let Value::Agg(agg) = target else {
+        return None;
+    };
+    let float = |v: &Value| v.as_float().map(|v| v as f32);
+    Some(match (agg.tag, agg.fields.first()?) {
+        (0, Value::Agg(offset)) => {
+            let [x, y] = &*offset.fields else {
+                return None;
+            };
+            LookValue::Translate(store.fold_offset(node, [length(x)?, length(y)?]))
+        }
+        (1, v) => LookValue::Scale(float(v)?),
+        (2, v) => LookValue::Rotation(float(v)?.to_radians()),
+        (3, v) => LookValue::Opacity(float(v)?),
+        _ => return None,
+    })
 }
 
 /// A `MixedLength` of `dp` alone: its `dp`, `px`, `sp`, `em` and `pct` terms.

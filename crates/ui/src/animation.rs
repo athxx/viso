@@ -22,6 +22,13 @@
 //! each frame, writing each value with the invalidation its property takes
 //! ([`NodeStore::transition`]): PAINT for a look, TRANSFORM for a translate,
 //! MEASURE and LAYOUT for a size.
+//!
+//! An animation a node runs by request ([`NodeStore::animate`]) moves the
+//! value a node presents of its translate, scale, rotation or opacity toward
+//! a target and then shows the property's model value again: what the node
+//! is told to show meanwhile lands in the model and shows once it ends. How
+//! it ended reaches its handler and the node's watcher after the frame's
+//! layout ([`deliver_notices`](crate::notice::deliver_notices)).
 
 use core::time::Duration;
 
@@ -312,6 +319,38 @@ impl LookValue {
         }
     }
 }
+
+/// Names an animation a node runs by request ([`NodeStore::animate`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AnimationId(pub(crate) u64);
+
+/// How an animation ended.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AnimationEnd {
+    pub animation: AnimationId,
+    /// The value it moved toward.
+    pub target: LookValue,
+    /// Whether it ran its course or was finished, rather than cancelled,
+    /// replaced by a newer one or dropped with its node.
+    pub finished: bool,
+}
+
+/// Called once an animation ends, with the state cells it writes.
+pub type AnimationEndHandler = Box<dyn FnOnce(&AnimationEnd, &mut crate::state::StateStore)>;
+
+/// An animation a node runs by request.
+pub(crate) struct NodeAnimation {
+    pub(crate) id: AnimationId,
+    /// The presented value's move.
+    pub(crate) motion: LookTransition,
+    /// The property's model value, which shows once it ends.
+    pub(crate) model: LookValue,
+    pub(crate) on_end: Option<AnimationEndHandler>,
+}
+
+/// An ended animation waiting for delivery: its node, how it ended and its
+/// handler.
+pub(crate) type EndedAnimation = (NodeId, AnimationEnd, Option<AnimationEndHandler>);
 
 /// A node's look property moving from the value it showed toward its target.
 /// A rebuild lifts one off the node it leaves
@@ -814,6 +853,43 @@ mod tests {
             turned.opacity(node),
             0.75,
             "a new target turns it from there"
+        );
+    }
+
+    #[test]
+    fn an_animation_holds_what_the_node_is_told_and_shows_it_once_it_ends() {
+        use crate::notice::deliver_notices;
+        use crate::state::StateStore;
+        use crate::virtual_list::VirtualLists;
+        let (mut store, id) = one_leaf();
+        store.set_opacity(id, 0.5);
+        let ends = Rc::new(Cell::new(None));
+        let heard = Rc::clone(&ends);
+        let timing = Timing {
+            duration: Duration::from_millis(100),
+            delay: Duration::ZERO,
+            easing: Easing::Linear,
+        };
+        let on_end: AnimationEndHandler = Box::new(move |end, _| heard.set(Some(end.finished)));
+        let animation = store
+            .animate(id, LookValue::Opacity(1.0), timing, Some(on_end))
+            .expect("opacity animates");
+        assert!(store.is_animating(animation));
+        store.tick_transitions(Duration::from_millis(50));
+        assert_eq!(store.opacity(id), 0.75);
+        store.set_opacity(id, 0.25);
+        assert_eq!(store.opacity(id), 0.75, "a model write waits for the end");
+        store.tick_transitions(Duration::from_millis(50));
+        assert_eq!(store.opacity(id), 0.25, "the model shows once it ends");
+        assert!(!store.is_animating(animation));
+        let mut states = StateStore::new();
+        deliver_notices(&mut store, &VirtualLists::new(), &mut states);
+        assert_eq!(ends.get(), Some(true));
+        assert!(!store.is_transitioning());
+        assert_eq!(
+            store.animate(id, LookValue::Width(10.0), timing, None),
+            None,
+            "a size would lay out"
         );
     }
 }

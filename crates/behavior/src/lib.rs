@@ -74,6 +74,6 @@ pub use op::{Arith, ArithOp, DisplayKind, NodeAction, Num, Op};
 pub use value::{Aggregate, Closure, Text, Value};
 pub use vm::{
     Budget, Cost, Deferred, Event, Fault, FaultKind, Fiber, Instance, Location, NodeRequest,
-    Outcome, Start, TaskStep, Vm,
+    Outcome, Start, TaskStep, Vm, animation_of,
 };
 pub use wire::LoadError;

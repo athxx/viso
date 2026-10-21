@@ -4789,6 +4789,8 @@ component Shake {
 - 同一节点同一目标上的新动画取消旧动画；
 - `Animation` 与 `NodeRef` 生命周期相同（§83）：节点 Dispose 或热重载后失效，对失效句柄调用是 No-op，Debug Runtime 报告警告。
 
+当前实现：`animate` 在调用处即返回 `Animation`（`is_running()` 立即为 `true`），请求在事务提交、结构稳定后作用于节点；动画移动的是节点的呈现值，期间对该 Property 的 Model 写入（Binding、Transition）记入 Model，结束时呈现。`cancel()` / `finish()` 在下一次结构稳定时生效，`is_running()` 计入本次调用已排队的请求。`animation_end` 在结束所在帧的布局之后派发，`target` 为折叠后的值（长度为 `dp`）。节点 Dispose 时动画随之结束且不派发事件。Web 导出为 Web Animations（`fill: none`），结束派发同一事件。Debug Runtime 的失效句柄警告尚未实现。
+
 ### U6.4 Reduced Motion
 
 `env.reduced_motion == true` 时，运行时按 `Transition.reduced` 处理 U6.1 与 U6.3 的动画：`instant` 跳过插值直接呈现终值，仍派发 `finished: true` 的 `animation_end`；`keep` 照常播放，只用于传达信息的必要动画（如进度指示）。作者无需读取 `env.reduced_motion` 来关闭动画，只有在需要改变动画之外的呈现时才读取。

@@ -1,9 +1,11 @@
-//! The methods of `NodeRef<T>` (U7.6): `focus`, `blur` and
-//! `scroll_into_view` on any named node, `scroll_to` and `scroll_by` on a
+//! The methods of `NodeRef<T>` (U7.6): `focus`, `blur`, `scroll_into_view`
+//! and `animate` on any named node, `scroll_to` and `scroll_by` on a
 //! `Scroll`, `scroll_to_index` and `scroll_to_key` on a `VirtualList`. Each
 //! queues a request the view applies once the transaction
 //! commits and its structure settles, so a node the same action mounts is
-//! reached; the value is `()`.
+//! reached; the value is `()`, and `animate`'s the `Animation` it starts,
+//! whose `cancel` and `finish` queue requests of their own and whose
+//! `is_running` answers at once (U6.3).
 
 use viso_behavior::NodeAction;
 
@@ -30,10 +32,13 @@ impl InferCx<'_> {
             let mut diagnostic = Diagnostic::error("E2001", name.text_range(), message);
             let suggestions = nearest(
                 &text,
-                NodeAction::ALL.iter().map(|action| Candidate {
-                    name: action.method(),
-                    declared_at: None,
-                }),
+                NodeAction::ALL
+                    .iter()
+                    .filter(|a| !a.on_animation())
+                    .map(|action| Candidate {
+                        name: action.method(),
+                        declared_at: None,
+                    }),
             );
             attach(&mut diagnostic, name.text_range(), &suggestions);
             self.diagnostics.push(diagnostic);
@@ -41,9 +46,9 @@ impl InferCx<'_> {
             return Ty::Unknown;
         };
         let scrolls = match action {
-            NodeAction::Focus | NodeAction::Blur | NodeAction::ScrollIntoView => None,
             NodeAction::ScrollTo | NodeAction::ScrollBy => Some("Scroll"),
             NodeAction::ScrollToIndex | NodeAction::ScrollToKey => Some("VirtualList"),
+            _ => None,
         };
         if let Some(scrolls) = scrolls
             && target != scrolls
@@ -57,19 +62,20 @@ impl InferCx<'_> {
             self.infer_args_alone(args);
             return Ty::Unit;
         }
+        let standard =
+            |cx: &Self, name: &str| cx.env.standard_type(name).map_or(Ty::Unknown, Ty::named);
         let params = match action {
-            NodeAction::Focus | NodeAction::Blur | NodeAction::ScrollIntoView => Vec::new(),
-            NodeAction::ScrollTo | NodeAction::ScrollBy => {
-                let offset = self
-                    .env
-                    .standard_type("Offset")
-                    .map_or(Ty::Unknown, Ty::named);
-                vec![offset]
-            }
+            NodeAction::ScrollTo | NodeAction::ScrollBy => vec![standard(self, "Offset")],
+            NodeAction::Animate => vec![standard(self, "Animate"), standard(self, "Transition")],
             NodeAction::ScrollToIndex => vec![Ty::I64],
             // A key is whatever the list's `for` keys its items by; one of
             // another kind matches no row.
             NodeAction::ScrollToKey => vec![Ty::Unknown],
+            _ => Vec::new(),
+        };
+        let ret = match action {
+            NodeAction::Animate => Ty::Animation,
+            _ => Ty::Unit,
         };
         if args.len() != params.len() {
             let message = format!(
@@ -82,8 +88,49 @@ impl InferCx<'_> {
             self.diagnostics
                 .push(Diagnostic::error("E2103", node.text_range(), message));
             self.infer_args_alone(args);
-            return Ty::Unit;
+            return ret;
         }
-        self.apply_signature(args, (params, Ty::Unit), expected, node)
+        self.apply_signature(args, (params, ret), expected, node)
+    }
+
+    /// Types `recv.name(args)` on a receiver of `Animation`.
+    pub(super) fn animation_method(
+        &mut self,
+        name: &SyntaxToken,
+        args: &[Expr],
+        expected: Option<&Ty>,
+        node: &SyntaxNode,
+    ) -> Ty {
+        let text = name.text();
+        let Some(action) = NodeAction::animation_method(&text) else {
+            let message = format!("no method `{text}` on `Animation`");
+            let mut diagnostic = Diagnostic::error("E2001", name.text_range(), message);
+            let suggestions = nearest(
+                &text,
+                NodeAction::ALL
+                    .iter()
+                    .filter(|a| a.on_animation())
+                    .map(|action| Candidate {
+                        name: action.method(),
+                        declared_at: None,
+                    }),
+            );
+            attach(&mut diagnostic, name.text_range(), &suggestions);
+            self.diagnostics.push(diagnostic);
+            self.infer_args_alone(args);
+            return Ty::Unknown;
+        };
+        let ret = match action {
+            NodeAction::IsRunning => Ty::Bool,
+            _ => Ty::Unit,
+        };
+        if !args.is_empty() {
+            let message = format!("`{text}` takes no arguments, but {} given", args.len());
+            self.diagnostics
+                .push(Diagnostic::error("E2103", node.text_range(), message));
+            self.infer_args_alone(args);
+            return ret;
+        }
+        self.apply_signature(args, (Vec::new(), ret), expected, node)
     }
 }

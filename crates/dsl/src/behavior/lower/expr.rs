@@ -814,8 +814,9 @@ impl Lowerer<'_, '_> {
         }
     }
 
-    /// `recv.name(args)` on a `NodeRef`, `None` when `recv` is none: the
-    /// receiver, then the arguments, evaluate in source order.
+    /// `recv.name(args)` on a `NodeRef` or an `Animation`, `None` when `recv`
+    /// is neither: the receiver, then the arguments, evaluate in source
+    /// order.
     fn node_call(&mut self, call: &CallExpr) -> Lower<Option<Reg>> {
         let Some(field) = call
             .callee()
@@ -826,11 +827,13 @@ impl Lowerer<'_, '_> {
         let (Some(recv), Some(name)) = (field.receiver(), field.field()) else {
             return Ok(None);
         };
-        if !matches!(self.cx.type_of(&recv), Some(Ty::NodeRef(_))) {
-            return Ok(None);
-        }
-        let Some(action) = viso_behavior::NodeAction::named(&name.text()) else {
-            return self.bail(format!("`NodeRef` has no method `{}`", name.text()));
+        let action = match self.cx.type_of(&recv) {
+            Some(Ty::NodeRef(_)) => viso_behavior::NodeAction::named(&name.text()),
+            Some(Ty::Animation) => viso_behavior::NodeAction::animation_method(&name.text()),
+            _ => return Ok(None),
+        };
+        let Some(action) = action else {
+            return self.bail(format!("no method `{}` to call", name.text()));
         };
         let mut all = vec![recv];
         all.extend(emit_args(call.syntax()).into_iter().map(|(_, e)| e));

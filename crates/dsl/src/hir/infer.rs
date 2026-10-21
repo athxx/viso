@@ -1908,6 +1908,7 @@ pub(crate) fn ty_name(ty: &Ty) -> &'static str {
         Ty::Resource(_, _) => "<resource>",
         Ty::ResourceState(_, _) => "<resource-state>",
         Ty::NodeRef(_) => "<node-ref>",
+        Ty::Animation => "Animation",
         Ty::Range(_) => "<range>",
         Ty::RangeInclusive(_) => "<range-inclusive>",
         Ty::InferInt => "<int>",

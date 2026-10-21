@@ -1,6 +1,6 @@
 //! Notices: what a node reports about itself once a frame has laid out, rather
 //! than from an input sample — a viewport's scroll, a virtual list's visible
-//! rows.
+//! rows, the end of an animation it ran.
 //!
 //! A node that has a handler for one is watched: after the frame's layout,
 //! [`deliver_notices`] reads each watched node's state and, when it moved since
@@ -10,8 +10,11 @@
 //! next frame's transaction.
 //!
 //! A viewport's scroll is reported when it changes, not at mount; a list's
-//! visible rows from the first layout that shows the list.
+//! visible rows from the first layout that shows the list. An animation's end
+//! reaches its own handler first, then its node's watcher, in the order the
+//! animations ended.
 
+use crate::animation::LookValue;
 use crate::component::NodeStore;
 use crate::layout::{Axis, OnAxis, Vec2};
 use crate::node::NodeId;
@@ -34,6 +37,8 @@ pub enum Notice {
         last: usize,
         count: usize,
     },
+    /// An animation the node ran ended ([`NodeStore::animate`]).
+    AnimationEnd { target: LookValue, finished: bool },
 }
 
 /// Which notices a watched node reports.
@@ -43,6 +48,7 @@ pub struct NoticeKinds(u8);
 impl NoticeKinds {
     pub const SCROLL: Self = Self(1);
     pub const VISIBLE_RANGE: Self = Self(2);
+    pub const ANIMATION_END: Self = Self(4);
 
     pub fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
@@ -126,10 +132,26 @@ pub fn deliver_notices(
     lists: &VirtualLists,
     states: &mut StateStore,
 ) -> u32 {
-    if !store.has_watches() {
-        return 0;
-    }
     let mut delivered = 0;
+    if store.is_transitioning() {
+        for (node, end, on_end) in store.take_animation_ends() {
+            if let Some(on_end) = on_end {
+                on_end(&end, states);
+            }
+            let notice = Notice::AnimationEnd {
+                target: end.target,
+                finished: end.finished,
+            };
+            if store.arena().is_live(node)
+                && tell(store, node, NoticeKinds::ANIMATION_END, &notice, states)
+            {
+                delivered += 1;
+            }
+        }
+    }
+    if !store.has_watches() {
+        return delivered;
+    }
     let mut at = 0;
     while at < store.notices().watches.len() {
         let node = store.notices().watches[at].node;
@@ -192,6 +214,38 @@ pub fn deliver_notices(
         at += 1;
     }
     delivered
+}
+
+/// Calls node `node`'s watcher with `notice` when it watches for `kind`.
+/// Returns whether it did.
+fn tell(
+    store: &mut NodeStore,
+    node: NodeId,
+    kind: NoticeKinds,
+    notice: &Notice,
+    states: &mut StateStore,
+) -> bool {
+    let Some(watch) = store
+        .notices_mut()
+        .watches
+        .iter_mut()
+        .find(|watch| watch.node == node && watch.kinds.contains(kind))
+    else {
+        return false;
+    };
+    let Some(mut handler) = watch.handler.take() else {
+        return false;
+    };
+    handler(notice, states);
+    if let Some(watch) = store
+        .notices_mut()
+        .watches
+        .iter_mut()
+        .find(|watch| watch.node == node && watch.handler.is_none())
+    {
+        watch.handler = Some(handler);
+    }
+    true
 }
 
 impl NodeStore {

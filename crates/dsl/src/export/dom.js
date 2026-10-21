@@ -51,12 +51,78 @@ const mark = (out, k) => {
   if (first instanceof Element) first.$key = k;
   return out;
 };
+// The animations `animate` started that run, by id, and the last id given.
+const animations = new Map();
+let lastAnimation = 0n;
+// Queues the request `[action, key, args]` in `queue`, answering what the
+// call returns: an `animate` the id of the `Animation` it starts, which rides
+// along as a third argument; an `is_running` whether the animation `key`
+// runs, as the requests queued so far leave it.
+const request = (queue, action, key, args) => {
+  if (action === 10) {
+    for (let i = queue.length - 1; i >= 0; i--) {
+      const [a, k, g] = queue[i];
+      if (a === 7 && g[2] === key) return 1n;
+      if ((a === 8 || a === 9) && k === key) return 0n;
+    }
+    return bool(animations.has(key));
+  }
+  if (action === 7) {
+    const id = ++lastAnimation;
+    queue.push([action, key, [args[0], args[1], id]]);
+    return id;
+  }
+  queue.push([action, key, args]);
+  return 0n;
+};
+// The CSS property and value an `Animate` moves toward.
+const animated = (v) => {
+  switch (v.t) {
+    case 0: return ["translate", offset(v.f[0])];
+    case 1: return ["scale", scaling(v.f[0])];
+    case 2: return ["rotate", turning(v.f[0])];
+    default: return ["opacity", String(Math.min(Math.max(v.f[0] ?? 1, 0), 1))];
+  }
+};
+// Starts the animation `id` of `el` toward `target` over `spec`: the
+// presented value moves there and the styled one shows again once it ends,
+// which `el` hears as an `animation_end`. A newer one of the same property
+// cancels it.
+const animate = (el, target, spec, id) => {
+  const [property, value] = animated(target);
+  const f = spec === null ? [] : spec.f;
+  const instant = reduced.matches && f[3] === 0n;
+  const ms = (x) => (instant ? 0 : Math.max(Number(x ?? 0), 0) * 1000);
+  const running = (el.$anims ??= {});
+  if (running[property]) running[property].cancel();
+  const a = el.animate([{ [property]: value }], {
+    duration: ms(f[0]),
+    delay: ms(f[1]),
+    easing: easings[Number(f[2] ?? 2n)] || "ease-out",
+    fill: "none",
+  });
+  running[property] = a;
+  animations.set(id, a);
+  const end = (finished) => () => {
+    animations.delete(id);
+    if (running[property] === a) delete running[property];
+    el.dispatchEvent(new CustomEvent("viso-animationend", { detail: { target, finished } }));
+  };
+  a.onfinish = end(true);
+  a.oncancel = end(false);
+};
 // Applies the requests a transaction made of named nodes, each
 // `[action, key, args]`: focus, blur, scroll into view, scroll to, scroll by,
-// and a list's scroll to a row by index or key.
+// a list's scroll to a row by index or key, and an animation's start; and
+// those of animations, by id: cancel and finish.
 const reach = (requests, from) => {
   if (!requests) return;
   for (const [action, key, args] of requests) {
+    if (action === 8 || action === 9) {
+      const a = animations.get(key);
+      if (a) action === 8 ? a.cancel() : a.finish();
+      continue;
+    }
     const el = named(key, from);
     if (!el) continue;
     const at = (v) => [fold(el, v.f[0]), fold(el, v.f[1])];
@@ -73,6 +139,7 @@ const reach = (requests, from) => {
         break;
       }
       case 6: { const r = row(el, $.key(args[0])); if (r) r.scrollIntoView({ block: "start", inline: "start" }); break; }
+      case 7: animate(el, args[0], args[1], args[2]); break;
     }
   }
 };
@@ -266,6 +333,8 @@ const listen = (el, route, capture, control, fire) => {
     el.addEventListener("scroll", report, { passive: true, capture });
     new ResizeObserver(report).observe(el);
     new MutationObserver(report).observe(el, { childList: true });
+  } else if (route === 14) {
+    el.addEventListener("viso-animationend", (e) => fire(rec([e.detail.target, bool(e.detail.finished)])), capture);
   } else {
     const current = () => items(el).findIndex((c) => c.getAttribute(el.$radio ? "aria-checked" : "aria-selected") === "true");
     const choose = (i) => {

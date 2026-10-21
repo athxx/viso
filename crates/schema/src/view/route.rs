@@ -37,11 +37,14 @@ pub enum EventRoute {
     /// A `VirtualList`'s `visible_range_changed` (`VisibleRange`): the rows it
     /// shows changed.
     VisibleRangeChanged = 13,
+    /// Any node's `animation_end` (`AnimationEnd`): an animation it ran by
+    /// `NodeRef::animate` ended.
+    AnimationEnd = 14,
 }
 
 impl EventRoute {
     /// Every route, by discriminant.
-    pub const ALL: [EventRoute; 14] = [
+    pub const ALL: [EventRoute; 15] = [
         EventRoute::Click,
         EventRoute::Tap,
         EventRoute::PointerDown,
@@ -56,6 +59,7 @@ impl EventRoute {
         EventRoute::SelectedChanged,
         EventRoute::ScrollChanged,
         EventRoute::VisibleRangeChanged,
+        EventRoute::AnimationEnd,
     ];
 
     /// The route of standard DSL event `event`, `None` for an event the runtime
@@ -84,6 +88,7 @@ impl EventRoute {
             EventRoute::SelectedChanged => "selected_changed",
             EventRoute::ScrollChanged => "scroll_changed",
             EventRoute::VisibleRangeChanged => "visible_range_changed",
+            EventRoute::AnimationEnd => "animation_end",
         }
     }
 
@@ -104,6 +109,7 @@ impl EventRoute {
             EventRoute::SelectedChanged => "SelectedChanged",
             EventRoute::ScrollChanged => "ScrollChanged",
             EventRoute::VisibleRangeChanged => "VisibleRangeChanged",
+            EventRoute::AnimationEnd => "AnimationEnd",
         }
     }
 
@@ -122,7 +128,7 @@ impl EventRoute {
     pub fn is_notice(self) -> bool {
         matches!(
             self,
-            EventRoute::ScrollChanged | EventRoute::VisibleRangeChanged
+            EventRoute::ScrollChanged | EventRoute::VisibleRangeChanged | EventRoute::AnimationEnd
         )
     }
 
@@ -152,12 +158,14 @@ pub const PAYLOAD_RECORDS: &[(&str, &[&str])] = &[
     ("SizeDp", &["width", "height"]),
     ("ScrollChanged", &["offset", "viewport", "content"]),
     ("VisibleRange", &["first", "last", "count"]),
+    ("AnimationEnd", &["target", "finished"]),
 ];
 
 /// The prelude enums a payload names a variant of, with their variants in order.
 pub const PAYLOAD_ENUMS: &[(&str, &[&str])] = &[
     ("PointerButton", &["primary", "secondary", "middle"]),
     ("PointerKind", &["mouse", "touch", "pen"]),
+    ("Animate", &["translate", "scale", "rotation", "opacity"]),
     (
         "Key",
         &[

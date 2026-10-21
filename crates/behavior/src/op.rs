@@ -224,11 +224,24 @@ pub enum NodeAction {
     /// `scroll_to_key(key)`: the same for the row with this key; an unknown
     /// key scrolls nothing.
     ScrollToKey = 6,
+    /// `animate(target: Animate, spec: Transition) -> Animation`: move the
+    /// node's presented value toward `target` over `spec`, then back to its
+    /// model value. The request carries the `Animation`'s id as a third
+    /// argument, and the value is that id.
+    Animate = 7,
+    /// `Animation::cancel()`: end it unfinished. The receiver is the
+    /// `Animation`, the request's one argument its id.
+    Cancel = 8,
+    /// `Animation::finish()`: end it as finished, at once.
+    Finish = 9,
+    /// `Animation::is_running()`: whether it was started and has not ended,
+    /// answered at once; queues nothing.
+    IsRunning = 10,
 }
 
 impl NodeAction {
     /// Every action, by discriminant.
-    pub const ALL: [NodeAction; 7] = [
+    pub const ALL: [NodeAction; 11] = [
         NodeAction::Focus,
         NodeAction::Blur,
         NodeAction::ScrollIntoView,
@@ -236,6 +249,10 @@ impl NodeAction {
         NodeAction::ScrollBy,
         NodeAction::ScrollToIndex,
         NodeAction::ScrollToKey,
+        NodeAction::Animate,
+        NodeAction::Cancel,
+        NodeAction::Finish,
+        NodeAction::IsRunning,
     ];
 
     /// The action with discriminant `raw`.
@@ -243,11 +260,26 @@ impl NodeAction {
         NodeAction::ALL.get(raw as usize).copied()
     }
 
-    /// The action method `name` names.
+    /// The `NodeRef` method `name` names.
     pub fn named(name: &str) -> Option<NodeAction> {
         NodeAction::ALL
             .into_iter()
-            .find(|action| action.method() == name)
+            .find(|action| !action.on_animation() && action.method() == name)
+    }
+
+    /// The `Animation` method `name` names.
+    pub fn animation_method(name: &str) -> Option<NodeAction> {
+        NodeAction::ALL
+            .into_iter()
+            .find(|action| action.on_animation() && action.method() == name)
+    }
+
+    /// Whether it is a method of an `Animation` rather than of a `NodeRef`.
+    pub fn on_animation(self) -> bool {
+        matches!(
+            self,
+            NodeAction::Cancel | NodeAction::Finish | NodeAction::IsRunning
+        )
     }
 
     /// The method name.
@@ -260,17 +292,27 @@ impl NodeAction {
             NodeAction::ScrollBy => "scroll_by",
             NodeAction::ScrollToIndex => "scroll_to_index",
             NodeAction::ScrollToKey => "scroll_to_key",
+            NodeAction::Animate => "animate",
+            NodeAction::Cancel => "cancel",
+            NodeAction::Finish => "finish",
+            NodeAction::IsRunning => "is_running",
         }
     }
 
     /// How many arguments it takes.
     pub fn arity(self) -> usize {
         match self {
-            NodeAction::Focus | NodeAction::Blur | NodeAction::ScrollIntoView => 0,
+            NodeAction::Focus
+            | NodeAction::Blur
+            | NodeAction::ScrollIntoView
+            | NodeAction::Cancel
+            | NodeAction::Finish
+            | NodeAction::IsRunning => 0,
             NodeAction::ScrollTo
             | NodeAction::ScrollBy
             | NodeAction::ScrollToIndex
             | NodeAction::ScrollToKey => 1,
+            NodeAction::Animate => 2,
         }
     }
 
@@ -284,6 +326,10 @@ impl NodeAction {
             NodeAction::ScrollBy => "ScrollBy",
             NodeAction::ScrollToIndex => "ScrollToIndex",
             NodeAction::ScrollToKey => "ScrollToKey",
+            NodeAction::Animate => "Animate",
+            NodeAction::Cancel => "Cancel",
+            NodeAction::Finish => "Finish",
+            NodeAction::IsRunning => "IsRunning",
         }
     }
 }

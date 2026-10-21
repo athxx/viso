@@ -15,7 +15,10 @@ use std::any::Any;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::animation::{LookTransition, LookValue, Timing, TranslateAnim};
+use crate::animation::{
+    AnimationEnd, AnimationEndHandler, AnimationId, EndedAnimation, LookTransition, LookValue,
+    NodeAnimation, Timing, TranslateAnim,
+};
 use crate::asset::{Asset, AssetDraw, AssetFit, AssetPayload, AssetTable};
 use crate::binding::{BindingTable, Template};
 use crate::check_mark::CheckMark;
@@ -568,6 +571,12 @@ pub struct NodeStore {
     /// at most one per node and property. Empty while nothing moves, so a
     /// settled frame never walks it.
     transitions: Vec<LookTransition>,
+    /// Cold: the animations nodes run by request, at most one per node and
+    /// property, and the ones ended since the last delivery.
+    animations: Vec<NodeAnimation>,
+    animation_ends: Vec<EndedAnimation>,
+    /// The last [`AnimationId`] given out.
+    last_animation: u64,
     /// Cold, transient handoff buffer (not index-aligned): one-shot timer arms a
     /// handler requested this frame, sitting here between the router (which drains
     /// them off the [`EventCx`](crate::context::EventCx) after a dispatch and
@@ -747,6 +756,8 @@ impl NodeStore {
         self.assets.clear();
         self.animation_requests.clear();
         self.transitions.clear();
+        self.animations.clear();
+        self.animation_ends.clear();
         self.timer_requests.clear();
         self.window_opens.clear();
         self.window_closes.clear();
@@ -1139,7 +1150,27 @@ impl NodeStore {
         edit: impl FnOnce(crate::transform::Turn) -> crate::transform::Turn,
     ) {
         let i = id.index() as usize;
-        let turn = edit(self.turn[i]);
+        let mut model = self.turn[i];
+        if let LookValue::Scale(scale) = self.shown(id, &LookValue::Scale(0.0)) {
+            model.scale = scale;
+        }
+        if let LookValue::Rotation(rotation) = self.shown(id, &LookValue::Rotation(0.0)) {
+            model.rotation = rotation;
+        }
+        let model = edit(model);
+        let mut turn = model;
+        if self.hold(id, LookValue::Scale(model.scale)) {
+            turn.scale = self.turn[i].scale;
+        }
+        if self.hold(id, LookValue::Rotation(model.rotation)) {
+            turn.rotation = self.turn[i].rotation;
+        }
+        self.show_turn(id, turn);
+    }
+
+    /// Shows `turn` as node `id`'s. `id` is live.
+    fn show_turn(&mut self, id: NodeId, turn: crate::transform::Turn) {
+        let i = id.index() as usize;
         if self.turn[i] == turn {
             return;
         }
@@ -2371,9 +2402,14 @@ impl NodeStore {
     /// write; a stale handle is a no-op, and an offset equal to the current value
     /// schedules nothing.
     pub fn set_translate(&mut self, id: NodeId, offset: Vec2) {
-        if !self.arena.is_live(id) {
+        if !self.arena.is_live(id) || self.hold(id, LookValue::Translate(offset)) {
             return;
         }
+        self.show_translate(id, offset);
+    }
+
+    /// Shows `offset` as node `id`'s translate. `id` is live.
+    fn show_translate(&mut self, id: NodeId, offset: Vec2) {
         let i = id.index() as usize;
         if offset == self.translate[i] {
             return;
@@ -2392,18 +2428,14 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        let i = id.index() as usize;
-        let next = Vec2 {
-            x: self.translate[i].x + delta.x,
-            y: self.translate[i].y + delta.y,
-        };
-        if next == self.translate[i] {
+        let LookValue::Translate(now) = self.shown(id, &LookValue::Translate(delta)) else {
             return;
-        }
-        let was = self.reach_in_parent(i);
-        self.translate[i] = next;
-        self.lift_reach(id, was);
-        self.mark_moved(id);
+        };
+        let next = Vec2 {
+            x: now.x + delta.x,
+            y: now.y + delta.y,
+        };
+        self.set_translate(id, next);
     }
 
     /// Mark a translated node: `TRANSFORM` once it is a transform root; the
@@ -3231,6 +3263,12 @@ impl NodeStore {
     }
 
     fn write_opacity(&mut self, id: NodeId, opacity: f32) {
+        if !self.hold(id, LookValue::Opacity(opacity)) {
+            self.show_opacity(id, opacity);
+        }
+    }
+
+    fn show_opacity(&mut self, id: NodeId, opacity: f32) {
         let opacity = if opacity.is_finite() {
             opacity.clamp(0.0, 1.0)
         } else {
@@ -3306,6 +3344,9 @@ impl NodeStore {
     /// itself for one it shows none of (a text color with no text, a size
     /// that is not fixed), which then shows at once.
     fn shown(&self, id: NodeId, of: &LookValue) -> LookValue {
+        if let Some(running) = self.animations.iter().find(|a| a.motion.moves(id, of)) {
+            return running.model;
+        }
         let i = id.index() as usize;
         match *of {
             LookValue::Fill(_) => LookValue::Fill(self.style[i].fill),
@@ -3480,6 +3521,8 @@ impl NodeStore {
     #[inline]
     pub fn is_transitioning(&self) -> bool {
         !self.transitions.is_empty()
+            || !self.animations.is_empty()
+            || !self.animation_ends.is_empty()
     }
 
     /// Advances every moving look property by `delta`, writing the value each
@@ -3499,6 +3542,164 @@ impl NodeStore {
             if done {
                 self.transitions.swap_remove(i);
             }
+        }
+        let mut i = self.animations.len();
+        while i > 0 {
+            i -= 1;
+            let node = self.animations[i].motion.node;
+            if !self.arena.is_live(node) {
+                let gone = self.animations.swap_remove(i);
+                self.end_animation(gone, false);
+                continue;
+            }
+            let (value, done) = self.animations[i].motion.advance(delta);
+            if done {
+                let ran = self.animations.swap_remove(i);
+                self.end_animation(ran, true);
+            } else {
+                self.show_look(node, value);
+            }
+        }
+    }
+
+    /// Runs an animation on node `id`: the value it presents of the property
+    /// `to` names moves there from the value it presents now over `timing`,
+    /// then the property's model value shows again — what the node is told to
+    /// show meanwhile is that model value. A newer animation of the same
+    /// property ends one running, unfinished. `on_end` is called with how it
+    /// ended after the layout of the frame it ends in, and the node's
+    /// [`NoticeKinds::ANIMATION_END`](crate::NoticeKinds::ANIMATION_END)
+    /// watcher hears it. `None` for a stale handle or a property other than
+    /// translate, scale, rotation and opacity, which would lay out.
+    pub fn animate(
+        &mut self,
+        id: NodeId,
+        to: LookValue,
+        timing: Timing,
+        on_end: Option<AnimationEndHandler>,
+    ) -> Option<AnimationId> {
+        let animates = matches!(
+            to,
+            LookValue::Translate(_)
+                | LookValue::Scale(_)
+                | LookValue::Rotation(_)
+                | LookValue::Opacity(_)
+        );
+        if !self.arena.is_live(id) || !animates {
+            return None;
+        }
+        self.last_animation += 1;
+        let animation = AnimationId(self.last_animation);
+        let model = self.shown(id, &to);
+        let presented = self.presented(id, &to);
+        if let Some(at) = self.animations.iter().position(|a| a.motion.moves(id, &to)) {
+            let prior = self.animations.swap_remove(at);
+            self.queue_end(prior, false);
+        }
+        let running = NodeAnimation {
+            id: animation,
+            motion: LookTransition::new(id, presented, to, timing),
+            model,
+            on_end,
+        };
+        if timing.is_instant() {
+            self.end_animation(running, true);
+        } else {
+            self.animations.push(running);
+        }
+        Some(animation)
+    }
+
+    /// Ends animation `animation` unfinished, showing its property's model
+    /// value; one that ended already is left be.
+    pub fn cancel_animation(&mut self, animation: AnimationId) {
+        self.stop_animation(animation, false);
+    }
+
+    /// Ends animation `animation` as finished, at once.
+    pub fn finish_animation(&mut self, animation: AnimationId) {
+        self.stop_animation(animation, true);
+    }
+
+    /// Whether animation `animation` runs.
+    pub fn is_animating(&self, animation: AnimationId) -> bool {
+        self.animations.iter().any(|a| a.id == animation)
+    }
+
+    fn stop_animation(&mut self, animation: AnimationId, finished: bool) {
+        if let Some(at) = self.animations.iter().position(|a| a.id == animation) {
+            let stopped = self.animations.swap_remove(at);
+            self.end_animation(stopped, finished);
+        }
+    }
+
+    /// Shows the model value `ended` held and queues its end.
+    fn end_animation(&mut self, ended: NodeAnimation, finished: bool) {
+        if self.arena.is_live(ended.motion.node) {
+            self.show_look(ended.motion.node, ended.model);
+        }
+        self.queue_end(ended, finished);
+    }
+
+    fn queue_end(&mut self, ended: NodeAnimation, finished: bool) {
+        let end = AnimationEnd {
+            animation: ended.id,
+            target: ended.motion.to,
+            finished,
+        };
+        self.animation_ends
+            .push((ended.motion.node, end, ended.on_end));
+    }
+
+    /// The animations ended since the last call, oldest first.
+    pub(crate) fn take_animation_ends(&mut self) -> Vec<EndedAnimation> {
+        std::mem::take(&mut self.animation_ends)
+    }
+
+    /// Whether an animation of node `id` holds the property `value` names:
+    /// the value lands in its model rather than on the node.
+    fn hold(&mut self, id: NodeId, value: LookValue) -> bool {
+        if self.animations.is_empty() {
+            return false;
+        }
+        match self
+            .animations
+            .iter_mut()
+            .find(|a| a.motion.moves(id, &value))
+        {
+            Some(running) => {
+                running.model = value;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The value node `id` presents of the property `of` names, of those an
+    /// animation moves.
+    fn presented(&self, id: NodeId, of: &LookValue) -> LookValue {
+        let i = id.index() as usize;
+        match *of {
+            LookValue::Translate(_) => LookValue::Translate(self.translate[i]),
+            LookValue::Scale(_) => LookValue::Scale(self.turn[i].scale),
+            LookValue::Rotation(_) => LookValue::Rotation(self.turn[i].rotation),
+            LookValue::Opacity(_) => LookValue::Opacity(self.opacity[i]),
+            _ => *of,
+        }
+    }
+
+    /// Shows `value` on node `id`, past any animation's hold: the presented
+    /// values an animation moves. `id` is live.
+    fn show_look(&mut self, id: NodeId, value: LookValue) {
+        let turn = self.turn[id.index() as usize];
+        match value {
+            LookValue::Translate(offset) => self.show_translate(id, offset),
+            LookValue::Opacity(opacity) => self.show_opacity(id, opacity),
+            LookValue::Scale(scale) => self.show_turn(id, crate::transform::Turn { scale, ..turn }),
+            LookValue::Rotation(rotation) => {
+                self.show_turn(id, crate::transform::Turn { rotation, ..turn })
+            }
+            _ => self.write_look(id, value),
         }
     }
 

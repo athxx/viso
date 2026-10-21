@@ -261,6 +261,21 @@ pub struct NodeRequest {
     pub args: Box<[Value]>,
 }
 
+/// The id the next `Animation` takes: unique across the process, so a
+/// handle outlives no view it could be confused in.
+static NEXT_ANIMATION: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+
+/// The `Animation` `request` starts or ends, `None` for one of a node alone.
+pub fn animation_of(request: &NodeRequest) -> Option<u64> {
+    match request.action {
+        NodeAction::Animate => request.args.get(2),
+        NodeAction::Cancel | NodeAction::Finish => request.args.first(),
+        _ => None,
+    }
+    .and_then(Value::as_int)
+    .and_then(|id| u64::try_from(id).ok())
+}
+
 /// A committed invocation.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Outcome {
@@ -516,6 +531,9 @@ pub struct Vm {
     marks: Vec<u64>,
     events: Vec<Event>,
     nodes: Vec<NodeRequest>,
+    /// The ids of the `Animation`s committed calls started that have not
+    /// ended, ascending.
+    animations: Vec<u64>,
     detail: String,
     graph: Rc<ReadGraph>,
     /// Whether the running invocation's instance caches against `graph`.
@@ -567,6 +585,7 @@ impl Vm {
             marks: Vec::new(),
             events: Vec::new(),
             nodes: Vec::new(),
+            animations: Vec::new(),
             detail: String::new(),
             deferring: false,
             deferred: Vec::new(),
@@ -1182,12 +1201,80 @@ impl Vm {
                 instance.dirty[slot as usize / 64] |= 1 << (slot % 64);
             }
         }
+        for request in &self.nodes {
+            let Some(id) = animation_of(request) else {
+                continue;
+            };
+            let at = self.animations.binary_search(&id);
+            match (request.action, at) {
+                (NodeAction::Animate, Err(at)) => self.animations.insert(at, id),
+                (NodeAction::Cancel | NodeAction::Finish, Ok(at)) => {
+                    self.animations.remove(at);
+                }
+                _ => {}
+            }
+        }
         Outcome {
             value,
             events: mem::take(&mut self.events),
             starts: mem::take(&mut self.starts),
             nodes: mem::take(&mut self.nodes),
         }
+    }
+
+    /// Forgets the `Animation` `id` as the view ends it: it ran its course,
+    /// was cancelled by a newer one on its node and property, or its node
+    /// went.
+    pub fn animation_ended(&mut self, id: u64) {
+        if let Ok(at) = self.animations.binary_search(&id) {
+            self.animations.remove(at);
+        }
+    }
+
+    /// Queues `action` on the node whose key `key` holds, or on the
+    /// `Animation` it holds, with `args`; `IsRunning` answers at once.
+    pub(crate) fn request_node(
+        &mut self,
+        action: NodeAction,
+        key: &Value,
+        args: Box<[Value]>,
+    ) -> Step<Value> {
+        let key = key
+            .as_int()
+            .and_then(|key| u64::try_from(key).ok())
+            .ok_or(FaultKind::Internal)?;
+        if action.on_animation() {
+            if action == NodeAction::IsRunning {
+                // The calls of this run count before it commits: the last
+                // that names the animation decides.
+                let queued = self.nodes.iter().rev().find_map(|request| {
+                    (animation_of(request) == Some(key))
+                        .then_some(request.action == NodeAction::Animate)
+                });
+                let running = queued.unwrap_or_else(|| self.animations.binary_search(&key).is_ok());
+                return Ok(Value::Int(i64::from(running)));
+            }
+            self.nodes.push(NodeRequest {
+                node: 0,
+                action,
+                args: Box::new([Value::Int(key as i64)]),
+            });
+            return Ok(Value::Int(0));
+        }
+        let node = u32::try_from(key).map_err(|_| FaultKind::Internal)?;
+        if action == NodeAction::Animate {
+            let id = NEXT_ANIMATION.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            let mut args = args.into_vec();
+            args.push(Value::Int(id as i64));
+            self.nodes.push(NodeRequest {
+                node,
+                action,
+                args: args.into(),
+            });
+            return Ok(Value::Int(id as i64));
+        }
+        self.nodes.push(NodeRequest { node, action, args });
+        Ok(Value::Int(0))
     }
 
     /// Rolls the run back and describes its fault `kind` at `cursor`.
@@ -1620,15 +1707,15 @@ impl Vm {
                     let Some(action) = NodeAction::from_u32(code.ext[at]) else {
                         return self.trap(FaultKind::Internal, "an unknown node action".into());
                     };
-                    let Some(node) = self.stack[base + code.ext[at + 1] as usize]
-                        .as_int()
-                        .and_then(|key| u32::try_from(key).ok())
-                    else {
-                        return self.trap(FaultKind::Internal, "a node key that is no key".into());
-                    };
+                    let key = self.stack[base + code.ext[at + 1] as usize].clone();
                     let args = self.gather(base, &code.ext[at + 3..at + 3 + n]);
-                    self.nodes.push(NodeRequest { node, action, args });
-                    (dst, Value::Int(0))
+                    match self.request_node(action, &key, args) {
+                        Ok(value) => (dst, value),
+                        Err(_) => {
+                            return self
+                                .trap(FaultKind::Internal, "a node key that is no key".into());
+                        }
+                    }
                 }
                 Op::Native { dst, ext } => {
                     let value = self.call_native(code, base, ext as usize)?;
