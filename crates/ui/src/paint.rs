@@ -345,9 +345,10 @@ fn paint_subtree<S: PaintSpans>(
     // pushes nothing.
     let scroll = store.is_scroll(root);
     let clips = store.clips_children(root);
-    let corners = clip_corners(store, root, world);
+    let mut corners = None;
     let mut inner = space;
     if clips {
+        corners = clip_corners(store, root, world);
         out.push(Primitive::Layer(LayerClip {
             clip: world,
             opacity: 1.0,
@@ -408,7 +409,7 @@ fn paint_subtree<S: PaintSpans>(
                 | flag(scroll, Span::SCROLL)
                 | flag(own, Span::ROOT)
                 | flag(clips, Span::CLIP)
-                | flag(clips && corners.is_some(), Span::CORNERS),
+                | flag(corners.is_some(), Span::CORNERS),
         },
     );
 }
