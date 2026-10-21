@@ -84,7 +84,7 @@ Generated from the compiler's diagnostics registry (`crates/dsl/src/diag/codes.r
 | [E3704](#e3704) | Interactive Node Without Role Or Name | warning | view |
 | [E3705](#e3705) | Concatenated Localizable Text | warning | view |
 | [E3706](#e3706) | Message Catalog Mismatch | error | view |
-| [E3707](#e3707) | Invalid VirtualList Item Template (reserved) | error | view |
+| [E3707](#e3707) | Invalid VirtualList Item Template | error | view |
 | [E3708](#e3708) | Interactive Node Without Keyboard Path | warning | view |
 | [E3709](#e3709) | Property Not Yet Supported By Runtime (reserved) | error | view |
 | [E3710](#e3710) | Invalid Styleable Or Selector Member | error | view |
@@ -1946,7 +1946,7 @@ See also: `viso check`
 
 ## E3707
 
-**Invalid VirtualList Item Template** — error, view, reserved: specified, not raised yet
+**Invalid VirtualList Item Template** — error, view
 
 A `VirtualList` mounts only the items inside its viewport and overscan, so its body is an item template rather than ordinary children. The body must contain exactly one keyed `for`, which the compiler lowers to the virtualized template. A `for` without `key`, several `for`s, or any other child node in the body is rejected.
 

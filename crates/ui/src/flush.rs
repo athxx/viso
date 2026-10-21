@@ -25,6 +25,7 @@ use crate::node::NodeId;
 use crate::reactive::{ComputedStore, EffectStore, SemanticProjector};
 use crate::state::{StateId, StateStore};
 use crate::structure::run_structure_hooks;
+use crate::virtual_list::VirtualLists;
 
 /// How many rounds one frame's flush runs before it stops as a reactive cycle.
 pub const SETTLE_ROUNDS: u32 = 16;
@@ -99,6 +100,7 @@ impl std::fmt::Display for ReactiveCycle {
 ///
 /// A [`ReactiveCycle`] when round [`SETTLE_ROUNDS`] still leaves writes
 /// pending; they are dropped.
+#[allow(clippy::too_many_arguments)]
 pub fn settle_states(
     store: &mut NodeStore,
     states: &mut StateStore,
@@ -106,6 +108,7 @@ pub fn settle_states(
     computeds: &mut ComputedStore,
     projectors: &mut SemanticProjector,
     effects: &mut EffectStore,
+    lists: &mut VirtualLists,
     changed: &mut Vec<StateId>,
 ) -> Result<u32, ReactiveCycle> {
     let mut rounds = 0;
@@ -126,7 +129,7 @@ pub fn settle_states(
         rounds += 1;
         computeds.wake_computed(changed, states, store);
         store.flush_state_transactions(changed, bindings);
-        run_structure_hooks(store, states, bindings, effects, changed);
+        run_structure_hooks(store, states, bindings, effects, lists, changed);
         projectors.wake(changed, states, store);
         // The effects the commit mounted queue first, then those it woke;
         // they run after the frame presents (`run_effects`).
@@ -248,6 +251,7 @@ pub fn settle_adaptive(
     computeds: &mut ComputedStore,
     projectors: &mut SemanticProjector,
     effects: &mut EffectStore,
+    lists: &mut VirtualLists,
     changed: &mut Vec<StateId>,
     mut laid_out: bool,
     mut relayout: impl FnMut(&mut NodeStore) -> bool,
@@ -269,7 +273,7 @@ pub fn settle_adaptive(
         rounds += 1;
         if moved {
             settle_states(
-                store, states, bindings, computeds, projectors, effects, changed,
+                store, states, bindings, computeds, projectors, effects, lists, changed,
             )
             .map_err(Unsettled::Reactive)?;
         }
@@ -309,6 +313,7 @@ mod tests {
                 &mut self.computeds,
                 &mut self.projectors,
                 &mut self.effects,
+                &mut crate::virtual_list::VirtualLists::new(),
                 &mut self.changed,
             )
         }
@@ -552,6 +557,7 @@ mod tests {
                 &mut stores.computeds,
                 &mut stores.projectors,
                 &mut stores.effects,
+                &mut crate::virtual_list::VirtualLists::new(),
                 &mut stores.changed,
                 measured + laid_out > 0,
                 |store| {

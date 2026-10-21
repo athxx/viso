@@ -33,7 +33,7 @@ pub use binding_ir::{
 pub use dirty_map::{DirtyClass, property_dirty_class};
 pub use keys::{KEYLESS_STATEFUL_FOR, KeyIr, KeyedFor, analyze_keys};
 pub use ui_ir::{
-    Align, Avoid, AxisIr, Justify, LengthIr, LengthsIr, NodeKind, PendingProperty, ScopeIr,
+    Align, Avoid, AxisIr, Justify, LengthIr, LengthsIr, ListIr, NodeKind, PendingProperty, ScopeIr,
     StyleIr, TermsIr, UiFor, UiHandler, UiIf, UiIfArm, UiInstance, UiItem, UiLook, UiLookArm,
     UiMatch, UiMatchArm, UiNode, UiStyled, UiTree, UiWhen,
 };
@@ -1587,6 +1587,24 @@ fn fold_static(
                     true
                 }
                 None => false,
+            })
+        }
+        "estimated_extent" if kind == NodeKind::VirtualList => {
+            folded(match length::fold_terms(value, consts) {
+                Some(estimate) if estimate.pct == 0.0 => {
+                    style.list.get_or_insert_with(ListIr::default).estimate = estimate;
+                    true
+                }
+                _ => false,
+            })
+        }
+        "overscan" if kind == NodeKind::VirtualList => {
+            folded(match length::fold_number(value, consts) {
+                Some(n) if n >= 0.0 && n.fract() == 0.0 && n <= 1024.0 => {
+                    style.list.get_or_insert_with(ListIr::default).overscan = n as u32;
+                    true
+                }
+                _ => false,
             })
         }
         _ if kind == NodeKind::Grid => fold_grid(name, value, consts, style),

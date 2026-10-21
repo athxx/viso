@@ -17,6 +17,7 @@ use crate::binding::BindingTable;
 use crate::component::NodeStore;
 use crate::reactive::EffectStore;
 use crate::state::{StateId, StateStore, StateValue};
+use crate::virtual_list::VirtualLists;
 
 /// The stores a structure hook edits.
 pub struct StructureCx<'a> {
@@ -28,6 +29,8 @@ pub struct StructureCx<'a> {
     pub bindings: &'a mut BindingTable,
     /// The effects a freed node cancels.
     pub effects: &'a mut EffectStore,
+    /// The virtual lists a hook mounts, scrolls and frees.
+    pub lists: &'a mut VirtualLists,
 }
 
 /// A structure hook's body, called with the frame's changed cells.
@@ -147,6 +150,7 @@ pub fn run_structure_hooks(
     states: &mut StateStore,
     bindings: &mut BindingTable,
     effects: &mut EffectStore,
+    lists: &mut VirtualLists,
     changed: &[StateId],
 ) -> u32 {
     if changed.is_empty() || store.structure_hooks().hooks.is_empty() {
@@ -170,6 +174,7 @@ pub fn run_structure_hooks(
             states: &mut *states,
             bindings: &mut *bindings,
             effects: &mut *effects,
+            lists: &mut *lists,
         };
         (hook.run)(&mut cx, changed);
         ran += 1;
@@ -205,6 +210,7 @@ mod tests {
                 &mut states,
                 &mut bindings,
                 &mut effects,
+                &mut crate::virtual_list::VirtualLists::new(),
                 changed,
             )
         };
@@ -230,6 +236,7 @@ mod tests {
             &mut states,
             &mut bindings,
             &mut effects,
+            &mut crate::virtual_list::VirtualLists::new(),
             &[read],
         );
         assert_eq!(ran, 1);

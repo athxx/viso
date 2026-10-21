@@ -18,6 +18,8 @@
 //! - a keyed `for` re-evaluates its items and their keys, keeps the nodes of
 //!   every key still present, moves them into the new order, mounts the new
 //!   keys and frees the removed ones;
+//! - the `for` of a `VirtualList` re-evaluates its items and keys the same
+//!   way but mounts only the rows its list shows ([`rows`]);
 //! - a region whose cells did not change keeps its content and only visits the
 //!   regions nested in it.
 //!
@@ -36,9 +38,11 @@
 //! A region entry that faults, a value a region cannot mount, and a repeated
 //! key keep the region's current content and record the fault on the host.
 
+mod rows;
+
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use viso_behavior::{Fault, FaultKind, Text, Value};
 use viso_ende::{Decode, DecodeError, Decoder, Encoder};
@@ -55,6 +59,9 @@ use crate::host::ViewHost;
 use crate::nodes::NamedNodes;
 use crate::scope::{LocalEnv, Locals, Scope};
 use crate::values::{Shown, control_cells};
+
+use rows::Rows;
+pub(crate) use rows::key_hash;
 
 pub use viso_schema::view::regions::{
     ArmTemplate, CLOSED, CellRef, EffectTemplate, EnvTemplate, GroupTemplate, HALF_OPEN,
@@ -171,19 +178,21 @@ pub fn mount_regions(
     let names = (0..regions.regions.len() as u32)
         .map(|region| names_nodes(&regions, region, 0))
         .collect();
-    let mounted = Mounted {
-        templates,
-        regions,
-        cells: resolved,
-        env,
-        pulse,
-        trim,
-        host: Rc::clone(host),
-        groups,
-        scratch: Vec::new(),
-        names,
-    };
-    let mounted = Rc::new(RefCell::new(mounted));
+    let mounted = Rc::new_cyclic(|me| {
+        RefCell::new(Mounted {
+            me: me.clone(),
+            templates,
+            regions,
+            cells: resolved,
+            env,
+            pulse,
+            trim,
+            host: Rc::clone(host),
+            groups,
+            scratch: Vec::new(),
+            names,
+        })
+    });
     mounted.borrow_mut().patch(cx, &[]);
     let kept = Rc::clone(&mounted);
     let hook = cx.store.add_structure_hook(deps, move |cx, changed| {
@@ -355,6 +364,8 @@ enum Content {
     },
     /// A `for`: its items in order.
     List(Vec<Item>),
+    /// The `for` of a `VirtualList`: the rows its list mounts.
+    Rows(Box<Rows>),
 }
 
 /// A `preserve` arm switched away: its detached nodes, the focus they took
@@ -397,6 +408,7 @@ impl Mount {
     fn new(region: u32, template: &RegionTemplate) -> Mount {
         let content = match template.kind {
             RegionKind::For { .. } => Content::List(Vec::new()),
+            RegionKind::Virtual { .. } => Content::Rows(Box::new(Rows::new(region))),
             RegionKind::If { .. } | RegionKind::Match { .. } => Content::Arms {
                 subject: Value::Nil,
                 active: None,
@@ -416,6 +428,9 @@ impl Mount {
         match &self.content {
             Content::Arms { live, .. } => live.as_ref().and_then(|frag| first_of(&frag.roots)),
             Content::List(items) => items.iter().find_map(|item| first_of(&item.frag.roots)),
+            // The rows sit on the list's canvas, not among the viewport's
+            // children the slots order.
+            Content::Rows(_) => None,
         }
     }
 }
@@ -429,6 +444,9 @@ fn first_of(slots: &[Slot]) -> Option<NodeId> {
 
 /// A view's mounted regions, owned by its structure hook.
 pub(crate) struct Mounted {
+    /// Itself, for the lists its `VirtualList` regions attach to build their
+    /// rows through.
+    me: Weak<RefCell<Mounted>>,
     regions: Rc<ViewRegions>,
     /// Each arm's template, by region: every mount of an arm (each item of a
     /// `for`) that binds the same way shares its edges (§18.1).
@@ -481,6 +499,7 @@ impl Mounted {
 
     fn patch(&mut self, cx: &mut StructureCx<'_>, changed: &[StateId]) {
         let Mounted {
+            me,
             regions,
             templates,
             cells,
@@ -494,6 +513,7 @@ impl Mounted {
         } = self;
         let mut patch = Patch {
             cx,
+            me,
             regions,
             templates,
             cells,
@@ -524,6 +544,7 @@ impl Mounted {
 /// One walk over a view's regions.
 struct Patch<'p, 'c> {
     cx: &'p mut StructureCx<'c>,
+    me: &'p Weak<RefCell<Mounted>>,
     regions: &'p ViewRegions,
     templates: &'p mut [Vec<Template>],
     cells: &'p [Option<StateId>],
@@ -674,6 +695,23 @@ impl Patch<'_, '_> {
                         anchor = Some(first);
                     }
                 }
+            }
+            (
+                RegionKind::Virtual {
+                    items,
+                    key,
+                    estimate,
+                    overscan,
+                },
+                Content::Rows(rows),
+            ) => {
+                let list = rows::ListEntries {
+                    items,
+                    key,
+                    estimate,
+                    overscan,
+                };
+                self.rows(rows, list, scope, parent, touched, force);
             }
             _ => {}
         }
@@ -973,7 +1011,7 @@ impl Patch<'_, '_> {
         let own = self.keep(template, scope, extra, &built);
         let region_names = matches!(
             regions.regions[region as usize].kind,
-            RegionKind::For { .. }
+            RegionKind::For { .. } | RegionKind::Virtual { .. }
         ) && self.names[region as usize];
         let named = region_names.then(|| Rc::new(NamedNodes::default()));
         let frag_scope = frag_scope(scope, extra, own.as_ref(), named.as_ref());
@@ -1172,6 +1210,7 @@ impl Patch<'_, '_> {
                             self.detach_slots(&item.frag.roots);
                         }
                     }
+                    Content::Rows(_) => {}
                 },
             }
         }
@@ -1225,6 +1264,12 @@ impl Patch<'_, '_> {
                         self.evict_frag(&mut item.frag, survives);
                     }
                 }
+                Content::Rows(rows) => {
+                    let set = rows.shared();
+                    for row in set.borrow_mut().rows.iter_mut() {
+                        self.evict_frag(&mut row.frag, survives);
+                    }
+                }
             }
         }
     }
@@ -1239,39 +1284,52 @@ impl Patch<'_, '_> {
     /// Frees `frag`'s nodes and instance states, and those its nested regions
     /// keep.
     fn free(&mut self, frag: Frag) {
+        self.drop_frag(frag, true);
+    }
+
+    /// Frees the instance states `frag` and its nested regions keep, its nodes
+    /// already freed with the list row that held them.
+    fn release(&mut self, frag: Frag) {
+        self.drop_frag(frag, false);
+    }
+
+    fn drop_frag(&mut self, frag: Frag, nodes: bool) {
         self.freed = true;
         if let Some(own) = &frag.own {
             own.release(self.cx.states);
         }
         for slot in frag.roots {
-            self.free_slot(slot);
+            self.drop_slot(slot, nodes);
         }
         for group in frag.groups {
             for slot in group.slots {
-                self.free_slot(slot);
+                self.drop_slot(slot, nodes);
             }
         }
     }
 
-    fn free_slot(&mut self, slot: Slot) {
+    fn drop_slot(&mut self, slot: Slot, nodes: bool) {
         match slot {
             Slot::Node(id) => {
-                self.cx
-                    .store
-                    .free_tree(id, &mut *self.cx.effects, &mut *self.scratch);
+                if nodes {
+                    self.cx
+                        .store
+                        .free_tree(id, &mut *self.cx.effects, &mut *self.scratch);
+                }
             }
             Slot::Region(mount) => match mount.content {
                 Content::Arms { live, kept, .. } => {
                     let kept = kept.into_iter().flatten().map(|kept| kept.frag);
                     for frag in live.into_iter().chain(kept) {
-                        self.free(*frag);
+                        self.drop_frag(*frag, nodes);
                     }
                 }
                 Content::List(items) => {
                     for item in items {
-                        self.free(item.frag);
+                        self.drop_frag(item.frag, nodes);
                     }
                 }
+                Content::Rows(rows) => self.drop_rows(*rows),
             },
         }
     }
@@ -1312,6 +1370,11 @@ fn kept_stamps(slots: &[Slot], out: &mut Vec<u64>) {
             Content::List(items) => {
                 for item in items {
                     frag_stamps(&item.frag, out);
+                }
+            }
+            Content::Rows(rows) => {
+                for row in &rows.shared().borrow().rows {
+                    frag_stamps(&row.frag, out);
                 }
             }
         }
@@ -1396,6 +1459,13 @@ fn census_mount(
             for item in items {
                 path.push(ItemKey(item.key.clone()));
                 census_frag(regions, &item.frag, store, path, out);
+                path.pop();
+            }
+        }
+        Content::Rows(rows) => {
+            for row in &rows.shared().borrow().rows {
+                path.push(ItemKey(row.key.clone()));
+                census_frag(regions, &row.frag, store, path, out);
                 path.pop();
             }
         }

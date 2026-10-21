@@ -413,7 +413,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             (NodeKind::Grid, _) => "vx-grid",
             (NodeKind::Stack, _) => "vx-stack",
             (NodeKind::Absolute, _) => "vx-absolute",
-            (NodeKind::Scroll, _) => "vx-scroll",
+            (NodeKind::Scroll | NodeKind::VirtualList, _) => "vx-scroll",
             (_, "Text") => "vx-text",
             (_, "Button") => "vx-button",
             (_, "TextInput") => "vx-input",
@@ -423,6 +423,12 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             (_, "Image" | "Svg") => "vx-image",
             _ => "vx-leaf",
         };
+        if node.kind == NodeKind::VirtualList {
+            el.classes.push("vx-list".to_owned());
+            if node.style.axis == Some(AxisIr::Row) {
+                el.classes.push("vx-across".to_owned());
+            }
+        }
         match node.type_name.as_str() {
             "Button" => el.attr("type", "button"),
             "TextInput" => el.attr("type", "text"),
@@ -564,7 +570,9 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             NodeKind::Grid => Some(Parent::Grid),
             NodeKind::Stack => Some(Parent::Stack(node.style.content_align.unwrap_or_default())),
             NodeKind::Absolute => Some(Parent::Absolute),
-            NodeKind::Scroll => Some(Parent::Scroll(node.style.axis.unwrap_or(AxisIr::Column))),
+            NodeKind::Scroll | NodeKind::VirtualList => {
+                Some(Parent::Scroll(node.style.axis.unwrap_or(AxisIr::Column)))
+            }
             _ => None,
         };
         let item_role = match node.type_name.as_str() {
@@ -661,12 +669,20 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 padding(node, decls, device);
             }
             NodeKind::Grid | NodeKind::Stack | NodeKind::Absolute => padding(node, decls, device),
-            NodeKind::Scroll => {
+            NodeKind::Scroll | NodeKind::VirtualList => {
                 if style.axis == Some(AxisIr::Row) {
                     decls.push(("flex-direction", "row".into()));
                     decls.push(("overflow-y", "hidden".into()));
                 } else {
                     decls.push(("overflow-x", "hidden".into()));
+                }
+                // The page mounts every row; the browser skips laying out and
+                // painting those off screen, sizing each at the estimate until
+                // it has been shown.
+                if node.kind == NodeKind::VirtualList
+                    && let Some(list) = style.list
+                {
+                    decls.push(("--vx-row", css::terms(list.estimate, device)));
                 }
             }
             _ => {}

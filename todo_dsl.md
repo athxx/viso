@@ -469,7 +469,16 @@ Goal: every Core view construct reaches a live tree through all three lowering t
       mounted is skipped; each component instance of a `for` item reaches its
       own nodes; across the macros, hot reload, the release package (AOT
       included) and the HTML/Solid exports.
-- [ ] `NodeRef::scroll_to_key` / `scroll_to_index` on a `VirtualList` (U9.3).
+- [x] `VirtualList` item templates (U9): the one keyed `for` in its body
+      (`E3707` otherwise) mounts only the rows of its viewport and overscan, on
+      recycled hosts, across the macros, hot reload and the release package;
+      a change of the items keeps the rows whose key stays (their host, states
+      and focus) and re-delivers them; the HTML/Solid exports mount every row
+      with `content-visibility: auto` at the estimated extent.
+- [x] `NodeRef::scroll_to_key` / `scroll_to_index` on a `VirtualList` (U9.3):
+      the row goes to the start edge and its window mounts in the same frame.
+- [ ] `VirtualList`: `on visible_range_changed`, rows' `list_item` semantics
+      with the collection size and position, and a list among another's rows.
 - [x] `clip` clipping a node's children's paint and hit test to its box, rounded
       by its `corner_radius`: a `ClipCorners` marker after the clip layer sends
       the group offscreen and its composite is masked by a rounded box (Metal,

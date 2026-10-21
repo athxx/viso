@@ -237,7 +237,7 @@ export function Each(props) {
   const keys = createMemo(() => rows().keys);
   const render = props.children;
   return createMemo(
-    mapArray(keys, (_, i) => render(createMemo(() => rows().list[i()], undefined, { equals: $.eq }))),
+    mapArray(keys, (k, i) => mark(render(createMemo(() => rows().list[i()], undefined, { equals: $.eq })), k)),
   );
 }
 

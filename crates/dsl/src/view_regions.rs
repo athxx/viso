@@ -19,7 +19,7 @@ use viso_schema::view::{
     LocalTemplate, RegionKind, RegionTemplate, Route, SlotTemplate, StarterTemplate, ViewRegions,
 };
 
-use crate::aot::aot_node;
+use crate::aot::{aot_node, terms_of};
 use crate::behavior::ir::{ComponentLayout, FuncId, Inst, Program, Site};
 use crate::frontend::{Compiled, SourceKind};
 use crate::ir::binding_ir::NodeKey;
@@ -29,8 +29,7 @@ use crate::syntax::TextRange;
 use crate::view_behavior::MountError;
 
 /// Each node's static pre-order index, by [`NodeKey`]: `None` for a node a
-/// region mounts, or one under a node that authors no children (a leaf, a
-/// `VirtualList`).
+/// region mounts, or one under a node that authors no children (a leaf).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StaticNodes {
     ordinals: Vec<Option<u32>>,
@@ -211,29 +210,39 @@ pub fn has_regions(tree: &UiTree) -> bool {
 }
 
 /// The structural errors of `tree` no target mounts: a region at the root,
-/// and anything under a `VirtualList`, whose items are not mounted from a view
-/// yet.
+/// a `VirtualList` whose body is not its one keyed `for`, and a `VirtualList`
+/// among another's rows, which a row cannot register while its list builds
+/// it.
 pub fn structure_errors(tree: &UiTree) -> Vec<MountError> {
-    fn walk(item: &UiItem, errors: &mut Vec<MountError>) {
+    fn walk(item: &UiItem, rows: bool, errors: &mut Vec<MountError>) {
         match item {
             UiItem::Node(node) => {
-                if node.kind == NodeKind::VirtualList
-                    && let Some(child) = node.children.first()
-                {
-                    errors.push(MountError::new(
-                        Some(origin(child)),
-                        "a `VirtualList` does not mount content from a view yet",
-                    ));
-                    return;
+                let list = node.kind == NodeKind::VirtualList;
+                if list {
+                    if rows {
+                        errors.push(MountError::new(
+                            Some(node.origin),
+                            "a `VirtualList` among another `VirtualList`'s rows does not \
+                             mount yet",
+                        ));
+                        return;
+                    }
+                    if !matches!(node.children.as_slice(), [UiItem::For(f)] if f.key.is_some()) {
+                        errors.push(MountError::new(
+                            Some(node.origin),
+                            "a `VirtualList`'s body is exactly one keyed `for`, its item template",
+                        ));
+                        return;
+                    }
                 }
                 for child in &node.children {
-                    walk(child, errors);
+                    walk(child, rows || list, errors);
                 }
             }
             _ => {
                 for items in arms(item) {
                     for item in items {
-                        walk(item, errors);
+                        walk(item, rows, errors);
                     }
                 }
             }
@@ -247,7 +256,7 @@ pub fn structure_errors(tree: &UiTree) -> Vec<MountError> {
                 "a view's root must be a node, not a control-flow region",
             ));
         }
-        walk(item, &mut errors);
+        walk(item, false, &mut errors);
     }
     errors
 }
@@ -308,7 +317,7 @@ pub(crate) fn view_regions(
         ordinal: 0,
     };
     for item in &compiled.tree.items {
-        builder.item(item, None);
+        builder.item(item, None, None);
     }
     if builder.errors.is_empty() {
         Ok(builder.out)
@@ -343,10 +352,16 @@ struct Builder<'a> {
 
 impl Builder<'_> {
     /// Walks a static item; `slots` collects the children of the enclosing
-    /// static node when it has a region among them.
-    fn item(&mut self, item: &UiItem, slots: Option<&mut Vec<SlotTemplate>>) {
+    /// static node when it has a region among them, and `list` is that node
+    /// when it is a `VirtualList`.
+    fn item(
+        &mut self,
+        item: &UiItem,
+        slots: Option<&mut Vec<SlotTemplate>>,
+        list: Option<&UiNode>,
+    ) {
         let UiItem::Node(node) = item else {
-            let region = self.region(item);
+            let region = self.region(item, list);
             if let Some(slots) = slots {
                 slots.push(SlotTemplate::Region(region));
             }
@@ -364,13 +379,14 @@ impl Builder<'_> {
         }
         if node.children.iter().all(|c| matches!(c, UiItem::Node(_))) {
             for child in &node.children {
-                self.item(child, None);
+                self.item(child, None, None);
             }
             return;
         }
+        let list = (node.kind == NodeKind::VirtualList).then_some(&**node);
         let mut children = Vec::with_capacity(node.children.len());
         for child in &node.children {
-            self.item(child, Some(&mut children));
+            self.item(child, Some(&mut children), list);
         }
         self.out.groups.push(GroupTemplate {
             parent: ordinal,
@@ -396,8 +412,9 @@ impl Builder<'_> {
     }
 
     /// Lowers the region `item` and the regions nested in it, and returns its
-    /// index.
-    fn region(&mut self, item: &UiItem) -> u32 {
+    /// index; the `for` of the `VirtualList` `list` lowers to its item
+    /// template.
+    fn region(&mut self, item: &UiItem, list: Option<&UiNode>) -> u32 {
         let index = self.out.regions.len() as u32;
         let (kind, entries, preserves) = match item {
             UiItem::If(region) => {
@@ -426,11 +443,19 @@ impl Builder<'_> {
                 let key = region
                     .key
                     .map(|key| self.entry(region.instance, Some(key), region.origin));
-                (
-                    RegionKind::For { items, key },
-                    [items].into_iter().chain(key).collect(),
-                    vec![false],
-                )
+                let kind = match (list, key) {
+                    (Some(list), Some(key)) => {
+                        let shape = list.style.list.unwrap_or_default();
+                        RegionKind::Virtual {
+                            items,
+                            key,
+                            estimate: terms_of(shape.estimate),
+                            overscan: shape.overscan,
+                        }
+                    }
+                    _ => RegionKind::For { items, key },
+                };
+                (kind, [items].into_iter().chain(key).collect(), vec![false])
             }
             UiItem::Node(_) => unreachable!("a node is not a region"),
         };
@@ -450,6 +475,7 @@ impl Builder<'_> {
             for item in items {
                 self.content(
                     item,
+                    None,
                     &mut out,
                     &mut locals,
                     &mut env,
@@ -477,9 +503,11 @@ impl Builder<'_> {
     /// appears there, into `env` the `env` fields they read, anchored at the
     /// instance's root, into `effects` their effects, mounted on it, and into
     /// `starters` those that start tasks, owned by it.
+    #[allow(clippy::too_many_arguments)]
     fn content(
         &mut self,
         item: &UiItem,
+        list: Option<&UiNode>,
         out: &mut Vec<ItemTemplate>,
         locals: &mut Vec<LocalTemplate>,
         env: &mut Vec<EnvTemplate>,
@@ -487,7 +515,7 @@ impl Builder<'_> {
         starters: &mut Vec<StarterTemplate>,
     ) {
         let UiItem::Node(node) = item else {
-            let region = self.region(item);
+            let region = self.region(item, list);
             out.push(ItemTemplate::Region(region));
             return;
         };
@@ -577,8 +605,9 @@ impl Builder<'_> {
             self.skip(&node.children);
             return;
         }
+        let list = (node.kind == NodeKind::VirtualList).then_some(&**node);
         for child in &node.children {
-            self.content(child, out, locals, env, effects, starters);
+            self.content(child, list, out, locals, env, effects, starters);
         }
         if let ItemTemplate::Node { node: template, .. } = &mut out[at] {
             template.child_count = node.children.len() as u32;
@@ -665,10 +694,10 @@ impl Builder<'_> {
     }
 }
 
-/// Whether a target authors `node`'s children: a container does, except a
-/// `VirtualList`, which mounts its items itself.
+/// Whether a target authors `node`'s children: a container does, a
+/// `VirtualList` through its item template.
 fn authors_children(node: &UiNode) -> bool {
-    node.kind.is_container() && node.kind != NodeKind::VirtualList
+    node.kind.is_container()
 }
 
 /// The item lists of a region's arms (a `for` has one, its body); none for a

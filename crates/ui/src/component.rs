@@ -2075,6 +2075,34 @@ impl NodeStore {
         self.mark_dirty(id, DirtyClass::TRANSFORM);
     }
 
+    /// Scroll a viewport `distance` from its start along `axis` (leftward on a
+    /// row read right to left), unclamped: the virtual-list reconcile seeks a
+    /// row on a canvas whose extent it has just set, before the layout that
+    /// measures it. Marks `TRANSFORM` like [`set_scroll`](Self::set_scroll).
+    pub(crate) fn seek_scroll(&mut self, id: NodeId, axis: Axis, distance: f32) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        let i = id.index() as usize;
+        let along = if axis == Axis::Row
+            && self.direction_at(id.index()) == crate::adaptive::LayoutDirection::Rtl
+        {
+            -distance
+        } else {
+            distance
+        };
+        let mut next = self.scroll[i];
+        match axis {
+            Axis::Row => next.x = along,
+            Axis::Column => next.y = along,
+        }
+        if next == self.scroll[i] {
+            return;
+        }
+        self.scroll[i] = next;
+        self.mark_dirty(id, DirtyClass::TRANSFORM);
+    }
+
     /// Restore a scroll viewport's offset once the next layout has measured its
     /// content: a freshly built viewport has no scroll range yet, so the offset
     /// waits and is then applied through [`set_scroll`](Self::set_scroll),
@@ -3851,7 +3879,7 @@ impl NodeStore {
     /// ordinary node the scope records; a reused slot is overwritten in place,
     /// and a fresh one extends every column by one, after growing them
     /// together when they are full.
-    fn alloc(&mut self, input: LayoutInput, style: BoxStyle) -> NodeId {
+    pub(crate) fn alloc(&mut self, input: LayoutInput, style: BoxStyle) -> NodeId {
         let (id, owner) = match self.scopes.last_mut() {
             Some(scope) => match scope.next {
                 Some(next) if next < scope.end => {
@@ -5376,47 +5404,22 @@ impl<'a> BuildCx<'a> {
             style.style,
         );
 
-        // The canvas is the viewport's single content child: fixed on the main
-        // axis at the full estimated collection extent (so the scroll range is
-        // correct), fixed at zero on the cross axis (a pure MEASURE boundary
-        // marker — the real cross extent comes from the viewport at layout time).
-        let total = style.estimated_row * item_count as f32;
-        let canvas_size = match style.axis {
-            Axis::Column => Size {
-                width: Length::Fixed(0.0),
-                height: Length::Fixed(total),
-            },
-            Axis::Row => Size {
-                width: Length::Fixed(total),
-                height: Length::Fixed(0.0),
-            },
-        };
-        let canvas = self.store.alloc(
-            LayoutInput::AbsoluteRows {
-                axis: style.axis,
-                size: canvas_size,
-            },
-            BoxStyle::NONE,
-        );
-        self.store.arena.append_child(viewport, canvas);
-
-        // Register the per-list state with the driver-owned registry, keyed by the
-        // viewport index. `dirty_data` starts set, so the first reconcile mounts.
         let lists = self
             .lists
             .as_mut()
             .expect("virtual_list() requires a with_reactive BuildCx");
-        lists.register(
+        crate::virtual_list::attach_list(
+            self.store,
+            lists,
             viewport,
-            Box::new(crate::virtual_list::VirtualListState::new(
-                item_count,
-                style.estimated_row,
-                style.overscan as usize,
-                style.axis,
-                canvas,
-                item,
-                key_of,
-            )),
+            crate::virtual_list::ListShape {
+                axis: style.axis,
+                estimated_row: style.estimated_row,
+                overscan: style.overscan as usize,
+            },
+            item_count,
+            item,
+            key_of,
         );
 
         Handle { id: viewport }
@@ -5737,7 +5740,9 @@ impl<'a> BuildCx<'a> {
 
     /// Runs `f` over this build's stores as a [`StructureCx`], for a view that
     /// mounts its control-flow regions under the nodes it just built. A mount
-    /// frees nothing, so the context's effect store is a fresh empty one.
+    /// frees nothing, so the context's effect store is a fresh empty one; a
+    /// build without the virtual-list registry (a list row's body) lends an
+    /// empty one too, so a list it mounts is not registered.
     /// Requires a [`BuildCx::with_reactive`] cx (see [`BuildCx::state`]).
     ///
     /// [`StructureCx`]: crate::structure::StructureCx
@@ -5746,6 +5751,7 @@ impl<'a> BuildCx<'a> {
         f: impl FnOnce(&mut crate::structure::StructureCx<'_>) -> R,
     ) -> R {
         let mut effects = crate::reactive::EffectStore::default();
+        let mut spare = crate::virtual_list::VirtualLists::new();
         let mut cx = crate::structure::StructureCx {
             store: &mut *self.store,
             states: self
@@ -5757,8 +5763,18 @@ impl<'a> BuildCx<'a> {
                 .as_deref_mut()
                 .expect("structure() requires a with_reactive BuildCx"),
             effects: &mut effects,
+            lists: match self.lists.as_deref_mut() {
+                Some(lists) => lists,
+                None => &mut spare,
+            },
         };
         f(&mut cx)
+    }
+
+    /// The node the next declared child attaches under, `None` before the
+    /// first node of a root build.
+    pub fn parent(&self) -> Option<NodeId> {
+        self.stack.last().copied()
     }
 
     /// Give `node` an interaction-state box selection: record the resting /

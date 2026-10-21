@@ -2692,6 +2692,7 @@ mod tests {
             &mut ws.computeds,
             &mut ws.projectors,
             &mut ws.effects,
+            &mut ws.virtual_lists,
             &mut ws.changed,
         )
         .expect("the writes settle");

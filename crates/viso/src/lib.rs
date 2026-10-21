@@ -1512,6 +1512,7 @@ impl WindowState {
             &mut self.computeds,
             &mut self.projectors,
             &mut self.effects,
+            &mut self.virtual_lists,
             &mut self.changed,
             measured + laid_out > 0,
             |store| {
@@ -2702,6 +2703,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         &mut ws.computeds,
                         &mut ws.projectors,
                         &mut ws.effects,
+                        &mut ws.virtual_lists,
                         &mut ws.changed,
                     ) {
                         eprintln!("[viso] {cycle}");

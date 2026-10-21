@@ -288,11 +288,12 @@ use std::collections::VecDeque;
 use crate::binding::{BindingTable, Template};
 use crate::component::{BuildCx, NodeStore};
 use crate::dirty::DirtyClass;
-use crate::layout::Axis;
 use crate::layout::OnAxis;
+use crate::layout::{Axis, LayoutInput, Length, Size};
 use crate::node::NodeId;
 use crate::reactive::EffectStore;
 use crate::state::StateStore;
+use crate::style::BoxStyle;
 
 /// Builds the body of one list item under a host node. Called only when a row is
 /// mounted or re-bound (a cold path — a steady scroll never invokes it), so it is
@@ -400,6 +401,8 @@ pub struct VirtualListState {
     /// Whether an initial mount has happened yet (the build mounts no rows; the
     /// first reconcile against the real viewport size does).
     mounted_once: bool,
+    /// The row the next reconcile scrolls to the start edge, mounted or not.
+    reveal: Option<usize>,
     /// Reused scratch: hosts freed from the tree during `free_subtree`.
     scratch_free: Vec<NodeId>,
     /// Reused scratch: the newly-mounted hosts this reconcile, swept for their
@@ -459,6 +462,7 @@ impl VirtualListState {
             committed_extent: estimated_row * item_count as f32,
             dirty_data: true,
             mounted_once: false,
+            reveal: None,
             scratch_free: Vec::new(),
             scratch_mounted: Vec::new(),
             new_keys: Vec::new(),
@@ -706,6 +710,35 @@ impl VirtualListState {
     pub fn mark_data_dirty(&mut self) {
         self.dirty_data = true;
     }
+
+    /// The logical item count.
+    #[inline]
+    pub fn item_count(&self) -> usize {
+        self.item_count
+    }
+
+    /// Scroll row `index` (clamped to the last row) to the viewport's start
+    /// edge, or as near as the end of the list allows, at the next reconcile —
+    /// which then mounts the window around it in the same frame, whether or not
+    /// it was mounted before.
+    pub fn scroll_to_index(&mut self, index: usize) {
+        self.reveal = Some(index.min(self.item_count.saturating_sub(1)));
+        self.dirty_data = true;
+    }
+
+    /// The logical index of the row keyed `key`, by a scan of the keys: cold,
+    /// for a programmatic seek.
+    pub fn index_of(&self, key: ItemKey) -> Option<usize> {
+        (0..self.item_count).find(|&i| self.key_at(i) == key)
+    }
+
+    /// Free the parked hosts, which sit outside the tree: as the list itself is
+    /// dropped.
+    fn free_pool(&mut self, store: &mut NodeStore, effects: &mut EffectStore) {
+        for host in self.pool.drain(..) {
+            store.free_tree(host, effects, &mut self.scratch_free);
+        }
+    }
 }
 
 /// The driver-owned registry of virtual lists, indexed by the list viewport's
@@ -716,9 +749,10 @@ impl VirtualListState {
 /// owned beside the store rather than woven into it.
 #[derive(Default)]
 pub struct VirtualLists {
-    /// `lists[viewport_index]` is the state for the list whose viewport is that
-    /// node, or `None` for a non-list node (the common case).
-    lists: Vec<Option<Box<VirtualListState>>>,
+    /// `lists[viewport_index]` is the list whose viewport is that node, with
+    /// the viewport's generation-checked id, or `None` for a non-list node (the
+    /// common case).
+    lists: Vec<Option<(NodeId, Box<VirtualListState>)>>,
 }
 
 impl VirtualLists {
@@ -734,29 +768,51 @@ impl VirtualLists {
     }
 
     /// Register `state` for the list viewport `viewport`, growing the dense index
-    /// as needed. Replaces any prior registration at that slot.
-    pub fn register(&mut self, viewport: NodeId, state: Box<VirtualListState>) {
+    /// as needed. Returns the registration it replaces at that slot.
+    pub fn register(
+        &mut self,
+        viewport: NodeId,
+        state: Box<VirtualListState>,
+    ) -> Option<Box<VirtualListState>> {
         let i = viewport.index() as usize;
         if i >= self.lists.len() {
             self.lists.resize_with(i + 1, || None);
         }
-        self.lists[i] = Some(state);
+        self.lists[i]
+            .replace((viewport, state))
+            .map(|(_, prior)| prior)
+    }
+
+    /// Drop the list of `viewport`, freeing the hosts it keeps parked outside
+    /// the tree; the viewport's own subtree (the canvas and its mounted rows)
+    /// is the caller's.
+    pub fn remove(&mut self, viewport: NodeId, store: &mut NodeStore, effects: &mut EffectStore) {
+        let Some(slot) = self.lists.get_mut(viewport.index() as usize) else {
+            return;
+        };
+        if slot.as_ref().is_some_and(|(id, _)| *id == viewport)
+            && let Some((_, mut state)) = slot.take()
+        {
+            state.free_pool(store, effects);
+        }
     }
 
     /// The list state registered for `viewport`, if any.
     #[inline]
     pub fn get(&self, viewport: NodeId) -> Option<&VirtualListState> {
-        self.lists
-            .get(viewport.index() as usize)
-            .and_then(|s| s.as_deref())
+        match self.lists.get(viewport.index() as usize)? {
+            Some((id, state)) if *id == viewport => Some(state),
+            _ => None,
+        }
     }
 
     /// Mutable access to the list state registered for `viewport`, if any.
     #[inline]
     pub fn get_mut(&mut self, viewport: NodeId) -> Option<&mut VirtualListState> {
-        self.lists
-            .get_mut(viewport.index() as usize)
-            .and_then(|s| s.as_deref_mut())
+        match self.lists.get_mut(viewport.index() as usize)? {
+            Some((id, state)) if *id == viewport => Some(state),
+            _ => None,
+        }
     }
 
     /// Whether any list is registered (lets a frame skip the reconcile entirely).
@@ -789,18 +845,20 @@ pub fn reconcile(
     effects: &mut EffectStore,
 ) -> u32 {
     let mut bound = 0;
-    // Walk the dense index; each occupied slot's viewport id is recoverable from
-    // the slot index paired with the arena's live generation.
+    // Walk the dense index; each occupied slot keeps its viewport's
+    // generation-checked id.
     for i in 0..lists.lists.len() {
-        if lists.lists[i].is_none() {
-            continue;
-        }
-        let Some(viewport) = store.arena().live_id(i as u32) else {
-            // The viewport was freed (whole-tree rebuild races the registry
-            // clear); drop the stale entry defensively.
-            lists.lists[i] = None;
+        let Some((viewport, _)) = lists.lists[i] else {
             continue;
         };
+        if !store.arena().is_live(viewport) {
+            // The viewport was freed with its tree: drop the list and the
+            // hosts it parked outside the tree.
+            if let Some((_, mut state)) = lists.lists[i].take() {
+                state.free_pool(store, effects);
+            }
+            continue;
+        }
         bound += reconcile_one(viewport, store, lists, states, bindings, effects);
     }
     bound
@@ -820,6 +878,12 @@ fn reconcile_one(
         return 0;
     };
     let axis = state.axis;
+    // A seek scrolls its row to the start edge, as near as the end of the list
+    // allows, on the extent the height model holds now.
+    if let Some(index) = state.reveal.take() {
+        let room = (state.heights.total() - store.bounds_main(viewport, axis)).max(0.0);
+        store.seek_scroll(viewport, axis, state.heights.prefix_sum(index).min(room));
+    }
     // How far the viewport is scrolled from its start: a row read right to
     // left takes negative offsets.
     let scroll_main = store.scroll(viewport).on(axis).abs();
@@ -904,7 +968,7 @@ fn park(store: &mut NodeStore, pool: &mut Vec<NodeId>, host: NodeId) {
 pub fn absorb_measurements(store: &NodeStore, lists: &mut VirtualLists) -> u32 {
     let mut changed = 0;
     for slot in &mut lists.lists {
-        let Some(state) = slot.as_deref_mut() else {
+        let Some((_, state)) = slot.as_mut() else {
             continue;
         };
         if state.scratch_mounted.is_empty() {
@@ -941,6 +1005,71 @@ pub fn absorb_measurements(store: &NodeStore, lists: &mut VirtualLists) -> u32 {
         }
     }
     changed
+}
+
+/// How a list lays out its rows: the axis it stacks them along, the extent a
+/// row not measured yet is estimated at, and the rows mounted past each end of
+/// the viewport.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ListShape {
+    pub axis: Axis,
+    pub estimated_row: f32,
+    pub overscan: usize,
+}
+
+/// Make the scroll node `viewport` a virtual list of `item_count` rows that
+/// `builder` authors, keyed by `key_of` (by index without): its single content
+/// child becomes a canvas sized to the whole estimated collection, so the
+/// scroll range spans every row while none is mounted yet; the first
+/// reconcile mounts the window. Returns the list it replaces on `viewport`,
+/// whose canvas the caller frees.
+///
+/// The canvas is fixed on **both** axes — at the collection's extent on the
+/// main axis, at zero across (the real cross extent comes from the viewport at
+/// layout) — which is load-bearing: it is the boundary where a row's `MEASURE`
+/// stops rising, so a row remount never relays out the ancestors above the
+/// list.
+pub fn attach_list(
+    store: &mut NodeStore,
+    lists: &mut VirtualLists,
+    viewport: NodeId,
+    shape: ListShape,
+    item_count: usize,
+    builder: ItemBuilder,
+    key_of: Option<KeyOf>,
+) -> Option<Box<VirtualListState>> {
+    let total = shape.estimated_row * item_count as f32;
+    let size = match shape.axis {
+        Axis::Column => Size {
+            width: Length::Fixed(0.0),
+            height: Length::Fixed(total),
+        },
+        Axis::Row => Size {
+            width: Length::Fixed(total),
+            height: Length::Fixed(0.0),
+        },
+    };
+    let canvas = store.alloc(
+        LayoutInput::AbsoluteRows {
+            axis: shape.axis,
+            size,
+        },
+        BoxStyle::NONE,
+    );
+    store.arena_append_child(viewport, canvas);
+    store.mark_dirty(viewport, DirtyClass::MEASURE | DirtyClass::LAYOUT);
+    lists.register(
+        viewport,
+        Box::new(VirtualListState::new(
+            item_count,
+            shape.estimated_row,
+            shape.overscan,
+            shape.axis,
+            canvas,
+            builder,
+            key_of,
+        )),
+    )
 }
 
 /// Grow or shrink a list's logical item count, resizing the height model and

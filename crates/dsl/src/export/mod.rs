@@ -322,6 +322,8 @@ body { font-family: var(--typography-family); font-size: var(--typography-base-s
 .vx-stack { display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr); }
 .vx-absolute { position: relative; }
 .vx-scroll { display: flex; flex-direction: column; align-items: stretch; overflow: auto; }
+.vx-list > * { content-visibility: auto; contain-intrinsic-block-size: auto var(--vx-row, 30px); }
+.vx-list.vx-across > * { contain-intrinsic-block-size: none; contain-intrinsic-inline-size: auto var(--vx-row, 30px); }
 .vx-text { white-space: pre; }
 .vx-button { font: inherit; color: inherit; background: none; border: 0; border-radius: 0; padding: 0; margin: 0; text-align: start; white-space: pre; cursor: pointer; }
 .vx-input { font: inherit; color: inherit; background: transparent; border: 0; padding: 0; margin: 0; }

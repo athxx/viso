@@ -10,6 +10,7 @@ use viso_dsl::frontend::Origin;
 use viso_dsl::hotreload::plan_view;
 use viso_dsl::ir::binding_ir::NodeKey;
 
+use viso_ui::virtual_list::VirtualLists;
 use viso_ui::{
     BindingTable, BuildCx, EffectStore, FieldSeed, LeafStyle, LiveRegion, NodeId, NodeStore, Role,
     SemanticState, StateStore, StateValue, StructureCx, run_structure_hooks,
@@ -98,6 +99,7 @@ fn values_reach_their_nodes_at_mount_and_again_only_when_changed() {
         states: &mut states,
         bindings: &mut bindings,
         effects: &mut effects,
+        lists: &mut VirtualLists::new(),
     };
     mount_values(&mut structure, &host, &nodes);
 
@@ -126,6 +128,7 @@ fn values_reach_their_nodes_at_mount_and_again_only_when_changed() {
         &mut states,
         &mut bindings,
         &mut effects,
+        &mut VirtualLists::new(),
         &changed,
     );
     assert_eq!(ran, 1);
@@ -142,6 +145,7 @@ fn values_reach_their_nodes_at_mount_and_again_only_when_changed() {
         &mut states,
         &mut bindings,
         &mut effects,
+        &mut VirtualLists::new(),
         &changed,
     );
     assert_eq!(ran, 0);
@@ -215,6 +219,7 @@ fn controls_project_their_value_and_range_into_semantic_state() {
         states: &mut states,
         bindings: &mut bindings,
         effects: &mut effects,
+        lists: &mut VirtualLists::new(),
     };
     mount_values(&mut structure, &host, &nodes);
 
@@ -236,6 +241,7 @@ fn controls_project_their_value_and_range_into_semantic_state() {
         &mut states,
         &mut bindings,
         &mut effects,
+        &mut VirtualLists::new(),
         &changed,
     );
     assert_eq!(state(&store, toggle), SemanticState::checked(false));
@@ -285,6 +291,7 @@ fn nodes_take_their_role_and_the_name_they_show() {
         states: &mut states,
         bindings: &mut bindings,
         effects: &mut effects,
+        lists: &mut VirtualLists::new(),
     };
     mount_values(&mut structure, &host, &nodes);
 
@@ -313,6 +320,7 @@ fn nodes_take_their_role_and_the_name_they_show() {
         &mut states,
         &mut bindings,
         &mut effects,
+        &mut VirtualLists::new(),
         &changed,
     );
     assert_eq!(named(&store, ids[1]), Some((Role::Label, "4".into())));
@@ -380,6 +388,7 @@ fn nodes_say_their_hint_value_live_setting_level_and_hiding() {
         states: &mut states,
         bindings: &mut bindings,
         effects: &mut effects,
+        lists: &mut VirtualLists::new(),
     };
     mount_values(&mut structure, &host, &nodes);
 
@@ -414,6 +423,7 @@ fn nodes_say_their_hint_value_live_setting_level_and_hiding() {
         &mut states,
         &mut bindings,
         &mut effects,
+        &mut VirtualLists::new(),
         &changed,
     );
     let detail = store.semantics(ids[1]).expect("the text says");

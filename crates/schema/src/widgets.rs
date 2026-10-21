@@ -441,5 +441,6 @@ pub const STANDARD: &[NativeWidget] = &[
         "VirtualList",
         WidgetNode::VirtualList,
         &[VIRTUAL_LIST, LAYOUT, TRANSFORM, FOCUS],
-    ),
+    )
+    .slots(CHILDREN),
 ];

@@ -1285,6 +1285,7 @@ fn mount_behavior(
             states: rt.states,
             bindings: rt.bindings,
             effects: rt.effects,
+            lists: rt.lists,
         };
         if !package.regions.is_empty() {
             mount_regions(

@@ -736,6 +736,13 @@ impl NodeStore {
         }
     }
 
+    /// The dp `terms` fold to at node `id`: its `px`, `sp` and `em` against
+    /// the environment and the node's font size, a percentage as nothing.
+    pub fn fold_extent(&self, id: NodeId, terms: LengthTerms) -> f32 {
+        let env = self.lengths().env;
+        terms.fixed(&env, self.font_of(id)).unwrap_or(0.0)
+    }
+
     /// Moves node `id` and its subtree by `x` and `y`, a `px`, `sp` or `em`
     /// term following the environment: over `timing` when given, from where
     /// it shows now, else at once, ending a move. TRANSFORM only, as any

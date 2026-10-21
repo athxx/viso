@@ -2283,7 +2283,7 @@ match user.state {
 - 区域读取的 State 变化时，Runtime 在该帧 State Flush 之后重新求值并只修改变化的区域；读取 String/List 等 UI State Cell 无法容纳的 State 时，由修订计数 Cell 触发；
 - 区域内 Node 的 Handler 以 Payload 加外层 `for`/`match` 绑定运行（§52）；
 - Region Entry 运行期 Fault 保留当前结构并记录在宿主上；
-- View 的根必须是 Node，根上的控制流区域报 `E3711`；`VirtualList` 尚不从 View 挂载内容，其子项报 `E3711`；
+- View 的根必须是 Node，根上的控制流区域报 `E3711`；`VirtualList` 的 Body 是其 Item Template（U9.1），另一 `VirtualList` 行内的 `VirtualList` 尚不挂载，报 `E3711`；
 - Hot Reload 中出现 `E3711` 时保留 Last-good 区域；含控制流区域的 View 在 Hot Reload 中整树重建，按名称保留 State。
 
 ---
@@ -4898,7 +4898,7 @@ Named Node `n` 在同一 Component 的 Action 与 Handler 中以 `n: NodeRef<T>`
 
 在 View、Computed 与 `fn` 中调用这些方法是 §83 纯度错误；方法返回 `()`，在视图结构落定后生效；对未挂载或已 Dispose 节点调用是 No-op。
 
-当前实现：`focus`、`blur`、`scroll_into_view`、`scroll_to`、`scroll_by` 在宏、热重载、Release Package（含 AOT）与 HTML/Solid 导出中生效（导出以 `data-node` 标记节点，从发起事件的元素就近查找）；`scroll_to_key`/`scroll_to_index` 与 `animate` 尚未实现，调用报 `E2001`。
+当前实现：`focus`、`blur`、`scroll_into_view`、`scroll_to`、`scroll_by`、`scroll_to_index`、`scroll_to_key` 在宏、热重载、Release Package（含 AOT）与 HTML/Solid 导出中生效（导出以 `data-node` 标记节点，从发起事件的元素就近查找）；`scroll_to_index`/`scroll_to_key` 把该行滚到视口起始边（列表末尾不足时尽量靠近），同一帧挂载其周围的窗口，越界 Index 取最后一行；`animate` 尚未实现，调用报 `E2001`。
 
 ---
 
@@ -4965,6 +4965,8 @@ Named Node `n` 在同一 Component 的 Action 与 Handler 中以 `n: NodeRef<T>`
 - **滚动**：只标记 `TRANSFORM|HIT_TEST|PAINT`；进入视口的新行按上述规则挂载或复用；
 - **命令式滚动**：`n.scroll_to_key(key)` 与 `n.scroll_to_index(i)` 可滚动到尚未挂载的行；未知 `key` 是 No-op；
 - **语义**：列表 Role 为 `list`，每行为 `list_item`，语义树报告集合总数与行位置。
+
+当前实现：`VirtualList` 的 Item Template 在宏、热重载与 Release Package（含 AOT）中挂载：列表节点是其 `axis` 上的 Scroll 视口，`for` 的 Items 与 Key 按普通 `for` 的规则求值（Key 经稳定哈希成为行身份），视口只挂载窗口与 Overscan 内的行；Items 变化时存活行按 Key 保留宿主、局部状态与焦点并以新 Item 重新投递，离开的行回收复用；`estimated_extent` 与 `overscan` 取常量（`em` 在挂载时按列表节点的字号折算）。HTML/Solid 导出挂载全部行，行带 `content-visibility: auto` 与按 `estimated_extent` 的固有尺寸，浏览器跳过屏幕外行的布局与绘制。`on visible_range_changed` 与行的 `list_item` 语义尚未实现；另一 `VirtualList` 行内的 `VirtualList` 报 `E3711`。
 
 ---
 
@@ -8814,7 +8816,7 @@ RecordPatternField
 | E3708  | 交互节点缺少等价键盘路径（警告，§U8.2）                 |
 | E3709  | 标注 [Runtime 待实现] 的 Property 使用了非默认值（§U1.1） |
 | E3710  | `@selector` 或 `@styleable` 误用（§U2.3）               |
-| E3711  | Handler、控制流区域或 Component 实例未能挂载：Runtime 未投递该 Event、Behavior 未能 Lower，区域位于 View 根或 `VirtualList` 内，或实例无法内联，或 `ui!` Fragment 中的 Rust Component 带 Property、Handler 或子项，或以 Component Input 为目标的 `bind` 带 `using`，或 `AdaptiveScope` 的 `basis` 不是常量、`SafeArea`/`KeyboardAvoiding` 带 `padding`，或 `padding` 写在非容器节点上，或 `Grid` 的 `areas`/`grid.area` 不是常量，或 Style 以读取值的绑定给出布局 Property，或 Style 应用于用户 Component 节点、来自其他文件、或以 `when` 切换 `background`/`opacity` 以外的 Property（§40.1、§59、§52、§56.1、§96.3、§96.6、§123） |
+| E3711  | Handler、控制流区域或 Component 实例未能挂载：Runtime 未投递该 Event、Behavior 未能 Lower，区域位于 View 根，或 `VirtualList` 位于另一 `VirtualList` 的行内，或实例无法内联，或 `ui!` Fragment 中的 Rust Component 带 Property、Handler 或子项，或以 Component Input 为目标的 `bind` 带 `using`，或 `AdaptiveScope` 的 `basis` 不是常量、`SafeArea`/`KeyboardAvoiding` 带 `padding`，或 `padding` 写在非容器节点上，或 `Grid` 的 `areas`/`grid.area` 不是常量，或 Style 以读取值的绑定给出布局 Property，或 Style 应用于用户 Component 节点、来自其他文件、或以 `when` 切换 `background`/`opacity` 以外的 Property（§40.1、§59、§52、§56.1、§96.3、§96.6、§123） |
 | E3712  | `@migrate` 误用：不标记 `fn`、`from` 缺失或不是类型拼写字符串、参数不是恰好一个 `from` 类型参数、未声明返回类型，或同一 `from` 与返回类型重复（§94.1） |
 | E3713  | 资源误用：`asset` 的参数不是恰好一个字符串字面量、路径越出 `assets/`、文件不存在或不是 PNG/JPEG/SVG、编译没有资源目录，或写出 `ImageAsset`/`SvgAsset` 的 Record 表达式（§U5.1） |
 | E4101  | 非 Task 主体（Action、Event、Effect 等）中使用 Await    |

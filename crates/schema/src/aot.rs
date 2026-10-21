@@ -560,7 +560,7 @@ fn terms_of(terms: &LengthTerms) -> [f32; 5] {
     [terms.dp, terms.px, terms.sp, terms.em, terms.pct]
 }
 
-fn encode_terms(terms: &LengthTerms, enc: &mut Encoder) {
+pub(crate) fn encode_terms(terms: &LengthTerms, enc: &mut Encoder) {
     let values = terms_of(terms);
     let mut mask = 0u8;
     for (bit, value) in values.iter().enumerate() {
@@ -576,7 +576,7 @@ fn encode_terms(terms: &LengthTerms, enc: &mut Encoder) {
     }
 }
 
-fn decode_terms(dec: &mut Decoder) -> Result<LengthTerms, DecodeError> {
+pub(crate) fn decode_terms(dec: &mut Decoder) -> Result<LengthTerms, DecodeError> {
     let offset = dec.position();
     let mask = dec.read_u8()?;
     if mask & !(TERMS_DP | TERMS_PX | TERMS_SP | TERMS_EM | TERMS_PCT) != 0 {

@@ -82,6 +82,7 @@ fn a_component_task_hands_its_value_back_at_a_frame_boundary() {
                 &mut computeds,
                 &mut projectors,
                 &mut effects,
+                &mut VirtualLists::new(),
                 &mut changed,
             )
             .expect("settles");
@@ -163,6 +164,7 @@ fn a_component_resource_loads_on_its_root() {
         &mut computeds,
         &mut projectors,
         &mut effects,
+        &mut VirtualLists::new(),
         &mut changed,
     )
     .expect("settles");

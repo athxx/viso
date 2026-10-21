@@ -320,8 +320,7 @@ pub fn build_aot_node(
         AotNodeKind::Absolute => cx.absolute(absolute_style(node), children),
         AotNodeKind::Scroll => cx.scroll(scroll_style(node), children),
         // A leaf hosts no child region; the view guarantees `child_count == 0`
-        // for a leaf (a `VirtualList` collapses to a leaf on the package side,
-        // exactly as the commit twin treats it).
+        // for a leaf.
         AotNodeKind::Leaf => cx.leaf(leaf_style(node)),
     };
     if let Some(rules) = node.rules() {

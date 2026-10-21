@@ -615,6 +615,9 @@ impl<'a> ViewWalk<'a> {
             if owner.is_outlet() {
                 self.outlet(body.as_ref(), at);
             }
+            if owner.component.is_none() && owner.schema.native().node == WidgetNode::VirtualList {
+                self.item_template(body.as_ref(), at);
+            }
             self.slots(owner, body.as_ref(), at);
         }
         let Some(body) = body else {
@@ -1092,6 +1095,43 @@ impl<'a> ViewWalk<'a> {
     /// A `SlotOutlet` whose type is at `at`: its `slot:` names a slot of the
     /// component whose view it is in, placed by no other outlet and not once per
     /// item of a `for`.
+    /// Checks that a `VirtualList`'s body (its type at `at`) is exactly one
+    /// keyed `for`, its item template (`E3707`).
+    fn item_template(&mut self, body: Option<&NodeBody>, at: TextRange) {
+        let mut template = None;
+        let mut others = Vec::new();
+        for member in body.into_iter().flat_map(|b| b.members()) {
+            match member {
+                ViewItem::Property(_) | ViewItem::Handler(_) | ViewItem::TwoWayBinding(_) => {}
+                ViewItem::For(view_for) if template.is_none() => template = Some(view_for),
+                other => others.push(other.syntax().text_range()),
+            }
+        }
+        for range in others {
+            self.diagnostics.push(Diagnostic::error(
+                "E3707",
+                range,
+                "a `VirtualList`'s body is its item template, one keyed `for`, and \
+                 nothing beside it",
+            ));
+        }
+        match template {
+            None => self.diagnostics.push(Diagnostic::error(
+                "E3707",
+                at,
+                "a `VirtualList` mounts the items of one keyed `for` in its body",
+            )),
+            Some(view_for) if view_for.key().is_none() => {
+                self.diagnostics.push(Diagnostic::error(
+                    "E3707",
+                    view_for.syntax().text_range(),
+                    "a `VirtualList`'s `for` keys its items: `for item in items key item.id`",
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+
     fn outlet(&mut self, body: Option<&NodeBody>, at: TextRange) {
         let value = body
             .into_iter()

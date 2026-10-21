@@ -39,8 +39,21 @@ const named = (key, from) => {
   }
   return document.querySelector(sel);
 };
+// The first element of each item a list mounts carries its key as `$key`.
+const row = (list, k) => {
+  if (!list) return null;
+  for (const c of list.children) if (c.$key === k) return c;
+  return null;
+};
+const rows = (list) => Array.from(list.children).filter((c) => c.$key !== undefined);
+const mark = (out, k) => {
+  const first = Array.isArray(out) ? out.find((n) => n instanceof Element) : out;
+  if (first instanceof Element) first.$key = k;
+  return out;
+};
 // Applies the requests a transaction made of named nodes, each
-// `[action, key, args]`: focus, blur, scroll into view, scroll to, scroll by.
+// `[action, key, args]`: focus, blur, scroll into view, scroll to, scroll by,
+// and a list's scroll to a row by index or key.
 const reach = (requests, from) => {
   if (!requests) return;
   for (const [action, key, args] of requests) {
@@ -53,6 +66,13 @@ const reach = (requests, from) => {
       case 2: el.scrollIntoView({ block: "nearest", inline: "nearest" }); break;
       case 3: { const [x, y] = at(args[0]); el.scrollTo(x, y); break; }
       case 4: { const [x, y] = at(args[0]); el.scrollBy(x, y); break; }
+      case 5: {
+        const all = rows(el);
+        const r = all[Math.max(0, Math.min(Number(args[0]), all.length - 1))];
+        if (r) r.scrollIntoView({ block: "start", inline: "start" });
+        break;
+      }
+      case 6: { const r = row(el, $.key(args[0])); if (r) r.scrollIntoView({ block: "start", inline: "start" }); break; }
     }
   }
 };

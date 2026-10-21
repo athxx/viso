@@ -264,6 +264,7 @@ fn mount<'a>(
         states,
         bindings,
         effects: &mut effects,
+        lists,
     };
     let regions = view.regions();
     let reaches = crate::nodes::reaches_nodes(view.named().len(), &regions);

@@ -188,6 +188,7 @@ impl Rt {
             &mut self.states,
             &mut self.bindings,
             &mut self.effects,
+            &mut self.lists,
             &changed,
         );
     }

@@ -187,6 +187,7 @@ impl Mounted {
             &mut self.states,
             &mut self.bindings,
             &mut self.effects,
+            &mut VirtualLists::new(),
             &changed,
         );
     }

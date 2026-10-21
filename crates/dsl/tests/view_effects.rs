@@ -188,6 +188,7 @@ impl Rt {
                 &mut self.computeds,
                 &mut self.projectors,
                 &mut self.effects,
+                &mut self.lists,
                 &mut changed,
             )?;
             frames += 1;

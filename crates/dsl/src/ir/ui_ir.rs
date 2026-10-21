@@ -472,6 +472,29 @@ pub struct StyleIr {
     /// The area a grid's child names by `grid.area`, until its grid resolves
     /// it to [`place`](Self::place).
     pub area: Option<Box<AreaRef>>,
+    /// A `VirtualList`'s constant row estimate and overscan, when either is
+    /// set.
+    pub list: Option<ListIr>,
+}
+
+/// How a `VirtualList` mounts its rows: the extent a row not measured yet is
+/// estimated at, and the rows mounted past each end of the viewport.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ListIr {
+    pub estimate: TermsIr,
+    pub overscan: u32,
+}
+
+impl Default for ListIr {
+    fn default() -> Self {
+        ListIr {
+            estimate: TermsIr {
+                dp: 30.0,
+                ..TermsIr::default()
+            },
+            overscan: 4,
+        }
+    }
 }
 
 /// A grid container's constant template, gaps and cell alignment. A field
@@ -533,6 +556,7 @@ impl StyleIr {
             && self.grid.is_none()
             && self.place.is_none()
             && self.area.is_none()
+            && self.list.is_none()
     }
 
     /// The lengths that fold against the environment, empty when there are none.

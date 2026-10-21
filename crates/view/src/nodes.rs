@@ -20,6 +20,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use viso_behavior::{NodeAction, NodeRequest, Value};
+use viso_ui::virtual_list::{ItemKey, VirtualLists};
 use viso_ui::{
     NodeId, NodeStore, ScrollRequest, StateId, StateStore, StateValue, StructureCx, Vec2,
     blur_node, focus_quietly,
@@ -27,6 +28,7 @@ use viso_ui::{
 
 use crate::host::{StateCells, ViewHost};
 use crate::layout_values::length;
+use crate::regions::key_hash;
 use crate::scope::Scope;
 
 /// The nodes a view, or one `for` item of it, reaches as a `NodeRef`: each
@@ -179,7 +181,7 @@ pub fn mount_nodes(
             if let Some(node) = view.named_node(request.node, &items)
                 && mounted(cx.store, node, view.root)
             {
-                apply(cx.store, node, &request);
+                apply(cx.store, cx.lists, node, &request);
             }
         }
     });
@@ -242,7 +244,7 @@ fn mounted(store: &NodeStore, node: NodeId, root: Option<NodeId>) -> bool {
 }
 
 /// Applies `request` to `node`.
-fn apply(store: &mut NodeStore, node: NodeId, request: &NodeRequest) {
+fn apply(store: &mut NodeStore, lists: &mut VirtualLists, node: NodeId, request: &NodeRequest) {
     match request.action {
         NodeAction::Focus => {
             focus_quietly(store, node);
@@ -260,6 +262,21 @@ fn apply(store: &mut NodeStore, node: NodeId, request: &NodeRequest) {
                 _ => ScrollRequest::By(offset),
             };
             store.request_scroll(node, request);
+        }
+        NodeAction::ScrollToIndex => {
+            if let Some(list) = lists.get_mut(node)
+                && let Some(index) = request.args.first().and_then(Value::as_int)
+            {
+                list.scroll_to_index(usize::try_from(index).unwrap_or(0));
+            }
+        }
+        NodeAction::ScrollToKey => {
+            if let Some(list) = lists.get_mut(node)
+                && let Some(hash) = request.args.first().and_then(key_hash)
+                && let Some(index) = list.index_of(ItemKey(hash))
+            {
+                list.scroll_to_index(index);
+            }
         }
     }
 }

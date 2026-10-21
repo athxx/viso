@@ -64,6 +64,7 @@ fn a_component_effect_runs_after_the_build_and_on_change() {
                 &mut computeds,
                 &mut projectors,
                 &mut effects,
+                &mut VirtualLists::new(),
                 &mut changed,
             )
             .expect("settles");

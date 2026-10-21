@@ -296,9 +296,9 @@ impl Emit<'_> {
             self.static_keys.push(key.0);
         }
 
-        // A node that authors no children (a leaf, a `VirtualList`, which mounts
-        // its own items) numbers them without building them.
-        let authors_children = node.kind.is_container() && node.kind != NodeKind::VirtualList;
+        // A node that authors no children (a leaf) numbers them without
+        // building them.
+        let authors_children = node.kind.is_container();
         if !authors_children {
             for child in &node.children {
                 self.skip_item(child);
@@ -518,18 +518,19 @@ impl Emit<'_> {
                     )
                 }
             }
+            // The scroll viewport its item template makes a list of as the
+            // regions mount.
             NodeKind::VirtualList => {
                 let axis = axis_tokens(node.style.axis.unwrap_or(AxisIr::Column));
                 let size = size_tokens(&node.style);
                 quote! {
-                    cx.virtual_list(
-                        ::viso::__private::viso_ui::VirtualListStyle {
+                    cx.scroll(
+                        ::viso::__private::viso_ui::ScrollStyle {
                             axis: #axis,
                             size: #size,
                             ..::core::default::Default::default()
                         },
-                        0,
-                        |_, _| {},
+                        |cx| { #child_block },
                     )
                 }
             }

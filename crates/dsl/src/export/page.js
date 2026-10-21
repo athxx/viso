@@ -240,7 +240,10 @@ const repeat = (r, changed) => {
     drop(it);
     dispose(it.m);
   }
-  for (const it of next) place(r, it);
+  for (const it of next) {
+    place(r, it);
+    mark(it.nodes, it.key);
+  }
   r.items = next;
 };
 const region = (anchor, g, sc, m) => {

@@ -218,16 +218,24 @@ pub enum NodeAction {
     ScrollTo = 3,
     /// `scroll_by(delta: Offset)`: move a `Scroll`'s offset.
     ScrollBy = 4,
+    /// `scroll_to_index(index: Int)`: scroll a `VirtualList`'s row to its
+    /// start edge, mounted or not.
+    ScrollToIndex = 5,
+    /// `scroll_to_key(key)`: the same for the row with this key; an unknown
+    /// key scrolls nothing.
+    ScrollToKey = 6,
 }
 
 impl NodeAction {
     /// Every action, by discriminant.
-    pub const ALL: [NodeAction; 5] = [
+    pub const ALL: [NodeAction; 7] = [
         NodeAction::Focus,
         NodeAction::Blur,
         NodeAction::ScrollIntoView,
         NodeAction::ScrollTo,
         NodeAction::ScrollBy,
+        NodeAction::ScrollToIndex,
+        NodeAction::ScrollToKey,
     ];
 
     /// The action with discriminant `raw`.
@@ -250,6 +258,8 @@ impl NodeAction {
             NodeAction::ScrollIntoView => "scroll_into_view",
             NodeAction::ScrollTo => "scroll_to",
             NodeAction::ScrollBy => "scroll_by",
+            NodeAction::ScrollToIndex => "scroll_to_index",
+            NodeAction::ScrollToKey => "scroll_to_key",
         }
     }
 
@@ -257,7 +267,10 @@ impl NodeAction {
     pub fn arity(self) -> usize {
         match self {
             NodeAction::Focus | NodeAction::Blur | NodeAction::ScrollIntoView => 0,
-            NodeAction::ScrollTo | NodeAction::ScrollBy => 1,
+            NodeAction::ScrollTo
+            | NodeAction::ScrollBy
+            | NodeAction::ScrollToIndex
+            | NodeAction::ScrollToKey => 1,
         }
     }
 
@@ -269,6 +282,8 @@ impl NodeAction {
             NodeAction::ScrollIntoView => "ScrollIntoView",
             NodeAction::ScrollTo => "ScrollTo",
             NodeAction::ScrollBy => "ScrollBy",
+            NodeAction::ScrollToIndex => "ScrollToIndex",
+            NodeAction::ScrollToKey => "ScrollToKey",
         }
     }
 }

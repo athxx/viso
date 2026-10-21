@@ -394,8 +394,8 @@ fn emit_item(item: &UiItem, nodes: &mut Vec<AotNode>) {
 }
 
 /// Author one node and its subtree, mirroring the commit's `build_node`: the builder
-/// kind is selected the same way (a `VirtualList` collapses to a leaf, content under
-/// it being rejected), the style is folded the same way, and the
+/// kind is selected the same way (a `VirtualList` is the scroll viewport of its
+/// item template), the style is folded the same way, and the
 /// node reserves its own pre-order slot *before* its children are authored so the
 /// index a binding edge references is stable regardless of subtree size.
 fn emit_node(node: &UiNode, nodes: &mut Vec<AotNode>) {
@@ -406,8 +406,8 @@ fn emit_node(node: &UiNode, nodes: &mut Vec<AotNode>) {
     let index = nodes.len();
     nodes.push(aot_node(node));
 
-    // A container descends into exactly its children; a leaf (or a collapsed
-    // VirtualList) authors none, matching the commit's builder-closure recursion.
+    // A container descends into exactly its children; a leaf authors none,
+    // matching the commit's builder-closure recursion.
     let mut child_count = 0u32;
     if kind.is_container() {
         for child in &node.children {
@@ -440,18 +440,18 @@ pub(crate) fn aot_node(node: &UiNode) -> AotNode {
     }
 }
 
-/// The package builder kind for a lowered [`NodeKind`], mirroring the commit's
-/// builder selection: `VirtualList` collapses to a leaf (content under it is
-/// rejected), everything else maps one-to-one. A Rust-scope component never
-/// reaches a package: [`plan`] rejects it.
+/// The package builder kind for a lowered [`NodeKind`]: a `VirtualList` is
+/// the scroll viewport its item template makes a list of, everything else
+/// maps one-to-one. A Rust-scope component never reaches a package: [`plan`]
+/// rejects it.
 pub(crate) fn aot_kind(kind: NodeKind) -> AotNodeKind {
     match kind {
         NodeKind::Flex => AotNodeKind::Flex,
         NodeKind::Grid => AotNodeKind::Grid,
         NodeKind::Stack => AotNodeKind::Stack,
         NodeKind::Absolute => AotNodeKind::Absolute,
-        NodeKind::Scroll => AotNodeKind::Scroll,
-        NodeKind::VirtualList | NodeKind::Leaf | NodeKind::Component => AotNodeKind::Leaf,
+        NodeKind::Scroll | NodeKind::VirtualList => AotNodeKind::Scroll,
+        NodeKind::Leaf | NodeKind::Component => AotNodeKind::Leaf,
     }
 }
 
@@ -538,7 +538,7 @@ fn inset_of(inset: InsetIr) -> Inset {
 }
 
 /// One lowered term sum to the runtime [`LengthTerms`].
-fn terms_of(terms: TermsIr) -> LengthTerms {
+pub(crate) fn terms_of(terms: TermsIr) -> LengthTerms {
     LengthTerms {
         dp: terms.dp,
         px: terms.px,

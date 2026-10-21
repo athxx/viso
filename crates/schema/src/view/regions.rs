@@ -1,5 +1,6 @@
 //! A view's control-flow regions: the `if`/`match`/`for` templates the
-//! runtime mounts and re-shapes, with their state edges and nested regions.
+//! runtime mounts and re-shapes, with their state edges and nested regions,
+//! and the item template a `VirtualList` mounts a window of.
 
 use alloc::boxed::Box;
 use alloc::vec;
@@ -7,9 +8,10 @@ use alloc::vec::Vec;
 
 use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder, ProtocolTag};
 
-use crate::aot::AotNode;
+use crate::aot::{AotNode, decode_terms, encode_terms};
 use crate::effect::ComponentEffect;
 use crate::env::EnvField;
+use crate::length::LengthTerms;
 use crate::state::StateKey;
 use crate::view::control::Control;
 use crate::view::route::Route;
@@ -48,7 +50,7 @@ pub struct RegionTemplate {
 
 /// What decides a region's content. Each entry is an index into the view's
 /// handler table, called with the enclosing regions' bindings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum RegionKind {
     /// An `if` chain: `select` returns the index of the arm to mount, or `-1`.
     If {
@@ -72,6 +74,20 @@ pub enum RegionKind {
         items: u32,
         /// The item key.
         key: Option<u32>,
+    },
+    /// The keyed `for` a `VirtualList` (the region's parent) virtualizes: it
+    /// mounts only the items in the viewport and its overscan, each on a row
+    /// of its own, from the same entries a `for` has.
+    Virtual {
+        /// The iterable.
+        items: u32,
+        /// The item key.
+        key: u32,
+        /// The extent a row not measured yet is estimated at, folded at the
+        /// list.
+        estimate: LengthTerms,
+        /// The rows mounted past each end of the viewport.
+        overscan: u32,
     },
 }
 
@@ -251,6 +267,18 @@ impl Encode for ViewRegions {
                     enc.write_varint(u64::from(items));
                     enc.write_varint(key.map_or(0, |key| u64::from(key) + 1));
                 }
+                RegionKind::Virtual {
+                    items,
+                    key,
+                    estimate,
+                    overscan,
+                } => {
+                    enc.write_u8(3);
+                    enc.write_varint(u64::from(items));
+                    enc.write_varint(u64::from(key));
+                    encode_terms(&estimate, enc);
+                    enc.write_varint(u64::from(overscan));
+                }
             }
             enc.write_varint(region.deps.len() as u64);
             for &cell in &region.deps {
@@ -359,6 +387,12 @@ impl Decode for ViewRegions {
                 2 => RegionKind::For {
                     items: read_u32(dec)?,
                     key: read_u32(dec)?.checked_sub(1),
+                },
+                3 => RegionKind::Virtual {
+                    items: read_u32(dec)?,
+                    key: read_u32(dec)?,
+                    estimate: decode_terms(dec)?,
+                    overscan: read_u32(dec)?,
                 },
                 _ => return Err(DecodeError::Malformed { offset }),
             };
@@ -518,6 +552,18 @@ impl ViewRegions {
             check(region.deps.iter().all(|&cell| shared(cell)))?;
             let arms = match region.kind {
                 RegionKind::For { .. } => region.arms.len() == 1,
+                RegionKind::Virtual { estimate, .. } => {
+                    region.arms.len() == 1
+                        && [
+                            estimate.dp,
+                            estimate.px,
+                            estimate.sp,
+                            estimate.em,
+                            estimate.pct,
+                        ]
+                        .iter()
+                        .all(|term| term.is_finite())
+                }
                 RegionKind::If { .. } | RegionKind::Match { .. } => true,
             };
             check(arms)?;
@@ -672,6 +718,25 @@ mod tests {
         };
         let bytes = regions.encode_to_vec();
         assert_eq!(ViewRegions::decode_from_slice(&bytes), Ok(regions.clone()));
+
+        let mut rows = regions.clone();
+        rows.regions[1].kind = RegionKind::Virtual {
+            items: 2,
+            key: 3,
+            estimate: LengthTerms::dp(30.0) + LengthTerms::em(1.5),
+            overscan: 4,
+        };
+        assert_eq!(
+            ViewRegions::decode_from_slice(&rows.encode_to_vec()),
+            Ok(rows.clone())
+        );
+        rows.regions[1].kind = RegionKind::Virtual {
+            items: 2,
+            key: 3,
+            estimate: LengthTerms::dp(f32::NAN),
+            overscan: 4,
+        };
+        assert!(ViewRegions::decode_from_slice(&rows.encode_to_vec()).is_err());
 
         let mut dangling = regions.clone();
         dangling.groups[0].slots[1] = SlotTemplate::Region(1);

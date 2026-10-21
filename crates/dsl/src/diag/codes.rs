@@ -2483,7 +2483,7 @@ title = "Inbox"
 "#,
         ),
         commands: &["viso schema VirtualList"],
-        reserved: true,
+        reserved: false,
     },
     CodeInfo {
         code: "E3708",
