@@ -19,6 +19,7 @@ fn program(source: &str) -> Program {
         package: "app".to_owned(),
         module: vec!["main".to_owned()],
         language: None,
+        ..Default::default()
     };
     let compiled = compile_file(source, &origin);
     let errors: Vec<_> = compiled.errors().collect();

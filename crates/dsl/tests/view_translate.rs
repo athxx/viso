@@ -83,6 +83,7 @@ fn origin() -> Origin {
         package: "app".into(),
         module: vec!["inbox".into()],
         language: None,
+        ..Default::default()
     }
 }
 

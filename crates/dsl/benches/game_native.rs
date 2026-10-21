@@ -29,6 +29,7 @@ fn game(source: &str, native: Option<&'static NativeCode>) -> Scheduler {
         package: "app".to_owned(),
         module: vec!["main".to_owned()],
         language: None,
+        ..Default::default()
     };
     let profile = TargetProfile {
         determinism: Determinism::CrossPlatform,

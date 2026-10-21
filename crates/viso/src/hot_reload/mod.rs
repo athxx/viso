@@ -2260,6 +2260,7 @@ mod tests {
                 package: entry.package.clone(),
                 module: entry.module.clone(),
                 language: entry.language.clone(),
+                ..Default::default()
             };
             let mut capabilities = CapabilitySet::new();
             for capability in &entry.capabilities {

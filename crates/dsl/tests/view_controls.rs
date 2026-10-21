@@ -91,6 +91,7 @@ fn origin() -> Origin {
         package: "app".into(),
         module: vec!["controls".into()],
         language: None,
+        ..Default::default()
     }
 }
 

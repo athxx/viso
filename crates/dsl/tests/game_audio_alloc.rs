@@ -131,6 +131,7 @@ fn module() -> Rc<Module> {
             package: "app".to_owned(),
             module: vec!["synth".to_owned()],
             language: None,
+            ..Default::default()
         },
         Natives::standard(),
         TargetProfile::default(),

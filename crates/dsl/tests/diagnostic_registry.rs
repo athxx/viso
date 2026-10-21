@@ -135,6 +135,7 @@ fn each_source_example_raises_its_code() {
         package: "app".into(),
         module: vec!["app".into()],
         language: None,
+        ..Default::default()
     };
     let mut wrong = Vec::new();
     for info in CODES {

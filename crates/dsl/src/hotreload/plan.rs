@@ -70,6 +70,9 @@ pub struct CandidatePlan {
     pub game: Option<Program>,
     /// Every asset the source names, ascending.
     pub assets: Vec<crate::assets::AssetUse>,
+    /// The package's other modules the source imports, which a change to
+    /// recompiles it.
+    pub imported: Vec<crate::frontend::Imported>,
 }
 
 /// A `@migrate(from: "T")` function of a candidate.
@@ -261,6 +264,7 @@ fn candidate(compiled: Compiled) -> Result<CandidatePlan, Vec<Diagnostic>> {
         field_defaults: compiled.behavior.field_defaults.clone(),
         view,
         assets: compiled.assets,
+        imported: compiled.imported,
         game: (compiled.component.is_some() && !compiled.behavior.systems.is_empty())
             .then_some(compiled.behavior),
     })
@@ -326,6 +330,7 @@ mod tests {
             package: "app".into(),
             module: vec!["view".into()],
             language: None,
+            ..Default::default()
         };
         let mut compiled = compile_file(
             "component C { state a = 0; state b = 0; view { Text {} } }",
@@ -368,6 +373,7 @@ mod tests {
             package: "app".into(),
             module: vec!["c".into()],
             language: None,
+            ..Default::default()
         };
         let view = |body: &str| {
             plan_view(

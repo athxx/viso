@@ -10,7 +10,7 @@
 use std::path::PathBuf;
 
 use viso_dsl::Diagnostic;
-use viso_dsl::frontend::{DeclaredComponent, Origin, declared_components};
+use viso_dsl::frontend::{DeclaredComponent, Origin, Siblings, declared_components};
 use viso_dsl::hir::TargetProfile;
 use viso_dsl::package::LoadedPackage;
 
@@ -111,6 +111,7 @@ pub(super) fn package(
     found: &Found,
     package: &str,
     language: Option<String>,
+    siblings: Siblings,
     profile: TargetProfile,
 ) -> Result<Vec<u8>, Unbuilt> {
     if !found.required.is_empty() {
@@ -134,6 +135,7 @@ pub(super) fn package(
         package: package.to_owned(),
         module: found.module.clone(),
         language,
+        siblings,
     };
     viso_dsl::aot::build_mount_package_for(&text, &origin, profile, &harness).map_err(|errors| {
         let (alone, own): (Vec<Diagnostic>, Vec<Diagnostic>) = errors
@@ -185,12 +187,21 @@ mod tests {
             line: 1,
             required: Vec::new(),
         };
-        assert!(package(&found, "app", None, TargetProfile::default()).is_ok());
+        assert!(
+            package(
+                &found,
+                "app",
+                None,
+                Siblings::None,
+                TargetProfile::default()
+            )
+            .is_ok()
+        );
         let needy = Found {
             required: vec!["label".into()],
             ..found
         };
-        match package(&needy, "app", None, TargetProfile::default()) {
+        match package(&needy, "app", None, Siblings::None, TargetProfile::default()) {
             Err(Unbuilt::Alone(why)) => {
                 assert!(why.iter().any(|m| m.contains("label")), "{why:?}");
             }

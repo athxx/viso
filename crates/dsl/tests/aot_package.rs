@@ -128,6 +128,7 @@ fn labelled() -> viso_dsl::hotreload::CandidatePlan {
         package: "app".into(),
         module: vec!["labelled".into()],
         language: None,
+        ..Default::default()
     };
     viso_dsl::hotreload::plan_view(
         "component Labelled { state label = 0; view { Row { Text { text: format(\"{}\", label); } } } }",

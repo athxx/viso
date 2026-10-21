@@ -199,6 +199,7 @@ system Synth implements AudioProcess {
                 package: "app".into(),
                 module: vec!["game".into()],
                 language: None,
+                ..Default::default()
             },
             Natives::standard(),
             TargetProfile::default(),

@@ -15,6 +15,7 @@ fn compiled(source: &str) -> Compiled {
         package: "app".to_owned(),
         module: vec!["main".to_owned()],
         language: None,
+        ..Default::default()
     };
     compile_file_in(source, &origin, Natives::standard())
 }

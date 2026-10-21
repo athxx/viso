@@ -228,6 +228,7 @@ fn origin() -> Origin {
         package: "app".into(),
         module: vec!["todo".into()],
         language: None,
+        ..Default::default()
     }
 }
 

@@ -110,6 +110,7 @@ fn hot_reload(
         package: "app".to_owned(),
         module: vec!["t".to_owned()],
         language: None,
+        ..Default::default()
     };
     hot_reload_view(rt, last_good, &component(view), &origin)
 }

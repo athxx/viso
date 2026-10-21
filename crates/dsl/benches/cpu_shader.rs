@@ -80,6 +80,7 @@ fn program(name: &str) -> Program {
         package: "app".to_owned(),
         module: vec!["main".to_owned()],
         language: None,
+        ..Default::default()
     };
     let compiled = compile_file(SOURCE, &origin);
     assert!(!compiled.has_errors(), "{:?}", compiled.diagnostics);

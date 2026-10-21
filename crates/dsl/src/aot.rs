@@ -578,6 +578,7 @@ mod tests {
             package: "app".into(),
             module: vec!["c".into()],
             language: None,
+            ..Default::default()
         };
         plan_view(
             &format!("component C {{ state label = 0; view {{ {view} }} }}"),

@@ -914,6 +914,7 @@ impl DevSession {
             let hash = source_hash(&text);
             mount.running = hash;
             mount.settled = Some(hash);
+            mount.run_compiled();
             mount.failing = false;
             mount.last_good = Some(candidate);
             let file = mount.file;
@@ -1024,6 +1025,7 @@ impl DevSession {
             // planned against it.
             if let Some(mount) = runtime.mounts.views.get_mut(&sent_view.at) {
                 mount.settled = Some(source_hash(&sent_view.text));
+                mount.settle_compiled();
             }
             let mut codes = sent_view.notes.clone();
             codes.extend(nack.diagnostic_codes.iter().cloned());
@@ -1568,7 +1570,10 @@ impl DevSession {
         // A rejected edit reverted to what the runtime runs: clear its failure.
         let mut cleared = false;
         for (&view, mount) in &mut runtime.mounts.views {
-            if mount.failing && self.sources.views[view].hash() == Some(mount.running) {
+            if mount.failing
+                && self.sources.views[view].hash() == Some(mount.running)
+                && self.sources.imports_running(mount)
+            {
                 mount.failing = false;
                 mount.settled = None;
                 cleared = true;
@@ -1623,6 +1628,7 @@ impl DevSession {
                 }
                 Ok(_) => {
                     mount.settled = Some(hash);
+                    mount.settle_compiled();
                     let event = ReloadEvent {
                         base_revision: base.0,
                         candidate_revision: next.0,
@@ -1641,6 +1647,7 @@ impl DevSession {
                 Err(diagnostics) => diagnostics,
             };
             mount.settled = Some(hash);
+            mount.settle_compiled();
             let source = Source::new(path, &self.root, &text);
             if pass.reported.insert((view, hash)) {
                 for diagnostic in &diagnostics {
@@ -2226,6 +2233,7 @@ mod tests {
             package: "app".into(),
             module: vec!["view".into()],
             language: None,
+            ..Default::default()
         };
         viso_dsl::hotreload::plan_view_for(text, &origin, Default::default()).unwrap()
     }

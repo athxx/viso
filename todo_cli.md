@@ -474,8 +474,8 @@ explanations, IR dumps, the LSP, headless snapshots and tree queries.
 - [x] Golden tests per kind on a fixture project; the dump format is documented as
       unstable-for-humans but its JSON keys versioned (`dump_version`, in `viso --version`).
 - [x] The HIR records module-level `fn`/`action`/`task` nodes (they were never filled).
-- [ ] `ui-ir`/`reactive-ir`/`behavior-ir` of a file importing a sibling module's
-      declaration: blocked on the one-file compile resolving package imports (todo_dsl).
+- [x] `ui-ir`/`reactive-ir`/`behavior-ir` of a file importing a sibling module's
+      declaration: the one-file compile reads its imports from the loaded package.
 
 ### C2.5 — `viso lsp` (§21)
 

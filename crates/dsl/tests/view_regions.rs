@@ -77,6 +77,7 @@ fn origin() -> Origin {
         package: "app".into(),
         module: vec!["regions".into()],
         language: None,
+        ..Default::default()
     }
 }
 

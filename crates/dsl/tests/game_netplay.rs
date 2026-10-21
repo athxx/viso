@@ -61,6 +61,7 @@ fn module() -> Rc<Module> {
         package: "app".to_owned(),
         module: vec!["main".to_owned()],
         language: None,
+        ..Default::default()
     };
     let profile = TargetProfile {
         determinism: Determinism::CrossPlatform,

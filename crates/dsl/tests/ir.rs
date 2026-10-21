@@ -431,6 +431,7 @@ mod binding {
             package: "app".to_owned(),
             module: vec!["t".to_owned()],
             language: None,
+            ..Default::default()
         };
         compile_component(&format!("T {{ {states} view {{ {view} }} }}"), &origin)
     }

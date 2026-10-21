@@ -367,13 +367,14 @@ resets only its own scope.
 - [x] Composition (IME) state carried with the edit buffer when compatible (§15):
       confirmed already correct as a side effect of the existing `SELECTION` carry
       (`Buffer` bundles composition with text/selection); regression test added.
-- [ ] Component instances inlined from another file reload when that file changes
-      (cross-file dependents found from the module graph). Deferred: needs real
-      multi-file module resolution in the hot-reload compile pipeline (`compile_unit`
-      builds a `ModuleGraph` from exactly one `SourceUnit`, `crates/dsl/src/frontend.rs`)
-      — an unrelated architectural capability from this slice's node-identity/patch
-      mechanics (AGENTS §40). A future slice's own item. The DSL itself refuses a
-      component of another file (`E3711`, `todo_dsl.md`), at build time as well.
+- [x] An edit to a module a mounted file imports makes that file a candidate again:
+      the one-file compile reads the file's imports into one module graph, each
+      mount keeps which views those are and the content the version it runs
+      compiled against, and a refused edit of one is not resent
+      (`tools/cli/src/dev/sources.rs`).
+- [ ] Component instances inlined from another file: the DSL refuses a component of
+      another file (`E3711`) — a view's inlined spans are not file-qualified yet, so
+      a component of another file cannot be inlined into the view's IR.
 - [x] Unit tests (§61): scoped reset planning (`commit.rs`'s `migrate_states` tests,
       `state_retype.rs`), SymbolId preservation across reorder/insert (`diff.rs`'s
       `a_node_under_a_replaced_ancestor_is_not_its_own_insert_or_remove`,

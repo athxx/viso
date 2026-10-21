@@ -38,6 +38,7 @@ fn behavior(c: &mut Criterion) {
         package: "app".to_owned(),
         module: vec!["main".to_owned()],
         language: None,
+        ..Default::default()
     };
     let compiled = compile_file(SOURCE, &origin);
     assert!(!compiled.has_errors());

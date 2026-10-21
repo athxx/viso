@@ -41,6 +41,7 @@ fn the_audio_systems_render_on_the_device() {
             package: "app".into(),
             module: vec!["hush".into()],
             language: None,
+            ..Default::default()
         },
         Natives::standard(),
         TargetProfile::default(),

@@ -66,6 +66,7 @@ fn origin() -> Origin {
         package: "app".into(),
         module: vec!["adaptive".into()],
         language: None,
+        ..Default::default()
     }
 }
 

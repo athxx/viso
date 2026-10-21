@@ -197,6 +197,7 @@ export component Home {
             package: "app".into(),
             module: vec!["home".into()],
             language: None,
+            ..Default::default()
         };
         let plan = plan_view_for(text, &origin, TargetProfile::default())
             .unwrap_or_else(|d| panic!("{d:?}"));

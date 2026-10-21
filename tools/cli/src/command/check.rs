@@ -357,6 +357,7 @@ impl Checked {
                     package: self.name.clone(),
                     module: file.module.clone(),
                     language: self.language(),
+                    siblings: self.package.siblings(),
                 };
                 let plan = plan_view_for(&file.source, &origin, profile.clone()).ok()?;
                 let canonical = file
@@ -557,6 +558,7 @@ impl Checked {
             package: self.name.clone(),
             module: file.module.clone(),
             language: self.language(),
+            siblings: self.package.siblings(),
         };
         let Ok(plan) = plan_view_for(&file.source, &origin, self.view_profile()) else {
             return Vec::new();

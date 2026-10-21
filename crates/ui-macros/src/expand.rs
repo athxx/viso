@@ -76,6 +76,10 @@ pub fn component(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         } = mount(&compiled, &report, None, asset_dir(&profile))?;
         let name = rust_ident(&component.schema.name)
             .map_err(|message| report.at(Some(component.source_origin), message))?;
+        let imported = compiled
+            .imported
+            .iter()
+            .filter_map(|module| module.path.as_deref()?.to_str());
         let doc = format!("The `{name}` component's state ids.");
         let fields = states
             .iter()
@@ -85,6 +89,7 @@ pub fn component(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             .map(|(field, local)| quote! { #field: #local });
         Ok(quote! {
             #catalogs
+            #(const _: &str = ::core::include_str!(#imported);)*
             #[doc = #doc]
             #[derive(Debug, Clone, Copy, PartialEq, Eq)]
             pub struct #name {
@@ -176,9 +181,16 @@ pub fn view(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             Some((dependency, &origin, build)),
             asset_dir(&profile),
         )?;
+        // The modules the file imports are compile dependencies too: editing
+        // one rebuilds every view that reads it.
+        let imported = compiled
+            .imported
+            .iter()
+            .filter_map(|module| module.path.as_deref()?.to_str());
         Ok(quote! {
             {
                 const _: &str = ::core::include_str!(#dependency);
+                #(const _: &str = ::core::include_str!(#imported);)*
                 #catalogs
                 |cx: &mut ::viso::__private::viso_ui::BuildCx<'_>| -> ::viso::__private::viso_ui::Handle {
                     #allocations

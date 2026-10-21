@@ -234,6 +234,7 @@ impl View {
                     package: checked.name.clone(),
                     module: found.module.clone(),
                     language: checked.language(),
+                    siblings: checked.package.siblings(),
                 };
                 let compiled = compile_mount_for(
                     &found.source,
@@ -263,6 +264,7 @@ impl View {
                     package: checked.name.clone(),
                     module: file.module.clone(),
                     language: checked.language(),
+                    siblings: checked.package.siblings(),
                 };
                 let compiled =
                     compile_file_for(&file.source, &origin, natives, checked.view_profile());

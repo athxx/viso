@@ -27,6 +27,11 @@
 //!
 //! Runtimes that mount a file alike — the same origin, grants, catalogs and
 //! assets — share one compile of each of its edits ([`Memo`]).
+//!
+//! A file's compile also reads the package modules it imports, so a mount
+//! remembers which views those are and their content the version it runs
+//! compiled against: an edit to one makes each file importing it a
+//! candidate again, compiled with its own text as it is.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -35,7 +40,7 @@ use std::rc::Rc;
 use viso_dev_protocol::inspect::FileSources;
 use viso_dev_protocol::wire::{FileId, MAX_LINE, MAX_LINES, MountEntry, content_hash, source_hash};
 use viso_dsl::assets::{AssetCatalog, AssetFormat, ResourceId, normalize_path};
-use viso_dsl::frontend::Origin;
+use viso_dsl::frontend::{Imported, Origin, Siblings, package_root};
 use viso_dsl::hir::{CapabilitySet, TargetProfile};
 use viso_dsl::hotreload::{CandidatePlan, plan_view_for, plan_view_parsed};
 use viso_dsl::i18n::{CatalogFile, CatalogIssue, Messages};
@@ -101,6 +106,22 @@ pub(super) struct Mount {
     /// against; `None` when the version the build compiled is unknown or
     /// does not compile on the host.
     pub last_good: Option<CandidatePlan>,
+    /// The views of the modules the version it runs imports, and the hash
+    /// of their content that version compiled against.
+    imports: Imports,
+    /// The same of its latest compile.
+    compiled_imports: Imports,
+    /// The hash of the imported content the latest candidate compiled
+    /// against, so the same content is not a candidate twice.
+    settled_imports: Option<u64>,
+}
+
+/// The modules a compile of a file read, as views of the source graph, and
+/// the hash of their content as it read them.
+#[derive(Clone, Default)]
+struct Imports {
+    views: Vec<usize>,
+    hash: u64,
 }
 
 /// A package's message catalogs.
@@ -354,12 +375,14 @@ impl Sources {
             at
         });
         let path = PathBuf::from(&entry.path);
+        let siblings = package_root(&path, &entry.module).map_or(Siblings::None, Siblings::Dir);
         let mount = Mount {
             file: entry.file,
             origin: Origin {
                 package: entry.package.clone(),
                 module: entry.module.clone(),
                 language: entry.language.clone(),
+                siblings,
             },
             capabilities: entry.capabilities.clone(),
             catalog,
@@ -371,6 +394,9 @@ impl Sources {
             rejected: false,
             failing: false,
             last_good: None,
+            imports: Imports::default(),
+            compiled_imports: Imports::default(),
+            settled_imports: None,
         };
         let at = match self.views.iter().position(|view| view.path == path) {
             Some(at) => at,
@@ -457,8 +483,50 @@ impl Sources {
                 codes.join(", ")
             )
         })?;
+        mount.imports = self.imports(&plan.imported);
         mount.last_good = Some(plan);
         Ok(())
+    }
+
+    /// The views of the modules `imported` names, and the hash of their
+    /// content as it is.
+    fn imports(&self, imported: &[Imported]) -> Imports {
+        let views: Vec<usize> = imported
+            .iter()
+            .filter_map(|module| {
+                let path = module.path.as_deref()?;
+                let canonical = path.canonicalize().ok();
+                self.views.iter().position(|view| {
+                    view.path == path || canonical.as_deref() == Some(view.path.as_path())
+                })
+            })
+            .collect();
+        let hash = self.imports_hash(&views);
+        Imports { views, hash }
+    }
+
+    /// The hash of the content of `views` as it is.
+    fn imports_hash(&self, views: &[usize]) -> u64 {
+        let bytes: Vec<u8> = views
+            .iter()
+            .flat_map(|&at| self.views[at].hash().unwrap_or(0).to_le_bytes())
+            .collect();
+        content_hash(&bytes)
+    }
+
+    /// Whether a module `mount` runs against changed since, to content
+    /// that was not a candidate already.
+    fn imports_changed(&self, mount: &Mount) -> bool {
+        if mount.imports.views.is_empty() {
+            return false;
+        }
+        let now = self.imports_hash(&mount.imports.views);
+        now != mount.imports.hash && mount.settled_imports != Some(now)
+    }
+
+    /// Whether every module `mount` runs against is as that version read it.
+    pub fn imports_running(&self, mount: &Mount) -> bool {
+        self.imports_hash(&mount.imports.views) == mount.imports.hash
     }
 
     /// Compiles the catalogs that changed and that a mount names, each
@@ -557,6 +625,7 @@ impl Sources {
                 catalog_changed
                     || assets_appeared
                     || (hash != mount.running && mount.settled != Some(hash))
+                    || self.imports_changed(mount)
             })
             .map(|(&at, _)| at)
             .collect()
@@ -630,7 +699,9 @@ impl Sources {
         mount.checked_assets = mount.assets.map_or(0, |a| self.assets[a].revision);
         if let Some((_, _, planned)) = memo.0.iter().find(|(v, k, _)| *v == at && *k == key) {
             mount.rejected = planned.is_err();
-            return Some(planned.clone());
+            let planned = planned.clone();
+            mount.compiled_imports = self.compiled_imports(mount, &planned);
+            return Some(planned);
         }
         let parse = match view.parse.take() {
             Some((old, mut parse)) if old != text => {
@@ -645,7 +716,25 @@ impl Sources {
         mount.rejected = planned.is_err();
         memo.0.push((at, key, planned.clone()));
         view.parse = Some((text.to_owned(), parse));
+        mount.compiled_imports = self.compiled_imports(mount, &planned);
         Some(planned)
+    }
+
+    /// What a compile of `mount`'s file into `planned` read of the modules
+    /// it imports: those the plan names, or for a compile that failed those
+    /// the version it runs imports, as they are now.
+    fn compiled_imports(
+        &self,
+        mount: &Mount,
+        planned: &Result<CandidatePlan, Vec<Diagnostic>>,
+    ) -> Imports {
+        match planned {
+            Ok(plan) => self.imports(&plan.imported),
+            Err(_) => Imports {
+                views: mount.imports.views.clone(),
+                hash: self.imports_hash(&mount.imports.views),
+            },
+        }
     }
 }
 
@@ -674,6 +763,17 @@ impl Mounts {
 }
 
 impl Mount {
+    /// Its latest compile is now what the runtime runs.
+    pub fn run_compiled(&mut self) {
+        self.settled_imports = Some(self.compiled_imports.hash);
+        self.imports = self.compiled_imports.clone();
+    }
+
+    /// Its latest compile was a candidate, sent or refused.
+    pub fn settle_compiled(&mut self) {
+        self.settled_imports = Some(self.compiled_imports.hash);
+    }
+
     /// How it compiles its file.
     fn key(&self) -> ProfileKey {
         ProfileKey {
@@ -832,6 +932,69 @@ mod tests {
     }
 
     #[test]
+    fn an_edit_to_an_imported_module_makes_its_importers_candidates() {
+        let root = std::env::temp_dir().join(format!("viso-dev-imports-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let root = root.canonicalize().unwrap();
+        let (page, model) = (root.join("src/page.vs"), root.join("src/model.vs"));
+        let model_text = "export fn twice(x: I64) -> I64 { x * 2 }\n";
+        let page_text = "import model::{twice};\nexport component Page {\n  state n = 0;\n  \
+                         view { Text { on click { n = twice(n); } } }\n}\n";
+        let write = |sources: &mut Sources, path: &Path, text: &str| {
+            std::fs::write(path, text).unwrap();
+            sources.change(path, text.to_owned());
+        };
+        let mut sources = Sources::default();
+        let mut mounts = Mounts::default();
+        write(&mut sources, &model, model_text);
+        write(&mut sources, &page, page_text);
+        let entry = MountEntry {
+            file: FileId(0),
+            path: page.to_string_lossy().into_owned(),
+            package: "app".into(),
+            module: vec!["page".into()],
+            language: None,
+            catalog: None,
+            capabilities: Vec::new(),
+            source_hash: source_hash(page_text),
+            assets: None,
+        };
+        let at = sources.mount(&mut mounts, &entry);
+        sources.baseline(&mut mounts, at).unwrap();
+        assert!(
+            sources.candidates(&mounts).is_empty(),
+            "the runtime runs it"
+        );
+
+        write(&mut sources, &model, &model_text.replace("x * 2", "x * 3"));
+        assert_eq!(sources.candidates(&mounts), [at], "its import changed");
+        assert!(compile(&mut sources, &mut mounts, at).is_ok());
+        mounts.views.get_mut(&at).unwrap().settle_compiled();
+        assert!(sources.candidates(&mounts).is_empty(), "settled");
+
+        write(
+            &mut sources,
+            &model,
+            &model_text.replace("x * 2", "x * missing"),
+        );
+        assert_eq!(sources.candidates(&mounts), [at]);
+        let errors = compile(&mut sources, &mut mounts, at).unwrap_err();
+        assert!(errors[0].message.starts_with("in `model`"), "{errors:?}");
+        let mount = mounts.views.get_mut(&at).unwrap();
+        mount.settle_compiled();
+        assert!(
+            sources.candidates(&mounts).is_empty(),
+            "a refused edit is not resent"
+        );
+
+        write(&mut sources, &model, model_text);
+        let mount = &mounts.views[&at];
+        assert!(sources.imports_running(mount), "back to what it runs");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn an_edit_is_a_candidate_until_it_settles_and_reparses_incrementally() {
         let (mut sources, mut mounts) = mounted(VIEW);
         assert!(
@@ -919,6 +1082,7 @@ mod tests {
             package: "app".into(),
             module: vec!["cards".into()],
             language: None,
+            ..Default::default()
         };
         let mut compile = Vec::new();
         for _ in 0..10 {
@@ -1024,6 +1188,7 @@ mod tests {
                 package: "app".into(),
                 module: vec!["view".into()],
                 language: None,
+                ..Default::default()
             };
             emit_view_package(&plan_view_for(text, &origin, TargetProfile::default()).unwrap())
         };

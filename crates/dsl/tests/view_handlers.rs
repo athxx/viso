@@ -59,6 +59,7 @@ fn origin() -> Origin {
         package: "app".into(),
         module: vec!["clicker".into()],
         language: None,
+        ..Default::default()
     }
 }
 

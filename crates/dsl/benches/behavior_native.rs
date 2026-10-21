@@ -28,6 +28,7 @@ fn side(native: Option<&'static NativeCode>) -> (Vm, Instance) {
         package: "app".to_owned(),
         module: vec!["main".to_owned()],
         language: None,
+        ..Default::default()
     };
     let compiled = compile_file(include_str!("../tests/differential/core.vs"), &origin);
     let errors: Vec<_> = compiled.errors().collect();

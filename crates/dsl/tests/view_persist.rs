@@ -49,6 +49,7 @@ fn origin() -> Origin {
         package: "app".into(),
         module: vec!["counter".into()],
         language: None,
+        ..Default::default()
     }
 }
 

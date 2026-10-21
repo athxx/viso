@@ -14,6 +14,7 @@ fn origin() -> Origin {
         package: "app".into(),
         module: vec!["access".into()],
         language: None,
+        ..Default::default()
     }
 }
 

@@ -15,7 +15,7 @@
 //! over these three functions; none re-implements a stage.
 
 use std::collections::HashMap;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -72,8 +72,9 @@ const FRAGMENT_PACKAGE: &str = "<ui!>";
 
 /// Where a component-declaring source lives: its package and the module path its
 /// source path derives (there is no in-file `module` header, section 21.5.3), plus
-/// the language version the package pins, if any.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// the language version the package pins, if any, and where the package's other
+/// modules are read from.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Origin {
     /// The package identity.
     pub package: String,
@@ -81,6 +82,60 @@ pub struct Origin {
     pub module: Vec<String>,
     /// The language version the package pins; `None` takes [`LANGUAGE_VERSION`].
     pub language: Option<String>,
+    /// Where the modules the source imports are read from.
+    pub siblings: Siblings,
+}
+
+/// Where a one-file compile reads the package's other modules from: the source
+/// imports them, so each it imports, directly or through another, compiles with
+/// it, while the rest of the package is never read.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Siblings {
+    /// Nowhere: an import of another of the package's modules is unresolved.
+    #[default]
+    None,
+    /// The `.vs` files of the package rooted at the directory.
+    Dir(PathBuf),
+    /// Each module's path and source.
+    Memory(Arc<[(Vec<String>, String)]>),
+}
+
+impl Siblings {
+    /// The file and source of the package module `module`, if there is one.
+    fn source(&self, module: &[String]) -> Option<(Option<PathBuf>, String)> {
+        match self {
+            Siblings::None => None,
+            Siblings::Dir(root) => module_files(root, module).into_iter().find_map(|path| {
+                let source = std::fs::read_to_string(&path).ok()?;
+                Some((Some(path), source))
+            }),
+            Siblings::Memory(modules) => modules
+                .iter()
+                .find(|(path, _)| path == module)
+                .map(|(_, source)| (None, source.clone())),
+        }
+    }
+}
+
+/// The files that would declare `module` in the package rooted at `root`, in
+/// the order [`module_path`] prefers none of: `a/b.vs`, then `a/b/mod.vs`;
+/// the root module's `lib.vs`, `main.vs` or `mod.vs`.
+fn module_files(root: &Path, module: &[String]) -> Vec<PathBuf> {
+    let mut dir = root.join(crate::package::SOURCE_ROOT);
+    let ext = crate::package::SOURCE_EXTENSION;
+    match module.split_last() {
+        None => ["lib", "main", "mod"]
+            .iter()
+            .map(|name| dir.join(format!("{name}.{ext}")))
+            .collect(),
+        Some((last, parents)) => {
+            dir.extend(parents);
+            vec![
+                dir.join(format!("{last}.{ext}")),
+                dir.join(last).join(format!("mod.{ext}")),
+            ]
+        }
+    }
 }
 
 impl Origin {
@@ -94,8 +149,23 @@ impl Origin {
             package: package.to_owned(),
             module: module_path(root, file),
             language,
+            siblings: Siblings::Dir(root.to_path_buf()),
         }
     }
+}
+
+/// The root of the package whose source `file` declares the module `module`:
+/// the directory whose `src/` holds it with that module path, else the first
+/// ancestor that derives the path.
+pub fn package_root(file: &Path, module: &[String]) -> Option<PathBuf> {
+    let derives = |root: &Path| module_path(root, file) == module;
+    let sources = file
+        .ancestors()
+        .skip(1)
+        .find(|root| file.starts_with(root.join(crate::package::SOURCE_ROOT)) && derives(root));
+    sources
+        .or_else(|| file.ancestors().skip(1).find(|root| derives(root)))
+        .map(Path::to_path_buf)
 }
 
 /// The module path of `file` in the package rooted at `root`; see
@@ -190,6 +260,18 @@ pub struct Compiled {
     /// Where the caller's source starts in the text it compiled as: `0` but
     /// for a fragment, which compiles inside the component it is the view of.
     pub base: TextSize,
+    /// The package's other modules the source imports, directly or through
+    /// another, in the order they were read: what a change to recompiles it.
+    pub imported: Vec<Imported>,
+}
+
+/// A module of the package a compiled source imports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Imported {
+    /// Its module path.
+    pub module: Vec<String>,
+    /// The file it was read from, `None` for a source held in memory.
+    pub path: Option<PathBuf>,
 }
 
 impl Compiled {
@@ -243,8 +325,7 @@ pub fn compile_fragment(source: &str) -> Compiled {
     let parse = parse_entry(&tokenize(&text), &text, Entry::CompilationUnit);
     let origin = Origin {
         package: FRAGMENT_PACKAGE.to_owned(),
-        module: Vec::new(),
-        language: None,
+        ..Origin::default()
     };
     let profile = TargetProfile {
         rust_scope: true,
@@ -419,9 +500,23 @@ fn compile_unit(
     let mut interner = NameInterner::new();
     let segments: Vec<&str> = origin.module.iter().map(String::as_str).collect();
     let path = ModulePath::intern(&mut interner, &segments);
-    let units = vec![SourceUnit::new(path.clone(), parse)];
+    let siblings = imported_modules(&cu, &origin.module, &origin.siblings);
+    let imported: Vec<Imported> = siblings.iter().map(|s| s.imported.clone()).collect();
+    let mut units = vec![SourceUnit::new(path.clone(), parse)];
+    for sibling in &siblings {
+        let segments: Vec<&str> = sibling.imported.module.iter().map(String::as_str).collect();
+        let path = ModulePath::intern(&mut interner, &segments);
+        units.push(SourceUnit::new(path, sibling.parse.clone()));
+    }
     let graph = ModuleGraph::build_with(&units, &interner, natives, &origin.package);
-    diagnostics.extend(graph.errors().iter().cloned());
+    let Some(index) = graph.index_of(&path.display(&interner), &interner) else {
+        diagnostics.extend(graph.errors().iter().cloned());
+        let mut compiled = Compiled::empty(diagnostics, Program::default(), Vec::new());
+        compiled.imported = imported;
+        return compiled;
+    };
+    diagnostics.extend(graph.module_errors(index).cloned());
+    diagnostics.extend(graph.graph_errors().cloned());
     let mut resolved = resolve(&graph, &units, &mut interner, &origin.package);
     let rust_scope = profile.rust_scope;
     let lowered = crate::hir::lower(
@@ -436,19 +531,64 @@ fn compile_unit(
     let shaders = lowered.shaders;
     let paints = lowered.paints;
     let assets = lowered.assets;
-    let Some(module) = resolved.pop() else {
-        return Compiled::empty(diagnostics, behavior, shaders);
-    };
+    // A module the source imports that does not compile fails it too: each of
+    // its errors at the import that reads the module, pointing at where it is.
+    for (i, module) in graph.modules().iter().enumerate() {
+        let text = module.path.display(&interner);
+        let Some(sibling) = siblings
+            .iter()
+            .find(|s| s.imported.module.join("::") == text)
+        else {
+            continue;
+        };
+        let lowered_errors = lowered
+            .module_diagnostics
+            .get(i)
+            .map_or(&[][..], |range| &lowered.diagnostics[range.clone()]);
+        let errors = sibling
+            .parse
+            .diagnostics()
+            .into_iter()
+            .chain(
+                graph
+                    .index_of(&text, &interner)
+                    .into_iter()
+                    .flat_map(|at| graph.module_errors(at).cloned()),
+            )
+            .chain(
+                resolved
+                    .get(i)
+                    .into_iter()
+                    .flat_map(|m| m.errors.iter().cloned()),
+            )
+            .chain(lowered_errors.iter().cloned())
+            .filter(|d| d.severity == Severity::Error);
+        for error in errors {
+            diagnostics.push(imported_error(error, &text, sibling.via));
+        }
+    }
+    let module = resolved.swap_remove(index.as_usize());
     diagnostics.extend(module.errors.iter().cloned());
-    diagnostics.extend(lowered.diagnostics.iter().cloned());
+    if let Some(range) = lowered.module_diagnostics.get(index.as_usize()) {
+        diagnostics.extend(lowered.diagnostics[range.clone()].iter().cloned());
+    }
 
+    let empty = |diagnostics, behavior, shaders| {
+        let mut compiled = Compiled::empty(diagnostics, behavior, shaders);
+        compiled.imported = imported.clone();
+        compiled
+    };
     let Some(decl) = mounted_component(&cu, source, mount, &mut diagnostics) else {
-        return Compiled::empty(diagnostics, behavior, shaders);
+        return empty(diagnostics, behavior, shaders);
     };
     let range = decl.syntax().text_range();
     let mut components = lowered.components;
-    let Some(mounted) = components.iter().position(|c| c.source_origin == range) else {
-        return Compiled::empty(diagnostics, behavior, shaders);
+    let own = |c: &HirComponent| module.decls.iter().any(|d| d.id == c.schema.symbol);
+    let Some(mounted) = components
+        .iter()
+        .position(|c| own(c) && c.source_origin == range)
+    else {
+        return empty(diagnostics, behavior, shaders);
     };
 
     // Every component of the unit is one the mounted view may inline.
@@ -459,7 +599,7 @@ fn compile_unit(
             .find(|d| d.syntax().text_range() == c.source_origin)
             .cloned()
     };
-    let library = unit_library(&cu, &module, &decls, components.iter());
+    let library = unit_library(&cu, &module, &decls, components.iter().filter(|c| own(c)));
     let root_symbol = components[mounted].schema.symbol;
     let lowered_view = decl.view().and_then(|view| view.block()).map(|block| {
         lower_component_view(&block, graph.natives(), &library, root_symbol, rust_scope)
@@ -564,7 +704,77 @@ fn compile_unit(
         paints,
         assets,
         base: TextSize::ZERO,
+        imported,
     }
+}
+
+/// A module of the package a compiled source imports, read and parsed.
+struct Sibling {
+    imported: Imported,
+    parse: Parse,
+    /// The import of the compiled source that reads it, directly or through
+    /// other modules.
+    via: TextRange,
+}
+
+/// Every module of the package `siblings` holds that `cu`, the unit of
+/// `module`, imports, directly or through another, each read once.
+fn imported_modules(cu: &CompilationUnit, module: &[String], siblings: &Siblings) -> Vec<Sibling> {
+    if matches!(siblings, Siblings::None) {
+        return Vec::new();
+    }
+    let mut out: Vec<Sibling> = Vec::new();
+    let mut tried: Vec<Vec<String>> = vec![module.to_vec()];
+    let mut queue: Vec<(Vec<String>, TextRange)> = imports_of(cu).collect();
+    queue.reverse();
+    while let Some((path, via)) = queue.pop() {
+        if tried.contains(&path) {
+            continue;
+        }
+        tried.push(path.clone());
+        let Some((file, source)) = siblings.source(&path) else {
+            continue;
+        };
+        let parse = parse_entry(&tokenize(&source), &source, Entry::CompilationUnit);
+        let root = SyntaxNode::new_root(parse.root.clone());
+        if let Some(unit) = CompilationUnit::cast(root) {
+            let mut next: Vec<_> = imports_of(&unit).map(|(path, _)| (path, via)).collect();
+            next.reverse();
+            queue.extend(next);
+        }
+        out.push(Sibling {
+            imported: Imported {
+                module: path,
+                path: file,
+            },
+            parse,
+            via,
+        });
+    }
+    out
+}
+
+/// The module path each import of `cu` names, with the import's span.
+fn imports_of(cu: &CompilationUnit) -> impl Iterator<Item = (Vec<String>, TextRange)> + '_ {
+    cu.imports().filter_map(|import| {
+        let path = import.path()?;
+        let segments = path.segments().map(|s| s.text().to_string()).collect();
+        Some((segments, import.syntax().text_range()))
+    })
+}
+
+/// `error`, raised in the imported module `module`, reported at `via`, the
+/// import that reads it.
+fn imported_error(mut error: Diagnostic, module: &str, via: TextRange) -> Diagnostic {
+    let at = error.primary;
+    error.message = format!("in `{module}`: {}", error.message);
+    error.primary = via;
+    error.related.insert(
+        0,
+        crate::diag::Related::in_module(module, at, "raised here"),
+    );
+    error.fixes.clear();
+    error
 }
 
 /// `by_source` in the order of `sources` then `regional`, any other source
@@ -789,6 +999,7 @@ impl Compiled {
             paints: Vec::new(),
             assets: Vec::new(),
             base: TextSize::ZERO,
+            imported: Vec::new(),
         }
     }
 }
@@ -986,6 +1197,7 @@ mod tests {
             package: "app".to_owned(),
             module: module.iter().map(|s| (*s).to_owned()).collect(),
             language: None,
+            ..Default::default()
         }
     }
 

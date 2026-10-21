@@ -352,7 +352,13 @@ impl Alone<'_> {
         let profile = self.checked.view_profile();
         let language = self.checked.language();
         let source = Source::new(&found.file, &project.root, &found.source);
-        match component::package(&found, &self.checked.name, language, profile) {
+        match component::package(
+            &found,
+            &self.checked.name,
+            language,
+            self.checked.package.siblings(),
+            profile,
+        ) {
             Ok(view) => Ok(Case::component(
                 name.to_owned(),
                 found.path.clone(),

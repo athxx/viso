@@ -37,6 +37,7 @@ fn origin() -> Origin {
         package: "app".into(),
         module: vec!["values".into()],
         language: None,
+        ..Default::default()
     }
 }
 

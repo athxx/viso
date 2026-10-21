@@ -428,6 +428,7 @@ mod tests {
             package: "app".into(),
             module: vec!["c".into()],
             language: None,
+            ..Default::default()
         };
         crate::hotreload::plan::plan_view(&source, &origin)
             .expect("component compiles")

@@ -76,6 +76,7 @@ impl Live {
             package: "app".into(),
             module: vec!["clicker".into()],
             language: None,
+            ..Default::default()
         };
         let done =
             hot_reload_view(&mut rt, &self.last_good, source, &origin).expect("the edit compiles");
@@ -422,6 +423,7 @@ fn errors(types: &str, members: &str) -> Vec<(String, String)> {
         package: "app".into(),
         module: vec!["clicker".into()],
         language: None,
+        ..Default::default()
     };
     build_view_package(
         &view(

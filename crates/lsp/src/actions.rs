@@ -37,6 +37,7 @@ pub fn origin(module: &[String]) -> Origin {
         package: String::new(),
         module: module.to_vec(),
         language: None,
+        ..Default::default()
     }
 }
 

@@ -12,6 +12,7 @@ fn origin() -> Origin {
         package: "app".to_owned(),
         module: vec!["main".to_owned()],
         language: None,
+        ..Default::default()
     }
 }
 

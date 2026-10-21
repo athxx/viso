@@ -42,6 +42,7 @@ pub fn origin(root: &Path, file: Option<&Path>) -> syn::Result<Origin> {
             package,
             module: Vec::new(),
             language,
+            ..Default::default()
         },
     })
 }

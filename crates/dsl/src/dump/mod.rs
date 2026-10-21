@@ -168,6 +168,7 @@ impl FileCx<'_> {
             package: self.package.model.name.clone(),
             module: file.module.clone(),
             language: None,
+            siblings: self.package.siblings(),
         };
         compile_file_for(
             self.source,

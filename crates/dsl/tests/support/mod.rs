@@ -36,6 +36,7 @@ pub fn origin() -> Origin {
         package: "app".into(),
         module: vec!["tasks".into()],
         language: None,
+        ..Default::default()
     }
 }
 
@@ -127,6 +128,8 @@ pub struct Rt {
     pub view: Option<Rc<RefCell<ViewHost>>>,
     pub last_good: CandidatePlan,
     pub clock: Clock,
+    /// What it compiles under, [`origin`] unless set.
+    pub origin: Option<Origin>,
 }
 
 impl Rt {
@@ -149,14 +152,32 @@ impl Rt {
         Rt::mount_compiled(source, compiled)
     }
 
+    /// `source` mounted as [`Rt::mount`] does, its imports read from
+    /// `siblings`.
+    pub fn mount_in(source: &str, siblings: viso_dsl::frontend::Siblings) -> Self {
+        let origin = Origin {
+            siblings,
+            ..origin()
+        };
+        let compiled = compile_file(source, &origin);
+        Rt::mount_compiled_in(source, compiled, Some(origin))
+    }
+
     fn mount_compiled(source: &str, compiled: Compiled) -> Self {
+        Rt::mount_compiled_in(source, compiled, None)
+    }
+
+    fn mount_compiled_in(source: &str, compiled: Compiled, origin: Option<Origin>) -> Self {
         let errors: Vec<_> = compiled.errors().collect();
         assert!(errors.is_empty(), "{errors:#?}");
         let view = view_behavior(&compiled)
             .expect("mounts")
             .expect("has behavior");
         let mut host = ViewHost::new(Rc::clone(&view.module), &view.component).expect("links");
-        let mut rt = Rt::default();
+        let mut rt = Rt {
+            origin,
+            ..Rt::default()
+        };
         host.services_mut()
             .insert::<Box<dyn Timers>>(Box::new(rt.clock.clone()));
         rt.view = Some(host.shared());
@@ -167,6 +188,17 @@ impl Rt {
     /// `source` loaded from its release package, with the test clock.
     pub fn packaged(source: &str) -> Self {
         let blob = build_view_package(source, &origin()).expect("packages");
+        Rt::load(&blob)
+    }
+
+    /// `source` loaded from its release package, its imports read from
+    /// `siblings`.
+    pub fn packaged_in(source: &str, siblings: viso_dsl::frontend::Siblings) -> Self {
+        let origin = Origin {
+            siblings,
+            ..origin()
+        };
+        let blob = build_view_package(source, &origin).expect("packages");
         Rt::load(&blob)
     }
 
@@ -217,7 +249,8 @@ impl Rt {
             nodes: &mut self.nodes,
             view: &mut self.view,
         };
-        let done = hot_reload_view(&mut live, &self.last_good, source, &origin())?;
+        let origin = self.origin.clone().unwrap_or_else(origin);
+        let done = hot_reload_view(&mut live, &self.last_good, source, &origin)?;
         self.root = live.root;
         self.last_good = done.candidate;
         self.frame();

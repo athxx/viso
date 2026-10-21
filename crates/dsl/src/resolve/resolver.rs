@@ -130,6 +130,9 @@ struct ImportEnv {
     /// `(owner, local name)` → the full path of the native a component's or
     /// system's member declaration declares.
     member_natives: std::collections::HashMap<(NameId, NameId), String>,
+    /// Local name → the path of the package module a whole-module import
+    /// names.
+    modules: std::collections::HashMap<NameId, String>,
 }
 
 /// One import binding: a local name mapped to the exported symbol it names.
@@ -921,6 +924,15 @@ fn build_import_env(
         let target_table = &tables[idx.as_usize()];
         let target_decls = &decls[idx.as_usize()];
         let target_path = graph.modules()[idx.as_usize()].path.display(interner);
+        if import.items().next().is_none() {
+            let local = import
+                .rename()
+                .and_then(|r| r.name())
+                .map(|t| t.text().to_string())
+                .unwrap_or_else(|| target_path.rsplit("::").next().unwrap_or("").to_owned());
+            env.modules
+                .insert(interner.intern(&local), target_path.clone());
+        }
         // `import a::{ x, y as z };` — selective items into the local environment.
         for item in import.items() {
             let Some(name_tok) = item.name() else {
@@ -2149,6 +2161,23 @@ impl<'a> ModulePass<'a> {
         if let Some(base) = self.native_base(name) {
             let rest: Vec<_> = path.segments().skip(1).collect();
             self.resolve_native(&head, base, &rest, false);
+            return;
+        }
+        // `units::ONE` reads a declaration of a package module through its
+        // whole-module import, which only names are imported by yet.
+        if let (Some(module), Some(item)) =
+            (self.imports.modules.get(&name), path.segments().nth(1))
+        {
+            let item = item.text();
+            let at = path.syntax().text_range();
+            self.errors.push(Diagnostic::error(
+                "E2001",
+                at,
+                format!(
+                    "`{module}::{item}` reads a declaration through its module, which is not \
+                     resolved yet; import it by name: `import {module}::{{{item}}};`"
+                ),
+            ));
             return;
         }
         // `S::idle` names a variant of the type `S`: a qualified head that is no

@@ -10,15 +10,15 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use viso_behavior::native::Natives;
 
 use crate::ast::{AstNode, CompilationUnit};
 use crate::diag::Diagnostic;
 use crate::frontend::{
-    check_language_version, component_decls, module_path, mounted_component, unit_library,
-    view_diagnostics,
+    Siblings, check_language_version, component_decls, module_path, mounted_component,
+    unit_library, view_diagnostics,
 };
 use crate::hir::{HirComponent, LoweredPackage, TargetProfile, lower};
 use crate::ir::lower_component_view;
@@ -73,6 +73,9 @@ pub struct LoadedPackage {
     /// What resolution and lowering worked from, for the tools that read past
     /// the HIR: the schema of each component, the IR dumps.
     pub(crate) model: PackageModel,
+    /// Its files as the modules a one-file compile of one of them imports,
+    /// made once on first use.
+    siblings: OnceLock<Siblings>,
 }
 
 /// The parsed units of a package, its module graph and each module's
@@ -111,6 +114,22 @@ impl std::fmt::Debug for PackageModel {
 }
 
 impl LoadedPackage {
+    /// Its files as the modules a one-file compile of one of them reads its
+    /// imports from ([`Origin::siblings`](crate::frontend::Origin::siblings)):
+    /// the sources as loaded, not as they are on disk now.
+    pub fn siblings(&self) -> Siblings {
+        self.siblings
+            .get_or_init(|| {
+                let modules: Vec<_> = self
+                    .files
+                    .iter()
+                    .map(|file| (file.module.clone(), file.source.clone()))
+                    .collect();
+                Siblings::Memory(modules.into())
+            })
+            .clone()
+    }
+
     /// Whether any file, the manifest or the module graph raised an error, or a
     /// source could not be read.
     pub fn has_errors(&self) -> bool {
@@ -226,6 +245,7 @@ pub fn load_package_in(
             graph,
             resolved,
         },
+        siblings: OnceLock::new(),
     }
 }
 

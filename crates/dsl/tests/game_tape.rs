@@ -13,6 +13,7 @@ fn module(source: &str) -> Rc<Module> {
         package: "app".to_owned(),
         module: vec!["main".to_owned()],
         language: None,
+        ..Default::default()
     };
     let compiled = compile_file_in(source, &origin, Natives::standard());
     let errors: Vec<_> = compiled.errors().collect();
