@@ -296,6 +296,7 @@ fn sizing(font_size: f32) -> TextSizing {
     TextSizing {
         font_size,
         line_height: None,
+        rtl: false,
     }
 }
 

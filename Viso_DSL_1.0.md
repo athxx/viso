@@ -4974,7 +4974,7 @@ Named Node `n` 在同一 Component 的 Action 与 Handler 中以 `n: NodeRef<T>`
 - 变换（U4）、Canvas 坐标与指针坐标都是物理坐标，不翻转；
 - Adaptive Scope（§96）可以局部覆盖 `layout_direction` 与 `locale`，例如内嵌的外语段落。
 
-当前实现：RTL 下 `Row` 从右向左排列子节点（子节点的物理 `margin` 不随之互换，`margin.start`/`end` 已按方向解析），`Justify` 与 `Column` 的 `Align` 的 `start`/`end` 互换，`Stack` 的 `start`/`end` 对齐与 `Absolute` 的 `absolute.start`/`absolute.end` 以右边为起点（两者都未给出时贴右），`Grid` 列从内容盒右边起排、单元格内的子节点贴右；方向变化时整窗重新布局。`AdaptiveScope` 的 `layout_direction` 在其子树内覆盖窗口方向：布局、`padding`/`margin` 的 `start`/`end`、勾选标记的位置与子树内读取的 `env.layout_direction` 都按最近的设定解析；Web 导出给该元素写 `dir`。水平 `Scroll`（含水平虚拟列表）在 RTL 下从右边起排（U3.7）。段落的基础方向仍只由文字决定，尚不回退到布局方向（U10.2）。
+当前实现：RTL 下 `Row` 从右向左排列子节点（子节点的物理 `margin` 不随之互换，`margin.start`/`end` 已按方向解析），`Justify` 与 `Column` 的 `Align` 的 `start`/`end` 互换，`Stack` 的 `start`/`end` 对齐与 `Absolute` 的 `absolute.start`/`absolute.end` 以右边为起点（两者都未给出时贴右），`Grid` 列从内容盒右边起排、单元格内的子节点贴右；方向变化时整窗重新布局。`AdaptiveScope` 的 `layout_direction` 在其子树内覆盖窗口方向：布局、`padding`/`margin` 的 `start`/`end`、勾选标记的位置与子树内读取的 `env.layout_direction` 都按最近的设定解析；Web 导出给该元素写 `dir`。水平 `Scroll`（含水平虚拟列表）在 RTL 下从右边起排（U3.7）。没有强方向字符的段落以节点所在的布局方向为基础方向（U10.2），方向变化时这些文字重新排版。
 
 ### U10.2 Bidi
 

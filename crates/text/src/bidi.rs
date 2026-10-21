@@ -56,6 +56,9 @@ pub enum BaseDirection {
     /// First-strong: the first strong directional character in each paragraph
     /// sets its base level; a paragraph with no strong character is LTR.
     Auto,
+    /// First-strong as [`Auto`](Self::Auto), but a paragraph with no strong
+    /// character is RTL: the base of text laid out right to left.
+    AutoRightToLeft,
     /// Force left-to-right base level for every paragraph.
     LeftToRight,
     /// Force right-to-left base level for every paragraph.
@@ -67,9 +70,17 @@ impl BaseDirection {
     /// `None` requests first-strong auto-detection, `Some(level)` forces it.
     fn default_level(self) -> Option<Level> {
         match self {
-            BaseDirection::Auto => None,
+            BaseDirection::Auto | BaseDirection::AutoRightToLeft => None,
             BaseDirection::LeftToRight => Some(Level::ltr()),
             BaseDirection::RightToLeft => Some(Level::rtl()),
+        }
+    }
+
+    /// The level a paragraph with no strong character takes.
+    fn neutral_level(self) -> Level {
+        match self {
+            BaseDirection::Auto | BaseDirection::LeftToRight => Level::ltr(),
+            BaseDirection::AutoRightToLeft | BaseDirection::RightToLeft => Level::rtl(),
         }
     }
 }
@@ -149,7 +160,8 @@ impl BidiInfo {
     /// character's level, and retains the result for level and reorder queries.
     pub fn resolve(text: &str, base: BaseDirection) -> Self {
         let info = UnicodeBidiInfo::new(text, base.default_level());
-        let has_rtl = info.has_rtl();
+        let mut has_rtl = info.has_rtl();
+        let mut levels = info.levels;
         let mut paragraphs: Vec<Paragraph> = info
             .paragraphs
             .iter()
@@ -159,11 +171,27 @@ impl BidiInfo {
                 base_level: BidiLevel(p.level.number()),
             })
             .collect();
+        // A paragraph with no strong character resolves again right to left;
+        // paragraphs split the same at any base, so its levels carry over.
+        if base == BaseDirection::AutoRightToLeft {
+            let neutral = |p: &Paragraph| {
+                unicode_bidi::get_base_direction(&text[p.start.0..p.end.0])
+                    == unicode_bidi::Direction::Mixed
+            };
+            if paragraphs.iter().any(neutral) {
+                let rtl = UnicodeBidiInfo::new(text, Some(Level::rtl()));
+                for p in paragraphs.iter_mut().filter(|p| neutral(p)) {
+                    levels[p.start.0..p.end.0].copy_from_slice(&rtl.levels[p.start.0..p.end.0]);
+                    p.base_level = BidiLevel(Level::rtl().number());
+                    has_rtl = true;
+                }
+            }
+        }
         // Empty text still presents as one empty paragraph: a caret must have a
         // paragraph to sit in. `unicode-bidi` yields none, so synthesize it under
         // the requested base (LTR for auto, per P3).
         if paragraphs.is_empty() {
-            let base_level = base.default_level().unwrap_or_else(Level::ltr);
+            let base_level = base.neutral_level();
             paragraphs.push(Paragraph {
                 start: TextOffset(0),
                 end: TextOffset(0),
@@ -172,7 +200,7 @@ impl BidiInfo {
         }
         Self {
             text: text.to_owned(),
-            levels: info.levels,
+            levels,
             original_classes: info.original_classes,
             paragraphs,
             has_rtl,
@@ -769,6 +797,19 @@ mod tests {
             cases > 400_000,
             "class corpus should carry the full sample set"
         );
+    }
+
+    #[test]
+    fn a_paragraph_with_no_strong_character_takes_the_right_to_left_base() {
+        let info = BidiInfo::resolve("123 + 4\nab 12\n%", BaseDirection::AutoRightToLeft);
+        let bases: Vec<u8> = info.paragraphs().iter().map(|p| p.base_level.0).collect();
+        assert_eq!(bases, [1, 0, 1], "the neutral paragraphs only");
+        assert!(info.has_rtl());
+        let auto = BidiInfo::resolve("123 + 4\nab 12\n%", BaseDirection::Auto);
+        let bases: Vec<u8> = auto.paragraphs().iter().map(|p| p.base_level.0).collect();
+        assert_eq!(bases, [0, 0, 0]);
+        let empty = BidiInfo::resolve("", BaseDirection::AutoRightToLeft);
+        assert_eq!(empty.paragraphs()[0].base_level, BidiLevel(1));
     }
 
     #[test]

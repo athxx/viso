@@ -23,12 +23,16 @@ pub enum FontSize {
     Inherited,
 }
 
-/// A text's size as its node and the environment resolve it, in dp.
+/// A text's size, in dp, and direction as its node and the environment
+/// resolve them.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TextSizing {
     pub font_size: f32,
     /// The height of each line's box; `None` for the face's own spacing.
     pub line_height: Option<f32>,
+    /// Whether a paragraph with no strong character runs right to left: the
+    /// node's layout direction.
+    pub rtl: bool,
 }
 
 /// The family a text draws with: a role the platform or the app's fonts
@@ -141,6 +145,7 @@ impl NodeStore {
                 .style
                 .line_height
                 .and_then(|terms| terms.fold_font(&env, font_size)),
+            rtl: self.layout_direction(id) == crate::adaptive::LayoutDirection::Rtl,
         }
     }
 }

@@ -73,6 +73,8 @@ pub(crate) struct LayoutJob {
     pub(crate) locale: String,
     /// How many lines the paragraph shows and how text it cuts off ends.
     pub(crate) limit: LineLimit,
+    /// The base direction its paragraphs resolve under.
+    pub(crate) direction: BaseDirection,
     /// Lay out from the top, reshaping every run: a cluster the last layout
     /// could not cover has a face now.
     pub(crate) full: bool,
@@ -586,9 +588,10 @@ impl WorkerState {
                     apply_text(&mut paragraph, &job.text);
                 }
                 paragraph.set_style_epoch(epoch);
+                paragraph.set_base(job.direction);
                 paragraph
             }
-            None => Paragraph::new(&*job.text, BaseDirection::Auto, epoch),
+            None => Paragraph::new(&*job.text, job.direction, epoch),
         };
         paragraph.set_tailoring(job.tailoring);
         self.needs.clear();

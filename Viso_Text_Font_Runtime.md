@@ -1062,11 +1062,12 @@ word == split_ascii_whitespace()
 
 ```text
 Auto
+AutoRightToLeft
 LeftToRight
 RightToLeft
 ```
 
-`Auto` 使用 UAX #9 paragraph-level 规则/first-strong 语义，不使用“UI locale == Arabic 就把所有段落强制 RTL”的粗糙规则。
+`Auto` 使用 UAX #9 paragraph-level 规则/first-strong 语义，不使用“UI locale == Arabic 就把所有段落强制 RTL”的粗糙规则。`AutoRightToLeft` 同为 first-strong，但没有强方向字符的段落取 RTL（UAX #9 HL1 的更高层协议）：UI 文本以 `Auto` 或 `AutoRightToLeft` 排版，取决于节点所在的布局方向（DSL U10.1/U10.2），因此 RTL 布局中纯数字或纯标点的文字从右侧起排。
 
 `Auto/LeftToRight/RightToLeft` 是概念内部类型；精确 public API 在实现阶段收敛，是否以及如何暴露给 DSL 由后续决定，本节只固定其 BiDi 语义。
 

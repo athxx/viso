@@ -60,6 +60,7 @@ fn declared(rt: &mut Rt) -> Vec<(String, TextStyle, Option<f32>)> {
             let TextSizing {
                 font_size,
                 line_height,
+                ..
             } = store.text_sizing(id, &r);
             assert_eq!(font_size, 14.0);
             (r.text, r.style, line_height)

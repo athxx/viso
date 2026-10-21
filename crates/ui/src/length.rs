@@ -447,7 +447,8 @@ impl NodeStore {
         if !changed.is_empty() {
             table.mark(changed);
         }
-        table.text_resized |= changed.intersects(LengthDeps::FONT_SIZE);
+        // A text with no strong character runs in the layout direction.
+        table.text_resized |= changed.intersects(LengthDeps::FONT_SIZE) || turned;
         if turned {
             for index in 0..self.arena().slot_count() as u32 {
                 if let Some(id) = self.arena().live_id(index)
@@ -466,7 +467,8 @@ impl NodeStore {
 
     /// Sets the direction lines run in from node `id` down, `None` for the
     /// one its parent has (the environment's at the root). Its subtree lays
-    /// out anew, its paddings and margins re-fold, and it repaints. A no-op
+    /// out anew, its paddings and margins re-fold, its texts resolve their
+    /// direction again, and it repaints. A no-op
     /// for a stale handle or an unchanged direction.
     pub fn set_layout_direction(&mut self, id: NodeId, direction: Option<LayoutDirection>) {
         if !self.arena().is_live(id) {
@@ -495,6 +497,7 @@ impl NodeStore {
         table.directions = directions;
         if changed {
             table.mark(LengthDeps::DIRECTION);
+            table.text_resized = true;
             self.mark_dirty(id, DirtyClass::LAYOUT);
             self.request_repaint();
         }

@@ -731,6 +731,15 @@ impl Paragraph {
         self.base
     }
 
+    /// Resolves the paragraph under `base` from now on, reflowing it from the
+    /// top when that changes it.
+    pub fn set_base(&mut self, base: BaseDirection) {
+        if self.base != base {
+            self.base = base;
+            self.dirty_from = Some(TextOffset(0));
+        }
+    }
+
     /// The laid-out lines from the last [`Self::layout`], top to bottom.
     pub fn lines(&self) -> &[LineLayout] {
         &self.lines

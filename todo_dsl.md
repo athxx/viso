@@ -500,8 +500,9 @@ Goal: every Core view construct reaches a live tree through all three lowering t
         layout, padding/margin folding and check marks read; `env.layout_direction`
         is anchored; a horizontal `Scroll`'s (and virtual list's) origin at its
         right edge, offsets in `[-range, 0]`.
-  - [ ] A paragraph with no strong character takes its base direction from the
-        layout direction (§U10.2).
+  - [x] A paragraph with no strong character takes its base direction from the
+        layout direction (§U10.2): `BaseDirection::AutoRightToLeft`, the node's
+        direction in `TextSizing`, a turned direction reshaping its texts.
 
 ### D2.6 — Animation (§U6)
 

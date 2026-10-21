@@ -22,6 +22,7 @@ use viso_render::{
     AtlasAlloc, ColorAlloc, ColorAtlas, GlyphAtlas, GlyphInstanceData, Rect, TextureId,
 };
 use viso_text::app_fonts::AppFonts;
+use viso_text::bidi::BaseDirection;
 use viso_text::fallback::{FallbackPlan, FallbackStyle, FontFallback};
 use viso_text::font_manifest::{AssetRef, FontManifest};
 use viso_text::inspect::{MissLedger, TextInspection};
@@ -292,6 +293,8 @@ struct LayoutTarget {
     style: FallbackStyle,
     locale: String,
     limit: LineLimit,
+    /// The base direction its paragraphs resolve under.
+    direction: BaseDirection,
 }
 
 /// A [`LayoutTarget`] but its text and locale, which the caller compares
@@ -303,6 +306,7 @@ struct TargetKey {
     base: FontFaceId,
     style: FallbackStyle,
     limit: LineLimit,
+    direction: BaseDirection,
 }
 
 impl LayoutTarget {
@@ -313,6 +317,7 @@ impl LayoutTarget {
             base: self.base,
             style: self.style,
             limit: self.limit,
+            direction: self.direction,
         }
     }
 
@@ -942,6 +947,7 @@ impl TextShaper {
         self.slots.get(&slot).map(|entry| TextSizing {
             font_size: entry.placing.font_size,
             line_height: entry.placing.line_height,
+            rtl: entry.target.direction == BaseDirection::AutoRightToLeft,
         })
     }
 
@@ -1101,6 +1107,11 @@ impl TextShaper {
                 ..FallbackStyle::default()
             },
             limit: line_limit(&request.style, request.soft_wrap, bound.map(em)),
+            direction: if sizing.rtl {
+                BaseDirection::AutoRightToLeft
+            } else {
+                BaseDirection::Auto
+            },
         };
         let mut entry = match stale {
             Some(entry) if entry.target.matches(&request.text, locale, key) => entry,
@@ -1113,6 +1124,7 @@ impl TextShaper {
                     style: key.style,
                     locale: locale.to_owned(),
                     limit: key.limit,
+                    direction: key.direction,
                 };
                 let mut entry = match stale {
                     Some(mut entry) => {
@@ -1466,6 +1478,7 @@ impl TextShaper {
                 style: target.style,
                 locale: target.locale.clone(),
                 limit: target.limit,
+                direction: target.direction,
                 full: std::mem::take(&mut entry.full),
                 ppem: entry.ppem,
                 // A node with nothing drawn yet shows a hole until it lands.
@@ -2219,6 +2232,7 @@ mod tests {
             let sizing = TextSizing {
                 font_size,
                 line_height: request.style.line_height.map(|terms| terms.dp),
+                rtl: false,
             };
             self.shape(backend, slot, request, sizing, dpi_factor, max_width)
         }
@@ -3734,6 +3748,29 @@ mod tests {
     }
 
     #[test]
+    fn a_neutral_paragraph_runs_in_its_node_s_direction() {
+        let mut gpu = headless();
+        let mut shaper = shaper();
+        let at = slot(0);
+        let digits = request("12 34", 16.0);
+        let rtl = |shaper: &TextShaper| {
+            let drawn = shaper.slots[&at].drawn.as_ref().expect("drawn");
+            drawn.lines.iter().all(|line| line.rtl)
+        };
+        for turned in [false, true, false] {
+            let sizing = TextSizing {
+                font_size: 16.0,
+                line_height: None,
+                rtl: turned,
+            };
+            shaper.shape(&mut gpu, at, &digits, sizing, 1.0, None);
+            drain(&mut shaper, &mut gpu);
+            assert_eq!(shaper.sizing(at), Some(sizing));
+            assert_eq!(rtl(&shaper), turned, "turned: {turned}");
+        }
+    }
+
+    #[test]
     fn a_new_size_places_the_laid_out_lines_again_in_the_box_they_keep() {
         let mut gpu = headless();
         let mut shaper = shaper();
@@ -3765,6 +3802,7 @@ mod tests {
         let big = TextSizing {
             font_size: 40.0,
             line_height: Some(60.0),
+            rtl: false,
         };
         shaper.shape(&mut gpu, at, &centered, big, 1.0, width);
         assert!(
