@@ -163,6 +163,8 @@ impl Rt {
         };
         if let Some(root) = self.root {
             self.store.layout(root, surface, &mut Vec::new());
+            // Hit testing reads the top layer the last paint drew.
+            self.store.repaint_dirty(root, &mut Vec::new());
         }
     }
 
@@ -610,6 +612,105 @@ export component Panel {
         rt.key(Key::Space);
         assert_eq!(rt.int("open"), 0);
         assert!(rt.store.hidden(body));
+        assert!(!rt.faulted());
+    }
+}
+
+#[test]
+fn a_modal_covers_the_surface_traps_focus_and_asks_to_close_on_its_scrim_or_escape() {
+    const MODAL: &str = r#"
+export component Page {
+    state shown = false;
+    state asks = 0;
+    view {
+        Column {
+            width: 400dp;
+            height: 300dp;
+            CheckBox { width: 100dp; height: 20dp; bind checked <=> shown; }
+            Modal {
+                bind open <=> shown;
+                on changed(event) { asks += 1; }
+                Column {
+                    width: 200dp;
+                    height: 100dp;
+                    TextInput { width: 200dp; height: 20dp; }
+                }
+            }
+        }
+    }
+}
+"#;
+    for mut rt in [Rt::reloaded(MODAL), Rt::packaged(MODAL)] {
+        let [check, modal] = rt.children_of_root()[..] else {
+            panic!("a check and a modal");
+        };
+        let content = rt.children(modal)[0];
+        let field = rt.children(content)[0];
+        let role = |rt: &Rt| rt.store.semantics(modal).map(|s| s.role);
+        assert!(rt.store.is_layer(modal) && rt.store.hidden(modal));
+        assert_eq!(role(&rt), Some(viso_ui::Role::Dialog));
+
+        rt.store.set_focused(Some(check));
+        rt.key(Key::Space);
+        assert_eq!(rt.int("shown"), 1);
+        assert!(!rt.store.hidden(modal));
+        let bounds = rt.store.bounds(modal);
+        assert_eq!((bounds.w, bounds.h), (400.0, 300.0), "over the surface");
+        let at = rt.store.bounds(content);
+        assert_eq!((at.x, at.y), (100.0, 100.0), "its content centred");
+        assert_eq!(rt.store.focused(), Some(field), "focus moves in");
+        assert_eq!(rt.store.focus_scope(), Some(modal));
+
+        rt.key(Key::Escape);
+        assert_eq!((rt.int("shown"), rt.int("asks")), (0, 1));
+        assert!(rt.store.hidden(modal));
+        assert_eq!(rt.store.focused(), Some(check), "focus comes back");
+        assert_eq!(rt.store.focus_scope(), None);
+
+        rt.key(Key::Space);
+        assert_eq!(rt.int("shown"), 1);
+        rt.click(150.0, 150.0);
+        assert_eq!(rt.int("shown"), 1, "a press inside stays open");
+        rt.click(10.0, 10.0);
+        assert_eq!((rt.int("shown"), rt.int("asks")), (0, 2));
+        assert!(!rt.store.hidden(check) && rt.store.hidden(modal));
+        assert!(!rt.faulted());
+    }
+}
+
+#[test]
+fn a_toast_shows_while_open_speaks_politely_and_lets_the_pointer_through() {
+    const TOAST: &str = r#"
+export component Page {
+    state shown = true;
+    state taps = 0;
+    view {
+        Column {
+            width: 400dp;
+            height: 300dp;
+            Button { text: "Tap"; width: 100dp; height: 20dp; on click { taps += 1; } }
+            Toast {
+                open: shown;
+                Text { text: "Saved"; width: 100dp; height: 20dp; }
+            }
+        }
+    }
+}
+"#;
+    for mut rt in [Rt::reloaded(TOAST), Rt::packaged(TOAST)] {
+        let [_, toast] = rt.children_of_root()[..] else {
+            panic!("a button and a toast");
+        };
+        let note = rt.children(toast)[0];
+        assert!(rt.store.is_layer(toast) && !rt.store.hidden(toast));
+        let said = rt.store.semantics(toast).expect("described");
+        assert_eq!(said.role, viso_ui::Role::Status);
+        assert_eq!(said.live, viso_ui::LiveRegion::Polite);
+        let at = rt.store.bounds(note);
+        assert_eq!((at.x, at.y), (150.0, 280.0), "at the bottom");
+        rt.click(10.0, 10.0);
+        assert_eq!(rt.int("taps"), 1, "the toast's box lets the press through");
+        assert_eq!(rt.store.focus_scope(), None, "a toast traps nothing");
         assert!(!rt.faulted());
     }
 }

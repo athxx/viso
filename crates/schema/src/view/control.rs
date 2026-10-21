@@ -46,11 +46,19 @@ pub enum ControlKind {
     /// `Disclosure`: a release on its first child, the header, or Space/Enter
     /// flips `expanded`; while it is not expanded only the header shows.
     Disclosure = 9,
+    /// `Modal` and `Sheet`: a layer over the whole surface that shows while
+    /// `open`, traps focus and drops it back on close; a release on its
+    /// scrim, outside its content, or Escape reports `open` false.
+    Dialog = 10,
+    /// `Toast`: a layer over the whole surface that shows while `open` and
+    /// lets the pointer through outside its content; it has no built-in
+    /// response.
+    Toast = 11,
 }
 
 impl ControlKind {
     /// Every kind, by discriminant.
-    pub const ALL: [ControlKind; 10] = [
+    pub const ALL: [ControlKind; 12] = [
         ControlKind::Check,
         ControlKind::Slider,
         ControlKind::Select,
@@ -61,6 +69,8 @@ impl ControlKind {
         ControlKind::Shader,
         ControlKind::Switch,
         ControlKind::Disclosure,
+        ControlKind::Dialog,
+        ControlKind::Toast,
     ];
 
     /// The kind native widget `widget` is.
@@ -69,6 +79,8 @@ impl ControlKind {
             "CheckBox" => ControlKind::Check,
             "Toggle" => ControlKind::Switch,
             "Disclosure" => ControlKind::Disclosure,
+            "Modal" | "Sheet" => ControlKind::Dialog,
+            "Toast" => ControlKind::Toast,
             "Slider" => ControlKind::Slider,
             "Tabs" | "RadioGroup" => ControlKind::Select,
             "TextInput" => ControlKind::TextInput,
@@ -95,7 +107,11 @@ impl ControlKind {
     pub fn responds(self) -> bool {
         !matches!(
             self,
-            ControlKind::Label | ControlKind::Plain | ControlKind::Asset | ControlKind::Shader
+            ControlKind::Label
+                | ControlKind::Plain
+                | ControlKind::Asset
+                | ControlKind::Shader
+                | ControlKind::Toast
         )
     }
 
@@ -107,6 +123,7 @@ impl ControlKind {
                 ControlKind::Check
                     | ControlKind::Switch
                     | ControlKind::Disclosure
+                    | ControlKind::Dialog
                     | ControlKind::Slider
                     | ControlKind::TextInput,
                 EventRoute::Changed
@@ -164,6 +181,7 @@ impl ControlKind {
             (ControlKind::Label, "overflow") => ControlInput::Overflow,
             (ControlKind::Check | ControlKind::Switch, "checked")
             | (ControlKind::Disclosure, "expanded")
+            | (ControlKind::Dialog | ControlKind::Toast, "open")
             | (ControlKind::Slider, "value")
             | (ControlKind::Select, "selected")
             | (ControlKind::TextInput, "value")
@@ -188,6 +206,8 @@ impl ControlKind {
             ControlKind::Check => "Check",
             ControlKind::Switch => "Switch",
             ControlKind::Disclosure => "Disclosure",
+            ControlKind::Dialog => "Dialog",
+            ControlKind::Toast => "Toast",
             ControlKind::Slider => "Slider",
             ControlKind::Select => "Select",
             ControlKind::TextInput => "TextInput",
@@ -218,6 +238,8 @@ pub fn widget_role(widget: &str) -> Option<Role> {
         "Image" | "Svg" => Role::Image,
         "VirtualList" => Role::List,
         "NavigationStack" => Role::Navigation,
+        "Modal" | "Sheet" => Role::Dialog,
+        "Toast" => Role::Status,
         _ => return None,
     })
 }
@@ -1290,7 +1312,7 @@ mod tests {
         for kind in ControlKind::ALL {
             assert_eq!(ControlKind::from_u8(kind as u8), Some(kind));
         }
-        assert_eq!(ControlKind::from_u8(10), None);
+        assert_eq!(ControlKind::from_u8(12), None);
         assert_eq!(ControlKind::of("Svg"), ControlKind::Asset);
         assert_eq!(ControlKind::of("ShaderView"), ControlKind::Shader);
         assert_eq!(
@@ -1472,7 +1494,7 @@ mod tests {
             "layout slots ascend"
         );
         let mut bad = bytes.clone();
-        bad[0] = 10;
+        bad[0] = 12;
         assert!(Control::decode_from_slice(&bad).is_err());
         let mut bad = bytes.clone();
         bad[1] = 99;

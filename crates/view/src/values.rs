@@ -49,6 +49,14 @@ use crate::text_style::text_style;
 const FONT_SIZE: f32 = 14.0;
 
 /// The color of a text whose node binds no `color`.
+/// The wash a dialog with no `background` dims the scene behind it with.
+const SCRIM: Rgba = Rgba {
+    r: 0.0,
+    g: 0.0,
+    b: 0.0,
+    a: 0.32,
+};
+
 const COLOR: Rgba = Rgba {
     r: 0.05,
     g: 0.05,
@@ -422,7 +430,8 @@ impl Shown {
         };
         // Whether the value at `at` shows: it is given, or it showed before.
         let shown = |at: usize| held || given(at);
-        let shown_background = shown(LOOK).then_some(());
+        let dialog = control.kind == ControlKind::Dialog;
+        let shown_background = (shown(LOOK) || dialog).then_some(());
         let shown_opacity = shown(LOOK + 1).then_some(());
         let shown_radius = shown(LOOK + 2);
         let shown_border = shown(LOOK + 3);
@@ -522,7 +531,22 @@ impl Shown {
             _ => None,
         };
         let store = &mut *cx.store;
-        if shown(NODE) && changed(NODE) {
+        // A dialog or a toast is a layer that shows while open; a dialog
+        // traps the focus meanwhile, and a toast's own box lets the pointer
+        // through.
+        if matches!(control.kind, ControlKind::Dialog | ControlKind::Toast) {
+            if first {
+                store.set_layer(self.node, true);
+                store.set_hittable(self.node, dialog);
+            }
+            if first || changed(0) || changed(NODE) {
+                let open = truth(value, false) && truth(visible, true);
+                store.set_hidden(self.node, !open);
+                if dialog {
+                    store.trap_focus(self.node, open);
+                }
+            }
+        } else if shown(NODE) && changed(NODE) {
             store.set_hidden(self.node, !truth(visible, true));
         }
         if given(NODE + 1) && changed(NODE + 1) {
@@ -577,7 +601,14 @@ impl Shown {
             store.set_border(self.node, stroke(border));
         }
         for (at, entry, value) in [
-            (LOOK, shown_background, LookValue::Fill(color(background))),
+            (
+                LOOK,
+                shown_background,
+                LookValue::Fill(match background {
+                    Value::Nil if dialog => SCRIM,
+                    background => color(background),
+                }),
+            ),
             (
                 LOOK + 1,
                 shown_opacity,
@@ -619,7 +650,7 @@ impl Shown {
             return;
         }
         match control.kind {
-            ControlKind::Plain => {}
+            ControlKind::Plain | ControlKind::Dialog | ControlKind::Toast => {}
             // A shader the view's table lacks, or a value that is not its
             // parameters, leaves the node as it is.
             ControlKind::Shader => {

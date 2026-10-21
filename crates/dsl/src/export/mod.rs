@@ -329,6 +329,12 @@ body { font-family: var(--typography-family); font-size: var(--typography-base-s
 .vx-input { font: inherit; color: inherit; background: transparent; border: 0; padding: 0; margin: 0; }
 .vx-check, .vx-range { margin: 0; accent-color: var(--colors-primary); }
 .vx-image { display: block; object-fit: contain; }
+.vx-layer { position: fixed; inset: 0; width: auto; height: auto; max-width: none; max-height: none; margin: 0; padding: 0; border: 0; color: inherit; z-index: 1; }
+:where(dialog.vx-layer) { background: rgba(0, 0, 0, 0.32); }
+.vx-layer::backdrop { background: transparent; }
+dialog.vx-layer:not([open]), .vx-layer[hidden] { display: none; }
+.vx-toast { pointer-events: none; }
+.vx-toast > * { pointer-events: auto; }
 .vx-mask { display: block; mask: center / contain no-repeat; -webkit-mask: center / contain no-repeat; }
 ";
 

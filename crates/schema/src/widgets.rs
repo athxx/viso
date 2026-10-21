@@ -178,6 +178,7 @@ const SELECTED: &[WidgetProperty] = &[two_way("selected", "U32")];
 
 /// Whether a `Disclosure` shows its body.
 const DISCLOSURE: &[WidgetProperty] = &[two_way("expanded", "Bool")];
+const OPEN: &[WidgetProperty] = &[two_way("open", "Bool")];
 
 const CURRENT: &[WidgetProperty] = &[two_way("current", "U32")];
 
@@ -433,6 +434,32 @@ pub const STANDARD: &[NativeWidget] = &[
     .events(&[TOGGLE_EVENTS, STANDARD_EVENTS])
     .slots(CHILDREN)
     .interactive(),
+    layout(
+        "Modal",
+        WidgetNode::Stack,
+        &[OPEN, STACK, LAYOUT, TRANSFORM, FOCUS],
+    )
+    .provides(&STACK_CHILD)
+    .events(&[TOGGLE_EVENTS, STANDARD_EVENTS])
+    .slots(CHILDREN)
+    .interactive(),
+    layout(
+        "Sheet",
+        WidgetNode::Stack,
+        &[OPEN, STACK, LAYOUT, TRANSFORM, FOCUS],
+    )
+    .provides(&STACK_CHILD)
+    .events(&[TOGGLE_EVENTS, STANDARD_EVENTS])
+    .slots(CHILDREN)
+    .interactive(),
+    layout(
+        "Toast",
+        WidgetNode::Stack,
+        &[OPEN, STACK, LAYOUT, TRANSFORM, FOCUS],
+    )
+    .provides(&STACK_CHILD)
+    .events(&[TOGGLE_EVENTS, STANDARD_EVENTS])
+    .slots(CHILDREN),
     layout("RadioGroup", COLUMN, &[SELECTED, LAYOUT, TRANSFORM, FOCUS])
         .events(&[SELECTED_EVENTS, STANDARD_EVENTS])
         .slots(CHILDREN)

@@ -218,6 +218,14 @@ const P = {
   level: (el, v) => attr(el, "aria-level", v),
   checked: (el, v) => { el.checked = truth(v); },
   open: (el, v) => { el.open = truth(v); },
+  // A dialog opens as a modal one, in the top layer with the page behind
+  // it inert; a toast shows unless hidden.
+  layer(el, v) {
+    const on = truth(v);
+    if (el.tagName !== "DIALOG") el.hidden = !on;
+    else if (on && !el.open) el.showModal();
+    else if (!on && el.open) el.close();
+  },
   range: (el, v, name) => { el[name] = v === null ? "" : String(v); },
   input: (el, v) => { const s = text(v); if (el.value !== s) el.value = s; },
   placeholder: (el, v) => attr(el, "placeholder", v),
@@ -385,6 +393,12 @@ const listen = (el, route, capture, control, fire) => {
   } else if (route === 9) {
     if (control === 0 || control === 8) el.addEventListener("change", () => fire(rec([bool(el.checked)])), capture);
     else if (control === 9) el.addEventListener("toggle", () => fire(rec([bool(el.open)])), capture);
+    else if (control === 10) {
+      // Escape and a press on the scrim, the dialog's own box, ask it to
+      // close; the view decides.
+      el.addEventListener("cancel", (e) => { e.preventDefault(); fire(rec([bool(false)])); }, capture);
+      el.addEventListener("pointerdown", (e) => { if (e.target === el && el.open) fire(rec([bool(false)])); }, capture);
+    }
     else if (control === 1) el.addEventListener("input", () => fire(rec([Number(el.value)])), capture);
     else el.addEventListener("input", () => fire(rec([el.value])), capture);
   } else if (route === 10) {
@@ -463,6 +477,7 @@ const sync = (el, control, value) => {
   const v = value ? value() : null;
   if (control === 0 || control === 8) el.checked = truth(v);
   else if (control === 9) el.open = truth(v);
+  else if (control === 10 || control === 11) P.layer(el, v);
   else if (control === 1) el.value = v === null ? el.min : String(v);
   else if (control === 2) select(el, v === null ? 0n : v, el.$radio);
   else if (v !== null) P.input(el, v);

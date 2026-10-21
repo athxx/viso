@@ -374,6 +374,12 @@ pub trait LayoutTree {
     /// measures to zero on both axes and lays out to a zero rect, contributing
     /// nothing to a parent's main-axis sum, without a structural rebuild.
     fn hidden(&self, index: u32) -> bool;
+    /// Whether a node is laid out apart from its parent, which measures and
+    /// places its other children as if it were not there: a layer over the
+    /// whole surface.
+    fn out_of_flow(&self, _index: u32) -> bool {
+        false
+    }
     /// Record that a child was assigned `width` (physical px) by its Flex
     /// parent, so a wrap-eligible text leaf can be reshaped at that width in a
     /// later pass. A pure data write: the implementation decides eligibility
@@ -539,7 +545,7 @@ pub fn measure(tree: &mut impl LayoutTree, root: u32, scratch: &mut Vec<u32>) {
     // A hidden subtree folds out of layout: it measures to zero (contributing
     // nothing to a parent's main-axis sum) and its children are never walked, so
     // it reserves no scratch and does not recurse.
-    if tree.hidden(root) {
+    if tree.hidden(root) || tree.out_of_flow(root) {
         tree.set_measured(root, Measured::default());
         return;
     }
@@ -1028,7 +1034,11 @@ pub fn layout_on(
     // A hidden subtree lays out to a zero rect at the parent-assigned origin and
     // its children are never placed — it measured to zero, so the parent already
     // gave it a zero-extent slot; short-circuiting here also spares the whole
-    // subtree's layout recursion.
+    // subtree's layout recursion. A node out of flow keeps the box its own
+    // layout gives it.
+    if tree.out_of_flow(root) {
+        return;
+    }
     if tree.hidden(root) {
         tree.set_bounds(
             root,

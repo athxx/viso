@@ -839,3 +839,48 @@ export component Panel {
         "the toggle reports `changed`: {script}"
     );
 }
+
+#[test]
+fn a_modal_exports_as_a_dialog_layer_and_a_toast_as_a_hidden_status() {
+    const PAGE: &str = r#"
+export component Page {
+    state shown = false;
+    view {
+        Column {
+            Modal {
+                bind open <=> shown;
+                Text { text: "Sure?"; }
+            }
+            Toast {
+                open: false;
+                Text { text: "Saved"; }
+            }
+        }
+    }
+}
+"#;
+    let page = export(PAGE, false).unwrap();
+    let index = &page.index;
+    assert!(
+        index.contains("<dialog class=\"vx-stack vx-layer"),
+        "{index}"
+    );
+    assert!(
+        !index.contains("role=\"dialog\""),
+        "a dialog element is one: {index}"
+    );
+    assert!(index.contains("vx-layer vx-toast"), "{index}");
+    assert!(index.contains("role=\"status\""), "{index}");
+    assert!(
+        index.contains(" hidden"),
+        "a closed toast is hidden: {index}"
+    );
+    assert!(
+        !index.contains("aria-live"),
+        "a status speaks politely of itself: {index}"
+    );
+    let script = page.script.as_deref().unwrap();
+    assert!(script.contains("P.layer(e["), "{script}");
+    assert!(script.contains(", 10, (p) =>"), "{script}");
+    assert!(page.styles.contains("dialog.vx-layer:not([open])"));
+}

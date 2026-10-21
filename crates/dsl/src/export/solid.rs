@@ -654,6 +654,9 @@ impl Jsx<'_> {
                         Prop::HeadingLevel => attrs.push(format!("aria-level={{show.opt({v})}}")),
                         Prop::Checked => attrs.push(format!("checked={{show.truth({v})}}")),
                         Prop::Open => attrs.push(format!("open={{show.truth({v})}}")),
+                        Prop::Layer { .. } => {
+                            refs.push(format!("st.effect(() => show.layer(el, {v}));"));
+                        }
                         Prop::Range(name) => attrs.push(format!("{name}={{show.num({v})}}")),
                         Prop::InputValue => attrs.push(format!("value={{show.text({v})}}")),
                         Prop::Placeholder => attrs.push(format!("placeholder={{show.opt({v})}}")),

@@ -111,6 +111,11 @@ pub(super) enum Prop {
     Checked,
     /// A disclosure's `expanded`, its `<details>`' `open`.
     Open,
+    /// Whether a layer shows: a dialog's `<dialog>` open as a modal one, a
+    /// toast not `hidden`.
+    Layer {
+        dialog: bool,
+    },
     /// A slider's `value`, `min`, `max` or `step`.
     Range(&'static str),
     InputValue,
@@ -431,6 +436,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         el.tag = match (node.type_name.as_str(), role) {
             _ if summary => "summary",
             ("Disclosure", _) => "details",
+            ("Modal" | "Sheet", _) => "dialog",
             ("Button", _) => "button",
             ("TextInput" | "Toggle" | "CheckBox" | "Slider", _) => "input",
             ("Image" | "Svg", _) if !masked => "img",
@@ -453,6 +459,13 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             (_, "Image" | "Svg") => "vx-image",
             _ => "vx-leaf",
         };
+        match node.type_name.as_str() {
+            "Modal" | "Sheet" => el.classes.push("vx-layer".to_owned()),
+            "Toast" => el
+                .classes
+                .extend(["vx-layer".to_owned(), "vx-toast".to_owned()]),
+            _ => {}
+        }
         if node.kind == NodeKind::VirtualList {
             el.classes.push("vx-list".to_owned());
             if node.style.axis == Some(AxisIr::Row) {
@@ -499,6 +512,8 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             }
         }
         match node.live {
+            // A status speaks politely of itself.
+            Some(LiveRegion::Polite) if role == Some(Role::Status) => {}
             Some(LiveRegion::Polite) => el.attr("aria-live", "polite"),
             Some(LiveRegion::Assertive) => el.attr("aria-live", "assertive"),
             _ => {}
@@ -962,6 +977,23 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 ) && fixed.truth()
                 {
                     el.attr("open", "");
+                }
+            }
+            ControlKind::Dialog | ControlKind::Toast => {
+                let dialog = control.kind == ControlKind::Dialog;
+                let shows = self.bind(
+                    wires,
+                    control.value,
+                    Prop::Layer { dialog },
+                    "whether it is open",
+                    at,
+                );
+                // A layer its script opens starts closed.
+                let open = shows.is_some_and(|fixed| fixed.truth());
+                match (dialog, open) {
+                    (true, true) => el.attr("open", ""),
+                    (false, false) => el.attr("hidden", ""),
+                    _ => {}
                 }
             }
             ControlKind::Slider => {
@@ -1832,6 +1864,7 @@ fn aria_role(role: Role, tag: &str, widget: &str) -> Option<&'static str> {
         | (Role::TextField | Role::SecureField, "input", _)
         | (Role::Image, "img", _)
         | (Role::Navigation, "nav", _)
+        | (Role::Dialog, "dialog", _)
         | (Role::Label, _, _) => return None,
         (Role::Group, ..) => "group",
         (Role::Button, ..) => "button",

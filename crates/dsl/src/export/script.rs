@@ -313,6 +313,7 @@ fn mount(out: &mut String, index: usize, content: &Content, eval: &Eval<'_>, roo
                         Prop::HeadingLevel => format!("P.level({el}, {value})"),
                         Prop::Checked => format!("P.checked({el}, {value})"),
                         Prop::Open => format!("P.open({el}, {value})"),
+                        Prop::Layer { .. } => format!("P.layer({el}, {value})"),
                         Prop::Range(name) => format!("P.range({el}, {value}, \"{name}\")"),
                         Prop::InputValue => format!("P.input({el}, {value})"),
                         Prop::Placeholder => format!("P.placeholder({el}, {value})"),

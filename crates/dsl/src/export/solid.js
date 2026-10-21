@@ -298,6 +298,7 @@ export const show = {
   rotate: turning,
   origin: pivot,
   focusable: P.focusable,
+  layer: P.layer,
   enabled: P.enabled,
   autofocus: P.autofocus,
   reaches: (e) => !off(e.target),

@@ -387,7 +387,7 @@ gap, and CI can run all of it headless.
       `LiveRegion::…`; a hidden node's subtree leaves the semantics tree; the direct
       children of `Tabs` are tabs and of `RadioGroup` radios (through regions too),
       `NavigationStack` is navigation; AccessKit and the web publish them.
-- [ ] The default roles of `Modal`, `Sheet` (`dialog`) and `Toast` (`status`,
+- [x] The default roles of `Modal`, `Sheet` (`dialog`) and `Toast` (`status`,
       polite) once they are `.vs` widgets.
 - [x] Filters (§22.4): `--filter <pattern>`, `--exact`, `--fail-fast`, `--nocapture`,
       `--update-snapshots`, `--target <t>`, `--device <profile>` (C3). (`--target`

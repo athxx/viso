@@ -662,6 +662,8 @@ pub struct NodeStore {
     pub(crate) holds: crate::long_press::Holds,
     /// Cold: the nodes folded to their first child.
     pub(crate) folds: crate::fold::Folds,
+    /// Cold: the nodes laid out over the whole surface.
+    pub(crate) layers: crate::layer::Layers,
     /// Cold: the nodes whose lengths read the environment (`px`, `sp`, `em`),
     /// re-folded into `layout` when it changes. Empty in a tree of plain `dp`
     /// and `%` lengths.
@@ -781,6 +783,7 @@ impl NodeStore {
         self.drags.clear();
         self.holds.clear();
         self.folds.clear();
+        self.layers.clear();
         self.focus_scope = None;
         self.draggable_regions.clear();
         self.tasks.clear();
@@ -910,7 +913,7 @@ impl NodeStore {
     /// What slot `i` adds to its parent's reach: its reach where its translate
     /// and turn place it, a device pixel wider for the snapping of a moved
     /// subtree.
-    fn reach_in_parent(&self, i: usize) -> Rect {
+    pub(crate) fn reach_in_parent(&self, i: usize) -> Rect {
         let reach = self.reach[i];
         let translate = self.translate[i];
         if reach.is_empty() {
@@ -978,7 +981,7 @@ impl NodeStore {
     }
 
     /// Re-join the reach of every node in `id`'s subtree, children first.
-    fn rejoin_subtree(&mut self, id: NodeId) {
+    pub(crate) fn rejoin_subtree(&mut self, id: NodeId) {
         if !self.concealed(id.index() as usize) {
             let mut child = self.arena.first_child(id);
             while let Some(c) = child {
@@ -994,7 +997,7 @@ impl NodeStore {
     /// up the ancestry, stopping at the first ancestor it leaves as it was: one
     /// whose box held the part before and after, or whose re-joined reach did
     /// not move.
-    fn lift_reach(&mut self, mut id: NodeId, mut was: Rect) {
+    pub(crate) fn lift_reach(&mut self, mut id: NodeId, mut was: Rect) {
         while let Some(parent) = self.arena.parent(id) {
             let now = self.reach_in_parent(id.index() as usize);
             let own = self.bounds[parent.index() as usize];
@@ -4340,6 +4343,7 @@ impl NodeStore {
         self.hittable[i] = true;
         self.hidden[i] = false;
         self.folds.forget(i as u32);
+        self.layers.forget(i as u32);
         self.clips[i] = false;
         self.overlay[i] = false;
         self.opacity[i] = 1.0;
@@ -4506,6 +4510,7 @@ impl NodeStore {
         let was = self.reach_in_parent(root.index() as usize);
         self.rejoin_subtree(root);
         self.lift_reach(root, was);
+        self.lay_layers(root, surface, scratch);
         self.settle_scroll_requests();
     }
 
@@ -4665,6 +4670,12 @@ impl NodeStore {
         let mut measured = 0;
         let mut laid_out = 0;
         for redo in redo_roots.iter().copied() {
+            if redo != root && self.is_layer(redo) {
+                self.lay_layer(redo, surface, scratch);
+                measured += self.subtree_len(redo);
+                laid_out += self.subtree_len(redo);
+                continue;
+            }
             scratch.clear();
             layout::measure(self, redo.index(), scratch);
             measured += self.subtree_len(redo);
@@ -4714,6 +4725,11 @@ impl NodeStore {
             self.lift_reach(redo, was);
             laid_out += self.subtree_len(redo);
         }
+        // A layout of the whole tree skipped its layers, and a new surface
+        // moves them.
+        if redo_roots.contains(&root) || self.layer_surface() != Some(surface) {
+            self.lay_layers(root, surface, scratch);
+        }
         // A waiting scroll applies once layout knows the range.
         self.settle_scroll_requests();
         (measured, laid_out)
@@ -4731,6 +4747,9 @@ impl NodeStore {
         };
         if id == root || self.concealed(id.index() as usize) {
             return false;
+        }
+        if self.redone_alone(id) {
+            return true;
         }
         let p = parent.index() as usize;
         let alone = match self.layout[p] {
@@ -4763,7 +4782,7 @@ impl NodeStore {
     }
 
     /// How many parent links lie between `id` and the top of its tree.
-    fn depth_of(&self, id: NodeId) -> u32 {
+    pub(crate) fn depth_of(&self, id: NodeId) -> u32 {
         let mut depth = 0;
         let mut at = id.node_index();
         loop {
@@ -4782,6 +4801,10 @@ impl NodeStore {
         while !at.is_none() {
             if self.redo_flag[at.slot()] {
                 return true;
+            }
+            // A layout from above a layer skips it.
+            if self.redone_alone_at(at) {
+                return false;
             }
             at = self.arena.parent_of(at);
         }
@@ -5249,6 +5272,11 @@ impl LayoutTree for NodeStore {
     #[inline]
     fn hidden(&self, index: u32) -> bool {
         self.concealed(index as usize)
+    }
+
+    #[inline]
+    fn out_of_flow(&self, index: u32) -> bool {
+        self.skips_layer(index)
     }
 
     fn report_length(&mut self, index: u32, issue: crate::length::LengthIssue) {

@@ -28,6 +28,7 @@ pub mod hit_test;
 pub mod input;
 pub mod inspect;
 pub mod interaction;
+pub mod layer;
 pub mod layout;
 pub mod layout_value;
 pub mod length;

@@ -61,12 +61,15 @@ impl Drive for Control {
         match self.kind {
             ControlKind::Check | ControlKind::Switch => toggle(self, host, scope, cx),
             ControlKind::Disclosure => disclose(self, host, scope, cx),
+            ControlKind::Dialog => dismiss(self, host, scope, cx),
             ControlKind::Slider => slider(self, host, scope, cx),
             ControlKind::Select => select(self, host, scope, cx),
             ControlKind::TextInput => text_input(cx),
-            ControlKind::Label | ControlKind::Plain | ControlKind::Asset | ControlKind::Shader => {
-                None
-            }
+            ControlKind::Label
+            | ControlKind::Plain
+            | ControlKind::Asset
+            | ControlKind::Shader
+            | ControlKind::Toast => None,
         }
     }
 }
@@ -176,6 +179,42 @@ fn disclose(
     }
     let expanded = read(host, control.value, scope, cx).as_int().unwrap_or(0) != 0;
     Some((EventRoute::Changed, field(Value::bool(!expanded))))
+}
+
+/// A dialog's response: it swallows the pointer on its scrim, its own box
+/// outside its content, and a press there or a fresh Escape inside it asks
+/// an open dialog to close.
+fn dismiss(
+    control: &Control,
+    host: &mut ViewHost,
+    scope: &Scope,
+    cx: &mut EventCx<'_>,
+) -> Option<(EventRoute, Value)> {
+    let escape = cx
+        .key()
+        .is_some_and(|k| k.pressed && !k.repeat && k.key == Key::Escape);
+    let closes = match cx.pointer().map(|p| p.phase) {
+        Some(phase) if cx.phase() == DispatchPhase::Target => {
+            cx.stop_propagation();
+            // The rest of the press stays with the dialog, so its release
+            // reaches nothing the dialog uncovers as it closes.
+            if phase == PointerPhase::Down
+                && let Some(node) = cx.node()
+            {
+                cx.capture_pointer(node);
+            }
+            phase == PointerPhase::Down
+        }
+        _ if escape => {
+            cx.stop_propagation();
+            true
+        }
+        _ => false,
+    };
+    if !closes || read(host, control.value, scope, cx).as_int().unwrap_or(0) == 0 {
+        return None;
+    }
+    Some((EventRoute::Changed, field(Value::bool(false))))
 }
 
 fn slider(

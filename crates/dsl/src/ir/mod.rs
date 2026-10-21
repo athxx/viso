@@ -700,6 +700,18 @@ impl<'a, 'l> Lowering<'a, 'l> {
                 other => self.child(other, &mut children),
             }
         }
+        // A layer places its content where its kind does unless the author
+        // places it, and a toast speaks politely unless told otherwise.
+        if style.content_align.is_none() && !pending.iter().any(|p| p.name == "content_align") {
+            style.content_align = match type_name.as_str() {
+                "Modal" => Some(ui_ir::Alignment2D::Center),
+                "Sheet" | "Toast" => Some(ui_ir::Alignment2D::Bottom),
+                _ => None,
+            };
+        }
+        if control == ControlKind::Toast && live.is_none() {
+            live = Some(viso_schema::LiveRegion::Polite);
+        }
         if style.scope.is_some()
             && let Some(at) = pending.iter().position(|p| p.name == "basis")
         {
