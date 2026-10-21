@@ -3,7 +3,7 @@
 //! Responsibilities (the `viso-platform` boundary):
 //! window/surface, raw pointer/keyboard/IME events, clipboard, cursor,
 //! system appearance, lifecycle, app activation, native handles,
-//! accessibility bridge hook, audio output.
+//! accessibility bridge hook, audio output, standard output.
 //!
 //! This crate MUST NOT depend on ui/widgets/dsl/studio, and MUST NOT pull in
 //! script, network, video, or live-reload.
@@ -45,6 +45,7 @@ pub mod menu;
     test
 ))]
 mod panel;
+pub mod stdio;
 pub mod time;
 pub mod wake;
 

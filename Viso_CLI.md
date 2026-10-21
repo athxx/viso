@@ -1268,7 +1268,7 @@ Exit code：首次 build 失败按 §7（1/3/4）；app 正常退出 0；app cra
   - `web-dom`/`web-hybrid` 以 `TargetUnavailable` 退出；
 - `viso ios simulator` / `viso android emulator` 的 `list|create|start|stop|delete`（§11.4、§12.4）：profile 存于 `~/.viso/ios/simulators/<id>.toml` / `~/.viso/android/emulators/<id>.toml`（`preset`、`system`、`device`，`$VISO_HOME` 可改 root）；iOS 以最新已安装 runtime 与对应 iPhone/iPad 机型创建 Simulator，Android 不依赖 `avdmanager`，直接按最新（或 `--api` 指定）已安装 system image 写出 AVD `viso_<id>`；`start --no-window` 无窗口启动 emulator；`list` 列出 `NAME PROFILE STATUS SYSTEM`；
 - Dev artifact 与 `viso build` 共用 Build Service（§14.5）：以 dev profile 的 `--profile dev` 与 `[profile.dev]` 设置构建；每次 build 前取 `build-<target>.lock`，被 `viso build` 占用时等待（输出一条 `log`）而不失败；`--json` 下 launch build 之后输出一条 `artifact`（host `binary`、iOS `app-bundle`、Android `apk`、web `wasm`，`path` 相对 project root），Rust 编译诊断为带 span 的 `diagnostic`；
-- 尚未实现：`viso serve --https`。
+- `viso serve` 不提供 HTTPS：loopback 页面本身就是 secure context，WebGPU 可用；另一台设备的浏览器经端口转发以 loopback 打开页面（Android `adb reverse`），不为此引入 TLS 依赖。
 
 ---
 
@@ -1434,17 +1434,14 @@ print local/network URL
 --port <n>
 --open
 --lan
---https
---cert <path>
---key <path>
 --no-hot-reload
 ```
 
 默认只监听 loopback；非 loopback `--host` 必须同时给 `--lan`，否则 usage error（Viso_Hot_Reload.md §46）。
 
-`serve` 与 `viso run web-*` 共用 Web Serve Service 与 Dev Session；区别是 `serve` 不启动浏览器开发 session（`--open` 只打开 URL），用于 LAN/HTTPS/外部浏览器访问。
+`serve` 与 `viso run web-*` 共用 Web Serve Service 与 Dev Session；区别是 `serve` 不启动浏览器开发 session（`--open` 只打开 URL），用于 LAN/外部浏览器访问。
 
-已实现（`--https`/`--cert`/`--key` 除外）：`--lan` 不给 `--host` 时绑定 loopback 与本机通往网络的那个私有地址（10/8、172.16/12、192.168/16、100.64/10、169.254/16、fc00::/7、fe80::/10）；该地址不是私有地址时 exit 3，要求以 `--host <ip> --lan` 指明接口；`--host 0.0.0.0 --lan` 监听全部接口；`--lan` 配 loopback `--host` 是 usage error。每个请求的 `Host` 必须是 server 所绑定的 IP 字面量或 `localhost`（`0.0.0.0` 时任一 IP 字面量）且端口一致，否则 `421`，域名一律拒绝，以挡 DNS rebinding；WebSocket 的 `Origin` 必须等于 `http://` 加该 `Host`。页面的 dev channel 连接页面自己的来源地址，不再经 launch 变量给出地址。LAN 下 human 输出两个地址并警告：网络上任何设备都能加载页面、驱动该 session；web-gpu 另警告其他设备的浏览器只对 secure context 提供 WebGPU，纯 HTTP 页面不是。`--json` 的 `server` event 在 LAN 下给网络地址与 `lan:true`。
+已实现：`--lan` 不给 `--host` 时绑定 loopback 与本机通往网络的那个私有地址（10/8、172.16/12、192.168/16、100.64/10、169.254/16、fc00::/7、fe80::/10）；该地址不是私有地址时 exit 3，要求以 `--host <ip> --lan` 指明接口；`--host 0.0.0.0 --lan` 监听全部接口；`--lan` 配 loopback `--host` 是 usage error。每个请求的 `Host` 必须是 server 所绑定的 IP 字面量或 `localhost`（`0.0.0.0` 时任一 IP 字面量）且端口一致，否则 `421`，域名一律拒绝，以挡 DNS rebinding；WebSocket 的 `Origin` 必须等于 `http://` 加该 `Host`。页面的 dev channel 连接页面自己的来源地址，不再经 launch 变量给出地址。LAN 下 human 输出两个地址并警告：网络上任何设备都能加载页面、驱动该 session；web-gpu 另警告其他设备的浏览器只对 secure context 提供 WebGPU，纯 HTTP 页面不是。`--json` 的 `server` event 在 LAN 下给网络地址与 `lan:true`。
 
 ### 15.2 Port selection
 

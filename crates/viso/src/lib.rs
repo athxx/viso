@@ -114,9 +114,80 @@ pub use viso_ui_macros::{asset, component, ui, view};
 pub mod __private {
     pub use viso_behavior;
     pub use viso_ende;
+    pub use viso_platform;
     pub use viso_ui;
     pub use viso_view;
 }
+
+// `print!`, `println!`, `eprint!` and `eprintln!` for every target: natively
+// what `std`'s print, and on the web, where `std` drops what is printed, each
+// line goes to the page's console (output to `console.log`, errors to
+// `console.error`), where devtools and the dev session read it. A glob
+// import cannot shadow `std`'s, so they are named by path (`viso::println!`)
+// or imported by name (`use viso::println;`).
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __print {
+    ($($arg:tt)*) => {
+        $crate::__private::viso_platform::stdio::write(
+            $crate::__private::viso_platform::stdio::Stream::Out,
+            ::core::format_args!($($arg)*),
+        )
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __println {
+    () => {
+        $crate::__print!("\n")
+    };
+    ($($arg:tt)*) => {
+        $crate::__private::viso_platform::stdio::write(
+            $crate::__private::viso_platform::stdio::Stream::Out,
+            ::core::format_args!("{}\n", ::core::format_args!($($arg)*)),
+        )
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __eprint {
+    ($($arg:tt)*) => {
+        $crate::__private::viso_platform::stdio::write(
+            $crate::__private::viso_platform::stdio::Stream::Err,
+            ::core::format_args!($($arg)*),
+        )
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __eprintln {
+    () => {
+        $crate::__eprint!("\n")
+    };
+    ($($arg:tt)*) => {
+        $crate::__private::viso_platform::stdio::write(
+            $crate::__private::viso_platform::stdio::Stream::Err,
+            ::core::format_args!("{}\n", ::core::format_args!($($arg)*)),
+        )
+    };
+}
+
+/// Prints to the standard error, as [`std::eprint!`] does; on the web, to the
+/// page's console once the line ends.
+pub use crate::__eprint as eprint;
+/// Prints a line to the standard error, as [`std::eprintln!`] does; on the
+/// web, to the page's console (`console.error`).
+pub use crate::__eprintln as eprintln;
+/// Prints to the standard output, as [`std::print!`] does; on the web, to the
+/// page's console once the line ends.
+pub use crate::__print as print;
+/// Prints a line to the standard output, as [`std::println!`] does; on the
+/// web, to the page's console (`console.log`).
+pub use crate::__println as println;
 
 /// The form of a view's behavior the expansion of `view!` keeps, as its
 /// module's bytes and the module compiled to Rust: in a release build, and

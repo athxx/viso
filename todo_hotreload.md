@@ -1086,8 +1086,9 @@ differ.
       with `--host`/`--port`/`--open`/`--lan`/`--no-hot-reload`, loopback plus the
       machine's private address, `Host` checked against what is bound, the page's dev
       channel at its own origin.
-- [ ] Web: `viso serve --https --cert --key` (another device's browser offers WebGPU
-      only to a secure context; a LAN page over plain HTTP gets none).
+- Not planned: `viso serve --https`. A loopback page is a secure context; another
+  device opens the page as loopback through port forwarding (`adb reverse`), so no
+  TLS dependency.
 - [x] Web: a page that crashed before its dev channel opened reloads when a newer
       build is served (the page's own channel at `/__viso/page`).
 - [x] iOS simulator: an app that panics ends the session with exit 5: `simctl launch`
@@ -1096,9 +1097,11 @@ differ.
       in a UIKit callback aborts the app instead of being swallowed.
 - [x] Web: the page's console, uncaught errors and rejections reach the session as
       `log` over the page's own channel.
-- [ ] Web: the app's own `print!`/`eprintln!` reach the session: std discards them on
-      `wasm32-unknown-unknown`, so they need a `viso` log path that writes the page's
-      console (and stdout/stderr natively).
+- [x] Web: the app's own printing reaches the session: `viso::print!`/`println!`/
+      `eprint!`/`eprintln!` (`viso_platform::stdio`) write stdout/stderr natively and
+      each whole line to the page's console on the web (`console.log`/`console.error`),
+      which the page's channel forwards. A glob import cannot shadow `std`'s macros,
+      so they are named by path or imported by name.
 - [ ] `view!` builds the host platform stack for every cross build (the proc macro
       reaches `viso-platform` through `viso-dsl` → `viso-ui`); cut that edge. Measured:
       the macro's host graph is 124 crates, 23 of them native (objc2/AppKit/Metal,

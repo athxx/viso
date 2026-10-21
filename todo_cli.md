@@ -656,9 +656,9 @@ alternative.
       `index.html` with the launch scripts ahead of `</head>`; a per-response nonce on
       each script, CSP on scripts only; CORP `same-origin`; `.br` before `.gz` by
       `Accept-Encoding` with `Vary`. COOP/COEP move to the threads item.)
-- [ ] `serve --https`: self-signed loopback/LAN certificate generated and cached under
-      `~/.viso/web/` (needs a TLS dependency decision — rustls; pending user call).
-- [ ] Page-side `print`/`eprintln` log API (pending user call, see `todo_hotreload.md`).
+- Not planned: `serve --https` (a loopback page is a secure context; another device
+  reaches it as loopback through port forwarding).
+- [x] Page-side `print`/`eprintln` log API: `viso::println!` and its family (`todo_hotreload.md`).
 - [x] `test web --target web-gpu`: headless Chrome/WebDriver runner when a browser is
       found, `skip` otherwise. (`test ui --target web-gpu`: the device runner with a
       browser venue — `viso run web-gpu --browser none`, the served page opened in
