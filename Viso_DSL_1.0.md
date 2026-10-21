@@ -4676,7 +4676,7 @@ export record AdaptiveColumns { mode: AutoRepeat = AutoRepeat::fill; min: MixedL
 - 仅因宽度变化引起的重排不标记 `SEMANTICS`（ADR 0027）；
 - `overflow: ellipsis` 仅在 `max_lines` 有值或 `soft_wrap: false` 时生效；
 - `max_lines` 为 `Option::Some(0)` 时按 `1` 处理；`TextInput` 是单行编辑框，取 `font_weight`、`font_family`、`line_height` 与 `align`，不取 `max_lines`/`overflow`（`E3711`）；`Button` 的文本取全部文本样式；
-- 当前实现：上述样式（常量或读取值）随节点的值条目送达其文本请求，热重载就地改写，Release 包与宏路径相同；`line_height` 的 `em`/`%` 读节点解析出的字号。行盒、行数上限、省略号与对齐的算法见 Text Runtime §12.12.1；`Fit` 宽度的文本按其 max-content 宽度测量，被 `max_width` 等上下界或父容器收窄时按盒宽换行或加省略号。`font_family` 的默认值暂取 `system_ui`，尚不读 `theme.typography`；
+- 当前实现：上述样式（常量或读取值）随节点的值条目送达其文本请求，热重载就地改写，Release 包与宏路径相同；`line_height` 的 `em`/`%` 读节点解析出的字号。行盒、行数上限、省略号与对齐的算法见 Text Runtime §12.12.1；`Fit` 宽度的文本按其 max-content 宽度测量，被 `max_width` 等上下界或父容器收窄时按盒宽换行或加省略号。未设置 `font_family` 的文本取当前 Theme 的 `typography.family`，切换 Theme 时只有这些文本重新塑形；`FontFamily::named` 暂只查找应用打包的字体；
 - `text` 在 Schema 中标记为 Localizable（U10.3）。
 - `String` 文本槽（`text`、`label`、`placeholder` 等）只接受 `String`（或 `Option<String>` 槽的 U1.3 提升），不做隐式 `Display` 转换：`text: count;`（`count: I64`）是 `E2103`，并附 Machine-Applicable Fix `format("{}", count)`；对无 `Display` 的类型不给出该 Fix。
 
@@ -5081,7 +5081,7 @@ export record Theme {
 | Record            | 字段（类型 = 默认）                                                                 |
 | ----------------- | ----------------------------------------------------------------------------------- |
 | `ColorPalette`    | 均为 `Color`、无默认：`background` `foreground` `surface` `on_surface` `primary` `on_primary` `primary_hover` `accent` `muted` `outline` `error` `on_error` `focus_ring` `scrim` |
-| `TypographyScale` | `base_size: Sp = 14sp`、`family: FontFamily = FontFamily::system_ui`、`caption_size: Em = 0.85em`、`title_size: Em = 1.25em`、`headline_size: Em = 1.6em` |
+| `TypographyScale` | `base_size: Sp = 14sp`、`caption_size: Em = 0.85em`、`title_size: Em = 1.25em`、`headline_size: Em = 1.6em`、`family: FontFamily = FontFamily::system_ui` |
 | `SpacingScale`    | 均为 `Dp`：`xsmall = 2dp`、`small = 4dp`、`medium = 8dp`、`large = 16dp`、`xlarge = 24dp` |
 | `RadiusScale`     | 均为 `Dp`：`small = 4dp`、`medium = 8dp`、`large = 12dp`                            |
 | `ElevationScale`  | 均为 `Shadow`、无默认：`low` `medium` `high`；`Shadow { offset_y: Dp; blur: Dp; color: Color; }` |
@@ -5091,7 +5091,7 @@ export record Theme {
 - 读取 `theme.*` 的 Binding 在 Theme 整体替换时按各自 Property 的失效类别失效，替换本身不引入额外 Dirty Class；
 - 应用自定义 Theme 字段通过扩展 Record 提供，扩展方式沿用 §60 的 Theme Base 规则。
 
-当前实现：`TypographyScale` 暂无 `family` 字段（`FontFamily` 类型随字体运行时提供）；其余 Record 与字段、默认值如上表。`Color` 值为 `0xRRGGBBAA` 整数，长度为数值，`Duration` 为秒，`Easing` 为变体序号。
+当前实现：Record 与字段、默认值如上表；设置 Theme 时其 `typography.base_size` 成为根 Resolved Font Size、`typography.family` 成为未设置 `font_family` 的文本的字体族，HTML 导出的 `body` 读取对应的 `--typography-base-size` 与 `--typography-family`。`Color` 值为 `0xRRGGBBAA` 整数，长度为数值，`Duration` 为秒，`Easing` 为变体序号。
 
 ---
 

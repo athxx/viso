@@ -27,9 +27,6 @@ use crate::view_behavior::{ViewBehavior, When};
 /// in sRGB.
 pub(super) const TEXT_COLOR: &str = "#3f3f45";
 
-/// The font size a text shows where it sets none.
-pub(super) const FONT_SIZE: &str = "14px";
-
 /// A stretch of the page shown as one: the static view, or an arm of a
 /// region the script mounts.
 #[derive(Debug, Default)]

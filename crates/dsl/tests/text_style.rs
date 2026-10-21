@@ -72,7 +72,7 @@ fn declared(rt: &mut Rt) -> Vec<(String, TextStyle, Option<f32>)> {
 fn title(weight: FontWeight) -> TextStyle {
     TextStyle {
         weight,
-        family: FontFamily::Named(Arc::from("Inter")),
+        family: Some(FontFamily::Named(Arc::from("Inter"))),
         line_height: Some(LengthTerms::pct(150.0)),
         max_lines: NonZeroU32::new(2),
         overflow: TextOverflow::Ellipsis,
@@ -82,7 +82,7 @@ fn title(weight: FontWeight) -> TextStyle {
 
 fn button(line_height: Option<LengthTerms>) -> TextStyle {
     TextStyle {
-        family: FontFamily::Monospace,
+        family: Some(FontFamily::Monospace),
         line_height,
         ..TextStyle::default()
     }

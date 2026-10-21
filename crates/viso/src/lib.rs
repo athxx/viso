@@ -1202,7 +1202,8 @@ impl WindowState {
             return;
         };
         self.store.take_text_requests(&mut self.text_scratch);
-        let resized = self.store.take_text_resized();
+        let refamilied = text.set_family(self.store.text_family());
+        let resized = self.store.take_text_resized() || refamilied;
         if self.text_scratch.is_empty() && !resized {
             return;
         }
@@ -1238,11 +1239,13 @@ impl WindowState {
         if !resized {
             return;
         }
-        // Shaping is in em, so a run whose size moved is only placed again.
+        // Shaping is in em, so a run whose size moved is only placed again; a
+        // run of the default family shapes anew when that family moved.
         for (&id, request) in &self.text_sources {
             let slot = ParagraphSlot::from(id);
             let sizing = self.store.text_sizing(id, request);
-            if text.sizing(slot) == Some(sizing) {
+            let refaced = refamilied && request.style.family.is_none();
+            if text.sizing(slot) == Some(sizing) && !refaced {
                 continue;
             }
             let width = text.box_width(slot);

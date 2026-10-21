@@ -146,7 +146,7 @@ impl Label {
 
     /// Set the font family.
     pub fn family(mut self, family: FontFamily) -> Self {
-        self.text_style.family = family;
+        self.text_style.family = Some(family);
         self
     }
 

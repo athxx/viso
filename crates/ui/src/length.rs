@@ -113,8 +113,10 @@ pub(crate) struct LengthBindings {
     /// binding that reads the font size.
     font_moved: bool,
     /// A font source or the environment moved since the text shaper last
-    /// asked: a text's size may resolve anew.
+    /// asked: a text's size or face may resolve anew.
     text_resized: bool,
+    /// The family a text that names none draws with.
+    pub(crate) text_family: crate::text_style::FontFamily,
     stats: LengthStats,
     /// The issues reported so far, by node index; a debug build warns of each
     /// once.
@@ -393,9 +395,15 @@ impl NodeStore {
     }
 
     /// Whether a font source or the environment moved since the last call,
-    /// so that a text's [`text_sizing`](Self::text_sizing) may have changed.
+    /// so that a text's [`text_sizing`](Self::text_sizing) or the
+    /// [`text_family`](Self::text_family) it falls back to may have changed.
     pub fn take_text_resized(&mut self) -> bool {
         std::mem::take(&mut self.lengths_mut().text_resized)
+    }
+
+    /// Marks every text's size and face to resolve anew.
+    pub(crate) fn resize_text(&mut self) {
+        self.lengths_mut().text_resized = true;
     }
 
     /// How often layout met each length issue.

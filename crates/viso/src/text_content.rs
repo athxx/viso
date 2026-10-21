@@ -427,6 +427,8 @@ pub(crate) struct TextShaper {
     /// The face each family and weight but the primary's resolved to, the
     /// primary for one nothing provides.
     styled: HashMap<(FontFamily, FontWeight), FontFaceId>,
+    /// The family a text that names none draws with: the theme's.
+    family: FontFamily,
     /// System queries made to resolve the primary face; one at most once it
     /// resolved, so a steady frame never asks the system for a font.
     primary_queries: u64,
@@ -541,6 +543,7 @@ impl TextShaper {
             retired: Vec::new(),
             primary: None,
             styled: HashMap::new(),
+            family: FontFamily::SystemUi,
             primary_queries: 0,
             next_asset: 0,
             slots: HashMap::new(),
@@ -922,6 +925,16 @@ impl TextShaper {
     /// of flashing the text unwrapped for a frame.
     pub(crate) fn box_width(&self, slot: ParagraphSlot) -> Option<f32> {
         self.slots.get(&slot).and_then(|entry| entry.bound)
+    }
+
+    /// Makes `family` the one a text that names none draws with; `true` when
+    /// it moved, so that every such text shapes anew.
+    pub(crate) fn set_family(&mut self, family: &FontFamily) -> bool {
+        if self.family == *family {
+            return false;
+        }
+        self.family = family.clone();
+        true
     }
 
     /// The size `slot`'s text is placed at, `None` before it is shaped.
@@ -1755,18 +1768,19 @@ impl TextShaper {
         self.primary
     }
 
-    /// The face text of `style` draws with: its family at its weight, the
-    /// primary face when nothing provides one. Resolved once per family and
-    /// weight.
+    /// The face text of `style` draws with: its family, else the default
+    /// one, at its weight, the primary face when nothing provides one.
+    /// Resolved once per family and weight.
     fn resolve_face(&mut self, style: &TextStyle) -> Option<FontFaceId> {
-        if style.family == FontFamily::SystemUi && style.weight == FontWeight::REGULAR {
+        let family = style.family.as_ref().unwrap_or(&self.family);
+        if *family == FontFamily::SystemUi && style.weight == FontWeight::REGULAR {
             return self.resolve_primary();
         }
-        let key = (style.family.clone(), style.weight);
+        let key = (family.clone(), style.weight);
         if let Some(&face) = self.styled.get(&key) {
             return Some(face);
         }
-        let target = match &style.family {
+        let target = match &key.0 {
             FontFamily::SystemUi => FontTarget::Role(FontRole::Ui),
             FontFamily::Serif => FontTarget::Role(FontRole::Serif),
             FontFamily::Monospace => FontTarget::Role(FontRole::Mono),
@@ -3810,7 +3824,7 @@ mod tests {
         for style in [
             TextStyle {
                 weight: FontWeight::BOLD,
-                family: FontFamily::Named(Arc::from("No Such Family")),
+                family: Some(FontFamily::Named(Arc::from("No Such Family"))),
                 ..TextStyle::default()
             },
             TextStyle::default(),
@@ -3818,7 +3832,7 @@ mod tests {
             assert!(shaper.resolve_face(&style).is_some());
         }
         let missing = TextStyle {
-            family: FontFamily::Named(Arc::from("No Such Family")),
+            family: Some(FontFamily::Named(Arc::from("No Such Family"))),
             ..TextStyle::default()
         };
         let face = shaper.resolve_face(&missing);

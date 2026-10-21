@@ -38,6 +38,7 @@ pub(super) const THEME: &[(&str, &[(&str, Token)])] = &[
             ("caption_size", Token::Em),
             ("title_size", Token::Em),
             ("headline_size", Token::Em),
+            ("family", Token::Family),
         ],
     ),
     (
@@ -88,6 +89,7 @@ pub(super) enum Token {
     Shadow,
     Duration,
     Easing,
+    Family,
 }
 
 /// The custom property of the theme field at `path` (`--colors-primary`),
@@ -135,6 +137,7 @@ fn token_value(value: &Value, token: Token) -> Option<String> {
         Token::Em => format!("{}em", number(value.as_float()?)),
         Token::Duration => seconds(value.as_float()?),
         Token::Easing => easing(value.as_int()?).to_owned(),
+        Token::Family => family(value),
         Token::Shadow => {
             let offset = field(value, 0)?.as_float()?;
             let blur = field(value, 1)?.as_float()?;
@@ -142,6 +145,26 @@ fn token_value(value: &Value, token: Token) -> Option<String> {
             format!("0 {} {} {}", px(offset), px(blur), color(tint))
         }
     })
+}
+
+/// The interface face's font stack.
+const SYSTEM_UI: &str = "system-ui, -apple-system, \"Segoe UI\", Roboto, sans-serif";
+
+/// A `FontFamily` as a font stack: a role its generic family, a named one
+/// before the interface face it falls back to.
+fn family(value: &Value) -> String {
+    match value {
+        Value::Int(1) => "serif".to_owned(),
+        Value::Int(2) => "ui-monospace, monospace".to_owned(),
+        Value::Agg(agg) => match agg.fields.first().and_then(Value::as_str) {
+            Some(name) => {
+                let name = name.replace('\\', "\\\\").replace('"', "\\\"");
+                format!("\"{name}\", {SYSTEM_UI}")
+            }
+            None => SYSTEM_UI.to_owned(),
+        },
+        _ => SYSTEM_UI.to_owned(),
+    }
 }
 
 /// `v` in its shortest form: `12`, `0.5`, `-3.25`.

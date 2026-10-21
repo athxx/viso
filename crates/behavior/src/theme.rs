@@ -44,7 +44,14 @@ fn build_default() -> Value {
         ]
         .map(|rgba: u32| Value::Int(i64::from(rgba))),
     );
-    let typography = record([14.0, 0.85, 1.25, 1.6].map(Value::Float));
+    // `FontFamily::system_ui`, by tag.
+    let typography = record([
+        Value::Float(14.0),
+        Value::Float(0.85),
+        Value::Float(1.25),
+        Value::Float(1.6),
+        Value::Int(0),
+    ]);
     let spacing = record([2.0, 4.0, 8.0, 16.0, 24.0].map(Value::Float));
     let radius = record([4.0, 8.0, 12.0].map(Value::Float));
     let shadow = |offset_y: f64, blur: f64, alpha: u32| {

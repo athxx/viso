@@ -43,8 +43,16 @@ pub(crate) fn text_style(
     }
 }
 
-/// A `FontFamily`, `Option::None` the interface face.
-fn font_family(value: &Value) -> FontFamily {
+/// An `Option<FontFamily>`, `Option::None` the theme's family.
+fn font_family(value: &Value) -> Option<FontFamily> {
+    match value {
+        Value::Nil => None,
+        value => Some(family(value)),
+    }
+}
+
+/// A `FontFamily`; a value of the wrong shape the interface face.
+pub(crate) fn family(value: &Value) -> FontFamily {
     match value {
         Value::Int(1) => FontFamily::Serif,
         Value::Int(2) => FontFamily::Monospace,

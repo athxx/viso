@@ -382,9 +382,11 @@ Goal: every Core view construct reaches a live tree through all three lowering t
         grapheme cut). `Content::Text` reports its max-content width and how it uses
         its box (`WidthUse`), so a `Fit` text a bound narrows wraps or ellipsizes
         without feeding its width back.
-  - [ ] `font_family` defaults to `theme.typography.family` (`TypographyScale` has no
-        `family` yet); `FontFamily::named` reaches only the app's fonts, not the
-        platform's by name.
+  - [x] `font_family` defaults to `theme.typography.family`: an unset family
+        draws with the store's theme family, and a theme switch reshapes only the
+        text that names none; the root font size is `typography.base_size`.
+  - [ ] `FontFamily::named` reaches only the app's fonts, not the platform's by
+        name.
 - [x] `TextInput` `placeholder` and `secure`, `CheckBox`/`Toggle` `label`: a field
       holding no text draws its placeholder at half its text color's opacity (its
       hint where it has none); a secure one draws a bullet per grapheme, maps the
@@ -1149,7 +1151,9 @@ timers (§104–§111).
         evaluates a theme by name and replaces the store's theme atomically,
         which re-evaluates exactly the bindings that read it; the default theme
         before one is set; hot reload and the release package alike.
-  - [ ] `TypographyScale.family` (needs the font runtime's `FontFamily`).
+  - [x] `TypographyScale.family`; setting a theme applies its typography to the
+        node store (root font size, default family) and the exported page's
+        `body` reads `--typography-base-size` and `--typography-family`.
   - [ ] `theme` read in theme expressions (the base's value).
 - [ ] Runtime capability denial `E6103` (§95).
   - [x] The package grant (`[package] capabilities`) travels in the compiled

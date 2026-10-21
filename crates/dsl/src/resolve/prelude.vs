@@ -212,6 +212,7 @@ export record TypographyScale {
     caption_size: Em = 0.85em;
     title_size: Em = 1.25em;
     headline_size: Em = 1.6em;
+    family: FontFamily = FontFamily::system_ui;
 }
 export record SpacingScale {
     xsmall: Dp = 2dp;

@@ -10,7 +10,7 @@ mod support;
 
 use support::{Rt, origin};
 use viso_dsl::frontend::compile_file;
-use viso_ui::{NodeId, Rgba, Srgb};
+use viso_ui::{FontFamily, NodeId, Rgba, Srgb};
 use viso_view::{Value, default_theme, set_theme};
 
 /// No diagnostic.
@@ -187,14 +187,14 @@ fn switching_the_theme_re_evaluates_what_reads_it() {
     assert_eq!(rt.int("taps"), Some(1));
 
     let tight = theme(&rt, "Tight");
-    set_theme(&mut rt.states, tight);
+    set_theme(&mut rt.states, &mut rt.store, tight);
     rt.frame();
     assert_eq!(first_fill(&rt), rgba(GREEN));
     rt.click(0);
     assert_eq!(rt.int("taps"), Some(1), "the handler read the new theme");
 
     let roomy = theme(&rt, "Roomy");
-    set_theme(&mut rt.states, roomy);
+    set_theme(&mut rt.states, &mut rt.store, roomy);
     rt.frame();
     assert_eq!(
         first_fill(&rt),
@@ -211,7 +211,7 @@ fn a_hot_reload_rebuilds_the_themes_and_keeps_the_one_set() {
     let source = probe(&themes(""));
     let mut rt = Rt::mount(&source);
     let tight = theme(&rt, "Tight");
-    set_theme(&mut rt.states, tight);
+    set_theme(&mut rt.states, &mut rt.store, tight);
     rt.frame();
     rt.reload(&source.replace("primary: #00ff00", "primary: #0000ff"));
     assert_eq!(
@@ -220,7 +220,7 @@ fn a_hot_reload_rebuilds_the_themes_and_keeps_the_one_set() {
         "the store keeps the value it was set"
     );
     let tight = theme(&rt, "Tight");
-    set_theme(&mut rt.states, tight);
+    set_theme(&mut rt.states, &mut rt.store, tight);
     rt.frame();
     assert_eq!(first_fill(&rt), rgba(0x0000_ffff), "the edited theme");
 }
@@ -231,9 +231,35 @@ fn the_release_package_runs_the_same() {
     assert_eq!(first_fill(&rt), rgba(PRIMARY));
     assert_eq!(theme(&rt, "Light"), default_theme());
     let tight = theme(&rt, "Tight");
-    set_theme(&mut rt.states, tight);
+    set_theme(&mut rt.states, &mut rt.store, tight);
     rt.frame();
     assert_eq!(first_fill(&rt), rgba(GREEN));
     rt.click(0);
     assert_eq!(rt.int("taps"), Some(0));
+}
+
+#[test]
+fn a_theme_sets_the_root_font_size_and_the_family_text_falls_back_to() {
+    let mut rt = Rt::mount(&probe(&themes(
+        "theme Big: Light {\n    \
+         typography = TypographyScale { base_size: 20sp, family: FontFamily::monospace };\n}",
+    )));
+    assert_eq!(rt.store.length_env().base_font_size, 14.0);
+    assert_eq!(*rt.store.text_family(), FontFamily::SystemUi);
+    rt.store.take_text_resized();
+
+    let big = theme(&rt, "Big");
+    set_theme(&mut rt.states, &mut rt.store, big);
+    rt.frame();
+    assert_eq!(rt.store.length_env().base_font_size, 20.0);
+    assert_eq!(rt.store.length_env().root_font_size(), 20.0);
+    assert_eq!(*rt.store.text_family(), FontFamily::Monospace);
+    assert!(rt.store.take_text_resized(), "the text shapes anew");
+
+    let again = theme(&rt, "Big");
+    set_theme(&mut rt.states, &mut rt.store, again);
+    assert!(
+        !rt.store.take_text_resized(),
+        "the same typography moves nothing"
+    );
 }

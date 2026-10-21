@@ -9,7 +9,7 @@ pub use viso_text::FontWeight;
 
 use crate::component::NodeStore;
 use crate::content::TextRequest;
-use crate::length::LengthTerms;
+use crate::length::{LengthEnv, LengthTerms};
 use crate::node::NodeId;
 
 /// The size a text draws at.
@@ -73,7 +73,9 @@ pub enum TextAlign {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TextStyle {
     pub weight: FontWeight,
-    pub family: FontFamily,
+    /// The family it draws with; `None` for the store's
+    /// [`text_family`](NodeStore::text_family), the theme's.
+    pub family: Option<FontFamily>,
     /// The height of each line's box, the glyphs centered in it, its `em`
     /// and `%` of the text's font size; `None` for the face's own line
     /// spacing.
@@ -100,6 +102,29 @@ impl TextStyle {
 }
 
 impl NodeStore {
+    /// The family a text that names none draws with: the theme's
+    /// `typography.family`.
+    pub fn text_family(&self) -> &FontFamily {
+        &self.lengths().text_family
+    }
+
+    /// Sets the theme's typography: the root's font size, `base_size` sp,
+    /// and the family a text that names none draws with. A text whose size
+    /// or face moves shapes anew.
+    pub fn set_typography(&mut self, base_size: f32, family: FontFamily) {
+        let env = self.length_env();
+        if env.base_font_size != base_size {
+            self.set_length_env(LengthEnv {
+                base_font_size: base_size,
+                ..env
+            });
+        }
+        if self.lengths().text_family != family {
+            self.lengths_mut().text_family = family;
+            self.resize_text();
+        }
+    }
+
     /// The size `request`, declared on node `id`, draws at now. A line height
     /// that does not fold to a finite size is the face's own.
     pub fn text_sizing(&self, id: NodeId, request: &TextRequest) -> TextSizing {

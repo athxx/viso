@@ -316,7 +316,7 @@ fn index(page: &html::Lowered, options: &HtmlOptions, scripted: bool) -> String 
 const BASE: &str = "\
 *, *::before, *::after { box-sizing: border-box; }
 html, body { margin: 0; width: 100%; height: 100%; }
-body { font-family: system-ui, -apple-system, \"Segoe UI\", Roboto, sans-serif; line-height: normal; }
+body { font-family: var(--typography-family); font-size: var(--typography-base-size); line-height: normal; }
 .vx-flex { display: flex; align-items: flex-start; }
 .vx-grid { display: grid; grid-template-columns: minmax(0, 1fr); align-items: stretch; }
 .vx-stack { display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr); }
@@ -340,12 +340,7 @@ fn styles(page: &html::Lowered) -> String {
         out.push_str("@media (resolution >= 3dppx) { :root { --viso-px: 0.3333px; } }\n");
     }
     out.push_str(BASE);
-    let _ = writeln!(
-        out,
-        "body {{ font-size: {}; color: {}; }}",
-        html::FONT_SIZE,
-        html::TEXT_COLOR
-    );
+    let _ = writeln!(out, "body {{ color: {}; }}", html::TEXT_COLOR);
     page.sheet.write(&mut out);
     out
 }
