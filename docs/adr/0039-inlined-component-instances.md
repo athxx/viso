@@ -62,8 +62,7 @@ second instance lifecycle to every target.
   - a component that mounts itself;
   - `bind … using` to an input;
   - properties or handlers forwarded to a view that does not mount exactly one
-    node;
-  - a component from another file.
+    node.
 - A `ui!` fragment has no file of components to inline. A type no widget
   declares there is a component of the surrounding Rust scope, declared with
   `component!`, and the macro mounts it by calling its generated `build`. Each
@@ -88,4 +87,7 @@ second instance lifecycle to every target.
   regions are rebuilt. It is not kept by name.
 - A `ui!` instance costs its own host and its own state cells, and the
   fragment cannot pass it inputs or handle its events.
-- Components from other files remain open.
+- A component or template of an imported module inlines like one of the
+  file: its items carry the module they come from, its behavior is checked
+  in its own module, and a diagnostic inside it is reported at the node or
+  `use` of this file that places it, naming the component.

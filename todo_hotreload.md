@@ -372,9 +372,10 @@ resets only its own scope.
       mount keeps which views those are and the content the version it runs
       compiled against, and a refused edit of one is not resent
       (`tools/cli/src/dev/sources.rs`).
-- [ ] Component instances inlined from another file: the DSL refuses a component of
-      another file (`E3711`) — a view's inlined spans are not file-qualified yet, so
-      a component of another file cannot be inlined into the view's IR.
+- [x] Component instances inlined from another file: each inlined item carries the
+      unit of its instance, a span of another file is reported at the node of this
+      file that places it (`UiTree::own_span`); hot reload, release package and
+      web export alike (`crates/dsl/tests/imports.rs`).
 - [x] Unit tests (§61): scoped reset planning (`commit.rs`'s `migrate_states` tests,
       `state_retype.rs`), SymbolId preservation across reorder/insert (`diff.rs`'s
       `a_node_under_a_replaced_ancestor_is_not_its_own_insert_or_remove`,

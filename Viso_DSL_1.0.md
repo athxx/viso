@@ -780,7 +780,7 @@ module_path      = identifier, { "::", label } ;
 - 编译器、Formatter、LSP 和 Hot Reload 都必须从同一 Source Context 获得 package/module identity；
 - 独立 conformance fixture 若需要显式 module identity，应由测试 harness 提供，不扩展普通 source grammar。
 
-当前实现：一个文件单独编译时（`view!`、`component!`、热重载、`viso dump`/`export`/`snapshot`），编译器读它直接或间接 import 的包内 Module（`a::b` 对应 `src/a/b.vs` 或 `src/a/b/mod.vs`），与它组成同一个 Module Graph 一起解析、检查与降级，不读包的其余文件；被 import 的 Module 有错误时，每个错误报在读它的那条 `import` 上（`in `model`: …`，related 指向它在该 Module 中的位置）。`view!`/`component!` 把被读的文件列为编译依赖，开发会话在其中任一文件变化时重新编译 import 它的文件。按名 import（`import model::{twice};`）的 `fn`、`const`、Record 与 Enum 可用，经整模块 import 以路径读取（`import model;` 后写 `model::twice(x)`、`model::Size { .. }`、`model::Turn::left`、类型 `model::Size`）与按名 import 相同：名字须是该 Module `export` 的声明，未导出或不存在时在该名字处报 `E2001`（附 `export` Fix 或最近的导出名）；View 只内联本文件声明的组件与 Style（另一文件的报 `E3711`）。同名 import 两次报 `E2002`；`const` 的值直接或经其调用的 `fn` 读到自身报 `E2003`。
+当前实现：一个文件单独编译时（`view!`、`component!`、热重载、`viso dump`/`export`/`snapshot`），编译器读它直接或间接 import 的包内 Module（`a::b` 对应 `src/a/b.vs` 或 `src/a/b/mod.vs`），与它组成同一个 Module Graph 一起解析、检查与降级，不读包的其余文件；被 import 的 Module 有错误时，每个错误报在读它的那条 `import` 上（`in `model`: …`，related 指向它在该 Module 中的位置）。`view!`/`component!` 把被读的文件列为编译依赖，开发会话在其中任一文件变化时重新编译 import 它的文件。按名 import（`import model::{twice};`）的 `fn`、`const`、Record 与 Enum 可用，经整模块 import 以路径读取（`import model;` 后写 `model::twice(x)`、`model::Size { .. }`、`model::Turn::left`、类型 `model::Size`）与按名 import 相同：名字须是该 Module `export` 的声明，未导出或不存在时在该名字处报 `E2001`（附 `export` Fix 或最近的导出名）；View 内联本文件与经 import 可见的 Component 与 Template：被 import 者在其声明 Module 中检查与降级（读该 Module 的 `const`、Style 与 `fn`），其中的诊断报在本文件放置它的节点或 `use` 上并注明所在 Component；其他文件的 Style 用在本文件节点上报 `E3711`。同名 import 两次报 `E2002`；`const` 的值直接或经其调用的 `fn` 读到自身报 `E2003`。
 
 ### 22.1 Rust 侧源码入口
 
@@ -1616,7 +1616,7 @@ View 中类型为同一文件内 Component 的 Node 是该 Component 的一个�
 - 与 Event 同名以外的 Property 和 Handler 作用于实例 View 的根 Node；
 - 实例可以位于 `if`、`match` 与 Keyed `for` 中，区域绑定对实例的 Input 实参、State 初值与 Handler 可见（§56.1）；
 - 控制流区域中的实例，其 State 属于区域的每次挂载：Keyed `for` 的每个 Item、`if`/`match` 的每次进入各有一份，以区域绑定求值初值；State 随 Key 移动，Item 移除或离开无 `preserve` 的分支即丢弃，`preserve` 分支缓存期间保留；这类 State 不按名称跨 Hot Reload 保留，含控制流区域的 View 整树重建时从初值重新开始；
-- 以下情形报 `E3711`：Component 直接或间接挂载自身；`bind` 目标为 Component Input 且带 `using`；向 View 不恰好挂载一个 Node 的实例传入非 Input Property 或非 Event Handler；类型为其他文件的 Component；`AdaptiveScope` 的 `basis` 不是常量 `dp` 长度（§96.3）；`SafeArea` 或 `KeyboardAvoiding` 带 `padding`（§96.6）；`padding` 写在非容器节点上（U3.3）；`Grid` 的 `areas` 或子节点的 `grid.area` 不是常量（U3.5）；Style 以读取值的绑定给出布局 Property（U3.4）；
+- 以下情形报 `E3711`：Component 直接或间接挂载自身；`bind` 目标为 Component Input 且带 `using`；向 View 不恰好挂载一个 Node 的实例传入非 Input Property 或非 Event Handler；`AdaptiveScope` 的 `basis` 不是常量 `dp` 长度（§96.3）；`SafeArea` 或 `KeyboardAvoiding` 带 `padding`（§96.6）；`padding` 写在非容器节点上（U3.3）；`Grid` 的 `areas` 或子节点的 `grid.area` 不是常量（U3.5）；Style 以读取值的绑定给出布局 Property（U3.4）；
 - `ui!` Fragment 中不是内置 Widget 的类型是外围 Rust 作用域以 `component!` 声明的 Component（可写作 Rust 路径，如 `widgets::Tally`），由其 `build` 挂载，每个实例自带 State 与 Handler；这类 Node 不接受 Property、Handler 与子项（`E3711`），名称无法解析时由 Rust 在该位置报错；Hot Reload 与 Release Package 的 Fragment 没有 Rust 作用域，这类类型报 `E2001`。
 
 ---
@@ -2376,7 +2376,7 @@ use TitledCard("Profile") {
 - Template 递归必须有可证明的有限展开，否则编译错误；
 - 实现可以延迟 Template 实例化，但语义等价于 Typed IR 展开。
 
-当前实现：Template 是没有 State 的 Component，参数是它的 Input，与 Component 实例一样在编译期内联进放置它的 View（§40.1），每个 `use` 一个实例，实例身份为 `Template名#序号`。成员只能是 `slot`、`const`、`fn` 与 `view`，其他成员或缺少 `view` 报 `E3601`。`use` 的实参按位置或 `name: value` 给出参数，每个参数至多给一次（`E3102`），未知参数名报 `E3101`，多余实参与缺少无默认值的参数报 `E2103`，实参按参数类型检查；`use` 体只含 `fill`、`override part`、`replace part`（其他项 `E3601`）。Template 只能以 `use` 放置：写成节点 `T { .. }`，或 `use` 一个 Component，报 `E2103`。经 `use` 直接或间接放置自身所在的 Template 报 `E3601`：参数是运行期值，无法在编译期终止展开。展开后的节点保留定义处的 Source Origin，其实例记录调用处（`use` 或节点）的 Source Origin；挂载失败（`E3711`）的诊断同时指向两处。其他文件声明的 Template 尚不内联（`E3711`）。
+当前实现：Template 是没有 State 的 Component，参数是它的 Input，与 Component 实例一样在编译期内联进放置它的 View（§40.1），每个 `use` 一个实例，实例身份为 `Template名#序号`。成员只能是 `slot`、`const`、`fn` 与 `view`，其他成员或缺少 `view` 报 `E3601`。`use` 的实参按位置或 `name: value` 给出参数，每个参数至多给一次（`E3102`），未知参数名报 `E3101`，多余实参与缺少无默认值的参数报 `E2103`，实参按参数类型检查；`use` 体只含 `fill`、`override part`、`replace part`（其他项 `E3601`）。Template 只能以 `use` 放置：写成节点 `T { .. }`，或 `use` 一个 Component，报 `E2103`。经 `use` 直接或间接放置自身所在的 Template 报 `E3601`：参数是运行期值，无法在编译期终止展开。展开后的节点保留定义处的 Source Origin，其实例记录调用处（`use` 或节点）的 Source Origin；挂载失败（`E3711`）的诊断同时指向两处。经 import 可见的其他文件的 Template 与本文件的同样内联。
 
 在 Template 定义内部，调用方 Slot 通过标准 `SlotOutlet` Component 放入结构。`SlotOutlet` 只有一个 Property `slot`，其值是当前 Template/Component 声明的 Slot 名；它就地展开调用方为该 Slot 提供的节点，未提供时展开为 Slot 默认值（`None`/`empty` 为零个节点）。`SlotOutlet` 只能出现在声明该 Slot 的 Template/Component 的 View 中，每个 Slot 至多一个 `SlotOutlet`。`fill` 只允许出现在 Template/Component 的调用方，不能用于定义 Slot Outlet。缺少 `slot`、其值不是单个标识符、或不是当前 Component 声明的 Slot 报 `E3501`；同一 Slot 的第二个 `SlotOutlet`，或位于 `for` 内（会把调用方节点放置多次）的 `SlotOutlet` 报 `E3502`。
 

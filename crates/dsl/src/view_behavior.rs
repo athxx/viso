@@ -240,7 +240,7 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
     };
     let mut routes: Vec<(NodeKey, Vec<Route>)> = Vec::new();
     for (node, kind, event, capture, site) in sites {
-        let at = site.at;
+        let at = compiled.tree.own_span(site.instance, site.at);
         let route = EventRoute::of(event).or_else(|| kind.route(event));
         let Some(route) = route else {
             errors.push(MountError::new(
@@ -261,7 +261,7 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
             .function(layout.handlers[index as usize].1);
         if let Err(unsupported) = &function.body {
             errors.push(MountError::new(
-                Some(unsupported.at),
+                Some(compiled.tree.own_span(site.instance, unsupported.at)),
                 format!("the handler {}", unsupported.reason),
             ));
             continue;
@@ -313,7 +313,7 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
             };
             let Some(index) = layout.handler(site) else {
                 errors.push(MountError::new(
-                    Some(*at),
+                    Some(compiled.tree.own_span(*instance, *at)),
                     match slot {
                         Some(_) => format!(
                             "a `{property}` the compiler cannot fold does not lay out yet; a constant or one reading a value does"
@@ -328,7 +328,7 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
                 .function(layout.handlers[index as usize].1);
             if let Err(unsupported) = &function.body {
                 errors.push(MountError::new(
-                    Some(unsupported.at),
+                    Some(compiled.tree.own_span(*instance, unsupported.at)),
                     format!("the control's `{property}` {}", unsupported.reason),
                 ));
                 continue;
@@ -475,7 +475,7 @@ fn styled_look(
         };
         let Some(index) = layout.handler(site) else {
             errors.push(MountError::new(
-                Some(styled.at),
+                Some(compiled.tree.own_span(instance, styled.at)),
                 "internal: the style's value was not lowered",
             ));
             return None;
@@ -485,7 +485,7 @@ fn styled_look(
             .function(layout.handlers[index as usize].1);
         if let Err(unsupported) = &function.body {
             errors.push(MountError::new(
-                Some(unsupported.at),
+                Some(compiled.tree.own_span(instance, unsupported.at)),
                 format!("the style's value {}", unsupported.reason),
             ));
             return None;

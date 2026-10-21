@@ -11,7 +11,7 @@ use super::{
     VariantSchema, dirty_names,
 };
 use crate::ast::{AstNode, CompilationUnit, ComponentDecl, Item, Member, PartNode, RecordField};
-use crate::frontend::{component_decls, graph_consts, input_invalidations};
+use crate::frontend::{component_decls, graph_consts, graph_units, input_invalidations};
 use crate::hir::{FieldInfo, HirComponent, LoweredPackage, VariantPayload};
 use crate::package::LoadedPackage;
 use crate::resolve::{SymbolDecl, digest};
@@ -27,6 +27,8 @@ pub fn package_schemas(package: &LoadedPackage, root: &Path, version: &str) -> V
     let hir = &package.hir;
     let natives = model.graph.natives();
     let consts = graph_consts(&model.graph, &model.units, &model.resolved, &model.interner);
+    let units = graph_units(&model.graph, &model.units, &model.resolved, &model.interner);
+    let components: Vec<&HirComponent> = hir.components.iter().collect();
     let mut out = Vec::new();
     for (index, file) in package.files.iter().enumerate() {
         let (Some(module), Some(unit)) = (model.module_of(index), model.units.get(index)) else {
@@ -84,7 +86,7 @@ pub fn package_schemas(package: &LoadedPackage, root: &Path, version: &str) -> V
             else {
                 continue;
             };
-            let invalidates = input_invalidations(&cu, module, &consts, &own, natives, component);
+            let invalidates = input_invalidations(&units, &consts, &components, natives, component);
             let mut schema = component_schema(component, decl, &invalidates, hir, natives);
             schema.symbol = format!("{}::{}", prefix.join("::"), component.schema.name);
             out.push(place(schema, declared));

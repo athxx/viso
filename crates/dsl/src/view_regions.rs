@@ -212,26 +212,26 @@ pub fn has_regions(tree: &UiTree) -> bool {
 /// The structural errors of `tree` no target mounts: a region at the root,
 /// and a `VirtualList` whose body is not its one keyed `for`.
 pub fn structure_errors(tree: &UiTree) -> Vec<MountError> {
-    fn walk(item: &UiItem, errors: &mut Vec<MountError>) {
+    fn walk(tree: &UiTree, item: &UiItem, errors: &mut Vec<MountError>) {
         match item {
             UiItem::Node(node) => {
                 if node.kind == NodeKind::VirtualList
                     && !matches!(node.children.as_slice(), [UiItem::For(f)] if f.key.is_some())
                 {
                     errors.push(MountError::new(
-                        Some(node.origin),
+                        Some(tree.own_span(node.instance, node.origin)),
                         "a `VirtualList`'s body is exactly one keyed `for`, its item template",
                     ));
                     return;
                 }
                 for child in &node.children {
-                    walk(child, errors);
+                    walk(tree, child, errors);
                 }
             }
             _ => {
                 for items in arms(item) {
                     for item in items {
-                        walk(item, errors);
+                        walk(tree, item, errors);
                     }
                 }
             }
@@ -245,7 +245,7 @@ pub fn structure_errors(tree: &UiTree) -> Vec<MountError> {
                 "a view's root must be a node, not a control-flow region",
             ));
         }
-        walk(item, &mut errors);
+        walk(tree, item, &mut errors);
     }
     errors
 }
@@ -291,6 +291,7 @@ pub(crate) fn view_regions(
         })
         .collect();
     let mut builder = Builder {
+        tree: &compiled.tree,
         program: &compiled.behavior,
         layout,
         routes,
@@ -318,6 +319,9 @@ pub(crate) fn view_regions(
 /// The region walk: the pre-order counters, the templates so far and the
 /// errors.
 struct Builder<'a> {
+    /// The tree walked, whose spans of other files it reports where its own
+    /// file places them.
+    tree: &'a UiTree,
     program: &'a Program,
     layout: &'a ComponentLayout,
     routes: &'a [(NodeKey, Vec<Route>)],
@@ -614,7 +618,7 @@ impl Builder<'_> {
             })
         }) else {
             self.errors.push(MountError::new(
-                Some(at.unwrap_or(origin)),
+                Some(self.tree.own_span(instance, at.unwrap_or(origin))),
                 "internal: the region entry was not lowered",
             ));
             return 0;
@@ -624,7 +628,7 @@ impl Builder<'_> {
             .function(self.layout.handlers[index as usize].1);
         if let Err(unsupported) = &function.body {
             self.errors.push(MountError::new(
-                Some(unsupported.at),
+                Some(self.tree.own_span(instance, unsupported.at)),
                 format!("the region {}", unsupported.reason),
             ));
         }

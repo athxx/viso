@@ -25,14 +25,13 @@
 //! is still a valid key — its identity is positional-free by construction — so it
 //! contributes no reactive edge, mirroring the binding pass.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 
-use crate::ast::Expr;
 use crate::diag::Diagnostic;
 use crate::hir::{ReadEnv, collect_reads};
+use crate::ir::binding_ir::ViewUnits;
 use crate::ir::ui_ir::{UiFor, UiItem, UiNode, UiTree};
-use crate::resolve::{ResolvedRef, SymbolId};
-use crate::syntax::SyntaxNode;
+use crate::resolve::SymbolId;
 use crate::syntax::span::TextRange;
 
 /// The strict-mode diagnostic code for a stateful `for` body without a stable
@@ -75,15 +74,10 @@ pub struct KeyIr {
 /// Each keyed `for` records
 /// its key's reactive reads; each keyless `for` with a stateful body produces one
 /// [`KEYLESS_STATEFUL_FOR`] warning.
-pub fn analyze_keys(
-    tree: &UiTree,
-    root: &SyntaxNode,
-    refs: &[ResolvedRef],
-    env: &dyn ReadEnv,
-) -> KeyIr {
+pub fn analyze_keys(tree: &UiTree, units: &ViewUnits<'_>, env: &dyn ReadEnv) -> KeyIr {
     let mut ctx = KeyCtx {
-        exprs: index_exprs(root),
-        refs,
+        tree,
+        units,
         env,
         ir: KeyIr::default(),
     };
@@ -95,8 +89,8 @@ pub fn analyze_keys(
 
 /// The state threaded through the pre-order key walk.
 struct KeyCtx<'a> {
-    exprs: HashMap<TextRange, Expr>,
-    refs: &'a [ResolvedRef],
+    tree: &'a UiTree,
+    units: &'a ViewUnits<'a>,
     env: &'a dyn ReadEnv,
     ir: KeyIr,
 }
@@ -137,12 +131,14 @@ impl KeyCtx<'_> {
     /// then descends into the body for nested regions.
     fn walk_for(&mut self, vf: &UiFor) {
         let keyed = vf.key.is_some();
-        let key_reads = match vf.key.and_then(|span| self.exprs.get(&span)) {
-            Some(expr) => collect_reads(self.refs, self.env, expr),
+        let unit = self.tree.unit_of(vf.instance);
+        let key_reads = match vf.key.and_then(|span| self.units.expr(unit, span)) {
+            Some(expr) => collect_reads(self.units.refs(unit), self.env, expr),
             None => BTreeSet::new(),
         };
         let stateful = body_is_stateful(&vf.body);
-        if !keyed && stateful {
+        // A `for` of another file's component is that file's to report.
+        if !keyed && stateful && unit == self.tree.unit {
             self.ir.diagnostics.push(Diagnostic::warning(
                 KEYLESS_STATEFUL_FOR,
                 vf.origin,
@@ -189,20 +185,4 @@ fn item_is_stateful(item: &UiItem) -> bool {
             .iter()
             .any(|arm| arm.items.iter().any(item_is_stateful)),
     }
-}
-
-/// Indexes every `Expr` in the view by its span, so a `for`'s recorded key span
-/// recovers the expression `collect_reads` walks. Shares the cold compile-time
-/// strategy of [`crate::ir::binding_ir`]: cast every node, key by span.
-fn index_exprs(root: &SyntaxNode) -> HashMap<TextRange, Expr> {
-    use crate::ast::AstNode;
-    let mut map = HashMap::new();
-    let mut stack = vec![root.clone()];
-    while let Some(node) = stack.pop() {
-        if let Some(expr) = Expr::cast(node.clone()) {
-            map.insert(node.text_range(), expr);
-        }
-        stack.extend(node.children());
-    }
-    map
 }

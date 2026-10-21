@@ -126,7 +126,7 @@ pub(super) struct UiView {
 pub(super) fn ui(cx: &FileCx<'_>, compiled: &Compiled) -> UiView {
     let names = super::hir::names(&cx.package.hir);
     let mut key = 0;
-    let items = entries(cx, &compiled.tree.items, &mut key);
+    let items = entries(cx, &compiled.tree, &compiled.tree.items, &mut key);
     let instances = compiled
         .tree
         .instances
@@ -139,7 +139,7 @@ pub(super) fn ui(cx: &FileCx<'_>, compiled: &Compiled) -> UiView {
             parent: instance.parent,
             depth: instance.depth,
             regional: instance.regional,
-            at: At::new(cx, instance.origin),
+            at: At::new(cx, compiled.tree.own_span(instance.parent, instance.origin)),
         })
         .collect();
     UiView {
@@ -154,6 +154,16 @@ fn classes(class: crate::ir::DirtyClass) -> DirtyClass {
     DirtyClass::from_bits(class.bits())
 }
 
+/// The text at `range` in the view of `instance`: empty for a view of
+/// another file, whose text the file does not hold.
+fn text_in<'c>(cx: &'c FileCx<'_>, tree: &UiTree, instance: u32, range: TextRange) -> &'c str {
+    if tree.unit_of(instance) == tree.unit {
+        cx.text(range)
+    } else {
+        ""
+    }
+}
+
 fn view_name(compiled: &Compiled) -> Option<String> {
     compiled.component.as_ref().map(|c| c.schema.name.clone())
 }
@@ -165,14 +175,27 @@ fn name_of(names: &HashMap<SymbolId, String>, symbol: SymbolId) -> String {
         .unwrap_or_else(|| symbol.to_string())
 }
 
-fn entries(cx: &FileCx<'_>, items: &[UiItem], key: &mut u32) -> Vec<Entry> {
-    items.iter().map(|item| entry(cx, item, key)).collect()
+fn entries(cx: &FileCx<'_>, tree: &UiTree, items: &[UiItem], key: &mut u32) -> Vec<Entry> {
+    items
+        .iter()
+        .map(|item| entry(cx, tree, item, key))
+        .collect()
 }
 
-fn entry(cx: &FileCx<'_>, item: &UiItem, key: &mut u32) -> Entry {
-    let text = |range: Option<TextRange>| range.map(|r| cx.text(r).to_owned()).unwrap_or_default();
+fn entry(cx: &FileCx<'_>, tree: &UiTree, item: &UiItem, key: &mut u32) -> Entry {
+    let instance = match item {
+        UiItem::Node(node) => node.instance,
+        UiItem::If(r) => r.instance,
+        UiItem::For(r) => r.instance,
+        UiItem::Match(r) => r.instance,
+    };
+    let text = |range: Option<TextRange>| {
+        range
+            .map(|r| text_in(cx, tree, instance, r).to_owned())
+            .unwrap_or_default()
+    };
     match item {
-        UiItem::Node(node) => Entry::Node(self::node(cx, node, key)),
+        UiItem::Node(node) => Entry::Node(self::node(cx, tree, node, key)),
         UiItem::If(region) => Entry::Region(Region {
             kind: "if",
             head: String::new(),
@@ -182,11 +205,11 @@ fn entry(cx: &FileCx<'_>, item: &UiItem, key: &mut u32) -> Entry {
                 .map(|arm| Arm {
                     head: text(arm.condition),
                     preserve: arm.preserve.clone(),
-                    items: entries(cx, &arm.items, key),
+                    items: entries(cx, tree, &arm.items, key),
                 })
                 .collect(),
             instance: region.instance,
-            at: At::new(cx, region.origin),
+            at: At::new(cx, tree.own_span(region.instance, region.origin)),
         }),
         UiItem::For(region) => {
             let mut head = format!(
@@ -195,7 +218,7 @@ fn entry(cx: &FileCx<'_>, item: &UiItem, key: &mut u32) -> Entry {
                 text(region.iterable)
             );
             if let Some(key) = region.key {
-                let _ = write!(head, " key {}", cx.text(key));
+                let _ = write!(head, " key {}", text_in(cx, tree, instance, key));
             }
             Entry::Region(Region {
                 kind: "for",
@@ -203,10 +226,10 @@ fn entry(cx: &FileCx<'_>, item: &UiItem, key: &mut u32) -> Entry {
                 arms: vec![Arm {
                     head: String::new(),
                     preserve: None,
-                    items: entries(cx, &region.body, key),
+                    items: entries(cx, tree, &region.body, key),
                 }],
                 instance: region.instance,
-                at: At::new(cx, region.origin),
+                at: At::new(cx, tree.own_span(region.instance, region.origin)),
             })
         }
         UiItem::Match(region) => Entry::Region(Region {
@@ -218,22 +241,22 @@ fn entry(cx: &FileCx<'_>, item: &UiItem, key: &mut u32) -> Entry {
                 .map(|arm| {
                     let mut head = text(arm.pattern);
                     if let Some(guard) = arm.guard {
-                        let _ = write!(head, " if {}", cx.text(guard));
+                        let _ = write!(head, " if {}", text_in(cx, tree, instance, guard));
                     }
                     Arm {
                         head,
                         preserve: None,
-                        items: entries(cx, &arm.items, key),
+                        items: entries(cx, tree, &arm.items, key),
                     }
                 })
                 .collect(),
             instance: region.instance,
-            at: At::new(cx, region.origin),
+            at: At::new(cx, tree.own_span(region.instance, region.origin)),
         }),
     }
 }
 
-fn node(cx: &FileCx<'_>, node: &UiNode, key: &mut u32) -> Node {
+fn node(cx: &FileCx<'_>, tree: &UiTree, node: &UiNode, key: &mut u32) -> Node {
     let own = *key;
     *key += 1;
     Node {
@@ -247,10 +270,10 @@ fn node(cx: &FileCx<'_>, node: &UiNode, key: &mut u32) -> Node {
             .iter()
             .map(|p| Bound {
                 name: p.name.clone(),
-                value: cx.text(p.value).to_owned(),
+                value: text_in(cx, tree, p.instance, p.value).to_owned(),
                 dirty: classes(p.dirty),
                 instance: p.instance,
-                at: At::new(cx, p.value),
+                at: At::new(cx, tree.own_span(p.instance, p.value)),
             })
             .collect(),
         handlers: node
@@ -260,7 +283,7 @@ fn node(cx: &FileCx<'_>, node: &UiNode, key: &mut u32) -> Node {
                 event: h.event.clone(),
                 capture: h.capture,
                 instance: h.instance,
-                at: At::new(cx, h.origin),
+                at: At::new(cx, tree.own_span(h.instance, h.origin)),
             })
             .collect(),
         controls: node
@@ -268,9 +291,9 @@ fn node(cx: &FileCx<'_>, node: &UiNode, key: &mut u32) -> Node {
             .iter()
             .map(|(property, range, instance)| Control {
                 property: property.clone(),
-                value: cx.text(*range).to_owned(),
+                value: text_in(cx, tree, *instance, *range).to_owned(),
                 instance: *instance,
-                at: At::new(cx, *range),
+                at: At::new(cx, tree.own_span(*instance, *range)),
             })
             .collect(),
         looks: node
@@ -283,8 +306,8 @@ fn node(cx: &FileCx<'_>, node: &UiNode, key: &mut u32) -> Node {
             .map(|r| viso_schema::view::source_name(r).to_owned()),
         live: node.live.map(|l| l.label().to_owned()),
         instance: node.instance,
-        at: At::new(cx, node.origin),
-        children: entries(cx, &node.children, key),
+        at: At::new(cx, tree.own_span(node.instance, node.origin)),
+        children: entries(cx, tree, &node.children, key),
     }
 }
 

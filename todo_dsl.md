@@ -254,8 +254,10 @@ Goal: every Core view construct reaches a live tree through all three lowering t
   - [x] Instance state as hidden mounted state `identity.state`, kept by hot reload.
   - [x] Input reads call the caller's argument entry; `emit` runs the caller's handlers.
   - [x] Inlined-view bindings substitute instance sources (`lower_view_bindings`).
-  - [x] `E3711` for self-mounting, forwarded props on a multi-root view, and
-        components of other files.
+  - [x] `E3711` for self-mounting and forwarded props on a multi-root view.
+  - [x] Components and templates of imported modules inline like the file's own,
+        with their own module's constants, styles and behavior; their
+        diagnostics land where this file places them.
   - [x] Stateful instances inside `if`/`for`/`match`: per-mount kept states
         (`view/scope.rs`), initializers run with the region's scope values.
   - [x] Component instances in `ui!` fragments: Rust-scope `component!` types mount

@@ -18,8 +18,8 @@ use viso_behavior::native::Natives;
 use crate::ast::{AstNode, CompilationUnit};
 use crate::diag::Diagnostic;
 use crate::frontend::{
-    Siblings, check_language_version, component_decls, graph_consts, module_path,
-    mounted_component, unit_library, view_diagnostics,
+    GraphUnit, Siblings, check_language_version, graph_consts, graph_library, graph_units,
+    module_path, mounted_component, view_diagnostics,
 };
 use crate::hir::{HirComponent, LoweredPackage, TargetProfile, lower};
 use crate::ir::{Consts, lower_component_view};
@@ -204,6 +204,7 @@ pub fn load_package_in(
         manifest.profile,
     );
     let consts = graph_consts(&graph, &units, &resolved, &interner);
+    let sources = graph_units(&graph, &units, &resolved, &interner);
     for (i, module) in graph.modules().iter().enumerate() {
         let text = module.path.display(&interner);
         let Some(file) = units
@@ -219,6 +220,7 @@ pub fn load_package_in(
                 module,
                 &hir,
                 graph.natives(),
+                &sources,
                 &consts,
             )
         });
@@ -261,6 +263,7 @@ fn mounted_view_diagnostics(
     module: &ResolvedModule,
     hir: &LoweredPackage,
     natives: &Natives,
+    sources: &[Option<GraphUnit<'_>>],
     consts: &Rc<Consts>,
 ) -> Vec<Diagnostic> {
     let root = SyntaxNode::new_root(parse.root.clone());
@@ -283,14 +286,7 @@ fn mounted_view_diagnostics(
     else {
         return Vec::new();
     };
-    let decls = component_decls(&cu);
-    let library = unit_library(
-        &cu,
-        module,
-        &decls,
-        hir.components.iter().filter(own),
-        consts.clone(),
-    );
+    let library = graph_library(sources, hir.components.iter(), consts.clone());
     let view = lower_component_view(&block, natives, &library, mounted.schema.symbol, false);
     view_diagnostics(&view).collect()
 }

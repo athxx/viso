@@ -27,7 +27,7 @@ mod place;
 pub mod ui_ir;
 
 pub use binding_ir::{
-    BindingEdge, BindingIr, BindingKind, InstanceSources, NodeKey, lower_bindings,
+    BindingEdge, BindingIr, BindingKind, InstanceSources, NodeKey, ViewUnits, lower_bindings,
     lower_view_reactivity, source_invalidations,
 };
 pub use dirty_map::{DirtyClass, property_dirty_class};
@@ -92,34 +92,30 @@ pub struct Unmounted {
 /// the mounted component, with the node types that name them.
 #[derive(Debug, Default)]
 pub struct ComponentLibrary<'a> {
+    /// Each source unit's names and styles, by the unit's index.
+    units: Vec<LibraryUnit>,
+    components: Vec<LibraryComponent<'a>>,
+    /// The constants of the units, which fold into their nodes' style.
+    consts: Rc<Consts>,
+    /// What a unit the library lacks resolves through: nothing.
+    none: LibraryUnit,
+}
+
+/// One source unit of a [`ComponentLibrary`]: what the views it declares
+/// resolve their names through.
+#[derive(Debug, Default)]
+pub struct LibraryUnit {
     /// The declaration each resolved name names, by the name's range: the
     /// component of a node-type head.
     heads: HashMap<TextRange, SymbolId>,
-    components: Vec<LibraryComponent<'a>>,
     /// The styles of the unit, which its nodes apply.
     styles: StyleBook,
-    /// The constants of the unit, which fold into its nodes' style.
-    consts: Rc<Consts>,
 }
 
-/// One component of a [`ComponentLibrary`].
-#[derive(Debug)]
-pub struct LibraryComponent<'a> {
-    /// Its typed schema.
-    pub schema: &'a ComponentSchema,
-    /// Its declaration, whose view is inlined.
-    pub decl: ComponentDecl,
-    /// Each two-way input, by its index among the inputs, and the event that
-    /// writes it back.
-    pub write_backs: Vec<(usize, String)>,
-    /// Whether a state of it is `@persist`.
-    pub persists: bool,
-}
-
-impl<'a> ComponentLibrary<'a> {
-    /// The library of `components`, whose node-type heads resolve through
-    /// `refs`.
-    pub fn new(refs: &[ResolvedRef], components: Vec<LibraryComponent<'a>>) -> Self {
+impl LibraryUnit {
+    /// The unit whose names resolve through `refs` and that declares
+    /// `styles`.
+    pub(crate) fn new(refs: &[ResolvedRef], styles: StyleBook) -> Self {
         let heads = refs
             .iter()
             .filter_map(|r| match r.to {
@@ -130,18 +126,35 @@ impl<'a> ComponentLibrary<'a> {
                 | Resolution::Theme => None,
             })
             .collect();
-        ComponentLibrary {
-            heads,
-            components,
-            styles: StyleBook::default(),
-            consts: Rc::new(Consts::default()),
-        }
+        LibraryUnit { heads, styles }
     }
+}
 
-    /// The library with the unit's styles `styles`.
-    pub(crate) fn with_styles(mut self, styles: StyleBook) -> Self {
-        self.styles = styles;
-        self
+/// One component of a [`ComponentLibrary`].
+#[derive(Debug)]
+pub struct LibraryComponent<'a> {
+    /// Its typed schema.
+    pub schema: &'a ComponentSchema,
+    /// Its declaration, whose view is inlined.
+    pub decl: ComponentDecl,
+    /// The source unit that declares it.
+    pub unit: u32,
+    /// Each two-way input, by its index among the inputs, and the event that
+    /// writes it back.
+    pub write_backs: Vec<(usize, String)>,
+    /// Whether a state of it is `@persist`.
+    pub persists: bool,
+}
+
+impl<'a> ComponentLibrary<'a> {
+    /// The library of `components`, declared across `units`.
+    pub fn new(units: Vec<LibraryUnit>, components: Vec<LibraryComponent<'a>>) -> Self {
+        ComponentLibrary {
+            units,
+            components,
+            consts: Rc::new(Consts::default()),
+            none: LibraryUnit::default(),
+        }
     }
 
     /// The library with the constants `consts` its views fold.
@@ -151,8 +164,17 @@ impl<'a> ComponentLibrary<'a> {
     }
 
     /// The component `id`.
-    fn get(&self, id: SymbolId) -> Option<&LibraryComponent<'a>> {
+    pub(crate) fn component(&self, id: SymbolId) -> Option<&LibraryComponent<'a>> {
         self.components.iter().find(|c| c.schema.symbol == id)
+    }
+
+    fn get(&self, id: SymbolId) -> Option<&LibraryComponent<'a>> {
+        self.component(id)
+    }
+
+    /// Source unit `unit`; an empty one for a unit the library lacks.
+    fn unit(&self, unit: u32) -> &LibraryUnit {
+        self.units.get(unit as usize).unwrap_or(&self.none)
     }
 }
 
@@ -219,6 +241,8 @@ struct Lowering<'a, 'l> {
 struct Frame {
     /// Its instance: `0` for the mounted component.
     instance: u32,
+    /// The source unit that declares its component.
+    unit: u32,
     /// The components being inlined into each other down to this one.
     chain: Vec<SymbolId>,
     /// What the caller fills each slot with.
@@ -247,6 +271,9 @@ impl<'a, 'l> Lowering<'a, 'l> {
             instances: Vec::new(),
             frames: vec![Frame {
                 instance: 0,
+                unit: root
+                    .and_then(|root| library.get(root))
+                    .map_or(0, |c| c.unit),
                 chain: root.into_iter().collect(),
                 fills: Vec::new(),
                 overrides: Vec::new(),
@@ -268,6 +295,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
             tree: UiTree {
                 items,
                 instances: self.instances,
+                unit: self.frames[0].unit,
             },
             unknown: self.unknown,
             unmounted: self.unmounted,
@@ -281,32 +309,57 @@ impl<'a, 'l> Lowering<'a, 'l> {
         self.frames[self.current].instance
     }
 
-    /// Reports `(at, reason)`: what does not mount and why, with the call
-    /// site of the instance whose view it is in.
-    fn unmount(&mut self, (at, reason): (TextRange, String)) {
-        let placed_at = self
-            .instances
-            .get(self.instance().wrapping_sub(1) as usize)
-            .map(|i| i.origin);
-        self.unmounted.push(Unmounted {
-            at,
-            reason,
-            placed_at,
-        });
+    /// The names and styles of the unit whose view is being lowered.
+    fn names(&self) -> &'a LibraryUnit {
+        self.library.unit(self.frames[self.current].unit)
+    }
+
+    /// `(at, reason)` as the mounted view's file reports it, with the call
+    /// site of the instance whose view it is in: a span of another file is
+    /// reported at the node of the mounted file that places the component it
+    /// is in.
+    fn report(&self, (at, reason): (TextRange, String)) -> Unmounted {
+        let root = self.frames[0].unit;
+        let unit_of = |instance: u32| match instance.checked_sub(1) {
+            Some(i) => self.instances[i as usize].unit,
+            None => root,
+        };
+        let mut instance = self.instance();
+        if unit_of(instance) == root {
+            let placed_at = self
+                .instances
+                .get(instance.wrapping_sub(1) as usize)
+                .map(|i| i.origin);
+            return Unmounted {
+                at,
+                reason,
+                placed_at,
+            };
+        }
+        loop {
+            let placed = &self.instances[instance as usize - 1];
+            if unit_of(placed.parent) == root {
+                return Unmounted {
+                    at: placed.origin,
+                    reason: format!("in `{}`: {reason}", placed.name),
+                    placed_at: None,
+                };
+            }
+            instance = placed.parent;
+        }
+    }
+
+    /// Reports `(at, reason)`: what does not mount and why.
+    fn unmount(&mut self, report: (TextRange, String)) {
+        let report = self.report(report);
+        self.unmounted.push(report);
     }
 
     /// Reports `(at, reason)`: a grid template or child cell that names no
-    /// cells and why, with the call site of the instance whose view it is in.
-    fn misplace(&mut self, (at, reason): (TextRange, String)) {
-        let placed_at = self
-            .instances
-            .get(self.instance().wrapping_sub(1) as usize)
-            .map(|i| i.origin);
-        self.misplaced.push(Unmounted {
-            at,
-            reason,
-            placed_at,
-        });
+    /// cells and why.
+    fn misplace(&mut self, report: (TextRange, String)) {
+        let report = self.report(report);
+        self.misplaced.push(report);
     }
 
     /// Places each child of a grid whose `grid` template is `grid` and that
@@ -410,7 +463,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
     /// The `NodeRef` key of the named node `name` names, `None` for one in a
     /// `for` body, which its component reaches by no `NodeRef`.
     fn node_ref(&self, name: &crate::syntax::SyntaxToken) -> Option<u32> {
-        self.library.heads.get(&name.text_range())?;
+        self.names().heads.get(&name.text_range())?;
         let frame = &self.frames[self.current];
         let component = self.library.get(*frame.chain.last()?)?;
         let ordinal = component
@@ -453,7 +506,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
         let Some(ty) = ty else { return };
         let type_name = type_name_of(&ty);
         let head = ty.segments().next().map(|t| t.text_range());
-        if let Some(id) = head.and_then(|head| self.library.heads.get(&head).copied()) {
+        if let Some(id) = head.and_then(|head| self.names().heads.get(&head).copied()) {
             if overriding.is_some() {
                 self.unmount((
                     origin,
@@ -465,13 +518,6 @@ impl<'a, 'l> Lowering<'a, 'l> {
             if self.library.get(id).is_some() {
                 let members = body.iter().flat_map(|b| b.members()).collect();
                 self.component(id, type_name, local_name, members, Vec::new(), origin, out);
-            } else {
-                self.unmount((
-                    ty.syntax().text_range(),
-                    format!(
-                        "`{type_name}` is declared in another file; a view inlines the components of its own file"
-                    ),
-                ));
             }
             return;
         }
@@ -730,13 +776,13 @@ impl<'a, 'l> Lowering<'a, 'l> {
         ),
     ) -> Option<UiStyled> {
         let value = styles_value(members)?;
-        let uses = style::uses(&self.library.styles, &value).ok()?;
+        let uses = style::uses(&self.names().styles, &value).ok()?;
         let list = style::applying(&uses, type_name);
         if list.is_empty() {
             return None;
         }
         let plan = style::plan(
-            &self.library.styles,
+            &self.names().styles,
             &list,
             &style::own_bindings(members),
             type_name,
@@ -796,7 +842,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
     /// node of type `type_name`, in list order.
     fn style_names(&self, type_name: &str, members: &[ViewItem]) -> Vec<String> {
         let Some(uses) =
-            styles_value(members).and_then(|v| style::uses(&self.library.styles, &v).ok())
+            styles_value(members).and_then(|v| style::uses(&self.names().styles, &v).ok())
         else {
             return Vec::new();
         };
@@ -942,16 +988,10 @@ impl<'a, 'l> Lowering<'a, 'l> {
         let Some(head) = ty.segments().next() else {
             return;
         };
-        let Some(id) = self.library.heads.get(&head.text_range()).copied() else {
+        let Some(id) = self.names().heads.get(&head.text_range()).copied() else {
             return;
         };
         let Some(template) = self.library.get(id) else {
-            self.unmount((
-                ty.syntax().text_range(),
-                format!(
-                    "`{type_name}` is declared in another file; a view inlines the templates of its own file"
-                ),
-            ));
             return;
         };
         let inputs = &template.schema.inputs;
@@ -1134,6 +1174,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
             name: type_name.clone(),
             origin,
             parent,
+            unit: component.unit,
             identity,
             depth: self.depth,
             regional: self.guarded,
@@ -1145,6 +1186,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
         chain.push(id);
         self.frames.push(Frame {
             instance,
+            unit: component.unit,
             chain,
             fills,
             overrides,

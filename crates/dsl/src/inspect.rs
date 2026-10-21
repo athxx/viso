@@ -138,8 +138,9 @@ fn source(
     let owner = tree
         .instance(node.instance)
         .map_or(owner, |placed| placed.name.as_str());
-    let start = node.origin.start().to_usize().min(len);
-    let end = node.origin.end().to_usize().clamp(start, len);
+    let origin = tree.own_span(node.instance, node.origin);
+    let start = origin.start().to_usize().min(len);
+    let end = origin.end().to_usize().clamp(start, len);
     let at = |offset: usize| {
         let at = lines.line_col_utf16(TextSize::new(offset as u32));
         (at.line + 1, at.column + 1)

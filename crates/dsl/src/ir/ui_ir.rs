@@ -36,9 +36,34 @@ pub struct UiTree {
     /// The user-component instances the view inlines, in pre-order: instance
     /// `i` is `instances[i - 1]`, and instance `0` is the view's own component.
     pub instances: Vec<UiInstance>,
+    /// The source unit of the view's own component, as the library numbers
+    /// the units.
+    pub unit: u32,
 }
 
 impl UiTree {
+    /// The source unit whose spans the items of instance `instance` carry.
+    pub fn unit_of(&self, instance: u32) -> u32 {
+        self.instance(instance).map_or(self.unit, |i| i.unit)
+    }
+
+    /// `at`, a span of the view of instance `instance`, in the view's own
+    /// file: itself for a view of that file, else the node of the file that
+    /// places the component of another file it lies in.
+    pub fn own_span(&self, instance: u32, at: TextRange) -> TextRange {
+        let mut instance = instance;
+        while self.unit_of(instance) != self.unit {
+            let Some(placed) = self.instance(instance) else {
+                break;
+            };
+            if self.unit_of(placed.parent) == self.unit {
+                return placed.origin;
+            }
+            instance = placed.parent;
+        }
+        at
+    }
+
     /// The inlined instance `instance`, or `None` for the view's own component.
     pub fn instance(&self, instance: u32) -> Option<&UiInstance> {
         let index = instance.checked_sub(1)?;
@@ -60,6 +85,9 @@ pub struct UiInstance {
     pub origin: TextRange,
     /// The instance whose view names the node.
     pub parent: u32,
+    /// The source unit that declares the component, whose spans its view's
+    /// items carry, as the library numbers the units.
+    pub unit: u32,
     /// A name stable across edits that keep the path of named nodes and
     /// component types to it: the parent's, then the node's local name or its
     /// type and ordinal among the parent's instances of that type.

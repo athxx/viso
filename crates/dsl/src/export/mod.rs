@@ -89,7 +89,7 @@ pub fn html(compiled: &Compiled, options: &HtmlOptions) -> Result<HtmlExport, Ve
         &compiled.assets,
         options.static_only,
     );
-    lower.view(&compiled.tree.items);
+    lower.view(&compiled.tree);
     if let Some(layout) = layout
         && options.static_only
         && let Some(effect) = layout.effects.first()
@@ -176,7 +176,7 @@ pub fn solid(compiled: &Compiled, options: &SolidOptions) -> Result<SolidExport,
         &compiled.assets,
         false,
     );
-    lower.view(&compiled.tree.items);
+    lower.view(&compiled.tree);
     lower.all_assets();
     let html::Lower {
         findings,

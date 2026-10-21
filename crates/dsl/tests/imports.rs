@@ -253,3 +253,153 @@ fn an_imported_const_folds_into_style_as_one_of_the_file() {
         assert_eq!(rt.store.bounds(row).w, 120.0, "`WIDE` through `BASE`");
     }
 }
+
+const WIDGETS: &str = r#"
+import units::{BASE};
+style Dim for Text { opacity: 0.5f32; }
+export component Counter {
+    input step: I64 = 1;
+    event counted(value: I64);
+    state count = 0;
+    view {
+        Row {
+            width: BASE;
+            height: 20dp;
+            Text { width: 20dp; height: 20dp; on click { count += step; emit counted(count); } }
+            Text { width: 20dp; height: 20dp; styles: [Dim]; text: format("{}", count); }
+            if count > 2 {
+                Text { width: 20dp; height: 20dp; text: "many"; }
+            }
+        }
+    }
+}
+export component Loop {
+    view { Column { Loop {} } }
+}
+"#;
+
+const BOARD: &str = r#"
+import widgets::{Counter};
+export component Board {
+    state total = 0;
+    view {
+        Column {
+            width: 200dp;
+            height: 100dp;
+            Counter { step: 2; on counted(event) { total = event.value; } }
+            Counter {}
+        }
+    }
+}
+"#;
+
+fn widgets() -> Siblings {
+    Siblings::Memory(Arc::from(vec![
+        (vec!["widgets".to_owned()], WIDGETS.to_owned()),
+        (
+            vec!["units".to_owned()],
+            "export const BASE: MixedLength = 120dp;\n".to_owned(),
+        ),
+    ]))
+}
+
+#[test]
+fn a_component_of_another_file_inlines_with_its_state_events_and_constants() {
+    for mut rt in [
+        Rt::mount_in(BOARD, widgets()),
+        Rt::packaged_in(BOARD, widgets()),
+    ] {
+        let root = rt.root.expect("mounted");
+        let rows = rt.children(root);
+        assert_eq!(
+            rt.store.bounds(rows[0]).w,
+            120.0,
+            "`BASE` read in `widgets`"
+        );
+        let shown = rt.children(rows[0])[1];
+        assert_eq!(rt.store.opacity(shown), 0.5, "`Dim`, a style of `widgets`");
+        rt.click(0);
+        assert_eq!(rt.children(rows[0]).len(), 2);
+        rt.click(0);
+        assert_eq!(rt.int("total"), Some(4), "the first counter steps by 2");
+        assert_eq!(rt.children(rows[0]).len(), 3, "its `if` shows past 2");
+        rt.click(1);
+        assert_eq!(rt.int("total"), Some(4), "the second keeps its own count");
+        assert_eq!(rt.children(rows[1]).len(), 2);
+        assert_eq!(rt.fault(), None);
+    }
+}
+
+#[test]
+fn what_does_not_mount_in_another_file_is_reported_where_this_one_places_it() {
+    let page = BOARD
+        .replace("Counter {}", "Loop {}")
+        .replace("{Counter}", "{Counter, Loop}");
+    let origin = Origin {
+        siblings: widgets(),
+        ..origin()
+    };
+    let errors: Vec<_> = compile_file(&page, &origin)
+        .errors()
+        .map(|d| {
+            let at = d.primary.start().to_u32() as usize..d.primary.end().to_u32() as usize;
+            (d.code, page[at].to_owned(), d.message.contains("in `Loop`"))
+        })
+        .collect();
+    assert_eq!(
+        errors,
+        [("E3711", "Loop {}".to_owned(), true)],
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn a_component_of_another_file_exports_to_the_web() {
+    let origin = Origin {
+        siblings: widgets(),
+        ..origin()
+    };
+    let compiled = compile_file(BOARD, &origin);
+    let page = viso_dsl::export::html(
+        &compiled,
+        &viso_dsl::export::HtmlOptions {
+            static_only: false,
+            title: "Board".into(),
+            lang: "en".into(),
+        },
+    )
+    .expect("exports");
+    let script = page.script.expect("a script");
+    assert_eq!(script.matches("  on(e[").count(), 2, "{script}");
+    assert_eq!(script.matches("region(e[").count(), 2, "{script}");
+    assert!(page.styles.contains("opacity: 0.5"), "{}", page.styles);
+}
+
+#[test]
+fn a_template_of_another_file_inlines_with_its_parameters() {
+    let widgets = Siblings::Memory(Arc::from(vec![(
+        vec!["cards".to_owned()],
+        "export template Card(w: MixedLength = 30dp) {\n    view { Text { width: w; height: 10dp; } }\n}\n"
+            .to_owned(),
+    )]));
+    let page = r#"
+import cards::{Card};
+export component Deck {
+    view {
+        Column {
+            use Card(50dp);
+            use Card();
+        }
+    }
+}
+"#;
+    for rt in [
+        Rt::mount_in(page, widgets.clone()),
+        Rt::packaged_in(page, widgets.clone()),
+    ] {
+        let root = rt.root.expect("mounted");
+        let cards = rt.children(root);
+        assert_eq!(rt.store.bounds(cards[0]).w, 50.0);
+        assert_eq!(rt.store.bounds(cards[1]).w, 30.0);
+    }
+}

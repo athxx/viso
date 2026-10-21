@@ -18,7 +18,7 @@ use crate::assets::{AssetUse, ResourceId};
 use crate::behavior::ir::Site;
 use crate::ir::binding_ir::NodeKey;
 use crate::ir::ui_ir::{
-    Alignment2D, AxisIr, InsetIr, LengthIr, NodeKind, Placement, TermsIr, UiItem, UiNode,
+    Alignment2D, AxisIr, InsetIr, LengthIr, NodeKind, Placement, TermsIr, UiItem, UiNode, UiTree,
 };
 use crate::syntax::TextRange;
 use crate::view_behavior::{ViewBehavior, When};
@@ -223,6 +223,9 @@ pub(super) struct Lower<'v, 'e, 'a> {
     anchors: bool,
     /// Whether the flex container being lowered stretches its children.
     stretch: bool,
+    /// The tree being lowered, whose spans of other files' components it
+    /// reports where the page's source places them.
+    tree: Option<&'v UiTree>,
 }
 
 impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
@@ -244,11 +247,20 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             rooted: BTreeSet::new(),
             anchors: false,
             stretch: false,
+            tree: None,
         }
     }
 
+    /// `at`, a span of instance `instance`'s view, as the page's source has
+    /// it.
+    fn own(&self, instance: u32, at: TextRange) -> TextRange {
+        self.tree.map_or(at, |tree| tree.own_span(instance, at))
+    }
+
     /// Lowers the view's root items.
-    pub(super) fn view(&mut self, items: &[UiItem]) {
+    pub(super) fn view(&mut self, tree: &'v UiTree) {
+        self.tree = Some(tree);
+        let items = &tree.items[..];
         self.anchors = !self.static_only
             && self
                 .eval
@@ -295,8 +307,8 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
     /// The source span of handler-table entry `entry`.
     fn site(&self, entry: u32) -> Option<TextRange> {
         let eval = self.eval.as_deref()?;
-        let (Site { at, .. }, _) = eval.layout.handlers.get(entry as usize)?;
-        Some(*at)
+        let (Site { at, instance, .. }, _) = eval.layout.handlers.get(entry as usize)?;
+        Some(self.own(*instance, *at))
     }
 
     /// What `entry` shows here: its value when it never changes, else
@@ -368,7 +380,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             (_, ControlKind::Shader) => {
                 self.need(
                     Need::GpuOnly,
-                    node.origin,
+                    self.own(node.instance, node.origin),
                     format!(
                         "a `{}` paints with a shader, which no HTML element runs",
                         node.type_name
@@ -386,7 +398,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             (NodeKind::Component, _) => {
                 self.need(
                     Need::Unsupported,
-                    node.origin,
+                    self.own(node.instance, node.origin),
                     format!(
                         "`{}` is a Rust component, which only the Viso runtime mounts",
                         node.type_name
@@ -497,7 +509,9 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         }
         if !routes.is_empty() && !templated && self.static_only {
             for route in &routes {
-                let at = self.site(route.handler).unwrap_or(node.origin);
+                let at = self
+                    .site(route.handler)
+                    .unwrap_or(self.own(node.instance, node.origin));
                 self.need(
                     Need::Dynamic,
                     at,
@@ -873,7 +887,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         decls: &mut Vec<(&'static str, String)>,
         wires: &mut Vec<Wire>,
     ) -> Option<i64> {
-        let at = node.origin;
+        let at = self.own(node.instance, node.origin);
         let mut selected = None;
         let mask = el.tag != "img";
         match control.kind {

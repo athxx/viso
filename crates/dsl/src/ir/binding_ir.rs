@@ -96,6 +96,44 @@ impl BindingIr {
     }
 }
 
+/// The expressions and references of each source unit a lowered view's
+/// spans come from, by the unit's index in the library it was lowered with:
+/// a span recovers its expression in the unit of the instance whose view
+/// holds it.
+pub struct ViewUnits<'r> {
+    exprs: HashMap<(u32, TextRange), Expr>,
+    refs: Vec<&'r [ResolvedRef]>,
+}
+
+impl<'r> ViewUnits<'r> {
+    /// The units `units`, each its tree and the references its names resolve
+    /// by; `None` holds the index of a unit no view's spans come from.
+    pub fn new(units: impl IntoIterator<Item = Option<(SyntaxNode, &'r [ResolvedRef])>>) -> Self {
+        let mut exprs = HashMap::new();
+        let mut refs = Vec::new();
+        for (unit, source) in units.into_iter().enumerate() {
+            match source {
+                Some((root, unit_refs)) => {
+                    index_exprs(unit as u32, &root, &mut exprs);
+                    refs.push(unit_refs);
+                }
+                None => refs.push(&[][..]),
+            }
+        }
+        ViewUnits { exprs, refs }
+    }
+
+    /// The expression at `at` in unit `unit`.
+    pub(crate) fn expr(&self, unit: u32, at: TextRange) -> Option<&Expr> {
+        self.exprs.get(&(unit, at))
+    }
+
+    /// The references of unit `unit`.
+    pub(crate) fn refs(&self, unit: u32) -> &'r [ResolvedRef] {
+        self.refs.get(unit as usize).copied().unwrap_or(&[])
+    }
+}
+
 /// Lowers a [`UiTree`]'s pending properties into Binding IR, given the view's
 /// parsed root (to recover each pending value's expression by span), the resolver's
 /// references, and a [`ReadEnv`] classifying which symbols are reactive sources.
@@ -106,13 +144,8 @@ impl BindingIr {
 /// becomes a static edge carrying the property's dirty class. A property reading no
 /// reactive source contributes no edge — a typed binding never silently becomes a
 /// dynamic subscription.
-pub fn lower_bindings(
-    tree: &UiTree,
-    root: &SyntaxNode,
-    refs: &[ResolvedRef],
-    env: &dyn ReadEnv,
-) -> BindingIr {
-    lower_view_reactivity(tree, root, refs, env, &DerivedReads::default(), &[]).0
+pub fn lower_bindings(tree: &UiTree, units: &ViewUnits<'_>, env: &dyn ReadEnv) -> BindingIr {
+    lower_view_reactivity(tree, units, env, &DerivedReads::default(), &[]).0
 }
 
 /// The reactive sources of one inlined instance of a [`UiTree`]: what its
@@ -133,13 +166,12 @@ pub struct InstanceSources {
 /// region. Sources the view never reads are absent.
 pub fn source_invalidations(
     tree: &UiTree,
-    root: &SyntaxNode,
-    refs: &[ResolvedRef],
+    units: &ViewUnits<'_>,
     env: &dyn ReadEnv,
     derived: &DerivedReads,
     instances: &[InstanceSources],
 ) -> HashMap<SymbolId, DirtyClass> {
-    lower_view_reactivity(tree, root, refs, env, derived, instances).1
+    lower_view_reactivity(tree, units, env, derived, instances).1
 }
 
 /// [`lower_bindings`] for a view that inlines component instances, `instances`
@@ -152,8 +184,7 @@ pub fn source_invalidations(
 /// it, as `derived` records them.
 pub fn lower_view_reactivity(
     tree: &UiTree,
-    root: &SyntaxNode,
-    refs: &[ResolvedRef],
+    units: &ViewUnits<'_>,
     env: &dyn ReadEnv,
     derived: &DerivedReads,
     instances: &[InstanceSources],
@@ -163,7 +194,7 @@ pub fn lower_view_reactivity(
         env,
         derived: &is_derived,
     };
-    let mut ctx = LowerCtx::new(tree, root, refs, &with, derived, instances);
+    let mut ctx = LowerCtx::new(tree, units, &with, derived, instances);
     let mut out: HashMap<SymbolId, DirtyClass> = HashMap::new();
     for item in &tree.items {
         ctx.lower_item(item);
@@ -202,10 +233,11 @@ fn substitute(
 
 /// The mutable state threaded through the pre-order lowering walk.
 struct LowerCtx<'a> {
-    /// Every `Expr` in the view, keyed by its span, so a pending property's value
-    /// range resolves back to the expression `collect_reads` walks.
-    exprs: HashMap<TextRange, Expr>,
-    refs: &'a [ResolvedRef],
+    /// Every `Expr` of the view's units, so a pending property's value range
+    /// resolves back to the expression `collect_reads` walks.
+    units: &'a ViewUnits<'a>,
+    /// The source unit of each instance's view, by instance.
+    unit_of: Vec<u32>,
     env: &'a dyn ReadEnv,
     /// The base reads of each derived member.
     derived: &'a DerivedReads,
@@ -222,13 +254,14 @@ impl<'a> LowerCtx<'a> {
     /// what its caller's arguments read.
     fn new(
         tree: &UiTree,
-        root: &SyntaxNode,
-        refs: &'a [ResolvedRef],
+        units: &'a ViewUnits<'a>,
         env: &'a dyn ReadEnv,
         derived: &'a DerivedReads,
         instances: &[InstanceSources],
     ) -> Self {
-        let exprs = index_exprs(root);
+        let unit_of: Vec<u32> = (0..=tree.instances.len() as u32)
+            .map(|instance| tree.unit_of(instance))
+            .collect();
         let mut substitutions: Vec<HashMap<SymbolId, Vec<SymbolId>>> = Vec::new();
         for (instance, sources) in tree.instances.iter().zip(instances) {
             let mut map: HashMap<SymbolId, Vec<SymbolId>> = sources
@@ -236,20 +269,24 @@ impl<'a> LowerCtx<'a> {
                 .iter()
                 .map(|&(state, hidden)| (state, vec![hidden]))
                 .collect();
+            // An argument is an expression of the caller's view.
+            let unit = unit_of[instance.parent as usize];
             for &(slot, at) in &instance.args {
                 let Some(Some(input)) = sources.inputs.get(slot as usize) else {
                     continue;
                 };
-                let Some(expr) = exprs.get(&at) else { continue };
-                let reads = derived.flatten(collect_reads(refs, env, expr));
+                let Some(expr) = units.expr(unit, at) else {
+                    continue;
+                };
+                let reads = derived.flatten(collect_reads(units.refs(unit), env, expr));
                 let reads = substitute(&substitutions, instance.parent, reads);
                 map.insert(*input, reads);
             }
             substitutions.push(map);
         }
         Self {
-            exprs,
-            refs,
+            units,
+            unit_of,
             env,
             derived,
             substitutions,
@@ -261,12 +298,13 @@ impl<'a> LowerCtx<'a> {
 
     /// The sources the expression at `at`, in the view of `instance`, reads.
     fn reads_at(&self, at: TextRange, instance: u32) -> Vec<SymbolId> {
-        let Some(expr) = self.exprs.get(&at) else {
+        let unit = self.unit_of.get(instance as usize).copied().unwrap_or(0);
+        let Some(expr) = self.units.expr(unit, at) else {
             return Vec::new();
         };
         let reads = self
             .derived
-            .flatten(collect_reads(self.refs, self.env, expr));
+            .flatten(collect_reads(self.units.refs(unit), self.env, expr));
         substitute(&self.substitutions, instance, reads)
     }
 
@@ -358,13 +396,7 @@ impl<'a> LowerCtx<'a> {
     /// constant the UI IR should have folded, or a name the frontend diagnosed):
     /// a typed binding never silently becomes a dynamic subscription.
     fn lower_pending(&mut self, node: NodeKey, pending: &PendingProperty) {
-        let Some(expr) = self.exprs.get(&pending.value) else {
-            return;
-        };
-        let reads = self
-            .derived
-            .flatten(collect_reads(self.refs, self.env, expr));
-        for source in substitute(&self.substitutions, pending.instance, reads) {
+        for source in self.reads_at(pending.value, pending.instance) {
             self.ir.edges.push(BindingEdge {
                 source,
                 node,
@@ -376,23 +408,18 @@ impl<'a> LowerCtx<'a> {
     }
 }
 
-/// Indexes every `Expr` in the view by its span, so a pending property's recorded
-/// value range recovers the expression to run `collect_reads` over. Spans are
-/// unique per node, so the map is one-to-one. This is a cold compile-time walk, so
-/// it simply asks [`Expr::cast`] itself which nodes are expressions rather than
-/// duplicating the AST's expression-kind set.
-fn index_exprs(root: &SyntaxNode) -> HashMap<TextRange, Expr> {
-    let mut map = HashMap::new();
-    collect_exprs(root, &mut map);
-    map
-}
-
-/// Recursively records each node that casts to an [`Expr`], keyed by its span.
-fn collect_exprs(node: &SyntaxNode, map: &mut HashMap<TextRange, Expr>) {
-    if let Some(expr) = Expr::cast(node.clone()) {
-        map.insert(node.text_range(), expr);
-    }
-    for child in node.children() {
-        collect_exprs(&child, map);
+/// Indexes every `Expr` under `root`, the tree of unit `unit`, by its span, so
+/// a pending property's recorded value range recovers the expression to run
+/// `collect_reads` over. Spans are unique per node within a unit, so the map is
+/// one-to-one. This is a cold compile-time walk, so it simply asks
+/// [`Expr::cast`] itself which nodes are expressions rather than duplicating
+/// the AST's expression-kind set.
+fn index_exprs(unit: u32, root: &SyntaxNode, map: &mut HashMap<(u32, TextRange), Expr>) {
+    let mut stack = vec![root.clone()];
+    while let Some(node) = stack.pop() {
+        if let Some(expr) = Expr::cast(node.clone()) {
+            map.insert((unit, node.text_range()), expr);
+        }
+        stack.extend(node.children());
     }
 }
