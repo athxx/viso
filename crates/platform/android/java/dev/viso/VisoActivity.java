@@ -359,6 +359,10 @@ public class VisoActivity extends Activity implements SurfaceHolder.Callback2 {
         runOnUiThread(() -> view.setEditMenu(show, x, y, width, height, items));
     }
 
+    void setLoupe(boolean show, float x, float y) {
+        runOnUiThread(() -> view.setLoupe(show, x, y));
+    }
+
     void setPointerIcon(int type) {
         runOnUiThread(() -> view.setPointerIcon(
                 type == 0 ? PointerIcon.getSystemIcon(this, PointerIcon.TYPE_NULL)

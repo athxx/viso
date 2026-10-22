@@ -1059,6 +1059,7 @@ impl PlatformApp for WebApp {
             accessibility: true,
             edit_menu: false,
             context_menu: false,
+            loupe: false,
         }
     }
 

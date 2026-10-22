@@ -78,6 +78,17 @@ pub struct EditMenu {
     pub select_all: bool,
 }
 
+/// The magnifier a phone shows above a text field's caret while a finger
+/// carries it: from a long press, or dragging a selection handle.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Loupe {
+    /// The finger, logical points (top-left origin).
+    pub x: f64,
+    pub y: f64,
+    /// The caret it magnifies, logical points.
+    pub caret: LogicalRect,
+}
+
 /// The titles of a context menu's edits, in the language of the app.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EditLabels {
@@ -377,6 +388,9 @@ pub struct PlatformCaps {
     /// A system context menu at the pointer
     /// ([`PlatformApp::show_context_menu`](crate::PlatformApp::show_context_menu)).
     pub context_menu: bool,
+    /// A system magnifier over a carried caret
+    /// ([`PlatformApp::set_loupe`](crate::PlatformApp::set_loupe)).
+    pub loupe: bool,
 }
 
 impl PlatformCaps {
@@ -390,6 +404,7 @@ impl PlatformCaps {
         accessibility: true,
         edit_menu: false,
         context_menu: true,
+        loupe: false,
     };
     /// A phone or tablet backend: one window, the system's clipboard and IME.
     pub const MOBILE: PlatformCaps = PlatformCaps {
@@ -401,6 +416,7 @@ impl PlatformCaps {
         accessibility: true,
         edit_menu: true,
         context_menu: false,
+        loupe: true,
     };
     /// A display driven with no display server (KMS): one window, nothing
     /// from a desktop and no accessibility bridge.
@@ -413,5 +429,6 @@ impl PlatformCaps {
         accessibility: false,
         edit_menu: false,
         context_menu: false,
+        loupe: false,
     };
 }

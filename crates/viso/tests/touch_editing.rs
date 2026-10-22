@@ -151,3 +151,24 @@ fn select_all_keeps_the_menu_and_a_tap_on_the_selection_hides_it() {
     );
     assert_eq!(app.focused_selection(), Some((0, 16)), "and keeps it");
 }
+
+#[test]
+fn the_loupe_follows_the_finger_carrying_the_caret_and_goes_with_the_lift() {
+    let mut held = vec![redraw()];
+    let mut press = long_press(1, 2.0, 12.0);
+    let lift = press.split_off(press.len() - 2);
+    held.extend(press);
+    held.extend([touch(1, 60.0, 14.0, RawPhase::Moved), redraw()]);
+    let app = drive_scripted::<FieldApp>(held.clone(), STEP);
+    let loupe = app
+        .loupe()
+        .expect("the loupe shows while the finger carries");
+    assert!((loupe.x - 60.0).abs() < 0.5 && (loupe.y - 14.0).abs() < 0.5);
+    assert!(loupe.caret.height > 0.0 && loupe.caret.x > 2.0, "{loupe:?}");
+    assert!(app.edit_menu().is_none(), "no menu while carried");
+
+    held.extend(lift);
+    let app = drive_scripted::<FieldApp>(held, STEP);
+    assert_eq!(app.loupe(), None, "the lift puts it away");
+    assert!(app.edit_menu().is_some());
+}

@@ -452,6 +452,12 @@ pub mod __test_support {
             self.driver.windows[0].edit_menu
         }
 
+        /// The magnifier last pushed to the platform for the launch window,
+        /// while it shows.
+        pub fn loupe(&self) -> Option<viso_platform::Loupe> {
+            self.driver.windows[0].loupe
+        }
+
         /// The context menu the launch window last popped up, until it
         /// closes or the field takes its request back.
         pub fn context_menu(&self) -> Option<viso_platform::EditMenu> {
@@ -912,6 +918,8 @@ struct WindowState {
     context_menu: Option<viso_platform::EditMenu>,
     /// The menus of edits the window draws where the platform draws none.
     drawn_menu: edit_menu::DrawnMenu,
+    /// The magnifier last pushed to the platform, while it shows.
+    loupe: Option<viso_platform::Loupe>,
     /// The cursor last pushed to the platform for the mouse.
     cursor: viso_platform::CursorIcon,
     /// The text field drawn with the focus last frame.
@@ -1170,6 +1178,7 @@ impl WindowState {
             edit_menu: None,
             context_menu: None,
             drawn_menu: edit_menu::DrawnMenu::new(),
+            loupe: None,
             cursor: viso_platform::CursorIcon::Default,
             marked: None,
             blink: None,
@@ -1893,6 +1902,35 @@ impl WindowState {
             return false;
         }
         self.edit_menu = menu;
+        true
+    }
+
+    /// Recompute the magnifier over the caret a finger carries in the
+    /// focused field and report whether it differs from what was pushed.
+    fn loupe_changed(&mut self) -> bool {
+        let loupe = self
+            .focused_text_node()
+            .filter(|_| self.active)
+            .and_then(|id| {
+                let marks = self.store.field_marks(id)?;
+                let (finger, caret) = marks.loupe?;
+                let view = self.store.world(id);
+                let (x, y) = (view.x - marks.scroll.x, view.y - marks.scroll.y);
+                Some(viso_platform::Loupe {
+                    x: f64::from(x + finger.x),
+                    y: f64::from(y + finger.y),
+                    caret: LogicalRect::new(
+                        f64::from(x + caret.x),
+                        f64::from(y + caret.y),
+                        f64::from(caret.w),
+                        f64::from(caret.h),
+                    ),
+                })
+            });
+        if self.loupe == loupe {
+            return false;
+        }
+        self.loupe = loupe;
         true
     }
 
@@ -3523,6 +3561,9 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         cx.show_context_menu(ws.window, menu, labels);
                     }
                     ws.update_drawn_menu(cx);
+                    if caps.loupe && ws.loupe_changed() {
+                        cx.set_loupe(ws.window, ws.loupe);
+                    }
                 }
             }
             FramePhase::BuildPaintChanges => {

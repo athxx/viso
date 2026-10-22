@@ -55,7 +55,8 @@ pub use accessibility::{
 };
 pub use control::{
     ControlFlow, DEFAULT_FRAME_BUDGET, EditLabels, EditMenu, EditMenuAction, InputKind,
-    LogicalRect, PlatformCaps, PlatformError, TextEntry, WindowChrome, WindowConfig, WindowId,
+    LogicalRect, Loupe, PlatformCaps, PlatformError, TextEntry, WindowChrome, WindowConfig,
+    WindowId,
 };
 pub use event::{
     AcceptCell, Appearance, ClipboardReply, ClipboardShortcut, ColorScheme, CursorIcon,
@@ -199,6 +200,13 @@ pub trait PlatformApp {
     /// [`PlatformCaps::context_menu`] is false.
     fn show_context_menu(&mut self, window: WindowId, menu: EditMenu, labels: EditLabels) {
         let _ = (window, menu, labels);
+    }
+
+    /// Show the system magnifier over the caret a finger carries, or move it
+    /// with the finger; `None` puts it away. A no-op where
+    /// [`PlatformCaps::loupe`] is false.
+    fn set_loupe(&mut self, window: WindowId, loupe: Option<Loupe>) {
+        let _ = (window, loupe);
     }
 
     /// The current system appearance. Changes arrive as

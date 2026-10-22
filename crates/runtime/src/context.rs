@@ -11,7 +11,7 @@ use std::time::Duration;
 use viso_platform::{Instant, LoopWaker};
 
 use viso_platform::{
-    Appearance, CursorIcon, EditLabels, EditMenu, LogicalRect, PlatformApp, PlatformCaps,
+    Appearance, CursorIcon, EditLabels, EditMenu, LogicalRect, Loupe, PlatformApp, PlatformCaps,
     PlatformError, RawEvent, RawWindowHandle, SemanticsDelta, TextEntry, WindowConfig, WindowId,
 };
 
@@ -256,6 +256,11 @@ impl<'a> RuntimeCx<'a> {
     /// Pop up `window`'s context menu of edits, titled by `labels`.
     pub fn show_context_menu(&mut self, window: WindowId, menu: EditMenu, labels: EditLabels) {
         self.app.show_context_menu(window, menu, labels);
+    }
+
+    /// Show, move or (with `None`) put away `window`'s magnifier.
+    pub fn set_loupe(&mut self, window: WindowId, loupe: Option<Loupe>) {
+        self.app.set_loupe(window, loupe);
     }
 
     /// The current system appearance.

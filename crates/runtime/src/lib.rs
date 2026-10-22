@@ -40,5 +40,5 @@ pub use scheduler::Scheduler;
 pub use task::{TaskId, TaskSet};
 pub use viso_platform::{
     Appearance, ColorScheme, CursorIcon, DisplayFeature, DisplayFeatureKind, EditLabels, EditMenu,
-    EditMenuAction, InputKind, Instant, LogicalInsets, LoopWaker,
+    EditMenuAction, InputKind, Instant, LogicalInsets, LoopWaker, Loupe,
 };

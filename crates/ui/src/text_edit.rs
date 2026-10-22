@@ -461,6 +461,9 @@ pub struct Buffer {
     touch: TouchState,
     /// Where the context menu was asked for, while it is.
     context: Option<MenuAt>,
+    /// The finger carrying the caret or dragging a handle, in the field's
+    /// text space.
+    finger: Option<(f32, f32)>,
     /// Advances on every change to `text`.
     revision: Revision,
     /// Queued intents recorded since the last reconcile, applied in order. A
@@ -504,6 +507,7 @@ impl Buffer {
             scrub_from: None,
             touch: TouchState::default(),
             context: None,
+            finger: None,
             revision: Revision::default(),
             pending: Vec::new(),
         }
@@ -764,6 +768,14 @@ impl Buffer {
         if !matches!(intent, EditIntent::Touch(_)) {
             self.touch = TouchState::default();
         }
+        self.finger = match intent {
+            EditIntent::Touch(
+                TouchEdit::Hold { x, y, .. }
+                | TouchEdit::Follow { x, y }
+                | TouchEdit::Handle { x, y, .. },
+            ) => placed.map(|p| (x - p.origin.0, y - p.origin.1)),
+            _ => None,
+        };
         if !matches!(intent, EditIntent::ContextMenu { .. }) {
             self.context = None;
         }
@@ -1548,6 +1560,7 @@ impl Buffer {
         marks.handles = None;
         marks.menu = None;
         marks.context = None;
+        marks.loupe = None;
         let sel = Selection {
             anchor: self.drawn_position(self.sel.anchor),
             focus: self.drawn_position(self.sel.focus),
@@ -1670,6 +1683,12 @@ impl Buffer {
             marks.handles = stem(TextPosition::downstream(start))
                 .zip(stem(TextPosition::upstream(end)))
                 .map(|(start, end)| [start, end]);
+        }
+        if self.touch.held || self.touch.dragging {
+            marks.loupe = self
+                .finger
+                .zip(caret)
+                .map(|((x, y), caret)| (Vec2 { x, y }, caret));
         }
         if self.touch.menu && !self.touch.held && !self.touch.dragging {
             marks.menu = if sel.is_caret() {

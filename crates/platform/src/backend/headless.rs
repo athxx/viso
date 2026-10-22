@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::RawWindowHandle;
 use crate::control::{
-    EditLabels, EditMenu, PlatformCaps, PlatformError, TextEntry, WindowConfig, WindowId,
+    EditLabels, EditMenu, Loupe, PlatformCaps, PlatformError, TextEntry, WindowConfig, WindowId,
 };
 use crate::event::{Appearance, CursorIcon, DisplayFeature, RawEvent};
 use crate::handler::AppHandler;
@@ -85,10 +85,11 @@ impl HeadlessApp {
             locale: "und".to_owned(),
             display_features: Vec::new(),
             framed_windows: true,
-            // A desktop that also records the edit menu it is asked to show,
-            // beside the context menu.
+            // A desktop that also records the edit menu and the magnifier it
+            // is asked to show, beside the context menu.
             caps: PlatformCaps {
                 edit_menu: true,
+                loupe: true,
                 ..PlatformCaps::DESKTOP
             },
             woken: Arc::new(AtomicBool::new(false)),
@@ -205,6 +206,14 @@ impl HeadlessApp {
             .and_then(|w| w.context_menu)
     }
 
+    /// The magnifier last shown for `window`, while it shows.
+    pub fn loupe(&self, window: WindowId) -> Option<Loupe> {
+        self.windows
+            .iter()
+            .find(|w| w.id == window)
+            .and_then(|w| w.loupe)
+    }
+
     /// Whether the soft keyboard is currently requested for `window`.
     pub fn soft_keyboard_shown(&self, window: WindowId) -> bool {
         self.windows
@@ -266,6 +275,7 @@ impl PlatformApp for HeadlessApp {
             text_entry: None,
             edit_menu: None,
             context_menu: None,
+            loupe: None,
             soft_keyboard: false,
             fullscreen: false,
         });
@@ -392,6 +402,12 @@ impl PlatformApp for HeadlessApp {
         }
     }
 
+    fn set_loupe(&mut self, window: WindowId, loupe: Option<Loupe>) {
+        if let Some(w) = self.window_mut(window) {
+            w.loupe = loupe;
+        }
+    }
+
     fn capabilities(&self) -> PlatformCaps {
         self.caps
     }
@@ -432,6 +448,7 @@ pub struct HeadlessWindow {
     text_entry: Option<TextEntry>,
     edit_menu: Option<EditMenu>,
     context_menu: Option<(EditMenu, EditLabels)>,
+    loupe: Option<Loupe>,
     soft_keyboard: bool,
     fullscreen: bool,
 }

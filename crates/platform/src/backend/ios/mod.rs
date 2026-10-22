@@ -518,6 +518,12 @@ impl PlatformApp for IosApp {
         }
     }
 
+    fn set_loupe(&mut self, window: WindowId, loupe: Option<crate::Loupe>) {
+        if let Some(w) = self.window.as_ref().filter(|_| window == WINDOW) {
+            w.view.set_loupe(loupe);
+        }
+    }
+
     fn appearance(&self) -> Appearance {
         LOOP.with(|l| l.appearance.get())
     }

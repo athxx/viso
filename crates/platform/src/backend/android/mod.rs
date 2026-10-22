@@ -1005,6 +1005,19 @@ impl PlatformApp for AndroidApp {
         }));
     }
 
+    fn set_loupe(&mut self, window: WindowId, loupe: Option<crate::Loupe>) {
+        if window != WINDOW {
+            return;
+        }
+        let d = LOOP.with(|l| l.density.get());
+        // The finger's column on the caret's line, as the system's text
+        // fields magnify it.
+        jni::set_loupe(loupe.map(|l| {
+            let y = l.caret.y + l.caret.height * 0.5;
+            [(l.x * d) as f32, (y * d) as f32]
+        }));
+    }
+
     fn appearance(&self) -> Appearance {
         LOOP.with(|l| l.appearance.get())
     }

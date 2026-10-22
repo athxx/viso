@@ -98,7 +98,7 @@ Rules:
   paste, select all).
 - [x] E8 Pointer cursors per node: a node's hover cursor (DSL `cursor`), the I-beam
   over text fields, a resize cursor over a number field's scrub and a splitter.
-- [ ] E9 The edit menu where the OS has no touch one: a text field's context menu on
+- [x] E9 The edit menu where the OS has no touch one: a text field's context menu on
   right click (macOS `NSMenu`, Windows popup menu), a framework-drawn menu on Web, X11
   and Wayland; the Apple loupe while a long press carries the caret.
 

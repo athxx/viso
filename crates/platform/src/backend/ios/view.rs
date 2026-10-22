@@ -48,7 +48,9 @@ use crate::backend::ios_translate::{
     REPEAT_DELAY_SECS, REPEAT_INTERVAL_SECS, TouchIds, is_command_key, key_code, keyboard_overlap,
     modifiers, pressure, repeats,
 };
-use crate::control::{EditMenu, EditMenuAction, InputKind, LogicalRect, TextEntry, WindowId};
+use crate::control::{
+    EditMenu, EditMenuAction, InputKind, LogicalRect, Loupe, TextEntry, WindowId,
+};
 use crate::event::{
     ClipboardReply, ClipboardShortcut, KeyCode, LogicalInsets, Modifiers, PointerButtons,
     PointerId, PointerKind, PointerPhase, RawEvent, RawImePreedit, RawKey, RawPointer, RawScroll,
@@ -93,6 +95,8 @@ pub(super) struct ViewIvars {
     /// The menu is being closed or replaced at the app's word, so its
     /// closing is not the user's.
     menu_replacing: Cell<bool>,
+    /// The loupe session while the magnifier shows, on iOS 17 and later.
+    loupe: RefCell<Option<Retained<AnyObject>>>,
 }
 
 define_class!(
@@ -738,6 +742,7 @@ impl VisoView {
             edit_menu: Cell::new(None),
             menu_interaction: RefCell::new(None),
             menu_replacing: Cell::new(false),
+            loupe: RefCell::new(None),
         });
         // SAFETY: `initWithFrame:` is UIView's designated initializer.
         let view: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
@@ -782,6 +787,56 @@ impl VisoView {
 
     /// Show `menu` beside the selection, move it or change its items while
     /// it shows, or (`None`) close it.
+    /// Show the magnifier over `loupe`'s caret at its finger, move it, or
+    /// with `None` put it away. Nothing shows before iOS 17.
+    pub(super) fn set_loupe(&self, loupe: Option<Loupe>) {
+        let ivars = self.ivars();
+        let Some(loupe) = loupe else {
+            if let Some(session) = ivars.loupe.borrow_mut().take() {
+                // SAFETY: `invalidate` is UITextLoupeSession's, taking no
+                // argument, on the session this view began.
+                unsafe {
+                    let _: () = msg_send![&*session, invalidate];
+                }
+            }
+            return;
+        };
+        let point = CGPoint {
+            x: loupe.x,
+            y: loupe.y,
+        };
+        let caret = cg_rect(loupe.caret);
+        let mut held = ivars.loupe.borrow_mut();
+        if held.is_none() {
+            let Some(class) = AnyClass::get(c"UITextLoupeSession") else {
+                return;
+            };
+            // SAFETY: the class method takes a point, an optional selection
+            // widget view and the view the loupe magnifies, and returns a
+            // session (or nil); this view is live on the main thread.
+            *held = unsafe {
+                msg_send![
+                    class,
+                    beginLoupeSessionAtPoint: point,
+                    fromSelectionWidgetView: Option::<&UIView>::None,
+                    inView: self
+                ]
+            };
+        }
+        if let Some(session) = held.as_ref() {
+            // SAFETY: `moveToPoint:withCaretRect:trackingCaret:` is
+            // UITextLoupeSession's, on the session this view began.
+            unsafe {
+                let _: () = msg_send![
+                    &**session,
+                    moveToPoint: point,
+                    withCaretRect: caret,
+                    trackingCaret: true
+                ];
+            }
+        }
+    }
+
     pub(super) fn set_edit_menu(&self, menu: Option<EditMenu>) {
         let ivars = self.ivars();
         let was = ivars.edit_menu.replace(menu);

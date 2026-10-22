@@ -168,6 +168,9 @@ pub struct FieldMarks {
     /// Where the context menu pops up while one is asked for: the pointer
     /// that asked, or under the caret; a point, of no size.
     pub context: Option<Rect>,
+    /// The finger and the caret a magnifier follows while a finger carries
+    /// the caret or drags a handle.
+    pub loupe: Option<(Vec2, Rect)>,
 }
 
 impl Default for FieldMarks {
@@ -183,6 +186,7 @@ impl Default for FieldMarks {
             handles: None,
             menu: None,
             context: None,
+            loupe: None,
         }
     }
 }

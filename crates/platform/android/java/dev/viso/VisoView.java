@@ -19,6 +19,7 @@ import android.view.inputmethod.CursorAnchorInfo;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
+import android.widget.Magnifier;
 
 /**
  * The surface a Viso app draws into, and the receiver of its touch, mouse,
@@ -62,6 +63,8 @@ final class VisoView extends SurfaceView {
     private static final int EDIT_MENU_CLOSED = 4;
     /** The floating edit menu while it shows. */
     private ActionMode editMenu;
+    /** The text magnifier, made the first time it shows (API 28 and later). */
+    private Magnifier magnifier;
     private int menuItems;
     /** What the edit menu points at and keeps clear of, in pixels of the view. */
     private final Rect menuAt = new Rect();
@@ -284,6 +287,29 @@ final class VisoView extends SurfaceView {
         if (enabled && cursorUpdates) {
             reportCursor();
         }
+    }
+
+    /**
+     * Show the magnifier over the content around {@code x, y}, move it there,
+     * or put it away. Nothing shows before API 28.
+     */
+    @SuppressWarnings("deprecation")
+    void setLoupe(boolean show, float x, float y) {
+        if (Build.VERSION.SDK_INT < 28) {
+            return;
+        }
+        if (!show) {
+            if (magnifier != null) {
+                magnifier.dismiss();
+            }
+            return;
+        }
+        if (magnifier == null) {
+            magnifier = Build.VERSION.SDK_INT >= 29
+                    ? new Magnifier.Builder(this).build()
+                    : new Magnifier(this);
+        }
+        magnifier.show(x, y);
     }
 
     /**
