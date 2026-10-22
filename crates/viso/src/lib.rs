@@ -43,7 +43,7 @@ use std::rc::Rc;
 use viso_gpu::{Backend, GpuBackend, SurfaceId};
 use viso_platform::{LogicalInsets, LogicalRect, RawWindowHandle, TextEntry, WindowId};
 use viso_render::{Primitive, Rect, Renderer};
-use viso_runtime::{FramePhase, RuntimeCx, Scheduler};
+use viso_runtime::{FramePhase, Instant, RuntimeCx, Scheduler};
 use viso_ui::context::UpdateCx;
 use viso_ui::{
     AnimationRegistry, Axis, BindingTable, BuildCx, ChromeContext, ComputedStore, Continuation,
@@ -710,6 +710,22 @@ struct SessionFonts {
 /// window holds an independent instance of everything below, so closing a window
 /// drops exactly its tree and GPU resources (its `EffectStore` cancelled first,
 /// so scoped effects release their resources — cleanup then drop).
+/// How long a text field's caret shows, and then hides, while it blinks.
+const CARET_BLINK: std::time::Duration = std::time::Duration::from_millis(530);
+
+/// How long after it last moved a caret stops blinking and shows steadily, so
+/// an idle field wakes no frames.
+const CARET_IDLE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// A focused text field as its caret last stood: the field, its text's
+/// revision and its selection.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct FieldKey {
+    node: NodeId,
+    revision: viso_text::ime::Revision,
+    sel: viso_text::selection::Selection,
+}
+
 struct WindowState {
     /// The window this state drives. Input, geometry, and close events name a
     /// [`WindowId`]; the driver routes each to the matching state by this field.
@@ -836,6 +852,20 @@ struct WindowState {
     /// against it so a steady frame pushes nothing and the soft keyboard is
     /// shown or hidden only when focus moves into or out of text entry.
     text_entry: Option<Option<TextEntry>>,
+    /// The text field drawn with the focus last frame.
+    marked: Option<NodeId>,
+    /// The focused field's text and selection when its caret last moved, and
+    /// when: its caret blinks from then.
+    blink: Option<(FieldKey, Instant)>,
+    /// The focused field's text and selection it last scrolled to show.
+    revealed: Option<FieldKey>,
+    /// When the caret next blinks, while it blinks.
+    caret_due: Option<Instant>,
+    /// Whether the window is the active one, taking the keys.
+    active: bool,
+    /// The marks a field drew before the ones it was just given, kept so
+    /// marking a field each frame allocates nothing.
+    marks: viso_ui::FieldMarks,
     /// Reusable ancestry buffer the pointer router fills each event, owned here
     /// so routing a pointer allocates nothing on the steady path.
     route_chain: Vec<NodeId>,
@@ -1075,6 +1105,12 @@ impl WindowState {
             changed: Vec::new(),
             root: None,
             text_entry: None,
+            marked: None,
+            blink: None,
+            revealed: None,
+            caret_due: None,
+            active: true,
+            marks: viso_ui::FieldMarks::default(),
             route_chain: Vec::new(),
             #[cfg(any(feature = "hot-reload", feature = "headless"))]
             journal: None,
@@ -1811,6 +1847,88 @@ impl WindowState {
         true
     }
 
+    /// Give the focused text field its caret, selection and composition
+    /// marks and scroll it to show its caret, and take them from the field
+    /// that lost the focus. The caret shows steadily for [`CARET_BLINK`]
+    /// after it moves, then blinks until [`CARET_IDLE`] passes, then shows
+    /// steadily again; it never blinks under reduced motion, and shows only
+    /// while the window is active.
+    fn update_field_marks(&mut self, now: Instant) {
+        let focused = self.focused_text_node();
+        if self.marked != focused
+            && let Some(old) = self.marked
+        {
+            self.mark_field(old, false, now);
+        }
+        self.marked = focused;
+        self.caret_due = None;
+        if let Some(node) = focused {
+            self.mark_field(node, true, now);
+        }
+    }
+
+    /// Mark text field `node`, `focused` or not, against its drawn lines. A
+    /// field whose lines are older than its text keeps the marks it drew
+    /// with them.
+    fn mark_field(&mut self, node: NodeId, focused: bool, now: Instant) {
+        let (Some(text), Some(buffer)) = (self.text.as_ref(), self.text_edits.get(node)) else {
+            return;
+        };
+        let Some(layout) = text_edit::EditGeometry::layout(text, node) else {
+            return;
+        };
+        if !buffer.draws(layout.text) {
+            return;
+        }
+        let key = FieldKey {
+            node,
+            revision: buffer.revision(),
+            sel: buffer.sel,
+        };
+        let mut caret_on = true;
+        if focused {
+            let start = match self.blink {
+                Some((at, start)) if at == key => start,
+                _ => {
+                    self.blink = Some((key, now));
+                    now
+                }
+            };
+            let since = now.saturating_duration_since(start);
+            let steady = self.states.env().environment().reduced_motion || !self.active;
+            if !steady && since < CARET_IDLE {
+                let phase = since.as_nanos() / CARET_BLINK.as_nanos();
+                caret_on = phase.is_multiple_of(2);
+                let next = start + CARET_BLINK * (phase as u32 + 1);
+                self.caret_due = Some(next.min(start + CARET_IDLE));
+            }
+        }
+        let state = viso_ui::MarkState {
+            focused,
+            active: self.active,
+            caret_on,
+            reveal: focused && self.revealed != Some(key),
+        };
+        let world = self.store.world(node);
+        let baseline = match self.store.content_payload(node) {
+            Some(viso_ui::Content::Text { baseline, .. }) => *baseline,
+            _ => 0.0,
+        };
+        self.marks.scroll = self
+            .store
+            .field_marks(node)
+            .map_or(viso_ui::Vec2::ZERO, |m| m.scroll);
+        let view = viso_ui::Vec2 {
+            x: world.w,
+            y: world.h,
+        };
+        buffer.mark(layout, view, baseline, state, &mut self.marks);
+        self.store.swap_field_marks(node, &mut self.marks);
+        if focused {
+            self.revealed = Some(key);
+        }
+    }
+
     fn draggable_regions_changed(&mut self) -> bool {
         let regions = self.store.draggable_regions();
         // Fast exit shared by every window without a self-drawn caption: nothing
@@ -2499,7 +2617,12 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // A decoded asset frames the windows that show assets.
         let decoded = self.assets.receive();
         for ws in &self.windows {
-            let timer_due = ws.timers.earliest().is_some_and(|at| at <= now);
+            let timer_due = ws
+                .timers
+                .earliest()
+                .into_iter()
+                .chain(ws.caret_due)
+                .any(|at| at <= now);
             let asset_due = decoded && !ws.store.assets().is_empty();
             if ws.store.tasks_woken() || timer_due || asset_due {
                 cx.request_redraw(ws.window);
@@ -2555,8 +2678,12 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         }
         // A window losing focus stops delivering key-ups: release every key
         // its games hold so none stays down.
-        if !focused && let Some(ws) = self.windows.iter_mut().find(|w| w.window == window) {
-            ws.store.release_client_input();
+        if let Some(ws) = self.windows.iter_mut().find(|w| w.window == window) {
+            if !focused {
+                ws.store.release_client_input();
+            }
+            // An inactive window shows no caret and greys its selection.
+            ws.active = focused;
         }
     }
 
@@ -3068,6 +3195,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     if ws.draggable_regions_changed() {
                         cx.set_draggable_regions(ws.window, &ws.draggable_cache);
                     }
+                    ws.update_field_marks(cx.frame_now());
                     // Tell the platform where text entry is, so an IME candidate
                     // window and the soft keyboard track the focused control. The
                     // keyboard is toggled only when focus crosses into or out of
@@ -3378,7 +3506,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // falls fully idle (the zero-CPU-when-idle contract).
         self.windows
             .iter()
-            .filter_map(|w| w.timers.earliest())
+            .flat_map(|w| w.timers.earliest().into_iter().chain(w.caret_due))
             .min()
     }
 }

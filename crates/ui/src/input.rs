@@ -706,6 +706,20 @@ fn scroll_chain(store: &mut NodeStore, target: NodeId, delta: Vec2) -> bool {
     // the delta on its axis if it has range left in the direction of travel.
     let mut node = Some(target);
     while let Some(n) = node {
+        // A text field scrolls its own text, on either axis.
+        if store.field_marks(n).is_some() {
+            let moved = store.scroll_field(n, remaining);
+            if moved.x != 0.0 {
+                remaining.x = 0.0;
+            }
+            if moved.y != 0.0 {
+                remaining.y = 0.0;
+            }
+            consumed |= moved != Vec2::ZERO;
+            if remaining == Vec2::ZERO {
+                break;
+            }
+        }
         if let Some(axis) = store.scroll_axis(n) {
             let component = remaining.on(axis);
             if component != 0.0 {

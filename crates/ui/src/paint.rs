@@ -28,14 +28,15 @@ use crate::asset::{AssetDraw, AssetFit};
 use crate::check_mark::CheckMark;
 use crate::component::NodeStore;
 use crate::content::Content;
+use crate::field_marks::FieldMarks;
 use crate::layout::Vec2;
 use crate::node::NodeId;
 use crate::style::BoxStyle;
 use crate::transform::TransformTable;
 use viso_render::{
-    Corners, GlyphInstanceData, GlyphLane, GlyphRunDraw, ImageDraw, LayerClip, Path, PathCmd,
-    Point, Primitive, ProgramTextures, Quad, Rect, Rgba, RoundMask, SamplerDesc, ShaderDraw,
-    TransformSlot,
+    Border, Corners, GlyphInstanceData, GlyphLane, GlyphRunDraw, ImageDraw, LayerClip, Path,
+    PathCmd, Point, Primitive, ProgramTextures, Quad, Rect, Rgba, RoundMask, SamplerDesc,
+    ShaderDraw, TransformSlot,
 };
 
 /// The opaque white tint that passes a premultiplied color-atlas texel through
@@ -457,12 +458,52 @@ fn paint_own(store: &NodeStore, node: NodeId, world: Rect, out: &mut Vec<Primiti
             paint_check(store, node, mark, content, world, out);
             return;
         }
+        if let Some(marks) = store.field_marks(node) {
+            paint_field(marks, content, world, out);
+            return;
+        }
         let mask = (radius > 0.0).then_some(RoundMask {
             rect: world,
             radius: Corners::uniform(radius),
         });
         paint_content(content, world, mask, out);
     }
+}
+
+/// A text field at `world`, clipped to it: its selection, its text `content`,
+/// its composition's underline and its caret, all shifted by its scroll.
+#[cold]
+fn paint_field(marks: &FieldMarks, content: &Content, world: Rect, out: &mut Vec<Primitive>) {
+    out.push(Primitive::Layer(LayerClip {
+        clip: world,
+        opacity: 1.0,
+        blur_sigma: 0.0,
+        backdrop_sigma: 0.0,
+    }));
+    let (ox, oy) = (world.x - marks.scroll.x, world.y - marks.scroll.y);
+    let quad = |r: &Rect, color: Rgba| {
+        Primitive::Quad(Quad {
+            rect: Rect::new(ox + r.x, oy + r.y, r.w, r.h),
+            color,
+            radius: 0.0,
+            border: Border::NONE,
+        })
+    };
+    out.extend(
+        marks
+            .selection
+            .iter()
+            .map(|r| quad(r, marks.selection_color)),
+    );
+    let text = Rect {
+        x: ox,
+        y: oy,
+        ..world
+    };
+    paint_content(content, text, None, out);
+    out.extend(marks.underlines.iter().map(|r| quad(r, marks.ink)));
+    out.extend(marks.caret.iter().map(|r| quad(r, marks.ink)));
+    out.push(Primitive::LayerEnd);
 }
 
 /// A check at `world`: its mark, then its caption `content` beside it, the
@@ -972,6 +1013,97 @@ mod tests {
         assert_eq!(cw.y, store.bounds(content.unwrap()).y - 40.0);
         assert!(matches!(out[4], Primitive::TransformEnd));
         assert!(matches!(out[5], Primitive::LayerEnd));
+    }
+
+    #[test]
+    fn a_field_draws_its_selection_text_and_caret_scrolled_and_clipped_to_its_box() {
+        use crate::content::Content;
+        use crate::field_marks::FieldMarks;
+        use crate::layout::{Length, Vec2};
+        use viso_render::{GlyphInstanceData, TextureId};
+
+        let mut store = NodeStore::new();
+        let mut field = None;
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(FlexStyle::default(), |cx| {
+                let size = Size {
+                    width: Length::Fixed(50.0),
+                    height: Length::Fixed(20.0),
+                };
+                field = Some(
+                    cx.leaf(LeafStyle {
+                        size,
+                        style: BoxStyle::NONE,
+                    })
+                    .id(),
+                );
+            });
+            cx.root().unwrap()
+        };
+        let field = field.unwrap();
+        store.set_content_payload(
+            field,
+            Content::Text {
+                glyphs: vec![GlyphInstanceData {
+                    rect: Rect::new(60.0, 3.0, 8.0, 10.0),
+                    uv: Rect::new(0.0, 0.0, 1.0, 1.0),
+                }],
+                atlas: TextureId::new(7),
+                color_glyphs: Vec::new(),
+                color_atlas: None,
+                color: RED,
+                natural: Vec2 { x: 70.0, y: 20.0 },
+                baseline: 16.0,
+                shaped_at_width: None,
+                width_use: crate::WidthUse::Ignored,
+                min_content: 70.0,
+                max_content: 70.0,
+            },
+        );
+        store.make_field(field);
+        let mut marks = FieldMarks {
+            scroll: Vec2 { x: 30.0, y: 0.0 },
+            content: Vec2 { x: 72.0, y: 20.0 },
+            selection: vec![Rect::new(40.0, 0.0, 10.0, 20.0)],
+            selection_color: RED,
+            caret: Some(Rect::new(68.0, 0.0, 1.5, 20.0)),
+            ink: RED,
+            ..FieldMarks::default()
+        };
+        store.swap_field_marks(field, &mut marks);
+        store.layout(root, Rect::new(0.0, 0.0, 200.0, 100.0), &mut Vec::new());
+
+        let mut out = Vec::new();
+        paint_tree(&store, root, &mut out);
+        let world = store.world(field);
+        let at = out
+            .iter()
+            .position(|p| matches!(p, Primitive::Layer(l) if l.clip == world))
+            .expect("clipped to its box");
+        let Primitive::Quad(selection) = out[at + 1] else {
+            panic!("the selection behind the text: {out:?}");
+        };
+        assert_eq!(selection.rect.x, world.x + 10.0);
+        let Primitive::GlyphRun(run) = &out[at + 2] else {
+            panic!("the text: {out:?}");
+        };
+        assert_eq!(
+            run.glyphs[0].rect.x,
+            world.x + 30.0,
+            "shifted by the scroll"
+        );
+        let Primitive::Quad(caret) = out[at + 3] else {
+            panic!("the caret over it: {out:?}");
+        };
+        assert_eq!(caret.rect.x, world.x + 38.0);
+        assert!(matches!(out[at + 4], Primitive::LayerEnd));
+
+        assert_eq!(
+            store.scroll_field(field, Vec2 { x: 100.0, y: 5.0 }),
+            Vec2 { x: -8.0, y: 0.0 },
+            "past the text's end it scrolls back to it"
+        );
     }
 
     #[test]

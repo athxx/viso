@@ -60,9 +60,11 @@
 
 use crate::content::TextRequest;
 use crate::edit_history::{EditKind, History, Splice, Step};
+use crate::field_marks::FieldMarks;
+use crate::layout::Vec2;
 use crate::node::NodeId;
 use crate::text_style::{FontSize, TextOverflow, TextStyle};
-use viso_render::Rgba;
+use viso_render::{Rect, Rgba};
 use viso_text::caret::Caret;
 use viso_text::hit_test::HitTester;
 use viso_text::ime::{ImeComposition, Revision};
@@ -994,6 +996,158 @@ impl Buffer {
     }
 }
 
+/// The width of a text field's caret, in the node's space.
+pub const CARET_WIDTH: f32 = 1.5;
+
+/// The highlight of a selection in a field with the focus in the active
+/// window: a translucent blue.
+const SELECTION: Rgba = Rgba {
+    r: 0.046,
+    g: 0.209,
+    b: 1.0,
+    a: 0.35,
+};
+
+/// The highlight of a selection in a field whose window is not the active
+/// one: a translucent grey.
+const INACTIVE_SELECTION: Rgba = Rgba {
+    r: 0.5,
+    g: 0.5,
+    b: 0.5,
+    a: 0.3,
+};
+
+/// The share of an em a selected line break highlights past its line's end.
+const BREAK_HIGHLIGHT: f32 = 0.3;
+
+/// What a field's marks show this frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MarkState {
+    /// The field has the focus: it shows its selection and composition.
+    pub focused: bool,
+    /// Its window is the active one: its caret shows and its selection is
+    /// highlighted in color.
+    pub active: bool,
+    /// The caret is in the shown phase of its blink.
+    pub caret_on: bool,
+    /// The text or the caret moved since the marks were last made, so the
+    /// field scrolls to show the caret.
+    pub reveal: bool,
+}
+
+impl Buffer {
+    /// Rewrites `marks` as the field draws them over `layout`, the lines its
+    /// text was drawn with, in a box of `view`, the first line's baseline at
+    /// `baseline`: its selection, composition underline and caret, and its
+    /// scroll on from the one `marks` holds. A field without the focus shows
+    /// none, and a single-line one scrolls back to its start. Reuses what
+    /// `marks` holds, so a steady frame allocates nothing.
+    pub fn mark(
+        &self,
+        layout: EditLayout<'_>,
+        view: Vec2,
+        baseline: f32,
+        state: MarkState,
+        marks: &mut FieldMarks,
+    ) {
+        let scroll = marks.scroll;
+        let (fs, lh) = (layout.font_size, layout.line_height);
+        let x_of = |row: usize, em: f32| em * fs + layout.offsets.get(row).copied().unwrap_or(0.0);
+        let right = (0..layout.lines.len())
+            .map(|row| x_of(row, layout.lines[row].width))
+            .fold(0.0f32, f32::max);
+        marks.content = Vec2 {
+            x: right + CARET_WIDTH,
+            y: layout.lines.len() as f32 * lh,
+        };
+        marks.selection_color = if state.active {
+            SELECTION
+        } else {
+            INACTIVE_SELECTION
+        };
+        marks.ink = self.color;
+        marks.selection.clear();
+        marks.underlines.clear();
+        marks.caret = None;
+        let sel = Selection {
+            anchor: self.drawn_position(self.sel.anchor),
+            focus: self.drawn_position(self.sel.focus),
+        };
+        let caret = layout.line_at(sel.focus).map(|(row, _)| Rect {
+            x: (layout.caret_x(row, sel.focus) - CARET_WIDTH * 0.5).max(0.0),
+            y: row as f32 * lh,
+            w: CARET_WIDTH,
+            h: lh,
+        });
+        if state.focused {
+            let (start, end) = sel.logical_range();
+            for (row, line) in layout.lines.iter().enumerate() {
+                let y = row as f32 * lh;
+                for piece in sel.fragments(line) {
+                    marks.selection.push(Rect {
+                        x: x_of(row, piece.left),
+                        y,
+                        w: piece.width() * fs,
+                        h: lh,
+                    });
+                }
+                let (_, to) = line.logical_range;
+                let breaks = layout.text[..to.0].ends_with('\n');
+                if breaks && start.0 < to.0 && to.0 <= end.0 {
+                    marks.selection.push(Rect {
+                        x: x_of(row, line.width),
+                        y,
+                        w: BREAK_HIGHLIGHT * fs,
+                        h: lh,
+                    });
+                }
+            }
+            if self.composition.is_active() {
+                let (from, to) = self.composition.range();
+                let composed = Selection {
+                    anchor: self.drawn_position(TextPosition::downstream(from)),
+                    focus: self.drawn_position(TextPosition::upstream(to)),
+                };
+                let thickness = (fs / 16.0).max(1.0);
+                for (row, line) in layout.lines.iter().enumerate() {
+                    let y = row as f32 * lh + baseline + thickness;
+                    for piece in composed.fragments(line) {
+                        marks.underlines.push(Rect {
+                            x: x_of(row, piece.left),
+                            y,
+                            w: piece.width() * fs,
+                            h: thickness,
+                        });
+                    }
+                }
+            }
+            if state.active && state.caret_on && sel.is_caret() {
+                marks.caret = caret;
+            }
+        }
+        let scroll = if !state.focused && !self.holds_lines() {
+            Vec2::ZERO
+        } else if let Some(caret) = caret.filter(|_| state.reveal) {
+            let reveal = |at: f32, extent: f32, from: f32, to: f32| {
+                if from < at {
+                    from
+                } else if to > at + extent {
+                    to - extent
+                } else {
+                    at
+                }
+            };
+            Vec2 {
+                x: reveal(scroll.x, view.x, caret.x, caret.x + caret.w),
+                y: reveal(scroll.y, view.y, caret.y, caret.y + caret.h),
+            }
+        } else {
+            scroll
+        };
+        marks.scroll = marks.clamped(scroll, view);
+    }
+}
+
 /// How many grapheme clusters `text` holds.
 fn graphemes(text: &str) -> usize {
     Segmenter::new(text).grapheme_boundaries().count() - 1
@@ -1238,6 +1392,7 @@ pub fn reconcile(
                     &*buffer
                 }
                 None => {
+                    store.make_field(node);
                     edits.register(node, Box::new(Buffer::with_seed(&seed)));
                     edits.get(node).expect("registered above")
                 }
@@ -1271,9 +1426,10 @@ pub fn reconcile(
         }
         let placed = geometry.and_then(|g| g.layout(node)).map(|layout| {
             let world = store.world(node);
+            let scroll = store.field_marks(node).map_or(Vec2::ZERO, |m| m.scroll);
             Placed {
                 layout,
-                origin: (world.x, world.y),
+                origin: (world.x - scroll.x, world.y - scroll.y),
                 extent: (world.w, world.h),
             }
         });
@@ -1646,6 +1802,133 @@ mod tests {
         assert_eq!(b.text, "ab\nc\nd\ne");
         assert!(b.request().soft_wrap);
         assert!(!buf("x", 0).request().soft_wrap);
+    }
+
+    fn layout<'a>(text: &'a str, lines: &'a [LineLayout]) -> EditLayout<'a> {
+        placed(text, lines).layout
+    }
+
+    const SHOWN: MarkState = MarkState {
+        focused: true,
+        active: true,
+        caret_on: true,
+        reveal: true,
+    };
+
+    fn marked(
+        b: &Buffer,
+        layout: EditLayout<'_>,
+        view: Vec2,
+        state: MarkState,
+        scroll: Vec2,
+    ) -> FieldMarks {
+        let mut marks = FieldMarks {
+            scroll,
+            ..FieldMarks::default()
+        };
+        b.mark(layout, view, 9.0, state, &mut marks);
+        marks
+    }
+
+    #[test]
+    fn a_focused_field_marks_its_caret_and_a_selection_across_a_break() {
+        let text = "abc\nde";
+        let lines = lines_for(text);
+        let view = Vec2 { x: 200.0, y: 24.0 };
+        let b = buf(text, 1);
+        let marks = marked(&b, layout(text, &lines), view, SHOWN, Vec2::ZERO);
+        assert_eq!(
+            marks.caret,
+            Some(Rect::new(10.0 - CARET_WIDTH * 0.5, 0.0, CARET_WIDTH, 12.0))
+        );
+        assert!(marks.selection.is_empty());
+        assert_eq!(
+            marks.content,
+            Vec2 {
+                x: 30.0 + CARET_WIDTH,
+                y: 24.0
+            }
+        );
+
+        let mut b = buf(text, 0);
+        b.sel = range(2, 5);
+        let marks = marked(&b, layout(text, &lines), view, SHOWN, Vec2::ZERO);
+        assert_eq!(marks.caret, None, "a range shows no caret");
+        assert_eq!(
+            marks.selection,
+            vec![
+                Rect::new(20.0, 0.0, 10.0, 12.0),
+                Rect::new(30.0, 0.0, BREAK_HIGHLIGHT * 10.0, 12.0),
+                Rect::new(0.0, 12.0, 10.0, 12.0),
+            ]
+        );
+        let idle = MarkState {
+            active: false,
+            ..SHOWN
+        };
+        let marks = marked(&b, layout(text, &lines), view, idle, Vec2::ZERO);
+        assert_eq!(marks.selection_color, INACTIVE_SELECTION);
+        let blurred = MarkState {
+            focused: false,
+            ..SHOWN
+        };
+        let marks = marked(&b, layout(text, &lines), view, blurred, Vec2::ZERO);
+        assert!(marks.selection.is_empty() && marks.caret.is_none());
+    }
+
+    #[test]
+    fn a_composition_is_underlined_below_the_baseline() {
+        let mut b = buf("ab", 2);
+        apply(
+            &mut b,
+            EditIntent::Compose {
+                text: "cd".into(),
+                caret: TextOffset(2),
+            },
+        );
+        let lines = lines_for("abcd");
+        let marks = marked(
+            &b,
+            layout("abcd", &lines),
+            Vec2 { x: 200.0, y: 12.0 },
+            SHOWN,
+            Vec2::ZERO,
+        );
+        assert_eq!(marks.underlines, vec![Rect::new(20.0, 10.0, 20.0, 1.0)]);
+    }
+
+    #[test]
+    fn a_field_scrolls_to_show_its_caret_and_back_when_it_loses_the_focus() {
+        let text = "abcdefghijklmnopqrst";
+        let lines = lines_for(text);
+        let view = Vec2 { x: 50.0, y: 12.0 };
+        let b = buf(text, 20);
+        let marks = marked(&b, layout(text, &lines), view, SHOWN, Vec2::ZERO);
+        assert_eq!(marks.scroll.x, 200.0 + CARET_WIDTH * 0.5 - 50.0);
+        let held = MarkState {
+            reveal: false,
+            ..SHOWN
+        };
+        let marks = marked(
+            &b,
+            layout(text, &lines),
+            view,
+            held,
+            Vec2 { x: 30.0, y: 0.0 },
+        );
+        assert_eq!(marks.scroll.x, 30.0, "without a move it keeps its scroll");
+        let blurred = MarkState {
+            focused: false,
+            ..SHOWN
+        };
+        let marks = marked(
+            &b,
+            layout(text, &lines),
+            view,
+            blurred,
+            Vec2 { x: 30.0, y: 0.0 },
+        );
+        assert_eq!(marks.scroll, Vec2::ZERO);
     }
 
     #[test]

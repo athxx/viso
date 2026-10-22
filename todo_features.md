@@ -83,10 +83,11 @@ Rules:
 - [x] E2 Multi-line `TextInput` (`multiline: true`): newline insertion, wrapped layout,
   the accelerator with Enter submits, breaks unified to `\n`; DSL prop (HTML export as
   `<textarea>`) and widget setter.
-- [ ] E3 Field painting: caret, selection highlight and composition underline drawn by
+- [x] E3 Field painting: caret, selection highlight and composition underline drawn by
   the framework; internal scroll to the caret (horizontal single-line, vertical
-  multi-line) with the content clipped; caret blink paused while typing, steady after
-  idle and under reduced motion.
+  multi-line) with the content clipped, wheel/pan scrolling inside the text; caret
+  blink paused while typing, steady after idle and under reduced motion, hidden in an
+  inactive window.
 - [ ] E4 Double-click word select, triple-click paragraph select, drag-extend by word
   (click counting in the pointer router).
 - [ ] E5 Input formatters: max length, integer/decimal filter, custom filter, widget
