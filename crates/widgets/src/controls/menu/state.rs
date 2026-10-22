@@ -213,11 +213,31 @@ impl MenuState {
         let rows = &self.levels[level].rows;
         if let Some(r) = was {
             ev.set(rows[r].lit, StateValue::Bool(false));
+            if ev.focused() == Some(rows[r].node) {
+                ev.request_focus(self.levels[level].panel);
+            }
         }
+        // The focus follows the highlight, so assistive technology reads
+        // the item.
         if let Some(r) = row {
             ev.set(rows[r].lit, StateValue::Bool(true));
+            ev.request_focus(rows[r].node);
             ev.scroll_into_view(rows[r].node);
         }
+    }
+
+    /// Put the focus on `level`: its highlighted row, else its panel.
+    fn focus_level(&self, ev: &mut EventCx<'_>, level: usize) {
+        let l = &self.levels[level];
+        let to = self.lit(level).map_or(l.panel, |r| l.rows[r].node);
+        ev.request_focus(to);
+    }
+
+    /// Whether the focus is on `level`: its panel or one of its rows.
+    fn holds_focus(&self, ev: &EventCx<'_>, level: usize) -> bool {
+        let l = &self.levels[level];
+        ev.focused()
+            .is_some_and(|f| f == l.panel || l.rows.iter().any(|r| r.node == f))
     }
 
     fn lit(&self, level: usize) -> Option<usize> {
@@ -258,8 +278,8 @@ impl MenuState {
             self.show(ev, sub);
         }
         if keyboard {
-            self.light(ev, sub, self.end_row(sub, Start::First));
             ev.request_focus(self.levels[sub].panel);
+            self.light(ev, sub, self.end_row(sub, Start::First));
         }
     }
 
@@ -423,9 +443,6 @@ impl MenuState {
     }
 
     fn enter(&self, ev: &mut EventCx<'_>, level: usize, row: usize, at: Vec2) {
-        if ev.focused() != Some(self.levels[level].panel) {
-            ev.request_focus(self.levels[level].panel);
-        }
         // A row of a submenu the pointer reached: it no longer crosses.
         if let Some(Pending::Switch(l, _)) = self.pending.get()
             && l != level
@@ -472,8 +489,8 @@ impl MenuState {
             return;
         }
         // Keys and text pass through every panel above the focused one: the
-        // focused panel answers them.
-        if ev.focused() != Some(self.levels[level].panel) {
+        // level holding the focus answers them.
+        if !self.holds_focus(ev, level) {
             return;
         }
         if let Some(ImeEvent::Commit { text }) = ev.ime() {
@@ -539,7 +556,7 @@ impl MenuState {
         match self.levels[level].parent {
             Some((parent, _)) => {
                 self.close_after(ev, Some(parent));
-                ev.request_focus(self.levels[parent].panel);
+                self.focus_level(ev, parent);
             }
             None => self.close(ev),
         }

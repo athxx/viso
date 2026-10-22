@@ -5,17 +5,14 @@ use std::rc::Rc;
 
 use viso_ui::{
     Align, AnchorAlign, Anchoring, Axis, BoxStyle, BuildCx, Component, DispatchPhase, FlexStyle,
-    Handle, Inset, InteractionStyle, Justify, Key, LeafStyle, Length, LineCap, LineJoin, NodeId,
-    PathCmd, Point, PointerButtons, PointerPhase, Role, SemanticState, Semantics, Side, Size,
-    StateValue, Stroke, Vec2,
+    Handle, Inset, InteractionStyle, Justify, Key, LeafStyle, Length, NodeId, PointerButtons,
+    PointerPhase, Role, SemanticState, Semantics, Side, Size, StateValue, Vec2,
 };
 
 use super::state::{Level, MarkCell, MenuHandle, MenuState, Row, Start};
 use super::{Close, Mark, MenuEntry, MenuItem, MenuStyle};
+use crate::controls::glyphs::{check, chevron_end, dot, glyph_slot};
 use crate::label;
-
-/// The side of a mark's, an icon's and a chevron's box.
-const GLYPH: f32 = 16.0;
 
 /// The menu state the handlers built before it reach.
 type Shared = Rc<OnceCell<Rc<MenuState>>>;
@@ -389,9 +386,9 @@ fn row(
                             Mark::Radio(on) => (on, true),
                         };
                         let glyph = if radio {
-                            dot(cx, style)
+                            dot(cx, style.ink)
                         } else {
-                            check(cx, style)
+                            check(cx, style.ink)
                         };
                         cx.set_hidden(glyph, !on);
                         let cell = cx.state(StateValue::Bool(on));
@@ -425,7 +422,7 @@ fn row(
                     .build_node(cx);
             }
             if !item.entries.is_empty() {
-                chevron(cx, style);
+                chevron_end(cx, style.quiet);
             }
         },
     );
@@ -444,6 +441,7 @@ fn row(
             s.store.set_opacity(node.id(), style.disabled);
         }
     });
+    cx.focusable(node, true);
     cx.interaction_style(
         node,
         InteractionStyle {
@@ -477,86 +475,4 @@ fn row(
         section,
     };
     (row, node)
-}
-
-/// A box of a glyph's side, `inner` centred in it.
-fn glyph_slot(cx: &mut BuildCx<'_>, inner: impl FnOnce(&mut BuildCx<'_>)) -> Handle {
-    cx.flex(
-        FlexStyle {
-            axis: Axis::Row,
-            align: Align::Center,
-            justify: Justify::Center,
-            size: Size::fixed(GLYPH, GLYPH),
-            ..FlexStyle::default()
-        },
-        inner,
-    )
-}
-
-/// A stroked glyph of `cmds` in a box of the glyph's side.
-fn stroked(cx: &mut BuildCx<'_>, cmds: Vec<PathCmd>, ink: viso_ui::Rgba, width: f32) -> Handle {
-    let leaf = cx.leaf(LeafStyle {
-        size: Size::fixed(GLYPH, GLYPH),
-        style: BoxStyle::NONE,
-    });
-    let stroke = Stroke {
-        cap: LineCap::Round,
-        join: LineJoin::Round,
-        ..Stroke::new(width, ink)
-    };
-    cx.path(leaf, cmds, None, Some(stroke), Vec2::new(GLYPH, GLYPH))
-}
-
-fn check(cx: &mut BuildCx<'_>, style: &MenuStyle) -> Handle {
-    let cmds = vec![
-        PathCmd::MoveTo(Point::new(3.5, 8.5)),
-        PathCmd::LineTo(Point::new(6.5, 11.5)),
-        PathCmd::LineTo(Point::new(12.5, 4.5)),
-    ];
-    stroked(cx, cmds, style.ink, 1.8)
-}
-
-fn chevron(cx: &mut BuildCx<'_>, style: &MenuStyle) -> Handle {
-    let cmds = vec![
-        PathCmd::MoveTo(Point::new(6.0, 4.0)),
-        PathCmd::LineTo(Point::new(10.0, 8.0)),
-        PathCmd::LineTo(Point::new(6.0, 12.0)),
-    ];
-    stroked(cx, cmds, style.quiet, 1.5)
-}
-
-/// A radio item's dot: a filled circle.
-fn dot(cx: &mut BuildCx<'_>, style: &MenuStyle) -> Handle {
-    let leaf = cx.leaf(LeafStyle {
-        size: Size::fixed(GLYPH, GLYPH),
-        style: BoxStyle::NONE,
-    });
-    let (c, r) = (GLYPH * 0.5, 3.5);
-    // A circle as four cubic quarters.
-    let k = 0.552_284_8 * r;
-    let cmds = vec![
-        PathCmd::MoveTo(Point::new(c + r, c)),
-        PathCmd::CubicTo(
-            Point::new(c + r, c + k),
-            Point::new(c + k, c + r),
-            Point::new(c, c + r),
-        ),
-        PathCmd::CubicTo(
-            Point::new(c - k, c + r),
-            Point::new(c - r, c + k),
-            Point::new(c - r, c),
-        ),
-        PathCmd::CubicTo(
-            Point::new(c - r, c - k),
-            Point::new(c - k, c - r),
-            Point::new(c, c - r),
-        ),
-        PathCmd::CubicTo(
-            Point::new(c + k, c - r),
-            Point::new(c + r, c - k),
-            Point::new(c + r, c),
-        ),
-        PathCmd::Close,
-    ];
-    cx.path(leaf, cmds, Some(style.ink), None, Vec2::new(GLYPH, GLYPH))
 }

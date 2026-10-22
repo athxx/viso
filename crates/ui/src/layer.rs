@@ -150,6 +150,19 @@ impl NodeStore {
         };
         scratch.clear();
         layout::layout_on(self, index, bounds, Basis::DEFINITE, within, scratch);
+        // A layer put over its anchor by one of its nodes places that node
+        // only now, the first time.
+        let anchored = match anchored {
+            Some((_, laid)) => match self.anchored_box(index, surface) {
+                Some(again) if again.1 != laid => {
+                    scratch.clear();
+                    layout::layout_on(self, index, again.1, Basis::DEFINITE, within, scratch);
+                    Some(again)
+                }
+                again => again,
+            },
+            None => None,
+        };
         self.layers.laying = outer;
         let was = self.reach_in_parent(index as usize);
         self.rejoin_subtree(layer);
@@ -309,7 +322,7 @@ impl NodeStore {
     }
 
     /// Whether `id` lies at or below `root`.
-    fn is_under(&self, id: NodeId, root: NodeId) -> bool {
+    pub(crate) fn is_under(&self, id: NodeId, root: NodeId) -> bool {
         let stop = root.node_index();
         let mut at = id.node_index();
         while !at.is_none() {

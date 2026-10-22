@@ -442,8 +442,13 @@ fn the_keyboard_goes_into_a_submenu_and_back() {
     let (_, panels) = parts(&app);
     let store = app.store();
     assert!(!store.hidden(panels[1]), "Right opens the submenu");
-    assert_eq!(store.focused(), Some(panels[1]));
-    assert!(lit(&app, rows(store, panels[1])[0]));
+    let mail = rows(store, panels[1])[0];
+    assert!(lit(&app, mail));
+    assert_eq!(
+        store.focused(),
+        Some(mail),
+        "the focus follows the highlight"
+    );
     let app = run(&[
         click(140.0, 115.0),
         key(Key::Escape),
@@ -453,8 +458,9 @@ fn the_keyboard_goes_into_a_submenu_and_back() {
     ]);
     let (_, panels) = parts(&app);
     assert!(app.store().hidden(panels[1]), "Left goes back");
-    assert_eq!(app.store().focused(), Some(panels[0]));
-    assert!(lit(&app, rows(app.store(), panels[0])[3]), "to Share");
+    let share = rows(app.store(), panels[0])[3];
+    assert!(lit(&app, share), "to Share");
+    assert_eq!(app.store().focused(), Some(share));
     let app = run(&[
         click(140.0, 115.0),
         key(Key::Escape),

@@ -13,12 +13,14 @@ mod caption_bar;
 mod checkbox;
 mod dock;
 mod file_tree;
+mod glyphs;
 mod menu;
 mod modal;
 mod navigation_stack;
 mod number_field;
 mod popup;
 mod radio;
+mod select;
 mod sheet;
 mod slider;
 mod splitter;
@@ -49,6 +51,10 @@ pub use navigation_stack::{
 pub use number_field::{NumberField, number_field};
 pub use popup::{Popup, PopupArrow, PopupHandle, PopupHandleSlot, PopupStyle, popover, popup};
 pub use radio::{RadioGroup, RadioStyle, radio_group};
+pub use select::{
+    Select, SelectHandle, SelectHandleSlot, SelectKind, SelectOption, SelectStyle, select,
+    select_option,
+};
 pub use sheet::{Sheet, SheetEdge, SheetHandle, SheetHandleSlot, SheetStyle, sheet};
 pub use slider::{Slider, SliderStyle, slider};
 pub use splitter::{Splitter, SplitterStyle, splitter};

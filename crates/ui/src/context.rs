@@ -454,12 +454,16 @@ pub struct EventCx<'a> {
 /// Something a handler asks of the tree, applied by the router after it
 /// returns.
 #[doc(hidden)]
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum StoreRequest {
     /// Anchor a layer at a window point of its anchor.
     AnchorAt(NodeId, Vec2),
+    /// Put a node of a layer over its anchor.
+    AnchorOver(NodeId, Option<NodeId>),
     /// Scroll a node into view.
     Reveal(NodeId),
+    /// Show another text on a text node.
+    Text(NodeId, Box<crate::content::TextRequest>),
 }
 
 impl StoreRequest {
@@ -467,9 +471,11 @@ impl StoreRequest {
     pub(crate) fn apply(self, store: &mut NodeStore) {
         match self {
             StoreRequest::AnchorAt(layer, at) => store.set_anchor_point(layer, Some(at)),
+            StoreRequest::AnchorOver(layer, over) => store.set_anchor_over(layer, over),
             StoreRequest::Reveal(id) => {
                 store.request_scroll(id, crate::component::ScrollRequest::Reveal)
             }
+            StoreRequest::Text(id, request) => store.set_text(id, *request),
         }
     }
 }
@@ -1144,10 +1150,24 @@ impl<'a> EventCx<'a> {
         self.store_requests.push(StoreRequest::AnchorAt(layer, at));
     }
 
+    /// Put node `over` of anchored layer `layer` level with its anchor
+    /// ([`NodeStore::set_anchor_over`]), or `None`, on its side again.
+    pub fn anchor_over(&mut self, layer: NodeId, over: Option<NodeId>) {
+        self.store_requests
+            .push(StoreRequest::AnchorOver(layer, over));
+    }
+
     /// Scroll the viewports around `id` the least that shows it, once the
     /// next layout has placed it.
     pub fn scroll_into_view(&mut self, id: NodeId) {
         self.store_requests.push(StoreRequest::Reveal(id));
+    }
+
+    /// Show `request` on text node `id` in place of its text
+    /// ([`NodeStore::set_text`]).
+    pub fn set_text(&mut self, id: NodeId, request: crate::content::TextRequest) {
+        self.store_requests
+            .push(StoreRequest::Text(id, Box::new(request)));
     }
 
     /// Take what the handler asked of the tree for the router to apply.

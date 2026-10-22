@@ -43,6 +43,10 @@ pub use controls::{
     ContextMenu, Menu, MenuEntry, MenuHandle, MenuHandleSlot, MenuItem, MenuStyle, Shortcut,
     context_menu, menu, menu_item, separator,
 };
+pub use controls::{
+    Select, SelectHandle, SelectHandleSlot, SelectKind, SelectOption, SelectStyle, select,
+    select_option,
+};
 pub use document::{Document, DocumentStyle, DocumentText, html, markdown};
 pub use grid::{Grid, GridViewStyle, grid};
 pub use icon::{Icon, IconStyle, icon};

@@ -3058,6 +3058,23 @@ impl NodeStore {
         self.text_request[id.index() as usize] = Some(Box::new(request));
     }
 
+    /// Show `request` on text node `id` in place of the text it shows: it is
+    /// shaped again before the next layout, and a label's accessible name
+    /// follows it. A stale handle is a no-op.
+    pub fn set_text(&mut self, id: NodeId, request: TextRequest) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        if let Some(s) = self.semantics(id)
+            && s.role == Role::Label
+            && s.label.as_deref() != Some(request.text.as_str())
+        {
+            let named = s.clone().with_label(request.text.clone());
+            self.set_semantics(id, named);
+        }
+        self.set_text_request(id, request);
+    }
+
     /// Move every pending text request out into `out` as `(NodeId, request)`
     /// pairs, clearing the column. The shaping tier calls this, shapes each
     /// request, and writes the result back with [`Self::set_content_payload`] —

@@ -250,6 +250,8 @@ struct Entry {
     /// The point of the anchor the layer sits against instead of its box,
     /// from the anchor's top-left.
     point: Option<Vec2>,
+    /// The node of the layer put level with the anchor, over it.
+    over: Option<NodeId>,
     placed: Option<AnchorPlacement>,
 }
 
@@ -302,6 +304,7 @@ impl NodeStore {
                     how,
                     arrow: None,
                     point: None,
+                    over: None,
                     placed: None,
                 });
                 self.set_layer(id, true);
@@ -340,6 +343,20 @@ impl NodeStore {
             .expect("found above");
         if entry.point != point {
             entry.point = point;
+            self.place_anchored_layer(id);
+        }
+    }
+
+    /// Puts node `over` of anchored layer `id` level with the anchor, the
+    /// layer over it — a list whose chosen row covers the field that opened
+    /// it — while the layer fits the window's height; `None` sets it on its
+    /// side again.
+    pub fn set_anchor_over(&mut self, id: NodeId, over: Option<NodeId>) {
+        let Some(entry) = self.anchors.entries.iter_mut().find(|e| e.layer == id) else {
+            return;
+        };
+        if entry.over != over {
+            entry.over = over;
             self.place_anchored_layer(id);
         }
     }
@@ -412,7 +429,13 @@ impl NodeStore {
         if let Some(p) = entry.point {
             anchor = Rect::new(anchor.x + p.x, anchor.y + p.y, 0.0, 0.0);
         }
-        let placed = place(anchor, natural, bounds, &entry.how, self.anchors.rtl);
+        let mut placed = place(anchor, natural, bounds, &entry.how, self.anchors.rtl);
+        if let Some(top) = entry.over.and_then(|over| {
+            self.over_top(entry.layer, over, anchor, natural.y, bounds, &entry.how)
+        }) {
+            placed.rect.y = top;
+            placed.rect.h = natural.y;
+        }
         // Layout's boxes are the world's before the ancestors' transforms.
         let shift = self.parent(entry.layer).map_or(Vec2::ZERO, |p| {
             let t = self.world_transform(p).translation();
@@ -423,6 +446,43 @@ impl NodeStore {
             placed,
             Rect::new(rect.x - shift.x, rect.y - shift.y, rect.w, rect.h),
         ))
+    }
+
+    /// Where the top of layer `layer`, `height` tall, goes to put its node
+    /// `over` level with `anchor`, as the last layout placed `over` in it:
+    /// `None` until it is laid out, when it does not fit the window, or when
+    /// `over` sits in a viewport that scrolls.
+    fn over_top(
+        &self,
+        layer: NodeId,
+        over: NodeId,
+        anchor: Rect,
+        height: f32,
+        bounds: Rect,
+        how: &Anchoring,
+    ) -> Option<f32> {
+        if !self.arena().is_live(over) || !self.is_under(over, layer) {
+            return None;
+        }
+        let (top, bottom) = (bounds.y + how.margin, bounds.y + bounds.h - how.margin);
+        let (l, c) = (self.bounds(layer), self.bounds(over));
+        if l.h <= 0.0 || height > bottom - top {
+            return None;
+        }
+        // A list that scrolls keeps its place below the anchor: where its
+        // node shows depends on how far it is scrolled.
+        let mut at = self.parent(over);
+        while let Some(id) = at.filter(|&id| id != layer) {
+            if self
+                .scroll_axis(id)
+                .is_some_and(|axis| self.scroll_range(id, axis) > 0.0)
+            {
+                return None;
+            }
+            at = self.parent(id);
+        }
+        let y = anchor.y + anchor.h * 0.5 - (c.y - l.y + c.h * 0.5);
+        Some(y.clamp(top, bottom - height))
     }
 
     /// Note where anchored layer `id` went, and move its arrow there.

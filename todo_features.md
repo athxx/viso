@@ -122,7 +122,7 @@ Rules:
 
 - [x] Anchored placement: side/align, flip on collision, shift into the window, size to
   the available space, arrow offset, re-place on scroll/resize.
-- [ ] `Select` / `DropDown`: anchored list, type-ahead, arrow/Home/End/PageUp/PageDown,
+- [x] `Select` / `DropDown`: anchored list, type-ahead, arrow/Home/End/PageUp/PageDown,
   scroll to the selected row, `listbox` semantics.
 - [ ] `ComboBox`: filter as you type, free text or closed set, `combobox` semantics.
 - [x] `Menu` / context menu: items, separators, checkable items, shortcuts text,
@@ -263,3 +263,5 @@ Rules:
 - [ ] Biometric authentication service.
 - [ ] Push notification registration (APNs/FCM).
 - [ ] Background tasks service.
+- [ ] Focus-visible ring drawn by the framework on focused controls (keyboard focus
+  only, platform style).
