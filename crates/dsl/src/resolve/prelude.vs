@@ -175,7 +175,7 @@ export enum Cursor { default; pointer; text; vertical_text; crosshair; move; gra
 export enum Role {
     group; button; check_box; slider; radio; label; image; text_field; tab; tab_list;
     navigation; dialog; status; region; tree; tree_item; heading; list; list_item;
-    secure_field; spin_button;
+    secure_field; spin_button; menu; menu_item;
 }
 
 export record Environment {

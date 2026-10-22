@@ -62,6 +62,7 @@ mod accessibility;
 pub mod alloc;
 mod assets;
 pub mod audio;
+mod edit_menu;
 mod environment;
 mod footprint;
 mod game_sheet;
@@ -457,6 +458,16 @@ pub mod __test_support {
             self.driver.windows[0].context_menu
         }
 
+        /// The menu of edits the launch window draws itself, while it
+        /// shows: whether it is the context menu (else the touch bar), its
+        /// panel's box, and each item's box and whether it applies — Cut,
+        /// Copy, Paste, Select All — in window space.
+        #[allow(clippy::type_complexity)]
+        pub fn drawn_menu(&self) -> Option<(bool, viso_ui::Rect, Vec<(viso_ui::Rect, bool)>)> {
+            let ws = &self.driver.windows[0];
+            ws.drawn_menu.seen(&ws.store)
+        }
+
         /// The pointer cursor last pushed to the platform for the launch
         /// window.
         pub fn cursor(&self) -> viso_platform::CursorIcon {
@@ -544,6 +555,22 @@ pub mod __test_support {
         step: Duration,
     ) -> DrivenApp<A> {
         drive_host::<A>(script, step, true, None, None)
+    }
+
+    /// [`drive_scripted`] on a host offering `caps`.
+    pub fn drive_scripted_with_caps<A: Application>(
+        script: Vec<viso_platform::RawEvent>,
+        step: Duration,
+        caps: viso_platform::PlatformCaps,
+    ) -> DrivenApp<A> {
+        let mut app = Box::new(viso_platform::backend::headless::HeadlessApp::scripted(
+            script,
+        ));
+        app.set_capabilities(caps);
+        let driver = AppDriver::<A>::new(Some(crate::services::Services::unsupported()));
+        let clock = FixedStepClock::new(Instant::now(), step);
+        let driver = Scheduler::with_clock(app, driver, clock).run_returning();
+        DrivenApp { driver }
     }
 
     /// [`drive_scripted`] bounded to `frames` frames, for an app that never
@@ -883,6 +910,8 @@ struct WindowState {
     edit_menu: Option<viso_platform::EditMenu>,
     /// The context menu last asked for, while the field asks for it.
     context_menu: Option<viso_platform::EditMenu>,
+    /// The menus of edits the window draws where the platform draws none.
+    drawn_menu: edit_menu::DrawnMenu,
     /// The cursor last pushed to the platform for the mouse.
     cursor: viso_platform::CursorIcon,
     /// The text field drawn with the focus last frame.
@@ -1140,6 +1169,7 @@ impl WindowState {
             text_entry: None,
             edit_menu: None,
             context_menu: None,
+            drawn_menu: edit_menu::DrawnMenu::new(),
             cursor: viso_platform::CursorIcon::Default,
             marked: None,
             blink: None,
@@ -1880,6 +1910,108 @@ impl WindowState {
         menu.is_some()
     }
 
+    /// Show the menu of edits the focused field asks for where the platform
+    /// draws none — a touch selection's bar, a context menu — and apply what
+    /// the user picked from it.
+    fn update_drawn_menu(&mut self, cx: &mut RuntimeCx<'_>) {
+        if let Some((edit, look)) = self.drawn_menu.take_pick() {
+            self.apply_menu_edit(cx, edit, look);
+        }
+        let caps = cx.capabilities();
+        let want = self
+            .focused_text_node()
+            .filter(|_| self.active)
+            .and_then(|id| {
+                let marks = self.store.field_marks(id)?;
+                let list = marks
+                    .context
+                    .filter(|_| !caps.context_menu && !caps.edit_menu)
+                    .map(|at| (edit_menu::MenuLook::List, at));
+                let bar = marks
+                    .menu
+                    .filter(|_| !caps.edit_menu)
+                    .map(|at| (edit_menu::MenuLook::Bar, at));
+                let (look, at) = list.or(bar)?;
+                Some((look, self.edit_menu_at(id, at)?))
+            });
+        let Some(root) = self.root else {
+            return;
+        };
+        if want.is_none() && self.drawn_menu.shown().is_none() {
+            return;
+        }
+        let labels = viso_platform::EditLabels::for_locale(&self.states.env().environment().locale);
+        let waits = self.drawn_menu.update(
+            &mut self.store,
+            &mut self.states,
+            &mut self.bindings,
+            root,
+            want,
+            &labels,
+        );
+        // The panel placed this frame paints where it now sits.
+        self.update_transforms();
+        if waits {
+            cx.request_state_flush(self.window);
+        }
+    }
+
+    /// Apply `edit` picked from the drawn menu of `look` to the focused
+    /// field, through the same clipboard as the shortcuts; the menu closes,
+    /// but for the bar's Select All.
+    fn apply_menu_edit(
+        &mut self,
+        cx: &mut RuntimeCx<'_>,
+        edit: edit_menu::Edit,
+        look: edit_menu::MenuLook,
+    ) {
+        let Some(node) = self.focused_text_node() else {
+            return;
+        };
+        let Some(buffer) = self.text_edits.get(node) else {
+            return;
+        };
+        let (start, end) = buffer.sel.logical_range();
+        let selected =
+            (start != end && !buffer.look.secure).then(|| buffer.text[start.0..end.0].to_owned());
+        let bar = look == edit_menu::MenuLook::Bar;
+        let intent = match edit {
+            edit_menu::Edit::Cut | edit_menu::Edit::Copy => {
+                let Some(text) = selected else {
+                    return;
+                };
+                cx.set_clipboard_text(&text);
+                (edit == edit_menu::Edit::Cut).then_some(text_edit::EditIntent::Cut)
+            }
+            edit_menu::Edit::Paste => {
+                cx.request_paste(self.window);
+                None
+            }
+            edit_menu::Edit::SelectAll if bar => Some(text_edit::EditIntent::Touch(
+                text_edit::TouchEdit::SelectAll,
+            )),
+            edit_menu::Edit::SelectAll => Some(text_edit::EditIntent::SelectAll),
+        };
+        if let Some(intent) = intent {
+            self.store.queue_edit(node, intent);
+        }
+        if !(bar && edit == edit_menu::Edit::SelectAll) {
+            self.close_drawn_menu();
+        }
+        self.settle_text_edits();
+        cx.request_state_flush(self.window);
+    }
+
+    /// Close the drawn menu the focused field asks for.
+    fn close_drawn_menu(&mut self) {
+        if let Some(node) = self.focused_text_node() {
+            self.store.queue_edit(
+                node,
+                text_edit::EditIntent::Touch(text_edit::TouchEdit::MenuClosed),
+            );
+        }
+    }
+
     /// The menu of edits field `id` offers, pointing at `at` in its text
     /// space, kept inside the field's box.
     fn edit_menu_at(&self, id: NodeId, at: viso_ui::Rect) -> Option<viso_platform::EditMenu> {
@@ -2525,6 +2657,17 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     direct: p.kind != viso_runtime::PointerKind::Mouse,
                 };
                 environment::note_pointer(&mut ws.states, p.kind);
+                // A press away from the drawn menu and its field closes it.
+                if ev.phase == PointerPhase::Down
+                    && ws.drawn_menu.shown().is_some()
+                    && !ws.drawn_menu.holds(&ws.store, ev.x, ev.y)
+                    && !ws.focused_text_node().is_some_and(|id| {
+                        let r = ws.store.world(id);
+                        r.x <= ev.x && ev.x < r.x + r.w && r.y <= ev.y && ev.y < r.y + r.h
+                    })
+                {
+                    ws.close_drawn_menu();
+                }
                 PointerRouter::route_contact(
                     &mut ws.store,
                     &mut ws.states,
@@ -2544,7 +2687,13 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 // ancestry so a control can react to it.
                 let modifiers = lower_modifiers(k.modifiers);
                 environment::note_key(&mut ws.states);
-                if matches!(k.key, viso_runtime::Key::Tab) && k.pressed {
+                let menu_key = ws.drawn_menu.key(&mut ws.states, k.key, k.pressed);
+                if menu_key == edit_menu::MenuKey::Close {
+                    ws.close_drawn_menu();
+                }
+                if menu_key != edit_menu::MenuKey::Ignored {
+                    // The drawn context menu takes the keys it answers.
+                } else if matches!(k.key, viso_runtime::Key::Tab) && k.pressed {
                     focus_next(&mut ws.store, root, !modifiers.shift);
                 } else if ws.store.keys_reach_clients()
                     && (ws.store.focused().is_none()
@@ -2666,6 +2815,9 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 );
             }
             viso_runtime::InputSample::Scroll(s) => {
+                if ws.drawn_menu.shown() == Some(edit_menu::MenuLook::List) {
+                    ws.close_drawn_menu();
+                }
                 // A wheel/trackpad sample routes to the innermost scroll viewport
                 // under the pointer. The runtime reports the delta as content
                 // motion (positive = content moves down/right, revealing later
@@ -3370,6 +3522,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         );
                         cx.show_context_menu(ws.window, menu, labels);
                     }
+                    ws.update_drawn_menu(cx);
                 }
             }
             FramePhase::BuildPaintChanges => {

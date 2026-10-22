@@ -42,6 +42,8 @@ pub struct HeadlessApp {
     /// What [`PlatformApp::display_features`] reports for every window.
     display_features: Vec<DisplayFeature>,
     framed_windows: bool,
+    /// What [`PlatformApp::capabilities`] reports.
+    caps: PlatformCaps,
     /// Set by a [`LoopWaker`] kick from any thread; delivered as one
     /// [`RawEvent::Wakeup`] ahead of the script.
     woken: Arc<AtomicBool>,
@@ -83,6 +85,12 @@ impl HeadlessApp {
             locale: "und".to_owned(),
             display_features: Vec::new(),
             framed_windows: true,
+            // A desktop that also records the edit menu it is asked to show,
+            // beside the context menu.
+            caps: PlatformCaps {
+                edit_menu: true,
+                ..PlatformCaps::DESKTOP
+            },
             woken: Arc::new(AtomicBool::new(false)),
             frames_left: None,
             surface: None,
@@ -143,6 +151,12 @@ impl HeadlessApp {
     /// full-screen host (mobile, a browser tab).
     pub fn set_framed_windows(&mut self, framed: bool) {
         self.framed_windows = framed;
+    }
+
+    /// Set what [`PlatformApp::capabilities`] reports, to stand in for a
+    /// host without a system edit or context menu.
+    pub fn set_capabilities(&mut self, caps: PlatformCaps) {
+        self.caps = caps;
     }
 
     /// The clipboard's current text.
@@ -379,12 +393,7 @@ impl PlatformApp for HeadlessApp {
     }
 
     fn capabilities(&self) -> PlatformCaps {
-        // A desktop that also records the edit menu it is asked to show,
-        // beside the context menu.
-        PlatformCaps {
-            edit_menu: true,
-            ..PlatformCaps::DESKTOP
-        }
+        self.caps
     }
 
     fn appearance(&self) -> Appearance {

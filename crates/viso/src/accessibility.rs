@@ -202,6 +202,8 @@ fn semantics_role(role: Role, named: bool) -> SemanticsRole {
         Role::TextField => SemanticsRole::TextField,
         Role::SecureField => SemanticsRole::SecureField,
         Role::SpinButton => SemanticsRole::SpinButton,
+        Role::Menu => SemanticsRole::Menu,
+        Role::MenuItem => SemanticsRole::MenuItem,
         Role::Tab => SemanticsRole::Tab,
         Role::TabList => SemanticsRole::TabList,
         Role::Navigation => SemanticsRole::Navigation,

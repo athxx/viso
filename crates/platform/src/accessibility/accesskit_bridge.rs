@@ -116,6 +116,8 @@ fn role(role: SemanticsRole) -> Role {
         SemanticsRole::TextField => Role::TextInput,
         SemanticsRole::SecureField => Role::PasswordInput,
         SemanticsRole::SpinButton => Role::SpinButton,
+        SemanticsRole::Menu => Role::Menu,
+        SemanticsRole::MenuItem => Role::MenuItem,
         SemanticsRole::Tab => Role::Tab,
         SemanticsRole::TabList => Role::TabList,
         SemanticsRole::Navigation => Role::Navigation,

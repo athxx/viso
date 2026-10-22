@@ -120,11 +120,16 @@ pub enum Role {
     /// down: announces its value and any bounds, and takes increment and
     /// decrement (WAI-ARIA `role=spinbutton`).
     SpinButton,
+    /// A menu of commands that pops up over the content (WAI-ARIA
+    /// `role=menu`).
+    Menu,
+    /// One command of a [`Menu`](Role::Menu) (WAI-ARIA `role=menuitem`).
+    MenuItem,
 }
 
 impl Role {
     /// Every role, in declaration order.
-    pub const ALL: [Role; 21] = [
+    pub const ALL: [Role; 23] = [
         Role::Group,
         Role::Button,
         Role::CheckBox,
@@ -146,6 +151,8 @@ impl Role {
         Role::ListItem,
         Role::SecureField,
         Role::SpinButton,
+        Role::Menu,
+        Role::MenuItem,
     ];
 
     /// The role whose [`label`](Self::label) is `label`.
@@ -179,6 +186,8 @@ impl Role {
             Role::ListItem => "listitem",
             Role::SecureField => "securefield",
             Role::SpinButton => "spinbutton",
+            Role::Menu => "menu",
+            Role::MenuItem => "menuitem",
         }
     }
 }

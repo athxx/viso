@@ -58,6 +58,10 @@ pub enum SemanticsRole {
     SecureField,
     /// An editable number that steps up and down.
     SpinButton,
+    /// A menu of commands popped up over the content.
+    Menu,
+    /// One command of a menu.
+    MenuItem,
     Tab,
     TabList,
     Navigation,

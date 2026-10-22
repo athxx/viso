@@ -313,7 +313,7 @@ pub(crate) fn announced(role: SemanticsRole) -> bool {
 pub(crate) fn element_kind(node: &AccessNode) -> ElementKind {
     use SemanticsRole as R;
     match node.role {
-        R::Button | R::CheckBox | R::Radio | R::Tab => ElementKind::Button,
+        R::Button | R::CheckBox | R::Radio | R::Tab | R::MenuItem => ElementKind::Button,
         R::Slider | R::SpinButton => ElementKind::Adjustable,
         R::Label | R::Status => ElementKind::StaticText,
         R::Image => ElementKind::Image,

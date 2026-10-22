@@ -2086,6 +2086,8 @@ fn aria_role(role: Role, tag: &str, widget: &str) -> Option<&'static str> {
         (Role::Image, ..) => "img",
         (Role::TextField | Role::SecureField, ..) => "textbox",
         (Role::SpinButton, ..) => "spinbutton",
+        (Role::Menu, ..) => "menu",
+        (Role::MenuItem, ..) => "menuitem",
         (Role::Tab, ..) => "tab",
         (Role::TabList, ..) => "tablist",
         (Role::Navigation, ..) => "navigation",
