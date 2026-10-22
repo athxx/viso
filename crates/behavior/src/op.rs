@@ -238,11 +238,16 @@ pub enum NodeAction {
     /// `Animation::is_running()`: whether it was started and has not ended,
     /// answered at once; queues nothing.
     IsRunning = 10,
+    /// `play(track: Keyframes) -> Animation`: move the node's presented
+    /// value through the track's stops, then back to its model value. The
+    /// request carries the `Animation`'s id as a second argument, and the
+    /// value is that id.
+    Play = 11,
 }
 
 impl NodeAction {
     /// Every action, by discriminant.
-    pub const ALL: [NodeAction; 11] = [
+    pub const ALL: [NodeAction; 12] = [
         NodeAction::Focus,
         NodeAction::Blur,
         NodeAction::ScrollIntoView,
@@ -254,6 +259,7 @@ impl NodeAction {
         NodeAction::Cancel,
         NodeAction::Finish,
         NodeAction::IsRunning,
+        NodeAction::Play,
     ];
 
     /// The action with discriminant `raw`.
@@ -273,6 +279,11 @@ impl NodeAction {
         NodeAction::ALL
             .into_iter()
             .find(|action| action.on_animation() && action.method() == name)
+    }
+
+    /// Whether it starts an `Animation`, whose id its request carries last.
+    pub fn starts_animation(self) -> bool {
+        matches!(self, NodeAction::Animate | NodeAction::Play)
     }
 
     /// Whether it is a method of an `Animation` rather than of a `NodeRef`.
@@ -297,6 +308,7 @@ impl NodeAction {
             NodeAction::Cancel => "cancel",
             NodeAction::Finish => "finish",
             NodeAction::IsRunning => "is_running",
+            NodeAction::Play => "play",
         }
     }
 
@@ -312,7 +324,8 @@ impl NodeAction {
             NodeAction::ScrollTo
             | NodeAction::ScrollBy
             | NodeAction::ScrollToIndex
-            | NodeAction::ScrollToKey => 1,
+            | NodeAction::ScrollToKey
+            | NodeAction::Play => 1,
             NodeAction::Animate => 2,
         }
     }
@@ -344,6 +357,7 @@ impl NodeAction {
             NodeAction::Cancel => "Cancel",
             NodeAction::Finish => "Finish",
             NodeAction::IsRunning => "IsRunning",
+            NodeAction::Play => "Play",
         }
     }
 }

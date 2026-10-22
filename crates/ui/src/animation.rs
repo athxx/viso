@@ -367,11 +367,273 @@ pub struct AnimationEnd {
 /// Called once an animation ends, with the state cells it writes.
 pub type AnimationEndHandler = Box<dyn FnOnce(&AnimationEnd, &mut crate::state::StateStore)>;
 
+/// A stop of a [`Keyframes`] track: the value it reaches `at` this share of
+/// a cycle, eased in from the stop before.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Keyframe {
+    /// Its share of a cycle, in `[0, 1]`.
+    pub at: f32,
+    /// The value it reaches.
+    pub value: LookValue,
+    /// The curve the move into it follows.
+    pub easing: Easing,
+}
+
+impl Keyframe {
+    /// The stop reaching `value` at `at` of a cycle, linearly.
+    pub fn new(at: f32, value: LookValue) -> Self {
+        Keyframe {
+            at,
+            value,
+            easing: Easing::Linear,
+        }
+    }
+
+    /// The same stop, reached along `easing`.
+    pub fn eased(self, easing: Easing) -> Self {
+        Keyframe { easing, ..self }
+    }
+}
+
+/// How many cycles a [`Keyframes`] track runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Repeat {
+    /// This many, then it ends.
+    Times(u32),
+    /// Until it is cancelled, finished or replaced.
+    Forever,
+}
+
+impl Default for Repeat {
+    fn default() -> Self {
+        Repeat::Times(1)
+    }
+}
+
+/// Which way the cycles of a [`Keyframes`] track run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PlayDirection {
+    /// Each from its first stop to its last.
+    #[default]
+    Normal,
+    /// Each from its last stop to its first, its curves run backward.
+    Reverse,
+    /// Forward, then backward, and so on.
+    Alternate,
+    /// Backward, then forward, and so on.
+    AlternateReverse,
+}
+
+/// A run through stops: each cycle moves the value through them in order of
+/// their `at`, from the value shown where the first stop is past the start
+/// and holding the last one where it falls short of the end.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Keyframes {
+    /// Its stops, of one property.
+    pub stops: Vec<Keyframe>,
+    /// How long a cycle takes.
+    pub duration: Duration,
+    /// The time before the first cycle begins.
+    pub delay: Duration,
+    /// How many cycles it runs.
+    pub repeat: Repeat,
+    /// Which way each cycle runs.
+    pub direction: PlayDirection,
+}
+
+impl Keyframes {
+    /// One forward cycle of `duration` through `stops`.
+    pub fn new(duration: Duration, stops: impl IntoIterator<Item = Keyframe>) -> Self {
+        Keyframes {
+            stops: stops.into_iter().collect(),
+            duration,
+            ..Default::default()
+        }
+    }
+
+    /// The same track, run `repeat` cycles.
+    pub fn repeat(self, repeat: Repeat) -> Self {
+        Keyframes { repeat, ..self }
+    }
+
+    /// The same track, its cycles run `direction`.
+    pub fn direction(self, direction: PlayDirection) -> Self {
+        Keyframes { direction, ..self }
+    }
+
+    /// The same track, begun `delay` later.
+    pub fn after(self, delay: Duration) -> Self {
+        Keyframes { delay, ..self }
+    }
+
+    /// Whether it ends the moment it starts.
+    pub fn is_instant(&self) -> bool {
+        self.delay.is_zero()
+            && (self.duration.is_zero() || self.repeat == Repeat::Times(0) || self.stops.is_empty())
+    }
+}
+
+/// A [`Keyframes`] track a node runs, from the value it presented.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct TrackRun {
+    pub(crate) node: NodeId,
+    start: LookValue,
+    /// Its stops of one property, in order of `at`, each in `[0, 1]`: never
+    /// empty.
+    stops: Box<[Keyframe]>,
+    elapsed: Duration,
+    duration: Duration,
+    delay: Duration,
+    repeat: Repeat,
+    direction: PlayDirection,
+}
+
+impl TrackRun {
+    /// `track` run on `node` from `start`, keeping the stops of `start`'s
+    /// property with a finite `at`, held in `[0, 1]`; `None` without any.
+    pub(crate) fn new(node: NodeId, start: LookValue, track: Keyframes) -> Option<Self> {
+        let mut stops: Vec<Keyframe> = track
+            .stops
+            .into_iter()
+            .filter(|stop| stop.at.is_finite() && stop.value.same_property(&start))
+            .map(|stop| Keyframe {
+                at: stop.at.clamp(0.0, 1.0),
+                ..stop
+            })
+            .collect();
+        if stops.is_empty() {
+            return None;
+        }
+        stops.sort_by(|a, b| a.at.total_cmp(&b.at));
+        Some(TrackRun {
+            node,
+            start,
+            stops: stops.into_boxed_slice(),
+            elapsed: Duration::ZERO,
+            duration: track.duration,
+            delay: track.delay,
+            repeat: track.repeat,
+            direction: track.direction,
+        })
+    }
+
+    /// The value it shows `p` of the way through a forward cycle.
+    fn sample(&self, p: f32) -> LookValue {
+        let (mut at, mut value) = (0.0, self.start);
+        for stop in &self.stops {
+            if p <= stop.at {
+                let span = stop.at - at;
+                let t = if span > 0.0 { (p - at) / span } else { 1.0 };
+                return value.lerp(stop.value, stop.easing.apply(t));
+            }
+            (at, value) = (stop.at, stop.value);
+        }
+        value
+    }
+
+    /// The value it shows `time` into its cycles, and whether they are done.
+    fn at_time(&self, time: Duration) -> (LookValue, bool) {
+        let Some(moving) = time.checked_sub(self.delay) else {
+            return (self.start, false);
+        };
+        let cycles = match self.repeat {
+            Repeat::Times(n) => f64::from(n),
+            Repeat::Forever => f64::INFINITY,
+        };
+        let span = self.duration.as_secs_f64();
+        let run = if span > 0.0 {
+            moving.as_secs_f64() / span
+        } else {
+            f64::INFINITY
+        };
+        if run >= cycles {
+            return (self.target(), true);
+        }
+        let cycle = run.floor();
+        let mut p = (run - cycle) as f32;
+        let odd = cycle % 2.0 == 1.0;
+        let backward = match self.direction {
+            PlayDirection::Normal => false,
+            PlayDirection::Reverse => true,
+            PlayDirection::Alternate => odd,
+            PlayDirection::AlternateReverse => !odd,
+        };
+        if backward {
+            p = 1.0 - p;
+        }
+        (self.sample(p), false)
+    }
+
+    /// Its last stop's value.
+    fn target(&self) -> LookValue {
+        self.stops[self.stops.len() - 1].value
+    }
+}
+
+/// The presented value's move an animation makes: toward a target, or
+/// through a track's stops.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Run {
+    Move(LookTransition),
+    Track(TrackRun),
+}
+
+impl Run {
+    pub(crate) fn node(&self) -> NodeId {
+        match self {
+            Run::Move(m) => m.node,
+            Run::Track(t) => t.node,
+        }
+    }
+
+    /// The value it moves toward: a track's last stop.
+    pub(crate) fn target(&self) -> LookValue {
+        match self {
+            Run::Move(m) => m.to,
+            Run::Track(t) => t.target(),
+        }
+    }
+
+    /// Whether it moves the same property of the same node as `value` on
+    /// `node`.
+    pub(crate) fn moves(&self, node: NodeId, value: &LookValue) -> bool {
+        self.node() == node && self.target().same_property(value)
+    }
+
+    /// Advances it by `delta`: the value it shows now, and whether it is done.
+    pub(crate) fn advance(&mut self, delta: Duration) -> (LookValue, bool) {
+        match self {
+            Run::Move(m) => m.advance(delta),
+            Run::Track(t) => {
+                t.elapsed = t.elapsed.saturating_add(delta);
+                t.at_time(t.elapsed)
+            }
+        }
+    }
+
+    /// How fast each part moves now, per second: a track's over the last
+    /// millisecond.
+    pub(crate) fn velocity(&self) -> Parts {
+        match self {
+            Run::Move(m) => m.velocity(),
+            Run::Track(t) => {
+                const H: Duration = Duration::from_millis(1);
+                let (now, done) = t.at_time(t.elapsed);
+                if done || t.elapsed < t.delay + H {
+                    return [0.0; 4];
+                }
+                let (a, b) = (t.at_time(t.elapsed - H).0.parts(), now.parts());
+                core::array::from_fn(|i| (b[i] - a[i]) / H.as_secs_f32())
+            }
+        }
+    }
+}
+
 /// An animation a node runs by request.
 pub(crate) struct NodeAnimation {
     pub(crate) id: AnimationId,
     /// The presented value's move.
-    pub(crate) motion: LookTransition,
+    pub(crate) motion: Run,
     /// The property's model value, which shows once it ends.
     pub(crate) model: LookValue,
     pub(crate) on_end: Option<AnimationEndHandler>,
@@ -1113,5 +1375,119 @@ mod tests {
             store.tick_transitions(Duration::from_millis(4));
         }
         assert!(!store.is_animating(back), "it settles");
+    }
+
+    #[test]
+    fn a_track_moves_through_its_stops_from_the_value_shown() {
+        let (mut store, id) = one_leaf();
+        let ms = Duration::from_millis;
+        let ends = Rc::new(Cell::new(None));
+        let heard = Rc::clone(&ends);
+        let on_end: AnimationEndHandler = Box::new(move |end, _| heard.set(Some(*end)));
+        // From the shown 1, down to 0 by the half and back by the end.
+        let track = Keyframes::new(
+            ms(100),
+            [
+                Keyframe::new(1.0, LookValue::Opacity(1.0)),
+                Keyframe::new(0.5, LookValue::Opacity(0.0)),
+            ],
+        );
+        let animation = store.play(id, track, Some(on_end)).unwrap();
+        for (step, shown) in [(25, 0.5), (25, 0.0), (25, 0.5)] {
+            store.tick_transitions(ms(step));
+            assert_eq!(store.opacity(id), shown);
+        }
+        store.tick_transitions(ms(25));
+        assert!(!store.is_animating(animation));
+        let ended = store.take_animation_ends();
+        assert_eq!(ended.len(), 1);
+        let (_, end, handler) = ended.into_iter().next().unwrap();
+        assert_eq!((end.target, end.finished), (LookValue::Opacity(1.0), true));
+        handler.unwrap()(&end, &mut crate::state::StateStore::new());
+        assert!(ends.get().is_some());
+    }
+
+    #[test]
+    fn a_track_holds_its_last_stop_and_eases_into_each() {
+        let (mut store, id) = one_leaf();
+        let ms = Duration::from_millis;
+        let track = Keyframes::new(
+            ms(100),
+            [Keyframe::new(0.5, LookValue::Scale(2.0)).eased(Easing::EASE_IN)],
+        );
+        store.play(id, track, None).unwrap();
+        store.tick_transitions(ms(25));
+        assert_eq!(store.turn(id).scale, 1.0 + Easing::EASE_IN.apply(0.5));
+        store.tick_transitions(ms(50));
+        assert_eq!(store.turn(id).scale, 2.0, "held past its last stop");
+        store.tick_transitions(ms(25));
+        assert_eq!(store.turn(id).scale, 1.0, "the model shows once it ends");
+    }
+
+    #[test]
+    fn a_track_repeats_reverses_and_alternates() {
+        let ms = Duration::from_millis;
+        let turn = |direction, repeat, at: &[(u64, f32)]| {
+            let (mut store, id) = one_leaf();
+            let track = Keyframes::new(ms(100), [Keyframe::new(1.0, LookValue::Rotation(1.0))])
+                .repeat(repeat)
+                .direction(direction);
+            let animation = store.play(id, track, None).unwrap();
+            let mut clock = 0;
+            for &(t, shown) in at {
+                store.tick_transitions(ms(t - clock));
+                clock = t;
+                let r = store.turn(id).rotation;
+                assert!((r - shown).abs() < 1e-5, "{direction:?} at {t}: {r}");
+            }
+            store.is_animating(animation)
+        };
+        let twice = Repeat::Times(2);
+        assert!(!turn(
+            PlayDirection::Normal,
+            twice,
+            &[(50, 0.5), (150, 0.5), (175, 0.75), (200, 0.0)]
+        ));
+        assert!(turn(
+            PlayDirection::Reverse,
+            twice,
+            &[(25, 0.75), (125, 0.75)]
+        ));
+        assert!(!turn(
+            PlayDirection::Alternate,
+            twice,
+            &[(25, 0.25), (125, 0.75), (200, 0.0)]
+        ));
+        assert!(turn(
+            PlayDirection::AlternateReverse,
+            Repeat::Forever,
+            &[(25, 0.75), (125, 0.25), (10_025, 0.75)]
+        ));
+    }
+
+    #[test]
+    fn a_track_keeps_its_property_s_stops_and_needs_one() {
+        let (mut store, id) = one_leaf();
+        let ms = Duration::from_millis;
+        let mixed = Keyframes::new(
+            ms(100),
+            [
+                Keyframe::new(1.0, LookValue::Opacity(0.0)),
+                Keyframe::new(0.5, LookValue::Scale(3.0)),
+                Keyframe::new(f32::NAN, LookValue::Opacity(0.5)),
+            ],
+        );
+        store.play(id, mixed, None).unwrap();
+        store.tick_transitions(ms(50));
+        assert_eq!(store.opacity(id), 0.5);
+        assert_eq!(store.turn(id).scale, 1.0);
+        assert_eq!(store.play(id, Keyframes::default(), None), None);
+        let sized = Keyframes::new(ms(100), [Keyframe::new(1.0, LookValue::Width(4.0))]);
+        assert_eq!(store.play(id, sized, None), None, "a size would lay out");
+        // One that runs no cycle ends at once, finished.
+        let none = Keyframes::new(ms(100), [Keyframe::new(1.0, LookValue::Scale(2.0))])
+            .repeat(Repeat::Times(0));
+        let animation = store.play(id, none, None).unwrap();
+        assert!(!store.is_animating(animation));
     }
 }

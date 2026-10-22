@@ -88,6 +88,16 @@ export record Transition {
     easing: Easing = Easing::ease_out; reduced: ReducedMotion = ReducedMotion::instant;
 }
 export enum Animate { translate(Offset); scale(F32); rotation(Angle); opacity(F32); }
+// A stop of a `Keyframes` track: the value it reaches `at` this share of a
+// cycle, eased in from the stop before.
+export record Keyframe { at: F32; value: Animate; easing: Easing = Easing::linear; }
+export enum Repeat { times(U32); forever; }
+export enum PlayDirection { normal; reverse; alternate; alternate_reverse; }
+export record Keyframes {
+    stops: List<Keyframe>; duration: Duration = 200ms; delay: Duration = 0ms;
+    repeat: Repeat = Repeat::times(1); direction: PlayDirection = PlayDirection::normal;
+    reduced: ReducedMotion = ReducedMotion::instant;
+}
 export record AnimationEnd { target: Animate; finished: Bool; }
 
 export record ToggleChanged { value: Bool; }

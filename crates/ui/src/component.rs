@@ -16,8 +16,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::animation::{
-    AnimationEnd, AnimationEndHandler, AnimationId, EndedAnimation, LookTransition, LookValue,
-    NodeAnimation, Parts, Timing, TranslateAnim,
+    AnimationEnd, AnimationEndHandler, AnimationId, EndedAnimation, Keyframes, LookTransition,
+    LookValue, NodeAnimation, Parts, Run, Timing, TrackRun, TranslateAnim,
 };
 use crate::asset::{Asset, AssetDraw, AssetFit, AssetPayload, AssetTable};
 use crate::binding::{BindingTable, Template};
@@ -4000,7 +4000,7 @@ impl NodeStore {
         let mut i = self.animations.len();
         while i > 0 {
             i -= 1;
-            let node = self.animations[i].motion.node;
+            let node = self.animations[i].motion.node();
             if !self.arena.is_live(node) {
                 let gone = self.animations.swap_remove(i);
                 self.end_animation(gone, false);
@@ -4021,8 +4021,8 @@ impl NodeStore {
     /// then the property's model value shows again — what the node is told to
     /// show meanwhile is that model value. A newer animation of the same
     /// property ends one running, unfinished, a spring carrying on at the
-    /// velocity it had. `on_end` is called with how it
-    /// ended after the layout of the frame it ends in, and the node's
+    /// velocity it had. `on_end` is called with how it ended after the layout
+    /// of the frame it ends in, and the node's
     /// [`NoticeKinds::ANIMATION_END`](crate::NoticeKinds::ANIMATION_END)
     /// watcher hears it. `None` for a stale handle or a property other than
     /// translate, scale, rotation and opacity, which would lay out.
@@ -4033,8 +4033,46 @@ impl NodeStore {
         timing: Timing,
         on_end: Option<AnimationEndHandler>,
     ) -> Option<AnimationId> {
+        self.run_animation(id, to, timing.is_instant(), on_end, |presented, carried| {
+            Some(Run::Move(
+                LookTransition::new(id, presented, to, timing).carrying(carried),
+            ))
+        })
+    }
+
+    /// Runs the animation `track` makes on node `id`, as
+    /// [`animate`](Self::animate) runs one toward a target: the value it
+    /// presents of its stops' property moves through them, cycle by cycle,
+    /// from the value it presents now, then the model value shows again. Its
+    /// end names its last stop's value as the target. A stop of another
+    /// property than its first's, or with an `at` that is not finite, is
+    /// left out; `None` without any, or as `animate` gives it.
+    pub fn play(
+        &mut self,
+        id: NodeId,
+        track: Keyframes,
+        on_end: Option<AnimationEndHandler>,
+    ) -> Option<AnimationId> {
+        let property = track.stops.first()?.value;
+        let instant = track.is_instant();
+        self.run_animation(id, property, instant, on_end, |presented, _| {
+            TrackRun::new(id, presented, track).map(Run::Track)
+        })
+    }
+
+    /// Starts on live node `id` the run `make` makes of the property
+    /// `property` names, given the value presented and the velocity of the
+    /// animation it replaces; it ends at once when `instant`.
+    fn run_animation(
+        &mut self,
+        id: NodeId,
+        property: LookValue,
+        instant: bool,
+        on_end: Option<AnimationEndHandler>,
+        make: impl FnOnce(LookValue, Parts) -> Option<Run>,
+    ) -> Option<AnimationId> {
         let animates = matches!(
-            to,
+            property,
             LookValue::Translate(_)
                 | LookValue::Scale(_)
                 | LookValue::Rotation(_)
@@ -4043,23 +4081,27 @@ impl NodeStore {
         if !self.arena.is_live(id) || !animates {
             return None;
         }
-        self.last_animation += 1;
-        let animation = AnimationId(self.last_animation);
-        let model = self.shown(id, &to);
-        let presented = self.presented(id, &to);
-        let mut carried = Parts::default();
-        if let Some(at) = self.animations.iter().position(|a| a.motion.moves(id, &to)) {
+        let model = self.shown(id, &property);
+        let presented = self.presented(id, &property);
+        let prior = self
+            .animations
+            .iter()
+            .position(|a| a.motion.moves(id, &property));
+        let carried = prior.map_or_else(Parts::default, |at| self.animations[at].motion.velocity());
+        let motion = make(presented, carried)?;
+        if let Some(at) = prior {
             let prior = self.animations.swap_remove(at);
-            carried = prior.motion.velocity();
             self.queue_end(prior, false);
         }
+        self.last_animation += 1;
+        let animation = AnimationId(self.last_animation);
         let running = NodeAnimation {
             id: animation,
-            motion: LookTransition::new(id, presented, to, timing).carrying(carried),
+            motion,
             model,
             on_end,
         };
-        if timing.is_instant() {
+        if instant {
             self.end_animation(running, true);
         } else {
             self.animations.push(running);
@@ -4092,8 +4134,9 @@ impl NodeStore {
 
     /// Shows the model value `ended` held and queues its end.
     fn end_animation(&mut self, ended: NodeAnimation, finished: bool) {
-        if self.arena.is_live(ended.motion.node) {
-            self.show_look(ended.motion.node, ended.model);
+        let node = ended.motion.node();
+        if self.arena.is_live(node) {
+            self.show_look(node, ended.model);
         }
         self.queue_end(ended, finished);
     }
@@ -4101,11 +4144,11 @@ impl NodeStore {
     fn queue_end(&mut self, ended: NodeAnimation, finished: bool) {
         let end = AnimationEnd {
             animation: ended.id,
-            target: ended.motion.to,
+            target: ended.motion.target(),
             finished,
         };
         self.animation_ends
-            .push((ended.motion.node, end, ended.on_end));
+            .push((ended.motion.node(), end, ended.on_end));
     }
 
     /// The animations ended since the last call, oldest first.

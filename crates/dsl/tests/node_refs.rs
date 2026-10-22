@@ -278,6 +278,85 @@ fn an_animation_moves_its_node_and_returns_it_and_its_end_reaches_the_node() {
     assert!(!page.store.is_transitioning());
 }
 
+const PULSE: &str = "component Pulse {
+    state pulse: Option<Animation> = Option::None;
+    state ended = \"\";
+    view {
+        Column {
+            width: 200dp;
+            height: 300dp;
+            Button {
+                width: 100dp; height: 20dp; text: \"pulse\";
+                on click {
+                    let track = Keyframes {
+                        stops: [
+                            Keyframe { at: 0.5f32, value: Animate::scale(2.0f32), easing: Easing::linear },
+                            Keyframe { at: 1.0f32, value: Animate::scale(1.0f32) },
+                        ],
+                        duration: 100ms,
+                        repeat: Repeat::times(2),
+                        direction: PlayDirection::alternate,
+                    };
+                    pulse = Option::Some(card.play(track));
+                }
+            }
+            Button {
+                width: 100dp; height: 20dp; text: \"forever\";
+                on click {
+                    let track = Keyframes {
+                        stops: [Keyframe { at: 1.0f32, value: Animate::opacity(0.0f32) }],
+                        duration: 100ms,
+                        repeat: Repeat::forever,
+                    };
+                    pulse = Option::Some(card.play(track));
+                }
+            }
+            Button {
+                width: 100dp; height: 20dp; text: \"finish\";
+                on click { match pulse { Option::Some(a) => a.finish(), Option::None => {} } }
+            }
+            node card: Column {
+                width: 50dp; height: 20dp;
+                on animation_end(e) {
+                    ended = match e.target {
+                        Animate::scale(s) => format(\"scale {} {}\", s, e.finished),
+                        Animate::opacity(o) => format(\"opacity {} {}\", o, e.finished),
+                        _ => \"other\",
+                    };
+                }
+            }
+            Text { width: 100dp; height: 20dp; text: ended; }
+        }
+    }
+}";
+
+#[test]
+fn a_track_plays_its_stops_cycle_by_cycle_and_ends_at_its_last() {
+    let mut page = Page::load(PULSE);
+    let [pulse, forever, finish, card, ended] = [0, 1, 2, 3, 4].map(|at| page.child(page.root, at));
+    page.click(pulse);
+    page.frame(25);
+    assert_eq!(page.store.turn(card).scale, 1.5);
+    page.frame(25);
+    assert_eq!(page.store.turn(card).scale, 2.0);
+    // The second cycle runs backward: from 1 up to 2 and back.
+    page.frame(75);
+    assert_eq!(page.store.turn(card).scale, 1.5);
+    page.frame(75);
+    assert_eq!(page.store.turn(card).scale, 1.0);
+    assert_eq!(page.text(ended), "scale 1 true");
+
+    page.click(forever);
+    page.frame(1000);
+    page.frame(50);
+    assert_eq!(page.store.opacity(card), 0.5, "it keeps cycling");
+    page.click(finish);
+    page.frame(16);
+    assert_eq!(page.store.opacity(card), 1.0);
+    assert_eq!(page.text(ended), "opacity 0 true");
+    assert!(!page.store.is_transitioning());
+}
+
 #[test]
 fn a_named_node_is_a_node_ref_only_in_handlers_and_actions() {
     let source = "component Form {

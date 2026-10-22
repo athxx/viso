@@ -3087,6 +3087,8 @@ transform / opacity 动画的 evaluator 在 AdvanceAnimations 阶段直接写入
 
 **弹簧**（`viso_math::Spring`，`viso_ui` re-export）：`stiffness`/`damping`/`mass` 的阻尼谐振子，欠阻尼、临界与过阻尼三种情形各用闭式解给出任意时刻的位移与速度（不做逐帧积分，结果与帧率无关）；`with_response(response, ratio)` 按无阻尼周期与阻尼比构造，`SMOOTH`/`SNAPPY`/`BOUNCY` 为半秒周期、阻尼比 1/0.85/0.7 的预设；阻尼比下限为 0.01，因此每个弹簧都会停下。`Timing` 由 `delay` 与 `Pace`（`Eased { duration, easing }` 或 `Spring`）组成。外观转场把值拆成至多四个分量（颜色取预乘线性光的四通道，平移取两轴，圆角取 `dp` 与 `pct`），每个分量从起点偏移与初速度独立求解，夹取规则与缓动插值相同；判定收敛用能量界 `x² + (v/ω₀)² ≤ rest²`：弹簧只会损失能量，满足后位移不会再超过 `rest`，此时写入目标值并移出列表（帧循环随之停下）。转向时由 `LookTransition::velocity` 求出当前各分量速度（弹簧取闭式解的导数，缓动取曲线在当前 1 ms 内的斜率），交给新的弹簧移动：`NodeStore::transition` 转向、`resume_transition` 跨重建续上、`animate` 取代同一属性的运行中动画时都这样交接；有 `delay` 或按时长缓动的新移动从静止开始。Web 导出：编译器与页面脚本（同一闭式解的 JS 实现，经 `node` 与 Rust 比对）把弹簧从静止到收敛至千分之一以内的移动采样为 `linear()`，以收敛时间作为 `transition`/`animate` 的时长。
 
+**关键帧**（`viso_ui::Keyframes`）：`stops: Vec<Keyframe { at, value, easing }>`、每周期 `duration`、`delay`、`Repeat::{Times(n), Forever}`、`PlayDirection::{Normal, Reverse, Alternate, AlternateReverse}`。`NodeStore::play` 与 `animate` 共用 `run_animation`：同样只接受平移、缩放、旋转与不透明度，同样移动呈现值、结束时显示 Model 值并经 `ANIMATION_END` 通知结束（`target` 为最后一个停靠点的值），同一属性的新动画结束旧动画。运行中的 `NodeAnimation` 持有 `Run::Move(LookTransition)` 或 `Run::Track(TrackRun)`：`TrackRun` 在开始时把停靠点过滤为首个停靠点的属性、丢弃非有限的 `at`、夹到 `[0, 1]` 并稳定排序，之后每帧只做一次查找与插值、不分配；时间以 `f64` 秒累计，周期数取整数部分，按方向决定是否倒放，第一个停靠点之前从开始时的呈现值插入，最后一个之后保持。被弹簧动画取代时，轨道的当前速度按最近 1 ms 的差分交出。Web 导出见 DSL §U6.3。
+
 ---
 
 # Part X — Accessibility / Semantics

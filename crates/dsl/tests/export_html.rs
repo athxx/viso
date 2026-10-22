@@ -291,6 +291,85 @@ fn an_animation_exports_as_a_web_animation_and_its_end_as_an_event() {
     }
 }
 
+const PULSED: &str = r#"
+export component Pulsed {
+    state scaled = false;
+    state faded = false;
+    view {
+        Column {
+            Button {
+                width: 40dp; height: 20dp; text: "Pulse";
+                on click {
+                    let track = Keyframes {
+                        stops: [
+                            Keyframe { at: 0.5f32, value: Animate::scale(2.0f32), easing: Easing::ease_out },
+                            Keyframe { at: 1.0f32, value: Animate::scale(1.0f32) },
+                        ],
+                        duration: 100ms,
+                        repeat: Repeat::times(3),
+                        direction: PlayDirection::alternate,
+                    };
+                    card.play(track);
+                }
+            }
+            Button {
+                width: 40dp; height: 20dp; text: "Spin";
+                on click {
+                    let track = Keyframes {
+                        stops: [Keyframe { at: 1.0f32, value: Animate::opacity(0.0f32) }],
+                        repeat: Repeat::forever,
+                    };
+                    let spin = card.play(track);
+                    if spin.is_running() { spin.finish(); }
+                }
+            }
+            node card: Text {
+                width: 40dp; height: 20dp; text: "card";
+                on animation_end(e) {
+                    scaled = match e.target { Animate::scale(_) => e.finished, _ => scaled };
+                    faded = match e.target { Animate::opacity(_) => e.finished, _ => faded };
+                }
+            }
+            Text { text: format("scaled={}", scaled); }
+            Text { text: format("faded={}", faded); }
+        }
+    }
+}
+"#;
+
+#[test]
+fn a_track_plays_as_a_web_animation_through_its_stops() {
+    let page = export(PULSED, false).unwrap();
+    let script = page.script.clone().unwrap();
+    assert!(script.contains(".node(11, "), "{script}");
+    let Some(chrome) = chrome() else {
+        eprintln!("no Chrome: the page is not run");
+        return;
+    };
+    // Headless Chrome's virtual time does not run an animation's timeline,
+    // so what it plays is read off the animation itself.
+    let clicks = "\nsetTimeout(() => document.querySelectorAll('button').forEach((b) => b.click()), 50);\n\
+        setTimeout(() => document.body.append('played=' + document.getAnimations().map((a) => {\n\
+          const t = a.effect.getTiming();\n\
+          return a.effect.getKeyframes().map((k) => k.offset + ':' + k.scale + ':' + k.easing).join(' ') + '|' + t.iterations + '|' + t.direction;\n\
+        }).join(';') + '.'), 100);\n";
+    let dom = run_in_chrome(&page, &(script + clicks), "export-pulsed", &[], chrome);
+    // Shown before its first stop, eased into each from the one before.
+    assert!(
+        dom.contains("played=0:none:linear(0 0%, ")
+            && dom.contains(" 0.5:2:linear 1:1:linear|3|alternate."),
+        "{dom}"
+    );
+    assert!(
+        dom.contains(">faded=true<"),
+        "a track forever finishes where it is: {dom}"
+    );
+    assert!(
+        dom.contains(">scaled=false<"),
+        "and leaves the other playing: {dom}"
+    );
+}
+
 const GUARDED: &str = r#"
 export component Guarded {
     state on = true;

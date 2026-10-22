@@ -268,7 +268,7 @@ static NEXT_ANIMATION: core::sync::atomic::AtomicU64 = core::sync::atomic::Atomi
 /// The `Animation` `request` starts or ends, `None` for one of a node alone.
 pub fn animation_of(request: &NodeRequest) -> Option<u64> {
     match request.action {
-        NodeAction::Animate => request.args.get(2),
+        action if action.starts_animation() => request.args.last(),
         NodeAction::Cancel | NodeAction::Finish => request.args.first(),
         _ => None,
     }
@@ -1207,7 +1207,7 @@ impl Vm {
             };
             let at = self.animations.binary_search(&id);
             match (request.action, at) {
-                (NodeAction::Animate, Err(at)) => self.animations.insert(at, id),
+                (action, Err(at)) if action.starts_animation() => self.animations.insert(at, id),
                 (NodeAction::Cancel | NodeAction::Finish, Ok(at)) => {
                     self.animations.remove(at);
                 }
@@ -1249,7 +1249,7 @@ impl Vm {
                 // that names the animation decides.
                 let queued = self.nodes.iter().rev().find_map(|request| {
                     (animation_of(request) == Some(key))
-                        .then_some(request.action == NodeAction::Animate)
+                        .then_some(request.action.starts_animation())
                 });
                 let running = queued.unwrap_or_else(|| self.animations.binary_search(&key).is_ok());
                 return Ok(Value::Int(i64::from(running)));
@@ -1262,7 +1262,7 @@ impl Vm {
             return Ok(Value::Int(0));
         }
         let node = u32::try_from(key).map_err(|_| FaultKind::Internal)?;
-        if action == NodeAction::Animate {
+        if action.starts_animation() {
             let id = NEXT_ANIMATION.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             let mut args = args.into_vec();
             args.push(Value::Int(id as i64));

@@ -200,7 +200,7 @@ pub fn mount_nodes(
                 continue;
             }
             match request.action {
-                NodeAction::Animate => {
+                action if action.starts_animation() => {
                     view.start_animation(cx.store, node, &request, reduced, Rc::downgrade(&keep));
                 }
                 _ => apply(cx.store, cx.lists, node, &request),
@@ -224,26 +224,30 @@ impl ViewHost {
         let Some(id) = animation_of(request) else {
             return;
         };
-        let started = match (
-            request
-                .args
-                .first()
-                .and_then(|target| crate::route::look_of(store, node, target)),
-            request.args.get(1),
-        ) {
-            (Some(target), Some(spec)) => {
-                let timing = crate::values::timing(spec, reduced);
-                let on_end = Box::new(move |_: &viso_ui::AnimationEnd, _: &mut StateStore| {
-                    if let Some(host) = host.upgrade()
-                        && let Ok(mut host) = host.try_borrow_mut()
-                    {
-                        host.vm.animation_ended(id);
-                        host.nodes.animations.retain(|&(vm, _)| vm != id);
-                    }
-                });
-                store.animate(node, target, timing, Some(on_end))
+        let on_end = Box::new(move |_: &viso_ui::AnimationEnd, _: &mut StateStore| {
+            if let Some(host) = host.upgrade()
+                && let Ok(mut host) = host.try_borrow_mut()
+            {
+                host.vm.animation_ended(id);
+                host.nodes.animations.retain(|&(vm, _)| vm != id);
             }
-            _ => None,
+        });
+        let arg = |at: usize| request.args.get(at);
+        let started = if request.action == NodeAction::Play {
+            arg(0)
+                .and_then(|track| crate::values::keyframes(store, node, track, reduced))
+                .and_then(|track| store.play(node, track, Some(on_end)))
+        } else {
+            match (
+                arg(0).and_then(|target| crate::route::look_of(store, node, target)),
+                arg(1),
+            ) {
+                (Some(target), Some(spec)) => {
+                    let timing = crate::values::timing(spec, reduced);
+                    store.animate(node, target, timing, Some(on_end))
+                }
+                _ => None,
+            }
         };
         match started {
             Some(animation) => self.nodes.animations.push((id, animation)),
@@ -360,7 +364,11 @@ fn apply(store: &mut NodeStore, lists: &mut VirtualLists, node: NodeId, request:
                 list.scroll_to_index_with(index, behavior_at(request, 1));
             }
         }
-        NodeAction::Animate | NodeAction::Cancel | NodeAction::Finish | NodeAction::IsRunning => {}
+        NodeAction::Animate
+        | NodeAction::Play
+        | NodeAction::Cancel
+        | NodeAction::Finish
+        | NodeAction::IsRunning => {}
     }
 }
 

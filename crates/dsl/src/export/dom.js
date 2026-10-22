@@ -55,21 +55,21 @@ const mark = (out, k) => {
 const animations = new Map();
 let lastAnimation = 0n;
 // Queues the request `[action, key, args]` in `queue`, answering what the
-// call returns: an `animate` the id of the `Animation` it starts, which rides
-// along as a third argument; an `is_running` whether the animation `key`
-// runs, as the requests queued so far leave it.
+// call returns: an `animate` or a `play` the id of the `Animation` it
+// starts, which rides along as a last argument; an `is_running` whether the
+// animation `key` runs, as the requests queued so far leave it.
 const request = (queue, action, key, args) => {
   if (action === 10) {
     for (let i = queue.length - 1; i >= 0; i--) {
       const [a, k, g] = queue[i];
-      if (a === 7 && g[2] === key) return 1n;
+      if ((a === 7 || a === 11) && g[g.length - 1] === key) return 1n;
       if ((a === 8 || a === 9) && k === key) return 0n;
     }
     return bool(animations.has(key));
   }
-  if (action === 7) {
+  if (action === 7 || action === 11) {
     const id = ++lastAnimation;
-    queue.push([action, key, [args[0], args[1], id]]);
+    queue.push([action, key, [...args, id]]);
     return id;
   }
   queue.push([action, key, args]);
@@ -93,34 +93,82 @@ const animate = (el, target, spec, id) => {
   const f = spec === null ? [] : spec.f;
   const instant = reduced.matches && f[3] === 0n;
   const ms = (x) => (instant ? 0 : Math.max(Number(x ?? 0), 0) * 1000);
-  const running = (el.$anims ??= {});
-  if (running[property]) running[property].cancel();
-  const a = el.animate([{ [property]: value }], {
+  run(el, property, target, id, () => el.animate([{ [property]: value }], {
     duration: ms(easeSeconds(f)),
     delay: ms(f[1]),
     easing: easing(f[2]),
     fill: "none",
-  });
+  }));
+};
+// Plays the `Keyframes` `track` on `el` as the animation `id`: its stops of
+// the first's property, in order of `at`, from the value shown where the
+// first is past the start and holding the last where it falls short of the
+// end, each eased in from the one before.
+const play = (el, track, id) => {
+  const f = track.f;
+  const all = (f[0] ?? []).filter((s) => Number.isFinite(Number(s.f[0])));
+  if (!all.length) return;
+  const tag = all[0].f[1].t;
+  const stops = all.filter((s) => s.f[1].t === tag)
+    .map((s) => ({ at: Math.min(Math.max(Number(s.f[0]), 0), 1), value: s.f[1], easing: s.f[2] }))
+    .sort((a, b) => a.at - b.at);
+  const [property] = animated(stops[0].value);
+  const frames = [];
+  if (stops[0].at > 0) frames.push({ offset: 0, [property]: getComputedStyle(el)[property] });
+  for (const s of stops) {
+    if (frames.length) frames[frames.length - 1].easing = stopEasing(s.easing);
+    frames.push({ offset: s.at, [property]: animated(s.value)[1] });
+  }
+  if (stops[stops.length - 1].at < 1) frames.push({ ...frames[frames.length - 1], offset: 1, easing: "linear" });
+  const instant = reduced.matches && f[5] === 0n;
+  const ms = (x) => Math.max(Number(x ?? 0), 0) * 1000;
+  const repeat = f[3];
+  const iterations = instant ? 0 : repeat === 1n ? Infinity : repeat && repeat.f ? Number(repeat.f[0]) : 1;
+  const directions = ["normal", "reverse", "alternate", "alternate-reverse"];
+  const target = stops[stops.length - 1].value;
+  run(el, property, target, id, () => el.animate(frames, {
+    duration: ms(f[1]),
+    delay: instant ? 0 : ms(f[2]),
+    iterations,
+    direction: directions[Number(f[4] ?? 0n)] ?? "normal",
+    fill: "none",
+  }));
+};
+// A stop's easing: a spring has no time of its own there, and eases out.
+const stopEasing = (e) => (e && e.t === 35 ? easeNamed(2) : easing(e ?? 0n));
+// Runs the animation `start` makes of `el`'s `property` as `id` toward
+// `target`: a newer one of the same property cancels it, and `el` hears its
+// end as an `animation_end`.
+const run = (el, property, target, id, start) => {
+  const running = (el.$anims ??= {});
+  if (running[property]) running[property].cancel();
+  const a = start();
   running[property] = a;
   animations.set(id, a);
-  const end = (finished) => () => {
+  a.$end = (finished) => {
+    a.onfinish = a.oncancel = null;
+    if (finished && a.playState !== "finished") a.cancel();
     animations.delete(id);
     if (running[property] === a) delete running[property];
     el.dispatchEvent(new CustomEvent("viso-animationend", { detail: { target, finished } }));
   };
-  a.onfinish = end(true);
-  a.oncancel = end(false);
+  a.onfinish = () => a.$end(true);
+  a.oncancel = () => a.$end(false);
 };
 // Applies the requests a transaction made of named nodes, each
 // `[action, key, args]`: focus, blur, scroll into view, scroll to, scroll by,
-// a list's scroll to a row by index or key, and an animation's start; and
-// those of animations, by id: cancel and finish.
+// a list's scroll to a row by index or key, and an animation's start or a
+// track's play; and those of animations, by id: cancel and finish (a track
+// that repeats forever has no end to finish at, and ends where it is).
 const reach = (requests, from) => {
   if (!requests) return;
   for (const [action, key, args] of requests) {
     if (action === 8 || action === 9) {
       const a = animations.get(key);
-      if (a) action === 8 ? a.cancel() : a.finish();
+      if (!a) continue;
+      if (action === 8) a.cancel();
+      else if (a.effect.getComputedTiming().iterations === Infinity) a.$end(true);
+      else a.finish();
       continue;
     }
     const el = named(key, from);
@@ -140,6 +188,7 @@ const reach = (requests, from) => {
       }
       case 6: { const r = row(el, $.key(args[0])); if (r) r.scrollIntoView({ block: "start", inline: "start" }); break; }
       case 7: animate(el, args[0], args[1], args[2]); break;
+      case 11: play(el, args[0], args[1]); break;
     }
   }
 };

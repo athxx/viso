@@ -155,7 +155,7 @@ Rules:
 - [x] Easing set: all Penner curves (quad … bounce, in/out/in-out) and `cubic_bezier`.
 - [x] Springs: stiffness/damping/mass, interruption with velocity handoff, settle
   detection.
-- [ ] Keyframes: multi-stop tracks, repeat count / infinite, reverse, alternate.
+- [x] Keyframes: multi-stop tracks, repeat count / infinite, reverse, alternate.
 - [ ] Reduced motion: platform setting honored by transitions, springs and scroll glides.
 - [ ] Navigation transitions: push/pop slide, fade, platform default; shared-element
   (hero) transition.

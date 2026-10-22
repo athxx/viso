@@ -4814,8 +4814,17 @@ Row {
 
 ```viso
 export enum Animate { translate(Offset); scale(F32); rotation(Angle); opacity(F32); }
+export record Keyframe { at: F32; value: Animate; easing: Easing = Easing::linear; }
+export enum Repeat { times(U32); forever; }
+export enum PlayDirection { normal; reverse; alternate; alternate_reverse; }
+export record Keyframes {
+    stops: List<Keyframe>; duration: Duration = 200ms; delay: Duration = 0ms;
+    repeat: Repeat = Repeat::times(1); direction: PlayDirection = PlayDirection::normal;
+    reduced: ReducedMotion = ReducedMotion::instant;
+}
 
 // NodeRef<T>：fn animate(self, target: Animate, spec: Transition) -> Animation;
+//            fn play(self, track: Keyframes) -> Animation;
 // Animation：fn cancel(self); fn finish(self); fn is_running(self) -> Bool;
 
 component Shake {
@@ -4834,13 +4843,14 @@ component Shake {
 }
 ```
 
-- `animate` 只能在 Action、Event Handler 与 `start` Handler 中调用；基线目标只含变换类与 `opacity`，因此命令式动画永不触发布局；
+- `animate` 与 `play` 只能在 Action、Event Handler 与 `start` Handler 中调用；基线目标只含变换类与 `opacity`，因此命令式动画永不触发布局；
+- `play` 让呈现值逐周期经过 `track` 的各个停靠点：停靠点按 `at`（周期的份额，夹在 `[0, 1]`）排序，每个以自己的 `easing` 从前一个停靠点移入；第一个停靠点在 `0` 之后时从当前呈现值出发，最后一个在 `1` 之前时保持其值到周期结束。只保留与第一个停靠点同一目标（`Animate` 变体）且 `at` 有限的停靠点。`repeat: Repeat::times(n)` 运行 `n` 个周期（`0` 立即以 `finished: true` 结束），`Repeat::forever` 一直运行到被取消、`finish()` 或被新动画取代；`direction` 为 `normal`、`reverse`（周期倒放，曲线随之倒放）、`alternate`（正、反交替）、`alternate_reverse`（反、正交替）。结束时 `animation_end` 的 `target` 是最后一个停靠点的值；停靠点的 `easing` 取 `spring` 时按 `ease_out` 处理；
 - 结束或取消时目标节点收到 `animation_end(AnimationEnd)`，字段为 `target: Animate`、`finished: Bool`（被 `cancel()` 或新动画打断时为 `false`）；
 - 结束后呈现值回到该 Property 当前的 Model 值；需要保持终值时在 `animation_end` 中写入 State，或直接使用 U6.1 Transition；
 - 同一节点同一目标上的新动画取消旧动画；
 - `Animation` 与 `NodeRef` 生命周期相同（§83）：节点 Dispose 或热重载后失效，对失效句柄调用是 No-op，Debug Runtime 报告警告。
 
-当前实现：`animate` 在调用处即返回 `Animation`（`is_running()` 立即为 `true`），请求在事务提交、结构稳定后作用于节点；动画移动的是节点的呈现值，期间对该 Property 的 Model 写入（Binding、Transition）记入 Model，结束时呈现。`cancel()` / `finish()` 在下一次结构稳定时生效，`is_running()` 计入本次调用已排队的请求。`animation_end` 在结束所在帧的布局之后派发，`target` 为折叠后的值（长度为 `dp`）。节点 Dispose 时动画随之结束且不派发事件。Web 导出为 Web Animations（`fill: none`），结束派发同一事件。Debug Runtime 的失效句柄警告尚未实现。
+当前实现：`animate` 在调用处即返回 `Animation`（`is_running()` 立即为 `true`），请求在事务提交、结构稳定后作用于节点；动画移动的是节点的呈现值，期间对该 Property 的 Model 写入（Binding、Transition）记入 Model，结束时呈现。`cancel()` / `finish()` 在下一次结构稳定时生效，`is_running()` 计入本次调用已排队的请求。`animation_end` 在结束所在帧的布局之后派发，`target` 为折叠后的值（长度为 `dp`）。节点 Dispose 时动画随之结束且不派发事件。Web 导出为 Web Animations（`fill: none`），结束派发同一事件；`play` 的停靠点成为 Web Animations 的关键帧（各自的缓动移到前一个关键帧上，隐含的起点取当时的计算样式），`repeat`、`direction` 成为 `iterations`、`direction`；`forever` 的轨道被 `finish()` 时停在当前处并以 `finished: true` 结束。Debug Runtime 的失效句柄警告尚未实现。
 
 ### U6.4 Reduced Motion
 
@@ -4965,13 +4975,13 @@ Named Node `n` 在同一 Component 的 Action 与 Handler 中以 `n: NodeRef<T>`
 | `n.scroll_into_view(smooth?)`                   | 任意          | 最近祖先视口以最小滚动使 `n` 可见                 |
 | `n.scroll_to(offset, smooth?)` / `n.scroll_by(delta, smooth?)` | `Scroll` | 只标记 `TRANSFORM\|HIT_TEST\|PAINT` |
 | `n.scroll_to_key(key, smooth?)` / `n.scroll_to_index(i, smooth?)` | `VirtualList` | 见 U9.3                         |
-| `n.animate(target, spec)`                       | 任意          | 见 U6.3                                           |
+| `n.animate(target, spec)` / `n.play(track)`     | 任意          | 见 U6.3                                           |
 
 滚动方法可带末尾的 `smooth: Bool`（默认 `false`）：为 `true` 时平滑滑行到目标而非立即跳转；滑行中再次请求从当前速度转向新目标，`scroll_by` 在滑行目标上累加；手指、滚轮或滚动条操作会停止滑行。
 
 在 View、Computed 与 `fn` 中调用这些方法是 §83 纯度错误；方法返回 `()`，在视图结构落定后生效；对未挂载或已 Dispose 节点调用是 No-op。
 
-当前实现：`focus`、`blur`、`scroll_into_view`、`scroll_to`、`scroll_by`、`scroll_to_index`、`scroll_to_key` 在宏、热重载、Release Package（含 AOT）与 HTML/Solid 导出中生效（导出以 `data-node` 标记节点，从发起事件的元素就近查找）；`scroll_to_index`/`scroll_to_key` 把该行滚到视口起始边（列表末尾不足时尽量靠近），同一帧挂载其周围的窗口，越界 Index 取最后一行；`animate` 尚未实现，调用报 `E2001`。
+当前实现：`focus`、`blur`、`scroll_into_view`、`scroll_to`、`scroll_by`、`scroll_to_index`、`scroll_to_key` 在宏、热重载、Release Package（含 AOT）与 HTML/Solid 导出中生效（导出以 `data-node` 标记节点，从发起事件的元素就近查找）；`scroll_to_index`/`scroll_to_key` 把该行滚到视口起始边（列表末尾不足时尽量靠近），同一帧挂载其周围的窗口，越界 Index 取最后一行；`animate` 与 `play` 见 U6.3。
 
 ### U7.7 `cursor`
 

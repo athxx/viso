@@ -1219,6 +1219,70 @@ pub(crate) fn timing(spec: &Value, reduced_motion: bool) -> Timing {
 /// `cubic_bezier`.
 const SPRING: u32 = Easing::NAMED + 1;
 
+/// A `Keyframes` value (`stops`, `duration`, `delay`, `repeat`, `direction`,
+/// `reduced`), its stops' values folded at `node`: no cycle when
+/// `reduced_motion` holds and its `reduced` is `instant`. A negative or
+/// non-finite time is zero.
+pub(crate) fn keyframes(
+    store: &NodeStore,
+    node: NodeId,
+    spec: &Value,
+    reduced_motion: bool,
+) -> Option<viso_ui::Keyframes> {
+    use viso_ui::{Keyframe, PlayDirection, Repeat};
+    let Value::Agg(spec) = spec else {
+        return None;
+    };
+    let field = |at: usize| spec.fields.get(at);
+    let time = |at: usize| {
+        let seconds = field(at).and_then(Value::as_float).unwrap_or(0.0);
+        std::time::Duration::try_from_secs_f64(seconds).unwrap_or_default()
+    };
+    let tag = |at: usize| field(at).and_then(Value::as_int).unwrap_or(0);
+    let Some(Value::List(items)) = field(0) else {
+        return None;
+    };
+    let stops = items.iter().filter_map(|stop| {
+        let Value::Agg(stop) = stop else {
+            return None;
+        };
+        let value = crate::route::look_of(store, node, stop.fields.get(1)?)?;
+        Some(Keyframe {
+            at: float(stop.fields.first()?, f32::NAN),
+            value,
+            easing: stop.fields.get(2).map_or(Easing::Linear, easing),
+        })
+    });
+    let repeat = match field(3) {
+        Some(Value::Agg(times)) => Repeat::Times(
+            times
+                .fields
+                .first()
+                .and_then(Value::as_int)
+                .and_then(|n| u32::try_from(n).ok())
+                .unwrap_or(0),
+        ),
+        Some(Value::Int(1)) => Repeat::Forever,
+        _ => Repeat::Times(1),
+    };
+    let direction = match tag(4) {
+        1 => PlayDirection::Reverse,
+        2 => PlayDirection::Alternate,
+        3 => PlayDirection::AlternateReverse,
+        _ => PlayDirection::Normal,
+    };
+    let track = viso_ui::Keyframes::new(time(1), stops)
+        .after(time(2))
+        .direction(direction);
+    Some(if reduced_motion && tag(5) == 0 {
+        track
+            .after(std::time::Duration::ZERO)
+            .repeat(Repeat::Times(0))
+    } else {
+        track.repeat(repeat)
+    })
+}
+
 /// An `Easing` value: a named curve by its tag, or a `cubic_bezier` by its
 /// control points.
 pub(crate) fn easing(value: &Value) -> Easing {

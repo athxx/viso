@@ -1,10 +1,11 @@
-//! The methods of `NodeRef<T>` (U7.6): `focus`, `blur`, `scroll_into_view`
-//! and `animate` on any named node, `scroll_to` and `scroll_by` on a
+//! The methods of `NodeRef<T>` (U7.6): `focus`, `blur`, `scroll_into_view`,
+//! `animate` and `play` on any named node, `scroll_to` and `scroll_by` on a
 //! `Scroll`, `scroll_to_index` and `scroll_to_key` on a `VirtualList`; each
 //! scroll takes a last `smooth: Bool`, gliding there when true. Each
 //! queues a request the view applies once the transaction
 //! commits and its structure settles, so a node the same action mounts is
-//! reached; the value is `()`, and `animate`'s the `Animation` it starts,
+//! reached; the value is `()`, and `animate`'s and `play`'s the `Animation`
+//! it starts,
 //! whose `cancel` and `finish` queue requests of their own and whose
 //! `is_running` answers at once (U6.3).
 
@@ -68,15 +69,17 @@ impl InferCx<'_> {
         let mut params = match action {
             NodeAction::ScrollTo | NodeAction::ScrollBy => vec![standard(self, "Offset")],
             NodeAction::Animate => vec![standard(self, "Animate"), standard(self, "Transition")],
+            NodeAction::Play => vec![standard(self, "Keyframes")],
             NodeAction::ScrollToIndex => vec![Ty::I64],
             // A key is whatever the list's `for` keys its items by; one of
             // another kind matches no row.
             NodeAction::ScrollToKey => vec![Ty::Unknown],
             _ => Vec::new(),
         };
-        let ret = match action {
-            NodeAction::Animate => Ty::Animation,
-            _ => Ty::Unit,
+        let ret = if action.starts_animation() {
+            Ty::Animation
+        } else {
+            Ty::Unit
         };
         // A scroll may glide.
         let scroll = matches!(
