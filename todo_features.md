@@ -125,12 +125,16 @@ Rules:
 - [ ] `Select` / `DropDown`: anchored list, type-ahead, arrow/Home/End/PageUp/PageDown,
   scroll to the selected row, `listbox` semantics.
 - [ ] `ComboBox`: filter as you type, free text or closed set, `combobox` semantics.
-- [ ] `Menu` / context menu: items, separators, checkable items, shortcuts text,
+- [x] `Menu` / context menu: items, separators, checkable items, shortcuts text,
   submenus with hover intent, keyboard navigation, `on_context_menu` (right click / long
   press).
 - [ ] `Tooltip`: hover delay, grace period between targets, touch long-press, keyboard
   focus show, `tooltip` semantics.
 - [x] `Popover` with arrow (callout).
+- [x] Box shadows on nodes (`BuildCx::shadow`), floating layers cast one.
+- [ ] DSL `shadow` property and its HTML export.
+- [ ] Framework-drawn `MenuBar` for windows without a native one (Left/Right between
+  menus, Alt to focus, mnemonics).
 
 ## W5 — Scrolling
 

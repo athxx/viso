@@ -3620,6 +3620,10 @@ IR/runtime 使用 `PropertyId`、`TokenId`、`NodeKey`、`ComponentTypeId` 等�
 
 **轻量关闭**（light dismiss）：`light_dismiss(layer)` 标记的 layer 在窗口里任一按下落在它、它的锚点、以及压在它上面的显示中 layer 之外时收到 `KeyPayload::Dismiss`（`ev.dismissed()`），由 widget 决定关闭；按在锚点上不算外部，所以锚点自己的点击可以 toggle。`Popup` 默认轻量关闭、Escape 关闭，打开时焦点进入内容，关闭时还给打开前的焦点；`popover()` 是带箭头的气泡预设。
 
+**菜单**（`viso_widgets::{menu, context_menu}`）：`menu()` 挂在锚点上（按下锚点打开），`context_menu()` 包住一块内容，在请求菜单的按下处打开（次键按下、Apple 上 Control 加按下、长按，非 Apple 上菜单键与 Shift+F10，见 `EventCx::context_menu`），锚在内容的一个点上（`EventCx::anchor_at`），点在内容的其他地方按下即关闭。菜单项可带图标、快捷键文字（`Shortcut` 按平台拼写：Apple 为 `⇧⌘S`，其他为 `Ctrl+Shift+S`；菜单只显示，绑定归应用）、勾选或单选标记（单选以分隔线划分的段为一组）、禁用、子菜单。指针：按下锚点即开，拖到某项松开即选（离打开处不足 6 逻辑像素的松开不算）；悬停高亮，在有子菜单的项上停留 200 ms 打开，点击立即打开；指针从父项斜向子菜单途经其他项时，只要仍落在由上一个位置与子菜单近边构成的三角形内，子菜单保持 300 ms（hover intent）。键盘：锚点上 Enter/Space/Down 打开并高亮首项、Up 高亮末项；菜单内 Up/Down 在可用项间循环、Home/End、阅读方向键（RTL 为 Left）打开子菜单并进入、反向键返回、Enter/Space 选择、键入的文字在 1 秒内累计跳到以之开头的项（同一字母重复则逐个轮换）、Escape 关闭一层、Tab 全部关闭；关闭后焦点回到打开前的位置。语义：面板 `menu`，项 `menuitem` / `menuitemcheckbox` / `menuitemradio`（报告 checked），带子菜单的项报告 expanded，分隔线 `separator`，锚点为报告 expanded 的 `button`。只有根面板登记轻量关闭，子菜单是它的子孙，按在其中不算外部。
+
+**唤醒与阴影**：处理器可用 `EventCx::wake_after(node, delay, token)` 让 `token` 在 `delay` 后送到 `node` 的 key 处理器（`ev.woken()`），在那里做处理器能做的一切；它建立在一次性定时器上，帧在触发定时器后投递唤醒，不取消，过期的 token 由处理器忽略。节点可投下阴影（`BuildCx::shadow` / `NodeStore::set_shadow`，`Shadow { color, offset, blur, spread }`，`blur` 取 CSS 的模糊半径）：作为节点自身 drawable 画在盒子之下，用 renderer 的 analytic shadow（闭式高斯，无 offscreen）；冷表按 slot 排序，没有阴影的树只检查一个空表。
+
 **目标分组**（informative；按子系统而不是按类型机械拆分）：
 
 | 分组 | 目标内容 |

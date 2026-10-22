@@ -68,6 +68,11 @@ pub struct Anchoring {
     pub match_anchor: bool,
     /// How far from the box's corners an arrow stays.
     pub arrow_inset: f32,
+    /// How far the box moves along the side after it lines up: toward the
+    /// end of lines on the top and bottom, down on the start and end. A
+    /// submenu moves up by its padding so its first item lines up with the
+    /// item that opened it.
+    pub offset: f32,
 }
 
 impl Default for Anchoring {
@@ -82,6 +87,7 @@ impl Default for Anchoring {
             fit: true,
             match_anchor: false,
             arrow_inset: 0.0,
+            offset: 0.0,
         }
     }
 }
@@ -196,7 +202,7 @@ pub fn place(
         (AnchorAlign::End, false) | (AnchorAlign::Start, true) => {
             anchor_cross + anchor_cross_len - cross_len
         }
-    };
+    } + if flipped { -how.offset } else { how.offset };
     if how.shift {
         let keep = |v: f32, len: f32, start: f32, extent: f32| {
             if len >= extent {
@@ -241,6 +247,9 @@ struct Entry {
     how: Anchoring,
     /// The node moved to where the arrow goes.
     arrow: Option<NodeId>,
+    /// The point of the anchor the layer sits against instead of its box,
+    /// from the anchor's top-left.
+    point: Option<Vec2>,
     placed: Option<AnchorPlacement>,
 }
 
@@ -292,6 +301,7 @@ impl NodeStore {
                     anchor,
                     how,
                     arrow: None,
+                    point: None,
                     placed: None,
                 });
                 self.set_layer(id, true);
@@ -310,6 +320,33 @@ impl NodeStore {
         if let Some(entry) = self.anchors.entries.iter_mut().find(|e| e.layer == id) {
             entry.arrow = arrow;
         }
+    }
+
+    /// Sets anchored layer `id` against the window point `at` of its
+    /// anchor rather than its box — a context menu at the press that asked
+    /// for it — or, `None`, against the box again. The point moves with the
+    /// anchor.
+    pub fn set_anchor_point(&mut self, id: NodeId, at: Option<Vec2>) {
+        let Some(entry) = self.anchors.entries.iter().find(|e| e.layer == id) else {
+            return;
+        };
+        let origin = self.world(entry.anchor);
+        let point = at.map(|p| Vec2::new(p.x - origin.x, p.y - origin.y));
+        let entry = self
+            .anchors
+            .entries
+            .iter_mut()
+            .find(|e| e.layer == id)
+            .expect("found above");
+        if entry.point != point {
+            entry.point = point;
+            self.place_anchored_layer(id);
+        }
+    }
+
+    /// Whether anchored layer `id` sits against a point of its anchor.
+    pub(crate) fn anchored_at_point(&self, id: NodeId) -> bool {
+        self.anchors.entry(id).is_some_and(|e| e.point.is_some())
     }
 
     /// The anchor of layer `id`, and how it sits against it.
@@ -371,7 +408,10 @@ impl NodeStore {
             natural(size.width, measured.w, bounds.w),
             natural(size.height, measured.h, bounds.h),
         );
-        let anchor = self.world(entry.anchor);
+        let mut anchor = self.world(entry.anchor);
+        if let Some(p) = entry.point {
+            anchor = Rect::new(anchor.x + p.x, anchor.y + p.y, 0.0, 0.0);
+        }
         let placed = place(anchor, natural, bounds, &entry.how, self.anchors.rtl);
         // Layout's boxes are the world's before the ancestors' transforms.
         let shift = self.parent(entry.layer).map_or(Vec2::ZERO, |p| {

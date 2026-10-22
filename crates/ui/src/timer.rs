@@ -240,6 +240,25 @@ impl TimerRegistry {
     }
 }
 
+impl NodeStore {
+    /// Queue wake `token` for `node`, which the frame delivers to its key
+    /// handler after it fires the timers ([`EventCx::wake_after`]).
+    ///
+    /// [`EventCx::wake_after`]: crate::EventCx::wake_after
+    pub fn queue_wake(&mut self, node: NodeId, token: u32) {
+        self.wakes.push((node, token));
+    }
+
+    /// Whether wakes wait to be delivered.
+    pub fn wakes_due(&self) -> bool {
+        !self.wakes.is_empty()
+    }
+
+    pub(crate) fn take_wakes(&mut self) -> Vec<(NodeId, u32)> {
+        std::mem::take(&mut self.wakes)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;

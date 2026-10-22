@@ -3266,6 +3266,15 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                                 &ws.bindings,
                             );
                         }
+                        // The wakes whose time came reach their handlers.
+                        if ws.store.wakes_due() {
+                            KeyRouter::route_wakes(
+                                &mut ws.store,
+                                &mut ws.states,
+                                &ws.bindings,
+                                &mut ws.text_edits,
+                            );
+                        }
                     }
                     // Poll the tasks spawned or woken since the last frame and
                     // run each finished one's continuation; what it writes joins

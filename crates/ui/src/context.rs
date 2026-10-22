@@ -356,6 +356,11 @@ pub struct EventCx<'a> {
     link: Option<&'a str>,
     /// This dispatch tells a light-dismiss layer a press landed outside it.
     dismissed: bool,
+    /// The token of the wake this dispatch delivers.
+    woken: Option<u32>,
+    /// What a handler asked of the tree this dispatch beyond the requests
+    /// above: applied by the router after the handler returns.
+    store_requests: Vec<StoreRequest>,
     /// A focus request a handler made this dispatch: `Some(Some(id))` focuses
     /// `id`, `Some(None)` clears focus, `None` = no request. Applied by the
     /// router after the handler returns.
@@ -446,6 +451,29 @@ pub struct EventCx<'a> {
     place: Option<Place<'a>>,
 }
 
+/// Something a handler asks of the tree, applied by the router after it
+/// returns.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum StoreRequest {
+    /// Anchor a layer at a window point of its anchor.
+    AnchorAt(NodeId, Vec2),
+    /// Scroll a node into view.
+    Reveal(NodeId),
+}
+
+impl StoreRequest {
+    /// Apply the request to `store`.
+    pub(crate) fn apply(self, store: &mut NodeStore) {
+        match self {
+            StoreRequest::AnchorAt(layer, at) => store.set_anchor_point(layer, Some(at)),
+            StoreRequest::Reveal(id) => {
+                store.request_scroll(id, crate::component::ScrollRequest::Reveal)
+            }
+        }
+    }
+}
+
 /// The dispatching node and the tree it sits in, lent to an [`EventCx`] so a
 /// control can read its geometry and which of its children the event passed
 /// through.
@@ -487,6 +515,8 @@ impl<'a> EventCx<'a> {
             text_change: None,
             link: None,
             dismissed: false,
+            woken: None,
+            store_requests: Vec::new(),
             tasks: TaskOps::default(),
             services: None,
             place: None,
@@ -523,6 +553,8 @@ impl<'a> EventCx<'a> {
             text_change: None,
             link: None,
             dismissed: false,
+            woken: None,
+            store_requests: Vec::new(),
             tasks: TaskOps::default(),
             services: None,
             place: None,
@@ -558,6 +590,8 @@ impl<'a> EventCx<'a> {
             text_change: None,
             link: None,
             dismissed: false,
+            woken: None,
+            store_requests: Vec::new(),
             tasks: TaskOps::default(),
             services: None,
             place: None,
@@ -593,6 +627,8 @@ impl<'a> EventCx<'a> {
             text_change: None,
             link: None,
             dismissed: false,
+            woken: None,
+            store_requests: Vec::new(),
             tasks: TaskOps::default(),
             services: None,
             place: None,
@@ -631,6 +667,15 @@ impl<'a> EventCx<'a> {
     pub fn __new_dismiss(states: &'a mut StateStore, bindings: &'a BindingTable) -> Self {
         let mut cx = Self::__new(states, bindings);
         cx.dismissed = true;
+        cx
+    }
+
+    /// Assemble the event context that delivers the wake `token` a handler
+    /// asked for: the handler reads it via [`EventCx::woken`].
+    #[doc(hidden)]
+    pub fn __new_wake(states: &'a mut StateStore, bindings: &'a BindingTable, token: u32) -> Self {
+        let mut cx = Self::__new(states, bindings);
+        cx.woken = Some(token);
         cx
     }
 
@@ -776,6 +821,47 @@ impl<'a> EventCx<'a> {
     /// ([`NodeStore::set_light_dismiss`]) that a press landed outside it.
     pub fn dismissed(&self) -> bool {
         self.dismissed
+    }
+
+    /// The token of the wake ([`wake_after`](Self::wake_after)) this dispatch
+    /// delivers, `None` for any other dispatch.
+    pub fn woken(&self) -> Option<u32> {
+        self.woken
+    }
+
+    /// Where this dispatch asks for a context menu, in window coordinates: a
+    /// secondary press (on Apple systems also a Control press), a long press,
+    /// or off Apple systems the menu key or Shift+F10, which ask for it below
+    /// the dispatching node's start. `None` for any other dispatch.
+    pub fn context_menu(&self) -> Option<Vec2> {
+        if let Some(hold) = self.long_press() {
+            return Some(hold.at);
+        }
+        if let Some(p) = self.pointer {
+            return crate::field_input::asks_for_menu(p, viso_runtime::primary_is_logo())
+                .then_some(Vec2::new(p.x, p.y));
+        }
+        let k = self.key.filter(|k| k.pressed && !k.repeat)?;
+        let m = k.modifiers;
+        let asks = !viso_runtime::primary_is_logo()
+            && match k.key {
+                viso_runtime::Key::ContextMenu => true,
+                viso_runtime::Key::F10 => m.shift && !m.control && !m.alt && !m.logo,
+                _ => false,
+            };
+        let r = self.rect()?;
+        asks.then_some(Vec2::new(r.x, r.y + r.h))
+    }
+
+    /// The on-screen rect of node `id` — the one hit testing uses — or `None`
+    /// for a node gone or on the state-only paths.
+    pub fn rect_of(&self, id: NodeId) -> Option<Rect> {
+        let place = self.place?;
+        place
+            .store
+            .arena()
+            .is_live(id)
+            .then(|| place.store.world(id))
     }
 
     /// The node that held focus when this dispatch began, or `None` if nothing
@@ -1040,6 +1126,34 @@ impl<'a> EventCx<'a> {
     ) {
         self.timer_requests
             .push(TimerRequest::new(node, delay, on_fire));
+    }
+
+    /// Deliver `token` to `node`'s key handler (read via
+    /// [`woken`](Self::woken)) `delay` after the frame that arms it, where it
+    /// may do anything a handler does — a menu opens a submenu the pointer
+    /// rests on this way. Nothing cancels a wake: a handler that arms another
+    /// gives it a new token and ignores the stale one.
+    pub fn wake_after(&mut self, node: NodeId, delay: core::time::Duration, token: u32) {
+        self.request_timer(node, delay, move |store| store.queue_wake(node, token));
+    }
+
+    /// Put anchored layer `layer` against the point `at` of its anchor, in
+    /// window coordinates, rather than against the anchor's box: a context
+    /// menu opens at the press that asked for it.
+    pub fn anchor_at(&mut self, layer: NodeId, at: Vec2) {
+        self.store_requests.push(StoreRequest::AnchorAt(layer, at));
+    }
+
+    /// Scroll the viewports around `id` the least that shows it, once the
+    /// next layout has placed it.
+    pub fn scroll_into_view(&mut self, id: NodeId) {
+        self.store_requests.push(StoreRequest::Reveal(id));
+    }
+
+    /// Take what the handler asked of the tree for the router to apply.
+    #[doc(hidden)]
+    pub fn __take_store_requests(&mut self) -> Vec<StoreRequest> {
+        std::mem::take(&mut self.store_requests)
     }
 
     /// Take the timer arms requested this dispatch for the router to enqueue on

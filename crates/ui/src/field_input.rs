@@ -227,7 +227,7 @@ pub fn field_input(cx: &mut EventCx<'_>, multiline: bool) -> Option<FieldEvent> 
 
 /// Whether pointer sample `p` asks for the context menu: a secondary press,
 /// or on Apple systems Control alone with a primary one.
-fn asks_for_menu(p: &crate::input::PointerEvent, apple: bool) -> bool {
+pub(crate) fn asks_for_menu(p: &crate::input::PointerEvent, apple: bool) -> bool {
     let primary = p.buttons.contains(PointerButtons::PRIMARY);
     let m = p.modifiers;
     p.phase == PointerPhase::Down

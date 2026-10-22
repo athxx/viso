@@ -49,6 +49,7 @@ pub mod reactive;
 pub mod scenes;
 pub mod semantics;
 pub mod shader;
+pub mod shadow;
 pub mod state;
 #[cfg(feature = "hot-reload")]
 pub mod state_origin;
@@ -120,7 +121,7 @@ pub use text_style::{
     TextSpan, TextStyle, WidthUse,
 };
 pub use transform::{TransformTable, Turn};
-pub use viso_runtime::{InputKind, Instant};
+pub use viso_runtime::{InputKind, Instant, primary_is_logo};
 // Render primitive data types that already appear in this crate's public API —
 // `Content`'s payload fields (content.rs), `TextRequest::color`, and
 // `BoxStyle::fill` (style.rs) are all typed with them. Re-export the exact set
@@ -144,6 +145,7 @@ pub use semantics::{
     InspectKind, LiveRegion, Role, SemanticState, Semantics, SemanticsNode, SemanticsTree,
 };
 pub use shader::ShaderSlots;
+pub use shadow::Shadow;
 pub use state::{StateId, StateStore, StateValue};
 pub use structure::{StructureCx, StructureHookId, run_structure_hooks};
 pub use style::{BoxStyle, InteractionStyle, StyleId};
@@ -165,7 +167,7 @@ pub use viso_render::asset as resource;
 /// The 3D scene vocabulary a `Content::Scene` node's frame is written in.
 pub use viso_render::scene3d;
 pub use viso_render::{
-    Border, LineJoin, PathCmd, Point, Primitive, Rect, Rgba, Srgb, Stroke, TextureId,
+    Border, LineCap, LineJoin, PathCmd, Point, Primitive, Rect, Rgba, Srgb, Stroke, TextureId,
 };
 pub use viso_text::selection::Selection;
 pub use viso_text::{CaretAffinity, TextOffset, TextPosition};

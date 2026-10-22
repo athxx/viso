@@ -34,9 +34,9 @@ use crate::node::NodeId;
 use crate::style::BoxStyle;
 use crate::transform::TransformTable;
 use viso_render::{
-    AnalyticEllipse, AnalyticRRect, Border, Corners, GlyphInstanceData, GlyphLane, GlyphRunDraw,
-    ImageDraw, LayerClip, Path, PathCmd, Point, Primitive, ProgramTextures, Quad, Rect, Rgba,
-    RoundMask, SamplerDesc, ShaderDraw, TransformSlot,
+    AnalyticEllipse, AnalyticRRect, AnalyticShadow, Border, Corners, GlyphInstanceData, GlyphLane,
+    GlyphRunDraw, ImageDraw, LayerClip, Path, PathCmd, Point, Primitive, ProgramTextures, Quad,
+    Rect, Rgba, RoundMask, SamplerDesc, ShaderDraw, ShadowShape, TransformSlot,
 };
 
 /// The opaque white tint that passes a premultiplied color-atlas texel through
@@ -450,6 +450,9 @@ pub(crate) fn clip_corners(store: &NodeStore, node: NodeId, world: Rect) -> Opti
 fn paint_own(store: &NodeStore, node: NodeId, world: Rect, out: &mut Vec<Primitive>) {
     let style = store.style(node);
     let radius = corner_radius(&style, world);
+    if let Some(shadow) = store.shadow(node) {
+        paint_shadow(shadow, world, radius, out);
+    }
     if style.is_visible() {
         out.push(Primitive::Quad(Quad {
             rect: world,
@@ -496,6 +499,21 @@ fn paint_own(store: &NodeStore, node: NodeId, world: Rect, out: &mut Vec<Primiti
             None => {}
         }
     }
+}
+
+/// The shadow a box of `world` rounded by `radius` casts under itself.
+#[cold]
+fn paint_shadow(shadow: crate::shadow::Shadow, world: Rect, radius: f32, out: &mut Vec<Primitive>) {
+    out.push(Primitive::AnalyticShadow(AnalyticShadow {
+        rect: world,
+        color: shadow.color,
+        radius: Corners::uniform(radius),
+        offset: [shadow.offset.x, shadow.offset.y],
+        sigma: shadow.blur * 0.5,
+        spread: shadow.spread,
+        shape: ShadowShape::RoundedBox,
+        inner: false,
+    }));
 }
 
 /// The focus ring round `rect`, worn by a focused link (round each of its

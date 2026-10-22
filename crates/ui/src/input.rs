@@ -272,7 +272,7 @@ pub enum ImeEvent {
 
 use crate::binding::BindingTable;
 use crate::component::NodeStore;
-use crate::context::EventCx;
+use crate::context::{EventCx, StoreRequest};
 use crate::dirty::DirtyClass;
 use crate::drag::MOUSE_SLOP;
 use crate::hit_test::HitTestTree;
@@ -901,7 +901,7 @@ fn pointer_dispatch(
     let Some(mut handler) = store.take_handler(node) else {
         return Dispatched::default();
     };
-    let (capture, focus, scope, hidden, anims, timers, opens, closes, edits, stop, tasks) = {
+    let (capture, focus, scope, hidden, anims, timers, opens, closes, edits, stop, tasks, asks) = {
         let mut ev = match event {
             Some(event) => EventCx::__new_pointer(states, bindings, event),
             None => EventCx::__new(states, bindings),
@@ -923,6 +923,7 @@ fn pointer_dispatch(
             ev.__take_edits(),
             ev.__stop_requested(),
             ev.__take_tasks(),
+            ev.__take_store_requests(),
         )
     };
     store.restore_handler(node, handler);
@@ -933,7 +934,7 @@ fn pointer_dispatch(
         store.queue_edit(node, intent);
     }
     let loser = apply_pointer_side_effects(
-        store, pointer, capture, focus, scope, hidden, anims, timers, opens, closes,
+        store, pointer, capture, focus, scope, asks, hidden, anims, timers, opens, closes,
     );
     // A handler took the pointer from another node (an ancestor claiming a
     // drag its descendant was tracking): the previous captor loses the contact,
@@ -983,7 +984,7 @@ fn hover_dispatch(
         buttons: PointerButtons::NONE,
         modifiers: sample.modifiers,
     };
-    let (capture, focus, scope, hidden, anims, timers, opens, closes, _stop, tasks) = {
+    let (capture, focus, scope, hidden, anims, timers, opens, closes, _stop, tasks, asks) = {
         let mut ev = EventCx::__new_pointer(states, bindings, &event);
         ev.__set_pointer_id(pointer);
         ev.__set_focused(store.focused());
@@ -1001,6 +1002,7 @@ fn hover_dispatch(
             ev.__take_window_closes(),
             ev.__stop_requested(),
             ev.__take_tasks(),
+            ev.__take_store_requests(),
         )
     };
     store.restore_handler(node, handler);
@@ -1008,7 +1010,7 @@ fn hover_dispatch(
     // A hover handler that grabs the pointer from another node is not an
     // arbitration the router honors: hover never steals a live contact.
     let _ = apply_pointer_side_effects(
-        store, pointer, capture, focus, scope, hidden, anims, timers, opens, closes,
+        store, pointer, capture, focus, scope, asks, hidden, anims, timers, opens, closes,
     );
 }
 
@@ -1074,6 +1076,7 @@ fn apply_pointer_side_effects(
     capture: Option<Option<NodeId>>,
     focus: Option<Option<NodeId>>,
     scope: Option<Option<NodeId>>,
+    asks: Vec<StoreRequest>,
     hidden: Vec<(NodeId, bool)>,
     anims: Vec<crate::animation::TranslateAnim>,
     timers: Vec<crate::timer::TimerRequest>,
@@ -1100,6 +1103,9 @@ fn apply_pointer_side_effects(
     // closing modal): `Some(id)` confines Tab to `id`'s subtree, `None` releases.
     if let Some(scope_req) = scope {
         store.set_focus_scope(scope_req);
+    }
+    for ask in asks {
+        ask.apply(store);
     }
     // Visibility flips from a hide/show control (Tabs panel swap): applied the
     // same deferred way, each marking the node LAYOUT | PAINT dirty.
@@ -1447,6 +1453,32 @@ impl KeyRouter {
         store.arena().is_live(layer)
             && key_handler_dispatch(store, states, bindings, edits, layer, KeyPayload::Dismiss).ran
     }
+
+    /// Deliver every wake whose time came ([`EventCx::wake_after`]) to its
+    /// node's key handler, in the order they fired; a node gone drops its
+    /// wake. Returns whether a handler ran.
+    pub fn route_wakes(
+        store: &mut NodeStore,
+        states: &mut StateStore,
+        bindings: &BindingTable,
+        edits: &mut TextEdits,
+    ) -> bool {
+        let mut ran = false;
+        for (node, token) in store.take_wakes() {
+            if store.arena().is_live(node) {
+                ran |= key_handler_dispatch(
+                    store,
+                    states,
+                    bindings,
+                    edits,
+                    node,
+                    KeyPayload::Wake(token),
+                )
+                .ran;
+            }
+        }
+        ran
+    }
 }
 
 /// Call one node's *key* handler with the key event, moving it out of the store/// Call one node's *key* handler with the key event, moving it out of the store
@@ -1464,7 +1496,7 @@ fn key_dispatch(
     let Some(mut handler) = store.take_key_handler(node) else {
         return Dispatched::default();
     };
-    let (request, stop, recorded, hidden, scope, anims, timers, opens, closes, tasks) = {
+    let (request, stop, recorded, hidden, scope, anims, timers, opens, closes, tasks, asks) = {
         let mut cx = EventCx::__new_key(states, bindings, ev);
         cx.__set_focused(store.focused());
         cx.__set_services(store.__services());
@@ -1481,6 +1513,7 @@ fn key_dispatch(
             cx.__take_window_opens(),
             cx.__take_window_closes(),
             cx.__take_tasks(),
+            cx.__take_store_requests(),
         )
     };
     store.restore_key_handler(node, handler);
@@ -1491,6 +1524,9 @@ fn key_dispatch(
     }
     if let Some(scope_req) = scope {
         store.set_focus_scope(scope_req);
+    }
+    for ask in asks {
+        ask.apply(store);
     }
     for (id, h) in hidden {
         store.set_hidden(id, h);
@@ -1534,6 +1570,7 @@ enum KeyPayload<'e> {
     TextChange(&'e str),
     Link(&'e str),
     Dismiss,
+    Wake(u32),
 }
 
 /// Call one node's key handler with `payload`, then apply everything the
@@ -1549,12 +1586,13 @@ fn key_handler_dispatch(
     let Some(mut handler) = store.take_key_handler(node) else {
         return Dispatched::default();
     };
-    let (request, stop, recorded, hidden, scope, anims, timers, opens, closes, tasks) = {
+    let (request, stop, recorded, hidden, scope, anims, timers, opens, closes, tasks, asks) = {
         let mut cx = match payload {
             KeyPayload::Ime(ev) => EventCx::__new_ime(states, bindings, ev),
             KeyPayload::TextChange(text) => EventCx::__new_text_change(states, bindings, text),
             KeyPayload::Link(target) => EventCx::__new_link(states, bindings, target),
             KeyPayload::Dismiss => EventCx::__new_dismiss(states, bindings),
+            KeyPayload::Wake(token) => EventCx::__new_wake(states, bindings, token),
         };
         cx.__set_focused(store.focused());
         cx.__set_services(store.__services());
@@ -1571,6 +1609,7 @@ fn key_handler_dispatch(
             cx.__take_window_opens(),
             cx.__take_window_closes(),
             cx.__take_tasks(),
+            cx.__take_store_requests(),
         )
     };
     store.restore_key_handler(node, handler);
@@ -1581,6 +1620,9 @@ fn key_handler_dispatch(
     }
     if let Some(scope_req) = scope {
         store.set_focus_scope(scope_req);
+    }
+    for ask in asks {
+        ask.apply(store);
     }
     for (id, h) in hidden {
         store.set_hidden(id, h);

@@ -16,7 +16,8 @@
 //!
 //! A light-dismiss layer — a menu, a list, a popover — goes when a press
 //! lands outside it: outside its own box, the boxes of the layers shown under
-//! it (a submenu's), and its anchor's. The window delivers the dismissal to
+//! it (a submenu's), and its anchor's — unless it sits against a point of its
+//! anchor, as a context menu does. The window delivers the dismissal to
 //! the layer's key handler ([`EventCx::dismissed`]) before it routes the
 //! press, which goes on to whatever it landed on.
 //!
@@ -262,7 +263,9 @@ impl NodeStore {
             .filter(|&layer| {
                 let inside = contains(layer)
                     || self.anchor_of(layer).is_some_and(|(anchor, _)| {
-                        self.arena().is_live(anchor) && contains(anchor)
+                        self.arena().is_live(anchor)
+                            && !self.anchored_at_point(layer)
+                            && contains(anchor)
                     })
                     || self.layers.nodes.iter().any(|&other| {
                         other != layer

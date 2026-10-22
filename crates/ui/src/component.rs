@@ -679,6 +679,10 @@ pub struct NodeStore {
     pub(crate) layers: crate::layer::Layers,
     /// The anchored layers (cold): each one's anchor and where it went.
     pub(crate) anchors: crate::anchored::Anchors,
+    /// The wakes whose time came, waiting to reach their nodes.
+    pub(crate) wakes: Vec<(NodeId, u32)>,
+    /// Cold: the nodes that cast shadows.
+    pub(crate) shadows: crate::shadow::Shadows,
     /// Cold: the nodes whose lengths read the environment (`px`, `sp`, `em`),
     /// re-folded into `layout` when it changes. Empty in a tree of plain `dp`
     /// and `%` lengths.
@@ -804,6 +808,8 @@ impl NodeStore {
         self.links.clear();
         self.layers.clear();
         self.anchors.clear();
+        self.wakes.clear();
+        self.shadows.clear();
         self.focus_scope = None;
         self.draggable_regions.clear();
         self.tasks.clear();
@@ -4460,6 +4466,7 @@ impl NodeStore {
         self.links.forget(i as u32);
         self.layers.forget(i as u32);
         self.anchors.forget(i as u32);
+        self.shadows.forget(i as u32);
         self.clips[i] = false;
         self.overlay[i] = false;
         self.opacity[i] = 1.0;
@@ -6203,6 +6210,12 @@ impl<'a> BuildCx<'a> {
     /// flag at runtime via [`EventCx::set_hidden`].
     pub fn set_hidden(&mut self, handle: Handle, hidden: bool) -> Handle {
         self.store.set_hidden(handle.id, hidden);
+        handle
+    }
+
+    /// Make an already-declared node cast `shadow` under its box.
+    pub fn shadow(&mut self, handle: Handle, shadow: crate::shadow::Shadow) -> Handle {
+        self.store.set_shadow(handle.id, Some(shadow));
         handle
     }
 
