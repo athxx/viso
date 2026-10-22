@@ -673,6 +673,8 @@ pub struct NodeStore {
     pub(crate) clicks: crate::clicks::Clicks,
     /// Cold: the cursors nodes name.
     pub(crate) cursors: crate::cursor::Cursors,
+    /// Cold: the texts that hold links, and what is done to them.
+    pub(crate) links: crate::links::Links,
     /// Cold: the nodes laid out over the whole surface.
     pub(crate) layers: crate::layer::Layers,
     /// Cold: the nodes whose lengths read the environment (`px`, `sp`, `em`),
@@ -797,6 +799,7 @@ impl NodeStore {
         self.fields.clear();
         self.clicks.clear();
         self.cursors.clear();
+        self.links.clear();
         self.layers.clear();
         self.focus_scope = None;
         self.draggable_regions.clear();
@@ -3031,6 +3034,18 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
+        if request.spans.iter().any(|s| s.style.link.is_some()) || !self.links(id).is_empty() {
+            let text = request.text.as_str();
+            let (targets, labels) = request
+                .spans
+                .iter()
+                .filter_map(|s| {
+                    let label = text.get(s.range.clone()).unwrap_or_default();
+                    Some((s.style.link.clone()?, Box::from(label)))
+                })
+                .unzip();
+            self.set_links(id, targets, labels);
+        }
         self.text_request[id.index() as usize] = Some(Box::new(request));
     }
 
@@ -4439,6 +4454,7 @@ impl NodeStore {
         self.fields.forget(i as u32);
         self.clicks.forget(i as u32);
         self.cursors.forget(i as u32);
+        self.links.forget(i as u32);
         self.layers.forget(i as u32);
         self.clips[i] = false;
         self.overlay[i] = false;
@@ -5067,9 +5083,12 @@ impl NodeStore {
             None => Role::Group,
         };
         let label = authored.and_then(|s| s.label.clone());
-        let focused = self.focused == Some(id);
+        let links = self.links(id).len() as u16;
+        // A text of links holds the focus on one of them.
+        let focused = self.focused == Some(id) && links == 0;
         tree.nodes.push(SemanticsNode {
             id,
+            link: None,
             role,
             label,
             hint: authored.and_then(|s| s.hint.clone()),
@@ -5092,6 +5111,38 @@ impl NodeStore {
                 let ci = self.derive_into(c, disabled, tree);
                 tree.nodes[my_index].children.push(ci);
             }
+        }
+        let on = self.focused_link(id);
+        let origin = self.bounds(id);
+        for link in 0..links {
+            let ci = tree.nodes.len();
+            let bounds = self
+                .link_boxes(id, link)
+                .reduce(Rect::union)
+                .map_or(origin, |seen| {
+                    let world = self.world(id);
+                    Rect {
+                        x: origin.x + seen.x - world.x,
+                        y: origin.y + seen.y - world.y,
+                        ..seen
+                    }
+                });
+            tree.nodes.push(SemanticsNode {
+                id,
+                link: Some(link),
+                role: Role::Link,
+                label: self.link_label(id, link).map(str::to_owned),
+                hint: None,
+                value: None,
+                live: crate::semantics::LiveRegion::Off,
+                heading_level: None,
+                focused: on == Some(link),
+                disabled,
+                state: None,
+                bounds,
+                children: Vec::new(),
+            });
+            tree.nodes[my_index].children.push(ci);
         }
         my_index
     }

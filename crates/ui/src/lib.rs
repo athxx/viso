@@ -38,6 +38,7 @@ pub mod layer;
 pub mod layout;
 pub mod layout_value;
 pub mod length;
+pub mod links;
 pub mod long_press;
 pub mod node;
 pub mod notice;
@@ -75,7 +76,7 @@ pub use component::{
     AbsoluteStyle, BuildCx, Component, FlexStyle, FrameRecompute, Handle, LeafStyle, NodeStore,
     Painted, PointerHandler, ScrollRequest, ScrollStyle, StackStyle, VirtualListStyle,
 };
-pub use content::{BrushImage, Content, InkRun, TextInk, TextMark, TextRequest};
+pub use content::{BrushImage, Content, InkRun, LinkBox, TextInk, TextMark, TextRequest};
 pub use context::EventCx;
 pub use dirty::{DirtyCause, DirtyClass, DirtyLists, DirtyMark};
 pub use drag::{DragPhase, DragSample, MOUSE_SLOP};
@@ -130,6 +131,7 @@ pub use cursor::CursorIcon;
 pub use field_input::{FieldEvent, FieldKey, field_input, field_key, number_input};
 pub use field_marks::FieldMarks;
 pub use input_filter::InputFilter;
+pub use links::LinkPointer;
 pub use number_format::{NumberFormat, number_kind};
 pub use reactive::{
     Cleanup, ComputeCx, ComputedId, ComputedStore, DepCursor, EffectCx, EffectId, EffectStore,

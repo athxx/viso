@@ -193,6 +193,9 @@ pub struct SpanStyle {
     /// How far its baseline sits above the line's, a superscript's up and a
     /// subscript's down (negative); `em` and `%` of its own size.
     pub raise: Option<LengthTerms>,
+    /// Where it leads: a pointer's click or Enter on it activates it, which
+    /// the text's handlers hear; the text takes the focus a link at a time.
+    pub link: Option<Arc<str>>,
 }
 
 impl SpanStyle {
@@ -269,6 +272,13 @@ impl SpanStyle {
         self.scale(SCRIPT_SCALE).raise(-0.25)
     }
 
+    /// A link to `target`, underlined.
+    pub fn link(mut self, target: impl Into<Arc<str>>) -> Self {
+        self.link = Some(target.into());
+        self.underline = true;
+        self
+    }
+
     /// Whether it changes the glyphs of the text it covers, so that text
     /// shapes apart from its neighbours.
     pub fn reshapes(&self) -> bool {
@@ -281,7 +291,11 @@ impl SpanStyle {
 
     /// Whether it changes how the text it covers is painted.
     pub fn repaints(&self) -> bool {
-        self.color.is_some() || self.background.is_some() || self.underline || self.strikethrough
+        self.color.is_some()
+            || self.background.is_some()
+            || self.underline
+            || self.strikethrough
+            || self.link.is_some()
     }
 }
 

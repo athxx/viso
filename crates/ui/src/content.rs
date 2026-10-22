@@ -257,6 +257,17 @@ pub struct TextInk {
     pub fills: Vec<TextMark>,
     /// Underlines and strikethroughs, drawn over them.
     pub lines: Vec<TextMark>,
+    /// Where its links draw, a box for each line each is on, in node-local
+    /// space: what a pointer hits and what the focus ring goes round.
+    pub links: Vec<LinkBox>,
+}
+
+/// Where one line of a link draws.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LinkBox {
+    /// Which of the text's links, counted in the order they appear.
+    pub link: u16,
+    pub rect: Rect,
 }
 
 /// A run of a text's outline glyphs in one color.

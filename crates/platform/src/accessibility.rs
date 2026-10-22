@@ -74,6 +74,8 @@ pub enum SemanticsRole {
     Heading,
     List,
     ListItem,
+    /// A stretch of text that leads somewhere.
+    Link,
 }
 
 /// How an assistive technology announces a change to a node's content.

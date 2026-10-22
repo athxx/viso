@@ -24,6 +24,9 @@ pub fn payload(route: EventRoute, cx: &EventCx<'_>) -> Option<Value> {
     if route.is_control() {
         return None;
     }
+    if route == EventRoute::Link {
+        return cx.link().map(|url| record([Value::str(url)]));
+    }
     if route.is_key() {
         let key = cx.key()?;
         return (key.pressed == (route == EventRoute::KeyDown)).then(|| key_event(key));

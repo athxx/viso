@@ -197,8 +197,9 @@ const spanLength = (v) => {
 };
 // A text's pieces, each a `<span>` styled its own way.
 const pieces = (list) => (list || []).map((p) => {
-  const [t, c, bg, w, it, fam, size, raise, under, through] = p.f;
-  const s = document.createElement("span");
+  const [t, c, bg, w, it, fam, size, raise, under, through, link] = p.f;
+  const s = document.createElement(link === null ? "span" : "a");
+  if (link !== null) s.href = text(link);
   s.textContent = text(t);
   if (c !== null) s.style.color = color(c);
   if (bg !== null) s.style.backgroundColor = color(bg);
@@ -547,6 +548,13 @@ const listen = (el, route, capture, control, fire) => {
     el.addEventListener("viso-animationend", (e) => fire(rec([e.detail.target, bool(e.detail.finished)])), capture);
   } else if (route === 18) {
     holdable(el, fire);
+  } else if (route === 19) {
+    el.addEventListener("click", live((e) => {
+      const a = e.target.closest && e.target.closest("a[href]");
+      if (!a || !el.contains(a)) return;
+      e.preventDefault();
+      fire(rec([a.getAttribute("href")]));
+    }), capture);
   } else if (route >= 15) {
     draggable(el);
     el.addEventListener("viso-drag", live((e) => {

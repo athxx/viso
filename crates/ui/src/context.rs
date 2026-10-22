@@ -315,6 +315,8 @@ pub struct EventCx<'a> {
     ime: Option<&'a ImeEvent>,
     /// The edited node's new text, if this dispatch reports a settled edit.
     text_change: Option<&'a str>,
+    /// Where an activated link leads, if this dispatch reports one.
+    link: Option<&'a str>,
     /// A focus request a handler made this dispatch: `Some(Some(id))` focuses
     /// `id`, `Some(None)` clears focus, `None` = no request. Applied by the
     /// router after the handler returns.
@@ -444,6 +446,7 @@ impl<'a> EventCx<'a> {
             focused: None,
             pointer_id: PointerId::MOUSE,
             text_change: None,
+            link: None,
             tasks: TaskOps::default(),
             services: None,
             place: None,
@@ -478,6 +481,7 @@ impl<'a> EventCx<'a> {
             focused: None,
             pointer_id: PointerId::MOUSE,
             text_change: None,
+            link: None,
             tasks: TaskOps::default(),
             services: None,
             place: None,
@@ -511,6 +515,7 @@ impl<'a> EventCx<'a> {
             focused: None,
             pointer_id: PointerId::MOUSE,
             text_change: None,
+            link: None,
             tasks: TaskOps::default(),
             services: None,
             place: None,
@@ -544,6 +549,7 @@ impl<'a> EventCx<'a> {
             focused: None,
             pointer_id: PointerId::MOUSE,
             text_change: None,
+            link: None,
             tasks: TaskOps::default(),
             services: None,
             place: None,
@@ -560,6 +566,19 @@ impl<'a> EventCx<'a> {
     ) -> Self {
         let mut cx = Self::__new(states, bindings);
         cx.text_change = Some(text);
+        cx
+    }
+
+    /// Assemble the event context that reports an activated link: the
+    /// handler reads where it leads via [`EventCx::link`].
+    #[doc(hidden)]
+    pub fn __new_link(
+        states: &'a mut StateStore,
+        bindings: &'a BindingTable,
+        target: &'a str,
+    ) -> Self {
+        let mut cx = Self::__new(states, bindings);
+        cx.link = Some(target);
         cx
     }
 
@@ -692,6 +711,13 @@ impl<'a> EventCx<'a> {
     /// alike — after the edit is applied, so the text is what the user now sees.
     pub fn text_change(&self) -> Option<&'a str> {
         self.text_change
+    }
+
+    /// Where a link leads, when this dispatch reports that a pointer's click
+    /// or Enter activated it: delivered to the key handler of the text that
+    /// holds it, then of each of its ancestors until one stops it.
+    pub fn link(&self) -> Option<&'a str> {
+        self.link
     }
 
     /// The node that held focus when this dispatch began, or `None` if nothing

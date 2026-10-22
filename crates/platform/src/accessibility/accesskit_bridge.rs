@@ -118,6 +118,7 @@ fn role(role: SemanticsRole) -> Role {
         SemanticsRole::SpinButton => Role::SpinButton,
         SemanticsRole::Menu => Role::Menu,
         SemanticsRole::MenuItem => Role::MenuItem,
+        SemanticsRole::Link => Role::Link,
         SemanticsRole::Tab => Role::Tab,
         SemanticsRole::TabList => Role::TabList,
         SemanticsRole::Navigation => Role::Navigation,

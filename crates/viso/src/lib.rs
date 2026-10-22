@@ -48,10 +48,10 @@ use viso_ui::context::UpdateCx;
 use viso_ui::{
     AnimationRegistry, Axis, BindingTable, BuildCx, ChromeContext, ComputedStore, Continuation,
     DirtyCause, DirtyClass, EffectStore, FlexStyle, FrameRecompute, ImeEvent, KeyEvent, KeyRouter,
-    Modifiers, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase, PointerRouter,
-    ScrollEvent, ScrollRouter, SemanticProjector, Size, StateId, StateStore, TextEdits,
-    TextRequest, TimerRegistry, TimerRequest, TranslateAnim, VirtualLists, WindowOpenRequest,
-    focus_next, text_edit, virtual_list,
+    LinkPointer, Modifiers, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase,
+    PointerRouter, ScrollEvent, ScrollRouter, SemanticProjector, Size, StateId, StateStore,
+    TextEdits, TextRequest, TimerRegistry, TimerRequest, TranslateAnim, VirtualLists,
+    WindowOpenRequest, focus_next, text_edit, virtual_list,
 };
 #[cfg(any(feature = "hot-reload", feature = "headless"))]
 use viso_view::profile::Count;
@@ -2715,6 +2715,28 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     ev,
                     &mut ws.route_chain,
                 );
+                let what = match ev.phase {
+                    PointerPhase::Down if ev.buttons.contains(PointerButtons::PRIMARY) => {
+                        Some(LinkPointer::Down)
+                    }
+                    PointerPhase::Down => None,
+                    PointerPhase::Up => Some(LinkPointer::Up),
+                    PointerPhase::Leave => Some(LinkPointer::Left),
+                    _ => Some(LinkPointer::Moved),
+                };
+                if let Some(what) = what
+                    && let Some((host, target)) =
+                        ws.store.link_pointer(root, contact.id, what, ev.x, ev.y)
+                {
+                    KeyRouter::route_link(
+                        &mut ws.store,
+                        &mut ws.states,
+                        &ws.bindings,
+                        &mut ws.text_edits,
+                        host,
+                        &target,
+                    );
+                }
             }
             viso_runtime::InputSample::Key(k) => {
                 // Lower the runtime-tier key sample onto the UI-tier event, then
@@ -2733,6 +2755,18 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // The drawn context menu takes the keys it answers.
                 } else if matches!(k.key, viso_runtime::Key::Tab) && k.pressed {
                     focus_next(&mut ws.store, root, !modifiers.shift);
+                } else if let Some((host, target)) = ws.store.link_key(
+                    matches!(k.key, viso_runtime::Key::Enter) && !k.repeat,
+                    k.pressed,
+                ) {
+                    KeyRouter::route_link(
+                        &mut ws.store,
+                        &mut ws.states,
+                        &ws.bindings,
+                        &mut ws.text_edits,
+                        host,
+                        &target,
+                    );
                 } else if ws.store.keys_reach_clients()
                     && (ws.store.focused().is_none()
                         || k.repeat
@@ -3090,14 +3124,16 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
             }
             viso_platform::AccessRequest::Action { target, action } => (target, action),
         };
-        let Some(node) = ws.access.as_ref().and_then(|access| access.target(target)) else {
+        let Some((node, link)) = ws.access.as_ref().and_then(|access| access.target(target)) else {
             return;
         };
         if !ws.store.arena().is_live(node) {
             return;
         }
         let scale = ws.dpi.max(1.0);
-        if let Some(samples) = accessibility::perform(&mut ws.store, window, node, action, scale) {
+        if let Some(samples) =
+            accessibility::perform(&mut ws.store, window, node, link, action, scale)
+        {
             for sample in samples {
                 self.on_input(sample);
             }

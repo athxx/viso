@@ -50,11 +50,14 @@ pub enum EventRoute {
     /// `long_press` (`LongPressEvent`): a press on the node or under it held
     /// still past the long-press delay and the node won it.
     LongPress = 18,
+    /// `link` (`LinkEvent`): a link of the node's text, or of a text under
+    /// it, was activated by a click or Enter.
+    Link = 19,
 }
 
 impl EventRoute {
     /// Every route, by discriminant.
-    pub const ALL: [EventRoute; 19] = [
+    pub const ALL: [EventRoute; 20] = [
         EventRoute::Click,
         EventRoute::Tap,
         EventRoute::PointerDown,
@@ -74,6 +77,7 @@ impl EventRoute {
         EventRoute::DragMove,
         EventRoute::DragEnd,
         EventRoute::LongPress,
+        EventRoute::Link,
     ];
 
     /// The route of standard DSL event `event`, `None` for an event the runtime
@@ -107,6 +111,7 @@ impl EventRoute {
             EventRoute::DragMove => "drag_move",
             EventRoute::DragEnd => "drag_end",
             EventRoute::LongPress => "long_press",
+            EventRoute::Link => "link",
         }
     }
 
@@ -132,6 +137,7 @@ impl EventRoute {
             EventRoute::DragMove => "DragMove",
             EventRoute::DragEnd => "DragEnd",
             EventRoute::LongPress => "LongPress",
+            EventRoute::Link => "Link",
         }
     }
 
@@ -143,6 +149,12 @@ impl EventRoute {
     /// Whether a key sample delivers it; otherwise a pointer sample does.
     pub fn is_key(self) -> bool {
         matches!(self, EventRoute::KeyDown | EventRoute::KeyUp)
+    }
+
+    /// Whether the node's key handler delivers it: a key sample, or an
+    /// activated link, which reaches a text and its ancestors that way.
+    pub fn by_key_handler(self) -> bool {
+        self.is_key() || self == EventRoute::Link
     }
 
     /// Whether a drag the node wins delivers it.
@@ -191,6 +203,7 @@ pub const PAYLOAD_RECORDS: &[(&str, &[&str])] = &[
     ("ScrollChanged", &["offset", "viewport", "content"]),
     ("VisibleRange", &["first", "last", "count"]),
     ("AnimationEnd", &["target", "finished"]),
+    ("LinkEvent", &["url"]),
 ];
 
 /// The prelude enums a payload names a variant of, with their variants in order.

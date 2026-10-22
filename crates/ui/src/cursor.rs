@@ -5,7 +5,7 @@
 //! the mouse captured — a drag, a selection under way — the cursor stays the
 //! one it showed as the capture began, wherever the mouse goes. A text field names the I-beam and a
 //! number field without the focus the horizontal resize its scrub moves
-//! along, unless they name another; a disabled node shows the default. The
+//! along, unless they name another; a link shows the hand; a disabled node shows the default. The
 //! runtime asks for the cursor once a frame and hands the platform a new one
 //! only when it changes. The table is cold and small: one entry for each node
 //! that names a cursor.
@@ -94,6 +94,9 @@ impl NodeStore {
         };
         if self.inert(start) {
             return CursorIcon::Default;
+        }
+        if self.over_link(start) {
+            return CursorIcon::Pointer;
         }
         let mut node = Some(start);
         while let Some(n) = node {

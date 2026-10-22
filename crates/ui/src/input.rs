@@ -1135,7 +1135,7 @@ fn apply_pointer_side_effects(
 }
 
 /// Advance focus to the next (`forward`) or previous focusable node in tree
-/// pre-order, wrapping. A `None` current focus starts at the first focusable
+/// pre-order, wrapping; a text of links first steps among its links. A `None` current focus starts at the first focusable
 /// node (or the last, going backward). Returns the new focused id, or `None` if
 /// no node is focusable. Marks PAINT + SEMANTICS dirty on both the old and new
 /// focused nodes (the focus-ring repaint and the accessibility re-fold) and
@@ -1157,6 +1157,15 @@ pub fn focus_next(store: &mut NodeStore, root: NodeId, forward: bool) -> Option<
         .unwrap_or(root);
     if store.inert(scope_root) {
         return None;
+    }
+    // A text of links holds the focus a link at a time, leaving it past the
+    // last one (or the first, going back).
+    if let Some(host) = store.focused()
+        && !store.inert(host)
+        && store.step_link(host, forward)
+    {
+        store.set_focus_visible(true);
+        return Some(host);
     }
     // Pre-order walk (first_child, then next_sibling), collecting focusables in
     // the tree's natural order and skipping disabled subtrees.
@@ -1200,6 +1209,7 @@ pub fn focus_next(store: &mut NodeStore, root: NodeId, forward: bool) -> Option<
         }
     };
 
+    store.enter_links(new, forward);
     apply_focus(store, old, Some(new), true);
     Some(new)
 }
@@ -1399,9 +1409,34 @@ impl KeyRouter {
         )
         .ran
     }
+
+    /// Tell a text and then its ancestors that its link to `target` was
+    /// activated, driving each one's key handler with it (read via
+    /// `cx.link()`) until one stops it. Returns whether a handler ran.
+    pub fn route_link(
+        store: &mut NodeStore,
+        states: &mut StateStore,
+        bindings: &BindingTable,
+        edits: &mut TextEdits,
+        node: NodeId,
+        target: &str,
+    ) -> bool {
+        let mut ran = false;
+        let mut at = Some(node).filter(|&n| store.arena().is_live(n));
+        while let Some(n) = at {
+            let d =
+                key_handler_dispatch(store, states, bindings, edits, n, KeyPayload::Link(target));
+            ran |= d.ran;
+            if d.stop {
+                break;
+            }
+            at = store.parent(n);
+        }
+        ran
+    }
 }
 
-/// Call one node's *key* handler with the key event, moving it out of the store
+/// Call one node's *key* handler with the key event, moving it out of the store/// Call one node's *key* handler with the key event, moving it out of the store
 /// for the call so state can be lent to the [`EventCx`] without aliasing, then
 /// putting it back. Applies any focus request the handler made. Returns whether
 /// a handler ran.
@@ -1484,6 +1519,7 @@ fn ime_dispatch(
 enum KeyPayload<'e> {
     Ime(&'e ImeEvent),
     TextChange(&'e str),
+    Link(&'e str),
 }
 
 /// Call one node's key handler with `payload`, then apply everything the
@@ -1503,6 +1539,7 @@ fn key_handler_dispatch(
         let mut cx = match payload {
             KeyPayload::Ime(ev) => EventCx::__new_ime(states, bindings, ev),
             KeyPayload::TextChange(text) => EventCx::__new_text_change(states, bindings, text),
+            KeyPayload::Link(target) => EventCx::__new_link(states, bindings, target),
         };
         cx.__set_focused(store.focused());
         cx.__set_services(store.__services());

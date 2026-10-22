@@ -443,6 +443,38 @@ fn a_text_s_spans_weight_and_slant_export_as_styled_spans() {
     );
 }
 
+const LINKED: &str = r#"
+export component Doc {
+    state followed = 0;
+    view {
+        Column {
+            Text { spans: [Span { text: "see " }, Span { text: "docs", link: Option::Some("/a?b&c") }]; }
+            Text {
+                spans: [Span { text: "site", link: Option::Some("https://viso.dev") }];
+                on link(e) { followed += 1; }
+            }
+        }
+    }
+}
+"#;
+
+#[test]
+fn a_span_s_link_exports_as_an_anchor_and_on_link_hears_its_clicks() {
+    let still = LINKED.replace("on link(e) { followed += 1; }", "");
+    let page = export(&still, true).unwrap();
+    assert!(
+        page.index.contains(r#"<a href="/a?b&amp;c""#),
+        "a constant link is an escaped anchor: {}",
+        page.index
+    );
+    let page = export(LINKED, false).unwrap();
+    let script = page.script.as_deref().unwrap();
+    assert!(
+        script.contains("route === 19"),
+        "a link's clicks reach `on link`"
+    );
+}
+
 const LOGIN: &str = r#"
 
 export component Login {

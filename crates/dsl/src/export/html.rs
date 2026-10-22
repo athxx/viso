@@ -2019,10 +2019,12 @@ fn spans_markup(pieces: &Value) -> Option<String> {
             raise,
             underline,
             strikethrough,
+            link,
         ] = &span.fields[..]
         else {
             continue;
         };
+        let link = link.as_str();
         let mut style: Vec<String> = Vec::new();
         if let Some(c) = color.as_int() {
             style.push(format!("color: {}", css::color(c as u32)));
@@ -2056,15 +2058,28 @@ fn spans_markup(pieces: &Value) -> Option<String> {
             style.push(format!("text-decoration-line: {}", lines.join(" ")));
         }
         let text = text.as_str().unwrap_or_default();
-        if style.is_empty() {
+        if style.is_empty() && link.is_none() {
             escape_text(text, &mut out);
-        } else {
-            out.push_str("<span style=\"");
-            escape_attr(&style.join("; "), &mut out);
-            out.push_str("\">");
-            escape_text(text, &mut out);
-            out.push_str("</span>");
+            continue;
         }
+        let tag = if link.is_some() { "a" } else { "span" };
+        out.push('<');
+        out.push_str(tag);
+        if let Some(href) = link {
+            out.push_str(" href=\"");
+            escape_attr(href, &mut out);
+            out.push('"');
+        }
+        if !style.is_empty() {
+            out.push_str(" style=\"");
+            escape_attr(&style.join("; "), &mut out);
+            out.push('"');
+        }
+        out.push('>');
+        escape_text(text, &mut out);
+        out.push_str("</");
+        out.push_str(tag);
+        out.push('>');
     }
     Some(out)
 }
@@ -2251,6 +2266,8 @@ fn aria_role(role: Role, tag: &str, widget: &str) -> Option<&'static str> {
         (Role::SpinButton, ..) => "spinbutton",
         (Role::Menu, ..) => "menu",
         (Role::MenuItem, ..) => "menuitem",
+        (Role::Link, "a", _) => return None,
+        (Role::Link, ..) => "link",
         (Role::Tab, ..) => "tab",
         (Role::TabList, ..) => "tablist",
         (Role::Navigation, ..) => "navigation",

@@ -95,6 +95,7 @@ pub(crate) fn spans(value: &Value) -> Option<(String, Vec<TextSpan>)> {
             raise,
             underline,
             strikethrough,
+            link,
         ] = &span.fields[..]
         else {
             continue;
@@ -109,9 +110,10 @@ pub(crate) fn spans(value: &Value) -> Option<(String, Vec<TextSpan>)> {
             slant: slant(slant_of),
             color: paint(color),
             background: paint(background),
-            underline: underline.as_int().is_some_and(|v| v != 0),
+            underline: underline.as_int().is_some_and(|v| v != 0) || link.as_str().is_some(),
             strikethrough: strikethrough.as_int().is_some_and(|v| v != 0),
             raise: length(raise),
+            link: link.as_str().map(Arc::from),
         };
         if style != SpanStyle::default() && start < text.len() {
             spans.push(TextSpan {

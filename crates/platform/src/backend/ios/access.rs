@@ -22,8 +22,9 @@ use objc2_ui_kit::{
     UIAccessibilityElement, UIAccessibilityIsSwitchControlRunning,
     UIAccessibilityIsVoiceOverRunning, UIAccessibilityLayoutChangedNotification,
     UIAccessibilityPostNotification, UIAccessibilityTraitAdjustable, UIAccessibilityTraitButton,
-    UIAccessibilityTraitImage, UIAccessibilityTraitNotEnabled, UIAccessibilityTraitSelected,
-    UIAccessibilityTraitStaticText, UIAccessibilityTraits, UIResponder,
+    UIAccessibilityTraitImage, UIAccessibilityTraitLink, UIAccessibilityTraitNotEnabled,
+    UIAccessibilityTraitSelected, UIAccessibilityTraitStaticText, UIAccessibilityTraits,
+    UIResponder,
 };
 
 use super::view::VisoView;
@@ -155,12 +156,13 @@ fn send(request: AccessRequest) {
 /// The UIKit traits a node's element announces.
 fn traits(node: &AccessNode) -> UIAccessibilityTraits {
     // SAFETY: the trait constants are immutable UIKit values.
-    let (button, adjustable, text, image, selected, not_enabled) = unsafe {
+    let (button, adjustable, text, image, link, selected, not_enabled) = unsafe {
         (
             UIAccessibilityTraitButton,
             UIAccessibilityTraitAdjustable,
             UIAccessibilityTraitStaticText,
             UIAccessibilityTraitImage,
+            UIAccessibilityTraitLink,
             UIAccessibilityTraitSelected,
             UIAccessibilityTraitNotEnabled,
         )
@@ -170,6 +172,7 @@ fn traits(node: &AccessNode) -> UIAccessibilityTraits {
         ElementKind::Adjustable => adjustable,
         ElementKind::StaticText => text,
         ElementKind::Image => image,
+        ElementKind::Link => link,
         ElementKind::Plain => 0,
     };
     if shows_selected(node) {

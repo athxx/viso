@@ -4678,7 +4678,8 @@ export record AdaptiveColumns { mode: AutoRepeat = AutoRepeat::fill; min: MixedL
 
 - `FontWeight { thin; light; regular; medium; semibold; bold; heavy; }`（字重 100、300、400、500、600、700、900）；`FontFamily { system_ui; serif; monospace; named(String); }`（`named` 为 App 字体中的族名，无此族时取主 UI 字体）；`TextOverflow { clip; ellipsis; }`；`TextAlign { start; center; end; }`（`start`/`end` 随段落方向解析，`justify` 推迟）；
 - `FontStyle { normal; italic; }`：`italic` 取该族的斜体字体（有则用之）；
-- **富文本**：`spans` 只属于 `Text`，非空时各片段的 `text` 依次拼接成节点的文本（取代 `text`，也是无障碍名称），每个片段按自身样式绘制。`record Span { text: String; color: Option<Color> = None; background: Option<Color> = None; font_weight: Option<FontWeight> = None; font_style: Option<FontStyle> = None; font_family: Option<FontFamily> = None; font_size: Option<MixedLength> = None; raise: Option<MixedLength> = None; underline: Bool = false; strikethrough: Bool = false; }`：`None` 的字段沿用节点自身的值，`color` 为 `None` 的片段随节点 `color`（及其过渡）；`font_size` 的 `em`/`%` 相对节点字号，`raise` 把片段基线抬高（负值降低），其 `em`/`%` 相对片段自身字号；`background` 填在片段字体的 ascent 到 descent 之间，`underline`/`strikethrough` 的位置与粗细取字体度量。只改颜色、背景与线条的片段不打断整形（字距与连字保持），改字体、字号、字重、倾斜或抬升的片段单独整形；一行的高度取该行各片段行盒的最大值（Text Runtime §12.12.2）。片段读取的 State 变化时整段重新声明。HTML 与 Solid 导出把片段写成带内联样式的 `<span>`，变化的片段由页面脚本重建；
+- **富文本**：`spans` 只属于 `Text`，非空时各片段的 `text` 依次拼接成节点的文本（取代 `text`，也是无障碍名称），每个片段按自身样式绘制。`record Span { text: String; color: Option<Color> = None; background: Option<Color> = None; font_weight: Option<FontWeight> = None; font_style: Option<FontStyle> = None; font_family: Option<FontFamily> = None; font_size: Option<MixedLength> = None; raise: Option<MixedLength> = None; underline: Bool = false; strikethrough: Bool = false; link: Option<String> = None; }`：`None` 的字段沿用节点自身的值，`color` 为 `None` 的片段随节点 `color`（及其过渡）；`font_size` 的 `em`/`%` 相对节点字号，`raise` 把片段基线抬高（负值降低），其 `em`/`%` 相对片段自身字号；`background` 填在片段字体的 ascent 到 descent 之间，`underline`/`strikethrough` 的位置与粗细取字体度量。只改颜色、背景与线条的片段不打断整形（字距与连字保持），改字体、字号、字重、倾斜或抬升的片段单独整形；一行的高度取该行各片段行盒的最大值（Text Runtime §12.12.2）。片段读取的 State 变化时整段重新声明。HTML 与 Solid 导出把片段写成带内联样式的 `<span>`，变化的片段由页面脚本重建；
+- **链接**：带 `link` 的片段是链接，总有下划线。鼠标在其上显示手形，在同一链接上按下并抬起即激活它，`Text` 及其祖先收到 `link(LinkEvent)`；有链接的 `Text` 可获得焦点，Tab/Shift+Tab 先在其链接间逐个移动再离开，Enter 激活焦点所在的链接，键盘移动焦点时该链接外画焦点环。辅助技术把每个链接读作 `Role::link` 的子节点（名称为链接文字，Click 激活、Focus 聚焦它）。HTML 导出为 `<a href>`，有 `on link` 时点击由页面脚本拦截并投递，没有时按浏览器默认跟随；原生运行时不替作者打开链接（打开由 `on link` 调用相应服务）；
 
 ```viso
 Text {
@@ -4831,6 +4832,7 @@ component Shake {
 | `scroll`                                       | `ScrollEvent`    | Bubble     | 按轴传递 | 滚轮与触控板（ADR 0007）                         |
 | `key_down` / `key_up`                          | `KeyEvent`       | Bubble     | 沿焦点链 | 焦点节点                                         |
 | `focus` / `blur`                               | `FocusEvent`     | Target     | 否       | 焦点系统                                         |
+| `link`                                         | `LinkEvent`      | Bubble     | 是       | 文本的链接被点击或在焦点上按 Enter、辅助技术 Click |
 
 Payload 基线字段：
 
@@ -4841,6 +4843,7 @@ Payload 基线字段：
 - `TapEvent`、`LongPressEvent`、`HoverEvent`：`position: Point`、`pointer_kind: PointerKind`；
 - `ScrollEvent`：`delta: Offset`、`modifiers: Modifiers`；
 - `FocusEvent`：`focus_visible: Bool`（焦点由键盘移动时为 `true`）；
+- `LinkEvent`：`url: String`（被激活的 `Span` 的 `link`），先投递给持有该链接的 `Text`，再沿其祖先冒泡；
 - `Point { x: Dp; y: Dp; }`；`PointerButtons { primary; secondary; middle: Bool }`；`Key` 为 `char(Char); enter; escape; tab; backspace; delete; space; arrow_up; arrow_down; arrow_left; arrow_right; home; end; page_up; page_down; function(U8); unidentified;`。
 
 以上类型、U6.3 的 `Animate`/`AnimationEnd` 与 U7.5 的 Widget 事件 Payload 由隐式 Prelude 导出（§23）。
@@ -4963,7 +4966,7 @@ Named Node `n` 在同一 Component 的 Action 与 Handler 中以 `n: NodeRef<T>`
 | `semantics.hidden`        | `Bool`           | `false`                         |
 | `semantics.heading_level` | `Option<U8>`     | `Option::None`                  |
 
-- `Role { group; button; check_box; slider; radio; label; text_field; tab; tab_list; navigation; dialog; status; region; tree; tree_item; heading; image; list; list_item; secure_field; spin_button; menu; menu_item; }`；
+- `Role { group; button; check_box; slider; radio; label; text_field; tab; tab_list; navigation; dialog; status; region; tree; tree_item; heading; image; list; list_item; secure_field; spin_button; menu; menu_item; link; }`；
 - `LiveRegion { off; polite; assertive; }`；
 - 默认角色：`Button` → `button`；`Toggle`、`CheckBox` → `check_box`；`Slider` → `slider`；`TextInput` → `text_field`；`NumberField` → `spin_button`；`Tabs` → `tab_list`，每页为 `tab`；`RadioGroup` 每项为 `radio`；`Text` → `label`；`Modal`、`Sheet` → `dialog`；`Toast` → `status`（隐含 `polite`）；`NavigationStack` → `navigation`；`VirtualList` → `list`；`GameViewport` → `image`；容器 → `group`。
 

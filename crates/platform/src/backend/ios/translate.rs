@@ -288,6 +288,7 @@ pub(crate) enum ElementKind {
     Adjustable,
     StaticText,
     Image,
+    Link,
     Plain,
 }
 
@@ -317,6 +318,7 @@ pub(crate) fn element_kind(node: &AccessNode) -> ElementKind {
         R::Slider | R::SpinButton => ElementKind::Adjustable,
         R::Label | R::Status => ElementKind::StaticText,
         R::Image => ElementKind::Image,
+        R::Link => ElementKind::Link,
         _ if node.actions.contains(AccessAction::Click) => ElementKind::Button,
         _ => ElementKind::Plain,
     }

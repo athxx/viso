@@ -109,7 +109,7 @@ Rules:
 - [x] DSL `Text { spans }` (a `Span` record), its HTML/script export, and `font_style`.
 
 
-- [ ] Links: hit-testing span ranges, hover cursor, `on_link`, keyboard focus and the
+- [x] Links: hit-testing span ranges, hover cursor, `on_link`, keyboard focus and the
   `link` role.
 - [ ] Selectable text (`selectable: true`) on `Text`/`RichText`: drag/double/triple
   select, copy, focus ring, semantics.

@@ -367,6 +367,7 @@ pub(crate) fn aria_role(role: SemanticsRole) -> Option<&'static str> {
         R::Heading => "heading",
         R::List => "list",
         R::ListItem => "listitem",
+        R::Link => "link",
         R::Window | R::Container | R::Label => return None,
     })
 }

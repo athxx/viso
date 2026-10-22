@@ -276,6 +276,7 @@ const STANDARD_EVENTS: &[WidgetEvent] = &[
     WidgetEvent::new("focus", "FocusEvent"),
     WidgetEvent::new("blur", "FocusEvent"),
     WidgetEvent::new("animation_end", "AnimationEnd"),
+    WidgetEvent::routed("link", "LinkEvent"),
 ];
 
 const TOGGLE_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("changed", "ToggleChanged")];

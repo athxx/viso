@@ -34,8 +34,9 @@ fn republish() -> DirtyClass {
 pub(crate) struct AccessBridge {
     /// Every node last sent, by id: the base the next delta is taken against.
     published: HashMap<SemanticsId, AccessNode>,
-    /// The retained node behind each published id, for routing actions back.
-    targets: HashMap<SemanticsId, NodeId>,
+    /// The retained node behind each published id, and which of its links
+    /// the id is, for routing actions back.
+    targets: HashMap<SemanticsId, Target>,
     /// The root and focus last sent; `None` until the first publication.
     root: Option<SemanticsId>,
     focus: Option<SemanticsId>,
@@ -108,21 +109,27 @@ impl AccessBridge {
         })
     }
 
-    /// The retained node last published as `target`.
-    pub(crate) fn target(&self, target: SemanticsId) -> Option<NodeId> {
+    /// The retained node last published as `target`, and which of its links
+    /// it is.
+    pub(crate) fn target(&self, target: SemanticsId) -> Option<Target> {
         self.targets.get(&target).copied()
     }
 }
 
-/// The input that performs `action` on `node` in `window`, after moving focus
-/// where the action needs it. `Focus` needs no input; `Click` is a primary
-/// press and release at the node's center; `Increment`/`Decrement` are the
+/// A published node's retained node, and which of its links it is.
+pub(crate) type Target = (NodeId, Option<u16>);
+
+/// The input that performs `action` on `node` (or its link `link`) in
+/// `window`, after moving focus where the action needs it. `Focus` needs no
+/// input; `Click` is a primary press and release at the node's center (the
+/// link's first line's); `Increment`/`Decrement` are the
 /// arrow keys a focused slider steps on, Up and Down for a spin button. Positions are physical pixels, as the
 /// scheduler delivers them. An inert node takes none.
 pub(crate) fn perform(
     store: &mut NodeStore,
     window: WindowId,
     node: NodeId,
+    link: Option<u16>,
     action: AccessAction,
     scale: f32,
 ) -> Option<[InputSample; 2]> {
@@ -132,10 +139,15 @@ pub(crate) fn perform(
     let key = match action {
         AccessAction::Focus => {
             viso_ui::focus_node(store, node);
+            if let Some(link) = link {
+                store.focus_link(node, link);
+            }
             return None;
         }
         AccessAction::Click => {
-            let rect = store.seen(node);
+            let rect = link
+                .and_then(|link| store.link_boxes(node, link).next())
+                .unwrap_or_else(|| store.seen(node));
             let x = (rect.x + rect.w * 0.5) * scale;
             let y = (rect.y + rect.h * 0.5) * scale;
             let pointer = |phase, buttons: PointerButtons, pressure| {
@@ -187,6 +199,26 @@ fn semantics_id(id: NodeId) -> SemanticsId {
     SemanticsId(u64::from(id.index()) | u64::from(id.generation()) << 32)
 }
 
+/// The published id of link `link` of a retained node: the top bit set, the
+/// link in the 15 bits below it, then the generation's low 16 bits and the
+/// index. A node's generation never reaches the top bit.
+fn link_id(id: NodeId, link: u16) -> SemanticsId {
+    SemanticsId(
+        1 << 63
+            | u64::from(link & 0x7fff) << 48
+            | u64::from(id.generation() & 0xffff) << 32
+            | u64::from(id.index()),
+    )
+}
+
+/// The published id of `row`.
+fn row_id(row: &viso_ui::SemanticsNode) -> SemanticsId {
+    match row.link {
+        Some(link) => link_id(row.id, link),
+        None => semantics_id(row.id),
+    }
+}
+
 /// The published role for a Viso one. An unnamed group is a plain layout
 /// container, which platforms leave out of what they announce.
 fn semantics_role(role: Role, named: bool) -> SemanticsRole {
@@ -204,6 +236,7 @@ fn semantics_role(role: Role, named: bool) -> SemanticsRole {
         Role::SpinButton => SemanticsRole::SpinButton,
         Role::Menu => SemanticsRole::Menu,
         Role::MenuItem => SemanticsRole::MenuItem,
+        Role::Link => SemanticsRole::Link,
         Role::Tab => SemanticsRole::Tab,
         Role::TabList => SemanticsRole::TabList,
         Role::Navigation => SemanticsRole::Navigation,
@@ -251,7 +284,7 @@ struct Walk<'a> {
     tree: &'a mut SemanticsTree,
     scale: f32,
     nodes: HashMap<SemanticsId, AccessNode>,
-    targets: HashMap<SemanticsId, NodeId>,
+    targets: HashMap<SemanticsId, Target>,
     focus: SemanticsId,
 }
 
@@ -261,7 +294,8 @@ impl Walk<'_> {
         let rows = std::mem::take(&mut self.tree.nodes[index].children);
         let mut children = Vec::with_capacity(rows.len());
         for &child in &rows {
-            if !self.store.hidden(self.tree.nodes[child].id) {
+            let row = &self.tree.nodes[child];
+            if row.link.is_some() || !self.store.hidden(row.id) {
                 children.push(self.visit(child));
             }
         }
@@ -271,7 +305,7 @@ impl Walk<'_> {
         if row.focused {
             self.focus = id;
         }
-        self.targets.insert(id, row.id);
+        self.targets.insert(id, (row.id, row.link));
         self.nodes.insert(id, node);
         id
     }
@@ -285,14 +319,20 @@ impl Walk<'_> {
         } else {
             semantics_role(row.role, label.is_some())
         };
-        let rect = store.world(row.id);
+        let rect = match row.link {
+            Some(link) => store
+                .link_boxes(row.id, link)
+                .reduce(viso_ui::Rect::union)
+                .unwrap_or_else(|| store.world(row.id)),
+            None => store.world(row.id),
+        };
         // A disabled node offers no action.
         let mut actions = AccessActions::NONE;
         let live = !row.disabled;
         if live && store.focusable(row.id) {
             actions = actions.with(AccessAction::Focus);
         }
-        if live && store.has_handler(row.id) {
+        if live && (row.link.is_some() || store.has_handler(row.id)) {
             actions = actions.with(AccessAction::Click);
         }
         if live && matches!(row.role, Role::Slider | Role::SpinButton) {
@@ -301,7 +341,7 @@ impl Walk<'_> {
                 .with(AccessAction::Decrement);
         }
         AccessNode {
-            id: semantics_id(row.id),
+            id: row_id(row),
             role,
             label,
             description: row.hint.take(),
@@ -381,6 +421,66 @@ mod tests {
     }
 
     #[test]
+    fn each_link_of_a_text_is_its_own_node_that_a_click_follows() {
+        let (mut store, root, [text, _]) = scene();
+        store.set_text_request(
+            text,
+            viso_ui::TextRequest {
+                text: "a go".into(),
+                font_size: viso_ui::FontSize::Fixed(14.0),
+                color: viso_ui::Rgba::TRANSPARENT,
+                soft_wrap: false,
+                locale: None,
+                style: Default::default(),
+                spans: vec![viso_ui::TextSpan {
+                    range: 2..4,
+                    style: viso_ui::SpanStyle::default().link("/go"),
+                }],
+            },
+        );
+        store.set_content_payload(
+            text,
+            viso_ui::Content::Text {
+                ink: Some(Box::new(viso_ui::TextInk {
+                    links: vec![viso_ui::LinkBox {
+                        link: 0,
+                        rect: Rect::new(10.0, 0.0, 20.0, 20.0),
+                    }],
+                    ..Default::default()
+                })),
+                glyphs: Vec::new(),
+                atlas: viso_render::TextureId::new(1),
+                color_glyphs: Vec::new(),
+                color_atlas: None,
+                color: viso_ui::Rgba::TRANSPARENT,
+                natural: viso_ui::Vec2 { x: 40.0, y: 20.0 },
+                baseline: 15.0,
+                shaped_at_width: None,
+                width_use: viso_ui::WidthUse::Ignored,
+                min_content: 40.0,
+                max_content: 40.0,
+            },
+        );
+        let mut bridge = AccessBridge::new();
+        let update = bridge.update(&store, root, 2.0).expect("first update");
+        let id = link_id(text, 0);
+        assert_ne!(id, semantics_id(text));
+        assert!(node(&update, text).children.contains(&id));
+        let link = update.nodes.iter().find(|n| n.id == id).expect("the link");
+        assert_eq!(link.role, SemanticsRole::Link);
+        assert_eq!(link.label.as_deref(), Some("go"));
+        assert_eq!(link.bounds.x, 20.0, "in physical pixels");
+        assert!(link.actions.contains(AccessAction::Click));
+        assert_eq!(bridge.target(id), Some((text, Some(0))));
+        let window = WindowId(1);
+        let click = perform(&mut store, window, text, Some(0), AccessAction::Click, 2.0);
+        let Some([InputSample::Pointer(down), _]) = click else {
+            panic!("a click");
+        };
+        assert_eq!((down.x, down.y), (40.0, 20.0), "at the link's centre");
+    }
+
+    #[test]
     fn first_update_is_the_whole_tree_in_physical_pixels() {
         let (store, root, [button, slider]) = scene();
         let mut bridge = AccessBridge::new();
@@ -413,7 +513,7 @@ mod tests {
         assert_eq!(volume.state.numeric_value, Some(0.5));
         assert_eq!(volume.state.numeric_range, Some((0.0, 1.0)));
         assert!(volume.actions.contains(AccessAction::Increment));
-        assert_eq!(bridge.target(semantics_id(slider)), Some(slider));
+        assert_eq!(bridge.target(semantics_id(slider)), Some((slider, None)));
     }
 
     #[test]
@@ -534,7 +634,8 @@ mod tests {
     fn actions_lower_to_ordinary_input() {
         let (mut store, _, [button, slider]) = scene();
         let window = WindowId(0);
-        let click = perform(&mut store, window, button, AccessAction::Click, 2.0).expect("click");
+        let click =
+            perform(&mut store, window, button, None, AccessAction::Click, 2.0).expect("click");
         let [InputSample::Pointer(down), InputSample::Pointer(up)] = click else {
             panic!("a click is a press and a release");
         };
@@ -544,7 +645,14 @@ mod tests {
         );
         assert_eq!((down.x, down.y), (40.0, 20.0), "center, physical pixels");
 
-        let step = perform(&mut store, window, slider, AccessAction::Increment, 1.0);
+        let step = perform(
+            &mut store,
+            window,
+            slider,
+            None,
+            AccessAction::Increment,
+            1.0,
+        );
         assert!(matches!(
             step,
             Some([
@@ -562,7 +670,7 @@ mod tests {
             "the step lands on the slider"
         );
 
-        assert!(perform(&mut store, window, button, AccessAction::Focus, 1.0).is_none());
+        assert!(perform(&mut store, window, button, None, AccessAction::Focus, 1.0).is_none());
         assert_eq!(store.focused(), Some(button));
     }
 }

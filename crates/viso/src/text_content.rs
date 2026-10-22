@@ -40,8 +40,8 @@ use viso_text::{
 };
 use viso_ui::{
     Content, EditGeometry, EditLayout, FontFamily, FontSlant, FontWeight, InkRun, LengthTerms,
-    NodeId, TextAlign, TextInk, TextMark, TextOverflow, TextRequest, TextSizing, TextStyle, Vec2,
-    WidthUse,
+    LinkBox, NodeId, TextAlign, TextInk, TextMark, TextOverflow, TextRequest, TextSizing,
+    TextStyle, Vec2, WidthUse,
 };
 
 use crate::system_fonts::{LiveFontRegistry, PlatformColorRaster, PlatformFontProvider};
@@ -241,6 +241,8 @@ struct PreparedLayout {
     fills: Vec<TextMark>,
     /// The underlines and strikethroughs its spans draw over them.
     strokes: Vec<TextMark>,
+    /// Where its links draw, a box for each line of each.
+    links: Vec<LinkBox>,
 }
 
 /// A glyph in no painted span.
@@ -255,6 +257,8 @@ struct PaintSpan {
     background: Option<Rgba>,
     underline: bool,
     strikethrough: bool,
+    /// Which of the text's links it is, counted in the order they appear.
+    link: Option<u16>,
 }
 
 /// The span of `spans` the text at `at` falls in, [`NO_PAINT`] for none.
@@ -1115,6 +1119,7 @@ impl TextShaper {
         let mut offsets = Vec::with_capacity(lines.len());
         let mut rows = Vec::with_capacity(lines.len() + 1);
         let (mut fills, mut strokes) = (Vec::new(), Vec::new());
+        let mut links: Vec<LinkBox> = Vec::new();
         let mut first_baseline = None;
         let mut y = 0.0f32;
         for line in lines {
@@ -1184,6 +1189,20 @@ impl TextShaper {
                     let x = offset + a.min(b) * size;
                     let w = (a - b).abs() * size;
                     let metrics = &look.metrics;
+                    if let Some(link) = span.link {
+                        let rect = Rect::new(x, y, w, above + below);
+                        match links.last_mut() {
+                            Some(last)
+                                if last.link == link
+                                    && last.rect.y == y
+                                    && x <= last.rect.max_x() + 0.5
+                                    && last.rect.x <= x + w + 0.5 =>
+                            {
+                                last.rect = last.rect.union(rect);
+                            }
+                            _ => links.push(LinkBox { link, rect }),
+                        }
+                    }
                     if let Some(color) = span.background {
                         let top = ground - metrics.ascender_em * look.size;
                         fills.push(TextMark {
@@ -1229,6 +1248,7 @@ impl TextShaper {
             offsets,
             fills,
             strokes,
+            links,
         }
     }
 
@@ -1256,12 +1276,18 @@ impl TextShaper {
         let mut styles: Vec<FaceStyle> = Vec::new();
         let mut runs: Vec<StyleRun> = Vec::new();
         let mut paint = Vec::new();
+        let mut links = 0u16;
         for span in &request.spans {
+            let look = &span.style;
+            // Counted as the store counts them, so each names its target.
+            let link = look.link.is_some().then(|| {
+                links += 1;
+                links - 1
+            });
             let (start, end) = (floor(span.range.start), floor(span.range.end));
             if start >= end {
                 continue;
             }
-            let look = &span.style;
             if look.reshapes() {
                 let weight = look.weight.unwrap_or(request.style.weight);
                 let slant = look.slant.unwrap_or(request.style.slant);
@@ -1332,6 +1358,7 @@ impl TextShaper {
                     background: look.background,
                     underline: look.underline,
                     strikethrough: look.strikethrough,
+                    link,
                 });
             }
         }
@@ -1583,6 +1610,7 @@ impl TextShaper {
                 runs: inks,
                 fills: layout.fills.clone(),
                 lines: layout.strokes.clone(),
+                links: layout.links.clone(),
             })
         });
         let atlas = self

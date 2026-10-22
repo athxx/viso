@@ -72,8 +72,13 @@ pub fn attach_node(
         );
     }
     if let Some(keys) = keys {
+        // Links take the focus as their text holds them, not as heard.
+        let focus = keys.iter().any(|r| r.event != EventRoute::Link)
+            || control.as_ref().is_some_and(|c| c.kind.responds());
         store.set_key_handler(id, Box::new(handler(host, keys, control, scope)));
-        store.set_focusable(id, true);
+        if focus {
+            store.set_focusable(id, true);
+        }
     }
     store.set_draggable(id, drags(routes));
     store.set_long_pressable(id, holds(routes));
@@ -102,7 +107,7 @@ fn split(routes: &[Route], control: Option<&Control>) -> (Option<Vec<Route>>, Op
             .copied()
             .filter(|route| {
                 !route.event.is_notice()
-                    && (route.event.is_control() || route.event.is_key() == key)
+                    && (route.event.is_control() || route.event.by_key_handler() == key)
             })
             .collect();
         (control.is_some() || !picked.is_empty()).then_some(picked)

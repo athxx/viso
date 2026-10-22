@@ -1288,7 +1288,8 @@ cluster map
 - **行盒**：每个整形样式按自身字体度量和字号算出基线上下的伸展（未指定行高：ascent 在上、行距余量在下；指定行高 `h`：ascent + descent 在 `h` 中居中），抬升使其整体上移；一行的高度取该行所有片段伸展的最大值，因此行高逐行不同。放置结果记录每行顶边（行数 + 1 项），Caret、选区、IME、点击定位与 PageUp/PageDown 都读这组行顶边（`EditLayout::rows`）。
 - **光栅**：每个字形的 Raster bucket 是其样式字号 × 设备密度，主线程与 Worker 用同一公式（`text_worker::bucket`）。
 - **绘制**：`Content::Text::ink` 携带按字形下标划分的颜色 Run（未指定颜色的 Run 使用文本颜色，并跟随文本颜色过渡）、画在字形下方的背景（片段字体的 ascent 到 descent）以及画在字形上方的下划线与删除线（位置与粗细取字体 `post`/`OS/2` 度量，缺省时取常见值，粗细至少一个物理像素）。每个颜色 Run 是一个 Glyph Run Primitive，由渲染器照常合批。
-- **Widget**：`rich_text([(piece, SpanStyle)…])` 构造一个由若干片段拼成的 `Label`，`Label::span(range, style)` 给已有文本加片段；`SpanStyle` 提供 `bold`/`italic`/`monospace`/`scale`/`color`/`background`/`underline`/`strikethrough`/`raise`/`superscript`/`subscript` 构造方法。
+- **Widget**：`rich_text([(piece, SpanStyle)…])` 构造一个由若干片段拼成的 `Label`，`Label::span(range, style)` 给已有文本加片段；`SpanStyle` 提供 `bold`/`italic`/`monospace`/`scale`/`color`/`background`/`underline`/`strikethrough`/`raise`/`superscript`/`subscript`/`link` 构造方法。
+- **链接**：`SpanStyle::link` 让片段成为链接（`link(target)` 同时加下划线）。放置时每个链接在其所在的每一行得到一个盒（片段在该 Run 内的横向范围 × 整行行高，同行相邻的合并），记在 `TextInk::links`（`LinkBox { link, rect }`，节点局部坐标）；指针命中、手形光标、焦点环与无障碍边界都读这组盒，所以链接在它画出的地方被点中。`viso_ui::links` 是冷侧表（每个持有链接的节点一项）：鼠标悬停时 `cursor_over` 返回 `Pointer`；同一指针在同一链接上按下并抬起即激活，取消或离开窗口不激活；持有链接的节点可获得焦点，`focus_next` 先在其链接间步进再离开，进入时落在第一个（反向时最后一个）链接；Enter 激活焦点所在的链接；焦点由键盘移动时绘制 2 px 圆角焦点环。激活经 `KeyRouter::route_link` 先投递给该节点的 key handler（`EventCx::link()`），再沿祖先冒泡直到被停止；`Label::on_link` 在此处理并停止冒泡。语义树为每个链接追加一个 `Role::Link` 子行（`SemanticsNode::link`），名称为链接文字，Click 降为在其首行盒中心的点击，Focus 把宿主的焦点放到该链接。
 
 ## 12.13 双向 Caret：同一 logical offset 允许两个视觉位置
 

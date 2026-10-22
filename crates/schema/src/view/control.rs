@@ -303,6 +303,7 @@ pub fn source_role(variant: &str) -> Option<Role> {
         "spin_button" => Role::SpinButton,
         "menu" => Role::Menu,
         "menu_item" => Role::MenuItem,
+        "link" => Role::Link,
         _ => return None,
     })
 }
@@ -313,7 +314,7 @@ pub fn source_name(role: Role) -> &'static str {
 }
 
 /// Every variant [`source_role`] takes, in the order of [`Role::ALL`].
-pub const SOURCE_ROLES: [&str; 23] = [
+pub const SOURCE_ROLES: [&str; 24] = [
     "group",
     "button",
     "check_box",
@@ -337,6 +338,7 @@ pub const SOURCE_ROLES: [&str; 23] = [
     "spin_button",
     "menu",
     "menu_item",
+    "link",
 ];
 
 /// A layout property a node's value sets as the view's values change: one

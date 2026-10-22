@@ -89,6 +89,9 @@ impl Semantics {
 pub struct SemanticsNode {
     /// The node this row derives from.
     pub id: NodeId,
+    /// Which of the node's links the row is, counted in the order they
+    /// appear in its text; `None` for the node itself.
+    pub link: Option<u16>,
     /// The resolved role (authored, else a default from interactivity).
     pub role: Role,
     /// The resolved accessible label, if any.
@@ -305,6 +308,7 @@ mod tests {
             nodes: vec![
                 SemanticsNode {
                     id: root_id,
+                    link: None,
                     role: Role::Group,
                     label: None,
                     hint: None,
@@ -319,6 +323,7 @@ mod tests {
                 },
                 SemanticsNode {
                     id: child_id,
+                    link: None,
                     role: Role::Button,
                     label: Some("Add".to_string()),
                     hint: None,

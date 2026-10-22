@@ -125,11 +125,14 @@ pub enum Role {
     Menu,
     /// One command of a [`Menu`](Role::Menu) (WAI-ARIA `role=menuitem`).
     MenuItem,
+    /// A link: a stretch of text that leads somewhere, activated to follow
+    /// it (WAI-ARIA `role=link`).
+    Link,
 }
 
 impl Role {
     /// Every role, in declaration order.
-    pub const ALL: [Role; 23] = [
+    pub const ALL: [Role; 24] = [
         Role::Group,
         Role::Button,
         Role::CheckBox,
@@ -153,6 +156,7 @@ impl Role {
         Role::SpinButton,
         Role::Menu,
         Role::MenuItem,
+        Role::Link,
     ];
 
     /// The role whose [`label`](Self::label) is `label`.
@@ -188,6 +192,7 @@ impl Role {
             Role::SpinButton => "spinbutton",
             Role::Menu => "menu",
             Role::MenuItem => "menuitem",
+            Role::Link => "link",
         }
     }
 }

@@ -15,12 +15,14 @@
 //! [`Length::Fit`] on both axes, so the leaf measures to the shaped run's
 //! natural size once the facade has shaped it.
 
+use std::cell::RefCell;
 use std::num::NonZeroU32;
+use std::rc::Rc;
 
 use viso_ui::{
-    BoxStyle, BuildCx, Component, FontFamily, FontSize, FontSlant, FontWeight, LeafStyle, Length,
-    LengthTerms, Rgba, Role, Semantics, Size, SpanStyle, TextAlign, TextOverflow, TextRequest,
-    TextSpan, TextStyle,
+    BoxStyle, BuildCx, Component, EventCx, FontFamily, FontSize, FontSlant, FontWeight, LeafStyle,
+    Length, LengthTerms, Rgba, Role, Semantics, Size, SpanStyle, TextAlign, TextOverflow,
+    TextRequest, TextSpan, TextStyle,
 };
 
 /// The default label font size in logical pixels.
@@ -102,7 +104,12 @@ pub struct Label {
     locale: Option<String>,
     /// The stretches of the text drawn their own way, in order.
     spans: Vec<TextSpan>,
+    /// What runs when one of its links is activated.
+    on_link: Option<LinkHandler>,
 }
+
+/// What a label runs with where an activated link leads.
+type LinkHandler = Rc<RefCell<dyn FnMut(&mut EventCx<'_>, &str)>>;
 
 /// Construct a [`Label`] with the given text and default style. Chain
 /// [`Label::font_size`], [`Label::color`], and [`Label::size`] to adjust it.
@@ -113,6 +120,7 @@ pub fn label(text: impl Into<String>) -> Label {
         text_style: TextStyle::default(),
         locale: None,
         spans: Vec::new(),
+        on_link: None,
     }
 }
 
@@ -180,6 +188,14 @@ impl Label {
     /// Draw the text italic.
     pub fn italic(mut self) -> Self {
         self.text_style.slant = FontSlant::Italic;
+        self
+    }
+
+    /// Run `handler` with where a link leads when a click or Enter activates
+    /// one of the label's links ([`SpanStyle::link`]). A label without one
+    /// lets the activation reach its ancestors.
+    pub fn on_link(mut self, handler: impl FnMut(&mut EventCx<'_>, &str) + 'static) -> Self {
+        self.on_link = Some(Rc::new(RefCell::new(handler)));
         self
     }
 
@@ -260,6 +276,15 @@ impl Component for Label {
             handle,
             Semantics::role(Role::Label).with_label(self.text.clone()),
         );
+        if let Some(on_link) = &self.on_link {
+            let on_link = Rc::clone(on_link);
+            cx.on_key(handle, move |ev| {
+                if let Some(target) = ev.link() {
+                    ev.stop_propagation();
+                    (on_link.borrow_mut())(ev, target);
+                }
+            });
+        }
     }
 }
 
