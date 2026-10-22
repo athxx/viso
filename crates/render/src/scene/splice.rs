@@ -270,7 +270,7 @@ impl Scene {
         let k = Leaf::Image as usize;
         if removed[k] > 0 || added[k] > 0 {
             let new = new.iter().filter_map(|n| match n.draw {
-                Draw::Instance(Instance::Image(i, texture, sampler)) => Some((i, texture, sampler)),
+                Draw::Instance(Instance::Image(i, source)) => Some((i, source)),
                 _ => None,
             });
             self.images.splice(at[k] as usize, removed[k] as usize, new);

@@ -63,6 +63,40 @@ pub struct ImageEntry {
     /// How the texture is sampled (resource plane). The renderer interns this to
     /// a shared `SamplerId`; it is not GPU instance data.
     pub sampler: viso_gpu::SamplerDesc,
+    /// The revision of what the texture holds: a texture the renderer redraws
+    /// in place (a 3D scene's target) changes it, so the entry's pixels count
+    /// as changed though it samples the same texture. `0` for a texture that
+    /// never changes.
+    pub revision: u64,
+}
+
+/// What an image entry samples: its texture, how, and the revision of the
+/// texture's content.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ImageSource {
+    pub texture: viso_gpu::TextureId,
+    pub sampler: viso_gpu::SamplerDesc,
+    pub revision: u64,
+}
+
+impl ImageEntry {
+    fn new(instance: ImageInstance, source: ImageSource) -> ImageEntry {
+        ImageEntry {
+            instance,
+            texture: source.texture,
+            sampler: source.sampler,
+            revision: source.revision,
+        }
+    }
+
+    /// What it samples.
+    pub fn source(&self) -> ImageSource {
+        ImageSource {
+            texture: self.texture,
+            sampler: self.sampler,
+            revision: self.revision,
+        }
+    }
 }
 
 /// A retained glyph run: a contiguous range of glyph instances in the run
@@ -966,18 +1000,13 @@ impl ImageStore {
     pub fn ingest(
         &mut self,
         instance: ImageInstance,
-        texture: viso_gpu::TextureId,
-        sampler: viso_gpu::SamplerDesc,
+        source: ImageSource,
     ) -> (ImageId, DirtyPlanes) {
         let index = self.cursor;
         let dirty = if index < self.entries.len() {
-            self.set(ImageId::new(index as u32), instance, texture, sampler)
+            self.set(ImageId::new(index as u32), instance, source)
         } else {
-            self.entries.push(ImageEntry {
-                instance,
-                texture,
-                sampler,
-            });
+            self.entries.push(ImageEntry::new(instance, source));
             DirtyPlanes::APPENDED
         };
         self.cursor += 1;
@@ -990,8 +1019,7 @@ impl ImageStore {
         &mut self,
         id: ImageId,
         instance: ImageInstance,
-        texture: viso_gpu::TextureId,
-        sampler: viso_gpu::SamplerDesc,
+        source: ImageSource,
     ) -> DirtyPlanes {
         let entry = &mut self.entries[id.index() as usize];
         let pi = &entry.instance;
@@ -1004,15 +1032,11 @@ impl ImageStore {
                 || pi.mask_size.moved(&instance.mask_size)
                 || pi.mask_radius.moved(&instance.mask_radius),
             paint: pi.color.moved(&instance.color),
-            resource: entry.texture != texture || entry.sampler != sampler,
+            resource: entry.source() != source,
             appended: false,
         };
         if dirty.any() {
-            *entry = ImageEntry {
-                instance,
-                texture,
-                sampler,
-            };
+            *entry = ImageEntry::new(instance, source);
         }
         dirty
     }
@@ -1028,15 +1052,11 @@ impl ImageStore {
         &mut self,
         at: usize,
         removed: usize,
-        new: impl IntoIterator<Item = (ImageInstance, viso_gpu::TextureId, viso_gpu::SamplerDesc)>,
+        new: impl IntoIterator<Item = (ImageInstance, ImageSource)>,
     ) {
         let new = new
             .into_iter()
-            .map(|(instance, texture, sampler)| ImageEntry {
-                instance,
-                texture,
-                sampler,
-            });
+            .map(|(instance, source)| ImageEntry::new(instance, source));
         self.entries.splice(at..at + removed, new);
     }
 

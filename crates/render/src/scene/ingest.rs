@@ -27,17 +27,17 @@
 //! fields moved, but the decision that a moved `rect_pos` is a transform-plane
 //! event and a moved `color` a paint-plane event lives here.
 
-use viso_gpu::{SamplerDesc, TextureId};
+use viso_gpu::TextureId;
 
 use crate::primitive::{
     AnalyticCapsuleInstance, AnalyticEllipseInstance, AnalyticLineInstance, AnalyticRRectInstance,
-    GlyphInstance, GradientInstance, ImageInstance, MeshVertex, Path, QuadInstance, Rect,
-    ShaderDraw, ShadowInstance,
+    GlyphInstance, GradientInstance, ImageDraw, ImageInstance, MeshVertex, Path, QuadInstance,
+    Rect, ShaderDraw, ShadowInstance,
 };
 
 use super::bounds::Bounds;
 use super::ids::{ClipChainId, PrimitiveId};
-use super::store::{Brush, ClipChainDescriptor, ClipMaskKey, DirtyPlanes, StoreRef};
+use super::store::{Brush, ClipChainDescriptor, ClipMaskKey, DirtyPlanes, ImageSource, StoreRef};
 use super::{EmitContext, Scene};
 use crate::primitive::Primitive;
 
@@ -51,7 +51,7 @@ pub(crate) enum Instance {
     AnalyticCapsule(AnalyticCapsuleInstance),
     AnalyticLine(AnalyticLineInstance),
     AnalyticShadow(ShadowInstance),
-    Image(ImageInstance, TextureId, SamplerDesc),
+    Image(ImageInstance, ImageSource),
 }
 
 impl Instance {
@@ -148,19 +148,33 @@ impl Instance {
                     Bounds::from_world(world, 0.0, filter),
                 )
             }
-            Primitive::Image(image) => {
-                let mut inst = image.to_instance();
-                if folded {
-                    inst.color[3] *= fold;
-                }
-                let world = rect(inst.rect_pos, inst.rect_size);
-                (
-                    Instance::Image(inst, image.texture, image.sampler),
-                    Bounds::from_world(world, 0.0, 0.0),
-                )
-            }
+            Primitive::Image(image) => Instance::image(image, 0, fold),
             _ => return None,
         })
+    }
+
+    /// `image`'s instance with `fold` applied and its bounds, its texture's
+    /// content at `revision`.
+    pub(crate) fn image(image: &ImageDraw, revision: u64, fold: f32) -> (Instance, Bounds) {
+        let mut inst = image.to_instance();
+        if fold < 1.0 {
+            inst.color[3] *= fold;
+        }
+        let world = Rect {
+            x: inst.rect_pos[0],
+            y: inst.rect_pos[1],
+            w: inst.rect_size[0],
+            h: inst.rect_size[1],
+        };
+        let source = ImageSource {
+            texture: image.texture,
+            sampler: image.sampler,
+            revision,
+        };
+        (
+            Instance::Image(inst, source),
+            Bounds::from_world(world, 0.0, 0.0),
+        )
     }
 }
 
@@ -299,9 +313,7 @@ impl Scene {
             Instance::AnalyticCapsule(i) => self.ingest_analytic_capsule(i, context, bounds),
             Instance::AnalyticLine(i) => self.ingest_analytic_line(i, context, bounds),
             Instance::AnalyticShadow(i) => self.ingest_analytic_shadow(i, context, bounds),
-            Instance::Image(i, texture, sampler) => {
-                self.ingest_image(i, texture, sampler, context, bounds)
-            }
+            Instance::Image(i, source) => self.ingest_image(i, source, context, bounds),
         }
     }
 
@@ -380,12 +392,11 @@ impl Scene {
     pub fn ingest_image(
         &mut self,
         instance: ImageInstance,
-        texture: TextureId,
-        sampler: SamplerDesc,
+        source: ImageSource,
         context: EmitContext,
         bounds: Bounds,
     ) -> PrimitiveId {
-        let (slot, dirty) = self.images.ingest(instance, texture, sampler);
+        let (slot, dirty) = self.images.ingest(instance, source);
         self.apply_planes(dirty);
         self.record(StoreRef::Image(slot), context, bounds)
     }

@@ -83,10 +83,9 @@ impl Scene {
                 .gradients
                 .get(id)
                 .map(|e| hashed(pod(key, &e.instance), &e.texture)),
-            StoreRef::Image(id) => self
-                .images
-                .get(id)
-                .map(|e| hashed(hashed(pod(key, &e.instance), &e.texture), &e.sampler)),
+            StoreRef::Image(id) => self.images.get(id).map(|e| {
+                hashed(hashed(pod(key, &e.instance), &e.texture), &e.sampler).word(e.revision)
+            }),
             StoreRef::Shader(id) => self.shaders.get(id).map(|e| {
                 let key = key.f32s(&[e.rect_pos[0], e.rect_pos[1], e.rect_size[0], e.rect_size[1]]);
                 hashed(hashed(key.bytes(&e.params), &e.program), &e.textures)

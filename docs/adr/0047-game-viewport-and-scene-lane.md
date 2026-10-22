@@ -44,38 +44,80 @@
 ## Decision
 
 - **A scene is retained render data, not UI nodes.**
-  - `viso-render` gains a `Scene` resource with these parts:
-    - a camera (view and projection matrices, with reversed-Z
-      perspective);
-    - one directional light and a hemispheric ambient;
-    - a clear color;
-    - a list of instance batches, one per mesh, each a dense array of
-      `SceneInstance { model: [Vec4; 3], color: Vec4 }` (a 3×4 affine plus
-      linear RGBA, 64 bytes, `GpuPod`).
-  - The scene owns its instance buffer, rewritten in place once a frame
-    through the frame's upload ring. It owns its color and depth targets.
-    Nothing is created per frame.
-  - Meshes live in a `SceneMeshStore` keyed by a compact `SceneMeshId`:
-    - a vertex buffer of position, normal and uv (`f32×8`, 32 bytes);
-    - a `u16`/`u32` index buffer;
-    - local bounds.
-  - Built-in meshes are generated once, procedurally, on first use. A
-    composite Kit model is a fixed list of parts (mesh, local transform,
-    tint), expanded into the batches at fill time. A user mesh is uploaded
-    the same way; glTF import is a later asset-pipeline decision.
-- **The scene lane is a render-graph pass.**
-  - `PassWork::Scene { scene }` renders a scene into its color target, with
-    a `Depth32Float` attachment that is cleared and not stored. It runs
-    before the 2D pass that composites it. Its work:
-    1. one instanced draw per non-empty batch, opaque;
-    2. particles, as camera-facing billboards, blended, depth-tested
-       without depth writes;
-    3. debug shapes, as lines.
-  - The 2D pass composites the color target through the existing
-    `Content::Image` path. Clip, transform, opacity and z-order are the 2D
-    scene's as for any image.
-  - Culling: per-instance sphere against the frustum during fill, on the
-    CPU. A batch whose instances are all culled issues no draw.
+  - `viso-render::scene3d` holds it. Its owner fills a `SceneFrame`:
+    - a `Camera` (eye, target, up, near, far, and a perspective field of
+      view or an orthographic height). The renderer projects it with
+      reversed depth at the aspect of the rect it draws into. An infinite
+      `far` (the default) never clips the distance;
+    - `Lighting`: one directional light, a hemispheric ambient (sky and
+      ground) and exponential fog, linear RGB;
+    - a background, straight linear RGBA; a transparent one shows the 2D
+      content behind;
+    - one batch of `SceneInstance { rows: [[f32; 4]; 3], color }` per mesh
+      (a 3×4 affine plus color, 64 bytes), pushed by `MeshId`.
+  - The owner hands the frame over with
+    `Renderer::swap_scene(slot: SceneSlot, &mut SceneFrame)`. The renderer
+    takes the frame and gives back the slot's previous one, which the owner
+    clears and refills. A steady scene neither copies nor allocates.
+  - A slot owns its persistent targets: a `Bgra8Unorm` color texture (what
+    an image texture holds) and a `Depth32Float` depth. It also owns its
+    instance buffer, grown in powers of two, and its uniform buffer and
+    bind group. Nothing is created per frame. `Renderer::release_scene`
+    frees them.
+  - Meshes are keyed by a compact `MeshId`. Each holds a vertex buffer of
+    `SceneVertex` (32 bytes), a `u16` index buffer (`u32` past 65 536
+    vertices) and local bounds.
+    - The built-in `Shape`s are cube, sphere, capsule, cylinder, cone, wedge
+      and plane. Each spans `[-1, 1]` on every axis, so an instance's linear
+      part is the half extents of the body it draws. Each is generated
+      procedurally and uploaded the first time it is drawn.
+    - Curved surfaces share their vertices around a ring, so they are smooth
+      shaded. Hard edges split their vertices.
+    - A capsule's caps are half-ellipsoids half the height of its straight
+      part, so a standing character's caps stay round under its half
+      extents.
+    - `Renderer::create_scene_mesh` uploads a user mesh, and
+      `release_scene_mesh` frees it.
+  - A composite Kit model is a fixed list of parts (shape, local transform,
+    tint). The view expands it into the batches at fill time. glTF import
+    is a later asset-pipeline decision.
+- **A scene draw places the scene in the 2D stream.**
+  - `Primitive::Scene(SceneDraw { rect, slot, revision, mask })` draws the
+    slot's scene into `rect`.
+  - When the renderer takes the draw (on upload, patch or splice), it sizes
+    the slot's targets to the rect's device pixels:
+    - targets are rounded up to 64-pixel steps, so a resize within a step
+      reuses them;
+    - the projection is fitted to the used top-left part of the targets;
+    - each draw is scissored to that part.
+  - It refills the slot only when its frame revision or its pixel size
+    changed since the last fill. A refill:
+    1. culls each instance's world box (its mesh bounds placed by the
+       affine) against the six frustum planes;
+    2. packs the survivors contiguously into the instance buffer;
+    3. writes the uniform block;
+    4. records one instanced draw per mesh with survivors. A batch culled
+       whole issues no draw.
+  - The draw lowers to an image of the color target (uv = used / allocated
+    size). Clip, transform, opacity, mask and z-order are the 2D scene's, as
+    for any image.
+  - An image entry carries the revision of its texture's content, and the
+    revision is part of its damage key. A new scene revision therefore
+    redraws exactly the rect, and a patch rewrites the one entry in place.
+- **Scene passes run ahead of the frame's 2D passes.**
+  - Each slot refilled since it last rendered contributes one pass, before
+    the render graph's passes. The pass:
+    - targets the slot's color texture, cleared to the background;
+    - has a `Depth32Float` attachment cleared to 0 and discarded;
+    - draws its instanced draws with `DepthState::REVERSED` and back-face
+      culling.
+  - It is not a graph node. Its targets are persistent, not transient, and
+    it renders only on change: a paused game with a still camera renders no
+    scene pass and redraws no 2D pixel.
+  - Particles (camera-facing billboards, blended, depth-tested without
+    depth writes) and debug shapes join the same pass.
+  - `Renderer::take_scene_stats` counts passes, draws, drawn and culled
+    instances, and target allocations (§61).
   - The 1.0 lighting is Lambert diffuse plus Blinn-Phong specular and
     hemispheric ambient, linear color, sRGB target. Shadows, SSAO, PBR, sky,
     skinning and MSAA are later decisions. Each is a pass or pipeline added
@@ -197,7 +239,7 @@
   1. RHI depth and the instanced mesh draw on all backends, with a test
      that draws two overlapping quads and reads back their depth order;
   2. the shader scene profile;
-  3. `Scene`, `SceneMeshStore` and `PassWork::Scene`;
+  3. `SceneFrame`, the meshes, scene slots and their passes;
   4. `Content::Scene` and `GameViewport` with the session fill;
   5. particles, debug shapes and focus.
   Each step lands with its tests.

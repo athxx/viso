@@ -400,6 +400,67 @@ impl Mat4 {
         }
     }
 
+    /// A right-handed perspective projection with reversed depth: the near
+    /// plane maps to clip depth 1 and the far plane to 0, in the `[0, 1]` clip
+    /// depth range. An infinite `far` puts the far plane at infinity, where
+    /// depth reaches 0 only in the limit. Reversed depth spreads `f32`
+    /// precision evenly over distance, so it suits a `Greater` depth test.
+    pub fn perspective_reversed(fov_y: f32, aspect: f32, near: f32, far: f32) -> Mat4 {
+        let f = 1.0 / tan(fov_y * 0.5);
+        let (zz, zw) = if far.is_finite() {
+            (near / (far - near), near * far / (far - near))
+        } else {
+            (0.0, near)
+        };
+        Mat4 {
+            v: [
+                f / aspect,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                f,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                zz,
+                -1.0,
+                0.0,
+                0.0,
+                zw,
+                0.0,
+            ],
+        }
+    }
+
+    /// A right-handed orthographic projection with reversed depth, viewing
+    /// `width × height` units around the view axis: the near plane maps to
+    /// clip depth 1 and the far plane to 0.
+    pub fn ortho_reversed(width: f32, height: f32, near: f32, far: f32) -> Mat4 {
+        let span = 1.0 / (far - near);
+        Mat4 {
+            v: [
+                2.0 / width,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                2.0 / height,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                span,
+                0.0,
+                0.0,
+                0.0,
+                far * span,
+                1.0,
+            ],
+        }
+    }
+
     /// A right-handed view matrix looking from `eye` toward `center`, with the
     /// given `up` direction.
     pub fn look_at(eye: Vec3, center: Vec3, up: Vec3) -> Mat4 {
@@ -436,6 +497,26 @@ mod tests {
 
     fn approx_mat4(a: &Mat4, b: &Mat4, eps: f32) -> bool {
         a.v.iter().zip(b.v.iter()).all(|(x, y)| (x - y).abs() < eps)
+    }
+
+    #[test]
+    fn reversed_projections_put_near_at_one_and_far_at_zero() {
+        let depth = |m: &Mat4, z: f32| {
+            let c = m.transform_vec4(vec4(0.0, 0.0, z, 1.0));
+            c.z / c.w
+        };
+        let p = Mat4::perspective_reversed(1.0, 1.5, 0.5, 100.0);
+        assert!((depth(&p, -0.5) - 1.0).abs() < 1e-6);
+        assert!(depth(&p, -100.0).abs() < 1e-6);
+        assert!(depth(&p, -2.0) > depth(&p, -3.0), "nearer is greater");
+        let inf = Mat4::perspective_reversed(1.0, 1.5, 0.5, f32::INFINITY);
+        assert!((depth(&inf, -0.5) - 1.0).abs() < 1e-6);
+        assert!(depth(&inf, -1e6) > 0.0 && depth(&inf, -1e6) < 1e-5);
+        let o = Mat4::ortho_reversed(4.0, 2.0, 1.0, 11.0);
+        assert!((depth(&o, -1.0) - 1.0).abs() < 1e-6);
+        assert!(depth(&o, -11.0).abs() < 1e-6);
+        let edge = o.transform_vec4(vec4(2.0, 1.0, -5.0, 1.0));
+        assert!((edge.x - 1.0).abs() < 1e-6 && (edge.y - 1.0).abs() < 1e-6);
     }
 
     #[test]

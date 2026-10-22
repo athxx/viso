@@ -521,7 +521,14 @@ fn encode_pass(
         }
     }
     if let Some(depth) = pass.depth {
-        scene_pass(res, &mut px, width, height, fmt, depth, &list[range]);
+        scene_pass(
+            res,
+            &mut px,
+            (width, height, fmt),
+            load,
+            depth,
+            &list[range],
+        );
         *target_pixels(res, surfaces, pass.target).0 = px;
         return;
     }
@@ -567,13 +574,13 @@ fn encode_pass(
 }
 
 /// Draws the scene commands of a pass with depth attachment `depth` into
-/// `px`, cleared or loaded already.
+/// `px`, a `width × height` target of `fmt`, cleared first when `load` (what
+/// is left of the pass's load) still clears.
 fn scene_pass(
     res: &mut Resources,
     px: &mut Pixels,
-    width: u32,
-    height: u32,
-    fmt: Fmt,
+    (width, height, fmt): (u32, u32, Fmt),
+    load: LoadOp,
     depth: DepthAttachment,
     commands: &[DrawCommand],
 ) {
@@ -587,11 +594,15 @@ fn scene_pass(
     };
     values.fill(depth.clear);
     macro_rules! run {
-        ($p:expr) => {
+        ($p:expr) => {{
+            let p = $p;
+            if let LoadOp::Clear(c) = load {
+                p.fill(Px::store(c, fmt));
+            }
             scene::run(
                 res,
                 &mut scene::SceneTarget {
-                    px: $p,
+                    px: p,
                     depth: &mut values,
                     width,
                     height,
@@ -599,7 +610,7 @@ fn scene_pass(
                 },
                 commands,
             )
-        };
+        }};
     }
     match px {
         Pixels::Unorm8(p) => run!(p),

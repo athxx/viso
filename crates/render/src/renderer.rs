@@ -56,6 +56,7 @@ use crate::transient::{TargetDesc, TargetId, TargetUsage, TransientTargets};
 use viso_math::InterpolationSpace;
 
 mod patch;
+mod scene3d;
 mod splice;
 pub use splice::Splice;
 mod present;
@@ -1390,6 +1391,8 @@ pub struct Renderer {
     /// then [`Renderer::lower_from_scene`] derives every instance buffer and
     /// [`Segment`] from the scene (§8).
     scene: Scene,
+    /// The 3D scenes the stream draws, their meshes and targets (ADR 0047).
+    scene3d: crate::scene3d::SceneLane,
     /// Bytes uploaded to instance/vertex/index buffers by the last
     /// [`upload`](Self::upload), summed over every pool (each pool's
     /// [`last_upload_bytes`](InstancePool::last_upload_bytes)). Zero on a steady
@@ -2069,6 +2072,7 @@ impl Renderer {
             commands: Vec::with_capacity(8),
             passes: Vec::with_capacity(4),
             scene: Scene::new(),
+            scene3d: crate::scene3d::SceneLane::default(),
             gpu_upload_bytes: 0,
             uploaded_ranges: 0,
             surface_size: [Rect::INFINITE.w, Rect::INFINITE.h],
@@ -2668,6 +2672,14 @@ impl Renderer {
                     // into its retained store, bumping only the moved planes, and
                     // record its paint-order slot.
                     if let Some((inst, bounds)) = Instance::of(prim, fold) {
+                        self.scene.ingest_instance(inst, ctx, bounds);
+                    }
+                }
+                Primitive::Scene(_) => {
+                    // The scene renders into its own target ahead of the 2D
+                    // passes; the stream draws that target as an image.
+                    self.place_scenes(backend, std::slice::from_ref(prim));
+                    if let Some((inst, bounds)) = self.leaf_instance(prim, fold) {
                         self.scene.ingest_instance(inst, ctx, bounds);
                     }
                 }
@@ -5199,6 +5211,10 @@ impl Renderer {
         let mut passes = std::mem::take(&mut self.passes);
         commands.clear();
         passes.clear();
+
+        // The scenes filled since they last rendered, ahead of the 2D passes
+        // that composite their targets.
+        self.scene3d.encode(&mut commands, &mut passes);
 
         for pass in self.graph.passes() {
             let works = self.graph.works(pass);

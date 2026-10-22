@@ -1,6 +1,7 @@
 //! The CPU raster draws a scene pass against its depth attachment: the nearer
 //! of two overlapping instances shows whichever is drawn last, a back face is
-//! culled, and without a depth test the later draw wins.
+//! culled, without a depth test the later draw wins, and a pass clears what
+//! its target held.
 
 use viso_gpu::backend::{
     DepthAttachment, DrawCommand, DrawList, Geometry, IndexFormat, InlineUniforms, RenderPass,
@@ -87,6 +88,17 @@ const GREEN: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
 
 /// The center texel after drawing `instances` in order, one draw each.
 fn draw(instances: &[SceneInstance], depth: Option<DepthState>, cull: CullMode) -> [f32; 4] {
+    drawn(instances, depth, cull, false)
+}
+
+/// The center texel after drawing `instances`, and when `then_clear` a pass
+/// that draws nothing over them.
+fn drawn(
+    instances: &[SceneInstance],
+    depth: Option<DepthState>,
+    cull: CullMode,
+    then_clear: bool,
+) -> [f32; 4] {
     let mut gpu = CpuRaster::new();
     let target = gpu.create_texture(&TextureDesc {
         width: SIZE,
@@ -167,19 +179,26 @@ fn draw(instances: &[SceneInstance], depth: Option<DepthState>, cull: CullMode) 
         .collect();
     let surface = gpu.create_surface(RawWindowHandle::Headless, 1, 1);
     let frame = gpu.begin_frame(surface).expect("headless acquires");
+    let pass = |first_command, command_count| RenderPass {
+        target: RenderTarget::Texture(target),
+        load: LoadOp::Clear([0.0, 0.0, 1.0, 1.0]),
+        depth: Some(DepthAttachment {
+            texture: depth_texture,
+            clear: 0.0,
+        }),
+        first_command,
+        command_count,
+    };
     gpu.encode(&DrawList {
         commands: &commands,
-        passes: &[RenderPass {
-            target: RenderTarget::Texture(target),
-            load: LoadOp::Clear([0.0, 0.0, 1.0, 1.0]),
-            depth: Some(DepthAttachment {
-                texture: depth_texture,
-                clear: 0.0,
-            }),
-            first_command: 0,
-            command_count: commands.len() as u32,
-        }],
+        passes: &[pass(0, commands.len() as u32)],
     });
+    if then_clear {
+        gpu.encode(&DrawList {
+            commands: &commands,
+            passes: &[pass(0, 0)],
+        });
+    }
     gpu.present(frame);
     // The readback is BGRA.
     let bytes = gpu.read_texture(target);
@@ -205,6 +224,20 @@ fn without_a_depth_test_the_later_draw_wins() {
         CullMode::None,
     );
     assert!(c[1] > 0.9 && c[0] < c[1], "{c:?}");
+}
+
+#[test]
+fn a_scene_pass_clears_what_its_target_held() {
+    let c = drawn(
+        &[at(-2.0, RED, false)],
+        Some(DepthState::REVERSED),
+        CullMode::Back,
+        true,
+    );
+    assert!(
+        c[2] > 0.9 && c[0] < 0.1,
+        "the clear replaced the drawn quad: {c:?}"
+    );
 }
 
 #[test]

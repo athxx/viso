@@ -35,13 +35,20 @@ Rules:
   - [x] Lambert + Blinn-Phong + hemispheric ambient + fog, linear color;
   - [x] MSL/WGSL/HLSL/GLSL codegen, frozen SPIR-V, `cross` in the body subset;
   - [x] the CPU fill.
-- [ ] S3 Render:
-  - [ ] `Scene` resource (camera, light, clear, instance batches), `SceneMeshStore`
-    with procedural primitives (cube, sphere, capsule, cylinder, cone, wedge, plane)
-    and composite Kit models;
-  - [ ] `PassWork::Scene` before the 2D pass that composites it;
-  - [ ] frustum culling on fill;
-  - [ ] targets sized to 64-px steps.
+- [x] S3 Render:
+  - [x] `SceneFrame` (camera with perspective or orthographic projection, lighting,
+    background, one instance batch per mesh) handed to a `SceneSlot` by
+    `Renderer::swap_scene`;
+  - [x] meshes keyed by `MeshId`: procedural cube, sphere, capsule, cylinder, cone,
+    wedge and plane, plus uploaded user meshes;
+  - [x] `Primitive::Scene` lowered to an image of the slot's target. The image's
+    content revision is part of its damage key, and it patches in place;
+  - [x] scene passes ahead of the 2D passes, only when the frame or size changed;
+  - [x] frustum culling on fill;
+  - [x] targets sized in 64-px steps, the projection fitted to the used part;
+  - [x] CpuRaster: a scene pass clears what its target held;
+  - [x] tests: composite, render-on-change, damage, patch, culling, resize steps,
+    and Metal against CpuRaster.
 - [ ] S4 UI/view:
   - [ ] `Content::Scene { scene }` node content;
   - [ ] `GameViewport` (DSL + Rust) fed each frame from `GameWorld::extract`,

@@ -34,7 +34,6 @@ use crate::batch::joins;
 use crate::primitive::Primitive;
 use crate::scene::EmitContext;
 use crate::scene::bounds::Bounds;
-use crate::scene::ingest::Instance;
 use crate::scene::splice::{Draw, Inserted};
 use crate::scene::store::glyph_instances;
 
@@ -110,6 +109,7 @@ pub(super) fn is_leaf(prim: &Primitive) -> bool {
             | Primitive::AnalyticLine(_)
             | Primitive::AnalyticShadow(_)
             | Primitive::Image(_)
+            | Primitive::Scene(_)
             | Primitive::GlyphRun(_)
     )
 }
@@ -131,6 +131,12 @@ impl Renderer {
     ) -> bool {
         if self.surface_moved || !self.splices(primitives, splices) {
             return false;
+        }
+        for s in splices {
+            self.place_scenes(
+                backend,
+                &primitives[s.at as usize..(s.at + s.inserted) as usize],
+            );
         }
         let mut in_place = self.lowers_in_place();
         let tails = self.tails();
@@ -166,7 +172,7 @@ impl Renderer {
                         };
                         (draw, Bounds::default())
                     }
-                    _ => match Instance::of(prim, context.fold) {
+                    _ => match self.leaf_instance(prim, context.fold) {
                         Some((instance, bounds)) => (Draw::Instance(instance), bounds),
                         None => continue,
                     },

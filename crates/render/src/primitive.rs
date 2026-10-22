@@ -1798,6 +1798,27 @@ pub struct Mesh {
     pub indices: Vec<u32>,
 }
 
+/// A 3D scene's slot in a [`Renderer`](crate::Renderer): where
+/// [`Renderer::swap_scene`](crate::Renderer::swap_scene) hands it a frame and
+/// a [`SceneDraw`] names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SceneSlot(pub u32);
+
+/// A 3D scene drawn into a rect (ADR 0047): the slot's frame rendered at the
+/// rect's device-pixel size and composited like an image.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SceneDraw {
+    /// Destination rectangle, in points.
+    pub rect: Rect,
+    pub slot: SceneSlot,
+    /// The revision of the frame the slot holds. A new revision redraws the
+    /// rect, so a draw that shows a new frame must carry a new revision.
+    pub revision: u64,
+    /// The rounded rectangle the scene is masked to; `None` shows all of
+    /// `rect`.
+    pub mask: Option<RoundMask>,
+}
+
 /// A user program's slot in a [`Renderer`](crate::Renderer): where
 /// [`Renderer::set_program`](crate::Renderer::set_program) installs it and a
 /// [`ShaderDraw`] names it.
@@ -1869,6 +1890,8 @@ pub enum Primitive {
     Mesh(Mesh),
     /// A box painted by a user program.
     Shader(Box<ShaderDraw>),
+    /// A 3D scene, rendered into its own target and composited into a rect.
+    Scene(SceneDraw),
     /// Push a clip/compositing layer. Following primitives are constrained to
     /// its clip (intersected with any enclosing layer's clip) until the matching
     /// [`Primitive::LayerEnd`]. A `LayerClip::opacity < 1` layer additionally
@@ -1965,6 +1988,7 @@ impl Primitive {
             Primitive::Path(_) => "path",
             Primitive::Mesh(_) => "mesh",
             Primitive::Shader(_) => "shader",
+            Primitive::Scene(_) => "scene",
             Primitive::Layer(_) => "layer",
             Primitive::ColorEffect(_) => "color_effect",
             Primitive::Blend(_) => "blend",

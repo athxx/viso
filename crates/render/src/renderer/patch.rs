@@ -117,6 +117,11 @@ impl Renderer {
         if !self.backdrop_captures.is_empty() {
             return false;
         }
+        for &i in changed {
+            if let Some(prim) = primitives.get(i as usize) {
+                self.place_scenes(backend, std::slice::from_ref(prim));
+            }
+        }
         let mut edits = std::mem::take(&mut self.edits);
         edits.clear();
         if !self.edits_for(primitives, changed, &mut edits) {
@@ -276,7 +281,7 @@ impl Renderer {
                 None
             }
             _ => {
-                let (instance, bounds) = Instance::of(prim, fold)?;
+                let (instance, bounds) = self.leaf_instance(prim, fold)?;
                 if bounds != entry.bounds || !self.holds(entry.store, &instance) {
                     return None;
                 }
@@ -409,11 +414,11 @@ impl Renderer {
             | (StoreRef::AnalyticCapsule(_), Instance::AnalyticCapsule(_))
             | (StoreRef::AnalyticLine(_), Instance::AnalyticLine(_))
             | (StoreRef::AnalyticShadow(_), Instance::AnalyticShadow(_)) => true,
-            (StoreRef::Image(id), Instance::Image(_, texture, sampler)) => self
+            (StoreRef::Image(id), Instance::Image(_, source)) => self
                 .scene
                 .images
                 .get(id)
-                .is_some_and(|e| e.texture == *texture && e.sampler == *sampler),
+                .is_some_and(|e| e.texture == source.texture && e.sampler == source.sampler),
             _ => false,
         }
     }
@@ -438,9 +443,7 @@ impl Renderer {
             (StoreRef::AnalyticShadow(id), Instance::AnalyticShadow(i)) => {
                 scene.analytic_shadows.set(id, i)
             }
-            (StoreRef::Image(id), Instance::Image(i, texture, sampler)) => {
-                scene.images.set(id, i, texture, sampler)
-            }
+            (StoreRef::Image(id), Instance::Image(i, source)) => scene.images.set(id, i, source),
             _ => DirtyPlanes::default(),
         }
     }
