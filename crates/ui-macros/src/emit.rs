@@ -641,9 +641,10 @@ fn control_tokens(control: Control) -> TokenStream {
         entry(control.tint),
         entry(control.shader),
     );
-    let (placeholder, secure, caption) = (
+    let (placeholder, secure, multiline, caption) = (
         entry(control.placeholder),
         entry(control.secure),
+        entry(control.multiline),
         entry(control.caption),
     );
     let semantics = control.semantics;
@@ -740,6 +741,7 @@ fn control_tokens(control: Control) -> TokenStream {
             tint: #tint,
             placeholder: #placeholder,
             secure: #secure,
+            multiline: #multiline,
             caption: #caption,
             shader: #shader,
             look: ::viso::__private::viso_view::Look {

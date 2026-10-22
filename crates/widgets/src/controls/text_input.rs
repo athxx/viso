@@ -1,4 +1,4 @@
-//! The [`TextInput`] control — a single-line editable text field with a caret,
+//! The [`TextInput`] control — a single- or multi-line editable text field with a caret,
 //! selection, undo history and IME composition.
 //!
 //! A `TextInput` is a focusable text leaf carrying a retained edit
@@ -163,6 +163,13 @@ impl TextInput {
         self
     }
 
+    /// Holds lines: the text wraps to the field's width, Enter breaks a line
+    /// and the accelerator with Enter submits.
+    pub fn multiline(mut self, multiline: bool) -> Self {
+        self.look.multiline = multiline;
+        self
+    }
+
     /// Mask the text: a bullet per grapheme, nothing to copy or cut, and an
     /// accessible [`Role::SecureField`] that never reads its text out.
     pub fn secure(mut self, secure: bool) -> Self {
@@ -212,7 +219,7 @@ impl Component for TextInput {
                 text: self.value.clone(),
                 font_size: FontSize::Fixed(self.style.font_size),
                 color: self.style.color,
-                // A text field is single-line: it scrolls horizontally, never wraps.
+                // The buffer declares whether its text wraps.
                 soft_wrap: false,
                 locale: None,
                 style: viso_ui::TextStyle::default(),
@@ -226,8 +233,9 @@ impl Component for TextInput {
         // Pointer, key and text samples become edit intents the router applies
         // to this node's buffer after the handler returns; the shape pass folds
         // them into the text. The handler never touches the buffer.
-        cx.on_pointer(root, |ev| {
-            field_input(ev, false);
+        let multiline = self.look.multiline;
+        cx.on_pointer(root, move |ev| {
+            field_input(ev, multiline);
         });
         let on_change = Rc::clone(&self.on_change);
         cx.on_key(root, move |ev| {
@@ -237,7 +245,7 @@ impl Component for TextInput {
                 }
                 return;
             }
-            field_input(ev, false);
+            field_input(ev, multiline);
         });
 
         // A text field's accessible role, with the given label as its accessible

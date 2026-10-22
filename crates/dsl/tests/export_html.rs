@@ -406,6 +406,40 @@ fn a_field_s_placeholder_and_masking_and_a_check_s_caption_export() {
     assert!(script.contains("P.secure(e[0], f"), "{script}");
 }
 
+const NOTES: &str = r#"
+export component Notes {
+    state lines = true;
+    view {
+        Column {
+            TextInput { width: 100dp; height: 40dp; value: "a"; multiline: true; }
+            TextInput { width: 100dp; height: 20dp; multiline: true; secure: true; }
+            TextInput { width: 100dp; height: 20dp; multiline: lines; }
+        }
+    }
+}
+"#;
+
+#[test]
+fn a_multi_line_field_exports_as_a_textarea_and_one_that_turns_multi_line_cannot() {
+    let findings = export(NOTES, false).unwrap_err();
+    assert!(
+        findings
+            .iter()
+            .any(|(need, at, message)| *need == Need::Unsupported
+                && at == "lines"
+                && message.contains("holds lines")),
+        "{findings:#?}"
+    );
+    let page = export(&NOTES.replace("multiline: lines;", ""), false).unwrap();
+    let index = &page.index;
+    assert!(index.contains(">a</textarea>"), "{index}");
+    assert_eq!(
+        index.matches("<textarea").count(),
+        1,
+        "a secure field holds one line: {index}"
+    );
+}
+
 const COUNTER: &str = r#"
 export component Counter {
     state count = 0;

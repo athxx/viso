@@ -207,6 +207,7 @@ pub(crate) fn control_cells(
     .chain([
         control.placeholder,
         control.secure,
+        control.multiline,
         control.caption,
         look.translate,
         look.scale,
@@ -227,9 +228,9 @@ pub(crate) fn control_cells(
 /// `value`, `hidden` and `heading_level`, its `visible`, `focusable`,
 /// `enabled`, `autofocus` and `clip`, and its text's `color`, `soft_wrap`,
 /// `font_weight`, `font_family`, `line_height`, `max_lines`, `overflow` and
-/// `align`, a field's `placeholder` and `secure` and a check's caption, and
-/// its `translate`, `scale`, `rotation` and `transform_origin`.
-const SHOWN: usize = 34;
+/// `align`, a field's `placeholder`, `secure` and `multiline` and a check's
+/// caption, and its `translate`, `scale`, `rotation` and `transform_origin`.
+const SHOWN: usize = 35;
 
 /// The input of each value a node shows, in order.
 const SHOWN_INPUTS: [ControlInput; SHOWN] = [
@@ -262,6 +263,7 @@ const SHOWN_INPUTS: [ControlInput; SHOWN] = [
     ControlInput::TextAlign,
     ControlInput::Placeholder,
     ControlInput::Secure,
+    ControlInput::Multiline,
     ControlInput::Caption,
     ControlInput::Translate,
     ControlInput::Scale,
@@ -270,11 +272,11 @@ const SHOWN_INPUTS: [ControlInput; SHOWN] = [
 ];
 
 /// Where its `translate` sits among the values a node shows.
-const TRANSLATE: usize = 30;
+const TRANSLATE: usize = 31;
 
 /// Where its `scale`, `rotation` and `transform_origin` sit among the values
 /// a node shows.
-const TURN: usize = 31;
+const TURN: usize = 32;
 
 /// Where its background, opacity, corner radius and border sit among the
 /// values a node shows.
@@ -290,8 +292,8 @@ const NODE: usize = 14;
 /// Where its text's style starts among the values a node shows.
 const TEXT: usize = 19;
 
-/// Where a field's placeholder and masking and a check's caption sit among
-/// the values a node shows.
+/// Where a field's placeholder, masking and lines and a check's caption sit
+/// among the values a node shows.
 const FIELD: usize = 27;
 
 /// A node showing a value of the view.
@@ -465,6 +467,7 @@ impl Shown {
             align,
             placeholder,
             secure,
+            multiline,
             caption,
             translate,
             scale,
@@ -686,6 +689,7 @@ impl Shown {
                     look: FieldLook {
                         placeholder: placeholder.as_str().unwrap_or_default().to_owned(),
                         secure,
+                        multiline: truth(multiline, false),
                     },
                 };
                 store.seed_text(self.node, seed);
@@ -700,7 +704,7 @@ impl Shown {
                 store.set_check_mark(self.node, Some(CheckMark { shape, checked }));
                 // A check with no caption still shapes an empty one, which
                 // sizes and inks its mark.
-                if first || (given(FIELD + 2) && changed(FIELD + 2)) {
+                if first || (given(FIELD + 3) && changed(FIELD + 3)) {
                     store.set_text_request(self.node, text(caption));
                 }
             }

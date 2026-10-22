@@ -4680,7 +4680,7 @@ export record AdaptiveColumns { mode: AutoRepeat = AutoRepeat::fill; min: MixedL
 - 源文本始终为逻辑顺序；Bidi、断行、字形选择与回退由 Text Runtime 负责，DSL 不得反转字符串或手工插入方向控制符；
 - 仅因宽度变化引起的重排不标记 `SEMANTICS`（ADR 0027）；
 - `overflow: ellipsis` 仅在 `max_lines` 有值或 `soft_wrap: false` 时生效；
-- `max_lines` 为 `Option::Some(0)` 时按 `1` 处理；`TextInput` 是单行编辑框，取 `font_weight`、`font_family`、`line_height` 与 `align`，不取 `max_lines`/`overflow`（`E3711`）；`Button` 的文本取全部文本样式；
+- `max_lines` 为 `Option::Some(0)` 时按 `1` 处理；`TextInput` 是编辑框（`multiline` 决定单行或多行），取 `font_weight`、`font_family`、`line_height` 与 `align`，不取 `max_lines`/`overflow`（`E3711`）；`Button` 的文本取全部文本样式；
 - 当前实现：上述样式（常量或读取值）随节点的值条目送达其文本请求，热重载就地改写，Release 包与宏路径相同；`line_height` 的 `em`/`%` 读节点解析出的字号。行盒、行数上限、省略号与对齐的算法见 Text Runtime §12.12.1；`Fit` 宽度的文本按其 max-content 宽度测量，被 `max_width` 等上下界或父容器收窄时按盒宽换行或加省略号。未设置 `font_family` 的文本取当前 Theme 的 `typography.family`，切换 Theme 时只有这些文本重新塑形；`FontFamily::named` 暂只查找应用打包的字体；
 - `text` 在 Schema 中标记为 Localizable（U10.3）。
 - `String` 文本槽（`text`、`label`、`placeholder` 等）只接受 `String`（或 `Option<String>` 槽的 U1.3 提升），不做隐式 `Display` 转换：`text: count;`（`count: I64`）是 `E2103`，并附 Machine-Applicable Fix `format("{}", count)`；对无 `Display` 的类型不给出该 Fix。
@@ -4883,7 +4883,7 @@ KeyShortcut {
 | `Toggle`     | `checked: Bool = false`（two_way；`PAINT\|SEMANTICS`）；`label: String = ""`（Localizable；`MEASURE\|LAYOUT\|PAINT\|SEMANTICS`） | `changed(value: Bool)` |
 | `CheckBox`   | 同 `Toggle`                                                                                   | `changed(value: Bool)` |
 | `Slider`     | `value: F32 = 0.0`（two_way；`PAINT\|SEMANTICS`）；`min: F32 = 0.0`、`max: F32 = 1.0`、`step: Option<F32> = Option::None`（`PAINT\|SEMANTICS`） | `changed(value: F32)` |
-| `TextInput`  | `value: String = ""`（two_way；`MEASURE\|LAYOUT\|PAINT\|SEMANTICS`）；`placeholder: String = ""`（Localizable；同上）；`secure: Bool = false`（同上）；`invalid: Bool = false`（`STYLE\|SEMANTICS`） | `changed(value: String)`、`submitted` |
+| `TextInput`  | `value: String = ""`（two_way；`MEASURE\|LAYOUT\|PAINT\|SEMANTICS`）；`placeholder: String = ""`（Localizable；同上）；`secure: Bool = false`（同上）；`multiline: Bool = false`（同上）；`invalid: Bool = false`（`STYLE\|SEMANTICS`） | `changed(value: String)`、`submitted` |
 | `Tabs`、`RadioGroup` | `selected: U32 = 0`（two_way；`STYLE\|PAINT\|SEMANTICS`）                             | `selected_changed(value: U32)` |
 | `Disclosure` | `expanded: Bool = false`（two_way；`MEASURE\|LAYOUT\|PAINT\|SEMANTICS`）；Column 的 Flex 属性        | `changed(value: Bool)` |
 | `Modal`、`Sheet`、`Toast` | `open: Bool = false`（two_way；`MEASURE\|LAYOUT\|PAINT\|HIT_TEST\|SEMANTICS`）；Stack 的 `content_align` 与子节点放置 | `changed(value: Bool)`（`Toast` 无） |
@@ -4894,7 +4894,7 @@ KeyShortcut {
 
 `TextInput` 无文本时以其文本颜色一半的不透明度绘制 `placeholder`，`placeholder` 同时是没有 `semantics.hint` 时的提示；`secure` 的输入框为每个字素绘制一个 `•`，光标、点击与 IME 位置经绘制文本与原文之间的映射落在原文上，不提供复制或剪切的文本，语义角色为 `Role::secure_field`，不向辅助技术报告其文本；获得焦点时平台输入法按密码处理，不组字、不给候选、不学习或提示其输入：macOS 持有 Secure Event Input 并只允许罗马字输入源，iOS `secureTextEntry`，Android `TYPE_TEXT_VARIATION_PASSWORD`，Web 为 `type=password` 的输入元素，Windows 与 X11 让按键绕过输入法，Wayland `text-input-v3` 的内容用途为 `password`。没有 `value` 的输入框照常取得文本样式、`placeholder` 与 `secure`，其文本是用户输入的内容。`Toggle`/`CheckBox` 的 `label` 是其绘制的文字，也是没有 `semantics.label` 时的可访问名称；文字前（从右到左时为其后）绘制控件自身的标记，按文字首行定尺寸、居中于首行，以文字颜色着色：`CheckBox` 为一个方框，选中时填充并画勾，`Toggle` 为一条轨道，滑块选中时在末端。
 
-`TextInput` 的编辑按平台惯例响应按键（Rust Widget 与 DSL 共用 `viso_ui::field_input`）：Left/Right 按绘制的光标停靠点逐个字素移动，Up/Down 到上一行/下一行并保持光标所在的列（单行时到文本首尾），Home/End 到行首/行尾，PageUp/PageDown 移动框内可见的行数；Apple 系统（含其上的浏览器）上 Option 按词移动与删除、Command 到行首尾（与 Up/Down 到文本首尾）、Option 加 Up/Down 到段首尾，Control 加 A/E/B/F/P/N/H/D/K 是系统文本框的 Emacs 移动与删除；其他平台上 Control 按词移动与删除，Control 加 Home/End 到文本首尾、加 Up/Down 到段首尾，Control+Y 重做；Shift 随任一移动扩展选区；加速键（Apple 为 Command，其他为 Control）加 A 全选、加 Z 撤销、加 Shift+Z 重做；单行输入框中 Enter 投递 `submitted`（按住不重复）。词边界按 UAX #29，跳过空白与标点；secure 输入框按词移动与删除到其首尾。每个输入框有自己的撤销历史：连续输入合为一步并在空白后开始的新词处断开，连续 Backspace、连续前向删除各合为一步，粘贴、剪切、按词或按行删除、一次 IME 组字与一次外部 `value` 改写各为一步，移动光标或选区结束当前步；撤销恢复编辑前的选区，重做恢复撤销时的选区；历史最多保留 256 KiB 文本与 1000 步，超出时丢弃最早的步；secure 输入框不保留历史；热重载迁移缓冲时历史清空。
+`TextInput` 的编辑按平台惯例响应按键（Rust Widget 与 DSL 共用 `viso_ui::field_input`）：Left/Right 按绘制的光标停靠点逐个字素移动，Up/Down 到上一行/下一行并保持光标所在的列（单行时到文本首尾），Home/End 到行首/行尾，PageUp/PageDown 移动框内可见的行数；Apple 系统（含其上的浏览器）上 Option 按词移动与删除、Command 到行首尾（与 Up/Down 到文本首尾）、Option 加 Up/Down 到段首尾，Control 加 A/E/B/F/P/N/H/D/K 是系统文本框的 Emacs 移动与删除；其他平台上 Control 按词移动与删除，Control 加 Home/End 到文本首尾、加 Up/Down 到段首尾，Control+Y 重做；Shift 随任一移动扩展选区；加速键（Apple 为 Command，其他为 Control）加 A 全选、加 Z 撤销、加 Shift+Z 重做；单行输入框中 Enter 投递 `submitted`（按住不重复）。`multiline: true` 的输入框持有多行：文本按框宽折行，Enter（含 Shift+Enter）插入换行，加速键加 Enter 投递 `submitted`，粘贴的 `\r\n` 与 `\r` 统一为 `\n`；单行输入框把输入与粘贴中的每个换行折为一个空格；secure 输入框总是单行。HTML 导出把常量多行的输入框导出为 `<textarea>`，`multiline` 随值变化报导出诊断。词边界按 UAX #29，跳过空白与标点；secure 输入框按词移动与删除到其首尾。每个输入框有自己的撤销历史：连续输入合为一步并在空白后开始的新词处断开，连续 Backspace、连续前向删除各合为一步，粘贴、剪切、按词或按行删除、一次 IME 组字与一次外部 `value` 改写各为一步，移动光标或选区结束当前步；撤销恢复编辑前的选区，重做恢复撤销时的选区；历史最多保留 256 KiB 文本与 1000 步，超出时丢弃最早的步；secure 输入框不保留历史；热重载迁移缓冲时历史清空。
 
 Widget 事件的 Payload 是 Prelude Record：`Toggle`/`CheckBox`/`Disclosure` 的 `changed` 为 `ToggleChanged`，`Slider` 为 `SliderChanged`，`TextInput` 为 `TextChanged`，`selected_changed` 为 `SelectionChanged`，字段均为 `value`；`submitted` 与 `triggered` 无 Payload。
 

@@ -324,6 +324,16 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
 
     /// What `entry` shows here: its value when it never changes, else
     /// `None`, a wire for the script — which a static export refuses.
+    /// Whether the constant entry `entry` holds; `None` when it changes.
+    fn constant_truth(&mut self, entry: u32) -> Option<bool> {
+        let eval = self.eval.as_deref_mut()?;
+        if !eval.constant(entry) {
+            return None;
+        }
+        let value = eval.value(entry, &[]).ok()?;
+        Some(value.as_int().is_some_and(|v| v != 0))
+    }
+
     fn fixed(&mut self, entry: u32, what: &str, fallback: TextRange) -> Fixed {
         let at = self.site(entry).unwrap_or(fallback);
         let Some(eval) = self.eval.as_deref_mut() else {
@@ -437,12 +447,35 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             item => node.role.or(item.map(|(role, _)| role)).or(widget),
         };
         let masked = control.as_ref().is_some_and(|c| c.tint.is_some());
+        // A field that holds lines is a `<textarea>`, which one that turns
+        // multi-line on the open page cannot become. A secure field holds
+        // one line.
+        let field = control
+            .as_ref()
+            .filter(|c| c.kind == ControlKind::TextInput);
+        let secure = field
+            .and_then(|c| c.secure)
+            .is_some_and(|entry| self.constant_truth(entry) == Some(true));
+        let lines = match field.and_then(|c| c.multiline).filter(|_| !secure) {
+            Some(entry) => self.constant_truth(entry).unwrap_or_else(|| {
+                let at = self.site(entry).unwrap_or(self.own(node.instance, node.origin));
+                self.need(
+                    Need::Unsupported,
+                    at,
+                    "whether the field holds lines changes while the page is open".to_owned(),
+                    vec!["HTML holds lines in a `<textarea>` and one line in an `<input>`; give `multiline` a constant".to_owned()],
+                );
+                false
+            }),
+            None => false,
+        };
         let summary = std::mem::take(&mut self.summary);
         el.tag = match (node.type_name.as_str(), role) {
             _ if summary => "summary",
             ("Disclosure", _) => "details",
             ("Modal" | "Sheet", _) => "dialog",
             ("Button", _) => "button",
+            ("TextInput", _) if lines => "textarea",
             ("TextInput" | "Toggle" | "CheckBox" | "Slider", _) => "input",
             ("Image" | "Svg", _) if !masked => "img",
             ("Text", _) => "span",
@@ -479,7 +512,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         }
         match node.type_name.as_str() {
             "Button" => el.attr("type", "button"),
-            "TextInput" => el.attr("type", "text"),
+            "TextInput" if !lines => el.attr("type", "text"),
             "Toggle" => {
                 el.attr("type", "checkbox");
                 el.attr("role", "switch");
@@ -930,7 +963,11 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 if let Some(fixed) =
                     self.bind(wires, control.value, Prop::InputValue, "the text", at)
                 {
-                    el.attr("value", &fixed.text());
+                    if el.tag == "textarea" {
+                        el.text = Some(fixed.text());
+                    } else {
+                        el.attr("value", &fixed.text());
+                    }
                 }
                 if let Some(fixed) = self.bind(
                     wires,

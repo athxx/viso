@@ -29,6 +29,7 @@ export component Controls {
     state level: F32 = 0.0;
     state tab: U32 = 0;
     state name = "";
+    state notes = "";
     state changes = 0;
     state seen: F32 = 0.0;
     state submits = 0;
@@ -80,6 +81,13 @@ export component Controls {
                     height: 20dp;
                     on pointer_down(event) { local = event.position.x; }
                 }
+            }
+            TextInput {
+                width: 200dp;
+                height: 20dp;
+                multiline: true;
+                bind value <=> notes;
+                on submitted { submits += 10; }
             }
         }
     }
@@ -196,11 +204,16 @@ impl Rt {
 
     /// A press of `key` to the focused node.
     fn key(&mut self, key: Key) {
+        self.key_with(key, Modifiers::default());
+    }
+
+    /// A press of `key` with `modifiers` held to the focused node.
+    fn key_with(&mut self, key: Key, modifiers: Modifiers) {
         let event = KeyEvent {
             key,
             pressed: true,
             repeat: false,
-            modifiers: Modifiers::default(),
+            modifiers,
         };
         KeyRouter::route_key(
             &mut self.store,
@@ -367,6 +380,34 @@ fn a_text_field_writes_its_edited_text_back_and_submits() {
         assert_eq!(rt.state("name"), Some(Value::Str(Rc::new("你".into()))));
         rt.key(Key::Enter);
         assert_eq!(rt.int("submits"), 1);
+        assert!(!rt.faulted());
+    }
+}
+
+#[test]
+fn a_multi_line_field_breaks_lines_on_enter_and_submits_with_the_accelerator() {
+    for mut rt in targets() {
+        rt.click(10.0, 110.0);
+        rt.ime(ImeEvent::Commit { text: "a".into() });
+        rt.key(Key::Enter);
+        rt.ime(ImeEvent::Paste {
+            text: "b\r\nc".into(),
+        });
+        assert_eq!(
+            rt.state("notes"),
+            Some(Value::Str(Rc::new("a\nb\nc".into())))
+        );
+        assert_eq!(rt.int("submits"), 0);
+        let apple = cfg!(target_vendor = "apple");
+        rt.key_with(
+            Key::Enter,
+            Modifiers {
+                control: !apple,
+                logo: apple,
+                ..Modifiers::default()
+            },
+        );
+        assert_eq!(rt.int("submits"), 10);
         assert!(!rt.faulted());
     }
 }

@@ -80,8 +80,9 @@ Rules:
     paste/cut/word and line deletion/IME composition/outside value as one step each,
     the selection restored, bounded to 256 KiB and 1000 steps, none for secure fields;
   - [x] paste as its own text event (`ImeEvent::Paste`), cut as one edit.
-- [ ] E2 Multi-line `TextInput` (`multiline: true`): newline insertion, wrapped layout,
-  the accelerator with Enter submits; DSL prop and widget setter.
+- [x] E2 Multi-line `TextInput` (`multiline: true`): newline insertion, wrapped layout,
+  the accelerator with Enter submits, breaks unified to `\n`; DSL prop (HTML export as
+  `<textarea>`) and widget setter.
 - [ ] E3 Field painting: caret, selection highlight and composition underline drawn by
   the framework; internal scroll to the caret (horizontal single-line, vertical
   multi-line) with the content clipped; caret blink paused while typing, steady after

@@ -142,6 +142,7 @@ const TEXT_INPUT: &[WidgetProperty] = &[
     two_way("value", "String"),
     prop("placeholder", "String").localizable(),
     prop("secure", "Bool"),
+    prop("multiline", "Bool"),
     prop("invalid", "Bool"),
 ];
 

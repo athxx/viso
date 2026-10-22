@@ -197,6 +197,7 @@ impl ControlKind {
             | (ControlKind::Viewport, "camera") => ControlInput::Value,
             (ControlKind::TextInput, "placeholder") => ControlInput::Placeholder,
             (ControlKind::TextInput, "secure") => ControlInput::Secure,
+            (ControlKind::TextInput, "multiline") => ControlInput::Multiline,
             (ControlKind::Check | ControlKind::Switch, "label") => ControlInput::Caption,
             (ControlKind::Slider, "min") => ControlInput::Min,
             (ControlKind::Slider, "max") => ControlInput::Max,
@@ -623,6 +624,8 @@ pub enum ControlInput {
     Placeholder,
     /// A text field's `secure`: whether it masks its text.
     Secure,
+    /// A text field's `multiline`: whether it holds lines.
+    Multiline,
     /// A check's `label`: the caption it shows and is named by.
     Caption,
 }
@@ -650,6 +653,8 @@ pub struct Control {
     pub placeholder: Option<u32>,
     /// The entry of whether a text field masks its text.
     pub secure: Option<u32>,
+    /// The entry of whether a text field holds lines.
+    pub multiline: Option<u32>,
     /// The entry of a check's caption.
     pub caption: Option<u32>,
     /// The shader a shader view paints with, by its index in the view's
@@ -808,7 +813,7 @@ pub enum Switched {
 
 impl ControlInput {
     /// Every input, by wire tag.
-    pub const ALL: [ControlInput; 44] = [
+    pub const ALL: [ControlInput; 45] = [
         ControlInput::Value,
         ControlInput::Min,
         ControlInput::Max,
@@ -852,6 +857,7 @@ impl ControlInput {
         ControlInput::TextAlign,
         ControlInput::Placeholder,
         ControlInput::Secure,
+        ControlInput::Multiline,
         ControlInput::Caption,
     ];
 
@@ -931,6 +937,7 @@ impl Control {
             tint: None,
             placeholder: None,
             secure: None,
+            multiline: None,
             caption: None,
             shader: None,
             look: Look::default(),
@@ -993,6 +1000,7 @@ impl Control {
             ControlInput::TextAlign => self.text.align,
             ControlInput::Placeholder => self.placeholder,
             ControlInput::Secure => self.secure,
+            ControlInput::Multiline => self.multiline,
             ControlInput::Caption => self.caption,
         }
     }
@@ -1053,6 +1061,7 @@ impl Control {
             ControlInput::TextAlign => &mut self.text.align,
             ControlInput::Placeholder => &mut self.placeholder,
             ControlInput::Secure => &mut self.secure,
+            ControlInput::Multiline => &mut self.multiline,
             ControlInput::Caption => &mut self.caption,
         };
         *slot = Some(entry);
@@ -1075,6 +1084,7 @@ impl Encode for Control {
             self.tint,
             self.placeholder,
             self.secure,
+            self.multiline,
             self.caption,
             self.shader,
             look.background,
@@ -1181,6 +1191,7 @@ impl Decode for Control {
             tint: entry()?,
             placeholder: entry()?,
             secure: entry()?,
+            multiline: entry()?,
             caption: entry()?,
             shader: entry()?,
             look: Look {
@@ -1379,6 +1390,10 @@ mod tests {
             Some(ControlInput::Secure)
         );
         assert_eq!(
+            ControlKind::TextInput.input("multiline"),
+            Some(ControlInput::Multiline)
+        );
+        assert_eq!(
             ControlKind::Check.input("label"),
             Some(ControlInput::Caption)
         );
@@ -1434,6 +1449,7 @@ mod tests {
             tint: Some(8),
             placeholder: Some(14),
             secure: None,
+            multiline: None,
             caption: Some(15),
             shader: Some(2),
             look: Look {

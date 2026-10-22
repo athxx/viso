@@ -64,7 +64,7 @@ impl Drive for Control {
             ControlKind::Dialog => dismiss(self, host, scope, cx),
             ControlKind::Slider => slider(self, host, scope, cx),
             ControlKind::Select => select(self, host, scope, cx),
-            ControlKind::TextInput => text_input(cx),
+            ControlKind::TextInput => text_input(self, host, scope, cx),
             ControlKind::Viewport => viewport(cx),
             ControlKind::Label
             | ControlKind::Plain
@@ -335,14 +335,22 @@ const PAGE_STEPS: f32 = 10.0;
 
 /// A text field's response: the edits its input asks for, and the settled
 /// text or a submission it reports.
-fn text_input(cx: &mut EventCx<'_>) -> Option<(EventRoute, Value)> {
+fn text_input(
+    control: &Control,
+    host: &mut ViewHost,
+    scope: &Scope,
+    cx: &mut EventCx<'_>,
+) -> Option<(EventRoute, Value)> {
     if cx.phase() != DispatchPhase::Target {
         return None;
     }
     if let Some(text) = cx.text_change() {
         return Some((EventRoute::Changed, field(Value::str(text))));
     }
-    match field_input(cx, false)? {
+    let multiline = read(host, control.multiline, scope, cx)
+        .as_int()
+        .is_some_and(|v| v != 0);
+    match field_input(cx, multiline)? {
         FieldEvent::Submitted => Some((EventRoute::Submitted, Value::Nil)),
     }
 }

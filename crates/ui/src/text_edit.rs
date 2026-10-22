@@ -1,4 +1,4 @@
-//! Single-line text editing: the retained edit buffer, the deferred edit
+//! Text editing: the retained edit buffer, the deferred edit
 //! intents an input handler records, and the frame pass that folds queued
 //! intents into each buffer and re-declares the node's text.
 //!
@@ -85,6 +85,10 @@ pub struct FieldLook {
     /// Whether it masks its text: it draws a bullet for each grapheme, gives
     /// no text to copy or cut, and an assistive technology never reads it.
     pub secure: bool,
+    /// Whether it holds lines: its text wraps to its width, Enter breaks a
+    /// line, and pasted breaks are kept. A single-line field folds every
+    /// break to a space. A secure field holds one line.
+    pub multiline: bool,
 }
 
 /// What a text field's node declares, queued on the store until
@@ -291,7 +295,8 @@ struct Placed<'a> {
 /// re-declare a complete request from the buffer alone, with no lookup into the
 /// store.
 ///
-/// Single-line: the text holds no `'\n'` (Enter submits, it does not insert).
+/// A single-line buffer's text holds no `'\n'` (Enter submits, it does not
+/// insert); a multi-line one's breaks are all `'\n'`.
 /// Every offset the edit ops leave behind is a grapheme boundary of `text`,
 /// except a composition caret, which the platform places and which is kept on a
 /// `char` boundary.
@@ -462,8 +467,9 @@ impl Buffer {
 
     /// The text request that declares what the field draws in its resident
     /// style: its text, its placeholder while it holds none, or a bullet for
-    /// each grapheme of a secure one's. An edit buffer is single-line: it
-    /// clips and scrolls, never wraps or cuts its text off.
+    /// each grapheme of a secure one's. A single-line field clips and
+    /// scrolls, a multi-line one wraps to its width; neither cuts its text
+    /// off.
     pub fn request(&self) -> TextRequest {
         let (text, color) = match self.drawn() {
             Drawn::Text => (self.text.clone(), self.color),
@@ -483,7 +489,7 @@ impl Buffer {
             text,
             font_size: self.font_size,
             color,
-            soft_wrap: false,
+            soft_wrap: self.holds_lines(),
             locale: self.locale.clone(),
             style: TextStyle {
                 max_lines: None,
@@ -600,7 +606,7 @@ impl Buffer {
         match intent {
             EditIntent::Insert(s) => self.type_text(s),
             EditIntent::Paste(s) => {
-                let s = single_line(s);
+                let s = self.fold(s);
                 self.replace_selection(&s, EditKind::Other);
             }
             EditIntent::Backspace(reach) => self.erase(false, *reach, placed),
@@ -660,12 +666,27 @@ impl Buffer {
         }
     }
 
+    /// Whether the field holds lines: a multi-line one that does not mask.
+    pub fn holds_lines(&self) -> bool {
+        self.look.multiline && !self.look.secure
+    }
+
+    /// `s` with its line breaks as the field holds them: each `\n` in a
+    /// multi-line field, a space in a single-line one.
+    fn fold<'s>(&self, s: &'s str) -> std::borrow::Cow<'s, str> {
+        if self.holds_lines() {
+            unify_breaks(s)
+        } else {
+            single_line(s)
+        }
+    }
+
     /// Type `s` over the selection: a typing run joins one undo step.
     fn type_text(&mut self, s: &str) {
         if !self.sel.is_caret() {
             self.history.close();
         }
-        let s = single_line(s);
+        let s = self.fold(s);
         self.replace_selection(&s, EditKind::Typing);
     }
 
@@ -965,7 +986,7 @@ impl Buffer {
             self.type_text(text);
             return;
         }
-        let text = single_line(text);
+        let text = self.fold(text);
         let (start, end) = self.composition.replacement();
         self.splice(start, end, &text, None);
         self.sel = Selection::caret(TextPosition::upstream(TextOffset(start.0 + text.len())));
@@ -1043,6 +1064,15 @@ fn visual_step(lines: &[LineLayout], from: TextPosition, right: bool) -> TextPos
     } else {
         caret.move_left(line)
     }
+}
+
+/// `s` with every line break (`\r\n`, `\n`, `\r`) as `\n`. Borrows when it
+/// has no `\r`.
+fn unify_breaks(s: &str) -> std::borrow::Cow<'_, str> {
+    if !s.contains('\r') {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    std::borrow::Cow::Owned(s.replace("\r\n", "\n").replace('\r', "\n"))
 }
 
 /// `s` with every line break (`\r\n`, `\n`, `\r`) folded to one space. Borrows
@@ -1608,6 +1638,17 @@ mod tests {
     }
 
     #[test]
+    fn a_multi_line_field_keeps_its_breaks_and_wraps() {
+        let mut b = buf("ab", 2);
+        b.look.multiline = true;
+        apply(&mut b, EditIntent::Insert("\n".into()));
+        apply(&mut b, EditIntent::Paste("c\r\nd\re".into()));
+        assert_eq!(b.text, "ab\nc\nd\ne");
+        assert!(b.request().soft_wrap);
+        assert!(!buf("x", 0).request().soft_wrap);
+    }
+
+    #[test]
     fn the_changed_range_keeps_the_common_ends() {
         assert_eq!(
             changed_range("hello world", "hello brave world"),
@@ -2103,6 +2144,7 @@ mod tests {
             look: FieldLook {
                 placeholder: placeholder.to_owned(),
                 secure,
+                ..FieldLook::default()
             },
             ..seed(text)
         })
@@ -2184,7 +2226,7 @@ mod tests {
             valued: false,
             look: FieldLook {
                 placeholder: "Hint".into(),
-                secure: false,
+                ..FieldLook::default()
             },
             ..seed("")
         };
