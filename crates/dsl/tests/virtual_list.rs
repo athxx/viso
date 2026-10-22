@@ -550,3 +550,104 @@ fn a_list_refreshes_while_its_owner_says_so() {
     page.refresh();
     assert!(!page.store.is_refreshing(unowned), "nobody said so");
 }
+
+const SECTIONS: &str = "component Feed {
+    state grouped = true;
+    view {
+        Column {
+            width: 200dp;
+            height: 300dp;
+            Button { width: 100dp; height: 20dp; text: \"flat\"; on click { grouped = false; } }
+            VirtualList {
+                width: 200dp;
+                height: 100dp;
+                estimated_extent: 20dp;
+                overscan: 1;
+                for i in 0..100 key i {
+                    Text { width: 200dp; height: 20dp; sticky: grouped && i % 10 == 0; text: format(\"{}\", i); }
+                }
+            }
+            Scroll {
+                width: 200dp;
+                height: 100dp;
+                Column {
+                    Column {
+                        height: 200dp;
+                        Text { width: 200dp; height: 20dp; sticky: true; text: \"a\"; }
+                    }
+                    Column {
+                        height: 200dp;
+                        Text { width: 200dp; height: 20dp; sticky: true; text: \"b\"; }
+                    }
+                }
+            }
+        }
+    }
+}";
+
+impl Page {
+    /// The host of the row of list `list` that shows `text`.
+    fn row_showing(&self, list: NodeId, text: &str) -> Option<NodeId> {
+        let canvas = self.canvas(list);
+        self.store.arena().children(canvas).find(|&host| {
+            self.store
+                .arena()
+                .children(host)
+                .next()
+                .and_then(|row| self.texts.get(&row))
+                .is_some_and(|t| t == text)
+        })
+    }
+
+    /// Scroll `viewport` to `y` and run a frame.
+    fn scroll_to(&mut self, viewport: NodeId, y: f32) {
+        self.store.set_scroll(viewport, Vec2 { x: 0.0, y });
+        self.frame();
+        self.frame();
+    }
+}
+
+#[test]
+fn a_rows_sticky_root_heads_its_section_and_a_sticky_node_its_parent() {
+    let mut page = Page::load(SECTIONS);
+    let (flat, list, scroll) = (
+        page.child(page.root, 0),
+        page.child(page.root, 1),
+        page.child(page.root, 2),
+    );
+    let top = page.store.world(list).y;
+    assert_eq!(
+        page.lists.get(list).unwrap().headers(),
+        (0..100).step_by(10).collect::<Vec<_>>()
+    );
+    // Far down section 0, its header stays at the top.
+    page.scroll_to(list, 150.0);
+    let header = page.row_showing(list, "0").expect("row 0 stays mounted");
+    assert_eq!(page.store.world(header).y, top);
+    // Section 1's header pushes it on as it comes.
+    page.scroll_to(list, 190.0);
+    assert_eq!(page.store.world(header).y, top - 10.0);
+    let next = page.row_showing(list, "10").unwrap();
+    assert_eq!(page.store.world(next).y, top + 10.0);
+    // The row root itself stays put inside its host.
+    let root = page.store.arena().children(next).next().unwrap();
+    assert!(!page.store.is_sticky(root));
+
+    // A sticky node holds within its parent.
+    let column = page.child(scroll, 0);
+    let a = page.child(page.child(column, 0), 0);
+    let b = page.child(page.child(column, 1), 0);
+    let seen = page.store.world(scroll).y;
+    page.scroll_to(scroll, 50.0);
+    assert_eq!(page.store.world(a).y, seen);
+    page.scroll_to(scroll, 190.0);
+    assert_eq!(
+        page.store.world(a).y,
+        seen - 10.0,
+        "its section pushes it on"
+    );
+    assert_eq!(page.store.world(b).y, seen + 10.0);
+
+    page.click(flat);
+    assert!(page.lists.get(list).unwrap().headers().is_empty());
+}

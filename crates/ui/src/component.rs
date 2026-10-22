@@ -730,6 +730,8 @@ pub struct NodeStore {
     pub(crate) refreshers: crate::refresh::Refreshers,
     /// Cold: the spinners that spin.
     pub(crate) spinners: crate::spinner::Spinners,
+    /// Cold: the nodes pinned at their viewport's start edge.
+    pub(crate) stickies: crate::sticky::Stickies,
     /// Cold: the nodes that show a descendant as active.
     actives: crate::semantics::ActiveDescendants,
     /// Where the focus was before it last moved, until the move is told.
@@ -867,6 +869,7 @@ impl NodeStore {
         self.bars.clear();
         self.refreshers.clear();
         self.spinners.clear();
+        self.stickies.clear();
         self.actives.clear();
         self.focus_scope = None;
         self.draggable_regions.clear();
@@ -1400,6 +1403,13 @@ impl NodeStore {
         self.row_offset[id.index() as usize] = offset;
     }
 
+    /// Whether node `id` is a row an `AbsoluteRows` canvas positions: a
+    /// virtual list's row host.
+    #[inline]
+    pub fn is_positioned_row(&self, id: NodeId) -> bool {
+        !self.row_offset[id.index() as usize].is_nan()
+    }
+
     /// Clear a node's positioned-row offset back to the "not a row" sentinel, so
     /// it is skipped when an `AbsoluteRows` canvas lays out. Used when a host is
     /// recycled out of the mounted window.
@@ -1565,18 +1575,21 @@ impl NodeStore {
     /// The layer stack child `id` paints in; `0` for any other node.
     #[inline]
     pub(crate) fn stack_layer(&self, id: NodeId) -> i32 {
-        match LayoutTree::placement(self, id.index()) {
+        let layer = match LayoutTree::placement(self, id.index()) {
             Some(Placement::Stack(placed)) => placed.layer,
             _ => 0,
-        }
+        };
+        // A pinned node rides above the siblings of its layer.
+        layer.saturating_add(i32::from(self.is_pinned(id)))
     }
 
-    /// Whether `id` is a stack whose children paint by layer: one of them
-    /// is off layer 0.
+    /// Whether `id`'s children paint by layer: it is a stack one of whose
+    /// children is off layer 0, or a child of it is pinned.
     #[inline]
     pub(crate) fn is_layered(&self, id: NodeId) -> bool {
-        matches!(self.layout[id.index() as usize], LayoutInput::Stack { .. })
-            && self.arena.children(id).any(|c| self.stack_layer(c) != 0)
+        (matches!(self.layout[id.index() as usize], LayoutInput::Stack { .. })
+            && self.arena.children(id).any(|c| self.stack_layer(c) != 0))
+            || self.raises_children(id)
     }
 
     /// Rewrite a Grid container's tracks, gaps, cell alignment, subgrid axes
@@ -1841,6 +1854,12 @@ impl NodeStore {
     #[inline]
     pub fn arena_append_child(&mut self, parent: NodeId, child: NodeId) -> bool {
         self.arena.append_child(parent, child)
+    }
+
+    /// Repaint `parent`'s children whole: the order they paint in changed.
+    pub(crate) fn restack_children(&mut self, parent: NodeId) {
+        self.arena.note_relinked(parent.node_index(), None);
+        self.mark_dirty(parent, DirtyClass::PAINT | DirtyClass::HIT_TEST);
     }
 
     /// Links the orphan `child` under `parent` immediately before `before`, or
@@ -2590,8 +2609,15 @@ impl NodeStore {
         self.show_translate(id, offset);
     }
 
-    /// Shows `offset` as node `id`'s translate. `id` is live.
+    /// Shows `offset` as node `id`'s translate, past any pin of it. `id` is
+    /// live.
     fn show_translate(&mut self, id: NodeId, offset: Vec2) {
+        let offset = offset + self.pin_of(id);
+        self.put_translate(id, offset);
+    }
+
+    /// Writes `offset` as node `id`'s whole translate. `id` is live.
+    pub(crate) fn put_translate(&mut self, id: NodeId, offset: Vec2) {
         let i = id.index() as usize;
         if offset == self.translate[i] {
             return;
@@ -3689,7 +3715,7 @@ impl NodeStore {
                 Some(Content::Text { color, .. }) => LookValue::TextColor(*color),
                 _ => *of,
             },
-            LookValue::Translate(_) => LookValue::Translate(self.translate[i]),
+            LookValue::Translate(_) => LookValue::Translate(self.translate[i] - self.pin_of(id)),
             LookValue::Width(_) => match self.layout[i].size().width {
                 Length::Fixed(v) => LookValue::Width(v),
                 _ => *of,
@@ -4010,7 +4036,7 @@ impl NodeStore {
     fn presented(&self, id: NodeId, of: &LookValue) -> LookValue {
         let i = id.index() as usize;
         match *of {
-            LookValue::Translate(_) => LookValue::Translate(self.translate[i]),
+            LookValue::Translate(_) => LookValue::Translate(self.translate[i] - self.pin_of(id)),
             LookValue::Scale(_) => LookValue::Scale(self.turn[i].scale),
             LookValue::Rotation(_) => LookValue::Rotation(self.turn[i].rotation),
             LookValue::Opacity(_) => LookValue::Opacity(self.opacity[i]),
@@ -4680,6 +4706,7 @@ impl NodeStore {
         self.bars.forget(i as u32);
         self.refreshers.forget(i as u32);
         self.spinners.forget(i as u32);
+        self.stickies.forget(i as u32);
         self.actives.forget(i as u32);
         self.clips[i] = false;
         self.overlay[i] = false;
@@ -4853,6 +4880,7 @@ impl NodeStore {
         self.follow_tails();
         self.settle_scroll_requests();
         self.sync_refreshers();
+        self.sync_stickies();
         if self.sync_scroll_bars() {
             let mut redo = Vec::new();
             self.relayout_dirty(root, surface, scratch, &mut redo);
@@ -5084,6 +5112,7 @@ impl NodeStore {
         self.settle_scroll_requests();
         // A refresher starts or ends and its indicator follows its pull.
         self.sync_refreshers();
+        self.sync_stickies();
         // The bars follow their viewports; a thumb whose length changed lays
         // out again, alone in its track.
         if self.sync_scroll_bars() {
@@ -5783,7 +5812,7 @@ pub struct BuildCx<'a> {
     /// cx. A `virtual_list` call registers its per-list state here keyed by the
     /// viewport's node index; `None` for a node-only or child-body cx (neither
     /// declares a top-level virtual list).
-    lists: Option<&'a mut crate::virtual_list::VirtualLists>,
+    pub(crate) lists: Option<&'a mut crate::virtual_list::VirtualLists>,
     /// Driver-owned edit-buffer registry, present only for a `with_reactive` cx.
     /// A `text_input` call registers the editable node's retained [`Buffer`] here
     /// keyed by that node's index (mirroring `lists`); `None` for a node-only or

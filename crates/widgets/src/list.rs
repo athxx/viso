@@ -155,6 +155,8 @@ pub struct VirtualList {
     /// with no name.
     label: Option<String>,
     on_refresh: Option<crate::scroll::RefreshHandler>,
+    /// Which rows head a section, taken by `build` as the row builder is.
+    headers: RefCell<Option<viso_ui::StickyOf>>,
 }
 
 /// Construct a [`VirtualList`] with the given style, no rows yet. Chain
@@ -167,6 +169,7 @@ pub fn virtual_list(style: VirtualListViewStyle) -> VirtualList {
         item: RefCell::new(None),
         label: None,
         on_refresh: None,
+        headers: RefCell::new(None),
     }
 }
 
@@ -195,6 +198,14 @@ impl VirtualList {
     /// semantics node.
     pub fn label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
+        self
+    }
+
+    /// Let `is_header` say which rows head a section: a header stays at the
+    /// list's start edge while its section passes under it, until the next
+    /// header pushes it on. Asked of every row when the list builds.
+    pub fn section_headers(self, is_header: impl Fn(usize) -> bool + 'static) -> Self {
+        *self.headers.borrow_mut() = Some(Box::new(is_header));
         self
     }
 
@@ -247,6 +258,9 @@ impl Component for VirtualList {
             ),
         };
 
+        if let Some(is_header) = self.headers.borrow_mut().take() {
+            cx.section_headers(handle, is_header);
+        }
         if let Some(handler) = &self.on_refresh {
             crate::scroll::install_refresh(cx, handle, handler);
         }

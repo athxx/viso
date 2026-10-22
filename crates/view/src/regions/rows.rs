@@ -19,7 +19,8 @@ use std::rc::Rc;
 use viso_behavior::{FaultKind, Value};
 use viso_schema::LengthTerms;
 use viso_ui::virtual_list::{
-    ItemBuilder, ItemKey as RowKey, KeyOf, ListShape, attach_list, set_item_count,
+    ItemBuilder, ItemKey as RowKey, KeyOf, ListShape, StickyOf, attach_list, set_item_count,
+    set_sticky_of,
 };
 use viso_ui::{NodeId, StructureCx};
 
@@ -33,6 +34,7 @@ pub(super) struct ListEntries {
     pub(super) key: u32,
     pub(super) estimate: LengthTerms,
     pub(super) overscan: u32,
+    pub(super) sticky: Option<u32>,
 }
 
 /// A mounted `VirtualList` item template.
@@ -43,6 +45,9 @@ pub(super) struct Rows {
     set: Rc<RefCell<RowSet>>,
     /// Each item's key hash, by index, shared with the list's key map.
     hashes: Rc<RefCell<Vec<u64>>>,
+    /// Whether each item's row heads a section, by index, shared with the
+    /// list.
+    heads: Rc<RefCell<Vec<bool>>>,
 }
 
 /// What the list builds rows from and the rows it has mounted.
@@ -75,6 +80,7 @@ impl Rows {
                 rows: Vec::new(),
             })),
             hashes: Rc::new(RefCell::new(Vec::new())),
+            heads: Rc::new(RefCell::new(Vec::new())),
         }
     }
 
@@ -115,6 +121,17 @@ impl Patch<'_, '_> {
         {
             let count = values.len();
             *rows.hashes.borrow_mut() = keys.iter().map(hash).collect();
+            if let Some(sticky) = list.sticky {
+                let heads: Vec<bool> = values
+                    .iter()
+                    .map(|value| {
+                        self.evaluate(sticky, scope, Some(value))
+                            .and_then(|head| head.as_int())
+                            .is_some_and(|head| head != 0)
+                    })
+                    .collect();
+                *rows.heads.borrow_mut() = heads;
+            }
             {
                 let mut set = rows.set.borrow_mut();
                 set.values = values;
@@ -216,6 +233,12 @@ impl Patch<'_, '_> {
             builder,
             Some(key_of),
         );
+        if list.sticky.is_some() {
+            let heads = Rc::clone(&rows.heads);
+            let sticky_of: StickyOf =
+                Box::new(move |at| heads.borrow().get(at).copied().unwrap_or(false));
+            set_sticky_of(self.cx.lists, parent, Some(sticky_of));
+        }
         rows.viewport = Some(parent);
     }
 

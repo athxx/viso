@@ -306,6 +306,7 @@ fn mount(out: &mut String, index: usize, content: &Content, eval: &Eval<'_>, roo
                         Prop::Enabled => format!("P.enabled({el}, {value})"),
                         Prop::Autofocus => format!("P.autofocus({el}, {value})"),
                         Prop::Clip => format!("P.clip({el}, {value})"),
+                        Prop::Sticky => format!("P.sticky({el}, {value})"),
                         Prop::Cursor => format!("P.cursor({el}, {value})"),
                         Prop::FontWeight => format!("P.weight({el}, {value})"),
                         Prop::FontStyle => format!("P.italic({el}, {value})"),

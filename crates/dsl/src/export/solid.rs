@@ -643,6 +643,19 @@ impl Jsx<'_> {
                             "overflow".to_owned(),
                             format!("show.truth({v}) ? \"hidden\" : undefined"),
                         )),
+                        Prop::Sticky => {
+                            for (name, on) in [
+                                ("position", "sticky"),
+                                ("inset-block-start", "0"),
+                                ("inset-inline-start", "0"),
+                                ("z-index", "1"),
+                            ] {
+                                style.push((
+                                    name.to_owned(),
+                                    format!("show.truth({v}) ? \"{on}\" : undefined"),
+                                ));
+                            }
+                        }
                         Prop::Cursor => {
                             style.push(("cursor".to_owned(), format!("show.cursor({v})")))
                         }

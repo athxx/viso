@@ -289,6 +289,7 @@ EXPORT_WRITE                  The export could not be written.
 RUN_APP_FAILED                The app could not be launched, crashed, or exited with a failure.
 RUN_TEST_CRASHED              A test case's runner could not start, crashed, or ended without its report.
 RUN_SNAPSHOT_FAILED           A scenario's snapshot could not be taken.
+RUN_SHEET_FAILED              A game scenario's frame sheet could not be drawn.
 EXPLAIN_UNKNOWN               No diagnostic code has that name.
 TEST_INPUT_INVALID            A test scenario or tape does not parse or fit the build.
 TEST_SNAPSHOT_MISMATCH        A snapshot differs from its golden.

@@ -290,6 +290,12 @@ const P = {
     });
   },
   clip: (el, v) => { el.style.overflow = truth(v) ? "hidden" : ""; },
+  sticky: (el, v) => {
+    const on = truth(v);
+    el.style.position = on ? "sticky" : "";
+    el.style.insetBlockStart = el.style.insetInlineStart = on ? "0" : "";
+    el.style.zIndex = on ? "1" : "";
+  },
   cursor: (el, v) => { el.style.cursor = cursor(v); },
   weight: (el, v) => { el.style.fontWeight = weight(v); },
   italic: (el, v) => { el.style.fontStyle = Number(v ?? 0n) === 1 ? "italic" : ""; },

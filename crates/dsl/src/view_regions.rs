@@ -436,6 +436,21 @@ impl Builder<'_> {
                 let key = region
                     .key
                     .map(|key| self.entry(region.instance, Some(key), region.origin));
+                // A list row's root `sticky` says, of each item, whether its
+                // row heads a section.
+                let sticky = list.and_then(|_| {
+                    let at = region.body.iter().find_map(|item| match item {
+                        UiItem::Node(root) => root
+                            .control_reads
+                            .iter()
+                            .find(|(name, _, instance)| {
+                                name == "sticky" && *instance == region.instance
+                            })
+                            .map(|&(_, at, _)| at),
+                        _ => None,
+                    })?;
+                    Some(self.entry(region.instance, Some(at), region.origin))
+                });
                 let kind = match (list, key) {
                     (Some(list), Some(key)) => {
                         let shape = list.style.list.unwrap_or_default();
@@ -444,11 +459,13 @@ impl Builder<'_> {
                             key,
                             estimate: terms_of(shape.estimate),
                             overscan: shape.overscan,
+                            sticky,
                         }
                     }
                     _ => RegionKind::For { items, key },
                 };
-                (kind, [items].into_iter().chain(key).collect(), vec![false])
+                let entries = [items].into_iter().chain(key).chain(sticky).collect();
+                (kind, entries, vec![false])
             }
             UiItem::Node(_) => unreachable!("a node is not a region"),
         };

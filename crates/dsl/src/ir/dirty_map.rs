@@ -70,6 +70,7 @@ pub fn property_dirty_class(name: &str) -> DirtyClass {
         // A refresh starting or ending moves the indicator and the gap it
         // holds open, and repaints the spinner.
         "refreshing" => D::TRANSFORM | D::PAINT,
+        "sticky" => D::TRANSFORM | D::PAINT | D::HIT_TEST,
 
         // Visibility toggles participation in layout and paint and what is
         // exposed to accessibility.

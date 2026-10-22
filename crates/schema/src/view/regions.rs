@@ -88,6 +88,9 @@ pub enum RegionKind {
         estimate: LengthTerms,
         /// The rows mounted past each end of the viewport.
         overscan: u32,
+        /// Whether an item's row heads a section (called with the item too):
+        /// its root's `sticky`.
+        sticky: Option<u32>,
     },
 }
 
@@ -272,12 +275,14 @@ impl Encode for ViewRegions {
                     key,
                     estimate,
                     overscan,
+                    sticky,
                 } => {
                     enc.write_u8(3);
                     enc.write_varint(u64::from(items));
                     enc.write_varint(u64::from(key));
                     encode_terms(&estimate, enc);
                     enc.write_varint(u64::from(overscan));
+                    enc.write_varint(sticky.map_or(0, |sticky| u64::from(sticky) + 1));
                 }
             }
             enc.write_varint(region.deps.len() as u64);
@@ -393,6 +398,7 @@ impl Decode for ViewRegions {
                     key: read_u32(dec)?,
                     estimate: decode_terms(dec)?,
                     overscan: read_u32(dec)?,
+                    sticky: read_u32(dec)?.checked_sub(1),
                 },
                 _ => return Err(DecodeError::Malformed { offset }),
             };
@@ -725,6 +731,7 @@ mod tests {
             key: 3,
             estimate: LengthTerms::dp(30.0) + LengthTerms::em(1.5),
             overscan: 4,
+            sticky: Some(5),
         };
         assert_eq!(
             ViewRegions::decode_from_slice(&rows.encode_to_vec()),
@@ -735,6 +742,7 @@ mod tests {
             key: 3,
             estimate: LengthTerms::dp(f32::NAN),
             overscan: 4,
+            sticky: None,
         };
         assert!(ViewRegions::decode_from_slice(&rows.encode_to_vec()).is_err());
 

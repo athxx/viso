@@ -952,7 +952,7 @@ Notes:
 $ viso serve --help
 Build a dev artifact for a browser and serve it, hot reloading it
 
-Usage: viso serve [OPTIONS] [TARGET]
+Usage: viso serve [OPTIONS] [TARGETS]...
 
 Examples:
   viso serve                            # the target `[web] default_target` names
@@ -960,7 +960,7 @@ Examples:
   viso serve web-gpu --lan --port 9000  # to the other devices of the network
 
 Arguments:
-  [TARGET]  The web target: `[web] default_target` when omitted [possible values: web-gpu, web-dom, web-hybrid]
+  [TARGETS]...  The web targets, each once and each served under its own path when there are several: `[web] default_target` when omitted [possible values: web-gpu, web-dom, web-hybrid]
 
 Options:
       --host <IP>      The address to listen at; one off the loopback interface needs `--lan`, and `0.0.0.0` with it listens at every interface
@@ -1194,6 +1194,7 @@ Options:
       --frames <N>        The frames a game scenario runs, one fixed tick each; by default through the tape and the scenario's last expectation
       --seed <SEED>       A game world's random seed, over the tape's
       --tape <PATH>       Replay the game input tape at PATH, binary or text, instead of the scenario's
+      --sheet <PATH>      Draw each game scenario's run as a sheet of its frames, a PNG at PATH, through a headless build of the app; with several scenarios, `<stem>-<scenario>.png` beside it each
   -h, --help              Print help
 
 Global options:

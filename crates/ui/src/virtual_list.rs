@@ -323,6 +323,12 @@ pub struct ItemKey(pub u64);
 /// index maps to a stable identity with no side effect).
 pub type KeyOf = Box<dyn Fn(usize) -> ItemKey>;
 
+/// Whether logical row `i` heads a section: a header row stays at the
+/// viewport's start edge while its section passes under it, until the next
+/// header pushes it on. Cold, like [`KeyOf`]: asked of every row once when
+/// the data changes.
+pub type StickyOf = Box<dyn Fn(usize) -> bool>;
+
 /// One currently-mounted row: the logical item it shows, the host node whose body
 /// holds its widgets, and the main-axis offset the host sits at inside the canvas.
 #[derive(Debug, Clone, Copy)]
@@ -426,6 +432,20 @@ pub struct VirtualListState {
     /// steps find a key by binary search instead of a scan per row.
     sorted_new: Vec<u64>,
     sorted_old: Vec<(u64, u32)>,
+    /// Which rows head a section, if any do.
+    sticky_of: Option<StickyOf>,
+    /// The header rows, in index order, as `sticky_of` gave them when the
+    /// data last changed.
+    headers: Vec<usize>,
+    /// The data changed since `headers` was taken.
+    headers_stale: bool,
+    /// The header row the viewport's start shows while the window no longer
+    /// holds it: mounted past the window, pinned at the start edge.
+    pinned: Option<MountedItem>,
+    /// The key of the header to keep when its row leaves the window.
+    keep: Option<ItemKey>,
+    /// The host showing the current header, raised above the rows.
+    header_host: Option<NodeId>,
 }
 
 impl VirtualListState {
@@ -472,7 +492,138 @@ impl VirtualListState {
             scratch_old_mounted: VecDeque::new(),
             sorted_new: Vec::new(),
             sorted_old: Vec::new(),
+            sticky_of: None,
+            headers: Vec::new(),
+            headers_stale: false,
+            pinned: None,
+            keep: None,
+            header_host: None,
         }
+    }
+
+    /// Let `sticky_of` say which rows head a section (none without).
+    pub fn set_sticky_of(&mut self, sticky_of: Option<StickyOf>) {
+        self.sticky_of = sticky_of;
+        self.headers_stale = true;
+        self.dirty_data = true;
+    }
+
+    /// The header rows, in index order.
+    pub fn headers(&self) -> &[usize] {
+        &self.headers
+    }
+
+    /// Asks `sticky_of` of every row again when the data changed.
+    fn take_headers(&mut self) {
+        if !std::mem::take(&mut self.headers_stale) {
+            return;
+        }
+        self.headers.clear();
+        if let Some(sticky_of) = &self.sticky_of {
+            self.headers
+                .extend((0..self.item_count).filter(|&i| sticky_of(i)));
+        }
+    }
+
+    /// The header of the section row `row` belongs to, with the next
+    /// header, if any.
+    fn header_of(&self, row: usize) -> Option<(usize, Option<usize>)> {
+        let at = self.headers.partition_point(|&h| h <= row);
+        let header = *self.headers.get(at.checked_sub(1)?)?;
+        Some((header, self.headers.get(at).copied()))
+    }
+
+    /// The offset that shows row `index` at the viewport's start: under its
+    /// section's pinned header, unless it heads the section itself.
+    fn reveal_offset(&self, index: usize) -> f32 {
+        let top = self.heights.prefix_sum(index);
+        match self.header_of(index) {
+            Some((header, _)) if header != index => top - self.heights.point_query(header),
+            _ => top,
+        }
+    }
+
+    /// A row leaving the window parks its host, but the current header's row
+    /// stays mounted, pinned past the window.
+    fn leave(&mut self, row: MountedItem, store: &mut NodeStore) {
+        if self.keep != Some(row.key) {
+            park(store, &mut self.pool, row.host);
+        } else if let Some(old) = self.pinned.replace(row) {
+            park(store, &mut self.pool, old.host);
+        }
+    }
+
+    /// Show the header of the section at the viewport's start `scroll` —
+    /// the window's row of it, or one mounted past the window — pinned at
+    /// the start edge until the next header pushes it on. Returns the rows
+    /// bound.
+    fn place_header(&mut self, first: usize, scroll: f32, cx: &mut StructureCx<'_>) -> u32 {
+        let mut bound = 0;
+        let header = self.header_of(first);
+        let host = match header {
+            None => None,
+            Some((h, _)) if (self.range_start..self.range_end).contains(&h) => {
+                Some(self.mounted[h - self.range_start].host)
+            }
+            Some((h, _)) => {
+                let key = self.key_at(h);
+                match self.pinned {
+                    Some(row) if row.key == key => {
+                        let item_top = self.heights.prefix_sum(h);
+                        if row.item_top != item_top {
+                            cx.store.set_row_offset(row.host, item_top);
+                            cx.store
+                                .mark_dirty(row.host, DirtyClass::LAYOUT | DirtyClass::PAINT);
+                        }
+                        self.pinned = Some(MountedItem {
+                            logical_index: h,
+                            item_top,
+                            ..row
+                        });
+                        Some(row.host)
+                    }
+                    _ => {
+                        if let Some(row) = self.pinned.take() {
+                            park(cx.store, &mut self.pool, row.host);
+                        }
+                        let row = self.mount(h, key, cx);
+                        bound += 1;
+                        self.pinned = Some(row);
+                        Some(row.host)
+                    }
+                }
+            }
+        };
+        if let Some(row) = self.pinned
+            && Some(row.host) != host
+        {
+            self.pinned = None;
+            park(cx.store, &mut self.pool, row.host);
+        }
+        if self.header_host != host {
+            if let Some(old) = self.header_host {
+                cx.store.unpin(old);
+            }
+            self.header_host = host;
+        }
+        if let (Some(host), Some((h, next))) = (host, header) {
+            let top = self.heights.prefix_sum(h);
+            let room = next.map_or(f32::INFINITY, |n| self.heights.prefix_sum(n))
+                - self.heights.point_query(h);
+            let shift = (scroll.min(room) - top).max(0.0);
+            let pin = match self.axis {
+                Axis::Column => crate::layout::Vec2 { x: 0.0, y: shift },
+                Axis::Row
+                    if cx.store.direction_at(self.canvas.index())
+                        == crate::adaptive::LayoutDirection::Rtl =>
+                {
+                    crate::layout::Vec2 { x: -shift, y: 0.0 }
+                }
+                Axis::Row => crate::layout::Vec2 { x: shift, y: 0.0 },
+            };
+            cx.store.pin(host, pin);
+        }
+        bound
     }
 
     /// The stable key of logical row `i`: the data key for a keyed list, or
@@ -570,7 +721,7 @@ impl VirtualListState {
         for m in &old_mounted {
             let still_present = sorted_new.binary_search(&m.key.0).is_ok();
             if !still_present {
-                park(cx.store, &mut self.pool, m.host);
+                self.leave(*m, cx.store);
             }
         }
 
@@ -626,12 +777,15 @@ impl VirtualListState {
         let (start, end) = (self.range_start, self.range_end);
         let front = new_start.saturating_sub(start);
         let back = end.saturating_sub(new_end);
-        for m in self.mounted.drain(..front) {
-            park(cx.store, &mut self.pool, m.host);
+        for _ in 0..front {
+            if let Some(m) = self.mounted.pop_front() {
+                self.leave(m, cx.store);
+            }
         }
-        let kept = self.mounted.len() - back;
-        for m in self.mounted.drain(kept..) {
-            park(cx.store, &mut self.pool, m.host);
+        for _ in 0..back {
+            if let Some(m) = self.mounted.pop_back() {
+                self.leave(m, cx.store);
+            }
         }
         let mut entering = std::mem::take(&mut self.scratch_old_mounted);
         for logical in new_start..start {
@@ -654,6 +808,21 @@ impl VirtualListState {
     /// allocate one under the canvas), empty its old body and build the row's.
     fn mount(&mut self, logical: usize, key: ItemKey, cx: &mut StructureCx<'_>) -> MountedItem {
         let item_top = self.heights.prefix_sum(logical);
+        // The pinned header's row comes back into the window as it is.
+        if let Some(row) = self.pinned.filter(|row| row.key == key) {
+            self.pinned = None;
+            if row.item_top != item_top {
+                cx.store.set_row_offset(row.host, item_top);
+                cx.store
+                    .mark_dirty(row.host, DirtyClass::LAYOUT | DirtyClass::PAINT);
+            }
+            return MountedItem {
+                logical_index: logical,
+                key,
+                host: row.host,
+                item_top,
+            };
+        }
         let host = match self.pool.pop() {
             Some(parked) => {
                 cx.store.arena_append_child(self.canvas, parked);
@@ -690,7 +859,7 @@ impl VirtualListState {
     /// writing only the hosts whose place moved.
     fn announce_positions(&self, store: &mut NodeStore) {
         let count = u32::try_from(self.item_count).unwrap_or(u32::MAX);
-        for row in &self.mounted {
+        for row in self.mounted.iter().chain(&self.pinned) {
             let index = u32::try_from(row.logical_index + 1).unwrap_or(u32::MAX);
             let state = store.semantic_state(row.host).unwrap_or_default();
             if state.position != Some((index, count)) {
@@ -704,6 +873,7 @@ impl VirtualListState {
     #[inline]
     pub fn mark_data_dirty(&mut self) {
         self.dirty_data = true;
+        self.headers_stale = self.sticky_of.is_some();
     }
 
     /// The logical item count.
@@ -756,6 +926,8 @@ impl VirtualListState {
     /// Free the parked hosts, which sit outside the tree: as the list itself is
     /// dropped.
     fn free_pool(&mut self, store: &mut NodeStore, effects: &mut EffectStore) {
+        // The pinned header's host is the canvas's; it goes with it.
+        self.pinned = None;
         for host in self.pool.drain(..) {
             store.free_tree(host, effects, &mut self.scratch_free);
         }
@@ -939,6 +1111,7 @@ fn reconcile_one(viewport: NodeId, state: &mut VirtualListState, cx: &mut Struct
     let axis = state.axis;
     // A seek scrolls its row to the start edge, as near as the end of the list
     // allows, on the extent the height model holds now.
+    state.take_headers();
     let room = (state.heights.total() - cx.store.bounds_main(viewport, axis)).max(0.0);
     let mut started = false;
     if let Some((index, smooth)) = state.reveal.take() {
@@ -947,14 +1120,14 @@ fn reconcile_one(viewport: NodeId, state: &mut VirtualListState, cx: &mut Struct
             started = true;
         } else {
             state.gliding_to = None;
-            let to = state.heights.prefix_sum(index).min(room);
+            let to = state.reveal_offset(index).min(room);
             cx.store.seek_scroll(viewport, axis, to);
         }
     }
     // A glide the finger or the wheel stopped, or that arrived, aims no more.
     if let Some(index) = state.gliding_to {
         if started || cx.store.is_gliding(viewport) {
-            let to = state.heights.prefix_sum(index).min(room);
+            let to = state.reveal_offset(index).min(room);
             cx.store.glide_along(viewport, axis, to);
         } else {
             state.gliding_to = None;
@@ -991,8 +1164,15 @@ fn reconcile_one(viewport: NodeId, state: &mut VirtualListState, cx: &mut Struct
         && !state.dirty_data
     {
         state.last_reconciled_scroll = scroll_main;
-        return 0;
+        let bound = state.place_header(first, scroll_main, cx);
+        if bound > 0 {
+            state.announce_positions(cx.store);
+        }
+        return bound;
     }
+
+    // The current header's row stays mounted as it leaves the window.
+    state.keep = state.header_of(first).map(|(h, _)| state.key_at(h));
 
     // With clean data every row keeps its key and its offset, so a window that
     // overlaps the last one keeps exactly the overlap: only its ends change.
@@ -1020,21 +1200,25 @@ fn reconcile_one(viewport: NodeId, state: &mut VirtualListState, cx: &mut Struct
         state.committed_extent = total_after;
     }
 
-    // 4. Tell each mounted row its place in the collection: an entering row
-    //    has none yet, and a survivor moves with a reorder or a count change.
-    state.announce_positions(cx.store);
-
-    // 5. Commit the window.
+    // 4. Commit the window.
     state.range_start = new_start;
     state.range_end = new_end;
     state.last_reconciled_scroll = scroll_main;
     state.dirty_data = false;
     state.mounted_once = true;
+
+    // 5. Pin the header of the section the viewport starts in, then tell
+    //    each mounted row its place in the collection: an entering row has
+    //    none yet, and a survivor moves with a reorder or a count change.
+    state.keep = None;
+    let bound = bound + state.place_header(first, scroll_main, cx);
+    state.announce_positions(cx.store);
     bound
 }
 
 /// Detach a row's host from the canvas and park it for reuse.
 fn park(store: &mut NodeStore, pool: &mut Vec<NodeId>, host: NodeId) {
+    store.unpin(host);
     store.arena_detach(host);
     store.clear_row_offset(host);
     pool.push(host);
@@ -1167,6 +1351,30 @@ pub fn set_item_count(lists: &mut VirtualLists, viewport: NodeId, item_count: us
         state.item_count = item_count;
         state.heights.resize(item_count);
         state.dirty_data = true;
+        state.headers_stale = state.sticky_of.is_some();
+    }
+}
+
+/// Let `sticky_of` say which rows of the list at `viewport` head a section
+/// (none without): see [`StickyOf`].
+pub fn set_sticky_of(lists: &mut VirtualLists, viewport: NodeId, sticky_of: Option<StickyOf>) {
+    if let Some(state) = lists.get_mut(viewport) {
+        state.set_sticky_of(sticky_of);
+    }
+}
+
+impl BuildCx<'_> {
+    /// Let `is_header` say which rows of the virtual list `list` head a
+    /// section: each stays at the viewport's start edge while its section
+    /// passes under it, until the next header pushes it on.
+    pub fn section_headers(
+        &mut self,
+        list: crate::component::Handle,
+        is_header: impl Fn(usize) -> bool + 'static,
+    ) {
+        if let Some(lists) = self.lists.as_mut() {
+            set_sticky_of(lists, list.id(), Some(Box::new(is_header)));
+        }
     }
 }
 
@@ -1810,6 +2018,156 @@ mod tests {
         );
         // Logical 20 now shows key 21's host (the swap), still on screen.
         assert_eq!(h.host_of(20), h.host_for_key(ItemKey(21)));
+    }
+
+    /// A 1000-row list of 30px rows, 300px tall, overscan 2, whose every
+    /// 20th row heads a section.
+    fn sectioned() -> ListHarness {
+        let mut h = ListHarness::new(1000, 30.0, 2, 300.0);
+        h.state_mut().set_sticky_of(Some(Box::new(|i| i % 20 == 0)));
+        h.frame();
+        h
+    }
+
+    /// Scroll `h` to `to` and run a frame.
+    fn scroll_to(h: &mut ListHarness, to: f32) {
+        let now = h.store.scroll(h.viewport).y;
+        h.store.scroll_by(
+            h.viewport,
+            Vec2 {
+                x: 0.0,
+                y: to - now,
+            },
+        );
+        h.frame();
+    }
+
+    /// The host showing row `row` and the pin it shows, mounted in the window
+    /// or pinned past it.
+    fn header_host(h: &ListHarness, row: usize) -> (NodeId, f32) {
+        let state = h.state();
+        let host = state
+            .mounted
+            .iter()
+            .chain(&state.pinned)
+            .find(|m| m.logical_index == row)
+            .expect("the header is mounted")
+            .host;
+        (host, h.store.translate(host).y)
+    }
+
+    #[test]
+    fn a_section_header_stays_at_the_top_until_the_next_pushes_it_on() {
+        let mut h = sectioned();
+        assert_eq!(h.state().headers().len(), 50);
+        // Inside section 0, the header sits pinned at the scroll offset.
+        scroll_to(&mut h, 45.0);
+        assert_eq!(header_host(&h, 0).1, 45.0);
+        // Far past the window, row 0 is still mounted, pinned.
+        scroll_to(&mut h, 500.0);
+        assert!(h.state().pinned.is_some_and(|p| p.logical_index == 0));
+        let (host, pin) = header_host(&h, 0);
+        assert_eq!(pin, 500.0);
+        assert!(h.store.is_pinned(host));
+        assert!(
+            h.store.is_layered(h.state().canvas()),
+            "it paints over the rows"
+        );
+        // The next header, 600 down, pushes it: 30px short it starts to go.
+        scroll_to(&mut h, 585.0);
+        assert_eq!(header_host(&h, 0).1, 570.0);
+        // In section 1, row 20 is the header; row 0 is gone.
+        scroll_to(&mut h, 615.0);
+        assert_eq!(header_host(&h, 20).1, 15.0);
+        assert!(h.state().pinned.is_none(), "row 20 is in the window");
+        assert!(!h.store.is_pinned(host), "the old header was unpinned");
+        // Back up, the pinned row returns to the window as it was.
+        scroll_to(&mut h, 900.0);
+        let pinned = header_host(&h, 20).0;
+        scroll_to(&mut h, 620.0);
+        assert_eq!(header_host(&h, 20).0, pinned, "not rebuilt");
+    }
+
+    #[test]
+    fn a_list_with_headers_paints_as_a_whole_repaint_would() {
+        let mut h = sectioned();
+        let mut out = Vec::new();
+        h.store.repaint(h.viewport, &mut out);
+        for to in [45.0, 500.0, 585.0, 615.0, 900.0, 620.0, 0.0] {
+            let now = h.store.scroll(h.viewport).y;
+            h.store.scroll_by(
+                h.viewport,
+                Vec2 {
+                    x: 0.0,
+                    y: to - now,
+                },
+            );
+            for _ in 0..2 {
+                reconcile(
+                    &mut h.store,
+                    &mut h.lists,
+                    &mut h.states,
+                    &mut h.bindings,
+                    &mut h.effects,
+                );
+                h.store
+                    .relayout_dirty(h.viewport, h.surface, &mut h.scratch, &mut h.redo);
+                absorb_measurements(&h.store, &mut h.lists);
+                h.store.repaint_dirty(h.viewport, &mut out);
+                let mut whole = Vec::new();
+                h.store.repaint(h.viewport, &mut whole);
+                assert_eq!(out, whole, "at {to}");
+                h.store.clear_dirty();
+            }
+        }
+    }
+
+    #[test]
+    fn pinning_a_header_moves_it_without_a_relayout() {
+        let mut h = sectioned();
+        scroll_to(&mut h, 200.0);
+        let (host, _) = header_host(&h, 0);
+        h.store.scroll_by(h.viewport, Vec2 { x: 0.0, y: 5.0 });
+        reconcile(
+            &mut h.store,
+            &mut h.lists,
+            &mut h.states,
+            &mut h.bindings,
+            &mut h.effects,
+        );
+        let dirty = h.store.dirty(host);
+        assert!(dirty.contains(DirtyClass::TRANSFORM));
+        assert!(!dirty.intersects(DirtyClass::MEASURE | DirtyClass::LAYOUT));
+        assert_eq!(h.store.translate(host).y, 205.0);
+    }
+
+    #[test]
+    fn a_row_scrolled_to_shows_under_its_sections_header() {
+        let mut h = sectioned();
+        h.state_mut().scroll_to_index(25);
+        h.frame();
+        assert_eq!(h.store.scroll(h.viewport).y, 25.0 * 30.0 - 30.0);
+        h.state_mut().scroll_to_index(40);
+        h.frame();
+        assert_eq!(
+            h.store.scroll(h.viewport).y,
+            40.0 * 30.0,
+            "a header shows at the top"
+        );
+    }
+
+    #[test]
+    fn headers_follow_the_data() {
+        let mut h = sectioned();
+        scroll_to(&mut h, 500.0);
+        h.state_mut().set_sticky_of(None);
+        h.frame();
+        assert!(h.state().headers().is_empty());
+        assert!(h.state().pinned.is_none());
+        assert!(!h.store.is_layered(h.state().canvas()));
+        set_item_count(&mut h.lists, h.viewport, 10);
+        h.frame();
+        assert!(h.state().pool_len() > 0);
     }
 
     #[test]

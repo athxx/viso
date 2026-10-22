@@ -58,6 +58,7 @@ pub mod spinner;
 pub mod state;
 #[cfg(feature = "hot-reload")]
 pub mod state_origin;
+pub mod sticky;
 pub mod structure;
 pub mod style;
 pub mod suspend;
@@ -169,8 +170,8 @@ pub use text_edit::{
 pub use timer::{TimerId, TimerRegistry, TimerRequest};
 pub use token::{Theme, TokenId, TokenInterner, TokenNamespace};
 pub use virtual_list::{
-    HeightCache, HeightTree, ItemBuilder, VirtualListState, VirtualLists, absorb_measurements,
-    reconcile, set_item_count,
+    HeightCache, HeightTree, ItemBuilder, StickyOf, VirtualListState, VirtualLists,
+    absorb_measurements, reconcile, set_item_count, set_sticky_of,
 };
 /// The renderer's asset vocabulary — resource identity, formats, decoded
 /// payloads — which the compiler names resources by and the facade decodes

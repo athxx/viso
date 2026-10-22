@@ -182,6 +182,7 @@ impl ControlKind {
             (_, "clip") => ControlInput::Clip,
             (_, "cursor") => ControlInput::Cursor,
             (_, "refreshing") => ControlInput::Refreshing,
+            (_, "sticky") => ControlInput::Sticky,
             (ControlKind::Label | ControlKind::TextInput | ControlKind::Number, "color") => {
                 ControlInput::TextColor
             }
@@ -672,6 +673,9 @@ pub enum ControlInput {
     /// A refreshable viewport's `refreshing`: whether a refresh runs, its
     /// owner's to say.
     Refreshing,
+    /// The node's `sticky`: whether it stays at its viewport's start edge
+    /// while its parent passes under it.
+    Sticky,
     /// A text's `font_style`: upright or italic.
     FontStyle,
     /// A text's `spans`: its pieces, drawn each its own way.
@@ -781,6 +785,8 @@ pub struct NodeEntries {
     pub cursor: Option<u32>,
     /// The entry of a refreshable viewport's `refreshing`.
     pub refreshing: Option<u32>,
+    /// The entry of its `sticky`.
+    pub sticky: Option<u32>,
 }
 
 /// The handler-table entries of the style of a text a node shows: an absent
@@ -912,7 +918,7 @@ pub enum Switched {
 
 impl ControlInput {
     /// Every input, by wire tag.
-    pub const ALL: [ControlInput; 54] = [
+    pub const ALL: [ControlInput; 55] = [
         ControlInput::Value,
         ControlInput::Min,
         ControlInput::Max,
@@ -967,6 +973,7 @@ impl ControlInput {
         ControlInput::Selectable,
         ControlInput::Shadow,
         ControlInput::Refreshing,
+        ControlInput::Sticky,
     ];
 
     /// Its wire tag: its place in [`ControlInput::ALL`].
@@ -1112,6 +1119,7 @@ impl Control {
             ControlInput::Clip => self.node.clip,
             ControlInput::Cursor => self.node.cursor,
             ControlInput::Refreshing => self.node.refreshing,
+            ControlInput::Sticky => self.node.sticky,
             ControlInput::TextColor => self.text.color,
             ControlInput::SoftWrap => self.text.soft_wrap,
             ControlInput::FontWeight => self.text.font_weight,
@@ -1182,6 +1190,7 @@ impl Control {
             ControlInput::Clip => &mut self.node.clip,
             ControlInput::Cursor => &mut self.node.cursor,
             ControlInput::Refreshing => &mut self.node.refreshing,
+            ControlInput::Sticky => &mut self.node.sticky,
             ControlInput::TextColor => &mut self.text.color,
             ControlInput::SoftWrap => &mut self.text.soft_wrap,
             ControlInput::FontWeight => &mut self.text.font_weight,
@@ -1257,6 +1266,7 @@ impl Encode for Control {
             self.node.clip,
             self.node.cursor,
             self.node.refreshing,
+            self.node.sticky,
         ]
         .into_iter()
         .chain(self.text.all())
@@ -1382,6 +1392,7 @@ impl Decode for Control {
             clip: entry()?,
             cursor: entry()?,
             refreshing: entry()?,
+            sticky: entry()?,
         };
         control.text = TextEntries {
             color: entry()?,
@@ -1662,6 +1673,7 @@ mod tests {
                 clip: Some(21),
                 cursor: Some(26),
                 refreshing: Some(28),
+                sticky: Some(29),
             },
             text: TextEntries {
                 color: None,

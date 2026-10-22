@@ -57,6 +57,7 @@ const TRANSFORM: &[WidgetProperty] = &[
     look("opacity", "F32"),
     look("clip", "Bool"),
     look("visible", "Bool"),
+    prop("sticky", "Bool"),
 ];
 
 /// Focus properties every node but `Fragment` takes.

@@ -4657,12 +4657,14 @@ export record AdaptiveColumns { mode: AutoRepeat = AutoRepeat::fill; min: MixedL
 | `opacity`          | `F32`         | `1.0`                 | `PAINT`                      |
 | `clip`             | `Bool`        | `false`               | `PAINT\|HIT_TEST`            |
 | `visible`          | `Bool`        | `true`                | `PAINT\|HIT_TEST\|SEMANTICS` |
+| `sticky`           | `Bool`        | `false`               | `TRANSFORM\|PAINT\|HIT_TEST` |
 
 - `Offset { x: MixedLength = 0dp; y: MixedLength = 0dp; }` 不声明 `percent_basis`，含 Percent 分量是 `E3104`；
 - 变换在布局之后应用，不改变任何节点的布局尺寸与兄弟位置；Hit Test 使用变换后的几何；`translate.x` 是物理方向，不随 RTL 翻转；
 - `opacity` 截断到 `[0, 1]`；`opacity: 0.0` 的节点仍参与 Hit Test 与语义；
 - `visible: false` 保留布局空间，但不绘制、不参与命中测试，并从语义树移除；需要同时移除布局空间时使用 `if`；
 - `clip: true` 按自身 Border Box 与 `corner_radius` 裁剪子节点的绘制与命中测试；滚动视口总是裁剪。
+- `sticky: true` 的节点在最近的滚动视口滚过它时停在视口起点边（纵向为上边，横向为起点边，RTL 为右边），直到父节点的末端把它推走（分组标题随其分组离开）；可绑定。停靠只叠加在节点自身 `translate` 之上，只标记 `TRANSFORM`；停靠中的节点在兄弟之上绘制与命中。`VirtualList` 行根的 `sticky` 不作用于行根本身，而是按 Item 求值，标出各分组的标题行（U9.3）。HTML 导出为 `position: sticky`。
 - `transform_origin` 的 `start`/`end` 随布局方向翻转；`scale`、`rotation` 绕它先缩放后旋转（顺时针），再平移 `translate`。
 
 ---
@@ -5030,6 +5032,7 @@ Named Node `n` 在同一 Component 的 Action 与 Handler 中以 `n: NodeRef<T>`
 - **滚动**：只标记 `TRANSFORM|HIT_TEST|PAINT`；进入视口的新行按上述规则挂载或复用；
 - **命令式滚动**：`n.scroll_to_key(key)` 与 `n.scroll_to_index(i)` 可滚动到尚未挂载的行；未知 `key` 是 No-op；
 - **语义**：列表 Role 为 `list`，每行为 `list_item`，语义树报告集合总数与行位置。
+- **分组标题**：行根的 `sticky`（`sticky: item.is_header;`）按 Item 与 Key 一同求值；为 `true` 的行是分组标题：视口起点所在分组的标题停在起点边，下一个标题到达时将其推走；标题行滚出窗口后仍保持挂载并停靠；`scroll_to_index`/`scroll_to_key` 让非标题行停在其分组标题下方。
 
 当前实现：`VirtualList` 的 Item Template 在宏、热重载与 Release Package（含 AOT）中挂载：列表节点是其 `axis` 上的 Scroll 视口，`for` 的 Items 与 Key 按普通 `for` 的规则求值（Key 经稳定哈希成为行身份），视口只挂载窗口与 Overscan 内的行；Items 变化时存活行按 Key 保留宿主、局部状态与焦点并以新 Item 重新投递，离开的行回收复用；`estimated_extent` 与 `overscan` 取常量（`em` 在挂载时按列表节点的字号折算）。HTML/Solid 导出挂载全部行，行带 `content-visibility: auto` 与按 `estimated_extent` 的固有尺寸，浏览器跳过屏幕外行的布局与绘制。`on visible_range_changed` 在布局之后投递：首次布局即报告，之后窗口变化才报告，`last` 为视口内最后一行（含）；导出页面由滚动与尺寸变化计算同一范围。列表 Role 为 `list`，每个行宿主为 `list_item` 并带 1 起的位置与集合总数（AccessKit `position_in_set`/`size_of_set`，Web `aria-posinset`/`aria-setsize`），导出页面中无自身 Role 的行根元素为 `listitem`。行内可以再有 `VirtualList`：它随所在行在同一帧挂载，所在行被回收时一并释放。
 

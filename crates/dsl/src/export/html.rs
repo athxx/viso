@@ -87,6 +87,10 @@ pub(super) enum Wire {
     Anchor(u32),
 }
 
+/// The style of a sticky element: held at its scroller's start edge, over
+/// the siblings that pass under it.
+const STICKY: &str = "position: sticky; inset-block-start: 0; inset-inline-start: 0; z-index: 1";
+
 /// A property a wire shows.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum Prop {
@@ -101,6 +105,9 @@ pub(super) enum Prop {
     Autofocus,
     /// Whether its children show only inside its box.
     Clip,
+    /// Whether it stays at its scroller's start edge while its parent
+    /// passes under it, as `position: sticky`.
+    Sticky,
     /// The pointer shape over it, as its CSS `cursor`.
     Cursor,
     /// Its text's `font-weight`.
@@ -1341,6 +1348,16 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         ) && fixed.truth()
         {
             el.style("overflow: hidden");
+        }
+        if let Some(fixed) = self.bind(
+            wires,
+            control.node.sticky,
+            Prop::Sticky,
+            "whether it sticks",
+            at,
+        ) && fixed.truth()
+        {
+            el.style(STICKY);
         }
         if let Some(fixed) = self.bind(
             wires,

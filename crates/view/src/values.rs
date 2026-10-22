@@ -221,6 +221,7 @@ pub(crate) fn control_cells(
         look.transform_origin,
         control.node.cursor,
         control.node.refreshing,
+        control.node.sticky,
     ])
     .flatten()
     .chain(arms)
@@ -240,8 +241,8 @@ pub(crate) fn control_cells(
 /// `max_length`, a number field's `step` and `precision` and a check's
 /// caption, its `translate`, `scale`, `rotation` and `transform_origin`, and
 /// its `cursor`, its text's `font_style`, `spans` and `selectable`, its
-/// `shadow`, and a refreshable viewport's `refreshing`.
-const SHOWN: usize = 45;
+/// `shadow`, a refreshable viewport's `refreshing`, and its `sticky`.
+const SHOWN: usize = 46;
 
 /// The input of each value a node shows, in order.
 const SHOWN_INPUTS: [ControlInput; SHOWN] = [
@@ -290,6 +291,7 @@ const SHOWN_INPUTS: [ControlInput; SHOWN] = [
     ControlInput::Selectable,
     ControlInput::Shadow,
     ControlInput::Refreshing,
+    ControlInput::Sticky,
 ];
 
 /// Where its `translate` sits among the values a node shows.
@@ -312,6 +314,9 @@ const SHADOW: usize = 43;
 /// Where a refreshable viewport's `refreshing` sits among the values a node
 /// shows.
 const REFRESHING: usize = 44;
+
+/// Where its `sticky` sits among the values a node shows.
+const STICKY: usize = 45;
 
 /// Where its background, opacity, corner radius and border sit among the
 /// values a node shows.
@@ -519,6 +524,7 @@ impl Shown {
             selectable,
             shadow,
             refreshing,
+            sticky,
         ] = &shows;
         let spanned = crate::text_style::spans(pieces);
         let changed = |at: usize| prior.is_none_or(|prior| prior[at] != shows[at]);
@@ -618,6 +624,16 @@ impl Shown {
         if given(REFRESHING) && changed(REFRESHING) {
             store.set_refresh_controlled(self.node, true);
             store.set_refreshing(self.node, truth(refreshing, false));
+        }
+        // A list row's root heads a section through its list instead.
+        if shown(STICKY)
+            && changed(STICKY)
+            && !store
+                .arena()
+                .parent(self.node)
+                .is_some_and(|host| store.is_positioned_row(host))
+        {
+            store.set_sticky(self.node, truth(sticky, false));
         }
         // An autofocus node takes the focus as it mounts, unless something
         // already holds it.
