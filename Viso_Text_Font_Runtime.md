@@ -1292,6 +1292,14 @@ cluster map
 - **可选择文本**：只读文本框（`FieldLook::read_only`）。可选择的文本与输入框共用 `text_edit::Buffer`、`field_input`、点击计数、触摸手柄与编辑菜单：缓冲区丢弃一切改变文本的意图（`EditIntent::edits`），其文本请求照常携带片段、行数上限与省略号；门面不为它推送 Text Entry（无软键盘、无输入法），编辑菜单只有复制与全选，剪切请求不应答；光标只在焦点由键盘带来时显示（`MarkState::keyboard`），此时 `FieldMarks::ring` 让它外画焦点环；焦点离开时选区收起。`NodeStore::unmake_field` 把字段节点变回普通文本，其缓冲区在下一次 reconcile 中注销，所以 `selectable` 可以在运行时切换。
 - **链接**：`SpanStyle::link` 让片段成为链接（`link(target)` 同时加下划线）。放置时每个链接在其所在的每一行得到一个盒（片段在该 Run 内的横向范围 × 整行行高，同行相邻的合并），记在 `TextInk::links`（`LinkBox { link, rect }`，节点局部坐标）；指针命中、手形光标、焦点环与无障碍边界都读这组盒，所以链接在它画出的地方被点中。`viso_ui::links` 是冷侧表（每个持有链接的节点一项）：鼠标悬停时 `cursor_over` 返回 `Pointer`；同一指针在同一链接上按下并抬起即激活，取消或离开窗口不激活；持有链接的节点可获得焦点，`focus_next` 先在其链接间步进再离开，进入时落在第一个（反向时最后一个）链接；Enter 激活焦点所在的链接；焦点由键盘移动时绘制 2 px 圆角焦点环。激活经 `KeyRouter::route_link` 先投递给该节点的 key handler（`EventCx::link()`），再沿祖先冒泡直到被停止；`Label::on_link` 在此处理并停止冒泡。语义树为每个链接追加一个 `Role::Link` 子行（`SemanticsNode::link`），名称为链接文字，Click 降为在其首行盒中心的点击，Focus 把宿主的焦点放到该链接。
 
+### 12.12.3 Markdown 文档
+
+`viso_widgets::markdown(source)` 把 CommonMark + GitHub 扩展（表格、任务列表、删除线、脚注、Alert）显示为保留节点；解析用 `pulldown-cmark`（只取事件与源码偏移，不带 HTML 渲染器）。
+
+- **块即节点**：每个顶层块恰为根列下的一个节点：段落是换行的 `Label`（行内强调、加粗、删除线、行内代码、链接、`<br>`/`<sub>`/`<sup>`/`<kbd>`/`<mark>` 等 GitHub 白名单内联 HTML 都折成同一文本上的 `TextSpan`），标题按级缩放并加粗（`Role::Heading` + 级别，一、二级下画分隔线），引用是竖条 + 内容列（Alert 用其颜色与标题），列表是标记列 + 内容列的行（有序列表的标记按最大序号定宽右对齐，`Role::List`/`Role::ListItem`，紧凑与松散列表间距不同），代码块是横向滚动框中的等宽 `Label`，表格是横向滚动的 Grid（`Auto` 列、表头加粗、列对齐），图片经 `Markdown::pictures` 解析为 `Asset`、解析不到则显示替代文字；块级 HTML 不显示。
+- **源码与增量**：源码是 `MarkdownText`（`Rc` 共享，`set`/`push_str` 接收任意 `StateWriter`：`EventCx`、`UpdateCx`、`EffectCx`、`StateStore`），每次写入递增文档的修订 cell，结构 Hook 在同帧内更新。纯追加且没有链接引用定义时只从最后一个顶层块的行首重新解析；否则全文重新解析，引用定义集合变化时全部重建。新旧顶层块按各自源码切片比较公共前缀与后缀，只释放并重建中间变化的块（新块插在后缀的第一个块之前），所以流式输出每次只重建最后一个块。重建的块若含焦点，焦点按其在块内可聚焦节点中的序号落到新块。
+- **交互**：链接激活冒泡到文档根，`Markdown::on_link` 处理；`selectable()` 让每个块的文字可选可复制（Hook 中构建的只读文本框经 `seed_text` 在下一次 reconcile 注册缓冲区）；任务框是无标题的 `CheckMark` 节点（`Role::CheckBox` + checked），设置 `on_task` 后可点击/Enter/Space 切换：原地改 CheckMark 与语义状态，并把 `[ ]`/`[x]` 写回源码与已显示源码，所以不触发重建。
+
 ## 12.13 双向 Caret：同一 logical offset 允许两个视觉位置
 
 在 BiDi boundary 或 soft line wrap 处，一个 logical insertion offset 可能对应两个合理的 visual caret geometry。

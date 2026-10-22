@@ -113,7 +113,7 @@ Rules:
   `link` role.
 - [x] Selectable text (`selectable: true`) on `Text`/`RichText`: drag/double/triple
   select, copy, focus ring, semantics.
-- [ ] `Markdown` widget (CommonMark + tables, task lists, strikethrough, code blocks with
+- [x] `Markdown` widget (CommonMark + tables, task lists, strikethrough, code blocks with
   monospace, images, links), incremental re-parse for streaming text.
 - [ ] `Html` widget for a safe inline/block subset (p, h1–h6, b/i/u/s, a, ul/ol/li,
   blockquote, pre/code, br, hr, img).

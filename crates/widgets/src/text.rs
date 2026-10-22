@@ -21,7 +21,7 @@ use std::rc::Rc;
 
 use viso_ui::{
     BoxStyle, BuildCx, Component, EventCx, FieldLook, FontFamily, FontSize, FontSlant, FontWeight,
-    LeafStyle, Length, LengthTerms, Rgba, Role, Semantics, Size, SpanStyle, TextAlign,
+    Handle, LeafStyle, Length, LengthTerms, Rgba, Role, Semantics, Size, SpanStyle, TextAlign,
     TextOverflow, TextRequest, TextSpan, TextStyle, field_input,
 };
 
@@ -267,6 +267,20 @@ impl Label {
 
 impl Component for Label {
     fn build(&self, cx: &mut BuildCx<'_>) {
+        self.build_node(cx);
+    }
+}
+
+impl Label {
+    /// The stretches of the text drawn their own way, replaced by `spans`, in
+    /// order of their start.
+    pub(crate) fn with_spans(mut self, spans: Vec<TextSpan>) -> Self {
+        self.spans = spans;
+        self
+    }
+
+    /// Build the label's one node and return it.
+    pub(crate) fn build_node(&self, cx: &mut BuildCx<'_>) -> Handle {
         // One leaf: a transparent box (the text is the content), carrying the
         // text request the shaping tier drains, plus a Label semantics node so
         // the visible text is the accessible name. `build` takes `&self`, so the
@@ -285,7 +299,7 @@ impl Component for Label {
             locale: self.locale.clone(),
             style: self.text_style.clone(),
         };
-        let multiline = self.style.soft_wrap;
+        let multiline = self.style.soft_wrap || self.text.contains('\n');
         let handle = if self.selectable {
             let handle = cx.text_input(
                 leaf,
@@ -324,6 +338,7 @@ impl Component for Label {
                 }
             });
         }
+        handle
     }
 }
 

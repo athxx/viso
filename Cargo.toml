@@ -169,6 +169,9 @@ viso-woff2 = { path = "libs/woff2", version = "1.0.0" }
 objc2-core-text = "0.3"
 objc2-core-foundation = "0.3"
 objc2-core-graphics = "0.3"
+# CommonMark + GFM parsing for the Markdown widget: a pull parser emitting
+# events with source offsets, without its HTML renderer.
+pulldown-cmark = { version = "0.13", default-features = false }
 
 [profile.release]
 lto = "thin"

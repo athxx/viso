@@ -6065,9 +6065,10 @@ impl<'a> BuildCx<'a> {
     /// the driver registry beside the store, not in a hot node column, and
     /// [`reconcile`](crate::text_edit::reconcile) folds queued intents into it and
     /// re-declares its text each frame. What the buffer draws is also declared
-    /// on the node so the first frame shapes it. Requires a
-    /// [`BuildCx::with_reactive`] cx (the driver owns the registry); returns the
-    /// handle so the widget body chains focus/handler/semantics onto it.
+    /// on the node so the first frame shapes it. A cx without the registry
+    /// (one a structure hook builds with) queues the field's seed instead,
+    /// which the next reconcile registers its buffer from. Returns the handle
+    /// so the widget body chains focus/handler/semantics onto it.
     pub fn text_input(
         &mut self,
         style: LeafStyle,
@@ -6076,18 +6077,19 @@ impl<'a> BuildCx<'a> {
     ) -> Handle {
         let id = self.push_node(LayoutInput::Leaf { size: style.size }, style.style);
         let number = look.number.is_some();
-        let buffer = crate::text_edit::Buffer::with_seed(&crate::text_edit::FieldSeed {
+        let seed = crate::text_edit::FieldSeed {
             request,
             valued: true,
             look,
-        });
+        };
+        let buffer = crate::text_edit::Buffer::with_seed(&seed);
         self.store.set_text_request(id, buffer.request());
         self.store.make_field(id);
         self.store.set_number_field(id, number);
-        self.text_edits
-            .as_mut()
-            .expect("text_input() requires a with_reactive BuildCx")
-            .register(id, Box::new(buffer));
+        match self.text_edits.as_mut() {
+            Some(edits) => edits.register(id, Box::new(buffer)),
+            None => self.store.seed_text(id, seed),
+        }
         Handle { id }
     }
 

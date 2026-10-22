@@ -200,6 +200,43 @@ phase_cx!(/// Render/submit context (internal).
 phase_cx!(/// Async task context.
     TaskCx);
 
+/// What writes state cells: an event handler's context, an update's, an
+/// effect's, or the store itself. A handle that owns a cell — a document a
+/// widget shows, say — takes one, so whichever context holds it can write.
+pub trait StateWriter {
+    /// Write a state value; returns whether the write landed (the handle was
+    /// live).
+    fn set(&mut self, id: StateId, value: StateValue) -> bool;
+}
+
+impl StateWriter for StateStore {
+    #[inline]
+    fn set(&mut self, id: StateId, value: StateValue) -> bool {
+        StateStore::set(self, id, value)
+    }
+}
+
+impl StateWriter for UpdateCx<'_> {
+    #[inline]
+    fn set(&mut self, id: StateId, value: StateValue) -> bool {
+        UpdateCx::set(self, id, value)
+    }
+}
+
+impl StateWriter for EventCx<'_> {
+    #[inline]
+    fn set(&mut self, id: StateId, value: StateValue) -> bool {
+        EventCx::set(self, id, value)
+    }
+}
+
+impl StateWriter for crate::reactive::EffectCx<'_> {
+    #[inline]
+    fn set(&mut self, id: StateId, value: StateValue) -> bool {
+        crate::reactive::EffectCx::set(self, id, value)
+    }
+}
+
 /// State-flush / reactive update context.
 ///
 /// This is the write end handed to component update / action handlers. Unlike
