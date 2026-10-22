@@ -27,7 +27,7 @@ impl Reactive {
         }
     }
 
-    fn build(&mut self, doc: Markdown) -> NodeId {
+    fn build(&mut self, doc: Document) -> NodeId {
         let mut cx = BuildCx::with_reactive(
             &mut self.store,
             &mut self.states,
@@ -41,7 +41,7 @@ impl Reactive {
     }
 
     /// Run the hooks of `text`'s documents, as the frame after a write does.
-    fn settle(&mut self, text: &MarkdownText) {
+    fn settle(&mut self, text: &DocumentText) {
         let cells = text.0.cells.borrow().clone();
         run_structure_hooks(
             &mut self.store,
@@ -83,7 +83,7 @@ fn each_block_is_one_node_with_its_semantics() {
 #[test]
 fn an_append_rebuilds_only_the_last_block_and_adds_the_new_ones() {
     let mut rx = Reactive::new();
-    let text = MarkdownText::new("One.\n\nTwo");
+    let text = DocumentText::new("One.\n\nTwo");
     let root = rx.build(markdown(&text));
     let before = rx.blocks(root);
     text.push_str(&mut rx.states, " more");
@@ -106,7 +106,7 @@ fn an_append_rebuilds_only_the_last_block_and_adds_the_new_ones() {
 #[test]
 fn an_edit_rebuilds_the_changed_blocks_in_their_place() {
     let mut rx = Reactive::new();
-    let text = MarkdownText::new("One.\n\nTwo.\n\nThree.");
+    let text = DocumentText::new("One.\n\nTwo.\n\nThree.");
     let root = rx.build(markdown(&text));
     let before = rx.blocks(root);
     text.set(&mut rx.states, "One.\n\nChanged.\n\nAdded.\n\nThree.");
@@ -126,7 +126,7 @@ fn an_edit_rebuilds_the_changed_blocks_in_their_place() {
 #[test]
 fn a_new_reference_definition_rebuilds_the_blocks_it_reaches() {
     let mut rx = Reactive::new();
-    let text = MarkdownText::new("[docs]\n\nTail.");
+    let text = DocumentText::new("[docs]\n\nTail.");
     let root = rx.build(markdown(&text));
     let before = rx.blocks(root);
     text.push_str(&mut rx.states, "\n\n[docs]: /docs");
@@ -143,7 +143,7 @@ fn a_task_box_toggles_in_place_and_writes_its_source() {
     let seen = Rc::new(RefCell::new(Vec::new()));
     let sink = Rc::clone(&seen);
     let mut rx = Reactive::new();
-    let text = MarkdownText::new("- [ ] one\n- [x] two\n");
+    let text = DocumentText::new("- [ ] one\n- [x] two\n");
     let root = rx.build(markdown(&text).on_task(move |_, at, checked| {
         sink.borrow_mut().push((at, checked));
     }));
@@ -197,7 +197,7 @@ fn a_read_only_task_box_takes_nothing() {
 #[test]
 fn a_selectable_block_a_write_brings_is_a_seeded_field() {
     let mut rx = Reactive::new();
-    let text = MarkdownText::new("One.");
+    let text = DocumentText::new("One.");
     let root = rx.build(markdown(&text).selectable());
     assert!(rx.store.field_marks(rx.blocks(root)[0]).is_some());
     text.push_str(&mut rx.states, "\n\nTwo.");
@@ -210,10 +210,29 @@ fn a_selectable_block_a_write_brings_is_a_seeded_field() {
 #[test]
 fn a_document_freed_ignores_its_source() {
     let mut rx = Reactive::new();
-    let text = MarkdownText::new("One.");
+    let text = DocumentText::new("One.");
     let root = rx.build(markdown(&text));
     rx.store.free_tree(root, &mut rx.effects, &mut Vec::new());
     text.push_str(&mut rx.states, "\n\nTwo.");
     rx.settle(&text);
     assert!(!rx.store.arena().is_live(root));
+}
+
+#[test]
+fn an_html_document_builds_the_same_blocks_and_streams_the_same_way() {
+    let mut rx = Reactive::new();
+    let text = DocumentText::new("<h1>Title</h1><p>One</p><p>Tw");
+    let root = rx.build(html(&text));
+    let before = rx.blocks(root);
+    assert_eq!(before.len(), 3);
+    let heading = rx.store.arena().children(before[0]).next().unwrap();
+    assert_eq!(rx.store.semantics(heading).unwrap().role, Role::Heading);
+    assert_eq!(rx.text(before[2]), "Tw");
+    text.push_str(&mut rx.states, "o</p><ul><li>a<li>b</ul>");
+    rx.settle(&text);
+    let after = rx.blocks(root);
+    assert_eq!(after.len(), 4);
+    assert_eq!(after[..2], before[..2], "the blocks before the last stay");
+    assert_eq!(rx.text(after[2]), "Two");
+    assert_eq!(rx.store.arena().children(after[3]).count(), 2);
 }

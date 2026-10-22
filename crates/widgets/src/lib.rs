@@ -17,11 +17,11 @@
 
 pub mod containers;
 pub mod controls;
+pub mod document;
 pub mod grid;
 pub mod icon;
 pub mod image;
 pub mod list;
-pub mod markdown;
 pub mod scroll;
 pub mod text;
 
@@ -38,10 +38,10 @@ pub use controls::{
     VisibleRow, button, caption_bar, checkbox, dock, file_tree, modal, navigation_stack,
     number_field, popup, radio_group, sheet, slider, splitter, tabs, text_input, toast, toggle,
 };
+pub use document::{Document, DocumentStyle, DocumentText, html, markdown};
 pub use grid::{Grid, GridViewStyle, grid};
 pub use icon::{Icon, IconStyle, icon};
 pub use image::{Image, ImageStyle, image, image_asset};
 pub use list::{VirtualList, VirtualListViewStyle, virtual_list};
-pub use markdown::{Markdown, MarkdownStyle, MarkdownText, markdown};
 pub use scroll::{Scroll, ScrollViewStyle, scroll};
 pub use text::{Label, LabelStyle, label, rich_text};

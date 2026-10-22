@@ -1,6 +1,6 @@
-//! A Markdown document driven through the facade: its blocks lay out one
-//! under another, a click on a link reaches `on_link`, and a source a click
-//! appends to grows the document by its new block.
+//! Markdown and HTML documents driven through the facade: their blocks lay
+//! out one under another, a click on a link reaches `on_link`, and a source
+//! a click appends to grows the document by its new block.
 #![cfg(feature = "headless")]
 
 use std::cell::RefCell;
@@ -13,16 +13,20 @@ use viso::platform::{
 };
 use viso::prelude::*;
 use viso::ui::{Axis, Component, FlexStyle, LeafStyle, NodeId, PointerButtons, PointerPhase, Size};
-use viso::widgets::{MarkdownText, markdown};
+use viso::widgets::{DocumentText, html, markdown};
 
 const STEP: Duration = Duration::from_millis(16);
 const WIN: WindowId = WindowId(1);
 
 const DOC: &str = "# Title\n\nSee [docs](/docs) now.\n\n```\nlet x = 1;\nlet y = 2;\n```\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n- [x] done\n- [ ] todo\n\n---\n";
 
+const PAGE: &str = "<h2>Title</h2><p>Some <b>bold</b> text.</p>\
+    <pre>let x = 1;\nlet y = 2;</pre><ol><li>one<li>two</ol>\
+    <table><tr><th>a<th>b<tr><td>1<td>2</table><hr>";
+
 thread_local! {
     static FOLLOWED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
-    static SOURCE: MarkdownText = MarkdownText::new("First.");
+    static SOURCE: DocumentText = DocumentText::new("First.");
 }
 
 /// The document over a 20 by 20 box a click on which appends to `SOURCE`.
@@ -64,6 +68,7 @@ impl Application for DocApp {
                     .on_link(|_ev, url| FOLLOWED.with(|f| f.borrow_mut().push(url.to_owned())))
                     .build(cx);
                 SOURCE.with(|s| markdown(s).build(cx));
+                html(PAGE).build(cx);
             },
         );
     }
@@ -90,7 +95,8 @@ fn mouse(x: f32, y: f32, phase: RawPhase) -> RawEvent {
     ))
 }
 
-/// The root's children: the button, the document, the streamed document.
+/// The root's children: the button, the document, the streamed document,
+/// the HTML page.
 fn parts(app: &viso::__test_support::DrivenApp<DocApp>) -> Vec<NodeId> {
     let store = app.store();
     let root = app.root().expect("a root");
@@ -180,4 +186,25 @@ fn an_append_shows_its_new_block_under_the_others() {
         "{first:?} {list:?}"
     );
     assert_eq!(store.arena().children(blocks[1]).count(), 2);
+}
+
+#[test]
+fn an_html_page_lays_out_its_blocks_like_a_markdown_one() {
+    let app = drive_scripted::<DocApp>(vec![redraw(), redraw()], STEP);
+    let store = app.store();
+    let page = parts(&app)[3];
+    let blocks: Vec<NodeId> = store.arena().children(page).collect();
+    assert_eq!(
+        blocks.len(),
+        6,
+        "heading, paragraph, code, list, table, rule"
+    );
+    let mut bottom = f32::MIN;
+    for &block in &blocks {
+        let r = store.world(block);
+        assert!(r.w > 0.0 && r.h > 0.0, "block {block:?} draws: {r:?}");
+        assert!(r.y >= bottom, "below the one before");
+        bottom = r.y + r.h;
+    }
+    assert_eq!(store.arena().children(blocks[3]).count(), 2, "two items");
 }

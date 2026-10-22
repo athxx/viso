@@ -1,28 +1,33 @@
-//! The [`Markdown`] widget: a document of CommonMark with the GitHub
-//! extensions, drawn as retained nodes.
+//! The [`Document`] widget: a Markdown or HTML document drawn as retained
+//! nodes.
 //!
-//! It shows headings, paragraphs, emphasis, strong, strikethrough, inline
-//! code, links, block quotes and GitHub alerts, ordered, bullet and task
-//! lists, fenced and indented code, tables with their column alignment,
-//! rules, footnotes, pictures and the inline HTML the GitHub sanitizer keeps
-//! (`<br>`, `<sub>`, `<sup>`, `<kbd>`, `<mark>` and the styles); block HTML
-//! shows nothing. Each top-level block is one node: a paragraph a wrapping
-//! label, a list a column of rows, a table a grid that scrolls sideways, a
-//! code block a monospace label in a box that scrolls sideways.
+//! [`markdown`] reads CommonMark with the GitHub extensions: headings,
+//! paragraphs, emphasis, strong, strikethrough, inline code, links, block
+//! quotes and GitHub alerts, ordered, bullet and task lists, fenced and
+//! indented code, tables with their column alignment, rules, footnotes,
+//! pictures and the inline HTML the GitHub sanitizer keeps (`<br>`, `<sub>`,
+//! `<sup>`, `<kbd>`, `<mark>` and the styles); block HTML shows nothing.
+//! [`html`] reads a safe subset of HTML into the same blocks: `p`, `h1`–`h6`,
+//! the inline styles, `a`, `ul`/`ol`/`li`, `blockquote`, `pre`/`code`,
+//! `br`, `hr`, `img` and tables; it runs no script and loads nothing, and
+//! the tags it does not know show their text. Each top-level block is one
+//! node: a paragraph a wrapping label, a list a column of rows, a table a
+//! grid that scrolls sideways, a code block a monospace label in a box that
+//! scrolls sideways.
 //!
-//! The source is a [`MarkdownText`], which the app can write as the document
+//! The source is a [`DocumentText`], which the app can write as the document
 //! shows it — a reply streaming in, say. A write re-parses only from the
-//! last block when it appends and there are no link reference definitions,
-//! and either way rebuilds only the blocks whose source changed, so a stream
-//! of appends rebuilds just its last block each time. A link's activation
-//! reaches [`on_link`](Markdown::on_link), else the ancestors; a task box
-//! toggles when [`on_task`](Markdown::on_task) is set, writing its new state
-//! into the source.
+//! last block when it appends (and, in Markdown, there are no link reference
+//! definitions), and either way rebuilds only the blocks whose source
+//! changed, so a stream of appends rebuilds just its last block each time. A
+//! link's activation reaches [`on_link`](Document::on_link), else the
+//! ancestors; a task box toggles when [`on_task`](Document::on_task) is set,
+//! writing its new state into the source.
 //!
 //! ```
-//! use viso_widgets::{MarkdownText, markdown};
+//! use viso_widgets::{DocumentText, markdown};
 //!
-//! let reply = MarkdownText::new("# Hello\n\nSome *text* with a [link](https://viso.dev).");
+//! let reply = DocumentText::new("# Hello\n\nSome *text* with a [link](https://viso.dev).");
 //! let doc = markdown(&reply)
 //!     .selectable()
 //!     .on_link(|_ev, url| {
@@ -32,8 +37,10 @@
 //!
 //! It needs a [`BuildCx::with_reactive`] cx.
 
+mod blocks;
 mod build;
-mod parse;
+mod html;
+mod markdown;
 
 use std::cell::{Cell, Ref, RefCell};
 use std::ops::Range;
@@ -44,13 +51,13 @@ use viso_ui::{
     SemanticState, Size, StateId, StateValue, StateWriter, StructureCx,
 };
 
+use blocks::{Parsed, Task, Top};
 use build::{Env, Toggle};
-use parse::{Task, Top, parse};
 
-/// The look of a [`Markdown`] document: its body's size and ink, and the
+/// The look of a [`Document`]: its body's size and ink, and the
 /// colors of its links, code, rules and tables.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct MarkdownStyle {
+pub struct DocumentStyle {
     /// The body's font size in logical pixels; headings scale from it.
     pub font_size: f32,
     /// Each line's height, of the font size.
@@ -75,9 +82,9 @@ pub struct MarkdownStyle {
     pub size: Size,
 }
 
-impl Default for MarkdownStyle {
+impl Default for DocumentStyle {
     fn default() -> Self {
-        MarkdownStyle {
+        DocumentStyle {
             font_size: 14.0,
             line_height: 1.5,
             block_gap: 0.75,
@@ -138,10 +145,10 @@ pub(crate) type Pictures = dyn Fn(&str) -> Option<Asset>;
 type LinkHandler = Rc<RefCell<dyn FnMut(&mut EventCx<'_>, &str)>>;
 type TaskHandler = Rc<RefCell<dyn FnMut(&mut EventCx<'_>, usize, bool)>>;
 
-/// The source of a [`Markdown`] document, shared by the documents showing
+/// The source of a [`Document`], shared by the documents showing
 /// it and whatever writes it. Cloning it shares it.
 #[derive(Clone)]
-pub struct MarkdownText(Rc<Source>);
+pub struct DocumentText(Rc<Source>);
 
 struct Source {
     text: RefCell<String>,
@@ -150,9 +157,9 @@ struct Source {
     revision: Cell<i32>,
 }
 
-impl MarkdownText {
+impl DocumentText {
     pub fn new(text: impl Into<String>) -> Self {
-        MarkdownText(Rc::new(Source {
+        DocumentText(Rc::new(Source {
             text: RefCell::new(text.into()),
             cells: RefCell::new(Vec::new()),
             revision: Cell::new(0),
@@ -189,50 +196,92 @@ impl MarkdownText {
     }
 }
 
-impl From<&str> for MarkdownText {
+impl From<&str> for DocumentText {
     fn from(text: &str) -> Self {
-        MarkdownText::new(text)
+        DocumentText::new(text)
     }
 }
 
-impl From<String> for MarkdownText {
+impl From<String> for DocumentText {
     fn from(text: String) -> Self {
-        MarkdownText::new(text)
+        DocumentText::new(text)
     }
 }
 
-impl From<&MarkdownText> for MarkdownText {
-    fn from(text: &MarkdownText) -> Self {
+impl From<&DocumentText> for DocumentText {
+    fn from(text: &DocumentText) -> Self {
         text.clone()
     }
 }
 
-/// A Markdown document; see the [module docs](self).
-pub struct Markdown {
-    source: MarkdownText,
-    style: MarkdownStyle,
+/// How a document's source reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Format {
+    Markdown,
+    Html,
+}
+
+impl Format {
+    /// Parse `src`, which starts at byte `base` of the document.
+    fn parse(self, src: &str, base: usize, look: &DocumentStyle) -> Parsed {
+        match self {
+            Format::Markdown => markdown::parse(src, base, look),
+            Format::Html => html::parse(src, base, look),
+        }
+    }
+
+    /// Where a parse that leaves the blocks before the one starting at
+    /// `at` of `src` as they are starts; `None` when a definition might
+    /// reach them from what follows.
+    fn resume(self, src: &str, at: usize) -> Option<usize> {
+        match self {
+            Format::Markdown => {
+                let from = line_start(src, at);
+                (!src[from..].contains("]:")).then_some(from)
+            }
+            Format::Html => Some(at),
+        }
+    }
+}
+
+/// A Markdown or HTML document; see the [module docs](self).
+pub struct Document {
+    format: Format,
+    source: DocumentText,
+    style: DocumentStyle,
     selectable: bool,
     on_link: Option<LinkHandler>,
     on_task: Option<TaskHandler>,
     pictures: Option<Rc<Pictures>>,
 }
 
-/// Construct a [`Markdown`] document of `source`: a text, or a
-/// [`MarkdownText`] to write as it shows.
-pub fn markdown(source: impl Into<MarkdownText>) -> Markdown {
-    Markdown {
-        source: source.into(),
-        style: MarkdownStyle::default(),
-        selectable: false,
-        on_link: None,
-        on_task: None,
-        pictures: None,
-    }
+/// Construct a [`Document`] of Markdown `source`: a text, or a
+/// [`DocumentText`] to write as it shows.
+pub fn markdown(source: impl Into<DocumentText>) -> Document {
+    Document::new(Format::Markdown, source.into())
 }
 
-impl Markdown {
-    /// Replace the whole [`MarkdownStyle`].
-    pub fn style(mut self, style: MarkdownStyle) -> Self {
+/// Construct a [`Document`] of HTML `source`: a text, or a [`DocumentText`]
+/// to write as it shows.
+pub fn html(source: impl Into<DocumentText>) -> Document {
+    Document::new(Format::Html, source.into())
+}
+
+impl Document {
+    fn new(format: Format, source: DocumentText) -> Self {
+        Document {
+            format,
+            source,
+            style: DocumentStyle::default(),
+            selectable: false,
+            on_link: None,
+            on_task: None,
+            pictures: None,
+        }
+    }
+
+    /// Replace the whole [`DocumentStyle`].
+    pub fn style(mut self, style: DocumentStyle) -> Self {
         self.style = style;
         self
     }
@@ -288,8 +337,9 @@ impl Markdown {
 
 /// One shown document: what it builds with and the blocks it shows.
 struct Shown {
-    source: MarkdownText,
-    style: MarkdownStyle,
+    format: Format,
+    source: DocumentText,
+    style: DocumentStyle,
     selectable: bool,
     pictures: Option<Rc<Pictures>>,
     on_task: Option<TaskHandler>,
@@ -347,9 +397,10 @@ impl Host {
     }
 }
 
-impl Component for Markdown {
+impl Component for Document {
     fn build(&self, cx: &mut BuildCx<'_>) {
         let shown = Rc::new(Shown {
+            format: self.format,
             source: self.source.clone(),
             style: self.style,
             selectable: self.selectable,
@@ -365,7 +416,7 @@ impl Component for Markdown {
         self.source.0.cells.borrow_mut().push(cell);
 
         let source = self.source.0.text.borrow();
-        let parsed = parse(&source, 0, &self.style);
+        let parsed = self.format.parse(&source, 0, &self.style);
         let mut hosts = Vec::with_capacity(parsed.blocks.len());
         let root = {
             let mut env = shown.env(toggle.as_ref());
@@ -406,7 +457,7 @@ impl Component for Markdown {
 }
 
 /// The document's column: its blocks one under another, as wide as it.
-fn doc_column(style: &MarkdownStyle) -> viso_ui::FlexStyle {
+fn doc_column(style: &DocumentStyle) -> viso_ui::FlexStyle {
     viso_ui::FlexStyle {
         axis: viso_ui::Axis::Column,
         gap: style.font_size * style.block_gap,
@@ -487,14 +538,13 @@ impl Shown {
             .hosts
             .last()
             .filter(|_| doc.defs.is_empty() && source.starts_with(doc.seen.as_str()))
-            .map(|h| line_start(&source, h.range.start))
-            .filter(|&from| !source[from..].contains("]:"));
+            .and_then(|h| self.format.resume(&source, h.range.start));
         let (kept, parsed) = match appended {
             Some(from) => (
                 doc.hosts.len() - 1,
-                parse(&source[from..], from, &self.style),
+                self.format.parse(&source[from..], from, &self.style),
             ),
-            None => (0, parse(&source, 0, &self.style)),
+            None => (0, self.format.parse(&source, 0, &self.style)),
         };
         let all = appended.is_none() && parsed.defs != doc.defs;
         if appended.is_none() {

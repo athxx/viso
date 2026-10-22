@@ -1,14 +1,14 @@
-//! Markdown source into blocks: a CommonMark parse with the GitHub
-//! extensions, folded into the block tree the document builds its nodes
-//! from, each top-level block with the source it came from.
+//! The block tree a document builds its nodes from, and the fold that
+//! builds it from a parse's events — CommonMark's, or those the HTML reader
+//! makes — each top-level block with the source it came from.
 
 use std::ops::Range;
 use std::sync::Arc;
 
-use pulldown_cmark::{Alignment, BlockQuoteKind, Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Alignment, BlockQuoteKind, Event, Tag, TagEnd};
 use viso_ui::{Rgba, SpanStyle, TextSpan};
 
-use super::MarkdownStyle;
+use super::DocumentStyle;
 
 /// A run of text and the stretches of it drawn their own way.
 #[derive(Debug, Default, PartialEq)]
@@ -154,47 +154,12 @@ pub(super) struct Top {
     pub range: Range<usize>,
 }
 
-/// A parse: the top-level blocks, and the link reference definitions, which
-/// reach every block, as one text that changes when any of them does.
+/// A parse: the top-level blocks, and the definitions that reach every
+/// block — Markdown's link references — as one text that changes when any of
+/// them does.
 pub(super) struct Parsed {
     pub blocks: Vec<Top>,
     pub defs: String,
-}
-
-const OPTIONS: Options = Options::ENABLE_TABLES
-    .union(Options::ENABLE_STRIKETHROUGH)
-    .union(Options::ENABLE_TASKLISTS)
-    .union(Options::ENABLE_FOOTNOTES)
-    .union(Options::ENABLE_GFM);
-
-/// Parse `src`, which starts at byte `base` of the document.
-pub(super) fn parse(src: &str, base: usize, look: &MarkdownStyle) -> Parsed {
-    let mut events = Parser::new_ext(src, OPTIONS).into_offset_iter();
-    let mut fold = Fold {
-        look,
-        base,
-        tops: Vec::new(),
-        top: 0..0,
-        frames: Vec::new(),
-        open: None,
-        marks: Marks::default(),
-        picture: None,
-        skip: 0,
-    };
-    for (event, range) in events.by_ref() {
-        fold.event(event, range);
-    }
-    fold.close_implicit();
-    let mut defs: Vec<&str> = events
-        .reference_definitions()
-        .iter()
-        .map(|(_, def)| &src[def.span.clone()])
-        .collect();
-    defs.sort_unstable();
-    Parsed {
-        blocks: fold.tops,
-        defs: defs.join("\n"),
-    }
 }
 
 /// What a block being folded holds so far.
@@ -267,7 +232,7 @@ const MARK: Rgba = Rgba {
 };
 
 impl Marks {
-    fn style(&self, look: &MarkdownStyle) -> SpanStyle {
+    fn style(&self, look: &DocumentStyle) -> SpanStyle {
         let mut style = SpanStyle::default();
         if self.strong > 0 {
             style = style.bold();
@@ -302,12 +267,14 @@ impl Marks {
     }
 }
 
-struct Fold<'a> {
-    look: &'a MarkdownStyle,
+pub(super) struct Fold<'a> {
+    look: &'a DocumentStyle,
     base: usize,
     tops: Vec<Top>,
-    /// The source of the top-level block being folded.
-    top: Range<usize>,
+    /// Where the top-level block being folded starts in the source, and
+    /// where the event being folded ends.
+    top: usize,
+    at: usize,
     frames: Vec<Frame>,
     open: Option<Open>,
     marks: Marks,
@@ -317,8 +284,45 @@ struct Fold<'a> {
     skip: u32,
 }
 
-impl Fold<'_> {
-    fn event(&mut self, event: Event<'_>, range: Range<usize>) {
+impl<'a> Fold<'a> {
+    /// A fold of a source that starts at byte `base` of the document.
+    pub(super) fn new(look: &'a DocumentStyle, base: usize) -> Self {
+        Fold {
+            look,
+            base,
+            tops: Vec::new(),
+            top: base,
+            at: base,
+            frames: Vec::new(),
+            open: None,
+            marks: Marks::default(),
+            picture: None,
+            skip: 0,
+        }
+    }
+
+    /// The top-level blocks folded.
+    pub(super) fn finish(mut self) -> Vec<Top> {
+        if self.open.as_ref().is_some_and(|o| o.run == Run::Cell) {
+            self.end(TagEnd::TableCell);
+        }
+        self.close();
+        while !self.frames.is_empty() {
+            let end = match self.frames.last() {
+                Some(Frame::Quote { .. }) => TagEnd::BlockQuote(None),
+                Some(Frame::List { .. }) => TagEnd::List(false),
+                Some(Frame::Item { .. }) => TagEnd::Item,
+                Some(Frame::Footnote { .. }) => TagEnd::FootnoteDefinition,
+                Some(Frame::Table { .. }) => TagEnd::Table,
+                None => break,
+            };
+            self.end(end);
+        }
+        self.tops
+    }
+
+    /// Fold `event`, whose source is `range` of the parsed text.
+    pub(super) fn event(&mut self, event: Event<'_>, range: Range<usize>) {
         if self.skip > 0 {
             match event {
                 Event::Start(Tag::HtmlBlock | Tag::MetadataBlock(_)) => self.skip += 1,
@@ -329,8 +333,9 @@ impl Fold<'_> {
         }
         let at_top = self.frames.is_empty() && self.open.is_none();
         if at_top && matches!(event, Event::Start(_) | Event::Rule) {
-            self.top = self.base + range.start..self.base + range.end;
+            self.top = self.base + range.start;
         }
+        self.at = self.base + range.end;
         match event {
             Event::Start(tag) => self.start(tag),
             Event::End(tag) => self.end(tag),
@@ -348,7 +353,7 @@ impl Fold<'_> {
                 self.text(&math);
                 self.marks.code -= 1;
             }
-            Event::InlineHtml(html) => self.html(&html),
+            Event::InlineHtml(html) => self.inline_html(&html),
             Event::Html(_) => {}
             Event::FootnoteReference(label) => {
                 self.marks.superscript += 1;
@@ -496,15 +501,24 @@ impl Fold<'_> {
                     },
                     Some(Frame::Footnote { label, blocks }) => Block::Footnote { label, blocks },
                     Some(Frame::Table {
-                        columns,
+                        mut columns,
                         head,
-                        rows,
-                        ..
-                    }) => Block::Table {
-                        columns,
-                        head,
-                        rows,
-                    },
+                        mut rows,
+                        row,
+                    }) => {
+                        if !row.is_empty() {
+                            rows.push(row);
+                        }
+                        let widest = rows.iter().map(Vec::len).fold(head.len(), usize::max);
+                        if columns.len() < widest {
+                            columns.resize(widest, Column::Start);
+                        }
+                        Block::Table {
+                            columns,
+                            head,
+                            rows,
+                        }
+                    }
                     Some(Frame::Item { .. }) | None => return,
                 };
                 self.emit(block);
@@ -568,9 +582,10 @@ impl Fold<'_> {
         open.text.push(text, &style);
     }
 
-    /// An inline tag: the line break, and the styles the GitHub sanitizer
-    /// keeps. Any other tag shows nothing; the text between shows as text.
-    fn html(&mut self, html: &str) {
+    /// An inline tag of Markdown's: the line break, and the styles the
+    /// GitHub sanitizer keeps. Any other tag shows nothing; the text between
+    /// shows as text.
+    fn inline_html(&mut self, html: &str) {
         let tag = html.trim();
         let Some(tag) = tag.strip_prefix('<') else {
             return;
@@ -588,10 +603,15 @@ impl Fold<'_> {
             self.text("\n");
             return;
         }
-        if tag.trim_end_matches('>').ends_with('/') {
-            return;
+        if !tag.trim_end_matches('>').ends_with('/') {
+            self.style_tag(&name, closing);
         }
-        let mark = match name.as_str() {
+    }
+
+    /// Open (or close) the inline style the tag `name` names; whether it
+    /// names one.
+    pub(super) fn style_tag(&mut self, name: &str, closing: bool) -> bool {
+        let mark = match name {
             "b" | "strong" => &mut self.marks.strong,
             "i" | "em" | "cite" | "var" => &mut self.marks.emphasis,
             "s" | "del" | "strike" => &mut self.marks.strike,
@@ -600,13 +620,14 @@ impl Fold<'_> {
             "sub" => &mut self.marks.subscript,
             "code" | "kbd" | "samp" | "tt" => &mut self.marks.code,
             "mark" => &mut self.marks.mark,
-            _ => return,
+            _ => return false,
         };
         *mark = if closing {
             mark.saturating_sub(1)
         } else {
             *mark + 1
         };
+        true
     }
 
     /// Close the open run into the block it is.
@@ -620,7 +641,7 @@ impl Fold<'_> {
                     for picture in open.pictures {
                         self.emit(Block::Picture(picture));
                     }
-                } else {
+                } else if open.words {
                     self.emit(Block::Paragraph(open.text.trimmed()));
                 }
             }
@@ -649,7 +670,7 @@ impl Fold<'_> {
         match self.frames.last_mut() {
             None => self.tops.push(Top {
                 block,
-                range: self.top.clone(),
+                range: self.top..self.at,
             }),
             Some(
                 Frame::Quote { blocks, .. }
@@ -676,140 +697,5 @@ fn column(align: Alignment) -> Column {
         Alignment::None | Alignment::Left => Column::Start,
         Alignment::Center => Column::Center,
         Alignment::Right => Column::End,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn blocks(src: &str) -> Vec<Block> {
-        parse(src, 0, &MarkdownStyle::default())
-            .blocks
-            .into_iter()
-            .map(|t| t.block)
-            .collect()
-    }
-
-    fn plain(text: &str) -> Inline {
-        Inline {
-            text: text.into(),
-            spans: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn each_top_level_block_keeps_the_source_it_came_from() {
-        let src = "# Title\n\nSome *words*.\n\n- a\n- b\n\n---\n";
-        let parsed = parse(src, 0, &MarkdownStyle::default());
-        let ranges: Vec<&str> = parsed
-            .blocks
-            .iter()
-            .map(|t| src[t.range.clone()].trim_end())
-            .collect();
-        assert_eq!(ranges, ["# Title", "Some *words*.", "- a\n- b", "---"]);
-        assert_eq!(
-            parse("x", 10, &MarkdownStyle::default()).blocks[0].range,
-            10..11
-        );
-    }
-
-    #[test]
-    fn inline_styles_become_spans_over_one_text() {
-        let look = MarkdownStyle::default();
-        let [Block::Paragraph(text)] = &blocks("a **b** *c* ~~d~~ `e` [f](/f)<br>g")[..] else {
-            panic!("one paragraph");
-        };
-        assert_eq!(text.text, "a b c d e f\ng");
-        let styled: Vec<(&str, &SpanStyle)> = text
-            .spans
-            .iter()
-            .map(|s| (&text.text[s.range.clone()], &s.style))
-            .collect();
-        assert_eq!(styled.len(), 5);
-        assert_eq!(styled[0], ("b", &SpanStyle::default().bold()));
-        assert_eq!(styled[1], ("c", &SpanStyle::default().italic()));
-        assert_eq!(styled[2], ("d", &SpanStyle::default().strikethrough()));
-        assert_eq!(styled[3].0, "e");
-        assert_eq!(styled[3].1.background, Some(look.code_background));
-        assert_eq!(styled[4].0, "f");
-        assert_eq!(styled[4].1.link.as_deref(), Some("/f"));
-    }
-
-    #[test]
-    fn lists_nest_and_know_their_tasks_numbers_and_tightness() {
-        let list = blocks("3. one\n4. two\n   - [x] done\n   - [ ] todo\n");
-        let [
-            Block::List {
-                start: Some(3),
-                tight: true,
-                items,
-            },
-        ] = &list[..]
-        else {
-            panic!("an ordered tight list: {list:?}");
-        };
-        assert_eq!(items.len(), 2);
-        assert_eq!(items[0].blocks, [Block::Paragraph(plain("one"))]);
-        let Block::List { start: None, .. } = &items[1].blocks[1] else {
-            panic!("a nested bullet list");
-        };
-        let mut tasks = Vec::new();
-        list[0].tasks(&mut tasks);
-        let src = "3. one\n4. two\n   - [x] done\n   - [ ] todo\n";
-        let marks: Vec<(bool, &str)> = tasks
-            .iter()
-            .map(|t| (t.checked, &src[t.at..t.at + 3]))
-            .collect();
-        assert_eq!(marks, [(true, "[x]"), (false, "[ ]")]);
-        let [Block::List { tight: false, .. }] = &blocks("- a\n\n- b\n")[..] else {
-            panic!("a loose list");
-        };
-    }
-
-    #[test]
-    fn code_tables_quotes_rules_and_pictures_fold_to_their_blocks() {
-        assert_eq!(
-            blocks("```rust\nfn main() {}\n```\n"),
-            [Block::Code("fn main() {}".into())]
-        );
-        let table = blocks("| a | b |\n|:-:|--:|\n| 1 | 2 |\n");
-        assert_eq!(
-            table,
-            [Block::Table {
-                columns: vec![Column::Center, Column::End],
-                head: vec![plain("a"), plain("b")],
-                rows: vec![vec![plain("1"), plain("2")]],
-            }]
-        );
-        assert_eq!(
-            blocks("> [!WARNING]\n> careful\n"),
-            [Block::Quote {
-                alert: Some(Alert::Warning),
-                blocks: vec![Block::Paragraph(plain("careful"))],
-            }]
-        );
-        assert_eq!(
-            blocks("![a cat](cat.png)"),
-            [Block::Picture(Picture {
-                url: "cat.png".into(),
-                alt: "a cat".into(),
-                link: None,
-            })]
-        );
-        let [Block::Paragraph(text)] = &blocks("see ![a cat](cat.png) here")[..] else {
-            panic!("a picture among words stays in its text");
-        };
-        assert_eq!(text.text, "see a cat here");
-        assert_eq!(blocks("<div>\nhidden\n</div>\n\n***"), [Block::Rule]);
-    }
-
-    #[test]
-    fn reference_definitions_change_the_parse_s_defs() {
-        let look = MarkdownStyle::default();
-        let a = parse("[x]\n\n[x]: /a\n", 0, &look);
-        let b = parse("[x]\n\n[x]: /b\n", 0, &look);
-        assert_ne!(a.defs, b.defs);
-        assert!(parse("plain", 0, &look).defs.is_empty());
     }
 }

@@ -10,8 +10,8 @@ use viso_ui::{
     Semantics, Size, SpanStyle, TextAlign, TextRequest, TextSpan, TextStyle, TrackSizing,
 };
 
-use super::parse::{Alert, Block, Column, Inline, Item, Picture, Task};
-use super::{MarkdownStyle, Pictures};
+use super::blocks::{Alert, Block, Column, Inline, Item, Picture, Task};
+use super::{DocumentStyle, Pictures};
 use crate::{image_asset, label};
 
 /// What a task box runs when it is toggled.
@@ -19,7 +19,7 @@ pub(super) type Toggle = Rc<dyn Fn(&mut EventCx<'_>, NodeId)>;
 
 /// What a document's blocks build with.
 pub(super) struct Env<'a> {
-    pub look: &'a MarkdownStyle,
+    pub look: &'a DocumentStyle,
     pub selectable: bool,
     pub pictures: Option<&'a Pictures>,
     /// What a task box runs when toggled; `None` leaves the boxes read-only.
