@@ -10,6 +10,7 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 pub mod adaptive;
+pub mod anchored;
 pub mod animation;
 pub mod aot;
 pub mod asset;
@@ -68,6 +69,7 @@ pub use animation::{
     LookValue, Timing, TranslateAnim,
 };
 // The frame clock's time point (wasm-safe), named by timers and deadlines.
+pub use anchored::{AnchorAlign, AnchorPlacement, Anchoring, Side};
 pub use binding::{
     Binding, BindingFootprint, BindingTable, InstanceBase, StateRef, Template, TemplateBinding,
 };

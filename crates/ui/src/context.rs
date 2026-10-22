@@ -354,6 +354,8 @@ pub struct EventCx<'a> {
     text_change: Option<&'a str>,
     /// Where an activated link leads, if this dispatch reports one.
     link: Option<&'a str>,
+    /// This dispatch tells a light-dismiss layer a press landed outside it.
+    dismissed: bool,
     /// A focus request a handler made this dispatch: `Some(Some(id))` focuses
     /// `id`, `Some(None)` clears focus, `None` = no request. Applied by the
     /// router after the handler returns.
@@ -484,6 +486,7 @@ impl<'a> EventCx<'a> {
             pointer_id: PointerId::MOUSE,
             text_change: None,
             link: None,
+            dismissed: false,
             tasks: TaskOps::default(),
             services: None,
             place: None,
@@ -519,6 +522,7 @@ impl<'a> EventCx<'a> {
             pointer_id: PointerId::MOUSE,
             text_change: None,
             link: None,
+            dismissed: false,
             tasks: TaskOps::default(),
             services: None,
             place: None,
@@ -553,6 +557,7 @@ impl<'a> EventCx<'a> {
             pointer_id: PointerId::MOUSE,
             text_change: None,
             link: None,
+            dismissed: false,
             tasks: TaskOps::default(),
             services: None,
             place: None,
@@ -587,6 +592,7 @@ impl<'a> EventCx<'a> {
             pointer_id: PointerId::MOUSE,
             text_change: None,
             link: None,
+            dismissed: false,
             tasks: TaskOps::default(),
             services: None,
             place: None,
@@ -616,6 +622,15 @@ impl<'a> EventCx<'a> {
     ) -> Self {
         let mut cx = Self::__new(states, bindings);
         cx.link = Some(target);
+        cx
+    }
+
+    /// Assemble the event context that tells a light-dismiss layer a press
+    /// landed outside it: the handler reads it via [`EventCx::dismissed`].
+    #[doc(hidden)]
+    pub fn __new_dismiss(states: &'a mut StateStore, bindings: &'a BindingTable) -> Self {
+        let mut cx = Self::__new(states, bindings);
+        cx.dismissed = true;
         cx
     }
 
@@ -755,6 +770,12 @@ impl<'a> EventCx<'a> {
     /// holds it, then of each of its ancestors until one stops it.
     pub fn link(&self) -> Option<&'a str> {
         self.link
+    }
+
+    /// Whether this dispatch tells a light-dismiss layer
+    /// ([`NodeStore::set_light_dismiss`]) that a press landed outside it.
+    pub fn dismissed(&self) -> bool {
+        self.dismissed
     }
 
     /// The node that held focus when this dispatch began, or `None` if nothing

@@ -677,6 +677,8 @@ pub struct NodeStore {
     pub(crate) links: crate::links::Links,
     /// Cold: the nodes laid out over the whole surface.
     pub(crate) layers: crate::layer::Layers,
+    /// The anchored layers (cold): each one's anchor and where it went.
+    pub(crate) anchors: crate::anchored::Anchors,
     /// Cold: the nodes whose lengths read the environment (`px`, `sp`, `em`),
     /// re-folded into `layout` when it changes. Empty in a tree of plain `dp`
     /// and `%` lengths.
@@ -801,6 +803,7 @@ impl NodeStore {
         self.cursors.clear();
         self.links.clear();
         self.layers.clear();
+        self.anchors.clear();
         self.focus_scope = None;
         self.draggable_regions.clear();
         self.tasks.clear();
@@ -4456,6 +4459,7 @@ impl NodeStore {
         self.cursors.forget(i as u32);
         self.links.forget(i as u32);
         self.layers.forget(i as u32);
+        self.anchors.forget(i as u32);
         self.clips[i] = false;
         self.overlay[i] = false;
         self.opacity[i] = 1.0;
@@ -4838,9 +4842,12 @@ impl NodeStore {
             laid_out += self.subtree_len(redo);
         }
         // A layout of the whole tree skipped its layers, and a new surface
-        // moves them.
+        // moves them; a relayout may have moved an anchor or resized an
+        // anchored layer.
         if redo_roots.contains(&root) || self.layer_surface() != Some(surface) {
             self.lay_layers(root, surface, scratch);
+        } else {
+            self.follow_anchors();
         }
         // A waiting scroll applies once layout knows the range.
         self.settle_scroll_requests();
@@ -6133,6 +6140,32 @@ impl<'a> BuildCx<'a> {
     pub fn draggable(&mut self, handle: Handle, takes: bool) -> Handle {
         self.store.set_draggable(handle.id, takes);
         handle
+    }
+
+    /// Lay `floater` out against `anchor` the way `how` says, as an anchored
+    /// layer (see [`NodeStore::set_anchor`]).
+    pub fn anchored(
+        &mut self,
+        floater: Handle,
+        anchor: Handle,
+        how: crate::anchored::Anchoring,
+    ) -> Handle {
+        self.store.set_anchor(floater.id, Some((anchor.id, how)));
+        floater
+    }
+
+    /// Move `arrow`, laid out at the top-left of anchored layer `floater`,
+    /// to where the layer's arrow points at its anchor.
+    pub fn anchor_arrow(&mut self, floater: Handle, arrow: Handle) -> Handle {
+        self.store.set_anchor_arrow(floater.id, Some(arrow.id));
+        floater
+    }
+
+    /// Make layer `layer` go when a press lands outside it (see
+    /// [`NodeStore::set_light_dismiss`]).
+    pub fn light_dismiss(&mut self, layer: Handle) -> Handle {
+        self.store.set_light_dismiss(layer.id, true);
+        layer
     }
 
     /// Mark an already-declared node focusable (default: not focusable), so it can

@@ -120,7 +120,7 @@ Rules:
 
 ## W4 — Anchored overlays
 
-- [ ] Anchored placement: side/align, flip on collision, shift into the window, size to
+- [x] Anchored placement: side/align, flip on collision, shift into the window, size to
   the available space, arrow offset, re-place on scroll/resize.
 - [ ] `Select` / `DropDown`: anchored list, type-ahead, arrow/Home/End/PageUp/PageDown,
   scroll to the selected row, `listbox` semantics.
@@ -130,7 +130,7 @@ Rules:
   press).
 - [ ] `Tooltip`: hover delay, grace period between targets, touch long-press, keyboard
   focus show, `tooltip` semantics.
-- [ ] `Popover` with arrow (callout).
+- [x] `Popover` with arrow (callout).
 
 ## W5 — Scrolling
 

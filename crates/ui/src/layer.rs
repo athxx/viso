@@ -13,6 +13,14 @@
 //! A dialog layer traps the focus while it shows: it takes the focus into
 //! itself and confines Tab to its subtree, and gives back the focus and scope
 //! it took over when it lets go, so dialogs nest.
+//!
+//! A light-dismiss layer — a menu, a list, a popover — goes when a press
+//! lands outside it: outside its own box, the boxes of the layers shown under
+//! it (a submenu's), and its anchor's. The window delivers the dismissal to
+//! the layer's key handler ([`EventCx::dismissed`]) before it routes the
+//! press, which goes on to whatever it landed on.
+//!
+//! [`EventCx::dismissed`]: crate::context::EventCx::dismissed
 
 use viso_render::Rect;
 
@@ -31,6 +39,8 @@ pub(crate) struct Layers {
     surface: Option<Rect>,
     /// The focus traps the layers hold, the innermost last.
     traps: Vec<Trap>,
+    /// The layers a press outside dismisses.
+    light: Vec<NodeId>,
 }
 
 /// A focus trap: the layer holding it, and the focus and scope it took over.
@@ -47,12 +57,14 @@ impl Layers {
         self.laying = None;
         self.surface = None;
         self.traps.clear();
+        self.light.clear();
     }
 
     /// Forgets the slot `index`, freed or reused.
     pub(crate) fn forget(&mut self, index: u32) {
         self.nodes.retain(|n| n.index() != index);
         self.traps.retain(|t| t.layer.index() != index);
+        self.light.retain(|n| n.index() != index);
     }
 
     #[inline]
@@ -126,7 +138,11 @@ impl NodeStore {
         let outer = self.layers.laying.replace(index);
         scratch.clear();
         layout::measure(self, index, scratch);
-        let bounds = layout::root_box(self, index, surface);
+        let anchored = self.anchored_box(index, surface);
+        let bounds = match anchored {
+            Some((_, laid)) => laid,
+            None => layout::root_box(self, index, surface),
+        };
         let within = Vec2 {
             x: surface.w,
             y: surface.h,
@@ -137,6 +153,9 @@ impl NodeStore {
         let was = self.reach_in_parent(index as usize);
         self.rejoin_subtree(layer);
         self.lift_reach(layer, was);
+        if let Some((placed, _)) = anchored {
+            self.placed_anchored(layer, placed);
+        }
     }
 
     /// Traps the focus in node `id`, or lets it go. Trapping takes the focus
@@ -209,6 +228,53 @@ impl NodeStore {
             }
             _ => {}
         }
+    }
+
+    /// Makes layer `id` go when a press lands outside it, or stay.
+    pub fn set_light_dismiss(&mut self, id: NodeId, light: bool) {
+        let at = self.layers.light.iter().position(|&n| n == id);
+        match (light, at) {
+            (true, None) if self.arena().is_live(id) => self.layers.light.push(id),
+            (false, Some(at)) => {
+                self.layers.light.swap_remove(at);
+            }
+            _ => {}
+        }
+    }
+
+    /// The shown light-dismiss layers a press at window point `(x, y)` lands
+    /// outside of, outermost first.
+    pub fn dismissed_by_press(&self, x: f32, y: f32) -> Vec<NodeId> {
+        if self.layers.light.is_empty() {
+            return Vec::new();
+        }
+        let contains = |id: NodeId| {
+            let r = self.world(id);
+            r.x <= x && x < r.x + r.w && r.y <= y && y < r.y + r.h
+        };
+        let shown = |id: NodeId| self.arena().is_live(id) && !self.hidden(id);
+        let mut out: Vec<NodeId> = self
+            .layers
+            .light
+            .iter()
+            .copied()
+            .filter(|&layer| shown(layer))
+            .filter(|&layer| {
+                let inside = contains(layer)
+                    || self.anchor_of(layer).is_some_and(|(anchor, _)| {
+                        self.arena().is_live(anchor) && contains(anchor)
+                    })
+                    || self.layers.nodes.iter().any(|&other| {
+                        other != layer
+                            && shown(other)
+                            && self.is_under(other, layer)
+                            && contains(other)
+                    });
+                !inside
+            })
+            .collect();
+        out.sort_by_key(|&l| self.depth_of(l));
+        out
     }
 
     /// Whether node `id` traps the focus.

@@ -1691,6 +1691,12 @@ impl WindowState {
             h: lh,
         };
         let _layout = profile::time(Span::Layout);
+        // Anchored layers stay out of what the system covers.
+        let env = self.states.env().environment();
+        let mut keep_out = env.safe_area;
+        keep_out.bottom = keep_out.bottom.max(env.keyboard_inset);
+        let rtl = env.layout_direction == viso_ui::adaptive::LayoutDirection::Rtl;
+        self.store.set_keep_out(keep_out, rtl);
         let (mut measured, mut laid_out) =
             self.store
                 .relayout_dirty(root, surface, &mut self.scratch, &mut self.redo_roots);
@@ -1741,6 +1747,11 @@ impl WindowState {
     /// moved — one compose per root, no node visited. A frame that moved
     /// nothing skips it.
     fn update_transforms(&mut self) {
+        // A scroll or a translate moved anchors without a layout: the layers
+        // anchored to them follow.
+        if self.root.is_some() && self.store.transforms_pending() {
+            self.store.follow_anchors();
+        }
         if self.root.is_some() && self.store.transforms_pending() {
             let _layout = profile::time(Span::Layout);
             self.store.update_transforms();
@@ -2724,6 +2735,19 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     })
                 {
                     ws.close_drawn_menu();
+                }
+                // A press outside a menu, a list or a popover dismisses it
+                // before it goes on to what it landed on.
+                if ev.phase == PointerPhase::Down {
+                    for layer in ws.store.dismissed_by_press(ev.x, ev.y) {
+                        KeyRouter::route_dismiss(
+                            &mut ws.store,
+                            &mut ws.states,
+                            &ws.bindings,
+                            &mut ws.text_edits,
+                            layer,
+                        );
+                    }
                 }
                 PointerRouter::route_contact(
                     &mut ws.store,

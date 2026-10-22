@@ -24,9 +24,15 @@
 //! AGENTS section 15), firing an optional `on_dismiss`. An app captures a
 //! [`PopupHandle`] (see [`Popup::handle`]) and calls
 //! [`open`](PopupHandle::open)/[`close`](PopupHandle::close)/[`toggle`](PopupHandle::toggle)
-//! from the anchor's own controls. Anchored *positioning* (edge flip, collision
-//! avoidance) is a later slice; this slice anchors the content to the popup's box
-//! and simply draws it on top.
+//! from the anchor's own controls.
+//!
+//! The content is an anchored layer ([`viso_ui::anchored`]): it sits on a side of
+//! the anchor the way [`PopupStyle::placement`] says — flipped, shifted and fitted
+//! to stay in the window, following the anchor as it scrolls — and a press outside
+//! it and its anchor closes it (light dismiss), as Escape does. Opening takes the
+//! focus into the content and closing gives it back to where it was. A
+//! [`popover`] is a popup whose content sits in a bubble with an arrow pointing at
+//! the anchor.
 //!
 //! ```
 //! use std::cell::RefCell;
@@ -57,9 +63,12 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use std::cell::Cell;
+
 use viso_ui::{
-    Align, Axis, BoxStyle, BuildCx, Component, DirtyClass, EventCx, FlexStyle, Inset, Justify, Key,
-    Length, NodeId, Rgba, Role, Semantics, Size, StateId, StateValue,
+    AbsoluteStyle, Align, AnchorAlign, Anchoring, Axis, BoxStyle, BuildCx, Component, DirtyClass,
+    EventCx, FlexStyle, Inset, Justify, Key, LeafStyle, Length, NodeId, Rgba, Role, Semantics,
+    Side, Size, StateId, StateValue,
 };
 
 /// A shared, mutable dismiss callback, fired when the popup closes (Escape, or a
@@ -98,27 +107,48 @@ pub struct PopupHandle {
     content: NodeId,
     /// The shared `on_dismiss` callback, fired on a close.
     on_dismiss: SharedDismiss,
+    /// Where the focus was when the popup opened, which it goes back to.
+    returns: Rc<Cell<Option<NodeId>>>,
 }
 
 impl PopupHandle {
     /// Open the popup: show the content. An open when already open is a no-op.
     /// Call from within an event handler.
     pub fn open(&self, ev: &mut EventCx<'_>) {
-        set_open(&self.on_dismiss, ev, self.open, self.content, true);
+        self.set(ev, true);
     }
 
     /// Close the popup: hide the content and fire `on_dismiss`. A close when
     /// already closed is a no-op. Call from within an event handler.
     pub fn close(&self, ev: &mut EventCx<'_>) {
-        set_open(&self.on_dismiss, ev, self.open, self.content, false);
+        self.set(ev, false);
     }
 
     /// Toggle the popup: close it if open, open it if closed. Call from within an
     /// event handler.
     pub fn toggle(&self, ev: &mut EventCx<'_>) {
         let next = !matches!(ev.get(self.open), Some(StateValue::Bool(true)));
-        set_open(&self.on_dismiss, ev, self.open, self.content, next);
+        self.set(ev, next);
     }
+
+    fn set(&self, ev: &mut EventCx<'_>, next: bool) {
+        set_open(
+            &self.on_dismiss,
+            ev,
+            self.open,
+            self.content,
+            &self.returns,
+            next,
+        );
+    }
+}
+
+/// An arrow from a popup's content to its anchor: a square of `size` turned a
+/// quarter, half of it out of the content's edge.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PopupArrow {
+    pub size: f32,
+    pub color: Rgba,
 }
 
 /// The visual and layout parameters of a [`Popup`].
@@ -137,6 +167,15 @@ pub struct PopupStyle {
     /// An optional dimming color painted over the popup's box while open, under the
     /// content and over the anchor. `None` (the default) paints no scrim.
     pub scrim: Option<Rgba>,
+    /// Where the content sits against the anchor.
+    pub placement: Anchoring,
+    /// Whether a press outside the content and the anchor closes it.
+    pub light_dismiss: bool,
+    /// The box the content sits in and the room inside it.
+    pub body: BoxStyle,
+    pub padding: Inset,
+    /// An arrow pointing at the anchor.
+    pub arrow: Option<PopupArrow>,
 }
 
 impl Default for PopupStyle {
@@ -147,6 +186,11 @@ impl Default for PopupStyle {
                 height: Length::Fit,
             },
             scrim: None,
+            placement: Anchoring::default(),
+            light_dismiss: true,
+            body: BoxStyle::NONE,
+            padding: Inset::all(0.0),
+            arrow: None,
         }
     }
 }
@@ -193,7 +237,49 @@ pub fn popup() -> Popup {
     }
 }
 
+/// The bubble a [`popover`]'s content sits in.
+const BUBBLE: Rgba = Rgba {
+    r: 0.16,
+    g: 0.17,
+    b: 0.19,
+    a: 1.0,
+};
+
+/// Construct a popover: a [`Popup`] whose content sits in a rounded bubble
+/// below its anchor, centred on it, with an arrow pointing at it.
+pub fn popover() -> Popup {
+    let mut p = popup();
+    let arrow = 12.0;
+    let radius = 8.0;
+    p.style.body = BoxStyle::solid(BUBBLE).with_radius(radius);
+    p.style.padding = Inset::all(12.0);
+    p.style.arrow = Some(PopupArrow {
+        size: arrow,
+        color: BUBBLE,
+    });
+    p.style.placement = Anchoring {
+        side: Side::Bottom,
+        align: AnchorAlign::Center,
+        gap: arrow * 0.75,
+        arrow_inset: radius + arrow * 0.75,
+        ..Anchoring::default()
+    };
+    p
+}
+
 impl Popup {
+    /// Set where the content sits against the anchor.
+    pub fn placement(mut self, placement: Anchoring) -> Self {
+        self.style.placement = placement;
+        self
+    }
+
+    /// Keep the content open when a press lands outside it.
+    pub fn keep_open_on_outside_press(mut self) -> Self {
+        self.style.light_dismiss = false;
+        self
+    }
+
     /// Set the anchor builder: the always-visible content the popup hangs off.
     /// Replaces any previously set anchor.
     pub fn anchor(mut self, anchor: impl Fn(&mut BuildCx<'_>) + 'static) -> Self {
@@ -267,7 +353,14 @@ fn fire_dismiss(cb: &SharedDismiss, ev: &mut EventCx<'_>) {
 /// The `set_hidden` request is deferred (an `EventCx` holds no node store); the
 /// router applies it after the handler returns, showing or hiding the content.
 /// `on_dismiss` fires only on a close.
-fn set_open(cb: &SharedDismiss, ev: &mut EventCx<'_>, open: StateId, content: NodeId, next: bool) {
+fn set_open(
+    cb: &SharedDismiss,
+    ev: &mut EventCx<'_>,
+    open: StateId,
+    content: NodeId,
+    returns: &Cell<Option<NodeId>>,
+    next: bool,
+) {
     let cur = matches!(ev.get(open), Some(StateValue::Bool(true)));
     if cur == next {
         return;
@@ -276,7 +369,14 @@ fn set_open(cb: &SharedDismiss, ev: &mut EventCx<'_>, open: StateId, content: No
     // Open => show the content; close => hide it. Overlay order (set at build) puts
     // the shown content over the whole scene.
     ev.set_hidden(content, !next);
-    if !next {
+    if next {
+        // The focus goes back where it was, or to what opened the popup.
+        returns.set(ev.focused().or(ev.node()));
+        ev.request_focus(content);
+    } else {
+        if let Some(back) = returns.take() {
+            ev.request_focus(back);
+        }
         fire_dismiss(cb, ev);
     }
 }
@@ -296,6 +396,8 @@ impl Component for Popup {
         // starts hidden.
         let scrim_color = self.style.scrim;
         let dismiss_cb = self.on_dismiss.clone();
+        let returns = Rc::new(Cell::new(None));
+        let style = self.style;
         let mut content_id = None;
         let root = cx.flex(
             FlexStyle {
@@ -308,10 +410,22 @@ impl Component for Popup {
                 style: BoxStyle::NONE,
             },
             |cx| {
-                // The anchor: always visible, painted in place.
-                if let Some(anchor) = &self.anchor {
-                    (anchor)(cx);
-                }
+                // The anchor: always visible, painted in place, in one box the
+                // content sits against.
+                let anchor = cx.flex(
+                    FlexStyle {
+                        size: Size {
+                            width: Length::Fit,
+                            height: Length::Fit,
+                        },
+                        ..FlexStyle::default()
+                    },
+                    |cx| {
+                        if let Some(anchor) = &self.anchor {
+                            (anchor)(cx);
+                        }
+                    },
+                );
 
                 // The scrim: a dimming fill over the popup's box, under the content
                 // and over the anchor. It is a second overlay quad authored before
@@ -330,39 +444,77 @@ impl Component for Popup {
                 // and hidden until opened. Its root is focusable and closes on
                 // Escape, and is a Group in the semantics tree (a dialog role is a
                 // Modal refinement, a later slice).
+                let mut arrow = None;
                 let content = cx.flex(
                     FlexStyle {
                         axis: Axis::Column,
                         gap: 0.0,
-                        padding: Inset::all(0.0),
+                        padding: style.padding,
                         align: Align::Stretch,
                         justify: Justify::Start,
                         size: Size {
                             width: Length::Fit,
                             height: Length::Fit,
                         },
-                        style: BoxStyle::NONE,
+                        style: style.body,
                     },
                     |cx| {
+                        if let Some(look) = style.arrow {
+                            // Out of the content's flow, at its top-left until
+                            // placed.
+                            cx.absolute(
+                                AbsoluteStyle {
+                                    size: Size::fixed(0.0, 0.0),
+                                    ..AbsoluteStyle::default()
+                                },
+                                |cx| {
+                                    arrow = Some(cx.leaf(LeafStyle {
+                                        size: Size::fixed(look.size, look.size),
+                                        style: BoxStyle::solid(look.color),
+                                    }));
+                                },
+                            );
+                        }
                         if let Some(content) = &self.content {
                             (content)(cx);
                         }
                     },
                 );
-                cx.set_overlay(content, true);
+                cx.anchored(content, anchor, style.placement);
+                if let Some(arrow) = arrow {
+                    cx.anchor_arrow(content, arrow);
+                    cx.structure(|s| {
+                        s.store.set_turn(
+                            arrow.id(),
+                            viso_ui::Turn {
+                                rotation: std::f32::consts::FRAC_PI_4,
+                                ..viso_ui::Turn::NONE
+                            },
+                        );
+                    });
+                }
+                if style.light_dismiss {
+                    cx.light_dismiss(content);
+                }
                 cx.set_hidden(content, true);
                 cx.focusable(content, true);
                 cx.semantics(content, Semantics::role(Role::Group));
 
                 let key_cb = dismiss_cb.clone();
                 let content_node = content.id();
+                let back = Rc::clone(&returns);
                 cx.on_key(content, move |ev| {
+                    if ev.dismissed() {
+                        set_open(&key_cb, ev, open, content_node, &back, false);
+                        return;
+                    }
                     let Some(k) = ev.key() else { return };
                     if !k.pressed || k.repeat {
                         return;
                     }
                     if matches!(k.key, Key::Escape) {
-                        set_open(&key_cb, ev, open, content_node, false);
+                        ev.stop_propagation();
+                        set_open(&key_cb, ev, open, content_node, &back, false);
                     }
                 });
 
@@ -380,6 +532,7 @@ impl Component for Popup {
             open,
             content,
             on_dismiss: self.on_dismiss.clone(),
+            returns,
         });
     }
 }

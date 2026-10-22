@@ -31,12 +31,13 @@ pub use controls::{
     DockHandleSlot, DockNode, DockStyle, DockTree, DropPart, FileTree, FileTreeHandle,
     FileTreeHandleSlot, FileTreeStyle, Floating, Modal, ModalHandle, ModalHandleSlot, ModalStyle,
     NavHandle, NavHandleSlot, NavigationStack, NavigationStackStyle, NodeKey, NumberField,
-    PanelContent, PanelKey, Popup, PopupHandle, PopupHandleSlot, PopupStyle, RadioGroup,
-    RadioStyle, SelectMode, SelectOp, Sheet, SheetEdge, SheetHandle, SheetHandleSlot, SheetStyle,
-    Slider, SliderStyle, Splitter, SplitterStyle, Tabs, TabsStyle, TextInput, TextInputStyle,
-    Toast, ToastEdge, ToastHandle, ToastHandleSlot, ToastStyle, Toggle, ToggleStyle, TreeNode,
-    VisibleRow, button, caption_bar, checkbox, dock, file_tree, modal, navigation_stack,
-    number_field, popup, radio_group, sheet, slider, splitter, tabs, text_input, toast, toggle,
+    PanelContent, PanelKey, Popup, PopupArrow, PopupHandle, PopupHandleSlot, PopupStyle,
+    RadioGroup, RadioStyle, SelectMode, SelectOp, Sheet, SheetEdge, SheetHandle, SheetHandleSlot,
+    SheetStyle, Slider, SliderStyle, Splitter, SplitterStyle, Tabs, TabsStyle, TextInput,
+    TextInputStyle, Toast, ToastEdge, ToastHandle, ToastHandleSlot, ToastStyle, Toggle,
+    ToggleStyle, TreeNode, VisibleRow, button, caption_bar, checkbox, dock, file_tree, modal,
+    navigation_stack, number_field, popover, popup, radio_group, sheet, slider, splitter, tabs,
+    text_input, toast, toggle,
 };
 pub use document::{Document, DocumentStyle, DocumentText, html, markdown};
 pub use grid::{Grid, GridViewStyle, grid};

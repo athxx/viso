@@ -1434,6 +1434,19 @@ impl KeyRouter {
         }
         ran
     }
+
+    /// Tell light-dismiss layer `layer` a press landed outside it, through
+    /// its key handler; whether one ran.
+    pub fn route_dismiss(
+        store: &mut NodeStore,
+        states: &mut StateStore,
+        bindings: &BindingTable,
+        edits: &mut TextEdits,
+        layer: NodeId,
+    ) -> bool {
+        store.arena().is_live(layer)
+            && key_handler_dispatch(store, states, bindings, edits, layer, KeyPayload::Dismiss).ran
+    }
 }
 
 /// Call one node's *key* handler with the key event, moving it out of the store/// Call one node's *key* handler with the key event, moving it out of the store
@@ -1520,6 +1533,7 @@ enum KeyPayload<'e> {
     Ime(&'e ImeEvent),
     TextChange(&'e str),
     Link(&'e str),
+    Dismiss,
 }
 
 /// Call one node's key handler with `payload`, then apply everything the
@@ -1540,6 +1554,7 @@ fn key_handler_dispatch(
             KeyPayload::Ime(ev) => EventCx::__new_ime(states, bindings, ev),
             KeyPayload::TextChange(text) => EventCx::__new_text_change(states, bindings, text),
             KeyPayload::Link(target) => EventCx::__new_link(states, bindings, target),
+            KeyPayload::Dismiss => EventCx::__new_dismiss(states, bindings),
         };
         cx.__set_focused(store.focused());
         cx.__set_services(store.__services());

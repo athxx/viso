@@ -3616,6 +3616,10 @@ IR/runtime 使用 `PropertyId`、`TokenId`、`NodeKey`、`ComponentTypeId` 等�
 
 **当前**（`crates/widgets/src/`）：`containers.rs`、`grid.rs`（ADR 0009）、`list.rs`（VirtualList，ADR 0008）、`scroll.rs`（ADR 0007）、`text.rs`、`image.rs`、`icon.rs`，以及 `controls/`（button、checkbox、radio、toggle、slider、text_input、tabs、splitter、popup、modal、sheet、toast、navigation_stack、caption_bar、`dock/`（ADR 0023）、`file_tree/`（ADR 0024））。
 
+**锚定浮层**（`viso_ui::anchored`）：一个 layer 可以锚在场景里的另一个节点上（`BuildCx::anchored(floater, anchor, Anchoring)`）。`Anchoring` 给出首选边（`Side::{Top, Bottom, Start, End}`，Start/End 随 RTL 镜像）、沿边对齐（`AnchorAlign`）、间距、窗口边距，以及三个碰撞策略：`flip`（首选边放不下且对边更宽裕时翻到对边）、`shift`（沿边平移进窗口）、`fit`（把可用空间作为 Fill 尺寸的上限，`match_anchor` 让宽度跟随锚点）。放置是纯函数 `place(anchor, natural, bounds, &Anchoring, rtl) -> AnchorPlacement`，结果（矩形、实际边、箭头沿边位置、可用空间）存在 `NodeStore` 的稀疏表里，`anchor_placement` 可读。窗口可用区域是 surface 减去 keep-out（facade 每帧设为 safe area，底边取 safe area 与软键盘高度的较大者）。锚点被 scroll / translate 移动时，`update_transforms` 调 `follow_anchors` 只重放受影响的 layer：位置变了才重新 lay 该 layer，不触发场景 layout；窗口 resize 走正常 relayout。`anchor_arrow(floater, arrow)` 登记的箭头节点被平移到实际边上、对准锚点中心，翻边时随之换边。
+
+**轻量关闭**（light dismiss）：`light_dismiss(layer)` 标记的 layer 在窗口里任一按下落在它、它的锚点、以及压在它上面的显示中 layer 之外时收到 `KeyPayload::Dismiss`（`ev.dismissed()`），由 widget 决定关闭；按在锚点上不算外部，所以锚点自己的点击可以 toggle。`Popup` 默认轻量关闭、Escape 关闭，打开时焦点进入内容，关闭时还给打开前的焦点；`popover()` 是带箭头的气泡预设。
+
 **目标分组**（informative；按子系统而不是按类型机械拆分）：
 
 | 分组 | 目标内容 |
