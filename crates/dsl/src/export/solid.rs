@@ -640,6 +640,9 @@ impl Jsx<'_> {
                             "overflow".to_owned(),
                             format!("show.truth({v}) ? \"hidden\" : undefined"),
                         )),
+                        Prop::Cursor => {
+                            style.push(("cursor".to_owned(), format!("show.cursor({v})")))
+                        }
                         Prop::Label { alt } => {
                             let name = if *alt { "alt" } else { "aria-label" };
                             attrs.push(format!("{name}={{show.opt({v})}}"));

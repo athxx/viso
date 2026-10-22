@@ -179,6 +179,7 @@ impl ControlKind {
             (_, "enabled") => ControlInput::Enabled,
             (_, "autofocus") => ControlInput::Autofocus,
             (_, "clip") => ControlInput::Clip,
+            (_, "cursor") => ControlInput::Cursor,
             (ControlKind::Label | ControlKind::TextInput | ControlKind::Number, "color") => {
                 ControlInput::TextColor
             }
@@ -625,6 +626,8 @@ pub enum ControlInput {
     /// The node's `clip`: whether its children are seen and hit only inside
     /// its box.
     Clip,
+    /// The node's `cursor`: the pointer shape over it and its subtree.
+    Cursor,
     /// A text's `color`.
     TextColor,
     /// A text's `soft_wrap`.
@@ -724,6 +727,8 @@ pub struct NodeEntries {
     pub autofocus: Option<u32>,
     /// The entry of its `clip`.
     pub clip: Option<u32>,
+    /// The entry of its `cursor`.
+    pub cursor: Option<u32>,
 }
 
 /// The handler-table entries of the style of a text a node shows: an absent
@@ -846,7 +851,7 @@ pub enum Switched {
 
 impl ControlInput {
     /// Every input, by wire tag.
-    pub const ALL: [ControlInput; 48] = [
+    pub const ALL: [ControlInput; 49] = [
         ControlInput::Value,
         ControlInput::Min,
         ControlInput::Max,
@@ -895,6 +900,7 @@ impl ControlInput {
         ControlInput::MaxLength,
         ControlInput::Precision,
         ControlInput::Caption,
+        ControlInput::Cursor,
     ];
 
     /// Its wire tag: its place in [`ControlInput::ALL`].
@@ -1029,6 +1035,7 @@ impl Control {
             ControlInput::Enabled => self.node.enabled,
             ControlInput::Autofocus => self.node.autofocus,
             ControlInput::Clip => self.node.clip,
+            ControlInput::Cursor => self.node.cursor,
             ControlInput::TextColor => self.text.color,
             ControlInput::SoftWrap => self.text.soft_wrap,
             ControlInput::FontWeight => self.text.font_weight,
@@ -1093,6 +1100,7 @@ impl Control {
             ControlInput::Enabled => &mut self.node.enabled,
             ControlInput::Autofocus => &mut self.node.autofocus,
             ControlInput::Clip => &mut self.node.clip,
+            ControlInput::Cursor => &mut self.node.cursor,
             ControlInput::TextColor => &mut self.text.color,
             ControlInput::SoftWrap => &mut self.text.soft_wrap,
             ControlInput::FontWeight => &mut self.text.font_weight,
@@ -1162,6 +1170,7 @@ impl Encode for Control {
             self.node.enabled,
             self.node.autofocus,
             self.node.clip,
+            self.node.cursor,
         ]
         .into_iter()
         .chain(self.text.all())
@@ -1284,6 +1293,7 @@ impl Decode for Control {
             enabled: entry()?,
             autofocus: entry()?,
             clip: entry()?,
+            cursor: entry()?,
         };
         control.text = TextEntries {
             color: entry()?,
@@ -1554,6 +1564,7 @@ mod tests {
                 enabled: Some(19),
                 autofocus: Some(20),
                 clip: Some(21),
+                cursor: Some(26),
             },
             text: TextEntries {
                 color: None,

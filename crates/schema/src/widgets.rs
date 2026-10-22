@@ -62,6 +62,7 @@ const TRANSFORM: &[WidgetProperty] = &[
 const FOCUS: &[WidgetProperty] = &[
     prop("focusable", "Bool"),
     prop("autofocus", "Bool"),
+    prop("cursor", "Cursor"),
     prop("enabled", "Bool"),
 ];
 

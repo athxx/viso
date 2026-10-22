@@ -101,6 +101,8 @@ pub(super) enum Prop {
     Autofocus,
     /// Whether its children show only inside its box.
     Clip,
+    /// The pointer shape over it, as its CSS `cursor`.
+    Cursor,
     /// The accessible name: `alt` of an image, else `aria-label`.
     Label {
         alt: bool,
@@ -1283,6 +1285,16 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         {
             el.style("overflow: hidden");
         }
+        if let Some(fixed) = self.bind(
+            wires,
+            control.node.cursor,
+            Prop::Cursor,
+            "the pointer shape",
+            at,
+        ) && let Some(cursor) = fixed.int().and_then(css_cursor)
+        {
+            el.style(&format!("cursor: {cursor}"));
+        }
         let alt = el.tag == "img";
         if let Some(fixed) = self.bind(
             wires,
@@ -1892,6 +1904,37 @@ fn input_kind(tag: i64) -> Option<(&'static str, Option<&'static str>)> {
         7 => ("search", None),
         _ => return None,
     })
+}
+
+/// The CSS `cursor` of the `Cursor` of tag `tag`.
+fn css_cursor(tag: i64) -> Option<&'static str> {
+    const CURSORS: [&str; 24] = [
+        "default",
+        "pointer",
+        "text",
+        "vertical-text",
+        "crosshair",
+        "move",
+        "grab",
+        "grabbing",
+        "not-allowed",
+        "wait",
+        "progress",
+        "help",
+        "context-menu",
+        "copy",
+        "alias",
+        "zoom-in",
+        "zoom-out",
+        "ew-resize",
+        "ns-resize",
+        "nesw-resize",
+        "nwse-resize",
+        "col-resize",
+        "row-resize",
+        "none",
+    ];
+    CURSORS.get(usize::try_from(tag).ok()?).copied()
 }
 
 /// A value's text where the page shows it as text.

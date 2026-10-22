@@ -172,6 +172,14 @@ const tab = (el) => {
   el.tabIndex = off(el) ? -1 : el.$tab;
 };
 const fits = ["contain", "cover", "fill"];
+// The CSS `cursor` of each `Cursor`, by tag.
+const cursors = [
+  "default", "pointer", "text", "vertical-text", "crosshair", "move", "grab",
+  "grabbing", "not-allowed", "wait", "progress", "help", "context-menu",
+  "copy", "alias", "zoom-in", "zoom-out", "ew-resize", "ns-resize",
+  "nesw-resize", "nwse-resize", "col-resize", "row-resize", "none",
+];
+const cursor = (v) => (v === null ? "" : cursors[Number(v)] || "");
 // What a text field holds, by tag: its `inputmode` and the `pattern` a
 // number holds to.
 const holds = [
@@ -240,6 +248,7 @@ const P = {
     });
   },
   clip: (el, v) => { el.style.overflow = truth(v) ? "hidden" : ""; },
+  cursor: (el, v) => { el.style.cursor = cursor(v); },
   label: (el, v, alt) => attr(el, alt ? "alt" : "aria-label", v),
   hint: (el, v) => attr(el, "aria-description", v),
   spoken: (el, v) => attr(el, "aria-valuetext", v),

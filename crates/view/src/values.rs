@@ -33,9 +33,10 @@ use viso_ui::resource::{ResourceId, ResourceRevision};
 use viso_ui::shader::BrushProgram;
 use viso_ui::{Alignment2D, BoundSize, LayoutValue, LengthTerms};
 use viso_ui::{
-    AssetFit, Border, BuildCx, CheckMark, CheckShape, Easing, FieldLook, FieldSeed, FontSize,
-    InputKind, LiveRegion, LookValue, NodeId, NodeStore, NumberFormat, Rgba, Role, SemanticState,
-    Semantics, Srgb, StateId, StructureCx, TextRequest, Timing, focus_node, number_kind,
+    AssetFit, Border, BuildCx, CheckMark, CheckShape, CursorIcon, Easing, FieldLook, FieldSeed,
+    FontSize, InputKind, LiveRegion, LookValue, NodeId, NodeStore, NumberFormat, Rgba, Role,
+    SemanticState, Semantics, Srgb, StateId, StructureCx, TextRequest, Timing, focus_node,
+    number_kind,
 };
 
 use crate::control::{Control, ControlInput, ControlKind, Holds, LayoutSlot, Switched, When};
@@ -217,6 +218,7 @@ pub(crate) fn control_cells(
         look.scale,
         look.rotation,
         look.transform_origin,
+        control.node.cursor,
     ])
     .flatten()
     .chain(arms)
@@ -234,8 +236,9 @@ pub(crate) fn control_cells(
 /// `font_weight`, `font_family`, `line_height`, `max_lines`, `overflow` and
 /// `align`, a field's `placeholder`, `secure`, `multiline`, `input` and
 /// `max_length`, a number field's `step` and `precision` and a check's
-/// caption, and its `translate`, `scale`, `rotation` and `transform_origin`.
-const SHOWN: usize = 39;
+/// caption, its `translate`, `scale`, `rotation` and `transform_origin`, and
+/// its `cursor`.
+const SHOWN: usize = 40;
 
 /// The input of each value a node shows, in order.
 const SHOWN_INPUTS: [ControlInput; SHOWN] = [
@@ -278,6 +281,7 @@ const SHOWN_INPUTS: [ControlInput; SHOWN] = [
     ControlInput::Scale,
     ControlInput::Rotation,
     ControlInput::TransformOrigin,
+    ControlInput::Cursor,
 ];
 
 /// Where its `translate` sits among the values a node shows.
@@ -286,6 +290,9 @@ const TRANSLATE: usize = 35;
 /// Where its `scale`, `rotation` and `transform_origin` sit among the values
 /// a node shows.
 const TURN: usize = 36;
+
+/// Where its `cursor` sits among the values a node shows.
+const CURSOR: usize = 39;
 
 /// Where its background, opacity, corner radius and border sit among the
 /// values a node shows.
@@ -487,6 +494,7 @@ impl Shown {
             scale,
             rotation,
             origin,
+            cursor,
         ] = &shows;
         let changed = |at: usize| prior.is_none_or(|prior| prior[at] != shows[at]);
         let secure = truth(secure, false);
@@ -574,6 +582,9 @@ impl Shown {
         }
         if shown(NODE + 4) && changed(NODE + 4) {
             store.set_clip(self.node, truth(clip, false));
+        }
+        if shown(CURSOR) && changed(CURSOR) {
+            store.set_cursor(self.node, cursor_of(cursor));
         }
         // An autofocus node takes the focus as it mounts, unless something
         // already holds it.
@@ -983,6 +994,38 @@ fn input_kind_of(value: &Value) -> InputKind {
         Some(7) => InputKind::Search,
         _ => InputKind::Text,
     }
+}
+
+/// A `Cursor` value as the pointer shape it names, none for any other.
+fn cursor_of(value: &Value) -> Option<CursorIcon> {
+    const CURSORS: [CursorIcon; 24] = [
+        CursorIcon::Default,
+        CursorIcon::Pointer,
+        CursorIcon::Text,
+        CursorIcon::VerticalText,
+        CursorIcon::Crosshair,
+        CursorIcon::Move,
+        CursorIcon::Grab,
+        CursorIcon::Grabbing,
+        CursorIcon::NotAllowed,
+        CursorIcon::Wait,
+        CursorIcon::Progress,
+        CursorIcon::Help,
+        CursorIcon::ContextMenu,
+        CursorIcon::Copy,
+        CursorIcon::Alias,
+        CursorIcon::ZoomIn,
+        CursorIcon::ZoomOut,
+        CursorIcon::ResizeEw,
+        CursorIcon::ResizeNs,
+        CursorIcon::ResizeNesw,
+        CursorIcon::ResizeNwse,
+        CursorIcon::ResizeCol,
+        CursorIcon::ResizeRow,
+        CursorIcon::Hidden,
+    ];
+    let at = usize::try_from(value.as_int()?).ok()?;
+    CURSORS.get(at).copied()
 }
 
 /// An `ImageFit` value as the fit it names, `contain` for any other.

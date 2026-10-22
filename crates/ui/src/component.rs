@@ -671,6 +671,8 @@ pub struct NodeStore {
     pub(crate) fields: crate::field_marks::Fields,
     /// Cold: each pointer's last press, which a press soon after counts on.
     pub(crate) clicks: crate::clicks::Clicks,
+    /// Cold: the cursors nodes name.
+    pub(crate) cursors: crate::cursor::Cursors,
     /// Cold: the nodes laid out over the whole surface.
     pub(crate) layers: crate::layer::Layers,
     /// Cold: the nodes whose lengths read the environment (`px`, `sp`, `em`),
@@ -794,6 +796,7 @@ impl NodeStore {
         self.folds.clear();
         self.fields.clear();
         self.clicks.clear();
+        self.cursors.clear();
         self.layers.clear();
         self.focus_scope = None;
         self.draggable_regions.clear();
@@ -2193,7 +2196,12 @@ impl NodeStore {
     pub fn set_capture(&mut self, pointer: PointerId, id: Option<NodeId>) -> Option<NodeId> {
         match id {
             Some(node) if !self.arena.is_live(node) => self.contacts.captor(pointer),
-            _ => self.contacts.set_captor(pointer, id, false),
+            _ => {
+                if pointer == PointerId::MOUSE {
+                    self.hold_cursor(id.is_some());
+                }
+                self.contacts.set_captor(pointer, id, false)
+            }
         }
     }
 
@@ -4430,6 +4438,7 @@ impl NodeStore {
         self.folds.forget(i as u32);
         self.fields.forget(i as u32);
         self.clicks.forget(i as u32);
+        self.cursors.forget(i as u32);
         self.layers.forget(i as u32);
         self.clips[i] = false;
         self.overlay[i] = false;
@@ -6079,6 +6088,13 @@ impl<'a> BuildCx<'a> {
     /// router's job; this only declares the node eligible.
     pub fn focusable(&mut self, handle: Handle, focusable: bool) -> Handle {
         self.store.set_focusable(handle.id, focusable);
+        handle
+    }
+
+    /// Make the mouse show `cursor` over an already-declared node and its
+    /// subtree. Returns the handle so authoring chains inline.
+    pub fn cursor(&mut self, handle: Handle, cursor: crate::cursor::CursorIcon) -> Handle {
+        self.store.set_cursor(handle.id, Some(cursor));
         handle
     }
 

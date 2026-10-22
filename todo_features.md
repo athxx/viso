@@ -96,7 +96,7 @@ Rules:
   keys, typed entry), widget and DSL.
 - [x] E7 Touch: long-press word select, selection handles, the edit menu (copy, cut,
   paste, select all).
-- [ ] E8 Pointer cursors per node: a node's hover cursor (DSL `cursor`), the I-beam
+- [x] E8 Pointer cursors per node: a node's hover cursor (DSL `cursor`), the I-beam
   over text fields, a resize cursor over a number field's scrub and a splitter.
 - [ ] E9 The edit menu where the OS has no touch one: a text field's context menu on
   right click (macOS `NSMenu`, Windows popup menu), a framework-drawn menu on Web, X11

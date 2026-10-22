@@ -84,6 +84,10 @@ pub fn property_dirty_class(name: &str) -> DirtyClass {
         // input method reads them with the field's other facts.
         "input" | "max_length" => D::SEMANTICS,
 
+        // The cursor paints nothing; it is what the pointer over the node
+        // shows, read with what the pointer hits.
+        "cursor" => D::HIT_TEST,
+
         // Accessibility-only properties touch the semantics tree alone.
         "role" | "aria_label" | "aria_role" | "accessibility_label" | "description" | "hint" => {
             D::SEMANTICS

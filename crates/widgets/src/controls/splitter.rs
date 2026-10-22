@@ -62,9 +62,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use viso_ui::{
-    Align, Axis, BoxStyle, BuildCx, Component, DirtyClass, EventCx, FlexStyle, Inset, Justify, Key,
-    LeafStyle, Length, PointerButtons, PointerPhase, Rgba, Role, Semantics, Size, StateId,
-    StateValue,
+    Align, Axis, BoxStyle, BuildCx, Component, CursorIcon, DirtyClass, EventCx, FlexStyle, Inset,
+    Justify, Key, LeafStyle, Length, PointerButtons, PointerPhase, Rgba, Role, Semantics, Size,
+    StateId, StateValue,
 };
 
 /// A shared, mutable change callback carrying the new split fraction. It is cloned
@@ -352,11 +352,19 @@ impl Component for Splitter {
                         }
                     },
                 );
-                // The divider bar: a fixed-thickness leaf across the cross axis.
-                cx.leaf(LeafStyle {
+                // The divider bar: a fixed-thickness leaf across the cross axis,
+                // showing the resize cursor across the split.
+                let bar = cx.leaf(LeafStyle {
                     size: bar_leaf_size,
                     style: bar_box,
                 });
+                cx.cursor(
+                    bar,
+                    match axis {
+                        Axis::Row => CursorIcon::ResizeCol,
+                        Axis::Column => CursorIcon::ResizeRow,
+                    },
+                );
                 // Pane B: fills the remaining main axis, holding the trailing
                 // content.
                 cx.flex(

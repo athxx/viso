@@ -376,6 +376,30 @@ fn clip_exports_as_hidden_overflow() {
     assert!(script.contains("P.clip("), "{script}");
 }
 
+const POINTED: &str = r#"
+export component Pointed {
+    state busy = false;
+    view {
+        Column {
+            Column { width: 40dp; height: 20dp; cursor: Cursor::pointer; }
+            Column { width: 40dp; height: 20dp; cursor: if busy { Cursor::wait } else { Cursor::resize_col }; }
+        }
+    }
+}
+"#;
+
+#[test]
+fn a_cursor_exports_as_the_css_cursor() {
+    let page = export(POINTED, false).unwrap();
+    let all = format!("{}{}", page.index, page.styles);
+    assert!(all.contains("cursor: pointer"), "{all}");
+    let script = page.script.as_deref().unwrap();
+    assert!(
+        script.contains("P.cursor("),
+        "a changing cursor is set as it changes"
+    );
+}
+
 const LOGIN: &str = r#"
 export component Login {
     state hidden = true;

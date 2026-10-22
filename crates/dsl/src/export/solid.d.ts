@@ -117,6 +117,7 @@ export declare const show: {
   fit(v: Value): string;
   mode(v: Value): string | undefined;
   pattern(v: Value): string | undefined;
+  cursor(v: Value): string | undefined;
   number(el: HTMLInputElement, v: Value): void;
   maskSize(v: Value): string;
   mask(href: string): string;

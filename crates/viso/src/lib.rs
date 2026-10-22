@@ -451,6 +451,12 @@ pub mod __test_support {
             self.driver.windows[0].edit_menu
         }
 
+        /// The pointer cursor last pushed to the platform for the launch
+        /// window.
+        pub fn cursor(&self) -> viso_platform::CursorIcon {
+            self.driver.windows[0].cursor
+        }
+
         /// The text entry last pushed to the platform for the launch window:
         /// `None` before any push, `Some(None)` once pushed clear.
         pub fn text_entry(&self) -> Option<Option<viso_platform::TextEntry>> {
@@ -869,6 +875,8 @@ struct WindowState {
     text_entry: Option<Option<TextEntry>>,
     /// The edit menu last pushed to the platform, while it shows.
     edit_menu: Option<viso_platform::EditMenu>,
+    /// The cursor last pushed to the platform for the mouse.
+    cursor: viso_platform::CursorIcon,
     /// The text field drawn with the focus last frame.
     marked: Option<NodeId>,
     /// The focused field's text and selection when its caret last moved, and
@@ -1123,6 +1131,7 @@ impl WindowState {
             root: None,
             text_entry: None,
             edit_menu: None,
+            cursor: viso_platform::CursorIcon::Default,
             marked: None,
             blink: None,
             revealed: None,
@@ -3302,6 +3311,13 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                             cx.show_soft_keyboard(ws.window, entry.is_some());
                         }
                     }
+                    // The mouse shows the cursor the node under it names; the
+                    // platform hears of it only when it changes.
+                    let cursor = ws.store.mouse_cursor();
+                    if cursor != ws.cursor {
+                        ws.cursor = cursor;
+                        cx.set_cursor(ws.window, cursor);
+                    }
                     // The edit menu follows what a touch made of the focused
                     // field's selection, where the platform has one.
                     if cx.capabilities().edit_menu && ws.edit_menu_changed() {
@@ -3643,8 +3659,9 @@ pub mod prelude {
     // layout styles, the semantics facts, and the state cell handles belong in
     // the default set (commonly used, stable, unambiguous).
     pub use viso_ui::{
-        AdaptiveColumns, BuildCx, FlexStyle, GridPlacement, GridStyle, InputKind, LeafStyle, Role,
-        Semantics, StateId, StateValue, TextRequest, TrackMax, TrackSizing, VirtualListStyle,
+        AdaptiveColumns, BuildCx, CursorIcon, FlexStyle, GridPlacement, GridStyle, InputKind,
+        LeafStyle, Role, Semantics, StateId, StateValue, TextRequest, TrackMax, TrackSizing,
+        VirtualListStyle,
     };
     // Tier 1 widgets: the base layout container, the static text control, the
     // texture-backed image control, and the vector icon control — plus the Tier 2

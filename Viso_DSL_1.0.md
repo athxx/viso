@@ -4919,6 +4919,16 @@ Named Node `n` 在同一 Component 的 Action 与 Handler 中以 `n: NodeRef<T>`
 
 当前实现：`focus`、`blur`、`scroll_into_view`、`scroll_to`、`scroll_by`、`scroll_to_index`、`scroll_to_key` 在宏、热重载、Release Package（含 AOT）与 HTML/Solid 导出中生效（导出以 `data-node` 标记节点，从发起事件的元素就近查找）；`scroll_to_index`/`scroll_to_key` 把该行滚到视口起始边（列表末尾不足时尽量靠近），同一帧挂载其周围的窗口，越界 Index 取最后一行；`animate` 尚未实现，调用报 `E2001`。
 
+### U7.7 `cursor`
+
+| Property | 类型     | 默认               | 失效       |
+| -------- | -------- | ------------------ | ---------- |
+| `cursor` | `Cursor` | 沿祖先继承；无则见下 | `HIT_TEST` |
+
+`Cursor` 为 Prelude Enum：`default`、`pointer`、`text`、`vertical_text`、`crosshair`、`move`、`grab`、`grabbing`、`not_allowed`、`wait`、`progress`、`help`、`context_menu`、`copy`、`alias`、`zoom_in`、`zoom_out`、`resize_ew`、`resize_ns`、`resize_nesw`、`resize_nwse`、`resize_col`、`resize_row`、`hidden`。鼠标在节点上时窗口显示该节点及其祖先中最近一个写了 `cursor` 的值；都没写时，输入框显示 `text`，未获得焦点的 `NumberField` 显示 `resize_ew`（可刮动），其余为 `default`。inert（`enabled: false` 子树内）的节点一律显示 `default`。鼠标被 Capture 期间（拖动、刮动、按住 `Splitter` 分隔条）保持 Capture 开始时的形状，不随经过的节点变化。触摸与笔的直接接触没有光标。`Splitter` 的分隔条为 `resize_col`（左右分割）或 `resize_row`（上下分割）。
+
+当前实现：`cursor` 可为常量或读取值，宏路径、热重载与 Release 包相同；Rust 侧为 `BuildCx::cursor(handle, CursorIcon)`。每帧布局后按鼠标所在节点求出形状，与上次不同时才推给平台。HTML 导出：常量写为元素的 CSS `cursor`（`resize_ew` 为 `ew-resize`、`resize_col` 为 `col-resize`、`hidden` 为 `none`，余同名换连字符），读取值由页面脚本随值设置。
+
 ---
 
 ## U8. 语义
