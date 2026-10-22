@@ -503,13 +503,8 @@ pub enum StoreRequest {
     Refreshing(NodeId, bool),
     /// Bring a snapping viewport to rest on an item.
     SnapTo(NodeId, usize),
-    /// Show a page of a stack in place of another, going back or forward.
-    Navigate {
-        from: Option<NodeId>,
-        to: NodeId,
-        transition: crate::navigation::PageTransition,
-        back: bool,
-    },
+    /// Turn a paged stack to a page.
+    Page(NodeId, Option<usize>, crate::navigation::PageTransition),
 }
 
 impl StoreRequest {
@@ -534,12 +529,7 @@ impl StoreRequest {
             StoreRequest::Bar(track, input) => store.bar_input(track, input),
             StoreRequest::Refreshing(id, on) => store.set_refreshing(id, on),
             StoreRequest::SnapTo(id, index) => store.snap_to_item(id, index),
-            StoreRequest::Navigate {
-                from,
-                to,
-                transition,
-                back,
-            } => store.navigate(from, to, transition, back),
+            StoreRequest::Page(stack, page, transition) => store.set_page(stack, page, transition),
         }
     }
 }
@@ -977,21 +967,16 @@ impl<'a> EventCx<'a> {
         self.store_requests.push(StoreRequest::SnapTo(id, index));
     }
 
-    /// Show page `to` of a stack in place of page `from`, going `back` or
-    /// forward, as `transition` moves them ([`NodeStore::navigate`]).
-    pub fn navigate(
+    /// Turn paged stack `stack` to `page`, the pages moving as `transition`
+    /// says ([`NodeStore::set_page`]).
+    pub fn set_page(
         &mut self,
-        from: Option<NodeId>,
-        to: NodeId,
+        stack: NodeId,
+        page: Option<usize>,
         transition: crate::navigation::PageTransition,
-        back: bool,
     ) {
-        self.store_requests.push(StoreRequest::Navigate {
-            from,
-            to,
-            transition,
-            back,
-        });
+        self.store_requests
+            .push(StoreRequest::Page(stack, page, transition));
     }
 
     /// The item snapping viewport `id` rests on, heads for, or shows

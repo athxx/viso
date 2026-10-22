@@ -674,7 +674,7 @@ pub(crate) struct NodeAnimation {
     pub(crate) reduced: ReducedMotion,
     /// Whether its end goes unheard: a page's move through a navigation.
     pub(crate) quiet: bool,
-    /// The page it hides once it runs its course.
+    /// The page that leaves its stack, folding away, once it runs its course.
     pub(crate) hides: Option<NodeId>,
 }
 

@@ -556,13 +556,11 @@ fn frame(h: &mut Harness) {
 fn steady_navigation_stack_frame_is_allocation_free_including_after_a_page_flip() {
     let mut h = setup_alloc();
 
-    // Flip the top page once through a direct `set_hidden` pair (the same effect
-    // the router applies for a push): hide page 0, show page 1. The flip marks
+    // Flip the top page once directly (the same effect
+    // the router applies for a push): turn the stack to page 1. The turn marks
     // LAYOUT | PAINT, so re-run layout to settle the new visibility before
-    // measuring — the one-time flip/layout cost folds into warmup.
-    let pages = children_of(&h.store, h.root);
-    h.store.set_hidden(pages[0], true);
-    h.store.set_hidden(pages[1], false);
+    // measuring — the one-time turn/layout cost folds into warmup.
+    h.store.set_page(h.root, Some(1), PageTransition::None);
     let mut scratch = Vec::new();
     h.store.layout(h.root, surface_rect(), &mut scratch);
 

@@ -656,8 +656,10 @@ pub struct NodeStore {
     /// once, and a programmatic scroll jumps rather than glides.
     reduced_motion: bool,
     /// Cold: the pages leaving their stacks, which take no pointer
-    /// ([`navigate`](Self::navigate)).
+    /// ([`set_page`](Self::set_page)).
     pub(crate) leaving: Vec<NodeId>,
+    /// Cold: the paged stacks and the page each shows.
+    pub(crate) paged: crate::navigation::Paged,
     /// Cold, transient handoff buffer (not index-aligned): one-shot timer arms a
     /// handler requested this frame, sitting here between the router (which drains
     /// them off the [`EventCx`](crate::context::EventCx) after a dispatch and
@@ -899,6 +901,7 @@ impl NodeStore {
         self.drags.clear();
         self.holds.clear();
         self.folds.clear();
+        self.paged.clear();
         self.fields.clear();
         self.clicks.clear();
         self.cursors.clear();
@@ -3656,7 +3659,8 @@ impl NodeStore {
     /// Whether the slot `i` is out of layout and paint.
     #[inline]
     fn concealed(&self, i: usize) -> bool {
-        self.hidden[i] || self.folded_away(crate::node::NodeIndex::new(i as u32))
+        let index = crate::node::NodeIndex::new(i as u32);
+        self.hidden[i] || self.folded_away(index) || self.paged_away(index)
     }
 
     /// Set whether a node (and its subtree) is folded out of layout, paint and
@@ -4217,9 +4221,14 @@ impl NodeStore {
         if self.arena.is_live(node) {
             self.show_look(node, ended.model);
         }
-        if finished && let Some(page) = ended.hides {
+        if finished
+            && let Some(page) = ended.hides
+            && self.leaving.contains(&page)
+        {
             self.leaving.retain(|&p| p != page);
-            self.set_hidden(page, true);
+            if self.arena.is_live(page) {
+                self.shown_changed(page);
+            }
         }
         self.queue_end(ended, finished);
     }
@@ -4928,6 +4937,7 @@ impl NodeStore {
         self.hittable[i] = true;
         self.hidden[i] = false;
         self.folds.forget(i as u32);
+        self.paged.forget(i as u32);
         self.fields.forget(i as u32);
         self.clicks.forget(i as u32);
         self.cursors.forget(i as u32);
@@ -6769,6 +6779,14 @@ impl<'a> BuildCx<'a> {
     /// flag at runtime via [`EventCx::set_hidden`].
     pub fn set_hidden(&mut self, handle: Handle, hidden: bool) -> Handle {
         self.store.set_hidden(handle.id, hidden);
+        handle
+    }
+
+    /// Page an already-declared node: it shows only its child at `page`
+    /// ([`NodeStore::set_page`]).
+    pub fn page(&mut self, handle: Handle, page: Option<usize>) -> Handle {
+        self.store
+            .set_page(handle.id, page, crate::navigation::PageTransition::None);
         handle
     }
 

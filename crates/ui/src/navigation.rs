@@ -1,19 +1,51 @@
-//! Navigation: the pages of a stack trading places.
+//! Navigation: a stack showing one of its pages, and the pages trading
+//! places.
 //!
-//! [`NodeStore::navigate`] shows one page of a stack in place of another,
-//! moving the two as a [`PageTransition`] says: the page arriving moves in
-//! from where it enters, the page leaving moves out to where it leaves and
-//! hides once there. Both move as the presented values of animations
-//! ([`NodeStore::animate`]), so neither lays out as it moves, and a
-//! navigation while one is under way takes each page on from where it is —
-//! a spring at the speed it has. A page leaving takes no pointer.
+//! A paged stack ([`NodeStore::set_page`]) shows the child at its page index
+//! and folds every other child out of layout, paint, hit testing and the
+//! semantics tree, as hiding each would — a child linked later folds too, and
+//! one its own `visible` hides stays hidden. Turned to another page, it moves
+//! the two as its [`PageTransition`] says: the page arriving moves in from
+//! where it enters, the page leaving moves out to where it leaves and folds
+//! once there. Both move as the presented values of animations
+//! ([`NodeStore::animate`]), so neither lays out as it moves, and a turn
+//! while one is under way takes each page on from where it is — a spring at
+//! the speed it has. A page leaving takes no pointer. The table is cold: a
+//! store with no paged stack pays one emptiness check where a node's
+//! visibility is read.
 
 use core::time::Duration;
 
 use crate::animation::{CubicBezier, Easing, LookTransition, LookValue, Run, Spring, Timing};
 use crate::component::NodeStore;
+use crate::dirty::DirtyClass;
 use crate::layout::Vec2;
-use crate::node::NodeId;
+use crate::node::{NodeId, NodeIndex};
+
+/// The paged stacks, each with the index of the child it shows. Cold and
+/// small: a handful of navigation stacks at most.
+#[derive(Debug, Default)]
+pub(crate) struct Paged {
+    stacks: Vec<(NodeId, Option<usize>)>,
+}
+
+impl Paged {
+    pub(crate) fn clear(&mut self) {
+        self.stacks.clear();
+    }
+
+    /// Forgets the slot `index`, freed or reused.
+    pub(crate) fn forget(&mut self, index: u32) {
+        self.stacks.retain(|(n, _)| n.index() != index);
+    }
+
+    fn at(&self, index: NodeIndex) -> Option<Option<usize>> {
+        self.stacks
+            .iter()
+            .find(|(n, _)| n.index() == index.get())
+            .map(|&(_, page)| page)
+    }
+}
 
 /// How the pages of a stack trade places.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -123,49 +155,117 @@ impl PageTransition {
 }
 
 impl NodeStore {
-    /// Shows page `to` of a stack in place of page `from`, going `back` or
-    /// forward, moving the two as `transition` says. `to` shows at once and
-    /// `from` hides once it has moved out; a page moving from an earlier
-    /// navigation moves on from where it is. With no `from`, or no
-    /// transition, `to` simply takes `from`'s place. Pages stack in their
-    /// order, so going forward the arriving page is above and going back
-    /// the leaving one is. A stale `to` is a no-op.
-    pub fn navigate(
-        &mut self,
-        from: Option<NodeId>,
-        to: NodeId,
-        transition: PageTransition,
-        back: bool,
-    ) {
-        if !self.arena().is_live(to) {
+    /// Shows the child of `stack` at `page`, none for `None`, folding every
+    /// other child away; turned from another page, the two move as
+    /// `transition` says — back toward a lower page, else forward. Pages
+    /// stack in their order, so going forward the arriving page is above
+    /// and going back the leaving one is. The first page a stack is given
+    /// shows at once. A stale handle is a no-op.
+    pub fn set_page(&mut self, stack: NodeId, page: Option<usize>, transition: PageTransition) {
+        if !self.arena().is_live(stack) {
             return;
         }
-        let entering = self.hidden(to);
-        self.set_hidden(to, false);
-        self.leaving.retain(|&page| page != to);
-        let Some(from) = from.filter(|&from| from != to && self.arena().is_live(from)) else {
+        let Some(at) = self.paged.stacks.iter().position(|&(n, _)| n == stack) else {
+            self.paged.stacks.push((stack, page));
+            let mut child = self.arena().first_child(stack);
+            while let Some(c) = child {
+                child = self.arena().next_sibling(c);
+                self.shown_changed(c);
+            }
+            self.mark_dirty(
+                stack,
+                DirtyClass::MEASURE
+                    | DirtyClass::LAYOUT
+                    | DirtyClass::PAINT
+                    | DirtyClass::SEMANTICS,
+            );
             return;
         };
-        let stack = self.arena().parent(to).unwrap_or(to);
-        let width = self.bounds(stack).w.max(self.bounds(from).w);
-        let rtl = self.direction_at(stack.index()) == crate::adaptive::LayoutDirection::Rtl;
-        let Some(moves) = transition.moves(back, width, rtl, self.reduced_motion()) else {
-            self.settle_page(to);
-            self.settle_page(from);
-            self.set_hidden(from, true);
-            return;
-        };
-        let (dx, fade) = moves.into;
-        self.move_page(to, dx, fade, (true, entering), moves.timing, None);
-        let (dx, fade) = moves.out;
-        let moved = self.move_page(from, dx, fade, (false, false), moves.timing, Some(from));
-        // A leaving page that does not move hides with the arriving one's
-        // arrival.
-        if !moved && !self.move_page_hides(to, from) {
-            self.set_hidden(from, true);
+        let was = self.paged.stacks[at].1;
+        if was == page {
             return;
         }
-        self.leaving.push(from);
+        let from = was.and_then(|i| self.page_at(stack, i));
+        let to = page.and_then(|i| self.page_at(stack, i));
+        let back = matches!((was, page), (Some(a), Some(b)) if b < a);
+        // A page turned back to as it leaves moves on from where it is.
+        let entering = to.is_some_and(|to| !self.is_leaving(to));
+        if let Some(to) = to {
+            self.leaving.retain(|&p| p != to);
+        }
+        let moves = (from.is_some() && to.is_some())
+            .then(|| {
+                let width = self.bounds(stack).w;
+                let rtl = self.direction_at(stack.index()) == crate::adaptive::LayoutDirection::Rtl;
+                transition.moves(back, width, rtl, self.reduced_motion())
+            })
+            .flatten();
+        match (moves, from, to) {
+            (Some(moves), Some(from), Some(to)) => {
+                // The leaving page shows on as it moves out.
+                self.leaving.retain(|&p| p != from);
+                self.leaving.push(from);
+                let (dx, fade) = moves.into;
+                self.move_page(to, dx, fade, (true, entering), moves.timing, None);
+                let (dx, fade) = moves.out;
+                let moved =
+                    self.move_page(from, dx, fade, (false, false), moves.timing, Some(from));
+                // A leaving page that does not move folds with the arriving
+                // one's arrival.
+                if !moved && !self.move_page_hides(to, from) {
+                    self.leaving.retain(|&p| p != from);
+                }
+            }
+            _ => {
+                for page in [from, to].into_iter().flatten() {
+                    self.settle_page(page);
+                    self.leaving.retain(|&p| p != page);
+                }
+            }
+        }
+        self.paged.stacks[at].1 = page;
+        for page in [from, to].into_iter().flatten() {
+            self.shown_changed(page);
+        }
+    }
+
+    /// The index of the page `stack` shows, `None` for none or for a stack
+    /// that is not paged.
+    pub fn shown_page(&self, stack: NodeId) -> Option<usize> {
+        self.paged
+            .stacks
+            .iter()
+            .find(|&&(n, _)| n == stack)
+            .and_then(|&(_, page)| page)
+    }
+
+    /// The child of `stack` at `index`.
+    fn page_at(&self, stack: NodeId, index: usize) -> Option<NodeId> {
+        self.arena().children(stack).nth(index)
+    }
+
+    /// Whether the slot `index` is a child of a paged stack other than the
+    /// one it shows and no page leaving it.
+    #[inline]
+    pub(crate) fn paged_away(&self, index: NodeIndex) -> bool {
+        if self.paged.stacks.is_empty() {
+            return false;
+        }
+        let arena = self.arena();
+        let parent = arena.parent_of(index);
+        if parent.is_none() {
+            return false;
+        }
+        let Some(page) = self.paged.at(parent) else {
+            return false;
+        };
+        let mut child = arena.first_child_of(parent);
+        let mut at = 0;
+        while !child.is_none() && child != index {
+            child = arena.next_sibling_of(child);
+            at += 1;
+        }
+        page != Some(at) && !self.leaving.iter().any(|p| p.index() == index.get())
     }
 
     /// Whether `page` is leaving its stack: it takes no pointer.
@@ -298,12 +398,11 @@ mod tests {
                     ..Default::default()
                 },
                 |cx| {
-                    for i in 0..3 {
+                    for _ in 0..3 {
                         let page = cx.leaf(LeafStyle {
                             size: Size::fill(),
                             ..Default::default()
                         });
-                        cx.set_hidden(page, i != 0);
                         pages.push(page.id());
                     }
                 },
@@ -316,6 +415,7 @@ mod tests {
             w: 400.0,
             h: 300.0,
         };
+        store.set_page(root, Some(0), PageTransition::None);
         store.layout(root, surface, &mut Vec::new());
         (store, root, [pages[0], pages[1], pages[2]])
     }
@@ -326,8 +426,8 @@ mod tests {
 
     #[test]
     fn a_slide_brings_the_page_over_from_the_trailing_edge() {
-        let (mut store, _, [a, b, _]) = stack();
-        store.navigate(Some(a), b, PageTransition::Slide, false);
+        let (mut store, root, [a, b, _]) = stack();
+        store.set_page(root, Some(1), PageTransition::Slide);
         assert!(
             !store.hidden(b) && !store.hidden(a),
             "both show as they move"
@@ -356,11 +456,11 @@ mod tests {
 
     #[test]
     fn going_back_mid_slide_takes_each_page_on_from_where_it_is() {
-        let (mut store, _, [a, b, _]) = stack();
-        store.navigate(Some(a), b, PageTransition::Slide, false);
+        let (mut store, root, [a, b, _]) = stack();
+        store.set_page(root, Some(1), PageTransition::Slide);
         store.tick_transitions(ms(80));
         let (bx, ax) = (store.translate(b).x, store.translate(a).x);
-        store.navigate(Some(b), a, PageTransition::Slide, true);
+        store.set_page(root, Some(0), PageTransition::Slide);
         assert!(!store.hidden(a), "the page it was leaving stays");
         store.tick_transitions(ms(4));
         assert!(
@@ -378,15 +478,15 @@ mod tests {
 
     #[test]
     fn a_fade_fades_the_page_on_top_and_none_swaps_at_once() {
-        let (mut store, _, [a, b, c]) = stack();
-        store.navigate(Some(a), b, PageTransition::Fade, false);
+        let (mut store, root, [a, b, c]) = stack();
+        store.set_page(root, Some(1), PageTransition::Fade);
         assert_eq!(store.opacity(b), 0.0);
         store.tick_transitions(ms(100));
         assert_eq!(store.opacity(a), 1.0, "the page beneath stays opaque");
         assert!(store.opacity(b) > 0.0 && store.opacity(b) < 1.0);
         store.tick_transitions(ms(100));
         assert!(store.hidden(a) && store.opacity(b) == 1.0);
-        store.navigate(Some(b), a, PageTransition::Fade, true);
+        store.set_page(root, Some(0), PageTransition::Fade);
         store.tick_transitions(ms(100));
         assert!(
             store.opacity(b) < 1.0 && store.opacity(a) == 1.0,
@@ -394,22 +494,22 @@ mod tests {
         );
         store.tick_transitions(ms(100));
         assert!(store.hidden(b) && store.opacity(b) == 1.0);
-        store.navigate(Some(a), c, PageTransition::None, false);
+        store.set_page(root, Some(2), PageTransition::None);
         assert!(store.hidden(a) && !store.hidden(c));
         assert!(!store.is_transitioning());
     }
 
     #[test]
     fn a_shared_axis_slides_and_fades_and_reduced_motion_makes_it_a_fade() {
-        let (mut store, _, [a, b, _]) = stack();
-        store.navigate(Some(a), b, PageTransition::SharedAxis, false);
+        let (mut store, root, [a, b, _]) = stack();
+        store.set_page(root, Some(1), PageTransition::SharedAxis);
         assert_eq!((store.translate(b).x, store.opacity(b)), (30.0, 0.0));
         store.tick_transitions(ms(150));
         assert!(store.translate(a).x < 0.0 && store.opacity(a) < 1.0);
         store.tick_transitions(ms(150));
         assert!(store.hidden(a));
         store.set_reduced_motion(true);
-        store.navigate(Some(b), a, PageTransition::SharedAxis, true);
+        store.set_page(root, Some(0), PageTransition::SharedAxis);
         assert_eq!(store.translate(a).x, 0.0, "no slide");
         store.tick_transitions(ms(100));
         assert!(store.opacity(b) < 1.0, "a fade still runs");
@@ -417,9 +517,25 @@ mod tests {
 
     #[test]
     fn a_right_to_left_stack_slides_from_the_left() {
-        let (mut store, root, [a, b, _]) = stack();
+        let (mut store, root, [_, b, _]) = stack();
         store.set_layout_direction(root, Some(crate::adaptive::LayoutDirection::Rtl));
-        store.navigate(Some(a), b, PageTransition::Slide, false);
+        store.set_page(root, Some(1), PageTransition::Slide);
         assert_eq!(store.translate(b).x, -400.0);
+    }
+
+    #[test]
+    fn a_paged_stack_folds_all_but_its_page_and_respects_a_page_s_own_hiding() {
+        let (mut store, root, [a, b, c]) = stack();
+        assert!(!store.hidden(a) && store.hidden(b) && store.hidden(c));
+        assert_eq!(store.shown_page(root), Some(0));
+        store.set_hidden(b, true);
+        store.set_page(root, Some(1), PageTransition::None);
+        assert!(store.hidden(a), "the page it left folds");
+        assert!(store.hidden(b), "a page hidden itself stays hidden");
+        store.set_hidden(b, false);
+        assert!(!store.hidden(b));
+        store.set_page(root, None, PageTransition::Slide);
+        assert!(store.hidden(a) && store.hidden(b) && store.hidden(c));
+        assert!(!store.is_transitioning(), "to no page nothing moves");
     }
 }

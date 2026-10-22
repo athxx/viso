@@ -6,8 +6,8 @@
 //! over the one below, which hides once covered; popping does the reverse, and
 //! both fire `on_navigate` with the new stack depth. The pages move as the
 //! stack's [`PageTransition`] says — the platform's own by default — through
-//! [`NodeStore::navigate`](viso_ui::NodeStore::navigate), clipped to the stack. Unlike [`Tabs`](crate::Tabs), a navigation stack has no
-//! internal button strip — it is driven by application logic: an app captures a
+//! the stack's turn, clipped to it. Unlike [`Tabs`](crate::Tabs), a navigation
+//! stack has no internal button strip — it is driven by application logic: an app captures a
 //! [`NavHandle`] (see [`NavigationStack::handle`]) and calls
 //! [`NavHandle::push`]/[`NavHandle::pop`] from a page's own controls, and the
 //! stack also honors a keyboard back gesture (Escape or Backspace while focused).
@@ -15,17 +15,16 @@
 //! action semantically, so an interactive control must have a keyboard equivalent
 //! (AGENTS section 15).
 //!
-//! All pages build once, at build time. Pushing and popping do not rebuild them —
-//! `DirtyClass::STRUCTURE` bubbles but no pass rebuilds a subtree, so pages are
-//! shown and hidden through the retained [`hidden`](viso_ui::NodeStore::hidden)
-//! flag: a hidden page folds out of layout and paint without a structural change
-//! (architecture section 8.4 / section 11). A handler cannot navigate directly
-//! (an [`EventCx`] holds no node store), so the navigation is a deferred
-//! request the router applies after the handler returns — the same discipline as
-//! a state edit. Navigating writes a reactive `depth` cell bound to the stack's
-//! `PAINT`; the pages' visibility and motion are the deferred navigation's. Lazy pages (build only the visible page, build the rest on
-//! first reveal) are a later slice; this slice builds all pages and hides the
-//! ones below the top.
+//! All pages build once, at build time. Pushing and popping do not rebuild them:
+//! the stack is a paged stack ([`NodeStore::set_page`](viso_ui::NodeStore::set_page)),
+//! which folds every page but the top out of layout and paint without a
+//! structural change (architecture section 8.4 / section 11). A handler cannot
+//! navigate directly (an [`EventCx`] holds no node store), so the turn is a
+//! deferred request the router applies after the handler returns — the same
+//! discipline as a state edit. Navigating writes a reactive `depth` cell bound
+//! to the stack's `PAINT`; the pages' visibility and motion are the deferred
+//! turn's. Lazy pages (build only the visible page, build the rest on first
+//! reveal) are a later slice; this slice builds all pages.
 //!
 //! ```
 //! use std::cell::RefCell;
@@ -76,32 +75,28 @@ type SharedNavigate = Rc<RefCell<Option<Box<dyn FnMut(&mut EventCx<'_>, usize)>>
 /// stack; boxed so a `NavigationStack` can hold a heterogeneous list of closures.
 type PageBuilder = Box<dyn Fn(&mut BuildCx<'_>)>;
 
-/// The shared list of built page ids, filled once during build and read only at
-/// event time (a [`NavHandle`] or the back-gesture handler resolves a page id from
-/// it to flip `hidden`). Written once, read only during dispatch — never
-/// concurrently — so the borrow is uncontended.
-type PagesCell = Rc<RefCell<Vec<NodeId>>>;
-
 /// A shared slot an application creates, passes to
 /// [`NavigationStack::handle`], and reads after `build` to obtain the control's
-/// [`NavHandle`]. The `depth` cell and page ids are minted inside `build`, so the
-/// handle cannot be returned by the builder chain; the app supplies this slot up
-/// front and `build` fills it once the ids exist — the same deferred-fill idiom as
-/// the internal pages slot. Written once during build, read once after.
+/// [`NavHandle`]. The `depth` cell and the stack's id are minted inside `build`,
+/// so the handle cannot be returned by the builder chain; the app supplies this
+/// slot up front and `build` fills it once the ids exist. Written once during
+/// build, read once after.
 pub type NavHandleSlot = Rc<RefCell<Option<NavHandle>>>;
 
 /// A handle an application captures to drive a built [`NavigationStack`]
 /// programmatically. Cheap to clone (it holds only ids and shared cells). Call
 /// [`NavHandle::push`] to reveal the next page and [`NavHandle::pop`] to return to
 /// the previous one — both from within an [`EventCx`] (an event handler), since a
-/// navigation defers `hidden` flips the router applies. A push past the last page
+/// navigation defers a turn the router applies. A push past the last page
 /// or a pop below the first is a clamped no-op.
 #[derive(Clone)]
 pub struct NavHandle {
     /// The reactive cell holding the current top-page index.
     depth: StateId,
-    /// The built page ids, in stack order.
-    pages: PagesCell,
+    /// The paged stack.
+    stack: NodeId,
+    /// How many pages it has.
+    pages: usize,
     /// The shared `on_navigate` callback.
     on_navigate: SharedNavigate,
     /// How its pages trade places.
@@ -113,17 +108,8 @@ impl NavHandle {
     /// fire `on_navigate` with the new depth. A push past the last page is a
     /// clamped no-op. Call from within an event handler.
     pub fn push(&self, ev: &mut EventCx<'_>) {
-        let pages = self.pages.borrow();
         if let Some(StateValue::Int(cur)) = ev.get(self.depth) {
-            let to = cur as usize + 1;
-            navigate(
-                &self.on_navigate,
-                ev,
-                self.depth,
-                &pages,
-                to,
-                self.transition,
-            );
+            self.go(ev, cur as usize + 1);
         }
     }
 
@@ -131,20 +117,21 @@ impl NavHandle {
     /// fire `on_navigate` with the new depth. A pop below the first page is a
     /// clamped no-op. Call from within an event handler.
     pub fn pop(&self, ev: &mut EventCx<'_>) {
-        let pages = self.pages.borrow();
         if let Some(StateValue::Int(cur)) = ev.get(self.depth)
             && cur > 0
         {
-            let to = cur as usize - 1;
-            navigate(
-                &self.on_navigate,
-                ev,
-                self.depth,
-                &pages,
-                to,
-                self.transition,
-            );
+            self.go(ev, cur as usize - 1);
         }
+    }
+
+    fn go(&self, ev: &mut EventCx<'_>, to: usize) {
+        navigate(
+            &self.on_navigate,
+            ev,
+            (self.depth, self.stack, self.pages),
+            to,
+            self.transition,
+        );
     }
 }
 
@@ -185,8 +172,9 @@ impl Default for NavigationStackStyle {
 ///
 /// See the [module docs](self) for a build example. Invalidation: navigating
 /// writes a reactive `depth` cell bound to the stack's `PAINT`, and defers a pair
-/// of `hidden` flips (hide the old top, show the new) the router applies — each
-/// marking its page `LAYOUT | PAINT`. No rebuild: all pages are built once.
+/// turn of its paged stack the router applies — the two pages it trades each
+/// marking `MEASURE | LAYOUT | PAINT | SEMANTICS`. No rebuild: all pages are
+/// built once.
 pub struct NavigationStack {
     /// The pages, in stack order (index `0` is the root page).
     pages: Vec<PageBuilder>,
@@ -270,7 +258,7 @@ fn fire(cb: &SharedNavigate, ev: &mut EventCx<'_>, depth: usize) {
 
 /// Navigate the stack to top-page index `next` — but only when it is a genuine,
 /// in-range change. Navigating to the current top, or to an out-of-range index, is
-/// a no-op: no cell write, no `hidden` flip, no callback. This also coalesces the
+/// a no-op: no cell write, no turn, no callback. This also coalesces the
 /// capture/bubble double-dispatch a router performs when a back gesture lands on a
 /// leaf inside the focused stack (the stack is then an ancestor, so its handler
 /// runs on both passes): the first pass writes the new depth, flips the pages, and
@@ -280,17 +268,16 @@ fn fire(cb: &SharedNavigate, ev: &mut EventCx<'_>, depth: usize) {
 ///
 /// The navigation is deferred (an `EventCx` holds no node store); the router
 /// applies it after the handler returns, bringing the new top page in over the
-/// old one going forward, or the old one out over it going back. `pages[i]` is
-/// page `i`'s node.
+/// old one going forward, or the old one out over it going back. `stack` is
+/// the paged stack of `pages` pages.
 fn navigate(
     cb: &SharedNavigate,
     ev: &mut EventCx<'_>,
-    depth: StateId,
-    pages: &[NodeId],
+    (depth, stack, pages): (StateId, NodeId, usize),
     next: usize,
     transition: PageTransition,
 ) {
-    if next >= pages.len() {
+    if next >= pages {
         return;
     }
     let prev = match ev.get(depth) {
@@ -301,9 +288,7 @@ fn navigate(
         return;
     }
     ev.set(depth, StateValue::Int(next as i32));
-    if let Some(&new) = pages.get(next) {
-        ev.navigate(pages.get(prev).copied(), new, transition, next < prev);
-    }
+    ev.set_page(stack, Some(next), transition);
     fire(cb, ev, next);
 }
 
@@ -311,24 +296,16 @@ impl Component for NavigationStack {
     fn build(&self, cx: &mut BuildCx<'_>) {
         // One shared `depth` cell holding the visible top-page index. The stack
         // binds this cell to its PAINT so a navigation repaints the stack in one
-        // targeted invalidation, not a rebuild. Pages switch through deferred
-        // `hidden` flips, not this cell. The root page (index 0) is initially on
-        // top.
+        // targeted invalidation, not a rebuild. Pages switch through the
+        // deferred turn of the paged stack, not this cell. The root page
+        // (index 0) is initially on top.
         let depth = cx.state(StateValue::Int(0));
 
-        // Pages are shown/hidden through their node ids, resolved only at event
-        // time (a back gesture or a `NavHandle` flips `hidden`), long after the
-        // whole tree is built. The page-build phase below pushes each page's id
-        // into this shared, deferred-fill slot, and the handler and the handle read
-        // it when they run. Written once during build, read only during dispatch —
-        // never concurrently — so the borrow is uncontended.
-        let pages_cell: PagesCell = Rc::new(RefCell::new(Vec::with_capacity(self.pages.len())));
-
-        // The stack: every page overlaps, each filling the region; all but the
-        // top are hidden. It clips, so a page sliding in or out shows only
-        // inside it.
+        // The stack: every page overlaps, each filling the region; it shows
+        // only the top. It clips, so a page sliding in or out shows only inside
+        // it.
         let key_cb = self.on_navigate.clone();
-        let key_pages = pages_cell.clone();
+        let pages = self.pages.len();
         let transition = self.style.transition;
         let root = cx.stack(
             StackStyle {
@@ -336,8 +313,7 @@ impl Component for NavigationStack {
                 ..Default::default()
             },
             |cx| {
-                let mut pages = pages_cell.borrow_mut();
-                for (index, page) in self.pages.iter().enumerate() {
+                for page in &self.pages {
                     let node = cx.flex(
                         FlexStyle {
                             axis: Axis::Column,
@@ -355,32 +331,34 @@ impl Component for NavigationStack {
                             (page)(cx);
                         },
                     );
-                    // Show only the root page; hide the rest at build time so the
-                    // initial frame lays out one page.
-                    cx.set_hidden(node, index != 0);
                     cx.semantics(node, Semantics::role(Role::Group));
-                    pages.push(node.id());
                 }
             },
         );
+        // Only the root page shows, so the first frame lays out one page.
+        cx.page(root, Some(0));
+        let stack = root.id();
 
         // The stack is a focusable navigation container: a keyboard back gesture
         // (Escape or Backspace while it is focused) pops. Auto-repeat is ignored so
-        // a held key pops once. The pages are resolved lazily inside the handler
-        // from the shared slot filled above.
+        // a held key pops once.
         cx.focusable(root, true);
         cx.on_key(root, move |ev| {
             let Some(k) = ev.key() else { return };
             if !k.pressed || k.repeat {
                 return;
             }
-            if matches!(k.key, Key::Escape | Key::Backspace) {
-                let pages = key_pages.borrow();
-                if let Some(StateValue::Int(cur)) = ev.get(depth)
-                    && cur > 0
-                {
-                    navigate(&key_cb, ev, depth, &pages, cur as usize - 1, transition);
-                }
+            if matches!(k.key, Key::Escape | Key::Backspace)
+                && let Some(StateValue::Int(cur)) = ev.get(depth)
+                && cur > 0
+            {
+                navigate(
+                    &key_cb,
+                    ev,
+                    (depth, stack, pages),
+                    cur as usize - 1,
+                    transition,
+                );
             }
         });
         cx.clip(root, true);
@@ -388,10 +366,11 @@ impl Component for NavigationStack {
         cx.semantics(root, Semantics::role(Role::Navigation));
 
         // Fill the app-supplied handle slot (if any) with a handle bound to the
-        // just-minted cell and page ids, so the app can push/pop programmatically.
+        // just-minted cell and stack, so the app can push/pop programmatically.
         *self.handle_slot.borrow_mut() = Some(NavHandle {
             depth,
-            pages: pages_cell,
+            stack,
+            pages,
             on_navigate: self.on_navigate.clone(),
             transition,
         });
@@ -447,7 +426,7 @@ mod tests {
         }
 
         /// Feed a key sample to a node's key handler, restoring it after, then apply
-        /// any deferred `hidden` flips it recorded — the router discipline (take,
+        /// any deferred turns it recorded — the router discipline (take,
         /// drive, restore, apply) reproduced for the test.
         fn key(&mut self, node: NodeId, ev: KeyEvent) {
             let mut handler = self.store.take_key_handler(node).expect("key handler");
@@ -463,7 +442,7 @@ mod tests {
         }
 
         /// Drive a `NavHandle` action (push/pop) as a router would: run it inside a
-        /// throwaway `EventCx`, take the deferred `hidden` flips, and apply them.
+        /// throwaway `EventCx`, take the deferred turns, and apply them.
         fn drive(&mut self, act: impl FnOnce(&mut EventCx<'_>)) {
             let ev = read_pointer();
             let asks = {
@@ -547,7 +526,7 @@ mod tests {
     }
 
     /// All pages build once; only the root page (index 0) is shown initially, the
-    /// rest folded out through `hidden`.
+    /// rest folded out by the paged stack.
     #[test]
     fn all_pages_build_and_only_the_root_is_shown() {
         let slot: NavHandleSlot = Rc::new(RefCell::new(None));
