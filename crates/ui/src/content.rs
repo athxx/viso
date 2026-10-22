@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 use crate::asset::{AssetDraw, AssetFit};
 use crate::layout::Vec2;
-use crate::text_style::{FontSize, TextStyle, WidthUse};
+use crate::text_style::{FontSize, TextSpan, TextStyle, WidthUse};
 use viso_render::asset::ResourceId;
 use viso_render::{
     GlyphInstanceData, PathCmd, ProgramSlot, Rect, Rgba, SceneSlot, Stroke, TextureId,
@@ -92,6 +92,9 @@ pub enum Content {
         /// pixels: what a `fit` width sizes to, so a run its box's bounds
         /// wrap or cut sizes the same as it is laid out again.
         max_content: f32,
+        /// The colors, fills and lines of a text with styled spans; `None`
+        /// for a text drawn all in `color`.
+        ink: Option<Box<TextInk>>,
     },
     /// A textured image drawn into the node's box. `uv` selects the source
     /// sub-rect in normalized texture coordinates, `tint` modulates it.
@@ -238,6 +241,39 @@ pub struct TextRequest {
     pub locale: Option<String>,
     /// Its face, line height, line limit and alignment.
     pub style: TextStyle,
+    /// The stretches of it drawn their own way, in order; empty for a text
+    /// drawn all alike.
+    pub spans: Vec<TextSpan>,
+}
+
+/// How a text of styled spans is painted beyond its glyphs: the colors runs
+/// of them draw in, and the fills and lines its spans add.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TextInk {
+    /// Where the outline glyphs change color, in order: each run covers the
+    /// glyphs up to its `end`, the glyphs past the last run the text's color.
+    pub runs: Vec<InkRun>,
+    /// Backgrounds, drawn under the glyphs, in node-local space.
+    pub fills: Vec<TextMark>,
+    /// Underlines and strikethroughs, drawn over them.
+    pub lines: Vec<TextMark>,
+}
+
+/// A run of a text's outline glyphs in one color.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InkRun {
+    /// The index past its last glyph.
+    pub end: u32,
+    /// Its color; the text's own when `None`.
+    pub color: Option<Rgba>,
+}
+
+/// A fill or a line a span adds to its text, in node-local space.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextMark {
+    pub rect: Rect,
+    /// Its color; the text's own when `None`.
+    pub color: Option<Rgba>,
 }
 
 #[cfg(test)]
@@ -247,6 +283,7 @@ mod tests {
     #[test]
     fn natural_reads_each_variant() {
         let text = Content::Text {
+            ink: None,
             glyphs: Vec::new(),
             atlas: TextureId::new(1),
             color_glyphs: Vec::new(),

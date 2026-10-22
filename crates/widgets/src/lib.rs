@@ -42,4 +42,4 @@ pub use icon::{Icon, IconStyle, icon};
 pub use image::{Image, ImageStyle, image, image_asset};
 pub use list::{VirtualList, VirtualListViewStyle, virtual_list};
 pub use scroll::{Scroll, ScrollViewStyle, scroll};
-pub use text::{Label, LabelStyle, label};
+pub use text::{Label, LabelStyle, label, rich_text};

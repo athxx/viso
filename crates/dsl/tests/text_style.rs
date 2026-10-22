@@ -72,6 +72,7 @@ fn declared(rt: &mut Rt) -> Vec<(String, TextStyle, Option<f32>)> {
 
 fn title(weight: FontWeight) -> TextStyle {
     TextStyle {
+        slant: viso_ui::FontSlant::Normal,
         weight,
         family: Some(FontFamily::Named(Arc::from("Inter"))),
         line_height: Some(LengthTerms::pct(150.0)),

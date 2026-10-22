@@ -3901,9 +3901,10 @@ pub mod prelude {
     // the default set (commonly used, stable, unambiguous).
     pub use viso_ui::{
         AdaptiveColumns, BuildCx, CursorIcon, FlexStyle, GridPlacement, GridStyle, InputKind,
-        LeafStyle, Role, Semantics, StateId, StateValue, TextRequest, TrackMax, TrackSizing,
-        VirtualListStyle,
+        LeafStyle, Role, Semantics, SpanStyle, StateId, StateValue, TextRequest, TrackMax,
+        TrackSizing, VirtualListStyle,
     };
+
     // Tier 1 widgets: the base layout container, the static text control, the
     // texture-backed image control, and the vector icon control — plus the Tier 2
     // interactive controls, Button, CheckBox, Toggle, RadioGroup, Slider, and
@@ -3928,8 +3929,8 @@ pub mod prelude {
         SplitterStyle, Tabs, TabsStyle, TextInput, TextInputStyle, Toast, ToastEdge, ToastHandle,
         ToastHandleSlot, ToastStyle, Toggle, ToggleStyle, View, ViewStyle, VirtualList,
         VirtualListViewStyle, button, checkbox, grid, icon, image, label, modal, navigation_stack,
-        number_field, popup, radio_group, scroll, sheet, slider, splitter, tabs, text_input, toast,
-        toggle, view, virtual_list,
+        number_field, popup, radio_group, rich_text, scroll, sheet, slider, splitter, tabs,
+        text_input, toast, toggle, view, virtual_list,
     };
     // The top-level Window control (§68 public application lifecycle): a window
     // is not a node control — it does not enter the UI tree — so it appears as an

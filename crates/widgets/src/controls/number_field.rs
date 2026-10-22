@@ -133,6 +133,7 @@ impl Component for NumberField {
                 style: viso_ui::BoxStyle::NONE,
             },
             TextRequest {
+                spans: Vec::new(),
                 text: format.show(value),
                 font_size: FontSize::Fixed(self.style.font_size),
                 color: self.style.color,

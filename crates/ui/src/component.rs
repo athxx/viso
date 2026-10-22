@@ -6555,6 +6555,7 @@ mod tests {
     /// A label's shaped text: `n` glyphs, on one to three lines.
     fn label_text(n: u32) -> Content {
         Content::Text {
+            ink: None,
             glyphs: Vec::new(),
             atlas: TextureId::new(1),
             color_glyphs: Vec::new(),
@@ -7477,6 +7478,7 @@ mod tests {
         store.set_content_payload(
             text_leaf,
             Content::Text {
+                ink: None,
                 glyphs: vec![GlyphInstanceData {
                     rect: Rect {
                         x: 0.0,
@@ -8931,6 +8933,7 @@ mod tests {
     /// `Content::Text` the reflow recorder reads.
     fn text_run(natural: Vec2, at: Option<f32>, wrap: bool) -> Content {
         Content::Text {
+            ink: None,
             glyphs: Vec::new(),
             atlas: TextureId::new(1),
             color_glyphs: Vec::new(),

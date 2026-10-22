@@ -663,6 +663,7 @@ mod tests {
 
     fn text(color: Rgba) -> crate::content::Content {
         crate::content::Content::Text {
+            ink: None,
             glyphs: Vec::new(),
             atlas: viso_render::TextureId::new(1),
             color_glyphs: Vec::new(),

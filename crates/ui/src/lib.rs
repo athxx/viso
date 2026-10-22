@@ -75,7 +75,7 @@ pub use component::{
     AbsoluteStyle, BuildCx, Component, FlexStyle, FrameRecompute, Handle, LeafStyle, NodeStore,
     Painted, PointerHandler, ScrollRequest, ScrollStyle, StackStyle, VirtualListStyle,
 };
-pub use content::{BrushImage, Content, TextRequest};
+pub use content::{BrushImage, Content, InkRun, TextInk, TextMark, TextRequest};
 pub use context::EventCx;
 pub use dirty::{DirtyCause, DirtyClass, DirtyLists, DirtyMark};
 pub use drag::{DragPhase, DragSample, MOUSE_SLOP};
@@ -113,7 +113,8 @@ pub use node::{ArenaFull, ChildIds, Children, NodeArena, NodeId, NodeIndex, Node
 pub use notice::{Notice, NoticeHandler, NoticeKinds, deliver_notices};
 pub use paint::{paint_tree, paint_with_transforms};
 pub use text_style::{
-    FontFamily, FontSize, FontWeight, TextAlign, TextOverflow, TextSizing, TextStyle, WidthUse,
+    FontFamily, FontSize, FontSlant, FontWeight, SpanStyle, TextAlign, TextOverflow, TextSizing,
+    TextSpan, TextStyle, WidthUse,
 };
 pub use transform::{TransformTable, Turn};
 pub use viso_runtime::{InputKind, Instant};

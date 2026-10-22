@@ -112,6 +112,13 @@ pub struct FaceMetrics {
     /// The recommended line-to-line advance, as a fraction of the em: the sum
     /// of ascent, descent magnitude, and line gap.
     pub line_height_em: f32,
+    /// Where an underline sits and how thick it is, as fractions of the em:
+    /// the top of the stroke above the baseline (negative, y-up, below it)
+    /// and its thickness.
+    pub underline_em: (f32, f32),
+    /// Where a strikethrough sits and how thick it is, as fractions of the
+    /// em: the top of the stroke above the baseline and its thickness.
+    pub strikeout_em: (f32, f32),
     /// Design units per em; the shaper works in em-relative units, so this is
     /// rarely needed downstream but is exposed for completeness.
     pub units_per_em: u16,
@@ -122,6 +129,10 @@ pub struct FaceMetrics {
     /// handle (a color rasterizer keys its cache on the concrete OS font).
     pub postscript_name: Option<String>,
 }
+
+/// The thickness of an underline or strikethrough a face records none for,
+/// as a fraction of the em.
+const DEFAULT_STROKE_EM: f32 = 0.06;
 
 /// Parse the placement and platform-binding metrics of one sfnt face.
 ///
@@ -144,10 +155,20 @@ pub fn inspect_instance(sfnt: &[u8], index: u32, variations: &Variations) -> Opt
         .into_iter()
         .find(|name| name.name_id == ttf_parser::name_id::POST_SCRIPT_NAME)
         .and_then(|name| name.to_string());
+    // A face that records no stroke gets one placed like common faces'.
+    let stroke = |metrics: Option<ttf_parser::LineMetrics>, top: f32| {
+        metrics
+            .filter(|m| m.thickness > 0)
+            .map_or((top, DEFAULT_STROKE_EM), |m| {
+                (f32::from(m.position) / upem, f32::from(m.thickness) / upem)
+            })
+    };
     Some(FaceMetrics {
         ascender_em: ascender / upem,
         descender_em: descender / upem,
         line_height_em: (ascender - descender + line_gap) / upem,
+        underline_em: stroke(face.underline_metrics(), -0.1),
+        strikeout_em: stroke(face.strikeout_metrics(), 0.3),
         units_per_em: face.units_per_em(),
         glyph_count: face.number_of_glyphs(),
         postscript_name,

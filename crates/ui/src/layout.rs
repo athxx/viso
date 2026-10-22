@@ -2905,6 +2905,7 @@ mod tests {
         store.set_content_payload(
             id,
             Content::Text {
+                ink: None,
                 glyphs: Vec::new(),
                 atlas: TextureId::new(0),
                 color_glyphs: Vec::new(),
@@ -4123,6 +4124,7 @@ mod tests {
         };
         for (&id, &(_, min, max)) in ids.iter().zip(leaves) {
             let content = Content::Text {
+                ink: None,
                 glyphs: Vec::new(),
                 atlas: TextureId::new(0),
                 color_glyphs: Vec::new(),
@@ -4244,6 +4246,7 @@ mod tests {
             store.set_content_payload(
                 id,
                 Content::Text {
+                    ink: None,
                     glyphs: Vec::new(),
                     atlas: TextureId::new(0),
                     color_glyphs: Vec::new(),

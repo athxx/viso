@@ -104,8 +104,10 @@ Rules:
 
 ## W3 — Rich and selectable text
 
-- [ ] Styled spans: `TextRequest` carries runs (font, size, weight, style, color,
-  decoration, background, baseline shift); `RichText` widget and DSL `Text { spans }`.
+- [x] Styled spans: `TextRequest` carries runs (font, size, weight, style, color,
+  decoration, background, baseline shift); `rich_text` widget.
+- [ ] DSL `Text { spans }` (a `Span` record), its HTML/script export, and `font_style`.
+
 - [ ] Links: hit-testing span ranges, hover cursor, `on_link`, keyboard focus and the
   `link` role.
 - [ ] Selectable text (`selectable: true`) on `Text`/`RichText`: drag/double/triple

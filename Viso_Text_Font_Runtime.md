@@ -1275,8 +1275,20 @@ cluster map
 - **对齐**：主线程放置行时按对齐把每行在盒宽（无盒宽时为最宽行）内偏移：`start`/`end` 随该行段落方向，`center` 居中；宽于盒的行按段落 start 对齐。Caret、Hit Test 与 IME 几何读取同一组行偏移。
 - **Max-content**：段落报告每个硬换行段内各行宽度之和的最大值，作为 `Fit` 宽度的固有宽度；换行或截断只改变绘制的行，不改变 `Fit` 盒的测量宽度，盒被上下界或父容器收窄时才按盒宽重排，宽度不再回授。
 - **字号随环境**：文本请求的字号可为固定值或节点解析出的字号（`FontSize::Inherited`），行高为长度项，均在塑形时解析（`NodeStore::text_sizing`）；文字缩放、缩放因子、根字号或字号来源变化后，Facade 对解析结果变化的段落只重新放置已有的 em 行（不重新断行或整形），对齐或省略号段落沿用其盒宽。
-- **字体选择**：`font_family`（`system_ui`/`serif`/`monospace` 角色，或按名称的字体族：先查 App 字体，再按名称查平台字体，平台没有该族时不以他族冒充）与 `font_weight` 经 Font Resolver 解析为主字体，每个 (族, 字重) 只解析一次；无字体提供时使用主 UI 字体。Fallback 计划按所请求的字重选择回退字体。
+- **字体选择**：`font_family`（`system_ui`/`serif`/`monospace` 角色，或按名称的字体族：先查 App 字体，再按名称查平台字体，平台没有该族时不以他族冒充）、`font_weight` 与倾斜（`TextStyle::slant`）经 Font Resolver 解析为主字体，每个 (族, 字重, 倾斜) 只解析一次；无字体提供时使用主 UI 字体。Fallback 计划按所请求的字重与倾斜选择回退字体。
+
 - **可变字体实例**：解析到的字体是可变字体且所请求的字重、宽度、倾斜不是其默认实例时，该实例是独立的 Face（独立 `FontFaceId`，与基础 Face 共享字节）：`wght`/`wdth`/`ital`/`slnt` 按请求取值并钳制到字体声明的轴范围，平台自行选定实例时（CoreText 的 `CTFontCopyVariation`）以平台坐标为准。整形（`HVAR` 步进）、轮廓、度量（`MVAR`）、A8 与 MTSDF 光栅都在该坐标下读取字体；构建期烘焙页只服务默认实例。
+
+### 12.12.2 样式片段（富文本）
+
+一段文本可带有序、互不重叠的样式片段（`TextRequest::spans`，`TextSpan { range, style: SpanStyle }`，字节范围落在字符边界上）。片段的每个字段缺省时沿用文本自身：族、字号（`em`/`%` 相对文本字号）、字重、倾斜、颜色、背景、下划线、删除线、基线抬升（`em`/`%` 相对片段自身字号，上标为正、下标为负）。
+
+- **整形样式与绘制样式分开**：改变字形的字段（族、字号、字重、倾斜、抬升）构成"整形样式"，段落按 `StyleRun { start, style }` 在其变化处把方向 Run 再切成整形片段（`viso_text::paragraph::shaping_runs`），每个片段独立整形；颜色、背景与线条不改变字形，只在放置时按字节偏移查找，因此半个单词变色不打断字距与连字。相邻相同整形样式自动合并；样式表下标 0 永远是文本自身样式，无片段的文本不付任何代价（`rich: None`）。
+- **单位**：Shape 回调接收样式下标，返回按样式字号缩放到段落 em 的步进（`ShapedSpan::scale`），所以宽度、Caret Stop、Hit Test、断行和省略号都在同一单位里工作；省略号取被截断处最后一个字符的整形样式。整形缓存按未缩放的 em 结果共享，缩放在取出后进行。
+- **行盒**：每个整形样式按自身字体度量和字号算出基线上下的伸展（未指定行高：ascent 在上、行距余量在下；指定行高 `h`：ascent + descent 在 `h` 中居中），抬升使其整体上移；一行的高度取该行所有片段伸展的最大值，因此行高逐行不同。放置结果记录每行顶边（行数 + 1 项），Caret、选区、IME、点击定位与 PageUp/PageDown 都读这组行顶边（`EditLayout::rows`）。
+- **光栅**：每个字形的 Raster bucket 是其样式字号 × 设备密度，主线程与 Worker 用同一公式（`text_worker::bucket`）。
+- **绘制**：`Content::Text::ink` 携带按字形下标划分的颜色 Run（未指定颜色的 Run 使用文本颜色，并跟随文本颜色过渡）、画在字形下方的背景（片段字体的 ascent 到 descent）以及画在字形上方的下划线与删除线（位置与粗细取字体 `post`/`OS/2` 度量，缺省时取常见值，粗细至少一个物理像素）。每个颜色 Run 是一个 Glyph Run Primitive，由渲染器照常合批。
+- **Widget**：`rich_text([(piece, SpanStyle)…])` 构造一个由若干片段拼成的 `Label`，`Label::span(range, style)` 给已有文本加片段；`SpanStyle` 提供 `bold`/`italic`/`monospace`/`scale`/`color`/`background`/`underline`/`strikethrough`/`raise`/`superscript`/`subscript` 构造方法。
 
 ## 12.13 双向 Caret：同一 logical offset 允许两个视觉位置
 

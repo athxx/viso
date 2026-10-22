@@ -90,6 +90,7 @@ fn render_scene() -> Vec<u8> {
     store.set_content_payload(
         text_id,
         Content::Text {
+            ink: None,
             glyphs: tg.glyphs.clone(),
             atlas,
             color_glyphs: Vec::new(),

@@ -67,6 +67,7 @@ fn build(store: &mut NodeStore, lines: &[&str]) -> NodeId {
         cx.text_request(
             leaf,
             TextRequest {
+                spans: Vec::new(),
                 text,
                 font_size: viso_ui::FontSize::Fixed(FONT_SIZE),
                 color: FOREGROUND,
@@ -163,6 +164,7 @@ fn hud(store: &mut NodeStore, line: &str) -> NodeId {
                     cx.text_request(
                         leaf,
                         TextRequest {
+                            spans: Vec::new(),
                             text: line.to_owned(),
                             font_size: viso_ui::FontSize::Fixed(HUD_FONT_SIZE),
                             color: FOREGROUND,

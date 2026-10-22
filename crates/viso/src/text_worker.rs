@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use viso_text::fallback::{FallbackPlanKey, FallbackStyle, FontFallback};
 use viso_text::inspect::{self, BudgetState, CacheKey, MissLedger};
-use viso_text::paragraph::{LineLayout, Paragraph, ShapedSegment, ShapedSpan};
+use viso_text::paragraph::{LineLayout, Paragraph, ShapedSegment, ShapedSpan, StyleRun};
 #[cfg(feature = "rasterizer")]
 use viso_text::rasterize_coverage_at;
 use viso_text::text_work::{JobKind, Priority, TextJob, TextWork};
@@ -55,6 +55,61 @@ pub(crate) struct ClusterKey {
     pub(crate) cluster: String,
 }
 
+/// A style a text of styled spans shapes some of itself in, beside its own.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct FaceStyle {
+    pub(crate) face: FontFaceId,
+    /// The weight, width and slant a fallback face is chosen to match.
+    pub(crate) fallback: FallbackStyle,
+    /// Its size over the text's.
+    pub(crate) scale: f32,
+    /// How far its baseline sits above the line's, in the text's em.
+    pub(crate) raise: f32,
+}
+
+/// The styles a text of styled spans shapes in beyond its own, style `0`,
+/// and where in the text each begins.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RichShape {
+    /// Style `i + 1` of the text.
+    pub(crate) styles: Vec<FaceStyle>,
+    pub(crate) runs: Vec<StyleRun>,
+}
+
+impl RichShape {
+    /// Style `style` of a text whose own style is `own`.
+    pub(crate) fn style(rich: Option<&Self>, own: FaceStyle, style: u16) -> FaceStyle {
+        match style.checked_sub(1) {
+            Some(at) => rich
+                .and_then(|rich| rich.styles.get(usize::from(at)))
+                .copied()
+                .unwrap_or(own),
+            None => own,
+        }
+    }
+
+    /// An identity of the faces and sizes it shapes in, for a paragraph's
+    /// style epoch.
+    fn epoch(rich: Option<&Self>, base: FontFaceId) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let Some(rich) = rich else {
+            return u64::from(base.0);
+        };
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        base.hash(&mut hasher);
+        for style in &rich.styles {
+            (style.face, style.fallback, style.scale.to_bits()).hash(&mut hasher);
+        }
+        hasher.finish()
+    }
+}
+
+/// The raster bucket a glyph drawn at `px` device pixels per em, `scale`
+/// times over, falls in.
+pub(crate) fn bucket(px: f32, scale: f32) -> u16 {
+    (px * scale).round().clamp(1.0, f32::from(u16::MAX)) as u16
+}
+
 /// Lay a paragraph out to a width.
 #[derive(Debug)]
 pub(crate) struct LayoutJob {
@@ -70,6 +125,8 @@ pub(crate) struct LayoutJob {
     pub(crate) base: FontFaceId,
     /// The weight, width and slant a fallback face is chosen to match.
     pub(crate) style: FallbackStyle,
+    /// The styles of its spans, when it has any that shape apart.
+    pub(crate) rich: Option<Arc<RichShape>>,
     pub(crate) locale: String,
     /// How many lines the paragraph shows and how text it cuts off ends.
     pub(crate) limit: LineLimit,
@@ -78,9 +135,9 @@ pub(crate) struct LayoutJob {
     /// Lay out from the top, reshaping every run: a cluster the last layout
     /// could not cover has a face now.
     pub(crate) full: bool,
-    /// The raster bucket the lines will draw at. The coverage of every glyph
-    /// not yet rasterized at it comes back with the lines.
-    pub(crate) ppem: u16,
+    /// The device pixels per em the lines will draw at. The coverage of
+    /// every glyph not yet rasterized at its bucket comes back with the lines.
+    pub(crate) px: f32,
     pub(crate) priority: Priority,
 }
 
@@ -579,7 +636,8 @@ impl WorkerState {
     /// Lay `job`'s paragraph out: its retained lines take the new text as one
     /// range edit, so only the neighbourhood of the edit reflows.
     pub(crate) fn layout(&mut self, job: LayoutJob) -> LayoutDone {
-        let epoch = u64::from(job.base.0);
+        let rich = job.rich.clone();
+        let epoch = RichShape::epoch(rich.as_deref(), job.base);
         let mut paragraph = match self.paragraphs.remove(&job.slot) {
             Some(mut paragraph) => {
                 if job.full {
@@ -594,12 +652,24 @@ impl WorkerState {
             None => Paragraph::new(&*job.text, job.direction, epoch),
         };
         paragraph.set_tailoring(job.tailoring);
+        paragraph.set_styles(rich.as_ref().map_or(&[][..], |rich| &rich.runs[..]));
         self.needs.clear();
         self.shaped = 0;
-        self.style = job.style;
-        let (base, locale) = (job.base, job.locale.as_str());
-        let mut shape = |text: &str, direction: Direction, _: u16| {
-            self.shape_span(base, locale, text, direction)
+        let own = FaceStyle {
+            face: job.base,
+            fallback: job.style,
+            scale: 1.0,
+            raise: 0.0,
+        };
+        let locale = job.locale.as_str();
+        let mut shape = |text: &str, direction: Direction, style: u16| {
+            let style = RichShape::style(rich.as_deref(), own, style);
+            self.style = style.fallback;
+            let mut span = self.shape_span(style.face, locale, text, direction);
+            if style.scale != 1.0 {
+                span.scale(style.scale);
+            }
+            span
         };
         let relaid = paragraph.layout(job.width_em, &mut shape);
         let lines = paragraph
@@ -625,10 +695,11 @@ impl WorkerState {
                 if run.logical_range.0 < run.logical_range.1 && starts_emoji(&job.text, cluster) {
                     continue;
                 }
+                let scale = RichShape::style(rich.as_deref(), own, run.style).scale;
                 let key = GlyphKey {
                     face: run.face,
                     glyph: glyph.glyph_id,
-                    bucket: job.ppem,
+                    bucket: bucket(job.px, scale),
                     kind: GlyphImageKind::MaskA8,
                 };
                 if self.sent.insert(key) {

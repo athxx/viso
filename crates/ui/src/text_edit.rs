@@ -353,8 +353,9 @@ pub struct EditLayout<'a> {
     pub lines: &'a [LineLayout],
     /// The font size the lines were placed at, in the node's space units per em.
     pub font_size: f32,
-    /// The distance between successive lines, in the node's space units.
-    pub line_height: f32,
+    /// The top of each line in the node's space, and after the last line's
+    /// the bottom of the text: one more than there are lines.
+    pub rows: &'a [f32],
     /// Each line's inline offset within the node, its alignment, in the
     /// node's space units; a line past them is not offset.
     pub offsets: &'a [f32],
@@ -371,6 +372,27 @@ impl EditLayout<'_> {
     fn caret_x(&self, row: usize, at: TextPosition) -> f32 {
         let x = self.lines[row].caret_x(at).unwrap_or(0.0);
         x * self.font_size + self.offsets.get(row).copied().unwrap_or(0.0)
+    }
+
+    /// The top of `row` and its height, in the node's space.
+    fn row_box(&self, row: usize) -> (f32, f32) {
+        let top = self.rows.get(row).copied().unwrap_or(0.0);
+        let bottom = self.rows.get(row + 1).copied().unwrap_or(top);
+        (top, bottom - top)
+    }
+
+    /// The row at height `y` in the node's space: the first above it, the
+    /// last below it.
+    fn row_at(&self, y: f32) -> usize {
+        let below = self.rows.partition_point(|&top| top <= y);
+        below
+            .saturating_sub(1)
+            .min(self.lines.len().saturating_sub(1))
+    }
+
+    /// The bottom of the text in the node's space.
+    fn bottom(&self) -> f32 {
+        self.rows.last().copied().unwrap_or(0.0)
     }
 
     /// The position on `row` nearest `x` in the node's space.
@@ -637,6 +659,7 @@ impl Buffer {
             ),
         };
         TextRequest {
+            spans: Vec::new(),
             text,
             font_size: self.font_size,
             color,
@@ -1324,19 +1347,35 @@ impl Buffer {
         let drawn = self.drawn_position(self.sel.focus);
         let (row, _) = layout.line_at(drawn)?;
         let x = *self.goal_x.get_or_insert(layout.caret_x(row, drawn));
-        let rows = match motion {
-            Motion::PageUp | Motion::PageDown if layout.line_height > 0.0 => {
-                ((placed.extent.1 / layout.line_height).floor() as usize).max(1)
+        // A page moves by as many of the caret line's heights as the view
+        // holds.
+        let target = match motion {
+            Motion::PageUp | Motion::PageDown => {
+                let (top, height) = layout.row_box(row);
+                let page = if height > 0.0 {
+                    (placed.extent.1 / height).floor().max(1.0) * height
+                } else {
+                    placed.extent.1
+                };
+                let to = if down { top + page } else { top - page };
+                if to < 0.0 {
+                    return Some(TextPosition::downstream(TextOffset(0)));
+                }
+                if to >= layout.bottom() {
+                    return Some(TextPosition::upstream(TextOffset(self.text.len())));
+                }
+                let at = layout.row_at(to);
+                if down {
+                    at.max(row + 1)
+                } else {
+                    at.min(row.saturating_sub(1))
+                }
             }
-            _ => 1,
-        };
-        let target = if down {
-            row + rows
-        } else {
-            match row.checked_sub(rows) {
+            _ if down => row + 1,
+            _ => match row.checked_sub(1) {
                 Some(target) => target,
                 None => return Some(TextPosition::downstream(TextOffset(0))),
-            }
+            },
         };
         if target >= layout.lines.len() {
             return Some(TextPosition::upstream(TextOffset(self.text.len())));
@@ -1352,12 +1391,7 @@ impl Buffer {
             return None;
         }
         let (local_x, local_y) = (x - placed.origin.0, y - placed.origin.1);
-        let row = if layout.line_height > 0.0 {
-            (local_y / layout.line_height).floor().max(0.0) as usize
-        } else {
-            0
-        };
-        let row = row.min(layout.lines.len() - 1);
+        let row = layout.row_at(local_y);
         Some(self.text_position(layout.position_at(row, local_x)))
     }
 
@@ -1539,14 +1573,14 @@ impl Buffer {
         marks: &mut FieldMarks,
     ) {
         let scroll = marks.scroll;
-        let (fs, lh) = (layout.font_size, layout.line_height);
+        let fs = layout.font_size;
         let x_of = |row: usize, em: f32| em * fs + layout.offsets.get(row).copied().unwrap_or(0.0);
         let right = (0..layout.lines.len())
             .map(|row| x_of(row, layout.lines[row].width))
             .fold(0.0f32, f32::max);
         marks.content = Vec2 {
             x: right + CARET_WIDTH,
-            y: layout.lines.len() as f32 * lh,
+            y: layout.bottom(),
         };
         marks.selection_color = if state.active {
             SELECTION
@@ -1565,16 +1599,19 @@ impl Buffer {
             anchor: self.drawn_position(self.sel.anchor),
             focus: self.drawn_position(self.sel.focus),
         };
-        let caret = layout.line_at(sel.focus).map(|(row, _)| Rect {
-            x: (layout.caret_x(row, sel.focus) - CARET_WIDTH * 0.5).max(0.0),
-            y: row as f32 * lh,
-            w: CARET_WIDTH,
-            h: lh,
+        let caret = layout.line_at(sel.focus).map(|(row, _)| {
+            let (y, h) = layout.row_box(row);
+            Rect {
+                x: (layout.caret_x(row, sel.focus) - CARET_WIDTH * 0.5).max(0.0),
+                y,
+                w: CARET_WIDTH,
+                h,
+            }
         });
         if state.focused {
             let (start, end) = sel.logical_range();
             for (row, line) in layout.lines.iter().enumerate() {
-                let y = row as f32 * lh;
+                let (y, lh) = layout.row_box(row);
                 for piece in sel.fragments(line) {
                     marks.selection.push(Rect {
                         x: x_of(row, piece.left),
@@ -1602,7 +1639,7 @@ impl Buffer {
                 };
                 let thickness = (fs / 16.0).max(1.0);
                 for (row, line) in layout.lines.iter().enumerate() {
-                    let y = row as f32 * lh + baseline + thickness;
+                    let y = layout.row_box(row).0 + baseline + thickness;
                     for piece in composed.fragments(line) {
                         marks.underlines.push(Rect {
                             x: x_of(row, piece.left),
@@ -1669,15 +1706,17 @@ impl Buffer {
         caret: Option<Rect>,
         marks: &mut FieldMarks,
     ) {
-        let lh = layout.line_height;
         if self.touch.handles && !sel.is_caret() {
             let (start, end) = sel.logical_range();
             let stem = |at: TextPosition| {
-                layout.line_at(at).map(|(row, _)| Rect {
-                    x: layout.caret_x(row, at),
-                    y: row as f32 * lh,
-                    w: 0.0,
-                    h: lh,
+                layout.line_at(at).map(|(row, _)| {
+                    let (y, h) = layout.row_box(row);
+                    Rect {
+                        x: layout.caret_x(row, at),
+                        y,
+                        w: 0.0,
+                        h,
+                    }
                 })
             };
             marks.handles = stem(TextPosition::downstream(start))
@@ -2074,6 +2113,17 @@ mod tests {
         vec![LineLayout::single_line(text, &bidi, &shaped)]
     }
 
+    /// The tops of lines 12 units apart.
+    const ROWS: [f32; 64] = {
+        let mut rows = [0.0; 64];
+        let mut row = 0;
+        while row < 64 {
+            rows[row] = row as f32 * 12.0;
+            row += 1;
+        }
+        rows
+    };
+
     struct FakeGeometry {
         node: NodeId,
         text: String,
@@ -2086,7 +2136,7 @@ mod tests {
                 text: &self.text,
                 lines: &self.lines,
                 font_size: 10.0,
-                line_height: 12.0,
+                rows: &ROWS[..=self.lines.len()],
                 offsets: &[],
             })
         }
@@ -2098,7 +2148,7 @@ mod tests {
                 text,
                 lines,
                 font_size: 10.0,
-                line_height: 12.0,
+                rows: &ROWS[..=lines.len()],
                 offsets: &[],
             },
             origin: (100.0, 50.0),
@@ -3363,6 +3413,7 @@ mod tests {
 
     fn request(text: &str) -> TextRequest {
         TextRequest {
+            spans: Vec::new(),
             text: text.to_owned(),
             font_size: FontSize::Fixed(14.0),
             color: Rgba {

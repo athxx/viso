@@ -591,26 +591,60 @@ pub(crate) fn paint_content(
             color_glyphs,
             color_atlas,
             color,
+            ink,
             ..
         } => {
-            let glyphs = glyphs
-                .iter()
-                .map(|g| GlyphInstanceData {
-                    rect: Rect {
-                        x: g.rect.x + ox,
-                        y: g.rect.y + oy,
-                        w: g.rect.w,
-                        h: g.rect.h,
-                    },
-                    ..*g
+            let shifted = |glyphs: &[GlyphInstanceData]| {
+                glyphs
+                    .iter()
+                    .map(|g| GlyphInstanceData {
+                        rect: Rect {
+                            x: g.rect.x + ox,
+                            y: g.rect.y + oy,
+                            w: g.rect.w,
+                            h: g.rect.h,
+                        },
+                        ..*g
+                    })
+                    .collect()
+            };
+            let mark = |mark: &crate::content::TextMark| {
+                Primitive::Quad(Quad {
+                    rect: Rect::new(ox + mark.rect.x, oy + mark.rect.y, mark.rect.w, mark.rect.h),
+                    color: mark.color.unwrap_or(*color),
+                    radius: 0.0,
+                    border: Border::NONE,
                 })
-                .collect();
-            out.push(Primitive::GlyphRun(GlyphRunDraw {
-                glyphs,
-                atlas: *atlas,
-                color: *color,
-                lane: GlyphLane::CoverageA8,
-            }));
+            };
+            match ink.as_deref() {
+                None => out.push(Primitive::GlyphRun(GlyphRunDraw {
+                    glyphs: shifted(glyphs),
+                    atlas: *atlas,
+                    color: *color,
+                    lane: GlyphLane::CoverageA8,
+                })),
+                Some(ink) => {
+                    out.extend(ink.fills.iter().map(mark));
+                    let mut from = 0;
+                    let tail = crate::content::InkRun {
+                        end: glyphs.len() as u32,
+                        color: None,
+                    };
+                    for run in ink.runs.iter().chain([&tail]) {
+                        let to = (run.end as usize).min(glyphs.len());
+                        if from < to {
+                            out.push(Primitive::GlyphRun(GlyphRunDraw {
+                                glyphs: shifted(&glyphs[from..to]),
+                                atlas: *atlas,
+                                color: run.color.unwrap_or(*color),
+                                lane: GlyphLane::CoverageA8,
+                            }));
+                        }
+                        from = from.max(to);
+                    }
+                    out.extend(ink.lines.iter().map(mark));
+                }
+            }
             // Color-bitmap glyphs (emoji) reuse the Image pipeline: each is one
             // textured quad sampling the RGBA color atlas at its glyph sub-rect.
             // A white, opaque tint leaves the premultiplied emoji texel unchanged
@@ -1077,6 +1111,7 @@ mod tests {
         store.set_content_payload(
             field,
             Content::Text {
+                ink: None,
                 glyphs: vec![GlyphInstanceData {
                     rect: Rect::new(60.0, 3.0, 8.0, 10.0),
                     uv: Rect::new(0.0, 0.0, 1.0, 1.0),
@@ -1163,6 +1198,7 @@ mod tests {
         store.set_content_payload(
             check,
             Content::Text {
+                ink: None,
                 glyphs: vec![GlyphInstanceData {
                     rect: Rect {
                         x: 2.0,
@@ -1275,6 +1311,7 @@ mod tests {
         store.set_content_payload(
             text_id,
             Content::Text {
+                ink: None,
                 glyphs: vec![GlyphInstanceData {
                     rect: Rect {
                         x: 2.0,
@@ -1428,6 +1465,7 @@ mod tests {
         store.set_content_payload(
             text_id,
             Content::Text {
+                ink: None,
                 glyphs: vec![GlyphInstanceData {
                     rect: Rect {
                         x: 1.0,
@@ -1546,6 +1584,7 @@ mod tests {
         store.set_content_payload(
             text_id,
             Content::Text {
+                ink: None,
                 glyphs: vec![GlyphInstanceData {
                     rect: Rect {
                         x: 0.0,

@@ -163,6 +163,7 @@ fn text(n: usize) -> Content {
         h: 12.0,
     };
     Content::Text {
+        ink: None,
         glyphs: (0..n)
             .map(|i| GlyphInstanceData {
                 rect: rect(i as f32 * 7.0, 6.0),

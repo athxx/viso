@@ -5,12 +5,13 @@
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
-pub use viso_text::FontWeight;
+pub use viso_text::{FontSlant, FontWeight};
 
 use crate::component::NodeStore;
 use crate::content::TextRequest;
 use crate::length::{LengthEnv, LengthTerms};
 use crate::node::NodeId;
+use viso_render::Rgba;
 
 /// The size a text draws at.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -33,6 +34,8 @@ pub struct TextSizing {
     /// Whether a paragraph with no strong character runs right to left: the
     /// node's layout direction.
     pub rtl: bool,
+    /// What the sizes of its spans resolve against.
+    pub env: LengthEnv,
 }
 
 /// The family a text draws with: a role the platform or the app's fonts
@@ -77,6 +80,8 @@ pub enum TextAlign {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TextStyle {
     pub weight: FontWeight,
+    /// Upright or italic: an italic face of its family where there is one.
+    pub slant: FontSlant,
     /// The family it draws with; `None` for the store's
     /// [`text_family`](NodeStore::text_family), the theme's.
     pub family: Option<FontFamily>,
@@ -146,7 +151,137 @@ impl NodeStore {
                 .line_height
                 .and_then(|terms| terms.fold_font(&env, font_size)),
             rtl: self.layout_direction(id) == crate::adaptive::LayoutDirection::Rtl,
+            env,
         }
+    }
+}
+
+/// The size of a superscript or subscript over its text's.
+const SCRIPT_SCALE: f32 = 0.75;
+
+/// A stretch of a text drawn its own way: bold, larger, colored, underlined.
+///
+/// `range` is a byte range of the text on char boundaries. A text's spans
+/// are in order and do not overlap; the text between them draws as the text
+/// itself does.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextSpan {
+    pub range: std::ops::Range<usize>,
+    pub style: SpanStyle,
+}
+
+/// How a [`TextSpan`] draws: each field left `None` (or off) is the text's
+/// own.
+///
+/// What changes the glyphs — family, size, weight, slant, a raised
+/// baseline — splits the text where it changes; color, background and lines
+/// do not, so a word colored mid-way keeps its kerning and ligatures.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SpanStyle {
+    pub family: Option<FontFamily>,
+    /// Its size; `em` and `%` of the text's font size.
+    pub size: Option<LengthTerms>,
+    pub weight: Option<FontWeight>,
+    pub slant: Option<FontSlant>,
+    /// Its ink; the text's color, which follows the text's transitions, when
+    /// `None`.
+    pub color: Option<Rgba>,
+    /// A fill behind its glyphs, the height of its line.
+    pub background: Option<Rgba>,
+    pub underline: bool,
+    pub strikethrough: bool,
+    /// How far its baseline sits above the line's, a superscript's up and a
+    /// subscript's down (negative); `em` and `%` of its own size.
+    pub raise: Option<LengthTerms>,
+}
+
+impl SpanStyle {
+    /// Bold.
+    pub fn bold(self) -> Self {
+        self.weight(FontWeight::BOLD)
+    }
+
+    pub fn weight(mut self, weight: FontWeight) -> Self {
+        self.weight = Some(weight);
+        self
+    }
+
+    pub fn italic(mut self) -> Self {
+        self.slant = Some(FontSlant::Italic);
+        self
+    }
+
+    pub fn family(mut self, family: FontFamily) -> Self {
+        self.family = Some(family);
+        self
+    }
+
+    /// The monospace family.
+    pub fn monospace(self) -> Self {
+        self.family(FontFamily::Monospace)
+    }
+
+    /// `factor` times the text's size.
+    pub fn scale(mut self, factor: f32) -> Self {
+        self.size = Some(LengthTerms {
+            em: factor,
+            ..LengthTerms::ZERO
+        });
+        self
+    }
+
+    pub fn color(mut self, color: Rgba) -> Self {
+        self.color = Some(color);
+        self
+    }
+
+    pub fn background(mut self, color: Rgba) -> Self {
+        self.background = Some(color);
+        self
+    }
+
+    pub fn underline(mut self) -> Self {
+        self.underline = true;
+        self
+    }
+
+    pub fn strikethrough(mut self) -> Self {
+        self.strikethrough = true;
+        self
+    }
+
+    /// Its baseline `em` of its own size above the line's.
+    pub fn raise(mut self, em: f32) -> Self {
+        self.raise = Some(LengthTerms {
+            em,
+            ..LengthTerms::ZERO
+        });
+        self
+    }
+
+    /// Smaller, above the baseline.
+    pub fn superscript(self) -> Self {
+        self.scale(SCRIPT_SCALE).raise(0.45)
+    }
+
+    /// Smaller, below the baseline.
+    pub fn subscript(self) -> Self {
+        self.scale(SCRIPT_SCALE).raise(-0.25)
+    }
+
+    /// Whether it changes the glyphs of the text it covers, so that text
+    /// shapes apart from its neighbours.
+    pub fn reshapes(&self) -> bool {
+        self.family.is_some()
+            || self.size.is_some()
+            || self.weight.is_some()
+            || self.slant.is_some()
+            || self.raise.is_some()
+    }
+
+    /// Whether it changes how the text it covers is painted.
+    pub fn repaints(&self) -> bool {
+        self.color.is_some() || self.background.is_some() || self.underline || self.strikethrough
     }
 }
 

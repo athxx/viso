@@ -158,6 +158,7 @@ fn attach_caption(gpu: &mut CpuRaster, store: &mut NodeStore, caption_id: NodeId
     store.set_content_payload(
         caption_id,
         Content::Text {
+            ink: None,
             glyphs: tg.glyphs.clone(),
             atlas,
             color_glyphs: Vec::new(),

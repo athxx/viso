@@ -283,6 +283,7 @@ fn slot(paragraph: u32) -> ParagraphSlot {
 
 fn request(text: &str, font_size: f32, soft_wrap: bool) -> TextRequest {
     TextRequest {
+        spans: Vec::new(),
         text: text.into(),
         font_size: FontSize::Fixed(font_size),
         color: WHITE,
@@ -294,6 +295,7 @@ fn request(text: &str, font_size: f32, soft_wrap: bool) -> TextRequest {
 
 fn sizing(font_size: f32) -> TextSizing {
     TextSizing {
+        env: viso_ui::LengthEnv::default(),
         font_size,
         line_height: None,
         rtl: false,

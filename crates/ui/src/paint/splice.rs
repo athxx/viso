@@ -1342,6 +1342,7 @@ mod tests {
             h: 6.0,
         };
         Content::Text {
+            ink: None,
             glyphs: (0..n)
                 .map(|i| GlyphInstanceData {
                     rect: rect(i as f32 * 5.0, 4.0),

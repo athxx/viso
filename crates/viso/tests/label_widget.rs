@@ -109,6 +109,7 @@ fn attach_glyphs(gpu: &mut CpuRaster, store: &mut NodeStore, label_id: NodeId) -
     store.set_content_payload(
         label_id,
         Content::Text {
+            ink: None,
             glyphs: tg.glyphs.clone(),
             atlas,
             color_glyphs: Vec::new(),

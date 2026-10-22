@@ -19,14 +19,14 @@ use std::time::Duration;
 use viso_gpu::{GpuBackend, TextureDesc};
 use viso_platform::Instant;
 use viso_render::{
-    AtlasAlloc, ColorAlloc, ColorAtlas, GlyphAtlas, GlyphInstanceData, Rect, TextureId,
+    AtlasAlloc, ColorAlloc, ColorAtlas, GlyphAtlas, GlyphInstanceData, Rect, Rgba, TextureId,
 };
 use viso_text::app_fonts::AppFonts;
 use viso_text::bidi::BaseDirection;
 use viso_text::fallback::{FallbackPlan, FallbackStyle, FontFallback};
 use viso_text::font_manifest::{AssetRef, FontManifest};
 use viso_text::inspect::{MissLedger, TextInspection};
-use viso_text::paragraph::{LineLayout, line_index_at};
+use viso_text::paragraph::{LineLayout, StyleRun, VisualRun, line_index_at};
 #[cfg(feature = "rasterizer")]
 use viso_text::raster_color::rasterize_color;
 use viso_text::system_fonts::ColorGlyph;
@@ -35,17 +35,19 @@ use viso_text::{
     Admission, ColorGlyphRasterizer, CoverageBitmap, FontCache, FontFaceId, FontRequest,
     FontResolver, FontRole, FontTarget, GlyphImageKind, GlyphKey, GlyphResidency,
     LineBreakTailoring, LineLimit, OUTLINE_POOL, PackagedFirst, PackagedFonts, PackagedSource,
-    PoolBudget, Reclaimed, ReplacedFiles, Resolved, TextBudgets, TextPosition, inspect_face,
+    PoolBudget, Reclaimed, ReplacedFiles, Resolved, TextBudgets, TextOffset, TextPosition,
+    inspect_face,
 };
 use viso_ui::{
-    Content, EditGeometry, EditLayout, FontFamily, FontWeight, NodeId, TextAlign, TextOverflow,
-    TextRequest, TextSizing, TextStyle, Vec2, WidthUse,
+    Content, EditGeometry, EditLayout, FontFamily, FontSlant, FontWeight, InkRun, LengthTerms,
+    NodeId, TextAlign, TextInk, TextMark, TextOverflow, TextRequest, TextSizing, TextStyle, Vec2,
+    WidthUse,
 };
 
 use crate::system_fonts::{LiveFontRegistry, PlatformColorRaster, PlatformFontProvider};
 use crate::text_worker::{
-    ClusterKey, ContentWidths, FromWorker, LayoutDone, LayoutJob, Rastered, SpanStats, TextWorker,
-    ToWorker, starts_emoji,
+    ClusterKey, ContentWidths, FaceStyle, FromWorker, LayoutDone, LayoutJob, Rastered, RichShape,
+    SpanStats, TextWorker, ToWorker, bucket, starts_emoji,
 };
 
 const ATLAS_SIZE: u32 = 1024;
@@ -211,6 +213,10 @@ impl TextCounters {
 struct PositionedGlyph {
     face: FontFaceId,
     glyph: u16,
+    /// The raster bucket it draws from: its style's size at the density.
+    bucket: u16,
+    /// The span of [`Placing::paint`] it falls in, [`NO_PAINT`] for none.
+    paint: u16,
     /// It starts an emoji of the text, and draws from the color atlas.
     emoji: bool,
     origin: [f32; 2],
@@ -226,21 +232,74 @@ struct PreparedLayout {
     /// The width the text takes on one line per hard break.
     max_content: f32,
     baseline: f32,
-    /// The height of each line's box.
-    line_height: f32,
+    /// The top of each line's box, and after the last the bottom of the
+    /// text: one more than there are lines.
+    rows: Vec<f32>,
     /// Each line's inline offset within the box, its alignment.
     offsets: Vec<f32>,
+    /// The backgrounds its spans draw under their glyphs.
+    fills: Vec<TextMark>,
+    /// The underlines and strikethroughs its spans draw over them.
+    strokes: Vec<TextMark>,
+}
+
+/// A glyph in no painted span.
+const NO_PAINT: u16 = u16::MAX;
+
+/// A stretch of a text painted its own way, in byte offsets of the text.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PaintSpan {
+    start: u32,
+    end: u32,
+    color: Option<Rgba>,
+    background: Option<Rgba>,
+    underline: bool,
+    strikethrough: bool,
+}
+
+/// The span of `spans` the text at `at` falls in, [`NO_PAINT`] for none.
+fn paint_at(spans: &[PaintSpan], at: usize) -> u16 {
+    let i = spans.partition_point(|span| span.start as usize <= at);
+    match i.checked_sub(1) {
+        Some(i) if at < spans[i].end as usize => i as u16,
+        _ => NO_PAINT,
+    }
+}
+
+/// The inline x, in em, of the caret stop of `run` at or before `at`.
+fn run_x(run: &VisualRun, at: TextOffset) -> f32 {
+    let i = run.caret_stops.partition_point(|stop| stop.offset <= at);
+    run.caret_stops
+        .get(i.saturating_sub(1))
+        .map_or(run.visual_inline_range.0, |stop| stop.inline_x)
+}
+
+/// How one style of a text sits on its lines, in logical pixels.
+struct Look {
+    metrics: viso_text::FaceMetrics,
+    /// The size it draws at.
+    size: f32,
+    /// How far its baseline sits above the line's.
+    raise: f32,
+    /// How far its box reaches above and below the line's baseline.
+    top: f32,
+    bottom: f32,
+    bucket: u16,
 }
 
 /// What placing a paragraph's lines reads beside them: the size they scale
 /// to, the line box height, the alignment and the width it aligns within
 /// (`None` for the widest line's).
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 struct Placing {
     font_size: f32,
+    /// Device pixels per logical pixel.
+    dpi: f32,
     line_height: Option<f32>,
     align: TextAlign,
     width: Option<f32>,
+    /// The stretches its spans paint their own way, in order.
+    paint: Option<Arc<[PaintSpan]>>,
 }
 
 /// Which retained paragraph a request belongs to: the node that draws it,
@@ -291,13 +350,15 @@ struct LayoutTarget {
     base: FontFaceId,
     /// The style fallback faces are chosen to match.
     style: FallbackStyle,
+    /// The styles its spans shape in, when any shape apart.
+    rich: Option<Arc<RichShape>>,
     locale: String,
     limit: LineLimit,
     /// The base direction its paragraphs resolve under.
     direction: BaseDirection,
 }
 
-/// A [`LayoutTarget`] but its text and locale, which the caller compares
+/// A [`LayoutTarget`] but its text, locale and spans, which the caller compares
 /// without copying them.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct TargetKey {
@@ -321,8 +382,24 @@ impl LayoutTarget {
         }
     }
 
-    fn matches(&self, text: &str, locale: &str, key: TargetKey) -> bool {
-        *self.text == *text && self.locale == locale && self.key() == key
+    fn matches(
+        &self,
+        text: &str,
+        locale: &str,
+        key: TargetKey,
+        rich: &Option<Arc<RichShape>>,
+    ) -> bool {
+        *self.text == *text && self.locale == locale && self.key() == key && self.rich == *rich
+    }
+
+    /// The text's own style.
+    fn own(&self) -> FaceStyle {
+        FaceStyle {
+            face: self.base,
+            fallback: self.style,
+            scale: 1.0,
+            raise: 0.0,
+        }
     }
 }
 
@@ -354,8 +431,8 @@ struct TextSlot {
     bound: Option<f32>,
     /// How its lines are placed now.
     placing: Placing,
-    /// The raster bucket the node draws at.
-    ppem: u16,
+    /// The size and direction it was last shaped for.
+    sizing: Option<TextSizing>,
     drawn: Option<Committed>,
     staged: Option<Committed>,
     /// Layouts sent to the worker and not yet returned, oldest first.
@@ -376,7 +453,7 @@ impl TextSlot {
             target,
             bound: None,
             placing: Placing::default(),
-            ppem: 1,
+            sizing: None,
             drawn: None,
             staged: None,
             laying: Vec::new(),
@@ -431,7 +508,7 @@ pub(crate) struct TextShaper {
     primary: Option<FontFaceId>,
     /// The face each family and weight but the primary's resolved to, the
     /// primary for one nothing provides.
-    styled: HashMap<(FontFamily, FontWeight), FontFaceId>,
+    styled: HashMap<(FontFamily, FontWeight, FontSlant), FontFaceId>,
     /// The family a text that names none draws with: the theme's.
     family: FontFamily,
     /// System queries made to resolve the primary face; one at most once it
@@ -854,7 +931,7 @@ impl TextShaper {
                     let mut key = GlyphKey {
                         face: glyph.face,
                         glyph: glyph.glyph,
-                        bucket: entry.ppem,
+                        bucket: glyph.bucket,
                         kind: GlyphImageKind::MaskA8,
                     };
                     // A color glyph the color plane refused draws from coverage,
@@ -944,11 +1021,7 @@ impl TextShaper {
 
     /// The size `slot`'s text is placed at, `None` before it is shaped.
     pub(crate) fn sizing(&self, slot: ParagraphSlot) -> Option<TextSizing> {
-        self.slots.get(&slot).map(|entry| TextSizing {
-            font_size: entry.placing.font_size,
-            line_height: entry.placing.line_height,
-            rtl: entry.target.direction == BaseDirection::AutoRightToLeft,
-        })
+        self.slots.get(&slot).and_then(|entry| entry.sizing)
     }
 
     /// The caret box at `position` in `slot`'s text, relative to the run's
@@ -971,48 +1044,80 @@ impl TextShaper {
             .get(row)
             .and_then(|line: &LineLayout| line.caret_x(position))
             .unwrap_or(0.0);
-        let line_height = drawn.placed.line_height;
+        let rows = &drawn.placed.rows;
+        let top = rows.get(row).copied().unwrap_or(0.0);
+        let bottom = rows.get(row + 1).copied().unwrap_or(top);
         let offset = drawn.placed.offsets.get(row).copied().unwrap_or(0.0);
         Some(Rect {
             x: x * drawn.placing.font_size + offset,
-            y: row as f32 * line_height,
+            y: top,
             w: 0.0,
-            h: line_height,
+            h: bottom - top,
         })
     }
 
     /// Position every glyph of `lines` in logical pixels as `placing` asks:
     /// each run starts at its own inline offset, so BiDi order and fallback
-    /// splits come from the paragraph, not from re-walking the text here; a
-    /// line box of a given height centers the face's ascent and descent in
-    /// it, and each line is offset by its alignment within the width, a line
-    /// wider than it at its paragraph's start.
+    /// splits come from the paragraph, not from re-walking the text here.
+    ///
+    /// Each style's box reaches its face's ascent above its baseline and the
+    /// rest of its line height below, or, in a line box of a given height,
+    /// its ascent and descent centered in that height; a raised style's box
+    /// rises with it. A line is as tall as its styles' boxes reach, and each
+    /// line is offset by its alignment within the width, a line wider than it
+    /// at its paragraph's start.
     fn place(
         &self,
         target: &LayoutTarget,
         lines: &[LineLayout],
         content_em: ContentWidths,
-        placing: Placing,
+        placing: &Placing,
     ) -> PreparedLayout {
-        let metrics = self
-            .resolver
-            .face_metrics(target.base)
-            .unwrap_or_else(default_metrics);
         let size = placing.font_size;
-        let ascent = metrics.ascender_em * size;
-        let (line_height, baseline) = match placing.line_height {
-            Some(height) if height.is_finite() => {
-                let height = height.max(0.0);
-                let content = (metrics.ascender_em - metrics.descender_em) * size;
-                (height, (height - content) / 2.0 + ascent)
-            }
-            _ => (metrics.line_height_em.max(1.0) * size, ascent),
-        };
+        let rich = target.rich.as_deref();
+        let own = target.own();
+        let looks: Vec<Look> = (0..=rich.map_or(0, |rich| rich.styles.len()))
+            .map(|at| {
+                let style = RichShape::style(rich, own, at as u16);
+                let metrics = self
+                    .resolver
+                    .face_metrics(style.face)
+                    .unwrap_or_else(default_metrics);
+                let size = size * style.scale;
+                let ascent = metrics.ascender_em * size;
+                let descent = -metrics.descender_em * size;
+                let (top, bottom) = match placing.line_height {
+                    Some(height) if height.is_finite() => {
+                        let half = (height.max(0.0) - ascent - descent) / 2.0;
+                        (ascent + half, descent + half)
+                    }
+                    _ => {
+                        let height = metrics.line_height_em.max(1.0) * size;
+                        (ascent, height - ascent)
+                    }
+                };
+                let raise = style.raise * placing.font_size;
+                Look {
+                    metrics,
+                    size,
+                    raise,
+                    top: top + raise,
+                    bottom: bottom - raise,
+                    bucket: bucket(placing.font_size * placing.dpi, style.scale),
+                }
+            })
+            .collect();
+        let look = |style: u16| looks.get(usize::from(style)).unwrap_or(&looks[0]);
+        let paint = placing.paint.as_deref().unwrap_or(&[]);
         let widest = lines.iter().fold(0.0f32, |w, line| w.max(line.width)) * size;
         let room = placing.width.unwrap_or(widest);
         let mut glyphs = Vec::new();
         let mut offsets = Vec::with_capacity(lines.len());
-        for (row, line) in lines.iter().enumerate() {
+        let mut rows = Vec::with_capacity(lines.len() + 1);
+        let (mut fills, mut strokes) = (Vec::new(), Vec::new());
+        let mut first_baseline = None;
+        let mut y = 0.0f32;
+        for line in lines {
             let free = room - line.width * size;
             let offset = match (placing.align, line.rtl) {
                 _ if free <= 0.0 => {
@@ -1027,37 +1132,215 @@ impl TextShaper {
                 (TextAlign::Center, _) => free / 2.0,
             };
             offsets.push(offset);
-            let y = baseline + row as f32 * line_height;
+            let (above, below) = if line.runs.is_empty() {
+                (looks[0].top, looks[0].bottom)
+            } else {
+                line.runs.iter().fold((f32::MIN, f32::MIN), |(a, b), run| {
+                    let look = look(run.style);
+                    (a.max(look.top), b.max(look.bottom))
+                })
+            };
+            rows.push(y);
+            let baseline = y + above;
+            first_baseline.get_or_insert(baseline);
             for run in &line.runs {
+                let look = look(run.style);
+                let ground = baseline - look.raise;
                 let mut pen = run.visual_inline_range.0;
-                let own_text = run.logical_range.0 < run.logical_range.1;
+                let (from, to) = run.logical_range;
+                let own_text = from < to;
                 for glyph in &run.glyphs {
-                    let cluster = run.logical_range.0.0 + glyph.cluster as usize;
+                    let cluster = from.0 + glyph.cluster as usize;
+                    // An ellipsis paints like the text it follows.
+                    let painted = if own_text {
+                        cluster
+                    } else {
+                        from.0.saturating_sub(1)
+                    };
                     glyphs.push(PositionedGlyph {
                         face: run.face,
                         glyph: glyph.glyph_id,
+                        bucket: look.bucket,
+                        paint: paint_at(paint, painted),
                         emoji: own_text && starts_emoji(&target.text, cluster),
                         origin: [
                             offset + (pen + glyph.x_offset) * size,
-                            y - glyph.y_offset * size,
+                            ground - glyph.y_offset * size,
                         ],
                     });
                     pen += glyph.x_advance;
                 }
+                if !own_text {
+                    continue;
+                }
+                let first = paint.partition_point(|span| span.end as usize <= from.0);
+                for span in paint[first..]
+                    .iter()
+                    .take_while(|span| (span.start as usize) < to.0)
+                {
+                    let start = TextOffset(from.0.max(span.start as usize));
+                    let end = TextOffset(to.0.min(span.end as usize));
+                    let (a, b) = (run_x(run, start), run_x(run, end));
+                    let x = offset + a.min(b) * size;
+                    let w = (a - b).abs() * size;
+                    let metrics = &look.metrics;
+                    if let Some(color) = span.background {
+                        let top = ground - metrics.ascender_em * look.size;
+                        fills.push(TextMark {
+                            rect: Rect::new(
+                                x,
+                                top,
+                                w,
+                                (metrics.ascender_em - metrics.descender_em) * look.size,
+                            ),
+                            color: Some(color),
+                        });
+                    }
+                    let px = 1.0 / placing.dpi.max(1.0);
+                    let mut stroke = |(at, thickness): (f32, f32)| {
+                        strokes.push(TextMark {
+                            rect: Rect::new(
+                                x,
+                                ground - at * look.size,
+                                w,
+                                (thickness * look.size).max(px),
+                            ),
+                            color: span.color,
+                        });
+                    };
+                    if span.underline {
+                        stroke(metrics.underline_em);
+                    }
+                    if span.strikethrough {
+                        stroke(metrics.strikeout_em);
+                    }
+                }
             }
+            y += above + below;
         }
+        rows.push(y);
         PreparedLayout {
             glyphs,
-            natural: Vec2 {
-                x: widest,
-                y: lines.len() as f32 * line_height,
-            },
+            natural: Vec2 { x: widest, y },
             min_content: content_em.min * size,
             max_content: content_em.max * size,
-            baseline,
-            line_height,
+            baseline: first_baseline.unwrap_or(looks[0].top),
+            rows,
             offsets,
+            fills,
+            strokes,
         }
+    }
+
+    /// The styles `request`'s spans shape in beyond its own style `own`, and
+    /// the stretches they paint their own way; `None` for either it has none
+    /// of.
+    fn spans(
+        &mut self,
+        request: &TextRequest,
+        sizing: &TextSizing,
+        own: FaceStyle,
+    ) -> (Option<Arc<RichShape>>, Option<Arc<[PaintSpan]>>) {
+        if request.spans.is_empty() {
+            return (None, None);
+        }
+        let text = request.text.as_str();
+        let floor = |mut at: usize| {
+            at = at.min(text.len());
+            while !text.is_char_boundary(at) {
+                at -= 1;
+            }
+            at
+        };
+        let size = sizing.font_size;
+        let mut styles: Vec<FaceStyle> = Vec::new();
+        let mut runs: Vec<StyleRun> = Vec::new();
+        let mut paint = Vec::new();
+        for span in &request.spans {
+            let (start, end) = (floor(span.range.start), floor(span.range.end));
+            if start >= end {
+                continue;
+            }
+            let look = &span.style;
+            if look.reshapes() {
+                let weight = look.weight.unwrap_or(request.style.weight);
+                let slant = look.slant.unwrap_or(request.style.slant);
+                let family = look.family.as_ref().or(request.style.family.as_ref());
+                let face = self
+                    .resolve_styled(family, weight, slant)
+                    .unwrap_or(own.face);
+                let span_size = look
+                    .size
+                    .and_then(|terms| terms.fold_font(&sizing.env, size))
+                    .unwrap_or(size);
+                let raise = look
+                    .raise
+                    .and_then(|terms| {
+                        LengthTerms {
+                            em: terms.em + terms.pct,
+                            pct: 0.0,
+                            ..terms
+                        }
+                        .fixed(&sizing.env, span_size)
+                    })
+                    .unwrap_or(0.0);
+                let per_em = |v: f32| if size > 0.0 { v / size } else { 0.0 };
+                let style = FaceStyle {
+                    face,
+                    fallback: FallbackStyle {
+                        weight,
+                        slant,
+                        ..FallbackStyle::default()
+                    },
+                    scale: if size > 0.0 { span_size / size } else { 1.0 },
+                    raise: per_em(raise),
+                };
+                let index = if style == own {
+                    0
+                } else {
+                    match styles.iter().position(|known| *known == style) {
+                        Some(at) => at + 1,
+                        None => {
+                            styles.push(style);
+                            styles.len()
+                        }
+                    }
+                };
+                for run in [
+                    StyleRun {
+                        start: TextOffset(start),
+                        style: index as u16,
+                    },
+                    StyleRun {
+                        start: TextOffset(end),
+                        style: 0,
+                    },
+                ] {
+                    match runs.last_mut() {
+                        Some(last) if last.start == run.start => last.style = run.style,
+                        Some(last) if last.style == run.style => {}
+                        None if run.style == 0 => {}
+                        _ => runs.push(run),
+                    }
+                }
+            }
+            if look.repaints() {
+                paint.push(PaintSpan {
+                    start: start as u32,
+                    end: end as u32,
+                    color: look.color,
+                    background: look.background,
+                    underline: look.underline,
+                    strikethrough: look.strikethrough,
+                });
+            }
+        }
+        for style in &styles {
+            self.ensure_worker_face(style.face);
+        }
+        let rich = (!styles.is_empty()).then(|| Arc::new(RichShape { styles, runs }));
+        let paint = (!paint.is_empty()).then(|| Arc::from(paint));
+        (rich, paint)
     }
 
     /// `slot`'s content for `request` at `sizing`: its last good layout,
@@ -1080,6 +1363,21 @@ impl TextShaper {
             return empty_content(request, None);
         };
         self.ensure_worker_face(base);
+        let fallback = FallbackStyle {
+            weight: request.style.weight,
+            slant: request.style.slant,
+            ..FallbackStyle::default()
+        };
+        let (rich, paint) = self.spans(
+            request,
+            &sizing,
+            FaceStyle {
+                face: base,
+                fallback,
+                scale: 1.0,
+                raise: 0.0,
+            },
+        );
         let locale = match request.locale.as_deref() {
             Some(locale) => locale,
             None => process_locale(),
@@ -1102,10 +1400,7 @@ impl TextShaper {
             width_em: wrap.map_or(0, |width| em(width).to_bits()),
             tailoring,
             base,
-            style: FallbackStyle {
-                weight: request.style.weight,
-                ..FallbackStyle::default()
-            },
+            style: fallback,
             limit: line_limit(&request.style, request.soft_wrap, bound.map(em)),
             direction: if sizing.rtl {
                 BaseDirection::AutoRightToLeft
@@ -1114,7 +1409,7 @@ impl TextShaper {
             },
         };
         let mut entry = match stale {
-            Some(entry) if entry.target.matches(&request.text, locale, key) => entry,
+            Some(entry) if entry.target.matches(&request.text, locale, key, &rich) => entry,
             stale => {
                 let target = LayoutTarget {
                     text: Arc::from(request.text.as_str()),
@@ -1122,6 +1417,7 @@ impl TextShaper {
                     tailoring,
                     base,
                     style: key.style,
+                    rich,
                     locale: locale.to_owned(),
                     limit: key.limit,
                     direction: key.direction,
@@ -1143,20 +1439,22 @@ impl TextShaper {
         entry.bound = bound;
         entry.placing = Placing {
             font_size: size,
+            dpi: dpi_factor,
             line_height: sizing.line_height,
             align: request.style.align,
             width: bound,
+            paint,
         };
-        entry.ppem = (size * dpi_factor).round().clamp(1.0, f32::from(u16::MAX)) as u16;
+        entry.sizing = Some(sizing);
         for committed in [&mut entry.drawn, &mut entry.staged].into_iter().flatten() {
             if committed.placing != entry.placing {
                 committed.placed = self.place(
                     &committed.target,
                     &committed.lines,
                     committed.content_em,
-                    entry.placing,
+                    &entry.placing,
                 );
-                committed.placing = entry.placing;
+                committed.placing = entry.placing.clone();
             }
         }
         self.try_promote(slot, &mut entry);
@@ -1183,16 +1481,18 @@ impl TextShaper {
         for &face in &drawn.faces {
             self.faces.touch(face);
         }
-        let ppem = entry.ppem;
         let layout = &drawn.placed;
+        let paint = drawn.placing.paint.as_deref();
         let mut glyphs = Vec::with_capacity(layout.glyphs.len());
         let mut color_glyphs = Vec::new();
+        let mut inks: Vec<InkRun> = Vec::new();
+        let mut ink: Option<Rgba> = None;
         for &glyph in &layout.glyphs {
             if glyph.emoji {
                 let key = GlyphKey {
                     face: glyph.face,
                     glyph: glyph.glyph,
-                    bucket: ppem,
+                    bucket: glyph.bucket,
                     kind: GlyphImageKind::ColorRgba8,
                 };
                 let packed = match self.color_uv.get(&key) {
@@ -1231,7 +1531,7 @@ impl TextShaper {
             let key = GlyphKey {
                 face: glyph.face,
                 glyph: glyph.glyph,
-                bucket: ppem,
+                bucket: glyph.bucket,
                 kind: GlyphImageKind::MaskA8,
             };
             let packed = match self.coverage_uv.get(&key) {
@@ -1249,6 +1549,18 @@ impl TextShaper {
                 continue;
             };
             let inv = 1.0 / dpi_factor;
+            let color = paint
+                .and_then(|spans| spans.get(usize::from(glyph.paint)))
+                .and_then(|span| span.color);
+            if color != ink {
+                if !glyphs.is_empty() {
+                    inks.push(InkRun {
+                        end: glyphs.len() as u32,
+                        color: ink,
+                    });
+                }
+                ink = color;
+            }
             glyphs.push(GlyphInstanceData {
                 rect: Rect {
                     x: glyph.origin[0] + bearing[0] * inv,
@@ -1260,6 +1572,19 @@ impl TextShaper {
             });
         }
 
+        if ink.is_some() {
+            inks.push(InkRun {
+                end: glyphs.len() as u32,
+                color: ink,
+            });
+        }
+        let ink = paint.map(|_| {
+            Box::new(TextInk {
+                runs: inks,
+                fills: layout.fills.clone(),
+                lines: layout.strokes.clone(),
+            })
+        });
         let atlas = self
             .coverage_atlas
             .as_ref()
@@ -1279,6 +1604,7 @@ impl TextShaper {
                 .width_use(request.soft_wrap, drawn.lines.iter().any(|line| line.rtl)),
             min_content: layout.min_content,
             max_content: layout.max_content,
+            ink,
         }
     }
 
@@ -1396,7 +1722,7 @@ impl TextShaper {
             let key = GlyphKey {
                 face: glyph.face,
                 glyph: glyph.glyph,
-                bucket: entry.ppem,
+                bucket: glyph.bucket,
                 kind: GlyphImageKind::MaskA8,
             };
             if self.coverage_uv.contains_key(&key) {
@@ -1476,11 +1802,12 @@ impl TextShaper {
                 tailoring: target.tailoring,
                 base: target.base,
                 style: target.style,
+                rich: target.rich.clone(),
                 locale: target.locale.clone(),
                 limit: target.limit,
                 direction: target.direction,
                 full: std::mem::take(&mut entry.full),
-                ppem: entry.ppem,
+                px: entry.placing.font_size * entry.placing.dpi,
                 // A node with nothing drawn yet shows a hole until it lands.
                 priority: if entry.drawn.is_none() {
                     Priority::CriticalVisible
@@ -1699,7 +2026,7 @@ impl TextShaper {
                 if done.relaid {
                     self.counters.record_shape(target.width_em != 0);
                 }
-                let staged = self.stage(target, done.lines, done.content_em, entry.placing);
+                let staged = self.stage(target, done.lines, done.content_em, entry.placing.clone());
                 if let Some(old) = entry.staged.replace(staged) {
                     self.unpin(&old.faces);
                 }
@@ -1730,7 +2057,7 @@ impl TextShaper {
         for &face in &faces {
             self.faces.pin(face);
         }
-        let placed = self.place(&target, &lines, content_em, placing);
+        let placed = self.place(&target, &lines, content_em, &placing);
         Committed {
             target,
             lines,
@@ -1791,11 +2118,26 @@ impl TextShaper {
     /// one, at its weight, the primary face when nothing provides one.
     /// Resolved once per family and weight.
     fn resolve_face(&mut self, style: &TextStyle) -> Option<FontFaceId> {
-        let family = style.family.as_ref().unwrap_or(&self.family);
-        if *family == FontFamily::SystemUi && style.weight == FontWeight::REGULAR {
+        self.resolve_styled(style.family.as_ref(), style.weight, style.slant)
+    }
+
+    /// The face text of `family` (the default one when `None`), `weight`
+    /// and `slant` draws with, the primary face when nothing provides one.
+    /// Resolved once per family, weight and slant.
+    fn resolve_styled(
+        &mut self,
+        family: Option<&FontFamily>,
+        weight: FontWeight,
+        slant: FontSlant,
+    ) -> Option<FontFaceId> {
+        let family = family.unwrap_or(&self.family);
+        if *family == FontFamily::SystemUi
+            && weight == FontWeight::REGULAR
+            && slant == FontSlant::Normal
+        {
             return self.resolve_primary();
         }
-        let key = (family.clone(), style.weight);
+        let key = (family.clone(), weight, slant);
         if let Some(&face) = self.styled.get(&key) {
             return Some(face);
         }
@@ -1807,7 +2149,8 @@ impl TextShaper {
         };
         let request = FontRequest {
             target,
-            weight: style.weight,
+            weight,
+            slant,
             ..FontRequest::role(FontRole::Ui)
         };
         let face = match self
@@ -2083,7 +2426,7 @@ impl EditGeometry for TextShaper {
             text: &drawn.target.text,
             lines: &drawn.lines,
             font_size: drawn.placing.font_size,
-            line_height: drawn.placed.line_height,
+            rows: &drawn.placed.rows,
             offsets: &drawn.placed.offsets,
         })
     }
@@ -2159,6 +2502,7 @@ fn empty_content(request: &TextRequest, shaped_at_width: Option<f32>) -> Content
         width_use: request.style.width_use(request.soft_wrap, false),
         min_content: 0.0,
         max_content: 0.0,
+        ink: None,
     }
 }
 
@@ -2183,6 +2527,8 @@ fn default_metrics() -> viso_text::FaceMetrics {
         ascender_em: 0.8,
         descender_em: -0.2,
         line_height_em: 1.2,
+        underline_em: (-0.1, 0.06),
+        strikeout_em: (0.3, 0.06),
         units_per_em: 1000,
         glyph_count: 0,
         postscript_name: None,
@@ -2230,6 +2576,7 @@ mod tests {
                 panic!("a test request fixes its size");
             };
             let sizing = TextSizing {
+                env: viso_ui::LengthEnv::default(),
                 font_size,
                 line_height: request.style.line_height.map(|terms| terms.dp),
                 rtl: false,
@@ -2311,6 +2658,7 @@ mod tests {
     fn the_caret_walks_the_pen_positions_of_a_shaped_run() {
         let mut shaper = tiny_shaper();
         let request = TextRequest {
+            spans: Vec::new(),
             text: PAIR.to_owned(),
             font_size: FontSize::Fixed(30.0),
             color: Rgba::TRANSPARENT,
@@ -2349,6 +2697,7 @@ mod tests {
     fn edit_geometry_is_the_placed_paragraph_and_resolves_a_click() {
         let mut shaper = tiny_shaper();
         let request = TextRequest {
+            spans: Vec::new(),
             text: PAIR.to_owned(),
             font_size: FontSize::Fixed(30.0),
             color: Rgba::TRANSPARENT,
@@ -2368,7 +2717,7 @@ mod tests {
         let layout = shaper.layout(node).expect("drawn");
         assert_eq!(layout.text, PAIR);
         assert_eq!(layout.font_size, 30.0);
-        assert_eq!(layout.line_height, middle.h);
+        assert_eq!(layout.rows[1] - layout.rows[0], middle.h);
         // The stop the caret query drew at offset 1 is where a click resolves.
         let line = &layout.lines[0];
         let hit = viso_text::hit_test::HitTester::new(line)
@@ -3064,6 +3413,7 @@ mod tests {
 
     fn request(text: &str, font_size: f32) -> TextRequest {
         TextRequest {
+            spans: Vec::new(),
             text: text.into(),
             font_size: FontSize::Fixed(font_size),
             color: WHITE,
@@ -3375,6 +3725,7 @@ mod tests {
         let _ = gpu.create_surface(RawWindowHandle::Headless, 128, 128);
         let mut shaper = shaper();
         let request = TextRequest {
+            spans: Vec::new(),
             text: "Viso".into(),
             font_size: FontSize::Fixed(22.0),
             color: WHITE,
@@ -3439,6 +3790,7 @@ mod tests {
         // exactly as the hello-world example does.
         let mut shaper = TextShaper::new();
         let request = TextRequest {
+            spans: Vec::new(),
             text: "世界 नमस्ते 🥟".into(),
             font_size: FontSize::Fixed(48.0),
             color: WHITE,
@@ -3507,6 +3859,7 @@ mod tests {
         ] {
             let mut solo = TextShaper::new();
             let req = TextRequest {
+                spans: Vec::new(),
                 text: text.into(),
                 font_size: FontSize::Fixed(48.0),
                 color: WHITE,
@@ -3566,6 +3919,7 @@ mod tests {
         // Shape once so the CJK/Devanagari fallback face is resolved and its live
         // handle registered with the color raster.
         let request = TextRequest {
+            spans: Vec::new(),
             text: "नमस्ते".into(),
             font_size: FontSize::Fixed(48.0),
             color: WHITE,
@@ -3625,6 +3979,7 @@ mod tests {
         let _ = gpu.create_surface(RawWindowHandle::Headless, 256, 256);
         let mut shaper = shaper();
         let request = TextRequest {
+            spans: Vec::new(),
             text: "wrap this paragraph onto several lines".into(),
             font_size: FontSize::Fixed(20.0),
             color: WHITE,
@@ -3759,6 +4114,7 @@ mod tests {
         };
         for turned in [false, true, false] {
             let sizing = TextSizing {
+                env: viso_ui::LengthEnv::default(),
                 font_size: 16.0,
                 line_height: None,
                 rtl: turned,
@@ -3800,6 +4156,7 @@ mod tests {
         let width = shaper.box_width(at);
         assert_eq!(width, Some(200.0), "an aligned run keeps its box");
         let big = TextSizing {
+            env: viso_ui::LengthEnv::default(),
             font_size: 40.0,
             line_height: Some(60.0),
             rtl: false,
@@ -4210,5 +4567,143 @@ mod tests {
             1,
             "carets read the drawn lines"
         );
+    }
+
+    fn spanned(text: &str, spans: Vec<viso_ui::TextSpan>) -> TextRequest {
+        TextRequest {
+            spans,
+            ..request(text, 20.0)
+        }
+    }
+
+    fn span(range: std::ops::Range<usize>, style: viso_ui::SpanStyle) -> viso_ui::TextSpan {
+        viso_ui::TextSpan { range, style }
+    }
+
+    #[test]
+    fn a_larger_span_grows_its_line_and_draws_from_its_own_bucket() {
+        let mut shaper = shaper();
+        let mut gpu = headless();
+        let (plain, _, plain_baseline, _, _) =
+            laid(&mut shaper, &mut gpu, &request(PAIR, 20.0), None);
+        let big = spanned(
+            PAIR,
+            vec![span(
+                1..2,
+                viso_ui::SpanStyle {
+                    size: Some(LengthTerms {
+                        em: 2.0,
+                        ..LengthTerms::ZERO
+                    }),
+                    ..Default::default()
+                },
+            )],
+        );
+        let (natural, _, baseline, _, _) = laid(&mut shaper, &mut gpu, &big, None);
+        assert!(natural.x > plain.x * 1.4, "the `d` draws twice as wide");
+        assert!(
+            (natural.y - plain.y * 2.0).abs() < 0.5,
+            "the line is the span's"
+        );
+        assert!((baseline - plain_baseline * 2.0).abs() < 0.5);
+        let drawn = shaper.slots[&slot(0)].drawn.as_ref().expect("drawn");
+        let buckets: Vec<u16> = drawn.placed.glyphs.iter().map(|g| g.bucket).collect();
+        assert_eq!(buckets, [20, 40]);
+        let caret = shaper
+            .caret(slot(0), &big, TextPosition::downstream(TextOffset(1)))
+            .expect("drawn");
+        assert_eq!(caret.h, natural.y, "the caret spans the line");
+    }
+
+    #[test]
+    fn a_painted_span_inks_its_glyphs_and_draws_its_fill_and_lines() {
+        let mut shaper = shaper();
+        let mut gpu = headless();
+        let red = Rgba {
+            r: 1.0,
+            g: 0.0,
+            b: 0.0,
+            a: 1.0,
+        };
+        let blue = Rgba { r: 0.0, ..red };
+        let request = spanned(
+            "bdb",
+            vec![span(
+                1..2,
+                viso_ui::SpanStyle {
+                    color: Some(red),
+                    background: Some(blue),
+                    underline: true,
+                    strikethrough: true,
+                    ..Default::default()
+                },
+            )],
+        );
+        let Content::Text {
+            ink: Some(ink),
+            glyphs,
+            natural,
+            baseline,
+            ..
+        } = settle(&mut shaper, &mut gpu, slot(0), &request, None)
+        else {
+            panic!("a text with ink");
+        };
+        assert_eq!(glyphs.len(), 3);
+        assert_eq!(
+            ink.runs,
+            [
+                InkRun {
+                    end: 1,
+                    color: None
+                },
+                InkRun {
+                    end: 2,
+                    color: Some(red)
+                }
+            ],
+            "only the middle glyph is red; the rest take the text's color"
+        );
+        let [fill] = ink.fills[..] else {
+            panic!("one fill: {:?}", ink.fills);
+        };
+        assert_eq!(fill.color, Some(blue));
+        assert!(fill.rect.w > 0.0 && fill.rect.x > 0.0 && fill.rect.x + fill.rect.w < natural.x);
+        let [under, through] = ink.lines[..] else {
+            panic!("an underline and a strikethrough: {:?}", ink.lines);
+        };
+        assert_eq!((under.color, through.color), (Some(red), Some(red)));
+        assert!(under.rect.y > baseline && through.rect.y < baseline);
+        assert_eq!(under.rect.x, fill.rect.x);
+    }
+
+    #[test]
+    fn a_raised_span_lifts_its_glyphs_and_its_line_makes_room() {
+        let mut shaper = shaper();
+        let mut gpu = headless();
+        let (plain, _, _, _, _) = laid(&mut shaper, &mut gpu, &request(PAIR, 20.0), None);
+        let raised = spanned(
+            PAIR,
+            vec![span(
+                1..2,
+                viso_ui::SpanStyle {
+                    raise: Some(LengthTerms {
+                        em: 0.5,
+                        ..LengthTerms::ZERO
+                    }),
+                    ..Default::default()
+                },
+            )],
+        );
+        let (natural, _, _, _, _) = laid(&mut shaper, &mut gpu, &raised, None);
+        assert!(
+            (natural.y - plain.y - 10.0).abs() < 0.01,
+            "half an em more above"
+        );
+        let drawn = shaper.slots[&slot(0)].drawn.as_ref().expect("drawn");
+        let [b, d] = drawn.placed.glyphs[..] else {
+            panic!("two glyphs");
+        };
+        assert!((b.origin[1] - d.origin[1] - 10.0).abs() < 0.01);
     }
 }

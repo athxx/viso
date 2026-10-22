@@ -22,6 +22,7 @@ pub(crate) fn text_style(
 ) -> TextStyle {
     let tag = |value: &Value| value.as_int().and_then(|v| usize::try_from(v).ok());
     TextStyle {
+        slant: viso_ui::FontSlant::Normal,
         weight: tag(weight)
             .and_then(|at| WEIGHTS.get(at))
             .map_or(FontWeight::REGULAR, |&w| FontWeight(w)),

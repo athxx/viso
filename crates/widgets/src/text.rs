@@ -1,4 +1,5 @@
-//! Text controls — the [`Label`] widget.
+//! Text controls — the [`Label`] widget, and [`rich_text`], a label of
+//! pieces each drawn its own way.
 //!
 //! `Label` is the base static-text control: a single leaf node that draws a run
 //! of text and reports it to assistive technology. It is the widget-layer face
@@ -17,8 +18,9 @@
 use std::num::NonZeroU32;
 
 use viso_ui::{
-    BoxStyle, BuildCx, Component, FontFamily, FontSize, FontWeight, LeafStyle, Length, LengthTerms,
-    Rgba, Role, Semantics, Size, TextAlign, TextOverflow, TextRequest, TextStyle,
+    BoxStyle, BuildCx, Component, FontFamily, FontSize, FontSlant, FontWeight, LeafStyle, Length,
+    LengthTerms, Rgba, Role, Semantics, Size, SpanStyle, TextAlign, TextOverflow, TextRequest,
+    TextSpan, TextStyle,
 };
 
 /// The default label font size in logical pixels.
@@ -98,6 +100,8 @@ pub struct Label {
     text_style: TextStyle,
     /// The content language (BCP-47), or `None` for the process locale.
     locale: Option<String>,
+    /// The stretches of the text drawn their own way, in order.
+    spans: Vec<TextSpan>,
 }
 
 /// Construct a [`Label`] with the given text and default style. Chain
@@ -108,7 +112,36 @@ pub fn label(text: impl Into<String>) -> Label {
         style: LabelStyle::default(),
         text_style: TextStyle::default(),
         locale: None,
+        spans: Vec::new(),
     }
+}
+
+/// Construct a [`Label`] of `pieces`, each drawn its own way and all
+/// together read as one text.
+///
+/// ```
+/// use viso_widgets::rich_text;
+/// use viso_ui::SpanStyle;
+///
+/// let note = rich_text([
+///     ("Saved ", SpanStyle::default()),
+///     ("3 files", SpanStyle::default().bold()),
+///     (" to disk", SpanStyle::default().italic()),
+/// ]);
+/// ```
+pub fn rich_text<S: AsRef<str>>(pieces: impl IntoIterator<Item = (S, SpanStyle)>) -> Label {
+    let mut out = label(String::new());
+    for (piece, style) in pieces {
+        let start = out.text.len();
+        out.text.push_str(piece.as_ref());
+        if style != SpanStyle::default() {
+            out.spans.push(TextSpan {
+                range: start..out.text.len(),
+                style,
+            });
+        }
+    }
+    out
 }
 
 impl Label {
@@ -141,6 +174,23 @@ impl Label {
     /// Set the weight of the face.
     pub fn weight(mut self, weight: FontWeight) -> Self {
         self.text_style.weight = weight;
+        self
+    }
+
+    /// Draw the text italic.
+    pub fn italic(mut self) -> Self {
+        self.text_style.slant = FontSlant::Italic;
+        self
+    }
+
+    /// Draw the bytes `range` of the text `style`'s way. Spans are kept in
+    /// order of their start; one overlapping an earlier one wins where they
+    /// overlap.
+    pub fn span(mut self, range: std::ops::Range<usize>, style: SpanStyle) -> Self {
+        let at = self
+            .spans
+            .partition_point(|span| span.range.start <= range.start);
+        self.spans.insert(at, TextSpan { range, style });
         self
     }
 
@@ -197,6 +247,7 @@ impl Component for Label {
         cx.text_request(
             handle,
             TextRequest {
+                spans: self.spans.clone(),
                 text: self.text.clone(),
                 font_size: FontSize::Fixed(self.style.font_size),
                 color: self.style.color,

@@ -655,6 +655,7 @@ impl Shown {
             }
         }
         let text = |shown: &Value| TextRequest {
+            spans: Vec::new(),
             text: shown.as_str().unwrap_or_default().to_owned(),
             font_size: FontSize::Inherited,
             color: if given(TEXT) {

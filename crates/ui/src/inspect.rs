@@ -702,6 +702,7 @@ mod tests {
     /// `Text` and setting it marks MEASURE | LAYOUT | PAINT | SEMANTICS.
     fn text_content() -> Content {
         Content::Text {
+            ink: None,
             glyphs: Vec::new(),
             atlas: viso_render::TextureId::new(1),
             color_glyphs: Vec::new(),

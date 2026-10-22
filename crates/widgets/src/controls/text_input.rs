@@ -262,6 +262,7 @@ impl Component for TextInput {
                 style: viso_ui::BoxStyle::NONE,
             },
             TextRequest {
+                spans: Vec::new(),
                 text: self.value.clone(),
                 font_size: FontSize::Fixed(self.style.font_size),
                 color: self.style.color,
