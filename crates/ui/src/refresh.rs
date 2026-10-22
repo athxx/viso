@@ -231,18 +231,10 @@ const EASE: f32 = 14.0;
 const FAINT: f32 = 0.3;
 
 fn eased(duration: Duration) -> Timing {
-    Timing {
-        duration,
-        delay: Duration::ZERO,
-        easing: Easing::EASE_OUT,
-    }
+    Timing::eased(duration, Easing::EASE_OUT)
 }
 
-const INSTANT: Timing = Timing {
-    duration: Duration::ZERO,
-    delay: Duration::ZERO,
-    easing: Easing::Linear,
-};
+const INSTANT: Timing = Timing::INSTANT;
 
 impl BuildCx<'_> {
     /// Make the column viewport `handle` names refresh when pulled down past

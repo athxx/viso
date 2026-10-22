@@ -47,6 +47,7 @@ mod quat;
 mod rect;
 mod simd;
 mod snap;
+mod spring;
 mod transform;
 mod vec;
 
@@ -63,5 +64,6 @@ pub use mat::{Mat2, Mat3, Mat4};
 pub use quat::Quat;
 pub use rect::{Insets, Point, Rect, Size};
 pub use snap::{Hairline, PixelSnap, snap_bounds, snap_device, snap_position, snap_stroke_center};
+pub use spring::Spring;
 pub use transform::{Affine2, Transform3};
 pub use vec::{Vec2, Vec3, Vec4, vec2, vec3, vec4};

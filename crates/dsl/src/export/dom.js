@@ -96,7 +96,7 @@ const animate = (el, target, spec, id) => {
   const running = (el.$anims ??= {});
   if (running[property]) running[property].cancel();
   const a = el.animate([{ [property]: value }], {
-    duration: ms(f[0]),
+    duration: ms(easeSeconds(f)),
     delay: ms(f[1]),
     easing: easing(f[2]),
     fill: "none",
@@ -359,7 +359,7 @@ const P = {
     const f = v === null ? [] : v.f;
     const instant = reduced.matches && f[3] === 0n;
     const s = (x) => Math.max(Number(x ?? 0), 0) + "s";
-    el.style.setProperty(name, property + " " + (instant ? "0s" : s(f[0])) + " " +
+    el.style.setProperty(name, property + " " + (instant ? "0s" : s(easeSeconds(f))) + " " +
       easing(f[2]) + " " + (instant ? "0s" : s(f[1])));
   },
   cls: (el, v, name) => el.classList.toggle(name, truth(v)),

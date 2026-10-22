@@ -32,6 +32,10 @@ mod imp {
     pub fn powf(x: f32, y: f32) -> f32 {
         x.powf(y)
     }
+    #[inline]
+    pub fn exp(x: f32) -> f32 {
+        x.exp()
+    }
 }
 
 #[cfg(not(feature = "std"))]
@@ -64,6 +68,10 @@ mod imp {
     pub fn powf(x: f32, y: f32) -> f32 {
         libm::powf(x, y)
     }
+    #[inline]
+    pub fn exp(x: f32) -> f32 {
+        libm::expf(x)
+    }
 }
 
-pub(crate) use imp::{acos, powf, round, sin, sin_cos, sqrt, tan};
+pub(crate) use imp::{acos, exp, powf, round, sin, sin_cos, sqrt, tan};

@@ -177,6 +177,7 @@ export component Moved {
                 translate: Offset { x: 4dp, y: 1sp };
                 transition.translate: Transition { duration: 100ms };
                 transition.corner_radius: Transition { duration: 200ms };
+                transition.opacity: Transition { easing: Easing::spring(300.0f32, 10.0f32, 1.0f32) };
             }
             Text {
                 width: 40dp;
@@ -199,6 +200,13 @@ fn a_translate_and_its_transition_export_as_css_translate() {
     );
     assert!(css.contains("translate 0.1s"), "{css}");
     assert!(css.contains("border-radius 0.2s"), "{css}");
+    // A spring moves for as long as it takes to settle.
+    let settle = viso_math::Spring::new(300.0, 10.0, 1.0).settle_time(1e-3);
+    let at = css.find("opacity ").expect(css);
+    let shown = css[at + 8..].split('s').next().unwrap();
+    let seconds: f32 = shown.parse().unwrap();
+    assert!((seconds - settle).abs() < 1e-3, "{seconds} vs {settle}");
+    assert!(css[at..].starts_with(&format!("opacity {shown}s linear(0, ")));
     let script = page.script.as_deref().unwrap();
     assert!(script.contains("P.vtranslate("), "{script}");
 }
@@ -1170,7 +1178,7 @@ fn a_page_eases_as_the_runtime_does() {
         return;
     };
     let program = format!(
-        "{}\nconst out = [];\nfor (let tag = 0; tag < 34; tag++) for (let k = 0; k <= 40; k++) out.push(curveAt(tag, k / 40));\nconsole.log(out.join(' '));\nconsole.log(easing(2n));\nconsole.log(easing({{ t: 34, f: [0.2, 0, 1.4, 1] }}));\n",
+        "{}\nconst out = [];\nfor (let tag = 0; tag < 34; tag++) for (let k = 0; k <= 40; k++) out.push(curveAt(tag, k / 40));\nconsole.log(out.join(' '));\nconsole.log(easing(2n));\nconsole.log(easing({{ t: 34, f: [0.2, 0, 1.4, 1] }}));\nfor (const f of [[300, 10, 1], [157.9, 25.1, 1], [100, 40, 2], [100, 0, 1]]) {{ const e = {{ t: 35, f }}; const [w, z] = springOf(e); const xs = [spring(e)[1]]; for (let i = 0; i <= 20; i++) xs.push(1 - springAt(w, z, i / 40)[0]); console.log(xs.join(' ')); }}\n",
         include_str!("../src/export/easing.js")
     );
     let out = std::process::Command::new(&node)
@@ -1199,4 +1207,32 @@ fn a_page_eases_as_the_runtime_does() {
     }
     assert!(lines.next().unwrap().starts_with("linear(0, "));
     assert_eq!(lines.next(), Some("cubic-bezier(0.2, 0, 1, 1)"));
+    for (k, c, m) in [
+        (300.0, 10.0, 1.0),
+        (157.9, 25.1, 1.0),
+        (100.0, 40.0, 2.0),
+        (100.0, 0.0, 1.0),
+    ] {
+        let spring = viso_math::Spring::new(k, c, m);
+        let js: Vec<f32> = lines
+            .next()
+            .unwrap()
+            .split(' ')
+            .map(|v| v.parse().unwrap())
+            .collect();
+        let settle = spring.settle_time(1e-3);
+        assert!(
+            (js[0] - settle).abs() < settle * 1e-3,
+            "{spring:?}: {} vs {settle}",
+            js[0]
+        );
+        for i in 0..=20 {
+            let rust = spring.step(i as f32 / 40.0);
+            assert!(
+                (js[i + 1] - rust).abs() < 1e-4,
+                "{spring:?} at {i}/40: {} vs {rust}",
+                js[i + 1]
+            );
+        }
+    }
 }

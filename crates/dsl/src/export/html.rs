@@ -2359,11 +2359,12 @@ fn transition(property: &str, spec: &Value) -> Option<(String, bool)> {
     };
     let time = |at: usize| spec.fields.get(at).and_then(Value::as_float).unwrap_or(0.0);
     let tag = |at: usize| spec.fields.get(at).and_then(Value::as_int).unwrap_or(0);
+    let easing = spec.fields.get(2).unwrap_or(&Value::Int(2));
     Some((
         format!(
             "{property} {} {} {}",
-            css::seconds(time(0)),
-            css::easing(spec.fields.get(2).unwrap_or(&Value::Int(2))),
+            css::seconds(css::duration(easing, time(0))),
+            css::easing(easing),
             css::seconds(time(1))
         ),
         tag(3) == 0,

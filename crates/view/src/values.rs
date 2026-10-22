@@ -1195,12 +1195,29 @@ pub(crate) fn timing(spec: &Value, reduced_motion: bool) -> Timing {
     if reduced_motion && tag(3) == 0 {
         return Timing::default();
     }
+    let pace = match field(2) {
+        Some(Value::Agg(spring)) if spring.tag == SPRING => {
+            let at = |i: usize| float(spring.fields.get(i).unwrap_or(&Value::Nil), 0.0);
+            viso_ui::Pace::Spring(viso_ui::Spring::new(at(0), at(1), at(2)))
+        }
+        Some(value) => viso_ui::Pace::Eased {
+            duration: time(0),
+            easing: easing(value),
+        },
+        None => viso_ui::Pace::Eased {
+            duration: time(0),
+            easing: Easing::default(),
+        },
+    };
     Timing {
-        duration: time(0),
         delay: time(1),
-        easing: field(2).map_or_else(Easing::default, easing),
+        pace,
     }
 }
+
+/// The tag of an `Easing`'s `spring`, past its named curves and its
+/// `cubic_bezier`.
+const SPRING: u32 = Easing::NAMED + 1;
 
 /// An `Easing` value: a named curve by its tag, or a `cubic_bezier` by its
 /// control points.

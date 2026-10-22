@@ -37,7 +37,7 @@ use crate::layout::Vec2;
 use crate::node::NodeId;
 use viso_render::Rgba;
 
-pub use viso_math::{CubicBezier, Curve, Easing};
+pub use viso_math::{CubicBezier, Curve, Easing, Spring};
 
 /// A completion callback, run once with the live store when an animation
 /// finishes. Boxed because each callback captures a distinct environment (a
@@ -187,25 +187,68 @@ impl AnimationRegistry {
     }
 }
 
-/// How a look property moves to a new value: it holds for `delay`, then moves
-/// over `duration` shaped by `easing`.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+/// How a move covers its way.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Pace {
+    /// Over `duration`, its progress following `easing`.
+    Eased { duration: Duration, easing: Easing },
+    /// On a spring, released from the value shown at the velocity it had:
+    /// the spring, not a duration, says how long it takes, and a move
+    /// retargeted mid-flight carries its velocity on.
+    Spring(Spring),
+}
+
+/// How a look property moves to a new value: it holds for `delay`, then
+/// moves at its `pace`.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Timing {
-    /// The time the move takes.
-    pub duration: Duration,
     /// The time before the move begins.
     pub delay: Duration,
-    /// The curve shaping the move.
-    pub easing: Easing,
+    /// How the move covers its way.
+    pub pace: Pace,
+}
+
+impl Default for Timing {
+    fn default() -> Self {
+        Timing::INSTANT
+    }
 }
 
 impl Timing {
+    /// A move that ends the moment it starts.
+    pub const INSTANT: Timing = Timing::eased(Duration::ZERO, Easing::Linear);
+
+    /// A move over `duration` following `easing`.
+    pub const fn eased(duration: Duration, easing: Easing) -> Self {
+        Timing {
+            delay: Duration::ZERO,
+            pace: Pace::Eased { duration, easing },
+        }
+    }
+
+    /// A move on `spring`.
+    pub const fn spring(spring: Spring) -> Self {
+        Timing {
+            delay: Duration::ZERO,
+            pace: Pace::Spring(spring),
+        }
+    }
+
+    /// The same move begun `delay` later.
+    pub const fn after(self, delay: Duration) -> Self {
+        Timing { delay, ..self }
+    }
+
     /// Whether a move with this timing ends the moment it starts.
     #[inline]
     pub fn is_instant(&self) -> bool {
-        self.duration.is_zero() && self.delay.is_zero()
+        self.delay.is_zero()
+            && matches!(self.pace, Pace::Eased { duration, .. } if duration.is_zero())
     }
 }
+
+/// The numbers a look value moves by: up to four, the rest zero.
+pub(crate) type Parts = [f32; 4];
 
 /// A value of a node's look a transition moves.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -238,46 +281,71 @@ impl LookValue {
         std::mem::discriminant(self) == std::mem::discriminant(other)
     }
 
-    /// The value `t` of the way from `self` to `to` (of the same property). A
-    /// fill moves in premultiplied linear light, so a fade from transparent
-    /// keeps its hue instead of passing through black. A `t` past either end
-    /// (an easing that overshoots) carries a translate, scale or rotation
-    /// past its target, but holds a color and an opacity in range and an
-    /// extent and a radius at zero or more.
-    fn lerp(self, to: LookValue, t: f32) -> LookValue {
-        let mix = |x: f32, y: f32| x + (y - x) * t;
-        let unit = |x: f32, y: f32| mix(x, y).clamp(0.0, 1.0);
-        let size = |x: f32, y: f32| mix(x, y).max(0.0);
-        let mix_color = |a: Rgba, b: Rgba| {
-            let (mut mixed, b) = (a.premultiply(), b.premultiply());
-            mixed.a = unit(mixed.a, b.a);
-            mixed.r = unit(mixed.r, b.r).min(mixed.a);
-            mixed.g = unit(mixed.g, b.g).min(mixed.a);
-            mixed.b = unit(mixed.b, b.b).min(mixed.a);
-            mixed.unpremultiply()
-        };
-        match (self, to) {
-            (LookValue::Opacity(a), LookValue::Opacity(b)) => LookValue::Opacity(unit(a, b)),
-            (LookValue::Fill(a), LookValue::Fill(b)) => LookValue::Fill(mix_color(a, b)),
-            (LookValue::TextColor(a), LookValue::TextColor(b)) => {
-                LookValue::TextColor(mix_color(a, b))
+    /// The numbers it moves by: a color's premultiplied linear channels, so
+    /// a fade from transparent keeps its hue instead of passing through
+    /// black, an offset's two axes, a radius's `dp` and `pct`, else the one
+    /// number.
+    fn parts(self) -> Parts {
+        match self {
+            LookValue::Fill(c) | LookValue::TextColor(c) => {
+                let p = c.premultiply();
+                [p.r, p.g, p.b, p.a]
             }
-            (LookValue::Radius { dp: a, pct: p }, LookValue::Radius { dp: b, pct: q }) => {
-                LookValue::Radius {
-                    dp: size(a, b),
-                    pct: size(p, q),
-                }
-            }
-            (LookValue::Translate(a), LookValue::Translate(b)) => LookValue::Translate(Vec2 {
-                x: mix(a.x, b.x),
-                y: mix(a.y, b.y),
-            }),
-            (LookValue::Width(a), LookValue::Width(b)) => LookValue::Width(size(a, b)),
-            (LookValue::Height(a), LookValue::Height(b)) => LookValue::Height(size(a, b)),
-            (LookValue::Scale(a), LookValue::Scale(b)) => LookValue::Scale(size(a, b)),
-            (LookValue::Rotation(a), LookValue::Rotation(b)) => LookValue::Rotation(mix(a, b)),
-            _ => to,
+            LookValue::Radius { dp, pct } => [dp, pct, 0.0, 0.0],
+            LookValue::Translate(v) => [v.x, v.y, 0.0, 0.0],
+            LookValue::Opacity(v)
+            | LookValue::Width(v)
+            | LookValue::Height(v)
+            | LookValue::Scale(v)
+            | LookValue::Rotation(v) => [v, 0.0, 0.0, 0.0],
         }
+    }
+
+    /// The value of its property moved to `parts`. Parts carried past where
+    /// a move ends (an easing or a spring that overshoots) move a translate,
+    /// scale or rotation past its target, but hold a color and an opacity in
+    /// range and an extent and a radius at zero or more.
+    fn with_parts(self, p: Parts) -> LookValue {
+        let unit = |x: f32| x.clamp(0.0, 1.0);
+        let size = |x: f32| x.max(0.0);
+        let color = || {
+            let a = unit(p[3]);
+            let c = |x: f32| unit(x).min(a);
+            viso_math::LinearPremul::new(c(p[0]), c(p[1]), c(p[2]), a).unpremultiply()
+        };
+        match self {
+            LookValue::Fill(_) => LookValue::Fill(color()),
+            LookValue::TextColor(_) => LookValue::TextColor(color()),
+            LookValue::Opacity(_) => LookValue::Opacity(unit(p[0])),
+            LookValue::Radius { .. } => LookValue::Radius {
+                dp: size(p[0]),
+                pct: size(p[1]),
+            },
+            LookValue::Translate(_) => LookValue::Translate(Vec2 { x: p[0], y: p[1] }),
+            LookValue::Width(_) => LookValue::Width(size(p[0])),
+            LookValue::Height(_) => LookValue::Height(size(p[0])),
+            LookValue::Scale(_) => LookValue::Scale(size(p[0])),
+            LookValue::Rotation(_) => LookValue::Rotation(p[0]),
+        }
+    }
+
+    /// How near its target each part of a spring's move comes before it
+    /// rests there: a hundredth of a dp, else a thousandth.
+    fn rest(&self) -> f32 {
+        match self {
+            LookValue::Translate(_) | LookValue::Width(_) | LookValue::Height(_) => 0.01,
+            _ => 1e-3,
+        }
+    }
+
+    /// The value `t` of the way from `self` to `to` (of the same property),
+    /// held as [`with_parts`](Self::with_parts) holds.
+    fn lerp(self, to: LookValue, t: f32) -> LookValue {
+        if !self.same_property(&to) {
+            return to;
+        }
+        let (a, b) = (self.parts(), to.parts());
+        to.with_parts(core::array::from_fn(|i| a[i] + (b[i] - a[i]) * t))
     }
 }
 
@@ -324,6 +392,9 @@ pub struct LookTransition {
     pub(crate) to: LookValue,
     elapsed: Duration,
     pub(crate) timing: Timing,
+    /// How fast each part of `from` moved as the move began, per second: what
+    /// a spring carries on with.
+    velocity: Parts,
 }
 
 impl LookTransition {
@@ -334,7 +405,17 @@ impl LookTransition {
             to,
             elapsed: Duration::ZERO,
             timing,
+            velocity: [0.0; 4],
         }
+    }
+
+    /// The same move begun at `velocity`, when it moves on a spring at once:
+    /// a move that waits first, or runs over a duration, begins still.
+    pub(crate) fn carrying(mut self, velocity: Parts) -> Self {
+        if self.timing.delay.is_zero() && matches!(self.timing.pace, Pace::Spring(_)) {
+            self.velocity = velocity;
+        }
+        self
     }
 
     /// Whether it moves the same property of the same node as `value` on
@@ -350,16 +431,69 @@ impl LookTransition {
         self.at()
     }
 
-    /// The value it shows at its elapsed time, and whether it is done.
+    /// The value it shows at its elapsed time, and whether it is done: a
+    /// spring once every part has settled within its rest of the target.
     pub(crate) fn at(&self) -> (LookValue, bool) {
         let Some(moving) = self.elapsed.checked_sub(self.timing.delay) else {
             return (self.from, false);
         };
-        if moving >= self.timing.duration {
-            return (self.to, true);
+        match self.timing.pace {
+            Pace::Eased { duration, easing } => {
+                if moving >= duration {
+                    return (self.to, true);
+                }
+                let t = moving.as_secs_f32() / duration.as_secs_f32();
+                (self.from.lerp(self.to, easing.apply(t)), false)
+            }
+            Pace::Spring(spring) => {
+                if !self.from.same_property(&self.to) {
+                    return (self.to, true);
+                }
+                let (from, to, rest) = (self.from.parts(), self.to.parts(), self.to.rest());
+                let t = moving.as_secs_f32();
+                let mut parts = to;
+                let mut settled = true;
+                for i in 0..4 {
+                    let (x, v) = spring.at(from[i] - to[i], self.velocity[i], t);
+                    parts[i] += x;
+                    settled &= spring.settled(x, v, rest);
+                }
+                if settled {
+                    (self.to, true)
+                } else {
+                    (self.to.with_parts(parts), false)
+                }
+            }
         }
-        let t = moving.as_secs_f32() / self.timing.duration.as_secs_f32();
-        (self.from.lerp(self.to, self.timing.easing.apply(t)), false)
+    }
+
+    /// How fast each part moves at its elapsed time, per second: still while
+    /// it waits and once it is done.
+    pub(crate) fn velocity(&self) -> Parts {
+        let Some(moving) = self.elapsed.checked_sub(self.timing.delay) else {
+            return [0.0; 4];
+        };
+        if !self.from.same_property(&self.to) {
+            return [0.0; 4];
+        }
+        let (from, to) = (self.from.parts(), self.to.parts());
+        match self.timing.pace {
+            Pace::Eased { duration, easing } => {
+                if moving >= duration {
+                    return [0.0; 4];
+                }
+                // The curve's slope over the millisecond about now.
+                let span = duration.as_secs_f32();
+                let h = (1e-3 / span).min(1.0);
+                let t = (moving.as_secs_f32() / span).clamp(h, 1.0);
+                let slope = (easing.apply(t) - easing.apply(t - h)) / (h * span);
+                core::array::from_fn(|i| (to[i] - from[i]) * slope)
+            }
+            Pace::Spring(spring) => {
+                let t = moving.as_secs_f32();
+                core::array::from_fn(|i| spring.at(from[i] - to[i], self.velocity[i], t).1)
+            }
+        }
     }
 }
 
@@ -610,11 +744,7 @@ mod tests {
     }
 
     fn linear(ms: u64) -> Timing {
-        Timing {
-            duration: Duration::from_millis(ms),
-            delay: Duration::ZERO,
-            easing: Easing::Linear,
-        }
+        Timing::eased(Duration::from_millis(ms), Easing::Linear)
     }
 
     const RED: Rgba = Rgba {
@@ -750,10 +880,7 @@ mod tests {
     #[test]
     fn a_delay_holds_the_shown_value() {
         let (mut store, node) = one_leaf();
-        let timing = Timing {
-            delay: Duration::from_millis(40),
-            ..linear(100)
-        };
+        let timing = linear(100).after(Duration::from_millis(40));
         store.transition(node, LookValue::Opacity(0.0), timing);
         store.tick_transitions(Duration::from_millis(40));
         assert_eq!(store.opacity(node), 1.0);
@@ -853,11 +980,7 @@ mod tests {
         store.set_opacity(id, 0.5);
         let ends = Rc::new(Cell::new(None));
         let heard = Rc::clone(&ends);
-        let timing = Timing {
-            duration: Duration::from_millis(100),
-            delay: Duration::ZERO,
-            easing: Easing::Linear,
-        };
+        let timing = linear(100);
         let on_end: AnimationEndHandler = Box::new(move |end, _| heard.set(Some(end.finished)));
         let animation = store
             .animate(id, LookValue::Opacity(1.0), timing, Some(on_end))
@@ -879,5 +1002,116 @@ mod tests {
             None,
             "a size would lay out"
         );
+    }
+
+    /// Ticks `store` a frame at a time until it rests, at most `frames`;
+    /// the translates it showed along the way.
+    fn run(store: &mut NodeStore, node: NodeId, frames: usize) -> Vec<f32> {
+        let mut shown = Vec::new();
+        for _ in 0..frames {
+            if !store.is_transitioning() {
+                break;
+            }
+            store.tick_transitions(Duration::from_millis(4));
+            shown.push(store.translate(node).x);
+        }
+        shown
+    }
+
+    #[test]
+    fn a_spring_rings_past_its_target_then_rests_on_it() {
+        let (mut store, node) = one_leaf();
+        let to = LookValue::Translate(Vec2 { x: 100.0, y: 0.0 });
+        store.transition(node, to, Timing::spring(Spring::BOUNCY));
+        let shown = run(&mut store, node, 2000);
+        assert!(!store.is_transitioning(), "it settles");
+        assert!(shown.iter().any(|&x| x > 101.0), "it rings past its target");
+        assert_eq!(store.translate(node).x, 100.0, "and rests on it exactly");
+        // A smooth one never passes it.
+        store.transition(
+            node,
+            LookValue::Translate(Vec2::ZERO),
+            Timing::spring(Spring::SMOOTH),
+        );
+        let shown = run(&mut store, node, 2000);
+        assert!(shown.iter().all(|&x| x >= 0.0));
+        assert_eq!(store.translate(node).x, 0.0);
+        // An opacity rings within its range.
+        store.transition(
+            node,
+            LookValue::Opacity(0.0),
+            Timing::spring(Spring::BOUNCY),
+        );
+        store.tick_transitions(Duration::from_millis(500));
+        assert!((0.0..=1.0).contains(&store.opacity(node)));
+    }
+
+    #[test]
+    fn a_retargeted_spring_carries_its_velocity_on() {
+        let (mut store, node) = one_leaf();
+        let spring = Timing::spring(Spring::SMOOTH);
+        store.transition(
+            node,
+            LookValue::Translate(Vec2 { x: 100.0, y: 0.0 }),
+            spring,
+        );
+        let shown = run(&mut store, node, 20);
+        let (last, before) = (shown[19], shown[19] - shown[18]);
+        assert!(before > 0.5, "it moves fast toward 100");
+        // Sent back home, it keeps going the way it went, then turns.
+        store.transition(node, LookValue::Translate(Vec2::ZERO), spring);
+        let shown = run(&mut store, node, 2000);
+        let after = shown[0] - last;
+        assert!(
+            (after - before).abs() < before * 0.3,
+            "{before} then {after}"
+        );
+        assert!(shown.iter().copied().fold(0.0, f32::max) > last + 1.0);
+        assert_eq!(store.translate(node).x, 0.0);
+    }
+
+    #[test]
+    fn a_spring_takes_over_an_eased_move_at_its_speed() {
+        let (mut store, node) = one_leaf();
+        let to = LookValue::Translate(Vec2 { x: 100.0, y: 0.0 });
+        // 250 dp a second: a dp a frame.
+        store.transition(node, to, linear(400));
+        store.tick_transitions(Duration::from_millis(100));
+        assert_eq!(store.translate(node).x, 25.0);
+        store.transition(
+            node,
+            LookValue::Translate(Vec2::ZERO),
+            Timing::spring(Spring::SMOOTH),
+        );
+        let shown = run(&mut store, node, 2000);
+        assert!((shown[0] - 25.0 - 1.0).abs() < 0.3, "{}", shown[0]);
+        // An eased move that follows a spring begins still: from where it is.
+        store.transition(node, to, Timing::spring(Spring::BOUNCY));
+        store.tick_transitions(Duration::from_millis(40));
+        let at = store.translate(node).x;
+        store.transition(node, LookValue::Translate(Vec2::ZERO), linear(100));
+        store.tick_transitions(Duration::from_millis(50));
+        assert_eq!(store.translate(node).x, at / 2.0);
+    }
+
+    #[test]
+    fn an_animation_replacing_a_spring_carries_its_velocity_on() {
+        let (mut store, id) = one_leaf();
+        let spring = Timing::spring(Spring::SMOOTH);
+        let to = |x: f32| LookValue::Translate(Vec2 { x, y: 0.0 });
+        store.animate(id, to(100.0), spring, None).unwrap();
+        let shown = run(&mut store, id, 20);
+        let (last, before) = (shown[19], shown[19] - shown[18]);
+        let back = store.animate(id, to(0.0), spring, None).unwrap();
+        store.tick_transitions(Duration::from_millis(4));
+        let after = store.translate(id).x - last;
+        assert!(
+            (after - before).abs() < before * 0.3,
+            "{before} then {after}"
+        );
+        for _ in 0..2000 {
+            store.tick_transitions(Duration::from_millis(4));
+        }
+        assert!(!store.is_animating(back), "it settles");
     }
 }

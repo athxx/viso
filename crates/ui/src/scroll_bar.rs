@@ -394,18 +394,10 @@ fn thickness_of(axis: Axis, v: f32) -> LookValue {
 }
 
 fn eased(duration: Duration) -> Timing {
-    Timing {
-        duration,
-        delay: Duration::ZERO,
-        easing: Easing::EASE_OUT,
-    }
+    Timing::eased(duration, Easing::EASE_OUT)
 }
 
-const INSTANT: Timing = Timing {
-    duration: Duration::ZERO,
-    delay: Duration::ZERO,
-    easing: Easing::Linear,
-};
+const INSTANT: Timing = Timing::INSTANT;
 
 /// A bar's track handler: its pointer samples become [`BarInput`]s.
 fn bar_pointer(ev: &mut crate::context::EventCx<'_>, track: NodeId, axis: Axis) {

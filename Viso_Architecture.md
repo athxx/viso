@@ -3085,6 +3085,8 @@ transform / opacity 动画的 evaluator 在 AdvanceAnimations 阶段直接写入
 
 **缓动**（`viso_math::Easing`，`viso_ui` 在原路径 re-export）：`Linear`、Penner 十族曲线（`Curve::{Quad, Cubic, Quart, Quint, Sine, Expo, Circ, Back, Elastic, Bounce}`）各取 `In`/`Out`/`InOut`，与 CSS `CubicBezier`（Newton 求解、二分兜底）；`EASE_IN`/`EASE_OUT`/`EASE_IN_OUT` 为三次族。曲线是无分配的纯函数，放在叶子 `viso-math`，运行时与编译器（Web 导出）共用同一实现；`Easing::named` 给出 DSL `Easing` 声明变体的顺序。会越界的曲线（`Back`、`Elastic`、越界的贝塞尔）让平移、缩放、旋转越过目标，颜色与不透明度在插值处夹回取值范围，尺寸与圆角不小于 0。Web 导出：静态 CSS 由编译器把曲线自适应采样为误差 ≤0.2% 的 `linear()`，页面脚本带同一组曲线的 JS 实现，首次用到时同样采样并缓存（测试经 `node` 比对两份实现）。
 
+**弹簧**（`viso_math::Spring`，`viso_ui` re-export）：`stiffness`/`damping`/`mass` 的阻尼谐振子，欠阻尼、临界与过阻尼三种情形各用闭式解给出任意时刻的位移与速度（不做逐帧积分，结果与帧率无关）；`with_response(response, ratio)` 按无阻尼周期与阻尼比构造，`SMOOTH`/`SNAPPY`/`BOUNCY` 为半秒周期、阻尼比 1/0.85/0.7 的预设；阻尼比下限为 0.01，因此每个弹簧都会停下。`Timing` 由 `delay` 与 `Pace`（`Eased { duration, easing }` 或 `Spring`）组成。外观转场把值拆成至多四个分量（颜色取预乘线性光的四通道，平移取两轴，圆角取 `dp` 与 `pct`），每个分量从起点偏移与初速度独立求解，夹取规则与缓动插值相同；判定收敛用能量界 `x² + (v/ω₀)² ≤ rest²`：弹簧只会损失能量，满足后位移不会再超过 `rest`，此时写入目标值并移出列表（帧循环随之停下）。转向时由 `LookTransition::velocity` 求出当前各分量速度（弹簧取闭式解的导数，缓动取曲线在当前 1 ms 内的斜率），交给新的弹簧移动：`NodeStore::transition` 转向、`resume_transition` 跨重建续上、`animate` 取代同一属性的运行中动画时都这样交接；有 `delay` 或按时长缓动的新移动从静止开始。Web 导出：编译器与页面脚本（同一闭式解的 JS 实现，经 `node` 与 Rust 比对）把弹簧从静止到收敛至千分之一以内的移动采样为 `linear()`，以收敛时间作为 `transition`/`animate` 的时长。
+
 ---
 
 # Part X — Accessibility / Semantics

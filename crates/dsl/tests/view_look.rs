@@ -355,6 +355,39 @@ fn a_translate_radius_size_and_text_color_move_in_over_their_transitions() {
     }
 }
 
+#[test]
+fn a_spring_transition_rings_past_its_target_and_rests_on_it() {
+    let ms = Duration::from_millis;
+    let source = MOVE.replace(
+        "transition.translate: Transition { duration: 100ms, easing: Easing::linear };",
+        "transition.translate: Transition { easing: Easing::spring(300.0f32, 10.0f32, 1.0f32) };",
+    );
+    for mut rt in [Rt::reload(&source), Rt::package(&source)] {
+        let root = rt.root.expect("mounted");
+        let [text] = rt.children(root)[..] else {
+            panic!("the text");
+        };
+        rt.click(5.0, 5.0);
+        let mut peak = 0.0f32;
+        for _ in 0..500 {
+            rt.store.tick_transitions(ms(4));
+            peak = peak.max(rt.store.translate(text).x);
+        }
+        assert!(peak > 45.0, "it rings past 40: {peak}");
+        assert_eq!(rt.store.translate(text).x, 40.0, "and rests on it");
+        assert!(!rt.store.is_transitioning());
+
+        rt.states.update_env(|env| env.reduced_motion = true);
+        rt.layout();
+        rt.click(50.0, 5.0);
+        assert_eq!(
+            rt.store.translate(text).x,
+            0.0,
+            "reduced motion skips the spring"
+        );
+    }
+}
+
 /// The error codes a view whose text node binds `property: value;` compiles with.
 fn codes(property: &str, value: &str) -> Vec<String> {
     let source =

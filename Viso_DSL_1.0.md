@@ -4773,6 +4773,7 @@ export enum Easing {
     in_elastic; out_elastic; in_out_elastic;
     in_bounce; out_bounce; in_out_bounce;
     cubic_bezier(F32, F32, F32, F32);
+    spring(F32, F32, F32);
 }
 export enum ReducedMotion { instant; keep; }
 ```
@@ -4791,6 +4792,7 @@ Row {
 - Model 值立即变化并始终是事实来源，呈现值在 `delay` 内保持起点，随后在 `duration` 内插值；进行中再次变化时从当前呈现值重新出发（Retarget），目标不变的再次求值不重启；
 - `Color` 值（`background`、`color`）在预乘的线性光空间逐分量插值，从透明淡入时保持色相；
 - `Easing` 把移动的归一化时间映射为进度：`in_*` 从静止加速、`out_*` 减速到静止、`in_out_*` 两端都慢，十个族为 Penner 曲线（`quad`、`cubic`、`quart`、`quint`、`sine`、`expo`、`circ`、`back`、`elastic`、`bounce`），`ease_in`/`ease_out`/`ease_in_out` 即 `cubic` 族；`cubic_bezier(x1, y1, x2, y2)` 为 CSS 三次贝塞尔，`x` 取 `[0, 1]` 内；`back`、`elastic` 与 `y` 越出 `[0, 1]` 的贝塞尔会越过目标再回来：`translate`、`scale`、`rotation` 随之越过，颜色与 `opacity` 停在取值范围内，`width`、`height`、`corner_radius` 不小于 0；
+- `spring(stiffness, damping, mass)` 让值像弹簧上的质点一样移向目标，不使用 `duration`：从当前呈现值、以当时的速度出发（进行中的移动被转向时速度延续，缓动中的移动转为弹簧时同样带上其速度），`damping` 低于临界值 `2√(stiffness·mass)` 时越过目标并来回振荡；每个分量的剩余能量足以移动的距离都小于静止阈值（`translate`/`width`/`height` 为 0.01dp，其余为千分之一）时停在目标上，此后不再越出。非有限或不大于 0 的 `stiffness`、`mass` 取默认弹簧的值，`damping` 至少为临界值的百分之一。Web 导出把弹簧从静止到收敛在千分之一以内的移动采样为 `linear()`，以收敛所需时间作为时长（CSS 过渡不能延续速度）；
 - 变换类 Property 的 Hit Test 使用呈现值；其他 Property 的 Hit Test 与语义使用 Model 值；
 - `transition.*` 自身的变化只影响下一次触发，不标记失效。
 

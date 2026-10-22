@@ -64,8 +64,9 @@ export record ScrollChanged { offset: Offset; viewport: SizeDp; content: SizeDp;
 export record VisibleRange { first: U64; last: U64; count: U64; }
 
 // How a move's progress follows its time: Penner's curves accelerating
-// (`in_*`), decelerating (`out_*`) or both, `ease_*` the cubic ones, and a
-// CSS cubic Bézier through two control points.
+// (`in_*`), decelerating (`out_*`) or both, `ease_*` the cubic ones, a CSS
+// cubic Bézier through two control points, and a spring of stiffness,
+// damping and mass, which takes the time it takes in place of the duration.
 export enum Easing {
     linear; ease_in; ease_out; ease_in_out;
     in_quad; out_quad; in_out_quad;
@@ -79,6 +80,7 @@ export enum Easing {
     in_elastic; out_elastic; in_out_elastic;
     in_bounce; out_bounce; in_out_bounce;
     cubic_bezier(F32, F32, F32, F32);
+    spring(F32, F32, F32);
 }
 export enum ReducedMotion { instant; keep; }
 export record Transition {

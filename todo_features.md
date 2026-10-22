@@ -153,7 +153,7 @@ Rules:
 ## W6 — Animation
 
 - [x] Easing set: all Penner curves (quad … bounce, in/out/in-out) and `cubic_bezier`.
-- [ ] Springs: stiffness/damping/mass, interruption with velocity handoff, settle
+- [x] Springs: stiffness/damping/mass, interruption with velocity handoff, settle
   detection.
 - [ ] Keyframes: multi-stop tracks, repeat count / infinite, reverse, alternate.
 - [ ] Reduced motion: platform setting honored by transitions, springs and scroll glides.

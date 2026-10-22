@@ -77,7 +77,7 @@ pub mod window;
 
 pub use animation::{
     AnimationEnd, AnimationEndHandler, AnimationId, AnimationRegistry, CubicBezier, Curve, Easing,
-    LookTransition, LookValue, Timing, TranslateAnim,
+    LookTransition, LookValue, Pace, Spring, Timing, TranslateAnim,
 };
 // The frame clock's time point (wasm-safe), named by timers and deadlines.
 pub use anchored::{AnchorAlign, AnchorPlacement, Anchoring, Side};

@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 
 use viso_behavior::Value;
 
-use viso_math::{CubicBezier, Easing};
+use viso_math::{CubicBezier, Easing, Spring};
 
 use crate::ir::ui_ir::{LengthIr, TermsIr};
 
@@ -237,18 +237,14 @@ pub(super) fn color(rgba: u32) -> String {
 }
 
 /// An `Easing` value as a CSS timing function: a named curve by its tag, a
-/// `cubic_bezier` by its control points.
+/// `cubic_bezier` by its control points, a `spring` by its move from rest
+/// over the time [`duration`] gives it.
 pub(super) fn easing(value: &Value) -> String {
     match value {
+        Value::Agg(spring) if spring.tag == SPRING => spring_function(spring_of(spring)).0,
         Value::Agg(bezier) if bezier.tag == Easing::NAMED => {
-            let at = |i: usize| {
-                bezier
-                    .fields
-                    .get(i)
-                    .and_then(Value::as_float)
-                    .unwrap_or(0.0)
-            };
-            let b = CubicBezier::new(at(0) as f32, at(1) as f32, at(2) as f32, at(3) as f32);
+            let at = |i: usize| agg_float(bezier, i);
+            let b = CubicBezier::new(at(0), at(1), at(2), at(3));
             timing_function(Easing::CubicBezier(b))
         }
         _ => timing_function(
@@ -259,6 +255,41 @@ pub(super) fn easing(value: &Value) -> String {
                 .unwrap_or_default(),
         ),
     }
+}
+
+/// The tag of an `Easing`'s `spring`, past its named curves and its
+/// `cubic_bezier`.
+const SPRING: u32 = Easing::NAMED + 1;
+
+fn agg_float(agg: &viso_behavior::Aggregate, i: usize) -> f32 {
+    agg.fields.get(i).and_then(Value::as_float).unwrap_or(0.0) as f32
+}
+
+fn spring_of(agg: &viso_behavior::Aggregate) -> Spring {
+    Spring::new(agg_float(agg, 0), agg_float(agg, 1), agg_float(agg, 2))
+}
+
+/// The seconds a move with `easing` takes in place of `duration`: a
+/// spring's, from rest until it settles within a thousandth of its way.
+pub(super) fn duration(easing: &Value, duration: f64) -> f64 {
+    match easing {
+        Value::Agg(spring) if spring.tag == SPRING => spring_function(spring_of(spring)).1,
+        _ => duration,
+    }
+}
+
+/// A move on `spring` from rest as a `linear()` over the time it takes to
+/// settle, and that time in seconds.
+fn spring_function(spring: Spring) -> (String, f64) {
+    let settle = spring.settle_time(1e-3);
+    let at = |u: f32| {
+        if u >= 1.0 {
+            1.0
+        } else {
+            spring.step(u * settle)
+        }
+    };
+    (linear_function(&at), f64::from(settle))
 }
 
 /// The CSS timing function that follows `easing`: `linear`, a
@@ -274,24 +305,27 @@ pub(super) fn timing_function(easing: Easing) -> String {
             number(f64::from(b.x2)),
             number(f64::from(b.y2))
         ),
-        _ => {
-            let at = |t: f32| easing.apply(t);
-            let mut stops = vec![0.0f32];
-            sample(&at, 0.0, 1.0, 0, &mut stops);
-            let mut out = String::from("linear(");
-            for (i, &t) in stops.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(", ");
-                }
-                out.push_str(&number(f64::from(at(t))));
-                if i > 0 && i + 1 < stops.len() {
-                    let _ = write!(out, " {}%", number(f64::from(t) * 100.0));
-                }
-            }
-            out.push(')');
-            out
+        _ => linear_function(&|t: f32| easing.apply(t)),
+    }
+}
+
+/// A `linear()` through stops sampled along `at` over `[0, 1]`, as many as
+/// keep it within 0.2% of it.
+fn linear_function(at: &impl Fn(f32) -> f32) -> String {
+    let mut stops = vec![0.0f32];
+    sample(at, 0.0, 1.0, 0, &mut stops);
+    let mut out = String::from("linear(");
+    for (i, &t) in stops.iter().enumerate() {
+        if i > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(&number(f64::from(at(t))));
+        if i > 0 && i + 1 < stops.len() {
+            let _ = write!(out, " {}%", number(f64::from(t) * 100.0));
         }
     }
+    out.push(')');
+    out
 }
 
 /// Push onto `stops` the times past `a` up to and including `b` at which a
@@ -517,6 +551,32 @@ mod tests {
             timing_function(Easing::CubicBezier(CubicBezier::new(0.2, 0.0, 0.0, 1.0))),
             "cubic-bezier(0.2, 0, 0, 1)"
         );
+    }
+
+    #[test]
+    fn a_spring_is_a_linear_function_over_the_time_it_takes_to_settle() {
+        let (css, seconds) = spring_function(Spring::BOUNCY);
+        assert!((seconds - f64::from(Spring::BOUNCY.settle_time(1e-3))).abs() < 1e-9);
+        assert!(
+            css.starts_with("linear(0, ") && css.ends_with(", 1)"),
+            "{css}"
+        );
+        let peak = css
+            .trim_start_matches("linear(")
+            .trim_end_matches(')')
+            .split(", ")
+            .map(|stop| stop.split(' ').next().unwrap().parse::<f32>().unwrap())
+            .fold(0.0, f32::max);
+        assert!(peak > 1.03, "it rings past its end: {css}");
+        let value = Value::Agg(std::rc::Rc::new(viso_behavior::Aggregate {
+            tag: SPRING,
+            fields: Box::new([Value::Float(300.0), Value::Float(10.0), Value::Float(1.0)]),
+        }));
+        assert_eq!(
+            duration(&value, 0.2),
+            spring_function(Spring::new(300.0, 10.0, 1.0)).1
+        );
+        assert_eq!(duration(&Value::Int(2), 0.2), 0.2);
     }
 
     #[test]

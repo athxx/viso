@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use crate::animation::{
     AnimationEnd, AnimationEndHandler, AnimationId, EndedAnimation, LookTransition, LookValue,
-    NodeAnimation, Timing, TranslateAnim,
+    NodeAnimation, Parts, Timing, TranslateAnim,
 };
 use crate::asset::{Asset, AssetDraw, AssetFit, AssetPayload, AssetTable};
 use crate::binding::{BindingTable, Template};
@@ -3886,18 +3886,23 @@ impl NodeStore {
     }
 
     /// Moves a node's look property to `to` over `timing`, starting from the
-    /// value it shows now: one already moving retargets from where it is. An
-    /// instant timing, or a target the node already shows with nothing in
-    /// flight, writes at once. Each frame's
-    /// [`tick_transitions`](Self::tick_transitions) writes the value it shows,
-    /// marking PAINT. A stale handle is a no-op.
+    /// value it shows now: one already moving retargets from where it is, a
+    /// spring carrying on at the velocity it had. An instant timing, or a
+    /// target the node already shows with nothing in flight, writes at once.
+    /// Each frame's [`tick_transitions`](Self::tick_transitions) writes the
+    /// value it shows, marking PAINT. A stale handle is a no-op.
     pub fn transition(&mut self, id: NodeId, to: LookValue, timing: Timing) {
-        if !self.arena.is_live(id) {
-            return;
+        if self.arena.is_live(id) {
+            self.move_look(id, to, timing, None);
         }
+    }
+
+    /// [`transition`](Self::transition) on a live node, a move from rest
+    /// beginning at `velocity` when one is given.
+    fn move_look(&mut self, id: NodeId, to: LookValue, timing: Timing, velocity: Option<Parts>) {
         let from = self.shown(id, &to);
         let moving = self.transitions.iter().position(|t| t.moves(id, &to));
-        if timing.is_instant() || (moving.is_none() && from == to) {
+        if timing.is_instant() || (moving.is_none() && velocity.is_none() && from == to) {
             self.settle(id, &to);
             self.write_look(id, to);
             return;
@@ -3905,8 +3910,13 @@ impl NodeStore {
         let transition = LookTransition::new(id, from, to, timing);
         match moving {
             Some(at) if self.transitions[at].to == to => {}
-            Some(at) => self.transitions[at] = transition,
-            None => self.transitions.push(transition),
+            Some(at) => {
+                let carried = self.transitions[at].velocity();
+                self.transitions[at] = transition.carrying(carried);
+            }
+            None => self
+                .transitions
+                .push(transition.carrying(velocity.unwrap_or_default())),
         }
     }
 
@@ -3956,7 +3966,7 @@ impl NodeStore {
             moving.node = id;
             self.transitions.push(moving);
         } else {
-            self.transition(id, target, moving.timing);
+            self.move_look(id, target, moving.timing, Some(moving.velocity()));
         }
     }
 
@@ -4010,7 +4020,8 @@ impl NodeStore {
     /// `to` names moves there from the value it presents now over `timing`,
     /// then the property's model value shows again — what the node is told to
     /// show meanwhile is that model value. A newer animation of the same
-    /// property ends one running, unfinished. `on_end` is called with how it
+    /// property ends one running, unfinished, a spring carrying on at the
+    /// velocity it had. `on_end` is called with how it
     /// ended after the layout of the frame it ends in, and the node's
     /// [`NoticeKinds::ANIMATION_END`](crate::NoticeKinds::ANIMATION_END)
     /// watcher hears it. `None` for a stale handle or a property other than
@@ -4036,13 +4047,15 @@ impl NodeStore {
         let animation = AnimationId(self.last_animation);
         let model = self.shown(id, &to);
         let presented = self.presented(id, &to);
+        let mut carried = Parts::default();
         if let Some(at) = self.animations.iter().position(|a| a.motion.moves(id, &to)) {
             let prior = self.animations.swap_remove(at);
+            carried = prior.motion.velocity();
             self.queue_end(prior, false);
         }
         let running = NodeAnimation {
             id: animation,
-            motion: LookTransition::new(id, presented, to, timing),
+            motion: LookTransition::new(id, presented, to, timing).carrying(carried),
             model,
             on_end,
         };
