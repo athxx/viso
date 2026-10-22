@@ -529,6 +529,8 @@ mod tests {
         let entry = TextEntry {
             caret: LogicalRect::new(10.0, 20.0, 1.0, 16.0),
             secure: true,
+            kind: crate::InputKind::Text,
+            multiline: false,
         };
         app.set_text_entry(a, Some(entry));
         app.show_soft_keyboard(a, true);

@@ -38,7 +38,9 @@ use std::time::Duration;
 use super::android_translate as translate;
 use super::utf16::byte_offset;
 use crate::accessibility::AccessRequest;
-use crate::control::{ControlFlow, LogicalRect, PlatformError, TextEntry, WindowConfig, WindowId};
+use crate::control::{
+    ControlFlow, InputKind, LogicalRect, PlatformError, TextEntry, WindowConfig, WindowId,
+};
 use crate::event::{
     AcceptCell, Appearance, ClipboardReply, ClipboardShortcut, ColorScheme, CursorIcon,
     DisplayFeature, DisplayFeatureKind, LogicalInsets, PointerButtons, PointerKind, RawEvent,
@@ -967,6 +969,8 @@ impl PlatformApp for AndroidApp {
         jni::set_text_input(
             caret.map(|r| [r.x, r.y, r.width, r.height].map(|v| (v * d) as f32)),
             entry.is_some_and(|e| e.secure),
+            entry.map_or(InputKind::Text, |e| e.kind),
+            entry.is_some_and(|e| e.multiline),
         );
     }
 

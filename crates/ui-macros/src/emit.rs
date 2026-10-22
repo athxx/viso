@@ -647,6 +647,7 @@ fn control_tokens(control: Control) -> TokenStream {
         entry(control.multiline),
         entry(control.caption),
     );
+    let (input_kind, max_length) = (entry(control.input_kind), entry(control.max_length));
     let semantics = control.semantics;
     let role = match semantics.role {
         Some(role) => {
@@ -742,6 +743,8 @@ fn control_tokens(control: Control) -> TokenStream {
             placeholder: #placeholder,
             secure: #secure,
             multiline: #multiline,
+            input_kind: #input_kind,
+            max_length: #max_length,
             caption: #caption,
             shader: #shader,
             look: ::viso::__private::viso_view::Look {

@@ -80,6 +80,10 @@ pub fn property_dirty_class(name: &str) -> DirtyClass {
         // unchanged, since a disabled subtree still takes its pointer.
         "enabled" => D::STYLE | D::SEMANTICS,
 
+        // What a field takes and the keyboard it asks for draw nothing; the
+        // input method reads them with the field's other facts.
+        "input" | "max_length" => D::SEMANTICS,
+
         // Accessibility-only properties touch the semantics tree alone.
         "role" | "aria_label" | "aria_role" | "accessibility_label" | "description" | "hint" => {
             D::SEMANTICS

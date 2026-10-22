@@ -28,12 +28,13 @@ use objc2_foundation::{
 };
 use objc2_ui_kit::{
     UIEvent, UIEventButtonMask, UIGestureRecognizer, UIGestureRecognizerState,
-    UIHoverGestureRecognizer, UIKeyInput, UIPanGestureRecognizer, UIPress, UIPressesEvent,
-    UIResponder, UIScrollTypeMask, UITextAutocapitalizationType, UITextAutocorrectionType,
-    UITextInput, UITextInputDelegate, UITextInputStringTokenizer, UITextInputTokenizer,
-    UITextInputTraits, UITextPosition, UITextRange, UITextSelectionRect, UITextSmartDashesType,
-    UITextSmartInsertDeleteType, UITextSmartQuotesType, UITextSpellCheckingType, UITouch,
-    UITouchPhase, UITouchType, UITraitCollection, UITraitEnvironment, UIView,
+    UIHoverGestureRecognizer, UIKeyInput, UIKeyboardType, UIPanGestureRecognizer, UIPress,
+    UIPressesEvent, UIResponder, UIReturnKeyType, UIScrollTypeMask, UITextAutocapitalizationType,
+    UITextAutocorrectionType, UITextInput, UITextInputDelegate, UITextInputStringTokenizer,
+    UITextInputTokenizer, UITextInputTraits, UITextPosition, UITextRange, UITextSelectionRect,
+    UITextSmartDashesType, UITextSmartInsertDeleteType, UITextSmartQuotesType,
+    UITextSpellCheckingType, UITouch, UITouchPhase, UITouchType, UITraitCollection,
+    UITraitEnvironment, UIView,
 };
 
 use super::{drive, push, read_pasteboard, report_appearance};
@@ -42,7 +43,7 @@ use crate::backend::ios_translate::{
     REPEAT_DELAY_SECS, REPEAT_INTERVAL_SECS, TouchIds, is_command_key, key_code, keyboard_overlap,
     modifiers, pressure, repeats,
 };
-use crate::control::{LogicalRect, TextEntry, WindowId};
+use crate::control::{InputKind, LogicalRect, TextEntry, WindowId};
 use crate::event::{
     ClipboardReply, ClipboardShortcut, KeyCode, LogicalInsets, Modifiers, PointerButtons,
     PointerId, PointerKind, PointerPhase, RawEvent, RawImePreedit, RawKey, RawPointer, RawScroll,
@@ -68,6 +69,10 @@ pub(super) struct ViewIvars {
     ime_caret: Cell<Option<LogicalRect>>,
     /// The focused field takes a secret.
     secure: Cell<bool>,
+    /// What the focused field holds.
+    kind: Cell<InputKind>,
+    /// The focused field holds lines.
+    multiline: Cell<bool>,
     soft_keyboard: Cell<bool>,
     /// The empty input view that stands in for the soft keyboard while it
     /// is hidden.
@@ -311,6 +316,32 @@ define_class!(
         #[unsafe(method(autocapitalizationType))]
         fn autocapitalization_type(&self) -> UITextAutocapitalizationType {
             UITextAutocapitalizationType::None
+        }
+
+        #[unsafe(method(keyboardType))]
+        fn keyboard_type(&self) -> UIKeyboardType {
+            match self.ivars().kind.get() {
+                InputKind::Text => UIKeyboardType::Default,
+                InputKind::Digits => UIKeyboardType::ASCIICapableNumberPad,
+                // The pads have no minus sign.
+                InputKind::Integer | InputKind::Decimal => UIKeyboardType::NumbersAndPunctuation,
+                InputKind::Phone => UIKeyboardType::PhonePad,
+                InputKind::Email => UIKeyboardType::EmailAddress,
+                InputKind::Url => UIKeyboardType::URL,
+                InputKind::Search => UIKeyboardType::WebSearch,
+            }
+        }
+
+        #[unsafe(method(returnKeyType))]
+        fn return_key_type(&self) -> UIReturnKeyType {
+            let ivars = self.ivars();
+            if ivars.multiline.get() {
+                UIReturnKeyType::Default
+            } else if ivars.kind.get() == InputKind::Search {
+                UIReturnKeyType::Search
+            } else {
+                UIReturnKeyType::Done
+            }
         }
 
         // A secure field's keyboard composes, suggests and records nothing,
@@ -637,6 +668,8 @@ impl VisoView {
             composition: RefCell::new(Composition::default()),
             ime_caret: Cell::new(None),
             secure: Cell::new(false),
+            kind: Cell::new(InputKind::Text),
+            multiline: Cell::new(false),
             soft_keyboard: Cell::new(false),
             no_keyboard: RefCell::new(None),
             input_delegate: RefCell::new(Weak::default()),
@@ -694,12 +727,18 @@ impl VisoView {
     }
 
     /// Record the focused field's caret (`None`: no field has focus, so any
-    /// composition is dropped) and whether it takes a secret, reloading the
-    /// keyboard when that changes.
+    /// composition is dropped), whether it takes a secret and what it holds,
+    /// reloading the keyboard when those change.
     pub(super) fn set_text_entry(&self, entry: Option<TextEntry>) {
+        let ivars = self.ivars();
         let caret = entry.map(|e| e.caret);
         let secure = entry.is_some_and(|e| e.secure);
-        if self.ivars().secure.replace(secure) != secure && self.isFirstResponder() {
+        let kind = entry.map_or(InputKind::Text, |e| e.kind);
+        let multiline = entry.is_some_and(|e| e.multiline);
+        let traits = (ivars.secure.replace(secure) != secure)
+            | (ivars.kind.replace(kind) != kind)
+            | (ivars.multiline.replace(multiline) != multiline);
+        if traits && self.isFirstResponder() {
             self.reloadInputViews();
         }
         let old = self.ivars().ime_caret.replace(caret);

@@ -349,9 +349,10 @@ public class VisoActivity extends Activity implements SurfaceHolder.Callback2 {
         runOnUiThread(() -> view.setSoftKeyboard(show));
     }
 
-    void setTextInput(boolean enabled, boolean secure, float x, float y, float width,
-            float height) {
-        runOnUiThread(() -> view.setTextInput(enabled, secure, x, y, width, height));
+    void setTextInput(boolean enabled, boolean secure, int kind, boolean multiline, float x,
+            float y, float width, float height) {
+        runOnUiThread(
+                () -> view.setTextInput(enabled, secure, kind, multiline, x, y, width, height));
     }
 
     void setPointerIcon(int type) {

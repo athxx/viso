@@ -34,8 +34,8 @@ use viso_ui::shader::BrushProgram;
 use viso_ui::{Alignment2D, BoundSize, LayoutValue, LengthTerms};
 use viso_ui::{
     AssetFit, Border, BuildCx, CheckMark, CheckShape, Easing, FieldLook, FieldSeed, FontSize,
-    LiveRegion, LookValue, NodeId, NodeStore, Rgba, Role, SemanticState, Semantics, Srgb, StateId,
-    StructureCx, TextRequest, Timing, focus_node,
+    InputKind, LiveRegion, LookValue, NodeId, NodeStore, Rgba, Role, SemanticState, Semantics,
+    Srgb, StateId, StructureCx, TextRequest, Timing, focus_node,
 };
 
 use crate::control::{Control, ControlInput, ControlKind, Holds, LayoutSlot, Switched, When};
@@ -208,6 +208,8 @@ pub(crate) fn control_cells(
         control.placeholder,
         control.secure,
         control.multiline,
+        control.input_kind,
+        control.max_length,
         control.caption,
         look.translate,
         look.scale,
@@ -228,9 +230,10 @@ pub(crate) fn control_cells(
 /// `value`, `hidden` and `heading_level`, its `visible`, `focusable`,
 /// `enabled`, `autofocus` and `clip`, and its text's `color`, `soft_wrap`,
 /// `font_weight`, `font_family`, `line_height`, `max_lines`, `overflow` and
-/// `align`, a field's `placeholder`, `secure` and `multiline` and a check's
-/// caption, and its `translate`, `scale`, `rotation` and `transform_origin`.
-const SHOWN: usize = 35;
+/// `align`, a field's `placeholder`, `secure`, `multiline`, `input` and
+/// `max_length` and a check's caption, and its `translate`, `scale`,
+/// `rotation` and `transform_origin`.
+const SHOWN: usize = 37;
 
 /// The input of each value a node shows, in order.
 const SHOWN_INPUTS: [ControlInput; SHOWN] = [
@@ -264,6 +267,8 @@ const SHOWN_INPUTS: [ControlInput; SHOWN] = [
     ControlInput::Placeholder,
     ControlInput::Secure,
     ControlInput::Multiline,
+    ControlInput::InputKind,
+    ControlInput::MaxLength,
     ControlInput::Caption,
     ControlInput::Translate,
     ControlInput::Scale,
@@ -272,11 +277,11 @@ const SHOWN_INPUTS: [ControlInput; SHOWN] = [
 ];
 
 /// Where its `translate` sits among the values a node shows.
-const TRANSLATE: usize = 31;
+const TRANSLATE: usize = 33;
 
 /// Where its `scale`, `rotation` and `transform_origin` sit among the values
 /// a node shows.
-const TURN: usize = 32;
+const TURN: usize = 34;
 
 /// Where its background, opacity, corner radius and border sit among the
 /// values a node shows.
@@ -292,8 +297,8 @@ const NODE: usize = 14;
 /// Where its text's style starts among the values a node shows.
 const TEXT: usize = 19;
 
-/// Where a field's placeholder, masking and lines and a check's caption sit
-/// among the values a node shows.
+/// Where a field's placeholder, masking, lines, kind and length and a
+/// check's caption sit among the values a node shows.
 const FIELD: usize = 27;
 
 /// A node showing a value of the view.
@@ -468,6 +473,8 @@ impl Shown {
             placeholder,
             secure,
             multiline,
+            input_kind,
+            max_length,
             caption,
             translate,
             scale,
@@ -690,6 +697,9 @@ impl Shown {
                         placeholder: placeholder.as_str().unwrap_or_default().to_owned(),
                         secure,
                         multiline: truth(multiline, false),
+                        kind: input_kind_of(input_kind),
+                        max_length: max_length.as_int().and_then(|v| u32::try_from(v).ok()),
+                        filter: None,
                     },
                 };
                 store.seed_text(self.node, seed);
@@ -704,7 +714,7 @@ impl Shown {
                 store.set_check_mark(self.node, Some(CheckMark { shape, checked }));
                 // A check with no caption still shapes an empty one, which
                 // sizes and inks its mark.
-                if first || (given(FIELD + 3) && changed(FIELD + 3)) {
+                if first || (given(FIELD + 5) && changed(FIELD + 5)) {
                     store.set_text_request(self.node, text(caption));
                 }
             }
@@ -910,6 +920,20 @@ fn offer(store: &mut NodeStore, host: &ViewHost, resource: ResourceId) {
                 .offer(resource, ResourceRevision::default(), bytes.clone());
         }
         None => store.assets_mut().want(resource),
+    }
+}
+
+/// An `InputKind` value as the kind it names, `text` for any other.
+fn input_kind_of(value: &Value) -> InputKind {
+    match value.as_int() {
+        Some(1) => InputKind::Digits,
+        Some(2) => InputKind::Integer,
+        Some(3) => InputKind::Decimal,
+        Some(4) => InputKind::Phone,
+        Some(5) => InputKind::Email,
+        Some(6) => InputKind::Url,
+        Some(7) => InputKind::Search,
+        _ => InputKind::Text,
     }
 }
 

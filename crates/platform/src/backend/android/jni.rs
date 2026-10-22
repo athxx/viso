@@ -22,6 +22,7 @@ use jni_sys::{
 
 use super::ndk;
 use super::{Msg, Surface, Touch, send, send_and_wait};
+use crate::control::InputKind;
 
 /// Call a `JNIEnv` function.
 macro_rules! env_call {
@@ -260,13 +261,31 @@ pub(super) fn set_soft_keyboard(show: bool) {
     call_void(|m| m.set_soft_keyboard, &[jvalue { z: show }]);
 }
 
-pub(super) fn set_text_input(caret: Option<[f32; 4]>, secure: bool) {
+pub(super) fn set_text_input(
+    caret: Option<[f32; 4]>,
+    secure: bool,
+    kind: InputKind,
+    multiline: bool,
+) {
     let [x, y, w, h] = caret.unwrap_or_default();
+    // The `VisoView.KIND_*` constants.
+    let kind = match kind {
+        InputKind::Text => 0,
+        InputKind::Digits => 1,
+        InputKind::Integer => 2,
+        InputKind::Decimal => 3,
+        InputKind::Phone => 4,
+        InputKind::Email => 5,
+        InputKind::Url => 6,
+        InputKind::Search => 7,
+    };
     call_void(
         |m| m.set_text_input,
         &[
             jvalue { z: caret.is_some() },
             jvalue { z: secure },
+            jvalue { i: kind },
+            jvalue { z: multiline },
             jvalue { f: x },
             jvalue { f: y },
             jvalue { f: w },
@@ -467,7 +486,7 @@ pub unsafe extern "system" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void
         };
         let methods = Methods {
             set_soft_keyboard: method(c"setSoftKeyboard", c"(Z)V"),
-            set_text_input: method(c"setTextInput", c"(ZZFFFF)V"),
+            set_text_input: method(c"setTextInput", c"(ZZIZFFFF)V"),
             set_pointer_icon: method(c"setPointerIcon", c"(I)V"),
             set_clipboard: method(c"setClipboard", c"(Ljava/lang/String;)V"),
             get_clipboard: method(c"getClipboard", c"()Ljava/lang/String;"),

@@ -41,7 +41,8 @@ pub struct LogicalRect {
 
 /// The focused text field the platform's input method serves: where its
 /// caret is, so candidate windows and the soft keyboard's accessory views sit
-/// next to it, and whether it takes a secret.
+/// next to it, whether it takes a secret, and what it holds, so a soft
+/// keyboard shows the keys it needs.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TextEntry {
     /// The caret, logical points (top-left origin).
@@ -50,6 +51,50 @@ pub struct TextEntry {
     /// candidates, nothing is learned or suggested from what it types, and
     /// where the platform can, other processes cannot read its keys.
     pub secure: bool,
+    /// What the field holds.
+    pub kind: InputKind,
+    /// Whether it holds lines: the soft keyboard's return key breaks a line
+    /// rather than finishing the entry.
+    pub multiline: bool,
+}
+
+/// What a text field holds, which decides the keys a soft keyboard shows
+/// and whether it suggests, corrects and capitalizes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum InputKind {
+    /// Prose: the full keyboard, with suggestions.
+    #[default]
+    Text,
+    /// Digits alone: a code, a count, a quantity.
+    Digits,
+    /// A whole number: digits and a sign.
+    Integer,
+    /// A number with a fraction: digits, a sign and a decimal separator.
+    Decimal,
+    /// A telephone number: the phone pad.
+    Phone,
+    /// An email address: no capitals or corrections, `@` at hand.
+    Email,
+    /// A web address: no capitals or corrections, `/` and `.` at hand.
+    Url,
+    /// A search query: the return key searches.
+    Search,
+}
+
+impl InputKind {
+    /// Whether it holds a number, which no input method composes.
+    pub const fn numeric(self) -> bool {
+        matches!(
+            self,
+            InputKind::Digits | InputKind::Integer | InputKind::Decimal | InputKind::Phone
+        )
+    }
+
+    /// Whether the keyboard should leave what is typed as typed: no
+    /// capitals, corrections or suggestions.
+    pub const fn literal(self) -> bool {
+        !matches!(self, InputKind::Text | InputKind::Search)
+    }
 }
 
 impl LogicalRect {

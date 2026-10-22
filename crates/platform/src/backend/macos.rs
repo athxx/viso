@@ -1695,6 +1695,10 @@ struct ViewIvars {
     ime_caret: Cell<Option<LogicalRect>>,
     /// The focused field takes a secret.
     secure_field: Cell<bool>,
+    /// The focused field takes a number, which no input method composes.
+    number_field: Cell<bool>,
+    /// The input context keeps to Roman keyboards.
+    roman: Cell<bool>,
     /// The window is key, so its focused field takes the keyboard.
     key: Cell<bool>,
     /// Holds secure event input while a secure field of the key window has
@@ -2134,6 +2138,8 @@ impl VisoContentView {
             ime_enabled: Cell::new(true),
             ime_caret: Cell::new(None),
             secure_field: Cell::new(false),
+            number_field: Cell::new(false),
+            roman: Cell::new(false),
             key: Cell::new(false),
             secure_input: SecureInput(Cell::new(false)),
             logical: Cell::new(1.0),
@@ -2267,6 +2273,9 @@ impl VisoContentView {
         ivars.ime_enabled.set(caret.is_some());
         ivars.ime_caret.set(caret);
         ivars.secure_field.set(entry.is_some_and(|e| e.secure));
+        ivars
+            .number_field
+            .set(entry.is_some_and(|e| e.kind.numeric()));
         self.sync_secure_input();
         let Some(ctx) = self.inputContext() else {
             return;
@@ -2292,17 +2301,20 @@ impl VisoContentView {
         self.sync_secure_input();
     }
 
-    /// Holds secure event input, and keeps the input method to Roman
-    /// keyboards (no composition, no candidates) as `NSSecureTextField`
-    /// does, while a secure field of the key window has focus.
+    /// Holds secure event input while a secure field of the key window has
+    /// focus, and keeps the input method to Roman keyboards (no composition,
+    /// no candidates) as `NSSecureTextField` does while it does or a number
+    /// field has focus.
     fn sync_secure_input(&self) {
         let ivars = self.ivars();
         let want = ivars.secure_field.get() && ivars.key.get();
-        if !ivars.secure_input.set(want) {
+        ivars.secure_input.set(want);
+        let roman = want || ivars.number_field.get();
+        if ivars.roman.replace(roman) == roman {
             return;
         }
         if let Some(ctx) = self.inputContext() {
-            let roman = want.then(|| {
+            let roman = roman.then(|| {
                 // SAFETY: an AppKit constant string, initialized before any
                 // code of the app runs and never mutated.
                 NSArray::from_slice(&[unsafe { NSAllRomanInputSourcesLocaleIdentifier }])

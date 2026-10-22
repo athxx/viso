@@ -30,6 +30,7 @@ pub mod frame_client;
 pub mod grid;
 pub mod hit_test;
 pub mod input;
+pub mod input_filter;
 pub mod inspect;
 pub mod interaction;
 pub mod layer;
@@ -113,7 +114,7 @@ pub use text_style::{
     FontFamily, FontSize, FontWeight, TextAlign, TextOverflow, TextSizing, TextStyle, WidthUse,
 };
 pub use transform::{TransformTable, Turn};
-pub use viso_runtime::Instant;
+pub use viso_runtime::{InputKind, Instant};
 // Render primitive data types that already appear in this crate's public API —
 // `Content`'s payload fields (content.rs), `TextRequest::color`, and
 // `BoxStyle::fill` (style.rs) are all typed with them. Re-export the exact set
@@ -124,6 +125,7 @@ pub use viso_runtime::Instant;
 pub use asset::{Asset, AssetBytes, AssetDraw, AssetFit, AssetPayload, AssetState, AssetTable};
 pub use field_input::{FieldEvent, FieldKey, field_input, field_key};
 pub use field_marks::FieldMarks;
+pub use input_filter::InputFilter;
 pub use reactive::{
     Cleanup, ComputeCx, ComputedId, ComputedStore, DepCursor, EffectCx, EffectId, EffectStore,
     ProjectId, SemanticProjector,

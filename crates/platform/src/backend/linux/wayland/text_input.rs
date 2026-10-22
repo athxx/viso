@@ -10,16 +10,50 @@ use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{
 
 use super::State;
 use crate::backend::linux::translate;
-use crate::control::WindowId;
+use crate::control::{InputKind, WindowId};
 use crate::event::{RawEvent, RawImePreedit, RawText};
+
+/// The content type of a field that takes a secret when `secure`, holds
+/// `kind` and holds lines when `multiline`.
+fn content_type(secure: bool, kind: InputKind, multiline: bool) -> (ContentHint, ContentPurpose) {
+    if secure {
+        let purpose = if kind == InputKind::Digits {
+            ContentPurpose::Pin
+        } else {
+            ContentPurpose::Password
+        };
+        return (
+            ContentHint::HiddenText | ContentHint::SensitiveData,
+            purpose,
+        );
+    }
+    let purpose = match kind {
+        InputKind::Text | InputKind::Search => ContentPurpose::Normal,
+        InputKind::Digits => ContentPurpose::Digits,
+        InputKind::Integer | InputKind::Decimal => ContentPurpose::Number,
+        InputKind::Phone => ContentPurpose::Phone,
+        InputKind::Email => ContentPurpose::Email,
+        InputKind::Url => ContentPurpose::Url,
+    };
+    let mut hint = if kind.literal() {
+        ContentHint::Latin
+    } else {
+        ContentHint::None
+    };
+    if multiline {
+        hint |= ContentHint::Multiline;
+    }
+    (hint, purpose)
+}
 
 pub(super) struct TextInput {
     input: ZwpTextInputV3,
     /// The window the compositor routes this input to.
     focus: Option<WindowId>,
     enabled: bool,
-    /// The content type last sent: whether the field takes a secret.
-    secure: bool,
+    /// The content type last sent: whether the field takes a secret, what
+    /// it holds and whether it holds lines.
+    content: Option<(bool, InputKind, bool)>,
     pending: Pending,
     /// A non-empty preedit is on screen, so an empty one must clear it.
     preedit_shown: bool,
@@ -38,7 +72,7 @@ impl TextInput {
             input,
             focus: None,
             enabled: false,
-            secure: false,
+            content: None,
             pending: Pending::default(),
             preedit_shown: false,
         }
@@ -73,18 +107,12 @@ impl TextInput {
                 if !self.enabled {
                     self.input.enable();
                     self.enabled = true;
-                    self.secure = !entry.secure;
+                    self.content = None;
                 }
-                if self.secure != entry.secure {
-                    self.secure = entry.secure;
-                    let (hint, purpose) = if entry.secure {
-                        (
-                            ContentHint::HiddenText | ContentHint::SensitiveData,
-                            ContentPurpose::Password,
-                        )
-                    } else {
-                        (ContentHint::None, ContentPurpose::Normal)
-                    };
+                let content = (entry.secure, entry.kind, entry.multiline);
+                if self.content != Some(content) {
+                    self.content = Some(content);
+                    let (hint, purpose) = content_type(entry.secure, entry.kind, entry.multiline);
                     self.input.set_content_type(hint, purpose);
                 }
                 self.input.set_cursor_rectangle(

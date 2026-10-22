@@ -285,6 +285,8 @@ export const show = {
   num: (v) => (v === null ? undefined : String(v)),
   url,
   fit: (v) => fits[Number(v ?? 0n)] || "contain",
+  mode: (v) => holding(v)[0] ?? undefined,
+  pattern: (v) => holding(v)[1] ?? undefined,
   maskSize: (v) => {
     const fit = fits[Number(v ?? 0n)] || "contain";
     return fit === "fill" ? "100% 100%" : fit;

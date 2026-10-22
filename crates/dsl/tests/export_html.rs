@@ -440,6 +440,34 @@ fn a_multi_line_field_exports_as_a_textarea_and_one_that_turns_multi_line_cannot
     );
 }
 
+const AMOUNTS: &str = r#"
+export component Amounts {
+    state kind = InputKind::digits;
+    view {
+        Column {
+            TextInput { width: 100dp; height: 20dp; input: InputKind::decimal; max_length: 8; }
+            TextInput { width: 100dp; height: 20dp; input: InputKind::email; }
+            TextInput { width: 100dp; height: 20dp; input: kind; }
+        }
+    }
+}
+"#;
+
+#[test]
+fn what_a_field_holds_exports_as_its_keyboard_and_pattern() {
+    let page = export(AMOUNTS, false).unwrap();
+    let index = &page.index;
+    assert!(index.contains(r#"inputmode="decimal""#), "{index}");
+    assert!(index.contains(r#"pattern="-?[0-9]*[.]?[0-9]*""#), "{index}");
+    assert!(index.contains(r#"maxlength="8""#), "{index}");
+    assert!(index.contains(r#"inputmode="email""#), "{index}");
+    let script = page.script.as_deref().unwrap();
+    assert!(
+        script.contains("P.kind("),
+        "a changing kind is kept current"
+    );
+}
+
 const COUNTER: &str = r#"
 export component Counter {
     state count = 0;

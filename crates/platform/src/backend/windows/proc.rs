@@ -41,7 +41,7 @@ use crate::event::{
     clipboard_shortcut,
 };
 use crate::menu::SystemAction;
-use crate::{Instant, TextEntry};
+use crate::{InputKind, Instant, TextEntry};
 
 const WM_MOUSELEAVE: u32 = 0x02A3;
 const SIZE_MINIMIZED: usize = 1;
@@ -772,12 +772,43 @@ fn place_ime(state: &WindowState) {
     }
 }
 
+#[link(name = "msctf", kind = "raw-dylib")]
+unsafe extern "system" {
+    fn SetInputScope(hwnd: HWND, scope: i32) -> windows::core::HRESULT;
+}
+
+/// The input scope of a field that takes a secret when `secure` and holds
+/// `kind`: the touch keyboard's layout for it.
+fn input_scope(secure: bool, kind: InputKind) -> i32 {
+    // The `InputScope` values of `InputScope.h`.
+    match (secure, kind) {
+        (true, InputKind::Digits) => 64,  // IS_NUMERIC_PIN
+        (true, _) => 31,                  // IS_PASSWORD
+        (false, InputKind::Text) => 0,    // IS_DEFAULT
+        (false, InputKind::Url) => 1,     // IS_URL
+        (false, InputKind::Email) => 5,   // IS_EMAIL_SMTPEMAILADDRESS
+        (false, InputKind::Digits) => 28, // IS_DIGITS
+        (false, InputKind::Integer | InputKind::Decimal) => 29, // IS_NUMBER
+        (false, InputKind::Phone) => 32,  // IS_TELEPHONE_FULLTELEPHONENUMBER
+        (false, InputKind::Search) => 50, // IS_SEARCH
+    }
+}
+
 /// `None` detaches the input context so keys reach the window unconverted,
-/// as does a secure field, which composes nothing and offers no candidates;
-/// any other field reattaches it and places its windows at the caret.
+/// as does a secure or number field, which composes nothing and offers no
+/// candidates; any other field reattaches it and places its windows at the
+/// caret. The window's input scope follows what the field holds.
 pub(super) fn set_text_entry(state: &WindowState, entry: Option<TextEntry>) {
-    let caret = entry.filter(|e| !e.secure).map(|e| e.caret);
+    let caret = entry
+        .filter(|e| !e.secure && !e.kind.numeric())
+        .map(|e| e.caret);
     let hwnd = state.hwnd.get();
+    let scope = entry.map_or(0, |e| input_scope(e.secure, e.kind));
+    if state.input_scope.replace(scope) != scope {
+        // SAFETY: `hwnd` is the live window this state belongs to, on its
+        // own thread; the scope is one of the documented values.
+        let _ = unsafe { SetInputScope(hwnd, scope) };
+    }
     state.ime_caret.set(caret);
     match caret {
         None => {

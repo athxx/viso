@@ -61,10 +61,12 @@
 use crate::content::TextRequest;
 use crate::edit_history::{EditKind, History, Splice, Step};
 use crate::field_marks::FieldMarks;
+use crate::input_filter::{InputFilter, admit};
 use crate::layout::Vec2;
 use crate::node::NodeId;
 use crate::text_style::{FontSize, TextOverflow, TextStyle};
 use viso_render::{Rect, Rgba};
+use viso_runtime::InputKind;
 use viso_text::caret::Caret;
 use viso_text::hit_test::HitTester;
 use viso_text::ime::{ImeComposition, Revision};
@@ -91,6 +93,14 @@ pub struct FieldLook {
     /// line, and pasted breaks are kept. A single-line field folds every
     /// break to a space. A secure field holds one line.
     pub multiline: bool,
+    /// What it holds: the keys a soft keyboard shows, and for a number or a
+    /// phone number, what it takes ([`crate::input_filter`]).
+    pub kind: InputKind,
+    /// The most graphemes typing, pasting or composing brings it to; `None`
+    /// for no limit. A value it is given may hold more.
+    pub max_length: Option<u32>,
+    /// Its own rule for what it takes of each piece of text entering it.
+    pub filter: Option<InputFilter>,
 }
 
 /// What a text field's node declares, queued on the store until
@@ -631,8 +641,10 @@ impl Buffer {
         match intent {
             EditIntent::Insert(s) => self.type_text(s),
             EditIntent::Paste(s) => {
-                let s = self.fold(s);
-                self.replace_selection(&s, EditKind::Other);
+                let (start, end) = self.sel.logical_range();
+                if let Some(s) = self.admit(s, start, end) {
+                    self.replace_selection(&s, EditKind::Other);
+                }
             }
             EditIntent::Backspace(reach) => self.erase(false, *reach, placed),
             EditIntent::Delete(reach) => self.erase(true, *reach, placed),
@@ -734,12 +746,28 @@ impl Buffer {
         }
     }
 
+    /// What the field takes of `s` entering it in place of `[start, end)`:
+    /// its breaks folded and the rules of [`crate::input_filter`] applied.
+    /// `None` when it takes nothing of an `s` that holds something.
+    fn admit<'s>(
+        &self,
+        s: &'s str,
+        start: TextOffset,
+        end: TextOffset,
+    ) -> Option<std::borrow::Cow<'s, str>> {
+        let taken = admit(&self.look, &self.text, start.0, end.0, self.fold(s));
+        (s.is_empty() || !taken.is_empty()).then_some(taken)
+    }
+
     /// Type `s` over the selection: a typing run joins one undo step.
     fn type_text(&mut self, s: &str) {
+        let (start, end) = self.sel.logical_range();
+        let Some(s) = self.admit(s, start, end) else {
+            return;
+        };
         if !self.sel.is_caret() {
             self.history.close();
         }
-        let s = self.fold(s);
         self.replace_selection(&s, EditKind::Typing);
     }
 
@@ -1084,8 +1112,8 @@ impl Buffer {
             self.type_text(text);
             return;
         }
-        let text = self.fold(text);
         let (start, end) = self.composition.replacement();
+        let text = self.admit(text, start, end).unwrap_or_default();
         self.splice(start, end, &text, None);
         self.sel = Selection::caret(TextPosition::upstream(TextOffset(start.0 + text.len())));
         self.end_composition();
@@ -2361,6 +2389,34 @@ mod tests {
         let mut b = buf("", 0);
         apply(&mut b, EditIntent::CommitCompose("a\nb".into()));
         assert_eq!(b.text, "a b");
+    }
+
+    #[test]
+    fn a_field_takes_only_what_its_rules_let_in() {
+        let mut b = buf("12", 2);
+        b.look.kind = InputKind::Integer;
+        b.look.max_length = Some(4);
+        b.sel = range(0, 2);
+        apply(&mut b, EditIntent::Paste("abc".into()));
+        assert_eq!(
+            (b.text.as_str(), b.sel),
+            ("12", range(0, 2)),
+            "refused whole"
+        );
+        apply(&mut b, EditIntent::Insert("-3x45".into()));
+        assert_eq!(b.text, "-345");
+        apply(
+            &mut b,
+            EditIntent::Compose {
+                text: "６".into(),
+                caret: TextOffset(3),
+            },
+        );
+        assert_eq!(b.text, "-345６", "a composition is not held back");
+        apply(&mut b, EditIntent::CommitCompose("６".into()));
+        assert_eq!(b.text, "-345", "but its commit is");
+        apply(&mut b, EditIntent::Undo);
+        assert_eq!(b.text, "12");
     }
 
     #[test]

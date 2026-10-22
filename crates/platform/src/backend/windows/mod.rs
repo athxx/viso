@@ -157,6 +157,8 @@ struct WindowState {
     /// The caret rect the IME places its windows at; `None` disables the IME.
     ime_caret: Cell<Option<LogicalRect>>,
     ime_enabled: Cell<bool>,
+    /// The input scope last set, which picks the touch keyboard's layout.
+    input_scope: Cell<i32>,
     /// The composition currently shown as preedit is non-empty.
     preedit_shown: Cell<bool>,
     fullscreen: RefCell<Option<Restore>>,
@@ -182,6 +184,7 @@ impl WindowState {
             surrogates: RefCell::new(translate::Utf16Assembler::default()),
             ime_caret: Cell::new(None),
             ime_enabled: Cell::new(true),
+            input_scope: Cell::new(0),
             preedit_shown: Cell::new(false),
             fullscreen: RefCell::new(None),
         }

@@ -30,6 +30,7 @@ export component Controls {
     state tab: U32 = 0;
     state name = "";
     state notes = "";
+    state amount = "";
     state changes = 0;
     state seen: F32 = 0.0;
     state submits = 0;
@@ -88,6 +89,13 @@ export component Controls {
                 multiline: true;
                 bind value <=> notes;
                 on submitted { submits += 10; }
+            }
+            TextInput {
+                width: 200dp;
+                height: 20dp;
+                input: InputKind::integer;
+                max_length: 4;
+                bind value <=> amount;
             }
         }
     }
@@ -380,6 +388,19 @@ fn a_text_field_writes_its_edited_text_back_and_submits() {
         assert_eq!(rt.state("name"), Some(Value::Str(Rc::new("你".into()))));
         rt.key(Key::Enter);
         assert_eq!(rt.int("submits"), 1);
+        assert!(!rt.faulted());
+    }
+}
+
+#[test]
+fn a_number_field_takes_a_number_within_its_length() {
+    for mut rt in targets() {
+        rt.click(10.0, 130.0);
+        rt.ime(ImeEvent::Commit { text: "x-1".into() });
+        rt.ime(ImeEvent::Paste {
+            text: "2a345".into(),
+        });
+        assert_eq!(rt.state("amount"), Some(Value::Str(Rc::new("-123".into()))));
         assert!(!rt.faulted());
     }
 }

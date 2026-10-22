@@ -26,6 +26,19 @@ final class VisoView extends SurfaceView {
     private boolean textInput;
     /** The focused field takes a secret. */
     private boolean secure;
+    /** What the focused field holds, one of the {@code KIND_} constants. */
+    private int kind;
+    /** The focused field holds lines. */
+    private boolean multiline;
+
+    static final int KIND_TEXT = 0;
+    static final int KIND_DIGITS = 1;
+    static final int KIND_INTEGER = 2;
+    static final int KIND_DECIMAL = 3;
+    static final int KIND_PHONE = 4;
+    static final int KIND_EMAIL = 5;
+    static final int KIND_URL = 6;
+    static final int KIND_SEARCH = 7;
     private float caretX, caretY, caretWidth, caretHeight;
     private boolean cursorUpdates;
     private int deadKey;
@@ -173,12 +186,17 @@ final class VisoView extends SurfaceView {
         if (!textInput) {
             return null;
         }
-        // A secure field's keyboard composes, suggests and learns nothing.
-        info.inputType = secure
-                ? EditorInfo.TYPE_CLASS_TEXT | EditorInfo.TYPE_TEXT_VARIATION_PASSWORD
-                : EditorInfo.TYPE_CLASS_TEXT | EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE;
+        info.inputType = inputType();
+        // A single-line field's return key finishes the entry; the action
+        // reaches the app as Enter.
+        int action = multiline ? EditorInfo.IME_ACTION_NONE
+                : kind == KIND_SEARCH ? EditorInfo.IME_ACTION_SEARCH
+                : EditorInfo.IME_ACTION_DONE;
         info.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN | EditorInfo.IME_FLAG_NO_EXTRACT_UI
-                | EditorInfo.IME_ACTION_NONE;
+                | action;
+        if (multiline) {
+            info.imeOptions |= EditorInfo.IME_FLAG_NO_ENTER_ACTION;
+        }
         if (secure) {
             info.imeOptions |= EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING;
         }
@@ -188,15 +206,47 @@ final class VisoView extends SurfaceView {
         return connection;
     }
 
-    void setTextInput(boolean enabled, boolean secret, float x, float y, float width,
-            float height) {
+    /** The keyboard the focused field asks for. */
+    private int inputType() {
+        // A secure field's keyboard composes, suggests and learns nothing.
+        if (secure) {
+            return kind == KIND_DIGITS
+                    ? EditorInfo.TYPE_CLASS_NUMBER | EditorInfo.TYPE_NUMBER_VARIATION_PASSWORD
+                    : EditorInfo.TYPE_CLASS_TEXT | EditorInfo.TYPE_TEXT_VARIATION_PASSWORD;
+        }
+        switch (kind) {
+            case KIND_DIGITS:
+                return EditorInfo.TYPE_CLASS_NUMBER;
+            case KIND_INTEGER:
+                return EditorInfo.TYPE_CLASS_NUMBER | EditorInfo.TYPE_NUMBER_FLAG_SIGNED;
+            case KIND_DECIMAL:
+                return EditorInfo.TYPE_CLASS_NUMBER | EditorInfo.TYPE_NUMBER_FLAG_SIGNED
+                        | EditorInfo.TYPE_NUMBER_FLAG_DECIMAL;
+            case KIND_PHONE:
+                return EditorInfo.TYPE_CLASS_PHONE;
+            case KIND_EMAIL:
+                return EditorInfo.TYPE_CLASS_TEXT
+                        | EditorInfo.TYPE_TEXT_VARIATION_EMAIL_ADDRESS;
+            case KIND_URL:
+                return EditorInfo.TYPE_CLASS_TEXT | EditorInfo.TYPE_TEXT_VARIATION_URI;
+            default:
+                return multiline
+                        ? EditorInfo.TYPE_CLASS_TEXT | EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE
+                        : EditorInfo.TYPE_CLASS_TEXT;
+        }
+    }
+
+    void setTextInput(boolean enabled, boolean secret, int kindOf, boolean lines, float x,
+            float y, float width, float height) {
         caretX = x;
         caretY = y;
         caretWidth = width;
         caretHeight = height;
-        if (enabled != textInput || secret != secure) {
+        if (enabled != textInput || secret != secure || kindOf != kind || lines != multiline) {
             textInput = enabled;
             secure = secret;
+            kind = kindOf;
+            multiline = lines;
             if (!enabled && connection != null) {
                 connection.cancelComposition();
             }

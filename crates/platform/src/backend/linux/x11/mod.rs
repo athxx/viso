@@ -177,9 +177,11 @@ impl PlatformApp for X11App {
     }
 
     fn set_text_entry(&mut self, window: WindowId, entry: Option<TextEntry>) {
-        // A secure field's keys bypass the input method: it composes
-        // nothing and offers no candidates.
-        let caret = entry.filter(|e| !e.secure).map(|e| e.caret);
+        // A secure or number field's keys bypass the input method: it
+        // composes nothing and offers no candidates.
+        let caret = entry
+            .filter(|e| !e.secure && !e.kind.numeric())
+            .map(|e| e.caret);
         self.with_window(window, |x11, i| {
             let win = &mut x11.windows[i];
             win.ime_enabled = caret.is_some();

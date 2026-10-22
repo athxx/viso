@@ -663,6 +663,11 @@ impl Jsx<'_> {
                         Prop::Secure => attrs.push(format!(
                             "type={{show.truth({v}) ? \"password\" : \"text\"}}"
                         )),
+                        Prop::InputKind => {
+                            attrs.push(format!("inputmode={{show.mode({v})}}"));
+                            attrs.push(format!("pattern={{show.pattern({v})}}"));
+                        }
+                        Prop::MaxLength => attrs.push(format!("maxlength={{show.num({v})}}")),
                         Prop::Selected { radio } => {
                             refs.push(format!("st.effect(() => show.select(el, {v}, {radio}));"));
                         }

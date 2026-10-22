@@ -169,6 +169,7 @@ export enum FontFamily { system_ui; serif; monospace; named(String); }
 export enum TextOverflow { clip; ellipsis; }
 export enum TextAlign { start; center; end; }
 export enum LiveRegion { off; polite; assertive; }
+export enum InputKind { text; digits; integer; decimal; phone; email; url; search; }
 export enum Role {
     group; button; check_box; slider; radio; label; image; text_field; tab; tab_list;
     navigation; dialog; status; region; tree; tree_item; heading; list; list_item;

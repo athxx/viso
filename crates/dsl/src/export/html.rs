@@ -123,6 +123,11 @@ pub(super) enum Prop {
     Placeholder,
     /// Whether a text field is a password one.
     Secure,
+    /// What a text field holds: its `inputmode` and, for a number, the
+    /// `pattern` it holds to.
+    InputKind,
+    /// A text field's `maxlength`.
+    MaxLength,
     Selected {
         radio: bool,
     },
@@ -984,6 +989,25 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 {
                     el.attr("type", "password");
                 }
+                if let Some(fixed) = self.bind(
+                    wires,
+                    control.input_kind,
+                    Prop::InputKind,
+                    "what it holds",
+                    at,
+                ) && let Some((mode, pattern)) = input_kind(fixed.int().unwrap_or(0))
+                {
+                    el.attr("inputmode", mode);
+                    if let Some(pattern) = pattern {
+                        el.attr("pattern", pattern);
+                    }
+                }
+                if let Some(fixed) =
+                    self.bind(wires, control.max_length, Prop::MaxLength, "its length", at)
+                    && let Some(max) = fixed.int()
+                {
+                    el.attr("maxlength", &max.to_string());
+                }
             }
             ControlKind::Check | ControlKind::Switch => {
                 if let Some(fixed) = self.bind(
@@ -1765,6 +1789,21 @@ impl Fixed {
             _ => None,
         }
     }
+}
+
+/// The `inputmode` and `pattern` of the `InputKind` tagged `tag`; `None`
+/// for prose, which needs neither.
+fn input_kind(tag: i64) -> Option<(&'static str, Option<&'static str>)> {
+    Some(match tag {
+        1 => ("numeric", Some("[0-9]*")),
+        2 => ("numeric", Some("-?[0-9]*")),
+        3 => ("decimal", Some("-?[0-9]*[.]?[0-9]*")),
+        4 => ("tel", None),
+        5 => ("email", None),
+        6 => ("url", None),
+        7 => ("search", None),
+        _ => return None,
+    })
 }
 
 /// A value's text where the page shows it as text.

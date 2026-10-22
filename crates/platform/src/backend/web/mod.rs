@@ -335,6 +335,10 @@ struct Page {
     /// The viewport segments' hinges and folds over the canvas.
     features: RefCell<Vec<DisplayFeature>>,
     soft_keyboard: Cell<bool>,
+    /// The `inputmode` the focused field's keyboard takes while it shows.
+    keys: Cell<&'static str>,
+    /// The input element's `enterkeyhint`.
+    enter: Cell<&'static str>,
     cursor: Cell<CursorIcon>,
     listeners: RefCell<Vec<Listener>>,
     observer: RefCell<Option<Observer>>,
@@ -867,6 +871,8 @@ impl PlatformApp for WebApp {
             insets: Cell::new(LogicalInsets::default()),
             features: RefCell::new(Vec::new()),
             soft_keyboard: Cell::new(false),
+            keys: Cell::new("text"),
+            enter: Cell::new(""),
             cursor: Cell::new(CursorIcon::Default),
             listeners: RefCell::new(Vec::new()),
             observer: RefCell::new(None),

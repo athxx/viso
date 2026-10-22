@@ -90,7 +90,7 @@ Rules:
   inactive window.
 - [x] E4 Double-click word select, triple-click paragraph select, drag-extend by word
   or paragraph (click counting in the pointer router, `EventCx::clicks`).
-- [ ] E5 Input formatters: max length, integer/decimal filter, custom filter, widget
+- [x] E5 Input formatters: max length, integer/decimal filter, custom filter, widget
   `on_submit`; DSL props.
 - [ ] E6 `NumberField` / scrub value input (drag to change, step, min/max, wheel, arrow
   keys, typed entry), widget and DSL.

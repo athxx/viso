@@ -1835,9 +1835,16 @@ impl WindowState {
                 }
                 _ => None,
             };
+            let look = self
+                .text_edits
+                .get(id)
+                .map(|b| (b.look.secure, b.look.kind, b.holds_lines()));
+            let (secure, kind, multiline) = look.unwrap_or_default();
             TextEntry {
                 caret: caret_area(r, caret),
-                secure: self.text_edits.get(id).is_some_and(|b| b.look.secure),
+                secure,
+                kind,
+                multiline,
             }
         });
         if self.text_entry == Some(entry) {
@@ -3537,8 +3544,8 @@ pub mod prelude {
     // layout styles, the semantics facts, and the state cell handles belong in
     // the default set (commonly used, stable, unambiguous).
     pub use viso_ui::{
-        AdaptiveColumns, BuildCx, FlexStyle, GridPlacement, GridStyle, LeafStyle, Role, Semantics,
-        StateId, StateValue, TextRequest, TrackMax, TrackSizing, VirtualListStyle,
+        AdaptiveColumns, BuildCx, FlexStyle, GridPlacement, GridStyle, InputKind, LeafStyle, Role,
+        Semantics, StateId, StateValue, TextRequest, TrackMax, TrackSizing, VirtualListStyle,
     };
     // Tier 1 widgets: the base layout container, the static text control, the
     // texture-backed image control, and the vector icon control — plus the Tier 2

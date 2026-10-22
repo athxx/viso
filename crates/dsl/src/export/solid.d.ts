@@ -115,6 +115,8 @@ export declare const show: {
   num(v: Value): string | undefined;
   url(v: Value): string;
   fit(v: Value): string;
+  mode(v: Value): string | undefined;
+  pattern(v: Value): string | undefined;
   maskSize(v: Value): string;
   mask(href: string): string;
   opacity(v: Value): string;

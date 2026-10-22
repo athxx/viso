@@ -54,8 +54,8 @@ pub use accessibility::{
     SemanticsLive, SemanticsRect, SemanticsRole, SemanticsState,
 };
 pub use control::{
-    ControlFlow, DEFAULT_FRAME_BUDGET, LogicalRect, PlatformCaps, PlatformError, TextEntry,
-    WindowChrome, WindowConfig, WindowId,
+    ControlFlow, DEFAULT_FRAME_BUDGET, InputKind, LogicalRect, PlatformCaps, PlatformError,
+    TextEntry, WindowChrome, WindowConfig, WindowId,
 };
 pub use event::{
     AcceptCell, Appearance, ClipboardReply, ClipboardShortcut, ColorScheme, CursorIcon,

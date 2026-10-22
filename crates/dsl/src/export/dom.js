@@ -172,6 +172,19 @@ const tab = (el) => {
   el.tabIndex = off(el) ? -1 : el.$tab;
 };
 const fits = ["contain", "cover", "fill"];
+// What a text field holds, by tag: its `inputmode` and the `pattern` a
+// number holds to.
+const holds = [
+  [null, null],
+  ["numeric", "[0-9]*"],
+  ["numeric", "-?[0-9]*"],
+  ["decimal", "-?[0-9]*[.]?[0-9]*"],
+  ["tel", null],
+  ["email", null],
+  ["url", null],
+  ["search", null],
+];
+const holding = (v) => holds[Number(v ?? 0n)] || holds[0];
 const easings = ["linear", "ease-in", "ease-out", "ease-in-out"];
 const reduced = matchMedia("(prefers-reduced-motion: reduce)");
 const items = (el) => Array.from(el.children).filter((c) => c.tagName !== "TEMPLATE");
@@ -230,6 +243,12 @@ const P = {
   input: (el, v) => { const s = text(v); if (el.value !== s) el.value = s; },
   placeholder: (el, v) => attr(el, "placeholder", v),
   secure: (el, v) => { el.type = truth(v) ? "password" : "text"; },
+  kind(el, v) {
+    const [mode, pattern] = holding(v);
+    attr(el, "inputmode", mode);
+    attr(el, "pattern", pattern);
+  },
+  maxlength: (el, v) => attr(el, "maxlength", v),
   selected: (el, v, radio) => select(el, v === null ? 0n : v, radio),
   source(el, v, mask) {
     const u = url(v);

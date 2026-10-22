@@ -21,7 +21,7 @@ use crate::backend::web_translate::{
     buttons, key_code, modifiers, page_claims, pointer_id, pointer_kind, pointer_phase,
     track_buttons, wheel_delta,
 };
-use crate::control::TextEntry;
+use crate::control::{InputKind, TextEntry};
 use crate::event::{
     ClipboardReply, ClipboardShortcut, KeyCode, Modifiers, PointerButtons, PointerKind,
     PointerPhase, RawEvent, RawImePreedit, RawKey, RawPointer, RawScroll, RawText,
@@ -356,7 +356,8 @@ fn on_paste(_page: &Page, e: &Event) {
 
 /// Place the input element over the caret, so the IME's candidate window
 /// opens beside it, a password input for a secure field, which the browser
-/// and its keyboards neither compose, suggest nor learn from; `None` ends text
+/// and its keyboards neither compose, suggest nor learn from, and the soft
+/// keyboard and return key for what the field holds; `None` ends text
 /// input, cancelling any composition.
 pub(super) fn set_text_entry(page: &Page, entry: Option<TextEntry>) {
     let kind = if entry.is_some_and(|e| e.secure) {
@@ -364,13 +365,39 @@ pub(super) fn set_text_entry(page: &Page, entry: Option<TextEntry>) {
     } else {
         "text"
     };
-    if page.input.type_() != kind {
+    let field = entry.map_or(InputKind::Text, |e| e.kind);
+    let keys = match field {
+        InputKind::Text => "text",
+        InputKind::Digits | InputKind::Integer => "numeric",
+        InputKind::Decimal => "decimal",
+        InputKind::Phone => "tel",
+        InputKind::Email => "email",
+        InputKind::Url => "url",
+        InputKind::Search => "search",
+    };
+    let enter = if entry.is_some_and(|e| e.multiline) {
+        "enter"
+    } else if field == InputKind::Search {
+        "search"
+    } else {
+        "done"
+    };
+    let mut retake = page.input.type_() != kind;
+    if retake {
         page.input.set_type(kind);
-        // Refocusing makes the browser and its keyboard take the new type.
-        if entry.is_some() {
-            let _ = page.input.blur();
-            page.focus_input();
-        }
+    }
+    if page.keys.replace(keys) != keys && page.soft_keyboard.get() {
+        let _ = page.input.set_attribute("inputmode", keys);
+        retake = true;
+    }
+    if page.enter.replace(enter) != enter {
+        let _ = page.input.set_attribute("enterkeyhint", enter);
+        retake = true;
+    }
+    // Refocusing makes the browser and its keyboard take the new type.
+    if retake && entry.is_some() {
+        let _ = page.input.blur();
+        page.focus_input();
     }
     match entry.map(|e| e.caret) {
         Some(r) => {
@@ -398,7 +425,7 @@ pub(super) fn show_soft_keyboard(page: &Page, show: bool) {
     }
     let _ = page
         .input
-        .set_attribute("inputmode", if show { "text" } else { "none" });
+        .set_attribute("inputmode", if show { page.keys.get() } else { "none" });
     let _ = page.input.blur();
     page.focus_input();
 }

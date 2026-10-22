@@ -27,6 +27,14 @@
 //! draws a bullet per grapheme, gives nothing to copy or cut, keeps no undo
 //! history, and is a [`Role::SecureField`].
 //!
+//! What it holds ([`input`](TextInput::input)) picks the soft keyboard and,
+//! for a number or a phone number, what it takes; a
+//! [`max_length`](TextInput::max_length) and a [`filter`](TextInput::filter)
+//! hold back the rest of what is typed, pasted or composed into it
+//! ([`viso_ui::input_filter`]). Enter in a single-line field, or the
+//! accelerator with Enter in a multi-line one, fires
+//! [`on_submit`](TextInput::on_submit).
+//!
 //! ```
 //! use viso_widgets::text_input;
 //! use viso_ui::{SemanticProjector, BuildCx, BindingTable, Component, NodeStore, StateStore, TextEdits, VirtualLists};
@@ -51,8 +59,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use viso_ui::{
-    BuildCx, Component, EventCx, FieldLook, FontSize, LeafStyle, Length, Rgba, Role, Semantics,
-    Size, TextRequest, field_input,
+    BuildCx, Component, EventCx, FieldEvent, FieldLook, FontSize, InputFilter, InputKind,
+    LeafStyle, Length, Rgba, Role, Semantics, Size, TextRequest, field_input,
 };
 
 /// A shared, mutable change callback carrying the field's new text, fired from
@@ -60,6 +68,10 @@ use viso_ui::{
 /// ([`EventCx::text_change`]). Shared through an `Rc` so the builder can set it
 /// after construction and the built handler still sees it.
 type SharedChange = Rc<RefCell<Option<Box<dyn FnMut(&mut EventCx<'_>, &str)>>>>;
+
+/// A shared, mutable submit callback, fired from the field's key handler when
+/// Enter submits it; shared like [`SharedChange`].
+type SharedSubmit = Rc<RefCell<Option<Box<dyn FnMut(&mut EventCx<'_>)>>>>;
 
 /// The text color: near-white for contrast against a dark surface.
 const TEXT: Rgba = Rgba {
@@ -127,6 +139,9 @@ pub struct TextInput {
     /// The shared change callback (see [`SharedChange`]). `None` until
     /// [`TextInput::on_change`] is called.
     on_change: SharedChange,
+    /// The shared submit callback. `None` until [`TextInput::on_submit`] is
+    /// called.
+    on_submit: SharedSubmit,
 }
 
 /// Construct a [`TextInput`] with the given accessible label, empty initial text,
@@ -139,6 +154,7 @@ pub fn text_input(label: impl Into<String>) -> TextInput {
         look: FieldLook::default(),
         style: TextInputStyle::default(),
         on_change: Rc::new(RefCell::new(None)),
+        on_submit: Rc::new(RefCell::new(None)),
     }
 }
 
@@ -147,6 +163,14 @@ impl TextInput {
     /// previously set handler.
     pub fn on_change(self, handler: impl FnMut(&mut EventCx<'_>, &str) + 'static) -> Self {
         *self.on_change.borrow_mut() = Some(Box::new(handler));
+        self
+    }
+
+    /// Set the submit callback, fired when Enter submits the field (the
+    /// accelerator with Enter in a multi-line one). Replaces any previously
+    /// set handler.
+    pub fn on_submit(self, handler: impl FnMut(&mut EventCx<'_>) + 'static) -> Self {
+        *self.on_submit.borrow_mut() = Some(Box::new(handler));
         self
     }
 
@@ -174,6 +198,28 @@ impl TextInput {
     /// accessible [`Role::SecureField`] that never reads its text out.
     pub fn secure(mut self, secure: bool) -> Self {
         self.look.secure = secure;
+        self
+    }
+
+    /// Say what the field holds (defaults to [`InputKind::Text`]): the soft
+    /// keyboard it shows, and for a number or a phone number, what it takes.
+    pub fn input(mut self, kind: InputKind) -> Self {
+        self.look.kind = kind;
+        self
+    }
+
+    /// Hold typing, pasting and composing to at most `max` graphemes (no
+    /// limit by default). A value it is given may hold more.
+    pub fn max_length(mut self, max: u32) -> Self {
+        self.look.max_length = Some(max);
+        self
+    }
+
+    /// Map each piece of text typed, pasted or composed into the field to
+    /// what it keeps, after the rule of what it holds; a piece mapped to
+    /// nothing is refused.
+    pub fn filter(mut self, filter: impl Fn(&str) -> String + 'static) -> Self {
+        self.look.filter = Some(InputFilter::new(filter));
         self
     }
 
@@ -238,6 +284,7 @@ impl Component for TextInput {
             field_input(ev, multiline);
         });
         let on_change = Rc::clone(&self.on_change);
+        let on_submit = Rc::clone(&self.on_submit);
         cx.on_key(root, move |ev| {
             if let Some(text) = ev.text_change() {
                 if let Some(handler) = on_change.borrow_mut().as_mut() {
@@ -245,7 +292,11 @@ impl Component for TextInput {
                 }
                 return;
             }
-            field_input(ev, multiline);
+            if field_input(ev, multiline) == Some(FieldEvent::Submitted)
+                && let Some(handler) = on_submit.borrow_mut().as_mut()
+            {
+                handler(ev);
+            }
         });
 
         // A text field's accessible role, with the given label as its accessible
@@ -391,6 +442,23 @@ mod tests {
                 ..Modifiers::default()
             },
         }
+    }
+
+    #[test]
+    fn enter_fires_on_submit() {
+        let submitted = Rc::new(std::cell::Cell::new(0));
+        let seen = Rc::clone(&submitted);
+        let mut rx = Reactive::new();
+        let root = rx.build(
+            text_input("Amount")
+                .input(InputKind::Decimal)
+                .max_length(8)
+                .on_submit(move |_| seen.set(seen.get() + 1)),
+        );
+        assert!(rx.key(root, key_ev(Key::Enter, true, false)).is_empty());
+        assert_eq!(submitted.get(), 1);
+        rx.key(root, key_ev(Key::Enter, false, false));
+        assert_eq!(submitted.get(), 1, "a release submits nothing");
     }
 
     /// A text input builds a focusable text-field node: it has a pointer handler

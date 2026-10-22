@@ -198,6 +198,8 @@ impl ControlKind {
             (ControlKind::TextInput, "placeholder") => ControlInput::Placeholder,
             (ControlKind::TextInput, "secure") => ControlInput::Secure,
             (ControlKind::TextInput, "multiline") => ControlInput::Multiline,
+            (ControlKind::TextInput, "input") => ControlInput::InputKind,
+            (ControlKind::TextInput, "max_length") => ControlInput::MaxLength,
             (ControlKind::Check | ControlKind::Switch, "label") => ControlInput::Caption,
             (ControlKind::Slider, "min") => ControlInput::Min,
             (ControlKind::Slider, "max") => ControlInput::Max,
@@ -626,6 +628,10 @@ pub enum ControlInput {
     Secure,
     /// A text field's `multiline`: whether it holds lines.
     Multiline,
+    /// A text field's `input`: what it holds.
+    InputKind,
+    /// A text field's `max_length`: the most graphemes entry brings it to.
+    MaxLength,
     /// A check's `label`: the caption it shows and is named by.
     Caption,
 }
@@ -655,6 +661,10 @@ pub struct Control {
     pub secure: Option<u32>,
     /// The entry of whether a text field holds lines.
     pub multiline: Option<u32>,
+    /// The entry of what a text field holds.
+    pub input_kind: Option<u32>,
+    /// The entry of the most graphemes entry brings a text field to.
+    pub max_length: Option<u32>,
     /// The entry of a check's caption.
     pub caption: Option<u32>,
     /// The shader a shader view paints with, by its index in the view's
@@ -813,7 +823,7 @@ pub enum Switched {
 
 impl ControlInput {
     /// Every input, by wire tag.
-    pub const ALL: [ControlInput; 45] = [
+    pub const ALL: [ControlInput; 47] = [
         ControlInput::Value,
         ControlInput::Min,
         ControlInput::Max,
@@ -858,6 +868,8 @@ impl ControlInput {
         ControlInput::Placeholder,
         ControlInput::Secure,
         ControlInput::Multiline,
+        ControlInput::InputKind,
+        ControlInput::MaxLength,
         ControlInput::Caption,
     ];
 
@@ -938,6 +950,8 @@ impl Control {
             placeholder: None,
             secure: None,
             multiline: None,
+            input_kind: None,
+            max_length: None,
             caption: None,
             shader: None,
             look: Look::default(),
@@ -1001,6 +1015,8 @@ impl Control {
             ControlInput::Placeholder => self.placeholder,
             ControlInput::Secure => self.secure,
             ControlInput::Multiline => self.multiline,
+            ControlInput::InputKind => self.input_kind,
+            ControlInput::MaxLength => self.max_length,
             ControlInput::Caption => self.caption,
         }
     }
@@ -1062,6 +1078,8 @@ impl Control {
             ControlInput::Placeholder => &mut self.placeholder,
             ControlInput::Secure => &mut self.secure,
             ControlInput::Multiline => &mut self.multiline,
+            ControlInput::InputKind => &mut self.input_kind,
+            ControlInput::MaxLength => &mut self.max_length,
             ControlInput::Caption => &mut self.caption,
         };
         *slot = Some(entry);
@@ -1085,6 +1103,8 @@ impl Encode for Control {
             self.placeholder,
             self.secure,
             self.multiline,
+            self.input_kind,
+            self.max_length,
             self.caption,
             self.shader,
             look.background,
@@ -1192,6 +1212,8 @@ impl Decode for Control {
             placeholder: entry()?,
             secure: entry()?,
             multiline: entry()?,
+            input_kind: entry()?,
+            max_length: entry()?,
             caption: entry()?,
             shader: entry()?,
             look: Look {
@@ -1390,6 +1412,10 @@ mod tests {
             Some(ControlInput::Secure)
         );
         assert_eq!(
+            ControlKind::TextInput.input("max_length"),
+            Some(ControlInput::MaxLength)
+        );
+        assert_eq!(
             ControlKind::TextInput.input("multiline"),
             Some(ControlInput::Multiline)
         );
@@ -1450,6 +1476,8 @@ mod tests {
             placeholder: Some(14),
             secure: None,
             multiline: None,
+            input_kind: Some(21),
+            max_length: None,
             caption: Some(15),
             shader: Some(2),
             look: Look {
