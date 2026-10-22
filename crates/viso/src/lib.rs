@@ -2810,8 +2810,40 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 }
                 if menu_key != edit_menu::MenuKey::Ignored {
                     // The drawn context menu takes the keys it answers.
-                } else if matches!(k.key, viso_runtime::Key::Tab) && k.pressed {
-                    focus_next(&mut ws.store, root, !modifiers.shift);
+                } else if matches!(k.key, viso_runtime::Key::Tab | viso_runtime::Key::Escape)
+                    && k.pressed
+                {
+                    // A handler may take Tab or Escape first; else Tab moves
+                    // the focus and Escape dismisses the innermost transient
+                    // layer (a tooltip, a list the focus is not in).
+                    let ev = KeyEvent {
+                        key: k.key,
+                        pressed: k.pressed,
+                        repeat: k.repeat,
+                        modifiers,
+                    };
+                    let taken = KeyRouter::route_key_taken(
+                        &mut ws.store,
+                        &mut ws.states,
+                        &ws.bindings,
+                        &mut ws.text_edits,
+                        root,
+                        ev,
+                        &mut ws.route_chain,
+                    );
+                    if taken {
+                        // The handler did what the key does.
+                    } else if matches!(k.key, viso_runtime::Key::Tab) {
+                        focus_next(&mut ws.store, root, !modifiers.shift);
+                    } else if let Some(layer) = ws.store.dismissed_by_escape() {
+                        KeyRouter::route_dismiss(
+                            &mut ws.store,
+                            &mut ws.states,
+                            &ws.bindings,
+                            &mut ws.text_edits,
+                            layer,
+                        );
+                    }
                 } else if let Some((host, target)) = ws.store.link_key(
                     matches!(k.key, viso_runtime::Key::Enter) && !k.repeat,
                     k.pressed,

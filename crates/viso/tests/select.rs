@@ -318,6 +318,10 @@ fn escape_and_a_press_outside_close_it_unchanged() {
     assert!(app.store().hidden(p.panel));
     assert_eq!(shown(app.store(), p.text), "Cherry");
     assert_eq!(app.store().focused(), Some(p.field));
+    let app = run(&[click(pop), key(Key::Tab)]);
+    let p = parts(&app, 0);
+    assert!(app.store().hidden(p.panel), "Tab closes it");
+    assert_eq!(app.store().focused(), Some(p.field), "on the field");
     let app = run(&[click(pop), click((700.0, 500.0))]);
     assert!(app.store().hidden(parts(&app, 0).panel));
     assert!(changes().is_empty());

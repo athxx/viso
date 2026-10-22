@@ -128,7 +128,7 @@ Rules:
 - [x] `Menu` / context menu: items, separators, checkable items, shortcuts text,
   submenus with hover intent, keyboard navigation, `on_context_menu` (right click / long
   press).
-- [ ] `Tooltip`: hover delay, grace period between targets, touch long-press, keyboard
+- [x] `Tooltip`: hover delay, grace period between targets, touch long-press, keyboard
   focus show, `tooltip` semantics.
 - [x] `Popover` with arrow (callout).
 - [x] Box shadows on nodes (`BuildCx::shadow`), floating layers cast one.

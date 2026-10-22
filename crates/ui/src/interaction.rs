@@ -72,6 +72,12 @@ impl InteractionStates {
 }
 
 impl NodeStore {
+    /// Whether the focus shows as the keyboard's: a key, not a press, brought
+    /// it where it is.
+    pub fn focus_shows_visible(&self) -> bool {
+        self.interaction_states.focus_visible
+    }
+
     /// The revision cell raised whenever an interaction state of any node may
     /// have changed, allocated in `states` on first ask.
     pub fn interaction_cell(&mut self, states: &mut StateStore) -> StateId {
@@ -194,7 +200,8 @@ impl NodeStore {
     }
 
     /// Whether `node` is `ancestor` or lies under it.
-    fn within(&self, node: NodeId, ancestor: NodeId) -> bool {
+    /// Whether `node` is `ancestor` or lies inside it.
+    pub fn within(&self, node: NodeId, ancestor: NodeId) -> bool {
         let mut at = Some(node);
         while let Some(n) = at {
             if n == ancestor {

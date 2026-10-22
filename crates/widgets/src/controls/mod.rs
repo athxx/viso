@@ -29,6 +29,7 @@ mod tabs;
 mod text_input;
 mod toast;
 mod toggle;
+mod tooltip;
 
 pub use button::{Button, ButtonStyle, button};
 pub use caption_bar::{CaptionBar, CaptionBarStyle, caption_bar};
@@ -64,3 +65,4 @@ pub use tabs::{Tabs, TabsStyle, tabs};
 pub use text_input::{TextInput, TextInputStyle, text_input};
 pub use toast::{Toast, ToastEdge, ToastHandle, ToastHandleSlot, ToastStyle, toast};
 pub use toggle::{Toggle, ToggleStyle, toggle};
+pub use tooltip::{TOOLTIP_GRACE, TOOLTIP_LINGER, TOOLTIP_TOUCH, Tooltip, TooltipStyle, tooltip};

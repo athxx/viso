@@ -803,11 +803,22 @@ fn axis_vec(axis: Axis, value: f32) -> Vec2 {
 /// path allocates nothing. Returns whether any dispatch reported it ran.
 fn dispatch_chain(
     store: &mut NodeStore,
+    root: NodeId,
+    target: NodeId,
+    chain: &mut Vec<NodeId>,
+    dispatch: impl FnMut(&mut NodeStore, NodeId, Hop) -> Dispatched,
+) -> bool {
+    walk_chain(store, root, target, chain, dispatch).ran
+}
+
+/// [`dispatch_chain`], telling also whether a handler stopped the walk.
+fn walk_chain(
+    store: &mut NodeStore,
     _root: NodeId,
     target: NodeId,
     chain: &mut Vec<NodeId>,
     mut dispatch: impl FnMut(&mut NodeStore, NodeId, Hop) -> Dispatched,
-) -> bool {
+) -> Dispatched {
     chain.clear();
     // Build the chain root-first by walking parent links up from the target and
     // reversing in place: chain[0] = root … chain[n-1] = target.
@@ -838,14 +849,14 @@ fn dispatch_chain(
         );
         ran |= d.ran;
         if d.stop {
-            return ran;
+            return Dispatched { ran, stop: true };
         }
     }
     // Target: exactly once.
     let d = dispatch(store, target, Hop::TARGET);
     ran |= d.ran;
     if d.stop {
-        return ran;
+        return Dispatched { ran, stop: true };
     }
     // Bubble: the node just below the target, up to root.
     for (i, &node) in chain[..n - 1].iter().enumerate().rev() {
@@ -856,10 +867,10 @@ fn dispatch_chain(
         );
         ran |= d.ran;
         if d.stop {
-            return ran;
+            return Dispatched { ran, stop: true };
         }
     }
-    ran
+    Dispatched { ran, stop: false }
 }
 
 /// Where on the dispatch chain a node's handler runs: the leg of the walk, and
@@ -1015,11 +1026,16 @@ fn hover_dispatch(
 }
 
 /// Diff the hover target against the store's currently hovered node and, when it
-/// changed, synthesize the enter/leave pair: `Leave` to the old node, `Enter` to
-/// the new one, then commit the new target (live-guarded). When `new == old`
-/// nothing is dispatched and the slot is untouched — the steady-state move
-/// within one node does zero hover work and allocates nothing. Called only from
-/// the move / window-leave path in [`route_pointer`], never while captured.
+/// changed, synthesize the enter/leave pairs: `Leave` to the old node and each
+/// ancestor of it the pointer left, innermost first, then `Enter` to each
+/// ancestor of the new node the pointer came into, outermost first, and the
+/// new node; then commit the new target (live-guarded). A node the pointer
+/// stays within — an ancestor of both — hears neither, so a control hears
+/// one `Enter` and one `Leave` however its children divide it. When
+/// `new == old` nothing is dispatched and the slot is untouched — the
+/// steady-state move within one node does zero hover work and allocates
+/// nothing. Called only from the move / window-leave path in
+/// [`route_pointer`], never while captured.
 fn sync_hover(
     store: &mut NodeStore,
     states: &mut StateStore,
@@ -1028,18 +1044,24 @@ fn sync_hover(
     pointer: PointerId,
     sample: &PointerEvent,
 ) {
-    let old = store.hovered();
+    let old = store.hovered().filter(|&n| store.arena().is_live(n));
     if new == old {
         return;
     }
-    // Leave the old node first, then enter the new — the platform-conventional
+    let shared = match (old, new) {
+        (Some(a), Some(b)) => common_ancestor(store, a, b),
+        _ => None,
+    };
+    // Leave the old nodes first, then enter the new — the platform-conventional
     // order (a control's leave feedback settles before the next control's enter).
-    if let Some(old_node) = old {
+    let mut at = old;
+    while let Some(node) = at.filter(|&n| Some(n) != shared) {
+        at = store.parent(node);
         hover_dispatch(
             store,
             states,
             bindings,
-            old_node,
+            node,
             PointerPhase::Leave,
             pointer,
             sample,
@@ -1047,21 +1069,63 @@ fn sync_hover(
     }
     // An inert node is never entered; it is still left, so a node disabled
     // under the pointer settles its hover feedback.
-    if let Some(new_node) = new.filter(|&n| !store.inert(n)) {
-        hover_dispatch(
-            store,
-            states,
-            bindings,
-            new_node,
-            PointerPhase::Enter,
-            pointer,
-            sample,
-        );
+    let entered = |store: &NodeStore| {
+        let mut n = 0;
+        let mut at = new;
+        while let Some(node) = at.filter(|&n| Some(n) != shared) {
+            n += 1;
+            at = store.parent(node);
+        }
+        n
+    };
+    for depth in (0..entered(store)).rev() {
+        let mut node = new;
+        for _ in 0..depth {
+            node = node.and_then(|n| store.parent(n));
+        }
+        if let Some(node) = node.filter(|&n| store.arena().is_live(n) && !store.inert(n)) {
+            hover_dispatch(
+                store,
+                states,
+                bindings,
+                node,
+                PointerPhase::Enter,
+                pointer,
+                sample,
+            );
+        }
     }
     // Commit after dispatching (the platform's own hover cycle commits the new
     // area only after the move is delivered). Live-guarded: a freed target is
     // never recorded as hovered.
     store.set_hovered(new);
+}
+
+/// The nearest node both `a` and `b` are within (themselves included).
+fn common_ancestor(store: &NodeStore, a: NodeId, b: NodeId) -> Option<NodeId> {
+    let depth = |mut n: NodeId| {
+        let mut d = 0;
+        while let Some(p) = store.parent(n) {
+            d += 1;
+            n = p;
+        }
+        d
+    };
+    let (mut a, mut b) = (a, b);
+    let (mut da, mut db) = (depth(a), depth(b));
+    while da > db {
+        a = store.parent(a)?;
+        da -= 1;
+    }
+    while db > da {
+        b = store.parent(b)?;
+        db -= 1;
+    }
+    while a != b {
+        a = store.parent(a)?;
+        b = store.parent(b)?;
+    }
+    Some(a)
 }
 
 /// Apply the deferred side-effects a pointer handler produced. Shared by the
@@ -1367,6 +1431,28 @@ impl KeyRouter {
         dispatch_chain(store, root, target, chain, |s, n, _| {
             key_dispatch(s, states, bindings, edits, n, &ev)
         })
+    }
+
+    /// [`route_key`](Self::route_key), telling whether a handler took the
+    /// key: stopped it, so what the framework does with it by default — Tab
+    /// moving the focus, Escape dismissing a transient layer — does not run.
+    pub fn route_key_taken(
+        store: &mut NodeStore,
+        states: &mut StateStore,
+        bindings: &BindingTable,
+        edits: &mut TextEdits,
+        root: NodeId,
+        ev: KeyEvent,
+        chain: &mut Vec<NodeId>,
+    ) -> bool {
+        let Some(target) = store.focused() else {
+            chain.clear();
+            return false;
+        };
+        walk_chain(store, root, target, chain, |s, n, _| {
+            key_dispatch(s, states, bindings, edits, n, &ev)
+        })
+        .stop
     }
 
     /// Route an IME event to the focused node's ancestry, same shape as
@@ -2172,6 +2258,91 @@ mod tests {
             vec![(0, PointerPhase::Enter), (0, PointerPhase::Move)]
         );
         assert_eq!(store.hovered(), Some(root));
+    }
+
+    #[test]
+    fn a_control_hears_one_enter_and_one_leave_however_its_children_divide_it() {
+        // column { row(handler 0, padding 10) { leaf(handler 1) } }, the row
+        // 100 by 40 in a 200 by 100 column.
+        let mut store = NodeStore::new();
+        let mut states = StateStore::new();
+        let bindings = BindingTable::new();
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(
+                FlexStyle {
+                    axis: Axis::Column,
+                    size: Size::fixed(200.0, 100.0),
+                    ..Default::default()
+                },
+                |cx| {
+                    let row = cx.flex(
+                        FlexStyle {
+                            axis: Axis::Row,
+                            padding: crate::layout::Inset::all(10.0),
+                            size: Size::fixed(100.0, 40.0),
+                            ..Default::default()
+                        },
+                        |cx| {
+                            let leaf = cx.leaf(LeafStyle {
+                                size: Size::fixed(20.0, 20.0),
+                                ..Default::default()
+                            });
+                            cx.on_pointer(leaf, phase_log_handler(log.clone(), 1));
+                        },
+                    );
+                    cx.on_pointer(row, phase_log_handler(log.clone(), 0));
+                },
+            );
+            cx.root().unwrap()
+        };
+        let mut scratch = Vec::new();
+        let surface = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 200.0,
+            h: 100.0,
+        };
+        store.layout(root, surface, &mut scratch);
+        let mut chain = Vec::new();
+        let mut go = |store: &mut NodeStore, x: f32, y: f32| {
+            route_pointer(
+                store,
+                &mut states,
+                &bindings,
+                root,
+                move_to(x, y),
+                &mut chain,
+            );
+        };
+        let hover = |log: &Rc<RefCell<Vec<(u32, PointerPhase)>>>| {
+            std::mem::take(&mut *log.borrow_mut())
+                .into_iter()
+                .filter(|(_, p)| *p != PointerPhase::Move)
+                .collect::<Vec<_>>()
+        };
+        go(&mut store, 5.0, 5.0);
+        assert_eq!(hover(&log), [(0, PointerPhase::Enter)]);
+        go(&mut store, 15.0, 15.0);
+        assert_eq!(
+            hover(&log),
+            [(1, PointerPhase::Enter)],
+            "the row stays entered"
+        );
+        go(&mut store, 50.0, 20.0);
+        assert_eq!(hover(&log), [(1, PointerPhase::Leave)]);
+        go(&mut store, 15.0, 15.0);
+        go(&mut store, 150.0, 80.0);
+        assert_eq!(
+            hover(&log),
+            [
+                (1, PointerPhase::Enter),
+                (1, PointerPhase::Leave),
+                (0, PointerPhase::Leave)
+            ],
+            "the leaf leaves first"
+        );
     }
 
     #[test]

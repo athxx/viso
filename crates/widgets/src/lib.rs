@@ -48,6 +48,7 @@ pub use controls::{
     Select, SelectHandle, SelectHandleSlot, SelectKind, SelectOption, SelectStyle, select,
     select_option,
 };
+pub use controls::{TOOLTIP_GRACE, TOOLTIP_LINGER, TOOLTIP_TOUCH, Tooltip, TooltipStyle, tooltip};
 pub use document::{Document, DocumentStyle, DocumentText, html, markdown};
 pub use grid::{Grid, GridViewStyle, grid};
 pub use icon::{Icon, IconStyle, icon};

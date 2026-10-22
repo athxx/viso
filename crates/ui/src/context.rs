@@ -870,6 +870,19 @@ impl<'a> EventCx<'a> {
         self.woken
     }
 
+    /// Whether node `id` is `ancestor` or lies inside it.
+    pub fn is_within(&self, id: NodeId, ancestor: NodeId) -> bool {
+        self.place
+            .is_some_and(|place| place.store.within(id, ancestor))
+    }
+
+    /// Whether the focus shows as the keyboard's: a key, not a press, brought
+    /// it where it is.
+    pub fn focus_visible(&self) -> bool {
+        self.place
+            .is_some_and(|place| place.store.focus_shows_visible())
+    }
+
     /// Whether this dispatch tells that the focus came to or left a node: the
     /// dispatching node or one inside it. [`focused`](Self::focused) says
     /// where the focus is now, so a container learns whether it left it.

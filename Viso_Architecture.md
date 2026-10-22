@@ -3628,6 +3628,10 @@ IR/runtime 使用 `PropertyId`、`TokenId`、`NodeKey`、`ComponentTypeId` 等�
 
 **焦点进出**：焦点移动后，离开的节点及其祖先、再到达的节点及其祖先的 key 处理器依次收到 `ev.focus_change()`（`FocusChange::Lost` / `Gained`，可被 stop），`ev.focused()` 是焦点现在的位置，容器据此判断焦点是否离开了自己；移回原处不算移动，处理器因此再移动焦点会再通知（至多数次）。驱动在每个输入样本与唤醒之后投递。
 
+**提示**（`viso_widgets::tooltip`）：包住一段内容，指针在内容上停留 `TooltipStyle::delay`（默认 500 ms）后在其下方居中显示（无空间则翻到上方，并平移留在窗口内），超过 `max_width` 换行；一个提示消失后 `TOOLTIP_GRACE`（400 ms）内移到另一个带提示的内容上立即显示，同一时刻只显示一个。指针在内容或提示本身上时保持（跨过间隙有 `TOOLTIP_LINGER` 的余量），离开、按下内容、按在别处、无人处理的 Escape 都使之消失，按下后直到指针离开前不再出现。键盘焦点（`ev.focus_visible()`）进入内容立即显示，离开即消失；手指长按显示，抬起 `TOOLTIP_TOUCH`（1.5 s）后消失。语义：气泡为 `tooltip`，内容里第一个控件以提示文字为其描述（hint）。
+
+**指针进出与默认按键**：指针移动时，离开的节点及其祖先（直到与新节点共同的祖先为止）由内向外收到 `Leave`，进入的祖先由外向内、最后是新节点收到 `Enter`；指针仍在其内的祖先两者都不收，所以一个控件无论子节点怎样划分都只收到一对 Enter/Leave。Tab 与 Escape 先走焦点链上的处理器，没有处理器 stop 时才执行默认行为：Tab 移动焦点，Escape 关闭最内层显示中的轻量关闭层（`NodeStore::dismissed_by_escape`）。
+
 **唤醒与阴影**：处理器可用 `EventCx::wake_after(node, delay, token)` 让 `token` 在 `delay` 后送到 `node` 的 key 处理器（`ev.woken()`），在那里做处理器能做的一切；它建立在一次性定时器上，帧在触发定时器后投递唤醒，不取消，过期的 token 由处理器忽略。节点可投下阴影（`BuildCx::shadow` / `NodeStore::set_shadow`，`Shadow { color, offset, blur, spread }`，`blur` 取 CSS 的模糊半径）：作为节点自身 drawable 画在盒子之下，用 renderer 的 analytic shadow（闭式高斯，无 offscreen）；冷表按 slot 排序，没有阴影的树只检查一个空表。
 
 **目标分组**（informative；按子系统而不是按类型机械拆分）：

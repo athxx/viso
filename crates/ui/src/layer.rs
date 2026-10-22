@@ -293,6 +293,17 @@ impl NodeStore {
         out
     }
 
+    /// The shown light-dismiss layer Escape dismisses when nothing took it:
+    /// the innermost.
+    pub fn dismissed_by_escape(&self) -> Option<NodeId> {
+        self.layers
+            .light
+            .iter()
+            .copied()
+            .filter(|&l| self.arena().is_live(l) && !self.hidden(l))
+            .max_by_key(|&l| self.depth_of(l))
+    }
+
     /// Whether node `id` traps the focus.
     pub fn traps_focus(&self, id: NodeId) -> bool {
         self.layers.traps.iter().any(|t| t.layer == id)

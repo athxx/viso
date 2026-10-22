@@ -275,6 +275,15 @@ fn a_closed_set_takes_no_text_of_its_own() {
 }
 
 #[test]
+fn tab_chooses_the_highlight_and_moves_on() {
+    let (fruit, _) = fields();
+    let app = run(&[click(fruit), typed("ban"), key(Key::Tab)]);
+    assert_eq!(heard(), ["pick 1"]);
+    assert_eq!(app.store().focused(), Some(parts(&app, 1).input));
+    assert!(app.store().hidden(parts(&app, 0).panel));
+}
+
+#[test]
 fn a_click_on_an_option_chooses_it() {
     let (fruit, _) = fields();
     let probe = run(&[click(fruit)]);
