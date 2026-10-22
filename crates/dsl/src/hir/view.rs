@@ -573,6 +573,10 @@ impl<'a> ViewWalk<'a> {
         if let Some(inner) = generic("List") {
             return Some(Ty::List(Box::new(self.schema_value_ty(inner)?)));
         }
+        // A native value type, by its path.
+        if name.contains("::") {
+            return Some(Ty::Native(viso_behavior::native::NativeId::of(name)));
+        }
         let id = self.env.standard_type(name)?;
         let is_enum = self.cx.env().enum_variants(id).is_some();
         (is_enum || widget::PRELUDE_RECORDS.contains(&name)).then(|| Ty::named(id))

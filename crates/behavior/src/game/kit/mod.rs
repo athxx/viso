@@ -40,7 +40,7 @@ use crate::native::{
 };
 use crate::value::Value;
 
-pub use camera::{CameraRig, CameraView, RigKind};
+pub use camera::{Camera, CameraRig, CameraView, RigKind};
 pub use particles::{MAX_EMITTERS, MAX_PARTICLES, Sprite};
 pub use stage::{DebugShape, MAX_CUES, Stage};
 pub use synth::{Cue, MAX_VOICES, Sound, Synth};

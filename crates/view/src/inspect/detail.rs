@@ -372,6 +372,18 @@ fn groups(store: &NodeStore, id: NodeId) -> Vec<PropertyGroup> {
         Some(Content::Path { .. }) => add(&mut content, "kind", "path".into()),
         Some(Content::Shader { .. }) => add(&mut content, "kind", "shader".into()),
         Some(Content::Asset { .. }) => add(&mut content, "kind", "asset".into()),
+        Some(Content::Scene { slot, revision }) => {
+            add(&mut content, "kind", "scene".into());
+            add(&mut content, "slot", slot.0.to_string());
+            add(&mut content, "revision", revision.to_string());
+            if let Some(frame) = store.scenes().frame(*slot) {
+                add(
+                    &mut content,
+                    "instances",
+                    frame.instance_count().to_string(),
+                );
+            }
+        }
     }
     if let Some(request) = store.text_request(id) {
         add(&mut content, "pending_text", request.text.clone());

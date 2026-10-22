@@ -685,7 +685,7 @@ fn kind_of(content: Option<&Content>) -> InspectKind {
     match content {
         None => InspectKind::Container,
         Some(Content::Text { .. }) => InspectKind::Text,
-        Some(Content::Image { .. }) => InspectKind::Image,
+        Some(Content::Image { .. } | Content::Scene { .. }) => InspectKind::Image,
         Some(Content::Path { .. }) => InspectKind::Path,
         Some(Content::Shader { .. }) => InspectKind::Shader,
         Some(Content::Asset { .. }) => InspectKind::Asset,

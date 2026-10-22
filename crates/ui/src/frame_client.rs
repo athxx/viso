@@ -5,15 +5,19 @@
 //! A client is owned by a node: it lives while that node does and is
 //! dropped at the first frame after the node is freed. While a node holds
 //! keyboard focus the keys go to the UI, and every client releases what it
-//! holds (a key pressed before the focus moved is released, not stuck).
+//! holds (a key pressed before the focus moved is released, not stuck) —
+//! unless the focused node shows a scene: a focused game viewport takes the
+//! keys for the game.
 
 use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::component::NodeStore;
+use crate::content::Content;
 use crate::input::Key;
 use crate::node::NodeId;
+use crate::scenes::SceneTarget;
 use crate::state::StateStore;
 
 /// A client advanced by the window's frame loop.
@@ -32,6 +36,13 @@ pub trait FrameClient: Any {
     /// Whether it needs the next frame, as a running clock does.
     fn wants_frame(&self) -> bool;
 
+    /// Fills the 3D scenes under its owner `owner` after its frame: `fill`
+    /// visits each, and a target it reports changed is committed and
+    /// repainted.
+    fn fill_scenes(&mut self, owner: NodeId, scenes: &mut SceneFill<'_>) {
+        let _ = (owner, scenes);
+    }
+
     /// Writes what its frame changed that the UI reads into `states`, as the
     /// frame's transaction begins to settle.
     fn settle(&mut self, states: &mut StateStore) {
@@ -40,6 +51,20 @@ pub trait FrameClient: Any {
 
     /// The client, to reach its concrete type.
     fn as_any_mut(&mut self) -> &mut dyn Any;
+}
+
+/// The scenes a frame client fills.
+pub struct SceneFill<'a> {
+    arena: &'a crate::node::NodeArena,
+    scenes: &'a mut crate::scenes::SceneSlots,
+}
+
+impl SceneFill<'_> {
+    /// Calls `fill` with every scene whose node lies under `owner` (or is
+    /// it), committing each it returns `true` for.
+    pub fn under(&mut self, owner: NodeId, mut fill: impl FnMut(SceneTarget<'_>) -> bool) {
+        self.scenes.fill_under(self.arena, owner, &mut fill);
+    }
 }
 
 /// A shared client.
@@ -110,7 +135,7 @@ impl NodeStore {
         }
         let (arena, clients) = self.arena_and_frame_clients();
         clients.clients.retain(|(node, _)| arena.is_live(*node));
-        if self.focused().is_some() {
+        if !self.keys_reach_clients() {
             self.release_client_input();
         }
         for (_, client) in &self.frame_clients().clients {
@@ -118,6 +143,17 @@ impl NodeStore {
                 client.frame(dt);
             }
         }
+        if self.scenes().is_empty() {
+            return;
+        }
+        let (arena, scenes, clients) = self.scenes_and_frame_clients();
+        let mut fill = SceneFill { arena, scenes };
+        for (owner, client) in &clients.clients {
+            if let Ok(mut client) = client.try_borrow_mut() {
+                client.fill_scenes(*owner, &mut fill);
+            }
+        }
+        self.mark_committed_scenes();
     }
 
     /// Lets every client write what its frame changed into `states`.
@@ -126,6 +162,15 @@ impl NodeStore {
             if let Ok(mut client) = client.try_borrow_mut() {
                 client.settle(states);
             }
+        }
+    }
+
+    /// Whether keys go to the clients rather than the UI: no node holds
+    /// keyboard focus, or the one that does shows a scene.
+    pub fn keys_reach_clients(&self) -> bool {
+        match self.focused() {
+            None => true,
+            Some(node) => matches!(self.content_payload(node), Some(Content::Scene { .. })),
         }
     }
 

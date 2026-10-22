@@ -49,17 +49,21 @@ Rules:
   - [x] CpuRaster: a scene pass clears what its target held;
   - [x] tests: composite, render-on-change, damage, patch, culling, resize steps,
     and Metal against CpuRaster.
-- [ ] S4 UI/view:
-  - [ ] `Content::Scene { scene }` node content;
-  - [ ] `GameViewport` (DSL + Rust) fed each frame from `GameWorld::extract`,
-    `Stage::view()` and terrain;
-  - [ ] PAINT only when the world, camera or size moved;
-  - [ ] `camera:` override;
-  - [ ] semantics role `image`.
+- [x] S4 UI/view:
+  - [x] `Content::Scene { slot, revision }` node content and the store's `SceneSlots`
+    (commit → `PAINT` + revision; the facade swaps committed frames into the renderer
+    and releases left slots);
+  - [x] `GameViewport` (DSL + Rust `game_viewport`) fed each frame from
+    `GameWorld::extract` (terrain included) and `Stage::view()`, with composite Kit models;
+  - [x] PAINT only when the world, camera or size moved;
+  - [x] `camera:` override (its own eased rig);
+  - [x] semantics role `image`;
+  - [x] tests: slot commit/sync/release, fills only under the owner, a viewport draws its
+    game and redraws only on change.
 - [ ] S5:
   - [ ] particles as billboards (blended, depth-tested, no write);
   - [ ] debug shapes as thin boxes;
-  - [ ] viewport focus takes game keys (§106.2); pointer down focuses.
+  - [x] viewport focus takes game keys (§106.2); pointer down focuses.
 - [ ] S6 Headless frame sheet (`viso game … --sheet`) and golden scene images through
   CpuRaster.
 

@@ -65,6 +65,7 @@ impl Drive for Control {
             ControlKind::Slider => slider(self, host, scope, cx),
             ControlKind::Select => select(self, host, scope, cx),
             ControlKind::TextInput => text_input(cx),
+            ControlKind::Viewport => viewport(cx),
             ControlKind::Label
             | ControlKind::Plain
             | ControlKind::Asset
@@ -158,6 +159,18 @@ fn toggle(
     }
     let checked = read(host, control.value, scope, cx).as_int().unwrap_or(0) != 0;
     Some((EventRoute::Changed, field(Value::bool(!checked))))
+}
+
+/// A game viewport's response: a press on it takes the keyboard focus, so
+/// the keys reach the game.
+fn viewport(cx: &mut EventCx<'_>) -> Option<(EventRoute, Value)> {
+    if cx.phase() == DispatchPhase::Target
+        && cx.pointer().is_some_and(|p| p.phase == PointerPhase::Down)
+        && let Some(node) = cx.node()
+    {
+        cx.request_focus(node);
+    }
+    None
 }
 
 /// A disclosure's response: a release on its header, its first child, or a

@@ -54,11 +54,15 @@ pub enum ControlKind {
     /// lets the pointer through outside its content; it has no built-in
     /// response.
     Toast = 11,
+    /// `GameViewport`: shows the World of the view root's game through the
+    /// stage's camera or its `camera` rig; a press focuses it, and while
+    /// focused the keys reach the game.
+    Viewport = 12,
 }
 
 impl ControlKind {
     /// Every kind, by discriminant.
-    pub const ALL: [ControlKind; 12] = [
+    pub const ALL: [ControlKind; 13] = [
         ControlKind::Check,
         ControlKind::Slider,
         ControlKind::Select,
@@ -71,6 +75,7 @@ impl ControlKind {
         ControlKind::Disclosure,
         ControlKind::Dialog,
         ControlKind::Toast,
+        ControlKind::Viewport,
     ];
 
     /// The kind native widget `widget` is.
@@ -87,6 +92,7 @@ impl ControlKind {
             "Text" | "Button" => ControlKind::Label,
             "Image" | "Svg" => ControlKind::Asset,
             "ShaderView" => ControlKind::Shader,
+            "GameViewport" => ControlKind::Viewport,
             _ => ControlKind::Plain,
         }
     }
@@ -187,7 +193,8 @@ impl ControlKind {
             | (ControlKind::TextInput, "value")
             | (ControlKind::Label, "text")
             | (ControlKind::Asset, "source")
-            | (ControlKind::Shader, "shader") => ControlInput::Value,
+            | (ControlKind::Shader, "shader")
+            | (ControlKind::Viewport, "camera") => ControlInput::Value,
             (ControlKind::TextInput, "placeholder") => ControlInput::Placeholder,
             (ControlKind::TextInput, "secure") => ControlInput::Secure,
             (ControlKind::Check | ControlKind::Switch, "label") => ControlInput::Caption,
@@ -215,6 +222,7 @@ impl ControlKind {
             ControlKind::Plain => "Plain",
             ControlKind::Asset => "Asset",
             ControlKind::Shader => "Shader",
+            ControlKind::Viewport => "Viewport",
         }
     }
 
@@ -235,7 +243,7 @@ pub fn widget_role(widget: &str) -> Option<Role> {
         "TextInput" => Role::TextField,
         "Tabs" => Role::TabList,
         "Text" => Role::Label,
-        "Image" | "Svg" => Role::Image,
+        "Image" | "Svg" | "GameViewport" => Role::Image,
         "VirtualList" => Role::List,
         "NavigationStack" => Role::Navigation,
         "Modal" | "Sheet" => Role::Dialog,
@@ -1312,7 +1320,7 @@ mod tests {
         for kind in ControlKind::ALL {
             assert_eq!(ControlKind::from_u8(kind as u8), Some(kind));
         }
-        assert_eq!(ControlKind::from_u8(12), None);
+        assert_eq!(ControlKind::from_u8(13), None);
         assert_eq!(ControlKind::of("Svg"), ControlKind::Asset);
         assert_eq!(ControlKind::of("ShaderView"), ControlKind::Shader);
         assert_eq!(
@@ -1494,7 +1502,7 @@ mod tests {
             "layout slots ascend"
         );
         let mut bad = bytes.clone();
-        bad[0] = 12;
+        bad[0] = ControlKind::ALL.len() as u8;
         assert!(Control::decode_from_slice(&bad).is_err());
         let mut bad = bytes.clone();
         bad[1] = 99;

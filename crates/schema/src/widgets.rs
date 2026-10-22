@@ -160,6 +160,10 @@ const SLIDER: &[WidgetProperty] = &[
 /// The parameters of the brush shader painting a `ShaderView`'s box.
 const SHADER_VIEW: &[WidgetProperty] = &[prop("shader", "Shader")];
 
+/// The rig a `GameViewport` sees the World through; the stage's camera
+/// without one.
+const GAME_VIEWPORT: &[WidgetProperty] = &[prop("camera", "Option<viso::game::kit::CameraRig>")];
+
 /// An `Image`'s raster, from `asset("…")`, and how it fills the box.
 const IMAGE: &[WidgetProperty] = &[
     prop("source", "ImageAsset"),
@@ -404,6 +408,12 @@ pub const STANDARD: &[NativeWidget] = &[
         WidgetNode::Leaf,
         &[SHADER_VIEW, LAYOUT, TRANSFORM, FOCUS],
     ),
+    layout(
+        "GameViewport",
+        WidgetNode::Leaf,
+        &[GAME_VIEWPORT, LAYOUT, TRANSFORM, FOCUS],
+    )
+    .interactive(),
     layout("Tabs", ROW, &[SELECTED, LAYOUT, TRANSFORM, FOCUS])
         .events(&[SELECTED_EVENTS, STANDARD_EVENTS])
         .slots(CHILDREN)

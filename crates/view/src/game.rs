@@ -31,6 +31,7 @@ use viso_behavior::game::{
 use viso_behavior::native::Natives;
 use viso_behavior::{Budget, Module, Value, Vm};
 use viso_schema::view::GameQuery;
+use viso_ui::frame_client::SceneFill;
 use viso_ui::input::Key;
 use viso_ui::{FrameClient, NodeId, NodeStore, StateId, StateStore, StateValue};
 
@@ -566,8 +567,9 @@ impl GameSession {
 }
 
 /// The frame client a mount registers: the shared session, so the dev
-/// runtime reaches it typed through its owner.
-struct GameClient(Rc<RefCell<GameSession>>);
+/// runtime reaches it typed through its owner, and the last frame's wall
+/// delta its viewports' rigs ease by.
+struct GameClient(Rc<RefCell<GameSession>>, f32);
 
 impl FrameClient for GameClient {
     fn frame(&mut self, dt: f64) {
@@ -578,6 +580,15 @@ impl FrameClient for GameClient {
         session.scheduler.frame(dt);
         session.report_faults();
         session.refresh();
+        self.1 = dt as f32;
+    }
+
+    fn fill_scenes(&mut self, owner: NodeId, scenes: &mut SceneFill<'_>) {
+        let session = self.0.borrow();
+        let dt = self.1;
+        scenes.under(owner, |target| {
+            crate::world_scene::fill_viewport(target, &session.scheduler, dt)
+        });
     }
 
     fn settle(&mut self, states: &mut StateStore) {
@@ -803,6 +814,6 @@ pub fn mount_game(
         return Ok(());
     }
     let session = Rc::new(RefCell::new(GameSession::start(Rc::clone(module), native)?));
-    store.add_frame_client(owner, Rc::new(RefCell::new(GameClient(session))));
+    store.add_frame_client(owner, Rc::new(RefCell::new(GameClient(session, 0.0))));
     Ok(())
 }

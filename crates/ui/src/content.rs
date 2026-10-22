@@ -28,7 +28,9 @@ use crate::asset::{AssetDraw, AssetFit};
 use crate::layout::Vec2;
 use crate::text_style::{FontSize, TextStyle, WidthUse};
 use viso_render::asset::ResourceId;
-use viso_render::{GlyphInstanceData, PathCmd, ProgramSlot, Rect, Rgba, Stroke, TextureId};
+use viso_render::{
+    GlyphInstanceData, PathCmd, ProgramSlot, Rect, Rgba, SceneSlot, Stroke, TextureId,
+};
 
 /// A node's drawable content plus its measured intrinsic size.
 ///
@@ -137,6 +139,11 @@ pub enum Content {
         params: Arc<[u8]>,
         images: Box<[BrushImage]>,
     },
+    /// A 3D scene: the frame the store's
+    /// [`SceneSlots`](crate::scenes::SceneSlots) slot `slot` holds, at its
+    /// `revision`, rendered at the node's box and composited like an image.
+    /// A scene has no intrinsic size, so a `Fit` axis sizes to zero.
+    Scene { slot: SceneSlot, revision: u64 },
 }
 
 /// An image a brush node samples: the resource its texture parameter names,
@@ -167,7 +174,7 @@ impl Content {
             Content::Image { natural, .. }
             | Content::Path { natural, .. }
             | Content::Asset { natural, .. } => *natural,
-            Content::Shader { .. } => Vec2::ZERO,
+            Content::Shader { .. } | Content::Scene { .. } => Vec2::ZERO,
         }
     }
 
@@ -180,7 +187,7 @@ impl Content {
             Content::Image { natural, .. }
             | Content::Path { natural, .. }
             | Content::Asset { natural, .. } => natural.x,
-            Content::Shader { .. } => 0.0,
+            Content::Shader { .. } | Content::Scene { .. } => 0.0,
         }
     }
 
@@ -194,7 +201,8 @@ impl Content {
             Content::Image { .. }
             | Content::Path { .. }
             | Content::Asset { .. }
-            | Content::Shader { .. } => None,
+            | Content::Shader { .. }
+            | Content::Scene { .. } => None,
         }
     }
 }

@@ -603,6 +603,12 @@ pub(crate) fn paint_content(
                 })));
             }
         }
+        Content::Scene { slot, revision } => out.push(Primitive::Scene(viso_render::SceneDraw {
+            rect: world,
+            slot: *slot,
+            revision: *revision,
+            mask,
+        })),
         Content::Asset {
             draw,
             natural,

@@ -139,10 +139,10 @@ pub struct CameraView {
     pub far: f32,
 }
 
-/// The camera a stage draws through: its rig and where it is on the way to
-/// what the rig asks for.
+/// The camera a stage, or a viewport with a rig of its own, draws through:
+/// its rig and where it is on the way to what the rig asks for.
 #[derive(Debug, Clone, Default)]
-pub(super) struct Camera {
+pub struct Camera {
     rig: Option<CameraRig>,
     /// The eased pivot, yaw (degrees) and whether they have a value yet.
     pivot: [f32; 3],
@@ -156,7 +156,7 @@ pub(super) struct Camera {
 
 impl Camera {
     /// Follows `rig` from now on, easing over from where the camera is.
-    pub(super) fn set(&mut self, rig: CameraRig) {
+    pub fn set(&mut self, rig: CameraRig) {
         self.rig = Some(rig);
     }
 
@@ -181,7 +181,7 @@ impl Camera {
 
     /// Eases toward the rig over `dt` seconds, its target drawn `alpha` of
     /// the way into the next tick.
-    pub(super) fn advance(&mut self, dt: f32, world: &GameWorld, alpha: f32) {
+    pub fn advance(&mut self, dt: f32, world: &GameWorld, alpha: f32) {
         self.clock += dt;
         self.shake[2] = (self.shake[2] - dt).max(0.0);
         let Some(rig) = self.rig else {
@@ -218,7 +218,7 @@ impl Camera {
     }
 
     /// The view from the camera now: a default overview without a rig.
-    pub(super) fn view(&self) -> CameraView {
+    pub fn view(&self) -> CameraView {
         let Some(rig) = self.rig.filter(|_| self.settled) else {
             return CameraView {
                 eye: Vec3::new(0.0, 10.0, 14.0),

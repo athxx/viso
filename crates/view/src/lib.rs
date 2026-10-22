@@ -45,6 +45,7 @@ mod tasks;
 mod text_style;
 mod theme;
 mod values;
+mod world_scene;
 
 pub use attach::{Route, attach, attach_node};
 pub use control::{
@@ -85,6 +86,7 @@ pub use theme::{default_theme, set_theme};
 pub use values::{__mount_values, mount_values};
 pub use viso_behavior::{Fault, Module, Value};
 pub use viso_ui::shader::__per_backend;
+pub use world_scene::game_viewport;
 /// The stores a view's `@persist` states persist through.
 pub mod persist {
     #[cfg(not(target_family = "wasm"))]

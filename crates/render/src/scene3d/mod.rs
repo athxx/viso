@@ -28,8 +28,9 @@ pub use lane::SceneStats;
 pub use shapes::Shape;
 pub use viso_gpu::scene::{SceneInstance, SceneUniforms, SceneVertex};
 
+pub use viso_math::{LinearStraight, Mat4, Quat, Vec3, vec3};
+
 use viso_gpu::scene::{encode, normalize};
-use viso_math::{LinearStraight, Mat4, Quat, Vec3, vec3};
 
 /// A mesh the scene lane draws: a built-in [`Shape`] or an uploaded mesh.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -253,6 +254,19 @@ pub fn instance(
     let p = [position.x, position.y, position.z];
     SceneInstance {
         rows: core::array::from_fn(|i| [r[i] * s[0], r[4 + i] * s[1], r[8 + i] * s[2], p[i]]),
+        color: encoded(color),
+    }
+}
+
+/// An instance of a mesh placed by the affine `linear` then `translation`,
+/// in `color`: `linear[r]` is row `r` of its 3×3 part.
+pub fn affine(
+    linear: &[[f32; 3]; 3],
+    translation: [f32; 3],
+    color: LinearStraight,
+) -> SceneInstance {
+    SceneInstance {
+        rows: core::array::from_fn(|r| [linear[r][0], linear[r][1], linear[r][2], translation[r]]),
         color: encoded(color),
     }
 }

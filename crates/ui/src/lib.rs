@@ -37,6 +37,7 @@ pub mod node;
 pub mod notice;
 pub mod paint;
 pub mod reactive;
+pub mod scenes;
 pub mod semantics;
 pub mod shader;
 pub mod state;
@@ -121,6 +122,7 @@ pub use reactive::{
     Cleanup, ComputeCx, ComputedId, ComputedStore, DepCursor, EffectCx, EffectId, EffectStore,
     ProjectId, SemanticProjector,
 };
+pub use scenes::{SceneSlots, SceneSync, SceneTarget};
 pub use semantics::{
     InspectKind, LiveRegion, Role, SemanticState, Semantics, SemanticsNode, SemanticsTree,
 };
@@ -142,6 +144,8 @@ pub use virtual_list::{
 /// payloads — which the compiler names resources by and the facade decodes
 /// into.
 pub use viso_render::asset as resource;
+/// The 3D scene vocabulary a `Content::Scene` node's frame is written in.
+pub use viso_render::scene3d;
 pub use viso_render::{
     Border, LineJoin, PathCmd, Point, Primitive, Rect, Rgba, Srgb, Stroke, TextureId,
 };

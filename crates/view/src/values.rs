@@ -651,6 +651,13 @@ impl Shown {
         }
         match control.kind {
             ControlKind::Plain | ControlKind::Dialog | ControlKind::Toast => {}
+            // The game of the view's root fills the scene each frame.
+            ControlKind::Viewport => {
+                if let Some(slot) = store.set_scene(self.node) {
+                    let rig = <viso_behavior::game::kit::CameraRig as viso_behavior::native::NativeValue>::from_value(value);
+                    crate::world_scene::set_viewport_rig(store, slot, rig);
+                }
+            }
             // A shader the view's table lacks, or a value that is not its
             // parameters, leaves the node as it is.
             ControlKind::Shader => {

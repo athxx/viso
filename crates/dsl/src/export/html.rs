@@ -388,12 +388,17 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             .unwrap_or_default();
         let kind = ControlKind::of(&node.type_name);
         match (node.kind, kind) {
-            (_, ControlKind::Shader) => {
+            (_, ControlKind::Shader | ControlKind::Viewport) => {
+                let what = if kind == ControlKind::Shader {
+                    "paints with a shader"
+                } else {
+                    "draws a 3D scene"
+                };
                 self.need(
                     Need::GpuOnly,
                     self.own(node.instance, node.origin),
                     format!(
-                        "a `{}` paints with a shader, which no HTML element runs",
+                        "a `{}` {what}, which no HTML element runs",
                         node.type_name
                     ),
                     vec![
@@ -1073,7 +1078,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                     el.attr("alt", "");
                 }
             }
-            ControlKind::Plain | ControlKind::Shader => {}
+            ControlKind::Plain | ControlKind::Shader | ControlKind::Viewport => {}
         }
 
         if let Some(fixed) = self.bind(

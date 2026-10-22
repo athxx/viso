@@ -1697,6 +1697,14 @@ impl WindowState {
         let (w, h) = gpu.size;
         gpu.renderer
             .set_surface_size([w as f32, h as f32], self.dpi.max(1.0));
+        // The scenes committed since the last frame, ahead of the draws that
+        // show them.
+        self.store.scenes_mut().sync(|sync| match sync {
+            viso_ui::SceneSync::Frame(slot, frame) => gpu.renderer.swap_scene(slot, frame),
+            viso_ui::SceneSync::Released(slot) => {
+                gpu.renderer.release_scene(&mut gpu.backend, slot)
+            }
+        });
         let whole = match std::mem::replace(&mut self.painted, viso_ui::Painted::Nothing) {
             viso_ui::Painted::Nothing | viso_ui::Painted::Patched(0) => false,
             viso_ui::Painted::Whole(_) => true,
@@ -2301,10 +2309,16 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 environment::note_key(&mut ws.states);
                 if matches!(k.key, viso_runtime::Key::Tab) && k.pressed {
                     focus_next(&mut ws.store, root, !modifiers.shift);
-                } else if ws.store.focused().is_none() {
-                    // No UI node takes keys: a running game does. An
-                    // auto-repeat is not a new press for it.
-                    if !k.repeat {
+                } else if ws.store.keys_reach_clients()
+                    && (ws.store.focused().is_none()
+                        || k.repeat
+                        || ws.store.frame_clients_key(k.key, k.pressed))
+                {
+                    // No UI node takes keys, or a focused game viewport
+                    // does: a running game takes them. An auto-repeat is not
+                    // a new press for it; a key the game has no use for
+                    // reaches the viewport's ancestry.
+                    if ws.store.focused().is_none() && !k.repeat {
                         ws.store.frame_clients_key(k.key, k.pressed);
                     }
                 } else {

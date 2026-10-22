@@ -759,6 +759,18 @@ impl<'a, 'l> Lowering<'a, 'l> {
         if kind == NodeKind::Grid {
             self.place_areas(style.grid.as_deref(), &mut children);
         }
+        // A scene has no intrinsic size: a viewport fills what it is given
+        // on each axis it does not size.
+        if type_name == "GameViewport" {
+            let lengths = style.lengths.as_deref();
+            if style.width.is_none() && lengths.is_none_or(|l| l.width.is_none()) {
+                style.width = Some(LengthIr::Fill { weight: 1.0 });
+            }
+            let lengths = style.lengths.as_deref();
+            if style.height.is_none() && lengths.is_none_or(|l| l.height.is_none()) {
+                style.height = Some(LengthIr::Fill { weight: 1.0 });
+            }
+        }
         style.settle_rules(&laid_slots(&laid));
         out.push(UiItem::Node(Box::new(UiNode {
             type_name,

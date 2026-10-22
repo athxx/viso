@@ -43,7 +43,9 @@ use crate::timer::TimerRequest;
 use crate::token::Theme;
 use crate::window::{ChromeContext, WindowOpenRequest};
 use viso_render::asset::{ResourceId, ResourceRevision};
-use viso_render::{Affine2, Border, BrushProgram, PathCmd, Rect, Rgba, Stroke, TextureId};
+use viso_render::{
+    Affine2, Border, BrushProgram, PathCmd, Rect, Rgba, SceneSlot, Stroke, TextureId,
+};
 use viso_runtime::{LoopWaker, TaskSet};
 
 /// The application entry into the tree: a component declares its children into
@@ -548,6 +550,9 @@ pub struct NodeStore {
     check_marks: Vec<Option<CheckMark>>,
     /// The brush programs `Content::Shader` nodes paint with, by slot.
     shaders: ShaderSlots,
+    scenes: crate::scenes::SceneSlots,
+    /// The scene commits being marked, kept for its capacity.
+    scratch_scene_marks: Vec<(NodeId, u64)>,
     /// The assets `Content::Asset` nodes show, by resource.
     assets: AssetTable,
     /// Cold: per-node unshaped text request, index-aligned but mostly `None`.
@@ -2870,12 +2875,86 @@ impl NodeStore {
         }
     }
 
-    /// Lets go of the program slot node `index` paints with, if it paints
-    /// with one: its content is about to change.
+    /// Lets go of the program or scene slot node `index` paints with, if it
+    /// paints with one: its content is about to change.
     fn leave_shader(&mut self, index: usize) {
-        if let Some(Content::Shader { program, .. }) = self.content_payload[index].as_deref() {
-            self.shaders.leave(*program);
+        match self.content_payload[index].as_deref() {
+            Some(Content::Shader { program, .. }) => self.shaders.leave(*program),
+            Some(Content::Scene { slot, .. }) => self.scenes.leave(*slot),
+            _ => {}
         }
+    }
+
+    /// Shows a 3D scene on `id`: the node takes a slot in
+    /// [`scenes`](Self::scenes), or keeps the one it has, and returns it.
+    /// Fill the slot's frame and [`commit_scene`](Self::commit_scene) it to
+    /// show it. `None` for a stale handle.
+    pub fn set_scene(&mut self, id: NodeId) -> Option<SceneSlot> {
+        if !self.arena.is_live(id) {
+            return None;
+        }
+        if let Some(Content::Scene { slot, .. }) = self.content_payload(id) {
+            return Some(*slot);
+        }
+        self.leave_shader(id.index() as usize);
+        let slot = self.scenes.take(id);
+        self.content_payload[id.index() as usize] =
+            Some(Box::new(Content::Scene { slot, revision: 0 }));
+        self.mark_dirty(
+            id,
+            DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
+        );
+        Some(slot)
+    }
+
+    /// The 3D scenes this store's nodes show, by slot.
+    pub fn scenes(&self) -> &crate::scenes::SceneSlots {
+        &self.scenes
+    }
+
+    /// The 3D scenes this store's nodes show, to fill, or for the facade to
+    /// sync into a renderer.
+    pub fn scenes_mut(&mut self) -> &mut crate::scenes::SceneSlots {
+        &mut self.scenes
+    }
+
+    /// Hands the frame of `slot` over as its next revision and marks its
+    /// node `PAINT`.
+    pub fn commit_scene(&mut self, slot: SceneSlot) {
+        self.scenes.commit(slot);
+        self.mark_committed_scenes();
+    }
+
+    /// Writes each committed scene's revision into its node's content and
+    /// marks the node `PAINT`.
+    pub(crate) fn mark_committed_scenes(&mut self) {
+        let mut committed = std::mem::take(&mut self.scratch_scene_marks);
+        committed.clear();
+        committed.extend(self.scenes.take_committed());
+        for &(node, revision) in &committed {
+            if !self.arena.is_live(node) {
+                continue;
+            }
+            if let Some(Content::Scene { revision: r, .. }) =
+                self.content_payload[node.index() as usize].as_deref_mut()
+            {
+                *r = revision;
+                self.mark_dirty(node, DirtyClass::PAINT);
+            }
+        }
+        self.scratch_scene_marks = committed;
+    }
+
+    /// The arena alongside the scenes and the frame clients, for the clients
+    /// to fill the scenes under their owners.
+    pub(crate) fn scenes_and_frame_clients(
+        &mut self,
+    ) -> (
+        &NodeArena,
+        &mut crate::scenes::SceneSlots,
+        &crate::frame_client::FrameClients,
+    ) {
+        (&self.arena, &mut self.scenes, &self.frame_clients)
     }
 
     /// Frees node `node`'s slot, letting go of the program it paints with. A
@@ -6056,6 +6135,14 @@ impl<'a> BuildCx<'a> {
     pub fn text_request(&mut self, handle: Handle, request: TextRequest) -> Handle {
         self.store.set_text_request(handle.id, request);
         handle
+    }
+
+    /// Show a 3D scene on an already-declared node and return its slot in
+    /// the store's scenes: fill the slot's frame and
+    /// [`commit_scene`](NodeStore::commit_scene) it to show it. `None` for a
+    /// stale handle.
+    pub fn scene(&mut self, handle: Handle) -> Option<SceneSlot> {
+        self.store.set_scene(handle.id)
     }
 
     /// Declare an image to draw on an already-declared node. Mirrors

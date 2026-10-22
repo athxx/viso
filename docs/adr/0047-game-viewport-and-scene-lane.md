@@ -192,26 +192,50 @@
   - Custom scene materials are a later decision. The profile is shaped so
     one adds a material block without changing the vertex interface.
 - **`GameViewport` is a node whose content is a scene.**
-  - `viso-ui` gains `Content::Scene { scene: SceneHandle }`.
-    - Layout: fill by default, like an image of no intrinsic size.
-    - Paint: one image primitive of the scene's target.
+  - `viso-ui` gains `Content::Scene { slot, revision }`.
+    - The node store keeps its nodes' scenes, `SceneSlots`, by slot. Each
+      slot holds:
+      - the `SceneFrame` the node shows and its revision;
+      - whatever state the slot's filler keeps beside it.
+    - Layout: no intrinsic size. The DSL fills an axis the author did not
+      size.
+    - Paint: one `Primitive::Scene` of the slot at the content's revision.
     - Semantics: role `image`, labelled by the viewport's `label`.
+  - A filler writes a slot's frame and commits it. The commit:
+    - bumps the revision;
+    - marks the node `PAINT`;
+    - queues the frame for the renderer. Before patch and upload, the facade
+      swaps each committed frame into the renderer (`Renderer::swap_scene`),
+      getting the renderer's previous frame back. A commit therefore hands
+      a frame over whole: the filler refills it completely each time.
+  - A node that takes other content, or is freed, lets go of its slot, and
+    the facade releases the renderer's side.
   - The scene's targets follow the node's device-pixel size, rounded up to
     a multiple of 64 so a resize does not reallocate every frame.
-  - The DSL and Rust `GameViewport` (in `viso-view`, beside `GameSession`)
-    attaches its node's scene to the session of the view's root. Each frame,
-    after the session's ticks and `FrameUpdate`s, the session fills the
-    scene:
-    - the camera from `Stage::view()`, with the node's aspect;
-    - instances from `GameWorld::extract` at the clock's alpha, `Model`
-      resolved per body kind;
-    - terrain boxes, particles and debug shapes from the `Stage`.
-  - The fill marks the node `PAINT` only when the scene changed: the
-    World, the camera or the size moved. A paused game with a still camera
-    renders no scene pass and no 2D repaint.
-  - The viewport is focusable. While it holds keyboard focus, keys reach
-    the game (§106.2, the current no-focus rule widened to the viewport). A
-    pointer down on it takes the focus.
+  - The DSL `GameViewport` and the Rust `viso_view::game_viewport(store,
+    node, rig)` mark a slot as a viewport. Each frame, after the session's
+    ticks and `FrameUpdate`s, the session fills the viewports under its
+    root (`FrameClient::fill_scenes`, a walk up from each slot's node), so
+    no registration orders them. A fill draws:
+    - the camera: the viewport's own `camera:` rig eased by its own `Camera`,
+      or else `Stage::view()`. The renderer applies the node's aspect;
+    - instances from `GameWorld::extract` at the clock's alpha, terrain
+      included (its blocks are `Model::Ground` bodies), each with its
+      `Model` resolved per body kind;
+    - particles and debug shapes from the `Stage`.
+  - Each `Model` is one built-in shape stretched to the body, or a
+    composite of shapes laid out at its prefab's size and stretched with
+    the body. It is turned so its `-z` points along the body's facing.
+  - The fill compares what it read with what it read last. It commits only
+    when the World as drawn or the camera moved. A paused game with a still
+    camera renders no scene pass and no 2D repaint. A size change re-renders
+    the renderer's retained frame without a commit.
+  - Slots that are not viewports belong to app code, which fills them
+    through `NodeStore::scenes_mut` and `commit_scene`.
+  - The viewport is focusable, and a pointer down on it takes the focus.
+    Keys reach the game in two cases (§106.2):
+    - nothing is focused;
+    - the focused node shows a scene.
   - Several viewports of one session render the same World through their
     own scenes, each with its own camera override (`camera:` property)
     or the stage's.
