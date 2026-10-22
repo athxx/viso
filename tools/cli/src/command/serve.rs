@@ -1,6 +1,6 @@
-//! `viso serve`: the session `viso run` holds with a web target, its page
-//! served where `--host`, `--lan` and `--port` ask, and opened only with
-//! `--open`.
+//! `viso serve`: the session `viso run` holds with web targets, their pages
+//! served from one server where `--host`, `--lan` and `--port` ask — each
+//! under its target when there are several — and opened only with `--open`.
 
 use viso_project::Target;
 
@@ -17,19 +17,24 @@ pub fn run(ctx: &Context<'_>, args: &ServeArgs, out: &mut Output) -> u8 {
         Err(web::ListenError::Usage(why)) => return out.failure(CLI_USAGE, &why, &[]),
         Err(web::ListenError::Environment(why)) => return out.failure(ENV_DEV_CHANNEL, &why, &[]),
     };
-    let target = match args.target {
-        Some(target) => target,
-        None => match default_web_target(ctx, out) {
-            Ok(target) => target,
+    let targets = match &args.targets[..] {
+        [] => match default_web_target(ctx, out) {
+            Ok(target) => vec![target],
             Err(code) => return code,
         },
+        targets => targets.to_vec(),
     };
     let run = RunArgs {
-        targets: vec![TargetArg::Builtin(match target {
-            WebTarget::Gpu => RunTarget::WebGpu,
-            WebTarget::Dom => RunTarget::WebDom,
-            WebTarget::Hybrid => RunTarget::WebHybrid,
-        })],
+        targets: targets
+            .into_iter()
+            .map(|target| {
+                TargetArg::Builtin(match target {
+                    WebTarget::Gpu => RunTarget::WebGpu,
+                    WebTarget::Dom => RunTarget::WebDom,
+                    WebTarget::Hybrid => RunTarget::WebHybrid,
+                })
+            })
+            .collect(),
         desktop: false,
         device: None,
         browser: None,

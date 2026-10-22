@@ -641,6 +641,19 @@ alternative.
       over WebSocket, page log channel, reload, browser choice.
 - [x] `viso serve [web-gpu]`: `--host`, `--port` (exact when given), `--lan` with
       Host/Origin checks (421 for an unserved Host), `--open`, `--no-hot-reload`.
+- [x] Several web lanes in one session (ADR 0046, §15.4): `viso serve web-gpu web-dom
+      web-hybrid` (any subset, each once) and `viso run` with several web targets share
+      one watcher, source graph, control endpoint and page server on one port.
+  - [x] One lane keeps `/`; several are each under `/<target>/`, `/` lists them, a
+        prefix without its slash is a `308` keeping the query.
+  - [x] Dev and page channels beside the page (`<lane>/__viso/dev`, `<lane>/__viso/page`):
+        the runtime and the page script resolve them from the page's URL, so each socket
+        belongs to its lane; a lane's new build reloads its pages alone.
+  - [x] COOP/COEP per lane, only where the bundle's module imports or defines a shared
+        memory (`viso_package::web::shares_memory`).
+  - [x] One human line and one `server` event (`target` added; `url` with the lane's
+        path) per lane; the LAN warning once; `--open` opens every lane's page.
+  - [ ] End to end with `web-dom`/`web-hybrid` lanes: waits on C4.3 (both still C0011).
 
 ### C4.2 — web-gpu remaining
 
@@ -652,7 +665,8 @@ alternative.
       the generated glue is not rewritten; `index.html` keeps its name.)
 - [ ] `[profile.<name>.web] split` and `threads`: a startup/lazy module split and a
       shared-memory threaded module (`auto` resolves to off until then); with threads
-      on, `serve` sends COOP `same-origin` and COEP `require-corp`.
+      on, `serve` sends COOP `same-origin` and COEP `require-corp`. (The serve half is
+      in: a lane whose module shares its memory gets both headers.)
 - [x] `serve` security headers of §15.3 (CSP, `nosniff`, correct MIME for `.wasm`),
       served precompressed when the client accepts it. (The page is the bundle's own
       `index.html` with the launch scripts ahead of `</head>`; a per-response nonce on

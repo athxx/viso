@@ -138,11 +138,19 @@ impl Stream {
     }
 
     /// Writes a `server` event.
-    pub(super) fn server(&mut self, addr: std::net::SocketAddr, lan: bool) {
+    pub(super) fn server(
+        &mut self,
+        target: &str,
+        addr: std::net::SocketAddr,
+        path: &str,
+        lan: bool,
+    ) {
         self.event("server", |w| {
             w.begin_object();
+            w.name("target");
+            w.string(target);
             w.name("url");
-            w.string(&format!("http://{addr}/"));
+            w.string(&format!("http://{addr}{path}"));
             w.name("host");
             w.string(&addr.ip().to_string());
             w.name("port");

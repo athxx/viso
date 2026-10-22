@@ -63,8 +63,12 @@ impl DevLink {
         capabilities: Domains,
     ) -> Option<Self> {
         let hello = launch_identity(schema, capabilities)?;
-        let host = web_sys::window()?.location().host().ok()?;
-        let socket = WebSocket::new(&format!("ws://{host}{WEB_DEV_PATH}")).ok()?;
+        // The channel is beside the page: the page's directory, which is the
+        // web lane's on a server of several.
+        let location = web_sys::window()?.location();
+        let (host, page) = (location.host().ok()?, location.pathname().ok()?);
+        let dir = &page[..page.rfind('/').unwrap_or(0)];
+        let socket = WebSocket::new(&format!("ws://{host}{dir}{WEB_DEV_PATH}")).ok()?;
         socket.set_binary_type(BinaryType::Arraybuffer);
         let shared = Rc::new(RefCell::new(Shared {
             hello,

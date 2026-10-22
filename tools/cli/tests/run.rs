@@ -86,7 +86,7 @@ fn an_option_the_target_does_not_take_is_a_usage_error() {
         (&["run", "headless"], "viso test ui"),
         (&["run", "web-gpu", "web-gpu"], "named twice"),
         (&["run", "ios", "android"], "one simulator or emulator"),
-        (&["run", "web-gpu", "web-dom"], "one web target"),
+        (&["serve", "web-gpu", "web-gpu"], "named twice"),
     ] {
         let out = viso(&root, args);
         assert_eq!(out.status.code(), Some(2), "{args:?}");

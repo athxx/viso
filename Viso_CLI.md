@@ -1149,12 +1149,12 @@ viso run ios web-gpu
 
 `viso run [TARGET]...` 把每个 target 作为同一 Dev Session 的一条 lane 运行（ADR 0046）；`--desktop` 再加上本机，作为第一条 lane（本机仍不是 positional target，§1）。共享一个 session id/token、watcher、source graph、control endpoint 和输出流，一次编辑只 parse/type-check 一次，按 runtime 各自 plan；每条 lane 有自己的 dev lock（全部在任何 build 开始前、按 lane 顺序取得）、Rust plan 与 `RustBuild`、build id、deploy、dev listener 和 restart 状态。两条 lane 构建同一 Rust triple 时，后者用 `<target-dir>/viso/lanes/<target>/`，不会启动另一条 lane 的可执行文件。
 
-- 同一 target 写两次、多于一个 simulator/emulator、多于一个 web target 均为 usage error；`--device`、`--browser`/`--open`、`--emulate`、`--cwd` 作用于合适的 lane，没有合适 lane 时为 usage error；
+- 同一 target 写两次、多于一个 simulator/emulator 均为 usage error；web target 可以有多个（各一次），共用 session 的一个页面 server（§15.4）；`--device`、`--browser`/`--open`、`--emulate`、`--cwd` 作用于合适的 lane，没有合适 lane 时为 usage error；
 - Rust 编辑重建 scope 含该文件的每条 lane；warm restart 一次一条 lane（snapshot、close、launch、restore 属于该 lane 直到落地或失败），其余 lane 的新 build 排队；一条 lane 的 build 或 restart 失败不影响其他 lane；
 - 多 lane 时 app 日志行以 `[target] ` 开头；`viso game`/`viso inspect` 未指定 runtime 时交给第一条 lane 的 app；
 - 所有 lane 的 app 都结束时 session 结束，exit code 取第一条 lane；中途结束的 lane 报告一行，其 runtime 离开 session；第一次中断关闭所有 app，第二次 kill。
 
-`viso serve` 仍是单 lane。
+`viso serve [TARGET]...` 是只含 web lane 的同一种 session（§15）。
 
 ### 13.4 App arguments
 
@@ -1279,7 +1279,7 @@ Exit code：首次 build 失败按 §7（1/3/4）；app 正常退出 0；app cra
   - device 选择按 `--device`、`.viso/local.toml` 的 `[ios]`/`[android] device`、`~/.viso/<platform>/config.toml` 的 `device`、唯一 profile 的顺序；没有 profile 时 `DEVICE_MISSING`（exit 3），有多个且无默认时 `DEVICE_AMBIGUOUS`、名字不存在时 `DEVICE_UNKNOWN`（exit 2），均附 suggested command；human 输出、stdin 与 stderr 都是终端且无 `CI` 环境变量时，多个无默认则列出 profile 让用户按序号或 ID 选择（无效回答重问，输入结束则回到 `DEVICE_AMBIGUOUS`），并提示写入 `.viso/local.toml` 的默认，没有 profile 则询问是否创建标准 profile `phone`（最新已装系统上的 phone，回车即同意）；`--json`、非 TTY 与 CI 从不等待 stdin；
   - 所选 device 在 launch build 期间 boot，输出 `device{state:"booting"|"ready"|"launched"}`；boot 失败立即以 `ENV_DEVICE`（exit 3）结束；Ctrl-C 不关闭 simulator/emulator；
   - session lock 带 device id；
-  - iOS 构建 simulator triple 并打包为未签名 `.app`；Android 构建 emulator ABI 的 `cdylib` 并打包为 dev APK，需要 Android SDK（`ANDROID_HOME`/`ANDROID_SDK_ROOT` 或默认位置）、NDK 与 build-tools，缺失时 `ENV_DEVICE`；web-gpu 构建 `wasm32-unknown-unknown` 并经 `wasm-bindgen` 生成 bundle，打开浏览器（`--browser chrome|safari|firefox|none`，省略为系统默认），输出 `server{url,host,port,lan:false}`；
+  - iOS 构建 simulator triple 并打包为未签名 `.app`；Android 构建 emulator ABI 的 `cdylib` 并打包为 dev APK，需要 Android SDK（`ANDROID_HOME`/`ANDROID_SDK_ROOT` 或默认位置）、NDK 与 build-tools，缺失时 `ENV_DEVICE`；web-gpu 构建 `wasm32-unknown-unknown` 并经 `wasm-bindgen` 生成 bundle，打开浏览器（`--browser chrome|safari|firefox|none`，省略为系统默认），输出 `server{target,url,host,port,lan:false}`；
   - launch 变量在 iOS 上经 `SIMCTL_CHILD_*`、Android 上经 intent extras、web 上经页面的 `visoLaunch`，app 一律用 `viso_platform::launch_var` 读取；`--` 之后的参数只交给 desktop 与 iOS，其它 target 给出 warning；
   - Rust 改动的 warm restart 在新 artifact 打包完成后才停止旧 app；
   - `web-dom`/`web-hybrid` 以 `TargetUnavailable` 退出；
@@ -1428,9 +1428,10 @@ viso serve             # 使用 [web] default_target；未配置时为 usage err
 viso serve web-dom
 viso serve web-gpu
 viso serve web-hybrid
+viso serve web-gpu web-dom web-hybrid   # 一个 session，多条 web lane（§15.4）
 ```
 
-非 Web positional target 是 usage error（exit 2）。
+非 Web positional target 是 usage error（exit 2）；同一 target 写两次亦然。
 
 默认行为：
 
@@ -1465,7 +1466,7 @@ print local/network URL
 若默认端口被占用：
 
 - human mode：自动选择相邻空闲端口并提示；
-- `--json`：同样自动选择，并输出一条 `server` event（`url`、`host`、`port`）；
+- `--json`：同样自动选择，并为每条 web lane 输出一条 `server` event（`target`、`url`、`host`、`port`）；
 - 显式 `--port` 被占用：报错（exit 3），不静默改端口；`[web.serve] port` 与默认端口从该端口起取后续 100 个中第一个在所有绑定地址上都空闲的。
 
 `--json` 事件：`progress`、`diagnostic`、`artifact`、`server`、`dev`、`log`、`summary`。Exit code 同 §13.9（无 app crash 分支）。
@@ -1479,7 +1480,20 @@ WebGPU/threaded WASM 所需 COOP/COEP 等 header 由 target/profile policy 决�
 - 每个响应带 `Content-Type`（`.wasm` 为 `application/wasm`）、`X-Content-Type-Options: nosniff`、`Cross-Origin-Resource-Policy: same-origin`、`Cache-Control: no-store`；
 - 页面是 bundle 自己的 `index.html`（它给出按内容命名的模块与 glue，§14.3），launch 变量与页面 log 脚本插在 `</head>` 前；每个响应生成一个 nonce，页面的每个 `<script>` 都带上它，`Content-Security-Policy: script-src 'self' 'nonce-…' 'wasm-unsafe-eval'; object-src 'none'; base-uri 'none'; frame-ancestors 'self'`——只限制脚本来源，app 自己的网络请求、图片与字体不受限制；
 - bundle 文件有 `.br`/`.gz` 副本时按请求的 `Accept-Encoding`（权重大于 0，`*` 亦可）优先 Brotli、其次 gzip 发送，带 `Content-Encoding` 与 `Vary: Accept-Encoding`；
-- WebGPU 只要求 secure context，不需要 COOP/COEP；`Cross-Origin-Opener-Policy: same-origin` 与 `Cross-Origin-Embedder-Policy: require-corp` 随 shared-memory 线程模块（`[profile.<name>.web] threads`）开启，否则不发——COEP 会挡住 app 加载的跨源资源。
+- WebGPU 只要求 secure context，不需要 COOP/COEP；`Cross-Origin-Opener-Policy: same-origin` 与 `Cross-Origin-Embedder-Policy: require-corp` 随 shared-memory 线程模块（`[profile.<name>.web] threads`）开启，否则不发——COEP 会挡住 app 加载的跨源资源。按 lane 判定：bundle 的 `.wasm` 导入或定义 shared memory 的 lane，其所有响应带这两个 header，其他 lane 不带。
+
+### 15.4 多条 web lane
+
+`viso serve` 与 `viso run` 都可以带多个 web target（ADR 0046）：一个 session、一个 watcher、一个 source graph、一个 control endpoint、一个页面 server（一个端口）。
+
+- 只有一条 web lane 时页面在 `/`，URL 与以前相同；
+- 多条时每条 lane 在 `/<target>/`（`/web-gpu/`、`/web-dom/`、`/web-hybrid/`）；`/` 是列出各 lane 链接的索引页（`Content-Security-Policy: default-src 'none'`）；`/<target>`（无尾斜杠）`308` 到 `/<target>/` 并保留 query；其他路径 `404`；
+- 页面的 dev channel 与页面 log channel 都开在页面旁边：`<lane>/__viso/dev`、`<lane>/__viso/page`（runtime 取 `location.pathname` 的目录，页面脚本按页面 URL 相对解析），server 据此知道每个 socket 属于哪条 lane；
+- link 接受每条 lane 的 build id；patch 按 runtime 各自下发；一条 lane 的新 build 只让该 lane 的页面 reload；多 lane 时页面 log 行以 `[target] ` 开头；
+- 每条 web lane 输出一条 human 行（多 lane 时为 ``[viso] serving `web-dom` at http://127.0.0.1:8000/web-dom/``）与一条 `server` event（`target`、`url` 含 lane 路径、`host`、`port`、`lan`）；LAN 警告只出现一次；
+- `--open` 打开每条 lane 的页面。
+
+当前 `web-dom`/`web-hybrid` 尚未可用（`require_available` 拒绝），多 lane 的端到端运行要等它们落地；路由、per-lane header 与 reload 由单元测试覆盖。
 
 ---
 
@@ -2707,7 +2721,7 @@ test          name, domain, status(pass|fail|skip), duration_ms, message?, artif
 trace         scenario, tick, probes（`viso test game` 每 Tick 一条，§22.3）
 profile       target, device, frames, duration_ms, dropped, metrics, unavailable[], caveats[]（§25）
 inspect       kind(attached|input|focus|dirty|dropped), …（`inspect` 跟随中的 app 事件，§24.5）
-server        url, host, port, lan
+server        target, url, host, port, lan（每条 web lane 一条，§15.4）
 dev           见下
 runtime       dev_session_id, runtime_session_id, target, build_id, connection(connected|closed), running_revision, candidate_revision?, last_good_revision, failing[], rust(idle|building|restarting), bytes_sent, bytes_received, patch?（`Viso_Hot_Reload.md` §52）
 doctor_check  name, status(ok|warn|missing|error), code?, message?, suggestion?
@@ -2733,7 +2747,7 @@ summary       见 §36.3
 {"type":"trace","payload":{"scenario":"jump","tick":12,"probes":{"player.y":3.5}}}
 {"type":"profile","payload":{"target":"headless","device":null,"frames":6,"duration_ms":12010.4,"dropped":0,"metrics":{"frame":{"p50":0.7,"p95":3.6,"max":3.6}},"unavailable":["allocations","allocated_bytes"],"caveats":[]}}
 {"type":"inspect","payload":{"kind":"input","seq":1,"frame":1,"window":0,"input":"pointer_down","at":[60,78],"target":{"node_id":"15:0","label":"Button#tap"},"route":[{"node_id":"0:0","label":"container"},{"node_id":"15:0","label":"Button#tap"}]}}
-{"type":"server","payload":{"url":"http://127.0.0.1:8000/","host":"127.0.0.1","port":8000,"lan":false}}
+{"type":"server","payload":{"target":"web-gpu","url":"http://127.0.0.1:8000/","host":"127.0.0.1","port":8000,"lan":false}}
 {"type":"dev","payload":{"dev_session_id":"s1","runtime_session_id":"r1","target":"web","build_id":"b1","file":"src/view.vs","base_revision":2,"candidate_revision":3,"patch_class":null,"outcome":"rejected","stage":"parse","diagnostic_codes":["E1001"],"last_good_revision":2,"elapsed_ms":1.5,"mounts":0,"migrated":0,"reset":0,"focus_lost":0,"scroll_lost":0,"handlers_lost":0,"dirty":{"structure":0,"style":0,"measure":0,"layout":0,"transform":0,"paint":0,"hit_test":0,"semantics":0},"game":null}}
 {"type":"runtime","payload":{"dev_session_id":"s1","runtime_session_id":"r1","target":"web","build_id":"b1","connection":"connected","running_revision":3,"candidate_revision":null,"last_good_revision":3,"failing":["src/view.vs"],"rust":"building","bytes_sent":1200,"bytes_received":300,"patch":{"candidate_revision":4,"outcome":"rejected","patch_class":null,"stage":"shader-compile","scoped_resets":0,"compile_ms":2.5,"commit_ms":null,"round_trip_ms":4,"bytes":900}}}
 {"type":"doctor_check","payload":{"name":"rust","status":"ok","message":"rustc 1.99.1 (aarch64-apple-darwin)"}}
@@ -3839,7 +3853,7 @@ viso run android [--device <emulator-id>]
 viso run web-gpu|web-dom|web-hybrid [--browser <name>]
 
 viso build [headless|ios|android|web-gpu|web-dom|web-hybrid] [--profile <p>|--release]
-viso serve [web-gpu|web-dom|web-hybrid]
+viso serve [web-gpu|web-dom|web-hybrid]...
 viso package [ios|android|web-gpu|web-dom|web-hybrid] [--profile shipping|release]
 viso check [<target>]
 viso profile [<target>] [--device <id>]

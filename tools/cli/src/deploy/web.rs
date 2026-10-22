@@ -1,7 +1,16 @@
 //! The web dev server: it serves the dev build's web
 //! bundle on the loopback interface — on the network too only when asked
 //! ([`Listen`]) — and carries the page's dev channel as a WebSocket at
-//! [`WEB_DEV_PATH`] of the address the page was loaded from.
+//! [`WEB_DEV_PATH`] beside the page, at the address it was loaded from.
+//!
+//! It serves the session's web lanes. A session of one serves it at `/`.
+//! Several are served each under its target, `/web-gpu/` and `/web-dom/`:
+//! `/` lists them, and a prefix without its slash is redirected to it. A
+//! page's channels open beside it, so each lane's are its own, and a newer
+//! build of a lane reloads only that lane's pages. The responses of a lane
+//! whose module shares its memory (a threaded build) carry the headers that
+//! isolate its page across origins, which shared memory needs; no other
+//! lane's do.
 //!
 //! Every request must name, in its `Host`, an address the server listens at:
 //! an IP literal or `localhost`, never a domain name, so a page of another
@@ -13,10 +22,10 @@
 //! and, once after a warm restart, the restore — ahead of its `</head>`. A WebSocket is accepted only from a page this
 //! server served (its `Origin`), and the dev channel behind it checks the
 //! session token as the TCP channel does. Once a newer build is served, every
-//! open page's channel is closed with [`WEB_RELOAD_CLOSE`] and the page loads
-//! it.
+//! open page's channel of its lane is closed with [`WEB_RELOAD_CLOSE`] and
+//! the page loads it.
 //!
-//! Each page also opens a channel of its own at [`PAGE_PATH`] from a script
+//! Each page also opens a channel of its own at [`PAGE_PATH`] beside it, from a script
 //! that runs before the app: what the page writes to its console, and its
 //! uncaught errors and rejections — a panic's message among them — reach the
 //! session as the app's `log` lines, and a newer build reloads it even when
@@ -224,48 +233,57 @@ fn is_private(ip: IpAddr) -> bool {
     }
 }
 
-/// What the server serves.
-#[derive(Default)]
+/// What the server serves of one lane.
 struct Served {
+    /// The path segment the lane is served under; empty for the one lane at
+    /// `/`.
+    prefix: String,
+    /// Where what the lane's pages log is handed.
+    log: PageLog,
     /// The bundle's directory, once a build is served.
     bundle: Option<PathBuf>,
     /// The launch variables of the page.
     vars: Vec<(String, String)>,
     /// Whether the next page restores the app before it.
     restore: bool,
+    /// Whether the bundle's module shares its memory, so its page is
+    /// isolated across origins.
+    isolated: bool,
     /// The write halves of the open dev channels, and of the pages' own.
     sockets: Vec<Weak<Mutex<TcpStream>>>,
     pages: Vec<Weak<Mutex<TcpStream>>>,
 }
 
+/// A lane of a [`WebServer`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PageLane(usize);
+
 /// The web dev server.
 pub(crate) struct WebServer {
     listen: Arc<Listen>,
     port: u16,
-    served: Arc<Mutex<Served>>,
+    lanes: Arc<Mutex<Vec<Served>>>,
 }
 
 /// What every connection is answered with.
 struct Context {
     listen: Arc<Listen>,
     port: u16,
-    served: Arc<Mutex<Served>>,
+    lanes: Arc<Mutex<Vec<Served>>>,
     expect: Expect,
     deliver: Deliver,
-    log: PageLog,
 }
 
 impl WebServer {
     /// Binds every address of `listen` at its port, or at `configured` or
     /// the next port after it free on all of them, and serves each on a
     /// thread; a dev channel's connection is checked against `expect` and
-    /// delivered to `deliver`, and what a page logs is handed to `log`.
+    /// delivered to `deliver`. It serves no lane until one is added.
     pub(crate) fn bind(
         listen: Listen,
         configured: u16,
         expect: Expect,
         deliver: Deliver,
-        log: PageLog,
     ) -> io::Result<WebServer> {
         let (first, tries) = listen
             .port
@@ -306,15 +324,14 @@ impl WebServer {
             ));
         };
         let listen = Arc::new(listen);
-        let served = Arc::new(Mutex::new(Served::default()));
+        let lanes = Arc::new(Mutex::new(Vec::new()));
         for listener in listeners {
             let cx = Arc::new(Context {
                 listen: Arc::clone(&listen),
                 port,
-                served: Arc::clone(&served),
+                lanes: Arc::clone(&lanes),
                 expect: expect.clone(),
                 deliver: Arc::clone(&deliver),
-                log: Arc::clone(&log),
             });
             thread::Builder::new()
                 .name("viso-web-serve".into())
@@ -330,11 +347,32 @@ impl WebServer {
         Ok(WebServer {
             listen,
             port,
-            served,
+            lanes,
         })
     }
 
-    /// The address the session's own browser loads the page at.
+    /// Adds a lane served under `/<prefix>/`, or at `/` when `None` — then
+    /// the server's only one; what its pages log is handed to `log`.
+    pub(crate) fn lane(&self, prefix: Option<&str>, log: PageLog) -> PageLane {
+        let mut lanes = lock(&self.lanes);
+        debug_assert!(
+            !lanes.iter().any(|l| l.prefix.is_empty()) && (prefix.is_some() || lanes.is_empty()),
+            "a lane at `/` is the server's only one"
+        );
+        lanes.push(Served {
+            prefix: prefix.unwrap_or_default().to_owned(),
+            log,
+            bundle: None,
+            vars: Vec::new(),
+            restore: false,
+            isolated: false,
+            sockets: Vec::new(),
+            pages: Vec::new(),
+        });
+        PageLane(lanes.len() - 1)
+    }
+
+    /// The address the session's own browser loads the pages at.
     pub(crate) fn addr(&self) -> SocketAddr {
         let ip = self.listen.ips[0];
         let ip = if ip.is_unspecified() {
@@ -345,32 +383,51 @@ impl WebServer {
         SocketAddr::new(ip, self.port)
     }
 
-    /// The page's address for the session's own browser.
-    pub(crate) fn url(&self) -> String {
-        format!("http://{}/", self.addr())
+    /// The path `lane`'s page is at: `/`, or `/<prefix>/`.
+    pub(crate) fn path(&self, lane: PageLane) -> String {
+        match &*lock(&self.lanes)[lane.0].prefix {
+            "" => "/".to_owned(),
+            prefix => format!("/{prefix}/"),
+        }
     }
 
-    /// The address other devices load the page at, when the network was
+    /// `lane`'s page's address for the session's own browser.
+    pub(crate) fn url(&self, lane: PageLane) -> String {
+        format!("http://{}{}", self.addr(), self.path(lane))
+    }
+
+    /// The address other devices load the pages at, when the network was
     /// asked for.
     pub(crate) fn network_addr(&self) -> Option<SocketAddr> {
         self.listen.lan.map(|ip| SocketAddr::new(ip, self.port))
     }
 
-    /// Serves the bundle in `dir` of the app `bin`, its page launched with
+    /// Serves the bundle in `dir` as `lane`'s, its page launched with
     /// `vars`, the next one restoring the app before it when `restore`.
-    pub(crate) fn serve(&self, dir: PathBuf, vars: Vec<(String, String)>, restore: bool) {
-        let mut served = lock(&self.served);
+    pub(crate) fn serve(
+        &self,
+        lane: PageLane,
+        dir: PathBuf,
+        vars: Vec<(String, String)>,
+        restore: bool,
+    ) {
+        let isolated = web::shares_memory_in(&dir);
+        let mut lanes = lock(&self.lanes);
+        let served = &mut lanes[lane.0];
         served.bundle = Some(dir);
         served.vars = vars;
         served.restore = restore;
+        served.isolated = isolated;
     }
 
-    /// Ends every open page's dev channel with [`WEB_RELOAD_CLOSE`] and
-    /// tells every page to reload, so it loads what is served now — a page
-    /// whose app died before its dev channel opened too.
-    pub(crate) fn reload_pages(&self) {
+    /// Ends every open dev channel of `lane`'s pages with
+    /// [`WEB_RELOAD_CLOSE`] and tells each of its pages to reload, so it
+    /// loads what is served now — a page whose app died before its dev
+    /// channel opened too. Other lanes' pages are left as they are.
+    pub(crate) fn reload_pages(&self, lane: PageLane) {
         let (sockets, pages) = {
-            let mut served = lock(&self.served);
+            let mut lanes = lock(&self.lanes);
+            let served = &mut lanes[lane.0];
             (
                 std::mem::take(&mut served.sockets),
                 std::mem::take(&mut served.pages),
@@ -385,6 +442,60 @@ impl WebServer {
         for page in pages.iter().filter_map(Weak::upgrade) {
             let _ = write_ws_frame(&mut *lock(&page), 0x1, b"reload");
         }
+    }
+}
+
+/// Where a request's path (without its leading `/`) goes among the lanes
+/// served under `prefixes`, in lane order.
+#[derive(Debug, PartialEq, Eq)]
+enum Route<'a> {
+    /// The list of the lanes.
+    Index,
+    /// A lane's prefix without its slash: moved to the path with it.
+    Moved(&'a str),
+    /// The lane of that index, at the path beneath its prefix.
+    Lane(usize, &'a str),
+    Unknown,
+}
+
+fn route<'a>(path: &'a str, prefixes: &[&str]) -> Route<'a> {
+    if let [""] = prefixes {
+        return Route::Lane(0, path);
+    }
+    if path.is_empty() {
+        return Route::Index;
+    }
+    let (segment, rest) = match path.split_once('/') {
+        Some((segment, rest)) => (segment, Some(rest)),
+        None => (path, None),
+    };
+    match (prefixes.iter().position(|p| *p == segment), rest) {
+        (Some(lane), Some(rest)) => Route::Lane(lane, rest),
+        (Some(_), None) => Route::Moved(segment),
+        (None, _) => Route::Unknown,
+    }
+}
+
+/// The headers that isolate a page across origins, which a module sharing
+/// its memory needs.
+const ISOLATED: &str =
+    "Cross-Origin-Opener-Policy: same-origin\r\nCross-Origin-Embedder-Policy: require-corp\r\n";
+
+/// The page that lists the lanes served under `prefixes`.
+fn index_page(prefixes: &[&str]) -> Reply {
+    let mut body = String::from(
+        "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
+         <title>viso serve</title>\n</head>\n<body>\n<ul>\n",
+    );
+    for prefix in prefixes {
+        body.push_str(&format!("<li><a href=\"/{prefix}/\">{prefix}</a></li>\n"));
+    }
+    body.push_str("</ul>\n</body>\n</html>\n");
+    Reply {
+        status: "200 OK",
+        kind: web::mime(std::path::Path::new("index.html")),
+        headers: "Content-Security-Policy: default-src 'none'\r\n".to_owned(),
+        body: body.into_bytes(),
     }
 }
 
@@ -462,14 +573,46 @@ fn respond(stream: TcpStream, cx: &Context) {
         );
         return;
     }
+    let head = request.method == "HEAD";
     let path = web::request_path(&request.target).unwrap_or("");
+    let routed = {
+        let lanes = lock(&cx.lanes);
+        let prefixes: Vec<&str> = lanes.iter().map(|l| l.prefix.as_str()).collect();
+        match route(path, &prefixes) {
+            Route::Lane(lane, rest) => Ok((lane, rest)),
+            Route::Index => Err(index_page(&prefixes)),
+            Route::Moved(prefix) => {
+                let query = request
+                    .target
+                    .find('?')
+                    .map_or("", |at| &request.target[at..]);
+                let mut reply = Reply::text("308 Permanent Redirect", "moved");
+                reply.headers = format!("Location: /{prefix}/{query}\r\n");
+                Err(reply)
+            }
+            Route::Unknown => Err(Reply::text("404 Not Found", "not found")),
+        }
+    };
+    let (lane, path) = match routed {
+        Ok(routed) => routed,
+        Err(reply) => {
+            let _ = answer(
+                &mut stream,
+                reply.status,
+                reply.kind,
+                &reply.headers,
+                &reply.body,
+                head,
+            );
+            return;
+        }
+    };
     if format!("/{path}") == WEB_DEV_PATH {
-        return dev_channel(stream, reader, &request, cx);
+        return dev_channel(stream, reader, &request, lane, cx);
     }
     if format!("/{path}") == PAGE_PATH {
-        return page_channel(stream, reader, &request, cx);
+        return page_channel(stream, reader, &request, lane, cx);
     }
-    let served = &cx.served;
     if request.method != "GET" && request.method != "HEAD" {
         let _ = answer(
             &mut stream,
@@ -481,10 +624,10 @@ fn respond(stream: TcpStream, cx: &Context) {
         );
         return;
     }
-    let head = request.method == "HEAD";
-    let reply = {
-        let mut served = lock(served);
-        match &served.bundle {
+    let (reply, isolated) = {
+        let mut lanes = lock(&cx.lanes);
+        let served = &mut lanes[lane];
+        let reply = match &served.bundle {
             None => Reply::text(
                 "503 Service Unavailable",
                 "the app is still building; load the page again in a moment",
@@ -492,8 +635,8 @@ fn respond(stream: TcpStream, cx: &Context) {
             Some(dir) if path.is_empty() || path == "index.html" => {
                 match std::fs::read_to_string(dir.join("index.html")) {
                     Ok(page) => {
-                        // The page's dev channel is at the address it was
-                        // loaded from, not at one it is told.
+                        // The page's dev channel is beside it, not at an
+                        // address it is told.
                         let mut vars: Vec<_> = served
                             .vars
                             .iter()
@@ -510,18 +653,24 @@ fn respond(stream: TcpStream, cx: &Context) {
                     Err(_) => Reply::text("404 Not Found", "the bundle has no page"),
                 }
             }
-            Some(dir) => match web::resolve(dir, &request.target) {
+            Some(dir) => match web::resolve(dir, path) {
                 Some(file) => Reply::file(&file, request.header("accept-encoding")),
                 None => None,
             }
             .unwrap_or_else(|| Reply::text("404 Not Found", "not found")),
-        }
+        };
+        (reply, served.isolated)
+    };
+    let headers = if isolated {
+        format!("{ISOLATED}{}", reply.headers)
+    } else {
+        reply.headers
     };
     let _ = answer(
         &mut stream,
         reply.status,
         reply.kind,
-        &reply.headers,
+        &headers,
         &reply.body,
         head,
     );
@@ -670,7 +819,7 @@ fn launch_script(vars: &[(String, String)]) -> String {
 }
 
 /// The script a page runs before the app: its console, uncaught errors and
-/// rejections go to the session over the page's own channel (queued until it
+/// rejections go to the session over the page's own channel beside it (queued until it
 /// opens, at most a thousand lines), and `reload` loads the page again. It
 /// reconnects while the server runs.
 const PAGE_SCRIPT: &str = r#"<script>(() => {
@@ -694,7 +843,9 @@ addEventListener("error", (e) => send("error", [e.error || e.message]));
 addEventListener("unhandledrejection", (e) => send("error", [e.reason]));
 let wait = 250;
 const open = () => {
-  socket = new WebSocket("ws://" + location.host + "/__viso/page");
+  const url = new URL("__viso/page", location.href);
+  url.protocol = "ws:";
+  socket = new WebSocket(url);
   socket.onopen = () => { wait = 250; for (const line of queue.splice(0)) socket.send(line); };
   socket.onmessage = (e) => { if (e.data === "reload") location.reload(); };
   socket.onclose = () => { socket = undefined; setTimeout(open, wait); wait = Math.min(wait * 2, 5000); };
@@ -737,14 +888,18 @@ fn page_channel(
     stream: TcpStream,
     mut reader: BufReader<TcpStream>,
     request: &Request,
+    lane: usize,
     cx: &Context,
 ) {
     let Some(stream) = upgrade(stream, request) else {
         return;
     };
     let writer = Arc::new(Mutex::new(stream));
-    lock(&cx.served).pages.push(Arc::downgrade(&writer));
-    let log = &cx.log;
+    let log = {
+        let mut lanes = lock(&cx.lanes);
+        lanes[lane].pages.push(Arc::downgrade(&writer));
+        Arc::clone(&lanes[lane].log)
+    };
     while let Ok(Some((opcode, payload))) = read_ws_frame(&mut reader) {
         match opcode {
             0x1 => {
@@ -781,12 +936,18 @@ fn page_line(payload: &[u8]) -> Option<(&'static str, String)> {
 
 /// Upgrades the connection to the dev channel's WebSocket when the page
 /// asking is one this server served, and serves the channel on it.
-fn dev_channel(stream: TcpStream, reader: BufReader<TcpStream>, request: &Request, cx: &Context) {
+fn dev_channel(
+    stream: TcpStream,
+    reader: BufReader<TcpStream>,
+    request: &Request,
+    lane: usize,
+    cx: &Context,
+) {
     let Some(stream) = upgrade(stream, request) else {
         return;
     };
     let writer = Arc::new(Mutex::new(stream));
-    lock(&cx.served).sockets.push(Arc::downgrade(&writer));
+    lock(&cx.lanes)[lane].sockets.push(Arc::downgrade(&writer));
     let (expect, deliver) = (&cx.expect, &cx.deliver);
     let socket = WebSocket {
         reader,
@@ -1243,8 +1404,8 @@ mod tests {
             schema: SchemaFingerprint(4),
         };
         let log: PageLog = Arc::new(|_, _| true);
-        let server =
-            WebServer::bind(Listen::loopback(), 0, expect, Arc::new(|_| true), log).unwrap();
+        let server = WebServer::bind(Listen::loopback(), 0, expect, Arc::new(|_| true)).unwrap();
+        let lane = server.lane(None, log);
         let get = |path: &str| {
             let mut stream = TcpStream::connect(server.addr()).unwrap();
             write!(
@@ -1259,6 +1420,7 @@ mod tests {
         };
         assert!(get("/").starts_with("HTTP/1.1 503"), "nothing is built yet");
         server.serve(
+            lane,
             dir.clone(),
             vec![("VISO_DEV_TOKEN".into(), "token".into())],
             false,
@@ -1283,6 +1445,10 @@ mod tests {
         );
         assert!(module.contains("X-Content-Type-Options: nosniff"));
         assert!(!module.contains("Content-Security-Policy"));
+        assert!(
+            !page.contains("Cross-Origin-Embedder-Policy"),
+            "no shared memory"
+        );
         assert!(get("/missing.js").starts_with("HTTP/1.1 404"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -1314,17 +1480,17 @@ mod tests {
 
     #[test]
     fn the_page_script_opens_the_page_channel() {
-        assert!(PAGE_SCRIPT.contains(PAGE_PATH));
+        assert!(PAGE_SCRIPT.contains(&format!("\"{}\"", &PAGE_PATH[1..])));
         assert_eq!(PAGE_SCRIPT.matches("</script>").count(), 1);
     }
 
-    /// A page's own channel opened on `server` from `origin`: the stream
+    /// A page's own channel opened on `server` at `path` from `origin`: the stream
     /// switched to it, or `None` when it was refused.
-    fn open_page(server: &WebServer, origin: &str) -> Option<TcpStream> {
+    fn open_page(server: &WebServer, path: &str, origin: &str) -> Option<TcpStream> {
         let mut stream = TcpStream::connect(server.addr()).unwrap();
         write!(
             stream,
-            "GET {PAGE_PATH} HTTP/1.1\r\nHost: {}\r\nOrigin: {origin}\r\nUpgrade: websocket\r\n\
+            "GET {path} HTTP/1.1\r\nHost: {}\r\nOrigin: {origin}\r\nUpgrade: websocket\r\n\
              Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
             server.addr()
         )
@@ -1413,11 +1579,11 @@ mod tests {
         };
         let (tx, rx) = std::sync::mpsc::channel();
         let log: PageLog = Arc::new(move |level, line| tx.send((level, line)).is_ok());
-        let server =
-            WebServer::bind(Listen::loopback(), 0, expect, Arc::new(|_| true), log).unwrap();
+        let server = WebServer::bind(Listen::loopback(), 0, expect, Arc::new(|_| true)).unwrap();
+        let lane = server.lane(None, log);
 
         assert!(
-            open_page(&server, "http://example.com").is_none(),
+            open_page(&server, PAGE_PATH, "http://example.com").is_none(),
             "another origin"
         );
         let mut rebound = TcpStream::connect(server.addr()).unwrap();
@@ -1430,7 +1596,8 @@ mod tests {
         let mut status = String::new();
         BufReader::new(rebound).read_line(&mut status).unwrap();
         assert!(status.contains(" 421 "), "a name, not an address: {status}");
-        let mut page = open_page(&server, &format!("http://{}", server.addr())).expect("it opens");
+        let mut page =
+            open_page(&server, PAGE_PATH, &format!("http://{}", server.addr())).expect("it opens");
 
         let line = b"error\tpanicked at src/main.rs";
         let mask = [1u8, 2, 3, 4];
@@ -1441,11 +1608,144 @@ mod tests {
         let logged = rx.recv_timeout(Duration::from_secs(5)).expect("it logs");
         assert_eq!(logged, ("error", "panicked at src/main.rs".to_owned()));
 
-        server.reload_pages();
+        server.reload_pages(lane);
         page.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         let mut reload = [0u8; 8];
         page.read_exact(&mut reload).unwrap();
         assert_eq!(reload, *b"\x81\x06reload");
+    }
+
+    #[test]
+    fn a_path_goes_to_the_lane_its_prefix_names() {
+        assert_eq!(route("", &[""]), Route::Lane(0, ""));
+        assert_eq!(route("web-gpu/a.js", &[""]), Route::Lane(0, "web-gpu/a.js"));
+        let lanes = ["web-gpu", "web-dom"];
+        assert_eq!(route("", &lanes), Route::Index);
+        assert_eq!(route("web-dom", &lanes), Route::Moved("web-dom"));
+        assert_eq!(route("web-dom/", &lanes), Route::Lane(1, ""));
+        assert_eq!(
+            route("web-gpu/__viso/dev", &lanes),
+            Route::Lane(0, "__viso/dev")
+        );
+        assert_eq!(route("web-hybrid/", &lanes), Route::Unknown);
+        assert_eq!(route("__viso/dev", &lanes), Route::Unknown);
+        assert_eq!(route("", &[]), Route::Index);
+    }
+
+    #[test]
+    fn lanes_are_served_under_their_prefixes_each_with_its_own_pages() {
+        use viso_dev_protocol::wire::{
+            BuildId, DevSessionId, ProjectFingerprint, SchemaFingerprint,
+        };
+
+        let root = std::env::temp_dir().join(format!("viso-serve-lanes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (gpu, dom) = (root.join("gpu"), root.join("dom"));
+        for (dir, title) in [(&gpu, "gpu"), (&dom, "dom")] {
+            std::fs::create_dir_all(dir).unwrap();
+            web::write_page(dir, title, "app.js", Some("app_bg.wasm")).unwrap();
+        }
+        std::fs::write(gpu.join("app_bg.wasm"), b"\0asm\x01\0\0\0").unwrap();
+        // A module defining a shared memory: a threaded build.
+        std::fs::write(
+            dom.join("app_bg.wasm"),
+            b"\0asm\x01\0\0\0\x05\x04\x01\x03\x01\x02",
+        )
+        .unwrap();
+        let expect = Expect {
+            token: "token".into(),
+            dev_session: DevSessionId(1),
+            builds: vec![BuildId(2), BuildId(3)],
+            project: ProjectFingerprint(3),
+            schema: SchemaFingerprint(4),
+        };
+        let server = WebServer::bind(Listen::loopback(), 0, expect, Arc::new(|_| true)).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let logs = |lane: &'static str| -> PageLog {
+            let tx = tx.clone();
+            Arc::new(move |_, line| tx.send((lane, line)).is_ok())
+        };
+        let gpu_lane = server.lane(Some("web-gpu"), logs("web-gpu"));
+        let dom_lane = server.lane(Some("web-dom"), logs("web-dom"));
+        assert_eq!(server.path(dom_lane), "/web-dom/");
+        assert_eq!(
+            server.url(gpu_lane),
+            format!("http://{}/web-gpu/", server.addr())
+        );
+        let get = |path: &str| {
+            let mut stream = TcpStream::connect(server.addr()).unwrap();
+            write!(
+                stream,
+                "GET {path} HTTP/1.1\r\nHost: {}\r\n\r\n",
+                server.addr()
+            )
+            .unwrap();
+            let mut response = String::new();
+            let _ = stream.read_to_string(&mut response);
+            response
+        };
+
+        let index = get("/");
+        assert!(index.starts_with("HTTP/1.1 200 OK"), "{index}");
+        assert!(
+            index.contains(r#"<a href="/web-gpu/">"#) && index.contains(r#"<a href="/web-dom/">"#)
+        );
+        assert!(index.contains("Content-Security-Policy: default-src 'none'"));
+        let moved = get("/web-dom?x=1");
+        assert!(moved.starts_with("HTTP/1.1 308"), "{moved}");
+        assert!(moved.contains("Location: /web-dom/?x=1\r\n"), "{moved}");
+        assert!(get("/web-hybrid/").starts_with("HTTP/1.1 404"));
+        assert!(
+            get("/web-gpu/").starts_with("HTTP/1.1 503"),
+            "nothing is built yet"
+        );
+
+        server.serve(gpu_lane, gpu.clone(), Vec::new(), false);
+        server.serve(dom_lane, dom.clone(), Vec::new(), false);
+        let page = get("/web-gpu/");
+        assert!(page.contains("<title>gpu</title>"), "{page}");
+        assert!(!page.contains("Cross-Origin-Opener-Policy"), "{page}");
+        let page = get("/web-dom/");
+        assert!(page.contains("<title>dom</title>"), "{page}");
+        for header in [
+            "Cross-Origin-Opener-Policy: same-origin",
+            "Cross-Origin-Embedder-Policy: require-corp",
+        ] {
+            assert!(page.contains(header), "{header}: {page}");
+            assert!(get("/web-dom/app_bg.wasm").contains(header));
+        }
+        assert!(get("/web-gpu/app_bg.wasm").contains("Content-Type: application/wasm"));
+
+        let origin = format!("http://{}", server.addr());
+        let mut gpu_page = open_page(&server, "/web-gpu/__viso/page", &origin).expect("it opens");
+        let mut dom_page = open_page(&server, "/web-dom/__viso/page", &origin).expect("it opens");
+        assert!(
+            open_page(&server, PAGE_PATH, &origin).is_none(),
+            "no lane at `/`"
+        );
+        let line = b"info\tfrom dom";
+        let mask = [1u8, 2, 3, 4];
+        let mut frame = vec![0x81, 0x80 | line.len() as u8];
+        frame.extend_from_slice(&mask);
+        frame.extend(line.iter().enumerate().map(|(i, b)| b ^ mask[i % 4]));
+        dom_page.write_all(&frame).unwrap();
+        let logged = rx.recv_timeout(Duration::from_secs(5)).expect("it logs");
+        assert_eq!(logged, ("web-dom", "from dom".to_owned()));
+
+        // A new build of one lane reloads its pages alone.
+        server.reload_pages(dom_lane);
+        dom_page
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut reload = [0u8; 8];
+        dom_page.read_exact(&mut reload).unwrap();
+        assert_eq!(reload, *b"\x81\x06reload");
+        gpu_page
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
+        let mut byte = [0u8; 1];
+        assert!(gpu_page.read(&mut byte).is_err(), "the other lane is left");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     /// A page in a headless Chrome: its console and uncaught error reach the
@@ -1475,27 +1775,40 @@ mod tests {
             project: ProjectFingerprint(3),
             schema: SchemaFingerprint(4),
         };
-        let (tx, rx) = std::sync::mpsc::channel();
-        let log: PageLog = Arc::new(move |level, line| tx.send((level, line)).is_ok());
-        let server =
-            WebServer::bind(Listen::loopback(), 0, expect, Arc::new(|_| true), log).unwrap();
         web::write_index(&dir, "probe").unwrap();
-        server.serve(dir.clone(), Vec::new(), false);
-
         let chrome = headless_browser().expect("a Chromium browser");
-        let mut page = open_headless(&chrome, &server.url(), &dir.join("chrome")).expect("it runs");
-        let next = || rx.recv_timeout(Duration::from_secs(60)).expect("a line");
-        let lines = [next(), next()];
-        server.reload_pages();
-        let again = next();
-        let _ = page.kill();
-        let _ = page.wait();
-        let _ = std::fs::remove_dir_all(&dir);
+        // The one lane at `/`, and one of two under its prefix.
+        for prefix in [None, Some("web-dom")] {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let log: PageLog = Arc::new(move |level, line| tx.send((level, line)).is_ok());
+            let server =
+                WebServer::bind(Listen::loopback(), 0, expect.clone(), Arc::new(|_| true)).unwrap();
+            if prefix.is_some() {
+                server.lane(Some("web-gpu"), Arc::new(|_, _| true));
+            }
+            let lane = server.lane(prefix, log);
+            server.serve(lane, dir.clone(), Vec::new(), false);
 
-        assert_eq!(lines[0], ("warn", "page {\"n\":1}".to_owned()));
-        assert_eq!(lines[1].0, "error");
-        assert!(lines[1].1.contains("boom"), "{:?}", lines[1]);
-        assert_eq!(again, lines[0], "the page loaded again");
+            let _ = std::fs::remove_dir_all(dir.join("chrome"));
+            let mut page =
+                open_headless(&chrome, &server.url(lane), &dir.join("chrome")).expect("it runs");
+            let next = || rx.recv_timeout(Duration::from_secs(60)).expect("a line");
+            let lines = [next(), next()];
+            server.reload_pages(lane);
+            let again = next();
+            let _ = page.kill();
+            let _ = page.wait();
+
+            assert_eq!(
+                lines[0],
+                ("warn", "page {\"n\":1}".to_owned()),
+                "{prefix:?}"
+            );
+            assert_eq!(lines[1].0, "error");
+            assert!(lines[1].1.contains("boom"), "{:?}", lines[1]);
+            assert_eq!(again, lines[0], "the page loaded again");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

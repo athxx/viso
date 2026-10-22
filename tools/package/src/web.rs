@@ -109,6 +109,141 @@ pub fn request_path(target: &str) -> Option<&str> {
     Some(target.split(['?', '#']).next()?.trim_start_matches('/'))
 }
 
+/// Whether a module of the bundle in `dir` shares its memory (a threaded
+/// build), so its page must be isolated across origins.
+pub fn shares_memory_in(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.filter_map(Result::ok).any(|entry| {
+        let path = entry.path();
+        path.extension().is_some_and(|x| x == "wasm")
+            && std::fs::read(&path).is_ok_and(|module| shares_memory(&module))
+    })
+}
+
+/// Whether the WebAssembly module `wasm` imports or defines a shared
+/// memory; `false` for what does not read as a module.
+pub fn shares_memory(wasm: &[u8]) -> bool {
+    let mut read = WasmReader { bytes: wasm, at: 8 };
+    if !wasm.starts_with(b"\0asm") {
+        return false;
+    }
+    while read.at < wasm.len() {
+        let (Some(id), Some(size)) = (read.byte(), read.leb()) else {
+            return false;
+        };
+        let Some(end) = read
+            .at
+            .checked_add(size as usize)
+            .filter(|&e| e <= wasm.len())
+        else {
+            return false;
+        };
+        let shared = match id {
+            2 => read.imports_shared_memory(),
+            5 => read.memories_shared(),
+            _ => Some(false),
+        };
+        match shared {
+            Some(true) => return true,
+            Some(false) => read.at = end,
+            None => return false,
+        }
+    }
+    false
+}
+
+/// A cursor over a WebAssembly module's bytes.
+struct WasmReader<'a> {
+    bytes: &'a [u8],
+    at: usize,
+}
+
+impl WasmReader<'_> {
+    fn byte(&mut self) -> Option<u8> {
+        let byte = *self.bytes.get(self.at)?;
+        self.at += 1;
+        Some(byte)
+    }
+
+    /// An unsigned LEB128 of at most 64 bits.
+    fn leb(&mut self) -> Option<u64> {
+        let mut value = 0u64;
+        for shift in (0..64).step_by(7) {
+            let byte = self.byte()?;
+            value |= u64::from(byte & 0x7F) << shift;
+            if byte & 0x80 == 0 {
+                return Some(value);
+            }
+        }
+        None
+    }
+
+    fn skip_name(&mut self) -> Option<()> {
+        let len = self.leb()? as usize;
+        self.at = self
+            .at
+            .checked_add(len)
+            .filter(|&e| e <= self.bytes.len())?;
+        Some(())
+    }
+
+    /// A memory's limits: whether it is shared.
+    fn limits_shared(&mut self) -> Option<bool> {
+        let flags = self.byte()?;
+        self.leb()?;
+        if flags & 0x01 != 0 {
+            self.leb()?;
+        }
+        Some(flags & 0x02 != 0)
+    }
+
+    /// The import section: whether a memory it imports is shared; `None`
+    /// for an import this does not read.
+    fn imports_shared_memory(&mut self) -> Option<bool> {
+        for _ in 0..self.leb()? {
+            self.skip_name()?;
+            self.skip_name()?;
+            match self.byte()? {
+                // A function or a tag: its type.
+                0x00 => drop(self.leb()?),
+                0x04 => {
+                    self.byte()?;
+                    self.leb()?;
+                }
+                // A table: its element type, then its limits.
+                0x01 => {
+                    self.byte()?;
+                    self.limits_shared()?;
+                }
+                0x02 => {
+                    if self.limits_shared()? {
+                        return Some(true);
+                    }
+                }
+                // A global: its value type and mutability.
+                0x03 => {
+                    self.byte()?;
+                    self.byte()?;
+                }
+                _ => return None,
+            }
+        }
+        Some(false)
+    }
+
+    /// The memory section: whether a memory it defines is shared.
+    fn memories_shared(&mut self) -> Option<bool> {
+        for _ in 0..self.leb()? {
+            if self.limits_shared()? {
+                return Some(true);
+            }
+        }
+        Some(false)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -137,5 +272,45 @@ mod tests {
         assert_eq!(resolve(dir, "/../secret"), None);
         assert_eq!(resolve(dir, "/a//b"), None);
         assert_eq!(resolve(dir, "/a\\..\\b"), None);
+    }
+
+    /// A module of `sections`, each its id and contents.
+    fn module(sections: &[(u8, &[u8])]) -> Vec<u8> {
+        let mut wasm = b"\0asm\x01\0\0\0".to_vec();
+        for (id, contents) in sections {
+            wasm.push(*id);
+            wasm.push(contents.len() as u8);
+            wasm.extend_from_slice(contents);
+        }
+        wasm
+    }
+
+    #[test]
+    fn a_module_shares_its_memory_when_it_imports_or_defines_a_shared_one() {
+        // A type section, then one import of a function and one of memory.
+        let types: &[u8] = &[1, 0x60, 0, 0];
+        let imports = |memory: &[u8]| {
+            let mut section = vec![2];
+            section.extend_from_slice(b"\x03wbg\x01f\x00\x00");
+            section.extend_from_slice(b"\x03wbg\x06memory\x02");
+            section.extend_from_slice(memory);
+            section
+        };
+        assert!(shares_memory(&module(&[
+            (1, types),
+            (2, &imports(&[0x03, 17, 0x80, 0x80, 0x04]))
+        ])));
+        assert!(!shares_memory(&module(&[
+            (1, types),
+            (2, &imports(&[0x00, 17]))
+        ])));
+        // A memory the module defines.
+        assert!(shares_memory(&module(&[(5, &[1, 0x03, 1, 2])])));
+        assert!(!shares_memory(&module(&[(5, &[1, 0x01, 1, 2])])));
+        assert!(!shares_memory(&module(&[(5, &[1, 0x00, 1])])));
+        // What does not read as a module.
+        assert!(!shares_memory(b"not wasm"));
+        assert!(!shares_memory(&module(&[(5, &[9])])));
+        assert!(!shares_memory(&[]));
     }
 }

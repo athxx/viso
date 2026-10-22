@@ -1214,9 +1214,10 @@ pub enum WebTarget {
 /// What `viso serve` serves, and where.
 #[derive(Debug, Args)]
 pub struct ServeArgs {
-    /// The web target: `[web] default_target` when omitted.
+    /// The web targets, each once and each served under its own path when
+    /// there are several: `[web] default_target` when omitted.
     #[arg(value_enum)]
-    pub target: Option<WebTarget>,
+    pub targets: Vec<WebTarget>,
     /// The address to listen at; one off the loopback interface needs
     /// `--lan`, and `0.0.0.0` with it listens at every interface.
     #[arg(long, value_name = "IP")]
@@ -1615,15 +1616,23 @@ mod tests {
         assert!(matches!(
             &cli.command,
             Command::Serve(ServeArgs {
-                target: Some(WebTarget::Gpu),
+                targets,
                 host: Some(_),
                 port: Some(9000),
                 lan: true,
                 open: false,
                 ..
-            })
+            }) if targets[..] == [WebTarget::Gpu]
+        ));
+        let cli =
+            Cli::try_parse_from(["viso", "serve", "web-gpu", "web-dom", "web-hybrid"]).unwrap();
+        assert!(matches!(
+            &cli.command,
+            Command::Serve(ServeArgs { targets, .. })
+                if targets[..] == [WebTarget::Gpu, WebTarget::Dom, WebTarget::Hybrid]
         ));
         assert!(Cli::try_parse_from(["viso", "serve", "ios"]).is_err());
+        assert!(Cli::try_parse_from(["viso", "serve", "web-gpu", "ios"]).is_err());
         assert!(Cli::try_parse_from(["viso", "serve", "--host", "lan.example"]).is_err());
     }
 

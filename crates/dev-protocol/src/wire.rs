@@ -83,9 +83,10 @@ pub const DEV_PREWARM_ENV: &str = "VISO_DEV_PREWARM";
 /// The largest frame either side writes or reads.
 pub const MAX_FRAME: usize = 4 << 20;
 
-/// Where on the web dev server a browser runtime opens its dev channel: a
-/// WebSocket at `ws://<dev channel address><WEB_DEV_PATH>`, each binary
-/// message carrying frames as the TCP channel does.
+/// Where on the web dev server a browser runtime opens its dev channel,
+/// beside its page: a WebSocket at `ws://<host><page directory><WEB_DEV_PATH>`
+/// (the directory empty for a page at `/`, `/web-gpu` for one at
+/// `/web-gpu/`), each binary message carrying frames as the TCP channel does.
 pub const WEB_DEV_PATH: &str = "/__viso/dev";
 
 /// The close code the web dev server ends a page's dev channel with once it

@@ -117,10 +117,12 @@ pub(crate) enum Deploy {
     },
     /// A device target's board, over SSH.
     Board(Box<board::Board>),
-    /// The pages `server` serves; the first launch opens `browser` (the
-    /// default one when `None`) unless it is not to `open` one.
+    /// The pages of `lane` of `server`, which the session's web lanes share;
+    /// the first launch opens `browser` (the default one when `None`) unless
+    /// it is not to `open` one.
     Browser {
-        server: web::WebServer,
+        server: Arc<web::WebServer>,
+        lane: web::PageLane,
         browser: Option<String>,
         open: bool,
         launched: bool,
@@ -544,6 +546,7 @@ impl Deploy {
             }
             Deploy::Browser {
                 server,
+                lane,
                 browser,
                 open,
                 launched,
@@ -553,12 +556,12 @@ impl Deploy {
                     .into_iter()
                     .map(|(name, value)| (name.to_owned(), value))
                     .collect();
-                server.serve(artifact.to_owned(), page, restore);
+                server.serve(*lane, artifact.to_owned(), page, restore);
                 if std::mem::replace(launched, true) {
                     // The open pages load the new build.
-                    server.reload_pages();
+                    server.reload_pages(*lane);
                 } else if *open {
-                    web::open_browser(&server.url(), browser.as_deref())?;
+                    web::open_browser(&server.url(*lane), browser.as_deref())?;
                 }
                 Ok(App {
                     process: None,

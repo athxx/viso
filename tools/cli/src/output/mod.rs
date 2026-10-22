@@ -678,18 +678,34 @@ impl Output {
         matches!(self.form, Form::Human)
     }
 
-    /// Reports the dev server's addresses, its own and the one other devices
-    /// load the page at: a `server` event naming the latter when there is
-    /// one, or a line on stderr.
-    pub fn server(&mut self, local: std::net::SocketAddr, network: Option<std::net::SocketAddr>) {
+    /// Reports where the dev server serves the web lane `target`, at `path`
+    /// of its own address and of the one other devices load the page at: a
+    /// `server` event naming the latter when there is one, or a line on
+    /// stderr, naming the target when it is served under its own path.
+    pub fn server(
+        &mut self,
+        target: &str,
+        path: &str,
+        local: std::net::SocketAddr,
+        network: Option<std::net::SocketAddr>,
+    ) {
         match &mut self.form {
-            Form::Json(stream) => stream.server(network.unwrap_or(local), network.is_some()),
-            Form::Human => match network {
-                None => eprintln!("[viso] serving at http://{local}/"),
-                Some(network) => {
-                    eprintln!("[viso] serving at http://{local}/ and http://{network}/")
+            Form::Json(stream) => {
+                stream.server(target, network.unwrap_or(local), path, network.is_some())
+            }
+            Form::Human => {
+                let what = if path == "/" {
+                    String::new()
+                } else {
+                    format!(" `{target}`")
+                };
+                match network {
+                    None => eprintln!("[viso] serving{what} at http://{local}{path}"),
+                    Some(network) => eprintln!(
+                        "[viso] serving{what} at http://{local}{path} and http://{network}{path}"
+                    ),
                 }
-            },
+            }
         }
     }
 

@@ -341,9 +341,6 @@ fn misplaced(args: &RunArgs, lanes: &[(Target, Option<Platform>)]) -> Option<Str
                 .into(),
         );
     }
-    if lanes.iter().filter(|(target, _)| target.is_web()).count() > 1 {
-        return Some("a session serves one web target, from its one page server".into());
-    }
     let any = |fits: fn(Target, Option<Platform>) -> bool| {
         lanes
             .iter()
@@ -586,7 +583,11 @@ pub(super) fn session(
         Arc::new(move |event| tx.send(Incoming::Link(event)).is_ok())
     };
     let named = preps.len() > 1;
+    // The web lanes share one page server, each under its target when there
+    // are several.
+    let pages_named = preps.iter().filter(|prep| prep.target.is_web()).count() > 1;
     let mut listen = Some(listen);
+    let mut pages: Option<Arc<web::WebServer>> = None;
     let mut triples: Vec<Option<String>> = Vec::with_capacity(preps.len());
     let mut lanes = Vec::with_capacity(preps.len());
     let mut channels = Vec::with_capacity(preps.len());
@@ -632,14 +633,7 @@ pub(super) fn session(
         };
         let deploy = match (&profile, sdk, board) {
             (_, _, Some(board)) => Deploy::Board(Box::new(board)),
-            (None, _, None) if target == Target::WebGpu => {
-                let port = project
-                    .manifest
-                    .web
-                    .serve
-                    .port
-                    .as_ref()
-                    .map_or(web::DEFAULT_PORT, |port| port.value);
+            (None, _, None) if target.is_web() => {
                 let log: web::PageLog = {
                     let tx = tx.clone();
                     let prefix = lane_prefix(named, target);
@@ -652,26 +646,45 @@ pub(super) fn session(
                         .is_ok()
                     })
                 };
-                let listen = listen.take().expect("a session has one web lane");
-                match web::WebServer::bind(listen, port, expect.clone(), Arc::clone(&deliver), log)
-                {
-                    Ok(server) => Deploy::Browser {
-                        server,
-                        browser: args.browser.clone().filter(|b| b != "none"),
-                        open: open.unwrap_or_else(|| {
-                            args.open
-                                || (args.browser.as_deref() != Some("none")
-                                    && (!ctx.global.json || args.browser.is_some()))
-                        }),
-                        launched: false,
-                    },
-                    Err(error) => {
-                        return out.failure(
-                            ENV_DEV_CHANNEL,
-                            &format!("cannot open the web dev server: {error}"),
-                            &[],
-                        );
+                let server = match &pages {
+                    Some(server) => Arc::clone(server),
+                    None => {
+                        let port = project
+                            .manifest
+                            .web
+                            .serve
+                            .port
+                            .as_ref()
+                            .map_or(web::DEFAULT_PORT, |port| port.value);
+                        let listen = listen.take().expect("a session has one page server");
+                        match web::WebServer::bind(
+                            listen,
+                            port,
+                            expect.clone(),
+                            Arc::clone(&deliver),
+                        ) {
+                            Ok(server) => Arc::clone(pages.insert(Arc::new(server))),
+                            Err(error) => {
+                                return out.failure(
+                                    ENV_DEV_CHANNEL,
+                                    &format!("cannot open the web dev server: {error}"),
+                                    &[],
+                                );
+                            }
+                        }
                     }
+                };
+                let lane = server.lane(pages_named.then(|| target.as_str()), log);
+                Deploy::Browser {
+                    server,
+                    lane,
+                    browser: args.browser.clone().filter(|b| b != "none"),
+                    open: open.unwrap_or_else(|| {
+                        args.open
+                            || (args.browser.as_deref() != Some("none")
+                                && (!ctx.global.json || args.browser.is_some()))
+                    }),
+                    launched: false,
                 }
             }
             (None, _, None) => Deploy::Host {
@@ -875,6 +888,7 @@ pub(super) fn session(
         Err(code) => return code,
     };
     let mut threads = Vec::new();
+    let mut network_warned = false;
     for ((lane, exe), channel_ip) in lanes.iter_mut().zip(&exes).zip(channels) {
         lane.builds.launched(exe);
         if let Deploy::Emulator { device, .. } = &mut lane.deploy {
@@ -960,15 +974,25 @@ pub(super) fn session(
                 ),
             );
         }
-        if let Deploy::Browser { server, .. } = &lane.deploy {
-            out.server(server.addr(), server.network_addr());
+        if let Deploy::Browser {
+            server, lane: page, ..
+        } = &lane.deploy
+        {
+            out.server(
+                lane.target.as_str(),
+                &server.path(*page),
+                server.addr(),
+                server.network_addr(),
+            );
             if server.network_addr().is_some() {
-                out.log(
-                    "warn",
-                    "tool",
-                    "the page is served to the network: any device on it can load it and \
-                     drive this session",
-                );
+                if !std::mem::replace(&mut network_warned, true) {
+                    out.log(
+                        "warn",
+                        "tool",
+                        "the page is served to the network: any device on it can load it and \
+                         drive this session",
+                    );
+                }
                 if lane.target == Target::WebGpu {
                     out.log(
                         "warn",
