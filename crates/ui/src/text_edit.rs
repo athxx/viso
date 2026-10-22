@@ -207,6 +207,63 @@ pub enum Unit {
     Paragraph,
 }
 
+/// Which end of a selection a handle holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionEnd {
+    /// The end the text starts from.
+    Start,
+    /// The end the text runs to.
+    End,
+}
+
+/// What a finger or a pen does to a text field. A touch selection shows
+/// handles at its ends that drag them, and the edit menu shows beside it once
+/// the finger lifts; a mouse or a key ends both.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TouchEdit {
+    /// A tap at the point, in window space. On a field that `had_focus`, a
+    /// tap on the caret or inside the selection shows or hides the edit menu;
+    /// any other tap places the caret.
+    Tap { x: f32, y: f32, had_focus: bool },
+    /// A double or triple tap: selects the word or the paragraph at the point
+    /// and shows the edit menu.
+    Select { x: f32, y: f32, unit: Unit },
+    /// A long press at the point: selects the word under it when `word`,
+    /// else (and past the end of a line) places the caret there; the finger
+    /// then carries the caret, or the selection's end by whole words, until it
+    /// lifts.
+    Hold { x: f32, y: f32, word: bool },
+    /// The finger that pressed long moved to the point.
+    Follow { x: f32, y: f32 },
+    /// The finger that pressed long or dragged a handle lifted: the edit menu
+    /// shows.
+    Lift,
+    /// A handle dragged its end of the selection to the point; the selection
+    /// keeps a grapheme at least.
+    Handle { end: SelectionEnd, x: f32, y: f32 },
+    /// The edit menu's Select All: selects the whole text, keeping the
+    /// handles and the menu.
+    SelectAll,
+    /// The edit menu closed on its own.
+    MenuClosed,
+    /// The field lost the focus: its handles and menu go.
+    End,
+}
+
+/// What a touch made of a field's selection: whether its handles and the
+/// edit menu show, and whether a finger is carrying it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TouchState {
+    /// The selection shows handles.
+    pub handles: bool,
+    /// The edit menu shows.
+    pub menu: bool,
+    /// A finger that pressed long carries the caret or the selection.
+    pub held: bool,
+    /// A finger drags a handle.
+    pub dragging: bool,
+}
+
 /// A self-contained editing command an input handler records without reading the
 /// buffer. [`reconcile`] applies it to the node's [`Buffer`] in the layout phase.
 ///
@@ -266,6 +323,8 @@ pub enum EditIntent {
     Settle,
     /// Put back the number a number field last settled on.
     Revert,
+    /// A finger or a pen editing the field.
+    Touch(TouchEdit),
 }
 
 /// The drawn geometry of one editable node's text, as the runtime last laid it
@@ -383,6 +442,8 @@ pub struct Buffer {
     settled: f64,
     /// The number a scrub under way began from.
     scrub_from: Option<f64>,
+    /// What a touch made of the selection.
+    touch: TouchState,
     /// Advances on every change to `text`.
     revision: Revision,
     /// Queued intents recorded since the last reconcile, applied in order. A
@@ -424,6 +485,7 @@ impl Buffer {
             granule: None,
             settled: 0.0,
             scrub_from: None,
+            touch: TouchState::default(),
             revision: Revision::default(),
             pending: Vec::new(),
         }
@@ -672,12 +734,17 @@ impl Buffer {
         }
         if !matches!(
             intent,
-            EditIntent::PlaceAt { extend: true, .. } | EditIntent::SelectAt { .. }
+            EditIntent::PlaceAt { extend: true, .. }
+                | EditIntent::SelectAt { .. }
+                | EditIntent::Touch(TouchEdit::Hold { .. } | TouchEdit::Follow { .. })
         ) {
             self.granule = None;
         }
         if !matches!(intent, EditIntent::Scrub(_)) {
             self.scrub_from = None;
+        }
+        if !matches!(intent, EditIntent::Touch(_)) {
+            self.touch = TouchState::default();
         }
         match intent {
             EditIntent::Insert(s) => self.type_text(s),
@@ -727,17 +794,7 @@ impl Buffer {
                     }
                 }
             }
-            EditIntent::SelectAt { x, y, unit } => {
-                if let Some(at) = placed.and_then(|p| self.under(p, *x, *y)) {
-                    self.history.close();
-                    let (start, end) = self.unit_range(*unit, at.offset);
-                    self.sel = Selection {
-                        anchor: TextPosition::downstream(start),
-                        focus: TextPosition::upstream(end),
-                    };
-                    self.granule = Some((*unit, start, end));
-                }
-            }
+            EditIntent::SelectAt { x, y, unit } => self.select_at(placed, *x, *y, *unit),
             EditIntent::Compose { text, caret } => self.compose(text, *caret),
             EditIntent::CommitCompose(text) => self.commit_compose(text),
             EditIntent::Undo => self.walk_history(true),
@@ -773,7 +830,161 @@ impl Buffer {
                     self.show_number(self.settled, EditKind::Other);
                 }
             }
+            EditIntent::Touch(touch) => self.touch(*touch, placed),
         }
+    }
+
+    /// Select the `unit` holding the grapheme at window point `(x, y)`; a
+    /// drag on extends the selection by whole ones.
+    fn select_at(&mut self, placed: Option<Placed<'_>>, x: f32, y: f32, unit: Unit) {
+        if let Some(at) = placed.and_then(|p| self.under(p, x, y)) {
+            self.history.close();
+            let (start, end) = self.unit_range(unit, at.offset);
+            self.sel = Selection {
+                anchor: TextPosition::downstream(start),
+                focus: TextPosition::upstream(end),
+            };
+            self.granule = Some((unit, start, end));
+        }
+    }
+
+    /// Apply what a finger or a pen did.
+    fn touch(&mut self, touch: TouchEdit, placed: Option<Placed<'_>>) {
+        match touch {
+            TouchEdit::Tap { x, y, had_focus } => {
+                let Some(at) = placed.and_then(|p| self.point(p, x, y)) else {
+                    return;
+                };
+                let (start, end) = self.sel.logical_range();
+                let on = if start == end {
+                    at.offset == start
+                } else {
+                    start <= at.offset && at.offset <= end
+                };
+                if had_focus && on {
+                    self.touch.menu = !self.touch.menu;
+                    self.touch.handles = start != end;
+                } else {
+                    self.history.close();
+                    self.sel = Selection::caret(at);
+                    self.touch = TouchState::default();
+                }
+            }
+            TouchEdit::Select { x, y, unit } => {
+                self.select_at(placed, x, y, unit);
+                self.touch = TouchState {
+                    handles: !self.sel.is_caret(),
+                    menu: true,
+                    ..TouchState::default()
+                };
+            }
+            TouchEdit::Hold { x, y, word } => {
+                let Some(p) = placed else {
+                    return;
+                };
+                let Some(at) = self.point(p, x, y) else {
+                    return;
+                };
+                self.history.close();
+                if word && !self.past_line_end(p, at, x) {
+                    self.select_at(placed, x, y, Unit::Word);
+                } else {
+                    self.sel = Selection::caret(at);
+                }
+                self.touch = TouchState {
+                    handles: !self.sel.is_caret(),
+                    held: true,
+                    ..TouchState::default()
+                };
+            }
+            TouchEdit::Follow { x, y } => {
+                if !self.touch.held {
+                    return;
+                }
+                if self.granule.is_some() {
+                    self.apply_one(&EditIntent::PlaceAt { x, y, extend: true }, placed);
+                } else if let Some(at) = placed.and_then(|p| self.point(p, x, y)) {
+                    self.sel = Selection::caret(at);
+                }
+                self.touch = TouchState {
+                    handles: !self.sel.is_caret(),
+                    held: true,
+                    ..TouchState::default()
+                };
+            }
+            TouchEdit::Lift => {
+                if self.touch.held || self.touch.dragging {
+                    self.touch = TouchState {
+                        handles: !self.sel.is_caret(),
+                        menu: true,
+                        ..TouchState::default()
+                    };
+                }
+            }
+            TouchEdit::Handle { end, x, y } => {
+                let Some(at) = placed.and_then(|p| self.point(p, x, y)) else {
+                    return;
+                };
+                let (start, stop) = self.sel.logical_range();
+                if start == stop {
+                    return;
+                }
+                let graphemes = Segmenter::new(&self.text);
+                self.history.close();
+                self.sel = match end {
+                    SelectionEnd::Start => Selection {
+                        anchor: TextPosition::upstream(stop),
+                        focus: TextPosition::downstream(
+                            at.offset.min(graphemes.prev_grapheme(stop)),
+                        ),
+                    },
+                    SelectionEnd::End => Selection {
+                        anchor: TextPosition::downstream(start),
+                        focus: TextPosition::upstream(
+                            at.offset.max(graphemes.next_grapheme(start)),
+                        ),
+                    },
+                };
+                self.touch = TouchState {
+                    handles: true,
+                    dragging: true,
+                    ..TouchState::default()
+                };
+            }
+            TouchEdit::SelectAll => {
+                self.history.close();
+                self.sel = Selection {
+                    anchor: TextPosition::downstream(TextOffset(0)),
+                    focus: TextPosition::upstream(TextOffset(self.text.len())),
+                };
+                self.touch = TouchState {
+                    handles: !self.text.is_empty(),
+                    menu: true,
+                    ..TouchState::default()
+                };
+            }
+            TouchEdit::MenuClosed => self.touch.menu = false,
+            TouchEdit::End => self.touch = TouchState::default(),
+        }
+    }
+
+    /// Whether window point `x`, resolved to `at`, lies past the end of
+    /// `at`'s line: in the empty space after its text.
+    fn past_line_end(&self, placed: Placed<'_>, at: TextPosition, x: f32) -> bool {
+        let layout = placed.layout;
+        let drawn = self.drawn_position(at);
+        let Some((row, line)) = layout.line_at(drawn) else {
+            return true;
+        };
+        let (from, to) = line.logical_range;
+        let local = x - placed.origin.0;
+        from == to || (drawn.offset == to && local > layout.caret_x(row, drawn))
+    }
+
+    /// What a touch made of the selection.
+    #[inline]
+    pub fn touch_state(&self) -> TouchState {
+        self.touch
     }
 
     /// The number a number field of `format` steps from: what its text
@@ -1288,6 +1499,8 @@ impl Buffer {
         marks.selection.clear();
         marks.underlines.clear();
         marks.caret = None;
+        marks.handles = None;
+        marks.menu = None;
         let sel = Selection {
             anchor: self.drawn_position(self.sel.anchor),
             focus: self.drawn_position(self.sel.focus),
@@ -1343,6 +1556,9 @@ impl Buffer {
             if state.active && state.caret_on && sel.is_caret() {
                 marks.caret = caret;
             }
+            if state.active {
+                self.mark_touch(layout, sel, caret, marks);
+            }
         }
         let scroll = if !state.focused && !self.holds_lines() {
             Vec2::ZERO
@@ -1364,6 +1580,43 @@ impl Buffer {
             scroll
         };
         marks.scroll = marks.clamped(scroll, view);
+    }
+}
+
+impl Buffer {
+    /// Mark what a touch made of the drawn selection `sel`: a handle at each
+    /// end while it shows them, and what the edit menu points at — the
+    /// selection's bounds, or the `caret` — while it shows and no finger
+    /// carries the selection.
+    fn mark_touch(
+        &self,
+        layout: EditLayout<'_>,
+        sel: Selection,
+        caret: Option<Rect>,
+        marks: &mut FieldMarks,
+    ) {
+        let lh = layout.line_height;
+        if self.touch.handles && !sel.is_caret() {
+            let (start, end) = sel.logical_range();
+            let stem = |at: TextPosition| {
+                layout.line_at(at).map(|(row, _)| Rect {
+                    x: layout.caret_x(row, at),
+                    y: row as f32 * lh,
+                    w: 0.0,
+                    h: lh,
+                })
+            };
+            marks.handles = stem(TextPosition::downstream(start))
+                .zip(stem(TextPosition::upstream(end)))
+                .map(|(start, end)| [start, end]);
+        }
+        if self.touch.menu && !self.touch.held && !self.touch.dragging {
+            marks.menu = if sel.is_caret() {
+                caret
+            } else {
+                marks.selection.iter().copied().reduce(Rect::union)
+            };
+        }
     }
 }
 
@@ -2206,6 +2459,195 @@ mod tests {
             (TextOffset(6), TextOffset(12)),
             "a key ends the unit"
         );
+    }
+
+    #[test]
+    fn a_long_press_selects_a_word_that_handles_drag_and_the_lift_shows_the_menu() {
+        let text = "hello wide world";
+        let lines = lines_for(text);
+        let p = Some(placed(text, &lines));
+        let at = |i: f32| 100.0 + 10.0 * i + 2.0;
+        let touch = |b: &mut Buffer, t: TouchEdit| b.apply_one(&EditIntent::Touch(t), p);
+        let mut b = buf(text, 0);
+        touch(
+            &mut b,
+            TouchEdit::Hold {
+                x: at(7.0),
+                y: 55.0,
+                word: true,
+            },
+        );
+        assert_eq!(b.sel.logical_range(), (TextOffset(6), TextOffset(10)));
+        let held = b.touch_state();
+        assert!(held.handles && held.held && !held.menu, "{held:?}");
+        touch(
+            &mut b,
+            TouchEdit::Follow {
+                x: at(12.0),
+                y: 55.0,
+            },
+        );
+        assert_eq!(
+            b.sel.logical_range(),
+            (TextOffset(6), TextOffset(16)),
+            "by words"
+        );
+        touch(&mut b, TouchEdit::Lift);
+        assert!(b.touch_state().menu && !b.touch_state().held);
+
+        touch(
+            &mut b,
+            TouchEdit::Handle {
+                end: SelectionEnd::Start,
+                x: at(8.0),
+                y: 55.0,
+            },
+        );
+        assert_eq!(b.sel.logical_range(), (TextOffset(8), TextOffset(16)));
+        assert!(!b.touch_state().menu, "no menu while a handle drags");
+        touch(
+            &mut b,
+            TouchEdit::Handle {
+                end: SelectionEnd::Start,
+                x: at(20.0),
+                y: 55.0,
+            },
+        );
+        assert_eq!(
+            b.sel.logical_range(),
+            (TextOffset(15), TextOffset(16)),
+            "a grapheme stays selected"
+        );
+        touch(
+            &mut b,
+            TouchEdit::Handle {
+                end: SelectionEnd::End,
+                x: at(0.0) - 2.0,
+                y: 55.0,
+            },
+        );
+        assert_eq!(b.sel.logical_range(), (TextOffset(15), TextOffset(16)));
+        touch(&mut b, TouchEdit::Lift);
+        assert!(b.touch_state().menu);
+
+        apply(
+            &mut b,
+            EditIntent::Move {
+                motion: Motion::Right,
+                extend: false,
+            },
+        );
+        assert_eq!(b.touch_state(), TouchState::default(), "a key ends it");
+    }
+
+    #[test]
+    fn a_tap_places_the_caret_or_on_it_toggles_the_menu() {
+        let text = "hello wide world";
+        let lines = lines_for(text);
+        let p = Some(placed(text, &lines));
+        let touch = |b: &mut Buffer, t: TouchEdit| b.apply_one(&EditIntent::Touch(t), p);
+        let mut b = buf(text, 0);
+        let tap = |i: f32, had_focus| TouchEdit::Tap {
+            x: 100.0 + 10.0 * i,
+            y: 55.0,
+            had_focus,
+        };
+        touch(&mut b, tap(3.0, false));
+        assert_eq!(at(&b), 3);
+        assert!(!b.touch_state().menu);
+        touch(&mut b, tap(3.2, true));
+        assert!(b.touch_state().menu, "on the caret");
+        touch(&mut b, tap(3.0, true));
+        assert!(!b.touch_state().menu, "again hides it");
+        touch(&mut b, tap(9.0, true));
+        assert_eq!(at(&b), 9);
+
+        touch(
+            &mut b,
+            TouchEdit::Select {
+                x: 100.0 + 72.0,
+                y: 55.0,
+                unit: Unit::Word,
+            },
+        );
+        assert_eq!(b.sel.logical_range(), (TextOffset(6), TextOffset(10)));
+        assert!(b.touch_state().menu && b.touch_state().handles);
+        touch(&mut b, tap(8.0, true));
+        assert_eq!(b.sel.logical_range(), (TextOffset(6), TextOffset(10)));
+        assert!(!b.touch_state().menu, "inside the selection");
+        touch(&mut b, TouchEdit::SelectAll);
+        assert_eq!(b.sel.logical_range(), (TextOffset(0), TextOffset(16)));
+        assert!(b.touch_state().menu);
+        touch(&mut b, TouchEdit::MenuClosed);
+        assert!(!b.touch_state().menu && b.touch_state().handles);
+    }
+
+    #[test]
+    fn a_long_press_past_a_line_or_on_apple_places_the_caret() {
+        let text = "hello";
+        let lines = lines_for(text);
+        let p = Some(placed(text, &lines));
+        let mut b = buf(text, 0);
+        b.apply_one(
+            &EditIntent::Touch(TouchEdit::Hold {
+                x: 190.0,
+                y: 55.0,
+                word: true,
+            }),
+            p,
+        );
+        assert_eq!(
+            b.sel,
+            Selection::caret(TextPosition::upstream(TextOffset(5)))
+        );
+        b.apply_one(
+            &EditIntent::Touch(TouchEdit::Hold {
+                x: 122.0,
+                y: 55.0,
+                word: false,
+            }),
+            p,
+        );
+        assert_eq!(at(&b), 2);
+        b.apply_one(
+            &EditIntent::Touch(TouchEdit::Follow { x: 140.0, y: 55.0 }),
+            p,
+        );
+        assert_eq!(at(&b), 4, "the finger carries the caret");
+        b.apply_one(&EditIntent::Touch(TouchEdit::Lift), p);
+        assert!(b.touch_state().menu && !b.touch_state().handles);
+    }
+
+    #[test]
+    fn a_touch_selection_marks_its_handles_and_where_the_menu_points() {
+        let text = "hello wide";
+        let lines = lines_for(text);
+        let view = Vec2 { x: 200.0, y: 12.0 };
+        let mut b = buf(text, 0);
+        b.sel = range(6, 10);
+        b.touch = TouchState {
+            handles: true,
+            menu: true,
+            ..TouchState::default()
+        };
+        let marks = marked(&b, layout(text, &lines), view, SHOWN, Vec2::ZERO);
+        assert_eq!(
+            marks.handles,
+            Some([
+                Rect::new(60.0, 0.0, 0.0, 12.0),
+                Rect::new(100.0, 0.0, 0.0, 12.0)
+            ])
+        );
+        assert_eq!(marks.menu, Some(Rect::new(60.0, 0.0, 40.0, 12.0)));
+        b.touch.dragging = true;
+        let marks = marked(&b, layout(text, &lines), view, SHOWN, Vec2::ZERO);
+        assert_eq!(marks.menu, None, "no menu while a handle drags");
+        let idle = MarkState {
+            active: false,
+            ..SHOWN
+        };
+        let marks = marked(&b, layout(text, &lines), view, idle, Vec2::ZERO);
+        assert_eq!((marks.handles, marks.menu), (None, None));
     }
 
     #[test]

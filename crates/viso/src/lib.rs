@@ -436,6 +436,21 @@ pub mod __test_support {
             ws.text_edits.get(node).map(|b| b.text.as_str())
         }
 
+        /// The selection of the focused text control in the launch window, as
+        /// a byte range of its text.
+        pub fn focused_selection(&self) -> Option<(usize, usize)> {
+            let ws = &self.driver.windows[0];
+            let node = ws.focused_text_node()?;
+            let (start, end) = ws.text_edits.get(node)?.sel.logical_range();
+            Some((start.0, end.0))
+        }
+
+        /// The edit menu last pushed to the platform for the launch window,
+        /// while it shows.
+        pub fn edit_menu(&self) -> Option<viso_platform::EditMenu> {
+            self.driver.windows[0].edit_menu
+        }
+
         /// The text entry last pushed to the platform for the launch window:
         /// `None` before any push, `Some(None)` once pushed clear.
         pub fn text_entry(&self) -> Option<Option<viso_platform::TextEntry>> {
@@ -852,6 +867,8 @@ struct WindowState {
     /// against it so a steady frame pushes nothing and the soft keyboard is
     /// shown or hidden only when focus moves into or out of text entry.
     text_entry: Option<Option<TextEntry>>,
+    /// The edit menu last pushed to the platform, while it shows.
+    edit_menu: Option<viso_platform::EditMenu>,
     /// The text field drawn with the focus last frame.
     marked: Option<NodeId>,
     /// The focused field's text and selection when its caret last moved, and
@@ -1105,6 +1122,7 @@ impl WindowState {
             changed: Vec::new(),
             root: None,
             text_entry: None,
+            edit_menu: None,
             marked: None,
             blink: None,
             revealed: None,
@@ -1810,6 +1828,46 @@ impl WindowState {
         None
     }
 
+    /// Recompute the edit menu the focused field shows and report whether it
+    /// differs from what was last pushed: what it points at, in logical
+    /// points and kept within the field's box, and the edits its selection
+    /// takes. None shows while the window is inactive.
+    fn edit_menu_changed(&mut self) -> bool {
+        let menu = self
+            .focused_text_node()
+            .filter(|_| self.active)
+            .and_then(|id| {
+                let at = self.store.field_marks(id)?.menu?;
+                let buffer = self.text_edits.get(id)?;
+                let scroll = self.store.field_marks(id)?.scroll;
+                let view = self.store.world(id);
+                let x = (view.x - scroll.x + at.x).max(view.x);
+                let y = (view.y - scroll.y + at.y).max(view.y);
+                let right = (view.x - scroll.x + at.x + at.w).min(view.x + view.w);
+                let bottom = (view.y - scroll.y + at.y + at.h).min(view.y + view.h);
+                let (start, end) = buffer.sel.logical_range();
+                let selected = start != end && !buffer.look.secure;
+                let whole = start.0 == 0 && end.0 == buffer.text.len();
+                Some(viso_platform::EditMenu {
+                    at: LogicalRect::new(
+                        x as f64,
+                        y as f64,
+                        (right - x).max(0.0) as f64,
+                        (bottom - y).max(0.0) as f64,
+                    ),
+                    cut: selected,
+                    copy: selected,
+                    paste: true,
+                    select_all: !buffer.text.is_empty() && !whole,
+                })
+            });
+        if self.edit_menu == menu {
+            return false;
+        }
+        self.edit_menu = menu;
+        true
+    }
+
     /// Recompute the text-entry area from the laid-out tree and report whether
     /// it differs from what was last pushed. The area is the caret's line box
     /// in the focused control, one logical pixel wide so a candidate window
@@ -1866,6 +1924,14 @@ impl WindowState {
             && let Some(old) = self.marked
         {
             self.mark_field(old, false, now);
+            if self
+                .text_edits
+                .get(old)
+                .is_some_and(|b| b.touch_state() != text_edit::TouchState::default())
+            {
+                self.store
+                    .queue_edit(old, text_edit::EditIntent::Touch(text_edit::TouchEdit::End));
+            }
             // A number field the focus leaves settles its text.
             if self.store.is_number_field(old) {
                 self.store.queue_edit(old, text_edit::EditIntent::Settle);
@@ -2386,6 +2452,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 | viso_runtime::InputSample::Text(_)
                 | viso_runtime::InputSample::Paste(_)
                 | viso_runtime::InputSample::ImePreedit(_)
+                | viso_runtime::InputSample::EditMenu(_)
         );
         match sample {
             viso_runtime::InputSample::Pointer(p) => {
@@ -2520,6 +2587,22 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 if c.cut {
                     buffer.queue(text_edit::EditIntent::Cut);
                     ws.settle_text_edits();
+                }
+            }
+            viso_runtime::InputSample::EditMenu(e) => {
+                // The menu's Select All selects the focused field's text and
+                // keeps the menu; a menu that closed on its own is no longer
+                // shown, so a later one is pushed afresh.
+                let edit = match e.action {
+                    viso_platform::EditMenuAction::SelectAll => text_edit::TouchEdit::SelectAll,
+                    viso_platform::EditMenuAction::Closed => {
+                        ws.edit_menu = None;
+                        text_edit::TouchEdit::MenuClosed
+                    }
+                };
+                if let Some(node) = ws.focused_text_node() {
+                    ws.store
+                        .queue_edit(node, text_edit::EditIntent::Touch(edit));
                 }
             }
             viso_runtime::InputSample::ImePreedit(p) => {
@@ -3218,6 +3301,11 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         if was_editing != entry.is_some() {
                             cx.show_soft_keyboard(ws.window, entry.is_some());
                         }
+                    }
+                    // The edit menu follows what a touch made of the focused
+                    // field's selection, where the platform has one.
+                    if cx.capabilities().edit_menu && ws.edit_menu_changed() {
+                        cx.set_edit_menu(ws.window, ws.edit_menu);
                     }
                 }
             }

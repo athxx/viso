@@ -16,25 +16,30 @@
 //! - The soft keyboard is shown by the system whenever the first responder
 //!   takes text; hiding it swaps in an empty input view, so the view stays
 //!   first responder (and keeps hardware keys) either way.
+//! - The edit menu is the system's: an edit-menu interaction on iOS 16 and
+//!   later, the shared menu controller before. Its items are the view's
+//!   `copy:`, `cut:`, `paste:` and `selectAll:` actions, offered as the app's
+//!   menu allows.
 
 use std::cell::{Cell, RefCell};
 
 use objc2::rc::{Retained, Weak};
-use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject, Sel};
+use objc2::runtime::{AnyClass, AnyObject, NSObject, NSObjectProtocol, ProtocolObject, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{
     NSArray, NSComparisonResult, NSDate, NSDictionary, NSRange, NSSet, NSString, NSTimer, NSValue,
 };
 use objc2_ui_kit::{
-    UIEvent, UIEventButtonMask, UIGestureRecognizer, UIGestureRecognizerState,
-    UIHoverGestureRecognizer, UIKeyInput, UIKeyboardType, UIPanGestureRecognizer, UIPress,
-    UIPressesEvent, UIResponder, UIReturnKeyType, UIScrollTypeMask, UITextAutocapitalizationType,
-    UITextAutocorrectionType, UITextInput, UITextInputDelegate, UITextInputStringTokenizer,
-    UITextInputTokenizer, UITextInputTraits, UITextPosition, UITextRange, UITextSelectionRect,
-    UITextSmartDashesType, UITextSmartInsertDeleteType, UITextSmartQuotesType,
-    UITextSpellCheckingType, UITouch, UITouchPhase, UITouchType, UITraitCollection,
-    UITraitEnvironment, UIView,
+    UIEditMenuConfiguration, UIEditMenuInteraction, UIEditMenuInteractionAnimating,
+    UIEditMenuInteractionDelegate, UIEvent, UIEventButtonMask, UIGestureRecognizer,
+    UIGestureRecognizerState, UIHoverGestureRecognizer, UIKeyInput, UIKeyboardType,
+    UIPanGestureRecognizer, UIPasteboard, UIPress, UIPressesEvent, UIResponder, UIReturnKeyType,
+    UIScrollTypeMask, UITextAutocapitalizationType, UITextAutocorrectionType, UITextInput,
+    UITextInputDelegate, UITextInputStringTokenizer, UITextInputTokenizer, UITextInputTraits,
+    UITextPosition, UITextRange, UITextSelectionRect, UITextSmartDashesType,
+    UITextSmartInsertDeleteType, UITextSmartQuotesType, UITextSpellCheckingType, UITouch,
+    UITouchPhase, UITouchType, UITraitCollection, UITraitEnvironment, UIView,
 };
 
 use super::{drive, push, read_pasteboard, report_appearance};
@@ -43,7 +48,7 @@ use crate::backend::ios_translate::{
     REPEAT_DELAY_SECS, REPEAT_INTERVAL_SECS, TouchIds, is_command_key, key_code, keyboard_overlap,
     modifiers, pressure, repeats,
 };
-use crate::control::{InputKind, LogicalRect, TextEntry, WindowId};
+use crate::control::{EditMenu, EditMenuAction, InputKind, LogicalRect, TextEntry, WindowId};
 use crate::event::{
     ClipboardReply, ClipboardShortcut, KeyCode, LogicalInsets, Modifiers, PointerButtons,
     PointerId, PointerKind, PointerPhase, RawEvent, RawImePreedit, RawKey, RawPointer, RawScroll,
@@ -81,6 +86,13 @@ pub(super) struct ViewIvars {
     tokenizer: RefCell<Option<Retained<UITextInputStringTokenizer>>>,
     /// The held key being repeated, with its timer and modifiers.
     repeat: RefCell<Option<(KeyCode, Modifiers, Retained<NSTimer>)>>,
+    /// The edit menu while it shows.
+    edit_menu: Cell<Option<EditMenu>>,
+    /// The edit-menu interaction, on iOS 16 and later.
+    menu_interaction: RefCell<Option<Retained<UIEditMenuInteraction>>>,
+    /// The menu is being closed or replaced at the app's word, so its
+    /// closing is not the user's.
+    menu_replacing: Cell<bool>,
 }
 
 define_class!(
@@ -271,10 +283,32 @@ define_class!(
             super::guarded(|| self.clipboard(ClipboardShortcut::Paste));
         }
 
+        #[unsafe(method(selectAll:))]
+        fn select_all(&self, _sender: Option<&AnyObject>) {
+            super::guarded(|| {
+                self.menu_picked();
+                push(RawEvent::EditMenu {
+                    window: self.ivars().window,
+                    action: EditMenuAction::SelectAll,
+                });
+                drive();
+            });
+        }
+
         #[unsafe(method(canPerformAction:withSender:))]
         fn can_perform_action(&self, action: Sel, sender: Option<&AnyObject>) -> bool {
-            if action == sel!(copy:) || action == sel!(cut:) || action == sel!(paste:) {
-                true
+            // While the edit menu shows, its items are what the app offers;
+            // otherwise the clipboard keys always reach the app.
+            let menu = self.ivars().edit_menu.get();
+            if action == sel!(copy:) {
+                menu.is_none_or(|m| m.copy)
+            } else if action == sel!(cut:) {
+                menu.is_none_or(|m| m.cut)
+            } else if action == sel!(paste:) {
+                // SAFETY: a plain property read on the general pasteboard.
+                menu.is_none_or(|m| m.paste && unsafe { UIPasteboard::generalPasteboard().hasStrings() })
+            } else if action == sel!(selectAll:) {
+                menu.is_some_and(|m| m.select_all)
             } else {
                 // SAFETY: forwards to UIResponder's implementation.
                 unsafe { msg_send![super(self), canPerformAction: action, withSender: sender] }
@@ -284,6 +318,32 @@ define_class!(
         #[unsafe(method_id(inputView))]
         fn input_view(&self) -> Option<Retained<UIView>> {
             self.keyboard_stand_in()
+        }
+    }
+
+    unsafe impl UIEditMenuInteractionDelegate for VisoView {
+        #[unsafe(method(editMenuInteraction:targetRectForConfiguration:))]
+        fn edit_menu_target(
+            &self,
+            _interaction: &UIEditMenuInteraction,
+            _configuration: &UIEditMenuConfiguration,
+        ) -> CGRect {
+            self.ivars()
+                .edit_menu
+                .get()
+                .map_or(CGRect::default(), |m| cg_rect(m.at))
+        }
+
+        #[unsafe(method(editMenuInteraction:willDismissMenuForConfiguration:animator:))]
+        fn edit_menu_will_dismiss(
+            &self,
+            _interaction: &UIEditMenuInteraction,
+            _configuration: &UIEditMenuConfiguration,
+            _animator: &ProtocolObject<dyn UIEditMenuInteractionAnimating>,
+        ) {
+            if !self.ivars().menu_replacing.get() {
+                super::guarded(|| self.menu_closed());
+            }
         }
     }
 
@@ -675,6 +735,9 @@ impl VisoView {
             input_delegate: RefCell::new(Weak::default()),
             tokenizer: RefCell::new(None),
             repeat: RefCell::new(None),
+            edit_menu: Cell::new(None),
+            menu_interaction: RefCell::new(None),
+            menu_replacing: Cell::new(false),
         });
         // SAFETY: `initWithFrame:` is UIView's designated initializer.
         let view: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
@@ -705,7 +768,91 @@ impl VisoView {
         scroll.setAllowedScrollTypesMask(UIScrollTypeMask::All);
         scroll.setCancelsTouchesInView(false);
         view.addGestureRecognizer(&scroll);
+        if AnyClass::get(c"UIEditMenuInteraction").is_some() {
+            let delegate = ProtocolObject::<dyn UIEditMenuInteractionDelegate>::from_ref(&*view);
+            let interaction = UIEditMenuInteraction::initWithDelegate(
+                UIEditMenuInteraction::alloc(mtm),
+                Some(delegate),
+            );
+            view.addInteraction(ProtocolObject::from_ref(&*interaction));
+            *view.ivars().menu_interaction.borrow_mut() = Some(interaction);
+        }
         view
+    }
+
+    /// Show `menu` beside the selection, move it or change its items while
+    /// it shows, or (`None`) close it.
+    pub(super) fn set_edit_menu(&self, menu: Option<EditMenu>) {
+        let ivars = self.ivars();
+        let was = ivars.edit_menu.replace(menu);
+        if was == menu {
+            return;
+        }
+        let interaction = ivars.menu_interaction.borrow().clone();
+        ivars.menu_replacing.set(true);
+        match (menu, &interaction) {
+            (None, Some(interaction)) => interaction.dismissMenu(),
+            (Some(m), Some(interaction)) => match was {
+                Some(w)
+                    if (w.cut, w.copy, w.paste, w.select_all)
+                        == (m.cut, m.copy, m.paste, m.select_all) =>
+                {
+                    interaction.updateVisibleMenuPositionAnimated(false);
+                }
+                Some(_) => {
+                    interaction.reloadVisibleMenu();
+                    interaction.updateVisibleMenuPositionAnimated(false);
+                }
+                None => {
+                    if !self.isFirstResponder() {
+                        self.becomeFirstResponder();
+                    }
+                    let at = cg_rect(m.at);
+                    let point = CGPoint {
+                        x: at.origin.x + at.size.width * 0.5,
+                        y: at.origin.y,
+                    };
+                    // SAFETY: no identifier is a valid one.
+                    let config = unsafe {
+                        UIEditMenuConfiguration::configurationWithIdentifier_sourcePoint(
+                            None,
+                            point,
+                            MainThreadMarker::from(self),
+                        )
+                    };
+                    interaction.presentEditMenuWithConfiguration(&config);
+                }
+            },
+            (None, None) => menu_controller(self).hideMenuFromView(self),
+            (Some(m), None) => {
+                if !self.isFirstResponder() {
+                    self.becomeFirstResponder();
+                }
+                menu_controller(self).showMenuFromView_rect(self, cg_rect(m.at));
+            }
+        }
+        ivars.menu_replacing.set(false);
+    }
+
+    /// The user picked an item of the edit menu, which closes it.
+    fn menu_picked(&self) {
+        if self.ivars().edit_menu.get().is_some()
+            && self.ivars().menu_interaction.borrow().is_none()
+        {
+            // The menu controller says nothing of its closing.
+            self.menu_closed();
+        }
+    }
+
+    /// The edit menu closed on its own.
+    fn menu_closed(&self) {
+        if self.ivars().edit_menu.take().is_some() {
+            push(RawEvent::EditMenu {
+                window: self.ivars().window,
+                action: EditMenuAction::Closed,
+            });
+            drive();
+        }
     }
 
     /// The input view in place of the soft keyboard: none (the system
@@ -996,6 +1143,7 @@ impl VisoView {
     }
 
     fn clipboard(&self, shortcut: ClipboardShortcut) {
+        self.menu_picked();
         let window = self.ivars().window;
         match shortcut {
             ClipboardShortcut::Copy | ClipboardShortcut::Cut => push(RawEvent::CopyRequested {
@@ -1055,6 +1203,24 @@ impl VisoView {
             ),
             None => CGRect::default(),
         }
+    }
+}
+
+/// The shared menu controller: the edit menu before iOS 16, which has no
+/// edit-menu interaction.
+#[allow(deprecated)]
+fn menu_controller(view: &VisoView) -> Retained<objc2_ui_kit::UIMenuController> {
+    objc2_ui_kit::UIMenuController::sharedMenuController(MainThreadMarker::from(view))
+}
+
+/// `r` as a rectangle of the view.
+fn cg_rect(r: LogicalRect) -> CGRect {
+    CGRect {
+        origin: CGPoint { x: r.x, y: r.y },
+        size: CGSize {
+            width: r.width.max(1.0),
+            height: r.height.max(1.0),
+        },
     }
 }
 

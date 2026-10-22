@@ -54,8 +54,8 @@ pub use accessibility::{
     SemanticsLive, SemanticsRect, SemanticsRole, SemanticsState,
 };
 pub use control::{
-    ControlFlow, DEFAULT_FRAME_BUDGET, InputKind, LogicalRect, PlatformCaps, PlatformError,
-    TextEntry, WindowChrome, WindowConfig, WindowId,
+    ControlFlow, DEFAULT_FRAME_BUDGET, EditMenu, EditMenuAction, InputKind, LogicalRect,
+    PlatformCaps, PlatformError, TextEntry, WindowChrome, WindowConfig, WindowId,
 };
 pub use event::{
     AcceptCell, Appearance, ClipboardReply, ClipboardShortcut, ColorScheme, CursorIcon,
@@ -180,6 +180,15 @@ pub trait PlatformApp {
 
     /// Show or hide the on-screen keyboard. A no-op where there is none.
     fn show_soft_keyboard(&mut self, window: WindowId, show: bool);
+
+    /// Show the system edit menu for the focused text field's selection, or
+    /// move it to `menu`'s place and items while it shows; `None` closes it.
+    /// What the user picks arrives as [`RawEvent::CopyRequested`],
+    /// [`RawEvent::Paste`] or [`RawEvent::EditMenu`]. A no-op where
+    /// [`PlatformCaps::edit_menu`] is false.
+    fn set_edit_menu(&mut self, window: WindowId, menu: Option<EditMenu>) {
+        let _ = (window, menu);
+    }
 
     /// The current system appearance. Changes arrive as
     /// [`RawEvent::AppearanceChanged`].

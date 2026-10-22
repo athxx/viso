@@ -883,6 +883,13 @@ pub enum RawEvent {
     /// [`RawEvent::SurfaceDestroyed`]; [`Window::raw_handle`](crate::Window::raw_handle)
     /// returns it and [`Window::inner_size`](crate::Window::inner_size) its size.
     SurfaceCreated { window: WindowId },
+    /// The user picked an item of `window`'s
+    /// [`EditMenu`](crate::EditMenu) other than cut, copy and paste, or it
+    /// closed on its own.
+    EditMenu {
+        window: WindowId,
+        action: crate::EditMenuAction,
+    },
     /// An assistive technology started or stopped listening to `window`, or
     /// asked for an action on one of its published nodes.
     Accessibility {

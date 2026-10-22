@@ -1,13 +1,19 @@
 package dev.viso;
 
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.graphics.Matrix;
+import android.graphics.Rect;
 import android.os.Build;
+import android.view.ActionMode;
 import android.view.InputDevice;
 import android.view.KeyCharacterMap;
 import android.view.KeyEvent;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.view.MotionEvent;
 import android.view.SurfaceView;
+import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.inputmethod.CursorAnchorInfo;
 import android.view.inputmethod.EditorInfo;
@@ -42,6 +48,25 @@ final class VisoView extends SurfaceView {
     private float caretX, caretY, caretWidth, caretHeight;
     private boolean cursorUpdates;
     private int deadKey;
+
+    /** The items of the edit menu, the {@code MENU_} bits. */
+    static final int MENU_CUT = 1;
+    static final int MENU_COPY = 2;
+    static final int MENU_PASTE = 4;
+    static final int MENU_SELECT_ALL = 8;
+    /** The {@code nativeEdit} actions of the edit menu. */
+    private static final int EDIT_COPY = 0;
+    private static final int EDIT_CUT = 1;
+    private static final int EDIT_PASTE = 2;
+    private static final int EDIT_SELECT_ALL = 3;
+    private static final int EDIT_MENU_CLOSED = 4;
+    /** The floating edit menu while it shows. */
+    private ActionMode editMenu;
+    private int menuItems;
+    /** What the edit menu points at and keeps clear of, in pixels of the view. */
+    private final Rect menuAt = new Rect();
+    /** The edit menu is closing at the app's word, not the user's. */
+    private boolean menuClosing;
 
     VisoView(Context context) {
         super(context);
@@ -259,6 +284,90 @@ final class VisoView extends SurfaceView {
         if (enabled && cursorUpdates) {
             reportCursor();
         }
+    }
+
+    /**
+     * Show the floating edit menu beside {@code x, y, width, height} with the
+     * {@code MENU_} {@code items}, move it or change its items while it shows,
+     * or close it.
+     */
+    void setEditMenu(boolean show, float x, float y, float width, float height, int items) {
+        if (!show) {
+            if (editMenu != null) {
+                menuClosing = true;
+                editMenu.finish();
+                menuClosing = false;
+                editMenu = null;
+            }
+            return;
+        }
+        menuAt.set((int) Math.floor(x), (int) Math.floor(y), (int) Math.ceil(x + width),
+                (int) Math.ceil(y + height));
+        if (editMenu != null) {
+            if (items != menuItems) {
+                menuItems = items;
+                editMenu.invalidate();
+            }
+            editMenu.invalidateContentRect();
+            return;
+        }
+        menuItems = items;
+        editMenu = startActionMode(new ActionMode.Callback2() {
+            @Override
+            public boolean onCreateActionMode(ActionMode mode, Menu menu) {
+                menu.add(Menu.NONE, android.R.id.cut, 0, android.R.string.cut);
+                menu.add(Menu.NONE, android.R.id.copy, 1, android.R.string.copy);
+                menu.add(Menu.NONE, android.R.id.paste, 2, android.R.string.paste);
+                menu.add(Menu.NONE, android.R.id.selectAll, 3, android.R.string.selectAll);
+                return true;
+            }
+
+            @Override
+            public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
+                ClipboardManager clipboard =
+                        (ClipboardManager) getContext().getSystemService(Context.CLIPBOARD_SERVICE);
+                boolean clip = clipboard != null && clipboard.hasPrimaryClip();
+                menu.findItem(android.R.id.cut).setVisible((menuItems & MENU_CUT) != 0);
+                menu.findItem(android.R.id.copy).setVisible((menuItems & MENU_COPY) != 0);
+                menu.findItem(android.R.id.paste).setVisible((menuItems & MENU_PASTE) != 0 && clip);
+                menu.findItem(android.R.id.selectAll)
+                        .setVisible((menuItems & MENU_SELECT_ALL) != 0);
+                return true;
+            }
+
+            @Override
+            public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
+                int id = item.getItemId();
+                if (id == android.R.id.cut) {
+                    VisoActivity.nativeEdit(EDIT_CUT);
+                } else if (id == android.R.id.copy) {
+                    VisoActivity.nativeEdit(EDIT_COPY);
+                } else if (id == android.R.id.paste) {
+                    VisoActivity.nativeEdit(EDIT_PASTE);
+                } else if (id == android.R.id.selectAll) {
+                    VisoActivity.nativeEdit(EDIT_SELECT_ALL);
+                } else {
+                    return false;
+                }
+                mode.finish();
+                return true;
+            }
+
+            @Override
+            public void onDestroyActionMode(ActionMode mode) {
+                if (editMenu == mode) {
+                    editMenu = null;
+                }
+                if (!menuClosing) {
+                    VisoActivity.nativeEdit(EDIT_MENU_CLOSED);
+                }
+            }
+
+            @Override
+            public void onGetContentRect(ActionMode mode, View view, Rect outRect) {
+                outRect.set(menuAt);
+            }
+        }, ActionMode.TYPE_FLOATING);
     }
 
     void setSoftKeyboard(boolean show) {

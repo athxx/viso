@@ -512,6 +512,12 @@ impl PlatformApp for IosApp {
         }
     }
 
+    fn set_edit_menu(&mut self, window: WindowId, menu: Option<crate::EditMenu>) {
+        if let Some(w) = self.window.as_ref().filter(|_| window == WINDOW) {
+            w.view.set_edit_menu(menu);
+        }
+    }
+
     fn appearance(&self) -> Appearance {
         LOOP.with(|l| l.appearance.get())
     }

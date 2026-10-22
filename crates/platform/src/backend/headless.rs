@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::RawWindowHandle;
-use crate::control::{PlatformError, TextEntry, WindowConfig, WindowId};
+use crate::control::{EditMenu, PlatformCaps, PlatformError, TextEntry, WindowConfig, WindowId};
 use crate::event::{Appearance, CursorIcon, DisplayFeature, RawEvent};
 use crate::handler::AppHandler;
 use crate::{ControlFlow, LoopWaker, PlatformApp, Window};
@@ -172,6 +172,14 @@ impl HeadlessApp {
             .and_then(|w| w.text_entry)
     }
 
+    /// The edit menu last shown for `window`, while it shows.
+    pub fn edit_menu(&self, window: WindowId) -> Option<EditMenu> {
+        self.windows
+            .iter()
+            .find(|w| w.id == window)
+            .and_then(|w| w.edit_menu)
+    }
+
     /// Whether the soft keyboard is currently requested for `window`.
     pub fn soft_keyboard_shown(&self, window: WindowId) -> bool {
         self.windows
@@ -231,6 +239,7 @@ impl PlatformApp for HeadlessApp {
             physical_size: ((w * scale).round() as u32, (h * scale).round() as u32),
             cursor: CursorIcon::Default,
             text_entry: None,
+            edit_menu: None,
             soft_keyboard: false,
             fullscreen: false,
         });
@@ -336,6 +345,20 @@ impl PlatformApp for HeadlessApp {
         }
     }
 
+    fn set_edit_menu(&mut self, window: WindowId, menu: Option<EditMenu>) {
+        if let Some(w) = self.window_mut(window) {
+            w.edit_menu = menu;
+        }
+    }
+
+    fn capabilities(&self) -> PlatformCaps {
+        // A desktop that also records the edit menu it is asked to show.
+        PlatformCaps {
+            edit_menu: true,
+            ..PlatformCaps::DESKTOP
+        }
+    }
+
     fn appearance(&self) -> Appearance {
         self.appearance
     }
@@ -370,6 +393,7 @@ pub struct HeadlessWindow {
     physical_size: (u32, u32),
     cursor: CursorIcon,
     text_entry: Option<TextEntry>,
+    edit_menu: Option<EditMenu>,
     soft_keyboard: bool,
     fullscreen: bool,
 }

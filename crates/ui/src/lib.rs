@@ -143,7 +143,7 @@ pub use style::{BoxStyle, InteractionStyle, StyleId};
 pub use task::{Continuation, TaskFuture, TaskId, TaskOps};
 pub use text_edit::{
     Buffer, CARET_WIDTH, EditGeometry, EditIntent, EditLayout, FieldLook, FieldSeed, MarkState,
-    Motion, Reach, TextEdits,
+    Motion, Reach, SelectionEnd, TextEdits, TouchEdit, TouchState,
 };
 pub use timer::{TimerId, TimerRegistry, TimerRequest};
 pub use token::{Theme, TokenId, TokenInterner, TokenNamespace};

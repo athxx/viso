@@ -499,5 +499,6 @@ pub(crate) fn input_name(
             Some([s.x / scale, s.y / scale]),
         ),
         InputSample::Copy(_) => return None,
+        InputSample::EditMenu(e) => (format!("edit_menu {:?}", e.action), None),
     })
 }

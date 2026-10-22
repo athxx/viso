@@ -39,7 +39,8 @@ use super::android_translate as translate;
 use super::utf16::byte_offset;
 use crate::accessibility::AccessRequest;
 use crate::control::{
-    ControlFlow, InputKind, LogicalRect, PlatformError, TextEntry, WindowConfig, WindowId,
+    ControlFlow, EditMenuAction, InputKind, LogicalRect, PlatformError, TextEntry, WindowConfig,
+    WindowId,
 };
 use crate::event::{
     AcceptCell, Appearance, ClipboardReply, ClipboardShortcut, ColorScheme, CursorIcon,
@@ -638,6 +639,14 @@ fn apply(msg: Msg) {
         Msg::Edit(0) => copy(false),
         Msg::Edit(1) => copy(true),
         Msg::Edit(2) => paste(),
+        Msg::Edit(3) => push_to_window(RawEvent::EditMenu {
+            window: WINDOW,
+            action: EditMenuAction::SelectAll,
+        }),
+        Msg::Edit(4) => push_to_window(RawEvent::EditMenu {
+            window: WINDOW,
+            action: EditMenuAction::Closed,
+        }),
         Msg::Edit(_) => {}
         Msg::Access(request) => push_to_window(RawEvent::Accessibility {
             window: WINDOW,
@@ -978,6 +987,22 @@ impl PlatformApp for AndroidApp {
         if window == WINDOW {
             jni::set_soft_keyboard(show);
         }
+    }
+
+    fn set_edit_menu(&mut self, window: WindowId, menu: Option<crate::EditMenu>) {
+        if window != WINDOW {
+            return;
+        }
+        let d = LOOP.with(|l| l.density.get());
+        jni::set_edit_menu(menu.map(|m| {
+            let at = [m.at.x, m.at.y, m.at.width, m.at.height].map(|v| (v * d) as f32);
+            // The `VisoView.MENU_*` bits.
+            let items = i32::from(m.cut)
+                | i32::from(m.copy) << 1
+                | i32::from(m.paste) << 2
+                | i32::from(m.select_all) << 3;
+            (at, items)
+        }));
     }
 
     fn appearance(&self) -> Appearance {

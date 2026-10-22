@@ -781,6 +781,21 @@ impl<'a> EventCx<'a> {
             .map_or(1, |place| place.store.click_count(self.pointer_id))
     }
 
+    /// Whether the pointer under dispatch is a direct contact — a finger or
+    /// a pen on the glass — rather than a mouse; `false` on the state-only
+    /// paths.
+    pub fn direct(&self) -> bool {
+        self.place
+            .is_some_and(|place| place.store.contacts().is_direct(self.pointer_id))
+    }
+
+    /// Whether the direct contact under dispatch has stayed within the touch
+    /// slop with no handler capturing it, so that its lift is a tap.
+    pub fn still(&self) -> bool {
+        self.place
+            .is_some_and(|place| place.store.contacts().is_still(self.pointer_id))
+    }
+
     /// The long press under dispatch, `None` for any other dispatch.
     pub fn long_press(&self) -> Option<crate::long_press::LongPressSample> {
         self.place?.store.long_press_sample(self.pointer_id)

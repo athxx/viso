@@ -175,6 +175,10 @@ pub enum TapeInput {
     Focus(bool),
     /// The window took a new logical size and scale.
     Resize(TapeSurface),
+    /// The edit menu's Select All.
+    SelectAll,
+    /// The edit menu closed on its own.
+    EditMenuClosed,
 }
 
 /// What follows the stream tag of a tape file, then its version.
@@ -388,6 +392,8 @@ impl Encode for TapeInput {
                 enc.write_u8(8);
                 write_surface(enc, *surface);
             }
+            TapeInput::SelectAll => enc.write_u8(9),
+            TapeInput::EditMenuClosed => enc.write_u8(10),
         }
     }
 }
@@ -479,6 +485,8 @@ impl Decode for TapeInput {
             6 => TapeInput::Copy { cut: flag(dec)? },
             7 => TapeInput::Focus(flag(dec)?),
             8 => TapeInput::Resize(read_surface(dec)?),
+            9 => TapeInput::SelectAll,
+            10 => TapeInput::EditMenuClosed,
             _ => return Err(malformed),
         })
     }
@@ -546,6 +554,8 @@ mod tests {
                         TapeInput::Copy { cut: true },
                         TapeInput::Focus(false),
                         TapeInput::Resize(TapeSurface::default()),
+                        TapeInput::SelectAll,
+                        TapeInput::EditMenuClosed,
                     ],
                 },
             ],

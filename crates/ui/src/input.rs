@@ -153,6 +153,18 @@ impl PointerContacts {
         self.slots.iter_mut().find(|s| s.id == id)
     }
 
+    /// Whether `id` is a direct contact: a finger or a pen on the glass.
+    pub(crate) fn is_direct(&self, id: PointerId) -> bool {
+        self.slot(id).is_some_and(|s| s.direct)
+    }
+
+    /// Whether direct contact `id` is still a tap: it has stayed within the
+    /// slop and no handler captured it.
+    pub(crate) fn is_still(&self, id: PointerId) -> bool {
+        self.slot(id)
+            .is_some_and(|s| s.direct && s.gesture == Gesture::Pending)
+    }
+
     /// The node `id` is captured to, if any.
     pub fn captor(&self, id: PointerId) -> Option<NodeId> {
         self.slot(id).and_then(|s| s.captor)
@@ -377,6 +389,11 @@ pub fn route_contact(
     chain: &mut Vec<NodeId>,
 ) -> bool {
     let pointer = contact.id;
+    // A finger on a selection handle drags it; no node sees the contact.
+    if contact.direct && store.steer_field_handle(pointer, ev.phase, [ev.x, ev.y]) {
+        chain.clear();
+        return true;
+    }
     let slop = if contact.direct {
         TOUCH_SLOP
     } else {
@@ -3561,6 +3578,55 @@ mod contact_tests {
                 (0, PointerPhase::Move),
                 (0, PointerPhase::Up)
             ]
+        );
+    }
+
+    #[test]
+    fn a_finger_on_a_selection_handle_drags_it_and_no_node_sees_the_contact() {
+        use crate::field_marks::FieldMarks;
+        use crate::text_edit::{EditIntent, SelectionEnd, TouchEdit};
+        let mut s = scene(false);
+        s.store.make_field(s.a);
+        let mut marks = FieldMarks {
+            handles: Some([
+                Rect::new(5.0, 0.0, 0.0, 20.0),
+                Rect::new(30.0, 0.0, 0.0, 20.0),
+            ]),
+            ..FieldMarks::default()
+        };
+        s.store.swap_field_marks(s.a, &mut marks);
+        let [_, end] = s.store.field_handles(s.a);
+        let knob = end.expect("the end shows").knob;
+        let (x, y) = (knob.x + knob.w * 0.5, knob.y + knob.h * 0.5);
+        s.touch(1, x, y, PointerPhase::Down);
+        s.touch(1, x - 10.0, y + 30.0, PointerPhase::Move);
+        s.touch(1, x - 10.0, y + 30.0, PointerPhase::Up);
+        assert!(s.log().is_empty(), "no node saw it: {:?}", s.log());
+        assert_eq!(s.store.scroll(s.root).y, 0.0, "no pan took it");
+        let mut edits = Vec::new();
+        s.store.take_edit_requests(&mut edits);
+        let anchor_y = 10.0;
+        assert_eq!(
+            edits,
+            vec![
+                (
+                    s.a,
+                    EditIntent::Touch(TouchEdit::Handle {
+                        end: SelectionEnd::End,
+                        x: 20.0,
+                        y: anchor_y + 30.0,
+                    })
+                ),
+                (s.a, EditIntent::Touch(TouchEdit::Lift)),
+            ]
+        );
+
+        s.touch(2, 70.0, 30.0, PointerPhase::Down);
+        s.touch(2, 70.0, 30.0, PointerPhase::Up);
+        assert_eq!(
+            s.log(),
+            vec![(1, PointerPhase::Down), (1, PointerPhase::Up)],
+            "out of their reach the contact routes as ever"
         );
     }
 

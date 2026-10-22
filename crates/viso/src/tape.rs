@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
-use viso_platform::{Instant, WindowId};
+use viso_platform::{EditMenuAction, Instant, WindowId};
 use viso_runtime::{FrameClock, InputSample, PointerKind};
 use viso_view::tape::{
     BuildId, MAX_FRAMES, MAX_INPUTS, TapeFrame, TapeInput, TapeKey, TapeModifiers, TapePointerKind,
@@ -137,6 +137,10 @@ impl TapeRecorder {
             },
             InputSample::Paste(t) => TapeInput::Paste(t.text.clone()),
             InputSample::Copy(c) => TapeInput::Copy { cut: c.cut },
+            InputSample::EditMenu(e) => match e.action {
+                EditMenuAction::SelectAll => TapeInput::SelectAll,
+                EditMenuAction::Closed => TapeInput::EditMenuClosed,
+            },
         };
         self.push(input);
     }
@@ -491,6 +495,14 @@ fn raw(window: WindowId, input: &TapeInput) -> Vec<viso_platform::RawEvent> {
             window,
             cut: *cut,
             reply: ClipboardReply::default(),
+        },
+        TapeInput::SelectAll => RawEvent::EditMenu {
+            window,
+            action: EditMenuAction::SelectAll,
+        },
+        TapeInput::EditMenuClosed => RawEvent::EditMenu {
+            window,
+            action: EditMenuAction::Closed,
         },
         TapeInput::Focus(focused) => RawEvent::WindowFocused {
             window,

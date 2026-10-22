@@ -11,6 +11,17 @@
 //! reads no buffer. Enter submits a single-line field and starts a new line
 //! in a multi-line one, where the accelerator with Enter submits.
 //!
+//! ## Touch
+//!
+//! A finger or a pen acts on lift, so a contact that turns into a pan places
+//! nothing: a tap places the caret, or on the caret or inside the selection
+//! of a field that has the focus shows or hides the edit menu; a double tap
+//! selects the word and a triple the paragraph, with the menu. A long press
+//! selects the word under the finger and extends by words as it moves (on
+//! Apple systems it places the caret and carries it), and its lift shows the
+//! menu. The selection a touch made shows handles that drag its ends
+//! ([`crate::field_marks`]); a mouse or a key ends it.
+//!
 //! ## Key conventions
 //!
 //! On Apple systems (and a browser on one) Option moves and deletes by word,
@@ -37,7 +48,7 @@ use viso_runtime::{Key, primary_is_logo};
 use crate::context::EventCx;
 use crate::drag::DragPhase;
 use crate::input::{DispatchPhase, ImeEvent, KeyEvent, Modifiers, PointerButtons, PointerPhase};
-use crate::text_edit::{EditIntent, Motion, Reach, Unit};
+use crate::text_edit::{EditIntent, Motion, Reach, TouchEdit, Unit};
 use viso_text::TextOffset;
 
 /// What a key does in a text field.
@@ -134,6 +145,10 @@ pub fn field_input(cx: &mut EventCx<'_>, multiline: bool) -> Option<FieldEvent> 
         return None;
     }
     let node = cx.node()?;
+    if cx.direct() {
+        touch_input(cx, node);
+        return None;
+    }
     if let Some(p) = cx.pointer() {
         let held = p.buttons.contains(PointerButtons::PRIMARY);
         let (x, y, extend) = (p.x, p.y, p.modifiers.shift);
@@ -184,6 +199,51 @@ pub fn field_input(cx: &mut EventCx<'_>, multiline: bool) -> Option<FieldEvent> 
     };
     cx.record_edit(intent);
     None
+}
+
+/// What a finger or a pen does to text field `node`: a tap places the
+/// caret on lift — so a contact that becomes a pan places nothing — or, on
+/// the caret or the selection, shows or hides the edit menu; a double tap
+/// selects the word and a triple the paragraph; a long press focuses the
+/// field and selects the word under it (on Apple systems places the caret),
+/// carrying it while the finger moves, and the lift shows the edit menu.
+fn touch_input(cx: &mut EventCx<'_>, node: crate::node::NodeId) {
+    if let Some(hold) = cx.long_press() {
+        cx.request_focus(node);
+        cx.record_edit(EditIntent::Touch(TouchEdit::Hold {
+            x: hold.at.x,
+            y: hold.at.y,
+            word: !primary_is_logo(),
+        }));
+        return;
+    }
+    let Some(p) = cx.pointer() else {
+        return;
+    };
+    let (x, y) = (p.x, p.y);
+    let edit = match p.phase {
+        PointerPhase::Move => TouchEdit::Follow { x, y },
+        PointerPhase::Up if cx.still() => {
+            let had_focus = cx.focused() == Some(node);
+            cx.request_focus(node);
+            match cx.clicks() {
+                1 => TouchEdit::Tap { x, y, had_focus },
+                2 => TouchEdit::Select {
+                    x,
+                    y,
+                    unit: Unit::Word,
+                },
+                _ => TouchEdit::Select {
+                    x,
+                    y,
+                    unit: Unit::Paragraph,
+                },
+            }
+        }
+        PointerPhase::Up | PointerPhase::Leave => TouchEdit::Lift,
+        _ => return,
+    };
+    cx.record_edit(EditIntent::Touch(edit));
 }
 
 /// How far a scrub travels for one step of a number field, in the node's
@@ -250,9 +310,10 @@ pub fn number_input(cx: &mut EventCx<'_>) -> Option<FieldEvent> {
             cx.record_edit(intent);
             return None;
         }
+        let direct = cx.direct();
         match phase {
-            PointerPhase::Down if held => cx.capture_pointer(node),
-            PointerPhase::Up => {
+            PointerPhase::Down if held && !direct => cx.capture_pointer(node),
+            PointerPhase::Up if !direct || cx.still() => {
                 cx.release_pointer();
                 cx.request_focus(node);
                 cx.record_edit(EditIntent::SelectAll);

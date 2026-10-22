@@ -1,7 +1,8 @@
 //! Long presses: the gesture a node wins by taking `long_press`.
 //!
 //! A primary press arms a hold for the nearest node at or above the pressed
-//! one that takes long presses, and asks for a timer [`LONG_PRESS`] out. The
+//! one that takes long presses from it — a node may take them from fingers
+//! and pens alone, as a text field does — and asks for a timer [`LONG_PRESS`] out. The
 //! pointer travelling past the slop — a drag or a pan in the making — or
 //! lifting first lets the hold go. A hold whose timer fires before either is
 //! due, and the frame's [`deliver_long_presses`] runs it: the press is
@@ -45,7 +46,9 @@ struct Hold {
 /// none of whose nodes takes long presses arms none.
 #[derive(Debug, Default)]
 pub(crate) struct Holds {
-    takers: Vec<NodeId>,
+    /// Each node that takes long presses, and whether from direct contacts
+    /// alone.
+    takers: Vec<(NodeId, bool)>,
     holds: Vec<Hold>,
     next: u64,
     /// The pointer and sample under dispatch.
@@ -68,17 +71,35 @@ impl Holds {
 impl NodeStore {
     /// Makes node `id` take long presses, or no longer.
     pub fn set_long_pressable(&mut self, id: NodeId, takes: bool) {
+        self.take_holds(id, takes, false);
+    }
+
+    /// Makes node `id` take long presses from fingers and pens alone, or no
+    /// longer.
+    pub fn set_touch_long_pressable(&mut self, id: NodeId, takes: bool) {
+        self.take_holds(id, takes, true);
+    }
+
+    fn take_holds(&mut self, id: NodeId, takes: bool, direct_only: bool) {
         let mut takers = std::mem::take(&mut self.holds.takers);
-        takers.retain(|&n| n != id && self.arena().is_live(n));
+        takers.retain(|&(n, _)| n != id && self.arena().is_live(n));
         if takes && self.arena().is_live(id) {
-            takers.push(id);
+            takers.push((id, direct_only));
         }
         self.holds.takers = takers;
     }
 
     /// Whether node `id` takes long presses.
     pub fn long_pressable(&self, id: NodeId) -> bool {
-        self.holds.takers.contains(&id)
+        self.holds.takers.iter().any(|&(n, _)| n == id)
+    }
+
+    /// Whether node `id` takes long presses from a pointer, `direct` or not.
+    fn holds_for(&self, id: NodeId, direct: bool) -> bool {
+        self.holds
+            .takers
+            .iter()
+            .any(|&(n, direct_only)| n == id && (direct || !direct_only))
     }
 
     /// The long press pointer `pointer`'s dispatch carries.
@@ -104,7 +125,7 @@ impl NodeStore {
         }
         let mut node = Some(target);
         while let Some(n) = node {
-            if self.long_pressable(n) {
+            if self.holds_for(n, direct) {
                 self.holds.next += 1;
                 let token = self.holds.next;
                 self.holds.holds.push(Hold {

@@ -10,17 +10,136 @@
 //!
 //! A number field with the focus takes the wheel to step its number, a step
 //! for every [`WHEEL_PX`] of scroll, up for a scroll toward earlier content.
+//!
+//! A selection a touch made shows a handle at each end, drawn over the field
+//! and reaching past its box: on Apple systems a stem along the line with a
+//! knob above the start and below the end, elsewhere a teardrop below the
+//! line pointing at it. A finger that lands within reach of one drags that
+//! end of the selection — the router steers it before any node sees the
+//! contact, so no pan or long press takes it — and its lift shows the edit
+//! menu. A handle whose end is scrolled out of the field's box hides.
 
-use viso_render::{Rect, Rgba};
+use viso_render::{Corners, Rect, Rgba};
+use viso_runtime::primary_is_logo;
 
 use crate::component::NodeStore;
 use crate::dirty::DirtyClass;
+use crate::input::{PointerId, PointerPhase};
 use crate::layout::Vec2;
 use crate::node::NodeId;
-use crate::text_edit::EditIntent;
+use crate::text_edit::{EditIntent, SelectionEnd, TouchEdit};
 
 /// How far the wheel scrolls for one step of a focused number field: a line.
 pub const WHEEL_PX: f32 = 16.0;
+
+/// A selection handle's color: the selection's blue, opaque.
+pub(crate) const HANDLE: Rgba = Rgba {
+    r: 0.046,
+    g: 0.209,
+    b: 1.0,
+    a: 1.0,
+};
+
+/// The width of an Apple handle's stem and the size of its knob.
+const STEM: f32 = 2.0;
+const KNOB: f32 = 10.0;
+/// The size of a teardrop handle.
+const TEAR: f32 = 22.0;
+/// How far from a handle's knob a finger still takes it: half of the 44
+/// points a touch target needs.
+const REACH: f32 = 22.0;
+
+/// A selection handle placed in window space.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct HandleShape {
+    /// The stem along the line, on Apple systems.
+    pub(crate) stem: Option<Rect>,
+    /// The knob: a circle on Apple systems, elsewhere a teardrop.
+    pub(crate) knob: Rect,
+    /// The teardrop's corners, sharp where it points at the line.
+    pub(crate) tear: Option<Corners>,
+    /// Where a finger takes it.
+    pub(crate) reach: Rect,
+    /// The point on the line it stands for.
+    pub(crate) anchor: Vec2,
+}
+
+/// The handle at `end` of a selection whose stem there is `stem`, in window
+/// space; `None` when the stem lies outside `view`, the field's box.
+pub(crate) fn handle_shape(end: SelectionEnd, stem: Rect, view: Rect) -> Option<HandleShape> {
+    let (x, top, h) = (stem.x, stem.y, stem.h);
+    let mid = top + h * 0.5;
+    let inside =
+        x >= view.x - 0.5 && x <= view.x + view.w + 0.5 && mid >= view.y && mid <= view.y + view.h;
+    if !inside {
+        return None;
+    }
+    let anchor = Vec2 { x, y: mid };
+    let around = |c: Vec2| Rect::new(c.x - REACH, c.y - REACH, REACH * 2.0, REACH * 2.0);
+    Some(if primary_is_logo() {
+        let knob_y = match end {
+            SelectionEnd::Start => top - KNOB + 1.0,
+            SelectionEnd::End => top + h - 1.0,
+        };
+        let knob = Rect::new(x - KNOB * 0.5, knob_y, KNOB, KNOB);
+        let stem = Rect::new(x - STEM * 0.5, top, STEM, h);
+        let center = Vec2 {
+            x,
+            y: knob_y + KNOB * 0.5,
+        };
+        HandleShape {
+            stem: Some(stem),
+            knob,
+            tear: None,
+            reach: around(center).union(Rect::new(x - REACH * 0.5, top, REACH, h)),
+            anchor,
+        }
+    } else {
+        let round = TEAR * 0.5;
+        let (left, tear) = match end {
+            SelectionEnd::Start => (
+                x - TEAR,
+                Corners {
+                    left_top: round,
+                    right_top: 0.0,
+                    right_bottom: round,
+                    left_bottom: round,
+                },
+            ),
+            SelectionEnd::End => (
+                x,
+                Corners {
+                    left_top: 0.0,
+                    right_top: round,
+                    right_bottom: round,
+                    left_bottom: round,
+                },
+            ),
+        };
+        let knob = Rect::new(left, top + h, TEAR, TEAR);
+        let center = Vec2 {
+            x: left + round,
+            y: top + h + round,
+        };
+        HandleShape {
+            stem: None,
+            knob,
+            tear: Some(tear),
+            reach: around(center),
+            anchor,
+        }
+    })
+}
+
+/// A finger dragging an end of a field's selection by its handle, held
+/// `offset` from the point on the line that end stands for.
+#[derive(Debug, Clone, Copy)]
+struct Grab {
+    pointer: PointerId,
+    node: NodeId,
+    end: SelectionEnd,
+    offset: Vec2,
+}
 
 /// What a text field draws besides its text, in its node's space with the
 /// text unscrolled.
@@ -40,6 +159,12 @@ pub struct FieldMarks {
     pub caret: Option<Rect>,
     /// The caret's and the underline's color.
     pub ink: Rgba,
+    /// The selection's handles while a touch made it: the line-tall stem at
+    /// its start, then at its end, each of no width.
+    pub handles: Option<[Rect; 2]>,
+    /// What the edit menu points at while it shows: the selection's bounds,
+    /// or the caret.
+    pub menu: Option<Rect>,
 }
 
 impl Default for FieldMarks {
@@ -52,6 +177,8 @@ impl Default for FieldMarks {
             underlines: Vec::new(),
             caret: None,
             ink: Rgba::TRANSPARENT,
+            handles: None,
+            menu: None,
         }
     }
 }
@@ -73,12 +200,15 @@ pub(crate) struct Fields {
     marks: Vec<(NodeId, FieldMarks)>,
     /// The number fields, with the wheel scroll not yet a whole step.
     steppers: Vec<(NodeId, f32)>,
+    /// The handle a finger drags.
+    grab: Option<Grab>,
 }
 
 impl Fields {
     pub(crate) fn clear(&mut self) {
         self.marks.clear();
         self.steppers.clear();
+        self.grab = None;
     }
 
     /// Forgets the slot `index`, freed or reused.
@@ -88,6 +218,9 @@ impl Fields {
         }
         if !self.steppers.is_empty() {
             self.steppers.retain(|(n, _)| n.index() != index);
+        }
+        if self.grab.is_some_and(|g| g.node.index() == index) {
+            self.grab = None;
         }
     }
 
@@ -117,6 +250,7 @@ impl NodeStore {
         }
         self.fields.marks.push((id, FieldMarks::default()));
         self.count_clicks(id);
+        self.set_touch_long_pressable(id, true);
         self.mark_dirty(id, DirtyClass::PAINT);
     }
 
@@ -193,6 +327,107 @@ impl NodeStore {
             self.queue_edit(focused, EditIntent::Step(f64::from(steps)));
         }
         true
+    }
+
+    /// The handles field `id` shows, in window space.
+    pub(crate) fn field_handles(&self, id: NodeId) -> [Option<HandleShape>; 2] {
+        let Some(marks) = self.fields.get(id) else {
+            return [None, None];
+        };
+        let Some([start, end]) = marks.handles else {
+            return [None, None];
+        };
+        let view = self.world(id);
+        let place = |r: Rect| Rect {
+            x: view.x - marks.scroll.x + r.x,
+            y: view.y - marks.scroll.y + r.y,
+            ..r
+        };
+        [
+            handle_shape(SelectionEnd::Start, place(start), view),
+            handle_shape(SelectionEnd::End, place(end), view),
+        ]
+    }
+
+    /// Steers a direct contact `pointer` at `at` that drags a selection
+    /// handle: a press within reach of one takes it, a move drags its end of
+    /// the selection, a lift lets it go. Returns whether the contact holds a
+    /// handle, which no node then sees.
+    pub(crate) fn steer_field_handle(
+        &mut self,
+        pointer: PointerId,
+        phase: PointerPhase,
+        at: [f32; 2],
+    ) -> bool {
+        let at = Vec2 { x: at[0], y: at[1] };
+        match phase {
+            PointerPhase::Down => {
+                if self.fields.grab.is_some() {
+                    return false;
+                }
+                let mut nearest: Option<(f32, Grab)> = None;
+                for i in 0..self.fields.marks.len() {
+                    let (node, marks) = &self.fields.marks[i];
+                    if marks.handles.is_none() {
+                        continue;
+                    }
+                    let node = *node;
+                    let handles = self.field_handles(node);
+                    let ends = [SelectionEnd::Start, SelectionEnd::End];
+                    for (shape, end) in handles.into_iter().zip(ends) {
+                        let Some(shape) = shape.filter(|h| h.reach.contains(at.x, at.y)) else {
+                            continue;
+                        };
+                        let c = Vec2 {
+                            x: shape.knob.x + shape.knob.w * 0.5,
+                            y: shape.knob.y + shape.knob.h * 0.5,
+                        };
+                        let d = (at.x - c.x).hypot(at.y - c.y);
+                        if nearest.is_none_or(|(best, _)| d < best) {
+                            let offset = Vec2 {
+                                x: at.x - shape.anchor.x,
+                                y: at.y - shape.anchor.y,
+                            };
+                            nearest = Some((
+                                d,
+                                Grab {
+                                    pointer,
+                                    node,
+                                    end,
+                                    offset,
+                                },
+                            ));
+                        }
+                    }
+                }
+                let Some((_, grab)) = nearest else {
+                    return false;
+                };
+                self.fields.grab = Some(grab);
+                true
+            }
+            _ => {
+                let Some(grab) = self.fields.grab.filter(|g| g.pointer == pointer) else {
+                    return false;
+                };
+                let edit = match phase {
+                    PointerPhase::Move => TouchEdit::Handle {
+                        end: grab.end,
+                        x: at.x - grab.offset.x,
+                        y: at.y - grab.offset.y,
+                    },
+                    PointerPhase::Up | PointerPhase::Leave => {
+                        self.fields.grab = None;
+                        TouchEdit::Lift
+                    }
+                    _ => return true,
+                };
+                if self.arena().is_live(grab.node) {
+                    self.queue_edit(grab.node, EditIntent::Touch(edit));
+                }
+                true
+            }
+        }
     }
 
     /// Scrolls text field `id` by `delta` within its text, inside its box.

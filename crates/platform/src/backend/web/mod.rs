@@ -1057,6 +1057,7 @@ impl PlatformApp for WebApp {
             system_clipboard: true,
             ime: true,
             accessibility: true,
+            edit_menu: false,
         }
     }
 

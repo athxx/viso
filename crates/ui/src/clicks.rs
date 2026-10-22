@@ -7,6 +7,8 @@
 //! a timer armed at each press, so the count needs no clock of its own and
 //! replays as the input does. Only a press at or under a node that counts
 //! clicks (a text field) is counted, so a store with none arms nothing.
+//! Fingers and pens are one pointer here: each tap is a contact of its own,
+//! and a double tap is two of them.
 
 use core::time::Duration;
 
@@ -21,6 +23,9 @@ pub const CLICK_INTERVAL: Duration = Duration::from_millis(500);
 /// The most clicks a run counts: presses on after a triple click are triple
 /// clicks too.
 const MOST: u8 = 3;
+
+/// The run every direct contact counts on.
+const TOUCH: PointerId = PointerId(u64::MAX);
 
 /// One pointer's last press.
 #[derive(Debug, Clone, Copy)]
@@ -80,6 +85,7 @@ impl NodeStore {
         if self.clicks.counters.is_empty() {
             return;
         }
+        let pointer = self.click_run(pointer);
         let mut node = Some(target);
         while let Some(n) = node {
             if self.clicks.counters.contains(&n) {
@@ -123,10 +129,21 @@ impl NodeStore {
     /// How many clicks the press of `pointer` under dispatch is in its run:
     /// `1` for a single click, `2` for a double, `3` for a triple.
     pub fn click_count(&self, pointer: PointerId) -> u8 {
+        let pointer = self.click_run(pointer);
         self.clicks
             .presses
             .iter()
             .find(|p| p.pointer == pointer)
             .map_or(1, |p| p.count)
+    }
+
+    /// The run `pointer`'s presses count on: its own, or for a direct
+    /// contact the one all of them share.
+    fn click_run(&self, pointer: PointerId) -> PointerId {
+        if self.contacts().is_direct(pointer) {
+            TOUCH
+        } else {
+            pointer
+        }
     }
 }

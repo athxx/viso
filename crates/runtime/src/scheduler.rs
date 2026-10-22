@@ -26,8 +26,8 @@ use crate::context::RuntimeCx;
 use crate::driver::{FrameDriver, Lifecycle};
 use crate::frame::run_frame;
 use crate::input::{
-    CopySample, ImePreeditSample, InputSample, KeySample, Modifiers, PointerPhase, PointerSample,
-    ScrollSample, TextSample,
+    CopySample, EditMenuSample, ImePreeditSample, InputSample, KeySample, Modifiers, PointerPhase,
+    PointerSample, ScrollSample, TextSample,
 };
 use crate::schedule::{RedrawReason, RedrawReasons};
 
@@ -443,6 +443,11 @@ impl<D: FrameDriver, C: FrameClock> AppHandler for Loop<D, C> {
             RawEvent::Paste { window, text } => {
                 self.driver
                     .on_input(InputSample::Paste(TextSample { window, text }));
+                self.reasons.add(RedrawReason::InputDirty);
+            }
+            RawEvent::EditMenu { window, action } => {
+                self.driver
+                    .on_input(InputSample::EditMenu(EditMenuSample { window, action }));
                 self.reasons.add(RedrawReason::InputDirty);
             }
             RawEvent::Suspended => {

@@ -58,6 +58,37 @@ pub struct TextEntry {
     pub multiline: bool,
 }
 
+/// The menu of edits a text field offers for its selection, shown beside
+/// it: on a phone or tablet after a long press, a double tap or a tap on the
+/// caret, as the platform draws it. Paste is offered only while the system
+/// clipboard holds text, which the platform checks itself.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EditMenu {
+    /// What the menu points at and keeps clear of: the selection, or the
+    /// caret; logical points (top-left origin).
+    pub at: LogicalRect,
+    /// Offer to cut the selection.
+    pub cut: bool,
+    /// Offer to copy the selection.
+    pub copy: bool,
+    /// Offer to paste over the selection.
+    pub paste: bool,
+    /// Offer to select the whole text.
+    pub select_all: bool,
+}
+
+/// What the user did with the [`EditMenu`] besides cutting, copying and
+/// pasting, which arrive as [`RawEvent::CopyRequested`](crate::RawEvent::CopyRequested)
+/// and [`RawEvent::Paste`](crate::RawEvent::Paste).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditMenuAction {
+    /// Select the whole text.
+    SelectAll,
+    /// The menu closed without the app asking: an item was chosen, or the
+    /// user touched elsewhere.
+    Closed,
+}
+
 /// What a text field holds, which decides the keys a soft keyboard shows
 /// and whether it suggests, corrects and capitalizes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -278,6 +309,9 @@ pub struct PlatformCaps {
     /// assistive technology; without one, the app derives semantics for
     /// tests and the Inspector only and publishes nothing.
     pub accessibility: bool,
+    /// A system edit menu for a text field's selection
+    /// ([`PlatformApp::set_edit_menu`](crate::PlatformApp::set_edit_menu)).
+    pub edit_menu: bool,
 }
 
 impl PlatformCaps {
@@ -289,6 +323,7 @@ impl PlatformCaps {
         system_clipboard: true,
         ime: true,
         accessibility: true,
+        edit_menu: false,
     };
     /// A phone or tablet backend: one window, the system's clipboard and IME.
     pub const MOBILE: PlatformCaps = PlatformCaps {
@@ -298,6 +333,7 @@ impl PlatformCaps {
         system_clipboard: true,
         ime: true,
         accessibility: true,
+        edit_menu: true,
     };
     /// A display driven with no display server (KMS): one window, nothing
     /// from a desktop and no accessibility bridge.
@@ -308,5 +344,6 @@ impl PlatformCaps {
         system_clipboard: false,
         ime: false,
         accessibility: false,
+        edit_menu: false,
     };
 }

@@ -46,6 +46,7 @@ unsafe impl<T> Sync for Global<T> {}
 struct Methods {
     set_soft_keyboard: Global<jmethodID>,
     set_text_input: Global<jmethodID>,
+    set_edit_menu: Global<jmethodID>,
     set_pointer_icon: Global<jmethodID>,
     set_clipboard: Global<jmethodID>,
     get_clipboard: Global<jmethodID>,
@@ -294,6 +295,23 @@ pub(super) fn set_text_input(
     );
 }
 
+/// Show the edit menu beside `at` (pixels: x, y, width, height) with the
+/// `VisoView.MENU_*` `items`, or with `None` close it.
+pub(super) fn set_edit_menu(menu: Option<([f32; 4], i32)>) {
+    let ([x, y, w, h], items) = menu.unwrap_or_default();
+    call_void(
+        |m| m.set_edit_menu,
+        &[
+            jvalue { z: menu.is_some() },
+            jvalue { f: x },
+            jvalue { f: y },
+            jvalue { f: w },
+            jvalue { f: h },
+            jvalue { i: items },
+        ],
+    );
+}
+
 pub(super) fn set_pointer_icon(icon: i32) {
     call_void(|m| m.set_pointer_icon, &[jvalue { i: icon }]);
 }
@@ -487,6 +505,7 @@ pub unsafe extern "system" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void
         let methods = Methods {
             set_soft_keyboard: method(c"setSoftKeyboard", c"(Z)V"),
             set_text_input: method(c"setTextInput", c"(ZZIZFFFF)V"),
+            set_edit_menu: method(c"setEditMenu", c"(ZFFFFI)V"),
             set_pointer_icon: method(c"setPointerIcon", c"(I)V"),
             set_clipboard: method(c"setClipboard", c"(Ljava/lang/String;)V"),
             get_clipboard: method(c"getClipboard", c"()Ljava/lang/String;"),

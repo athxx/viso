@@ -14,8 +14,8 @@
 //! slot — are the platform's own types, so one vocabulary runs from the OS to
 //! the widget.
 
-use viso_platform::WindowId;
 pub use viso_platform::{ClipboardReply, KeyCode as Key, PointerId, PointerKind, primary_is_logo};
+use viso_platform::{EditMenuAction, WindowId};
 
 /// The lifecycle position of a pointer sample. Mirrors the platform phase, with
 /// `Leave` naming the pointer-exited-the-window case.
@@ -118,6 +118,14 @@ pub struct CopySample {
     pub reply: ClipboardReply,
 }
 
+/// The user picked an edit-menu item other than cut, copy and paste, or the
+/// menu closed on its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EditMenuSample {
+    pub window: WindowId,
+    pub action: EditMenuAction,
+}
+
 /// A normalized input sample handed to the driver.
 ///
 /// Each variant carries data already normalized for its channel, so the driver
@@ -140,6 +148,8 @@ pub enum InputSample {
     Paste(TextSample),
     /// A copy/cut request for the focused content's selection.
     Copy(CopySample),
+    /// What the user did with the focused field's edit menu.
+    EditMenu(EditMenuSample),
 }
 
 impl InputSample {
@@ -156,6 +166,7 @@ impl InputSample {
             InputSample::ImePreedit(p) => p.window,
             InputSample::Paste(t) => t.window,
             InputSample::Copy(c) => c.window,
+            InputSample::EditMenu(e) => e.window,
         }
     }
 }

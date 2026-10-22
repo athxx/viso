@@ -28,15 +28,15 @@ use crate::asset::{AssetDraw, AssetFit};
 use crate::check_mark::CheckMark;
 use crate::component::NodeStore;
 use crate::content::Content;
-use crate::field_marks::FieldMarks;
+use crate::field_marks::{FieldMarks, HANDLE, HandleShape};
 use crate::layout::Vec2;
 use crate::node::NodeId;
 use crate::style::BoxStyle;
 use crate::transform::TransformTable;
 use viso_render::{
-    Border, Corners, GlyphInstanceData, GlyphLane, GlyphRunDraw, ImageDraw, LayerClip, Path,
-    PathCmd, Point, Primitive, ProgramTextures, Quad, Rect, Rgba, RoundMask, SamplerDesc,
-    ShaderDraw, TransformSlot,
+    AnalyticEllipse, AnalyticRRect, Border, Corners, GlyphInstanceData, GlyphLane, GlyphRunDraw,
+    ImageDraw, LayerClip, Path, PathCmd, Point, Primitive, ProgramTextures, Quad, Rect, Rgba,
+    RoundMask, SamplerDesc, ShaderDraw, TransformSlot,
 };
 
 /// The opaque white tint that passes a premultiplied color-atlas texel through
@@ -460,6 +460,9 @@ fn paint_own(store: &NodeStore, node: NodeId, world: Rect, out: &mut Vec<Primiti
         }
         if let Some(marks) = store.field_marks(node) {
             paint_field(marks, content, world, out);
+            if marks.handles.is_some() {
+                paint_handles(store.field_handles(node), out);
+            }
             return;
         }
         let mask = (radius > 0.0).then_some(RoundMask {
@@ -504,6 +507,35 @@ fn paint_field(marks: &FieldMarks, content: &Content, world: Rect, out: &mut Vec
     out.extend(marks.underlines.iter().map(|r| quad(r, marks.ink)));
     out.extend(marks.caret.iter().map(|r| quad(r, marks.ink)));
     out.push(Primitive::LayerEnd);
+}
+
+/// A field's selection handles, over everything it draws and unclipped by
+/// its box.
+#[cold]
+fn paint_handles(handles: [Option<HandleShape>; 2], out: &mut Vec<Primitive>) {
+    for shape in handles.into_iter().flatten() {
+        if let Some(stem) = shape.stem {
+            out.push(Primitive::Quad(Quad {
+                rect: stem,
+                color: HANDLE,
+                radius: 0.0,
+                border: Border::NONE,
+            }));
+        }
+        out.push(match shape.tear {
+            Some(radius) => Primitive::AnalyticRRect(AnalyticRRect {
+                rect: shape.knob,
+                color: HANDLE,
+                radius,
+                border: Border::NONE,
+            }),
+            None => Primitive::AnalyticEllipse(AnalyticEllipse {
+                rect: shape.knob,
+                color: HANDLE,
+                border: Border::NONE,
+            }),
+        });
+    }
 }
 
 /// A check at `world`: its mark, then its caption `content` beside it, the

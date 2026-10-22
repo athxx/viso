@@ -30,14 +30,15 @@ pub use context::RuntimeCx;
 pub use driver::{FrameDriver, Lifecycle};
 pub use frame::run_frame;
 pub use input::{
-    ClipboardReply, CopySample, ImePreeditSample, InputSample, Key, KeySample, Modifiers,
-    PointerId, PointerKind, PointerPhase, PointerSample, ScrollSample, TextSample, primary_is_logo,
+    ClipboardReply, CopySample, EditMenuSample, ImePreeditSample, InputSample, Key, KeySample,
+    Modifiers, PointerId, PointerKind, PointerPhase, PointerSample, ScrollSample, TextSample,
+    primary_is_logo,
 };
 pub use phase::FramePhase;
 pub use schedule::{FrameDecision, RedrawReason, RedrawReasons};
 pub use scheduler::Scheduler;
 pub use task::{TaskId, TaskSet};
 pub use viso_platform::{
-    Appearance, ColorScheme, CursorIcon, DisplayFeature, DisplayFeatureKind, InputKind, Instant,
-    LogicalInsets, LoopWaker,
+    Appearance, ColorScheme, CursorIcon, DisplayFeature, DisplayFeatureKind, EditMenu,
+    EditMenuAction, InputKind, Instant, LogicalInsets, LoopWaker,
 };

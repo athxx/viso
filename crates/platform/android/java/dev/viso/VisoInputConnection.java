@@ -101,6 +101,9 @@ final class VisoInputConnection extends BaseInputConnection {
             case android.R.id.paste:
                 VisoActivity.nativeEdit(2);
                 return true;
+            case android.R.id.selectAll:
+                VisoActivity.nativeEdit(3);
+                return true;
             default:
                 return false;
         }
