@@ -31,9 +31,9 @@ use viso_dsl::ir::binding_ir::{BindingEdge, BindingIr, NodeKey};
 use viso_dsl::ir::dirty_map::DirtyClass;
 use viso_dsl::ir::ui_ir::Span as LayoutSpan;
 use viso_dsl::ir::ui_ir::{
-    AdaptiveColumns, Align, AlignItems, Alignment2D, AutoRepeat, Avoid, AxisIr, BoxRules,
+    AdaptiveColumns, Align, AlignItems, Alignment2D, AotSnap, AutoRepeat, Avoid, AxisIr, BoxRules,
     EdgeTermsIr, Inset, InsetIr, InsetTermsIr, Justify, LayoutDirection, LengthIr, LengthsIr,
-    NodeKind, Placement, StyleIr, TermsIr, TrackMax, TrackSizing, UiItem, UiNode, UiTree,
+    NodeKind, Placement, ScrollIr, StyleIr, TermsIr, TrackMax, TrackSizing, UiItem, UiNode, UiTree,
 };
 use viso_dsl::resolve::SymbolId;
 use viso_dsl::view_behavior::{Control, GameQuery, Switched, ViewBehavior, When};
@@ -530,6 +530,14 @@ impl Emit<'_> {
                     quote!(::viso::__private::viso_ui::ScrollBars::Hidden)
                 };
                 let tail = scroll.tail;
+                let snap = snap_tokens(scroll);
+                let dots = if scroll.dots {
+                    quote!(::core::option::Option::Some(
+                        ::viso::__private::viso_ui::PageDotsStyle::default()
+                    ))
+                } else {
+                    quote!(::core::option::Option::None)
+                };
                 quote! {
                     cx.scroll(
                         ::viso::__private::viso_ui::ScrollStyle {
@@ -537,6 +545,8 @@ impl Emit<'_> {
                             size: #size,
                             bars: #bars,
                             tail: #tail,
+                            snap: #snap,
+                            dots: #dots,
                             ..::core::default::Default::default()
                         },
                         |cx| { #child_block },
@@ -555,6 +565,14 @@ impl Emit<'_> {
                     quote!(::viso::__private::viso_ui::ScrollBars::Hidden)
                 };
                 let tail = scroll.tail;
+                let snap = snap_tokens(scroll);
+                let dots = if scroll.dots {
+                    quote!(::core::option::Option::Some(
+                        ::viso::__private::viso_ui::PageDotsStyle::default()
+                    ))
+                } else {
+                    quote!(::core::option::Option::None)
+                };
                 quote! {
                     cx.scroll(
                         ::viso::__private::viso_ui::ScrollStyle {
@@ -562,6 +580,8 @@ impl Emit<'_> {
                             size: #size,
                             bars: #bars,
                             tail: #tail,
+                            snap: #snap,
+                            dots: #dots,
                             ..::core::default::Default::default()
                         },
                         |cx| { #child_block },
@@ -642,6 +662,28 @@ impl Emit<'_> {
 }
 
 /// The `::viso::__private::viso_view::Control` expression of `control`.
+/// The `ScrollSnap` a viewport's `snap` and `snap_inset` say, if any.
+fn snap_tokens(scroll: ScrollIr) -> TokenStream {
+    let Some(snap) = scroll.snap else {
+        return quote!(::core::option::Option::None);
+    };
+    let ui = quote!(::viso::__private::viso_ui);
+    let base = match snap {
+        AotSnap::Start => quote!(#ui::ScrollSnap::START),
+        AotSnap::Center => quote!(#ui::ScrollSnap::CENTER),
+        AotSnap::End => quote!(#ui::ScrollSnap {
+            align: #ui::SnapAlign::End,
+            ..#ui::ScrollSnap::START
+        }),
+        AotSnap::Pages => quote!(#ui::ScrollSnap::PAGES),
+    };
+    let inset = scroll.snap_inset;
+    quote!(::core::option::Option::Some(#ui::ScrollSnap {
+        inset: #inset,
+        ..#base
+    }))
+}
+
 fn control_tokens(control: Control) -> TokenStream {
     let kind = Ident::new(control.kind.variant(), Span::call_site());
     let entry = |entry: Option<u32>| match entry {

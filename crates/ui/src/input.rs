@@ -787,7 +787,11 @@ pub fn route_scroll(store: &mut NodeStore, root: NodeId, ev: ScrollEvent) -> boo
     }
     match ev.phase {
         // A wheel's notch ends hard at the range's end.
-        ScrollPhase::None => scroll_chain(store, target, delta),
+        ScrollPhase::None => {
+            let moved = scroll_chain(store, target, delta);
+            store.snap_after_wheel(target);
+            moved
+        }
         // Fingers on a trackpad pull past the end as a finger on the glass
         // does, and the pull relaxes when they lift.
         ScrollPhase::Began | ScrollPhase::Changed | ScrollPhase::Ended => {
@@ -1796,6 +1800,34 @@ impl KeyRouter {
         ran
     }
 
+    /// Tell each snapping viewport whose item changed
+    /// ([`NodeStore::tell_snaps`]) its key handler the item. Returns whether
+    /// a handler ran.
+    pub fn route_snaps(
+        store: &mut NodeStore,
+        states: &mut StateStore,
+        bindings: &BindingTable,
+        edits: &mut TextEdits,
+    ) -> bool {
+        let mut told = Vec::new();
+        store.take_snap_changes(&mut told);
+        let mut ran = false;
+        for (node, index) in told {
+            if store.arena().is_live(node) {
+                ran |= key_handler_dispatch(
+                    store,
+                    states,
+                    bindings,
+                    edits,
+                    node,
+                    KeyPayload::Snap(index),
+                )
+                .ran;
+            }
+        }
+        ran
+    }
+
     /// Deliver every wake whose time came ([`EventCx::wake_after`]) to its
     /// node's key handler, in the order they fired; a node gone drops its
     /// wake. Returns whether a handler ran.
@@ -1916,6 +1948,7 @@ enum KeyPayload<'e> {
     Focus(FocusChange),
     Access(crate::access::Access),
     Refresh,
+    Snap(usize),
 }
 
 /// Call one node's key handler with `payload`, then apply everything the
@@ -1941,6 +1974,7 @@ fn key_handler_dispatch(
             KeyPayload::Focus(change) => EventCx::__new_focus(states, bindings, change),
             KeyPayload::Access(access) => EventCx::__new_access(states, bindings, access),
             KeyPayload::Refresh => EventCx::__new_refresh(states, bindings),
+            KeyPayload::Snap(index) => EventCx::__new_snap(states, bindings, index),
         };
         cx.__set_focused(store.focused());
         cx.__set_services(store.__services());

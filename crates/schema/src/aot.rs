@@ -357,12 +357,16 @@ pub struct AotStyle {
     pub scroll: Option<AotScroll>,
 }
 
-/// How a scroll viewport scrolls: whether it shows scroll bars, and whether
-/// it follows the end of its content.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// How a scroll viewport scrolls: whether it shows scroll bars, whether it
+/// follows the end of its content, how it comes to rest on its items and
+/// how far in from its edges, and whether page dots show them.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AotScroll {
     pub bars: bool,
     pub tail: bool,
+    pub snap: Option<AotSnap>,
+    pub snap_inset: f32,
+    pub dots: bool,
 }
 
 impl Default for AotScroll {
@@ -370,9 +374,41 @@ impl Default for AotScroll {
         AotScroll {
             bars: true,
             tail: false,
+            snap: None,
+            snap_inset: 0.0,
+            dots: false,
         }
     }
 }
+
+/// Where a snapping viewport's item rests: at its start, middle or end, or a
+/// page at a time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AotSnap {
+    Start,
+    Center,
+    End,
+    Pages,
+}
+
+impl AotSnap {
+    /// Every snap, by wire tag.
+    pub const ALL: [AotSnap; 4] = [
+        AotSnap::Start,
+        AotSnap::Center,
+        AotSnap::End,
+        AotSnap::Pages,
+    ];
+}
+
+// A scroll is a byte: bit 0 its bars, bit 1 its tail, bit 2 its dots, bit 3
+// an inset following as an `f32`, and above them its snap, `0` for none, else
+// one past its tag.
+const SCROLL_BARS: u8 = 1;
+const SCROLL_TAIL: u8 = 1 << 1;
+const SCROLL_DOTS: u8 = 1 << 2;
+const SCROLL_INSET: u8 = 1 << 3;
+const SCROLL_SNAP_SHIFT: u8 = 4;
 
 /// An adaptive scope: the node its subtree's size class classifies.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -1402,7 +1438,22 @@ fn encode_record(record: &AotRecord<'_>, enc: &mut Encoder) {
         enc.write_u8(align as u8);
     }
     if let Some(scroll) = style.scroll {
-        enc.write_u8(u8::from(scroll.bars) | u8::from(scroll.tail) << 1);
+        let snap = scroll.snap.map_or(0, |snap| snap as u8 + 1);
+        let mut bits = snap << SCROLL_SNAP_SHIFT;
+        for (on, bit) in [
+            (scroll.bars, SCROLL_BARS),
+            (scroll.tail, SCROLL_TAIL),
+            (scroll.dots, SCROLL_DOTS),
+            (scroll.snap_inset != 0.0, SCROLL_INSET),
+        ] {
+            if on {
+                bits |= bit;
+            }
+        }
+        enc.write_u8(bits);
+        if scroll.snap_inset != 0.0 {
+            enc.write_f32(scroll.snap_inset);
+        }
     }
     enc.write_varint(u64::from(record.child_count));
 }
@@ -1534,12 +1585,25 @@ fn decode_record<'a>(dec: &mut Decoder<'a>) -> Result<AotRecord<'a>, DecodeError
     let scroll = if has(STYLE_SCROLLS) {
         let offset = dec.position();
         let bits = dec.read_u8()?;
-        if bits > 3 {
-            return Err(DecodeError::Malformed { offset });
-        }
+        let snap = match (bits >> SCROLL_SNAP_SHIFT) as usize {
+            0 => None,
+            tag => Some(
+                *AotSnap::ALL
+                    .get(tag - 1)
+                    .ok_or(DecodeError::Malformed { offset })?,
+            ),
+        };
+        let snap_inset = if bits & SCROLL_INSET != 0 {
+            dec.read_f32()?
+        } else {
+            0.0
+        };
         Some(AotScroll {
-            bars: bits & 1 != 0,
-            tail: bits & 2 != 0,
+            bars: bits & SCROLL_BARS != 0,
+            tail: bits & SCROLL_TAIL != 0,
+            snap,
+            snap_inset,
+            dots: bits & SCROLL_DOTS != 0,
         })
     } else {
         None
@@ -1877,6 +1941,9 @@ mod tests {
                         scroll: Some(AotScroll {
                             bars: false,
                             tail: true,
+                            snap: Some(AotSnap::Pages),
+                            snap_inset: 12.0,
+                            dots: true,
                         }),
                         place: None,
                     },

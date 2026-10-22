@@ -56,11 +56,14 @@ pub enum EventRoute {
     /// A `Scroll`'s or `VirtualList`'s `refresh`: a pull down past its start,
     /// or an assistive technology, asked it to refresh.
     Refresh = 20,
+    /// A snapping `Scroll`'s or `VirtualList`'s `snap_changed`: it came to
+    /// rest on, heads for, or shows another item.
+    SnapChanged = 21,
 }
 
 impl EventRoute {
     /// Every route, by discriminant.
-    pub const ALL: [EventRoute; 21] = [
+    pub const ALL: [EventRoute; 22] = [
         EventRoute::Click,
         EventRoute::Tap,
         EventRoute::PointerDown,
@@ -82,6 +85,7 @@ impl EventRoute {
         EventRoute::LongPress,
         EventRoute::Link,
         EventRoute::Refresh,
+        EventRoute::SnapChanged,
     ];
 
     /// The route of standard DSL event `event`, `None` for an event the runtime
@@ -117,6 +121,7 @@ impl EventRoute {
             EventRoute::LongPress => "long_press",
             EventRoute::Link => "link",
             EventRoute::Refresh => "refresh",
+            EventRoute::SnapChanged => "snap_changed",
         }
     }
 
@@ -144,6 +149,7 @@ impl EventRoute {
             EventRoute::LongPress => "LongPress",
             EventRoute::Link => "Link",
             EventRoute::Refresh => "Refresh",
+            EventRoute::SnapChanged => "SnapChanged",
         }
     }
 
@@ -158,10 +164,14 @@ impl EventRoute {
     }
 
     /// Whether the node's key handler delivers it: a key sample, an
-    /// activated link, which reaches a text and its ancestors that way, or
-    /// a refresh asked of a viewport.
+    /// activated link, which reaches a text and its ancestors that way, a
+    /// refresh asked of a viewport, or the item a snapping one settles on.
     pub fn by_key_handler(self) -> bool {
-        self.is_key() || matches!(self, EventRoute::Link | EventRoute::Refresh)
+        self.is_key()
+            || matches!(
+                self,
+                EventRoute::Link | EventRoute::Refresh | EventRoute::SnapChanged
+            )
     }
 
     /// Whether a drag the node wins delivers it.
@@ -211,6 +221,7 @@ pub const PAYLOAD_RECORDS: &[(&str, &[&str])] = &[
     ("VisibleRange", &["first", "last", "count"]),
     ("AnimationEnd", &["target", "finished"]),
     ("LinkEvent", &["url"]),
+    ("SelectionChanged", &["value"]),
 ];
 
 /// The prelude enums a payload names a variant of, with their variants in order.

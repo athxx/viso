@@ -811,6 +811,7 @@ pub(crate) fn paint_content(
             ..
         } => paint_asset(draw, *natural, *fit, *tint, world, mask, out),
         Content::Spinner(spinner) => spinner.paint(world, out),
+        Content::PageDots(dots) => dots.paint(world, out),
     }
 }
 
@@ -1124,6 +1125,8 @@ mod tests {
                     bars: crate::scroll_bar::ScrollBars::Hidden,
                     tail: false,
                     refresh: false,
+                    snap: None,
+                    dots: None,
                 },
                 |cx| {
                     content = Some(
@@ -2272,6 +2275,8 @@ mod tests {
                             bars: crate::scroll_bar::ScrollBars::Hidden,
                             tail: false,
                             refresh: false,
+                            snap: None,
+                            dots: None,
                         },
                         |cx| {
                             for _ in 0..n {

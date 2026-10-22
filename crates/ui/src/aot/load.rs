@@ -430,8 +430,26 @@ fn scroll_style(node: &AotRecord) -> ScrollStyle {
             crate::scroll_bar::ScrollBars::Hidden
         };
         out.tail = scroll.tail;
+        out.snap = scroll.snap.map(|snap| snap_of(snap, scroll.snap_inset));
+        out.dots = scroll.dots.then(crate::page_dots::PageDotsStyle::default);
     }
     out
+}
+
+/// A package's snap, `inset` dp in from the viewport's edges.
+fn snap_of(snap: viso_schema::aot::AotSnap, inset: f32) -> crate::snap::ScrollSnap {
+    use crate::snap::{ScrollSnap, SnapAlign};
+    use viso_schema::aot::AotSnap;
+    let base = match snap {
+        AotSnap::Start => ScrollSnap::START,
+        AotSnap::Center => ScrollSnap::CENTER,
+        AotSnap::End => ScrollSnap {
+            align: SnapAlign::End,
+            ..ScrollSnap::START
+        },
+        AotSnap::Pages => ScrollSnap::PAGES,
+    };
+    ScrollSnap { inset, ..base }
 }
 
 /// The leaf builder style, mirroring the commit's `leaf_style`: a size only when the

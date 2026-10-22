@@ -4629,6 +4629,7 @@ export record AdaptiveColumns { mode: AutoRepeat = AutoRepeat::fill; min: MixedL
 - `scroll_bars: Bool = true`：是否显示滚动条（样式随平台与系统设置，见架构文档“滚动条”）；`tail: Bool = false`：打开时位于内容末端，停在末端期间内容增长时平滑跟随末端，滚离末端后不再跟随、回到末端后恢复（日志、聊天）；两者取常量，`VirtualList` 同样接受；
 - 事件 `scroll_changed(ScrollChanged)`，字段为 `offset: Offset`、`viewport: SizeDp`、`content: SizeDp`（`SizeDp { width: Dp; height: Dp; }`）；
 - 事件 `refresh`（无载荷）：声明它的纵向视口支持下拉刷新——越过起点下拉到阈值（Apple 为按住时到达，Material 为松手时）或辅助技术的 Refresh 操作即开始刷新并在下一帧投递；`refreshing: Bool`（可绑定，失效 `TRANSFORM|PAINT`）由 Owner 决定刷新是否进行：下拉开始的刷新若在投递后的下一次布局前没有被 `refreshing` 变为 `true` 确认就结束，`refreshing` 变为 `false` 时结束（`on refresh { loading = true; reload(); }`，加载完成时 `loading = false`）；`VirtualList` 同样接受；
+- `snap: Snap`（`start; center; end; pages;`，取常量）：视口停靠在其项上——`Scroll` 的项是其内容节点的子节点，`VirtualList` 的项是行；松手、滚轮停转或触控板抬起后滑行到惯性停点最近的项，按 `start`/`center`/`end` 对齐，`pages` 一次轻扫至多移动一项；`snap_inset: MixedLength`（常量 `dp`）让项停在距视口两边该距离处（Carousel 的内边距）；`page_dots: Bool` 在视口横轴末端边居中覆盖一行页点，点亮所停项，点击或方向键移动到对应项；事件 `snap_changed(SelectionChanged)` 在所停、所趋向或最近的项变化时投递其序号 `value`（初始项不投递）；`VirtualList` 同样接受；
 - 子节点在滚动轴上的约束无界；滚动偏移变化只标记视口子树 `TRANSFORM|HIT_TEST|PAINT`，不触发布局（ADR 0007）；
 - 滚轮与触控板事件先送往最内层可在该轴滚动的视口，到达边界后沿祖先链传递；
 - 水平滚动的视口在 RTL 下以右边为起点：内容右边与视口右边对齐，偏移在 `[-range, 0]` 内取值（0 为起点，向左为负）；方向翻转时偏移保持到起点的距离；
@@ -5021,6 +5022,8 @@ Named Node `n` 在同一 Component 的 Action 与 Handler 中以 `n: NodeRef<T>`
 | `width` / `height`         | `Sizing`       | `fill` / `fill` | `MEASURE\|LAYOUT` | 见 U3.3                |
 | `on visible_range_changed` | `VisibleRange` | —               | —                 | —                      |
 | `refreshing` / `on refresh` | `Bool` / —    | `false` / —     | `TRANSFORM\|PAINT` | —（见 U3.7）          |
+| `snap` / `snap_inset` / `page_dots` / `on snap_changed` | `Snap` / `MixedLength` / `Bool` / `SelectionChanged` | 无 / `0dp` / `false` / — | — | —（见 U3.7） |
+| `pages`                    | `Bool`         | `false`         | `LAYOUT`          | —                      |
 
 `VisibleRange` 字段为 `first: U64`、`last: U64`、`count: U64`。
 
@@ -5032,6 +5035,7 @@ Named Node `n` 在同一 Component 的 Action 与 Handler 中以 `n: NodeRef<T>`
 - **滚动**：只标记 `TRANSFORM|HIT_TEST|PAINT`；进入视口的新行按上述规则挂载或复用；
 - **命令式滚动**：`n.scroll_to_key(key)` 与 `n.scroll_to_index(i)` 可滚动到尚未挂载的行；未知 `key` 是 No-op；
 - **语义**：列表 Role 为 `list`，每行为 `list_item`，语义树报告集合总数与行位置。
+- **分页**：`pages: true` 让每行恰为视口在 `axis` 上的长度（Pager 的页），未写 `snap` 时取 `Snap::pages`；视口尺寸变化时保持当前页；横向分页列表配 `page_dots: true` 与 `scroll_bars: false` 即为 Pager；
 - **分组标题**：行根的 `sticky`（`sticky: item.is_header;`）按 Item 与 Key 一同求值；为 `true` 的行是分组标题：视口起点所在分组的标题停在起点边，下一个标题到达时将其推走；标题行滚出窗口后仍保持挂载并停靠；`scroll_to_index`/`scroll_to_key` 让非标题行停在其分组标题下方。
 
 当前实现：`VirtualList` 的 Item Template 在宏、热重载与 Release Package（含 AOT）中挂载：列表节点是其 `axis` 上的 Scroll 视口，`for` 的 Items 与 Key 按普通 `for` 的规则求值（Key 经稳定哈希成为行身份），视口只挂载窗口与 Overscan 内的行；Items 变化时存活行按 Key 保留宿主、局部状态与焦点并以新 Item 重新投递，离开的行回收复用；`estimated_extent` 与 `overscan` 取常量（`em` 在挂载时按列表节点的字号折算）。HTML/Solid 导出挂载全部行，行带 `content-visibility: auto` 与按 `estimated_extent` 的固有尺寸，浏览器跳过屏幕外行的布局与绘制。`on visible_range_changed` 在布局之后投递：首次布局即报告，之后窗口变化才报告，`last` 为视口内最后一行（含）；导出页面由滚动与尺寸变化计算同一范围。列表 Role 为 `list`，每个行宿主为 `list_item` 并带 1 起的位置与集合总数（AccessKit `position_in_set`/`size_of_set`，Web `aria-posinset`/`aria-setsize`），导出页面中无自身 Role 的行根元素为 `listitem`。行内可以再有 `VirtualList`：它随所在行在同一帧挂载，所在行被回收时一并释放。

@@ -35,6 +35,7 @@ pub(super) struct ListEntries {
     pub(super) estimate: LengthTerms,
     pub(super) overscan: u32,
     pub(super) sticky: Option<u32>,
+    pub(super) pages: bool,
 }
 
 /// A mounted `VirtualList` item template.
@@ -206,6 +207,7 @@ impl Patch<'_, '_> {
             axis,
             estimated_row: self.cx.store.fold_extent(parent, list.estimate).max(1.0),
             overscan: list.overscan as usize,
+            pages: list.pages,
         };
         let me = self.me.clone();
         let set = Rc::clone(&rows.set);

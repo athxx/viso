@@ -651,3 +651,109 @@ fn a_rows_sticky_root_heads_its_section_and_a_sticky_node_its_parent() {
     page.click(flat);
     assert!(page.lists.get(list).unwrap().headers().is_empty());
 }
+
+const PAGES: &str = "component Tour {
+    state page: U32 = 0;
+    view {
+        Column {
+            width: 200dp;
+            height: 300dp;
+            Text { width: 200dp; height: 20dp; text: format(\"{}\", page); }
+            VirtualList {
+                axis: Axis::row;
+                width: 200dp;
+                height: 100dp;
+                pages: true;
+                page_dots: true;
+                on snap_changed(e) { page = e.value; }
+                for i in 0..5 key i {
+                    Text { text: format(\"{}\", i); }
+                }
+            }
+            Scroll {
+                axis: Axis::row;
+                width: 200dp;
+                height: 50dp;
+                snap: Snap::start;
+                snap_inset: 16dp;
+                Row {
+                    padding: 16dp;
+                    gap: 8dp;
+                    for i in 0..6 key i {
+                        Text { width: 120dp; height: 20dp; text: format(\"{}\", i); }
+                    }
+                }
+            }
+        }
+    }
+}";
+
+impl Page {
+    /// Frames until the scroll motion stops, the snaps told after each.
+    fn rest(&mut self) {
+        let mut edits = viso_ui::TextEdits::new();
+        for _ in 0..240 {
+            if !self.store.is_scroll_moving() && !self.store.snaps_due() {
+                return;
+            }
+            self.store
+                .tick_scroll_motion(std::time::Duration::from_millis(16));
+            self.frame();
+            KeyRouter::route_snaps(
+                &mut self.store,
+                &mut self.states,
+                &self.bindings,
+                &mut edits,
+            );
+            self.settle();
+            self.frame();
+        }
+    }
+}
+
+#[test]
+fn a_list_of_pages_turns_a_page_a_flick_and_its_handler_hears_each() {
+    let mut page = Page::load(PAGES);
+    let (shown, pager, shelf) = (
+        page.child(page.root, 0),
+        page.child(page.root, 1),
+        page.child(page.root, 2),
+    );
+    assert_eq!(
+        page.store.scroll_snap(pager),
+        Some(viso_ui::ScrollSnap::PAGES)
+    );
+    let host = page.child(page.canvas(pager), 0);
+    assert_eq!(
+        page.store.bounds(host).w,
+        200.0,
+        "a page is the viewport's width"
+    );
+    let dots = page
+        .store
+        .arena()
+        .children(pager)
+        .filter(|&c| page.store.is_chrome(c))
+        .find_map(|layer| {
+            let mut kids = page.store.arena().children(layer);
+            kids.find(|&d| page.store.page_dots(d).is_some())
+        })
+        .expect("the dots over the pages");
+    assert_eq!(page.store.page_dots(dots).map(|d| d.count), Some(5));
+
+    page.store.fling(pager, 3000.0);
+    page.rest();
+    assert_eq!(page.store.scroll(pager).x, 200.0, "one page, however hard");
+    assert_eq!(page.store.page_dots(dots).unwrap().current, 1);
+    page.frame();
+    assert_eq!(page.texts.get(&shown).map(String::as_str), Some("1"));
+
+    let snap = page.store.scroll_snap(shelf).unwrap();
+    assert_eq!((snap.align, snap.inset), (viso_ui::SnapAlign::Start, 16.0));
+    page.store.set_scroll(shelf, Vec2 { x: 100.0, y: 0.0 });
+    page.frame();
+    page.store.fling(shelf, 0.0);
+    page.rest();
+    // Item 1 starts at 16 + 128: it rests 16 in.
+    assert_eq!(page.store.scroll(shelf).x, 128.0);
+}

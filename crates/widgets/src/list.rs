@@ -68,6 +68,12 @@ pub struct VirtualListViewStyle {
     /// Whether it opens at its last row and follows the end as rows are
     /// added, while it stands there (a log, a chat).
     pub tail: bool,
+    /// How it comes to rest on its rows, if it does.
+    pub snap: Option<viso_ui::ScrollSnap>,
+    /// Whether each row is exactly as long as the viewport: a pager's pages.
+    pub pages: bool,
+    /// The page dots over its end edge across, a snapping list's.
+    pub dots: Option<viso_ui::PageDotsStyle>,
 }
 
 impl Default for VirtualListViewStyle {
@@ -81,6 +87,9 @@ impl Default for VirtualListViewStyle {
             background: base.style,
             bars: base.bars,
             tail: base.tail,
+            snap: base.snap,
+            pages: base.pages,
+            dots: base.dots,
         }
     }
 }
@@ -155,6 +164,7 @@ pub struct VirtualList {
     /// with no name.
     label: Option<String>,
     on_refresh: Option<crate::scroll::RefreshHandler>,
+    on_snap: Option<crate::scroll::SnapHandler>,
     /// Which rows head a section, taken by `build` as the row builder is.
     headers: RefCell<Option<viso_ui::StickyOf>>,
 }
@@ -169,6 +179,7 @@ pub fn virtual_list(style: VirtualListViewStyle) -> VirtualList {
         item: RefCell::new(None),
         label: None,
         on_refresh: None,
+        on_snap: None,
         headers: RefCell::new(None),
     }
 }
@@ -218,6 +229,16 @@ impl VirtualList {
         self.on_refresh = Some(std::rc::Rc::new(RefCell::new(handler)));
         self
     }
+
+    /// Hear the row a snapping list ([`VirtualListViewStyle::snap`]) settles
+    /// on, as [`Scroll::on_snap`](crate::Scroll::on_snap) does.
+    pub fn on_snap(
+        mut self,
+        handler: impl FnMut(&mut viso_ui::EventCx<'_>, viso_ui::Handle, usize) + 'static,
+    ) -> Self {
+        self.on_snap = Some(std::rc::Rc::new(RefCell::new(handler)));
+        self
+    }
 }
 
 impl Component for VirtualList {
@@ -227,43 +248,35 @@ impl Component for VirtualList {
         // (or the value was already built once), declare a no-body list so the
         // viewport/canvas/scroll-range still exist — rows would just build empty.
         let item = self.item.borrow_mut().take();
+        let style = VirtualListStyle {
+            axis: self.style.axis,
+            size: self.style.size,
+            overscan: self.style.overscan,
+            estimated_row: self.style.estimated_row,
+            style: self.style.background,
+            bars: self.style.bars,
+            tail: self.style.tail,
+            refresh: self.on_refresh.is_some(),
+            snap: self.style.snap,
+            pages: self.style.pages,
+            dots: self.style.dots,
+        };
         let handle = match item {
-            Some(mut item) => cx.virtual_list(
-                VirtualListStyle {
-                    axis: self.style.axis,
-                    size: self.style.size,
-                    overscan: self.style.overscan,
-                    estimated_row: self.style.estimated_row,
-                    style: self.style.background,
-                    bars: self.style.bars,
-                    tail: self.style.tail,
-                    refresh: self.on_refresh.is_some(),
-                },
-                self.item_count,
-                move |index, cx| item(index, cx),
-            ),
-            None => cx.virtual_list(
-                VirtualListStyle {
-                    axis: self.style.axis,
-                    size: self.style.size,
-                    overscan: self.style.overscan,
-                    estimated_row: self.style.estimated_row,
-                    style: self.style.background,
-                    bars: self.style.bars,
-                    tail: self.style.tail,
-                    refresh: self.on_refresh.is_some(),
-                },
-                self.item_count,
-                |_index, _cx| {},
-            ),
+            Some(mut item) => {
+                cx.virtual_list(style, self.item_count, move |index, cx| item(index, cx))
+            }
+            None => cx.virtual_list(style, self.item_count, |_index, _cx| {}),
         };
 
         if let Some(is_header) = self.headers.borrow_mut().take() {
             cx.section_headers(handle, is_header);
         }
-        if let Some(handler) = &self.on_refresh {
-            crate::scroll::install_refresh(cx, handle, handler);
-        }
+        crate::scroll::install_viewport_events(
+            cx,
+            handle,
+            self.on_refresh.as_ref(),
+            self.on_snap.as_ref(),
+        );
         // A virtual list is a `Group` to an assistive technology; carry the label
         // when one was authored.
         let mut semantics = Semantics::role(Role::Group);

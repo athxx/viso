@@ -166,6 +166,7 @@ export record Shadow {
 
 // The values of the standard widgets' enum properties.
 export enum Axis { row; column; }
+export enum Snap { start; center; end; pages; }
 export enum Justify { start; center; end; }
 export enum Align { start; center; end; stretch; }
 export enum GridAlign { stretch; start; center; end; }

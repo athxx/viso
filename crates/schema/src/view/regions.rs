@@ -91,6 +91,8 @@ pub enum RegionKind {
         /// Whether an item's row heads a section (called with the item too):
         /// its root's `sticky`.
         sticky: Option<u32>,
+        /// Whether each row is as long as the viewport: a pager's pages.
+        pages: bool,
     },
 }
 
@@ -276,6 +278,7 @@ impl Encode for ViewRegions {
                     estimate,
                     overscan,
                     sticky,
+                    pages,
                 } => {
                     enc.write_u8(3);
                     enc.write_varint(u64::from(items));
@@ -283,6 +286,7 @@ impl Encode for ViewRegions {
                     encode_terms(&estimate, enc);
                     enc.write_varint(u64::from(overscan));
                     enc.write_varint(sticky.map_or(0, |sticky| u64::from(sticky) + 1));
+                    enc.write_bool(pages);
                 }
             }
             enc.write_varint(region.deps.len() as u64);
@@ -399,6 +403,7 @@ impl Decode for ViewRegions {
                     estimate: decode_terms(dec)?,
                     overscan: read_u32(dec)?,
                     sticky: read_u32(dec)?.checked_sub(1),
+                    pages: dec.read_bool()?,
                 },
                 _ => return Err(DecodeError::Malformed { offset }),
             };
@@ -732,6 +737,7 @@ mod tests {
             estimate: LengthTerms::dp(30.0) + LengthTerms::em(1.5),
             overscan: 4,
             sticky: Some(5),
+            pages: true,
         };
         assert_eq!(
             ViewRegions::decode_from_slice(&rows.encode_to_vec()),
@@ -743,6 +749,7 @@ mod tests {
             estimate: LengthTerms::dp(f32::NAN),
             overscan: 4,
             sticky: None,
+            pages: false,
         };
         assert!(ViewRegions::decode_from_slice(&rows.encode_to_vec()).is_err());
 

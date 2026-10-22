@@ -364,6 +364,9 @@ pub struct EventCx<'a> {
     dismissed: bool,
     /// This dispatch tells a viewport a pull asked it to refresh.
     refresh: bool,
+    /// The item a snapping viewport came to rest on, heads for, or shows
+    /// nearest, if this dispatch tells it.
+    snapped: Option<usize>,
     /// The token of the wake this dispatch delivers.
     woken: Option<u32>,
     /// Whether the focus came to or left the node this dispatch tells.
@@ -498,6 +501,8 @@ pub enum StoreRequest {
     Bar(NodeId, crate::scroll_bar::BarInput),
     /// Start or end a viewport's refresh.
     Refreshing(NodeId, bool),
+    /// Bring a snapping viewport to rest on an item.
+    SnapTo(NodeId, usize),
 }
 
 impl StoreRequest {
@@ -514,6 +519,7 @@ impl StoreRequest {
             StoreRequest::Edit(id, intent) => store.queue_edit(id, intent),
             StoreRequest::Bar(track, input) => store.bar_input(track, input),
             StoreRequest::Refreshing(id, on) => store.set_refreshing(id, on),
+            StoreRequest::SnapTo(id, index) => store.snap_to_item(id, index),
         }
     }
 }
@@ -560,6 +566,7 @@ impl<'a> EventCx<'a> {
             link: None,
             dismissed: false,
             refresh: false,
+            snapped: None,
             woken: None,
             focus_change: None,
             access: None,
@@ -601,6 +608,7 @@ impl<'a> EventCx<'a> {
             link: None,
             dismissed: false,
             refresh: false,
+            snapped: None,
             woken: None,
             focus_change: None,
             access: None,
@@ -641,6 +649,7 @@ impl<'a> EventCx<'a> {
             link: None,
             dismissed: false,
             refresh: false,
+            snapped: None,
             woken: None,
             focus_change: None,
             access: None,
@@ -681,6 +690,7 @@ impl<'a> EventCx<'a> {
             link: None,
             dismissed: false,
             refresh: false,
+            snapped: None,
             woken: None,
             focus_change: None,
             access: None,
@@ -732,6 +742,19 @@ impl<'a> EventCx<'a> {
     pub fn __new_refresh(states: &'a mut StateStore, bindings: &'a BindingTable) -> Self {
         let mut cx = Self::__new(states, bindings);
         cx.refresh = true;
+        cx
+    }
+
+    /// Assemble the event context that tells a snapping viewport the item it
+    /// settles on: the handler reads it via [`EventCx::snapped`].
+    #[doc(hidden)]
+    pub fn __new_snap(
+        states: &'a mut StateStore,
+        bindings: &'a BindingTable,
+        index: usize,
+    ) -> Self {
+        let mut cx = Self::__new(states, bindings);
+        cx.snapped = Some(index);
         cx
     }
 
@@ -926,6 +949,29 @@ impl<'a> EventCx<'a> {
     /// ([`NodeStore::set_refreshing`]).
     pub fn set_refreshing(&mut self, id: NodeId, on: bool) {
         self.store_requests.push(StoreRequest::Refreshing(id, on));
+    }
+
+    /// Bring snapping viewport `id` to rest on item `index`
+    /// ([`NodeStore::snap_to_item`]).
+    pub fn snap_to_item(&mut self, id: NodeId, index: usize) {
+        self.store_requests.push(StoreRequest::SnapTo(id, index));
+    }
+
+    /// The item snapping viewport `id` rests on, heads for, or shows
+    /// nearest; `None` on the state-only paths.
+    pub fn snap_index(&self, id: NodeId) -> Option<usize> {
+        self.place.and_then(|place| place.store.snap_index(id))
+    }
+
+    /// Node `id`'s page dots; `None` on the state-only paths.
+    pub fn page_dots(&self, id: NodeId) -> Option<crate::page_dots::PageDots> {
+        self.place.and_then(|place| place.store.page_dots(id))
+    }
+
+    /// The item a snapping viewport ([`NodeStore::tell_snaps`]) came to rest
+    /// on, heads for, or shows nearest, if this dispatch tells one.
+    pub fn snapped(&self) -> Option<usize> {
+        self.snapped
     }
 
     /// The token of the wake ([`wake_after`](Self::wake_after)) this dispatch

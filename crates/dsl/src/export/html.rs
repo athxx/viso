@@ -19,7 +19,8 @@ use crate::assets::{AssetUse, ResourceId};
 use crate::behavior::ir::Site;
 use crate::ir::binding_ir::NodeKey;
 use crate::ir::ui_ir::{
-    Alignment2D, AxisIr, InsetIr, LengthIr, NodeKind, Placement, TermsIr, UiItem, UiNode, UiTree,
+    Alignment2D, AotSnap, AxisIr, InsetIr, LengthIr, NodeKind, Placement, TermsIr, UiItem, UiNode,
+    UiTree,
 };
 use crate::syntax::TextRange;
 use crate::view_behavior::{ViewBehavior, When};
@@ -536,6 +537,16 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             if node.style.axis == Some(AxisIr::Row) {
                 el.classes.push("vx-across".to_owned());
             }
+            if node.style.list.is_some_and(|list| list.pages) {
+                el.classes.push("vx-pages".to_owned());
+            }
+        }
+        if node
+            .style
+            .scroll
+            .is_some_and(|scroll| scroll.snap.is_some())
+        {
+            el.classes.push("vx-snap".to_owned());
         }
         match node.type_name.as_str() {
             "Button" => el.attr("type", "button"),
@@ -784,11 +795,37 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             }
             NodeKind::Grid | NodeKind::Stack | NodeKind::Absolute => padding(node, decls, device),
             NodeKind::Scroll | NodeKind::VirtualList => {
-                if style.axis == Some(AxisIr::Row) {
+                let row = style.axis == Some(AxisIr::Row);
+                if row {
                     decls.push(("flex-direction", "row".into()));
                     decls.push(("overflow-y", "hidden".into()));
                 } else {
                     decls.push(("overflow-x", "hidden".into()));
+                }
+                // A snapping viewport rests its items as `--vx-snap` aligns
+                // them, its inset kept clear.
+                if let Some(scroll) = style.scroll
+                    && let Some(snap) = scroll.snap
+                {
+                    let axis = if row { "x" } else { "y" };
+                    decls.push(("scroll-snap-type", format!("{axis} mandatory")));
+                    let align = match snap {
+                        AotSnap::Start | AotSnap::Pages => "start",
+                        AotSnap::Center => "center",
+                        AotSnap::End => "end",
+                    };
+                    decls.push(("--vx-snap", align.into()));
+                    if snap == AotSnap::Pages {
+                        decls.push(("--vx-snap-stop", "always".into()));
+                    }
+                    if scroll.snap_inset > 0.0 {
+                        let edge = if row {
+                            "scroll-padding-inline"
+                        } else {
+                            "scroll-padding-block"
+                        };
+                        decls.push((edge, css::px(f64::from(scroll.snap_inset))));
+                    }
                 }
                 // The page mounts every row; the browser skips laying out and
                 // painting those off screen, sizing each at the estimate until

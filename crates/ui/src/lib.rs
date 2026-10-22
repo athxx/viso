@@ -45,6 +45,7 @@ pub mod long_press;
 pub mod node;
 pub mod notice;
 pub mod number_format;
+pub mod page_dots;
 pub mod paint;
 pub mod reactive;
 pub mod refresh;
@@ -54,6 +55,7 @@ pub mod scroll_motion;
 pub mod semantics;
 pub mod shader;
 pub mod shadow;
+pub mod snap;
 pub mod spinner;
 pub mod state;
 #[cfg(feature = "hot-reload")]
@@ -145,6 +147,7 @@ pub use field_marks::FieldMarks;
 pub use input_filter::InputFilter;
 pub use links::LinkPointer;
 pub use number_format::{NumberFormat, number_kind};
+pub use page_dots::{PageDots, PageDotsStyle};
 pub use reactive::{
     Cleanup, ComputeCx, ComputedId, ComputedStore, DepCursor, EffectCx, EffectId, EffectStore,
     ProjectId, SemanticProjector,
@@ -158,6 +161,7 @@ pub use semantics::{
 };
 pub use shader::ShaderSlots;
 pub use shadow::Shadow;
+pub use snap::{ScrollSnap, SnapAlign};
 pub use spinner::{Spinner, SpinnerLook};
 pub use state::{StateId, StateStore, StateValue};
 pub use structure::{StructureCx, StructureHookId, run_structure_hooks};

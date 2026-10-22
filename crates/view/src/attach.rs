@@ -31,8 +31,10 @@ pub fn attach(
         cx.on_pointer(node, handler(host, pointers, control.clone(), scope));
     }
     if let Some(keys) = keys {
-        // A refresh comes without the focus.
-        let focus = keys.iter().any(|r| r.event != EventRoute::Refresh)
+        // A refresh, and a snap, come without the focus.
+        let focus = keys
+            .iter()
+            .any(|r| !matches!(r.event, EventRoute::Refresh | EventRoute::SnapChanged))
             || control.as_ref().is_some_and(|c| c.responds());
         cx.on_key(node, handler(host, keys, control, scope));
         if focus {
@@ -50,6 +52,9 @@ pub fn attach(
     }
     if refreshes(routes) {
         cx.refreshable(node, true);
+    }
+    if snaps(routes) {
+        cx.tell_snaps(node, true);
     }
     node
 }
@@ -91,15 +96,26 @@ pub fn attach_node(
     if refreshes(routes) || store.is_refreshable(id) {
         store.set_refreshable(id, refreshes(routes));
     }
+    store.tell_snaps(id, snaps(routes));
 }
 
 /// Whether a node whose key handler runs `keys` takes the focus for them as
 /// it is re-attached: links take it as their text holds them, not as heard,
-/// a text as it is selectable, and a refresh comes without it.
+/// a text as it is selectable, and a refresh and a snap come without it.
 fn takes_focus(keys: &[Route], control: Option<&Control>) -> bool {
-    keys.iter()
-        .any(|r| !matches!(r.event, EventRoute::Link | EventRoute::Refresh))
-        || control.is_some_and(|c| c.kind.responds())
+    keys.iter().any(|r| {
+        !matches!(
+            r.event,
+            EventRoute::Link | EventRoute::Refresh | EventRoute::SnapChanged
+        )
+    }) || control.is_some_and(|c| c.kind.responds())
+}
+
+/// Whether `routes` hear the item a snapping viewport settles on.
+fn snaps(routes: &[Route]) -> bool {
+    routes
+        .iter()
+        .any(|route| route.event == EventRoute::SnapChanged)
 }
 
 /// Whether `routes` take refreshes: the viewport refreshes when pulled.

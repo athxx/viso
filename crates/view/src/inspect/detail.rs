@@ -390,6 +390,11 @@ fn groups(store: &NodeStore, id: NodeId) -> Vec<PropertyGroup> {
             add(&mut content, "look", format!("{:?}", spinner.look));
             add(&mut content, "spinning", spinner.spinning.to_string());
         }
+        Some(Content::PageDots(dots)) => {
+            add(&mut content, "kind", "page_dots".into());
+            add(&mut content, "count", dots.count.to_string());
+            add(&mut content, "current", dots.current.to_string());
+        }
         Some(Content::Shader { .. }) => add(&mut content, "kind", "shader".into()),
         Some(Content::Asset { .. }) => add(&mut content, "kind", "asset".into()),
         Some(Content::Scene { slot, revision }) => {

@@ -1595,6 +1595,7 @@ impl WindowState {
             || self.store.is_scroll_moving()
             || self.store.is_spinning()
             || self.store.refreshes_due()
+            || self.store.snaps_due()
             || self.store.frame_clients_want_frame()
             || self.draws_clock
     }
@@ -3507,6 +3508,16 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // The viewports a pull asked to refresh hear it.
                     if ws.store.refreshes_due() {
                         KeyRouter::route_refreshes(
+                            &mut ws.store,
+                            &mut ws.states,
+                            &ws.bindings,
+                            &mut ws.text_edits,
+                        );
+                        ws.tell_focus();
+                    }
+                    // The snapping viewports whose item changed hear it.
+                    if ws.store.snaps_due() {
+                        KeyRouter::route_snaps(
                             &mut ws.store,
                             &mut ws.states,
                             &ws.bindings,

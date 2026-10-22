@@ -1417,6 +1417,8 @@ mod tests {
                                 bars: crate::scroll_bar::ScrollBars::Hidden,
                                 tail: false,
                                 refresh: false,
+                                snap: None,
+                                dots: None,
                             },
                             |_| {},
                         )

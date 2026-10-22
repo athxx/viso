@@ -69,6 +69,12 @@ impl Handle {
     pub fn id(self) -> NodeId {
         self.id
     }
+
+    /// The handle of node `id`, declared already.
+    #[inline]
+    pub(crate) fn of(id: NodeId) -> Handle {
+        Handle { id }
+    }
 }
 
 /// Parameters for a Flex container declared via [`BuildCx::flex`].
@@ -189,6 +195,12 @@ pub struct ScrollStyle {
     /// Whether a column refreshes when pulled down past its start (see
     /// [`refresh`](crate::refresh)).
     pub refresh: bool,
+    /// How it comes to rest on its content's children, if it does (see
+    /// [`snap`](crate::snap)).
+    pub snap: Option<crate::snap::ScrollSnap>,
+    /// The page dots over its end edge across, a snapping viewport's (see
+    /// [`page_dots`](crate::page_dots)).
+    pub dots: Option<crate::page_dots::PageDotsStyle>,
 }
 
 impl Default for ScrollStyle {
@@ -200,6 +212,8 @@ impl Default for ScrollStyle {
             bars: crate::scroll_bar::ScrollBars::Auto,
             tail: false,
             refresh: false,
+            snap: None,
+            dots: None,
         }
     }
 }
@@ -230,6 +244,13 @@ pub struct VirtualListStyle {
     /// Whether a column refreshes when pulled down past its start (see
     /// [`refresh`](crate::refresh)).
     pub refresh: bool,
+    /// How it comes to rest on its rows, if it does (see
+    /// [`snap`](crate::snap)).
+    pub snap: Option<crate::snap::ScrollSnap>,
+    /// Whether each row is exactly as long as the viewport: a pager's pages.
+    pub pages: bool,
+    /// The page dots over its end edge across, a snapping list's.
+    pub dots: Option<crate::page_dots::PageDotsStyle>,
 }
 
 impl Default for VirtualListStyle {
@@ -243,6 +264,9 @@ impl Default for VirtualListStyle {
             bars: crate::scroll_bar::ScrollBars::Auto,
             tail: false,
             refresh: false,
+            snap: None,
+            pages: false,
+            dots: None,
         }
     }
 }
@@ -732,6 +756,8 @@ pub struct NodeStore {
     pub(crate) spinners: crate::spinner::Spinners,
     /// Cold: the nodes pinned at their viewport's start edge.
     pub(crate) stickies: crate::sticky::Stickies,
+    /// Cold: the viewports that snap to their items.
+    pub(crate) snaps: crate::snap::Snaps,
     /// Cold: the nodes that show a descendant as active.
     actives: crate::semantics::ActiveDescendants,
     /// Where the focus was before it last moved, until the move is told.
@@ -870,6 +896,7 @@ impl NodeStore {
         self.refreshers.clear();
         self.spinners.clear();
         self.stickies.clear();
+        self.snaps.clear();
         self.actives.clear();
         self.focus_scope = None;
         self.draggable_regions.clear();
@@ -2786,6 +2813,17 @@ impl NodeStore {
         }
         *slot = Some(state);
         self.mark_dirty(id, DirtyClass::SEMANTICS);
+    }
+
+    /// Node `id`'s page dots, to change in place; the caller marks them.
+    pub(crate) fn page_dots_mut(&mut self, id: NodeId) -> Option<&mut crate::page_dots::PageDots> {
+        if !self.arena.is_live(id) {
+            return None;
+        }
+        match self.content_payload[id.index() as usize].as_deref_mut() {
+            Some(Content::PageDots(dots)) => Some(dots),
+            _ => None,
+        }
     }
 
     /// Node `id`'s spinner, to change in place; the caller marks it.
@@ -4707,6 +4745,7 @@ impl NodeStore {
         self.refreshers.forget(i as u32);
         self.spinners.forget(i as u32);
         self.stickies.forget(i as u32);
+        self.snaps.forget(i as u32);
         self.actives.forget(i as u32);
         self.clips[i] = false;
         self.overlay[i] = false;
@@ -4881,6 +4920,7 @@ impl NodeStore {
         self.settle_scroll_requests();
         self.sync_refreshers();
         self.sync_stickies();
+        self.sync_snaps();
         if self.sync_scroll_bars() {
             let mut redo = Vec::new();
             self.relayout_dirty(root, surface, scratch, &mut redo);
@@ -5113,6 +5153,7 @@ impl NodeStore {
         // A refresher starts or ends and its indicator follows its pull.
         self.sync_refreshers();
         self.sync_stickies();
+        self.sync_snaps();
         // The bars follow their viewports; a thumb whose length changed lays
         // out again, alone in its track.
         if self.sync_scroll_bars() {
@@ -6225,6 +6266,13 @@ impl<'a> BuildCx<'a> {
         self.stack.push(id);
         children(self);
         self.stack.pop();
+        self.viewport_ways(id, &style);
+        Handle { id }
+    }
+
+    /// Give viewport `id` its bars, tail, refresh, snapping and page dots,
+    /// as `style` says.
+    fn viewport_ways(&mut self, id: NodeId, style: &ScrollStyle) {
         if style.bars == crate::scroll_bar::ScrollBars::Auto {
             self.scroll_bar(id, style.axis);
         }
@@ -6234,7 +6282,12 @@ impl<'a> BuildCx<'a> {
         if style.refresh {
             self.store.set_refreshable(id, true);
         }
-        Handle { id }
+        if style.snap.is_some() {
+            self.store.set_scroll_snap(id, style.snap);
+        }
+        if let Some(dots) = style.dots {
+            self.viewport_dots(id, style.axis, dots);
+        }
     }
 
     /// Declare a virtualized list of `item_count` logical rows that mounts only a
@@ -6320,21 +6373,25 @@ impl<'a> BuildCx<'a> {
                 axis: style.axis,
                 estimated_row: style.estimated_row,
                 overscan: style.overscan as usize,
+                pages: style.pages,
             },
             item_count,
             item,
             key_of,
         );
-        if style.bars == crate::scroll_bar::ScrollBars::Auto {
-            self.scroll_bar(viewport, style.axis);
-        }
-        if style.tail {
-            self.store.set_scroll_tail(viewport, true);
-        }
-        if style.refresh {
-            self.store.set_refreshable(viewport, true);
-        }
-
+        self.viewport_ways(
+            viewport,
+            &ScrollStyle {
+                axis: style.axis,
+                size: style.size,
+                style: style.style,
+                bars: style.bars,
+                tail: style.tail,
+                refresh: style.refresh,
+                snap: style.snap,
+                dots: style.dots,
+            },
+        );
         Handle { id: viewport }
     }
 

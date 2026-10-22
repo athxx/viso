@@ -149,6 +149,8 @@ pub enum Content {
     Scene { slot: SceneSlot, revision: u64 },
     /// A spinner: work under way.
     Spinner(crate::spinner::Spinner),
+    /// Page dots: a snapping viewport's items, the one it rests on lit.
+    PageDots(crate::page_dots::PageDots),
 }
 
 /// An image a brush node samples: the resource its texture parameter names,
@@ -180,6 +182,7 @@ impl Content {
             | Content::Path { natural, .. }
             | Content::Asset { natural, .. } => *natural,
             Content::Spinner(spinner) => spinner.natural,
+            Content::PageDots(dots) => dots.natural(),
             Content::Shader { .. } | Content::Scene { .. } => Vec2::ZERO,
         }
     }
@@ -194,6 +197,7 @@ impl Content {
             | Content::Path { natural, .. }
             | Content::Asset { natural, .. } => natural.x,
             Content::Spinner(spinner) => spinner.natural.x,
+            Content::PageDots(dots) => dots.natural().x,
             Content::Shader { .. } | Content::Scene { .. } => 0.0,
         }
     }
@@ -210,7 +214,8 @@ impl Content {
             | Content::Asset { .. }
             | Content::Shader { .. }
             | Content::Scene { .. }
-            | Content::Spinner(_) => None,
+            | Content::Spinner(_)
+            | Content::PageDots(_) => None,
         }
     }
 }

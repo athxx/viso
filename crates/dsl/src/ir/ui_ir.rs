@@ -21,6 +21,7 @@ use crate::resolve::SymbolId;
 use crate::syntax::span::TextRange;
 use viso_behavior::native::MigratableState;
 use viso_schema::Interaction;
+pub use viso_schema::aot::AotSnap;
 pub use viso_schema::layout::{
     AbsoluteInsets, AdaptiveColumns, AlignItems, Alignment2D, AutoRepeat, BoxRules, GridPlacement,
     Inset, Placement, Span, SpanInset, StackPlacement, TrackMax, TrackSizing,
@@ -549,12 +550,17 @@ pub struct StyleIr {
 }
 
 /// How a viewport scrolls: whether it shows scroll bars (`scroll_bars`),
-/// and whether it opens at the end of its content and follows the end as
-/// the content grows (`tail`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// whether it opens at the end of its content and follows the end as the
+/// content grows (`tail`), how it comes to rest on its items (`snap`) and
+/// how far in from its edges (`snap_inset`, dp), and whether page dots show
+/// them (`page_dots`).
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ScrollIr {
     pub bars: bool,
     pub tail: bool,
+    pub snap: Option<AotSnap>,
+    pub snap_inset: f32,
+    pub dots: bool,
 }
 
 impl Default for ScrollIr {
@@ -562,6 +568,9 @@ impl Default for ScrollIr {
         ScrollIr {
             bars: true,
             tail: false,
+            snap: None,
+            snap_inset: 0.0,
+            dots: false,
         }
     }
 }
@@ -572,6 +581,8 @@ impl Default for ScrollIr {
 pub struct ListIr {
     pub estimate: TermsIr,
     pub overscan: u32,
+    /// Whether each row is as long as the viewport (`pages`).
+    pub pages: bool,
 }
 
 impl Default for ListIr {
@@ -582,6 +593,7 @@ impl Default for ListIr {
                 ..TermsIr::default()
             },
             overscan: 4,
+            pages: false,
         }
     }
 }

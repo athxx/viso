@@ -460,6 +460,7 @@ impl Builder<'_> {
                             estimate: terms_of(shape.estimate),
                             overscan: shape.overscan,
                             sticky,
+                            pages: shape.pages,
                         }
                     }
                     _ => RegionKind::For { items, key },

@@ -30,6 +30,9 @@ pub fn payload(route: EventRoute, cx: &EventCx<'_>) -> Option<Value> {
     if route == EventRoute::Refresh {
         return cx.refresh().then_some(Value::Nil);
     }
+    if route == EventRoute::SnapChanged {
+        return cx.snapped().map(|index| record([Value::Int(index as i64)]));
+    }
     if route.is_key() {
         let key = cx.key()?;
         return (key.pressed == (route == EventRoute::KeyDown)).then(|| key_event(key));

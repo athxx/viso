@@ -446,6 +446,12 @@ pub struct VirtualListState {
     keep: Option<ItemKey>,
     /// The host showing the current header, raised above the rows.
     header_host: Option<NodeId>,
+    /// Whether each row is exactly as long as the viewport.
+    pages: bool,
+    /// The viewport extent the pages were last made, `0` before.
+    page_extent: f32,
+    /// Reused: the snap points near a release.
+    snap_points: Vec<(f32, usize)>,
 }
 
 impl VirtualListState {
@@ -498,7 +504,162 @@ impl VirtualListState {
             pinned: None,
             keep: None,
             header_host: None,
+            pages: false,
+            page_extent: 0.0,
+            snap_points: Vec::new(),
         }
+    }
+
+    /// Make each row exactly as long as the viewport, or not.
+    pub fn paged(mut self: Box<Self>, pages: bool) -> Box<Self> {
+        self.pages = pages;
+        self
+    }
+
+    /// Whether each row is exactly as long as the viewport.
+    pub fn is_paged(&self) -> bool {
+        self.pages
+    }
+
+    /// Make every page as long as the viewport now is, keeping the page the
+    /// viewport shows.
+    fn fit_pages(&mut self, viewport: NodeId, cx: &mut StructureCx<'_>) {
+        let axis = self.axis;
+        let extent = cx.store.bounds_main(viewport, axis);
+        if extent <= 0.0 || extent == self.page_extent {
+            return;
+        }
+        let page = if self.page_extent > 0.0 {
+            (cx.store.scroll_distance(viewport, axis) / self.page_extent).round()
+        } else {
+            0.0
+        };
+        let was = self.page_extent;
+        self.page_extent = extent;
+        self.heights = HeightTree::new(self.item_count, extent);
+        self.height_cache = HeightCache::with_fallback(extent);
+        let size = self.page_size();
+        for row in self.mounted.iter_mut().chain(self.pinned.as_mut()) {
+            row.item_top = self.heights.prefix_sum(row.logical_index);
+            cx.store.set_fixed_size(row.host, size);
+            cx.store.set_row_offset(row.host, row.item_top);
+        }
+        if was > 0.0 {
+            cx.store.seek_scroll(viewport, axis, page * extent);
+        }
+        self.dirty_data = true;
+    }
+
+    /// The size of a page's host.
+    fn page_size(&self) -> Size {
+        let main = Length::Fixed(self.page_extent);
+        match self.axis {
+            Axis::Row => Size {
+                width: main,
+                height: Length::fill(),
+            },
+            Axis::Column => Size {
+                width: Length::fill(),
+                height: main,
+            },
+        }
+    }
+
+    /// Push onto `out` the snap points of the rows about where a viewport
+    /// `extent` long `at` from its start shows its row as `snap` says.
+    fn snap_candidates(
+        &self,
+        at: f32,
+        snap: crate::snap::ScrollSnap,
+        extent: f32,
+        out: &mut Vec<(f32, usize)>,
+    ) {
+        if self.item_count == 0 {
+            return;
+        }
+        let range = (self.heights.total() - extent).max(0.0);
+        let probe = match snap.align {
+            crate::snap::SnapAlign::Start => at + snap.inset,
+            crate::snap::SnapAlign::Center => at + extent * 0.5,
+            crate::snap::SnapAlign::End => at + extent - snap.inset - 0.5,
+        };
+        let (row, _) = self.heights.find_position(probe.max(0.0));
+        for r in row.saturating_sub(1)..=(row + 1).min(self.item_count - 1) {
+            let start = self.heights.prefix_sum(r);
+            let point =
+                crate::snap::snap_point(snap, start, self.heights.point_query(r), extent, range);
+            out.push((point, r));
+        }
+    }
+
+    /// The release of viewport `viewport` its store left the list: glide to
+    /// the row it comes to rest on, or coast on past none near.
+    fn aim_snap(&mut self, viewport: NodeId, aim: crate::snap::SnapAim, cx: &mut StructureCx<'_>) {
+        let Some(snap) = cx.store.scroll_snap(viewport) else {
+            return;
+        };
+        let extent = cx.store.bounds_main(viewport, self.axis);
+        let (from, rest, velocity) = match aim {
+            crate::snap::SnapAim::Release {
+                from,
+                rest,
+                velocity,
+            } => (from, rest, velocity),
+            crate::snap::SnapAim::Item(index) => {
+                let index = index.min(self.item_count.saturating_sub(1));
+                let start = self.heights.prefix_sum(index);
+                let to = crate::snap::snap_point(
+                    snap,
+                    start,
+                    self.heights.point_query(index),
+                    extent,
+                    (self.heights.total() - extent).max(0.0),
+                );
+                cx.store.snap_to(viewport, to, index, 0.0);
+                return;
+            }
+        };
+        let mut points = std::mem::take(&mut self.snap_points);
+        points.clear();
+        self.snap_candidates(from, snap, extent, &mut points);
+        self.snap_candidates(rest, snap, extent, &mut points);
+        points.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        points.dedup_by_key(|p| p.1);
+        let flick = cx.store.scroll_physics().min_velocity;
+        match crate::snap::choose(&points, snap, (from, rest, velocity), flick, extent) {
+            Some((to, index)) => cx.store.snap_to(viewport, to, index, velocity),
+            None => {
+                let sign = if self.axis == Axis::Row
+                    && cx.store.direction_at(viewport.index())
+                        == crate::adaptive::LayoutDirection::Rtl
+                {
+                    -1.0
+                } else {
+                    1.0
+                };
+                cx.store.coast(viewport, velocity * sign);
+            }
+        }
+        self.snap_points = points;
+    }
+
+    /// Tell viewport `viewport`'s store the row it shows nearest.
+    fn note_snap(&mut self, viewport: NodeId, cx: &mut StructureCx<'_>) {
+        let Some(snap) = cx.store.scroll_snap(viewport) else {
+            return;
+        };
+        let extent = cx.store.bounds_main(viewport, self.axis);
+        let at = cx.store.scroll_distance(viewport, self.axis);
+        let mut points = std::mem::take(&mut self.snap_points);
+        points.clear();
+        self.snap_candidates(at, snap, extent, &mut points);
+        if let Some(&(_, index)) = points
+            .iter()
+            .min_by(|a, b| (a.0 - at).abs().total_cmp(&(b.0 - at).abs()))
+        {
+            cx.store.note_snap_index(viewport, index);
+        }
+        self.snap_points = points;
     }
 
     /// Let `sticky_of` say which rows head a section (none without).
@@ -835,6 +996,9 @@ impl VirtualListState {
             }
             None => cx.store.alloc_row_host(self.canvas, self.axis),
         };
+        if self.pages && self.page_extent > 0.0 {
+            cx.store.set_fixed_size(host, self.page_size());
+        }
         cx.store.set_row_offset(host, item_top);
         {
             let mut build =
@@ -1112,6 +1276,13 @@ fn reconcile_one(viewport: NodeId, state: &mut VirtualListState, cx: &mut Struct
     // A seek scrolls its row to the start edge, as near as the end of the list
     // allows, on the extent the height model holds now.
     state.take_headers();
+    if state.pages {
+        state.fit_pages(viewport, cx);
+    }
+    // A release the store left the list to aim.
+    if let Some(aim) = cx.store.take_snap_aim(viewport) {
+        state.aim_snap(viewport, aim, cx);
+    }
     let room = (state.heights.total() - cx.store.bounds_main(viewport, axis)).max(0.0);
     let mut started = false;
     if let Some((index, smooth)) = state.reveal.take() {
@@ -1145,6 +1316,11 @@ fn reconcile_one(viewport: NodeId, state: &mut VirtualListState, cx: &mut Struct
     // scroll itself already moved the world rects (TRANSFORM class); no relayout.
     if state.mounted_once && scroll_main == state.last_reconciled_scroll && !state.dirty_data {
         return 0;
+    }
+
+    if cx.store.snaps(viewport) {
+        cx.store.note_snap_count(viewport, state.item_count);
+        state.note_snap(viewport, cx);
     }
 
     // The visible window: the row at the viewport top, through the row at its
@@ -1281,6 +1457,8 @@ pub struct ListShape {
     pub axis: Axis,
     pub estimated_row: f32,
     pub overscan: usize,
+    /// Whether each row is exactly as long as the viewport: a pager's pages.
+    pub pages: bool,
 }
 
 /// Make the scroll node `viewport` a virtual list of `item_count` rows that
@@ -1337,7 +1515,8 @@ pub fn attach_list(
             canvas,
             builder,
             key_of,
-        )),
+        ))
+        .paged(shape.pages),
     )
 }
 
@@ -2168,6 +2347,101 @@ mod tests {
         set_item_count(&mut h.lists, h.viewport, 10);
         h.frame();
         assert!(h.state().pool_len() > 0);
+    }
+
+    /// A 20-page column pager 300 tall, on Apple's coast.
+    fn pager() -> ListHarness {
+        let mut h = ListHarness::new(20, 50.0, 1, 300.0);
+        let mut lists = VirtualLists::new();
+        let mut text_edits = crate::text_edit::TextEdits::new();
+        let mut projectors = crate::reactive::SemanticProjector::new();
+        let mut store = NodeStore::new();
+        store.set_scroll_physics(crate::scroll_motion::ScrollPhysics::APPLE);
+        let viewport = BuildCx::with_reactive(
+            &mut store,
+            &mut h.states,
+            &mut h.bindings,
+            &mut lists,
+            &mut text_edits,
+            &mut projectors,
+        )
+        .virtual_list(
+            VirtualListStyle {
+                size: Size::fixed(100.0, 300.0),
+                overscan: 1,
+                estimated_row: 50.0,
+                pages: true,
+                snap: Some(crate::snap::ScrollSnap::PAGES),
+                ..Default::default()
+            },
+            20,
+            |_, cx| {
+                cx.leaf(LeafStyle {
+                    size: Size::fill(),
+                    ..Default::default()
+                });
+            },
+        )
+        .id();
+        store.mark_dirty(viewport, DirtyClass::MEASURE | DirtyClass::LAYOUT);
+        h.store = store;
+        h.lists = lists;
+        h.viewport = viewport;
+        h.frame();
+        h.frame();
+        h
+    }
+
+    /// Frames, the motion advancing in each, until `h` stands still.
+    fn coast_out(h: &mut ListHarness) {
+        for _ in 0..240 {
+            if !h.store.is_scroll_moving() {
+                return;
+            }
+            h.store
+                .tick_scroll_motion(std::time::Duration::from_millis(16));
+            h.frame();
+        }
+    }
+
+    #[test]
+    fn a_pager_s_pages_are_the_viewport_s_length_and_a_flick_turns_one() {
+        let mut h = pager();
+        assert_eq!(h.state().total_extent(), 20.0 * 300.0);
+        let first = h.host_of(0).unwrap();
+        assert_eq!(h.store.bounds(first).h, 300.0);
+        h.store.fling(h.viewport, 4000.0);
+        h.frame();
+        assert!(h.store.is_gliding(h.viewport), "the list aimed the release");
+        coast_out(&mut h);
+        assert_eq!(h.store.scroll(h.viewport).y, 300.0);
+        assert_eq!(h.store.snap_index(h.viewport), Some(1));
+        // A slow drag past halfway settles on the next.
+        h.store.set_scroll(h.viewport, Vec2 { x: 0.0, y: 480.0 });
+        h.frame();
+        h.store.settle_snaps_over(h.viewport);
+        h.frame();
+        coast_out(&mut h);
+        assert_eq!(h.store.scroll(h.viewport).y, 600.0);
+        // A shorter viewport keeps the page it shows.
+        h.store
+            .set_fixed_size(h.viewport, Size::fixed(100.0, 200.0));
+        h.surface.h = 200.0;
+        h.frame();
+        h.frame();
+        assert_eq!(h.state().total_extent(), 20.0 * 200.0);
+        assert_eq!(h.store.scroll(h.viewport).y, 400.0, "still page 2");
+        // Asked for a page far off, it glides there; past the last, the last.
+        h.store.snap_to_item(h.viewport, 15);
+        h.frame();
+        coast_out(&mut h);
+        assert_eq!(h.store.scroll(h.viewport).y, 15.0 * 200.0);
+        assert_eq!(h.store.snap_index(h.viewport), Some(15));
+        h.store.snap_to_item(h.viewport, 99);
+        h.frame();
+        coast_out(&mut h);
+        assert_eq!(h.store.scroll(h.viewport).y, 19.0 * 200.0);
+        assert_eq!(h.store.snap_index(h.viewport), Some(19));
     }
 
     #[test]

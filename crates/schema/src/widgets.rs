@@ -127,6 +127,9 @@ const SCROLL: &[WidgetProperty] = &[
     prop("scroll_bars", "Bool"),
     prop("tail", "Bool"),
     prop("refreshing", "Bool"),
+    prop("snap", "Snap"),
+    prop("snap_inset", "MixedLength"),
+    prop("page_dots", "Bool"),
 ];
 
 /// Text style properties `Text` and `TextInput` share.
@@ -235,6 +238,10 @@ const VIRTUAL_LIST: &[WidgetProperty] = &[
     prop("scroll_bars", "Bool"),
     prop("tail", "Bool"),
     prop("refreshing", "Bool"),
+    prop("snap", "Snap"),
+    prop("snap_inset", "MixedLength"),
+    prop("page_dots", "Bool"),
+    prop("pages", "Bool"),
 ];
 
 /// The `grid.*` group a `Grid` provides to its children.
@@ -302,10 +309,12 @@ const CURRENT_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("current_changed", "Se
 const SCROLL_EVENTS: &[WidgetEvent] = &[
     WidgetEvent::new("scroll_changed", "ScrollChanged"),
     WidgetEvent::signal("refresh"),
+    WidgetEvent::new("snap_changed", "SelectionChanged"),
 ];
 const VIRTUAL_LIST_EVENTS: &[WidgetEvent] = &[
     WidgetEvent::new("visible_range_changed", "VisibleRange"),
     WidgetEvent::signal("refresh"),
+    WidgetEvent::new("snap_changed", "SelectionChanged"),
 ];
 const KEY_SHORTCUT_EVENTS: &[WidgetEvent] = &[WidgetEvent::signal("triggered")];
 

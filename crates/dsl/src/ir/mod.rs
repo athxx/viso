@@ -1833,6 +1833,57 @@ fn fold_static(
                 None => false,
             })
         }
+        "page_dots" if matches!(kind, NodeKind::Scroll | NodeKind::VirtualList) => {
+            folded(match fold_bool(value) {
+                Some(on) => {
+                    style
+                        .scroll
+                        .get_or_insert_with(ui_ir::ScrollIr::default)
+                        .dots = on;
+                    true
+                }
+                None => false,
+            })
+        }
+        "snap" if matches!(kind, NodeKind::Scroll | NodeKind::VirtualList) => {
+            use viso_schema::aot::AotSnap;
+            let snap = match enum_constant(value, "Snap").as_deref() {
+                Some("start") => AotSnap::Start,
+                Some("center") => AotSnap::Center,
+                Some("end") => AotSnap::End,
+                Some("pages") => AotSnap::Pages,
+                _ => return Fold::Pending,
+            };
+            style
+                .scroll
+                .get_or_insert_with(ui_ir::ScrollIr::default)
+                .snap = Some(snap);
+            Fold::Folded
+        }
+        "snap_inset" if matches!(kind, NodeKind::Scroll | NodeKind::VirtualList) => {
+            folded(match length::fold_gap(value, consts) {
+                Some(Lowered::Layout(LengthIr::Fixed(n))) if n >= 0.0 => {
+                    style
+                        .scroll
+                        .get_or_insert_with(ui_ir::ScrollIr::default)
+                        .snap_inset = n;
+                    true
+                }
+                _ => false,
+            })
+        }
+        // A list of pages snaps a page at a time unless it says otherwise.
+        "pages" if kind == NodeKind::VirtualList => folded(match fold_bool(value) {
+            Some(on) => {
+                style.list.get_or_insert_with(ListIr::default).pages = on;
+                if on {
+                    let scroll = style.scroll.get_or_insert_with(ui_ir::ScrollIr::default);
+                    scroll.snap.get_or_insert(viso_schema::aot::AotSnap::Pages);
+                }
+                true
+            }
+            None => false,
+        }),
         _ if kind == NodeKind::Grid => fold_grid(name, value, consts, style),
         _ => Fold::Pending,
     }

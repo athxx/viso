@@ -34,13 +34,34 @@ use viso_ui::{
 /// so a widget built by reference installs it.
 pub(crate) type RefreshHandler = Rc<RefCell<dyn FnMut(&mut EventCx<'_>, Handle)>>;
 
-/// Make the viewport `handle` names run `handler` when a pull, or an
-/// assistive technology, asks it to refresh.
-pub(crate) fn install_refresh(cx: &mut BuildCx<'_>, handle: Handle, handler: &RefreshHandler) {
-    let handler = Rc::clone(handler);
+/// What a snapping viewport runs when it settles on an item, with the item.
+pub(crate) type SnapHandler = Rc<RefCell<dyn FnMut(&mut EventCx<'_>, Handle, usize)>>;
+
+/// Make the viewport `handle` names run `refresh` when a pull, or an
+/// assistive technology, asks it to refresh, and `snap` when it settles on
+/// an item.
+pub(crate) fn install_viewport_events(
+    cx: &mut BuildCx<'_>,
+    handle: Handle,
+    refresh: Option<&RefreshHandler>,
+    snap: Option<&SnapHandler>,
+) {
+    if refresh.is_none() && snap.is_none() {
+        return;
+    }
+    if snap.is_some() {
+        cx.tell_snaps(handle, true);
+    }
+    let refresh = refresh.map(Rc::clone);
+    let snap = snap.map(Rc::clone);
     cx.on_key(handle, move |ev| {
-        if ev.refresh() {
-            (handler.borrow_mut())(ev, handle);
+        if let Some(refresh) = &refresh
+            && ev.refresh()
+        {
+            (refresh.borrow_mut())(ev, handle);
+        }
+        if let (Some(snap), Some(index)) = (&snap, ev.snapped()) {
+            (snap.borrow_mut())(ev, handle, index);
         }
     });
 }
@@ -65,6 +86,11 @@ pub struct ScrollViewStyle {
     /// Whether it opens at the end of its content and follows the end as
     /// the content grows, while it stands there (a log, a chat).
     pub tail: bool,
+    /// How it comes to rest on its content's children, if it does: a
+    /// carousel's items.
+    pub snap: Option<viso_ui::ScrollSnap>,
+    /// The page dots over its end edge across, a snapping viewport's.
+    pub dots: Option<viso_ui::PageDotsStyle>,
 }
 
 impl Default for ScrollViewStyle {
@@ -75,6 +101,8 @@ impl Default for ScrollViewStyle {
             background: BoxStyle::NONE,
             bars: ScrollBars::Auto,
             tail: false,
+            snap: None,
+            dots: None,
         }
     }
 }
@@ -122,6 +150,7 @@ pub struct Scroll {
     /// viewport with no name.
     label: Option<String>,
     on_refresh: Option<RefreshHandler>,
+    on_snap: Option<SnapHandler>,
 }
 
 /// Construct a [`Scroll`] viewport with the given style and no content yet.
@@ -133,6 +162,7 @@ pub fn scroll(style: ScrollViewStyle) -> Scroll {
         content: None,
         label: None,
         on_refresh: None,
+        on_snap: None,
     }
 }
 
@@ -168,6 +198,17 @@ impl Scroll {
         self.on_refresh = Some(Rc::new(RefCell::new(handler)));
         self
     }
+
+    /// Hear the item a snapping viewport ([`ScrollViewStyle::snap`]) settles
+    /// on: `handler` runs with the viewport's handle and the item's index as
+    /// it rests on, heads for, or shows another.
+    pub fn on_snap(
+        mut self,
+        handler: impl FnMut(&mut EventCx<'_>, Handle, usize) + 'static,
+    ) -> Self {
+        self.on_snap = Some(Rc::new(RefCell::new(handler)));
+        self
+    }
 }
 
 impl Component for Scroll {
@@ -184,6 +225,8 @@ impl Component for Scroll {
                 bars: self.style.bars,
                 tail: self.style.tail,
                 refresh: self.on_refresh.is_some(),
+                snap: self.style.snap,
+                dots: self.style.dots,
             },
             |cx| {
                 if let Some(content) = &self.content {
@@ -191,9 +234,7 @@ impl Component for Scroll {
                 }
             },
         );
-        if let Some(handler) = &self.on_refresh {
-            install_refresh(cx, handle, handler);
-        }
+        install_viewport_events(cx, handle, self.on_refresh.as_ref(), self.on_snap.as_ref());
 
         // A scroll viewport is a `Group` to an assistive technology; carry the
         // label when one was authored.

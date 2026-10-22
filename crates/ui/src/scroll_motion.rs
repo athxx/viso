@@ -425,12 +425,14 @@ struct Caught {
     at: Instant,
 }
 
-/// A viewport's offset easing toward `target`, moving at `velocity` (pt/s).
+/// A viewport's offset easing toward `target`, moving at `velocity` (pt/s),
+/// along a critically damped spring of `rate` (1/s).
 #[derive(Debug, Clone, Copy)]
-struct Glide {
-    viewport: NodeId,
-    target: Vec2,
-    velocity: [f64; 2],
+pub(crate) struct Glide {
+    pub(crate) viewport: NodeId,
+    pub(crate) target: Vec2,
+    pub(crate) velocity: [f64; 2],
+    pub(crate) rate: f64,
 }
 
 /// A viewport that follows the end of its content while it stands there:
@@ -489,7 +491,7 @@ fn raw_pull(shown: f32, limit: f32) -> f32 {
 pub(crate) struct ScrollMotions {
     physics: ScrollPhysics,
     flings: Vec<Fling>,
-    glides: Vec<Glide>,
+    pub(crate) glides: Vec<Glide>,
     tails: Vec<Tail>,
     pulls: Vec<Pull>,
     caught: Option<Caught>,
@@ -552,6 +554,7 @@ impl NodeStore {
             || !self.motions.glides.is_empty()
             || self.motions.pulls.iter().any(|p| p.spring.is_some())
             || self.refreshers.easing()
+            || self.snap_aims()
     }
 
     /// Whether viewport `id` glides toward a target.
@@ -574,6 +577,7 @@ impl NodeStore {
                 viewport: id,
                 target: offset,
                 velocity: [0.0; 2],
+                rate: GLIDE,
             }),
         }
     }
@@ -717,7 +721,24 @@ impl NodeStore {
     /// physics' fastest, as a flick released at that speed would; a speed
     /// under the physics' least stops its coast instead. A stale handle or a
     /// node that does not scroll is a no-op.
+    ///
+    /// A snapping viewport glides to the item the coast would near instead,
+    /// however slow (see [`snap`](crate::snap)).
     pub fn fling(&mut self, id: NodeId, velocity: f32) {
+        let physics = self.motions.physics;
+        if self.snaps(id)
+            && self.release_snap(
+                id,
+                velocity.clamp(-physics.max_velocity, physics.max_velocity),
+            )
+        {
+            return;
+        }
+        self.coast(id, velocity);
+    }
+
+    /// Coast viewport `id` from `velocity` (pt/s), snapping or not.
+    pub(crate) fn coast(&mut self, id: NodeId, velocity: f32) {
         let Some(axis) = self.scroll_axis(id).filter(|_| self.arena().is_live(id)) else {
             return;
         };
@@ -836,10 +857,10 @@ impl NodeStore {
                 let v = glide.velocity[k];
                 // The spring's closed form over the step:
                 // e(t) = (e + (v + λe)t)·e^(−λt).
-                let decay = (-GLIDE * dt).exp();
-                let c = v + GLIDE * e;
+                let decay = (-glide.rate * dt).exp();
+                let c = v + glide.rate * e;
                 let e = (e + c * dt) * decay;
-                let v = (v - GLIDE * c * dt) * decay;
+                let v = (v - glide.rate * c * dt) * decay;
                 glide.velocity[k] = v;
                 let at = if e.abs() < GLIDE_NEAR && v.abs() < GLIDE_STILL {
                     target
@@ -855,6 +876,7 @@ impl NodeStore {
             self.set_scroll(id, next);
             if arrived {
                 self.motions.glides.swap_remove(i);
+                self.snap_arrived(id);
             } else {
                 self.motions.glides[i] = glide;
             }
@@ -988,6 +1010,9 @@ impl NodeStore {
             if let Some(at) = self.motions.glides.iter().position(|g| g.viewport == n) {
                 let glide = self.motions.glides.swap_remove(at);
                 brisk |= glide.velocity.iter().any(|v| v.abs() > CATCH_VELOCITY);
+                if self.snaps(n) {
+                    self.note_snap_catch(target);
+                }
             }
             if let Some(pull) = self.motions.pulls.iter_mut().find(|p| p.viewport == n) {
                 pull.spring = None;
@@ -1013,6 +1038,7 @@ impl NodeStore {
             self.motions.swallowed = None;
             self.let_go_pulls();
         }
+        self.settle_caught_snap();
     }
 
     /// Every pull a finger holds relaxes from rest; a refresher's puck
@@ -1098,6 +1124,12 @@ impl NodeStore {
     /// pull they held springs back.
     pub(crate) fn lift_pad(&mut self, target: NodeId) {
         if self.motions.physics.system_coast {
+            // A snapping viewport snaps instead, and the system's coast
+            // leaves it be.
+            let v = self.motions.pad.1.velocity();
+            if let Some(viewport) = self.snap_lift(target, Vec2 { x: -v.x, y: -v.y }) {
+                self.motions.pinned = Some(viewport);
+            }
             self.let_go_pulls();
             return;
         }
@@ -1283,7 +1315,29 @@ impl NodeStore {
                 self.fling(viewport, speed + boost);
             }
         }
+        // A snapping viewport released too slowly to coast snaps where it is.
+        self.settle_snaps_over(from);
         self.let_go_pulls();
+    }
+
+    /// How far a coast from `velocity` (pt/s) travels before it stops, on
+    /// the physics' curve, signed as the velocity.
+    pub(crate) fn coast_travel(&self, velocity: f32) -> f32 {
+        let physics = self.motions.physics;
+        if velocity.abs() < physics.min_velocity {
+            return 0.0;
+        }
+        let v = velocity.clamp(-physics.max_velocity, physics.max_velocity);
+        let mut motion = Motion::new(f64::from(v), physics.curve);
+        let step = Duration::from_micros(8333);
+        let mut travel = 0.0;
+        for _ in 0..2000 {
+            travel += motion.advance(step);
+            if motion.done() {
+                break;
+            }
+        }
+        travel as f32
     }
 
     /// Whether `node` is `ancestor` or under it.

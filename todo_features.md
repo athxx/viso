@@ -146,7 +146,8 @@ Rules:
 - [x] Smooth `scroll_to` / `scroll_into_view` with animation; auto-tail (stick to end).
 - [x] Pull-to-refresh.
 - [x] Sticky section headers in `List`.
-- [ ] Scroll snapping and a `Pager` / `Carousel` widget.
+- [x] Scroll snapping and a `Pager` / `Carousel` widget.
+- [ ] Keyboard scrolling: arrows, Page Up/Down, Home/End, Space; snap-aware.
 - [ ] 2D virtual grid (`LazyGrid`, fixed and masonry columns).
 
 ## W6 — Animation
