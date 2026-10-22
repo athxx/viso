@@ -56,7 +56,7 @@ impl FrameDriver for CountingDriver {
         self.log.borrow_mut().geometries += 1;
     }
 
-    fn on_input(&mut self, _sample: InputSample) {
+    fn on_input(&mut self, _sample: InputSample, _at: viso_runtime::Instant) {
         self.log.borrow_mut().inputs += 1;
     }
 
@@ -296,7 +296,7 @@ impl FrameDriver for TwoWindowDriver {
         cx.create_window(WindowConfig::default()).unwrap();
     }
     fn on_geometry(&mut self, _window: WindowId, _scale: f64, _width: u32, _height: u32) {}
-    fn on_input(&mut self, _sample: InputSample) {}
+    fn on_input(&mut self, _sample: InputSample, _at: viso_runtime::Instant) {}
     fn run_phase(&mut self, _phase: FramePhase, _cx: &mut RuntimeCx<'_>) {}
     fn on_window_closed(&mut self, window: WindowId) {
         self.log.borrow_mut().closed.push(window);
@@ -364,7 +364,7 @@ impl FrameDriver for NoWindowDriver {
         self.log.borrow_mut().launches += 1;
     }
     fn on_geometry(&mut self, _window: WindowId, _scale: f64, _width: u32, _height: u32) {}
-    fn on_input(&mut self, _sample: InputSample) {}
+    fn on_input(&mut self, _sample: InputSample, _at: viso_runtime::Instant) {}
     fn run_phase(&mut self, phase: FramePhase, _cx: &mut RuntimeCx<'_>) {
         let mut log = self.log.borrow_mut();
         log.phase_calls += 1;

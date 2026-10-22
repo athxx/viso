@@ -133,6 +133,8 @@ struct ContactSlot {
     origin: [f32; 2],
     last: [f32; 2],
     gesture: Gesture,
+    /// A direct contact's latest samples, for the speed a pan lifts at.
+    track: VelocityTracker,
 }
 
 /// Per-pointer routing state held by the node store: each live pointer's
@@ -205,15 +207,20 @@ impl PointerContacts {
                 origin: [0.0; 2],
                 last: [0.0; 2],
                 gesture: Gesture::Held,
+                track: VelocityTracker::default(),
             });
         }
         None
     }
 
-    /// A direct contact landed at `at`: start tracking it. A stale slot under the
-    /// same id (a lost up) is replaced.
-    fn begin(&mut self, id: PointerId, at: [f32; 2]) {
+    /// A direct contact landed at `at` at time `now`: start tracking it. A
+    /// stale slot under the same id (a lost up) is replaced.
+    fn begin(&mut self, id: PointerId, at: [f32; 2], now: Option<Instant>) {
         self.slots.retain(|s| s.id != id);
+        let mut track = VelocityTracker::default();
+        if let Some(now) = now {
+            track.push(now, at);
+        }
         self.slots.push(ContactSlot {
             id,
             captor: None,
@@ -222,6 +229,7 @@ impl PointerContacts {
             origin: at,
             last: at,
             gesture: Gesture::Pending,
+            track,
         });
     }
 
@@ -279,8 +287,10 @@ use crate::hit_test::HitTestTree;
 use crate::layout::OnAxis;
 use crate::layout::{Axis, Vec2};
 use crate::node::NodeId;
+use crate::scroll_motion::VelocityTracker;
 use crate::state::StateStore;
 use crate::text_edit::TextEdits;
+use viso_runtime::Instant;
 
 /// Routes one pointer event along the retained ancestry chain of the node it
 /// hits: capture (root → just above target), target (once), bubble (just above
@@ -406,9 +416,27 @@ pub fn route_contact(
         PointerPhase::Leave if contact.direct => store.release_hold(pointer),
         _ => {}
     }
+    // A press on a coasting viewport catches it; a brisk one is only that.
+    if ev.phase == PointerPhase::Down
+        && store.is_scroll_moving()
+        && let Some(hit) = HitTestTree::hit(store, root, ev.x, ev.y)
+        && store.catch_coast(hit, pointer)
+    {
+        if contact.direct {
+            // The finger may pan on from the catch.
+            let now = store.input_time();
+            store.contacts_mut().begin(pointer, [ev.x, ev.y], now);
+            store.contacts_mut().set_captor(pointer, Some(hit), true);
+        }
+        chain.clear();
+        return true;
+    }
     if contact.direct {
         match ev.phase {
-            PointerPhase::Down => store.contacts_mut().begin(pointer, [ev.x, ev.y]),
+            PointerPhase::Down => {
+                let now = store.input_time();
+                store.contacts_mut().begin(pointer, [ev.x, ev.y], now);
+            }
             // A drag armed above no scroll viewport, or one that started,
             // keeps the contact from a pan.
             PointerPhase::Move if !store.drag_leads(pointer) => {
@@ -424,15 +452,35 @@ pub fn route_contact(
                 let panned = store
                     .contacts()
                     .slot(pointer)
-                    .is_some_and(|s| s.gesture == Gesture::Pan);
-                if panned {
+                    .filter(|s| s.gesture == Gesture::Pan)
+                    .copied();
+                if let Some(mut slot) = panned {
                     store.contacts_mut().end(pointer);
+                    store.end_swallow(pointer);
+                    // Lifted, not cancelled, the pan coasts on at its speed.
+                    if ev.phase == PointerPhase::Up
+                        && let (Some(from), Some(now)) = (slot.captor, store.input_time())
+                    {
+                        slot.track.push(now, [ev.x, ev.y]);
+                        store.release_pan(from, slot.track.velocity());
+                    }
                     chain.clear();
                     return true;
                 }
             }
             _ => {}
         }
+    }
+    // The press that caught a coast reaches no control, to its lift.
+    if store.swallows(pointer) {
+        if matches!(ev.phase, PointerPhase::Up | PointerPhase::Leave) {
+            store.end_swallow(pointer);
+            if contact.direct {
+                store.contacts_mut().end(pointer);
+            }
+        }
+        chain.clear();
+        return true;
     }
     let at = [ev.x, ev.y];
     match ev.phase {
@@ -582,8 +630,12 @@ fn pan_step(
 ) -> Option<bool> {
     let slot = *store.contacts().slot(pointer)?;
     let at = [ev.x, ev.y];
+    let now = store.input_time();
     if let Some(s) = store.contacts_mut().slot_mut(pointer) {
         s.last = at;
+        if let Some(now) = now {
+            s.track.push(now, at);
+        }
     }
     let from = slot.captor?;
     match slot.gesture {
@@ -707,6 +759,8 @@ pub fn route_scroll(store: &mut NodeStore, root: NodeId, ev: ScrollEvent) -> boo
     let Some(target) = HitTestTree::hit(store, root, ev.x, ev.y) else {
         return false;
     };
+    // The wheel moves the viewports under it now, not their coasts.
+    store.stop_coasts_over(target);
     if ev.delta_y != 0.0 && store.wheel_number_field(target, ev.delta_y) {
         return true;
     }
@@ -3752,9 +3806,11 @@ mod contact_tests {
     use crate::component::{BuildCx, FlexStyle, LeafStyle, ScrollStyle};
     use crate::interaction::Interaction;
     use crate::layout::Size;
+    use crate::scroll_motion::ScrollPhysics;
     use crate::state::StateValue;
     use std::cell::RefCell;
     use std::rc::Rc;
+    use std::time::Duration;
     use viso_render::Rect;
 
     type Log = Rc<RefCell<Vec<(u32, PointerPhase)>>>;
@@ -4140,6 +4196,157 @@ mod contact_tests {
         s.touch(1, 10.0, 30.0, PointerPhase::Up);
         assert_eq!(s.store.scroll(s.root).y, 0.0);
         assert_eq!(s.log().last(), Some(&(0, PointerPhase::Up)));
+    }
+
+    /// A finger rising from (10, 90) at `speed` pt/ms in 10 ms samples for
+    /// `steps` samples from `t0 + from` ms, then lifting.
+    fn flick(s: &mut Scene, t0: Instant, from: u64, speed: f32, steps: u64) {
+        let at = |s: &mut Scene, n: u64| s.store.set_input_time(t0 + Duration::from_millis(n));
+        at(s, from);
+        s.touch(1, 10.0, 90.0, PointerPhase::Down);
+        for k in 1..=steps {
+            at(s, from + k * 10);
+            s.touch(1, 10.0, 90.0 - speed * 10.0 * k as f32, PointerPhase::Move);
+        }
+        s.touch(
+            1,
+            10.0,
+            90.0 - speed * 10.0 * steps as f32,
+            PointerPhase::Up,
+        );
+    }
+
+    /// Frames of 16 ms until the coasts end; how many ran.
+    fn coast_out(s: &mut Scene) -> usize {
+        let mut frames = 0;
+        while s.store.is_scroll_moving() && frames < 1000 {
+            s.store.tick_scroll_motion(Duration::from_millis(16));
+            frames += 1;
+        }
+        frames
+    }
+
+    #[test]
+    fn a_lifted_pan_coasts_on_and_slows_to_a_stop() {
+        let mut s = scene(false);
+        s.store.set_scroll_physics(ScrollPhysics::APPLE);
+        flick(&mut s, Instant::now(), 0, 0.3, 5);
+        let panned = s.store.scroll(s.root).y;
+        assert_eq!(panned, 15.0);
+        assert!(s.store.is_coasting(s.root));
+        let v = s.store.coast_velocity(s.root).unwrap();
+        assert!(
+            (v - 300.0).abs() < 1.0,
+            "the offset moves against the finger: {v}"
+        );
+        s.store.tick_scroll_motion(Duration::from_millis(16));
+        assert!(s.store.scroll(s.root).y > panned);
+        assert!(coast_out(&mut s) > 100, "about three seconds");
+        let rest = s.store.scroll(s.root).y;
+        assert!((rest - (panned + 147.0)).abs() < 3.0, "{rest}");
+    }
+
+    #[test]
+    fn a_coast_ends_at_the_edge_and_a_slow_lift_does_not_coast() {
+        let mut s = scene(false);
+        s.store.set_scroll_physics(ScrollPhysics::APPLE);
+        flick(&mut s, Instant::now(), 0, 2.0, 5);
+        coast_out(&mut s);
+        assert_eq!(s.store.scroll(s.root).y, 200.0);
+        assert!(!s.store.is_scroll_moving());
+
+        let t0 = Instant::now();
+        // Held still for a fifth of a second before lifting: a stop.
+        let mut s = scene(false);
+        s.store.set_input_time(t0);
+        s.touch(1, 10.0, 90.0, PointerPhase::Down);
+        s.store.set_input_time(t0 + Duration::from_millis(30));
+        s.touch(1, 10.0, 60.0, PointerPhase::Move);
+        s.store.set_input_time(t0 + Duration::from_millis(230));
+        s.touch(1, 10.0, 60.0, PointerPhase::Up);
+        assert!(!s.store.is_scroll_moving());
+    }
+
+    #[test]
+    fn a_press_on_a_brisk_coast_catches_it_and_clicks_nothing() {
+        let mut s = scene(false);
+        s.store.set_scroll_physics(ScrollPhysics::APPLE);
+        let t0 = Instant::now();
+        flick(&mut s, t0, 0, 0.5, 5);
+        s.log.borrow_mut().clear();
+        s.store.tick_scroll_motion(Duration::from_millis(16));
+        let caught = s.store.scroll(s.root).y;
+        s.store.set_input_time(t0 + Duration::from_millis(100));
+        s.touch(1, 10.0, 50.0, PointerPhase::Down);
+        assert!(!s.store.is_scroll_moving());
+        s.touch(1, 10.0, 50.0, PointerPhase::Up);
+        assert!(s.log().is_empty(), "the catch reached no control");
+        assert_eq!(s.store.scroll(s.root).y, caught);
+
+        // A slow coast stops and the press goes through.
+        s.store.set_scroll(s.root, Vec2::ZERO);
+        s.store.set_scroll_physics(ScrollPhysics {
+            min_velocity: 10.0,
+            ..ScrollPhysics::APPLE
+        });
+        s.store.fling(s.root, 30.0);
+        s.store.tick_scroll_motion(Duration::from_millis(16));
+        s.touch(1, 10.0, 20.0, PointerPhase::Down);
+        assert!(!s.store.is_scroll_moving());
+        s.touch(1, 10.0, 20.0, PointerPhase::Up);
+        assert_eq!(
+            s.log(),
+            vec![(0, PointerPhase::Down), (0, PointerPhase::Up)]
+        );
+    }
+
+    #[test]
+    fn a_caught_finger_pans_on_and_a_quick_reflick_builds_speed() {
+        let mut s = scene(false);
+        s.store.set_scroll_physics(ScrollPhysics::APPLE);
+        let t0 = Instant::now();
+        flick(&mut s, t0, 0, 0.5, 5);
+        s.store.tick_scroll_motion(Duration::from_millis(16));
+        let carried = s.store.coast_velocity(s.root).unwrap();
+        // Caught at 100 ms, flicked again the same way.
+        flick(&mut s, t0, 100, 0.5, 5);
+        let boosted = s.store.coast_velocity(s.root).unwrap();
+        assert!(
+            (boosted - (500.0 + carried)).abs() < 2.0,
+            "{carried} {boosted}"
+        );
+        // A re-flick long after the catch carries only its own speed.
+        s.store.tick_scroll_motion(Duration::from_millis(16));
+        s.store.set_input_time(t0 + Duration::from_millis(300));
+        s.touch(1, 10.0, 90.0, PointerPhase::Down);
+        s.touch(1, 10.0, 90.0, PointerPhase::Up);
+        s.store.set_scroll(s.root, Vec2::ZERO);
+        flick(&mut s, t0, 1000, 0.5, 5);
+        let own = s.store.coast_velocity(s.root).unwrap();
+        assert!((own - 500.0).abs() < 2.0, "{own}");
+    }
+
+    #[test]
+    fn the_wheel_and_an_asked_scroll_stop_a_coast() {
+        let mut s = scene(false);
+        s.store.set_scroll_physics(ScrollPhysics::APPLE);
+        s.store.fling(s.root, 500.0);
+        route_scroll(
+            &mut s.store,
+            s.root,
+            ScrollEvent {
+                x: 50.0,
+                y: 50.0,
+                delta_x: 0.0,
+                delta_y: 4.0,
+                modifiers: Modifiers::default(),
+            },
+        );
+        assert!(!s.store.is_scroll_moving());
+        s.store.fling(s.root, 500.0);
+        s.store
+            .request_scroll(s.root, crate::component::ScrollRequest::By(Vec2::ZERO));
+        assert!(!s.store.is_scroll_moving());
     }
 
     #[test]

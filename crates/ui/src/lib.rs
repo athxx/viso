@@ -48,6 +48,7 @@ pub mod number_format;
 pub mod paint;
 pub mod reactive;
 pub mod scenes;
+pub mod scroll_motion;
 pub mod semantics;
 pub mod shader;
 pub mod shadow;
@@ -143,6 +144,7 @@ pub use reactive::{
     ProjectId, SemanticProjector,
 };
 pub use scenes::{SceneSlots, SceneSync, SceneTarget};
+pub use scroll_motion::{FlingCurve, ScrollPhysics};
 pub use semantics::{
     InspectKind, LiveRegion, Role, SemanticState, Semantics, SemanticsNode, SemanticsTree,
 };

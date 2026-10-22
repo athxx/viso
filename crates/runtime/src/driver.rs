@@ -44,11 +44,11 @@ pub trait FrameDriver {
     /// The window's geometry (size and/or scale factor) changed.
     fn on_geometry(&mut self, window: WindowId, scale: f64, width: u32, height: u32);
 
-    /// A normalized input sample arrived. The scheduler has already resolved
-    /// the window scale and converted the sample into physical-pixel space, so
-    /// the driver can hit-test and route it directly without touching raw
-    /// platform types.
-    fn on_input(&mut self, sample: InputSample);
+    /// A normalized input sample arrived at `at`, by the loop's clock. The
+    /// scheduler has already resolved the window scale and converted the
+    /// sample into physical-pixel space, so the driver can hit-test and route
+    /// it directly without touching raw platform types.
+    fn on_input(&mut self, sample: InputSample, at: Instant);
 
     /// Run one frame phase. Called once per phase, in [`FramePhase::ORDER`],
     /// for each frame the scheduler decides to run.

@@ -28,7 +28,7 @@ impl FrameDriver for BlankDriver {
         let _ = cx.create_window(WindowConfig::default());
     }
     fn on_geometry(&mut self, _w: WindowId, _s: f64, _width: u32, _height: u32) {}
-    fn on_input(&mut self, _sample: InputSample) {}
+    fn on_input(&mut self, _sample: InputSample, _at: viso_runtime::Instant) {}
     fn run_phase(&mut self, phase: FramePhase, _cx: &mut RuntimeCx<'_>) {
         // Keep the phase from being optimized away entirely.
         black_box(phase);

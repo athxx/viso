@@ -1592,6 +1592,7 @@ impl WindowState {
     fn is_animating(&self) -> bool {
         !self.animations.is_empty()
             || self.store.is_transitioning()
+            || self.store.is_scroll_moving()
             || self.store.frame_clients_want_frame()
             || self.draws_clock
     }
@@ -2789,7 +2790,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         ws.report_window();
     }
 
-    fn on_input(&mut self, sample: viso_runtime::InputSample) {
+    fn on_input(&mut self, sample: viso_runtime::InputSample, at: viso_runtime::Instant) {
         // The sample arrives in physical pixels (the scheduler resolved the
         // window scale), but layout and hit testing run in logical points, so
         // pointer/scroll positions are divided by the scale factor before they
@@ -2811,6 +2812,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         let Some(root) = ws.root else {
             return;
         };
+        ws.store.set_input_time(at);
         let scale = ws.dpi.max(1.0);
         #[cfg(any(feature = "hot-reload", feature = "headless"))]
         let journaled = match ws.journal {
@@ -3391,11 +3393,16 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
             return;
         }
         let scale = ws.dpi.max(1.0);
+        // The action's samples arrive with the last input.
+        let at = ws
+            .store
+            .input_time()
+            .unwrap_or_else(viso_runtime::Instant::now);
         if let Some(samples) =
             accessibility::perform(&mut ws.store, window, node, link, action, scale)
         {
             for sample in samples {
-                self.on_input(sample);
+                self.on_input(sample, at);
             }
         }
     }
@@ -3566,6 +3573,10 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     }
                     if ws.store.is_transitioning() {
                         ws.store.tick_transitions(cx.frame_delta());
+                    }
+                    // The viewports a flick left coasting move on.
+                    if ws.store.is_scroll_moving() {
+                        ws.store.tick_scroll_motion(cx.frame_delta());
                     }
                     ws.store.set_dirty_cause(DirtyCause::Other);
                     // Advance the games the window's views run — the ticks

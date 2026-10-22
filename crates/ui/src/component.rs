@@ -685,6 +685,8 @@ pub struct NodeStore {
     pub(crate) shadows: crate::shadow::Shadows,
     /// Cold: the nodes' access keys and the window's menu bar.
     pub(crate) access: crate::access::AccessKeys,
+    /// The viewports coasting after a flick, and how they coast.
+    pub(crate) motions: crate::scroll_motion::ScrollMotions,
     /// Cold: the nodes that show a descendant as active.
     actives: crate::semantics::ActiveDescendants,
     /// Where the focus was before it last moved, until the move is told.
@@ -818,6 +820,7 @@ impl NodeStore {
         self.wakes.clear();
         self.shadows.clear();
         self.access.clear();
+        self.motions.clear();
         self.actives.clear();
         self.focus_scope = None;
         self.draggable_regions.clear();
@@ -2389,6 +2392,11 @@ impl NodeStore {
     /// action mounts this way. A stale handle is a no-op. Cold path.
     pub fn request_scroll(&mut self, id: NodeId, request: ScrollRequest) {
         if self.arena.is_live(id) {
+            // The asked scroll takes over from a coast.
+            match request {
+                ScrollRequest::Reveal => self.stop_coasts_over(id),
+                _ => self.stop_coast(id),
+            }
             self.scroll_requests.push((id, request));
         }
     }

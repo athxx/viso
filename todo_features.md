@@ -138,7 +138,7 @@ Rules:
 
 ## W5 — Scrolling
 
-- [ ] Kinetic scrolling: velocity tracking, platform deceleration curve, flick-catch
+- [x] Kinetic scrolling: velocity tracking, platform deceleration curve, flick-catch
   on press.
 - [ ] Overscroll: bounce (iOS) / glow-stretch (Android) by platform style; rubber-band
   on drag.

@@ -331,7 +331,8 @@ impl<D: FrameDriver, C: FrameClock> AppHandler for Loop<D, C> {
                     .map(|w| w.scale_factor())
                     .unwrap_or(1.0) as f32;
                 let sample = normalize_pointer(p, scale);
-                self.driver.on_input(InputSample::Pointer(sample));
+                self.driver
+                    .on_input(InputSample::Pointer(sample), self.clock.peek());
                 self.reasons.add(RedrawReason::InputDirty);
             }
             RawEvent::Key(k) => {
@@ -344,25 +345,31 @@ impl<D: FrameDriver, C: FrameClock> AppHandler for Loop<D, C> {
                     repeat: k.repeat,
                     modifiers: normalize_modifiers(k.modifiers),
                 };
-                self.driver.on_input(InputSample::Key(sample));
+                self.driver
+                    .on_input(InputSample::Key(sample), self.clock.peek());
                 self.reasons.add(RedrawReason::InputDirty);
             }
             RawEvent::Text(t) => {
                 // A committed (post-IME) text segment.
-                self.driver.on_input(InputSample::Text(TextSample {
-                    window: t.window,
-                    text: t.text,
-                }));
+                self.driver.on_input(
+                    InputSample::Text(TextSample {
+                        window: t.window,
+                        text: t.text,
+                    }),
+                    self.clock.peek(),
+                );
                 self.reasons.add(RedrawReason::InputDirty);
             }
             RawEvent::ImePreedit(p) => {
                 // An in-progress IME composition update.
-                self.driver
-                    .on_input(InputSample::ImePreedit(ImePreeditSample {
+                self.driver.on_input(
+                    InputSample::ImePreedit(ImePreeditSample {
                         window: p.window,
                         text: p.text,
                         caret: p.caret,
-                    }));
+                    }),
+                    self.clock.peek(),
+                );
                 self.reasons.add(RedrawReason::InputDirty);
             }
             RawEvent::MenuCommand { id } => {
@@ -404,7 +411,8 @@ impl<D: FrameDriver, C: FrameClock> AppHandler for Loop<D, C> {
                     .map(|w| w.scale_factor())
                     .unwrap_or(1.0) as f32;
                 let sample = normalize_scroll(s, scale);
-                self.driver.on_input(InputSample::Scroll(sample));
+                self.driver
+                    .on_input(InputSample::Scroll(sample), self.clock.peek());
                 self.reasons.add(RedrawReason::InputDirty);
             }
             RawEvent::WindowFocused { window, focused } => {
@@ -434,20 +442,26 @@ impl<D: FrameDriver, C: FrameClock> AppHandler for Loop<D, C> {
             RawEvent::CopyRequested { window, cut, reply } => {
                 // The driver answers synchronously through `reply`; the backend
                 // reads it once this returns. A cut edits content, so redraw.
-                self.driver
-                    .on_input(InputSample::Copy(CopySample { window, cut, reply }));
+                self.driver.on_input(
+                    InputSample::Copy(CopySample { window, cut, reply }),
+                    self.clock.peek(),
+                );
                 if cut {
                     self.reasons.add(RedrawReason::InputDirty);
                 }
             }
             RawEvent::Paste { window, text } => {
-                self.driver
-                    .on_input(InputSample::Paste(TextSample { window, text }));
+                self.driver.on_input(
+                    InputSample::Paste(TextSample { window, text }),
+                    self.clock.peek(),
+                );
                 self.reasons.add(RedrawReason::InputDirty);
             }
             RawEvent::EditMenu { window, action } => {
-                self.driver
-                    .on_input(InputSample::EditMenu(EditMenuSample { window, action }));
+                self.driver.on_input(
+                    InputSample::EditMenu(EditMenuSample { window, action }),
+                    self.clock.peek(),
+                );
                 self.reasons.add(RedrawReason::InputDirty);
             }
             RawEvent::Suspended => {
@@ -552,7 +566,7 @@ mod tests {
     impl FrameDriver for SeamDriver {
         fn on_launch(&mut self, _cx: &mut RuntimeCx<'_>) {}
         fn on_geometry(&mut self, _window: WindowId, _scale: f64, _width: u32, _height: u32) {}
-        fn on_input(&mut self, _sample: InputSample) {}
+        fn on_input(&mut self, _sample: InputSample, _at: Instant) {}
         fn run_phase(&mut self, _phase: FramePhase, _cx: &mut RuntimeCx<'_>) {}
         fn wants_animation(&self) -> bool {
             self.animate
@@ -618,7 +632,7 @@ mod tests {
     impl FrameDriver for RecordingDriver {
         fn on_launch(&mut self, _cx: &mut RuntimeCx<'_>) {}
         fn on_geometry(&mut self, _window: WindowId, _scale: f64, _width: u32, _height: u32) {}
-        fn on_input(&mut self, _sample: InputSample) {}
+        fn on_input(&mut self, _sample: InputSample, _at: Instant) {}
         fn run_phase(&mut self, _phase: FramePhase, _cx: &mut RuntimeCx<'_>) {}
         fn on_fullscreen_changed(&mut self, window: WindowId, fullscreen: bool) {
             self.fullscreen.push((window, fullscreen));
@@ -670,7 +684,7 @@ mod tests {
                 .expect("headless window");
         }
         fn on_geometry(&mut self, _window: WindowId, _scale: f64, _width: u32, _height: u32) {}
-        fn on_input(&mut self, _sample: InputSample) {}
+        fn on_input(&mut self, _sample: InputSample, _at: Instant) {}
         fn run_phase(&mut self, phase: FramePhase, _cx: &mut RuntimeCx<'_>) {
             if phase == FramePhase::Submit {
                 self.frames += 1;
@@ -715,7 +729,7 @@ mod tests {
             std::thread::spawn(move || waker.wake()).join().unwrap();
         }
         fn on_geometry(&mut self, _window: WindowId, _scale: f64, _width: u32, _height: u32) {}
-        fn on_input(&mut self, _sample: InputSample) {}
+        fn on_input(&mut self, _sample: InputSample, _at: Instant) {}
         fn run_phase(&mut self, phase: FramePhase, _cx: &mut RuntimeCx<'_>) {
             if phase == FramePhase::Submit {
                 self.frames += 1;
@@ -751,7 +765,7 @@ mod tests {
     impl FrameDriver for LifecycleDriver {
         fn on_launch(&mut self, _cx: &mut RuntimeCx<'_>) {}
         fn on_geometry(&mut self, _window: WindowId, _scale: f64, _width: u32, _height: u32) {}
-        fn on_input(&mut self, sample: InputSample) {
+        fn on_input(&mut self, sample: InputSample, _at: Instant) {
             match sample {
                 InputSample::Paste(t) => self.pasted.push(t.text),
                 InputSample::Copy(c) => {
@@ -904,7 +918,7 @@ mod tests {
     impl FrameDriver for PostDriver {
         fn on_launch(&mut self, _cx: &mut RuntimeCx<'_>) {}
         fn on_geometry(&mut self, _window: WindowId, _scale: f64, _width: u32, _height: u32) {}
-        fn on_input(&mut self, sample: InputSample) {
+        fn on_input(&mut self, sample: InputSample, _at: Instant) {
             if let InputSample::Pointer(p) = sample {
                 self.presses.push((p.x, p.y));
             }
