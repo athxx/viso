@@ -234,7 +234,7 @@ fn eased(duration: Duration) -> Timing {
     Timing {
         duration,
         delay: Duration::ZERO,
-        easing: Easing::EaseOut,
+        easing: Easing::EASE_OUT,
     }
 }
 

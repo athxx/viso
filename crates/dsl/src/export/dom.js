@@ -98,7 +98,7 @@ const animate = (el, target, spec, id) => {
   const a = el.animate([{ [property]: value }], {
     duration: ms(f[0]),
     delay: ms(f[1]),
-    easing: easings[Number(f[2] ?? 2n)] || "ease-out",
+    easing: easing(f[2]),
     fill: "none",
   });
   running[property] = a;
@@ -251,7 +251,6 @@ const settled = (el, n) => {
   const s = Math.min(Math.max(n, lo), hi).toFixed(Number(el.dataset.places || 0));
   return [Number(s), s];
 };
-const easings = ["linear", "ease-in", "ease-out", "ease-in-out"];
 const reduced = matchMedia("(prefers-reduced-motion: reduce)");
 const items = (el) => Array.from(el.children).filter((c) => c.tagName !== "TEMPLATE");
 const select = (el, v, radio) => {
@@ -361,7 +360,7 @@ const P = {
     const instant = reduced.matches && f[3] === 0n;
     const s = (x) => Math.max(Number(x ?? 0), 0) + "s";
     el.style.setProperty(name, property + " " + (instant ? "0s" : s(f[0])) + " " +
-      (easings[Number(f[2] ?? 2n)] || "ease-out") + " " + (instant ? "0s" : s(f[1])));
+      easing(f[2]) + " " + (instant ? "0s" : s(f[1])));
   },
   cls: (el, v, name) => el.classList.toggle(name, truth(v)),
 };

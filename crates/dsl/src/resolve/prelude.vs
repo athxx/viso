@@ -63,7 +63,23 @@ export record FocusEvent { focus_visible: Bool; }
 export record ScrollChanged { offset: Offset; viewport: SizeDp; content: SizeDp; }
 export record VisibleRange { first: U64; last: U64; count: U64; }
 
-export enum Easing { linear; ease_in; ease_out; ease_in_out; }
+// How a move's progress follows its time: Penner's curves accelerating
+// (`in_*`), decelerating (`out_*`) or both, `ease_*` the cubic ones, and a
+// CSS cubic Bézier through two control points.
+export enum Easing {
+    linear; ease_in; ease_out; ease_in_out;
+    in_quad; out_quad; in_out_quad;
+    in_cubic; out_cubic; in_out_cubic;
+    in_quart; out_quart; in_out_quart;
+    in_quint; out_quint; in_out_quint;
+    in_sine; out_sine; in_out_sine;
+    in_expo; out_expo; in_out_expo;
+    in_circ; out_circ; in_out_circ;
+    in_back; out_back; in_out_back;
+    in_elastic; out_elastic; in_out_elastic;
+    in_bounce; out_bounce; in_out_bounce;
+    cubic_bezier(F32, F32, F32, F32);
+}
 export enum ReducedMotion { instant; keep; }
 export record Transition {
     duration: Duration = 200ms; delay: Duration = 0ms;

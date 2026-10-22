@@ -412,7 +412,7 @@ fn set_open(h: &SheetHandle, ev: &mut EventCx<'_>, next: bool) {
             offscreen,
             Vec2::ZERO,
             h.duration,
-            Easing::EaseOut,
+            Easing::EASE_OUT,
         ));
         ev.set_focus_scope(content);
         ev.request_focus(content);
@@ -424,13 +424,12 @@ fn set_open(h: &SheetHandle, ev: &mut EventCx<'_>, next: bool) {
         // the content is not spuriously hidden. `on_dismiss` fires now, at close time.
         let restore = h.restore_focus.clone();
         ev.request_animation(
-            TranslateAnim::new(content, Vec2::ZERO, offscreen, h.duration, Easing::EaseIn).on_done(
-                move |store| {
+            TranslateAnim::new(content, Vec2::ZERO, offscreen, h.duration, Easing::EASE_IN)
+                .on_done(move |store| {
                     store.set_hidden(content, true);
                     store.set_focus_scope(None);
                     store.set_focused(restore.take());
-                },
-            ),
+                }),
         );
         fire_dismiss(&h.on_dismiss, ev);
     }

@@ -1162,3 +1162,41 @@ fn a_list_in_lanes_is_a_css_grid() {
     }
     assert!(css.contains(".vx-lanes > [style*=\"sticky\"] { grid-column: 1 / -1; }"));
 }
+
+#[test]
+fn a_page_eases_as_the_runtime_does() {
+    let Ok(node) = which("node") else {
+        eprintln!("no `node` on PATH: the page's curves are not run");
+        return;
+    };
+    let program = format!(
+        "{}\nconst out = [];\nfor (let tag = 0; tag < 34; tag++) for (let k = 0; k <= 40; k++) out.push(curveAt(tag, k / 40));\nconsole.log(out.join(' '));\nconsole.log(easing(2n));\nconsole.log(easing({{ t: 34, f: [0.2, 0, 1.4, 1] }}));\n",
+        include_str!("../src/export/easing.js")
+    );
+    let out = std::process::Command::new(&node)
+        .args(["-e", &program])
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&out.stdout);
+    let mut lines = said.lines();
+    let values: Vec<f32> = lines
+        .next()
+        .unwrap()
+        .split(' ')
+        .map(|v| v.parse().unwrap())
+        .collect();
+    assert_eq!(values.len(), 34 * 41);
+    for tag in 0..34u32 {
+        let curve = viso_math::Easing::named(tag).unwrap();
+        for k in 0..=40 {
+            let js = values[tag as usize * 41 + k];
+            let rust = curve.apply(k as f32 / 40.0);
+            assert!(
+                (js - rust).abs() < 1e-4,
+                "{curve:?} at {k}/40: {js} vs {rust}"
+            );
+        }
+    }
+    assert!(lines.next().unwrap().starts_with("linear(0, "));
+    assert_eq!(lines.next(), Some("cubic-bezier(0.2, 0, 1, 1)"));
+}

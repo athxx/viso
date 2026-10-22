@@ -27,6 +27,7 @@ use crate::syntax::TextRange;
 /// region components.
 const RUNTIME: &str = concat!(
     include_str!("values.js"),
+    include_str!("easing.js"),
     include_str!("dom.js"),
     include_str!("work.js"),
     include_str!("env.js"),

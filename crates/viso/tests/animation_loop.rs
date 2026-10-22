@@ -94,7 +94,7 @@ impl Application for SlideApp {
                     Vec2::ZERO,
                     Vec2 { x: 0.0, y: -SLIDE },
                     Duration::from_millis(SLIDE_MS),
-                    Easing::EaseOut,
+                    Easing::EASE_OUT,
                 ));
             }
         });

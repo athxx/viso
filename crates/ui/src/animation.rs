@@ -37,51 +37,7 @@ use crate::layout::Vec2;
 use crate::node::NodeId;
 use viso_render::Rgba;
 
-/// A standard easing curve mapping normalized time `t ∈ [0, 1]` onto eased
-/// progress, also in `[0, 1]`. These are the WAI/Material cubic curves: linear
-/// for constant-rate motion, and the three cubic variants for natural
-/// acceleration/deceleration. All satisfy `apply(0) == 0` and `apply(1) == 1`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Easing {
-    /// Constant rate — no acceleration.
-    Linear,
-    /// Accelerate from rest (cubic): slow start, fast finish.
-    EaseIn,
-    /// Decelerate to rest (cubic): fast start, slow finish. The natural choice
-    /// for content sliding *in* — it arrives and settles.
-    #[default]
-    EaseOut,
-    /// Accelerate then decelerate (cubic): slow at both ends.
-    EaseInOut,
-}
-
-impl Easing {
-    /// Map normalized time `t` (clamped to `[0, 1]`) onto eased progress.
-    #[inline]
-    pub fn apply(&self, t: f32) -> f32 {
-        let t = t.clamp(0.0, 1.0);
-        match self {
-            Easing::Linear => t,
-            // t^3.
-            Easing::EaseIn => t * t * t,
-            // 1 - (1 - t)^3.
-            Easing::EaseOut => {
-                let inv = 1.0 - t;
-                1.0 - inv * inv * inv
-            }
-            // Piecewise cubic: accelerate over the first half, decelerate over
-            // the second — the standard "smooth" curve.
-            Easing::EaseInOut => {
-                if t < 0.5 {
-                    4.0 * t * t * t
-                } else {
-                    let f = 2.0 * t - 2.0;
-                    1.0 + f * f * f / 2.0
-                }
-            }
-        }
-    }
-}
+pub use viso_math::{CubicBezier, Curve, Easing};
 
 /// A completion callback, run once with the live store when an animation
 /// finishes. Boxed because each callback captures a distinct environment (a
@@ -233,7 +189,7 @@ impl AnimationRegistry {
 
 /// How a look property moves to a new value: it holds for `delay`, then moves
 /// over `duration` shaped by `easing`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Timing {
     /// The time the move takes.
     pub duration: Duration,
@@ -284,36 +240,41 @@ impl LookValue {
 
     /// The value `t` of the way from `self` to `to` (of the same property). A
     /// fill moves in premultiplied linear light, so a fade from transparent
-    /// keeps its hue instead of passing through black.
+    /// keeps its hue instead of passing through black. A `t` past either end
+    /// (an easing that overshoots) carries a translate, scale or rotation
+    /// past its target, but holds a color and an opacity in range and an
+    /// extent and a radius at zero or more.
     fn lerp(self, to: LookValue, t: f32) -> LookValue {
         let mix = |x: f32, y: f32| x + (y - x) * t;
+        let unit = |x: f32, y: f32| mix(x, y).clamp(0.0, 1.0);
+        let size = |x: f32, y: f32| mix(x, y).max(0.0);
         let mix_color = |a: Rgba, b: Rgba| {
             let (mut mixed, b) = (a.premultiply(), b.premultiply());
-            mixed.r = mix(mixed.r, b.r);
-            mixed.g = mix(mixed.g, b.g);
-            mixed.b = mix(mixed.b, b.b);
-            mixed.a = mix(mixed.a, b.a);
+            mixed.a = unit(mixed.a, b.a);
+            mixed.r = unit(mixed.r, b.r).min(mixed.a);
+            mixed.g = unit(mixed.g, b.g).min(mixed.a);
+            mixed.b = unit(mixed.b, b.b).min(mixed.a);
             mixed.unpremultiply()
         };
         match (self, to) {
-            (LookValue::Opacity(a), LookValue::Opacity(b)) => LookValue::Opacity(mix(a, b)),
+            (LookValue::Opacity(a), LookValue::Opacity(b)) => LookValue::Opacity(unit(a, b)),
             (LookValue::Fill(a), LookValue::Fill(b)) => LookValue::Fill(mix_color(a, b)),
             (LookValue::TextColor(a), LookValue::TextColor(b)) => {
                 LookValue::TextColor(mix_color(a, b))
             }
             (LookValue::Radius { dp: a, pct: p }, LookValue::Radius { dp: b, pct: q }) => {
                 LookValue::Radius {
-                    dp: mix(a, b),
-                    pct: mix(p, q),
+                    dp: size(a, b),
+                    pct: size(p, q),
                 }
             }
             (LookValue::Translate(a), LookValue::Translate(b)) => LookValue::Translate(Vec2 {
                 x: mix(a.x, b.x),
                 y: mix(a.y, b.y),
             }),
-            (LookValue::Width(a), LookValue::Width(b)) => LookValue::Width(mix(a, b)),
-            (LookValue::Height(a), LookValue::Height(b)) => LookValue::Height(mix(a, b)),
-            (LookValue::Scale(a), LookValue::Scale(b)) => LookValue::Scale(mix(a, b)),
+            (LookValue::Width(a), LookValue::Width(b)) => LookValue::Width(size(a, b)),
+            (LookValue::Height(a), LookValue::Height(b)) => LookValue::Height(size(a, b)),
+            (LookValue::Scale(a), LookValue::Scale(b)) => LookValue::Scale(size(a, b)),
             (LookValue::Rotation(a), LookValue::Rotation(b)) => LookValue::Rotation(mix(a, b)),
             _ => to,
         }
@@ -442,9 +403,9 @@ mod tests {
     fn each_easing_pins_its_endpoints_and_stays_monotonic() {
         for easing in [
             Easing::Linear,
-            Easing::EaseIn,
-            Easing::EaseOut,
-            Easing::EaseInOut,
+            Easing::EASE_IN,
+            Easing::EASE_OUT,
+            Easing::EASE_IN_OUT,
         ] {
             assert_eq!(easing.apply(0.0), 0.0, "{easing:?} starts at 0");
             assert_eq!(easing.apply(1.0), 1.0, "{easing:?} ends at 1");
@@ -461,11 +422,37 @@ mod tests {
     }
 
     #[test]
+    fn an_overshooting_easing_carries_a_move_past_its_target_but_holds_a_look_in_range() {
+        let t = Easing::Out(Curve::Back).apply(0.6);
+        assert!(t > 1.0);
+        assert_eq!(
+            LookValue::Opacity(0.0).lerp(LookValue::Opacity(1.0), t),
+            LookValue::Opacity(1.0)
+        );
+        assert_eq!(
+            LookValue::Width(100.0).lerp(LookValue::Width(0.0), t),
+            LookValue::Width(0.0)
+        );
+        let LookValue::Translate(at) = LookValue::Translate(Vec2::ZERO)
+            .lerp(LookValue::Translate(Vec2 { x: 10.0, y: 0.0 }), t)
+        else {
+            unreachable!()
+        };
+        assert!(at.x > 10.0, "passes its target");
+        let LookValue::Fill(c) = LookValue::Fill(Rgba::new(0.0, 0.0, 0.0, 1.0))
+            .lerp(LookValue::Fill(Rgba::new(1.0, 1.0, 1.0, 1.0)), t)
+        else {
+            unreachable!()
+        };
+        assert_eq!((c.r, c.a), (1.0, 1.0));
+    }
+
+    #[test]
     fn easing_clamps_out_of_range_time() {
         // Time outside [0, 1] pins to the endpoints rather than extrapolating.
         assert_eq!(Easing::Linear.apply(-1.0), 0.0);
         assert_eq!(Easing::Linear.apply(2.0), 1.0);
-        assert_eq!(Easing::EaseOut.apply(5.0), 1.0);
+        assert_eq!(Easing::EASE_OUT.apply(5.0), 1.0);
     }
 
     #[test]
@@ -526,7 +513,7 @@ mod tests {
             Vec2::ZERO,
             Vec2 { x: 40.0, y: 0.0 },
             Duration::from_millis(100),
-            Easing::EaseOut,
+            Easing::EASE_OUT,
         ));
         // A delta far larger than the duration clamps progress to 1.0.
         reg.tick(&mut store, Duration::from_secs(10));

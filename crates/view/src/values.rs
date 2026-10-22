@@ -1195,16 +1195,26 @@ pub(crate) fn timing(spec: &Value, reduced_motion: bool) -> Timing {
     if reduced_motion && tag(3) == 0 {
         return Timing::default();
     }
-    let easing = match tag(2) {
-        0 => Easing::Linear,
-        1 => Easing::EaseIn,
-        3 => Easing::EaseInOut,
-        _ => Easing::EaseOut,
-    };
     Timing {
         duration: time(0),
         delay: time(1),
-        easing,
+        easing: field(2).map_or_else(Easing::default, easing),
+    }
+}
+
+/// An `Easing` value: a named curve by its tag, or a `cubic_bezier` by its
+/// control points.
+pub(crate) fn easing(value: &Value) -> Easing {
+    match value {
+        Value::Agg(bezier) if bezier.tag == Easing::NAMED => {
+            let at = |i: usize| float(bezier.fields.get(i).unwrap_or(&Value::Nil), 0.0);
+            Easing::CubicBezier(viso_ui::CubicBezier::new(at(0), at(1), at(2), at(3)))
+        }
+        _ => value
+            .as_int()
+            .and_then(|tag| u32::try_from(tag).ok())
+            .and_then(Easing::named)
+            .unwrap_or_default(),
     }
 }
 

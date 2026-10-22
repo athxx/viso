@@ -2363,7 +2363,7 @@ fn transition(property: &str, spec: &Value) -> Option<(String, bool)> {
         format!(
             "{property} {} {} {}",
             css::seconds(time(0)),
-            css::easing(tag(2)),
+            css::easing(spec.fields.get(2).unwrap_or(&Value::Int(2))),
             css::seconds(time(1))
         ),
         tag(3) == 0,

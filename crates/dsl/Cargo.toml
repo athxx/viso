@@ -19,6 +19,8 @@ viso-schema = { workspace = true }
 # an inspection with, as the dev link carries them.
 viso-dev-protocol = { workspace = true }
 viso-ende = { workspace = true }
+# The easing curves a page's transitions sample into CSS.
+viso-math = { workspace = true, features = ["std"] }
 viso-behavior = { workspace = true, features = ["std", "interpreter"] }
 # A `shader` declaration lowers into the shader program IR, and a package
 # carries its code in the target backend's language, SPIR-V included.

@@ -4760,7 +4760,20 @@ export record Transition {
     easing: Easing = Easing::ease_out; reduced: ReducedMotion = ReducedMotion::instant;
 }
 
-export enum Easing { linear; ease_in; ease_out; ease_in_out; }
+export enum Easing {
+    linear; ease_in; ease_out; ease_in_out;
+    in_quad; out_quad; in_out_quad;
+    in_cubic; out_cubic; in_out_cubic;
+    in_quart; out_quart; in_out_quart;
+    in_quint; out_quint; in_out_quint;
+    in_sine; out_sine; in_out_sine;
+    in_expo; out_expo; in_out_expo;
+    in_circ; out_circ; in_out_circ;
+    in_back; out_back; in_out_back;
+    in_elastic; out_elastic; in_out_elastic;
+    in_bounce; out_bounce; in_out_bounce;
+    cubic_bezier(F32, F32, F32, F32);
+}
 export enum ReducedMotion { instant; keep; }
 ```
 
@@ -4777,6 +4790,7 @@ Row {
 - 挂载后 `p` 的解析值变化才触发动画；首次挂载与 `if`/`for` 新挂载的节点直接呈现目标值；
 - Model 值立即变化并始终是事实来源，呈现值在 `delay` 内保持起点，随后在 `duration` 内插值；进行中再次变化时从当前呈现值重新出发（Retarget），目标不变的再次求值不重启；
 - `Color` 值（`background`、`color`）在预乘的线性光空间逐分量插值，从透明淡入时保持色相；
+- `Easing` 把移动的归一化时间映射为进度：`in_*` 从静止加速、`out_*` 减速到静止、`in_out_*` 两端都慢，十个族为 Penner 曲线（`quad`、`cubic`、`quart`、`quint`、`sine`、`expo`、`circ`、`back`、`elastic`、`bounce`），`ease_in`/`ease_out`/`ease_in_out` 即 `cubic` 族；`cubic_bezier(x1, y1, x2, y2)` 为 CSS 三次贝塞尔，`x` 取 `[0, 1]` 内；`back`、`elastic` 与 `y` 越出 `[0, 1]` 的贝塞尔会越过目标再回来：`translate`、`scale`、`rotation` 随之越过，颜色与 `opacity` 停在取值范围内，`width`、`height`、`corner_radius` 不小于 0；
 - 变换类 Property 的 Hit Test 使用呈现值；其他 Property 的 Hit Test 与语义使用 Model 值；
 - `transition.*` 自身的变化只影响下一次触发，不标记失效。
 
@@ -4790,7 +4804,7 @@ Row {
 
 对 `width`/`height` 设置 transition 合法但每帧重新布局；`viso check` 对 `VirtualList` Item Template 中的这类 transition 报告性能提示。其他 Property 不可动画。
 
-当前实现：`translate`、`scale`、`rotation`、`opacity`、`background`、`color`、`corner_radius`、`width`、`height` 的 transition 在 `component!`、`view!`、Hot Reload 与 Release 包中播放（Web 导出为 CSS `transition`）：长度在开始时按节点的环境与字号折叠，移动途中环境变化时转向新的折叠值而不中断；文本重新排版送达的新颜色不打断颜色的移动。`scale`/`rotation` 绕 `transform_origin` 作用于节点及其子树：渲染器按每个变换根的仿射 Place 绘制、命中测试把指针映射回节点局部坐标；Web 导出为 CSS `scale`/`rotate`/`transform-origin`，`start`/`end` 原点在 `:dir(rtl)` 下取另一侧。
+当前实现：`translate`、`scale`、`rotation`、`opacity`、`background`、`color`、`corner_radius`、`width`、`height` 的 transition 在 `component!`、`view!`、Hot Reload 与 Release 包中播放（Web 导出为 CSS `transition`：`linear` 与 `cubic_bezier` 为同名 CSS 函数，其他曲线采样为误差不超过 0.2% 的 CSS `linear()`）：长度在开始时按节点的环境与字号折叠，移动途中环境变化时转向新的折叠值而不中断；文本重新排版送达的新颜色不打断颜色的移动。`scale`/`rotation` 绕 `transform_origin` 作用于节点及其子树：渲染器按每个变换根的仿射 Place 绘制、命中测试把指针映射回节点局部坐标；Web 导出为 CSS `scale`/`rotate`/`transform-origin`，`start`/`end` 原点在 `:dir(rtl)` 下取另一侧。
 
 ### U6.3 `Animation` 句柄
 

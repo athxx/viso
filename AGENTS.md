@@ -162,7 +162,7 @@ text (pure CPU) / shader
 gpu → handle
 ```
 
-The compiler side is separate: `dsl -> schema / dev-protocol / behavior / shader`, with `lsp` and `ui-macros` on `dsl` (ADR 0042). `ui` and `view` re-export `schema`; `dev-protocol` is the CLI↔runtime dev link both sides depend on; `shader` sees GPU types only through `gpu-abi`. Leaf crates (`math`, `ende`, `handle`, `glyph-a8`, `schema`, `gpu-abi`) sit outside this chain, with `macros` on `glyph-a8` (the A8 glyph rasterizer and baked pages `text` also reads); `render` sits on `svg` (parser) and `image` (raster decode). The transitive closure of `dsl`/`lsp`/`ui-macros`/`cli` must not contain runtime, platform or gpu; `check-deps` enforces it. The exact allowed edges are the allowlist in `xtask/src/main.rs` (§3.6, Architecture §10).
+The compiler side is separate: `dsl -> schema / dev-protocol / behavior / shader / math`, with `lsp` and `ui-macros` on `dsl` (ADR 0042). `ui` and `view` re-export `schema`; `dev-protocol` is the CLI↔runtime dev link both sides depend on; `shader` sees GPU types only through `gpu-abi`. Leaf crates (`math`, `ende`, `handle`, `glyph-a8`, `schema`, `gpu-abi`) sit outside this chain, with `macros` on `glyph-a8` (the A8 glyph rasterizer and baked pages `text` also reads); `render` sits on `svg` (parser) and `image` (raster decode). The transitive closure of `dsl`/`lsp`/`ui-macros`/`cli` must not contain runtime, platform or gpu; `check-deps` enforces it. The exact allowed edges are the allowlist in `xtask/src/main.rs` (§3.6, Architecture §10).
 
 Exact low-level edges can differ where required by surface creation and runtime ownership, but the following are forbidden:
 

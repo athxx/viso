@@ -86,7 +86,7 @@ fn registry_for(ids: &[NodeId]) -> AnimationRegistry {
             Vec2::ZERO,
             Vec2 { x: 0.0, y: -1000.0 },
             LONG,
-            Easing::EaseOut,
+            Easing::EASE_OUT,
         ));
     }
     reg

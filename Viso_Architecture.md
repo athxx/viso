@@ -907,7 +907,7 @@ PDF/browser/chart/map 等不是基础 widget，放 optional package/integration�
 - source map；
 - Behavior IR → bytecode lowering（`Program::bytecode`，ADR 0035），只服务 Dev 热更新与显式 dynamic。
 
-`viso-dsl` 只依赖 `viso-schema`、`viso-dev-protocol`、`viso-ende`、`viso-behavior`、`viso-shader`；传递依赖闭包不含 `ui`/`render`/`gpu`（backend）/`runtime`/`platform`，这样 LSP、`viso check` 与 CI 分析不链接运行时栈（`check-deps` 的闭包规则执行）。Shader IR 的唯一 owner 是 `viso-shader`：`viso-dsl` 解析、检查 `.vs` 中的 shader 声明（与其余 DSL 共用 CST、resolver 与诊断），lower 为 `viso_shader::program::Program`，validation 与 codegen 由 `viso-shader` 完成。
+`viso-dsl` 只依赖 `viso-schema`、`viso-dev-protocol`、`viso-ende`、`viso-behavior`、`viso-shader` 与叶子 `viso-math`（Web 导出按其缓动曲线采样 CSS）；传递依赖闭包不含 `ui`/`render`/`gpu`（backend）/`runtime`/`platform`，这样 LSP、`viso check` 与 CI 分析不链接运行时栈（`check-deps` 的闭包规则执行）。Shader IR 的唯一 owner 是 `viso-shader`：`viso-dsl` 解析、检查 `.vs` 中的 shader 声明（与其余 DSL 共用 CST、resolver 与诊断），lower 为 `viso_shader::program::Program`，validation 与 codegen 由 `viso-shader` 完成。
 
 ### `viso-behavior`
 
@@ -961,7 +961,7 @@ CLI 依赖 `viso-dsl`、`viso-dev-protocol`、`viso-schema`、`viso-image`、`vi
 | `viso-ui-macros` | dsl | — |
 | `viso-lsp` | dsl | — |
 | `viso-cli` | project, package, dsl, dev-protocol, schema, ende, image, svg, text | — |
-| `viso-dsl` | schema, dev-protocol, ende, behavior, shader；测试另 dev-depend ui、view | — |
+| `viso-dsl` | schema, dev-protocol, ende, behavior, shader, math；测试另 dev-depend ui、view | — |
 | `viso-view` | ui, schema, dev-protocol, behavior, ende | `behavior` 的解释器只在 `vm` feature 下编入（ADR 0041） |
 | `viso-behavior` | ende, math, schema | — |
 | `viso-services` | runtime, platform | — |
@@ -3082,6 +3082,8 @@ AnimationTrack {
 animation dirty 按属性限定：transform 动画只标 `TRANSFORM`，opacity/color 动画只标 `PAINT`；只有 width/height 等 layout property animation 才标 `MEASURE | LAYOUT`。
 
 transform / opacity 动画的 evaluator 在 AdvanceAnimations 阶段直接写入 TransformStore / PaintStore 中的单个字段，不经过 binding 求值。
+
+**缓动**（`viso_math::Easing`，`viso_ui` 在原路径 re-export）：`Linear`、Penner 十族曲线（`Curve::{Quad, Cubic, Quart, Quint, Sine, Expo, Circ, Back, Elastic, Bounce}`）各取 `In`/`Out`/`InOut`，与 CSS `CubicBezier`（Newton 求解、二分兜底）；`EASE_IN`/`EASE_OUT`/`EASE_IN_OUT` 为三次族。曲线是无分配的纯函数，放在叶子 `viso-math`，运行时与编译器（Web 导出）共用同一实现；`Easing::named` 给出 DSL `Easing` 声明变体的顺序。会越界的曲线（`Back`、`Elastic`、越界的贝塞尔）让平移、缩放、旋转越过目标，颜色与不透明度在插值处夹回取值范围，尺寸与圆角不小于 0。Web 导出：静态 CSS 由编译器把曲线自适应采样为误差 ≤0.2% 的 `linear()`，页面脚本带同一组曲线的 JS 实现，首次用到时同样采样并缓存（测试经 `node` 比对两份实现）。
 
 ---
 

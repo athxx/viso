@@ -315,7 +315,7 @@ export const show = {
     const instant = reduced.matches && f[3] === 0n;
     const s = (x) => Math.max(Number(x ?? 0), 0) + "s";
     return property + " " + (instant ? "0s" : s(f[0])) + " " +
-      (easings[Number(f[2] ?? 2n)] || "ease-out") + " " + (instant ? "0s" : s(f[1]));
+      easing(f[2]) + " " + (instant ? "0s" : s(f[1]));
   },
   select,
 };

@@ -38,6 +38,7 @@ extern crate std;
 mod batch;
 mod color;
 mod coverage;
+mod easing;
 mod float;
 mod geom;
 mod legality;
@@ -55,6 +56,7 @@ pub use color::{
     LinearStraight, Srgb, linear_to_srgb, srgb_to_linear,
 };
 pub use coverage::{Coverage, composite};
+pub use easing::{CubicBezier, Curve, Easing};
 pub use geom::{Aabb, Plane, Ray};
 pub use legality::{GeometryLegality, classify_extent, classify_rect, classify_transform};
 pub use mat::{Mat2, Mat3, Mat4};

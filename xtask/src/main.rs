@@ -165,7 +165,7 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
         // runtime (section 10.1, ADR 0042): it emits schema data (`viso-schema`)
         // and dev-link patches (`viso-dev-protocol`), encodes them with
         // `viso-ende`, lowers behavior to `viso-behavior` and shaders to
-        // `viso-shader`. Its integration tests mount what it compiles, so they
+        // `viso-shader`, and samples `viso-math`'s easing curves for export. Its integration tests mount what it compiles, so they
         // link the runtime as dev-dependencies.
         (
             "viso-dsl",
@@ -177,6 +177,7 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
                     "viso-ende",
                     "viso-behavior",
                     "viso-shader",
+                    "viso-math",
                 ],
                 dev: &["viso-ui", "viso-view"],
             },

@@ -2722,6 +2722,7 @@ dependencies = [
  "viso-behavior",
  "viso-dev-protocol",
  "viso-ende",
+ "viso-math",
  "viso-schema",
  "viso-shader",
  "viso-ui",

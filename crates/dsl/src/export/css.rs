@@ -7,6 +7,8 @@ use std::fmt::Write as _;
 
 use viso_behavior::Value;
 
+use viso_math::{CubicBezier, Easing};
+
 use crate::ir::ui_ir::{LengthIr, TermsIr};
 
 /// The `Theme` record a view reads as `theme`, as the prelude declares it:
@@ -136,7 +138,7 @@ fn token_value(value: &Value, token: Token) -> Option<String> {
         Token::Sp => sp(value.as_float()?),
         Token::Em => format!("{}em", number(value.as_float()?)),
         Token::Duration => seconds(value.as_float()?),
-        Token::Easing => easing(value.as_int()?).to_owned(),
+        Token::Easing => easing(value),
         Token::Family => family(value),
         Token::Shadow => shadow(value)?,
     })
@@ -234,14 +236,80 @@ pub(super) fn color(rgba: u32) -> String {
     }
 }
 
-/// An `Easing` variant, by tag.
-pub(super) fn easing(tag: i64) -> &'static str {
-    match tag {
-        0 => "linear",
-        1 => "ease-in",
-        3 => "ease-in-out",
-        _ => "ease-out",
+/// An `Easing` value as a CSS timing function: a named curve by its tag, a
+/// `cubic_bezier` by its control points.
+pub(super) fn easing(value: &Value) -> String {
+    match value {
+        Value::Agg(bezier) if bezier.tag == Easing::NAMED => {
+            let at = |i: usize| {
+                bezier
+                    .fields
+                    .get(i)
+                    .and_then(Value::as_float)
+                    .unwrap_or(0.0)
+            };
+            let b = CubicBezier::new(at(0) as f32, at(1) as f32, at(2) as f32, at(3) as f32);
+            timing_function(Easing::CubicBezier(b))
+        }
+        _ => timing_function(
+            value
+                .as_int()
+                .and_then(|tag| u32::try_from(tag).ok())
+                .and_then(Easing::named)
+                .unwrap_or_default(),
+        ),
     }
+}
+
+/// The CSS timing function that follows `easing`: `linear`, a
+/// `cubic-bezier()`, or a `linear()` through stops sampled along the curve,
+/// as many as keep it within 0.2% of the curve.
+pub(super) fn timing_function(easing: Easing) -> String {
+    match easing {
+        Easing::Linear => "linear".to_owned(),
+        Easing::CubicBezier(b) => format!(
+            "cubic-bezier({}, {}, {}, {})",
+            number(f64::from(b.x1)),
+            number(f64::from(b.y1)),
+            number(f64::from(b.x2)),
+            number(f64::from(b.y2))
+        ),
+        _ => {
+            let at = |t: f32| easing.apply(t);
+            let mut stops = vec![0.0f32];
+            sample(&at, 0.0, 1.0, 0, &mut stops);
+            let mut out = String::from("linear(");
+            for (i, &t) in stops.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(&number(f64::from(at(t))));
+                if i > 0 && i + 1 < stops.len() {
+                    let _ = write!(out, " {}%", number(f64::from(t) * 100.0));
+                }
+            }
+            out.push(')');
+            out
+        }
+    }
+}
+
+/// Push onto `stops` the times past `a` up to and including `b` at which a
+/// line through `f` stays within tolerance of it, halving where it does not.
+fn sample(f: &impl Fn(f32) -> f32, a: f32, b: f32, depth: u32, stops: &mut Vec<f32>) {
+    const TOLERANCE: f32 = 0.002;
+    let (fa, fb) = (f(a), f(b));
+    let off = |t: f32| (f(t) - (fa + (fb - fa) * (t - a) / (b - a))).abs();
+    let straight = [0.25, 0.5, 0.75]
+        .iter()
+        .all(|&k| off(a + (b - a) * k) <= TOLERANCE);
+    if depth >= 8 || (depth >= 2 && straight) {
+        stops.push(b);
+        return;
+    }
+    let mid = (a + b) * 0.5;
+    sample(f, a, mid, depth + 1, stops);
+    sample(f, mid, b, depth + 1, stops);
 }
 
 /// A folded length that sets an extent: a fixed one, a percentage of the
@@ -411,7 +479,44 @@ mod tests {
         assert!(rule.contains("  --colors-primary: #3b6cf0;\n"), "{rule}");
         assert!(rule.contains("  --typography-base-size: 0.875rem;\n"));
         assert!(rule.contains("  --elevation-low: 0 1px 2px 0 #00000024;\n"));
-        assert!(rule.contains("  --motion-standard: ease-out;\n"));
+        assert!(rule.contains("  --motion-standard: linear(0, "), "{rule}");
+    }
+
+    #[test]
+    fn a_curve_is_a_linear_function_within_tolerance_of_it() {
+        for tag in 1..Easing::NAMED {
+            let easing = Easing::named(tag).unwrap();
+            let css = timing_function(easing);
+            let stops: Vec<(f32, f32)> = css
+                .strip_prefix("linear(")
+                .and_then(|s| s.strip_suffix(')'))
+                .unwrap()
+                .split(", ")
+                .enumerate()
+                .map(|(i, stop)| {
+                    let mut parts = stop.split(' ');
+                    let value: f32 = parts.next().unwrap().parse().unwrap();
+                    let at = parts
+                        .next()
+                        .map(|p| p.trim_end_matches('%').parse::<f32>().unwrap() / 100.0)
+                        .unwrap_or(if i == 0 { 0.0 } else { 1.0 });
+                    (at, value)
+                })
+                .collect();
+            assert!(stops.len() <= 260, "{easing:?}: {} stops", stops.len());
+            for k in 0..=200 {
+                let t = k as f32 / 200.0;
+                let seg = stops.windows(2).find(|w| w[1].0 >= t).unwrap();
+                let (a, b) = (seg[0], seg[1]);
+                let line = a.1 + (b.1 - a.1) * (t - a.0) / (b.0 - a.0).max(1e-6);
+                assert!((line - easing.apply(t)).abs() < 0.01, "{easing:?} at {t}");
+            }
+        }
+        assert_eq!(timing_function(Easing::Linear), "linear");
+        assert_eq!(
+            timing_function(Easing::CubicBezier(CubicBezier::new(0.2, 0.0, 0.0, 1.0))),
+            "cubic-bezier(0.2, 0, 0, 1)"
+        );
     }
 
     #[test]
