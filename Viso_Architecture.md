@@ -3089,6 +3089,8 @@ transform / opacity 动画的 evaluator 在 AdvanceAnimations 阶段直接写入
 
 **关键帧**（`viso_ui::Keyframes`）：`stops: Vec<Keyframe { at, value, easing }>`、每周期 `duration`、`delay`、`Repeat::{Times(n), Forever}`、`PlayDirection::{Normal, Reverse, Alternate, AlternateReverse}`。`NodeStore::play` 与 `animate` 共用 `run_animation`：同样只接受平移、缩放、旋转与不透明度，同样移动呈现值、结束时显示 Model 值并经 `ANIMATION_END` 通知结束（`target` 为最后一个停靠点的值），同一属性的新动画结束旧动画。运行中的 `NodeAnimation` 持有 `Run::Move(LookTransition)` 或 `Run::Track(TrackRun)`：`TrackRun` 在开始时把停靠点过滤为首个停靠点的属性、丢弃非有限的 `at`、夹到 `[0, 1]` 并稳定排序，之后每帧只做一次查找与插值、不分配；时间以 `f64` 秒累计，周期数取整数部分，按方向决定是否倒放，第一个停靠点之前从开始时的呈现值插入，最后一个之后保持。被弹簧动画取代时，轨道的当前速度按最近 1 ms 的差分交出。Web 导出见 DSL §U6.3。
 
+**减少动态效果**：`Timing`、`Keyframes` 各带 `ReducedMotion::{Instant, Keep}`（默认 `Instant`）。`NodeStore::set_reduced_motion` 由 facade 在系统外观变化时与 `env.reduced_motion` 一同写入，是唯一执行策略的地方：`transition`、`animate`、`play` 遇到 `Instant` 时间立即落到终值或以 finished 结束；`glide_to`（平滑 `scroll_to`/`scroll_by`/`scroll_into_view`、键盘滚动、跟随末尾、刷新保持位）直接 `set_scroll`，虚拟列表的平滑定位改走即时定位；`AnimationRegistry::tick` 让 `TranslateAnim` 在当帧到位。惯性滚动、越界回弹与吸附滑行（松手后的直接操控延续）不受影响。开启时 `set_reduced_motion(true)` 把进行中的可省略转场写到终值、结束可省略的动画、把所有滑行落到目标。视图不再自行读取 env 决定是否插值，只把 `reduced` 字段传给 Store。
+
 ---
 
 # Part X — Accessibility / Semantics

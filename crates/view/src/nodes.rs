@@ -183,7 +183,6 @@ pub fn mount_nodes(
             return;
         };
         let pending = std::mem::take(&mut view.nodes.pending);
-        let reduced = cx.states.env().environment().reduced_motion;
         for PendingRequest { request, items } in pending {
             if request.action.on_animation() {
                 view.stop_animation(cx.store, &request);
@@ -201,7 +200,7 @@ pub fn mount_nodes(
             }
             match request.action {
                 action if action.starts_animation() => {
-                    view.start_animation(cx.store, node, &request, reduced, Rc::downgrade(&keep));
+                    view.start_animation(cx.store, node, &request, Rc::downgrade(&keep));
                 }
                 _ => apply(cx.store, cx.lists, node, &request),
             }
@@ -218,7 +217,6 @@ impl ViewHost {
         store: &mut NodeStore,
         node: NodeId,
         request: &NodeRequest,
-        reduced: bool,
         host: Weak<RefCell<ViewHost>>,
     ) {
         let Some(id) = animation_of(request) else {
@@ -235,7 +233,7 @@ impl ViewHost {
         let arg = |at: usize| request.args.get(at);
         let started = if request.action == NodeAction::Play {
             arg(0)
-                .and_then(|track| crate::values::keyframes(store, node, track, reduced))
+                .and_then(|track| crate::values::keyframes(store, node, track))
                 .and_then(|track| store.play(node, track, Some(on_end)))
         } else {
             match (
@@ -243,7 +241,7 @@ impl ViewHost {
                 arg(1),
             ) {
                 (Some(target), Some(spec)) => {
-                    let timing = crate::values::timing(spec, reduced);
+                    let timing = crate::values::timing(spec);
                     store.animate(node, target, timing, Some(on_end))
                 }
                 _ => None,

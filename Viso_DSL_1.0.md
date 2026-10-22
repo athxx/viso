@@ -4854,7 +4854,9 @@ component Shake {
 
 ### U6.4 Reduced Motion
 
-`env.reduced_motion == true` 时，运行时按 `Transition.reduced` 处理 U6.1 与 U6.3 的动画：`instant` 跳过插值直接呈现终值，仍派发 `finished: true` 的 `animation_end`；`keep` 照常播放，只用于传达信息的必要动画（如进度指示）。作者无需读取 `env.reduced_motion` 来关闭动画，只有在需要改变动画之外的呈现时才读取。
+`env.reduced_motion == true` 时，运行时按 `Transition.reduced` 与 `Keyframes.reduced` 处理 U6.1 与 U6.3 的动画：`instant` 跳过插值直接呈现终值，仍派发 `finished: true` 的 `animation_end`；`keep` 照常播放，只用于传达信息的必要动画（如进度指示）。作者无需读取 `env.reduced_motion` 来关闭动画，只有在需要改变动画之外的呈现时才读取。带 `smooth: true` 的滚动方法（U7.6）此时直接跳到目标；手指拖动、惯性滚动与松手后的吸附仍照常运动。
+
+当前实现：平台的减少动态效果设置（macOS/iOS 辅助功能、Android 动画缩放、Windows 客户区动画、GNOME `enable-animations`、Web `prefers-reduced-motion`）同时写入 `env.reduced_motion` 与窗口 `NodeStore` 的 `set_reduced_motion`，策略只在 Store 一处执行：弹簧与关键帧同样适用；设置在动画进行中打开时，可省略的转场立即落到终值、动画以 `finished: true` 结束、程序触发的滚动滑行立即到位。Rust 控件自身的过渡（滚动条淡入淡出、下拉刷新指示器、Sheet 滑入滑出）同样遵循；旋转器保持转动。Web 导出以 `prefers-reduced-motion` 判断：转场与动画时长为 0，`smooth` 滚动用 `behavior: "instant"`。
 
 ---
 

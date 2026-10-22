@@ -174,19 +174,23 @@ const reach = (requests, from) => {
     const el = named(key, from);
     if (!el) continue;
     const at = (v) => [fold(el, v.f[0]), fold(el, v.f[1])];
+    // A scroll's last `smooth` glides, unless motion is reduced.
+    const glide = (v) => (v === 1n && !reduced.matches ? "smooth" : "instant");
+    const to = (v, smooth) => { const [left, top] = at(v); return { left, top, behavior: glide(smooth) }; };
+    const lead = (smooth) => ({ block: "start", inline: "start", behavior: glide(smooth) });
     switch (action) {
       case 0: el.focus({ focusVisible: false }); break;
       case 1: if (el.contains(document.activeElement)) document.activeElement.blur(); break;
-      case 2: el.scrollIntoView({ block: "nearest", inline: "nearest" }); break;
-      case 3: { const [x, y] = at(args[0]); el.scrollTo(x, y); break; }
-      case 4: { const [x, y] = at(args[0]); el.scrollBy(x, y); break; }
+      case 2: el.scrollIntoView({ block: "nearest", inline: "nearest", behavior: glide(args[0]) }); break;
+      case 3: el.scrollTo(to(args[0], args[1])); break;
+      case 4: el.scrollBy(to(args[0], args[1])); break;
       case 5: {
         const all = rows(el);
         const r = all[Math.max(0, Math.min(Number(args[0]), all.length - 1))];
-        if (r) r.scrollIntoView({ block: "start", inline: "start" });
+        if (r) r.scrollIntoView(lead(args[1]));
         break;
       }
-      case 6: { const r = row(el, $.key(args[0])); if (r) r.scrollIntoView({ block: "start", inline: "start" }); break; }
+      case 6: { const r = row(el, $.key(args[0])); if (r) r.scrollIntoView(lead(args[1])); break; }
       case 7: animate(el, args[0], args[1], args[2]); break;
       case 11: play(el, args[0], args[1]); break;
     }

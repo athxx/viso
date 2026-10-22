@@ -272,7 +272,7 @@ fn a_changed_look_moves_in_over_its_transition() {
         assert_eq!(rt.store.style(text).fill, rgba(1.0, 0.0, 0.0, 1.0));
         assert!(!rt.store.is_transitioning(), "both arrived");
 
-        rt.states.update_env(|env| env.reduced_motion = true);
+        rt.store.set_reduced_motion(true);
         rt.click(5.0, 5.0);
         assert_eq!(
             rt.store.opacity(text),
@@ -377,7 +377,7 @@ fn a_spring_transition_rings_past_its_target_and_rests_on_it() {
         assert_eq!(rt.store.translate(text).x, 40.0, "and rests on it");
         assert!(!rt.store.is_transitioning());
 
-        rt.states.update_env(|env| env.reduced_motion = true);
+        rt.store.set_reduced_motion(true);
         rt.layout();
         rt.click(50.0, 5.0);
         assert_eq!(

@@ -375,6 +375,7 @@ fn the_platform_feeds_the_environment_and_regions_pad_once() {
     assert_eq!(env.safe_area.bottom, 34.0);
     assert_eq!(env.keyboard_inset, 300.0);
     assert!(env.reduced_motion);
+    assert!(app.store().reduced_motion(), "the store's motion follows");
     assert_eq!(env.text_scale, 1.5);
     assert_eq!(
         app.store().length_env().text_scale,

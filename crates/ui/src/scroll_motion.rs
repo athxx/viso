@@ -564,13 +564,18 @@ impl NodeStore {
 
     /// Ease viewport `id`'s offset to `offset`, clamped to its range as it
     /// goes: a glide under way turns to the new target at its speed, and a
-    /// coast stops. A stale handle or a node that does not scroll is a
-    /// no-op.
+    /// coast stops. While motion is reduced it moves there at once. A stale
+    /// handle or a node that does not scroll is a no-op.
     pub fn glide_to(&mut self, id: NodeId, offset: Vec2) {
         if self.scroll_axis(id).is_none() || !self.arena().is_live(id) {
             return;
         }
         self.motions.flings.retain(|f| f.viewport != id);
+        if self.reduced_motion() {
+            self.motions.glides.retain(|g| g.viewport != id);
+            self.set_scroll(id, offset);
+            return;
+        }
         match self.motions.glides.iter_mut().find(|g| g.viewport == id) {
             Some(glide) => glide.target = offset,
             None => self.motions.glides.push(Glide {
@@ -1578,6 +1583,33 @@ mod tests {
         frame(&mut store, viewport);
         frames(&mut store, viewport, 60);
         assert_eq!(store.scroll(viewport).y, 800.0);
+    }
+
+    #[test]
+    fn under_reduced_motion_a_smooth_scroll_jumps_but_a_flick_still_coasts() {
+        let (mut store, viewport, _) = list(20, false);
+        smooth(
+            &mut store,
+            viewport,
+            ScrollRequest::To(Vec2 { x: 0.0, y: 300.0 }),
+        );
+        frame(&mut store, viewport);
+        frames(&mut store, viewport, 2);
+        assert!(store.is_gliding(viewport));
+        // A glide under way lands as motion is reduced.
+        store.set_reduced_motion(true);
+        assert_eq!(store.scroll(viewport).y, 300.0);
+        assert!(!store.is_gliding(viewport));
+        smooth(
+            &mut store,
+            viewport,
+            ScrollRequest::To(Vec2 { x: 0.0, y: 5000.0 }),
+        );
+        frame(&mut store, viewport);
+        assert_eq!(store.scroll(viewport).y, 800.0, "at once, clamped");
+        assert!(!store.is_scroll_moving());
+        store.fling(viewport, -2000.0);
+        assert!(store.is_coasting(viewport), "a flick is the finger's");
     }
 
     #[test]

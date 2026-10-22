@@ -10,8 +10,8 @@
 //!
 //! A look value with a `transition.*` entry moves to each new value over the
 //! transition that entry evaluates to when the value changes; the first value
-//! a node shows, and every value under reduced motion with an `instant`
-//! transition, shows at once. The cells a transition reads are no
+//! a node shows shows at once, as the store shows every value under reduced
+//! motion with an `instant` transition. The cells a transition reads are no
 //! dependencies: changing one changes only the next move. A first delivery to
 //! a node already moving, as a hot reload's is, heads the move to its value
 //! rather than cutting it.
@@ -562,11 +562,10 @@ impl Shown {
         }
         // How a changed value moves in: over its transition after the first
         // delivery, else at once.
-        let reduced = cx.states.env().environment().reduced_motion;
         let mut move_of = |at: usize, transition: Option<u32>| {
             let transition = transition.filter(|_| !first && changed(at))?;
             match host.evaluate(transition, &self.scope, None, &*cx.states) {
-                Ok(spec) => Some(timing(&spec, reduced)),
+                Ok(spec) => Some(timing(&spec)),
                 Err(fault) => {
                     host.record_fault(fault);
                     None
@@ -901,7 +900,6 @@ impl Shown {
         }
         let env = cx.store.length_env();
         let font = cx.store.resolved_font_size(self.node).unwrap_or(FONT_SIZE);
-        let reduced = cx.states.env().environment().reduced_motion;
         let look = self.control.look;
         for (at, &(slot, _)) in self.control.layout.iter().enumerate() {
             if self
@@ -921,7 +919,7 @@ impl Shown {
             .filter(|_| self.laid.is_some());
             let timing = match transition.map(|t| host.evaluate(t, &self.scope, None, &*cx.states))
             {
-                Some(Ok(spec)) => Some(timing(&spec, reduced)),
+                Some(Ok(spec)) => Some(timing(&spec)),
                 Some(Err(fault)) => {
                     host.record_fault(fault);
                     None
@@ -1180,9 +1178,8 @@ pub(crate) fn color(value: &Value) -> Rgba {
 }
 
 /// The timing of a `Transition` value (`duration`, `delay`, `easing`,
-/// `reduced`): instant when `reduced_motion` holds and its `reduced` is
-/// `instant`. A negative or non-finite time is zero.
-pub(crate) fn timing(spec: &Value, reduced_motion: bool) -> Timing {
+/// `reduced`). A negative or non-finite time is zero.
+pub(crate) fn timing(spec: &Value) -> Timing {
     let Value::Agg(spec) = spec else {
         return Timing::default();
     };
@@ -1192,9 +1189,6 @@ pub(crate) fn timing(spec: &Value, reduced_motion: bool) -> Timing {
         std::time::Duration::try_from_secs_f64(seconds).unwrap_or_default()
     };
     let tag = |at: usize| field(at).and_then(Value::as_int).unwrap_or(0);
-    if reduced_motion && tag(3) == 0 {
-        return Timing::default();
-    }
     let pace = match field(2) {
         Some(Value::Agg(spring)) if spring.tag == SPRING => {
             let at = |i: usize| float(spring.fields.get(i).unwrap_or(&Value::Nil), 0.0);
@@ -1212,6 +1206,16 @@ pub(crate) fn timing(spec: &Value, reduced_motion: bool) -> Timing {
     Timing {
         delay: time(1),
         pace,
+        reduced: reduced(tag(3)),
+    }
+}
+
+/// A `ReducedMotion` by its tag.
+fn reduced(tag: i64) -> viso_ui::ReducedMotion {
+    if tag == 1 {
+        viso_ui::ReducedMotion::Keep
+    } else {
+        viso_ui::ReducedMotion::Instant
     }
 }
 
@@ -1220,14 +1224,12 @@ pub(crate) fn timing(spec: &Value, reduced_motion: bool) -> Timing {
 const SPRING: u32 = Easing::NAMED + 1;
 
 /// A `Keyframes` value (`stops`, `duration`, `delay`, `repeat`, `direction`,
-/// `reduced`), its stops' values folded at `node`: no cycle when
-/// `reduced_motion` holds and its `reduced` is `instant`. A negative or
-/// non-finite time is zero.
+/// `reduced`), its stops' values folded at `node`. A negative or non-finite
+/// time is zero.
 pub(crate) fn keyframes(
     store: &NodeStore,
     node: NodeId,
     spec: &Value,
-    reduced_motion: bool,
 ) -> Option<viso_ui::Keyframes> {
     use viso_ui::{Keyframe, PlayDirection, Repeat};
     let Value::Agg(spec) = spec else {
@@ -1271,16 +1273,13 @@ pub(crate) fn keyframes(
         3 => PlayDirection::AlternateReverse,
         _ => PlayDirection::Normal,
     };
-    let track = viso_ui::Keyframes::new(time(1), stops)
-        .after(time(2))
-        .direction(direction);
-    Some(if reduced_motion && tag(5) == 0 {
-        track
-            .after(std::time::Duration::ZERO)
-            .repeat(Repeat::Times(0))
-    } else {
-        track.repeat(repeat)
-    })
+    Some(
+        viso_ui::Keyframes::new(time(1), stops)
+            .after(time(2))
+            .repeat(repeat)
+            .direction(direction)
+            .reduced(reduced(tag(5))),
+    )
 }
 
 /// An `Easing` value: a named curve by its tag, or a `cubic_bezier` by its

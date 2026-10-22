@@ -1387,7 +1387,7 @@ fn reconcile_one(viewport: NodeId, state: &mut VirtualListState, cx: &mut Struct
     let room = (state.flow.total() - cx.store.bounds_main(viewport, axis)).max(0.0);
     let mut started = false;
     if let Some((index, smooth)) = state.reveal.take() {
-        if smooth {
+        if smooth && !cx.store.reduced_motion() {
             state.gliding_to = Some(index);
             started = true;
         } else {

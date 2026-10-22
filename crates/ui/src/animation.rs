@@ -158,7 +158,8 @@ impl AnimationRegistry {
     /// offset through [`NodeStore::set_translate`]. An animation that reaches or
     /// passes its duration is written to its final offset, removed, and its
     /// `on_done` fired. An animation whose node is no longer live is dropped
-    /// without firing `on_done` (the node it targeted is gone).
+    /// without firing `on_done` (the node it targeted is gone). While the
+    /// store's motion is reduced, each lands at its end on the tick.
     ///
     /// A flat pass with no heap allocation: it walks the `Vec` in reverse so a
     /// `swap_remove` of a finished animation does not skip its neighbour.
@@ -173,7 +174,12 @@ impl AnimationRegistry {
                 self.anims.swap_remove(i);
                 continue;
             }
-            self.anims[i].elapsed = self.anims[i].elapsed.saturating_add(delta);
+            // Reduced motion lands a slide where it ends.
+            self.anims[i].elapsed = if store.reduced_motion() {
+                self.anims[i].duration
+            } else {
+                self.anims[i].elapsed.saturating_add(delta)
+            };
             let node = self.anims[i].node;
             let offset = self.anims[i].current();
             store.set_translate(node, offset);
@@ -198,6 +204,17 @@ pub enum Pace {
     Spring(Spring),
 }
 
+/// What becomes of a move while motion is reduced
+/// ([`NodeStore::set_reduced_motion`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReducedMotion {
+    /// It ends the moment it starts.
+    #[default]
+    Instant,
+    /// It runs all the same: a move that tells something, a progress shown.
+    Keep,
+}
+
 /// How a look property moves to a new value: it holds for `delay`, then
 /// moves at its `pace`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -206,6 +223,8 @@ pub struct Timing {
     pub delay: Duration,
     /// How the move covers its way.
     pub pace: Pace,
+    /// What becomes of it while motion is reduced.
+    pub reduced: ReducedMotion,
 }
 
 impl Default for Timing {
@@ -223,6 +242,7 @@ impl Timing {
         Timing {
             delay: Duration::ZERO,
             pace: Pace::Eased { duration, easing },
+            reduced: ReducedMotion::Instant,
         }
     }
 
@@ -231,12 +251,18 @@ impl Timing {
         Timing {
             delay: Duration::ZERO,
             pace: Pace::Spring(spring),
+            reduced: ReducedMotion::Instant,
         }
     }
 
     /// The same move begun `delay` later.
     pub const fn after(self, delay: Duration) -> Self {
         Timing { delay, ..self }
+    }
+
+    /// The same move, `reduced` while motion is reduced.
+    pub const fn reduced(self, reduced: ReducedMotion) -> Self {
+        Timing { reduced, ..self }
     }
 
     /// Whether a move with this timing ends the moment it starts.
@@ -439,6 +465,8 @@ pub struct Keyframes {
     pub repeat: Repeat,
     /// Which way each cycle runs.
     pub direction: PlayDirection,
+    /// What becomes of it while motion is reduced.
+    pub reduced: ReducedMotion,
 }
 
 impl Keyframes {
@@ -464,6 +492,11 @@ impl Keyframes {
     /// The same track, begun `delay` later.
     pub fn after(self, delay: Duration) -> Self {
         Keyframes { delay, ..self }
+    }
+
+    /// The same track, `reduced` while motion is reduced.
+    pub fn reduced(self, reduced: ReducedMotion) -> Self {
+        Keyframes { reduced, ..self }
     }
 
     /// Whether it ends the moment it starts.
@@ -637,6 +670,8 @@ pub(crate) struct NodeAnimation {
     /// The property's model value, which shows once it ends.
     pub(crate) model: LookValue,
     pub(crate) on_end: Option<AnimationEndHandler>,
+    /// What becomes of it while motion is reduced.
+    pub(crate) reduced: ReducedMotion,
 }
 
 /// An ended animation waiting for delivery: its node, how it ended and its
@@ -1489,5 +1524,57 @@ mod tests {
             .repeat(Repeat::Times(0));
         let animation = store.play(id, none, None).unwrap();
         assert!(!store.is_animating(animation));
+    }
+
+    #[test]
+    fn reduced_motion_lands_what_reduces_and_keeps_what_does_not() {
+        let ms = Duration::from_millis;
+        let (mut store, id) = one_leaf();
+        // A move under way lands as motion is reduced.
+        store.transition(id, LookValue::Opacity(0.0), linear(100));
+        store.tick_transitions(ms(50));
+        store.set_reduced_motion(true);
+        assert_eq!(store.opacity(id), 0.0);
+        assert!(!store.is_transitioning());
+        // A new one lands at once, a spring too; a kept one moves.
+        store.transition(id, LookValue::Opacity(1.0), linear(100));
+        assert_eq!(store.opacity(id), 1.0);
+        let spring = Timing::spring(Spring::BOUNCY);
+        store.transition(id, LookValue::Translate(Vec2 { x: 9.0, y: 0.0 }), spring);
+        assert_eq!(store.translate(id).x, 9.0);
+        store.transition(
+            id,
+            LookValue::Opacity(0.0),
+            linear(100).reduced(ReducedMotion::Keep),
+        );
+        store.tick_transitions(ms(50));
+        assert_eq!(store.opacity(id), 0.5);
+        // An animation ends finished at once; a kept track runs on.
+        let shake = store
+            .animate(id, LookValue::Rotation(1.0), linear(100), None)
+            .unwrap();
+        assert!(!store.is_animating(shake));
+        let spin = Keyframes::new(ms(100), [Keyframe::new(1.0, LookValue::Rotation(6.0))])
+            .repeat(Repeat::Forever);
+        let reduced = store.play(id, spin.clone(), None).unwrap();
+        assert!(!store.is_animating(reduced));
+        let kept = store
+            .play(id, spin.reduced(ReducedMotion::Keep), None)
+            .unwrap();
+        store.tick_transitions(ms(50));
+        assert!(store.is_animating(kept));
+        assert_eq!(store.turn(id).rotation, 3.0);
+        // A slide lands on its next tick.
+        let mut reg = AnimationRegistry::new();
+        reg.start(TranslateAnim::new(
+            id,
+            Vec2::ZERO,
+            Vec2 { x: 0.0, y: 40.0 },
+            ms(300),
+            Easing::EASE_OUT,
+        ));
+        reg.tick(&mut store, ms(16));
+        assert!(reg.is_empty());
+        assert_eq!(store.translate(id).y, 40.0);
     }
 }

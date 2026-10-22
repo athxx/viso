@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use crate::animation::{
     AnimationEnd, AnimationEndHandler, AnimationId, EndedAnimation, Keyframes, LookTransition,
-    LookValue, NodeAnimation, Parts, Run, Timing, TrackRun, TranslateAnim,
+    LookValue, NodeAnimation, Parts, ReducedMotion, Run, Timing, TrackRun, TranslateAnim,
 };
 use crate::asset::{Asset, AssetDraw, AssetFit, AssetPayload, AssetTable};
 use crate::binding::{BindingTable, Template};
@@ -652,6 +652,9 @@ pub struct NodeStore {
     animation_ends: Vec<EndedAnimation>,
     /// The last [`AnimationId`] given out.
     last_animation: u64,
+    /// Whether motion is reduced: what moves on a reducible timing lands at
+    /// once, and a programmatic scroll jumps rather than glides.
+    reduced_motion: bool,
     /// Cold, transient handoff buffer (not index-aligned): one-shot timer arms a
     /// handler requested this frame, sitting here between the router (which drains
     /// them off the [`EventCx`](crate::context::EventCx) after a dispatch and
@@ -3902,7 +3905,7 @@ impl NodeStore {
     fn move_look(&mut self, id: NodeId, to: LookValue, timing: Timing, velocity: Option<Parts>) {
         let from = self.shown(id, &to);
         let moving = self.transitions.iter().position(|t| t.moves(id, &to));
-        if timing.is_instant() || (moving.is_none() && velocity.is_none() && from == to) {
+        if self.lands(&timing) || (moving.is_none() && velocity.is_none() && from == to) {
             self.settle(id, &to);
             self.write_look(id, to);
             return;
@@ -3970,6 +3973,66 @@ impl NodeStore {
         }
     }
 
+    /// Reduce motion, or stop: the platform's setting, or the environment's
+    /// in its place. Reduced, a move on a timing that reduces lands at once
+    /// — the ones under way land now, and an animation that would run ends
+    /// finished — and a programmatic scroll jumps where it would glide; what
+    /// a finger or a flick moves still moves.
+    pub fn set_reduced_motion(&mut self, on: bool) {
+        if self.reduced_motion == on {
+            return;
+        }
+        self.reduced_motion = on;
+        if !on {
+            return;
+        }
+        let mut i = self.transitions.len();
+        while i > 0 {
+            i -= 1;
+            if self.transitions[i].timing.reduced == ReducedMotion::Instant {
+                let landed = self.transitions.swap_remove(i);
+                if self.arena.is_live(landed.node) {
+                    self.write_look(landed.node, landed.to);
+                }
+            }
+        }
+        let mut i = self.animations.len();
+        while i > 0 {
+            i -= 1;
+            if self.animations[i].reduced == ReducedMotion::Instant {
+                let ended = self.animations.swap_remove(i);
+                self.end_animation(ended, true);
+            }
+        }
+        let glides: Vec<(NodeId, Vec2)> = self
+            .motions
+            .glides
+            .drain(..)
+            .map(|g| (g.viewport, g.target))
+            .collect();
+        for (id, to) in glides {
+            self.set_scroll(id, to);
+        }
+    }
+
+    /// Whether motion is reduced.
+    #[inline]
+    pub fn reduced_motion(&self) -> bool {
+        self.reduced_motion
+    }
+
+    /// Whether a move that is `reduced` so lands at once now.
+    #[inline]
+    fn reduces(&self, reduced: ReducedMotion) -> bool {
+        self.reduced_motion && reduced == ReducedMotion::Instant
+    }
+
+    /// Whether a move on `timing` lands the moment it starts.
+    #[inline]
+    fn lands(&self, timing: &Timing) -> bool {
+        timing.is_instant() || self.reduces(timing.reduced)
+    }
+
     /// Whether any look property is moving: the frame loop keeps beating
     /// while one is.
     #[inline]
@@ -4033,11 +4096,18 @@ impl NodeStore {
         timing: Timing,
         on_end: Option<AnimationEndHandler>,
     ) -> Option<AnimationId> {
-        self.run_animation(id, to, timing.is_instant(), on_end, |presented, carried| {
-            Some(Run::Move(
-                LookTransition::new(id, presented, to, timing).carrying(carried),
-            ))
-        })
+        let instant = self.lands(&timing);
+        self.run_animation(
+            id,
+            to,
+            (instant, timing.reduced),
+            on_end,
+            |presented, carried| {
+                Some(Run::Move(
+                    LookTransition::new(id, presented, to, timing).carrying(carried),
+                ))
+            },
+        )
     }
 
     /// Runs the animation `track` makes on node `id`, as
@@ -4054,20 +4124,22 @@ impl NodeStore {
         on_end: Option<AnimationEndHandler>,
     ) -> Option<AnimationId> {
         let property = track.stops.first()?.value;
-        let instant = track.is_instant();
-        self.run_animation(id, property, instant, on_end, |presented, _| {
+        let instant = track.is_instant() || self.reduces(track.reduced);
+        let reduced = track.reduced;
+        self.run_animation(id, property, (instant, reduced), on_end, |presented, _| {
             TrackRun::new(id, presented, track).map(Run::Track)
         })
     }
 
     /// Starts on live node `id` the run `make` makes of the property
     /// `property` names, given the value presented and the velocity of the
-    /// animation it replaces; it ends at once when `instant`.
+    /// animation it replaces; it ends at once when `instant`, and is
+    /// `reduced` so while motion is reduced.
     fn run_animation(
         &mut self,
         id: NodeId,
         property: LookValue,
-        instant: bool,
+        (instant, reduced): (bool, ReducedMotion),
         on_end: Option<AnimationEndHandler>,
         make: impl FnOnce(LookValue, Parts) -> Option<Run>,
     ) -> Option<AnimationId> {
@@ -4100,6 +4172,7 @@ impl NodeStore {
             motion,
             model,
             on_end,
+            reduced,
         };
         if instant {
             self.end_animation(running, true);
