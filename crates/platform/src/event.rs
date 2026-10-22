@@ -118,10 +118,11 @@ impl Modifiers {
     }
 }
 
-/// Whether the accelerator modifier is the logo (Command) key. Fixed per target
-/// natively; on the web it depends on the OS under the browser, which the web
-/// backend detects at startup.
-fn primary_is_logo() -> bool {
+/// Whether the accelerator modifier is the logo (Command) key, and the
+/// system's other key conventions are Apple's (Option moves by word, Command
+/// to the line's ends). Fixed per target natively; on the web it depends on
+/// the OS under the browser, which the web backend detects at startup.
+pub fn primary_is_logo() -> bool {
     #[cfg(target_arch = "wasm32")]
     {
         WEB_PRIMARY_IS_LOGO.load(std::sync::atomic::Ordering::Relaxed)

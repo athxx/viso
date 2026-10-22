@@ -16,8 +16,8 @@ use std::rc::Rc;
 use viso_behavior::{Aggregate, Fault, FaultKind, Value};
 
 use viso_ui::{
-    DispatchPhase, EditIntent, EventCx, ImeEvent, Key, KeyEvent, Motion, NodeId, NodeStore,
-    PointerButtons, PointerPhase, TextOffset,
+    DispatchPhase, EventCx, FieldEvent, Key, KeyEvent, NodeId, NodeStore, PointerButtons,
+    PointerPhase, field_input,
 };
 
 use crate::host::ViewHost;
@@ -333,62 +333,18 @@ const KEY_FRACTION: f32 = 0.01;
 /// How many steps Page Up / Page Down move a slider.
 const PAGE_STEPS: f32 = 10.0;
 
-/// A text field's response: pointer placement and drag selection, caret
-/// motion and deletion keys, IME composition and commit — recorded as edit
-/// intents the router applies — and the settled text or an Enter it reports.
+/// A text field's response: the edits its input asks for, and the settled
+/// text or a submission it reports.
 fn text_input(cx: &mut EventCx<'_>) -> Option<(EventRoute, Value)> {
     if cx.phase() != DispatchPhase::Target {
         return None;
     }
-    let node = cx.node()?;
     if let Some(text) = cx.text_change() {
         return Some((EventRoute::Changed, field(Value::str(text))));
     }
-    if let Some(p) = cx.pointer() {
-        let held = p.buttons.contains(PointerButtons::PRIMARY);
-        let (x, y, extend) = (p.x, p.y, p.modifiers.shift);
-        match p.phase {
-            PointerPhase::Down if held => {
-                cx.request_focus(node);
-                cx.capture_pointer(node);
-                cx.record_edit(EditIntent::PlaceAt { x, y, extend });
-            }
-            PointerPhase::Move if held => {
-                cx.record_edit(EditIntent::PlaceAt { x, y, extend: true });
-            }
-            PointerPhase::Up => cx.release_pointer(),
-            _ => {}
-        }
-        return None;
+    match field_input(cx, false)? {
+        FieldEvent::Submitted => Some((EventRoute::Submitted, Value::Nil)),
     }
-    if let Some(k) = cx.key() {
-        if !k.pressed {
-            return None;
-        }
-        let extend = k.modifiers.shift;
-        let motion = |motion| EditIntent::Move { motion, extend };
-        let intent = match k.key {
-            Key::Enter if !k.repeat => return Some((EventRoute::Submitted, Value::Nil)),
-            Key::Left => motion(Motion::Left),
-            Key::Right => motion(Motion::Right),
-            Key::Home => motion(Motion::Home),
-            Key::End => motion(Motion::End),
-            Key::Backspace => EditIntent::Backspace,
-            Key::Delete => EditIntent::Delete,
-            _ => return None,
-        };
-        cx.record_edit(intent);
-        return None;
-    }
-    let intent = match cx.ime()? {
-        ImeEvent::Preedit { text, caret } => EditIntent::Compose {
-            text: text.clone(),
-            caret: TextOffset(*caret),
-        },
-        ImeEvent::Commit { text } => EditIntent::CommitCompose(text.clone()),
-    };
-    cx.record_edit(intent);
-    None
 }
 
 /// A slider's range and step.

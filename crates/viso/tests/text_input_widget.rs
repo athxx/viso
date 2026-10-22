@@ -454,6 +454,68 @@ fn ime_composition_commits_into_the_buffer() {
     assert_eq!(ix.text(), "你", "the committed text landed in the buffer");
 }
 
+/// The platform's accelerator modifier with `key`.
+fn primary(key: Key, shift: bool) -> KeyEvent {
+    let apple = viso::runtime::primary_is_logo();
+    KeyEvent {
+        modifiers: Modifiers {
+            shift,
+            control: !apple,
+            logo: apple,
+            ..Default::default()
+        },
+        ..key_ev(key, true, false)
+    }
+}
+
+#[test]
+fn typing_pasting_and_word_deletion_undo_and_redo_through_the_keys() {
+    let mut ix = Interactive::new("");
+    ix.store.set_focused(Some(ix.field));
+    for c in ["a", "b", " ", "c", "d"] {
+        ix.ime(ImeEvent::Commit { text: c.into() });
+    }
+    ix.ime(ImeEvent::Paste {
+        text: "!\n?".into(),
+    });
+    assert_eq!(
+        ix.text(),
+        "ab cd! ?",
+        "a single-line field folds a pasted break"
+    );
+    let word = KeyEvent {
+        modifiers: if viso::runtime::primary_is_logo() {
+            Modifiers {
+                alt: true,
+                ..Default::default()
+            }
+        } else {
+            Modifiers {
+                control: true,
+                ..Default::default()
+            }
+        },
+        ..key_ev(Key::Left, true, false)
+    };
+    ix.key(word);
+    assert_eq!(
+        ix.caret(),
+        3,
+        "back over the punctuation to the word's start"
+    );
+    for expect in ["ab cd", "ab ", ""] {
+        ix.key(primary(Key::Z, false));
+        assert_eq!(ix.text(), expect);
+    }
+    ix.key(primary(Key::Z, true));
+    assert_eq!(ix.text(), "ab ");
+    ix.key(primary(Key::A, false));
+    ix.key(key_ev(Key::Backspace, true, false));
+    assert_eq!(ix.text(), "");
+    ix.key(primary(Key::Z, false));
+    assert_eq!(ix.text(), "ab ", "the selection's deletion is one step");
+}
+
 // --- a11y snapshot ----------------------------------------------------------
 
 #[test]

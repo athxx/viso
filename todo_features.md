@@ -70,19 +70,30 @@ Rules:
 
 ## W2 — Text editing
 
-- [ ] Multi-line `TextInput` (`multiline: true` / `TextArea`): newline insertion, wrapped
-  layout, vertical caret motion keeping the goal x, internal scroll to the caret.
-- [ ] Undo/redo history with edit grouping (typing runs, word boundaries, paste/cut as
-  one), bounded memory, IME commit as one edit.
-- [ ] Word / line / paragraph / page / document motion and deletion (platform key maps:
-  Alt/Ctrl, Cmd), Shift-extension.
-- [ ] Double-click word select, triple-click line/paragraph select, drag-extend by word.
-- [ ] Select-all, caret blink (paused while typing, off under reduced motion),
-  horizontal scroll of a single-line field.
-- [ ] Input formatters: max length, numeric/decimal/integer filter, custom filter
-  callback, `on_submit`.
-- [ ] `NumberField` / scrub value input (drag to change, step, min/max, wheel).
-- [ ] Selection handles and the edit menu on touch (copy/cut/paste/select all).
+- [x] E1 Editing commands, shared by the widget and the DSL (`viso_ui::field_input`):
+  - [x] word / line / paragraph / page / document motion, Up/Down keeping the goal x,
+    Shift-extension;
+  - [x] deletion by grapheme, word and line;
+  - [x] platform key maps (Apple: Option word, Command line/document, the Emacs keys;
+    elsewhere: Control word, Control Home/End, Control Y), select-all, undo/redo keys;
+  - [x] undo/redo history: typing runs broken at word starts, Backspace and Delete runs,
+    paste/cut/word and line deletion/IME composition/outside value as one step each,
+    the selection restored, bounded to 256 KiB and 1000 steps, none for secure fields;
+  - [x] paste as its own text event (`ImeEvent::Paste`), cut as one edit.
+- [ ] E2 Multi-line `TextInput` (`multiline: true`): newline insertion, wrapped layout,
+  the accelerator with Enter submits; DSL prop and widget setter.
+- [ ] E3 Field painting: caret, selection highlight and composition underline drawn by
+  the framework; internal scroll to the caret (horizontal single-line, vertical
+  multi-line) with the content clipped; caret blink paused while typing, steady after
+  idle and under reduced motion.
+- [ ] E4 Double-click word select, triple-click paragraph select, drag-extend by word
+  (click counting in the pointer router).
+- [ ] E5 Input formatters: max length, integer/decimal filter, custom filter, widget
+  `on_submit`; DSL props.
+- [ ] E6 `NumberField` / scrub value input (drag to change, step, min/max, wheel, arrow
+  keys, typed entry), widget and DSL.
+- [ ] E7 Touch: long-press word select, selection handles, the edit menu (copy, cut,
+  paste, select all).
 
 ## W3 — Rich and selectable text
 

@@ -59,6 +59,7 @@
 //! caret resolve against the drawn lines while every edit applies to the text.
 
 use crate::content::TextRequest;
+use crate::edit_history::{EditKind, History, Splice, Step};
 use crate::node::NodeId;
 use crate::text_style::{FontSize, TextOverflow, TextStyle};
 use viso_render::Rgba;
@@ -111,7 +112,15 @@ enum Drawn {
     Mask,
 }
 
-/// Which way a caret motion goes, for arrow / Home / End.
+/// Where a caret motion goes.
+///
+/// Left and Right step visually through the drawn caret stops; the word
+/// motions go to the start of the word before the caret or the end of the
+/// word after it in the paragraph's reading direction; the line motions go
+/// to the ends of the drawn line, Up and Down to the line above or below at
+/// the column the caret keeps, the page motions as many lines as the field
+/// shows, and the paragraph and document motions to the ends of the hard line
+/// and of the text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Motion {
     /// One caret stop to the visual left (one grapheme back when the text has
@@ -120,10 +129,53 @@ pub enum Motion {
     /// One caret stop to the visual right (one grapheme forward when the text
     /// has no drawn geometry yet).
     Right,
+    /// To the word boundary on the visual left.
+    WordLeft,
+    /// To the word boundary on the visual right.
+    WordRight,
+    /// The start of the drawn line (of the paragraph without geometry).
+    LineStart,
+    /// The end of the drawn line (of the paragraph without geometry).
+    LineEnd,
+    /// The line above, at the caret's column; the text's start from the
+    /// first line.
+    Up,
+    /// The line below, at the caret's column; the text's end from the last
+    /// line.
+    Down,
+    /// As many lines up as the field shows.
+    PageUp,
+    /// As many lines down as the field shows.
+    PageDown,
+    /// The start of the paragraph, or of the one before from its start.
+    ParagraphStart,
+    /// The end of the paragraph, or of the one after from its end.
+    ParagraphEnd,
     /// The start of the text.
-    Home,
+    DocStart,
     /// The end of the text.
-    End,
+    DocEnd,
+}
+
+impl Motion {
+    /// Whether the motion moves between lines, keeping the caret's column.
+    fn is_vertical(self) -> bool {
+        matches!(
+            self,
+            Motion::Up | Motion::Down | Motion::PageUp | Motion::PageDown
+        )
+    }
+}
+
+/// How far a deletion from a bare caret reaches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reach {
+    /// One grapheme.
+    Grapheme,
+    /// To the word boundary.
+    Word,
+    /// To the end of the drawn line.
+    Line,
 }
 
 /// A self-contained editing command an input handler records without reading the
@@ -135,16 +187,24 @@ pub enum Motion {
 /// pure.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EditIntent {
-    /// Replace the current selection with this text (an ordinary keystroke or an
-    /// IME commit). Collapses to a caret after the inserted text.
+    /// Replace the current selection with typed text. Collapses to a caret
+    /// after it; typing in a row is one undo step a word at a time.
     Insert(String),
-    /// Delete backward: the selection if any, else the grapheme before the caret.
-    Backspace,
-    /// Delete forward: the selection if any, else the grapheme after the caret.
-    Delete,
+    /// Replace the current selection with pasted text, one undo step.
+    Paste(String),
+    /// Delete backward: the selection if any, else from the caret back as
+    /// far as the reach.
+    Backspace(Reach),
+    /// Delete forward: the selection if any, else from the caret on as far
+    /// as the reach.
+    Delete(Reach),
+    /// Delete the selection as one undo step, after its text was copied.
+    Cut,
     /// Move the caret. `extend` keeps the anchor fixed (shift-select) instead of
     /// collapsing to a caret.
     Move { motion: Motion, extend: bool },
+    /// Select the whole text.
+    SelectAll,
     /// Place the caret at the pointer, in the same window space as node bounds.
     /// `extend` keeps the anchor fixed (shift-click, drag-select).
     PlaceAt { x: f32, y: f32, extend: bool },
@@ -155,8 +215,12 @@ pub enum EditIntent {
     Compose { text: String, caret: TextOffset },
     /// Finalize the IME composition: keep the composed text as committed and end
     /// the composing state. `text` is the final segment (may differ from the last
-    /// preedit).
+    /// preedit). With no composition it is typed text.
     CommitCompose(String),
+    /// Take back the last undo step.
+    Undo,
+    /// Make the last undone step again.
+    Redo,
 }
 
 /// The drawn geometry of one editable node's text, as the runtime last laid it
@@ -177,6 +241,26 @@ pub struct EditLayout<'a> {
     pub offsets: &'a [f32],
 }
 
+impl EditLayout<'_> {
+    /// The row drawing `at` and its line.
+    fn line_at(&self, at: TextPosition) -> Option<(usize, &LineLayout)> {
+        let row = line_index_at(self.lines, at);
+        self.lines.get(row).map(|line| (row, line))
+    }
+
+    /// The x of the caret at `at` on `row`, in the node's space.
+    fn caret_x(&self, row: usize, at: TextPosition) -> f32 {
+        let x = self.lines[row].caret_x(at).unwrap_or(0.0);
+        x * self.font_size + self.offsets.get(row).copied().unwrap_or(0.0)
+    }
+
+    /// The position on `row` nearest `x` in the node's space.
+    fn position_at(&self, row: usize, x: f32) -> TextPosition {
+        let offset = self.offsets.get(row).copied().unwrap_or(0.0);
+        HitTester::new(&self.lines[row]).position_at_inline((x - offset) / self.font_size)
+    }
+}
+
 /// Where the runtime answers "how is this node's text drawn right now". The
 /// text shaper implements it; [`reconcile`] asks once per edited node.
 pub trait EditGeometry {
@@ -184,15 +268,17 @@ pub trait EditGeometry {
     fn layout(&self, node: NodeId) -> Option<EditLayout<'_>>;
 }
 
-/// An [`EditLayout`] together with the node's origin in window space.
+/// An [`EditLayout`] together with the node's box in window space.
 #[derive(Clone, Copy)]
 struct Placed<'a> {
     layout: EditLayout<'a>,
     origin: (f32, f32),
+    /// The box's width and height.
+    extent: (f32, f32),
 }
 
 /// The retained state of one editable node: its text, the selection over it, the
-/// in-progress IME composition, and the text style
+/// in-progress IME composition, its undo history, and the text style
 /// ([`font_size`](Buffer::font_size), [`color`](Buffer::color)) the node was
 /// declared with.
 ///
@@ -236,6 +322,13 @@ pub struct Buffer {
     pub look: FieldLook,
     /// The active IME composition, inactive (empty range) when not composing.
     composition: ImeComposition,
+    /// What undoing the composition under way takes back, while one is.
+    composing: Option<Step>,
+    /// The column, in the node's space, Up and Down keep while they move the
+    /// caret from line to line.
+    goal_x: Option<f32>,
+    /// The steps undo and redo walk.
+    history: History,
     /// Advances on every change to `text`.
     revision: Revision,
     /// Queued intents recorded since the last reconcile, applied in order. A
@@ -271,6 +364,9 @@ impl Buffer {
             style: TextStyle::default(),
             look: FieldLook::default(),
             composition: ImeComposition::default(),
+            composing: None,
+            goal_x: None,
+            history: History::default(),
             revision: Revision::default(),
             pending: Vec::new(),
         }
@@ -309,7 +405,8 @@ impl Buffer {
     /// already hold it, then put the caret at the end and end any
     /// composition. A buffer that already holds the text keeps its caret,
     /// selection and composition, so the state a field writes back seeds
-    /// nothing. Returns whether what the field draws changed.
+    /// nothing. A new text is one undo step. Returns whether what the field
+    /// draws changed.
     pub fn seed(&mut self, seed: &FieldSeed) -> bool {
         let request = &seed.request;
         let styled = self.font_size != request.font_size
@@ -325,16 +422,22 @@ impl Buffer {
         if !seed.valued || self.text == request.text {
             return styled;
         }
-        self.text.clone_from(&request.text);
+        self.end_composition();
+        let (start, old_end, new_end) = changed_range(&self.text, &request.text);
+        self.splice(
+            TextOffset(start),
+            TextOffset(old_end),
+            &request.text[start..new_end],
+            Some(EditKind::Other),
+        );
         self.sel = Selection::caret(TextPosition::upstream(TextOffset(self.text.len())));
-        self.composition = ImeComposition::default();
-        self.revision = self.revision.next();
         true
     }
 
     /// Replace the text and selection with ones recorded of this field
-    /// elsewhere (a snapshot of the process before), ending any composition.
-    /// A selection end past the text or inside a character moves to its end.
+    /// elsewhere (a snapshot of the process before), ending any composition
+    /// and forgetting the undo history. A selection end past the text or
+    /// inside a character moves to its end.
     pub fn restore(&mut self, text: String, sel: Selection) {
         let end = TextPosition::upstream(TextOffset(text.len()));
         let clamp = |position: TextPosition| {
@@ -351,6 +454,9 @@ impl Buffer {
         };
         self.text = text;
         self.composition = ImeComposition::default();
+        self.composing = None;
+        self.goal_x = None;
+        self.history.clear();
         self.revision = self.revision.next();
     }
 
@@ -488,71 +594,157 @@ impl Buffer {
     /// geometry, used only while it still describes the buffer's text.
     fn apply_one(&mut self, intent: &EditIntent, placed: Option<Placed<'_>>) {
         let placed = placed.filter(|p| self.draws(p.layout.text));
+        if !matches!(intent, EditIntent::Move { motion, .. } if motion.is_vertical()) {
+            self.goal_x = None;
+        }
         match intent {
-            EditIntent::Insert(s) => self.replace_selection(s),
-            EditIntent::Backspace => self.delete(true),
-            EditIntent::Delete => self.delete(false),
+            EditIntent::Insert(s) => self.type_text(s),
+            EditIntent::Paste(s) => {
+                let s = single_line(s);
+                self.replace_selection(&s, EditKind::Other);
+            }
+            EditIntent::Backspace(reach) => self.erase(false, *reach, placed),
+            EditIntent::Delete(reach) => self.erase(true, *reach, placed),
+            EditIntent::Cut => {
+                let (start, end) = self.sel.logical_range();
+                self.remove(start, end, EditKind::Other);
+            }
             EditIntent::Move { motion, extend } => {
-                self.move_caret(*motion, *extend, placed.map(|p| p.layout))
+                self.history.close();
+                self.move_caret(*motion, *extend, placed);
+            }
+            EditIntent::SelectAll => {
+                self.history.close();
+                self.sel = Selection {
+                    anchor: TextPosition::downstream(TextOffset(0)),
+                    focus: TextPosition::upstream(TextOffset(self.text.len())),
+                };
             }
             EditIntent::PlaceAt { x, y, extend } => {
                 if let Some(placed) = placed {
+                    self.history.close();
                     self.place_at(placed, *x, *y, *extend);
                 }
             }
             EditIntent::Compose { text, caret } => self.compose(text, *caret),
             EditIntent::CommitCompose(text) => self.commit_compose(text),
+            EditIntent::Undo => self.walk_history(true),
+            EditIntent::Redo => self.walk_history(false),
         }
     }
 
     /// Replace `[start, end)` of the text with `s`, advancing the revision when
-    /// the text actually changes.
-    fn splice(&mut self, start: TextOffset, end: TextOffset, s: &str) {
+    /// the text actually changes. The change is an undo step of `kind`, or
+    /// part of the composition under way when there is no kind.
+    fn splice(&mut self, start: TextOffset, end: TextOffset, s: &str, kind: Option<EditKind>) {
         if &self.text[start.0..end.0] == s {
             return;
         }
-        self.text.replace_range(start.0..end.0, s);
+        let inverse = Splice {
+            start: start.0,
+            end: end.0,
+            text: s.to_owned(),
+        }
+        .apply(&mut self.text);
         self.revision = self.revision.next();
+        if self.look.secure {
+            return;
+        }
+        match (kind, &mut self.composing) {
+            (Some(kind), _) => {
+                let space = !s.is_empty() && s.chars().all(char::is_whitespace);
+                self.history.record(kind, self.sel, inverse, space);
+            }
+            (None, Some(step)) => step.push(inverse),
+            (None, None) => {}
+        }
+    }
+
+    /// Type `s` over the selection: a typing run joins one undo step.
+    fn type_text(&mut self, s: &str) {
+        if !self.sel.is_caret() {
+            self.history.close();
+        }
+        let s = single_line(s);
+        self.replace_selection(&s, EditKind::Typing);
     }
 
     /// Replace the current selection with `s`, collapsing to a caret after it.
-    /// The buffer is single-line, so a pasted or committed line break lands as
-    /// a space.
-    fn replace_selection(&mut self, s: &str) {
-        let s = single_line(s);
+    fn replace_selection(&mut self, s: &str, kind: EditKind) {
+        self.end_composition();
         let (start, end) = self.sel.logical_range();
-        self.splice(start, end, &s);
-        self.composition.clear();
+        self.splice(start, end, s, Some(kind));
         self.sel = Selection::caret(TextPosition::upstream(TextOffset(start.0 + s.len())));
     }
 
-    /// Delete the selection, or one grapheme backward/forward from a bare caret.
-    /// The caret ends at the start of the removed range.
-    fn delete(&mut self, backward: bool) {
-        let (start, end) = if self.sel.is_caret() {
-            let at = self.sel.focus.offset;
-            let graphemes = Segmenter::new(&self.text);
-            if backward {
-                (graphemes.prev_grapheme(at), at)
-            } else {
-                (at, graphemes.next_grapheme(at))
-            }
-        } else {
-            self.sel.logical_range()
-        };
+    /// Remove `[start, end)` as an edit of `kind`, leaving the caret there.
+    fn remove(&mut self, start: TextOffset, end: TextOffset, kind: EditKind) {
         if start == end {
             return;
         }
-        self.splice(start, end, "");
-        self.composition.clear();
+        self.end_composition();
+        self.splice(start, end, "", Some(kind));
         self.sel = Selection::caret(TextPosition::downstream(start));
+    }
+
+    /// Delete the selection, or from a bare caret as far as `reach` goes
+    /// backward or `forward`. The caret ends at the start of the removed
+    /// range.
+    fn erase(&mut self, forward: bool, reach: Reach, placed: Option<Placed<'_>>) {
+        if !self.sel.is_caret() {
+            let (start, end) = self.sel.logical_range();
+            self.history.close();
+            self.remove(start, end, EditKind::Other);
+            return;
+        }
+        let at = self.sel.focus.offset;
+        let graphemes = Segmenter::new(&self.text);
+        let grapheme = if forward {
+            graphemes.next_grapheme(at)
+        } else {
+            graphemes.prev_grapheme(at)
+        };
+        let to = match reach {
+            Reach::Grapheme => grapheme,
+            Reach::Word if self.look.secure => self.edge(forward),
+            Reach::Word if forward => TextOffset(word_end_after(&self.text, at.0)),
+            Reach::Word => TextOffset(word_start_before(&self.text, at.0)),
+            Reach::Line => {
+                let motion = if forward {
+                    Motion::LineEnd
+                } else {
+                    Motion::LineStart
+                };
+                match self.line_edge(motion, placed).offset {
+                    // At a line's edge a line deletion takes the break.
+                    edge if edge == at => grapheme,
+                    edge => edge,
+                }
+            }
+        };
+        let (start, end) = if forward { (at, to) } else { (to, at) };
+        let kind = match (reach, forward) {
+            (Reach::Grapheme, false) => EditKind::Backspace,
+            (Reach::Grapheme, true) => EditKind::Delete,
+            _ => {
+                self.history.close();
+                EditKind::Other
+            }
+        };
+        self.remove(start, end, kind);
+    }
+
+    /// The start of the text, or with `forward` its end.
+    fn edge(&self, forward: bool) -> TextOffset {
+        TextOffset(if forward { self.text.len() } else { 0 })
     }
 
     /// Move the caret per `motion`. With `extend`, the anchor stays put
     /// (shift-select); without it, an existing range collapses to its logical
     /// start (Left) or end (Right) and a bare caret steps.
-    fn move_caret(&mut self, motion: Motion, extend: bool, layout: Option<EditLayout<'_>>) {
+    fn move_caret(&mut self, motion: Motion, extend: bool, placed: Option<Placed<'_>>) {
         let (start, end) = self.sel.logical_range();
+        let layout = placed.map(|p| p.layout);
         let target = match motion {
             Motion::Left if !extend && !self.sel.is_caret() => TextPosition::downstream(start),
             Motion::Right if !extend && !self.sel.is_caret() => TextPosition::upstream(end),
@@ -575,10 +767,115 @@ impl Buffer {
                     }
                 }
             }
-            Motion::Home => TextPosition::downstream(TextOffset(0)),
-            Motion::End => TextPosition::upstream(TextOffset(self.text.len())),
+            Motion::WordLeft | Motion::WordRight => {
+                let drawn = self.drawn_position(self.sel.focus);
+                let rtl =
+                    layout.is_some_and(|l| l.line_at(drawn).is_some_and(|(_, line)| line.rtl));
+                let forward = (motion == Motion::WordRight) != rtl;
+                let at = self.sel.focus.offset.0;
+                if self.look.secure {
+                    TextPosition::downstream(self.edge(forward))
+                } else if forward {
+                    TextPosition::upstream(TextOffset(word_end_after(&self.text, at)))
+                } else {
+                    TextPosition::downstream(TextOffset(word_start_before(&self.text, at)))
+                }
+            }
+            Motion::LineStart | Motion::LineEnd => self.line_edge(motion, placed),
+            Motion::Up | Motion::Down | Motion::PageUp | Motion::PageDown => {
+                match self.vertical(motion, placed) {
+                    Some(target) => target,
+                    None => return,
+                }
+            }
+            Motion::ParagraphStart => {
+                let at = self.sel.focus.offset.0;
+                let here = paragraph_start(&self.text, at);
+                let to = if here == at && at > 0 {
+                    paragraph_start(&self.text, at - 1)
+                } else {
+                    here
+                };
+                TextPosition::downstream(TextOffset(to))
+            }
+            Motion::ParagraphEnd => {
+                let at = self.sel.focus.offset.0;
+                let here = paragraph_end(&self.text, at);
+                let to = if here == at && at < self.text.len() {
+                    paragraph_end(&self.text, at + 1)
+                } else {
+                    here
+                };
+                TextPosition::upstream(TextOffset(to))
+            }
+            Motion::DocStart => TextPosition::downstream(TextOffset(0)),
+            Motion::DocEnd => TextPosition::upstream(TextOffset(self.text.len())),
         };
         self.set_focus(target, extend);
+    }
+
+    /// The start or end of the line drawing the caret, of its paragraph when
+    /// the text has no drawn geometry.
+    fn line_edge(&self, motion: Motion, placed: Option<Placed<'_>>) -> TextPosition {
+        let start = motion == Motion::LineStart;
+        let drawn = self.drawn_position(self.sel.focus);
+        if let Some(layout) = placed.map(|p| p.layout)
+            && let Some((_, line)) = layout.line_at(drawn)
+        {
+            let (from, to) = line.logical_range;
+            if start {
+                return self.text_position(TextPosition::downstream(from));
+            }
+            // A hard break ends the line but is not on it.
+            let to = if layout.text[from.0..to.0].ends_with('\n') {
+                TextOffset(to.0 - 1)
+            } else {
+                to
+            };
+            return self.text_position(TextPosition::upstream(to));
+        }
+        let at = self.sel.focus.offset.0;
+        if start {
+            TextPosition::downstream(TextOffset(paragraph_start(&self.text, at)))
+        } else {
+            TextPosition::upstream(TextOffset(paragraph_end(&self.text, at)))
+        }
+    }
+
+    /// Where a vertical `motion` takes the caret, keeping its column; `None`
+    /// when it cannot tell without geometry.
+    fn vertical(&mut self, motion: Motion, placed: Option<Placed<'_>>) -> Option<TextPosition> {
+        let down = matches!(motion, Motion::Down | Motion::PageDown);
+        let Some(placed) = placed else {
+            // One paragraph moves to its ends; between paragraphs a line
+            // takes geometry.
+            return (!self.text.contains('\n')).then(|| TextPosition {
+                offset: self.edge(down),
+                affinity: self.sel.focus.affinity,
+            });
+        };
+        let layout = placed.layout;
+        let drawn = self.drawn_position(self.sel.focus);
+        let (row, _) = layout.line_at(drawn)?;
+        let x = *self.goal_x.get_or_insert(layout.caret_x(row, drawn));
+        let rows = match motion {
+            Motion::PageUp | Motion::PageDown if layout.line_height > 0.0 => {
+                ((placed.extent.1 / layout.line_height).floor() as usize).max(1)
+            }
+            _ => 1,
+        };
+        let target = if down {
+            row + rows
+        } else {
+            match row.checked_sub(rows) {
+                Some(target) => target,
+                None => return Some(TextPosition::downstream(TextOffset(0))),
+            }
+        };
+        if target >= layout.lines.len() {
+            return Some(TextPosition::upstream(TextOffset(self.text.len())));
+        }
+        Some(self.text_position(layout.position_at(target, x)))
     }
 
     /// Place the caret at window point `(x, y)` through the drawn lines.
@@ -594,9 +891,7 @@ impl Buffer {
             0
         };
         let row = row.min(layout.lines.len() - 1);
-        let offset = layout.offsets.get(row).copied().unwrap_or(0.0);
-        let position = HitTester::new(&layout.lines[row])
-            .position_at_inline((local_x - offset) / layout.font_size);
+        let position = layout.position_at(row, local_x);
         self.set_focus(self.text_position(position), extend);
     }
 
@@ -610,6 +905,31 @@ impl Buffer {
         }
     }
 
+    /// Take back the last undo step, or with `undo` false make the last
+    /// undone one again.
+    fn walk_history(&mut self, undo: bool) {
+        self.end_composition();
+        let mut text = std::mem::take(&mut self.text);
+        let sel = if undo {
+            self.history.undo(&mut text, self.sel)
+        } else {
+            self.history.redo(&mut text, self.sel)
+        };
+        self.text = text;
+        if let Some(sel) = sel {
+            self.sel = sel;
+            self.revision = self.revision.next();
+        }
+    }
+
+    /// End any composition, keeping what it marked as typed.
+    fn end_composition(&mut self) {
+        self.composition.clear();
+        if let Some(step) = self.composing.take() {
+            self.history.record_step(step);
+        }
+    }
+
     /// Update the IME composition: replace the composition range (or the
     /// selection, if not composing yet) with `text`, keep it marked composing,
     /// and place the caret `caret` bytes into it. Empty `text` cancels.
@@ -617,12 +937,14 @@ impl Buffer {
         let (start, end) = if self.composition.is_active() {
             self.composition.range()
         } else {
+            self.history.close();
+            self.composing = Some(Step::new(self.sel));
             self.sel.logical_range()
         };
-        self.splice(start, end, text);
+        self.splice(start, end, text, None);
         if text.is_empty() {
-            self.composition.clear();
             self.sel = Selection::caret(TextPosition::downstream(start));
+            self.end_composition();
             return;
         }
         let composed_end = TextOffset(start.0 + text.len());
@@ -636,23 +958,77 @@ impl Buffer {
     }
 
     /// Finalize the composition: replace the range it stands for with the final
-    /// `text` as committed content and end the composing state.
+    /// `text` as committed content and end the composing state. With no
+    /// composition the text is typed.
     fn commit_compose(&mut self, text: &str) {
+        if !self.composition.is_active() {
+            self.type_text(text);
+            return;
+        }
         let text = single_line(text);
-        let (start, end) = if self.composition.is_active() {
-            self.composition.replacement()
-        } else {
-            self.sel.logical_range()
-        };
-        self.splice(start, end, &text);
-        self.composition.clear();
+        let (start, end) = self.composition.replacement();
+        self.splice(start, end, &text, None);
         self.sel = Selection::caret(TextPosition::upstream(TextOffset(start.0 + text.len())));
+        self.end_composition();
     }
 }
 
 /// How many grapheme clusters `text` holds.
 fn graphemes(text: &str) -> usize {
     Segmenter::new(text).grapheme_boundaries().count() - 1
+}
+
+/// Whether a word segment is a word, not a run of spaces or punctuation.
+fn is_word(segment: &str) -> bool {
+    segment.chars().any(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// The start of the word before `at`, or the text's start.
+fn word_start_before(text: &str, at: usize) -> usize {
+    let bounds: Vec<TextOffset> = Segmenter::new(text).word_boundaries().collect();
+    bounds
+        .windows(2)
+        .rev()
+        .find(|w| w[0].0 < at && is_word(&text[w[0].0..w[1].0]))
+        .map_or(0, |w| w[0].0)
+}
+
+/// The end of the word after `at`, or the text's end.
+fn word_end_after(text: &str, at: usize) -> usize {
+    let bounds: Vec<TextOffset> = Segmenter::new(text).word_boundaries().collect();
+    bounds
+        .windows(2)
+        .find(|w| w[1].0 > at && is_word(&text[w[0].0..w[1].0]))
+        .map_or(text.len(), |w| w[1].0)
+}
+
+/// The start of the paragraph holding `at`.
+fn paragraph_start(text: &str, at: usize) -> usize {
+    text[..at].rfind('\n').map_or(0, |i| i + 1)
+}
+
+/// The end of the paragraph holding `at`, before its break.
+fn paragraph_end(text: &str, at: usize) -> usize {
+    text[at..].find('\n').map_or(text.len(), |i| at + i)
+}
+
+/// The range that differs between `old` and `new`: its start and its end in
+/// each, on character boundaries.
+fn changed_range(old: &str, new: &str) -> (usize, usize, usize) {
+    let prefix: usize = old
+        .chars()
+        .zip(new.chars())
+        .take_while(|(a, b)| a == b)
+        .map(|(a, _)| a.len_utf8())
+        .sum();
+    let suffix: usize = old[prefix..]
+        .chars()
+        .rev()
+        .zip(new[prefix..].chars().rev())
+        .take_while(|(a, b)| a == b)
+        .map(|(a, _)| a.len_utf8())
+        .sum();
+    (prefix, old.len() - suffix, new.len() - suffix)
 }
 
 /// One caret stop from `from` in the visual direction, on the line that draws
@@ -868,6 +1244,7 @@ pub fn reconcile(
             Placed {
                 layout,
                 origin: (world.x, world.y),
+                extent: (world.w, world.h),
             }
         });
         let text_changed = buffer.apply_pending(placed);
@@ -986,7 +1363,258 @@ mod tests {
                 offsets: &[],
             },
             origin: (100.0, 50.0),
+            extent: (200.0, 24.0),
         }
+    }
+
+    /// One laid-out line per paragraph of LTR `text`, every char one em wide;
+    /// each line's range takes its hard break.
+    fn lines_for(text: &str) -> Vec<LineLayout> {
+        let bidi = BidiInfo::resolve(text, BaseDirection::LeftToRight);
+        let mut lines = Vec::new();
+        let mut start = 0;
+        for paragraph in text.split_inclusive('\n') {
+            let end = start + paragraph.trim_end_matches('\n').len();
+            let range = (TextOffset(start), TextOffset(end));
+            let spans: Vec<viso_text::paragraph::ShapedSpan> = bidi
+                .direction_runs_in(range.0, range.1)
+                .iter()
+                .map(|run| {
+                    let slice = &text[run.start.0..run.end.0];
+                    let glyphs: Vec<ShapedGlyph> = slice
+                        .char_indices()
+                        .map(|(i, _)| ShapedGlyph {
+                            glyph_id: 1,
+                            cluster: i as u32,
+                            x_advance: 1.0,
+                            x_offset: 0.0,
+                            y_offset: 0.0,
+                            unsafe_to_break: false,
+                        })
+                        .collect();
+                    ShapedRun {
+                        face: FontFaceId(0),
+                        width_ems: glyphs.len() as f32,
+                        glyphs,
+                        text_len: slice.len() as u32,
+                        ligature_carets: Vec::new(),
+                    }
+                    .into()
+                })
+                .collect();
+            let mut line = LineLayout::in_range(text, &bidi, range, &spans);
+            line.logical_range.1 = TextOffset(start + paragraph.len());
+            lines.push(line);
+            start += paragraph.len();
+        }
+        lines
+    }
+
+    fn moved(b: &mut Buffer, motion: Motion, placed: Option<Placed<'_>>) -> usize {
+        b.apply_one(
+            &EditIntent::Move {
+                motion,
+                extend: false,
+            },
+            placed,
+        );
+        at(b)
+    }
+
+    #[test]
+    fn word_motions_skip_spaces_and_punctuation_to_word_edges() {
+        let mut b = buf("hello, wide world", 17);
+        assert_eq!(moved(&mut b, Motion::WordLeft, None), 12);
+        assert_eq!(moved(&mut b, Motion::WordLeft, None), 7);
+        assert_eq!(moved(&mut b, Motion::WordLeft, None), 0);
+        assert_eq!(moved(&mut b, Motion::WordLeft, None), 0);
+        assert_eq!(moved(&mut b, Motion::WordRight, None), 5);
+        assert_eq!(moved(&mut b, Motion::WordRight, None), 11);
+        assert_eq!(moved(&mut b, Motion::WordRight, None), 17);
+    }
+
+    #[test]
+    fn word_and_line_deletions_reach_their_edges() {
+        let mut b = buf("hello, wide world", 17);
+        apply(&mut b, EditIntent::Backspace(Reach::Word));
+        assert_eq!((b.text.as_str(), at(&b)), ("hello, wide ", 12));
+        b.sel = Selection::caret(TextPosition::downstream(TextOffset(0)));
+        apply(&mut b, EditIntent::Delete(Reach::Word));
+        assert_eq!(b.text, ", wide ");
+        b.sel = Selection::caret(TextPosition::downstream(TextOffset(2)));
+        apply(&mut b, EditIntent::Delete(Reach::Line));
+        assert_eq!(b.text, ", ");
+        apply(&mut b, EditIntent::Backspace(Reach::Line));
+        assert_eq!(b.text, "");
+    }
+
+    #[test]
+    fn a_secure_field_moves_and_deletes_by_word_to_its_ends() {
+        let mut b = buf("pass word", 9);
+        b.look.secure = true;
+        assert_eq!(moved(&mut b, Motion::WordLeft, None), 0);
+        b.sel = Selection::caret(TextPosition::upstream(TextOffset(9)));
+        apply(&mut b, EditIntent::Backspace(Reach::Word));
+        assert_eq!(b.text, "");
+    }
+
+    #[test]
+    fn paragraph_and_line_motions_without_geometry_follow_hard_breaks() {
+        let mut b = buf("ab\ncd\nef", 4);
+        assert_eq!(moved(&mut b, Motion::LineStart, None), 3);
+        assert_eq!(moved(&mut b, Motion::LineEnd, None), 5);
+        assert_eq!(moved(&mut b, Motion::ParagraphStart, None), 3);
+        assert_eq!(moved(&mut b, Motion::ParagraphStart, None), 0);
+        assert_eq!(moved(&mut b, Motion::ParagraphEnd, None), 2);
+        assert_eq!(moved(&mut b, Motion::ParagraphEnd, None), 5);
+        assert_eq!(moved(&mut b, Motion::DocEnd, None), 8);
+        assert_eq!(moved(&mut b, Motion::DocStart, None), 0);
+        let before = at(&b);
+        assert_eq!(
+            moved(&mut b, Motion::Down, None),
+            before,
+            "lines take geometry"
+        );
+        let mut one = buf("abc", 1);
+        assert_eq!(moved(&mut one, Motion::Down, None), 3);
+        assert_eq!(moved(&mut one, Motion::Up, None), 0);
+    }
+
+    #[test]
+    fn up_and_down_keep_the_column_through_a_short_line() {
+        let text = "abcdef\nab\nabcdef";
+        let lines = lines_for(text);
+        let mut b = buf(text, 5);
+        let p = Some(placed(text, &lines));
+        assert_eq!(moved(&mut b, Motion::Down, p), 9, "the short line's end");
+        assert_eq!(moved(&mut b, Motion::Down, p), 15, "back at the column");
+        assert_eq!(
+            moved(&mut b, Motion::Down, p),
+            16,
+            "past the last line: the end"
+        );
+        b.sel = Selection::caret(TextPosition::downstream(TextOffset(15)));
+        assert_eq!(
+            moved(&mut b, Motion::PageUp, p),
+            5,
+            "a page is two lines here"
+        );
+        assert_eq!(
+            moved(&mut b, Motion::Up, p),
+            0,
+            "above the first line: the start"
+        );
+        b.sel = Selection::caret(TextPosition::downstream(TextOffset(2)));
+        assert_eq!(
+            moved(&mut b, Motion::LineEnd, p),
+            6,
+            "the break is not on the line"
+        );
+        assert_eq!(moved(&mut b, Motion::LineStart, p), 0);
+    }
+
+    #[test]
+    fn select_all_selects_the_whole_text() {
+        let mut b = buf("abc", 1);
+        apply(&mut b, EditIntent::SelectAll);
+        assert_eq!(b.sel.logical_range(), (TextOffset(0), TextOffset(3)));
+    }
+
+    fn typed(b: &mut Buffer, s: &str) {
+        for c in s.chars() {
+            apply(b, EditIntent::CommitCompose(c.to_string()));
+        }
+    }
+
+    #[test]
+    fn typing_undoes_a_word_at_a_time_and_redoes() {
+        let mut b = buf("", 0);
+        typed(&mut b, "ab cd");
+        apply(&mut b, EditIntent::Undo);
+        assert_eq!((b.text.as_str(), at(&b)), ("ab ", 3));
+        apply(&mut b, EditIntent::Undo);
+        assert_eq!(b.text, "");
+        apply(&mut b, EditIntent::Undo);
+        assert_eq!(b.text, "", "nothing more to undo");
+        apply(&mut b, EditIntent::Redo);
+        apply(&mut b, EditIntent::Redo);
+        assert_eq!((b.text.as_str(), at(&b)), ("ab cd", 5));
+    }
+
+    #[test]
+    fn a_caret_move_paste_and_cut_each_start_a_step() {
+        let mut b = buf("", 0);
+        typed(&mut b, "ab");
+        step(&mut b, Motion::Left);
+        typed(&mut b, "x");
+        apply(&mut b, EditIntent::Paste("12\n3".into()));
+        assert_eq!(b.text, "ax12 3b", "a single-line paste folds its breaks");
+        apply(&mut b, EditIntent::SelectAll);
+        apply(&mut b, EditIntent::Cut);
+        assert_eq!(b.text, "");
+        for expect in ["ax12 3b", "axb", "ab", ""] {
+            apply(&mut b, EditIntent::Undo);
+            assert_eq!(b.text, expect);
+        }
+    }
+
+    #[test]
+    fn backspaces_in_a_row_are_one_step_and_restore_the_selection() {
+        let mut b = buf("abcd", 4);
+        apply(&mut b, EditIntent::Backspace(Reach::Grapheme));
+        apply(&mut b, EditIntent::Backspace(Reach::Grapheme));
+        assert_eq!(b.text, "ab");
+        apply(&mut b, EditIntent::Undo);
+        assert_eq!((b.text.as_str(), at(&b)), ("abcd", 4));
+    }
+
+    #[test]
+    fn a_composition_is_one_step() {
+        let mut b = buf("ab", 2);
+        for preedit in ["n", "ni"] {
+            apply(
+                &mut b,
+                EditIntent::Compose {
+                    text: preedit.into(),
+                    caret: TextOffset(preedit.len()),
+                },
+            );
+        }
+        apply(&mut b, EditIntent::CommitCompose("你".into()));
+        typed(&mut b, "x");
+        assert_eq!(b.text, "ab你x");
+        apply(&mut b, EditIntent::Undo);
+        assert_eq!(b.text, "ab你");
+        apply(&mut b, EditIntent::Undo);
+        assert_eq!((b.text.as_str(), at(&b)), ("ab", 2));
+    }
+
+    #[test]
+    fn a_secure_field_keeps_no_history() {
+        let mut b = buf("", 0);
+        b.look.secure = true;
+        typed(&mut b, "pw");
+        apply(&mut b, EditIntent::Undo);
+        assert_eq!(b.text, "pw");
+    }
+
+    #[test]
+    fn a_new_value_from_outside_is_one_step() {
+        let mut b = Buffer::with_seed(&seed("draft"));
+        assert!(b.seed(&seed("")));
+        assert_eq!(b.text, "");
+        apply(&mut b, EditIntent::Undo);
+        assert_eq!(b.text, "draft");
+    }
+
+    #[test]
+    fn the_changed_range_keeps_the_common_ends() {
+        assert_eq!(
+            changed_range("hello world", "hello brave world"),
+            (6, 6, 12)
+        );
+        assert_eq!(changed_range("abc", "abc"), (3, 3, 3));
+        assert_eq!(changed_range("aé", "aè"), (1, 3, 3));
     }
 
     #[test]
@@ -1010,7 +1638,7 @@ mod tests {
     #[test]
     fn backspace_at_caret_removes_prev_char() {
         let mut b = buf("abc", 3);
-        apply(&mut b, EditIntent::Backspace);
+        apply(&mut b, EditIntent::Backspace(Reach::Grapheme));
         assert_eq!(b.text, "ab");
         assert_eq!(at(&b), 2);
     }
@@ -1019,7 +1647,7 @@ mod tests {
     fn backspace_at_start_is_noop() {
         let mut b = buf("abc", 0);
         let revision = b.revision();
-        apply(&mut b, EditIntent::Backspace);
+        apply(&mut b, EditIntent::Backspace(Reach::Grapheme));
         assert_eq!(b.text, "abc");
         assert_eq!(at(&b), 0);
         assert_eq!(b.revision(), revision);
@@ -1028,7 +1656,7 @@ mod tests {
     #[test]
     fn delete_at_caret_removes_next_char() {
         let mut b = buf("abc", 0);
-        apply(&mut b, EditIntent::Delete);
+        apply(&mut b, EditIntent::Delete(Reach::Grapheme));
         assert_eq!(b.text, "bc");
         assert_eq!(at(&b), 0);
     }
@@ -1037,7 +1665,7 @@ mod tests {
     fn delete_removes_selection() {
         let mut b = Buffer::with_text("hello");
         b.sel = range(1, 4);
-        apply(&mut b, EditIntent::Delete);
+        apply(&mut b, EditIntent::Delete(Reach::Grapheme));
         assert_eq!(b.text, "ho");
         assert_eq!(at(&b), 1);
     }
@@ -1075,9 +1703,9 @@ mod tests {
     #[test]
     fn home_end_jump_to_line_ends() {
         let mut b = buf("abc", 1);
-        step(&mut b, Motion::End);
+        step(&mut b, Motion::LineEnd);
         assert_eq!(at(&b), 3);
-        step(&mut b, Motion::Home);
+        step(&mut b, Motion::LineStart);
         assert_eq!(at(&b), 0);
     }
 
@@ -1090,7 +1718,7 @@ mod tests {
         assert_eq!(at(&b), 4);
         step(&mut b, Motion::Left);
         assert_eq!(at(&b), 1);
-        apply(&mut b, EditIntent::Delete);
+        apply(&mut b, EditIntent::Delete(Reach::Grapheme));
         assert_eq!(b.text, "ab");
         assert_eq!(at(&b), 1);
     }
@@ -1102,9 +1730,9 @@ mod tests {
         let flag = "\u{1F1EF}\u{1F1F5}";
         let text = format!("{family}{flag}");
         let mut b = buf(&text, text.len());
-        apply(&mut b, EditIntent::Backspace);
+        apply(&mut b, EditIntent::Backspace(Reach::Grapheme));
         assert_eq!(b.text, family);
-        apply(&mut b, EditIntent::Backspace);
+        apply(&mut b, EditIntent::Backspace(Reach::Grapheme));
         assert_eq!(b.text, "");
     }
 
@@ -1115,9 +1743,9 @@ mod tests {
         let nfd = "Cafe\u{301}";
         let mut b = buf(nfd, nfd.len());
         apply(&mut b, EditIntent::Insert("!".into()));
-        apply(&mut b, EditIntent::Backspace);
+        apply(&mut b, EditIntent::Backspace(Reach::Grapheme));
         assert_eq!(b.text, nfd);
-        apply(&mut b, EditIntent::Backspace);
+        apply(&mut b, EditIntent::Backspace(Reach::Grapheme));
         assert_eq!(b.text, "Caf");
     }
 
@@ -1538,7 +2166,7 @@ mod tests {
             TextOffset(1),
             "the clear text's lines describe nothing"
         );
-        apply(&mut b, EditIntent::Delete);
+        apply(&mut b, EditIntent::Delete(Reach::Grapheme));
         assert_eq!(b.text, "ab");
         assert_eq!(b.request().text, "\u{2022}\u{2022}");
         b.text.clear();
@@ -1587,7 +2215,7 @@ mod tests {
 
         // The caret moved by the user survives a seed of the text it holds.
         edits.get_mut(id).unwrap().queue(EditIntent::Move {
-            motion: Motion::Home,
+            motion: Motion::LineStart,
             extend: false,
         });
         reconcile(&mut store, &mut edits, None);
@@ -1616,7 +2244,10 @@ mod tests {
         edits.register(id, Box::new(Buffer::with_text("hi")));
         assert!(!edits.is_empty());
         assert_eq!(edits.get(id).map(|b| b.text.as_str()), Some("hi"));
-        edits.get_mut(id).unwrap().queue(EditIntent::Backspace);
+        edits
+            .get_mut(id)
+            .unwrap()
+            .queue(EditIntent::Backspace(Reach::Grapheme));
         assert!(edits.get(id).unwrap().is_dirty());
         edits.clear();
         assert!(edits.is_empty());

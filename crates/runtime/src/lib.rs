@@ -31,7 +31,7 @@ pub use driver::{FrameDriver, Lifecycle};
 pub use frame::run_frame;
 pub use input::{
     ClipboardReply, CopySample, ImePreeditSample, InputSample, Key, KeySample, Modifiers,
-    PointerId, PointerKind, PointerPhase, PointerSample, ScrollSample, TextSample,
+    PointerId, PointerKind, PointerPhase, PointerSample, ScrollSample, TextSample, primary_is_logo,
 };
 pub use phase::FramePhase;
 pub use schedule::{FrameDecision, RedrawReason, RedrawReasons};

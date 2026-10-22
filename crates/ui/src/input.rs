@@ -240,8 +240,9 @@ pub struct KeyEvent {
     pub modifiers: Modifiers,
 }
 
-/// A normalized IME event: an in-progress composition (preedit) or a committed
-/// segment. Like [`KeyEvent`] it routes to the focused node.
+/// A normalized text event: an in-progress IME composition (preedit), a
+/// committed segment, or pasted text. Like [`KeyEvent`] it routes to the
+/// focused node.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImeEvent {
     /// The composing string, shown inline and replaced on each update. An empty
@@ -253,6 +254,8 @@ pub enum ImeEvent {
     },
     /// A committed segment: the composition finished and this text is final.
     Commit { text: String },
+    /// Text pasted from the clipboard, which replaces the selection.
+    Paste { text: String },
 }
 
 use crate::binding::BindingTable;
@@ -2930,6 +2933,7 @@ mod tests {
                     let s = match ime {
                         ImeEvent::Preedit { text, .. } => format!("pre:{text}"),
                         ImeEvent::Commit { text } => format!("commit:{text}"),
+                        ImeEvent::Paste { text } => format!("paste:{text}"),
                     };
                     seen2.borrow_mut().push(s);
                 }

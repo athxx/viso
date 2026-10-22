@@ -2355,8 +2355,8 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 );
             }
             viso_runtime::InputSample::Paste(t) => {
-                // Pasted text enters the focused control exactly like a committed
-                // IME segment: it replaces the selection. A single-line buffer
+                // Pasted text routes to the focused control, which replaces
+                // its selection with it as one edit. A single-line buffer
                 // folds any line breaks in it.
                 KeyRouter::route_ime(
                     &mut ws.store,
@@ -2364,7 +2364,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     &ws.bindings,
                     &mut ws.text_edits,
                     root,
-                    ImeEvent::Commit { text: t.text },
+                    ImeEvent::Paste { text: t.text },
                     &mut ws.route_chain,
                 );
             }
@@ -2389,7 +2389,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 }
                 c.reply.set(buffer.text[start.0..end.0].to_owned());
                 if c.cut {
-                    buffer.queue(text_edit::EditIntent::Delete);
+                    buffer.queue(text_edit::EditIntent::Cut);
                     ws.settle_text_edits();
                 }
             }

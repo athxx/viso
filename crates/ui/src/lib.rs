@@ -20,6 +20,8 @@ pub mod content;
 pub mod context;
 pub mod dirty;
 pub mod drag;
+mod edit_history;
+pub mod field_input;
 pub mod flush;
 pub mod fold;
 pub mod frame_client;
@@ -118,6 +120,7 @@ pub use viso_runtime::Instant;
 // `BoxStyle`, `TextRequest`, or `Content`. `viso-render` is already a `viso-ui`
 // dependency, so this adds no new edge.
 pub use asset::{Asset, AssetBytes, AssetDraw, AssetFit, AssetPayload, AssetState, AssetTable};
+pub use field_input::{FieldEvent, FieldKey, field_input, field_key};
 pub use reactive::{
     Cleanup, ComputeCx, ComputedId, ComputedStore, DepCursor, EffectCx, EffectId, EffectStore,
     ProjectId, SemanticProjector,
@@ -132,7 +135,7 @@ pub use structure::{StructureCx, StructureHookId, run_structure_hooks};
 pub use style::{BoxStyle, InteractionStyle, StyleId};
 pub use task::{Continuation, TaskFuture, TaskId, TaskOps};
 pub use text_edit::{
-    Buffer, EditGeometry, EditIntent, EditLayout, FieldLook, FieldSeed, Motion, TextEdits,
+    Buffer, EditGeometry, EditIntent, EditLayout, FieldLook, FieldSeed, Motion, Reach, TextEdits,
 };
 pub use timer::{TimerId, TimerRegistry, TimerRequest};
 pub use token::{Theme, TokenId, TokenInterner, TokenNamespace};

@@ -1,51 +1,31 @@
 //! The [`TextInput`] control — a single-line editable text field with a caret,
-//! selection, and IME composition.
+//! selection, undo history and IME composition.
 //!
 //! A `TextInput` is a focusable text leaf carrying a retained edit
 //! [`Buffer`](viso_ui::Buffer): the text, the [`Selection`](viso_ui::Selection)
-//! (caret + anchor), and any in-progress IME composition all live in that buffer,
-//! registered in the driver-owned [`TextEdits`](viso_ui::TextEdits) registry
-//! beside the store (the heap-heavy string lives off the hot node columns,
-//! mirroring how a virtual list keeps its item store out of the arena). The
-//! widget itself is thin: it declares the leaf through
-//! [`BuildCx::text_input`](viso_ui::BuildCx::text_input) (which seeds the buffer
-//! and shapes the initial text), makes it focusable, and attaches one key/IME
-//! handler that translates input into [`EditIntent`](viso_ui::EditIntent)s. The
-//! router applies those intents to the buffer after the handler returns, and the
+//! (caret + anchor), the undo history and any in-progress IME composition all
+//! live in that buffer, registered in the driver-owned
+//! [`TextEdits`](viso_ui::TextEdits) registry beside the store (the heap-heavy
+//! string lives off the hot node columns, mirroring how a virtual list keeps its
+//! item store out of the arena). The widget itself is thin: it declares the leaf
+//! through [`BuildCx::text_input`](viso_ui::BuildCx::text_input) (which seeds the
+//! buffer and shapes the initial text), makes it focusable, and runs the shared
+//! text-field handler, [`field_input`](viso_ui::field_input), on its pointer, key
+//! and text samples. That handler turns them into
+//! [`EditIntent`](viso_ui::EditIntent)s by the platform's key conventions; the
+//! router applies those to the buffer after the handler returns, and the
 //! reconcile/shape pass folds them into the text and re-shapes — the handler
 //! never mutates the buffer directly (it holds no buffer reference; an
 //! [`EventCx`] has none).
 //!
-//! Input arrives on two paths, both dispatched to the *same* handler (the key
-//! router drives it for a focused node's key events and its IME events alike):
+//! Printable typing is IME-commit-driven: there is no key-to-insert path, which
+//! is what makes the control IME-aware from the first slice (AGENTS section 20).
 //!
-//! - **navigation and deletion** come from [`KeyEvent`](viso_ui::KeyEvent)s —
-//!   Left/Right move the caret ([`Motion`](viso_ui::Motion)), Home/End jump to the
-//!   ends, Shift extends the selection, Backspace/Delete remove the selection or
-//!   one grapheme cluster;
-//! - **insertion and composition** come from [`ImeEvent`](viso_ui::ImeEvent)s —
-//!   `Preedit` drives a [`EditIntent::Compose`](viso_ui::EditIntent::Compose)
-//!   (the composing underline), `Commit` finalizes it with
-//!   [`CommitCompose`](viso_ui::EditIntent::CommitCompose). Printable typing is
-//!   IME-commit-driven: there is no key-to-insert path, which is what makes the
-//!   control IME-aware from the first slice (AGENTS section 20).
-//!
-//! A primary press moves focus to the field, captures the pointer, and records
-//! an [`EditIntent::PlaceAt`](viso_ui::EditIntent::PlaceAt) at the press point
-//! (Shift extends the selection); moving with the button held extends it, which
-//! is drag-select. The handler only forwards the point — the reconcile pass
-//! resolves it through the field's drawn caret stops. Its accessible role is
-//! [`Role::TextField`] with the given label as its accessible name (AGENTS
-//! section 15).
-//!
-//! A [`placeholder`](TextInput::placeholder) draws while the field is empty,
-//! and a [`secure`](TextInput::secure) field draws a bullet per grapheme,
-//! gives nothing to copy or cut, and is a [`Role::SecureField`].
-//!
-//! Deferred to later slices: multi-line/wrap, undo/redo, word motion,
-//! horizontal scroll/clip, caret blink,
-//! double/triple-click selection, and authoritative full-state IME sync
-//! (Android/iOS).
+//! Its accessible role is [`Role::TextField`] with the given label as its
+//! accessible name (AGENTS section 15). A [`placeholder`](TextInput::placeholder)
+//! draws while the field is empty, and a [`secure`](TextInput::secure) field
+//! draws a bullet per grapheme, gives nothing to copy or cut, keeps no undo
+//! history, and is a [`Role::SecureField`].
 //!
 //! ```
 //! use viso_widgets::text_input;
@@ -71,8 +51,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use viso_ui::{
-    BuildCx, Component, EditIntent, EventCx, FieldLook, FontSize, ImeEvent, Key, LeafStyle, Length,
-    Motion, PointerButtons, PointerPhase, Rgba, Role, Semantics, Size, TextOffset, TextRequest,
+    BuildCx, Component, EventCx, FieldLook, FontSize, LeafStyle, Length, Rgba, Role, Semantics,
+    Size, TextRequest, field_input,
 };
 
 /// A shared, mutable change callback carrying the field's new text, fired from
@@ -243,86 +223,21 @@ impl Component for TextInput {
         // Focusable so keystrokes and IME events route to it while focused.
         cx.focusable(root, true);
 
-        // A primary press focuses the field and places the caret at the press
-        // point; moving with the button held extends the selection (the capture
-        // keeps the drag here when it leaves the field). The point is resolved
-        // against the drawn caret stops when the intent is applied.
-        let root_id = root.id();
-        cx.on_pointer(root, move |ev| {
-            let Some(p) = ev.pointer() else { return };
-            let held = p.buttons.contains(PointerButtons::PRIMARY);
-            let (x, y) = (p.x, p.y);
-            match p.phase {
-                PointerPhase::Down if held => {
-                    let extend = p.modifiers.shift;
-                    ev.request_focus(root_id);
-                    ev.capture_pointer(root_id);
-                    ev.record_edit(EditIntent::PlaceAt { x, y, extend });
-                }
-                PointerPhase::Move if held => {
-                    ev.record_edit(EditIntent::PlaceAt { x, y, extend: true });
-                }
-                PointerPhase::Up => ev.release_pointer(),
-                _ => {}
-            }
+        // Pointer, key and text samples become edit intents the router applies
+        // to this node's buffer after the handler returns; the shape pass folds
+        // them into the text. The handler never touches the buffer.
+        cx.on_pointer(root, |ev| {
+            field_input(ev, false);
         });
-
-        // One handler for both key and IME events (the key router drives it for a
-        // focused node on both paths). Key events are navigation and deletion; IME
-        // events are composition and insertion. The handler records `EditIntent`s;
-        // the router applies them to this node's buffer after the handler returns,
-        // and the shape pass folds them into the text — the handler never mutates
-        // the buffer directly.
         let on_change = Rc::clone(&self.on_change);
         cx.on_key(root, move |ev| {
             if let Some(text) = ev.text_change() {
                 if let Some(handler) = on_change.borrow_mut().as_mut() {
                     handler(ev, text);
                 }
-            } else if let Some(k) = ev.key() {
-                // Only act on a fresh press (ignore key-up); navigation and
-                // deletion honor auto-repeat so a held key keeps moving/deleting.
-                if !k.pressed {
-                    return;
-                }
-                let extend = k.modifiers.shift;
-                match k.key {
-                    Key::Left => ev.record_edit(EditIntent::Move {
-                        motion: Motion::Left,
-                        extend,
-                    }),
-                    Key::Right => ev.record_edit(EditIntent::Move {
-                        motion: Motion::Right,
-                        extend,
-                    }),
-                    Key::Home => ev.record_edit(EditIntent::Move {
-                        motion: Motion::Home,
-                        extend,
-                    }),
-                    Key::End => ev.record_edit(EditIntent::Move {
-                        motion: Motion::End,
-                        extend,
-                    }),
-                    Key::Backspace => ev.record_edit(EditIntent::Backspace),
-                    Key::Delete => ev.record_edit(EditIntent::Delete),
-                    _ => {}
-                }
-            } else if let Some(ime) = ev.ime() {
-                match ime {
-                    // A composing update: replace the composition range, keeping the
-                    // composing state (empty text cancels the composition).
-                    ImeEvent::Preedit { text, caret } => ev.record_edit(EditIntent::Compose {
-                        text: text.clone(),
-                        caret: TextOffset(*caret),
-                    }),
-                    // The commit finalizes composition (or, with no composition in
-                    // flight, inserts the text at the caret): this is the insertion
-                    // path — printable typing arrives here, not as a key event.
-                    ImeEvent::Commit { text } => {
-                        ev.record_edit(EditIntent::CommitCompose(text.clone()))
-                    }
-                }
+                return;
             }
+            field_input(ev, false);
         });
 
         // A text field's accessible role, with the given label as its accessible
@@ -342,8 +257,9 @@ impl Component for TextInput {
 mod tests {
     use super::*;
     use viso_ui::{
-        BindingTable, KeyEvent, Modifiers, NodeId, NodeStore, PointerEvent, SemanticProjector,
-        StateStore, TextEdits, VirtualLists,
+        BindingTable, DispatchPhase, EditIntent, ImeEvent, Key, KeyEvent, Modifiers, Motion,
+        NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase, Reach, SemanticProjector,
+        StateStore, TextEdits, TextOffset, VirtualLists,
     };
 
     /// The reactive stores a text-input build writes into, kept together so a test
@@ -396,6 +312,7 @@ mod tests {
             let mut handler = self.store.take_handler(root).expect("pointer handler");
             let outcome = {
                 let mut cx = EventCx::__new_pointer(&mut self.states, &self.bindings, &ev);
+                cx.__set_place(&self.store, root, DispatchPhase::Target, None);
                 handler(&mut cx);
                 PointerOutcome {
                     focus: cx.__take_focus_request(),
@@ -413,6 +330,7 @@ mod tests {
             let mut handler = self.store.take_key_handler(root).expect("key handler");
             let edits = {
                 let mut cx = EventCx::__new_key(&mut self.states, &self.bindings, &ev);
+                cx.__set_place(&self.store, root, DispatchPhase::Target, None);
                 handler(&mut cx);
                 cx.__take_edits()
             };
@@ -427,6 +345,7 @@ mod tests {
             let mut handler = self.store.take_key_handler(root).expect("key handler");
             let edits = {
                 let mut cx = EventCx::__new_ime(&mut self.states, &self.bindings, &ev);
+                cx.__set_place(&self.store, root, DispatchPhase::Target, None);
                 handler(&mut cx);
                 cx.__take_edits()
             };
@@ -657,14 +576,14 @@ mod tests {
         assert_eq!(
             rx.key(root, key_ev(Key::Home, true, false)),
             vec![EditIntent::Move {
-                motion: Motion::Home,
+                motion: Motion::LineStart,
                 extend: false
             }]
         );
         assert_eq!(
             rx.key(root, key_ev(Key::End, true, true)),
             vec![EditIntent::Move {
-                motion: Motion::End,
+                motion: Motion::LineEnd,
                 extend: true
             }]
         );
@@ -678,11 +597,11 @@ mod tests {
 
         assert_eq!(
             rx.key(root, key_ev(Key::Backspace, true, false)),
-            vec![EditIntent::Backspace]
+            vec![EditIntent::Backspace(Reach::Grapheme)]
         );
         assert_eq!(
             rx.key(root, key_ev(Key::Delete, true, false)),
-            vec![EditIntent::Delete]
+            vec![EditIntent::Delete(Reach::Grapheme)]
         );
     }
 

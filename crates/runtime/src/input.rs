@@ -15,7 +15,7 @@
 //! the widget.
 
 use viso_platform::WindowId;
-pub use viso_platform::{ClipboardReply, KeyCode as Key, PointerId, PointerKind};
+pub use viso_platform::{ClipboardReply, KeyCode as Key, PointerId, PointerKind, primary_is_logo};
 
 /// The lifecycle position of a pointer sample. Mirrors the platform phase, with
 /// `Leave` naming the pointer-exited-the-window case.
