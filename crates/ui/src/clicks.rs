@@ -63,6 +63,11 @@ impl Clicks {
 }
 
 impl NodeStore {
+    /// Makes node `id` count no more clicks of its own.
+    pub(crate) fn uncount_clicks(&mut self, id: NodeId) {
+        self.clicks.counters.retain(|&n| n != id);
+    }
+
     /// Makes node `id` count the clicks pressed at or under it.
     pub fn count_clicks(&mut self, id: NodeId) {
         if self.arena().is_live(id) && !self.clicks.counters.contains(&id) {

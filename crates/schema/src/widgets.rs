@@ -140,8 +140,9 @@ const TEXT_STYLE: &[WidgetProperty] = &[
 
 const TEXT: &[WidgetProperty] = &[prop("text", "String").localizable()];
 
-/// A `Text`'s pieces drawn each its own way, which replace its `text`.
-const SPANS: &[WidgetProperty] = &[prop("spans", "List<Span>")];
+/// A `Text`'s pieces drawn each its own way, which replace its `text`, and
+/// whether its text can be selected and copied.
+const SPANS: &[WidgetProperty] = &[prop("spans", "List<Span>"), prop("selectable", "Bool")];
 
 const TEXT_INPUT: &[WidgetProperty] = &[
     two_way("value", "String"),

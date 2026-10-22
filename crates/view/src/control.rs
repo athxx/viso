@@ -67,11 +67,17 @@ impl Drive for Control {
             ControlKind::TextInput => text_input(self, host, scope, cx),
             ControlKind::Number => number(self, host, scope, cx),
             ControlKind::Viewport => viewport(cx),
-            ControlKind::Label
-            | ControlKind::Plain
-            | ControlKind::Asset
-            | ControlKind::Shader
-            | ControlKind::Toast => None,
+            ControlKind::Label => {
+                let selectable = read(host, self.text.selectable, scope, cx);
+                if selectable.as_int().is_some_and(|v| v != 0) {
+                    let multiline = read(host, self.text.soft_wrap, scope, cx);
+                    field_input(cx, multiline.as_int().is_some_and(|v| v != 0));
+                }
+                None
+            }
+            ControlKind::Plain | ControlKind::Asset | ControlKind::Shader | ControlKind::Toast => {
+                None
+            }
         }
     }
 }

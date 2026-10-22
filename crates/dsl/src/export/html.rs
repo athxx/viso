@@ -109,6 +109,8 @@ pub(super) enum Prop {
     FontStyle,
     /// A text's pieces, each a `<span>` styled its own way.
     Spans,
+    /// Whether a text can be selected, as its `vx-selectable` class.
+    Selectable,
     /// The accessible name: `alt` of an image, else `aria-label`.
     Label {
         alt: bool,
@@ -1052,6 +1054,16 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                             el.text = Some(fixed.text());
                         }
                     }
+                }
+                if let Some(Fixed::Value(on)) = self.bind(
+                    wires,
+                    control.text.selectable,
+                    Prop::Selectable,
+                    "whether the text is selectable",
+                    at,
+                ) && on.as_int().is_some_and(|v| v != 0)
+                {
+                    el.classes.push("vx-selectable".to_owned());
                 }
             }
             ControlKind::TextInput => {

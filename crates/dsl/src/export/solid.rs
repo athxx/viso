@@ -653,6 +653,9 @@ impl Jsx<'_> {
                             style.push(("font-style".to_owned(), format!("show.italic({v})")))
                         }
                         Prop::Spans => text = Some(format!("show.spans({v})")),
+                        Prop::Selectable => attrs.push(format!(
+                            "classList={{{{ \"vx-selectable\": show.truth({v}) }}}}"
+                        )),
                         Prop::Label { alt } => {
                             let name = if *alt { "alt" } else { "aria-label" };
                             attrs.push(format!("{name}={{show.opt({v})}}"));

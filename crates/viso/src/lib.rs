@@ -2063,6 +2063,7 @@ impl WindowState {
         let (start, end) = buffer.sel.logical_range();
         let selected = start != end && !buffer.look.secure;
         let whole = start.0 == 0 && end.0 == buffer.text.len();
+        let editable = !buffer.look.read_only;
         Some(viso_platform::EditMenu {
             at: LogicalRect::new(
                 x as f64,
@@ -2070,9 +2071,9 @@ impl WindowState {
                 (right - x).max(0.0) as f64,
                 (bottom - y).max(0.0) as f64,
             ),
-            cut: selected,
+            cut: selected && editable,
             copy: selected,
-            paste: true,
+            paste: editable,
             select_all: !buffer.text.is_empty() && !whole,
         })
     }
@@ -2083,37 +2084,41 @@ impl WindowState {
     /// anchors beside the insertion point; a control whose run is not shaped
     /// yet reports its whole box.
     fn text_entry_changed(&mut self) -> bool {
-        let entry = self.focused_text_node().map(|id| {
-            let r = self.store.world(id);
-            let caret = match (
-                self.text.as_ref(),
-                self.text_sources.get(&id),
-                self.text_edits.get(id),
-            ) {
-                (Some(text), Some(request), Some(buffer)) if buffer.draws(&request.text) => {
-                    // A composing control anchors the candidate window at the
-                    // composition, not wherever the caret sits inside it.
-                    let at = if buffer.has_composition() {
-                        buffer.composition().anchor()
-                    } else {
-                        buffer.sel.focus
-                    };
-                    text.caret(ParagraphSlot::from(id), request, buffer.drawn_position(at))
+        // A read-only field takes no input: no keyboard, no input method.
+        let entry = self
+            .focused_text_node()
+            .filter(|&id| !self.text_edits.get(id).is_some_and(|b| b.look.read_only))
+            .map(|id| {
+                let r = self.store.world(id);
+                let caret = match (
+                    self.text.as_ref(),
+                    self.text_sources.get(&id),
+                    self.text_edits.get(id),
+                ) {
+                    (Some(text), Some(request), Some(buffer)) if buffer.draws(&request.text) => {
+                        // A composing control anchors the candidate window at the
+                        // composition, not wherever the caret sits inside it.
+                        let at = if buffer.has_composition() {
+                            buffer.composition().anchor()
+                        } else {
+                            buffer.sel.focus
+                        };
+                        text.caret(ParagraphSlot::from(id), request, buffer.drawn_position(at))
+                    }
+                    _ => None,
+                };
+                let look = self
+                    .text_edits
+                    .get(id)
+                    .map(|b| (b.look.secure, b.look.kind, b.holds_lines()));
+                let (secure, kind, multiline) = look.unwrap_or_default();
+                TextEntry {
+                    caret: caret_area(r, caret),
+                    secure,
+                    kind,
+                    multiline,
                 }
-                _ => None,
-            };
-            let look = self
-                .text_edits
-                .get(id)
-                .map(|b| (b.look.secure, b.look.kind, b.holds_lines()));
-            let (secure, kind, multiline) = look.unwrap_or_default();
-            TextEntry {
-                caret: caret_area(r, caret),
-                secure,
-                kind,
-                multiline,
-            }
-        });
+            });
         if self.text_entry == Some(entry) {
             return false;
         }
@@ -2145,6 +2150,14 @@ impl WindowState {
             if self.store.is_number_field(old) {
                 self.store.queue_edit(old, text_edit::EditIntent::Settle);
             }
+            // A read-only field's selection goes with the focus.
+            if let Some(buffer) = self.text_edits.get_mut(old)
+                && buffer.look.read_only
+                && !buffer.sel.is_caret()
+            {
+                buffer.sel = viso_text::selection::Selection::caret(buffer.sel.focus);
+                self.mark_field(old, false, now);
+            }
         }
         self.marked = focused;
         self.caret_due = None;
@@ -2171,8 +2184,13 @@ impl WindowState {
             revision: buffer.revision(),
             sel: buffer.sel,
         };
+        let keyboard = focused
+            && self
+                .store
+                .in_state(node, viso_ui::Interaction::FocusVisible);
         let mut caret_on = true;
-        if focused {
+        // A read-only field's caret shows only under the keyboard's focus.
+        if focused && (keyboard || !buffer.look.read_only) {
             let start = match self.blink {
                 Some((at, start)) if at == key => start,
                 _ => {
@@ -2193,6 +2211,7 @@ impl WindowState {
             focused,
             active: self.active,
             caret_on,
+            keyboard,
             reveal: focused && self.revealed != Some(key),
         };
         let world = self.store.world(node);
@@ -2840,7 +2859,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     return;
                 };
                 let (start, end) = buffer.sel.logical_range();
-                if start == end || buffer.look.secure {
+                if start == end || buffer.look.secure || (c.cut && buffer.look.read_only) {
                     return;
                 }
                 c.reply.set(buffer.text[start.0..end.0].to_owned());

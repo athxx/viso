@@ -310,6 +310,7 @@ fn mount(out: &mut String, index: usize, content: &Content, eval: &Eval<'_>, roo
                         Prop::FontWeight => format!("P.weight({el}, {value})"),
                         Prop::FontStyle => format!("P.italic({el}, {value})"),
                         Prop::Spans => format!("P.spans({el}, {value})"),
+                        Prop::Selectable => format!("P.selectable({el}, {value})"),
                         Prop::Label { alt } => format!("P.label({el}, {value}, {alt})"),
                         Prop::Hint => format!("P.hint({el}, {value})"),
                         Prop::Spoken => format!("P.spoken({el}, {value})"),

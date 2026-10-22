@@ -475,6 +475,33 @@ fn a_span_s_link_exports_as_an_anchor_and_on_link_hears_its_clicks() {
     );
 }
 
+const SELECTABLE: &str = r#"
+export component Note {
+    state pick = false;
+    view {
+        Column {
+            Text { text: "always"; selectable: true; }
+            Text { text: "sometimes"; selectable: pick; on click { pick = !pick; } }
+        }
+    }
+}
+"#;
+
+#[test]
+fn a_selectable_text_exports_as_one_the_browser_lets_select() {
+    let page = export(SELECTABLE, false).unwrap();
+    assert!(
+        page.styles.contains("user-select: none"),
+        "other text is not"
+    );
+    assert!(page.index.contains("vx-selectable"), "{}", page.index);
+    let script = page.script.as_deref().unwrap();
+    assert!(
+        script.contains("P.selectable("),
+        "a changing one follows its state"
+    );
+}
+
 const LOGIN: &str = r#"
 
 export component Login {

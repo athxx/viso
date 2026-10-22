@@ -72,7 +72,8 @@ pub fn attach_node(
         );
     }
     if let Some(keys) = keys {
-        // Links take the focus as their text holds them, not as heard.
+        // Links take the focus as their text holds them, not as heard, and
+        // a text as it is selectable.
         let focus = keys.iter().any(|r| r.event != EventRoute::Link)
             || control.as_ref().is_some_and(|c| c.kind.responds());
         store.set_key_handler(id, Box::new(handler(host, keys, control, scope)));
@@ -100,7 +101,7 @@ fn holds(routes: &[Route]) -> bool {
 /// for a kind of handler the node needs none of. A control drives both, and the
 /// routes it reports run from either; a label responds to nothing.
 fn split(routes: &[Route], control: Option<&Control>) -> (Option<Vec<Route>>, Option<Vec<Route>>) {
-    let control = control.filter(|control| control.kind.responds());
+    let control = control.filter(|control| control.responds());
     let pick = |key: bool| {
         let picked: Vec<Route> = routes
             .iter()

@@ -111,7 +111,7 @@ Rules:
 
 - [x] Links: hit-testing span ranges, hover cursor, `on_link`, keyboard focus and the
   `link` role.
-- [ ] Selectable text (`selectable: true`) on `Text`/`RichText`: drag/double/triple
+- [x] Selectable text (`selectable: true`) on `Text`/`RichText`: drag/double/triple
   select, copy, focus ring, semantics.
 - [ ] `Markdown` widget (CommonMark + tables, task lists, strikethrough, code blocks with
   monospace, images, links), incremental re-parse for streaming text.

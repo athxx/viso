@@ -42,15 +42,16 @@ use viso_render::{
 /// The opaque white tint that passes a premultiplied color-atlas texel through
 /// the Image shader unchanged (`texel * float4(1,1,1,1)`), so a color-bitmap
 /// glyph paints exactly as its emoji artwork stores it.
-/// The focused link's ring: its color, its width and its room from the text.
-const LINK_RING: Rgba = Rgba {
+/// The focus ring of a link or a read-only text: its color, its width and
+/// its room from what it goes round.
+const RING: Rgba = Rgba {
     r: 0.23,
     g: 0.48,
     b: 0.96,
     a: 1.0,
 };
-const LINK_RING_WIDTH: f32 = 2.0;
-const LINK_RING_GAP: f32 = 1.0;
+const RING_WIDTH: f32 = 2.0;
+const RING_GAP: f32 = 1.0;
 
 const WHITE: Rgba = Rgba {
     r: 1.0,
@@ -468,41 +469,49 @@ fn paint_own(store: &NodeStore, node: NodeId, world: Rect, out: &mut Vec<Primiti
             paint_check(store, node, mark, content, world, out);
             return;
         }
-        if let Some(marks) = store.field_marks(node) {
+        let ring = if let Some(marks) = store.field_marks(node) {
             paint_field(marks, content, world, out);
             if marks.handles.is_some() {
                 paint_handles(store.field_handles(node), out);
             }
-            return;
-        }
-        let mask = (radius > 0.0).then_some(RoundMask {
-            rect: world,
-            radius: Corners::uniform(radius),
-        });
-        paint_content(content, world, mask, out);
-        if let Some(link) = store.focused_link(node)
-            && store.in_state(node, crate::interaction::Interaction::FocusVisible)
-        {
-            paint_link_ring(store, node, link, out);
+            marks.ring
+        } else {
+            let mask = (radius > 0.0).then_some(RoundMask {
+                rect: world,
+                radius: Corners::uniform(radius),
+            });
+            paint_content(content, world, mask, out);
+            false
+        };
+        let link = store
+            .focused_link(node)
+            .filter(|_| store.in_state(node, crate::interaction::Interaction::FocusVisible));
+        match link {
+            Some(link) => {
+                for rect in store.link_boxes(node, link) {
+                    paint_ring(rect, out);
+                }
+            }
+            None if ring => paint_ring(world, out),
+            None => {}
         }
     }
 }
 
-/// The ring the focused link `link` of `node` wears while the keyboard moved
-/// the focus: a rounded outline just outside each of its line boxes.
+/// The focus ring round `rect`, worn by a focused link (round each of its
+/// line boxes) or a read-only field while the keyboard moved the focus: a
+/// rounded outline just outside it.
 #[cold]
-fn paint_link_ring(store: &NodeStore, node: NodeId, link: u16, out: &mut Vec<Primitive>) {
-    for rect in store.link_boxes(node, link) {
-        out.push(Primitive::Quad(Quad {
-            rect: rect.inflate(LINK_RING_GAP + LINK_RING_WIDTH),
-            color: Rgba::TRANSPARENT,
-            radius: LINK_RING_GAP + LINK_RING_WIDTH,
-            border: Border {
-                width: LINK_RING_WIDTH,
-                color: LINK_RING,
-            },
-        }));
-    }
+fn paint_ring(rect: Rect, out: &mut Vec<Primitive>) {
+    out.push(Primitive::Quad(Quad {
+        rect: rect.inflate(RING_GAP + RING_WIDTH),
+        color: Rgba::TRANSPARENT,
+        radius: RING_GAP + RING_WIDTH,
+        border: Border {
+            width: RING_WIDTH,
+            color: RING,
+        },
+    }));
 }
 
 /// A text field at `world`, clipped to it: its selection, its text `content`,

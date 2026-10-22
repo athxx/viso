@@ -196,6 +196,7 @@ impl ControlKind {
                 ControlInput::FontStyle
             }
             (ControlKind::Label, "spans") => ControlInput::Spans,
+            (ControlKind::Label, "selectable") => ControlInput::Selectable,
             (ControlKind::Label | ControlKind::TextInput | ControlKind::Number, "line_height") => {
                 ControlInput::LineHeight
             }
@@ -642,6 +643,8 @@ pub enum ControlInput {
     FontStyle,
     /// A text's `spans`: its pieces, drawn each its own way.
     Spans,
+    /// A text's `selectable`: whether its text can be selected and copied.
+    Selectable,
     /// A text's `color`.
     TextColor,
     /// A text's `soft_wrap`.
@@ -771,13 +774,15 @@ pub struct TextEntries {
     pub font_style: Option<u32>,
     /// The entry of its `spans`.
     pub spans: Option<u32>,
+    /// The entry of its `selectable`.
+    pub selectable: Option<u32>,
 }
 
 impl TextEntries {
     /// The entries in their encoded order: `color`, `soft_wrap`,
     /// `font_weight`, `font_family`, `line_height`, `max_lines`, `overflow`,
-    /// `align`, `font_style` and `spans`.
-    pub fn all(&self) -> [Option<u32>; 10] {
+    /// `align`, `font_style`, `spans` and `selectable`.
+    pub fn all(&self) -> [Option<u32>; 11] {
         [
             self.color,
             self.soft_wrap,
@@ -789,6 +794,7 @@ impl TextEntries {
             self.align,
             self.font_style,
             self.spans,
+            self.selectable,
         ]
     }
 }
@@ -871,7 +877,7 @@ pub enum Switched {
 
 impl ControlInput {
     /// Every input, by wire tag.
-    pub const ALL: [ControlInput; 51] = [
+    pub const ALL: [ControlInput; 52] = [
         ControlInput::Value,
         ControlInput::Min,
         ControlInput::Max,
@@ -923,6 +929,7 @@ impl ControlInput {
         ControlInput::Cursor,
         ControlInput::FontStyle,
         ControlInput::Spans,
+        ControlInput::Selectable,
     ];
 
     /// Its wire tag: its place in [`ControlInput::ALL`].
@@ -989,6 +996,12 @@ pub struct Look {
 }
 
 impl Control {
+    /// Whether the node responds to pointer and key samples itself: its kind
+    /// does, or it is a text that may be selectable.
+    pub fn responds(&self) -> bool {
+        self.kind.responds() || self.text.selectable.is_some()
+    }
+
     /// A control of `kind` reading only defaults.
     pub fn new(kind: ControlKind) -> Control {
         Control {
@@ -1063,6 +1076,7 @@ impl Control {
             ControlInput::FontWeight => self.text.font_weight,
             ControlInput::FontStyle => self.text.font_style,
             ControlInput::Spans => self.text.spans,
+            ControlInput::Selectable => self.text.selectable,
             ControlInput::FontFamily => self.text.font_family,
             ControlInput::LineHeight => self.text.line_height,
             ControlInput::MaxLines => self.text.max_lines,
@@ -1130,6 +1144,7 @@ impl Control {
             ControlInput::FontWeight => &mut self.text.font_weight,
             ControlInput::FontStyle => &mut self.text.font_style,
             ControlInput::Spans => &mut self.text.spans,
+            ControlInput::Selectable => &mut self.text.selectable,
             ControlInput::FontFamily => &mut self.text.font_family,
             ControlInput::LineHeight => &mut self.text.line_height,
             ControlInput::MaxLines => &mut self.text.max_lines,
@@ -1332,6 +1347,7 @@ impl Decode for Control {
             align: entry()?,
             font_style: entry()?,
             spans: entry()?,
+            selectable: entry()?,
         };
         let index = |dec: &mut Decoder<'_>| -> Result<u32, DecodeError> {
             let offset = dec.position();

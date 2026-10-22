@@ -65,7 +65,7 @@ use crate::input_filter::{InputFilter, admit};
 use crate::layout::Vec2;
 use crate::node::NodeId;
 use crate::number_format::NumberFormat;
-use crate::text_style::{FontSize, TextOverflow, TextStyle};
+use crate::text_style::{FontSize, TextOverflow, TextSpan, TextStyle};
 use viso_render::{Rect, Rgba};
 use viso_runtime::InputKind;
 use viso_text::caret::Caret;
@@ -105,6 +105,13 @@ pub struct FieldLook {
     /// How it reads, shows and steps the number it holds, when it holds one
     /// ([`crate::number_format`]).
     pub number: Option<NumberFormat>,
+    /// Whether it only shows its text, for the text to be selected and
+    /// copied: nothing typed, pasted, composed, cut or undone reaches it, the
+    /// platform shows no keyboard or input method for it, its menu offers only
+    /// Copy and Select All, its caret shows only while the keyboard brought
+    /// the focus, and its selection goes when the focus leaves. It draws its
+    /// spans, line limit and overflow as a plain text does.
+    pub read_only: bool,
 }
 
 /// What a text field's node declares, queued on the store until
@@ -333,6 +340,29 @@ pub enum EditIntent {
     ContextMenu { at: Option<(f32, f32)>, word: bool },
 }
 
+impl EditIntent {
+    /// Whether it changes the text, or would: what a read-only field takes
+    /// none of.
+    pub fn edits(&self) -> bool {
+        matches!(
+            self,
+            EditIntent::Insert(_)
+                | EditIntent::Paste(_)
+                | EditIntent::Backspace(_)
+                | EditIntent::Delete(_)
+                | EditIntent::Cut
+                | EditIntent::Compose { .. }
+                | EditIntent::CommitCompose(_)
+                | EditIntent::Undo
+                | EditIntent::Redo
+                | EditIntent::Step(_)
+                | EditIntent::Scrub(_)
+                | EditIntent::Settle
+                | EditIntent::Revert
+        )
+    }
+}
+
 /// Where a field's context menu was asked for.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum MenuAt {
@@ -460,6 +490,9 @@ pub struct Buffer {
     /// The face, line height and alignment the node was declared with.
     /// Resident for the same reason as [`font_size`](Buffer::font_size).
     pub style: TextStyle,
+    /// The stretches a read-only field's text draws its own way. Resident
+    /// for the same reason as [`font_size`](Buffer::font_size).
+    pub spans: Vec<TextSpan>,
     /// How the field shows its text: its placeholder and masking.
     pub look: FieldLook,
     /// The active IME composition, inactive (empty range) when not composing.
@@ -519,6 +552,7 @@ impl Buffer {
             color: Rgba::TRANSPARENT,
             locale: None,
             style: TextStyle::default(),
+            spans: Vec::new(),
             look: FieldLook::default(),
             composition: ImeComposition::default(),
             composing: None,
@@ -545,6 +579,7 @@ impl Buffer {
             color: request.color,
             locale: request.locale.clone(),
             style: request.style.clone(),
+            spans: request.spans.clone(),
             ..Self::with_text(request.text.clone())
         }
     }
@@ -579,11 +614,13 @@ impl Buffer {
             || self.color != request.color
             || self.locale != request.locale
             || self.style != request.style
+            || self.spans != request.spans
             || self.look != seed.look;
         self.font_size = request.font_size;
         self.color = request.color;
         self.locale.clone_from(&request.locale);
         self.style.clone_from(&request.style);
+        self.spans.clone_from(&request.spans);
         self.look.clone_from(&seed.look);
         if !seed.valued || self.text == request.text {
             return styled;
@@ -642,8 +679,20 @@ impl Buffer {
     /// style: its text, its placeholder while it holds none, or a bullet for
     /// each grapheme of a secure one's. A single-line field clips and
     /// scrolls, a multi-line one wraps to its width; neither cuts its text
-    /// off.
+    /// off. A read-only field draws its text as a plain text does: its spans,
+    /// line limit and overflow too.
     pub fn request(&self) -> TextRequest {
+        if self.look.read_only && self.drawn() == Drawn::Text {
+            return TextRequest {
+                spans: self.spans.clone(),
+                text: self.text.clone(),
+                font_size: self.font_size,
+                color: self.color,
+                soft_wrap: self.holds_lines(),
+                locale: self.locale.clone(),
+                style: self.style.clone(),
+            };
+        }
         let (text, color) = match self.drawn() {
             Drawn::Text => (self.text.clone(), self.color),
             Drawn::Placeholder => (
@@ -773,6 +822,9 @@ impl Buffer {
     /// Apply a single intent to the buffer. `placed` is the node's drawn
     /// geometry, used only while it still describes the buffer's text.
     fn apply_one(&mut self, intent: &EditIntent, placed: Option<Placed<'_>>) {
+        if self.look.read_only && intent.edits() {
+            return;
+        }
         let placed = placed.filter(|p| self.draws(p.layout.text));
         if !matches!(intent, EditIntent::Move { motion, .. } if motion.is_vertical()) {
             self.goal_x = None;
@@ -1552,6 +1604,9 @@ pub struct MarkState {
     pub active: bool,
     /// The caret is in the shown phase of its blink.
     pub caret_on: bool,
+    /// The keyboard or an assistive technology brought the focus: a
+    /// read-only field shows its caret only then.
+    pub keyboard: bool,
     /// The text or the caret moved since the marks were last made, so the
     /// field scrolls to show the caret.
     pub reveal: bool,
@@ -1588,6 +1643,7 @@ impl Buffer {
             INACTIVE_SELECTION
         };
         marks.ink = self.color;
+        marks.ring = self.look.read_only && state.focused && state.keyboard;
         marks.selection.clear();
         marks.underlines.clear();
         marks.caret = None;
@@ -1650,7 +1706,8 @@ impl Buffer {
                     }
                 }
             }
-            if state.active && state.caret_on && sel.is_caret() {
+            let caret_shows = !self.look.read_only || state.keyboard;
+            if state.active && state.caret_on && caret_shows && sel.is_caret() {
                 marks.caret = caret;
             }
             if state.active {
@@ -1968,6 +2025,11 @@ pub fn reconcile(
     geometry: Option<&dyn EditGeometry>,
 ) -> u32 {
     let mut redeclared = 0;
+    let mut dropped = Vec::new();
+    store.take_dropped_fields(&mut dropped);
+    for node in dropped {
+        edits.take(node);
+    }
     if store.has_text_seeds() {
         let mut seeds = Vec::new();
         store.take_text_seeds(&mut seeds);
@@ -2388,6 +2450,38 @@ mod tests {
     }
 
     #[test]
+    fn a_read_only_field_selects_and_moves_but_takes_no_edit_and_draws_as_a_text() {
+        let mut b = buf("hello world", 0);
+        b.look.read_only = true;
+        b.style.max_lines = std::num::NonZeroU32::new(1);
+        b.style.overflow = TextOverflow::Ellipsis;
+        b.spans = vec![TextSpan {
+            range: 0..5,
+            style: crate::text_style::SpanStyle::default().bold(),
+        }];
+        for intent in [
+            EditIntent::Insert("x".into()),
+            EditIntent::Paste("y".into()),
+            EditIntent::Backspace(Reach::Grapheme),
+            EditIntent::Delete(Reach::Grapheme),
+            EditIntent::CommitCompose("z".into()),
+            EditIntent::Undo,
+        ] {
+            assert!(intent.edits());
+            apply(&mut b, intent);
+        }
+        assert_eq!(b.text, "hello world");
+        apply(&mut b, EditIntent::SelectAll);
+        assert_eq!(b.sel.logical_range(), (TextOffset(0), TextOffset(11)));
+        apply(&mut b, EditIntent::Cut);
+        assert_eq!(b.text, "hello world", "nor cuts");
+        let request = b.request();
+        assert_eq!(request.spans, b.spans);
+        assert_eq!(request.style.overflow, TextOverflow::Ellipsis);
+        assert_eq!(request.style.max_lines, std::num::NonZeroU32::new(1));
+    }
+
+    #[test]
     fn a_new_value_from_outside_is_one_step() {
         let mut b = Buffer::with_seed(&seed("draft"));
         assert!(b.seed(&seed("")));
@@ -2415,6 +2509,7 @@ mod tests {
         focused: true,
         active: true,
         caret_on: true,
+        keyboard: false,
         reveal: true,
     };
 

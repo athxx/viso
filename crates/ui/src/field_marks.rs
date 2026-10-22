@@ -171,6 +171,9 @@ pub struct FieldMarks {
     /// The finger and the caret a magnifier follows while a finger carries
     /// the caret or drags a handle.
     pub loupe: Option<(Vec2, Rect)>,
+    /// Whether it wears a focus ring round its box: a read-only field the
+    /// keyboard brought the focus to, which shows no editing box of its own.
+    pub ring: bool,
 }
 
 impl Default for FieldMarks {
@@ -187,6 +190,7 @@ impl Default for FieldMarks {
             menu: None,
             context: None,
             loupe: None,
+            ring: false,
         }
     }
 }
@@ -210,6 +214,8 @@ pub(crate) struct Fields {
     steppers: Vec<(NodeId, f32)>,
     /// The handle a finger drags.
     grab: Option<Grab>,
+    /// The nodes that stopped being fields, whose buffers reconcile drops.
+    dropped: Vec<NodeId>,
 }
 
 impl Fields {
@@ -217,6 +223,7 @@ impl Fields {
         self.marks.clear();
         self.steppers.clear();
         self.grab = None;
+        self.dropped.clear();
     }
 
     /// Forgets the slot `index`, freed or reused.
@@ -260,6 +267,32 @@ impl NodeStore {
         self.count_clicks(id);
         self.set_touch_long_pressable(id, true);
         self.mark_dirty(id, DirtyClass::PAINT);
+    }
+
+    /// Makes text field `id` a plain text again: it draws its text as it is
+    /// given, counts no clicks, and its edit buffer goes at the next
+    /// reconcile. A node that is no field stays as it is.
+    pub fn unmake_field(&mut self, id: NodeId) {
+        let Some(at) = self.fields.marks.iter().position(|(n, _)| *n == id) else {
+            return;
+        };
+        self.fields.marks.swap_remove(at);
+        self.fields.steppers.retain(|(n, _)| *n != id);
+        if self.fields.grab.is_some_and(|g| g.node == id) {
+            self.fields.grab = None;
+        }
+        self.fields.dropped.push(id);
+        self.uncount_clicks(id);
+        self.set_touch_long_pressable(id, false);
+        self.set_number_field(id, false);
+        self.mark_dirty(id, DirtyClass::PAINT);
+    }
+
+    /// Move the nodes that stopped being fields since the last call into
+    /// `out` (cleared first).
+    pub(crate) fn take_dropped_fields(&mut self, out: &mut Vec<NodeId>) {
+        out.clear();
+        out.append(&mut self.fields.dropped);
     }
 
     /// The marks text field `id` draws, `None` for a node that is no field.

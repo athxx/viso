@@ -237,8 +237,8 @@ pub(crate) fn control_cells(
 /// `align`, a field's `placeholder`, `secure`, `multiline`, `input` and
 /// `max_length`, a number field's `step` and `precision` and a check's
 /// caption, its `translate`, `scale`, `rotation` and `transform_origin`, and
-/// its `cursor`, and its text's `font_style` and `spans`.
-const SHOWN: usize = 42;
+/// its `cursor`, and its text's `font_style`, `spans` and `selectable`.
+const SHOWN: usize = 43;
 
 /// The input of each value a node shows, in order.
 const SHOWN_INPUTS: [ControlInput; SHOWN] = [
@@ -284,6 +284,7 @@ const SHOWN_INPUTS: [ControlInput; SHOWN] = [
     ControlInput::Cursor,
     ControlInput::FontStyle,
     ControlInput::Spans,
+    ControlInput::Selectable,
 ];
 
 /// Where its `translate` sits among the values a node shows.
@@ -503,6 +504,7 @@ impl Shown {
             cursor,
             font_style,
             pieces,
+            selectable,
         ] = &shows;
         let spanned = crate::text_style::spans(pieces);
         let changed = |at: usize| prior.is_none_or(|prior| prior[at] != shows[at]);
@@ -735,7 +737,31 @@ impl Shown {
                     },
                     None => text(value),
                 };
-                store.set_text_request(self.node, request);
+                let selectable = truth(selectable, false);
+                let was = store.field_marks(self.node).is_some();
+                // A text takes the focus while it is selectable, unless its
+                // `focusable` says.
+                if selectable != was && !given(NODE + 1) {
+                    store.set_focusable(self.node, selectable);
+                }
+                if selectable {
+                    let multiline = request.soft_wrap;
+                    let seed = FieldSeed {
+                        request,
+                        valued: true,
+                        look: FieldLook {
+                            multiline,
+                            read_only: true,
+                            ..FieldLook::default()
+                        },
+                    };
+                    store.seed_text(self.node, seed);
+                } else {
+                    if was {
+                        store.unmake_field(self.node);
+                    }
+                    store.set_text_request(self.node, request);
+                }
             }
             ControlKind::TextInput => {
                 let seed = FieldSeed {
@@ -749,6 +775,7 @@ impl Shown {
                         max_length: max_length.as_int().and_then(|v| u32::try_from(v).ok()),
                         filter: None,
                         number: None,
+                        read_only: false,
                     },
                 };
                 store.seed_text(self.node, seed);

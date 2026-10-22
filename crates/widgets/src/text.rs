@@ -20,9 +20,9 @@ use std::num::NonZeroU32;
 use std::rc::Rc;
 
 use viso_ui::{
-    BoxStyle, BuildCx, Component, EventCx, FontFamily, FontSize, FontSlant, FontWeight, LeafStyle,
-    Length, LengthTerms, Rgba, Role, Semantics, Size, SpanStyle, TextAlign, TextOverflow,
-    TextRequest, TextSpan, TextStyle,
+    BoxStyle, BuildCx, Component, EventCx, FieldLook, FontFamily, FontSize, FontSlant, FontWeight,
+    LeafStyle, Length, LengthTerms, Rgba, Role, Semantics, Size, SpanStyle, TextAlign,
+    TextOverflow, TextRequest, TextSpan, TextStyle, field_input,
 };
 
 /// The default label font size in logical pixels.
@@ -106,6 +106,8 @@ pub struct Label {
     spans: Vec<TextSpan>,
     /// What runs when one of its links is activated.
     on_link: Option<LinkHandler>,
+    /// Whether its text can be selected and copied.
+    selectable: bool,
 }
 
 /// What a label runs with where an activated link leads.
@@ -121,6 +123,7 @@ pub fn label(text: impl Into<String>) -> Label {
         locale: None,
         spans: Vec::new(),
         on_link: None,
+        selectable: false,
     }
 }
 
@@ -191,6 +194,19 @@ impl Label {
         self
     }
 
+    /// Let its text be selected and copied: a drag selects (a double click
+    /// a word, a triple click a paragraph, a long press on a touch screen a
+    /// word, with handles to adjust it), the accelerator with C copies and
+    /// with A selects all, and a secondary click or the menu of a touch
+    /// selection offers Copy and Select All. It takes the focus; while the
+    /// keyboard brought it, it wears a focus ring and a caret the arrows move
+    /// (with Shift, extending the selection). The selection goes when the
+    /// focus leaves. Needs a [`BuildCx::with_reactive`] cx.
+    pub fn selectable(mut self) -> Self {
+        self.selectable = true;
+        self
+    }
+
     /// Run `handler` with where a link leads when a click or Enter activates
     /// one of the label's links ([`SpanStyle::link`]). A label without one
     /// lets the activation reach its ancestors.
@@ -256,32 +272,55 @@ impl Component for Label {
         // the visible text is the accessible name. `build` takes `&self`, so the
         // text is cloned into the request and label — a cold, build-time cost,
         // not a per-frame hot path.
-        let handle = cx.leaf(LeafStyle {
+        let leaf = LeafStyle {
             size: self.style.size,
             style: BoxStyle::NONE,
-        });
-        cx.text_request(
-            handle,
-            TextRequest {
-                spans: self.spans.clone(),
-                text: self.text.clone(),
-                font_size: FontSize::Fixed(self.style.font_size),
-                color: self.style.color,
-                soft_wrap: self.style.soft_wrap,
-                locale: self.locale.clone(),
-                style: self.text_style.clone(),
-            },
-        );
+        };
+        let request = TextRequest {
+            spans: self.spans.clone(),
+            text: self.text.clone(),
+            font_size: FontSize::Fixed(self.style.font_size),
+            color: self.style.color,
+            soft_wrap: self.style.soft_wrap,
+            locale: self.locale.clone(),
+            style: self.text_style.clone(),
+        };
+        let multiline = self.style.soft_wrap;
+        let handle = if self.selectable {
+            let handle = cx.text_input(
+                leaf,
+                request,
+                FieldLook {
+                    multiline,
+                    read_only: true,
+                    ..FieldLook::default()
+                },
+            );
+            cx.focusable(handle, true);
+            cx.on_pointer(handle, move |ev| {
+                field_input(ev, multiline);
+            });
+            handle
+        } else {
+            let handle = cx.leaf(leaf);
+            cx.text_request(handle, request);
+            handle
+        };
         cx.semantics(
             handle,
             Semantics::role(Role::Label).with_label(self.text.clone()),
         );
-        if let Some(on_link) = &self.on_link {
-            let on_link = Rc::clone(on_link);
+        let on_link = self.on_link.clone();
+        if self.selectable || on_link.is_some() {
+            let selectable = self.selectable;
             cx.on_key(handle, move |ev| {
                 if let Some(target) = ev.link() {
-                    ev.stop_propagation();
-                    (on_link.borrow_mut())(ev, target);
+                    if let Some(on_link) = &on_link {
+                        ev.stop_propagation();
+                        (on_link.borrow_mut())(ev, target);
+                    }
+                } else if selectable {
+                    field_input(ev, multiline);
                 }
             });
         }

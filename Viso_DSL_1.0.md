@@ -4673,13 +4673,14 @@ export record AdaptiveColumns { mode: AutoRepeat = AutoRepeat::fill; min: MixedL
 | `max_lines`   | `Option<U32>`         | `Option::None`                | `MEASURE\|LAYOUT\|PAINT`            | —                         |
 | `overflow`    | `TextOverflow`        | `TextOverflow::clip`          | `LAYOUT\|PAINT`                     | —                         |
 | `align`       | `TextAlign`           | `TextAlign::start`            | `LAYOUT\|PAINT`                     | —                         |
-| `selectable`  | `Bool`                | `false`                       | `HIT_TEST\|SEMANTICS`               | —                         |
+| `selectable`  | `Bool`                | `false`                       | `PAINT\|HIT_TEST\|SEMANTICS`        | —                         |
 | `locale`      | `Option<Locale>`      | `Option::None`（`env.locale`）| `MEASURE\|LAYOUT\|PAINT`            | —                         |
 
 - `FontWeight { thin; light; regular; medium; semibold; bold; heavy; }`（字重 100、300、400、500、600、700、900）；`FontFamily { system_ui; serif; monospace; named(String); }`（`named` 为 App 字体中的族名，无此族时取主 UI 字体）；`TextOverflow { clip; ellipsis; }`；`TextAlign { start; center; end; }`（`start`/`end` 随段落方向解析，`justify` 推迟）；
 - `FontStyle { normal; italic; }`：`italic` 取该族的斜体字体（有则用之）；
 - **富文本**：`spans` 只属于 `Text`，非空时各片段的 `text` 依次拼接成节点的文本（取代 `text`，也是无障碍名称），每个片段按自身样式绘制。`record Span { text: String; color: Option<Color> = None; background: Option<Color> = None; font_weight: Option<FontWeight> = None; font_style: Option<FontStyle> = None; font_family: Option<FontFamily> = None; font_size: Option<MixedLength> = None; raise: Option<MixedLength> = None; underline: Bool = false; strikethrough: Bool = false; link: Option<String> = None; }`：`None` 的字段沿用节点自身的值，`color` 为 `None` 的片段随节点 `color`（及其过渡）；`font_size` 的 `em`/`%` 相对节点字号，`raise` 把片段基线抬高（负值降低），其 `em`/`%` 相对片段自身字号；`background` 填在片段字体的 ascent 到 descent 之间，`underline`/`strikethrough` 的位置与粗细取字体度量。只改颜色、背景与线条的片段不打断整形（字距与连字保持），改字体、字号、字重、倾斜或抬升的片段单独整形；一行的高度取该行各片段行盒的最大值（Text Runtime §12.12.2）。片段读取的 State 变化时整段重新声明。HTML 与 Solid 导出把片段写成带内联样式的 `<span>`，变化的片段由页面脚本重建；
 - **链接**：带 `link` 的片段是链接，总有下划线。鼠标在其上显示手形，在同一链接上按下并抬起即激活它，`Text` 及其祖先收到 `link(LinkEvent)`；有链接的 `Text` 可获得焦点，Tab/Shift+Tab 先在其链接间逐个移动再离开，Enter 激活焦点所在的链接，键盘移动焦点时该链接外画焦点环。辅助技术把每个链接读作 `Role::link` 的子节点（名称为链接文字，Click 激活、Focus 聚焦它）。HTML 导出为 `<a href>`，有 `on link` 时点击由页面脚本拦截并投递，没有时按浏览器默认跟随；原生运行时不替作者打开链接（打开由 `on link` 调用相应服务）；
+- **可选择文本**：`selectable: true` 的 `Text` 可以选择与复制，与 `TextInput` 共用同一套选择机制（Rust `Label::selectable`）：拖动选择，双击选词、三击选段，Shift+按下扩展；触摸长按选词并显示选区手柄与编辑菜单；加速键加 C 复制、加 A 全选；次键单击或触摸选区的菜单只提供复制与全选。它不接受任何输入（键入、粘贴、输入法、剪切、撤销都不改变文本），平台不为它显示软键盘或输入法。它可获得焦点；焦点由键盘带来时外画焦点环并显示光标，方向键移动光标、加 Shift 扩展选区；由指针带来时不显示光标。焦点离开时选区收起。它照常绘制 `spans`、`max_lines` 与 `overflow`。`selectable` 可以随 State 变化，节点就地在可选择与普通文本之间切换。HTML 导出中普通文本为 `user-select: none`，可选择文本加 `vx-selectable` 类恢复浏览器的选择，变化时由页面脚本切换；
 
 ```viso
 Text {

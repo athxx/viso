@@ -157,3 +157,50 @@ fn a_span_s_link_leads_where_it_says_and_its_activation_bubbles_to_on_link() {
         assert_eq!(rt.int("caught"), Some(2), "the column hears each too");
     }
 }
+
+const SELECTABLE: &str = r#"
+export component Note {
+    state pick = true;
+    view {
+        Column {
+            Text { width: 20dp; height: 20dp; on click { pick = !pick; } }
+            Text { text: "Copy me"; selectable: pick; }
+        }
+    }
+}
+"#;
+
+#[test]
+fn a_selectable_text_is_a_read_only_field_until_it_is_not() {
+    for mut rt in [Rt::mount(SELECTABLE), Rt::packaged(SELECTABLE)] {
+        assert_eq!(rt.fault(), None);
+        let text = rt.children(rt.root.expect("mounted"))[1];
+        let reconcile = |rt: &mut Rt| {
+            viso_ui::text_edit::reconcile(&mut rt.store, &mut rt.text_edits, None);
+        };
+        reconcile(&mut rt);
+        let buffer = rt.text_edits.get(text).expect("a field's buffer");
+        assert!(buffer.look.read_only);
+        assert_eq!(buffer.text, "Copy me");
+        assert!(rt.store.field_marks(text).is_some());
+        assert!(rt.store.focusable(text), "it takes the focus");
+        assert!(rt.store.has_key_handler(text), "its keys select");
+
+        rt.click(0);
+        rt.frame();
+        reconcile(&mut rt);
+        assert!(rt.text_edits.get(text).is_none(), "its buffer goes");
+        assert!(rt.store.field_marks(text).is_none());
+        assert!(!rt.store.focusable(text));
+        assert_eq!(
+            rt.store.text_request(text).map(|r| r.text.as_str()),
+            Some("Copy me"),
+            "a plain text again"
+        );
+
+        rt.click(0);
+        rt.frame();
+        reconcile(&mut rt);
+        assert!(rt.text_edits.get(text).is_some_and(|b| b.look.read_only));
+    }
+}

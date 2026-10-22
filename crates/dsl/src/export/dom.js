@@ -284,6 +284,7 @@ const P = {
   weight: (el, v) => { el.style.fontWeight = weight(v); },
   italic: (el, v) => { el.style.fontStyle = Number(v ?? 0n) === 1 ? "italic" : ""; },
   spans: (el, v) => { el.replaceChildren(...pieces(v)); },
+  selectable: (el, v) => { el.classList.toggle("vx-selectable", truth(v)); },
   label: (el, v, alt) => attr(el, alt ? "alt" : "aria-label", v),
   hint: (el, v) => attr(el, "aria-description", v),
   spoken: (el, v) => attr(el, "aria-valuetext", v),
