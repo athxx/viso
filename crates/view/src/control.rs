@@ -17,7 +17,7 @@ use viso_behavior::{Aggregate, Fault, FaultKind, Value};
 
 use viso_ui::{
     DispatchPhase, EventCx, FieldEvent, Key, KeyEvent, NodeId, NodeStore, PointerButtons,
-    PointerPhase, field_input,
+    PointerPhase, field_input, number_input,
 };
 
 use crate::host::ViewHost;
@@ -65,6 +65,7 @@ impl Drive for Control {
             ControlKind::Slider => slider(self, host, scope, cx),
             ControlKind::Select => select(self, host, scope, cx),
             ControlKind::TextInput => text_input(self, host, scope, cx),
+            ControlKind::Number => number(self, host, scope, cx),
             ControlKind::Viewport => viewport(cx),
             ControlKind::Label
             | ControlKind::Plain
@@ -353,6 +354,32 @@ fn text_input(
     match field_input(cx, multiline)? {
         FieldEvent::Submitted => Some((EventRoute::Submitted, Value::Nil)),
     }
+}
+
+/// A number field's response: the edits its input asks for, and each new
+/// number in its range its text comes to read as.
+fn number(
+    control: &Control,
+    host: &mut ViewHost,
+    scope: &Scope,
+    cx: &mut EventCx<'_>,
+) -> Option<(EventRoute, Value)> {
+    if cx.phase() != DispatchPhase::Target {
+        return None;
+    }
+    let Some(text) = cx.text_change() else {
+        number_input(cx);
+        return None;
+    };
+    let format = crate::values::number_format(
+        &read(host, control.min, scope, cx),
+        &read(host, control.max, scope, cx),
+        &read(host, control.step, scope, cx),
+        &read(host, control.precision, scope, cx),
+    );
+    let next = format.read(text).filter(|&v| format.holds(v))?;
+    let current = read(host, control.value, scope, cx).as_float();
+    (current != Some(next)).then(|| (EventRoute::Changed, field(Value::Float(next))))
 }
 
 /// A slider's range and step.

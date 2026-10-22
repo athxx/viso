@@ -21,11 +21,22 @@
 //! with Home and End goes to the ends of the text, Control with Up and Down
 //! to the ends of the paragraph, and Control with Y redoes. Shift extends the
 //! selection with every motion.
+//!
+//! ## Number fields
+//!
+//! A number field ([`number_input`]) is a text field that also steps its
+//! number. Until it has the focus a drag along it scrubs the number — a step
+//! for every [`SCRUB_PX`] the pointer travels, ten with Shift, a tenth with
+//! Alt — and a click focuses it with its text selected; with the focus it
+//! edits like any text field. Up and Down step it, Page Up and Page Down ten
+//! steps (Shift and Alt scale them alike), Enter settles its text and
+//! submits, and Escape puts back the number it last settled on.
 
 use viso_runtime::{Key, primary_is_logo};
 
 use crate::context::EventCx;
-use crate::input::{DispatchPhase, ImeEvent, KeyEvent, PointerButtons, PointerPhase};
+use crate::drag::DragPhase;
+use crate::input::{DispatchPhase, ImeEvent, KeyEvent, Modifiers, PointerButtons, PointerPhase};
 use crate::text_edit::{EditIntent, Motion, Reach, Unit};
 use viso_text::TextOffset;
 
@@ -175,6 +186,94 @@ pub fn field_input(cx: &mut EventCx<'_>, multiline: bool) -> Option<FieldEvent> 
     None
 }
 
+/// How far a scrub travels for one step of a number field, in the node's
+/// space.
+pub const SCRUB_PX: f32 = 2.0;
+
+/// How many steps Page Up and Page Down move a number field.
+const PAGE_STEPS: f64 = 10.0;
+
+/// The scale `m` puts on a number field's steps: ten with Shift, a tenth with
+/// Alt.
+fn step_scale(m: Modifiers) -> f64 {
+    match (m.shift, m.alt) {
+        (true, false) => 10.0,
+        (false, true) => 0.1,
+        _ => 1.0,
+    }
+}
+
+/// What a key does in a number field beyond what it does in a text field;
+/// `None` for a key it leaves to the text field.
+pub fn number_key(k: &KeyEvent) -> Option<FieldKey> {
+    if !k.pressed {
+        return None;
+    }
+    let scale = step_scale(k.modifiers);
+    let step = |steps: f64| Some(FieldKey::Edit(EditIntent::Step(steps * scale)));
+    let m = k.modifiers;
+    if m.control || m.logo {
+        return None;
+    }
+    match k.key {
+        Key::Up => step(1.0),
+        Key::Down => step(-1.0),
+        Key::PageUp => step(PAGE_STEPS),
+        Key::PageDown => step(-PAGE_STEPS),
+        Key::Escape => Some(FieldKey::Edit(EditIntent::Revert)),
+        _ => None,
+    }
+}
+
+/// Runs a number field's response to the sample under dispatch: scrubs and
+/// steps its number and settles its text, and otherwise edits it as
+/// [`field_input`] does a single-line field. Enter settles the text and
+/// reports a submission.
+pub fn number_input(cx: &mut EventCx<'_>) -> Option<FieldEvent> {
+    if cx.phase() != DispatchPhase::Target {
+        return None;
+    }
+    let node = cx.node()?;
+    if let Some(p) = cx.pointer()
+        && cx.focused() != Some(node)
+    {
+        let (phase, modifiers) = (p.phase, p.modifiers);
+        let held = p.buttons.contains(PointerButtons::PRIMARY);
+        if let Some(drag) = cx.drag() {
+            let intent = match drag.phase {
+                DragPhase::Start | DragPhase::Move => {
+                    let steps = f64::from(drag.total.x / SCRUB_PX).trunc();
+                    EditIntent::Scrub(steps * step_scale(modifiers))
+                }
+                DragPhase::End => EditIntent::Settle,
+            };
+            cx.record_edit(intent);
+            return None;
+        }
+        match phase {
+            PointerPhase::Down if held => cx.capture_pointer(node),
+            PointerPhase::Up => {
+                cx.release_pointer();
+                cx.request_focus(node);
+                cx.record_edit(EditIntent::SelectAll);
+            }
+            _ => {}
+        }
+        return None;
+    }
+    if let Some(k) = cx.key() {
+        if let Some(FieldKey::Edit(intent)) = number_key(k) {
+            cx.record_edit(intent);
+            return None;
+        }
+        if k.pressed && !k.repeat && k.key == Key::Enter {
+            cx.record_edit(EditIntent::Settle);
+            return Some(FieldEvent::Submitted);
+        }
+    }
+    field_input(cx, false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,6 +379,18 @@ mod tests {
             None,
             "a held Enter submits once"
         );
+    }
+
+    #[test]
+    fn a_number_field_steps_on_the_arrows_scaled_by_shift_and_alt() {
+        let key = |k, m| number_key(&press(k, m));
+        let step = |steps| edit(EditIntent::Step(steps));
+        assert_eq!(key(Key::Up, NONE), step(1.0));
+        assert_eq!(key(Key::Down, SHIFT), step(-10.0));
+        assert_eq!(key(Key::PageUp, ALT), step(1.0));
+        assert_eq!(key(Key::Escape, NONE), edit(EditIntent::Revert));
+        assert_eq!(key(Key::Up, CMD), None, "the text field's");
+        assert_eq!(key(Key::Left, NONE), None);
     }
 
     #[test]

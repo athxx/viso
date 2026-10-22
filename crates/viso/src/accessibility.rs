@@ -117,7 +117,7 @@ impl AccessBridge {
 /// The input that performs `action` on `node` in `window`, after moving focus
 /// where the action needs it. `Focus` needs no input; `Click` is a primary
 /// press and release at the node's center; `Increment`/`Decrement` are the
-/// arrow keys a focused slider steps on. Positions are physical pixels, as the
+/// arrow keys a focused slider steps on, Up and Down for a spin button. Positions are physical pixels, as the
 /// scheduler delivers them. An inert node takes none.
 pub(crate) fn perform(
     store: &mut NodeStore,
@@ -156,8 +156,17 @@ pub(crate) fn perform(
                 pointer(PointerPhase::Up, PointerButtons::NONE, 0.0),
             ]);
         }
-        AccessAction::Increment => Key::Right,
-        AccessAction::Decrement => Key::Left,
+        AccessAction::Increment | AccessAction::Decrement => {
+            let spin = store
+                .semantics(node)
+                .is_some_and(|s| s.role == Role::SpinButton);
+            match (action == AccessAction::Increment, spin) {
+                (true, false) => Key::Right,
+                (false, false) => Key::Left,
+                (true, true) => Key::Up,
+                (false, true) => Key::Down,
+            }
+        }
     };
     viso_ui::focus_node(store, node);
     let press = |pressed| {
@@ -192,6 +201,7 @@ fn semantics_role(role: Role, named: bool) -> SemanticsRole {
         Role::Image => SemanticsRole::Image,
         Role::TextField => SemanticsRole::TextField,
         Role::SecureField => SemanticsRole::SecureField,
+        Role::SpinButton => SemanticsRole::SpinButton,
         Role::Tab => SemanticsRole::Tab,
         Role::TabList => SemanticsRole::TabList,
         Role::Navigation => SemanticsRole::Navigation,
@@ -283,7 +293,7 @@ impl Walk<'_> {
         if live && store.has_handler(row.id) {
             actions = actions.with(AccessAction::Click);
         }
-        if live && row.role == Role::Slider {
+        if live && matches!(row.role, Role::Slider | Role::SpinButton) {
             actions = actions
                 .with(AccessAction::Increment)
                 .with(AccessAction::Decrement);

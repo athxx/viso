@@ -34,8 +34,8 @@ use viso_ui::shader::BrushProgram;
 use viso_ui::{Alignment2D, BoundSize, LayoutValue, LengthTerms};
 use viso_ui::{
     AssetFit, Border, BuildCx, CheckMark, CheckShape, Easing, FieldLook, FieldSeed, FontSize,
-    InputKind, LiveRegion, LookValue, NodeId, NodeStore, Rgba, Role, SemanticState, Semantics,
-    Srgb, StateId, StructureCx, TextRequest, Timing, focus_node,
+    InputKind, LiveRegion, LookValue, NodeId, NodeStore, NumberFormat, Rgba, Role, SemanticState,
+    Semantics, Srgb, StateId, StructureCx, TextRequest, Timing, focus_node, number_kind,
 };
 
 use crate::control::{Control, ControlInput, ControlKind, Holds, LayoutSlot, Switched, When};
@@ -210,6 +210,8 @@ pub(crate) fn control_cells(
         control.multiline,
         control.input_kind,
         control.max_length,
+        control.step,
+        control.precision,
         control.caption,
         look.translate,
         look.scale,
@@ -231,9 +233,9 @@ pub(crate) fn control_cells(
 /// `enabled`, `autofocus` and `clip`, and its text's `color`, `soft_wrap`,
 /// `font_weight`, `font_family`, `line_height`, `max_lines`, `overflow` and
 /// `align`, a field's `placeholder`, `secure`, `multiline`, `input` and
-/// `max_length` and a check's caption, and its `translate`, `scale`,
-/// `rotation` and `transform_origin`.
-const SHOWN: usize = 37;
+/// `max_length`, a number field's `step` and `precision` and a check's
+/// caption, and its `translate`, `scale`, `rotation` and `transform_origin`.
+const SHOWN: usize = 39;
 
 /// The input of each value a node shows, in order.
 const SHOWN_INPUTS: [ControlInput; SHOWN] = [
@@ -269,6 +271,8 @@ const SHOWN_INPUTS: [ControlInput; SHOWN] = [
     ControlInput::Multiline,
     ControlInput::InputKind,
     ControlInput::MaxLength,
+    ControlInput::Step,
+    ControlInput::Precision,
     ControlInput::Caption,
     ControlInput::Translate,
     ControlInput::Scale,
@@ -277,11 +281,11 @@ const SHOWN_INPUTS: [ControlInput; SHOWN] = [
 ];
 
 /// Where its `translate` sits among the values a node shows.
-const TRANSLATE: usize = 33;
+const TRANSLATE: usize = 35;
 
 /// Where its `scale`, `rotation` and `transform_origin` sit among the values
 /// a node shows.
-const TURN: usize = 34;
+const TURN: usize = 36;
 
 /// Where its background, opacity, corner radius and border sit among the
 /// values a node shows.
@@ -297,8 +301,9 @@ const NODE: usize = 14;
 /// Where its text's style starts among the values a node shows.
 const TEXT: usize = 19;
 
-/// Where a field's placeholder, masking, lines, kind and length and a
-/// check's caption sit among the values a node shows.
+/// Where a field's placeholder, masking, lines, kind and length, a number
+/// field's step and precision and a check's caption sit among the values a
+/// node shows.
 const FIELD: usize = 27;
 
 /// A node showing a value of the view.
@@ -475,6 +480,8 @@ impl Shown {
             multiline,
             input_kind,
             max_length,
+            step,
+            precision,
             caption,
             translate,
             scale,
@@ -535,7 +542,7 @@ impl Shown {
             move_of(TURN + 1, look.rotation_transition),
         ];
         let color_move = match control.kind {
-            ControlKind::Label | ControlKind::TextInput => {
+            ControlKind::Label | ControlKind::TextInput | ControlKind::Number => {
                 move_of(TEXT, look.color_transition.filter(|_| given(TEXT)))
             }
             _ => None,
@@ -700,9 +707,29 @@ impl Shown {
                         kind: input_kind_of(input_kind),
                         max_length: max_length.as_int().and_then(|v| u32::try_from(v).ok()),
                         filter: None,
+                        number: None,
                     },
                 };
                 store.seed_text(self.node, seed);
+            }
+            ControlKind::Number => {
+                let format = number_format(min, max, step, precision);
+                let number = format.settle(value.as_float().unwrap_or(format.origin()));
+                let shown = Value::str(format.show(number));
+                let seed = FieldSeed {
+                    request: text(&shown),
+                    valued: true,
+                    look: FieldLook {
+                        kind: number_kind(&format),
+                        number: Some(format),
+                        ..FieldLook::default()
+                    },
+                };
+                store.seed_text(self.node, seed);
+                store.set_semantic_state(
+                    self.node,
+                    SemanticState::number(number, format.min, format.max),
+                );
             }
             ControlKind::Check | ControlKind::Switch => {
                 let checked = value.as_int().is_some_and(|v| v != 0);
@@ -714,7 +741,7 @@ impl Shown {
                 store.set_check_mark(self.node, Some(CheckMark { shape, checked }));
                 // A check with no caption still shapes an empty one, which
                 // sizes and inks its mark.
-                if first || (given(FIELD + 5) && changed(FIELD + 5)) {
+                if first || (given(FIELD + 7) && changed(FIELD + 7)) {
                     store.set_text_request(self.node, text(caption));
                 }
             }
@@ -920,6 +947,27 @@ fn offer(store: &mut NodeStore, host: &ViewHost, resource: ResourceId) {
                 .offer(resource, ResourceRevision::default(), bytes.clone());
         }
         None => store.assets_mut().want(resource),
+    }
+}
+
+/// How a number field bounded by `min` and `max`, stepping by `step` and
+/// showing `precision` places reads and shows its number: an absent bound
+/// is none, an absent step `1`, an absent precision as many places as the
+/// step has.
+pub(crate) fn number_format(
+    min: &Value,
+    max: &Value,
+    step: &Value,
+    precision: &Value,
+) -> NumberFormat {
+    let format = NumberFormat::new(
+        min.as_float().unwrap_or(f64::NEG_INFINITY),
+        max.as_float().unwrap_or(f64::INFINITY),
+        step.as_float().unwrap_or(1.0),
+    );
+    match precision.as_int().and_then(|p| u8::try_from(p).ok()) {
+        Some(places) => format.with_precision(places),
+        None => format,
     }
 }
 

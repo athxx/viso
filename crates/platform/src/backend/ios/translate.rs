@@ -314,7 +314,7 @@ pub(crate) fn element_kind(node: &AccessNode) -> ElementKind {
     use SemanticsRole as R;
     match node.role {
         R::Button | R::CheckBox | R::Radio | R::Tab => ElementKind::Button,
-        R::Slider => ElementKind::Adjustable,
+        R::Slider | R::SpinButton => ElementKind::Adjustable,
         R::Label | R::Status => ElementKind::StaticText,
         R::Image => ElementKind::Image,
         _ if node.actions.contains(AccessAction::Click) => ElementKind::Button,
@@ -329,8 +329,8 @@ pub(crate) fn shows_selected(node: &AccessNode) -> bool {
 }
 
 /// The spoken value: a slider's position as a percentage of its range, or
-/// its bare value without one; else the node's value text, which a secure
-/// field never speaks.
+/// its bare value without one; a spin button's text, or its bare value;
+/// else the node's value text, which a secure field never speaks.
 pub(crate) fn spoken_value(node: &AccessNode) -> Option<String> {
     if node.role == SemanticsRole::SecureField {
         return None;
@@ -338,6 +338,9 @@ pub(crate) fn spoken_value(node: &AccessNode) -> Option<String> {
     let Some(value) = node.state.numeric_value else {
         return node.value.clone();
     };
+    if node.role == SemanticsRole::SpinButton {
+        return node.value.clone().or_else(|| Some(format!("{value}")));
+    }
     Some(match node.state.numeric_range {
         Some((min, max)) if max > min => {
             format!("{}%", ((value - min) / (max - min) * 100.0).round())

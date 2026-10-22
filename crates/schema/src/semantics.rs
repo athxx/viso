@@ -116,11 +116,15 @@ pub enum Role {
     /// A [`TextField`](Role::TextField) whose text is masked: an assistive
     /// technology announces it as secure and never reads its text.
     SecureField,
+    /// A [`TextField`](Role::TextField) holding a number that steps up and
+    /// down: announces its value and any bounds, and takes increment and
+    /// decrement (WAI-ARIA `role=spinbutton`).
+    SpinButton,
 }
 
 impl Role {
     /// Every role, in declaration order.
-    pub const ALL: [Role; 20] = [
+    pub const ALL: [Role; 21] = [
         Role::Group,
         Role::Button,
         Role::CheckBox,
@@ -141,6 +145,7 @@ impl Role {
         Role::List,
         Role::ListItem,
         Role::SecureField,
+        Role::SpinButton,
     ];
 
     /// The role whose [`label`](Self::label) is `label`.
@@ -173,6 +178,7 @@ impl Role {
             Role::List => "list",
             Role::ListItem => "listitem",
             Role::SecureField => "securefield",
+            Role::SpinButton => "spinbutton",
         }
     }
 }
@@ -261,6 +267,16 @@ impl SemanticState {
         Self {
             value: Some(value),
             range: Some((min, max)),
+            ..Self::default()
+        }
+    }
+
+    /// A number field's state: its `value` and, when it has both bounds, its
+    /// inclusive `(min, max)` range.
+    pub fn number(value: f64, min: f64, max: f64) -> Self {
+        Self {
+            value: Some(value as f32),
+            range: (min.is_finite() && max.is_finite()).then_some((min as f32, max as f32)),
             ..Self::default()
         }
     }

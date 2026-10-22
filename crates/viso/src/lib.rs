@@ -1866,6 +1866,10 @@ impl WindowState {
             && let Some(old) = self.marked
         {
             self.mark_field(old, false, now);
+            // A number field the focus leaves settles its text.
+            if self.store.is_number_field(old) {
+                self.store.queue_edit(old, text_edit::EditIntent::Settle);
+            }
         }
         self.marked = focused;
         self.caret_due = None;
@@ -3228,6 +3232,13 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // frame presented; what they write is the next frame's
                     // transaction, so that frame is scheduled.
                     ws.store.set_dirty_cause(DirtyCause::Task);
+                    // Edits the frame itself asked for (a number field the
+                    // focus left settling) apply now; what they report is the
+                    // next frame's.
+                    if ws.store.has_edit_requests() {
+                        ws.settle_text_edits();
+                        cx.request_redraw(ws.window);
+                    }
                     // What the frame's layout moved reaches the nodes that
                     // report it — a viewport's scroll, a list's visible rows;
                     // their handlers' writes are the next frame's, as the
@@ -3565,13 +3576,14 @@ pub mod prelude {
     pub use viso_widgets::{
         Button, ButtonStyle, CheckBox, CheckBoxStyle, Grid, GridViewStyle, Icon, IconStyle, Image,
         ImageStyle, Label, LabelStyle, Modal, ModalHandle, ModalHandleSlot, ModalStyle, NavHandle,
-        NavHandleSlot, NavigationStack, NavigationStackStyle, Popup, PopupHandle, PopupHandleSlot,
-        PopupStyle, RadioGroup, RadioStyle, Scroll, ScrollViewStyle, Sheet, SheetEdge, SheetHandle,
-        SheetHandleSlot, SheetStyle, Slider, SliderStyle, Splitter, SplitterStyle, Tabs, TabsStyle,
-        TextInput, TextInputStyle, Toast, ToastEdge, ToastHandle, ToastHandleSlot, ToastStyle,
-        Toggle, ToggleStyle, View, ViewStyle, VirtualList, VirtualListViewStyle, button, checkbox,
-        grid, icon, image, label, modal, navigation_stack, popup, radio_group, scroll, sheet,
-        slider, splitter, tabs, text_input, toast, toggle, view, virtual_list,
+        NavHandleSlot, NavigationStack, NavigationStackStyle, NumberField, Popup, PopupHandle,
+        PopupHandleSlot, PopupStyle, RadioGroup, RadioStyle, Scroll, ScrollViewStyle, Sheet,
+        SheetEdge, SheetHandle, SheetHandleSlot, SheetStyle, Slider, SliderStyle, Splitter,
+        SplitterStyle, Tabs, TabsStyle, TextInput, TextInputStyle, Toast, ToastEdge, ToastHandle,
+        ToastHandleSlot, ToastStyle, Toggle, ToggleStyle, View, ViewStyle, VirtualList,
+        VirtualListViewStyle, button, checkbox, grid, icon, image, label, modal, navigation_stack,
+        number_field, popup, radio_group, scroll, sheet, slider, splitter, tabs, text_input, toast,
+        toggle, view, virtual_list,
     };
     // The top-level Window control (§68 public application lifecycle): a window
     // is not a node control — it does not enter the UI tree — so it appears as an

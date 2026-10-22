@@ -351,6 +351,7 @@ pub(crate) fn aria_role(role: SemanticsRole) -> Option<&'static str> {
         R::Radio => "radio",
         R::Slider => "slider",
         R::TextField | R::SecureField => "textbox",
+        R::SpinButton => "spinbutton",
         R::Tab => "tab",
         R::TabList => "tablist",
         R::Tree => "tree",

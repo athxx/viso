@@ -690,6 +690,9 @@ pub fn route_scroll(store: &mut NodeStore, root: NodeId, ev: ScrollEvent) -> boo
     let Some(target) = HitTestTree::hit(store, root, ev.x, ev.y) else {
         return false;
     };
+    if ev.delta_y != 0.0 && store.wheel_number_field(target, ev.delta_y) {
+        return true;
+    }
     scroll_chain(
         store,
         target,

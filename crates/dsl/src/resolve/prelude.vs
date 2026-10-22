@@ -75,6 +75,7 @@ export record AnimationEnd { target: Animate; finished: Bool; }
 export record ToggleChanged { value: Bool; }
 export record SliderChanged { value: F32; }
 export record TextChanged { value: String; }
+export record NumberChanged { value: F64; }
 export record SelectionChanged { value: U32; }
 
 export record Rect { x: Dp; y: Dp; width: Dp; height: Dp; }
@@ -173,7 +174,7 @@ export enum InputKind { text; digits; integer; decimal; phone; email; url; searc
 export enum Role {
     group; button; check_box; slider; radio; label; image; text_field; tab; tab_list;
     navigation; dialog; status; region; tree; tree_item; heading; list; list_item;
-    secure_field;
+    secure_field; spin_button;
 }
 
 export record Environment {

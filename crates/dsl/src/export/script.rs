@@ -320,6 +320,7 @@ fn mount(out: &mut String, index: usize, content: &Content, eval: &Eval<'_>, roo
                         Prop::Secure => format!("P.secure({el}, {value})"),
                         Prop::InputKind => format!("P.kind({el}, {value})"),
                         Prop::MaxLength => format!("P.maxlength({el}, {value})"),
+                        Prop::Number => format!("P.number({el}, {value})"),
                         Prop::Selected { radio } => format!("P.selected({el}, {value}, {radio})"),
                         Prop::Source { mask } => format!("P.source({el}, {value}, {mask})"),
                         Prop::Fit { mask } => format!("P.fit({el}, {value}, {mask})"),

@@ -64,6 +64,7 @@ use crate::field_marks::FieldMarks;
 use crate::input_filter::{InputFilter, admit};
 use crate::layout::Vec2;
 use crate::node::NodeId;
+use crate::number_format::NumberFormat;
 use crate::text_style::{FontSize, TextOverflow, TextStyle};
 use viso_render::{Rect, Rgba};
 use viso_runtime::InputKind;
@@ -101,6 +102,9 @@ pub struct FieldLook {
     pub max_length: Option<u32>,
     /// Its own rule for what it takes of each piece of text entering it.
     pub filter: Option<InputFilter>,
+    /// How it reads, shows and steps the number it holds, when it holds one
+    /// ([`crate::number_format`]).
+    pub number: Option<NumberFormat>,
 }
 
 /// What a text field's node declares, queued on the store until
@@ -250,6 +254,18 @@ pub enum EditIntent {
     Undo,
     /// Make the last undone step again.
     Redo,
+    /// Move a number field's number by this many steps, rewriting its text;
+    /// steps in a row are one undo step.
+    Step(f64),
+    /// Move a number field's number this many steps from where it was when
+    /// the scrub began; a scrub is one undo step.
+    Scrub(f64),
+    /// Rewrite a number field's text from the number it reads as, within its
+    /// range and at its precision, or from the number it last settled on
+    /// when it reads as none.
+    Settle,
+    /// Put back the number a number field last settled on.
+    Revert,
 }
 
 /// The drawn geometry of one editable node's text, as the runtime last laid it
@@ -362,6 +378,11 @@ pub struct Buffer {
     /// The unit a double or triple click selected and its range, which a
     /// drag on from it extends by.
     granule: Option<(Unit, TextOffset, TextOffset)>,
+    /// The number a number field last settled on: what it was given, or
+    /// what Enter or the focus leaving made of its text.
+    settled: f64,
+    /// The number a scrub under way began from.
+    scrub_from: Option<f64>,
     /// Advances on every change to `text`.
     revision: Revision,
     /// Queued intents recorded since the last reconcile, applied in order. A
@@ -401,6 +422,8 @@ impl Buffer {
             goal_x: None,
             history: History::default(),
             granule: None,
+            settled: 0.0,
+            scrub_from: None,
             revision: Revision::default(),
             pending: Vec::new(),
         }
@@ -431,6 +454,9 @@ impl Buffer {
             buffer.text.clear();
             buffer.sel = Selection::caret(TextPosition::upstream(TextOffset(0)));
         }
+        if let Some(format) = buffer.look.number {
+            buffer.settled = format.read(&buffer.text).unwrap_or(format.origin());
+        }
         buffer
     }
 
@@ -455,6 +481,18 @@ impl Buffer {
         self.look.clone_from(&seed.look);
         if !seed.valued || self.text == request.text {
             return styled;
+        }
+        if let Some(format) = self.look.number {
+            if let Some(given) = format.read(&request.text) {
+                self.settled = given;
+            }
+            // A number field keeps its text while it shows as the value.
+            if format
+                .read(&self.text)
+                .is_some_and(|typed| format.show(typed) == request.text)
+            {
+                return styled;
+            }
         }
         self.end_composition();
         let (start, old_end, new_end) = changed_range(&self.text, &request.text);
@@ -638,6 +676,9 @@ impl Buffer {
         ) {
             self.granule = None;
         }
+        if !matches!(intent, EditIntent::Scrub(_)) {
+            self.scrub_from = None;
+        }
         match intent {
             EditIntent::Insert(s) => self.type_text(s),
             EditIntent::Paste(s) => {
@@ -701,7 +742,61 @@ impl Buffer {
             EditIntent::CommitCompose(text) => self.commit_compose(text),
             EditIntent::Undo => self.walk_history(true),
             EditIntent::Redo => self.walk_history(false),
+            EditIntent::Step(steps) => {
+                if let Some(format) = self.look.number {
+                    let from = self.number(format);
+                    self.show_number(format.stepped(from, *steps), EditKind::Step);
+                }
+            }
+            EditIntent::Scrub(steps) => {
+                if let Some(format) = self.look.number {
+                    if self.scrub_from.is_none() {
+                        self.history.close();
+                    }
+                    let from = *self.scrub_from.get_or_insert(self.number(format));
+                    self.show_number(format.stepped(from, *steps), EditKind::Step);
+                }
+            }
+            EditIntent::Settle => {
+                if let Some(format) = self.look.number {
+                    let settled = format
+                        .read(&self.text)
+                        .map_or(self.settled, |v| format.settle(v));
+                    self.history.close();
+                    self.show_number(settled, EditKind::Other);
+                    self.settled = settled;
+                }
+            }
+            EditIntent::Revert => {
+                if self.look.number.is_some() {
+                    self.history.close();
+                    self.show_number(self.settled, EditKind::Other);
+                }
+            }
         }
+    }
+
+    /// The number a number field of `format` steps from: what its text
+    /// reads as, else what it last settled on.
+    fn number(&self, format: NumberFormat) -> f64 {
+        format.read(&self.text).unwrap_or(self.settled)
+    }
+
+    /// Rewrite the whole text as `value` in an edit of `kind`, the caret at
+    /// its end.
+    fn show_number(&mut self, value: f64, kind: EditKind) {
+        let Some(format) = self.look.number else {
+            return;
+        };
+        let text = format.show(value);
+        self.end_composition();
+        self.splice(
+            TextOffset(0),
+            TextOffset(self.text.len()),
+            &text,
+            Some(kind),
+        );
+        self.sel = Selection::caret(TextPosition::upstream(TextOffset(text.len())));
     }
 
     /// Replace `[start, end)` of the text with `s`, advancing the revision when
@@ -1508,6 +1603,7 @@ pub fn reconcile(
             if !store.arena().is_live(node) {
                 continue;
             }
+            store.set_number_field(node, seed.look.number.is_some());
             let buffer = match edits.get_mut(node) {
                 Some(buffer) => {
                     if !buffer.seed(&seed) {
@@ -2417,6 +2513,69 @@ mod tests {
         assert_eq!(b.text, "-345", "but its commit is");
         apply(&mut b, EditIntent::Undo);
         assert_eq!(b.text, "12");
+    }
+
+    fn number_field(text: &str, format: NumberFormat) -> Buffer {
+        let mut b = buf(text, text.len());
+        b.look.kind = crate::number_format::number_kind(&format);
+        b.look.number = Some(format);
+        b.settled = format.read(text).unwrap_or(format.origin());
+        b
+    }
+
+    #[test]
+    fn a_number_field_steps_scrubs_and_settles_its_text() {
+        let mut b = number_field("0.5", NumberFormat::new(0.0, 1.0, 0.1));
+        apply(&mut b, EditIntent::Step(1.0));
+        apply(&mut b, EditIntent::Step(1.0));
+        assert_eq!(b.text, "0.7");
+        apply(&mut b, EditIntent::Undo);
+        assert_eq!(b.text, "0.5", "steps in a row are one undo");
+        for steps in [1.0, 2.0, 30.0] {
+            apply(&mut b, EditIntent::Scrub(steps));
+        }
+        assert_eq!(
+            b.text, "1.0",
+            "a scrub moves from where it began, within the range"
+        );
+        apply(&mut b, EditIntent::Undo);
+        assert_eq!(b.text, "0.5", "a scrub is one undo");
+        b.sel = range(0, 3);
+        apply(&mut b, EditIntent::Insert("3".into()));
+        assert_eq!(b.text, "3");
+        apply(&mut b, EditIntent::Settle);
+        assert_eq!(b.text, "1.0", "settled within the range");
+        apply(&mut b, EditIntent::SelectAll);
+        apply(&mut b, EditIntent::Insert(".".into()));
+        apply(&mut b, EditIntent::Revert);
+        assert_eq!(b.text, "1.0");
+        apply(&mut b, EditIntent::SelectAll);
+        apply(&mut b, EditIntent::Backspace(Reach::Grapheme));
+        apply(&mut b, EditIntent::Settle);
+        assert_eq!(b.text, "1.0", "text that reads as no number settles back");
+    }
+
+    #[test]
+    fn a_number_field_keeps_its_text_while_it_reads_as_its_value() {
+        let format = NumberFormat::new(f64::NEG_INFINITY, f64::INFINITY, 0.1);
+        let mut b = number_field("1.", format);
+        let mut seed = FieldSeed {
+            request: TextRequest {
+                text: "1.0".into(),
+                ..b.request()
+            },
+            valued: true,
+            look: b.look.clone(),
+        };
+        assert!(!b.seed(&seed));
+        assert_eq!(b.text, "1.");
+        b.text = "1.04".into();
+        assert!(!b.seed(&seed), "1.04 shows as 1.0");
+        seed.request.text = "2.0".into();
+        assert!(b.seed(&seed));
+        assert_eq!(b.text, "2.0");
+        apply(&mut b, EditIntent::Step(-1.0));
+        assert_eq!(b.text, "1.9");
     }
 
     #[test]

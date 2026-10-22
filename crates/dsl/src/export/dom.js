@@ -185,6 +185,22 @@ const holds = [
   ["search", null],
 ];
 const holding = (v) => holds[Number(v ?? 0n)] || holds[0];
+// The number a number field's text reads as, NaN for none.
+const reading = (s) => {
+  const t = s.trim().replace(",", ".");
+  return /^[+-]?(\d+\.?\d*|\.\d+)$/.test(t) ? Number(t) : NaN;
+};
+// A number field's bounds.
+const bounds = (el) => {
+  const lo = el.getAttribute("aria-valuemin"), hi = el.getAttribute("aria-valuemax");
+  return [lo === null ? -Infinity : Number(lo), hi === null ? Infinity : Number(hi)];
+};
+// A number field's `n` within its bounds at its places, and its text.
+const settled = (el, n) => {
+  const [lo, hi] = bounds(el);
+  const s = Math.min(Math.max(n, lo), hi).toFixed(Number(el.dataset.places || 0));
+  return [Number(s), s];
+};
 const easings = ["linear", "ease-in", "ease-out", "ease-in-out"];
 const reduced = matchMedia("(prefers-reduced-motion: reduce)");
 const items = (el) => Array.from(el.children).filter((c) => c.tagName !== "TEMPLATE");
@@ -249,6 +265,13 @@ const P = {
     attr(el, "pattern", pattern);
   },
   maxlength: (el, v) => attr(el, "maxlength", v),
+  // A number field keeps its text while it reads as the number.
+  number(el, v) {
+    if (v === null) return;
+    const n = Number(v);
+    if (reading(el.value) !== n) el.value = settled(el, n)[1];
+    el.setAttribute("aria-valuenow", el.value);
+  },
   selected: (el, v, radio) => select(el, v === null ? 0n : v, radio),
   source(el, v, mask) {
     const u = url(v);
@@ -419,6 +442,25 @@ const listen = (el, route, capture, control, fire) => {
       el.addEventListener("pointerdown", (e) => { if (e.target === el && el.open) fire(rec([bool(false)])); }, capture);
     }
     else if (control === 1) el.addEventListener("input", () => fire(rec([Number(el.value)])), capture);
+    else if (control === 13) {
+      // Each number the text reads as within the bounds; Enter and the
+      // focus leaving settle the text, the arrows step it.
+      const held = (n) => { const [lo, hi] = bounds(el); return n >= lo && n <= hi; };
+      const show = (n) => { const [v, s] = settled(el, n); el.value = s; el.$settled = v; fire(rec([v])); };
+      el.addEventListener("input", () => { const n = reading(el.value); if (held(n)) fire(rec([n])); }, capture);
+      el.addEventListener("change", () => {
+        const n = reading(el.value);
+        show(Number.isFinite(n) ? n : el.$settled ?? 0);
+      }, capture);
+      el.addEventListener("keydown", (e) => {
+        const dir = { ArrowUp: 1, ArrowDown: -1, PageUp: 10, PageDown: -10 }[e.key];
+        if (dir === undefined || e.ctrlKey || e.metaKey) return;
+        e.preventDefault();
+        const scale = e.shiftKey ? 10 : e.altKey ? 0.1 : 1;
+        const n = reading(el.value);
+        show((Number.isFinite(n) ? n : el.$settled ?? 0) + dir * scale * Number(el.dataset.step || 1));
+      }, capture);
+    }
     else el.addEventListener("input", () => fire(rec([el.value])), capture);
   } else if (route === 10) {
     el.addEventListener("keydown", live((e) => {
@@ -498,6 +540,7 @@ const sync = (el, control, value) => {
   else if (control === 9) el.open = truth(v);
   else if (control === 10 || control === 11) P.layer(el, v);
   else if (control === 1) el.value = v === null ? el.min : String(v);
+  else if (control === 13) P.number(el, v);
   else if (control === 2) select(el, v === null ? 0n : v, el.$radio);
   else if (v !== null) P.input(el, v);
 };

@@ -15,6 +15,7 @@ mod dock;
 mod file_tree;
 mod modal;
 mod navigation_stack;
+mod number_field;
 mod popup;
 mod radio;
 mod sheet;
@@ -40,6 +41,7 @@ pub use modal::{Modal, ModalHandle, ModalHandleSlot, ModalStyle, modal};
 pub use navigation_stack::{
     NavHandle, NavHandleSlot, NavigationStack, NavigationStackStyle, navigation_stack,
 };
+pub use number_field::{NumberField, number_field};
 pub use popup::{Popup, PopupHandle, PopupHandleSlot, PopupStyle, popup};
 pub use radio::{RadioGroup, RadioStyle, radio_group};
 pub use sheet::{Sheet, SheetEdge, SheetHandle, SheetHandleSlot, SheetStyle, sheet};

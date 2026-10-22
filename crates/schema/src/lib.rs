@@ -22,6 +22,7 @@ pub mod id;
 pub mod interaction;
 pub mod layout;
 pub mod length;
+pub mod number;
 pub mod resource;
 pub mod retype;
 pub mod semantics;

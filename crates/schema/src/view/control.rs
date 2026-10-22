@@ -58,11 +58,15 @@ pub enum ControlKind {
     /// stage's camera or its `camera` rig; a press focuses it, and while
     /// focused the keys reach the game.
     Viewport = 12,
+    /// `NumberField`: a text field holding a number within `min..=max` that
+    /// a drag scrubs and the arrows and the wheel step by `step`; reports
+    /// each number its text comes to read as.
+    Number = 13,
 }
 
 impl ControlKind {
     /// Every kind, by discriminant.
-    pub const ALL: [ControlKind; 13] = [
+    pub const ALL: [ControlKind; 14] = [
         ControlKind::Check,
         ControlKind::Slider,
         ControlKind::Select,
@@ -76,6 +80,7 @@ impl ControlKind {
         ControlKind::Dialog,
         ControlKind::Toast,
         ControlKind::Viewport,
+        ControlKind::Number,
     ];
 
     /// The kind native widget `widget` is.
@@ -89,6 +94,7 @@ impl ControlKind {
             "Slider" => ControlKind::Slider,
             "Tabs" | "RadioGroup" => ControlKind::Select,
             "TextInput" => ControlKind::TextInput,
+            "NumberField" => ControlKind::Number,
             "Text" | "Button" => ControlKind::Label,
             "Image" | "Svg" => ControlKind::Asset,
             "ShaderView" => ControlKind::Shader,
@@ -131,7 +137,8 @@ impl ControlKind {
                     | ControlKind::Disclosure
                     | ControlKind::Dialog
                     | ControlKind::Slider
-                    | ControlKind::TextInput,
+                    | ControlKind::TextInput
+                    | ControlKind::Number,
                 EventRoute::Changed
             ) | (ControlKind::TextInput, EventRoute::Submitted)
                 | (ControlKind::Select, EventRoute::SelectedChanged)
@@ -158,9 +165,10 @@ impl ControlKind {
             (_, "transition.corner_radius") => ControlInput::CornerRadiusTransition,
             (_, "transition.width") => ControlInput::WidthTransition,
             (_, "transition.height") => ControlInput::HeightTransition,
-            (ControlKind::Label | ControlKind::TextInput, "transition.color") => {
-                ControlInput::ColorTransition
-            }
+            (
+                ControlKind::Label | ControlKind::TextInput | ControlKind::Number,
+                "transition.color",
+            ) => ControlInput::ColorTransition,
             (_, "semantics.label") => ControlInput::Label,
             (_, "semantics.hint") => ControlInput::Hint,
             (_, "semantics.value") => ControlInput::SpokenValue,
@@ -171,18 +179,24 @@ impl ControlKind {
             (_, "enabled") => ControlInput::Enabled,
             (_, "autofocus") => ControlInput::Autofocus,
             (_, "clip") => ControlInput::Clip,
-            (ControlKind::Label | ControlKind::TextInput, "color") => ControlInput::TextColor,
-            (ControlKind::Label | ControlKind::TextInput, "soft_wrap") => ControlInput::SoftWrap,
-            (ControlKind::Label | ControlKind::TextInput, "font_weight") => {
+            (ControlKind::Label | ControlKind::TextInput | ControlKind::Number, "color") => {
+                ControlInput::TextColor
+            }
+            (ControlKind::Label | ControlKind::TextInput | ControlKind::Number, "soft_wrap") => {
+                ControlInput::SoftWrap
+            }
+            (ControlKind::Label | ControlKind::TextInput | ControlKind::Number, "font_weight") => {
                 ControlInput::FontWeight
             }
-            (ControlKind::Label | ControlKind::TextInput, "font_family") => {
+            (ControlKind::Label | ControlKind::TextInput | ControlKind::Number, "font_family") => {
                 ControlInput::FontFamily
             }
-            (ControlKind::Label | ControlKind::TextInput, "line_height") => {
+            (ControlKind::Label | ControlKind::TextInput | ControlKind::Number, "line_height") => {
                 ControlInput::LineHeight
             }
-            (ControlKind::Label | ControlKind::TextInput, "align") => ControlInput::TextAlign,
+            (ControlKind::Label | ControlKind::TextInput | ControlKind::Number, "align") => {
+                ControlInput::TextAlign
+            }
             (ControlKind::Label, "max_lines") => ControlInput::MaxLines,
             (ControlKind::Label, "overflow") => ControlInput::Overflow,
             (ControlKind::Check | ControlKind::Switch, "checked")
@@ -190,7 +204,7 @@ impl ControlKind {
             | (ControlKind::Dialog | ControlKind::Toast, "open")
             | (ControlKind::Slider, "value")
             | (ControlKind::Select, "selected")
-            | (ControlKind::TextInput, "value")
+            | (ControlKind::TextInput | ControlKind::Number, "value")
             | (ControlKind::Label, "text")
             | (ControlKind::Asset, "source")
             | (ControlKind::Shader, "shader")
@@ -201,9 +215,10 @@ impl ControlKind {
             (ControlKind::TextInput, "input") => ControlInput::InputKind,
             (ControlKind::TextInput, "max_length") => ControlInput::MaxLength,
             (ControlKind::Check | ControlKind::Switch, "label") => ControlInput::Caption,
-            (ControlKind::Slider, "min") => ControlInput::Min,
-            (ControlKind::Slider, "max") => ControlInput::Max,
-            (ControlKind::Slider, "step") => ControlInput::Step,
+            (ControlKind::Slider | ControlKind::Number, "min") => ControlInput::Min,
+            (ControlKind::Slider | ControlKind::Number, "max") => ControlInput::Max,
+            (ControlKind::Slider | ControlKind::Number, "step") => ControlInput::Step,
+            (ControlKind::Number, "precision") => ControlInput::Precision,
             (ControlKind::Asset, "fit") => ControlInput::Fit,
             (ControlKind::Asset, "tint") => ControlInput::Tint,
             _ => return None,
@@ -226,6 +241,7 @@ impl ControlKind {
             ControlKind::Asset => "Asset",
             ControlKind::Shader => "Shader",
             ControlKind::Viewport => "Viewport",
+            ControlKind::Number => "Number",
         }
     }
 
@@ -244,6 +260,7 @@ pub fn widget_role(widget: &str) -> Option<Role> {
         "Toggle" | "CheckBox" => Role::CheckBox,
         "Slider" => Role::Slider,
         "TextInput" => Role::TextField,
+        "NumberField" => Role::SpinButton,
         "Tabs" => Role::TabList,
         "Text" => Role::Label,
         "Image" | "Svg" | "GameViewport" => Role::Image,
@@ -278,6 +295,7 @@ pub fn source_role(variant: &str) -> Option<Role> {
         "list" => Role::List,
         "list_item" => Role::ListItem,
         "secure_field" => Role::SecureField,
+        "spin_button" => Role::SpinButton,
         _ => return None,
     })
 }
@@ -288,7 +306,7 @@ pub fn source_name(role: Role) -> &'static str {
 }
 
 /// Every variant [`source_role`] takes, in the order of [`Role::ALL`].
-pub const SOURCE_ROLES: [&str; 20] = [
+pub const SOURCE_ROLES: [&str; 21] = [
     "group",
     "button",
     "check_box",
@@ -309,6 +327,7 @@ pub const SOURCE_ROLES: [&str; 20] = [
     "list",
     "list_item",
     "secure_field",
+    "spin_button",
 ];
 
 /// A layout property a node's value sets as the view's values change: one
@@ -632,6 +651,8 @@ pub enum ControlInput {
     InputKind,
     /// A text field's `max_length`: the most graphemes entry brings it to.
     MaxLength,
+    /// A number field's `precision`: the decimal places it shows.
+    Precision,
     /// A check's `label`: the caption it shows and is named by.
     Caption,
 }
@@ -665,6 +686,8 @@ pub struct Control {
     pub input_kind: Option<u32>,
     /// The entry of the most graphemes entry brings a text field to.
     pub max_length: Option<u32>,
+    /// The entry of the decimal places a number field shows.
+    pub precision: Option<u32>,
     /// The entry of a check's caption.
     pub caption: Option<u32>,
     /// The shader a shader view paints with, by its index in the view's
@@ -823,7 +846,7 @@ pub enum Switched {
 
 impl ControlInput {
     /// Every input, by wire tag.
-    pub const ALL: [ControlInput; 47] = [
+    pub const ALL: [ControlInput; 48] = [
         ControlInput::Value,
         ControlInput::Min,
         ControlInput::Max,
@@ -870,6 +893,7 @@ impl ControlInput {
         ControlInput::Multiline,
         ControlInput::InputKind,
         ControlInput::MaxLength,
+        ControlInput::Precision,
         ControlInput::Caption,
     ];
 
@@ -952,6 +976,7 @@ impl Control {
             multiline: None,
             input_kind: None,
             max_length: None,
+            precision: None,
             caption: None,
             shader: None,
             look: Look::default(),
@@ -1017,6 +1042,7 @@ impl Control {
             ControlInput::Multiline => self.multiline,
             ControlInput::InputKind => self.input_kind,
             ControlInput::MaxLength => self.max_length,
+            ControlInput::Precision => self.precision,
             ControlInput::Caption => self.caption,
         }
     }
@@ -1080,6 +1106,7 @@ impl Control {
             ControlInput::Multiline => &mut self.multiline,
             ControlInput::InputKind => &mut self.input_kind,
             ControlInput::MaxLength => &mut self.max_length,
+            ControlInput::Precision => &mut self.precision,
             ControlInput::Caption => &mut self.caption,
         };
         *slot = Some(entry);
@@ -1105,6 +1132,7 @@ impl Encode for Control {
             self.multiline,
             self.input_kind,
             self.max_length,
+            self.precision,
             self.caption,
             self.shader,
             look.background,
@@ -1214,6 +1242,7 @@ impl Decode for Control {
             multiline: entry()?,
             input_kind: entry()?,
             max_length: entry()?,
+            precision: entry()?,
             caption: entry()?,
             shader: entry()?,
             look: Look {
@@ -1353,7 +1382,7 @@ mod tests {
         for kind in ControlKind::ALL {
             assert_eq!(ControlKind::from_u8(kind as u8), Some(kind));
         }
-        assert_eq!(ControlKind::from_u8(13), None);
+        assert_eq!(ControlKind::from_u8(ControlKind::ALL.len() as u8), None);
         assert_eq!(ControlKind::of("Svg"), ControlKind::Asset);
         assert_eq!(ControlKind::of("ShaderView"), ControlKind::Shader);
         assert_eq!(
@@ -1478,6 +1507,7 @@ mod tests {
             multiline: None,
             input_kind: Some(21),
             max_length: None,
+            precision: Some(22),
             caption: Some(15),
             shader: Some(2),
             look: Look {

@@ -668,6 +668,9 @@ impl Jsx<'_> {
                             attrs.push(format!("pattern={{show.pattern({v})}}"));
                         }
                         Prop::MaxLength => attrs.push(format!("maxlength={{show.num({v})}}")),
+                        Prop::Number => {
+                            refs.push(format!("st.effect(() => show.number(el, {v}));"))
+                        }
                         Prop::Selected { radio } => {
                             refs.push(format!("st.effect(() => show.select(el, {v}, {radio}));"));
                         }

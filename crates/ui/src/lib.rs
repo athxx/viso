@@ -40,6 +40,7 @@ pub mod length;
 pub mod long_press;
 pub mod node;
 pub mod notice;
+pub mod number_format;
 pub mod paint;
 pub mod reactive;
 pub mod scenes;
@@ -123,9 +124,10 @@ pub use viso_runtime::{InputKind, Instant};
 // `BoxStyle`, `TextRequest`, or `Content`. `viso-render` is already a `viso-ui`
 // dependency, so this adds no new edge.
 pub use asset::{Asset, AssetBytes, AssetDraw, AssetFit, AssetPayload, AssetState, AssetTable};
-pub use field_input::{FieldEvent, FieldKey, field_input, field_key};
+pub use field_input::{FieldEvent, FieldKey, field_input, field_key, number_input};
 pub use field_marks::FieldMarks;
 pub use input_filter::InputFilter;
+pub use number_format::{NumberFormat, number_kind};
 pub use reactive::{
     Cleanup, ComputeCx, ComputedId, ComputedStore, DepCursor, EffectCx, EffectId, EffectStore,
     ProjectId, SemanticProjector,

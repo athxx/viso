@@ -19,7 +19,7 @@ use viso_ui::virtual_list::VirtualLists;
 use viso_ui::{
     BindingTable, CheckMark, CheckShape, EffectStore, ImeEvent, Key, KeyEvent, KeyRouter,
     Modifiers, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase, PointerRouter, Rect,
-    SemanticProjector, StateStore, TextEdits, run_structure_hooks,
+    ScrollEvent, ScrollRouter, SemanticProjector, StateStore, TextEdits, run_structure_hooks,
 };
 use viso_view::{Value, ViewHost, load_view};
 
@@ -31,6 +31,8 @@ export component Controls {
     state name = "";
     state notes = "";
     state amount = "";
+    state volume: F64 = 2.0;
+    state volumes = 0;
     state changes = 0;
     state seen: F32 = 0.0;
     state submits = 0;
@@ -97,6 +99,15 @@ export component Controls {
                 max_length: 4;
                 bind value <=> amount;
             }
+            NumberField {
+                width: 200dp;
+                height: 20dp;
+                min: 0.0;
+                max: 10.0;
+                step: 0.5;
+                bind value <=> volume;
+                on changed(event) { volumes += 1; }
+            }
         }
     }
 }
@@ -148,7 +159,7 @@ impl Rt {
         let done = hot_reload_view(&mut live, &rt.last_good, source, &origin()).expect("reloads");
         rt.root = live.root;
         rt.last_good = done.candidate;
-        rt.layout();
+        rt.settle();
         rt
     }
 
@@ -166,7 +177,7 @@ impl Rt {
         .expect("loads");
         rt.root = view.root;
         rt.view = view.host;
-        rt.layout();
+        rt.settle();
         rt
     }
 
@@ -208,6 +219,19 @@ impl Rt {
     fn click(&mut self, x: f32, y: f32) {
         self.pointer(x, y, PointerPhase::Down);
         self.pointer(x, y, PointerPhase::Up);
+    }
+
+    /// A wheel scroll of `delta_y` at `(x, y)`.
+    fn wheel(&mut self, x: f32, y: f32, delta_y: f32) {
+        let event = ScrollEvent {
+            x,
+            y,
+            delta_x: 0.0,
+            delta_y,
+            modifiers: Modifiers::default(),
+        };
+        ScrollRouter::route(&mut self.store, self.root.expect("mounted"), event);
+        self.settle();
     }
 
     /// A press of `key` to the focused node.
@@ -401,6 +425,39 @@ fn a_number_field_takes_a_number_within_its_length() {
             text: "2a345".into(),
         });
         assert_eq!(rt.state("amount"), Some(Value::Str(Rc::new("-123".into()))));
+        assert!(!rt.faulted());
+    }
+}
+
+/// `got` is `want` as the view's cells hold an `F64`: at single precision.
+fn assert_near(got: f64, want: f64, what: &str) {
+    assert!((got - want).abs() < 1e-5, "{got} is not {want}: {what}");
+}
+
+#[test]
+fn a_number_field_scrubs_steps_and_settles_its_number() {
+    for mut rt in targets() {
+        rt.pointer(10.0, 150.0, PointerPhase::Down);
+        rt.pointer(30.0, 150.0, PointerPhase::Move);
+        rt.pointer(30.0, 150.0, PointerPhase::Up);
+        assert_near(rt.float("volume"), 7.0, "ten steps scrubbed from 2");
+        rt.click(10.0, 150.0);
+        rt.ime(ImeEvent::Commit { text: "4x".into() });
+        assert_near(rt.float("volume"), 4.0, "the text replaced its selection");
+        rt.key(Key::Up);
+        assert_near(rt.float("volume"), 4.5, "");
+        rt.ime(ImeEvent::Commit { text: "9".into() });
+        assert_near(rt.float("volume"), 4.59, "typed on, read as it is");
+        rt.key(Key::Enter);
+        assert_near(rt.float("volume"), 4.6, "settled at the precision");
+        rt.wheel(10.0, 150.0, -32.0);
+        assert_near(rt.float("volume"), 5.6, "two steps up");
+        rt.key(Key::Home);
+        rt.ime(ImeEvent::Commit { text: "9".into() });
+        assert_near(rt.float("volume"), 5.6, "95.6 is out of range");
+        rt.key(Key::Enter);
+        assert_near(rt.float("volume"), 10.0, "settled within the range");
+        assert!(rt.int("volumes") >= 6);
         assert!(!rt.faulted());
     }
 }

@@ -468,6 +468,47 @@ fn what_a_field_holds_exports_as_its_keyboard_and_pattern() {
     );
 }
 
+const VOLUME: &str = r#"
+export component Volume {
+    state volume: F64 = 2.5;
+    view {
+        Column {
+            NumberField {
+                width: 100dp;
+                height: 20dp;
+                value: volume;
+                min: 0.0;
+                max: 10.0;
+                step: 0.5;
+                on changed(e) { volume = e.value; }
+            }
+            NumberField { width: 100dp; height: 20dp; min: 0.0; max: 99.0; }
+        }
+    }
+}
+"#;
+
+#[test]
+fn a_number_field_exports_as_a_spin_button_that_steps() {
+    let page = export(VOLUME, false).unwrap();
+    let index = &page.index;
+    assert!(index.contains(r#"role="spinbutton""#), "{index}");
+    assert!(index.contains(r#"inputmode="decimal""#), "{index}");
+    assert!(index.contains(r#"aria-valuemin="0.0""#), "{index}");
+    assert!(index.contains(r#"aria-valuemax="10.0""#), "{index}");
+    assert!(index.contains(r#"data-step="0.5""#), "{index}");
+    assert!(
+        index.contains(r#"pattern="[0-9]*""#),
+        "whole and unsigned: {index}"
+    );
+    assert!(
+        index.contains(r#"aria-valuemax="99" data-step="1" data-places="0" value="0""#),
+        "no number shows its origin: {index}"
+    );
+    let script = page.script.as_deref().unwrap();
+    assert!(script.contains("P.number("), "the number is kept current");
+}
+
 const COUNTER: &str = r#"
 export component Counter {
     state count = 0;

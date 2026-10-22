@@ -6015,6 +6015,7 @@ impl<'a> BuildCx<'a> {
         look: crate::text_edit::FieldLook,
     ) -> Handle {
         let id = self.push_node(LayoutInput::Leaf { size: style.size }, style.style);
+        let number = look.number.is_some();
         let buffer = crate::text_edit::Buffer::with_seed(&crate::text_edit::FieldSeed {
             request,
             valued: true,
@@ -6022,6 +6023,7 @@ impl<'a> BuildCx<'a> {
         });
         self.store.set_text_request(id, buffer.request());
         self.store.make_field(id);
+        self.store.set_number_field(id, number);
         self.text_edits
             .as_mut()
             .expect("text_input() requires a with_reactive BuildCx")

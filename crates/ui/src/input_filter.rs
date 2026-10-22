@@ -14,6 +14,7 @@ use std::fmt;
 use std::rc::Rc;
 
 use viso_runtime::InputKind;
+use viso_schema::number::number_char;
 use viso_text::Segmenter;
 
 use crate::text_edit::FieldLook;
@@ -86,18 +87,6 @@ fn keep_printable(piece: Cow<'_, str>) -> Cow<'_, str> {
         return piece;
     }
     Cow::Owned(piece.chars().filter(|&c| !control(c)).collect())
-}
-
-/// `c` as a number field reads it: a full-width digit, sign or separator as
-/// its ASCII one, and a comma, ideographic full stop or minus sign as the
-/// separator or sign it stands for.
-fn number_char(c: char) -> char {
-    match c {
-        '\u{FF10}'..='\u{FF19}' => char::from(b'0' + (c as u32 - 0xFF10) as u8),
-        '\u{FF0D}' | '\u{2212}' => '-',
-        '\u{FF0E}' | '\u{FF0C}' | '\u{3002}' | ',' => '.',
-        c => c,
-    }
 }
 
 /// Keeps `s` borrowed when `out` came to the same text.

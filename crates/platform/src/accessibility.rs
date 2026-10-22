@@ -56,6 +56,8 @@ pub enum SemanticsRole {
     TextField,
     /// An editable text field whose text is masked and never read out.
     SecureField,
+    /// An editable number that steps up and down.
+    SpinButton,
     Tab,
     TabList,
     Navigation,

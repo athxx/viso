@@ -36,6 +36,8 @@ pub(crate) enum EditKind {
     Backspace,
     /// A grapheme deleted forward.
     Delete,
+    /// A number stepped or scrubbed.
+    Step,
     /// Anything else: a step of its own.
     Other,
 }

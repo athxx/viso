@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use viso_behavior::Value;
+use viso_schema::number::NumberFormat;
 use viso_schema::view::{Control, ControlKind, EventRoute};
 use viso_schema::{Align, Justify, LiveRegion, Role};
 
@@ -128,6 +129,8 @@ pub(super) enum Prop {
     InputKind,
     /// A text field's `maxlength`.
     MaxLength,
+    /// A number field's number, kept while its text reads as it.
+    Number,
     Selected {
         radio: bool,
     },
@@ -481,7 +484,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             ("Modal" | "Sheet", _) => "dialog",
             ("Button", _) => "button",
             ("TextInput", _) if lines => "textarea",
-            ("TextInput" | "Toggle" | "CheckBox" | "Slider", _) => "input",
+            ("TextInput" | "NumberField" | "Toggle" | "CheckBox" | "Slider", _) => "input",
             ("Image" | "Svg", _) if !masked => "img",
             ("Text", _) => "span",
             (_, Some(Role::Navigation)) => "nav",
@@ -495,7 +498,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             (NodeKind::Scroll | NodeKind::VirtualList, _) => "vx-scroll",
             (_, "Text") => "vx-text",
             (_, "Button") => "vx-button",
-            (_, "TextInput") => "vx-input",
+            (_, "TextInput" | "NumberField") => "vx-input",
             (_, "Toggle" | "CheckBox") => "vx-check",
             (_, "Slider") => "vx-range",
             (_, "Image" | "Svg") if masked => "vx-mask",
@@ -517,7 +520,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         }
         match node.type_name.as_str() {
             "Button" => el.attr("type", "button"),
-            "TextInput" if !lines => el.attr("type", "text"),
+            "TextInput" | "NumberField" if !lines => el.attr("type", "text"),
             "Toggle" => {
                 el.attr("type", "checkbox");
                 el.attr("role", "switch");
@@ -942,6 +945,68 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         }
     }
 
+    /// Writes a number field's number, its bounds, its step and the places
+    /// it shows: the keyboard and pattern of what it holds, its bounds as
+    /// `aria-valuemin`/`aria-valuemax`, and its step and places as
+    /// `data-step`/`data-places` for the page's script to step and settle by.
+    fn number(
+        &mut self,
+        control: &Control,
+        el: &mut Element,
+        wires: &mut Vec<Wire>,
+        at: TextRange,
+    ) {
+        let constant = |entry: Option<u32>, this: &mut Self| -> Value {
+            entry
+                .and_then(
+                    |entry| match this.fixed(entry, "the number field's format", at) {
+                        Fixed::Value(v) => Some(v),
+                        _ => None,
+                    },
+                )
+                .unwrap_or(Value::Nil)
+        };
+        let (min, max, step, precision) = (
+            constant(control.min, self),
+            constant(control.max, self),
+            constant(control.step, self),
+            constant(control.precision, self),
+        );
+        let format = number_format(&min, &max, &step, &precision);
+        // The `InputKind` tags of digits, integer and decimal.
+        let kind = match (format.whole(), format.signed()) {
+            (true, false) => 1,
+            (true, true) => 2,
+            (false, _) => 3,
+        };
+        if let Some((mode, pattern)) = input_kind(kind) {
+            el.attr("inputmode", mode);
+            if let Some(pattern) = pattern {
+                el.attr("pattern", pattern);
+            }
+        }
+        if format.min.is_finite() {
+            el.attr("aria-valuemin", &format.show(format.min));
+        }
+        if format.max.is_finite() {
+            el.attr("aria-valuemax", &format.show(format.max));
+        }
+        el.attr("data-step", &format!("{}", format.step));
+        el.attr("data-places", &format.precision.to_string());
+        // A field given no number shows the one nearest zero in its range.
+        let fixed = match control.value {
+            Some(_) => self
+                .bind(wires, control.value, Prop::Number, "the number", at)
+                .map(|fixed| fixed.float()),
+            None => Some(None),
+        };
+        if let Some(number) = fixed {
+            let shown = format.show(format.settle(number.unwrap_or(format.origin())));
+            el.attr("value", &shown);
+            el.attr("aria-valuenow", &shown);
+        }
+    }
+
     /// Writes what `control`'s entries show; returns the child a selection
     /// selects when it never changes.
     #[allow(clippy::too_many_arguments)]
@@ -1062,6 +1127,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                     _ => {}
                 }
             }
+            ControlKind::Number => self.number(control, el, wires, at),
             ControlKind::Slider => {
                 for (entry, name, what) in [
                     (control.min, "min", "the slider's minimum"),
@@ -1771,6 +1837,13 @@ impl Fixed {
         }
     }
 
+    fn float(&self) -> Option<f64> {
+        match self {
+            Fixed::Value(v) => v.as_float(),
+            _ => None,
+        }
+    }
+
     fn color(&self) -> String {
         match self {
             Fixed::Value(v) => v
@@ -1788,6 +1861,21 @@ impl Fixed {
             }
             _ => None,
         }
+    }
+}
+
+/// How a number field bounded by `min` and `max`, stepping by `step` and
+/// showing `precision` places shows its number; an absent bound is none, an
+/// absent step `1`, an absent precision as many places as the step has.
+fn number_format(min: &Value, max: &Value, step: &Value, precision: &Value) -> NumberFormat {
+    let format = NumberFormat::new(
+        min.as_float().unwrap_or(f64::NEG_INFINITY),
+        max.as_float().unwrap_or(f64::INFINITY),
+        step.as_float().unwrap_or(1.0),
+    );
+    match precision.as_int().and_then(|p| u8::try_from(p).ok()) {
+        Some(places) => format.with_precision(places),
+        None => format,
     }
 }
 
@@ -1954,6 +2042,7 @@ fn aria_role(role: Role, tag: &str, widget: &str) -> Option<&'static str> {
         (Role::Radio, ..) => "radio",
         (Role::Image, ..) => "img",
         (Role::TextField | Role::SecureField, ..) => "textbox",
+        (Role::SpinButton, ..) => "spinbutton",
         (Role::Tab, ..) => "tab",
         (Role::TabList, ..) => "tablist",
         (Role::Navigation, ..) => "navigation",

@@ -92,10 +92,12 @@ Rules:
   or paragraph (click counting in the pointer router, `EventCx::clicks`).
 - [x] E5 Input formatters: max length, integer/decimal filter, custom filter, widget
   `on_submit`; DSL props.
-- [ ] E6 `NumberField` / scrub value input (drag to change, step, min/max, wheel, arrow
+- [x] E6 `NumberField` / scrub value input (drag to change, step, min/max, wheel, arrow
   keys, typed entry), widget and DSL.
 - [ ] E7 Touch: long-press word select, selection handles, the edit menu (copy, cut,
   paste, select all).
+- [ ] E8 Pointer cursors per node: a node's hover cursor (DSL `cursor`), the I-beam
+  over text fields, a resize cursor over a number field's scrub and a splitter.
 
 ## W3 — Rich and selectable text
 

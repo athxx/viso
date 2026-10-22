@@ -148,6 +148,16 @@ const TEXT_INPUT: &[WidgetProperty] = &[
     prop("invalid", "Bool"),
 ];
 
+/// A `NumberField`'s number, its bounds, its step and the decimal places
+/// it shows, as many as `step` has when it gives none.
+const NUMBER_FIELD: &[WidgetProperty] = &[
+    two_way("value", "F64"),
+    prop("min", "Option<F64>"),
+    prop("max", "Option<F64>"),
+    prop("step", "F64"),
+    prop("precision", "Option<U8>"),
+];
+
 const CHECK: &[WidgetProperty] = &[
     two_way("checked", "Bool"),
     prop("label", "String").localizable(),
@@ -265,6 +275,7 @@ const STANDARD_EVENTS: &[WidgetEvent] = &[
 
 const TOGGLE_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("changed", "ToggleChanged")];
 const SLIDER_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("changed", "SliderChanged")];
+const NUMBER_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("changed", "NumberChanged")];
 const TEXT_INPUT_EVENTS: &[WidgetEvent] = &[
     WidgetEvent::new("changed", "TextChanged"),
     WidgetEvent::signal("submitted"),
@@ -371,6 +382,14 @@ pub const STANDARD: &[NativeWidget] = &[
         &[TEXT_INPUT, TEXT_STYLE, LAYOUT, TRANSFORM, FOCUS],
     )
     .events(&[TEXT_INPUT_EVENTS, STANDARD_EVENTS])
+    .migratable(MigratableState::SELECTION)
+    .interactive(),
+    layout(
+        "NumberField",
+        WidgetNode::Leaf,
+        &[NUMBER_FIELD, TEXT_STYLE, LAYOUT, TRANSFORM, FOCUS],
+    )
+    .events(&[NUMBER_EVENTS, STANDARD_EVENTS])
     .migratable(MigratableState::SELECTION)
     .interactive(),
     layout(

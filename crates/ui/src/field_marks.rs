@@ -7,6 +7,9 @@
 //! text is laid out ([`crate::text_edit::Buffer::marks`]), in the node's
 //! space with its text unscrolled; setting different ones repaints only the
 //! field. The table is cold and small: one entry for each text field.
+//!
+//! A number field with the focus takes the wheel to step its number, a step
+//! for every [`WHEEL_PX`] of scroll, up for a scroll toward earlier content.
 
 use viso_render::{Rect, Rgba};
 
@@ -14,6 +17,10 @@ use crate::component::NodeStore;
 use crate::dirty::DirtyClass;
 use crate::layout::Vec2;
 use crate::node::NodeId;
+use crate::text_edit::EditIntent;
+
+/// How far the wheel scrolls for one step of a focused number field: a line.
+pub const WHEEL_PX: f32 = 16.0;
 
 /// What a text field draws besides its text, in its node's space with the
 /// text unscrolled.
@@ -64,17 +71,23 @@ impl FieldMarks {
 #[derive(Debug, Default)]
 pub(crate) struct Fields {
     marks: Vec<(NodeId, FieldMarks)>,
+    /// The number fields, with the wheel scroll not yet a whole step.
+    steppers: Vec<(NodeId, f32)>,
 }
 
 impl Fields {
     pub(crate) fn clear(&mut self) {
         self.marks.clear();
+        self.steppers.clear();
     }
 
     /// Forgets the slot `index`, freed or reused.
     pub(crate) fn forget(&mut self, index: u32) {
         if !self.marks.is_empty() {
             self.marks.retain(|(n, _)| n.index() != index);
+        }
+        if !self.steppers.is_empty() {
+            self.steppers.retain(|(n, _)| n.index() != index);
         }
     }
 
@@ -125,6 +138,61 @@ impl NodeStore {
         }
         std::mem::swap(slot, marks);
         self.mark_dirty(id, DirtyClass::PAINT);
+    }
+
+    /// Makes text field `id` a number field, which a drag scrubs and the
+    /// wheel steps while it has the focus, or a plain one.
+    pub fn set_number_field(&mut self, id: NodeId, number: bool) {
+        let at = self.fields.steppers.iter().position(|(n, _)| *n == id);
+        match (at, number) {
+            (None, true) if self.arena().is_live(id) => {
+                self.fields.steppers.push((id, 0.0));
+                self.set_draggable(id, true);
+            }
+            (Some(at), false) => {
+                self.fields.steppers.swap_remove(at);
+                self.set_draggable(id, false);
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether node `id` is a number field.
+    pub fn is_number_field(&self, id: NodeId) -> bool {
+        self.fields.steppers.iter().any(|(n, _)| *n == id)
+    }
+
+    /// Steps the focused number field at or above `target` by the wheel's
+    /// `delta_y`, reporting whether there is one to take it.
+    pub(crate) fn wheel_number_field(&mut self, target: NodeId, delta_y: f32) -> bool {
+        if self.fields.steppers.is_empty() {
+            return false;
+        }
+        let Some(focused) = self.focused() else {
+            return false;
+        };
+        let mut node = Some(target);
+        while let Some(n) = node {
+            if n == focused {
+                break;
+            }
+            node = self.parent(n);
+        }
+        let Some((_, left)) = self
+            .fields
+            .steppers
+            .iter_mut()
+            .find(|(n, _)| Some(*n) == node)
+        else {
+            return false;
+        };
+        *left -= delta_y;
+        let steps = (*left / WHEEL_PX).trunc();
+        *left -= steps * WHEEL_PX;
+        if steps != 0.0 {
+            self.queue_edit(focused, EditIntent::Step(f64::from(steps)));
+        }
+        true
     }
 
     /// Scrolls text field `id` by `delta` within its text, inside its box.
