@@ -313,6 +313,93 @@ impl NodeStore {
         }
     }
 
+    /// Snapping viewport `id`, along `axis`, takes key step `step`: an item
+    /// on or back from the one it heads for, the item nearest a page on or
+    /// back (the next page, paging), or its first or last item.
+    pub(crate) fn snap_by_key(&mut self, id: NodeId, axis: Axis, step: crate::key_scroll::Step) {
+        use crate::key_scroll::Step;
+        let Some(k) = self.snaps.find(id) else {
+            return;
+        };
+        let s = self.snaps.list[k];
+        let index = s.index.unwrap_or(0);
+        let last = s.count.saturating_sub(1);
+        let item = match step {
+            Step::Line(on) => Some(on),
+            Step::Page(on) if s.snap.paging => Some(on),
+            Step::Page(on) => {
+                let page = self.page_step(id, axis);
+                let from = match self.snap_aim_at(id, axis, index) {
+                    Some(at) => at,
+                    None => self.scroll_distance(id, axis),
+                };
+                let rest = from + if on { page } else { -page };
+                self.snap_near(id, axis, from, rest);
+                return;
+            }
+            Step::End(on) => {
+                self.snap_to_item(id, if on { last.max(index) } else { 0 });
+                return;
+            }
+        };
+        if let Some(on) = item {
+            let next = if on {
+                index + 1
+            } else {
+                index.saturating_sub(1)
+            };
+            if next != index && (!on || s.count == 0 || next <= last) {
+                self.snap_to_item(id, next);
+            }
+        }
+    }
+
+    /// Where snapping viewport `id` rests on item `index`, from its start
+    /// along `axis`, when its content's children are its items.
+    fn snap_aim_at(&mut self, id: NodeId, axis: Axis, index: usize) -> Option<f32> {
+        if self.snaps_rows(id) {
+            return None;
+        }
+        let snap = self.snaps.list[self.snaps.find(id)?].snap;
+        self.gather_points(id, axis, snap);
+        self.snaps.points.iter().find(|p| p.1 == index).map(|p| p.0)
+    }
+
+    /// Snapping viewport `id`, at `from` along `axis`, glides to the item
+    /// nearest `rest`, past `from` the way `rest` lies.
+    fn snap_near(&mut self, id: NodeId, axis: Axis, from: f32, rest: f32) {
+        let Some(k) = self.snaps.find(id) else {
+            return;
+        };
+        if self.snaps_rows(id) {
+            self.snaps.list[k].aim = Some(SnapAim::Release {
+                from,
+                rest,
+                velocity: 0.0,
+            });
+            return;
+        }
+        let snap = self.snaps.list[k].snap;
+        self.gather_points(id, axis, snap);
+        let on = rest > from;
+        let pick = self
+            .snaps
+            .points
+            .iter()
+            .copied()
+            .filter(|p| {
+                if on {
+                    p.0 > from + ON_POINT
+                } else {
+                    p.0 < from - ON_POINT
+                }
+            })
+            .min_by(|a, b| (a.0 - rest).abs().total_cmp(&(b.0 - rest).abs()));
+        if let Some((to, index)) = pick {
+            self.snap_to(id, to, index, 0.0);
+        }
+    }
+
     /// How viewport `id` snaps, if it does.
     pub fn scroll_snap(&self, id: NodeId) -> Option<ScrollSnap> {
         self.snaps.find(id).map(|k| self.snaps.list[k].snap)

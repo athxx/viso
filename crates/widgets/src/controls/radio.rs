@@ -343,6 +343,7 @@ impl Component for RadioGroup {
                             && !k.repeat
                             && matches!(k.key, Key::Enter | Key::Space)
                         {
+                            ev.stop_propagation();
                             select(&key_cb, ev, selected, index);
                         }
                     });

@@ -165,6 +165,11 @@ impl NodeStore {
         }
     }
 
+    /// Whether the store has a frame client.
+    pub fn has_frame_clients(&self) -> bool {
+        !self.frame_clients().clients.is_empty()
+    }
+
     /// Whether keys go to the clients rather than the UI: no node holds
     /// keyboard focus, or the one that does shows a scene.
     pub fn keys_reach_clients(&self) -> bool {

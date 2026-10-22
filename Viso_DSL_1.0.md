@@ -4632,6 +4632,7 @@ export record AdaptiveColumns { mode: AutoRepeat = AutoRepeat::fill; min: MixedL
 - `snap: Snap`（`start; center; end; pages;`，取常量）：视口停靠在其项上——`Scroll` 的项是其内容节点的子节点，`VirtualList` 的项是行；松手、滚轮停转或触控板抬起后滑行到惯性停点最近的项，按 `start`/`center`/`end` 对齐，`pages` 一次轻扫至多移动一项；`snap_inset: MixedLength`（常量 `dp`）让项停在距视口两边该距离处（Carousel 的内边距）；`page_dots: Bool` 在视口横轴末端边居中覆盖一行页点，点亮所停项，点击或方向键移动到对应项；事件 `snap_changed(SelectionChanged)` 在所停、所趋向或最近的项变化时投递其序号 `value`（初始项不投递）；`VirtualList` 同样接受；
 - 子节点在滚动轴上的约束无界；滚动偏移变化只标记视口子树 `TRANSFORM|HIT_TEST|PAINT`，不触发布局（ADR 0007）；
 - 滚轮与触控板事件先送往最内层可在该轴滚动的视口，到达边界后沿祖先链传递；
+- 键盘：焦点路由上无处理器取走、焦点又不在可编辑文本框中的方向键、Page Up/Down、Space（Shift+Space）与 Home/End 滚动焦点（无焦点时为指针下节点）所在的最近可滚动视口——一行、一页（保留少量重叠）或到两端，平滑抵达，连按累加；吸附视口逐项移动；标准控件取走自己使用的按键（Slider 的方向键、Toggle 的 Space 等）；
 - 水平滚动的视口在 RTL 下以右边为起点：内容右边与视口右边对齐，偏移在 `[-range, 0]` 内取值（0 为起点，向左为负）；方向翻转时偏移保持到起点的距离；
 - 命令式滚动只经 NodeRef（U7.6）。
 

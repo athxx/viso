@@ -36,6 +36,7 @@ pub mod input;
 pub mod input_filter;
 pub mod inspect;
 pub mod interaction;
+pub mod key_scroll;
 pub mod layer;
 pub mod layout;
 pub mod layout_value;

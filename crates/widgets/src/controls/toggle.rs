@@ -350,6 +350,7 @@ impl Component for Toggle {
                 && !k.repeat
                 && matches!(k.key, Key::Enter | Key::Space)
             {
+                ev.stop_propagation();
                 let next = !read_on(ev, on);
                 ev.set(on, StateValue::Bool(next));
                 fire(&key_cb, ev, next);

@@ -284,6 +284,7 @@ impl Component for Button {
                 && !k.repeat
                 && matches!(k.key, Key::Enter | Key::Space)
             {
+                ev.stop_propagation();
                 fire(&key_cb, ev);
             }
         });

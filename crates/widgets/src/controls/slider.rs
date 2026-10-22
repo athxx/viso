@@ -431,6 +431,7 @@ impl Component for Slider {
                 Key::Left | Key::Down => -1.0,
                 _ => return,
             };
+            ev.stop_propagation();
             let increment = if step > 0.0 && span > 0.0 {
                 step / span
             } else {

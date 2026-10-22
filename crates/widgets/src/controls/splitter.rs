@@ -445,6 +445,7 @@ impl Component for Splitter {
                 Key::Left | Key::Up => -1.0,
                 _ => return,
             };
+            ev.stop_propagation();
             let next = (read_f32(ev, fraction) + dir * KEY_STEP_FRACTION).clamp(0.0, 1.0);
             if ev.set(fraction, StateValue::Float(next)) {
                 fire(&key_cb, ev, next);

@@ -205,6 +205,7 @@ impl BuildCx<'_> {
                 Key::End => dots.count.saturating_sub(1),
                 _ => return,
             };
+            ev.stop_propagation();
             if next < dots.count {
                 ev.snap_to_item(viewport, next);
             }

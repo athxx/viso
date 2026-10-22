@@ -404,11 +404,16 @@ impl Component for Tabs {
                             let key_cb = self.on_change.clone();
                             let key_panels = panels_cell.clone();
                             cx.on_key(button, move |ev| {
-                                let Some(k) = ev.key() else { return };
+                                let Some(&k) = ev.key() else { return };
                                 if !k.pressed {
                                     return;
                                 }
                                 let panels = key_panels.borrow();
+                                // The strip takes its keys, at its ends too.
+                                if matches!(k.key, Key::Enter | Key::Space | Key::Left | Key::Right)
+                                {
+                                    ev.stop_propagation();
+                                }
                                 match k.key {
                                     Key::Enter | Key::Space if !k.repeat => {
                                         select(&key_cb, ev, selected, &panels, index);

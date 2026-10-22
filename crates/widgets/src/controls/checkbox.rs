@@ -299,6 +299,7 @@ impl Component for CheckBox {
                 && !k.repeat
                 && matches!(k.key, Key::Enter | Key::Space)
             {
+                ev.stop_propagation();
                 let next = !read_checked(ev, checked);
                 ev.set(checked, StateValue::Bool(next));
                 fire(&key_cb, ev, next);

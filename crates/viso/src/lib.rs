@@ -3039,9 +3039,24 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // No UI node takes keys, or a focused game viewport
                     // does: a running game takes them. An auto-repeat is not
                     // a new press for it; a key the game has no use for
-                    // reaches the viewport's ancestry.
-                    if ws.store.focused().is_none() && !k.repeat {
-                        ws.store.frame_clients_key(k.key, k.pressed);
+                    // reaches the viewport's ancestry. With nothing focused,
+                    // a key no game takes scrolls the window's viewport.
+                    if ws.store.focused().is_none() {
+                        let took = if k.repeat {
+                            ws.store.has_frame_clients()
+                        } else {
+                            ws.store.frame_clients_key(k.key, k.pressed)
+                        };
+                        if !took {
+                            let ev = KeyEvent {
+                                key: k.key,
+                                pressed: k.pressed,
+                                repeat: k.repeat,
+                                modifiers,
+                            };
+                            ws.store
+                                .scroll_by_key(root, &ev, viso_ui::primary_is_logo());
+                        }
                     }
                 } else {
                     let ev = KeyEvent {
@@ -3050,7 +3065,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         repeat: k.repeat,
                         modifiers,
                     };
-                    KeyRouter::route_key(
+                    let taken = KeyRouter::route_key_taken(
                         &mut ws.store,
                         &mut ws.states,
                         &ws.bindings,
@@ -3059,6 +3074,17 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         ev,
                         &mut ws.route_chain,
                     );
+                    // A key nothing took scrolls the viewport the keyboard
+                    // is in, unless the focus edits text.
+                    let edits = ws.store.focused().is_some_and(|id| {
+                        ws.text_edits
+                            .get(id)
+                            .is_some_and(|buffer| !buffer.look.read_only)
+                    });
+                    if !taken && !edits {
+                        ws.store
+                            .scroll_by_key(root, &ev, viso_ui::primary_is_logo());
+                    }
                 }
             }
             viso_runtime::InputSample::Text(t) => {

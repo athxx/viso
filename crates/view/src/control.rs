@@ -164,6 +164,7 @@ fn toggle(
     if !flips {
         return None;
     }
+    take_key(cx);
     let checked = read(host, control.value, scope, cx).as_int().unwrap_or(0) != 0;
     Some((EventRoute::Changed, field(Value::bool(!checked))))
 }
@@ -197,6 +198,7 @@ fn disclose(
     if !flips {
         return None;
     }
+    take_key(cx);
     let expanded = read(host, control.value, scope, cx).as_int().unwrap_or(0) != 0;
     Some((EventRoute::Changed, field(Value::bool(!expanded))))
 }
@@ -287,7 +289,7 @@ fn slider(
     } else {
         let k = cx.key()?;
         let unit = range.step.unwrap_or((range.max - range.min) * KEY_FRACTION);
-        match k.key {
+        let next = match k.key {
             Key::Right | Key::Up => range.snap(current + unit),
             Key::Left | Key::Down => range.snap(current - unit),
             Key::PageUp => range.snap(current + unit * PAGE_STEPS),
@@ -295,7 +297,9 @@ fn slider(
             Key::Home => range.min,
             Key::End => range.max,
             _ => return None,
-        }
+        };
+        cx.stop_propagation();
+        next
     };
     (next != current).then(|| (EventRoute::Changed, field(Value::Float(f64::from(next)))))
 }
@@ -323,13 +327,15 @@ fn select(
     } else {
         let k = cx.key()?;
         let last = i64::from(count - 1);
-        match k.key {
+        let next = match k.key {
             Key::Right | Key::Down => (current + 1).min(last),
             Key::Left | Key::Up => (current - 1).max(0),
             Key::Home => 0,
             Key::End => last,
             _ => return None,
-        }
+        };
+        cx.stop_propagation();
+        next
     };
     (next != current).then(|| (EventRoute::SelectedChanged, field(Value::Int(next))))
 }
@@ -408,6 +414,14 @@ impl Range {
             None => value,
         };
         stepped.clamp(low, high)
+    }
+}
+
+/// A key sample under dispatch, when it is one, taken: what the framework
+/// does with it by default — scrolling on Space — does not run.
+fn take_key(cx: &mut EventCx<'_>) {
+    if cx.key().is_some() {
+        cx.stop_propagation();
     }
 }
 
