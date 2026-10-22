@@ -65,6 +65,9 @@ pub struct VirtualListViewStyle {
     pub background: BoxStyle,
     /// Whether it shows scroll bars.
     pub bars: viso_ui::ScrollBars,
+    /// Whether it opens at its last row and follows the end as rows are
+    /// added, while it stands there (a log, a chat).
+    pub tail: bool,
 }
 
 impl Default for VirtualListViewStyle {
@@ -77,6 +80,7 @@ impl Default for VirtualListViewStyle {
             estimated_row: base.estimated_row,
             background: base.style,
             bars: base.bars,
+            tail: base.tail,
         }
     }
 }
@@ -209,6 +213,7 @@ impl Component for VirtualList {
                     estimated_row: self.style.estimated_row,
                     style: self.style.background,
                     bars: self.style.bars,
+                    tail: self.style.tail,
                 },
                 self.item_count,
                 move |index, cx| item(index, cx),
@@ -221,6 +226,7 @@ impl Component for VirtualList {
                     estimated_row: self.style.estimated_row,
                     style: self.style.background,
                     bars: self.style.bars,
+                    tail: self.style.tail,
                 },
                 self.item_count,
                 |_index, _cx| {},

@@ -423,6 +423,14 @@ fn scroll_style(node: &AotRecord) -> ScrollStyle {
     if has_size(node) {
         out.size = size_of(style);
     }
+    if let Some(scroll) = style.scroll {
+        out.bars = if scroll.bars {
+            crate::scroll_bar::ScrollBars::Auto
+        } else {
+            crate::scroll_bar::ScrollBars::Hidden
+        };
+        out.tail = scroll.tail;
+    }
     out
 }
 

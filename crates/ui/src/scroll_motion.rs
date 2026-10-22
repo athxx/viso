@@ -14,6 +14,16 @@
 //! stop the list, not to tap a row). A flick soon after in the same direction
 //! adds the caught speed, so repeated flicks build up speed. A wheel over the
 //! viewport, or a programmatic scroll of it, stops its coast too.
+//!
+//! A smooth programmatic scroll glides: the offset eases toward its target
+//! along a critically damped spring ([`NodeStore::glide_to`]), and a new
+//! target takes over at the speed the offset already moves. The finger, the
+//! wheel and the scroll bar stop a glide as they stop a coast.
+//!
+//! A tailing viewport ([`NodeStore::set_scroll_tail`]) opens at the end of
+//! its content and, while it stands there, follows the end as the content
+//! grows, gliding; scrolled away it stays put, and back at the end it
+//! follows again.
 
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -151,6 +161,13 @@ const PULL_RANGE: f32 = 0.35;
 /// critically damped, its `λ` per second. A coast reaching the end at `v`
 /// overshoots by `v/(λ·e)` and settles in about `7.5/λ` seconds.
 const SPRING: f64 = 20.0;
+/// The spring a glide eases its offset along, `λ` per second: nine tenths
+/// of the way in about `4/λ` seconds, whatever the distance.
+const GLIDE: f64 = 14.0;
+/// Within this distance (points) and under this speed (pt/s) a glide has
+/// arrived.
+const GLIDE_NEAR: f64 = 0.5;
+const GLIDE_STILL: f64 = 10.0;
 /// How far a full pull stretches the content along its axis: a share of
 /// the shown pull over the extent.
 const STRETCH: f32 = 0.25;
@@ -407,6 +424,22 @@ struct Caught {
     at: Instant,
 }
 
+/// A viewport's offset easing toward `target`, moving at `velocity` (pt/s).
+#[derive(Debug, Clone, Copy)]
+struct Glide {
+    viewport: NodeId,
+    target: Vec2,
+    velocity: [f64; 2],
+}
+
+/// A viewport that follows the end of its content while it stands there:
+/// `end` is where the end was at the last layout, `NaN` before the first.
+#[derive(Debug, Clone, Copy)]
+struct Tail {
+    viewport: NodeId,
+    end: f32,
+}
+
 /// A viewport pulled past the end of its range along its axis.
 #[derive(Debug, Clone, Copy)]
 struct Pull {
@@ -453,6 +486,8 @@ fn raw_pull(shown: f32, extent: f32) -> f32 {
 pub(crate) struct ScrollMotions {
     physics: ScrollPhysics,
     flings: Vec<Fling>,
+    glides: Vec<Glide>,
+    tails: Vec<Tail>,
     pulls: Vec<Pull>,
     caught: Option<Caught>,
     /// The pointer whose press caught a coast: its samples reach no control.
@@ -474,6 +509,8 @@ impl ScrollMotions {
     /// Forget every coast; the physics and the clock stay.
     pub(crate) fn clear(&mut self) {
         self.flings.clear();
+        self.glides.clear();
+        self.tails.clear();
         self.pulls.clear();
         self.caught = None;
         self.swallowed = None;
@@ -504,11 +541,103 @@ impl NodeStore {
         self.motions.input_time
     }
 
-    /// Whether a viewport coasts or a pull relaxes: the frame loop keeps
-    /// beating while one does.
+    /// Whether a viewport coasts or glides or a pull relaxes: the frame loop
+    /// keeps beating while one does.
     #[inline]
     pub fn is_scroll_moving(&self) -> bool {
-        !self.motions.flings.is_empty() || self.motions.pulls.iter().any(|p| p.spring.is_some())
+        !self.motions.flings.is_empty()
+            || !self.motions.glides.is_empty()
+            || self.motions.pulls.iter().any(|p| p.spring.is_some())
+    }
+
+    /// Whether viewport `id` glides toward a target.
+    pub fn is_gliding(&self, id: NodeId) -> bool {
+        self.motions.glides.iter().any(|g| g.viewport == id)
+    }
+
+    /// Ease viewport `id`'s offset to `offset`, clamped to its range as it
+    /// goes: a glide under way turns to the new target at its speed, and a
+    /// coast stops. A stale handle or a node that does not scroll is a
+    /// no-op.
+    pub fn glide_to(&mut self, id: NodeId, offset: Vec2) {
+        if self.scroll_axis(id).is_none() || !self.arena().is_live(id) {
+            return;
+        }
+        self.motions.flings.retain(|f| f.viewport != id);
+        match self.motions.glides.iter_mut().find(|g| g.viewport == id) {
+            Some(glide) => glide.target = offset,
+            None => self.motions.glides.push(Glide {
+                viewport: id,
+                target: offset,
+                velocity: [0.0; 2],
+            }),
+        }
+    }
+
+    /// Make viewport `id` follow the end of its content while it stands
+    /// there, or stop it. Turned on, it opens at the end.
+    pub fn set_scroll_tail(&mut self, id: NodeId, on: bool) {
+        self.motions.tails.retain(|t| t.viewport != id);
+        if on && self.arena().is_live(id) {
+            self.motions.tails.push(Tail {
+                viewport: id,
+                end: f32::NAN,
+            });
+        }
+    }
+
+    /// After a layout, move each tailing viewport that stood at the end of
+    /// its content (or glides toward it) to where the end is now.
+    pub(crate) fn follow_tails(&mut self) {
+        let mut i = self.motions.tails.len();
+        while i > 0 {
+            i -= 1;
+            let tail = self.motions.tails[i];
+            let id = tail.viewport;
+            let Some(axis) = self.scroll_axis(id).filter(|_| self.arena().is_live(id)) else {
+                self.motions.tails.swap_remove(i);
+                continue;
+            };
+            let (least, most) = self.scroll_span(id, axis);
+            // A row read right to left ends at its least offset.
+            let rtl = axis == Axis::Row
+                && self.direction_at(id.index()) == crate::adaptive::LayoutDirection::Rtl;
+            let end = if rtl { least } else { most };
+            self.motions.tails[i].end = end;
+            let offset = self.scroll(id);
+            if tail.end.is_nan() {
+                self.set_scroll(id, with_axis(offset, axis, end));
+                continue;
+            }
+            let near = |a: f32, b: f32| (a - b).abs() <= 0.5;
+            let stood = near(offset.on(axis), tail.end)
+                || self.is_gliding(id) && near(self.scroll_target(id).on(axis), tail.end);
+            if stood && !near(offset.on(axis), end) {
+                self.glide_to(id, with_axis(self.scroll_target(id), axis, end));
+            }
+        }
+    }
+
+    /// Glide viewport `id` to `distance` from its start along `axis`
+    /// (leftward on a row read right to left).
+    pub(crate) fn glide_along(&mut self, id: NodeId, axis: Axis, distance: f32) {
+        let along = if axis == Axis::Row
+            && self.direction_at(id.index()) == crate::adaptive::LayoutDirection::Rtl
+        {
+            -distance
+        } else {
+            distance
+        };
+        self.glide_to(id, with_axis(self.scroll_target(id), axis, along));
+    }
+
+    /// Where viewport `id` is headed: its glide's target, else its offset.
+    pub fn scroll_target(&self, id: NodeId) -> Vec2 {
+        self.motions
+            .glides
+            .iter()
+            .find(|g| g.viewport == id)
+            .map_or_else(|| self.scroll(id), |g| g.target)
     }
 
     /// Whether viewport `id` coasts.
@@ -574,6 +703,7 @@ impl NodeStore {
             return;
         };
         self.motions.flings.retain(|f| f.viewport != id);
+        self.motions.glides.retain(|g| g.viewport != id);
         let physics = self.motions.physics;
         if velocity.abs() < physics.min_velocity {
             return;
@@ -596,21 +726,24 @@ impl NodeStore {
             .map(|f| f.motion.velocity)
     }
 
-    /// Stop viewport `id`'s coast where it is, and drop a pull of it back
-    /// within its range at once.
+    /// Stop viewport `id`'s coast or glide where it is, and drop a pull of
+    /// it back within its range at once.
     pub fn stop_coast(&mut self, id: NodeId) {
         self.motions.flings.retain(|f| f.viewport != id);
+        self.motions.glides.retain(|g| g.viewport != id);
         if let Some(at) = self.motions.pulls.iter().position(|p| p.viewport == id) {
             self.motions.pulls.swap_remove(at);
             self.mark_dirty(id, DirtyClass::TRANSFORM);
         }
     }
 
-    /// Advance every coast and relaxing pull by a frame of `delta`, moving
-    /// its viewport; a coast that slowed to a stop or lost its node ends,
-    /// one reaching its end bounces or is absorbed into a stretch, and a
-    /// pull that settled is gone. A flat pass with no allocation.
+    /// Advance every coast, glide and relaxing pull by a frame of `delta`,
+    /// moving its viewport; a coast that slowed to a stop or lost its node
+    /// ends, one reaching its end bounces or is absorbed into a stretch, a
+    /// glide that arrived ends on its target, and a pull that settled is
+    /// gone. A flat pass with no allocation.
     pub fn tick_scroll_motion(&mut self, delta: Duration) {
+        self.tick_glides(delta.as_secs_f64().min(MAX_STEP));
         let mut i = self.motions.flings.len();
         while i > 0 {
             i -= 1;
@@ -659,6 +792,52 @@ impl NodeStore {
             pull.shown = x;
             pull.spring = Some(spring);
             self.motions.pulls[i] = pull;
+        }
+    }
+
+    /// Ease every glide `dt` seconds along its spring.
+    fn tick_glides(&mut self, dt: f64) {
+        let mut i = self.motions.glides.len();
+        while i > 0 {
+            i -= 1;
+            let mut glide = self.motions.glides[i];
+            let id = glide.viewport;
+            if !self.arena().is_live(id) {
+                self.motions.glides.swap_remove(i);
+                continue;
+            }
+            let now = self.scroll(id);
+            let mut next = now;
+            let mut arrived = true;
+            for (k, axis) in [Axis::Row, Axis::Column].into_iter().enumerate() {
+                let (least, most) = self.scroll_span(id, axis);
+                let target = f64::from(glide.target.on(axis).clamp(least, most));
+                let e = f64::from(now.on(axis)) - target;
+                let v = glide.velocity[k];
+                // The spring's closed form over the step:
+                // e(t) = (e + (v + λe)t)·e^(−λt).
+                let decay = (-GLIDE * dt).exp();
+                let c = v + GLIDE * e;
+                let e = (e + c * dt) * decay;
+                let v = (v - GLIDE * c * dt) * decay;
+                glide.velocity[k] = v;
+                let at = if e.abs() < GLIDE_NEAR && v.abs() < GLIDE_STILL {
+                    target
+                } else {
+                    arrived = false;
+                    target + e
+                };
+                match axis {
+                    Axis::Row => next.x = at as f32,
+                    Axis::Column => next.y = at as f32,
+                }
+            }
+            self.set_scroll(id, next);
+            if arrived {
+                self.motions.glides.swap_remove(i);
+            } else {
+                self.motions.glides[i] = glide;
+            }
         }
     }
 
@@ -721,6 +900,10 @@ impl NodeStore {
                     });
                 }
             }
+            if let Some(at) = self.motions.glides.iter().position(|g| g.viewport == n) {
+                let glide = self.motions.glides.swap_remove(at);
+                brisk |= glide.velocity.iter().any(|v| v.abs() > CATCH_VELOCITY);
+            }
             if let Some(pull) = self.motions.pulls.iter_mut().find(|p| p.viewport == n) {
                 pull.spring = None;
                 brisk = true;
@@ -760,15 +943,16 @@ impl NodeStore {
         }
     }
 
-    /// Stop the coasts of the viewports at or above `target`: a wheel there
-    /// moves them now.
+    /// Stop the coasts and glides of the viewports at or above `target`: a
+    /// wheel there moves them now.
     pub(crate) fn stop_coasts_over(&mut self, target: NodeId) {
-        if self.motions.flings.is_empty() {
+        if self.motions.flings.is_empty() && self.motions.glides.is_empty() {
             return;
         }
         let mut node = Some(target);
         while let Some(n) = node {
             self.motions.flings.retain(|f| f.viewport != n);
+            self.motions.glides.retain(|g| g.viewport != n);
             node = self.arena().parent(n);
         }
     }
@@ -1038,6 +1222,13 @@ impl NodeStore {
     }
 }
 
+fn with_axis(v: Vec2, axis: Axis, value: f32) -> Vec2 {
+    match axis {
+        Axis::Row => Vec2 { x: value, ..v },
+        Axis::Column => Vec2 { y: value, ..v },
+    }
+}
+
 fn axis_vec(axis: Axis, value: f32) -> Vec2 {
     match axis {
         Axis::Row => Vec2 { x: value, y: 0.0 },
@@ -1117,5 +1308,235 @@ mod tests {
         }
         assert_eq!(track.len, TRACKED);
         assert!((track.velocity().y - 1000.0).abs() < 1.0);
+    }
+
+    use crate::component::{BuildCx, FlexStyle, ScrollBehavior, ScrollRequest, ScrollStyle};
+    use crate::layout::{Length, Size};
+    use crate::scroll_bar::ScrollBars;
+    use viso_render::Rect;
+
+    const VIEW: Rect = Rect {
+        x: 0.0,
+        y: 0.0,
+        w: 100.0,
+        h: 200.0,
+    };
+
+    /// A 100 by 200 viewport over a column of `rows` rows 50 points tall,
+    /// its rows' column inside, tailing or not.
+    fn list(rows: usize, tail: bool) -> (NodeStore, NodeId, NodeId) {
+        let mut store = NodeStore::new();
+        let mut column = None;
+        let viewport = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.scroll(
+                ScrollStyle {
+                    size: Size::fixed(VIEW.w, VIEW.h),
+                    bars: ScrollBars::Hidden,
+                    tail,
+                    ..ScrollStyle::default()
+                },
+                |cx| {
+                    column = Some(
+                        cx.flex(
+                            FlexStyle {
+                                axis: Axis::Column,
+                                size: Size {
+                                    width: Length::Fill { weight: 1.0 },
+                                    height: Length::Fit,
+                                },
+                                ..FlexStyle::default()
+                            },
+                            |cx| {
+                                for _ in 0..rows {
+                                    row(cx);
+                                }
+                            },
+                        )
+                        .id(),
+                    );
+                },
+            )
+            .id()
+        };
+        store.layout(viewport, VIEW, &mut Vec::new());
+        (store, viewport, column.unwrap())
+    }
+
+    fn row(cx: &mut BuildCx<'_>) -> NodeId {
+        cx.leaf(crate::component::LeafStyle {
+            size: Size::fixed(100.0, 50.0),
+            ..Default::default()
+        })
+        .id()
+    }
+
+    fn frame(store: &mut NodeStore, viewport: NodeId) {
+        store.relayout_dirty(viewport, VIEW, &mut Vec::new(), &mut Vec::new());
+    }
+
+    /// Run `n` frames of 16 ms; the offsets they showed.
+    fn frames(store: &mut NodeStore, viewport: NodeId, n: usize) -> Vec<f32> {
+        (0..n)
+            .map(|_| {
+                store.tick_scroll_motion(Duration::from_millis(16));
+                frame(store, viewport);
+                store.scroll(viewport).y
+            })
+            .collect()
+    }
+
+    fn smooth(store: &mut NodeStore, id: NodeId, request: ScrollRequest) {
+        store.request_scroll_with(id, request, ScrollBehavior::Smooth);
+    }
+
+    #[test]
+    fn a_smooth_scroll_glides_to_its_target_moving_only_the_transform() {
+        let (mut store, viewport, _) = list(20, false);
+        smooth(
+            &mut store,
+            viewport,
+            ScrollRequest::To(Vec2 { x: 0.0, y: 600.0 }),
+        );
+        frame(&mut store, viewport);
+        assert!(store.is_gliding(viewport) && store.is_scroll_moving());
+        assert_eq!(store.scroll(viewport).y, 0.0, "it starts where it is");
+        assert_eq!(store.scroll_target(viewport).y, 600.0);
+        store.clear_dirty();
+        let seen = frames(&mut store, viewport, 60);
+        let dirty = store.dirty(viewport);
+        assert!(
+            !dirty.intersects(DirtyClass::LAYOUT | DirtyClass::PAINT),
+            "{dirty:?}"
+        );
+        assert!(
+            seen.windows(2).all(|w| w[1] >= w[0]),
+            "it never overshoots back"
+        );
+        assert!(
+            seen[17] > 540.0,
+            "most of the way in a quarter second: {}",
+            seen[17]
+        );
+        assert_eq!(*seen.last().unwrap(), 600.0, "it ends on its target");
+        assert!(!store.is_gliding(viewport));
+
+        // Past the range, it glides to the end.
+        smooth(
+            &mut store,
+            viewport,
+            ScrollRequest::To(Vec2 { x: 0.0, y: 5000.0 }),
+        );
+        frame(&mut store, viewport);
+        frames(&mut store, viewport, 60);
+        assert_eq!(store.scroll(viewport).y, 800.0);
+    }
+
+    #[test]
+    fn a_new_target_takes_over_at_the_speed_it_moves() {
+        let (mut store, viewport, _) = list(20, false);
+        smooth(
+            &mut store,
+            viewport,
+            ScrollRequest::To(Vec2 { x: 0.0, y: 400.0 }),
+        );
+        frame(&mut store, viewport);
+        let before = frames(&mut store, viewport, 5);
+        let step = before[4] - before[3];
+        // Smooth steps add to where it is headed.
+        smooth(
+            &mut store,
+            viewport,
+            ScrollRequest::By(Vec2 { x: 0.0, y: 200.0 }),
+        );
+        frame(&mut store, viewport);
+        assert_eq!(store.scroll_target(viewport).y, 600.0);
+        let after = frames(&mut store, viewport, 1);
+        let next = after[0] - before[4];
+        assert!(next > 0.0 && (next - step).abs() < step, "{step} {next}");
+        frames(&mut store, viewport, 80);
+        assert_eq!(store.scroll(viewport).y, 600.0);
+
+        // An instant scroll, the finger or the wheel stops it where it is.
+        smooth(&mut store, viewport, ScrollRequest::To(Vec2::ZERO));
+        frame(&mut store, viewport);
+        frames(&mut store, viewport, 3);
+        store.stop_coasts_over(viewport);
+        let at = store.scroll(viewport).y;
+        assert!(at > 0.0 && at < 600.0);
+        frames(&mut store, viewport, 10);
+        assert_eq!(store.scroll(viewport).y, at);
+        // A press on a brisk glide is a catch.
+        smooth(&mut store, viewport, ScrollRequest::To(Vec2::ZERO));
+        frame(&mut store, viewport);
+        frames(&mut store, viewport, 2);
+        assert!(store.catch_coast(viewport, PointerId(1)));
+        assert!(!store.is_gliding(viewport));
+    }
+
+    #[test]
+    fn a_smooth_reveal_glides_each_viewport_where_the_inner_ones_head() {
+        let (mut store, viewport, column) = list(20, false);
+        let target = store.arena().children(column).nth(15).unwrap();
+        smooth(&mut store, target, ScrollRequest::Reveal);
+        frame(&mut store, viewport);
+        // Row 15 spans 750..800: its bottom meets the viewport's.
+        assert_eq!(store.scroll_target(viewport).y, 600.0);
+        frames(&mut store, viewport, 80);
+        assert_eq!(store.world(target).y, 150.0);
+        // Asked again while it glides back, the reveal reads its target.
+        let top = store.arena().children(column).next().unwrap();
+        smooth(&mut store, top, ScrollRequest::Reveal);
+        frame(&mut store, viewport);
+        frames(&mut store, viewport, 2);
+        smooth(&mut store, top, ScrollRequest::Reveal);
+        frame(&mut store, viewport);
+        assert_eq!(store.scroll_target(viewport).y, 0.0);
+    }
+
+    #[test]
+    fn a_tailing_viewport_follows_the_end_while_it_stands_there() {
+        let (mut store, viewport, column) = list(20, true);
+        assert_eq!(store.scroll(viewport).y, 800.0, "it opens at the end");
+        let grow = |store: &mut NodeStore, n: usize| {
+            for _ in 0..n {
+                let leaf = store.alloc(
+                    crate::layout::LayoutInput::Leaf {
+                        size: Size::fixed(100.0, 50.0),
+                    },
+                    crate::style::BoxStyle::NONE,
+                );
+                store.arena_append_child(column, leaf);
+                store.mark_dirty(column, DirtyClass::MEASURE | DirtyClass::LAYOUT);
+            }
+        };
+        grow(&mut store, 2);
+        frame(&mut store, viewport);
+        assert!(store.is_gliding(viewport));
+        frames(&mut store, viewport, 60);
+        assert_eq!(store.scroll(viewport).y, 900.0, "it followed");
+        // More arrives while it glides: it heads for the new end.
+        grow(&mut store, 2);
+        frame(&mut store, viewport);
+        frames(&mut store, viewport, 3);
+        grow(&mut store, 2);
+        frame(&mut store, viewport);
+        frames(&mut store, viewport, 80);
+        assert_eq!(store.scroll(viewport).y, 1100.0);
+
+        // Scrolled away, it stays put.
+        store.set_scroll(viewport, Vec2 { x: 0.0, y: 300.0 });
+        frame(&mut store, viewport);
+        grow(&mut store, 2);
+        frame(&mut store, viewport);
+        frames(&mut store, viewport, 30);
+        assert_eq!(store.scroll(viewport).y, 300.0);
+        // Back at the end, it follows again.
+        store.set_scroll(viewport, Vec2 { x: 0.0, y: 5000.0 });
+        frame(&mut store, viewport);
+        grow(&mut store, 1);
+        frame(&mut store, viewport);
+        frames(&mut store, viewport, 60);
+        assert_eq!(store.scroll(viewport).y, 1250.0);
     }
 }

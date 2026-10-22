@@ -4626,6 +4626,7 @@ export record AdaptiveColumns { mode: AutoRepeat = AutoRepeat::fill; min: MixedL
 ### U3.7 Scroll
 
 - `axis: ScrollAxes = ScrollAxes::vertical`（`vertical; horizontal; both;`），失效 `MEASURE|LAYOUT`；
+- `scroll_bars: Bool = true`：是否显示滚动条（样式随平台与系统设置，见架构文档“滚动条”）；`tail: Bool = false`：打开时位于内容末端，停在末端期间内容增长时平滑跟随末端，滚离末端后不再跟随、回到末端后恢复（日志、聊天）；两者取常量，`VirtualList` 同样接受；
 - 事件 `scroll_changed(ScrollChanged)`，字段为 `offset: Offset`、`viewport: SizeDp`、`content: SizeDp`（`SizeDp { width: Dp; height: Dp; }`）；
 - 子节点在滚动轴上的约束无界；滚动偏移变化只标记视口子树 `TRANSFORM|HIT_TEST|PAINT`，不触发布局（ADR 0007）；
 - 滚轮与触控板事件先送往最内层可在该轴滚动的视口，到达边界后沿祖先链传递；
@@ -4940,10 +4941,12 @@ Named Node `n` 在同一 Component 的 Action 与 Handler 中以 `n: NodeRef<T>`
 | 方法                                            | 适用 `T`      | 效果                                              |
 | ----------------------------------------------- | ------------- | ------------------------------------------------- |
 | `n.focus()` / `n.blur()`                        | 可聚焦节点    | 程序化焦点移动，不激活 `focus_visible`            |
-| `n.scroll_into_view()`                          | 任意          | 最近祖先视口以最小滚动使 `n` 可见                 |
-| `n.scroll_to(offset)` / `n.scroll_by(delta)`    | `Scroll`      | 只标记 `TRANSFORM\|HIT_TEST\|PAINT`               |
-| `n.scroll_to_key(key)` / `n.scroll_to_index(i)` | `VirtualList` | 见 U9.3                                           |
+| `n.scroll_into_view(smooth?)`                   | 任意          | 最近祖先视口以最小滚动使 `n` 可见                 |
+| `n.scroll_to(offset, smooth?)` / `n.scroll_by(delta, smooth?)` | `Scroll` | 只标记 `TRANSFORM\|HIT_TEST\|PAINT` |
+| `n.scroll_to_key(key, smooth?)` / `n.scroll_to_index(i, smooth?)` | `VirtualList` | 见 U9.3                         |
 | `n.animate(target, spec)`                       | 任意          | 见 U6.3                                           |
+
+滚动方法可带末尾的 `smooth: Bool`（默认 `false`）：为 `true` 时平滑滑行到目标而非立即跳转；滑行中再次请求从当前速度转向新目标，`scroll_by` 在滑行目标上累加；手指、滚轮或滚动条操作会停止滑行。
 
 在 View、Computed 与 `fn` 中调用这些方法是 §83 纯度错误；方法返回 `()`，在视图结构落定后生效；对未挂载或已 Dispose 节点调用是 No-op。
 
@@ -5011,6 +5014,7 @@ Named Node `n` 在同一 Component 的 Action 与 Handler 中以 `n: NodeRef<T>`
 | `axis`                     | `Axis`         | `Axis::column`  | `MEASURE\|LAYOUT` | —                      |
 | `estimated_extent`         | `MixedLength`  | `30dp`          | `LAYOUT`          | 不声明（Percent 为 `E3104`） |
 | `overscan`                 | `U32`          | `4`             | `LAYOUT`          | —                      |
+| `scroll_bars` / `tail`     | `Bool`         | `true` / `false`| `LAYOUT`          | —（见 U3.7）           |
 | `width` / `height`         | `Sizing`       | `fill` / `fill` | `MEASURE\|LAYOUT` | 见 U3.3                |
 | `on visible_range_changed` | `VisibleRange` | —               | —                 | —                      |
 

@@ -1,6 +1,7 @@
 //! The methods of `NodeRef<T>` (U7.6): `focus`, `blur`, `scroll_into_view`
 //! and `animate` on any named node, `scroll_to` and `scroll_by` on a
-//! `Scroll`, `scroll_to_index` and `scroll_to_key` on a `VirtualList`. Each
+//! `Scroll`, `scroll_to_index` and `scroll_to_key` on a `VirtualList`; each
+//! scroll takes a last `smooth: Bool`, gliding there when true. Each
 //! queues a request the view applies once the transaction
 //! commits and its structure settles, so a node the same action mounts is
 //! reached; the value is `()`, and `animate`'s the `Animation` it starts,
@@ -64,7 +65,7 @@ impl InferCx<'_> {
         }
         let standard =
             |cx: &Self, name: &str| cx.env.standard_type(name).map_or(Ty::Unknown, Ty::named);
-        let params = match action {
+        let mut params = match action {
             NodeAction::ScrollTo | NodeAction::ScrollBy => vec![standard(self, "Offset")],
             NodeAction::Animate => vec![standard(self, "Animate"), standard(self, "Transition")],
             NodeAction::ScrollToIndex => vec![Ty::I64],
@@ -77,6 +78,18 @@ impl InferCx<'_> {
             NodeAction::Animate => Ty::Animation,
             _ => Ty::Unit,
         };
+        // A scroll may glide.
+        let scroll = matches!(
+            action,
+            NodeAction::ScrollIntoView
+                | NodeAction::ScrollTo
+                | NodeAction::ScrollBy
+                | NodeAction::ScrollToIndex
+                | NodeAction::ScrollToKey
+        );
+        if scroll && args.len() == params.len() + 1 {
+            params.push(Ty::Bool);
+        }
         if args.len() != params.len() {
             let message = format!(
                 "`{text}` takes {} argument{}, but {} {} given",

@@ -212,7 +212,8 @@ pub enum NodeAction {
     /// `blur()`: take focus from the node when it holds it.
     Blur = 1,
     /// `scroll_into_view()`: scroll the nearest enclosing viewports the least
-    /// that shows the node.
+    /// that shows the node. Each scroll takes a last `smooth: Bool`, gliding
+    /// there when true.
     ScrollIntoView = 2,
     /// `scroll_to(offset: Offset)`: set a `Scroll`'s offset.
     ScrollTo = 3,
@@ -313,6 +314,19 @@ impl NodeAction {
             | NodeAction::ScrollToIndex
             | NodeAction::ScrollToKey => 1,
             NodeAction::Animate => 2,
+        }
+    }
+
+    /// How many arguments it may take past its [`arity`](Self::arity): a
+    /// scroll's `smooth`.
+    pub fn optional(self) -> usize {
+        match self {
+            NodeAction::ScrollIntoView
+            | NodeAction::ScrollTo
+            | NodeAction::ScrollBy
+            | NodeAction::ScrollToIndex
+            | NodeAction::ScrollToKey => 1,
+            _ => 0,
         }
     }
 

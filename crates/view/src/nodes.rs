@@ -26,8 +26,8 @@ use std::rc::{Rc, Weak};
 use viso_behavior::{NodeAction, NodeRequest, Value, animation_of};
 use viso_ui::virtual_list::{ItemKey, VirtualLists};
 use viso_ui::{
-    AnimationId, NodeId, NodeStore, ScrollRequest, StateId, StateStore, StateValue, StructureCx,
-    Vec2, blur_node, focus_quietly,
+    AnimationId, NodeId, NodeStore, ScrollBehavior, ScrollRequest, StateId, StateStore, StateValue,
+    StructureCx, Vec2, blur_node, focus_quietly,
 };
 
 use crate::host::{StateCells, ViewHost};
@@ -330,22 +330,26 @@ fn apply(store: &mut NodeStore, lists: &mut VirtualLists, node: NodeId, request:
         NodeAction::Blur => {
             blur_node(store, node);
         }
-        NodeAction::ScrollIntoView => store.request_scroll(node, ScrollRequest::Reveal),
+        NodeAction::ScrollIntoView => {
+            let behavior = behavior_at(request, 0);
+            store.request_scroll_with(node, ScrollRequest::Reveal, behavior);
+        }
         NodeAction::ScrollTo | NodeAction::ScrollBy => {
             let Some(offset) = request.args.first().and_then(|o| offset(store, node, o)) else {
                 return;
             };
-            let request = match request.action {
+            let scroll = match request.action {
                 NodeAction::ScrollTo => ScrollRequest::To(offset),
                 _ => ScrollRequest::By(offset),
             };
-            store.request_scroll(node, request);
+            store.request_scroll_with(node, scroll, behavior_at(request, 1));
         }
         NodeAction::ScrollToIndex => {
             if let Some(list) = lists.get_mut(node)
                 && let Some(index) = request.args.first().and_then(Value::as_int)
             {
-                list.scroll_to_index(usize::try_from(index).unwrap_or(0));
+                let index = usize::try_from(index).unwrap_or(0);
+                list.scroll_to_index_with(index, behavior_at(request, 1));
             }
         }
         NodeAction::ScrollToKey => {
@@ -353,10 +357,19 @@ fn apply(store: &mut NodeStore, lists: &mut VirtualLists, node: NodeId, request:
                 && let Some(hash) = request.args.first().and_then(key_hash)
                 && let Some(index) = list.index_of(ItemKey(hash))
             {
-                list.scroll_to_index(index);
+                list.scroll_to_index_with(index, behavior_at(request, 1));
             }
         }
         NodeAction::Animate | NodeAction::Cancel | NodeAction::Finish | NodeAction::IsRunning => {}
+    }
+}
+
+/// How a scroll `request` moves: gliding when its argument `at`, its last,
+/// is true.
+fn behavior_at(request: &NodeRequest, at: usize) -> ScrollBehavior {
+    match request.args.get(at).and_then(Value::as_int) {
+        Some(v) if v != 0 => ScrollBehavior::Smooth,
+        _ => ScrollBehavior::Instant,
     }
 }
 

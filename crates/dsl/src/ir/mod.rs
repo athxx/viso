@@ -1819,8 +1819,32 @@ fn fold_static(
                 _ => false,
             })
         }
+        "scroll_bars" | "tail" if matches!(kind, NodeKind::Scroll | NodeKind::VirtualList) => {
+            folded(match fold_bool(value) {
+                Some(on) => {
+                    let scroll = style.scroll.get_or_insert_with(ui_ir::ScrollIr::default);
+                    *if name == "tail" {
+                        &mut scroll.tail
+                    } else {
+                        &mut scroll.bars
+                    } = on;
+                    true
+                }
+                None => false,
+            })
+        }
         _ if kind == NodeKind::Grid => fold_grid(name, value, consts, style),
         _ => Fold::Pending,
+    }
+}
+
+/// A `true` or `false` literal.
+fn fold_bool(value: &Expr) -> Option<bool> {
+    let literal = crate::ast::LiteralExpr::cast(value.syntax().clone())?;
+    match literal.token()?.kind() {
+        crate::syntax::SyntaxKind::TrueKw => Some(true),
+        crate::syntax::SyntaxKind::FalseKw => Some(false),
+        _ => None,
     }
 }
 

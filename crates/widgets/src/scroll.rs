@@ -41,6 +41,9 @@ pub struct ScrollViewStyle {
     pub background: BoxStyle,
     /// Whether it shows scroll bars.
     pub bars: ScrollBars,
+    /// Whether it opens at the end of its content and follows the end as
+    /// the content grows, while it stands there (a log, a chat).
+    pub tail: bool,
 }
 
 impl Default for ScrollViewStyle {
@@ -50,6 +53,7 @@ impl Default for ScrollViewStyle {
             size: Size::fill(),
             background: BoxStyle::NONE,
             bars: ScrollBars::Auto,
+            tail: false,
         }
     }
 }
@@ -145,6 +149,7 @@ impl Component for Scroll {
                 size: self.style.size,
                 style: self.style.background,
                 bars: self.style.bars,
+                tail: self.style.tail,
             },
             |cx| {
                 if let Some(content) = &self.content {

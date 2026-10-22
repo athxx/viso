@@ -143,7 +143,7 @@ Rules:
 - [x] Overscroll: bounce (iOS) / glow-stretch (Android) by platform style; rubber-band
   on drag.
 - [x] Scrollbars: overlay and classic, draggable thumb, track paging, auto-hide.
-- [ ] Smooth `scroll_to` / `scroll_into_view` with animation; auto-tail (stick to end).
+- [x] Smooth `scroll_to` / `scroll_into_view` with animation; auto-tail (stick to end).
 - [ ] Pull-to-refresh.
 - [ ] Sticky section headers in `List`.
 - [ ] Scroll snapping and a `Pager` / `Carousel` widget.
@@ -155,7 +155,7 @@ Rules:
 - [ ] Springs: stiffness/damping/mass, interruption with velocity handoff, settle
   detection.
 - [ ] Keyframes: multi-stop tracks, repeat count / infinite, reverse, alternate.
-- [ ] Reduced motion: platform setting honored by transitions and springs.
+- [ ] Reduced motion: platform setting honored by transitions, springs and scroll glides.
 - [ ] Navigation transitions: push/pop slide, fade, platform default; shared-element
   (hero) transition.
 - [ ] Animated `Toggle` thumb, `Checkbox` check, `Disclosure` chevron.

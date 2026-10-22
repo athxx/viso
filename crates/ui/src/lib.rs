@@ -80,7 +80,8 @@ pub use binding::{
 pub use check_mark::{CheckMark, CheckShape};
 pub use component::{
     AbsoluteStyle, BuildCx, Component, FlexStyle, FrameRecompute, Handle, LeafStyle, NodeStore,
-    Painted, PointerHandler, ScrollRequest, ScrollStyle, StackStyle, VirtualListStyle,
+    Painted, PointerHandler, ScrollBehavior, ScrollRequest, ScrollStyle, StackStyle,
+    VirtualListStyle,
 };
 pub use content::{BrushImage, Content, InkRun, LinkBox, TextInk, TextMark, TextRequest};
 pub use context::{EventCx, FocusChange, StateWriter};

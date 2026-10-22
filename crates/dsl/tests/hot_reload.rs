@@ -148,10 +148,13 @@ fn preorder(store: &NodeStore, root: Option<NodeId>) -> Vec<NodeId> {
     out
 }
 
+/// The nodes the source declares, a viewport's scroll bar left out.
 fn walk(store: &NodeStore, node: NodeId, out: &mut Vec<NodeId>) {
     out.push(node);
     for c in store.arena().children(node) {
-        walk(store, c, out);
+        if !store.is_chrome(c) {
+            walk(store, c, out);
+        }
     }
 }
 
@@ -315,6 +318,11 @@ fn structural_edit_migrates_state_and_reports_focus_and_scroll() {
         "the kept container's offset carries"
     );
     assert_eq!(live.store.scroll(scroll_node).y, 50.0);
+    let thumb = live
+        .store
+        .scroll_thumb(scroll_node)
+        .expect("its scroll bar");
+    assert!(live.store.arena().is_live(thumb));
 }
 
 #[test]

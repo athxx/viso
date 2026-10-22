@@ -2165,10 +2165,14 @@ mod tests {
     }
 
     /// Every node of the subtree at `root`, in pre-order.
+    /// The nodes the source declares under `root`, a viewport's scroll bar
+    /// left out.
     fn subtree(store: &NodeStore, root: NodeId) -> Vec<NodeId> {
         let mut out = vec![root];
         for child in children(store, root) {
-            out.extend(subtree(store, child));
+            if !store.is_chrome(child) {
+                out.extend(subtree(store, child));
+            }
         }
         out
     }

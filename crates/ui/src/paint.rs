@@ -1121,6 +1121,7 @@ mod tests {
                     // A solid viewport background so its quad paints before the clip.
                     style: BoxStyle::solid(RED),
                     bars: crate::scroll_bar::ScrollBars::Hidden,
+                    tail: false,
                 },
                 |cx| {
                     content = Some(
@@ -2267,6 +2268,7 @@ mod tests {
                             size: Size::fixed(100.0, 100.0),
                             style: BoxStyle::solid(RED),
                             bars: crate::scroll_bar::ScrollBars::Hidden,
+                            tail: false,
                         },
                         |cx| {
                             for _ in 0..n {

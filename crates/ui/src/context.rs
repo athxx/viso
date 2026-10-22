@@ -475,7 +475,11 @@ pub enum StoreRequest {
     /// Put a node of a layer over its anchor.
     AnchorOver(NodeId, Option<NodeId>),
     /// Scroll a node into view.
-    Reveal(NodeId),
+    Scroll(
+        NodeId,
+        crate::component::ScrollRequest,
+        crate::component::ScrollBehavior,
+    ),
     /// Show another text on a text node.
     Text(NodeId, Box<crate::content::TextRequest>),
     /// Show a descendant of a node as its active one.
@@ -492,8 +496,8 @@ impl StoreRequest {
         match self {
             StoreRequest::AnchorAt(layer, at) => store.set_anchor_point(layer, Some(at)),
             StoreRequest::AnchorOver(layer, over) => store.set_anchor_over(layer, over),
-            StoreRequest::Reveal(id) => {
-                store.request_scroll(id, crate::component::ScrollRequest::Reveal)
+            StoreRequest::Scroll(id, request, behavior) => {
+                store.request_scroll_with(id, request, behavior)
             }
             StoreRequest::Text(id, request) => store.set_text(id, *request),
             StoreRequest::Active(id, active) => store.set_active_descendant(id, active),
@@ -1262,7 +1266,24 @@ impl<'a> EventCx<'a> {
     /// Scroll the viewports around `id` the least that shows it, once the
     /// next layout has placed it.
     pub fn scroll_into_view(&mut self, id: NodeId) {
-        self.store_requests.push(StoreRequest::Reveal(id));
+        self.scroll(
+            id,
+            crate::component::ScrollRequest::Reveal,
+            crate::component::ScrollBehavior::Instant,
+        );
+    }
+
+    /// Scroll viewport `id` (or, revealing, the viewports around it) as
+    /// `request` asks, at once or gliding, once the next layout has placed
+    /// it ([`NodeStore::request_scroll_with`](crate::NodeStore::request_scroll_with)).
+    pub fn scroll(
+        &mut self,
+        id: NodeId,
+        request: crate::component::ScrollRequest,
+        behavior: crate::component::ScrollBehavior,
+    ) {
+        self.store_requests
+            .push(StoreRequest::Scroll(id, request, behavior));
     }
 
     /// Show `request` on text node `id` in place of its text

@@ -523,11 +523,20 @@ impl Emit<'_> {
             NodeKind::Scroll => {
                 let axis = axis_tokens(node.style.axis.unwrap_or(AxisIr::Column));
                 let size = size_tokens(&node.style);
+                let scroll = node.style.scroll.unwrap_or_default();
+                let bars = if scroll.bars {
+                    quote!(::viso::__private::viso_ui::ScrollBars::Auto)
+                } else {
+                    quote!(::viso::__private::viso_ui::ScrollBars::Hidden)
+                };
+                let tail = scroll.tail;
                 quote! {
                     cx.scroll(
                         ::viso::__private::viso_ui::ScrollStyle {
                             axis: #axis,
                             size: #size,
+                            bars: #bars,
+                            tail: #tail,
                             ..::core::default::Default::default()
                         },
                         |cx| { #child_block },
@@ -539,11 +548,20 @@ impl Emit<'_> {
             NodeKind::VirtualList => {
                 let axis = axis_tokens(node.style.axis.unwrap_or(AxisIr::Column));
                 let size = size_tokens(&node.style);
+                let scroll = node.style.scroll.unwrap_or_default();
+                let bars = if scroll.bars {
+                    quote!(::viso::__private::viso_ui::ScrollBars::Auto)
+                } else {
+                    quote!(::viso::__private::viso_ui::ScrollBars::Hidden)
+                };
+                let tail = scroll.tail;
                 quote! {
                     cx.scroll(
                         ::viso::__private::viso_ui::ScrollStyle {
                             axis: #axis,
                             size: #size,
+                            bars: #bars,
+                            tail: #tail,
                             ..::core::default::Default::default()
                         },
                         |cx| { #child_block },

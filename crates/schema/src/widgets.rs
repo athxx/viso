@@ -121,7 +121,11 @@ const GRID: &[WidgetProperty] = &[
 
 const STACK: &[WidgetProperty] = &[look("content_align", "Alignment2D")];
 
-const SCROLL: &[WidgetProperty] = &[prop("axis", "Axis")];
+const SCROLL: &[WidgetProperty] = &[
+    prop("axis", "Axis"),
+    prop("scroll_bars", "Bool"),
+    prop("tail", "Bool"),
+];
 
 /// Text style properties `Text` and `TextInput` share.
 const TEXT_STYLE: &[WidgetProperty] = &[
@@ -226,6 +230,8 @@ const VIRTUAL_LIST: &[WidgetProperty] = &[
     prop("axis", "Axis"),
     prop("estimated_extent", "MixedLength"),
     prop("overscan", "U32"),
+    prop("scroll_bars", "Bool"),
+    prop("tail", "Bool"),
 ];
 
 /// The `grid.*` group a `Grid` provides to its children.

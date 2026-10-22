@@ -1232,7 +1232,7 @@ impl Verifier<'_> {
                     return Err(format!("unknown node action {}", head[0]));
                 };
                 let n = self.code.ext[ext as usize + 2] as usize;
-                if n != action.arity() {
+                if n < action.arity() || n > action.arity() + action.optional() {
                     return Err(format!(
                         "node action `{}` takes {} arguments, not {n}",
                         action.method(),

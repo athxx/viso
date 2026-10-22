@@ -543,6 +543,27 @@ pub struct StyleIr {
     /// A `VirtualList`'s constant row estimate and overscan, when either is
     /// set.
     pub list: Option<ListIr>,
+    /// Whether a `Scroll` or a `VirtualList` shows scroll bars and follows
+    /// the end of its content, when either is set.
+    pub scroll: Option<ScrollIr>,
+}
+
+/// How a viewport scrolls: whether it shows scroll bars (`scroll_bars`),
+/// and whether it opens at the end of its content and follows the end as
+/// the content grows (`tail`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScrollIr {
+    pub bars: bool,
+    pub tail: bool,
+}
+
+impl Default for ScrollIr {
+    fn default() -> Self {
+        ScrollIr {
+            bars: true,
+            tail: false,
+        }
+    }
 }
 
 /// How a `VirtualList` mounts its rows: the extent a row not measured yet is
@@ -625,6 +646,7 @@ impl StyleIr {
             && self.place.is_none()
             && self.area.is_none()
             && self.list.is_none()
+            && self.scroll.is_none()
     }
 
     /// The lengths that fold against the environment, empty when there are none.

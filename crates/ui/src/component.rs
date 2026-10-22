@@ -183,6 +183,9 @@ pub struct ScrollStyle {
     pub style: BoxStyle,
     /// Whether it shows scroll bars.
     pub bars: crate::scroll_bar::ScrollBars,
+    /// Whether it opens at the end of its content and follows the end as
+    /// the content grows, while it stands there (a log, a chat).
+    pub tail: bool,
 }
 
 impl Default for ScrollStyle {
@@ -192,6 +195,7 @@ impl Default for ScrollStyle {
             size: Size::fill(),
             style: BoxStyle::NONE,
             bars: crate::scroll_bar::ScrollBars::Auto,
+            tail: false,
         }
     }
 }
@@ -216,6 +220,9 @@ pub struct VirtualListStyle {
     pub style: BoxStyle,
     /// Whether it shows scroll bars.
     pub bars: crate::scroll_bar::ScrollBars,
+    /// Whether it opens at its last row and follows the end as rows are
+    /// added, while it stands there (a log, a chat).
+    pub tail: bool,
 }
 
 impl Default for VirtualListStyle {
@@ -227,6 +234,7 @@ impl Default for VirtualListStyle {
             estimated_row: crate::virtual_list::DEFAULT_ROW_HEIGHT,
             style: BoxStyle::NONE,
             bars: crate::scroll_bar::ScrollBars::Auto,
+            tail: false,
         }
     }
 }
@@ -340,6 +348,16 @@ pub enum ScrollRequest {
     By(Vec2),
     /// Scroll the viewports enclosing the node the least that shows it.
     Reveal,
+}
+
+/// How a programmatic scroll moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScrollBehavior {
+    /// At once.
+    #[default]
+    Instant,
+    /// Gliding there (see [`NodeStore::glide_to`]).
+    Smooth,
 }
 
 /// The retained node store: the arena plus parallel side-storage arrays, all
@@ -648,7 +666,7 @@ pub struct NodeStore {
     /// layout to know the ranges they clamp to and the rects they reveal — the
     /// offsets a hot reload carries onto freshly built viewports and the
     /// scrolls a view's actions ask for — in the order they were asked.
-    scroll_requests: Vec<(NodeId, ScrollRequest)>,
+    scroll_requests: Vec<(NodeId, ScrollRequest, ScrollBehavior)>,
     /// Cold retained slot (not index-aligned): the nodes a caption widget
     /// declared as draggable self-drawn-caption regions, in declaration order. A
     /// self-drawn-chrome window's caption registers its blank band here at build
@@ -902,6 +920,11 @@ impl NodeStore {
         } else {
             bounds.transform_bounds(&at)
         }
+    }
+
+    /// [`world`](Self::world) before it is snapped to the device pixels.
+    fn unsnapped_world(&self, id: NodeId) -> Rect {
+        self.bounds[id.index() as usize].transform_bounds(&self.world_transform(id))
     }
 
     /// Where a point of the screen falls in `id`'s box: from its top-left
@@ -2432,13 +2455,25 @@ impl NodeStore {
     /// `scroll_to`, `scroll_by` and `scroll_into_view` reach a node the same
     /// action mounts this way. A stale handle is a no-op. Cold path.
     pub fn request_scroll(&mut self, id: NodeId, request: ScrollRequest) {
+        self.request_scroll_with(id, request, ScrollBehavior::Instant);
+    }
+
+    /// [`request_scroll`](Self::request_scroll), at once or gliding: a
+    /// smooth move by a delta adds it to where a glide under way is headed.
+    pub fn request_scroll_with(
+        &mut self,
+        id: NodeId,
+        request: ScrollRequest,
+        behavior: ScrollBehavior,
+    ) {
         if self.arena.is_live(id) {
             // The asked scroll takes over from a coast.
             match request {
                 ScrollRequest::Reveal => self.stop_coasts_over(id),
-                _ => self.stop_coast(id),
+                _ if behavior == ScrollBehavior::Instant => self.stop_coast(id),
+                _ => {}
             }
-            self.scroll_requests.push((id, request));
+            self.scroll_requests.push((id, request, behavior));
         }
     }
 
@@ -2448,29 +2483,48 @@ impl NodeStore {
         if self.scroll_requests.is_empty() {
             return;
         }
-        for (id, request) in std::mem::take(&mut self.scroll_requests) {
+        for (id, request, behavior) in std::mem::take(&mut self.scroll_requests) {
+            let smooth = behavior == ScrollBehavior::Smooth;
             match request {
+                ScrollRequest::To(offset) if smooth => self.glide_to(id, offset),
                 ScrollRequest::To(offset) => self.set_scroll(id, offset),
+                ScrollRequest::By(delta) if smooth => {
+                    let to = self.scroll_target(id);
+                    self.glide_to(
+                        id,
+                        Vec2 {
+                            x: to.x + delta.x,
+                            y: to.y + delta.y,
+                        },
+                    );
+                }
                 ScrollRequest::By(delta) => self.scroll_by(id, delta),
-                ScrollRequest::Reveal => self.reveal(id),
+                ScrollRequest::Reveal => self.reveal(id, smooth),
             }
         }
     }
 
     /// Scrolls each viewport enclosing `id`, innermost first, the least that
-    /// brings `id`'s on-screen rect inside it: a rect larger than the
-    /// viewport shows its leading edge.
-    fn reveal(&mut self, id: NodeId) {
+    /// brings `id`'s on-screen rect inside it, at once or gliding: a rect
+    /// larger than the viewport shows its leading edge. Each viewport is
+    /// figured where the ones inside it are headed.
+    fn reveal(&mut self, id: NodeId, smooth: bool) {
         if !self.arena.is_live(id) {
             return;
         }
+        let rect = self.unsnapped_world(id);
+        // How far the ones inside move the node on screen.
+        let mut moved = Vec2::ZERO;
         let mut at = self.arena.parent(id);
         while let Some(viewport) = at {
             at = self.arena.parent(viewport);
             let Some(axis) = self.scroll_axis(viewport) else {
                 continue;
             };
-            let (rect, seen) = (self.world(id), self.world(viewport));
+            let (now, from) = (self.scroll(viewport), self.scroll_target(viewport));
+            let seen = self.unsnapped_world(viewport);
+            let x = rect.x + moved.x - (from.x - now.x);
+            let y = rect.y + moved.y - (from.y - now.y);
             let fit = |start: f32, len: f32, view: f32, view_len: f32| {
                 if start < view {
                     start - view
@@ -2480,17 +2534,24 @@ impl NodeStore {
                     0.0
                 }
             };
-            let delta = match axis {
-                Axis::Row => Vec2 {
-                    x: fit(rect.x, rect.w, seen.x, seen.w),
-                    y: 0.0,
-                },
-                Axis::Column => Vec2 {
-                    x: 0.0,
-                    y: fit(rect.y, rect.h, seen.y, seen.h),
-                },
-            };
-            self.scroll_by(viewport, delta);
+            let (least, most) = self.scroll_span(viewport, axis);
+            let mut to = from;
+            match axis {
+                Axis::Row => to.x = (from.x + fit(x, rect.w, seen.x, seen.w)).clamp(least, most),
+                Axis::Column => {
+                    to.y = (from.y + fit(y, rect.h, seen.y, seen.h)).clamp(least, most);
+                }
+            }
+            moved.x -= to.x - now.x;
+            moved.y -= to.y - now.y;
+            if to == from {
+                continue;
+            }
+            if smooth {
+                self.glide_to(viewport, to);
+            } else {
+                self.set_scroll(viewport, to);
+            }
         }
     }
 
@@ -4759,6 +4820,7 @@ impl NodeStore {
         self.rejoin_subtree(root);
         self.lift_reach(root, was);
         self.lay_layers(root, surface, scratch);
+        self.follow_tails();
         self.settle_scroll_requests();
         if self.sync_scroll_bars() {
             let mut redo = Vec::new();
@@ -4985,7 +5047,9 @@ impl NodeStore {
         } else {
             self.follow_anchors();
         }
-        // A waiting scroll applies once layout knows the range.
+        // A tailing viewport follows its content's end, and a waiting scroll
+        // applies, once layout knows the range.
+        self.follow_tails();
         self.settle_scroll_requests();
         // The bars follow their viewports; a thumb whose length changed lays
         // out again, alone in its track.
@@ -6102,6 +6166,9 @@ impl<'a> BuildCx<'a> {
         if style.bars == crate::scroll_bar::ScrollBars::Auto {
             self.scroll_bar(id, style.axis);
         }
+        if style.tail {
+            self.store.set_scroll_tail(id, true);
+        }
         Handle { id }
     }
 
@@ -6195,6 +6262,9 @@ impl<'a> BuildCx<'a> {
         );
         if style.bars == crate::scroll_bar::ScrollBars::Auto {
             self.scroll_bar(viewport, style.axis);
+        }
+        if style.tail {
+            self.store.set_scroll_tail(viewport, true);
         }
 
         Handle { id: viewport }

@@ -400,8 +400,12 @@ pub struct VirtualListState {
     /// Whether an initial mount has happened yet (the build mounts no rows; the
     /// first reconcile against the real viewport size does).
     mounted_once: bool,
-    /// The row the next reconcile scrolls to the start edge, mounted or not.
-    reveal: Option<usize>,
+    /// The row the next reconcile scrolls to the start edge, mounted or not,
+    /// and whether it glides there.
+    reveal: Option<(usize, bool)>,
+    /// The row a glide is headed for: each reconcile aims it where the
+    /// height model now puts the row.
+    gliding_to: Option<usize>,
     /// Reused scratch: hosts freed from the tree during `free_subtree`.
     scratch_free: Vec<NodeId>,
     /// Reused scratch: the newly-mounted hosts this reconcile, swept for their
@@ -462,6 +466,7 @@ impl VirtualListState {
             dirty_data: true,
             mounted_once: false,
             reveal: None,
+            gliding_to: None,
             scratch_free: Vec::new(),
             scratch_mounted: Vec::new(),
             new_keys: Vec::new(),
@@ -728,7 +733,18 @@ impl VirtualListState {
     /// which then mounts the window around it in the same frame, whether or not
     /// it was mounted before.
     pub fn scroll_to_index(&mut self, index: usize) {
-        self.reveal = Some(index.min(self.item_count.saturating_sub(1)));
+        self.scroll_to_index_with(index, crate::component::ScrollBehavior::Instant);
+    }
+
+    /// [`scroll_to_index`](Self::scroll_to_index), at once or gliding: a
+    /// glide aims at the row anew as the rows it passes are measured.
+    pub fn scroll_to_index_with(
+        &mut self,
+        index: usize,
+        behavior: crate::component::ScrollBehavior,
+    ) {
+        let smooth = behavior == crate::component::ScrollBehavior::Smooth;
+        self.reveal = Some((index.min(self.item_count.saturating_sub(1)), smooth));
         self.dirty_data = true;
     }
 
@@ -924,10 +940,26 @@ fn reconcile_one(viewport: NodeId, state: &mut VirtualListState, cx: &mut Struct
     let axis = state.axis;
     // A seek scrolls its row to the start edge, as near as the end of the list
     // allows, on the extent the height model holds now.
-    if let Some(index) = state.reveal.take() {
-        let room = (state.heights.total() - cx.store.bounds_main(viewport, axis)).max(0.0);
-        cx.store
-            .seek_scroll(viewport, axis, state.heights.prefix_sum(index).min(room));
+    let room = (state.heights.total() - cx.store.bounds_main(viewport, axis)).max(0.0);
+    let mut started = false;
+    if let Some((index, smooth)) = state.reveal.take() {
+        if smooth {
+            state.gliding_to = Some(index);
+            started = true;
+        } else {
+            state.gliding_to = None;
+            let to = state.heights.prefix_sum(index).min(room);
+            cx.store.seek_scroll(viewport, axis, to);
+        }
+    }
+    // A glide the finger or the wheel stopped, or that arrived, aims no more.
+    if let Some(index) = state.gliding_to {
+        if started || cx.store.is_gliding(viewport) {
+            let to = state.heights.prefix_sum(index).min(room);
+            cx.store.glide_along(viewport, axis, to);
+        } else {
+            state.gliding_to = None;
+        }
     }
     // How far the viewport is scrolled from its start: a row read right to
     // left takes negative offsets.

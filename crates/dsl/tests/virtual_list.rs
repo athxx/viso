@@ -155,9 +155,18 @@ impl Page {
             .expect("a child")
     }
 
+    /// The canvas of list `list`, past its scroll bar.
+    fn canvas(&self, list: NodeId) -> NodeId {
+        self.store
+            .arena()
+            .children(list)
+            .find(|&c| !self.store.is_chrome(c))
+            .expect("a canvas")
+    }
+
     /// The texts of the rows mounted on the list `list`, top to bottom.
     fn rows(&self, list: NodeId) -> Vec<String> {
-        let canvas = self.child(list, 0);
+        let canvas = self.canvas(list);
         let mut rows: Vec<(f32, String)> = self
             .store
             .arena()
@@ -169,6 +178,15 @@ impl Page {
             .collect();
         rows.sort_by(|a, b| a.0.total_cmp(&b.0));
         rows.into_iter().map(|(_, text)| text).collect()
+    }
+
+    /// `n` frames 16 ms apart, the scroll motion advancing in each.
+    fn glide(&mut self, n: usize) {
+        for _ in 0..n {
+            self.store
+                .tick_scroll_motion(std::time::Duration::from_millis(16));
+            self.frame();
+        }
     }
 }
 
@@ -216,6 +234,62 @@ fn a_node_ref_scrolls_its_list_to_a_row_by_index_or_key() {
         "the last row's start, as near as the end of the list allows"
     );
     assert!(page.rows(list).iter().any(|row| row == "1999"));
+}
+
+const GLIDING: &str = "component Feed {
+    state count = 1000;
+    view {
+        Column {
+            width: 200dp;
+            height: 300dp;
+            Button { width: 100dp; height: 20dp; text: \"middle\"; on click { list.scroll_to_index(500, smooth: true); } }
+            Button { width: 100dp; height: 20dp; text: \"more\"; on click { count += 1000; } }
+            node list: VirtualList {
+                width: 200dp;
+                height: 200dp;
+                estimated_extent: 20dp;
+                tail: true;
+                scroll_bars: false;
+                for i in 0..count key i {
+                    Text { width: 200dp; height: 20dp; text: format(\"{}\", i); }
+                }
+            }
+        }
+    }
+}";
+
+#[test]
+fn a_list_glides_to_a_row_and_a_tailing_one_follows_its_end() {
+    let mut page = Page::load(GLIDING);
+    let list = page.child(page.root, 2);
+    assert_eq!(page.store.scroll_thumb(list), None, "no scroll bar");
+    let end = |n: f32| n * 20.0 - 200.0;
+    assert_eq!(
+        page.store.scroll(list).y,
+        end(1000.0),
+        "it opens at the end"
+    );
+
+    let more = page.child(page.root, 1);
+    page.click(more);
+    page.glide(60);
+    assert_eq!(
+        page.store.scroll(list).y,
+        end(2000.0),
+        "it followed the end"
+    );
+    assert!(page.rows(list).iter().any(|row| row == "1999"));
+
+    let middle = page.child(page.root, 0);
+    page.click(middle);
+    assert!(page.store.is_gliding(list));
+    page.glide(90);
+    assert_eq!(page.store.scroll(list).y, 500.0 * 20.0);
+    assert!(page.rows(list).iter().any(|row| row == "500"));
+    // Away from the end, more rows leave it be.
+    page.click(more);
+    page.glide(10);
+    assert_eq!(page.store.scroll(list).y, 500.0 * 20.0);
 }
 
 #[test]
@@ -270,7 +344,7 @@ fn a_row_shows_its_item_and_its_handlers_see_it_as_the_items_move() {
     assert_eq!(page.rows(list), ["a", "b", "c"]);
     page.click(page.child(page.root, 0));
     assert_eq!(page.rows(list), ["c", "b", "a", "d"]);
-    let canvas = page.child(list, 0);
+    let canvas = page.canvas(list);
     let first = page
         .store
         .arena()
@@ -365,13 +439,13 @@ fn a_row_can_hold_a_list_of_its_own() {
     );
     let shelves = page.child(page.root, 0);
     let shelf = |page: &Page, at: usize| {
-        let canvas = page.child(shelves, 0);
+        let canvas = page.canvas(shelves);
         let mut hosts: Vec<NodeId> = page.store.arena().children(canvas).collect();
         hosts.sort_by(|a, b| page.store.world(*a).y.total_cmp(&page.store.world(*b).y));
         page.child(hosts[at], 0)
     };
     let books = |page: &Page, list: NodeId| {
-        let canvas = page.child(list, 0);
+        let canvas = page.canvas(list);
         let mut rows: Vec<(f32, String)> = page
             .store
             .arena()

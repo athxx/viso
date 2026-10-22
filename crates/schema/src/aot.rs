@@ -353,6 +353,25 @@ pub struct AotStyle {
     /// Where a grid, stack or absolute child sits in its parent, when it
     /// placed itself.
     pub place: Option<Placement>,
+    /// How a scroll viewport scrolls, when the node set it.
+    pub scroll: Option<AotScroll>,
+}
+
+/// How a scroll viewport scrolls: whether it shows scroll bars, and whether
+/// it follows the end of its content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AotScroll {
+    pub bars: bool,
+    pub tail: bool,
+}
+
+impl Default for AotScroll {
+    fn default() -> Self {
+        AotScroll {
+            bars: true,
+            tail: false,
+        }
+    }
 }
 
 /// An adaptive scope: the node its subtree's size class classifies.
@@ -418,22 +437,23 @@ pub struct AotEdge {
 // the fields that are present, so an all-default style costs a single byte and only
 // the rare fields past the seventh bit a second. The bits are private to this format:
 // emitter and loader are the same source, so no external contract depends on them.
-const STYLE_HAS_AXIS: u16 = 1 << 0;
-const STYLE_HAS_WIDTH: u16 = 1 << 1;
-const STYLE_HAS_HEIGHT: u16 = 1 << 2;
-const STYLE_HAS_GAP: u16 = 1 << 3;
-const STYLE_HAS_LENGTHS: u16 = 1 << 4;
-const STYLE_IS_SCOPE: u16 = 1 << 5;
-const STYLE_HAS_BASIS: u16 = 1 << 6;
-const STYLE_AVOIDS: u16 = 1 << 7;
-const STYLE_HAS_PADDING: u16 = 1 << 8;
-const STYLE_HAS_JUSTIFY: u16 = 1 << 9;
-const STYLE_HAS_ALIGN: u16 = 1 << 10;
-const STYLE_HAS_RULES: u16 = 1 << 11;
-const STYLE_HAS_PLACE: u16 = 1 << 12;
-const STYLE_HAS_GRID: u16 = 1 << 13;
-const STYLE_HAS_CONTENT_ALIGN: u16 = 1 << 14;
-const STYLE_HAS_DIRECTION: u16 = 1 << 15;
+const STYLE_HAS_AXIS: u32 = 1 << 0;
+const STYLE_HAS_WIDTH: u32 = 1 << 1;
+const STYLE_HAS_HEIGHT: u32 = 1 << 2;
+const STYLE_HAS_GAP: u32 = 1 << 3;
+const STYLE_HAS_LENGTHS: u32 = 1 << 4;
+const STYLE_IS_SCOPE: u32 = 1 << 5;
+const STYLE_HAS_BASIS: u32 = 1 << 6;
+const STYLE_AVOIDS: u32 = 1 << 7;
+const STYLE_HAS_PADDING: u32 = 1 << 8;
+const STYLE_HAS_JUSTIFY: u32 = 1 << 9;
+const STYLE_HAS_ALIGN: u32 = 1 << 10;
+const STYLE_HAS_RULES: u32 = 1 << 11;
+const STYLE_HAS_PLACE: u32 = 1 << 12;
+const STYLE_HAS_GRID: u32 = 1 << 13;
+const STYLE_HAS_CONTENT_ALIGN: u32 = 1 << 14;
+const STYLE_HAS_DIRECTION: u32 = 1 << 15;
+const STYLE_SCROLLS: u32 = 1 << 16;
 
 // A grid is a byte naming the parts it sets, then each: a template is a
 // varint count of tracks; a track is a byte naming its sizing, then its
@@ -1265,7 +1285,7 @@ fn encode_record(record: &AotRecord<'_>, enc: &mut Encoder) {
     let (lengths, rules, grid) = (record.lengths(), record.rules(), record.grid());
     let style = &record.style;
     enc.write_u8(record.kind.as_u8());
-    let mut mask = 0u16;
+    let mut mask = 0u32;
     if style.axis.is_some() {
         mask |= STYLE_HAS_AXIS;
     }
@@ -1313,6 +1333,9 @@ fn encode_record(record: &AotRecord<'_>, enc: &mut Encoder) {
     }
     if style.content_align.is_some() {
         mask |= STYLE_HAS_CONTENT_ALIGN;
+    }
+    if style.scroll.is_some() {
+        mask |= STYLE_SCROLLS;
     }
     enc.write_varint(u64::from(mask));
     if let Some(axis) = style.axis {
@@ -1378,6 +1401,9 @@ fn encode_record(record: &AotRecord<'_>, enc: &mut Encoder) {
     if let Some(align) = style.content_align {
         enc.write_u8(align as u8);
     }
+    if let Some(scroll) = style.scroll {
+        enc.write_u8(u8::from(scroll.bars) | u8::from(scroll.tail) << 1);
+    }
     enc.write_varint(u64::from(record.child_count));
 }
 
@@ -1405,11 +1431,13 @@ fn decode_record<'a>(dec: &mut Decoder<'a>) -> Result<AotRecord<'a>, DecodeError
         ],
     )?;
     let offset = dec.position();
-    let mask = u16::try_from(dec.read_varint()?).map_err(|_| DecodeError::Malformed { offset })?;
-    if mask & (STYLE_HAS_BASIS | STYLE_HAS_DIRECTION) != 0 && mask & STYLE_IS_SCOPE == 0 {
+    let mask = u32::try_from(dec.read_varint()?).map_err(|_| DecodeError::Malformed { offset })?;
+    if mask & (STYLE_HAS_BASIS | STYLE_HAS_DIRECTION) != 0 && mask & STYLE_IS_SCOPE == 0
+        || mask >= STYLE_SCROLLS << 1
+    {
         return Err(DecodeError::Malformed { offset });
     }
-    let has = |bit: u16| mask & bit != 0;
+    let has = |bit: u32| mask & bit != 0;
     let axis = if has(STYLE_HAS_AXIS) {
         Some(read_variant(dec, &[AotAxis::Row, AotAxis::Column])?)
     } else {
@@ -1503,6 +1531,19 @@ fn decode_record<'a>(dec: &mut Decoder<'a>) -> Result<AotRecord<'a>, DecodeError
     } else {
         None
     };
+    let scroll = if has(STYLE_SCROLLS) {
+        let offset = dec.position();
+        let bits = dec.read_u8()?;
+        if bits > 3 {
+            return Err(DecodeError::Malformed { offset });
+        }
+        Some(AotScroll {
+            bars: bits & 1 != 0,
+            tail: bits & 2 != 0,
+        })
+    } else {
+        None
+    };
     let offset = dec.position();
     let child_count =
         u32::try_from(dec.read_varint()?).map_err(|_| DecodeError::Malformed { offset })?;
@@ -1520,6 +1561,7 @@ fn decode_record<'a>(dec: &mut Decoder<'a>) -> Result<AotRecord<'a>, DecodeError
             avoid,
             content_align,
             place,
+            scroll,
         },
         child_count,
         extras: Extras::Encoded {
@@ -1832,6 +1874,10 @@ mod tests {
                         }),
                         avoid: None,
                         content_align: Some(Alignment2D::BottomEnd),
+                        scroll: Some(AotScroll {
+                            bars: false,
+                            tail: true,
+                        }),
                         place: None,
                     },
                     lengths: None,
