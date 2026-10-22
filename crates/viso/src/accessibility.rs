@@ -249,6 +249,7 @@ fn semantics_role(role: Role, named: bool) -> SemanticsRole {
         Role::Row => SemanticsRole::Row,
         Role::Cell => SemanticsRole::Cell,
         Role::ColumnHeader => SemanticsRole::ColumnHeader,
+        Role::EditableComboBox => SemanticsRole::EditableComboBox,
         Role::Tab => SemanticsRole::Tab,
         Role::TabList => SemanticsRole::TabList,
         Role::Navigation => SemanticsRole::Navigation,
@@ -368,6 +369,7 @@ impl Walk<'_> {
             },
             state: semantics_state(row.state, row.disabled),
             actions,
+            active_descendant: row.active.map(semantics_id),
             children,
         }
     }

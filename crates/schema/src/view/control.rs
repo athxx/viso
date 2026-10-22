@@ -317,6 +317,7 @@ pub fn source_role(variant: &str) -> Option<Role> {
         "row" => Role::Row,
         "cell" => Role::Cell,
         "column_header" => Role::ColumnHeader,
+        "editable_combo_box" => Role::EditableComboBox,
         _ => return None,
     })
 }
@@ -327,7 +328,7 @@ pub fn source_name(role: Role) -> &'static str {
 }
 
 /// Every variant [`source_role`] takes, in the order of [`Role::ALL`].
-pub const SOURCE_ROLES: [&str; 36] = [
+pub const SOURCE_ROLES: [&str; 37] = [
     "group",
     "button",
     "check_box",
@@ -364,6 +365,7 @@ pub const SOURCE_ROLES: [&str; 36] = [
     "row",
     "cell",
     "column_header",
+    "editable_combo_box",
 ];
 
 /// A layout property a node's value sets as the view's values change: one

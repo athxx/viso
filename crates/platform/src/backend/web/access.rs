@@ -22,7 +22,7 @@ use crate::access_mirror::TreeMirror;
 use crate::accessibility::{
     AccessAction, AccessNode, AccessRequest, SemanticsDelta, SemanticsId, SemanticsRect,
 };
-use crate::backend::web_translate::{aria_attributes, named_by_content, slider_step};
+use crate::backend::web_translate::{aria_attributes, element_id, named_by_content, slider_step};
 use crate::event::RawEvent;
 
 /// The mirror's root: fixed over the canvas, invisible, and transparent to
@@ -176,6 +176,7 @@ fn element_for(
     element
         .set_attribute(ID_ATTRIBUTE, &id.0.to_string())
         .ok()?;
+    element.set_id(&element_id(id));
     elements.insert(id, element.clone());
     Some(element)
 }

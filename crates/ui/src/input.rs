@@ -272,7 +272,7 @@ pub enum ImeEvent {
 
 use crate::binding::BindingTable;
 use crate::component::NodeStore;
-use crate::context::{EventCx, StoreRequest};
+use crate::context::{EventCx, FocusChange, StoreRequest};
 use crate::dirty::DirtyClass;
 use crate::drag::MOUSE_SLOP;
 use crate::hit_test::HitTestTree;
@@ -1441,6 +1441,45 @@ impl KeyRouter {
         ran
     }
 
+    /// Tell the nodes the focus moved between, once it moved: the node it
+    /// left and then each of its ancestors until one stops it hear
+    /// [`FocusChange::Lost`], then the node it came to and its ancestors
+    /// [`FocusChange::Gained`] (read via `cx.focus_change()`). What a handler
+    /// does about it may move the focus again, which is told in turn, a few
+    /// times at most. Returns whether a handler ran.
+    pub fn route_focus(
+        store: &mut NodeStore,
+        states: &mut StateStore,
+        bindings: &BindingTable,
+        edits: &mut TextEdits,
+    ) -> bool {
+        let mut ran = false;
+        for _ in 0..4 {
+            let Some((from, to)) = store.take_focus_move() else {
+                break;
+            };
+            for (node, change) in [(from, FocusChange::Lost), (to, FocusChange::Gained)] {
+                let mut at = node.filter(|&n| store.arena().is_live(n));
+                while let Some(n) = at {
+                    let d = key_handler_dispatch(
+                        store,
+                        states,
+                        bindings,
+                        edits,
+                        n,
+                        KeyPayload::Focus(change),
+                    );
+                    ran |= d.ran;
+                    if d.stop {
+                        break;
+                    }
+                    at = store.parent(n);
+                }
+            }
+        }
+        ran
+    }
+
     /// Tell light-dismiss layer `layer` a press landed outside it, through
     /// its key handler; whether one ran.
     pub fn route_dismiss(
@@ -1571,6 +1610,7 @@ enum KeyPayload<'e> {
     Link(&'e str),
     Dismiss,
     Wake(u32),
+    Focus(FocusChange),
 }
 
 /// Call one node's key handler with `payload`, then apply everything the
@@ -1593,6 +1633,7 @@ fn key_handler_dispatch(
             KeyPayload::Link(target) => EventCx::__new_link(states, bindings, target),
             KeyPayload::Dismiss => EventCx::__new_dismiss(states, bindings),
             KeyPayload::Wake(token) => EventCx::__new_wake(states, bindings, token),
+            KeyPayload::Focus(change) => EventCx::__new_focus(states, bindings, change),
         };
         cx.__set_focused(store.focused());
         cx.__set_services(store.__services());
@@ -3131,6 +3172,47 @@ mod tests {
         assert_eq!(store.focused(), Some(b));
         assert!(store.dirty(a).contains(DirtyClass::PAINT));
         assert!(store.dirty(b).contains(DirtyClass::PAINT));
+    }
+
+    #[test]
+    fn a_focus_move_tells_the_node_it_left_then_the_one_it_came_to_and_their_ancestors() {
+        let (mut store, root, [a, b, _c]) = three_focusable_leaves();
+        let mut states = StateStore::new();
+        let bindings = BindingTable::new();
+        let heard = Rc::new(RefCell::new(Vec::new()));
+        for (node, name) in [(a, "a"), (b, "b"), (root, "root")] {
+            let heard = heard.clone();
+            store.set_key_handler(
+                node,
+                Box::new(move |cx: &mut EventCx<'_>| {
+                    if let Some(change) = cx.focus_change() {
+                        heard.borrow_mut().push((name, change, cx.focused()));
+                    }
+                }),
+            );
+        }
+        store.set_focused(Some(a));
+        let mut edits = TextEdits::new();
+        KeyRouter::route_focus(&mut store, &mut states, &bindings, &mut edits);
+        heard.borrow_mut().clear();
+        store.set_focused(Some(b));
+        store.set_focused(Some(a));
+        assert!(
+            !KeyRouter::route_focus(&mut store, &mut states, &bindings, &mut edits),
+            "a move back to where it was is none"
+        );
+        store.set_focused(Some(b));
+        KeyRouter::route_focus(&mut store, &mut states, &bindings, &mut edits);
+        use crate::context::FocusChange::{Gained, Lost};
+        assert_eq!(
+            *heard.borrow(),
+            [
+                ("a", Lost, Some(b)),
+                ("root", Lost, Some(b)),
+                ("b", Gained, Some(b)),
+                ("root", Gained, Some(b)),
+            ]
+        );
     }
 
     #[test]

@@ -94,6 +94,8 @@ pub enum SemanticsRole {
     Row,
     Cell,
     ColumnHeader,
+    /// A text field that opens a list box of suggestions for it.
+    EditableComboBox,
 }
 
 /// How an assistive technology announces a change to a node's content.
@@ -183,6 +185,9 @@ pub struct AccessNode {
     pub bounds: SemanticsRect,
     pub state: SemanticsState,
     pub actions: AccessActions,
+    /// The node it shows as active while it keeps the focus itself: a combo
+    /// box's highlighted option.
+    pub active_descendant: Option<SemanticsId>,
     /// Its children in document order.
     pub children: Vec<SemanticsId>,
 }

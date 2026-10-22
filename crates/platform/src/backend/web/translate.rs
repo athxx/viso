@@ -11,7 +11,7 @@
     allow(dead_code)
 )]
 
-use crate::accessibility::{AccessAction, AccessNode, SemanticsLive, SemanticsRole};
+use crate::accessibility::{AccessAction, AccessNode, SemanticsId, SemanticsLive, SemanticsRole};
 use crate::event::{
     CursorIcon, KeyCode, Modifiers, PointerButtons, PointerId, PointerKind, PointerPhase,
 };
@@ -374,7 +374,7 @@ pub(crate) fn aria_role(role: SemanticsRole) -> Option<&'static str> {
         R::Separator => "separator",
         R::ListBox => "listbox",
         R::ListOption => "option",
-        R::ComboBox => "combobox",
+        R::ComboBox | R::EditableComboBox => "combobox",
         R::Tooltip => "tooltip",
         R::Table => "table",
         R::Row => "row",
@@ -397,6 +397,11 @@ pub(crate) fn aria_live(live: SemanticsLive) -> Option<&'static str> {
         SemanticsLive::Polite => Some("polite"),
         SemanticsLive::Assertive => Some("assertive"),
     }
+}
+
+/// The `id` of the element mirroring node `id`, which ARIA relations name.
+pub(crate) fn element_id(id: SemanticsId) -> String {
+    format!("viso-node-{}", id.0)
 }
 
 fn aria_flag(value: bool) -> &'static str {
@@ -429,6 +434,8 @@ pub(crate) fn aria_attributes(node: &AccessNode, mut set: impl FnMut(&'static st
     set("aria-posinset", index.map(|i| i.to_string()).as_deref());
     set("aria-setsize", count.map(|c| c.to_string()).as_deref());
     set("aria-disabled", state.disabled.then_some("true"));
+    let active = node.active_descendant.map(element_id);
+    set("aria-activedescendant", active.as_deref());
     set("aria-description", node.description.as_deref());
     let secure = role == SemanticsRole::SecureField;
     set("aria-valuetext", node.value.as_deref().filter(|_| !secure));

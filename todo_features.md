@@ -124,7 +124,7 @@ Rules:
   the available space, arrow offset, re-place on scroll/resize.
 - [x] `Select` / `DropDown`: anchored list, type-ahead, arrow/Home/End/PageUp/PageDown,
   scroll to the selected row, `listbox` semantics.
-- [ ] `ComboBox`: filter as you type, free text or closed set, `combobox` semantics.
+- [x] `ComboBox`: filter as you type, free text or closed set, `combobox` semantics.
 - [x] `Menu` / context menu: items, separators, checkable items, shortcuts text,
   submenus with hover intent, keyboard navigation, `on_context_menu` (right click / long
   press).

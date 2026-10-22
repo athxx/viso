@@ -11,6 +11,7 @@
 mod button;
 mod caption_bar;
 mod checkbox;
+mod combo_box;
 mod dock;
 mod file_tree;
 mod glyphs;
@@ -32,6 +33,7 @@ mod toggle;
 pub use button::{Button, ButtonStyle, button};
 pub use caption_bar::{CaptionBar, CaptionBarStyle, caption_bar};
 pub use checkbox::{CheckBox, CheckBoxStyle, checkbox};
+pub use combo_box::{ComboBox, ComboBoxHandle, ComboBoxHandleSlot, ComboBoxStyle, combo_box};
 pub use dock::{
     Dock, DockHandle, DockHandleSlot, DockNode, DockStyle, DockTree, DropPart, Floating,
     PanelContent, PanelKey, dock,

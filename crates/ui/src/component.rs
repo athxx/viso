@@ -683,6 +683,10 @@ pub struct NodeStore {
     pub(crate) wakes: Vec<(NodeId, u32)>,
     /// Cold: the nodes that cast shadows.
     pub(crate) shadows: crate::shadow::Shadows,
+    /// Cold: the nodes that show a descendant as active.
+    actives: crate::semantics::ActiveDescendants,
+    /// Where the focus was before it last moved, until the move is told.
+    focus_from: Option<Option<NodeId>>,
     /// Cold: the nodes whose lengths read the environment (`px`, `sp`, `em`),
     /// re-folded into `layout` when it changes. Empty in a tree of plain `dp`
     /// and `%` lengths.
@@ -796,6 +800,7 @@ impl NodeStore {
         painting.transforms.clear();
         painting.index.clear();
         self.focused = None;
+        self.focus_from = None;
         self.contacts.clear();
         self.hovered = None;
         self.interaction_states.clear();
@@ -810,6 +815,7 @@ impl NodeStore {
         self.anchors.clear();
         self.wakes.clear();
         self.shadows.clear();
+        self.actives.clear();
         self.focus_scope = None;
         self.draggable_regions.clear();
         self.tasks.clear();
@@ -2579,6 +2585,23 @@ impl NodeStore {
         self.mark_dirty(id, DirtyClass::SEMANTICS);
     }
 
+    /// The descendant node `id` shows as active while it keeps the focus
+    /// itself, if it is still in the tree.
+    pub fn active_descendant(&self, id: NodeId) -> Option<NodeId> {
+        self.actives
+            .get(id.index())
+            .filter(|&a| self.arena.is_live(a))
+    }
+
+    /// Show `active`, a descendant of `id`, as the one active in `id` while
+    /// `id` keeps the focus — a combo box's highlighted option — or none, and
+    /// mark `id` SEMANTICS-dirty. A stale handle is a no-op.
+    pub fn set_active_descendant(&mut self, id: NodeId, active: Option<NodeId>) {
+        if self.arena.is_live(id) && self.actives.set(id.index(), active) {
+            self.mark_dirty(id, DirtyClass::SEMANTICS);
+        }
+    }
+
     /// A node's live accessibility state (checked / value / range / expanded),
     /// if any. `None` = a node that carries no reactive semantic state (a plain
     /// container, a label, or a control before its projection binding has run).
@@ -3938,6 +3961,14 @@ impl NodeStore {
         self.focused
     }
 
+    /// Where the focus was and where it is, once since the focus last moved
+    /// and then `None`: what [`KeyRouter::route_focus`](crate::KeyRouter::route_focus)
+    /// tells the nodes. A move back to where it was is none.
+    pub fn take_focus_move(&mut self) -> Option<(Option<NodeId>, Option<NodeId>)> {
+        let from = self.focus_from.take()?;
+        (from != self.focused).then_some((from, self.focused))
+    }
+
     /// Set the focus slot. Focusing `Some(id)` is live-guarded — a stale handle
     /// leaves focus unchanged rather than pointing the slot at a dead slot;
     /// `None` always clears. This only moves the slot: dirtying the old and new
@@ -3948,6 +3979,7 @@ impl NodeStore {
             other => {
                 if self.focused != other {
                     self.interaction_states.moved();
+                    self.focus_from.get_or_insert(self.focused);
                 }
                 self.focused = other;
             }
@@ -4484,6 +4516,7 @@ impl NodeStore {
         self.layers.forget(i as u32);
         self.anchors.forget(i as u32);
         self.shadows.forget(i as u32);
+        self.actives.forget(i as u32);
         self.clips[i] = false;
         self.overlay[i] = false;
         self.opacity[i] = 1.0;
@@ -5132,6 +5165,7 @@ impl NodeStore {
             // a cross-layer state-store read: a control's projection binding
             // wrote it in the flush phase (AGENTS section 3.5).
             state: self.semantic_state(id),
+            active: self.active_descendant(id),
             bounds: self.bounds(id),
             children: Vec::new(),
         });
@@ -5170,6 +5204,7 @@ impl NodeStore {
                 focused: on == Some(link),
                 disabled,
                 state: None,
+                active: None,
                 bounds,
                 children: Vec::new(),
             });

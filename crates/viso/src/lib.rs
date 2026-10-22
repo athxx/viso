@@ -1543,6 +1543,20 @@ impl WindowState {
         self.text.as_ref().is_some_and(TextShaper::has_pending_work)
     }
 
+    /// Tell the nodes the focus moved between, and settle the edits what
+    /// they did about it asked for.
+    fn tell_focus(&mut self) {
+        if KeyRouter::route_focus(
+            &mut self.store,
+            &mut self.states,
+            &self.bindings,
+            &mut self.text_edits,
+        ) && self.store.has_edit_requests()
+        {
+            self.settle_text_edits();
+        }
+    }
+
     /// Fold every queued edit into its buffer and tell each control whose text
     /// changed what it now reads, so `on_change` observes typing, deletion,
     /// paste, and cut through one path. Runs right after an input sample is
@@ -2956,6 +2970,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         if edits_text || ws.store.has_edit_requests() {
             ws.settle_text_edits();
         }
+        ws.tell_focus();
         ws.store.set_dirty_cause(cause);
         #[cfg(any(feature = "hot-reload", feature = "headless"))]
         if let Some(journal) = &mut ws.journal {
@@ -3274,6 +3289,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                                 &ws.bindings,
                                 &mut ws.text_edits,
                             );
+                            ws.tell_focus();
                         }
                     }
                     // Poll the tasks spawned or woken since the last frame and

@@ -73,6 +73,14 @@ pub fn select_option(label: impl Into<String>) -> SelectOption {
 }
 
 impl SelectOption {
+    pub(crate) fn label(&self) -> &str {
+        &self.label
+    }
+
+    pub(crate) fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
     /// Enable or disable it (default enabled): a disabled option shows dimmed
     /// and cannot be chosen.
     pub fn enabled(mut self, enabled: bool) -> Self {
@@ -470,7 +478,7 @@ fn build(cx: &mut BuildCx<'_>, select: &Select) -> Rc<SelectState> {
 }
 
 /// Make everything below `node` let the pointer through to it.
-fn unhit_below(cx: &mut BuildCx<'_>, node: NodeId) {
+pub(super) fn unhit_below(cx: &mut BuildCx<'_>, node: NodeId) {
     cx.structure(|s| {
         let mut stack: Vec<NodeId> = s.store.arena().children(node).collect();
         while let Some(id) = stack.pop() {

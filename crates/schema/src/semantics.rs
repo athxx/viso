@@ -159,11 +159,15 @@ pub enum Role {
     Cell,
     /// A cell heading its column (WAI-ARIA `role=columnheader`).
     ColumnHeader,
+    /// A text field that opens a [`ListBox`](Role::ListBox) of suggestions
+    /// for it, announcing whether it is `expanded` (WAI-ARIA `role=combobox`
+    /// on a text input).
+    EditableComboBox,
 }
 
 impl Role {
     /// Every role, in declaration order.
-    pub const ALL: [Role; 36] = [
+    pub const ALL: [Role; 37] = [
         Role::Group,
         Role::Button,
         Role::CheckBox,
@@ -200,6 +204,7 @@ impl Role {
         Role::Row,
         Role::Cell,
         Role::ColumnHeader,
+        Role::EditableComboBox,
     ];
 
     /// The role whose [`label`](Self::label) is `label`.
@@ -248,6 +253,7 @@ impl Role {
             Role::Row => "row",
             Role::Cell => "cell",
             Role::ColumnHeader => "columnheader",
+            Role::EditableComboBox => "editablecombobox",
         }
     }
 }

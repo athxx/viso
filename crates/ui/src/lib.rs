@@ -80,7 +80,7 @@ pub use component::{
     Painted, PointerHandler, ScrollRequest, ScrollStyle, StackStyle, VirtualListStyle,
 };
 pub use content::{BrushImage, Content, InkRun, LinkBox, TextInk, TextMark, TextRequest};
-pub use context::{EventCx, StateWriter};
+pub use context::{EventCx, FocusChange, StateWriter};
 pub use dirty::{DirtyCause, DirtyClass, DirtyLists, DirtyMark};
 pub use drag::{DragPhase, DragSample, MOUSE_SLOP};
 pub use flush::{

@@ -411,13 +411,12 @@ impl Component for Popup {
             },
             |cx| {
                 // The anchor: always visible, painted in place, in one box the
-                // content sits against.
+                // content sits against, as big as the popup's room.
                 let anchor = cx.flex(
                     FlexStyle {
-                        size: Size {
-                            width: Length::Fit,
-                            height: Length::Fit,
-                        },
+                        axis: Axis::Column,
+                        align: Align::Stretch,
+                        size: Size::fill(),
                         ..FlexStyle::default()
                     },
                     |cx| {

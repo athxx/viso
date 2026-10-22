@@ -112,6 +112,9 @@ pub struct SemanticsNode {
     /// derived from the node's [`SemanticState`] side column. `None` for a node
     /// that carries no live state (a plain container or label).
     pub state: Option<SemanticState>,
+    /// The descendant it shows as active while it keeps the focus itself: a
+    /// combo box's highlighted option (WAI-ARIA `aria-activedescendant`).
+    pub active: Option<NodeId>,
     /// The node's layout box.
     pub bounds: Rect,
     /// Indices of this node's children within [`SemanticsTree::nodes`], in tree
@@ -318,6 +321,7 @@ mod tests {
                     focused: false,
                     disabled: false,
                     state: None,
+                    active: None,
                     bounds: ZERO_RECT,
                     children: vec![1],
                 },
@@ -333,6 +337,7 @@ mod tests {
                     focused: true,
                     disabled: false,
                     state: None,
+                    active: None,
                     bounds: ZERO_RECT,
                     children: Vec::new(),
                 },
@@ -342,5 +347,57 @@ mod tests {
         assert_eq!(tree.root().map(|n| n.id), Some(root_id));
         assert_eq!(tree.get(child_id).map(|n| n.role), Some(Role::Button));
         assert!(tree.get(child_id).unwrap().focused);
+    }
+}
+
+/// The nodes that show a descendant as active (cold): one entry for each,
+/// in slot order.
+#[derive(Debug, Default)]
+pub(crate) struct ActiveDescendants {
+    entries: Vec<(u32, NodeId)>,
+}
+
+impl ActiveDescendants {
+    pub(crate) fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    /// Forgets the slot `index`, freed or reused.
+    pub(crate) fn forget(&mut self, index: u32) {
+        if let Ok(at) = self.find(index) {
+            self.entries.remove(at);
+        }
+    }
+
+    fn find(&self, index: u32) -> Result<usize, usize> {
+        self.entries.binary_search_by_key(&index, |e| e.0)
+    }
+
+    #[inline]
+    pub(crate) fn get(&self, index: u32) -> Option<NodeId> {
+        if self.entries.is_empty() {
+            return None;
+        }
+        self.find(index).ok().map(|at| self.entries[at].1)
+    }
+
+    /// Set slot `index`'s active descendant, or none; whether it changed.
+    pub(crate) fn set(&mut self, index: u32, active: Option<NodeId>) -> bool {
+        match (self.find(index), active) {
+            (Ok(at), Some(a)) if self.entries[at].1 == a => false,
+            (Ok(at), Some(a)) => {
+                self.entries[at].1 = a;
+                true
+            }
+            (Ok(at), None) => {
+                self.entries.remove(at);
+                true
+            }
+            (Err(at), Some(a)) => {
+                self.entries.insert(at, (index, a));
+                true
+            }
+            (Err(_), None) => false,
+        }
     }
 }

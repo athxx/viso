@@ -2302,7 +2302,7 @@ fn aria_role(role: Role, tag: &str, widget: &str) -> Option<&'static str> {
         (Role::Separator, ..) => "separator",
         (Role::ListBox, ..) => "listbox",
         (Role::ListOption, ..) => "option",
-        (Role::ComboBox, ..) => "combobox",
+        (Role::ComboBox | Role::EditableComboBox, ..) => "combobox",
         (Role::Tooltip, ..) => "tooltip",
         (Role::Table, ..) => "table",
         (Role::Row, ..) => "row",

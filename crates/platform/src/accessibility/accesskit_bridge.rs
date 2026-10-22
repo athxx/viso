@@ -95,6 +95,9 @@ fn node_of(node: AccessNode) -> Node {
     if state.disabled {
         out.set_disabled();
     }
+    if let Some(active) = node.active_descendant {
+        out.set_active_descendant(node_id(active));
+    }
     for action in node.actions.iter() {
         out.add_action(accesskit_action(action));
     }
@@ -131,6 +134,7 @@ fn role(role: SemanticsRole) -> Role {
         SemanticsRole::Row => Role::Row,
         SemanticsRole::Cell => Role::Cell,
         SemanticsRole::ColumnHeader => Role::ColumnHeader,
+        SemanticsRole::EditableComboBox => Role::EditableComboBox,
         SemanticsRole::Tab => Role::Tab,
         SemanticsRole::TabList => Role::TabList,
         SemanticsRole::Navigation => Role::Navigation,
@@ -194,6 +198,7 @@ mod tests {
                 .with(AccessAction::Focus)
                 .with(AccessAction::Increment)
                 .with(AccessAction::Decrement),
+            active_descendant: None,
             children: Vec::new(),
         }
     }
@@ -324,5 +329,17 @@ mod tests {
             assert_eq!(action_of(accesskit_action(action)), Some(action));
         }
         assert_eq!(request(&ask(Action::ScrollIntoView)), None);
+    }
+
+    #[test]
+    fn a_combo_box_names_its_highlighted_option_as_its_active_descendant() {
+        let node = node_of(AccessNode {
+            id: SemanticsId(3),
+            role: SemanticsRole::EditableComboBox,
+            active_descendant: Some(SemanticsId(9)),
+            ..AccessNode::default()
+        });
+        assert_eq!(node.role(), Role::EditableComboBox);
+        assert_eq!(node.active_descendant(), Some(NodeId(9)));
     }
 }

@@ -358,6 +358,8 @@ pub struct EventCx<'a> {
     dismissed: bool,
     /// The token of the wake this dispatch delivers.
     woken: Option<u32>,
+    /// Whether the focus came to or left the node this dispatch tells.
+    focus_change: Option<FocusChange>,
     /// What a handler asked of the tree this dispatch beyond the requests
     /// above: applied by the router after the handler returns.
     store_requests: Vec<StoreRequest>,
@@ -451,6 +453,16 @@ pub struct EventCx<'a> {
     place: Option<Place<'a>>,
 }
 
+/// How the focus moved for the node a key-handler dispatch tells
+/// ([`EventCx::focus_change`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusChange {
+    /// The focus came to it.
+    Gained,
+    /// The focus left it.
+    Lost,
+}
+
 /// Something a handler asks of the tree, applied by the router after it
 /// returns.
 #[doc(hidden)]
@@ -464,6 +476,10 @@ pub enum StoreRequest {
     Reveal(NodeId),
     /// Show another text on a text node.
     Text(NodeId, Box<crate::content::TextRequest>),
+    /// Show a descendant of a node as its active one.
+    Active(NodeId, Option<NodeId>),
+    /// Edit another node's text.
+    Edit(NodeId, EditIntent),
 }
 
 impl StoreRequest {
@@ -476,6 +492,8 @@ impl StoreRequest {
                 store.request_scroll(id, crate::component::ScrollRequest::Reveal)
             }
             StoreRequest::Text(id, request) => store.set_text(id, *request),
+            StoreRequest::Active(id, active) => store.set_active_descendant(id, active),
+            StoreRequest::Edit(id, intent) => store.queue_edit(id, intent),
         }
     }
 }
@@ -522,6 +540,7 @@ impl<'a> EventCx<'a> {
             link: None,
             dismissed: false,
             woken: None,
+            focus_change: None,
             store_requests: Vec::new(),
             tasks: TaskOps::default(),
             services: None,
@@ -560,6 +579,7 @@ impl<'a> EventCx<'a> {
             link: None,
             dismissed: false,
             woken: None,
+            focus_change: None,
             store_requests: Vec::new(),
             tasks: TaskOps::default(),
             services: None,
@@ -597,6 +617,7 @@ impl<'a> EventCx<'a> {
             link: None,
             dismissed: false,
             woken: None,
+            focus_change: None,
             store_requests: Vec::new(),
             tasks: TaskOps::default(),
             services: None,
@@ -634,6 +655,7 @@ impl<'a> EventCx<'a> {
             link: None,
             dismissed: false,
             woken: None,
+            focus_change: None,
             store_requests: Vec::new(),
             tasks: TaskOps::default(),
             services: None,
@@ -682,6 +704,19 @@ impl<'a> EventCx<'a> {
     pub fn __new_wake(states: &'a mut StateStore, bindings: &'a BindingTable, token: u32) -> Self {
         let mut cx = Self::__new(states, bindings);
         cx.woken = Some(token);
+        cx
+    }
+
+    /// Assemble the event context that tells a node the focus came to it or
+    /// left it: the handler reads it via [`EventCx::focus_change`].
+    #[doc(hidden)]
+    pub fn __new_focus(
+        states: &'a mut StateStore,
+        bindings: &'a BindingTable,
+        change: FocusChange,
+    ) -> Self {
+        let mut cx = Self::__new(states, bindings);
+        cx.focus_change = Some(change);
         cx
     }
 
@@ -833,6 +868,13 @@ impl<'a> EventCx<'a> {
     /// delivers, `None` for any other dispatch.
     pub fn woken(&self) -> Option<u32> {
         self.woken
+    }
+
+    /// Whether this dispatch tells that the focus came to or left a node: the
+    /// dispatching node or one inside it. [`focused`](Self::focused) says
+    /// where the focus is now, so a container learns whether it left it.
+    pub fn focus_change(&self) -> Option<FocusChange> {
+        self.focus_change
     }
 
     /// Where this dispatch asks for a context menu, in window coordinates: a
@@ -1070,6 +1112,14 @@ impl<'a> EventCx<'a> {
         self.edits.push(intent);
     }
 
+    /// Record a text edit for text field `id`, which need not be the
+    /// dispatching node: a combo box's list writes the chosen option into its
+    /// field. Applied with the dispatch's other edits; the field's key
+    /// handler hears the change like any other.
+    pub fn edit(&mut self, id: NodeId, intent: EditIntent) {
+        self.store_requests.push(StoreRequest::Edit(id, intent));
+    }
+
     /// Take the edit intents recorded this dispatch for the router to apply to the
     /// dispatching node's buffer. Empty when the handler recorded none.
     #[doc(hidden)]
@@ -1168,6 +1218,12 @@ impl<'a> EventCx<'a> {
     pub fn set_text(&mut self, id: NodeId, request: crate::content::TextRequest) {
         self.store_requests
             .push(StoreRequest::Text(id, Box::new(request)));
+    }
+
+    /// Show `active`, a descendant of `id`, as the one active while `id`
+    /// keeps the focus ([`NodeStore::set_active_descendant`]).
+    pub fn set_active_descendant(&mut self, id: NodeId, active: Option<NodeId>) {
+        self.store_requests.push(StoreRequest::Active(id, active));
     }
 
     /// Take what the handler asked of the tree for the router to apply.
