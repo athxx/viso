@@ -622,6 +622,7 @@ fn events(at: &Window<'_>, action: &Action) -> Result<Vec<RawEvent>, String> {
                     delta_x: *dx,
                     delta_y: *dy,
                     modifiers: Modifiers::default(),
+                    phase: viso_platform::ScrollPhase::None,
                 }),
             ];
             Ok(())

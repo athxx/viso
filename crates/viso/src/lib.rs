@@ -3167,6 +3167,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     delta_x: s.delta_x / scale,
                     delta_y: s.delta_y / scale,
                     modifiers: lower_modifiers(s.modifiers),
+                    phase: s.phase,
                 };
                 ScrollRouter::route(&mut ws.store, root, ev);
             }

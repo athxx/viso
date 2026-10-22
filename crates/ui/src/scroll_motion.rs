@@ -21,6 +21,7 @@ use std::time::Duration;
 use viso_runtime::Instant;
 
 use crate::component::NodeStore;
+use crate::dirty::DirtyClass;
 use crate::input::PointerId;
 use crate::layout::{Axis, OnAxis, Vec2};
 use crate::node::NodeId;
@@ -40,16 +41,38 @@ pub enum FlingCurve {
     Spline,
 }
 
-/// How a window's viewports coast: the curve, and the speeds a flick needs
-/// to start and may reach. Logical points per second.
+/// How a viewport shows a pull past the end of its range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverscrollStyle {
+    /// The range ends hard.
+    None,
+    /// The content follows the finger past the end, ever more stiffly, and
+    /// springs back; a coast reaching the end bounces (iOS).
+    Bounce,
+    /// The content stretches along the axis from the end it is pulled at,
+    /// and relaxes back; a coast reaching the end is absorbed into a
+    /// stretch (Android).
+    Stretch,
+}
+
+/// How a window's viewports coast and overscroll: the curve, the speeds a
+/// flick needs to start and may reach (logical points per second), and how
+/// a pull past the end shows.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ScrollPhysics {
     pub curve: FlingCurve,
+    pub overscroll: OverscrollStyle,
+    /// Whether the system coasts a trackpad scroll on after the fingers
+    /// lift (macOS); otherwise the window coasts it as it does a flick.
+    pub system_coast: bool,
     /// The release speed under which a lift is a stop, not a flick.
     pub min_velocity: f32,
     /// The fastest a flick (boosted ones too) coasts.
     pub max_velocity: f32,
 }
+
+/// macOS sends its own coast after a trackpad scroll.
+const SYSTEM_COAST: bool = cfg!(target_os = "macos");
 
 impl ScrollPhysics {
     /// `UIScrollView`'s normal deceleration.
@@ -58,12 +81,16 @@ impl ScrollPhysics {
             rate: 0.998,
             hard_rate: 0.998,
         },
+        overscroll: OverscrollStyle::Bounce,
+        system_coast: SYSTEM_COAST,
         min_velocity: 50.0,
         max_velocity: 8000.0,
     };
     /// Android's fling, at its `ViewConfiguration` speeds.
     pub const ANDROID: ScrollPhysics = ScrollPhysics {
         curve: FlingCurve::Spline,
+        overscroll: OverscrollStyle::Stretch,
+        system_coast: false,
         min_velocity: 50.0,
         max_velocity: 8000.0,
     };
@@ -73,6 +100,8 @@ impl ScrollPhysics {
             rate: 0.997,
             hard_rate: 0.9985,
         },
+        overscroll: OverscrollStyle::Bounce,
+        system_coast: false,
         min_velocity: 50.0,
         max_velocity: 8000.0,
     };
@@ -113,6 +142,18 @@ const STOP_VELOCITY: f64 = 5.0;
 const CATCH_VELOCITY: f64 = 40.0;
 /// How soon (seconds) after a catch a flick the same way adds its speed.
 const BOOST_WINDOW: f32 = 0.4;
+/// A pull `raw` points past the end shows `raw·c·d / (raw·c + d)` of it,
+/// `d` being this share of the viewport's extent: just over half the travel
+/// at first, flattening so it never shows more than `d`.
+const PULL_COEFF: f32 = 0.55;
+const PULL_RANGE: f32 = 0.35;
+/// The spring a pull relaxes along, `x(t) = (x0 + (v0 + λ·x0)·t)·e^(−λ·t)`:
+/// critically damped, its `λ` per second. A coast reaching the end at `v`
+/// overshoots by `v/(λ·e)` and settles in about `7.5/λ` seconds.
+const SPRING: f64 = 20.0;
+/// How far a full pull stretches the content along its axis: a share of
+/// the shown pull over the extent.
+const STRETCH: f32 = 0.25;
 /// The longest step (seconds) one frame advances a coast: a hitch catches
 /// up a little rather than jumping.
 const MAX_STEP: f64 = 0.1;
@@ -366,35 +407,88 @@ struct Caught {
     at: Instant,
 }
 
-/// A window's coasting viewports, and what the catches and flicks read.
+/// A viewport pulled past the end of its range along its axis.
+#[derive(Debug, Clone, Copy)]
+struct Pull {
+    viewport: NodeId,
+    axis: Axis,
+    /// How far past the end it shows (points): positive past the greatest
+    /// offset, negative past the least.
+    shown: f32,
+    /// How it relaxes once let go; `None` while a finger holds it.
+    spring: Option<Spring>,
+}
+
+/// A pull relaxing from `x0` at speed `v0` (displayed points, signed as the
+/// pull), `t` seconds since.
+#[derive(Debug, Clone, Copy)]
+struct Spring {
+    x0: f64,
+    v0: f64,
+    t: f64,
+}
+
+impl Spring {
+    fn at(&self) -> f64 {
+        (self.x0 + (self.v0 + SPRING * self.x0) * self.t) * (-SPRING * self.t).exp()
+    }
+}
+
+/// The shown pull for `raw` points of travel past the end of a viewport
+/// `extent` long, and back.
+fn shown_pull(raw: f32, extent: f32) -> f32 {
+    let d = (extent * PULL_RANGE).max(1.0);
+    (raw.abs() * PULL_COEFF * d / (raw.abs() * PULL_COEFF + d)).copysign(raw)
+}
+
+fn raw_pull(shown: f32, extent: f32) -> f32 {
+    let d = (extent * PULL_RANGE).max(1.0);
+    let s = shown.abs().min(d * 0.999);
+    (s * d / (PULL_COEFF * (d - s))).copysign(shown)
+}
+
+/// A window's coasting and pulled viewports, and what the catches and
+/// flicks read.
 #[derive(Debug, Default)]
 pub(crate) struct ScrollMotions {
     physics: ScrollPhysics,
     flings: Vec<Fling>,
+    pulls: Vec<Pull>,
     caught: Option<Caught>,
     /// The pointer whose press caught a coast: its samples reach no control.
     swallowed: Option<PointerId>,
     /// When the sample under routing arrived.
     input_time: Option<Instant>,
+    /// When the last trackpad scroll sample arrived, for the speed of the
+    /// system's coast.
+    last_scroll: Option<Instant>,
+    /// The viewport the system's coast bounced at: the rest of that coast
+    /// moves it no more.
+    pinned: Option<NodeId>,
+    /// The trackpad fingers' scroll so far, and its samples, for the speed
+    /// it lifts at.
+    pad: (Vec2, VelocityTracker),
 }
 
 impl ScrollMotions {
     /// Forget every coast; the physics and the clock stay.
     pub(crate) fn clear(&mut self) {
         self.flings.clear();
+        self.pulls.clear();
         self.caught = None;
         self.swallowed = None;
+        self.pinned = None;
     }
 }
 
 impl NodeStore {
-    /// How this window's viewports coast; [`ScrollPhysics::native`] unless
-    /// set.
+    /// How this window's viewports coast and overscroll;
+    /// [`ScrollPhysics::native`] unless set.
     pub fn scroll_physics(&self) -> ScrollPhysics {
         self.motions.physics
     }
 
-    /// Make this window's viewports coast by `physics`.
+    /// Make this window's viewports coast and overscroll by `physics`.
     pub fn set_scroll_physics(&mut self, physics: ScrollPhysics) {
         self.motions.physics = physics;
     }
@@ -410,15 +504,64 @@ impl NodeStore {
         self.motions.input_time
     }
 
-    /// Whether a viewport coasts: the frame loop keeps beating while one does.
+    /// Whether a viewport coasts or a pull relaxes: the frame loop keeps
+    /// beating while one does.
     #[inline]
     pub fn is_scroll_moving(&self) -> bool {
-        !self.motions.flings.is_empty()
+        !self.motions.flings.is_empty() || self.motions.pulls.iter().any(|p| p.spring.is_some())
     }
 
     /// Whether viewport `id` coasts.
     pub fn is_coasting(&self, id: NodeId) -> bool {
         self.motions.flings.iter().any(|f| f.viewport == id)
+    }
+
+    /// How far past the end of its range viewport `id` shows pulled
+    /// (points): positive past its greatest offset, negative past its
+    /// least, zero while it is within.
+    pub fn overscroll(&self, id: NodeId) -> f32 {
+        self.motions
+            .pulls
+            .iter()
+            .find(|p| p.viewport == id)
+            .map_or(0.0, |p| p.shown)
+    }
+
+    /// The shift a bounced pull adds to the content of the viewport in slot
+    /// `index`: nothing for a stretch, or with no pull.
+    #[inline]
+    pub(crate) fn pull_shift_at(&self, index: u32) -> Vec2 {
+        if self.motions.pulls.is_empty()
+            || self.motions.physics.overscroll != OverscrollStyle::Bounce
+        {
+            return Vec2::ZERO;
+        }
+        self.motions
+            .pulls
+            .iter()
+            .find(|p| p.viewport.index() == index && self.arena().is_live(p.viewport))
+            .map_or(Vec2::ZERO, |p| axis_vec(p.axis, p.shown))
+    }
+
+    /// The stretch a pull gives viewport `id`'s content: the axis, the
+    /// factor, and the end it stretches from (layout space).
+    pub(crate) fn pull_stretch(&self, id: NodeId) -> Option<(Axis, f32, f32)> {
+        if self.motions.pulls.is_empty()
+            || self.motions.physics.overscroll != OverscrollStyle::Stretch
+        {
+            return None;
+        }
+        let p = self.motions.pulls.iter().find(|p| p.viewport == id)?;
+        let b = self.bounds(id);
+        let (start, extent) = match p.axis {
+            Axis::Row => (b.x, b.w),
+            Axis::Column => (b.y, b.h),
+        };
+        if extent <= 0.0 || p.shown == 0.0 {
+            return None;
+        }
+        let pivot = if p.shown < 0.0 { start } else { start + extent };
+        Some((p.axis, 1.0 + STRETCH * p.shown.abs() / extent, pivot))
     }
 
     /// Coast viewport `id` along its axis from an offset speed of
@@ -430,7 +573,7 @@ impl NodeStore {
         let Some(axis) = self.scroll_axis(id).filter(|_| self.arena().is_live(id)) else {
             return;
         };
-        self.stop_coast(id);
+        self.motions.flings.retain(|f| f.viewport != id);
         let physics = self.motions.physics;
         if velocity.abs() < physics.min_velocity {
             return;
@@ -453,14 +596,20 @@ impl NodeStore {
             .map(|f| f.motion.velocity)
     }
 
-    /// Stop viewport `id`'s coast where it is.
+    /// Stop viewport `id`'s coast where it is, and drop a pull of it back
+    /// within its range at once.
     pub fn stop_coast(&mut self, id: NodeId) {
         self.motions.flings.retain(|f| f.viewport != id);
+        if let Some(at) = self.motions.pulls.iter().position(|p| p.viewport == id) {
+            self.motions.pulls.swap_remove(at);
+            self.mark_dirty(id, DirtyClass::TRANSFORM);
+        }
     }
 
-    /// Advance every coast by a frame of `delta`, moving its viewport; one
-    /// that slowed to a stop, reached its edge or lost its node ends. A flat
-    /// pass with no allocation.
+    /// Advance every coast and relaxing pull by a frame of `delta`, moving
+    /// its viewport; a coast that slowed to a stop or lost its node ends,
+    /// one reaching its end bounces or is absorbed into a stretch, and a
+    /// pull that settled is gone. A flat pass with no allocation.
     pub fn tick_scroll_motion(&mut self, delta: Duration) {
         let mut i = self.motions.flings.len();
         while i > 0 {
@@ -479,17 +628,82 @@ impl NodeStore {
             let edge = wanted <= least || wanted >= most;
             if fling.motion.done() || edge {
                 self.motions.flings.swap_remove(i);
+                if edge && !fling.motion.done() {
+                    self.bounce(id, fling.axis, fling.motion.velocity);
+                }
             } else {
                 self.motions.flings[i] = fling;
             }
         }
+        let dt = delta.as_secs_f64().min(MAX_STEP);
+        let mut i = self.motions.pulls.len();
+        while i > 0 {
+            i -= 1;
+            let mut pull = self.motions.pulls[i];
+            let id = pull.viewport;
+            let Some(mut spring) = pull.spring else {
+                continue;
+            };
+            if !self.arena().is_live(id) {
+                self.motions.pulls.swap_remove(i);
+                continue;
+            }
+            spring.t += dt;
+            let limit = f64::from(self.pull_limit(id, pull.axis));
+            let x = spring.at().clamp(-limit, limit) as f32;
+            self.mark_dirty(id, DirtyClass::TRANSFORM);
+            if spring.t * SPRING > 1.0 && x.abs() < 0.25 || spring.t * SPRING > 7.5 {
+                self.motions.pulls.swap_remove(i);
+                continue;
+            }
+            pull.shown = x;
+            pull.spring = Some(spring);
+            self.motions.pulls[i] = pull;
+        }
+    }
+
+    /// The farthest viewport `id` shows pulled along `axis`.
+    fn pull_limit(&self, id: NodeId, axis: Axis) -> f32 {
+        let b = self.bounds(id);
+        let extent = match axis {
+            Axis::Row => b.w,
+            Axis::Column => b.h,
+        };
+        (extent * PULL_RANGE).max(1.0)
+    }
+
+    /// A coast reached viewport `id`'s end at `velocity`: it carries on past
+    /// the end and springs back, its overshoot easing under the limit.
+    fn bounce(&mut self, id: NodeId, axis: Axis, velocity: f64) {
+        if self.motions.physics.overscroll == OverscrollStyle::None
+            || self.scroll_range(id, axis) <= 0.0
+        {
+            return;
+        }
+        let x0 = f64::from(self.overscroll(id));
+        let limit = f64::from(self.pull_limit(id, axis));
+        let headroom = (limit - x0.abs()).max(0.0);
+        let peak = velocity.abs() / (SPRING * std::f64::consts::E);
+        let v0 = if peak + headroom > 0.0 {
+            velocity * headroom / (peak + headroom)
+        } else {
+            0.0
+        };
+        self.motions.pulls.retain(|p| p.viewport != id);
+        self.motions.pulls.push(Pull {
+            viewport: id,
+            axis,
+            shown: x0 as f32,
+            spring: Some(Spring { x0, v0, t: 0.0 }),
+        });
     }
 
     /// A press at or under `target` by `pointer`: stop the coasts of the
-    /// viewports enclosing it. Returns whether one moved briskly, so the
-    /// press is the catch and reaches no control.
+    /// viewports enclosing it and hold their relaxing pulls. Returns whether
+    /// one moved briskly or showed pulled, so the press is the catch and
+    /// reaches no control.
     pub(crate) fn catch_coast(&mut self, target: NodeId, pointer: PointerId) -> bool {
-        if self.motions.flings.is_empty() {
+        if !self.is_scroll_moving() {
             return false;
         }
         let mut brisk = false;
@@ -506,7 +720,10 @@ impl NodeStore {
                         at,
                     });
                 }
-                continue;
+            }
+            if let Some(pull) = self.motions.pulls.iter_mut().find(|p| p.viewport == n) {
+                pull.spring = None;
+                brisk = true;
             }
             node = self.arena().parent(n);
         }
@@ -522,10 +739,24 @@ impl NodeStore {
         self.motions.swallowed == Some(pointer)
     }
 
-    /// `pointer`'s catch ended with its lift.
+    /// `pointer`'s catch ended with its lift: the pulls it held relax.
     pub(crate) fn end_swallow(&mut self, pointer: PointerId) {
         if self.swallows(pointer) {
             self.motions.swallowed = None;
+            self.let_go_pulls();
+        }
+    }
+
+    /// Every pull a finger holds relaxes from rest.
+    pub(crate) fn let_go_pulls(&mut self) {
+        for pull in &mut self.motions.pulls {
+            if pull.spring.is_none() {
+                pull.spring = Some(Spring {
+                    x0: f64::from(pull.shown),
+                    v0: 0.0,
+                    t: 0.0,
+                });
+            }
         }
     }
 
@@ -537,21 +768,223 @@ impl NodeStore {
         }
         let mut node = Some(target);
         while let Some(n) = node {
-            self.stop_coast(n);
+            self.motions.flings.retain(|f| f.viewport != n);
             node = self.arena().parent(n);
         }
     }
 
-    /// A pan from `from` lifted with the finger at `velocity` (pt/s): the
-    /// viewport carrying each axis of it coasts on, the way the content
-    /// moved, with the speed of a coast caught moments before the same way
-    /// added.
+    /// Fingers came down on a trackpad over `target`: the relaxing pulls of
+    /// the viewports enclosing it are held, and a bounced coast's pin is
+    /// lifted.
+    pub(crate) fn hold_pulls_over(&mut self, target: NodeId) {
+        self.motions.pinned = None;
+        if self.motions.pulls.is_empty() {
+            return;
+        }
+        let mut node = Some(target);
+        while let Some(n) = node {
+            if let Some(pull) = self.motions.pulls.iter_mut().find(|p| p.viewport == n) {
+                pull.spring = None;
+            }
+            node = self.arena().parent(n);
+        }
+    }
+
+    /// The seconds since the last trackpad sample, noting this one's time.
+    pub(crate) fn scroll_interval(&mut self) -> f32 {
+        let now = self.motions.input_time;
+        let last = std::mem::replace(&mut self.motions.last_scroll, now);
+        match (last, now) {
+            (Some(last), Some(now)) => now
+                .saturating_duration_since(last)
+                .as_secs_f32()
+                .clamp(1.0 / 240.0, 0.1),
+            _ => 1.0 / 60.0,
+        }
+    }
+
+    /// Note a trackpad fingers' sample moving the offsets by `delta`; a new
+    /// gesture starts afresh. A sample that moves nothing (the lift's) tells
+    /// no speed.
+    pub(crate) fn track_pad(&mut self, delta: Vec2, began: bool) {
+        let Some(now) = self.motions.input_time else {
+            return;
+        };
+        if delta == Vec2::ZERO && !began {
+            return;
+        }
+        let (at, track) = &mut self.motions.pad;
+        if began {
+            *at = Vec2::ZERO;
+            *track = VelocityTracker::default();
+        }
+        *at += delta;
+        track.push(now, [at.x, at.y]);
+    }
+
+    /// The trackpad fingers lifted from `target`: unless the system coasts
+    /// on, the viewports they moved coast at the speed they lifted at, and a
+    /// pull they held springs back.
+    pub(crate) fn lift_pad(&mut self, target: NodeId) {
+        if self.motions.physics.system_coast {
+            self.let_go_pulls();
+            return;
+        }
+        let v = self.motions.pad.1.velocity();
+        self.motions.pad.1 = VelocityTracker::default();
+        // The offset moved by the samples' deltas: the finger's way is back.
+        self.release_pan(target, Vec2 { x: -v.x, y: -v.y });
+    }
+
+    /// Whether the system's coast moves nothing at or above `target` any
+    /// more: it bounced at a viewport there.
+    pub(crate) fn coast_pinned(&self, target: NodeId) -> bool {
+        self.motions
+            .pinned
+            .is_some_and(|pin| self.arena().is_live(pin) && self.encloses(pin, target))
+    }
+
+    /// The system's coast ended.
+    pub(crate) fn unpin_coast(&mut self) {
+        self.motions.pinned = None;
+    }
+
+    /// What of the system's coast from `target` no viewport could scroll,
+    /// at `velocity` (pt/s): the viewport it reached the end of bounces, and
+    /// the rest of the coast leaves it be.
+    pub(crate) fn bounce_coast(&mut self, target: NodeId, velocity: Vec2) {
+        if self.motions.physics.overscroll == OverscrollStyle::None {
+            return;
+        }
+        for axis in [Axis::Row, Axis::Column] {
+            let v = velocity.on(axis);
+            if v == 0.0 {
+                continue;
+            }
+            if let Some(viewport) = self.puller(target, axis) {
+                self.bounce(viewport, axis, f64::from(v));
+                self.motions.pinned = Some(viewport);
+            }
+        }
+    }
+
+    /// Whether a pan from `from` along `axis` may pull a viewport past its
+    /// end: one at or above it scrolls that way with range to show.
+    pub(crate) fn can_pull(&self, from: NodeId, axis: Axis) -> bool {
+        self.motions.physics.overscroll != OverscrollStyle::None
+            && self.puller(from, axis).is_some()
+    }
+
+    /// The viewport at or above `from` a pull along `axis` shows on: the
+    /// innermost scrolling that way with range.
+    fn puller(&self, from: NodeId, axis: Axis) -> Option<NodeId> {
+        let mut node = Some(from);
+        while let Some(n) = node {
+            if self.scroll_axis(n) == Some(axis) && self.scroll_range(n, axis) > 0.0 {
+                return Some(n);
+            }
+            node = self.arena().parent(n);
+        }
+        None
+    }
+
+    /// A pan from `from` moves the offsets by `delta`, a pulled viewport's
+    /// pull first: travel back toward the range eases the pull and, past
+    /// it, scrolls; travel further out pulls on. Returns what is left to
+    /// scroll.
+    pub(crate) fn ease_pulls(&mut self, from: NodeId, delta: Vec2) -> Vec2 {
+        let mut rest = delta;
+        if self.motions.pulls.is_empty() {
+            return rest;
+        }
+        for axis in [Axis::Row, Axis::Column] {
+            let d = rest.on(axis);
+            if d == 0.0 {
+                continue;
+            }
+            let Some(at) = self.motions.pulls.iter().position(|p| {
+                p.axis == axis && p.spring.is_none() && self.encloses(p.viewport, from)
+            }) else {
+                continue;
+            };
+            let pull = self.motions.pulls[at];
+            let extent = self.pull_limit(pull.viewport, axis) / PULL_RANGE;
+            let raw = raw_pull(pull.shown, extent) + d;
+            self.mark_dirty(pull.viewport, DirtyClass::TRANSFORM);
+            // Back within the range (to within a rounding of it): the rest
+            // scrolls.
+            let left = if raw.abs() < 1e-3 || raw.signum() != pull.shown.signum() {
+                self.motions.pulls.swap_remove(at);
+                if raw.abs() < 1e-3 { 0.0 } else { raw }
+            } else {
+                self.motions.pulls[at].shown = shown_pull(raw, extent);
+                0.0
+            };
+            match axis {
+                Axis::Row => rest.x = left,
+                Axis::Column => rest.y = left,
+            }
+        }
+        rest
+    }
+
+    /// What of a pan's `delta` from `from` no viewport could scroll pulls
+    /// the innermost one along its axis past its end.
+    pub(crate) fn pull_on(&mut self, from: NodeId, delta: Vec2) {
+        if self.motions.physics.overscroll == OverscrollStyle::None {
+            return;
+        }
+        for axis in [Axis::Row, Axis::Column] {
+            let d = delta.on(axis);
+            if d == 0.0 {
+                continue;
+            }
+            let Some(viewport) = self.puller(from, axis) else {
+                continue;
+            };
+            let extent = self.pull_limit(viewport, axis) / PULL_RANGE;
+            let shown = shown_pull(d, extent);
+            self.motions.pulls.retain(|p| p.viewport != viewport);
+            self.motions.pulls.push(Pull {
+                viewport,
+                axis,
+                shown,
+                spring: None,
+            });
+            self.mark_dirty(viewport, DirtyClass::TRANSFORM);
+        }
+    }
+
+    /// A pan from `from` lifted with the finger at `velocity` (pt/s): a
+    /// pull it holds springs back carrying that speed; else the viewport
+    /// carrying each axis of it coasts on, the way the content moved, with
+    /// the speed of a coast caught moments before the same way added.
     pub(crate) fn release_pan(&mut self, from: NodeId, velocity: Vec2) {
         let caught = self.motions.caught.take();
         let now = self.motions.input_time;
         for axis in [Axis::Row, Axis::Column] {
             // Content follows the finger: the offset moves against it.
             let speed = -velocity.on(axis);
+            if let Some(at) = self
+                .motions
+                .pulls
+                .iter()
+                .position(|p| p.axis == axis && p.spring.is_none())
+            {
+                let pull = self.motions.pulls[at];
+                // The finger's speed as the pull shows it: the curve's slope
+                // where it stands.
+                let extent = self.pull_limit(pull.viewport, axis) / PULL_RANGE;
+                let d = (extent * PULL_RANGE).max(1.0);
+                let raw = raw_pull(pull.shown, extent).abs();
+                let slope = PULL_COEFF * d * d / (raw * PULL_COEFF + d).powi(2);
+                self.motions.pulls[at].spring = Some(Spring {
+                    x0: f64::from(pull.shown),
+                    v0: f64::from(speed * slope),
+                    t: 0.0,
+                });
+                continue;
+            }
             if speed == 0.0 {
                 continue;
             }
@@ -572,6 +1005,19 @@ impl NodeStore {
                 self.fling(viewport, speed + boost);
             }
         }
+        self.let_go_pulls();
+    }
+
+    /// Whether `node` is `ancestor` or under it.
+    fn encloses(&self, ancestor: NodeId, node: NodeId) -> bool {
+        let mut at = Some(node);
+        while let Some(n) = at {
+            if n == ancestor {
+                return true;
+            }
+            at = self.arena().parent(n);
+        }
+        false
     }
 
     /// The viewport at or above `from` scrolling along `axis` with room

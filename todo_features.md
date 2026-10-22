@@ -140,7 +140,7 @@ Rules:
 
 - [x] Kinetic scrolling: velocity tracking, platform deceleration curve, flick-catch
   on press.
-- [ ] Overscroll: bounce (iOS) / glow-stretch (Android) by platform style; rubber-band
+- [x] Overscroll: bounce (iOS) / glow-stretch (Android) by platform style; rubber-band
   on drag.
 - [ ] Scrollbars: overlay and classic, draggable thumb, track paging, auto-hide.
 - [ ] Smooth `scroll_to` / `scroll_into_view` with animation; auto-tail (stick to end).

@@ -229,6 +229,7 @@ impl Rt {
             delta_x: 0.0,
             delta_y,
             modifiers: Modifiers::default(),
+            phase: viso_ui::ScrollPhase::None,
         };
         ScrollRouter::route(&mut self.store, self.root.expect("mounted"), event);
         self.settle();

@@ -121,3 +121,50 @@ fn a_finger_held_still_before_the_lift_does_not_coast() {
     let app = flick(16.0, 6, 10);
     assert_eq!(offset(&app), 16.0 * 6.0);
 }
+
+/// A finger pulling the list down from its start by `travel` points over
+/// six frames, lifted or not.
+fn pull(travel: f32, lift: bool) -> DrivenApp<ListApp> {
+    let mut script = vec![
+        redraw(),
+        redraw(),
+        finger(100.0, 100.0, PointerPhase::Down),
+        redraw(),
+    ];
+    for k in 1..=6 {
+        script.push(finger(
+            100.0,
+            100.0 + travel * k as f32 / 6.0,
+            PointerPhase::Moved,
+        ));
+        script.push(redraw());
+    }
+    if lift {
+        script.push(finger(100.0, 100.0 + travel, PointerPhase::Up));
+        script.push(redraw());
+    }
+    drive_scripted::<ListApp>(script, STEP)
+}
+
+#[test]
+fn a_pull_past_the_start_shows_and_springs_back_when_let_go() {
+    let app = pull(120.0, false);
+    let root = app.root().unwrap();
+    let store = app.store();
+    let shown = store.overscroll(root);
+    assert!(shown < -10.0, "{shown}");
+    assert_eq!(store.scroll(root).y, 0.0);
+    let content = store.arena().children(root).next().unwrap();
+    let moved = store.world(content).y - store.world(root).y;
+    match store.scroll_physics().overscroll {
+        viso::ui::OverscrollStyle::Bounce => {
+            assert!((moved + shown).abs() < 1.0, "{moved} {shown}")
+        }
+        _ => assert_eq!(moved, 0.0),
+    }
+
+    let app = pull(120.0, true);
+    let root = app.root().unwrap();
+    assert_eq!(app.store().overscroll(root), 0.0, "settled");
+    assert!(!app.store().is_scroll_moving());
+}

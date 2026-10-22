@@ -707,6 +707,7 @@ impl KmsDisplay {
                     delta_x: translate::wheel_notches(x),
                     delta_y: -translate::wheel_notches(y),
                     modifiers: self.modifiers(),
+                    phase: crate::ScrollPhase::None,
                 }));
             }
             Input::Scroll { dx, dy } => {
@@ -721,6 +722,7 @@ impl KmsDisplay {
                     delta_x: dx / s,
                     delta_y: dy / s,
                     modifiers: self.modifiers(),
+                    phase: crate::ScrollPhase::None,
                 }));
             }
             Input::Dial { steps } => self.dial(steps),

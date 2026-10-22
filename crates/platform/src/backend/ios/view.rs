@@ -218,7 +218,17 @@ define_class!(
             super::guarded(|| {
                 let t = recognizer.translationInView(Some(self));
                 recognizer.setTranslation_inView(CGPoint::new(0.0, 0.0), Some(self));
-                if t.x == 0.0 && t.y == 0.0 {
+                // The recognizer's states make the trackpad gesture; the
+                // window coasts it after the lift.
+                let phase = match gesture_state(recognizer) {
+                    UIGestureRecognizerState::Began => crate::ScrollPhase::Began,
+                    UIGestureRecognizerState::Changed => crate::ScrollPhase::Changed,
+                    UIGestureRecognizerState::Ended | UIGestureRecognizerState::Cancelled => {
+                        crate::ScrollPhase::Ended
+                    }
+                    _ => crate::ScrollPhase::None,
+                };
+                if t.x == 0.0 && t.y == 0.0 && phase != crate::ScrollPhase::Ended {
                     return;
                 }
                 let p = recognizer.locationInView(Some(self));
@@ -229,6 +239,7 @@ define_class!(
                     delta_x: -t.x,
                     delta_y: -t.y,
                     modifiers: modifiers(recognizer.modifierFlags().0),
+                    phase,
                 }));
                 drive();
             });

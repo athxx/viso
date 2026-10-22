@@ -586,6 +586,7 @@ fn apply(msg: Msg) {
                 delta_x: f64::from(delta[0]) / d,
                 delta_y: f64::from(delta[1]) / d,
                 modifiers: translate::modifiers(meta),
+                phase: crate::ScrollPhase::None,
             }));
         }
         Msg::Key {

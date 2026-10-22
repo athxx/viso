@@ -229,6 +229,27 @@ pub struct RawScroll {
     pub delta_x: f64,
     pub delta_y: f64,
     pub modifiers: Modifiers,
+    /// Where the sample stands in the gesture that made it.
+    pub phase: ScrollPhase,
+}
+
+/// Where a scroll sample stands in the gesture that made it: fingers on a
+/// trackpad scroll, lift, and the system coasts on. A wheel's notch, or a
+/// device that tells nothing of its gesture, is [`ScrollPhase::None`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScrollPhase {
+    #[default]
+    None,
+    /// The fingers began scrolling.
+    Began,
+    /// The fingers moved.
+    Changed,
+    /// The fingers lifted (or the gesture was cancelled).
+    Ended,
+    /// The system's coast after the lift.
+    Momentum,
+    /// The coast ended, or a touch stopped it.
+    MomentumEnded,
 }
 
 /// A physical key transition (not text — see [`RawEvent::Text`]).

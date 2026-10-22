@@ -1082,7 +1082,9 @@ impl NodeStore {
         while let Some(i) = at.get_some() {
             // Grouped as `transform_above` composes, so the two agree to the bit
             // while nothing is turned.
-            shift += self.translate[i.slot()] - self.scroll[i.slot()];
+            shift += self.translate[i.slot()]
+                - self.scroll[i.slot()]
+                - self.pull_shift_at(i.slot() as u32);
             at = self.arena.parent_of(at);
         }
         shift
@@ -1123,8 +1125,7 @@ impl NodeStore {
     fn child_transform(&self, id: NodeId) -> Affine2 {
         let own = self.self_transform(id);
         if self.is_scroll(id) {
-            let s = self.content_shift(id);
-            Affine2::translate(s.x, s.y).then(&own)
+            self.content_transform(id).then(&own)
         } else {
             own
         }
@@ -1240,10 +1241,29 @@ impl NodeStore {
     }
 
     /// The displacement a scroll viewport adds for its content: its negated
-    /// scroll.
+    /// scroll, and a bounced pull past its end.
     #[inline]
     pub fn content_shift(&self, id: NodeId) -> Vec2 {
-        -self.scroll[id.index() as usize]
+        -self.scroll[id.index() as usize] - self.pull_shift_at(id.index())
+    }
+
+    /// What a scroll viewport applies to its content: its
+    /// [`content_shift`](Self::content_shift), then a stretched pull's
+    /// stretch along its axis from the end it is pulled at.
+    pub fn content_transform(&self, id: NodeId) -> Affine2 {
+        let s = self.content_shift(id);
+        let shift = Affine2::translate(s.x, s.y);
+        let Some((axis, factor, pivot)) = self.pull_stretch(id) else {
+            return shift;
+        };
+        let ((sx, sy), (px, py)) = match axis {
+            Axis::Row => ((factor, 1.0), (pivot, 0.0)),
+            Axis::Column => ((1.0, factor), (0.0, pivot)),
+        };
+        shift
+            .then(&Affine2::translate(-px, -py))
+            .then(&Affine2::scale(sx, sy))
+            .then(&Affine2::translate(px, py))
     }
 
     /// `raw` rounded to the device pixel grid.

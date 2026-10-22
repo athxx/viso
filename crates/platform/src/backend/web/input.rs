@@ -177,6 +177,7 @@ fn on_wheel(page: &Page, e: &Event) {
         delta_x,
         delta_y,
         modifiers: event_modifiers(e),
+        phase: crate::ScrollPhase::None,
     }));
     drive();
 }

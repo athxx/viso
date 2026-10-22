@@ -102,6 +102,20 @@ pub enum TapePointerPhase {
     Cancel = 4,
 }
 
+/// Where a scroll sample stands in its trackpad gesture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u8)]
+pub enum TapeScrollPhase {
+    /// A wheel's notch, or a device that tells nothing of its gesture.
+    #[default]
+    None = 0,
+    Began = 1,
+    Changed = 2,
+    Ended = 3,
+    Momentum = 4,
+    MomentumEnded = 5,
+}
+
 /// A key: its place among the named keys, or a key no name covers, by the
 /// code the platform reported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,6 +170,7 @@ pub enum TapeInput {
         delta_x: f32,
         delta_y: f32,
         modifiers: TapeModifiers,
+        phase: TapeScrollPhase,
     },
     Key {
         key: TapeKey,
@@ -339,8 +354,16 @@ impl Encode for TapeInput {
                 delta_x,
                 delta_y,
                 modifiers,
+                phase,
             } => {
-                enc.write_u8(1);
+                // A phased sample carries its phase first; a phaseless one
+                // keeps the original record.
+                if *phase == TapeScrollPhase::None {
+                    enc.write_u8(1);
+                } else {
+                    enc.write_u8(11);
+                    enc.write_u8(*phase as u8);
+                }
                 enc.write_f32(*x);
                 enc.write_f32(*y);
                 enc.write_f32(*delta_x);
@@ -418,7 +441,8 @@ impl Decode for TapeInput {
                 _ => Err(DecodeError::Malformed { offset: at }),
             }
         };
-        Ok(match dec.read_u8()? {
+        let tag = dec.read_u8()?;
+        Ok(match tag {
             0 => {
                 let pointer = dec.read_varint()?;
                 let kind = match dec.read_u8()? {
@@ -446,13 +470,28 @@ impl Decode for TapeInput {
                     modifiers: modifiers(dec)?,
                 }
             }
-            1 => TapeInput::Scroll {
-                x: dec.read_f32()?,
-                y: dec.read_f32()?,
-                delta_x: dec.read_f32()?,
-                delta_y: dec.read_f32()?,
-                modifiers: modifiers(dec)?,
-            },
+            1 | 11 => {
+                let phase = if tag == 1 {
+                    TapeScrollPhase::None
+                } else {
+                    match dec.read_u8()? {
+                        1 => TapeScrollPhase::Began,
+                        2 => TapeScrollPhase::Changed,
+                        3 => TapeScrollPhase::Ended,
+                        4 => TapeScrollPhase::Momentum,
+                        5 => TapeScrollPhase::MomentumEnded,
+                        _ => return Err(malformed),
+                    }
+                };
+                TapeInput::Scroll {
+                    x: dec.read_f32()?,
+                    y: dec.read_f32()?,
+                    delta_x: dec.read_f32()?,
+                    delta_y: dec.read_f32()?,
+                    modifiers: modifiers(dec)?,
+                    phase,
+                }
+            }
             2 => {
                 let key = match dec.read_u8()? {
                     0 => TapeKey::Named(dec.read_u16()?),
@@ -544,6 +583,15 @@ mod tests {
                             delta_x: 0.0,
                             delta_y: -3.5,
                             modifiers,
+                            phase: TapeScrollPhase::None,
+                        },
+                        TapeInput::Scroll {
+                            x: 1.0,
+                            y: 2.0,
+                            delta_x: 0.0,
+                            delta_y: 6.0,
+                            modifiers,
+                            phase: TapeScrollPhase::Momentum,
                         },
                         TapeInput::Text("é".into()),
                         TapeInput::Preedit {

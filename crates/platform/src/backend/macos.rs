@@ -44,9 +44,9 @@ use objc2_app_kit::{
     NSAllRomanInputSourcesLocaleIdentifier, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
     NSApplicationTerminateReply, NSBackingStoreType, NSCursor, NSEvent, NSEventMask,
-    NSEventModifierFlags, NSMenu, NSMenuItem, NSPasteboard, NSPasteboardTypeString, NSScreen,
-    NSTextInputClient, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow, NSWindowDelegate,
-    NSWindowStyleMask, NSWindowTitleVisibility, NSWorkspace,
+    NSEventModifierFlags, NSEventPhase, NSMenu, NSMenuItem, NSPasteboard, NSPasteboardTypeString,
+    NSScreen, NSTextInputClient, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow,
+    NSWindowDelegate, NSWindowStyleMask, NSWindowTitleVisibility, NSWorkspace,
     NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification,
 };
 use objc2_foundation::{
@@ -1974,6 +1974,7 @@ define_class!(
                     delta_x: -dx * k,
                     delta_y: -dy * k,
                     modifiers: modifiers_of(event),
+                    phase: scroll_phase(event),
                 };
                 self.push(RawEvent::Scroll(sample));
             }));
@@ -2464,6 +2465,28 @@ impl SecureInput {
 impl Drop for SecureInput {
     fn drop(&mut self) {
         self.set(false);
+    }
+}
+
+/// Where a scroll event stands in its trackpad gesture: the fingers' phase,
+/// else the coast's, else none (a wheel).
+fn scroll_phase(event: &NSEvent) -> crate::ScrollPhase {
+    use crate::ScrollPhase;
+    let has = |phase: NSEventPhase, flag: NSEventPhase| phase.0 & flag.0 != 0;
+    let fingers = event.phase();
+    let coast = event.momentumPhase();
+    if has(fingers, NSEventPhase::Began) || has(fingers, NSEventPhase::MayBegin) {
+        ScrollPhase::Began
+    } else if has(fingers, NSEventPhase::Changed) || has(fingers, NSEventPhase::Stationary) {
+        ScrollPhase::Changed
+    } else if has(fingers, NSEventPhase::Ended) || has(fingers, NSEventPhase::Cancelled) {
+        ScrollPhase::Ended
+    } else if has(coast, NSEventPhase::Ended) || has(coast, NSEventPhase::Cancelled) {
+        ScrollPhase::MomentumEnded
+    } else if coast.0 != 0 {
+        ScrollPhase::Momentum
+    } else {
+        ScrollPhase::None
     }
 }
 

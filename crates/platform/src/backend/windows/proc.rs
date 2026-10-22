@@ -329,6 +329,7 @@ fn handle(
                 delta_x,
                 delta_y,
                 modifiers: modifiers(),
+                phase: crate::ScrollPhase::None,
             }));
             Some(LRESULT(0))
         }

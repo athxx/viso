@@ -70,6 +70,12 @@ struct Pointer {
     x: f64,
     y: f64,
     axes: [Axis; 2],
+    /// The frame's scroll comes from fingers on a touchpad.
+    finger: bool,
+    /// The frame ends the fingers' scroll.
+    stop: bool,
+    /// A fingers' scroll is under way.
+    scrolling: bool,
     surface: WlSurface,
     theme: Option<Theme>,
 }
@@ -204,6 +210,9 @@ impl Seat {
                     x: 0.0,
                     y: 0.0,
                     axes: [Axis::default(); 2],
+                    finger: false,
+                    stop: false,
+                    scrolling: false,
                     surface,
                     theme: None,
                 });
@@ -373,6 +382,10 @@ impl Seat {
                     *p.axes[a].value120.get_or_insert(0) += value120;
                 }
             }
+            wl_pointer::Event::AxisSource { axis_source } => {
+                p.finger = known(axis_source) == Some(wl_pointer::AxisSource::Finger);
+            }
+            wl_pointer::Event::AxisStop { .. } => p.stop = true,
             wl_pointer::Event::Frame => self.flush_axes(state, modifiers),
             _ => {}
         }
@@ -498,7 +511,21 @@ impl Seat {
         let Some(p) = &mut self.pointer else { return };
         let [h, v] = std::mem::take(&mut p.axes);
         let (delta_x, delta_y) = (h.delta(), v.delta());
-        if (delta_x, delta_y) == (0.0, 0.0) {
+        let (finger, stop) = (std::mem::take(&mut p.finger), std::mem::take(&mut p.stop));
+        // A touchpad's frames make a gesture: the first begins it, a stop
+        // ends it.
+        let phase = if stop && p.scrolling {
+            p.scrolling = false;
+            crate::ScrollPhase::Ended
+        } else if finger && !p.scrolling {
+            p.scrolling = true;
+            crate::ScrollPhase::Began
+        } else if finger || p.scrolling {
+            crate::ScrollPhase::Changed
+        } else {
+            crate::ScrollPhase::None
+        };
+        if (delta_x, delta_y) == (0.0, 0.0) && phase != crate::ScrollPhase::Ended {
             return;
         }
         let Some(window) = p.focus else { return };
@@ -509,6 +536,7 @@ impl Seat {
             delta_x,
             delta_y,
             modifiers,
+            phase,
         }));
     }
 

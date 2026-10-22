@@ -14,7 +14,9 @@
 //! slot — are the platform's own types, so one vocabulary runs from the OS to
 //! the widget.
 
-pub use viso_platform::{ClipboardReply, KeyCode as Key, PointerId, PointerKind, primary_is_logo};
+pub use viso_platform::{
+    ClipboardReply, KeyCode as Key, PointerId, PointerKind, ScrollPhase, primary_is_logo,
+};
 use viso_platform::{EditMenuAction, WindowId};
 
 /// The lifecycle position of a pointer sample. Mirrors the platform phase, with
@@ -89,6 +91,8 @@ pub struct ScrollSample {
     pub delta_x: f32,
     pub delta_y: f32,
     pub modifiers: Modifiers,
+    /// Where the sample stands in the gesture that made it.
+    pub phase: ScrollPhase,
 }
 
 /// A committed text segment (post-IME).

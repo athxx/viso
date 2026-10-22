@@ -246,7 +246,7 @@ impl PointerContacts {
 
 /// The physical key identity: the one vocabulary shared from the OS event up
 /// to the widget, named by US-layout position.
-pub use viso_runtime::Key;
+pub use viso_runtime::{Key, ScrollPhase};
 
 /// A normalized key event (UI tier). Coordinate-free: routed to the focused
 /// node, not by hit testing.
@@ -464,6 +464,7 @@ pub fn route_contact(
                         slot.track.push(now, [ev.x, ev.y]);
                         store.release_pan(from, slot.track.velocity());
                     }
+                    store.let_go_pulls();
                     chain.clear();
                     return true;
                 }
@@ -643,7 +644,7 @@ fn pan_step(
         Gesture::Pan => {
             // Content follows the finger: a finger moving up reveals later
             // content, so the offset grows by the negated travel.
-            scroll_chain(
+            pan_by(
                 store,
                 from,
                 Vec2 {
@@ -667,7 +668,7 @@ fn pan_step(
                 Axis::Column
             };
             let want = -travel.on(axis);
-            if !can_scroll(store, from, axis, want) {
+            if !can_scroll(store, from, axis, want) && !store.can_pull(from, axis) {
                 if let Some(s) = store.contacts_mut().slot_mut(pointer) {
                     s.gesture = Gesture::Held;
                 }
@@ -688,9 +689,20 @@ fn pan_step(
                 pointer,
                 ev,
             );
-            scroll_chain(store, from, axis_vec(axis, want));
+            pan_by(store, from, axis_vec(axis, want));
             Some(true)
         }
+    }
+}
+
+/// Move the offsets by a pan's `delta` from `from`: a pull eases first,
+/// then the viewports scroll, and what none could take pulls the innermost
+/// one past its end.
+fn pan_by(store: &mut NodeStore, from: NodeId, delta: Vec2) {
+    let rest = store.ease_pulls(from, delta);
+    let (_, left) = scroll_chain_rest(store, from, rest);
+    if left != Vec2::ZERO {
+        store.pull_on(from, left);
     }
 }
 
@@ -730,6 +742,8 @@ pub struct ScrollEvent {
     pub delta_x: f32,
     pub delta_y: f32,
     pub modifiers: Modifiers,
+    /// Where the sample stands in the trackpad gesture that made it.
+    pub phase: ScrollPhase,
 }
 
 /// Routes a scroll sample to the innermost scroll viewport under the pointer
@@ -761,26 +775,81 @@ pub fn route_scroll(store: &mut NodeStore, root: NodeId, ev: ScrollEvent) -> boo
     };
     // The wheel moves the viewports under it now, not their coasts.
     store.stop_coasts_over(target);
-    if ev.delta_y != 0.0 && store.wheel_number_field(target, ev.delta_y) {
+    let delta = Vec2 {
+        x: ev.delta_x,
+        y: ev.delta_y,
+    };
+    if ev.delta_y != 0.0
+        && matches!(ev.phase, ScrollPhase::None | ScrollPhase::Began)
+        && store.wheel_number_field(target, ev.delta_y)
+    {
         return true;
     }
-    scroll_chain(
-        store,
-        target,
-        Vec2 {
-            x: ev.delta_x,
-            y: ev.delta_y,
-        },
-    )
+    match ev.phase {
+        // A wheel's notch ends hard at the range's end.
+        ScrollPhase::None => scroll_chain(store, target, delta),
+        // Fingers on a trackpad pull past the end as a finger on the glass
+        // does, and the pull relaxes when they lift.
+        ScrollPhase::Began | ScrollPhase::Changed | ScrollPhase::Ended => {
+            // Noted for the speed of the system's coast after it.
+            store.scroll_interval();
+            let began = ev.phase == ScrollPhase::Began;
+            if began {
+                store.hold_pulls_over(target);
+            }
+            store.track_pad(delta, began);
+            if delta != Vec2::ZERO {
+                pan_by(store, target, delta);
+            }
+            if ev.phase == ScrollPhase::Ended {
+                store.lift_pad(target);
+            }
+            true
+        }
+        // The system's coast scrolls until it reaches an end, where it
+        // bounces at its speed, and moves that viewport no more.
+        ScrollPhase::Momentum => {
+            let interval = store.scroll_interval();
+            if store.coast_pinned(target) {
+                return true;
+            }
+            let (moved, left) = scroll_chain_rest(store, target, delta);
+            if left != Vec2::ZERO {
+                store.bounce_coast(
+                    target,
+                    Vec2 {
+                        x: left.x / interval,
+                        y: left.y / interval,
+                    },
+                );
+            }
+            moved
+        }
+        ScrollPhase::MomentumEnded => {
+            store.unpin_coast();
+            if delta != Vec2::ZERO {
+                scroll_chain(store, target, delta);
+            }
+            true
+        }
+    }
 }
 
 /// Place `delta` on the scroll viewports from `target` up to the root, each
 /// absorbing its own axis's component while it has range left in the direction
 /// of travel. Shared by the wheel route and the touch pan.
 fn scroll_chain(store: &mut NodeStore, target: NodeId, delta: Vec2) -> bool {
+    scroll_chain_rest(store, target, delta).0
+}
+
+/// [`scroll_chain`], also returning what of `delta` no viewport moved: an
+/// axis no viewport had room for whole, or what passed the end of the one
+/// that took it.
+fn scroll_chain_rest(store: &mut NodeStore, target: NodeId, delta: Vec2) -> (bool, Vec2) {
     // Remaining delta to place; each viewport consumes its own axis's component.
     let mut remaining = delta;
     let mut consumed = false;
+    let mut excess = Vec2::ZERO;
 
     // Walk from the target up to the root, letting each scroll viewport absorb
     // the delta on its axis if it has range left in the direction of travel.
@@ -817,6 +886,11 @@ fn scroll_chain(store: &mut NodeStore, target: NodeId, delta: Vec2) -> bool {
                     let step = axis_vec(axis, component);
                     store.scroll_by(n, step);
                     consumed = true;
+                    let past = component - store.scroll(n).on(axis) + offset;
+                    match axis {
+                        Axis::Row => excess.x = past,
+                        Axis::Column => excess.y = past,
+                    }
                     // This axis is now placed on this viewport; zero it so an
                     // enclosing same-axis viewport does not double-apply it.
                     match axis {
@@ -832,7 +906,7 @@ fn scroll_chain(store: &mut NodeStore, target: NodeId, delta: Vec2) -> bool {
         node = store.arena().parent(n);
     }
 
-    consumed
+    (consumed, remaining + excess)
 }
 
 /// A [`Vec2`] with `value` on `axis` and zero on the other — the per-axis delta
@@ -3658,6 +3732,7 @@ mod tests {
             delta_x: dx,
             delta_y: dy,
             modifiers: Modifiers::default(),
+            phase: ScrollPhase::None,
         }
     }
 
@@ -3806,7 +3881,7 @@ mod contact_tests {
     use crate::component::{BuildCx, FlexStyle, LeafStyle, ScrollStyle};
     use crate::interaction::Interaction;
     use crate::layout::Size;
-    use crate::scroll_motion::ScrollPhysics;
+    use crate::scroll_motion::{OverscrollStyle, ScrollPhysics};
     use crate::state::StateValue;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -4190,6 +4265,10 @@ mod contact_tests {
     #[test]
     fn a_drag_with_no_room_to_pan_stays_with_the_control() {
         let mut s = scene(false);
+        s.store.set_scroll_physics(ScrollPhysics {
+            overscroll: OverscrollStyle::None,
+            ..ScrollPhysics::APPLE
+        });
         // Dragging down at offset 0 would scroll toward negative offsets.
         s.touch(1, 10.0, 10.0, PointerPhase::Down);
         s.touch(1, 10.0, 30.0, PointerPhase::Move);
@@ -4327,6 +4406,202 @@ mod contact_tests {
     }
 
     #[test]
+    fn a_drag_past_the_end_pulls_ever_more_stiffly_and_back() {
+        let mut s = scene(false);
+        s.store.set_scroll_physics(ScrollPhysics::APPLE);
+        s.touch(1, 10.0, 30.0, PointerPhase::Down);
+        s.touch(1, 10.0, 70.0, PointerPhase::Move);
+        let first = s.store.overscroll(s.root);
+        assert!((first + 13.5).abs() < 0.1, "past the start: {first}");
+        assert_eq!(s.store.scroll(s.root).y, 0.0, "the offset stays in range");
+        assert!(
+            (s.store.world(s.a).y - 13.5).abs() < 0.6,
+            "the content follows"
+        );
+        s.touch(1, 10.0, 130.0, PointerPhase::Move);
+        let far = s.store.overscroll(s.root);
+        assert!(far < first && far > -35.0, "stiffer, and bounded: {far}");
+        assert!(far - first > -(130.0 - 70.0) / 2.0);
+        // Back the way it came: the pull eases, then the list scrolls.
+        s.touch(1, 10.0, 30.0, PointerPhase::Move);
+        assert_eq!(s.store.overscroll(s.root), 0.0);
+        s.touch(1, 10.0, 20.0, PointerPhase::Move);
+        assert_eq!(s.store.scroll(s.root).y, 10.0);
+        s.touch(1, 10.0, 20.0, PointerPhase::Up);
+        assert!(!s.store.is_scroll_moving());
+    }
+
+    #[test]
+    fn a_let_go_pull_springs_back_into_range() {
+        let mut s = scene(false);
+        s.store.set_scroll_physics(ScrollPhysics::APPLE);
+        s.touch(1, 10.0, 30.0, PointerPhase::Down);
+        s.touch(1, 10.0, 90.0, PointerPhase::Move);
+        s.touch(1, 10.0, 90.0, PointerPhase::Up);
+        let pulled = s.store.overscroll(s.root);
+        assert!(pulled < -10.0 && s.store.is_scroll_moving());
+        s.store.tick_scroll_motion(Duration::from_millis(16));
+        let easing = s.store.overscroll(s.root);
+        assert!(easing > pulled && easing < 0.0, "{pulled} {easing}");
+        let frames = coast_out(&mut s);
+        assert!(frames < 40, "settles in about half a second: {frames}");
+        assert_eq!(s.store.overscroll(s.root), 0.0);
+        assert_eq!(s.store.world(s.a).y, 0.0);
+    }
+
+    #[test]
+    fn a_coast_reaching_the_end_bounces_past_it_and_back() {
+        let mut s = scene(false);
+        s.store.set_scroll_physics(ScrollPhysics::APPLE);
+        flick(&mut s, Instant::now(), 0, 2.0, 5);
+        let mut deepest: f32 = 0.0;
+        let mut frames = 0;
+        while s.store.is_scroll_moving() && frames < 1000 {
+            s.store.tick_scroll_motion(Duration::from_millis(16));
+            deepest = deepest.max(s.store.overscroll(s.root));
+            frames += 1;
+        }
+        assert!(deepest > 5.0 && deepest < 35.0, "{deepest}");
+        assert_eq!(s.store.scroll(s.root).y, 200.0);
+        assert_eq!(s.store.overscroll(s.root), 0.0);
+
+        // With no overscroll, the end is hard.
+        let mut s = scene(false);
+        s.store.set_scroll_physics(ScrollPhysics {
+            overscroll: OverscrollStyle::None,
+            ..ScrollPhysics::APPLE
+        });
+        flick(&mut s, Instant::now(), 0, 2.0, 5);
+        while s.store.is_scroll_moving() {
+            s.store.tick_scroll_motion(Duration::from_millis(16));
+            assert_eq!(s.store.overscroll(s.root), 0.0);
+        }
+    }
+
+    #[test]
+    fn a_stretched_pull_stretches_the_content_from_its_end() {
+        let mut s = scene(false);
+        s.store.set_scroll_physics(ScrollPhysics::ANDROID);
+        s.touch(1, 10.0, 30.0, PointerPhase::Down);
+        s.touch(1, 10.0, 90.0, PointerPhase::Move);
+        assert!(s.store.overscroll(s.root) < 0.0);
+        let a = s.store.world(s.a);
+        assert_eq!(a.y, 0.0, "pinned at the end pulled");
+        assert!(a.h > 41.0 && a.h < 40.0 * 1.09, "{a:?}");
+        assert_eq!(a.w, 40.0, "only along the axis");
+        // A finger on it lands where it shows.
+        let b = s.store.world(s.b);
+        let hit = HitTestTree::hit(&s.store, s.root, b.x + 5.0, b.y + b.h - 1.0);
+        assert_eq!(hit, Some(s.b));
+    }
+
+    #[test]
+    fn a_press_on_a_springing_pull_holds_it_and_its_lift_lets_go() {
+        let mut s = scene(false);
+        s.store.set_scroll_physics(ScrollPhysics::APPLE);
+        s.touch(1, 10.0, 30.0, PointerPhase::Down);
+        s.touch(1, 10.0, 90.0, PointerPhase::Move);
+        s.touch(1, 10.0, 90.0, PointerPhase::Up);
+        s.store.tick_scroll_motion(Duration::from_millis(16));
+        s.log.borrow_mut().clear();
+        let held = s.store.overscroll(s.root);
+        s.touch(2, 10.0, 40.0, PointerPhase::Down);
+        assert!(!s.store.is_scroll_moving(), "held");
+        s.store.tick_scroll_motion(Duration::from_millis(16));
+        assert_eq!(s.store.overscroll(s.root), held);
+        s.touch(2, 10.0, 40.0, PointerPhase::Up);
+        assert!(s.log().is_empty(), "the press reached no control");
+        assert!(s.store.is_scroll_moving(), "let go");
+        coast_out(&mut s);
+        assert_eq!(s.store.overscroll(s.root), 0.0);
+    }
+
+    fn pad(s: &mut Scene, t0: Instant, ms: u64, dy: f32, phase: ScrollPhase) {
+        s.store.set_input_time(t0 + Duration::from_millis(ms));
+        route_scroll(
+            &mut s.store,
+            s.root,
+            ScrollEvent {
+                x: 50.0,
+                y: 50.0,
+                delta_x: 0.0,
+                delta_y: dy,
+                modifiers: Modifiers::default(),
+                phase,
+            },
+        );
+    }
+
+    #[test]
+    fn trackpad_fingers_pull_past_the_end_and_the_wheel_does_not() {
+        let mut s = scene(false);
+        s.store.set_scroll_physics(ScrollPhysics::APPLE);
+        let t0 = Instant::now();
+        pad(&mut s, t0, 0, -10.0, ScrollPhase::Began);
+        pad(&mut s, t0, 16, -20.0, ScrollPhase::Changed);
+        let pulled = s.store.overscroll(s.root);
+        assert!(pulled < -5.0, "{pulled}");
+        assert!(!s.store.is_scroll_moving(), "held by the fingers");
+        pad(&mut s, t0, 32, 0.0, ScrollPhase::Ended);
+        assert!(s.store.is_scroll_moving());
+        coast_out(&mut s);
+        assert_eq!(s.store.overscroll(s.root), 0.0);
+
+        pad(&mut s, t0, 500, -30.0, ScrollPhase::None);
+        assert_eq!(s.store.overscroll(s.root), 0.0, "a wheel ends hard");
+        assert_eq!(s.store.scroll(s.root).y, 0.0);
+    }
+
+    #[test]
+    fn trackpad_fingers_lifting_fast_coast_where_the_system_does_not() {
+        let mut s = scene(false);
+        s.store.set_scroll_physics(ScrollPhysics::DEFAULT);
+        let t0 = Instant::now();
+        pad(&mut s, t0, 0, 4.0, ScrollPhase::Began);
+        for k in 1..=5 {
+            pad(&mut s, t0, k * 10, 4.0, ScrollPhase::Changed);
+        }
+        pad(&mut s, t0, 60, 0.0, ScrollPhase::Ended);
+        assert_eq!(s.store.scroll(s.root).y, 24.0);
+        let v = s.store.coast_velocity(s.root).expect("coasting");
+        assert!((v - 400.0).abs() < 1.0, "{v}");
+        // Where the system coasts, the lift leaves it to the system.
+        let mut s = scene(false);
+        s.store.set_scroll_physics(ScrollPhysics {
+            system_coast: true,
+            ..ScrollPhysics::DEFAULT
+        });
+        pad(&mut s, t0, 0, 4.0, ScrollPhase::Began);
+        for k in 1..=5 {
+            pad(&mut s, t0, k * 10, 4.0, ScrollPhase::Changed);
+        }
+        pad(&mut s, t0, 60, 0.0, ScrollPhase::Ended);
+        assert!(!s.store.is_scroll_moving());
+    }
+
+    #[test]
+    fn the_system_coast_bounces_at_the_end_and_then_moves_it_no_more() {
+        let mut s = scene(false);
+        s.store.set_scroll_physics(ScrollPhysics::APPLE);
+        let t0 = Instant::now();
+        pad(&mut s, t0, 0, 190.0, ScrollPhase::None);
+        pad(&mut s, t0, 100, 5.0, ScrollPhase::Began);
+        pad(&mut s, t0, 116, 0.0, ScrollPhase::Ended);
+        pad(&mut s, t0, 132, 20.0, ScrollPhase::Momentum);
+        assert_eq!(s.store.scroll(s.root).y, 200.0);
+        assert!(s.store.is_scroll_moving(), "bouncing");
+        s.store.tick_scroll_motion(Duration::from_millis(16));
+        assert!(s.store.overscroll(s.root) > 0.0);
+        pad(&mut s, t0, 148, -8.0, ScrollPhase::Momentum);
+        assert_eq!(s.store.scroll(s.root).y, 200.0, "pinned");
+        coast_out(&mut s);
+        assert_eq!(s.store.overscroll(s.root), 0.0);
+        pad(&mut s, t0, 400, 0.0, ScrollPhase::MomentumEnded);
+        pad(&mut s, t0, 500, -8.0, ScrollPhase::None);
+        assert_eq!(s.store.scroll(s.root).y, 192.0, "free again");
+    }
+
+    #[test]
     fn the_wheel_and_an_asked_scroll_stop_a_coast() {
         let mut s = scene(false);
         s.store.set_scroll_physics(ScrollPhysics::APPLE);
@@ -4340,6 +4615,7 @@ mod contact_tests {
                 delta_x: 0.0,
                 delta_y: 4.0,
                 modifiers: Modifiers::default(),
+                phase: ScrollPhase::None,
             },
         );
         assert!(!s.store.is_scroll_moving());

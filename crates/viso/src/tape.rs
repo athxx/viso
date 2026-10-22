@@ -15,11 +15,11 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
-use viso_platform::{EditMenuAction, Instant, WindowId};
+use viso_platform::{EditMenuAction, Instant, ScrollPhase, WindowId};
 use viso_runtime::{FrameClock, InputSample, PointerKind};
 use viso_view::tape::{
     BuildId, MAX_FRAMES, MAX_INPUTS, TapeFrame, TapeInput, TapeKey, TapeModifiers, TapePointerKind,
-    TapePointerPhase, TapeSurface, UiTape,
+    TapePointerPhase, TapeScrollPhase, TapeSurface, UiTape,
 };
 
 /// The first window's input being recorded, and where it goes.
@@ -117,6 +117,14 @@ impl TapeRecorder {
                 delta_x: s.delta_x / scale,
                 delta_y: s.delta_y / scale,
                 modifiers: modifiers(s.modifiers),
+                phase: match s.phase {
+                    ScrollPhase::None => TapeScrollPhase::None,
+                    ScrollPhase::Began => TapeScrollPhase::Began,
+                    ScrollPhase::Changed => TapeScrollPhase::Changed,
+                    ScrollPhase::Ended => TapeScrollPhase::Ended,
+                    ScrollPhase::Momentum => TapeScrollPhase::Momentum,
+                    ScrollPhase::MomentumEnded => TapeScrollPhase::MomentumEnded,
+                },
             },
             InputSample::Key(k) => TapeInput::Key {
                 key: match k.key.named_index() {
@@ -449,6 +457,7 @@ fn raw(window: WindowId, input: &TapeInput) -> Vec<viso_platform::RawEvent> {
             delta_x,
             delta_y,
             modifiers,
+            phase,
         } => RawEvent::Scroll(RawScroll {
             window,
             x: f64::from(*x),
@@ -456,6 +465,14 @@ fn raw(window: WindowId, input: &TapeInput) -> Vec<viso_platform::RawEvent> {
             delta_x: f64::from(*delta_x),
             delta_y: f64::from(*delta_y),
             modifiers: mods(*modifiers),
+            phase: match phase {
+                TapeScrollPhase::None => ScrollPhase::None,
+                TapeScrollPhase::Began => ScrollPhase::Began,
+                TapeScrollPhase::Changed => ScrollPhase::Changed,
+                TapeScrollPhase::Ended => ScrollPhase::Ended,
+                TapeScrollPhase::Momentum => ScrollPhase::Momentum,
+                TapeScrollPhase::MomentumEnded => ScrollPhase::MomentumEnded,
+            },
         }),
         TapeInput::Key {
             key,

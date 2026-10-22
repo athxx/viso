@@ -529,6 +529,7 @@ fn normalize_scroll(s: RawScroll, scale: f32) -> ScrollSample {
         delta_x: s.delta_x as f32 * scale,
         delta_y: s.delta_y as f32 * scale,
         modifiers: normalize_modifiers(s.modifiers),
+        phase: s.phase,
     }
 }
 

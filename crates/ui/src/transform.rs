@@ -129,8 +129,7 @@ impl TransformTable {
             None => store.transform_above(root.node),
         };
         let own = if root.content {
-            let s = store.content_shift(root.node);
-            Affine2::translate(s.x, s.y)
+            store.content_transform(root.node)
         } else {
             store.self_transform(root.node)
         };

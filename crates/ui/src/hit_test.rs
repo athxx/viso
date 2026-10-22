@@ -119,8 +119,7 @@ impl HitTestTree {
                 && crate::paint::clip_corners(store, root, bounds)
                     .is_none_or(|corners| rounded_contains(bounds, corners.left_top, p.x, p.y)));
         let inner = if store.is_scroll(root) {
-            let s = store.content_shift(root);
-            Affine2::translate(s.x, s.y).then(&own)
+            store.content_transform(root).then(&own)
         } else {
             own
         };

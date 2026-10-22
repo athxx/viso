@@ -97,8 +97,9 @@ pub use grid::{
 pub use hit_test::{HitTestTree, hit_test};
 pub use input::{
     DispatchPhase, ImeEvent, Key, KeyEvent, KeyRouter, Modifiers, PointerButtons, PointerContact,
-    PointerEvent, PointerId, PointerPhase, PointerRouter, ScrollEvent, ScrollRouter, TOUCH_SLOP,
-    blur_node, focus_next, focus_node, focus_quietly, route_contact, route_pointer, route_scroll,
+    PointerEvent, PointerId, PointerPhase, PointerRouter, ScrollEvent, ScrollPhase, ScrollRouter,
+    TOUCH_SLOP, blur_node, focus_next, focus_node, focus_quietly, route_contact, route_pointer,
+    route_scroll,
 };
 pub use inspect::{
     InspectFlags, InspectNode, InspectSnapshot, InspectTree, PaintRange, PaintRanges, paint_ranges,
@@ -144,7 +145,7 @@ pub use reactive::{
     ProjectId, SemanticProjector,
 };
 pub use scenes::{SceneSlots, SceneSync, SceneTarget};
-pub use scroll_motion::{FlingCurve, ScrollPhysics};
+pub use scroll_motion::{FlingCurve, OverscrollStyle, ScrollPhysics};
 pub use semantics::{
     InspectKind, LiveRegion, Role, SemanticState, Semantics, SemanticsNode, SemanticsTree,
 };

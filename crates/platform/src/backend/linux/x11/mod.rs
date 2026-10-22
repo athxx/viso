@@ -1293,6 +1293,7 @@ impl X11 {
                     delta_x: dx,
                     delta_y: dy,
                     modifiers,
+                    phase: crate::ScrollPhase::None,
                 }));
             }
             return;
@@ -1425,6 +1426,7 @@ impl X11 {
                 delta_x: motion.scroll.0,
                 delta_y: motion.scroll.1,
                 modifiers,
+                phase: crate::ScrollPhase::None,
             }));
         }
         if let Some(p) = motion.pressure {

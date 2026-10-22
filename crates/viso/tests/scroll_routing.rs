@@ -31,6 +31,7 @@ fn wheel(x: f32, y: f32, dx: f32, dy: f32) -> ScrollEvent {
         delta_x: dx,
         delta_y: dy,
         modifiers: Default::default(),
+        phase: viso::ui::ScrollPhase::None,
     }
 }
 
