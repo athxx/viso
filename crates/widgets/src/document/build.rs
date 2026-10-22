@@ -408,6 +408,7 @@ impl Env<'_> {
                     axis: Axis::Row,
                     size: FILL_FIT,
                     style: BoxStyle::NONE,
+                    ..Default::default()
                 },
                 |cx| {
                     let mut code = label(code.to_owned())
@@ -496,6 +497,7 @@ impl Env<'_> {
                 axis: Axis::Row,
                 size: FILL_FIT,
                 style: BoxStyle::NONE,
+                ..Default::default()
             },
             |cx| {
                 let table = cx.grid(grid, |cx| {

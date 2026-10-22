@@ -195,6 +195,11 @@ pub(super) fn read_appearance() -> Appearance {
         high_contrast,
         reduce_motion: !animate,
         text_scale: read_text_scale(),
+        // Settings > Accessibility > Visual effects > Always show scrollbars.
+        overlay_scroll_bars: read_dword(
+            w!("Control Panel\\Accessibility"),
+            w!("DynamicScrollbars"),
+        ) != Some(0),
     }
 }
 

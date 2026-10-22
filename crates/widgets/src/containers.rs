@@ -166,6 +166,7 @@ impl Component for View {
                     axis: scroll_axis,
                     size: self.style.size,
                     style: self.style.background,
+                    ..Default::default()
                 };
                 cx.scroll(scroll_style, |cx| {
                     if let Some(children) = &self.children {

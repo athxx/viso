@@ -681,6 +681,9 @@ pub struct Appearance {
     /// The user's preferred text size relative to the platform's default
     /// size: `1.0` where the platform has no such setting.
     pub text_scale: f32,
+    /// Scroll bars show only while scrolling, over the content; else the
+    /// user asked to always see them, beside it.
+    pub overlay_scroll_bars: bool,
 }
 
 impl Default for Appearance {
@@ -690,6 +693,7 @@ impl Default for Appearance {
             high_contrast: false,
             reduce_motion: false,
             text_scale: 1.0,
+            overlay_scroll_bars: true,
         }
     }
 }

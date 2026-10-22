@@ -132,6 +132,10 @@ pub enum LayoutInput {
         axis: Axis,
         /// The viewport's own size request within its parent.
         size: Size,
+        /// The room across the axis kept for a classic scroll bar, at the
+        /// viewport's end (its start, for a column read right to left); the
+        /// content fills the rest.
+        gutter: f32,
     },
     /// A canvas of absolutely-positioned rows along `axis`: each child is placed
     /// at its own row offset (read via [`LayoutTree::row_offset`]) rather than
@@ -367,6 +371,12 @@ pub trait LayoutTree {
     /// row's scroll content starts at its right edge. Left to right by
     /// default.
     fn rtl(&self, index: u32) -> bool {
+        let _ = index;
+        false
+    }
+    /// Whether a node is its scroll viewport's chrome (a scroll bar track),
+    /// laid out along the viewport's edge rather than as its content.
+    fn chrome(&self, index: u32) -> bool {
         let _ = index;
         false
     }
@@ -629,13 +639,17 @@ pub fn measure(tree: &mut impl LayoutTree, root: u32, scratch: &mut Vec<u32>) {
             };
             Measured::sized(size, content, content.x)
         }
-        LayoutInput::Scroll { axis, size, .. } => {
+        LayoutInput::Scroll {
+            axis, size, gutter, ..
+        } => {
             // A viewport's natural size is its own request: a Fixed axis is its
             // pixel value; a content-sized axis hugs the single content child's
             // natural extent (the content can still exceed the resolved box —
-            // that overflow is what scrolls, decided at layout time). Content
-            // that scrolls across asks no width of it.
-            match scratch[start..start + child_count].first() {
+            // that overflow is what scrolls, decided at layout time), with the
+            // room its bar keeps across. Content that scrolls across asks no
+            // width of it.
+            let kids = &scratch[start..start + child_count];
+            let (natural, min_w) = match kids.iter().find(|&&k| !tree.chrome(k)) {
                 Some(&content) => {
                     let margin = margin_of(tree, content, INDEFINITE);
                     let m = tree.measured(content);
@@ -647,10 +661,27 @@ pub fn measure(tree: &mut impl LayoutTree, root: u32, scratch: &mut Vec<u32>) {
                         Axis::Row => 0.0,
                         Axis::Column => m.min_w + margin.main(Axis::Row),
                     };
-                    Measured::sized(size, natural, min_w)
+                    (natural, min_w)
                 }
-                None => Measured::sized(size, Vec2::ZERO, 0.0),
-            }
+                None => (Vec2::ZERO, 0.0),
+            };
+            let (natural, min_w) = match axis {
+                Axis::Column => (
+                    Vec2 {
+                        x: natural.x + gutter,
+                        ..natural
+                    },
+                    min_w + gutter,
+                ),
+                Axis::Row => (
+                    Vec2 {
+                        y: natural.y + gutter,
+                        ..natural
+                    },
+                    min_w,
+                ),
+            };
+            Measured::sized(size, natural, min_w)
         }
         LayoutInput::AbsoluteRows { size, .. } => {
             // The canvas measures to its own declared size — the full logical
@@ -1716,18 +1747,46 @@ fn layout_scroll(
 ) {
     let start = scratch.len();
     tree.children(root, scratch);
-    let child_count = scratch.len() - start;
-    if child_count == 0 {
+    let kids = &scratch[start..];
+    // A viewport hosts a single content subtree; its chrome (its scroll
+    // bars) lays out along its edge and does not scroll.
+    let chrome = kids.iter().any(|&k| tree.chrome(k));
+    let content = kids.iter().copied().find(|&k| !tree.chrome(k));
+    let cross = cross_of(axis);
+    let bar_first = axis == Axis::Column && tree.rtl(root);
+    let Some(content) = content else {
         scratch.truncate(start);
         tree.set_content(root, Vec2::ZERO);
+        if chrome {
+            layout_scroll_chrome(tree, root, bounds, axis, bar_first, scratch);
+        }
         return;
-    }
+    };
 
-    let cross = cross_of(axis);
     // Content takes its natural main extent (unclamped → overflow scrolls) and
-    // fills the viewport across. A viewport hosts a single content subtree; if
-    // more than one child was declared, only the first is the scrolled content.
-    let content = scratch[start];
+    // fills the viewport across.
+    let gutter = match tree.input(root) {
+        LayoutInput::Scroll { gutter, .. } => gutter.clamp(0.0, rect_len(bounds, cross)),
+        _ => 0.0,
+    };
+    // The bar sits at the end across, at the start in a column read right to
+    // left.
+    let viewport = bounds;
+    let bounds = match (axis, bar_first) {
+        (Axis::Column, false) => Rect {
+            w: bounds.w - gutter,
+            ..bounds
+        },
+        (Axis::Column, true) => Rect {
+            x: bounds.x + gutter,
+            w: bounds.w - gutter,
+            ..bounds
+        },
+        (Axis::Row, _) => Rect {
+            h: bounds.h - gutter,
+            ..bounds
+        },
+    };
     let main_size = tree.measured(content).on(axis);
     let inner = content_within(
         bounds,
@@ -1775,6 +1834,54 @@ fn layout_scroll(
     }
     let content_basis = basis.child(tree.input(root), input);
     layout_on(tree, content, content_box, content_basis, inner, scratch);
+    if chrome {
+        layout_scroll_chrome(tree, root, viewport, axis, bar_first, scratch);
+    }
+}
+
+/// Lay out a viewport's chrome: each a track along the whole viewport, as
+/// thick across as it asks, at the end across (at the start when
+/// `bar_first`).
+fn layout_scroll_chrome(
+    tree: &mut impl LayoutTree,
+    root: u32,
+    viewport: Rect,
+    axis: Axis,
+    bar_first: bool,
+    scratch: &mut Vec<u32>,
+) {
+    let cross = cross_of(axis);
+    let start = scratch.len();
+    tree.children(root, scratch);
+    let count = scratch.len() - start;
+    for k in 0..count {
+        let track = scratch[start + k];
+        if !tree.chrome(track) {
+            continue;
+        }
+        let thick = match tree.input(track).size().on(cross) {
+            Length::Fixed(t) => t.clamp(0.0, rect_len(viewport, cross)),
+            _ => 0.0,
+        };
+        let across = if bar_first {
+            rect_start(viewport, cross)
+        } else {
+            rect_start(viewport, cross) + rect_len(viewport, cross) - thick
+        };
+        let rect = axis_rect(
+            axis,
+            rect_start(viewport, axis),
+            across,
+            rect_len(viewport, axis),
+            thick,
+        );
+        let within = Vec2 {
+            x: rect.w,
+            y: rect.h,
+        };
+        layout_on(tree, track, rect, Basis::DEFINITE, within, scratch);
+    }
+    scratch.truncate(start);
 }
 
 /// Lay out an [`LayoutInput::AbsoluteRows`] canvas: place each mounted child at

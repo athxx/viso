@@ -608,6 +608,7 @@ fn current_appearance() -> Appearance {
         high_contrast: CONTRAST.iter().any(|q| matches(q)),
         reduce_motion: matches(REDUCED_MOTION),
         text_scale: text_scale(),
+        overlay_scroll_bars: true,
     }
 }
 

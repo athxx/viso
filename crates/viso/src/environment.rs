@@ -31,7 +31,8 @@ impl WindowState {
     }
 
     /// Writes the parts of the system appearance the environment carries; the
-    /// text scale also resizes the window's `sp` lengths.
+    /// text scale also resizes the window's `sp` lengths, and the scheme and
+    /// scroll bar preference restyle its scroll bars.
     pub(crate) fn report_appearance(&mut self, appearance: Appearance) {
         let text_scale = if appearance.text_scale.is_finite() && appearance.text_scale > 0.0 {
             appearance.text_scale
@@ -45,6 +46,13 @@ impl WindowState {
                 env.text_scale = text_scale;
             });
         }
+        let dark = appearance.color_scheme == viso_platform::ColorScheme::Dark;
+        self.store
+            .set_scroll_bar_style(if appearance.overlay_scroll_bars {
+                viso_ui::ScrollBarStyle::native(dark)
+            } else {
+                viso_ui::ScrollBarStyle::classic(dark)
+            });
         let lengths = self.store.length_env();
         if lengths.text_scale != text_scale {
             self.store.set_length_env(viso_ui::LengthEnv {

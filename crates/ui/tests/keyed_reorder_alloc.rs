@@ -147,6 +147,7 @@ fn setup() -> Harness {
                 overscan: 2,
                 estimated_row: ROW_H,
                 style: BoxStyle::NONE,
+                ..Default::default()
             },
             ITEMS,
             move |i| ItemKey(key_src.borrow()[i]),

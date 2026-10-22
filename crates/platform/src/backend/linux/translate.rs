@@ -279,15 +279,17 @@ pub(crate) fn monitor_scale(width_px: u32, width_mm: u32) -> f64 {
 /// The appearance the desktop portal's settings describe:
 /// `org.freedesktop.appearance color-scheme` (1 prefers dark, 2 light, 0 no
 /// preference), `org.freedesktop.appearance contrast` (1 asks for more),
-/// `org.gnome.desktop.interface enable-animations` and
-/// `org.gnome.desktop.interface text-scaling-factor`. Unset values keep the
-/// light, standard-contrast, animated, unscaled default.
+/// `org.gnome.desktop.interface enable-animations`,
+/// `org.gnome.desktop.interface text-scaling-factor` and
+/// `org.gnome.desktop.interface overlay-scrolling`. Unset values keep the
+/// light, standard-contrast, animated, unscaled, overlay-scrolling default.
 #[cfg_attr(not(any(feature = "x11", feature = "wayland")), allow(dead_code))]
 pub(crate) fn portal_appearance(
     color_scheme: Option<u32>,
     contrast: Option<u32>,
     animations: Option<bool>,
     text_scaling: Option<f64>,
+    overlay_scrolling: Option<bool>,
 ) -> Appearance {
     Appearance {
         color_scheme: if color_scheme == Some(1) {
@@ -300,6 +302,7 @@ pub(crate) fn portal_appearance(
         text_scale: text_scaling
             .filter(|f| f.is_finite() && *f > 0.0)
             .map_or(1.0, |f| f as f32),
+        overlay_scroll_bars: overlay_scrolling != Some(false),
     }
 }
 
@@ -745,21 +748,22 @@ mod tests {
 
     #[test]
     fn portal_values_decode() {
-        let dark = portal_appearance(Some(1), Some(1), Some(false), Some(1.25));
+        let dark = portal_appearance(Some(1), Some(1), Some(false), Some(1.25), Some(false));
+        assert!(!dark.overlay_scroll_bars);
         assert_eq!(dark.color_scheme, ColorScheme::Dark);
         assert!(dark.high_contrast);
         assert!(dark.reduce_motion);
         assert_eq!(dark.text_scale, 1.25);
         assert_eq!(
-            portal_appearance(Some(2), None, None, None),
+            portal_appearance(Some(2), None, None, None, None),
             Appearance::default()
         );
         assert_eq!(
-            portal_appearance(Some(0), Some(0), Some(true), Some(0.0)),
+            portal_appearance(Some(0), Some(0), Some(true), Some(0.0), Some(true)),
             Appearance::default()
         );
         assert_eq!(
-            portal_appearance(None, None, None, None),
+            portal_appearance(None, None, None, None, None),
             Appearance::default()
         );
     }

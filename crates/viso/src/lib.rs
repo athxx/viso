@@ -4091,6 +4091,12 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     self.count_frame();
                 }
                 for ws in &mut self.windows {
+                    // A timer the frame's own passes asked for (a scroll bar's
+                    // fade) is armed now, so an idle loop wakes for it.
+                    ws.store.take_timer_requests(&mut ws.timer_requests);
+                    for req in ws.timer_requests.drain(..) {
+                        ws.timers.arm_request(req, cx.frame_now());
+                    }
                     // What the frame marked, for the inspector following the
                     // window.
                     ws.store.set_dirty_cause(DirtyCause::Other);

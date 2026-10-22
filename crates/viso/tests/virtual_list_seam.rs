@@ -66,6 +66,7 @@ impl Seam {
                     overscan: OVERSCAN,
                     estimated_row: ROW_H,
                     style: BoxStyle::NONE,
+                    ..Default::default()
                 },
                 ITEM_COUNT,
                 move |_i, cx| {

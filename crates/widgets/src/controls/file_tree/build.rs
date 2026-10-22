@@ -77,6 +77,7 @@ pub fn build_tree(
             overscan: style.overscan,
             estimated_row: style.row_height,
             style: style.background,
+            ..Default::default()
         },
         item_count,
         key_of,

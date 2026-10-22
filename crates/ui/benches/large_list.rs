@@ -78,6 +78,7 @@ fn setup() -> Harness {
                 overscan: OVERSCAN,
                 estimated_row: ROW_H,
                 style: BoxStyle::NONE,
+                ..Default::default()
             },
             ITEM_COUNT,
             move |_i, cx| {
@@ -155,6 +156,7 @@ fn setup_keyed() -> KeyedHarness {
                 overscan: OVERSCAN,
                 estimated_row: ROW_H,
                 style: BoxStyle::NONE,
+                ..Default::default()
             },
             ITEM_COUNT,
             move |i| ItemKey(key_src.borrow()[i]),

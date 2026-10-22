@@ -517,6 +517,7 @@ fn panel(
                     axis: Axis::Column,
                     size: FIT,
                     style: BoxStyle::NONE,
+                    ..Default::default()
                 },
                 |cx| {
                     cx.flex(

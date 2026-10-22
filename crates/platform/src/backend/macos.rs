@@ -45,8 +45,9 @@ use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
     NSApplicationTerminateReply, NSBackingStoreType, NSCursor, NSEvent, NSEventMask,
     NSEventModifierFlags, NSEventPhase, NSMenu, NSMenuItem, NSPasteboard, NSPasteboardTypeString,
-    NSScreen, NSTextInputClient, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow,
-    NSWindowDelegate, NSWindowStyleMask, NSWindowTitleVisibility, NSWorkspace,
+    NSPreferredScrollerStyleDidChangeNotification, NSScreen, NSScroller, NSScrollerStyle,
+    NSTextInputClient, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow, NSWindowDelegate,
+    NSWindowStyleMask, NSWindowTitleVisibility, NSWorkspace,
     NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification,
 };
 use objc2_foundation::{
@@ -181,6 +182,13 @@ impl MacApp {
                     Some(NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification),
                     None,
                 );
+            // So does the scroller style, with Settings or a mouse plugged in.
+            NSNotificationCenter::defaultCenter().addObserver_selector_name_object(
+                &app_delegate,
+                sel!(accessibilityDisplayOptionsChanged:),
+                Some(NSPreferredScrollerStyleDidChangeNotification),
+                None,
+            );
             // The preferred languages change outside the app, in Settings.
             NSNotificationCenter::defaultCenter().addObserver_selector_name_object(
                 &app_delegate,
@@ -322,6 +330,8 @@ fn current_appearance(app: &NSApplication) -> Appearance {
         reduce_motion: workspace.accessibilityDisplayShouldReduceMotion(),
         // macOS has no system text size an app can read.
         text_scale: 1.0,
+        overlay_scroll_bars: NSScroller::preferredScrollerStyle(MainThreadMarker::from(app))
+            == NSScrollerStyle::Overlay,
     }
 }
 

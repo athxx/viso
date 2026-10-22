@@ -90,6 +90,8 @@ impl Settings {
                 .and_then(|v| bool::try_from(&*v).ok()),
             self.value(GNOME_INTERFACE, "text-scaling-factor")
                 .and_then(|v| f64::try_from(&*v).ok()),
+            self.value(GNOME_INTERFACE, "overlay-scrolling")
+                .and_then(|v| bool::try_from(&*v).ok()),
         )
     }
 

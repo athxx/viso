@@ -385,6 +385,22 @@ fn paint_subtree<S: PaintSpans>(
     inner.depth += 1;
     if store.is_layered(root) {
         paint_layered(store, root, inner, out, table, overlays, spans);
+    } else if scroll {
+        // A viewport's chrome does not scroll: it paints after the content's
+        // transform ends.
+        for c in arena.children(root).filter(|&c| !store.is_chrome(c)) {
+            if store.is_overlay(c) {
+                overlays.push((c, inner));
+            } else {
+                paint_subtree(store, c, inner, out, table, overlays, spans);
+            }
+        }
+        out.push(Primitive::TransformEnd);
+        let mut outer = space;
+        outer.depth += 1;
+        for c in arena.children(root).filter(|&c| store.is_chrome(c)) {
+            paint_subtree(store, c, outer, out, table, overlays, spans);
+        }
     } else {
         for c in arena.children(root) {
             if store.is_overlay(c) {
@@ -395,7 +411,7 @@ fn paint_subtree<S: PaintSpans>(
         }
     }
 
-    if scroll {
+    if scroll && store.is_layered(root) {
         out.push(Primitive::TransformEnd);
     }
     if clips {
@@ -1104,6 +1120,7 @@ mod tests {
                     size: Size::fixed(100.0, 100.0),
                     // A solid viewport background so its quad paints before the clip.
                     style: BoxStyle::solid(RED),
+                    bars: crate::scroll_bar::ScrollBars::Hidden,
                 },
                 |cx| {
                     content = Some(
@@ -2249,6 +2266,7 @@ mod tests {
                             axis: Axis::Column,
                             size: Size::fixed(100.0, 100.0),
                             style: BoxStyle::solid(RED),
+                            bars: crate::scroll_bar::ScrollBars::Hidden,
                         },
                         |cx| {
                             for _ in 0..n {

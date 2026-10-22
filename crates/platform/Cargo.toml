@@ -98,6 +98,8 @@ objc2-app-kit = { version = "0.3", features = [
     "NSWorkspace",
     "NSAccessibility",
     "NSScreen",
+    "NSScroller",
+    "NSControl",
 ] }
 
 # iOS / iPadOS: UIKit via objc2 (default features: every class the backend

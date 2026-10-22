@@ -107,6 +107,7 @@ impl Seam {
                 overscan: OVERSCAN,
                 estimated_row: ROW_H,
                 background,
+                ..Default::default()
             })
             .items(item_count, |_index, cx| {
                 cx.leaf(LeafStyle {

@@ -792,9 +792,11 @@ impl Walk<'_> {
             (self.moved(record.own), record.len())
         };
         let diff = if item.bits & RELINKED != 0 {
-            // A stack's children paint by layer, not in the order the diff
-            // walks.
-            if store.is_layered(node) {
+            // A stack's children paint by layer, and a viewport's chrome
+            // after its content's transform, not in the order the diff walks.
+            if store.is_layered(node)
+                || store.is_scroll(node) && store.arena().children(node).any(|c| store.is_chrome(c))
+            {
                 return None;
             }
             let (cursor, end) = record.children();
@@ -1412,6 +1414,7 @@ mod tests {
                                 axis: Axis::Column,
                                 size: Size::fixed(300.0, 600.0),
                                 style: BoxStyle::solid(color(2)),
+                                bars: crate::scroll_bar::ScrollBars::Hidden,
                             },
                             |_| {},
                         )
@@ -1490,10 +1493,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_viewport_with_a_scroll_bar_splices_into_what_a_whole_paint_emits() {
+        BARS.set(true);
+        let mut spliced = 0;
+        for seed in 0..4 {
+            spliced += changes(seed, 200).0;
+        }
+        BARS.set(false);
+        assert!(spliced > 200, "{spliced} spliced");
+    }
+
     thread_local! {
         /// Diff every relinked parent's children whole, as if the arena did
         /// not know which changed.
         pub(super) static BLIND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        /// Give the page's viewport its scroll bar.
+        static BARS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
 
     /// Run `frames` frames of random changes from `seed` over a page,

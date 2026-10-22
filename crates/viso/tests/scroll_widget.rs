@@ -61,6 +61,7 @@ fn build_scene(store: &mut NodeStore) -> NodeId {
         axis: Axis::Column,
         size: Size::fixed(100.0, 100.0),
         background: BoxStyle::solid(DARK),
+        ..Default::default()
     })
     .content(|cx| {
         cx.leaf(LeafStyle {

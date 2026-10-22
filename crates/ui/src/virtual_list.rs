@@ -1355,6 +1355,7 @@ mod tests {
                         overscan,
                         estimated_row: est_row,
                         style: BoxStyle::NONE,
+                        ..Default::default()
                     },
                     item_count,
                     move |i, cx| {
@@ -1514,6 +1515,7 @@ mod tests {
                         overscan,
                         estimated_row: row_h,
                         style: BoxStyle::NONE,
+                        ..Default::default()
                     },
                     item_count,
                     keys.key_of(),

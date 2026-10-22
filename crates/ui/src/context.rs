@@ -482,6 +482,8 @@ pub enum StoreRequest {
     Active(NodeId, Option<NodeId>),
     /// Edit another node's text.
     Edit(NodeId, EditIntent),
+    /// Work a scroll bar.
+    Bar(NodeId, crate::scroll_bar::BarInput),
 }
 
 impl StoreRequest {
@@ -496,6 +498,7 @@ impl StoreRequest {
             StoreRequest::Text(id, request) => store.set_text(id, *request),
             StoreRequest::Active(id, active) => store.set_active_descendant(id, active),
             StoreRequest::Edit(id, intent) => store.queue_edit(id, intent),
+            StoreRequest::Bar(track, input) => store.bar_input(track, input),
         }
     }
 }
@@ -1249,6 +1252,11 @@ impl<'a> EventCx<'a> {
     pub fn anchor_over(&mut self, layer: NodeId, over: Option<NodeId>) {
         self.store_requests
             .push(StoreRequest::AnchorOver(layer, over));
+    }
+
+    /// Work the scroll bar whose track is `track`.
+    pub(crate) fn bar_input(&mut self, track: NodeId, input: crate::scroll_bar::BarInput) {
+        self.store_requests.push(StoreRequest::Bar(track, input));
     }
 
     /// Scroll the viewports around `id` the least that shows it, once the

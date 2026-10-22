@@ -22,7 +22,7 @@
 //! wheel/drag scroll gesture is routed by `viso-ui`'s `ScrollRouter`, not by a
 //! widget-level handler.
 
-use viso_ui::{Axis, BoxStyle, BuildCx, Component, Role, ScrollStyle, Semantics, Size};
+use viso_ui::{Axis, BoxStyle, BuildCx, Component, Role, ScrollBars, ScrollStyle, Semantics, Size};
 
 /// The visual and layout parameters of a [`Scroll`] viewport: the axis it
 /// scrolls along, its own visible size within its parent, and an optional
@@ -39,6 +39,8 @@ pub struct ScrollViewStyle {
     /// The viewport's own background/border/radius. [`BoxStyle::NONE`] is a pure,
     /// transparent clip box.
     pub background: BoxStyle,
+    /// Whether it shows scroll bars.
+    pub bars: ScrollBars,
 }
 
 impl Default for ScrollViewStyle {
@@ -47,6 +49,7 @@ impl Default for ScrollViewStyle {
             axis: Axis::Column,
             size: Size::fill(),
             background: BoxStyle::NONE,
+            bars: ScrollBars::Auto,
         }
     }
 }
@@ -141,6 +144,7 @@ impl Component for Scroll {
                 axis: self.style.axis,
                 size: self.style.size,
                 style: self.style.background,
+                bars: self.style.bars,
             },
             |cx| {
                 if let Some(content) = &self.content {
@@ -165,9 +169,13 @@ mod tests {
     use viso_ui::{LeafStyle, Length, NodeId, NodeStore};
 
     /// Count a node's direct children by walking the arena sibling chain.
+    /// How many children `parent` has besides its scroll bar.
     fn child_count(store: &NodeStore, parent: NodeId) -> usize {
         let arena = store.arena();
-        arena.children(parent).count()
+        arena
+            .children(parent)
+            .filter(|&c| !store.is_chrome(c))
+            .count()
     }
 
     /// A `Scroll` maps to a single Scroll viewport node, and its content closure
@@ -203,6 +211,7 @@ mod tests {
             1,
             "the content closure's single child attaches beneath the viewport"
         );
+        assert!(store.scroll_thumb(root).is_some(), "with its scroll bar");
     }
 
     /// The viewport carries the requested background as its own box style, and a

@@ -181,6 +181,8 @@ pub struct ScrollStyle {
     pub size: Size,
     /// The viewport's own background/border (transparent = pure clip box).
     pub style: BoxStyle,
+    /// Whether it shows scroll bars.
+    pub bars: crate::scroll_bar::ScrollBars,
 }
 
 impl Default for ScrollStyle {
@@ -189,6 +191,7 @@ impl Default for ScrollStyle {
             axis: Axis::Column,
             size: Size::fill(),
             style: BoxStyle::NONE,
+            bars: crate::scroll_bar::ScrollBars::Auto,
         }
     }
 }
@@ -211,6 +214,8 @@ pub struct VirtualListStyle {
     pub estimated_row: f32,
     /// The viewport's own background/border (transparent = pure clip box).
     pub style: BoxStyle,
+    /// Whether it shows scroll bars.
+    pub bars: crate::scroll_bar::ScrollBars,
 }
 
 impl Default for VirtualListStyle {
@@ -221,6 +226,7 @@ impl Default for VirtualListStyle {
             overscan: 4,
             estimated_row: crate::virtual_list::DEFAULT_ROW_HEIGHT,
             style: BoxStyle::NONE,
+            bars: crate::scroll_bar::ScrollBars::Auto,
         }
     }
 }
@@ -261,6 +267,7 @@ macro_rules! node_columns {
         $store.hidden.$op($($arg),*);
         $store.clips.$op($($arg),*);
         $store.overlay.$op($($arg),*);
+        $store.chrome.$op($($arg),*);
         $store.opacity.$op($($arg),*);
         $store.handlers.$op($($arg),*);
         $store.focusable.$op($($arg),*);
@@ -451,6 +458,10 @@ pub struct NodeStore {
     /// during the main walk and emits them last, so top-layer content draws over
     /// the rest of the scene without a z-index sort.
     overlay: Vec<bool>,
+    /// Hot: whether a node is its scroll viewport's chrome (a scroll bar
+    /// track): laid out along the viewport's edge, not scrolled with its
+    /// content. Default `false`.
+    chrome: Vec<bool>,
     /// Hot: each node's opacity, applied to it and its subtree as one layer.
     /// Default `1.0`; `0.0` paints nothing.
     opacity: Vec<f32>,
@@ -687,6 +698,8 @@ pub struct NodeStore {
     pub(crate) access: crate::access::AccessKeys,
     /// The viewports coasting after a flick, and how they coast.
     pub(crate) motions: crate::scroll_motion::ScrollMotions,
+    /// Cold: the viewports' scroll bars and how they look.
+    pub(crate) bars: crate::scroll_bar::Bars,
     /// Cold: the nodes that show a descendant as active.
     actives: crate::semantics::ActiveDescendants,
     /// Where the focus was before it last moved, until the move is told.
@@ -821,6 +834,7 @@ impl NodeStore {
         self.shadows.clear();
         self.access.clear();
         self.motions.clear();
+        self.bars.clear();
         self.actives.clear();
         self.focus_scope = None;
         self.draggable_regions.clear();
@@ -1075,16 +1089,21 @@ impl NodeStore {
     }
 
     /// The unsnapped displacement `id`'s ancestors apply to it: the sum of their
-    /// translates and negated scrolls.
+    /// translates and negated scrolls (a viewport's chrome does not scroll).
     pub fn shift_above(&self, id: NodeId) -> Vec2 {
         let mut shift = Vec2::ZERO;
-        let mut at = self.arena.parent_of(id.node_index());
+        let mut from = id.node_index();
+        let mut at = self.arena.parent_of(from);
         while let Some(i) = at.get_some() {
             // Grouped as `transform_above` composes, so the two agree to the bit
             // while nothing is turned.
-            shift += self.translate[i.slot()]
-                - self.scroll[i.slot()]
-                - self.pull_shift_at(i.slot() as u32);
+            let scrolled = self.scroll[i.slot()] + self.pull_shift_at(i.slot() as u32);
+            if scrolled == Vec2::ZERO || !self.chrome[from.slot()] {
+                shift += self.translate[i.slot()] - scrolled;
+            } else {
+                shift += self.translate[i.slot()];
+            }
+            from = at;
             at = self.arena.parent_of(at);
         }
         shift
@@ -1120,11 +1139,11 @@ impl NodeStore {
             .then(&Affine2::translate(ox + t.x, oy + t.y))
     }
 
-    /// What a node applies to its children: its own transform, then, for a
-    /// scroll viewport, its scroll.
-    fn child_transform(&self, id: NodeId) -> Affine2 {
+    /// What a node applies to its child `child`: its own transform, then, for
+    /// a scroll viewport's content, its scroll.
+    fn child_transform(&self, id: NodeId, child: NodeId) -> Affine2 {
         let own = self.self_transform(id);
-        if self.is_scroll(id) {
+        if self.is_scroll(id) && !self.is_chrome(child) {
             self.content_transform(id).then(&own)
         } else {
             own
@@ -1135,9 +1154,11 @@ impl NodeStore {
     /// space to the screen.
     pub fn transform_above(&self, id: NodeId) -> Affine2 {
         let mut above = Affine2::IDENTITY;
+        let mut child = id;
         let mut at = self.arena.parent(id);
         while let Some(parent) = at {
-            above = above.then(&self.child_transform(parent));
+            above = above.then(&self.child_transform(parent, child));
+            child = parent;
             at = self.arena.parent(parent);
         }
         above
@@ -3948,6 +3969,25 @@ impl NodeStore {
         self.repaint_pending = true;
     }
 
+    /// Whether a node is its scroll viewport's chrome: a scroll bar track,
+    /// laid out along the viewport's edge and not scrolled with its content.
+    #[inline]
+    pub fn is_chrome(&self, id: NodeId) -> bool {
+        self.chrome[id.index() as usize]
+    }
+
+    /// Mark a scroll viewport's child its chrome. Its viewport lays it out
+    /// and paints it anew.
+    pub(crate) fn set_chrome(&mut self, id: NodeId, chrome: bool) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        self.chrome[id.index() as usize] = chrome;
+        if let Some(parent) = self.parent(id) {
+            self.mark_dirty(parent, DirtyClass::LAYOUT | DirtyClass::PAINT);
+        }
+    }
+
     /// Attach a pointer handler to a node, replacing any prior one. A
     /// live-guarded write, so a stale handle is a no-op.
     pub fn set_pointer_handler(&mut self, id: NodeId, handler: PointerHandler) {
@@ -4548,9 +4588,11 @@ impl NodeStore {
         self.anchors.forget(i as u32);
         self.shadows.forget(i as u32);
         self.access.forget(i as u32);
+        self.bars.forget(i as u32);
         self.actives.forget(i as u32);
         self.clips[i] = false;
         self.overlay[i] = false;
+        self.chrome[i] = false;
         self.opacity[i] = 1.0;
         self.handlers[i] = None;
         self.focusable[i] = false;
@@ -4604,6 +4646,7 @@ impl NodeStore {
             self.hidden.push(false);
             self.clips.push(false);
             self.overlay.push(false);
+            self.chrome.push(false);
             self.opacity.push(1.0);
             self.handlers.push(None);
             self.focusable.push(false);
@@ -4717,6 +4760,10 @@ impl NodeStore {
         self.lift_reach(root, was);
         self.lay_layers(root, surface, scratch);
         self.settle_scroll_requests();
+        if self.sync_scroll_bars() {
+            let mut redo = Vec::new();
+            self.relayout_dirty(root, surface, scratch, &mut redo);
+        }
     }
 
     /// Re-resolve the warm `style` of every STYLE-dirty node that carries a
@@ -4940,6 +4987,12 @@ impl NodeStore {
         }
         // A waiting scroll applies once layout knows the range.
         self.settle_scroll_requests();
+        // The bars follow their viewports; a thumb whose length changed lays
+        // out again, alone in its track.
+        if self.sync_scroll_bars() {
+            let (m, l) = self.relayout_dirty(root, surface, scratch, redo_roots);
+            return (measured + m, laid_out + l);
+        }
         (measured, laid_out)
     }
 
@@ -5323,6 +5376,11 @@ impl LayoutTree for NodeStore {
     }
 
     #[inline]
+    fn chrome(&self, index: u32) -> bool {
+        self.chrome[index as usize]
+    }
+
+    #[inline]
     fn input(&self, index: u32) -> LayoutInput {
         self.layout[index as usize]
     }
@@ -5618,7 +5676,7 @@ fn fixed_on_both_axes(input: LayoutInput) -> bool {
 /// node tree (the shape most tests want) and its `state`/`bind` methods are
 /// unreachable by construction.
 pub struct BuildCx<'a> {
-    store: &'a mut NodeStore,
+    pub(crate) store: &'a mut NodeStore,
     /// Reactive state cells, present only for a `with_reactive` cx. `None` for
     /// a `new`-built (node-only) cx.
     states: Option<&'a mut StateStore>,
@@ -5642,7 +5700,7 @@ pub struct BuildCx<'a> {
     /// `None` for a node-only or child-body cx.
     projectors: Option<&'a mut SemanticProjector>,
     /// Parent cursor stack; the top is the current insertion parent.
-    stack: Vec<NodeId>,
+    pub(crate) stack: Vec<NodeId>,
     /// The placement to apply to the next child authored inside the current
     /// grid closure, then cleared. `None` outside a grid or once consumed.
     pending_placement: Option<Placement>,
@@ -6024,7 +6082,9 @@ impl<'a> BuildCx<'a> {
     /// `children` closure runs with the viewport as the active parent; the
     /// viewport lays out a single content child at its natural extent along
     /// `axis` (so overflow becomes scrollable) and clips to its own box. Author a
-    /// single container child to hold the scrollable content.
+    /// single container child to hold the scrollable content. With
+    /// [`ScrollBars::Auto`](crate::ScrollBars::Auto) the viewport also builds
+    /// its scroll bar (see [`scroll_bar`](crate::scroll_bar)).
     pub fn scroll(
         &mut self,
         style: ScrollStyle,
@@ -6033,11 +6093,15 @@ impl<'a> BuildCx<'a> {
         let input = LayoutInput::Scroll {
             axis: style.axis,
             size: style.size,
+            gutter: 0.0,
         };
         let id = self.push_node(input, style.style);
         self.stack.push(id);
         children(self);
         self.stack.pop();
+        if style.bars == crate::scroll_bar::ScrollBars::Auto {
+            self.scroll_bar(id, style.axis);
+        }
         Handle { id }
     }
 
@@ -6107,6 +6171,7 @@ impl<'a> BuildCx<'a> {
             LayoutInput::Scroll {
                 axis: style.axis,
                 size: style.size,
+                gutter: 0.0,
             },
             style.style,
         );
@@ -6128,6 +6193,9 @@ impl<'a> BuildCx<'a> {
             item,
             key_of,
         );
+        if style.bars == crate::scroll_bar::ScrollBars::Auto {
+            self.scroll_bar(viewport, style.axis);
+        }
 
         Handle { id: viewport }
     }

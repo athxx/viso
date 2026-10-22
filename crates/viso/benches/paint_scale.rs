@@ -285,6 +285,7 @@ fn list(row_h: f32) -> Harness {
                 overscan: 2,
                 estimated_row: row_h,
                 style: BoxStyle::NONE,
+                ..Default::default()
             },
             100_000,
             move |i, cx| {

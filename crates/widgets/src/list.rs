@@ -63,6 +63,8 @@ pub struct VirtualListViewStyle {
     /// The viewport's own background/border/radius. [`BoxStyle::NONE`] is a pure,
     /// transparent clip box.
     pub background: BoxStyle,
+    /// Whether it shows scroll bars.
+    pub bars: viso_ui::ScrollBars,
 }
 
 impl Default for VirtualListViewStyle {
@@ -74,6 +76,7 @@ impl Default for VirtualListViewStyle {
             overscan: base.overscan,
             estimated_row: base.estimated_row,
             background: base.style,
+            bars: base.bars,
         }
     }
 }
@@ -205,6 +208,7 @@ impl Component for VirtualList {
                     overscan: self.style.overscan,
                     estimated_row: self.style.estimated_row,
                     style: self.style.background,
+                    bars: self.style.bars,
                 },
                 self.item_count,
                 move |index, cx| item(index, cx),
@@ -216,6 +220,7 @@ impl Component for VirtualList {
                     overscan: self.style.overscan,
                     estimated_row: self.style.estimated_row,
                     style: self.style.background,
+                    bars: self.style.bars,
                 },
                 self.item_count,
                 |_index, _cx| {},
@@ -280,9 +285,13 @@ mod tests {
     }
 
     /// Count a node's direct children by walking the arena sibling chain.
+    /// How many children `parent` has besides its scroll bar.
     fn child_count(store: &NodeStore, parent: NodeId) -> usize {
         let arena = store.arena();
-        arena.children(parent).count()
+        arena
+            .children(parent)
+            .filter(|&c| !store.is_chrome(c))
+            .count()
     }
 
     fn row(_index: usize, cx: &mut BuildCx<'_>) {

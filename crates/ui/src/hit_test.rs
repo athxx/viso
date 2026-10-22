@@ -132,8 +132,26 @@ impl HitTestTree {
                     return Some(hit);
                 }
             } else {
+                // A viewport's chrome does not scroll, and paints over its
+                // content.
                 let mut child = arena.last_child(root);
+                if store.is_scroll(root) {
+                    let mut c = child;
+                    while let Some(k) = c {
+                        if store.is_chrome(k)
+                            && !store.is_overlay(k)
+                            && let Some(hit) = Self::hit_under(store, k, px, py, own)
+                        {
+                            return Some(hit);
+                        }
+                        c = arena.prev_sibling(k);
+                    }
+                }
                 while let Some(c) = child {
+                    if store.is_chrome(c) {
+                        child = arena.prev_sibling(c);
+                        continue;
+                    }
                     if !store.is_overlay(c)
                         && let Some(hit) = Self::hit_under(store, c, px, py, inner)
                     {

@@ -68,6 +68,7 @@ fn setup(row_h: f32) -> Harness {
                 overscan: OVERSCAN,
                 estimated_row: row_h,
                 style: BoxStyle::NONE,
+                ..Default::default()
             },
             ITEM_COUNT,
             move |_i, cx| {
