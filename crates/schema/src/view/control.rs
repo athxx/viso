@@ -305,6 +305,18 @@ pub fn source_role(variant: &str) -> Option<Role> {
         "menu" => Role::Menu,
         "menu_item" => Role::MenuItem,
         "link" => Role::Link,
+        "menu_item_check_box" => Role::MenuItemCheckBox,
+        "menu_item_radio" => Role::MenuItemRadio,
+        "menu_bar" => Role::MenuBar,
+        "separator" => Role::Separator,
+        "list_box" => Role::ListBox,
+        "list_option" => Role::ListOption,
+        "combo_box" => Role::ComboBox,
+        "tooltip" => Role::Tooltip,
+        "table" => Role::Table,
+        "row" => Role::Row,
+        "cell" => Role::Cell,
+        "column_header" => Role::ColumnHeader,
         _ => return None,
     })
 }
@@ -315,7 +327,7 @@ pub fn source_name(role: Role) -> &'static str {
 }
 
 /// Every variant [`source_role`] takes, in the order of [`Role::ALL`].
-pub const SOURCE_ROLES: [&str; 24] = [
+pub const SOURCE_ROLES: [&str; 36] = [
     "group",
     "button",
     "check_box",
@@ -340,6 +352,18 @@ pub const SOURCE_ROLES: [&str; 24] = [
     "menu",
     "menu_item",
     "link",
+    "menu_item_check_box",
+    "menu_item_radio",
+    "menu_bar",
+    "separator",
+    "list_box",
+    "list_option",
+    "combo_box",
+    "tooltip",
+    "table",
+    "row",
+    "cell",
+    "column_header",
 ];
 
 /// A layout property a node's value sets as the view's values change: one

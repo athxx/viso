@@ -2291,6 +2291,23 @@ fn aria_role(role: Role, tag: &str, widget: &str) -> Option<&'static str> {
         (Role::Heading, ..) => "heading",
         (Role::List, ..) => "list",
         (Role::ListItem, ..) => "listitem",
+        (Role::Table, "table", _)
+        | (Role::Row, "tr", _)
+        | (Role::Cell, "td", _)
+        | (Role::ColumnHeader, "th", _)
+        | (Role::Separator, "hr", _) => return None,
+        (Role::MenuItemCheckBox, ..) => "menuitemcheckbox",
+        (Role::MenuItemRadio, ..) => "menuitemradio",
+        (Role::MenuBar, ..) => "menubar",
+        (Role::Separator, ..) => "separator",
+        (Role::ListBox, ..) => "listbox",
+        (Role::ListOption, ..) => "option",
+        (Role::ComboBox, ..) => "combobox",
+        (Role::Tooltip, ..) => "tooltip",
+        (Role::Table, ..) => "table",
+        (Role::Row, ..) => "row",
+        (Role::Cell, ..) => "cell",
+        (Role::ColumnHeader, ..) => "columnheader",
     })
 }
 

@@ -128,11 +128,42 @@ pub enum Role {
     /// A link: a stretch of text that leads somewhere, activated to follow
     /// it (WAI-ARIA `role=link`).
     Link,
+    /// A [`MenuItem`](Role::MenuItem) that turns something on or off,
+    /// announcing whether it is `checked` (WAI-ARIA `role=menuitemcheckbox`).
+    MenuItemCheckBox,
+    /// One of a set of [`MenuItem`](Role::MenuItem)s of which one is chosen,
+    /// announcing whether it is `checked` (WAI-ARIA `role=menuitemradio`).
+    MenuItemRadio,
+    /// A bar of menus across a window, each opening a [`Menu`](Role::Menu)
+    /// (WAI-ARIA `role=menubar`).
+    MenuBar,
+    /// A line between groups of items (WAI-ARIA `role=separator`).
+    Separator,
+    /// A list of [`ListOption`](Role::ListOption)s to choose from (WAI-ARIA
+    /// `role=listbox`).
+    ListBox,
+    /// One choice of a [`ListBox`](Role::ListBox), announcing whether it is
+    /// `selected` and its place in the list (WAI-ARIA `role=option`).
+    ListOption,
+    /// A field that opens a [`ListBox`](Role::ListBox) to fill it from,
+    /// announcing whether it is `expanded` (WAI-ARIA `role=combobox`).
+    ComboBox,
+    /// A short description shown over the node it describes (WAI-ARIA
+    /// `role=tooltip`).
+    Tooltip,
+    /// Rows of [`Cell`](Role::Cell)s in columns (WAI-ARIA `role=table`).
+    Table,
+    /// One row of a [`Table`](Role::Table) (WAI-ARIA `role=row`).
+    Row,
+    /// One cell of a [`Row`](Role::Row) (WAI-ARIA `role=cell`).
+    Cell,
+    /// A cell heading its column (WAI-ARIA `role=columnheader`).
+    ColumnHeader,
 }
 
 impl Role {
     /// Every role, in declaration order.
-    pub const ALL: [Role; 24] = [
+    pub const ALL: [Role; 36] = [
         Role::Group,
         Role::Button,
         Role::CheckBox,
@@ -157,6 +188,18 @@ impl Role {
         Role::Menu,
         Role::MenuItem,
         Role::Link,
+        Role::MenuItemCheckBox,
+        Role::MenuItemRadio,
+        Role::MenuBar,
+        Role::Separator,
+        Role::ListBox,
+        Role::ListOption,
+        Role::ComboBox,
+        Role::Tooltip,
+        Role::Table,
+        Role::Row,
+        Role::Cell,
+        Role::ColumnHeader,
     ];
 
     /// The role whose [`label`](Self::label) is `label`.
@@ -193,6 +236,18 @@ impl Role {
             Role::Menu => "menu",
             Role::MenuItem => "menuitem",
             Role::Link => "link",
+            Role::MenuItemCheckBox => "menuitemcheckbox",
+            Role::MenuItemRadio => "menuitemradio",
+            Role::MenuBar => "menubar",
+            Role::Separator => "separator",
+            Role::ListBox => "listbox",
+            Role::ListOption => "option",
+            Role::ComboBox => "combobox",
+            Role::Tooltip => "tooltip",
+            Role::Table => "table",
+            Role::Row => "row",
+            Role::Cell => "cell",
+            Role::ColumnHeader => "columnheader",
         }
     }
 }

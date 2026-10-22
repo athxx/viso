@@ -306,6 +306,12 @@ pub(crate) fn announced(role: SemanticsRole) -> bool {
             | R::TabList
             | R::Tree
             | R::Dialog
+            | R::Menu
+            | R::MenuBar
+            | R::ListBox
+            | R::Table
+            | R::Row
+            | R::Separator
     )
 }
 
@@ -314,9 +320,17 @@ pub(crate) fn announced(role: SemanticsRole) -> bool {
 pub(crate) fn element_kind(node: &AccessNode) -> ElementKind {
     use SemanticsRole as R;
     match node.role {
-        R::Button | R::CheckBox | R::Radio | R::Tab | R::MenuItem => ElementKind::Button,
+        R::Button
+        | R::CheckBox
+        | R::Radio
+        | R::Tab
+        | R::MenuItem
+        | R::MenuItemCheckBox
+        | R::MenuItemRadio
+        | R::ListOption
+        | R::ComboBox => ElementKind::Button,
         R::Slider | R::SpinButton => ElementKind::Adjustable,
-        R::Label | R::Status => ElementKind::StaticText,
+        R::Label | R::Status | R::Tooltip | R::Cell | R::ColumnHeader => ElementKind::StaticText,
         R::Image => ElementKind::Image,
         R::Link => ElementKind::Link,
         _ if node.actions.contains(AccessAction::Click) => ElementKind::Button,

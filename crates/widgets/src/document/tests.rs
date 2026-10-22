@@ -236,3 +236,27 @@ fn an_html_document_builds_the_same_blocks_and_streams_the_same_way() {
     assert_eq!(rx.text(after[2]), "Two");
     assert_eq!(rx.store.arena().children(after[3]).count(), 2);
 }
+
+#[test]
+fn a_table_is_a_table_of_header_and_body_cells() {
+    let mut rx = Reactive::new();
+    let root = rx.build(markdown("| a | b |\n|---|---|\n| 1 | 2 |\n"));
+    let scroll = rx.blocks(root)[0];
+    let table = rx.store.arena().children(scroll).next().unwrap();
+    assert_eq!(rx.store.semantics(table).unwrap().role, Role::Table);
+    let roles: Vec<Role> = rx
+        .store
+        .arena()
+        .children(table)
+        .map(|cell| rx.store.semantics(cell).unwrap().role)
+        .collect();
+    assert_eq!(
+        roles,
+        [
+            Role::ColumnHeader,
+            Role::ColumnHeader,
+            Role::Cell,
+            Role::Cell
+        ]
+    );
+}

@@ -76,6 +76,24 @@ pub enum SemanticsRole {
     ListItem,
     /// A stretch of text that leads somewhere.
     Link,
+    /// A menu command that turns something on or off.
+    MenuItemCheckBox,
+    /// A menu command, one of a set of which one is chosen.
+    MenuItemRadio,
+    MenuBar,
+    /// A line between groups of items.
+    Separator,
+    /// A list of options to choose from.
+    ListBox,
+    /// One choice of a list box.
+    ListOption,
+    /// A field that opens a list box to fill it from.
+    ComboBox,
+    Tooltip,
+    Table,
+    Row,
+    Cell,
+    ColumnHeader,
 }
 
 /// How an assistive technology announces a change to a node's content.

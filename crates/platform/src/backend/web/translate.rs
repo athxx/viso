@@ -368,6 +368,18 @@ pub(crate) fn aria_role(role: SemanticsRole) -> Option<&'static str> {
         R::List => "list",
         R::ListItem => "listitem",
         R::Link => "link",
+        R::MenuItemCheckBox => "menuitemcheckbox",
+        R::MenuItemRadio => "menuitemradio",
+        R::MenuBar => "menubar",
+        R::Separator => "separator",
+        R::ListBox => "listbox",
+        R::ListOption => "option",
+        R::ComboBox => "combobox",
+        R::Tooltip => "tooltip",
+        R::Table => "table",
+        R::Row => "row",
+        R::Cell => "cell",
+        R::ColumnHeader => "columnheader",
         R::Window | R::Container | R::Label => return None,
     })
 }

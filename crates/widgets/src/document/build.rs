@@ -470,7 +470,7 @@ impl Env<'_> {
                 style: BoxStyle::solid(fill),
                 ..FlexStyle::default()
             };
-            cx.flex(style, |cx| {
+            let node = cx.flex(style, |cx| {
                 let mut text = label(text.text.clone())
                     .with_spans(text.spans.clone())
                     .font_size(look.font_size)
@@ -484,6 +484,12 @@ impl Env<'_> {
                 }
                 text.build(cx);
             });
+            let role = if header {
+                Role::ColumnHeader
+            } else {
+                Role::Cell
+            };
+            cx.semantics(node, Semantics::role(role));
         };
         let node = cx.scroll(
             ScrollStyle {
@@ -492,7 +498,7 @@ impl Env<'_> {
                 style: BoxStyle::NONE,
             },
             |cx| {
-                cx.grid(grid, |cx| {
+                let table = cx.grid(grid, |cx| {
                     for (at, text) in head.iter().enumerate() {
                         cell(cx, text, at, true);
                     }
@@ -503,6 +509,7 @@ impl Env<'_> {
                         }
                     }
                 });
+                cx.semantics(table, Semantics::role(Role::Table));
             },
         );
         node.id()
