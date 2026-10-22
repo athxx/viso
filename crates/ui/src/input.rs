@@ -515,6 +515,12 @@ fn route_sample(
     let inert = store.inert(target);
     match ev.phase {
         PointerPhase::Down if ev.buttons.contains(PointerButtons::PRIMARY) && !inert => {
+            let slop = if contact.direct {
+                TOUCH_SLOP * 2.0
+            } else {
+                MOUSE_SLOP
+            };
+            store.count_click(pointer, target, root, [ev.x, ev.y], slop);
             store.press(target, pointer);
             store.arm_drag(pointer, target, [ev.x, ev.y], contact.direct);
             store.arm_hold(pointer, target, [ev.x, ev.y], contact.direct);
@@ -3552,6 +3558,30 @@ mod contact_tests {
                 (0, PointerPhase::Move),
                 (0, PointerPhase::Up)
             ]
+        );
+    }
+
+    #[test]
+    fn presses_soon_after_and_near_each_other_count_up_to_a_triple_click() {
+        let mut s = scene(false);
+        s.store.count_clicks(s.a);
+        let tap = |s: &mut Scene, x: f32| {
+            s.touch(1, x, 10.0, PointerPhase::Down);
+            let count = s.store.click_count(PointerId(1));
+            s.touch(1, x, 10.0, PointerPhase::Up);
+            count
+        };
+        assert_eq!(tap(&mut s, 10.0), 1);
+        assert_eq!(tap(&mut s, 12.0), 2);
+        assert_eq!(tap(&mut s, 11.0), 3);
+        assert_eq!(tap(&mut s, 10.0), 3, "a run stays at a triple click");
+        assert_eq!(tap(&mut s, 60.0), 1, "a press away starts a run");
+        s.wait();
+        assert_eq!(tap(&mut s, 60.0), 1, "and so does one after the interval");
+        assert_eq!(
+            s.store.click_count(PointerId(9)),
+            1,
+            "a pointer that never pressed"
         );
     }
 

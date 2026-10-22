@@ -15,6 +15,7 @@ pub mod aot;
 pub mod asset;
 pub mod binding;
 pub mod check_mark;
+pub mod clicks;
 pub mod component;
 pub mod content;
 pub mod context;

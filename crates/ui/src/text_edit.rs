@@ -184,6 +184,15 @@ pub enum Reach {
     Line,
 }
 
+/// What a double or triple click selects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unit {
+    /// The word, or the run of spaces or punctuation, under the pointer.
+    Word,
+    /// The paragraph under the pointer, with its line break.
+    Paragraph,
+}
+
 /// A self-contained editing command an input handler records without reading the
 /// buffer. [`reconcile`] applies it to the node's [`Buffer`] in the layout phase.
 ///
@@ -212,8 +221,12 @@ pub enum EditIntent {
     /// Select the whole text.
     SelectAll,
     /// Place the caret at the pointer, in the same window space as node bounds.
-    /// `extend` keeps the anchor fixed (shift-click, drag-select).
+    /// `extend` keeps the anchor fixed (shift-click, drag-select); after a
+    /// [`SelectAt`](Self::SelectAt) it extends by whole units.
     PlaceAt { x: f32, y: f32, extend: bool },
+    /// Select the word or paragraph at the pointer (a double or triple click);
+    /// a drag on extends the selection by whole ones.
+    SelectAt { x: f32, y: f32, unit: Unit },
     /// Set or update the IME composition: replace the composition range (or the
     /// selection, if no composition is active yet) with `text`, keeping it marked
     /// as composing with the caret at `caret` bytes into `text`. An empty `text`
@@ -336,6 +349,9 @@ pub struct Buffer {
     goal_x: Option<f32>,
     /// The steps undo and redo walk.
     history: History,
+    /// The unit a double or triple click selected and its range, which a
+    /// drag on from it extends by.
+    granule: Option<(Unit, TextOffset, TextOffset)>,
     /// Advances on every change to `text`.
     revision: Revision,
     /// Queued intents recorded since the last reconcile, applied in order. A
@@ -374,6 +390,7 @@ impl Buffer {
             composing: None,
             goal_x: None,
             history: History::default(),
+            granule: None,
             revision: Revision::default(),
             pending: Vec::new(),
         }
@@ -605,6 +622,12 @@ impl Buffer {
         if !matches!(intent, EditIntent::Move { motion, .. } if motion.is_vertical()) {
             self.goal_x = None;
         }
+        if !matches!(
+            intent,
+            EditIntent::PlaceAt { extend: true, .. } | EditIntent::SelectAt { .. }
+        ) {
+            self.granule = None;
+        }
         match intent {
             EditIntent::Insert(s) => self.type_text(s),
             EditIntent::Paste(s) => {
@@ -629,9 +652,37 @@ impl Buffer {
                 };
             }
             EditIntent::PlaceAt { x, y, extend } => {
-                if let Some(placed) = placed {
+                if let Some(at) = placed.and_then(|p| self.point(p, *x, *y)) {
                     self.history.close();
-                    self.place_at(placed, *x, *y, *extend);
+                    match self.granule {
+                        Some((unit, from, to)) if *extend => {
+                            let under = placed.and_then(|p| self.under(p, *x, *y));
+                            let (start, end) = self.unit_range(unit, under.unwrap_or(at).offset);
+                            self.sel = if start < from {
+                                Selection {
+                                    anchor: TextPosition::upstream(to),
+                                    focus: TextPosition::downstream(start),
+                                }
+                            } else {
+                                Selection {
+                                    anchor: TextPosition::downstream(from),
+                                    focus: TextPosition::upstream(end),
+                                }
+                            };
+                        }
+                        _ => self.set_focus(at, *extend),
+                    }
+                }
+            }
+            EditIntent::SelectAt { x, y, unit } => {
+                if let Some(at) = placed.and_then(|p| self.under(p, *x, *y)) {
+                    self.history.close();
+                    let (start, end) = self.unit_range(*unit, at.offset);
+                    self.sel = Selection {
+                        anchor: TextPosition::downstream(start),
+                        focus: TextPosition::upstream(end),
+                    };
+                    self.granule = Some((*unit, start, end));
                 }
             }
             EditIntent::Compose { text, caret } => self.compose(text, *caret),
@@ -901,11 +952,12 @@ impl Buffer {
         Some(self.text_position(layout.position_at(target, x)))
     }
 
-    /// Place the caret at window point `(x, y)` through the drawn lines.
-    fn place_at(&mut self, placed: Placed<'_>, x: f32, y: f32, extend: bool) {
+    /// The position of the text at window point `(x, y)`, through the drawn
+    /// lines.
+    fn point(&self, placed: Placed<'_>, x: f32, y: f32) -> Option<TextPosition> {
         let layout = placed.layout;
         if layout.lines.is_empty() || layout.font_size <= 0.0 {
-            return;
+            return None;
         }
         let (local_x, local_y) = (x - placed.origin.0, y - placed.origin.1);
         let row = if layout.line_height > 0.0 {
@@ -914,8 +966,52 @@ impl Buffer {
             0
         };
         let row = row.min(layout.lines.len() - 1);
-        let position = layout.position_at(row, local_x);
-        self.set_focus(self.text_position(position), extend);
+        Some(self.text_position(layout.position_at(row, local_x)))
+    }
+
+    /// The position of the grapheme drawn at window point `(x, y)`: the one
+    /// after the nearest caret stop, or before it when the point is on that
+    /// side.
+    fn under(&self, placed: Placed<'_>, x: f32, y: f32) -> Option<TextPosition> {
+        let at = self.point(placed, x, y)?;
+        let layout = placed.layout;
+        let drawn = self.drawn_position(at);
+        let (row, line) = layout.line_at(drawn)?;
+        let before = (x - placed.origin.0) < layout.caret_x(row, drawn);
+        if before != line.rtl && at.offset > TextOffset(0) {
+            let back = Segmenter::new(&self.text).prev_grapheme(at.offset);
+            return Some(TextPosition::downstream(back));
+        }
+        Some(at)
+    }
+
+    /// The range of the `unit` holding the grapheme at `at`: its word segment
+    /// (a word, or a run of spaces or punctuation), or its paragraph with the
+    /// break after it. A secure field's word is its whole text.
+    fn unit_range(&self, unit: Unit, at: TextOffset) -> (TextOffset, TextOffset) {
+        let text = &self.text;
+        let at = at.0.min(text.len());
+        match unit {
+            Unit::Word if self.look.secure => (TextOffset(0), TextOffset(text.len())),
+            Unit::Word => {
+                let bounds: Vec<TextOffset> = Segmenter::new(text).word_boundaries().collect();
+                let segments: Vec<(usize, usize)> =
+                    bounds.windows(2).map(|w| (w[0].0, w[1].0)).collect();
+                let range = segments
+                    .iter()
+                    .copied()
+                    .find(|&(a, b)| a <= at && at < b)
+                    .or_else(|| segments.last().copied())
+                    .unwrap_or((at, at));
+                (TextOffset(range.0), TextOffset(range.1))
+            }
+            Unit::Paragraph => {
+                let start = paragraph_start(text, at);
+                let end = paragraph_end(text, at);
+                let end = if end < text.len() { end + 1 } else { end };
+                (TextOffset(start), TextOffset(end))
+            }
+        }
     }
 
     /// Move the selection's focus to `position`, keeping the anchor when
@@ -1929,6 +2025,93 @@ mod tests {
             Vec2 { x: 30.0, y: 0.0 },
         );
         assert_eq!(marks.scroll, Vec2::ZERO);
+    }
+
+    #[test]
+    fn a_double_click_selects_a_word_and_a_drag_on_extends_by_words() {
+        let text = "hello wide world";
+        let lines = lines_for(text);
+        let p = Some(placed(text, &lines));
+        // A char is ten wide from x = 100.
+        let at = |i: f32| 100.0 + 10.0 * i + 2.0;
+        let mut b = buf(text, 0);
+        let word = |x| EditIntent::SelectAt {
+            x,
+            y: 55.0,
+            unit: Unit::Word,
+        };
+        let drag = |x| EditIntent::PlaceAt {
+            x,
+            y: 55.0,
+            extend: true,
+        };
+        b.apply_one(&word(at(7.0)), p);
+        assert_eq!(b.sel.logical_range(), (TextOffset(6), TextOffset(10)));
+        b.apply_one(&drag(at(12.0)), p);
+        assert_eq!(
+            (b.sel.anchor.offset, b.sel.focus.offset),
+            (TextOffset(6), TextOffset(16))
+        );
+        b.apply_one(&drag(at(2.0)), p);
+        assert_eq!(
+            (b.sel.anchor.offset, b.sel.focus.offset),
+            (TextOffset(10), TextOffset(0))
+        );
+        b.apply_one(&word(100.0 + 48.0), p);
+        assert_eq!(
+            b.sel.logical_range(),
+            (TextOffset(0), TextOffset(5)),
+            "on the right of a word's last letter: the word"
+        );
+        b.apply_one(&word(at(5.7)), p);
+        assert_eq!(
+            b.sel.logical_range(),
+            (TextOffset(5), TextOffset(6)),
+            "on the space"
+        );
+        apply(
+            &mut b,
+            EditIntent::Move {
+                motion: Motion::Right,
+                extend: false,
+            },
+        );
+        b.apply_one(&drag(at(12.0)), p);
+        assert_eq!(
+            b.sel.logical_range(),
+            (TextOffset(6), TextOffset(12)),
+            "a key ends the unit"
+        );
+    }
+
+    #[test]
+    fn a_triple_click_selects_the_paragraph_with_its_break() {
+        let text = "ab\ncd";
+        let lines = lines_for(text);
+        let p = Some(placed(text, &lines));
+        let mut b = buf(text, 0);
+        let paragraph = |y| EditIntent::SelectAt {
+            x: 101.0,
+            y,
+            unit: Unit::Paragraph,
+        };
+        b.apply_one(&paragraph(52.0), p);
+        assert_eq!(b.sel.logical_range(), (TextOffset(0), TextOffset(3)));
+        b.apply_one(&paragraph(64.0), p);
+        assert_eq!(b.sel.logical_range(), (TextOffset(3), TextOffset(5)));
+        let mut secret = buf("pass word", 0);
+        secret.look.secure = true;
+        let masked: String = std::iter::repeat_n(MASK, 9).collect();
+        let lines = lines_for(&masked);
+        secret.apply_one(
+            &EditIntent::SelectAt {
+                x: 101.0,
+                y: 52.0,
+                unit: Unit::Word,
+            },
+            Some(placed(&masked, &lines)),
+        );
+        assert_eq!(secret.sel.logical_range(), (TextOffset(0), TextOffset(9)));
     }
 
     #[test]

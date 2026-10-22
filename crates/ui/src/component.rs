@@ -669,6 +669,8 @@ pub struct NodeStore {
     pub(crate) folds: crate::fold::Folds,
     /// Cold: the text fields and the marks they draw.
     pub(crate) fields: crate::field_marks::Fields,
+    /// Cold: each pointer's last press, which a press soon after counts on.
+    pub(crate) clicks: crate::clicks::Clicks,
     /// Cold: the nodes laid out over the whole surface.
     pub(crate) layers: crate::layer::Layers,
     /// Cold: the nodes whose lengths read the environment (`px`, `sp`, `em`),
@@ -791,6 +793,7 @@ impl NodeStore {
         self.holds.clear();
         self.folds.clear();
         self.fields.clear();
+        self.clicks.clear();
         self.layers.clear();
         self.focus_scope = None;
         self.draggable_regions.clear();
@@ -4426,6 +4429,7 @@ impl NodeStore {
         self.hidden[i] = false;
         self.folds.forget(i as u32);
         self.fields.forget(i as u32);
+        self.clicks.forget(i as u32);
         self.layers.forget(i as u32);
         self.clips[i] = false;
         self.overlay[i] = false;

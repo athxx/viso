@@ -772,6 +772,15 @@ impl<'a> EventCx<'a> {
         self.place?.store.drag_sample(self.pointer_id)
     }
 
+    /// How many clicks the press under dispatch is in its run: `1` for a
+    /// single click, `2` for a double and `3` for a triple. A press comes
+    /// within [`CLICK_INTERVAL`](crate::clicks::CLICK_INTERVAL) of the last,
+    /// near it, to count on.
+    pub fn clicks(&self) -> u8 {
+        self.place
+            .map_or(1, |place| place.store.click_count(self.pointer_id))
+    }
+
     /// The long press under dispatch, `None` for any other dispatch.
     pub fn long_press(&self) -> Option<crate::long_press::LongPressSample> {
         self.place?.store.long_press_sample(self.pointer_id)

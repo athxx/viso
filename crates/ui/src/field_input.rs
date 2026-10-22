@@ -1,8 +1,10 @@
 //! What a text field does with its input: the one handler every text field
 //! runs, and the keys it answers to.
 //!
-//! A press focuses the field, captures the pointer and places the caret; a
-//! drag with the button held extends the selection. Keys move the caret,
+//! A press focuses the field, captures the pointer and places the caret, a
+//! double click selects the word under it and a triple click the paragraph;
+//! a drag with the button held extends the selection, by whole words or
+//! paragraphs after a double or triple click. Keys move the caret,
 //! delete, select, undo and redo by the platform's conventions; the IME
 //! composes and commits, and a paste replaces the selection. Each becomes an
 //! [`EditIntent`] the router applies to the field's buffer, so the handler
@@ -24,7 +26,7 @@ use viso_runtime::{Key, primary_is_logo};
 
 use crate::context::EventCx;
 use crate::input::{DispatchPhase, ImeEvent, KeyEvent, PointerButtons, PointerPhase};
-use crate::text_edit::{EditIntent, Motion, Reach};
+use crate::text_edit::{EditIntent, Motion, Reach, Unit};
 use viso_text::TextOffset;
 
 /// What a key does in a text field.
@@ -128,7 +130,21 @@ pub fn field_input(cx: &mut EventCx<'_>, multiline: bool) -> Option<FieldEvent> 
             PointerPhase::Down if held => {
                 cx.request_focus(node);
                 cx.capture_pointer(node);
-                cx.record_edit(EditIntent::PlaceAt { x, y, extend });
+                let intent = match cx.clicks() {
+                    _ if extend => EditIntent::PlaceAt { x, y, extend },
+                    1 => EditIntent::PlaceAt { x, y, extend },
+                    2 => EditIntent::SelectAt {
+                        x,
+                        y,
+                        unit: Unit::Word,
+                    },
+                    _ => EditIntent::SelectAt {
+                        x,
+                        y,
+                        unit: Unit::Paragraph,
+                    },
+                };
+                cx.record_edit(intent);
             }
             PointerPhase::Move if held => {
                 cx.record_edit(EditIntent::PlaceAt { x, y, extend: true });

@@ -88,8 +88,8 @@ Rules:
   multi-line) with the content clipped, wheel/pan scrolling inside the text; caret
   blink paused while typing, steady after idle and under reduced motion, hidden in an
   inactive window.
-- [ ] E4 Double-click word select, triple-click paragraph select, drag-extend by word
-  (click counting in the pointer router).
+- [x] E4 Double-click word select, triple-click paragraph select, drag-extend by word
+  or paragraph (click counting in the pointer router, `EventCx::clicks`).
 - [ ] E5 Input formatters: max length, integer/decimal filter, custom filter, widget
   `on_submit`; DSL props.
 - [ ] E6 `NumberField` / scrub value input (drag to change, step, min/max, wheel, arrow

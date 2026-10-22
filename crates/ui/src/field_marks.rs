@@ -96,12 +96,14 @@ impl Fields {
 
 impl NodeStore {
     /// Makes node `id` a text field: its text is clipped to its box and drawn
-    /// with the marks it is given. A field already is one.
+    /// with the marks it is given, and it counts its clicks. A field already
+    /// is one.
     pub fn make_field(&mut self, id: NodeId) {
         if !self.arena().is_live(id) || self.fields.get(id).is_some() {
             return;
         }
         self.fields.marks.push((id, FieldMarks::default()));
+        self.count_clicks(id);
         self.mark_dirty(id, DirtyClass::PAINT);
     }
 
