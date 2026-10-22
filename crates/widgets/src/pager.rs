@@ -148,6 +148,7 @@ impl Component for Pager {
             snap: Some(ScrollSnap::PAGES),
             pages: true,
             dots: self.style.dots,
+            grid: None,
         };
         let pages = match page {
             Some(mut page) => cx.virtual_list(style, self.count, move |i, cx| page(i, cx)),

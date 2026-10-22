@@ -16,7 +16,8 @@ use viso_behavior::ComponentEffect;
 use viso_schema::StateKey;
 use viso_schema::view::{
     ArmTemplate, CellRef, Control, EffectTemplate, EnvTemplate, GroupTemplate, ItemTemplate,
-    LocalTemplate, RegionKind, RegionTemplate, Route, SlotTemplate, StarterTemplate, ViewRegions,
+    ListLanes, LocalTemplate, RegionKind, RegionTemplate, Route, SlotTemplate, StarterTemplate,
+    ViewRegions,
 };
 
 use crate::aot::{aot_node, terms_of};
@@ -437,20 +438,24 @@ impl Builder<'_> {
                     .key
                     .map(|key| self.entry(region.instance, Some(key), region.origin));
                 // A list row's root `sticky` says, of each item, whether its
-                // row heads a section.
-                let sticky = list.and_then(|_| {
+                // row heads a section, and its `list.full_line` whether it
+                // spans a grid's line.
+                let mut read = |property: &str| {
+                    list?;
                     let at = region.body.iter().find_map(|item| match item {
                         UiItem::Node(root) => root
                             .control_reads
                             .iter()
                             .find(|(name, _, instance)| {
-                                name == "sticky" && *instance == region.instance
+                                name == property && *instance == region.instance
                             })
                             .map(|&(_, at, _)| at),
                         _ => None,
                     })?;
                     Some(self.entry(region.instance, Some(at), region.origin))
-                });
+                };
+                let sticky = read("sticky");
+                let full = read("list.full_line");
                 let kind = match (list, key) {
                     (Some(list), Some(key)) => {
                         let shape = list.style.list.unwrap_or_default();
@@ -461,11 +466,24 @@ impl Builder<'_> {
                             overscan: shape.overscan,
                             sticky,
                             pages: shape.pages,
+                            lanes: shape.lanes.map(|lanes| ListLanes {
+                                columns: lanes.columns,
+                                min: terms_of(lanes.min),
+                                gap: terms_of(lanes.gap),
+                                cross_gap: terms_of(lanes.cross_gap),
+                                masonry: lanes.masonry,
+                            }),
+                            full,
                         }
                     }
                     _ => RegionKind::For { items, key },
                 };
-                let entries = [items].into_iter().chain(key).chain(sticky).collect();
+                let entries = [items]
+                    .into_iter()
+                    .chain(key)
+                    .chain(sticky)
+                    .chain(full)
+                    .collect();
                 (kind, entries, vec![false])
             }
             UiItem::Node(_) => unreachable!("a node is not a region"),

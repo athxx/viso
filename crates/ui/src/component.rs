@@ -251,6 +251,9 @@ pub struct VirtualListStyle {
     pub pages: bool,
     /// The page dots over its end edge across, a snapping list's.
     pub dots: Option<crate::page_dots::PageDotsStyle>,
+    /// How it lays its items in lanes across its axis, if it does: a grid
+    /// or a masonry (see [`virtual_grid`](crate::virtual_grid)).
+    pub grid: Option<crate::virtual_grid::ListGrid>,
 }
 
 impl Default for VirtualListStyle {
@@ -267,6 +270,7 @@ impl Default for VirtualListStyle {
             snap: None,
             pages: false,
             dots: None,
+            grid: None,
         }
     }
 }
@@ -455,6 +459,11 @@ pub struct NodeStore {
     /// Written by the virtual-list reconcile step, read by the `AbsoluteRows`
     /// layout arm.
     row_offset: Vec<f32>,
+    /// Warm: the lane across its [`LayoutInput::AbsoluteRows`] canvas a
+    /// positioned row sits on, sized only as far as the last node given one;
+    /// a node past it, or holding [`FULL_LANE`](crate::virtual_grid::FULL_LANE),
+    /// sits across them all.
+    row_lane: Vec<u16>,
     /// Warm: a grid node's column/row track templates, boxed because only grid
     /// nodes carry them — an ordinary node's entry is `None`. Read by the grid
     /// layout arm through [`LayoutTree::grid_column_tracks`] /
@@ -851,6 +860,7 @@ impl NodeStore {
     pub fn clear(&mut self) {
         self.arena.clear();
         node_columns!(self.clear());
+        self.row_lane.clear();
         self.disabled_count = 0;
         self.box_rules.clear();
         self.free_rules.clear();
@@ -1443,6 +1453,27 @@ impl NodeStore {
     #[inline]
     pub fn clear_row_offset(&mut self, id: NodeId) {
         self.row_offset[id.index() as usize] = f32::NAN;
+        self.set_row_lane(id, crate::virtual_grid::FULL_LANE);
+    }
+
+    /// Set the lane across its [`LayoutInput::AbsoluteRows`] canvas node `id`
+    /// sits on, [`FULL_LANE`](crate::virtual_grid::FULL_LANE) for across them
+    /// all.
+    pub fn set_row_lane(&mut self, id: NodeId, lane: u16) {
+        let i = id.index() as usize;
+        if i >= self.row_lane.len() {
+            if lane == crate::virtual_grid::FULL_LANE {
+                return;
+            }
+            self.row_lane.resize(i + 1, crate::virtual_grid::FULL_LANE);
+        }
+        self.row_lane[i] = lane;
+    }
+
+    /// The lane across its canvas node `id` sits on.
+    #[inline]
+    pub fn row_lane(&self, id: NodeId) -> u16 {
+        LayoutTree::row_lane(self, id.index())
     }
 
     /// Grid `id`'s track payload, if it has one.
@@ -2079,6 +2110,25 @@ impl NodeStore {
                 Axis::Column => size.height = Length::Fixed(extent),
             }
             self.request_moved(canvas);
+        }
+    }
+
+    /// Lay the rows of [`LayoutInput::AbsoluteRows`] canvas `canvas` on
+    /// `lanes` lanes `cross_gap` apart, re-placing them.
+    pub fn set_absolute_rows_lanes(&mut self, canvas: NodeId, lanes: u16, cross_gap: f32) {
+        if !self.arena.is_live(canvas) {
+            return;
+        }
+        let i = canvas.index() as usize;
+        if let LayoutInput::AbsoluteRows {
+            lanes: l,
+            cross_gap: g,
+            ..
+        } = &mut self.layout[i]
+            && (*l, *g) != (lanes, cross_gap)
+        {
+            (*l, *g) = (lanes, cross_gap);
+            self.mark_dirty(canvas, DirtyClass::LAYOUT | DirtyClass::PAINT);
         }
     }
 
@@ -4724,6 +4774,9 @@ impl NodeStore {
         self.turn[i] = crate::transform::Turn::NONE;
         self.content[i] = Vec2::ZERO;
         self.row_offset[i] = f32::NAN;
+        if let Some(lane) = self.row_lane.get_mut(i) {
+            *lane = crate::virtual_grid::FULL_LANE;
+        }
         self.grid_tracks[i] = None;
         self.drop_placement(i);
         self.dirty[i] = DirtyClass::EMPTY;
@@ -5651,6 +5704,14 @@ impl LayoutTree for NodeStore {
     }
 
     #[inline]
+    fn row_lane(&self, index: u32) -> u16 {
+        self.row_lane
+            .get(index as usize)
+            .copied()
+            .unwrap_or(crate::virtual_grid::FULL_LANE)
+    }
+
+    #[inline]
     fn row_offset(&self, index: u32) -> Option<f32> {
         let off = self.row_offset[index as usize];
         // The sentinel `f32::NAN` marks a node that is not a positioned row, so a
@@ -6181,7 +6242,15 @@ impl<'a> BuildCx<'a> {
         size: Size,
         children: impl FnOnce(&mut BuildCx<'_>),
     ) -> Handle {
-        let id = self.push_node(LayoutInput::AbsoluteRows { axis, size }, BoxStyle::NONE);
+        let id = self.push_node(
+            LayoutInput::AbsoluteRows {
+                axis,
+                size,
+                lanes: 1,
+                cross_gap: 0.0,
+            },
+            BoxStyle::NONE,
+        );
         self.stack.push(id);
         children(self);
         self.stack.pop();
@@ -6374,6 +6443,7 @@ impl<'a> BuildCx<'a> {
                 estimated_row: style.estimated_row,
                 overscan: style.overscan as usize,
                 pages: style.pages,
+                grid: style.grid,
             },
             item_count,
             item,

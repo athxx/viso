@@ -374,12 +374,12 @@ impl Owner<'_> {
     }
 
     /// Whether `path` is a property a view-driven native node reads: a
-    /// control's value or range, a label's text, or its look.
+    /// control's value or range, a label's text, or its look; or one its
+    /// list reads of it as a row, its `list.full_line`.
     fn reads_control(&self, path: &PropertyPath) -> bool {
+        let name = path_text(path);
         self.component.is_none()
-            && ControlKind::of(&self.name)
-                .input(&path_text(path))
-                .is_some()
+            && (ControlKind::of(&self.name).input(&name).is_some() || name == "list.full_line")
     }
 
     /// Whether `path` is a layout property a native node sets from its value

@@ -148,6 +148,11 @@ pub enum LayoutInput {
         axis: Axis,
         /// The canvas's own size request — fixed on both axes.
         size: Size,
+        /// The lanes across it a row may sit on (see [`LayoutTree::row_lane`]):
+        /// `1` for rows that fill it across.
+        lanes: u16,
+        /// The room between two lanes.
+        cross_gap: f32,
     },
     /// A two-dimensional grid: children are placed into cells of a column/row
     /// track model. Only `Copy` scalars ride here — the variable-length column
@@ -303,6 +308,10 @@ pub trait LayoutTree {
     /// [`LayoutInput::AbsoluteRows`] canvas, or `None` when the node is not a
     /// positioned row. The `AbsoluteRows` layout arm is the only caller.
     fn row_offset(&self, index: u32) -> Option<f32>;
+    /// The lane across an [`LayoutInput::AbsoluteRows`] canvas a positioned
+    /// row sits on, [`FULL_LANE`](crate::virtual_grid::FULL_LANE) for one
+    /// across them all.
+    fn row_lane(&self, index: u32) -> u16;
     /// The resolved column track template for a grid node, or `None` when the
     /// node is not a grid. The grid layout arm is the only caller.
     fn grid_column_tracks(&self, index: u32) -> Option<&[TrackSizing]>;
@@ -1933,9 +1942,10 @@ fn layout_absolute_rows(
 /// The box an [`LayoutInput::AbsoluteRows`] canvas `index` at `canvas`
 /// along `axis` gives its positioned child `child`: at its row offset from
 /// the canvas's start (its right edge for a row read right to left), its
-/// measured main extent, the canvas's whole cross extent. `None` for a
-/// child that is not a positioned row. No sibling enters into it, so a row
-/// that re-measures is re-placed alone.
+/// measured main extent, across its lane (the canvas's whole cross extent
+/// for one row a line; lanes run right to left in a column read so). `None`
+/// for a child that is not a positioned row. No sibling enters into it, so
+/// a row that re-measures is re-placed alone.
 pub(crate) fn row_box(
     tree: &impl LayoutTree,
     index: u32,
@@ -1945,7 +1955,26 @@ pub(crate) fn row_box(
 ) -> Option<Rect> {
     let offset = tree.row_offset(child)?;
     let cross = cross_of(axis);
-    let across = rect_len(canvas, cross);
+    let (lanes, gap) = match tree.input(index) {
+        LayoutInput::AbsoluteRows {
+            lanes, cross_gap, ..
+        } => (lanes.max(1), cross_gap),
+        _ => (1, 0.0),
+    };
+    let lane = tree.row_lane(child);
+    let (cross_start, across) = if lanes > 1 && lane != crate::virtual_grid::FULL_LANE {
+        let n = lanes as f32;
+        let width = ((rect_len(canvas, cross) - gap * (n - 1.0)) / n).max(0.0);
+        let k = lane.min(lanes - 1);
+        let k = if cross == Axis::Row && tree.rtl(index) {
+            lanes - 1 - k
+        } else {
+            k
+        };
+        (rect_start(canvas, cross) + k as f32 * (width + gap), width)
+    } else {
+        (rect_start(canvas, cross), rect_len(canvas, cross))
+    };
     let cross_size = match tree.rules(child) {
         Some(rules) => rules.clamp(cross, across, across, true),
         None => across,
@@ -1956,13 +1985,7 @@ pub(crate) fn row_box(
     } else {
         rect_start(canvas, axis) + offset
     };
-    Some(axis_rect(
-        axis,
-        main_start,
-        rect_start(canvas, cross),
-        main,
-        cross_size,
-    ))
+    Some(axis_rect(axis, main_start, cross_start, main, cross_size))
 }
 
 /// The working buffers of one grid layout. `layout_grid` needs about a dozen
@@ -2490,7 +2513,7 @@ fn layout_grid(
 /// clamped to at least one. Adding one `gap` to both terms models that `n` tracks
 /// carry `n − 1` interior gaps, so `n` columns of `min` fit when `n·min + (n−1)·gap
 /// ≤ content_w`. A non-positive `min` degrades to a single column.
-fn adaptive_column_count(min: f32, gap: f32, content_w: f32) -> u16 {
+pub(crate) fn adaptive_column_count(min: f32, gap: f32, content_w: f32) -> u16 {
     let min = min.max(0.0);
     let gap = gap.max(0.0);
     let denom = min + gap;

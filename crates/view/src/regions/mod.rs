@@ -704,6 +704,8 @@ impl Patch<'_, '_> {
                     overscan,
                     sticky,
                     pages,
+                    lanes,
+                    full,
                 },
                 Content::Rows(rows),
             ) => {
@@ -714,6 +716,8 @@ impl Patch<'_, '_> {
                     overscan,
                     sticky,
                     pages,
+                    lanes,
+                    full,
                 };
                 self.rows(rows, list, scope, parent, touched, force);
             }

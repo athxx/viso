@@ -260,6 +260,7 @@ impl Component for VirtualList {
             snap: self.style.snap,
             pages: self.style.pages,
             dots: self.style.dots,
+            grid: None,
         };
         let handle = match item {
             Some(mut item) => {

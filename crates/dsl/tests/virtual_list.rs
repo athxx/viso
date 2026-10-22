@@ -757,3 +757,44 @@ fn a_list_of_pages_turns_a_page_a_flick_and_its_handler_hears_each() {
     // Item 1 starts at 16 + 128: it rests 16 in.
     assert_eq!(page.store.scroll(shelf).x, 128.0);
 }
+
+const GRID: &str = "component Photos {
+    view {
+        VirtualList {
+            columns: 3;
+            gap: 10dp;
+            column_gap: 5dp;
+            for i in 0..30 key i {
+                Text { height: 50dp; list.full_line: i == 3; text: format(\"{}\", i); }
+            }
+        }
+    }
+}";
+
+#[test]
+fn a_list_with_columns_lays_its_items_in_lanes_a_full_line_item_alone() {
+    let mut page = Page::load(GRID);
+    for _ in 0..3 {
+        page.frame();
+    }
+    let list = page.root;
+    assert_eq!(page.lists.get(list).unwrap().lanes(), 3);
+    let canvas = page.canvas(list);
+    let placed: Vec<(String, Rect)> = page
+        .store
+        .arena()
+        .children(canvas)
+        .map(|host| {
+            let text = page.child(host, 0);
+            (page.texts[&text].clone(), page.store.bounds(host))
+        })
+        .collect();
+    let at = |name: &str| placed.iter().find(|(t, _)| t == name).unwrap().1;
+    let origin = page.store.bounds(canvas);
+    let local = |r: Rect| (r.x - origin.x, r.y - origin.y, r.w);
+    // The root list fills the 400-wide page: lanes 130 wide, 5 apart.
+    assert_eq!(local(at("0")), (0.0, 0.0, 130.0));
+    assert_eq!(local(at("2")), (270.0, 0.0, 130.0));
+    assert_eq!(local(at("3")), (0.0, 60.0, 400.0), "alone on its line");
+    assert_eq!(local(at("4")), (0.0, 120.0, 130.0));
+}

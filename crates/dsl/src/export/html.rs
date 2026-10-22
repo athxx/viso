@@ -540,6 +540,9 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             if node.style.list.is_some_and(|list| list.pages) {
                 el.classes.push("vx-pages".to_owned());
             }
+            if node.style.list.is_some_and(|list| list.lanes.is_some()) {
+                el.classes.push("vx-lanes".to_owned());
+            }
         }
         if node
             .style
@@ -834,6 +837,40 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                     && let Some(list) = style.list
                 {
                     decls.push(("--vx-row", css::terms(list.estimate, device)));
+                    // A grid's lanes are the tracks across its axis; a
+                    // masonry packs its items along it where the browser
+                    // can.
+                    if let Some(lanes) = list.lanes {
+                        let track = match lanes.columns {
+                            0 => format!(
+                                "repeat(auto-fill, minmax(min({}, 100%), 1fr))",
+                                css::terms(lanes.min, device)
+                            ),
+                            n => format!("repeat({n}, minmax(0, 1fr))"),
+                        };
+                        let (across, along) = if row {
+                            ("grid-template-rows", "grid-template-columns")
+                        } else {
+                            ("grid-template-columns", "grid-template-rows")
+                        };
+                        decls.push(("display", "grid".into()));
+                        decls.push((across, track));
+                        if row {
+                            decls.push(("grid-auto-flow", "column".into()));
+                        }
+                        if lanes.masonry {
+                            decls.push((along, "masonry".into()));
+                        }
+                        let (gap, cross) = if row {
+                            ("column-gap", "row-gap")
+                        } else {
+                            ("row-gap", "column-gap")
+                        };
+                        decls.push((gap, css::terms(lanes.gap, device)));
+                        decls.push((cross, css::terms(lanes.cross_gap, device)));
+                        decls.push(("align-items", "start".into()));
+                        decls.push(("align-content", "start".into()));
+                    }
                 }
             }
             _ => {}

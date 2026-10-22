@@ -583,6 +583,32 @@ pub struct ListIr {
     pub overscan: u32,
     /// Whether each row is as long as the viewport (`pages`).
     pub pages: bool,
+    /// How it lays its items in lanes (`columns`, `min_column`, `masonry`,
+    /// `gap`, `column_gap`), if it does.
+    pub lanes: Option<LanesIr>,
+}
+
+/// How a `VirtualList` lays its items in lanes across its axis.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LanesIr {
+    /// Exactly this many lanes, `0` for as many at least `min` wide as fit.
+    pub columns: u16,
+    pub min: TermsIr,
+    pub gap: TermsIr,
+    pub cross_gap: TermsIr,
+    pub masonry: bool,
+}
+
+impl Default for LanesIr {
+    fn default() -> Self {
+        LanesIr {
+            columns: 2,
+            min: TermsIr::default(),
+            gap: TermsIr::default(),
+            cross_gap: TermsIr::default(),
+            masonry: false,
+        }
+    }
 }
 
 impl Default for ListIr {
@@ -594,6 +620,7 @@ impl Default for ListIr {
             },
             overscan: 4,
             pages: false,
+            lanes: None,
         }
     }
 }

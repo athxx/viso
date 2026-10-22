@@ -19,9 +19,10 @@ use std::rc::Rc;
 use viso_behavior::{FaultKind, Value};
 use viso_schema::LengthTerms;
 use viso_ui::virtual_list::{
-    ItemBuilder, ItemKey as RowKey, KeyOf, ListShape, StickyOf, attach_list, set_item_count,
-    set_sticky_of,
+    ItemBuilder, ItemKey as RowKey, KeyOf, ListShape, StickyOf, attach_list, set_full_of,
+    set_item_count, set_sticky_of,
 };
+use viso_ui::{Columns, ListGrid};
 use viso_ui::{NodeId, StructureCx};
 
 use super::{Frag, Key, Mounted, Patch};
@@ -36,6 +37,8 @@ pub(super) struct ListEntries {
     pub(super) overscan: u32,
     pub(super) sticky: Option<u32>,
     pub(super) pages: bool,
+    pub(super) lanes: Option<viso_schema::view::ListLanes>,
+    pub(super) full: Option<u32>,
 }
 
 /// A mounted `VirtualList` item template.
@@ -49,6 +52,9 @@ pub(super) struct Rows {
     /// Whether each item's row heads a section, by index, shared with the
     /// list.
     heads: Rc<RefCell<Vec<bool>>>,
+    /// Whether each item spans a grid's line, by index, shared with the
+    /// list.
+    full: Rc<RefCell<Vec<bool>>>,
 }
 
 /// What the list builds rows from and the rows it has mounted.
@@ -82,6 +88,7 @@ impl Rows {
             })),
             hashes: Rc::new(RefCell::new(Vec::new())),
             heads: Rc::new(RefCell::new(Vec::new())),
+            full: Rc::new(RefCell::new(Vec::new())),
         }
     }
 
@@ -122,16 +129,17 @@ impl Patch<'_, '_> {
         {
             let count = values.len();
             *rows.hashes.borrow_mut() = keys.iter().map(hash).collect();
-            if let Some(sticky) = list.sticky {
-                let heads: Vec<bool> = values
+            for (entry, flags) in [(list.sticky, &rows.heads), (list.full, &rows.full)] {
+                let Some(entry) = entry else { continue };
+                let each: Vec<bool> = values
                     .iter()
                     .map(|value| {
-                        self.evaluate(sticky, scope, Some(value))
-                            .and_then(|head| head.as_int())
-                            .is_some_and(|head| head != 0)
+                        self.evaluate(entry, scope, Some(value))
+                            .and_then(|on| on.as_int())
+                            .is_some_and(|on| on != 0)
                     })
                     .collect();
-                *rows.heads.borrow_mut() = heads;
+                *flags.borrow_mut() = each;
             }
             {
                 let mut set = rows.set.borrow_mut();
@@ -208,6 +216,20 @@ impl Patch<'_, '_> {
             estimated_row: self.cx.store.fold_extent(parent, list.estimate).max(1.0),
             overscan: list.overscan as usize,
             pages: list.pages,
+            grid: list.lanes.map(|lanes| {
+                let fold = |terms| self.cx.store.fold_extent(parent, terms).max(0.0);
+                ListGrid {
+                    columns: match lanes.columns {
+                        0 => Columns::Adaptive {
+                            min: fold(lanes.min),
+                        },
+                        n => Columns::Fixed(n),
+                    },
+                    gap: fold(lanes.gap),
+                    cross_gap: fold(lanes.cross_gap),
+                    masonry: lanes.masonry,
+                }
+            }),
         };
         let me = self.me.clone();
         let set = Rc::clone(&rows.set);
@@ -240,6 +262,12 @@ impl Patch<'_, '_> {
             let sticky_of: StickyOf =
                 Box::new(move |at| heads.borrow().get(at).copied().unwrap_or(false));
             set_sticky_of(self.cx.lists, parent, Some(sticky_of));
+        }
+        if list.full.is_some() {
+            let full = Rc::clone(&rows.full);
+            let full_of: StickyOf =
+                Box::new(move |at| full.borrow().get(at).copied().unwrap_or(false));
+            set_full_of(self.cx.lists, parent, Some(full_of));
         }
         rows.viewport = Some(parent);
     }

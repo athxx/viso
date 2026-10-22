@@ -1129,3 +1129,36 @@ export component Page {
     assert!(script.contains(", 10, (p) =>"), "{script}");
     assert!(page.styles.contains("dialog.vx-layer:not([open])"));
 }
+
+#[test]
+fn a_list_in_lanes_is_a_css_grid() {
+    let page = export(
+        "component Board {
+            view {
+                VirtualList {
+                    min_column: 96dp;
+                    gap: 8dp;
+                    column_gap: 4dp;
+                    masonry: true;
+                    for i in 0..20 key i {
+                        Text { height: 40dp; sticky: i == 0; text: \"card\"; }
+                    }
+                }
+            }
+        }",
+        false,
+    )
+    .unwrap();
+    assert!(page.index.contains("vx-lanes"), "{}", page.index);
+    let css = &page.styles;
+    for decl in [
+        "display: grid",
+        "grid-template-columns: repeat(auto-fill, minmax(min(96px, 100%), 1fr))",
+        "grid-template-rows: masonry",
+        "row-gap: 8px",
+        "column-gap: 4px",
+    ] {
+        assert!(css.contains(decl), "{decl} in {css}");
+    }
+    assert!(css.contains(".vx-lanes > [style*=\"sticky\"] { grid-column: 1 / -1; }"));
+}

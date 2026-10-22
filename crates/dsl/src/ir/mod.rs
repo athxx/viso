@@ -641,7 +641,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
                             Err(reason) => self.unmount((at, reason)),
                         }
                     }
-                    if control.input(&name).is_some() {
+                    if control.input(&name).is_some() || name == "list.full_line" {
                         control_reads.push((name.clone(), at, instance));
                     } else if let Some(member) = name.strip_prefix("transition.")
                         && widget
@@ -1434,6 +1434,8 @@ fn unapplied(
     }
     match name {
         "semantics.role" | "semantics.live" => None,
+        // A list reads it of each of its rows.
+        "list.full_line" => None,
         "checked" | "invalid" | "expanded" if selected() => None,
         "areas" | "grid.area" => Some(format!(
             "a `{name}` that reads a value does not lay out yet; a constant one does"
@@ -1689,21 +1691,23 @@ fn fold_static(
             }
             Fold::Folded
         }
-        "gap" | "spacing" => folded(match length::fold_gap(value, consts) {
-            Some(Lowered::Layout(LengthIr::Fixed(n))) => {
-                style.gap = Some(n);
-                if let Some(lengths) = &mut style.lengths {
-                    lengths.gap = None;
+        "gap" | "spacing" if kind != NodeKind::VirtualList => {
+            folded(match length::fold_gap(value, consts) {
+                Some(Lowered::Layout(LengthIr::Fixed(n))) => {
+                    style.gap = Some(n);
+                    if let Some(lengths) = &mut style.lengths {
+                        lengths.gap = None;
+                    }
+                    true
                 }
-                true
-            }
-            Some(Lowered::Env(terms)) => {
-                style.gap = None;
-                style.lengths_mut().gap = Some(terms);
-                true
-            }
-            _ => false,
-        }),
+                Some(Lowered::Env(terms)) => {
+                    style.gap = None;
+                    style.lengths_mut().gap = Some(terms);
+                    true
+                }
+                _ => false,
+            })
+        }
         "min_width" | "max_width" | "min_height" | "max_height" => {
             let Some(bound) = length::fold_bound(value, consts, name.starts_with("max")) else {
                 return Fold::Pending;
@@ -1872,6 +1876,41 @@ fn fold_static(
                 _ => false,
             })
         }
+        "columns" if kind == NodeKind::VirtualList => match length::fold_number(value, consts) {
+            Some(n) if (1.0..=1024.0).contains(&n) && n.fract() == 0.0 => {
+                lanes_of(style).columns = n as u16;
+                Fold::Folded
+            }
+            _ => Fold::Unsupported(
+                "a list's `columns` is a constant count from 1 to 1024".to_owned(),
+            ),
+        },
+        "min_column" | "gap" | "column_gap" if kind == NodeKind::VirtualList => {
+            match length::fold_terms(value, consts) {
+                Some(terms) if terms.pct == 0.0 => {
+                    let lanes = lanes_of(style);
+                    match name {
+                        "min_column" => {
+                            lanes.min = terms;
+                            lanes.columns = 0;
+                        }
+                        "gap" => lanes.gap = terms,
+                        _ => lanes.cross_gap = terms,
+                    }
+                    Fold::Folded
+                }
+                _ => Fold::Unsupported(format!(
+                    "a list's `{name}` is a constant length, not a percentage"
+                )),
+            }
+        }
+        "masonry" if kind == NodeKind::VirtualList => match fold_bool(value) {
+            Some(on) => {
+                lanes_of(style).masonry = on;
+                Fold::Folded
+            }
+            None => Fold::Unsupported("a list's `masonry` is `true` or `false`".to_owned()),
+        },
         // A list of pages snaps a page at a time unless it says otherwise.
         "pages" if kind == NodeKind::VirtualList => folded(match fold_bool(value) {
             Some(on) => {
@@ -1887,6 +1926,15 @@ fn fold_static(
         _ if kind == NodeKind::Grid => fold_grid(name, value, consts, style),
         _ => Fold::Pending,
     }
+}
+
+/// The lanes of the list `style` lays out, made a grid of two to begin.
+fn lanes_of(style: &mut StyleIr) -> &mut ui_ir::LanesIr {
+    style
+        .list
+        .get_or_insert_with(ListIr::default)
+        .lanes
+        .get_or_insert_with(ui_ir::LanesIr::default)
 }
 
 /// A `true` or `false` literal.

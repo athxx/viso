@@ -55,6 +55,20 @@ impl HeightTree {
         t
     }
 
+    /// A tree over `heights`, each measured.
+    pub(crate) fn from_heights(heights: Vec<f32>) -> Self {
+        let count = heights.len();
+        let mut t = HeightTree {
+            tree: Vec::new(),
+            count,
+            measured: vec![true; count],
+            heights,
+            default_height: 0.0,
+        };
+        t.rebuild();
+        t
+    }
+
     /// Rebuild the BIT from `heights` in O(n) (the linear construction: add each
     /// value to its slot, then propagate to the parent). Used on construction and
     /// resize; steady updates go through the O(log n) `update`.
@@ -217,7 +231,7 @@ impl HeightTree {
 
 /// The minimum drift (in px) between the old and new estimate before
 /// `update_default_height` bothers re-applying it to unmeasured rows.
-const DRIFT_EPSILON: f32 = 0.5;
+pub(crate) const DRIFT_EPSILON: f32 = 0.5;
 
 /// The estimate used for a row before it has ever been measured, when no running
 /// average exists yet.
@@ -295,6 +309,7 @@ use crate::semantics::{Role, Semantics};
 use crate::state::StateStore;
 use crate::structure::StructureCx;
 use crate::style::BoxStyle;
+use crate::virtual_grid::{Flow, ListGrid};
 
 /// Builds the body of one list item under a host node. Called only when a row is
 /// mounted or re-bound (a cold path — a steady scroll never invokes it), so it is
@@ -352,9 +367,14 @@ struct MountedItem {
 /// warm state that would pollute the hot/warm SoA columns if it rode a node, and
 /// only a handful of nodes are lists.
 pub struct VirtualListState {
-    /// Per-item heights (a Fenwick tree): prefix sums place rows, the inverse
-    /// query maps a scroll offset back to the row at the viewport top.
-    heights: HeightTree,
+    /// Where the items sit: a list's heights (a Fenwick tree whose prefix
+    /// sums place rows and whose inverse query maps a scroll offset back to
+    /// the row at the viewport top), or a grid's lines or lanes.
+    flow: Flow,
+    /// How it lays its items in lanes, if it does.
+    grid: Option<ListGrid>,
+    /// Which items span a grid's line, besides its section headers.
+    full_of: Option<StickyOf>,
     /// Running mean of measured heights, seeding unmeasured rows' estimate.
     height_cache: HeightCache,
     /// The currently mounted logical range `[range_start, range_end)`.
@@ -452,6 +472,8 @@ pub struct VirtualListState {
     page_extent: f32,
     /// Reused: the snap points near a release.
     snap_points: Vec<(f32, usize)>,
+    /// Reused: the stretches about a probe a snap may rest on.
+    snap_spans: Vec<(f32, f32, usize)>,
 }
 
 impl VirtualListState {
@@ -470,7 +492,9 @@ impl VirtualListState {
         key_of: Option<KeyOf>,
     ) -> Self {
         VirtualListState {
-            heights: HeightTree::new(item_count, estimated_row),
+            flow: Flow::new(item_count, estimated_row, None, 1),
+            grid: None,
+            full_of: None,
             height_cache: HeightCache::with_fallback(estimated_row),
             range_start: 0,
             range_end: 0,
@@ -507,6 +531,7 @@ impl VirtualListState {
             pages: false,
             page_extent: 0.0,
             snap_points: Vec::new(),
+            snap_spans: Vec::new(),
         }
     }
 
@@ -514,6 +539,61 @@ impl VirtualListState {
     pub fn paged(mut self: Box<Self>, pages: bool) -> Box<Self> {
         self.pages = pages;
         self
+    }
+
+    /// Lay the items in lanes as `grid` says, or one a line without.
+    pub fn gridded(mut self: Box<Self>, grid: Option<ListGrid>) -> Box<Self> {
+        let estimate = self.flow.default_height();
+        let lanes = grid.map_or(1, |g| g.lanes_in(0.0));
+        self.flow = Flow::new(self.item_count, estimate, grid, lanes);
+        self.grid = grid;
+        self.headers_stale = true;
+        self
+    }
+
+    /// How many lanes it lays its items on: one for a list.
+    pub fn lanes(&self) -> u16 {
+        self.flow.lanes()
+    }
+
+    /// Let `full_of` say which items span a grid's line (a section header
+    /// always does).
+    pub fn set_full_of(&mut self, full_of: Option<StickyOf>) {
+        self.full_of = full_of;
+        self.headers_stale = true;
+        self.dirty_data = true;
+    }
+
+    /// Recount a grid's adaptive lanes for the cross extent its canvas has
+    /// now, keeping the item the viewport starts at in view.
+    fn fit_lanes(&mut self, viewport: NodeId, cx: &mut StructureCx<'_>) {
+        let Some(grid) = self.grid else { return };
+        let cross = match self.axis {
+            Axis::Column => cx.store.bounds(self.canvas).w,
+            Axis::Row => cx.store.bounds(self.canvas).h,
+        };
+        if cross <= 0.0 {
+            return;
+        }
+        let lanes = grid.lanes_in(cross);
+        if lanes == self.flow.lanes() {
+            return;
+        }
+        let axis = self.axis;
+        let scroll = cx.store.scroll_distance(viewport, axis);
+        let extent = cx.store.bounds_main(viewport, axis);
+        let anchor =
+            (self.item_count > 0 && scroll > 0.0).then(|| self.flow.visible(scroll, extent).0);
+        self.flow.set_lanes(lanes);
+        self.flow.settle();
+        cx.store
+            .set_absolute_rows_lanes(self.canvas, lanes, grid.cross_gap);
+        if let Some(anchor) = anchor {
+            let room = (self.flow.total() - extent).max(0.0);
+            cx.store
+                .seek_scroll(viewport, axis, self.flow.top(anchor).min(room));
+        }
+        self.dirty_data = true;
     }
 
     /// Whether each row is exactly as long as the viewport.
@@ -536,11 +616,11 @@ impl VirtualListState {
         };
         let was = self.page_extent;
         self.page_extent = extent;
-        self.heights = HeightTree::new(self.item_count, extent);
+        self.flow = Flow::List(HeightTree::new(self.item_count, extent));
         self.height_cache = HeightCache::with_fallback(extent);
         let size = self.page_size();
         for row in self.mounted.iter_mut().chain(self.pinned.as_mut()) {
-            row.item_top = self.heights.prefix_sum(row.logical_index);
+            row.item_top = self.flow.top(row.logical_index);
             cx.store.set_fixed_size(row.host, size);
             cx.store.set_row_offset(row.host, row.item_top);
         }
@@ -568,7 +648,7 @@ impl VirtualListState {
     /// Push onto `out` the snap points of the rows about where a viewport
     /// `extent` long `at` from its start shows its row as `snap` says.
     fn snap_candidates(
-        &self,
+        &mut self,
         at: f32,
         snap: crate::snap::ScrollSnap,
         extent: f32,
@@ -577,19 +657,22 @@ impl VirtualListState {
         if self.item_count == 0 {
             return;
         }
-        let range = (self.heights.total() - extent).max(0.0);
+        let range = (self.flow.total() - extent).max(0.0);
         let probe = match snap.align {
             crate::snap::SnapAlign::Start => at + snap.inset,
             crate::snap::SnapAlign::Center => at + extent * 0.5,
             crate::snap::SnapAlign::End => at + extent - snap.inset - 0.5,
         };
-        let (row, _) = self.heights.find_position(probe.max(0.0));
-        for r in row.saturating_sub(1)..=(row + 1).min(self.item_count - 1) {
-            let start = self.heights.prefix_sum(r);
-            let point =
-                crate::snap::snap_point(snap, start, self.heights.point_query(r), extent, range);
-            out.push((point, r));
+        let mut spans = std::mem::take(&mut self.snap_spans);
+        spans.clear();
+        self.flow.snap_spans(probe, &mut spans);
+        for &(start, size, index) in &spans {
+            out.push((
+                crate::snap::snap_point(snap, start, size, extent, range),
+                index,
+            ));
         }
+        self.snap_spans = spans;
     }
 
     /// The release of viewport `viewport` its store left the list: glide to
@@ -607,13 +690,13 @@ impl VirtualListState {
             } => (from, rest, velocity),
             crate::snap::SnapAim::Item(index) => {
                 let index = index.min(self.item_count.saturating_sub(1));
-                let start = self.heights.prefix_sum(index);
+                let (start, size) = self.flow.snap_span(index);
                 let to = crate::snap::snap_point(
                     snap,
                     start,
-                    self.heights.point_query(index),
+                    size,
                     extent,
-                    (self.heights.total() - extent).max(0.0),
+                    (self.flow.total() - extent).max(0.0),
                 );
                 cx.store.snap_to(viewport, to, index, 0.0);
                 return;
@@ -684,6 +767,23 @@ impl VirtualListState {
             self.headers
                 .extend((0..self.item_count).filter(|&i| sticky_of(i)));
         }
+        if self.grid.is_some() {
+            let full = if self.headers.is_empty() && self.full_of.is_none() {
+                Vec::new()
+            } else {
+                let mut full = vec![false; self.item_count];
+                for &h in &self.headers {
+                    full[h] = true;
+                }
+                if let Some(full_of) = &self.full_of {
+                    for (i, f) in full.iter_mut().enumerate() {
+                        *f |= full_of(i);
+                    }
+                }
+                full
+            };
+            self.flow.set_full(full);
+        }
     }
 
     /// The header of the section row `row` belongs to, with the next
@@ -697,9 +797,9 @@ impl VirtualListState {
     /// The offset that shows row `index` at the viewport's start: under its
     /// section's pinned header, unless it heads the section itself.
     fn reveal_offset(&self, index: usize) -> f32 {
-        let top = self.heights.prefix_sum(index);
+        let top = self.flow.top(index);
         match self.header_of(index) {
-            Some((header, _)) if header != index => top - self.heights.point_query(header),
+            Some((header, _)) if header != index => top - self.flow.extent(header),
             _ => top,
         }
     }
@@ -730,7 +830,7 @@ impl VirtualListState {
                 let key = self.key_at(h);
                 match self.pinned {
                     Some(row) if row.key == key => {
-                        let item_top = self.heights.prefix_sum(h);
+                        let item_top = self.flow.top(h);
                         if row.item_top != item_top {
                             cx.store.set_row_offset(row.host, item_top);
                             cx.store
@@ -768,9 +868,8 @@ impl VirtualListState {
             self.header_host = host;
         }
         if let (Some(host), Some((h, next))) = (host, header) {
-            let top = self.heights.prefix_sum(h);
-            let room = next.map_or(f32::INFINITY, |n| self.heights.prefix_sum(n))
-                - self.heights.point_query(h);
+            let top = self.flow.top(h);
+            let room = next.map_or(f32::INFINITY, |n| self.flow.top(n)) - self.flow.extent(h);
             let shift = (scroll.min(room) - top).max(0.0);
             let pin = match self.axis {
                 Axis::Column => crate::layout::Vec2 { x: 0.0, y: shift },
@@ -807,7 +906,7 @@ impl VirtualListState {
     /// The current total logical extent along the scroll axis.
     #[inline]
     pub fn total_extent(&self) -> f32 {
-        self.heights.total()
+        self.flow.total()
     }
 
     /// How many rows are currently mounted (≈ visible + 2·overscan, not the
@@ -889,7 +988,7 @@ impl VirtualListState {
         // 2. Build the new mounted set in index order, reusing survivors. A survivor is
         //    found by a binary search over the old set's sorted keys.
         for &(logical, key) in &new_keys {
-            let item_top = self.heights.prefix_sum(logical);
+            let item_top = self.flow.top(logical);
             let at = sorted_old.partition_point(|&(k, _)| k < key.0);
             let survivor = sorted_old
                 .get(at)
@@ -900,8 +999,10 @@ impl VirtualListState {
                 // rebind its logical index if a reorder placed it at a new position —
                 // no rebuild, so its body / per-row state / focus are preserved.
                 let host = existing.host;
-                if existing.item_top != item_top {
+                let lane = self.flow.lane(logical);
+                if existing.item_top != item_top || cx.store.row_lane(host) != lane {
                     cx.store.set_row_offset(host, item_top);
+                    cx.store.set_row_lane(host, lane);
                     cx.store
                         .mark_dirty(host, DirtyClass::LAYOUT | DirtyClass::PAINT);
                 }
@@ -968,7 +1069,7 @@ impl VirtualListState {
     /// Mount logical row `logical` at its offset: pop a parked host (or
     /// allocate one under the canvas), empty its old body and build the row's.
     fn mount(&mut self, logical: usize, key: ItemKey, cx: &mut StructureCx<'_>) -> MountedItem {
-        let item_top = self.heights.prefix_sum(logical);
+        let item_top = self.flow.top(logical);
         // The pinned header's row comes back into the window as it is.
         if let Some(row) = self.pinned.filter(|row| row.key == key) {
             self.pinned = None;
@@ -1000,6 +1101,7 @@ impl VirtualListState {
             cx.store.set_fixed_size(host, self.page_size());
         }
         cx.store.set_row_offset(host, item_top);
+        cx.store.set_row_lane(host, self.flow.lane(logical));
         {
             let mut build =
                 BuildCx::with_parent(cx.store, cx.states, cx.bindings, host).with_lists(cx.lists);
@@ -1037,7 +1139,7 @@ impl VirtualListState {
     #[inline]
     pub fn mark_data_dirty(&mut self) {
         self.dirty_data = true;
-        self.headers_stale = self.sticky_of.is_some();
+        self.headers_stale = self.sticky_of.is_some() || self.full_of.is_some();
     }
 
     /// The logical item count.
@@ -1053,11 +1155,8 @@ impl VirtualListState {
         if self.item_count == 0 {
             return (0, 0, 0);
         }
-        let last_row = self.item_count - 1;
-        let first = self.heights.find_position(scroll).0.min(last_row);
         // The row under the viewport's far edge, not the one starting there.
-        let end = (scroll + extent - 0.5).max(scroll);
-        let last = self.heights.find_position(end).0.clamp(first, last_row);
+        let (first, last) = self.flow.visible(scroll, extent);
         (first, last, self.item_count)
     }
 
@@ -1276,6 +1375,8 @@ fn reconcile_one(viewport: NodeId, state: &mut VirtualListState, cx: &mut Struct
     // A seek scrolls its row to the start edge, as near as the end of the list
     // allows, on the extent the height model holds now.
     state.take_headers();
+    state.flow.settle();
+    state.fit_lanes(viewport, cx);
     if state.pages {
         state.fit_pages(viewport, cx);
     }
@@ -1283,7 +1384,7 @@ fn reconcile_one(viewport: NodeId, state: &mut VirtualListState, cx: &mut Struct
     if let Some(aim) = cx.store.take_snap_aim(viewport) {
         state.aim_snap(viewport, aim, cx);
     }
-    let room = (state.heights.total() - cx.store.bounds_main(viewport, axis)).max(0.0);
+    let room = (state.flow.total() - cx.store.bounds_main(viewport, axis)).max(0.0);
     let mut started = false;
     if let Some((index, smooth)) = state.reveal.take() {
         if smooth {
@@ -1326,10 +1427,10 @@ fn reconcile_one(viewport: NodeId, state: &mut VirtualListState, cx: &mut Struct
     // The visible window: the row at the viewport top, through the row at its
     // bottom, widened by overscan on each side and clamped to the item range.
     let viewport_main = cx.store.bounds_main(viewport, axis);
-    let first = state.heights.find_position(scroll_main).0;
-    let last = state.heights.find_position(scroll_main + viewport_main).0;
-    let new_start = first.saturating_sub(state.overscan);
-    let new_end = (last + state.overscan + 1).min(state.item_count);
+    let first = state.flow.window(scroll_main, viewport_main, 0).0;
+    let (new_start, new_end) = state
+        .flow
+        .window(scroll_main, viewport_main, state.overscan);
 
     // No structural change and clean data → commit the offset and leave (a scroll
     // that stayed within the mounted window, or a first reconcile that landed on
@@ -1367,7 +1468,7 @@ fn reconcile_one(viewport: NodeId, state: &mut VirtualListState, cx: &mut Struct
     //    STRUCTURE — that would bubble to root and force a full-tree relayout; the
     //    canvas is fixed on both axes so a MEASURE mark inside it already stops
     //    here). MEASURE too, so the canvas re-measures its own new fixed size.
-    let total_after = state.heights.total();
+    let total_after = state.flow.total();
     if total_after != state.committed_extent {
         cx.store
             .set_absolute_rows_extent(state.canvas, axis, total_after);
@@ -1428,7 +1529,7 @@ pub fn absorb_measurements(store: &NodeStore, lists: &mut VirtualLists) -> u32 {
             let h = store.measured_main(host, axis);
             if h > 0.0 {
                 state.height_cache.push_measured(h);
-                if state.heights.update(logical, h) {
+                if state.flow.update(logical, h) {
                     any = true;
                 }
             }
@@ -1436,11 +1537,12 @@ pub fn absorb_measurements(store: &NodeStore, lists: &mut VirtualLists) -> u32 {
         state.scratch_mounted.clear();
         // Re-estimate not-yet-seen rows from the refreshed running mean.
         if state
-            .heights
+            .flow
             .update_default_height(state.height_cache.estimate())
         {
             any = true;
         }
+        state.flow.settle();
         if any {
             state.dirty_data = true;
             changed += 1;
@@ -1459,6 +1561,8 @@ pub struct ListShape {
     pub overscan: usize,
     /// Whether each row is exactly as long as the viewport: a pager's pages.
     pub pages: bool,
+    /// How it lays its items in lanes, if it does: a grid.
+    pub grid: Option<ListGrid>,
 }
 
 /// Make the scroll node `viewport` a virtual list of `item_count` rows that
@@ -1500,6 +1604,8 @@ pub fn attach_list(
         LayoutInput::AbsoluteRows {
             axis: shape.axis,
             size,
+            lanes: shape.grid.map_or(1, |g| g.lanes_in(0.0)),
+            cross_gap: shape.grid.map_or(0.0, |g| g.cross_gap),
         },
         BoxStyle::NONE,
     );
@@ -1516,7 +1622,8 @@ pub fn attach_list(
             builder,
             key_of,
         ))
-        .paged(shape.pages),
+        .paged(shape.pages)
+        .gridded(shape.grid),
     )
 }
 
@@ -1528,9 +1635,9 @@ pub fn set_item_count(lists: &mut VirtualLists, viewport: NodeId, item_count: us
         && item_count != state.item_count
     {
         state.item_count = item_count;
-        state.heights.resize(item_count);
+        state.flow.resize(item_count);
         state.dirty_data = true;
-        state.headers_stale = state.sticky_of.is_some();
+        state.headers_stale = state.sticky_of.is_some() || state.full_of.is_some();
     }
 }
 
@@ -1542,7 +1649,27 @@ pub fn set_sticky_of(lists: &mut VirtualLists, viewport: NodeId, sticky_of: Opti
     }
 }
 
+/// Let `full_of` say which items of the grid at `viewport` span its line
+/// (none besides its section headers without).
+pub fn set_full_of(lists: &mut VirtualLists, viewport: NodeId, full_of: Option<StickyOf>) {
+    if let Some(state) = lists.get_mut(viewport) {
+        state.set_full_of(full_of);
+    }
+}
+
 impl BuildCx<'_> {
+    /// Let `is_full` say which items of the virtual grid `grid` span its
+    /// whole line, starting a line of their own: a banner among the cards.
+    pub fn full_line_items(
+        &mut self,
+        grid: crate::component::Handle,
+        is_full: impl Fn(usize) -> bool + 'static,
+    ) {
+        if let Some(lists) = self.lists.as_mut() {
+            set_full_of(lists, grid.id(), Some(Box::new(is_full)));
+        }
+    }
+
     /// Let `is_header` say which rows of the virtual list `list` head a
     /// section: each stays at the viewport's start edge while its section
     /// passes under it, until the next header pushes it on.
@@ -1749,6 +1876,18 @@ mod tests {
             overscan: u32,
             viewport_h: f32,
         ) -> Self {
+            Self::gridded(item_count, est_row, body_h, overscan, viewport_h, None)
+        }
+
+        /// Like [`Self::with_bodies`], laid in lanes as `grid` says.
+        fn gridded(
+            item_count: usize,
+            est_row: f32,
+            body_h: impl Fn(usize) -> f32 + 'static,
+            overscan: u32,
+            viewport_h: f32,
+            grid: Option<crate::virtual_grid::ListGrid>,
+        ) -> Self {
             let mut store = NodeStore::new();
             let mut states = StateStore::new();
             let mut bindings = BindingTable::new();
@@ -1774,6 +1913,7 @@ mod tests {
                         overscan,
                         estimated_row: est_row,
                         style: BoxStyle::NONE,
+                        grid,
                         ..Default::default()
                     },
                     item_count,
@@ -2177,7 +2317,7 @@ mod tests {
         h.frame();
         // Row 20 sits at the top (20 · 30 = 600).
         let top_logical = 20usize;
-        assert_eq!(h.state().heights.prefix_sum(top_logical), 600.0);
+        assert_eq!(h.state().flow.top(top_logical), 600.0);
         let extent_before = h.state().total_extent();
 
         // Swap keys at logical 20 and 21 — both inside the window.
@@ -2190,7 +2330,7 @@ mod tests {
         // the row at logical 20 is still anchored at absolute top 600 — its screen
         // position did not jump.
         assert_eq!(h.state().total_extent(), extent_before);
-        assert_eq!(h.state().heights.prefix_sum(top_logical), 600.0);
+        assert_eq!(h.state().flow.top(top_logical), 600.0);
         assert_eq!(
             h.inner.store.scroll(h.inner.viewport).on(Axis::Column),
             600.0
@@ -2528,9 +2668,8 @@ mod tests {
             h.frame();
             let s = h.state();
             let scroll = h.store.scroll(h.viewport).y;
-            let first = s.heights.find_position(scroll).0;
-            let last = s.heights.find_position(scroll + 300.0).0;
-            let range = first.saturating_sub(3)..(last + 4).min(5000);
+            let (start, end) = s.flow.window(scroll, 300.0, 3);
+            let range = start..end;
             if !s.dirty_data {
                 assert_eq!(s.range_start..s.range_end, range, "frame {frame}");
             }
@@ -2545,7 +2684,7 @@ mod tests {
                 assert_eq!(m.key, ItemKey(m.logical_index as u64));
                 // A row measured this frame moves the rest on the next.
                 if !s.dirty_data {
-                    assert_eq!(m.item_top, s.heights.prefix_sum(m.logical_index));
+                    assert_eq!(m.item_top, s.flow.top(m.logical_index));
                 }
             }
             let boxes = |h: &ListHarness| -> Vec<Rect> {
@@ -2653,7 +2792,7 @@ mod tests {
         h.frame(); // mounts at the estimate, then absorb corrects mounted rows
         // A mounted row's stored height is now the measured 40, not the estimate —
         // the measurement was absorbed into the model.
-        assert_eq!(h.state().heights.point_query(0), 40.0);
+        assert_eq!(h.state().flow.extent(0), 40.0);
         // The running mean of measured rows also re-estimates the not-yet-seen
         // rows, so the whole extent converges to the true 40px row height.
         assert_eq!(h.state().total_extent(), 200.0 * 40.0);
@@ -2680,7 +2819,7 @@ mod tests {
         h.frame();
         // Row 20 is the anchor: it sits at scroll offset 600, i.e. at the top.
         let anchor = 20usize;
-        assert_eq!(h.state().heights.prefix_sum(anchor), 600.0);
+        assert_eq!(h.state().flow.top(anchor), 600.0);
         assert_eq!(h.store.scroll(h.viewport).on(Axis::Column), 600.0);
 
         // Grow row 5 (above the anchor) by 100px, and correct the scroll to keep
@@ -2688,10 +2827,10 @@ mod tests {
         // scroll must follow to 700 for the same on-screen top. This is the scroll
         // correction a real anchored reconcile applies; here we assert the model
         // supports it — the anchor's prefix moved by exactly the edit.
-        h.state_mut().heights.update(5, 130.0);
+        h.state_mut().flow.update(5, 130.0);
         h.state_mut().mark_data_dirty();
         assert_eq!(
-            h.state().heights.prefix_sum(anchor),
+            h.state().flow.top(anchor),
             700.0,
             "the edit above the anchor pushed its absolute top down by 100px"
         );
@@ -2822,5 +2961,198 @@ mod tests {
             let body = h.store.arena().first_child(row.host).unwrap();
             assert!(h.store.dirty(body).contains(DirtyClass::STYLE));
         }
+    }
+
+    fn lanes_of(
+        grid_columns: crate::virtual_grid::Columns,
+        masonry: bool,
+    ) -> crate::virtual_grid::ListGrid {
+        crate::virtual_grid::ListGrid {
+            columns: grid_columns,
+            gap: 10.0,
+            cross_gap: 5.0,
+            masonry,
+        }
+    }
+
+    fn settle_frames(h: &mut ListHarness) {
+        for _ in 0..4 {
+            h.frame();
+        }
+    }
+
+    #[test]
+    fn a_grid_lays_its_items_on_lines_of_lanes() {
+        use crate::virtual_grid::Columns;
+        let mut h = ListHarness::gridded(
+            100,
+            50.0,
+            |_| 50.0,
+            1,
+            200.0,
+            Some(lanes_of(Columns::Fixed(3), false)),
+        );
+        settle_frames(&mut h);
+        let s = h.state();
+        assert_eq!(s.lanes(), 3);
+        // Lines at 0, 60, 120, 180 show, and one more past them.
+        assert_eq!((s.range_start, s.range_end), (0, 15));
+        assert_eq!(s.total_extent(), 34.0 * 60.0 - 10.0);
+        let b = |h: &ListHarness, i| h.store.bounds(h.host_of(i).unwrap());
+        // Lanes 30 wide, 5 apart.
+        assert_eq!(
+            b(&h, 0),
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 30.0,
+                h: 50.0
+            }
+        );
+        assert_eq!(
+            b(&h, 2),
+            Rect {
+                x: 70.0,
+                y: 0.0,
+                w: 30.0,
+                h: 50.0
+            }
+        );
+        assert_eq!(
+            b(&h, 4),
+            Rect {
+                x: 35.0,
+                y: 60.0,
+                w: 30.0,
+                h: 50.0
+            }
+        );
+        h.store.set_scroll(h.viewport, Vec2 { x: 0.0, y: 600.0 });
+        h.frame();
+        let s = h.state();
+        assert_eq!((s.range_start, s.range_end), (27, 45));
+        assert_eq!(s.visible(600.0, 200.0), (30, 41, 100));
+    }
+
+    #[test]
+    fn a_grid_read_right_to_left_starts_its_lanes_at_the_right() {
+        use crate::virtual_grid::Columns;
+        let mut h = ListHarness::gridded(
+            9,
+            50.0,
+            |_| 50.0,
+            1,
+            200.0,
+            Some(lanes_of(Columns::Fixed(3), false)),
+        );
+        h.store
+            .set_layout_direction(h.viewport, Some(crate::adaptive::LayoutDirection::Rtl));
+        settle_frames(&mut h);
+        let x = |h: &ListHarness, i| h.store.bounds(h.host_of(i).unwrap()).x;
+        assert_eq!([x(&h, 0), x(&h, 1), x(&h, 2)], [70.0, 35.0, 0.0]);
+    }
+
+    #[test]
+    fn adaptive_lanes_recount_as_the_grid_resizes() {
+        use crate::virtual_grid::Columns;
+        let mut h = ListHarness::gridded(
+            60,
+            50.0,
+            |_| 50.0,
+            0,
+            200.0,
+            Some(lanes_of(Columns::Adaptive { min: 40.0 }, false)),
+        );
+        settle_frames(&mut h);
+        assert_eq!(h.state().lanes(), 2);
+        h.store.set_fixed_size(
+            h.viewport,
+            Size {
+                width: Length::Fixed(220.0),
+                height: Length::Fixed(200.0),
+            },
+        );
+        h.surface.w = 220.0;
+        settle_frames(&mut h);
+        // floor((220 + 5) / 45) = 5 lanes, 40 wide.
+        assert_eq!(h.state().lanes(), 5);
+        assert_eq!(h.state().total_extent(), 12.0 * 60.0 - 10.0);
+        let b = h.store.bounds(h.host_of(6).unwrap());
+        assert_eq!((b.x, b.y, b.w), (45.0, 60.0, 40.0));
+    }
+
+    #[test]
+    fn a_masonry_packs_its_items_without_overlap() {
+        use crate::virtual_grid::Columns;
+        let tall = |i: usize| if i.is_multiple_of(3) { 90.0 } else { 30.0 };
+        let mut h = ListHarness::gridded(
+            200,
+            30.0,
+            tall,
+            1,
+            300.0,
+            Some(lanes_of(Columns::Fixed(2), true)),
+        );
+        settle_frames(&mut h);
+        for scroll in [0.0, 400.0, 1500.0, 700.0] {
+            h.store.set_scroll(h.viewport, Vec2 { x: 0.0, y: scroll });
+            settle_frames(&mut h);
+            let s = h.state();
+            let mut boxes: Vec<Rect> = s.mounted.iter().map(|m| h.store.bounds(m.host)).collect();
+            assert!(!boxes.is_empty());
+            for m in &s.mounted {
+                assert_eq!(h.store.bounds(m.host).h, tall(m.logical_index));
+            }
+            boxes.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)));
+            for w in boxes.windows(2) {
+                if w[0].x == w[1].x {
+                    assert!(
+                        w[0].y + w[0].h + 10.0 <= w[1].y + 0.01,
+                        "at {scroll}: {w:?}"
+                    );
+                }
+            }
+            // Every item the viewport shows is mounted.
+            let (first, last, _) = s.visible(scroll, 300.0);
+            assert!(s.range_start <= first && last < s.range_end);
+        }
+    }
+
+    #[test]
+    fn a_grid_s_headers_span_the_line() {
+        use crate::virtual_grid::Columns;
+        let mut h = ListHarness::gridded(
+            40,
+            50.0,
+            |_| 50.0,
+            1,
+            200.0,
+            Some(lanes_of(Columns::Fixed(3), false)),
+        );
+        set_sticky_of(&mut h.lists, h.viewport, Some(Box::new(|i| i % 10 == 0)));
+        set_full_of(&mut h.lists, h.viewport, Some(Box::new(|i| i == 5)));
+        settle_frames(&mut h);
+        let b = |h: &ListHarness, i| h.store.bounds(h.host_of(i).unwrap());
+        assert_eq!(
+            b(&h, 0),
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 50.0
+            }
+        );
+        assert_eq!((b(&h, 1).x, b(&h, 1).y), (0.0, 60.0));
+        assert_eq!((b(&h, 4).x, b(&h, 4).y), (0.0, 120.0));
+        assert_eq!(
+            b(&h, 5),
+            Rect {
+                x: 0.0,
+                y: 180.0,
+                w: 100.0,
+                h: 50.0
+            }
+        );
+        assert_eq!((b(&h, 6).x, b(&h, 6).y), (0.0, 240.0));
     }
 }

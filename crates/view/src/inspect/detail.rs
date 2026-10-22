@@ -208,9 +208,18 @@ fn groups(store: &NodeStore, id: NodeId) -> Vec<PropertyGroup> {
             add(&mut layout, "axis", axis_name(axis).into());
             add(&mut layout, "range", number(store.scroll_range(id, axis)));
         }
-        LayoutInput::AbsoluteRows { axis, .. } => {
+        LayoutInput::AbsoluteRows {
+            axis,
+            lanes,
+            cross_gap,
+            ..
+        } => {
             add(&mut layout, "kind", "rows".into());
             add(&mut layout, "axis", axis_name(axis).into());
+            if lanes > 1 {
+                add(&mut layout, "lanes", number(f32::from(lanes)));
+                add(&mut layout, "cross_gap", number(cross_gap));
+            }
         }
         LayoutInput::Grid {
             column_count,

@@ -71,6 +71,8 @@ pub fn property_dirty_class(name: &str) -> DirtyClass {
         // holds open, and repaints the spinner.
         "refreshing" => D::TRANSFORM | D::PAINT,
         "sticky" => D::TRANSFORM | D::PAINT | D::HIT_TEST,
+        // An item spanning a grid's line moves the items after it.
+        "list.full_line" => D::LAYOUT | D::PAINT,
 
         // Visibility toggles participation in layout and paint and what is
         // exposed to accessibility.

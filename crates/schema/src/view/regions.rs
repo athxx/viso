@@ -93,7 +93,29 @@ pub enum RegionKind {
         sticky: Option<u32>,
         /// Whether each row is as long as the viewport: a pager's pages.
         pages: bool,
+        /// How it lays its items in lanes across its axis, if it does.
+        lanes: Option<ListLanes>,
+        /// Whether an item spans a grid's line (called with the item too):
+        /// its root's `list.full_line`.
+        full: Option<u32>,
     },
+}
+
+/// How a `VirtualList` lays its items in lanes across its axis: a grid or a
+/// masonry.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ListLanes {
+    /// Exactly this many lanes, or `0` for as many at least `min` wide as
+    /// fit.
+    pub columns: u16,
+    /// The narrowest an adaptive lane is.
+    pub min: LengthTerms,
+    /// The room between two items along the axis.
+    pub gap: LengthTerms,
+    /// The room between two lanes.
+    pub cross_gap: LengthTerms,
+    /// Whether each item packs under the lane that ends soonest.
+    pub masonry: bool,
 }
 
 /// A state cell a region reads or a region node binds.
@@ -279,6 +301,8 @@ impl Encode for ViewRegions {
                     overscan,
                     sticky,
                     pages,
+                    lanes,
+                    full,
                 } => {
                     enc.write_u8(3);
                     enc.write_varint(u64::from(items));
@@ -287,6 +311,15 @@ impl Encode for ViewRegions {
                     enc.write_varint(u64::from(overscan));
                     enc.write_varint(sticky.map_or(0, |sticky| u64::from(sticky) + 1));
                     enc.write_bool(pages);
+                    enc.write_bool(lanes.is_some());
+                    if let Some(lanes) = lanes {
+                        enc.write_varint(u64::from(lanes.columns));
+                        encode_terms(&lanes.min, enc);
+                        encode_terms(&lanes.gap, enc);
+                        encode_terms(&lanes.cross_gap, enc);
+                        enc.write_bool(lanes.masonry);
+                    }
+                    enc.write_varint(full.map_or(0, |full| u64::from(full) + 1));
                 }
             }
             enc.write_varint(region.deps.len() as u64);
@@ -404,6 +437,18 @@ impl Decode for ViewRegions {
                     overscan: read_u32(dec)?,
                     sticky: read_u32(dec)?.checked_sub(1),
                     pages: dec.read_bool()?,
+                    lanes: match dec.read_bool()? {
+                        false => None,
+                        true => Some(ListLanes {
+                            columns: u16::try_from(dec.read_varint()?)
+                                .map_err(|_| DecodeError::Malformed { offset })?,
+                            min: decode_terms(dec)?,
+                            gap: decode_terms(dec)?,
+                            cross_gap: decode_terms(dec)?,
+                            masonry: dec.read_bool()?,
+                        }),
+                    },
+                    full: read_u32(dec)?.checked_sub(1),
                 },
                 _ => return Err(DecodeError::Malformed { offset }),
             };
@@ -738,6 +783,14 @@ mod tests {
             overscan: 4,
             sticky: Some(5),
             pages: true,
+            lanes: Some(ListLanes {
+                columns: 0,
+                min: LengthTerms::dp(96.0),
+                gap: LengthTerms::dp(8.0),
+                cross_gap: LengthTerms::sp(4.0),
+                masonry: true,
+            }),
+            full: Some(6),
         };
         assert_eq!(
             ViewRegions::decode_from_slice(&rows.encode_to_vec()),
@@ -750,6 +803,8 @@ mod tests {
             overscan: 4,
             sticky: None,
             pages: false,
+            lanes: None,
+            full: None,
         };
         assert!(ViewRegions::decode_from_slice(&rows.encode_to_vec()).is_err());
 

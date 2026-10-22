@@ -242,7 +242,18 @@ const VIRTUAL_LIST: &[WidgetProperty] = &[
     prop("snap_inset", "MixedLength"),
     prop("page_dots", "Bool"),
     prop("pages", "Bool"),
+    prop("columns", "U16"),
+    prop("min_column", "MixedLength"),
+    prop("masonry", "Bool"),
+    prop("gap", "MixedLength"),
+    prop("column_gap", "MixedLength"),
 ];
+
+/// The `list.*` group a `VirtualList` provides to its rows.
+static LIST_CHILD: PropertyGroup = PropertyGroup {
+    prefix: "list",
+    members: &[prop("full_line", "Bool")],
+};
 
 /// The `grid.*` group a `Grid` provides to its children.
 static GRID_CHILD: PropertyGroup = PropertyGroup {
@@ -545,6 +556,7 @@ pub const STANDARD: &[NativeWidget] = &[
         WidgetNode::VirtualList,
         &[VIRTUAL_LIST, LAYOUT, TRANSFORM, FOCUS],
     )
+    .provides(&LIST_CHILD)
     .events(&[VIRTUAL_LIST_EVENTS, STANDARD_EVENTS])
     .slots(CHILDREN),
 ];

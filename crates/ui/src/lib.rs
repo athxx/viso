@@ -71,6 +71,7 @@ pub mod text_style;
 pub mod timer;
 pub mod token;
 pub mod transform;
+pub mod virtual_grid;
 pub mod virtual_list;
 pub mod window;
 
@@ -174,6 +175,7 @@ pub use text_edit::{
 };
 pub use timer::{TimerId, TimerRegistry, TimerRequest};
 pub use token::{Theme, TokenId, TokenInterner, TokenNamespace};
+pub use virtual_grid::{Columns, ListGrid};
 pub use virtual_list::{
     HeightCache, HeightTree, ItemBuilder, StickyOf, VirtualListState, VirtualLists,
     absorb_measurements, reconcile, set_item_count, set_sticky_of,
