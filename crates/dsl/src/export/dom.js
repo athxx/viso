@@ -180,6 +180,37 @@ const cursors = [
   "nesw-resize", "nwse-resize", "col-resize", "row-resize", "none",
 ];
 const cursor = (v) => (v === null ? "" : cursors[Number(v)] || "");
+// The CSS `font-weight` of each `FontWeight`, by tag.
+const weights = [100, 300, 400, 500, 600, 700, 900];
+const weight = (v) => (v === null ? "" : String(weights[Number(v)] || ""));
+// A `FontFamily`'s CSS family list.
+const family = (v) => {
+  if (v === null) return "";
+  if (typeof v === "object") return '"' + String(v.f[0]).replace(/["\\]/g, "") + '", system-ui, sans-serif';
+  return ["system-ui, sans-serif", "serif", "monospace"][Number(v)] || "";
+};
+// A `MixedLength` a span sizes or raises by: its `%` of the font size.
+const spanLength = (v) => {
+  if (v === null) return "";
+  const f = v.f;
+  return length({ f: [f[0], f[1], f[2], Number(f[3] ?? 0) + Number(f[4] ?? 0) / 100] });
+};
+// A text's pieces, each a `<span>` styled its own way.
+const pieces = (list) => (list || []).map((p) => {
+  const [t, c, bg, w, it, fam, size, raise, under, through] = p.f;
+  const s = document.createElement("span");
+  s.textContent = text(t);
+  if (c !== null) s.style.color = color(c);
+  if (bg !== null) s.style.backgroundColor = color(bg);
+  if (w !== null) s.style.fontWeight = weight(w);
+  if (it !== null) s.style.fontStyle = Number(it) === 1 ? "italic" : "normal";
+  if (fam !== null) s.style.fontFamily = family(fam);
+  if (size !== null) s.style.fontSize = spanLength(size);
+  if (raise !== null) s.style.verticalAlign = spanLength(raise);
+  const lines = [truth(under) && "underline", truth(through) && "line-through"].filter(Boolean);
+  if (lines.length) s.style.textDecorationLine = lines.join(" ");
+  return s;
+});
 // What a text field holds, by tag: its `inputmode` and the `pattern` a
 // number holds to.
 const holds = [
@@ -249,6 +280,9 @@ const P = {
   },
   clip: (el, v) => { el.style.overflow = truth(v) ? "hidden" : ""; },
   cursor: (el, v) => { el.style.cursor = cursor(v); },
+  weight: (el, v) => { el.style.fontWeight = weight(v); },
+  italic: (el, v) => { el.style.fontStyle = Number(v ?? 0n) === 1 ? "italic" : ""; },
+  spans: (el, v) => { el.replaceChildren(...pieces(v)); },
   label: (el, v, alt) => attr(el, alt ? "alt" : "aria-label", v),
   hint: (el, v) => attr(el, "aria-description", v),
   spoken: (el, v) => attr(el, "aria-valuetext", v),

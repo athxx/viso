@@ -106,7 +106,8 @@ Rules:
 
 - [x] Styled spans: `TextRequest` carries runs (font, size, weight, style, color,
   decoration, background, baseline shift); `rich_text` widget.
-- [ ] DSL `Text { spans }` (a `Span` record), its HTML/script export, and `font_style`.
+- [x] DSL `Text { spans }` (a `Span` record), its HTML/script export, and `font_style`.
+
 
 - [ ] Links: hit-testing span ranges, hover cursor, `on_link`, keyboard focus and the
   `link` role.

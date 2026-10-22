@@ -126,6 +126,7 @@ const SCROLL: &[WidgetProperty] = &[prop("axis", "Axis")];
 const TEXT_STYLE: &[WidgetProperty] = &[
     based_look("font_size", "MixedLength"),
     look("font_weight", "FontWeight"),
+    look("font_style", "FontStyle"),
     look("font_family", "Option<FontFamily>"),
     based_look("line_height", "Option<MixedLength>"),
     look("color", "Color"),
@@ -138,6 +139,9 @@ const TEXT_STYLE: &[WidgetProperty] = &[
 ];
 
 const TEXT: &[WidgetProperty] = &[prop("text", "String").localizable()];
+
+/// A `Text`'s pieces drawn each its own way, which replace its `text`.
+const SPANS: &[WidgetProperty] = &[prop("spans", "List<Span>")];
 
 const TEXT_INPUT: &[WidgetProperty] = &[
     two_way("value", "String"),
@@ -375,7 +379,7 @@ pub const STANDARD: &[NativeWidget] = &[
     layout(
         "Text",
         WidgetNode::Leaf,
-        &[TEXT, TEXT_STYLE, LAYOUT, TRANSFORM, FOCUS],
+        &[TEXT, SPANS, TEXT_STYLE, LAYOUT, TRANSFORM, FOCUS],
     ),
     layout(
         "TextInput",

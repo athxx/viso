@@ -118,6 +118,9 @@ export declare const show: {
   mode(v: Value): string | undefined;
   pattern(v: Value): string | undefined;
   cursor(v: Value): string | undefined;
+  weight(v: Value): string | undefined;
+  italic(v: Value): string | undefined;
+  spans(v: Value): HTMLSpanElement[];
   number(el: HTMLInputElement, v: Value): void;
   maskSize(v: Value): string;
   mask(href: string): string;

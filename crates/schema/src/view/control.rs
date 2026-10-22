@@ -192,6 +192,10 @@ impl ControlKind {
             (ControlKind::Label | ControlKind::TextInput | ControlKind::Number, "font_family") => {
                 ControlInput::FontFamily
             }
+            (ControlKind::Label | ControlKind::TextInput | ControlKind::Number, "font_style") => {
+                ControlInput::FontStyle
+            }
+            (ControlKind::Label, "spans") => ControlInput::Spans,
             (ControlKind::Label | ControlKind::TextInput | ControlKind::Number, "line_height") => {
                 ControlInput::LineHeight
             }
@@ -632,6 +636,10 @@ pub enum ControlInput {
     Clip,
     /// The node's `cursor`: the pointer shape over it and its subtree.
     Cursor,
+    /// A text's `font_style`: upright or italic.
+    FontStyle,
+    /// A text's `spans`: its pieces, drawn each its own way.
+    Spans,
     /// A text's `color`.
     TextColor,
     /// A text's `soft_wrap`.
@@ -757,13 +765,17 @@ pub struct TextEntries {
     pub overflow: Option<u32>,
     /// The entry of its `align`.
     pub align: Option<u32>,
+    /// The entry of its `font_style`.
+    pub font_style: Option<u32>,
+    /// The entry of its `spans`.
+    pub spans: Option<u32>,
 }
 
 impl TextEntries {
     /// The entries in their encoded order: `color`, `soft_wrap`,
-    /// `font_weight`, `font_family`, `line_height`, `max_lines`, `overflow`
-    /// and `align`.
-    pub fn all(&self) -> [Option<u32>; 8] {
+    /// `font_weight`, `font_family`, `line_height`, `max_lines`, `overflow`,
+    /// `align`, `font_style` and `spans`.
+    pub fn all(&self) -> [Option<u32>; 10] {
         [
             self.color,
             self.soft_wrap,
@@ -773,6 +785,8 @@ impl TextEntries {
             self.max_lines,
             self.overflow,
             self.align,
+            self.font_style,
+            self.spans,
         ]
     }
 }
@@ -855,7 +869,7 @@ pub enum Switched {
 
 impl ControlInput {
     /// Every input, by wire tag.
-    pub const ALL: [ControlInput; 49] = [
+    pub const ALL: [ControlInput; 51] = [
         ControlInput::Value,
         ControlInput::Min,
         ControlInput::Max,
@@ -905,6 +919,8 @@ impl ControlInput {
         ControlInput::Precision,
         ControlInput::Caption,
         ControlInput::Cursor,
+        ControlInput::FontStyle,
+        ControlInput::Spans,
     ];
 
     /// Its wire tag: its place in [`ControlInput::ALL`].
@@ -1043,6 +1059,8 @@ impl Control {
             ControlInput::TextColor => self.text.color,
             ControlInput::SoftWrap => self.text.soft_wrap,
             ControlInput::FontWeight => self.text.font_weight,
+            ControlInput::FontStyle => self.text.font_style,
+            ControlInput::Spans => self.text.spans,
             ControlInput::FontFamily => self.text.font_family,
             ControlInput::LineHeight => self.text.line_height,
             ControlInput::MaxLines => self.text.max_lines,
@@ -1108,6 +1126,8 @@ impl Control {
             ControlInput::TextColor => &mut self.text.color,
             ControlInput::SoftWrap => &mut self.text.soft_wrap,
             ControlInput::FontWeight => &mut self.text.font_weight,
+            ControlInput::FontStyle => &mut self.text.font_style,
+            ControlInput::Spans => &mut self.text.spans,
             ControlInput::FontFamily => &mut self.text.font_family,
             ControlInput::LineHeight => &mut self.text.line_height,
             ControlInput::MaxLines => &mut self.text.max_lines,
@@ -1308,6 +1328,8 @@ impl Decode for Control {
             max_lines: entry()?,
             overflow: entry()?,
             align: entry()?,
+            font_style: entry()?,
+            spans: entry()?,
         };
         let index = |dec: &mut Decoder<'_>| -> Result<u32, DecodeError> {
             let offset = dec.position();
@@ -1576,6 +1598,7 @@ mod tests {
                 font_weight: Some(16),
                 max_lines: Some(17),
                 align: Some(18),
+                spans: Some(27),
                 ..TextEntries::default()
             },
             layout: Box::new([(LayoutSlot::Width, 14), (LayoutSlot::AbsoluteStart, 15)]),

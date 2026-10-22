@@ -237,8 +237,8 @@ pub(crate) fn control_cells(
 /// `align`, a field's `placeholder`, `secure`, `multiline`, `input` and
 /// `max_length`, a number field's `step` and `precision` and a check's
 /// caption, its `translate`, `scale`, `rotation` and `transform_origin`, and
-/// its `cursor`.
-const SHOWN: usize = 40;
+/// its `cursor`, and its text's `font_style` and `spans`.
+const SHOWN: usize = 42;
 
 /// The input of each value a node shows, in order.
 const SHOWN_INPUTS: [ControlInput; SHOWN] = [
@@ -282,6 +282,8 @@ const SHOWN_INPUTS: [ControlInput; SHOWN] = [
     ControlInput::Rotation,
     ControlInput::TransformOrigin,
     ControlInput::Cursor,
+    ControlInput::FontStyle,
+    ControlInput::Spans,
 ];
 
 /// Where its `translate` sits among the values a node shows.
@@ -293,6 +295,10 @@ const TURN: usize = 36;
 
 /// Where its `cursor` sits among the values a node shows.
 const CURSOR: usize = 39;
+
+/// Where its text's `font_style` and `spans` sit among the values a node
+/// shows.
+const PIECES: usize = 40;
 
 /// Where its background, opacity, corner radius and border sit among the
 /// values a node shows.
@@ -495,17 +501,23 @@ impl Shown {
             rotation,
             origin,
             cursor,
+            font_style,
+            pieces,
         ] = &shows;
+        let spanned = crate::text_style::spans(pieces);
         let changed = |at: usize| prior.is_none_or(|prior| prior[at] != shows[at]);
         let secure = truth(secure, false);
         if semantics.says_anything()
             && ((SEMANTICS..NODE).any(changed)
                 || (FIELD..TRANSLATE).any(changed)
-                || (control.kind == ControlKind::Label && changed(0)))
+                || (control.kind == ControlKind::Label && (changed(0) || changed(PIECES + 1))))
         {
             let name = match (label.as_str(), control.kind) {
                 (Some(label), _) => Some(label),
-                (None, ControlKind::Label) => value.as_str(),
+                (None, ControlKind::Label) => match &spanned {
+                    Some((text, _)) => Some(text.as_str()),
+                    None => value.as_str(),
+                },
                 (None, ControlKind::Check | ControlKind::Switch) => caption.as_str(),
                 (None, _) => None,
             };
@@ -667,6 +679,7 @@ impl Shown {
             locale: None,
             style: text_style([
                 font_weight,
+                font_style,
                 font_family,
                 line_height,
                 max_lines,
@@ -674,7 +687,13 @@ impl Shown {
                 align,
             ]),
         };
-        if prior.is_some() && (0..LOOK).chain(TEXT..TRANSLATE).all(|at| !changed(at)) && !repaint {
+        if prior.is_some()
+            && (0..LOOK)
+                .chain(TEXT..TRANSLATE)
+                .chain(PIECES..SHOWN)
+                .all(|at| !changed(at))
+            && !repaint
+        {
             self.shows = Some(shows);
             return;
         }
@@ -707,7 +726,17 @@ impl Shown {
                     store.set_asset(self.node, resource, asset_fit(fit), tint);
                 }
             }
-            ControlKind::Label => store.set_text_request(self.node, text(value)),
+            ControlKind::Label => {
+                let request = match spanned {
+                    Some((shown, spans)) => TextRequest {
+                        text: shown,
+                        spans,
+                        ..text(&Value::Nil)
+                    },
+                    None => text(value),
+                };
+                store.set_text_request(self.node, request);
+            }
             ControlKind::TextInput => {
                 let seed = FieldSeed {
                     request: text(value),
@@ -1056,7 +1085,7 @@ fn stroke(value: &Value) -> Border {
 }
 
 /// A `Color` value (sRGB `0xRRGGBBAA`) as a fill, transparent for `None`.
-fn color(value: &Value) -> Rgba {
+pub(crate) fn color(value: &Value) -> Rgba {
     match value.as_int() {
         Some(rgba) => Srgb::from_rgba32(rgba as u32).into_linear_straight(),
         None => Rgba::TRANSPARENT,

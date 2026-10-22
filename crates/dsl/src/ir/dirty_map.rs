@@ -31,7 +31,7 @@ pub fn property_dirty_class(name: &str) -> DirtyClass {
         // Text content shifts intrinsic size, box, pixels, and what a screen
         // reader announces: a field's placeholder, masking and lines change
         // the text it draws and what it is announced as.
-        "text" | "content" | "label" | "placeholder" | "secure" | "multiline" => {
+        "text" | "spans" | "content" | "label" | "placeholder" | "secure" | "multiline" => {
             D::MEASURE | D::LAYOUT | D::PAINT | D::SEMANTICS
         }
 

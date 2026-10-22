@@ -675,6 +675,7 @@ fn control_tokens(control: Control) -> TokenStream {
     let (font_weight, font_family) = (entry(text.font_weight), entry(text.font_family));
     let (line_height, max_lines) = (entry(text.line_height), entry(text.max_lines));
     let (overflow, text_align) = (entry(text.overflow), entry(text.align));
+    let (font_style, spans) = (entry(text.font_style), entry(text.spans));
     let look = control.look;
     let (background, opacity) = (entry(look.background), entry(look.opacity));
     let (corner_radius, border) = (entry(look.corner_radius), entry(look.border));
@@ -789,7 +790,10 @@ fn control_tokens(control: Control) -> TokenStream {
                 max_lines: #max_lines,
                 overflow: #overflow,
                 align: #text_align,
+                font_style: #font_style,
+                spans: #spans,
             },
+
             semantics: ::viso::__private::viso_view::SemanticEntries {
                 role: #role,
                 live: ::viso::__private::viso_ui::LiveRegion::#live,

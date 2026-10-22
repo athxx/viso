@@ -4663,7 +4663,9 @@ export record AdaptiveColumns { mode: AutoRepeat = AutoRepeat::fill; min: MixedL
 | ------------- | --------------------- | ----------------------------- | ----------------------------------- | ------------------------- |
 | `text`        | `String`              | `""`                          | `MEASURE\|LAYOUT\|PAINT\|SEMANTICS` | —                         |
 | `font_size`   | `MixedLength`         | `1em`（继承）                 | `MEASURE\|LAYOUT\|PAINT`            | 父节点 Resolved Font Size |
+| `spans`       | `List<Span>`          | `[]`                          | `MEASURE\|LAYOUT\|PAINT\|SEMANTICS` | —                         |
 | `font_weight` | `FontWeight`          | `FontWeight::regular`         | `MEASURE\|LAYOUT\|PAINT`            | —                         |
+| `font_style`  | `FontStyle`           | `FontStyle::normal`           | `MEASURE\|LAYOUT\|PAINT`            | —                         |
 | `font_family` | `Option<FontFamily>`  | `Option::None`（Theme）       | `MEASURE\|LAYOUT\|PAINT`            | —                         |
 | `line_height` | `Option<MixedLength>` | `Option::None`（字体度量）    | `MEASURE\|LAYOUT\|PAINT`            | 当前 Resolved Font Size   |
 | `color`       | `Color`               | `theme.colors.foreground`     | `PAINT`                             | —                         |
@@ -4675,12 +4677,26 @@ export record AdaptiveColumns { mode: AutoRepeat = AutoRepeat::fill; min: MixedL
 | `locale`      | `Option<Locale>`      | `Option::None`（`env.locale`）| `MEASURE\|LAYOUT\|PAINT`            | —                         |
 
 - `FontWeight { thin; light; regular; medium; semibold; bold; heavy; }`（字重 100、300、400、500、600、700、900）；`FontFamily { system_ui; serif; monospace; named(String); }`（`named` 为 App 字体中的族名，无此族时取主 UI 字体）；`TextOverflow { clip; ellipsis; }`；`TextAlign { start; center; end; }`（`start`/`end` 随段落方向解析，`justify` 推迟）；
+- `FontStyle { normal; italic; }`：`italic` 取该族的斜体字体（有则用之）；
+- **富文本**：`spans` 只属于 `Text`，非空时各片段的 `text` 依次拼接成节点的文本（取代 `text`，也是无障碍名称），每个片段按自身样式绘制。`record Span { text: String; color: Option<Color> = None; background: Option<Color> = None; font_weight: Option<FontWeight> = None; font_style: Option<FontStyle> = None; font_family: Option<FontFamily> = None; font_size: Option<MixedLength> = None; raise: Option<MixedLength> = None; underline: Bool = false; strikethrough: Bool = false; }`：`None` 的字段沿用节点自身的值，`color` 为 `None` 的片段随节点 `color`（及其过渡）；`font_size` 的 `em`/`%` 相对节点字号，`raise` 把片段基线抬高（负值降低），其 `em`/`%` 相对片段自身字号；`background` 填在片段字体的 ascent 到 descent 之间，`underline`/`strikethrough` 的位置与粗细取字体度量。只改颜色、背景与线条的片段不打断整形（字距与连字保持），改字体、字号、字重、倾斜或抬升的片段单独整形；一行的高度取该行各片段行盒的最大值（Text Runtime §12.12.2）。片段读取的 State 变化时整段重新声明。HTML 与 Solid 导出把片段写成带内联样式的 `<span>`，变化的片段由页面脚本重建；
+
+```viso
+Text {
+    spans: [
+        Span { text: "Saved " },
+        Span { text: "3 files", font_weight: Option::Some(FontWeight::bold) },
+        Span { text: "2", font_size: Option::Some(75%), raise: Option::Some(0.5em) },
+    ];
+}
+```
+
 - Schema 默认值列中的 `theme.*` 表示未绑定时读取 Theme Context；
 - **Typography Context**（§19.4）：`Text` 声明 `font_size`，设置时成为子树 Resolved Font Size 的来源；容器不声明 `font_size`，只向下传递；根节点取 `theme.typography.base_size`（默认 `14sp`）；`font_size` 变化按 §19.6 追加标记依赖当前 Resolved Font Size 的后代 Binding；
 - 源文本始终为逻辑顺序；Bidi、断行、字形选择与回退由 Text Runtime 负责，DSL 不得反转字符串或手工插入方向控制符；
 - 仅因宽度变化引起的重排不标记 `SEMANTICS`（ADR 0027）；
 - `overflow: ellipsis` 仅在 `max_lines` 有值或 `soft_wrap: false` 时生效；
-- `max_lines` 为 `Option::Some(0)` 时按 `1` 处理；`TextInput` 是编辑框（`multiline` 决定单行或多行），取 `font_weight`、`font_family`、`line_height` 与 `align`，不取 `max_lines`/`overflow`（`E3711`）；`Button` 的文本取全部文本样式；
+- `max_lines` 为 `Option::Some(0)` 时按 `1` 处理；`TextInput` 是编辑框（`multiline` 决定单行或多行），取 `font_weight`、`font_style`、`font_family`、`line_height` 与 `align`，不取 `max_lines`/`overflow`（`E3711`）；`Button` 的文本取全部文本样式；
+
 - 当前实现：上述样式（常量或读取值）随节点的值条目送达其文本请求，热重载就地改写，Release 包与宏路径相同；`line_height` 的 `em`/`%` 读节点解析出的字号。行盒、行数上限、省略号与对齐的算法见 Text Runtime §12.12.1；`Fit` 宽度的文本按其 max-content 宽度测量，被 `max_width` 等上下界或父容器收窄时按盒宽换行或加省略号。未设置 `font_family` 的文本取当前 Theme 的 `typography.family`，切换 Theme 时只有这些文本重新塑形；`FontFamily::named` 暂只查找应用打包的字体；
 - `text` 在 Schema 中标记为 Localizable（U10.3）。
 - `String` 文本槽（`text`、`label`、`placeholder` 等）只接受 `String`（或 `Option<String>` 槽的 U1.3 提升），不做隐式 `Display` 转换：`text: count;`（`count: I64`）是 `E2103`，并附 Machine-Applicable Fix `format("{}", count)`；对无 `Display` 的类型不给出该 Fix。

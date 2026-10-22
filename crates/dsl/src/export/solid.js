@@ -288,6 +288,9 @@ export const show = {
   mode: (v) => holding(v)[0] ?? undefined,
   pattern: (v) => holding(v)[1] ?? undefined,
   cursor: (v) => cursor(v) || undefined,
+  weight: (v) => weight(v) || undefined,
+  italic: (v) => (Number(v ?? 0n) === 1 ? "italic" : undefined),
+  spans: pieces,
   number: P.number,
   maskSize: (v) => {
     const fit = fits[Number(v ?? 0n)] || "contain";

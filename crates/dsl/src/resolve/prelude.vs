@@ -169,6 +169,20 @@ export enum FontWeight { thin; light; regular; medium; semibold; bold; heavy; }
 export enum FontFamily { system_ui; serif; monospace; named(String); }
 export enum TextOverflow { clip; ellipsis; }
 export enum TextAlign { start; center; end; }
+export enum FontStyle { normal; italic; }
+export record Span {
+    text: String;
+    color: Option<Color> = None;
+    background: Option<Color> = None;
+    font_weight: Option<FontWeight> = None;
+    font_style: Option<FontStyle> = None;
+    font_family: Option<FontFamily> = None;
+    font_size: Option<MixedLength> = None;
+    raise: Option<MixedLength> = None;
+    underline: Bool = false;
+    strikethrough: Bool = false;
+}
+
 export enum LiveRegion { off; polite; assertive; }
 export enum InputKind { text; digits; integer; decimal; phone; email; url; search; }
 export enum Cursor { default; pointer; text; vertical_text; crosshair; move; grab; grabbing; not_allowed; wait; progress; help; context_menu; copy; alias; zoom_in; zoom_out; resize_ew; resize_ns; resize_nesw; resize_nwse; resize_col; resize_row; hidden; }

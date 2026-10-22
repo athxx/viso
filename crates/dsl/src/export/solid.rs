@@ -606,6 +606,9 @@ impl Jsx<'_> {
         }
         let mut class_list: Vec<(String, String)> = Vec::new();
         let mut text = el.text.as_ref().map(|t| script::string(t));
+        if let Some(markup) = &el.markup {
+            attrs.push(format!("innerHTML={{{}}}", script::string(markup)));
+        }
         let mut refs: Vec<String> = Vec::new();
         let mut events: Vec<String> = Vec::new();
         let synced = wires.iter().any(|w| matches!(w, Wire::Sync { .. }));
@@ -643,6 +646,13 @@ impl Jsx<'_> {
                         Prop::Cursor => {
                             style.push(("cursor".to_owned(), format!("show.cursor({v})")))
                         }
+                        Prop::FontWeight => {
+                            style.push(("font-weight".to_owned(), format!("show.weight({v})")))
+                        }
+                        Prop::FontStyle => {
+                            style.push(("font-style".to_owned(), format!("show.italic({v})")))
+                        }
+                        Prop::Spans => text = Some(format!("show.spans({v})")),
                         Prop::Label { alt } => {
                             let name = if *alt { "alt" } else { "aria-label" };
                             attrs.push(format!("{name}={{show.opt({v})}}"));

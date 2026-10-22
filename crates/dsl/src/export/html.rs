@@ -103,6 +103,12 @@ pub(super) enum Prop {
     Clip,
     /// The pointer shape over it, as its CSS `cursor`.
     Cursor,
+    /// Its text's `font-weight`.
+    FontWeight,
+    /// Whether its text is italic.
+    FontStyle,
+    /// A text's pieces, each a `<span>` styled its own way.
+    Spans,
     /// The accessible name: `alt` of an image, else `aria-label`.
     Label {
         alt: bool,
@@ -1027,8 +1033,25 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         let mask = el.tag != "img";
         match control.kind {
             ControlKind::Label => {
-                if let Some(fixed) = self.bind(wires, control.value, Prop::Text, "the text", at) {
-                    el.text = Some(fixed.text());
+                match self.bind(
+                    wires,
+                    control.text.spans,
+                    Prop::Spans,
+                    "the text's pieces",
+                    at,
+                ) {
+                    Some(Fixed::Value(pieces)) if spans_markup(&pieces).is_some() => {
+                        el.markup = spans_markup(&pieces);
+                    }
+                    // Pieces the script keeps current replace the text.
+                    None if control.text.spans.is_some() => {}
+                    _ => {
+                        if let Some(fixed) =
+                            self.bind(wires, control.value, Prop::Text, "the text", at)
+                        {
+                            el.text = Some(fixed.text());
+                        }
+                    }
                 }
             }
             ControlKind::TextInput => {
@@ -1228,6 +1251,26 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         ) && fixed.truth()
         {
             decls.push(("white-space", "pre-wrap".into()));
+        }
+        if let Some(fixed) = self.bind(
+            wires,
+            control.text.font_weight,
+            Prop::FontWeight,
+            "the weight",
+            at,
+        ) && let Some(weight) = fixed.int().and_then(css_weight)
+        {
+            decls.push(("font-weight", weight.to_string()));
+        }
+        if let Some(fixed) = self.bind(
+            wires,
+            control.text.font_style,
+            Prop::FontStyle,
+            "the slant",
+            at,
+        ) && fixed.int() == Some(1)
+        {
+            decls.push(("font-style", "italic".into()));
         }
         if let Some(fixed) = self.bind(
             wires,
@@ -1906,6 +1949,126 @@ fn input_kind(tag: i64) -> Option<(&'static str, Option<&'static str>)> {
     })
 }
 
+/// The CSS `font-weight` of the `FontWeight` of tag `tag`.
+fn css_weight(tag: i64) -> Option<u16> {
+    [100, 300, 400, 500, 600, 700, 900]
+        .get(usize::try_from(tag).ok()?)
+        .copied()
+}
+
+/// The CSS family list of a `FontFamily`.
+fn css_family(family: &Value) -> Option<String> {
+    match family {
+        Value::Int(0) => Some("system-ui, sans-serif".into()),
+        Value::Int(1) => Some("serif".into()),
+        Value::Int(2) => Some("monospace".into()),
+        Value::Agg(named) => {
+            let name = named.fields.first()?.as_str()?;
+            let quoted: String = name.chars().filter(|c| !matches!(c, '"' | '\\')).collect();
+            Some(format!("\"{quoted}\", system-ui, sans-serif"))
+        }
+        _ => None,
+    }
+}
+
+/// A `MixedLength` a span sizes or raises by, its `%` of the font size.
+fn css_span_length(length: &Value) -> Option<String> {
+    let Value::Agg(terms) = length else {
+        return None;
+    };
+    let term = |at: usize| {
+        terms
+            .fields
+            .get(at)
+            .and_then(Value::as_float)
+            .unwrap_or(0.0)
+    };
+    let mut device = false;
+    Some(css::terms(
+        crate::ir::ui_ir::TermsIr {
+            dp: term(0) as f32,
+            px: term(1) as f32,
+            sp: term(2) as f32,
+            em: (term(3) + term(4) / 100.0) as f32,
+            pct: 0.0,
+        },
+        &mut device,
+    ))
+}
+
+/// The markup of a text's pieces, each a `<span>` its style asks for and
+/// plain text where it asks for none; `None` for no pieces.
+fn spans_markup(pieces: &Value) -> Option<String> {
+    let Value::List(pieces) = pieces else {
+        return None;
+    };
+    if pieces.is_empty() {
+        return None;
+    }
+    let mut out = String::new();
+    for piece in pieces.iter() {
+        let Value::Agg(span) = piece else { continue };
+        let [
+            text,
+            color,
+            background,
+            weight,
+            slant,
+            family,
+            size,
+            raise,
+            underline,
+            strikethrough,
+        ] = &span.fields[..]
+        else {
+            continue;
+        };
+        let mut style: Vec<String> = Vec::new();
+        if let Some(c) = color.as_int() {
+            style.push(format!("color: {}", css::color(c as u32)));
+        }
+        if let Some(c) = background.as_int() {
+            style.push(format!("background-color: {}", css::color(c as u32)));
+        }
+        if let Some(w) = weight.as_int().and_then(css_weight) {
+            style.push(format!("font-weight: {w}"));
+        }
+        match slant.as_int() {
+            Some(1) => style.push("font-style: italic".into()),
+            Some(0) => style.push("font-style: normal".into()),
+            _ => {}
+        }
+        if let Some(f) = css_family(family) {
+            style.push(format!("font-family: {f}"));
+        }
+        if let Some(size) = css_span_length(size) {
+            style.push(format!("font-size: {size}"));
+        }
+        if let Some(raise) = css_span_length(raise) {
+            style.push(format!("vertical-align: {raise}"));
+        }
+        let lines: Vec<&str> = [(underline, "underline"), (strikethrough, "line-through")]
+            .into_iter()
+            .filter(|(on, _)| on.as_int().is_some_and(|v| v != 0))
+            .map(|(_, line)| line)
+            .collect();
+        if !lines.is_empty() {
+            style.push(format!("text-decoration-line: {}", lines.join(" ")));
+        }
+        let text = text.as_str().unwrap_or_default();
+        if style.is_empty() {
+            escape_text(text, &mut out);
+        } else {
+            out.push_str("<span style=\"");
+            escape_attr(&style.join("; "), &mut out);
+            out.push_str("\">");
+            escape_text(text, &mut out);
+            out.push_str("</span>");
+        }
+    }
+    Some(out)
+}
+
 /// The CSS `cursor` of the `Cursor` of tag `tag`.
 fn css_cursor(tag: i64) -> Option<&'static str> {
     const CURSORS: [&str; 24] = [
@@ -2121,6 +2284,8 @@ pub(super) struct Element {
     pub(super) attrs: Vec<(&'static str, String)>,
     pub(super) style: Vec<String>,
     pub(super) text: Option<String>,
+    /// Markup it holds in place of text, already escaped.
+    pub(super) markup: Option<String>,
     /// The asset it shows for good.
     pub(super) asset: Option<Shown>,
     /// Whether the node has rules of its own class.
@@ -2214,6 +2379,9 @@ pub(super) fn write_html(nodes: &[Piece], regions: &[Region], out: &mut String) 
                 el.open(out);
                 if let Some(text) = &el.text {
                     escape_text(text, out);
+                }
+                if let Some(markup) = &el.markup {
+                    out.push_str(markup);
                 }
                 write_html(children, regions, out);
                 el.close(out);

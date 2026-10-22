@@ -400,7 +400,51 @@ fn a_cursor_exports_as_the_css_cursor() {
     );
 }
 
+const NOTED: &str = r#"
+export component Noted {
+    state loud = false;
+    view {
+        Column {
+            Text {
+                font_style: FontStyle::italic;
+                font_weight: FontWeight::bold;
+                spans: [
+                    Span { text: "a<b " },
+                    Span { text: "x", color: Option::Some(#ff0000), underline: true },
+                    Span { text: "2", font_size: Option::Some(75%), raise: Option::Some(0.5em) },
+                ];
+            }
+            Text { spans: [Span { text: "now", underline: loud }]; on click { loud = !loud; } }
+        }
+    }
+}
+"#;
+
+#[test]
+fn a_text_s_spans_weight_and_slant_export_as_styled_spans() {
+    let page = export(NOTED, false).unwrap();
+    let all = format!("{}{}", page.index, page.styles);
+    assert!(all.contains("font-style: italic"), "{all}");
+    assert!(all.contains("font-weight: 700"), "{all}");
+    assert!(all.contains("a&lt;b "), "piece text is escaped: {all}");
+    assert!(
+        all.contains("text-decoration-line: underline"),
+        "a piece's lines: {all}"
+    );
+    assert!(all.contains("vertical-align: 0.5em"), "{all}");
+    assert!(
+        all.contains("font-size: 0.75em"),
+        "a `%` size is of the text's: {all}"
+    );
+    let script = page.script.as_deref().unwrap();
+    assert!(
+        script.contains("P.spans("),
+        "pieces that change are rebuilt as they change"
+    );
+}
+
 const LOGIN: &str = r#"
+
 export component Login {
     state hidden = true;
     view {
