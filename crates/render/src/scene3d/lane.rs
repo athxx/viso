@@ -12,7 +12,7 @@ use viso_gpu::{
 use viso_shader::{PrimitiveKind, shader_code};
 
 use super::{Bounds, Frustum, MeshId, SceneFrame, SceneInstance, SceneUniforms, SceneVertex};
-use super::{Shape, fit_view};
+use super::{SceneMaterial, Shape, fit_view};
 use crate::primitive::{ImageDraw, Rect, SceneDraw, SceneSlot};
 
 /// The pixel step a scene's targets grow and shrink by.
@@ -64,10 +64,11 @@ struct Targets {
     size: [u32; 2],
 }
 
-/// One instanced draw of a rendered scene: `count` instances of `mesh` from
-/// instance `first`.
+/// One instanced draw of a rendered scene: `count` instances of `mesh` in
+/// `material` from instance `first`.
 #[derive(Debug, Clone, Copy)]
 struct Draw {
+    material: SceneMaterial,
     mesh: MeshId,
     first: u32,
     count: u32,
@@ -85,7 +86,8 @@ struct Slot {
     /// The fill is not yet rendered.
     pending: bool,
     instances: Option<(BufferId, usize)>,
-    uniforms: Option<(BufferId, BindGroupId)>,
+    /// Each material's uniform block, by [`SceneMaterial`], made on first use.
+    uniforms: [Option<(BufferId, BindGroupId)>; 3],
     draws: Vec<Draw>,
     used: [u32; 2],
     clear: [f32; 4],
@@ -93,13 +95,18 @@ struct Slot {
 
 #[derive(Debug, Default)]
 pub(crate) struct SceneLane {
+    /// The pipeline of the opaque meshes, lit or unlit.
     pipeline: Option<PipelineId>,
+    /// The pipeline of the sprites: blended, depth-tested, never written.
+    blended: Option<PipelineId>,
     meshes: Vec<Option<GpuMesh>>,
     /// Uploaded mesh ids free for reuse.
     free: Vec<u32>,
     slots: Vec<Option<Slot>>,
     /// The bytes of a fill's surviving instances.
     scratch: Vec<u8>,
+    /// A fill's visible sprites, by their distance along the view.
+    order: Vec<(f32, u32)>,
     pub(crate) stats: SceneStats,
 }
 
@@ -127,7 +134,7 @@ impl SceneLane {
         if let Some((buffer, _)) = state.instances {
             backend.destroy_buffer(buffer);
         }
-        if let Some((buffer, group)) = state.uniforms {
+        for (buffer, group) in state.uniforms.into_iter().flatten() {
             backend.destroy_bind_group(group);
             backend.destroy_buffer(buffer);
         }
@@ -201,28 +208,15 @@ impl SceneLane {
     }
 
     fn pipeline<B: GpuBackend>(&mut self, backend: &mut B) -> PipelineId {
-        *self.pipeline.get_or_insert_with(|| {
-            let code = shader_code(PrimitiveKind::Scene, B::SHADER_LANG)
-                .expect("every backend language prints the scene built-in");
-            backend
-                .create_pipeline(
-                    &PipelineDesc {
-                        label: "scene",
-                        builtin: BuiltinShader::Scene,
-                        variant: 0,
-                        code,
-                        vertex_entry: "vertex_main",
-                        fragment_entry: "fragment_main",
-                        color_format: COLOR_FORMAT,
-                        depth: Some(DepthState::REVERSED),
-                        cull: CullMode::Back,
-                        blend: BlendMode::Replace,
-                        instance_schema: viso_gpu::scene::VERTEX_SCHEMA,
-                    },
-                    &VertexLayout::LAYOUT,
-                )
-                .expect("the scene vertex matches the scene built-in's schema")
-        })
+        *self
+            .pipeline
+            .get_or_insert_with(|| scene_pipeline(backend, false))
+    }
+
+    fn blended<B: GpuBackend>(&mut self, backend: &mut B) -> PipelineId {
+        *self
+            .blended
+            .get_or_insert_with(|| scene_pipeline(backend, true))
     }
 
     /// Size `draw`'s slot to its device pixels at `scale`, and fill it when
@@ -304,10 +298,15 @@ impl SceneLane {
         let used = slot.used;
         let view_proj = slot.frame.camera.view_proj(used[0] as f32 / used[1] as f32);
         let frustum = Frustum::of(&view_proj);
-        slot.draws.clear();
         let mut total = 0u32;
         let mut draws = core::mem::take(&mut slot.draws);
-        for (mesh_id, batch) in slot.frame.batches() {
+        draws.clear();
+        let push = |scratch: &mut Vec<u8>, instance: &SceneInstance| {
+            let at = scratch.len();
+            scratch.resize(at + SceneInstance::SIZE, 0);
+            instance.write_to(&mut scratch[at..]);
+        };
+        for (material, mesh_id, batch) in slot.frame.batches() {
             let Some(mesh) = self.mesh(backend, mesh_id) else {
                 continue;
             };
@@ -318,20 +317,53 @@ impl SceneLane {
                     self.stats.culled += 1;
                     continue;
                 }
-                let at = scratch.len();
-                scratch.resize(at + SceneInstance::SIZE, 0);
-                instance.write_to(&mut scratch[at..]);
+                push(&mut scratch, instance);
                 total += 1;
             }
             if total > first {
                 draws.push(Draw {
+                    material,
                     mesh: mesh_id,
                     first,
                     count: total - first,
                 });
             }
         }
-        slot.draws = draws;
+        let sprites = slot.frame.sprites();
+        if !sprites.is_empty() {
+            let (right, up, forward) = slot.frame.camera.basis();
+            let eye = slot.frame.camera.eye;
+            self.order.clear();
+            for (n, sprite) in sprites.iter().enumerate() {
+                let p = sprite.position.to_array();
+                if frustum.sees(p, [sprite.radius; 3]) {
+                    self.order
+                        .push(((sprite.position - eye).dot(forward), n as u32));
+                } else {
+                    self.stats.culled += 1;
+                }
+            }
+            // Back to front, so each blends over what is behind it.
+            self.order.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
+            if !self.order.is_empty() {
+                self.blended(backend);
+                self.mesh(backend, Shape::Plane.into());
+                let first = total;
+                for &(_, n) in &self.order {
+                    push(
+                        &mut scratch,
+                        &sprites[n as usize].facing(right, up, forward),
+                    );
+                    total += 1;
+                }
+                draws.push(Draw {
+                    material: SceneMaterial::Sprite,
+                    mesh: Shape::Plane.into(),
+                    first,
+                    count: total - first,
+                });
+            }
+        }
         if !scratch.is_empty() {
             let buffer = match slot.instances {
                 Some((buffer, capacity)) if capacity >= scratch.len() => buffer,
@@ -351,23 +383,32 @@ impl SceneLane {
             };
             backend.write_buffer(buffer, 0, &scratch);
         }
-        let (uniforms, _) = *slot.uniforms.get_or_insert_with(|| {
-            let buffer = backend.create_buffer(&BufferDesc {
-                size: SceneUniforms::SIZE,
-                usage: BufferUsage::UNIFORM | BufferUsage::CPU_WRITE,
-                label: "scene-uniforms",
+        let fitted = fit_view(&view_proj, used, size);
+        let mut written = [false; 3];
+        for draw in &draws {
+            let m = draw.material as usize;
+            if core::mem::replace(&mut written[m], true) {
+                continue;
+            }
+            let (uniforms, _) = *slot.uniforms[m].get_or_insert_with(|| {
+                let buffer = backend.create_buffer(&BufferDesc {
+                    size: SceneUniforms::SIZE,
+                    usage: BufferUsage::UNIFORM | BufferUsage::CPU_WRITE,
+                    label: "scene-uniforms",
+                });
+                let group = backend.create_bind_group(&BindGroupDesc {
+                    label: "scene",
+                    bindings: vec![Binding::Uniform(buffer)],
+                });
+                (buffer, group)
             });
-            let group = backend.create_bind_group(&BindGroupDesc {
-                label: "scene",
-                bindings: vec![Binding::Uniform(buffer)],
-            });
-            (buffer, group)
-        });
-        let mut bytes = [0u8; SceneUniforms::SIZE];
-        slot.frame
-            .uniforms(&fit_view(&view_proj, used, size))
-            .write_to(&mut bytes);
-        backend.write_buffer(uniforms, 0, &bytes);
+            let mut bytes = [0u8; SceneUniforms::SIZE];
+            slot.frame
+                .uniforms(&fitted, draw.material)
+                .write_to(&mut bytes);
+            backend.write_buffer(uniforms, 0, &bytes);
+        }
+        slot.draws = draws;
         slot.clear = slot.frame.clear_color();
         self.slots[i] = Some(slot);
         self.scratch = scratch;
@@ -384,13 +425,22 @@ impl SceneLane {
             };
             slot.pending = false;
             let first_command = commands.len() as u32;
-            let (_, group) = slot.uniforms.expect("a filled slot has uniforms");
             for draw in &slot.draws {
                 let Some(Some(mesh)) = self.meshes.get(draw.mesh.index()) else {
                     continue;
                 };
                 let Some((instances, _)) = slot.instances else {
                     continue;
+                };
+                let Some((_, group)) = slot.uniforms[draw.material as usize] else {
+                    continue;
+                };
+                let pipeline = match draw.material {
+                    SceneMaterial::Sprite => match self.blended {
+                        Some(blended) => blended,
+                        None => continue,
+                    },
+                    _ => pipeline,
                 };
                 commands.push(DrawCommand {
                     pipeline,
@@ -429,6 +479,40 @@ impl SceneLane {
     pub(crate) fn take_stats(&mut self) -> SceneStats {
         core::mem::take(&mut self.stats)
     }
+}
+
+/// The scene pipeline: opaque, or `blended` for the sprites (premultiplied
+/// over, depth-tested but never written, both faces).
+fn scene_pipeline<B: GpuBackend>(backend: &mut B, blended: bool) -> PipelineId {
+    let code = shader_code(PrimitiveKind::Scene, B::SHADER_LANG)
+        .expect("every backend language prints the scene built-in");
+    let (depth, cull, blend) = if blended {
+        (
+            DepthState::REVERSED_TEST_ONLY,
+            CullMode::None,
+            BlendMode::PremultipliedOver,
+        )
+    } else {
+        (DepthState::REVERSED, CullMode::Back, BlendMode::Replace)
+    };
+    backend
+        .create_pipeline(
+            &PipelineDesc {
+                label: if blended { "scene-sprites" } else { "scene" },
+                builtin: BuiltinShader::Scene,
+                variant: u32::from(blended),
+                code,
+                vertex_entry: "vertex_main",
+                fragment_entry: "fragment_main",
+                color_format: COLOR_FORMAT,
+                depth: Some(depth),
+                cull,
+                blend,
+                instance_schema: viso_gpu::scene::VERTEX_SCHEMA,
+            },
+            &VertexLayout::LAYOUT,
+        )
+        .expect("the scene vertex matches the scene built-in's schema")
 }
 
 /// A mesh's buffers on the device.

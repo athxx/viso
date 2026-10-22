@@ -60,9 +60,9 @@ Rules:
   - [x] semantics role `image`;
   - [x] tests: slot commit/sync/release, fills only under the owner, a viewport draws its
     game and redraws only on change.
-- [ ] S5:
-  - [ ] particles as billboards (blended, depth-tested, no write);
-  - [ ] debug shapes as thin boxes;
+- [x] S5:
+  - [x] particles as billboards (blended, depth-tested, no write; sorted back to front);
+  - [x] debug shapes as thin boxes (unlit material);
   - [x] viewport focus takes game keys (§106.2); pointer down focuses.
 - [ ] S6 Headless frame sheet (`viso game … --sheet`) and golden scene images through
   CpuRaster.

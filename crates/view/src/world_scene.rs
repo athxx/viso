@@ -5,13 +5,18 @@
 //! its facing and sized by its half extents, seen through the stage's camera
 //! or the viewport's own. A model is one built-in shape, or a composite of
 //! shapes laid out at the size of the prefab it belongs to and stretched with
-//! the body. The fill compares what it reads with what it read last, so an
-//! unchanged World under an unchanged camera produces no new frame.
+//! the body. The stage's particles are drawn as soft sprites over the World,
+//! and its debug shapes as thin unlit boxes. The fill compares what it reads
+//! with what it read last, so an unchanged World under an unchanged camera
+//! produces no new frame.
 
-use viso_behavior::game::kit::{Camera as RigCamera, CameraRig, CameraView, Model};
+use viso_behavior::game::kit::{
+    Camera as RigCamera, CameraRig, CameraView, DebugShape, Model, Sprite,
+};
 use viso_behavior::game::{Extracted, Scheduler};
 use viso_ui::scene3d::{
-    Camera, Lighting, LinearStraight, Projection, SceneFrame, SceneInstance, Shape, affine,
+    Camera, Lighting, LinearStraight, Projection, SceneFrame, SceneInstance, SceneSprite, Shape,
+    Vec3, affine, vec3,
 };
 use viso_ui::scenes::SceneSlot;
 use viso_ui::{NodeStore, SceneTarget};
@@ -332,6 +337,66 @@ fn push(frame: &mut SceneFrame, e: &Extracted) {
     }
 }
 
+/// The color of debug shapes.
+const DEBUG: [f32; 3] = [0.25, 1.0, 0.35];
+/// How thick a debug line is per metre of distance from the eye: about two
+/// pixels at a common field of view and window size.
+const DEBUG_THICKNESS: f32 = 0.003;
+
+/// Pushes a debug line from `from` to `to` into `frame`, seen from `eye`.
+fn push_line(frame: &mut SceneFrame, eye: Vec3, from: Vec3, to: Vec3) {
+    let along = (to - from) * 0.5;
+    let centre = from + along;
+    let t = (eye.distance(centre) * DEBUG_THICKNESS).max(1e-3);
+    let unit = if along.length() > 1e-6 {
+        along.normalize()
+    } else {
+        vec3(1.0, 0.0, 0.0)
+    };
+    // Any two axes across the line.
+    let other = if unit.y.abs() < 0.9 {
+        vec3(0.0, 1.0, 0.0)
+    } else {
+        vec3(1.0, 0.0, 0.0)
+    };
+    let side = unit.cross(other).normalize();
+    let across = side.cross(unit);
+    let a = if along.length() > 1e-6 {
+        along
+    } else {
+        unit * t
+    };
+    let (b, c) = (side * t, across * t);
+    let linear = [[a.x, b.x, c.x], [a.y, b.y, c.y], [a.z, b.z, c.z]];
+    let color = LinearStraight::new(DEBUG[0], DEBUG[1], DEBUG[2], 1.0);
+    frame.push_unlit(Shape::Cube, affine(&linear, centre.to_array(), color));
+}
+
+/// Pushes a debug shape into `frame`, seen from `eye`: a line, or a box's
+/// twelve edges.
+fn push_debug(frame: &mut SceneFrame, eye: Vec3, shape: &DebugShape) {
+    match *shape {
+        DebugShape::Line { from, to } => push_line(frame, eye, from, to),
+        DebugShape::Box {
+            center,
+            half_extents,
+        } => {
+            let (c, h) = (center, half_extents);
+            let corner = |i: u32| {
+                let s = |bit: u32| if i & bit != 0 { 1.0 } else { -1.0 };
+                c + vec3(h.x * s(1), h.y * s(2), h.z * s(4))
+            };
+            for i in 0..8u32 {
+                for bit in [1, 2, 4] {
+                    if i & bit == 0 {
+                        push_line(frame, eye, corner(i), corner(i | bit));
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// The renderer's camera for a stage's view.
 pub fn camera_of(view: &CameraView) -> Camera {
     Camera {
@@ -365,9 +430,18 @@ fn lighting() -> (Lighting, LinearStraight) {
 /// draws nothing new.
 #[derive(Debug, Default)]
 pub struct WorldScene {
-    extracted: Vec<Extracted>,
-    drawn: Vec<Extracted>,
+    read: Drawn,
+    drawn: Drawn,
     camera: Option<Camera>,
+}
+
+/// What a fill reads: the World's bodies, the particles and the debug
+/// shapes.
+#[derive(Debug, Default, PartialEq)]
+struct Drawn {
+    bodies: Vec<Extracted>,
+    sprites: Vec<Sprite>,
+    shapes: Vec<DebugShape>,
 }
 
 impl WorldScene {
@@ -380,20 +454,34 @@ impl WorldScene {
         camera: Option<Camera>,
         frame: &mut SceneFrame,
     ) -> bool {
-        let camera = camera.unwrap_or_else(|| camera_of(&scheduler.stage().view()));
+        let stage = scheduler.stage();
+        let camera = camera.unwrap_or_else(|| camera_of(&stage.view()));
+        let read = &mut self.read;
         scheduler
             .world()
-            .extract(scheduler.clock().alpha(), &mut self.extracted);
-        if self.camera == Some(camera) && self.extracted == self.drawn {
+            .extract(scheduler.clock().alpha(), &mut read.bodies);
+        read.sprites.clear();
+        read.sprites.extend(stage.sprites());
+        read.shapes.clear();
+        read.shapes.extend(stage.debug_shapes().copied());
+        if self.camera == Some(camera) && self.read == self.drawn {
             return false;
         }
-        core::mem::swap(&mut self.extracted, &mut self.drawn);
+        core::mem::swap(&mut self.read, &mut self.drawn);
         self.camera = Some(camera);
         frame.clear_instances();
         frame.camera = camera;
         (frame.lighting, frame.background) = lighting();
-        for e in &self.drawn {
+        for e in &self.drawn.bodies {
             push(frame, e);
+        }
+        for s in &self.drawn.sprites {
+            let [r, g, b, a] = s.color;
+            let color = LinearStraight::new(r, g, b, a);
+            frame.push_sprite(SceneSprite::new(s.position, s.size * 0.5, color));
+        }
+        for shape in &self.drawn.shapes {
+            push_debug(frame, camera.eye, shape);
         }
         true
     }
@@ -494,6 +582,42 @@ mod tests {
                 - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
                 + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
             assert!((det - 6.0).abs() < 1e-5, "{l:?}: {det}");
+        }
+    }
+
+    /// A debug box is its twelve edges, each a thin unlit box spanning the
+    /// edge.
+    #[test]
+    fn a_debug_box_draws_its_edges_as_thin_unlit_boxes() {
+        let mut frame = SceneFrame::new();
+        let shape = DebugShape::Box {
+            center: vec3(1.0, 2.0, 3.0),
+            half_extents: vec3(1.0, 0.5, 2.0),
+        };
+        push_debug(&mut frame, vec3(0.0, 0.0, 10.0), &shape);
+        let batches: Vec<_> = frame.batches().collect();
+        assert_eq!(batches.len(), 1);
+        let (material, mesh, edges) = batches[0];
+        assert_eq!(
+            (material, mesh),
+            (viso_ui::scene3d::SceneMaterial::Unlit, Shape::Cube.into())
+        );
+        assert_eq!(edges.len(), 12);
+        let mut lengths: Vec<f32> = edges
+            .iter()
+            .map(|e| {
+                let r = &e.rows;
+                let col =
+                    |j: usize| (r[0][j] * r[0][j] + r[1][j] * r[1][j] + r[2][j] * r[2][j]).sqrt();
+                let (a, b, c) = (col(0), col(1), col(2));
+                assert!(b < 0.1 && c < 0.1, "thin: {b} {c}");
+                a * 2.0
+            })
+            .collect();
+        lengths.sort_by(f32::total_cmp);
+        let want = [1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 4.0, 4.0, 4.0, 4.0];
+        for (got, want) in lengths.iter().zip(want) {
+            assert!((got - want).abs() < 1e-5, "{lengths:?}");
         }
     }
 

@@ -20,6 +20,7 @@ struct Clip {
     pos: [f32; 4],
     world: [f32; 3],
     normal: [f32; 3],
+    uv: [f32; 2],
 }
 
 impl Clip {
@@ -29,6 +30,7 @@ impl Clip {
             pos: core::array::from_fn(|i| mix(a.pos[i], b.pos[i])),
             world: core::array::from_fn(|i| mix(a.world[i], b.world[i])),
             normal: core::array::from_fn(|i| mix(a.normal[i], b.normal[i])),
+            uv: core::array::from_fn(|i| mix(a.uv[i], b.uv[i])),
         }
     }
 }
@@ -90,6 +92,7 @@ pub(super) fn run<P: Px>(
                         pos: uniforms.clip(world),
                         world,
                         normal: instance.turn_normal(v.normal),
+                        uv: v.uv,
                     }
                 };
                 let tri = [corner(0), corner(1), corner(2)];
@@ -271,7 +274,10 @@ fn raster<P: Px>(
             };
             let world = mix(|c| c.world);
             let normal = normalize(mix(|c| c.normal));
-            let shaded = uniforms.shade(world, normal, color);
+            let uv: [f32; 2] = core::array::from_fn(|i| {
+                (pw[0] * v[0].uv[i] + pw[1] * v[1].uv[i] + pw[2] * v[2].uv[i]) / sum
+            });
+            let shaded = uniforms.shade(world, normal, uv, color);
             let px = &mut target.px[at..at + 1];
             match pipe.blend {
                 BlendMode::Replace => P::replace(px, &[shaded], target.fmt),

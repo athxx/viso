@@ -1026,6 +1026,7 @@ pub fn scene_ir() -> ShaderIr {
         Varying::new("position", IrType::F32X4, " [[position]]", ""),
         Varying::new("world", IrType::F32X3, "", ""),
         Varying::new("normal", IrType::F32X3, "", ""),
+        Varying::new("uv", IrType::F32X2, "", ""),
         Varying::new("color", IrType::F32X4, " [[flat]]", ""),
     ];
     ShaderIr {
@@ -2247,6 +2248,7 @@ out.position = float4(u.view_proj0) * world.x + float4(u.view_proj1) * world.y
     + float4(u.view_proj2) * world.z + float4(u.view_proj3);
 out.world = world;
 out.normal = cross(c1, c2) * n.x + cross(c2, c0) * n.y + cross(c0, c1) * n.z;
+out.uv = float2(v.uv);
 out.color = float4(inst.color);
 return out;";
 
@@ -2255,33 +2257,44 @@ float a = in.color.a;
 if (a <= 0.0) {
     return float4(0.0, 0.0, 0.0, 0.0);
 }
-float4 light_dir = float4(u.light_dir);
+float4 camera = float4(u.camera);
 float4 fog_color = float4(u.fog);
-float3 sky = float4(u.sky).rgb;
-float3 ground = float4(u.ground).rgb;
-float3 light = float4(u.light_color).rgb;
-
-float3 n = normalize(in.normal);
-float3 l = light_dir.xyz;
-float3 to_eye = float4(u.camera).xyz - in.world;
+float3 to_eye = camera.xyz - in.world;
 float distance = length(to_eye);
-float3 v = to_eye / max(distance, 0.000001);
+float fog = 1.0 - exp(-fog_color.w * distance);
 
 // The base color in linear light.
 float3 base = pow(max(in.color.rgb / a, float3(0.0, 0.0, 0.0)), float3(2.2, 2.2, 2.2));
-float up = n.y * 0.5 + 0.5;
-float diffuse = max(dot(n, l), 0.0) * light_dir.w;
-float specular = 0.0;
-if (diffuse > 0.0) {
-    float3 half_way = l + v;
-    float hl = length(half_way);
-    if (hl > 0.0) {
-        specular = pow(max(dot(n, half_way / hl), 0.0), 32.0) * 0.25 * light_dir.w;
+float3 c = base;
+if (camera.w > 1.5) {
+    // A sprite: a disc across the quad, fading smoothly to its rim.
+    float2 d = in.uv * 2.0 - 1.0;
+    float t = clamp(1.0 - length(d), 0.0, 1.0);
+    a = a * (t * t * (3.0 - 2.0 * t));
+    if (a <= 0.0) {
+        return float4(0.0, 0.0, 0.0, 0.0);
     }
+} else if (camera.w < 0.5) {
+    float4 light_dir = float4(u.light_dir);
+    float3 sky = float4(u.sky).rgb;
+    float3 ground = float4(u.ground).rgb;
+    float3 light = float4(u.light_color).rgb;
+    float3 n = normalize(in.normal);
+    float3 l = light_dir.xyz;
+    float3 v = to_eye / max(distance, 0.000001);
+    float up = n.y * 0.5 + 0.5;
+    float diffuse = max(dot(n, l), 0.0) * light_dir.w;
+    float specular = 0.0;
+    if (diffuse > 0.0) {
+        float3 half_way = l + v;
+        float hl = length(half_way);
+        if (hl > 0.0) {
+            specular = pow(max(dot(n, half_way / hl), 0.0), 32.0) * 0.25 * light_dir.w;
+        }
+    }
+    float3 ambient = ground + (sky - ground) * up;
+    c = base * (ambient + diffuse * light) + specular * light;
 }
-float fog = 1.0 - exp(-fog_color.w * distance);
-float3 ambient = ground + (sky - ground) * up;
-float3 c = base * (ambient + diffuse * light) + specular * light;
 c = c + (fog_color.rgb - c) * fog;
 
 // Encoded for the target, premultiplied.

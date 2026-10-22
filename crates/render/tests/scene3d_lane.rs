@@ -1,12 +1,14 @@
 //! The 3D scene lane end to end through the renderer (ADR 0047): a scene draw
 //! renders its slot's frame into the slot's target and composites it into its
 //! rect, renders again only when the frame or the size changed, culls what the
-//! camera cannot see, and grows its target in 64-pixel steps.
+//! camera cannot see, grows its target in 64-pixel steps, draws unlit meshes
+//! in their own color, and blends sprites over the meshes they are in front
+//! of.
 
 use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle, SurfaceId};
 use viso_math::{LinearStraight, Quat, Vec3, vec3};
 use viso_render::damage::Region;
-use viso_render::scene3d::{Camera, SceneFrame, Shape, instance};
+use viso_render::scene3d::{Camera, SceneFrame, SceneSprite, Shape, instance};
 use viso_render::{Border, Primitive, Quad, Rect, Renderer, Rgba, SceneDraw, SceneSlot};
 
 const W: u32 = 96;
@@ -226,6 +228,85 @@ fn a_released_scene_draws_nothing() {
     assert_eq!(at(&px, 45, 45), [0, 0, 0]);
 }
 
+/// A frame seen from `z = 6` toward the origin on a black background, lit
+/// head on.
+fn facing_frame() -> SceneFrame {
+    let mut frame = SceneFrame::new();
+    frame.camera = Camera {
+        eye: vec3(0.0, 0.0, 6.0),
+        target: Vec3::ZERO,
+        ..Camera::default()
+    };
+    frame.background = LinearStraight::new(0.0, 0.0, 0.0, 1.0);
+    frame.lighting.direction = vec3(0.0, 1.0, 0.0);
+    frame
+}
+
+#[test]
+fn an_unlit_mesh_shows_its_own_color() {
+    let mut k = Kit::new();
+    let mut frame = facing_frame();
+    let one = vec3(1.0, 1.0, 1.0);
+    let color = LinearStraight::new(0.2, 0.6, 0.4, 1.0);
+    // Lit from above only, a lit cube's front face is dim; an unlit one is not.
+    frame.push_unlit(
+        Shape::Cube,
+        instance(vec3(-1.5, 0.0, 0.0), Quat::IDENTITY, one * 0.5, color),
+    );
+    frame.push(
+        Shape::Cube,
+        instance(vec3(1.5, 0.0, 0.0), Quat::IDENTITY, one * 0.5, color),
+    );
+    k.r.swap_scene(SLOT, &mut frame);
+    let px = k.present(&stream(rect(0.0, 0.0, W as f32, H as f32), 1));
+    let encode = |c: f32| (c.powf(1.0 / 2.2) * 255.0).round() as i32;
+    let unlit = at(&px, 30, 48);
+    let want = [encode(0.2), encode(0.6), encode(0.4)];
+    for (got, want) in unlit.iter().zip(want) {
+        assert!((i32::from(*got) - want).abs() <= 2, "{unlit:?} vs {want:?}");
+    }
+    let lit = at(&px, 66, 48);
+    assert!(lit[1] < unlit[1], "the lit face is in shadow: {lit:?}");
+}
+
+#[test]
+fn a_sprite_blends_over_what_is_behind_it_and_hides_behind_what_is_in_front() {
+    let mut k = Kit::new();
+    let mut frame = facing_frame();
+    let red = LinearStraight::new(1.0, 0.0, 0.0, 1.0);
+    frame.push(
+        Shape::Cube,
+        instance(Vec3::ZERO, Quat::IDENTITY, vec3(3.0, 3.0, 0.1), red),
+    );
+    let white = LinearStraight::new(1.0, 1.0, 1.0, 0.5);
+    // In front of the wall, and one behind it.
+    frame.push_sprite(SceneSprite::new(vec3(-1.2, 0.0, 1.0), 0.8, white));
+    frame.push_sprite(SceneSprite::new(vec3(1.2, 0.0, -1.0), 0.8, white));
+    k.r.swap_scene(SLOT, &mut frame);
+    let px = k.present(&stream(rect(0.0, 0.0, W as f32, H as f32), 1));
+    let stats = k.r.take_scene_stats();
+    assert_eq!(
+        (stats.draws, stats.instances),
+        (2, 3),
+        "a wall and a sprite batch"
+    );
+
+    let wall = at(&px, 48, 20);
+    assert!(wall[0] > 100 && wall[1] < 20, "the bare wall: {wall:?}");
+    // The front sprite's centre: half white over the wall's red.
+    let front = at(&px, 23, 48);
+    assert!(
+        front[1] > 100 && front[0] >= wall[0],
+        "the sprite over the wall: {front:?}"
+    );
+    // Toward its rim it fades back to the wall.
+    let rim = at(&px, 23 + 12, 48);
+    assert!(rim[1] < front[1], "it fades to its rim: {rim:?} {front:?}");
+    // The sprite behind the wall is hidden by its depth.
+    let behind = at(&px, 64, 48);
+    assert!(behind[1] < 20, "hidden behind the wall: {behind:?}");
+}
+
 /// The scene lane draws the same picture on the Metal device as on the CPU
 /// raster.
 #[cfg(target_vendor = "apple")]
@@ -270,6 +351,22 @@ fn metal_draws_what_the_cpu_raster_draws() {
                 color(0.3, 0.5, 0.3),
             ),
         );
+        frame.push_unlit(
+            Shape::Cube,
+            instance(
+                vec3(0.0, 1.4, 0.0),
+                Quat::IDENTITY,
+                vec3(1.5, 0.05, 0.05),
+                color(0.2, 1.0, 0.3),
+            ),
+        );
+        for (x, z) in [(-0.4, 1.5), (0.5, 1.0), (0.0, -0.5)] {
+            frame.push_sprite(SceneSprite::new(
+                vec3(x, 0.4, z),
+                0.6,
+                LinearStraight::new(1.0, 0.8, 0.4, 0.7),
+            ));
+        }
         r.swap_scene(SLOT, &mut frame);
         r.upload(gpu, &stream(rect(0.0, 0.0, W as f32, H as f32), 1));
         let target = gpu.create_texture(&TextureDesc {

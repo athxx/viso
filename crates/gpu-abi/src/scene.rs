@@ -87,7 +87,7 @@ pub struct SceneInstance {
 pub struct SceneUniforms {
     /// World to clip space, column-major.
     pub view_proj: [f32; 16],
-    /// The camera's position; `w` unused.
+    /// The camera's position; `w` the [`SceneMaterial`] of the draws.
     pub camera: [f32; 4],
     /// The unit direction toward the light; `w` its intensity.
     pub light_dir: [f32; 4],
@@ -99,6 +99,40 @@ pub struct SceneUniforms {
     /// The fog's color, linear, and in `w` its density per unit of distance
     /// (`0.0`: no fog).
     pub fog: [f32; 4],
+}
+
+/// How a scene draw colors its fragments: what its uniforms' `camera.w`
+/// holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[repr(u8)]
+pub enum SceneMaterial {
+    /// Lit by the scene's light and ambient, then fogged.
+    Lit = 0,
+    /// Its color as is, fogged: debug geometry and glowing surfaces.
+    Unlit = 1,
+    /// A soft disc across the mesh's texture coordinates, unlit and fogged:
+    /// a particle on a camera-facing quad, blended over what is behind it.
+    Sprite = 2,
+}
+
+impl SceneMaterial {
+    /// The value of `camera.w` that selects it.
+    #[inline]
+    pub const fn code(self) -> f32 {
+        self as u8 as f32
+    }
+
+    /// The material `camera.w` selects.
+    #[inline]
+    pub fn of(code: f32) -> SceneMaterial {
+        if code > 1.5 {
+            SceneMaterial::Sprite
+        } else if code > 0.5 {
+            SceneMaterial::Unlit
+        } else {
+            SceneMaterial::Lit
+        }
+    }
 }
 
 macro_rules! as_bytes {
@@ -177,39 +211,61 @@ impl SceneUniforms {
         core::array::from_fn(|i| m[i] * p[0] + m[4 + i] * p[1] + m[8 + i] * p[2] + m[12 + i])
     }
 
-    /// The color of a surface point at `world` with the unit normal `normal`
-    /// and the instance color `color` (premultiplied, the target's encoding):
-    /// hemispheric ambient, Lambert diffuse and Blinn-Phong specular from the
-    /// light, then fog, all in linear light, encoded back for the target.
+    /// The color of a surface point at `world` with the unit normal `normal`,
+    /// the texture coordinate `uv` and the instance color `color`
+    /// (premultiplied, the target's encoding), by the uniforms' material:
+    /// - lit: hemispheric ambient, Lambert diffuse and Blinn-Phong specular
+    ///   from the light;
+    /// - unlit: the color as is;
+    /// - sprite: the color as is, covering a disc across `uv` that fades
+    ///   smoothly to its rim;
+    ///
+    /// then fog, all in linear light, encoded back for the target.
     ///
     /// The scene programs of every backend compute the same expression.
-    pub fn shade(&self, world: [f32; 3], normal: [f32; 3], color: [f32; 4]) -> [f32; 4] {
-        let a = color[3];
+    pub fn shade(
+        &self,
+        world: [f32; 3],
+        normal: [f32; 3],
+        uv: [f32; 2],
+        color: [f32; 4],
+    ) -> [f32; 4] {
+        let mut a = color[3];
         if a <= 0.0 {
             return [0.0; 4];
         }
         let base: [f32; 3] = core::array::from_fn(|i| decode(color[i] / a));
-        let l = [self.light_dir[0], self.light_dir[1], self.light_dir[2]];
-        let intensity = self.light_dir[3];
         let to_eye = sub([self.camera[0], self.camera[1], self.camera[2]], world);
         let distance = length(to_eye);
-        let v = scale(to_eye, 1.0 / distance.max(1e-6));
-        let n = normal;
-        let up = n[1] * 0.5 + 0.5;
-        let diffuse = dot(n, l).max(0.0) * intensity;
-        let h = normalize(add(l, v));
-        let specular = if diffuse > 0.0 {
-            dot(n, h).max(0.0).powf(32.0) * 0.25 * intensity
-        } else {
-            0.0
-        };
         let fog = 1.0 - (-self.fog[3] * distance).exp();
-        let lit: [f32; 3] = core::array::from_fn(|i| {
-            let ambient = self.ground[i] + (self.sky[i] - self.ground[i]) * up;
-            let c = base[i] * (ambient + diffuse * self.light_color[i])
-                + specular * self.light_color[i];
-            c + (self.fog[i] - c) * fog
-        });
+        let material = SceneMaterial::of(self.camera[3]);
+        let c: [f32; 3] = if material == SceneMaterial::Lit {
+            let l = [self.light_dir[0], self.light_dir[1], self.light_dir[2]];
+            let intensity = self.light_dir[3];
+            let v = scale(to_eye, 1.0 / distance.max(1e-6));
+            let n = normal;
+            let up = n[1] * 0.5 + 0.5;
+            let diffuse = dot(n, l).max(0.0) * intensity;
+            let h = normalize(add(l, v));
+            let specular = if diffuse > 0.0 {
+                dot(n, h).max(0.0).powf(32.0) * 0.25 * intensity
+            } else {
+                0.0
+            };
+            core::array::from_fn(|i| {
+                let ambient = self.ground[i] + (self.sky[i] - self.ground[i]) * up;
+                base[i] * (ambient + diffuse * self.light_color[i]) + specular * self.light_color[i]
+            })
+        } else {
+            if material == SceneMaterial::Sprite {
+                a *= disc(uv);
+                if a <= 0.0 {
+                    return [0.0; 4];
+                }
+            }
+            base
+        };
+        let lit: [f32; 3] = core::array::from_fn(|i| c[i] + (self.fog[i] - c[i]) * fog);
         [
             encode(lit[0]) * a,
             encode(lit[1]) * a,
@@ -217,6 +273,15 @@ impl SceneUniforms {
             a,
         ]
     }
+}
+
+/// How much of a sprite covers `uv`: 1 at the centre of the unit square,
+/// falling smoothly to 0 at the inscribed circle.
+#[inline]
+pub fn disc(uv: [f32; 2]) -> f32 {
+    let (x, y) = (uv[0] * 2.0 - 1.0, uv[1] * 2.0 - 1.0);
+    let t = (1.0 - (x * x + y * y).sqrt()).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 /// An encoded channel in linear light: the 2.2 power the scene programs use.
@@ -310,9 +375,42 @@ mod tests {
             ..SceneUniforms::default()
         };
         let color = [0.5, 0.5, 0.5, 1.0];
-        let lit = uniforms.shade([0.0; 3], [0.0, 1.0, 0.0], color);
-        let unlit = uniforms.shade([0.0; 3], [0.0, -1.0, 0.0], color);
+        let lit = uniforms.shade([0.0; 3], [0.0, 1.0, 0.0], [0.5; 2], color);
+        let unlit = uniforms.shade([0.0; 3], [0.0, -1.0, 0.0], [0.5; 2], color);
         assert!(lit[0] > unlit[0] * 2.0, "{lit:?} {unlit:?}");
         assert_eq!(lit[3], 1.0);
+    }
+
+    #[test]
+    fn unlit_keeps_its_color_and_a_sprite_fades_to_its_rim() {
+        let mut uniforms = SceneUniforms {
+            camera: [0.0, 0.0, 5.0, SceneMaterial::Unlit.code()],
+            light_dir: [0.0, 1.0, 0.0, 1.0],
+            ..SceneUniforms::default()
+        };
+        let color = [0.5, 0.25, 0.75, 1.0];
+        let shaded = |u: &SceneUniforms, normal, uv| u.shade([0.0; 3], normal, uv, color);
+        let up = shaded(&uniforms, [0.0, 1.0, 0.0], [0.5; 2]);
+        assert_eq!(up, shaded(&uniforms, [0.0, -1.0, 0.0], [0.5; 2]));
+        for (a, b) in up.iter().zip(color) {
+            assert!((a - b).abs() < 1e-5, "{up:?}");
+        }
+
+        uniforms.camera[3] = SceneMaterial::Sprite.code();
+        let centre = shaded(&uniforms, [0.0; 3], [0.5, 0.5]);
+        let halfway = shaded(&uniforms, [0.0; 3], [0.75, 0.5]);
+        let rim = shaded(&uniforms, [0.0; 3], [1.0, 0.5]);
+        assert!((centre[3] - 1.0).abs() < 1e-6);
+        assert!((halfway[3] - 0.5).abs() < 1e-6, "{halfway:?}");
+        assert_eq!(rim, [0.0; 4]);
+        assert_eq!(
+            shaded(&uniforms, [0.0; 3], [0.0, 0.0]),
+            [0.0; 4],
+            "a corner"
+        );
+        assert!(
+            (halfway[0] / halfway[3] - color[0]).abs() < 1e-5,
+            "premultiplied"
+        );
     }
 }

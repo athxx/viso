@@ -114,8 +114,19 @@
   - It is not a graph node. Its targets are persistent, not transient, and
     it renders only on change: a paused game with a still camera renders no
     scene pass and redraws no 2D pixel.
-  - Particles (camera-facing billboards, blended, depth-tested without
-    depth writes) and debug shapes join the same pass.
+  - A frame's instances carry one of three materials, chosen by the
+    uniforms' `camera.w` (`SceneMaterial`), with one uniform block per
+    material a slot draws:
+    - lit meshes (`SceneFrame::push`);
+    - unlit meshes (`push_unlit`), their color as is, then fogged. Debug
+      shapes are thin unlit boxes: a line is one box, and a debug box is
+      its twelve edges. Each is thick in proportion to its distance from
+      the eye, about two pixels wide;
+    - sprites (`push_sprite`): soft discs on a camera-facing plane, unlit
+      and fogged. The lane turns each to the camera's axes, culls it by its
+      radius and sorts the visible ones back to front. It draws them last,
+      in one instanced draw, through a second pipeline: premultiplied over,
+      `DepthState::REVERSED_TEST_ONLY`, both faces.
   - `Renderer::take_scene_stats` counts passes, draws, drawn and culled
     instances, and target allocations (§61).
   - The 1.0 lighting is Lambert diffuse plus Blinn-Phong specular and
@@ -146,7 +157,7 @@
     - `SceneInstance { rows: [[f32; 4]; 3], color }`, 64 bytes
       (`scene::INSTANCE_SCHEMA`), is stepped per instance at the
       locations after the vertex attributes;
-    - `SceneUniforms`, 160 bytes, is a uniform buffer the draw's bind group
+    - `SceneUniforms`, 160 bytes (`camera.w` the material), is a uniform buffer the draw's bind group
       holds (`Binding::Uniform`).
   - How each backend implements it:
     - Metal: `MTLDepthStencilState`, `setCullMode`, and vertex pulling

@@ -26,7 +26,7 @@ mod shapes;
 pub(crate) use lane::SceneLane;
 pub use lane::SceneStats;
 pub use shapes::Shape;
-pub use viso_gpu::scene::{SceneInstance, SceneUniforms, SceneVertex};
+pub use viso_gpu::scene::{SceneInstance, SceneMaterial, SceneUniforms, SceneVertex};
 
 pub use viso_math::{LinearStraight, Mat4, Quat, Vec3, vec3};
 
@@ -151,9 +151,10 @@ impl Default for Lighting {
 
 /// One frame of a scene: what [`Renderer::swap_scene`] hands the renderer.
 ///
-/// Its instances are grouped by mesh, one batch each, so the lane draws each
-/// mesh in one instanced draw. Filling reuses the batches' storage, so a
-/// steady scene refills without allocating.
+/// Its instances are grouped by material and mesh, one batch each, so the
+/// lane draws each in one instanced draw: the lit meshes, then the unlit
+/// ones, then the sprites, blended back to front over them. Filling reuses
+/// the batches' storage, so a steady scene refills without allocating.
 ///
 /// [`Renderer::swap_scene`]: crate::Renderer::swap_scene
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -163,10 +164,80 @@ pub struct SceneFrame {
     /// What shows where nothing is drawn, straight linear RGBA. A transparent
     /// background lets the 2D content behind the scene show through.
     pub background: LinearStraight,
+    lit: Batches,
+    unlit: Batches,
+    sprites: Vec<SceneSprite>,
+}
+
+/// One material's instances, by mesh.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Batches {
     /// Each mesh's instances, by [`MeshId::index`].
-    batches: Vec<Vec<SceneInstance>>,
+    by_mesh: Vec<Vec<SceneInstance>>,
     /// The meshes with instances, in the order they were first pushed.
     meshes: Vec<MeshId>,
+}
+
+impl Batches {
+    fn clear(&mut self) {
+        for mesh in self.meshes.drain(..) {
+            self.by_mesh[mesh.index()].clear();
+        }
+    }
+
+    fn push(&mut self, mesh: MeshId, instance: SceneInstance) {
+        if self.by_mesh.len() <= mesh.index() {
+            self.by_mesh.resize_with(mesh.index() + 1, Vec::new);
+        }
+        let batch = &mut self.by_mesh[mesh.index()];
+        if batch.is_empty() {
+            self.meshes.push(mesh);
+        }
+        batch.push(instance);
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (MeshId, &[SceneInstance])> {
+        self.meshes
+            .iter()
+            .map(|&mesh| (mesh, self.by_mesh[mesh.index()].as_slice()))
+    }
+}
+
+/// A particle: a soft disc of `radius` at `position`, always facing the
+/// camera, in a color the frame encodes as it is pushed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SceneSprite {
+    pub position: Vec3,
+    pub radius: f32,
+    color: [f32; 4],
+}
+
+impl SceneSprite {
+    /// A sprite of `radius` at `position` in `color`, its alpha the disc's
+    /// opacity at its centre.
+    pub fn new(position: Vec3, radius: f32, color: LinearStraight) -> SceneSprite {
+        SceneSprite {
+            position,
+            radius,
+            color: encoded(color),
+        }
+    }
+
+    /// The sprite on a [`Shape::Plane`] turned to face along `-forward`,
+    /// spanned by `right` and `up`.
+    pub(crate) fn facing(&self, right: Vec3, up: Vec3, forward: Vec3) -> SceneInstance {
+        let r = self.radius;
+        let (x, y, z) = (right * r, forward * -1.0, up * r);
+        let p = self.position;
+        SceneInstance {
+            rows: [
+                [x.x, y.x, z.x, p.x],
+                [x.y, y.y, z.y, p.y],
+                [x.z, y.z, z.z, p.z],
+            ],
+            color: self.color,
+        }
+    }
 }
 
 impl SceneFrame {
@@ -175,46 +246,57 @@ impl SceneFrame {
         SceneFrame::default()
     }
 
-    /// Drop every instance, keeping the storage.
+    /// Drop every instance and sprite, keeping the storage.
     pub fn clear_instances(&mut self) {
-        for mesh in self.meshes.drain(..) {
-            self.batches[mesh.index()].clear();
-        }
+        self.lit.clear();
+        self.unlit.clear();
+        self.sprites.clear();
     }
 
-    /// Add `instance` of `mesh`.
+    /// Add `instance` of `mesh`, lit by the scene's light.
     pub fn push(&mut self, mesh: impl Into<MeshId>, instance: SceneInstance) {
-        let mesh = mesh.into();
-        if self.batches.len() <= mesh.index() {
-            self.batches.resize_with(mesh.index() + 1, Vec::new);
-        }
-        let batch = &mut self.batches[mesh.index()];
-        if batch.is_empty() {
-            self.meshes.push(mesh);
-        }
-        batch.push(instance);
+        self.lit.push(mesh.into(), instance);
     }
 
-    /// The meshes with instances, each with its instances.
-    pub fn batches(&self) -> impl Iterator<Item = (MeshId, &[SceneInstance])> {
-        self.meshes
-            .iter()
-            .map(|&mesh| (mesh, self.batches[mesh.index()].as_slice()))
+    /// Add `instance` of `mesh` in its color as is: debug geometry, or a
+    /// surface that glows.
+    pub fn push_unlit(&mut self, mesh: impl Into<MeshId>, instance: SceneInstance) {
+        self.unlit.push(mesh.into(), instance);
     }
 
-    /// How many instances the frame holds.
+    /// Add `sprite`, drawn over the meshes; the lane sorts the sprites back
+    /// to front.
+    pub fn push_sprite(&mut self, sprite: SceneSprite) {
+        self.sprites.push(sprite);
+    }
+
+    /// The meshes with instances, each with its material and instances: the
+    /// lit ones, then the unlit.
+    pub fn batches(&self) -> impl Iterator<Item = (SceneMaterial, MeshId, &[SceneInstance])> {
+        let lit = self.lit.iter().map(|(m, b)| (SceneMaterial::Lit, m, b));
+        let unlit = self.unlit.iter().map(|(m, b)| (SceneMaterial::Unlit, m, b));
+        lit.chain(unlit)
+    }
+
+    /// The sprites, in the order they were pushed.
+    pub fn sprites(&self) -> &[SceneSprite] {
+        &self.sprites
+    }
+
+    /// How many instances and sprites the frame holds.
     pub fn instance_count(&self) -> usize {
-        self.batches().map(|(_, b)| b.len()).sum()
+        self.batches().map(|(_, _, b)| b.len()).sum::<usize>() + self.sprites.len()
     }
 
-    /// The uniform block of the frame projected by `view_proj`.
-    pub(crate) fn uniforms(&self, view_proj: &Mat4) -> SceneUniforms {
+    /// The uniform block of the frame projected by `view_proj`, drawing
+    /// `material`.
+    pub(crate) fn uniforms(&self, view_proj: &Mat4, material: SceneMaterial) -> SceneUniforms {
         let l = &self.lighting;
         let d = normalize([l.direction.x, l.direction.y, l.direction.z]);
         let c = &self.camera.eye;
         SceneUniforms {
             view_proj: view_proj.v,
-            camera: [c.x, c.y, c.z, 0.0],
+            camera: [c.x, c.y, c.z, material.code()],
             light_dir: [d[0], d[1], d[2], l.intensity],
             light_color: [l.color[0], l.color[1], l.color[2], 0.0],
             sky: [l.sky[0], l.sky[1], l.sky[2], 0.0],
@@ -226,6 +308,16 @@ impl SceneFrame {
     /// The background as the target stores it: encoded, premultiplied.
     pub(crate) fn clear_color(&self) -> [f32; 4] {
         encoded(self.background)
+    }
+}
+
+impl Camera {
+    /// The camera's unit right, up and forward axes.
+    pub(crate) fn basis(&self) -> (Vec3, Vec3, Vec3) {
+        let unit = |v: Vec3, or: Vec3| if v.length() > 1e-6 { v.normalize() } else { or };
+        let forward = unit(self.target - self.eye, vec3(0.0, 0.0, -1.0));
+        let right = unit(forward.cross(self.up), vec3(1.0, 0.0, 0.0));
+        (right, right.cross(forward), forward)
     }
 }
 
@@ -445,7 +537,7 @@ mod tests {
         frame.push(Shape::Sphere, one);
         frame.push(Shape::Cube, one);
         frame.push(Shape::Sphere, one);
-        let order: Vec<_> = frame.batches().map(|(m, b)| (m, b.len())).collect();
+        let order: Vec<_> = frame.batches().map(|(_, m, b)| (m, b.len())).collect();
         assert_eq!(
             order,
             [
