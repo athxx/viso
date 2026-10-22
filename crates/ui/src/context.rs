@@ -312,6 +312,12 @@ impl<'a> UpdateCx<'a> {
         self.nodes.cancel_task(id);
     }
 
+    /// Make viewport `id` refreshing, or end its refresh: the work a pull
+    /// started finished ([`NodeStore::set_refreshing`]).
+    pub fn set_refreshing(&mut self, id: NodeId, on: bool) {
+        self.nodes.set_refreshing(id, on);
+    }
+
     /// The binding table backing this frame — the flush reads it to turn
     /// changed states into node dirtying.
     #[inline]
@@ -356,6 +362,8 @@ pub struct EventCx<'a> {
     link: Option<&'a str>,
     /// This dispatch tells a light-dismiss layer a press landed outside it.
     dismissed: bool,
+    /// This dispatch tells a viewport a pull asked it to refresh.
+    refresh: bool,
     /// The token of the wake this dispatch delivers.
     woken: Option<u32>,
     /// Whether the focus came to or left the node this dispatch tells.
@@ -488,6 +496,8 @@ pub enum StoreRequest {
     Edit(NodeId, EditIntent),
     /// Work a scroll bar.
     Bar(NodeId, crate::scroll_bar::BarInput),
+    /// Start or end a viewport's refresh.
+    Refreshing(NodeId, bool),
 }
 
 impl StoreRequest {
@@ -503,6 +513,7 @@ impl StoreRequest {
             StoreRequest::Active(id, active) => store.set_active_descendant(id, active),
             StoreRequest::Edit(id, intent) => store.queue_edit(id, intent),
             StoreRequest::Bar(track, input) => store.bar_input(track, input),
+            StoreRequest::Refreshing(id, on) => store.set_refreshing(id, on),
         }
     }
 }
@@ -548,6 +559,7 @@ impl<'a> EventCx<'a> {
             text_change: None,
             link: None,
             dismissed: false,
+            refresh: false,
             woken: None,
             focus_change: None,
             access: None,
@@ -588,6 +600,7 @@ impl<'a> EventCx<'a> {
             text_change: None,
             link: None,
             dismissed: false,
+            refresh: false,
             woken: None,
             focus_change: None,
             access: None,
@@ -627,6 +640,7 @@ impl<'a> EventCx<'a> {
             text_change: None,
             link: None,
             dismissed: false,
+            refresh: false,
             woken: None,
             focus_change: None,
             access: None,
@@ -666,6 +680,7 @@ impl<'a> EventCx<'a> {
             text_change: None,
             link: None,
             dismissed: false,
+            refresh: false,
             woken: None,
             focus_change: None,
             access: None,
@@ -708,6 +723,15 @@ impl<'a> EventCx<'a> {
     pub fn __new_dismiss(states: &'a mut StateStore, bindings: &'a BindingTable) -> Self {
         let mut cx = Self::__new(states, bindings);
         cx.dismissed = true;
+        cx
+    }
+
+    /// Assemble the event context that tells a viewport a pull asked it to
+    /// refresh: the handler reads it via [`EventCx::refresh`].
+    #[doc(hidden)]
+    pub fn __new_refresh(states: &'a mut StateStore, bindings: &'a BindingTable) -> Self {
+        let mut cx = Self::__new(states, bindings);
+        cx.refresh = true;
         cx
     }
 
@@ -888,6 +912,20 @@ impl<'a> EventCx<'a> {
     /// ([`NodeStore::set_light_dismiss`]) that a press landed outside it.
     pub fn dismissed(&self) -> bool {
         self.dismissed
+    }
+
+    /// Whether this dispatch tells a refreshable viewport
+    /// ([`NodeStore::set_refreshable`]) that a pull, or an assistive
+    /// technology, asked it to refresh. It shows refreshing until
+    /// [`set_refreshing`](Self::set_refreshing) ends it.
+    pub fn refresh(&self) -> bool {
+        self.refresh
+    }
+
+    /// Make viewport `id` refreshing, or end its refresh
+    /// ([`NodeStore::set_refreshing`]).
+    pub fn set_refreshing(&mut self, id: NodeId, on: bool) {
+        self.store_requests.push(StoreRequest::Refreshing(id, on));
     }
 
     /// The token of the wake ([`wake_after`](Self::wake_after)) this dispatch

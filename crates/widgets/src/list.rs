@@ -154,6 +154,7 @@ pub struct VirtualList {
     /// An optional accessible label. `None` keeps the plain [`Role::Group`] list
     /// with no name.
     label: Option<String>,
+    on_refresh: Option<crate::scroll::RefreshHandler>,
 }
 
 /// Construct a [`VirtualList`] with the given style, no rows yet. Chain
@@ -165,6 +166,7 @@ pub fn virtual_list(style: VirtualListViewStyle) -> VirtualList {
         item_count: 0,
         item: RefCell::new(None),
         label: None,
+        on_refresh: None,
     }
 }
 
@@ -195,6 +197,16 @@ impl VirtualList {
         self.label = Some(label.into());
         self
     }
+
+    /// Refresh when pulled down past the first row (a column), as
+    /// [`Scroll::on_refresh`](crate::Scroll::on_refresh) does.
+    pub fn on_refresh(
+        mut self,
+        handler: impl FnMut(&mut viso_ui::EventCx<'_>, viso_ui::Handle) + 'static,
+    ) -> Self {
+        self.on_refresh = Some(std::rc::Rc::new(RefCell::new(handler)));
+        self
+    }
 }
 
 impl Component for VirtualList {
@@ -214,6 +226,7 @@ impl Component for VirtualList {
                     style: self.style.background,
                     bars: self.style.bars,
                     tail: self.style.tail,
+                    refresh: self.on_refresh.is_some(),
                 },
                 self.item_count,
                 move |index, cx| item(index, cx),
@@ -227,12 +240,16 @@ impl Component for VirtualList {
                     style: self.style.background,
                     bars: self.style.bars,
                     tail: self.style.tail,
+                    refresh: self.on_refresh.is_some(),
                 },
                 self.item_count,
                 |_index, _cx| {},
             ),
         };
 
+        if let Some(handler) = &self.on_refresh {
+            crate::scroll::install_refresh(cx, handle, handler);
+        }
         // A virtual list is a `Group` to an assistive technology; carry the label
         // when one was authored.
         let mut semantics = Semantics::role(Role::Group);

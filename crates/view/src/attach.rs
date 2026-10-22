@@ -31,8 +31,13 @@ pub fn attach(
         cx.on_pointer(node, handler(host, pointers, control.clone(), scope));
     }
     if let Some(keys) = keys {
+        // A refresh comes without the focus.
+        let focus = keys.iter().any(|r| r.event != EventRoute::Refresh)
+            || control.as_ref().is_some_and(|c| c.responds());
         cx.on_key(node, handler(host, keys, control, scope));
-        cx.focusable(node, true);
+        if focus {
+            cx.focusable(node, true);
+        }
     }
     if drags(routes) {
         cx.draggable(node, true);
@@ -42,6 +47,9 @@ pub fn attach(
     }
     if let Some((kinds, watcher)) = notices(host, routes, scope) {
         cx.watch(node, kinds, watcher);
+    }
+    if refreshes(routes) {
+        cx.refreshable(node, true);
     }
     node
 }
@@ -72,10 +80,7 @@ pub fn attach_node(
         );
     }
     if let Some(keys) = keys {
-        // Links take the focus as their text holds them, not as heard, and
-        // a text as it is selectable.
-        let focus = keys.iter().any(|r| r.event != EventRoute::Link)
-            || control.as_ref().is_some_and(|c| c.kind.responds());
+        let focus = takes_focus(&keys, control.as_ref());
         store.set_key_handler(id, Box::new(handler(host, keys, control, scope)));
         if focus {
             store.set_focusable(id, true);
@@ -83,6 +88,25 @@ pub fn attach_node(
     }
     store.set_draggable(id, drags(routes));
     store.set_long_pressable(id, holds(routes));
+    if refreshes(routes) || store.is_refreshable(id) {
+        store.set_refreshable(id, refreshes(routes));
+    }
+}
+
+/// Whether a node whose key handler runs `keys` takes the focus for them as
+/// it is re-attached: links take it as their text holds them, not as heard,
+/// a text as it is selectable, and a refresh comes without it.
+fn takes_focus(keys: &[Route], control: Option<&Control>) -> bool {
+    keys.iter()
+        .any(|r| !matches!(r.event, EventRoute::Link | EventRoute::Refresh))
+        || control.is_some_and(|c| c.kind.responds())
+}
+
+/// Whether `routes` take refreshes: the viewport refreshes when pulled.
+fn refreshes(routes: &[Route]) -> bool {
+    routes
+        .iter()
+        .any(|route| route.event == EventRoute::Refresh)
 }
 
 /// Whether `routes` take drags.

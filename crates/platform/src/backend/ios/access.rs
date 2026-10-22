@@ -19,12 +19,12 @@ use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send};
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSArray, NSString};
 use objc2_ui_kit::{
-    UIAccessibilityElement, UIAccessibilityIsSwitchControlRunning,
-    UIAccessibilityIsVoiceOverRunning, UIAccessibilityLayoutChangedNotification,
-    UIAccessibilityPostNotification, UIAccessibilityTraitAdjustable, UIAccessibilityTraitButton,
-    UIAccessibilityTraitImage, UIAccessibilityTraitLink, UIAccessibilityTraitNotEnabled,
-    UIAccessibilityTraitSelected, UIAccessibilityTraitStaticText, UIAccessibilityTraits,
-    UIResponder,
+    NSObjectUIAccessibilityAction, UIAccessibilityCustomAction, UIAccessibilityElement,
+    UIAccessibilityIsSwitchControlRunning, UIAccessibilityIsVoiceOverRunning,
+    UIAccessibilityLayoutChangedNotification, UIAccessibilityPostNotification,
+    UIAccessibilityTraitAdjustable, UIAccessibilityTraitButton, UIAccessibilityTraitImage,
+    UIAccessibilityTraitLink, UIAccessibilityTraitNotEnabled, UIAccessibilityTraitSelected,
+    UIAccessibilityTraitStaticText, UIAccessibilityTraits, UIResponder,
 };
 
 use super::view::VisoView;
@@ -213,6 +213,11 @@ define_class!(
         fn decrement(&self) {
             self.perform(AccessAction::Decrement);
         }
+
+        #[unsafe(method(visoRefresh:))]
+        fn refresh(&self, _action: &AnyObject) -> bool {
+            self.perform(AccessAction::Refresh)
+        }
     }
 );
 
@@ -236,6 +241,23 @@ impl AccessElement {
         self.setAccessibilityHint(text(node.description.as_deref()).as_deref());
         self.setAccessibilityValue(text(spoken_value(node).as_deref()).as_deref());
         self.setAccessibilityTraits(traits(node));
+        let actions = node.actions.contains(AccessAction::Refresh).then(|| {
+            let name = NSString::from_str("Refresh");
+            let target: &AnyObject = self;
+            // SAFETY: the target is this element, which UIKit holds weakly
+            // and which answers `visoRefresh:` with the signature UIKit calls
+            // (the action as its one argument, a BOOL back).
+            let action = unsafe {
+                UIAccessibilityCustomAction::initWithName_target_selector(
+                    UIAccessibilityCustomAction::alloc(self.mtm()),
+                    &name,
+                    Some(target),
+                    objc2::sel!(visoRefresh:),
+                )
+            };
+            NSArray::from_retained_slice(&[action])
+        });
+        self.setAccessibilityCustomActions(actions.as_deref(), self.mtm());
         let b = node.bounds;
         let frame = CGRect {
             origin: CGPoint::new(f64::from(b.x) / scale, f64::from(b.y) / scale),

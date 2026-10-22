@@ -1593,6 +1593,8 @@ impl WindowState {
         !self.animations.is_empty()
             || self.store.is_transitioning()
             || self.store.is_scroll_moving()
+            || self.store.is_spinning()
+            || self.store.refreshes_due()
             || self.store.frame_clients_want_frame()
             || self.draws_clock
     }
@@ -3502,6 +3504,16 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                             ws.tell_focus();
                         }
                     }
+                    // The viewports a pull asked to refresh hear it.
+                    if ws.store.refreshes_due() {
+                        KeyRouter::route_refreshes(
+                            &mut ws.store,
+                            &mut ws.states,
+                            &ws.bindings,
+                            &mut ws.text_edits,
+                        );
+                        ws.tell_focus();
+                    }
                     // Poll the tasks spawned or woken since the last frame and
                     // run each finished one's continuation; what it writes joins
                     // this frame's transaction. No woken task (the steady case)
@@ -3578,6 +3590,10 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // The viewports a flick left coasting move on.
                     if ws.store.is_scroll_moving() {
                         ws.store.tick_scroll_motion(cx.frame_delta());
+                    }
+                    // The spinning arcs chase on.
+                    if ws.store.is_spinning() {
+                        ws.store.tick_spinners(cx.frame_delta());
                     }
                     ws.store.set_dirty_cause(DirtyCause::Other);
                     // Advance the games the window's views run — the ticks

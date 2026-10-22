@@ -53,6 +53,8 @@ impl WindowState {
             } else {
                 viso_ui::ScrollBarStyle::classic(dark)
             });
+        self.store
+            .set_refresh_style(viso_ui::RefreshStyle::native(dark));
         let lengths = self.store.length_env();
         if lengths.text_scale != text_scale {
             self.store.set_length_env(viso_ui::LengthEnv {

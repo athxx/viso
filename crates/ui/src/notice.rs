@@ -16,7 +16,7 @@
 
 use crate::animation::LookValue;
 use crate::component::NodeStore;
-use crate::layout::{Axis, OnAxis, Vec2};
+use crate::layout::{Axis, Vec2};
 use crate::node::NodeId;
 use crate::state::StateStore;
 use crate::virtual_list::VirtualLists;
@@ -183,7 +183,7 @@ pub fn deliver_notices(
         {
             let extent = store.bounds_main(node, axis);
             if extent > 0.0 {
-                let now = list.visible(store.scroll(node).on(axis).abs(), extent);
+                let now = list.visible(store.scroll_distance(node, axis), extent);
                 let watch = &mut store.notices_mut().watches[at];
                 if watch.range != Some(now) {
                     due[1] = Some(Notice::VisibleRange {

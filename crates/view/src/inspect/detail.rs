@@ -385,6 +385,11 @@ fn groups(store: &NodeStore, id: NodeId) -> Vec<PropertyGroup> {
             add(&mut content, "tint", color(*tint));
         }
         Some(Content::Path { .. }) => add(&mut content, "kind", "path".into()),
+        Some(Content::Spinner(spinner)) => {
+            add(&mut content, "kind", "spinner".into());
+            add(&mut content, "look", format!("{:?}", spinner.look));
+            add(&mut content, "spinning", spinner.spinning.to_string());
+        }
         Some(Content::Shader { .. }) => add(&mut content, "kind", "shader".into()),
         Some(Content::Asset { .. }) => add(&mut content, "kind", "asset".into()),
         Some(Content::Scene { slot, revision }) => {

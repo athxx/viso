@@ -147,6 +147,8 @@ pub enum Content {
     /// `revision`, rendered at the node's box and composited like an image.
     /// A scene has no intrinsic size, so a `Fit` axis sizes to zero.
     Scene { slot: SceneSlot, revision: u64 },
+    /// A spinner: work under way.
+    Spinner(crate::spinner::Spinner),
 }
 
 /// An image a brush node samples: the resource its texture parameter names,
@@ -177,6 +179,7 @@ impl Content {
             Content::Image { natural, .. }
             | Content::Path { natural, .. }
             | Content::Asset { natural, .. } => *natural,
+            Content::Spinner(spinner) => spinner.natural,
             Content::Shader { .. } | Content::Scene { .. } => Vec2::ZERO,
         }
     }
@@ -190,6 +193,7 @@ impl Content {
             Content::Image { natural, .. }
             | Content::Path { natural, .. }
             | Content::Asset { natural, .. } => natural.x,
+            Content::Spinner(spinner) => spinner.natural.x,
             Content::Shader { .. } | Content::Scene { .. } => 0.0,
         }
     }
@@ -205,7 +209,8 @@ impl Content {
             | Content::Path { .. }
             | Content::Asset { .. }
             | Content::Shader { .. }
-            | Content::Scene { .. } => None,
+            | Content::Scene { .. }
+            | Content::Spinner(_) => None,
         }
     }
 }

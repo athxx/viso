@@ -22,7 +22,28 @@
 //! wheel/drag scroll gesture is routed by `viso-ui`'s `ScrollRouter`, not by a
 //! widget-level handler.
 
-use viso_ui::{Axis, BoxStyle, BuildCx, Component, Role, ScrollBars, ScrollStyle, Semantics, Size};
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use viso_ui::{
+    Axis, BoxStyle, BuildCx, Component, EventCx, Handle, Role, ScrollBars, ScrollStyle, Semantics,
+    Size,
+};
+
+/// What a refreshable viewport runs when a pull asks it to refresh. Shared
+/// so a widget built by reference installs it.
+pub(crate) type RefreshHandler = Rc<RefCell<dyn FnMut(&mut EventCx<'_>, Handle)>>;
+
+/// Make the viewport `handle` names run `handler` when a pull, or an
+/// assistive technology, asks it to refresh.
+pub(crate) fn install_refresh(cx: &mut BuildCx<'_>, handle: Handle, handler: &RefreshHandler) {
+    let handler = Rc::clone(handler);
+    cx.on_key(handle, move |ev| {
+        if ev.refresh() {
+            (handler.borrow_mut())(ev, handle);
+        }
+    });
+}
 
 /// The visual and layout parameters of a [`Scroll`] viewport: the axis it
 /// scrolls along, its own visible size within its parent, and an optional
@@ -100,6 +121,7 @@ pub struct Scroll {
     /// An optional accessible label. `None` keeps the plain [`Role::Group`]
     /// viewport with no name.
     label: Option<String>,
+    on_refresh: Option<RefreshHandler>,
 }
 
 /// Construct a [`Scroll`] viewport with the given style and no content yet.
@@ -110,6 +132,7 @@ pub fn scroll(style: ScrollViewStyle) -> Scroll {
         style,
         content: None,
         label: None,
+        on_refresh: None,
     }
 }
 
@@ -135,6 +158,16 @@ impl Scroll {
         self.label = Some(label.into());
         self
     }
+
+    /// Refresh when pulled down past the start (a column): `handler` runs
+    /// with the viewport's handle when a pull, or an assistive technology,
+    /// asks, and the viewport shows refreshing until
+    /// [`set_refreshing`](EventCx::set_refreshing)`(viewport, false)` ends
+    /// it — from the handler, or from the task it starts.
+    pub fn on_refresh(mut self, handler: impl FnMut(&mut EventCx<'_>, Handle) + 'static) -> Self {
+        self.on_refresh = Some(Rc::new(RefCell::new(handler)));
+        self
+    }
 }
 
 impl Component for Scroll {
@@ -150,6 +183,7 @@ impl Component for Scroll {
                 style: self.style.background,
                 bars: self.style.bars,
                 tail: self.style.tail,
+                refresh: self.on_refresh.is_some(),
             },
             |cx| {
                 if let Some(content) = &self.content {
@@ -157,6 +191,9 @@ impl Component for Scroll {
                 }
             },
         );
+        if let Some(handler) = &self.on_refresh {
+            install_refresh(cx, handle, handler);
+        }
 
         // A scroll viewport is a `Group` to an assistive technology; carry the
         // label when one was authored.

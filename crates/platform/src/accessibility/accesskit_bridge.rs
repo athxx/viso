@@ -8,7 +8,8 @@
 //! conversion is per node and keeps no state.
 
 use accesskit::{
-    Action, ActionRequest, Live, Node, NodeId, Rect, Role, TreeId, TreeInfo, TreeUpdate,
+    Action, ActionData, ActionRequest, CustomAction, Live, Node, NodeId, Rect, Role, TreeId,
+    TreeInfo, TreeUpdate,
 };
 
 use super::{
@@ -34,7 +35,7 @@ pub(crate) fn tree_update(delta: SemanticsDelta) -> TreeUpdate {
 pub(crate) fn request(request: &ActionRequest) -> Option<AccessRequest> {
     Some(AccessRequest::Action {
         target: SemanticsId(request.target_node.0),
-        action: action_of(request.action)?,
+        action: action_of(request.action, request.data.as_ref())?,
     })
 }
 
@@ -100,6 +101,12 @@ fn node_of(node: AccessNode) -> Node {
     }
     for action in node.actions.iter() {
         out.add_action(accesskit_action(action));
+        if action == AccessAction::Refresh {
+            out.push_custom_action(CustomAction {
+                id: REFRESH,
+                description: "Refresh".into(),
+            });
+        }
     }
     out.set_children(node.children.into_iter().map(node_id).collect::<Vec<_>>());
     out
@@ -149,21 +156,29 @@ fn role(role: SemanticsRole) -> Role {
     }
 }
 
+/// The id of the custom action a refreshable viewport offers.
+const REFRESH: i32 = 1;
+
 fn accesskit_action(action: AccessAction) -> Action {
     match action {
         AccessAction::Focus => Action::Focus,
         AccessAction::Click => Action::Click,
         AccessAction::Increment => Action::Increment,
         AccessAction::Decrement => Action::Decrement,
+        AccessAction::Refresh => Action::CustomAction,
     }
 }
 
-fn action_of(action: Action) -> Option<AccessAction> {
+/// The action `action` with `data` asks for.
+fn action_of(action: Action, data: Option<&ActionData>) -> Option<AccessAction> {
     Some(match action {
         Action::Focus => AccessAction::Focus,
         Action::Click => AccessAction::Click,
         Action::Increment => AccessAction::Increment,
         Action::Decrement => AccessAction::Decrement,
+        Action::CustomAction if data == Some(&ActionData::CustomAction(REFRESH)) => {
+            AccessAction::Refresh
+        }
         _ => return None,
     })
 }
@@ -326,8 +341,18 @@ mod tests {
             })
         );
         for action in AccessAction::ALL {
-            assert_eq!(action_of(accesskit_action(action)), Some(action));
+            let data =
+                (action == AccessAction::Refresh).then_some(ActionData::CustomAction(REFRESH));
+            assert_eq!(
+                action_of(accesskit_action(action), data.as_ref()),
+                Some(action)
+            );
         }
+        assert_eq!(
+            request(&ask(Action::CustomAction)),
+            None,
+            "no custom action named"
+        );
         assert_eq!(request(&ask(Action::ScrollIntoView)), None);
     }
 

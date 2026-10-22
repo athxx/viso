@@ -4628,6 +4628,7 @@ export record AdaptiveColumns { mode: AutoRepeat = AutoRepeat::fill; min: MixedL
 - `axis: ScrollAxes = ScrollAxes::vertical`（`vertical; horizontal; both;`），失效 `MEASURE|LAYOUT`；
 - `scroll_bars: Bool = true`：是否显示滚动条（样式随平台与系统设置，见架构文档“滚动条”）；`tail: Bool = false`：打开时位于内容末端，停在末端期间内容增长时平滑跟随末端，滚离末端后不再跟随、回到末端后恢复（日志、聊天）；两者取常量，`VirtualList` 同样接受；
 - 事件 `scroll_changed(ScrollChanged)`，字段为 `offset: Offset`、`viewport: SizeDp`、`content: SizeDp`（`SizeDp { width: Dp; height: Dp; }`）；
+- 事件 `refresh`（无载荷）：声明它的纵向视口支持下拉刷新——越过起点下拉到阈值（Apple 为按住时到达，Material 为松手时）或辅助技术的 Refresh 操作即开始刷新并在下一帧投递；`refreshing: Bool`（可绑定，失效 `TRANSFORM|PAINT`）由 Owner 决定刷新是否进行：下拉开始的刷新若在投递后的下一次布局前没有被 `refreshing` 变为 `true` 确认就结束，`refreshing` 变为 `false` 时结束（`on refresh { loading = true; reload(); }`，加载完成时 `loading = false`）；`VirtualList` 同样接受；
 - 子节点在滚动轴上的约束无界；滚动偏移变化只标记视口子树 `TRANSFORM|HIT_TEST|PAINT`，不触发布局（ADR 0007）；
 - 滚轮与触控板事件先送往最内层可在该轴滚动的视口，到达边界后沿祖先链传递；
 - 水平滚动的视口在 RTL 下以右边为起点：内容右边与视口右边对齐，偏移在 `[-range, 0]` 内取值（0 为起点，向左为负）；方向翻转时偏移保持到起点的距离；
@@ -5017,6 +5018,7 @@ Named Node `n` 在同一 Component 的 Action 与 Handler 中以 `n: NodeRef<T>`
 | `scroll_bars` / `tail`     | `Bool`         | `true` / `false`| `LAYOUT`          | —（见 U3.7）           |
 | `width` / `height`         | `Sizing`       | `fill` / `fill` | `MEASURE\|LAYOUT` | 见 U3.3                |
 | `on visible_range_changed` | `VisibleRange` | —               | —                 | —                      |
+| `refreshing` / `on refresh` | `Bool` / —    | `false` / —     | `TRANSFORM\|PAINT` | —（见 U3.7）          |
 
 `VisibleRange` 字段为 `first: U64`、`last: U64`、`count: U64`。
 

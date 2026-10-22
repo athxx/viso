@@ -35,6 +35,7 @@ use crate::dirty::DirtyClass;
 use crate::input::PointerId;
 use crate::layout::{Axis, OnAxis, Vec2};
 use crate::node::NodeId;
+use crate::refresh::PullLook;
 
 /// How a released flick slows down.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -450,6 +451,8 @@ struct Pull {
     shown: f32,
     /// How it relaxes once let go; `None` while a finger holds it.
     spring: Option<Spring>,
+    /// Whether a finger pulled it, not a coast's bounce.
+    finger: bool,
 }
 
 /// A pull relaxing from `x0` at speed `v0` (displayed points, signed as the
@@ -468,14 +471,14 @@ impl Spring {
 }
 
 /// The shown pull for `raw` points of travel past the end of a viewport
-/// `extent` long, and back.
-fn shown_pull(raw: f32, extent: f32) -> f32 {
-    let d = (extent * PULL_RANGE).max(1.0);
+/// that shows a pull up to `limit`, and back.
+fn shown_pull(raw: f32, limit: f32) -> f32 {
+    let d = limit.max(1.0);
     (raw.abs() * PULL_COEFF * d / (raw.abs() * PULL_COEFF + d)).copysign(raw)
 }
 
-fn raw_pull(shown: f32, extent: f32) -> f32 {
-    let d = (extent * PULL_RANGE).max(1.0);
+fn raw_pull(shown: f32, limit: f32) -> f32 {
+    let d = limit.max(1.0);
     let s = shown.abs().min(d * 0.999);
     (s * d / (PULL_COEFF * (d - s))).copysign(shown)
 }
@@ -548,6 +551,7 @@ impl NodeStore {
         !self.motions.flings.is_empty()
             || !self.motions.glides.is_empty()
             || self.motions.pulls.iter().any(|p| p.spring.is_some())
+            || self.refreshers.easing()
     }
 
     /// Whether viewport `id` glides toward a target.
@@ -657,30 +661,45 @@ impl NodeStore {
     }
 
     /// The shift a bounced pull adds to the content of the viewport in slot
-    /// `index`: nothing for a stretch, or with no pull.
+    /// `index`: nothing for a stretch or a pull a puck shows, or with no
+    /// pull.
     #[inline]
     pub(crate) fn pull_shift_at(&self, index: u32) -> Vec2 {
-        if self.motions.pulls.is_empty()
-            || self.motions.physics.overscroll != OverscrollStyle::Bounce
-        {
+        if self.motions.pulls.is_empty() {
             return Vec2::ZERO;
         }
         self.motions
             .pulls
             .iter()
             .find(|p| p.viewport.index() == index && self.arena().is_live(p.viewport))
+            .filter(|p| self.pull_look(p) == PullLook::Shift)
             .map_or(Vec2::ZERO, |p| axis_vec(p.axis, p.shown))
+    }
+
+    /// How pull `p` shows.
+    fn pull_look(&self, p: &Pull) -> PullLook {
+        let physics = match self.motions.physics.overscroll {
+            OverscrollStyle::Stretch => PullLook::Stretch,
+            OverscrollStyle::Bounce | OverscrollStyle::None => PullLook::Shift,
+        };
+        if self.refreshers.is_empty() {
+            return physics;
+        }
+        self.refresh_pull_look(p.viewport, p.axis, p.shown, p.finger, physics)
     }
 
     /// The stretch a pull gives viewport `id`'s content: the axis, the
     /// factor, and the end it stretches from (layout space).
     pub(crate) fn pull_stretch(&self, id: NodeId) -> Option<(Axis, f32, f32)> {
-        if self.motions.pulls.is_empty()
-            || self.motions.physics.overscroll != OverscrollStyle::Stretch
-        {
+        if self.motions.pulls.is_empty() {
             return None;
         }
-        let p = self.motions.pulls.iter().find(|p| p.viewport == id)?;
+        let p = self
+            .motions
+            .pulls
+            .iter()
+            .find(|p| p.viewport == id)
+            .filter(|p| self.pull_look(p) == PullLook::Stretch)?;
         let b = self.bounds(id);
         let (start, extent) = match p.axis {
             Axis::Row => (b.x, b.w),
@@ -793,6 +812,7 @@ impl NodeStore {
             pull.spring = Some(spring);
             self.motions.pulls[i] = pull;
         }
+        self.tick_refreshers(dt as f32);
     }
 
     /// Ease every glide `dt` seconds along its spring.
@@ -841,14 +861,78 @@ impl NodeStore {
         }
     }
 
-    /// The farthest viewport `id` shows pulled along `axis`.
+    /// The farthest viewport `id` shows pulled along `axis`: a refreshable
+    /// one, far enough past its mark.
     fn pull_limit(&self, id: NodeId, axis: Axis) -> f32 {
         let b = self.bounds(id);
         let extent = match axis {
             Axis::Row => b.w,
             Axis::Column => b.h,
         };
-        (extent * PULL_RANGE).max(1.0)
+        let limit = (extent * PULL_RANGE).max(1.0);
+        match self.refresh_reach(id) {
+            Some(reach) if axis == Axis::Column => limit.max(reach),
+            _ => limit,
+        }
+    }
+
+    /// Add `by` to how far viewport `id` shows pulled along `axis`: a pull a
+    /// finger holds stays held, one relaxing relaxes from there, and with
+    /// none a new one springs back from `by`.
+    pub(crate) fn shift_pull(&mut self, id: NodeId, axis: Axis, by: f32) {
+        if by == 0.0 {
+            return;
+        }
+        self.mark_dirty(id, DirtyClass::TRANSFORM);
+        let Some(at) = self.motions.pulls.iter().position(|p| p.viewport == id) else {
+            self.motions.pulls.push(Pull {
+                viewport: id,
+                axis,
+                shown: by,
+                spring: Some(Spring {
+                    x0: f64::from(by),
+                    v0: 0.0,
+                    t: 0.0,
+                }),
+                finger: false,
+            });
+            return;
+        };
+        let pull = &mut self.motions.pulls[at];
+        pull.shown += by;
+        if let Some(spring) = &mut pull.spring {
+            *spring = Spring {
+                x0: f64::from(pull.shown),
+                v0: 0.0,
+                t: 0.0,
+            };
+        }
+        if pull.shown.abs() < 1e-3 {
+            self.motions.pulls.swap_remove(at);
+        }
+    }
+
+    /// Whether a finger holds viewport `id` pulled down past its start.
+    pub(crate) fn finger_pull(&self, id: NodeId) -> bool {
+        self.motions
+            .pulls
+            .iter()
+            .any(|p| p.viewport == id && p.finger && p.spring.is_none() && p.shown < 0.0)
+    }
+
+    /// Drop the pull a finger holds of viewport `id` past its start; whether
+    /// there was one.
+    pub(crate) fn take_finger_pull(&mut self, id: NodeId) -> bool {
+        let at = self
+            .motions
+            .pulls
+            .iter()
+            .position(|p| p.viewport == id && p.finger && p.spring.is_none() && p.shown < 0.0);
+        if let Some(at) = at {
+            self.motions.pulls.swap_remove(at);
+            self.mark_dirty(id, DirtyClass::TRANSFORM);
+        }
+        at.is_some()
     }
 
     /// A coast reached viewport `id`'s end at `velocity`: it carries on past
@@ -874,6 +958,7 @@ impl NodeStore {
             axis,
             shown: x0 as f32,
             spring: Some(Spring { x0, v0, t: 0.0 }),
+            finger: false,
         });
     }
 
@@ -930,8 +1015,10 @@ impl NodeStore {
         }
     }
 
-    /// Every pull a finger holds relaxes from rest.
+    /// Every pull a finger holds relaxes from rest; a refresher's puck
+    /// takes the one it showed.
     pub(crate) fn let_go_pulls(&mut self) {
+        self.release_refreshers();
         for pull in &mut self.motions.pulls {
             if pull.spring.is_none() {
                 pull.spring = Some(Spring {
@@ -1052,19 +1139,24 @@ impl NodeStore {
         }
     }
 
-    /// Whether a pan from `from` along `axis` may pull a viewport past its
-    /// end: one at or above it scrolls that way with range to show.
-    pub(crate) fn can_pull(&self, from: NodeId, axis: Axis) -> bool {
-        self.motions.physics.overscroll != OverscrollStyle::None
-            && self.puller(from, axis).is_some()
+    /// Whether a pan from `from` along `axis`, moving the offset by
+    /// `delta`, may pull a viewport past its end: one at or above it scrolls
+    /// that way with range to show, or refreshes when pulled so.
+    pub(crate) fn can_pull(&self, from: NodeId, axis: Axis, delta: f32) -> bool {
+        self.puller(from, axis).is_some_and(|n| {
+            self.motions.physics.overscroll != OverscrollStyle::None
+                || self.refresh_takes(n, axis, delta)
+        })
     }
 
     /// The viewport at or above `from` a pull along `axis` shows on: the
-    /// innermost scrolling that way with range.
+    /// innermost scrolling that way with range, or refreshable.
     fn puller(&self, from: NodeId, axis: Axis) -> Option<NodeId> {
         let mut node = Some(from);
         while let Some(n) = node {
-            if self.scroll_axis(n) == Some(axis) && self.scroll_range(n, axis) > 0.0 {
+            if self.scroll_axis(n) == Some(axis)
+                && (self.scroll_range(n, axis) > 0.0 || self.is_refreshable(n))
+            {
                 return Some(n);
             }
             node = self.arena().parent(n);
@@ -1092,8 +1184,8 @@ impl NodeStore {
                 continue;
             };
             let pull = self.motions.pulls[at];
-            let extent = self.pull_limit(pull.viewport, axis) / PULL_RANGE;
-            let raw = raw_pull(pull.shown, extent) + d;
+            let limit = self.pull_limit(pull.viewport, axis);
+            let raw = raw_pull(pull.shown, limit) + d;
             self.mark_dirty(pull.viewport, DirtyClass::TRANSFORM);
             // Back within the range (to within a rounding of it): the rest
             // scrolls.
@@ -1101,7 +1193,7 @@ impl NodeStore {
                 self.motions.pulls.swap_remove(at);
                 if raw.abs() < 1e-3 { 0.0 } else { raw }
             } else {
-                self.motions.pulls[at].shown = shown_pull(raw, extent);
+                self.motions.pulls[at].shown = shown_pull(raw, limit);
                 0.0
             };
             match axis {
@@ -1115,9 +1207,6 @@ impl NodeStore {
     /// What of a pan's `delta` from `from` no viewport could scroll pulls
     /// the innermost one along its axis past its end.
     pub(crate) fn pull_on(&mut self, from: NodeId, delta: Vec2) {
-        if self.motions.physics.overscroll == OverscrollStyle::None {
-            return;
-        }
         for axis in [Axis::Row, Axis::Column] {
             let d = delta.on(axis);
             if d == 0.0 {
@@ -1126,14 +1215,19 @@ impl NodeStore {
             let Some(viewport) = self.puller(from, axis) else {
                 continue;
             };
-            let extent = self.pull_limit(viewport, axis) / PULL_RANGE;
-            let shown = shown_pull(d, extent);
+            if self.motions.physics.overscroll == OverscrollStyle::None
+                && !self.refresh_takes(viewport, axis, d)
+            {
+                continue;
+            }
+            let shown = shown_pull(d, self.pull_limit(viewport, axis));
             self.motions.pulls.retain(|p| p.viewport != viewport);
             self.motions.pulls.push(Pull {
                 viewport,
                 axis,
                 shown,
                 spring: None,
+                finger: true,
             });
             self.mark_dirty(viewport, DirtyClass::TRANSFORM);
         }
@@ -1144,6 +1238,7 @@ impl NodeStore {
     /// carrying each axis of it coasts on, the way the content moved, with
     /// the speed of a coast caught moments before the same way added.
     pub(crate) fn release_pan(&mut self, from: NodeId, velocity: Vec2) {
+        self.release_refreshers();
         let caught = self.motions.caught.take();
         let now = self.motions.input_time;
         for axis in [Axis::Row, Axis::Column] {
@@ -1158,9 +1253,8 @@ impl NodeStore {
                 let pull = self.motions.pulls[at];
                 // The finger's speed as the pull shows it: the curve's slope
                 // where it stands.
-                let extent = self.pull_limit(pull.viewport, axis) / PULL_RANGE;
-                let d = (extent * PULL_RANGE).max(1.0);
-                let raw = raw_pull(pull.shown, extent).abs();
+                let d = self.pull_limit(pull.viewport, axis);
+                let raw = raw_pull(pull.shown, d).abs();
                 let slope = PULL_COEFF * d * d / (raw * PULL_COEFF + d).powi(2);
                 self.motions.pulls[at].spring = Some(Spring {
                     x0: f64::from(pull.shown),

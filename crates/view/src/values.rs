@@ -220,6 +220,7 @@ pub(crate) fn control_cells(
         look.rotation,
         look.transform_origin,
         control.node.cursor,
+        control.node.refreshing,
     ])
     .flatten()
     .chain(arms)
@@ -238,9 +239,9 @@ pub(crate) fn control_cells(
 /// `align`, a field's `placeholder`, `secure`, `multiline`, `input` and
 /// `max_length`, a number field's `step` and `precision` and a check's
 /// caption, its `translate`, `scale`, `rotation` and `transform_origin`, and
-/// its `cursor`, its text's `font_style`, `spans` and `selectable`, and its
-/// `shadow`.
-const SHOWN: usize = 44;
+/// its `cursor`, its text's `font_style`, `spans` and `selectable`, its
+/// `shadow`, and a refreshable viewport's `refreshing`.
+const SHOWN: usize = 45;
 
 /// The input of each value a node shows, in order.
 const SHOWN_INPUTS: [ControlInput; SHOWN] = [
@@ -288,6 +289,7 @@ const SHOWN_INPUTS: [ControlInput; SHOWN] = [
     ControlInput::Spans,
     ControlInput::Selectable,
     ControlInput::Shadow,
+    ControlInput::Refreshing,
 ];
 
 /// Where its `translate` sits among the values a node shows.
@@ -306,6 +308,10 @@ const PIECES: usize = 40;
 
 /// Where its `shadow` sits among the values a node shows.
 const SHADOW: usize = 43;
+
+/// Where a refreshable viewport's `refreshing` sits among the values a node
+/// shows.
+const REFRESHING: usize = 44;
 
 /// Where its background, opacity, corner radius and border sit among the
 /// values a node shows.
@@ -512,6 +518,7 @@ impl Shown {
             pieces,
             selectable,
             shadow,
+            refreshing,
         ] = &shows;
         let spanned = crate::text_style::spans(pieces);
         let changed = |at: usize| prior.is_none_or(|prior| prior[at] != shows[at]);
@@ -606,6 +613,11 @@ impl Shown {
         }
         if shown(CURSOR) && changed(CURSOR) {
             store.set_cursor(self.node, cursor_of(cursor));
+        }
+        // A bound `refreshing` makes the viewport's refreshes its owner's.
+        if given(REFRESHING) && changed(REFRESHING) {
+            store.set_refresh_controlled(self.node, true);
+            store.set_refreshing(self.node, truth(refreshing, false));
         }
         // An autofocus node takes the focus as it mounts, unless something
         // already holds it.

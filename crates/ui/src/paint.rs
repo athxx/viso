@@ -810,6 +810,7 @@ pub(crate) fn paint_content(
             tint,
             ..
         } => paint_asset(draw, *natural, *fit, *tint, world, mask, out),
+        Content::Spinner(spinner) => spinner.paint(world, out),
     }
 }
 
@@ -1122,6 +1123,7 @@ mod tests {
                     style: BoxStyle::solid(RED),
                     bars: crate::scroll_bar::ScrollBars::Hidden,
                     tail: false,
+                    refresh: false,
                 },
                 |cx| {
                     content = Some(
@@ -2269,6 +2271,7 @@ mod tests {
                             style: BoxStyle::solid(RED),
                             bars: crate::scroll_bar::ScrollBars::Hidden,
                             tail: false,
+                            refresh: false,
                         },
                         |cx| {
                             for _ in 0..n {

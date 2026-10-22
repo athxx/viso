@@ -229,15 +229,19 @@ pub enum AccessAction {
     Click,
     Increment,
     Decrement,
+    /// Refresh a viewport's content, as pulling it down past its start
+    /// does: offered as a custom action named "Refresh".
+    Refresh,
 }
 
 impl AccessAction {
     /// Every action, in declaration order.
-    pub const ALL: [AccessAction; 4] = [
+    pub const ALL: [AccessAction; 5] = [
         AccessAction::Focus,
         AccessAction::Click,
         AccessAction::Increment,
         AccessAction::Decrement,
+        AccessAction::Refresh,
     ];
 
     const fn bit(self) -> u8 {
@@ -259,6 +263,7 @@ impl AccessRequest {
                     AccessAction::Click => 3,
                     AccessAction::Increment => 4,
                     AccessAction::Decrement => 5,
+                    AccessAction::Refresh => 6,
                 };
                 (kind, target.0)
             }
@@ -273,6 +278,7 @@ impl AccessRequest {
             3 => AccessAction::Click,
             4 => AccessAction::Increment,
             5 => AccessAction::Decrement,
+            6 => AccessAction::Refresh,
             _ => return None,
         };
         Some(Self::Action {
@@ -299,12 +305,16 @@ mod tests {
                 target: SemanticsId(3 | 9 << 32),
                 action: AccessAction::Decrement,
             },
+            AccessRequest::Action {
+                target: SemanticsId(5),
+                action: AccessAction::Refresh,
+            },
         ];
         for request in requests {
             let (kind, target) = request.to_words();
             assert_eq!(AccessRequest::from_words(kind, target), Some(request));
         }
-        assert_eq!(AccessRequest::from_words(6, 0), None);
+        assert_eq!(AccessRequest::from_words(7, 0), None);
     }
 
     #[test]

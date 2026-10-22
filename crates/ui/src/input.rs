@@ -668,7 +668,7 @@ fn pan_step(
                 Axis::Column
             };
             let want = -travel.on(axis);
-            if !can_scroll(store, from, axis, want) && !store.can_pull(from, axis) {
+            if !can_scroll(store, from, axis, want) && !store.can_pull(from, axis, want) {
                 if let Some(s) = store.contacts_mut().slot_mut(pointer) {
                     s.gesture = Gesture::Held;
                 }
@@ -1778,6 +1778,24 @@ impl KeyRouter {
             && key_handler_dispatch(store, states, bindings, edits, layer, KeyPayload::Dismiss).ran
     }
 
+    /// Tell each viewport a pull asked to refresh, through its key handler
+    /// ([`EventCx::refresh`]). Returns whether a handler ran.
+    pub fn route_refreshes(
+        store: &mut NodeStore,
+        states: &mut StateStore,
+        bindings: &BindingTable,
+        edits: &mut TextEdits,
+    ) -> bool {
+        let mut asked = Vec::new();
+        store.take_refresh_asks(&mut asked);
+        let mut ran = false;
+        for node in asked {
+            ran |=
+                key_handler_dispatch(store, states, bindings, edits, node, KeyPayload::Refresh).ran;
+        }
+        ran
+    }
+
     /// Deliver every wake whose time came ([`EventCx::wake_after`]) to its
     /// node's key handler, in the order they fired; a node gone drops its
     /// wake. Returns whether a handler ran.
@@ -1897,6 +1915,7 @@ enum KeyPayload<'e> {
     Wake(u32),
     Focus(FocusChange),
     Access(crate::access::Access),
+    Refresh,
 }
 
 /// Call one node's key handler with `payload`, then apply everything the
@@ -1921,6 +1940,7 @@ fn key_handler_dispatch(
             KeyPayload::Wake(token) => EventCx::__new_wake(states, bindings, token),
             KeyPayload::Focus(change) => EventCx::__new_focus(states, bindings, change),
             KeyPayload::Access(access) => EventCx::__new_access(states, bindings, access),
+            KeyPayload::Refresh => EventCx::__new_refresh(states, bindings),
         };
         cx.__set_focused(store.focused());
         cx.__set_services(store.__services());

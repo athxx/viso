@@ -53,11 +53,14 @@ pub enum EventRoute {
     /// `link` (`LinkEvent`): a link of the node's text, or of a text under
     /// it, was activated by a click or Enter.
     Link = 19,
+    /// A `Scroll`'s or `VirtualList`'s `refresh`: a pull down past its start,
+    /// or an assistive technology, asked it to refresh.
+    Refresh = 20,
 }
 
 impl EventRoute {
     /// Every route, by discriminant.
-    pub const ALL: [EventRoute; 20] = [
+    pub const ALL: [EventRoute; 21] = [
         EventRoute::Click,
         EventRoute::Tap,
         EventRoute::PointerDown,
@@ -78,6 +81,7 @@ impl EventRoute {
         EventRoute::DragEnd,
         EventRoute::LongPress,
         EventRoute::Link,
+        EventRoute::Refresh,
     ];
 
     /// The route of standard DSL event `event`, `None` for an event the runtime
@@ -112,6 +116,7 @@ impl EventRoute {
             EventRoute::DragEnd => "drag_end",
             EventRoute::LongPress => "long_press",
             EventRoute::Link => "link",
+            EventRoute::Refresh => "refresh",
         }
     }
 
@@ -138,6 +143,7 @@ impl EventRoute {
             EventRoute::DragEnd => "DragEnd",
             EventRoute::LongPress => "LongPress",
             EventRoute::Link => "Link",
+            EventRoute::Refresh => "Refresh",
         }
     }
 
@@ -151,10 +157,11 @@ impl EventRoute {
         matches!(self, EventRoute::KeyDown | EventRoute::KeyUp)
     }
 
-    /// Whether the node's key handler delivers it: a key sample, or an
-    /// activated link, which reaches a text and its ancestors that way.
+    /// Whether the node's key handler delivers it: a key sample, an
+    /// activated link, which reaches a text and its ancestors that way, or
+    /// a refresh asked of a viewport.
     pub fn by_key_handler(self) -> bool {
-        self.is_key() || self == EventRoute::Link
+        self.is_key() || matches!(self, EventRoute::Link | EventRoute::Refresh)
     }
 
     /// Whether a drag the node wins delivers it.

@@ -125,6 +125,7 @@ const SCROLL: &[WidgetProperty] = &[
     prop("axis", "Axis"),
     prop("scroll_bars", "Bool"),
     prop("tail", "Bool"),
+    prop("refreshing", "Bool"),
 ];
 
 /// Text style properties `Text` and `TextInput` share.
@@ -232,6 +233,7 @@ const VIRTUAL_LIST: &[WidgetProperty] = &[
     prop("overscan", "U32"),
     prop("scroll_bars", "Bool"),
     prop("tail", "Bool"),
+    prop("refreshing", "Bool"),
 ];
 
 /// The `grid.*` group a `Grid` provides to its children.
@@ -296,9 +298,14 @@ const TEXT_INPUT_EVENTS: &[WidgetEvent] = &[
 ];
 const SELECTED_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("selected_changed", "SelectionChanged")];
 const CURRENT_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("current_changed", "SelectionChanged")];
-const SCROLL_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("scroll_changed", "ScrollChanged")];
-const VIRTUAL_LIST_EVENTS: &[WidgetEvent] =
-    &[WidgetEvent::new("visible_range_changed", "VisibleRange")];
+const SCROLL_EVENTS: &[WidgetEvent] = &[
+    WidgetEvent::new("scroll_changed", "ScrollChanged"),
+    WidgetEvent::signal("refresh"),
+];
+const VIRTUAL_LIST_EVENTS: &[WidgetEvent] = &[
+    WidgetEvent::new("visible_range_changed", "VisibleRange"),
+    WidgetEvent::signal("refresh"),
+];
 const KEY_SHORTCUT_EVENTS: &[WidgetEvent] = &[WidgetEvent::signal("triggered")];
 
 /// Any number of children, in the default slot `children`.

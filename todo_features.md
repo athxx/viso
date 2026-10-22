@@ -144,7 +144,7 @@ Rules:
   on drag.
 - [x] Scrollbars: overlay and classic, draggable thumb, track paging, auto-hide.
 - [x] Smooth `scroll_to` / `scroll_into_view` with animation; auto-tail (stick to end).
-- [ ] Pull-to-refresh.
+- [x] Pull-to-refresh.
 - [ ] Sticky section headers in `List`.
 - [ ] Scroll snapping and a `Pager` / `Carousel` widget.
 - [ ] 2D virtual grid (`LazyGrid`, fixed and masonry columns).

@@ -67,6 +67,10 @@ pub fn property_dirty_class(name: &str) -> DirtyClass {
         // the node's box, rounded by its corner radius.
         "clip" => D::PAINT | D::HIT_TEST,
 
+        // A refresh starting or ending moves the indicator and the gap it
+        // holds open, and repaints the spinner.
+        "refreshing" => D::TRANSFORM | D::PAINT,
+
         // Visibility toggles participation in layout and paint and what is
         // exposed to accessibility.
         "visible" | "hidden" | "visibility" => D::LAYOUT | D::PAINT | D::SEMANTICS,

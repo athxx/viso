@@ -1859,11 +1859,13 @@ fn layout_scroll_chrome(
         if !tree.chrome(track) {
             continue;
         }
-        let thick = match tree.input(track).size().on(cross) {
-            Length::Fixed(t) => t.clamp(0.0, rect_len(viewport, cross)),
-            _ => 0.0,
+        // A bar keeps a fixed thickness along an edge; other chrome covers
+        // the viewport.
+        let (thick, cover) = match tree.input(track).size().on(cross) {
+            Length::Fixed(t) => (t.clamp(0.0, rect_len(viewport, cross)), false),
+            _ => (rect_len(viewport, cross), true),
         };
-        let across = if bar_first {
+        let across = if bar_first || cover {
             rect_start(viewport, cross)
         } else {
             rect_start(viewport, cross) + rect_len(viewport, cross) - thick

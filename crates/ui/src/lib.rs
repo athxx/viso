@@ -47,12 +47,14 @@ pub mod notice;
 pub mod number_format;
 pub mod paint;
 pub mod reactive;
+pub mod refresh;
 pub mod scenes;
 pub mod scroll_bar;
 pub mod scroll_motion;
 pub mod semantics;
 pub mod shader;
 pub mod shadow;
+pub mod spinner;
 pub mod state;
 #[cfg(feature = "hot-reload")]
 pub mod state_origin;
@@ -146,6 +148,7 @@ pub use reactive::{
     Cleanup, ComputeCx, ComputedId, ComputedStore, DepCursor, EffectCx, EffectId, EffectStore,
     ProjectId, SemanticProjector,
 };
+pub use refresh::RefreshStyle;
 pub use scenes::{SceneSlots, SceneSync, SceneTarget};
 pub use scroll_bar::{ScrollBarStyle, ScrollBars};
 pub use scroll_motion::{FlingCurve, OverscrollStyle, ScrollPhysics};
@@ -154,6 +157,7 @@ pub use semantics::{
 };
 pub use shader::ShaderSlots;
 pub use shadow::Shadow;
+pub use spinner::{Spinner, SpinnerLook};
 pub use state::{StateId, StateStore, StateValue};
 pub use structure::{StructureCx, StructureHookId, run_structure_hooks};
 pub use style::{BoxStyle, InteractionStyle, StyleId};

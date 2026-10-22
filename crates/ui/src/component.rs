@@ -186,6 +186,9 @@ pub struct ScrollStyle {
     /// Whether it opens at the end of its content and follows the end as
     /// the content grows, while it stands there (a log, a chat).
     pub tail: bool,
+    /// Whether a column refreshes when pulled down past its start (see
+    /// [`refresh`](crate::refresh)).
+    pub refresh: bool,
 }
 
 impl Default for ScrollStyle {
@@ -196,6 +199,7 @@ impl Default for ScrollStyle {
             style: BoxStyle::NONE,
             bars: crate::scroll_bar::ScrollBars::Auto,
             tail: false,
+            refresh: false,
         }
     }
 }
@@ -223,6 +227,9 @@ pub struct VirtualListStyle {
     /// Whether it opens at its last row and follows the end as rows are
     /// added, while it stands there (a log, a chat).
     pub tail: bool,
+    /// Whether a column refreshes when pulled down past its start (see
+    /// [`refresh`](crate::refresh)).
+    pub refresh: bool,
 }
 
 impl Default for VirtualListStyle {
@@ -235,6 +242,7 @@ impl Default for VirtualListStyle {
             style: BoxStyle::NONE,
             bars: crate::scroll_bar::ScrollBars::Auto,
             tail: false,
+            refresh: false,
         }
     }
 }
@@ -718,6 +726,10 @@ pub struct NodeStore {
     pub(crate) motions: crate::scroll_motion::ScrollMotions,
     /// Cold: the viewports' scroll bars and how they look.
     pub(crate) bars: crate::scroll_bar::Bars,
+    /// Cold: the viewports that refresh when pulled, and how they show it.
+    pub(crate) refreshers: crate::refresh::Refreshers,
+    /// Cold: the spinners that spin.
+    pub(crate) spinners: crate::spinner::Spinners,
     /// Cold: the nodes that show a descendant as active.
     actives: crate::semantics::ActiveDescendants,
     /// Where the focus was before it last moved, until the move is told.
@@ -853,6 +865,8 @@ impl NodeStore {
         self.access.clear();
         self.motions.clear();
         self.bars.clear();
+        self.refreshers.clear();
+        self.spinners.clear();
         self.actives.clear();
         self.focus_scope = None;
         self.draggable_regions.clear();
@@ -1767,6 +1781,9 @@ impl NodeStore {
             && self.direction_at(id.index()) == crate::adaptive::LayoutDirection::Rtl
         {
             (-range, 0.0)
+        } else if axis == Axis::Column {
+            // A refresh holds a gap open before the content.
+            (-self.refreshers.held(id), range)
         } else {
             (0.0, range)
         }
@@ -2743,6 +2760,17 @@ impl NodeStore {
         }
         *slot = Some(state);
         self.mark_dirty(id, DirtyClass::SEMANTICS);
+    }
+
+    /// Node `id`'s spinner, to change in place; the caller marks it.
+    pub(crate) fn spinner_mut(&mut self, id: NodeId) -> Option<&mut crate::spinner::Spinner> {
+        if !self.arena.is_live(id) {
+            return None;
+        }
+        match self.content_payload[id.index() as usize].as_deref_mut() {
+            Some(Content::Spinner(spinner)) => Some(spinner),
+            _ => None,
+        }
     }
 
     /// What a check draws beside its caption, `None` for a node that is no
@@ -4650,6 +4678,8 @@ impl NodeStore {
         self.shadows.forget(i as u32);
         self.access.forget(i as u32);
         self.bars.forget(i as u32);
+        self.refreshers.forget(i as u32);
+        self.spinners.forget(i as u32);
         self.actives.forget(i as u32);
         self.clips[i] = false;
         self.overlay[i] = false;
@@ -4822,6 +4852,7 @@ impl NodeStore {
         self.lay_layers(root, surface, scratch);
         self.follow_tails();
         self.settle_scroll_requests();
+        self.sync_refreshers();
         if self.sync_scroll_bars() {
             let mut redo = Vec::new();
             self.relayout_dirty(root, surface, scratch, &mut redo);
@@ -5051,6 +5082,8 @@ impl NodeStore {
         // applies, once layout knows the range.
         self.follow_tails();
         self.settle_scroll_requests();
+        // A refresher starts or ends and its indicator follows its pull.
+        self.sync_refreshers();
         // The bars follow their viewports; a thumb whose length changed lays
         // out again, alone in its track.
         if self.sync_scroll_bars() {
@@ -6169,6 +6202,9 @@ impl<'a> BuildCx<'a> {
         if style.tail {
             self.store.set_scroll_tail(id, true);
         }
+        if style.refresh {
+            self.store.set_refreshable(id, true);
+        }
         Handle { id }
     }
 
@@ -6265,6 +6301,9 @@ impl<'a> BuildCx<'a> {
         }
         if style.tail {
             self.store.set_scroll_tail(viewport, true);
+        }
+        if style.refresh {
+            self.store.set_refreshable(viewport, true);
         }
 
         Handle { id: viewport }

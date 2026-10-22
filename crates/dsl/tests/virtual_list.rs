@@ -1,7 +1,8 @@
 //! A `VirtualList`'s item template: the keyed `for` in its body mounts only
 //! the rows its viewport and overscan show, follows its items as they change,
 //! and its `NodeRef` scrolls to a row by index or key, mounted or not; a body
-//! that is not one keyed `for` is `E3707`.
+//! that is not one keyed `for` is `E3707`. A list with `on refresh`
+//! refreshes while its `refreshing` says so.
 
 use std::collections::HashMap;
 
@@ -9,8 +10,8 @@ use viso_dsl::aot::build_view_package;
 use viso_dsl::frontend::Origin;
 use viso_ui::virtual_list::{VirtualLists, absorb_measurements, reconcile};
 use viso_ui::{
-    BindingTable, EffectStore, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase,
-    PointerRouter, Rect, StateStore, Vec2, deliver_notices, run_structure_hooks,
+    BindingTable, EffectStore, KeyRouter, NodeId, NodeStore, PointerButtons, PointerEvent,
+    PointerPhase, PointerRouter, Rect, StateStore, Vec2, deliver_notices, run_structure_hooks,
 };
 use viso_view::load_view;
 
@@ -476,4 +477,76 @@ fn a_row_can_hold_a_list_of_its_own() {
     );
     let lists = page.lists.len();
     assert!(lists <= 16, "the lists of rows gone are dropped: {lists}");
+}
+
+const REFRESHING: &str = "component Feed {
+    state loading = false;
+    state asked = 0;
+    view {
+        Column {
+            width: 200dp;
+            height: 300dp;
+            Button { width: 100dp; height: 20dp; text: \"done\"; on click { loading = false; } }
+            VirtualList {
+                width: 200dp;
+                height: 120dp;
+                estimated_extent: 20dp;
+                refreshing: loading;
+                on refresh { loading = true; asked += 1; }
+                for i in 0..100 key i {
+                    Text { width: 200dp; height: 20dp; text: format(\"{}\", i); }
+                }
+            }
+            VirtualList {
+                width: 200dp;
+                height: 120dp;
+                estimated_extent: 20dp;
+                refreshing: false;
+                on refresh { asked += 1; }
+                for i in 0..100 key i {
+                    Text { width: 200dp; height: 20dp; text: format(\"{}\", i); }
+                }
+            }
+        }
+    }
+}";
+
+impl Page {
+    /// Tell the viewports a refresh was asked of, the flush, and a frame.
+    fn refresh(&mut self) {
+        let mut edits = viso_ui::TextEdits::new();
+        KeyRouter::route_refreshes(
+            &mut self.store,
+            &mut self.states,
+            &self.bindings,
+            &mut edits,
+        );
+        self.settle();
+        self.frame();
+    }
+}
+
+#[test]
+fn a_list_refreshes_while_its_owner_says_so() {
+    let mut page = Page::load(REFRESHING);
+    let (done, owned, unowned) = (
+        page.child(page.root, 0),
+        page.child(page.root, 1),
+        page.child(page.root, 2),
+    );
+    assert!(page.store.is_refreshable(owned) && page.store.is_refreshable(unowned));
+    assert!(!page.store.focusable(owned), "a refresh takes no focus");
+
+    assert!(page.store.begin_refresh(owned));
+    page.refresh();
+    assert!(page.store.is_refreshing(owned), "its handler said so");
+    page.click(done);
+    assert!(
+        !page.store.is_refreshing(owned),
+        "and then said it was done"
+    );
+
+    assert!(page.store.begin_refresh(unowned));
+    page.refresh();
+    assert!(!page.store.is_refreshing(unowned), "nobody said so");
 }

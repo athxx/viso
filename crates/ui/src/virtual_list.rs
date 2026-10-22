@@ -288,7 +288,6 @@ use std::collections::VecDeque;
 use crate::binding::{BindingTable, Template};
 use crate::component::{BuildCx, NodeStore};
 use crate::dirty::DirtyClass;
-use crate::layout::OnAxis;
 use crate::layout::{Axis, LayoutInput, Length, Size};
 use crate::node::NodeId;
 use crate::reactive::EffectStore;
@@ -963,7 +962,7 @@ fn reconcile_one(viewport: NodeId, state: &mut VirtualListState, cx: &mut Struct
     }
     // How far the viewport is scrolled from its start: a row read right to
     // left takes negative offsets.
-    let scroll_main = cx.store.scroll(viewport).on(axis).abs();
+    let scroll_main = cx.store.scroll_distance(viewport, axis);
     debug_assert!(
         cx.store.is_scroll(viewport),
         "virtual list viewport must be a scroll node"
@@ -1174,6 +1173,7 @@ pub fn set_item_count(lists: &mut VirtualLists, viewport: NodeId, item_count: us
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::OnAxis;
 
     /// A naive prefix-sum over an explicit height array, for cross-checking the
     /// BIT.

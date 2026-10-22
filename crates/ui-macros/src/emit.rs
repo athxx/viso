@@ -688,6 +688,7 @@ fn control_tokens(control: Control) -> TokenStream {
     let (visible, focusable) = (entry(control.node.visible), entry(control.node.focusable));
     let (enabled, autofocus) = (entry(control.node.enabled), entry(control.node.autofocus));
     let (clip, cursor) = (entry(control.node.clip), entry(control.node.cursor));
+    let refreshing = entry(control.node.refreshing);
     let text = control.text;
     let (text_color, soft_wrap) = (entry(text.color), entry(text.soft_wrap));
     let (font_weight, font_family) = (entry(text.font_weight), entry(text.font_family));
@@ -801,6 +802,7 @@ fn control_tokens(control: Control) -> TokenStream {
                 autofocus: #autofocus,
                 clip: #clip,
                 cursor: #cursor,
+                refreshing: #refreshing,
             },
             text: ::viso::__private::viso_view::TextEntries {
                 color: #text_color,

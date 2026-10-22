@@ -123,7 +123,9 @@ pub(crate) type Target = (NodeId, Option<u16>);
 /// `window`, after moving focus where the action needs it. `Focus` needs no
 /// input; `Click` is a primary press and release at the node's center (the
 /// link's first line's); `Increment`/`Decrement` are the
-/// arrow keys a focused slider steps on, Up and Down for a spin button. Positions are physical pixels, as the
+/// arrow keys a focused slider steps on, Up and Down for a spin button;
+/// `Refresh` needs no input, a refreshable viewport refreshing as a pull
+/// past its start makes it. Positions are physical pixels, as the
 /// scheduler delivers them. An inert node takes none.
 pub(crate) fn perform(
     store: &mut NodeStore,
@@ -167,6 +169,10 @@ pub(crate) fn perform(
                 pointer(PointerPhase::Down, PointerButtons::PRIMARY, 1.0),
                 pointer(PointerPhase::Up, PointerButtons::NONE, 0.0),
             ]);
+        }
+        AccessAction::Refresh => {
+            store.begin_refresh(node);
+            return None;
         }
         AccessAction::Increment | AccessAction::Decrement => {
             let spin = store
@@ -352,6 +358,9 @@ impl Walk<'_> {
             actions = actions
                 .with(AccessAction::Increment)
                 .with(AccessAction::Decrement);
+        }
+        if live && store.is_refreshable(row.id) && !store.is_refreshing(row.id) {
+            actions = actions.with(AccessAction::Refresh);
         }
         AccessNode {
             id: row_id(row),

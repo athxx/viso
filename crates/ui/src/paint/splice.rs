@@ -1416,6 +1416,7 @@ mod tests {
                                 style: BoxStyle::solid(color(2)),
                                 bars: crate::scroll_bar::ScrollBars::Hidden,
                                 tail: false,
+                                refresh: false,
                             },
                             |_| {},
                         )
