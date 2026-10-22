@@ -165,6 +165,9 @@ pub struct FieldMarks {
     /// What the edit menu points at while it shows: the selection's bounds,
     /// or the caret.
     pub menu: Option<Rect>,
+    /// Where the context menu pops up while one is asked for: the pointer
+    /// that asked, or under the caret; a point, of no size.
+    pub context: Option<Rect>,
 }
 
 impl Default for FieldMarks {
@@ -179,6 +182,7 @@ impl Default for FieldMarks {
             ink: Rgba::TRANSPARENT,
             handles: None,
             menu: None,
+            context: None,
         }
     }
 }

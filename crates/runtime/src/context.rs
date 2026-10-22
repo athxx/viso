@@ -11,8 +11,8 @@ use std::time::Duration;
 use viso_platform::{Instant, LoopWaker};
 
 use viso_platform::{
-    Appearance, CursorIcon, EditMenu, LogicalRect, PlatformApp, PlatformCaps, PlatformError,
-    RawEvent, RawWindowHandle, SemanticsDelta, TextEntry, WindowConfig, WindowId,
+    Appearance, CursorIcon, EditLabels, EditMenu, LogicalRect, PlatformApp, PlatformCaps,
+    PlatformError, RawEvent, RawWindowHandle, SemanticsDelta, TextEntry, WindowConfig, WindowId,
 };
 
 /// Capabilities available to a frame driver for the duration of one callback.
@@ -251,6 +251,11 @@ impl<'a> RuntimeCx<'a> {
     /// Show, move or (with `None`) close `window`'s edit menu.
     pub fn set_edit_menu(&mut self, window: WindowId, menu: Option<EditMenu>) {
         self.app.set_edit_menu(window, menu);
+    }
+
+    /// Pop up `window`'s context menu of edits, titled by `labels`.
+    pub fn show_context_menu(&mut self, window: WindowId, menu: EditMenu, labels: EditLabels) {
+        self.app.show_context_menu(window, menu, labels);
     }
 
     /// The current system appearance.

@@ -19,7 +19,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::RawWindowHandle;
-use crate::control::{EditMenu, PlatformCaps, PlatformError, TextEntry, WindowConfig, WindowId};
+use crate::control::{
+    EditLabels, EditMenu, PlatformCaps, PlatformError, TextEntry, WindowConfig, WindowId,
+};
 use crate::event::{Appearance, CursorIcon, DisplayFeature, RawEvent};
 use crate::handler::AppHandler;
 use crate::{ControlFlow, LoopWaker, PlatformApp, Window};
@@ -180,6 +182,15 @@ impl HeadlessApp {
             .and_then(|w| w.edit_menu)
     }
 
+    /// The context menu last popped up for `window` and its titles; a
+    /// headless menu stays up until the script closes it.
+    pub fn context_menu(&self, window: WindowId) -> Option<(EditMenu, EditLabels)> {
+        self.windows
+            .iter()
+            .find(|w| w.id == window)
+            .and_then(|w| w.context_menu)
+    }
+
     /// Whether the soft keyboard is currently requested for `window`.
     pub fn soft_keyboard_shown(&self, window: WindowId) -> bool {
         self.windows
@@ -240,6 +251,7 @@ impl PlatformApp for HeadlessApp {
             cursor: CursorIcon::Default,
             text_entry: None,
             edit_menu: None,
+            context_menu: None,
             soft_keyboard: false,
             fullscreen: false,
         });
@@ -252,6 +264,15 @@ impl PlatformApp for HeadlessApp {
             return;
         }
         while let Some(event) = self.next_event() {
+            // A scripted close is the context menu's own closing.
+            if let RawEvent::EditMenu {
+                window,
+                action: crate::EditMenuAction::Closed,
+            } = event
+                && let Some(w) = self.window_mut(window)
+            {
+                w.context_menu = None;
+            }
             if handler.handle(self, event) == ControlFlow::Exit {
                 break;
             }
@@ -351,8 +372,15 @@ impl PlatformApp for HeadlessApp {
         }
     }
 
+    fn show_context_menu(&mut self, window: WindowId, menu: EditMenu, labels: EditLabels) {
+        if let Some(w) = self.window_mut(window) {
+            w.context_menu = Some((menu, labels));
+        }
+    }
+
     fn capabilities(&self) -> PlatformCaps {
-        // A desktop that also records the edit menu it is asked to show.
+        // A desktop that also records the edit menu it is asked to show,
+        // beside the context menu.
         PlatformCaps {
             edit_menu: true,
             ..PlatformCaps::DESKTOP
@@ -394,6 +422,7 @@ pub struct HeadlessWindow {
     cursor: CursorIcon,
     text_entry: Option<TextEntry>,
     edit_menu: Option<EditMenu>,
+    context_menu: Option<(EditMenu, EditLabels)>,
     soft_keyboard: bool,
     fullscreen: bool,
 }

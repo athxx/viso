@@ -54,8 +54,8 @@ pub use accessibility::{
     SemanticsLive, SemanticsRect, SemanticsRole, SemanticsState,
 };
 pub use control::{
-    ControlFlow, DEFAULT_FRAME_BUDGET, EditMenu, EditMenuAction, InputKind, LogicalRect,
-    PlatformCaps, PlatformError, TextEntry, WindowChrome, WindowConfig, WindowId,
+    ControlFlow, DEFAULT_FRAME_BUDGET, EditLabels, EditMenu, EditMenuAction, InputKind,
+    LogicalRect, PlatformCaps, PlatformError, TextEntry, WindowChrome, WindowConfig, WindowId,
 };
 pub use event::{
     AcceptCell, Appearance, ClipboardReply, ClipboardShortcut, ColorScheme, CursorIcon,
@@ -188,6 +188,17 @@ pub trait PlatformApp {
     /// [`PlatformCaps::edit_menu`] is false.
     fn set_edit_menu(&mut self, window: WindowId, menu: Option<EditMenu>) {
         let _ = (window, menu);
+    }
+
+    /// Pop up the system context menu of the focused text field at the
+    /// origin of `menu.at`, titled by `labels`. It closes on a pick or a
+    /// click elsewhere, never while the app is mid-frame; what the user
+    /// picks arrives as [`RawEvent::CopyRequested`], [`RawEvent::Paste`] or
+    /// [`RawEvent::EditMenu`], and then its closing as
+    /// [`EditMenuAction::Closed`]. A no-op where
+    /// [`PlatformCaps::context_menu`] is false.
+    fn show_context_menu(&mut self, window: WindowId, menu: EditMenu, labels: EditLabels) {
+        let _ = (window, menu, labels);
     }
 
     /// The current system appearance. Changes arrive as

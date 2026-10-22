@@ -58,7 +58,8 @@ use objc2_foundation::{
 
 use crate::RawWindowHandle;
 use crate::control::{
-    ControlFlow, LogicalRect, PlatformError, TextEntry, WindowChrome, WindowConfig, WindowId,
+    ControlFlow, EditLabels, EditMenu, EditMenuAction, LogicalRect, PlatformError, TextEntry,
+    WindowChrome, WindowConfig, WindowId,
 };
 use crate::event::{
     AcceptCell, Appearance, ClipboardReply, ClipboardShortcut, ColorScheme, CursorIcon,
@@ -781,6 +782,12 @@ impl PlatformApp for MacApp {
     fn set_text_entry(&mut self, window: WindowId, entry: Option<TextEntry>) {
         if let Some(win) = self.windows.iter().find(|w| w.id == window) {
             win.content_view.set_text_entry(entry);
+        }
+    }
+
+    fn show_context_menu(&mut self, window: WindowId, menu: EditMenu, labels: EditLabels) {
+        if let Some(win) = self.windows.iter().find(|w| w.id == window) {
+            win.content_view.queue_context_menu(menu, labels);
         }
     }
 
@@ -1709,6 +1716,8 @@ struct ViewIvars {
     logical: Cell<f64>,
     /// The frames of a CPU-drawn window, rescaled when the screen changes.
     pixels: RefCell<Option<Rc<LayerScanout>>>,
+    /// The context menu asked for, popped up from the run loop.
+    context_menu: Cell<Option<(EditMenu, EditLabels)>>,
 }
 
 define_class!(
@@ -1859,6 +1868,20 @@ define_class!(
         #[unsafe(method(paste:))]
         fn paste(&self, _sender: Option<&AnyObject>) {
             let _ = catch_unwind(AssertUnwindSafe(|| self.clipboard(ClipboardShortcut::Paste)));
+        }
+
+        #[unsafe(method(selectAll:))]
+        fn select_all(&self, _sender: Option<&AnyObject>) {
+            let window = self.ivars().window;
+            self.push(RawEvent::EditMenu {
+                window,
+                action: EditMenuAction::SelectAll,
+            });
+        }
+
+        #[unsafe(method(visoPopContextMenu))]
+        fn pop_context_menu(&self) {
+            let _ = catch_unwind(AssertUnwindSafe(|| self.pop_menu()));
         }
 
         #[unsafe(method(mouseDown:))]
@@ -2144,6 +2167,7 @@ impl VisoContentView {
             secure_input: SecureInput(Cell::new(false)),
             logical: Cell::new(1.0),
             pixels: RefCell::new(None),
+            context_menu: Cell::new(None),
         });
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
         this
@@ -2205,6 +2229,83 @@ impl VisoContentView {
                 phase,
             )));
         }));
+    }
+
+    /// Pop the context menu asked for up from the run loop, once the frame
+    /// that asked has finished.
+    fn queue_context_menu(&self, menu: EditMenu, labels: EditLabels) {
+        self.ivars().context_menu.set(Some((menu, labels)));
+        // SAFETY: `performSelector:withObject:afterDelay:` is NSObject's,
+        // `visoPopContextMenu` is this class's method taking no argument,
+        // and the run loop retains the view until it runs.
+        unsafe {
+            let _: () = msg_send![
+                self,
+                performSelector: sel!(visoPopContextMenu),
+                withObject: Option::<&AnyObject>::None,
+                afterDelay: 0.0f64
+            ];
+        }
+    }
+
+    /// Track the context menu at its place until the user picks or leaves
+    /// it, then release the buttons its tracking swallowed and report it
+    /// closed.
+    fn pop_menu(&self) {
+        let ivars = self.ivars();
+        let Some((menu, labels)) = ivars.context_menu.take() else {
+            return;
+        };
+        let mtm = self.mtm();
+        let ns = NSMenu::new(mtm);
+        ns.setAutoenablesItems(false);
+        let items = [
+            (labels.cut, sel!(cut:), menu.cut),
+            (labels.copy, sel!(copy:), menu.copy),
+            (labels.paste, sel!(paste:), menu.paste),
+            (labels.select_all, sel!(selectAll:), menu.select_all),
+        ];
+        for (at, (title, action, enabled)) in items.into_iter().enumerate() {
+            if at == 3 {
+                ns.addItem(&NSMenuItem::separatorItem(mtm));
+            }
+            // SAFETY: standard AppKit menu-item construction on the main
+            // thread; the menu holds the item and the view outlives the
+            // tracking below.
+            let item = unsafe {
+                let item = NSMenuItem::initWithTitle_action_keyEquivalent(
+                    NSMenuItem::alloc(mtm),
+                    &NSString::from_str(title),
+                    Some(action),
+                    &NSString::from_str(""),
+                );
+                item.setTarget(Some(self));
+                item
+            };
+            item.setEnabled(enabled);
+            ns.addItem(&item);
+        }
+        let k = ivars.logical.get();
+        let at = NSPoint::new(menu.at.x / k, menu.at.y / k);
+        ns.popUpMenuPositioningItem_atLocation_inView(None, at, Some(self));
+        let held = ivars.buttons.replace(0);
+        if held != 0
+            && let Some(window) = self.window()
+        {
+            let p = self.convertPoint_fromView(window.mouseLocationOutsideOfEventStream(), None);
+            self.push(RawEvent::Pointer(RawPointer::mouse(
+                ivars.window,
+                p.x * k,
+                p.y * k,
+                PointerButtons(0),
+                Modifiers::default(),
+                PointerPhase::Up,
+            )));
+        }
+        self.push(RawEvent::EditMenu {
+            window: ivars.window,
+            action: EditMenuAction::Closed,
+        });
     }
 
     /// Answer a clipboard gesture: copy and cut ask the app for its selection

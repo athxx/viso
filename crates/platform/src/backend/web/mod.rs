@@ -1058,6 +1058,7 @@ impl PlatformApp for WebApp {
             ime: true,
             accessibility: true,
             edit_menu: false,
+            context_menu: false,
         }
     }
 

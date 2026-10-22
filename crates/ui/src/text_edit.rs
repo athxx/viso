@@ -325,6 +325,21 @@ pub enum EditIntent {
     Revert,
     /// A finger or a pen editing the field.
     Touch(TouchEdit),
+    /// Ask for the context menu of edits: at the window point `at` (a
+    /// secondary click), which first selects the word under it when `word`
+    /// or else places the caret there unless it falls inside the selection;
+    /// or, with no point (the menu key), under the caret. Any other intent
+    /// takes the request back.
+    ContextMenu { at: Option<(f32, f32)>, word: bool },
+}
+
+/// Where a field's context menu was asked for.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum MenuAt {
+    /// Under the caret.
+    Caret,
+    /// At a point in the field's text space.
+    Point(f32, f32),
 }
 
 /// The drawn geometry of one editable node's text, as the runtime last laid it
@@ -444,6 +459,8 @@ pub struct Buffer {
     scrub_from: Option<f64>,
     /// What a touch made of the selection.
     touch: TouchState,
+    /// Where the context menu was asked for, while it is.
+    context: Option<MenuAt>,
     /// Advances on every change to `text`.
     revision: Revision,
     /// Queued intents recorded since the last reconcile, applied in order. A
@@ -486,6 +503,7 @@ impl Buffer {
             settled: 0.0,
             scrub_from: None,
             touch: TouchState::default(),
+            context: None,
             revision: Revision::default(),
             pending: Vec::new(),
         }
@@ -746,6 +764,9 @@ impl Buffer {
         if !matches!(intent, EditIntent::Touch(_)) {
             self.touch = TouchState::default();
         }
+        if !matches!(intent, EditIntent::ContextMenu { .. }) {
+            self.context = None;
+        }
         match intent {
             EditIntent::Insert(s) => self.type_text(s),
             EditIntent::Paste(s) => {
@@ -831,6 +852,7 @@ impl Buffer {
                 }
             }
             EditIntent::Touch(touch) => self.touch(*touch, placed),
+            EditIntent::ContextMenu { at, word } => self.context_menu(*at, *word, placed),
         }
     }
 
@@ -966,6 +988,30 @@ impl Buffer {
             TouchEdit::MenuClosed => self.touch.menu = false,
             TouchEdit::End => self.touch = TouchState::default(),
         }
+    }
+
+    /// Ask for the context menu at window point `at`, or under the caret:
+    /// a point outside the selection first selects the word under it when
+    /// `word`, else places the caret there.
+    fn context_menu(&mut self, at: Option<(f32, f32)>, word: bool, placed: Option<Placed<'_>>) {
+        let point = at.zip(placed).and_then(|((x, y), p)| {
+            let hit = self.point(p, x, y)?;
+            Some((x, y, p, hit))
+        });
+        let Some((x, y, p, hit)) = point else {
+            self.context = Some(MenuAt::Caret);
+            return;
+        };
+        let (start, end) = self.sel.logical_range();
+        if start == end || hit.offset < start || end < hit.offset {
+            self.history.close();
+            if word && !self.past_line_end(p, hit, x) {
+                self.select_at(placed, x, y, Unit::Word);
+            } else {
+                self.sel = Selection::caret(hit);
+            }
+        }
+        self.context = Some(MenuAt::Point(x - p.origin.0, y - p.origin.1));
     }
 
     /// Whether window point `x`, resolved to `at`, lies past the end of
@@ -1501,6 +1547,7 @@ impl Buffer {
         marks.caret = None;
         marks.handles = None;
         marks.menu = None;
+        marks.context = None;
         let sel = Selection {
             anchor: self.drawn_position(self.sel.anchor),
             focus: self.drawn_position(self.sel.focus),
@@ -1559,6 +1606,20 @@ impl Buffer {
             if state.active {
                 self.mark_touch(layout, sel, caret, marks);
             }
+            marks.context = self.context.and_then(|at| match at {
+                MenuAt::Point(x, y) => Some(Rect {
+                    x,
+                    y,
+                    w: 0.0,
+                    h: 0.0,
+                }),
+                MenuAt::Caret => caret.map(|c| Rect {
+                    x: c.x,
+                    y: c.y + c.h,
+                    w: 0.0,
+                    h: 0.0,
+                }),
+            });
         }
         let scroll = if !state.focused && !self.holds_lines() {
             Vec2::ZERO
@@ -2538,6 +2599,49 @@ mod tests {
             },
         );
         assert_eq!(b.touch_state(), TouchState::default(), "a key ends it");
+    }
+
+    #[test]
+    fn a_context_menu_places_the_caret_or_selects_the_word_unless_inside_the_selection() {
+        let text = "hello wide world";
+        let lines = lines_for(text);
+        let p = Some(placed(text, &lines));
+        let mut b = buf(text, 0);
+        let ask = |b: &mut Buffer, i: f32, word| {
+            b.apply_one(
+                &EditIntent::ContextMenu {
+                    at: Some((100.0 + 10.0 * i, 55.0)),
+                    word,
+                },
+                p,
+            );
+        };
+        ask(&mut b, 8.0, false);
+        assert_eq!(at(&b), 8, "elsewhere the caret goes to the pointer");
+        assert_eq!(b.context, Some(MenuAt::Point(80.0, 5.0)));
+
+        ask(&mut b, 7.2, true);
+        assert_eq!(b.sel.logical_range(), (TextOffset(6), TextOffset(10)));
+        ask(&mut b, 3.0, false);
+        assert_eq!(at(&b), 3);
+        b.apply_one(&EditIntent::SelectAll, p);
+        assert_eq!(b.context, None, "another edit takes the request back");
+        ask(&mut b, 12.0, true);
+        assert_eq!(
+            b.sel.logical_range(),
+            (TextOffset(0), TextOffset(16)),
+            "inside the selection it stays"
+        );
+        assert_eq!(b.context, Some(MenuAt::Point(120.0, 5.0)));
+
+        b.apply_one(
+            &EditIntent::ContextMenu {
+                at: None,
+                word: false,
+            },
+            p,
+        );
+        assert_eq!(b.context, Some(MenuAt::Caret), "the menu key");
     }
 
     #[test]

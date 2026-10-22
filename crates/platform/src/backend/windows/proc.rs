@@ -228,6 +228,10 @@ fn handle(
             }
             Some(LRESULT(0))
         }
+        super::WM_CONTEXT_MENU => {
+            pop_context_menu(state, hwnd);
+            Some(LRESULT(0))
+        }
         access::WM_ACCESS => {
             if let Some(request) = access::decode(wparam, lparam) {
                 state.push(RawEvent::Accessibility {
@@ -620,6 +624,44 @@ fn clipboard(state: &WindowState, hwnd: HWND, shortcut: ClipboardShortcut) {
             }
         }
     }
+}
+
+/// Track the context menu asked for until the user picks or leaves it,
+/// release the buttons its tracking swallowed, answer the pick and report
+/// it closed.
+fn pop_context_menu(state: &WindowState, hwnd: HWND) {
+    let Some((menu, labels)) = state.context_menu.take() else {
+        return;
+    };
+    let at = state.physical_point(menu.at.x, menu.at.y);
+    let picked = super::menu::track_context(hwnd, at, &menu, &labels);
+    if !state.buttons.replace(PointerButtons::NONE).is_empty() {
+        let (x, y) = state.last_mouse.get();
+        state.push(RawEvent::Pointer(RawPointer::mouse(
+            state.id,
+            x,
+            y,
+            PointerButtons::NONE,
+            modifiers(),
+            PointerPhase::Up,
+        )));
+        // SAFETY: releasing the capture the swallowed press took.
+        let _ = unsafe { ReleaseCapture() };
+    }
+    match picked {
+        super::menu::CUT => clipboard(state, hwnd, ClipboardShortcut::Cut),
+        super::menu::COPY => clipboard(state, hwnd, ClipboardShortcut::Copy),
+        super::menu::PASTE => clipboard(state, hwnd, ClipboardShortcut::Paste),
+        super::menu::SELECT_ALL => state.push(RawEvent::EditMenu {
+            window: state.id,
+            action: crate::EditMenuAction::SelectAll,
+        }),
+        _ => {}
+    }
+    state.push(RawEvent::EditMenu {
+        window: state.id,
+        action: crate::EditMenuAction::Closed,
+    });
 }
 
 fn menu_action(state: &WindowState, hwnd: HWND, action: MenuAction) {

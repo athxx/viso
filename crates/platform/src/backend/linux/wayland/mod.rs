@@ -216,6 +216,14 @@ impl PlatformApp for WaylandApp {
         crate::locale::from_environment(|name| std::env::var(name).ok())
     }
 
+    fn capabilities(&self) -> crate::PlatformCaps {
+        // No toolkit to draw a context menu: the app draws its own.
+        crate::PlatformCaps {
+            context_menu: false,
+            ..crate::PlatformCaps::DESKTOP
+        }
+    }
+
     fn loop_waker(&self) -> crate::LoopWaker {
         self.wl.borrow().state.waker.loop_waker()
     }

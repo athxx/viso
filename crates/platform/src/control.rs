@@ -60,8 +60,9 @@ pub struct TextEntry {
 
 /// The menu of edits a text field offers for its selection, shown beside
 /// it: on a phone or tablet after a long press, a double tap or a tap on the
-/// caret, as the platform draws it. Paste is offered only while the system
-/// clipboard holds text, which the platform checks itself.
+/// caret, as the platform draws it, and as a context menu where a secondary
+/// click or the menu key asks for one. Paste is offered only while the
+/// system clipboard holds text, which the platform checks itself.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EditMenu {
     /// What the menu points at and keeps clear of: the selection, or the
@@ -75,6 +76,58 @@ pub struct EditMenu {
     pub paste: bool,
     /// Offer to select the whole text.
     pub select_all: bool,
+}
+
+/// The titles of a context menu's edits, in the language of the app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EditLabels {
+    pub cut: &'static str,
+    pub copy: &'static str,
+    pub paste: &'static str,
+    pub select_all: &'static str,
+}
+
+impl EditLabels {
+    /// The titles in the language of BCP 47 tag `locale`; English for a
+    /// language without its own.
+    pub fn for_locale(locale: &str) -> EditLabels {
+        let mut parts = locale.split(['-', '_']);
+        let language = parts.next().unwrap_or("").to_ascii_lowercase();
+        let rest: Vec<String> = parts.map(str::to_ascii_lowercase).collect();
+        let traditional = rest
+            .iter()
+            .any(|p| matches!(p.as_str(), "hant" | "tw" | "hk" | "mo"));
+        let [cut, copy, paste, select_all] = match language.as_str() {
+            "zh" if traditional => ["剪下", "拷貝", "貼上", "全選"],
+            "zh" => ["剪切", "拷贝", "粘贴", "全选"],
+            "ja" => ["カット", "コピー", "ペースト", "すべてを選択"],
+            "ko" => ["잘라내기", "복사", "붙여넣기", "모두 선택"],
+            "de" => ["Ausschneiden", "Kopieren", "Einfügen", "Alles auswählen"],
+            "fr" => ["Couper", "Copier", "Coller", "Tout sélectionner"],
+            "es" => ["Cortar", "Copiar", "Pegar", "Seleccionar todo"],
+            "it" => ["Taglia", "Copia", "Incolla", "Seleziona tutto"],
+            "pt" => ["Recortar", "Copiar", "Colar", "Selecionar tudo"],
+            "nl" => ["Knippen", "Kopiëren", "Plakken", "Alles selecteren"],
+            "ru" => ["Вырезать", "Копировать", "Вставить", "Выделить все"],
+            "uk" => ["Вирізати", "Копіювати", "Вставити", "Виділити все"],
+            "pl" => ["Wytnij", "Kopiuj", "Wklej", "Zaznacz wszystko"],
+            "tr" => ["Kes", "Kopyala", "Yapıştır", "Tümünü seç"],
+            "sv" => ["Klipp ut", "Kopiera", "Klistra in", "Markera allt"],
+            "ar" => ["قص", "نسخ", "لصق", "تحديد الكل"],
+            "he" => ["גזירה", "העתקה", "הדבקה", "בחירת הכול"],
+            "hi" => ["काटें", "कॉपी करें", "चिपकाएँ", "सभी चुनें"],
+            "th" => ["ตัด", "คัดลอก", "วาง", "เลือกทั้งหมด"],
+            "vi" => ["Cắt", "Sao chép", "Dán", "Chọn tất cả"],
+            "id" => ["Potong", "Salin", "Tempel", "Pilih semua"],
+            _ => ["Cut", "Copy", "Paste", "Select All"],
+        };
+        EditLabels {
+            cut,
+            copy,
+            paste,
+            select_all,
+        }
+    }
 }
 
 /// What the user did with the [`EditMenu`] besides cutting, copying and
@@ -260,6 +313,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn edit_labels_follow_the_language_and_its_script() {
+        assert_eq!(EditLabels::for_locale("zh-Hans-CN").copy, "拷贝");
+        assert_eq!(EditLabels::for_locale("zh_TW").copy, "拷貝");
+        assert_eq!(EditLabels::for_locale("zh-Hant").paste, "貼上");
+        assert_eq!(EditLabels::for_locale("FR-ca").cut, "Couper");
+        assert_eq!(EditLabels::for_locale("und").select_all, "Select All");
+    }
+
+    #[test]
     fn logical_rect_contains_is_half_open() {
         let r = LogicalRect::new(10.0, 20.0, 100.0, 30.0);
         // Interior.
@@ -312,6 +374,9 @@ pub struct PlatformCaps {
     /// A system edit menu for a text field's selection
     /// ([`PlatformApp::set_edit_menu`](crate::PlatformApp::set_edit_menu)).
     pub edit_menu: bool,
+    /// A system context menu at the pointer
+    /// ([`PlatformApp::show_context_menu`](crate::PlatformApp::show_context_menu)).
+    pub context_menu: bool,
 }
 
 impl PlatformCaps {
@@ -324,6 +389,7 @@ impl PlatformCaps {
         ime: true,
         accessibility: true,
         edit_menu: false,
+        context_menu: true,
     };
     /// A phone or tablet backend: one window, the system's clipboard and IME.
     pub const MOBILE: PlatformCaps = PlatformCaps {
@@ -334,6 +400,7 @@ impl PlatformCaps {
         ime: true,
         accessibility: true,
         edit_menu: true,
+        context_menu: false,
     };
     /// A display driven with no display server (KMS): one window, nothing
     /// from a desktop and no accessibility bridge.
@@ -345,5 +412,6 @@ impl PlatformCaps {
         ime: false,
         accessibility: false,
         edit_menu: false,
+        context_menu: false,
     };
 }

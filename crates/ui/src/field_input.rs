@@ -11,6 +11,12 @@
 //! reads no buffer. Enter submits a single-line field and starts a new line
 //! in a multi-line one, where the accelerator with Enter submits.
 //!
+//! A secondary click (on Apple systems also Control with a click) focuses
+//! the field and asks for its context menu at the pointer, first selecting
+//! the word under it on Apple systems or placing the caret elsewhere, unless
+//! it falls inside the selection; elsewhere the menu key and Shift with F10
+//! ask for it under the caret.
+//!
 //! ## Touch
 //!
 //! A finger or a pen acts on lift, so a contact that turns into a pan places
@@ -130,6 +136,16 @@ pub fn field_key_in(k: &KeyEvent, multiline: bool, apple: bool) -> Option<FieldK
         Key::Z if primary && !m.alt && m.shift => edit(EditIntent::Redo),
         Key::Z if primary && !m.alt => edit(EditIntent::Undo),
         Key::Y if !apple && m.control && !m.alt && !m.shift => edit(EditIntent::Redo),
+        Key::ContextMenu if !apple => edit(EditIntent::ContextMenu {
+            at: None,
+            word: false,
+        }),
+        Key::F10 if !apple && m.shift && !m.control && !m.alt && !m.logo => {
+            edit(EditIntent::ContextMenu {
+                at: None,
+                word: false,
+            })
+        }
         Key::Enter if multiline && !primary => edit(EditIntent::Insert("\n".into())),
         Key::Enter if !k.repeat => Some(FieldKey::Submit),
         _ => None,
@@ -152,6 +168,14 @@ pub fn field_input(cx: &mut EventCx<'_>, multiline: bool) -> Option<FieldEvent> 
     if let Some(p) = cx.pointer() {
         let held = p.buttons.contains(PointerButtons::PRIMARY);
         let (x, y, extend) = (p.x, p.y, p.modifiers.shift);
+        if asks_for_menu(p, primary_is_logo()) {
+            cx.request_focus(node);
+            cx.record_edit(EditIntent::ContextMenu {
+                at: Some((x, y)),
+                word: primary_is_logo(),
+            });
+            return None;
+        }
         match p.phase {
             PointerPhase::Down if held => {
                 cx.request_focus(node);
@@ -199,6 +223,16 @@ pub fn field_input(cx: &mut EventCx<'_>, multiline: bool) -> Option<FieldEvent> 
     };
     cx.record_edit(intent);
     None
+}
+
+/// Whether pointer sample `p` asks for the context menu: a secondary press,
+/// or on Apple systems Control alone with a primary one.
+fn asks_for_menu(p: &crate::input::PointerEvent, apple: bool) -> bool {
+    let primary = p.buttons.contains(PointerButtons::PRIMARY);
+    let m = p.modifiers;
+    p.phase == PointerPhase::Down
+        && ((p.buttons.contains(PointerButtons::SECONDARY) && !primary)
+            || (apple && primary && m.control && !m.shift && !m.alt && !m.logo))
 }
 
 /// What a finger or a pen does to text field `node`: a tap places the
@@ -296,6 +330,7 @@ pub fn number_input(cx: &mut EventCx<'_>) -> Option<FieldEvent> {
     let node = cx.node()?;
     if let Some(p) = cx.pointer()
         && cx.focused() != Some(node)
+        && !asks_for_menu(p, primary_is_logo())
     {
         let (phase, modifiers) = (p.phase, p.modifiers);
         let held = p.buttons.contains(PointerButtons::PRIMARY);
@@ -402,6 +437,19 @@ mod tests {
             edit(EditIntent::Redo)
         );
         assert_eq!(key(Key::Y, CTRL), None, "no Control-Y on Apple systems");
+    }
+
+    #[test]
+    fn the_menu_key_and_shift_f10_ask_for_the_context_menu_off_apple_systems() {
+        let menu = edit(EditIntent::ContextMenu {
+            at: None,
+            word: false,
+        });
+        let key = |k, m, apple| field_key_in(&press(k, m), false, apple);
+        assert_eq!(key(Key::ContextMenu, NONE, false), menu);
+        assert_eq!(key(Key::F10, SHIFT, false), menu);
+        assert_eq!(key(Key::F10, NONE, false), None);
+        assert_eq!(key(Key::ContextMenu, NONE, true), None);
     }
 
     #[test]

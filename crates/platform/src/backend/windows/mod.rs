@@ -46,13 +46,18 @@ use crate::control::{ControlFlow, PlatformError, WindowConfig, WindowId};
 use crate::event::{Appearance, CursorIcon, PointerButtons, PointerKind, RawEvent};
 use crate::handler::AppHandler;
 use crate::menu::Menu;
-use crate::{Instant, LogicalRect, LoopWaker, PlatformApp, RawWindowHandle, TextEntry, Window};
+use crate::{
+    EditLabels, EditMenu, Instant, LogicalRect, LoopWaker, PlatformApp, RawWindowHandle, TextEntry,
+    Window,
+};
 
 const CLASS_NAME: PCWSTR = w!("VisoWindowClass");
 
 /// The thread message a [`LoopWaker`] kick posts to end the pump's wait. It
 /// carries nothing; the pump drains `PumpQueue::woken`.
 const WM_WAKE: u32 = ::windows::Win32::UI::WindowsAndMessaging::WM_APP + 2;
+/// Pops the context menu asked for up, from the window's own message loop.
+const WM_CONTEXT_MENU: u32 = ::windows::Win32::UI::WindowsAndMessaging::WM_APP + 3;
 
 /// Events the window procedure produces, drained by the pump between OS
 /// messages, plus the little app-wide state the procedure needs.
@@ -162,6 +167,8 @@ struct WindowState {
     /// The composition currently shown as preedit is non-empty.
     preedit_shown: Cell<bool>,
     fullscreen: RefCell<Option<Restore>>,
+    /// The context menu asked for, popped up from the message loop.
+    context_menu: Cell<Option<(EditMenu, EditLabels)>>,
 }
 
 impl WindowState {
@@ -187,6 +194,7 @@ impl WindowState {
             input_scope: Cell::new(0),
             preedit_shown: Cell::new(false),
             fullscreen: RefCell::new(None),
+            context_menu: Cell::new(None),
         }
     }
 
@@ -722,6 +730,23 @@ impl PlatformApp for WinApp {
         if let Some(state) = self.state(window) {
             proc::set_text_entry(state, entry);
         }
+    }
+
+    fn show_context_menu(&mut self, window: WindowId, menu: EditMenu, labels: EditLabels) {
+        let Some(state) = self.state(window) else {
+            return;
+        };
+        state.context_menu.set(Some((menu, labels)));
+        // SAFETY: posting to our own live window; its procedure takes the
+        // menu from the state when the loop gets to it.
+        let _ = unsafe {
+            ::windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                Some(state.hwnd.get()),
+                WM_CONTEXT_MENU,
+                WPARAM(0),
+                LPARAM(0),
+            )
+        };
     }
 
     fn show_soft_keyboard(&mut self, _window: WindowId, _show: bool) {

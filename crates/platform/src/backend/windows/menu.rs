@@ -1,17 +1,21 @@
 //! The menu bar: one `HMENU` tree per window built from a shared plan, and
 //! one accelerator table for the app.
 
-use ::windows::Win32::Foundation::HWND;
+use ::windows::Win32::Foundation::{HWND, POINT};
+use ::windows::Win32::Graphics::Gdi::ClientToScreen;
 use ::windows::Win32::UI::Input::KeyboardAndMouse::VkKeyScanW;
 use ::windows::Win32::UI::WindowsAndMessaging::{
     ACCEL, ACCEL_VIRT_FLAGS, AppendMenuW, CreateAcceleratorTableW, CreateMenu, CreatePopupMenu,
     DestroyAcceleratorTable, DestroyMenu, DrawMenuBar, FALT, FCONTROL, FSHIFT, FVIRTKEY, GetMenu,
-    HACCEL, HMENU, MENU_ITEM_FLAGS, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, SetMenu,
+    HACCEL, HMENU, MENU_ITEM_FLAGS, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING,
+    SetForegroundWindow, SetMenu, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON, TPM_TOPALIGN,
+    TrackPopupMenuEx,
 };
 use ::windows::core::PCWSTR;
 
 use super::translate::{self, MenuAction, MenuEntry, MenuPlan};
 use crate::menu::Menu;
+use crate::{EditLabels, EditMenu};
 
 pub(super) struct NativeMenu {
     plan: MenuPlan,
@@ -71,6 +75,59 @@ impl Drop for NativeMenu {
             // SAFETY: the table this value created and alone owns.
             let _ = unsafe { DestroyAcceleratorTable(accel) };
         }
+    }
+}
+
+/// The commands of a context menu's edits.
+pub(super) const CUT: u32 = 1;
+pub(super) const COPY: u32 = 2;
+pub(super) const PASTE: u32 = 3;
+pub(super) const SELECT_ALL: u32 = 4;
+
+/// Track `menu` titled by `labels` with its corner at client pixel `at` of
+/// `hwnd` until the user picks or leaves it: the command picked, or zero.
+pub(super) fn track_context(hwnd: HWND, at: POINT, menu: &EditMenu, labels: &EditLabels) -> u32 {
+    let items = [
+        (CUT, labels.cut, "Ctrl+X", menu.cut),
+        (COPY, labels.copy, "Ctrl+C", menu.copy),
+        (PASTE, labels.paste, "Ctrl+V", menu.paste),
+        (SELECT_ALL, labels.select_all, "Ctrl+A", menu.select_all),
+    ];
+    // SAFETY: the popup is ours from creation to its destruction below;
+    // every label is NUL-terminated and outlives its `AppendMenuW`; the
+    // point and window are our own live client's.
+    unsafe {
+        let Ok(popup) = CreatePopupMenu() else {
+            return 0;
+        };
+        for (id, title, keys, enabled) in items {
+            if id == SELECT_ALL {
+                let _ = AppendMenuW(popup, MF_SEPARATOR, 0, PCWSTR::null());
+            }
+            let text: Vec<u16> = format!("{title}\t{keys}")
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            let flags = if enabled {
+                MF_STRING
+            } else {
+                MENU_ITEM_FLAGS(MF_STRING.0 | MF_GRAYED.0)
+            };
+            let _ = AppendMenuW(popup, flags, id as usize, PCWSTR(text.as_ptr()));
+        }
+        let mut screen = at;
+        let _ = ClientToScreen(hwnd, &mut screen);
+        let _ = SetForegroundWindow(hwnd);
+        let picked = TrackPopupMenuEx(
+            popup,
+            (TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_TOPALIGN).0,
+            screen.x,
+            screen.y,
+            hwnd,
+            None,
+        );
+        let _ = DestroyMenu(popup);
+        picked.0 as u32
     }
 }
 

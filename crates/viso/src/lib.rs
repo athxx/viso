@@ -451,6 +451,12 @@ pub mod __test_support {
             self.driver.windows[0].edit_menu
         }
 
+        /// The context menu the launch window last popped up, until it
+        /// closes or the field takes its request back.
+        pub fn context_menu(&self) -> Option<viso_platform::EditMenu> {
+            self.driver.windows[0].context_menu
+        }
+
         /// The pointer cursor last pushed to the platform for the launch
         /// window.
         pub fn cursor(&self) -> viso_platform::CursorIcon {
@@ -875,6 +881,8 @@ struct WindowState {
     text_entry: Option<Option<TextEntry>>,
     /// The edit menu last pushed to the platform, while it shows.
     edit_menu: Option<viso_platform::EditMenu>,
+    /// The context menu last asked for, while the field asks for it.
+    context_menu: Option<viso_platform::EditMenu>,
     /// The cursor last pushed to the platform for the mouse.
     cursor: viso_platform::CursorIcon,
     /// The text field drawn with the focus last frame.
@@ -1131,6 +1139,7 @@ impl WindowState {
             root: None,
             text_entry: None,
             edit_menu: None,
+            context_menu: None,
             cursor: viso_platform::CursorIcon::Default,
             marked: None,
             blink: None,
@@ -1841,40 +1850,61 @@ impl WindowState {
     /// differs from what was last pushed: what it points at, in logical
     /// points and kept within the field's box, and the edits its selection
     /// takes. None shows while the window is inactive.
-    fn edit_menu_changed(&mut self) -> bool {
+    fn edit_menu_changed(&mut self, with_context: bool) -> bool {
         let menu = self
             .focused_text_node()
             .filter(|_| self.active)
             .and_then(|id| {
-                let at = self.store.field_marks(id)?.menu?;
-                let buffer = self.text_edits.get(id)?;
-                let scroll = self.store.field_marks(id)?.scroll;
-                let view = self.store.world(id);
-                let x = (view.x - scroll.x + at.x).max(view.x);
-                let y = (view.y - scroll.y + at.y).max(view.y);
-                let right = (view.x - scroll.x + at.x + at.w).min(view.x + view.w);
-                let bottom = (view.y - scroll.y + at.y + at.h).min(view.y + view.h);
-                let (start, end) = buffer.sel.logical_range();
-                let selected = start != end && !buffer.look.secure;
-                let whole = start.0 == 0 && end.0 == buffer.text.len();
-                Some(viso_platform::EditMenu {
-                    at: LogicalRect::new(
-                        x as f64,
-                        y as f64,
-                        (right - x).max(0.0) as f64,
-                        (bottom - y).max(0.0) as f64,
-                    ),
-                    cut: selected,
-                    copy: selected,
-                    paste: true,
-                    select_all: !buffer.text.is_empty() && !whole,
-                })
+                let marks = self.store.field_marks(id)?;
+                let at = marks.menu.or(marks.context.filter(|_| with_context))?;
+                self.edit_menu_at(id, at)
             });
         if self.edit_menu == menu {
             return false;
         }
         self.edit_menu = menu;
         true
+    }
+
+    /// Recompute the context menu the focused field asks for and report
+    /// whether it is a new request.
+    fn context_menu_changed(&mut self) -> bool {
+        let menu = self.focused_text_node().and_then(|id| {
+            let at = self.store.field_marks(id)?.context?;
+            self.edit_menu_at(id, at)
+        });
+        if self.context_menu == menu {
+            return false;
+        }
+        self.context_menu = menu;
+        menu.is_some()
+    }
+
+    /// The menu of edits field `id` offers, pointing at `at` in its text
+    /// space, kept inside the field's box.
+    fn edit_menu_at(&self, id: NodeId, at: viso_ui::Rect) -> Option<viso_platform::EditMenu> {
+        let buffer = self.text_edits.get(id)?;
+        let scroll = self.store.field_marks(id)?.scroll;
+        let view = self.store.world(id);
+        let x = (view.x - scroll.x + at.x).max(view.x);
+        let y = (view.y - scroll.y + at.y).max(view.y);
+        let right = (view.x - scroll.x + at.x + at.w).min(view.x + view.w);
+        let bottom = (view.y - scroll.y + at.y + at.h).min(view.y + view.h);
+        let (start, end) = buffer.sel.logical_range();
+        let selected = start != end && !buffer.look.secure;
+        let whole = start.0 == 0 && end.0 == buffer.text.len();
+        Some(viso_platform::EditMenu {
+            at: LogicalRect::new(
+                x as f64,
+                y as f64,
+                (right - x).max(0.0) as f64,
+                (bottom - y).max(0.0) as f64,
+            ),
+            cut: selected,
+            copy: selected,
+            paste: true,
+            select_all: !buffer.text.is_empty() && !whole,
+        })
     }
 
     /// Recompute the text-entry area from the laid-out tree and report whether
@@ -2602,16 +2632,21 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 // The menu's Select All selects the focused field's text and
                 // keeps the menu; a menu that closed on its own is no longer
                 // shown, so a later one is pushed afresh.
+                // Only the touch menu's Select All keeps the handles; a
+                // context menu's is a plain one.
                 let edit = match e.action {
-                    viso_platform::EditMenuAction::SelectAll => text_edit::TouchEdit::SelectAll,
+                    viso_platform::EditMenuAction::SelectAll if ws.edit_menu.is_some() => {
+                        text_edit::EditIntent::Touch(text_edit::TouchEdit::SelectAll)
+                    }
+                    viso_platform::EditMenuAction::SelectAll => text_edit::EditIntent::SelectAll,
                     viso_platform::EditMenuAction::Closed => {
                         ws.edit_menu = None;
-                        text_edit::TouchEdit::MenuClosed
+                        ws.context_menu = None;
+                        text_edit::EditIntent::Touch(text_edit::TouchEdit::MenuClosed)
                     }
                 };
                 if let Some(node) = ws.focused_text_node() {
-                    ws.store
-                        .queue_edit(node, text_edit::EditIntent::Touch(edit));
+                    ws.store.queue_edit(node, edit);
                 }
             }
             viso_runtime::InputSample::ImePreedit(p) => {
@@ -3320,8 +3355,20 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     }
                     // The edit menu follows what a touch made of the focused
                     // field's selection, where the platform has one.
-                    if cx.capabilities().edit_menu && ws.edit_menu_changed() {
+                    let caps = cx.capabilities();
+                    if caps.edit_menu && ws.edit_menu_changed(!caps.context_menu) {
                         cx.set_edit_menu(ws.window, ws.edit_menu);
+                    }
+                    // A secondary click or the menu key asks for the context
+                    // menu once; where the system draws one it pops up.
+                    if caps.context_menu
+                        && ws.context_menu_changed()
+                        && let Some(menu) = ws.context_menu
+                    {
+                        let labels = viso_platform::EditLabels::for_locale(
+                            &ws.states.env().environment().locale,
+                        );
+                        cx.show_context_menu(ws.window, menu, labels);
                     }
                 }
             }
