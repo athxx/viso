@@ -24,9 +24,9 @@ const PALETTE: &str = "background: #ffffff, foreground: #1b1f24, surface: #f5f6f
      focus_ring: #3b6cf099, scrim: #00000066";
 
 /// The default theme's shadows, as `ElevationScale` fields.
-const SHADOWS: &str = "low: Shadow { offset_y: 1dp, blur: 2dp, color: #00000024 }, \
-     medium: Shadow { offset_y: 2dp, blur: 6dp, color: #0000002e }, \
-     high: Shadow { offset_y: 6dp, blur: 16dp, color: #00000038 }";
+const SHADOWS: &str = "low: Shadow { y: 1dp, blur: 2dp, color: #00000024 }, \
+     medium: Shadow { y: 2dp, blur: 6dp, color: #0000002e }, \
+     high: Shadow { y: 6dp, blur: 16dp, color: #00000038 }";
 
 /// The themes `Light` (the default one, spelled out), `Roomy` and `Tight`
 /// over it, and `extra`.

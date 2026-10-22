@@ -154,10 +154,20 @@ const pivot = (v, rtl) => {
   const across = t % 3 === 1 ? "center" : (t % 3 === 0) !== rtl ? "left" : "right";
   return across + " " + ["top", "center", "bottom"][Math.floor(t / 3)];
 };
+// A `Dp` in px; a `box-shadow` of none that a list of them takes.
+const dp = (v) => (v !== null && typeof v === "object" ? Number(v.f[0]) : Number(v ?? 0));
+const noShadow = "0 0 #0000";
+// An `Option<Border>` as an inset `box-shadow`.
 const stroke = (v) => {
-  if (v === null) return "none";
-  const w = typeof v.f[0] === "object" ? Number(v.f[0].f[0]) : Number(v.f[0]);
-  return "inset 0 0 0 " + Math.max(w, 0) + "px " + color(v.f[1]);
+  if (v === null) return noShadow;
+  return "inset 0 0 0 " + Math.max(dp(v.f[0]), 0) + "px " + color(v.f[1]);
+};
+// An `Option<Shadow>` as a `box-shadow`.
+const shadow = (v) => {
+  if (v === null) return noShadow;
+  const [x, y, blur, spread, paint, inset] = v.f;
+  return (Number(inset ?? 0n) === 1 ? "inset " : "") + dp(x) + "px " + dp(y) + "px " +
+    Math.max(dp(blur), 0) + "px " + dp(spread) + "px " + color(paint);
 };
 const text = (v) => (v === null ? "" : typeof v === "string" ? v : String(v));
 const attr = (el, name, v) => (v === null ? el.removeAttribute(name) : el.setAttribute(name, text(v)));
@@ -332,6 +342,7 @@ const P = {
   vopacity: (el, v, name) => el.style.setProperty(name, String(Math.min(Math.max(v ?? 1, 0), 1))),
   vradius: (el, v, name) => el.style.setProperty(name, radius(v)),
   vborder: (el, v, name) => el.style.setProperty(name, stroke(v)),
+  vshadow: (el, v, name) => el.style.setProperty(name, shadow(v)),
   vtranslate: (el, v, name) => el.style.setProperty(name, offset(v)),
   vscale: (el, v, name) => el.style.setProperty(name, scaling(v)),
   vrotate: (el, v, name) => el.style.setProperty(name, turning(v)),

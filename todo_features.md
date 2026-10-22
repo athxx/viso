@@ -132,7 +132,7 @@ Rules:
   focus show, `tooltip` semantics.
 - [x] `Popover` with arrow (callout).
 - [x] Box shadows on nodes (`BuildCx::shadow`), floating layers cast one.
-- [ ] DSL `shadow` property and its HTML export.
+- [x] DSL `shadow` property (drop and inset, `theme.elevation.*` bindable) and its HTML export.
 - [ ] Framework-drawn `MenuBar` for windows without a native one (Left/Right between
   menus, Alt to focus, mnemonics).
 

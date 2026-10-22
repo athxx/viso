@@ -1,4 +1,4 @@
-//! A box's `corner_radius` and `border` (§U3.3): constant or reading state, a
+//! A box's `corner_radius`, `border` and `shadow` (§U3.3): constant or reading state, a
 //! `%` radius a share of the shorter side of the box as it paints, an `sp` one
 //! following the text scale, and a style's `when` switching both, under hot
 //! reload and from the release package.
@@ -8,13 +8,17 @@ mod support;
 use support::Rt;
 use viso_ui::{
     Border, LengthEnv, NodeId, PointerButtons, PointerEvent, PointerPhase, PointerRouter, Rgba,
-    Srgb,
+    Shadow, Srgb, Vec2,
 };
 
 const CARD: &str = r##"
 style Ring for Column {
     border: Option::Some(Border { width: 1dp, color: #00ff00 });
-    when hover { corner_radius: 6dp; border: Option::Some(Border { width: 3dp, color: #0000ff }); }
+    when hover {
+        corner_radius: 6dp;
+        border: Option::Some(Border { width: 3dp, color: #0000ff });
+        shadow: Option::Some(Shadow { y: 1dp, blur: 4dp, color: #000000, inset: true });
+    }
 }
 
 export component Card {
@@ -28,6 +32,7 @@ export component Card {
                 background: #ff0000;
                 corner_radius: if round { 50% } else { 4dp };
                 border: if round { Option::Some(Border { width: 2dp, color: #000000 }) } else { Option::None };
+                shadow: if round { Option::Some(Shadow { x: 1dp, y: 4dp, blur: 12dp, spread: -2dp, color: #00000040 }) } else { Option::None };
             }
             Column { width: 10dp; height: 10dp; corner_radius: 2sp; }
             Column { width: 20dp; height: 20dp; styles: [Ring]; }
@@ -88,17 +93,32 @@ fn a_box_rounds_and_strokes_as_its_values_say_in_every_target() {
         rt.relayout();
         let [_, card, scaled, styled] = nodes(&rt);
         assert_eq!(shape(&rt, card), (4.0, 0.0, Border::NONE));
+        assert_eq!(rt.store.shadow(card), None);
         assert_eq!(shape(&rt, scaled).0, 2.0);
         assert_eq!(shape(&rt, styled), (0.0, 0.0, border(1.0, 0x00ff00ff)));
 
         rt.click(0);
         assert_eq!(shape(&rt, card), (0.0, 0.5, border(2.0, 0x000000ff)));
+        assert_eq!(
+            rt.store.shadow(card),
+            Some(Shadow {
+                color: rgba(0x00000040),
+                offset: Vec2 { x: 1.0, y: 4.0 },
+                blur: 12.0,
+                spread: -2.0,
+                inset: false,
+            })
+        );
 
         hover(&mut rt);
         assert_eq!(
             shape(&rt, styled),
             (6.0, 0.0, border(3.0, 0x0000ffff)),
             "the `when` switches both"
+        );
+        assert_eq!(
+            rt.store.shadow(styled),
+            Some(Shadow::below(rgba(0x000000ff), 1.0, 4.0).inside())
         );
         assert_eq!(rt.fault(), None);
     }

@@ -153,6 +153,7 @@ impl ControlKind {
             (_, "opacity") => ControlInput::Opacity,
             (_, "corner_radius") => ControlInput::CornerRadius,
             (_, "border") => ControlInput::Border,
+            (_, "shadow") => ControlInput::Shadow,
             (_, "transition.background") => ControlInput::BackgroundTransition,
             (_, "transition.opacity") => ControlInput::OpacityTransition,
             (_, "translate") => ControlInput::Translate,
@@ -613,6 +614,8 @@ pub enum ControlInput {
     CornerRadius,
     /// The node's `border`.
     Border,
+    /// The node's `shadow`.
+    Shadow,
     /// The node's `transition.background`.
     BackgroundTransition,
     /// The node's `transition.opacity`.
@@ -903,7 +906,7 @@ pub enum Switched {
 
 impl ControlInput {
     /// Every input, by wire tag.
-    pub const ALL: [ControlInput; 52] = [
+    pub const ALL: [ControlInput; 53] = [
         ControlInput::Value,
         ControlInput::Min,
         ControlInput::Max,
@@ -956,6 +959,7 @@ impl ControlInput {
         ControlInput::FontStyle,
         ControlInput::Spans,
         ControlInput::Selectable,
+        ControlInput::Shadow,
     ];
 
     /// Its wire tag: its place in [`ControlInput::ALL`].
@@ -980,8 +984,8 @@ impl LookArm {
 }
 
 /// The handler-table entries of the look a node shows: an absent entry leaves
-/// the node as it was built (no fill, opaque, sharp corners, no border), and
-/// a value with no transition shows at once.
+/// the node as it was built (no fill, opaque, sharp corners, no border, no
+/// shadow), and a value with no transition shows at once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Look {
     /// Its `background`: a color, or `None` for no fill.
@@ -993,6 +997,8 @@ pub struct Look {
     pub corner_radius: Option<u32>,
     /// Its `border`: a `Border`, or `None` for no stroke.
     pub border: Option<u32>,
+    /// Its `shadow`: a `Shadow`, or `None` for none.
+    pub shadow: Option<u32>,
     /// Its `transition.background`: how a new background moves in.
     pub background_transition: Option<u32>,
     /// Its `transition.opacity`: how a new opacity moves in.
@@ -1073,6 +1079,7 @@ impl Control {
             ControlInput::Opacity => self.look.opacity,
             ControlInput::CornerRadius => self.look.corner_radius,
             ControlInput::Border => self.look.border,
+            ControlInput::Shadow => self.look.shadow,
             ControlInput::BackgroundTransition => self.look.background_transition,
             ControlInput::OpacityTransition => self.look.opacity_transition,
             ControlInput::Translate => self.look.translate,
@@ -1141,6 +1148,7 @@ impl Control {
             ControlInput::Opacity => &mut self.look.opacity,
             ControlInput::CornerRadius => &mut self.look.corner_radius,
             ControlInput::Border => &mut self.look.border,
+            ControlInput::Shadow => &mut self.look.shadow,
             ControlInput::BackgroundTransition => &mut self.look.background_transition,
             ControlInput::OpacityTransition => &mut self.look.opacity_transition,
             ControlInput::Translate => &mut self.look.translate,
@@ -1227,6 +1235,7 @@ impl Encode for Control {
             look.rotation,
             look.rotation_transition,
             look.transform_origin,
+            look.shadow,
             semantics.label,
             semantics.hint,
             semantics.value,
@@ -1339,6 +1348,7 @@ impl Decode for Control {
                 rotation: entry()?,
                 rotation_transition: entry()?,
                 transform_origin: entry()?,
+                shadow: entry()?,
             },
             arms: Box::new([]),
             semantics: SemanticEntries {
@@ -1541,6 +1551,10 @@ mod tests {
             ControlKind::Asset.input("border"),
             Some(ControlInput::Border)
         );
+        assert_eq!(
+            ControlKind::Plain.input("shadow"),
+            Some(ControlInput::Shadow)
+        );
     }
 
     #[test]
@@ -1608,6 +1622,7 @@ mod tests {
                 rotation: None,
                 rotation_transition: None,
                 transform_origin: Some(25),
+                shadow: Some(26),
             },
             arms: Box::new([LookArm {
                 target: Switched::Input(ControlInput::Border),

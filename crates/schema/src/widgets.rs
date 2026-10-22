@@ -44,6 +44,7 @@ const LAYOUT: &[WidgetProperty] = &[
     based_look("corner_radius", "MixedLength"),
     look("background", "Option<Color>"),
     look("border", "Option<Border>"),
+    look("shadow", "Option<Shadow>"),
     prop("styles", "List<StyleRef<T>>"),
 ];
 

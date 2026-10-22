@@ -138,13 +138,42 @@ fn token_value(value: &Value, token: Token) -> Option<String> {
         Token::Duration => seconds(value.as_float()?),
         Token::Easing => easing(value.as_int()?).to_owned(),
         Token::Family => family(value),
-        Token::Shadow => {
-            let offset = field(value, 0)?.as_float()?;
-            let blur = field(value, 1)?.as_float()?;
-            let tint = field(value, 2)?.as_int()? as u32;
-            format!("0 {} {} {}", px(offset), px(blur), color(tint))
-        }
+        Token::Shadow => shadow(value)?,
     })
+}
+
+/// A `Shadow` as a `box-shadow`, `None` for a value that is not one.
+pub(super) fn shadow(value: &Value) -> Option<String> {
+    let Value::Agg(agg) = value else {
+        return None;
+    };
+    let [x, y, blur, spread, tint, inset] = &agg.fields[..] else {
+        return None;
+    };
+    let inset = if inset.as_int().is_some_and(|v| v != 0) {
+        "inset "
+    } else {
+        ""
+    };
+    let tint = tint
+        .as_int()
+        .map_or("transparent".to_owned(), |c| color(c as u32));
+    Some(format!(
+        "{inset}{} {} {} {} {tint}",
+        px(dp(x)),
+        px(dp(y)),
+        px(dp(blur).max(0.0)),
+        px(dp(spread)),
+    ))
+}
+
+/// A `Dp` value in dp, zero for none.
+pub(super) fn dp(value: &Value) -> f64 {
+    match value {
+        Value::Agg(terms) => terms.fields.first().and_then(Value::as_float),
+        value => value.as_float(),
+    }
+    .unwrap_or(0.0)
 }
 
 /// The interface face's font stack.
@@ -381,7 +410,7 @@ mod tests {
         let rule = theme_rule(&theme);
         assert!(rule.contains("  --colors-primary: #3b6cf0;\n"), "{rule}");
         assert!(rule.contains("  --typography-base-size: 0.875rem;\n"));
-        assert!(rule.contains("  --elevation-low: 0 1px 2px #00000024;\n"));
+        assert!(rule.contains("  --elevation-low: 0 1px 2px 0 #00000024;\n"));
         assert!(rule.contains("  --motion-standard: ease-out;\n"));
     }
 

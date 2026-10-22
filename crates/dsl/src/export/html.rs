@@ -167,9 +167,11 @@ pub(super) enum VarToken {
     Opacity,
     /// A `MixedLength` corner radius, as `border-radius`.
     Radius,
-    /// An `Option<Border>`, as an inset `box-shadow`: it strokes inside the
-    /// box without moving its content.
+    /// An `Option<Border>`, as an inset `box-shadow` in `--vx-border`: it
+    /// strokes inside the box without moving its content.
     Border,
+    /// An `Option<Shadow>`, as a `box-shadow` in `--vx-shadow`.
+    Shadow,
     /// An `Offset`, as `translate`.
     Translate,
     /// An `F32`, as `scale`.
@@ -1411,6 +1413,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             VarToken::Opacity => "the opacity",
             VarToken::Radius => "the corner radius",
             VarToken::Border => "the border",
+            VarToken::Shadow => "the shadow",
             VarToken::Translate => "the translate",
             VarToken::Scale => "the scale",
             VarToken::Rotation => "the rotation",
@@ -1435,6 +1438,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 VarToken::Opacity => css::number(v.as_float().unwrap_or(1.0).clamp(0.0, 1.0)),
                 VarToken::Radius => radius(&v),
                 VarToken::Border => stroke(&v),
+                VarToken::Shadow => cast(&v),
                 VarToken::Translate => offset(&v),
                 VarToken::Scale => css::number(v.as_float().unwrap_or(1.0)),
                 VarToken::Rotation => format!("{}deg", css::number(v.as_float().unwrap_or(0.0))),
@@ -1445,9 +1449,11 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         }
     }
 
-    /// The node's background, opacity, corner radius and border, each its
-    /// base value and the values its styles' `when` blocks select, as rules
-    /// of its own class; and how they move.
+    /// The node's background, opacity, corner radius, border and shadow, each
+    /// its base value and the values its styles' `when` blocks select, as
+    /// rules of its own class; and how they move. A border and a shadow are
+    /// both a `box-shadow`, so each is a custom property the one
+    /// `box-shadow` lists.
     #[allow(clippy::too_many_arguments)]
     fn look(
         &mut self,
@@ -1460,10 +1466,22 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         wires: &mut Vec<Wire>,
     ) {
         let look = control.look;
-        for (base, input, property, token) in [
+        // Whether a border or a shadow shows: its `box-shadow` then lists
+        // both, the one not given as none.
+        let boxed = [
+            (look.border, viso_schema::view::ControlInput::Border),
+            (look.shadow, viso_schema::view::ControlInput::Shadow),
+        ]
+        .into_iter()
+        .any(|(base, input)| {
+            let input = viso_schema::view::Switched::Input(input);
+            base.is_some() || control.arms.iter().any(|a| a.target == input)
+        });
+        for (base, input, property, name, token) in [
             (
                 look.background,
                 viso_schema::view::ControlInput::Background,
+                "background-color",
                 "background-color",
                 VarToken::Color,
             ),
@@ -1471,23 +1489,34 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 look.opacity,
                 viso_schema::view::ControlInput::Opacity,
                 "opacity",
+                "opacity",
                 VarToken::Opacity,
             ),
             (
                 look.corner_radius,
                 viso_schema::view::ControlInput::CornerRadius,
                 "border-radius",
+                "border-radius",
                 VarToken::Radius,
             ),
             (
                 look.border,
                 viso_schema::view::ControlInput::Border,
-                "box-shadow",
+                "--vx-border",
+                "border",
                 VarToken::Border,
+            ),
+            (
+                look.shadow,
+                viso_schema::view::ControlInput::Shadow,
+                "--vx-shadow",
+                "shadow",
+                VarToken::Shadow,
             ),
             (
                 look.translate,
                 viso_schema::view::ControlInput::Translate,
+                "translate",
                 "translate",
                 VarToken::Translate,
             ),
@@ -1495,35 +1524,45 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 look.scale,
                 viso_schema::view::ControlInput::Scale,
                 "scale",
+                "scale",
                 VarToken::Scale,
             ),
             (
                 look.rotation,
                 viso_schema::view::ControlInput::Rotation,
                 "rotate",
+                "rotate",
                 VarToken::Rotation,
             ),
         ] {
-            if let Some(entry) = base {
-                let var = format!("--v{key}-{property}");
-                let value = self.look_value(wires, entry, var, token, at);
-                decls.push((property, value));
-            }
             let input = viso_schema::view::Switched::Input(input);
             let arms: Vec<_> = control.arms.iter().filter(|a| a.target == input).collect();
+            if let Some(entry) = base {
+                let var = format!("--v{key}-{name}");
+                let value = self.look_value(wires, entry, var, token, at);
+                decls.push((property, value));
+            } else if boxed && matches!(token, VarToken::Border | VarToken::Shadow) {
+                decls.push((property, NO_SHADOW.to_owned()));
+            }
             // The first arm that holds wins: the rules are written last first,
             // so an earlier one of equal specificity overrides the later.
             for (index, arm) in arms.iter().enumerate().rev() {
                 let Some(selector) = self.selector(&arm.when, key, at, wires) else {
                     continue;
                 };
-                let var = format!("--v{key}-{property}-{index}");
+                let var = format!("--v{key}-{name}-{index}");
                 let value = self.look_value(wires, arm.entry, var, token, at);
                 self.out
                     .sheet
                     .rule(None, format!(".{own}{selector}"), &[(property, value)]);
                 el.own_class = true;
             }
+        }
+        if boxed {
+            decls.push((
+                "box-shadow",
+                "var(--vx-shadow), var(--vx-border)".to_owned(),
+            ));
         }
         // A text's color switches as its look does; the arms of a value with
         // no CSS rule of its own here do not export.
@@ -1545,11 +1584,12 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 .rule(None, format!(".{own}{selector}"), &[("color", value)]);
             el.own_class = true;
         }
-        const LOOKS: [viso_schema::view::ControlInput; 8] = [
+        const LOOKS: [viso_schema::view::ControlInput; 9] = [
             viso_schema::view::ControlInput::Background,
             viso_schema::view::ControlInput::Opacity,
             viso_schema::view::ControlInput::CornerRadius,
             viso_schema::view::ControlInput::Border,
+            viso_schema::view::ControlInput::Shadow,
             viso_schema::view::ControlInput::Translate,
             viso_schema::view::ControlInput::Scale,
             viso_schema::view::ControlInput::Rotation,
@@ -1562,7 +1602,8 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 Need::Unsupported,
                 at,
                 "a style's `when` switches a value the export does not switch yet: \
-                 `background`, `opacity`, `corner_radius`, `border`, `translate`, `scale`, \
+                 `background`, `opacity`, `corner_radius`, `border`, `shadow`, `translate`, \
+                 `scale`, \
                  `rotation` and a text's `color` do",
                 Vec::new(),
             );
@@ -2556,23 +2597,26 @@ fn offset(value: &Value) -> String {
     )
 }
 
-/// An `Option<Border>` as an inset `box-shadow`, `none` for no border.
+/// The `box-shadow` of no border or no shadow, which a list of them takes
+/// where `none` is not allowed.
+const NO_SHADOW: &str = "0 0 #0000";
+
+/// An `Option<Border>` as an inset `box-shadow`, [`NO_SHADOW`] for no
+/// border.
 fn stroke(value: &Value) -> String {
     let Value::Agg(agg) = value else {
-        return "none".to_owned();
+        return NO_SHADOW.to_owned();
     };
     let [width, paint] = &agg.fields[..] else {
-        return "none".to_owned();
-    };
-    let width = match width {
-        Value::Agg(terms) => terms.fields.first().and_then(Value::as_float),
-        width => width.as_float(),
+        return NO_SHADOW.to_owned();
     };
     let color = paint
         .as_int()
         .map_or("transparent".to_owned(), |c| css::color(c as u32));
-    format!(
-        "inset 0 0 0 {} {color}",
-        css::px(width.unwrap_or(0.0).max(0.0))
-    )
+    format!("inset 0 0 0 {} {color}", css::px(css::dp(width).max(0.0)))
+}
+
+/// An `Option<Shadow>` as a `box-shadow`, [`NO_SHADOW`] for no shadow.
+fn cast(value: &Value) -> String {
+    css::shadow(value).unwrap_or_else(|| NO_SHADOW.to_owned())
 }

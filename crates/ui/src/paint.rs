@@ -450,7 +450,8 @@ pub(crate) fn clip_corners(store: &NodeStore, node: NodeId, world: Rect) -> Opti
 fn paint_own(store: &NodeStore, node: NodeId, world: Rect, out: &mut Vec<Primitive>) {
     let style = store.style(node);
     let radius = corner_radius(&style, world);
-    if let Some(shadow) = store.shadow(node) {
+    let shadow = store.shadow(node);
+    if let Some(shadow) = shadow.filter(|s| !s.inset) {
         paint_shadow(shadow, world, radius, out);
     }
     if style.is_visible() {
@@ -460,6 +461,16 @@ fn paint_own(store: &NodeStore, node: NodeId, world: Rect, out: &mut Vec<Primiti
             radius,
             border: style.border,
         }));
+    }
+    if let Some(shadow) = shadow.filter(|s| s.inset) {
+        let width = style.border.width.max(0.0);
+        let inner = Rect {
+            x: world.x + width,
+            y: world.y + width,
+            w: (world.w - 2.0 * width).max(0.0),
+            h: (world.h - 2.0 * width).max(0.0),
+        };
+        paint_shadow(shadow, inner, (radius - width).max(0.0), out);
     }
     // Drawable content (text/image/path) paints over the node's background. Its
     // coordinates are node-local, so shift them by the node's world origin — a
@@ -501,7 +512,8 @@ fn paint_own(store: &NodeStore, node: NodeId, world: Rect, out: &mut Vec<Primiti
     }
 }
 
-/// The shadow a box of `world` rounded by `radius` casts under itself.
+/// The shadow a box of `world` rounded by `radius` casts under itself, or
+/// within itself when the shadow is inset.
 #[cold]
 fn paint_shadow(shadow: crate::shadow::Shadow, world: Rect, radius: f32, out: &mut Vec<Primitive>) {
     out.push(Primitive::AnalyticShadow(AnalyticShadow {
@@ -512,7 +524,7 @@ fn paint_shadow(shadow: crate::shadow::Shadow, world: Rect, radius: f32, out: &m
         sigma: shadow.blur * 0.5,
         spread: shadow.spread,
         shape: ShadowShape::RoundedBox,
-        inner: false,
+        inner: shadow.inset,
     }));
 }
 

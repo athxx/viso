@@ -35,6 +35,7 @@ pub(crate) const PRELUDE_RECORDS: &[&str] = &[
     "SvgAsset",
     "EdgeInsets",
     "Border",
+    "Shadow",
     "AdaptiveColumns",
     "Offset",
 ];

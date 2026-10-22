@@ -336,6 +336,7 @@ fn mount(out: &mut String, index: usize, content: &Content, eval: &Eval<'_>, roo
                             }
                             VarToken::Radius => format!("P.vradius({el}, {value}, \"{name}\")"),
                             VarToken::Border => format!("P.vborder({el}, {value}, \"{name}\")"),
+                            VarToken::Shadow => format!("P.vshadow({el}, {value}, \"{name}\")"),
                             VarToken::Translate => {
                                 format!("P.vtranslate({el}, {value}, \"{name}\")")
                             }

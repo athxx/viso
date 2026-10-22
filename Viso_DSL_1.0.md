@@ -4366,7 +4366,7 @@ mouse+keyboard vs touch input
 
 一次绑定中 §76.1 拓宽与上述提升至多各发生一次（如 `Dp` → `MixedLength` → `Option<MixedLength>`）；提升不适用于函数实参与 `let`。
 
-当前实现：本部分的 Schema Enum（`Sizing`、`Track`、`TrackMax`、`AutoRepeat`、`Axis`、`Justify`、`Align`、`GridAlign`、`Alignment2D`、`FontWeight`、`TextOverflow`、`TextAlign`、`LiveRegion`、`Role`）与 Record `Border`、`AdaptiveColumns` 声明在 Prelude 中，无需 Import；以它们（或其 `Option`、`List`）为类型的 Property 按该类型检查绑定：未知 Variant 是 `E2001`（附最近候选），另一个 Enum 的 Variant 或其他类型的值是 `E2103`，`Head::variant` 的 `Head` 不是任何类型时也是 `E2001`。`Offset`、`Transition` 等其余 Record 类型的 Property 尚不按类型检查。
+当前实现：本部分的 Schema Enum（`Sizing`、`Track`、`TrackMax`、`AutoRepeat`、`Axis`、`Justify`、`Align`、`GridAlign`、`Alignment2D`、`FontWeight`、`TextOverflow`、`TextAlign`、`LiveRegion`、`Role`）与 Record `Border`、`Shadow`、`AdaptiveColumns` 声明在 Prelude 中，无需 Import；以它们（或其 `Option`、`List`）为类型的 Property 按该类型检查绑定：未知 Variant 是 `E2001`（附最近候选），另一个 Enum 的 Variant 或其他类型的值是 `E2103`，`Head::variant` 的 `Head` 不是任何类型时也是 `E2001`。`Offset`、`Transition` 等其余 Record 类型的 Property 尚不按类型检查。
 
 ### U1.4 明确推迟
 
@@ -4522,16 +4522,26 @@ export enum Sizing { fixed(MixedLength); fill { weight: F32 = 1.0; }; fit; min_c
 | `background`    | `Option<Color>`       | `Option::None`       | `PAINT`           | —                             |
 | `corner_radius` | `MixedLength`         | `0dp`                | `PAINT`           | 自身 Border Box 较短边        |
 | `border`        | `Option<Border>`      | `Option::None`       | `PAINT`           | —                             |
+| `shadow`        | `Option<Shadow>`      | `Option::None`       | `PAINT`           | —                             |
 | `styles`        | `List<StyleRef<T>>`   | `[]`                 | `STYLE`           | —                             |
 
 ```viso
 export record EdgeInsets { top: MixedLength = 0dp; end: MixedLength = 0dp; bottom: MixedLength = 0dp; start: MixedLength = 0dp; }
 export record Border { width: Dp = 1dp; color: Color; }
+export record Shadow {
+    x: Dp = 0dp;
+    y: Dp = 2dp;
+    blur: Dp = 8dp;
+    spread: Dp = 0dp;
+    color: Color;
+    inset: Bool = false;
+}
 ```
 
 - 构造函数：`EdgeInsets::zero()`、`EdgeInsets::all(v)`、`EdgeInsets::axes(inline: a, block: b)`（`a` 用于 `start`/`end`，`b` 用于 `top`/`bottom`）；
 - 按 U1.3，§19.5 的 `padding: 1em;` 提升为 `EdgeInsets::all(1em)`；
 - `margin` 不折叠；`border` 在 Border Box 内侧描边，不参与布局；
+- `shadow` 是盒按 `corner_radius` 取圆角、按 `spread` 扩张（负值收缩）、按 `x`/`y` 偏移并按 `blur`（CSS 模糊半径）淡出的投影，画在盒下方，不参与布局与命中；`inset: true` 时落在盒内、`border` 之内，画在背景之上；`theme.elevation.*` 即 `Shadow`，可直接绑定；
 - `min` 大于 `max` 时以 `min` 为准，Debug Runtime 报告 `E3105`；
 - `start`/`end` 在布局时按 `env.layout_direction` 解析为物理边；
 - `padding` 只作用于容器（`Row`、`Column`、`Flex`、`Stack`、`Absolute`、`Grid`）的内容盒；`padding` 可为常量（长度、`EdgeInsets::zero/all/axes` 或各字段为常量的 `EdgeInsets { .. }`）或读取值（见 U3.4 的绑定布局值），每条边按 §19.8 取非负，含 `%` 分量的边在布局时读到父内容盒后取非负；非容器节点上的 `padding` 报 `E3711`，不会被静默丢弃。纯 `dp` 且 `start` 与 `end` 相等的 `padding` 在编译期折叠为物理内边距；含 `px`/`sp`/`em` 分量或 `start` 与 `end` 不等的，随 §19.6 环境与 `env.layout_direction` 在布局时折叠，只有折叠结果变化的节点被标脏；
@@ -4550,7 +4560,7 @@ export record Border { width: Dp = 1dp; color: Color; }
 - `Row` 主轴 `start` 是行内起点，RTL 下首个子节点位于右侧；
 - `justify` 与 `align` 不改变容器自身测量结果，只标记 `LAYOUT`。
 
-当前实现：常量的 `width`/`height`（长度，即 `Sizing::fixed`，以及 `Sizing::fixed(..)`、`Sizing::fill`、`Sizing::fill { weight: w }`、`Sizing::fit`）、Flex 容器的 `justify`、`align` 与 `axis`（`Axis::row`/`Axis::column`）在编译期折叠进节点样式，`Grid` 取其 `width`/`height`；值可以是本文件或按名 import 的 `const`（经 `const` 链折叠，链可跨文件）。热重载就地改写保留节点的排列，Release 包与宏路径相同。`Sizing::fit`/`min_content`/`max_content` 按 U3.2 布局。`corner_radius` 与 `border` 可为常量或读取值，可由 Style 的 `when` 切换：`corner_radius` 的 `%` 读节点绘制时自身盒的较短边，`px`/`sp`/`em` 随 §19.6 环境，圆角不超过较短边的一半；`border` 在盒内侧描边，不移动内容。`clip` 可为常量或读取值：为 `true` 时子树的绘制与命中只落在节点自身盒内，按节点的 `corner_radius` 取圆角（圆角处的像素按覆盖率淡出，圆角外的指针不命中子节点）；HTML 导出为 `overflow: hidden`。尚无运行时路径的 Property（变换）报 `E3711`，不会被静默丢弃；`viso check` 与 `view!` 报告相同。`visible`（折出布局、绘制与语义树）、`focusable`，以及 `Text`/`Button`/`TextInput` 的 `color`、`soft_wrap` 与 `font_size`（节点解析出的字号）随值送达节点，可绑定；文本挂载后其字号与 `line_height` 在塑形时按节点解析出的字号与环境解析，文字缩放、缩放因子或根字号变化、或字号来源变化时只重新排布（em 布局不变），读取值的 `font_size` 随值改写节点的字号来源。读取值（State、Input、`theme` 等）的布局 Property——`font_size`、`width`/`height`、`min_*`/`max_*`、`margin`、`padding`、`gap`、`justify`/`align`/`axis`、Grid 的模板、间距与对齐、`content_align`、子节点的 `grid.column`/`grid.row`/`grid.*_span`、`stack.*` 与 `absolute.*`——随值变化重新布局节点，只标脏其移动的部分：长度经节点的环境长度在布局时折叠（`px`/`sp`/`em` 随 §19.6 环境，`%` 读其基准），与节点的常量长度一同折叠；热重载后全部重新送达，Release 包与宏路径相同。送达的值为 `minmax`/`fit_content`/`AdaptiveColumns` 中含 `%` 的长度时，执行域报告 Fault，节点保留此前的布局。读取值的 `areas`/`grid.area` 报 `E3711`。Style 给出的 Property 与节点自身的走同一送达路径：常量折叠进样式，读取值（含 `theme`）随值送达；Style 的 `when` 可切换节点运行时送达的任何 Property（外观、变换、文本样式、布局等），无 `when` 成立时显示基值；被 `when` 切换的布局 Property 须在 Style 中另有不带 `when` 的基值，否则 `E3711`。Web 导出切换 `background`、`opacity`、`corner_radius`、`border`、`translate`、`scale`、`rotation` 与文本 `color`，其余报导出诊断。交叉轴上的 `fill` 在任何 `align` 下都占满；`align: Align::stretch` 只拉伸交叉轴为 `fit` 的子节点，固定或百分比尺寸按自身尺寸由 `align` 定位。
+当前实现：常量的 `width`/`height`（长度，即 `Sizing::fixed`，以及 `Sizing::fixed(..)`、`Sizing::fill`、`Sizing::fill { weight: w }`、`Sizing::fit`）、Flex 容器的 `justify`、`align` 与 `axis`（`Axis::row`/`Axis::column`）在编译期折叠进节点样式，`Grid` 取其 `width`/`height`；值可以是本文件或按名 import 的 `const`（经 `const` 链折叠，链可跨文件）。热重载就地改写保留节点的排列，Release 包与宏路径相同。`Sizing::fit`/`min_content`/`max_content` 按 U3.2 布局。`corner_radius`、`border` 与 `shadow` 可为常量或读取值，可由 Style 的 `when` 切换：`corner_radius` 的 `%` 读节点绘制时自身盒的较短边，`px`/`sp`/`em` 随 §19.6 环境，圆角不超过较短边的一半；`border` 在盒内侧描边，不移动内容；`shadow` 改变只重绘节点。`clip` 可为常量或读取值：为 `true` 时子树的绘制与命中只落在节点自身盒内，按节点的 `corner_radius` 取圆角（圆角处的像素按覆盖率淡出，圆角外的指针不命中子节点）；HTML 导出为 `overflow: hidden`。尚无运行时路径的 Property（变换）报 `E3711`，不会被静默丢弃；`viso check` 与 `view!` 报告相同。`visible`（折出布局、绘制与语义树）、`focusable`，以及 `Text`/`Button`/`TextInput` 的 `color`、`soft_wrap` 与 `font_size`（节点解析出的字号）随值送达节点，可绑定；文本挂载后其字号与 `line_height` 在塑形时按节点解析出的字号与环境解析，文字缩放、缩放因子或根字号变化、或字号来源变化时只重新排布（em 布局不变），读取值的 `font_size` 随值改写节点的字号来源。读取值（State、Input、`theme` 等）的布局 Property——`font_size`、`width`/`height`、`min_*`/`max_*`、`margin`、`padding`、`gap`、`justify`/`align`/`axis`、Grid 的模板、间距与对齐、`content_align`、子节点的 `grid.column`/`grid.row`/`grid.*_span`、`stack.*` 与 `absolute.*`——随值变化重新布局节点，只标脏其移动的部分：长度经节点的环境长度在布局时折叠（`px`/`sp`/`em` 随 §19.6 环境，`%` 读其基准），与节点的常量长度一同折叠；热重载后全部重新送达，Release 包与宏路径相同。送达的值为 `minmax`/`fit_content`/`AdaptiveColumns` 中含 `%` 的长度时，执行域报告 Fault，节点保留此前的布局。读取值的 `areas`/`grid.area` 报 `E3711`。Style 给出的 Property 与节点自身的走同一送达路径：常量折叠进样式，读取值（含 `theme`）随值送达；Style 的 `when` 可切换节点运行时送达的任何 Property（外观、变换、文本样式、布局等），无 `when` 成立时显示基值；被 `when` 切换的布局 Property 须在 Style 中另有不带 `when` 的基值，否则 `E3711`。Web 导出切换 `background`、`opacity`、`corner_radius`、`border`、`shadow`、`translate`、`scale`、`rotation` 与文本 `color`，其余报导出诊断。`border` 与 `shadow` 导出为同一个 `box-shadow` 列表（`border` 为 `inset` 描边），各自为一个自定义属性，Style 的 `when` 只改写其中一个。交叉轴上的 `fill` 在任何 `align` 下都占满；`align: Align::stretch` 只拉伸交叉轴为 `fit` 的子节点，固定或百分比尺寸按自身尺寸由 `align` 定位。
 
 ### U3.5 Grid
 
@@ -5141,7 +5151,7 @@ export record Theme {
 | `TypographyScale` | `base_size: Sp = 14sp`、`caption_size: Em = 0.85em`、`title_size: Em = 1.25em`、`headline_size: Em = 1.6em`、`family: FontFamily = FontFamily::system_ui` |
 | `SpacingScale`    | 均为 `Dp`：`xsmall = 2dp`、`small = 4dp`、`medium = 8dp`、`large = 16dp`、`xlarge = 24dp` |
 | `RadiusScale`     | 均为 `Dp`：`small = 4dp`、`medium = 8dp`、`large = 12dp`                            |
-| `ElevationScale`  | 均为 `Shadow`、无默认：`low` `medium` `high`；`Shadow { offset_y: Dp; blur: Dp; color: Color; }` |
+| `ElevationScale`  | 均为 `Shadow`、无默认：`low` `medium` `high`；`Shadow` 见 U3.3 |
 | `MotionScale`     | `short: Duration = 100ms`、`medium = 200ms`、`long = 350ms`、`standard: Easing = Easing::ease_out`、`emphasized: Easing = Easing::ease_in_out` |
 
 - `typography.*_size` 是 `Em`，用作 `font_size` 时相对父节点 Resolved Font Size（§19.4）；需要与嵌套深度无关的层级时，写成 `theme.typography.base_size` 的倍数；

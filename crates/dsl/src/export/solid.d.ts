@@ -127,6 +127,7 @@ export declare const show: {
   opacity(v: Value): string;
   radius(v: Value): string;
   stroke(v: Value): string;
+  shadow(v: Value): string;
   offset(v: Value): string;
   scale(v: Value): string;
   rotate(v: Value): string;

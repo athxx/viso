@@ -300,6 +300,7 @@ export const show = {
   opacity: (v) => String(Math.min(Math.max(v ?? 1, 0), 1)),
   radius,
   stroke,
+  shadow,
   offset,
   scale: scaling,
   rotate: turning,

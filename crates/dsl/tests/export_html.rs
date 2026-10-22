@@ -126,21 +126,35 @@ export component Shapes {
             Column { width: 40dp; height: 20dp; corner_radius: 4dp + 1sp; border: Option::Some(Border { width: 2dp, color: #ff0000 }); }
             Column { width: 40dp; height: 20dp; corner_radius: 50%; }
             Column { width: 40dp; height: 20dp; corner_radius: if round { 10% } else { 0dp }; }
+            Column { width: 40dp; height: 20dp; shadow: Option::Some(Shadow { y: 4dp, blur: 12dp, color: #00000040 }); border: Option::Some(Border { color: #0000ff }); }
+            Column { width: 40dp; height: 20dp; shadow: if round { Option::Some(Shadow { color: #000000, inset: true }) } else { Option::None }; }
         }
     }
 }
 "##;
 
 #[test]
-fn a_box_s_corner_radius_and_border_export_as_rounded_corners_and_an_inner_stroke() {
+fn a_box_s_corner_radius_border_and_shadow_export_as_rounded_corners_an_inner_stroke_and_a_box_shadow()
+ {
     let page = export(SHAPES, false).unwrap();
     let css = &page.styles;
     assert!(
         css.contains("border-radius: calc(4 * 1px + 1 * 0.0625rem);"),
         "{css}"
     );
+    // A border and a shadow share the one `box-shadow`.
     assert!(
-        css.contains("box-shadow: inset 0 0 0 2px #ff0000;"),
+        css.contains(
+            "--vx-border: inset 0 0 0 2px #ff0000; --vx-shadow: 0 0 #0000; \
+             box-shadow: var(--vx-shadow), var(--vx-border);"
+        ),
+        "{css}"
+    );
+    assert!(
+        css.contains(
+            "--vx-border: inset 0 0 0 1px #0000ff; --vx-shadow: 0 4px 12px 0 #00000040; \
+             box-shadow: var(--vx-shadow), var(--vx-border);"
+        ),
         "{css}"
     );
     assert!(
@@ -149,6 +163,7 @@ fn a_box_s_corner_radius_and_border_export_as_rounded_corners_and_an_inner_strok
     );
     let script = page.script.as_deref().unwrap();
     assert!(script.contains("P.vradius("), "{script}");
+    assert!(script.contains("P.vshadow("), "{script}");
 }
 
 const MOVED: &str = r#"

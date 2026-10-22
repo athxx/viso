@@ -155,6 +155,14 @@ export record AdaptiveColumns {
     max: TrackMax = TrackMax::fr(1.0);
 }
 export record Border { width: Dp = 1dp; color: Color; }
+export record Shadow {
+    x: Dp = 0dp;
+    y: Dp = 2dp;
+    blur: Dp = 8dp;
+    spread: Dp = 0dp;
+    color: Color;
+    inset: Bool = false;
+}
 
 // The values of the standard widgets' enum properties.
 export enum Axis { row; column; }
@@ -212,7 +220,6 @@ export record Environment {
 }
 
 // The standard theme schema a view reads as `theme`.
-export record Shadow { offset_y: Dp; blur: Dp; color: Color; }
 export record ColorPalette {
     background: Color;
     foreground: Color;

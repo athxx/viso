@@ -35,8 +35,8 @@ use viso_ui::{Alignment2D, BoundSize, LayoutValue, LengthTerms};
 use viso_ui::{
     AssetFit, Border, BuildCx, CheckMark, CheckShape, CursorIcon, Easing, FieldLook, FieldSeed,
     FontSize, InputKind, LiveRegion, LookValue, NodeId, NodeStore, NumberFormat, Rgba, Role,
-    SemanticState, Semantics, Srgb, StateId, StructureCx, TextRequest, Timing, focus_node,
-    number_kind,
+    SemanticState, Semantics, Shadow, Srgb, StateId, StructureCx, TextRequest, Timing, Vec2,
+    focus_node, number_kind,
 };
 
 use crate::control::{Control, ControlInput, ControlKind, Holds, LayoutSlot, Switched, When};
@@ -192,6 +192,7 @@ pub(crate) fn control_cells(
         look.opacity,
         look.corner_radius,
         look.border,
+        look.shadow,
         semantics.label,
         semantics.hint,
         semantics.value,
@@ -237,8 +238,9 @@ pub(crate) fn control_cells(
 /// `align`, a field's `placeholder`, `secure`, `multiline`, `input` and
 /// `max_length`, a number field's `step` and `precision` and a check's
 /// caption, its `translate`, `scale`, `rotation` and `transform_origin`, and
-/// its `cursor`, and its text's `font_style`, `spans` and `selectable`.
-const SHOWN: usize = 43;
+/// its `cursor`, its text's `font_style`, `spans` and `selectable`, and its
+/// `shadow`.
+const SHOWN: usize = 44;
 
 /// The input of each value a node shows, in order.
 const SHOWN_INPUTS: [ControlInput; SHOWN] = [
@@ -285,6 +287,7 @@ const SHOWN_INPUTS: [ControlInput; SHOWN] = [
     ControlInput::FontStyle,
     ControlInput::Spans,
     ControlInput::Selectable,
+    ControlInput::Shadow,
 ];
 
 /// Where its `translate` sits among the values a node shows.
@@ -300,6 +303,9 @@ const CURSOR: usize = 39;
 /// Where its text's `font_style` and `spans` sit among the values a node
 /// shows.
 const PIECES: usize = 40;
+
+/// Where its `shadow` sits among the values a node shows.
+const SHADOW: usize = 43;
 
 /// Where its background, opacity, corner radius and border sit among the
 /// values a node shows.
@@ -505,6 +511,7 @@ impl Shown {
             font_style,
             pieces,
             selectable,
+            shadow,
         ] = &shows;
         let spanned = crate::text_style::spans(pieces);
         let changed = |at: usize| prior.is_none_or(|prior| prior[at] != shows[at]);
@@ -642,6 +649,9 @@ impl Shown {
         if shown_border && changed(LOOK + 3) {
             store.set_border(self.node, stroke(border));
         }
+        if shown(SHADOW) && changed(SHADOW) {
+            store.set_shadow(self.node, cast(shadow));
+        }
         for (at, entry, value) in [
             (
                 LOOK,
@@ -692,7 +702,7 @@ impl Shown {
         if prior.is_some()
             && (0..LOOK)
                 .chain(TEXT..TRANSLATE)
-                .chain(PIECES..SHOWN)
+                .chain(PIECES..SHADOW)
                 .all(|at| !changed(at))
             && !repaint
         {
@@ -1101,14 +1111,36 @@ fn stroke(value: &Value) -> Border {
     };
     match &border.fields[..] {
         [width, paint] => Border {
-            width: width
-                .as_float()
-                .or_else(|| length(width).map(|terms| f64::from(terms.dp)))
-                .map_or(0.0, |w| (w as f32).max(0.0)),
+            width: dp(width).max(0.0),
             color: color(paint),
         },
         _ => Border::NONE,
     }
+}
+
+/// A `Shadow` value as the shadow the node casts, none for `None`.
+fn cast(value: &Value) -> Option<Shadow> {
+    let Value::Agg(shadow) = value else {
+        return None;
+    };
+    match &shadow.fields[..] {
+        [x, y, blur, spread, paint, inset] => Some(Shadow {
+            color: color(paint),
+            offset: Vec2 { x: dp(x), y: dp(y) },
+            blur: dp(blur).max(0.0),
+            spread: dp(spread),
+            inset: truth(inset, false),
+        }),
+        _ => None,
+    }
+}
+
+/// A `Dp` value in dp, zero for none.
+fn dp(value: &Value) -> f32 {
+    value
+        .as_float()
+        .or_else(|| length(value).map(|terms| f64::from(terms.dp)))
+        .map_or(0.0, |v| v as f32)
 }
 
 /// A `Color` value (sRGB `0xRRGGBBAA`) as a fill, transparent for `None`.

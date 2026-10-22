@@ -695,6 +695,7 @@ fn control_tokens(control: Control) -> TokenStream {
     let (scale, scale_transition) = (entry(look.scale), entry(look.scale_transition));
     let (rotation, rotation_transition) = (entry(look.rotation), entry(look.rotation_transition));
     let transform_origin = entry(look.transform_origin);
+    let shadow = entry(look.shadow);
     let layout = control.layout.iter().map(|&(slot, entry)| {
         let slot = Ident::new(slot.variant(), Span::call_site());
         quote! { (::viso::__private::viso_view::LayoutSlot::#slot, #entry) }
@@ -772,6 +773,7 @@ fn control_tokens(control: Control) -> TokenStream {
                 rotation: #rotation,
                 rotation_transition: #rotation_transition,
                 transform_origin: #transform_origin,
+                shadow: #shadow,
             },
             arms: ::std::boxed::Box::new([#(#arms),*]),
             node: ::viso::__private::viso_view::NodeEntries {

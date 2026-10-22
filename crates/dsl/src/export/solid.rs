@@ -719,6 +719,7 @@ impl Jsx<'_> {
                                 VarToken::Opacity => format!("show.opacity({v})"),
                                 VarToken::Radius => format!("show.radius({v})"),
                                 VarToken::Border => format!("show.stroke({v})"),
+                                VarToken::Shadow => format!("show.shadow({v})"),
                                 VarToken::Translate => format!("show.offset({v})"),
                                 VarToken::Scale => format!("show.scale({v})"),
                                 VarToken::Rotation => format!("show.rotate({v})"),

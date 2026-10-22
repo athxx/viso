@@ -54,11 +54,16 @@ fn build_default() -> Value {
     ]);
     let spacing = record([2.0, 4.0, 8.0, 16.0, 24.0].map(Value::Float));
     let radius = record([4.0, 8.0, 12.0].map(Value::Float));
-    let shadow = |offset_y: f64, blur: f64, alpha: u32| {
+    // A `Shadow` falling `y` below its box: `x`, `y`, `blur`, `spread`,
+    // `color` and `inset`.
+    let shadow = |y: f64, blur: f64, alpha: u32| {
         record([
-            Value::Float(offset_y),
+            Value::Float(0.0),
+            Value::Float(y),
             Value::Float(blur),
+            Value::Float(0.0),
             Value::Int(i64::from(alpha)),
+            Value::Int(0),
         ])
     };
     let elevation = record([

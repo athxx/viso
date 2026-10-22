@@ -305,6 +305,21 @@ fn groups(store: &NodeStore, id: NodeId) -> Vec<PropertyGroup> {
             ),
         );
     }
+    if let Some(shadow) = store.shadow(id) {
+        add(
+            &mut style,
+            "shadow",
+            format!(
+                "{}{} {} {} {} {}",
+                if shadow.inset { "inset " } else { "" },
+                number(shadow.offset.x),
+                number(shadow.offset.y),
+                number(shadow.blur),
+                number(shadow.spread),
+                color(shadow.color)
+            ),
+        );
+    }
     add(&mut style, "opacity", number(store.opacity(id)));
     if store.hidden(id) {
         add(&mut style, "hidden", "true".into());
