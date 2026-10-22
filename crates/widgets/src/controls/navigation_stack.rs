@@ -2,9 +2,11 @@
 //! visible.
 //!
 //! A `NavigationStack` lays every page in an overlapping stack (each filling the
-//! control's region) but shows only the top one. Pushing a page reveals it and
-//! hides the one below; popping does the reverse and fires `on_navigate` with the
-//! new stack depth. Unlike [`Tabs`](crate::Tabs), a navigation stack has no
+//! control's region) but shows only the top one. Pushing a page brings it in
+//! over the one below, which hides once covered; popping does the reverse, and
+//! both fire `on_navigate` with the new stack depth. The pages move as the
+//! stack's [`PageTransition`] says — the platform's own by default — through
+//! [`NodeStore::navigate`](viso_ui::NodeStore::navigate), clipped to the stack. Unlike [`Tabs`](crate::Tabs), a navigation stack has no
 //! internal button strip — it is driven by application logic: an app captures a
 //! [`NavHandle`] (see [`NavigationStack::handle`]) and calls
 //! [`NavHandle::push`]/[`NavHandle::pop`] from a page's own controls, and the
@@ -17,12 +19,11 @@
 //! `DirtyClass::STRUCTURE` bubbles but no pass rebuilds a subtree, so pages are
 //! shown and hidden through the retained [`hidden`](viso_ui::NodeStore::hidden)
 //! flag: a hidden page folds out of layout and paint without a structural change
-//! (architecture section 8.4 / section 11). A handler cannot flip the flag
-//! directly (an [`EventCx`] holds no node store), so the flip is a deferred
+//! (architecture section 8.4 / section 11). A handler cannot navigate directly
+//! (an [`EventCx`] holds no node store), so the navigation is a deferred
 //! request the router applies after the handler returns — the same discipline as
 //! a state edit. Navigating writes a reactive `depth` cell bound to the stack's
-//! `PAINT`; the pages' visibility is the layout/paint effect of the deferred
-//! `hidden` flips. Lazy pages (build only the visible page, build the rest on
+//! `PAINT`; the pages' visibility and motion are the deferred navigation's. Lazy pages (build only the visible page, build the rest on
 //! first reveal) are a later slice; this slice builds all pages and hides the
 //! ones below the top.
 //!
@@ -60,7 +61,7 @@ use std::rc::Rc;
 
 use viso_ui::{
     Align, Axis, BoxStyle, BuildCx, Component, DirtyClass, EventCx, FlexStyle, Inset, Justify, Key,
-    Length, NodeId, Role, Semantics, Size, StateId, StateValue,
+    Length, NodeId, PageTransition, Role, Semantics, Size, StackStyle, StateId, StateValue,
 };
 
 /// A shared, mutable navigation callback carrying the new stack depth (the index
@@ -103,6 +104,8 @@ pub struct NavHandle {
     pages: PagesCell,
     /// The shared `on_navigate` callback.
     on_navigate: SharedNavigate,
+    /// How its pages trade places.
+    transition: PageTransition,
 }
 
 impl NavHandle {
@@ -112,7 +115,15 @@ impl NavHandle {
     pub fn push(&self, ev: &mut EventCx<'_>) {
         let pages = self.pages.borrow();
         if let Some(StateValue::Int(cur)) = ev.get(self.depth) {
-            navigate(&self.on_navigate, ev, self.depth, &pages, cur as usize + 1);
+            let to = cur as usize + 1;
+            navigate(
+                &self.on_navigate,
+                ev,
+                self.depth,
+                &pages,
+                to,
+                self.transition,
+            );
         }
     }
 
@@ -124,13 +135,21 @@ impl NavHandle {
         if let Some(StateValue::Int(cur)) = ev.get(self.depth)
             && cur > 0
         {
-            navigate(&self.on_navigate, ev, self.depth, &pages, cur as usize - 1);
+            let to = cur as usize - 1;
+            navigate(
+                &self.on_navigate,
+                ev,
+                self.depth,
+                &pages,
+                to,
+                self.transition,
+            );
         }
     }
 }
 
-/// The visual and layout parameters of a [`NavigationStack`]: currently just the
-/// control's own size request within its parent.
+/// The visual and layout parameters of a [`NavigationStack`]: the control's own
+/// size request within its parent, and how its pages trade places.
 ///
 /// `size` defaults to [`Length::Fill`] on both axes so the control fills its
 /// parent region (each page grows to hold its content); override it with a
@@ -140,6 +159,8 @@ pub struct NavigationStackStyle {
     /// The control's own size request within its parent. Defaults to `Fill` on
     /// both axes.
     pub size: Size,
+    /// How its pages trade places: the platform's own way by default.
+    pub transition: PageTransition,
 }
 
 impl Default for NavigationStackStyle {
@@ -149,6 +170,7 @@ impl Default for NavigationStackStyle {
                 width: Length::Fill { weight: 1.0 },
                 height: Length::Fill { weight: 1.0 },
             },
+            transition: PageTransition::Native,
         }
     }
 }
@@ -219,6 +241,12 @@ impl NavigationStack {
         self
     }
 
+    /// Set how its pages trade places (defaults to the platform's own way).
+    pub fn transition(mut self, transition: PageTransition) -> Self {
+        self.style.transition = transition;
+        self
+    }
+
     /// Register an app-supplied [`NavHandleSlot`] for programmatic push/pop. During
     /// [`build`](Component::build) the control fills the slot with a [`NavHandle`]
     /// bound to the just-minted `depth` cell and page ids; the app reads the slot
@@ -250,15 +278,17 @@ fn fire(cb: &SharedNavigate, ev: &mut EventCx<'_>, depth: usize) {
 /// writes the cell eagerly (the flush is deferred, but the stored value updates
 /// now), so the guard sees the first pass's write within the same route.
 ///
-/// The two `set_hidden` requests are deferred (an `EventCx` holds no node store);
-/// the router applies them after the handler returns, hiding the old top page and
-/// showing the new. `pages[i]` is page `i`'s node.
+/// The navigation is deferred (an `EventCx` holds no node store); the router
+/// applies it after the handler returns, bringing the new top page in over the
+/// old one going forward, or the old one out over it going back. `pages[i]` is
+/// page `i`'s node.
 fn navigate(
     cb: &SharedNavigate,
     ev: &mut EventCx<'_>,
     depth: StateId,
     pages: &[NodeId],
     next: usize,
+    transition: PageTransition,
 ) {
     if next >= pages.len() {
         return;
@@ -271,11 +301,8 @@ fn navigate(
         return;
     }
     ev.set(depth, StateValue::Int(next as i32));
-    if let Some(old) = pages.get(prev) {
-        ev.set_hidden(*old, true);
-    }
-    if let Some(new) = pages.get(next) {
-        ev.set_hidden(*new, false);
+    if let Some(&new) = pages.get(next) {
+        ev.navigate(pages.get(prev).copied(), new, transition, next < prev);
     }
     fire(cb, ev, next);
 }
@@ -297,21 +324,16 @@ impl Component for NavigationStack {
         // never concurrently — so the borrow is uncontended.
         let pages_cell: PagesCell = Rc::new(RefCell::new(Vec::with_capacity(self.pages.len())));
 
-        // The stack: every page overlaps in a stretched column, each filling the
-        // region; all but the top are hidden. (There is no dedicated stack
-        // container this slice — an aligned, stretched column overlaps its children
-        // when each fills the region, the same shape the tabs panel area uses.)
+        // The stack: every page overlaps, each filling the region; all but the
+        // top are hidden. It clips, so a page sliding in or out shows only
+        // inside it.
         let key_cb = self.on_navigate.clone();
         let key_pages = pages_cell.clone();
-        let root = cx.flex(
-            FlexStyle {
-                axis: Axis::Column,
-                gap: 0.0,
-                padding: Inset::all(0.0),
-                align: Align::Stretch,
-                justify: Justify::Start,
+        let transition = self.style.transition;
+        let root = cx.stack(
+            StackStyle {
                 size: self.style.size,
-                style: BoxStyle::NONE,
+                ..Default::default()
             },
             |cx| {
                 let mut pages = pages_cell.borrow_mut();
@@ -357,10 +379,11 @@ impl Component for NavigationStack {
                 if let Some(StateValue::Int(cur)) = ev.get(depth)
                     && cur > 0
                 {
-                    navigate(&key_cb, ev, depth, &pages, cur as usize - 1);
+                    navigate(&key_cb, ev, depth, &pages, cur as usize - 1, transition);
                 }
             }
         });
+        cx.clip(root, true);
         cx.bind(depth, root, DirtyClass::PAINT);
         cx.semantics(root, Semantics::role(Role::Navigation));
 
@@ -370,6 +393,7 @@ impl Component for NavigationStack {
             depth,
             pages: pages_cell,
             on_navigate: self.on_navigate.clone(),
+            transition,
         });
     }
 }
@@ -427,14 +451,14 @@ mod tests {
         /// drive, restore, apply) reproduced for the test.
         fn key(&mut self, node: NodeId, ev: KeyEvent) {
             let mut handler = self.store.take_key_handler(node).expect("key handler");
-            let hidden = {
+            let asks = {
                 let mut cx = EventCx::__new_key(&mut self.states, &self.bindings, &ev);
                 handler(&mut cx);
-                cx.__take_hidden_requests()
+                cx.__take_store_requests()
             };
             self.store.restore_key_handler(node, handler);
-            for (id, h) in hidden {
-                self.store.set_hidden(id, h);
+            for ask in asks {
+                ask.__apply(&mut self.store);
             }
         }
 
@@ -442,13 +466,13 @@ mod tests {
         /// throwaway `EventCx`, take the deferred `hidden` flips, and apply them.
         fn drive(&mut self, act: impl FnOnce(&mut EventCx<'_>)) {
             let ev = read_pointer();
-            let hidden = {
+            let asks = {
                 let mut cx = EventCx::__new_pointer(&mut self.states, &self.bindings, &ev);
                 act(&mut cx);
-                cx.__take_hidden_requests()
+                cx.__take_store_requests()
             };
-            for (id, h) in hidden {
-                self.store.set_hidden(id, h);
+            for ask in asks {
+                ask.__apply(&mut self.store);
             }
         }
 
@@ -511,12 +535,14 @@ mod tests {
         });
     }
 
-    /// A three-page stack with an app-captured handle, for the common test shape.
+    /// A three-page stack with an app-captured handle, for the common test
+    /// shape: its pages trade places at once.
     fn three_pages(slot: &NavHandleSlot) -> NavigationStack {
         navigation_stack()
             .page(leaf_page)
             .page(leaf_page)
             .page(leaf_page)
+            .transition(PageTransition::None)
             .handle(slot)
     }
 
@@ -578,6 +604,7 @@ mod tests {
             navigation_stack()
                 .page(leaf_page)
                 .page(leaf_page)
+                .transition(PageTransition::None)
                 .handle(&slot)
                 .on_navigate(move |_ev, depth| {
                     l.set(Some(depth));
@@ -711,5 +738,49 @@ mod tests {
             "a handler-less control still moves the shared cell"
         );
         assert!(!rx.store.hidden(pages[1]), "and shows the new page");
+    }
+
+    /// A push slides the new page in over the old, which hides once covered;
+    /// the stack clips them and the leaving page takes no pointer.
+    #[test]
+    fn a_push_slides_the_page_in_and_hides_the_one_it_covers() {
+        let slot: NavHandleSlot = Rc::new(RefCell::new(None));
+        let mut rx = Reactive::new();
+        let root = rx.build(
+            navigation_stack()
+                .page(leaf_page)
+                .page(leaf_page)
+                .size(Size::fixed(300.0, 200.0))
+                .transition(PageTransition::Slide)
+                .handle(&slot),
+        );
+        let surface = viso_ui::Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 300.0,
+            h: 200.0,
+        };
+        rx.store.layout(root, surface, &mut Vec::new());
+        assert!(rx.store.clips_children(root));
+        let pages = children(&rx.store, root);
+        let nav = slot.borrow().clone().unwrap();
+        rx.drive(|ev| nav.push(ev));
+        assert_eq!(rx.store.translate(pages[1]).x, 300.0);
+        assert!(
+            !rx.store.hidden(pages[0]),
+            "the covered page shows as it drifts"
+        );
+        rx.store.layout(root, surface, &mut Vec::new());
+        assert_eq!(
+            viso_ui::hit_test::hit_test(&rx.store, root, 5.0, 5.0),
+            Some(root),
+            "the leaving page takes no pointer"
+        );
+        for _ in 0..200 {
+            rx.store
+                .tick_transitions(std::time::Duration::from_millis(16));
+        }
+        assert_eq!(rx.store.translate(pages[1]).x, 0.0);
+        assert!(rx.store.hidden(pages[0]));
     }
 }

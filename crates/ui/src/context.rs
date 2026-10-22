@@ -503,9 +503,23 @@ pub enum StoreRequest {
     Refreshing(NodeId, bool),
     /// Bring a snapping viewport to rest on an item.
     SnapTo(NodeId, usize),
+    /// Show a page of a stack in place of another, going back or forward.
+    Navigate {
+        from: Option<NodeId>,
+        to: NodeId,
+        transition: crate::navigation::PageTransition,
+        back: bool,
+    },
 }
 
 impl StoreRequest {
+    /// Apply the request to `store`, as the router does: for tests that
+    /// drive a handler without one.
+    #[doc(hidden)]
+    pub fn __apply(self, store: &mut NodeStore) {
+        self.apply(store);
+    }
+
     /// Apply the request to `store`.
     pub(crate) fn apply(self, store: &mut NodeStore) {
         match self {
@@ -520,6 +534,12 @@ impl StoreRequest {
             StoreRequest::Bar(track, input) => store.bar_input(track, input),
             StoreRequest::Refreshing(id, on) => store.set_refreshing(id, on),
             StoreRequest::SnapTo(id, index) => store.snap_to_item(id, index),
+            StoreRequest::Navigate {
+                from,
+                to,
+                transition,
+                back,
+            } => store.navigate(from, to, transition, back),
         }
     }
 }
@@ -955,6 +975,23 @@ impl<'a> EventCx<'a> {
     /// ([`NodeStore::snap_to_item`]).
     pub fn snap_to_item(&mut self, id: NodeId, index: usize) {
         self.store_requests.push(StoreRequest::SnapTo(id, index));
+    }
+
+    /// Show page `to` of a stack in place of page `from`, going `back` or
+    /// forward, as `transition` moves them ([`NodeStore::navigate`]).
+    pub fn navigate(
+        &mut self,
+        from: Option<NodeId>,
+        to: NodeId,
+        transition: crate::navigation::PageTransition,
+        back: bool,
+    ) {
+        self.store_requests.push(StoreRequest::Navigate {
+            from,
+            to,
+            transition,
+            back,
+        });
     }
 
     /// The item snapping viewport `id` rests on, heads for, or shows

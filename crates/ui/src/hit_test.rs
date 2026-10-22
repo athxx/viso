@@ -87,7 +87,8 @@ impl HitTestTree {
         above: Affine2,
     ) -> Option<NodeId> {
         let arena = store.arena();
-        if !arena.is_live(root) || store.hidden(root) {
+        // A page leaving its stack takes no pointer.
+        if !arena.is_live(root) || store.hidden(root) || store.is_leaving(root) {
             return None;
         }
         let own = store.self_transform(root).then(&above);

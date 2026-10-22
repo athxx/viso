@@ -2,11 +2,12 @@
 //! pages of which only the top is visible — driven through the public facade.
 //! Mirrors `tabs_widget.rs` (golden + input tapes + a11y + allocation) with the
 //! navigation stack's own structure: every page builds once into an overlapping
-//! stretched column, and all but the top fold out of layout and paint through the
-//! retained `hidden` flag. A navigation (a keyboard back gesture or a programmatic
-//! `NavHandle::push`/`pop`) writes a reactive `depth` cell, defers a pair of
-//! `hidden` flips the router applies (hide the old top, show the new), and fires
-//! `on_navigate` once with the new depth.
+//! stack, and all but the top fold out of layout and paint through the retained
+//! `hidden` flag. A navigation (a keyboard back gesture or a programmatic
+//! `NavHandle::push`/`pop`) writes a reactive `depth` cell, defers a navigation
+//! the router applies (the new top shows, the old one hides once its page
+//! transition ends — at once here, with none), and fires `on_navigate` once with
+//! the new depth.
 //!
 //! - **golden screenshot** — build a `NavigationStack` with two colored pages, the
 //!   root on top, lay it out over a fixed surface, and confirm the pixels match a
@@ -47,7 +48,7 @@ use viso::gpu::{CpuRaster, GpuBackend, RawWindowHandle};
 use viso::render::{FrameStats, Rect, Renderer, Rgba};
 use viso::ui::{
     BindingTable, BoxStyle, BuildCx, Component, EventCx, Key, KeyEvent, KeyRouter, LeafStyle,
-    Modifiers, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase, Role,
+    Modifiers, NodeId, NodeStore, PageTransition, PointerButtons, PointerEvent, PointerPhase, Role,
     SemanticProjector, Size, StateId, StateStore, StateValue, TextEdits, VirtualLists, paint_tree,
 };
 use viso::widgets::{NavHandle, NavHandleSlot, navigation_stack};
@@ -232,6 +233,7 @@ impl Interactive {
             .page(page_fill(PAGE_B))
             .page(page_fill(PAGE_A))
             .size(Size::fill())
+            .transition(PageTransition::None)
             .handle(&slot)
             .on_navigate(move |_ev, depth| {
                 last.set(Some(depth));
@@ -287,17 +289,17 @@ impl Interactive {
     }
 
     /// Drive a `NavHandle` action (push/pop) as a router would: run it inside a
-    /// throwaway `EventCx`, take the deferred `hidden` flips, and apply them.
+    /// throwaway `EventCx`, take the deferred navigation, and apply it.
     fn drive(&mut self, act: impl FnOnce(&NavHandle, &mut EventCx<'_>)) {
         let ev = read_pointer();
         let handle = self.handle.clone();
-        let hidden = {
+        let asks = {
             let mut cx = EventCx::__new_pointer(&mut self.states, &self.bindings, &ev);
             act(&handle, &mut cx);
-            cx.__take_hidden_requests()
+            cx.__take_store_requests()
         };
-        for (id, h) in hidden {
-            self.store.set_hidden(id, h);
+        for ask in asks {
+            ask.__apply(&mut self.store);
         }
     }
 

@@ -3091,6 +3091,8 @@ transform / opacity 动画的 evaluator 在 AdvanceAnimations 阶段直接写入
 
 **减少动态效果**：`Timing`、`Keyframes` 各带 `ReducedMotion::{Instant, Keep}`（默认 `Instant`）。`NodeStore::set_reduced_motion` 由 facade 在系统外观变化时与 `env.reduced_motion` 一同写入，是唯一执行策略的地方：`transition`、`animate`、`play` 遇到 `Instant` 时间立即落到终值或以 finished 结束；`glide_to`（平滑 `scroll_to`/`scroll_by`/`scroll_into_view`、键盘滚动、跟随末尾、刷新保持位）直接 `set_scroll`，虚拟列表的平滑定位改走即时定位；`AnimationRegistry::tick` 让 `TranslateAnim` 在当帧到位。惯性滚动、越界回弹与吸附滑行（松手后的直接操控延续）不受影响。开启时 `set_reduced_motion(true)` 把进行中的可省略转场写到终值、结束可省略的动画、把所有滑行落到目标。视图不再自行读取 env 决定是否插值，只把 `reduced` 字段传给 Store。
 
+**页面转场**（`viso_ui::navigation`）：`NodeStore::navigate(from, to, PageTransition, back)` 让栈中的 `to` 页取代 `from` 页：`to` 立即显示，`from` 移出到位后隐藏。两页都以呈现值动画（平移、不透明度，`NodeAnimation` 标记 `quiet`，不派发 `animation_end`）移动，不触发布局；进行中再次导航时各页从当前呈现值继续（弹簧带速度），被取消的动画不隐藏页面。`PageTransition`：`Native`（Apple 为 `Slide`、Android 为 `SharedAxis`、其余为 `Fade`）；`Slide` 新页从尾边整宽滑入、被覆盖页反向漂移三成宽度（临界阻尼弹簧，半秒周期），返回时相反；`SharedAxis` 两页沿行进方向各移 30dp 并交叉淡入淡出（300 ms，`cubic-bezier(0.2, 0, 0, 1)`）；`Fade` 只淡化上层的页（前进时新页淡入、返回时旧页淡出），栈不透出背景；`None` 立即交换。RTL 栈的尾边在左。减少动态效果时 `Slide`/`SharedAxis` 改为 `Fade`（`ReducedMotion::Keep`，淡入淡出仍保留）。离开中的页记入冷列表 `leaving`，命中测试跳过它，到位隐藏时移出。`EventCx::navigate` 以 `StoreRequest::Navigate` 延后执行。`viso_widgets::NavigationStack` 用裁剪的 `stack` 容器承载各页，`NavigationStackStyle::transition` 默认 `Native`。
+
 ---
 
 # Part X — Accessibility / Semantics

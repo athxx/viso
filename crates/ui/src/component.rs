@@ -648,13 +648,16 @@ pub struct NodeStore {
     transitions: Vec<LookTransition>,
     /// Cold: the animations nodes run by request, at most one per node and
     /// property, and the ones ended since the last delivery.
-    animations: Vec<NodeAnimation>,
+    pub(crate) animations: Vec<NodeAnimation>,
     animation_ends: Vec<EndedAnimation>,
     /// The last [`AnimationId`] given out.
     last_animation: u64,
     /// Whether motion is reduced: what moves on a reducible timing lands at
     /// once, and a programmatic scroll jumps rather than glides.
     reduced_motion: bool,
+    /// Cold: the pages leaving their stacks, which take no pointer
+    /// ([`navigate`](Self::navigate)).
+    pub(crate) leaving: Vec<NodeId>,
     /// Cold, transient handoff buffer (not index-aligned): one-shot timer arms a
     /// handler requested this frame, sitting here between the router (which drains
     /// them off the [`EventCx`](crate::context::EventCx) after a dispatch and
@@ -874,6 +877,7 @@ impl NodeStore {
         self.shaders.clear();
         self.assets.clear();
         self.animation_requests.clear();
+        self.leaving.clear();
         self.transitions.clear();
         self.animations.clear();
         self.animation_ends.clear();
@@ -3790,7 +3794,7 @@ impl NodeStore {
     /// The value of the look property `of` names that a node shows now; `of`
     /// itself for one it shows none of (a text color with no text, a size
     /// that is not fixed), which then shows at once.
-    fn shown(&self, id: NodeId, of: &LookValue) -> LookValue {
+    pub(crate) fn shown(&self, id: NodeId, of: &LookValue) -> LookValue {
         if let Some(running) = self.animations.iter().find(|a| a.motion.moves(id, of)) {
             return running.model;
         }
@@ -4029,7 +4033,7 @@ impl NodeStore {
 
     /// Whether a move on `timing` lands the moment it starts.
     #[inline]
-    fn lands(&self, timing: &Timing) -> bool {
+    pub(crate) fn lands(&self, timing: &Timing) -> bool {
         timing.is_instant() || self.reduces(timing.reduced)
     }
 
@@ -4135,7 +4139,7 @@ impl NodeStore {
     /// `property` names, given the value presented and the velocity of the
     /// animation it replaces; it ends at once when `instant`, and is
     /// `reduced` so while motion is reduced.
-    fn run_animation(
+    pub(crate) fn run_animation(
         &mut self,
         id: NodeId,
         property: LookValue,
@@ -4173,6 +4177,8 @@ impl NodeStore {
             model,
             on_end,
             reduced,
+            quiet: false,
+            hides: None,
         };
         if instant {
             self.end_animation(running, true);
@@ -4206,15 +4212,22 @@ impl NodeStore {
     }
 
     /// Shows the model value `ended` held and queues its end.
-    fn end_animation(&mut self, ended: NodeAnimation, finished: bool) {
+    pub(crate) fn end_animation(&mut self, ended: NodeAnimation, finished: bool) {
         let node = ended.motion.node();
         if self.arena.is_live(node) {
             self.show_look(node, ended.model);
+        }
+        if finished && let Some(page) = ended.hides {
+            self.leaving.retain(|&p| p != page);
+            self.set_hidden(page, true);
         }
         self.queue_end(ended, finished);
     }
 
     fn queue_end(&mut self, ended: NodeAnimation, finished: bool) {
+        if ended.quiet {
+            return;
+        }
         let end = AnimationEnd {
             animation: ended.id,
             target: ended.motion.target(),
@@ -4250,7 +4263,7 @@ impl NodeStore {
 
     /// The value node `id` presents of the property `of` names, of those an
     /// animation moves.
-    fn presented(&self, id: NodeId, of: &LookValue) -> LookValue {
+    pub(crate) fn presented(&self, id: NodeId, of: &LookValue) -> LookValue {
         let i = id.index() as usize;
         match *of {
             LookValue::Translate(_) => LookValue::Translate(self.translate[i] - self.pin_of(id)),
@@ -4263,7 +4276,7 @@ impl NodeStore {
 
     /// Shows `value` on node `id`, past any animation's hold: the presented
     /// values an animation moves. `id` is live.
-    fn show_look(&mut self, id: NodeId, value: LookValue) {
+    pub(crate) fn show_look(&mut self, id: NodeId, value: LookValue) {
         let turn = self.turn[id.index() as usize];
         match value {
             LookValue::Translate(offset) => self.show_translate(id, offset),
@@ -6756,6 +6769,13 @@ impl<'a> BuildCx<'a> {
     /// flag at runtime via [`EventCx::set_hidden`].
     pub fn set_hidden(&mut self, handle: Handle, hidden: bool) -> Handle {
         self.store.set_hidden(handle.id, hidden);
+        handle
+    }
+
+    /// Clip an already-declared node's subtree to its box, or stop
+    /// ([`NodeStore::set_clip`]).
+    pub fn clip(&mut self, handle: Handle, clip: bool) -> Handle {
+        self.store.set_clip(handle.id, clip);
         handle
     }
 

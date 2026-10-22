@@ -43,6 +43,7 @@ pub mod layout_value;
 pub mod length;
 pub mod links;
 pub mod long_press;
+pub mod navigation;
 pub mod node;
 pub mod notice;
 pub mod number_format;
@@ -149,6 +150,7 @@ pub use field_input::{FieldEvent, FieldKey, field_input, field_key, number_input
 pub use field_marks::FieldMarks;
 pub use input_filter::InputFilter;
 pub use links::LinkPointer;
+pub use navigation::PageTransition;
 pub use number_format::{NumberFormat, number_kind};
 pub use page_dots::{PageDots, PageDotsStyle};
 pub use reactive::{

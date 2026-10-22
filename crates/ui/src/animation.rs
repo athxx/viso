@@ -672,6 +672,10 @@ pub(crate) struct NodeAnimation {
     pub(crate) on_end: Option<AnimationEndHandler>,
     /// What becomes of it while motion is reduced.
     pub(crate) reduced: ReducedMotion,
+    /// Whether its end goes unheard: a page's move through a navigation.
+    pub(crate) quiet: bool,
+    /// The page it hides once it runs its course.
+    pub(crate) hides: Option<NodeId>,
 }
 
 /// An ended animation waiting for delivery: its node, how it ended and its
