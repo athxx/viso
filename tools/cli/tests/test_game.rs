@@ -1,6 +1,15 @@
 //! `viso test game` end to end: scratch game projects whose scenarios pass,
 //! fail and replay tapes, asserting exit codes, the human lines and the JSON
-//! `trace` and `test` events.
+//! `trace` and `test` events. Drawing a run's frame sheet builds a probe app
+//! headless, so that test is ignored by default:
+//!
+//! `cargo test -p viso-cli --test test_game -- --ignored --nocapture`.
+
+#[allow(
+    dead_code,
+    reason = "the dev-session half of the support is not used here"
+)]
+mod support;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -209,4 +218,82 @@ fn a_missing_scenario_or_probe_is_reported() {
         "{}",
         stderr(&out)
     );
+}
+
+#[test]
+fn a_sheet_is_the_game_domain_s() {
+    let s = Scratch::new("sheet-usage");
+    let out = viso(&s.0, &["test", "ui", "--sheet", "sheet.png"]);
+    assert_eq!(code(&out), 2, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("`--sheet` is an option of game scenarios"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+#[ignore = "builds a probe app headless"]
+fn a_run_is_drawn_as_a_sheet_of_its_frames() {
+    let app = support::project(
+        "test_game_sheet",
+        &[
+            (
+                "src/main.rs",
+                b"use viso::prelude::*;\nstruct App;\nimpl Application for App {\n    \
+                  fn new(_cx: &mut AppCx) -> Self { App }\n    \
+                  fn build(&mut self, cx: &mut BuildCx<'_>) { viso::view!(\"app.vs\")(cx); }\n}\n\
+                  fn main() { viso::run::<App>(); }\n",
+            ),
+            (
+                "src/app.vs",
+                b"export component App { view { Text { text: \"Hi\"; } } }\n",
+            ),
+            (
+                "src/game.vs",
+                b"import viso::game::quick::{QuickGame, QuickStart, QuickFrame};\n\
+                  import viso::game::{SpawnDesc, InputAxis};\n\
+                  import viso::game::kit::{CameraRig, Terrain, Prefab};\n\
+                  import viso::math::Vec3F32;\n\
+                  export system Walk implements QuickGame {\n    \
+                  @probe state ticks = 0;\n    \
+                  action start(cx: QuickStart) {\n        \
+                  cx.kit.terrain(Terrain::flat(40.0));\n        \
+                  let h = cx.spawn(SpawnDesc::prefab(Prefab::hero).at(Vec3F32::new(0.0f32, 0.9f32, 0.0f32)));\n        \
+                  cx.kit.camera(CameraRig::third_person(h).distance(6.0));\n    }\n    \
+                  action fixed(frame: QuickFrame) { ticks += 1; }\n}\n",
+            ),
+            ("tests/game/walk.tape", b"seed 3\n23: expect Walk.ticks == 24\n"),
+        ],
+    );
+    let target = app.parent().unwrap().join("target");
+    let _ = fs::remove_dir_all(app.join("out"));
+    let out = Command::new(env!("CARGO_BIN_EXE_viso"))
+        .args(["test", "game", "walk", "--sheet", "out/walk.png", "--json"])
+        .current_dir(&app)
+        .env("CARGO_TARGET_DIR", &target)
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 0, "{}\n{}", stdout(&out), stderr(&out));
+    let json = stdout(&out);
+    let artifacts = events(&json, "artifact");
+    assert!(
+        artifacts
+            .iter()
+            .any(|a| a.contains(r#""kind":"sheet","path":"out/walk.png""#)),
+        "{json}"
+    );
+    let test = events(&json, "test");
+    assert!(
+        test[0].contains(
+            r#""sheet":{"path":"out/walk.png","ticks":[1,3,5,7,9,11,13,15,17,19,21,23]}"#
+        ),
+        "{}",
+        test[0]
+    );
+    let png = fs::read(app.join("out/walk.png")).expect("the sheet");
+    assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+    // Twelve 480 × 270 tiles, four to a row, 4-pixel gaps.
+    let size = |at: usize| u32::from_be_bytes(png[at..at + 4].try_into().unwrap());
+    assert_eq!((size(16), size(20)), (4 * 480 + 5 * 4, 3 * 270 + 4 * 4));
 }

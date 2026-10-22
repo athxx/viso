@@ -28,9 +28,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use viso_dev_protocol::headless::{
-    Action, CENSUS_ENV, DETAIL_ENV, EVENTS_ENV, Expectation, FRAMES_ENV, HeadlessSurface,
-    REPORT_ENV, Reported, SCRIPT_ENV, SNAPSHOT_ENV, SOURCES_ENV, SURFACE_ENV, Script, Selector,
-    VIEW_ENV, is_snapshot_name,
+    Action, CENSUS_ENV, DETAIL_ENV, EVENTS_ENV, Expectation, FRAMES_ENV, GAME_SHEET_ENV, GameSheet,
+    HeadlessSurface, REPORT_ENV, Reported, SCRIPT_ENV, SNAPSHOT_ENV, SOURCES_ENV, SURFACE_ENV,
+    Script, Selector, VIEW_ENV, is_snapshot_name,
 };
 use viso_dev_protocol::inspect::SourceTable;
 use viso_dev_protocol::profile::PROFILE_ENV;
@@ -66,6 +66,7 @@ const WITHHELD: &[&str] = &[
     DETAIL_ENV,
     EVENTS_ENV,
     PROFILE_ENV,
+    GAME_SHEET_ENV,
 ];
 
 /// The name of the file a played scenario is written to when it differs
@@ -459,6 +460,60 @@ pub(super) fn build(
         build_id: built.build_id,
         profile: built.profile.as_str(),
     })
+}
+
+/// Draws `sheet` in `build`, as the case `name`: its output on failure.
+///
+/// # Errors
+///
+/// Why the run did not write the sheet, and what it wrote.
+pub(super) fn sheet(build: &Build, name: &str, sheet: &GameSheet) -> Result<(), (String, String)> {
+    let dir = build.work.join("sheets").join(name);
+    let request = dir.join("sheet.bin");
+    let log = dir.join("output.log");
+    fs::create_dir_all(&dir)
+        .and_then(|()| fs::write(&request, sheet.to_bytes()))
+        .map_err(|error| {
+            (
+                format!("cannot write `{}`: {error}", request.display()),
+                String::new(),
+            )
+        })?;
+    let output = fs::File::create(&log).and_then(|file| Ok((file.try_clone()?, file)));
+    let output = output.map_err(|error| {
+        (
+            format!("cannot write `{}`: {error}", log.display()),
+            String::new(),
+        )
+    })?;
+    let mut command = Command::new(&build.exe);
+    for name in WITHHELD {
+        command.env_remove(name);
+    }
+    let status = command
+        .env(GAME_SHEET_ENV, &request)
+        .current_dir(&dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(output.0))
+        .stderr(Stdio::from(output.1))
+        .status()
+        .map_err(|error| {
+            (
+                format!("cannot run `{}`: {error}", build.exe.display()),
+                String::new(),
+            )
+        })?;
+    let written = read(&log);
+    if !status.success() {
+        let why = written
+            .lines()
+            .rev()
+            .find_map(|line| line.strip_prefix("viso: "))
+            .map_or_else(|| format!("the run exited with {status}"), str::to_owned);
+        return Err((why, written));
+    }
+    let _ = fs::remove_dir_all(&dir);
+    Ok(())
 }
 
 /// Plays every case in `build`, up to `--jobs` at once, handing each run to

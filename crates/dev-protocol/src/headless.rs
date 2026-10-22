@@ -11,8 +11,12 @@
 //! waits, and expectations on what the window shows. The build plays it
 //! against its first window, each step once the app has settled, and writes
 //! one [`Reported`] line per step.
+//!
+//! A run handed a [`GameSheet`] ([`GAME_SHEET_ENV`]) mounts no view: it runs
+//! the sheet's game on its tape and writes the frames the sheet asks for as
+//! one image.
 
-use viso_ende::{JsonValue, JsonWriter};
+use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder, JsonValue, JsonWriter};
 use viso_schema::Role;
 
 /// The environment variable the surface is passed in (see
@@ -735,9 +739,134 @@ impl Reported {
     }
 }
 
+/// The environment variable the path of a [`GameSheet`] is passed in: the
+/// run renders the sheet and ends, mounting no view.
+pub const GAME_SHEET_ENV: &str = "VISO_HEADLESS_GAME_SHEET";
+
+/// How many frames a sheet shows by default.
+pub const SHEET_TILES: u32 = 12;
+
+/// The size of a sheet's tile by default, in logical pixels: 16:9.
+pub const SHEET_TILE: HeadlessSurface = HeadlessSurface {
+    width: 480,
+    height: 270,
+    scale: 1.0,
+};
+
+/// A game run drawn as a sheet of frames: the game's module, run on its
+/// tape for `frames` frames of one fixed tick each, with `tiles` of the
+/// frames, evenly spaced and ending on the last, laid out in rows.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GameSheet {
+    /// The game's behavior module, in its wire form.
+    pub module: Vec<u8>,
+    /// The input tape it runs, in its binary form: its seed and tick rate.
+    pub tape: Vec<u8>,
+    pub frames: u64,
+    pub tiles: u32,
+    /// The size of each tile.
+    pub tile: HeadlessSurface,
+    /// Where the image is written, a PNG.
+    pub output: String,
+}
+
+impl GameSheet {
+    /// The ticks the tiles show, in order: the frame after each.
+    pub fn ticks(&self) -> impl Iterator<Item = u64> + '_ {
+        let n = u64::from(self.tiles).min(self.frames);
+        (1..=n).map(move |k| (k * self.frames).div_ceil(n) - 1)
+    }
+
+    /// How many tiles a row holds.
+    pub fn columns(&self) -> u32 {
+        let n = u64::from(self.tiles).min(self.frames).max(1) as u32;
+        (1..=n).find(|c| c * c >= n).unwrap_or(n)
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        self.encode_to_vec()
+    }
+
+    /// # Errors
+    ///
+    /// When `bytes` is not a sheet this protocol writes.
+    pub fn from_bytes(bytes: &[u8]) -> Result<GameSheet, DecodeError> {
+        GameSheet::decode_from_slice(bytes)
+    }
+}
+
+impl Encode for GameSheet {
+    fn encode(&self, enc: &mut Encoder) {
+        enc.write_bytes(&self.module);
+        enc.write_bytes(&self.tape);
+        enc.write_varint(self.frames);
+        enc.write_varint(u64::from(self.tiles));
+        enc.write_str(&self.tile.to_env());
+        enc.write_str(&self.output);
+    }
+}
+
+impl Decode for GameSheet {
+    fn decode(dec: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+        let module = dec.read_bytes()?.to_vec();
+        let tape = dec.read_bytes()?.to_vec();
+        let frames = dec.read_varint()?;
+        let offset = dec.position();
+        let tiles = u32::try_from(dec.read_varint()?)
+            .ok()
+            .filter(|&t| t > 0)
+            .ok_or(DecodeError::Malformed { offset })?;
+        let offset = dec.position();
+        let tile =
+            HeadlessSurface::from_env(dec.read_str()?).ok_or(DecodeError::Malformed { offset })?;
+        let output = dec.read_str()?.to_owned();
+        Ok(GameSheet {
+            module,
+            tape,
+            frames,
+            tiles,
+            tile,
+            output,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_game_sheet_round_trips_and_spaces_its_ticks() {
+        let sheet = GameSheet {
+            module: vec![1, 2, 3],
+            tape: vec![4, 5],
+            frames: 120,
+            tiles: 12,
+            tile: SHEET_TILE,
+            output: "out/sheet.png".into(),
+        };
+        assert_eq!(GameSheet::from_bytes(&sheet.to_bytes()), Ok(sheet.clone()));
+        let ticks: Vec<u64> = sheet.ticks().collect();
+        assert_eq!(ticks, [9, 19, 29, 39, 49, 59, 69, 79, 89, 99, 109, 119]);
+        assert_eq!(sheet.columns(), 4);
+
+        let short = GameSheet {
+            frames: 5,
+            ..sheet.clone()
+        };
+        assert_eq!(short.ticks().collect::<Vec<_>>(), [0, 1, 2, 3, 4]);
+        assert_eq!(short.columns(), 3);
+        let uneven = GameSheet {
+            frames: 100,
+            tiles: 3,
+            ..sheet.clone()
+        };
+        assert_eq!(uneven.ticks().collect::<Vec<_>>(), [33, 66, 99]);
+
+        let mut bad = sheet.clone();
+        bad.tiles = 0;
+        assert!(GameSheet::from_bytes(&bad.to_bytes()).is_err());
+    }
 
     #[test]
     fn a_surface_round_trips_through_the_environment() {

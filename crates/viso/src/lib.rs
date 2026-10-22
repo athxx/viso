@@ -64,6 +64,7 @@ mod assets;
 pub mod audio;
 mod environment;
 mod footprint;
+mod game_sheet;
 #[cfg(feature = "headless")]
 mod headless;
 #[cfg(any(feature = "hot-reload", feature = "headless"))]
@@ -351,6 +352,7 @@ pub fn run<A: Application>() {
 /// tree — world rects, per-frame recompute counts, and whether the loop halted.
 #[doc(hidden)]
 pub mod __test_support {
+    pub use crate::game_sheet::render as render_game_sheet;
     #[cfg(any(feature = "hot-reload", feature = "headless"))]
     pub use viso_view::tape::UiTape;
 

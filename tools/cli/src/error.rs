@@ -391,6 +391,13 @@ codes! {
         commands: ["viso test ui <scenario> --nocapture"],
     }
 
+    RUN_SHEET_FAILED = RUNTIME {
+        summary: "A game scenario's frame sheet could not be drawn.",
+        explanation: "`--sheet` runs the scenario's game again in a headless build of the app, which draws the frames through the software raster and writes them as one image; the build did not start, the game did not run there, or the image could not be written.",
+        fix: "Run the scenario alone with `--nocapture` to see the run's output.",
+        commands: ["viso test game <scenario> --sheet sheet.png --nocapture"],
+    }
+
     EXPLAIN_UNKNOWN = DIAGNOSTICS {
         summary: "No diagnostic code has that name.",
         explanation: "`viso explain` knows every code the compiler, the project configuration and the CLI raise; the one given is none of them. A code of the form `E0XXX` is the Rust compiler's.",

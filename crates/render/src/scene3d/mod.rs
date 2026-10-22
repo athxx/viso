@@ -224,9 +224,21 @@ impl SceneSprite {
     }
 
     /// The sprite on a [`Shape::Plane`] turned to face along `-forward`,
-    /// spanned by `right` and `up`.
-    pub(crate) fn facing(&self, right: Vec3, up: Vec3, forward: Vec3) -> SceneInstance {
-        let r = self.radius;
+    /// spanned by `right` and `up`, at least `least` across. A sprite
+    /// smaller than that is drawn at it, its opacity lowered by the ratio of
+    /// their areas, so a particle under a pixel still shows as faintly as
+    /// its size warrants rather than vanishing between the pixel centres.
+    pub(crate) fn facing(
+        &self,
+        (right, up, forward): (Vec3, Vec3, Vec3),
+        least: f32,
+    ) -> SceneInstance {
+        let (r, color) = if self.radius < least && least > 0.0 {
+            let k = (self.radius / least).powi(2);
+            (least, self.color.map(|c| c * k))
+        } else {
+            (self.radius, self.color)
+        };
         let (x, y, z) = (right * r, forward * -1.0, up * r);
         let p = self.position;
         SceneInstance {
@@ -235,7 +247,7 @@ impl SceneSprite {
                 [x.y, y.y, z.y, p.y],
                 [x.z, y.z, z.z, p.z],
             ],
-            color: self.color,
+            color,
         }
     }
 }
@@ -312,6 +324,16 @@ impl SceneFrame {
 }
 
 impl Camera {
+    /// How large one pixel of a view `pixels` tall is at `depth` along the
+    /// view, in world units.
+    pub(crate) fn pixel_at(&self, depth: f32, pixels: u32) -> f32 {
+        let span = match self.projection {
+            Projection::Perspective { fov_y } => 2.0 * depth.max(0.0) * (fov_y * 0.5).tan(),
+            Projection::Orthographic { height } => height,
+        };
+        span / pixels.max(1) as f32
+    }
+
     /// The camera's unit right, up and forward axes.
     pub(crate) fn basis(&self) -> (Vec3, Vec3, Vec3) {
         let unit = |v: Vec3, or: Vec3| if v.length() > 1e-6 { v.normalize() } else { or };

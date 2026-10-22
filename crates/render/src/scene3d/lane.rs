@@ -18,6 +18,10 @@ use crate::primitive::{ImageDraw, Rect, SceneDraw, SceneSlot};
 /// The pixel step a scene's targets grow and shrink by.
 const TARGET_STEP: u32 = 64;
 
+/// The radius, in pixels, a sprite is drawn at least at: its soft disc
+/// covers about a pixel at its centre.
+const MIN_SPRITE_PIXELS: f32 = 1.5;
+
 /// The color format of a scene's target: what an image texture holds.
 const COLOR_FORMAT: TextureFormat = TextureFormat::Bgra8Unorm;
 
@@ -349,11 +353,11 @@ impl SceneLane {
                 self.blended(backend);
                 self.mesh(backend, Shape::Plane.into());
                 let first = total;
-                for &(_, n) in &self.order {
-                    push(
-                        &mut scratch,
-                        &sprites[n as usize].facing(right, up, forward),
-                    );
+                let camera = &slot.frame.camera;
+                for &(depth, n) in &self.order {
+                    let least = MIN_SPRITE_PIXELS * camera.pixel_at(depth, used[1]);
+                    let sprite = sprites[n as usize].facing((right, up, forward), least);
+                    push(&mut scratch, &sprite);
                     total += 1;
                 }
                 draws.push(Draw {

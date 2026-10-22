@@ -2,20 +2,27 @@
 //! package's systems: its input tape, or the one `--tape` names, for
 //! `--frames` frames on a world seeded with the tape's seed or `--seed`, each
 //! tick's `@probe` states traced and checked against the scenario's
-//! expectations.
+//! expectations. With `--sheet`, each run is drawn again by a headless build
+//! of the app as a sheet of its frames.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use sha2::{Digest, Sha256};
+use viso_dev_protocol::headless::{GameSheet, SHEET_TILE, SHEET_TILES};
 use viso_dsl::scenario::{self, DEFAULT_SEED, GameRun, RunError, Scenario, read_tape};
 use viso_dsl::{Diagnostic, TextRange, TextSize};
 use viso_ende::JsonWriter;
 
 use super::{Run, TAPE, invalid, line_range, relative, report, scenarios};
 use crate::command::check::{self, Checked};
-use crate::error::{DIAGNOSTICS, ENV_TEST_INPUT, SUCCESS, TEST_EXPECTATION, TEST_INPUT_INVALID};
-use crate::output::{Output, Source, TestStatus};
+use crate::command::scenario::{self as headless, Build};
+use crate::context::Context;
+use crate::error::{
+    DIAGNOSTICS, ENV_TEST_INPUT, RUN_SHEET_FAILED, SUCCESS, TEST_EXPECTATION, TEST_INPUT_INVALID,
+};
+use crate::output::{Artifact, Output, Source, TestStatus};
 
 /// The directory below the project root that holds game scenarios.
 const SCENARIOS: &str = "tests/game";
@@ -29,7 +36,7 @@ struct Planned {
     file: Option<PathBuf>,
 }
 
-pub(super) fn run(checked: &Checked, run: &Run<'_>, out: &mut Output) -> u8 {
+pub(super) fn run(ctx: &Context<'_>, checked: &Checked, run: &Run<'_>, out: &mut Output) -> u8 {
     let root = &checked.project.root;
     let planned = match plan(root, run) {
         Ok(planned) => planned,
@@ -39,9 +46,20 @@ pub(super) fn run(checked: &Checked, run: &Run<'_>, out: &mut Output) -> u8 {
         Err(Nothing::Unreadable(why)) => return out.failure(ENV_TEST_INPUT, &why, &[]),
     };
     let tick_rate = check::profile(&checked.project, &check::Options::default()).tick_rate;
+    let sheets = match &run.args.sheet {
+        Some(path) => match headless::build(ctx, None, out) {
+            Ok(build) => Some(Sheets {
+                build,
+                path: root.join(path),
+                several: planned.len() > 1,
+            }),
+            Err(code) => return code,
+        },
+        None => None,
+    };
     let mut code = SUCCESS;
     for planned in &planned {
-        match scenario(root, planned, run, tick_rate, checked, out) {
+        match scenario(root, planned, run, tick_rate, checked, sheets.as_ref(), out) {
             Ok(true) => {}
             Ok(false) => code = code.max(DIAGNOSTICS),
             Err(environment) => code = code.max(environment),
@@ -108,12 +126,117 @@ fn plan(root: &Path, run: &Run<'_>) -> Result<Vec<Planned>, Nothing> {
 
 /// Runs one scenario and reports it; whether it passed, or the exit code
 /// of an input that could not be read.
+/// Where the runs' sheets are drawn and written.
+struct Sheets {
+    build: Build,
+    /// The sheet `--sheet` names, from the project root.
+    path: PathBuf,
+    /// Whether several scenarios run, each drawing its own.
+    several: bool,
+}
+
+impl Sheets {
+    /// Where the sheet of the scenario `name` is written.
+    fn path(&self, name: &str) -> PathBuf {
+        if !self.several {
+            return self.path.clone();
+        }
+        let stem = self
+            .path
+            .file_stem()
+            .map_or_else(|| "sheet".into(), |s| s.to_string_lossy());
+        let ext = self
+            .path
+            .extension()
+            .map_or_else(|| "png".into(), |s| s.to_string_lossy());
+        self.path.with_file_name(format!("{stem}-{name}.{ext}"))
+    }
+}
+
+/// A sheet drawn: where it is and the ticks it shows.
+struct Drawn {
+    path: String,
+    ticks: Vec<u64>,
+}
+
+/// Draws the sheet of `scenario`'s run of `frames` frames, as `name`.
+///
+/// # Errors
+///
+/// The exit code of the failure, reported.
+fn draw(
+    sheets: &Sheets,
+    root: &Path,
+    name: &str,
+    module: Vec<u8>,
+    scenario: &Scenario,
+    frames: u64,
+    out: &mut Output,
+) -> Result<Drawn, u8> {
+    let path = sheets.path(name);
+    let sheet = GameSheet {
+        module,
+        tape: scenario.tape.encode(),
+        frames,
+        tiles: SHEET_TILES,
+        tile: SHEET_TILE,
+        output: path.to_string_lossy().into_owned(),
+    };
+    if let Some(dir) = path.parent()
+        && let Err(error) = fs::create_dir_all(dir)
+    {
+        let why = format!("cannot create `{}`: {error}", relative(root, dir).display());
+        return Err(out.failure(RUN_SHEET_FAILED, &why, &[]));
+    }
+    if let Err((why, written)) = headless::sheet(&sheets.build, name, &sheet) {
+        let code = out.failure(
+            RUN_SHEET_FAILED,
+            &format!("the sheet of `{name}`: {why}"),
+            &[],
+        );
+        if !written.is_empty() {
+            out.case_output(name, &written);
+        }
+        return Err(code);
+    }
+    let bytes = fs::read(&path).unwrap_or_default();
+    let shown = relative(root, &path)
+        .display()
+        .to_string()
+        .replace('\\', "/");
+    let hash = format!("sha256:{}", hex(&Sha256::digest(&bytes)));
+    let ticks: Vec<u64> = sheet.ticks().collect();
+    let build = &sheets.build;
+    out.artifact(
+        &Artifact {
+            kind: "sheet",
+            path: &shown,
+            target: "headless",
+            profile: Some(build.profile),
+            build_id: &build.build_id,
+            size: bytes.len() as u64,
+            hash: &hash,
+            cached: false,
+        },
+        || {
+            let ticks: Vec<String> = ticks.iter().map(u64::to_string).collect();
+            format!("  sheet      {shown}  (ticks {})\n", ticks.join(", "))
+        },
+    );
+    Ok(Drawn { path: shown, ticks })
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 fn scenario(
     root: &Path,
     planned: &Planned,
     run: &Run<'_>,
     tick_rate: u32,
     checked: &Checked,
+    sheets: Option<&Sheets>,
     out: &mut Output,
 ) -> Result<bool, u8> {
     let args = run.args;
@@ -245,13 +368,26 @@ fn scenario(
             .first()
             .map(|f| format!("a system faulted at tick {}", f.tick))
     });
+    let drawn = match sheets {
+        Some(sheets) => {
+            let module = match program.bytecode() {
+                Ok(module) => module.encode(),
+                Err(error) => {
+                    let why = format!("the package's code does not verify: {error}");
+                    return Err(out.failure(RUN_SHEET_FAILED, &why, &[]));
+                }
+            };
+            Some(draw(sheets, root, name, module, &scenario, frames, out)?)
+        }
+        None => None,
+    };
     report_run(
         out,
         name,
         passed,
         duration_ms,
         message.as_deref(),
-        Some(&run),
+        Some((&run, drawn.as_ref())),
     );
     Ok(passed)
 }
@@ -263,7 +399,7 @@ fn report_run(
     passed: bool,
     duration_ms: u64,
     message: Option<&str>,
-    run: Option<&GameRun>,
+    run: Option<(&GameRun, Option<&Drawn>)>,
 ) {
     let status = if passed {
         TestStatus::Pass
@@ -271,7 +407,7 @@ fn report_run(
         TestStatus::Fail
     };
     match run {
-        Some(run) => {
+        Some((run, drawn)) => {
             let test = crate::output::Test {
                 name,
                 domain: "game",
@@ -281,7 +417,7 @@ fn report_run(
             };
             out.test(
                 &test,
-                |w| game_fields(w, run),
+                |w| game_fields(w, run, drawn),
                 || {
                     format!(
                         "test game {name} ... {} ({} frames, seed {}, snapshot {:016x})\n",
@@ -299,7 +435,7 @@ fn report_run(
 
 /// The game domain's fields of a `test` event: the run's shape, its snapshot
 /// hash and its final entity snapshot.
-fn game_fields(w: &mut JsonWriter, run: &GameRun) {
+fn game_fields(w: &mut JsonWriter, run: &GameRun, drawn: Option<&Drawn>) {
     w.name("seed");
     w.uint(run.seed);
     w.name("frames");
@@ -341,4 +477,17 @@ fn game_fields(w: &mut JsonWriter, run: &GameRun) {
     w.uint(run.failures.len() as u64);
     w.name("faults");
     w.uint(run.faults.len() as u64);
+    if let Some(drawn) = drawn {
+        w.name("sheet");
+        w.begin_object();
+        w.name("path");
+        w.string(&drawn.path);
+        w.name("ticks");
+        w.begin_array();
+        for &tick in &drawn.ticks {
+            w.uint(tick);
+        }
+        w.end_array();
+        w.end_object();
+    }
 }

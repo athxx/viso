@@ -265,9 +265,13 @@
   query-driven invalidation.
 - The 2D renderer is untouched: depth, vertex layouts and the scene profile
   are opt-in per pipeline.
-- Headless runs draw the scene through CpuRaster, which unblocks the
-  frame-sheet tool (`viso game … --sheet`) and golden images of game
-  scenes.
+- Headless runs draw the scene through CpuRaster. This gives:
+  - the frame-sheet tool, `viso test game … --sheet`. The CLI, which
+    links no renderer, hands a headless build of the app a `GameSheet`:
+    the module, the tape and the frames. The build reruns the scenario's
+    game, draws the frames the sheet shows as a `GameViewport` would, and
+    writes them as one PNG;
+  - golden images of game scenes.
 - The web export still refuses views that run games (ADR 0045). The WebGPU
   backend implements the lane, for when that changes.
 - Implementation order:

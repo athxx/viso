@@ -64,8 +64,9 @@ Rules:
   - [x] particles as billboards (blended, depth-tested, no write; sorted back to front);
   - [x] debug shapes as thin boxes (unlit material);
   - [x] viewport focus takes game keys (§106.2); pointer down focuses.
-- [ ] S6 Headless frame sheet (`viso game … --sheet`) and golden scene images through
-  CpuRaster.
+- [x] S6 Headless frame sheet (`viso test game … --sheet`, a `GameSheet` request run by the
+  headless build) and golden scene images through CpuRaster; sub-pixel sprites keep a
+  1.5-px radius at area-scaled opacity.
 
 ## W2 — Text editing
 

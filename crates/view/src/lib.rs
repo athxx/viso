@@ -86,7 +86,7 @@ pub use theme::{default_theme, set_theme};
 pub use values::{__mount_values, mount_values};
 pub use viso_behavior::{Fault, Module, Value};
 pub use viso_ui::shader::__per_backend;
-pub use world_scene::game_viewport;
+pub use world_scene::{WorldScene, game_viewport};
 /// The stores a view's `@persist` states persist through.
 pub mod persist {
     #[cfg(not(target_family = "wasm"))]

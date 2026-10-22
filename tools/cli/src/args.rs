@@ -1090,6 +1090,11 @@ pub struct TestArgs {
     /// scenario's.
     #[arg(long, value_name = "PATH", value_hint = ValueHint::FilePath)]
     pub tape: Option<PathBuf>,
+    /// Draw each game scenario's run as a sheet of its frames, a PNG at
+    /// PATH, through a headless build of the app; with several scenarios,
+    /// `<stem>-<scenario>.png` beside it each.
+    #[arg(long, value_name = "PATH", value_hint = ValueHint::FilePath)]
+    pub sheet: Option<PathBuf>,
 }
 
 /// Where `viso run` runs the app besides this machine.

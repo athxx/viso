@@ -15,7 +15,8 @@
 //! ```
 //!
 //! The right side is the probe's JSON value: `3`, `true`, `"Run"`,
-//! `{"hp":3}`. A frame runs one tick, then every `FrameUpdate`.
+//! `{"hp":3}`. A frame runs one tick, then every `FrameUpdate`, the frame
+//! lasting one tick.
 
 use std::fmt;
 
@@ -247,9 +248,10 @@ pub fn run(
         let state = &game.instance(*system).states()[probe.slot as usize];
         probe.shape.write(state, json);
     };
+    let frame = 1.0 / f64::from(scenario.tape.tick_rate.max(1));
     for tick in 0..frames {
         game.step(1);
-        game.frame(0.0);
+        game.present(frame);
         faults.append(&mut game.take_faults());
         let mut json = JsonWriter::new();
         json.begin_object();

@@ -63,7 +63,7 @@ pub fn run(ctx: &Context<'_>, args: &TestArgs, out: &mut Output) -> u8 {
         let ended = match domain {
             TestDomain::Unit => unit::run(ctx, &checked, &run, out),
             TestDomain::Ui => ui::run(ctx, &checked, &run, out),
-            TestDomain::Game => game::run(&checked, &run, out),
+            TestDomain::Game => game::run(ctx, &checked, &run, out),
             TestDomain::Web => web(&run, out),
             TestDomain::All => unreachable!("every domain is run one by one"),
         };
@@ -110,6 +110,7 @@ fn misplaced(args: &TestArgs, domain: TestDomain) -> Option<String> {
         (args.frames.is_some(), "--frames"),
         (args.seed.is_some(), "--seed"),
         (args.tape.is_some(), "--tape"),
+        (args.sheet.is_some(), "--sheet"),
     ] {
         if given && !game {
             return Some(format!(

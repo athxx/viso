@@ -15,6 +15,9 @@
 //! ([`crate::tape`]) on the surface it was recorded on, its frame clock held
 //! to the recorded times, and reports the revisions it crossed.
 //!
+//! A run handed a game sheet ([`GAME_SHEET_ENV`]) draws it and ends
+//! ([`crate::game_sheet`]), opening no window.
+//!
 //! A run handed a view package ([`VIEW_ENV`]) mounts it alone in its first
 //! window, with no caption and none of the app's own view, so a tool
 //! captures one component as the app's fonts and assets draw it.
@@ -28,8 +31,8 @@ use viso_platform::backend::headless::HeadlessApp;
 use viso_runtime::{FixedStepClock, Scheduler};
 use viso_ui::{DirtyClass, NodeId};
 use viso_view::headless::{
-    CENSUS_ENV, DETAIL_ENV, EVENTS_ENV, FRAMES_ENV, HeadlessSurface, REPORT_ENV, SCRIPT_ENV,
-    SNAPSHOT_ENV, SOURCES_ENV, SURFACE_ENV, VIEW_ENV,
+    CENSUS_ENV, DETAIL_ENV, EVENTS_ENV, FRAMES_ENV, GAME_SHEET_ENV, HeadlessSurface, REPORT_ENV,
+    SCRIPT_ENV, SNAPSHOT_ENV, SOURCES_ENV, SURFACE_ENV, VIEW_ENV,
 };
 use viso_view::inspect::{self, CensusView, WindowCensus, static_nodes};
 use viso_view::profile::{PROFILE_ENV, Trace};
@@ -41,6 +44,9 @@ use crate::tape::{HeadlessClock, STEP, TapeClock, TapePlayer};
 use crate::{AppDriver, Application, WindowState, services};
 
 pub(crate) fn run<A: Application>() {
+    if let Some(path) = viso_platform::launch_var(GAME_SHEET_ENV) {
+        crate::game_sheet::run(&path);
+    }
     let tape = viso_platform::launch_var(TAPE_ENV).map(|path| {
         if viso_platform::launch_var(SCRIPT_ENV).is_some() {
             eprintln!("viso: a run replays a tape or plays a scenario, not both");
