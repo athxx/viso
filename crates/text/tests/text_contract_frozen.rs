@@ -270,7 +270,7 @@ fn positions_are_typed_byte_offsets_with_affinity() {
 }
 
 /// One glyph per scalar, half an em each: shaping is the caller's.
-fn shape(text: &str, _direction: Direction) -> ShapedSpan {
+fn shape(text: &str, _direction: Direction, _style: u16) -> ShapedSpan {
     let glyphs: Vec<ShapedGlyph> = text
         .char_indices()
         .map(|(at, _)| ShapedGlyph {

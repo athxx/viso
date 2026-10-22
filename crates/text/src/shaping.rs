@@ -105,6 +105,22 @@ pub struct LigatureCarets {
 }
 
 impl ShapedRun {
+    /// Measure the run in an em `factor` times its own: what a run drawn at
+    /// `factor` times a paragraph's size advances in the paragraph's em.
+    pub fn scale(&mut self, factor: f32) {
+        for glyph in &mut self.glyphs {
+            glyph.x_advance *= factor;
+            glyph.x_offset *= factor;
+            glyph.y_offset *= factor;
+        }
+        for ligature in &mut self.ligature_carets {
+            for caret in &mut ligature.carets {
+                *caret *= factor;
+            }
+        }
+        self.width_ems *= factor;
+    }
+
     /// The font's caret offsets inside ligature glyph `glyph_id`, if recorded.
     pub fn carets_for(&self, glyph_id: u16) -> Option<&[f32]> {
         self.ligature_carets

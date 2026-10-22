@@ -91,6 +91,9 @@ pub struct VisualRun {
     /// The face every glyph in the run was shaped with — the shaped-run
     /// identity, retained so a re-raster or re-upload does not need to reshape.
     pub face: crate::FontFaceId,
+    /// The style the run shaped with: the index a [`StyleRun`] gave its text,
+    /// `0` for a paragraph of one style.
+    pub style: u16,
     /// Legal caret stops within the run, one per grapheme boundary in
     /// `logical_range`, each paired with its resolved inline x. Ordered by
     /// logical offset (ascending); the inline x is monotonic left-to-right for
@@ -203,7 +206,20 @@ impl LineLayout {
         range: (TextOffset, TextOffset),
         shaped: &[ShapedSpan],
     ) -> Self {
-        let logical_runs = bidi.direction_runs_in(range.0, range.1);
+        Self::in_styled_range(text, bidi, &[], range, shaped)
+    }
+
+    /// [`Self::in_range`] for a paragraph of several styles: its direction
+    /// runs split further where `styles` change, and `shaped` supplies one
+    /// [`ShapedSpan`] per piece, in [`shaping_runs`] order.
+    pub fn in_styled_range(
+        text: &str,
+        bidi: &BidiInfo,
+        styles: &[StyleRun],
+        range: (TextOffset, TextOffset),
+        shaped: &[ShapedSpan],
+    ) -> Self {
+        let logical_runs = shaping_runs(bidi, styles, range.0, range.1);
 
         // Visual (left-to-right) order of the line's source offsets under rule
         // L2. A run's visual position is the visual position of its logical
@@ -217,23 +233,29 @@ impl LineLayout {
 
         // Pair each logical direction run with its shaped span (same order as
         // `direction_runs_in`) and sort into visual order.
-        let mut ordered: Vec<(usize, &crate::bidi::DirectionRun, Option<&ShapedSpan>)> =
-            logical_runs
-                .iter()
-                .enumerate()
-                .map(|(i, run)| {
-                    let rank = visual_rank.get(&run.start).copied().unwrap_or(usize::MAX);
-                    (rank, run, shaped.get(i))
-                })
-                .collect();
+        // A piece of an RTL run starts at its right edge, so the later
+        // pieces of the run rank, and draw, further left.
+        let mut ordered: Vec<(usize, &ShapingRun, Option<&ShapedSpan>)> = logical_runs
+            .iter()
+            .enumerate()
+            .map(|(i, piece)| {
+                let rank = visual_rank
+                    .get(&piece.run.start)
+                    .copied()
+                    .unwrap_or(usize::MAX);
+                (rank, piece, shaped.get(i))
+            })
+            .collect();
         ordered.sort_by_key(|(rank, _, _)| *rank);
 
         let mut runs = Vec::with_capacity(ordered.len());
         let mut cursor_x = 0.0f32;
-        for (_, run, span) in ordered {
+        for (_, piece, span) in ordered {
+            let (run, style) = (&piece.run, piece.style);
             let segments = span.map_or(&[][..], |s| &s.segments[..]);
             if segments.is_empty() {
-                let built = build_visual_run(text, run, (run.start, run.end), None, cursor_x);
+                let built =
+                    build_visual_run(text, run, style, (run.start, run.end), None, cursor_x);
                 cursor_x = built.visual_inline_range.1;
                 runs.push(built);
                 continue;
@@ -243,7 +265,8 @@ impl LineLayout {
             let mut place = |segment: &ShapedSegment| {
                 let start = TextOffset(run.start.0 + segment.start as usize);
                 let end = TextOffset(start.0 + segment.run.text_len as usize);
-                let built = build_visual_run(text, run, (start, end), Some(&segment.run), cursor_x);
+                let built =
+                    build_visual_run(text, run, style, (start, end), Some(&segment.run), cursor_x);
                 cursor_x = built.visual_inline_range.1;
                 runs.push(built);
             };
@@ -345,6 +368,13 @@ impl ShapedSpan {
     pub fn width_ems(&self) -> f32 {
         self.segments.iter().map(|s| s.run.width_ems).sum()
     }
+
+    /// Measure the span in an em `factor` times its own ([`ShapedRun::scale`]).
+    pub fn scale(&mut self, factor: f32) {
+        for segment in &mut self.segments {
+            segment.run.scale(factor);
+        }
+    }
 }
 
 impl From<ShapedRun> for ShapedSpan {
@@ -353,6 +383,80 @@ impl From<ShapedRun> for ShapedSpan {
             segments: vec![ShapedSegment { start: 0, run }],
         }
     }
+}
+
+/// Where a style of a paragraph begins: its text from `start` to the next
+/// run's start shapes with `style`, an index into the caller's own table of
+/// faces and sizes; the text before the first run shapes with style `0`.
+///
+/// Runs are sorted by `start`, which falls on a char boundary. Only what
+/// changes the glyphs is a style here — the face, the size, the features; a
+/// color or a decoration changes no shape, so text that differs only in
+/// them is one style and shapes as one, its kerning and ligatures across the
+/// change intact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct StyleRun {
+    pub start: TextOffset,
+    pub style: u16,
+}
+
+/// One piece of text that shapes as a unit: a direction run, or the part of
+/// one a single style covers.
+#[derive(Debug, Clone, Copy)]
+pub struct ShapingRun {
+    pub run: crate::bidi::DirectionRun,
+    pub style: u16,
+}
+
+/// The pieces `[start, end)` shapes in, in logical order: its direction runs
+/// under `bidi`, each split where `styles` change.
+pub fn shaping_runs(
+    bidi: &BidiInfo,
+    styles: &[StyleRun],
+    start: TextOffset,
+    end: TextOffset,
+) -> Vec<ShapingRun> {
+    let runs = bidi.direction_runs_in(start, end);
+    if styles.is_empty() {
+        return runs
+            .into_iter()
+            .map(|run| ShapingRun { run, style: 0 })
+            .collect();
+    }
+    let mut out = Vec::with_capacity(runs.len() + styles.len());
+    for run in runs {
+        // The style in effect at the run's start, then each change inside it.
+        let first = styles.partition_point(|s| s.start <= run.start);
+        let mut style = first.checked_sub(1).map_or(0, |at| styles[at].style);
+        let mut from = run.start;
+        for change in styles[first..].iter().take_while(|s| s.start < run.end) {
+            if change.style != style {
+                if change.start > from {
+                    out.push(ShapingRun {
+                        run: crate::bidi::DirectionRun {
+                            start: from,
+                            end: change.start,
+                            ..run
+                        },
+                        style,
+                    });
+                }
+                from = change.start;
+                style = change.style;
+            }
+        }
+        out.push(ShapingRun {
+            run: crate::bidi::DirectionRun { start: from, ..run },
+            style,
+        });
+    }
+    out
+}
+
+/// The style the text at `at` shapes with.
+pub fn style_at(styles: &[StyleRun], at: TextOffset) -> u16 {
+    let i = styles.partition_point(|s| s.start <= at);
+    i.checked_sub(1).map_or(0, |i| styles[i].style)
 }
 
 /// Build one [`VisualRun`] over `[range.0, range.1)` of a logical direction run
@@ -372,6 +476,7 @@ impl From<ShapedRun> for ShapedSpan {
 fn build_visual_run(
     text: &str,
     run: &crate::bidi::DirectionRun,
+    style: u16,
     range: (TextOffset, TextOffset),
     shaped: Option<&ShapedRun>,
     left: f32,
@@ -468,6 +573,7 @@ fn build_visual_run(
         direction: run.direction,
         level: run.level,
         face: shaped.map(|s| s.face).unwrap_or(crate::FontFaceId(0)),
+        style,
         caret_stops,
         glyphs: shaped.map(|s| s.glyphs.clone()).unwrap_or_default(),
     }
@@ -603,6 +709,8 @@ pub struct Paragraph {
     text: String,
     base: BaseDirection,
     style_epoch: u64,
+    /// Where each style of the text begins; empty for one style.
+    styles: Vec<StyleRun>,
     /// The locale line-breaking policy the break opportunities come from.
     tailoring: LineBreakTailoring,
     /// The last laid-out lines, or empty before the first layout.
@@ -634,11 +742,13 @@ pub struct Paragraph {
     shape_calls: u64,
 }
 
-/// A shaping callback: shape a source substring in a resolved direction into a
-/// [`ShapedSpan`]. The paragraph calls it once per logical direction run per
-/// line; the caller resolves the faces (including per-cluster fallback) and
-/// holds the font bytes.
-pub type ShapeFn<'a> = dyn FnMut(&str, Direction) -> ShapedSpan + 'a;
+/// A shaping callback: shape a source substring in a resolved direction and
+/// a style ([`StyleRun::style`]) into a [`ShapedSpan`]. The paragraph calls it
+/// once per [`ShapingRun`] per line; the caller resolves the faces (including
+/// per-cluster fallback) and holds the font bytes. Advances come back in the
+/// paragraph's em — a style drawn at twice the size advances twice as far —
+/// so every width and caret stop of a paragraph is in one unit.
+pub type ShapeFn<'a> = dyn FnMut(&str, Direction, u16) -> ShapedSpan + 'a;
 
 /// A layout-scoped memo over the caller's [`ShapeFn`] that shapes each distinct
 /// `(byte range, direction)` at most once per layout pass.
@@ -659,7 +769,7 @@ pub type ShapeFn<'a> = dyn FnMut(&str, Direction) -> ShapedSpan + 'a;
 /// paragraph exposes, which is what proves a steady-state frame shapes nothing.
 struct ShapeCache<'f, 's> {
     shape: &'f mut ShapeFn<'s>,
-    runs: std::collections::HashMap<(u32, u32, Direction), ShapedSpan>,
+    runs: std::collections::HashMap<(u32, u32, Direction, u16), ShapedSpan>,
     misses: u64,
 }
 
@@ -675,19 +785,15 @@ impl<'f, 's> ShapeCache<'f, 's> {
     /// The shaped run for `text[range.0..range.1]` in `direction`, shaping through
     /// the caller's callback only on a miss. `text` is the paragraph source; the
     /// key is the byte range so identical substrings collapse to one shape.
-    fn shape(
-        &mut self,
-        text: &str,
-        range: (TextOffset, TextOffset),
-        direction: Direction,
-    ) -> &ShapedSpan {
-        let key = (range.0.0 as u32, range.1.0 as u32, direction);
+    fn shape(&mut self, text: &str, piece: &ShapingRun) -> &ShapedSpan {
+        let (range, direction) = ((piece.run.start, piece.run.end), piece.run.direction);
+        let key = (range.0.0 as u32, range.1.0 as u32, direction, piece.style);
         // `entry` would borrow `self.runs` across the miss closure that also needs
         // `self.shape`/`self.misses`; split the lookup so the miss path is a plain
         // insert with no overlapping borrow.
         if !self.runs.contains_key(&key) {
             let sub = &text[range.0.0..range.1.0];
-            let run = (self.shape)(sub, direction);
+            let run = (self.shape)(sub, direction, piece.style);
             self.misses += 1;
             self.runs.insert(key, run);
         }
@@ -711,6 +817,7 @@ impl Paragraph {
             text: text.into(),
             base,
             style_epoch,
+            styles: Vec::new(),
             tailoring: LineBreakTailoring::default(),
             lines: Vec::new(),
             key: None,
@@ -724,6 +831,22 @@ impl Paragraph {
     /// The paragraph's source text.
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    /// Where each style of the text begins; empty for one style.
+    pub fn styles(&self) -> &[StyleRun] {
+        &self.styles
+    }
+
+    /// Shapes the text in `styles` from now on, laying it out anew from the
+    /// top when they change. Offsets are the text's as it stands, so a caller
+    /// that edits the text sets its styles again.
+    pub fn set_styles(&mut self, styles: &[StyleRun]) {
+        if self.styles != styles {
+            self.styles.clear();
+            self.styles.extend_from_slice(styles);
+            self.key = None;
+        }
     }
 
     /// The base direction the paragraph resolves under.
@@ -1104,13 +1227,9 @@ impl Paragraph {
     ) -> f32 {
         let text = &self.text;
         let end = content_end(text, start, end);
-        bidi.direction_runs_in(start, end)
+        shaping_runs(bidi, &self.styles, start, end)
             .iter()
-            .map(|run| {
-                cache
-                    .shape(text, (run.start, run.end), run.direction)
-                    .width_ems()
-            })
+            .map(|piece| cache.shape(text, piece).width_ems())
             .sum()
     }
 
@@ -1124,16 +1243,13 @@ impl Paragraph {
     ) -> LineLayout {
         let text = &self.text;
         let end = content_end(text, range.0, range.1);
-        let shaped: Vec<ShapedSpan> = bidi
-            .direction_runs_in(range.0, end)
+        let pieces = shaping_runs(bidi, &self.styles, range.0, end);
+        let shaped: Vec<ShapedSpan> = pieces
             .iter()
-            .map(|run| {
-                cache
-                    .shape(text, (run.start, run.end), run.direction)
-                    .clone()
-            })
+            .map(|piece| cache.shape(text, piece).clone())
             .collect();
-        let mut line = LineLayout::in_range(text, bidi, (range.0, end), &shaped);
+        let mut line =
+            LineLayout::in_styled_range(text, bidi, &self.styles, (range.0, end), &shaped);
         // The hard break belongs to the line logically but draws nothing.
         line.logical_range = range;
         line
@@ -1306,8 +1422,8 @@ mod tests {
     /// A shaping callback over the fixture face, capturing a fresh [`Shaper`] per
     /// paragraph. Both the incremental and full paths are driven by an identical
     /// closure so any difference is layout, not shaping.
-    fn fixture_shaper() -> impl FnMut(&str, Direction) -> ShapedSpan {
-        move |sub: &str, dir: Direction| shape_run(sub, dir).into()
+    fn fixture_shaper() -> impl FnMut(&str, Direction, u16) -> ShapedSpan {
+        move |sub: &str, dir: Direction, _: u16| shape_run(sub, dir).into()
     }
 
     /// Structural equality of two laid-out line sets: same line count, and each
@@ -1575,12 +1691,12 @@ mod tests {
     /// invoked, so a test can distinguish "the paragraph asked to shape" from "the
     /// paragraph reused a retained run". Returns the closure and a shared counter.
     fn counting_shaper() -> (
-        impl FnMut(&str, Direction) -> ShapedSpan,
+        impl FnMut(&str, Direction, u16) -> ShapedSpan,
         std::rc::Rc<std::cell::Cell<u64>>,
     ) {
         let calls = std::rc::Rc::new(std::cell::Cell::new(0u64));
         let seen = calls.clone();
-        let shape = move |sub: &str, dir: Direction| {
+        let shape = move |sub: &str, dir: Direction, _: u16| {
             seen.set(seen.get() + 1);
             ShapedSpan::from(shape_run(sub, dir))
         };
@@ -1857,7 +1973,7 @@ mod tests {
     fn fallback_segments_become_runs_and_rtl_places_them_right_to_left() {
         // Split every span at its first grapheme into two faces, as per-cluster
         // fallback does.
-        let mut shape = |sub: &str, dir: Direction| {
+        let mut shape = |sub: &str, dir: Direction, _: u16| {
             let cut = sub.chars().next().map_or(0, char::len_utf8);
             let mut segments = Vec::new();
             for (face, range) in [(1, 0..cut), (2, cut..sub.len())] {
@@ -2006,7 +2122,7 @@ mod tests {
             }),
             direction,
         };
-        build_visual_run(text, &run, (run.start, run.end), Some(shaped), 0.0)
+        build_visual_run(text, &run, 0, (run.start, run.end), Some(shaped), 0.0)
     }
 
     fn stop_xs(run: &VisualRun) -> Vec<(usize, f32)> {
@@ -2081,5 +2197,128 @@ mod tests {
         let shaped = synthetic_run(&[(4, 0.6, 3), (0, 0.7, 1), (0, 0.0, 2)], 6, &[]);
         let run = synthetic_line(text, Direction::RightToLeft, &shaped);
         assert_stops(&run, &[(0, 1.3), (4, 0.6), (6, 0.0)]);
+    }
+
+    /// Every char `style + 1` em wide: style 1 draws at twice the size.
+    fn sized(text: &str, _: Direction, style: u16) -> ShapedSpan {
+        let em = f32::from(style + 1);
+        let glyphs: Vec<ShapedGlyph> = text
+            .char_indices()
+            .map(|(at, ch)| ShapedGlyph {
+                glyph_id: ch as u16,
+                cluster: at as u32,
+                x_advance: em,
+                x_offset: 0.0,
+                y_offset: 0.0,
+                unsafe_to_break: false,
+            })
+            .collect();
+        ShapedRun {
+            face: FontFaceId(1),
+            width_ems: glyphs.len() as f32 * em,
+            glyphs,
+            text_len: text.len() as u32,
+            ligature_carets: Vec::new(),
+        }
+        .into()
+    }
+
+    fn run(start: usize, style: u16) -> StyleRun {
+        StyleRun {
+            start: TextOffset(start),
+            style,
+        }
+    }
+
+    #[test]
+    fn style_changes_split_direction_runs_into_pieces() {
+        let text = "abc\u{05D0}\u{05D1}def";
+        let bidi = BidiInfo::resolve(text, BaseDirection::LeftToRight);
+        // A change to the style already in effect splits nothing.
+        let styles = [run(0, 0), run(1, 1), run(2, 1), run(4, 0), run(9, 2)];
+        let pieces: Vec<(usize, usize, u16)> =
+            shaping_runs(&bidi, &styles, TextOffset(0), TextOffset(text.len()))
+                .iter()
+                .map(|p| (p.run.start.0, p.run.end.0, p.style))
+                .collect();
+        assert_eq!(
+            pieces,
+            [
+                (0, 1, 0),
+                (1, 3, 1),
+                (3, 4, 1),
+                (4, 7, 0),
+                (7, 9, 0),
+                (9, 10, 2)
+            ]
+        );
+        assert_eq!(style_at(&styles, TextOffset(5)), 0);
+        assert_eq!(style_at(&styles, TextOffset(9)), 2);
+        assert_eq!(style_at(&[run(3, 1)], TextOffset(2)), 0);
+    }
+
+    #[test]
+    fn a_larger_style_widens_its_text_and_wraps_it_sooner() {
+        let mut p = Paragraph::new("aa bb cc", BaseDirection::LeftToRight, 0);
+        p.layout(6.0, &mut sized);
+        assert_eq!(p.lines().len(), 2, "one style: `aa bb ` then `cc`");
+        p.set_styles(&[run(3, 1), run(5, 0)]);
+        assert!(p.layout(6.0, &mut sized), "new styles lay out anew");
+        let lines: Vec<(usize, usize)> = p
+            .lines()
+            .iter()
+            .map(|l| (l.logical_range.0.0, l.logical_range.1.0))
+            .collect();
+        assert_eq!(lines, [(0, 3), (3, 6), (6, 8)], "`bb` is two em a char");
+        let second = &p.lines()[1];
+        assert_eq!(second.width, 5.0, "`bb` at 2 em a char, the space at 1");
+        let styles: Vec<u16> = second.runs.iter().map(|r| r.style).collect();
+        assert_eq!(styles, [1, 0]);
+        let stops: Vec<(usize, f32)> = second
+            .runs
+            .iter()
+            .flat_map(|r| r.caret_stops.iter().map(|s| (s.offset.0, s.inline_x)))
+            .collect();
+        assert_eq!(stops, [(3, 0.0), (4, 2.0), (5, 4.0), (5, 4.0), (6, 5.0)]);
+        p.set_styles(&[run(3, 1), run(5, 0)]);
+        assert!(!p.layout(6.0, &mut sized), "the same styles change nothing");
+    }
+
+    #[test]
+    fn the_pieces_of_a_right_to_left_run_draw_right_to_left() {
+        let text = "\u{05D0}\u{05D1}\u{05D2}";
+        let mut p = Paragraph::new(text, BaseDirection::RightToLeft, 0);
+        p.set_styles(&[run(2, 1), run(4, 0)]);
+        p.layout(f32::INFINITY, &mut sized);
+        let runs: Vec<(usize, f32, f32, u16)> = p.lines()[0]
+            .runs
+            .iter()
+            .map(|r| {
+                let (l, r2) = r.visual_inline_range;
+                (r.logical_range.0.0, l, r2, r.style)
+            })
+            .collect();
+        assert_eq!(
+            runs,
+            [(4, 0.0, 1.0, 0), (2, 1.0, 3.0, 1), (0, 3.0, 4.0, 0)],
+            "the logically last piece draws leftmost"
+        );
+    }
+
+    #[test]
+    fn an_ellipsis_takes_the_style_of_the_text_it_follows() {
+        let mut p = Paragraph::new("aaaa bbbb", BaseDirection::LeftToRight, 0);
+        p.set_styles(&[run(5, 1)]);
+        p.layout(f32::INFINITY, &mut sized);
+        let limit = crate::LineLimit {
+            max_lines: None,
+            ellipsis: true,
+            width: 9.0,
+        };
+        let lines = p.limited(limit, &mut sized).expect("the line overflows");
+        let last = lines[0].runs.last().expect("the ellipsis");
+        assert_eq!(last.style, 1);
+        assert_eq!(last.width(), 2.0, "an ellipsis at twice the size");
+        assert!(lines[0].width <= 9.0);
     }
 }

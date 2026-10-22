@@ -82,7 +82,7 @@ fn two_token_width() -> f32 {
 fn edit_and_measure_reshape(words: usize) -> (u64, Vec<LineLayout>) {
     let text = large_text(words);
     let width = two_token_width();
-    let mut shape_fn = |s: &str, d: Direction| ShapedSpan::from(shape_run(s, d));
+    let mut shape_fn = |s: &str, d: Direction, _: u16| ShapedSpan::from(shape_run(s, d));
 
     let mut p = Paragraph::new(&text, BaseDirection::LeftToRight, 0);
     p.layout(width, &mut shape_fn);
@@ -109,7 +109,7 @@ fn full_lines_for(words: usize) -> Vec<LineLayout> {
     let mid = text.find(&target).expect("mid token present");
     let mut edited = text.clone();
     edited.replace_range(mid..mid + target.len(), "word9999");
-    let mut shape_fn = |s: &str, d: Direction| ShapedSpan::from(shape_run(s, d));
+    let mut shape_fn = |s: &str, d: Direction, _: u16| ShapedSpan::from(shape_run(s, d));
     let mut p = Paragraph::new(&edited, BaseDirection::LeftToRight, 0);
     p.layout_full(width, &mut shape_fn)
 }
@@ -180,7 +180,7 @@ fn bench_incremental_edit(c: &mut Criterion) {
     let width = two_token_width();
     let target_a = format!("word{:04}", WORDS / 2);
     let mid = text.find(&target_a).expect("mid token present");
-    let mut shape_fn = |s: &str, d: Direction| ShapedSpan::from(shape_run(s, d));
+    let mut shape_fn = |s: &str, d: Direction, _: u16| ShapedSpan::from(shape_run(s, d));
 
     let mut p = Paragraph::new(&text, BaseDirection::LeftToRight, 0);
     p.layout(width, &mut shape_fn);

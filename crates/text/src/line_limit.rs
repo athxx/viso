@@ -6,7 +6,10 @@
 use std::num::NonZeroU32;
 
 use crate::bidi::{BidiInfo, BidiLevel};
-use crate::paragraph::{CaretStop, LineLayout, Paragraph, ShapeFn, ShapedSpan, VisualRun};
+use crate::paragraph::{
+    CaretStop, LineLayout, Paragraph, ShapeFn, ShapedSpan, StyleRun, VisualRun, shaping_runs,
+    style_at,
+};
 use crate::segment::Segmenter;
 use crate::shaping::Direction;
 use crate::text_position::TextOffset;
@@ -58,7 +61,7 @@ impl Paragraph {
             let last = out.len().saturating_sub(1);
             for (at, line) in out.iter_mut().enumerate() {
                 if (cut && at == last) || overflows(line) {
-                    *line = ellipsize(text, &bidi, line, limit.width, shape);
+                    *line = ellipsize(text, &bidi, self.styles(), line, limit.width, shape);
                 }
             }
         }
@@ -68,10 +71,11 @@ impl Paragraph {
 
 /// `line` cut at the last grapheme boundary its text fits `width` from with
 /// the ellipsis after it, trailing white space dropped; the ellipsis at the
-/// paragraph's end side.
+/// paragraph's end side, in the style of the line's last character.
 fn ellipsize(
     text: &str,
     bidi: &BidiInfo,
+    styles: &[StyleRun],
     line: &LineLayout,
     width: f32,
     shape: &mut ShapeFn<'_>,
@@ -83,7 +87,12 @@ fn ellipsize(
     } else {
         Direction::LeftToRight
     };
-    let mark = shape(ELLIPSIS, direction);
+    let last = text[start.0..end.0]
+        .char_indices()
+        .next_back()
+        .map_or(start, |(at, _)| TextOffset(start.0 + at));
+    let style = style_at(styles, last);
+    let mark = shape(ELLIPSIS, direction, style);
     let room = width - mark.width_ems();
     let bounds: Vec<TextOffset> = Segmenter::new(&text[start.0..end.0])
         .grapheme_boundaries()
@@ -94,7 +103,7 @@ fn ellipsize(
     let (mut lo, mut hi) = (0, bounds.len() - 1);
     while lo < hi {
         let mid = (lo + hi).div_ceil(2);
-        let spans = spans(text, bidi, (start, bounds[mid]), shape);
+        let spans = spans(text, bidi, styles, (start, bounds[mid]), shape);
         if spans.iter().map(ShapedSpan::width_ems).sum::<f32>() <= room {
             lo = mid;
         } else {
@@ -103,8 +112,8 @@ fn ellipsize(
     }
     let to = bounds[lo];
     let to = TextOffset(start.0 + text[start.0..to.0].trim_end().len());
-    let shaped = spans(text, bidi, (start, to), shape);
-    let mut out = LineLayout::in_range(text, bidi, (start, to), &shaped);
+    let shaped = spans(text, bidi, styles, (start, to), shape);
+    let mut out = LineLayout::in_styled_range(text, bidi, styles, (start, to), &shaped);
     let level = BidiLevel(u8::from(line.rtl));
     let mark_width = mark.width_ems();
     let mut marks = Vec::with_capacity(mark.segments.len());
@@ -117,6 +126,7 @@ fn ellipsize(
             direction,
             level,
             face: segment.run.face,
+            style,
             caret_stops: vec![CaretStop {
                 offset: to,
                 inline_x: if line.rtl { right } else { left },
@@ -144,16 +154,20 @@ fn ellipsize(
     out
 }
 
-/// The shaped direction runs of `text[range]`, in logical order.
+/// The shaped pieces of `text[range]`, in logical order.
 fn spans(
     text: &str,
     bidi: &BidiInfo,
+    styles: &[StyleRun],
     range: (TextOffset, TextOffset),
     shape: &mut ShapeFn<'_>,
 ) -> Vec<ShapedSpan> {
-    bidi.direction_runs_in(range.0, range.1)
+    shaping_runs(bidi, styles, range.0, range.1)
         .iter()
-        .map(|run| shape(&text[run.start.0..run.end.0], run.direction))
+        .map(|piece| {
+            let run = &piece.run;
+            shape(&text[run.start.0..run.end.0], run.direction, piece.style)
+        })
         .collect()
 }
 
@@ -165,7 +179,7 @@ mod tests {
     use crate::shaping::{ShapedGlyph, ShapedRun};
 
     /// Every char one em wide, its glyph its code point.
-    fn monospace(text: &str, _: Direction) -> ShapedSpan {
+    fn monospace(text: &str, _: Direction, _: u16) -> ShapedSpan {
         let glyphs: Vec<ShapedGlyph> = text
             .char_indices()
             .map(|(at, ch)| ShapedGlyph {

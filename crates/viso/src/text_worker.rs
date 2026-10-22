@@ -598,8 +598,9 @@ impl WorkerState {
         self.shaped = 0;
         self.style = job.style;
         let (base, locale) = (job.base, job.locale.as_str());
-        let mut shape =
-            |text: &str, direction: Direction| self.shape_span(base, locale, text, direction);
+        let mut shape = |text: &str, direction: Direction, _: u16| {
+            self.shape_span(base, locale, text, direction)
+        };
         let relaid = paragraph.layout(job.width_em, &mut shape);
         let lines = paragraph
             .limited(job.limit, &mut shape)
