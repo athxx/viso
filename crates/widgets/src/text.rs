@@ -279,6 +279,21 @@ impl Label {
         self
     }
 
+    /// The text request the label's node carries, which a later
+    /// [`EventCx::set_text`](viso_ui::EventCx::set_text) of the same look
+    /// starts from.
+    pub(crate) fn request(&self) -> TextRequest {
+        TextRequest {
+            spans: self.spans.clone(),
+            text: self.text.clone(),
+            font_size: FontSize::Fixed(self.style.font_size),
+            color: self.style.color,
+            soft_wrap: self.style.soft_wrap,
+            locale: self.locale.clone(),
+            style: self.text_style.clone(),
+        }
+    }
+
     /// Build the label's one node and return it.
     pub(crate) fn build_node(&self, cx: &mut BuildCx<'_>) -> Handle {
         // One leaf: a transparent box (the text is the content), carrying the
@@ -290,15 +305,7 @@ impl Label {
             size: self.style.size,
             style: BoxStyle::NONE,
         };
-        let request = TextRequest {
-            spans: self.spans.clone(),
-            text: self.text.clone(),
-            font_size: FontSize::Fixed(self.style.font_size),
-            color: self.style.color,
-            soft_wrap: self.style.soft_wrap,
-            locale: self.locale.clone(),
-            style: self.text_style.clone(),
-        };
+        let request = self.request();
         let multiline = self.style.soft_wrap || self.text.contains('\n');
         let handle = if self.selectable {
             let handle = cx.text_input(

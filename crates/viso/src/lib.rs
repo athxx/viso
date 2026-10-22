@@ -60,6 +60,7 @@ use viso_widgets::caption_bar;
 
 mod accessibility;
 pub mod alloc;
+mod app_menu;
 mod assets;
 pub mod audio;
 mod edit_menu;
@@ -563,6 +564,18 @@ pub mod __test_support {
         drive_host::<A>(script, step, true, None, None)
     }
 
+    thread_local! {
+        pub(crate) static ALT_ACCESS: std::cell::Cell<Option<bool>> =
+            const { std::cell::Cell::new(None) };
+    }
+
+    /// Make Alt reach the access keys and the menu bar on this thread's
+    /// drives as it does off Apple systems (`true`), as on them (`false`),
+    /// or as this system does (`None`).
+    pub fn set_alt_access(on: Option<bool>) {
+        ALT_ACCESS.with(|a| a.set(on));
+    }
+
     /// [`drive_scripted`] on a host offering `caps`.
     pub fn drive_scripted_with_caps<A: Application>(
         script: Vec<viso_platform::RawEvent>,
@@ -734,6 +747,11 @@ struct AppDriver<A: Application> {
     /// read on launch. Without a bridge no window derives deltas; the
     /// semantics tree still serves tests and the Inspector.
     accessibility: bool,
+    /// The application's menu, which a captioned window draws as its menu
+    /// bar where the platform shows none.
+    app_menu: Option<viso_platform::Menu>,
+    /// The picks of the windows' drawn menu bars, until a frame takes them.
+    menu_picks: app_menu::Picks,
     /// The development session: the mounted views, their watched files and
     /// the reloads staged for the next frame.
     #[cfg(feature = "hot-reload")]
@@ -939,6 +957,9 @@ struct WindowState {
     /// Reusable ancestry buffer the pointer router fills each event, owned here
     /// so routing a pointer allocates nothing on the steady path.
     route_chain: Vec<NodeId>,
+    /// Whether Alt is down with nothing pressed since: let go, it asks for
+    /// the menu bar.
+    alt_alone: bool,
     /// What happens in the window while an inspector follows it; `None`
     /// while none does.
     #[cfg(any(feature = "hot-reload", feature = "headless"))]
@@ -1059,6 +1080,40 @@ impl<A: Application> Drop for AppDriver<A> {
 }
 
 impl<A: Application> AppDriver<A> {
+    /// Do what the drawn menu bars' picks ask: a command reaches the app,
+    /// a standard action is done as the system's menu would.
+    fn take_menu_picks(&mut self, cx: &mut RuntimeCx<'_>) {
+        let picks = std::mem::take(&mut *self.menu_picks.borrow_mut());
+        for (window, pick) in picks {
+            match pick {
+                app_menu::Pick::Command(command) => {
+                    if let Some(app) = self.app.as_mut() {
+                        app.on_menu_command(command);
+                    }
+                }
+                app_menu::Pick::System(viso_platform::SystemAction::Quit) => {
+                    for ws in &self.windows {
+                        cx.close_window(ws.window);
+                    }
+                }
+                app_menu::Pick::System(viso_platform::SystemAction::CloseWindow) => {
+                    cx.close_window(window);
+                }
+                app_menu::Pick::System(action) => {
+                    let edit = match action {
+                        viso_platform::SystemAction::Copy => edit_menu::Edit::Copy,
+                        viso_platform::SystemAction::Cut => edit_menu::Edit::Cut,
+                        viso_platform::SystemAction::Paste => edit_menu::Edit::Paste,
+                        _ => continue,
+                    };
+                    if let Some(ws) = self.window_mut(window) {
+                        ws.apply_menu_edit(cx, edit, edit_menu::MenuLook::List);
+                    }
+                }
+            }
+        }
+    }
+
     fn new(services: Option<services::Services>) -> Self {
         footprint::install(A::memory_budget());
         Self {
@@ -1072,6 +1127,8 @@ impl<A: Application> AppDriver<A> {
             assets: assets::Assets::default(),
             budget_watch: footprint::BudgetWatch::default(),
             accessibility: true,
+            app_menu: None,
+            menu_picks: Default::default(),
             #[cfg(feature = "hot-reload")]
             hot_reload: hot_reload::HotReloadSession::default(),
             #[cfg(feature = "headless")]
@@ -1187,6 +1244,7 @@ impl WindowState {
             active: true,
             marks: viso_ui::FieldMarks::default(),
             route_chain: Vec::new(),
+            alt_alone: false,
             #[cfg(any(feature = "hot-reload", feature = "headless"))]
             journal: None,
             edited: Vec::new(),
@@ -2065,6 +2123,51 @@ impl WindowState {
         cx.request_state_flush(self.window);
     }
 
+    /// Alt and a letter or digit, or F10, pressed: the focused node's
+    /// handlers may take it, else it reaches the access key or the menu bar.
+    /// Returns whether one of them took it.
+    fn route_access_key(
+        &mut self,
+        root: NodeId,
+        key: AccessKey,
+        code: viso_runtime::Key,
+        modifiers: Modifiers,
+    ) -> bool {
+        let ev = KeyEvent {
+            key: code,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        };
+        if KeyRouter::route_key_taken(
+            &mut self.store,
+            &mut self.states,
+            &self.bindings,
+            &mut self.text_edits,
+            root,
+            ev,
+            &mut self.route_chain,
+        ) {
+            return true;
+        }
+        match key {
+            AccessKey::Char(c) => KeyRouter::route_access(
+                &mut self.store,
+                &mut self.states,
+                &self.bindings,
+                &mut self.text_edits,
+                root,
+                c,
+            ),
+            AccessKey::MenuBar => KeyRouter::route_menu_bar(
+                &mut self.store,
+                &mut self.states,
+                &self.bindings,
+                &mut self.text_edits,
+            ),
+        }
+    }
+
     /// Close the drawn menu the focused field asks for.
     fn close_drawn_menu(&mut self) {
         if let Some(node) = self.focused_text_node() {
@@ -2417,6 +2520,7 @@ fn wrap_root_with_caption(
     title: &str,
     caption: bool,
     caption_out: &Cell<Option<NodeId>>,
+    bar: Option<viso_widgets::MenuBar>,
     build_content: impl FnOnce(&mut BuildCx<'_>) -> Option<NodeId>,
 ) -> Option<NodeId> {
     if !caption {
@@ -2441,6 +2545,10 @@ fn wrap_root_with_caption(
             // it in place; the plain `Component::build` would discard the handle.
             let cap = caption_bar(title.to_string()).build_root(cx);
             caption_out.set(Some(cap.id()));
+            // The app's menu bar under it, where the platform shows none.
+            if let Some(bar) = &bar {
+                viso_ui::Component::build(bar, cx);
+            }
             // Body: a fill container so the app's tree occupies the height left
             // under the caption regardless of the app root's own size request.
             cx.flex(
@@ -2457,6 +2565,21 @@ fn wrap_root_with_caption(
         },
     );
     Some(root.id())
+}
+
+/// The menu bar a captioned window `window` draws for the app's `menu`
+/// where the platform shows no menu bar, its picks queued on `picks`.
+fn drawn_menu_bar(
+    menu: Option<&viso_platform::Menu>,
+    picks: &app_menu::Picks,
+    cx: &RuntimeCx<'_>,
+    window: WindowId,
+    caption: bool,
+) -> Option<viso_widgets::MenuBar> {
+    if !caption || cx.capabilities().menus {
+        return None;
+    }
+    app_menu::bar(menu?, window, picks)
 }
 
 /// Wrap a full-screen window's content (mobile, a browser tab) in a fill
@@ -2522,6 +2645,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // working Quit) in place from platform bring-up.
         if let Some(menu) = self.app.as_ref().and_then(Application::menu) {
             cx.set_menu(&menu);
+            self.app_menu = Some(menu);
         }
         // The OS services, created once on the loop thread now that the
         // platform is up; every window's handlers share them.
@@ -2557,11 +2681,12 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // opened later through the `window()` seam runs the identical path with
         // the request's deferred build closure — the launch window is not a
         // special case.
-        let app = self.app.as_mut();
         let ui_chrome = cfg.chrome;
         let title = cfg.title.clone();
         let framed = cx.framed_windows();
         let caption = cfg.caption && framed;
+        let bar = drawn_menu_bar(self.app_menu.as_ref(), &self.menu_picks, cx, id, caption);
+        let app = self.app.as_mut();
         // Read the native traffic-light box the instant the window exists, so the
         // single build below sees it and a self-drawn caption yields to the OS
         // overlay instead of drawing its own buttons (section 24 data contract).
@@ -2603,7 +2728,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     })
                 };
                 if framed {
-                    wrap_root_with_caption(build, &title, caption, &caption_cell, content)
+                    wrap_root_with_caption(build, &title, caption, &caption_cell, bar, content)
                 } else {
                     wrap_root_in_safe_area(build, content)
                 }
@@ -2709,6 +2834,10 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         );
         match sample {
             viso_runtime::InputSample::Pointer(p) => {
+                if p.phase == viso_runtime::PointerPhase::Down {
+                    // A press while Alt is held makes it no menu-bar Alt.
+                    ws.alt_alone = false;
+                }
                 let ev = PointerEvent {
                     x: p.x / scale,
                     y: p.y / scale,
@@ -2804,6 +2933,42 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 // ancestry so a control can react to it.
                 let modifiers = lower_modifiers(k.modifiers);
                 environment::note_key(&mut ws.states);
+                // Off Apple systems Alt shows the access keys' cues while it is
+                // held, and let go alone asks for the menu bar.
+                let access = alt_access() && ws.store.has_access_keys();
+                let alt = matches!(
+                    k.key,
+                    viso_runtime::Key::AltLeft | viso_runtime::Key::AltRight
+                );
+                if access && alt {
+                    let cues = k.pressed;
+                    if k.pressed && !k.repeat {
+                        ws.alt_alone = !(modifiers.control || modifiers.logo || modifiers.shift);
+                    }
+                    KeyRouter::route_cues(
+                        &mut ws.store,
+                        &mut ws.states,
+                        &ws.bindings,
+                        &mut ws.text_edits,
+                        cues,
+                    );
+                    if !k.pressed && std::mem::take(&mut ws.alt_alone) {
+                        KeyRouter::route_menu_bar(
+                            &mut ws.store,
+                            &mut ws.states,
+                            &ws.bindings,
+                            &mut ws.text_edits,
+                        );
+                    }
+                } else if k.pressed {
+                    ws.alt_alone = false;
+                }
+                // Alt and a letter or digit, and F10, reach the access keys
+                // and the menu bar when the focused node's handlers leave them.
+                let access_key = access
+                    .then(|| access_key_of(k.key, modifiers))
+                    .flatten()
+                    .filter(|_| k.pressed && !k.repeat);
                 let menu_key = ws.drawn_menu.key(&mut ws.states, k.key, k.pressed);
                 if menu_key == edit_menu::MenuKey::Close {
                     ws.close_drawn_menu();
@@ -2856,6 +3021,11 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         host,
                         &target,
                     );
+                } else if let Some(key) = access_key
+                    && ws.route_access_key(root, key, k.key, modifiers)
+                {
+                    // The focused node's handlers, an access key or the menu
+                    // bar took it.
                 } else if ws.store.keys_reach_clients()
                     && (ws.store.focused().is_none()
                         || k.repeat
@@ -3519,6 +3689,13 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         // Read the native traffic-light box synchronously so the
                         // deferred build sees it, exactly as the launch path does.
                         let chrome_geom = cx.window_chrome_geom(id);
+                        let bar = drawn_menu_bar(
+                            self.app_menu.as_ref(),
+                            &self.menu_picks,
+                            cx,
+                            id,
+                            caption,
+                        );
                         // Capture the caption root during the synchronous build, as
                         // the launch path does, to hold for fullscreen hide.
                         let caption_cell = Cell::new(None);
@@ -3536,6 +3713,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                                         &title,
                                         caption,
                                         &caption_cell,
+                                        bar,
                                         build,
                                     )
                                 } else {
@@ -3648,6 +3826,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 }
             }
             FramePhase::UpdateTransforms => {
+                self.take_menu_picks(cx);
                 for ws in &mut self.windows {
                     ws.update_transforms();
                     // Push the caption's draggable regions to the platform, but only
@@ -4012,6 +4191,83 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
 
 /// Lower runtime-tier modifier state onto the UI-tier mirror (same fields, a
 /// crate-boundary copy).
+/// Whether Alt reaches the access keys and the menu bar: off Apple systems,
+/// where Option types characters instead.
+fn alt_access() -> bool {
+    #[cfg(feature = "headless")]
+    if let Some(on) = __test_support::ALT_ACCESS.with(std::cell::Cell::get) {
+        return on;
+    }
+    !viso_runtime::primary_is_logo()
+}
+
+/// What a key reaches among the access keys: a letter or digit with Alt
+/// alone held, or the menu bar's F10.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AccessKey {
+    Char(char),
+    MenuBar,
+}
+
+/// The access key `key` with `modifiers` held presses, if any.
+fn access_key_of(key: viso_runtime::Key, modifiers: Modifiers) -> Option<AccessKey> {
+    use viso_runtime::Key as K;
+    let plain = !(modifiers.control || modifiers.logo || modifiers.shift);
+    if key == K::F10 && plain && !modifiers.alt {
+        return Some(AccessKey::MenuBar);
+    }
+    if !modifiers.alt || modifiers.control || modifiers.logo {
+        return None;
+    }
+    const LETTERS: [K; 26] = [
+        K::A,
+        K::B,
+        K::C,
+        K::D,
+        K::E,
+        K::F,
+        K::G,
+        K::H,
+        K::I,
+        K::J,
+        K::K,
+        K::L,
+        K::M,
+        K::N,
+        K::O,
+        K::P,
+        K::Q,
+        K::R,
+        K::S,
+        K::T,
+        K::U,
+        K::V,
+        K::W,
+        K::X,
+        K::Y,
+        K::Z,
+    ];
+    const DIGITS: [K; 10] = [
+        K::Digit0,
+        K::Digit1,
+        K::Digit2,
+        K::Digit3,
+        K::Digit4,
+        K::Digit5,
+        K::Digit6,
+        K::Digit7,
+        K::Digit8,
+        K::Digit9,
+    ];
+    if let Some(at) = LETTERS.iter().position(|&l| l == key) {
+        return Some(AccessKey::Char((b'a' + at as u8) as char));
+    }
+    DIGITS
+        .iter()
+        .position(|&d| d == key)
+        .map(|at| AccessKey::Char((b'0' + at as u8) as char))
+}
+
 fn lower_modifiers(m: viso_runtime::Modifiers) -> Modifiers {
     Modifiers {
         shift: m.shift,
@@ -4305,7 +4561,7 @@ mod fullscreen_tests {
         .with_chrome(ChromeContext::default());
         let caption_cell = Cell::new(None);
         // An app body: a single leaf so the wrap has content to place under the bar.
-        let _root = wrap_root_with_caption(&mut cx, "Title", caption, &caption_cell, |cx| {
+        let _root = wrap_root_with_caption(&mut cx, "Title", caption, &caption_cell, None, |cx| {
             Some(cx.leaf(LeafStyle::default()).id())
         });
         (store, caption_cell.get())

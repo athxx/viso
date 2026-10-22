@@ -9,6 +9,7 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+pub mod access;
 pub mod adaptive;
 pub mod anchored;
 pub mod animation;
@@ -129,6 +130,7 @@ pub use viso_runtime::{InputKind, Instant, primary_is_logo};
 // the DAG allows to reach `viso-ui` alone) can name them to construct a
 // `BoxStyle`, `TextRequest`, or `Content`. `viso-render` is already a `viso-ui`
 // dependency, so this adds no new edge.
+pub use access::Access;
 pub use asset::{Asset, AssetBytes, AssetDraw, AssetFit, AssetPayload, AssetState, AssetTable};
 pub use cursor::CursorIcon;
 pub use field_input::{FieldEvent, FieldKey, field_input, field_key, number_input};

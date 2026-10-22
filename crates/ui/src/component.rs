@@ -683,6 +683,8 @@ pub struct NodeStore {
     pub(crate) wakes: Vec<(NodeId, u32)>,
     /// Cold: the nodes that cast shadows.
     pub(crate) shadows: crate::shadow::Shadows,
+    /// Cold: the nodes' access keys and the window's menu bar.
+    pub(crate) access: crate::access::AccessKeys,
     /// Cold: the nodes that show a descendant as active.
     actives: crate::semantics::ActiveDescendants,
     /// Where the focus was before it last moved, until the move is told.
@@ -815,6 +817,7 @@ impl NodeStore {
         self.anchors.clear();
         self.wakes.clear();
         self.shadows.clear();
+        self.access.clear();
         self.actives.clear();
         self.focus_scope = None;
         self.draggable_regions.clear();
@@ -4516,6 +4519,7 @@ impl NodeStore {
         self.layers.forget(i as u32);
         self.anchors.forget(i as u32);
         self.shadows.forget(i as u32);
+        self.access.forget(i as u32);
         self.actives.forget(i as u32);
         self.clips[i] = false;
         self.overlay[i] = false;
@@ -6262,6 +6266,20 @@ impl<'a> BuildCx<'a> {
     /// flag at runtime via [`EventCx::set_hidden`].
     pub fn set_hidden(&mut self, handle: Handle, hidden: bool) -> Handle {
         self.store.set_hidden(handle.id, hidden);
+        handle
+    }
+
+    /// Make `key` the access key of an already-declared node: with Alt held
+    /// it reaches the node ([`crate::access`]).
+    pub fn access_key(&mut self, handle: Handle, key: char) -> Handle {
+        self.store.set_access_key(handle.id, Some(key));
+        handle
+    }
+
+    /// Make an already-declared node the window's menu bar, which Alt alone
+    /// and F10 reach ([`crate::access`]).
+    pub fn menu_bar(&mut self, handle: Handle) -> Handle {
+        self.store.set_menu_bar(Some(handle.id));
         handle
     }
 

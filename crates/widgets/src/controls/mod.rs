@@ -16,6 +16,7 @@ mod dock;
 mod file_tree;
 mod glyphs;
 mod menu;
+mod mnemonic;
 mod modal;
 mod navigation_stack;
 mod number_field;
@@ -44,8 +45,9 @@ pub use file_tree::{
     TreeNode, VisibleRow, file_tree,
 };
 pub use menu::{
-    ContextMenu, HOVER_GRACE, HOVER_OPEN, Menu, MenuEntry, MenuHandle, MenuHandleSlot, MenuItem,
-    MenuStyle, Shortcut, TYPE_AHEAD, context_menu, menu, menu_item, separator,
+    ContextMenu, HOVER_GRACE, HOVER_OPEN, Menu, MenuBar, MenuBarHandle, MenuBarHandleSlot,
+    MenuBarStyle, MenuEntry, MenuHandle, MenuHandleSlot, MenuItem, MenuStyle, Shortcut, TYPE_AHEAD,
+    context_menu, menu, menu_bar, menu_item, separator,
 };
 pub use modal::{Modal, ModalHandle, ModalHandleSlot, ModalStyle, modal};
 pub use navigation_stack::{

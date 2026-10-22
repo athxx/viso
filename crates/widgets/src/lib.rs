@@ -41,8 +41,9 @@ pub use controls::{
 };
 pub use controls::{ComboBox, ComboBoxHandle, ComboBoxHandleSlot, ComboBoxStyle, combo_box};
 pub use controls::{
-    ContextMenu, Menu, MenuEntry, MenuHandle, MenuHandleSlot, MenuItem, MenuStyle, Shortcut,
-    context_menu, menu, menu_item, separator,
+    ContextMenu, Menu, MenuBar, MenuBarHandle, MenuBarHandleSlot, MenuBarStyle, MenuEntry,
+    MenuHandle, MenuHandleSlot, MenuItem, MenuStyle, Shortcut, context_menu, menu, menu_bar,
+    menu_item, separator,
 };
 pub use controls::{
     Select, SelectHandle, SelectHandleSlot, SelectKind, SelectOption, SelectStyle, select,

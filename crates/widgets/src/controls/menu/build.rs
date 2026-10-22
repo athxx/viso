@@ -12,6 +12,7 @@ use viso_ui::{
 use super::state::{Level, MarkCell, MenuHandle, MenuState, Row, Start};
 use super::{Close, Mark, MenuEntry, MenuItem, MenuStyle};
 use crate::controls::glyphs::{check, chevron_end, dot, glyph_slot};
+use crate::controls::mnemonic::Mnemonic;
 use crate::label;
 
 /// The menu state the handlers built before it reach.
@@ -180,6 +181,23 @@ pub(super) fn context_region(
             });
         }
     });
+    finish(shared, levels, on_close)
+}
+
+/// Build the menu of `entries` hanging off `title`, a menu bar's, the way
+/// `how` says; the bar opens and closes it.
+pub(super) fn bar_menu(
+    cx: &mut BuildCx<'_>,
+    entries: &[MenuEntry],
+    title: Handle,
+    how: Anchoring,
+    style: &MenuStyle,
+    on_close: Option<Close>,
+) -> MenuHandle {
+    let shared: Shared = Rc::new(OnceCell::new());
+    let mut levels = Vec::new();
+    level(cx, entries, None, title, how, style, &shared, &mut levels);
+    let levels: Vec<Level> = levels.into_iter().map(|l| l.expect("built")).collect();
     finish(shared, levels, on_close)
 }
 
@@ -364,6 +382,8 @@ fn row(
 ) -> (Row, Handle) {
     let lit = cx.state(StateValue::Bool(false));
     let mut mark = None;
+    let mnemonic = Mnemonic::of(&item.label);
+    let mut shown = None;
     let node = cx.flex(
         FlexStyle {
             axis: Axis::Row,
@@ -407,14 +427,14 @@ fn row(
                     }
                 });
             }
-            label(item.label.clone())
+            let text = label(mnemonic.text.clone())
                 .font_size(style.font_size)
                 .color(style.ink)
                 .size(Size {
                     width: Length::Fill { weight: 1.0 },
                     height: Length::Fit,
-                })
-                .build_node(cx);
+                });
+            shown = Some((text.build_node(cx).id(), text.request()));
             if let Some(shortcut) = &item.shortcut {
                 label(shortcut.clone())
                     .font_size(style.font_size)
@@ -457,20 +477,27 @@ fn row(
         Some(Mark::Radio(_)) => Role::MenuItemRadio,
         None => Role::MenuItem,
     };
-    cx.semantics(node, Semantics::role(role).with_label(item.label.clone()));
+    cx.semantics(
+        node,
+        Semantics::role(role).with_label(mnemonic.text.clone()),
+    );
     if let Some(m) = &mark {
         let cell = m.cell;
         cx.bind_semantic_state(node, move |cx| {
             SemanticState::checked(matches!(cx.get(cell), Some(StateValue::Bool(true))))
         });
     }
+    let (label, request) = shown.expect("the label is built");
     let row = Row {
         node: node.id(),
         lit,
         enabled: item.enabled,
         sub: None,
         mark,
-        key: item.label.to_lowercase(),
+        key: mnemonic.text.to_lowercase(),
+        label,
+        request,
+        mnemonic,
         pick: item.pick.clone(),
         section,
     };

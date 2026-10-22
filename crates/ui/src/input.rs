@@ -1527,6 +1527,77 @@ impl KeyRouter {
         ran
     }
 
+    /// Tell the control whose access key `key` is, under `root`, that it was
+    /// pressed with Alt held ([`NodeStore::access_target`]).
+    /// Returns whether a handler ran.
+    pub fn route_access(
+        store: &mut NodeStore,
+        states: &mut StateStore,
+        bindings: &BindingTable,
+        edits: &mut TextEdits,
+        root: NodeId,
+        key: char,
+    ) -> bool {
+        let Some(node) = store.access_target(root, key) else {
+            return false;
+        };
+        key_handler_dispatch(
+            store,
+            states,
+            bindings,
+            edits,
+            node,
+            KeyPayload::Access(crate::access::Access::Key),
+        )
+        .ran
+    }
+
+    /// Tell the window's menu bar that Alt alone or F10 asks for it.
+    /// Returns whether a handler ran.
+    pub fn route_menu_bar(
+        store: &mut NodeStore,
+        states: &mut StateStore,
+        bindings: &BindingTable,
+        edits: &mut TextEdits,
+    ) -> bool {
+        let Some(bar) = store.menu_bar() else {
+            return false;
+        };
+        key_handler_dispatch(
+            store,
+            states,
+            bindings,
+            edits,
+            bar,
+            KeyPayload::Access(crate::access::Access::MenuBar),
+        )
+        .ran
+    }
+
+    /// Show the access keys' cues while Alt is held, or hide them: tell
+    /// each node with an access key, and the menu bar, when that changes.
+    pub fn route_cues(
+        store: &mut NodeStore,
+        states: &mut StateStore,
+        bindings: &BindingTable,
+        edits: &mut TextEdits,
+        cues: bool,
+    ) {
+        if !store.set_access_cues(cues) {
+            return;
+        }
+        for node in store.cued() {
+            key_handler_dispatch(
+                store,
+                states,
+                bindings,
+                edits,
+                node,
+                KeyPayload::Access(crate::access::Access::Cues(cues)),
+            );
+        }
+    }
+
     /// Tell the nodes the focus moved between, once it moved: the node it
     /// left and then each of its ancestors until one stops it hear
     /// [`FocusChange::Lost`], then the node it came to and its ancestors
@@ -1697,6 +1768,7 @@ enum KeyPayload<'e> {
     Dismiss,
     Wake(u32),
     Focus(FocusChange),
+    Access(crate::access::Access),
 }
 
 /// Call one node's key handler with `payload`, then apply everything the
@@ -1720,6 +1792,7 @@ fn key_handler_dispatch(
             KeyPayload::Dismiss => EventCx::__new_dismiss(states, bindings),
             KeyPayload::Wake(token) => EventCx::__new_wake(states, bindings, token),
             KeyPayload::Focus(change) => EventCx::__new_focus(states, bindings, change),
+            KeyPayload::Access(access) => EventCx::__new_access(states, bindings, access),
         };
         cx.__set_focused(store.focused());
         cx.__set_services(store.__services());

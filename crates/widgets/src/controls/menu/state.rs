@@ -2,16 +2,18 @@
 //! the pointer and the keys move them.
 
 use std::cell::{Cell, RefCell};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::time::Duration;
 
 use viso_ui::adaptive::LayoutDirection;
 use viso_ui::{
     DispatchPhase, EventCx, ImeEvent, Key, NodeId, PointerButtons, PointerPhase, StateId,
-    StateValue, Vec2,
+    StateValue, TextRequest, Vec2,
 };
 
+use super::bar::BarState;
 use super::{Close, HOVER_GRACE, HOVER_OPEN, Pick, TYPE_AHEAD};
+use crate::controls::mnemonic::Mnemonic;
 
 /// How far a release lands from the press that opened the menu before it
 /// picks: closer, it is the click that opened it.
@@ -40,6 +42,10 @@ pub(super) struct Row {
     pub(super) mark: Option<MarkCell>,
     /// Its label, lowercased, which typing matches.
     pub(super) key: String,
+    /// The node showing its label, the text it shows, and its access key.
+    pub(super) label: NodeId,
+    pub(super) request: TextRequest,
+    pub(super) mnemonic: Mnemonic,
     pub(super) pick: Option<Pick>,
     /// Which section of its level it is in.
     pub(super) section: u32,
@@ -94,6 +100,12 @@ pub(super) struct MenuState {
     typed: RefCell<String>,
     typed_tick: Cell<u32>,
     on_close: Option<Close>,
+    /// Where the focus goes back to when it closes, when not where it was.
+    home: Cell<Option<NodeId>>,
+    /// The menu bar it is a menu of, and which.
+    bar: RefCell<Option<(Weak<BarState>, usize)>>,
+    /// Whether its rows show their access keys' cues.
+    cues: Cell<bool>,
 }
 
 impl MenuState {
@@ -113,6 +125,44 @@ impl MenuState {
             typed: RefCell::new(String::new()),
             typed_tick: Cell::new(0),
             on_close,
+            home: Cell::new(None),
+            bar: RefCell::new(None),
+            cues: Cell::new(false),
+        }
+    }
+
+    /// Make it menu `index` of `bar`, giving the focus back to `title` when
+    /// it closes.
+    pub(super) fn join_bar(&self, bar: &Rc<BarState>, index: usize, title: NodeId) {
+        *self.bar.borrow_mut() = Some((Rc::downgrade(bar), index));
+        self.home.set(Some(title));
+    }
+
+    fn bar(&self) -> Option<(Rc<BarState>, usize)> {
+        let bar = self.bar.borrow();
+        let (bar, index) = bar.as_ref()?;
+        Some((bar.upgrade()?, *index))
+    }
+
+    /// Show the rows' access keys underlined, or not.
+    pub(super) fn set_cues(&self, ev: &mut EventCx<'_>, cues: bool) {
+        if self.cues.replace(cues) == cues {
+            return;
+        }
+        for row in self.levels.iter().flat_map(|l| &l.rows) {
+            if row.mnemonic.key.is_some() {
+                let mut request = row.request.clone();
+                request.spans = row.mnemonic.cue(cues);
+                ev.set_text(row.label, request);
+            }
+        }
+    }
+
+    /// Leave the menu bar it is a menu of, if any: the focus goes back to
+    /// where it was before the bar took it.
+    fn leave_bar(&self, ev: &mut EventCx<'_>) {
+        if let Some((bar, _)) = self.bar() {
+            bar.leave(ev);
         }
     }
 
@@ -145,9 +195,11 @@ impl MenuState {
             ev.anchor_at(root, at);
         }
         self.show(ev, 0);
-        self.returns.set(ev.focused().or(ev.node()));
+        self.returns
+            .set(self.home.get().or(ev.focused()).or(ev.node()));
         ev.request_focus(root);
         self.sweep.set(sweep);
+        self.set_cues(ev, start.is_some());
         if let Some(start) = start {
             self.light(ev, 0, self.end_row(0, start));
         }
@@ -171,8 +223,12 @@ impl MenuState {
         self.pressed.set(None);
         self.over.set(None);
         self.typed.borrow_mut().clear();
+        self.set_cues(ev, false);
         if let Some(back) = self.returns.take() {
             ev.request_focus(back);
+        }
+        if let Some((bar, index)) = self.bar() {
+            bar.closed(ev, index);
         }
         if let Some(close) = &self.on_close {
             (close.borrow_mut())(ev);
@@ -316,6 +372,7 @@ impl MenuState {
         };
         let pick = r.pick.clone();
         self.close(ev);
+        self.leave_bar(ev);
         if let Some(pick) = pick {
             (pick.borrow_mut())(ev, checked);
         }
@@ -486,6 +543,7 @@ impl MenuState {
         }
         if ev.dismissed() {
             self.close(ev);
+            self.leave_bar(ev);
             return;
         }
         // Keys and text pass through every panel above the focused one: the
@@ -538,15 +596,28 @@ impl MenuState {
                 }
             }
             Key::Escape if !k.repeat => self.back(ev, level),
-            Key::Tab => self.close(ev),
+            Key::Tab => {
+                self.close(ev);
+                self.leave_bar(ev);
+            }
             key if key == forth => {
-                if let Some(row) = self.lit(level)
-                    && self.levels[level].rows[row].enabled
-                {
-                    self.open_sub(ev, level, row, true);
+                let sub = self.lit(level).filter(|&row| {
+                    let row = &self.levels[level].rows[row];
+                    row.enabled && row.sub.is_some()
+                });
+                match (sub, self.bar()) {
+                    (Some(row), _) => self.open_sub(ev, level, row, true),
+                    // On an item with no submenu, the next menu of the bar.
+                    (None, Some((bar, index))) => bar.cross(ev, index, true),
+                    (None, None) => {}
                 }
             }
             key if key == back && level != 0 => self.back(ev, level),
+            key if key == back => {
+                if let Some((bar, index)) = self.bar() {
+                    bar.cross(ev, index, false);
+                }
+            }
             _ => {}
         }
     }
@@ -562,8 +633,37 @@ impl MenuState {
         }
     }
 
-    /// Jump to the next row of `level` whose label starts with what was typed.
+    /// A letter typed: the item it is the access key of picks, the next of
+    /// several highlights; with none, typing jumps to a label.
     fn type_ahead(&self, ev: &mut EventCx<'_>, level: usize, text: &str) {
+        let mut chars = text.chars();
+        if let (Some(c), None) = (chars.next(), chars.next()) {
+            let c = c.to_lowercase().next().unwrap_or(c);
+            let rows = &self.levels[level].rows;
+            let keyed: Vec<usize> = (0..rows.len())
+                .filter(|&r| rows[r].enabled && rows[r].mnemonic.char() == Some(c))
+                .collect();
+            match keyed[..] {
+                [] => {}
+                [row] => {
+                    self.pick(ev, level, row, true);
+                    return;
+                }
+                _ => {
+                    let after = self
+                        .lit(level)
+                        .and_then(|lit| keyed.iter().position(|&r| r == lit))
+                        .map_or(0, |at| (at + 1) % keyed.len());
+                    self.light(ev, level, Some(keyed[after]));
+                    return;
+                }
+            }
+        }
+        self.jump(ev, level, text);
+    }
+
+    /// Jump to the next row of `level` whose label starts with what was typed.
+    fn jump(&self, ev: &mut EventCx<'_>, level: usize, text: &str) {
         let typed = {
             let mut typed = self.typed.borrow_mut();
             typed.extend(text.chars().flat_map(char::to_lowercase));

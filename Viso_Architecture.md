@@ -3632,6 +3632,8 @@ IR/runtime 使用 `PropertyId`、`TokenId`、`NodeKey`、`ComponentTypeId` 等�
 
 **指针进出与默认按键**：指针移动时，离开的节点及其祖先（直到与新节点共同的祖先为止）由内向外收到 `Leave`，进入的祖先由外向内、最后是新节点收到 `Enter`；指针仍在其内的祖先两者都不收，所以一个控件无论子节点怎样划分都只收到一对 Enter/Leave。Tab 与 Escape 先走焦点链上的处理器，没有处理器 stop 时才执行默认行为：Tab 移动焦点，Escape 关闭最内层显示中的轻量关闭层（`NodeStore::dismissed_by_escape`）。
 
+**菜单栏与访问键**（`viso_widgets::menu_bar`，`viso_ui::access`）：菜单栏是一行标题（`menubar`），每个标题（`menuitem`，报告 expanded）是一个 `MenuItem`，其子项即它下方的菜单。按下标题打开其菜单，再按一次关闭；有菜单打开时指针划过另一标题即换成它的菜单。标签里 `&` 标出访问键（`&File` 为 F，`&&` 为字面 `&`），标题与菜单项都适用；菜单打开时键入某项的访问键即选中它（多项同键时在其间移动高亮），没有访问键时按原有的前缀跳转。访问键是框架机制：`BuildCx::access_key` 给节点登记一个字母，`BuildCx::menu_bar` 登记窗口的菜单栏；非 Apple 系统上，焦点链没有处理的 Alt+字母/数字送到树序中（焦点之后的）下一个可见、可用、在焦点作用域内持有该键的节点（`EventCx::access() == Access::Key`），单独按下又松开 Alt 或 F10 送到菜单栏（`Access::MenuBar`），Alt 按住期间各访问键节点与菜单栏收到 `Access::Cues(true/false)` 以显示/隐藏下划线；Apple 系统上 Option 用于输入字符，不参与。键盘进入菜单栏后焦点在首个可用标题上，显示下划线；Left/Right（随书写方向）在标题间移动并跳过禁用项、循环，Home/End 到首末，Down/Enter/Space 打开并高亮首项，Up 高亮末项，键入标题的访问键打开它；菜单中阅读方向键在有子菜单的项上打开子菜单，否则与反方向键一起移到相邻标题的菜单；Escape 先关闭菜单回到标题，再离开菜单栏，焦点回到进入前的位置；选中、Tab、按在外面也都把焦点还回去。平台没有系统菜单栏（`PlatformCaps::menus == false`，X11、Wayland）时，带标题栏的窗口在标题栏下绘制 `Application::menu()`：标题与项自动取访问键（优先词首、兄弟间不重复），自定义项送 `on_menu_command`，Quit/Close Window/Copy/Cut/Paste 由窗口执行，做不到的 Hide/Minimize 不列出；加速键仍由平台按键表处理。
+
 **唤醒与阴影**：处理器可用 `EventCx::wake_after(node, delay, token)` 让 `token` 在 `delay` 后送到 `node` 的 key 处理器（`ev.woken()`），在那里做处理器能做的一切；它建立在一次性定时器上，帧在触发定时器后投递唤醒，不取消，过期的 token 由处理器忽略。节点可投下阴影（`BuildCx::shadow` / `NodeStore::set_shadow`，`Shadow { color, offset, blur, spread }`，`blur` 取 CSS 的模糊半径）：作为节点自身 drawable 画在盒子之下，用 renderer 的 analytic shadow（闭式高斯，无 offscreen）；冷表按 slot 排序，没有阴影的树只检查一个空表。
 
 **目标分组**（informative；按子系统而不是按类型机械拆分）：

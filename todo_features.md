@@ -133,7 +133,7 @@ Rules:
 - [x] `Popover` with arrow (callout).
 - [x] Box shadows on nodes (`BuildCx::shadow`), floating layers cast one.
 - [x] DSL `shadow` property (drop and inset, `theme.elevation.*` bindable) and its HTML export.
-- [ ] Framework-drawn `MenuBar` for windows without a native one (Left/Right between
+- [x] Framework-drawn `MenuBar` for windows without a native one (Left/Right between
   menus, Alt to focus, mnemonics).
 
 ## W5 — Scrolling
@@ -265,3 +265,5 @@ Rules:
 - [ ] Background tasks service.
 - [ ] Focus-visible ring drawn by the framework on focused controls (keyboard focus
   only, platform style).
+- [ ] Access keys on buttons, checks and labelled fields (`&` mnemonics, Alt+letter,
+  cues while Alt is held) beyond the menu bar.

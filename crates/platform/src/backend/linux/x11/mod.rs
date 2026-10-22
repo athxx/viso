@@ -208,9 +208,11 @@ impl PlatformApp for X11App {
     }
 
     fn capabilities(&self) -> crate::PlatformCaps {
-        // No toolkit to draw a context menu: the app draws its own.
+        // No toolkit to draw a context menu or a menu bar: the app draws
+        // its own, and a menu's accelerators still work.
         crate::PlatformCaps {
             context_menu: false,
+            menus: false,
             ..crate::PlatformCaps::DESKTOP
         }
     }

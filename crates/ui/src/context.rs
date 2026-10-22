@@ -360,6 +360,8 @@ pub struct EventCx<'a> {
     woken: Option<u32>,
     /// Whether the focus came to or left the node this dispatch tells.
     focus_change: Option<FocusChange>,
+    /// What this dispatch tells of the access keys.
+    access: Option<crate::access::Access>,
     /// What a handler asked of the tree this dispatch beyond the requests
     /// above: applied by the router after the handler returns.
     store_requests: Vec<StoreRequest>,
@@ -541,6 +543,7 @@ impl<'a> EventCx<'a> {
             dismissed: false,
             woken: None,
             focus_change: None,
+            access: None,
             store_requests: Vec::new(),
             tasks: TaskOps::default(),
             services: None,
@@ -580,6 +583,7 @@ impl<'a> EventCx<'a> {
             dismissed: false,
             woken: None,
             focus_change: None,
+            access: None,
             store_requests: Vec::new(),
             tasks: TaskOps::default(),
             services: None,
@@ -618,6 +622,7 @@ impl<'a> EventCx<'a> {
             dismissed: false,
             woken: None,
             focus_change: None,
+            access: None,
             store_requests: Vec::new(),
             tasks: TaskOps::default(),
             services: None,
@@ -656,6 +661,7 @@ impl<'a> EventCx<'a> {
             dismissed: false,
             woken: None,
             focus_change: None,
+            access: None,
             store_requests: Vec::new(),
             tasks: TaskOps::default(),
             services: None,
@@ -717,6 +723,19 @@ impl<'a> EventCx<'a> {
     ) -> Self {
         let mut cx = Self::__new(states, bindings);
         cx.focus_change = Some(change);
+        cx
+    }
+
+    /// Assemble the event context that tells a node of the access keys: the
+    /// handler reads it via [`EventCx::access`].
+    #[doc(hidden)]
+    pub fn __new_access(
+        states: &'a mut StateStore,
+        bindings: &'a BindingTable,
+        access: crate::access::Access,
+    ) -> Self {
+        let mut cx = Self::__new(states, bindings);
+        cx.access = Some(access);
         cx
     }
 
@@ -888,6 +907,18 @@ impl<'a> EventCx<'a> {
     /// where the focus is now, so a container learns whether it left it.
     pub fn focus_change(&self) -> Option<FocusChange> {
         self.focus_change
+    }
+
+    /// What this dispatch tells of the access keys: the dispatching node's
+    /// was pressed, Alt alone or F10 asks for the menu bar it is, or the
+    /// cues come or go ([`crate::access`]).
+    pub fn access(&self) -> Option<crate::access::Access> {
+        self.access
+    }
+
+    /// Whether the access keys' cues show: Alt is held.
+    pub fn access_cues(&self) -> bool {
+        self.place.is_some_and(|place| place.store.access_cues())
     }
 
     /// Where this dispatch asks for a context menu, in window coordinates: a

@@ -32,15 +32,30 @@
 //! with what was typed in the last second; Escape closes one level, Tab all
 //! of them. A closed menu gives the focus back to where it was.
 //!
+//! An `&` in a label marks its access key (`&Open` answers to O, `&&` is an
+//! `&` of the text): typing it in the menu picks the item, or steps between
+//! the items sharing it; a menu with none jumps by what was typed. A menu
+//! the keyboard opened underlines its access keys.
+//!
+//! A [`menu_bar`] is a row of such menus under their titles: a press on a
+//! title opens its menu and, while one shows, the pointer crossing another
+//! title opens that one. Off Apple systems Alt alone or F10 takes the
+//! keyboard to it and Alt and a title's access key opens its menu
+//! ([`viso_ui::access`]); Left and Right move between the titles and, in a
+//! menu, to the next menu where no submenu opens; Escape closes the menu,
+//! then leaves the bar, the focus back where it was.
+//!
 //! Semantics: the menu is a `menu`, its items `menuitem`,
 //! `menuitemcheckbox` or `menuitemradio` announcing whether they are
 //! checked, an item with a submenu whether it is expanded, a separator a
 //! `separator`; a menu's anchor is a `button` announcing whether its menu is
-//! expanded.
+//! expanded; a menu bar is a `menubar` of `menuitem` titles announcing the
+//! same.
 //!
 //! Invalidation: the menus build once with their anchor. Opening and closing
 //! show and hide them; a highlight is a `PAINT` of one row's look.
 
+mod bar;
 mod build;
 mod state;
 
@@ -55,6 +70,7 @@ use viso_ui::{
 
 use crate::Icon;
 
+pub use bar::{MenuBar, MenuBarHandle, MenuBarHandleSlot, MenuBarStyle, menu_bar};
 pub use state::MenuHandle;
 
 /// How long the pointer rests on an item before its submenu opens.
