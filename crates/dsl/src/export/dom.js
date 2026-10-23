@@ -422,6 +422,10 @@ const page = (el, v) => {
     if (items(el).indexOf(a) !== el.$page) a.setAttribute("data-vx-away", "");
   };
 };
+// A viewer's `data-` attribute `name` for value `v`: a length in px, a
+// double tap's scale empty for none.
+const viewing = (v, name) => (name === "data-pan-margin" ? String(dp(v)) : v === null ? "" : String(v));
+
 const url = (v) => {
   if (v === null || typeof v !== "object") return "";
   return A.get(String(BigInt.asUintN(64, v.f[0]))) || "";
@@ -499,6 +503,7 @@ const P = {
   hero: (el, v) => attr(el, "data-hero", v),
   ring: (el, v) => { el.style.outline = truth(v) ? "" : "none"; },
   key: (el, v) => attr(el, "accesskey", v),
+  viewer: (el, v, name) => attr(el, name, viewing(v, name)),
   axis: (el, v) => {
     if (v === null) delete el.dataset.dragAxis;
     else el.dataset.dragAxis = v === 0n ? "row" : "column";
@@ -725,6 +730,184 @@ const pinchable = (el) => {
     clearTimeout(rest);
     rest = setTimeout(() => { rest = 0; send(2, last.x, last.y, last.scale, last.turn); }, 150);
   }, { passive: false });
+};
+
+// Makes `el` a viewer of its first element child: a drag pans the child, a
+// pinch zooms it about the pinch's middle as the middle's travel pans it, a
+// wheel pans it, arrows and page keys pan it, `+` and `-` zoom it and `0` or
+// Home put it back, and a double click zooms to `data-double-tap` (2.5 when
+// absent, none when empty) and back. The child keeps its edges at or past
+// `el`'s while larger and its middle on `el`'s while smaller,
+// `data-pan-margin` further either way, and its scale within
+// `data-min-scale`..`data-max-scale` (1 and 4 when absent); a drag that
+// lifts moving coasts on, and a zoom asked for glides.
+const viewer = (el) => {
+  if (el.$viewer) return;
+  draggable(el);
+  pinchable(el);
+  if (getComputedStyle(el).position === "static") el.style.position = "relative";
+  const v = { s: 1, x: 0, y: 0, run: null, pinched: false };
+  el.$viewer = v;
+  const num = (name, d) => { const n = parseFloat(el.dataset[name]); return Number.isFinite(n) ? n : d; };
+  const least = () => num("minScale", 1);
+  const most = () => Math.max(num("maxScale", 4), least());
+  const rest = () => Math.min(Math.max(1, least()), most());
+  const kid = () => el.firstElementChild;
+  const within = (n, [a, b]) => Math.min(Math.max(n, a), b);
+  // The least and greatest pan across (axis 0) or down at scale `s`: the
+  // shift of the child's corner from where it was laid out.
+  const span = (s, axis) => {
+    const c = kid();
+    if (!c) return [0, 0];
+    const [ve, c0, ce] = axis
+      ? [el.clientHeight, c.offsetTop, c.offsetHeight]
+      : [el.clientWidth, c.offsetLeft, c.offsetWidth];
+    const shown = ce * s, m = num("panMargin", 0);
+    const [a, b] = shown >= ve ? [ve - shown, 0] : [(ve - shown) / 2, (ve - shown) / 2];
+    return [a - m - c0, b + m - c0];
+  };
+  const placed = (p) => "translate(" + p.x + "px, " + p.y + "px) scale(" + p.s + ")";
+  const show = () => {
+    const c = kid();
+    if (!c) return;
+    c.style.transformOrigin = "0 0";
+    c.style.transform = placed(v);
+  };
+  // Ends the motion under way where it has come to.
+  const stop = () => {
+    if (!v.run) return;
+    const { a, at, from, seconds } = v.run;
+    v.run = null;
+    Object.assign(v, at(Math.min((performance.now() - from) / 1000, seconds)));
+    a.cancel();
+    show();
+  };
+  // Moves the child along the path `at(t)` traces over `seconds`, played
+  // by the browser from samples a sixtieth of a second apart; it rests
+  // where the path ends.
+  const travel = (at, seconds) => {
+    stop();
+    const c = kid();
+    if (!c) return;
+    const n = Math.max(Math.ceil(seconds * 60), 1);
+    const frames = [];
+    for (let i = 0; i <= n; i++) frames.push({ transform: placed(at(seconds * i / n)) });
+    Object.assign(v, at(seconds));
+    show();
+    if (seconds > 0) v.run = { a: c.animate(frames, { duration: seconds * 1000, easing: "linear" }), at, from: performance.now(), seconds };
+  };
+  const fit = () => {
+    stop();
+    v.s = within(v.s, [least(), most()]);
+    v.x = within(v.x, span(v.s, 0));
+    v.y = within(v.y, span(v.s, 1));
+    show();
+  };
+  // A point of the page, and el's middle, from where the child was laid out.
+  const local = (px, py) => {
+    const r = el.getBoundingClientRect(), c = kid();
+    return [px - r.left - el.clientLeft - c.offsetLeft, py - r.top - el.clientTop - c.offsetTop];
+  };
+  const middle = () => { const c = kid(); return [el.clientWidth / 2 - c.offsetLeft, el.clientHeight / 2 - c.offsetTop]; };
+  // Scales by `k` about (fx, fy), within the limits.
+  const zoom = (k, fx, fy) => {
+    const s = within(v.s * k, [least(), most()]);
+    const r = s / v.s;
+    v.x = fx - (fx - v.x) * r;
+    v.y = fy - (fy - v.y) * r;
+    v.s = s;
+  };
+  // Glides to scale `s` keeping what shows at (fx, fy) there, or with it
+  // heading where pan `to` puts it: the scale evenly in proportion, the
+  // point straight, along a critically damped spring.
+  const glide = (s, fx, fy, to) => {
+    stop();
+    if (!kid()) return;
+    s = within(s, [least(), most()]);
+    const q = [(fx - v.x) / v.s, (fy - v.y) / v.s];
+    const [tx, ty] = to ?? [fx - q[0] * s, fy - q[1] * s];
+    const x1 = within(tx, span(s, 0)), y1 = within(ty, span(s, 1));
+    const s0 = v.s, end = [x1 + q[0] * s, y1 + q[1] * s];
+    const at = (t) => {
+      const left = (1 + 14 * t) * Math.exp(-14 * t);
+      if (left < 1e-3) return { s, x: x1, y: y1 };
+      const p = 1 - left, k = Math.exp(Math.log(s0) + (Math.log(s) - Math.log(s0)) * p);
+      return { s: k, x: fx + (end[0] - fx) * p - q[0] * k, y: fy + (end[1] - fy) * p - q[1] * k };
+    };
+    travel(at, reduced.matches ? 0 : 0.66);
+  };
+  // Coasts on at (vx, vy) px/s, slowing as a native scroller does, each
+  // axis until it rests or meets the bounds.
+  const coast = (vx, vy) => {
+    stop();
+    const speed = Math.hypot(vx, vy);
+    if (speed < 50) return;
+    const lambda = -Math.log(0.998) * 1000;
+    const from = { s: v.s, x: v.x, y: v.y }, ax = span(v.s, 0), ay = span(v.s, 1);
+    const at = (t) => {
+      const gone = (1 - Math.exp(-lambda * t)) / lambda;
+      return { s: from.s, x: within(from.x + vx * gone, ax), y: within(from.y + vy * gone, ay) };
+    };
+    travel(at, Math.log(speed / 5) / lambda);
+  };
+  el.addEventListener("viso-drag", (e) => {
+    if (e.target !== el) return;
+    const d = e.detail;
+    if (d.phase === 0) v.pinched = false;
+    if (v.pinched) return;
+    stop();
+    v.x += d.dx;
+    v.y += d.dy;
+    fit();
+    if (d.phase === 2) coast(d.vx, d.vy);
+  });
+  el.addEventListener("viso-pinch", (e) => {
+    if (e.target !== el) return;
+    const d = e.detail;
+    v.pinched = true;
+    stop();
+    if (d.phase === 2) return;
+    v.x += d.px;
+    v.y += d.py;
+    const [fx, fy] = local(d.x, d.y);
+    zoom(d.ds, fx, fy);
+    fit();
+  });
+  el.addEventListener("wheel", (e) => {
+    if (e.ctrlKey || e.$viewer || off(e.target)) return;
+    stop();
+    const k = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? el.clientHeight : 1;
+    const x = within(v.x - e.deltaX * k, span(v.s, 0)), y = within(v.y - e.deltaY * k, span(v.s, 1));
+    if (x === v.x && y === v.y) return;
+    e.preventDefault();
+    e.$viewer = el;
+    v.x = x;
+    v.y = y;
+    show();
+  }, { passive: false });
+  el.addEventListener("dblclick", (e) => {
+    const to = el.dataset.doubleTap;
+    if (to === "" || off(e.target) || !kid()) return;
+    if (v.s > rest() * 1.01) return glide(rest(), ...middle(), [0, 0]);
+    glide(to === undefined ? 2.5 : parseFloat(to), ...local(e.clientX, e.clientY));
+  });
+  el.addEventListener("keydown", (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey || off(e.target) || !kid()) return;
+    const line = 40, page = el.clientHeight * 0.875;
+    if (e.key === "+" || e.key === "=") { e.preventDefault(); return glide(v.s * 1.25, ...middle()); }
+    if (e.shiftKey) return;
+    if (e.key === "-") { e.preventDefault(); return glide(v.s / 1.25, ...middle()); }
+    if (e.key === "0" || e.key === "Home") { e.preventDefault(); return glide(rest(), ...middle(), [0, 0]); }
+    const by = { ArrowLeft: [line, 0], ArrowRight: [-line, 0], ArrowUp: [0, line], ArrowDown: [0, -line], PageUp: [0, page], PageDown: [0, -page] }[e.key];
+    if (!by) return;
+    const to = [within(v.x + by[0], span(v.s, 0)), within(v.y + by[1], span(v.s, 1))];
+    if (to[0] === v.x && to[1] === v.y) return;
+    e.preventDefault();
+    glide(v.s, ...middle(), to);
+  });
+  new ResizeObserver(fit).observe(el);
+  new MutationObserver(fit).observe(el, { attributes: true, attributeFilter: ["data-min-scale", "data-max-scale", "data-pan-margin"] });
+  fit();
 };
 
 // Calls `fire` with the payload of a primary press at or under `el` that no

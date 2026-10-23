@@ -69,6 +69,7 @@ impl Drive for Control {
             ControlKind::TextInput => text_input(self, host, scope, cx),
             ControlKind::Number => number(self, host, scope, cx),
             ControlKind::Viewport => viewport(cx),
+            ControlKind::Viewer => double_tap(self, host, scope, cx),
             ControlKind::Label => {
                 let selectable = read(host, self.text.selectable, scope, cx);
                 if selectable.as_int().is_some_and(|v| v != 0) {
@@ -197,6 +198,39 @@ fn viewport(cx: &mut EventCx<'_>) -> Option<(EventRoute, Value)> {
     }
     None
 }
+
+/// A viewer's response: the second press of a double tap zooms it to its
+/// `double_tap` scale about where it lands, or back once zoomed in; a viewer
+/// whose `double_tap` is `None` lets it be. Its pans and zooms are the
+/// store's.
+fn double_tap(
+    control: &Control,
+    host: &mut ViewHost,
+    scope: &Scope,
+    cx: &mut EventCx<'_>,
+) -> Option<(EventRoute, Value)> {
+    let p = cx.pointer().copied()?;
+    if p.phase != PointerPhase::Down || cx.clicks() != 2 {
+        return None;
+    }
+    let scale = match control.value {
+        None => DOUBLE_TAP,
+        entry => read(host, entry, scope, cx).as_float()? as f32,
+    };
+    let node = cx.node()?;
+    cx.move_viewer(
+        node,
+        viso_ui::ViewerMove::Toggle {
+            scale,
+            at: viso_ui::Vec2::new(p.x, p.y),
+        },
+    );
+    None
+}
+
+/// The scale a viewer's double tap zooms to when its `double_tap` is not
+/// given.
+const DOUBLE_TAP: f32 = 2.5;
 
 /// A disclosure's response: a release on its header, its first child, or a
 /// fresh Space/Enter on it or its header flips `expanded`.

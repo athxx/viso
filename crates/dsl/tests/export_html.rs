@@ -601,6 +601,58 @@ export component Axed {
     assert!(script.contains("pan-y"), "the page still scrolls across it");
 }
 
+const VIEWED: &str = r#"
+export component Viewed {
+    state most: F32 = 3.0;
+    view {
+        Column {
+            InteractiveViewer {
+                width: 200dp; height: 100dp;
+                max_scale: most;
+                pan_margin: 10dp;
+                Column { width: 100%; height: 100%; background: #336699; }
+            }
+        }
+    }
+}
+"#;
+
+#[test]
+fn an_interactive_viewer_exports_as_a_clipped_box_its_script_pans_and_zooms() {
+    let page = export(VIEWED, false).unwrap();
+    assert!(
+        page.index.contains("data-pan-margin=\"10\""),
+        "{}",
+        page.index
+    );
+    let all = format!("{}{}", page.index, page.styles);
+    assert!(all.contains("overflow: hidden"), "{all}");
+    let script = page.script.clone().unwrap();
+    assert!(script.contains("viewer("), "{script}");
+    assert!(
+        script.contains("P.viewer("),
+        "the bound limit follows its state"
+    );
+    let Some(chrome) = chrome() else {
+        eprintln!("no Chrome: the page is not run");
+        return;
+    };
+    let zoom = "\nconst box = () => document.querySelector('[data-pan-margin]');\n\
+        const at = () => box().firstElementChild.style.transform;\n\
+        setTimeout(() => { const r = box().getBoundingClientRect(); box().dispatchEvent(new MouseEvent('dblclick', { bubbles: true, detail: 2, clientX: r.left, clientY: r.top })); }, 50);\n\
+        setTimeout(() => document.body.append('zoomed=' + at() + '.'), 900);\n\
+        setTimeout(() => { box().dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 500 })); document.body.append('wheeled=' + at() + '.'); }, 1000);\n";
+    let dom = run_in_chrome(&page, &(script + zoom), "export-viewed", &[], chrome);
+    assert!(
+        dom.contains("zoomed=translate(0px, 0px) scale(2.5)."),
+        "a double click zooms about where it lands: {dom}"
+    );
+    assert!(
+        dom.contains("wheeled=translate(0px, -160px) scale(2.5)."),
+        "a wheel pans to the bound and the margin past it: {dom}"
+    );
+}
+
 const CLIPPED: &str = r#"
 export component Clipped {
     state on = true;

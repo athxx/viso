@@ -227,6 +227,7 @@ pub(crate) fn control_cells(
         control.node.focus_ring,
         control.node.access_key,
         control.node.drag_axis,
+        control.pan_margin,
     ])
     .flatten()
     .chain(arms)
@@ -248,8 +249,8 @@ pub(crate) fn control_cells(
 /// its `cursor`, its text's `font_style`, `spans` and `selectable`, its
 /// `shadow`, a refreshable viewport's `refreshing`, its `sticky`, and a
 /// navigation stack's `page_transition`, its `hero`, its `focus_ring`, its
-/// `access_key` and its `drag_axis`.
-const SHOWN: usize = 51;
+/// `access_key`, its `drag_axis` and a viewer's `pan_margin`.
+const SHOWN: usize = 52;
 
 /// The input of each value a node shows, in order.
 const SHOWN_INPUTS: [ControlInput; SHOWN] = [
@@ -304,6 +305,7 @@ const SHOWN_INPUTS: [ControlInput; SHOWN] = [
     ControlInput::FocusRing,
     ControlInput::AccessKey,
     ControlInput::DragAxis,
+    ControlInput::PanMargin,
 ];
 
 /// Where its `translate` sits among the values a node shows.
@@ -341,6 +343,9 @@ const DRAG_AXIS: usize = 50;
 
 /// Where its `access_key` sits among the values a node shows.
 const ACCESS_KEY: usize = 49;
+
+/// Where a viewer's `pan_margin` sits among the values a node shows.
+const PAN_MARGIN: usize = 51;
 
 /// Where its background, opacity, corner radius and border sit among the
 /// values a node shows.
@@ -554,6 +559,7 @@ impl Shown {
             focus_ring,
             access_key,
             drag_axis,
+            pan_margin,
         ] = &shows;
         let access_key = access_key.as_str().and_then(|key| key.chars().next());
         let spanned = crate::text_style::spans(pieces);
@@ -779,7 +785,7 @@ impl Shown {
             && (0..LOOK)
                 .chain(TEXT..TRANSLATE)
                 .chain(PIECES..SHADOW)
-                .chain([ACCESS_KEY])
+                .chain([ACCESS_KEY, PAN_MARGIN])
                 .all(|at| !changed(at))
             && !repaint
         {
@@ -788,6 +794,19 @@ impl Shown {
         }
         match control.kind {
             ControlKind::Plain | ControlKind::Dialog | ControlKind::Toast => {}
+            // A viewer clips its content unless its `clip` says, and keeps
+            // the content within its limits as they change.
+            ControlKind::Viewer => {
+                if first && !given(NODE + 4) {
+                    store.set_clip(self.node, true);
+                }
+                let limits = viso_ui::ViewerLimits {
+                    min_scale: float(min, 1.0),
+                    max_scale: float(max, 4.0),
+                    margin: dp(pan_margin),
+                };
+                store.set_viewer(self.node, Some(limits));
+            }
             // A navigation stack shows its current page, clipping the pages
             // as they trade places unless its `clip` says.
             ControlKind::Pages => {

@@ -231,6 +231,15 @@ const ADAPTIVE_SCOPE: &[WidgetProperty] = &[
     prop("layout_direction", "Option<LayoutDirection>"),
 ];
 
+/// How far an `InteractiveViewer`'s content may scale and move past its
+/// bounds, and the scale a double tap zooms to (none for `None`).
+const VIEWER: &[WidgetProperty] = &[
+    prop("min_scale", "F32"),
+    prop("max_scale", "F32"),
+    prop("pan_margin", "MixedLength"),
+    prop("double_tap", "Option<F32>"),
+];
+
 const FOCUS_SCOPE: &[WidgetProperty] = &[prop("trap", "Bool"), prop("restore_focus", "Bool")];
 
 const KEY_SHORTCUT: &[WidgetProperty] =
@@ -416,6 +425,13 @@ pub const STANDARD: &[NativeWidget] = &[
     )
     .provides(&ABSOLUTE_CHILD)
     .slots(CHILDREN),
+    layout(
+        "InteractiveViewer",
+        WidgetNode::Stack,
+        &[VIEWER, LAYOUT, TRANSFORM, FOCUS],
+    )
+    .slots(CONTENT)
+    .interactive(),
     layout(
         "Scroll",
         WidgetNode::Scroll,

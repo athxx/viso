@@ -251,35 +251,56 @@ const AXES: [Axis; 2] = [Axis::Row, Axis::Column];
 impl NodeStore {
     /// Make node `id` a viewer of its one content child within `limits`,
     /// or no longer one with `None`: it takes drags and pinches, and its
-    /// content shows as laid out until moved.
+    /// content shows as laid out until moved. A viewer given new limits
+    /// keeps its content where it stands, within them.
     pub fn set_viewer(&mut self, id: NodeId, limits: Option<ViewerLimits>) {
         let was = self.viewer_index(id);
         let mut list = std::mem::take(&mut self.viewers.list);
-        list.retain(|v| v.node != id && self.arena().is_live(v.node));
+        list.retain(|v| (v.node != id || limits.is_some()) && self.arena().is_live(v.node));
         self.viewers.list = list;
-        if was.is_some()
-            && limits.is_none()
-            && let Some(content) = self.viewer_content(id)
-        {
-            self.set_turn(content, Turn::NONE);
-            self.set_translate(content, Vec2::ZERO);
-        }
         let on = limits.is_some() && self.arena().is_live(id);
-        self.set_draggable(id, on);
-        self.set_pinchable(id, on);
-        if let (true, Some(limits)) = (on, limits) {
-            self.viewers.list.push(Viewer {
-                node: id,
-                limits: limits.sound(),
-                scale: limits.sound().rest(),
-                pan: Vec2::ZERO,
-                runs: [Run::Still; 2],
-                glide: None,
-                track: VelocityTracker::default(),
-            });
-            let i = self.viewers.list.len() - 1;
-            self.show_viewer(i);
+        if !on {
+            if was.is_some()
+                && let Some(content) = self.viewer_content(id)
+            {
+                self.set_turn(content, Turn::NONE);
+                self.set_translate(content, Vec2::ZERO);
+            }
+            self.set_draggable(id, false);
+            self.set_pinchable(id, false);
+            return;
         }
+        let limits = limits.unwrap_or_default().sound();
+        let i = match self.viewer_index(id) {
+            Some(i) => {
+                let v = &mut self.viewers.list[i];
+                if v.limits == limits {
+                    return;
+                }
+                v.limits = limits;
+                v.scale = v.scale.clamp(limits.min_scale, limits.max_scale);
+                i
+            }
+            None => {
+                self.set_draggable(id, true);
+                self.set_pinchable(id, true);
+                self.viewers.list.push(Viewer {
+                    node: id,
+                    limits,
+                    scale: limits.rest(),
+                    pan: Vec2::ZERO,
+                    runs: [Run::Still; 2],
+                    glide: None,
+                    track: VelocityTracker::default(),
+                });
+                self.viewers.list.len() - 1
+            }
+        };
+        if let Some(content) = self.viewer_content(id) {
+            self.viewers.list[i].halt();
+            self.clamp_viewer(i, content);
+        }
+        self.show_viewer(i);
     }
 
     /// Whether node `id` is a viewer.

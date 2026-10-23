@@ -209,6 +209,10 @@ class Store {
   click(e) {
     return pointer(0, e, e.currentTarget);
   }
+  viewer(el) {
+    viewer(el);
+  }
+
   sync(el, control, value) {
     if (control === 2) el.$radio = el.getAttribute("role") === "radiogroup";
     el.$sync = () => sync(el, control, value);
@@ -283,6 +287,7 @@ export const show = {
   color,
   opt: (v) => (v === null ? undefined : text(v)),
   axis: (v) => (v === null ? undefined : v === 0n ? "row" : "column"),
+  viewer: (v, name) => viewing(v, name),
   num: (v) => (v === null ? undefined : String(v)),
   url,
   fit: (v) => fits[Number(v ?? 0n)] || "contain",

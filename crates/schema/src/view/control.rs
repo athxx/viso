@@ -70,11 +70,15 @@ pub enum ControlKind {
     /// does, and takes the focus; Space or Enter on it, or its access key,
     /// reports `click` as a release on it does.
     Button = 15,
+    /// `InteractiveViewer`: a drag pans its content and a pinch zooms it,
+    /// within `min_scale..=max_scale` and bounds `pan_margin` widens; a
+    /// double tap zooms to its `double_tap` scale and back.
+    Viewer = 16,
 }
 
 impl ControlKind {
     /// Every kind, by discriminant.
-    pub const ALL: [ControlKind; 16] = [
+    pub const ALL: [ControlKind; 17] = [
         ControlKind::Check,
         ControlKind::Slider,
         ControlKind::Select,
@@ -91,6 +95,7 @@ impl ControlKind {
         ControlKind::Number,
         ControlKind::Pages,
         ControlKind::Button,
+        ControlKind::Viewer,
     ];
 
     /// The kind native widget `widget` is.
@@ -111,6 +116,7 @@ impl ControlKind {
             "ShaderView" => ControlKind::Shader,
             "GameViewport" => ControlKind::Viewport,
             "NavigationStack" => ControlKind::Pages,
+            "InteractiveViewer" => ControlKind::Viewer,
             _ => ControlKind::Plain,
         }
     }
@@ -282,6 +288,10 @@ impl ControlKind {
             (ControlKind::Asset, "fit") => ControlInput::Fit,
             (ControlKind::Asset, "tint") => ControlInput::Tint,
             (ControlKind::Pages, "page_transition") => ControlInput::PageTransition,
+            (ControlKind::Viewer, "double_tap") => ControlInput::Value,
+            (ControlKind::Viewer, "min_scale") => ControlInput::Min,
+            (ControlKind::Viewer, "max_scale") => ControlInput::Max,
+            (ControlKind::Viewer, "pan_margin") => ControlInput::PanMargin,
             _ => return None,
         })
     }
@@ -305,6 +315,7 @@ impl ControlKind {
             ControlKind::Number => "Number",
             ControlKind::Pages => "Pages",
             ControlKind::Button => "Button",
+            ControlKind::Viewer => "Viewer",
         }
     }
 
@@ -779,6 +790,8 @@ pub enum ControlInput {
     Caption,
     /// A navigation stack's `page_transition`: how its pages trade places.
     PageTransition,
+    /// A viewer's `pan_margin`: how far past its bounds its content moves.
+    PanMargin,
 }
 
 /// A view-driven native node: its kind and the handler-table entries that
@@ -816,6 +829,8 @@ pub struct Control {
     pub caption: Option<u32>,
     /// The entry of how a navigation stack's pages trade places.
     pub page_transition: Option<u32>,
+    /// The entry of how far past its bounds a viewer's content moves.
+    pub pan_margin: Option<u32>,
     /// The shader a shader view paints with, by its index in the view's
     /// shader table; its value gives the shader's parameters.
     pub shader: Option<u32>,
@@ -995,7 +1010,7 @@ pub enum Switched {
 
 impl ControlInput {
     /// Every input, by wire tag.
-    pub const ALL: [ControlInput; 60] = [
+    pub const ALL: [ControlInput; 61] = [
         ControlInput::Value,
         ControlInput::Min,
         ControlInput::Max,
@@ -1056,6 +1071,7 @@ impl ControlInput {
         ControlInput::FocusRing,
         ControlInput::AccessKey,
         ControlInput::DragAxis,
+        ControlInput::PanMargin,
     ];
 
     /// Its wire tag: its place in [`ControlInput::ALL`].
@@ -1148,6 +1164,7 @@ impl Control {
             precision: None,
             caption: None,
             page_transition: None,
+            pan_margin: None,
             shader: None,
             look: Look::default(),
             arms: Box::new([]),
@@ -1226,6 +1243,7 @@ impl Control {
             ControlInput::Precision => self.precision,
             ControlInput::Caption => self.caption,
             ControlInput::PageTransition => self.page_transition,
+            ControlInput::PanMargin => self.pan_margin,
         }
     }
 
@@ -1302,6 +1320,7 @@ impl Control {
             ControlInput::Precision => &mut self.precision,
             ControlInput::Caption => &mut self.caption,
             ControlInput::PageTransition => &mut self.page_transition,
+            ControlInput::PanMargin => &mut self.pan_margin,
         };
         *slot = Some(entry);
     }
@@ -1329,6 +1348,7 @@ impl Encode for Control {
             self.precision,
             self.caption,
             self.page_transition,
+            self.pan_margin,
             self.shader,
             look.background,
             look.opacity,
@@ -1448,6 +1468,7 @@ impl Decode for Control {
             precision: entry()?,
             caption: entry()?,
             page_transition: entry()?,
+            pan_margin: entry()?,
             shader: entry()?,
             look: Look {
                 background: entry()?,
@@ -1731,6 +1752,7 @@ mod tests {
             precision: Some(22),
             caption: Some(15),
             page_transition: Some(9),
+            pan_margin: Some(34),
             shader: Some(2),
             look: Look {
                 background: Some(3),

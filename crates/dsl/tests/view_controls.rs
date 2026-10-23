@@ -1429,3 +1429,49 @@ export component Keys {
         assert!(!rt.faulted());
     }
 }
+
+#[test]
+fn an_interactive_viewer_pans_and_zooms_its_content_and_a_double_tap_toggles_it() {
+    const SRC: &str = r#"
+export component Photo {
+    view {
+        Column {
+            InteractiveViewer {
+                width: 200dp; height: 100dp;
+                max_scale: 3.0;
+                double_tap: 2.0;
+                Column { width: 100%; height: 100%; }
+            }
+        }
+    }
+}
+"#;
+    for mut rt in [Rt::reloaded(SRC), Rt::packaged(SRC)] {
+        rt.store.set_reduced_motion(true);
+        let viewer = rt.children_of_root()[0];
+        assert!(rt.store.is_viewer(viewer));
+        assert!(rt.store.clips(viewer) && rt.store.focusable(viewer));
+        let pan = |rt: &Rt| rt.store.viewer_pan(viewer).unwrap();
+        rt.click(50.0, 50.0);
+        rt.click(50.0, 50.0);
+        assert_eq!(rt.store.viewer_scale(viewer), Some(2.0));
+        assert_eq!(pan(&rt), viso_ui::Vec2::new(-50.0, -50.0));
+        rt.pointer(100.0, 50.0, PointerPhase::Down);
+        rt.pointer(80.0, 40.0, PointerPhase::Move);
+        rt.pointer(60.0, 30.0, PointerPhase::Move);
+        rt.pointer(60.0, 30.0, PointerPhase::Up);
+        assert_eq!(pan(&rt), viso_ui::Vec2::new(-90.0, -70.0), "a drag pans");
+        rt.wheel(100.0, 50.0, 100.0);
+        assert_eq!(pan(&rt), viso_ui::Vec2::new(-90.0, -100.0), "to its bound");
+        use viso_ui::PinchPhase::{End, Move, Start};
+        rt.trackpad(100.0, 50.0, 1.0, 0.0, Start);
+        rt.trackpad(100.0, 50.0, 2.0, 0.0, Move);
+        rt.trackpad(100.0, 50.0, 1.0, 0.0, End);
+        assert_eq!(rt.store.viewer_scale(viewer), Some(3.0), "within its limit");
+        rt.click(50.0, 50.0);
+        rt.click(50.0, 50.0);
+        assert_eq!(rt.store.viewer_scale(viewer), Some(1.0), "and back");
+        assert_eq!(pan(&rt), viso_ui::Vec2::ZERO);
+        assert!(!rt.faulted());
+    }
+}

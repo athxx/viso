@@ -27,6 +27,7 @@ pub fn attach(
     control: Option<Control>,
     scope: &Scope,
 ) -> Handle {
+    let control_kind = control.as_ref().map(|c| c.kind);
     let (keys, pointers) = split(routes, control.as_ref());
     let wait = tap_wait(routes);
     if let Some(pointers) = pointers {
@@ -46,7 +47,7 @@ pub fn attach(
             cx.focusable(node, true);
         }
     }
-    if counts(routes) {
+    if counts(routes) || viewer(control_kind) {
         cx.count_clicks(node);
     }
     if drags(routes) {
@@ -88,6 +89,7 @@ pub fn attach_node(
         Some((kinds, watcher)) => store.watch(id, kinds, watcher),
         None => store.unwatch(id),
     }
+    let control_kind = control.as_ref().map(|c| c.kind);
     let (keys, pointers) = split(routes, control.as_ref());
     let wait = tap_wait(routes);
     if let Some(pointers) = pointers {
@@ -102,7 +104,7 @@ pub fn attach_node(
             store.set_focusable(id, true);
         }
     }
-    if counts(routes) {
+    if counts(routes) || viewer(control_kind) {
         store.count_clicks(id);
     } else {
         store.uncount_clicks(id);
@@ -127,6 +129,12 @@ fn takes_focus(keys: &[Route], control: Option<&Control>) -> bool {
             EventRoute::Link | EventRoute::Refresh | EventRoute::SnapChanged | EventRoute::Tap
         )
     }) || control.is_some_and(|c| c.kind.responds())
+}
+
+/// Whether a control of `kind` is a viewer, which counts its clicks for its
+/// double tap.
+fn viewer(kind: Option<ControlKind>) -> bool {
+    kind == Some(ControlKind::Viewer)
 }
 
 /// Whether `routes` hear double taps: the node counts its clicks.

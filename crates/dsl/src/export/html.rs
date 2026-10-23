@@ -86,6 +86,8 @@ pub(super) enum Wire {
     /// Follows the `env` fields instance `instance` reads that depend on
     /// where it sits: the element is its root.
     Anchor(u32),
+    /// Makes the element a viewer of its child: it pans and zooms it.
+    Viewer,
 }
 
 /// The style of a sticky element: held at its scroller's start edge, over
@@ -162,6 +164,8 @@ pub(super) enum Prop {
     AccessKey,
     /// The axis it drags along alone, if any.
     DragAxis,
+    /// A viewer's limit or double-tap scale, by its `data-` attribute.
+    Viewer(&'static str),
     /// How a navigation stack's pages trade places.
     Turn,
     /// An asset's source, as an image or as a mask.
@@ -1298,6 +1302,38 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                         el.attr(name, &fixed.text());
                     }
                 }
+            }
+            ControlKind::Viewer => {
+                for (entry, name, what) in [
+                    (control.min, "data-min-scale", "the viewer's least scale"),
+                    (control.max, "data-max-scale", "the viewer's greatest scale"),
+                    (
+                        control.pan_margin,
+                        "data-pan-margin",
+                        "how far the viewer pans past its bounds",
+                    ),
+                    (
+                        control.value,
+                        "data-double-tap",
+                        "the scale a double tap zooms to",
+                    ),
+                ] {
+                    if let Some(fixed) = self.bind(wires, entry, Prop::Viewer(name), what, at) {
+                        let shown = match &fixed {
+                            Fixed::Value(Value::Agg(length)) => length
+                                .fields
+                                .first()
+                                .and_then(Value::as_float)
+                                .map_or_else(String::new, css::number),
+                            _ => fixed.text(),
+                        };
+                        el.attr(name, &shown);
+                    }
+                }
+                if control.node.clip.is_none() {
+                    el.style("overflow: hidden");
+                }
+                wires.push(Wire::Viewer);
             }
             ControlKind::Pages => {
                 // Its transition first, so a turn reads the current one.

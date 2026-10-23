@@ -92,6 +92,10 @@ pub fn property_dirty_class(name: &str) -> DirtyClass {
         // An access key is announced, and cued in the node's text.
         "access_key" => D::PAINT | D::SEMANTICS,
         "drag_axis" => D::HIT_TEST,
+        // A viewer's limits keep its content's transform within them; the
+        // scale a double tap zooms to is read as it lands.
+        "min_scale" | "max_scale" | "pan_margin" => D::TRANSFORM,
+        "double_tap" => D::EMPTY,
 
         // Turning input off restyles the node through its `disabled`
         // selector and announces it disabled; what hit testing finds is
