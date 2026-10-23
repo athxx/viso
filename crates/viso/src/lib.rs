@@ -3621,6 +3621,16 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         );
                         ws.tell_focus();
                     }
+                    // The rows whose gestures settled hear what they did.
+                    if ws.store.row_gestures_due() {
+                        KeyRouter::route_row_gestures(
+                            &mut ws.store,
+                            &mut ws.states,
+                            &ws.bindings,
+                            &mut ws.text_edits,
+                        );
+                        ws.tell_focus();
+                    }
                     // Poll the tasks spawned or woken since the last frame and
                     // run each finished one's continuation; what it writes joins
                     // this frame's transaction. No woken task (the steady case)

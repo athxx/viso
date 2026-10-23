@@ -427,9 +427,10 @@ pub fn route_contact(
         PointerPhase::Leave if contact.direct => store.release_hold(pointer),
         _ => {}
     }
-    // A press on a coasting viewport catches it; a brisk one is only that.
+    // A press on a coasting viewport catches it; a brisk one is only that,
+    // as is one within the list of a swipe row it shuts.
     if ev.phase == PointerPhase::Down
-        && store.is_scroll_moving()
+        && (store.is_scroll_moving() || store.swipes_open())
         && let Some(hit) = HitTestTree::hit(store, root, ev.x, ev.y)
         && store.catch_coast(hit, pointer)
     {
@@ -537,6 +538,7 @@ pub fn route_contact(
     let ended = contact.direct && matches!(ev.phase, PointerPhase::Up | PointerPhase::Leave);
     if lifted || ended {
         store.release_press(pointer);
+        store.lift_swipes(pointer);
     }
     if ended {
         store.contacts_mut().end(pointer);
@@ -857,6 +859,7 @@ pub fn route_scroll(store: &mut NodeStore, root: NodeId, ev: ScrollEvent) -> boo
     match ev.phase {
         // A wheel's notch ends hard at the range's end.
         ScrollPhase::None => {
+            store.pad_swipe(target, delta, ev.phase);
             let moved = scroll_chain(store, target, delta);
             store.snap_after_wheel(target);
             moved
@@ -871,6 +874,8 @@ pub fn route_scroll(store: &mut NodeStore, root: NodeId, ev: ScrollEvent) -> boo
                 store.hold_pulls_over(target);
             }
             store.track_pad(delta, began);
+            // A swipe across a row slides it instead.
+            let delta = store.pad_swipe(target, delta, ev.phase);
             if delta != Vec2::ZERO {
                 pan_by(store, target, delta);
             }
@@ -1982,6 +1987,34 @@ impl KeyRouter {
         ran
     }
 
+    /// Tell each node what the row gestures on it settled
+    /// ([`NodeStore::take_row_gestures`]), through its key handler. Returns
+    /// whether a handler ran.
+    pub fn route_row_gestures(
+        store: &mut NodeStore,
+        states: &mut StateStore,
+        bindings: &BindingTable,
+        edits: &mut TextEdits,
+    ) -> bool {
+        let mut told = Vec::new();
+        store.take_row_gestures(&mut told);
+        let mut ran = false;
+        for (node, gesture) in told {
+            if store.arena().is_live(node) {
+                ran |= key_handler_dispatch(
+                    store,
+                    states,
+                    bindings,
+                    edits,
+                    node,
+                    KeyPayload::Row(gesture),
+                )
+                .ran;
+            }
+        }
+        ran
+    }
+
     /// Deliver every wake whose time came ([`EventCx::wake_after`]) to its
     /// node's key handler, in the order they fired; a node gone drops its
     /// wake. Returns whether a handler ran.
@@ -2103,6 +2136,7 @@ enum KeyPayload<'e> {
     Access(crate::access::Access),
     Refresh,
     Snap(usize),
+    Row(crate::row_gesture::RowGesture),
 }
 
 /// Call one node's key handler with `payload`, then apply everything the
@@ -2129,6 +2163,7 @@ fn key_handler_dispatch(
             KeyPayload::Access(access) => EventCx::__new_access(states, bindings, access),
             KeyPayload::Refresh => EventCx::__new_refresh(states, bindings),
             KeyPayload::Snap(index) => EventCx::__new_snap(states, bindings, index),
+            KeyPayload::Row(gesture) => EventCx::__new_row_gesture(states, bindings, gesture),
         };
         cx.__set_focused(store.focused());
         cx.__set_services(store.__services());

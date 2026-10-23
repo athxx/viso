@@ -394,6 +394,7 @@ impl NodeStore {
         let sample = d.sample.take();
         if let Some(sample) = sample {
             self.steer_viewer_drag(node, pointer, sample);
+            self.steer_swipe_drag(node, sample);
         }
         if !sample.is_some_and(|s| s.phase == DragPhase::End) {
             return;

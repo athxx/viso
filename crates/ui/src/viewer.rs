@@ -202,7 +202,7 @@ impl Viewers {
 }
 
 /// How far a pull of `raw` past an end shows when it shows `d` at most.
-fn eased(raw: f32, d: f32) -> f32 {
+pub(crate) fn eased(raw: f32, d: f32) -> f32 {
     if d <= 0.0 {
         return 0.0;
     }
@@ -210,7 +210,7 @@ fn eased(raw: f32, d: f32) -> f32 {
 }
 
 /// The pull that shows as `shown` past an end, as [`eased`] shows it.
-fn uneased(shown: f32, d: f32) -> f32 {
+pub(crate) fn uneased(shown: f32, d: f32) -> f32 {
     if d <= 0.0 {
         return 0.0;
     }

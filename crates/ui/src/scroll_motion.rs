@@ -556,6 +556,7 @@ impl NodeStore {
             || self.refreshers.easing()
             || self.snap_aims()
             || self.viewers.moving()
+            || self.row_gestures.moving()
     }
 
     /// Whether viewport `id` glides toward a target.
@@ -841,6 +842,7 @@ impl NodeStore {
         }
         self.tick_refreshers(dt as f32);
         self.tick_viewers(delta);
+        self.tick_swipes(delta);
     }
 
     /// Ease every glide `dt` seconds along its spring.
@@ -992,14 +994,15 @@ impl NodeStore {
     }
 
     /// A press at or under `target` by `pointer`: stop the coasts of the
-    /// viewports enclosing it and hold their relaxing pulls. Returns whether
-    /// one moved briskly or showed pulled, so the press is the catch and
-    /// reaches no control.
+    /// viewports enclosing it and hold their relaxing pulls, and shut the
+    /// open swipe rows it is not on the actions of. Returns whether one
+    /// moved briskly or showed pulled, or a row it shut stands in the
+    /// press's list, so the press is the catch and reaches no control.
     pub(crate) fn catch_coast(&mut self, target: NodeId, pointer: PointerId) -> bool {
-        if !self.is_scroll_moving() {
+        let mut brisk = self.press_swipes(target, pointer);
+        if !self.is_scroll_moving() && !brisk {
             return false;
         }
-        let mut brisk = false;
         let mut node = Some(target);
         while let Some(n) = node {
             if let Some(at) = self.motions.flings.iter().position(|f| f.viewport == n) {

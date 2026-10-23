@@ -747,6 +747,8 @@ pub struct NodeStore {
     pub(crate) pinches: crate::pinch::Pinches,
     /// Cold: the viewers and how each one's content shows.
     pub(crate) viewers: crate::viewer::Viewers,
+    /// Cold: the swipe rows, and what their gestures settled.
+    pub(crate) row_gestures: crate::row_gesture::RowGestures,
     /// Cold: the nodes folded to their first child.
     pub(crate) folds: crate::fold::Folds,
     /// Cold: the text fields and the marks they draw.
@@ -910,6 +912,7 @@ impl NodeStore {
         self.holds.clear();
         self.pinches.clear();
         self.viewers.clear();
+        self.row_gestures.clear();
         self.folds.clear();
         self.paged.clear();
         self.fields.clear();
@@ -4468,6 +4471,7 @@ impl NodeStore {
                     if let Some(node) = other {
                         self.roved(node);
                     }
+                    self.swipe_focus(other);
                 }
             }
         }
@@ -5188,6 +5192,7 @@ impl NodeStore {
         self.follow_tails();
         self.settle_scroll_requests();
         self.fit_viewers();
+        self.fit_swipes();
         self.sync_refreshers();
         self.sync_stickies();
         self.sync_snaps();
@@ -5423,6 +5428,8 @@ impl NodeStore {
         self.settle_scroll_requests();
         // A viewer keeps its content within the bounds its boxes now set.
         self.fit_viewers();
+        // A swipe row stays open as far as its actions now reach.
+        self.fit_swipes();
         // A refresher starts or ends and its indicator follows its pull.
         self.sync_refreshers();
         self.sync_stickies();
@@ -6810,6 +6817,17 @@ impl<'a> BuildCx<'a> {
         limits: Option<crate::viewer::ViewerLimits>,
     ) -> Handle {
         self.store.set_viewer(handle.id, limits);
+        handle
+    }
+
+    /// Make an already-declared node a swipe row of `parts`, or no longer
+    /// one with `None` (see [`NodeStore::set_swipe_row`]).
+    pub fn swipe_row(
+        &mut self,
+        handle: Handle,
+        parts: Option<crate::row_gesture::SwipeParts>,
+    ) -> Handle {
+        self.store.set_swipe_row(handle.id, parts);
         handle
     }
 

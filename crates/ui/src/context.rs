@@ -367,6 +367,8 @@ pub struct EventCx<'a> {
     /// The item a snapping viewport came to rest on, heads for, or shows
     /// nearest, if this dispatch tells it.
     snapped: Option<usize>,
+    /// What a row gesture on the node settled, if this dispatch tells it.
+    row_gesture: Option<crate::row_gesture::RowGesture>,
     /// The token of the wake this dispatch delivers.
     woken: Option<u32>,
     /// Whether the focus came to or left the node this dispatch tells.
@@ -507,6 +509,8 @@ pub enum StoreRequest {
     Page(NodeId, Option<usize>, crate::navigation::PageTransition),
     /// Move a viewer's content.
     Viewer(NodeId, crate::viewer::ViewerMove),
+    /// Open a swipe row on an edge's actions, or shut it.
+    Swipe(NodeId, Option<crate::row_gesture::SwipeEdge>),
 }
 
 impl StoreRequest {
@@ -533,6 +537,7 @@ impl StoreRequest {
             StoreRequest::SnapTo(id, index) => store.snap_to_item(id, index),
             StoreRequest::Page(stack, page, transition) => store.set_page(stack, page, transition),
             StoreRequest::Viewer(id, to) => store.move_viewer(id, to),
+            StoreRequest::Swipe(id, edge) => store.open_swipe_row(id, edge),
         }
     }
 }
@@ -580,6 +585,7 @@ impl<'a> EventCx<'a> {
             dismissed: false,
             refresh: false,
             snapped: None,
+            row_gesture: None,
             woken: None,
             focus_change: None,
             access: None,
@@ -622,6 +628,7 @@ impl<'a> EventCx<'a> {
             dismissed: false,
             refresh: false,
             snapped: None,
+            row_gesture: None,
             woken: None,
             focus_change: None,
             access: None,
@@ -663,6 +670,7 @@ impl<'a> EventCx<'a> {
             dismissed: false,
             refresh: false,
             snapped: None,
+            row_gesture: None,
             woken: None,
             focus_change: None,
             access: None,
@@ -704,6 +712,7 @@ impl<'a> EventCx<'a> {
             dismissed: false,
             refresh: false,
             snapped: None,
+            row_gesture: None,
             woken: None,
             focus_change: None,
             access: None,
@@ -768,6 +777,19 @@ impl<'a> EventCx<'a> {
     ) -> Self {
         let mut cx = Self::__new(states, bindings);
         cx.snapped = Some(index);
+        cx
+    }
+
+    /// Assemble the event context that tells a node what a row gesture on it
+    /// settled: the handler reads it via [`EventCx::row_gesture`].
+    #[doc(hidden)]
+    pub fn __new_row_gesture(
+        states: &'a mut StateStore,
+        bindings: &'a BindingTable,
+        gesture: crate::row_gesture::RowGesture,
+    ) -> Self {
+        let mut cx = Self::__new(states, bindings);
+        cx.row_gesture = Some(gesture);
         cx
     }
 
@@ -969,6 +991,12 @@ impl<'a> EventCx<'a> {
         self.store_requests.push(StoreRequest::Viewer(id, to));
     }
 
+    /// Open swipe row `id` on `edge`'s actions, or shut it with `None`
+    /// ([`NodeStore::open_swipe_row`]).
+    pub fn open_swipe_row(&mut self, id: NodeId, edge: Option<crate::row_gesture::SwipeEdge>) {
+        self.store_requests.push(StoreRequest::Swipe(id, edge));
+    }
+
     /// Bring snapping viewport `id` to rest on item `index`
     /// ([`NodeStore::snap_to_item`]).
     pub fn snap_to_item(&mut self, id: NodeId, index: usize) {
@@ -1002,6 +1030,14 @@ impl<'a> EventCx<'a> {
     /// on, heads for, or shows nearest, if this dispatch tells one.
     pub fn snapped(&self) -> Option<usize> {
         self.snapped
+    }
+
+    /// What a row gesture on the node settled ([`RowGesture`]), `None` for
+    /// any other dispatch.
+    ///
+    /// [`RowGesture`]: crate::row_gesture::RowGesture
+    pub fn row_gesture(&self) -> Option<crate::row_gesture::RowGesture> {
+        self.row_gesture
     }
 
     /// The token of the wake ([`wake_after`](Self::wake_after)) this dispatch

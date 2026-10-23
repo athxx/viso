@@ -54,6 +54,7 @@ pub mod pinch;
 pub mod reactive;
 pub mod refresh;
 pub mod roving;
+pub mod row_gesture;
 pub mod scenes;
 pub mod scroll_bar;
 pub mod scroll_motion;
@@ -139,6 +140,7 @@ pub use pinch::{
     PinchPhase, PinchSample, TrackpadPinch, WHEEL_PINCH_REST, deliver_pinch_ends,
     route_trackpad_pinch, route_wheel_zoom,
 };
+pub use row_gesture::{RowGesture, SwipeEdge, SwipeParts};
 pub use text_style::{
     FontFamily, FontSize, FontSlant, FontWeight, SpanStyle, TextAlign, TextOverflow, TextSizing,
     TextSpan, TextStyle, WidthUse,

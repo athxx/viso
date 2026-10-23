@@ -12,7 +12,8 @@
 //! RadioGroup, Slider, TextInput, Splitter). Tier 3 completes the layout
 //! structures — [`scroll`] (Scroll), the virtualized [`list`] (VirtualList),
 //! the two-dimensional track [`grid`] (Grid), the draggable-pane Splitter, and
-//! the pan-and-zoom [`interactive_viewer`] (InteractiveViewer).
+//! the pan-and-zoom [`interactive_viewer`] (InteractiveViewer), and the
+//! [`swipe_row`] (SwipeRow) whose content slides aside to show its actions.
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
@@ -27,6 +28,7 @@ pub mod lazy_grid;
 pub mod list;
 pub mod pager;
 pub mod scroll;
+pub mod swipe_row;
 pub mod text;
 
 pub use containers::{View, ViewStyle, view};
@@ -65,4 +67,8 @@ pub use lazy_grid::{LazyGrid, LazyGridStyle, lazy_grid};
 pub use list::{VirtualList, VirtualListViewStyle, virtual_list};
 pub use pager::{Carousel, CarouselStyle, Pager, PagerStyle, carousel, pager};
 pub use scroll::{Scroll, ScrollViewStyle, scroll};
+pub use swipe_row::{
+    SwipeAction, SwipeRow, SwipeRowHandle, SwipeRowHandleSlot, SwipeRowStyle, swipe_action,
+    swipe_row,
+};
 pub use text::{Label, LabelStyle, label, rich_text};
