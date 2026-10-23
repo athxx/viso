@@ -229,8 +229,6 @@ fn the_simulation_reads_no_environment_and_awaits_no_task() {
 #[test]
 fn host_floating_point_meets_same_binary_but_not_cross_platform() {
     let source = r#"
-import viso::game::{FixedUpdate, FixedFrame};
-import app::fx;
 system Walker implements FixedUpdate {
     state x = 0.0;
     action fixed_update(frame: FixedFrame) {
