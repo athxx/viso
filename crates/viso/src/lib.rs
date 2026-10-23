@@ -3216,7 +3216,42 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     modifiers: lower_modifiers(s.modifiers),
                     phase: s.phase,
                 };
-                ScrollRouter::route(&mut ws.store, root, ev);
+                // A wheel turned with Control held zooms what takes pinches
+                // under it, as a browser reports a trackpad's pinch.
+                let zoomed = ev.modifiers.control
+                    && viso_ui::route_wheel_zoom(
+                        &mut ws.store,
+                        &mut ws.states,
+                        &ws.bindings,
+                        root,
+                        (ev.x, ev.y, ev.delta_y),
+                        &mut ws.route_chain,
+                    )
+                    .is_some();
+                if !zoomed {
+                    ScrollRouter::route(&mut ws.store, root, ev);
+                }
+            }
+            viso_runtime::InputSample::Gesture(g) => {
+                let ev = viso_ui::TrackpadPinch {
+                    x: g.x / scale,
+                    y: g.y / scale,
+                    scale: g.scale,
+                    rotation: g.rotation,
+                    phase: match g.phase {
+                        viso_runtime::GesturePhase::Began => viso_ui::PinchPhase::Start,
+                        viso_runtime::GesturePhase::Changed => viso_ui::PinchPhase::Move,
+                        viso_runtime::GesturePhase::Ended => viso_ui::PinchPhase::End,
+                    },
+                };
+                viso_ui::route_trackpad_pinch(
+                    &mut ws.store,
+                    &mut ws.states,
+                    &ws.bindings,
+                    root,
+                    ev,
+                    &mut ws.route_chain,
+                );
             }
         }
         if edits_text || ws.store.has_edit_requests() {
@@ -3542,6 +3577,14 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         // A press held still that long is a long press now.
                         if ws.store.long_press_due() {
                             viso_ui::deliver_long_presses(
+                                &mut ws.store,
+                                &mut ws.states,
+                                &ws.bindings,
+                            );
+                        }
+                        // A wheel's pinch that rested ends.
+                        if ws.store.pinch_end_due() {
+                            viso_ui::deliver_pinch_ends(
                                 &mut ws.store,
                                 &mut ws.states,
                                 &ws.bindings,

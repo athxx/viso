@@ -67,6 +67,9 @@ pub(super) fn listen(target: &Page) -> Vec<Listener> {
     .collect();
     listeners.extend([
         Listener::new(canvas, "wheel", with_page(on_wheel)),
+        Listener::new(canvas, "gesturestart", with_page(on_gesture)),
+        Listener::new(canvas, "gesturechange", with_page(on_gesture)),
+        Listener::new(canvas, "gestureend", with_page(on_gesture)),
         Listener::new(canvas, "contextmenu", |e| e.prevent_default()),
         Listener::new(input, "keydown", with_page(on_key_down)),
         Listener::new(input, "keyup", with_page(on_key_up)),
@@ -178,6 +181,57 @@ fn on_wheel(page: &Page, e: &Event) {
         delta_y,
         modifiers: event_modifiers(e),
         phase: crate::ScrollPhase::None,
+    }));
+    drive();
+}
+
+/// Safari's trackpad pinch and turn, whose events tell the scale and the turn
+/// (degrees, clockwise) since the gesture began. Fingers on the glass pinch
+/// as pointers, so a gesture while one is down is only kept from zooming the
+/// page.
+fn on_gesture(page: &Page, e: &Event) {
+    use crate::event::{GesturePhase, RawGesture};
+    e.prevent_default();
+    if !page.buttons.borrow().is_empty() {
+        return;
+    }
+    let read = |name: &str| {
+        Reflect::get(e, &name.into())
+            .ok()
+            .and_then(|v| v.as_f64())
+            .unwrap_or_default()
+    };
+    let (scale, turn) = (read("scale"), read("rotation"));
+    let (phase, (before_scale, before_turn)) = match (e.type_().as_str(), page.gesture.get()) {
+        ("gesturestart", _) => (GesturePhase::Began, (1.0, 0.0)),
+        ("gesturechange", Some(last)) => (GesturePhase::Changed, last),
+        ("gestureend", Some(last)) => (GesturePhase::Ended, last),
+        _ => return,
+    };
+    let scale = if scale > 0.0 { scale } else { before_scale };
+    page.gesture
+        .set((phase != GesturePhase::Ended).then_some((scale, turn)));
+    // A gesture event is no mouse event: its fields are read by name.
+    let held = |name: &str| {
+        Reflect::get(e, &name.into())
+            .ok()
+            .and_then(|v| v.as_bool())
+            .unwrap_or_default()
+    };
+    let (left, top) = page.origin();
+    push(RawEvent::Gesture(RawGesture {
+        window: WINDOW,
+        x: read("clientX") - left,
+        y: read("clientY") - top,
+        scale: scale / before_scale,
+        rotation: (turn - before_turn).to_radians(),
+        modifiers: modifiers(
+            held("shiftKey"),
+            held("ctrlKey"),
+            held("altKey"),
+            held("metaKey"),
+        ),
+        phase,
     }));
     drive();
 }

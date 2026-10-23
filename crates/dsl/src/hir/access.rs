@@ -25,6 +25,7 @@ pub(crate) fn is_gesture(event: &str) -> bool {
         event,
         "click" | "tap" | "double_tap" | "swipe" | "long_press" | "key_down"
     ) || event.starts_with("drag_")
+        || event.starts_with("pinch_")
 }
 
 fn report(strict: bool, code: &'static str, at: TextRange, message: String) -> Diagnostic {

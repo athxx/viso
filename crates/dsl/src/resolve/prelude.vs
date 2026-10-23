@@ -53,6 +53,16 @@ export record LongPressEvent { position: Point; pointer_kind: PointerKind; }
 export record DragEvent { position: Point; delta: Offset; total: Offset; velocity: Offset; }
 export enum SwipeDirection { left; right; up; down; }
 export record SwipeEvent { direction: SwipeDirection; position: Point; velocity: Offset; }
+// `scale` and `rotation` (clockwise) since the fingers landed, `*_delta` and
+// `pan` (the focal point's travel) since the last sample.
+export record PinchEvent {
+    position: Point;
+    scale: F32;
+    rotation: Angle;
+    scale_delta: F32;
+    rotation_delta: Angle;
+    pan: Offset;
+}
 export record PointerEvent {
     position: Point;
     button: PointerButton;

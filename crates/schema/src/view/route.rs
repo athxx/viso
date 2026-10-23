@@ -70,11 +70,21 @@ pub enum EventRoute {
     /// `swipe` (`SwipeEvent`): a drag the node won lifted moving fast along
     /// one axis.
     Swipe = 24,
+    /// `pinch_start` (`PinchEvent`): two fingers on the node or under it
+    /// travelled past the slop together, or a trackpad began to pinch or
+    /// turn over it, or a wheel turned with Control held, and the node won
+    /// the pinch.
+    PinchStart = 25,
+    /// `pinch_move` (`PinchEvent`): the pinch spread, turned or moved.
+    PinchMove = 26,
+    /// `pinch_end` (`PinchEvent`): a finger lifted, the trackpad's gesture
+    /// ended, or the wheel rested.
+    PinchEnd = 27,
 }
 
 impl EventRoute {
     /// Every route, by discriminant.
-    pub const ALL: [EventRoute; 25] = [
+    pub const ALL: [EventRoute; 28] = [
         EventRoute::Click,
         EventRoute::Tap,
         EventRoute::PointerDown,
@@ -100,6 +110,9 @@ impl EventRoute {
         EventRoute::CurrentChanged,
         EventRoute::DoubleTap,
         EventRoute::Swipe,
+        EventRoute::PinchStart,
+        EventRoute::PinchMove,
+        EventRoute::PinchEnd,
     ];
 
     /// The route of standard DSL event `event`, `None` for an event the runtime
@@ -139,6 +152,9 @@ impl EventRoute {
             EventRoute::CurrentChanged => "current_changed",
             EventRoute::DoubleTap => "double_tap",
             EventRoute::Swipe => "swipe",
+            EventRoute::PinchStart => "pinch_start",
+            EventRoute::PinchMove => "pinch_move",
+            EventRoute::PinchEnd => "pinch_end",
         }
     }
 
@@ -170,6 +186,9 @@ impl EventRoute {
             EventRoute::CurrentChanged => "CurrentChanged",
             EventRoute::DoubleTap => "DoubleTap",
             EventRoute::Swipe => "Swipe",
+            EventRoute::PinchStart => "PinchStart",
+            EventRoute::PinchMove => "PinchMove",
+            EventRoute::PinchEnd => "PinchEnd",
         }
     }
 
@@ -199,6 +218,14 @@ impl EventRoute {
         matches!(
             self,
             EventRoute::DragStart | EventRoute::DragMove | EventRoute::DragEnd | EventRoute::Swipe
+        )
+    }
+
+    /// Whether a pinch the node wins delivers it.
+    pub fn is_pinch(self) -> bool {
+        matches!(
+            self,
+            EventRoute::PinchStart | EventRoute::PinchMove | EventRoute::PinchEnd
         )
     }
 
@@ -239,6 +266,17 @@ pub const PAYLOAD_RECORDS: &[(&str, &[&str])] = &[
     ("KeyEvent", &["key", "repeat", "modifiers"]),
     ("DragEvent", &["position", "delta", "total", "velocity"]),
     ("SwipeEvent", &["direction", "position", "velocity"]),
+    (
+        "PinchEvent",
+        &[
+            "position",
+            "scale",
+            "rotation",
+            "scale_delta",
+            "rotation_delta",
+            "pan",
+        ],
+    ),
     ("Offset", &["x", "y"]),
     ("SizeDp", &["width", "height"]),
     ("ScrollChanged", &["offset", "viewport", "content"]),

@@ -50,6 +50,7 @@ pub mod notice;
 pub mod number_format;
 pub mod page_dots;
 pub mod paint;
+pub mod pinch;
 pub mod reactive;
 pub mod refresh;
 pub mod roving;
@@ -133,6 +134,10 @@ pub use long_press::{LONG_PRESS, LongPressSample, deliver_long_presses};
 pub use node::{ArenaFull, ChildIds, Children, NodeArena, NodeId, NodeIndex, NodeLinks, TreeLinks};
 pub use notice::{Notice, NoticeHandler, NoticeKinds, deliver_notices};
 pub use paint::{paint_tree, paint_with_transforms};
+pub use pinch::{
+    PinchPhase, PinchSample, TrackpadPinch, WHEEL_PINCH_REST, deliver_pinch_ends,
+    route_trackpad_pinch, route_wheel_zoom,
+};
 pub use text_style::{
     FontFamily, FontSize, FontSlant, FontWeight, SpanStyle, TextAlign, TextOverflow, TextSizing,
     TextSpan, TextStyle, WidthUse,

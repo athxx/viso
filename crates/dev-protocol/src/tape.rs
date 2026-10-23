@@ -116,6 +116,15 @@ pub enum TapeScrollPhase {
     MomentumEnded = 5,
 }
 
+/// Where a trackpad's gesture sample stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum TapeGesturePhase {
+    Began = 0,
+    Changed = 1,
+    Ended = 2,
+}
+
 /// A key: its place among the named keys, or a key no name covers, by the
 /// code the platform reported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -177,6 +186,16 @@ pub enum TapeInput {
         pressed: bool,
         repeat: bool,
         modifiers: TapeModifiers,
+    },
+    /// A trackpad's pinch or turn: the factor and the angle (radians,
+    /// clockwise) since its last sample.
+    Gesture {
+        x: f32,
+        y: f32,
+        scale: f32,
+        rotation: f32,
+        modifiers: TapeModifiers,
+        phase: TapeGesturePhase,
     },
     /// Committed text.
     Text(String),
@@ -417,6 +436,22 @@ impl Encode for TapeInput {
             }
             TapeInput::SelectAll => enc.write_u8(9),
             TapeInput::EditMenuClosed => enc.write_u8(10),
+            TapeInput::Gesture {
+                x,
+                y,
+                scale,
+                rotation,
+                modifiers,
+                phase,
+            } => {
+                enc.write_u8(12);
+                enc.write_u8(*phase as u8);
+                enc.write_f32(*x);
+                enc.write_f32(*y);
+                enc.write_f32(*scale);
+                enc.write_f32(*rotation);
+                enc.write_u8(modifiers.0);
+            }
         }
     }
 }
@@ -526,6 +561,22 @@ impl Decode for TapeInput {
             8 => TapeInput::Resize(read_surface(dec)?),
             9 => TapeInput::SelectAll,
             10 => TapeInput::EditMenuClosed,
+            12 => {
+                let phase = match dec.read_u8()? {
+                    0 => TapeGesturePhase::Began,
+                    1 => TapeGesturePhase::Changed,
+                    2 => TapeGesturePhase::Ended,
+                    _ => return Err(malformed),
+                };
+                TapeInput::Gesture {
+                    x: dec.read_f32()?,
+                    y: dec.read_f32()?,
+                    scale: dec.read_f32()?,
+                    rotation: dec.read_f32()?,
+                    modifiers: modifiers(dec)?,
+                    phase,
+                }
+            }
             _ => return Err(malformed),
         })
     }
@@ -604,6 +655,14 @@ mod tests {
                         TapeInput::Resize(TapeSurface::default()),
                         TapeInput::SelectAll,
                         TapeInput::EditMenuClosed,
+                        TapeInput::Gesture {
+                            x: 3.0,
+                            y: 4.0,
+                            scale: 1.25,
+                            rotation: -0.5,
+                            modifiers,
+                            phase: TapeGesturePhase::Changed,
+                        },
                     ],
                 },
             ],

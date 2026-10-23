@@ -167,6 +167,16 @@ impl NodeStore {
         self.drags.drags.iter().any(|d| d.started && d.node == id)
     }
 
+    /// The node pointer `pointer`'s started drag runs on.
+    pub(crate) fn drag_node(&self, pointer: PointerId) -> Option<NodeId> {
+        self.drags.of(pointer).filter(|d| d.started).map(|d| d.node)
+    }
+
+    /// Where pointer `pointer`'s drag saw it last.
+    pub(crate) fn drag_last(&self, pointer: PointerId) -> Option<[f32; 2]> {
+        self.drags.of(pointer).map(|d| d.last)
+    }
+
     /// The drag sample pointer `pointer`'s sample under dispatch carries.
     pub fn drag_sample(&self, pointer: PointerId) -> Option<DragSample> {
         self.drags.of(pointer)?.sample

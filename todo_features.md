@@ -165,7 +165,7 @@ Rules:
 
 - [x] Double/triple tap (`on_double_tap`, `double_click` route).
 - [x] Swipe/flick recognizer with direction and velocity.
-- [ ] Pinch/zoom and rotate recognizers (touch and trackpad magnify/rotate).
+- [x] Pinch/zoom and rotate recognizers (touch and trackpad magnify/rotate).
 - [ ] Gesture arena: competing recognizers, claim and reject, nested scroll
   coordination.
 - [ ] `InteractiveViewer` (pan/zoom container with bounds and inertia).

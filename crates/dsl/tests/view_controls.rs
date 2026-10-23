@@ -215,6 +215,49 @@ impl Rt {
         self.settle();
     }
 
+    /// One sample of finger `id` at `(x, y)`.
+    fn touch(&mut self, id: u64, x: f32, y: f32, phase: PointerPhase) {
+        let event = PointerEvent {
+            x,
+            y,
+            phase,
+            buttons: PointerButtons::PRIMARY,
+            modifiers: Modifiers::default(),
+        };
+        PointerRouter::route_contact(
+            &mut self.store,
+            &mut self.states,
+            &self.bindings,
+            self.root.expect("mounted"),
+            viso_ui::PointerContact {
+                id: viso_ui::PointerId(id),
+                direct: true,
+            },
+            event,
+            &mut self.scratch,
+        );
+        self.settle();
+    }
+
+    /// A trackpad's pinch sample at `(x, y)`.
+    fn trackpad(&mut self, x: f32, y: f32, scale: f32, rotation: f32, phase: viso_ui::PinchPhase) {
+        viso_ui::route_trackpad_pinch(
+            &mut self.store,
+            &mut self.states,
+            &self.bindings,
+            self.root.expect("mounted"),
+            viso_ui::TrackpadPinch {
+                x,
+                y,
+                scale,
+                rotation,
+                phase,
+            },
+            &mut self.scratch,
+        );
+        self.settle();
+    }
+
     /// A primary click at `(x, y)`.
     fn click(&mut self, x: f32, y: f32) {
         self.pointer(x, y, PointerPhase::Down);
@@ -1248,6 +1291,58 @@ export component Swipes {
             ],
         );
         assert_eq!((rt.int("lefts"), rt.int("ups")), (1, 1));
+        assert!(!rt.faulted());
+    }
+}
+
+#[test]
+fn two_fingers_or_a_trackpad_pinch_a_node_that_hears_pinches() {
+    const SRC: &str = r#"
+export component Pinches {
+    state zoom: F32 = 1.0;
+    state turn: Angle = 0deg;
+    state starts = 0;
+    state ends = 0;
+    view {
+        Column {
+            Row {
+                width: 200dp; height: 200dp;
+                on pinch_start(event) { starts += 1; }
+                on pinch_move(event) { zoom = event.scale; turn = event.rotation; }
+                on pinch_end(event) { ends += 1; }
+            }
+        }
+    }
+}
+"#;
+    for mut rt in [Rt::reloaded(SRC), Rt::packaged(SRC)] {
+        rt.touch(1, 50.0, 100.0, PointerPhase::Down);
+        rt.touch(2, 100.0, 100.0, PointerPhase::Down);
+        rt.touch(2, 150.0, 100.0, PointerPhase::Move);
+        rt.touch(2, 50.0, 200.0, PointerPhase::Move);
+        assert_eq!(rt.int("starts"), 1);
+        assert_eq!(rt.float("zoom"), 2.0);
+        assert!(
+            (rt.float("turn") - 90.0).abs() < 1e-3,
+            "{}",
+            rt.float("turn")
+        );
+        rt.touch(1, 50.0, 100.0, PointerPhase::Up);
+        assert_eq!(rt.int("ends"), 1);
+        rt.touch(2, 50.0, 200.0, PointerPhase::Up);
+
+        use viso_ui::PinchPhase::{End, Move, Start};
+        rt.trackpad(100.0, 100.0, 1.0, 0.0, Start);
+        rt.trackpad(100.0, 100.0, 1.5, 0.0, Move);
+        rt.trackpad(100.0, 100.0, 2.0, -std::f32::consts::FRAC_PI_2, Move);
+        rt.trackpad(100.0, 100.0, 1.0, 0.0, End);
+        assert_eq!((rt.int("starts"), rt.int("ends")), (2, 2));
+        assert_eq!(rt.float("zoom"), 3.0);
+        assert!(
+            (rt.float("turn") + 90.0).abs() < 1e-3,
+            "{}",
+            rt.float("turn")
+        );
         assert!(!rt.faulted());
     }
 }

@@ -10,7 +10,7 @@ use std::rc::Rc;
 use viso_behavior::{Aggregate, Value};
 use viso_ui::{
     DragPhase, EventCx, Interaction, Key, KeyEvent, LookValue, Modifiers, NodeId, NodeStore,
-    Notice, PointerButtons, PointerId, PointerPhase, SwipeDirection, Vec2,
+    Notice, PinchPhase, PointerButtons, PointerId, PointerPhase, SwipeDirection, Vec2,
 };
 
 use crate::layout_values::length;
@@ -39,6 +39,9 @@ pub fn payload(route: EventRoute, cx: &EventCx<'_>) -> Option<Value> {
     }
     if route.is_drag() {
         return drag_event(route, cx);
+    }
+    if route.is_pinch() {
+        return pinch_event(route, cx);
     }
     if route == EventRoute::LongPress {
         let held = cx.long_press()?;
@@ -131,6 +134,30 @@ fn drag_event(route: EventRoute, cx: &EventCx<'_>) -> Option<Value> {
         offset(drag.delta),
         offset(drag.total),
         offset(drag.velocity),
+    ]))
+}
+
+/// The `PinchEvent` of `route` when the dispatch carries that sample of a
+/// pinch. Its position is local to the dispatching node, its pan in window
+/// axes.
+fn pinch_event(route: EventRoute, cx: &EventCx<'_>) -> Option<Value> {
+    let pinch = cx.pinch()?;
+    let phase = match route {
+        EventRoute::PinchStart => PinchPhase::Start,
+        EventRoute::PinchMove => PinchPhase::Move,
+        _ => PinchPhase::End,
+    };
+    if pinch.phase != phase {
+        return None;
+    }
+    let at = cx.local(pinch.focal.x, pinch.focal.y);
+    Some(record([
+        point(at.x, at.y),
+        Value::Float(f64::from(pinch.scale)),
+        Value::Float(f64::from(pinch.rotation.to_degrees())),
+        Value::Float(f64::from(pinch.scale_delta)),
+        Value::Float(f64::from(pinch.rotation_delta.to_degrees())),
+        record([mixed(pinch.pan.x), mixed(pinch.pan.y)]),
     ]))
 }
 

@@ -17,6 +17,9 @@ use wayland_cursor::CursorTheme;
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::{
     self, WpCursorShapeDeviceV1,
 };
+use wayland_protocols::wp::pointer_gestures::zv1::client::zwp_pointer_gesture_pinch_v1::{
+    self, ZwpPointerGesturePinchV1,
+};
 
 use super::text_input::TextInput;
 use super::{Globals, State, known, resize_edge};
@@ -25,8 +28,8 @@ use crate::backend::linux::translate::{self, Edge, RESIZE_BORDER};
 use crate::backend::linux::xkb::{KeyText, Keyboard};
 use crate::control::{WindowChrome, WindowId};
 use crate::event::{
-    Modifiers, PointerButtons, PointerId, PointerKind, PointerPhase, RawEvent, RawPointer,
-    RawScroll, RawText,
+    GesturePhase, Modifiers, PointerButtons, PointerId, PointerKind, PointerPhase, RawEvent,
+    RawGesture, RawPointer, RawScroll, RawText,
 };
 
 /// Linux input-event button codes.
@@ -78,6 +81,9 @@ struct Pointer {
     stop: bool,
     /// A fingers' scroll is under way.
     scrolling: bool,
+    /// The touchpad's pinch, and the scale it reached by its last update.
+    pinch: Option<ZwpPointerGesturePinchV1>,
+    pinch_scale: f64,
     surface: WlSurface,
     theme: Option<Theme>,
 }
@@ -204,6 +210,11 @@ impl Seat {
                     .as_ref()
                     .map(|m| m.get_pointer(&pointer, &state.qh, ()));
                 let surface = state.globals.compositor.create_surface(&state.qh, ());
+                let pinch = state
+                    .globals
+                    .gestures
+                    .as_ref()
+                    .map(|g| g.get_pinch_gesture(&pointer, &state.qh, ()));
                 self.pointer = Some(Pointer {
                     pointer,
                     shape,
@@ -215,6 +226,8 @@ impl Seat {
                     finger: false,
                     stop: false,
                     scrolling: false,
+                    pinch,
+                    pinch_scale: 1.0,
                     surface,
                     theme: None,
                 });
@@ -223,6 +236,9 @@ impl Seat {
                 if let Some(p) = self.pointer.take() {
                     if let Some(shape) = p.shape {
                         shape.destroy();
+                    }
+                    if let Some(pinch) = p.pinch {
+                        pinch.destroy();
                     }
                     p.surface.destroy();
                     if p.pointer.version() >= 3 {
@@ -551,6 +567,43 @@ impl Seat {
             y: p.y,
             delta_x,
             delta_y,
+            modifiers,
+            phase,
+        }));
+    }
+
+    /// A touchpad pinch's event: the scale it reports is since its begin,
+    /// its turn (degrees, clockwise) since the update before.
+    fn on_pinch(&mut self, state: &mut State, event: zwp_pointer_gesture_pinch_v1::Event) {
+        let modifiers = self.modifiers();
+        let Some(p) = &mut self.pointer else { return };
+        let (phase, scale, rotation) = match event {
+            zwp_pointer_gesture_pinch_v1::Event::Begin { serial, .. } => {
+                self.last_serial = serial;
+                p.pinch_scale = 1.0;
+                (GesturePhase::Began, 1.0, 0.0)
+            }
+            zwp_pointer_gesture_pinch_v1::Event::Update {
+                scale, rotation, ..
+            } => {
+                let by = if p.pinch_scale > 0.0 && scale > 0.0 {
+                    scale / p.pinch_scale
+                } else {
+                    1.0
+                };
+                p.pinch_scale = scale;
+                (GesturePhase::Changed, by, rotation.to_radians())
+            }
+            zwp_pointer_gesture_pinch_v1::Event::End { .. } => (GesturePhase::Ended, 1.0, 0.0),
+            _ => return,
+        };
+        let Some(window) = p.focus else { return };
+        state.pump.push(RawEvent::Gesture(RawGesture {
+            window,
+            x: p.x,
+            y: p.y,
+            scale,
+            rotation,
             modifiers,
             phase,
         }));
@@ -924,6 +977,19 @@ impl Dispatch<WlPointer, ()> for State {
         _: &QueueHandle<Self>,
     ) {
         state.with_seat(|seat, state| seat.on_pointer(state, event));
+    }
+}
+
+impl Dispatch<ZwpPointerGesturePinchV1, ()> for State {
+    fn event(
+        state: &mut Self,
+        _: &ZwpPointerGesturePinchV1,
+        event: zwp_pointer_gesture_pinch_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        state.with_seat(|seat, state| seat.on_pinch(state, event));
     }
 }
 

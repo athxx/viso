@@ -17,8 +17,8 @@ use std::time::Duration;
 use viso_platform::Instant;
 
 use viso_platform::{
-    AppHandler, ControlFlow, Modifiers as RawModifiers, PlatformApp, RawEvent, RawPointer,
-    RawScroll, WindowId,
+    AppHandler, ControlFlow, Modifiers as RawModifiers, PlatformApp, RawEvent, RawGesture,
+    RawPointer, RawScroll, WindowId,
 };
 
 use crate::clock::{FrameClock, WallClock};
@@ -26,8 +26,8 @@ use crate::context::RuntimeCx;
 use crate::driver::{FrameDriver, Lifecycle};
 use crate::frame::run_frame;
 use crate::input::{
-    CopySample, EditMenuSample, ImePreeditSample, InputSample, KeySample, Modifiers, PointerPhase,
-    PointerSample, ScrollSample, TextSample,
+    CopySample, EditMenuSample, GestureSample, ImePreeditSample, InputSample, KeySample, Modifiers,
+    PointerPhase, PointerSample, ScrollSample, TextSample,
 };
 use crate::schedule::{RedrawReason, RedrawReasons};
 
@@ -415,6 +415,16 @@ impl<D: FrameDriver, C: FrameClock> AppHandler for Loop<D, C> {
                     .on_input(InputSample::Scroll(sample), self.clock.peek());
                 self.reasons.add(RedrawReason::InputDirty);
             }
+            RawEvent::Gesture(g) => {
+                let scale = app
+                    .window(g.window)
+                    .map(|w| w.scale_factor())
+                    .unwrap_or(1.0) as f32;
+                let sample = normalize_gesture(g, scale);
+                self.driver
+                    .on_input(InputSample::Gesture(sample), self.clock.peek());
+                self.reasons.add(RedrawReason::InputDirty);
+            }
             RawEvent::WindowFocused { window, focused } => {
                 self.driver.on_window_focus(window, focused);
                 self.reasons.add(RedrawReason::InputDirty);
@@ -521,6 +531,18 @@ fn normalize_pointer(p: RawPointer, scale: f32) -> PointerSample {
 /// Convert a raw scroll sample (logical points) into the runtime-tier
 /// physical-pixel sample the driver routes. Both the pointer position and the
 /// scroll delta scale by the same window factor.
+fn normalize_gesture(g: RawGesture, scale: f32) -> GestureSample {
+    GestureSample {
+        window: g.window,
+        x: g.x as f32 * scale,
+        y: g.y as f32 * scale,
+        scale: g.scale as f32,
+        rotation: g.rotation as f32,
+        modifiers: normalize_modifiers(g.modifiers),
+        phase: g.phase,
+    }
+}
+
 fn normalize_scroll(s: RawScroll, scale: f32) -> ScrollSample {
     ScrollSample {
         window: s.window,

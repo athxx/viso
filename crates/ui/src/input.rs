@@ -160,6 +160,11 @@ impl PointerContacts {
         self.slot(id).is_some_and(|s| s.direct)
     }
 
+    /// Whether some direct contact pans a viewport.
+    pub(crate) fn is_panning_any(&self) -> bool {
+        self.slots.iter().any(|s| s.gesture == Gesture::Pan)
+    }
+
     /// Whether direct contact `id` is still a tap: it has stayed within the
     /// slop and no handler captured it.
     pub(crate) fn is_still(&self, id: PointerId) -> bool {
@@ -287,6 +292,7 @@ use crate::hit_test::HitTestTree;
 use crate::layout::OnAxis;
 use crate::layout::{Axis, Vec2};
 use crate::node::NodeId;
+use crate::pinch::PinchStep;
 use crate::scroll_motion::VelocityTracker;
 use crate::state::StateStore;
 use crate::text_edit::TextEdits;
@@ -437,9 +443,9 @@ pub fn route_contact(
                 let now = store.input_time();
                 store.contacts_mut().begin(pointer, [ev.x, ev.y], now);
             }
-            // A drag armed above no scroll viewport, or one that started,
-            // keeps the contact from a pan.
-            PointerPhase::Move if !store.drag_leads(pointer) => {
+            // A drag armed above no scroll viewport, or one that started, and
+            // a pinch's finger keep the contact from a pan.
+            PointerPhase::Move if !store.drag_leads(pointer) && !store.pinch_leads(pointer) => {
                 if let Some(ran) = pan_step(store, states, bindings, pointer, &ev) {
                     store.drop_drag(pointer);
                     chain.clear();
@@ -485,6 +491,15 @@ pub fn route_contact(
     }
     let at = [ev.x, ev.y];
     match ev.phase {
+        PointerPhase::Move if contact.direct => {
+            if let Some(PinchStep::Started(fingers)) = store.step_pinch(pointer, at, slop) {
+                claim_pinch(store, states, bindings, fingers, &ev);
+            }
+        }
+        PointerPhase::Up | PointerPhase::Leave if contact.direct => store.end_pinch(pointer, at),
+        _ => {}
+    }
+    match ev.phase {
         PointerPhase::Move => {
             // The node the drag took the contact from loses it, as to a pan.
             if let Some(lost) = store.step_drag(pointer, at, slop) {
@@ -505,6 +520,7 @@ pub fn route_contact(
     }
     let ran = route_sample(store, states, bindings, root, contact, &ev, chain);
     store.settle_drag(pointer);
+    store.settle_pinch(pointer);
     // The release reaches the chain while the press still stands, so a node
     // tells a click it was pressed from one that only lies under the lift.
     let lifted = ev.phase == PointerPhase::Up;
@@ -590,6 +606,9 @@ fn route_sample(
             store.press(target, pointer);
             store.arm_drag(pointer, target, [ev.x, ev.y], contact.direct);
             store.arm_hold(pointer, target, [ev.x, ev.y], contact.direct);
+            if contact.direct && !store.contacts().is_panning_any() {
+                store.arm_pinch(pointer, target, [ev.x, ev.y]);
+            }
         }
         PointerPhase::Move | PointerPhase::Up => store.follow_press(pointer, ev.x, ev.y),
         _ => {}
@@ -601,6 +620,46 @@ fn route_sample(
     dispatch_chain(store, root, target, chain, |s, n, hop| {
         pointer_dispatch(s, states, bindings, n, hop, pointer, Some(ev))
     })
+}
+
+/// A pinch started with `fingers`: it captures both, each one's press is
+/// released and its hold lets go, a drag either began ends where it is, and
+/// each node a finger leaves sees it leave.
+fn claim_pinch(
+    store: &mut NodeStore,
+    states: &mut StateStore,
+    bindings: &BindingTable,
+    fingers: [PointerId; 2],
+    ev: &PointerEvent,
+) {
+    let Some(node) = fingers.iter().find_map(|&f| store.pinch_node(f)) else {
+        return;
+    };
+    let mut chain = Vec::new();
+    for finger in fingers {
+        store.release_hold(finger);
+        store.release_press(finger);
+        if let Some(drag) = store.drag_node(finger) {
+            let at = store.drag_last(finger).unwrap_or([ev.x, ev.y]);
+            store.end_drag(finger, at, false);
+            pointer_dispatch_chain(store, states, bindings, drag, finger, &mut chain);
+            store.settle_drag(finger);
+        }
+        store.drop_drag(finger);
+        let lost = store.set_capture(finger, Some(node));
+        if let Some(lost) = lost.filter(|&n| n != node) {
+            hover_dispatch(
+                store,
+                states,
+                bindings,
+                lost,
+                PointerPhase::Leave,
+                finger,
+                ev,
+            );
+        }
+    }
+    store.interaction_states.moved();
 }
 
 /// Dispatches a gesture of pointer `pointer` that rides on no pointer sample
@@ -4223,6 +4282,36 @@ mod contact_tests {
             "the second press took it"
         );
         s.touch(1, 30.0, 20.0, PointerPhase::Up);
+    }
+
+    #[test]
+    fn two_fingers_on_a_node_that_takes_pinches_pinch_it_and_pan_nothing() {
+        let mut s = scene(false);
+        s.store.set_pinchable(s.a, true);
+        s.store.set_draggable(s.a, true);
+        s.touch(1, 5.0, 20.0, PointerPhase::Down);
+        s.touch(2, 35.0, 20.0, PointerPhase::Down);
+        assert!(s.store.in_state(s.a, Interaction::Pressed));
+        // A finger slides up, then the other spreads.
+        s.touch(1, 5.0, 2.0, PointerPhase::Move);
+        assert!(s.store.pinching(s.a), "the middle moved past the slop");
+        assert_eq!(s.store.scroll(s.root).y, 0.0, "no pan");
+        assert!(!s.store.dragging(s.a), "nor a drag");
+        assert!(!s.store.in_state(s.a, Interaction::Pressed));
+        assert_eq!(s.store.capture_of(PointerId(1)), Some(s.a));
+        assert_eq!(s.store.capture_of(PointerId(2)), Some(s.a));
+        s.touch(2, 65.0, 5.0, PointerPhase::Move);
+        assert_eq!(s.store.scroll(s.root).y, 0.0);
+        s.touch(2, 65.0, 5.0, PointerPhase::Up);
+        assert!(!s.store.pinching(s.a), "a lift ends it");
+        s.touch(1, 5.0, 60.0, PointerPhase::Move);
+        assert_eq!(
+            s.store.scroll(s.root).y,
+            0.0,
+            "the finger left pans nothing"
+        );
+        s.touch(1, 5.0, 60.0, PointerPhase::Up);
+        assert_eq!(s.store.capture(), None);
     }
 
     #[test]

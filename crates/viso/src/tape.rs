@@ -15,11 +15,11 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
-use viso_platform::{EditMenuAction, Instant, ScrollPhase, WindowId};
+use viso_platform::{EditMenuAction, GesturePhase, Instant, ScrollPhase, WindowId};
 use viso_runtime::{FrameClock, InputSample, PointerKind};
 use viso_view::tape::{
-    BuildId, MAX_FRAMES, MAX_INPUTS, TapeFrame, TapeInput, TapeKey, TapeModifiers, TapePointerKind,
-    TapePointerPhase, TapeScrollPhase, TapeSurface, UiTape,
+    BuildId, MAX_FRAMES, MAX_INPUTS, TapeFrame, TapeGesturePhase, TapeInput, TapeKey,
+    TapeModifiers, TapePointerKind, TapePointerPhase, TapeScrollPhase, TapeSurface, UiTape,
 };
 
 /// The first window's input being recorded, and where it goes.
@@ -124,6 +124,18 @@ impl TapeRecorder {
                     ScrollPhase::Ended => TapeScrollPhase::Ended,
                     ScrollPhase::Momentum => TapeScrollPhase::Momentum,
                     ScrollPhase::MomentumEnded => TapeScrollPhase::MomentumEnded,
+                },
+            },
+            InputSample::Gesture(g) => TapeInput::Gesture {
+                x: g.x / scale,
+                y: g.y / scale,
+                scale: g.scale,
+                rotation: g.rotation,
+                modifiers: modifiers(g.modifiers),
+                phase: match g.phase {
+                    GesturePhase::Began => TapeGesturePhase::Began,
+                    GesturePhase::Changed => TapeGesturePhase::Changed,
+                    GesturePhase::Ended => TapeGesturePhase::Ended,
                 },
             },
             InputSample::Key(k) => TapeInput::Key {
@@ -412,7 +424,7 @@ impl TapePlayer {
 fn raw(window: WindowId, input: &TapeInput) -> Vec<viso_platform::RawEvent> {
     use viso_platform::{
         ClipboardReply, KeyCode, Modifiers, PointerButtons, PointerId, PointerPhase, RawEvent,
-        RawImePreedit, RawKey, RawPointer, RawScroll, RawText,
+        RawGesture, RawImePreedit, RawKey, RawPointer, RawScroll, RawText,
     };
     let mods = |m: TapeModifiers| Modifiers {
         shift: m.holds(TapeModifiers::SHIFT),
@@ -472,6 +484,26 @@ fn raw(window: WindowId, input: &TapeInput) -> Vec<viso_platform::RawEvent> {
                 TapeScrollPhase::Ended => ScrollPhase::Ended,
                 TapeScrollPhase::Momentum => ScrollPhase::Momentum,
                 TapeScrollPhase::MomentumEnded => ScrollPhase::MomentumEnded,
+            },
+        }),
+        TapeInput::Gesture {
+            x,
+            y,
+            scale,
+            rotation,
+            modifiers,
+            phase,
+        } => RawEvent::Gesture(RawGesture {
+            window,
+            x: f64::from(*x),
+            y: f64::from(*y),
+            scale: f64::from(*scale),
+            rotation: f64::from(*rotation),
+            modifiers: mods(*modifiers),
+            phase: match phase {
+                TapeGesturePhase::Began => GesturePhase::Began,
+                TapeGesturePhase::Changed => GesturePhase::Changed,
+                TapeGesturePhase::Ended => GesturePhase::Ended,
             },
         }),
         TapeInput::Key {

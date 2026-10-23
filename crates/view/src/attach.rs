@@ -55,6 +55,9 @@ pub fn attach(
     if holds(routes) {
         cx.long_pressable(node, true);
     }
+    if pinches(routes) {
+        cx.pinchable(node, true);
+    }
     if let Some((kinds, watcher)) = notices(host, routes, scope) {
         cx.watch(node, kinds, watcher);
     }
@@ -106,6 +109,7 @@ pub fn attach_node(
     }
     store.set_draggable(id, drags(routes));
     store.set_long_pressable(id, holds(routes));
+    store.set_pinchable(id, pinches(routes));
     if refreshes(routes) || store.is_refreshable(id) {
         store.set_refreshable(id, refreshes(routes));
     }
@@ -184,6 +188,11 @@ fn refreshes(routes: &[Route]) -> bool {
 /// Whether `routes` take drags.
 fn drags(routes: &[Route]) -> bool {
     routes.iter().any(|route| route.event.is_drag())
+}
+
+/// Whether `routes` take pinches.
+fn pinches(routes: &[Route]) -> bool {
+    routes.iter().any(|route| route.event.is_pinch())
 }
 
 /// Whether `routes` take long presses.

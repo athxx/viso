@@ -1147,6 +1147,11 @@ impl<'a> EventCx<'a> {
         self.place?.store.drag_sample(self.pointer_id)
     }
 
+    /// The pinch sample this dispatch carries, `None` for one no pinch sees.
+    pub fn pinch(&self) -> Option<crate::pinch::PinchSample> {
+        self.place?.store.pinch_sample(self.pointer_id)
+    }
+
     /// How many clicks the press under dispatch is in its run: `1` for a
     /// single click, `2` for a double and `3` for a triple. A press comes
     /// within the [click interval](Self::click_interval) of the last, near

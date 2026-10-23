@@ -327,6 +327,9 @@ struct Page {
     buttons: RefCell<Vec<(i32, PointerButtons)>>,
     /// An IME composition is in progress in the input element.
     composing: Cell<bool>,
+    /// The scale and the turn (degrees) a trackpad's gesture reached by its
+    /// last event; `None` while none runs.
+    gesture: Cell<Option<(f64, f64)>>,
     /// The last key press did not name its key (a soft keyboard or IME
     /// sent `229`), so edits arriving as input events stand in for it.
     unidentified: Cell<bool>,
@@ -869,6 +872,7 @@ impl PlatformApp for WebApp {
             size: Cell::new((pixels(rect.width(), scale), pixels(rect.height(), scale))),
             buttons: RefCell::new(Vec::new()),
             composing: Cell::new(false),
+            gesture: Cell::new(None),
             unidentified: Cell::new(false),
             keyboard: Cell::new(0.0),
             insets: Cell::new(LogicalInsets::default()),

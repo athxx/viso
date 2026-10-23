@@ -60,9 +60,9 @@ pub use control::{
 };
 pub use event::{
     AcceptCell, Appearance, ClipboardReply, ClipboardShortcut, ColorScheme, CursorIcon,
-    DisplayFeature, DisplayFeatureKind, KeyCode, LogicalInsets, Modifiers, PointerButtons,
-    PointerId, PointerKind, PointerPhase, RawEvent, RawImePreedit, RawKey, RawPointer, RawScroll,
-    RawText, ScrollPhase, clipboard_shortcut, primary_is_logo,
+    DisplayFeature, DisplayFeatureKind, GesturePhase, KeyCode, LogicalInsets, Modifiers,
+    PointerButtons, PointerId, PointerKind, PointerPhase, RawEvent, RawGesture, RawImePreedit,
+    RawKey, RawPointer, RawScroll, RawText, ScrollPhase, clipboard_shortcut, primary_is_logo,
 };
 pub use handler::AppHandler;
 pub use launch::launch_var;

@@ -30,9 +30,9 @@ pub use context::RuntimeCx;
 pub use driver::{FrameDriver, Lifecycle};
 pub use frame::run_frame;
 pub use input::{
-    ClipboardReply, CopySample, EditMenuSample, ImePreeditSample, InputSample, Key, KeySample,
-    Modifiers, PointerId, PointerKind, PointerPhase, PointerSample, ScrollPhase, ScrollSample,
-    TextSample, primary_is_logo,
+    ClipboardReply, CopySample, EditMenuSample, GesturePhase, GestureSample, ImePreeditSample,
+    InputSample, Key, KeySample, Modifiers, PointerId, PointerKind, PointerPhase, PointerSample,
+    ScrollPhase, ScrollSample, TextSample, primary_is_logo,
 };
 pub use phase::FramePhase;
 pub use schedule::{FrameDecision, RedrawReason, RedrawReasons};

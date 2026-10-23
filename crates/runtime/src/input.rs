@@ -15,7 +15,8 @@
 //! the widget.
 
 pub use viso_platform::{
-    ClipboardReply, KeyCode as Key, PointerId, PointerKind, ScrollPhase, primary_is_logo,
+    ClipboardReply, GesturePhase, KeyCode as Key, PointerId, PointerKind, ScrollPhase,
+    primary_is_logo,
 };
 use viso_platform::{EditMenuAction, WindowId};
 
@@ -95,6 +96,23 @@ pub struct ScrollSample {
     pub phase: ScrollPhase,
 }
 
+/// A trackpad's pinch or turn resolved to physical pixels (window-top-left
+/// origin), at the pointer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GestureSample {
+    /// The window the sample belongs to.
+    pub window: WindowId,
+    /// Pointer position in physical pixels, origin at the window's top-left.
+    pub x: f32,
+    pub y: f32,
+    /// The factor the fingers' spread scaled by since the last sample.
+    pub scale: f32,
+    /// How far they turned since the last sample, in radians, clockwise.
+    pub rotation: f32,
+    pub modifiers: Modifiers,
+    pub phase: GesturePhase,
+}
+
 /// A committed text segment (post-IME).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextSample {
@@ -142,6 +160,9 @@ pub enum InputSample {
     /// A scroll (wheel/trackpad) delta in physical pixels, positioned at the
     /// pointer so routing can find the scrollable target under the cursor.
     Scroll(ScrollSample),
+    /// A trackpad's pinch or turn, positioned at the pointer so routing can
+    /// find the node under it that takes pinches.
+    Gesture(GestureSample),
     /// A key transition routed to the focused node.
     Key(KeySample),
     /// A committed text segment (the IME commit).
@@ -165,6 +186,7 @@ impl InputSample {
         match self {
             InputSample::Pointer(p) => p.window,
             InputSample::Scroll(s) => s.window,
+            InputSample::Gesture(g) => g.window,
             InputSample::Key(k) => k.window,
             InputSample::Text(t) => t.window,
             InputSample::ImePreedit(p) => p.window,

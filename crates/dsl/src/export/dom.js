@@ -632,6 +632,89 @@ const draggable = (el) => {
   el.addEventListener("pointercancel", end);
 };
 
+// Makes `el` take pinches: two fingers at or under it that no nearer element
+// took, travelling past the slop together, Safari's trackpad gesture, and a
+// wheel turned with Control held (a browser's trackpad pinch), which ends
+// once it rests 150ms. Each sample bubbles from `el` as a `viso-pinch`
+// event: its phase (0 start, 1 move, 2 end), the focal point, the scale and
+// turn (degrees, clockwise) since the fingers landed, those since the last
+// sample, and the focal point's travel since it.
+const pinchable = (el) => {
+  if (el.$pinch) return;
+  el.$pinch = true;
+  el.style.touchAction = "none";
+  let fingers = [], on = false, from = null, angle = 0, turned = 0, last = null, rest = 0;
+  const send = (phase, x, y, scale, turn) => {
+    const was = last ?? { x, y, scale: 1, turn: 0 };
+    last = { x, y, scale, turn };
+    el.dispatchEvent(new CustomEvent("viso-pinch", { bubbles: true, detail: {
+      phase, x, y, scale, turn, ds: scale / was.scale, dt: turn - was.turn, px: x - was.x, py: y - was.y,
+    } }));
+    if (phase === 2) last = null;
+  };
+  const span = () => {
+    const [a, b] = fingers;
+    const dx = b.x - a.x, dy = b.y - a.y;
+    return { d: Math.max(Math.hypot(dx, dy), 1), a: Math.atan2(dy, dx) * 180 / Math.PI, x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  };
+  el.addEventListener("pointerdown", (e) => {
+    if (e.pointerType !== "touch" || e.$pinch || off(e.target) || fingers.length === 2) return;
+    e.$pinch = el;
+    fingers.push({ id: e.pointerId, x: e.clientX, y: e.clientY });
+    if (fingers.length === 2) { from = span(); angle = from.a; turned = 0; on = false; }
+  });
+  el.addEventListener("pointermove", (e) => {
+    const f = fingers.find((f) => f.id === e.pointerId);
+    if (!f) return;
+    f.x = e.clientX; f.y = e.clientY;
+    if (fingers.length < 2) return;
+    const now = span();
+    turned += ((now.a - angle + 540) % 360) - 180;
+    angle = now.a;
+    const turn = turned;
+    if (!on) {
+      const moved = Math.hypot(now.x - from.x, now.y - from.y);
+      if (Math.max(moved, Math.abs(now.d - from.d), Math.abs(turn) * Math.PI / 180 * from.d / 2) < slop(e)) return;
+      on = true;
+      claimed = true;
+      for (const g of fingers) try { el.setPointerCapture(g.id); } catch (_) {}
+      return send(0, now.x, now.y, now.d / from.d, turn);
+    }
+    send(1, now.x, now.y, now.d / from.d, turn);
+  });
+  const lift = (e) => {
+    const at = fingers.findIndex((f) => f.id === e.pointerId);
+    if (at < 0) return;
+    if (on) { const now = span(); send(2, now.x, now.y, now.d / from.d, last.turn); on = false; }
+    fingers.splice(at, 1);
+  };
+  el.addEventListener("pointerup", lift);
+  el.addEventListener("pointercancel", lift);
+  let gesture = null;
+  const pad = (e) => {
+    e.preventDefault();
+    if (e.$pinch || fingers.length) return;
+    e.$pinch = el;
+    if (e.type === "gesturestart") gesture = true;
+    if (!gesture) return;
+    send(e.type === "gesturestart" ? 0 : e.type === "gestureend" ? 2 : 1, e.clientX, e.clientY, e.scale || 1, e.rotation || 0);
+    if (e.type === "gestureend") gesture = null;
+  };
+  el.addEventListener("gesturestart", pad);
+  el.addEventListener("gesturechange", pad);
+  el.addEventListener("gestureend", pad);
+  el.addEventListener("wheel", (e) => {
+    if (!e.ctrlKey || e.$pinch || off(e.target)) return;
+    e.preventDefault();
+    e.$pinch = el;
+    const going = !!last && !!rest;
+    const scale = (going ? last.scale : 1) * Math.exp(-e.deltaY / 100);
+    send(going ? 1 : 0, e.clientX, e.clientY, scale, going ? last.turn : 0);
+    clearTimeout(rest);
+    rest = setTimeout(() => { rest = 0; send(2, last.x, last.y, last.scale, last.turn); }, 150);
+  }, { passive: false });
+};
+
 // Calls `fire` with the payload of a primary press at or under `el` that no
 // nearer element took, once it held still for the long-press delay.
 const holdable = (el, fire) => {
@@ -779,6 +862,14 @@ const listen = (el, route, capture, control, fire) => {
   } else if (route === 23) {
     el.$double = true;
     el.addEventListener("dblclick", live((e) => fire(rec([point(e, el), kind(e)]))), capture);
+  } else if (route >= 25 && route <= 27) {
+    pinchable(el);
+    el.addEventListener("viso-pinch", live((e) => {
+      const d = e.detail;
+      if (d.phase !== route - 25) return;
+      const r = el.getBoundingClientRect();
+      fire(rec([rec([d.x - r.left, d.y - r.top]), d.scale, d.turn, d.ds, d.dt, rec([mixed(d.px), mixed(d.py)])]));
+    }), capture);
   } else if (route === 24) {
     // A drag that lifts moving at 400px/s or more along the axis it moves
     // fastest along, the way it travelled, is a swipe that way.

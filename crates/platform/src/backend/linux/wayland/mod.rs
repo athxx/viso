@@ -29,6 +29,7 @@ use wayland_protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
     wp_fractional_scale_v1::{self, WpFractionalScaleV1},
 };
+use wayland_protocols::wp::pointer_gestures::zv1::client::zwp_pointer_gestures_v1::ZwpPointerGesturesV1;
 use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_manager_v3::ZwpTextInputManagerV3;
 use wayland_protocols::wp::viewporter::client::{
     wp_viewport::WpViewport, wp_viewporter::WpViewporter,
@@ -289,6 +290,7 @@ struct Globals {
     viewporter: Option<WpViewporter>,
     cursor_shape: Option<WpCursorShapeManagerV1>,
     text_input: Option<ZwpTextInputManagerV3>,
+    gestures: Option<ZwpPointerGesturesV1>,
 }
 
 struct Output {
@@ -391,6 +393,7 @@ impl State {
             viewporter: globals.bind(&qh, 1..=1, ()).ok(),
             cursor_shape: globals.bind(&qh, 1..=1, ()).ok(),
             text_input: globals.bind(&qh, 1..=1, ()).ok(),
+            gestures: globals.bind(&qh, 1..=3, ()).ok(),
         };
         let mut state = Self {
             conn,
@@ -1006,6 +1009,7 @@ delegate_noop!(State: WpFractionalScaleManagerV1);
 delegate_noop!(State: ZxdgDecorationManagerV1);
 delegate_noop!(State: WpCursorShapeManagerV1);
 delegate_noop!(State: ZwpTextInputManagerV3);
+delegate_noop!(State: ZwpPointerGesturesV1);
 
 /// The xdg-shell resize edge for `edge`.
 fn resize_edge(edge: translate::Edge) -> xdg_toplevel::ResizeEdge {

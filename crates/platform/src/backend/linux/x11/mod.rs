@@ -379,7 +379,14 @@ pub(crate) struct X11 {
     monitors: Vec<Monitor>,
     /// The latest server time seen, for selection ownership.
     last_time: Timestamp,
+    /// The server speaks XInput 2.4, whose touchpad gestures windows hear.
+    gestures: bool,
+    /// The scale the touchpad's pinch reached by its last update.
+    pinch_scale: f64,
 }
+
+/// XInput 2.4's touchpad pinch, which the bindings' mask does not name.
+const PINCH_MASK: u32 = 0b111 << 27;
 
 impl X11 {
     fn connect() -> Result<Self, PlatformError> {
@@ -398,11 +405,12 @@ impl X11 {
         {
             return Err(PlatformError::Backend("the X server lacks XInput".into()));
         }
-        let version = xinput::xi_query_version(&*conn, 2, 2)
+        let version = xinput::xi_query_version(&*conn, 2, 4)
             .map_err(backend_error)?
             .reply()
             .map_err(backend_error)?;
-        if (version.major_version, version.minor_version) < (2, 2) {
+        let version = (version.major_version, version.minor_version);
+        if version < (2, 2) {
             return Err(PlatformError::Backend("XInput 2.2 is required".into()));
         }
         let mut devices = Devices::default();
@@ -464,6 +472,8 @@ impl X11 {
             xft_scale: None,
             monitors: Vec::new(),
             last_time: x11rb::CURRENT_TIME,
+            gestures: version >= (2, 4),
+            pinch_scale: 1.0,
         };
         x11.load_resources();
         x11.refresh_monitors();
@@ -721,7 +731,8 @@ impl X11 {
                             | XIEventMask::DEVICE_CHANGED
                             | XIEventMask::TOUCH_BEGIN
                             | XIEventMask::TOUCH_UPDATE
-                            | XIEventMask::TOUCH_END,
+                            | XIEventMask::TOUCH_END
+                            | XIEventMask::from(if self.gestures { PINCH_MASK } else { 0 }),
                     ],
                 }],
             )?;
@@ -990,6 +1001,19 @@ impl X11 {
             Event::XinputTouchBegin(e) => self.on_touch(&e, PointerPhase::Down),
             Event::XinputTouchUpdate(e) => self.on_touch(&e, PointerPhase::Moved),
             Event::XinputTouchEnd(e) => self.on_touch(&e, PointerPhase::Up),
+            Event::XinputGesturePinchBegin(e) => {
+                let at = (e.event, e.event_x, e.event_y);
+                self.on_pinch(at, e.mods.effective, crate::GesturePhase::Began, None);
+            }
+            Event::XinputGesturePinchUpdate(e) => {
+                let at = (e.event, e.event_x, e.event_y);
+                let by = Some((e.scale, e.delta_angle));
+                self.on_pinch(at, e.mods.effective, crate::GesturePhase::Changed, by);
+            }
+            Event::XinputGesturePinchEnd(e) => {
+                let at = (e.event, e.event_x, e.event_y);
+                self.on_pinch(at, e.mods.effective, crate::GesturePhase::Ended, None);
+            }
             _ => {}
         }
     }
@@ -1406,6 +1430,46 @@ impl X11 {
             [root_x, root_y, direction, 1, 1],
         ));
         true
+    }
+
+    /// A touchpad pinch's event of `phase` at `(xid, x, y)`, a window and a
+    /// point in it; an update brings its scale since the begin and its turn
+    /// (degrees, clockwise) since the update before.
+    fn on_pinch(
+        &mut self,
+        (xid, x, y): (xproto::Window, i32, i32),
+        mods: u32,
+        phase: crate::GesturePhase,
+        update: Option<(i32, i32)>,
+    ) {
+        let (scale, rotation) = match update {
+            Some((scale, angle)) => {
+                let scale = input::fp1616(scale);
+                let by = if scale > 0.0 && self.pinch_scale > 0.0 {
+                    scale / self.pinch_scale
+                } else {
+                    1.0
+                };
+                self.pinch_scale = scale;
+                (by, input::fp1616(angle).to_radians())
+            }
+            None => {
+                self.pinch_scale = 1.0;
+                (1.0, 0.0)
+            }
+        };
+        let Some(i) = self.index_xid(xid) else { return };
+        let modifiers = self.modifiers(mods);
+        let win = &self.windows[i];
+        self.pump.push(RawEvent::Gesture(crate::RawGesture {
+            window: win.id,
+            x: input::fp1616(x) / win.scale,
+            y: input::fp1616(y) / win.scale,
+            scale,
+            rotation,
+            modifiers,
+            phase,
+        }));
     }
 
     fn on_motion(&mut self, e: &xinput::MotionEvent) {

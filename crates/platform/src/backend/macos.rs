@@ -1746,7 +1746,14 @@ struct ViewIvars {
     pixels: RefCell<Option<Rc<LayerScanout>>>,
     /// The context menu asked for, popped up from the run loop.
     context_menu: Cell<Option<(EditMenu, EditLabels)>>,
+    /// The trackpad's gestures under way: a magnify, a rotate, as bits.
+    gestures: Cell<u8>,
 }
+
+/// The magnify among a view's trackpad gestures.
+const MAGNIFY: u8 = 1;
+/// The rotate among them.
+const ROTATE: u8 = 2;
 
 define_class!(
     #[unsafe(super(NSView))]
@@ -2012,6 +2019,22 @@ define_class!(
             }));
         }
 
+        #[unsafe(method(magnifyWithEvent:))]
+        fn magnify_with_event(&self, event: &NSEvent) {
+            let _ = catch_unwind(AssertUnwindSafe(|| {
+                self.gesture(event, MAGNIFY, 1.0 + event.magnification(), 0.0);
+            }));
+        }
+
+        #[unsafe(method(rotateWithEvent:))]
+        fn rotate_with_event(&self, event: &NSEvent) {
+            let _ = catch_unwind(AssertUnwindSafe(|| {
+                // AppKit turns counterclockwise in degrees.
+                let turn = -f64::from(event.rotation()).to_radians();
+                self.gesture(event, ROTATE, 1.0, turn);
+            }));
+        }
+
         #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &NSEvent) {
             let _ = catch_unwind(AssertUnwindSafe(|| {
@@ -2201,6 +2224,7 @@ impl VisoContentView {
             logical: Cell::new(1.0),
             pixels: RefCell::new(None),
             context_menu: Cell::new(None),
+            gestures: Cell::new(0),
         });
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
         this
@@ -2513,6 +2537,41 @@ impl SecureInput {
 impl Drop for SecureInput {
     fn drop(&mut self) {
         self.set(false);
+    }
+}
+
+impl VisoContentView {
+    /// Reports trackpad gesture `which` of `event` scaling by `scale` and
+    /// turning by `rotation`, as one gesture with the other while either runs.
+    fn gesture(&self, event: &NSEvent, which: u8, scale: f64, rotation: f64) {
+        use crate::GesturePhase;
+        let ivars = self.ivars();
+        let has = |flag: NSEventPhase| event.phase().0 & flag.0 != 0;
+        let before = ivars.gestures.get();
+        let now = if has(NSEventPhase::Began) {
+            before | which
+        } else if has(NSEventPhase::Ended) || has(NSEventPhase::Cancelled) {
+            before & !which
+        } else {
+            before
+        };
+        ivars.gestures.set(now);
+        let phase = match (before, now) {
+            (0, 0) => return,
+            (0, _) => GesturePhase::Began,
+            (_, 0) => GesturePhase::Ended,
+            _ => GesturePhase::Changed,
+        };
+        let (x, y) = self.location(event);
+        self.push(RawEvent::Gesture(crate::RawGesture {
+            window: ivars.window,
+            x,
+            y,
+            scale,
+            rotation,
+            modifiers: modifiers_of(event),
+            phase,
+        }));
     }
 }
 

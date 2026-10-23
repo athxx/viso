@@ -743,6 +743,8 @@ pub struct NodeStore {
     pub(crate) drags: crate::drag::Drags,
     /// The nodes that take long presses and the holds under way.
     pub(crate) holds: crate::long_press::Holds,
+    /// The nodes that take pinches and the pinches under way.
+    pub(crate) pinches: crate::pinch::Pinches,
     /// Cold: the nodes folded to their first child.
     pub(crate) folds: crate::fold::Folds,
     /// Cold: the text fields and the marks they draw.
@@ -904,6 +906,7 @@ impl NodeStore {
         self.interaction_states.clear();
         self.drags.clear();
         self.holds.clear();
+        self.pinches.clear();
         self.folds.clear();
         self.paged.clear();
         self.fields.clear();
@@ -6775,6 +6778,12 @@ impl<'a> BuildCx<'a> {
     /// Make an already-declared node take drags (default: it takes none).
     pub fn draggable(&mut self, handle: Handle, takes: bool) -> Handle {
         self.store.set_draggable(handle.id, takes);
+        handle
+    }
+
+    /// Make an already-declared node take pinches (default: it takes none).
+    pub fn pinchable(&mut self, handle: Handle, takes: bool) -> Handle {
+        self.store.set_pinchable(handle.id, takes);
         handle
     }
 

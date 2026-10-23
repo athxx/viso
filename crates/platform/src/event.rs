@@ -233,6 +233,34 @@ pub struct RawScroll {
     pub phase: ScrollPhase,
 }
 
+/// A trackpad's pinch or turn, in logical points: two fingers spreading or
+/// turning on it. A system that reports the two apart reports one gesture
+/// while either runs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RawGesture {
+    pub window: WindowId,
+    /// Where the pointer is.
+    pub x: f64,
+    pub y: f64,
+    /// The factor the fingers' spread scaled by since the last sample.
+    pub scale: f64,
+    /// How far they turned since the last sample, in radians, clockwise.
+    pub rotation: f64,
+    pub modifiers: Modifiers,
+    pub phase: GesturePhase,
+}
+
+/// Where a trackpad's gesture sample stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GesturePhase {
+    /// The fingers began.
+    Began,
+    /// They moved.
+    Changed,
+    /// They lifted, or the gesture was cancelled.
+    Ended,
+}
+
 /// Where a scroll sample stands in the gesture that made it: fingers on a
 /// trackpad scroll, lift, and the system coasts on. A wheel's notch, or a
 /// device that tells nothing of its gesture, is [`ScrollPhase::None`].
@@ -833,6 +861,8 @@ pub enum RawEvent {
     Pointer(RawPointer),
     /// A scroll sample.
     Scroll(RawScroll),
+    /// A trackpad's pinch or turn.
+    Gesture(RawGesture),
     /// A key transition.
     Key(RawKey),
     /// A committed text/IME segment.

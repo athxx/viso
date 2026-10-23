@@ -537,6 +537,48 @@ fn a_swipe_exports_as_a_drag_that_lifts_fast() {
     );
 }
 
+const PINCHED: &str = r#"
+export component Pinched {
+    state zoom: F32 = 1.0;
+    state ends = 0;
+    view {
+        Column {
+            Row {
+                width: 200dp; height: 200dp;
+                on pinch_move(event) { zoom = event.scale; }
+                on pinch_end(event) { ends += 1; }
+            }
+            Text { text: format("zoom={}", zoom); }
+            Text { text: format("ends={}", ends); }
+        }
+    }
+}
+"#;
+
+#[test]
+fn a_pinch_exports_as_two_touches_and_a_control_wheel() {
+    let page = export(PINCHED, false).unwrap();
+    let script = page.script.clone().unwrap();
+    assert!(script.contains(", 26, false, "), "{script}");
+    let Some(chrome) = chrome() else {
+        eprintln!("no Chrome: the page is not run");
+        return;
+    };
+    let pinch = "\nconst row = () => document.querySelector('body div div');\n\
+        const touch = (type, id, x) => row().dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: id, pointerType: 'touch', isPrimary: id === 2, button: type === 'pointermove' ? -1 : 0, clientX: x, clientY: 50 }));\n\
+        const wheel = (dy) => row().dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, ctrlKey: true, deltaY: dy, clientX: 50, clientY: 50 }));\n\
+        setTimeout(() => { touch('pointerdown', 2, 50); touch('pointerdown', 3, 100); touch('pointermove', 3, 140); touch('pointermove', 3, 150); touch('pointerup', 3, 150); touch('pointerup', 2, 50); }, 50);\n\
+        setTimeout(() => document.body.append('touched=' + document.body.textContent.includes('zoom=2') + '.'), 100);\n\
+        setTimeout(() => { wheel(-100); wheel(100); }, 200);\n";
+    let dom = run_in_chrome(&page, &(script + pinch), "export-pinched", &[], chrome);
+    assert!(dom.contains("touched=true."), "{dom}");
+    assert!(
+        dom.contains(">zoom=1<"),
+        "the wheel zooms in and back: {dom}"
+    );
+    assert!(dom.contains(">ends=2<"), "and rests: {dom}");
+}
+
 const CLIPPED: &str = r#"
 export component Clipped {
     state on = true;
