@@ -323,6 +323,8 @@ fn mount(out: &mut String, index: usize, content: &Content, eval: &Eval<'_>, roo
                         Prop::Layer { .. } => format!("P.layer({el}, {value})"),
                         Prop::Range(name) => format!("P.range({el}, {value}, \"{name}\")"),
                         Prop::Href => format!("P.href({el}, {value})"),
+                        Prop::Badge(name) => format!("P.badge({el}, {value}, \"{name}\")"),
+                        Prop::Avatar(name) => format!("P.avatar({el}, {value}, \"{name}\")"),
                         Prop::Progress(name) => {
                             format!("P.progress({el}, {value}, \"{name}\")")
                         }

@@ -57,6 +57,13 @@ pub use length::Consts;
 use length::{Lowered, Padding};
 use ui_ir::{Laid, Placement, StackPlacement};
 
+/// A badge's count size, in sp.
+const BADGE_FONT: f32 = 11.0;
+/// An avatar's side unless sized, in dp, and its initials' size as a share
+/// of its side.
+const AVATAR_SIDE: f32 = 40.0;
+const AVATAR_INITIALS: f32 = 0.4;
+
 /// A lowered view: its template, every node type name it wrote that neither a
 /// registered widget nor a component of the library declares (each with the
 /// span of its type path), and every component node that does not mount. A
@@ -774,9 +781,11 @@ impl<'a, 'l> Lowering<'a, 'l> {
         // on each axis it does not size.
         // A progress indicator or spinner measures to its natural size on
         // each axis it does not size.
+        // A badge measures to its count's pill, an avatar is a 40dp circle.
         let default = match type_name.as_str() {
             "GameViewport" => Some(LengthIr::Fill { weight: 1.0 }),
-            "ProgressBar" | "ProgressRing" | "Spinner" => Some(LengthIr::Fit),
+            "ProgressBar" | "ProgressRing" | "Spinner" | "Badge" => Some(LengthIr::Fit),
+            "Avatar" => Some(LengthIr::Fixed(AVATAR_SIDE)),
             _ => None,
         };
         if let Some(default) = default {
@@ -788,6 +797,33 @@ impl<'a, 'l> Lowering<'a, 'l> {
             if style.height.is_none() && lengths.is_none_or(|l| l.height.is_none()) {
                 style.height = Some(default);
             }
+        }
+        // A badge's count draws small; an avatar's initials grow with its
+        // side.
+        let font = match type_name.as_str() {
+            "Badge" => Some(TermsIr {
+                sp: BADGE_FONT,
+                ..TermsIr::default()
+            }),
+            "Avatar" => {
+                let side = match style.width {
+                    Some(LengthIr::Fixed(side)) => side,
+                    _ => AVATAR_SIDE,
+                };
+                Some(TermsIr {
+                    dp: side * AVATAR_INITIALS,
+                    ..TermsIr::default()
+                })
+            }
+            _ => None,
+        };
+        if let Some(font) = font
+            && style
+                .lengths
+                .as_deref()
+                .is_none_or(|l| l.font_size.is_none())
+        {
+            style.lengths_mut().font_size = Some(font);
         }
         style.settle_rules(&laid_slots(&laid));
         out.push(UiItem::Node(Box::new(UiNode {

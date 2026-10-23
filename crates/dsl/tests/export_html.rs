@@ -2013,3 +2013,44 @@ fn a_link_label_exports_as_an_anchor_to_its_url() {
     let script = page.script.as_deref().unwrap();
     assert!(script.contains("P.href("), "{script}");
 }
+
+const PLATES: &str = r##"
+export component Plates {
+    state unread: Option<I32> = Option::Some(5);
+    state who: String = "Grace Hopper";
+    view {
+        Column {
+            Badge { count: Option::Some(120); }
+            Badge { label: "New"; }
+            Badge { count: unread; on click { unread = Option::None; } }
+            Avatar { name: "Ada Lovelace"; }
+            Avatar { name: who; tint: Option::Some(#ff0000); on click { who = "Alan"; } }
+        }
+    }
+}
+"##;
+
+#[test]
+fn badges_and_avatars_export_as_pills_and_circles_their_script_keeps_current() {
+    let page = export(PLATES, false).unwrap();
+    let index = &page.index;
+    assert!(index.contains(">99+</span>"), "{index}");
+    assert!(index.contains("vx-badge vx-dot"), "{index}");
+    assert!(index.contains("aria-label=\"New\""), "{index}");
+    assert!(index.contains(">AL</span>"), "{index}");
+    assert!(
+        index.contains("role=\"img\" aria-label=\"Ada Lovelace\""),
+        "{index}"
+    );
+    let ada = viso_schema::plate::avatar_rgb("Ada Lovelace");
+    assert!(
+        page.styles
+            .contains(&format!("background-color: #{ada:06x}")),
+        "{}",
+        page.styles
+    );
+    assert!(page.styles.contains(".vx-badge {"), "{}", page.styles);
+    let script = page.script.as_deref().unwrap();
+    assert!(script.contains("P.badge("), "{script}");
+    assert!(script.contains("P.avatar("), "{script}");
+}

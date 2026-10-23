@@ -308,6 +308,8 @@ export const show = {
   spans: pieces,
   number: P.number,
   progress: P.progress,
+  badge: P.badge,
+  avatar: P.avatar,
   maskSize: (v) => {
     const fit = fits[Number(v ?? 0n)] || "contain";
     return fit === "fill" ? "100% 100%" : fit;

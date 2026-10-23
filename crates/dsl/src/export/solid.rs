@@ -689,6 +689,12 @@ impl Jsx<'_> {
                         }
                         Prop::Range(name) => attrs.push(format!("{name}={{show.num({v})}}")),
                         Prop::Href => attrs.push(format!("href={{show.opt({v})}}")),
+                        Prop::Badge(name) => {
+                            refs.push(format!("st.effect(() => show.badge(el, {v}, \"{name}\"));"))
+                        }
+                        Prop::Avatar(name) => refs.push(format!(
+                            "st.effect(() => show.avatar(el, {v}, \"{name}\"));"
+                        )),
                         Prop::Progress(name) => refs.push(format!(
                             "st.effect(() => show.progress(el, {v}, \"{name}\"));"
                         )),

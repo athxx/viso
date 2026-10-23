@@ -1,12 +1,17 @@
 //! A check's own drawing beside its caption: a `CheckBox`'s box with its
 //! mark, a `Toggle`'s track with its knob, a radio option's circle with its
-//! dot, a disclosure header's chevron.
+//! dot, a disclosure header's chevron; and a plate's caption, centred on the
+//! plate its node's background draws.
 //!
 //! A check is one node: its caption is its text content, and the mark sits
 //! at its start edge (its end edge right to left), centred on the caption's
 //! first line, the caption following after a gap. The mark is sized from the
 //! caption's first line, so it scales with the text, and inked with the
 //! caption's color, so a style that recolors the text recolors the mark too.
+//!
+//! A plate draws no mark: its caption sits in the middle of its node, which
+//! measures at least as wide as tall around it — a badge's count, an
+//! avatar's initials — or, with nothing in the caption, to a dot.
 
 use viso_render::{
     Border, LineCap, LineJoin, Path, PathCmd, Point, Primitive, Quad, Rect, Rgba, Stroke,
@@ -30,6 +35,10 @@ pub enum CheckShape {
     /// A circle, filled with a dot in it while checked: a radio option,
     /// checked while it is the one selected.
     Radio,
+    /// No mark: the caption centred on the plate the node's background
+    /// draws, which is at least as wide as tall; with an empty caption, a
+    /// dot. It has no checked state.
+    Plate,
 }
 
 /// What a check draws beside its caption.
@@ -45,6 +54,10 @@ const SIDE_MIN: f32 = 16.0;
 /// A first line's height over its baseline: an ascender is about four fifths
 /// of a line.
 const LINE_OVER_BASELINE: f32 = 1.25;
+
+/// The least height of a plate with a caption, and the side of one without.
+const PLATE_MIN: f32 = 16.0;
+const DOT: f32 = 8.0;
 
 /// Where a check's mark and caption sit in its node.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -65,12 +78,35 @@ impl CheckMark {
                 x: side * 1.75,
                 y: side,
             },
+            CheckShape::Plate => Vec2::ZERO,
         }
+    }
+
+    /// A plate's natural size round a caption of natural size `text`, and
+    /// the room it keeps on each side of the caption.
+    fn plate(text: Vec2) -> (Vec2, f32) {
+        if text.x <= 0.0 {
+            return (Vec2 { x: DOT, y: DOT }, 0.0);
+        }
+        let height = text.y.max(PLATE_MIN);
+        let room = height * 0.25;
+        let width = (text.x + room * 2.0).max(height);
+        (
+            Vec2 {
+                x: width,
+                y: height,
+            },
+            room,
+        )
     }
 
     /// How far the caption sits from the start edge: the mark and, before a
     /// caption that draws anything, the gap after it.
     fn lead(self, text: Vec2, baseline: f32) -> f32 {
+        if self.shape == CheckShape::Plate {
+            let (plate, _) = Self::plate(text);
+            return (plate.x - text.x) * 0.5;
+        }
         let mark = self.size(baseline);
         // A chevron's stroke sits well inside its box, which spaces it already.
         let gap = match self.shape {
@@ -87,7 +123,10 @@ impl CheckMark {
     /// The natural size of the check over a caption of natural size `text`
     /// whose first line has `baseline`.
     pub(crate) fn natural(self, text: Vec2, baseline: f32) -> Vec2 {
-        let place = self.place(text, baseline, 0.0, false);
+        if self.shape == CheckShape::Plate {
+            return Self::plate(text).0;
+        }
+        let place = self.place(text, baseline, Vec2::ZERO, false);
         Vec2 {
             x: self.lead(text, baseline) + text.x,
             y: (place.mark.y + place.mark.h).max(place.text.y + text.y),
@@ -96,12 +135,37 @@ impl CheckMark {
 
     /// The width the caption has in a check `width` wide.
     pub(crate) fn caption_width(self, width: f32, text: Vec2, baseline: f32) -> f32 {
+        if self.shape == CheckShape::Plate {
+            return (width - Self::plate(text).1 * 2.0).max(0.0);
+        }
         (width - self.lead(text, baseline)).max(0.0)
     }
 
     /// Where the mark and a caption of natural size `text` (first line at
-    /// `baseline`) sit in a check `width` wide, mirrored right to left.
-    pub(crate) fn place(self, text: Vec2, baseline: f32, width: f32, rtl: bool) -> MarkPlace {
+    /// `baseline`) sit in a check of `size` (its natural size where zero),
+    /// mirrored right to left.
+    pub(crate) fn place(self, text: Vec2, baseline: f32, size: Vec2, rtl: bool) -> MarkPlace {
+        if self.shape == CheckShape::Plate {
+            let natural = Self::plate(text).0;
+            let (w, h) = if size.x > 0.0 {
+                (size.x, size.y)
+            } else {
+                (natural.x, natural.y)
+            };
+            return MarkPlace {
+                mark: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w,
+                    h,
+                },
+                text: Vec2 {
+                    x: ((w - text.x) * 0.5).max(0.0),
+                    y: ((h - text.y) * 0.5).max(0.0),
+                },
+            };
+        }
+        let width = size.x;
         let mark = self.size(baseline);
         let line = if baseline > 0.0 {
             (baseline * LINE_OVER_BASELINE).min(text.y.max(baseline))
@@ -141,7 +205,7 @@ impl CheckMark {
     /// a knob slides on a spring that carries a quick change of mind on.
     pub(crate) fn timing(self) -> Timing {
         match self.shape {
-            CheckShape::Box | CheckShape::Chevron | CheckShape::Radio => {
+            CheckShape::Box | CheckShape::Chevron | CheckShape::Radio | CheckShape::Plate => {
                 Timing::eased(Duration::from_millis(150), Easing::EASE_OUT)
             }
             CheckShape::Switch => Timing::spring(Spring::with_response(0.28, 1.0)),
@@ -165,6 +229,7 @@ impl CheckMark {
         let p = progress.clamp(0.0, 1.0);
         let on_ink = contrast(ink);
         match self.shape {
+            CheckShape::Plate => {}
             CheckShape::Box => {
                 out.push(Primitive::Quad(Quad {
                     rect,
@@ -366,7 +431,7 @@ mod tests {
     fn the_caption_follows_the_mark_after_a_gap_and_the_mark_mirrors_right_to_left() {
         // A 20-high caption on a 16 baseline: a 20 side, centred on it.
         let text = Vec2 { x: 50.0, y: 20.0 };
-        let place = BOX.place(text, 16.0, 100.0, false);
+        let place = BOX.place(text, 16.0, Vec2 { x: 100.0, y: 20.0 }, false);
         assert_eq!(
             place.mark,
             Rect {
@@ -379,8 +444,30 @@ mod tests {
         assert_eq!(place.text, Vec2 { x: 30.0, y: 0.0 });
         assert_eq!(BOX.natural(text, 16.0), Vec2 { x: 80.0, y: 20.0 });
         assert_eq!(BOX.caption_width(100.0, text, 16.0), 70.0);
-        let rtl = BOX.place(text, 16.0, 100.0, true);
+        let rtl = BOX.place(text, 16.0, Vec2 { x: 100.0, y: 20.0 }, true);
         assert_eq!((rtl.mark.x, rtl.text.x), (80.0, 20.0));
+    }
+
+    #[test]
+    fn a_plate_centres_its_caption_at_least_as_wide_as_tall_or_is_a_dot() {
+        let plate = CheckMark {
+            shape: CheckShape::Plate,
+            checked: false,
+        };
+        // One digit: a circle.
+        let digit = Vec2 { x: 7.0, y: 13.0 };
+        assert_eq!(plate.natural(digit, 10.0), Vec2 { x: 16.0, y: 16.0 });
+        // Three: a pill with room on each side.
+        let three = Vec2 { x: 20.0, y: 13.0 };
+        assert_eq!(plate.natural(three, 10.0), Vec2 { x: 28.0, y: 16.0 });
+        let place = plate.place(three, 10.0, Vec2::ZERO, false);
+        assert_eq!(place.text, Vec2 { x: 4.0, y: 1.5 });
+        let wide = plate.place(digit, 10.0, Vec2 { x: 40.0, y: 40.0 }, false);
+        assert_eq!(wide.text, Vec2 { x: 16.5, y: 13.5 });
+        assert_eq!(
+            plate.natural(Vec2 { x: 0.0, y: 13.0 }, 10.0),
+            Vec2 { x: 8.0, y: 8.0 }
+        );
     }
 
     #[test]

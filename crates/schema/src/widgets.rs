@@ -211,6 +211,24 @@ const PROGRESS: &[WidgetProperty] = &[
     prop("label", "String").localizable(),
 ];
 
+/// A `Badge`'s `count`, none for a dot, shown up to `max` and as `max`
+/// and a plus past it; its pill's `tint` and the `label` it is named by in
+/// place of its count.
+const BADGE: &[WidgetProperty] = &[
+    prop("count", "Option<I32>"),
+    prop("max", "I32"),
+    look("tint", "Option<Color>"),
+    prop("label", "String").localizable(),
+];
+
+/// An `Avatar`'s person's `name`, the picture `image` shows in place of
+/// their initials, and the `tint` in place of the color the name picks.
+const AVATAR: &[WidgetProperty] = &[
+    prop("name", "String").localizable(),
+    prop("image", "Option<ImageAsset>"),
+    look("tint", "Option<Color>"),
+];
+
 /// A `Spinner`'s `tint` and the `label` it is named by.
 const SPINNER: &[WidgetProperty] = &[
     look("tint", "Option<Color>"),
@@ -604,6 +622,16 @@ pub const STANDARD: &[NativeWidget] = &[
         "Spinner",
         WidgetNode::Leaf,
         &[SPINNER, LAYOUT, TRANSFORM, FOCUS],
+    ),
+    layout(
+        "Badge",
+        WidgetNode::Leaf,
+        &[BADGE, TEXT_STYLE, LAYOUT, TRANSFORM, FOCUS],
+    ),
+    layout(
+        "Avatar",
+        WidgetNode::Leaf,
+        &[AVATAR, TEXT_STYLE, LAYOUT, TRANSFORM, FOCUS],
     ),
     layout(
         "ShaderView",

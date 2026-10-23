@@ -89,7 +89,9 @@ impl Drive for Control {
             | ControlKind::DragPreview
             | ControlKind::Progress
             | ControlKind::Ring
-            | ControlKind::Spinner => None,
+            | ControlKind::Spinner
+            | ControlKind::Badge
+            | ControlKind::Avatar => None,
         }
     }
 }

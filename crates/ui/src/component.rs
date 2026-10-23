@@ -2923,6 +2923,7 @@ impl NodeStore {
             let follows = match mark.shape {
                 crate::check_mark::CheckShape::Chevron => state.expanded,
                 crate::check_mark::CheckShape::Radio => state.checked.or(state.selected),
+                crate::check_mark::CheckShape::Plate => None,
                 _ => state.checked,
             };
             if let Some(checked) = follows {
@@ -6077,7 +6078,7 @@ impl LayoutTree for NodeStore {
         match self.check_marks[index as usize] {
             Some((mark, _)) => {
                 let (text, line) = caption_of(content);
-                baseline.map(|b| b + mark.place(text, line, 0.0, false).text.y)
+                baseline.map(|b| b + mark.place(text, line, Vec2::ZERO, false).text.y)
             }
             None => baseline,
         }

@@ -435,6 +435,27 @@ const url = (v) => {
   if (v === null || typeof v !== "object") return "";
   return A.get(String(BigInt.asUintN(64, v.f[0]))) || "";
 };
+// An avatar's initials and fill, as the runtime makes them: the first
+// letters of the first and last words, one letter without case alone; the
+// FNV-1a hash of the trimmed name picking the fill.
+const initials = (name) => {
+  const lead = (w) => { for (const c of w) if (/[\p{L}\p{N}]/u.test(c)) return c; return null; };
+  const words = name.split(/\s+/).filter(lead);
+  if (!words.length) return "";
+  const first = lead(words[0]);
+  let out = first.toUpperCase();
+  if (first.toLowerCase() !== first.toUpperCase() && words.length > 1) {
+    out += lead(words[words.length - 1]).toUpperCase();
+  }
+  return out;
+};
+const FILLS = ["#c62828", "#ad1457", "#6a1b9a", "#283593", "#1565c0", "#00695c", "#2e7d32",
+  "#d84315", "#4e342e", "#37474f"];
+const avatarFill = (name) => {
+  let h = 0x811c9dc5;
+  for (const b of new TextEncoder().encode(name.trim())) h = Math.imul(h ^ b, 0x01000193) >>> 0;
+  return FILLS[h % FILLS.length];
+};
 const P = {
   text: (el, v) => { el.textContent = text(v); },
   color: (el, v) => { el.style.color = color(v); },
@@ -488,6 +509,25 @@ const P = {
   },
   range: (el, v, name) => { el[name] = v === null ? "" : String(v); },
   href: (el, v) => attr(el, "href", v),
+  badge(el, v, name) {
+    el.dataset[name] = v === null ? "" : String(v);
+    const c = el.dataset.count, m = Math.max(Number(el.dataset.max || 99), 1);
+    const n = c ? Math.max(Number(c), 0) : null;
+    el.textContent = n === null ? "" : n > m ? m + "+" : String(n);
+    el.classList.toggle("vx-dot", n === null);
+  },
+  avatar(el, v, name) {
+    if (name === "image") el.dataset.image = url(v);
+    else {
+      el.dataset.name = v ?? "";
+      attr(el, "aria-label", el.dataset.name || null);
+      attr(el, "role", el.dataset.name ? "img" : null);
+    }
+    const u = el.dataset.image, who = el.dataset.name || "";
+    el.style.backgroundImage = u ? 'url("' + u + '")' : "";
+    el.textContent = u ? "" : initials(who);
+    if (!("tinted" in el.dataset)) el.style.backgroundColor = avatarFill(who);
+  },
   // A progress indicator's value, bounds or tint: its fill shows the
   // value's fraction of its range, and with no value it runs.
   progress(el, v, name) {

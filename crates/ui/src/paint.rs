@@ -642,7 +642,11 @@ fn paint_check(
 ) {
     let (text, baseline) = crate::component::caption_of(Some(content));
     let rtl = store.layout_direction(node) == crate::adaptive::LayoutDirection::Rtl;
-    let place = mark.place(text, baseline, world.w, rtl);
+    let size = Vec2 {
+        x: world.w,
+        y: world.h,
+    };
+    let place = mark.place(text, baseline, size, rtl);
     let ink = match content {
         Content::Text { color, .. } => *color,
         _ => WHITE,

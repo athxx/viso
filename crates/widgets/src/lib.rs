@@ -17,6 +17,8 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+pub mod avatar;
+pub mod badge;
 pub mod containers;
 pub mod controls;
 pub mod document;
@@ -34,6 +36,8 @@ pub mod scroll;
 pub mod swipe_row;
 pub mod text;
 
+pub use avatar::{Avatar, avatar};
+pub use badge::{Badge, badge, dot_badge};
 pub use containers::{View, ViewStyle, view};
 pub use controls::{
     Button, ButtonStyle, CaptionBar, CaptionBarStyle, CheckBox, CheckBoxStyle, Dock, DockHandle,

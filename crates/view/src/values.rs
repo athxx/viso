@@ -30,9 +30,10 @@ use std::sync::Arc;
 
 use viso_behavior::{Fault, FaultKind, Value};
 use viso_ui::content::Content;
+use viso_ui::plate::{BADGE_FILL, BADGE_INK, avatar_fill, badge_count, initials};
 use viso_ui::resource::{ResourceId, ResourceRevision};
 use viso_ui::shader::BrushProgram;
-use viso_ui::{Alignment2D, BoundSize, LayoutValue, LengthTerms};
+use viso_ui::{Alignment2D, BoundSize, FontWeight, LayoutValue, LengthTerms};
 use viso_ui::{
     AssetFit, Border, BuildCx, CheckMark, CheckShape, CursorIcon, Easing, FieldLook, FieldSeed,
     FontSize, InputKind, LiveRegion, LookValue, NodeId, NodeStore, NumberFormat, PageTransition,
@@ -617,21 +618,34 @@ impl Shown {
             && ((SEMANTICS..NODE).any(changed)
                 || (FIELD..TRANSLATE).any(changed)
                 || (matches!(control.kind, ControlKind::Label | ControlKind::Button)
-                    && (changed(0) || changed(PIECES + 1))))
+                    && (changed(0) || changed(PIECES + 1)))
+                || (control.kind == ControlKind::Badge && (changed(0) || changed(2))))
         {
+            let counted = (control.kind == ControlKind::Badge)
+                .then(|| {
+                    value
+                        .as_int()
+                        .map(|c| badge_count(c, max.as_int().unwrap_or(99)))
+                })
+                .flatten();
             let name = match (label.as_str(), control.kind) {
                 (Some(label), _) => Some(label),
                 (None, ControlKind::Label | ControlKind::Button) => match &spanned {
                     Some((text, _)) => Some(text.as_str()),
                     None => value.as_str(),
                 },
+                (None, ControlKind::Badge) => caption
+                    .as_str()
+                    .filter(|c| !c.is_empty())
+                    .or(counted.as_deref()),
                 (
                     None,
                     ControlKind::Check
                     | ControlKind::Switch
                     | ControlKind::Progress
                     | ControlKind::Ring
-                    | ControlKind::Spinner,
+                    | ControlKind::Spinner
+                    | ControlKind::Avatar,
                 ) => caption.as_str(),
                 (None, _) => None,
             };
@@ -1126,6 +1140,59 @@ impl Shown {
                     store.set_spinner_color(self.node, ink);
                 }
             }
+            // A badge shows its count up to its most centred on its pill,
+            // white on the error red unless styled; with no count, a dot.
+            ControlKind::Badge => {
+                let shown = value
+                    .as_int()
+                    .map_or_else(String::new, |c| badge_count(c, max.as_int().unwrap_or(99)));
+                let mut request = text(&Value::str(shown));
+                if !given(TEXT) {
+                    request.color = BADGE_INK;
+                }
+                if !given(TEXT + 2) {
+                    request.style.weight = FontWeight(500);
+                }
+                store.set_text_request(self.node, request);
+                plate(store, self.node, first && !given(LOOK + 2));
+                if (first || changed(4)) && !given(LOOK) {
+                    let fill = tint.as_int().map_or(BADGE_FILL, |_| color(tint));
+                    store.set_fill(self.node, fill);
+                }
+            }
+            // An avatar shows its picture cropped to its circle, or its
+            // name's initials, white on the color the name picks unless
+            // styled.
+            ControlKind::Avatar => {
+                let name = caption.as_str().unwrap_or_default();
+                if (first || changed(4) || changed(FIELD + 7)) && !given(LOOK) {
+                    let fill = tint
+                        .as_int()
+                        .map_or_else(|| avatar_fill(name), |_| color(tint));
+                    store.set_fill(self.node, fill);
+                }
+                match resource(value) {
+                    Some(picture) => {
+                        offer(store, host, picture);
+                        store.set_check_mark(self.node, None);
+                        store.set_asset(self.node, picture, AssetFit::Cover, None);
+                        if first && !given(LOOK + 2) {
+                            store.set_corner_radius(self.node, ROUND);
+                        }
+                    }
+                    None => {
+                        let mut request = text(&Value::str(initials(name)));
+                        if !given(TEXT) {
+                            request.color = BADGE_INK;
+                        }
+                        if !given(TEXT + 2) {
+                            request.style.weight = FontWeight(500);
+                        }
+                        store.set_text_request(self.node, request);
+                        plate(store, self.node, first && !given(LOOK + 2));
+                    }
+                }
+            }
             ControlKind::Select => select(store, self.node, value.as_int().unwrap_or(0)),
             ControlKind::Disclosure => {
                 let expanded = value.as_int().is_some_and(|v| v != 0);
@@ -1294,6 +1361,25 @@ fn describe_node(store: &mut NodeStore, node: NodeId, said: &Said<'_>) {
 }
 
 /// Marks the child of `node` at `selected` selected and each other child not.
+/// A corner radius of half the shorter side: a pill, or a circle.
+const ROUND: LengthTerms = LengthTerms {
+    pct: 0.5,
+    ..LengthTerms::ZERO
+};
+
+/// Makes `node` a plate, its caption centred on its background, rounding it
+/// to a pill when `round`.
+fn plate(store: &mut NodeStore, node: NodeId, round: bool) {
+    let plate = CheckMark {
+        shape: CheckShape::Plate,
+        checked: false,
+    };
+    store.set_check_mark(node, Some(plate));
+    if round {
+        store.set_corner_radius(node, ROUND);
+    }
+}
+
 fn select(store: &mut NodeStore, node: NodeId, selected: i64) {
     let links = |store: &NodeStore, id| store.arena().links(id);
     let mut child = links(store, node).and_then(|l| l.first_child);

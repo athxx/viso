@@ -151,6 +151,11 @@ pub(super) enum Prop {
     Range(&'static str),
     /// A link label's `url`, its `<a>`'s `href`.
     Href,
+    /// A badge's `count` or `max`, which the script shows as its text.
+    Badge(&'static str),
+    /// An avatar's `name` or `image`, which the script shows as its
+    /// initials, fill and name, or its picture.
+    Avatar(&'static str),
     /// A progress indicator's `value`, `min` or `max`: its `aria-value*`,
     /// and the fraction `--vx-at` its fill shows; with no value it runs.
     Progress(&'static str),
@@ -547,6 +552,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             ("Image" | "Svg", _) if !masked => "img",
             ("Text", _) => "span",
             ("LinkLabel", _) => "a",
+            ("Badge" | "Avatar", _) => "span",
             (_, Some(Role::Navigation)) => "nav",
             _ => "div",
         };
@@ -564,6 +570,8 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             (_, "ProgressBar") => "vx-progress",
             (_, "ProgressRing") => "vx-ring",
             (_, "Spinner") => "vx-spinner",
+            (_, "Badge") => "vx-badge",
+            (_, "Avatar") => "vx-avatar",
             (_, "Image" | "Svg") if masked => "vx-mask",
             (_, "Image" | "Svg") => "vx-image",
             _ => "vx-leaf",
@@ -1186,6 +1194,159 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         }
     }
 
+    /// Writes a badge's count as its text, `max` and a plus past its `max`,
+    /// and with no count makes it a dot (`vx-dot`); a count or most that
+    /// changes rides in `data-count`/`data-max` for the script to show
+    /// again. Its tint is its background, its label its `aria-label`.
+    fn badge(
+        &mut self,
+        key: u32,
+        control: &Control,
+        el: &mut Element,
+        decls: &mut Vec<(&'static str, String)>,
+        wires: &mut Vec<Wire>,
+        at: TextRange,
+    ) {
+        let max = match control.max {
+            Some(_) => self
+                .bind(
+                    wires,
+                    control.max,
+                    Prop::Badge("max"),
+                    "the badge's most",
+                    at,
+                )
+                .map(|fixed| fixed.int()),
+            None => Some(Some(99)),
+        };
+        let count = match control.value {
+            Some(_) => self
+                .bind(
+                    wires,
+                    control.value,
+                    Prop::Badge("count"),
+                    "the badge's count",
+                    at,
+                )
+                .map(|fixed| fixed.int()),
+            None => Some(None),
+        };
+        if let Some(max) = max {
+            el.attr("data-max", &max.unwrap_or(99).to_string());
+        }
+        if let Some(count) = count {
+            el.attr(
+                "data-count",
+                &count.map_or_else(String::new, |c| c.to_string()),
+            );
+        }
+        match (count, max) {
+            (Some(Some(count)), Some(max)) => {
+                el.text = Some(viso_schema::plate::badge_count(count, max.unwrap_or(99)));
+            }
+            (Some(None), _) => el.classes.push("vx-dot".to_owned()),
+            _ => {}
+        }
+        self.plate_fill(key, control, decls, wires, at);
+        if control.semantics.label.is_none()
+            && let Some(fixed) = self.bind(
+                wires,
+                control.caption,
+                Prop::Label { alt: false },
+                "the label",
+                at,
+            )
+        {
+            el.attr("aria-label", &fixed.text());
+        }
+    }
+
+    /// Writes an avatar's name's initials as its text, the color the name
+    /// picks as its background unless its tint says, and the name as its
+    /// `aria-label`; or its image as its background picture. A name or
+    /// image that changes the script shows again.
+    fn avatar(
+        &mut self,
+        key: u32,
+        control: &Control,
+        el: &mut Element,
+        decls: &mut Vec<(&'static str, String)>,
+        wires: &mut Vec<Wire>,
+        at: TextRange,
+    ) {
+        let tinted = control.tint.is_some();
+        if tinted {
+            el.attr("data-tinted", "");
+        }
+        let image = match control.value {
+            Some(_) => self
+                .bind(
+                    wires,
+                    control.value,
+                    Prop::Avatar("image"),
+                    "the picture",
+                    at,
+                )
+                .map(|fixed| fixed.resource()),
+            None => Some(None),
+        };
+        let name = match control.caption {
+            Some(_) => self
+                .bind(wires, control.caption, Prop::Avatar("name"), "the name", at)
+                .map(|fixed| fixed.text()),
+            None => Some(String::new()),
+        };
+        if let Some(Some(id)) = image {
+            let url = self.asset(id);
+            el.attr("data-image", &url);
+            decls.push(("background-image", format!("url(\"{url}\")")));
+        }
+        if let Some(name) = &name {
+            el.attr("data-name", name);
+            if image == Some(None) {
+                el.text = Some(viso_schema::plate::initials(name));
+            }
+            if !tinted {
+                let rgb = viso_schema::plate::avatar_rgb(name);
+                decls.push(("background-color", css::color((rgb << 8) | 0xff)));
+            }
+            if control.semantics.label.is_none() && !name.is_empty() {
+                el.attr("role", "img");
+                el.attr("aria-label", name);
+            }
+        }
+        self.plate_fill(key, control, decls, wires, at);
+    }
+
+    /// Writes a badge's or avatar's tint as its background.
+    fn plate_fill(
+        &mut self,
+        key: u32,
+        control: &Control,
+        decls: &mut Vec<(&'static str, String)>,
+        wires: &mut Vec<Wire>,
+        at: TextRange,
+    ) {
+        let Some(tint) = control.tint else {
+            return;
+        };
+        let var = format!("--v{key}-tint");
+        match self.fixed(tint, "the tint", at) {
+            Fixed::Changes => {
+                wires.push(Wire::Prop {
+                    entry: tint,
+                    prop: Prop::Var {
+                        name: var.clone(),
+                        token: VarToken::Color,
+                    },
+                });
+                decls.push(("background-color", format!("var({var})")));
+            }
+            Fixed::Value(Value::Nil) => {}
+            fixed => decls.push(("background-color", fixed.color())),
+        }
+    }
+
     /// Writes a number field's number, its bounds, its step and the places
     /// it shows: the keyboard and pattern of what it holds, its bounds as
     /// `aria-valuemin`/`aria-valuemax`, and its step and places as
@@ -1459,6 +1620,8 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             ControlKind::Progress | ControlKind::Ring | ControlKind::Spinner => {
                 self.progress(control, el, decls, wires, at);
             }
+            ControlKind::Badge => self.badge(key, control, el, decls, wires, at),
+            ControlKind::Avatar => self.avatar(key, control, el, decls, wires, at),
             ControlKind::Viewer => {
                 for (entry, name, what) in [
                     (control.min, "data-min-scale", "the viewer's least scale"),

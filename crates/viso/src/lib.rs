@@ -4578,17 +4578,17 @@ pub mod prelude {
     // widget is a `Component` an app authors and builds into its `BuildCx`, so
     // these belong in the default set as they land.
     pub use viso_widgets::{
-        Button, ButtonStyle, CheckBox, CheckBoxStyle, Grid, GridViewStyle, Icon, IconStyle, Image,
-        ImageStyle, Label, LabelStyle, Modal, ModalHandle, ModalHandleSlot, ModalStyle, NavHandle,
-        NavHandleSlot, NavigationStack, NavigationStackStyle, NumberField, Popup, PopupHandle,
-        PopupHandleSlot, PopupStyle, ProgressIndicator, RadioGroup, RadioStyle, Scroll,
-        ScrollViewStyle, Sheet, SheetDetent, SheetEdge, SheetHandle, SheetHandleSlot, SheetStyle,
-        Slider, SliderStyle, Spinner, Splitter, SplitterStyle, Tabs, TabsStyle, TextInput,
-        TextInputStyle, Toast, ToastEdge, ToastHandle, ToastHandleSlot, ToastStyle, Toggle,
-        ToggleStyle, View, ViewStyle, VirtualList, VirtualListViewStyle, button, checkbox, grid,
-        icon, image, label, link_label, modal, navigation_stack, number_field, popup, progress_bar,
-        progress_ring, radio_group, rich_text, scroll, sheet, slider, spinner, splitter, tabs,
-        text_input, toast, toggle, view, virtual_list,
+        Avatar, Badge, Button, ButtonStyle, CheckBox, CheckBoxStyle, Grid, GridViewStyle, Icon,
+        IconStyle, Image, ImageStyle, Label, LabelStyle, Modal, ModalHandle, ModalHandleSlot,
+        ModalStyle, NavHandle, NavHandleSlot, NavigationStack, NavigationStackStyle, NumberField,
+        Popup, PopupHandle, PopupHandleSlot, PopupStyle, ProgressIndicator, RadioGroup, RadioStyle,
+        Scroll, ScrollViewStyle, Sheet, SheetDetent, SheetEdge, SheetHandle, SheetHandleSlot,
+        SheetStyle, Slider, SliderStyle, Spinner, Splitter, SplitterStyle, Tabs, TabsStyle,
+        TextInput, TextInputStyle, Toast, ToastEdge, ToastHandle, ToastHandleSlot, ToastStyle,
+        Toggle, ToggleStyle, View, ViewStyle, VirtualList, VirtualListViewStyle, avatar, badge,
+        button, checkbox, dot_badge, grid, icon, image, label, link_label, modal, navigation_stack,
+        number_field, popup, progress_bar, progress_ring, radio_group, rich_text, scroll, sheet,
+        slider, spinner, splitter, tabs, text_input, toast, toggle, view, virtual_list,
     };
     // The top-level Window control (§68 public application lifecycle): a window
     // is not a node control — it does not enter the UI tree — so it appears as an

@@ -52,6 +52,7 @@ pub mod number_format;
 pub mod page_dots;
 pub mod paint;
 pub mod pinch;
+pub mod plate;
 pub mod progress;
 pub mod reactive;
 pub mod refresh;

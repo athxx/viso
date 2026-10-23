@@ -101,11 +101,17 @@ pub enum ControlKind {
     Ring = 23,
     /// `Spinner`: the system's spinner, turning while it shows.
     Spinner = 24,
+    /// `Badge`: its `count`, up to its `max`, centred on a pill; with no
+    /// count, a dot.
+    Badge = 25,
+    /// `Avatar`: its `image` cropped to a circle, or the initials of its
+    /// `name` on the color the name picks.
+    Avatar = 26,
 }
 
 impl ControlKind {
     /// Every kind, by discriminant.
-    pub const ALL: [ControlKind; 25] = [
+    pub const ALL: [ControlKind; 27] = [
         ControlKind::Check,
         ControlKind::Slider,
         ControlKind::Select,
@@ -131,6 +137,8 @@ impl ControlKind {
         ControlKind::Progress,
         ControlKind::Ring,
         ControlKind::Spinner,
+        ControlKind::Badge,
+        ControlKind::Avatar,
     ];
 
     /// The kind native widget `widget` is.
@@ -160,6 +168,8 @@ impl ControlKind {
             "ProgressBar" => ControlKind::Progress,
             "ProgressRing" => ControlKind::Ring,
             "Spinner" => ControlKind::Spinner,
+            "Badge" => ControlKind::Badge,
+            "Avatar" => ControlKind::Avatar,
             _ => ControlKind::Plain,
         }
     }
@@ -193,6 +203,8 @@ impl ControlKind {
                 | ControlKind::Progress
                 | ControlKind::Ring
                 | ControlKind::Spinner
+                | ControlKind::Badge
+                | ControlKind::Avatar
         )
     }
 
@@ -208,6 +220,8 @@ impl ControlKind {
                     | ControlKind::Progress
                     | ControlKind::Ring
                     | ControlKind::Spinner
+                    | ControlKind::Badge
+                    | ControlKind::Avatar
             )
     }
 
@@ -286,7 +300,9 @@ impl ControlKind {
                 ControlKind::Label
                 | ControlKind::Button
                 | ControlKind::TextInput
-                | ControlKind::Number,
+                | ControlKind::Number
+                | ControlKind::Badge
+                | ControlKind::Avatar,
                 "color",
             ) => ControlInput::TextColor,
             (
@@ -300,21 +316,27 @@ impl ControlKind {
                 ControlKind::Label
                 | ControlKind::Button
                 | ControlKind::TextInput
-                | ControlKind::Number,
+                | ControlKind::Number
+                | ControlKind::Badge
+                | ControlKind::Avatar,
                 "font_weight",
             ) => ControlInput::FontWeight,
             (
                 ControlKind::Label
                 | ControlKind::Button
                 | ControlKind::TextInput
-                | ControlKind::Number,
+                | ControlKind::Number
+                | ControlKind::Badge
+                | ControlKind::Avatar,
                 "font_family",
             ) => ControlInput::FontFamily,
             (
                 ControlKind::Label
                 | ControlKind::Button
                 | ControlKind::TextInput
-                | ControlKind::Number,
+                | ControlKind::Number
+                | ControlKind::Badge
+                | ControlKind::Avatar,
                 "font_style",
             ) => ControlInput::FontStyle,
             (ControlKind::Label | ControlKind::Button, "spans") => ControlInput::Spans,
@@ -354,15 +376,24 @@ impl ControlKind {
             (ControlKind::Progress | ControlKind::Ring, "value") => ControlInput::Value,
             (ControlKind::Progress | ControlKind::Ring, "min") => ControlInput::Min,
             (ControlKind::Progress | ControlKind::Ring, "max") => ControlInput::Max,
-            (ControlKind::Progress | ControlKind::Ring | ControlKind::Spinner, "tint") => {
-                ControlInput::Tint
-            }
+            (
+                ControlKind::Progress
+                | ControlKind::Ring
+                | ControlKind::Spinner
+                | ControlKind::Badge
+                | ControlKind::Avatar,
+                "tint",
+            ) => ControlInput::Tint,
+            (ControlKind::Badge, "count") | (ControlKind::Avatar, "image") => ControlInput::Value,
+            (ControlKind::Badge, "max") => ControlInput::Max,
+            (ControlKind::Avatar, "name") => ControlInput::Caption,
             (
                 ControlKind::Check
                 | ControlKind::Switch
                 | ControlKind::Progress
                 | ControlKind::Ring
-                | ControlKind::Spinner,
+                | ControlKind::Spinner
+                | ControlKind::Badge,
                 "label",
             ) => ControlInput::Caption,
             (ControlKind::Slider | ControlKind::Number, "min") => ControlInput::Min,
@@ -413,6 +444,8 @@ impl ControlKind {
             ControlKind::Progress => "Progress",
             ControlKind::Ring => "Ring",
             ControlKind::Spinner => "Spinner",
+            ControlKind::Badge => "Badge",
+            ControlKind::Avatar => "Avatar",
         }
     }
 
@@ -433,8 +466,8 @@ pub fn widget_role(widget: &str) -> Option<Role> {
         "TextInput" => Role::TextField,
         "NumberField" => Role::SpinButton,
         "Tabs" => Role::TabList,
-        "Text" | "LinkLabel" => Role::Label,
-        "Image" | "Svg" | "GameViewport" => Role::Image,
+        "Text" | "LinkLabel" | "Badge" => Role::Label,
+        "Image" | "Svg" | "GameViewport" | "Avatar" => Role::Image,
         "VirtualList" => Role::List,
         "NavigationStack" => Role::Navigation,
         "Modal" | "Sheet" => Role::Dialog,

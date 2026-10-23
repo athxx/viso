@@ -353,6 +353,9 @@ dialog.vx-layer:not([open]), .vx-layer[hidden] { display: none; }
 .vx-toast > * { pointer-events: auto; }
 .vx-mask { display: block; mask: center / contain no-repeat; -webkit-mask: center / contain no-repeat; }
 .vx-link { color: #0066cc; text-decoration: underline; cursor: pointer; }
+.vx-badge { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; min-width: 1.4545em; height: 1.4545em; padding: 0 0.3636em; border-radius: 999px; background-color: #b3261e; color: #fff; font-weight: 500; line-height: 1; white-space: nowrap; }
+.vx-badge.vx-dot { min-width: 8px; width: 8px; height: 8px; padding: 0; }
+.vx-avatar { display: inline-flex; align-items: center; justify-content: center; overflow: hidden; border-radius: 50%; color: #fff; font-weight: 500; line-height: 1; background-size: cover; background-position: center; user-select: none; }
 .vx-progress, .vx-ring, .vx-spinner { color: var(--colors-primary); }
 .vx-progress { width: 160px; height: 4px; }
 .vx-ring { width: 32px; height: 32px; }

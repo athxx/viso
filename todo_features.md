@@ -19,6 +19,13 @@ Rules:
   widget graph (AGENTS 33).
 - Network/TLS/codecs are adapters (AGENTS 3.7).
 
+## W0 — Found on the way
+
+- [ ] Output color encoding: every backend writes linear-light values to a unorm surface
+  with no transfer function, so author colors show darker than their sRGB value
+  (`#1565c0` lands as `#022186`); encode exactly once (Rendering §5.4), sRGB images
+  included, and re-bless the snapshot goldens.
+
 ## W1 — 3D scene lane and `GameViewport` (ADR 0047)
 
 - [x] S1 RHI:
