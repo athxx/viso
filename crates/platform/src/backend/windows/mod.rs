@@ -12,6 +12,7 @@
 //! Windows machine.
 
 mod access;
+mod drop;
 mod menu;
 mod proc;
 mod system;
@@ -364,6 +365,9 @@ impl WinApp {
         // call fails harmlessly when a manifest already chose the awareness.
         let hinstance = unsafe {
             let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+            // OLE, for the windows' drop targets; a thread that already
+            // entered another apartment keeps it and takes no drops.
+            let _ = ::windows::Win32::System::Ole::OleInitialize(None);
             GetModuleHandleW(None).map_err(|e| PlatformError::Backend(e.to_string()))?
         };
         let shared = Rc::new(RefCell::new(PumpQueue {
@@ -573,6 +577,7 @@ impl PlatformApp for WinApp {
         system::set_dark_title(hwnd, dark);
         state.size.set(state.client_size());
         let access = access::attach(hwnd);
+        drop::register(&state);
         // No text field has focus yet: keys reach the window unconverted
         // until one asks for the IME.
         proc::set_text_entry(&state, None);

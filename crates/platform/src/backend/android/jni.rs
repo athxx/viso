@@ -225,27 +225,39 @@ unsafe fn read_string(env: *mut JNIEnv, s: jstring) -> Option<String> {
 /// `env` is the calling thread's `JNIEnv` and `pairs` a live `String[]` or
 /// null.
 unsafe fn read_pairs(env: *mut JNIEnv, pairs: jobjectArray) -> Vec<(String, String)> {
-    if pairs.is_null() {
+    // SAFETY: the caller's contract.
+    let mut strings = unsafe { read_strings(env, pairs) }.into_iter();
+    let mut vars = Vec::with_capacity(strings.len() / 2);
+    while let (Some(name), Some(value)) = (strings.next(), strings.next()) {
+        vars.push((name, value));
+    }
+    vars
+}
+
+/// The strings of the `String[]` `array`, a null one empty; an empty list
+/// for null.
+///
+/// # Safety
+///
+/// `env` is the calling thread's `JNIEnv` and `array` a live `String[]` or
+/// null.
+unsafe fn read_strings(env: *mut JNIEnv, array: jobjectArray) -> Vec<String> {
+    if array.is_null() {
         return Vec::new();
     }
     // SAFETY: the caller's contract; each element read is within the array
     // and its local reference is deleted once read.
     unsafe {
-        let len = env_call!(env, GetArrayLength, pairs);
+        let len = env_call!(env, GetArrayLength, array);
         let mut strings = Vec::with_capacity(len.max(0) as usize);
         for i in 0..len {
-            let element = env_call!(env, GetObjectArrayElement, pairs, i);
+            let element = env_call!(env, GetObjectArrayElement, array, i);
             strings.push(read_string(env, element).unwrap_or_default());
             if !element.is_null() {
                 env_call!(env, DeleteLocalRef, element);
             }
         }
-        let mut strings = strings.into_iter();
-        let mut vars = Vec::with_capacity(strings.len() / 2);
-        while let (Some(name), Some(value)) = (strings.next(), strings.next()) {
-            vars.push((name, value));
-        }
-        vars
+        strings
     }
 }
 
@@ -544,7 +556,7 @@ pub unsafe extern "system" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void
 /// `env` must be the calling thread's environment and `class` the
 /// `VisoActivity` class.
 unsafe fn register_natives(env: *mut JNIEnv, class: jclass) -> bool {
-    let natives: [(&CStr, &CStr, *mut c_void); 17] = [
+    let natives: [(&CStr, &CStr, *mut c_void); 19] = [
         (
             c"nativeStart",
             c"(Ldev/viso/VisoActivity;FIFLjava/lang/String;[Ljava/lang/String;)V",
@@ -594,6 +606,12 @@ unsafe fn register_natives(env: *mut JNIEnv, class: jclass) -> bool {
             native_commit as *mut c_void,
         ),
         (c"nativeEdit", c"(I)V", native_edit as *mut c_void),
+        (c"nativeDrag", c"(IFFIZ)I", native_drag as *mut c_void),
+        (
+            c"nativeDrop",
+            c"(FFLjava/lang/String;Ljava/lang/String;[Ljava/lang/String;)V",
+            native_drop as *mut c_void,
+        ),
     ];
     let methods: Vec<JNINativeMethod> = natives
         .iter()
@@ -877,4 +895,51 @@ extern "system" fn native_commit(env: *mut JNIEnv, _class: jclass, text: jstring
 
 extern "system" fn native_edit(_env: *mut JNIEnv, _class: jclass, action: jint) {
     send(Msg::Edit(action));
+}
+
+extern "system" fn native_drag(
+    _env: *mut JNIEnv,
+    _class: jclass,
+    phase: jint,
+    x: jfloat,
+    y: jfloat,
+    kinds: jint,
+    answer: jboolean,
+) -> jint {
+    let msg = Msg::Drag {
+        leave: phase == 1,
+        at: [x, y],
+        kinds,
+    };
+    if answer {
+        send_and_wait(msg, Duration::from_millis(500));
+    } else {
+        send(msg);
+    }
+    super::drop_answer()
+}
+
+extern "system" fn native_drop(
+    env: *mut JNIEnv,
+    _class: jclass,
+    x: jfloat,
+    y: jfloat,
+    text: jstring,
+    link: jstring,
+    files: jobjectArray,
+) {
+    // SAFETY: each is a live string, a live `String[]`, or null.
+    let (text, link, files) = unsafe {
+        (
+            read_string(env, text),
+            read_string(env, link),
+            read_strings(env, files),
+        )
+    };
+    send(Msg::Drop {
+        at: [x, y],
+        text,
+        link,
+        files: files.into_iter().map(Into::into).collect(),
+    });
 }

@@ -930,6 +930,9 @@ pub enum RawEvent {
     /// Clipboard text for the focused content: a native paste gesture, or the
     /// answer to [`PlatformApp::request_paste`](crate::PlatformApp::request_paste).
     Paste { window: WindowId, text: String },
+    /// A step of a drag from outside the app over a window; the handler
+    /// answers through its [`DropReply`](crate::DropReply).
+    Drop(crate::drop::RawDrop),
     /// The app moved to the background: it is no longer visible and should stop
     /// animating. On mobile the drawable may be torn down after this.
     Suspended,

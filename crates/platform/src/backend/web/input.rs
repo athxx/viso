@@ -1,5 +1,5 @@
-//! DOM input: pointer and wheel events on the canvas; keys, text,
-//! composition and clipboard events on the hidden input element.
+//! DOM input: pointer, wheel and drag-and-drop events on the canvas; keys,
+//! text, composition and clipboard events on the hidden input element.
 //!
 //! Text never accumulates in the input element. Typed text is taken from
 //! `beforeinput` and the edit cancelled; a composition is left to the
@@ -12,16 +12,18 @@ use js_sys::Reflect;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::wasm_bindgen;
 use web_sys::{
-    ClipboardEvent, CompositionEvent, Event, InputEvent, KeyboardEvent, PointerEvent, WheelEvent,
+    ClipboardEvent, CompositionEvent, DataTransfer, DragEvent, Event, InputEvent, KeyboardEvent,
+    PointerEvent, WheelEvent,
 };
 
 use super::{LOOP, Listener, Page, WINDOW, current_page, drive, push, write_clipboard};
 use crate::backend::utf16::byte_offset;
 use crate::backend::web_translate::{
-    buttons, key_code, modifiers, page_claims, pointer_id, pointer_kind, pointer_phase,
-    track_buttons, wheel_delta,
+    buttons, drop_actions, drop_effect, drop_kinds, key_code, modifiers, page_claims, pointer_id,
+    pointer_kind, pointer_phase, track_buttons, wheel_delta,
 };
 use crate::control::{InputKind, TextEntry};
+use crate::drop::{DropOffer, DropPhase, DropReply, RawDrop};
 use crate::event::{
     ClipboardReply, ClipboardShortcut, KeyCode, Modifiers, PointerButtons, PointerKind,
     PointerPhase, RawEvent, RawImePreedit, RawKey, RawPointer, RawScroll, RawText,
@@ -71,6 +73,10 @@ pub(super) fn listen(target: &Page) -> Vec<Listener> {
         Listener::new(canvas, "gesturechange", with_page(on_gesture)),
         Listener::new(canvas, "gestureend", with_page(on_gesture)),
         Listener::new(canvas, "contextmenu", |e| e.prevent_default()),
+        Listener::new(canvas, "dragenter", with_page(on_drag)),
+        Listener::new(canvas, "dragover", with_page(on_drag)),
+        Listener::new(canvas, "dragleave", with_page(on_drag)),
+        Listener::new(canvas, "drop", with_page(on_drag)),
         Listener::new(input, "keydown", with_page(on_key_down)),
         Listener::new(input, "keyup", with_page(on_key_up)),
         Listener::new(input, "beforeinput", with_page(on_before_input)),
@@ -183,6 +189,83 @@ fn on_wheel(page: &Page, e: &Event) {
         phase: crate::ScrollPhase::None,
     }));
     drive();
+}
+
+/// A drag from outside the page, or from elsewhere on it, over the canvas:
+/// each step is driven through the app at once, and the drop effect it
+/// answers is the browser's answer to the step. The drop is the browser's
+/// to cancel, so a file let go over the canvas never opens in the tab.
+fn on_drag(page: &Page, e: &Event) {
+    let e: &DragEvent = e.unchecked_ref();
+    let Some(data) = e.data_transfer() else {
+        return;
+    };
+    let kind = e.type_();
+    let phase = match kind.as_str() {
+        "dragleave" => DropPhase::Leave,
+        "drop" => DropPhase::Drop,
+        _ => DropPhase::Over,
+    };
+    if phase != DropPhase::Leave {
+        e.prevent_default();
+    }
+    let reply = if phase == DropPhase::Over {
+        page.arrival
+            .borrow_mut()
+            .get_or_insert_with(DropReply::new)
+            .clone()
+    } else {
+        page.arrival.borrow_mut().take().unwrap_or_default()
+    };
+    let offer = if phase == DropPhase::Drop {
+        dropped(&data)
+    } else {
+        let types: Vec<String> = data.types().iter().filter_map(|t| t.as_string()).collect();
+        DropOffer {
+            kinds: drop_kinds(types.iter().map(String::as_str)),
+            ..DropOffer::default()
+        }
+    };
+    let (left, top) = page.origin();
+    let at: &FractionalMouse = e.unchecked_ref();
+    push(RawEvent::Drop(RawDrop {
+        window: WINDOW,
+        phase,
+        x: at.client_x() - left,
+        y: at.client_y() - top,
+        offer,
+        reply: reply.clone(),
+    }));
+    drive();
+    if phase != DropPhase::Leave {
+        let allowed = drop_actions(&data.effect_allowed());
+        data.set_drop_effect(drop_effect(allowed.settle(reply.get())));
+    }
+}
+
+/// What a drop holds: its files, by name (a page never learns their paths),
+/// its first link and its text.
+fn dropped(data: &DataTransfer) -> DropOffer {
+    let read = |format| data.get_data(format).ok().filter(|t| !t.is_empty());
+    let (mut files, uri) = read("text/uri-list").map_or_default(|l| crate::drop::uri_list(&l));
+    if let Some(list) = data.files() {
+        files.extend(
+            (0..list.length())
+                .filter_map(|i| list.get(i))
+                .map(|f| f.name().into()),
+        );
+    }
+    let text = read("text/plain").or_else(|| uri.clone());
+    DropOffer {
+        kinds: crate::DropKinds {
+            text: text.is_some(),
+            uri: uri.is_some(),
+            files: !files.is_empty(),
+        },
+        text,
+        uri,
+        files,
+    }
 }
 
 /// Safari's trackpad pinch and turn, whose events tell the scale and the turn

@@ -15,8 +15,8 @@
 //! the widget.
 
 pub use viso_platform::{
-    ClipboardReply, GesturePhase, KeyCode as Key, PointerId, PointerKind, ScrollPhase,
-    primary_is_logo,
+    ClipboardReply, DropAction, DropOffer, DropPhase, DropReply, GesturePhase, KeyCode as Key,
+    PointerId, PointerKind, ScrollPhase, primary_is_logo,
 };
 use viso_platform::{EditMenuAction, WindowId};
 
@@ -129,6 +129,18 @@ pub struct ImePreeditSample {
     pub caret: usize,
 }
 
+/// A step of a drag from outside the app, at (`x`, `y`) in physical pixels.
+/// The driver answers through `reply` with what a drop there would do.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DropSample {
+    pub window: WindowId,
+    pub phase: DropPhase,
+    pub x: f32,
+    pub y: f32,
+    pub offer: DropOffer,
+    pub reply: DropReply,
+}
+
 /// The OS asked the focused content for its selection (a native copy/cut
 /// gesture). The driver answers through `reply`; the backend writes the answer
 /// to the system clipboard once the event returns.
@@ -175,6 +187,8 @@ pub enum InputSample {
     Copy(CopySample),
     /// What the user did with the focused field's edit menu.
     EditMenu(EditMenuSample),
+    /// A step of a drag from outside the app.
+    Drop(DropSample),
 }
 
 impl InputSample {
@@ -193,6 +207,7 @@ impl InputSample {
             InputSample::Paste(t) => t.window,
             InputSample::Copy(c) => c.window,
             InputSample::EditMenu(e) => e.window,
+            InputSample::Drop(d) => d.window,
         }
     }
 }

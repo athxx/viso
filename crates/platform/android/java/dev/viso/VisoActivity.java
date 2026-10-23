@@ -443,4 +443,14 @@ public class VisoActivity extends Activity implements SurfaceHolder.Callback2 {
     static native void nativeCommit(String text);
 
     static native void nativeEdit(int action);
+
+    /**
+     * A step of a drag from another app: over the view at ({@code x}, {@code y}) in px, offering
+     * {@code kinds}, or leaving it. With {@code answer} the call waits for the app and returns
+     * what it would do with a drop there, 0 for nothing; otherwise the app's last answer.
+     */
+    static native int nativeDrag(int phase, float x, float y, int kinds, boolean answer);
+
+    /** The drag was let go at ({@code x}, {@code y}) in px, holding these. */
+    static native void nativeDrop(float x, float y, String text, String link, String[] files);
 }

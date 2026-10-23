@@ -125,6 +125,31 @@ pub enum TapeGesturePhase {
     Ended = 2,
 }
 
+/// Where a drag from outside the app stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum TapeDropPhase {
+    Over = 0,
+    Leave = 1,
+    Drop = 2,
+}
+
+/// What a drag from outside offers: the kinds (`TEXT`, `URI`, `FILES`
+/// bits), and the contents the OS gave.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TapeOffer {
+    pub kinds: u8,
+    pub text: Option<String>,
+    pub uri: Option<String>,
+    pub files: Vec<String>,
+}
+
+impl TapeOffer {
+    pub const TEXT: u8 = 1;
+    pub const URI: u8 = 2;
+    pub const FILES: u8 = 4;
+}
+
 /// A key: its place among the named keys, or a key no name covers, by the
 /// code the platform reported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -213,6 +238,13 @@ pub enum TapeInput {
     SelectAll,
     /// The edit menu closed on its own.
     EditMenuClosed,
+    /// A step of a drag from outside the app.
+    Drop {
+        phase: TapeDropPhase,
+        x: f32,
+        y: f32,
+        offer: TapeOffer,
+    },
 }
 
 /// What follows the stream tag of a tape file, then its version.
@@ -436,6 +468,21 @@ impl Encode for TapeInput {
             }
             TapeInput::SelectAll => enc.write_u8(9),
             TapeInput::EditMenuClosed => enc.write_u8(10),
+            TapeInput::Drop { phase, x, y, offer } => {
+                enc.write_u8(13);
+                enc.write_u8(*phase as u8);
+                enc.write_f32(*x);
+                enc.write_f32(*y);
+                enc.write_u8(offer.kinds);
+                enc.write_u8(u8::from(offer.text.is_some()) | u8::from(offer.uri.is_some()) << 1);
+                for text in [&offer.text, &offer.uri].into_iter().flatten() {
+                    enc.write_str(text);
+                }
+                enc.write_varint(offer.files.len() as u64);
+                for file in &offer.files {
+                    enc.write_str(file);
+                }
+            }
             TapeInput::Gesture {
                 x,
                 y,
@@ -577,6 +624,36 @@ impl Decode for TapeInput {
                     phase,
                 }
             }
+            13 => {
+                let phase = match dec.read_u8()? {
+                    0 => TapeDropPhase::Over,
+                    1 => TapeDropPhase::Leave,
+                    2 => TapeDropPhase::Drop,
+                    _ => return Err(malformed),
+                };
+                let (x, y) = (dec.read_f32()?, dec.read_f32()?);
+                let kinds = dec.read_u8()?;
+                let given = dec.read_u8()?;
+                let mut offer = TapeOffer {
+                    kinds,
+                    ..TapeOffer::default()
+                };
+                if given & 1 != 0 {
+                    offer.text = Some(dec.read_str()?.to_owned());
+                }
+                if given & 2 != 0 {
+                    offer.uri = Some(dec.read_str()?.to_owned());
+                }
+                let at = dec.position();
+                let files = usize::try_from(dec.read_varint()?)
+                    .ok()
+                    .filter(|&n| n <= dec.remaining())
+                    .ok_or(DecodeError::Malformed { offset: at })?;
+                for _ in 0..files {
+                    offer.files.push(dec.read_str()?.to_owned());
+                }
+                TapeInput::Drop { phase, x, y, offer }
+            }
             _ => return Err(malformed),
         })
     }
@@ -655,6 +732,17 @@ mod tests {
                         TapeInput::Resize(TapeSurface::default()),
                         TapeInput::SelectAll,
                         TapeInput::EditMenuClosed,
+                        TapeInput::Drop {
+                            phase: TapeDropPhase::Drop,
+                            x: 5.0,
+                            y: 6.0,
+                            offer: TapeOffer {
+                                kinds: TapeOffer::TEXT | TapeOffer::FILES,
+                                text: Some("hi".into()),
+                                uri: None,
+                                files: vec!["/tmp/a b".into()],
+                            },
+                        },
                         TapeInput::Gesture {
                             x: 3.0,
                             y: 4.0,

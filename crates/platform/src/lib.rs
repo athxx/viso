@@ -25,6 +25,7 @@ pub mod accessibility;
 pub mod audio;
 pub mod backend;
 pub mod control;
+pub mod drop;
 pub mod event;
 pub mod handler;
 mod launch;
@@ -57,6 +58,10 @@ pub use control::{
     ControlFlow, DEFAULT_FRAME_BUDGET, EditLabels, EditMenu, EditMenuAction, InputKind,
     LogicalRect, Loupe, PlatformCaps, PlatformError, TextEntry, WindowChrome, WindowConfig,
     WindowId,
+};
+pub use drop::{
+    DropAction, DropActions, DropKinds, DropOffer, DropPhase, DropReply, RawDrop, file_path,
+    uri_list,
 };
 pub use event::{
     AcceptCell, Appearance, ClipboardReply, ClipboardShortcut, ColorScheme, CursorIcon,

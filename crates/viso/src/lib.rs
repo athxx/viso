@@ -2631,6 +2631,27 @@ impl WindowState {
     }
 }
 
+/// What a drag from outside offers, as data a target may take: its files,
+/// its link and its text, each empty until the OS gives its contents.
+fn outside_data(offer: &viso_runtime::DropOffer) -> viso_ui::DragData {
+    use viso_ui::{DragData, DragItem};
+    let mut data = DragData::new();
+    if offer.kinds.files {
+        data = data.with(DragItem::Files(offer.files.clone().into()));
+    }
+    if offer.kinds.uri {
+        data = data.with(DragItem::Uri(
+            offer.uri.as_deref().unwrap_or_default().into(),
+        ));
+    }
+    if offer.kinds.text {
+        data = data.with(DragItem::Text(
+            offer.text.as_deref().unwrap_or_default().into(),
+        ));
+    }
+    data
+}
+
 impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
     fn on_launch(&mut self, cx: &mut RuntimeCx<'_>) {
         // Construct the user application now that the pump is live, then take the
@@ -3160,6 +3181,24 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     buffer.queue(text_edit::EditIntent::Cut);
                     ws.settle_text_edits();
                 }
+            }
+            viso_runtime::InputSample::Drop(d) => {
+                // A drag from outside comes over the target under it; the
+                // reply tells the OS what a drop there would do.
+                let phase = match d.phase {
+                    viso_runtime::DropPhase::Over => viso_ui::ArrivalPhase::Over,
+                    viso_runtime::DropPhase::Leave => viso_ui::ArrivalPhase::Leave,
+                    viso_runtime::DropPhase::Drop => viso_ui::ArrivalPhase::Drop,
+                };
+                let at = viso_ui::Vec2::new(d.x / scale, d.y / scale);
+                let operation = ws
+                    .store
+                    .drag_from_outside(root, phase, at, outside_data(&d.offer));
+                d.reply.set(operation.map(|op| match op {
+                    viso_ui::DropOperation::Move => viso_runtime::DropAction::Move,
+                    viso_ui::DropOperation::Copy => viso_runtime::DropAction::Copy,
+                    viso_ui::DropOperation::Link => viso_runtime::DropAction::Link,
+                }));
             }
             viso_runtime::InputSample::EditMenu(e) => {
                 // The menu's Select All selects the focused field's text and

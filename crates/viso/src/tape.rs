@@ -18,8 +18,9 @@ use std::time::Duration;
 use viso_platform::{EditMenuAction, GesturePhase, Instant, ScrollPhase, WindowId};
 use viso_runtime::{FrameClock, InputSample, PointerKind};
 use viso_view::tape::{
-    BuildId, MAX_FRAMES, MAX_INPUTS, TapeFrame, TapeGesturePhase, TapeInput, TapeKey,
-    TapeModifiers, TapePointerKind, TapePointerPhase, TapeScrollPhase, TapeSurface, UiTape,
+    BuildId, MAX_FRAMES, MAX_INPUTS, TapeDropPhase, TapeFrame, TapeGesturePhase, TapeInput,
+    TapeKey, TapeModifiers, TapeOffer, TapePointerKind, TapePointerPhase, TapeScrollPhase,
+    TapeSurface, UiTape,
 };
 
 /// The first window's input being recorded, and where it goes.
@@ -160,6 +161,33 @@ impl TapeRecorder {
             InputSample::EditMenu(e) => match e.action {
                 EditMenuAction::SelectAll => TapeInput::SelectAll,
                 EditMenuAction::Closed => TapeInput::EditMenuClosed,
+            },
+            InputSample::Drop(d) => TapeInput::Drop {
+                phase: match d.phase {
+                    viso_runtime::DropPhase::Over => TapeDropPhase::Over,
+                    viso_runtime::DropPhase::Leave => TapeDropPhase::Leave,
+                    viso_runtime::DropPhase::Drop => TapeDropPhase::Drop,
+                },
+                x: d.x / scale,
+                y: d.y / scale,
+                offer: TapeOffer {
+                    kinds: [
+                        (d.offer.kinds.text, TapeOffer::TEXT),
+                        (d.offer.kinds.uri, TapeOffer::URI),
+                        (d.offer.kinds.files, TapeOffer::FILES),
+                    ]
+                    .into_iter()
+                    .filter(|&(has, _)| has)
+                    .fold(0, |kinds, (_, bit)| kinds | bit),
+                    text: d.offer.text.clone(),
+                    uri: d.offer.uri.clone(),
+                    files: d
+                        .offer
+                        .files
+                        .iter()
+                        .map(|f| f.to_string_lossy().into_owned())
+                        .collect(),
+                },
             },
         };
         self.push(input);
@@ -553,6 +581,27 @@ fn raw(window: WindowId, input: &TapeInput) -> Vec<viso_platform::RawEvent> {
             window,
             action: EditMenuAction::Closed,
         },
+        TapeInput::Drop { phase, x, y, offer } => RawEvent::Drop(viso_platform::RawDrop {
+            window,
+            phase: match phase {
+                TapeDropPhase::Over => viso_platform::DropPhase::Over,
+                TapeDropPhase::Leave => viso_platform::DropPhase::Leave,
+                TapeDropPhase::Drop => viso_platform::DropPhase::Drop,
+            },
+            x: f64::from(*x),
+            y: f64::from(*y),
+            offer: viso_platform::DropOffer {
+                kinds: viso_platform::DropKinds {
+                    text: offer.kinds & TapeOffer::TEXT != 0,
+                    uri: offer.kinds & TapeOffer::URI != 0,
+                    files: offer.kinds & TapeOffer::FILES != 0,
+                },
+                text: offer.text.clone(),
+                uri: offer.uri.clone(),
+                files: offer.files.iter().map(std::path::PathBuf::from).collect(),
+            },
+            reply: viso_platform::DropReply::new(),
+        }),
         TapeInput::Focus(focused) => RawEvent::WindowFocused {
             window,
             focused: *focused,

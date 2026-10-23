@@ -296,6 +296,24 @@ struct Session {
     over: Option<NodeId>,
 }
 
+/// A drag from outside the app over the window.
+#[derive(Debug)]
+struct Arrival {
+    data: Rc<DragData>,
+    over: Option<NodeId>,
+}
+
+/// Where a drag from outside the app is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArrivalPhase {
+    /// It came over the window or moved over it.
+    Over,
+    /// It left the window, or was given up.
+    Leave,
+    /// It was let go over the window.
+    Drop,
+}
+
 /// How a shown preview moves: its offset past where it lays out, heading
 /// for `to`, hidden on arrival when `hide`.
 #[derive(Debug)]
@@ -318,6 +336,7 @@ pub(crate) struct DragDrops {
     targets: Vec<(NodeId, DropTarget)>,
     armed: Vec<Armed>,
     session: Option<Session>,
+    arrival: Option<Arrival>,
     shown: Option<Shown>,
     told: Vec<(NodeId, DropTell)>,
 }
@@ -412,6 +431,66 @@ impl NodeStore {
     /// Whether a drag is over drop target `id`, which takes its data.
     pub fn drop_over(&self, id: NodeId) -> bool {
         self.drag_drops.session.as_ref().and_then(|s| s.over) == Some(id)
+            || self.drag_drops.arrival.as_ref().and_then(|a| a.over) == Some(id)
+    }
+
+    /// A drag from outside the app carrying `data` is at `at` under `root`,
+    /// in `phase`: it comes over the innermost target there that takes it,
+    /// leaving the one it was over, and dropped, that target takes it.
+    /// Before the drop `data` may offer its kinds with no contents, as the
+    /// OS keeps them until then. Returns what a drop where it is does, none
+    /// over no target.
+    pub fn drag_from_outside(
+        &mut self,
+        root: NodeId,
+        phase: ArrivalPhase,
+        at: Vec2,
+        data: DragData,
+    ) -> Option<DropOperation> {
+        let data = Rc::new(data);
+        let over = match phase {
+            ArrivalPhase::Leave => None,
+            _ => self.target_taking(root, at, &data),
+        };
+        let was = match self.drag_drops.arrival.as_mut() {
+            Some(a) => {
+                a.data = Rc::clone(&data);
+                core::mem::replace(&mut a.over, over)
+            }
+            None => {
+                self.drag_drops.arrival = Some(Arrival {
+                    data: Rc::clone(&data),
+                    over,
+                });
+                None
+            }
+        };
+        if was != over {
+            if let Some(was) = was {
+                self.tell_target(was, DropPhase::Leave, at, &data);
+            }
+            if let Some(over) = over {
+                self.tell_target(over, DropPhase::Enter, at, &data);
+            }
+            self.interaction_states.moved();
+        }
+        let operation = over.and_then(|o| self.target_of(o)).map(|t| t.operation);
+        if phase != ArrivalPhase::Over {
+            self.drag_drops.arrival = None;
+            if let Some(over) = over {
+                self.tell_target(over, DropPhase::Drop, at, &data);
+                self.interaction_states.moved();
+            }
+        }
+        operation
+    }
+
+    fn target_of(&self, id: NodeId) -> Option<&DropTarget> {
+        self.drag_drops
+            .targets
+            .iter()
+            .find(|(n, _)| *n == id)
+            .map(|(_, t)| t)
     }
 
     /// Whether node `id`'s data is being carried.
@@ -646,12 +725,17 @@ impl NodeStore {
     /// The innermost drop target under `at` that takes the data carried.
     fn target_at(&self, root: NodeId, at: Vec2) -> Option<NodeId> {
         let data = &self.drag_drops.session.as_ref()?.data;
+        self.target_taking(root, at, data)
+    }
+
+    /// The innermost drop target under `at` that takes `data`.
+    fn target_taking(&self, root: NodeId, at: Vec2, data: &DragData) -> Option<NodeId> {
+        if self.drag_drops.targets.is_empty() {
+            return None;
+        }
         let mut node = HitTestTree::hit(self, root, at.x, at.y);
         while let Some(n) = node {
-            if let Some((_, target)) = self.drag_drops.targets.iter().find(|(t, _)| *t == n)
-                && target.takes(data)
-                && !self.inert(n)
-            {
+            if self.target_of(n).is_some_and(|t| t.takes(data)) && !self.inert(n) {
                 return Some(n);
             }
             node = self.parent(n);
@@ -982,6 +1066,10 @@ impl NodeStore {
             } else if s.over.is_some_and(|o| !self.arena().is_live(o)) {
                 self.drag_drops.session.as_mut().unwrap().over = None;
             }
+        }
+        let over = self.drag_drops.arrival.as_ref().and_then(|a| a.over);
+        if over.is_some_and(|o| !self.arena().is_live(o)) {
+            self.drag_drops.arrival.as_mut().unwrap().over = None;
         }
     }
 }

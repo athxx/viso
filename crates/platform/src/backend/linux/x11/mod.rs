@@ -5,6 +5,7 @@
 //! asks for.
 
 mod atoms;
+mod dnd;
 mod ime;
 mod input;
 mod selection;
@@ -372,6 +373,8 @@ pub(crate) struct X11 {
     devices: Devices,
     ime: Option<Ime>,
     clipboard: Clipboard,
+    /// The drag from another client over one of the windows.
+    xdnd: dnd::Xdnd,
     cursor_theme: Option<CursorTheme>,
     cursors: Vec<(CursorIcon, xproto::Cursor)>,
     /// The scale `Xft.dpi` sets for every window, if any.
@@ -467,6 +470,7 @@ impl X11 {
             devices,
             ime,
             clipboard,
+            xdnd: dnd::Xdnd::default(),
             cursor_theme: None,
             cursors: Vec::new(),
             xft_scale: None,
@@ -661,6 +665,14 @@ impl X11 {
                 atoms.WM_PROTOCOLS,
                 AtomEnum::ATOM,
                 &[atoms.WM_DELETE_WINDOW, atoms._NET_WM_PING],
+            )?;
+            // A drop target for other clients' drags.
+            conn.change_property32(
+                PropMode::REPLACE,
+                xid,
+                atoms.XdndAware,
+                AtomEnum::ATOM,
+                &[dnd::VERSION],
             )?;
             let (instance, class) = wm_class();
             let mut wm_class = Vec::with_capacity(instance.len() + class.len() + 2);
@@ -926,7 +938,11 @@ impl X11 {
             Event::KeyRelease(e) => self.on_key(&e, false),
             Event::PropertyNotify(e) => self.on_property(&e),
             Event::SelectionNotify(e) => {
-                if let Ok(Some((window, text))) =
+                if let Some(dropped) = self.xdnd.on_notify(&self.conn, &self.atoms, &e) {
+                    if let Ok(Some(drop)) = dropped {
+                        self.pump.push(RawEvent::Drop(drop));
+                    }
+                } else if let Ok(Some((window, text))) =
                     self.clipboard.on_notify(&self.conn, &self.atoms, &e)
                 {
                     self.pump.push(RawEvent::Paste { window, text });
@@ -1093,6 +1109,20 @@ impl X11 {
     }
 
     fn on_client_message(&mut self, e: &ClientMessageEvent) {
+        if e.format == 32
+            && let Some(i) = self.index_xid(e.window)
+        {
+            let (id, scale) = (self.windows[i].id, self.windows[i].scale);
+            let step = self
+                .xdnd
+                .on_message(&self.conn, &self.atoms, self.root, e, id, scale);
+            if let Some(step) = step {
+                if let dnd::Step::Tell(drop) = step {
+                    self.pump.push(RawEvent::Drop(drop));
+                }
+                return;
+            }
+        }
         if e.type_ != self.atoms.WM_PROTOCOLS || e.format != 32 {
             return;
         }
@@ -1152,6 +1182,12 @@ impl X11 {
                     let icon = self.windows[i].cursor;
                     self.show_cursor(i, icon);
                 }
+            }
+            return;
+        }
+        if let Some(dropped) = self.xdnd.on_property(&self.conn, &self.atoms, e) {
+            if let Ok(Some(drop)) = dropped {
+                self.pump.push(RawEvent::Drop(drop));
             }
             return;
         }
@@ -1614,6 +1650,13 @@ impl Display for X11 {
             After::Copy(text) => self.copy(&text),
             After::Close(window) => self.close(window),
             After::Redrawn(_) => {}
+            After::Dropped(window, phase, reply) => {
+                if let Some(i) = self.index(window) {
+                    let xid = self.windows[i].xid;
+                    self.xdnd
+                        .answer(&self.conn, &self.atoms, xid, phase, &reply);
+                }
+            }
         }
         let _ = self.conn.flush();
     }

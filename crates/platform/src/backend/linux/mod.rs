@@ -91,6 +91,9 @@ pub(crate) enum Wake {
     /// A clipboard read finished.
     #[cfg_attr(not(feature = "wayland"), allow(dead_code))]
     Paste { window: WindowId, text: String },
+    /// A drop's data was read: the `text`, a `text/uri-list` when `list`.
+    #[cfg(feature = "wayland")]
+    Dropped { text: String, list: bool },
     /// An assistive technology asked something of a window.
     #[cfg(any(feature = "x11", feature = "wayland"))]
     Access {
@@ -233,6 +236,9 @@ pub(crate) struct Pump {
     /// Each window's accessibility adapter.
     #[cfg(any(feature = "x11", feature = "wayland"))]
     access: Vec<(WindowId, access::LinuxAccess)>,
+    /// A drop waiting for its data, read on a background thread.
+    #[cfg(feature = "wayland")]
+    dropping: Option<crate::RawDrop>,
 }
 
 impl Pump {
@@ -259,6 +265,12 @@ impl Pump {
         if let Some((_, access)) = self.access.iter_mut().find(|(w, _)| *w == window) {
             access.update(delta);
         }
+    }
+
+    /// Holds drop `step` until its data arrives as a [`Wake::Dropped`].
+    #[cfg(feature = "wayland")]
+    pub(crate) fn hold_drop(&mut self, step: crate::RawDrop) {
+        self.dropping = Some(step);
     }
 
     pub(crate) fn push_redraw(&mut self, window: WindowId) {
@@ -294,6 +306,26 @@ impl Pump {
             #[cfg(any(feature = "x11", feature = "wayland"))]
             Wake::Access { window, request } => {
                 self.push(RawEvent::Accessibility { window, request });
+            }
+            #[cfg(feature = "wayland")]
+            Wake::Dropped { text, list } => {
+                if let Some(mut step) = self.dropping.take() {
+                    let offer = &mut step.offer;
+                    if list {
+                        let (files, uri) = crate::drop::uri_list(&text);
+                        offer.text = uri.clone();
+                        offer.uri = uri;
+                        offer.files = files;
+                    } else {
+                        offer.text = Some(text);
+                    }
+                    offer.kinds = crate::DropKinds {
+                        text: offer.text.is_some(),
+                        uri: offer.uri.is_some(),
+                        files: !offer.files.is_empty(),
+                    };
+                    self.push(RawEvent::Drop(step));
+                }
             }
             Wake::Tasks => self.push(RawEvent::Wakeup),
         }
@@ -389,6 +421,8 @@ pub(crate) enum After {
     Close(WindowId),
     /// The handler drew (or declined to draw) a requested frame.
     Redrawn(WindowId),
+    /// The handler heard a step of a drag from outside and answered.
+    Dropped(WindowId, crate::DropPhase, crate::DropReply),
 }
 
 /// One windowing-system connection, as the shared loop drives it.
@@ -479,8 +513,10 @@ fn deliver<D: Display>(
         Copy(ClipboardReply),
         Close(AcceptCell, WindowId),
         Redrawn(WindowId),
+        Dropped(WindowId, crate::DropPhase, crate::DropReply),
     }
     let pending = match &event {
+        RawEvent::Drop(d) => Some(Pending::Dropped(d.window, d.phase, d.reply.clone())),
         RawEvent::CopyRequested { reply, .. } => Some(Pending::Copy(reply.clone())),
         RawEvent::CloseRequested { accept, window } => {
             Some(Pending::Close(accept.clone(), *window))
@@ -495,6 +531,7 @@ fn deliver<D: Display>(
             accept.is_accepted().then_some(After::Close(window))
         }
         Some(Pending::Redrawn(window)) => Some(After::Redrawn(window)),
+        Some(Pending::Dropped(window, phase, reply)) => Some(After::Dropped(window, phase, reply)),
         None => None,
     };
     if let Some(after) = after {

@@ -104,8 +104,8 @@ pub use context::{EventCx, FocusChange, StateWriter};
 pub use dirty::{DirtyCause, DirtyClass, DirtyLists, DirtyMark};
 pub use drag::{DragPhase, DragSample, MOUSE_SLOP, SWIPE_SPEED, SwipeDirection};
 pub use drag_drop::{
-    DragAccept, DragData, DragEnd, DragItem, DragKind, DropEvent, DropOperation, DropPhase,
-    DropTarget,
+    ArrivalPhase, DragAccept, DragData, DragEnd, DragItem, DragKind, DropEvent, DropOperation,
+    DropPhase, DropTarget,
 };
 pub use flush::{
     ADAPTIVE_ROUNDS, AdaptiveCycle, EffectsRan, ReactiveCycle, SETTLE_ROUNDS, Unsettled,

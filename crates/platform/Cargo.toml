@@ -93,6 +93,8 @@ objc2-app-kit = { version = "0.3", features = [
     "NSTextInputContext",
     "NSAttributedString",
     "NSPasteboard",
+    "NSPasteboardItem",
+    "NSDragging",
     "NSCursor",
     "NSAppearance",
     "NSWorkspace",
@@ -107,6 +109,7 @@ objc2-app-kit = { version = "0.3", features = [
 # iOS / iPadOS: UIKit via objc2 (default features: every class the backend
 # names is in the default set).
 [target.'cfg(target_os = "ios")'.dependencies]
+block2 = "0.6"
 objc2 = "0.6"
 objc2-foundation = "0.3"
 objc2-ui-kit = "0.3"
@@ -135,9 +138,12 @@ web-sys = { version = "0.3", features = [
     "Document",
     "DomRect",
     "DomRectReadOnly",
+    "DragEvent",
     "Element",
     "Event",
     "EventTarget",
+    "File",
+    "FileList",
     "FocusOptions",
     "HtmlCanvasElement",
     "HtmlElement",
@@ -164,6 +170,7 @@ web-sys = { version = "0.3", features = [
 # Windows: Win32 via the windows crate.
 [target.'cfg(target_os = "windows")'.dependencies]
 accesskit_windows = "0.35"
+windows-core = "0.62"
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_System_LibraryLoader",
@@ -185,6 +192,9 @@ windows = { version = "0.62", features = [
     "Win32_Media_KernelStreaming",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
+    "Win32_System_Ole",
+    "Win32_System_SystemServices",
+    "Win32_UI_Shell",
     "Win32_System_Variant",
     "Win32_Security",
 ] }

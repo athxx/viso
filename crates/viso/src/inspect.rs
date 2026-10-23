@@ -504,5 +504,13 @@ pub(crate) fn input_name(
         ),
         InputSample::Copy(_) => return None,
         InputSample::EditMenu(e) => (format!("edit_menu {:?}", e.action), None),
+        InputSample::Drop(d) => {
+            let phase = match d.phase {
+                viso_runtime::DropPhase::Over => return None,
+                viso_runtime::DropPhase::Leave => "drop_leave",
+                viso_runtime::DropPhase::Drop => "drop",
+            };
+            (phase.to_owned(), Some([d.x / scale, d.y / scale]))
+        }
     })
 }

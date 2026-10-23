@@ -20,6 +20,9 @@
 //!   later, the shared menu controller before. Its items are the view's
 //!   `copy:`, `cut:`, `paste:` and `selectAll:` actions, offered as the app's
 //!   menu allows.
+//! - Drags from other apps arrive through a drop interaction ([`drop`]).
+
+mod drop;
 
 use std::cell::{Cell, RefCell};
 
@@ -31,6 +34,7 @@ use objc2_foundation::{
     NSArray, NSComparisonResult, NSDate, NSDictionary, NSRange, NSSet, NSString, NSTimer, NSValue,
 };
 use objc2_ui_kit::{
+    UIDropInteraction, UIDropInteractionDelegate, UIDropProposal, UIDropSession,
     UIEditMenuConfiguration, UIEditMenuInteraction, UIEditMenuInteractionAnimating,
     UIEditMenuInteractionDelegate, UIEvent, UIEventButtonMask, UIGestureRecognizer,
     UIGestureRecognizerState, UIHoverGestureRecognizer, UIKeyInput, UIKeyboardType,
@@ -97,6 +101,11 @@ pub(super) struct ViewIvars {
     menu_replacing: Cell<bool>,
     /// The loupe session while the magnifier shows, on iOS 17 and later.
     loupe: RefCell<Option<Retained<AnyObject>>>,
+    /// What the drag from another app over the view offers, and the app's
+    /// answer.
+    arrival: RefCell<Option<(crate::DropKinds, crate::DropReply)>>,
+    /// A drop whose contents are loading.
+    landing: RefCell<Option<drop::Landing>>,
 }
 
 define_class!(
@@ -359,6 +368,48 @@ define_class!(
             if !self.ivars().menu_replacing.get() {
                 super::guarded(|| self.menu_closed());
             }
+        }
+    }
+
+    unsafe impl UIDropInteractionDelegate for VisoView {
+        #[unsafe(method(dropInteraction:canHandleSession:))]
+        fn drop_can_handle(
+            &self,
+            _interaction: &UIDropInteraction,
+            _session: &ProtocolObject<dyn UIDropSession>,
+        ) -> bool {
+            true
+        }
+
+        #[unsafe(method_id(dropInteraction:sessionDidUpdate:))]
+        fn drop_did_update(
+            &self,
+            _interaction: &UIDropInteraction,
+            session: &ProtocolObject<dyn UIDropSession>,
+        ) -> Retained<UIDropProposal> {
+            let mut operation = objc2_ui_kit::UIDropOperation::Cancel;
+            super::guarded(|| operation = self.drop_step(session, crate::DropPhase::Over));
+            UIDropProposal::initWithDropOperation(UIDropProposal::alloc(self.mtm()), operation)
+        }
+
+        #[unsafe(method(dropInteraction:sessionDidExit:))]
+        fn drop_did_exit(
+            &self,
+            _interaction: &UIDropInteraction,
+            session: &ProtocolObject<dyn UIDropSession>,
+        ) {
+            super::guarded(|| {
+                self.drop_step(session, crate::DropPhase::Leave);
+            });
+        }
+
+        #[unsafe(method(dropInteraction:performDrop:))]
+        fn drop_perform(
+            &self,
+            _interaction: &UIDropInteraction,
+            session: &ProtocolObject<dyn UIDropSession>,
+        ) {
+            super::guarded(|| self.perform_drop(session));
         }
     }
 
@@ -754,6 +805,8 @@ impl VisoView {
             menu_interaction: RefCell::new(None),
             menu_replacing: Cell::new(false),
             loupe: RefCell::new(None),
+            arrival: RefCell::new(None),
+            landing: RefCell::new(None),
         });
         // SAFETY: `initWithFrame:` is UIView's designated initializer.
         let view: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
@@ -793,6 +846,9 @@ impl VisoView {
             view.addInteraction(ProtocolObject::from_ref(&*interaction));
             *view.ivars().menu_interaction.borrow_mut() = Some(interaction);
         }
+        let delegate = ProtocolObject::<dyn UIDropInteractionDelegate>::from_ref(&*view);
+        let drops = UIDropInteraction::initWithDelegate(UIDropInteraction::alloc(mtm), delegate);
+        view.addInteraction(ProtocolObject::from_ref(&*drops));
         view
     }
 

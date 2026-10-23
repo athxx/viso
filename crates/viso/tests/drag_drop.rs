@@ -238,3 +238,60 @@ fn escape_puts_the_keyboard_s_card_back() {
         ]
     );
 }
+
+fn outside(
+    phase: viso::platform::DropPhase,
+    x: f64,
+    y: f64,
+    reply: &viso::platform::DropReply,
+) -> RawEvent {
+    use viso::platform::{DropKinds, DropOffer, RawDrop};
+    let dropped = phase == viso::platform::DropPhase::Drop;
+    RawEvent::Drop(RawDrop {
+        window: WIN,
+        phase,
+        x,
+        y,
+        offer: DropOffer {
+            kinds: DropKinds {
+                text: true,
+                uri: true,
+                files: false,
+            },
+            text: dropped.then(|| "https://example.org".to_owned()),
+            uri: dropped.then(|| "https://example.org".to_owned()),
+            files: Vec::new(),
+        },
+        reply: reply.clone(),
+    })
+}
+
+#[test]
+fn a_link_dragged_in_from_outside_drops_on_the_zone_taking_links() {
+    use viso::platform::{DropAction, DropPhase, DropReply};
+    let reply = DropReply::new();
+    let mut steps = vec![outside(DropPhase::Over, 150.0, 100.0, &reply), redraw()];
+    // Over the card zone, which takes no link, nothing answers.
+    let _ = run(&[steps.clone()]);
+    assert_eq!(reply.get(), None);
+    assert_eq!(heard(), []);
+    steps = [150.0, 190.0]
+        .into_iter()
+        .flat_map(|y| [outside(DropPhase::Over, 150.0, y, &reply), redraw()])
+        .collect();
+    let mut dropped = steps.clone();
+    dropped.extend([outside(DropPhase::Drop, 150.0, 190.0, &reply), redraw()]);
+    let _ = run(&[dropped]);
+    assert_eq!(
+        reply.get(),
+        Some(DropAction::Copy),
+        "the link zone copies it"
+    );
+    assert_eq!(
+        heard(),
+        [(2, "enter".to_owned()), (2, "drop None".to_owned())]
+    );
+    steps.extend([outside(DropPhase::Leave, 0.0, 0.0, &reply), redraw()]);
+    let _ = run(&[steps]);
+    assert_eq!(heard(), [(2, "enter".to_owned()), (2, "leave".to_owned())]);
+}

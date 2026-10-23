@@ -270,6 +270,7 @@ pub(crate) fn xft_scale(dpi: f64) -> Option<f64> {
 /// The scale for a monitor `width_px` wide and `width_mm` millimetres across,
 /// snapped to quarter steps in `1.0..=4.0`. Monitors that report no physical
 /// size (projectors, some virtual outputs) and implausible sizes get 1.
+#[cfg_attr(not(feature = "kms"), allow(dead_code))]
 pub(crate) fn monitor_scale(width_px: u32, width_mm: u32) -> f64 {
     if width_mm < 40 || width_px == 0 {
         return 1.0;

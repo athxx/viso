@@ -131,6 +131,20 @@ pub(super) enum Msg {
     Commit(String),
     /// A context-menu edit: copy 0, cut 1, paste 2.
     Edit(i32),
+    /// A drag from another app moved over the view at `at`, in pixels,
+    /// offering `kinds` (text 1, link 2, files 4), or left it.
+    Drag {
+        leave: bool,
+        at: [f32; 2],
+        kinds: i32,
+    },
+    /// The drag was let go at `at`, in pixels, holding these.
+    Drop {
+        at: [f32; 2],
+        text: Option<String>,
+        link: Option<String>,
+        files: Vec<std::path::PathBuf>,
+    },
     /// An assistive technology's request.
     Access(AccessRequest),
     /// The system recreated the activity: a new host view.
@@ -327,6 +341,31 @@ struct Loop {
     finishing: Cell<bool>,
     /// The accessibility adapter on the host view, while the window is open.
     access: RefCell<Option<accesskit_android::InjectingAdapter>>,
+    /// The app's answer to the drag from another app over the view.
+    arrival: RefCell<Option<crate::DropReply>>,
+}
+
+/// The app's last answer to a drag from another app, for the UI thread: 0
+/// for none, else 1 + the action.
+static DROP_ANSWER: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+/// The app's last answer to the drag over the view, as `nativeDrag` returns
+/// it.
+pub(super) fn drop_answer() -> i32 {
+    DROP_ANSWER.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// Keeps the app's answer to the drag for the UI thread, once the app has
+/// heard the step.
+fn note_drop_answer() {
+    let answer = LOOP.with(|l| l.arrival.borrow().as_ref().and_then(|r| r.get()));
+    let answer = match answer {
+        None => 0,
+        Some(crate::DropAction::Move) => 1,
+        Some(crate::DropAction::Copy) => 2,
+        Some(crate::DropAction::Link) => 3,
+    };
+    DROP_ANSWER.store(answer, std::sync::atomic::Ordering::Release);
 }
 
 thread_local! {
@@ -354,6 +393,7 @@ thread_local! {
         cursor: Cell::new(translate::pointer_icon(CursorIcon::Default)),
         finishing: Cell::new(false),
         access: RefCell::new(None),
+        arrival: RefCell::new(None),
     };
 }
 
@@ -653,6 +693,68 @@ fn apply(msg: Msg) {
             action: EditMenuAction::Closed,
         }),
         Msg::Edit(_) => {}
+        Msg::Drag { leave, at, kinds } => {
+            let reply = LOOP.with(|l| {
+                let mut arrival = l.arrival.borrow_mut();
+                if leave {
+                    arrival.take()
+                } else {
+                    Some(arrival.get_or_insert_with(crate::DropReply::new).clone())
+                }
+            });
+            let Some(reply) = reply else {
+                return;
+            };
+            let d = LOOP.with(|l| l.density.get());
+            push_to_window(RawEvent::Drop(crate::RawDrop {
+                window: WINDOW,
+                phase: if leave {
+                    crate::DropPhase::Leave
+                } else {
+                    crate::DropPhase::Over
+                },
+                x: f64::from(at[0]) / d,
+                y: f64::from(at[1]) / d,
+                offer: crate::DropOffer {
+                    kinds: crate::DropKinds {
+                        text: kinds & 1 != 0,
+                        uri: kinds & 2 != 0,
+                        files: kinds & 4 != 0,
+                    },
+                    ..crate::DropOffer::default()
+                },
+                reply,
+            }));
+        }
+        Msg::Drop {
+            at,
+            text,
+            link,
+            files,
+        } => {
+            let reply = LOOP
+                .with(|l| l.arrival.borrow_mut().take())
+                .unwrap_or_default();
+            let d = LOOP.with(|l| l.density.get());
+            let text = text.or_else(|| link.clone());
+            push_to_window(RawEvent::Drop(crate::RawDrop {
+                window: WINDOW,
+                phase: crate::DropPhase::Drop,
+                x: f64::from(at[0]) / d,
+                y: f64::from(at[1]) / d,
+                offer: crate::DropOffer {
+                    kinds: crate::DropKinds {
+                        text: text.is_some(),
+                        uri: link.is_some(),
+                        files: !files.is_empty(),
+                    },
+                    text,
+                    uri: link,
+                    files,
+                },
+                reply,
+            }));
+        }
         Msg::Access(request) => push_to_window(RawEvent::Accessibility {
             window: WINDOW,
             request,
@@ -893,6 +995,7 @@ impl PlatformApp for AndroidApp {
                 // The loss is delivered: the swapchain is gone, the window
                 // may go.
                 drop(LOOP.with(|l| l.retired.borrow_mut().take()));
+                note_drop_answer();
                 if let Some(ticket) = ticket {
                     acknowledge(ticket);
                 }

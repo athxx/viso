@@ -2,8 +2,9 @@
 //! soft keyboards that leave it empty, `key`) to [`KeyCode`], `PointerEvent`
 //! types, buttons and pointer types to phases, kinds and ids, `WheelEvent`
 //! deltas to logical points, [`CursorIcon`] to CSS cursors, and the platform
-//! strings that make Command the primary modifier, and the ARIA vocabulary of
-//! the accessibility mirror. Nothing here touches the
+//! strings that make Command the primary modifier, the ARIA vocabulary of
+//! the accessibility mirror, and the drag-and-drop effect and type names.
+//! Nothing here touches the
 //! DOM, so it is compiled and tested on every host.
 
 #![cfg_attr(
@@ -12,6 +13,7 @@
 )]
 
 use crate::accessibility::{AccessAction, AccessNode, SemanticsId, SemanticsLive, SemanticsRole};
+use crate::drop::{DropAction, DropActions, DropKinds};
 use crate::event::{
     CursorIcon, KeyCode, Modifiers, PointerButtons, PointerId, PointerKind, PointerPhase,
 };
@@ -467,6 +469,45 @@ pub(crate) fn slider_step(key: &str) -> Option<AccessAction> {
     }
 }
 
+/// The actions a drag whose `effectAllowed` is `allowed` allows; a source
+/// that set none allows every one.
+pub(crate) fn drop_actions(allowed: &str) -> DropActions {
+    let all = matches!(allowed, "all" | "uninitialized" | "");
+    // `copy`, `move`, `link`, `copyMove`, `copyLink`, `linkMove` or `none`.
+    let lower = allowed.to_ascii_lowercase();
+    let has = |name: &str| all || lower.contains(name);
+    DropActions {
+        moves: has("move"),
+        copies: has("copy"),
+        links: has("link"),
+    }
+}
+
+/// The `dropEffect` of `action`.
+pub(crate) fn drop_effect(action: Option<DropAction>) -> &'static str {
+    match action {
+        Some(DropAction::Move) => "move",
+        Some(DropAction::Copy) => "copy",
+        Some(DropAction::Link) => "link",
+        None => "none",
+    }
+}
+
+/// The kinds a drag whose `DataTransfer.types` are `types` offers: a
+/// `text/uri-list` is a link, `Files` the files.
+pub(crate) fn drop_kinds<'a>(types: impl IntoIterator<Item = &'a str>) -> DropKinds {
+    let mut kinds = DropKinds::default();
+    for t in types {
+        match t {
+            "Files" => kinds.files = true,
+            "text/uri-list" => kinds.uri = true,
+            "text/plain" | "text" => kinds.text = true,
+            _ => {}
+        }
+    }
+    kinds
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -765,5 +806,26 @@ mod tests {
         assert_eq!(value(&set, "aria-keyshortcuts"), Some("Alt+H"));
         assert_eq!(value(&set, "aria-expanded"), Some("false"));
         assert_eq!(value(&set, "aria-selected"), Some("true"));
+    }
+
+    #[test]
+    fn drag_effects_name_the_actions_a_source_allows() {
+        let copy_move = drop_actions("copyMove");
+        assert!(copy_move.moves && copy_move.copies && !copy_move.links);
+        assert_eq!(
+            drop_actions("none"),
+            DropActions {
+                moves: false,
+                copies: false,
+                links: false,
+            }
+        );
+        assert_eq!(drop_actions("uninitialized"), DropActions::ALL);
+        assert_eq!(
+            drop_effect(copy_move.settle(Some(DropAction::Link))),
+            "copy"
+        );
+        let kinds = drop_kinds(["Files", "text/uri-list", "application/x-moz-file"]);
+        assert!(kinds.files && kinds.uri && !kinds.text);
     }
 }

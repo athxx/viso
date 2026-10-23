@@ -43,9 +43,10 @@ use objc2::{AnyThread, ClassType, DefinedClass, MainThreadOnly, define_class, ms
 use objc2_app_kit::{
     NSAllRomanInputSourcesLocaleIdentifier, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
-    NSApplicationTerminateReply, NSBackingStoreType, NSColor, NSColorSpace, NSCursor, NSEvent,
-    NSEventMask, NSEventModifierFlags, NSEventPhase, NSMenu, NSMenuItem, NSPasteboard,
-    NSPasteboardTypeString, NSPreferredScrollerStyleDidChangeNotification, NSScreen, NSScroller,
+    NSApplicationTerminateReply, NSBackingStoreType, NSColor, NSColorSpace, NSCursor,
+    NSDragOperation, NSDraggingInfo, NSEvent, NSEventMask, NSEventModifierFlags, NSEventPhase,
+    NSMenu, NSMenuItem, NSPasteboard, NSPasteboardTypeFileURL, NSPasteboardTypeString,
+    NSPasteboardTypeURL, NSPreferredScrollerStyleDidChangeNotification, NSScreen, NSScroller,
     NSScrollerStyle, NSSystemColorsDidChangeNotification, NSTextInputClient, NSTrackingArea,
     NSTrackingAreaOptions, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
     NSWindowTitleVisibility, NSWorkspace,
@@ -63,6 +64,7 @@ use crate::control::{
     ControlFlow, EditLabels, EditMenu, EditMenuAction, LogicalRect, PlatformError, TextEntry,
     WindowChrome, WindowConfig, WindowId,
 };
+use crate::drop::{DropAction, DropActions, DropKinds, DropOffer, DropPhase, DropReply, RawDrop};
 use crate::event::{
     AcceptCell, Appearance, ClipboardReply, ClipboardShortcut, ColorScheme, CursorIcon,
     DisplayFeature, DisplayFeatureKind, KeyCode, Modifiers, PointerButtons, PointerPhase, RawEvent,
@@ -316,6 +318,66 @@ fn read_pasteboard() -> Option<String> {
     NSPasteboard::generalPasteboard()
         .stringForType(kind)
         .map(|s| s.to_string())
+}
+
+/// What a drag's pasteboard offers: its files, its first link that is no
+/// file, and its text.
+fn pasteboard_offer(pasteboard: &NSPasteboard) -> DropOffer {
+    // SAFETY: the pasteboard type names are immutable AppKit constants.
+    let (file, url, string) = unsafe {
+        (
+            NSPasteboardTypeFileURL,
+            NSPasteboardTypeURL,
+            NSPasteboardTypeString,
+        )
+    };
+    let mut offer = DropOffer::default();
+    if let Some(types) = pasteboard.types() {
+        offer.kinds = DropKinds {
+            text: types.containsObject(string),
+            uri: types.containsObject(url),
+            files: types.containsObject(file),
+        };
+    }
+    for item in pasteboard
+        .pasteboardItems()
+        .iter()
+        .flat_map(|items| items.iter())
+    {
+        if let Some(path) = item
+            .stringForType(file)
+            .and_then(|uri| crate::drop::file_path(&uri.to_string()))
+        {
+            offer.files.push(path);
+        } else if offer.uri.is_none()
+            && let Some(uri) = item.stringForType(url)
+        {
+            offer.uri = Some(uri.to_string());
+        }
+    }
+    // A file's URL is a URL too: what is left of the links is none.
+    offer.kinds.uri &= offer.uri.is_some() || offer.files.is_empty();
+    offer.text = pasteboard.stringForType(string).map(|s| s.to_string());
+    offer
+}
+
+/// The actions an AppKit drag's source allows.
+fn drag_actions(mask: NSDragOperation) -> DropActions {
+    DropActions {
+        moves: mask.intersects(NSDragOperation::Move | NSDragOperation::Generic),
+        copies: mask.contains(NSDragOperation::Copy),
+        links: mask.contains(NSDragOperation::Link),
+    }
+}
+
+/// The AppKit operation of `action`.
+fn drag_operation(action: Option<DropAction>) -> NSDragOperation {
+    match action {
+        Some(DropAction::Move) => NSDragOperation::Move,
+        Some(DropAction::Copy) => NSDragOperation::Copy,
+        Some(DropAction::Link) => NSDragOperation::Link,
+        None => NSDragOperation::None,
+    }
 }
 
 /// The system appearance as AppKit reports it right now.
@@ -1748,6 +1810,9 @@ struct ViewIvars {
     context_menu: Cell<Option<(EditMenu, EditLabels)>>,
     /// The trackpad's gestures under way: a magnify, a rotate, as bits.
     gestures: Cell<u8>,
+    /// What a drag from outside over the view offers, read as it came, and
+    /// the app's answer.
+    arrival: RefCell<Option<(DropOffer, DropReply)>>,
 }
 
 /// The magnify among a view's trackpad gestures.
@@ -2196,6 +2261,40 @@ define_class!(
 
         #[unsafe(method(doCommandBySelector:))]
         unsafe fn do_command(&self, _selector: Sel) {}
+
+        #[unsafe(method(draggingEntered:))]
+        fn dragging_entered(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
+            catch_unwind(AssertUnwindSafe(|| self.drag_over(sender, true)))
+                .unwrap_or(NSDragOperation::None)
+        }
+
+        #[unsafe(method(draggingUpdated:))]
+        fn dragging_updated(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
+            catch_unwind(AssertUnwindSafe(|| self.drag_over(sender, false)))
+                .unwrap_or(NSDragOperation::None)
+        }
+
+        #[unsafe(method(draggingExited:))]
+        fn dragging_exited(&self, _sender: Option<&ProtocolObject<dyn NSDraggingInfo>>) {
+            let _ = catch_unwind(AssertUnwindSafe(|| self.drag_leave()));
+        }
+
+        // Ask for the state of the app as it answers, even with the drag
+        // held still.
+        #[unsafe(method(wantsPeriodicDraggingUpdates))]
+        fn wants_periodic_dragging_updates(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(prepareForDragOperation:))]
+        fn prepare_for_drag_operation(&self, _sender: &ProtocolObject<dyn NSDraggingInfo>) -> bool {
+            true
+        }
+
+        #[unsafe(method(performDragOperation:))]
+        fn perform_drag_operation(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> bool {
+            catch_unwind(AssertUnwindSafe(|| self.drag_drop(sender))).unwrap_or(false)
+        }
     }
 );
 
@@ -2225,9 +2324,111 @@ impl VisoContentView {
             pixels: RefCell::new(None),
             context_menu: Cell::new(None),
             gestures: Cell::new(0),
+            arrival: RefCell::new(None),
         });
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
+        // SAFETY: the pasteboard type names are immutable AppKit constants.
+        let types = unsafe {
+            [
+                NSPasteboardTypeFileURL,
+                NSPasteboardTypeURL,
+                NSPasteboardTypeString,
+            ]
+        };
+        this.registerForDraggedTypes(&NSArray::from_slice(&types));
         this
+    }
+
+    /// A drag from outside came over the view, or moved over it: the app
+    /// hears where, and the OS the app's answer to the step before.
+    fn drag_over(
+        &self,
+        sender: &ProtocolObject<dyn NSDraggingInfo>,
+        entered: bool,
+    ) -> NSDragOperation {
+        let ivars = self.ivars();
+        let (offer, reply) = {
+            let mut arrival = ivars.arrival.borrow_mut();
+            if entered || arrival.is_none() {
+                *arrival = Some((
+                    pasteboard_offer(&sender.draggingPasteboard()),
+                    DropReply::new(),
+                ));
+            }
+            arrival.clone().unwrap_or_default()
+        };
+        let (x, y) = self.drag_location(sender);
+        self.push(RawEvent::Drop(RawDrop {
+            window: ivars.window,
+            phase: DropPhase::Over,
+            x,
+            y,
+            offer,
+            reply: reply.clone(),
+        }));
+        self.deliver_now();
+        drag_operation(drag_actions(sender.draggingSourceOperationMask()).settle(reply.get()))
+    }
+
+    /// The drag left the view, or was given up over it.
+    fn drag_leave(&self) {
+        let ivars = self.ivars();
+        let Some((offer, reply)) = ivars.arrival.borrow_mut().take() else {
+            return;
+        };
+        self.push(RawEvent::Drop(RawDrop {
+            window: ivars.window,
+            phase: DropPhase::Leave,
+            x: 0.0,
+            y: 0.0,
+            offer,
+            reply,
+        }));
+        self.deliver_now();
+    }
+
+    /// The drag was let go over the view: the app takes what it carries,
+    /// read afresh. Returns whether the app said it would.
+    fn drag_drop(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> bool {
+        let ivars = self.ivars();
+        let reply = ivars
+            .arrival
+            .borrow_mut()
+            .take()
+            .map(|(_, reply)| reply)
+            .unwrap_or_default();
+        let (x, y) = self.drag_location(sender);
+        self.push(RawEvent::Drop(RawDrop {
+            window: ivars.window,
+            phase: DropPhase::Drop,
+            x,
+            y,
+            offer: pasteboard_offer(&sender.draggingPasteboard()),
+            reply: reply.clone(),
+        }));
+        self.deliver_now();
+        reply.get().is_some()
+    }
+
+    /// Hands the queued events to the app at once, inside the AppKit turn
+    /// this callback runs in, so the OS hears the app's answer to this step.
+    fn deliver_now(&self) {
+        let shared = self.ivars().shared.clone();
+        let drive = shared.borrow().drive;
+        if let Some(drive) = drive {
+            // SAFETY: `drive` is what `MacApp::run` installed for the AppKit
+            // turn this callback runs inside, on the main thread, while the
+            // pump holds no borrow of the app or handler. See
+            // `drain_and_drive`.
+            unsafe { drain_and_drive(drive, &shared) };
+        }
+    }
+
+    /// Where a drag is, in this flipped view's logical points.
+    fn drag_location(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> (f64, f64) {
+        let p = self.convertPoint_fromView(sender.draggingLocation(), None);
+        let k = self.ivars().logical.get();
+        (p.x * k, p.y * k)
     }
 
     /// The event location in this flipped view's coordinates (logical points,
@@ -2845,6 +3046,30 @@ fn any_to_string(string: &AnyObject) -> String {
 mod tests {
     use super::*;
     use crate::backend::headless::HeadlessApp;
+
+    #[test]
+    fn a_drag_s_pasteboard_offers_its_files_and_its_text() {
+        use objc2_app_kit::{NSPasteboardItem, NSPasteboardWriting};
+        let pasteboard = NSPasteboard::pasteboardWithUniqueName();
+        // SAFETY: the pasteboard type names are immutable AppKit constants.
+        let (file, string) = unsafe { (NSPasteboardTypeFileURL, NSPasteboardTypeString) };
+        let item = NSPasteboardItem::new();
+        item.setString_forType(&NSString::from_str("file:///tmp/a%20b.txt"), file);
+        item.setString_forType(&NSString::from_str("a b.txt"), string);
+        let items = [ProtocolObject::<dyn NSPasteboardWriting>::from_retained(
+            item,
+        )];
+        pasteboard.clearContents();
+        assert!(pasteboard.writeObjects(&NSArray::from_retained_slice(&items)));
+        let offer = pasteboard_offer(&pasteboard);
+        assert_eq!(offer.files, [std::path::PathBuf::from("/tmp/a b.txt")]);
+        assert_eq!(offer.text.as_deref(), Some("a b.txt"));
+        assert!(offer.kinds.files && offer.kinds.text && !offer.kinds.uri);
+        assert_eq!(
+            drag_operation(drag_actions(NSDragOperation::Copy).settle(Some(DropAction::Move))),
+            NSDragOperation::Copy
+        );
+    }
 
     /// A stand-in handler that records the events it receives, so a test can
     /// assert the order `drain_and_drive` delivers them. It may also re-enqueue

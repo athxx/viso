@@ -574,6 +574,10 @@ impl State {
         self.clipboard.set(&self.qh, text, serial);
     }
 
+    fn answer_drop(&mut self, window: WindowId, phase: crate::DropPhase, reply: &crate::DropReply) {
+        self.clipboard.answer_drop(window, phase, reply);
+    }
+
     fn chore(&mut self, chore: Chore) {
         match chore {
             Chore::Paste(window) => {
@@ -777,6 +781,7 @@ impl Display for Wl {
                     state.windows[i].surface.commit();
                 }
             }
+            After::Dropped(window, phase, reply) => state.answer_drop(window, phase, &reply),
         }
         let _ = flush(&state.conn);
     }

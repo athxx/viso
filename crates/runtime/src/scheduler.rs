@@ -26,8 +26,8 @@ use crate::context::RuntimeCx;
 use crate::driver::{FrameDriver, Lifecycle};
 use crate::frame::run_frame;
 use crate::input::{
-    CopySample, EditMenuSample, GestureSample, ImePreeditSample, InputSample, KeySample, Modifiers,
-    PointerPhase, PointerSample, ScrollSample, TextSample,
+    CopySample, DropSample, EditMenuSample, GestureSample, ImePreeditSample, InputSample,
+    KeySample, Modifiers, PointerPhase, PointerSample, ScrollSample, TextSample,
 };
 use crate::schedule::{RedrawReason, RedrawReasons};
 
@@ -463,6 +463,26 @@ impl<D: FrameDriver, C: FrameClock> AppHandler for Loop<D, C> {
             RawEvent::Paste { window, text } => {
                 self.driver.on_input(
                     InputSample::Paste(TextSample { window, text }),
+                    self.clock.peek(),
+                );
+                self.reasons.add(RedrawReason::InputDirty);
+            }
+            RawEvent::Drop(d) => {
+                // The driver answers through the reply, which the backend
+                // reads as the OS next asks.
+                let scale = app
+                    .window(d.window)
+                    .map(|w| w.scale_factor())
+                    .unwrap_or(1.0);
+                self.driver.on_input(
+                    InputSample::Drop(DropSample {
+                        window: d.window,
+                        phase: d.phase,
+                        x: (d.x * scale) as f32,
+                        y: (d.y * scale) as f32,
+                        offer: d.offer,
+                        reply: d.reply,
+                    }),
                     self.clock.peek(),
                 );
                 self.reasons.add(RedrawReason::InputDirty);

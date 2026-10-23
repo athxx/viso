@@ -220,6 +220,7 @@ fn handle(
         }
         WM_DESTROY => {
             state.alive.set(false);
+            super::drop::revoke(hwnd);
             {
                 let mut q = state.shared.borrow_mut();
                 q.windows.retain(|w| !Rc::ptr_eq(w, state));

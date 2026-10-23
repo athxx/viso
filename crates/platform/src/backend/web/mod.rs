@@ -327,6 +327,8 @@ struct Page {
     buttons: RefCell<Vec<(i32, PointerButtons)>>,
     /// An IME composition is in progress in the input element.
     composing: Cell<bool>,
+    /// The app's answer to the drag from outside over the canvas.
+    arrival: RefCell<Option<crate::DropReply>>,
     /// The scale and the turn (degrees) a trackpad's gesture reached by its
     /// last event; `None` while none runs.
     gesture: Cell<Option<(f64, f64)>>,
@@ -872,6 +874,7 @@ impl PlatformApp for WebApp {
             size: Cell::new((pixels(rect.width(), scale), pixels(rect.height(), scale))),
             buttons: RefCell::new(Vec::new()),
             composing: Cell::new(false),
+            arrival: RefCell::new(None),
             gesture: Cell::new(None),
             unidentified: Cell::new(false),
             keyboard: Cell::new(0.0),

@@ -183,6 +183,7 @@ impl Keyboard {
         }
     }
 
+    #[cfg_attr(not(feature = "kms"), allow(dead_code))]
     pub(crate) fn has_keymap(&self) -> bool {
         self.keymap.is_some()
     }

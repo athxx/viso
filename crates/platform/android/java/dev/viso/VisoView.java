@@ -1,7 +1,16 @@
 package dev.viso;
 
+import android.app.Activity;
+import android.content.ClipData;
+import android.content.ClipDescription;
 import android.content.ClipboardManager;
+import android.content.ContentResolver;
 import android.content.Context;
+import android.database.Cursor;
+import android.net.Uri;
+import android.provider.OpenableColumns;
+import android.view.DragAndDropPermissions;
+import android.view.DragEvent;
 import android.graphics.Matrix;
 import android.graphics.Rect;
 import android.os.Build;
@@ -20,6 +29,11 @@ import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Magnifier;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.util.ArrayList;
 
 /**
  * The surface a Viso app draws into, and the receiver of its touch, mouse,
@@ -70,6 +84,18 @@ final class VisoView extends SurfaceView {
     private final Rect menuAt = new Rect();
     /** The edit menu is closing at the app's word, not the user's. */
     private boolean menuClosing;
+
+    /** The {@code nativeDrag} steps of a drag from another app. */
+    private static final int DRAG_OVER = 0;
+    private static final int DRAG_LEAVE = 1;
+    /** The kinds a drag offers, as {@code nativeDrag} takes them. */
+    private static final int DRAG_TEXT = 1;
+    private static final int DRAG_URI = 2;
+    private static final int DRAG_FILES = 4;
+    /** A drag from another app is over the view. */
+    private boolean dragInside;
+    /** Drops so far, naming each one's folder of copied files. */
+    private int drops;
 
     VisoView(Context context) {
         super(context);
@@ -135,6 +161,148 @@ final class VisoView extends SurfaceView {
         }
         VisoActivity.nativeTouch(action, event.getActionIndex(), ids, samples, tools,
                 event.getButtonState(), event.getMetaState());
+    }
+
+    // Drags from other apps.
+
+    @Override
+    public boolean onDragEvent(DragEvent event) {
+        switch (event.getAction()) {
+            case DragEvent.ACTION_DRAG_STARTED:
+                return true;
+            case DragEvent.ACTION_DRAG_ENTERED:
+            case DragEvent.ACTION_DRAG_LOCATION:
+                dragInside = true;
+                VisoActivity.nativeDrag(DRAG_OVER, event.getX(), event.getY(),
+                        dragKinds(event.getClipDescription()), false);
+                return true;
+            case DragEvent.ACTION_DRAG_EXITED:
+            case DragEvent.ACTION_DRAG_ENDED:
+                if (dragInside) {
+                    dragInside = false;
+                    VisoActivity.nativeDrag(DRAG_LEAVE, 0, 0, 0, false);
+                }
+                return true;
+            case DragEvent.ACTION_DROP:
+                dragInside = false;
+                return drop(event);
+            default:
+                return false;
+        }
+    }
+
+    /** The kinds a drag described by {@code description} offers. */
+    private static int dragKinds(ClipDescription description) {
+        if (description == null) {
+            return 0;
+        }
+        int kinds = 0;
+        for (int i = 0; i < description.getMimeTypeCount(); i++) {
+            String type = description.getMimeType(i);
+            if (type.equals(ClipDescription.MIMETYPE_TEXT_URILIST)) {
+                kinds |= DRAG_URI | DRAG_FILES;
+            } else if (type.startsWith("text/")) {
+                kinds |= DRAG_TEXT;
+            } else {
+                kinds |= DRAG_FILES;
+            }
+        }
+        return kinds;
+    }
+
+    /**
+     * The drag was let go over the view: the app is asked at once whether
+     * it takes it there, and if so its text, link and files go to it, the
+     * files another app shares by content copied into the cache first.
+     */
+    private boolean drop(DragEvent event) {
+        float x = event.getX();
+        float y = event.getY();
+        int kinds = dragKinds(event.getClipDescription());
+        if (VisoActivity.nativeDrag(DRAG_OVER, x, y, kinds, true) == 0) {
+            VisoActivity.nativeDrag(DRAG_LEAVE, 0, 0, 0, false);
+            return false;
+        }
+        ClipData clip = event.getClipData();
+        String text = null;
+        String link = null;
+        ArrayList<String> files = new ArrayList<>();
+        ArrayList<Uri> shared = new ArrayList<>();
+        for (int i = 0; clip != null && i < clip.getItemCount(); i++) {
+            ClipData.Item item = clip.getItemAt(i);
+            if (text == null && item.getText() != null) {
+                text = item.getText().toString();
+            }
+            Uri uri = item.getUri();
+            if (uri == null) {
+                continue;
+            }
+            String scheme = uri.getScheme();
+            if (ContentResolver.SCHEME_FILE.equals(scheme) && uri.getPath() != null) {
+                files.add(uri.getPath());
+            } else if (ContentResolver.SCHEME_CONTENT.equals(scheme)) {
+                shared.add(uri);
+            } else if (link == null) {
+                link = uri.toString();
+            }
+        }
+        if (shared.isEmpty()) {
+            VisoActivity.nativeDrop(x, y, text, link, files.toArray(new String[0]));
+            return true;
+        }
+        Context context = getContext();
+        DragAndDropPermissions permissions = context instanceof Activity
+                ? ((Activity) context).requestDragAndDropPermissions(event)
+                : null;
+        File folder = new File(context.getCacheDir(), "viso-drop-" + (++drops));
+        String dropText = text;
+        String dropLink = link;
+        new Thread(() -> {
+            folder.mkdirs();
+            ContentResolver resolver = context.getContentResolver();
+            for (int i = 0; i < shared.size(); i++) {
+                File copy = copyOut(resolver, shared.get(i), folder, i);
+                if (copy != null) {
+                    files.add(copy.getPath());
+                }
+            }
+            if (permissions != null) {
+                permissions.release();
+            }
+            VisoActivity.nativeDrop(x, y, dropText, dropLink, files.toArray(new String[0]));
+        }, "viso-drop").start();
+        return true;
+    }
+
+    /** A copy in {@code folder} of what {@code uri} holds, named as its provider names it. */
+    private static File copyOut(ContentResolver resolver, Uri uri, File folder, int index) {
+        String name = null;
+        try (Cursor cursor = resolver.query(uri,
+                new String[] {OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                name = cursor.getString(0);
+            }
+        } catch (RuntimeException e) {
+            // The provider names nothing: the copy is numbered.
+        }
+        if (name == null || name.isEmpty() || name.contains("/")) {
+            name = "item-" + index;
+        }
+        File copy = new File(folder, name);
+        try (InputStream in = resolver.openInputStream(uri);
+                OutputStream out = new FileOutputStream(copy)) {
+            if (in == null) {
+                return null;
+            }
+            byte[] buffer = new byte[64 * 1024];
+            for (int n; (n = in.read(buffer)) > 0; ) {
+                out.write(buffer, 0, n);
+            }
+            return copy;
+        } catch (Exception e) {
+            copy.delete();
+            return null;
+        }
     }
 
     // Keys.
