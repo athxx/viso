@@ -1277,6 +1277,22 @@ impl<'a> EventCx<'a> {
         }
     }
 
+    /// Whether the screen point `(x, y)` lands on the dispatching chip's
+    /// cross; `false` for a node with none, or on the state-only paths.
+    pub fn removes_at(&self, x: f32, y: f32) -> bool {
+        let Some(place) = self.place else {
+            return false;
+        };
+        let store = place.store;
+        let Some(mark) = store.check_mark(place.node) else {
+            return false;
+        };
+        let at = store.to_local(place.node, x, y);
+        let b = store.bounds(place.node);
+        let rtl = store.layout_direction(place.node) == crate::adaptive::LayoutDirection::Rtl;
+        mark.removes_at(at.x, Vec2 { x: b.w, y: b.h }, rtl)
+    }
+
     /// Whether the dispatching node is in interaction state `state`; `false`
     /// on the state-only paths.
     pub fn in_state(&self, state: crate::interaction::Interaction) -> bool {

@@ -320,6 +320,8 @@ fn handler(
             let payload = match &change {
                 // A control reports its change once, on its own node.
                 Some((changed, value)) if *changed == route.event => value.clone(),
+                // A release that removes a chip does not click it too.
+                Some((EventRoute::Removed, _)) if route.event == EventRoute::Click => continue,
                 _ if !runs_in(route, phase) => continue,
                 _ => match crate::route::payload(route.event, cx) {
                     Some(payload) => payload,

@@ -2924,6 +2924,7 @@ impl NodeStore {
                 crate::check_mark::CheckShape::Chevron => state.expanded,
                 crate::check_mark::CheckShape::Radio => state.checked.or(state.selected),
                 crate::check_mark::CheckShape::Plate => None,
+                crate::check_mark::CheckShape::Chip { .. } => state.checked.or(state.selected),
                 _ => state.checked,
             };
             if let Some(checked) = follows {
@@ -2983,7 +2984,8 @@ impl NodeStore {
     /// A new state moves the mark there over its shape's timing (at once
     /// while motion is reduced), repainting it each frame; a check's first
     /// state, a new shape, or becoming or ceasing to be a check shows at once
-    /// and re-measures it as well. A live-guarded write — a stale handle is a
+    /// and re-measures it as well. A step of a chip's motion re-measures it
+    /// too, its tick taking room. A live-guarded write — a stale handle is a
     /// no-op.
     pub fn set_check_mark(&mut self, id: NodeId, mark: Option<CheckMark>) {
         if !self.arena.is_live(id) {
@@ -3003,9 +3005,14 @@ impl NodeStore {
             _ => {
                 self.settle(id, &LookValue::Check(0.0));
                 self.check_marks[i] = mark.map(|m| (m, m.rest()));
+                // A new shape may add or drop the cross a chip's "Remove"
+                // action stands for.
                 self.mark_dirty(
                     id,
-                    DirtyClass::PAINT | DirtyClass::MEASURE | DirtyClass::LAYOUT,
+                    DirtyClass::PAINT
+                        | DirtyClass::MEASURE
+                        | DirtyClass::LAYOUT
+                        | DirtyClass::SEMANTICS,
                 );
             }
         }
@@ -3951,11 +3958,16 @@ impl NodeStore {
             }
             LookValue::Translate(offset) => self.set_translate(id, offset),
             LookValue::Check(progress) => {
-                if let Some((_, shown)) = &mut self.check_marks[id.index() as usize]
+                if let Some((mark, shown)) = &mut self.check_marks[id.index() as usize]
                     && *shown != progress
                 {
                     *shown = progress;
-                    self.mark_dirty(id, DirtyClass::PAINT);
+                    let dirty = if mark.moves_caption() {
+                        DirtyClass::PAINT | DirtyClass::MEASURE | DirtyClass::LAYOUT
+                    } else {
+                        DirtyClass::PAINT
+                    };
+                    self.mark_dirty(id, dirty);
                 }
             }
             LookValue::Scale(scale) => {
@@ -6049,9 +6061,9 @@ impl LayoutTree for NodeStore {
     fn content_natural(&self, index: u32) -> Option<Vec2> {
         let content = self.content_payload[index as usize].as_deref();
         match self.check_marks[index as usize] {
-            Some((mark, _)) => {
+            Some((mark, shown)) => {
                 let (text, baseline) = caption_of(content);
-                Some(mark.natural(text, baseline))
+                Some(mark.natural(text, baseline, shown))
             }
             None => content.map(|c| c.natural()),
         }
@@ -6062,9 +6074,9 @@ impl LayoutTree for NodeStore {
         let content = self.content_payload[index as usize].as_deref();
         let min = content.map_or(0.0, |c| c.min_width());
         match self.check_marks[index as usize] {
-            Some((mark, _)) => {
+            Some((mark, shown)) => {
                 let (text, baseline) = caption_of(content);
-                let lead = mark.natural(text, baseline).x - text.x;
+                let lead = mark.natural(text, baseline, shown).x - text.x;
                 lead + min
             }
             None => min,
@@ -6076,9 +6088,9 @@ impl LayoutTree for NodeStore {
         let content = self.content_payload[index as usize].as_deref();
         let baseline = content.and_then(|c| c.baseline());
         match self.check_marks[index as usize] {
-            Some((mark, _)) => {
+            Some((mark, shown)) => {
                 let (text, line) = caption_of(content);
-                baseline.map(|b| b + mark.place(text, line, Vec2::ZERO, false).text.y)
+                baseline.map(|b| b + mark.place(text, line, Vec2::ZERO, false, shown).text.y)
             }
             None => baseline,
         }
@@ -6137,9 +6149,9 @@ impl LayoutTree for NodeStore {
         // every frame, and reshaping on every one would defeat the text cache
         // (AGENTS section 20 / ADR 0025 "unchanged width must not reshape").
         let width = match self.check_marks[index as usize] {
-            Some((mark, _)) => {
+            Some((mark, shown)) => {
                 let (text, baseline) = caption_of(self.content_payload[index as usize].as_deref());
-                mark.caption_width(width, text, baseline)
+                mark.caption_width(width, text, baseline, shown)
             }
             None => width,
         };

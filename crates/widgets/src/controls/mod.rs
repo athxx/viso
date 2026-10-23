@@ -4,7 +4,7 @@
 //! single files in the crate root, interactive controls are grouped here: they
 //! share the pattern of a focusable node with pointer and key handlers plus a
 //! reactive visual state. The members so far are [`Button`], [`CheckBox`],
-//! [`Toggle`], [`RadioGroup`], [`Slider`], [`TextInput`], [`Splitter`],
+//! [`Toggle`], [`Chip`], [`RadioGroup`], [`Slider`], [`TextInput`], [`Splitter`],
 //! [`Tabs`], [`NavigationStack`], [`Popup`], [`Modal`], [`Sheet`], [`Toast`],
 //! and [`Dock`].
 
@@ -12,6 +12,7 @@ mod button;
 mod caption_bar;
 mod check;
 mod checkbox;
+mod chip;
 mod combo_box;
 mod dock;
 mod file_tree;
@@ -37,6 +38,7 @@ mod tooltip;
 pub use button::{Button, ButtonStyle, button};
 pub use caption_bar::{CaptionBar, CaptionBarStyle, caption_bar};
 pub use checkbox::{CheckBox, CheckBoxStyle, checkbox};
+pub use chip::{Chip, ChipStyle, chip};
 pub use combo_box::{ComboBox, ComboBoxHandle, ComboBoxHandleSlot, ComboBoxStyle, combo_box};
 pub use dock::{
     Dock, DockHandle, DockHandleSlot, DockNode, DockStyle, DockTree, DropPart, Floating,

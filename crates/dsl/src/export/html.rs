@@ -151,6 +151,8 @@ pub(super) enum Prop {
     Range(&'static str),
     /// A link label's `url`, its `<a>`'s `href`.
     Href,
+    /// A chip's `selected`, its `aria-pressed`.
+    Pressed,
     /// A badge's `count` or `max`, which the script shows as its text.
     Badge(&'static str),
     /// An avatar's `name` or `image`, which the script shows as its
@@ -546,7 +548,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             _ if summary => "summary",
             ("Disclosure", _) => "details",
             ("Modal" | "Sheet", _) => "dialog",
-            ("Button", _) => "button",
+            ("Button" | "Chip", _) => "button",
             ("TextInput", _) if lines => "textarea",
             ("TextInput" | "NumberField" | "Toggle" | "CheckBox" | "Slider", _) => "input",
             ("Image" | "Svg", _) if !masked => "img",
@@ -571,6 +573,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             (_, "ProgressRing") => "vx-ring",
             (_, "Spinner") => "vx-spinner",
             (_, "Badge") => "vx-badge",
+            (_, "Chip") => "vx-chip",
             (_, "Avatar") => "vx-avatar",
             (_, "Image" | "Svg") if masked => "vx-mask",
             (_, "Image" | "Svg") => "vx-image",
@@ -618,7 +621,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             el.classes.push("vx-snap".to_owned());
         }
         match node.type_name.as_str() {
-            "Button" => el.attr("type", "button"),
+            "Button" | "Chip" => el.attr("type", "button"),
             "TextInput" | "NumberField" if !lines => el.attr("type", "text"),
             "Toggle" => {
                 el.attr("type", "checkbox");
@@ -1530,6 +1533,36 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                     )
                 {
                     el.attr("aria-label", &fixed.text());
+                }
+            }
+            // A chip is a button pressed while selected, its caption its
+            // text; a removable one's cross the page draws at its end.
+            ControlKind::Chip => {
+                if let Some(fixed) =
+                    self.bind(wires, control.caption, Prop::Text, "the caption", at)
+                {
+                    el.text = Some(fixed.text());
+                }
+                if control.value.is_some() {
+                    let pressed = self.bind(
+                        wires,
+                        control.value,
+                        Prop::Pressed,
+                        "whether it is selected",
+                        at,
+                    );
+                    let on = pressed.is_some_and(|fixed| fixed.truth());
+                    el.attr("aria-pressed", if on { "true" } else { "false" });
+                }
+                if let Some(fixed) = self.bind(
+                    wires,
+                    control.removable,
+                    Prop::Data("data-removable"),
+                    "whether it removes",
+                    at,
+                ) && fixed.truth()
+                {
+                    el.attr("data-removable", "true");
                 }
             }
             ControlKind::Disclosure => {
@@ -2934,6 +2967,7 @@ fn aria_role(role: Role, tag: &str, widget: &str) -> Option<&'static str> {
         (Role::Button, "button", _)
         | (Role::CheckBox, "input", "CheckBox")
         | (Role::CheckBox, "input", "Toggle")
+        | (Role::CheckBox, "button", "Chip")
         | (Role::Slider, "input", _)
         | (Role::TextField | Role::SecureField, "input", _)
         | (Role::Image, "img", _)

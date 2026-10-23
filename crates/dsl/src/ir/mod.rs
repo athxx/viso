@@ -782,9 +782,10 @@ impl<'a, 'l> Lowering<'a, 'l> {
         // A progress indicator or spinner measures to its natural size on
         // each axis it does not size.
         // A badge measures to its count's pill, an avatar is a 40dp circle.
+        // A chip measures to its caption with the room round it.
         let default = match type_name.as_str() {
             "GameViewport" => Some(LengthIr::Fill { weight: 1.0 }),
-            "ProgressBar" | "ProgressRing" | "Spinner" | "Badge" => Some(LengthIr::Fit),
+            "ProgressBar" | "ProgressRing" | "Spinner" | "Badge" | "Chip" => Some(LengthIr::Fit),
             "Avatar" => Some(LengthIr::Fixed(AVATAR_SIDE)),
             _ => None,
         };

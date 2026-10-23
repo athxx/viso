@@ -689,6 +689,9 @@ impl Jsx<'_> {
                         }
                         Prop::Range(name) => attrs.push(format!("{name}={{show.num({v})}}")),
                         Prop::Href => attrs.push(format!("href={{show.opt({v})}}")),
+                        Prop::Pressed => attrs.push(format!(
+                            "aria-pressed={{show.truth({v}) ? \"true\" : \"false\"}}"
+                        )),
                         Prop::Badge(name) => {
                             refs.push(format!("st.effect(() => show.badge(el, {v}, \"{name}\"));"))
                         }

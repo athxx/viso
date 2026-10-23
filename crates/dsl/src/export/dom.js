@@ -509,6 +509,7 @@ const P = {
   },
   range: (el, v, name) => { el[name] = v === null ? "" : String(v); },
   href: (el, v) => attr(el, "href", v),
+  pressed: (el, v) => attr(el, "aria-pressed", truth(v) ? "true" : "false"),
   badge(el, v, name) {
     el.dataset[name] = v === null ? "" : String(v);
     const c = el.dataset.count, m = Math.max(Number(el.dataset.max || 99), 1);
@@ -1614,6 +1615,14 @@ const holdable = (el, fire) => {
   el.addEventListener("pointercancel", drop);
 };
 
+// Whether a click on a removable chip `el` lands on its cross, which takes
+// its end edge; a click a key made lands on none.
+const crossed = (el, e) => {
+  if (el.dataset.removable !== "true" || e.detail === 0) return false;
+  const b = el.getBoundingClientRect(), trail = b.height * 1.0625;
+  return getComputedStyle(el).direction === "rtl" ? e.clientX <= b.left + trail : e.clientX >= b.right - trail;
+};
+
 const DOM = ["click", "click", "pointerdown", "pointermove", "pointerup", "pointerenter", "pointerleave", "keydown", "keyup"];
 
 // Calls `fire` with the payload of each `route` event of `el`, a control
@@ -1632,11 +1641,17 @@ const listen = (el, route, capture, control, fire) => {
       el.$tap = setTimeout(() => fire(tap), 500);
     }), capture);
   } else if (route <= 6) {
-    el.addEventListener(DOM[route], live((e) => fire(pointer(route, e, el))), capture);
+    el.addEventListener(DOM[route], live((e) => {
+      if (route === 0 && crossed(el, e)) return;
+      fire(pointer(route, e, el));
+    }), capture);
   } else if (route <= 8) {
     el.addEventListener(DOM[route], live((e) => fire(rec([key(e), bool(e.repeat), mods(e)]))), capture);
   } else if (route === 9) {
     if (control === 0 || control === 8) el.addEventListener("change", () => fire(rec([bool(el.checked)])), capture);
+    else if (control === 27) el.addEventListener("click", live((e) => {
+      if (!crossed(el, e)) fire(rec([bool(el.getAttribute("aria-pressed") !== "true")]));
+    }), capture);
     else if (control === 9) el.addEventListener("toggle", () => fire(rec([bool(el.open)])), capture);
     else if (control === 10 || control === 20) {
       // Escape and a press on the scrim, the dialog's own box, and a
@@ -1747,6 +1762,13 @@ const listen = (el, route, capture, control, fire) => {
     el.addEventListener("viso-drop", (e) => {
       if (e.target === el && e.detail.phase === phase) fire(dropEvent(el, e.detail));
     }, capture);
+  } else if (route === 35) {
+    // A click on a chip's cross, or Delete or Backspace on it, asks it to go.
+    el.addEventListener("click", live((e) => { if (crossed(el, e)) fire(null); }), capture);
+    el.addEventListener("keydown", live((e) => {
+      if (e.repeat || e.isComposing || el.dataset.removable !== "true") return;
+      if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); fire(null); }
+    }), capture);
   } else if (route === 34) {
     dragDrop();
     el.addEventListener("viso-dragend", (e) => {

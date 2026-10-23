@@ -52,6 +52,7 @@ pub use controls::{
     file_tree, labelled, modal, navigation_stack, number_field, popover, popup, radio_group, sheet,
     slider, splitter, tabs, text_input, toast, toggle,
 };
+pub use controls::{Chip, ChipStyle, chip};
 pub use controls::{ComboBox, ComboBoxHandle, ComboBoxHandleSlot, ComboBoxStyle, combo_box};
 pub use controls::{
     ContextMenu, Menu, MenuBar, MenuBarHandle, MenuBarHandleSlot, MenuBarStyle, MenuEntry,

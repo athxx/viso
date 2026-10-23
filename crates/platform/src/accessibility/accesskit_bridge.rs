@@ -111,10 +111,10 @@ fn node_of(node: AccessNode) -> Node {
     }
     for action in node.actions.iter() {
         out.add_action(accesskit_action(action));
-        if action == AccessAction::Refresh {
+        if let Some((id, name)) = custom(action) {
             out.push_custom_action(CustomAction {
-                id: REFRESH,
-                description: "Refresh".into(),
+                id,
+                description: name.into(),
             });
         }
     }
@@ -167,8 +167,20 @@ fn role(role: SemanticsRole) -> Role {
     }
 }
 
-/// The id of the custom action a refreshable viewport offers.
+/// The ids of the custom actions a refreshable viewport and a removable
+/// node offer.
 const REFRESH: i32 = 1;
+const REMOVE: i32 = 2;
+
+/// The id and name of the custom action `action` is offered as, `None` for
+/// one the platform names itself.
+fn custom(action: AccessAction) -> Option<(i32, &'static str)> {
+    match action {
+        AccessAction::Refresh => Some((REFRESH, "Refresh")),
+        AccessAction::Remove => Some((REMOVE, "Remove")),
+        _ => None,
+    }
+}
 
 fn accesskit_action(action: AccessAction) -> Action {
     match action {
@@ -176,7 +188,7 @@ fn accesskit_action(action: AccessAction) -> Action {
         AccessAction::Click => Action::Click,
         AccessAction::Increment => Action::Increment,
         AccessAction::Decrement => Action::Decrement,
-        AccessAction::Refresh => Action::CustomAction,
+        AccessAction::Refresh | AccessAction::Remove => Action::CustomAction,
     }
 }
 
@@ -187,9 +199,11 @@ fn action_of(action: Action, data: Option<&ActionData>) -> Option<AccessAction> 
         Action::Click => AccessAction::Click,
         Action::Increment => AccessAction::Increment,
         Action::Decrement => AccessAction::Decrement,
-        Action::CustomAction if data == Some(&ActionData::CustomAction(REFRESH)) => {
-            AccessAction::Refresh
-        }
+        Action::CustomAction => match data {
+            Some(&ActionData::CustomAction(REFRESH)) => AccessAction::Refresh,
+            Some(&ActionData::CustomAction(REMOVE)) => AccessAction::Remove,
+            _ => return None,
+        },
         _ => return None,
     })
 }
@@ -355,8 +369,7 @@ mod tests {
             })
         );
         for action in AccessAction::ALL {
-            let data =
-                (action == AccessAction::Refresh).then_some(ActionData::CustomAction(REFRESH));
+            let data = custom(action).map(|(id, _)| ActionData::CustomAction(id));
             assert_eq!(
                 action_of(accesskit_action(action), data.as_ref()),
                 Some(action)

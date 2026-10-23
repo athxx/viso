@@ -258,6 +258,7 @@ pub(crate) fn control_cells(
         control.node.drop_accepts,
         control.node.drop_operation,
         control.url,
+        control.removable,
     ])
     .flatten()
     .chain(arms)
@@ -280,8 +281,9 @@ pub(crate) fn control_cells(
 /// `shadow`, a refreshable viewport's `refreshing`, its `sticky`, and a
 /// navigation stack's `page_transition`, its `hero`, its `focus_ring`, its
 /// `access_key`, its `drag_axis`, a viewer's `pan_margin`, and its `drag`,
-/// `drag_kind`, `drop_accepts` and `drop_operation`.
-const SHOWN: usize = 57;
+/// `drag_kind`, `drop_accepts` and `drop_operation`, a link label's `url`
+/// and a chip's `removable`.
+const SHOWN: usize = 58;
 
 /// The input of each value a node shows, in order.
 const SHOWN_INPUTS: [ControlInput; SHOWN] = [
@@ -342,6 +344,7 @@ const SHOWN_INPUTS: [ControlInput; SHOWN] = [
     ControlInput::DropAccepts,
     ControlInput::DropOperation,
     ControlInput::Url,
+    ControlInput::Removable,
 ];
 
 /// Where its `translate` sits among the values a node shows.
@@ -385,6 +388,9 @@ const PAN_MARGIN: usize = 51;
 
 /// Where a link label's `url` sits among the values a node shows.
 const URL: usize = 56;
+
+/// Where a chip's `removable` sits among the values a node shows.
+const REMOVABLE: usize = 57;
 
 /// Where its `drag`, `drag_kind`, `drop_accepts` and `drop_operation` sit
 /// among the values a node shows.
@@ -609,6 +615,7 @@ impl Shown {
             drop_accepts,
             drop_operation,
             url,
+            removable,
         ] = &shows;
         let access_key = access_key.as_str().and_then(|key| key.chars().next());
         let spanned = crate::text_style::spans(pieces);
@@ -642,6 +649,7 @@ impl Shown {
                     None,
                     ControlKind::Check
                     | ControlKind::Switch
+                    | ControlKind::Chip
                     | ControlKind::Progress
                     | ControlKind::Ring
                     | ControlKind::Spinner
@@ -651,6 +659,10 @@ impl Shown {
             };
             let role = match semantics.role.unwrap_or_default() {
                 Role::TextField if secure => Role::SecureField,
+                // A chip that does not select is a button.
+                Role::CheckBox if control.kind == ControlKind::Chip && control.value.is_none() => {
+                    Role::Button
+                }
                 role => role,
             };
             let said = Said {
@@ -879,7 +891,7 @@ impl Shown {
             && (0..LOOK)
                 .chain(TEXT..TRANSLATE)
                 .chain(PIECES..SHADOW)
-                .chain([ACCESS_KEY, PAN_MARGIN, URL])
+                .chain([ACCESS_KEY, PAN_MARGIN, URL, REMOVABLE])
                 .all(|at| !changed(at))
             && !repaint
         {
@@ -1090,6 +1102,25 @@ impl Shown {
                 store.set_check_mark(self.node, Some(CheckMark { shape, checked }));
                 // A check with no caption still shapes an empty one, which
                 // sizes and inks its mark.
+                if first || (given(FIELD + 7) && changed(FIELD + 7)) || changed(ACCESS_KEY) {
+                    let mut request = text(caption);
+                    if let Some(key) = access_key {
+                        request.cue(key);
+                    }
+                    store.set_text_request(self.node, request);
+                }
+            }
+            // A chip shows its caption on its body, selected or not when it
+            // selects, with a cross when removable.
+            ControlKind::Chip => {
+                let checked = value.as_int().is_some_and(|v| v != 0);
+                if control.value.is_some() {
+                    store.set_semantic_state(self.node, SemanticState::checked(checked));
+                }
+                let shape = CheckShape::Chip {
+                    removable: truth(removable, false),
+                };
+                store.set_check_mark(self.node, Some(CheckMark { shape, checked }));
                 if first || (given(FIELD + 7) && changed(FIELD + 7)) || changed(ACCESS_KEY) {
                     let mut request = text(caption);
                     if let Some(key) = access_key {

@@ -107,11 +107,18 @@ pub enum ControlKind {
     /// `Avatar`: its `image` cropped to a circle, or the initials of its
     /// `name` on the color the name picks.
     Avatar = 26,
+    /// `Chip`: its `label` on a rounded body. With a `selected`, a release
+    /// on it or Space/Enter flips `selected` as a [`Check`](Self::Check)
+    /// does, a tick growing in before the caption while selected; without
+    /// one, Space/Enter reports `click` as a release on it does. A
+    /// `removable` one draws a cross at its end edge: a release on the
+    /// cross, or Delete/Backspace, reports `removed`.
+    Chip = 27,
 }
 
 impl ControlKind {
     /// Every kind, by discriminant.
-    pub const ALL: [ControlKind; 27] = [
+    pub const ALL: [ControlKind; 28] = [
         ControlKind::Check,
         ControlKind::Slider,
         ControlKind::Select,
@@ -139,6 +146,7 @@ impl ControlKind {
         ControlKind::Spinner,
         ControlKind::Badge,
         ControlKind::Avatar,
+        ControlKind::Chip,
     ];
 
     /// The kind native widget `widget` is.
@@ -170,6 +178,7 @@ impl ControlKind {
             "Spinner" => ControlKind::Spinner,
             "Badge" => ControlKind::Badge,
             "Avatar" => ControlKind::Avatar,
+            "Chip" => ControlKind::Chip,
             _ => ControlKind::Plain,
         }
     }
@@ -183,6 +192,7 @@ impl ControlKind {
             "selected_changed" => EventRoute::SelectedChanged,
             "current_changed" => EventRoute::CurrentChanged,
             "detent_changed" => EventRoute::DetentChanged,
+            "removed" => EventRoute::Removed,
             _ => return None,
         };
         self.reports(route).then_some(route)
@@ -237,13 +247,15 @@ impl ControlKind {
                     | ControlKind::Sheet
                     | ControlKind::Slider
                     | ControlKind::TextInput
-                    | ControlKind::Number,
+                    | ControlKind::Number
+                    | ControlKind::Chip,
                 EventRoute::Changed
             ) | (ControlKind::TextInput, EventRoute::Submitted)
                 | (ControlKind::Select, EventRoute::SelectedChanged)
                 | (ControlKind::Pages, EventRoute::CurrentChanged)
                 | (ControlKind::Sheet, EventRoute::DetentChanged)
-                | (ControlKind::Button, EventRoute::Click)
+                | (ControlKind::Button | ControlKind::Chip, EventRoute::Click)
+                | (ControlKind::Chip, EventRoute::Removed)
         )
     }
 
@@ -302,7 +314,8 @@ impl ControlKind {
                 | ControlKind::TextInput
                 | ControlKind::Number
                 | ControlKind::Badge
-                | ControlKind::Avatar,
+                | ControlKind::Avatar
+                | ControlKind::Chip,
                 "color",
             ) => ControlInput::TextColor,
             (
@@ -318,7 +331,8 @@ impl ControlKind {
                 | ControlKind::TextInput
                 | ControlKind::Number
                 | ControlKind::Badge
-                | ControlKind::Avatar,
+                | ControlKind::Avatar
+                | ControlKind::Chip,
                 "font_weight",
             ) => ControlInput::FontWeight,
             (
@@ -327,7 +341,8 @@ impl ControlKind {
                 | ControlKind::TextInput
                 | ControlKind::Number
                 | ControlKind::Badge
-                | ControlKind::Avatar,
+                | ControlKind::Avatar
+                | ControlKind::Chip,
                 "font_family",
             ) => ControlInput::FontFamily,
             (
@@ -336,7 +351,8 @@ impl ControlKind {
                 | ControlKind::TextInput
                 | ControlKind::Number
                 | ControlKind::Badge
-                | ControlKind::Avatar,
+                | ControlKind::Avatar
+                | ControlKind::Chip,
                 "font_style",
             ) => ControlInput::FontStyle,
             (ControlKind::Label | ControlKind::Button, "spans") => ControlInput::Spans,
@@ -358,6 +374,7 @@ impl ControlKind {
             (ControlKind::Label | ControlKind::Button, "max_lines") => ControlInput::MaxLines,
             (ControlKind::Label | ControlKind::Button, "overflow") => ControlInput::Overflow,
             (ControlKind::Check | ControlKind::Switch, "checked")
+            | (ControlKind::Chip, "selected")
             | (ControlKind::Disclosure, "expanded")
             | (ControlKind::Dialog | ControlKind::Sheet | ControlKind::Toast, "open")
             | (ControlKind::Slider, "value")
@@ -390,12 +407,14 @@ impl ControlKind {
             (
                 ControlKind::Check
                 | ControlKind::Switch
+                | ControlKind::Chip
                 | ControlKind::Progress
                 | ControlKind::Ring
                 | ControlKind::Spinner
                 | ControlKind::Badge,
                 "label",
             ) => ControlInput::Caption,
+            (ControlKind::Chip, "removable") => ControlInput::Removable,
             (ControlKind::Slider | ControlKind::Number, "min") => ControlInput::Min,
             (ControlKind::Slider | ControlKind::Number, "max") => ControlInput::Max,
             (ControlKind::Slider | ControlKind::Number, "step") => ControlInput::Step,
@@ -446,6 +465,7 @@ impl ControlKind {
             ControlKind::Spinner => "Spinner",
             ControlKind::Badge => "Badge",
             ControlKind::Avatar => "Avatar",
+            ControlKind::Chip => "Chip",
         }
     }
 
@@ -461,7 +481,7 @@ impl ControlKind {
 pub fn widget_role(widget: &str) -> Option<Role> {
     Some(match widget {
         "Button" | "ReorderHandle" => Role::Button,
-        "Toggle" | "CheckBox" => Role::CheckBox,
+        "Toggle" | "CheckBox" | "Chip" => Role::CheckBox,
         "Slider" => Role::Slider,
         "TextInput" => Role::TextField,
         "NumberField" => Role::SpinButton,
@@ -935,6 +955,8 @@ pub enum ControlInput {
     PanMargin,
     /// A link label's `url`: where its text leads.
     Url,
+    /// A chip's `removable`: whether it draws a cross that removes it.
+    Removable,
 }
 
 /// A view-driven native node: its kind and the handler-table entries that
@@ -976,6 +998,8 @@ pub struct Control {
     pub pan_margin: Option<u32>,
     /// The entry of where a link label's text leads.
     pub url: Option<u32>,
+    /// The entry of whether a chip draws a cross that removes it.
+    pub removable: Option<u32>,
     /// The shader a shader view paints with, by its index in the view's
     /// shader table; its value gives the shader's parameters.
     pub shader: Option<u32>,
@@ -1163,7 +1187,7 @@ pub enum Switched {
 
 impl ControlInput {
     /// Every input, by wire tag.
-    pub const ALL: [ControlInput; 66] = [
+    pub const ALL: [ControlInput; 67] = [
         ControlInput::Value,
         ControlInput::Min,
         ControlInput::Max,
@@ -1230,6 +1254,7 @@ impl ControlInput {
         ControlInput::DropAccepts,
         ControlInput::DropOperation,
         ControlInput::Url,
+        ControlInput::Removable,
     ];
 
     /// Its wire tag: its place in [`ControlInput::ALL`].
@@ -1324,6 +1349,7 @@ impl Control {
             page_transition: None,
             pan_margin: None,
             url: None,
+            removable: None,
             shader: None,
             look: Look::default(),
             arms: Box::new([]),
@@ -1408,6 +1434,7 @@ impl Control {
             ControlInput::PageTransition => self.page_transition,
             ControlInput::PanMargin => self.pan_margin,
             ControlInput::Url => self.url,
+            ControlInput::Removable => self.removable,
         }
     }
 
@@ -1490,6 +1517,7 @@ impl Control {
             ControlInput::PageTransition => &mut self.page_transition,
             ControlInput::PanMargin => &mut self.pan_margin,
             ControlInput::Url => &mut self.url,
+            ControlInput::Removable => &mut self.removable,
         };
         *slot = Some(entry);
     }
@@ -1519,6 +1547,7 @@ impl Encode for Control {
             self.page_transition,
             self.pan_margin,
             self.url,
+            self.removable,
             self.shader,
             look.background,
             look.opacity,
@@ -1644,6 +1673,7 @@ impl Decode for Control {
             page_transition: entry()?,
             pan_margin: entry()?,
             url: entry()?,
+            removable: entry()?,
             shader: entry()?,
             look: Look {
                 background: entry()?,
@@ -1933,6 +1963,7 @@ mod tests {
             page_transition: Some(9),
             pan_margin: Some(34),
             url: Some(35),
+            removable: Some(36),
             shader: Some(2),
             look: Look {
                 background: Some(3),

@@ -193,6 +193,14 @@ const CHECK: &[WidgetProperty] = &[
     prop("label", "String").localizable(),
 ];
 
+/// A `Chip`'s `selected`, none for a chip that does not select, whether it
+/// is `removable`, and its `label`.
+const CHIP: &[WidgetProperty] = &[
+    two_way("selected", "Bool"),
+    prop("removable", "Bool"),
+    prop("label", "String").localizable(),
+];
+
 const SLIDER: &[WidgetProperty] = &[
     two_way("value", "F32"),
     prop("min", "F32"),
@@ -397,6 +405,10 @@ const STANDARD_EVENTS: &[WidgetEvent] = &[
 ];
 
 const TOGGLE_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("changed", "ToggleChanged")];
+const CHIP_EVENTS: &[WidgetEvent] = &[
+    WidgetEvent::new("changed", "ToggleChanged"),
+    WidgetEvent::signal("removed"),
+];
 const SLIDER_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("changed", "SliderChanged")];
 const NUMBER_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("changed", "NumberChanged")];
 const TEXT_INPUT_EVENTS: &[WidgetEvent] = &[
@@ -594,6 +606,13 @@ pub const STANDARD: &[NativeWidget] = &[
         &[CHECK, LAYOUT, TRANSFORM, FOCUS],
     )
     .events(&[TOGGLE_EVENTS, STANDARD_EVENTS])
+    .interactive(),
+    layout(
+        "Chip",
+        WidgetNode::Leaf,
+        &[CHIP, TEXT_STYLE, LAYOUT, TRANSFORM, FOCUS],
+    )
+    .events(&[CHIP_EVENTS, STANDARD_EVENTS])
     .interactive(),
     layout(
         "Slider",

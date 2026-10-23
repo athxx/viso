@@ -353,6 +353,12 @@ dialog.vx-layer:not([open]), .vx-layer[hidden] { display: none; }
 .vx-toast > * { pointer-events: auto; }
 .vx-mask { display: block; mask: center / contain no-repeat; -webkit-mask: center / contain no-repeat; }
 .vx-link { color: #0066cc; text-decoration: underline; cursor: pointer; }
+.vx-chip { display: inline-flex; align-items: center; box-sizing: border-box; height: 32px; padding: 0 12px; border: 1px solid color-mix(in srgb, currentColor 40%, transparent); border-radius: 8px; background-color: transparent; color: inherit; font: inherit; font-weight: 500; line-height: 1; white-space: nowrap; cursor: pointer; transition: background-color 150ms cubic-bezier(0.33, 1, 0.68, 1), border-color 150ms cubic-bezier(0.33, 1, 0.68, 1); }
+.vx-chip[aria-pressed]::before { content: \"\\2713\"; flex: none; width: 0; margin-inline: 0; overflow: hidden; text-align: center; transition: width 150ms cubic-bezier(0.33, 1, 0.68, 1), margin 150ms cubic-bezier(0.33, 1, 0.68, 1); }
+.vx-chip[aria-pressed=\"true\"] { border-color: transparent; background-color: color-mix(in srgb, currentColor 16%, transparent); }
+.vx-chip[aria-pressed=\"true\"]::before { width: 18px; margin-inline: -4px 8px; }
+.vx-chip[data-removable=\"true\"]::after { content: \"\\00d7\"; flex: none; width: 18px; margin-inline: 8px -4px; font-size: 18px; text-align: center; opacity: 0.8; }
+@media (prefers-reduced-motion: reduce) { .vx-chip, .vx-chip::before { transition: none; } }
 .vx-badge { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; min-width: 1.4545em; height: 1.4545em; padding: 0 0.3636em; border-radius: 999px; background-color: #b3261e; color: #fff; font-weight: 500; line-height: 1; white-space: nowrap; }
 .vx-badge.vx-dot { min-width: 8px; width: 8px; height: 8px; padding: 0; }
 .vx-avatar { display: inline-flex; align-items: center; justify-content: center; overflow: hidden; border-radius: 50%; color: #fff; font-weight: 500; line-height: 1; background-size: cover; background-position: center; user-select: none; }

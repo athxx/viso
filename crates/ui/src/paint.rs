@@ -646,7 +646,8 @@ fn paint_check(
         x: world.w,
         y: world.h,
     };
-    let place = mark.place(text, baseline, size, rtl);
+    let shown = store.check_progress(node);
+    let place = mark.place(text, baseline, size, rtl, shown);
     let ink = match content {
         Content::Text { color, .. } => *color,
         _ => WHITE,
@@ -656,7 +657,7 @@ fn paint_check(
         y: world.y + place.mark.y,
         ..place.mark
     };
-    mark.paint(mark_rect, ink, store.check_progress(node), rtl, out);
+    mark.paint(mark_rect, ink, shown, rtl, out);
     let caption = Rect {
         x: world.x + place.text.x,
         y: world.y + place.text.y,

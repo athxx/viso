@@ -101,11 +101,14 @@ pub enum EventRoute {
     /// `drop_end` (`DropEnd`): a drag of the node's data ended, dropped or
     /// put back.
     DropEnd = 34,
+    /// A `Chip`'s `removed`: a release on its cross, or Delete or Backspace
+    /// on it, asked it to go.
+    Removed = 35,
 }
 
 impl EventRoute {
     /// Every route, by discriminant.
-    pub const ALL: [EventRoute; 35] = [
+    pub const ALL: [EventRoute; 36] = [
         EventRoute::Click,
         EventRoute::Tap,
         EventRoute::PointerDown,
@@ -141,6 +144,7 @@ impl EventRoute {
         EventRoute::DropEnter,
         EventRoute::DropLeave,
         EventRoute::DropEnd,
+        EventRoute::Removed,
     ];
 
     /// The route of standard DSL event `event`, `None` for an event the runtime
@@ -190,6 +194,7 @@ impl EventRoute {
             EventRoute::DropEnter => "drop_enter",
             EventRoute::DropLeave => "drop_leave",
             EventRoute::DropEnd => "drop_end",
+            EventRoute::Removed => "removed",
         }
     }
 
@@ -231,6 +236,7 @@ impl EventRoute {
             EventRoute::DropEnter => "DropEnter",
             EventRoute::DropLeave => "DropLeave",
             EventRoute::DropEnd => "DropEnd",
+            EventRoute::Removed => "Removed",
         }
     }
 
@@ -304,6 +310,7 @@ impl EventRoute {
                 | EventRoute::SelectedChanged
                 | EventRoute::CurrentChanged
                 | EventRoute::DetentChanged
+                | EventRoute::Removed
         )
     }
 }

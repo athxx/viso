@@ -237,16 +237,20 @@ pub enum AccessAction {
     /// Refresh a viewport's content, as pulling it down past its start
     /// does: offered as a custom action named "Refresh".
     Refresh,
+    /// Remove the node from what holds it, as Delete on it does — a chip's
+    /// cross: offered as a custom action named "Remove".
+    Remove,
 }
 
 impl AccessAction {
     /// Every action, in declaration order.
-    pub const ALL: [AccessAction; 5] = [
+    pub const ALL: [AccessAction; 6] = [
         AccessAction::Focus,
         AccessAction::Click,
         AccessAction::Increment,
         AccessAction::Decrement,
         AccessAction::Refresh,
+        AccessAction::Remove,
     ];
 
     const fn bit(self) -> u8 {
@@ -269,6 +273,7 @@ impl AccessRequest {
                     AccessAction::Increment => 4,
                     AccessAction::Decrement => 5,
                     AccessAction::Refresh => 6,
+                    AccessAction::Remove => 7,
                 };
                 (kind, target.0)
             }
@@ -284,6 +289,7 @@ impl AccessRequest {
             4 => AccessAction::Increment,
             5 => AccessAction::Decrement,
             6 => AccessAction::Refresh,
+            7 => AccessAction::Remove,
             _ => return None,
         };
         Some(Self::Action {
@@ -314,12 +320,16 @@ mod tests {
                 target: SemanticsId(5),
                 action: AccessAction::Refresh,
             },
+            AccessRequest::Action {
+                target: SemanticsId(6),
+                action: AccessAction::Remove,
+            },
         ];
         for request in requests {
             let (kind, target) = request.to_words();
             assert_eq!(AccessRequest::from_words(kind, target), Some(request));
         }
-        assert_eq!(AccessRequest::from_words(7, 0), None);
+        assert_eq!(AccessRequest::from_words(8, 0), None);
     }
 
     #[test]

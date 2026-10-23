@@ -60,6 +60,7 @@ impl Drive for Control {
         }
         match self.kind {
             ControlKind::Check | ControlKind::Switch => toggle(self, host, scope, cx),
+            ControlKind::Chip => chip(self, host, scope, cx),
             ControlKind::Disclosure => disclose(self, host, scope, cx),
             ControlKind::Button => click(cx),
             ControlKind::Dialog => dismiss(self, host, scope, cx),
@@ -181,6 +182,47 @@ fn toggle(
     take_key(cx);
     let checked = read(host, control.value, scope, cx).as_int().unwrap_or(0) != 0;
     Some((EventRoute::Changed, field(Value::bool(!checked))))
+}
+
+/// A chip's response: a release on its cross, or Delete or Backspace on a
+/// removable one, reports `removed`; any other release, Space or Enter, or
+/// its access key flips a selecting chip's `selected` as a toggle does, and
+/// clicks one that does not select as a button does.
+fn chip(
+    control: &Control,
+    host: &mut ViewHost,
+    scope: &Scope,
+    cx: &mut EventCx<'_>,
+) -> Option<(EventRoute, Value)> {
+    if cx.phase() != DispatchPhase::Target {
+        return None;
+    }
+    let removes = match (cx.pointer(), cx.key()) {
+        (Some(p), _) if p.phase == PointerPhase::Up => cx.removes_at(p.x, p.y),
+        (Some(_), _) => return None,
+        (_, Some(k)) if k.pressed && !k.repeat && matches!(k.key, Key::Delete | Key::Backspace) => {
+            if read(host, control.removable, scope, cx)
+                .as_int()
+                .unwrap_or(0)
+                == 0
+            {
+                return None;
+            }
+            true
+        }
+        _ => false,
+    };
+    if removes {
+        take_key(cx);
+        return Some((EventRoute::Removed, Value::Nil));
+    }
+    if control.value.is_some() {
+        return toggle(control, host, scope, cx);
+    }
+    if cx.pointer().is_some() {
+        return None;
+    }
+    click(cx)
 }
 
 /// A button's response: Space or Enter on it, or its access key, reports a

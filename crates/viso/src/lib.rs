@@ -4563,8 +4563,8 @@ pub mod prelude {
 
     // Tier 1 widgets: the base layout container, the static text control, the
     // texture-backed image control, and the vector icon control — plus the Tier 2
-    // interactive controls, Button, CheckBox, Toggle, RadioGroup, Slider, and
-    // TextInput, the Tier 3 layout structures — the Scroll viewport, the
+    // interactive controls, Button, CheckBox, Toggle, Chip, RadioGroup, Slider,
+    // and TextInput, the Tier 3 layout structures — the Scroll viewport, the
     // virtualized VirtualList, the two-dimensional Grid, and the draggable-pane
     // Splitter — and the Tier 4 navigation/overlay controls, the panel-switching
     // Tabs, the page-stack NavigationStack (with its app-captured NavHandle for
@@ -4578,17 +4578,18 @@ pub mod prelude {
     // widget is a `Component` an app authors and builds into its `BuildCx`, so
     // these belong in the default set as they land.
     pub use viso_widgets::{
-        Avatar, Badge, Button, ButtonStyle, CheckBox, CheckBoxStyle, Grid, GridViewStyle, Icon,
-        IconStyle, Image, ImageStyle, Label, LabelStyle, Modal, ModalHandle, ModalHandleSlot,
-        ModalStyle, NavHandle, NavHandleSlot, NavigationStack, NavigationStackStyle, NumberField,
-        Popup, PopupHandle, PopupHandleSlot, PopupStyle, ProgressIndicator, RadioGroup, RadioStyle,
-        Scroll, ScrollViewStyle, Sheet, SheetDetent, SheetEdge, SheetHandle, SheetHandleSlot,
-        SheetStyle, Slider, SliderStyle, Spinner, Splitter, SplitterStyle, Tabs, TabsStyle,
-        TextInput, TextInputStyle, Toast, ToastEdge, ToastHandle, ToastHandleSlot, ToastStyle,
-        Toggle, ToggleStyle, View, ViewStyle, VirtualList, VirtualListViewStyle, avatar, badge,
-        button, checkbox, dot_badge, grid, icon, image, label, link_label, modal, navigation_stack,
-        number_field, popup, progress_bar, progress_ring, radio_group, rich_text, scroll, sheet,
-        slider, spinner, splitter, tabs, text_input, toast, toggle, view, virtual_list,
+        Avatar, Badge, Button, ButtonStyle, CheckBox, CheckBoxStyle, Chip, ChipStyle, Grid,
+        GridViewStyle, Icon, IconStyle, Image, ImageStyle, Label, LabelStyle, Modal, ModalHandle,
+        ModalHandleSlot, ModalStyle, NavHandle, NavHandleSlot, NavigationStack,
+        NavigationStackStyle, NumberField, Popup, PopupHandle, PopupHandleSlot, PopupStyle,
+        ProgressIndicator, RadioGroup, RadioStyle, Scroll, ScrollViewStyle, Sheet, SheetDetent,
+        SheetEdge, SheetHandle, SheetHandleSlot, SheetStyle, Slider, SliderStyle, Spinner,
+        Splitter, SplitterStyle, Tabs, TabsStyle, TextInput, TextInputStyle, Toast, ToastEdge,
+        ToastHandle, ToastHandleSlot, ToastStyle, Toggle, ToggleStyle, View, ViewStyle,
+        VirtualList, VirtualListViewStyle, avatar, badge, button, checkbox, chip, dot_badge, grid,
+        icon, image, label, link_label, modal, navigation_stack, number_field, popup, progress_bar,
+        progress_ring, radio_group, rich_text, scroll, sheet, slider, spinner, splitter, tabs,
+        text_input, toast, toggle, view, virtual_list,
     };
     // The top-level Window control (§68 public application lifecycle): a window
     // is not a node control — it does not enter the UI tree — so it appears as an

@@ -2054,3 +2054,40 @@ fn badges_and_avatars_export_as_pills_and_circles_their_script_keeps_current() {
     assert!(script.contains("P.badge("), "{script}");
     assert!(script.contains("P.avatar("), "{script}");
 }
+
+const CHIPS: &str = r##"
+export component Chips {
+    state veggie: Bool = true;
+    state tags: I32 = 2;
+    state editing: Bool = false;
+    view {
+        Row {
+            Chip { label: "Vegetarian"; bind selected <=> veggie; }
+            Chip { label: "rust"; removable: true; on removed { tags = tags - 1; } }
+            Chip { label: "Help"; on click { editing = !editing; } }
+            Chip { label: "draft"; removable: editing; }
+        }
+    }
+}
+"##;
+
+#[test]
+fn chips_export_as_buttons_pressed_while_selected_with_a_cross_when_removable() {
+    let page = export(CHIPS, false).unwrap();
+    let index = &page.index;
+    // The script presses the bound chip as it mounts.
+    assert!(
+        index.contains("type=\"button\" aria-pressed=\"false\" data-v>Vegetarian<"),
+        "{index}"
+    );
+    assert!(!index.contains("role=\"checkbox\""), "{index}");
+    assert!(
+        index.contains("data-removable=\"true\" data-v>rust</button>"),
+        "{index}"
+    );
+    assert!(index.contains(">Help</button>"), "{index}");
+    assert!(page.styles.contains(".vx-chip {"), "{}", page.styles);
+    let script = page.script.as_deref().unwrap();
+    assert!(script.contains("P.pressed("), "{script}");
+    assert!(script.contains("P.data("), "{script}");
+}

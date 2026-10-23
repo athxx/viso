@@ -218,6 +218,11 @@ define_class!(
         fn refresh(&self, _action: &AnyObject) -> bool {
             self.perform(AccessAction::Refresh)
         }
+
+        #[unsafe(method(visoRemove:))]
+        fn remove(&self, _action: &AnyObject) -> bool {
+            self.perform(AccessAction::Remove)
+        }
     }
 );
 
@@ -241,22 +246,31 @@ impl AccessElement {
         self.setAccessibilityHint(text(node.description.as_deref()).as_deref());
         self.setAccessibilityValue(text(spoken_value(node).as_deref()).as_deref());
         self.setAccessibilityTraits(traits(node));
-        let actions = node.actions.contains(AccessAction::Refresh).then(|| {
-            let name = NSString::from_str("Refresh");
-            let target: &AnyObject = self;
-            // SAFETY: the target is this element, which UIKit holds weakly
-            // and which answers `visoRefresh:` with the signature UIKit calls
-            // (the action as its one argument, a BOOL back).
-            let action = unsafe {
-                UIAccessibilityCustomAction::initWithName_target_selector(
-                    UIAccessibilityCustomAction::alloc(self.mtm()),
-                    &name,
-                    Some(target),
-                    objc2::sel!(visoRefresh:),
-                )
-            };
-            NSArray::from_retained_slice(&[action])
-        });
+        let custom = [
+            (AccessAction::Refresh, "Refresh", objc2::sel!(visoRefresh:)),
+            (AccessAction::Remove, "Remove", objc2::sel!(visoRemove:)),
+        ];
+        let offered: Vec<_> = custom
+            .into_iter()
+            .filter(|(action, ..)| node.actions.contains(*action))
+            .map(|(_, name, selector)| {
+                let name = NSString::from_str(name);
+                let target: &AnyObject = self;
+                // SAFETY: the target is this element, which UIKit holds
+                // weakly and which answers `visoRefresh:` and `visoRemove:`
+                // with the signature UIKit calls (the action as its one
+                // argument, a BOOL back).
+                unsafe {
+                    UIAccessibilityCustomAction::initWithName_target_selector(
+                        UIAccessibilityCustomAction::alloc(self.mtm()),
+                        &name,
+                        Some(target),
+                        selector,
+                    )
+                }
+            })
+            .collect();
+        let actions = (!offered.is_empty()).then(|| NSArray::from_retained_slice(&offered));
         self.setAccessibilityCustomActions(actions.as_deref(), self.mtm());
         let b = node.bounds;
         let frame = CGRect {

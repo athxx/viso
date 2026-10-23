@@ -125,7 +125,8 @@ pub(crate) type Target = (NodeId, Option<u16>);
 /// link's first line's); `Increment`/`Decrement` are the
 /// arrow keys a focused slider steps on, Up and Down for a spin button;
 /// `Refresh` needs no input, a refreshable viewport refreshing as a pull
-/// past its start makes it. Positions are physical pixels, as the
+/// past its start makes it; `Remove` is Delete on the focused node.
+/// Positions are physical pixels, as the
 /// scheduler delivers them. An inert node takes none.
 pub(crate) fn perform(
     store: &mut NodeStore,
@@ -174,6 +175,7 @@ pub(crate) fn perform(
             store.begin_refresh(node);
             return None;
         }
+        AccessAction::Remove => Key::Delete,
         AccessAction::Increment | AccessAction::Decrement => {
             let spin = store
                 .semantics(node)
@@ -363,6 +365,9 @@ impl Walk<'_> {
         if live && store.is_refreshable(row.id) && !store.is_refreshing(row.id) {
             actions = actions.with(AccessAction::Refresh);
         }
+        if live && store.check_mark(row.id).is_some_and(|m| m.removes()) {
+            actions = actions.with(AccessAction::Remove);
+        }
         AccessNode {
             id: row_id(row),
             role,
@@ -503,6 +508,35 @@ mod tests {
             panic!("a click");
         };
         assert_eq!((down.x, down.y), (40.0, 20.0), "at the link's centre");
+    }
+
+    #[test]
+    fn a_removable_chip_offers_remove_which_presses_delete_on_it() {
+        let (mut store, root, [chip, slider]) = scene();
+        let mark = |removable| viso_ui::CheckMark {
+            shape: viso_ui::CheckShape::Chip { removable },
+            checked: false,
+        };
+        store.set_check_mark(chip, Some(mark(true)));
+        let mut bridge = AccessBridge::new();
+        let update = bridge.update(&store, root, 1.0).expect("first update");
+        assert!(node(&update, chip).actions.contains(AccessAction::Remove));
+        assert!(!node(&update, slider).actions.contains(AccessAction::Remove));
+        let window = WindowId(1);
+        let remove = perform(&mut store, window, chip, None, AccessAction::Remove, 1.0);
+        let Some([InputSample::Key(press), InputSample::Key(release)]) = remove else {
+            panic!("a key press and release");
+        };
+        assert_eq!(
+            (press.key, press.pressed, release.pressed),
+            (Key::Delete, true, false)
+        );
+        assert_eq!(store.focused(), Some(chip));
+        store.set_check_mark(chip, Some(mark(false)));
+        let update = bridge
+            .update(&store, root, 1.0)
+            .expect("its actions changed");
+        assert!(!node(&update, chip).actions.contains(AccessAction::Remove));
     }
 
     #[test]

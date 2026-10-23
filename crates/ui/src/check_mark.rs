@@ -12,6 +12,11 @@
 //! A plate draws no mark: its caption sits in the middle of its node, which
 //! measures at least as wide as tall around it — a badge's count, an
 //! avatar's initials — or, with nothing in the caption, to a dot.
+//!
+//! A chip draws its whole node: a rounded body, outlined while unselected
+//! and tinted while selected, the caption inside it after a tick that grows
+//! in as it is selected (the chip widening to make room), and before a
+//! cross at its end edge when it is removable.
 
 use viso_render::{
     Border, LineCap, LineJoin, Path, PathCmd, Point, Primitive, Quad, Rect, Rgba, Stroke,
@@ -39,6 +44,11 @@ pub enum CheckShape {
     /// draws, which is at least as wide as tall; with an empty caption, a
     /// dot. It has no checked state.
     Plate,
+    /// A chip: the caption on a rounded body the mark draws over the whole
+    /// node, outlined while unchecked and tinted while checked, a tick
+    /// growing in before the caption as it checks; with a cross at its end
+    /// edge when `removable`.
+    Chip { removable: bool },
 }
 
 /// What a check draws beside its caption.
@@ -59,6 +69,19 @@ const LINE_OVER_BASELINE: f32 = 1.25;
 const PLATE_MIN: f32 = 16.0;
 const DOT: f32 = 8.0;
 
+/// A chip's least height, the room over and under its caption, and as
+/// shares of its height: the room before an unchecked caption, the room a
+/// checked one's tick takes in addition, the room after a caption with no
+/// cross and the room a cross takes with its gap; the side of the tick's and
+/// the cross's boxes, inset from the edge.
+const CHIP_MIN: f32 = 32.0;
+const CHIP_ROOM: f32 = 12.0;
+const CHIP_PAD: f32 = 0.375;
+const CHIP_TICK: f32 = 0.6875;
+const CHIP_CROSS: f32 = 1.0625;
+const CHIP_ICON: f32 = 0.5625;
+const CHIP_INSET: f32 = 0.25;
+
 /// Where a check's mark and caption sit in its node.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct MarkPlace {
@@ -78,8 +101,37 @@ impl CheckMark {
                 x: side * 1.75,
                 y: side,
             },
-            CheckShape::Plate => Vec2::ZERO,
+            CheckShape::Plate | CheckShape::Chip { .. } => Vec2::ZERO,
         }
+    }
+
+    /// A chip's height round a caption of natural size `text`.
+    fn chip_height(text: Vec2) -> f32 {
+        (text.y + CHIP_ROOM).max(CHIP_MIN)
+    }
+
+    /// The room a chip `height` high keeps before its caption, `shown` of
+    /// the way checked, and after it.
+    fn chip_room(removable: bool, height: f32, shown: f32) -> (f32, f32) {
+        let lead = height * (CHIP_PAD + CHIP_TICK * shown.clamp(0.0, 1.0));
+        let trail = height * if removable { CHIP_CROSS } else { CHIP_PAD };
+        (lead, trail)
+    }
+
+    /// Whether it is a chip with a cross, which Delete on it acts as.
+    pub fn removes(self) -> bool {
+        self.shape == CheckShape::Chip { removable: true }
+    }
+
+    /// Whether a point `x` across a chip of `size` lands on its cross, which
+    /// takes the end of its node (its start right to left): never for a
+    /// chip with none, or any other check.
+    pub fn removes_at(self, x: f32, size: Vec2, rtl: bool) -> bool {
+        if !self.removes() {
+            return false;
+        }
+        let (_, trail) = Self::chip_room(true, size.y, 0.0);
+        if rtl { x <= trail } else { x >= size.x - trail }
     }
 
     /// A plate's natural size round a caption of natural size `text`, and
@@ -102,10 +154,16 @@ impl CheckMark {
 
     /// How far the caption sits from the start edge: the mark and, before a
     /// caption that draws anything, the gap after it.
-    fn lead(self, text: Vec2, baseline: f32) -> f32 {
-        if self.shape == CheckShape::Plate {
-            let (plate, _) = Self::plate(text);
-            return (plate.x - text.x) * 0.5;
+    fn lead(self, text: Vec2, baseline: f32, shown: f32) -> f32 {
+        match self.shape {
+            CheckShape::Plate => {
+                let (plate, _) = Self::plate(text);
+                return (plate.x - text.x) * 0.5;
+            }
+            CheckShape::Chip { removable } => {
+                return Self::chip_room(removable, Self::chip_height(text), shown).0;
+            }
+            _ => {}
         }
         let mark = self.size(baseline);
         // A chevron's stroke sits well inside its box, which spaces it already.
@@ -121,30 +179,77 @@ impl CheckMark {
     }
 
     /// The natural size of the check over a caption of natural size `text`
-    /// whose first line has `baseline`.
-    pub(crate) fn natural(self, text: Vec2, baseline: f32) -> Vec2 {
-        if self.shape == CheckShape::Plate {
-            return Self::plate(text).0;
+    /// whose first line has `baseline`, its mark `shown` of the way checked.
+    pub(crate) fn natural(self, text: Vec2, baseline: f32, shown: f32) -> Vec2 {
+        match self.shape {
+            CheckShape::Plate => return Self::plate(text).0,
+            CheckShape::Chip { removable } => {
+                let height = Self::chip_height(text);
+                let (lead, trail) = Self::chip_room(removable, height, shown);
+                return Vec2 {
+                    x: lead + text.x + trail,
+                    y: height,
+                };
+            }
+            _ => {}
         }
-        let place = self.place(text, baseline, Vec2::ZERO, false);
+        let place = self.place(text, baseline, Vec2::ZERO, false, shown);
         Vec2 {
-            x: self.lead(text, baseline) + text.x,
+            x: self.lead(text, baseline, shown) + text.x,
             y: (place.mark.y + place.mark.h).max(place.text.y + text.y),
         }
     }
 
-    /// The width the caption has in a check `width` wide.
-    pub(crate) fn caption_width(self, width: f32, text: Vec2, baseline: f32) -> f32 {
-        if self.shape == CheckShape::Plate {
-            return (width - Self::plate(text).1 * 2.0).max(0.0);
+    /// The width the caption has in a check `width` wide, its mark `shown`
+    /// of the way checked.
+    pub(crate) fn caption_width(self, width: f32, text: Vec2, baseline: f32, shown: f32) -> f32 {
+        match self.shape {
+            CheckShape::Plate => (width - Self::plate(text).1 * 2.0).max(0.0),
+            CheckShape::Chip { removable } => {
+                let (lead, trail) = Self::chip_room(removable, Self::chip_height(text), shown);
+                (width - lead - trail).max(0.0)
+            }
+            _ => (width - self.lead(text, baseline, shown)).max(0.0),
         }
-        (width - self.lead(text, baseline)).max(0.0)
     }
 
     /// Where the mark and a caption of natural size `text` (first line at
     /// `baseline`) sit in a check of `size` (its natural size where zero),
-    /// mirrored right to left.
-    pub(crate) fn place(self, text: Vec2, baseline: f32, size: Vec2, rtl: bool) -> MarkPlace {
+    /// mirrored right to left, its mark `shown` of the way checked.
+    pub(crate) fn place(
+        self,
+        text: Vec2,
+        baseline: f32,
+        size: Vec2,
+        rtl: bool,
+        shown: f32,
+    ) -> MarkPlace {
+        if let CheckShape::Chip { removable } = self.shape {
+            let height = Self::chip_height(text);
+            let (lead, trail) = Self::chip_room(removable, height, shown);
+            let (w, h) = if size.x > 0.0 {
+                (size.x, size.y)
+            } else {
+                (lead + text.x + trail, height)
+            };
+            let x = if rtl {
+                (w - lead - text.x).max(trail.min(w))
+            } else {
+                lead
+            };
+            return MarkPlace {
+                mark: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w,
+                    h,
+                },
+                text: Vec2 {
+                    x,
+                    y: ((h - text.y) * 0.5).max(0.0),
+                },
+            };
+        }
         if self.shape == CheckShape::Plate {
             let natural = Self::plate(text).0;
             let (w, h) = if size.x > 0.0 {
@@ -174,7 +279,7 @@ impl CheckMark {
         };
         let mark_y = ((line - mark.y) * 0.5).max(0.0);
         let text_y = ((mark.y - line) * 0.5).max(0.0);
-        let lead = self.lead(text, baseline);
+        let lead = self.lead(text, baseline, shown);
         let (mark_x, text_x) = if rtl {
             (width - mark.x, (width - lead - text.x).max(0.0))
         } else {
@@ -201,15 +306,26 @@ impl CheckMark {
     }
 
     /// How its mark moves between its states: a box fills and ticks, a
-    /// circle fills and its dot grows and a chevron turns over a short ease,
-    /// a knob slides on a spring that carries a quick change of mind on.
+    /// circle fills and its dot grows, a chevron turns and a chip tints and
+    /// grows its tick over a short ease, a knob slides on a spring that
+    /// carries a quick change of mind on.
     pub(crate) fn timing(self) -> Timing {
         match self.shape {
-            CheckShape::Box | CheckShape::Chevron | CheckShape::Radio | CheckShape::Plate => {
+            CheckShape::Box
+            | CheckShape::Chevron
+            | CheckShape::Radio
+            | CheckShape::Plate
+            | CheckShape::Chip { .. } => {
                 Timing::eased(Duration::from_millis(150), Easing::EASE_OUT)
             }
             CheckShape::Switch => Timing::spring(Spring::with_response(0.28, 1.0)),
         }
+    }
+
+    /// Whether how far its mark shows checked moves its caption too, so a
+    /// step of its motion re-measures it: a chip's tick takes room.
+    pub(crate) fn moves_caption(self) -> bool {
+        matches!(self.shape, CheckShape::Chip { .. })
     }
 
     /// Draws the mark into `rect` (world space) inked `ink`, `progress` of
@@ -217,7 +333,8 @@ impl CheckMark {
     /// draws along its stroke, a circle's fill fades in as its dot grows from
     /// its centre, a knob slides along its track as the track
     /// fills, a chevron turns a quarter clockwise (counterclockwise right to
-    /// left, where it points left at rest).
+    /// left, where it points left at rest), a chip's body tints as its
+    /// outline fades and its tick draws in.
     pub(crate) fn paint(
         self,
         rect: Rect,
@@ -230,6 +347,7 @@ impl CheckMark {
         let on_ink = contrast(ink);
         match self.shape {
             CheckShape::Plate => {}
+            CheckShape::Chip { removable } => chip(rect, ink, p, removable, rtl, out),
             CheckShape::Box => {
                 out.push(Primitive::Quad(Quad {
                     rect,
@@ -249,20 +367,7 @@ impl CheckMark {
                         x: rect.x + rect.w * x,
                         y: rect.y + rect.h * y,
                     };
-                    let mut stroke = Stroke::new(rect.h * 0.12, on_ink);
-                    stroke.cap = LineCap::Round;
-                    stroke.join = LineJoin::Round;
-                    out.push(Primitive::Path(Box::new(Path {
-                        cmds: tick(p)
-                            .map(|(i, point)| match i {
-                                0 => PathCmd::MoveTo(at(point)),
-                                _ => PathCmd::LineTo(at(point)),
-                            })
-                            .collect(),
-                        fill: None,
-                        stroke: Some(stroke),
-                        shadow: None,
-                    })));
+                    stroked(tick_path(at, p), rect.h * 0.12, on_ink, out);
                 }
             }
             CheckShape::Chevron => {
@@ -278,19 +383,12 @@ impl CheckMark {
                         y: center.1 + mirror * x * sin + y * cos,
                     }
                 };
-                let mut stroke = Stroke::new(side * 0.1, ink);
-                stroke.cap = LineCap::Round;
-                stroke.join = LineJoin::Round;
-                out.push(Primitive::Path(Box::new(Path {
-                    cmds: vec![
-                        PathCmd::MoveTo(at(CHEVRON[0])),
-                        PathCmd::LineTo(at(CHEVRON[1])),
-                        PathCmd::LineTo(at(CHEVRON[2])),
-                    ],
-                    fill: None,
-                    stroke: Some(stroke),
-                    shadow: None,
-                })));
+                let cmds = vec![
+                    PathCmd::MoveTo(at(CHEVRON[0])),
+                    PathCmd::LineTo(at(CHEVRON[1])),
+                    PathCmd::LineTo(at(CHEVRON[2])),
+                ];
+                stroked(cmds, side * 0.1, ink, out);
             }
             CheckShape::Radio => {
                 out.push(Primitive::Quad(Quad {
@@ -345,6 +443,84 @@ impl CheckMark {
             }
         }
     }
+}
+
+/// A chip filling `rect` inked `ink`, `p` of the way checked: its body,
+/// outlined while unchecked and tinted toward checked, its tick drawing in
+/// at its start edge and its cross, if `removable`, at its end.
+fn chip(rect: Rect, ink: Rgba, p: f32, removable: bool, rtl: bool, out: &mut Vec<Primitive>) {
+    let height = rect.h;
+    out.push(Primitive::Quad(Quad {
+        rect,
+        color: faded(ink, 0.16 * p),
+        radius: height * 0.25,
+        border: if p >= 1.0 {
+            Border::NONE
+        } else {
+            Border {
+                width: (height / CHIP_MIN).max(1.0),
+                color: faded(ink, 0.4 * (1.0 - p)),
+            }
+        },
+    }));
+    let side = height * CHIP_ICON;
+    let inset = height * CHIP_INSET;
+    let icon = |at_end: bool| {
+        let x = if at_end != rtl {
+            rect.x + rect.w - inset - side
+        } else {
+            rect.x + inset
+        };
+        Rect::new(x, rect.y + (height - side) * 0.5, side, side)
+    };
+    let within = |icon: Rect| {
+        move |(x, y): (f32, f32)| Point {
+            x: icon.x + icon.w * x,
+            y: icon.y + icon.h * y,
+        }
+    };
+    if p > 0.0 {
+        stroked(
+            tick_path(within(icon(false)), p),
+            side * 0.11,
+            faded(ink, p),
+            out,
+        );
+    }
+    if removable {
+        let at = within(icon(true));
+        let cmds = vec![
+            PathCmd::MoveTo(at((0.28, 0.28))),
+            PathCmd::LineTo(at((0.72, 0.72))),
+            PathCmd::MoveTo(at((0.72, 0.28))),
+            PathCmd::LineTo(at((0.28, 0.72))),
+        ];
+        stroked(cmds, side * 0.1, faded(ink, 0.8), out);
+    }
+}
+
+/// Strokes `cmds` `width` wide inked `ink`, round at its ends and corners.
+fn stroked(cmds: Vec<PathCmd>, width: f32, ink: Rgba, out: &mut Vec<Primitive>) {
+    let mut stroke = Stroke::new(width, ink);
+    stroke.cap = LineCap::Round;
+    stroke.join = LineJoin::Round;
+    out.push(Primitive::Path(Box::new(Path {
+        cmds,
+        fill: None,
+        stroke: Some(stroke),
+        shadow: None,
+    })));
+}
+
+/// The path of the tick drawn `share` of its length, its points placed by
+/// `at`.
+fn tick_path(at: impl Fn((f32, f32)) -> Point, share: f32) -> Vec<PathCmd> {
+    tick(share)
+        .map(|(i, point)| match i {
+            0 => PathCmd::MoveTo(at(point)),
+            _ => PathCmd::LineTo(at(point)),
+        })
+        .collect()
 }
 
 /// A chevron's corners pointing toward the end edge, as shares of its box
@@ -431,7 +607,7 @@ mod tests {
     fn the_caption_follows_the_mark_after_a_gap_and_the_mark_mirrors_right_to_left() {
         // A 20-high caption on a 16 baseline: a 20 side, centred on it.
         let text = Vec2 { x: 50.0, y: 20.0 };
-        let place = BOX.place(text, 16.0, Vec2 { x: 100.0, y: 20.0 }, false);
+        let place = BOX.place(text, 16.0, Vec2 { x: 100.0, y: 20.0 }, false, 0.0);
         assert_eq!(
             place.mark,
             Rect {
@@ -442,9 +618,9 @@ mod tests {
             }
         );
         assert_eq!(place.text, Vec2 { x: 30.0, y: 0.0 });
-        assert_eq!(BOX.natural(text, 16.0), Vec2 { x: 80.0, y: 20.0 });
-        assert_eq!(BOX.caption_width(100.0, text, 16.0), 70.0);
-        let rtl = BOX.place(text, 16.0, Vec2 { x: 100.0, y: 20.0 }, true);
+        assert_eq!(BOX.natural(text, 16.0, 0.0), Vec2 { x: 80.0, y: 20.0 });
+        assert_eq!(BOX.caption_width(100.0, text, 16.0, 0.0), 70.0);
+        let rtl = BOX.place(text, 16.0, Vec2 { x: 100.0, y: 20.0 }, true, 0.0);
         assert_eq!((rtl.mark.x, rtl.text.x), (80.0, 20.0));
     }
 
@@ -456,16 +632,16 @@ mod tests {
         };
         // One digit: a circle.
         let digit = Vec2 { x: 7.0, y: 13.0 };
-        assert_eq!(plate.natural(digit, 10.0), Vec2 { x: 16.0, y: 16.0 });
+        assert_eq!(plate.natural(digit, 10.0, 0.0), Vec2 { x: 16.0, y: 16.0 });
         // Three: a pill with room on each side.
         let three = Vec2 { x: 20.0, y: 13.0 };
-        assert_eq!(plate.natural(three, 10.0), Vec2 { x: 28.0, y: 16.0 });
-        let place = plate.place(three, 10.0, Vec2::ZERO, false);
+        assert_eq!(plate.natural(three, 10.0, 0.0), Vec2 { x: 28.0, y: 16.0 });
+        let place = plate.place(three, 10.0, Vec2::ZERO, false, 0.0);
         assert_eq!(place.text, Vec2 { x: 4.0, y: 1.5 });
-        let wide = plate.place(digit, 10.0, Vec2 { x: 40.0, y: 40.0 }, false);
+        let wide = plate.place(digit, 10.0, Vec2 { x: 40.0, y: 40.0 }, false, 0.0);
         assert_eq!(wide.text, Vec2 { x: 16.5, y: 13.5 });
         assert_eq!(
-            plate.natural(Vec2 { x: 0.0, y: 13.0 }, 10.0),
+            plate.natural(Vec2 { x: 0.0, y: 13.0 }, 10.0, 0.0),
             Vec2 { x: 8.0, y: 8.0 }
         );
     }
@@ -476,7 +652,10 @@ mod tests {
             shape: CheckShape::Switch,
             checked: true,
         };
-        assert_eq!(switch.natural(Vec2::ZERO, 0.0), Vec2 { x: 28.0, y: 16.0 });
+        assert_eq!(
+            switch.natural(Vec2::ZERO, 0.0, 1.0),
+            Vec2 { x: 28.0, y: 16.0 }
+        );
     }
 
     #[test]
@@ -567,6 +746,89 @@ mod tests {
         assert_eq!(tip(1.0, false), (1000.0, 1220.0), "turned down");
         assert_eq!(tip(0.0, true), (780.0, 1000.0), "points left");
         assert_eq!(tip(1.0, true), (1000.0, 1220.0), "turned down");
+    }
+
+    #[test]
+    fn a_chip_widens_for_its_tick_as_it_checks_and_keeps_room_for_its_cross() {
+        let chip = |removable| CheckMark {
+            shape: CheckShape::Chip { removable },
+            checked: true,
+        };
+        // A 20-high caption: a 32-high chip, 12 before and after.
+        let text = Vec2 { x: 40.0, y: 20.0 };
+        assert_eq!(
+            chip(false).natural(text, 16.0, 0.0),
+            Vec2 { x: 64.0, y: 32.0 }
+        );
+        // Checked, the tick takes 22 more; a cross takes 34 after.
+        assert_eq!(
+            chip(false).natural(text, 16.0, 1.0),
+            Vec2 { x: 86.0, y: 32.0 }
+        );
+        assert_eq!(
+            chip(true).natural(text, 16.0, 1.0),
+            Vec2 { x: 108.0, y: 32.0 }
+        );
+        assert_eq!(chip(true).caption_width(108.0, text, 16.0, 1.0), 40.0);
+        let size = Vec2 { x: 108.0, y: 32.0 };
+        let place = chip(true).place(text, 16.0, size, false, 1.0);
+        assert_eq!(place.mark, Rect::new(0.0, 0.0, 108.0, 32.0));
+        assert_eq!(place.text, Vec2 { x: 34.0, y: 6.0 });
+        let rtl = chip(true).place(text, 16.0, size, true, 1.0);
+        assert_eq!(rtl.text, Vec2 { x: 34.0, y: 6.0 });
+        // The cross takes the last 34 of the chip, the first right to left.
+        assert!(chip(true).removes_at(80.0, size, false));
+        assert!(!chip(true).removes_at(70.0, size, false));
+        assert!(chip(true).removes_at(20.0, size, true));
+        assert!(!chip(false).removes_at(100.0, size, false));
+        assert!(chip(true).moves_caption() && !BOX.moves_caption());
+    }
+
+    #[test]
+    fn a_chip_tints_its_body_as_its_outline_fades_and_draws_its_tick_and_cross() {
+        let chip = CheckMark {
+            shape: CheckShape::Chip { removable: true },
+            checked: true,
+        };
+        let draw = |p| {
+            let mut out = Vec::new();
+            chip.paint(
+                Rect::new(0.0, 0.0, 108.0, 32.0),
+                Rgba::new(1.0, 1.0, 1.0, 1.0),
+                p,
+                false,
+                &mut out,
+            );
+            out
+        };
+        let rest = draw(0.0);
+        let [Primitive::Quad(body), Primitive::Path(cross)] = &rest[..] else {
+            panic!("an outlined body and its cross: {rest:?}")
+        };
+        assert_eq!(
+            (body.color.a, body.radius, body.border.width),
+            (0.0, 8.0, 1.0)
+        );
+        assert_eq!(cross.cmds.len(), 4);
+        // The cross sits in its box at the end edge.
+        let PathCmd::MoveTo(start) = cross.cmds[0] else {
+            panic!()
+        };
+        assert!(start.x > 108.0 - 8.0 - 18.0 && start.x < 108.0 - 8.0);
+        let checked = draw(1.0);
+        let [
+            Primitive::Quad(body),
+            Primitive::Path(tick),
+            Primitive::Path(_),
+        ] = &checked[..]
+        else {
+            panic!("a tinted body, its tick and its cross: {checked:?}")
+        };
+        assert!((body.color.a - 0.16).abs() < 1e-6 && body.border == Border::NONE);
+        let PathCmd::MoveTo(start) = tick.cmds[0] else {
+            panic!()
+        };
+        assert!(start.x > 8.0 && start.x < 8.0 + 18.0);
     }
 
     #[test]
