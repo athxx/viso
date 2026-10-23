@@ -42,6 +42,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use viso_behavior::native::{FlexAxis, MigratableState, Natives, WidgetNode};
+use viso_schema::layout::{SheetDetent, SheetEdge};
 use viso_schema::view::{ControlKind, LayoutSlot};
 
 use crate::ast::{
@@ -577,6 +578,9 @@ impl<'a, 'l> Lowering<'a, 'l> {
             }
         };
 
+        if type_name == "Sheet" {
+            style.sheet = Some(viso_schema::aot::AotSheet::default());
+        }
         let node_ref = self.naming.take();
         let instance = self.instance();
         let control = ControlKind::of(&type_name);
@@ -707,7 +711,13 @@ impl<'a, 'l> Lowering<'a, 'l> {
         if style.content_align.is_none() && !pending.iter().any(|p| p.name == "content_align") {
             style.content_align = match type_name.as_str() {
                 "Modal" | "InteractiveViewer" => Some(ui_ir::Alignment2D::Center),
-                "Sheet" | "Toast" => Some(ui_ir::Alignment2D::Bottom),
+                "Sheet" => style.sheet.map(|sheet| match sheet.edge {
+                    SheetEdge::Bottom => ui_ir::Alignment2D::Bottom,
+                    SheetEdge::Top => ui_ir::Alignment2D::Top,
+                    SheetEdge::Leading => ui_ir::Alignment2D::Start,
+                    SheetEdge::Trailing => ui_ir::Alignment2D::End,
+                }),
+                "Toast" => Some(ui_ir::Alignment2D::Bottom),
                 _ => None,
             };
         }
@@ -1438,6 +1448,9 @@ fn unapplied(
         // A list reads it of each of its rows.
         "list.full_line" => None,
         "checked" | "invalid" | "expanded" if selected() => None,
+        "edge" | "detents" | "dismissible" if type_name == "Sheet" => {
+            Some(format!("a `Sheet`'s `{name}` is a constant"))
+        }
         "areas" | "grid.area" => Some(format!(
             "a `{name}` that reads a value does not lay out yet; a constant one does"
         )),
@@ -1797,6 +1810,47 @@ fn fold_static(
             });
             Fold::Folded
         }
+        "edge" if style.sheet.is_some() => {
+            let edge = match enum_constant(value, "SheetEdge").as_deref() {
+                Some("bottom") => SheetEdge::Bottom,
+                Some("top") => SheetEdge::Top,
+                Some("leading") => SheetEdge::Leading,
+                Some("trailing") => SheetEdge::Trailing,
+                _ => return Fold::Pending,
+            };
+            if let Some(sheet) = &mut style.sheet {
+                sheet.edge = edge;
+            }
+            Fold::Folded
+        }
+        "dismissible" if style.sheet.is_some() => match fold_bool(value) {
+            Some(on) => {
+                if let Some(sheet) = &mut style.sheet {
+                    sheet.dismissible = on;
+                }
+                Fold::Folded
+            }
+            None => Fold::Pending,
+        },
+        "detents" if style.sheet.is_some() => match fold_detents(value, consts) {
+            Some(Ok(detents)) => {
+                if let Some(sheet) = &mut style.sheet {
+                    let (edge, dismissible) = (sheet.edge, sheet.dismissible);
+                    match viso_schema::aot::AotSheet::new(edge, &detents, dismissible) {
+                        Some(next) => *sheet = next,
+                        None => {
+                            return Fold::Unsupported(format!(
+                                "a `Sheet` rests at {} detents at most",
+                                viso_schema::aot::AotSheet::MAX_DETENTS
+                            ));
+                        }
+                    }
+                }
+                Fold::Folded
+            }
+            Some(Err(reason)) => Fold::Unsupported(reason),
+            None => Fold::Pending,
+        },
         "content_align" if kind == NodeKind::Stack => {
             folded(match place::fold_alignment(value, consts) {
                 Some(align) => {
@@ -1939,6 +1993,38 @@ fn lanes_of(style: &mut StyleIr) -> &mut ui_ir::LanesIr {
 }
 
 /// A `true` or `false` literal.
+/// Folds a `Sheet`'s constant `detents`: each a `%` share of the surface
+/// or a `dp` length. `Some(Err)` is a constant one it does not rest at, and
+/// why; `None` is not a constant.
+fn fold_detents(value: &Expr, consts: &Consts) -> Option<Result<Vec<SheetDetent>, String>> {
+    let named = consts.value_of(value);
+    let value = named.as_ref().unwrap_or(value);
+    let node = value.syntax();
+    if node.kind() != crate::syntax::SyntaxKind::ListExpr {
+        return None;
+    }
+    let mut detents = Vec::new();
+    for item in node.children().into_iter().filter_map(Expr::cast) {
+        let t = length::fold_terms(&item, consts)?;
+        let detent = match (t.dp, t.pct) {
+            _ if t.px != 0.0 || t.sp != 0.0 || t.em != 0.0 => None,
+            (dp, 0.0) => Some(SheetDetent::Fixed(dp)),
+            (0.0, pct) => Some(SheetDetent::Fraction(pct)),
+            _ => None,
+        };
+        match detent {
+            Some(detent) => detents.push(detent),
+            None => {
+                return Some(Err(
+                    "a `Sheet`'s detent is a share of the surface (`%`) or a length (`dp`)"
+                        .to_string(),
+                ));
+            }
+        }
+    }
+    Some(Ok(detents))
+}
+
 fn fold_bool(value: &Expr) -> Option<bool> {
     let literal = crate::ast::LiteralExpr::cast(value.syntax().clone())?;
     match literal.token()?.kind() {

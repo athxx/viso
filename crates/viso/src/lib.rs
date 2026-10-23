@@ -1597,6 +1597,7 @@ impl WindowState {
             || self.store.refreshes_due()
             || self.store.snaps_due()
             || self.store.row_gestures_due()
+            || self.store.sheets_due()
             || self.store.frame_clients_want_frame()
             || self.draws_clock
     }
@@ -3632,6 +3633,16 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         );
                         ws.tell_focus();
                     }
+                    // The sheets a drag moved hear where it left them.
+                    if ws.store.sheets_due() {
+                        KeyRouter::route_sheets(
+                            &mut ws.store,
+                            &mut ws.states,
+                            &ws.bindings,
+                            &mut ws.text_edits,
+                        );
+                        ws.tell_focus();
+                    }
                     // Poll the tasks spawned or woken since the last frame and
                     // run each finished one's continuation; what it writes joins
                     // this frame's transaction. No woken task (the steady case)
@@ -4460,8 +4471,9 @@ pub mod prelude {
     // top-layer content, with its app-captured PopupHandle for programmatic
     // open/close/toggle), the Modal (a full-surface dialog that dims the scene
     // and traps focus while open, with its app-captured ModalHandle), and the
-    // Sheet (an edge drawer that slides in over a dimming scrim and traps focus,
-    // with its app-captured SheetHandle for programmatic open/close/toggle). A
+    // Sheet (an edge panel that slides in over a dimming scrim, rests at its
+    // detents and drags off, trapping focus while open, with its app-captured
+    // SheetHandle for programmatic open/close/toggle). A
     // widget is a `Component` an app authors and builds into its `BuildCx`, so
     // these belong in the default set as they land.
     pub use viso_widgets::{
@@ -4469,12 +4481,12 @@ pub mod prelude {
         ImageStyle, Label, LabelStyle, Modal, ModalHandle, ModalHandleSlot, ModalStyle, NavHandle,
         NavHandleSlot, NavigationStack, NavigationStackStyle, NumberField, Popup, PopupHandle,
         PopupHandleSlot, PopupStyle, RadioGroup, RadioStyle, Scroll, ScrollViewStyle, Sheet,
-        SheetEdge, SheetHandle, SheetHandleSlot, SheetStyle, Slider, SliderStyle, Splitter,
-        SplitterStyle, Tabs, TabsStyle, TextInput, TextInputStyle, Toast, ToastEdge, ToastHandle,
-        ToastHandleSlot, ToastStyle, Toggle, ToggleStyle, View, ViewStyle, VirtualList,
-        VirtualListViewStyle, button, checkbox, grid, icon, image, label, modal, navigation_stack,
-        number_field, popup, radio_group, rich_text, scroll, sheet, slider, splitter, tabs,
-        text_input, toast, toggle, view, virtual_list,
+        SheetDetent, SheetEdge, SheetHandle, SheetHandleSlot, SheetStyle, Slider, SliderStyle,
+        Splitter, SplitterStyle, Tabs, TabsStyle, TextInput, TextInputStyle, Toast, ToastEdge,
+        ToastHandle, ToastHandleSlot, ToastStyle, Toggle, ToggleStyle, View, ViewStyle,
+        VirtualList, VirtualListViewStyle, button, checkbox, grid, icon, image, label, modal,
+        navigation_stack, number_field, popup, radio_group, rich_text, scroll, sheet, slider,
+        splitter, tabs, text_input, toast, toggle, view, virtual_list,
     };
     // The top-level Window control (§68 public application lifecycle): a window
     // is not a node control — it does not enter the UI tree — so it appears as an

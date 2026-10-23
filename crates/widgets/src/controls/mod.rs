@@ -63,7 +63,7 @@ pub use select::{
     Select, SelectHandle, SelectHandleSlot, SelectKind, SelectOption, SelectStyle, select,
     select_option,
 };
-pub use sheet::{Sheet, SheetEdge, SheetHandle, SheetHandleSlot, SheetStyle, sheet};
+pub use sheet::{Sheet, SheetDetent, SheetEdge, SheetHandle, SheetHandleSlot, SheetStyle, sheet};
 pub use slider::{Slider, SliderStyle, slider};
 pub use splitter::{Splitter, SplitterStyle, splitter};
 pub use tabs::{Tabs, TabsStyle, tabs};

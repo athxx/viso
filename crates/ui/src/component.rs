@@ -749,6 +749,8 @@ pub struct NodeStore {
     pub(crate) viewers: crate::viewer::Viewers,
     /// Cold: the swipe rows, and what their gestures settled.
     pub(crate) row_gestures: crate::row_gesture::RowGestures,
+    /// The window's sheets ([`crate::sheet`]).
+    pub(crate) sheets: crate::sheet::Sheets,
     /// Cold: the nodes folded to their first child.
     pub(crate) folds: crate::fold::Folds,
     /// Cold: the text fields and the marks they draw.
@@ -913,6 +915,7 @@ impl NodeStore {
         self.pinches.clear();
         self.viewers.clear();
         self.row_gestures.clear();
+        self.sheets.clear();
         self.folds.clear();
         self.paged.clear();
         self.fields.clear();
@@ -5216,6 +5219,7 @@ impl NodeStore {
         self.fit_viewers();
         self.fit_swipes();
         self.fit_reorders();
+        self.fit_sheets();
         self.sync_refreshers();
         self.sync_stickies();
         self.sync_snaps();
@@ -5454,6 +5458,7 @@ impl NodeStore {
         // A swipe row stays open as far as its actions now reach.
         self.fit_swipes();
         self.fit_reorders();
+        self.fit_sheets();
         // A refresher starts or ends and its indicator follows its pull.
         self.sync_refreshers();
         self.sync_stickies();
@@ -6886,6 +6891,31 @@ impl<'a> BuildCx<'a> {
     pub fn anchor_arrow(&mut self, floater: Handle, arrow: Handle) -> Handle {
         self.store.set_anchor_arrow(floater.id, Some(arrow.id));
         floater
+    }
+
+    /// Make an already-declared node a sheet of `spec`, dimming with `scrim`
+    /// as it shows: a layer over the whole surface whose first child is the
+    /// panel, put away until presented (see [`NodeStore::set_sheet`]).
+    pub fn sheet(
+        &mut self,
+        handle: Handle,
+        spec: crate::sheet::SheetSpec,
+        scrim: Option<Rgba>,
+    ) -> Handle {
+        self.store.set_layer(handle.id, true);
+        self.store.set_hittable(handle.id, true);
+        self.store.set_sheet(handle.id, Some(spec));
+        if let Some(scrim) = scrim {
+            self.store.set_sheet_scrim(handle.id, scrim);
+        }
+        handle
+    }
+
+    /// Open sheet `sheet` at detent `detent`, by its place among its detents
+    /// least first (see [`NodeStore::set_sheet_detent`]).
+    pub fn sheet_detent(&mut self, sheet: Handle, detent: usize) -> Handle {
+        self.store.set_sheet_detent(sheet.id, detent);
+        sheet
     }
 
     /// Make layer `layer` go when a press lands outside it (see

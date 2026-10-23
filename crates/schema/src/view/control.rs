@@ -45,7 +45,7 @@ pub enum ControlKind {
     /// `Disclosure`: a release on its first child, the header, or Space/Enter
     /// flips `expanded`; while it is not expanded only the header shows.
     Disclosure = 9,
-    /// `Modal` and `Sheet`: a layer over the whole surface that shows while
+    /// `Modal`: a layer over the whole surface that shows while
     /// `open`, traps focus and drops it back on close; a release on its
     /// scrim, outside its content, or Escape reports `open` false.
     Dialog = 10,
@@ -82,11 +82,17 @@ pub enum ControlKind {
     SwipeActions = 18,
     /// A `ReorderHandle`: the grip a reorderable row is carried by.
     ReorderHandle = 19,
+    /// `Sheet`: a layer whose child, its panel, slides in from its `edge`
+    /// over the scrim its `background` dims, while `open`, to its `detent`
+    /// among its `detents`; a drag carries it between them and reports
+    /// `detent_changed`, or off, and a drag off, a press on the scrim or
+    /// Escape reports `open` false. It traps the focus while open.
+    Sheet = 20,
 }
 
 impl ControlKind {
     /// Every kind, by discriminant.
-    pub const ALL: [ControlKind; 20] = [
+    pub const ALL: [ControlKind; 21] = [
         ControlKind::Check,
         ControlKind::Slider,
         ControlKind::Select,
@@ -107,6 +113,7 @@ impl ControlKind {
         ControlKind::SwipeRow,
         ControlKind::SwipeActions,
         ControlKind::ReorderHandle,
+        ControlKind::Sheet,
     ];
 
     /// The kind native widget `widget` is.
@@ -115,7 +122,8 @@ impl ControlKind {
             "CheckBox" => ControlKind::Check,
             "Toggle" => ControlKind::Switch,
             "Disclosure" => ControlKind::Disclosure,
-            "Modal" | "Sheet" => ControlKind::Dialog,
+            "Modal" => ControlKind::Dialog,
+            "Sheet" => ControlKind::Sheet,
             "Toast" => ControlKind::Toast,
             "Slider" => ControlKind::Slider,
             "Tabs" | "RadioGroup" => ControlKind::Select,
@@ -143,6 +151,7 @@ impl ControlKind {
             "submitted" => EventRoute::Submitted,
             "selected_changed" => EventRoute::SelectedChanged,
             "current_changed" => EventRoute::CurrentChanged,
+            "detent_changed" => EventRoute::DetentChanged,
             _ => return None,
         };
         self.reports(route).then_some(route)
@@ -177,6 +186,7 @@ impl ControlKind {
                     | ControlKind::Switch
                     | ControlKind::Disclosure
                     | ControlKind::Dialog
+                    | ControlKind::Sheet
                     | ControlKind::Slider
                     | ControlKind::TextInput
                     | ControlKind::Number,
@@ -184,6 +194,7 @@ impl ControlKind {
             ) | (ControlKind::TextInput, EventRoute::Submitted)
                 | (ControlKind::Select, EventRoute::SelectedChanged)
                 | (ControlKind::Pages, EventRoute::CurrentChanged)
+                | (ControlKind::Sheet, EventRoute::DetentChanged)
                 | (ControlKind::Button, EventRoute::Click)
         )
     }
@@ -288,7 +299,7 @@ impl ControlKind {
             (ControlKind::Label | ControlKind::Button, "overflow") => ControlInput::Overflow,
             (ControlKind::Check | ControlKind::Switch, "checked")
             | (ControlKind::Disclosure, "expanded")
-            | (ControlKind::Dialog | ControlKind::Toast, "open")
+            | (ControlKind::Dialog | ControlKind::Sheet | ControlKind::Toast, "open")
             | (ControlKind::Slider, "value")
             | (ControlKind::Select, "selected")
             | (ControlKind::Pages, "current")
@@ -313,6 +324,7 @@ impl ControlKind {
             (ControlKind::Viewer, "double_tap") => ControlInput::Value,
             (ControlKind::Viewer, "min_scale") => ControlInput::Min,
             (ControlKind::Viewer, "max_scale") => ControlInput::Max,
+            (ControlKind::Sheet, "detent") => ControlInput::Min,
             (ControlKind::Viewer, "pan_margin") => ControlInput::PanMargin,
             (ControlKind::SwipeRow, "full_swipe") | (ControlKind::SwipeActions, "edge") => {
                 ControlInput::Value
@@ -344,6 +356,7 @@ impl ControlKind {
             ControlKind::SwipeRow => "SwipeRow",
             ControlKind::SwipeActions => "SwipeActions",
             ControlKind::ReorderHandle => "ReorderHandle",
+            ControlKind::Sheet => "Sheet",
         }
     }
 
@@ -691,7 +704,7 @@ pub enum ControlInput {
     /// Its current value: `checked`, `value`, `selected`, a label's `text`,
     /// an image's `source` or a shader view's `shader`.
     Value,
-    /// A slider's lower bound.
+    /// A slider's lower bound, or the detent a sheet rests at.
     Min,
     /// A slider's upper bound.
     Max,

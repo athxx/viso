@@ -715,6 +715,69 @@ fn a_swipe_row_exports_as_a_clipped_row_its_script_slides_open() {
     );
 }
 
+const SHEETED: &str = r#"
+export component Page {
+    state shown = false;
+    state rest: U32 = 1;
+    state asks = 0;
+    view {
+        Column {
+            Button { text: "Open"; on click { shown = true; } }
+            Text { text: format("rest={} shown={} asks={}.", rest, shown, asks); }
+            Sheet {
+                bind open <=> shown;
+                bind detent <=> rest;
+                detents: [50dp, 100%];
+                on changed(event) { asks += 1; }
+                Column { width: 300dp; height: 200dp; background: #336699; }
+            }
+        }
+    }
+}
+"#;
+
+#[test]
+fn a_sheet_exports_as_a_dialog_its_script_slides_to_detents_and_off() {
+    let page = export(SHEETED, false).unwrap();
+    assert!(
+        page.index.contains("<dialog")
+            && page.index.contains("data-sheet-edge=\"0\"")
+            && page.index.contains("data-detents=\"50px 100%\""),
+        "{}",
+        page.index
+    );
+    let script = page.script.clone().unwrap();
+    assert!(script.contains("sheet("), "{script}");
+    let Some(chrome) = chrome() else {
+        eprintln!("no Chrome: the page is not run");
+        return;
+    };
+    let slide = "\nconst dialog = () => document.querySelector('dialog');\n\
+        const panel = () => dialog().firstElementChild;\n\
+        const at = (type, y) => panel().dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: 1, pointerType: 'mouse', isPrimary: true, button: type === 'pointermove' ? -1 : 0, clientX: 20, clientY: y }));\n\
+        const said = (what) => document.body.append(what + ' ' + document.querySelector('span').textContent + ' ' + panel().style.transform + ' ' + dialog().open + '|');\n\
+        setTimeout(() => document.querySelector('button').click(), 50);\n\
+        setTimeout(() => said('opened'), 700);\n\
+        setTimeout(() => { const y = panel().getBoundingClientRect().top + 100; at('pointerdown', y); for (let k = 1; k <= 5; k++) setTimeout(() => at('pointermove', y + 22 * k), 100 * k); setTimeout(() => at('pointerup', y + 110), 900); }, 800);\n\
+        setTimeout(() => said('dragged'), 2400);\n\
+        setTimeout(() => dialog().dispatchEvent(new Event('cancel', { cancelable: true })), 2500);\n\
+        setTimeout(() => said('closed'), 3300);\n";
+    let dom = run_in_chrome(&page, &(script + slide), "export-sheet", &[], chrome);
+    assert!(
+        dom.contains("opened rest=1 shown=true asks=0. translateY(0px) true|"),
+        "it opens to all of its panel: {dom}"
+    );
+    assert!(
+        dom.contains("dragged rest=0 shown=true asks=0. translateY(150px) true|"),
+        "a drag down brings it to its lesser detent: {dom}"
+    );
+    assert!(
+        dom.contains("closed rest=0 shown=false asks=1."),
+        "Escape closes it: {dom}"
+    );
+    assert!(dom.contains(" false|"), "out, it closes: {dom}");
+}
+
 const REORDERED: &str = r#"
 export component Groceries {
     state moved = 0;

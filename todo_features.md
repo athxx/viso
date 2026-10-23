@@ -170,7 +170,7 @@ Rules:
   coordination.
 - [x] `InteractiveViewer` (pan/zoom container with bounds and inertia).
 - [x] Swipe-to-reveal row actions; drag-handle reorder in `List`.
-- [ ] `Sheet` detents and drag-to-dismiss.
+- [x] `Sheet` detents and drag-to-dismiss.
 
 ## W8 — Drag and drop
 

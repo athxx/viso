@@ -371,6 +371,12 @@ impl Rt {
             &self.bindings,
             &mut self.text_edits,
         );
+        KeyRouter::route_sheets(
+            &mut self.store,
+            &mut self.states,
+            &self.bindings,
+            &mut self.text_edits,
+        );
         let mut changed = Vec::new();
         self.states.take_pending(&mut changed);
         self.store
@@ -995,6 +1001,88 @@ export component Page {
         rt.click(10.0, 10.0);
         assert_eq!((rt.int("shown"), rt.int("asks")), (0, 2));
         assert!(!rt.store.hidden(check) && rt.store.hidden(modal));
+        assert!(!rt.faulted());
+    }
+}
+
+#[test]
+fn a_sheet_slides_to_its_detent_a_drag_moves_it_and_a_drag_off_closes_it() {
+    const SHEET: &str = r#"
+export component Page {
+    state shown = false;
+    state rest: U32 = 1;
+    state asks = 0;
+    view {
+        Column {
+            width: 400dp;
+            height: 300dp;
+            CheckBox { width: 100dp; height: 20dp; bind checked <=> shown; }
+            Sheet {
+                bind open <=> shown;
+                bind detent <=> rest;
+                detents: [50dp, 100%];
+                on changed(event) { asks += 1; }
+                Column {
+                    width: 400dp;
+                    height: 200dp;
+                    TextInput { width: 200dp; height: 20dp; }
+                }
+            }
+        }
+    }
+}
+"#;
+    for mut rt in [Rt::reloaded(SHEET), Rt::packaged(SHEET)] {
+        rt.store.set_reduced_motion(true);
+        let [check, sheet] = rt.children_of_root()[..] else {
+            panic!("a check and a sheet");
+        };
+        let panel = rt.children(sheet)[0];
+        let field = rt.children(panel)[0];
+        assert!(rt.store.is_sheet(sheet) && rt.store.hidden(sheet));
+        assert_eq!(
+            rt.store.semantics(sheet).map(|s| s.role),
+            Some(viso_ui::Role::Dialog)
+        );
+        let top = |rt: &mut Rt| {
+            rt.layout();
+            rt.store.world(panel).y
+        };
+
+        rt.store.set_focused(Some(check));
+        rt.key(Key::Space);
+        assert_eq!(rt.int("shown"), 1);
+        assert!(!rt.store.hidden(sheet));
+        assert_eq!(top(&mut rt), 100.0, "all of it shows, against the bottom");
+        assert_eq!(rt.store.focused(), Some(field), "focus moves in");
+
+        rt.pointer(200.0, 150.0, PointerPhase::Down);
+        for k in 1..=11 {
+            rt.pointer(200.0, 150.0 + 10.0 * k as f32, PointerPhase::Move);
+        }
+        rt.pointer(200.0, 260.0, PointerPhase::Up);
+        assert_eq!(rt.int("rest"), 0, "it came to rest at its lesser detent");
+        assert_eq!(top(&mut rt), 250.0);
+
+        rt.key(Key::Escape);
+        assert_eq!((rt.int("shown"), rt.int("asks")), (0, 1));
+        assert!(rt.store.hidden(sheet));
+        assert_eq!(rt.store.focused(), Some(check), "focus comes back");
+
+        rt.key(Key::Space);
+        assert_eq!(top(&mut rt), 250.0, "it opens at its detent");
+        rt.pointer(200.0, 260.0, PointerPhase::Down);
+        for k in 1..=4 {
+            rt.pointer(200.0, 260.0 + 10.0 * k as f32, PointerPhase::Move);
+        }
+        rt.pointer(200.0, 300.0, PointerPhase::Up);
+        assert_eq!(
+            (rt.int("shown"), rt.int("asks")),
+            (0, 2),
+            "a drag off closes it"
+        );
+        rt.layout();
+        assert!(rt.store.hidden(sheet));
         assert!(!rt.faulted());
     }
 }

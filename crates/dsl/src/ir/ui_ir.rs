@@ -21,11 +21,12 @@ use crate::resolve::SymbolId;
 use crate::syntax::span::TextRange;
 use viso_behavior::native::MigratableState;
 use viso_schema::Interaction;
-pub use viso_schema::aot::AotSnap;
+pub use viso_schema::aot::{AotSheet, AotSnap};
 pub use viso_schema::layout::{
     AbsoluteInsets, AdaptiveColumns, AlignItems, Alignment2D, AutoRepeat, BoxRules, GridPlacement,
     Inset, Placement, Span, SpanInset, StackPlacement, TrackMax, TrackSizing,
 };
+pub use viso_schema::layout::{SheetDetent, SheetEdge};
 pub use viso_schema::{Align, Justify};
 pub use viso_schema::{Avoid, LayoutDirection};
 
@@ -547,6 +548,9 @@ pub struct StyleIr {
     /// Whether a `Scroll` or a `VirtualList` shows scroll bars and follows
     /// the end of its content, when either is set.
     pub scroll: Option<ScrollIr>,
+    /// What a `Sheet` is: its edge, its detents and whether a drag
+    /// dismisses it.
+    pub sheet: Option<AotSheet>,
 }
 
 /// How a viewport scrolls: whether it shows scroll bars (`scroll_bars`),

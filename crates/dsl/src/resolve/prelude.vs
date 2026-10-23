@@ -82,6 +82,8 @@ export enum SwipeEdge { leading; trailing; }
 export enum FullSwipe { none; leading; trailing; both; }
 export record FullSwipeEvent { edge: SwipeEdge; }
 export record ReorderEvent { from: U32; to: U32; }
+// The edge of the surface a `Sheet` slides in from.
+export enum SheetEdge { bottom; top; leading; trailing; }
 
 // How a move's progress follows its time: Penner's curves accelerating
 // (`in_*`), decelerating (`out_*`) or both, `ease_*` the cubic ones, a CSS

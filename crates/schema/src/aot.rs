@@ -64,8 +64,8 @@ use viso_ende::{
 use crate::env::{Avoid, LayoutDirection};
 use crate::layout::{
     AbsoluteInsets, AdaptiveColumns, Align, AlignItems, Alignment2D, AutoRepeat, BoxRules,
-    GridPlacement, Inset, Justify, Placement, Span, SpanInset, StackPlacement, TrackMax,
-    TrackSizing,
+    GridPlacement, Inset, Justify, Placement, SheetDetent, SheetEdge, Span, SpanInset,
+    StackPlacement, TrackMax, TrackSizing,
 };
 use crate::length::{EdgeTerms, InsetTerms, LengthTerms, NodeLengths};
 use crate::state::StateKey;
@@ -355,7 +355,64 @@ pub struct AotStyle {
     pub place: Option<Placement>,
     /// How a scroll viewport scrolls, when the node set it.
     pub scroll: Option<AotScroll>,
+    /// What a sheet is, when the node is one.
+    pub sheet: Option<AotSheet>,
 }
+
+/// What a sheet is: the edge its panel lies against, where it rests (none
+/// for all of the panel), and whether a drag past its least detent
+/// dismisses it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AotSheet {
+    pub edge: SheetEdge,
+    pub dismissible: bool,
+    detents: [SheetDetent; AotSheet::MAX_DETENTS],
+    count: u8,
+}
+
+impl AotSheet {
+    /// The most detents a sheet rests at.
+    pub const MAX_DETENTS: usize = 4;
+
+    /// A sheet against `edge` resting at `detents`, `None` past
+    /// [`MAX_DETENTS`](Self::MAX_DETENTS) of them.
+    pub fn new(edge: SheetEdge, detents: &[SheetDetent], dismissible: bool) -> Option<Self> {
+        if detents.len() > Self::MAX_DETENTS {
+            return None;
+        }
+        let mut at = [SheetDetent::Full; Self::MAX_DETENTS];
+        at[..detents.len()].copy_from_slice(detents);
+        Some(AotSheet {
+            edge,
+            dismissible,
+            detents: at,
+            count: detents.len() as u8,
+        })
+    }
+
+    /// Where it rests, least first; none for all of the panel.
+    pub fn detents(&self) -> &[SheetDetent] {
+        &self.detents[..usize::from(self.count)]
+    }
+}
+
+impl Default for AotSheet {
+    fn default() -> Self {
+        AotSheet {
+            edge: SheetEdge::Bottom,
+            dismissible: true,
+            detents: [SheetDetent::Full; Self::MAX_DETENTS],
+            count: 0,
+        }
+    }
+}
+
+// A sheet is a byte — bits 0-1 its edge, bit 2 whether it is dismissible,
+// bits 3-5 how many detents follow — then each detent a tag byte (`0` all of
+// the panel, `1` a share of the surface, `2` a length), the latter two an
+// `f32` after it.
+const SHEET_DISMISSIBLE: u8 = 1 << 2;
+const SHEET_COUNT_SHIFT: u8 = 3;
 
 /// How a scroll viewport scrolls: whether it shows scroll bars, whether it
 /// follows the end of its content, how it comes to rest on its items and
@@ -490,6 +547,7 @@ const STYLE_HAS_GRID: u32 = 1 << 13;
 const STYLE_HAS_CONTENT_ALIGN: u32 = 1 << 14;
 const STYLE_HAS_DIRECTION: u32 = 1 << 15;
 const STYLE_SCROLLS: u32 = 1 << 16;
+const STYLE_SHEET: u32 = 1 << 17;
 
 // A grid is a byte naming the parts it sets, then each: a template is a
 // varint count of tracks; a track is a byte naming its sizing, then its
@@ -1373,6 +1431,9 @@ fn encode_record(record: &AotRecord<'_>, enc: &mut Encoder) {
     if style.scroll.is_some() {
         mask |= STYLE_SCROLLS;
     }
+    if style.sheet.is_some() {
+        mask |= STYLE_SHEET;
+    }
     enc.write_varint(u64::from(mask));
     if let Some(axis) = style.axis {
         enc.write_u8(match axis {
@@ -1455,6 +1516,26 @@ fn encode_record(record: &AotRecord<'_>, enc: &mut Encoder) {
             enc.write_f32(scroll.snap_inset);
         }
     }
+    if let Some(sheet) = style.sheet {
+        let mut bits = sheet.edge as u8 | (sheet.count << SHEET_COUNT_SHIFT);
+        if sheet.dismissible {
+            bits |= SHEET_DISMISSIBLE;
+        }
+        enc.write_u8(bits);
+        for detent in sheet.detents() {
+            match *detent {
+                SheetDetent::Full => enc.write_u8(0),
+                SheetDetent::Fraction(f) => {
+                    enc.write_u8(1);
+                    enc.write_f32(f);
+                }
+                SheetDetent::Fixed(v) => {
+                    enc.write_u8(2);
+                    enc.write_f32(v);
+                }
+            }
+        }
+    }
     enc.write_varint(u64::from(record.child_count));
 }
 
@@ -1484,7 +1565,7 @@ fn decode_record<'a>(dec: &mut Decoder<'a>) -> Result<AotRecord<'a>, DecodeError
     let offset = dec.position();
     let mask = u32::try_from(dec.read_varint()?).map_err(|_| DecodeError::Malformed { offset })?;
     if mask & (STYLE_HAS_BASIS | STYLE_HAS_DIRECTION) != 0 && mask & STYLE_IS_SCOPE == 0
-        || mask >= STYLE_SCROLLS << 1
+        || mask >= STYLE_SHEET << 1
     {
         return Err(DecodeError::Malformed { offset });
     }
@@ -1608,6 +1689,28 @@ fn decode_record<'a>(dec: &mut Decoder<'a>) -> Result<AotRecord<'a>, DecodeError
     } else {
         None
     };
+    let sheet = if has(STYLE_SHEET) {
+        let offset = dec.position();
+        let bits = dec.read_u8()?;
+        let edge = SheetEdge::ALL[usize::from(bits & 3)];
+        let count = usize::from(bits >> SHEET_COUNT_SHIFT);
+        if count > AotSheet::MAX_DETENTS {
+            return Err(DecodeError::Malformed { offset });
+        }
+        let mut detents = [SheetDetent::Full; AotSheet::MAX_DETENTS];
+        for detent in &mut detents[..count] {
+            let offset = dec.position();
+            *detent = match dec.read_u8()? {
+                0 => SheetDetent::Full,
+                1 => SheetDetent::Fraction(dec.read_f32()?),
+                2 => SheetDetent::Fixed(dec.read_f32()?),
+                _ => return Err(DecodeError::Malformed { offset }),
+            };
+        }
+        AotSheet::new(edge, &detents[..count], bits & SHEET_DISMISSIBLE != 0)
+    } else {
+        None
+    };
     let offset = dec.position();
     let child_count =
         u32::try_from(dec.read_varint()?).map_err(|_| DecodeError::Malformed { offset })?;
@@ -1626,6 +1729,7 @@ fn decode_record<'a>(dec: &mut Decoder<'a>) -> Result<AotRecord<'a>, DecodeError
             content_align,
             place,
             scroll,
+            sheet,
         },
         child_count,
         extras: Extras::Encoded {
@@ -1945,6 +2049,15 @@ mod tests {
                             snap_inset: 12.0,
                             dots: true,
                         }),
+                        sheet: AotSheet::new(
+                            SheetEdge::Trailing,
+                            &[
+                                SheetDetent::Fraction(0.5),
+                                SheetDetent::Fixed(120.0),
+                                SheetDetent::Full,
+                            ],
+                            false,
+                        ),
                         place: None,
                     },
                     lengths: None,

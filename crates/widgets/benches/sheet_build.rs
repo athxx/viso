@@ -11,16 +11,12 @@
 //!
 //! `Sheet` authors one `Bool` open cell (`cx.state`) and binds it to the sheet's
 //! `PAINT`, so it must build through `BuildCx::with_reactive` (a plain
-//! `BuildCx::new` panics on `cx.state`). For the default `Bottom` edge the root's
-//! direct children are `[scrim@0, spacer@1, content@2]`: the scrim and the content
-//! are *overlay* (top layer) — scrim authored first, content second — and a `Fill`
-//! spacer pins the content to the bottom edge (the layout engine's `Align` is
-//! cross-axis only, so a far-edge anchor needs a spacer sibling). A closed sheet
-//! keeps both overlays hidden and paints nothing, so the bench opens the sheet
-//! (shows the scrim AND the content) before laying out and painting so the
-//! meaningful open-state cost is measured, not folded out by the closed `hidden`
-//! flags. It drives only `viso-ui`, so it needs no facade or render dev-dependency
-//! and adds no dependency edge.
+//! `BuildCx::new` panics on `cx.state`). The sheet is one layer whose own box
+//! is the scrim and whose child is the panel pinned to the bottom edge. A closed
+//! sheet is hidden and paints nothing, so the bench presents it before laying
+//! out and painting so the meaningful open-state cost is measured. It drives
+//! only `viso-ui`, so it needs no facade or render dev-dependency and adds no
+//! dependency edge.
 //!
 //! Run release (`CARGO_TARGET_DIR=/tmp/rust_tmp cargo bench -p viso-widgets`);
 //! criterion defaults to a release profile. Debug timing is not a perf result
@@ -29,7 +25,6 @@
 use std::cell::RefCell;
 use std::hint::black_box;
 use std::rc::Rc;
-use std::time::Duration;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use viso_ui::{
@@ -43,10 +38,6 @@ const H: f32 = 240.0;
 
 /// The drawer's fixed extent along the slide axis (its height for a bottom sheet).
 const EXTENT: f32 = 96.0;
-
-/// A brisk slide duration; unused by the static phases here but part of the built
-/// style so the scene matches what a real open sheet carries.
-const SLIDE: Duration = Duration::from_millis(200);
 
 /// An opaque scrim wash so the open-state paint carries a real fill for both
 /// layers rather than a transparent no-op.
@@ -88,11 +79,9 @@ fn fill(cx: &mut BuildCx<'_>) {
     });
 }
 
-/// Author a single bottom `Sheet` (scrim + spacer + content + an app-captured
-/// handle) into a fresh store, open it (show the scrim and content overlays), and
-/// return the store plus its root — the input the phases below run on. Opening
-/// shows the scrim@0 and content@2 so `layout`/`paint_tree` measure the
-/// visible-overlay path; a closed sheet paints nothing.
+/// Author a single bottom `Sheet` (scrim layer + panel + an app-captured
+/// handle) into a fresh store and present it — the input the phases below run
+/// on; a closed sheet paints nothing.
 fn build_scene() -> (NodeStore, NodeId) {
     let mut store = NodeStore::new();
     let mut r = Reactive::new();
@@ -109,33 +98,14 @@ fn build_scene() -> (NodeStore, NodeId) {
         sheet()
             .edge(SheetEdge::Bottom)
             .extent(EXTENT)
-            .duration(SLIDE)
             .scrim(SCRIM)
             .content(fill)
             .handle(&slot)
             .build(&mut cx);
         cx.root().expect("sheet declares a root")
     };
-    // Open the sheet: show the scrim@0 and the content@2 (the spacer@1 never
-    // paints) for the layout/paint phases.
-    let parts = children_of(&store, root);
-    store.set_hidden(parts[0], false);
-    store.set_hidden(
-        *parts.last().expect("a bottom sheet has a content child"),
-        false,
-    );
+    store.present_sheet(root, true);
     (store, root)
-}
-
-/// A node's direct children (arena sibling chain) — used to reach the scrim and
-/// content overlay layers.
-fn children_of(store: &NodeStore, parent: NodeId) -> Vec<NodeId> {
-    let arena = store.arena();
-    let mut out = Vec::new();
-    for c in arena.children(parent) {
-        out.push(c);
-    }
-    out
 }
 
 fn surface() -> Rect {
@@ -165,7 +135,6 @@ fn bench_sheet(c: &mut Criterion) {
             sheet()
                 .edge(SheetEdge::Bottom)
                 .extent(EXTENT)
-                .duration(SLIDE)
                 .scrim(SCRIM)
                 .content(fill)
                 .handle(&slot)
@@ -174,8 +143,7 @@ fn bench_sheet(c: &mut Criterion) {
         });
     });
 
-    // layout: place the opened scrim + spacer + content over the region — the
-    // spacer's `Fill` distribution pins the content to the bottom edge.
+    // layout: place the presented scrim layer and its panel over the region.
     c.bench_function("sheet/layout", |b| {
         let (mut store, root) = build_scene();
         let rect = surface();
@@ -187,8 +155,8 @@ fn bench_sheet(c: &mut Criterion) {
     });
 
     // paint_tree: lower the laid-out sheet into the reused primitive buffer; this
-    // carries the overlay top-layer collection/deferral cost for both layers (the
-    // scrim painted under the content).
+    // carries the layer's collection/deferral cost (the scrim painted under the
+    // panel).
     c.bench_function("sheet/paint_tree", |b| {
         let (mut store, root) = build_scene();
         store.layout(root, surface(), &mut Vec::new());

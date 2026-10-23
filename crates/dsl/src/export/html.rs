@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use viso_behavior::Value;
+use viso_schema::layout::SheetDetent;
 use viso_schema::number::NumberFormat;
 use viso_schema::view::{Control, ControlKind, EventRoute};
 use viso_schema::{Align, Justify, LiveRegion, Role};
@@ -91,6 +92,9 @@ pub(super) enum Wire {
     /// Makes the element a swipe row: a drag across slides its content
     /// aside to show its panels.
     SwipeRow,
+    /// Makes the element a sheet: its panel slides in from its edge to its
+    /// detent while open, and a drag carries it between them or off.
+    Sheet,
 }
 
 /// The style of a sticky element: held at its scroller's start edge, over
@@ -1292,6 +1296,49 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                     (true, true) => el.attr("open", ""),
                     (false, false) => el.attr("hidden", ""),
                     _ => {}
+                }
+            }
+            // A sheet's script, ahead of what it shows, slides its panel to
+            // the detent its `data-detent` picks among its `data-detents`.
+            ControlKind::Sheet => {
+                wires.push(Wire::Sheet);
+                let sheet = node.style.sheet.unwrap_or_default();
+                el.attr("data-sheet-edge", &(sheet.edge as u8).to_string());
+                let detents: Vec<String> = sheet
+                    .detents()
+                    .iter()
+                    .map(|detent| match *detent {
+                        SheetDetent::Full => "full".to_owned(),
+                        SheetDetent::Fraction(f) => format!("{}%", f * 100.0),
+                        SheetDetent::Fixed(v) => format!("{v}px"),
+                    })
+                    .collect();
+                if !detents.is_empty() {
+                    el.attr("data-detents", &detents.join(" "));
+                }
+                if !sheet.dismissible {
+                    el.attr("data-dismissible", "false");
+                }
+                if let Some(fixed) = self.bind(
+                    wires,
+                    control.min,
+                    Prop::Data("data-detent"),
+                    "the detent it rests at",
+                    at,
+                ) {
+                    el.attr("data-detent", &fixed.text());
+                }
+                if self
+                    .bind(
+                        wires,
+                        control.value,
+                        Prop::Layer { dialog: true },
+                        "whether it is open",
+                        at,
+                    )
+                    .is_some_and(|fixed| fixed.truth())
+                {
+                    el.attr("open", "");
                 }
             }
             ControlKind::Number => self.number(control, el, wires, at),

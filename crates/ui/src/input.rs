@@ -2018,6 +2018,31 @@ impl KeyRouter {
         ran
     }
 
+    /// Tell each sheet what a drag on it chose ([`crate::sheet`]), through
+    /// its key handler: a dismiss as a light dismiss
+    /// ([`EventCx::dismissed`]), a detent as
+    /// [`EventCx::sheet_detent`]. Returns whether a handler ran.
+    pub fn route_sheets(
+        store: &mut NodeStore,
+        states: &mut StateStore,
+        bindings: &BindingTable,
+        edits: &mut TextEdits,
+    ) -> bool {
+        let mut told = Vec::new();
+        store.take_sheet_tells(&mut told);
+        let mut ran = false;
+        for (node, tell) in told {
+            if store.arena().is_live(node) {
+                let payload = match tell {
+                    crate::sheet::SheetTell::Dismiss => KeyPayload::Dismiss,
+                    crate::sheet::SheetTell::Detent(d) => KeyPayload::Detent(d),
+                };
+                ran |= key_handler_dispatch(store, states, bindings, edits, node, payload).ran;
+            }
+        }
+        ran
+    }
+
     /// Deliver every wake whose time came ([`EventCx::wake_after`]) to its
     /// node's key handler, in the order they fired; a node gone drops its
     /// wake. Returns whether a handler ran.
@@ -2140,6 +2165,7 @@ enum KeyPayload<'e> {
     Refresh,
     Snap(usize),
     Row(crate::row_gesture::RowGesture),
+    Detent(usize),
 }
 
 /// Call one node's key handler with `payload`, then apply everything the
@@ -2167,6 +2193,7 @@ fn key_handler_dispatch(
             KeyPayload::Refresh => EventCx::__new_refresh(states, bindings),
             KeyPayload::Snap(index) => EventCx::__new_snap(states, bindings, index),
             KeyPayload::Row(gesture) => EventCx::__new_row_gesture(states, bindings, gesture),
+            KeyPayload::Detent(detent) => EventCx::__new_sheet_detent(states, bindings, detent),
         };
         cx.__set_focused(store.focused());
         cx.__set_services(store.__services());

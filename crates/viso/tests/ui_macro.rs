@@ -430,3 +430,52 @@ fn a_stack_and_an_absolute_place_their_children() {
     store.layout(root, surface, &mut Vec::new());
     assert_eq!(at(&store, text).1, 162.0, "4sp at text scale 2");
 }
+
+#[test]
+fn a_sheet_mounts_against_its_edge_resting_at_its_detents() {
+    use viso::render::Rect;
+
+    let build = viso::ui! {
+        Column {
+            width: 400dp;
+            height: 300dp;
+            Sheet {
+                edge: SheetEdge::top;
+                detents: [50%, 200dp];
+                dismissible: false;
+                Column { width: 400dp; height: 240dp; }
+            }
+        }
+    };
+    let mut store = NodeStore::new();
+    let mut states = StateStore::new();
+    let mut bindings = BindingTable::new();
+    let mut lists = VirtualLists::new();
+    let mut text_edits = TextEdits::new();
+    let mut projectors = SemanticProjector::new();
+    let root = {
+        let mut cx = BuildCx::with_reactive(
+            &mut store,
+            &mut states,
+            &mut bindings,
+            &mut lists,
+            &mut text_edits,
+            &mut projectors,
+        );
+        build(&mut cx).id()
+    };
+    let sheet = store.arena().children(root).next().expect("the sheet");
+    let panel = store.arena().children(sheet).next().expect("its panel");
+    assert!(store.is_sheet(sheet) && store.is_sheet_panel(panel) && store.hidden(sheet));
+    store.set_reduced_motion(true);
+    store.set_sheet_detent(sheet, 1);
+    store.present_sheet(sheet, true);
+    let surface = Rect::new(0.0, 0.0, 400.0, 300.0);
+    store.layout(root, surface, &mut Vec::new());
+    assert_eq!(store.sheet_shown(sheet), Some(200.0));
+    assert_eq!(
+        store.world(panel).y,
+        -40.0,
+        "against the top, 200 of its 240 showing"
+    );
+}

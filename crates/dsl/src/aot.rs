@@ -491,6 +491,7 @@ pub(crate) fn aot_style(style: &StyleIr) -> AotStyle {
             snap_inset: scroll.snap_inset,
             dots: scroll.dots,
         }),
+        sheet: style.sheet,
     }
 }
 

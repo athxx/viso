@@ -34,7 +34,8 @@ use crate::node::NodeId;
 use crate::state::{StateKey, StateStore, StateValue};
 use crate::virtual_list::VirtualLists;
 
-use super::package::{AotAxis, AotLength, AotNodeKind, AotRecord, AotStyle, AotView};
+use super::package::{AotAxis, AotLength, AotNodeKind, AotRecord, AotSheet, AotStyle, AotView};
+use crate::sheet::SheetSpec;
 
 /// A neutral value for a state cell the loader has to allocate because the package
 /// referenced a key the app has not authored yet. Mirrors the commit's brand-new
@@ -208,6 +209,13 @@ pub fn restyle_aot_node(
         AotNodeKind::Stack => {
             let built = stack_style(node);
             store.set_stack_align(live, built.align);
+            if let Some(sheet) = style.sheet {
+                store.set_layer(live, true);
+                store.set_hittable(live, true);
+                store.set_sheet(live, Some(sheet_spec(sheet)));
+            } else if store.is_sheet(live) {
+                store.set_sheet(live, None);
+            }
             (built.size, None, Some(built.padding))
         }
         AotNodeKind::Absolute => {
@@ -329,7 +337,19 @@ pub fn build_aot_node(
     if let Some(lengths) = node.lengths() {
         cx.bind_lengths(handle, lengths);
     }
+    if let Some(sheet) = style.sheet.filter(|_| node.kind == AotNodeKind::Stack) {
+        cx.sheet(handle, sheet_spec(sheet), None);
+    }
     handle
+}
+
+/// The sheet a packaged sheet stack is.
+fn sheet_spec(sheet: AotSheet) -> SheetSpec {
+    SheetSpec {
+        edge: sheet.edge,
+        detents: sheet.detents().to_vec(),
+        dismissible: sheet.dismissible,
+    }
 }
 
 /// The flex builder style for a packaged container, mirroring the commit's

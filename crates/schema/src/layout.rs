@@ -641,3 +641,48 @@ impl From<AbsoluteInsets> for Placement {
         Placement::Absolute(insets)
     }
 }
+
+/// The edge of the surface a sheet's panel lies against and slides in
+/// from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u8)]
+pub enum SheetEdge {
+    /// The bottom: it slides up in.
+    #[default]
+    Bottom,
+    /// The top: it slides down in.
+    Top,
+    /// The edge its lines start from: the left read left to right.
+    Leading,
+    /// The edge they end at.
+    Trailing,
+}
+
+impl SheetEdge {
+    /// Every edge, by its wire tag.
+    pub const ALL: [Self; 4] = [
+        SheetEdge::Bottom,
+        SheetEdge::Top,
+        SheetEdge::Leading,
+        SheetEdge::Trailing,
+    ];
+
+    /// The axis the panel slides along.
+    pub fn axis(self) -> Axis {
+        match self {
+            SheetEdge::Bottom | SheetEdge::Top => Axis::Column,
+            SheetEdge::Leading | SheetEdge::Trailing => Axis::Row,
+        }
+    }
+}
+
+/// How much of a sheet's panel shows at rest.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SheetDetent {
+    /// All of it.
+    Full,
+    /// This share of the surface along its axis, all of it at most.
+    Fraction(f32),
+    /// This many points, all of it at most.
+    Fixed(f32),
+}

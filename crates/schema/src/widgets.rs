@@ -217,6 +217,17 @@ const SELECTED: &[WidgetProperty] = &[two_way("selected", "U32")];
 const DISCLOSURE: &[WidgetProperty] = &[two_way("expanded", "Bool")];
 const OPEN: &[WidgetProperty] = &[two_way("open", "Bool")];
 
+/// Whether a `Sheet` shows, the detent it rests at among its `detents`
+/// (none for all of its panel), the edge it slides in from, and whether a
+/// drag past its least detent dismisses it.
+const SHEET: &[WidgetProperty] = &[
+    two_way("open", "Bool"),
+    two_way("detent", "U32"),
+    based("detents", "List<MixedLength>"),
+    prop("edge", "SheetEdge"),
+    prop("dismissible", "Bool"),
+];
+
 /// The page a `NavigationStack` shows, and how its pages trade places.
 const CURRENT: &[WidgetProperty] = &[
     two_way("current", "U32"),
@@ -345,6 +356,10 @@ const TEXT_INPUT_EVENTS: &[WidgetEvent] = &[
 ];
 const SELECTED_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("selected_changed", "SelectionChanged")];
 const CURRENT_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("current_changed", "SelectionChanged")];
+const SHEET_EVENTS: &[WidgetEvent] = &[
+    WidgetEvent::new("changed", "ToggleChanged"),
+    WidgetEvent::new("detent_changed", "SelectionChanged"),
+];
 const SCROLL_EVENTS: &[WidgetEvent] = &[
     WidgetEvent::new("scroll_changed", "ScrollChanged"),
     WidgetEvent::signal("refresh"),
@@ -586,10 +601,10 @@ pub const STANDARD: &[NativeWidget] = &[
     layout(
         "Sheet",
         WidgetNode::Stack,
-        &[OPEN, STACK, LAYOUT, TRANSFORM, FOCUS],
+        &[SHEET, STACK, LAYOUT, TRANSFORM, FOCUS],
     )
     .provides(&STACK_CHILD)
-    .events(&[TOGGLE_EVENTS, STANDARD_EVENTS])
+    .events(&[SHEET_EVENTS, STANDARD_EVENTS])
     .slots(CHILDREN)
     .interactive(),
     layout(

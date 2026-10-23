@@ -61,6 +61,7 @@ pub mod scroll_motion;
 pub mod semantics;
 pub mod shader;
 pub mod shadow;
+pub mod sheet;
 pub mod snap;
 pub mod spinner;
 pub mod state;
@@ -141,6 +142,7 @@ pub use pinch::{
     route_trackpad_pinch, route_wheel_zoom,
 };
 pub use row_gesture::{ReorderLift, RowGesture, SwipeEdge, SwipeParts};
+pub use sheet::{SheetDetent, SheetEdge, SheetSpec};
 pub use text_style::{
     FontFamily, FontSize, FontSlant, FontWeight, SpanStyle, TextAlign, TextOverflow, TextSizing,
     TextSpan, TextStyle, WidthUse,

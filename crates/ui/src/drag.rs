@@ -102,6 +102,8 @@ impl DragSample {
 struct Drag {
     pointer: PointerId,
     node: NodeId,
+    /// The node pressed.
+    target: NodeId,
     origin: [f32; 2],
     last: [f32; 2],
     started: bool,
@@ -247,6 +249,7 @@ impl NodeStore {
                 self.drags.drags.push(Drag {
                     pointer,
                     node: n,
+                    target,
                     origin: at,
                     last: at,
                     started: false,
@@ -282,7 +285,10 @@ impl NodeStore {
             self.drags.forget(pointer);
             return false;
         }
-        d.started || !d.behind_scroll
+        // A sheet's panel leads where the viewports in it give way.
+        d.started
+            || !d.behind_scroll
+            || (total.x.hypot(total.y) >= slop && self.sheet_leads(d.node, d.target, total))
     }
 
     /// Forgets pointer `pointer`'s armed drag: a pan took the contact.
@@ -396,6 +402,7 @@ impl NodeStore {
             self.steer_viewer_drag(node, pointer, sample);
             self.steer_swipe_drag(node, sample);
             self.steer_reorder_drag(node, pointer, sample);
+            self.steer_sheet_drag(node, sample);
         }
         if !sample.is_some_and(|s| s.phase == DragPhase::End) {
             return;

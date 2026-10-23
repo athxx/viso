@@ -215,6 +215,9 @@ class Store {
   swipeRow(el) {
     swipeRow(el);
   }
+  sheet(el) {
+    sheet(el);
+  }
 
   sync(el, control, value) {
     if (control === 2) el.$radio = el.getAttribute("role") === "radiogroup";

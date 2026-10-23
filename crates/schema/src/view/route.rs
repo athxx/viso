@@ -86,11 +86,14 @@ pub enum EventRoute {
     /// A list's `reordered` (`ReorderEvent`): a row lifted from one place
     /// came to rest at another.
     Reordered = 29,
+    /// A `Sheet`'s `detent_changed`: a drag let go brought it to rest at
+    /// another detent.
+    DetentChanged = 30,
 }
 
 impl EventRoute {
     /// Every route, by discriminant.
-    pub const ALL: [EventRoute; 30] = [
+    pub const ALL: [EventRoute; 31] = [
         EventRoute::Click,
         EventRoute::Tap,
         EventRoute::PointerDown,
@@ -121,6 +124,7 @@ impl EventRoute {
         EventRoute::PinchEnd,
         EventRoute::FullSwiped,
         EventRoute::Reordered,
+        EventRoute::DetentChanged,
     ];
 
     /// The route of standard DSL event `event`, `None` for an event the runtime
@@ -165,6 +169,7 @@ impl EventRoute {
             EventRoute::PinchEnd => "pinch_end",
             EventRoute::FullSwiped => "full_swiped",
             EventRoute::Reordered => "reordered",
+            EventRoute::DetentChanged => "detent_changed",
         }
     }
 
@@ -201,6 +206,7 @@ impl EventRoute {
             EventRoute::PinchEnd => "PinchEnd",
             EventRoute::FullSwiped => "FullSwiped",
             EventRoute::Reordered => "Reordered",
+            EventRoute::DetentChanged => "DetentChanged",
         }
     }
 
@@ -263,6 +269,7 @@ impl EventRoute {
                 | EventRoute::Submitted
                 | EventRoute::SelectedChanged
                 | EventRoute::CurrentChanged
+                | EventRoute::DetentChanged
         )
     }
 }

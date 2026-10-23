@@ -100,6 +100,10 @@ pub fn property_dirty_class(name: &str) -> DirtyClass {
         // go; a panel's edge places it past that side of the row.
         "full_swipe" => D::EMPTY,
         "edge" => D::LAYOUT | D::TRANSFORM,
+        // A sheet springs to its detent; how it rests and whether a drag
+        // dismisses it are read as a drag lets go.
+        "detent" => D::TRANSFORM | D::PAINT,
+        "detents" | "dismissible" => D::EMPTY,
 
         // Turning input off restyles the node through its `disabled`
         // selector and announces it disabled; what hit testing finds is

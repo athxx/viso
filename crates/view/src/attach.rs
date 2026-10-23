@@ -117,8 +117,12 @@ pub fn attach_node(
     } else {
         store.uncount_clicks(id);
     }
-    // A viewer, a swipe row and a reorder handle take their own drags.
-    let own = store.is_viewer(id) || store.is_swipe_row(id) || store.is_reorder_handle(id);
+    // A viewer, a swipe row, a reorder handle and a sheet's panel take
+    // their own drags.
+    let own = store.is_viewer(id)
+        || store.is_swipe_row(id)
+        || store.is_reorder_handle(id)
+        || store.is_sheet_panel(id);
     store.set_draggable(id, drags(routes) || own);
     store.set_long_pressable(id, holds(routes));
     store.set_pinchable(id, pinches(routes));

@@ -369,6 +369,8 @@ pub struct EventCx<'a> {
     snapped: Option<usize>,
     /// What a row gesture on the node settled, if this dispatch tells it.
     row_gesture: Option<crate::row_gesture::RowGesture>,
+    /// The detent a drag brought a sheet to, if this dispatch tells it.
+    sheet_detent: Option<usize>,
     /// The token of the wake this dispatch delivers.
     woken: Option<u32>,
     /// Whether the focus came to or left the node this dispatch tells.
@@ -511,6 +513,10 @@ pub enum StoreRequest {
     Viewer(NodeId, crate::viewer::ViewerMove),
     /// Open a swipe row on an edge's actions, or shut it.
     Swipe(NodeId, Option<crate::row_gesture::SwipeEdge>),
+    /// Present a sheet, or put it away.
+    Sheet(NodeId, bool),
+    /// Bring a sheet to rest at a detent.
+    Detent(NodeId, usize),
 }
 
 impl StoreRequest {
@@ -538,6 +544,8 @@ impl StoreRequest {
             StoreRequest::Page(stack, page, transition) => store.set_page(stack, page, transition),
             StoreRequest::Viewer(id, to) => store.move_viewer(id, to),
             StoreRequest::Swipe(id, edge) => store.open_swipe_row(id, edge),
+            StoreRequest::Sheet(id, open) => store.present_sheet(id, open),
+            StoreRequest::Detent(id, detent) => store.set_sheet_detent(id, detent),
         }
     }
 }
@@ -586,6 +594,7 @@ impl<'a> EventCx<'a> {
             refresh: false,
             snapped: None,
             row_gesture: None,
+            sheet_detent: None,
             woken: None,
             focus_change: None,
             access: None,
@@ -629,6 +638,7 @@ impl<'a> EventCx<'a> {
             refresh: false,
             snapped: None,
             row_gesture: None,
+            sheet_detent: None,
             woken: None,
             focus_change: None,
             access: None,
@@ -671,6 +681,7 @@ impl<'a> EventCx<'a> {
             refresh: false,
             snapped: None,
             row_gesture: None,
+            sheet_detent: None,
             woken: None,
             focus_change: None,
             access: None,
@@ -713,6 +724,7 @@ impl<'a> EventCx<'a> {
             refresh: false,
             snapped: None,
             row_gesture: None,
+            sheet_detent: None,
             woken: None,
             focus_change: None,
             access: None,
@@ -790,6 +802,19 @@ impl<'a> EventCx<'a> {
     ) -> Self {
         let mut cx = Self::__new(states, bindings);
         cx.row_gesture = Some(gesture);
+        cx
+    }
+
+    /// Assemble the event context that tells a sheet the detent a drag
+    /// brought it to: the handler reads it via [`EventCx::sheet_detent`].
+    #[doc(hidden)]
+    pub fn __new_sheet_detent(
+        states: &'a mut StateStore,
+        bindings: &'a BindingTable,
+        detent: usize,
+    ) -> Self {
+        let mut cx = Self::__new(states, bindings);
+        cx.sheet_detent = Some(detent);
         cx
     }
 
@@ -970,6 +995,23 @@ impl<'a> EventCx<'a> {
     /// ([`NodeStore::set_light_dismiss`]) that a press landed outside it.
     pub fn dismissed(&self) -> bool {
         self.dismissed
+    }
+
+    /// The detent a drag brought a sheet ([`NodeStore::set_sheet`]) to, by
+    /// its place among its detents least first, if this dispatch tells it.
+    pub fn sheet_detent(&self) -> Option<usize> {
+        self.sheet_detent
+    }
+
+    /// Present sheet `id`, or put it away ([`NodeStore::present_sheet`]).
+    pub fn present_sheet(&mut self, id: NodeId, open: bool) {
+        self.store_requests.push(StoreRequest::Sheet(id, open));
+    }
+
+    /// Bring sheet `id` to rest at detent `detent`
+    /// ([`NodeStore::set_sheet_detent`]).
+    pub fn set_sheet_detent(&mut self, id: NodeId, detent: usize) {
+        self.store_requests.push(StoreRequest::Detent(id, detent));
     }
 
     /// Whether this dispatch tells a refreshable viewport

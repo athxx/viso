@@ -476,7 +476,8 @@ const P = {
   // it inert; a toast shows unless hidden.
   layer(el, v) {
     const on = truth(v);
-    if (el.tagName !== "DIALOG") el.hidden = !on;
+    if (el.$sheet) el.$sheet.present(on);
+    else if (el.tagName !== "DIALOG") el.hidden = !on;
     else if (on && !el.open) el.showModal();
     else if (!on && el.open) el.close();
   },
@@ -924,6 +925,146 @@ let swiped = null;
 // in its list or a scroll shuts it, the press clicking nothing, and a press
 // on an action shuts it once it clicks. The focus coming to an action opens
 // the row on it; Escape shuts it.
+// A sheet: a dialog whose first child, its panel, lies against the edge
+// its `data-sheet-edge` names (0 the bottom, 1 the top, 2 the leading, 3
+// the trailing) and slides in, while open, to the detent its `data-detent`
+// picks among its `data-detents` — each `N%` of the window along its axis,
+// `Npx` or `full`, none for all of the panel — and out before it closes, its
+// own box, the scrim, darkening as it comes. A drag on the panel along its
+// axis carries it; let go, it springs to the detent nearest where its speed
+// would carry it, telling which by a `viso-detent` event `{ detent }`, or,
+// past its least detent unless `data-dismissible` is "false", off, telling
+// a `viso-dismiss` event; one the view keeps open springs back.
+const sheet = (el) => {
+  if (el.$sheet) return;
+  const panel = () => el.firstElementChild;
+  const edge = () => Number(el.dataset.sheetEdge || 0);
+  const down = () => edge() < 2;
+  const rtl = () => getComputedStyle(el).direction === "rtl";
+  // The way the panel slides in along its axis: 1 down or right.
+  const inward = () => { const e = edge(); return e === 0 ? -1 : e === 1 ? 1 : (e === 2) !== rtl() ? 1 : -1; };
+  const full = () => { const p = panel(); return p ? (down() ? p.offsetHeight : p.offsetWidth) : 0; };
+  const surface = () => (down() ? window.innerHeight : window.innerWidth);
+  const extents = () => {
+    const f = full(), all = (el.dataset.detents || "full").split(" ").filter(Boolean);
+    return all.map((d) => Math.min(Math.max(d === "full" ? f : d.endsWith("%") ? (parseFloat(d) / 100) * surface() : parseFloat(d), 0), f));
+  };
+  const dismissible = () => el.dataset.dismissible !== "false";
+  const v = { shown: 0, raw: 0, run: null, open: false, held: false, detent: Number(el.dataset.detent || 0), scrim: getComputedStyle(el).backgroundColor };
+  el.$sheet = v;
+  const aim = () => { const e = extents(); return e[Math.min(v.detent, e.length - 1)]; };
+  // The panel's slide and the scrim's dim with `s` of it showing.
+  const slide = (s) => (down() ? "translateY(" : "translateX(") + -inward() * Math.max(full() - s, 0) + "px)";
+  const dim = (s) => {
+    const least = extents()[0];
+    const d = least > 0 ? Math.min(Math.max(s / least, 0), 1) : v.open ? 1 : 0;
+    return "color-mix(in srgb, " + v.scrim + " " + d * 100 + "%, transparent)";
+  };
+  const show = () => {
+    const p = panel();
+    if (p) p.style.transform = slide(v.shown);
+    el.style.backgroundColor = dim(v.shown);
+  };
+  // Ends the spring under way where it has come to.
+  const stop = () => {
+    if (!v.run) return;
+    const { anims, at, from, seconds, timer } = v.run;
+    v.run = null;
+    clearTimeout(timer);
+    v.shown = at(Math.min((performance.now() - from) / 1000, seconds));
+    for (const a of anims) a.cancel();
+    show();
+  };
+  // Springs to show `to` from moving at `speed` px/s of it, critically
+  // damped; then `then` runs.
+  const spring = (to, speed, then) => {
+    stop();
+    const e0 = v.shown - to;
+    const at = (t) => to + (e0 + (speed + 20 * e0) * t) * Math.exp(-20 * t);
+    let seconds = 0;
+    if (!reduced.matches) while (seconds < 1.5 && (Math.abs(at(seconds) - to) > 0.5 || seconds < 0.05)) seconds += 1 / 60;
+    v.shown = to;
+    show();
+    if (seconds === 0) return then && then();
+    const n = Math.ceil(seconds * 60), slides = [], dims = [];
+    for (let i = 0; i <= n; i++) {
+      const s = at((seconds * i) / n);
+      slides.push({ transform: slide(s) });
+      dims.push({ backgroundColor: dim(s) });
+    }
+    const timing = { duration: seconds * 1000, easing: "linear" };
+    const anims = [el.animate(dims, timing)];
+    if (panel()) anims.push(panel().animate(slides, timing));
+    const timer = setTimeout(() => { if (v.run && v.run.timer === timer) { v.run = null; if (then) then(); } }, seconds * 1000);
+    v.run = { anims, at, from: performance.now(), seconds, timer };
+  };
+  v.present = (on) => {
+    if (on === v.open) return;
+    v.open = on;
+    if (on) {
+      if (!el.open) el.showModal();
+      show();
+      if (!v.held) spring(aim(), 0);
+    } else if (!v.held) spring(0, 0, () => { if (!v.open && el.open) el.close(); });
+  };
+  const rest = () => { if (v.open && !v.held) spring(aim(), 0); };
+  // How much shows for a drag that travelled `raw`: all of it at most, and
+  // below its least detent eased unless a drag dismisses it.
+  const shape = (raw) => {
+    const least = extents()[0];
+    raw = Math.min(raw, full());
+    if (raw >= least || dismissible()) return Math.max(raw, 0);
+    const d = least - raw, m = least * 0.15;
+    return least - (m * 0.55 * d) / (m * 0.55 + d);
+  };
+  const release = (speed) => {
+    const e = extents(), projected = v.shown + speed * 0.2;
+    const near = e.map((x, i) => [x, i]);
+    if (dismissible()) near.push([0, -1]);
+    let best = near[0];
+    for (const c of near) if (Math.abs(c[0] - projected) < Math.abs(best[0] - projected)) best = c;
+    if (best[1] < 0) {
+      el.dispatchEvent(new CustomEvent("viso-dismiss"));
+      if (v.open) spring(aim(), speed);
+      else spring(0, speed, () => { if (!v.open && el.open) el.close(); });
+      return;
+    }
+    const moved = best[1] !== v.detent;
+    v.detent = best[1];
+    spring(best[0], speed);
+    if (moved) el.dispatchEvent(new CustomEvent("viso-detent", { detail: { detent: best[1] } }));
+  };
+  const p = panel();
+  if (p) {
+    p.dataset.dragAxis = down() ? "column" : "row";
+    draggable(p);
+    p.addEventListener("viso-drag", (e) => {
+      if (e.target !== p) return;
+      const d = e.detail;
+      if (d.phase === 0) {
+        stop();
+        v.held = true;
+        v.raw = v.shown;
+      }
+      v.raw += (down() ? d.dy : d.dx) * inward();
+      v.shown = shape(v.raw);
+      show();
+      if (d.phase === 2) {
+        v.held = false;
+        release((down() ? d.vy : d.vx) * inward());
+      }
+    });
+  }
+  new MutationObserver(() => {
+    const d = Number(el.dataset.detent || 0);
+    if (d !== v.detent) { v.detent = d; rest(); }
+  }).observe(el, { attributes: true, attributeFilter: ["data-detent"] });
+  if (el.hasAttribute("open")) {
+    el.removeAttribute("open");
+    v.present(true);
+  } else show();
+};
+
 const swipeRow = (el) => {
   if (el.$swipe) return;
   el.dataset.dragAxis = "row";
@@ -1340,11 +1481,12 @@ const listen = (el, route, capture, control, fire) => {
   } else if (route === 9) {
     if (control === 0 || control === 8) el.addEventListener("change", () => fire(rec([bool(el.checked)])), capture);
     else if (control === 9) el.addEventListener("toggle", () => fire(rec([bool(el.open)])), capture);
-    else if (control === 10) {
-      // Escape and a press on the scrim, the dialog's own box, ask it to
-      // close; the view decides.
+    else if (control === 10 || control === 20) {
+      // Escape and a press on the scrim, the dialog's own box, and a
+      // sheet's drag off ask it to close; the view decides.
       el.addEventListener("cancel", (e) => { e.preventDefault(); fire(rec([bool(false)])); }, capture);
       el.addEventListener("pointerdown", (e) => { if (e.target === el && el.open) fire(rec([bool(false)])); }, capture);
+      if (control === 20) el.addEventListener("viso-dismiss", () => fire(rec([bool(false)])), capture);
     }
     else if (control === 1) el.addEventListener("input", () => fire(rec([Number(el.value)])), capture);
     else if (control === 13) {
@@ -1437,6 +1579,8 @@ const listen = (el, route, capture, control, fire) => {
     el.addEventListener("dblclick", live((e) => fire(rec([point(e, el), kind(e)]))), capture);
   } else if (route === 28) {
     el.addEventListener("viso-fullswipe", (e) => fire(rec([BigInt(e.detail.edge)])), capture);
+  } else if (route === 30) {
+    el.addEventListener("viso-detent", (e) => fire(rec([BigInt(e.detail.detent)])), capture);
   } else if (route === 29) {
     reorderList(el);
     el.addEventListener("viso-reorder", (e) => fire(rec([BigInt(e.detail.from), BigInt(e.detail.to)])), capture);
@@ -1495,7 +1639,7 @@ const sync = (el, control, value) => {
   const v = value ? value() : null;
   if (control === 0 || control === 8) el.checked = truth(v);
   else if (control === 9) el.open = truth(v);
-  else if (control === 10 || control === 11) P.layer(el, v);
+  else if (control === 10 || control === 11 || control === 20) P.layer(el, v);
   else if (control === 1) el.value = v === null ? el.min : String(v);
   else if (control === 13) P.number(el, v);
   else if (control === 2) select(el, v === null ? 0n : v, el.$radio);

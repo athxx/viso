@@ -63,6 +63,7 @@ impl Drive for Control {
             ControlKind::Disclosure => disclose(self, host, scope, cx),
             ControlKind::Button => click(cx),
             ControlKind::Dialog => dismiss(self, host, scope, cx),
+            ControlKind::Sheet => sheet(self, host, scope, cx),
             ControlKind::Slider => slider(self, host, scope, cx),
             ControlKind::Select => select(self, host, scope, cx),
             ControlKind::Pages => pages(self, host, scope, cx),
@@ -292,6 +293,27 @@ fn dismiss(
         return None;
     }
     Some((EventRoute::Changed, field(Value::bool(false))))
+}
+
+/// A sheet's response: the detent a drag let go at brought it to, and a
+/// drag off, Escape or a press on its scrim close it as a dialog's do.
+fn sheet(
+    control: &Control,
+    host: &mut ViewHost,
+    scope: &Scope,
+    cx: &mut EventCx<'_>,
+) -> Option<(EventRoute, Value)> {
+    if let Some(detent) = cx.sheet_detent() {
+        let held = read(host, control.min, scope, cx).as_int();
+        let detent = i64::try_from(detent).ok()?;
+        return (held != Some(detent))
+            .then(|| (EventRoute::DetentChanged, field(Value::Int(detent))));
+    }
+    if cx.dismissed() {
+        let open = read(host, control.value, scope, cx).as_int().unwrap_or(0) != 0;
+        return open.then(|| (EventRoute::Changed, field(Value::bool(false))));
+    }
+    dismiss(control, host, scope, cx)
 }
 
 fn slider(

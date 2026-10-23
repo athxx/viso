@@ -31,9 +31,10 @@ use viso_dsl::ir::binding_ir::{BindingEdge, BindingIr, NodeKey};
 use viso_dsl::ir::dirty_map::DirtyClass;
 use viso_dsl::ir::ui_ir::Span as LayoutSpan;
 use viso_dsl::ir::ui_ir::{
-    AdaptiveColumns, Align, AlignItems, Alignment2D, AotSnap, AutoRepeat, Avoid, AxisIr, BoxRules,
-    EdgeTermsIr, Inset, InsetIr, InsetTermsIr, Justify, LayoutDirection, LengthIr, LengthsIr,
-    NodeKind, Placement, ScrollIr, StyleIr, TermsIr, TrackMax, TrackSizing, UiItem, UiNode, UiTree,
+    AdaptiveColumns, Align, AlignItems, Alignment2D, AotSheet, AotSnap, AutoRepeat, Avoid, AxisIr,
+    BoxRules, EdgeTermsIr, Inset, InsetIr, InsetTermsIr, Justify, LayoutDirection, LengthIr,
+    LengthsIr, NodeKind, Placement, ScrollIr, SheetDetent, SheetEdge, StyleIr, TermsIr, TrackMax,
+    TrackSizing, UiItem, UiNode, UiTree,
 };
 use viso_dsl::resolve::SymbolId;
 use viso_dsl::view_behavior::{Control, GameQuery, Switched, ViewBehavior, When};
@@ -496,7 +497,7 @@ impl Emit<'_> {
                         let align = alignment_tokens(align);
                         quote! { align: #align, }
                     });
-                    quote! {
+                    let stack = quote! {
                         cx.stack(
                             ::viso::__private::viso_ui::StackStyle {
                                 #align
@@ -506,6 +507,16 @@ impl Emit<'_> {
                             },
                             |cx| { #child_block },
                         )
+                    };
+                    match node.style.sheet {
+                        Some(sheet) => {
+                            let spec = sheet_tokens(sheet);
+                            quote! {{
+                                let sheet = #stack;
+                                cx.sheet(sheet, #spec, ::core::option::Option::None)
+                            }}
+                        }
+                        None => stack,
                     }
                 } else {
                     quote! {
@@ -1100,6 +1111,31 @@ fn place_tokens(place: Placement) -> TokenStream {
                     top: #top, end: #end, bottom: #bottom, start: #start,
                 })
             }
+        }
+    }
+}
+
+/// A `::viso::__private::viso_ui::SheetSpec` of `sheet`.
+fn sheet_tokens(sheet: AotSheet) -> TokenStream {
+    let edge = match sheet.edge {
+        SheetEdge::Bottom => quote! { Bottom },
+        SheetEdge::Top => quote! { Top },
+        SheetEdge::Leading => quote! { Leading },
+        SheetEdge::Trailing => quote! { Trailing },
+    };
+    let detents = sheet.detents().iter().map(|detent| match *detent {
+        SheetDetent::Full => quote! { ::viso::__private::viso_ui::SheetDetent::Full },
+        SheetDetent::Fraction(f) => {
+            quote! { ::viso::__private::viso_ui::SheetDetent::Fraction(#f) }
+        }
+        SheetDetent::Fixed(v) => quote! { ::viso::__private::viso_ui::SheetDetent::Fixed(#v) },
+    });
+    let dismissible = sheet.dismissible;
+    quote! {
+        ::viso::__private::viso_ui::SheetSpec {
+            edge: ::viso::__private::viso_ui::SheetEdge::#edge,
+            detents: ::std::vec![#(#detents),*],
+            dismissible: #dismissible,
         }
     }
 }

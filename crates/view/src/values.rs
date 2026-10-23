@@ -50,7 +50,8 @@ use crate::text_style::text_style;
 const FONT_SIZE: f32 = 14.0;
 
 /// The color of a text whose node binds no `color`.
-/// The wash a dialog with no `background` dims the scene behind it with.
+/// The wash a dialog or a sheet with no `background` dims the scene behind
+/// it with.
 const SCRIM: Rgba = Rgba {
     r: 0.0,
     g: 0.0,
@@ -503,7 +504,8 @@ impl Shown {
         // Whether the value at `at` shows: it is given, or it showed before.
         let shown = |at: usize| held || given(at);
         let dialog = control.kind == ControlKind::Dialog;
-        let shown_background = (shown(LOOK) || dialog).then_some(());
+        let sheet = control.kind == ControlKind::Sheet;
+        let shown_background = (shown(LOOK) || dialog || sheet).then_some(());
         let shown_opacity = shown(LOOK + 1).then_some(());
         let shown_radius = shown(LOOK + 2);
         let shown_border = shown(LOOK + 3);
@@ -642,6 +644,18 @@ impl Shown {
                     store.trap_focus(self.node, open);
                 }
             }
+        } else if sheet {
+            // A sheet heads for its detent, and springs in while open and
+            // out once not.
+            if (first || changed(1))
+                && let Some(detent) = min.as_int().and_then(|v| usize::try_from(v).ok())
+            {
+                store.set_sheet_detent(self.node, detent);
+            }
+            if first || changed(0) || changed(NODE) {
+                let open = truth(value, false) && truth(visible, true);
+                store.present_sheet(self.node, open);
+            }
         } else if shown(NODE) && changed(NODE) {
             store.set_hidden(self.node, !truth(visible, true));
         }
@@ -739,7 +753,7 @@ impl Shown {
                 LOOK,
                 shown_background,
                 LookValue::Fill(match background {
-                    Value::Nil if dialog => SCRIM,
+                    Value::Nil if dialog || sheet => SCRIM,
                     background => color(background),
                 }),
             ),
@@ -750,6 +764,11 @@ impl Shown {
             ),
         ] {
             if entry.is_none() || !changed(at) {
+                continue;
+            }
+            // A sheet's background is its scrim, dimmed as it shows.
+            if let (true, LookValue::Fill(fill)) = (sheet, value) {
+                store.set_sheet_scrim(self.node, fill);
                 continue;
             }
             match (moves[at - LOOK], value) {
@@ -793,7 +812,7 @@ impl Shown {
             return;
         }
         match control.kind {
-            ControlKind::Plain | ControlKind::Dialog | ControlKind::Toast => {}
+            ControlKind::Plain | ControlKind::Dialog | ControlKind::Sheet | ControlKind::Toast => {}
             // A viewer clips its content unless its `clip` says, and keeps
             // the content within its limits as they change.
             ControlKind::Viewer => {
