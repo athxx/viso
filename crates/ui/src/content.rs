@@ -164,6 +164,10 @@ pub enum Content {
     /// A colour plane: a colour's tones at its hue, a ring of hues round
     /// them, or the colour itself.
     ColorPlane(crate::color_plane::ColorPlane),
+    /// Days: the marks a week row draws under its days — the selected, today
+    /// and the one under the pointer. A container's content, sizing it no
+    /// further.
+    Days(crate::calendar::Days),
 }
 
 /// An image a brush node samples: the resource its texture parameter names,
@@ -200,7 +204,10 @@ impl Content {
             Content::Stepper(stepper) => stepper.natural,
             Content::Slider(slider) => slider.natural,
             Content::ColorPlane(plane) => plane.natural,
-            Content::Shader { .. } | Content::Scene { .. } | Content::Segments(_) => Vec2::ZERO,
+            Content::Shader { .. }
+            | Content::Scene { .. }
+            | Content::Segments(_)
+            | Content::Days(_) => Vec2::ZERO,
         }
     }
 
@@ -219,7 +226,10 @@ impl Content {
             Content::Stepper(stepper) => stepper.natural.x,
             Content::Slider(slider) => slider.natural.x,
             Content::ColorPlane(plane) => plane.natural.x,
-            Content::Shader { .. } | Content::Scene { .. } | Content::Segments(_) => 0.0,
+            Content::Shader { .. }
+            | Content::Scene { .. }
+            | Content::Segments(_)
+            | Content::Days(_) => 0.0,
         }
     }
 
@@ -241,7 +251,8 @@ impl Content {
             | Content::Stepper(_)
             | Content::Slider(_)
             | Content::ColorPlane(_)
-            | Content::Segments(_) => None,
+            | Content::Segments(_)
+            | Content::Days(_) => None,
         }
     }
 }

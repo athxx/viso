@@ -511,6 +511,8 @@ fn paint_own(store: &NodeStore, node: NodeId, world: Rect, out: &mut Vec<Primiti
                 plane.paint(world, out);
             } else if let Content::Segments(segments) = content {
                 segments.paint(store, node, world, out);
+            } else if let Content::Days(days) = content {
+                days.paint(store, node, world, out);
             } else {
                 let mask = (radius > 0.0).then_some(RoundMask {
                     rect: world,
@@ -839,7 +841,7 @@ pub(crate) fn paint_content(
         Content::ColorPlane(plane) => plane.paint(world, out),
         // Segments read their container's children, which only a node's own
         // paint reaches.
-        Content::Segments(_) => {}
+        Content::Segments(_) | Content::Days(_) => {}
     }
 }
 

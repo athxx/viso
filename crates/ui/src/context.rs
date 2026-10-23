@@ -534,6 +534,8 @@ pub enum StoreRequest {
     ShowSlider(NodeId, f32, f32),
     /// Carry on or let go of a colour plane's drag, or move its focus.
     Plane(NodeId, crate::color_plane::PlaneChange),
+    /// Mark the day of a week row the pointer is over, or none.
+    HoverDay(NodeId, Option<u8>),
 }
 
 impl StoreRequest {
@@ -568,6 +570,7 @@ impl StoreRequest {
             StoreRequest::Slide(id, slide) => store.slide(id, slide),
             StoreRequest::ShowSlider(id, low, high) => store.show_slider(id, low, high),
             StoreRequest::Plane(id, change) => store.change_plane(id, change),
+            StoreRequest::HoverDay(id, day) => store.hover_day(id, day),
         }
     }
 }
@@ -1173,6 +1176,12 @@ impl<'a> EventCx<'a> {
     /// ([`color_plane`](crate::color_plane)).
     pub fn change_plane(&mut self, id: NodeId, change: crate::color_plane::PlaneChange) {
         self.store_requests.push(StoreRequest::Plane(id, change));
+    }
+
+    /// Mark day `day` of week row `id` as the one the pointer is over, or
+    /// none ([`calendar`](crate::calendar)).
+    pub fn hover_day(&mut self, id: NodeId, day: Option<u8>) {
+        self.store_requests.push(StoreRequest::HoverDay(id, day));
     }
 
     /// Hold half `half` of stepper `id` down, or let go of its hold

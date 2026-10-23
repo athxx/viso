@@ -214,8 +214,15 @@ Rules:
   content (exact per-vertex mesh square and hue ring, two-tone pucks, swatch over a
   checkerboard), hue/alpha bars on the slider content (`TrackPaint`), hex in four
   forms, hue and saturation kept through grey and black, slider semantics per part.
-- [ ] `DatePicker`, `TimePicker`, `Calendar` (locale first weekday, keyboard grid
-  navigation).
+- [x] `Calendar` (locale first weekday, keyboard grid navigation): `viso_ui::calendar`
+  dates (day numbers, month steps held to month ends, ISO weeks), CLDR first weekday and
+  hour cycle with `-u-fw-`/`-u-hc-`, a `Days` row content marking selected/today/hover;
+  table/row/column-header/cell semantics, roving days, arrows/Home/End/Page Up/Down
+  (Shift a year) turning the month, min/max and refused days passed over, week numbers,
+  overridable `DateNames`.
+- [ ] `DatePicker`: a field showing the date that opens a calendar in an anchored popup.
+- [ ] `TimePicker`: hour/minute (and AM/PM by the locale's hour cycle) spin segments,
+  typed digits, minute step.
 - [ ] `DataGrid`: virtualized rows and columns, resize, reorder, sort, cell/row
   selection, keyboard navigation, `grid` semantics.
 - [ ] Charts (in `extras/`): line, bar, area, scatter, sparkline.

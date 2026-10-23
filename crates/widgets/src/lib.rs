@@ -52,6 +52,7 @@ pub use controls::{
     checkbox, dock, file_tree, knob, labelled, modal, navigation_stack, number_field, popover,
     popup, radio_group, range_slider, sheet, slider, splitter, tabs, text_input, toast, toggle,
 };
+pub use controls::{Calendar, CalendarStyle, DateNames, calendar};
 pub use controls::{Chip, ChipStyle, chip};
 pub use controls::{ColorPicker, ColorPickerLabels, ColorPickerStyle, color_picker};
 pub use controls::{ComboBox, ComboBoxHandle, ComboBoxHandleSlot, ComboBoxStyle, combo_box};

@@ -436,6 +436,12 @@ fn groups(store: &NodeStore, id: NodeId) -> Vec<PropertyGroup> {
             );
             add(&mut content, "alpha", number(plane.alpha));
         }
+        Some(Content::Days(days)) => {
+            add(&mut content, "kind", "days".into());
+            let mark = |d: Option<u8>| d.map_or("none".into(), |d| d.to_string());
+            add(&mut content, "selected", mark(days.selected));
+            add(&mut content, "today", mark(days.today));
+        }
         Some(Content::Segments(segments)) => {
             add(&mut content, "kind", "segments".into());
             let selected = segments.selected.map_or("none".into(), |i| i.to_string());

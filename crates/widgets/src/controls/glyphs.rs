@@ -57,6 +57,16 @@ pub(crate) fn chevron_end(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
     stroked(cx, cmds, ink, 1.5)
 }
 
+/// A chevron pointing toward the start of lines: back.
+pub(crate) fn chevron_start(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
+    let cmds = vec![
+        PathCmd::MoveTo(Point::new(10.0, 4.0)),
+        PathCmd::LineTo(Point::new(6.0, 8.0)),
+        PathCmd::LineTo(Point::new(10.0, 12.0)),
+    ];
+    stroked(cx, cmds, ink, 1.5)
+}
+
 /// A chevron pointing down: a list that opens below.
 pub(crate) fn chevron_down(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
     let cmds = vec![

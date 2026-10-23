@@ -9,6 +9,7 @@
 //! and [`Dock`].
 
 mod button;
+mod calendar;
 mod caption_bar;
 mod check;
 mod checkbox;
@@ -40,6 +41,7 @@ mod toggle;
 mod tooltip;
 
 pub use button::{Button, ButtonStyle, button};
+pub use calendar::{Calendar, CalendarStyle, DateNames, calendar};
 pub use caption_bar::{CaptionBar, CaptionBarStyle, caption_bar};
 pub use checkbox::{CheckBox, CheckBoxStyle, checkbox};
 pub use chip::{Chip, ChipStyle, chip};
