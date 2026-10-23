@@ -1595,6 +1595,7 @@ impl WindowState {
             || self.store.is_scroll_moving()
             || self.store.is_spinning()
             || self.store.is_progressing()
+            || self.store.is_sliding()
             || self.store.refreshes_due()
             || self.store.snaps_due()
             || self.store.row_gestures_due()
@@ -3299,6 +3300,15 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     .is_some();
                 if !zoomed {
                     ScrollRouter::route(&mut ws.store, root, ev);
+                    // A focused slider under the wheel steps.
+                    if ws.store.wakes_due() {
+                        KeyRouter::route_wakes(
+                            &mut ws.store,
+                            &mut ws.states,
+                            &ws.bindings,
+                            &mut ws.text_edits,
+                        );
+                    }
                 }
             }
             viso_runtime::InputSample::Gesture(g) => {
@@ -3804,6 +3814,10 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // The progress indicators run, or ease to their values.
                     if ws.store.is_progressing() {
                         ws.store.tick_progress(cx.frame_delta());
+                    }
+                    // The sliders' thumbs ease to where they were told.
+                    if ws.store.is_sliding() {
+                        ws.store.tick_sliders(cx.frame_delta());
                     }
                     ws.store.set_dirty_cause(DirtyCause::Other);
                     // Advance the games the window's views run — the ticks
@@ -4582,16 +4596,16 @@ pub mod prelude {
         GridViewStyle, Icon, IconStyle, Image, ImageStyle, Label, LabelStyle, Modal, ModalHandle,
         ModalHandleSlot, ModalStyle, NavHandle, NavHandleSlot, NavigationStack,
         NavigationStackStyle, NumberField, Popup, PopupHandle, PopupHandleSlot, PopupStyle,
-        ProgressIndicator, RadioGroup, RadioStyle, Scroll, ScrollViewStyle, SearchField,
-        SearchFieldHandle, SearchFieldHandleSlot, SegmentedControl, SegmentedStyle, Sheet,
-        SheetDetent, SheetEdge, SheetHandle, SheetHandleSlot, SheetStyle, Slider, SliderStyle,
-        Spinner, Splitter, SplitterStyle, Stepper, StepperStyle, Tabs, TabsStyle, TextInput,
-        TextInputStyle, Toast, ToastEdge, ToastHandle, ToastHandleSlot, ToastStyle, Toggle,
-        ToggleStyle, View, ViewStyle, VirtualList, VirtualListViewStyle, avatar, badge, button,
-        checkbox, chip, dot_badge, grid, icon, image, label, link_label, modal, navigation_stack,
-        number_field, popup, progress_bar, progress_ring, radio_group, rich_text, scroll,
-        search_field, segmented_control, sheet, slider, spinner, splitter, stepper, tabs,
-        text_input, toast, toggle, view, virtual_list,
+        ProgressIndicator, RadioGroup, RadioStyle, RangeSlider, Scroll, ScrollViewStyle,
+        SearchField, SearchFieldHandle, SearchFieldHandleSlot, SegmentedControl, SegmentedStyle,
+        Sheet, SheetDetent, SheetEdge, SheetHandle, SheetHandleSlot, SheetStyle, Slider,
+        SliderStyle, Spinner, Splitter, SplitterStyle, Stepper, StepperStyle, Tabs, TabsStyle,
+        TextInput, TextInputStyle, Toast, ToastEdge, ToastHandle, ToastHandleSlot, ToastStyle,
+        Toggle, ToggleStyle, View, ViewStyle, VirtualList, VirtualListViewStyle, avatar, badge,
+        button, checkbox, chip, dot_badge, grid, icon, image, knob, label, link_label, modal,
+        navigation_stack, number_field, popup, progress_bar, progress_ring, radio_group,
+        range_slider, rich_text, scroll, search_field, segmented_control, sheet, slider, spinner,
+        splitter, stepper, tabs, text_input, toast, toggle, view, virtual_list,
     };
     // The top-level Window control (§68 public application lifecycle): a window
     // is not a node control — it does not enter the UI tree — so it appears as an

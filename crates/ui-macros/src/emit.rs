@@ -728,6 +728,9 @@ fn control_tokens(control: Control) -> TokenStream {
     let url = entry(control.url);
     let removable = entry(control.removable);
     let wrap = entry(control.wrap);
+    let fill_origin = entry(control.fill_origin);
+    let marks = entry(control.marks);
+    let axis = entry(control.axis);
     let semantics = control.semantics;
     let role = match semantics.role {
         Some(role) => {
@@ -848,6 +851,9 @@ fn control_tokens(control: Control) -> TokenStream {
             url: #url,
             removable: #removable,
             wrap: #wrap,
+            fill_origin: #fill_origin,
+            marks: #marks,
+            axis: #axis,
             shader: #shader,
             look: ::viso::__private::viso_view::Look {
                 background: #background,

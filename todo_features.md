@@ -204,8 +204,10 @@ Rules:
 - [ ] DSL nodes for the list-backed fields — `ComboBox`, `SearchField` (children as
   suggestions, two-way `value`, `changed`/`submitted`) — and their HTML export
   (`<input type="search">`, `role=combobox` with a listbox).
-- [ ] Slider: vertical, range (two thumbs), step marks, wheel, live thumb; `Knob`
-  (rotary).
+- [x] Slider: vertical, range (two thumbs), step marks, wheel, live thumb; `Knob`
+  (rotary). One shared `viso_ui::slider` content and input for the widgets and the DSL
+  (`Slider` gains `origin`/`marks`/`axis`/`tint`, new `Knob`); jump-or-pick-up press,
+  Shift fine drag, double-click reset, eased thumb, HTML export.
 - [ ] `ColorPicker` (HSV wheel/square, alpha, hex input).
 - [ ] `DatePicker`, `TimePicker`, `Calendar` (locale first weekday, keyboard grid
   navigation).

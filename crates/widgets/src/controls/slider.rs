@@ -1,48 +1,42 @@
-//! The [`Slider`] control — a draggable thumb on a horizontal track that picks a
-//! continuous (or stepped) value from a `[min, max]` range.
+//! The [`Slider`], [`Knob`](knob) and [`RangeSlider`] controls — a value
+//! picked from `min..=max` along a track, round a knob, or a stretch of it
+//! between two thumbs.
 //!
-//! A `Slider` is a focusable track carrying a thumb that the user drags with the
-//! primary pointer or nudges with the arrow keys. Dragging and arrow-stepping are
-//! the *same* action semantically — an interactive control must have a keyboard
-//! equivalent (AGENTS section 15) — so both drive one shared `on_change`,
-//! reporting the *external* value (`min` + the quantized fraction of the range).
+//! Each draws through one [`viso_ui::slider`] node: a bar along its axis —
+//! growing to the right, to the left read right to left, or upward when
+//! [`vertical`](Slider::vertical) — filled from its start or from its
+//! [`origin`](Slider::origin), marked at each step when
+//! [`marks`](Slider::marks) asks and there is room; or a knob, a ring open at
+//! the bottom round a face pointing at the value. The thumb follows a drag at
+//! once and eases to a value set any other way.
 //!
-//! The internal state is a *relative* fraction in `0.0..=1.0` (matching how the
-//! reference switch/toggle controls keep their reactive scalar cell small and
-//! `Copy`), converted to the external `[min, max]` value only at the callback
-//! boundary. Dragging is *delta*-based: a press records the down-x and the
-//! relative value at that instant, and each move adds `(x - down_x) / track_width`
-//! to the recorded relative — so the thumb tracks the finger without the handler
-//! ever needing the track's world geometry (an `EventCx` handler has no node
-//! bounds). The press captures the pointer (`capture_pointer`) so a drag keeps
-//! receiving samples even when the cursor leaves the track box; the release frees
-//! it.
+//! A press on a bar's track jumps the thumb there, one on the thumb picks it
+//! up, and a drag carries it; a knob turns with a drag up or right. Shift
+//! held while dragging moves a tenth as far, and a double click puts the
+//! value back to its [`default_value`](Slider::default_value). The arrows
+//! step (by `step`, or a hundredth of the range), Page Up/Down by ten steps,
+//! Home and End to the bounds, and the wheel steps a focused slider under
+//! it. Each change fires `on_change` once with the new value, on its step.
 //!
-//! It maps to one interactive `viso-ui` node: a focusable flex row carrying a
-//! reactive `value` cell (the relative fraction) bound to `PAINT`, composed of a
-//! rounded *track* holding a circular *thumb* leaf, and an optional
-//! [`Label`](crate::Label) child for the caption. Dragging writes the `value`
-//! cell, repainting the row alone (a targeted invalidation — no rebuild,
-//! architecture section 47). Its accessible role is [`Role::Slider`] with the
-//! caption as its name, and the live value reaches the derived semantics tree
-//! through a semantic-state projection: the internal relative fraction is mapped
-//! back to the external `[min, max]` value (with the step grid applied) and
-//! carried alongside the range on the node's side column, seeded at build and
-//! re-run in the flush phase on every move — the derive pass reads only that
-//! column, never the state store. A thumb that *slides* in paint with the cell
-//! (rather than sitting at its build-time position) is a later slice, matching
-//! the [`Toggle`](crate::Toggle) precedent.
+//! Semantics: a slider or knob is one focusable [`Role::Slider`] named by its
+//! label, announcing its value in its range. A range slider is a group named
+//! by its label holding two sliders, its lower and upper thumbs, each a Tab
+//! stop of its own; the focused thumb is ringed on the track.
+//!
+//! Invalidation: a value writes the slider's reactive cell, which tells the
+//! node where its thumb stands: a `PAINT` of that node alone each frame it
+//! moves, and its semantics.
 //!
 //! ```
-//! use viso_widgets::slider;
+//! use viso_widgets::{knob, range_slider, slider};
 //! use viso_ui::{SemanticProjector, BuildCx, BindingTable, Component, NodeStore, StateStore, TextEdits, VirtualLists};
 //!
 //! let volume = slider("Volume").range(0.0, 100.0).value(30.0).on_change(|_ev, v| {
-//!     // handle the new external value — e.g. write app state through the cx
 //!     let _ = v;
 //! });
+//! let pan = knob("Pan").range(-1.0, 1.0).origin(0.0);
+//! let price = range_slider("Price").range(0.0, 500.0).step(10.0).values(100.0, 300.0);
 //!
-//! // A slider authors reactive state, so it builds through a reactive cx.
 //! let mut store = NodeStore::new();
 //! let mut states = StateStore::new();
 //! let mut bindings = BindingTable::new();
@@ -50,87 +44,43 @@
 //! let mut text_edits = TextEdits::new();
 //! let mut projectors = SemanticProjector::new();
 //! let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists, &mut text_edits, &mut projectors);
-//! volume.build(&mut cx);
+//! cx.flex(Default::default(), |cx| {
+//!     volume.build(cx);
+//!     pan.build(cx);
+//!     price.build(cx);
+//! });
 //! ```
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use viso_ui::slider::{
+    SLIDER_SIZE, Slide, Slider as SliderMark, SliderInput, SliderRange, SliderShape, Thumb,
+    slider_input,
+};
 use viso_ui::{
-    Align, Axis, BoxStyle, BuildCx, Component, DirtyClass, EventCx, FlexStyle, Inset, Justify, Key,
-    LeafStyle, Length, PointerButtons, PointerPhase, Rgba, Role, SemanticState, Semantics, Size,
-    StateId, StateValue,
+    Axis, BoxStyle, BuildCx, Component, Content, DispatchPhase, EventCx, FocusChange, LeafStyle,
+    Length, Rgba, Role, SemanticState, Semantics, Size, StackStyle, StateId, StateValue,
 };
 
-use crate::label;
-
-/// A shared, mutable change callback carrying the new external value. It is cloned
-/// into both the pointer handler and the key handler at build time so a drag and
-/// an arrow-key step drive the same `on_change`. Pointer and keyboard input are
-/// never concurrent, so the runtime never re-enters the `RefCell` borrow.
+/// What runs with a slider's new value.
 type SharedChange = Rc<RefCell<Option<Box<dyn FnMut(&mut EventCx<'_>, f32)>>>>;
 
-/// The track's fill — a neutral recessed channel behind the thumb.
-const TRACK: Rgba = Rgba {
-    r: 0.24,
-    g: 0.25,
-    b: 0.28,
-    a: 1.0,
-};
+/// What runs with a range slider's new bounds.
+type SharedRange = Rc<RefCell<Option<Box<dyn FnMut(&mut EventCx<'_>, f32, f32)>>>>;
 
-/// The thumb's fill — a bright accent so the handle reads at a glance.
-const THUMB: Rgba = Rgba {
-    r: 0.22,
-    g: 0.45,
-    b: 0.85,
-    a: 1.0,
-};
-
-/// The caption color: near-white for contrast against a dark surface.
-const CAPTION: Rgba = Rgba {
-    r: 0.98,
-    g: 0.98,
-    b: 1.0,
-    a: 1.0,
-};
-
-/// The default track width.
-const TRACK_W: f32 = 120.0;
-
-/// The default track height (its corner radius is half this — a full pill).
-const TRACK_H: f32 = 6.0;
-
-/// The default thumb diameter.
-const THUMB_D: f32 = 18.0;
-
-/// The gap between the track and the caption.
-const GAP: f32 = 8.0;
-
-/// The fraction of the range one arrow-key press moves when the slider is
-/// continuous (`step == 0`). A discrete slider steps by one `step` instead.
-const KEY_STEP_FRACTION: f32 = 0.05;
-
-/// The visual and layout parameters of a [`Slider`]: the track and thumb
-/// dimensions and fills, plus the slider's own size request within its parent.
-///
-/// `size` defaults to [`Length::Fit`] on both axes so the slider shrinks to the
-/// track plus the caption; override it with a [`Length::Fixed`] or
-/// [`Length::Fill`] axis for a fixed or flexing box. All fields are `Copy`.
+/// How a slider looks.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SliderStyle {
-    /// The slider's own size request within its parent. Defaults to `Fit` on both
-    /// axes (shrink to the track plus the caption).
+    /// Its size within its parent. `Fit` takes the slider's own: 160 by 24
+    /// along its axis, 40 square for a knob.
     pub size: Size,
-    /// The track's width — also the pixel span a full `0.0..=1.0` drag covers.
-    pub track_width: f32,
-    /// The track's height (its corner radius is half this — a full pill).
-    pub track_height: f32,
-    /// The thumb's diameter (a circle: radius = half this).
-    pub thumb_diameter: f32,
-    /// The track's fill.
-    pub track: BoxStyle,
-    /// The thumb's fill.
-    pub thumb: BoxStyle,
+    /// The track, or a knob's ring.
+    pub track: Rgba,
+    /// The stretch filled, and a knob's pointer.
+    pub fill: Rgba,
+    /// The thumb, or a knob's face.
+    pub thumb: Rgba,
 }
 
 impl Default for SliderStyle {
@@ -140,87 +90,114 @@ impl Default for SliderStyle {
                 width: Length::Fit,
                 height: Length::Fit,
             },
-            track_width: TRACK_W,
-            track_height: TRACK_H,
-            thumb_diameter: THUMB_D,
-            // A full pill: radius = half the height.
-            track: BoxStyle::solid(TRACK).with_radius(TRACK_H / 2.0),
-            // A circle: radius = half the diameter.
-            thumb: BoxStyle::solid(THUMB).with_radius(THUMB_D / 2.0),
+            track: Rgba::new(0.47, 0.47, 0.5, 0.32),
+            fill: Rgba::new(0.22, 0.45, 0.85, 1.0),
+            thumb: Rgba::new(1.0, 1.0, 1.0, 1.0),
         }
     }
 }
 
-/// A draggable thumb on a track that picks a value from a `[min, max]` range.
-///
-/// Construct one with [`slider`] and attach behavior with the chainable setters.
-/// Dragging with the primary pointer or nudging with the arrow keys moves the
-/// value and fires `on_change` with the new *external* value.
-///
-/// See the [module docs](self) for a build example. Invalidation: moving the
-/// value writes a reactive `value` cell bound to `PAINT`, repainting the slider's
-/// own row without a rebuild; the caption and structure are static.
+/// A value picked from `min..=max` along a track or round a knob.
+/// Construct one with [`slider`] or [`knob`].
 pub struct Slider {
-    /// The visible caption, also used as the accessible name.
     label: String,
-    /// The inclusive lower bound of the external range.
+    shape: SliderShape,
     min: f32,
-    /// The inclusive upper bound of the external range.
     max: f32,
-    /// The quantization step in external units; `0.0` means continuous.
     step: f32,
-    /// The initial external value (defaults to `min`).
     value: f32,
+    default: Option<f32>,
+    origin: Option<f32>,
+    marks: bool,
+    cell: Option<StateId>,
     style: SliderStyle,
-    /// The shared change callback (see [`SharedChange`]). `None` until
-    /// [`Slider::on_change`] is called; a slider with no handler still moves its
-    /// value cell, just without notifying anyone.
     on_change: SharedChange,
 }
 
-/// Construct a [`Slider`] with the given caption, a default `0.0..=1.0`
-/// continuous range starting at `min`, and no handler yet. Chain
-/// [`Slider::range`]/[`Slider::step`]/[`Slider::value`] to shape the range and
-/// [`Slider::on_change`] to give it behavior.
+/// A horizontal slider named `label`, `0` to `1`, continuous, at `0`.
 pub fn slider(label: impl Into<String>) -> Slider {
     Slider {
         label: label.into(),
+        shape: SliderShape::Bar(Axis::Row),
         min: 0.0,
         max: 1.0,
         step: 0.0,
         value: 0.0,
+        default: None,
+        origin: None,
+        marks: false,
+        cell: None,
         style: SliderStyle::default(),
         on_change: Rc::new(RefCell::new(None)),
     }
 }
 
+/// A knob named `label`, `0` to `1`, continuous, at `0`.
+pub fn knob(label: impl Into<String>) -> Slider {
+    Slider {
+        shape: SliderShape::Knob,
+        ..slider(label)
+    }
+}
+
 impl Slider {
-    /// Set the change callback, fired with the new *external* value on a drag or
-    /// an arrow-key step. Replaces any previously set handler.
+    /// Run `handler` with each new value.
     pub fn on_change(self, handler: impl FnMut(&mut EventCx<'_>, f32) + 'static) -> Self {
         *self.on_change.borrow_mut() = Some(Box::new(handler));
         self
     }
 
-    /// Set the inclusive external range. A degenerate range (`max <= min`) pins
-    /// the slider to `min`.
+    /// Pick from `min` to `max`.
     pub fn range(mut self, min: f32, max: f32) -> Self {
         self.min = min;
         self.max = max;
         self
     }
 
-    /// Set the quantization step in external units. `0.0` (the default) is a
-    /// continuous slider; a positive step snaps the reported value to a grid.
+    /// Keep the value on a grid of `step` from `min`; `0` (the default) is
+    /// continuous.
     pub fn step(mut self, step: f32) -> Self {
         self.step = step.max(0.0);
         self
     }
 
-    /// Set the initial external value (defaults to `min`). Clamped into range at
-    /// build time.
+    /// Start at `value` (default: `min`).
     pub fn value(mut self, value: f32) -> Self {
         self.value = value;
+        self
+    }
+
+    /// Go back to `value` on a double click (default: the starting value).
+    pub fn default_value(mut self, value: f32) -> Self {
+        self.default = Some(value);
+        self
+    }
+
+    /// Fill from `value` rather than from the start: a balance or a trim
+    /// fills either way from its centre.
+    pub fn origin(mut self, value: f32) -> Self {
+        self.origin = Some(value);
+        self
+    }
+
+    /// Mark each step on the track, where there is room.
+    pub fn marks(mut self, marks: bool) -> Self {
+        self.marks = marks;
+        self
+    }
+
+    /// Run up the screen rather than across; a knob stays a knob.
+    pub fn vertical(mut self) -> Self {
+        if let SliderShape::Bar(_) = self.shape {
+            self.shape = SliderShape::Bar(Axis::Column);
+        }
+        self
+    }
+
+    /// Keep the value in float cell `cell`, which it shows and writes,
+    /// rather than a cell of its own.
+    pub fn bind(mut self, cell: StateId) -> Self {
+        self.cell = Some(cell);
         self
     }
 
@@ -230,668 +207,343 @@ impl Slider {
         self
     }
 
-    /// Set the slider's own size request within its parent (defaults to `Fit`).
+    /// Set its size within its parent (default: its own).
     pub fn size(mut self, size: Size) -> Self {
         self.style.size = size;
         self
     }
 
-    /// The span of the external range, guarding a degenerate `max <= min`.
-    fn span(&self) -> f32 {
-        self.max - self.min
-    }
-
-    /// The initial relative fraction in `0.0..=1.0` from the clamped initial
-    /// external value. A degenerate range maps everything to `0.0`.
-    fn initial_relative(&self) -> f32 {
-        let span = self.span();
-        if span <= 0.0 {
-            0.0
-        } else {
-            ((self.value - self.min) / span).clamp(0.0, 1.0)
-        }
+    fn grid(&self) -> SliderRange {
+        SliderRange::new(
+            f64::from(self.min),
+            f64::from(self.max),
+            Some(f64::from(self.step)),
+        )
     }
 }
 
-/// Convert a relative fraction to the external value, applying the step grid when
-/// the slider is discrete. Mirrors the reference `to_external` mapping: a discrete
-/// slider floors `relative * span / step` to a whole number of steps.
-fn to_external(relative: f32, min: f32, span: f32, step: f32) -> f32 {
-    if span <= 0.0 {
-        return min;
-    }
-    if step > 0.0 {
-        (relative * span / step).floor() * step + min
-    } else {
-        relative * span + min
+/// The float a cell holds, `or` for any other value.
+fn float(value: Option<StateValue>, or: f64) -> f64 {
+    match value {
+        Some(StateValue::Float(v)) => f64::from(v),
+        Some(StateValue::Int(v)) => f64::from(v),
+        _ => or,
     }
 }
 
-/// Drive the shared callback with the new external value if one is set; a
-/// handler-less slider is a no-op. Pointer and keyboard activation never overlap,
-/// so the borrow is uncontended.
-fn fire(cb: &SharedChange, ev: &mut EventCx<'_>, value: f32) {
-    if let Some(f) = cb.borrow_mut().as_mut() {
-        f(ev, value);
-    }
+/// The marks a slider over `grid` draws when asked to.
+fn marks_of(asked: bool, grid: &SliderRange) -> u32 {
+    if asked { grid.steps() } else { 0 }
 }
 
-/// Read a float state cell, defaulting to `0.0` for a stale handle or a non-float
-/// value (neither happens in normal use — the cells are authored as `Float` and
-/// live as long as the node).
-fn read_f32(ev: &EventCx<'_>, cell: StateId) -> f32 {
-    match ev.get(cell) {
-        Some(StateValue::Float(v)) => v,
-        _ => 0.0,
+/// The slider drawn for `shape` in `style`, at `value`.
+fn mark(shape: SliderShape, style: &SliderStyle, value: f32) -> SliderMark {
+    SliderMark::new(shape, style.track, style.fill, style.thumb, value)
+}
+
+/// `size`, its `Fit` axes taking a range slider's own size: a range's
+/// thumbs size it no further.
+fn sized(size: Size, axis: Axis) -> Size {
+    let own = match axis {
+        Axis::Row => SLIDER_SIZE,
+        Axis::Column => viso_ui::Vec2::new(SLIDER_SIZE.y, SLIDER_SIZE.x),
+    };
+    let fit = |l: Length, v: f32| match l {
+        Length::Fit => Length::Fixed(v),
+        l => l,
+    };
+    Size {
+        width: fit(size.width, own.x),
+        height: fit(size.height, own.y),
     }
 }
 
 impl Component for Slider {
     fn build(&self, cx: &mut BuildCx<'_>) {
-        // Three reactive `Float` cells keep the drag self-contained: `value` is
-        // the relative fraction (bound to PAINT so a move repaints the row alone,
-        // a targeted invalidation, not a rebuild); `down_x` and `start_rel` record
-        // the press anchor so a move is a pure delta from it — the handler never
-        // needs the track's world geometry (an `EventCx` has no node bounds).
-        let rel0 = self.initial_relative();
-        let value = cx.state(StateValue::Float(rel0));
-        let down_x = cx.state(StateValue::Float(0.0));
-        let start_rel = cx.state(StateValue::Float(rel0));
-
-        // Read the (Copy) style and range by value; `build` takes `&self`, so the
-        // caption is cloned (cold, build-time — not a per-frame path).
-        let track_w = self.style.track_width;
-        let track_h = self.style.track_height;
-        let thumb_d = self.style.thumb_diameter;
-        let track_box = self.style.track;
-        let thumb_box = self.style.thumb;
-        let caption = self.label.clone();
-        let (min, span, step) = (self.min, self.span(), self.step);
-
-        // Pin the thumb to its initial-relative position by splitting the track's
-        // free main-axis room (width minus the thumb diameter) into the leading
-        // pad. A thumb that slides in paint with the cell is a later slice
-        // (matching the Toggle precedent).
-        let free = (track_w - thumb_d).max(0.0);
-        let lead = rel0 * free;
-
-        let root = cx.flex(
-            FlexStyle {
-                axis: Axis::Row,
-                gap: GAP,
-                padding: Inset::all(0.0),
-                align: Align::Center,
-                justify: Justify::Start,
-                size: self.style.size,
-                style: BoxStyle::NONE,
-            },
-            |cx| {
-                // The track: a fixed pill holding the thumb, cross-centered, with
-                // the thumb pushed to its initial position by the leading pad. The
-                // track is sized to the thumb's height so the (larger) thumb is the
-                // row's cross extent; the thin track sits centered behind it.
-                cx.flex(
-                    FlexStyle {
-                        axis: Axis::Row,
-                        gap: 0.0,
-                        padding: Inset {
-                            left: lead,
-                            top: 0.0,
-                            right: 0.0,
-                            bottom: 0.0,
-                        },
-                        align: Align::Center,
-                        justify: Justify::Start,
-                        size: Size::fixed(track_w, thumb_d.max(track_h)),
-                        style: track_box,
-                    },
-                    |cx| {
-                        cx.leaf(LeafStyle {
-                            size: Size::fixed(thumb_d, thumb_d),
-                            style: thumb_box,
-                        });
-                    },
-                );
-                label(caption.clone()).color(CAPTION).build(cx);
-            },
-        );
-
-        // Bind the relative-value cell to the row's PAINT so a move repaints just
-        // this subtree.
-        cx.bind(value, root, DirtyClass::PAINT);
-
-        // Project the relative-value cell into the node's semantic-state column as
-        // the external value plus the range, so the derived accessibility tree
-        // announces the live position on the real `[min, max]` scale (seeded now
-        // for the first frame, then re-run in the flush phase on every move). The
-        // cell holds a 0..1 fraction; `to_external` maps it back through the step
-        // grid, exactly as `on_change` reports it. This is the SEMANTICS side of
-        // the same cell that drives PAINT — the derive pass reads only the node
-        // column, never the state store.
-        let max = self.max;
-        cx.bind_semantic_state(root, move |cx| {
-            let rel = match cx.get(value) {
-                Some(StateValue::Float(v)) => v,
-                _ => 0.0,
-            };
-            SemanticState::slider(to_external(rel, min, span, step), min, max)
-        });
-        cx.focusable(root, true);
-
-        // Pointer drag: a primary press records the anchor (down-x + the relative
-        // value at that instant) and captures the pointer, so subsequent samples
-        // route here even outside the track box. Each move adds the pixel delta
-        // over the track width to the recorded relative and fires `on_change` with
-        // the new external value. The release frees the capture. The delta model
-        // needs no node geometry — only the build-time `track_width`.
-        let pointer_cb = self.on_change.clone();
-        let root_id = root.id();
-        cx.on_pointer(root, move |ev| {
-            let Some(p) = ev.pointer() else { return };
-            if !p.buttons.contains(PointerButtons::PRIMARY) && p.phase != PointerPhase::Up {
-                return;
-            }
-            match p.phase {
-                PointerPhase::Down => {
-                    ev.set(down_x, StateValue::Float(p.x));
-                    ev.set(start_rel, StateValue::Float(read_f32(ev, value)));
-                    ev.capture_pointer(root_id);
-                }
-                PointerPhase::Move => {
-                    let dx = p.x - read_f32(ev, down_x);
-                    let delta = if track_w > 0.0 { dx / track_w } else { 0.0 };
-                    let next = (read_f32(ev, start_rel) + delta).clamp(0.0, 1.0);
-                    if ev.set(value, StateValue::Float(next)) {
-                        fire(&pointer_cb, ev, to_external(next, min, span, step));
-                    }
-                }
-                PointerPhase::Up => {
-                    ev.release_pointer();
-                }
-                // Hover enter/leave and window leave are not drag input — the
-                // early return above already skips no-button samples, but the
-                // match stays exhaustive.
-                PointerPhase::Enter | PointerPhase::Leave => {}
-            }
-        });
-
-        // Keyboard step: Left/Down decrement and Right/Up increment the relative
-        // value by one step (a discrete slider steps by `step / span`, a continuous
-        // one by a small fraction), firing the same `on_change` — the accessibility
-        // equivalent of the drag (AGENTS section 15). Auto-repeat is honored so a
-        // held arrow ramps the value.
-        let key_cb = self.on_change.clone();
-        cx.on_key(root, move |ev| {
-            let Some(k) = ev.key() else { return };
-            if !k.pressed {
-                return;
-            }
-            let dir = match k.key {
-                Key::Right | Key::Up => 1.0,
-                Key::Left | Key::Down => -1.0,
-                _ => return,
-            };
-            ev.stop_propagation();
-            let increment = if step > 0.0 && span > 0.0 {
-                step / span
-            } else {
-                KEY_STEP_FRACTION
-            };
-            let next = (read_f32(ev, value) + dir * increment).clamp(0.0, 1.0);
-            if ev.set(value, StateValue::Float(next)) {
-                fire(&key_cb, ev, to_external(next, min, span, step));
-            }
-        });
-
-        // A slider is a continuous/stepped value picker, role `Slider`. The caption
-        // is its accessible name, so the name matches the visible label (AGENTS
-        // section 15). The live value reaches the derived tree via the
-        // semantic-state projection registered above, not this authored (static)
-        // semantics.
+        let grid = self.grid();
+        let start = grid.snap(f64::from(self.value));
+        let cell = self
+            .cell
+            .unwrap_or_else(|| cx.state(StateValue::Float(start as f32)));
+        let default = self.default.map_or(start, |d| grid.snap(f64::from(d)));
+        let slider = mark(self.shape, &self.style, grid.fraction(start))
+            .with_origin(self.origin.map(|o| grid.fraction(f64::from(o))))
+            .with_marks(marks_of(self.marks, &grid));
+        let leaf = cx.slider_leaf(self.style.size, slider);
+        let id = leaf.id();
+        cx.focusable(leaf, true);
         cx.semantics(
-            root,
+            leaf,
             Semantics::role(Role::Slider).with_label(self.label.clone()),
         );
+        let (min, max) = (self.min, self.max);
+        cx.bind_semantic_state(leaf, move |cx| {
+            SemanticState::slider(float(cx.get(cell), f64::from(min)) as f32, min, max)
+        });
+        cx.structure(|s| {
+            let show = move |s: &mut viso_ui::StructureCx<'_>| {
+                let f = grid.fraction(float(s.states.get(cell), grid.min));
+                s.store.show_slider(id, 0.0, f);
+            };
+            // A bound cell may hold a value already; it shows at once.
+            show(s);
+            s.store.land_slider(id);
+            s.store.add_structure_hook([cell], move |s, _| show(s));
+        });
+        let respond = {
+            let cb = Rc::clone(&self.on_change);
+            move |ev: &mut EventCx<'_>| {
+                if ev.phase() == DispatchPhase::Capture {
+                    return;
+                }
+                let Some(input) = slider_input(ev, id, Thumb::High) else {
+                    return;
+                };
+                let current = float(ev.get(cell), grid.min);
+                let next = match input {
+                    SliderInput::Reset => Some(default).filter(|d| *d != current),
+                    input => input.apply(current, &grid, Thumb::High),
+                };
+                if let Some(next) = next {
+                    ev.set(cell, StateValue::Float(next as f32));
+                    if let Some(f) = cb.borrow_mut().as_mut() {
+                        f(ev, next as f32);
+                    }
+                }
+            }
+        };
+        let respond = Rc::new(respond);
+        let pointer = Rc::clone(&respond);
+        cx.on_pointer(leaf, move |ev| pointer(ev));
+        cx.on_key(leaf, move |ev| respond(ev));
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::cell::Cell;
-    use std::rc::Rc;
-    use viso_ui::{
-        BindingTable, KeyEvent, Modifiers, NodeId, NodeStore, PointerEvent, SemanticProjector,
-        SemanticState, StateStore, TextEdits, VirtualLists,
-    };
+/// A stretch of `min..=max` picked between two thumbs. Construct one with
+/// [`range_slider`].
+pub struct RangeSlider {
+    label: String,
+    labels: [String; 2],
+    axis: Axis,
+    min: f32,
+    max: f32,
+    step: f32,
+    values: (f32, f32),
+    marks: bool,
+    cells: Option<(StateId, StateId)>,
+    style: SliderStyle,
+    on_change: SharedRange,
+}
 
-    /// The reactive stores a slider build writes into, kept together so a test can
-    /// build a slider and then drive its handlers against the same state.
-    struct Reactive {
-        store: NodeStore,
-        states: StateStore,
-        bindings: BindingTable,
-        lists: VirtualLists,
-        text_edits: TextEdits,
-        projectors: SemanticProjector,
+/// A horizontal range slider named `label`, `0` to `1`, continuous, over the
+/// whole range.
+pub fn range_slider(label: impl Into<String>) -> RangeSlider {
+    RangeSlider {
+        label: label.into(),
+        labels: ["Minimum".to_owned(), "Maximum".to_owned()],
+        axis: Axis::Row,
+        min: 0.0,
+        max: 1.0,
+        step: 0.0,
+        values: (0.0, 1.0),
+        marks: false,
+        cells: None,
+        style: SliderStyle::default(),
+        on_change: Rc::new(RefCell::new(None)),
+    }
+}
+
+impl RangeSlider {
+    /// Run `handler` with the new lower and upper bounds at each change.
+    pub fn on_change(self, handler: impl FnMut(&mut EventCx<'_>, f32, f32) + 'static) -> Self {
+        *self.on_change.borrow_mut() = Some(Box::new(handler));
+        self
     }
 
-    impl Reactive {
-        fn new() -> Self {
-            Reactive {
-                store: NodeStore::new(),
-                states: StateStore::new(),
-                bindings: BindingTable::new(),
-                lists: VirtualLists::new(),
-                text_edits: TextEdits::new(),
-                projectors: SemanticProjector::new(),
+    /// Pick from `min` to `max`.
+    pub fn range(mut self, min: f32, max: f32) -> Self {
+        self.min = min;
+        self.max = max;
+        self
+    }
+
+    /// Keep both bounds on a grid of `step` from `min`.
+    pub fn step(mut self, step: f32) -> Self {
+        self.step = step.max(0.0);
+        self
+    }
+
+    /// Start with the stretch from `low` to `high` (default: the whole
+    /// range).
+    pub fn values(mut self, low: f32, high: f32) -> Self {
+        self.values = (low.min(high), high.max(low));
+        self
+    }
+
+    /// Name the lower and upper thumbs for assistive technology (default
+    /// "Minimum" and "Maximum").
+    pub fn thumb_labels(mut self, low: impl Into<String>, high: impl Into<String>) -> Self {
+        self.labels = [low.into(), high.into()];
+        self
+    }
+
+    /// Mark each step on the track, where there is room.
+    pub fn marks(mut self, marks: bool) -> Self {
+        self.marks = marks;
+        self
+    }
+
+    /// Run up the screen rather than across.
+    pub fn vertical(mut self) -> Self {
+        self.axis = Axis::Column;
+        self
+    }
+
+    /// Keep the bounds in float cells `low` and `high`, which it shows and
+    /// writes, rather than cells of its own.
+    pub fn bind(mut self, low: StateId, high: StateId) -> Self {
+        self.cells = Some((low, high));
+        self
+    }
+
+    /// Replace the whole [`SliderStyle`].
+    pub fn style(mut self, style: SliderStyle) -> Self {
+        self.style = style;
+        self
+    }
+
+    /// Set its size within its parent (default: 160 by 24 along its axis).
+    pub fn size(mut self, size: Size) -> Self {
+        self.style.size = size;
+        self
+    }
+}
+
+impl Component for RangeSlider {
+    fn build(&self, cx: &mut BuildCx<'_>) {
+        let grid = SliderRange::new(
+            f64::from(self.min),
+            f64::from(self.max),
+            Some(f64::from(self.step)),
+        );
+        let (low0, high0) = (
+            grid.snap(f64::from(self.values.0)),
+            grid.snap(f64::from(self.values.1)),
+        );
+        let (low, high) = self.cells.unwrap_or_else(|| {
+            (
+                cx.state(StateValue::Float(low0 as f32)),
+                cx.state(StateValue::Float(high0 as f32)),
+            )
+        });
+        let cells = [low, high];
+        let style = self.style;
+        let (axis, steps) = (self.axis, marks_of(self.marks, &grid));
+        let mut thumbs = [None, None];
+        let track = cx.stack(
+            StackStyle {
+                size: sized(self.style.size, self.axis),
+                ..StackStyle::default()
+            },
+            |cx| {
+                for (i, slot) in thumbs.iter_mut().enumerate() {
+                    let leaf = cx.leaf(LeafStyle {
+                        size: Size::fill(),
+                        style: BoxStyle::NONE,
+                    });
+                    *slot = Some(leaf);
+                    cx.focusable(leaf, true);
+                    cx.focus_ring(leaf, false);
+                    cx.semantics(
+                        leaf,
+                        Semantics::role(Role::Slider).with_label(self.labels[i].clone()),
+                    );
+                    let (min, max, cell) = (self.min, self.max, cells[i]);
+                    cx.bind_semantic_state(leaf, move |cx| {
+                        SemanticState::slider(float(cx.get(cell), f64::from(min)) as f32, min, max)
+                    });
+                }
+            },
+        );
+        let id = track.id();
+        let thumbs = thumbs.map(|t| t.expect("built"));
+        let ids = thumbs.map(|t| t.id());
+        cx.structure(|s| {
+            let at = |c: StateId, or: f64| grid.fraction(float(s.states.get(c), or));
+            let slider = mark(SliderShape::Bar(axis), &style, 0.0)
+                .with_range(at(low, low0), at(high, high0))
+                .with_marks(steps);
+            s.store.set_content_payload(id, Content::Slider(slider));
+            s.store.add_structure_hook(cells, move |s, _| {
+                let f = |c: StateId| grid.fraction(float(s.states.get(c), grid.min));
+                s.store.show_slider(id, f(low), f(high));
+            });
+        });
+        cx.semantics(
+            track,
+            Semantics::role(Role::Group).with_label(self.label.clone()),
+        );
+
+        // Move `thumb` as `input` asks, reporting the new bounds.
+        let respond = {
+            let cb = Rc::clone(&self.on_change);
+            move |ev: &mut EventCx<'_>, input: SliderInput, thumb: Thumb| {
+                let i = match thumb {
+                    Thumb::Low => 0,
+                    Thumb::High => 1,
+                };
+                let current = float(ev.get(cells[i]), grid.min);
+                let other = float(ev.get(cells[1 - i]), grid.min);
+                let Some(next) = input.apply(current, &grid, thumb) else {
+                    return;
+                };
+                // The thumbs do not pass each other.
+                let next = match thumb {
+                    Thumb::Low => next.min(other),
+                    Thumb::High => next.max(other),
+                };
+                if next == current {
+                    return;
+                }
+                ev.set(cells[i], StateValue::Float(next as f32));
+                let (lo, hi) = if i == 0 { (next, other) } else { (other, next) };
+                if let Some(f) = cb.borrow_mut().as_mut() {
+                    f(ev, lo as f32, hi as f32);
+                }
             }
-        }
-
-        /// Build a slider through a reactive cx (a slider authors state, so a plain
-        /// `BuildCx::new` would panic) and return its root node.
-        fn build(&mut self, s: Slider) -> NodeId {
-            let mut cx = BuildCx::with_reactive(
-                &mut self.store,
-                &mut self.states,
-                &mut self.bindings,
-                &mut self.lists,
-                &mut self.text_edits,
-                &mut self.projectors,
-            );
-            s.build(&mut cx);
-            cx.root().expect("slider declares a root node")
-        }
-
-        /// Feed a pointer sample to the root's pointer handler, restoring it after,
-        /// and return any pending capture request the handler made.
-        fn pointer(&mut self, root: NodeId, ev: PointerEvent) -> Option<Option<NodeId>> {
-            let mut handler = self.store.take_handler(root).expect("pointer handler");
-            let capture = {
-                let mut cx = EventCx::__new_pointer(&mut self.states, &self.bindings, &ev);
-                handler(&mut cx);
-                cx.__take_capture_request()
+        };
+        let respond = Rc::new(respond);
+        let pointer = Rc::clone(&respond);
+        cx.on_pointer(track, move |ev| {
+            if ev.phase() == DispatchPhase::Capture {
+                return;
+            }
+            let Some(input) = slider_input(ev, id, Thumb::High) else {
+                return;
             };
-            self.store.restore_handler(root, handler);
-            capture
-        }
-
-        /// Feed a key sample to the root's key handler, restoring it after.
-        fn key(&mut self, root: NodeId, ev: KeyEvent) {
-            let mut handler = self.store.take_key_handler(root).expect("key handler");
-            {
-                let mut cx = EventCx::__new_key(&mut self.states, &self.bindings, &ev);
-                handler(&mut cx);
+            if let Some(thumb) = input.thumb() {
+                let i = if thumb == Thumb::Low { 0 } else { 1 };
+                if ev.focused() != Some(ids[i]) {
+                    ev.request_focus(ids[i]);
+                }
+                pointer(ev, input, thumb);
             }
-            self.store.restore_key_handler(root, handler);
+        });
+        for (i, thumb) in [Thumb::Low, Thumb::High].into_iter().enumerate() {
+            let respond = Rc::clone(&respond);
+            cx.on_key(thumbs[i], move |ev| {
+                if let Some(change) = ev.focus_change() {
+                    let focus = (change == FocusChange::Gained).then_some(thumb);
+                    if focus.is_some() || ev.slider(id).is_some_and(|s| s.focus == Some(thumb)) {
+                        ev.slide(id, Slide::Focus(focus));
+                    }
+                    return;
+                }
+                // The keys and the wheel reach the focused thumb.
+                if let Some(input) = slider_input(ev, id, thumb) {
+                    respond(ev, input, thumb);
+                }
+            });
         }
-
-        /// The current relative value of the slider's `value` cell — the first
-        /// cell the build authors (a fresh store mints index 0, generation 0).
-        fn relative(&mut self) -> f32 {
-            let ev = still();
-            let cx = EventCx::__new_pointer(&mut self.states, &self.bindings, &ev);
-            match cx.get(value_cell()) {
-                Some(StateValue::Float(v)) => v,
-                _ => f32::NAN,
-            }
-        }
-
-        /// Run the flush phase (drain pending state writes, wake the projections
-        /// that read them) and derive the semantics tree, returning the root
-        /// node's live `SemanticState`. This is exactly the frame's flush + derive
-        /// sequence, so a snapshot taken here is what an assistive technology sees.
-        fn derive_state(&mut self, root: NodeId) -> Option<SemanticState> {
-            let mut changed = Vec::new();
-            self.states.take_pending(&mut changed);
-            self.projectors
-                .wake(&changed, &self.states, &mut self.store);
-            self.store
-                .derive_semantics(root)
-                .get(root)
-                .and_then(|n| n.state)
-        }
-    }
-
-    /// The slider's `value` cell handle. The build authors `value` first, so in a
-    /// fresh store it is index 0, generation 0 — the handle a throwaway store mints
-    /// for its first `Float` cell (there is no public bare-`StateId` constructor).
-    fn value_cell() -> StateId {
-        StateStore::new().alloc(StateValue::Float(0.0))
-    }
-
-    /// A still (no-button) pointer sample, for read-only state peeks.
-    fn still() -> PointerEvent {
-        PointerEvent {
-            x: 0.0,
-            y: 0.0,
-            phase: PointerPhase::Move,
-            buttons: PointerButtons::NONE,
-            modifiers: Modifiers::default(),
-        }
-    }
-
-    /// A primary-button pointer sample at `x` in the given phase.
-    fn primary_at(x: f32, phase: PointerPhase) -> PointerEvent {
-        PointerEvent {
-            x,
-            y: 0.0,
-            phase,
-            buttons: PointerButtons::PRIMARY,
-            modifiers: Modifiers::default(),
-        }
-    }
-
-    /// A key press/release sample.
-    fn key_ev(key: Key, pressed: bool, repeat: bool) -> KeyEvent {
-        KeyEvent {
-            key,
-            pressed,
-            repeat,
-            modifiers: Modifiers::default(),
-        }
-    }
-
-    /// Count a node's direct children by walking the arena sibling chain.
-    fn child_count(store: &NodeStore, parent: NodeId) -> usize {
-        let arena = store.arena();
-        arena.children(parent).count()
-    }
-
-    /// A slider builds an interactive node: a pointer handler, a key handler, a
-    /// focusable flag, a `CheckBox` semantics node named by its caption, and two
-    /// composed children (the track and the caption). The track holds the thumb as
-    /// its only child.
-    #[test]
-    fn slider_builds_a_focusable_node_with_track_thumb_and_caption() {
-        let mut rx = Reactive::new();
-        let root = rx.build(slider("Volume"));
-
-        assert!(
-            rx.store.has_handler(root),
-            "slider attaches a pointer handler"
-        );
-        assert!(
-            rx.store.has_key_handler(root),
-            "slider attaches a key handler"
-        );
-        assert!(rx.store.focusable(root), "slider is focusable");
-        assert_eq!(
-            child_count(&rx.store, root),
-            2,
-            "slider composes a track and a caption"
-        );
-
-        let track = rx
-            .store
-            .arena()
-            .first_child(root)
-            .expect("slider has a track as its first child");
-        assert_eq!(
-            child_count(&rx.store, track),
-            1,
-            "the track holds the thumb as its only child"
-        );
-
-        let sem = rx.store.semantics(root).expect("slider authors semantics");
-        assert_eq!(sem.role, Role::Slider);
-        assert_eq!(sem.label.as_deref(), Some("Volume"));
-    }
-
-    /// The chainable setters override the range, step, initial value, and size,
-    /// and the default is a `0.0..=1.0` continuous slider at `min`, `Fit` on both
-    /// axes.
-    #[test]
-    fn setters_override_defaults() {
-        let default = slider("x");
-        assert_eq!(default.min, 0.0);
-        assert_eq!(default.max, 1.0);
-        assert_eq!(default.step, 0.0);
-        assert_eq!(default.value, 0.0);
-        assert_eq!(default.style.size.width, Length::Fit);
-        assert_eq!(default.style.size.height, Length::Fit);
-
-        let widget = slider("x")
-            .range(0.0, 100.0)
-            .step(10.0)
-            .value(30.0)
-            .size(Size::fill());
-        assert_eq!(widget.min, 0.0);
-        assert_eq!(widget.max, 100.0);
-        assert_eq!(widget.step, 10.0);
-        assert_eq!(widget.value, 30.0);
-        assert_eq!(widget.style.size, Size::fill());
-        // 30 of 100 is 0.3 of the range.
-        assert!((widget.initial_relative() - 0.3).abs() < 1e-6);
-    }
-
-    /// `to_external` maps a relative fraction back to the range, and a discrete
-    /// step snaps to the grid.
-    #[test]
-    fn to_external_maps_and_snaps() {
-        // Continuous: linear over the range.
-        assert!((to_external(0.5, 0.0, 100.0, 0.0) - 50.0).abs() < 1e-6);
-        assert!((to_external(0.0, 10.0, 40.0, 0.0) - 10.0).abs() < 1e-6);
-        assert!((to_external(1.0, 10.0, 40.0, 0.0) - 50.0).abs() < 1e-6);
-        // Discrete step 10 over [0,100]: 0.47*100 = 47 -> floors to 40.
-        assert!((to_external(0.47, 0.0, 100.0, 10.0) - 40.0).abs() < 1e-6);
-        // Degenerate range pins to min.
-        assert!((to_external(0.9, 5.0, 0.0, 0.0) - 5.0).abs() < 1e-6);
-    }
-
-    /// A primary press records the anchor and captures the pointer to the root; a
-    /// move drags the relative value by the pixel delta over the track width and
-    /// fires `on_change` with the new external value; the release frees capture.
-    #[test]
-    fn pointer_drag_moves_value_captures_and_fires_change() {
-        let last = Rc::new(Cell::new(None::<f32>));
-        let count = Rc::new(Cell::new(0u32));
-        let (l, c) = (last.clone(), count.clone());
-        let mut rx = Reactive::new();
-        // A [0,100] slider with the default 120px track, starting at 0.
-        let root = rx.build(slider("Volume").range(0.0, 100.0).on_change(move |_, v| {
-            l.set(Some(v));
-            c.set(c.get() + 1);
-        }));
-
-        assert_eq!(rx.relative(), 0.0, "starts at the min");
-
-        // Press at x=0: records the anchor and requests capture to the root.
-        let cap = rx.pointer(root, primary_at(0.0, PointerPhase::Down));
-        assert_eq!(cap, Some(Some(root)), "the press captures the pointer");
-        assert_eq!(count.get(), 0, "the press alone does not fire a change");
-
-        // Move right by 60px over a 120px track: +0.5 relative -> 0.5 -> 50.0.
-        rx.pointer(root, primary_at(60.0, PointerPhase::Move));
-        assert!((rx.relative() - 0.5).abs() < 1e-6, "dragged to the middle");
-        assert_eq!(count.get(), 1, "the move fires one change");
-        assert_eq!(
-            last.get(),
-            Some(50.0),
-            "on_change carries the external value"
-        );
-
-        // Move past the far end: clamps to 1.0 -> 100.0.
-        rx.pointer(root, primary_at(200.0, PointerPhase::Move));
-        assert!((rx.relative() - 1.0).abs() < 1e-6, "clamps at the far end");
-        assert_eq!(last.get(), Some(100.0));
-
-        // Release frees capture.
-        let cap = rx.pointer(root, primary_at(200.0, PointerPhase::Up));
-        assert_eq!(cap, Some(None), "the release frees the capture");
-    }
-
-    /// The drag is a pure delta from the press anchor: a second press re-anchors,
-    /// so a move after it is measured from the new down-x, not the old one.
-    #[test]
-    fn drag_reanchors_on_each_press() {
-        let mut rx = Reactive::new();
-        let root = rx.build(slider("v").range(0.0, 1.0)); // 120px track, span 1
-
-        // First drag to 0.5.
-        rx.pointer(root, primary_at(0.0, PointerPhase::Down));
-        rx.pointer(root, primary_at(60.0, PointerPhase::Move));
-        assert!((rx.relative() - 0.5).abs() < 1e-6);
-        rx.pointer(root, primary_at(60.0, PointerPhase::Up));
-
-        // Second press at x=100 re-anchors at relative 0.5; a move to x=112 is
-        // +12px = +0.1, landing at 0.6 — not measured from the original down-x.
-        rx.pointer(root, primary_at(100.0, PointerPhase::Down));
-        rx.pointer(root, primary_at(112.0, PointerPhase::Move));
-        assert!(
-            (rx.relative() - 0.6).abs() < 1e-6,
-            "the second drag deltas from the new anchor"
-        );
-    }
-
-    /// A non-primary button neither anchors nor drags.
-    #[test]
-    fn non_primary_pointer_does_not_drag() {
-        let count = Rc::new(Cell::new(0u32));
-        let c = count.clone();
-        let mut rx = Reactive::new();
-        let root = rx.build(slider("v").on_change(move |_, _| c.set(c.get() + 1)));
-
-        let non_primary_down = PointerEvent {
-            buttons: PointerButtons::NONE,
-            ..primary_at(0.0, PointerPhase::Down)
-        };
-        let cap = rx.pointer(root, non_primary_down);
-        assert_eq!(cap, None, "a non-primary press does not capture");
-        let non_primary_move = PointerEvent {
-            buttons: PointerButtons::NONE,
-            ..primary_at(60.0, PointerPhase::Move)
-        };
-        rx.pointer(root, non_primary_move);
-        assert_eq!(count.get(), 0, "a non-primary drag fires nothing");
-    }
-
-    /// Arrow keys step the value and fire `on_change`; Right/Up increment,
-    /// Left/Down decrement, and a continuous slider steps by the default fraction.
-    #[test]
-    fn arrow_keys_step_the_value() {
-        let last = Rc::new(Cell::new(None::<f32>));
-        let count = Rc::new(Cell::new(0u32));
-        let (l, c) = (last.clone(), count.clone());
-        let mut rx = Reactive::new();
-        // Continuous [0,100]: the default key step is 5% of the range = 5 units.
-        let root = rx.build(
-            slider("v")
-                .range(0.0, 100.0)
-                .value(50.0)
-                .on_change(move |_, v| {
-                    l.set(Some(v));
-                    c.set(c.get() + 1);
-                }),
-        );
-
-        assert!((rx.relative() - 0.5).abs() < 1e-6, "starts mid-range");
-
-        rx.key(root, key_ev(Key::Right, true, false));
-        assert!((rx.relative() - 0.55).abs() < 1e-6, "Right steps up 5%");
-        assert_eq!(last.get(), Some(55.0));
-
-        rx.key(root, key_ev(Key::Up, true, false));
-        assert!((rx.relative() - 0.6).abs() < 1e-6, "Up steps up too");
-
-        rx.key(root, key_ev(Key::Left, true, false));
-        assert!((rx.relative() - 0.55).abs() < 1e-6, "Left steps down");
-        rx.key(root, key_ev(Key::Down, true, false));
-        assert!((rx.relative() - 0.5).abs() < 1e-6, "Down steps down too");
-
-        assert_eq!(count.get(), 4, "each arrow press fired one change");
-
-        // A key-up and an unrelated key do nothing.
-        rx.key(root, key_ev(Key::Right, false, false));
-        rx.key(root, key_ev(Key::Enter, true, false));
-        assert_eq!(count.get(), 4, "key-up and Enter do not step");
-    }
-
-    /// A discrete slider steps by exactly one grid unit per arrow press.
-    #[test]
-    fn discrete_arrow_step_is_one_grid_unit() {
-        let last = Rc::new(Cell::new(None::<f32>));
-        let l = last.clone();
-        let mut rx = Reactive::new();
-        // [0,100] step 10, starting at 0.
-        let root = rx.build(
-            slider("v")
-                .range(0.0, 100.0)
-                .step(10.0)
-                .on_change(move |_, v| l.set(Some(v))),
-        );
-
-        rx.key(root, key_ev(Key::Right, true, false));
-        assert_eq!(last.get(), Some(10.0), "one Right is one step of 10");
-        rx.key(root, key_ev(Key::Right, true, false));
-        assert_eq!(last.get(), Some(20.0), "another Right is another step");
-    }
-
-    /// A handler-less slider still moves its value without panicking.
-    #[test]
-    fn slider_without_handler_still_moves() {
-        let mut rx = Reactive::new();
-        let root = rx.build(slider("v").range(0.0, 1.0));
-
-        rx.pointer(root, primary_at(0.0, PointerPhase::Down));
-        rx.pointer(root, primary_at(60.0, PointerPhase::Move)); // no panic with no callback
-        assert!((rx.relative() - 0.5).abs() < 1e-6, "still moves the value");
-        assert!(rx.store.focusable(root), "still focusable");
-    }
-
-    /// The live value reaches the derived accessibility tree as a slider state on
-    /// the real `[min, max]` scale: seeded at build from the initial value, and
-    /// tracking a drag — each snapshot taken after a flush + derive, exactly as
-    /// the frame runs it. Dragging is delta-based (each move adds the pixel delta
-    /// over the 120px track to the value at press), so a 60px drag from a slider
-    /// resting at min advances it half the range: 50 on a 0..100 slider.
-    #[test]
-    fn semantics_snapshot_tracks_the_live_value_on_the_real_scale() {
-        let mut rx = Reactive::new();
-        let root = rx.build(slider("Volume").range(0.0, 100.0).value(30.0));
-
-        let seeded = rx
-            .derive_state(root)
-            .expect("slider seeds a semantic state");
-        assert_eq!(seeded.range, Some((0.0, 100.0)), "the range is carried");
-        assert!(
-            (seeded.value.unwrap() - 30.0).abs() < 1e-3,
-            "the first frame carries the seeded external value, got {:?}",
-            seeded.value
-        );
-
-        // Press then drag +60px along the 120px track: a +0.5 relative delta on
-        // top of the initial 0.3 -> relative 0.8 -> external 80.
-        rx.pointer(root, primary_at(0.0, PointerPhase::Down));
-        rx.pointer(root, primary_at(60.0, PointerPhase::Move));
-        let dragged = rx.derive_state(root).expect("still has a semantic state");
-        assert_eq!(dragged.range, Some((0.0, 100.0)));
-        assert!(
-            (dragged.value.unwrap() - 80.0).abs() < 1e-3,
-            "a +half-track drag advances the derived value by half the range, got {:?}",
-            dragged.value
-        );
-    }
-
-    /// A discrete slider announces the step-quantized external value: the
-    /// projection maps through the same `to_external` grid as `on_change`, so an
-    /// arrow step of 10 on a 0..100 slider reads exactly 10.
-    #[test]
-    fn semantics_snapshot_quantizes_a_discrete_slider() {
-        let mut rx = Reactive::new();
-        let root = rx.build(slider("v").range(0.0, 100.0).step(10.0));
-
-        assert_eq!(
-            rx.derive_state(root).and_then(|s| s.value),
-            Some(0.0),
-            "starts at the range minimum"
-        );
-
-        rx.key(root, key_ev(Key::Right, true, false));
-        assert_eq!(
-            rx.derive_state(root).and_then(|s| s.value),
-            Some(10.0),
-            "one Right step reads the quantized external value"
-        );
     }
 }

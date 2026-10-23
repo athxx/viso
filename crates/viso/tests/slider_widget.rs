@@ -1,283 +1,178 @@
-//! Section 71 validation pack for the `Slider` control — a draggable thumb on a
-//! track that picks a value from a `[min, max]` range — driven through the public
-//! facade. Mirrors `toggle_widget.rs` (golden + a11y + allocation + the two
-//! interactive input tapes) with the slider's own structure: a flex row holding a
-//! rounded *track* (which holds a circular *thumb* leaf) plus a composed `Label`
-//! caption. A primary *drag* and an *arrow-key* step drive the same `on_change`
-//! and move the reactive relative-value cell.
-//!
-//! - **golden screenshot + measure** — build a `Slider` with `Slider::build`
-//!   (a row holding a track flex + thumb leaf, then a composed `Label` caption),
-//!   attach a deterministic glyph run to its caption leaf (the facade `TextShaper`
-//!   is `pub(crate)`, so integration tests shape via the shared `viso-render`
-//!   fixtures rather than a real font stack), lay it out, and confirm the pixels
-//!   match a blessed baseline;
-//! - **pointer drag input tape** — `PointerRouter::route` over the slider's world
-//!   box: a primary press *captures the pointer to the slider* (so subsequent
-//!   samples route to it even outside its box), a move drags the value by the
-//!   pixel delta over the track width and fires `on_change`, and the release frees
-//!   the capture;
-//! - **keyboard step input tape** — with the slider focused, `KeyRouter::route_key`
-//!   steps the value on the arrow keys (Right/Up up, Left/Down down) and fires
-//!   `on_change`; an unfocused slider receives no key dispatch;
-//! - **a11y snapshot** — a `Slider`'s derived semantics node is `Role::Slider`,
-//!   its accessible name is the visible caption, and it carries the live value
-//!   and range on the real scale, projected from the reactive value cell
-//!   (section 8.1);
-//! - **allocation profile** — a warmed-up `Slider` frame allocates nothing per
-//!   frame (architecture section 47 hot-path contract), same CountingAlloc +
-//!   `frame_stats`/`*_count()` steady-state asserts as `toggle_widget.rs`.
-//!
-//! Building through `Slider::build` is the point: it proves the widget lowers to
-//! an interactive, content-bearing subtree the `viso-ui` input/paint path and
-//! `paint_tree` handle unchanged — including pointer *capture*, which a drag needs
-//! but a click does not.
+//! The `Slider`, `Knob` and `RangeSlider` controls driven through the
+//! facade: each draws one slider node — a track filled to its thumb, marked
+//! at its steps, filled from an origin, a range between two thumbs, a knob
+//! pointing at its value, a bar running up — matching a blessed golden; a
+//! press on the track jumps the thumb, one on the thumb picks it up, a drag
+//! carries it at once and Shift a tenth as far; the keys step it and its
+//! thumb eases there; a range's thumbs do not pass each other and each is a
+//! focusable slider of its own; a knob turns with a drag up; a warmed-up
+//! frame allocates the same each time.
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
+use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
-use viso::gpu::{CpuRaster, GpuBackend, RawWindowHandle, TextureDesc, TextureFormat};
-use viso::render::{FrameStats, GlyphInstanceData, Rect, Renderer, Rgba, test_glyphs};
+use viso::gpu::{CpuRaster, GpuBackend, RawWindowHandle};
+use viso::render::{FrameStats, Rect, Renderer, Rgba};
+use viso::ui::slider::Thumb;
 use viso::ui::{
-    Axis, BindingTable, BoxStyle, BuildCx, Component, Content, Inset, Key, KeyEvent, KeyRouter,
-    Modifiers, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase, PointerRouter, Role,
-    SemanticProjector, Size, StateStore, TextEdits, Vec2, VirtualLists, paint_tree,
+    Axis, BindingTable, BoxStyle, BuildCx, Component, EffectStore, Inset, Key, KeyEvent, KeyRouter,
+    Length, Modifiers, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase,
+    PointerRouter, Role, SemanticProjector, Size, StateStore, TextEdits, VirtualLists, focus_node,
+    paint_tree, run_structure_hooks,
 };
-use viso::widgets::{ViewStyle, slider, view};
+use viso::widgets::{ViewStyle, knob, range_slider, slider, view};
 
-const W: u32 = 200;
-const H: u32 = 96;
+const W: u32 = 260;
+const H: u32 = 200;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 /// Per-channel tolerance (in 0..=255) for the golden comparison.
 const TOL: u8 = 2;
 
-const DARK: Rgba = Rgba {
-    r: 0.1,
-    g: 0.1,
-    b: 0.12,
-    a: 1.0,
-};
-const WHITE: Rgba = Rgba {
-    r: 1.0,
-    g: 1.0,
-    b: 1.0,
-    a: 1.0,
-};
-
-/// The intrinsic extent of the glyph run, so the caption leaf sizes to it.
-fn glyph_run_natural(glyphs: &[GlyphInstanceData]) -> Vec2 {
-    let mut n = Vec2::ZERO;
-    for g in glyphs {
-        n.x = n.x.max(g.rect.x + g.rect.w);
-        n.y = n.y.max(g.rect.y + g.rect.h);
-    }
-    n
-}
-
 fn surface_rect() -> Rect {
-    Rect {
-        x: 0.0,
-        y: 0.0,
-        w: W as f32,
-        h: H as f32,
-    }
+    Rect::new(0.0, 0.0, W as f32, H as f32)
 }
 
-/// Build a padded dark `View` wrapping a single `Slider`, and return the root, the
-/// slider's node, and the slider's caption leaf. The slider is the container's
-/// only child, so its node is the root's first child; within the slider, the track
-/// flex is the *first* child (it holds the thumb) and the caption `Label` leaf is
-/// the *second*. Wrapping in a fill container keeps the slider at its `Fit`
-/// intrinsic size (track + gap + caption) rather than filling the surface.
-fn build_scene(store: &mut NodeStore) -> (NodeId, NodeId, NodeId) {
-    // The slider authors reactive cells, so it must build through a reactive cx;
-    // the golden only paints (the routers are exercised separately), so throwaway
-    // state stores are fine here.
+/// A light column of sliders: one marked at its steps, one filling from its
+/// centre, a range, then a row of a knob and a bar running up.
+fn build_scene(store: &mut NodeStore) -> NodeId {
     let mut states = StateStore::new();
     let mut bindings = BindingTable::new();
     let mut lists = VirtualLists::new();
     let mut text_edits = TextEdits::new();
     let mut projectors = SemanticProjector::new();
-
+    let width = Size {
+        width: Length::Fixed(200.0),
+        height: Length::Fit,
+    };
     let container = view(ViewStyle {
-        axis: Axis::Row,
+        axis: Axis::Column,
         padding: Inset::all(10.0),
+        gap: 6.0,
         size: Size::fill(),
-        background: BoxStyle::solid(DARK),
+        background: BoxStyle::solid(Rgba::new(0.97, 0.97, 0.98, 1.0)),
         ..Default::default()
     })
-    .children(|cx| {
-        slider("Volume").range(0.0, 100.0).value(50.0).build(cx);
+    .children(move |cx| {
+        slider("Steps")
+            .range(0.0, 100.0)
+            .step(10.0)
+            .marks(true)
+            .value(60.0)
+            .size(width)
+            .build(cx);
+        slider("Balance")
+            .range(-1.0, 1.0)
+            .origin(0.0)
+            .value(-0.5)
+            .size(width)
+            .build(cx);
+        range_slider("Price")
+            .range(0.0, 100.0)
+            .values(20.0, 70.0)
+            .size(Size {
+                width: Length::Fixed(200.0),
+                height: Length::Fixed(24.0),
+            })
+            .build(cx);
+        view(ViewStyle {
+            axis: Axis::Row,
+            gap: 20.0,
+            ..Default::default()
+        })
+        .children(|cx| {
+            knob("Gain").value(0.75).build(cx);
+            slider("Level")
+                .vertical()
+                .value(0.3)
+                .size(Size {
+                    width: Length::Fit,
+                    height: Length::Fixed(80.0),
+                })
+                .build(cx);
+        })
+        .build(cx);
     });
-
-    let root = {
-        let mut cx = BuildCx::with_reactive(
-            store,
-            &mut states,
-            &mut bindings,
-            &mut lists,
-            &mut text_edits,
-            &mut projectors,
-        );
-        container.build(&mut cx);
-        cx.root().expect("scene has a root")
-    };
-    let slider_id = store
-        .arena()
-        .first_child(root)
-        .expect("the view has the slider as its only child");
-    // The track flex is the first child (it holds the thumb); the caption `Label`
-    // leaf is the second child.
-    let track_id = store
-        .arena()
-        .first_child(slider_id)
-        .expect("the slider has a track flex as its first child");
-    let caption_id = store
-        .arena()
-        .next_sibling(track_id)
-        .expect("the slider has the caption leaf as its second child");
-    (root, slider_id, caption_id)
-}
-
-/// Attach the shared deterministic glyph run to the slider's caption leaf so the
-/// golden is font/atlas-stable without a real font stack — the same fixture
-/// bypass `toggle_widget.rs` uses.
-fn attach_caption(gpu: &mut CpuRaster, store: &mut NodeStore, caption_id: NodeId) {
-    let tg = test_glyphs([0.0, 0.0], 26.0);
-    let atlas = gpu.create_texture(&TextureDesc {
-        width: tg.atlas_size,
-        height: tg.atlas_size,
-        format: TextureFormat::R8Unorm,
-        render_target: false,
-        label: "slider-caption-atlas",
-    });
-    gpu.write_texture(atlas, 0, 0, tg.atlas_size, tg.atlas_size, &tg.atlas_pixels);
-
-    let natural = glyph_run_natural(&tg.glyphs);
-    store.set_content_payload(
-        caption_id,
-        Content::Text {
-            ink: None,
-            glyphs: tg.glyphs.clone(),
-            atlas,
-            color_glyphs: Vec::new(),
-            color_atlas: None,
-            color: WHITE,
-            natural,
-            baseline: 0.0,
-            shaped_at_width: None,
-            width_use: viso::ui::WidthUse::Ignored,
-            min_content: natural.x,
-            max_content: natural.x,
-        },
+    let mut cx = BuildCx::with_reactive(
+        store,
+        &mut states,
+        &mut bindings,
+        &mut lists,
+        &mut text_edits,
+        &mut projectors,
     );
+    container.build(&mut cx);
+    cx.root().expect("scene has a root")
 }
-
-// --- golden screenshot + measure -------------------------------------------
 
 #[test]
-fn slider_renders_track_thumb_and_caption_and_matches_golden() {
+fn sliders_draw_their_tracks_thumbs_marks_and_knob_and_match_golden() {
     let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let mut renderer = Renderer::new(&mut gpu, format);
-
     let mut store = NodeStore::new();
-    let (root, _slider_id, caption_id) = build_scene(&mut store);
-    attach_caption(&mut gpu, &mut store, caption_id);
-
-    let mut scratch = Vec::new();
-    store.layout(root, surface_rect(), &mut scratch);
+    let root = build_scene(&mut store);
+    store.layout(root, surface_rect(), &mut Vec::new());
+    let first = store.arena().first_child(root).unwrap();
+    assert_eq!(store.bounds(first).w, 200.0);
+    assert_eq!(store.bounds(first).h, 24.0, "a bar is its own height");
+    assert_eq!(store.slider(first).unwrap().marks, 10);
 
     let mut primitives = Vec::new();
     paint_tree(&store, root, &mut primitives);
     renderer.upload(&mut gpu, &primitives);
     renderer.submit(&mut gpu, surface, CLEAR, [W as f32, H as f32]);
     let actual = gpu.read_pixels_bgra8(surface);
-
-    let path = golden_path();
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden/slider_widget.bgra8");
     if std::env::var("BLESS").is_ok() {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, &actual).unwrap();
-        eprintln!("blessed golden: {}", path.display());
         return;
     }
-
-    let expected = std::fs::read(&path).unwrap_or_else(|_| {
-        panic!(
-            "missing golden {}; run with BLESS=1 to generate it",
-            path.display()
-        )
-    });
-    assert_eq!(
-        actual.len(),
-        expected.len(),
-        "golden size mismatch: {} vs {}",
-        actual.len(),
-        expected.len()
-    );
-
-    let mut worst = 0u8;
-    let mut worst_at = 0usize;
-    for (i, (&a, &e)) in actual.iter().zip(&expected).enumerate() {
-        let diff = a.abs_diff(e);
-        if diff > worst {
-            worst = diff;
-            worst_at = i;
-        }
-    }
+    let expected = std::fs::read(&path)
+        .unwrap_or_else(|_| panic!("missing golden {}; run with BLESS=1", path.display()));
+    assert_eq!(actual.len(), expected.len());
+    let worst = actual
+        .iter()
+        .zip(&expected)
+        .map(|(a, e)| a.abs_diff(*e))
+        .max()
+        .unwrap_or(0);
     assert!(
         worst <= TOL,
-        "golden mismatch: max per-channel diff {worst} at byte {worst_at} \
-         (pixel {}, channel {}) exceeds tolerance {TOL}",
-        worst_at / 4,
-        worst_at % 4,
+        "golden mismatch: max per-channel diff {worst}"
     );
-}
-
-fn golden_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden/slider_widget.bgra8")
 }
 
 // --- interactive input tapes ------------------------------------------------
 
-/// A focusable slider laid out as the root of its own tree, kept together with the
-/// reactive stores its handlers write into so a router can drive it. The slider
-/// fills the surface (root `Fill`) so any central pointer sample hits it. Its
-/// `on_change` records the last carried value and bumps a counter.
-struct Interactive {
+/// A component built alone over the surface with the stores its handlers
+/// write into, driven through the routers as the facade drives it.
+struct Driven {
     store: NodeStore,
     states: StateStore,
     bindings: BindingTable,
-    slider: NodeId,
+    projectors: SemanticProjector,
+    /// The view the component sits in, at the surface's top start.
+    top: NodeId,
+    /// The component's node.
+    root: NodeId,
     chain: Vec<NodeId>,
 }
 
-impl Interactive {
-    /// Build a fill slider whose `on_change` records the new value and bumps
-    /// `counter`, laid out over the surface so a center-of-surface pointer sample
-    /// lands on it. The `[0, 100]` range with the default 120px track keeps the
-    /// drag arithmetic (`dx / track_width`) easy to check.
-    fn new(counter: Rc<Cell<u32>>, last: Rc<Cell<Option<f32>>>) -> Self {
+impl Driven {
+    fn new(widget: impl Component + 'static) -> Self {
         let mut store = NodeStore::new();
         let mut states = StateStore::new();
         let mut bindings = BindingTable::new();
         let mut lists = VirtualLists::new();
         let mut text_edits = TextEdits::new();
         let mut projectors = SemanticProjector::new();
-
-        let widget = slider("Volume")
-            .range(0.0, 100.0)
-            .size(Size::fill())
-            .on_change(move |_ev, v| {
-                last.set(Some(v));
-                counter.set(counter.get() + 1);
-            });
-
-        let slider = {
+        let top = {
             let mut cx = BuildCx::with_reactive(
                 &mut store,
                 &mut states,
@@ -286,210 +181,250 @@ impl Interactive {
                 &mut text_edits,
                 &mut projectors,
             );
-            widget.build(&mut cx);
-            cx.root().expect("slider declares a root")
+            view(ViewStyle {
+                size: Size::fixed(220.0, 24.0),
+                ..Default::default()
+            })
+            .children(move |cx| widget.build(cx))
+            .build(&mut cx);
+            cx.root().expect("a root")
         };
-
-        let mut scratch = Vec::new();
-        store.layout(slider, surface_rect(), &mut scratch);
-
-        Interactive {
+        store.layout(top, Rect::new(0.0, 0.0, 220.0, 24.0), &mut Vec::new());
+        let root = store.arena().first_child(top).expect("the component");
+        Driven {
             store,
             states,
             bindings,
-            slider,
+            projectors,
+            top,
+            root,
             chain: Vec::new(),
         }
     }
 
-    /// Route a pointer sample through the public `PointerRouter`, exactly as the
-    /// facade's `on_input` does — including applying any capture the handler
-    /// requests. Returns whether any handler ran.
-    fn pointer(&mut self, ev: PointerEvent) -> bool {
+    /// Apply the writes a dispatch made, as the frame does.
+    fn flush(&mut self) {
+        KeyRouter::route_focus(
+            &mut self.store,
+            &mut self.states,
+            &self.bindings,
+            &mut TextEdits::new(),
+        );
+        let mut changed = Vec::new();
+        self.states.take_pending(&mut changed);
+        self.store
+            .flush_state_transactions(&changed, &self.bindings);
+        self.projectors
+            .wake(&changed, &self.states, &mut self.store);
+        run_structure_hooks(
+            &mut self.store,
+            &mut self.states,
+            &mut self.bindings,
+            &mut EffectStore::new(),
+            &mut VirtualLists::new(),
+            &changed,
+        );
+    }
+
+    fn pointer(&mut self, x: f32, y: f32, phase: PointerPhase, shift: bool) {
+        let ev = PointerEvent {
+            x,
+            y,
+            phase,
+            buttons: PointerButtons::PRIMARY,
+            modifiers: Modifiers {
+                shift,
+                ..Modifiers::default()
+            },
+        };
         PointerRouter::route(
             &mut self.store,
             &mut self.states,
             &self.bindings,
-            self.slider,
+            self.top,
             ev,
             &mut self.chain,
-        )
+        );
+        self.flush();
     }
 
-    /// Route a key sample through the public `KeyRouter` to the focused node.
-    fn key(&mut self, ev: KeyEvent) -> bool {
+    fn key(&mut self, key: Key) {
+        let ev = KeyEvent {
+            key,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::default(),
+        };
         KeyRouter::route_key(
             &mut self.store,
             &mut self.states,
             &self.bindings,
             &mut TextEdits::new(),
-            self.slider,
+            self.top,
             ev,
             &mut self.chain,
-        )
-    }
-}
-
-/// A primary-button pointer sample at `(x, center)`, in the given phase.
-fn primary_at(x: f32, phase: PointerPhase) -> PointerEvent {
-    PointerEvent {
-        x,
-        y: H as f32 / 2.0,
-        phase,
-        buttons: PointerButtons::PRIMARY,
-        modifiers: Modifiers::default(),
-    }
-}
-
-fn key_ev(key: Key, pressed: bool, repeat: bool) -> KeyEvent {
-    KeyEvent {
-        key,
-        pressed,
-        repeat,
-        modifiers: Modifiers::default(),
-    }
-}
-
-#[test]
-fn pointer_drag_moves_value_captures_and_fires_change() {
-    let count = Rc::new(Cell::new(0u32));
-    let last = Rc::new(Cell::new(None::<f32>));
-    let mut ix = Interactive::new(count.clone(), last.clone());
-
-    // A primary press near the left of the surface anchors the drag and captures
-    // the pointer to the slider — the router applies the request, so subsequent
-    // samples route to the slider even outside its box.
-    assert!(
-        ix.pointer(primary_at(20.0, PointerPhase::Down)),
-        "the press hits the slider's handler"
-    );
-    assert_eq!(
-        ix.store.capture(),
-        Some(ix.slider),
-        "the press captures the pointer to the slider so a drag keeps tracking"
-    );
-    assert_eq!(count.get(), 0, "the press alone does not fire a change");
-
-    // Move right by 60px over the default 120px track: +0.5 relative. The slider
-    // started at min (0), so the external value lands at 50 of [0, 100].
-    assert!(ix.pointer(primary_at(80.0, PointerPhase::Move)));
-    assert_eq!(count.get(), 1, "the move fires one change");
-    assert_eq!(
-        last.get(),
-        Some(50.0),
-        "on_change carries the external value dragged to mid-range"
-    );
-
-    // A sample far to the right of the surface still routes here because the
-    // pointer is captured; it clamps the value to the far end (100).
-    assert!(ix.pointer(primary_at(1000.0, PointerPhase::Move)));
-    assert_eq!(
-        last.get(),
-        Some(100.0),
-        "a captured drag past the track clamps to the max"
-    );
-
-    // The release frees the capture.
-    ix.pointer(primary_at(1000.0, PointerPhase::Up));
-    assert_eq!(
-        ix.store.capture(),
-        None,
-        "the release frees the pointer capture"
-    );
-}
-
-#[test]
-fn keyboard_step_requires_focus_and_moves_the_value() {
-    let count = Rc::new(Cell::new(0u32));
-    let last = Rc::new(Cell::new(None::<f32>));
-    let mut ix = Interactive::new(count.clone(), last.clone());
-
-    // Unfocused: the key router has no target, so nothing fires.
-    assert!(
-        !ix.key(key_ev(Key::Right, true, false)),
-        "an unfocused slider receives no key dispatch"
-    );
-    assert_eq!(count.get(), 0);
-
-    ix.store.set_focused(Some(ix.slider));
-
-    // The slider starts at min (0). A continuous [0, 100] slider steps 5% of the
-    // range per arrow press = 5 units.
-    assert!(ix.key(key_ev(Key::Right, true, false)));
-    assert_eq!(last.get(), Some(5.0), "Right steps up 5% of the range");
-    assert!(ix.key(key_ev(Key::Up, true, false)));
-    assert_eq!(last.get(), Some(10.0), "Up steps up too");
-    assert!(ix.key(key_ev(Key::Left, true, false)));
-    assert_eq!(last.get(), Some(5.0), "Left steps back down");
-
-    ix.key(key_ev(Key::Right, false, false)); // key-up: ignored
-    assert_eq!(
-        count.get(),
-        3,
-        "each arrow press fired one change; the key-up did not"
-    );
-}
-
-// --- a11y snapshot ----------------------------------------------------------
-
-#[test]
-fn slider_derives_a_slider_semantics_node_named_by_its_caption_with_live_value() {
-    let mut store = NodeStore::new();
-    let mut states = StateStore::new();
-    let mut bindings = BindingTable::new();
-    let mut lists = VirtualLists::new();
-    let mut text_edits = TextEdits::new();
-    let mut projectors = SemanticProjector::new();
-
-    // A named slider over an explicit range, seeded at a value inside it: the
-    // build writes the semantic-state column immediately, so the first derive
-    // reports the live value and range on the real scale (section 8.1) rather
-    // than the internal 0..1 relative fraction.
-    let root = {
-        let widget = slider("Volume").range(0.0, 100.0).value(25.0);
-        let mut cx = BuildCx::with_reactive(
-            &mut store,
-            &mut states,
-            &mut bindings,
-            &mut lists,
-            &mut text_edits,
-            &mut projectors,
         );
-        widget.build(&mut cx);
-        cx.root().expect("slider declares a root")
-    };
-    let mut scratch = Vec::new();
-    store.layout(root, surface_rect(), &mut scratch);
+        self.flush();
+    }
 
-    let tree = store.derive_semantics(root);
-    let node = tree.root().expect("the derived tree has a root");
-    assert_eq!(
-        node.role,
-        Role::Slider,
-        "a Slider derives the dedicated Role::Slider"
-    );
-    assert_eq!(
-        node.label.as_deref(),
-        Some("Volume"),
-        "the accessible name is the visible caption"
-    );
-
-    let state = node
-        .state
-        .expect("a Slider carries a live semantic state after build");
-    let value = state.value.expect("the state reports the current value");
-    assert!(
-        (value - 25.0).abs() < 1e-3,
-        "the derived value is the seeded value on the real scale, got {value}"
-    );
-    assert_eq!(
-        state.range,
-        Some((0.0, 100.0)),
-        "the derived range is the slider's real min/max, not the 0..1 fraction"
-    );
+    /// The slider node: the root.
+    fn slider(&self) -> viso::ui::slider::Slider {
+        *self.store.slider(self.root).expect("a slider")
+    }
 }
 
-// --- allocation profile -----------------------------------------------------
+/// Whether `heard` is `want`, each within a rounding of it.
+fn near(heard: &[f32], want: &[f32]) -> bool {
+    heard.len() == want.len() && heard.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-3)
+}
+
+/// A `[0, 100]` slider, 220 wide: its thumb's centre travels 200 from
+/// x = 10.
+fn volume(heard: &Rc<RefCell<Vec<f32>>>) -> Driven {
+    let h = Rc::clone(heard);
+    Driven::new(
+        slider("Volume")
+            .range(0.0, 100.0)
+            .value(50.0)
+            .size(Size::fill())
+            .on_change(move |_, v| h.borrow_mut().push(v)),
+    )
+}
+
+#[test]
+fn a_press_jumps_the_thumb_a_drag_carries_it_and_shift_moves_it_finely() {
+    let heard = Rc::new(RefCell::new(Vec::new()));
+    let mut s = volume(&heard);
+    assert!(s.store.focusable(s.root));
+    // On the thumb (centre at x = 110), it is picked up where it is.
+    s.pointer(112.0, 12.0, PointerPhase::Down, false);
+    assert!(heard.borrow().is_empty());
+    assert_eq!(s.store.capture(), Some(s.root));
+    assert_eq!(s.slider().held(), Some(Thumb::High));
+    s.pointer(132.0, 12.0, PointerPhase::Move, false);
+    assert!(
+        near(&heard.borrow(), &[60.0]),
+        "20 along of 200 is a tenth more"
+    );
+    assert_eq!(
+        s.slider().shown[1],
+        0.6,
+        "the thumb follows the drag at once"
+    );
+    s.pointer(152.0, 12.0, PointerPhase::Move, true);
+    assert!(
+        near(&heard.borrow()[1..], &[61.0]),
+        "Shift moves a tenth as far"
+    );
+    s.pointer(9000.0, 12.0, PointerPhase::Move, false);
+    assert_eq!(heard.borrow().last(), Some(&100.0), "captured, it clamps");
+    s.pointer(9000.0, 12.0, PointerPhase::Up, false);
+    assert_eq!(s.store.capture(), None);
+    assert_eq!(s.slider().held(), None);
+    // On the track, the thumb jumps there.
+    heard.borrow_mut().clear();
+    s.pointer(60.0, 12.0, PointerPhase::Down, false);
+    assert!(near(&heard.borrow(), &[25.0]));
+    s.pointer(60.0, 12.0, PointerPhase::Up, false);
+}
+
+#[test]
+fn the_keys_step_and_the_thumb_eases_there() {
+    let heard = Rc::new(RefCell::new(Vec::new()));
+    let mut s = volume(&heard);
+    focus_node(&mut s.store, s.root);
+    s.key(Key::Right);
+    s.key(Key::PageUp);
+    s.key(Key::Left);
+    assert!(
+        near(&heard.borrow(), &[51.0, 61.0, 60.0]),
+        "a hundredth, then ten"
+    );
+    let to = s.slider().value[1];
+    assert!((to - 0.6).abs() < 1e-6);
+    assert!(s.slider().shown[1] < to, "it eases from where it stood");
+    for _ in 0..60 {
+        s.store.tick_sliders(Duration::from_millis(16));
+    }
+    assert_eq!(s.slider().shown[1], to);
+    s.key(Key::End);
+    s.key(Key::Home);
+    assert_eq!(&heard.borrow()[3..], [100.0, 0.0]);
+    let state = s.store.semantic_state(s.root).unwrap();
+    assert_eq!((state.value, state.range), (Some(0.0), Some((0.0, 100.0))));
+    assert_eq!(s.store.semantics(s.root).unwrap().role, Role::Slider);
+}
+
+#[test]
+fn a_range_keeps_its_thumbs_apart_each_a_slider_of_its_own() {
+    let heard = Rc::new(RefCell::new(Vec::new()));
+    let h = Rc::clone(&heard);
+    let mut s = Driven::new(
+        range_slider("Price")
+            .range(0.0, 100.0)
+            .values(20.0, 70.0)
+            .size(Size::fill())
+            .on_change(move |_, lo, hi| h.borrow_mut().push((lo, hi))),
+    );
+    assert_eq!(s.store.semantics(s.root).unwrap().role, Role::Group);
+    let thumbs: Vec<NodeId> = s.store.arena().children(s.root).collect();
+    assert_eq!(thumbs.len(), 2);
+    for (&t, name) in thumbs.iter().zip(["Minimum", "Maximum"]) {
+        let sem = s.store.semantics(t).unwrap();
+        assert_eq!((sem.role, sem.label.as_deref()), (Role::Slider, Some(name)));
+        assert!(s.store.focusable(t));
+    }
+    // A press near the lower thumb (x = 50) carries it, and it stops at the
+    // upper.
+    s.pointer(20.0, 12.0, PointerPhase::Down, false);
+    assert_eq!(*heard.borrow(), [(5.0, 70.0)]);
+    assert_eq!(
+        s.store.focused(),
+        Some(thumbs[0]),
+        "its thumb takes the focus"
+    );
+    s.pointer(500.0, 12.0, PointerPhase::Move, false);
+    assert_eq!(heard.borrow().last(), Some(&(70.0, 70.0)));
+    s.pointer(500.0, 12.0, PointerPhase::Up, false);
+    // The keys reach the focused thumb, which stays below the upper.
+    s.key(Key::Right);
+    assert_eq!(heard.borrow().len(), 2, "the lower cannot pass the upper");
+    s.key(Key::Left);
+    assert_eq!(heard.borrow().last(), Some(&(69.0, 70.0)));
+    assert_eq!(
+        s.slider().focus,
+        Some(Thumb::Low),
+        "the focused thumb is ringed"
+    );
+    let v = s.slider().value;
+    assert!((v[0] - 0.69).abs() < 1e-6 && v[1] == 0.7, "{v:?}");
+}
+
+#[test]
+fn a_knob_turns_with_a_drag_up_and_names_its_value() {
+    let heard = Rc::new(RefCell::new(Vec::new()));
+    let h = Rc::clone(&heard);
+    let mut s = Driven::new(
+        knob("Gain")
+            .range(0.0, 10.0)
+            .on_change(move |_, v| h.borrow_mut().push(v)),
+    );
+    let r = s.store.bounds(s.root);
+    assert_eq!((r.w, r.h), (40.0, 40.0), "a knob is its own size");
+    s.pointer(20.0, 20.0, PointerPhase::Down, false);
+    assert!(heard.borrow().is_empty(), "a press does not jump a knob");
+    s.pointer(20.0, -30.0, PointerPhase::Move, false);
+    assert!(
+        near(&heard.borrow(), &[2.5]),
+        "50 up of 200 is a quarter turn"
+    );
+    s.pointer(70.0, -30.0, PointerPhase::Move, false);
+    assert!(near(&heard.borrow()[1..], &[5.0]), "and right turns it on");
+    s.pointer(70.0, -30.0, PointerPhase::Up, false);
+    assert_eq!(s.store.semantics(s.root).unwrap().role, Role::Slider);
+}
+
+// --- allocation profile ----------------------------------------------------
 
 /// Counts heap allocations while `ARMED`; off by default so the harness's own
 /// allocations are never counted. Mirrors `toggle_widget.rs`.
@@ -572,8 +507,7 @@ fn setup_alloc() -> Harness {
     let renderer = Renderer::new(&mut gpu, format);
 
     let mut store = NodeStore::new();
-    let (root, _slider_id, caption_id) = build_scene(&mut store);
-    attach_caption(&mut gpu, &mut store, caption_id);
+    let root = build_scene(&mut store);
 
     let mut scratch = Vec::new();
     store.layout(root, surface_rect(), &mut scratch);

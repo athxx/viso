@@ -159,6 +159,8 @@ pub enum Content {
     /// drawn under its segments. A container's content, sizing it no
     /// further.
     Segments(crate::segments::Segments),
+    /// A slider: a value along a track, or round a knob.
+    Slider(crate::slider::Slider),
 }
 
 /// An image a brush node samples: the resource its texture parameter names,
@@ -193,6 +195,7 @@ impl Content {
             Content::Progress(progress) => progress.natural,
             Content::PageDots(dots) => dots.natural(),
             Content::Stepper(stepper) => stepper.natural,
+            Content::Slider(slider) => slider.natural,
             Content::Shader { .. } | Content::Scene { .. } | Content::Segments(_) => Vec2::ZERO,
         }
     }
@@ -210,6 +213,7 @@ impl Content {
             Content::Progress(progress) => progress.natural.x,
             Content::PageDots(dots) => dots.natural().x,
             Content::Stepper(stepper) => stepper.natural.x,
+            Content::Slider(slider) => slider.natural.x,
             Content::Shader { .. } | Content::Scene { .. } | Content::Segments(_) => 0.0,
         }
     }
@@ -230,6 +234,7 @@ impl Content {
             | Content::Progress(_)
             | Content::PageDots(_)
             | Content::Stepper(_)
+            | Content::Slider(_)
             | Content::Segments(_) => None,
         }
     }

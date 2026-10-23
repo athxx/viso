@@ -557,7 +557,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             ("Modal" | "Sheet", _) => "dialog",
             ("Button" | "Chip", _) => "button",
             ("TextInput", _) if lines => "textarea",
-            ("TextInput" | "NumberField" | "Toggle" | "CheckBox" | "Slider", _) => "input",
+            ("TextInput" | "NumberField" | "Toggle" | "CheckBox" | "Slider" | "Knob", _) => "input",
             ("Image" | "Svg", _) if !masked => "img",
             ("Text", _) => "span",
             ("LinkLabel", _) => "a",
@@ -575,7 +575,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             (_, "Button") => "vx-button",
             (_, "TextInput" | "NumberField") => "vx-input",
             (_, "Toggle" | "CheckBox") => "vx-check",
-            (_, "Slider") => "vx-range",
+            (_, "Slider" | "Knob") => "vx-range",
             (_, "ProgressBar") => "vx-progress",
             (_, "ProgressRing") => "vx-ring",
             (_, "Spinner") => "vx-spinner",
@@ -643,7 +643,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 el.attr("role", "switch");
             }
             "CheckBox" => el.attr("type", "checkbox"),
-            "Slider" => {
+            "Slider" | "Knob" => {
                 el.attr("type", "range");
                 el.attr("min", "0");
                 el.attr("max", "1");
@@ -1760,15 +1760,63 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 }
             }
             ControlKind::Number => self.number(control, el, wires, at),
-            ControlKind::Slider => {
-                for (entry, name, what) in [
+            ControlKind::Slider | ControlKind::Knob => {
+                let mut fixed = [None; 3];
+                for (i, (entry, name, what)) in [
                     (control.min, "min", "the slider's minimum"),
                     (control.max, "max", "the slider's maximum"),
                     (control.step, "step", "the slider's step"),
                     (control.value, "value", "the slider's value"),
-                ] {
-                    if let Some(fixed) = self.bind(wires, entry, Prop::Range(name), what, at) {
-                        el.attr(name, &fixed.text());
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    if let Some(f) = self.bind(wires, entry, Prop::Range(name), what, at) {
+                        el.attr(name, &f.text());
+                        if let (Some(slot), Some(v)) = (fixed.get_mut(i.min(3)), f.float()) {
+                            *slot = Some(v);
+                        }
+                    }
+                }
+                // The thumb of a knob turns with its value's fraction.
+                if control.kind == ControlKind::Knob {
+                    el.classes.push("vx-knob".to_owned());
+                    let value =
+                        control
+                            .value
+                            .and_then(|v| match self.fixed(v, "the knob's value", at) {
+                                Fixed::Value(v) => v.as_float(),
+                                _ => None,
+                            });
+                    let (lo, hi) = (fixed[0].unwrap_or(0.0), fixed[1].unwrap_or(1.0));
+                    if let Some(v) = value.or(control.value.is_none().then_some(lo))
+                        && hi > lo
+                    {
+                        let f = ((v - lo) / (hi - lo)).clamp(0.0, 1.0);
+                        decls.push(("--vx-at", format!("{f}")));
+                    }
+                }
+                // A slider running up the screen.
+                if let Some(axis) = control.axis
+                    && let Fixed::Value(v) = self.fixed(axis, "the slider's axis", at)
+                    && v.as_int() == Some(1)
+                {
+                    el.classes.push("vx-vertical".to_owned());
+                }
+                // A tint fills the track.
+                if let Some(tint) = control.tint {
+                    match self.fixed(tint, "the tint", at) {
+                        Fixed::Changes => wires.push(Wire::Prop {
+                            entry: tint,
+                            prop: Prop::Var {
+                                name: "--vx-ink".to_owned(),
+                                token: VarToken::Color,
+                            },
+                        }),
+                        Fixed::Value(v) if v.as_int().is_some() => {
+                            decls.push(("--vx-ink", Fixed::Value(v).color()));
+                        }
+                        _ => {}
                     }
                 }
             }

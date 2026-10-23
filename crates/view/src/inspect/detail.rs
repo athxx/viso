@@ -415,6 +415,16 @@ fn groups(store: &NodeStore, id: NodeId) -> Vec<PropertyGroup> {
             add(&mut content, "lower", stepper.lower.to_string());
             add(&mut content, "upper", stepper.upper.to_string());
         }
+        Some(Content::Slider(slider)) => {
+            add(&mut content, "kind", "slider".into());
+            add(&mut content, "shape", format!("{:?}", slider.shape));
+            let value = if slider.range {
+                format!("{}..{}", number(slider.value[0]), number(slider.value[1]))
+            } else {
+                number(slider.value[1])
+            };
+            add(&mut content, "value", value);
+        }
         Some(Content::Segments(segments)) => {
             add(&mut content, "kind", "segments".into());
             let selected = segments.selected.map_or("none".into(), |i| i.to_string());

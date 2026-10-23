@@ -2156,3 +2156,33 @@ fn a_segmented_control_exports_as_a_radio_group_its_script_slides_a_thumb_in() {
     let script = page.script.as_deref().unwrap();
     assert!(script.contains("P.selected("), "{script}");
 }
+
+const SLIDERS: &str = r##"
+export component Mixer {
+    state level: F32 = 0.25;
+    view {
+        Column {
+            Slider {
+                bind value <=> level;
+                axis: Axis::column;
+                marks: true;
+                step: Option::Some(0.25);
+                tint: Option::Some(#3366ee);
+            }
+            Knob { min: 0.0; max: 10.0; value: 7.5; }
+        }
+    }
+}
+"##;
+
+#[test]
+fn a_slider_runs_up_tinted_and_a_knob_turns_to_its_fraction() {
+    let page = export(SLIDERS, false).unwrap();
+    let index = &page.index;
+    assert_eq!(index.matches("type=\"range\"").count(), 2, "{index}");
+    assert!(index.contains("vx-vertical"), "{index}");
+    assert!(index.contains("vx-knob"), "{index}");
+    assert!(page.styles.contains("--vx-ink:"), "{}", page.styles);
+    assert!(page.styles.contains("--vx-at: 0.75"), "{}", page.styles);
+    assert!(page.styles.contains(".vx-knob {"), "{}", page.styles);
+}

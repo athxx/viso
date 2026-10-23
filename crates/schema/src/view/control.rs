@@ -123,11 +123,14 @@ pub enum ControlKind {
     /// segments on one track, a thumb sliding under the selected one; a
     /// child that is one caption is centred with room round it.
     Segmented = 29,
+    /// `Knob`: a [`Slider`](Self::Slider) drawn as a ring round a face, a
+    /// drag up or right turning it.
+    Knob = 30,
 }
 
 impl ControlKind {
     /// Every kind, by discriminant.
-    pub const ALL: [ControlKind; 30] = [
+    pub const ALL: [ControlKind; 31] = [
         ControlKind::Check,
         ControlKind::Slider,
         ControlKind::Select,
@@ -158,6 +161,7 @@ impl ControlKind {
         ControlKind::Chip,
         ControlKind::Stepper,
         ControlKind::Segmented,
+        ControlKind::Knob,
     ];
 
     /// The kind native widget `widget` is.
@@ -192,6 +196,7 @@ impl ControlKind {
             "Chip" => ControlKind::Chip,
             "Stepper" => ControlKind::Stepper,
             "SegmentedControl" => ControlKind::Segmented,
+            "Knob" => ControlKind::Knob,
             _ => ControlKind::Plain,
         }
     }
@@ -259,6 +264,7 @@ impl ControlKind {
                     | ControlKind::Dialog
                     | ControlKind::Sheet
                     | ControlKind::Slider
+                    | ControlKind::Knob
                     | ControlKind::TextInput
                     | ControlKind::Number
                     | ControlKind::Chip
@@ -394,7 +400,7 @@ impl ControlKind {
             | (ControlKind::Chip, "selected")
             | (ControlKind::Disclosure, "expanded")
             | (ControlKind::Dialog | ControlKind::Sheet | ControlKind::Toast, "open")
-            | (ControlKind::Slider, "value")
+            | (ControlKind::Slider | ControlKind::Knob, "value")
             | (ControlKind::Select | ControlKind::Segmented, "selected")
             | (ControlKind::Pages, "current")
             | (ControlKind::TextInput | ControlKind::Number, "value")
@@ -417,7 +423,9 @@ impl ControlKind {
                 | ControlKind::Badge
                 | ControlKind::Avatar
                 | ControlKind::Stepper
-                | ControlKind::Segmented,
+                | ControlKind::Segmented
+                | ControlKind::Slider
+                | ControlKind::Knob,
                 "tint",
             ) => ControlInput::Tint,
             (ControlKind::Badge, "count") | (ControlKind::Avatar, "image") => ControlInput::Value,
@@ -435,17 +443,32 @@ impl ControlKind {
                 "label",
             ) => ControlInput::Caption,
             (ControlKind::Chip, "removable") => ControlInput::Removable,
-            (ControlKind::Slider | ControlKind::Number | ControlKind::Stepper, "min") => {
-                ControlInput::Min
-            }
-            (ControlKind::Slider | ControlKind::Number | ControlKind::Stepper, "max") => {
-                ControlInput::Max
-            }
-            (ControlKind::Slider | ControlKind::Number | ControlKind::Stepper, "step") => {
-                ControlInput::Step
-            }
+            (
+                ControlKind::Slider
+                | ControlKind::Knob
+                | ControlKind::Number
+                | ControlKind::Stepper,
+                "min",
+            ) => ControlInput::Min,
+            (
+                ControlKind::Slider
+                | ControlKind::Knob
+                | ControlKind::Number
+                | ControlKind::Stepper,
+                "max",
+            ) => ControlInput::Max,
+            (
+                ControlKind::Slider
+                | ControlKind::Knob
+                | ControlKind::Number
+                | ControlKind::Stepper,
+                "step",
+            ) => ControlInput::Step,
             (ControlKind::Stepper, "value") => ControlInput::Value,
             (ControlKind::Stepper, "wrap") => ControlInput::Wrap,
+            (ControlKind::Slider | ControlKind::Knob, "origin") => ControlInput::FillOrigin,
+            (ControlKind::Slider, "marks") => ControlInput::Marks,
+            (ControlKind::Slider, "axis") => ControlInput::Axis,
             (ControlKind::Number, "precision") => ControlInput::Precision,
             (ControlKind::Asset, "fit") => ControlInput::Fit,
             (ControlKind::Asset, "tint") => ControlInput::Tint,
@@ -496,6 +519,7 @@ impl ControlKind {
             ControlKind::Chip => "Chip",
             ControlKind::Stepper => "Stepper",
             ControlKind::Segmented => "Segmented",
+            ControlKind::Knob => "Knob",
         }
     }
 
@@ -512,7 +536,7 @@ pub fn widget_role(widget: &str) -> Option<Role> {
     Some(match widget {
         "Button" | "ReorderHandle" => Role::Button,
         "Toggle" | "CheckBox" | "Chip" => Role::CheckBox,
-        "Slider" => Role::Slider,
+        "Slider" | "Knob" => Role::Slider,
         "TextInput" => Role::TextField,
         "NumberField" | "Stepper" => Role::SpinButton,
         "Tabs" => Role::TabList,
@@ -992,6 +1016,12 @@ pub enum ControlInput {
     /// A stepper's `wrap`: whether a step past a bound comes round to the
     /// other.
     Wrap,
+    /// A slider's `origin`: the value its fill runs from.
+    FillOrigin,
+    /// A slider's `marks`: whether it marks each step.
+    Marks,
+    /// A slider's `axis`: the way it runs.
+    Axis,
 }
 
 /// A view-driven native node: its kind and the handler-table entries that
@@ -1037,6 +1067,12 @@ pub struct Control {
     pub removable: Option<u32>,
     /// The entry of whether a stepper comes round past a bound.
     pub wrap: Option<u32>,
+    /// The entry of the value a slider fills from.
+    pub fill_origin: Option<u32>,
+    /// The entry of whether a slider marks each step.
+    pub marks: Option<u32>,
+    /// The entry of the way a slider runs.
+    pub axis: Option<u32>,
     /// The shader a shader view paints with, by its index in the view's
     /// shader table; its value gives the shader's parameters.
     pub shader: Option<u32>,
@@ -1224,7 +1260,7 @@ pub enum Switched {
 
 impl ControlInput {
     /// Every input, by wire tag.
-    pub const ALL: [ControlInput; 68] = [
+    pub const ALL: [ControlInput; 71] = [
         ControlInput::Value,
         ControlInput::Min,
         ControlInput::Max,
@@ -1293,6 +1329,9 @@ impl ControlInput {
         ControlInput::Url,
         ControlInput::Removable,
         ControlInput::Wrap,
+        ControlInput::FillOrigin,
+        ControlInput::Marks,
+        ControlInput::Axis,
     ];
 
     /// Its wire tag: its place in [`ControlInput::ALL`].
@@ -1389,6 +1428,9 @@ impl Control {
             url: None,
             removable: None,
             wrap: None,
+            fill_origin: None,
+            marks: None,
+            axis: None,
             shader: None,
             look: Look::default(),
             arms: Box::new([]),
@@ -1475,6 +1517,9 @@ impl Control {
             ControlInput::Url => self.url,
             ControlInput::Removable => self.removable,
             ControlInput::Wrap => self.wrap,
+            ControlInput::FillOrigin => self.fill_origin,
+            ControlInput::Marks => self.marks,
+            ControlInput::Axis => self.axis,
         }
     }
 
@@ -1559,6 +1604,9 @@ impl Control {
             ControlInput::Url => &mut self.url,
             ControlInput::Removable => &mut self.removable,
             ControlInput::Wrap => &mut self.wrap,
+            ControlInput::FillOrigin => &mut self.fill_origin,
+            ControlInput::Marks => &mut self.marks,
+            ControlInput::Axis => &mut self.axis,
         };
         *slot = Some(entry);
     }
@@ -1590,6 +1638,9 @@ impl Encode for Control {
             self.url,
             self.removable,
             self.wrap,
+            self.fill_origin,
+            self.marks,
+            self.axis,
             self.shader,
             look.background,
             look.opacity,
@@ -1717,6 +1768,9 @@ impl Decode for Control {
             url: entry()?,
             removable: entry()?,
             wrap: entry()?,
+            fill_origin: entry()?,
+            marks: entry()?,
+            axis: entry()?,
             shader: entry()?,
             look: Look {
                 background: entry()?,
@@ -2009,6 +2063,9 @@ mod tests {
             url: Some(35),
             removable: Some(36),
             wrap: Some(37),
+            fill_origin: Some(38),
+            marks: Some(39),
+            axis: Some(40),
             shader: Some(2),
             look: Look {
                 background: Some(3),

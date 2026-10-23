@@ -321,6 +321,12 @@ const select = (el, v, radio) => {
     }
   }
 };
+// A knob's fill and pointer at its value's fraction of its range.
+const knob = (el) => {
+  if (!el.classList.contains("vx-knob")) return;
+  const [lo, hi, v] = [Number(el.min || 0), Number(el.max || 1), Number(el.value)];
+  el.style.setProperty("--vx-at", hi > lo ? String(Math.min(Math.max((v - lo) / (hi - lo), 0), 1)) : "0");
+};
 // A segmented control's thumb under its selected segment, sliding there.
 const thumb = (el) => {
   const c = items(el).find((c) => c.getAttribute("aria-checked") === "true");
@@ -520,7 +526,7 @@ const P = {
     else if (on && !el.open) el.showModal();
     else if (!on && el.open) el.close();
   },
-  range: (el, v, name) => { el[name] = v === null ? "" : String(v); },
+  range: (el, v, name) => { el[name] = v === null ? "" : String(v); knob(el); },
   href: (el, v) => attr(el, "href", v),
   pressed: (el, v) => attr(el, "aria-pressed", truth(v) ? "true" : "false"),
   // A stepper's number, bounds, step, wrap or tint: the halves that can
@@ -1744,7 +1750,7 @@ const listen = (el, route, capture, control, fire) => {
       el.addEventListener("pointerdown", (e) => { if (e.target === el && el.open) fire(rec([bool(false)])); }, capture);
       if (control === 20) el.addEventListener("viso-dismiss", () => fire(rec([bool(false)])), capture);
     }
-    else if (control === 1) el.addEventListener("input", () => fire(rec([Number(el.value)])), capture);
+    else if (control === 1 || control === 30) el.addEventListener("input", () => { knob(el); fire(rec([Number(el.value)])); }, capture);
     else if (control === 13) {
       // Each number the text reads as within the bounds; Enter and the
       // focus leaving settle the text, the arrows step it.

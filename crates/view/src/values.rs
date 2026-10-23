@@ -34,6 +34,7 @@ use viso_ui::plate::{BADGE_FILL, BADGE_INK, avatar_fill, badge_count, initials};
 use viso_ui::resource::{ResourceId, ResourceRevision};
 use viso_ui::segments::Segments;
 use viso_ui::shader::BrushProgram;
+use viso_ui::slider::{Slider as SliderMark, SliderRange, SliderShape};
 use viso_ui::{Alignment2D, BoundSize, FontWeight, LayoutValue, LengthTerms};
 use viso_ui::{
     AssetFit, Border, BuildCx, CheckMark, CheckShape, CursorIcon, Easing, FieldLook, FieldSeed,
@@ -89,6 +90,20 @@ const ACCENT: Rgba = Rgba {
 /// their layout gives none, in logical pixels.
 const BAR: Vec2 = Vec2 { x: 160.0, y: 4.0 };
 const RING: Vec2 = Vec2 { x: 32.0, y: 32.0 };
+
+/// A slider's track and thumb.
+const SLIDER_TRACK: Rgba = Rgba {
+    r: 0.47,
+    g: 0.47,
+    b: 0.5,
+    a: 0.32,
+};
+const SLIDER_THUMB: Rgba = Rgba {
+    r: 1.0,
+    g: 1.0,
+    b: 1.0,
+    a: 1.0,
+};
 const SPINNER: f32 = 20.0;
 
 /// Delivers the value each node of `nodes` shows, then registers one structure
@@ -261,6 +276,9 @@ pub(crate) fn control_cells(
         control.url,
         control.removable,
         control.wrap,
+        control.fill_origin,
+        control.marks,
+        control.axis,
     ])
     .flatten()
     .chain(arms)
@@ -284,8 +302,9 @@ pub(crate) fn control_cells(
 /// navigation stack's `page_transition`, its `hero`, its `focus_ring`, its
 /// `access_key`, its `drag_axis`, a viewer's `pan_margin`, and its `drag`,
 /// `drag_kind`, `drop_accepts` and `drop_operation`, a link label's `url`
-/// a chip's `removable` and a stepper's `wrap`.
-const SHOWN: usize = 59;
+/// a chip's `removable`, a stepper's `wrap`, and a slider's `origin`,
+/// `marks` and `axis`.
+const SHOWN: usize = 62;
 
 /// The input of each value a node shows, in order.
 const SHOWN_INPUTS: [ControlInput; SHOWN] = [
@@ -348,6 +367,9 @@ const SHOWN_INPUTS: [ControlInput; SHOWN] = [
     ControlInput::Url,
     ControlInput::Removable,
     ControlInput::Wrap,
+    ControlInput::FillOrigin,
+    ControlInput::Marks,
+    ControlInput::Axis,
 ];
 
 /// Where its `translate` sits among the values a node shows.
@@ -397,6 +419,10 @@ const REMOVABLE: usize = 57;
 
 /// Where a stepper's `wrap` sits among the values a node shows.
 const WRAP: usize = 58;
+
+/// Where a slider's `origin`, `marks` and `axis` sit among the values a
+/// node shows.
+const SLIDE: usize = 59;
 
 /// Where its `drag`, `drag_kind`, `drop_accepts` and `drop_operation` sit
 /// among the values a node shows.
@@ -623,6 +649,9 @@ impl Shown {
             url,
             removable,
             wrap,
+            fill_origin,
+            marks,
+            axis,
         ] = &shows;
         let access_key = access_key.as_str().and_then(|key| key.chars().next());
         let spanned = crate::text_style::spans(pieces);
@@ -900,6 +929,7 @@ impl Shown {
                 .chain(TEXT..TRANSLATE)
                 .chain(PIECES..SHADOW)
                 .chain([ACCESS_KEY, PAN_MARGIN, URL, REMOVABLE, WRAP])
+                .chain(SLIDE..SHOWN)
                 .all(|at| !changed(at))
             && !repaint
         {
@@ -1167,11 +1197,32 @@ impl Shown {
                 );
                 store.set_semantic_state(self.node, state);
             }
-            ControlKind::Slider => {
-                let (min, max) = (float(min, 0.0), float(max, 1.0));
+            // A slider fills its tint, or the accent, from its start or its
+            // origin, along its axis or round a knob, its thumb easing to
+            // its value.
+            ControlKind::Slider | ControlKind::Knob => {
+                let (lo, hi) = (float(min, 0.0), float(max, 1.0));
+                let grid = SliderRange::new(
+                    f64::from(lo),
+                    f64::from(hi),
+                    step.as_float().filter(|s| *s > 0.0),
+                );
+                let at = f64::from(float(value, lo));
+                let shape = match (control.kind, axis) {
+                    (ControlKind::Knob, _) => SliderShape::Knob,
+                    (_, Value::Int(1)) => SliderShape::Bar(viso_ui::Axis::Column),
+                    _ => SliderShape::Bar(viso_ui::Axis::Row),
+                };
+                let fill = tint.as_int().map_or(ACCENT, |_| color(tint));
+                let slider =
+                    SliderMark::new(shape, SLIDER_TRACK, fill, SLIDER_THUMB, grid.fraction(at))
+                        .with_origin(fill_origin.as_float().map(|o| grid.fraction(o)))
+                        .with_marks(if truth(marks, false) { grid.steps() } else { 0 });
+                // A new slider stands at its value; one shown eases there.
+                store.set_slider(self.node, slider);
                 let state = SemanticState {
-                    value: Some(float(value, min)),
-                    range: Some((min, max)),
+                    value: Some(at as f32),
+                    range: Some((lo, hi)),
                     ..SemanticState::default()
                 };
                 store.set_semantic_state(self.node, state);

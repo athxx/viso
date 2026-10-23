@@ -528,6 +528,10 @@ pub enum StoreRequest {
     Detent(NodeId, usize),
     /// Hold a stepper's half down, or let go of its hold.
     HoldStep(NodeId, Option<crate::stepper::StepHalf>),
+    /// Carry on or let go of a slider's drag.
+    Slide(NodeId, crate::slider::Slide),
+    /// Show a slider's thumbs elsewhere.
+    ShowSlider(NodeId, f32, f32),
 }
 
 impl StoreRequest {
@@ -559,6 +563,8 @@ impl StoreRequest {
             StoreRequest::Sheet(id, open) => store.present_sheet(id, open),
             StoreRequest::Detent(id, detent) => store.set_sheet_detent(id, detent),
             StoreRequest::HoldStep(id, half) => store.hold_step(id, half),
+            StoreRequest::Slide(id, slide) => store.slide(id, slide),
+            StoreRequest::ShowSlider(id, low, high) => store.show_slider(id, low, high),
         }
     }
 }
@@ -1134,6 +1140,23 @@ impl<'a> EventCx<'a> {
     /// Node `id`'s stepper, if it draws one.
     pub fn stepper(&self, id: NodeId) -> Option<crate::stepper::Stepper> {
         self.place.and_then(|place| place.store.stepper(id))
+    }
+
+    /// Node `id`'s slider, if it draws one; `None` on the state-only paths.
+    pub fn slider(&self, id: NodeId) -> Option<crate::slider::Slider> {
+        self.place.and_then(|place| place.store.slider(id).copied())
+    }
+
+    /// Record what a drag does to slider `id` ([`slider`](crate::slider)).
+    pub fn slide(&mut self, id: NodeId, slide: crate::slider::Slide) {
+        self.store_requests.push(StoreRequest::Slide(id, slide));
+    }
+
+    /// Tell slider `id` where its thumbs stand
+    /// ([`NodeStore::show_slider`]).
+    pub fn show_slider(&mut self, id: NodeId, low: f32, high: f32) {
+        self.store_requests
+            .push(StoreRequest::ShowSlider(id, low, high));
     }
 
     /// Hold half `half` of stepper `id` down, or let go of its hold

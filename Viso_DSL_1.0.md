@@ -4961,7 +4961,8 @@ KeyShortcut {
 | `Button`     | `text: String = ""`（Localizable；`MEASURE\|LAYOUT\|PAINT\|SEMANTICS`）；U5 的文本样式条目 | `click`                |
 | `Toggle`     | `checked: Bool = false`（two_way；`PAINT\|SEMANTICS`）；`label: String = ""`（Localizable；`MEASURE\|LAYOUT\|PAINT\|SEMANTICS`） | `changed(value: Bool)` |
 | `CheckBox`   | 同 `Toggle`                                                                                   | `changed(value: Bool)` |
-| `Slider`     | `value: F32 = 0.0`（two_way；`PAINT\|SEMANTICS`）；`min: F32 = 0.0`、`max: F32 = 1.0`、`step: Option<F32> = Option::None`（`PAINT\|SEMANTICS`） | `changed(value: F32)` |
+| `Slider`     | `value: F32 = 0.0`（two_way；`PAINT\|SEMANTICS`）；`min: F32 = 0.0`、`max: F32 = 1.0`、`step: Option<F32> = Option::None`（`PAINT\|SEMANTICS`）；`origin: Option<F32> = Option::None`（填充起点，双击回到它；`PAINT`）；`marks: Bool = false`（在每一步画刻度，空间不足时不画；`PAINT`）；`axis: Axis = Axis::row`（`column` 时向上增长；`MEASURE\|LAYOUT\|PAINT`）；`tint: Option<Color> = Option::None`（填充色；`PAINT`） | `changed(value: F32)` |
+| `Knob`       | 同 `Slider`，无 `marks`/`axis`：底部留四分之一缺口的圆环与指向值的表盘，默认 40×40，上/右拖动转动（200 dp 转满） | `changed(value: F32)` |
 | `TextInput`  | `value: String = ""`（two_way；`MEASURE\|LAYOUT\|PAINT\|SEMANTICS`）；`placeholder: String = ""`（Localizable；同上）；`secure: Bool = false`（同上）；`multiline: Bool = false`（同上）；`input: InputKind = InputKind::text`（`SEMANTICS`）；`max_length: Option<U32> = Option::None`（`SEMANTICS`）；`invalid: Bool = false`（`STYLE\|SEMANTICS`） | `changed(value: String)`、`submitted` |
 | `NumberField` | `value: F64 = 0.0`（two_way；`MEASURE\|LAYOUT\|PAINT\|SEMANTICS`）；`min: Option<F64> = Option::None`、`max: Option<F64> = Option::None`、`step: F64 = 1.0`、`precision: Option<U8> = Option::None`（同上） | `changed(value: F64)` |
 | `Tabs`、`RadioGroup` | `selected: U32 = 0`（two_way；`STYLE\|PAINT\|SEMANTICS`）                             | `selected_changed(value: U32)` |
@@ -5056,7 +5057,7 @@ Named Node `n` 在同一 Component 的 Action 与 Handler 中以 `n: NodeRef<T>`
 
 - `Role { group; button; check_box; slider; radio; label; text_field; tab; tab_list; navigation; dialog; status; region; tree; tree_item; heading; image; list; list_item; secure_field; spin_button; menu; menu_item; link; menu_item_check_box; menu_item_radio; menu_bar; separator; list_box; list_option; combo_box; tooltip; table; row; cell; column_header; editable_combo_box; progress_indicator; search_field; }`；
 - `LiveRegion { off; polite; assertive; }`；
-- 默认角色：`Button` → `button`；`Toggle`、`CheckBox` → `check_box`；`Chip` → 有 `selected` 时 `check_box`，否则 `button`；`Slider` → `slider`；`TextInput` → `text_field`；`NumberField`、`Stepper` → `spin_button`；`Tabs` → `tab_list`，每页为 `tab`；`RadioGroup`、`SegmentedControl` 每项为 `radio`；`Text`、`LinkLabel`、`Badge` → `label`；`Avatar` → `image`；`Modal`、`Sheet` → `dialog`；`Toast` → `status`（隐含 `polite`）；`ProgressBar`、`ProgressRing`、`Spinner` → `progress_indicator`；`NavigationStack` → `navigation`；`VirtualList` → `list`；`GameViewport` → `image`；容器 → `group`。
+- 默认角色：`Button` → `button`；`Toggle`、`CheckBox` → `check_box`；`Chip` → 有 `selected` 时 `check_box`，否则 `button`；`Slider`、`Knob` → `slider`；`TextInput` → `text_field`；`NumberField`、`Stepper` → `spin_button`；`Tabs` → `tab_list`，每页为 `tab`；`RadioGroup`、`SegmentedControl` 每项为 `radio`；`Text`、`LinkLabel`、`Badge` → `label`；`Avatar` → `image`；`Modal`、`Sheet` → `dialog`；`Toast` → `status`（隐含 `polite`）；`ProgressBar`、`ProgressRing`、`Spinner` → `progress_indicator`；`NavigationStack` → `navigation`；`VirtualList` → `list`；`GameViewport` → `image`；容器 → `group`。
 
 ### U8.2 规则
 

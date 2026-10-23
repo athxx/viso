@@ -214,11 +214,29 @@ const STEPPER: &[WidgetProperty] = &[
     prop("label", "String").localizable(),
 ];
 
+/// A `Slider`'s `value` within `min..=max`, on a grid of `step` when it
+/// has one; the value its fill runs `origin` from, whether it `marks` each
+/// step, the `axis` it runs along and the `tint` it fills with.
 const SLIDER: &[WidgetProperty] = &[
     two_way("value", "F32"),
     prop("min", "F32"),
     prop("max", "F32"),
     prop("step", "Option<F32>"),
+    prop("origin", "Option<F32>"),
+    prop("marks", "Bool"),
+    prop("axis", "Axis"),
+    look("tint", "Option<Color>"),
+];
+
+/// A `Knob`'s `value` within `min..=max`, on a grid of `step` when it has
+/// one; the value its ring fills `origin` from and the `tint` it fills with.
+const KNOB: &[WidgetProperty] = &[
+    two_way("value", "F32"),
+    prop("min", "F32"),
+    prop("max", "F32"),
+    prop("step", "Option<F32>"),
+    prop("origin", "Option<F32>"),
+    look("tint", "Option<Color>"),
 ];
 
 /// A `ProgressBar`'s or `ProgressRing`'s `value` within `min..=max`, none
@@ -645,6 +663,9 @@ pub const STANDARD: &[NativeWidget] = &[
     )
     .events(&[SLIDER_EVENTS, STANDARD_EVENTS])
     .interactive(),
+    layout("Knob", WidgetNode::Leaf, &[KNOB, LAYOUT, TRANSFORM, FOCUS])
+        .events(&[SLIDER_EVENTS, STANDARD_EVENTS])
+        .interactive(),
     layout(
         "Image",
         WidgetNode::Leaf,

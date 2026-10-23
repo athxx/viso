@@ -869,6 +869,15 @@ pub fn route_scroll(store: &mut NodeStore, root: NodeId, ev: ScrollEvent) -> boo
     {
         return true;
     }
+    if ev.delta_y != 0.0
+        && matches!(
+            ev.phase,
+            ScrollPhase::None | ScrollPhase::Began | ScrollPhase::Changed
+        )
+        && store.wheel_slider(target, ev.delta_y)
+    {
+        return true;
+    }
     match ev.phase {
         // A wheel's notch ends hard at the range's end.
         ScrollPhase::None => {

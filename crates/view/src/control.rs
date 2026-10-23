@@ -17,7 +17,9 @@ use viso_behavior::{Aggregate, Fault, FaultKind, Value};
 
 use viso_ui::{
     Access, DispatchPhase, EventCx, FieldEvent, Key, KeyEvent, Modifiers, NodeId, NodeStore,
-    PointerButtons, PointerPhase, field_input, number_input, stepper::stepper_input,
+    PointerButtons, PointerPhase, field_input, number_input,
+    slider::{SliderInput, SliderRange, Thumb, slider_input},
+    stepper::stepper_input,
 };
 
 use crate::host::ViewHost;
@@ -66,7 +68,7 @@ impl Drive for Control {
             ControlKind::Button => click(cx),
             ControlKind::Dialog => dismiss(self, host, scope, cx),
             ControlKind::Sheet => sheet(self, host, scope, cx),
-            ControlKind::Slider => slider(self, host, scope, cx),
+            ControlKind::Slider | ControlKind::Knob => slider(self, host, scope, cx),
             ControlKind::Select | ControlKind::Segmented => select(self, host, scope, cx),
             ControlKind::Pages => pages(self, host, scope, cx),
             ControlKind::TextInput => text_input(self, host, scope, cx),
@@ -401,59 +403,29 @@ fn slider(
         return None;
     }
     let node = cx.node()?;
-    let pointer = cx.pointer().map(|p| (p.phase, p.x, p.y));
-    if let Some((phase, ..)) = pointer {
-        let held = cx
-            .pointer()
-            .is_some_and(|p| p.buttons.contains(PointerButtons::PRIMARY));
-        match phase {
-            PointerPhase::Down if held => {
-                cx.request_focus(node);
-                cx.capture_pointer(node);
-            }
-            PointerPhase::Move if held => {}
-            PointerPhase::Up => {
-                cx.release_pointer();
-                return None;
-            }
-            _ => return None,
-        }
-    } else if !cx.key().is_some_and(|k| k.pressed) {
-        return None;
+    if cx.pointer().is_some_and(|p| {
+        p.phase == PointerPhase::Down && p.buttons.contains(PointerButtons::PRIMARY)
+    }) {
+        cx.request_focus(node);
     }
-    let range = Range {
-        min: float(read(host, control.min, scope, cx), 0.0),
-        max: float(read(host, control.max, scope, cx), 1.0),
-        step: read(host, control.step, scope, cx)
+    let input = slider_input(cx, node, Thumb::High)?;
+    let grid = SliderRange::new(
+        read(host, control.min, scope, cx).as_float().unwrap_or(0.0),
+        read(host, control.max, scope, cx).as_float().unwrap_or(1.0),
+        read(host, control.step, scope, cx).as_float(),
+    );
+    let current = read(host, control.value, scope, cx)
+        .as_float()
+        .unwrap_or(grid.min);
+    let next = match input {
+        // A double click goes back to the origin it fills from.
+        SliderInput::Reset => read(host, control.fill_origin, scope, cx)
             .as_float()
-            .map(|s| s as f32)
-            .filter(|&s| s > 0.0),
-    };
-    let current = float(read(host, control.value, scope, cx), range.min);
-    let next = if let Some((_, x, y)) = pointer {
-        let (size, at) = (cx.size()?, cx.local(x, y));
-        let t = if size.x > 0.0 {
-            (at.x / size.x).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        range.snap(range.min + t * (range.max - range.min))
-    } else {
-        let k = cx.key()?;
-        let unit = range.step.unwrap_or((range.max - range.min) * KEY_FRACTION);
-        let next = match k.key {
-            Key::Right | Key::Up => range.snap(current + unit),
-            Key::Left | Key::Down => range.snap(current - unit),
-            Key::PageUp => range.snap(current + unit * PAGE_STEPS),
-            Key::PageDown => range.snap(current - unit * PAGE_STEPS),
-            Key::Home => range.min,
-            Key::End => range.max,
-            _ => return None,
-        };
-        cx.stop_propagation();
-        next
-    };
-    (next != current).then(|| (EventRoute::Changed, field(Value::Float(f64::from(next)))))
+            .map(|o| grid.snap(o))
+            .filter(|o| *o != current),
+        input => input.apply(current, &grid, Thumb::High),
+    }?;
+    Some((EventRoute::Changed, field(Value::Float(next))))
 }
 
 fn select(
@@ -520,12 +492,6 @@ fn pages(
     Some((EventRoute::CurrentChanged, field(Value::Int(current - 1))))
 }
 
-/// The fraction of a slider's range one arrow key moves a stepless slider.
-const KEY_FRACTION: f32 = 0.01;
-
-/// How many steps Page Up / Page Down move a slider.
-const PAGE_STEPS: f32 = 10.0;
-
 /// A text field's response: the edits its input asks for, and the settled
 /// text or a submission it reports.
 fn text_input(
@@ -574,29 +540,6 @@ fn number(
     (current != Some(next)).then(|| (EventRoute::Changed, field(Value::Float(next))))
 }
 
-/// A slider's range and step.
-struct Range {
-    min: f32,
-    max: f32,
-    step: Option<f32>,
-}
-
-impl Range {
-    /// `value` on the nearest step from `min`, within the range.
-    fn snap(&self, value: f32) -> f32 {
-        let (low, high) = if self.min <= self.max {
-            (self.min, self.max)
-        } else {
-            (self.max, self.min)
-        };
-        let stepped = match self.step {
-            Some(step) => self.min + ((value - self.min) / step).round() * step,
-            None => value,
-        };
-        stepped.clamp(low, high)
-    }
-}
-
 /// A key sample under dispatch, when it is one, taken: what the framework
 /// does with it by default — scrolling on Space — does not run.
 fn take_key(cx: &mut EventCx<'_>) {
@@ -617,11 +560,6 @@ fn read(host: &mut ViewHost, entry: Option<u32>, scope: &Scope, cx: &EventCx<'_>
         .unwrap_or(Value::Nil)
 }
 
-/// An `F32` value as `f32`, `default` for any other.
-fn float(value: Value, default: f32) -> f32 {
-    value.as_float().map_or(default, |v| v as f32)
-}
-
 /// A widget change payload: a record of the one field `value`.
 fn field(value: Value) -> Value {
     Value::Agg(Rc::new(Aggregate {
@@ -636,11 +574,7 @@ mod tests {
 
     #[test]
     fn a_slider_snaps_to_its_step_within_its_range() {
-        let range = Range {
-            min: 0.0,
-            max: 10.0,
-            step: Some(2.5),
-        };
+        let range = SliderRange::new(0.0, 10.0, Some(2.5));
         assert_eq!(range.snap(3.6), 2.5);
         assert_eq!(range.snap(3.8), 5.0);
         assert_eq!(range.snap(12.0), 10.0);

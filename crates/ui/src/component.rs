@@ -786,6 +786,7 @@ pub struct NodeStore {
     pub(crate) spinners: crate::spinner::Spinners,
     /// Cold: the progress indicators that move.
     pub(crate) progresses: crate::progress::Progresses,
+    pub(crate) sliders: crate::slider::Sliders,
     /// Cold: the nodes pinned at their viewport's start edge.
     pub(crate) stickies: crate::sticky::Stickies,
     /// Cold: the viewports that snap to their items.
@@ -938,6 +939,7 @@ impl NodeStore {
         self.refreshers.clear();
         self.spinners.clear();
         self.progresses.clear();
+        self.sliders.clear();
         self.stickies.clear();
         self.snaps.clear();
         self.actives.clear();
@@ -5102,6 +5104,7 @@ impl NodeStore {
         self.refreshers.forget(i as u32);
         self.spinners.forget(i as u32);
         self.progresses.forget(i as u32);
+        self.sliders.forget(i as u32);
         self.stickies.forget(i as u32);
         self.snaps.forget(i as u32);
         self.actives.forget(i as u32);

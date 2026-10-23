@@ -66,6 +66,7 @@ pub mod semantics;
 pub mod shader;
 pub mod shadow;
 pub mod sheet;
+pub mod slider;
 pub mod snap;
 pub mod spinner;
 pub mod state;

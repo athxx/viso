@@ -343,7 +343,11 @@ details[open] > .vx-chevron:dir(rtl)::before { transform: rotate(-225deg); }
 .vx-text.vx-selectable { user-select: text; -webkit-user-select: text; cursor: text; }
 .vx-button { font: inherit; color: inherit; background: none; border: 0; border-radius: 0; padding: 0; margin: 0; text-align: start; white-space: pre; cursor: pointer; }
 .vx-input { font: inherit; color: inherit; background: transparent; border: 0; padding: 0; margin: 0; }
-.vx-check, .vx-range { margin: 0; accent-color: var(--colors-primary); }
+.vx-check, .vx-range { margin: 0; accent-color: var(--vx-ink, var(--colors-primary)); }
+.vx-vertical { writing-mode: vertical-lr; direction: rtl; }
+.vx-knob { appearance: none; -webkit-appearance: none; width: 40px; height: 40px; border-radius: 50%; cursor: grab; background: radial-gradient(circle, #fff 0 52%, transparent 53%), conic-gradient(from 225deg, var(--vx-ink, var(--colors-primary)) calc(var(--vx-at, 0) * 270deg), color-mix(in srgb, currentColor 25%, transparent) 0 270deg, transparent 0); }
+.vx-knob::-webkit-slider-thumb { -webkit-appearance: none; width: 0; height: 0; }
+.vx-knob::-moz-range-thumb { width: 0; height: 0; border: 0; }
 .vx-image { display: block; object-fit: contain; }
 .vx-layer { position: fixed; inset: 0; width: auto; height: auto; max-width: none; max-height: none; margin: 0; padding: 0; border: 0; color: inherit; z-index: 1; }
 :where(dialog.vx-layer) { background: rgba(0, 0, 0, 0.32); }
