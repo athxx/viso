@@ -169,7 +169,7 @@ Rules:
 - [x] Gesture arena: competing recognizers, claim and reject, nested scroll
   coordination.
 - [x] `InteractiveViewer` (pan/zoom container with bounds and inertia).
-- [ ] Swipe-to-reveal row actions; drag-handle reorder in `List`.
+- [x] Swipe-to-reveal row actions; drag-handle reorder in `List`.
 - [ ] `Sheet` detents and drag-to-dismiss.
 
 ## W8 — Drag and drop

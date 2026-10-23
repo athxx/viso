@@ -1116,6 +1116,178 @@ addEventListener("wheel", (e) => {
   if (swiped && !e.$swipe && !swiped.contains(e.target)) swiped.$swipe.shut();
 }, { passive: true });
 
+// Makes `el` a reorderable list: its rows are its children, or its
+// content's if it scrolls one. A drag on a `data-reorder-handle` within a
+// row lifts the row above the others and carries it along the list, the
+// rows between sliding aside by their midpoints; held near either end of
+// the viewport it scrolls, and a wheel scrolls it, the row kept under the
+// pointer. Let go, it slides into its gap and tells the list where it went
+// by a `viso-reorder` event `{ from, to }`, `to` among the rows without it;
+// back in its place it tells nothing. Space or Enter on a handle lifts its
+// row, the arrows along the list move it, Space or Enter drops it, and
+// Escape, a press or the focus leaving puts it back.
+const reorderList = (el) => {
+  if (el.$reorder) return;
+  el.$reorder = true;
+  const scrolls = (n) => /(auto|scroll)/.test(getComputedStyle(n).overflowY + getComputedStyle(n).overflowX);
+  const rowsOf = () => (scrolls(el) && el.children.length === 1 ? el.firstElementChild : el);
+  const slide = 200;
+  let lift = null;
+  const at = (e) => (lift.y ? e.clientY : e.clientX);
+  const origin = () => { const r = lift.rows.getBoundingClientRect(); return lift.y ? r.top : r.left; };
+  const put = (n, by, moving) => {
+    n.style.transition = moving && !reduced.matches ? "transform " + slide + "ms cubic-bezier(0.2, 0, 0, 1)" : "";
+    n.style.transform = by ? (lift.y ? "translateY(" : "translateX(") + by + "px)" : "";
+  };
+  const begin = (handle, pointer, grip) => {
+    const rows = rowsOf();
+    const row = [...rows.children].find((c) => c.contains(handle));
+    if (!row) return;
+    const s = getComputedStyle(rows);
+    const y = !(s.display.includes("flex") && s.flexDirection.startsWith("row"));
+    const all = [...rows.children];
+    const o = y ? rows.getBoundingClientRect().top : rows.getBoundingClientRect().left;
+    const spans = all.map((c) => { const r = c.getBoundingClientRect(); return y ? [r.top - o, r.bottom - o] : [r.left - o, r.right - o]; });
+    const from = all.indexOf(row);
+    // Which way the places grow, and the gap to a neighbour.
+    const flow = all.length > 1 && spans[Math.min(from + 1, all.length - 1)][0] < spans[Math.max(from - 1, 0)][0] ? -1 : 1;
+    const next = spans[from + 1], prev = spans[from - 1], [lo, hi] = spans[from];
+    const gap = flow > 0 ? (next ? next[0] - hi : prev ? lo - prev[1] : 0) : (next ? lo - next[1] : prev ? prev[0] - hi : 0);
+    let scroller = rows;
+    while (scroller && scroller !== document.body && !scrolls(scroller)) scroller = scroller.parentElement;
+    lift = { rows, row, all, spans, from, to: from, y, flow, pitch: hi - lo + Math.max(gap, 0), pointer, grip: 0, at: 0, timer: 0, handle, scroller: scroller !== document.body ? scroller : null, offset: 0 };
+    lift.grip = grip - o;
+    if (getComputedStyle(row).position === "static") row.style.position = "relative";
+    row.style.zIndex = "1";
+    lift.timer = setInterval(edge, 16);
+    if (lift.scroller) lift.scroller.addEventListener("scroll", follow, { passive: true });
+  };
+  // Where the rows slide: the lifted one by `offset`, the others aside of
+  // the gap it would land in.
+  const lay = () => {
+    const { all, spans, from, flow, pitch, row } = lift;
+    for (let j = 0; j < all.length; j++) {
+      if (all[j] === row) continue;
+      const by = from < j && j <= lift.to ? -flow * pitch : lift.to <= j && j < from ? flow * pitch : 0;
+      put(all[j], by, true);
+    }
+  };
+  const landing = () => {
+    const { spans, from, to, flow } = lift;
+    if (to === from) return 0;
+    return to > from ? (flow > 0 ? spans[to][1] - spans[from][1] : spans[to][0] - spans[from][0]) : (flow > 0 ? spans[to][0] - spans[from][0] : spans[to][1] - spans[from][1]);
+  };
+  const follow = () => {
+    if (!lift || lift.pointer === null) return;
+    const { spans, from } = lift;
+    const last = spans.length - 1;
+    const pos = lift.at - origin();
+    const offset = Math.min(Math.max(pos - lift.grip, spans[0][0] - spans[from][0]), Math.max(spans[last][1] - spans[from][1], spans[0][0] - spans[from][0]));
+    lift.offset = offset;
+    const mid = (spans[from][0] + spans[from][1]) / 2 + offset;
+    let to = 0;
+    for (let j = 0; j < spans.length; j++) if (j !== from && ((spans[j][0] + spans[j][1]) / 2 - mid) * lift.flow < 0) to++;
+    lift.to = to;
+    put(lift.row, offset, false);
+    lay();
+  };
+  // Held near an end of the viewport, the pointer scrolls it.
+  const edge = () => {
+    if (!lift || lift.pointer === null || !lift.scroller) return;
+    const r = lift.scroller.getBoundingClientRect();
+    const [v0, v1] = lift.y ? [r.top, r.bottom] : [r.left, r.right];
+    const band = Math.min(40, (v1 - v0) / 3);
+    const near = Math.min((v0 + band - lift.at) / band, 1), far = Math.min((lift.at - (v1 - band)) / band, 1);
+    const by = near > 0 ? -800 * near / 60 : far > 0 ? 800 * far / 60 : 0;
+    if (!by) return;
+    if (lift.y) lift.scroller.scrollTop += by;
+    else lift.scroller.scrollLeft += by;
+    follow();
+  };
+  const end = (tell) => {
+    const l = lift;
+    lift = null;
+    clearInterval(l.timer);
+    if (l.scroller) l.scroller.removeEventListener("scroll", follow);
+    if (tell && l.to !== l.from) el.dispatchEvent(new CustomEvent("viso-reorder", { detail: { from: l.from, to: l.to } }));
+    for (const n of l.all) { n.style.transition = ""; n.style.transform = ""; }
+    l.row.style.zIndex = "";
+  };
+  const settle = (tell) => {
+    const l = lift;
+    l.pointer = null;
+    l.settling = true;
+    if (!tell) l.to = l.from;
+    lay();
+    put(l.row, tell ? landing() : 0, true);
+    setTimeout(() => { if (lift === l) end(tell); }, reduced.matches ? 0 : slide);
+  };
+  el.addEventListener("pointerdown", (e) => {
+    const handle = e.target.closest && e.target.closest("[data-reorder-handle]");
+    if (e.button !== 0 || !handle || !el.contains(handle) || lift) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.$drag = handle;
+    const press = { id: e.pointerId, x: e.clientX, y: e.clientY, handle };
+    const move = (m) => {
+      if (m.pointerId !== press.id) return;
+      if (!lift) {
+        if (Math.hypot(m.clientX - press.x, m.clientY - press.y) < 4) return;
+        begin(handle, press.id, 0);
+        if (!lift) return;
+        lift.grip = (lift.y ? press.y : press.x) - origin();
+        try { handle.setPointerCapture(press.id); } catch {}
+      }
+      lift.at = at(m);
+      follow();
+    };
+    const up = (u) => {
+      if (u.pointerId !== press.id) return;
+      removeEventListener("pointermove", move, true);
+      removeEventListener("pointerup", up, true);
+      removeEventListener("pointercancel", up, true);
+      if (lift && lift.pointer === press.id) settle(u.type === "pointerup");
+    };
+    addEventListener("pointermove", move, true);
+    addEventListener("pointerup", up, true);
+    addEventListener("pointercancel", up, true);
+  });
+  el.addEventListener("keydown", (e) => {
+    const handle = e.target.closest && e.target.closest("[data-reorder-handle]");
+    if (!handle || !el.contains(handle)) return;
+    const bare = !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey;
+    const toggle = bare && !e.repeat && (e.key === " " || e.key === "Enter");
+    if (lift && lift.settling) return;
+    if (lift && lift.pointer !== null) {
+      if (e.key === "Escape") { e.preventDefault(); settle(false); }
+      return;
+    }
+    if (!lift) {
+      if (!toggle) return;
+      e.preventDefault();
+      begin(handle, null, 0);
+      if (lift) lift.pointer = null;
+      return;
+    }
+    if (e.key === "Escape") { e.preventDefault(); settle(false); return; }
+    if (toggle) { e.preventDefault(); settle(true); return; }
+    if (!bare) return;
+    const dir = lift.y ? { ArrowUp: -1, ArrowDown: 1 }[e.key] : { ArrowLeft: -1, ArrowRight: 1 }[e.key];
+    if (dir === undefined) return;
+    e.preventDefault();
+    lift.to = Math.min(Math.max(lift.to + dir * lift.flow, 0), lift.all.length - 1);
+    lay();
+    put(lift.row, landing(), true);
+    lift.row.scrollIntoView && lift.all[lift.to].scrollIntoView({ block: "nearest", inline: "nearest" });
+  });
+  el.addEventListener("focusout", (e) => {
+    if (lift && lift.pointer === null && !lift.settling && e.target === lift.handle) settle(false);
+  });
+  addEventListener("pointerdown", (e) => {
+    if (lift && lift.pointer === null && !lift.settling) settle(false);
+  }, true);
+};
+
 // Calls `fire` with the payload of a primary press at or under `el` that no
 // nearer element took, once it held still for the long-press delay.
 const holdable = (el, fire) => {
@@ -1265,6 +1437,9 @@ const listen = (el, route, capture, control, fire) => {
     el.addEventListener("dblclick", live((e) => fire(rec([point(e, el), kind(e)]))), capture);
   } else if (route === 28) {
     el.addEventListener("viso-fullswipe", (e) => fire(rec([BigInt(e.detail.edge)])), capture);
+  } else if (route === 29) {
+    reorderList(el);
+    el.addEventListener("viso-reorder", (e) => fire(rec([BigInt(e.detail.from), BigInt(e.detail.to)])), capture);
   } else if (route >= 25 && route <= 27) {
     pinchable(el);
     el.addEventListener("viso-pinch", live((e) => {

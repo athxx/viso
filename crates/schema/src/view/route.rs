@@ -83,11 +83,14 @@ pub enum EventRoute {
     /// A `SwipeRow`'s `full_swiped` (`FullSwipeEvent`): a full swipe carried
     /// its content off toward an edge.
     FullSwiped = 28,
+    /// A list's `reordered` (`ReorderEvent`): a row lifted from one place
+    /// came to rest at another.
+    Reordered = 29,
 }
 
 impl EventRoute {
     /// Every route, by discriminant.
-    pub const ALL: [EventRoute; 29] = [
+    pub const ALL: [EventRoute; 30] = [
         EventRoute::Click,
         EventRoute::Tap,
         EventRoute::PointerDown,
@@ -117,6 +120,7 @@ impl EventRoute {
         EventRoute::PinchMove,
         EventRoute::PinchEnd,
         EventRoute::FullSwiped,
+        EventRoute::Reordered,
     ];
 
     /// The route of standard DSL event `event`, `None` for an event the runtime
@@ -160,6 +164,7 @@ impl EventRoute {
             EventRoute::PinchMove => "pinch_move",
             EventRoute::PinchEnd => "pinch_end",
             EventRoute::FullSwiped => "full_swiped",
+            EventRoute::Reordered => "reordered",
         }
     }
 
@@ -195,6 +200,7 @@ impl EventRoute {
             EventRoute::PinchMove => "PinchMove",
             EventRoute::PinchEnd => "PinchEnd",
             EventRoute::FullSwiped => "FullSwiped",
+            EventRoute::Reordered => "Reordered",
         }
     }
 
@@ -210,8 +216,8 @@ impl EventRoute {
 
     /// Whether the node's key handler delivers it: a key sample, an
     /// activated link, which reaches a text and its ancestors that way, a
-    /// refresh asked of a viewport, the item a snapping one settles on, or a
-    /// swipe row's full swipe.
+    /// refresh asked of a viewport, the item a snapping one settles on, a
+    /// swipe row's full swipe, or a list's reorder.
     pub fn by_key_handler(self) -> bool {
         self.is_key()
             || matches!(
@@ -220,6 +226,7 @@ impl EventRoute {
                     | EventRoute::Refresh
                     | EventRoute::SnapChanged
                     | EventRoute::FullSwiped
+                    | EventRoute::Reordered
             )
     }
 
@@ -295,6 +302,7 @@ pub const PAYLOAD_RECORDS: &[(&str, &[&str])] = &[
     ("LinkEvent", &["url"]),
     ("SelectionChanged", &["value"]),
     ("FullSwipeEvent", &["edge"]),
+    ("ReorderEvent", &["from", "to"]),
 ];
 
 /// The prelude enums a payload names a variant of, with their variants in order.

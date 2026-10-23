@@ -43,6 +43,12 @@ pub fn payload(route: EventRoute, cx: &EventCx<'_>) -> Option<Value> {
         };
         return Some(record([Value::Int(edge)]));
     }
+    if route == EventRoute::Reordered {
+        let Some(viso_ui::RowGesture::Reordered { from, to }) = cx.row_gesture() else {
+            return None;
+        };
+        return Some(record([Value::Int(from as i64), Value::Int(to as i64)]));
+    }
     if route.is_key() {
         let key = cx.key()?;
         return (key.pressed == (route == EventRoute::KeyDown)).then(|| key_event(key));

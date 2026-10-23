@@ -80,11 +80,13 @@ pub enum ControlKind {
     SwipeRow = 17,
     /// `SwipeActions`: the panel of a `SwipeRow`'s actions on its `edge`.
     SwipeActions = 18,
+    /// A `ReorderHandle`: the grip a reorderable row is carried by.
+    ReorderHandle = 19,
 }
 
 impl ControlKind {
     /// Every kind, by discriminant.
-    pub const ALL: [ControlKind; 19] = [
+    pub const ALL: [ControlKind; 20] = [
         ControlKind::Check,
         ControlKind::Slider,
         ControlKind::Select,
@@ -104,6 +106,7 @@ impl ControlKind {
         ControlKind::Viewer,
         ControlKind::SwipeRow,
         ControlKind::SwipeActions,
+        ControlKind::ReorderHandle,
     ];
 
     /// The kind native widget `widget` is.
@@ -127,6 +130,7 @@ impl ControlKind {
             "InteractiveViewer" => ControlKind::Viewer,
             "SwipeRow" => ControlKind::SwipeRow,
             "SwipeActions" => ControlKind::SwipeActions,
+            "ReorderHandle" => ControlKind::ReorderHandle,
             _ => ControlKind::Plain,
         }
     }
@@ -339,6 +343,7 @@ impl ControlKind {
             ControlKind::Viewer => "Viewer",
             ControlKind::SwipeRow => "SwipeRow",
             ControlKind::SwipeActions => "SwipeActions",
+            ControlKind::ReorderHandle => "ReorderHandle",
         }
     }
 
@@ -353,7 +358,7 @@ impl ControlKind {
 /// role holds only while it has a label: one without is decoration.
 pub fn widget_role(widget: &str) -> Option<Role> {
     Some(match widget {
-        "Button" => Role::Button,
+        "Button" | "ReorderHandle" => Role::Button,
         "Toggle" | "CheckBox" => Role::CheckBox,
         "Slider" => Role::Slider,
         "TextInput" => Role::TextField,

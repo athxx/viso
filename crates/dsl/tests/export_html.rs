@@ -715,6 +715,56 @@ fn a_swipe_row_exports_as_a_clipped_row_its_script_slides_open() {
     );
 }
 
+const REORDERED: &str = r#"
+export component Groceries {
+    state moved = 0;
+    view {
+        Column {
+            Column {
+                width: 300dp;
+                on reordered(e) { moved = (e.from as I64) * 10 + (e.to as I64) + 100; }
+                Row { width: 300dp; height: 40dp; ReorderHandle { width: 40dp; height: 40dp; semantics.label: "Move milk"; } }
+                Row { width: 300dp; height: 40dp; ReorderHandle { width: 40dp; height: 40dp; semantics.label: "Move eggs"; } }
+                Row { width: 300dp; height: 40dp; ReorderHandle { width: 40dp; height: 40dp; semantics.label: "Move bread"; } }
+            }
+            Text { text: format("moved={}", moved); }
+        }
+    }
+}
+"#;
+
+#[test]
+fn a_reorderable_list_exports_with_handles_its_script_carries_rows_by() {
+    let page = export(REORDERED, false).unwrap();
+    assert!(
+        page.index.contains("data-reorder-handle") && page.index.contains("role=\"button\""),
+        "{}",
+        page.index
+    );
+    let script = page.script.clone().unwrap();
+    assert!(script.contains(", 29, false, "), "{script}");
+    let Some(chrome) = chrome() else {
+        eprintln!("no Chrome: the page is not run");
+        return;
+    };
+    let carry = "\nconst handles = () => [...document.querySelectorAll('[data-reorder-handle]')];\n\
+        const at = (type, y) => handles()[0].dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: 1, pointerType: 'mouse', isPrimary: true, button: type === 'pointermove' ? -1 : 0, clientX: 20, clientY: y }));\n\
+        const key = (k) => document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: k }));\n\
+        const first = () => handles()[0].getBoundingClientRect().top;\n\
+        setTimeout(() => { const y = first() + 20; at('pointerdown', y); for (let k = 1; k <= 5; k++) at('pointermove', y + 10 * k); at('pointerup', y + 50); }, 50);\n\
+        setTimeout(() => document.body.append('carried=' + document.body.textContent.includes('moved=101') + '.'), 600);\n\
+        setTimeout(() => { handles()[2].focus(); key(' '); key('ArrowUp'); key('ArrowUp'); key('Enter'); }, 700);\n";
+    let dom = run_in_chrome(&page, &(script + carry), "export-reordered", &[], chrome);
+    assert!(
+        dom.contains("carried=true."),
+        "a drag carries the first row on a place: {dom}"
+    );
+    assert!(
+        dom.contains(">moved=120<"),
+        "the keyboard carries the last up: {dom}"
+    );
+}
+
 const CLIPPED: &str = r#"
 export component Clipped {
     state on = true;

@@ -825,6 +825,14 @@ impl Shown {
                 };
                 store.set_swipe_panel(self.node, Some(edge));
             }
+            // A handle carries the reorderable row it lies in, the pointer
+            // showing a grab over it unless its `cursor` says.
+            ControlKind::ReorderHandle => {
+                if first && !given(CURSOR) {
+                    store.set_cursor(self.node, Some(CursorIcon::Grab));
+                }
+                store.set_reorder_handle(self.node, true);
+            }
             // A navigation stack shows its current page, clipping the pages
             // as they trade places unless its `clip` says.
             ControlKind::Pages => {

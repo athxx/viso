@@ -1528,3 +1528,67 @@ export component Inbox {
         assert!(!rt.faulted());
     }
 }
+
+#[test]
+fn a_reorder_handle_carries_its_row_and_the_list_reports_where() {
+    const SRC: &str = r#"
+export component Groceries {
+    state moved = 0;
+    view {
+        Column {
+            width: 300dp;
+            on reordered(e) { moved = (e.from as I64) * 10 + (e.to as I64) + 100; }
+            Row { width: 300dp; height: 40dp; ReorderHandle { width: 40dp; height: 40dp; semantics.label: "Move milk"; } }
+            Row { width: 300dp; height: 40dp; ReorderHandle { width: 40dp; height: 40dp; semantics.label: "Move eggs"; } }
+            Row { width: 300dp; height: 40dp; ReorderHandle { width: 40dp; height: 40dp; semantics.label: "Move bread"; } }
+        }
+    }
+}
+"#;
+    for mut rt in [Rt::reloaded(SRC), Rt::packaged(SRC)] {
+        rt.store.set_reduced_motion(true);
+        let list = rt.root.expect("mounted");
+        assert!(rt.store.is_reorder_list(list));
+        let rows = rt.children(list);
+        let handle = rt.children(rows[0])[0];
+        assert!(rt.store.is_reorder_handle(handle) && rt.store.focusable(handle));
+        rt.pointer(20.0, 20.0, PointerPhase::Down);
+        for k in 1..=5 {
+            rt.pointer(20.0, 20.0 + 10.0 * k as f32, PointerPhase::Move);
+        }
+        rt.pointer(20.0, 70.0, PointerPhase::Up);
+        rt.settle();
+        assert_eq!(rt.int("moved"), 101, "from the first place to the second");
+
+        // A key no handler takes reaches the store, as the facade sends it.
+        let key = |rt: &mut Rt, key: Key| {
+            let event = KeyEvent {
+                key,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::default(),
+            };
+            let root = rt.root.expect("mounted");
+            let taken = KeyRouter::route_key_taken(
+                &mut rt.store,
+                &mut rt.states,
+                &rt.bindings,
+                &mut rt.text_edits,
+                root,
+                event,
+                &mut rt.scratch,
+            );
+            if !taken {
+                rt.store.scroll_by_key(root, &event, false);
+            }
+            rt.settle();
+        };
+        rt.store.set_focused(Some(rt.children(rows[2])[0]));
+        key(&mut rt, Key::Space);
+        key(&mut rt, Key::Up);
+        key(&mut rt, Key::Up);
+        key(&mut rt, Key::Enter);
+        assert_eq!(rt.int("moved"), 120, "the keyboard carries it up");
+        assert!(!rt.faulted());
+    }
+}

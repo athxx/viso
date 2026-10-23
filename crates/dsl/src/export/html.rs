@@ -1354,6 +1354,15 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 }
                 wires.push(Wire::SwipeRow);
             }
+            // A handle is a button the list's script carries its row by.
+            ControlKind::ReorderHandle => {
+                el.attr("data-reorder-handle", "");
+                el.attr("tabindex", "0");
+                if control.node.cursor.is_none() {
+                    decls.push(("cursor", "grab".to_owned()));
+                }
+                decls.push(("touch-action", "none".to_owned()));
+            }
             // A panel lies below its row's content, filling the row.
             ControlKind::SwipeActions => {
                 let edge = self

@@ -35,7 +35,7 @@ pub fn attach(
         cx.on_pointer(node, handler);
     }
     if let Some(keys) = keys {
-        // A refresh, a snap, a full swipe and a waiting tap come without
+        // A refresh, a snap, a full swipe, a reorder and a waiting tap come without
         // the focus.
         let focus = keys.iter().any(|r| {
             !matches!(
@@ -43,6 +43,7 @@ pub fn attach(
                 EventRoute::Refresh
                     | EventRoute::SnapChanged
                     | EventRoute::FullSwiped
+                    | EventRoute::Reordered
                     | EventRoute::Tap
             )
         }) || control.as_ref().is_some_and(|c| c.responds());
@@ -71,6 +72,9 @@ pub fn attach(
     }
     if snaps(routes) {
         cx.tell_snaps(node, true);
+    }
+    if reorders(routes) {
+        cx.reorder_list(node, true);
     }
     node
 }
@@ -113,8 +117,8 @@ pub fn attach_node(
     } else {
         store.uncount_clicks(id);
     }
-    // A viewer and a swipe row take their own drags.
-    let own = store.is_viewer(id) || store.is_swipe_row(id);
+    // A viewer, a swipe row and a reorder handle take their own drags.
+    let own = store.is_viewer(id) || store.is_swipe_row(id) || store.is_reorder_handle(id);
     store.set_draggable(id, drags(routes) || own);
     store.set_long_pressable(id, holds(routes));
     store.set_pinchable(id, pinches(routes));
@@ -122,6 +126,9 @@ pub fn attach_node(
         store.set_refreshable(id, refreshes(routes));
     }
     store.tell_snaps(id, snaps(routes));
+    if reorders(routes) || store.is_reorder_list(id) {
+        store.set_reorder_list(id, reorders(routes));
+    }
 }
 
 /// Whether a node whose key handler runs `keys` takes the focus for them as
@@ -136,6 +143,7 @@ fn takes_focus(keys: &[Route], control: Option<&Control>) -> bool {
                 | EventRoute::Refresh
                 | EventRoute::SnapChanged
                 | EventRoute::FullSwiped
+                | EventRoute::Reordered
                 | EventRoute::Tap
         )
     }) || control.is_some_and(|c| c.kind.responds())
@@ -194,6 +202,13 @@ fn snaps(routes: &[Route]) -> bool {
     routes
         .iter()
         .any(|route| route.event == EventRoute::SnapChanged)
+}
+
+/// Whether `routes` take reorders: the list's rows lift from their handles.
+fn reorders(routes: &[Route]) -> bool {
+    routes
+        .iter()
+        .any(|route| route.event == EventRoute::Reordered)
 }
 
 /// Whether `routes` take refreshes: the viewport refreshes when pulled.

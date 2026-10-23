@@ -349,12 +349,16 @@ const SCROLL_EVENTS: &[WidgetEvent] = &[
     WidgetEvent::new("scroll_changed", "ScrollChanged"),
     WidgetEvent::signal("refresh"),
     WidgetEvent::new("snap_changed", "SelectionChanged"),
+    WidgetEvent::new("reordered", "ReorderEvent"),
 ];
 const VIRTUAL_LIST_EVENTS: &[WidgetEvent] = &[
     WidgetEvent::new("visible_range_changed", "VisibleRange"),
     WidgetEvent::signal("refresh"),
     WidgetEvent::new("snap_changed", "SelectionChanged"),
+    WidgetEvent::new("reordered", "ReorderEvent"),
 ];
+/// A flex list's rows carried elsewhere by their handles.
+const REORDER_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("reordered", "ReorderEvent")];
 const SWIPE_ROW_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("full_swiped", "FullSwipeEvent")];
 const KEY_SHORTCUT_EVENTS: &[WidgetEvent] = &[WidgetEvent::signal("triggered")];
 
@@ -389,8 +393,12 @@ pub static COMPONENT: NativeWidget =
 
 /// The standard widgets, in declaration order.
 pub const STANDARD: &[NativeWidget] = &[
-    layout("Row", ROW, &[FLEX, LAYOUT, TRANSFORM, FOCUS]).slots(CHILDREN),
-    layout("Column", COLUMN, &[FLEX, LAYOUT, TRANSFORM, FOCUS]).slots(CHILDREN),
+    layout("Row", ROW, &[FLEX, LAYOUT, TRANSFORM, FOCUS])
+        .events(&[REORDER_EVENTS, STANDARD_EVENTS])
+        .slots(CHILDREN),
+    layout("Column", COLUMN, &[FLEX, LAYOUT, TRANSFORM, FOCUS])
+        .events(&[REORDER_EVENTS, STANDARD_EVENTS])
+        .slots(CHILDREN),
     layout(
         "Flex",
         FLEX_NODE,
@@ -452,6 +460,14 @@ pub const STANDARD: &[NativeWidget] = &[
         &[SWIPE_ACTIONS, FLEX, LAYOUT, TRANSFORM, FOCUS],
     )
     .slots(CHILDREN),
+    layout(
+        "ReorderHandle",
+        WidgetNode::Stack,
+        &[STACK, LAYOUT, TRANSFORM, FOCUS],
+    )
+    .provides(&STACK_CHILD)
+    .slots(CHILDREN)
+    .interactive(),
     layout(
         "Scroll",
         WidgetNode::Scroll,
