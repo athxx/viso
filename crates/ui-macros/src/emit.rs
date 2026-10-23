@@ -965,18 +965,15 @@ fn flex_style_tokens(style: &StyleIr) -> TokenStream {
     }
 }
 
-/// `::viso::__private::viso_ui::LeafStyle { size?, .. }` from a folded [`StyleIr`].
+/// `::viso::__private::viso_ui::LeafStyle { size, .. }` from a folded [`StyleIr`]:
+/// `Fit` on an axis the node did not size, so a leaf measures to its content.
 fn leaf_style_tokens(style: &StyleIr) -> TokenStream {
-    if has_size(style) {
-        let size = size_tokens(style);
-        quote! {
-            ::viso::__private::viso_ui::LeafStyle {
-                size: #size,
-                ..::core::default::Default::default()
-            }
+    let size = size_tokens(style);
+    quote! {
+        ::viso::__private::viso_ui::LeafStyle {
+            size: #size,
+            ..::core::default::Default::default()
         }
-    } else {
-        quote! { ::core::default::Default::default() }
     }
 }
 

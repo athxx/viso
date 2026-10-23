@@ -4485,6 +4485,8 @@ export style SelectedChip for Chip {
 | `Scroll`   | 单子节点视口（ADR 0007）                       | `fill` / `fill`         |
 | `Fragment` | 零节点分组：子节点直接拼接进父节点 Slot，不接受 Property，不产生 NodeId | — |
 
+叶节点 Widget（`Text`、`Button`、`Image`、`Toggle` 等）未写 `width`/`height` 的轴为 `fit`，按其内容（文字、图片、勾选标记）测量，没有内容时为 `0`；Widget 另有默认的除外（如 `GameViewport` 为 `fill`，`Avatar` 为 40dp，`SegmentedControl` 的文字段宽为 `fill`）。`ui!`/`component!`/`view!`、Hot Reload 与 Release 包按同一规则构建。
+
 ### U3.2 Sizing
 
 ```viso

@@ -472,15 +472,13 @@ fn snap_of(snap: viso_schema::aot::AotSnap, inset: f32) -> crate::snap::ScrollSn
     ScrollSnap { inset, ..base }
 }
 
-/// The leaf builder style, mirroring the commit's `leaf_style`: a size only when the
-/// node authored a width or height, else the default.
+/// The leaf builder style, mirroring the macro's: the size the node authored,
+/// `Fit` on an axis it did not, so a leaf measures to its content.
 fn leaf_style(node: &AotRecord) -> LeafStyle {
-    let style = &node.style;
-    let mut out = LeafStyle::default();
-    if has_size(node) {
-        out.size = size_of(style);
+    LeafStyle {
+        size: size_of(&node.style),
+        ..LeafStyle::default()
     }
-    out
 }
 
 /// Whether the node authored a width or a height, folded or bound to the

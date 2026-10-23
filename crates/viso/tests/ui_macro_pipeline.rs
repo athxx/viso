@@ -232,3 +232,51 @@ fn a_reactive_flush_hits_only_the_static_edge() {
         "a compiler-known binding never falls back to dynamic"
     );
 }
+
+viso::component! {
+    Unsized {
+        view {
+            Column {
+                width: 200dp;
+                height: 100dp;
+                Text { text: "hello"; }
+                RadioGroup { Text { text: "one"; } }
+            }
+        }
+    }
+}
+
+/// A leaf that sizes neither axis measures to its content rather than to
+/// nothing: a radio option's text, unshaped here, still takes its circle.
+#[test]
+fn an_unsized_leaf_measures_to_its_content() {
+    use viso::ui::Length;
+    let mut store = NodeStore::new();
+    let mut states = StateStore::new();
+    let mut bindings = BindingTable::new();
+    let mut lists = VirtualLists::new();
+    let mut text_edits = TextEdits::new();
+    let mut projectors = SemanticProjector::new();
+    let root = {
+        let mut cx = BuildCx::with_reactive(
+            &mut store,
+            &mut states,
+            &mut bindings,
+            &mut lists,
+            &mut text_edits,
+            &mut projectors,
+        );
+        Unsized::build(&mut cx).1.id()
+    };
+    store.layout(root, Rect::new(0.0, 0.0, 400.0, 300.0), &mut Vec::new());
+    let text = store.arena().first_child(root).unwrap();
+    let size = store.layout_input(text).size();
+    assert_eq!((size.width, size.height), (Length::Fit, Length::Fit));
+    let group = store.arena().next_sibling(text).unwrap();
+    let option = store.arena().first_child(group).unwrap();
+    let b = store.bounds(option);
+    assert!(
+        b.w >= 16.0 && b.h >= 16.0,
+        "the option takes its circle: {b:?}"
+    );
+}

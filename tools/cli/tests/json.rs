@@ -92,6 +92,7 @@ fn every_command_keeps_the_event_contract() {
         &["ios", "simulator", "delete", "no-such-profile"],
         &["game", "peek"],
         &["game", "record"],
+        &["game", "replay"],
         &["run", "web-dom"],
         &["serve", "web-dom"],
         &["snapshot", "capture"],
