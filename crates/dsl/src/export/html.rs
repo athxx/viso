@@ -153,6 +153,9 @@ pub(super) enum Prop {
     Href,
     /// A chip's `selected`, its `aria-pressed`.
     Pressed,
+    /// A stepper's `value`, `min`, `max`, `step`, `wrap` or `tint`, which
+    /// the script steps by and shows.
+    Stepper(&'static str),
     /// A badge's `count` or `max`, which the script shows as its text.
     Badge(&'static str),
     /// An avatar's `name` or `image`, which the script shows as its
@@ -574,6 +577,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             (_, "Spinner") => "vx-spinner",
             (_, "Badge") => "vx-badge",
             (_, "Chip") => "vx-chip",
+            (_, "Stepper") => "vx-stepper",
             (_, "Avatar") => "vx-avatar",
             (_, "Image" | "Svg") if masked => "vx-mask",
             (_, "Image" | "Svg") => "vx-image",
@@ -1197,6 +1201,108 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         }
     }
 
+    /// Writes a stepper's halves, its number and bounds as `aria-value*`, its
+    /// step and whether it wraps as `data-` attributes the script steps by,
+    /// its tint as its `color` and its label as its `aria-label`; a half
+    /// that cannot step is spent.
+    fn stepper(
+        &mut self,
+        control: &Control,
+        el: &mut Element,
+        decls: &mut Vec<(&'static str, String)>,
+        wires: &mut Vec<Wire>,
+        at: TextRange,
+    ) {
+        el.attr("tabindex", "0");
+        let mut fixed = [None, None, Some(0.0)];
+        let mut changes = false;
+        for (i, (entry, name, attr, what)) in [
+            (control.min, "min", "aria-valuemin", "the stepper's minimum"),
+            (control.max, "max", "aria-valuemax", "the stepper's maximum"),
+            (
+                control.value,
+                "value",
+                "aria-valuenow",
+                "the stepper's number",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if entry.is_none() {
+                continue;
+            }
+            match self.bind(wires, entry, Prop::Stepper(name), what, at) {
+                Some(f) => {
+                    fixed[i] = f.float();
+                    if let Some(v) = fixed[i] {
+                        el.attr(attr, &css::number(v));
+                    }
+                }
+                None => changes = true,
+            }
+        }
+        if control.value.is_none() {
+            el.attr("aria-valuenow", "0");
+        }
+        if let Some(fixed) = self.bind(
+            wires,
+            control.step,
+            Prop::Stepper("step"),
+            "the stepper's step",
+            at,
+        ) && let Some(step) = fixed.float()
+        {
+            el.attr("data-step", &css::number(step));
+        }
+        let wrap = match self.bind(
+            wires,
+            control.wrap,
+            Prop::Stepper("wrap"),
+            "whether the stepper wraps",
+            at,
+        ) {
+            Some(fixed) => Some(fixed.truth()),
+            None if control.wrap.is_some() => None,
+            None => Some(false),
+        };
+        if wrap == Some(true) {
+            el.attr("data-wrap", "true");
+        }
+        // The script dims the halves of one whose number or bounds change.
+        let [min, max, value] = fixed;
+        let spent = match (changes, wrap, value) {
+            (false, Some(wrap), Some(v)) if !(wrap && min.is_some() && max.is_some()) => {
+                [min.is_some_and(|lo| v <= lo), max.is_some_and(|hi| v >= hi)]
+            }
+            _ => [false, false],
+        };
+        let half = |by: i8, glyph: &str, spent: bool| {
+            let class = if spent { "vx-step vx-spent" } else { "vx-step" };
+            format!(
+                "<button type=\"button\" tabindex=\"-1\" aria-hidden=\"true\" class=\"{class}\" data-by=\"{by}\">{glyph}</button>"
+            )
+        };
+        el.markup = Some(half(-1, "\u{2212}", spent[0]) + &half(1, "+", spent[1]));
+        if let Some(Fixed::Value(tint)) =
+            self.bind(wires, control.tint, Prop::Stepper("tint"), "the tint", at)
+            && tint.as_int().is_some()
+        {
+            decls.push(("color", Fixed::Value(tint).color()));
+        }
+        if control.semantics.label.is_none()
+            && let Some(fixed) = self.bind(
+                wires,
+                control.caption,
+                Prop::Label { alt: false },
+                "the label",
+                at,
+            )
+        {
+            el.attr("aria-label", &fixed.text());
+        }
+    }
+
     /// Writes a badge's count as its text, `max` and a plus past its `max`,
     /// and with no count makes it a dot (`vx-dot`); a count or most that
     /// changes rides in `data-count`/`data-max` for the script to show
@@ -1654,6 +1760,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 self.progress(control, el, decls, wires, at);
             }
             ControlKind::Badge => self.badge(key, control, el, decls, wires, at),
+            ControlKind::Stepper => self.stepper(control, el, decls, wires, at),
             ControlKind::Avatar => self.avatar(key, control, el, decls, wires, at),
             ControlKind::Viewer => {
                 for (entry, name, what) in [

@@ -524,6 +524,8 @@ pub enum StoreRequest {
     Sheet(NodeId, bool),
     /// Bring a sheet to rest at a detent.
     Detent(NodeId, usize),
+    /// Hold a stepper's half down, or let go of its hold.
+    HoldStep(NodeId, Option<crate::stepper::StepHalf>),
 }
 
 impl StoreRequest {
@@ -553,6 +555,7 @@ impl StoreRequest {
             StoreRequest::Swipe(id, edge) => store.open_swipe_row(id, edge),
             StoreRequest::Sheet(id, open) => store.present_sheet(id, open),
             StoreRequest::Detent(id, detent) => store.set_sheet_detent(id, detent),
+            StoreRequest::HoldStep(id, half) => store.hold_step(id, half),
         }
     }
 }
@@ -1123,6 +1126,24 @@ impl<'a> EventCx<'a> {
     /// Node `id`'s page dots; `None` on the state-only paths.
     pub fn page_dots(&self, id: NodeId) -> Option<crate::page_dots::PageDots> {
         self.place.and_then(|place| place.store.page_dots(id))
+    }
+
+    /// Node `id`'s stepper, if it draws one.
+    pub fn stepper(&self, id: NodeId) -> Option<crate::stepper::Stepper> {
+        self.place.and_then(|place| place.store.stepper(id))
+    }
+
+    /// Hold half `half` of stepper `id` down, or let go of its hold
+    /// ([`stepper`](crate::stepper)).
+    pub fn hold_step(&mut self, id: NodeId, half: Option<crate::stepper::StepHalf>) {
+        self.store_requests.push(StoreRequest::HoldStep(id, half));
+    }
+
+    /// Whether the dispatching node reads right to left; `false` on the
+    /// state-only paths.
+    pub fn reads_rtl(&self) -> bool {
+        self.place
+            .is_some_and(|place| place.store.reads_rtl(place.node))
     }
 
     /// The item a snapping viewport ([`NodeStore::tell_snaps`]) came to rest

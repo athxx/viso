@@ -2956,6 +2956,11 @@ impl NodeStore {
         }
     }
 
+    /// Node `id`'s content, to change in place; the caller marks it.
+    pub(crate) fn content_payload_mut(&mut self, id: NodeId) -> Option<&mut Content> {
+        self.content_payload[id.index() as usize].as_deref_mut()
+    }
+
     /// Node `id`'s spinner, to change in place; the caller marks it.
     pub(crate) fn spinner_mut(&mut self, id: NodeId) -> Option<&mut crate::spinner::Spinner> {
         if !self.arena.is_live(id) {

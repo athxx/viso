@@ -503,6 +503,8 @@ fn paint_own(store: &NodeStore, node: NodeId, world: Rect, out: &mut Vec<Primiti
             if let Content::Progress(progress) = content {
                 let rtl = store.layout_direction(node) == crate::adaptive::LayoutDirection::Rtl;
                 progress.paint(world, rtl, out);
+            } else if let Content::Stepper(stepper) = content {
+                stepper.paint(world, store.reads_rtl(node), out);
             } else {
                 let mask = (radius > 0.0).then_some(RoundMask {
                     rect: world,
@@ -826,6 +828,7 @@ pub(crate) fn paint_content(
         Content::Spinner(spinner) => spinner.paint(world, out),
         Content::Progress(progress) => progress.paint(world, false, out),
         Content::PageDots(dots) => dots.paint(world, out),
+        Content::Stepper(stepper) => stepper.paint(world, false, out),
     }
 }
 

@@ -259,6 +259,7 @@ pub(crate) fn control_cells(
         control.node.drop_operation,
         control.url,
         control.removable,
+        control.wrap,
     ])
     .flatten()
     .chain(arms)
@@ -282,8 +283,8 @@ pub(crate) fn control_cells(
 /// navigation stack's `page_transition`, its `hero`, its `focus_ring`, its
 /// `access_key`, its `drag_axis`, a viewer's `pan_margin`, and its `drag`,
 /// `drag_kind`, `drop_accepts` and `drop_operation`, a link label's `url`
-/// and a chip's `removable`.
-const SHOWN: usize = 58;
+/// a chip's `removable` and a stepper's `wrap`.
+const SHOWN: usize = 59;
 
 /// The input of each value a node shows, in order.
 const SHOWN_INPUTS: [ControlInput; SHOWN] = [
@@ -345,6 +346,7 @@ const SHOWN_INPUTS: [ControlInput; SHOWN] = [
     ControlInput::DropOperation,
     ControlInput::Url,
     ControlInput::Removable,
+    ControlInput::Wrap,
 ];
 
 /// Where its `translate` sits among the values a node shows.
@@ -391,6 +393,9 @@ const URL: usize = 56;
 
 /// Where a chip's `removable` sits among the values a node shows.
 const REMOVABLE: usize = 57;
+
+/// Where a stepper's `wrap` sits among the values a node shows.
+const WRAP: usize = 58;
 
 /// Where its `drag`, `drag_kind`, `drop_accepts` and `drop_operation` sit
 /// among the values a node shows.
@@ -616,6 +621,7 @@ impl Shown {
             drop_operation,
             url,
             removable,
+            wrap,
         ] = &shows;
         let access_key = access_key.as_str().and_then(|key| key.chars().next());
         let spanned = crate::text_style::spans(pieces);
@@ -650,6 +656,7 @@ impl Shown {
                     ControlKind::Check
                     | ControlKind::Switch
                     | ControlKind::Chip
+                    | ControlKind::Stepper
                     | ControlKind::Progress
                     | ControlKind::Ring
                     | ControlKind::Spinner
@@ -891,7 +898,7 @@ impl Shown {
             && (0..LOOK)
                 .chain(TEXT..TRANSLATE)
                 .chain(PIECES..SHADOW)
-                .chain([ACCESS_KEY, PAN_MARGIN, URL, REMOVABLE])
+                .chain([ACCESS_KEY, PAN_MARGIN, URL, REMOVABLE, WRAP])
                 .all(|at| !changed(at))
             && !repaint
         {
@@ -1128,6 +1135,29 @@ impl Shown {
                     }
                     store.set_text_request(self.node, request);
                 }
+            }
+            // A stepper inked its tint, or the text color, dims a half that
+            // can step no further and reports its number within its bounds.
+            ControlKind::Stepper => {
+                if first || changed(4) {
+                    let ink = tint.as_int().map_or(COLOR, |_| color(tint));
+                    let fill = Rgba {
+                        a: ink.a * 0.08,
+                        ..ink
+                    };
+                    let stepper = viso_ui::stepper::Stepper::new(ink, fill);
+                    store.set_content_payload(self.node, Content::Stepper(stepper));
+                }
+                let at = value.as_float().unwrap_or(0.0);
+                let (lo, hi) = (min.as_float(), max.as_float());
+                let (lower, upper) = viso_ui::stepper::can_step(at, lo, hi, truth(wrap, false));
+                store.show_stepper(self.node, lower, upper);
+                let state = SemanticState::number(
+                    at,
+                    lo.unwrap_or(f64::NEG_INFINITY),
+                    hi.unwrap_or(f64::INFINITY),
+                );
+                store.set_semantic_state(self.node, state);
             }
             ControlKind::Slider => {
                 let (min, max) = (float(min, 0.0), float(max, 1.0));

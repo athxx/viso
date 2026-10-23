@@ -410,6 +410,11 @@ fn groups(store: &NodeStore, id: NodeId) -> Vec<PropertyGroup> {
             add(&mut content, "count", dots.count.to_string());
             add(&mut content, "current", dots.current.to_string());
         }
+        Some(Content::Stepper(stepper)) => {
+            add(&mut content, "kind", "stepper".into());
+            add(&mut content, "lower", stepper.lower.to_string());
+            add(&mut content, "upper", stepper.upper.to_string());
+        }
         Some(Content::Shader { .. }) => add(&mut content, "kind", "shader".into()),
         Some(Content::Asset { .. }) => add(&mut content, "kind", "asset".into()),
         Some(Content::Scene { slot, revision }) => {

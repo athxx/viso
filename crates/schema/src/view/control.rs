@@ -114,11 +114,16 @@ pub enum ControlKind {
     /// `removable` one draws a cross at its end edge: a release on the
     /// cross, or Delete/Backspace, reports `removed`.
     Chip = 27,
+    /// `Stepper`: a minus and a plus that step `value` by `step` within
+    /// `min..=max`, coming round past a bound when it `wrap`s; a held press
+    /// steps on, the arrows step it, Page Up/Down by ten, Home/End to the
+    /// bounds. Reports each number it steps to.
+    Stepper = 28,
 }
 
 impl ControlKind {
     /// Every kind, by discriminant.
-    pub const ALL: [ControlKind; 28] = [
+    pub const ALL: [ControlKind; 29] = [
         ControlKind::Check,
         ControlKind::Slider,
         ControlKind::Select,
@@ -147,6 +152,7 @@ impl ControlKind {
         ControlKind::Badge,
         ControlKind::Avatar,
         ControlKind::Chip,
+        ControlKind::Stepper,
     ];
 
     /// The kind native widget `widget` is.
@@ -179,6 +185,7 @@ impl ControlKind {
             "Badge" => ControlKind::Badge,
             "Avatar" => ControlKind::Avatar,
             "Chip" => ControlKind::Chip,
+            "Stepper" => ControlKind::Stepper,
             _ => ControlKind::Plain,
         }
     }
@@ -248,7 +255,8 @@ impl ControlKind {
                     | ControlKind::Slider
                     | ControlKind::TextInput
                     | ControlKind::Number
-                    | ControlKind::Chip,
+                    | ControlKind::Chip
+                    | ControlKind::Stepper,
                 EventRoute::Changed
             ) | (ControlKind::TextInput, EventRoute::Submitted)
                 | (ControlKind::Select, EventRoute::SelectedChanged)
@@ -398,7 +406,8 @@ impl ControlKind {
                 | ControlKind::Ring
                 | ControlKind::Spinner
                 | ControlKind::Badge
-                | ControlKind::Avatar,
+                | ControlKind::Avatar
+                | ControlKind::Stepper,
                 "tint",
             ) => ControlInput::Tint,
             (ControlKind::Badge, "count") | (ControlKind::Avatar, "image") => ControlInput::Value,
@@ -411,13 +420,22 @@ impl ControlKind {
                 | ControlKind::Progress
                 | ControlKind::Ring
                 | ControlKind::Spinner
-                | ControlKind::Badge,
+                | ControlKind::Badge
+                | ControlKind::Stepper,
                 "label",
             ) => ControlInput::Caption,
             (ControlKind::Chip, "removable") => ControlInput::Removable,
-            (ControlKind::Slider | ControlKind::Number, "min") => ControlInput::Min,
-            (ControlKind::Slider | ControlKind::Number, "max") => ControlInput::Max,
-            (ControlKind::Slider | ControlKind::Number, "step") => ControlInput::Step,
+            (ControlKind::Slider | ControlKind::Number | ControlKind::Stepper, "min") => {
+                ControlInput::Min
+            }
+            (ControlKind::Slider | ControlKind::Number | ControlKind::Stepper, "max") => {
+                ControlInput::Max
+            }
+            (ControlKind::Slider | ControlKind::Number | ControlKind::Stepper, "step") => {
+                ControlInput::Step
+            }
+            (ControlKind::Stepper, "value") => ControlInput::Value,
+            (ControlKind::Stepper, "wrap") => ControlInput::Wrap,
             (ControlKind::Number, "precision") => ControlInput::Precision,
             (ControlKind::Asset, "fit") => ControlInput::Fit,
             (ControlKind::Asset, "tint") => ControlInput::Tint,
@@ -466,6 +484,7 @@ impl ControlKind {
             ControlKind::Badge => "Badge",
             ControlKind::Avatar => "Avatar",
             ControlKind::Chip => "Chip",
+            ControlKind::Stepper => "Stepper",
         }
     }
 
@@ -484,7 +503,7 @@ pub fn widget_role(widget: &str) -> Option<Role> {
         "Toggle" | "CheckBox" | "Chip" => Role::CheckBox,
         "Slider" => Role::Slider,
         "TextInput" => Role::TextField,
-        "NumberField" => Role::SpinButton,
+        "NumberField" | "Stepper" => Role::SpinButton,
         "Tabs" => Role::TabList,
         "Text" | "LinkLabel" | "Badge" => Role::Label,
         "Image" | "Svg" | "GameViewport" | "Avatar" => Role::Image,
@@ -957,6 +976,9 @@ pub enum ControlInput {
     Url,
     /// A chip's `removable`: whether it draws a cross that removes it.
     Removable,
+    /// A stepper's `wrap`: whether a step past a bound comes round to the
+    /// other.
+    Wrap,
 }
 
 /// A view-driven native node: its kind and the handler-table entries that
@@ -1000,6 +1022,8 @@ pub struct Control {
     pub url: Option<u32>,
     /// The entry of whether a chip draws a cross that removes it.
     pub removable: Option<u32>,
+    /// The entry of whether a stepper comes round past a bound.
+    pub wrap: Option<u32>,
     /// The shader a shader view paints with, by its index in the view's
     /// shader table; its value gives the shader's parameters.
     pub shader: Option<u32>,
@@ -1187,7 +1211,7 @@ pub enum Switched {
 
 impl ControlInput {
     /// Every input, by wire tag.
-    pub const ALL: [ControlInput; 67] = [
+    pub const ALL: [ControlInput; 68] = [
         ControlInput::Value,
         ControlInput::Min,
         ControlInput::Max,
@@ -1255,6 +1279,7 @@ impl ControlInput {
         ControlInput::DropOperation,
         ControlInput::Url,
         ControlInput::Removable,
+        ControlInput::Wrap,
     ];
 
     /// Its wire tag: its place in [`ControlInput::ALL`].
@@ -1350,6 +1375,7 @@ impl Control {
             pan_margin: None,
             url: None,
             removable: None,
+            wrap: None,
             shader: None,
             look: Look::default(),
             arms: Box::new([]),
@@ -1435,6 +1461,7 @@ impl Control {
             ControlInput::PanMargin => self.pan_margin,
             ControlInput::Url => self.url,
             ControlInput::Removable => self.removable,
+            ControlInput::Wrap => self.wrap,
         }
     }
 
@@ -1518,6 +1545,7 @@ impl Control {
             ControlInput::PanMargin => &mut self.pan_margin,
             ControlInput::Url => &mut self.url,
             ControlInput::Removable => &mut self.removable,
+            ControlInput::Wrap => &mut self.wrap,
         };
         *slot = Some(entry);
     }
@@ -1548,6 +1576,7 @@ impl Encode for Control {
             self.pan_margin,
             self.url,
             self.removable,
+            self.wrap,
             self.shader,
             look.background,
             look.opacity,
@@ -1674,6 +1703,7 @@ impl Decode for Control {
             pan_margin: entry()?,
             url: entry()?,
             removable: entry()?,
+            wrap: entry()?,
             shader: entry()?,
             look: Look {
                 background: entry()?,
@@ -1964,6 +1994,7 @@ mod tests {
             pan_margin: Some(34),
             url: Some(35),
             removable: Some(36),
+            wrap: Some(37),
             shader: Some(2),
             look: Look {
                 background: Some(3),

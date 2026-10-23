@@ -70,6 +70,7 @@ pub mod spinner;
 pub mod state;
 #[cfg(feature = "hot-reload")]
 pub mod state_origin;
+pub mod stepper;
 pub mod sticky;
 pub mod structure;
 pub mod style;

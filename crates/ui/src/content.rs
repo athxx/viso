@@ -153,6 +153,8 @@ pub enum Content {
     PageDots(crate::page_dots::PageDots),
     /// A progress indicator: how far work has come.
     Progress(crate::progress::Progress),
+    /// A stepper: a minus and a plus that step a number.
+    Stepper(crate::stepper::Stepper),
 }
 
 /// An image a brush node samples: the resource its texture parameter names,
@@ -186,6 +188,7 @@ impl Content {
             Content::Spinner(spinner) => spinner.natural,
             Content::Progress(progress) => progress.natural,
             Content::PageDots(dots) => dots.natural(),
+            Content::Stepper(stepper) => stepper.natural,
             Content::Shader { .. } | Content::Scene { .. } => Vec2::ZERO,
         }
     }
@@ -202,6 +205,7 @@ impl Content {
             Content::Spinner(spinner) => spinner.natural.x,
             Content::Progress(progress) => progress.natural.x,
             Content::PageDots(dots) => dots.natural().x,
+            Content::Stepper(stepper) => stepper.natural.x,
             Content::Shader { .. } | Content::Scene { .. } => 0.0,
         }
     }
@@ -220,7 +224,8 @@ impl Content {
             | Content::Scene { .. }
             | Content::Spinner(_)
             | Content::Progress(_)
-            | Content::PageDots(_) => None,
+            | Content::PageDots(_)
+            | Content::Stepper(_) => None,
         }
     }
 }

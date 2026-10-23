@@ -359,6 +359,12 @@ dialog.vx-layer:not([open]), .vx-layer[hidden] { display: none; }
 .vx-chip[aria-pressed=\"true\"]::before { width: 18px; margin-inline: -4px 8px; }
 .vx-chip[data-removable=\"true\"]::after { content: \"\\00d7\"; flex: none; width: 18px; margin-inline: 8px -4px; font-size: 18px; text-align: center; opacity: 0.8; }
 @media (prefers-reduced-motion: reduce) { .vx-chip, .vx-chip::before { transition: none; } }
+.vx-stepper { display: inline-flex; box-sizing: border-box; width: 96px; height: 32px; border-radius: 8px; background-color: color-mix(in srgb, currentColor 8%, transparent); user-select: none; -webkit-user-select: none; touch-action: manipulation; }
+.vx-step { flex: 1; display: flex; align-items: center; justify-content: center; margin: 2px; padding: 0; border: 0; border-radius: 6px; background-color: transparent; color: inherit; font: inherit; font-size: 20px; line-height: 1; cursor: pointer; }
+.vx-step + .vx-step { position: relative; }
+.vx-step + .vx-step::before { content: \"\"; position: absolute; inset-inline-start: -2.5px; top: 25%; height: 50%; width: 1px; background-color: color-mix(in srgb, currentColor 25%, transparent); }
+.vx-step:active:not(.vx-spent) { background-color: color-mix(in srgb, currentColor 14%, transparent); }
+.vx-step.vx-spent { opacity: 0.3; cursor: default; }
 .vx-badge { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; min-width: 1.4545em; height: 1.4545em; padding: 0 0.3636em; border-radius: 999px; background-color: #b3261e; color: #fff; font-weight: 500; line-height: 1; white-space: nowrap; }
 .vx-badge.vx-dot { min-width: 8px; width: 8px; height: 8px; padding: 0; }
 .vx-avatar { display: inline-flex; align-items: center; justify-content: center; overflow: hidden; border-radius: 50%; color: #fff; font-weight: 500; line-height: 1; background-size: cover; background-position: center; user-select: none; }

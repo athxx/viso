@@ -192,7 +192,8 @@ Rules:
 ## W9 — Widgets
 
 - [x] `ProgressBar` (determinate/indeterminate), `ProgressRing`, `Spinner`.
-- [ ] `Stepper`, `SegmentedControl`.
+- [x] `Stepper` (hold to repeat with acceleration, wrap, keys, spin-button semantics).
+- [ ] `SegmentedControl`.
 - [x] `Chip` (filter/input/assist: selection with a growing tick, a removable cross,
   Delete and an accessibility "Remove" action), `Badge`, `Avatar`, `LinkLabel`.
 - [ ] `SearchField` with suggestions (built on W4 placement).

@@ -201,6 +201,19 @@ const CHIP: &[WidgetProperty] = &[
     prop("label", "String").localizable(),
 ];
 
+/// A `Stepper`'s `value`, kept within `min..=max` and stepped by `step`,
+/// whether a step past a bound `wrap`s round to the other, its ink `tint`
+/// and the `label` it is named by.
+const STEPPER: &[WidgetProperty] = &[
+    two_way("value", "F64"),
+    prop("min", "Option<F64>"),
+    prop("max", "Option<F64>"),
+    prop("step", "F64"),
+    prop("wrap", "Bool"),
+    look("tint", "Option<Color>"),
+    prop("label", "String").localizable(),
+];
+
 const SLIDER: &[WidgetProperty] = &[
     two_way("value", "F32"),
     prop("min", "F32"),
@@ -613,6 +626,13 @@ pub const STANDARD: &[NativeWidget] = &[
         &[CHIP, TEXT_STYLE, LAYOUT, TRANSFORM, FOCUS],
     )
     .events(&[CHIP_EVENTS, STANDARD_EVENTS])
+    .interactive(),
+    layout(
+        "Stepper",
+        WidgetNode::Leaf,
+        &[STEPPER, LAYOUT, TRANSFORM, FOCUS],
+    )
+    .events(&[NUMBER_EVENTS, STANDARD_EVENTS])
     .interactive(),
     layout(
         "Slider",

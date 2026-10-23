@@ -17,7 +17,7 @@ use viso_behavior::{Aggregate, Fault, FaultKind, Value};
 
 use viso_ui::{
     Access, DispatchPhase, EventCx, FieldEvent, Key, KeyEvent, Modifiers, NodeId, NodeStore,
-    PointerButtons, PointerPhase, field_input, number_input,
+    PointerButtons, PointerPhase, field_input, number_input, stepper::stepper_input,
 };
 
 use crate::host::ViewHost;
@@ -61,6 +61,7 @@ impl Drive for Control {
         match self.kind {
             ControlKind::Check | ControlKind::Switch => toggle(self, host, scope, cx),
             ControlKind::Chip => chip(self, host, scope, cx),
+            ControlKind::Stepper => stepper(self, host, scope, cx),
             ControlKind::Disclosure => disclose(self, host, scope, cx),
             ControlKind::Button => click(cx),
             ControlKind::Dialog => dismiss(self, host, scope, cx),
@@ -223,6 +224,32 @@ fn chip(
         return None;
     }
     click(cx)
+}
+
+/// A stepper's response: a press on a half steps it and holds it down, a
+/// held half steps on, the keys step it; each reports the number it steps
+/// to within its bounds.
+fn stepper(
+    control: &Control,
+    host: &mut ViewHost,
+    scope: &Scope,
+    cx: &mut EventCx<'_>,
+) -> Option<(EventRoute, Value)> {
+    if cx.phase() != DispatchPhase::Target {
+        return None;
+    }
+    let input = stepper_input(cx, cx.node()?)?;
+    let value = read(host, control.value, scope, cx)
+        .as_float()
+        .unwrap_or(0.0);
+    let min = read(host, control.min, scope, cx).as_float();
+    let max = read(host, control.max, scope, cx).as_float();
+    let step = read(host, control.step, scope, cx)
+        .as_float()
+        .unwrap_or(1.0);
+    let wrap = read(host, control.wrap, scope, cx).as_int().unwrap_or(0) != 0;
+    let next = input.apply(value, step, min, max, wrap)?;
+    Some((EventRoute::Changed, field(Value::Float(next))))
 }
 
 /// A button's response: Space or Enter on it, or its access key, reports a

@@ -2091,3 +2091,34 @@ fn chips_export_as_buttons_pressed_while_selected_with_a_cross_when_removable() 
     assert!(script.contains("P.pressed("), "{script}");
     assert!(script.contains("P.data("), "{script}");
 }
+
+const STEPPERS: &str = r##"
+export component Steppers {
+    state guests: F64 = 2.0;
+    view {
+        Column {
+            Stepper { value: 0.0; min: 0.0; max: 3.0; label: "Fixed"; }
+            Stepper { bind value <=> guests; min: 1.0; max: 12.0; step: 1.0; wrap: true; }
+        }
+    }
+}
+"##;
+
+#[test]
+fn steppers_export_as_spin_buttons_their_script_steps() {
+    let page = export(STEPPERS, false).unwrap();
+    let index = &page.index;
+    assert!(
+        index.contains("role=\"spinbutton\" tabindex=\"0\" aria-valuemin=\"0\" aria-valuemax=\"3\" aria-valuenow=\"0\""),
+        "{index}"
+    );
+    assert!(
+        index.contains("class=\"vx-step vx-spent\" data-by=\"-1\">\u{2212}</button>"),
+        "the minus of one at its least is spent: {index}"
+    );
+    assert!(index.contains("aria-label=\"Fixed\""), "{index}");
+    assert!(index.contains("data-wrap=\"true\""), "{index}");
+    assert!(page.styles.contains(".vx-stepper {"), "{}", page.styles);
+    let script = page.script.as_deref().unwrap();
+    assert!(script.contains("P.stepper("), "{script}");
+}

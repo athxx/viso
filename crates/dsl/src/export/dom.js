@@ -510,6 +510,19 @@ const P = {
   range: (el, v, name) => { el[name] = v === null ? "" : String(v); },
   href: (el, v) => attr(el, "href", v),
   pressed: (el, v) => attr(el, "aria-pressed", truth(v) ? "true" : "false"),
+  // A stepper's number, bounds, step, wrap or tint: the halves that can
+  // step no further are spent.
+  stepper(el, v, name) {
+    if (name === "tint") { el.style.color = v === null ? "" : color(v); return; }
+    const a = { value: "aria-valuenow", min: "aria-valuemin", max: "aria-valuemax" }[name];
+    if (a) attr(el, a, v === null ? null : String(v));
+    else if (name === "wrap") attr(el, "data-wrap", truth(v) ? "true" : null);
+    else attr(el, "data-step", v === null ? null : String(v));
+    const [lo, hi, now, , wraps] = stepping(el);
+    const [down, up] = el.querySelectorAll(".vx-step");
+    down?.classList.toggle("vx-spent", !wraps && now <= lo);
+    up?.classList.toggle("vx-spent", !wraps && now >= hi);
+  },
   badge(el, v, name) {
     el.dataset[name] = v === null ? "" : String(v);
     const c = el.dataset.count, m = Math.max(Number(el.dataset.max || 99), 1);
@@ -1615,6 +1628,63 @@ const holdable = (el, fire) => {
   el.addEventListener("pointercancel", drop);
 };
 
+// A stepper's bounds, number, step and whether it comes round past a bound.
+const stepping = (el) => {
+  const n = (a, d) => { const s = el.getAttribute(a); return s === null ? d : Number(s); };
+  const lo = n("aria-valuemin", -Infinity), hi = n("aria-valuemax", Infinity);
+  const step = Number(el.dataset.step || 1) || 1;
+  return [lo, hi, n("aria-valuenow", 0), step, el.dataset.wrap === "true" && isFinite(lo) && isFinite(hi)];
+};
+
+// Steps stepper `el` by its halves and its keys, calling `report` with each
+// number it steps to: a held half steps on after a pause, faster the longer
+// it is held; the arrows step one, Page Up and Page Down ten, Home and End go
+// to the bounds.
+const stepper = (el, report, capture) => {
+  const go = (input) => {
+    const [lo, hi, now, step, wraps] = stepping(el);
+    let next;
+    if (input === "min") next = lo;
+    else if (input === "max") next = hi;
+    else {
+      const [sign, times] = input;
+      if (wraps && sign > 0 && now >= hi) next = lo;
+      else if (wraps && sign < 0 && now <= lo) next = hi;
+      else {
+        const base = isFinite(lo) ? lo : 0;
+        next = base + Math.round((now + sign * step * times - base) / step) * step;
+      }
+    }
+    next = Math.min(Math.max(next, Math.min(lo, hi)), Math.max(lo, hi));
+    if (!Number.isFinite(next) || next === now) return false;
+    report(next);
+    return true;
+  };
+  let hold = null;
+  const stop = () => { clearTimeout(hold); hold = null; };
+  const on = (sign, delay, steps) => {
+    hold = setTimeout(() => { if (go([sign, 1])) on(sign, steps < 8 ? 120 : 50, steps + 1); else stop(); }, delay);
+  };
+  el.addEventListener("pointerdown", (e) => {
+    const half = e.target.closest && e.target.closest(".vx-step");
+    if (!half || e.button !== 0 || off(el)) return;
+    e.preventDefault();
+    el.focus();
+    stop();
+    const sign = Number(half.dataset.by);
+    if (go([sign, 1])) on(sign, 500, 0);
+  }, capture);
+  for (const t of ["pointerup", "pointerleave", "pointercancel"]) el.addEventListener(t, stop, capture);
+  el.addEventListener("keydown", (e) => {
+    const back = getComputedStyle(el).direction === "rtl" ? 1 : -1;
+    const keys = { ArrowUp: [1, 1], ArrowDown: [-1, 1], ArrowRight: [-back, 1], ArrowLeft: [back, 1], PageUp: [1, 10], PageDown: [-1, 10], Home: "min", End: "max" };
+    const input = keys[e.key];
+    if (!input || off(el)) return;
+    e.preventDefault();
+    go(input);
+  }, capture);
+};
+
 // Whether a click on a removable chip `el` lands on its cross, which takes
 // its end edge; a click a key made lands on none.
 const crossed = (el, e) => {
@@ -1649,6 +1719,7 @@ const listen = (el, route, capture, control, fire) => {
     el.addEventListener(DOM[route], live((e) => fire(rec([key(e), bool(e.repeat), mods(e)]))), capture);
   } else if (route === 9) {
     if (control === 0 || control === 8) el.addEventListener("change", () => fire(rec([bool(el.checked)])), capture);
+    else if (control === 28) stepper(el, (n) => fire(rec([n])), capture);
     else if (control === 27) el.addEventListener("click", live((e) => {
       if (!crossed(el, e)) fire(rec([bool(el.getAttribute("aria-pressed") !== "true")]));
     }), capture);
