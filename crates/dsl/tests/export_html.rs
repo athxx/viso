@@ -497,6 +497,46 @@ fn a_double_tap_exports_as_dblclick_and_the_tap_waits_it_out() {
     assert!(dom.contains(">doubles=1<"), "{dom}");
 }
 
+const SWIPED: &str = r#"
+export component Swiped {
+    state lefts = 0;
+    state ends = 0;
+    view {
+        Column {
+            Row {
+                width: 200dp; height: 100dp;
+                on swipe(event) { lefts += match event.direction { SwipeDirection::left => 1, _ => 0 }; }
+                on drag_end(event) { ends += 1; }
+            }
+            Text { text: format("lefts={}", lefts); }
+            Text { text: format("ends={}", ends); }
+        }
+    }
+}
+"#;
+
+#[test]
+fn a_swipe_exports_as_a_drag_that_lifts_fast() {
+    let page = export(SWIPED, false).unwrap();
+    let script = page.script.clone().unwrap();
+    assert!(script.contains(", 24, false, "), "{script}");
+    let Some(chrome) = chrome() else {
+        eprintln!("no Chrome: the page is not run");
+        return;
+    };
+    let stroke = "\nconst row = () => document.querySelector('body div div');\n\
+        const at = (type, x) => row().dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: 1, pointerType: 'mouse', isPrimary: true, button: type === 'pointermove' ? -1 : 0, clientX: x, clientY: 50 }));\n\
+        [[50, 'pointerdown', 150], [60, 'pointermove', 130], [70, 'pointermove', 100], [80, 'pointermove', 70], [90, 'pointerup', 70],\n\
+         [300, 'pointerdown', 150], [400, 'pointermove', 140], [500, 'pointermove', 130], [600, 'pointerup', 130]]\n\
+          .forEach(([t, type, x]) => setTimeout(() => at(type, x), t));\n";
+    let dom = run_in_chrome(&page, &(script + stroke), "export-swiped", &[], chrome);
+    assert!(dom.contains(">ends=2<"), "{dom}");
+    assert!(
+        dom.contains(">lefts=1<"),
+        "the slow drag is no swipe: {dom}"
+    );
+}
+
 const CLIPPED: &str = r#"
 export component Clipped {
     state on = true;

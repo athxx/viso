@@ -1172,6 +1172,87 @@ export component Taps {
 }
 
 #[test]
+fn a_drag_that_lifts_fast_swipes_its_way_and_ends_with_its_velocity() {
+    const SRC: &str = r#"
+export component Swipes {
+    state lefts = 0;
+    state ups = 0;
+    state speed = Offset { x: 0dp, y: 0dp };
+    view {
+        Column {
+            Row {
+                width: 200dp; height: 200dp;
+                on swipe(event) {
+                    lefts += match event.direction { SwipeDirection::left => 1, _ => 0 };
+                    ups += match event.direction { SwipeDirection::up => 1, _ => 0 };
+                }
+                on drag_end(event) { speed = event.velocity; }
+            }
+        }
+    }
+}
+"#;
+    for mut rt in [Rt::reloaded(SRC), Rt::packaged(SRC)] {
+        let t0 = viso_ui::Instant::now();
+        let stroke = |rt: &mut Rt, points: &[(f32, f32)]| {
+            for (k, &(x, y)) in points.iter().enumerate() {
+                rt.store
+                    .set_input_time(t0 + std::time::Duration::from_millis(10 * k as u64));
+                let phase = match k {
+                    0 => PointerPhase::Down,
+                    _ if k == points.len() - 1 => PointerPhase::Up,
+                    _ => PointerPhase::Move,
+                };
+                rt.pointer(x, y, phase);
+            }
+        };
+        stroke(
+            &mut rt,
+            &[
+                (150.0, 100.0),
+                (130.0, 100.0),
+                (100.0, 101.0),
+                (70.0, 101.0),
+                (70.0, 101.0),
+            ],
+        );
+        assert_eq!((rt.int("lefts"), rt.int("ups")), (1, 0));
+        // The velocity's `x`, a length's px part.
+        let speed = match rt.state("speed") {
+            Some(Value::Agg(offset)) => match &offset.fields[0] {
+                Value::Agg(x) => x.fields[0].as_float(),
+                other => other.as_float(),
+            },
+            _ => None,
+        };
+        assert!(speed.is_some_and(|v| v < -1000.0), "{speed:?}");
+        stroke(
+            &mut rt,
+            &[
+                (100.0, 150.0),
+                (100.0, 145.0),
+                (101.0, 141.0),
+                (101.0, 138.0),
+                (101.0, 138.0),
+            ],
+        );
+        assert_eq!((rt.int("lefts"), rt.int("ups")), (1, 0), "too slow");
+        stroke(
+            &mut rt,
+            &[
+                (100.0, 150.0),
+                (100.0, 120.0),
+                (101.0, 90.0),
+                (101.0, 60.0),
+                (101.0, 60.0),
+            ],
+        );
+        assert_eq!((rt.int("lefts"), rt.int("ups")), (1, 1));
+        assert!(!rt.faulted());
+    }
+}
+
+#[test]
 fn an_access_key_is_cued_in_the_text_and_reaches_its_control() {
     const SRC: &str = r#"
 export component Keys {

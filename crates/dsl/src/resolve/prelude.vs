@@ -48,7 +48,11 @@ export enum ShortcutScope { parent; window; }
 export record ClickEvent { position: Option<Point>; modifiers: Modifiers; }
 export record TapEvent { position: Point; pointer_kind: PointerKind; }
 export record LongPressEvent { position: Point; pointer_kind: PointerKind; }
-export record DragEvent { position: Point; delta: Offset; total: Offset; }
+// `velocity` is how fast the pointer moves, per second; at `drag_end`, how
+// fast it lifted.
+export record DragEvent { position: Point; delta: Offset; total: Offset; velocity: Offset; }
+export enum SwipeDirection { left; right; up; down; }
+export record SwipeEvent { direction: SwipeDirection; position: Point; velocity: Offset; }
 export record PointerEvent {
     position: Point;
     button: PointerButton;

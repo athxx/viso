@@ -499,8 +499,8 @@ pub fn route_contact(
                 );
             }
         }
-        PointerPhase::Up => store.end_drag(pointer, at),
-        PointerPhase::Leave if contact.direct => store.end_drag(pointer, at),
+        PointerPhase::Up => store.end_drag(pointer, at, true),
+        PointerPhase::Leave if contact.direct => store.end_drag(pointer, at, false),
         _ => {}
     }
     let ran = route_sample(store, states, bindings, root, contact, &ev, chain);

@@ -23,7 +23,7 @@ use crate::syntax::{SyntaxKind, SyntaxNode, TextRange};
 pub(crate) fn is_gesture(event: &str) -> bool {
     matches!(
         event,
-        "click" | "tap" | "double_tap" | "long_press" | "key_down"
+        "click" | "tap" | "double_tap" | "swipe" | "long_press" | "key_down"
     ) || event.starts_with("drag_")
 }
 

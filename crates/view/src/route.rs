@@ -10,7 +10,7 @@ use std::rc::Rc;
 use viso_behavior::{Aggregate, Value};
 use viso_ui::{
     DragPhase, EventCx, Interaction, Key, KeyEvent, LookValue, Modifiers, NodeId, NodeStore,
-    Notice, PointerButtons, PointerId, PointerPhase, Vec2,
+    Notice, PointerButtons, PointerId, PointerPhase, SwipeDirection, Vec2,
 };
 
 use crate::layout_values::length;
@@ -99,8 +99,8 @@ pub(crate) fn key_click(cx: &EventCx<'_>, held: Modifiers) -> Value {
 }
 
 /// The `DragEvent` of `route` when the sample under dispatch is that sample of
-/// a drag. Its position is local to the dispatching node, its travel in window
-/// axes.
+/// a drag, or the `SwipeEvent` of the end that swipes. Its position is local
+/// to the dispatching node, its travel and velocity in window axes.
 fn drag_event(route: EventRoute, cx: &EventCx<'_>) -> Option<Value> {
     let drag = cx.drag()?;
     let phase = match route {
@@ -113,10 +113,24 @@ fn drag_event(route: EventRoute, cx: &EventCx<'_>) -> Option<Value> {
     }
     let at = cx.local(drag.at.x, drag.at.y);
     let offset = |v: Vec2| record([mixed(v.x), mixed(v.y)]);
+    if route == EventRoute::Swipe {
+        let direction = match drag.swipe()? {
+            SwipeDirection::Left => 0,
+            SwipeDirection::Right => 1,
+            SwipeDirection::Up => 2,
+            SwipeDirection::Down => 3,
+        };
+        return Some(record([
+            Value::Int(direction),
+            point(at.x, at.y),
+            offset(drag.velocity),
+        ]));
+    }
     Some(record([
         point(at.x, at.y),
         offset(drag.delta),
         offset(drag.total),
+        offset(drag.velocity),
     ]))
 }
 

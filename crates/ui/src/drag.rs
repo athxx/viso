@@ -11,16 +11,31 @@
 //!
 //! The router records the sample under dispatch on the drag, so a handler
 //! reads it through [`NodeStore::drag_sample`] beside the pointer sample it
-//! rides on.
+//! rides on. Each sample carries the pointer's velocity, read off its recent
+//! samples by the input clock; a drag that ends moving fast enough along one
+//! axis is a swipe ([`DragSample::swipe`]).
 
 use crate::component::NodeStore;
 use crate::input::PointerId;
 use crate::layout::Vec2;
 use crate::node::NodeId;
+use crate::scroll_motion::VelocityTracker;
 
 /// How far a mouse travels from where it pressed before the press becomes a
 /// drag.
 pub const MOUSE_SLOP: f32 = 4.0;
+
+/// How fast (pt/s) a drag ends moving along its axis to be a swipe.
+pub const SWIPE_SPEED: f32 = 400.0;
+
+/// Which way a swipe went, in window axes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SwipeDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+}
 
 /// Which sample of a drag is under dispatch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +59,42 @@ pub struct DragSample {
     pub delta: Vec2,
     /// How far it moved since the press.
     pub total: Vec2,
+    /// How fast it moves (pt/s), along each axis; at the end, how fast it
+    /// moved as it lifted.
+    pub velocity: Vec2,
+}
+
+impl DragSample {
+    /// The swipe this sample ends the drag with: it lifted moving at least
+    /// [`SWIPE_SPEED`] along the axis it moved fastest along, the way it
+    /// travelled from the press. A cancel ends it with none.
+    pub fn swipe(&self) -> Option<SwipeDirection> {
+        if self.phase != DragPhase::End {
+            return None;
+        }
+        let Vec2 { x, y } = self.velocity;
+        let (speed, along, travel, ahead, back) = if x.abs() >= y.abs() {
+            (
+                x,
+                x.abs(),
+                self.total.x,
+                SwipeDirection::Right,
+                SwipeDirection::Left,
+            )
+        } else {
+            (
+                y,
+                y.abs(),
+                self.total.y,
+                SwipeDirection::Down,
+                SwipeDirection::Up,
+            )
+        };
+        if along < SWIPE_SPEED || speed * travel <= 0.0 {
+            return None;
+        }
+        Some(if speed > 0.0 { ahead } else { back })
+    }
 }
 
 /// One pointer's drag, armed or started.
@@ -57,6 +108,7 @@ struct Drag {
     /// A touch reaches a scroll viewport below the node first.
     behind_scroll: bool,
     sample: Option<DragSample>,
+    track: VelocityTracker,
 }
 
 /// The nodes that take drags and the drags under way. Cold: a store none of
@@ -137,6 +189,10 @@ impl NodeStore {
         let mut node = Some(target);
         while let Some(n) = node {
             if self.draggable(n) {
+                let mut track = VelocityTracker::default();
+                if let Some(now) = self.input_time() {
+                    track.push(now, at);
+                }
                 self.drags.drags.push(Drag {
                     pointer,
                     node: n,
@@ -145,6 +201,7 @@ impl NodeStore {
                     started: false,
                     behind_scroll,
                     sample: None,
+                    track,
                 });
                 return;
             }
@@ -177,9 +234,14 @@ impl NodeStore {
         at: [f32; 2],
         slop: f32,
     ) -> Option<NodeId> {
-        let drag = *self.drags.of(pointer)?;
-        if drag.started {
-            if self.capture_of(pointer) != Some(drag.node) {
+        let now = self.input_time();
+        let d = self.drags.of_mut(pointer)?;
+        if let Some(now) = now {
+            d.track.push(now, at);
+        }
+        let (node, started, origin) = (d.node, d.started, d.origin);
+        if started {
+            if self.capture_of(pointer) != Some(node) {
                 // A handler took the pointer from the drag.
                 self.drop_drag(pointer);
                 return None;
@@ -190,19 +252,20 @@ impl NodeStore {
                 at: Vec2 { x: at[0], y: at[1] },
                 delta: vec(at, d.last),
                 total: vec(at, d.origin),
+                velocity: d.track.velocity(),
             });
             d.last = at;
             return None;
         }
-        let total = vec(at, drag.origin);
+        let total = vec(at, origin);
         if total.x.hypot(total.y) < slop {
             return None;
         }
-        if !self.arena().is_live(drag.node) {
+        if !self.arena().is_live(node) {
             self.drags.forget(pointer);
             return None;
         }
-        let lost = self.set_capture(pointer, Some(drag.node));
+        let lost = self.set_capture(pointer, Some(node));
         self.set_pressed(None);
         self.interaction_states.moved();
         let d = self.drags.of_mut(pointer)?;
@@ -212,14 +275,17 @@ impl NodeStore {
             at: Vec2 { x: at[0], y: at[1] },
             delta: total,
             total,
+            velocity: d.track.velocity(),
         });
         d.last = at;
-        lost.filter(|&n| n != drag.node)
+        lost.filter(|&n| n != node)
     }
 
-    /// Pointer `pointer` lifted or was cancelled at `at`: records the end a
-    /// started drag sees, and forgets one that never started.
-    pub(crate) fn end_drag(&mut self, pointer: PointerId, at: [f32; 2]) {
+    /// Pointer `pointer` lifted at `at`, or was cancelled there: records the
+    /// end a started drag sees, moving as it lifted and still once cancelled,
+    /// and forgets one that never started.
+    pub(crate) fn end_drag(&mut self, pointer: PointerId, at: [f32; 2], lifted: bool) {
+        let now = self.input_time();
         let Some(d) = self.drags.of_mut(pointer) else {
             return;
         };
@@ -227,11 +293,19 @@ impl NodeStore {
             self.drags.forget(pointer);
             return;
         }
+        if let Some(now) = now {
+            d.track.push(now, at);
+        }
         d.sample = Some(DragSample {
             phase: DragPhase::End,
             at: Vec2 { x: at[0], y: at[1] },
             delta: vec(at, d.last),
             total: vec(at, d.origin),
+            velocity: if lifted {
+                d.track.velocity()
+            } else {
+                Vec2::ZERO
+            },
         });
         d.last = at;
     }
@@ -252,5 +326,58 @@ impl NodeStore {
         if self.capture_of(pointer) == Some(node) {
             self.set_capture(pointer, None);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::time::Duration;
+
+    use viso_runtime::Instant;
+
+    use super::*;
+    use crate::component::{BuildCx, LeafStyle};
+    use crate::layout::Size;
+    use crate::style::BoxStyle;
+
+    /// A drag of pointer 1 on a fresh node from `(10, 10)` through `steps`,
+    /// one every 10 ms, lifted (or cancelled) at the last; its end sample.
+    fn drag(steps: &[[f32; 2]], lifted: bool) -> DragSample {
+        let mut store = NodeStore::new();
+        let node = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.leaf(LeafStyle {
+                size: Size::fixed(100.0, 100.0),
+                style: BoxStyle::NONE,
+            })
+            .id()
+        };
+        store.set_draggable(node, true);
+        let t0 = Instant::now();
+        let pointer = PointerId(1);
+        store.set_input_time(t0);
+        store.arm_drag(pointer, node, [10.0, 10.0], false);
+        for (k, &at) in steps.iter().enumerate() {
+            store.set_input_time(t0 + Duration::from_millis(10 * (k as u64 + 1)));
+            store.step_drag(pointer, at, MOUSE_SLOP);
+            store.settle_drag(pointer);
+        }
+        let last = *steps.last().unwrap();
+        store.end_drag(pointer, last, lifted);
+        store.drag_sample(pointer).expect("an end")
+    }
+
+    #[test]
+    fn a_drag_that_lifts_moving_fast_along_an_axis_is_a_swipe_that_way() {
+        let left = drag(&[[0.0, 11.0], [-20.0, 12.0], [-40.0, 12.0]], true);
+        assert!(left.velocity.x < -SWIPE_SPEED, "{left:?}");
+        assert_eq!(left.swipe(), Some(SwipeDirection::Left));
+        let down = drag(&[[11.0, 30.0], [12.0, 60.0], [12.0, 90.0]], true);
+        assert_eq!(down.swipe(), Some(SwipeDirection::Down));
+        let slow = drag(&[[16.0, 10.0], [17.0, 10.0], [18.0, 10.0]], true);
+        assert_eq!(slow.swipe(), None, "too slow");
+        let cancelled = drag(&[[0.0, 11.0], [-20.0, 12.0], [-40.0, 12.0]], false);
+        assert_eq!(cancelled.velocity, Vec2::ZERO);
+        assert_eq!(cancelled.swipe(), None, "a cancel is no swipe");
     }
 }

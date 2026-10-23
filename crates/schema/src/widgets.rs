@@ -297,6 +297,7 @@ const STANDARD_EVENTS: &[WidgetEvent] = &[
     WidgetEvent::routed("click", "ClickEvent"),
     WidgetEvent::routed("tap", "TapEvent"),
     WidgetEvent::routed("double_tap", "TapEvent"),
+    WidgetEvent::routed("swipe", "SwipeEvent"),
     WidgetEvent::routed("long_press", "LongPressEvent"),
     WidgetEvent::routed("drag_start", "DragEvent"),
     WidgetEvent::routed("drag_move", "DragEvent"),

@@ -97,7 +97,7 @@ pub use component::{
 pub use content::{BrushImage, Content, InkRun, LinkBox, TextInk, TextMark, TextRequest};
 pub use context::{EventCx, FocusChange, StateWriter};
 pub use dirty::{DirtyCause, DirtyClass, DirtyLists, DirtyMark};
-pub use drag::{DragPhase, DragSample, MOUSE_SLOP};
+pub use drag::{DragPhase, DragSample, MOUSE_SLOP, SWIPE_SPEED, SwipeDirection};
 pub use flush::{
     ADAPTIVE_ROUNDS, AdaptiveCycle, EffectsRan, ReactiveCycle, SETTLE_ROUNDS, Unsettled,
     run_effects, settle_adaptive, settle_states,

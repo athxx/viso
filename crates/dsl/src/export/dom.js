@@ -577,18 +577,29 @@ addEventListener("click", (e) => {
 // element took arms one, and travel past the slop starts it — `el` captures
 // the pointer and is dragging until the lift. Each sample bubbles from `el`
 // as a `viso-drag` event: its phase (0 start, 1 move, 2 end), the pointer
-// event, and the travel since the last sample and since the press.
+// event, the travel since the last sample and since the press, and the
+// velocity (px/s) over the last 40ms of samples, none once cancelled.
 const draggable = (el) => {
   if (el.$drag) return;
   el.$drag = true;
   el.style.touchAction = "none";
   let press = null;
+  const velocity = (e) => {
+    const t = e.timeStamp, x = e.clientX, y = e.clientY;
+    const seen = press.seen;
+    seen.push([t, x, y]);
+    while (seen.length > 2 && t - seen[0][0] > 100) seen.shift();
+    const from = seen.find((s) => t - s[0] <= 40 && t - s[0] > 10) ?? seen[0];
+    const dt = (t - from[0]) / 1000;
+    return dt > 0.01 ? [(x - from[1]) / dt, (y - from[2]) / dt] : [0, 0];
+  };
   const send = (phase, e) => {
     const x = e.clientX, y = e.clientY;
     const tx = x - press.x, ty = y - press.y;
+    const [vx, vy] = e.type === "pointercancel" ? [0, 0] : velocity(e);
     const detail = phase === 0
-      ? { phase, e, dx: tx, dy: ty, tx, ty }
-      : { phase, e, dx: x - press.lx, dy: y - press.ly, tx, ty };
+      ? { phase, e, dx: tx, dy: ty, tx, ty, vx, vy }
+      : { phase, e, dx: x - press.lx, dy: y - press.ly, tx, ty, vx, vy };
     press.lx = x;
     press.ly = y;
     el.dispatchEvent(new CustomEvent("viso-drag", { bubbles: true, detail }));
@@ -596,11 +607,12 @@ const draggable = (el) => {
   el.addEventListener("pointerdown", (e) => {
     if (e.button !== 0 || e.$drag || off(e.target)) return;
     e.$drag = el;
-    press = { id: e.pointerId, x: e.clientX, y: e.clientY, lx: e.clientX, ly: e.clientY, on: false };
+    press = { id: e.pointerId, x: e.clientX, y: e.clientY, lx: e.clientX, ly: e.clientY, on: false, seen: [[e.timeStamp, e.clientX, e.clientY]] };
   });
   el.addEventListener("pointermove", (e) => {
     if (!press || e.pointerId !== press.id) return;
     if (press.on) return send(1, e);
+    velocity(e);
     if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < slop(e)) return;
     press.on = true;
     el.setPointerCapture(e.pointerId);
@@ -767,11 +779,24 @@ const listen = (el, route, capture, control, fire) => {
   } else if (route === 23) {
     el.$double = true;
     el.addEventListener("dblclick", live((e) => fire(rec([point(e, el), kind(e)]))), capture);
+  } else if (route === 24) {
+    // A drag that lifts moving at 400px/s or more along the axis it moves
+    // fastest along, the way it travelled, is a swipe that way.
+    draggable(el);
+    el.addEventListener("viso-drag", live((e) => {
+      const d = e.detail;
+      if (d.phase !== 2) return;
+      const across = Math.abs(d.vx) >= Math.abs(d.vy);
+      const v = across ? d.vx : d.vy;
+      if (Math.abs(v) < 400 || v * (across ? d.tx : d.ty) <= 0) return;
+      const way = BigInt((across ? 0 : 2) + (v > 0 ? 1 : 0));
+      fire(rec([way, point(d.e, el), rec([mixed(d.vx), mixed(d.vy)])]));
+    }), capture);
   } else if (route >= 15) {
     draggable(el);
     el.addEventListener("viso-drag", live((e) => {
       const d = e.detail;
-      if (d.phase === route - 15) fire(rec([point(d.e, el), rec([mixed(d.dx), mixed(d.dy)]), rec([mixed(d.tx), mixed(d.ty)])]));
+      if (d.phase === route - 15) fire(rec([point(d.e, el), rec([mixed(d.dx), mixed(d.dy)]), rec([mixed(d.tx), mixed(d.ty)]), rec([mixed(d.vx), mixed(d.vy)])]));
     }), capture);
   } else {
     const current = () => items(el).findIndex((c) => c.getAttribute(el.$radio ? "aria-checked" : "aria-selected") === "true");

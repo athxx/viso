@@ -164,7 +164,7 @@ Rules:
 ## W7 — Gestures
 
 - [x] Double/triple tap (`on_double_tap`, `double_click` route).
-- [ ] Swipe/flick recognizer with direction and velocity.
+- [x] Swipe/flick recognizer with direction and velocity.
 - [ ] Pinch/zoom and rotate recognizers (touch and trackpad magnify/rotate).
 - [ ] Gesture arena: competing recognizers, claim and reject, nested scroll
   coordination.

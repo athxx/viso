@@ -67,11 +67,14 @@ pub enum EventRoute {
     /// `double_tap` (`TapEvent`): the release of a second press on the node
     /// soon after and near the first.
     DoubleTap = 23,
+    /// `swipe` (`SwipeEvent`): a drag the node won lifted moving fast along
+    /// one axis.
+    Swipe = 24,
 }
 
 impl EventRoute {
     /// Every route, by discriminant.
-    pub const ALL: [EventRoute; 24] = [
+    pub const ALL: [EventRoute; 25] = [
         EventRoute::Click,
         EventRoute::Tap,
         EventRoute::PointerDown,
@@ -96,6 +99,7 @@ impl EventRoute {
         EventRoute::SnapChanged,
         EventRoute::CurrentChanged,
         EventRoute::DoubleTap,
+        EventRoute::Swipe,
     ];
 
     /// The route of standard DSL event `event`, `None` for an event the runtime
@@ -134,6 +138,7 @@ impl EventRoute {
             EventRoute::SnapChanged => "snap_changed",
             EventRoute::CurrentChanged => "current_changed",
             EventRoute::DoubleTap => "double_tap",
+            EventRoute::Swipe => "swipe",
         }
     }
 
@@ -164,6 +169,7 @@ impl EventRoute {
             EventRoute::SnapChanged => "SnapChanged",
             EventRoute::CurrentChanged => "CurrentChanged",
             EventRoute::DoubleTap => "DoubleTap",
+            EventRoute::Swipe => "Swipe",
         }
     }
 
@@ -192,7 +198,7 @@ impl EventRoute {
     pub fn is_drag(self) -> bool {
         matches!(
             self,
-            EventRoute::DragStart | EventRoute::DragMove | EventRoute::DragEnd
+            EventRoute::DragStart | EventRoute::DragMove | EventRoute::DragEnd | EventRoute::Swipe
         )
     }
 
@@ -231,7 +237,8 @@ pub const PAYLOAD_RECORDS: &[(&str, &[&str])] = &[
         &["position", "button", "buttons", "pointer_kind", "modifiers"],
     ),
     ("KeyEvent", &["key", "repeat", "modifiers"]),
-    ("DragEvent", &["position", "delta", "total"]),
+    ("DragEvent", &["position", "delta", "total", "velocity"]),
+    ("SwipeEvent", &["direction", "position", "velocity"]),
     ("Offset", &["x", "y"]),
     ("SizeDp", &["width", "height"]),
     ("ScrollChanged", &["offset", "viewport", "content"]),
@@ -245,6 +252,7 @@ pub const PAYLOAD_RECORDS: &[(&str, &[&str])] = &[
 pub const PAYLOAD_ENUMS: &[(&str, &[&str])] = &[
     ("PointerButton", &["primary", "secondary", "middle"]),
     ("PointerKind", &["mouse", "touch", "pen"]),
+    ("SwipeDirection", &["left", "right", "up", "down"]),
     ("Animate", &["translate", "scale", "rotation", "opacity"]),
     (
         "Key",
