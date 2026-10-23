@@ -1,28 +1,36 @@
-//! The [`Tabs`] control — a strip of selectable tabs, each revealing one panel.
+//! The [`Tabs`] control — a strip of tabs, each showing one panel.
 //!
-//! A `Tabs` lays a horizontal [`TabList`](viso_ui::Role::TabList) of clickable
-//! tab buttons above a panel area holding one panel per tab. Exactly one tab is
-//! selected at a time; selecting a tab shows its panel and hides the others.
-//! Selecting a tab — a primary-pointer press then release on it, Enter/Space
-//! while it is focused, or a Left/Right arrow step across the strip — writes the
-//! shared `selected` cell to that tab's index and fires `on_change` once with the
-//! new index. Pointer and keyboard activation are the *same* action
-//! semantically, so an interactive control must have a keyboard equivalent
-//! (AGENTS section 15).
+//! A strip of tabs runs above a panel area holding one panel per tab, of
+//! which the selected tab's alone shows. A press on a tab selects it; so do
+//! the arrows while a tab has the focus (mirrored right to left), Home and
+//! End going to the first and last, and Ctrl+Page Up/Page Down from anywhere
+//! in the control. The tabs are one Tab stop, landing on the selected tab.
 //!
-//! All panels build once, at build time. Switching tabs does not rebuild them —
-//! `DirtyClass::STRUCTURE` bubbles but no pass rebuilds a subtree, so panels are
-//! shown and hidden through the retained [`hidden`](viso_ui::NodeStore::hidden)
-//! flag: a hidden panel folds out of layout and paint without a structural
-//! change (architecture section 8.4 / section 11). A handler cannot flip the
-//! flag directly (an [`EventCx`] holds no node store), so the flip is a deferred
-//! request the router applies after the handler returns — the same discipline as
-//! a state edit. Selecting writes a reactive `selected` cell bound to the strip's
-//! `PAINT`, repainting the strip alone (a targeted invalidation, not a rebuild,
-//! architecture section 47); the panels' visibility is the layout/paint effect of
-//! the deferred `hidden` flips. Lazy panels (build only the selected panel, build
-//! the rest on first reveal) are a later slice; this slice builds all panels and
-//! hides the unselected ones.
+//! A strip wider than the control scrolls: a wheel turning either way and a
+//! finger move it, and a newly selected tab scrolls into sight.
+//!
+//! A [`closable`](Tabs::closable) tab wears a close button; it, a middle
+//! press, or Delete while the tab has the focus closes the tab, freeing its
+//! button and panel. Closing the selected tab selects the one before it,
+//! else the one after. A [`permanent_tab`](Tabs::permanent_tab) never
+//! closes.
+//!
+//! In a [`reorderable`](Tabs::reorderable) strip a tab dragged along it is
+//! carried to another place, the others sliding aside, the strip scrolling
+//! when it is held at an end; Ctrl+Shift+Page Up/Page Down moves the focused
+//! tab a place. Each change fires its handler: `on_change` and `on_close`
+//! with the tab — its place among the tabs as they were declared — and
+//! `on_reorder` with where in the strip it came from and went.
+//!
+//! Semantics: a `group` holding a `tablist` of `tab`s named by their
+//! captions, each announcing whether it is selected and its place, and a
+//! `tabpanel` per tab named as it is. A close button is a `button` named
+//! "Close" and the tab's caption.
+//!
+//! Invalidation: the selected tab lives in one reactive cell, each tab's
+//! look in a cell of its own, and a revision cell the strip's structure hook
+//! reads; selecting flips panels' `hidden` flags, and closing and moving
+//! tabs free and relink retained nodes. All panels build once.
 //!
 //! ```
 //! use viso_widgets::tabs;
@@ -32,13 +40,12 @@
 //! let control = tabs()
 //!     .tab("Details", |cx| { cx.leaf(LeafStyle { size: Size::fill(), style: BoxStyle::NONE }); })
 //!     .tab("History", |cx| { cx.leaf(LeafStyle { size: Size::fill(), style: BoxStyle::NONE }); })
-//!     .selected(0)
-//!     .on_change(|_ev, index| {
-//!         // handle the newly-selected tab index
-//!         let _ = index;
+//!     .closable(true)
+//!     .reorderable(true)
+//!     .on_change(|_ev, tab| {
+//!         let _ = tab;
 //!     });
 //!
-//! // Tabs authors reactive state, so it builds through a reactive cx.
 //! let mut store = NodeStore::new();
 //! let mut states = StateStore::new();
 //! let mut bindings = BindingTable::new();
@@ -53,179 +60,185 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use viso_ui::{
-    Align, Axis, Border, BoxStyle, BuildCx, Component, DirtyClass, EventCx, FlexStyle, Inset,
-    Justify, Key, Length, PointerButtons, PointerPhase, Rgba, Role, Semantics, Size, StateId,
-    StateValue,
+    Align, Axis, Border, BoxStyle, BuildCx, Component, DispatchPhase, EventCx, FlexStyle, Handle,
+    Inset, InteractionStyle, Justify, Key, Length, NodeId, PointerButtons, PointerPhase, Rgba,
+    Role, ScrollBars, ScrollStyle, SemanticState, Semantics, Size, StateId, StateValue,
+    StructureCx,
 };
 
+use super::glyphs::{cross, glyph_slot};
 use crate::label;
 
-/// A shared, mutable change callback carrying the newly-selected tab index. It is
-/// cloned into every tab's pointer and key handler at build time so a pointer
-/// click, a keyboard activation, and an arrow step drive the same `on_change`.
-/// Pointer and keyboard input are never concurrent, so the runtime never
-/// re-enters the `RefCell` borrow.
-type SharedChange = Rc<RefCell<Option<Box<dyn FnMut(&mut EventCx<'_>, usize)>>>>;
+/// What runs with a tab selected or closed.
+type SharedTab = Rc<RefCell<Option<Box<dyn FnMut(&mut EventCx<'_>, usize)>>>>;
 
-/// A panel's build-time content builder. It authors the panel's subtree into the
-/// panel area; boxed so a `Tabs` can hold a heterogeneous list of closures.
+/// What runs with a tab moved from one place in the strip to another.
+type SharedMove = Rc<RefCell<Option<Box<dyn FnMut(&mut EventCx<'_>, usize, usize)>>>>;
+
+/// A panel's content builder.
 type PanelBuilder = Box<dyn Fn(&mut BuildCx<'_>)>;
 
-/// A deselected tab button's fill — a neutral chip that reads against the strip.
-const TAB_DESELECTED: Rgba = Rgba {
-    r: 0.16,
-    g: 0.17,
-    b: 0.20,
-    a: 1.0,
-};
+const fn rgba(r: f32, g: f32, b: f32, a: f32) -> Rgba {
+    Rgba { r, g, b, a }
+}
 
-/// A selected tab button's fill — a bright accent so the active tab reads at a
-/// glance.
-const TAB_SELECTED: Rgba = Rgba {
-    r: 0.22,
-    g: 0.45,
-    b: 0.85,
-    a: 1.0,
-};
-
-/// The tab caption color: near-white for contrast against a dark surface.
-const CAPTION: Rgba = Rgba {
-    r: 0.98,
-    g: 0.98,
-    b: 1.0,
-    a: 1.0,
-};
-
-/// A tab button's border, giving a deselected chip a visible outline.
-const BORDER: Rgba = Rgba {
-    r: 0.45,
-    g: 0.47,
-    b: 0.52,
-    a: 1.0,
-};
-
-/// The default tab-button border width.
-const BORDER_WIDTH: f32 = 1.0;
-
-/// The default corner radius of a tab chip.
-const TAB_RADIUS: f32 = 4.0;
-
-/// The horizontal gap between tab buttons in the strip.
-const TAB_GAP: f32 = 4.0;
-
-/// The vertical gap between the strip and the panel area.
-const AREA_GAP: f32 = 8.0;
-
-/// The tab chip's internal padding around its caption.
-const TAB_PADDING: f32 = 6.0;
-
-/// The visual and layout parameters of a [`Tabs`]: the deselected and selected
-/// tab-button fills and the control's own size request within its parent.
-///
-/// `size` defaults to [`Length::Fill`] on both axes so the control fills its
-/// parent region (the panel area grows to hold panel content); override it with a
-/// [`Length::Fixed`] or [`Length::Fit`] axis. `deselected` and `selected` default
-/// to a bordered neutral chip and a filled accent chip. All fields are `Copy`.
+/// How a [`Tabs`] looks.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TabsStyle {
-    /// The control's own size request within its parent. Defaults to `Fill` on
-    /// both axes.
+    /// The control's own size within its parent (default `Fill` both ways).
     pub size: Size,
-    /// A tab button's fill/border while deselected.
+    /// The strip behind the tabs.
+    pub strip: BoxStyle,
+    /// A tab at rest, under the pointer, and selected.
     pub deselected: BoxStyle,
-    /// A tab button's fill while selected.
+    pub hover: BoxStyle,
     pub selected: BoxStyle,
+    /// Around a tab's caption and close button.
+    pub padding: Inset,
+    /// Between the tabs, and between the strip and the panels.
+    pub gap: f32,
+    pub area_gap: f32,
+    /// The captions' ink.
+    pub caption: Rgba,
+    /// The close button's cross, and the button under the pointer.
+    pub close: Rgba,
+    pub close_hover: BoxStyle,
 }
 
 impl Default for TabsStyle {
     fn default() -> Self {
         TabsStyle {
-            size: Size {
-                width: Length::Fill { weight: 1.0 },
-                height: Length::Fill { weight: 1.0 },
-            },
+            size: Size::fill(),
+            strip: BoxStyle::NONE,
             deselected: BoxStyle {
                 border: Border {
-                    width: BORDER_WIDTH,
-                    color: BORDER,
+                    width: 1.0,
+                    color: rgba(0.45, 0.47, 0.52, 1.0),
                 },
-                ..BoxStyle::solid(TAB_DESELECTED).with_radius(TAB_RADIUS)
+                ..BoxStyle::solid(rgba(0.16, 0.17, 0.20, 1.0)).with_radius(4.0)
             },
-            selected: BoxStyle::solid(TAB_SELECTED).with_radius(TAB_RADIUS),
+            hover: BoxStyle {
+                border: Border {
+                    width: 1.0,
+                    color: rgba(0.55, 0.57, 0.62, 1.0),
+                },
+                ..BoxStyle::solid(rgba(0.22, 0.23, 0.27, 1.0)).with_radius(4.0)
+            },
+            selected: BoxStyle::solid(rgba(0.22, 0.45, 0.85, 1.0)).with_radius(4.0),
+            padding: Inset::all(6.0),
+            gap: 4.0,
+            area_gap: 8.0,
+            caption: rgba(0.98, 0.98, 1.0, 1.0),
+            close: rgba(0.85, 0.86, 0.9, 1.0),
+            close_hover: BoxStyle::solid(rgba(1.0, 1.0, 1.0, 0.16)).with_radius(4.0),
         }
     }
 }
 
-/// One tab: its caption (also its accessible name) and the builder that authors
-/// its panel's content.
-struct Tab {
-    /// The tab's caption, used as its accessible name.
+/// One tab as declared.
+struct TabSpec {
     caption: String,
-    /// The panel's content builder.
+    /// Whether it may close when the strip's tabs do.
+    permanent: bool,
     panel: PanelBuilder,
 }
 
-/// A strip of selectable tabs, each revealing one panel.
-///
-/// Construct one with [`tabs`], add tabs with [`Tabs::tab`], and attach behavior
-/// with the chainable setters. Selecting a tab — a primary-pointer click, an
-/// Enter/Space activation, or a Left/Right arrow step — shows its panel, hides the
-/// others, and fires `on_change` with the new index.
-///
-/// See the [module docs](self) for a build example. Invalidation: selecting
-/// writes a reactive `selected` cell bound to the strip's `PAINT`, and defers a
-/// pair of `hidden` flips (hide the old panel, show the new) the router applies —
-/// each marking its panel `LAYOUT | PAINT`. No rebuild: all panels are built once.
+/// A strip of tabs, each showing one panel. Construct one with [`tabs`].
 pub struct Tabs {
-    /// The tabs, in strip order.
-    tabs: Vec<Tab>,
-    /// The initially-selected tab index (defaults to `0`).
+    tabs: Vec<TabSpec>,
     selected: usize,
+    closable: bool,
+    reorderable: bool,
+    close_label: String,
     style: TabsStyle,
-    /// The shared change callback (see [`SharedChange`]). `None` until
-    /// [`Tabs::on_change`] is called; a control with no handler still switches
-    /// panels, just without notifying anyone.
-    on_change: SharedChange,
+    on_change: SharedTab,
+    on_close: SharedTab,
+    on_reorder: SharedMove,
 }
 
-/// Construct an empty [`Tabs`] with the first tab selected and no handler yet.
-/// Chain [`Tabs::tab`] to add tabs, [`Tabs::selected`] to choose the initial tab,
-/// [`Tabs::on_change`] to give it behavior, and [`Tabs::style`]/[`Tabs::size`] to
-/// adjust its appearance.
+/// A control with no tabs yet, the first to be selected.
 pub fn tabs() -> Tabs {
     Tabs {
         tabs: Vec::new(),
         selected: 0,
+        closable: false,
+        reorderable: false,
+        close_label: "Close".to_owned(),
         style: TabsStyle::default(),
         on_change: Rc::new(RefCell::new(None)),
+        on_close: Rc::new(RefCell::new(None)),
+        on_reorder: Rc::new(RefCell::new(None)),
     }
 }
 
 impl Tabs {
-    /// Add a tab with the given caption (also its accessible name) and a builder
-    /// that authors its panel's content into the panel area at build time.
+    /// Add a tab captioned `caption` whose panel `panel` builds.
     pub fn tab(
         mut self,
         caption: impl Into<String>,
         panel: impl Fn(&mut BuildCx<'_>) + 'static,
     ) -> Self {
-        self.tabs.push(Tab {
+        self.tabs.push(TabSpec {
             caption: caption.into(),
+            permanent: false,
             panel: Box::new(panel),
         });
         self
     }
 
-    /// Set the change callback, fired with the newly-selected index on a click, a
-    /// keyboard activation, or an arrow step. Replaces any previously set handler.
+    /// Add a tab that never closes, though the others do.
+    pub fn permanent_tab(
+        mut self,
+        caption: impl Into<String>,
+        panel: impl Fn(&mut BuildCx<'_>) + 'static,
+    ) -> Self {
+        self.tabs.push(TabSpec {
+            caption: caption.into(),
+            permanent: true,
+            panel: Box::new(panel),
+        });
+        self
+    }
+
+    /// Run `handler` with each tab selected.
     pub fn on_change(self, handler: impl FnMut(&mut EventCx<'_>, usize) + 'static) -> Self {
         *self.on_change.borrow_mut() = Some(Box::new(handler));
         self
     }
 
-    /// Set the initially-selected tab index (defaults to `0`).
-    pub fn selected(mut self, index: usize) -> Self {
-        self.selected = index;
+    /// Run `handler` with each tab closed.
+    pub fn on_close(self, handler: impl FnMut(&mut EventCx<'_>, usize) + 'static) -> Self {
+        *self.on_close.borrow_mut() = Some(Box::new(handler));
+        self
+    }
+
+    /// Run `handler` with where in the strip each tab moved from and to.
+    pub fn on_reorder(self, handler: impl FnMut(&mut EventCx<'_>, usize, usize) + 'static) -> Self {
+        *self.on_reorder.borrow_mut() = Some(Box::new(handler));
+        self
+    }
+
+    /// Start with tab `tab` selected (default the first).
+    pub fn selected(mut self, tab: usize) -> Self {
+        self.selected = tab;
+        self
+    }
+
+    /// Let the tabs close, each but a [`permanent_tab`](Self::permanent_tab).
+    pub fn closable(mut self, on: bool) -> Self {
+        self.closable = on;
+        self
+    }
+
+    /// Let the tabs be dragged to other places in the strip.
+    pub fn reorderable(mut self, on: bool) -> Self {
+        self.reorderable = on;
+        self
+    }
+
+    /// Name the close buttons `label` and the caption (default "Close").
+    pub fn close_label(mut self, label: impl Into<String>) -> Self {
+        self.close_label = label.into();
         self
     }
 
@@ -235,652 +248,561 @@ impl Tabs {
         self
     }
 
-    /// Set the control's own size request within its parent (defaults to `Fill`).
+    /// Set the control's own size within its parent (default `Fill`).
     pub fn size(mut self, size: Size) -> Self {
         self.style.size = size;
         self
     }
+}
 
-    /// The initial selection clamped to a valid tab index, or `0` when empty.
-    fn initial_index(&self) -> usize {
-        if self.tabs.is_empty() {
-            0
-        } else {
-            self.selected.min(self.tabs.len() - 1)
+/// One tab's nodes and cells.
+#[derive(Debug, Clone, Copy)]
+struct TabNodes {
+    button: NodeId,
+    panel: NodeId,
+    /// Whether it is selected: its look.
+    on: StateId,
+    closable: bool,
+}
+
+/// A tab's button as built: its close button and that button's hover
+/// cell, and the cells of its look.
+#[derive(Clone, Copy)]
+struct Built {
+    button: Handle,
+    close: Option<(Handle, StateId)>,
+    on: StateId,
+    hover: StateId,
+}
+
+/// What a control shares between its handlers and its hook.
+struct Strip {
+    /// The tabs as declared.
+    tabs: Vec<TabNodes>,
+    /// The row the tab buttons lie in.
+    row: NodeId,
+    /// The selected tab, `-1` for none.
+    selected: StateId,
+    /// Bumped when the strip's order or its tabs change.
+    revision: StateId,
+    /// The open tabs, in the strip's order.
+    order: RefCell<Vec<usize>>,
+    /// The tabs closed whose nodes are not freed yet.
+    closed: RefCell<Vec<usize>>,
+    on_change: SharedTab,
+    on_close: SharedTab,
+    on_reorder: SharedMove,
+}
+
+impl Strip {
+    fn selected(&self, ev: &EventCx<'_>) -> Option<usize> {
+        match ev.get(self.selected) {
+            Some(StateValue::Int(i)) if i >= 0 => Some(i as usize),
+            _ => None,
         }
     }
-}
 
-/// Drive the shared callback with the newly-selected index if one is set; a
-/// handler-less control is a no-op. Pointer and keyboard activation never overlap,
-/// so the borrow is uncontended.
-fn fire(cb: &SharedChange, ev: &mut EventCx<'_>, index: usize) {
-    if let Some(f) = cb.borrow_mut().as_mut() {
-        f(ev, index);
+    /// Tab `tab`'s place in the strip.
+    fn place(&self, tab: usize) -> Option<usize> {
+        self.order.borrow().iter().position(|&t| t == tab)
     }
-}
 
-/// Select `index` — but only when it is a genuine change. Selecting the
-/// already-selected tab is a no-op: no cell write, no `hidden` flip, no callback.
-/// This also coalesces the capture/bubble double-dispatch a router performs when
-/// the activation lands on a leaf inside a tab button (the button is then an
-/// ancestor, so its handler runs on both passes): the first pass writes the new
-/// index, flips the panels, and fires; the second reads the just-written value and
-/// short-circuits. `EventCx::set` writes the cell eagerly (the flush is deferred,
-/// but the stored value updates now), so the guard sees the first pass's write
-/// within the same route.
-///
-/// The two `set_hidden` requests are deferred (an `EventCx` holds no node store);
-/// the router applies them after the handler returns, hiding the old panel and
-/// showing the new. `panels[i]` is tab `i`'s panel node.
-fn select(
-    cb: &SharedChange,
-    ev: &mut EventCx<'_>,
-    cell: StateId,
-    panels: &[viso_ui::NodeId],
-    index: usize,
-) {
-    let next = StateValue::Int(index as i32);
-    let prev = match ev.get(cell) {
-        Some(StateValue::Int(i)) => i as usize,
-        _ => return,
-    };
-    if prev == index {
-        return;
+    /// The tab `by` places along from `tab`, held to the ends.
+    fn along(&self, tab: usize, by: i32) -> Option<usize> {
+        let order = self.order.borrow();
+        let at = order.iter().position(|&t| t == tab)? as i32 + by;
+        let at = at.clamp(0, order.len() as i32 - 1);
+        order.get(at as usize).copied()
     }
-    ev.set(cell, next);
-    if let Some(old) = panels.get(prev) {
-        ev.set_hidden(*old, true);
+
+    /// Select tab `tab`, reporting it.
+    fn select(&self, ev: &mut EventCx<'_>, tab: usize) {
+        let was = self.selected(ev);
+        if was == Some(tab) || self.place(tab).is_none() {
+            return;
+        }
+        if let Some(old) = was.and_then(|w| self.tabs.get(w)) {
+            ev.set(old.on, StateValue::Bool(false));
+            ev.set_hidden(old.panel, true);
+        }
+        let new = self.tabs[tab];
+        ev.set(new.on, StateValue::Bool(true));
+        ev.set_hidden(new.panel, false);
+        ev.set(self.selected, StateValue::Int(tab as i32));
+        ev.scroll_into_view(new.button);
+        if let Some(f) = self.on_change.borrow_mut().as_mut() {
+            f(ev, tab);
+        }
     }
-    if let Some(new) = panels.get(index) {
-        ev.set_hidden(*new, false);
+
+    /// Select tab `tab` and give it the focus.
+    fn go(&self, ev: &mut EventCx<'_>, tab: usize) {
+        self.select(ev, tab);
+        ev.request_focus(self.tabs[tab].button);
     }
-    fire(cb, ev, index);
+
+    /// Close tab `tab`, selecting a neighbour if it was selected.
+    fn close(&self, ev: &mut EventCx<'_>, tab: usize) {
+        let Some(at) = self.place(tab) else {
+            return;
+        };
+        let t = self.tabs[tab];
+        if !t.closable {
+            return;
+        }
+        let had_focus = ev.focused() == Some(t.button);
+        self.order.borrow_mut().remove(at);
+        let next = {
+            let order = self.order.borrow();
+            at.checked_sub(1)
+                .or(Some(at))
+                .and_then(|i| order.get(i).copied())
+        };
+        if self.selected(ev) == Some(tab) {
+            ev.set(t.on, StateValue::Bool(false));
+            ev.set(self.selected, StateValue::Int(-1));
+            if let Some(next) = next {
+                self.select(ev, next);
+            }
+        }
+        if had_focus && let Some(next) = next {
+            ev.request_focus(self.tabs[next].button);
+        }
+        ev.set_hidden(t.button, true);
+        ev.set_hidden(t.panel, true);
+        self.closed.borrow_mut().push(tab);
+        self.bump(ev);
+        if let Some(f) = self.on_close.borrow_mut().as_mut() {
+            f(ev, tab);
+        }
+    }
+
+    /// Move the tab at place `from` in the strip to place `to`.
+    fn move_tab(&self, ev: &mut EventCx<'_>, from: usize, to: usize) {
+        {
+            let mut order = self.order.borrow_mut();
+            if from >= order.len() || to >= order.len() || from == to {
+                return;
+            }
+            let tab = order.remove(from);
+            order.insert(to, tab);
+        }
+        self.bump(ev);
+        if let Some(f) = self.on_reorder.borrow_mut().as_mut() {
+            f(ev, from, to);
+        }
+    }
+
+    fn bump(&self, ev: &mut EventCx<'_>) {
+        let n = match ev.get(self.revision) {
+            Some(StateValue::Int(n)) => n,
+            _ => 0,
+        };
+        ev.set(self.revision, StateValue::Int(n.wrapping_add(1)));
+    }
+
+    /// What a key on tab `tab` asks.
+    fn key(&self, ev: &mut EventCx<'_>, tab: usize, reorderable: bool) {
+        let Some(k) = ev.key().copied().filter(|k| k.pressed) else {
+            return;
+        };
+        let m = k.modifiers;
+        let bare = !m.shift && !m.control && !m.alt && !m.logo;
+        let across = if ev.reads_rtl() { -1 } else { 1 };
+        let taken = match k.key {
+            Key::Left | Key::Right if bare => {
+                let by = if k.key == Key::Right { across } else { -across };
+                if let Some(to) = self.along(tab, by) {
+                    self.go(ev, to);
+                }
+                true
+            }
+            Key::Home | Key::End if bare => {
+                let order = self.order.borrow();
+                let to = if k.key == Key::Home {
+                    order.first()
+                } else {
+                    order.last()
+                }
+                .copied();
+                drop(order);
+                if let Some(to) = to {
+                    self.go(ev, to);
+                }
+                true
+            }
+            Key::Enter | Key::Space if bare => {
+                if !k.repeat {
+                    self.select(ev, tab);
+                }
+                true
+            }
+            Key::Delete if bare && self.tabs[tab].closable => {
+                if !k.repeat {
+                    self.close(ev, tab);
+                }
+                true
+            }
+            Key::PageUp | Key::PageDown if reorderable && m.control && m.shift => {
+                if let Some(from) = self.place(tab) {
+                    let to = if k.key == Key::PageDown {
+                        from + 1
+                    } else {
+                        from.wrapping_sub(1)
+                    };
+                    self.move_tab(ev, from, to);
+                    ev.scroll_into_view(self.tabs[tab].button);
+                }
+                true
+            }
+            _ => false,
+        };
+        if taken {
+            ev.stop_propagation();
+        }
+    }
+
+    /// Ctrl+Page Up/Page Down anywhere in the control: the tab before or
+    /// after the selected one.
+    fn page_key(&self, ev: &mut EventCx<'_>) {
+        let Some(k) = ev.key().copied().filter(|k| k.pressed) else {
+            return;
+        };
+        let m = k.modifiers;
+        if !(m.control && !m.shift && !m.alt && matches!(k.key, Key::PageUp | Key::PageDown)) {
+            return;
+        }
+        ev.stop_propagation();
+        let Some(tab) = self.selected(ev) else {
+            return;
+        };
+        let by = if k.key == Key::PageDown { 1 } else { -1 };
+        if let Some(to) = self.along(tab, by) {
+            let focus_in_strip = self.tabs.iter().any(|t| ev.focused() == Some(t.button));
+            if focus_in_strip {
+                self.go(ev, to);
+            } else {
+                self.select(ev, to);
+            }
+        }
+    }
+
+    /// Lay the strip out as its order says, free closed tabs, and announce
+    /// each tab's place and selection.
+    fn show(&self, s: &mut StructureCx<'_>) {
+        let closed = std::mem::take(&mut *self.closed.borrow_mut());
+        if !closed.is_empty() {
+            let mut scratch = Vec::new();
+            for tab in closed {
+                let t = self.tabs[tab];
+                s.store.free_tree(t.button, s.effects, &mut scratch);
+                s.store.free_tree(t.panel, s.effects, &mut scratch);
+            }
+        }
+        let order = self.order.borrow();
+        let in_order = s
+            .store
+            .arena()
+            .children(self.row)
+            .eq(order.iter().map(|&t| self.tabs[t].button));
+        if !in_order {
+            for &tab in order.iter() {
+                let button = self.tabs[tab].button;
+                s.store.arena_detach(button);
+                s.store.arena_insert_before(self.row, button, None);
+            }
+        }
+        let selected = match s.states.get(self.selected) {
+            Some(StateValue::Int(i)) if i >= 0 => Some(i as usize),
+            _ => None,
+        };
+        let n = order.len() as u32;
+        for (at, &tab) in order.iter().enumerate() {
+            s.store.set_semantic_state(
+                self.tabs[tab].button,
+                SemanticState {
+                    selected: Some(selected == Some(tab)),
+                    position: Some((at as u32 + 1, n)),
+                    ..SemanticState::default()
+                },
+            );
+        }
+    }
 }
 
 impl Component for Tabs {
     fn build(&self, cx: &mut BuildCx<'_>) {
-        // One shared `selected` cell holding the chosen tab index. The strip binds
-        // this cell to its PAINT so a selection repaints the strip (the active
-        // chip's fill swap) in one targeted invalidation, not a rebuild. Panels
-        // switch through deferred `hidden` flips, not this cell.
-        let initial = self.initial_index();
-        let selected = cx.state(StateValue::Int(initial as i32));
-
-        let tab_count = self.tabs.len();
-        let deselected = self.style.deselected;
-
-        // Tab buttons are built before their panels, so a button's handler cannot
-        // capture the panel ids by value — they are not known yet. A button needs
-        // them only at *event* time (to flip `hidden`), long after the whole tree
-        // is built, so it captures a shared, deferred-fill slot instead: the
-        // panel-build phase below pushes each panel's id into this vector, and the
-        // handlers read it when they run. It is written once during build and read
-        // only during event dispatch — never concurrently — so the borrow is
-        // uncontended.
-        let panels_cell: Rc<RefCell<Vec<viso_ui::NodeId>>> =
-            Rc::new(RefCell::new(Vec::with_capacity(tab_count)));
-
-        // The control is a column: a tab strip above a panel area.
+        let style = self.style;
+        let initial = (!self.tabs.is_empty()).then(|| self.selected.min(self.tabs.len() - 1));
+        let selected = cx.state(StateValue::Int(initial.map_or(-1, |i| i as i32)));
+        let revision = cx.state(StateValue::Int(0));
+        let mut built: Vec<Built> = Vec::new();
+        let mut panels: Vec<Handle> = Vec::new();
+        let mut row = None;
+        let mut viewport = None;
         let root = cx.flex(
             FlexStyle {
                 axis: Axis::Column,
-                gap: AREA_GAP,
-                padding: Inset::all(0.0),
+                gap: style.area_gap,
                 align: Align::Stretch,
                 justify: Justify::Start,
-                size: self.style.size,
-                style: BoxStyle::NONE,
+                size: style.size,
+                ..FlexStyle::default()
             },
             |cx| {
-                // The tab strip: a row of focusable tab buttons. Its handle carries
-                // the `TabList` role and the shared PAINT binding.
-                let strip = cx.flex(
-                    FlexStyle {
+                viewport = Some(cx.scroll(
+                    ScrollStyle {
                         axis: Axis::Row,
-                        gap: TAB_GAP,
-                        padding: Inset::all(0.0),
-                        align: Align::Center,
-                        justify: Justify::Start,
                         size: Size {
-                            width: Length::Fill { weight: 1.0 },
+                            width: Length::fill(),
                             height: Length::Fit,
                         },
-                        style: BoxStyle::NONE,
+                        style: style.strip,
+                        bars: ScrollBars::Hidden,
+                        ..ScrollStyle::default()
                     },
                     |cx| {
-                        for (index, tab) in self.tabs.iter().enumerate() {
-                            let caption = tab.caption.clone();
-                            let button = cx.flex(
-                                FlexStyle {
-                                    axis: Axis::Row,
-                                    gap: 0.0,
-                                    padding: Inset::all(TAB_PADDING),
-                                    align: Align::Center,
-                                    justify: Justify::Start,
-                                    size: Size {
-                                        width: Length::Fit,
-                                        height: Length::Fit,
-                                    },
-                                    style: deselected,
+                        row = Some(cx.flex(
+                            FlexStyle {
+                                axis: Axis::Row,
+                                gap: style.gap,
+                                align: Align::Center,
+                                justify: Justify::Start,
+                                size: Size {
+                                    width: Length::Fit,
+                                    height: Length::Fit,
                                 },
-                                |cx| {
-                                    label(caption.clone()).color(CAPTION).build(cx);
-                                },
-                            );
-
-                            // Bind the shared cell to this button's PAINT so a
-                            // selection repaints the affected chips (the active
-                            // chip's fill swap is a later paint slice, matching the
-                            // radio dot precedent).
-                            cx.bind(selected, button, DirtyClass::PAINT);
-                            cx.focusable(button, true);
-
-                            // Pointer activation: a primary press-then-release
-                            // selects this tab. The release is the activation,
-                            // matching the click gate used across the controls. The
-                            // panel nodes are resolved lazily inside the handler —
-                            // they are built after the strip, so their ids are not
-                            // known here; the handler reads them from the shared
-                            // `panels` slice captured below.
-                            let pointer_cb = self.on_change.clone();
-                            let pointer_panels = panels_cell.clone();
-                            cx.on_pointer(button, move |ev| {
-                                let Some(p) = ev.pointer() else { return };
-                                if p.phase == PointerPhase::Up
-                                    && p.buttons.contains(PointerButtons::PRIMARY)
-                                {
-                                    let panels = pointer_panels.borrow();
-                                    select(&pointer_cb, ev, selected, &panels, index);
+                                ..FlexStyle::default()
+                            },
+                            |cx| {
+                                for (i, tab) in self.tabs.iter().enumerate() {
+                                    let closable = self.closable && !tab.permanent;
+                                    let mut close = None;
+                                    let button = cx.flex(
+                                        FlexStyle {
+                                            axis: Axis::Row,
+                                            gap: 4.0,
+                                            padding: style.padding,
+                                            align: Align::Center,
+                                            justify: Justify::Start,
+                                            size: Size {
+                                                width: Length::Fit,
+                                                height: Length::Fit,
+                                            },
+                                            style: if initial == Some(i) {
+                                                style.selected
+                                            } else {
+                                                style.deselected
+                                            },
+                                        },
+                                        |cx| {
+                                            label(tab.caption.clone())
+                                                .color(style.caption)
+                                                .build(cx);
+                                            if closable {
+                                                close = Some(close_button(cx, style));
+                                            }
+                                        },
+                                    );
+                                    let on = cx.state(StateValue::Bool(initial == Some(i)));
+                                    let hover = cx.state(StateValue::Bool(false));
+                                    built.push(Built {
+                                        button,
+                                        close,
+                                        on,
+                                        hover,
+                                    });
                                 }
-                            });
-
-                            // Keyboard activation: Enter/Space activates the focused
-                            // tab; Left/Right steps the selection across the strip
-                            // (the arrow-step precedent is the splitter, not the
-                            // radio's Enter/Space-only model). Auto-repeat is
-                            // ignored for the activation keys; arrow steps honor a
-                            // held key so a ramp across many tabs works.
-                            let key_cb = self.on_change.clone();
-                            let key_panels = panels_cell.clone();
-                            cx.on_key(button, move |ev| {
-                                let Some(&k) = ev.key() else { return };
-                                if !k.pressed {
-                                    return;
-                                }
-                                let panels = key_panels.borrow();
-                                // The strip takes its keys, at its ends too.
-                                if matches!(k.key, Key::Enter | Key::Space | Key::Left | Key::Right)
-                                {
-                                    ev.stop_propagation();
-                                }
-                                match k.key {
-                                    Key::Enter | Key::Space if !k.repeat => {
-                                        select(&key_cb, ev, selected, &panels, index);
-                                    }
-                                    Key::Left if index > 0 => {
-                                        select(&key_cb, ev, selected, &panels, index - 1);
-                                    }
-                                    Key::Right if index + 1 < tab_count => {
-                                        select(&key_cb, ev, selected, &panels, index + 1);
-                                    }
-                                    _ => {}
-                                }
-                            });
-
-                            // Each tab is an interactive, named node: the `Tab` role
-                            // with its caption as its accessible name (AGENTS
-                            // section 15). The live selection is proven by the
-                            // reactive cell and input tapes.
-                            cx.semantics(
-                                button,
-                                Semantics::role(Role::Tab).with_label(caption.clone()),
-                            );
-                        }
+                            },
+                        ));
                     },
-                );
-                cx.bind(selected, strip, DirtyClass::PAINT);
-                cx.semantics(strip, Semantics::role(Role::TabList));
-
-                // The panel area: all panels build once as a stack of groups filling
-                // the area. Each panel is hidden except the selected one; switching
-                // tabs flips the `hidden` flag, folding the old panel out of layout
-                // and paint and the new one in — no rebuild.
+                ));
                 cx.flex(
                     FlexStyle {
                         axis: Axis::Column,
-                        gap: 0.0,
-                        padding: Inset::all(0.0),
                         align: Align::Stretch,
                         justify: Justify::Start,
-                        size: Size {
-                            width: Length::Fill { weight: 1.0 },
-                            height: Length::Fill { weight: 1.0 },
-                        },
-                        style: BoxStyle::NONE,
+                        size: Size::fill(),
+                        ..FlexStyle::default()
                     },
                     |cx| {
-                        let mut panels = panels_cell.borrow_mut();
-                        for (index, tab) in self.tabs.iter().enumerate() {
+                        for (i, tab) in self.tabs.iter().enumerate() {
                             let panel = cx.flex(
                                 FlexStyle {
                                     axis: Axis::Column,
-                                    gap: 0.0,
-                                    padding: Inset::all(0.0),
                                     align: Align::Stretch,
                                     justify: Justify::Start,
-                                    size: Size {
-                                        width: Length::Fill { weight: 1.0 },
-                                        height: Length::Fill { weight: 1.0 },
-                                    },
-                                    style: BoxStyle::NONE,
+                                    size: Size::fill(),
+                                    ..FlexStyle::default()
                                 },
-                                |cx| {
-                                    (tab.panel)(cx);
-                                },
+                                |cx| (tab.panel)(cx),
                             );
-                            // Show only the selected panel; hide the rest at build
-                            // time so the initial frame lays out one panel.
-                            cx.set_hidden(panel, index != initial);
-                            cx.semantics(panel, Semantics::role(Role::Group));
-                            panels.push(panel.id());
+                            cx.set_hidden(panel, initial != Some(i));
+                            cx.semantics(
+                                panel,
+                                Semantics::role(Role::TabPanel).with_label(tab.caption.clone()),
+                            );
+                            panels.push(panel);
                         }
                     },
                 );
             },
         );
-
-        // The control groups the strip and panels; `Role::Group` is the accessible
-        // wrapper. The column `cx.flex` returned the root's handle.
         cx.semantics(root, Semantics::role(Role::Group));
+        let (viewport, row) = (viewport.expect("built"), row.expect("built"));
+        cx.wheel_across(viewport, true);
+        cx.semantics(row, Semantics::role(Role::TabList));
+        cx.roving(row);
+        if self.reorderable {
+            cx.reorder_list(viewport, true);
+        }
+        let strip = Rc::new(Strip {
+            tabs: built
+                .iter()
+                .zip(&panels)
+                .map(|(b, panel)| TabNodes {
+                    button: b.button.id(),
+                    panel: panel.id(),
+                    on: b.on,
+                    closable: b.close.is_some(),
+                })
+                .collect(),
+            row: row.id(),
+            selected,
+            revision,
+            order: RefCell::new((0..self.tabs.len()).collect()),
+            closed: RefCell::new(Vec::new()),
+            on_change: Rc::clone(&self.on_change),
+            on_close: Rc::clone(&self.on_close),
+            on_reorder: Rc::clone(&self.on_reorder),
+        });
+        for (
+            i,
+            &Built {
+                button,
+                close,
+                on,
+                hover,
+            },
+        ) in built.iter().enumerate()
+        {
+            let caption = &self.tabs[i].caption;
+            cx.focusable(button, true);
+            cx.semantics(
+                button,
+                Semantics::role(Role::Tab).with_label(caption.clone()),
+            );
+            cx.interaction_style(
+                button,
+                InteractionStyle {
+                    resting: style.deselected,
+                    hover: style.hover,
+                    pressed: style.selected,
+                    pressed_cell: Some(on),
+                    hover_cell: Some(hover),
+                },
+            );
+            if self.reorderable {
+                cx.reorder_handle(button);
+            }
+            let s = Rc::clone(&strip);
+            cx.on_pointer(button, move |ev| {
+                if ev.phase() == DispatchPhase::Capture {
+                    return;
+                }
+                let Some(p) = ev.pointer().copied() else {
+                    return;
+                };
+                match p.phase {
+                    PointerPhase::Enter => {
+                        ev.set(hover, StateValue::Bool(true));
+                    }
+                    PointerPhase::Leave => {
+                        ev.set(hover, StateValue::Bool(false));
+                    }
+                    PointerPhase::Down if p.buttons.contains(PointerButtons::PRIMARY) => {
+                        s.select(ev, i);
+                        if ev.focused() != Some(s.tabs[i].button) {
+                            ev.request_focus(s.tabs[i].button);
+                        }
+                    }
+                    PointerPhase::Down if p.buttons.contains(PointerButtons::MIDDLE) => {
+                        s.close(ev, i);
+                    }
+                    _ => {}
+                }
+            });
+            let s = Rc::clone(&strip);
+            let reorderable = self.reorderable;
+            cx.on_key(button, move |ev| s.key(ev, i, reorderable));
+            if let Some((close, close_hover)) = close {
+                cx.semantics(
+                    close,
+                    Semantics::role(Role::Button)
+                        .with_label(format!("{} {caption}", self.close_label)),
+                );
+                let s = Rc::clone(&strip);
+                cx.on_pointer(close, move |ev| {
+                    if ev.phase() == DispatchPhase::Capture {
+                        return;
+                    }
+                    let Some(p) = ev.pointer().copied() else {
+                        return;
+                    };
+                    let primary = p.buttons.contains(PointerButtons::PRIMARY);
+                    match p.phase {
+                        PointerPhase::Enter => {
+                            ev.set(close_hover, StateValue::Bool(true));
+                        }
+                        PointerPhase::Leave => {
+                            ev.set(close_hover, StateValue::Bool(false));
+                        }
+                        // The press is the button's, not the tab's.
+                        PointerPhase::Down if primary => ev.stop_propagation(),
+                        PointerPhase::Up if primary => {
+                            ev.stop_propagation();
+                            s.close(ev, i);
+                        }
+                        _ => {}
+                    }
+                });
+            }
+        }
+        // A tab carried elsewhere in the strip.
+        let s = Rc::clone(&strip);
+        cx.on_key(viewport, move |ev| {
+            if let Some(viso_ui::RowGesture::Reordered { from, to }) = ev.row_gesture() {
+                s.move_tab(ev, from, to);
+            }
+        });
+        let s = Rc::clone(&strip);
+        cx.on_key(root, move |ev| s.page_key(ev));
+        cx.structure(|sx| {
+            strip.show(sx);
+            let hook = Rc::clone(&strip);
+            sx.store
+                .add_structure_hook([selected, revision], move |sx, _| hook.show(sx));
+        });
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::cell::Cell;
-    use std::rc::Rc;
-    use viso_ui::{
-        BindingTable, KeyEvent, LeafStyle, Modifiers, NodeId, NodeStore, PointerEvent,
-        SemanticProjector, StateStore, TextEdits, VirtualLists,
-    };
-
-    /// The reactive stores a tabs build writes into, kept together so a test can
-    /// build the control and then drive its handlers against the same state.
-    struct Reactive {
-        store: NodeStore,
-        states: StateStore,
-        bindings: BindingTable,
-        lists: VirtualLists,
-        text_edits: TextEdits,
-        projectors: SemanticProjector,
-    }
-
-    impl Reactive {
-        fn new() -> Self {
-            Reactive {
-                store: NodeStore::new(),
-                states: StateStore::new(),
-                bindings: BindingTable::new(),
-                lists: VirtualLists::new(),
-                text_edits: TextEdits::new(),
-                projectors: SemanticProjector::new(),
-            }
-        }
-
-        /// Build a control through a reactive cx (it authors state, so a plain
-        /// `BuildCx::new` would panic) and return its root (the column container).
-        fn build(&mut self, control: Tabs) -> NodeId {
-            let mut cx = BuildCx::with_reactive(
-                &mut self.store,
-                &mut self.states,
-                &mut self.bindings,
-                &mut self.lists,
-                &mut self.text_edits,
-                &mut self.projectors,
-            );
-            control.build(&mut cx);
-            cx.root().expect("tabs declares a root node")
-        }
-
-        /// Feed a pointer sample to a node's pointer handler, restoring it after,
-        /// then apply any deferred `hidden` flips the handler recorded — the router
-        /// discipline (take, drive, restore, apply) reproduced for the test.
-        fn pointer(&mut self, node: NodeId, ev: PointerEvent) {
-            let mut handler = self.store.take_handler(node).expect("pointer handler");
-            let hidden = {
-                let mut cx = EventCx::__new_pointer(&mut self.states, &self.bindings, &ev);
-                handler(&mut cx);
-                cx.__take_hidden_requests()
-            };
-            self.store.restore_handler(node, handler);
-            for (id, h) in hidden {
-                self.store.set_hidden(id, h);
-            }
-        }
-
-        /// Feed a key sample to a node's key handler, restoring it after, then
-        /// apply any deferred `hidden` flips it recorded.
-        fn key(&mut self, node: NodeId, ev: KeyEvent) {
-            let mut handler = self.store.take_key_handler(node).expect("key handler");
-            let hidden = {
-                let mut cx = EventCx::__new_key(&mut self.states, &self.bindings, &ev);
-                handler(&mut cx);
-                cx.__take_hidden_requests()
-            };
-            self.store.restore_key_handler(node, handler);
-            for (id, h) in hidden {
-                self.store.set_hidden(id, h);
-            }
-        }
-
-        /// The current value of the shared selection cell (via a throwaway read
-        /// cx).
-        fn selected(&mut self, cell: StateId) -> Option<i32> {
-            let ev = read_pointer();
-            let cx = EventCx::__new_pointer(&mut self.states, &self.bindings, &ev);
-            match cx.get(cell) {
-                Some(StateValue::Int(i)) => Some(i),
-                _ => None,
-            }
-        }
-    }
-
-    /// A neutral pointer sample for read-only cx construction.
-    fn read_pointer() -> PointerEvent {
-        PointerEvent {
-            x: 0.0,
-            y: 0.0,
-            phase: PointerPhase::Move,
-            buttons: PointerButtons::NONE,
-            modifiers: Modifiers::default(),
-        }
-    }
-
-    /// A primary-button pointer sample in the given phase.
-    fn primary(phase: PointerPhase) -> PointerEvent {
-        PointerEvent {
-            x: 0.0,
-            y: 0.0,
-            phase,
-            buttons: PointerButtons::PRIMARY,
-            modifiers: Modifiers::default(),
-        }
-    }
-
-    /// A key press/release sample.
-    fn key_ev(key: Key, pressed: bool, repeat: bool) -> KeyEvent {
-        KeyEvent {
-            key,
-            pressed,
-            repeat,
-            modifiers: Modifiers::default(),
-        }
-    }
-
-    /// The shared selection cell authored by the build. Tabs authors exactly one
-    /// state cell (the shared `selected` Int), so a fresh `StateStore` allocating
-    /// one `Int` cell yields the very handle the build produced (there is no public
-    /// constructor for a bare `StateId`, and the build does not return it).
-    fn shared_cell() -> StateId {
-        StateStore::new().alloc(StateValue::Int(0))
-    }
-
-    /// Collect a node's direct children by walking the arena sibling chain.
-    fn children(store: &NodeStore, parent: NodeId) -> Vec<NodeId> {
-        let arena = store.arena();
-        let mut out = Vec::new();
-        for c in arena.children(parent) {
-            out.push(c);
-        }
-        out
-    }
-
-    /// A two-tab control for the common test shape.
-    fn two_tabs() -> Tabs {
-        tabs()
-            .tab("One", |cx| {
-                cx.leaf(LeafStyle {
-                    size: Size::fixed(10.0, 10.0),
-                    style: BoxStyle::NONE,
-                });
-            })
-            .tab("Two", |cx| {
-                cx.leaf(LeafStyle {
-                    size: Size::fixed(10.0, 10.0),
-                    style: BoxStyle::NONE,
-                });
-            })
-    }
-
-    /// The root is a column of two children: the tab strip and the panel area.
-    /// The strip holds one focusable, handler-bearing tab button per tab; the panel
-    /// area holds one panel per tab.
-    #[test]
-    fn tabs_builds_a_strip_of_buttons_over_a_panel_area() {
-        let mut rx = Reactive::new();
-        let root = rx.build(two_tabs());
-
-        let top = children(&rx.store, root);
-        assert_eq!(top.len(), 2, "a strip and a panel area");
-        let (strip, area) = (top[0], top[1]);
-
-        let buttons = children(&rx.store, strip);
-        assert_eq!(buttons.len(), 2, "one tab button per tab");
-        for button in &buttons {
-            assert!(
-                rx.store.has_handler(*button),
-                "each tab attaches a pointer handler"
-            );
-            assert!(
-                rx.store.has_key_handler(*button),
-                "each tab attaches a key handler"
-            );
-            assert!(rx.store.focusable(*button), "each tab is focusable");
-        }
-
-        let panels = children(&rx.store, area);
-        assert_eq!(panels.len(), 2, "one panel per tab");
-    }
-
-    /// At build time only the selected panel is shown; the rest are hidden.
-    #[test]
-    fn only_the_selected_panel_is_shown_at_build() {
-        let mut rx = Reactive::new();
-        let root = rx.build(two_tabs().selected(1));
-
-        let area = children(&rx.store, root)[1];
-        let panels = children(&rx.store, area);
-        assert!(rx.store.hidden(panels[0]), "the unselected panel is hidden");
-        assert!(!rx.store.hidden(panels[1]), "the selected panel is shown");
-    }
-
-    /// The strip is a `TabList`, each button a `Tab` named by its caption, and each
-    /// panel a `Group`; the root is a `Group`.
-    #[test]
-    fn tabs_derive_tablist_over_named_tabs_and_group_panels() {
-        let mut rx = Reactive::new();
-        let root = rx.build(two_tabs());
-
-        assert_eq!(
-            rx.store.semantics(root).expect("root has semantics").role,
-            Role::Group,
-            "the control is a Group"
-        );
-
-        let top = children(&rx.store, root);
-        let (strip, area) = (top[0], top[1]);
-        assert_eq!(
-            rx.store.semantics(strip).expect("strip semantics").role,
-            Role::TabList,
-            "the strip is a TabList"
-        );
-
-        let buttons = children(&rx.store, strip);
-        for (button, expected) in buttons.iter().zip(["One", "Two"]) {
-            let sem = rx.store.semantics(*button).expect("tab semantics");
-            assert_eq!(sem.role, Role::Tab, "each button is a Tab");
-            assert_eq!(sem.label.as_deref(), Some(expected), "named by its caption");
-        }
-
-        for panel in children(&rx.store, area) {
-            assert_eq!(
-                rx.store.semantics(panel).expect("panel semantics").role,
-                Role::Group,
-                "each panel is a Group"
-            );
-        }
-    }
-
-    /// A primary click on a tab selects it, fires `on_change` once with its index,
-    /// and flips the panels' `hidden` flags; a press alone does not select.
-    #[test]
-    fn pointer_click_selects_tab_and_switches_panels() {
-        let count = Rc::new(Cell::new(0u32));
-        let last = Rc::new(Cell::new(None::<usize>));
-        let (c, l) = (count.clone(), last.clone());
-
-        let mut rx = Reactive::new();
-        let root = rx.build(two_tabs().on_change(move |_ev, index| {
-            l.set(Some(index));
-            c.set(c.get() + 1);
-        }));
-        let cell = shared_cell();
-        let top = children(&rx.store, root);
-        let (strip, area) = (top[0], top[1]);
-        let buttons = children(&rx.store, strip);
-        let panels = children(&rx.store, area);
-
-        // A press alone does not select.
-        rx.pointer(buttons[1], primary(PointerPhase::Down));
-        assert_eq!(count.get(), 0, "the press alone does not select");
-        assert_eq!(rx.selected(cell), Some(0), "selection unchanged by a press");
-
-        // Release on the second tab selects index 1 and switches the panels.
-        rx.pointer(buttons[1], primary(PointerPhase::Up));
-        assert_eq!(count.get(), 1, "press-then-release is one selection");
-        assert_eq!(last.get(), Some(1), "on_change carries the selected index");
-        assert_eq!(rx.selected(cell), Some(1), "the shared cell holds index 1");
-        assert!(rx.store.hidden(panels[0]), "the old panel is now hidden");
-        assert!(!rx.store.hidden(panels[1]), "the new panel is now shown");
-
-        // Re-selecting the current tab is a no-op (guarded).
-        rx.pointer(buttons[1], primary(PointerPhase::Up));
-        assert_eq!(count.get(), 1, "re-selecting the current tab does nothing");
-    }
-
-    /// Enter and Space each activate the focused tab; Left/Right step the selection
-    /// across the strip. An auto-repeat of Enter and a key-up do not activate.
-    #[test]
-    fn keyboard_activates_and_arrows_step_selection() {
-        let count = Rc::new(Cell::new(0u32));
-        let last = Rc::new(Cell::new(None::<usize>));
-        let (c, l) = (count.clone(), last.clone());
-
-        let mut rx = Reactive::new();
-        let root = rx.build(
-            tabs()
-                .tab("A", |_cx| {})
-                .tab("B", |_cx| {})
-                .tab("C", |_cx| {})
-                .on_change(move |_ev, index| {
-                    l.set(Some(index));
-                    c.set(c.get() + 1);
-                }),
-        );
-        let cell = shared_cell();
-        let strip = children(&rx.store, root)[0];
-        let buttons = children(&rx.store, strip);
-
-        // Right from tab 0 selects tab 1.
-        rx.key(buttons[0], key_ev(Key::Right, true, false));
-        assert_eq!(rx.selected(cell), Some(1), "Right steps to the next tab");
-        assert_eq!(last.get(), Some(1));
-
-        // Enter on the focused tab 2 activates it.
-        rx.key(buttons[2], key_ev(Key::Enter, true, false));
-        assert_eq!(
-            rx.selected(cell),
-            Some(2),
-            "Enter activates the focused tab"
-        );
-
-        // Left from tab 1 selects tab 0.
-        rx.key(buttons[1], key_ev(Key::Left, true, false));
-        assert_eq!(rx.selected(cell), Some(0), "Left steps to the previous tab");
-
-        // Space activates the focused tab 1.
-        rx.key(buttons[1], key_ev(Key::Space, true, false));
-        assert_eq!(
-            rx.selected(cell),
-            Some(1),
-            "Space activates the focused tab"
-        );
-
-        let before = count.get();
-        rx.key(buttons[2], key_ev(Key::Enter, true, true)); // auto-repeat: ignored
-        rx.key(buttons[2], key_ev(Key::Enter, false, false)); // key-up: ignored
-        assert_eq!(count.get(), before, "repeat and key-up do not activate");
-    }
-
-    /// Left at the first tab and Right at the last tab are clamped no-ops.
-    #[test]
-    fn arrow_steps_clamp_at_the_ends() {
-        let mut rx = Reactive::new();
-        let root = rx.build(two_tabs());
-        let cell = shared_cell();
-        let strip = children(&rx.store, root)[0];
-        let buttons = children(&rx.store, strip);
-
-        rx.key(buttons[0], key_ev(Key::Left, true, false));
-        assert_eq!(
-            rx.selected(cell),
-            Some(0),
-            "Left at the first tab is a no-op"
-        );
-
-        rx.pointer(buttons[1], primary(PointerPhase::Up));
-        assert_eq!(rx.selected(cell), Some(1));
-        rx.key(buttons[1], key_ev(Key::Right, true, false));
-        assert_eq!(
-            rx.selected(cell),
-            Some(1),
-            "Right at the last tab is a no-op"
-        );
-    }
-
-    /// A control with no handler still switches panels through the shared cell —
-    /// `build` does not panic and the handlers are no-ops on the callback.
-    #[test]
-    fn handlerless_tabs_still_switches() {
-        let mut rx = Reactive::new();
-        let root = rx.build(two_tabs());
-        let cell = shared_cell();
-        let top = children(&rx.store, root);
-        let (strip, area) = (top[0], top[1]);
-        let buttons = children(&rx.store, strip);
-        let panels = children(&rx.store, area);
-
-        rx.pointer(buttons[1], primary(PointerPhase::Up));
-        assert_eq!(
-            rx.selected(cell),
-            Some(1),
-            "a handler-less control still moves the shared cell"
-        );
-        assert!(!rx.store.hidden(panels[1]), "and shows the new panel");
-    }
-
-    /// The initial selection index is written into the shared cell at build time.
-    #[test]
-    fn initial_selection_seeds_the_shared_cell() {
-        let mut rx = Reactive::new();
-        rx.build(two_tabs().selected(1));
-        let cell = shared_cell();
-        assert_eq!(
-            rx.selected(cell),
-            Some(1),
-            "the initial index seeds the cell"
-        );
-    }
+/// A tab's close button: a cross the pointer lights, and the cell its
+/// hover is in.
+fn close_button(cx: &mut BuildCx<'_>, style: TabsStyle) -> (Handle, StateId) {
+    let hover = cx.state(StateValue::Bool(false));
+    let button = glyph_slot(cx, |cx| {
+        cross(cx, style.close);
+    });
+    let resting = BoxStyle::NONE.with_radius(style.close_hover.radius);
+    cx.interaction_style(
+        button,
+        InteractionStyle {
+            resting,
+            hover: style.close_hover,
+            pressed: style.close_hover,
+            pressed_cell: None,
+            hover_cell: Some(hover),
+        },
+    );
+    (button, hover)
 }

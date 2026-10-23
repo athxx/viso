@@ -508,6 +508,9 @@ pub(crate) struct ScrollMotions {
     /// The trackpad fingers' scroll so far, and its samples, for the speed
     /// it lifts at.
     pad: (Vec2, VelocityTracker),
+    /// The viewports along rows that a wheel turning up and down scrolls,
+    /// ascending by index.
+    across: Vec<NodeId>,
 }
 
 impl ScrollMotions {
@@ -520,6 +523,48 @@ impl ScrollMotions {
         self.caught = None;
         self.swallowed = None;
         self.pinned = None;
+        self.across.clear();
+    }
+}
+
+impl NodeStore {
+    /// Let a wheel turning up and down scroll viewport `id`, which scrolls
+    /// along rows, as one turning across does — a strip of tabs a mouse
+    /// with one wheel scrolls — or no longer.
+    pub fn set_wheel_across(&mut self, id: NodeId, takes: bool) {
+        let live = self.arena().is_live(id);
+        let across = &mut self.motions.across;
+        across.retain(|&n| n != id);
+        if takes && live {
+            let at = across.partition_point(|n| n.index() < id.index());
+            across.insert(at, id);
+        }
+    }
+
+    /// Whether a wheel turning up and down scrolls viewport `id` across.
+    pub fn wheel_across(&self, id: NodeId) -> bool {
+        self.motions.across.contains(&id)
+    }
+
+    /// A wheel's `delta` over `target` as the viewport that takes it reads
+    /// it: one turning only up and down is across under the first viewport
+    /// from `target` up, if that viewport [takes it so](Self::set_wheel_across).
+    pub(crate) fn wheel_delta(&self, target: NodeId, delta: Vec2) -> Vec2 {
+        if self.motions.across.is_empty() || delta.x != 0.0 || delta.y == 0.0 {
+            return delta;
+        }
+        let mut node = Some(target);
+        while let Some(n) = node {
+            if self.scroll_axis(n).is_some() {
+                return if self.wheel_across(n) {
+                    Vec2::new(delta.y, 0.0)
+                } else {
+                    delta
+                };
+            }
+            node = self.arena().parent(n);
+        }
+        delta
     }
 }
 

@@ -229,7 +229,10 @@ Rules:
 - [ ] `DataGrid`: virtualized rows and columns, resize, reorder, sort, cell/row
   selection, keyboard navigation, `grid` semantics.
 - [ ] Charts (in `extras/`): line, bar, area, scatter, sparkline.
-- [ ] Tabs: overflow scroll, close buttons, reorder.
+- [x] Tabs: overflow scroll (a vertical wheel scrolls the strip across, the selected
+  tab scrolls into view), close buttons (middle press, Delete; permanent tabs), drag and
+  Ctrl+Shift+Page Up/Down reorder; `tabpanel` role; hidden flex children take no fill
+  share or gap.
 - [ ] `Splitter` live relayout.
 - [ ] `Skeleton` / shimmer placeholder.
 - [ ] Form: field validation, error text, `Form` submit, field groups.

@@ -2830,6 +2830,8 @@ MinContent / MaxContent / Percent   // 目标
 
 Grid track 使用独立的 `TrackSizing { Fixed, Fr, Auto, Percent, Minmax, FitContent, FlexMin }`（ADR 0009）。
 
+hidden 子节点退出 flex 布局：测量为零、不占 Fixed/Fit 主轴空间、不分 Fill 份额、两侧不留 gap（同 CSS `display: none`），布局为容器游标处的零尺寸框。
+
 内部使用高性能专用算法，不默认引入通用 constraint solver。
 
 ### 22.1 Constraints
@@ -3645,6 +3647,8 @@ IR/runtime 使用 `PropertyId`、`TokenId`、`NodeKey`、`ComponentTypeId` 等�
 **日期选择器**（`viso_widgets::date_picker`）：字段以 `DateNames::short` 显示所选日期（未选时显示占位文字）并带日历图标；点击、或聚焦时按 Space/Enter/Alt+Down/F4，在字段下方的锚定面板（light dismiss）里打开同一个 `Calendar`（两者共享一个日期单元），焦点落在所选日（未选则今天，取最近可选的一天）。选中即关闭面板并把焦点还给字段；Escape 或在外面按下则原样关闭；打开期间 Tab/Shift+Tab 在可用的翻月按钮与当月落点日之间循环。语义：字段为 `combobox`（值为完整日期，报告 expanded），面板为以标签命名的 `dialog`。
 
 **时间选择器**（`viso_widgets::time_picker`）：时间按段显示——时、分、（`seconds(true)` 时）秒，十二小时制再加 AM/PM；时制取 locale 的 CLDR hour cycle（`viso_ui::calendar::hour_cycle`，认 `-u-hc-`），`hour_cycle` 可覆盖。值是一个 Int 单元：自午夜起的秒数（`Time::to_state`），未设为 `NO_TIME`，各段显示占位符。每段是独立 Tab 停靠点，聚焦段以强调色填充（`InteractionStyle` 的 pressed 单元即该段的聚焦单元）。Up/Down 在段内循环步进（十二小时制的时保持 AM/PM，分按 `minute_step`，不在格点时先落到格点），Home/End 到段的两端，Left/Right 在段间移动（RTL 镜像）；键入数字直接设定该段，再无数字能接上时自动跳到下一段（一次提交的多个字符跟着跳），键入期间其他段按开始键入时的时间保留；AM/PM 段认其名称首字母。结果夹在 `min`/`max` 内，从未设开始时以 `min` 或 00:00 为基准。语义：以标签命名的 `group`，每段 `spinbutton`（名称为段名，值为所示文本，带数值与范围）。
+
+**标签页**（`viso_widgets::tabs`）：标签条是横向 scroll viewport（隐藏滚动条，`set_wheel_across` 让只有竖向滚动的鼠标滚轮横向滚动它），条里一行 `tab`；面板区每个标签一个 `tabpanel`，只显示选中标签的面板，全部面板构建一次。按下或方向键（RTL 镜像）、Home/End 选中并聚焦标签，Ctrl+PageUp/PageDown 在控件内任意处切换；选中时 `scroll_into_view` 把它滚入视野。标签是一个 roving Tab 停靠点。`closable` 的标签带关闭按钮（`permanent_tab` 除外），关闭按钮、中键按下或 Delete 关闭标签：关闭选中的标签时选中前一个（无则后一个），焦点随之；节点在结构钩子里 `free_tree` 释放。`reorderable` 时标签条是 reorder list、每个标签是自己的 handle，拖动沿条移动标签（两端悬停自动滚动），Ctrl+Shift+PageUp/PageDown 把聚焦标签移一位；`RowGesture::Reordered` 改写顺序，结构钩子按顺序重链按钮。`on_change`/`on_close` 报告标签的声明序号，`on_reorder` 报告条内的起止位置。语义：`tab` 带 selected 与位置（`(序号, 总数)`，也是 reorder 判位依据），关闭按钮是名为“Close 标题”的 `button`。
 
 **锚定浮层**（`viso_ui::anchored`）：一个 layer 可以锚在场景里的另一个节点上（`BuildCx::anchored(floater, anchor, Anchoring)`）。`Anchoring` 给出首选边（`Side::{Top, Bottom, Start, End}`，Start/End 随 RTL 镜像）、沿边对齐（`AnchorAlign`）、间距、窗口边距，以及三个碰撞策略：`flip`（首选边放不下且对边更宽裕时翻到对边）、`shift`（沿边平移进窗口）、`fit`（把可用空间作为 Fill 尺寸的上限，`match_anchor` 让宽度跟随锚点）。放置是纯函数 `place(anchor, natural, bounds, &Anchoring, rtl) -> AnchorPlacement`，结果（矩形、实际边、箭头沿边位置、可用空间）存在 `NodeStore` 的稀疏表里，`anchor_placement` 可读。窗口可用区域是 surface 减去 keep-out（facade 每帧设为 safe area，底边取 safe area 与软键盘高度的较大者）。锚点被 scroll / translate 移动时，`update_transforms` 调 `follow_anchors` 只重放受影响的 layer：位置变了才重新 lay 该 layer，不触发场景 layout；窗口 resize 走正常 relayout。`anchor_arrow(floater, arrow)` 登记的箭头节点被平移到实际边上、对准锚点中心，翻边时随之换边。
 

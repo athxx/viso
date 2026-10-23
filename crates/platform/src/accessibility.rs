@@ -101,6 +101,8 @@ pub enum SemanticsRole {
     ProgressIndicator,
     /// A text field that searches, perhaps with a list of suggestions.
     SearchField,
+    /// The panel a tab shows.
+    TabPanel,
 }
 
 /// How an assistive technology announces a change to a node's content.

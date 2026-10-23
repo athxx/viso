@@ -154,6 +154,7 @@ fn role(role: SemanticsRole) -> Role {
         SemanticsRole::EditableComboBox => Role::EditableComboBox,
         SemanticsRole::ProgressIndicator => Role::ProgressIndicator,
         SemanticsRole::SearchField => Role::SearchInput,
+        SemanticsRole::TabPanel => Role::TabPanel,
         SemanticsRole::Tab => Role::Tab,
         SemanticsRole::TabList => Role::TabList,
         SemanticsRole::Navigation => Role::Navigation,

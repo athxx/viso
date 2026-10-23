@@ -6936,6 +6936,13 @@ impl<'a> BuildCx<'a> {
         handle
     }
 
+    /// Let a wheel turning up and down scroll an already-declared viewport
+    /// along rows (see [`NodeStore::set_wheel_across`]).
+    pub fn wheel_across(&mut self, handle: Handle, takes: bool) -> Handle {
+        self.store.set_wheel_across(handle.id, takes);
+        handle
+    }
+
     /// Make an already-declared node a reorderable list, or no longer one
     /// (see [`NodeStore::set_reorder_list`]).
     pub fn reorder_list(&mut self, handle: Handle, takes: bool) -> Handle {

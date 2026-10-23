@@ -384,6 +384,7 @@ pub(crate) fn aria_role(role: SemanticsRole) -> Option<&'static str> {
         R::ColumnHeader => "columnheader",
         R::ProgressIndicator => "progressbar",
         R::SearchField => "searchbox",
+        R::TabPanel => "tabpanel",
         R::Window | R::Container | R::Label => return None,
     })
 }

@@ -158,6 +158,18 @@ pub(crate) fn magnifier(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
     stroked(cx, cmds, ink, 1.6)
 }
 
+/// A cross: what closes a tab.
+pub(crate) fn cross(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
+    let (a, b) = (GLYPH * 0.5 - 3.5, GLYPH * 0.5 + 3.5);
+    let cmds = vec![
+        PathCmd::MoveTo(Point::new(a, a)),
+        PathCmd::LineTo(Point::new(b, b)),
+        PathCmd::MoveTo(Point::new(b, a)),
+        PathCmd::LineTo(Point::new(a, b)),
+    ];
+    stroked(cx, cmds, ink, 1.5)
+}
+
 /// A cross on a filled disc: what clears a field.
 pub(crate) fn clear(cx: &mut BuildCx<'_>, disc: Rgba, ink: Rgba) -> Handle {
     cx.flex(

@@ -169,11 +169,14 @@ pub enum Role {
     /// A text field that searches (WAI-ARIA `role=searchbox`), announcing
     /// whether a list of suggestions for it is `expanded`.
     SearchField,
+    /// The panel a [`Tab`](Role::Tab) shows (WAI-ARIA `role=tabpanel`),
+    /// named by its tab.
+    TabPanel,
 }
 
 impl Role {
     /// Every role, in declaration order.
-    pub const ALL: [Role; 39] = [
+    pub const ALL: [Role; 40] = [
         Role::Group,
         Role::Button,
         Role::CheckBox,
@@ -213,6 +216,7 @@ impl Role {
         Role::EditableComboBox,
         Role::ProgressIndicator,
         Role::SearchField,
+        Role::TabPanel,
     ];
 
     /// The role whose [`label`](Self::label) is `label`.
@@ -264,6 +268,7 @@ impl Role {
             Role::EditableComboBox => "editablecombobox",
             Role::ProgressIndicator => "progressindicator",
             Role::SearchField => "searchfield",
+            Role::TabPanel => "tabpanel",
         }
     }
 }

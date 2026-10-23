@@ -1,50 +1,16 @@
-//! Section 71 validation pack for the `Tabs` control — a strip of selectable
-//! tabs, each revealing one panel — driven through the public facade. Mirrors
-//! `splitter_widget.rs` (golden + input tapes + a11y + allocation) with the tabs'
-//! own structure: a `TabList` row of tab buttons above a panel area whose panels
-//! all build once and show/hide through the retained `hidden` flag. Selecting a
-//! tab writes a reactive `selected` cell, defers a pair of `hidden` flips the
-//! router applies (hide the old panel, show the new), and fires `on_change` once.
-//!
-//! - **golden screenshot** — build a `Tabs` with two colored panels, lay it out
-//!   over a fixed surface, and confirm the pixels match a blessed baseline. Only
-//!   the selected panel is shown, so the golden proves a hidden panel paints
-//!   nothing (its region shows the other panel / clear). Pure quads — no font
-//!   fixture (the tab captions render as glyphs, but the baseline captures
-//!   whatever the text path emits deterministically);
-//! - **pointer click input tape** — `PointerRouter::route` at a tab button's world
-//!   box: a primary press-then-release on the second tab selects it, fires
-//!   `on_change` once, moves the `selected` cell, and — through the router applying
-//!   the deferred requests — flips the panels' `hidden` flags;
-//! - **keyboard input tape** — with a tab focused, `KeyRouter::route_key` activates
-//!   it on Enter/Space and steps the selection on Left/Right; an unfocused strip
-//!   receives no key dispatch;
-//! - **a11y snapshot** — the derived tree carries a `TabList` over `Tab` nodes
-//!   named by their captions and `Group` panels; each tab button declares a pointer
-//!   and a key handler and is focusable;
-//! - **allocation profile** — a warmed-up `Tabs` frame allocates nothing per frame
-//!   (architecture section 47 hot-path contract), plus a *tab-flip* frame: driving
-//!   a click through the router flips `hidden` (which marks `LAYOUT | PAINT`), so
-//!   the flip re-runs `store.layout`; the flip's one-time layout cost folds into
-//!   warmup and the steady assert holds only after the scene settles — showing and
-//!   hiding panels does not leak an allocation per frame.
-//!
-//! Building through `Tabs::build` is the point: it proves the widget lowers to an
-//! interactive, panel-switching subtree the `viso-ui` input/paint path and
-//! `paint_tree` handle unchanged — including the deferred `hidden` seam a tab
-//! switch needs.
+//! The `Tabs` control's pixels and frame cost: a strip of tab buttons above
+//! the selected tab's panel matches a blessed golden, the hidden panel
+//! painting nothing; a warmed-up frame allocates nothing, after a tab flip
+//! too.
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
 use std::path::PathBuf;
-use std::rc::Rc;
 use std::sync::atomic::Ordering;
 
 use viso::gpu::{CpuRaster, GpuBackend, RawWindowHandle, TextureDesc, TextureFormat};
 use viso::render::{FrameStats, GlyphInstanceData, Rect, Renderer, Rgba, test_glyphs};
 use viso::ui::{
-    BindingTable, BoxStyle, BuildCx, Component, Content, Key, KeyEvent, KeyRouter, LeafStyle,
-    Modifiers, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase, PointerRouter, Role,
+    BindingTable, BoxStyle, BuildCx, Component, Content, LeafStyle, NodeId, NodeStore,
     SemanticProjector, Size, StateStore, TextEdits, Vec2, VirtualLists, paint_tree,
 };
 use viso::widgets::tabs;
@@ -148,10 +114,16 @@ fn children_of(store: &NodeStore, parent: NodeId) -> Vec<NodeId> {
     out
 }
 
+/// The tab buttons: the strip viewport's row's children.
+fn buttons_of(store: &NodeStore, root: NodeId) -> Vec<NodeId> {
+    let viewport = children_of(store, root)[0];
+    let row = children_of(store, viewport)[0];
+    children_of(store, row)
+}
+
 /// Replace each tab caption's content with a shared deterministic glyph run, so
 /// the golden is font/atlas-stable without a real font stack and the atlas stops
-/// growing after build — the same fixture bypass `button_widget.rs` uses. A tabs
-/// root is `[strip, panel_area]`; the strip's children are the tab buttons; each
+/// growing after build — the same fixture bypass `button_widget.rs` uses. Each
 /// tab button's first child is its caption leaf (`Label` maps to one leaf).
 fn attach_captions(gpu: &mut CpuRaster, store: &mut NodeStore, root: NodeId) {
     let tg = test_glyphs([0.0, 0.0], 26.0);
@@ -165,8 +137,7 @@ fn attach_captions(gpu: &mut CpuRaster, store: &mut NodeStore, root: NodeId) {
     gpu.write_texture(atlas, 0, 0, tg.atlas_size, tg.atlas_size, &tg.atlas_pixels);
     let natural = glyph_run_natural(&tg.glyphs);
 
-    let strip = children_of(store, root)[0];
-    for button in children_of(store, strip) {
+    for button in buttons_of(store, root) {
         let caption = children_of(store, button)[0];
         store.set_content_payload(
             caption,
@@ -254,284 +225,7 @@ fn golden_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden/tabs_widget.bgra8")
 }
 
-// --- interactive input tapes ------------------------------------------------
-
-/// A `Tabs` laid out as the root of its own tree, kept together with the reactive
-/// stores its handlers write into so a router can drive it. The tabs fill the
-/// surface. `on_change` records the last selected index and bumps a counter.
-struct Interactive {
-    store: NodeStore,
-    states: StateStore,
-    bindings: BindingTable,
-    root: NodeId,
-    chain: Vec<NodeId>,
-}
-
-impl Interactive {
-    fn new(counter: Rc<Cell<u32>>, last: Rc<Cell<Option<usize>>>) -> Self {
-        let mut store = NodeStore::new();
-        let mut states = StateStore::new();
-        let mut bindings = BindingTable::new();
-        let mut lists = VirtualLists::new();
-        let mut text_edits = TextEdits::new();
-        let mut projectors = SemanticProjector::new();
-
-        let widget = tabs()
-            .tab("Details", panel_fill(PANEL_A))
-            .tab("History", panel_fill(PANEL_B))
-            .selected(0)
-            .size(Size::fill())
-            .on_change(move |_ev, index| {
-                last.set(Some(index));
-                counter.set(counter.get() + 1);
-            });
-
-        let root = {
-            let mut cx = BuildCx::with_reactive(
-                &mut store,
-                &mut states,
-                &mut bindings,
-                &mut lists,
-                &mut text_edits,
-                &mut projectors,
-            );
-            widget.build(&mut cx);
-            cx.root().expect("tabs declares a root")
-        };
-
-        let mut scratch = Vec::new();
-        store.layout(root, surface_rect(), &mut scratch);
-
-        Interactive {
-            store,
-            states,
-            bindings,
-            root,
-            chain: Vec::new(),
-        }
-    }
-
-    /// The strip and panel-area children of the root, then the tab buttons and the
-    /// panels, walking the arena sibling chain.
-    fn strip_buttons(&self) -> Vec<NodeId> {
-        let strip = self.children(self.root)[0];
-        self.children(strip)
-    }
-
-    fn panels(&self) -> Vec<NodeId> {
-        let area = self.children(self.root)[1];
-        self.children(area)
-    }
-
-    fn children(&self, parent: NodeId) -> Vec<NodeId> {
-        let arena = self.store.arena();
-        let mut out = Vec::new();
-        for c in arena.children(parent) {
-            out.push(c);
-        }
-        out
-    }
-
-    /// Route a pointer sample through the public `PointerRouter`, exactly as the
-    /// facade's `on_input` does — including applying any deferred `hidden` flips the
-    /// handler requests. Returns whether any handler ran.
-    fn pointer(&mut self, ev: PointerEvent) -> bool {
-        PointerRouter::route(
-            &mut self.store,
-            &mut self.states,
-            &self.bindings,
-            self.root,
-            ev,
-            &mut self.chain,
-        )
-    }
-
-    /// Route a key sample through the public `KeyRouter` to the focused node.
-    fn key(&mut self, ev: KeyEvent) -> bool {
-        KeyRouter::route_key(
-            &mut self.store,
-            &mut self.states,
-            &self.bindings,
-            &mut TextEdits::new(),
-            self.root,
-            ev,
-            &mut self.chain,
-        )
-    }
-
-    /// The current value of the shared selection cell (via a throwaway read cx).
-    fn selected(&mut self) -> Option<i32> {
-        // The strip is bound to the selected cell; read it back through the state
-        // store the build wrote into. The build allocated exactly one Int cell, so
-        // the first cell holds the selection.
-        use viso::ui::StateValue;
-        let ev = PointerEvent {
-            x: 0.0,
-            y: 0.0,
-            phase: PointerPhase::Move,
-            buttons: PointerButtons::NONE,
-            modifiers: Modifiers::default(),
-        };
-        let cell = StateStore::new().alloc(StateValue::Int(0));
-        let cx = viso::ui::EventCx::__new_pointer(&mut self.states, &self.bindings, &ev);
-        match cx.get(cell) {
-            Some(StateValue::Int(i)) => Some(i),
-            _ => None,
-        }
-    }
-}
-
-/// A primary-button pointer sample at `(x, y)`, in the given phase.
-fn primary_at(x: f32, y: f32, phase: PointerPhase) -> PointerEvent {
-    PointerEvent {
-        x,
-        y,
-        phase,
-        buttons: PointerButtons::PRIMARY,
-        modifiers: Modifiers::default(),
-    }
-}
-
-fn key_ev(key: Key, pressed: bool, repeat: bool) -> KeyEvent {
-    KeyEvent {
-        key,
-        pressed,
-        repeat,
-        modifiers: Modifiers::default(),
-    }
-}
-
-/// The world-box center of a node, for aiming a pointer sample at it.
-fn center_of(store: &NodeStore, id: NodeId) -> (f32, f32) {
-    let b = store.world(id);
-    (b.x + b.w / 2.0, b.y + b.h / 2.0)
-}
-
-#[test]
-fn pointer_click_selects_tab_switches_panels_and_fires_change() {
-    let count = Rc::new(Cell::new(0u32));
-    let last = Rc::new(Cell::new(None::<usize>));
-    let mut ix = Interactive::new(count.clone(), last.clone());
-
-    let buttons = ix.strip_buttons();
-    let panels = ix.panels();
-    assert_eq!(buttons.len(), 2, "one tab button per tab");
-    assert_eq!(panels.len(), 2, "one panel per tab");
-    assert!(ix.store.hidden(panels[1]), "the second panel starts hidden");
-
-    let (bx, by) = center_of(&ix.store, buttons[1]);
-
-    // A press alone does not select.
-    assert!(
-        ix.pointer(primary_at(bx, by, PointerPhase::Down)),
-        "the press hits the second tab's handler"
-    );
-    assert_eq!(count.get(), 0, "the press alone does not select");
-
-    // The release on the second tab selects index 1, fires once, and — through the
-    // router applying the deferred requests — flips the panels' hidden flags.
-    assert!(ix.pointer(primary_at(bx, by, PointerPhase::Up)));
-    assert_eq!(count.get(), 1, "press-then-release is one selection");
-    assert_eq!(last.get(), Some(1), "on_change carries the selected index");
-    assert_eq!(ix.selected(), Some(1), "the shared cell holds index 1");
-    assert!(ix.store.hidden(panels[0]), "the old panel is now hidden");
-    assert!(!ix.store.hidden(panels[1]), "the new panel is now shown");
-
-    // Re-clicking the current tab is a guarded no-op.
-    ix.pointer(primary_at(bx, by, PointerPhase::Down));
-    ix.pointer(primary_at(bx, by, PointerPhase::Up));
-    assert_eq!(count.get(), 1, "re-selecting the current tab does nothing");
-}
-
-#[test]
-fn keyboard_activates_and_arrows_step_selection() {
-    let count = Rc::new(Cell::new(0u32));
-    let last = Rc::new(Cell::new(None::<usize>));
-    let mut ix = Interactive::new(count.clone(), last.clone());
-    let buttons = ix.strip_buttons();
-
-    // Unfocused: the key router has no target, so nothing fires.
-    assert!(
-        !ix.key(key_ev(Key::Right, true, false)),
-        "an unfocused strip receives no key dispatch"
-    );
-    assert_eq!(count.get(), 0);
-
-    // Focus the first tab: Right steps to tab 1.
-    ix.store.set_focused(Some(buttons[0]));
-    assert!(ix.key(key_ev(Key::Right, true, false)));
-    assert_eq!(ix.selected(), Some(1), "Right steps to the next tab");
-    assert_eq!(last.get(), Some(1));
-
-    // Focus the second tab: Enter activates it (already selected → guarded no-op),
-    // then Left steps back to tab 0.
-    ix.store.set_focused(Some(buttons[1]));
-    let before = count.get();
-    ix.key(key_ev(Key::Enter, true, false));
-    assert_eq!(
-        count.get(),
-        before,
-        "Enter on the already-selected tab is a no-op"
-    );
-    assert!(ix.key(key_ev(Key::Left, true, false)));
-    assert_eq!(ix.selected(), Some(0), "Left steps to the previous tab");
-
-    // Focus the first tab: Space activates tab 0 (guarded no-op, already selected).
-    ix.store.set_focused(Some(buttons[0]));
-    let before = count.get();
-    ix.key(key_ev(Key::Space, true, false));
-    assert_eq!(
-        count.get(),
-        before,
-        "Space on the already-selected tab is a no-op"
-    );
-}
-
-// --- a11y snapshot ----------------------------------------------------------
-
-#[test]
-fn tabs_derive_a_tablist_over_named_tabs_and_group_panels() {
-    let mut store = NodeStore::new();
-    let root = build_scene(&mut store);
-    let mut scratch = Vec::new();
-    store.layout(root, surface_rect(), &mut scratch);
-
-    let tree = store.derive_semantics(root);
-    let node = tree.root().expect("the derived tree has a root");
-    assert_eq!(node.role, Role::Group, "the control is a Group");
-
-    // The strip is a TabList; its buttons are named Tabs.
-    let tablist = tree
-        .nodes
-        .iter()
-        .find(|n| n.role == Role::TabList)
-        .expect("a TabList node");
-    let tab_labels: Vec<&str> = tree
-        .nodes
-        .iter()
-        .filter(|n| n.role == Role::Tab)
-        .filter_map(|n| n.label.as_deref())
-        .collect();
-    assert_eq!(
-        tab_labels,
-        vec!["Details", "History"],
-        "each tab is named by its caption"
-    );
-    assert!(
-        !tablist.children.is_empty(),
-        "the TabList groups the tab buttons"
-    );
-
-    // The tab buttons are interactive: pointer + key handlers, focusable.
-    let strip = children_of(&store, root)[0];
-    for button in children_of(&store, strip) {
-        assert!(store.has_handler(button), "each tab has a pointer handler");
-        assert!(store.has_key_handler(button), "each tab has a key handler");
-        assert!(store.focusable(button), "each tab is focusable");
-    }
-}
-
-// --- allocation profile -----------------------------------------------------
+// --- allocation profile ---------------------------------------------------
 
 /// Counts heap allocations while `ARMED`; off by default so the harness's own
 /// allocations are never counted. Mirrors `splitter_widget.rs`.
@@ -646,11 +340,7 @@ fn steady_tabs_frame_is_allocation_free_including_after_a_tab_flip() {
     // the router applies for a click): hide panel 0, show panel 1. The flip marks
     // LAYOUT | PAINT, so re-run layout to settle the new visibility before measuring
     // — the one-time flip/layout cost folds into warmup.
-    let (strip, area) = {
-        let kids = children_of(&h.store, h.root);
-        (kids[0], kids[1])
-    };
-    let _ = strip;
+    let area = children_of(&h.store, h.root)[1];
     let panels = children_of(&h.store, area);
     h.store.set_hidden(panels[0], true);
     h.store.set_hidden(panels[1], false);

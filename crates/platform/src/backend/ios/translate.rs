@@ -304,6 +304,7 @@ pub(crate) fn announced(role: SemanticsRole) -> bool {
             | R::Region
             | R::Navigation
             | R::TabList
+            | R::TabPanel
             | R::Tree
             | R::Dialog
             | R::Menu

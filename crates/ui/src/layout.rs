@@ -602,8 +602,13 @@ pub fn measure(tree: &mut impl LayoutTree, root: u32, scratch: &mut Vec<u32>) {
             let mut main_sum = 0.0f32;
             let mut cross_max = 0.0f32;
             let mut min_w = 0.0f32;
+            let mut shown = 0usize;
             for i in 0..child_count {
                 let child = scratch[start + i];
+                if tree.hidden(child) {
+                    continue;
+                }
+                shown += 1;
                 let cm = tree.measured(child);
                 let margin = margin_of(tree, child, INDEFINITE);
                 main_sum += cm.on(axis) + margin.main(axis);
@@ -614,10 +619,10 @@ pub fn measure(tree: &mut impl LayoutTree, root: u32, scratch: &mut Vec<u32>) {
                     Axis::Column => min_w.max(narrowest),
                 };
             }
-            if child_count > 1 {
-                main_sum += gap * (child_count as f32 - 1.0);
+            if shown > 1 {
+                main_sum += gap * (shown as f32 - 1.0);
                 if axis == Axis::Row {
-                    min_w += gap * (child_count as f32 - 1.0);
+                    min_w += gap * (shown as f32 - 1.0);
                 }
             }
             main_sum += padding.main(axis);
@@ -893,6 +898,9 @@ fn fill_share(
             let Length::Fill { weight } = tree.input(child).size().on(axis) else {
                 continue;
             };
+            if tree.hidden(child) {
+                continue;
+            }
             let weight = weight.max(0.0);
             let (min, max) = tree
                 .rules(child)
@@ -1151,22 +1159,23 @@ pub fn layout_on(
     let main_definite = basis.on(axis);
     let cross_definite = basis.on(cross);
     let inner = content_within(bounds, padding, basis);
-    let gaps_total = if child_count > 1 {
-        gap * (child_count as f32 - 1.0)
-    } else {
-        0.0
-    };
 
     // Sum the fixed/relative/fit main sizes, each within its bounds, the
     // margins, and the total fill weight in one sweep. A relative size and a
     // bound resolve against the content box's main extent. A child without
-    // rules, almost every one, takes its request as is.
+    // rules, almost every one, takes its request as is. A hidden child takes
+    // nothing, not even a gap.
     let mut fixed_main = 0.0f32;
     let mut weight_total = 0.0f32;
     let mut bounded_fill = false;
     let mut ruled = false;
+    let mut shown = 0usize;
     for i in 0..child_count {
         let child = scratch[start + i];
+        if tree.hidden(child) {
+            continue;
+        }
+        shown += 1;
         let length = tree.input(child).size().on(axis);
         if let Some(rules) = tree.rules(child) {
             ruled = true;
@@ -1191,6 +1200,12 @@ pub fn layout_on(
             }
         }
     }
+
+    let gaps_total = if shown > 1 {
+        gap * (shown as f32 - 1.0)
+    } else {
+        0.0
+    };
 
     // A row its children overflow takes what it lacks from its fit children,
     // each giving up the same share of its width down to its min-content one.
@@ -1239,6 +1254,17 @@ pub fn layout_on(
     for i in 0..child_count {
         let child = scratch[start + i];
         let input = tree.input(child);
+        if tree.hidden(child) {
+            let at = if reverse {
+                2.0 * main_origin + main_extent - cursor
+            } else {
+                cursor
+            };
+            let child_box = axis_rect(axis, at, cross_origin, 0.0, 0.0);
+            let child_basis = basis.child(tree.input(root), input);
+            layout_on(tree, child, child_box, child_basis, inner, scratch);
+            continue;
+        }
         let length = input.size().on(axis);
         if matches!(length, Length::Relative { .. }) && !main_definite {
             tree.report_length(child, LengthIssue::IndefiniteBasis);
@@ -3719,6 +3745,47 @@ mod tests {
         let b = store.bounds(fill_leaf);
         assert_eq!(b.w, 0.0);
         assert_eq!(b.h, 0.0);
+    }
+
+    #[test]
+    fn a_hidden_child_takes_no_share_of_the_fill_nor_a_gap() {
+        use crate::component::{BuildCx, FlexStyle, LeafStyle, NodeStore};
+        use crate::style::BoxStyle;
+
+        let mut store = NodeStore::new();
+        let mut leaves = Vec::new();
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(
+                FlexStyle {
+                    axis: Axis::Column,
+                    gap: 10.0,
+                    ..Default::default()
+                },
+                |cx| {
+                    for size in [Size::fill(), Size::fill(), Size::fixed(100.0, 20.0)] {
+                        leaves.push(cx.leaf(LeafStyle {
+                            size,
+                            style: BoxStyle::NONE,
+                        }));
+                    }
+                },
+            );
+            cx.root().unwrap()
+        };
+        store.set_hidden(leaves[1].id(), true);
+        store.set_hidden(leaves[2].id(), true);
+        let mut scratch = Vec::new();
+        measure(&mut store, root.index(), &mut scratch);
+        layout(
+            &mut store,
+            root.index(),
+            surface_local(100.0, 100.0),
+            &mut scratch,
+        );
+        assert_eq!(store.bounds(leaves[0].id()).h, 100.0, "the whole column");
+        assert_eq!(LayoutTree::measured(&store, root.index()).h, 0.0, "no gaps");
+        assert_eq!(store.bounds(leaves[2].id()).h, 0.0);
     }
 
     #[test]

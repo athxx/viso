@@ -882,6 +882,7 @@ pub fn route_scroll(store: &mut NodeStore, root: NodeId, ev: ScrollEvent) -> boo
         // A wheel's notch ends hard at the range's end.
         ScrollPhase::None => {
             store.pad_swipe(target, delta, ev.phase);
+            let delta = store.wheel_delta(target, delta);
             let moved = scroll_chain(store, target, delta);
             store.snap_after_wheel(target);
             moved
@@ -4188,6 +4189,41 @@ mod tests {
         let consumed = route_scroll(&mut store, viewport, wheel(50.0, 50.0, 40.0, 0.0));
         assert!(!consumed);
         assert_eq!(store.scroll(viewport), Vec2::ZERO);
+    }
+
+    #[test]
+    fn a_wheel_turning_up_and_down_scrolls_a_strip_that_takes_it_across() {
+        let mut store = NodeStore::new();
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            let strip = cx.scroll(
+                ScrollStyle {
+                    axis: Axis::Row,
+                    size: Size::fixed(100.0, 100.0),
+                    ..Default::default()
+                },
+                |cx| {
+                    cx.leaf(LeafStyle {
+                        size: Size::fixed(300.0, 100.0),
+                        ..Default::default()
+                    });
+                },
+            );
+            cx.wheel_across(strip, true);
+            cx.root().unwrap()
+        };
+        store.layout(root, Rect::new(0.0, 0.0, 100.0, 100.0), &mut Vec::new());
+        assert!(route_scroll(&mut store, root, wheel(50.0, 50.0, 0.0, 40.0)));
+        assert_eq!(store.scroll(root), Vec2 { x: 40.0, y: 0.0 });
+        // A wheel turning across moves it as it did.
+        route_scroll(&mut store, root, wheel(50.0, 50.0, -10.0, 0.0));
+        assert_eq!(store.scroll(root), Vec2 { x: 30.0, y: 0.0 });
+        store.set_wheel_across(root, false);
+        assert!(!route_scroll(
+            &mut store,
+            root,
+            wheel(50.0, 50.0, 0.0, 40.0)
+        ));
     }
 
     #[test]
