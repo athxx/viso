@@ -1,26 +1,22 @@
 //! The [`CheckBox`] control — a two-state toggle with a label.
 //!
-//! A `CheckBox` is a focusable box that flips a boolean `checked` state on
-//! either a primary-pointer click (press then release) or a keyboard activation
-//! (Enter/Space while focused), firing an `on_change` callback with the *new*
-//! checked value. Pointer and keyboard activation are the *same* action: an
-//! interactive control must have a keyboard equivalent (AGENTS section 15), so
-//! the callback is shared between both handlers rather than duplicated.
+//! A `CheckBox` is a focusable caption with a box at its start, filled and
+//! ticked while it is checked. A primary-pointer click (press then release)
+//! or a keyboard activation (Enter/Space while focused) flips its `checked`
+//! state and fires `on_change` with the new value: the two are the same
+//! action, so the callback is shared (AGENTS section 15).
 //!
-//! Unlike a [`Button`](crate::Button), whose press is momentary (armed on the
-//! primary down, disarmed on the up), a `CheckBox` *toggles*: each activation
-//! reads the current `checked` cell and writes its inverse, so the mark box
-//! stays lit until the next activation.
+//! Unlike a [`Button`](crate::Button), whose press is momentary, a `CheckBox`
+//! *toggles*: each activation writes the inverse of its `checked` cell, so the
+//! box stays ticked until the next one.
 //!
-//! It maps to one interactive `viso-ui` node: a focusable flex row carrying a
-//! reactive `checked` cell bound to `PAINT`, composed of a mark-box leaf (its
-//! fill reflects the checked state) and a [`Label`](crate::Label) child for the
-//! caption. Toggling flips the `checked` cell, repainting the row alone (a
-//! targeted invalidation — no rebuild, architecture section 47). Its accessible
-//! role is [`Role::CheckBox`] with the caption as its name; the live checked
-//! value reaches the derived semantics tree through a semantic-state projection
-//! (the node's side column, seeded at build and re-run on every toggle — the
-//! derive pass reads only that column, never the state store).
+//! It is one node: its text is the caption and its check's mark the box,
+//! sized from the caption's first line and inked with its color. A flip
+//! repaints the node alone while the box fills and its tick draws in over a
+//! short ease (at once while motion is reduced). Its accessible role is
+//! [`Role::CheckBox`](viso_ui::Role) named by the caption, the live checked
+//! value reaching the derived semantics tree through a semantic-state
+//! projection.
 //!
 //! ```
 //! use viso_widgets::checkbox;
@@ -45,86 +41,18 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use viso_ui::{
-    Align, Axis, Border, BoxStyle, BuildCx, Component, DirtyClass, EventCx, FlexStyle, Inset,
-    Justify, Key, LeafStyle, Length, PointerButtons, PointerPhase, Rgba, Role, SemanticState,
-    Semantics, Size, StateValue,
-};
+use viso_ui::{BuildCx, CheckShape, Component, EventCx, Length, Rgba, Size};
 
-use crate::label;
+use super::check::{Check, INK, SharedChange};
 
-/// A shared, mutable change callback carrying the new checked value. It is
-/// cloned into both the pointer handler and the key handler at build time so a
-/// pointer click and a keyboard activation drive the same `on_change`. Pointer
-/// and keyboard input are never concurrent, so the runtime never re-enters the
-/// `RefCell` borrow.
-type SharedChange = Rc<RefCell<Option<Box<dyn FnMut(&mut EventCx<'_>, bool)>>>>;
-
-/// The mark box's fill while unchecked — a neutral empty box.
-const UNCHECKED: Rgba = Rgba {
-    r: 0.16,
-    g: 0.17,
-    b: 0.20,
-    a: 1.0,
-};
-
-/// The mark box's fill while checked — a bright accent so the state reads at a
-/// glance.
-const CHECKED: Rgba = Rgba {
-    r: 0.22,
-    g: 0.45,
-    b: 0.85,
-    a: 1.0,
-};
-
-/// The caption color: near-white for contrast against a dark surface.
-const CAPTION: Rgba = Rgba {
-    r: 0.98,
-    g: 0.98,
-    b: 1.0,
-    a: 1.0,
-};
-
-/// The mark box's border, giving the unchecked box a visible outline.
-const BORDER: Rgba = Rgba {
-    r: 0.45,
-    g: 0.47,
-    b: 0.52,
-    a: 1.0,
-};
-
-/// The default corner radius of the mark box.
-const RADIUS: f32 = 4.0;
-
-/// The default border width of the mark box.
-const BORDER_WIDTH: f32 = 1.5;
-
-/// The default edge length of the (square) mark box.
-const MARK: f32 = 18.0;
-
-/// The gap between the mark box and the caption.
-const GAP: f32 = 8.0;
-
-/// The visual and layout parameters of a [`CheckBox`]: the mark box's unchecked
-/// and checked fills, the mark box's edge length, and the checkbox's own size
-/// request within its parent.
-///
-/// `size` defaults to [`Length::Fit`] on both axes so the checkbox shrinks to
-/// the mark box plus the caption; override it with a [`Length::Fixed`] or
-/// [`Length::Fill`] axis for a fixed or flexing box. `unchecked` and `checked`
-/// default to a bordered empty box and a filled accent box. All fields are
-/// `Copy`.
+/// The look and size of a [`CheckBox`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CheckBoxStyle {
     /// The checkbox's own size request within its parent. Defaults to `Fit` on
-    /// both axes (shrink to the mark box plus the caption).
+    /// both axes (shrink to the box plus the caption).
     pub size: Size,
-    /// The mark box's edge length (it is square).
-    pub mark: f32,
-    /// The mark box's fill/border while unchecked.
-    pub unchecked: BoxStyle,
-    /// The mark box's fill while checked.
-    pub checked: BoxStyle,
+    /// The caption's color, which inks the box and its tick too.
+    pub color: Rgba,
 }
 
 impl Default for CheckBoxStyle {
@@ -134,29 +62,21 @@ impl Default for CheckBoxStyle {
                 width: Length::Fit,
                 height: Length::Fit,
             },
-            mark: MARK,
-            unchecked: BoxStyle {
-                border: Border {
-                    width: BORDER_WIDTH,
-                    color: BORDER,
-                },
-                ..BoxStyle::solid(UNCHECKED).with_radius(RADIUS)
-            },
-            checked: BoxStyle::solid(CHECKED).with_radius(RADIUS),
+            color: INK,
         }
     }
 }
 
-/// A two-state toggle: a focusable mark box with a caption.
+/// A two-state toggle: a focusable caption with a box it ticks.
 ///
 /// Construct one with [`checkbox`] and attach behavior with the chainable
 /// setters. Each activation — a primary-pointer press then release, or
 /// Enter/Space while focused — flips the checked state and fires `on_change`
 /// once with the new value.
 ///
-/// See the [module docs](self) for a build example. Invalidation: toggling
-/// flips a reactive `checked` cell bound to `PAINT`, repainting the checkbox's
-/// own row without a rebuild; the caption and structure are static.
+/// See the [module docs](self) for a build example. Invalidation: a flip
+/// repaints the checkbox's one node each frame its box eases; the caption and
+/// structure are static.
 pub struct CheckBox {
     /// The visible caption, also used as the accessible name.
     label: String,
@@ -208,112 +128,25 @@ impl CheckBox {
         self.style.size = size;
         self
     }
-}
 
-/// Drive the shared callback with the new checked value if one is set; a
-/// handler-less checkbox is a no-op. Pointer and keyboard activation never
-/// overlap, so the borrow is uncontended.
-fn fire(cb: &SharedChange, ev: &mut EventCx<'_>, checked: bool) {
-    if let Some(f) = cb.borrow_mut().as_mut() {
-        f(ev, checked);
+    /// Set the caption's color, which inks the box and its tick too.
+    pub fn color(mut self, color: Rgba) -> Self {
+        self.style.color = color;
+        self
     }
-}
-
-/// Read the current checked value from the reactive cell, defaulting to `false`
-/// for a stale handle or a non-bool value (neither happens in normal use — the
-/// cell is authored as `Bool` and lives as long as the node).
-fn read_checked(ev: &EventCx<'_>, cell: viso_ui::StateId) -> bool {
-    matches!(ev.get(cell), Some(StateValue::Bool(true)))
 }
 
 impl Component for CheckBox {
     fn build(&self, cx: &mut BuildCx<'_>) {
-        // A reactive `checked` cell bound to PAINT: toggling repaints the row
-        // alone (targeted invalidation, not a rebuild). The mark box's fill is
-        // chosen in paint from this cell.
-        let checked = cx.state(StateValue::Bool(self.checked));
-
-        // The focusable flex row: the mark box leaf followed by the caption.
-        // `build` takes `&self`, so the styles (`Copy`) are read by value and the
-        // caption is cloned (cold, build-time — not a per-frame path).
-        let mark_box = self.style.unchecked;
-        let mark_size = self.style.mark;
-        let caption = self.label.clone();
-        let root = cx.flex(
-            FlexStyle {
-                axis: Axis::Row,
-                gap: GAP,
-                padding: Inset::all(0.0),
-                align: Align::Center,
-                justify: Justify::Start,
-                size: self.style.size,
-                style: BoxStyle::NONE,
-            },
-            |cx| {
-                cx.leaf(LeafStyle {
-                    size: Size::fixed(mark_size, mark_size),
-                    style: mark_box,
-                });
-                label(caption.clone()).color(CAPTION).build(cx);
-            },
-        );
-
-        // Bind the checked cell to the row's PAINT so a toggle repaints just this
-        // subtree. The mark box's fill swap is expressed by rebinding the box in
-        // paint via the cell; this slice paints the unchecked box and marks PAINT
-        // dirty on toggle so the frame re-emits the node.
-        cx.bind(checked, root, DirtyClass::PAINT);
-
-        // Project the same cell into the node's semantic-state column, so the
-        // derived accessibility tree carries the live checked value (seeded now
-        // for the first frame, then re-run in the flush phase on every toggle).
-        // This is the SEMANTICS side of the one cell that also drives PAINT — the
-        // derive pass reads only the node column, never the state store.
-        cx.bind_semantic_state(root, move |cx| match cx.get(checked) {
-            Some(StateValue::Bool(b)) => SemanticState::checked(b),
-            _ => SemanticState::checked(false),
-        });
-
-        cx.focusable(root, true);
-
-        // Pointer activation: a primary press-then-release toggles the checked
-        // cell and fires `on_change` with the new value. One press/release is one
-        // toggle — the release is the activation, matching Button's click gate.
-        let pointer_cb = self.on_change.clone();
-        cx.on_pointer(root, move |ev| {
-            let Some(p) = ev.pointer() else { return };
-            if p.phase == PointerPhase::Up && p.buttons.contains(PointerButtons::PRIMARY) {
-                let next = !read_checked(ev, checked);
-                ev.set(checked, StateValue::Bool(next));
-                fire(&pointer_cb, ev, next);
-            }
-        });
-
-        // Keyboard activation: Enter/Space pressed (not an auto-repeat) toggles
-        // the same cell and fires the same `on_change` — the accessibility
-        // equivalent of the pointer click.
-        let key_cb = self.on_change.clone();
-        cx.on_key(root, move |ev| {
-            if let Some(k) = ev.key()
-                && k.pressed
-                && !k.repeat
-                && matches!(k.key, Key::Enter | Key::Space)
-            {
-                ev.stop_propagation();
-                let next = !read_checked(ev, checked);
-                ev.set(checked, StateValue::Bool(next));
-                fire(&key_cb, ev, next);
-            }
-        });
-
-        // Explicit CheckBox role with the caption as its accessible name, so the
-        // name matches the visible label (AGENTS section 15). The live checked
-        // value reaches the derived tree through the semantic-state projection
-        // registered above (the node column, not a cross-layer state read).
-        cx.semantics(
-            root,
-            Semantics::role(Role::CheckBox).with_label(self.label.clone()),
-        );
+        Check {
+            shape: CheckShape::Box,
+            caption: &self.label,
+            checked: self.checked,
+            size: self.style.size,
+            color: self.style.color,
+            on_change: &self.on_change,
+        }
+        .build(cx);
     }
 }
 
@@ -323,8 +156,9 @@ mod tests {
     use std::cell::Cell;
     use std::rc::Rc;
     use viso_ui::{
-        BindingTable, KeyEvent, Modifiers, NodeId, NodeStore, PointerEvent, SemanticProjector,
-        SemanticState, StateId, StateStore, TextEdits, VirtualLists,
+        BindingTable, CheckMark, Key, KeyEvent, Modifiers, NodeId, NodeStore, PointerButtons,
+        PointerEvent, PointerPhase, Role, SemanticProjector, SemanticState, StateId, StateStore,
+        StateValue, TextEdits, VirtualLists,
     };
 
     /// The reactive stores a checkbox build writes into, kept together so a test
@@ -452,11 +286,11 @@ mod tests {
         StateStore::new().alloc(StateValue::Bool(false))
     }
 
-    /// A checkbox builds an interactive node: a pointer handler, a key handler, a
-    /// focusable flag, a `CheckBox` semantics node named by its caption, and two
-    /// composed children (the mark box leaf and the caption).
+    /// A checkbox builds one interactive node: a pointer handler, a key handler,
+    /// a focusable flag, a `CheckBox` semantics node named by its caption, its
+    /// caption text and a box mark.
     #[test]
-    fn checkbox_builds_a_focusable_toggle_node_with_mark_and_caption() {
+    fn checkbox_builds_one_focusable_caption_drawing_its_box() {
         let mut rx = Reactive::new();
         let root = rx.build(checkbox("Sound"));
 
@@ -469,10 +303,18 @@ mod tests {
             "checkbox attaches a key handler"
         );
         assert!(rx.store.focusable(root), "checkbox is focusable");
+        assert_eq!(child_count(&rx.store, root), 0, "checkbox is one node");
+        assert!(
+            rx.store.text_request(root).is_some(),
+            "its text is the caption"
+        );
         assert_eq!(
-            child_count(&rx.store, root),
-            2,
-            "checkbox composes a mark box and a caption"
+            rx.store.check_mark(root),
+            Some(CheckMark {
+                shape: CheckShape::Box,
+                checked: false,
+            }),
+            "it draws a box beside it"
         );
 
         let sem = rx
@@ -631,5 +473,24 @@ mod tests {
             Some(SemanticState::checked(true)),
             "checked(true) seeds the derived tree checked without any input"
         );
+    }
+
+    /// A flip moves the mark with the state it projects: the mark the node
+    /// draws follows the cell once the flush runs.
+    #[test]
+    fn a_click_moves_the_mark_to_the_new_state() {
+        let mut rx = Reactive::new();
+        let root = rx.build(checkbox("Sound"));
+        rx.pointer(root, primary(PointerPhase::Down));
+        rx.pointer(root, primary(PointerPhase::Up));
+        rx.derive_state(root);
+        assert_eq!(
+            rx.store.check_mark(root),
+            Some(CheckMark {
+                shape: viso_ui::CheckShape::Box,
+                checked: true,
+            })
+        );
+        assert!(rx.store.is_transitioning(), "the mark eases over");
     }
 }

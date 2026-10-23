@@ -10,6 +10,7 @@
 
 mod button;
 mod caption_bar;
+mod check;
 mod checkbox;
 mod combo_box;
 mod dock;

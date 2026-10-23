@@ -648,7 +648,7 @@ fn paint_check(
         y: world.y + place.mark.y,
         ..place.mark
     };
-    mark.paint(mark_rect, ink, out);
+    mark.paint(mark_rect, ink, store.check_progress(node), rtl, out);
     let caption = Rect {
         x: world.x + place.text.x,
         y: world.y + place.text.y,
@@ -1347,12 +1347,27 @@ mod tests {
         };
         assert_eq!(run.glyphs[0].rect.x, world.x + 30.0 + 2.0);
 
-        // Unchecked, the box is an outline with no tick.
+        // Unchecking fades the fill and draws the tick back along its stroke.
         store.set_check_mark(check, mark(false));
+        store.tick_transitions(core::time::Duration::from_millis(50));
+        out.clear();
+        paint_tree(&store, root, &mut out);
+        let Primitive::Quad(fading) = out[0] else {
+            panic!("the box first: {out:?}");
+        };
+        assert!(fading.color.a > 0.0 && fading.color.a < 1.0, "{fading:?}");
+        let Primitive::Path(tick) = &out[1] else {
+            panic!("a shorter tick: {out:?}");
+        };
+        assert!(tick.cmds.len() <= 3);
+
+        // Unchecked, the box is an outline with no tick.
+        store.tick_transitions(core::time::Duration::from_millis(200));
         out.clear();
         paint_tree(&store, root, &mut out);
         assert!(matches!(out[0], Primitive::Quad(q) if q.color.a == 0.0 && q.border.width > 0.0));
         assert!(matches!(out[1], Primitive::GlyphRun(_)));
+        assert!(!store.is_transitioning());
     }
 
     #[test]

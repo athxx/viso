@@ -1,7 +1,7 @@
 //! The [`FileTree`] control — a virtualized, keyboard-navigable tree browser.
 //!
 //! A `FileTree` renders a hierarchy of directories and files as an indented,
-//! expand/collapse list: click a folder's arrow to reveal or hide its children,
+//! expand/collapse list: click a folder's chevron to reveal or hide its children,
 //! navigate and expand/collapse from the keyboard, and select one or several
 //! rows. It is built for large trees — a directory of 100k files does **not**
 //! mount 100k nodes. The visible rows are the flatten of the tree under the set
@@ -120,7 +120,7 @@ const DEFAULT_ROW_HEIGHT: f32 = 22.0;
 /// The default per-depth indent in logical pixels.
 const DEFAULT_INDENT: f32 = 16.0;
 /// The default width of the disclosure-arrow column in logical pixels.
-const DEFAULT_ARROW_WIDTH: f32 = 14.0;
+const DEFAULT_ARROW_WIDTH: f32 = 16.0;
 /// The default gap between a row's arrow column and its label.
 const DEFAULT_GAP: f32 = 2.0;
 

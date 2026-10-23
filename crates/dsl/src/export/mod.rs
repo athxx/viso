@@ -330,6 +330,13 @@ body { font-family: var(--typography-family); font-size: var(--typography-base-s
 .vx-lanes > [style*=\"sticky\"] { grid-column: 1 / -1; }
 .vx-lanes.vx-across > [style*=\"sticky\"] { grid-column: auto; grid-row: 1 / -1; }
 [data-vx-away] { display: none !important; }
+summary { list-style: none; }
+summary::-webkit-details-marker { display: none; }
+.vx-chevron::before { content: \"\"; display: inline-block; width: 0.42em; height: 0.42em; margin-inline: 0.3em 0.5em; vertical-align: 0.12em; border: solid currentColor; border-width: 0.12em 0.12em 0 0; transform: rotate(45deg); transition: transform 150ms cubic-bezier(0.33, 1, 0.68, 1); }
+details[open] > .vx-chevron::before { transform: rotate(135deg); }
+.vx-chevron:dir(rtl)::before { transform: rotate(-135deg); }
+details[open] > .vx-chevron:dir(rtl)::before { transform: rotate(-225deg); }
+@media (prefers-reduced-motion: reduce) { .vx-chevron::before { transition: none; } }
 .vx-text { white-space: pre; user-select: none; -webkit-user-select: none; }
 .vx-text.vx-selectable { user-select: text; -webkit-user-select: text; cursor: text; }
 .vx-button { font: inherit; color: inherit; background: none; border: 0; border-radius: 0; padding: 0; margin: 0; text-align: start; white-space: pre; cursor: pointer; }

@@ -1147,7 +1147,7 @@ export component C { view { Column { Chip { styles: [Lit]; } } } }
 fn a_disclosure_exports_as_details_with_its_header_as_summary() {
     const PANEL: &str = r#"
 export component Panel {
-    state open = true;
+    state open = false;
     view {
         Disclosure {
             bind expanded <=> open;
@@ -1161,14 +1161,40 @@ export component Panel {
     let index = &page.index;
     assert!(index.contains("<details"), "{index}");
     assert!(
-        index.contains("<summary class=\"vx-text s1\">More</summary>"),
-        "the header is the summary, which browsers expose as its button: {index}"
+        index.contains("<summary class=\"vx-text vx-chevron s1\">More</summary>"),
+        "the header is the summary, which browsers expose as its button, drawing \
+         the chevron that turns with it: {index}"
+    );
+    let styles = &page.styles;
+    assert!(
+        styles.contains("details[open] > .vx-chevron::before { transform: rotate(135deg); }"),
+        "{styles}"
     );
     let script = page.script.as_deref().unwrap();
     assert!(script.contains("P.open(e["), "{script}");
     assert!(
         script.contains(", 9, (p) =>"),
         "the toggle reports `changed`: {script}"
+    );
+    let Some(chrome) = chrome() else {
+        eprintln!("no Chrome: the page is not run");
+        return;
+    };
+    let turn = "\nconst turned = () => getComputedStyle(document.querySelector('summary'), '::before').transform;\n\
+        setTimeout(() => { document.body.append('shut=' + turned() + '.'); document.querySelector('summary').click(); }, 200);\n\
+        setTimeout(() => document.body.append('turning=' + document.getAnimations().map((a) =>\n\
+          a.transitionProperty + ' ' + a.effect.getKeyframes().map((k) => k.transform).join(' to ')).join() + '.'), 250);\n";
+    let dom = run_in_chrome(
+        &page,
+        &(script.to_owned() + turn),
+        "export-chevron",
+        &[],
+        chrome,
+    );
+    assert!(
+        dom.contains("shut=matrix(0.707107, 0.707107, -0.707107, 0.707107, 0, 0).")
+            && dom.contains("turning=transform rotate(45deg) to rotate(135deg)."),
+        "the chevron points to the end edge while shut and turns down as it opens: {dom}"
     );
 }
 

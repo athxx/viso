@@ -1,5 +1,5 @@
 //! A check's own drawing beside its caption: a `CheckBox`'s box with its
-//! mark, a `Toggle`'s track with its knob.
+//! mark, a `Toggle`'s track with its knob, a disclosure header's chevron.
 //!
 //! A check is one node: its caption is its text content, and the mark sits
 //! at its start edge (its end edge right to left), centred on the caption's
@@ -11,6 +11,9 @@ use viso_render::{
     Border, LineCap, LineJoin, Path, PathCmd, Point, Primitive, Quad, Rect, Rgba, Stroke,
 };
 
+use core::time::Duration;
+
+use crate::animation::{Easing, Spring, Timing};
 use crate::layout::Vec2;
 
 /// How a check draws its state.
@@ -20,6 +23,9 @@ pub enum CheckShape {
     Box,
     /// A track with a knob at its start, at its end while checked.
     Switch,
+    /// A chevron pointing toward the end edge, turned to point down while
+    /// checked: what a disclosure's header shows of whether it is expanded.
+    Chevron,
 }
 
 /// What a check draws beside its caption.
@@ -50,7 +56,7 @@ impl CheckMark {
     fn size(self, baseline: f32) -> Vec2 {
         let side = (baseline * LINE_OVER_BASELINE).max(SIDE_MIN);
         match self.shape {
-            CheckShape::Box => Vec2 { x: side, y: side },
+            CheckShape::Box | CheckShape::Chevron => Vec2 { x: side, y: side },
             CheckShape::Switch => Vec2 {
                 x: side * 1.75,
                 y: side,
@@ -62,8 +68,13 @@ impl CheckMark {
     /// caption that draws anything, the gap after it.
     fn lead(self, text: Vec2, baseline: f32) -> f32 {
         let mark = self.size(baseline);
+        // A chevron's stroke sits well inside its box, which spaces it already.
+        let gap = match self.shape {
+            CheckShape::Chevron => 0.25,
+            _ => 0.5,
+        };
         if text.x > 0.0 {
-            mark.x + mark.y * 0.5
+            mark.x + mark.y * gap
         } else {
             mark.x
         }
@@ -115,27 +126,56 @@ impl CheckMark {
         }
     }
 
-    /// Draws the mark into `rect` (world space) inked `ink`.
-    pub(crate) fn paint(self, rect: Rect, ink: Rgba, out: &mut Vec<Primitive>) {
+    /// How far its mark has moved toward checked at rest: `1` checked, `0`
+    /// not.
+    pub(crate) fn rest(self) -> f32 {
+        if self.checked { 1.0 } else { 0.0 }
+    }
+
+    /// How its mark moves between its states: a box fills and ticks and a
+    /// chevron turns over a short ease, a knob slides on a spring that carries a quick change of
+    /// mind on.
+    pub(crate) fn timing(self) -> Timing {
+        match self.shape {
+            CheckShape::Box | CheckShape::Chevron => {
+                Timing::eased(Duration::from_millis(150), Easing::EASE_OUT)
+            }
+            CheckShape::Switch => Timing::spring(Spring::with_response(0.28, 1.0)),
+        }
+    }
+
+    /// Draws the mark into `rect` (world space) inked `ink`, `progress` of
+    /// the way from unchecked to checked: a box's fill fades in and its tick
+    /// draws along its stroke, a knob slides along its track as the track
+    /// fills, a chevron turns a quarter clockwise (counterclockwise right to
+    /// left, where it points left at rest).
+    pub(crate) fn paint(
+        self,
+        rect: Rect,
+        ink: Rgba,
+        progress: f32,
+        rtl: bool,
+        out: &mut Vec<Primitive>,
+    ) {
+        let p = progress.clamp(0.0, 1.0);
         let on_ink = contrast(ink);
-        match (self.shape, self.checked) {
-            (CheckShape::Box, checked) => {
-                let radius = rect.h * 0.2;
+        match self.shape {
+            CheckShape::Box => {
                 out.push(Primitive::Quad(Quad {
                     rect,
-                    color: if checked { ink } else { Rgba::TRANSPARENT },
-                    radius,
-                    border: if checked {
+                    color: faded(ink, p),
+                    radius: rect.h * 0.2,
+                    border: if p >= 1.0 {
                         Border::NONE
                     } else {
                         Border {
                             width: (rect.h * 0.09).max(1.0),
-                            color: faded(ink, 0.6),
+                            color: faded(ink, 0.6 + 0.4 * p),
                         }
                     },
                 }));
-                if checked {
-                    let at = |x: f32, y: f32| Point {
+                if p > 0.0 {
+                    let at = |(x, y): (f32, f32)| Point {
                         x: rect.x + rect.w * x,
                         y: rect.y + rect.h * y,
                     };
@@ -143,44 +183,110 @@ impl CheckMark {
                     stroke.cap = LineCap::Round;
                     stroke.join = LineJoin::Round;
                     out.push(Primitive::Path(Box::new(Path {
-                        cmds: vec![
-                            PathCmd::MoveTo(at(0.26, 0.52)),
-                            PathCmd::LineTo(at(0.43, 0.69)),
-                            PathCmd::LineTo(at(0.75, 0.34)),
-                        ],
+                        cmds: tick(p)
+                            .map(|(i, point)| match i {
+                                0 => PathCmd::MoveTo(at(point)),
+                                _ => PathCmd::LineTo(at(point)),
+                            })
+                            .collect(),
                         fill: None,
                         stroke: Some(stroke),
                         shadow: None,
                     })));
                 }
             }
-            (CheckShape::Switch, checked) => {
+            CheckShape::Chevron => {
+                let (sin, cos) = (p * core::f32::consts::FRAC_PI_2).sin_cos();
+                let (side, mirror) = (rect.h, if rtl { -1.0 } else { 1.0 });
+                let center = (rect.x + rect.w * 0.5, rect.y + rect.h * 0.5);
+                // Each corner about the centre, mirrored right to left, then
+                // turned toward the start of the box's bottom edge.
+                let at = |(x, y): (f32, f32)| {
+                    let (x, y) = (x * mirror * side, y * side);
+                    Point {
+                        x: center.0 + x * cos - mirror * y * sin,
+                        y: center.1 + mirror * x * sin + y * cos,
+                    }
+                };
+                let mut stroke = Stroke::new(side * 0.1, ink);
+                stroke.cap = LineCap::Round;
+                stroke.join = LineJoin::Round;
+                out.push(Primitive::Path(Box::new(Path {
+                    cmds: vec![
+                        PathCmd::MoveTo(at(CHEVRON[0])),
+                        PathCmd::LineTo(at(CHEVRON[1])),
+                        PathCmd::LineTo(at(CHEVRON[2])),
+                    ],
+                    fill: None,
+                    stroke: Some(stroke),
+                    shadow: None,
+                })));
+            }
+            CheckShape::Switch => {
                 out.push(Primitive::Quad(Quad {
                     rect,
-                    color: if checked { ink } else { faded(ink, 0.28) },
+                    color: faded(ink, 0.28 + 0.72 * p),
                     radius: rect.h * 0.5,
                     border: Border::NONE,
                 }));
                 let inset = rect.h * 0.125;
                 let knob = rect.h - inset * 2.0;
-                let x = if checked {
-                    rect.x + rect.w - inset - knob
-                } else {
-                    rect.x + inset
-                };
+                let travel = rect.w - inset * 2.0 - knob;
                 out.push(Primitive::Quad(Quad {
                     rect: Rect {
-                        x,
+                        x: rect.x + inset + travel * p,
                         y: rect.y + inset,
                         w: knob,
                         h: knob,
                     },
-                    color: if checked { on_ink } else { ink },
+                    color: mix(ink, on_ink, p),
                     radius: knob * 0.5,
                     border: Border::NONE,
                 }));
             }
         }
+    }
+}
+
+/// A chevron's corners pointing toward the end edge, as shares of its box
+/// about its centre.
+const CHEVRON: [(f32, f32); 3] = [(-0.11, -0.22), (0.11, 0.0), (-0.11, 0.22)];
+
+/// The tick's corners, as shares of its box.
+const TICK: [(f32, f32); 3] = [(0.26, 0.52), (0.43, 0.69), (0.75, 0.34)];
+
+/// The points of the tick drawn `share` of its length from its start, each
+/// with its place in the stroke: its corners up to where the stroke ends,
+/// and that end.
+fn tick(share: f32) -> impl Iterator<Item = (usize, (f32, f32))> {
+    let length = |a: (f32, f32), b: (f32, f32)| ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
+    let first = length(TICK[0], TICK[1]);
+    let total = first + length(TICK[1], TICK[2]);
+    let reach = share * total;
+    let toward =
+        |a: (f32, f32), b: (f32, f32), t: f32| (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
+    let end = if share >= 1.0 {
+        TICK[2]
+    } else if reach <= first {
+        toward(TICK[0], TICK[1], reach / first)
+    } else {
+        toward(TICK[1], TICK[2], (reach - first) / (total - first))
+    };
+    let corner = (reach > first).then_some(TICK[1]);
+    [Some(TICK[0]), corner, Some(end)]
+        .into_iter()
+        .flatten()
+        .enumerate()
+}
+
+/// `a` moved `t` of the way to `b`, channel by channel.
+fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
+    let at = |x: f32, y: f32| x + (y - x) * t;
+    Rgba {
+        r: at(a.r, b.r),
+        g: at(a.g, b.g),
+        b: at(a.b, b.b),
+        a: at(a.a, b.a),
     }
 }
 
@@ -250,5 +356,69 @@ mod tests {
             checked: true,
         };
         assert_eq!(switch.natural(Vec2::ZERO, 0.0), Vec2 { x: 28.0, y: 16.0 });
+    }
+
+    #[test]
+    fn a_knob_slides_along_its_track_as_the_track_fills() {
+        let switch = CheckMark {
+            shape: CheckShape::Switch,
+            checked: true,
+        };
+        let ink = Rgba {
+            r: 0.1,
+            g: 0.2,
+            b: 0.9,
+            a: 1.0,
+        };
+        let knob_x = |p| {
+            let mut out = Vec::new();
+            switch.paint(Rect::new(0.0, 0.0, 28.0, 16.0), ink, p, false, &mut out);
+            match (&out[0], &out[1]) {
+                (Primitive::Quad(track), Primitive::Quad(knob)) => (track.color.a, knob.rect.x),
+                _ => panic!("{out:?}"),
+            }
+        };
+        assert_eq!(knob_x(0.0), (0.28, 2.0));
+        assert_eq!(knob_x(1.0), (1.0, 14.0));
+        let (fill, x) = knob_x(0.5);
+        assert!((fill - 0.64).abs() < 1e-6 && x == 8.0);
+    }
+
+    #[test]
+    fn a_chevron_turns_from_the_end_edge_to_point_down() {
+        let chevron = CheckMark {
+            shape: CheckShape::Chevron,
+            checked: false,
+        };
+        let tip = |p, rtl| {
+            let mut out = Vec::new();
+            chevron.paint(
+                Rect::new(0.0, 0.0, 20.0, 20.0),
+                Rgba::new(1.0, 1.0, 1.0, 1.0),
+                p,
+                rtl,
+                &mut out,
+            );
+            match &out[..] {
+                [Primitive::Path(path)] => match path.cmds[1] {
+                    PathCmd::LineTo(at) => ((at.x * 100.0).round(), (at.y * 100.0).round()),
+                    _ => panic!("{path:?}"),
+                },
+                _ => panic!("{out:?}"),
+            }
+        };
+        assert_eq!(tip(0.0, false), (1220.0, 1000.0), "points right");
+        assert_eq!(tip(1.0, false), (1000.0, 1220.0), "turned down");
+        assert_eq!(tip(0.0, true), (780.0, 1000.0), "points left");
+        assert_eq!(tip(1.0, true), (1000.0, 1220.0), "turned down");
+    }
+
+    #[test]
+    fn a_tick_draws_along_its_stroke() {
+        assert_eq!(tick(1.0).map(|(_, p)| p).collect::<Vec<_>>(), TICK.to_vec());
+        let short: Vec<_> = tick(0.1).collect();
+        assert_eq!(short.len(), 2);
+        assert!(short[1].1.0 > TICK[0].0 && short[1].1.0 < TICK[1].0);
+        assert_eq!(tick(0.9).count(), 3);
     }
 }

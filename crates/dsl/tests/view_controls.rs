@@ -737,6 +737,53 @@ export component Panel {
 }
 
 #[test]
+fn a_disclosure_s_caption_header_draws_a_chevron_that_turns_with_it() {
+    const DISCLOSURE: &str = r#"
+export component Panel {
+    state open = false;
+    view {
+        Column {
+            width: 400dp;
+            height: 300dp;
+            Disclosure {
+                bind expanded <=> open;
+                Text { text: "More"; width: 100dp; height: 20dp; }
+                Row {
+                    Text { text: "Body"; }
+                }
+            }
+            Disclosure {
+                Row { Text { text: "Composed"; } }
+            }
+        }
+    }
+}
+"#;
+    for mut rt in [Rt::reloaded(DISCLOSURE), Rt::packaged(DISCLOSURE)] {
+        let [caption, composed] = rt.children_of_root()[..] else {
+            panic!("two disclosures");
+        };
+        let header = rt.children(caption)[0];
+        let chevron = |checked| {
+            Some(CheckMark {
+                shape: CheckShape::Chevron,
+                checked,
+            })
+        };
+        assert_eq!(rt.store.check_mark(header), chevron(false));
+        assert_eq!(rt.store.check_mark(rt.children(composed)[0]), None);
+
+        rt.click(10.0, 10.0);
+        assert_eq!(rt.int("open"), 1);
+        assert_eq!(rt.store.check_mark(header), chevron(true), "it turns down");
+        assert!(rt.store.is_transitioning());
+        rt.store
+            .tick_transitions(std::time::Duration::from_millis(200));
+        assert!(!rt.store.is_transitioning());
+    }
+}
+
+#[test]
 fn a_modal_covers_the_surface_traps_focus_and_asks_to_close_on_its_scrim_or_escape() {
     const MODAL: &str = r#"
 export component Page {

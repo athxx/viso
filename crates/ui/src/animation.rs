@@ -17,7 +17,7 @@
 //! [`is_empty`](AnimationRegistry::is_empty)).
 //!
 //! A look transition moves a node's fill, opacity, corner radius, text color,
-//! translate or fixed size to a new value over a [`Timing`]: the store keeps
+//! translate, fixed size or check mark to a new value over a [`Timing`]: the store keeps
 //! the moving ones in a flat list beside its columns and the driver ticks it
 //! each frame, writing each value with the invalidation its property takes
 //! ([`NodeStore::transition`]): PAINT for a look, TRANSFORM for a translate,
@@ -298,6 +298,9 @@ pub enum LookValue {
     /// How far it and its subtree turn clockwise about its origin, in
     /// radians.
     Rotation(f32),
+    /// How far a check's mark has moved toward checked: `0` unchecked, `1`
+    /// checked.
+    Check(f32),
 }
 
 impl LookValue {
@@ -323,14 +326,15 @@ impl LookValue {
             | LookValue::Width(v)
             | LookValue::Height(v)
             | LookValue::Scale(v)
-            | LookValue::Rotation(v) => [v, 0.0, 0.0, 0.0],
+            | LookValue::Rotation(v)
+            | LookValue::Check(v) => [v, 0.0, 0.0, 0.0],
         }
     }
 
     /// The value of its property moved to `parts`. Parts carried past where
     /// a move ends (an easing or a spring that overshoots) move a translate,
-    /// scale or rotation past its target, but hold a color and an opacity in
-    /// range and an extent and a radius at zero or more.
+    /// scale or rotation past its target, but hold a color, an opacity and a
+    /// check's mark in range and an extent and a radius at zero or more.
     fn with_parts(self, p: Parts) -> LookValue {
         let unit = |x: f32| x.clamp(0.0, 1.0);
         let size = |x: f32| x.max(0.0);
@@ -352,6 +356,7 @@ impl LookValue {
             LookValue::Height(_) => LookValue::Height(size(p[0])),
             LookValue::Scale(_) => LookValue::Scale(size(p[0])),
             LookValue::Rotation(_) => LookValue::Rotation(p[0]),
+            LookValue::Check(_) => LookValue::Check(unit(p[0])),
         }
     }
 

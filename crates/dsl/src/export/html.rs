@@ -538,6 +538,13 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             (_, "Image" | "Svg") => "vx-image",
             _ => "vx-leaf",
         };
+        // A disclosure's caption header draws the chevron that turns with it.
+        if summary
+            && node.kind == NodeKind::Leaf
+            && !matches!(node.type_name.as_str(), "Toggle" | "CheckBox")
+        {
+            el.classes.push("vx-chevron".to_owned());
+        }
         match node.type_name.as_str() {
             "Modal" | "Sheet" => el.classes.push("vx-layer".to_owned()),
             "Toast" => el

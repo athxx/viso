@@ -159,7 +159,7 @@ Rules:
 - [x] Reduced motion: platform setting honored by transitions, springs and scroll glides.
 - [x] Navigation transitions: push/pop slide, fade, platform default; shared-element
   (hero) transition.
-- [ ] Animated `Toggle` thumb, `Checkbox` check, `Disclosure` chevron.
+- [x] Animated `Toggle` thumb, `Checkbox` check, `Disclosure` chevron.
 
 ## W7 — Gestures
 

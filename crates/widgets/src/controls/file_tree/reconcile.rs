@@ -35,6 +35,7 @@
 use viso_ui::virtual_list::set_item_count;
 use viso_ui::{NodeStore, VirtualLists};
 
+use super::build::{chevron, chevron_slot};
 use super::command::{FileTreeState, Intent};
 use super::model::{apply_select, flatten};
 use super::semantics::row_state;
@@ -126,7 +127,7 @@ pub(super) fn reconcile_open(
     }
 
     // Refresh per-row accessibility state whenever an expansion or a selection changed. A
-    // structural change can flip a directory's expanded glyph and shift which rows are
+    // structural change can turn a directory's chevron and shift which rows are
     // visible; a selection change flips aria-selected without moving a row. A focus-only
     // frame changes neither and writes nothing.
     if structural || selection_changed {
@@ -148,6 +149,11 @@ fn refresh_row_semantics(state: &FileTreeState, store: &mut NodeStore) {
         if let Some(&node) = row_nodes.get(&row.key) {
             let selected = state.selection.contains(&row.key);
             store.set_semantic_state(node, row_state(*row, selected));
+            if row.is_dir
+                && let Some(slot) = chevron_slot(store, node)
+            {
+                store.set_check_mark(slot, Some(chevron(row.expanded)));
+            }
         }
     }
 }

@@ -13,9 +13,8 @@
 //! wires an `on -> PAINT` binding, so it must build through
 //! `BuildCx::with_reactive` (a plain `BuildCx::new` panics on `cx.state`). It
 //! also attaches pointer/key handlers driven by an `on_change` callback — the
-//! bench authors one so the handler-boxing cost is included, and its subtree is
-//! a touch larger than a checkbox's (a track flex holding a thumb leaf, plus the
-//! caption). It drives only `viso-ui`, so it needs no facade or render
+//! bench authors one so the handler-boxing cost is included; like a checkbox
+//! it is one caption node drawing its mark. It drives only `viso-ui`, so it needs no facade or render
 //! dev-dependency and adds no dependency edge.
 //!
 //! Run release (`CARGO_TARGET_DIR=/tmp/rust_tmp cargo bench -p viso-widgets`);

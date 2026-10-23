@@ -11,7 +11,7 @@
 //!
 //! The walk is cold: it runs once when the tree is authored, and each row body
 //! runs only when its row is (re)mounted, never on the per-frame hot path. A row
-//! is an indent spacer sized to `depth * indent`, a disclosure glyph for a
+//! is an indent spacer sized to `depth * indent`, a disclosure chevron for a
 //! directory (blank for a file), and the node's label — the label fetched from the
 //! warm tree by key at mount time, kept off the hot [`VisibleRow`] (section 8.4).
 //!
@@ -29,7 +29,8 @@ use std::rc::Rc;
 
 use viso_ui::virtual_list::ItemKey;
 use viso_ui::{
-    Axis, BoxStyle, BuildCx, Component, Inset, LeafStyle, Length, NodeId, Size, VirtualListStyle,
+    Axis, BoxStyle, BuildCx, CheckMark, CheckShape, Component, Inset, LeafStyle, Length, NodeId,
+    NodeStore, Size, VirtualListStyle,
 };
 
 use crate::text::label;
@@ -96,7 +97,7 @@ pub fn build_tree(
 }
 
 /// Author one row: a horizontal strip of an indent spacer (sized to the row's
-/// depth), a disclosure glyph column (an arrow for a directory, blank for a file),
+/// depth), a disclosure column (a chevron for a directory, blank for a file),
 /// and the node's label. Returns the row's host node so the caller can key it.
 fn build_row(
     cx: &mut BuildCx<'_>,
@@ -110,7 +111,6 @@ fn build_row(
         .map(String::as_str)
         .unwrap_or_default()
         .to_owned();
-    let glyph = disclosure_glyph(row);
     let text_for_role = text.clone();
 
     let handle = cx.flex(
@@ -133,12 +133,15 @@ fn build_row(
                 size: Size::fixed(indent, style.row_height),
                 style: BoxStyle::NONE,
             });
-            // Disclosure column: a fixed-width slot holding the arrow glyph for a
+            // Disclosure column: a fixed-width slot drawing the chevron of a
             // directory, blank for a file, so labels align across rows regardless
             // of whether a row can expand.
-            label(glyph)
+            let slot = label("")
                 .size(Size::fixed(style.arrow_width, style.row_height))
-                .build(cx);
+                .build_node(cx);
+            if row.is_dir {
+                cx.check_mark(slot, chevron(row.expanded));
+            }
             // The node's display name.
             label(text).build(cx);
         },
@@ -151,18 +154,19 @@ fn build_row(
     cx.semantic_state(handle, row_state(row, false)).id()
 }
 
-/// The disclosure glyph for a row: a right-pointing arrow for a collapsed
-/// directory, a down-pointing arrow for an expanded one, and a blank for a file
-/// (which never discloses). The arrow doubles as the click target the command
-/// layer wires in a later section.
-fn disclosure_glyph(row: VisibleRow) -> &'static str {
-    if !row.is_dir {
-        ""
-    } else if row.expanded {
-        "\u{25be}" // ▾ black down-pointing small triangle
-    } else {
-        "\u{25b8}" // ▸ black right-pointing small triangle
+/// A directory row's chevron: pointing to the end edge while collapsed, down
+/// while expanded.
+pub(super) fn chevron(expanded: bool) -> CheckMark {
+    CheckMark {
+        shape: CheckShape::Chevron,
+        checked: expanded,
     }
+}
+
+/// The node drawing a mounted row's chevron: its slot after the indent.
+pub(super) fn chevron_slot(store: &NodeStore, row: NodeId) -> Option<NodeId> {
+    let arena = store.arena();
+    arena.next_sibling(arena.first_child(row)?)
 }
 
 /// Build the key-to-label index by walking the tree once. The label is cold — read

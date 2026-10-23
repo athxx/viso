@@ -6,8 +6,8 @@
 //! momentary press).
 //!
 //! - **golden screenshot + measure** — build a `CheckBox` with `CheckBox::build`
-//!   (a mark box leaf + a composed `Label` caption in a flex row), attach a
-//!   deterministic glyph run to its caption leaf (the facade `TextShaper` is
+//!   (one caption node drawing its box), attach a deterministic glyph run as
+//!   its caption (the facade `TextShaper` is
 //!   `pub(crate)`, so integration tests shape via the shared `viso-render`
 //!   fixtures rather than a real font stack), lay it out, and confirm the pixels
 //!   match a blessed baseline;
@@ -64,7 +64,7 @@ const WHITE: Rgba = Rgba {
     a: 1.0,
 };
 
-/// The intrinsic extent of the glyph run, so the caption leaf sizes to it.
+/// The intrinsic extent of the glyph run, so the caption sizes to it.
 fn glyph_run_natural(glyphs: &[GlyphInstanceData]) -> Vec2 {
     let mut n = Vec2::ZERO;
     for g in glyphs {
@@ -83,13 +83,11 @@ fn surface_rect() -> Rect {
     }
 }
 
-/// Build a padded dark `View` wrapping a single `CheckBox`, and return the root,
-/// the checkbox's node, and the checkbox's caption leaf. The checkbox is the
-/// container's only child, so its node is the root's first child; the caption
-/// `Label` leaf is the checkbox's *second* child (the mark box leaf is first).
-/// Wrapping in a fill container keeps the checkbox at its `Fit` intrinsic size
-/// (mark box + gap + caption) rather than filling the surface.
-fn build_scene(store: &mut NodeStore) -> (NodeId, NodeId, NodeId) {
+/// Build a padded dark `View` wrapping a single `CheckBox`, and return the root
+/// and the checkbox's one node, the container's only child. Wrapping in a fill
+/// container keeps the checkbox at its `Fit` intrinsic size (box + gap +
+/// caption) rather than filling the surface.
+fn build_scene(store: &mut NodeStore) -> (NodeId, NodeId) {
     // The checkbox authors a reactive `checked` cell, so it must build through a
     // reactive cx; the golden only paints (the routers are exercised
     // separately), so throwaway state stores are fine here.
@@ -126,19 +124,10 @@ fn build_scene(store: &mut NodeStore) -> (NodeId, NodeId, NodeId) {
         .arena()
         .first_child(root)
         .expect("the view has the checkbox as its only child");
-    // The caption `Label` leaf is the second child (the mark box leaf is first).
-    let mark_id = store
-        .arena()
-        .first_child(checkbox_id)
-        .expect("the checkbox has a mark box leaf as its first child");
-    let caption_id = store
-        .arena()
-        .next_sibling(mark_id)
-        .expect("the checkbox has the caption leaf as its second child");
-    (root, checkbox_id, caption_id)
+    (root, checkbox_id)
 }
 
-/// Attach the shared deterministic glyph run to the checkbox's caption leaf so
+/// Attach the shared deterministic glyph run as the checkbox's caption so
 /// the golden is font/atlas-stable without a real font stack — the same fixture
 /// bypass `button_widget.rs` uses.
 fn attach_caption(gpu: &mut CpuRaster, store: &mut NodeStore, caption_id: NodeId) {
@@ -175,15 +164,15 @@ fn attach_caption(gpu: &mut CpuRaster, store: &mut NodeStore, caption_id: NodeId
 // --- golden screenshot + measure -------------------------------------------
 
 #[test]
-fn checkbox_renders_mark_box_and_caption_and_matches_golden() {
+fn checkbox_renders_its_box_beside_its_caption_and_matches_golden() {
     let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let mut renderer = Renderer::new(&mut gpu, format);
 
     let mut store = NodeStore::new();
-    let (root, _checkbox_id, caption_id) = build_scene(&mut store);
-    attach_caption(&mut gpu, &mut store, caption_id);
+    let (root, checkbox_id) = build_scene(&mut store);
+    attach_caption(&mut gpu, &mut store, checkbox_id);
 
     let mut scratch = Vec::new();
     store.layout(root, surface_rect(), &mut scratch);
@@ -545,8 +534,8 @@ fn setup_alloc() -> Harness {
     let renderer = Renderer::new(&mut gpu, format);
 
     let mut store = NodeStore::new();
-    let (root, _checkbox_id, caption_id) = build_scene(&mut store);
-    attach_caption(&mut gpu, &mut store, caption_id);
+    let (root, checkbox_id) = build_scene(&mut store);
+    attach_caption(&mut gpu, &mut store, checkbox_id);
 
     let mut scratch = Vec::new();
     store.layout(root, surface_rect(), &mut scratch);

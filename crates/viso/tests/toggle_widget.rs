@@ -1,13 +1,13 @@
 //! Section 71 validation pack for the `Toggle` control — a switch: a two-state
 //! on/off toggle — driven through the public facade. Mirrors `checkbox_widget.rs`
 //! (golden + a11y + allocation + the two interactive input tapes) with the
-//! toggle's own structure: a pill *track* holding a circular *thumb* leaf, plus a
-//! composed `Label` caption. A primary click and a keyboard activation drive the
+//! toggle's own mark: a pill *track* whose knob sits at its far end while on,
+//! beside the caption of its one node. A primary click and a keyboard activation drive the
 //! same `on_change` and *toggle* the on state (unlike Button's momentary press).
 //!
 //! - **golden screenshot + measure** — build a `Toggle` with `Toggle::build`
-//!   (a track flex holding a thumb leaf + a composed `Label` caption in a flex
-//!   row), attach a deterministic glyph run to its caption leaf (the facade
+//!   (one caption node drawing its track), attach a deterministic glyph run as
+//!   its caption (the facade
 //!   `TextShaper` is `pub(crate)`, so integration tests shape via the shared
 //!   `viso-render` fixtures rather than a real font stack), lay it out, and
 //!   confirm the pixels match a blessed baseline;
@@ -64,7 +64,7 @@ const WHITE: Rgba = Rgba {
     a: 1.0,
 };
 
-/// The intrinsic extent of the glyph run, so the caption leaf sizes to it.
+/// The intrinsic extent of the glyph run, so the caption sizes to it.
 fn glyph_run_natural(glyphs: &[GlyphInstanceData]) -> Vec2 {
     let mut n = Vec2::ZERO;
     for g in glyphs {
@@ -83,14 +83,11 @@ fn surface_rect() -> Rect {
     }
 }
 
-/// Build a padded dark `View` wrapping a single `Toggle`, and return the root,
-/// the toggle's node, and the toggle's caption leaf. The toggle is the
-/// container's only child, so its node is the root's first child; within the
-/// toggle, the track flex is the *first* child (it holds the thumb) and the
-/// caption `Label` leaf is the *second*. Wrapping in a fill container keeps the
-/// toggle at its `Fit` intrinsic size (track + gap + caption) rather than filling
-/// the surface.
-fn build_scene(store: &mut NodeStore) -> (NodeId, NodeId, NodeId) {
+/// Build a padded dark `View` wrapping a single `Toggle`, and return the root
+/// and the toggle's one node, the container's only child. Wrapping in a fill
+/// container keeps the toggle at its `Fit` intrinsic size (track + gap +
+/// caption) rather than filling the surface.
+fn build_scene(store: &mut NodeStore) -> (NodeId, NodeId) {
     // The toggle authors a reactive `on` cell, so it must build through a
     // reactive cx; the golden only paints (the routers are exercised
     // separately), so throwaway state stores are fine here.
@@ -127,20 +124,10 @@ fn build_scene(store: &mut NodeStore) -> (NodeId, NodeId, NodeId) {
         .arena()
         .first_child(root)
         .expect("the view has the toggle as its only child");
-    // The track flex is the first child (it holds the thumb); the caption `Label`
-    // leaf is the second child.
-    let track_id = store
-        .arena()
-        .first_child(toggle_id)
-        .expect("the toggle has a track flex as its first child");
-    let caption_id = store
-        .arena()
-        .next_sibling(track_id)
-        .expect("the toggle has the caption leaf as its second child");
-    (root, toggle_id, caption_id)
+    (root, toggle_id)
 }
 
-/// Attach the shared deterministic glyph run to the toggle's caption leaf so the
+/// Attach the shared deterministic glyph run as the toggle's caption so the
 /// golden is font/atlas-stable without a real font stack — the same fixture
 /// bypass `checkbox_widget.rs` uses.
 fn attach_caption(gpu: &mut CpuRaster, store: &mut NodeStore, caption_id: NodeId) {
@@ -177,15 +164,15 @@ fn attach_caption(gpu: &mut CpuRaster, store: &mut NodeStore, caption_id: NodeId
 // --- golden screenshot + measure -------------------------------------------
 
 #[test]
-fn toggle_renders_track_thumb_and_caption_and_matches_golden() {
+fn toggle_renders_its_track_beside_its_caption_and_matches_golden() {
     let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let mut renderer = Renderer::new(&mut gpu, format);
 
     let mut store = NodeStore::new();
-    let (root, _toggle_id, caption_id) = build_scene(&mut store);
-    attach_caption(&mut gpu, &mut store, caption_id);
+    let (root, toggle_id) = build_scene(&mut store);
+    attach_caption(&mut gpu, &mut store, toggle_id);
 
     let mut scratch = Vec::new();
     store.layout(root, surface_rect(), &mut scratch);
@@ -547,8 +534,8 @@ fn setup_alloc() -> Harness {
     let renderer = Renderer::new(&mut gpu, format);
 
     let mut store = NodeStore::new();
-    let (root, _toggle_id, caption_id) = build_scene(&mut store);
-    attach_caption(&mut gpu, &mut store, caption_id);
+    let (root, toggle_id) = build_scene(&mut store);
+    attach_caption(&mut gpu, &mut store, toggle_id);
 
     let mut scratch = Vec::new();
     store.layout(root, surface_rect(), &mut scratch);

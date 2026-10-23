@@ -617,7 +617,7 @@ pub struct NodeStore {
     content_payload: Vec<Option<Box<Content>>>,
     /// Cold: what each check draws beside its caption (its text content),
     /// index-aligned and `None` for every node but a check.
-    check_marks: Vec<Option<CheckMark>>,
+    check_marks: Vec<Option<(CheckMark, f32)>>,
     /// The brush programs `Content::Shader` nodes paint with, by slot.
     shaders: ShaderSlots,
     scenes: crate::scenes::SceneSlots,
@@ -2862,7 +2862,9 @@ impl NodeStore {
     /// This is the write end of the reactive-state projection: a control's cell
     /// drives a parallel binding whose flush computes the new [`SemanticState`]
     /// and calls this (in the flush phase, where the state store is live), so the
-    /// `&self` derive pass never reads the state store itself.
+    /// `&self` derive pass never reads the state store itself. A check's mark
+    /// follows the state it carries: a chevron whether it is expanded, a box
+    /// or a switch whether it is checked.
     pub fn set_semantic_state(&mut self, id: NodeId, state: SemanticState) {
         if !self.arena.is_live(id) {
             return;
@@ -2873,6 +2875,15 @@ impl NodeStore {
         }
         *slot = Some(state);
         self.mark_dirty(id, DirtyClass::SEMANTICS);
+        if let Some(mark) = self.check_mark(id) {
+            let follows = match mark.shape {
+                crate::check_mark::CheckShape::Chevron => state.expanded,
+                _ => state.checked,
+            };
+            if let Some(checked) = follows {
+                self.set_check_mark(id, Some(CheckMark { checked, ..mark }));
+            }
+        }
     }
 
     /// Node `id`'s page dots, to change in place; the caller marks them.
@@ -2901,28 +2912,45 @@ impl NodeStore {
     /// check.
     #[inline]
     pub fn check_mark(&self, id: NodeId) -> Option<CheckMark> {
-        self.check_marks[id.index() as usize]
+        self.check_marks[id.index() as usize].map(|(mark, _)| mark)
+    }
+
+    /// How far a check's mark shows moved toward checked, `0` to `1`: its
+    /// state at rest, between them while it moves.
+    pub(crate) fn check_progress(&self, id: NodeId) -> f32 {
+        self.check_marks[id.index() as usize].map_or(0.0, |(_, shown)| shown)
     }
 
     /// Makes a node a check drawing `mark` beside its caption, or no check.
-    /// A new state repaints it; a new shape, or becoming or ceasing to be a
-    /// check, re-measures it as well. A live-guarded write — a stale handle
-    /// is a no-op.
+    /// A new state moves the mark there over its shape's timing (at once
+    /// while motion is reduced), repainting it each frame; a check's first
+    /// state, a new shape, or becoming or ceasing to be a check shows at once
+    /// and re-measures it as well. A live-guarded write — a stale handle is a
+    /// no-op.
     pub fn set_check_mark(&mut self, id: NodeId, mark: Option<CheckMark>) {
         if !self.arena.is_live(id) {
             return;
         }
-        let slot = &mut self.check_marks[id.index() as usize];
-        if *slot == mark {
+        let i = id.index() as usize;
+        let prior = self.check_marks[i];
+        if prior.map(|(m, _)| m) == mark {
             return;
         }
-        let reshaped = slot.map(|m| m.shape) != mark.map(|m| m.shape);
-        *slot = mark;
-        let mut classes = DirtyClass::PAINT;
-        if reshaped {
-            classes |= DirtyClass::MEASURE | DirtyClass::LAYOUT;
+        let reshaped = prior.map(|(m, _)| m.shape) != mark.map(|m| m.shape);
+        match (prior, mark) {
+            (Some((_, shown)), Some(mark)) if !reshaped => {
+                self.check_marks[i] = Some((mark, shown));
+                self.move_look(id, LookValue::Check(mark.rest()), mark.timing(), None);
+            }
+            _ => {
+                self.settle(id, &LookValue::Check(0.0));
+                self.check_marks[i] = mark.map(|m| (m, m.rest()));
+                self.mark_dirty(
+                    id,
+                    DirtyClass::PAINT | DirtyClass::MEASURE | DirtyClass::LAYOUT,
+                );
+            }
         }
-        self.mark_dirty(id, classes);
     }
 
     /// A node's drawable content (text/image/path), if any. `None` = a node that
@@ -3825,6 +3853,10 @@ impl NodeStore {
             },
             LookValue::Scale(_) => LookValue::Scale(self.turn[i].scale),
             LookValue::Rotation(_) => LookValue::Rotation(self.turn[i].rotation),
+            LookValue::Check(_) => match self.check_marks[i] {
+                Some((_, shown)) => LookValue::Check(shown),
+                None => *of,
+            },
         }
     }
 
@@ -3843,6 +3875,14 @@ impl NodeStore {
                 }
             }
             LookValue::Translate(offset) => self.set_translate(id, offset),
+            LookValue::Check(progress) => {
+                if let Some((_, shown)) = &mut self.check_marks[id.index() as usize]
+                    && *shown != progress
+                {
+                    *shown = progress;
+                    self.mark_dirty(id, DirtyClass::PAINT);
+                }
+            }
             LookValue::Scale(scale) => {
                 self.write_turn(id, |turn| crate::transform::Turn { scale, ..turn })
             }
@@ -5907,7 +5947,7 @@ impl LayoutTree for NodeStore {
     fn content_natural(&self, index: u32) -> Option<Vec2> {
         let content = self.content_payload[index as usize].as_deref();
         match self.check_marks[index as usize] {
-            Some(mark) => {
+            Some((mark, _)) => {
                 let (text, baseline) = caption_of(content);
                 Some(mark.natural(text, baseline))
             }
@@ -5920,7 +5960,7 @@ impl LayoutTree for NodeStore {
         let content = self.content_payload[index as usize].as_deref();
         let min = content.map_or(0.0, |c| c.min_width());
         match self.check_marks[index as usize] {
-            Some(mark) => {
+            Some((mark, _)) => {
                 let (text, baseline) = caption_of(content);
                 let lead = mark.natural(text, baseline).x - text.x;
                 lead + min
@@ -5934,7 +5974,7 @@ impl LayoutTree for NodeStore {
         let content = self.content_payload[index as usize].as_deref();
         let baseline = content.and_then(|c| c.baseline());
         match self.check_marks[index as usize] {
-            Some(mark) => {
+            Some((mark, _)) => {
                 let (text, line) = caption_of(content);
                 baseline.map(|b| b + mark.place(text, line, 0.0, false).text.y)
             }
@@ -5995,7 +6035,7 @@ impl LayoutTree for NodeStore {
         // every frame, and reshaping on every one would defeat the text cache
         // (AGENTS section 20 / ADR 0025 "unchanged width must not reshape").
         let width = match self.check_marks[index as usize] {
-            Some(mark) => {
+            Some((mark, _)) => {
                 let (text, baseline) = caption_of(self.content_payload[index as usize].as_deref());
                 mark.caption_width(width, text, baseline)
             }
@@ -6843,6 +6883,14 @@ impl<'a> BuildCx<'a> {
     /// accessible facts. Returns the handle so authoring chains inline.
     pub fn semantics(&mut self, handle: Handle, semantics: Semantics) -> Handle {
         self.store.set_semantics(handle.id, semantics);
+        handle
+    }
+
+    /// Make a declared node a check drawing `mark` beside its caption (see
+    /// [`NodeStore::set_check_mark`]). Returns the handle so authoring chains
+    /// inline.
+    pub fn check_mark(&mut self, handle: Handle, mark: CheckMark) -> Handle {
+        self.store.set_check_mark(handle.id, Some(mark));
         handle
     }
 

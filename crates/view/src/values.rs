@@ -886,6 +886,19 @@ impl Shown {
                 let expanded = value.as_int().is_some_and(|v| v != 0);
                 store.set_folded(self.node, !expanded);
                 if let Some(header) = store.arena().first_child(self.node) {
+                    // A header that is one caption draws the chevron that
+                    // turns with it; a composed one, or a check, draws its own.
+                    let own = store
+                        .check_mark(header)
+                        .is_some_and(|mark| mark.shape != CheckShape::Chevron);
+                    if first && !own {
+                        let caption = store.arena().first_child(header).is_none();
+                        let chevron = CheckMark {
+                            shape: CheckShape::Chevron,
+                            checked: expanded,
+                        };
+                        store.set_check_mark(header, caption.then_some(chevron));
+                    }
                     let state = SemanticState {
                         expanded: Some(expanded),
                         ..SemanticState::default()
