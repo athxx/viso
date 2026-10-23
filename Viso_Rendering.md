@@ -304,6 +304,7 @@ Renderer 内部 canonical blend representation：**linear-light + premultiplied 
 - **Wire 表示**：GPU instance 数据与 primitive value 携带 straight linear RGBA（`LinearStraight`）；fragment shader 在输出前 premultiply。纹理（image、glyph color atlas、gradient LUT、offscreen target）存储 premultiplied；
 - **输出编码**：写入 sRGB 编码的 surface 时，transfer function 只能执行一次——使用 `*Srgb` format/view 时由硬件编码，否则由最终 composite shader 编码；二者不得同时生效，也不得都不生效；
 - 链路：public color / image profile → target working space → linear-light 运算 → GPU premultiplied → output transfer（exactly once）。
+- **落地（ADR 0048）**：`ColorSpace::Srgb` 的 surface 报告 `*Srgb` format，内建 pipeline 与 intermediate 随之，由硬件编码一次（Metal `BGRA8Unorm_sRGB`、Vulkan SRGB swapchain、D3D12 `_SRGB` RTV、WebGPU `-srgb` view、GLES sRGB colorspace window、`CpuRaster` 软件查表）；颜色纹理（image、color glyph atlas、gradient LUT、3D scene target）为 `*Srgb`，采样即解码；数据纹理（A8 coverage、MTSDF、mask、float）保持线性；sRGB texel 在线性光里 premultiply：`enc(dec(c)·a)`，缩放亦在线性光里做；glyph coverage 按墨色线性亮度 `l` 校正 `cov' = (1−l)(1−dec(1−cov)) + l·dec(cov)`，使黑字白底 / 白字黑底与编码空间混合的字重一致；
 
 SDR 常规 surface 不要求全部变成 RGBA16F；只有 HDR、wide-gamut effect chain、high-precision intermediate 才使用 FP16/更高成本 target（§19.2）。
 
@@ -420,9 +421,9 @@ ETC2 / EAC     Etc2Rgb8Unorm  Etc2Rgb8A1Unorm  Etc2Rgba8Unorm
 ASTC LDR       Astc4x4Unorm  Astc6x6Unorm  Astc8x8Unorm
 ```
 
-- texel 与其它 texture 同一约定：premultiplied、按存储的 sRGB 编码、以 unorm 采样；
+- texel 与其它 texture 同一约定：premultiplied（线性光）、按存储的 sRGB 编码；8-bit 与块格式各有 `*Srgb` 变体（`TextureFormat::srgb` / `linear` / `is_srgb`），图像以该变体建 texture，采样解码到线性光；16-bit packed 无硬件 sRGB 变体，GPU 后端不采样，由 asset worker 解码为 RGBA8，`CpuRaster` 软件解码；
 - 块格式（`TextureFormat::block`）只作 sampled texture，尺寸必须是整块（转换器保证；D3D12 / WebGPU 要求）；`write_texture` 收按块行排列的数据、块对齐的区域，`row_bytes` / `block_rows` / `data_size` 给出布局；
-- 设备采样哪些族由 `Caps::sampled: SampledFormats` 报告，`Caps::samples(format)` 查询：Metal 按 GPU family（Apple2+ ETC2/ASTC，BC 取 `supportsBCTextureCompression`）；D3D12 `CheckFeatureSupport`（B5G6R5、BC）；Vulkan 设备特性 `textureCompressionBC/ETC2/ASTC_LDR`（创建设备时开启）与 packed 格式的 optimal-tiling 特性；GLES3 packed 与 ETC2 为 core，ASTC 经 `KHR_texture_compression_astc_ldr`，BC 需 S3TC + BPTC；WebGPU 按 adapter feature 请求 `texture-compression-*`（packed 格式不可用）；`CpuRaster` 只采样 16-bit packed；
+- 设备采样哪些族由 `Caps::sampled: SampledFormats` 报告，`Caps::samples(format)` 查询：Metal 按 GPU family（Apple2+ ETC2/ASTC，BC 取 `supportsBCTextureCompression`）；D3D12 `CheckFeatureSupport`（BC）；Vulkan 设备特性 `textureCompressionBC/ETC2/ASTC_LDR`（创建设备时开启）；GLES3 ETC2 为 core，ASTC 经 `KHR_texture_compression_astc_ldr`，BC 需 S3TC（含 sRGB）+ BPTC；WebGPU 按 adapter feature 请求 `texture-compression-*`（packed 格式不可用）；`CpuRaster` 只采样 16-bit packed；
 - 不采样的格式由 asset worker 用 `viso_image::codec` 软件解码为 RGBA8 后上传；`create_texture` 收到不采样的格式是调用方错误；
 - `create_texture_static(desc, &'static [u8])`：texel 在程序生命期内不变（嵌入 binary / 映射 flash），默认实现为 create + write；`CpuRaster` 对可原地采样的格式直接借用，不复制。
 

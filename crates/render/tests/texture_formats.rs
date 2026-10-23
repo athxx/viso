@@ -61,10 +61,10 @@ fn sampled(gpu: &impl GpuBackend) -> Vec<TextureFormat> {
     .collect()
 }
 
-/// `texture` drawn 1:1, nearest, over transparent black into a BGRA8
+/// `texture` drawn 1:1, nearest, over transparent black into an sRGB BGRA8
 /// target; its pixels, BGRA8.
 fn draw<B: GpuBackend>(gpu: &mut B, texture: TextureId) -> TextureId {
-    let mut renderer = Renderer::new(gpu, TextureFormat::Bgra8Unorm);
+    let mut renderer = Renderer::new(gpu, TextureFormat::Bgra8UnormSrgb);
     let size = SIZE as f32;
     let mut image = ImageDraw::new(
         Rect {
@@ -83,7 +83,7 @@ fn draw<B: GpuBackend>(gpu: &mut B, texture: TextureId) -> TextureId {
     let target = gpu.create_texture(&TextureDesc {
         width: SIZE,
         height: SIZE,
-        format: TextureFormat::Bgra8Unorm,
+        format: TextureFormat::Bgra8UnormSrgb,
         render_target: true,
         label: "texture-formats-target",
     });
@@ -119,10 +119,11 @@ fn every_format_draws_as_it_decodes<B: GpuBackend>(
         let data = codec::encode(format, SIZE, SIZE, &texels, Effort::Fast);
         assert_eq!(data.len(), format.data_size(SIZE, SIZE), "{format:?}");
         let decoded = codec::decode(format, SIZE, SIZE, &data).expect("decodes");
+        // A color image: its sRGB variant, where the format has one.
         let desc = TextureDesc {
             width: SIZE,
             height: SIZE,
-            format,
+            format: format.srgb().unwrap_or(format),
             render_target: false,
             label: "converted",
         };

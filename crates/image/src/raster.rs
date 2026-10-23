@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use viso_gpu_abi::TextureFormat;
+use viso_gpu_abi::{TextureFormat, srgb};
 use viso_schema::resource::{AssetBytes, AssetFormat};
 
 /// The longest side a raster may have.
@@ -192,7 +192,8 @@ fn check_size(width: usize, height: usize) -> Result<(u32, u32), AssetError> {
 }
 
 /// `pixels` of `channels` channels each (gray, gray-alpha, RGB or RGBA) as
-/// premultiplied RGBA8.
+/// premultiplied RGBA8, premultiplied in linear light: a channel `c` of
+/// alpha `a` stores `enc(dec(c) · a)` (ADR 0048).
 fn premultiplied(
     pixels: &[u8],
     channels: usize,
@@ -216,7 +217,11 @@ fn premultiplied(
                 return Err(AssetError::Decode(format!("{channels} channels per pixel")));
             }
         };
-        let premul = |v: u8| ((u16::from(v) * u16::from(a) + 127) / 255) as u8;
+        let premul = |v: u8| match a {
+            255 => v,
+            0 => 0,
+            a => srgb::encode(srgb::decode(v) * (f32::from(a) / 255.0)),
+        };
         rgba.extend_from_slice(&[premul(r), premul(g), premul(b), a]);
     }
     Ok(RasterImage::rgba8(w, h, rgba))
@@ -381,9 +386,10 @@ mod tests {
         let image = decode_raster(&png(2, 2, &pixels)).expect("decodes");
         assert_eq!((image.width, image.height), (2, 2));
         assert_eq!(image.format, TextureFormat::Rgba8Unorm);
+        // Half-covered green keeps half its light: sRGB 188.
         assert_eq!(
             *image.texels,
-            [255, 0, 0, 255, 0, 128, 0, 128, 0, 0, 0, 0, 10, 20, 30, 255]
+            [255, 0, 0, 255, 0, 188, 0, 128, 0, 0, 0, 0, 10, 20, 30, 255]
         );
         let bytes = png(2, 2, &pixels);
         for end in [8, 20, 40, bytes.len() - 13] {

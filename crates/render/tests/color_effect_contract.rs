@@ -17,7 +17,7 @@
 //! public too, so the fused matrix can be written out independently and compared
 //! against what the renderer actually rasterizes.
 
-use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle, SurfaceId, TextureFormat};
+use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle, SurfaceId, TextureFormat, srgb};
 use viso_render::{
     Border, ColorEffect, ColorMatrix, ColorOp, FrameStats, LayerClip, Primitive, Quad, Rect,
     Renderer, Rgba, fuse,
@@ -26,7 +26,7 @@ use viso_render::{
 const W: u32 = 64;
 const H: u32 = 64;
 
-/// Per-channel tolerance (in 0..=255) for a pixel comparison: enough to absorb
+/// Per-channel tolerance (in stored sRGB bytes) for a pixel comparison: enough to absorb
 /// the unorm round-trip through an offscreen target, far too small to hide a
 /// missing or doubly-applied effect.
 const TOL: i32 = 2;
@@ -91,17 +91,24 @@ fn recolored(color: Rgba, effects: &[ColorEffect]) -> [f32; 4] {
     let i = ((H / 2) * W + W / 2) as usize * 4;
     // BGRA8 top-left, opaque over an opaque clear: straight == premultiplied.
     [
-        px[i + 2] as f32 / 255.0,
-        px[i + 1] as f32 / 255.0,
-        px[i] as f32 / 255.0,
+        srgb::decode(px[i + 2]),
+        srgb::decode(px[i + 1]),
+        srgb::decode(px[i]),
         px[i + 3] as f32 / 255.0,
     ]
 }
 
+/// Compared as the surface stores them: color sRGB-encoded, alpha as is.
 fn assert_pixel_close(actual: [f32; 4], expect: [f32; 4], what: &str) {
+    let byte = |c: usize, v: f32| {
+        if c < 3 {
+            i32::from(srgb::encode(v))
+        } else {
+            (v * 255.0).round() as i32
+        }
+    };
     for c in 0..4 {
-        let a = (actual[c] * 255.0).round() as i32;
-        let e = (expect[c] * 255.0).round() as i32;
+        let (a, e) = (byte(c, actual[c]), byte(c, expect[c]));
         assert!(
             (a - e).abs() <= TOL,
             "{what}: channel {c} is {a}, expected {e} (±{TOL}); got {actual:?} want {expect:?}"
@@ -379,9 +386,9 @@ fn layer_opacity_rides_the_fused_op() {
     // Grayscale white is white; at half opacity over black it is half white.
     assert_pixel_close(
         [
-            px[i + 2] as f32 / 255.0,
-            px[i + 1] as f32 / 255.0,
-            px[i] as f32 / 255.0,
+            srgb::decode(px[i + 2]),
+            srgb::decode(px[i + 1]),
+            srgb::decode(px[i]),
             px[i + 3] as f32 / 255.0,
         ],
         [0.5, 0.5, 0.5, 1.0],

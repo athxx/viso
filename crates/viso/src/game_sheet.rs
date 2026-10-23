@@ -53,12 +53,12 @@ pub fn render(sheet: &GameSheet) -> Result<Image, String> {
     let tw = (lw * scale).round() as u32;
     let th = (lh * scale).round() as u32;
     let mut gpu = CpuRaster::new();
-    let mut renderer = Renderer::new(&mut gpu, TextureFormat::Bgra8Unorm);
+    let mut renderer = Renderer::new(&mut gpu, TextureFormat::Bgra8UnormSrgb);
     renderer.set_surface_size([lw, lh], scale);
     let target = gpu.create_texture(&TextureDesc {
         width: tw,
         height: th,
-        format: TextureFormat::Bgra8Unorm,
+        format: TextureFormat::Bgra8UnormSrgb,
         render_target: true,
         label: "game-sheet",
     });

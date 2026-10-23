@@ -219,14 +219,18 @@ pub struct CpuTexture<'a> {
 #[derive(Debug, Clone, Copy)]
 pub enum CpuTexels<'a> {
     /// Four bytes per texel in the format's byte order; `bgra` swaps the first
-    /// and third.
-    Rgba8 { texels: &'a [[u8; 4]], bgra: bool },
+    /// and third, and `srgb` says the color channels are sRGB-encoded.
+    Rgba8 {
+        texels: &'a [[u8; 4]],
+        bgra: bool,
+        srgb: bool,
+    },
     /// One coverage byte per texel, read as premultiplied white.
     R8(&'a [u8]),
-    /// Opaque 5:6:5 color, red in the high bits.
+    /// Opaque sRGB-encoded 5:6:5 color, red in the high bits.
     Rgb565(&'a [u16]),
-    /// 16-bit texels as stored, little-endian, two bytes each, so they read in
-    /// place at any alignment (an image borrowed from flash).
+    /// sRGB-encoded 16-bit texels as stored, little-endian, two bytes each, so
+    /// they read in place at any alignment (an image borrowed from flash).
     Packed16 {
         texels: &'a [[u8; 2]],
         layout: Packed16,
@@ -242,19 +246,25 @@ impl CpuTexels<'_> {
     #[inline]
     pub fn get(&self, i: usize) -> [f32; 4] {
         let unorm = |v: u8| v as f32 / 255.0;
+        let dec = crate::srgb::decode;
         match *self {
-            CpuTexels::Rgba8 { texels, bgra } => {
+            CpuTexels::Rgba8 { texels, bgra, srgb } => {
                 let [a, b, c, d] = texels[i];
                 let (r, bl) = if bgra { (c, a) } else { (a, c) };
-                [unorm(r), unorm(b), unorm(bl), unorm(d)]
+                if srgb {
+                    [dec(r), dec(b), dec(bl), unorm(d)]
+                } else {
+                    [unorm(r), unorm(b), unorm(bl), unorm(d)]
+                }
             }
             CpuTexels::R8(texels) => [unorm(texels[i]); 4],
             CpuTexels::Rgb565(texels) => {
                 let [r, g, b] = rgb565_to_8(texels[i]);
-                [unorm(r), unorm(g), unorm(b), 1.0]
+                [dec(r), dec(g), dec(b), 1.0]
             }
             CpuTexels::Packed16 { texels, layout } => {
-                layout.rgba8(u16::from_le_bytes(texels[i])).map(unorm)
+                let [r, g, b, a] = layout.rgba8(u16::from_le_bytes(texels[i]));
+                [dec(r), dec(g), dec(b), unorm(a)]
             }
             CpuTexels::Float(texels) => texels[i],
             CpuTexels::None => [0.0; 4],

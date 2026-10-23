@@ -264,19 +264,19 @@ fn the_same_highlight_clips_on_an_sdr_surface() {
 // ---------------------------------------------------------------------------
 
 /// The gradient ramp is baked on the CPU into a texel, so its format is a real
-/// decision rather than an attachment constraint: 8-bit unorm rounds and clamps,
+/// decision rather than an attachment constraint: 8-bit sRGB rounds and clamps,
 /// which would destroy an authored stop above 1.0 before the GPU ever sampled it.
 /// So the ramp follows the domain — and only the domain, since it is not a render
 /// target and no pipeline is bound to it.
 #[test]
 fn the_gradient_ramp_follows_the_domain() {
     let (_gpu, _s, sdr) = renderer(TextureFormat::Bgra8Unorm, ColorSpace::Srgb);
-    assert_eq!(sdr.gradient_lut_format(), TextureFormat::Rgba8Unorm);
+    assert_eq!(sdr.gradient_lut_format(), TextureFormat::Rgba8UnormSrgb);
 
     let (_gpu, _s, wide) = renderer(TextureFormat::Bgra8Unorm, ColorSpace::DisplayP3);
     assert_eq!(
         wide.gradient_lut_format(),
-        TextureFormat::Rgba8Unorm,
+        TextureFormat::Rgba8UnormSrgb,
         "wide gamut is a space, not extra range: 8-bit ramps still suffice"
     );
 

@@ -214,12 +214,27 @@ mod tests {
         let a = CpuTexels::Rgba8 {
             texels: &rgba,
             bgra: false,
+            srgb: false,
         };
         let b = CpuTexels::Rgba8 {
             texels: &bgra,
             bgra: true,
+            srgb: false,
         };
         assert_eq!(a.get(0), [128.0 / 255.0, 0.0, 0.0, 128.0 / 255.0]);
         assert_eq!(a.get(0), b.get(0));
+    }
+
+    #[test]
+    fn srgb_texels_read_decoded_to_linear_light_their_alpha_as_is() {
+        let texels = [[188u8, 0, 255, 128]];
+        let t = CpuTexels::Rgba8 {
+            texels: &texels,
+            bgra: false,
+            srgb: true,
+        };
+        let [r, g, b, a] = t.get(0);
+        assert!((r - 0.5029).abs() < 1e-3, "{r}");
+        assert_eq!([g, b, a], [0.0, 1.0, 128.0 / 255.0]);
     }
 }

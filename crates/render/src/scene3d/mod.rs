@@ -30,7 +30,7 @@ pub use viso_gpu::scene::{SceneInstance, SceneMaterial, SceneUniforms, SceneVert
 
 pub use viso_math::{LinearStraight, Mat4, Quat, Vec3, vec3};
 
-use viso_gpu::scene::{encode, normalize};
+use viso_gpu::scene::normalize;
 
 /// A mesh the scene lane draws: a built-in [`Shape`] or an uploaded mesh.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -204,7 +204,7 @@ impl Batches {
 }
 
 /// A particle: a soft disc of `radius` at `position`, always facing the
-/// camera, in a color the frame encodes as it is pushed.
+/// camera, in a color the frame premultiplies as it is pushed.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SceneSprite {
     pub position: Vec3,
@@ -219,7 +219,7 @@ impl SceneSprite {
         SceneSprite {
             position,
             radius,
-            color: encoded(color),
+            color: premultiplied(color),
         }
     }
 
@@ -317,9 +317,9 @@ impl SceneFrame {
         }
     }
 
-    /// The background as the target stores it: encoded, premultiplied.
+    /// The background the target clears to: premultiplied linear light.
     pub(crate) fn clear_color(&self) -> [f32; 4] {
-        encoded(self.background)
+        premultiplied(self.background)
     }
 }
 
@@ -343,16 +343,11 @@ impl Camera {
     }
 }
 
-/// `color` as the scene programs read and write it: encoded for the target,
-/// premultiplied.
-fn encoded(color: LinearStraight) -> [f32; 4] {
+/// `color` as the scene programs read and write it: premultiplied linear
+/// light.
+fn premultiplied(color: LinearStraight) -> [f32; 4] {
     let a = color.a.clamp(0.0, 1.0);
-    [
-        encode(color.r) * a,
-        encode(color.g) * a,
-        encode(color.b) * a,
-        a,
-    ]
+    [color.r * a, color.g * a, color.b * a, a]
 }
 
 /// An instance of a mesh at `position`, turned by `rotation` and scaled by
@@ -368,7 +363,7 @@ pub fn instance(
     let p = [position.x, position.y, position.z];
     SceneInstance {
         rows: core::array::from_fn(|i| [r[i] * s[0], r[4 + i] * s[1], r[8 + i] * s[2], p[i]]),
-        color: encoded(color),
+        color: premultiplied(color),
     }
 }
 
@@ -381,7 +376,7 @@ pub fn affine(
 ) -> SceneInstance {
     SceneInstance {
         rows: core::array::from_fn(|r| [linear[r][0], linear[r][1], linear[r][2], translation[r]]),
-        color: encoded(color),
+        color: premultiplied(color),
     }
 }
 

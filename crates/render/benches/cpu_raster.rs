@@ -1,6 +1,7 @@
 //! The CPU raster as an embedded panel's renderer (§30.4): an 800×480 UI
-//! drawn whole, and redrawn where 5% of it changed, on an XRGB8888 and an
-//! RGB565 panel, on one thread and on four.
+//! drawn whole, and redrawn where 5% of it changed, on an XRGB8888 panel
+//! taking linear and sRGB-encoded bytes and on an RGB565 one, on one thread
+//! and on four.
 //!
 //! Before timing, it prints what each configuration holds — the pixels of
 //! the framebuffer and every target, and the workers' scratch — and the heap
@@ -198,6 +199,7 @@ fn bench(c: &mut Criterion) {
     let scenes = [dashboard(0.9), dashboard(0.3)];
     let configs = [
         ("xrgb8888", TextureFormat::Bgra8Unorm, 0),
+        ("xrgb8888_srgb", TextureFormat::Bgra8UnormSrgb, 0),
         ("xrgb8888_4t", TextureFormat::Bgra8Unorm, 3),
         ("rgb565", TextureFormat::Rgb565Unorm, 0),
     ];

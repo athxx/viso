@@ -125,8 +125,9 @@ fn glyph_a8_coverage_direct_sample_on_metal() {
     });
     gpu.write_buffer(instance_buffer, 0, ibytes);
 
-    // Viewport uniform: [width, height] in pixels (float2), pixel→NDC.
-    let vp = [W as f32, H as f32];
+    // View uniforms: the viewport in pixels (pixel→NDC), then the identity
+    // place — no shift, unit axes.
+    let vp = [W as f32, H as f32, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0];
     let vp_bytes: &[u8] = bytemuck_cast(&vp);
 
     let commands = [DrawCommand {
@@ -156,10 +157,20 @@ fn glyph_a8_coverage_direct_sample_on_metal() {
     assert_eq!(pixels.len(), (W * H * 4) as usize, "readback size");
 
     // Expected per output texel: premultiplied over transparent black. With
-    // straight color `c` and sampled coverage `k = cov/255`, alpha `a = c.a * k`
-    // and stored RGB (premultiplied) = c.rgb * a. Byte order is BGRA.
+    // straight color `c` and sampled coverage `k = cov/255` adjusted by the
+    // ink's luminance `l` (ADR 0048), alpha `a = c.a * k'` and stored RGB
+    // (premultiplied) = c.rgb * a. Byte order is BGRA.
+    let dec = |v: f32| {
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let l = 0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2];
     for (i, &c8) in cov.iter().enumerate() {
         let k = c8 as f32 / 255.0;
+        let k = (1.0 - l) * (1.0 - dec(1.0 - k)) + l * dec(k);
         let a = color[3] * k;
         let want = [
             (color[2] * a * 255.0).round() as i32, // B
@@ -189,8 +200,8 @@ fn glyph_a8_coverage_direct_sample_on_metal() {
 }
 
 /// Reinterpret a `[f32; 2]` as its little-endian bytes (no external dep).
-fn bytemuck_cast(v: &[f32; 2]) -> &[u8] {
-    // SAFETY: `[f32; 2]` is `#[repr(C)]`-equivalent POD, 8 contiguous bytes, and
-    // the returned slice borrows it for the same lifetime.
-    unsafe { std::slice::from_raw_parts((v as *const [f32; 2]) as *const u8, 8) }
+fn bytemuck_cast(v: &[f32; 8]) -> &[u8] {
+    // SAFETY: `[f32; 8]` is `#[repr(C)]`-equivalent POD, 32 contiguous bytes,
+    // and the returned slice borrows it for the same lifetime.
+    unsafe { std::slice::from_raw_parts((v as *const [f32; 8]) as *const u8, 32) }
 }

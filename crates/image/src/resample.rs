@@ -3,8 +3,11 @@
 //!
 //! Separable Mitchell–Netravali filtering (B = C = 1/3), its support widened
 //! by the scale when shrinking so every source texel contributes, over
-//! premultiplied texels — so transparent texels never bleed their color — and
-//! clamped back to premultiplied range.
+//! premultiplied texels in linear light — so transparent texels never bleed
+//! their color and a fine pattern keeps its brightness — and clamped back to
+//! premultiplied range.
+
+use viso_gpu_abi::srgb;
 
 /// The filter's support radius at scale 1.
 const RADIUS: f32 = 2.0;
@@ -89,9 +92,9 @@ pub fn resize(
         for (x, (first, ws)) in across.iter().enumerate() {
             let mut sum = [0f32; 4];
             for (k, wt) in ws.iter().enumerate() {
-                let t = row[first + k];
+                let t = linear(row[first + k]);
                 for c in 0..4 {
-                    sum[c] += f32::from(t[c]) * wt;
+                    sum[c] += t[c] * wt;
                 }
             }
             wide[y * tw + x] = sum;
@@ -108,12 +111,22 @@ pub fn resize(
                     sum[c] += t[c] * wt;
                 }
             }
-            let a = sum[3].round().clamp(0.0, 255.0);
-            let px = |v: f32| v.round().clamp(0.0, a) as u8;
+            let a = (sum[3] * 255.0).round().clamp(0.0, 255.0);
+            let px = |v: f32| srgb::encode(v.clamp(0.0, a / 255.0));
             out[y * tw + x] = [px(sum[0]), px(sum[1]), px(sum[2]), a as u8];
         }
     }
     out
+}
+
+/// A premultiplied sRGB texel in linear light.
+fn linear([r, g, b, a]: [u8; 4]) -> [f32; 4] {
+    [
+        srgb::decode(r),
+        srgb::decode(g),
+        srgb::decode(b),
+        f32::from(a) / 255.0,
+    ]
 }
 
 /// The texel size a `width × height` image needs on a surface of `surface`
@@ -156,7 +169,8 @@ mod tests {
 
     #[test]
     fn shrinking_averages_and_keeps_premultiplication() {
-        // A checkerboard of white and transparent averages to half-white.
+        // A checkerboard of white and transparent averages to half-white:
+        // half the light, which sRGB stores as 188.
         let checker: Vec<[u8; 4]> = (0..64)
             .map(|i| {
                 if (i % 8 + i / 8) % 2 == 0 {
@@ -169,7 +183,12 @@ mod tests {
         let out = resize(&checker, 8, 8, 2, 2);
         for p in &out {
             assert!((i32::from(p[3]) - 128).abs() <= 3, "{p:?}");
-            assert!(p[0] <= p[3] && p[1] <= p[3] && p[2] <= p[3], "{p:?}");
+            assert!((i32::from(p[0]) - 188).abs() <= 3, "{p:?}");
+            let a = f32::from(p[3]) / 255.0;
+            assert!(
+                p[..3].iter().all(|&c| srgb::decode(c) <= a + 0.005),
+                "{p:?}"
+            );
         }
     }
 

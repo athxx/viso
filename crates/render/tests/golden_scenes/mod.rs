@@ -68,16 +68,16 @@ impl GoldenScene {
     }
 }
 
-/// Render `scene` through the full renderer into a fresh BGRA8 render target
+/// Render `scene` through the full renderer into a fresh sRGB BGRA8 render target
 /// on `gpu`, returning the target for read-back.
 pub fn render_to_target<B: GpuBackend>(gpu: &mut B, scene: GoldenScene) -> TextureId {
-    let mut renderer = Renderer::new(gpu, TextureFormat::Bgra8Unorm);
+    let mut renderer = Renderer::new(gpu, TextureFormat::Bgra8UnormSrgb);
     let primitives = scene.build(gpu);
     renderer.upload(gpu, &primitives);
     let target = gpu.create_texture(&TextureDesc {
         width: W,
         height: H,
-        format: TextureFormat::Bgra8Unorm,
+        format: TextureFormat::Bgra8UnormSrgb,
         render_target: true,
         label: "golden-target",
     });
@@ -166,7 +166,7 @@ fn quad<B: GpuBackend>(gpu: &mut B) -> Vec<Primitive> {
     let texture = gpu.create_texture(&TextureDesc {
         width: tw,
         height: th,
-        format: TextureFormat::Bgra8Unorm,
+        format: TextureFormat::Bgra8UnormSrgb,
         render_target: false,
         label: "test-checkerboard",
     });
@@ -202,7 +202,7 @@ fn image_family<B: GpuBackend>(gpu: &mut B) -> Vec<Primitive> {
     let texture = gpu.create_texture(&TextureDesc {
         width: tw,
         height: th,
-        format: TextureFormat::Bgra8Unorm,
+        format: TextureFormat::Bgra8UnormSrgb,
         render_target: false,
         label: "image-family-checkerboard",
     });

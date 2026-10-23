@@ -14,6 +14,7 @@ pub mod instance;
 pub mod program;
 pub mod resource;
 pub mod scene;
+pub mod srgb;
 
 pub use ids::{BindGroupId, BufferId, PipelineId, SamplerId, SurfaceId, TextureId};
 pub use instance::{

@@ -21,10 +21,12 @@ Rules:
 
 ## W0 — Found on the way
 
-- [ ] Output color encoding: every backend writes linear-light values to a unorm surface
+- [x] Output color encoding: every backend writes linear-light values to a unorm surface
   with no transfer function, so author colors show darker than their sRGB value
   (`#1565c0` lands as `#022186`); encode exactly once (Rendering §5.4), sRGB images
-  included, and re-bless the snapshot goldens.
+  included, and re-bless the snapshot goldens (ADR 0048).
+- [ ] A surface with no sRGB format (a GLES 565 panel, EGL without
+  `EGL_KHR_gl_colorspace`) still draws unencoded: encode in a final composite pass.
 
 ## W1 — 3D scene lane and `GameViewport` (ADR 0047)
 

@@ -1448,8 +1448,8 @@ pub struct Renderer {
     /// per-target format on every draw, buying nothing at either end.
     ///
     /// The one exception is a surface without alpha (an `Rgb565Unorm` panel): a
-    /// layer must hold coverage, so its intermediates are `Bgra8Unorm`, the
-    /// narrowest SDR format with alpha. Only backends whose pipelines are not
+    /// layer must hold coverage, so its intermediates are `Bgra8UnormSrgb`, the
+    /// narrowest SDR format with alpha, encoded as the panel is. Only backends whose pipelines are not
     /// bound to an attachment format offer such a surface (the CPU raster, GL).
     ///
     /// Coverage planes are not color and are excluded by construction: the glyph
@@ -2083,7 +2083,7 @@ impl Renderer {
             intermediate_format: if surface_format.has_alpha() {
                 surface_format
             } else {
-                TextureFormat::Bgra8Unorm
+                TextureFormat::Bgra8UnormSrgb
             },
             culled_this_frame: 0,
             program_draws_dropped: 0,
@@ -6451,13 +6451,13 @@ mod tests {
         );
         let px = gpu.read_pixels_bgra8(surface);
 
-        // Center of the layer rect (14, 14): green over white at 0.5 →
-        // BGRA ≈ (b=128, g=255, r=128, a=255) after quantization.
+        // Center of the layer rect (14, 14): green over white at 0.5 → half
+        // the light in red and blue, which the sRGB surface stores as 188.
         let i = ((14 * W + 14) * 4) as usize;
         let (b, g, red, a) = (px[i], px[i + 1], px[i + 2], px[i + 3]);
-        assert!((120..=135).contains(&b), "blue channel {b}");
+        assert!((183..=193).contains(&b), "blue channel {b}");
         assert!(g >= 250, "green channel {g}");
-        assert!((120..=135).contains(&red), "red channel {red}");
+        assert!((183..=193).contains(&red), "red channel {red}");
         assert_eq!(a, 255, "background alpha stays opaque");
 
         // A corner well outside the layer is untouched (pure white background).

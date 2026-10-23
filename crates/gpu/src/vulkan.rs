@@ -559,7 +559,7 @@ impl VulkanBackend {
             )
         };
 
-        let sampled = sampled_formats(&instance, physical, &features);
+        let sampled = sampled_formats(&features);
 
         let surface_fn = has_surface.then(|| khr::surface::Instance::new(&entry, &instance));
         let swapchain_fn = has_swapchain.then(|| khr::swapchain::Device::new(&instance, &device));
@@ -2400,20 +2400,24 @@ impl GpuBackend for VulkanBackend {
                 .or_else(|| formats.iter().find(|s| s.format == f))
                 .copied()
         };
-        let (format, chosen) = match pick(vk::Format::B8G8R8A8_UNORM) {
-            Some(s) => (TextureFormat::Bgra8Unorm, s),
-            None => match pick(vk::Format::R8G8B8A8_UNORM) {
-                Some(s) => (TextureFormat::Rgba8Unorm, s),
-                // A lone UNDEFINED entry means "any format".
-                None => (
-                    TextureFormat::Bgra8Unorm,
-                    vk::SurfaceFormatKHR {
-                        format: vk::Format::B8G8R8A8_UNORM,
-                        color_space: vk::ColorSpaceKHR::SRGB_NONLINEAR,
-                    },
-                ),
+        // An sRGB format encodes what the pipelines write (ADR 0048); a plain
+        // unorm one is the last resort of a surface that offers no other.
+        let (format, chosen) = [
+            TextureFormat::Bgra8UnormSrgb,
+            TextureFormat::Rgba8UnormSrgb,
+            TextureFormat::Bgra8Unorm,
+            TextureFormat::Rgba8Unorm,
+        ]
+        .into_iter()
+        .find_map(|f| pick(vk_format(f)).map(|s| (f, s)))
+        // A lone UNDEFINED entry means "any format".
+        .unwrap_or((
+            TextureFormat::Bgra8UnormSrgb,
+            vk::SurfaceFormatKHR {
+                format: vk::Format::B8G8R8A8_SRGB,
+                color_space: vk::ColorSpaceKHR::SRGB_NONLINEAR,
             },
-        };
+        ));
         self.surfaces
             .insert(VulkanSurface {
                 surface,
@@ -3427,37 +3431,25 @@ fn vk_format(format: TextureFormat) -> vk::Format {
         TextureFormat::Astc4x4Unorm => vk::Format::ASTC_4X4_UNORM_BLOCK,
         TextureFormat::Astc6x6Unorm => vk::Format::ASTC_6X6_UNORM_BLOCK,
         TextureFormat::Astc8x8Unorm => vk::Format::ASTC_8X8_UNORM_BLOCK,
+        TextureFormat::Bgra8UnormSrgb => vk::Format::B8G8R8A8_SRGB,
+        TextureFormat::Rgba8UnormSrgb => vk::Format::R8G8B8A8_SRGB,
+        TextureFormat::Bc1RgbaUnormSrgb => vk::Format::BC1_RGBA_SRGB_BLOCK,
+        TextureFormat::Bc3RgbaUnormSrgb => vk::Format::BC3_SRGB_BLOCK,
+        TextureFormat::Bc7RgbaUnormSrgb => vk::Format::BC7_SRGB_BLOCK,
+        TextureFormat::Etc2Rgb8UnormSrgb => vk::Format::ETC2_R8G8B8_SRGB_BLOCK,
+        TextureFormat::Etc2Rgb8A1UnormSrgb => vk::Format::ETC2_R8G8B8A1_SRGB_BLOCK,
+        TextureFormat::Etc2Rgba8UnormSrgb => vk::Format::ETC2_R8G8B8A8_SRGB_BLOCK,
+        TextureFormat::Astc4x4UnormSrgb => vk::Format::ASTC_4X4_SRGB_BLOCK,
+        TextureFormat::Astc6x6UnormSrgb => vk::Format::ASTC_6X6_SRGB_BLOCK,
+        TextureFormat::Astc8x8UnormSrgb => vk::Format::ASTC_8X8_SRGB_BLOCK,
     }
 }
 
-/// The formats beyond the baseline `physical` samples with linear filtering:
-/// a block-compressed family when its feature is enabled (`features`), a
-/// packed 16-bit format when its optimal-tiling properties say so.
-fn sampled_formats(
-    instance: &ash::Instance,
-    physical: vk::PhysicalDevice,
-    features: &vk::PhysicalDeviceFeatures,
-) -> SampledFormats {
-    let filters = |format: TextureFormat| {
-        // SAFETY: `physical` belongs to `instance`.
-        let props =
-            unsafe { instance.get_physical_device_format_properties(physical, vk_format(format)) };
-        props.optimal_tiling_features.contains(
-            vk::FormatFeatureFlags::SAMPLED_IMAGE
-                | vk::FormatFeatureFlags::SAMPLED_IMAGE_FILTER_LINEAR
-                | vk::FormatFeatureFlags::TRANSFER_DST,
-        )
-    };
+/// The formats beyond the baseline the device samples: a block-compressed
+/// family when its feature is enabled (`features`). None of the packed 16-bit
+/// ones: they have no sRGB variant to decode a sample (ADR 0048).
+fn sampled_formats(features: &vk::PhysicalDeviceFeatures) -> SampledFormats {
     let mut sampled = SampledFormats::empty();
-    for (format, class) in [
-        (TextureFormat::Rgb565Unorm, SampledFormats::RGB565),
-        (TextureFormat::Rgba4444Unorm, SampledFormats::RGBA4444),
-        (TextureFormat::Rgba5551Unorm, SampledFormats::RGBA5551),
-    ] {
-        if filters(format) {
-            sampled |= class;
-        }
-    }
     for (enabled, class) in [
         (features.texture_compression_bc, SampledFormats::BC),
         (features.texture_compression_etc2, SampledFormats::ETC2),

@@ -23,7 +23,7 @@ const TARGET_STEP: u32 = 64;
 const MIN_SPRITE_PIXELS: f32 = 1.5;
 
 /// The color format of a scene's target: what an image texture holds.
-const COLOR_FORMAT: TextureFormat = TextureFormat::Bgra8Unorm;
+const COLOR_FORMAT: TextureFormat = TextureFormat::Bgra8UnormSrgb;
 
 /// The scene vertex as the pipeline's vertex layout reads it.
 #[repr(C)]

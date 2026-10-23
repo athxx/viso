@@ -596,6 +596,7 @@ pub(super) fn draw(
             };
             let map = UvMap::of(i, 2, 3);
             let color = i.f4(4);
+            let ink = Ink::of(color);
             let (pos, size) = (i.f2(0), i.f2(1));
             // R8 coverage is replicated into every channel, so any is it.
             shade(cx, out, clip, |p| {
@@ -603,7 +604,7 @@ pub(super) fn draw(
                     return [0.0; 4];
                 }
                 let [u, v] = map.at(p);
-                let a = color[3] * sample(&tex, &samp, u, v)[0];
+                let a = color[3] * ink.coverage(sample(&tex, &samp, u, v)[0]);
                 [color[0] * a, color[1] * a, color[2] * a, a]
             });
         }
@@ -613,6 +614,7 @@ pub(super) fn draw(
             };
             let map = UvMap::of(i, 2, 3);
             let color = i.f4(4);
+            let ink = Ink::of(color);
             // Screen-space width of the stored distance range: the quad's device
             // pixels per uv unit, over the atlas texels per uv unit.
             let span = i.f2(1)[0] * cx.pixels() / i.f2(3)[0].max(1e-6);
@@ -626,7 +628,7 @@ pub(super) fn draw(
                 let s = sample(&tex, &samp, u, v);
                 let md = s[0].min(s[1]).max(s[2].min(s[0].max(s[1])));
                 let sd = if (md > 0.5) != (s[3] > 0.5) { s[3] } else { md };
-                let a = color[3] * ((sd - 0.5) * px_range + 0.5).clamp(0.0, 1.0);
+                let a = color[3] * ink.coverage(((sd - 0.5) * px_range + 0.5).clamp(0.0, 1.0));
                 [color[0] * a, color[1] * a, color[2] * a, a]
             });
         }
@@ -655,6 +657,25 @@ pub(super) fn draw(
         BuiltinShader::Gradient => gradient(cx, i, out, clip),
         BuiltinShader::Path | BuiltinShader::Mesh | BuiltinShader::Layer | BuiltinShader::Scene => {
         }
+    }
+}
+
+/// A glyph's ink, as its coverage is adjusted for: its linear luminance.
+#[derive(Clone, Copy)]
+struct Ink(f32);
+
+impl Ink {
+    fn of(color: [f32; 4]) -> Ink {
+        Ink((0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2]).clamp(0.0, 1.0))
+    }
+
+    /// Coverage `cov` adjusted so a glyph blended in linear light keeps the
+    /// weight it has blended in encoded space: exactly so for a black ink on
+    /// white and a white one on black (ADR 0048).
+    #[inline]
+    fn coverage(self, cov: f32) -> f32 {
+        let dec = |v: f32| crate::srgb::decode((v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+        (1.0 - self.0) * (1.0 - dec(1.0 - cov)) + self.0 * dec(cov)
     }
 }
 

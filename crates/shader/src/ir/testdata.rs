@@ -239,7 +239,8 @@ fragment float4 fragment_main(VOut in [[stage_in]],
 /// The intended GLYPHRUN MSL, frozen as a codegen oracle.
 ///
 /// The glyph path samples a single-channel A8 coverage atlas directly (`cov =
-/// texel.r`); there is no signed-distance decode and no per-instance `px_range`.
+/// texel.r`), adjusted by the ink's luminance (ADR 0048); there is no
+/// signed-distance decode and no per-instance `px_range`.
 /// This text is the on-device-verified target, not a pre-migration baseline.
 pub const GLYPHRUN_MSL_ORIGINAL: &str = r##"
 #include <metal_stdlib>
@@ -298,12 +299,25 @@ vertex VOut vertex_main(uint vid [[vertex_id]],
     return out;
 }
 
+// An sRGB-encoded value in linear light.
+static inline float srgb_decode(float v) {
+    return v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4);
+}
+
+// Glyph coverage `cov` adjusted by the luminance of the linear `ink`, so a
+// glyph blended in linear light keeps the weight it has blended in encoded
+// space: exactly so for a black ink on white and a white one on black.
+static inline float ink_coverage(float cov, float3 ink) {
+    float l = clamp(dot(ink, float3(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
+    return (1.0 - l) * (1.0 - srgb_decode(1.0 - cov)) + l * srgb_decode(cov);
+}
+
 fragment float4 fragment_main(VOut in [[stage_in]],
                               texture2d<float> tex [[texture(0)]],
                               sampler samp [[sampler(0)]]) {
     // Single-channel A8 coverage sampled directly: the atlas texel's red channel
     // is exact per-pixel coverage. Modulate the run color by it, premultiplied.
-    float cov = tex.sample(samp, in.uv).r;
+    float cov = ink_coverage(tex.sample(samp, in.uv).r, in.color.rgb);
     float a = in.color.a * cov;
     return float4(in.color.rgb * a, a);
 }
@@ -376,6 +390,19 @@ vertex VOut vertex_main(uint vid [[vertex_id]],
     return out;
 }
 
+// An sRGB-encoded value in linear light.
+static inline float srgb_decode(float v) {
+    return v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4);
+}
+
+// Glyph coverage `cov` adjusted by the luminance of the linear `ink`, so a
+// glyph blended in linear light keeps the weight it has blended in encoded
+// space: exactly so for a black ink on white and a white one on black.
+static inline float ink_coverage(float cov, float3 ink) {
+    float l = clamp(dot(ink, float3(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
+    return (1.0 - l) * (1.0 - srgb_decode(1.0 - cov)) + l * srgb_decode(cov);
+}
+
 fragment float4 fragment_main(VOut in [[stage_in]],
                               texture2d<float> tex [[texture(0)]],
                               sampler samp [[sampler(0)]]) {
@@ -393,7 +420,7 @@ fragment float4 fragment_main(VOut in [[stage_in]],
     float distance_range = 4.0;
     float texels_per_uv = float(tex.get_width());
     float px_range = distance_range * in.span.x / max(texels_per_uv, 1.0);
-    float cov = clamp((sd - 0.5) * px_range + 0.5, 0.0, 1.0);
+    float cov = ink_coverage(clamp((sd - 0.5) * px_range + 0.5, 0.0, 1.0), in.color.rgb);
     float a = in.color.a * cov;
     return float4(in.color.rgb * a, a);
 }

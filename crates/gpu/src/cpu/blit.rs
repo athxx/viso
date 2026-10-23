@@ -6,8 +6,9 @@
 
 /// A target's pixels as stored, row-major, `width` per row.
 pub enum FillPixels<'a> {
-    /// Four bytes per pixel in the target's byte order — `Bgra8Unorm` is the
-    /// XRGB8888 / ARGB8888 scanout layout — and the pixel to fill with.
+    /// Four bytes per pixel in the target's byte order — `Bgra8Unorm` and its
+    /// sRGB twin are the XRGB8888 / ARGB8888 scanout layout — and the pixel to
+    /// fill with.
     Bytes4 {
         pixels: &'a mut [[u8; 4]],
         value: [u8; 4],

@@ -770,7 +770,7 @@ impl GpuBackend for MetalBackend {
 
         let layer = CAMetalLayer::new();
         layer.setDevice(Some(&self.device));
-        layer.setPixelFormat(MTLPixelFormat::BGRA8Unorm);
+        layer.setPixelFormat(MTLPixelFormat::BGRA8Unorm_sRGB);
         layer.setPresentsWithTransaction(false);
         layer.setMaximumDrawableCount(3);
         #[cfg(target_os = "macos")]
@@ -805,7 +805,7 @@ impl GpuBackend for MetalBackend {
                 view: view_ptr,
                 width,
                 height,
-                format: TextureFormat::Bgra8Unorm,
+                format: TextureFormat::Bgra8UnormSrgb,
                 current: None,
             })
             .into()
@@ -1416,17 +1416,26 @@ fn pixel_format(f: TextureFormat) -> MTLPixelFormat {
         TextureFormat::Astc4x4Unorm => MTLPixelFormat::ASTC_4x4_LDR,
         TextureFormat::Astc6x6Unorm => MTLPixelFormat::ASTC_6x6_LDR,
         TextureFormat::Astc8x8Unorm => MTLPixelFormat::ASTC_8x8_LDR,
+        TextureFormat::Bgra8UnormSrgb => MTLPixelFormat::BGRA8Unorm_sRGB,
+        TextureFormat::Rgba8UnormSrgb => MTLPixelFormat::RGBA8Unorm_sRGB,
+        TextureFormat::Bc1RgbaUnormSrgb => MTLPixelFormat::BC1_RGBA_sRGB,
+        TextureFormat::Bc3RgbaUnormSrgb => MTLPixelFormat::BC3_RGBA_sRGB,
+        TextureFormat::Bc7RgbaUnormSrgb => MTLPixelFormat::BC7_RGBAUnorm_sRGB,
+        TextureFormat::Etc2Rgb8UnormSrgb => MTLPixelFormat::ETC2_RGB8_sRGB,
+        TextureFormat::Etc2Rgb8A1UnormSrgb => MTLPixelFormat::ETC2_RGB8A1_sRGB,
+        TextureFormat::Etc2Rgba8UnormSrgb => MTLPixelFormat::EAC_RGBA8_sRGB,
+        TextureFormat::Astc4x4UnormSrgb => MTLPixelFormat::ASTC_4x4_sRGB,
+        TextureFormat::Astc6x6UnormSrgb => MTLPixelFormat::ASTC_6x6_sRGB,
+        TextureFormat::Astc8x8UnormSrgb => MTLPixelFormat::ASTC_8x8_sRGB,
     }
 }
 
-/// The formats beyond the baseline `device` samples: the packed 16-bit ones,
-/// ETC2 and ASTC on an Apple GPU (every iOS device, Apple silicon Macs), BC
-/// where the device reports it (every Mac, iPads with an M-series GPU).
+/// The formats beyond the baseline `device` samples: ETC2 and ASTC on an
+/// Apple GPU (every iOS device, Apple silicon Macs), BC where the device
+/// reports it (every Mac, iPads with an M-series GPU). None of the packed
+/// 16-bit ones: they have no sRGB variant to decode a sample (ADR 0048).
 fn sampled_formats(device: &ProtocolObject<dyn MTLDevice>) -> SampledFormats {
     let mut sampled = SampledFormats::empty();
-    if device.supportsFamily(MTLGPUFamily::Apple1) {
-        sampled |= SampledFormats::RGB565 | SampledFormats::RGBA4444 | SampledFormats::RGBA5551;
-    }
     if device.supportsFamily(MTLGPUFamily::Apple2) {
         sampled |= SampledFormats::ETC2 | SampledFormats::ASTC;
     }

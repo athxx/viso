@@ -53,6 +53,7 @@ use self::fill::{Inst, MAX_FIELDS};
 use self::pass::{Layer, NO_LAYER, Scratch, Shared, Target, Window};
 use self::pixels::{Fmt, Pixels, Px};
 use self::pool::Pool;
+use crate::Packed16;
 use crate::backend::{
     DepthAttachment, DrawCommand, DrawList, Frame, GpuBackend, LoadOp, RenderPass, RenderTarget,
 };
@@ -359,29 +360,29 @@ impl CpuRaster {
     }
 
     /// The last presented framebuffer of `surface` as packed **BGRA8**,
-    /// top-left first, un-premultiplied — a `Bgra8Unorm` swapchain readback.
+    /// top-left first, un-premultiplied, its color encoded as the surface
+    /// encodes it — what the display shows.
     pub fn read_pixels_bgra8(&self, surface: SurfaceId) -> Vec<u8> {
         let s = self.surface(surface);
         let texels = s.texels();
+        let srgb = encodes(s.format);
         let mut out = Vec::with_capacity(s.len() * 4);
         for i in 0..s.len() {
             let [r, g, b, a] = texels.get(i);
             let (r, g, b) = unpremultiply(r, g, b, a);
-            out.extend([b, g, r, a].map(to_unorm8));
+            out.extend(bgra8([r, g, b, a], srgb));
         }
         out
     }
 
     /// Texture `id` as packed **BGRA8**, top-left first, as stored
-    /// (premultiplied) — a `Bgra8Unorm` render-target readback.
+    /// (premultiplied, encoded as its format encodes).
     pub fn read_texture(&self, id: TextureId) -> Vec<u8> {
         let t = self.res.texture(id);
         let texels = t.pixels.texels(t.format);
+        let srgb = encodes(t.format);
         (0..t.len())
-            .flat_map(|i| {
-                let [r, g, b, a] = texels.get(i);
-                [b, g, r, a].map(to_unorm8)
-            })
+            .flat_map(|i| bgra8(texels.get(i), srgb))
             .collect()
     }
 
@@ -540,7 +541,9 @@ fn encode_pass(
         layer_of: layer_of.get(range.clone()).unwrap_or_default(),
         workers,
     };
-    let unorm8 = !format.is_extended_range();
+    // A program's window rounds as a linear 8-bit target does; an sRGB one
+    // rounds once, encoding as it is written back.
+    let unorm8 = !format.is_extended_range() && !fmt.srgb && Packed16::of(format).is_none();
     let commands = &list[range];
     macro_rules! run {
         ($px:expr) => {
@@ -827,12 +830,12 @@ impl GpuBackend for CpuRaster {
                 // SAFETY: the platform keeps the scanout alive with its window.
                 let (s, (w, h)) = unsafe { (&*scanout, (*scanout).size()) };
                 let format = match s.format() {
-                    ScanoutFormat::Xrgb8888 => TextureFormat::Bgra8Unorm,
+                    ScanoutFormat::Xrgb8888 => TextureFormat::Bgra8UnormSrgb,
                     ScanoutFormat::Rgb565 => TextureFormat::Rgb565Unorm,
                 };
                 (Some(ScanoutRef(scanout)), format, w, h)
             }
-            _ => (None, TextureFormat::Bgra8Unorm, width, height),
+            _ => (None, TextureFormat::Bgra8UnormSrgb, width, height),
         };
         self.surfaces
             .insert(Surface {
@@ -1049,7 +1052,7 @@ fn plan_layers(
             continue;
         };
         let storable = matches!(
-            t.format,
+            t.format.linear(),
             TextureFormat::Bgra8Unorm
                 | TextureFormat::Rgba8Unorm
                 | TextureFormat::Rgba8Data
@@ -1174,6 +1177,23 @@ fn targets(pass: &RenderPass, texture: TextureId) -> bool {
 /// `round(clamp(v, 0, 1) * 255)` as a byte.
 fn to_unorm8(v: f32) -> u8 {
     (v.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+/// Whether `format` stores its color sRGB-encoded.
+fn encodes(format: TextureFormat) -> bool {
+    format.is_srgb() || Packed16::of(format).is_some()
+}
+
+/// Linear `rgba` as BGRA bytes, the color sRGB-encoded when `srgb`.
+fn bgra8([r, g, b, a]: [f32; 4], srgb: bool) -> [u8; 4] {
+    let c = |v| {
+        if srgb {
+            crate::srgb::encode(v)
+        } else {
+            to_unorm8(v)
+        }
+    };
+    [c(b), c(g), c(r), to_unorm8(a)]
 }
 
 /// A premultiplied color's straight RGB (zero where `a == 0`).

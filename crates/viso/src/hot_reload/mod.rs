@@ -2878,7 +2878,7 @@ mod tests {
             mounted(|cx| viso_ui_macros::view!("../../tests/fixtures/shader_card.vs")(cx).id());
         let mut backend = viso_gpu::create_device();
         let renderer =
-            viso_render::Renderer::new(&mut backend, viso_gpu::TextureFormat::Bgra8Unorm);
+            viso_render::Renderer::new(&mut backend, viso_gpu::TextureFormat::Bgra8UnormSrgb);
         ws.gpu = Some(crate::GpuState {
             backend,
             renderer,
@@ -3128,7 +3128,7 @@ mod tests {
         let target = gpu.backend.create_texture(&viso_gpu::TextureDesc {
             width: 200,
             height: 100,
-            format: viso_gpu::TextureFormat::Bgra8Unorm,
+            format: viso_gpu::TextureFormat::Bgra8UnormSrgb,
             render_target: true,
             label: "card",
         });

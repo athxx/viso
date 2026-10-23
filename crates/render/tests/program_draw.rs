@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use viso_gpu::{
     AddressMode, CpuRaster, FilterMode, GpuBackend, RawWindowHandle, SamplerDesc, ShaderLang,
-    SurfaceId, TextureDesc, TextureFormat, TextureId,
+    SurfaceId, TextureDesc, TextureFormat, TextureId, srgb,
 };
 use viso_render::{
     BatchPipeline, Border, LayerClip, Primitive, ProgramSlot, Quad, Rect, Renderer, Rgba,
@@ -222,17 +222,22 @@ impl Frame {
         stats
     }
 
-    /// A 1×1 image of `color`, premultiplied RGBA8.
+    /// A 1×1 image of `color`, premultiplied sRGB RGBA8.
     fn image(&mut self, color: [f32; 4]) -> TextureId {
         let texture = self.gpu.create_texture(&TextureDesc {
             width: 1,
             height: 1,
-            format: TextureFormat::Rgba8Unorm,
+            format: TextureFormat::Rgba8UnormSrgb,
             render_target: false,
             label: "image",
         });
-        let q = |v: f32| (v * 255.0).round() as u8;
-        let texel = [q(color[0]), q(color[1]), q(color[2]), q(color[3])];
+        let e = srgb::encode;
+        let texel = [
+            e(color[0]),
+            e(color[1]),
+            e(color[2]),
+            (color[3] * 255.0).round() as u8,
+        ];
         self.gpu.write_texture(texture, 0, 0, 1, 1, &texel);
         texture
     }
@@ -281,10 +286,10 @@ const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 const GREEN: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
 const BLUE: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
 
-/// BGRA8 of an opaque premultiplied color.
+/// BGRA8 of an opaque premultiplied color, as the sRGB surface stores it.
 fn bgra(c: [f32; 4]) -> [u8; 4] {
-    let q = |v: f32| (v * 255.0).round() as u8;
-    [q(c[2]), q(c[1]), q(c[0]), q(c[3])]
+    let e = srgb::encode;
+    [e(c[2]), e(c[1]), e(c[0]), (c[3] * 255.0).round() as u8]
 }
 
 #[test]
@@ -398,7 +403,8 @@ fn inside_a_translucent_layer_a_box_draws_at_its_place_and_is_never_folded() {
     );
     assert_eq!(stats.offscreen_passes, 1);
     let [b, g, r, a] = f.pixel(28, 28);
-    assert!(r == 255 && (120..=135).contains(&g) && (120..=135).contains(&b) && a == 255);
+    // Half red over white: half the light in green and blue, sRGB 188.
+    assert!(r == 255 && (183..=193).contains(&g) && (183..=193).contains(&b) && a == 255);
     assert_eq!(
         f.pixel(22, 28),
         bgra(WHITE),
@@ -463,23 +469,24 @@ fn a_slot_past_the_key_or_a_wide_uniform_block_is_refused() {
         .install_program(&mut f.gpu, ProgramSlot(past), "Fill", &cpu, layout.clone())
         .expect_err("past the key");
     assert_eq!(err, viso_render::ProgramError::Slot(ProgramSlot(past)));
+    // One block past what a draw carries inline.
     let wide = BrushLayout {
-        uniform_size: 32,
+        uniform_size: 48,
         ..layout
     };
     assert!(matches!(
         f.renderer
             .install_program(&mut f.gpu, ProgramSlot(0), "Fill", &cpu, wide),
-        Err(viso_render::ProgramError::Uniforms { size: 32 })
+        Err(viso_render::ProgramError::Uniforms { size: 48 })
     ));
     assert_eq!(f.renderer.frame_stats().programs, 0);
 }
 
 /// A scene of program draws — merged, between two programs, clipped and
-/// inside a translucent layer — rendered into a fresh BGRA8 target on `gpu`
+/// inside a translucent layer — rendered into a fresh sRGB BGRA8 target on `gpu`
 /// from `lang` code.
 fn program_scene<B: GpuBackend>(gpu: &mut B, lang: ShaderLang) -> viso_gpu::TextureId {
-    let mut renderer = Renderer::new(gpu, viso_gpu::TextureFormat::Bgra8Unorm);
+    let mut renderer = Renderer::new(gpu, viso_gpu::TextureFormat::Bgra8UnormSrgb);
     renderer.set_surface_size([W as f32, H as f32], 1.0);
     let mut layouts = Vec::new();
     for (slot, program) in [(0, fill("Fill", None)), (1, fill("Blue", Some(BLUE)))] {
@@ -529,7 +536,7 @@ fn program_scene<B: GpuBackend>(gpu: &mut B, lang: ShaderLang) -> viso_gpu::Text
     let target = gpu.create_texture(&viso_gpu::TextureDesc {
         width: W,
         height: H,
-        format: viso_gpu::TextureFormat::Bgra8Unorm,
+        format: viso_gpu::TextureFormat::Bgra8UnormSrgb,
         render_target: true,
         label: "program-scene",
     });
@@ -552,8 +559,8 @@ fn the_program_scene_draws_on_the_headless_raster() {
     assert_eq!(at(8, 34), bgra(GREEN));
     assert_eq!(at(2, 34), bgra(WHITE));
     assert_eq!(at(8, 28), bgra(WHITE));
-    // Half green over red, half over white.
-    assert_eq!(at(16, 10)[1], 128);
+    // Half green over red, half over white: half the light, sRGB 188.
+    assert_eq!(at(16, 10)[1], 188);
 }
 
 #[cfg(target_vendor = "apple")]
@@ -682,7 +689,8 @@ fn a_brush_reading_the_clock_redraws_as_it_moves_and_uploads_nothing() {
     let first = f.draw(&[a.clone(), b.clone()]);
     assert_eq!(first.clock_instances, 1);
     assert!(f.renderer.reads_time());
-    assert!((red(&f) - 64).abs() <= 1, "{}", red(&f));
+    // A quarter of the light, sRGB 137.
+    assert!((red(&f) - 137).abs() <= 1, "{}", red(&f));
 
     f.renderer.set_time(0.75);
     let moved = f.draw(&[a.clone(), b.clone()]);
@@ -695,7 +703,8 @@ fn a_brush_reading_the_clock_redraws_as_it_moves_and_uploads_nothing() {
         (0, 0, 0),
         "the clock rides the draw's uniforms"
     );
-    assert!((red(&f) - 191).abs() <= 1, "{}", red(&f));
+    // Three quarters of the light, sRGB 225.
+    assert!((red(&f) - 225).abs() <= 1, "{}", red(&f));
     assert_eq!(f.pixel(24, 6), bgra(GREEN));
 
     // Off the target, clipped away, or gone, the box is not drawn and no
@@ -795,7 +804,7 @@ fn a_brush_samples_through_the_state_its_sampler_declares() {
     let image = f.gpu.create_texture(&TextureDesc {
         width: 2,
         height: 1,
-        format: TextureFormat::Rgba8Unorm,
+        format: TextureFormat::Rgba8UnormSrgb,
         render_target: false,
         label: "pair",
     });
@@ -811,8 +820,9 @@ fn a_brush_samples_through_the_state_its_sampler_declares() {
     };
     f.draw(&[boxed(&smooth, 0, 2.0), boxed(&nearest, 1, 20.0)]);
     let [b, g, r, _] = f.pixel(6, 6);
+    // Halfway in linear light: sRGB 188 each.
     assert!(
-        r.abs_diff(128) <= 1 && b.abs_diff(128) <= 1 && g == 0,
+        r.abs_diff(188) <= 1 && b.abs_diff(188) <= 1 && g == 0,
         "bilinear blends the pair: {r} {g} {b}"
     );
     assert_eq!(f.pixel(24, 6), bgra(BLUE), "nearest takes one texel");

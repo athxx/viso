@@ -3,7 +3,7 @@
 //!
 //! Structurally a sibling of [`GlyphAtlas`](crate::glyph_atlas::GlyphAtlas): the
 //! same paged plane and page-granular residency lifecycle, but four bytes per
-//! texel ([`TextureFormat::Rgba8Unorm`]) instead of one. Color glyphs
+//! texel ([`TextureFormat::Rgba8UnormSrgb`]) instead of one. Color glyphs
 //! ([`ColorGlyph`]) carry their own premultiplied RGBA, so they lower through
 //! the Image primitive with a white tint rather than the coverage shader; this
 //! atlas is where those bitmaps live.
@@ -30,7 +30,7 @@ const BPT: u32 = 4;
 pub struct ColorAtlas {
     /// The paged pixel plane: per-page packers, CPU pixels, dirty rect.
     plane: AtlasPlane,
-    /// The GPU texture (`Rgba8Unorm`, `size × size`) these pixels back.
+    /// The GPU texture (`Rgba8UnormSrgb`, `size × size`) these pixels back.
     texture: TextureId,
 }
 
@@ -63,7 +63,7 @@ impl ColorAtlas {
     }
 
     /// The RGBA8 pixel format a color-atlas texture must be created with.
-    pub const FORMAT: TextureFormat = TextureFormat::Rgba8Unorm;
+    pub const FORMAT: TextureFormat = TextureFormat::Rgba8UnormSrgb;
 
     /// Atlas edge length in texels.
     pub fn size(&self) -> u32 {

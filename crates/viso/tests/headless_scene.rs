@@ -88,9 +88,10 @@ fn pixel(buf: &[u8], x: u32, y: u32) -> (u8, u8, u8) {
     (buf[i + 2], buf[i + 1], buf[i]) // BGRA -> RGB
 }
 
-/// A channel is "close" to an expected 0..=1 float fill (allowing raster/round).
+/// A channel is "close" to an expected linear 0..=1 fill, as the sRGB surface
+/// stores it (allowing raster/round).
 fn near(actual: u8, expected: f32) -> bool {
-    let e = (expected * 255.0).round() as i32;
+    let e = i32::from(viso::gpu::srgb::encode(expected));
     (actual as i32 - e).abs() <= 6
 }
 

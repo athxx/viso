@@ -10,14 +10,25 @@
 /// block-compressed ones (BC, ETC2, ASTC) hold a fixed-size block of texels
 /// that the sampler decodes, so a texture of them is written whole blocks at a
 /// time and is never a render target. Every color format's texels are
-/// premultiplied and sampled as stored (Rendering §5.4–§5.5), compressed ones
-/// included: an encoder compresses premultiplied texels.
+/// premultiplied (Rendering §5.4–§5.5), compressed ones included: an encoder
+/// compresses premultiplied texels.
+///
+/// A `*Srgb` format stores the same bytes as its linear twin, holding
+/// sRGB-encoded color: sampling decodes it to linear light, rendering into it
+/// encodes, and blending into it runs in linear light (ADR 0048). Its texels
+/// are premultiplied in linear light, `enc(dec(c) · a)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TextureFormat {
     /// 8-bit BGRA, unsigned normalized — the canonical macOS swapchain format.
     Bgra8Unorm,
+    /// [`Bgra8Unorm`](Self::Bgra8Unorm) holding sRGB-encoded color: an sRGB
+    /// surface's format.
+    Bgra8UnormSrgb,
     /// 8-bit RGBA, unsigned normalized.
     Rgba8Unorm,
+    /// [`Rgba8Unorm`](Self::Rgba8Unorm) holding sRGB-encoded color: an image's
+    /// format.
+    Rgba8UnormSrgb,
     /// Single 8-bit channel — glyph coverage / alpha atlases.
     R8Unorm,
     /// Four independent 8-bit unorm channels of *data*, not color.
@@ -50,25 +61,43 @@ pub enum TextureFormat {
     /// BC1 (DXT1): 4×4 texels in 8 bytes, two 5:6:5 endpoints and 2-bit
     /// indices; a block may spend one index on transparent black.
     Bc1RgbaUnorm,
+    /// [`Bc1RgbaUnorm`](Self::Bc1RgbaUnorm), sRGB-encoded.
+    Bc1RgbaUnormSrgb,
     /// BC3 (DXT5): 4×4 texels in 16 bytes, BC1 color beside an interpolated
     /// 8-bit alpha block.
     Bc3RgbaUnorm,
+    /// [`Bc3RgbaUnorm`](Self::Bc3RgbaUnorm), sRGB-encoded.
+    Bc3RgbaUnormSrgb,
     /// BC7: 4×4 texels in 16 bytes, eight modes of partitioned endpoints.
     Bc7RgbaUnorm,
+    /// [`Bc7RgbaUnorm`](Self::Bc7RgbaUnorm), sRGB-encoded.
+    Bc7RgbaUnormSrgb,
     /// ETC2 RGB: 4×4 opaque texels in 8 bytes.
     Etc2Rgb8Unorm,
+    /// [`Etc2Rgb8Unorm`](Self::Etc2Rgb8Unorm), sRGB-encoded.
+    Etc2Rgb8UnormSrgb,
     /// ETC2 RGB with punch-through alpha: 4×4 texels in 8 bytes, each opaque
     /// or transparent black.
     Etc2Rgb8A1Unorm,
+    /// [`Etc2Rgb8A1Unorm`](Self::Etc2Rgb8A1Unorm), sRGB-encoded.
+    Etc2Rgb8A1UnormSrgb,
     /// ETC2 RGBA: 4×4 texels in 16 bytes, an EAC alpha block before the ETC2
     /// color block.
     Etc2Rgba8Unorm,
+    /// [`Etc2Rgba8Unorm`](Self::Etc2Rgba8Unorm), sRGB-encoded.
+    Etc2Rgba8UnormSrgb,
     /// ASTC LDR, 4×4 texels in 16 bytes (8 bits per texel).
     Astc4x4Unorm,
+    /// [`Astc4x4Unorm`](Self::Astc4x4Unorm), sRGB-encoded.
+    Astc4x4UnormSrgb,
     /// ASTC LDR, 6×6 texels in 16 bytes (3.56 bits per texel).
     Astc6x6Unorm,
+    /// [`Astc6x6Unorm`](Self::Astc6x6Unorm), sRGB-encoded.
+    Astc6x6UnormSrgb,
     /// ASTC LDR, 8×8 texels in 16 bytes (2 bits per texel).
     Astc8x8Unorm,
+    /// [`Astc8x8Unorm`](Self::Astc8x8Unorm), sRGB-encoded.
+    Astc8x8UnormSrgb,
 }
 
 /// The storage unit of a [`TextureFormat`]: `width × height` texels in
@@ -97,9 +126,53 @@ impl TextureFormat {
         block.bytes as usize
     }
 
+    /// Whether the format holds sRGB-encoded color.
+    pub const fn is_srgb(self) -> bool {
+        self.linear() as u8 != self as u8
+    }
+
+    /// The linear twin of an sRGB format, which stores the same bytes; any
+    /// other format is its own.
+    pub const fn linear(self) -> TextureFormat {
+        match self {
+            TextureFormat::Bgra8UnormSrgb => TextureFormat::Bgra8Unorm,
+            TextureFormat::Rgba8UnormSrgb => TextureFormat::Rgba8Unorm,
+            TextureFormat::Bc1RgbaUnormSrgb => TextureFormat::Bc1RgbaUnorm,
+            TextureFormat::Bc3RgbaUnormSrgb => TextureFormat::Bc3RgbaUnorm,
+            TextureFormat::Bc7RgbaUnormSrgb => TextureFormat::Bc7RgbaUnorm,
+            TextureFormat::Etc2Rgb8UnormSrgb => TextureFormat::Etc2Rgb8Unorm,
+            TextureFormat::Etc2Rgb8A1UnormSrgb => TextureFormat::Etc2Rgb8A1Unorm,
+            TextureFormat::Etc2Rgba8UnormSrgb => TextureFormat::Etc2Rgba8Unorm,
+            TextureFormat::Astc4x4UnormSrgb => TextureFormat::Astc4x4Unorm,
+            TextureFormat::Astc6x6UnormSrgb => TextureFormat::Astc6x6Unorm,
+            TextureFormat::Astc8x8UnormSrgb => TextureFormat::Astc8x8Unorm,
+            other => other,
+        }
+    }
+
+    /// The sRGB variant of an 8-bit color format; `None` for a format with
+    /// none (a 16-bit packed, float, data or depth one). An sRGB format is
+    /// its own.
+    pub const fn srgb(self) -> Option<TextureFormat> {
+        Some(match self.linear() {
+            TextureFormat::Bgra8Unorm => TextureFormat::Bgra8UnormSrgb,
+            TextureFormat::Rgba8Unorm => TextureFormat::Rgba8UnormSrgb,
+            TextureFormat::Bc1RgbaUnorm => TextureFormat::Bc1RgbaUnormSrgb,
+            TextureFormat::Bc3RgbaUnorm => TextureFormat::Bc3RgbaUnormSrgb,
+            TextureFormat::Bc7RgbaUnorm => TextureFormat::Bc7RgbaUnormSrgb,
+            TextureFormat::Etc2Rgb8Unorm => TextureFormat::Etc2Rgb8UnormSrgb,
+            TextureFormat::Etc2Rgb8A1Unorm => TextureFormat::Etc2Rgb8A1UnormSrgb,
+            TextureFormat::Etc2Rgba8Unorm => TextureFormat::Etc2Rgba8UnormSrgb,
+            TextureFormat::Astc4x4Unorm => TextureFormat::Astc4x4UnormSrgb,
+            TextureFormat::Astc6x6Unorm => TextureFormat::Astc6x6UnormSrgb,
+            TextureFormat::Astc8x8Unorm => TextureFormat::Astc8x8UnormSrgb,
+            _ => return None,
+        })
+    }
+
     /// The unit the format stores texels in.
     pub const fn block(self) -> FormatBlock {
-        let (width, height, bytes) = match self {
+        let (width, height, bytes) = match self.linear() {
             TextureFormat::Bgra8Unorm | TextureFormat::Rgba8Unorm | TextureFormat::Rgba8Data => {
                 (1, 1, 4)
             }
@@ -118,6 +191,7 @@ impl TextureFormat {
             | TextureFormat::Astc4x4Unorm => (4, 4, 16),
             TextureFormat::Astc6x6Unorm => (6, 6, 16),
             TextureFormat::Astc8x8Unorm => (8, 8, 16),
+            _ => unreachable!(),
         };
         FormatBlock {
             width,
@@ -153,7 +227,7 @@ impl TextureFormat {
     /// The capability a backend reports to sample the format natively; empty
     /// for the baseline every backend samples (§6.3).
     pub const fn sampled_class(self) -> SampledFormats {
-        match self {
+        match self.linear() {
             TextureFormat::Rgb565Unorm => SampledFormats::RGB565,
             TextureFormat::Rgba4444Unorm => SampledFormats::RGBA4444,
             TextureFormat::Rgba5551Unorm => SampledFormats::RGBA5551,
@@ -166,12 +240,7 @@ impl TextureFormat {
             TextureFormat::Astc4x4Unorm
             | TextureFormat::Astc6x6Unorm
             | TextureFormat::Astc8x8Unorm => SampledFormats::ASTC,
-            TextureFormat::Bgra8Unorm
-            | TextureFormat::Rgba8Unorm
-            | TextureFormat::R8Unorm
-            | TextureFormat::Rgba8Data
-            | TextureFormat::Rgba16Float
-            | TextureFormat::Depth32Float => SampledFormats::empty(),
+            _ => SampledFormats::empty(),
         }
     }
 
@@ -207,6 +276,7 @@ impl TextureFormat {
                 | TextureFormat::R8Unorm
                 | TextureFormat::Depth32Float
                 | TextureFormat::Etc2Rgb8Unorm
+                | TextureFormat::Etc2Rgb8UnormSrgb
         )
     }
 }

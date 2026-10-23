@@ -48,7 +48,7 @@ unsafe extern "C" {
 }
 
 /// `kCGBitmapByteOrder32Little | kCGImageAlphaNoneSkipFirst`: B, G, R, X in
-/// memory, the raster's `Bgra8Unorm` with its alpha ignored.
+/// memory, the raster's `Bgra8UnormSrgb` with its alpha ignored.
 const BGRX: u32 = (2 << 12) | 6;
 /// `kCGRenderingIntentDefault`.
 const INTENT_DEFAULT: i32 = 0;

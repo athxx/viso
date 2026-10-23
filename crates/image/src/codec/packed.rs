@@ -4,9 +4,9 @@
 //! Quantizing to 4–6 bits per channel bands a smooth ramp, so the encoder
 //! rounds every channel against a 4×4 ordered dither — the same thresholds
 //! the CPU raster dithers an RGB565 gradient with — and keeps the result
-//! premultiplied: no color channel above its alpha.
+//! premultiplied: no color channel brighter in linear light than its alpha.
 
-use viso_gpu_abi::{Packed16, TextureFormat};
+use viso_gpu_abi::{Packed16, TextureFormat, srgb};
 
 /// The 4×4 Bayer matrix as rounding thresholds in `0..255`.
 const BAYER: [[u32; 4]; 4] = {
@@ -42,7 +42,9 @@ pub(super) fn encode(format: TextureFormat, width: u32, texels: &[[u8; 4]]) -> V
             Packed16::Rgb565 => (narrow(r, 5, t) << 11) | (narrow(g, 6, t) << 5) | narrow(b, 5, t),
             Packed16::Rgba4444 => {
                 let a4 = narrow(a, 4, t);
-                let c = |v: u8| narrow(v, 4, t).min(a4);
+                // The brightest level whose light stays within the alpha.
+                let cap = narrow(srgb::encode(f32::from(a4) / 15.0), 4, 0);
+                let c = |v: u8| narrow(v, 4, t).min(cap);
                 (c(r) << 12) | (c(g) << 8) | (c(b) << 4) | a4
             }
             Packed16::Rgba5551 => {
@@ -89,8 +91,9 @@ mod tests {
             assert_eq!(back[1], [255, 255, 255, 255], "{format:?}");
             assert_eq!(back[2], [0, 0, 0, 0], "{format:?}");
             for p in &back {
+                let a = f32::from(p[3]) / 255.0;
                 assert!(
-                    p[0] <= p[3] && p[1] <= p[3] && p[2] <= p[3],
+                    p[..3].iter().all(|&c| srgb::decode(c) <= a + 0.005),
                     "{format:?} {p:?}"
                 );
             }

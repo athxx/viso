@@ -5,15 +5,18 @@
 //!   pixel in the format's byte order, so a BGRA surface is the XRGB8888 /
 //!   ARGB8888 scanout layout as is. A write rounds the source to bytes and
 //!   composites in integers ([`super::span`]), as an 8-bit attachment does.
-//! - `Rgb565Unorm`: two bytes per pixel, opaque. A write widens the
-//!   destination to bytes, composites, and narrows back — rounded, or through
-//!   a 4×4 ordered dither for the draws that ask for it (gradients), so a
-//!   ramp does not band into 32 steps.
+//! - Their sRGB variants (`Bgra8UnormSrgb`, `Rgba8UnormSrgb`): the same bytes,
+//!   color sRGB-encoded. A write decodes the destination, composites in
+//!   linear light and encodes; a sample decodes (ADR 0048).
+//! - `Rgb565Unorm`: two bytes per pixel, opaque, sRGB-encoded. A write widens
+//!   the destination to bytes, decodes, composites, encodes and narrows back
+//!   — rounded, or through a 4×4 ordered dither for the draws that ask for it
+//!   (gradients), so a ramp does not band into 32 steps.
 //! - `R8Unorm`: one coverage byte per texel (glyph and mask atlases), sampled
 //!   as premultiplied white; never a render target.
 //! - `Rgba16Float`: linear `f32` RGBA, unclamped, for HDR targets.
-//! - `Rgba4444Unorm`, `Rgba5551Unorm`: two bytes per texel as uploaded,
-//!   sampled only (16-bit images).
+//! - `Rgba4444Unorm`, `Rgba5551Unorm`: two sRGB-encoded bytes per texel as
+//!   uploaded, sampled only (16-bit images).
 //!
 //! A render target's pixels are allocated by the first pass that draws into
 //! it, an uploaded texture's by its first write. A texture created over
@@ -53,7 +56,7 @@ impl Pixels {
     /// `len` pixels of `format`, all transparent black (opaque black for a
     /// format without alpha).
     pub(super) fn zeroed(format: TextureFormat, len: usize) -> Pixels {
-        match format {
+        match format.linear() {
             TextureFormat::Bgra8Unorm | TextureFormat::Rgba8Unorm | TextureFormat::Rgba8Data => {
                 Pixels::Unorm8(vec![[0; 4]; len])
             }
@@ -71,9 +74,9 @@ impl Pixels {
     /// `len` pixels of `format`, every one `color`, stored as a write of it.
     pub(super) fn filled(format: TextureFormat, len: usize, color: [f32; 4]) -> Pixels {
         let fmt = Fmt::of(format);
-        match format {
+        match format.linear() {
             TextureFormat::Bgra8Unorm | TextureFormat::Rgba8Unorm | TextureFormat::Rgba8Data => {
-                Pixels::Unorm8(vec![span::pack(color, fmt.bgra); len])
+                Pixels::Unorm8(vec![<[u8; 4] as Px>::store(color, fmt); len])
             }
             TextureFormat::R8Unorm => Pixels::R8(vec![span::pack1(color[3]); len]),
             TextureFormat::Rgb565Unorm => Pixels::Rgb565(vec![<u16 as Px>::store(color, fmt); len]),
@@ -104,7 +107,8 @@ impl Pixels {
             Pixels::None => CpuTexels::None,
             Pixels::Unorm8(texels) => CpuTexels::Rgba8 {
                 texels,
-                bgra: format == TextureFormat::Bgra8Unorm,
+                bgra: format.linear() == TextureFormat::Bgra8Unorm,
+                srgb: format.is_srgb(),
             },
             Pixels::R8(texels) => CpuTexels::R8(texels),
             Pixels::Rgb565(texels) => CpuTexels::Rgb565(texels),
@@ -121,11 +125,12 @@ impl Pixels {
 
     /// `bytes`, laid out in `format`, as the samplers read them in place.
     fn borrowed(format: TextureFormat, bytes: &[u8]) -> CpuTexels<'_> {
-        match format {
+        match format.linear() {
             TextureFormat::Bgra8Unorm | TextureFormat::Rgba8Unorm | TextureFormat::Rgba8Data => {
                 CpuTexels::Rgba8 {
                     texels: bytes.as_chunks::<4>().0,
-                    bgra: format == TextureFormat::Bgra8Unorm,
+                    bgra: format.linear() == TextureFormat::Bgra8Unorm,
+                    srgb: format.is_srgb(),
                 }
             }
             TextureFormat::R8Unorm => CpuTexels::R8(bytes),
@@ -142,7 +147,7 @@ impl Pixels {
     /// Whether static bytes of `format` can be sampled in place.
     pub(super) fn borrows(format: TextureFormat) -> bool {
         matches!(
-            format,
+            format.linear(),
             TextureFormat::Bgra8Unorm
                 | TextureFormat::Rgba8Unorm
                 | TextureFormat::Rgba8Data
@@ -213,12 +218,15 @@ impl Pixels {
 pub(super) struct Fmt {
     /// Bytes in BGRA order.
     pub bgra: bool,
+    /// Color sRGB-encoded: 8-bit sRGB formats (a 5:6:5 target always is).
+    pub srgb: bool,
 }
 
 impl Fmt {
     pub(super) fn of(format: TextureFormat) -> Fmt {
         Fmt {
-            bgra: format == TextureFormat::Bgra8Unorm,
+            bgra: format.linear() == TextureFormat::Bgra8Unorm,
+            srgb: format.is_srgb(),
         }
     }
 }
@@ -258,6 +266,9 @@ pub(super) trait Px: Copy + Send + Sync + 'static {
 impl Px for [u8; 4] {
     #[inline]
     fn blend(dst: &mut [[u8; 4]], src: &[[f32; 4]], fmt: Fmt, _: Option<(u32, u32)>) {
+        if fmt.srgb {
+            return span::over_srgb_row(dst, src, fmt.bgra);
+        }
         let mut packed = [[0u8; 4]; super::TILE as usize];
         for (dst, src) in dst.chunks_mut(packed.len()).zip(src.chunks(packed.len())) {
             let packed = &mut packed[..src.len()];
@@ -268,13 +279,18 @@ impl Px for [u8; 4] {
 
     #[inline]
     fn replace(dst: &mut [[u8; 4]], src: &[[f32; 4]], fmt: Fmt) {
-        span::pack_row(src, dst, fmt.bgra);
+        if fmt.srgb {
+            span::encode_row(src, dst, fmt.bgra);
+        } else {
+            span::pack_row(src, dst, fmt.bgra);
+        }
     }
 
     fn load(src: &[[u8; 4]], out: &mut [[f32; 4]], fmt: Fmt) {
         let texels = CpuTexels::Rgba8 {
             texels: src,
             bgra: fmt.bgra,
+            srgb: fmt.srgb,
         };
         for (i, o) in out.iter_mut().enumerate() {
             *o = texels.get(i);
@@ -282,7 +298,11 @@ impl Px for [u8; 4] {
     }
 
     fn store(color: [f32; 4], fmt: Fmt) -> [u8; 4] {
-        span::pack(color, fmt.bgra)
+        if fmt.srgb {
+            span::encode(color, fmt.bgra)
+        } else {
+            span::pack(color, fmt.bgra)
+        }
     }
 }
 
@@ -301,22 +321,33 @@ fn to_565([r, g, b]: [u8; 3], t: u32) -> u16 {
 
 impl Px for u16 {
     fn blend(dst: &mut [u16], src: &[[f32; 4]], _: Fmt, dither: Option<(u32, u32)>) {
-        let mut packed = [[0u8; 4]; super::TILE as usize];
-        for (chunk, (dst, src)) in dst
-            .chunks_mut(packed.len())
-            .zip(src.chunks(packed.len()))
-            .enumerate()
-        {
-            let packed = &mut packed[..src.len()];
-            span::pack_row(src, packed, false);
-            for (i, (d, s)) in dst.iter_mut().zip(packed.iter()).enumerate() {
+        // Undithered, a pixel drawn as its neighbour was takes its result.
+        let mut last: Option<([f32; 4], u16, u16)> = None;
+        for (i, (d, &s)) in dst.iter_mut().zip(src).enumerate() {
+            if let Some((ls, ld, lo)) = last
+                && ls == s
+                && (ld == *d || s[3] >= 1.0)
+            {
+                *d = lo;
+                continue;
+            }
+            if span::clear(s) {
+                continue;
+            }
+            let under = *d;
+            let lin = if s[3] >= 1.0 {
+                s
+            } else {
                 let [r, g, b] = rgb565_to_8(*d);
-                let [r, g, b, _] = span::over1([r, g, b, 255], *s);
-                let t = dither.map_or(127, |(x, y)| {
-                    let x = x as usize + chunk * super::TILE as usize + i;
-                    u32::from(BAYER[y as usize & 3][x & 3])
-                });
-                *d = to_565([r, g, b], t);
+                span::over_linear(span::decode([r, g, b, 255], false), s)
+            };
+            let [r, g, b, _] = span::encode(lin, false);
+            let t = dither.map_or(127, |(x, y)| {
+                u32::from(BAYER[y as usize & 3][(x as usize + i) & 3])
+            });
+            *d = to_565([r, g, b], t);
+            if dither.is_none() {
+                last = Some((s, under, *d));
             }
         }
     }
@@ -335,7 +366,7 @@ impl Px for u16 {
     }
 
     fn store(color: [f32; 4], _: Fmt) -> u16 {
-        let [r, g, b, _] = span::pack(color, false);
+        let [r, g, b, _] = span::encode(color, false);
         to_565([r, g, b], 127)
     }
 }
@@ -369,26 +400,50 @@ mod tests {
     fn rgb565_round_trips_its_own_values_and_rounds_bytes() {
         for v in [0u16, 0xffff, 0xf800, 0x07e0, 0x001f, 0x1234] {
             let mut d = [v];
-            <u16 as Px>::blend(&mut d, &[[0.0; 4]], Fmt { bgra: false }, None);
+            <u16 as Px>::blend(
+                &mut d,
+                &[[0.0; 4]],
+                Fmt {
+                    bgra: false,
+                    srgb: true,
+                },
+                None,
+            );
             assert_eq!(d[0], v, "a transparent source keeps {v:#06x}");
         }
         assert_eq!(
-            <u16 as Px>::store([1.0, 1.0, 1.0, 1.0], Fmt { bgra: false }),
+            <u16 as Px>::store(
+                [1.0, 1.0, 1.0, 1.0],
+                Fmt {
+                    bgra: false,
+                    srgb: true
+                }
+            ),
             0xffff
         );
         assert_eq!(
-            <u16 as Px>::store([0.0, 0.0, 0.0, 1.0], Fmt { bgra: false }),
+            <u16 as Px>::store(
+                [0.0, 0.0, 0.0, 1.0],
+                Fmt {
+                    bgra: false,
+                    srgb: true
+                }
+            ),
             0
         );
     }
 
     #[test]
     fn a_dithered_ramp_alternates_where_a_rounded_one_bands() {
-        // A level between two 5-bit steps: rounding picks one everywhere, the
-        // dither mixes both over the 4×4 cell.
-        let level = (4.5 * 255.0 / 31.0) / 255.0;
+        // A level between two 5-bit steps (the byte 37 narrows to 4.5):
+        // rounding picks one everywhere, the dither mixes both over the 4×4
+        // cell.
+        let level = crate::srgb::decode(37);
         let src = [[level, 0.0, 0.0, 1.0]; 4];
-        let fmt = Fmt { bgra: false };
+        let fmt = Fmt {
+            bgra: false,
+            srgb: true,
+        };
         let mut seen = std::collections::BTreeSet::new();
         for y in 0..4 {
             let mut row = [0u16; 4];

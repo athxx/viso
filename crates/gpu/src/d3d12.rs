@@ -121,7 +121,11 @@ const PITCH_ALIGN: u32 = D3D12_TEXTURE_DATA_PITCH_ALIGNMENT;
 /// The state every texture rests in between commands.
 const TEXTURE_REST: D3D12_RESOURCE_STATES = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
 /// The swapchain's format and flags (kept identical across `ResizeBuffers`).
+/// A flip-model swapchain takes no sRGB format; its buffers' views are
+/// [`SURFACE_FORMAT`], which encodes what the pipelines write (ADR 0048).
 const SWAP_FORMAT: DXGI_FORMAT = DXGI_FORMAT_B8G8R8A8_UNORM;
+/// The format a surface reports and its buffers' render-target views take.
+const SURFACE_FORMAT: TextureFormat = TextureFormat::Bgra8UnormSrgb;
 const SWAP_FLAGS: DXGI_SWAP_CHAIN_FLAG = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
 /// How long `begin_frame` waits for the swapchain before skipping the frame.
 const FRAME_WAIT_MS: u32 = 1000;
@@ -1167,13 +1171,25 @@ impl D3D12Backend {
     ) -> Vec<ID3D12Resource> {
         (0..SWAP_BUFFERS)
             .map(|i| {
-                // SAFETY: `i` is below the swapchain's buffer count and each view
-                // is written into a handle the surface owns.
+                let view = D3D12_RENDER_TARGET_VIEW_DESC {
+                    Format: dxgi_format(SURFACE_FORMAT),
+                    ViewDimension: D3D12_RTV_DIMENSION_TEXTURE2D,
+                    Anonymous: D3D12_RENDER_TARGET_VIEW_DESC_0 {
+                        Texture2D: D3D12_TEX2D_RTV {
+                            MipSlice: 0,
+                            PlaneSlice: 0,
+                        },
+                    },
+                };
+                // SAFETY: `i` is below the swapchain's buffer count, each view
+                // is written into a handle the surface owns, and `view` names
+                // the sRGB twin of the buffers' format, which a flip-model
+                // buffer's render-target view may take.
                 unsafe {
                     let buffer: ID3D12Resource =
                         swapchain.GetBuffer(i).expect("query a swapchain buffer");
                     self.device
-                        .CreateRenderTargetView(&buffer, None, rtvs[i as usize]);
+                        .CreateRenderTargetView(&buffer, Some(&view), rtvs[i as usize]);
                     buffer
                 }
             })
@@ -2218,7 +2234,7 @@ impl GpuBackend for D3D12Backend {
     }
 
     fn surface_format(&self, _surface: SurfaceId) -> TextureFormat {
-        TextureFormat::Bgra8Unorm
+        SURFACE_FORMAT
     }
 
     fn time_frames(&mut self, on: bool) {
@@ -2815,6 +2831,11 @@ fn dxgi_format(format: TextureFormat) -> DXGI_FORMAT {
         TextureFormat::Bc1RgbaUnorm => DXGI_FORMAT_BC1_UNORM,
         TextureFormat::Bc3RgbaUnorm => DXGI_FORMAT_BC3_UNORM,
         TextureFormat::Bc7RgbaUnorm => DXGI_FORMAT_BC7_UNORM,
+        TextureFormat::Bgra8UnormSrgb => DXGI_FORMAT_B8G8R8A8_UNORM_SRGB,
+        TextureFormat::Rgba8UnormSrgb => DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+        TextureFormat::Bc1RgbaUnormSrgb => DXGI_FORMAT_BC1_UNORM_SRGB,
+        TextureFormat::Bc3RgbaUnormSrgb => DXGI_FORMAT_BC3_UNORM_SRGB,
+        TextureFormat::Bc7RgbaUnormSrgb => DXGI_FORMAT_BC7_UNORM_SRGB,
         // DXGI's 4:4:4:4 and 5:5:5:1 put alpha high and red in the middle,
         // and it has no ETC2 or ASTC: `Caps::sampled` leaves them out, so an
         // image in one is decoded before it is uploaded.
@@ -2825,14 +2846,21 @@ fn dxgi_format(format: TextureFormat) -> DXGI_FORMAT {
         | TextureFormat::Etc2Rgba8Unorm
         | TextureFormat::Astc4x4Unorm
         | TextureFormat::Astc6x6Unorm
-        | TextureFormat::Astc8x8Unorm) => {
+        | TextureFormat::Astc8x8Unorm
+        | TextureFormat::Etc2Rgb8UnormSrgb
+        | TextureFormat::Etc2Rgb8A1UnormSrgb
+        | TextureFormat::Etc2Rgba8UnormSrgb
+        | TextureFormat::Astc4x4UnormSrgb
+        | TextureFormat::Astc6x6UnormSrgb
+        | TextureFormat::Astc8x8UnormSrgb) => {
             panic!("Direct3D 12 samples no {unsampled:?} texture (Caps::sampled)")
         }
     }
 }
 
 /// The formats beyond the baseline `device` samples with filtering: BC on
-/// every feature level 11 device, B5G6R5 where the driver reports it.
+/// every feature level 11 device. Not B5G6R5: it has no sRGB variant to
+/// decode a sample (ADR 0048).
 fn sampled_formats(device: &ID3D12Device) -> SampledFormats {
     let samples = |format: DXGI_FORMAT| {
         let mut support = D3D12_FEATURE_DATA_FORMAT_SUPPORT {
@@ -2853,9 +2881,6 @@ fn sampled_formats(device: &ID3D12Device) -> SampledFormats {
             && (support.Support1.0 & D3D12_FORMAT_SUPPORT1_TEXTURE2D.0) != 0
     };
     let mut sampled = SampledFormats::empty();
-    if samples(DXGI_FORMAT_B5G6R5_UNORM) {
-        sampled |= SampledFormats::RGB565;
-    }
     if [
         DXGI_FORMAT_BC1_UNORM,
         DXGI_FORMAT_BC3_UNORM,

@@ -615,6 +615,7 @@ fn evaluate<'w>(
         CpuTexels::Rgba8 {
             texels: unorm8,
             bgra: fmt.bgra,
+            srgb: fmt.srgb,
         }
     };
     View {

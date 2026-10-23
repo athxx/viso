@@ -22,7 +22,11 @@
 //!   [`INSTANCE_CHUNK`] at a time into a uniform ring, with the chunk's first
 //!   index in `viso_base_instance`;
 //! - **`Bgra8Unorm`** textures are stored `RGBA8` (core GLES has no BGRA
-//!   storage): uploads swap red and blue, rendering needs nothing;
+//!   storage): uploads swap red and blue, rendering needs nothing; the sRGB
+//!   variants are `SRGB8_ALPHA8`, which GLES encodes into and decodes from;
+//! - an 8-bit **window** is created in the sRGB colorspace
+//!   (`EGL_KHR_gl_colorspace`), reporting `Bgra8UnormSrgb`, so the default
+//!   framebuffer encodes what the pipelines write (ADR 0048);
 //! - **texture targets** render with clip-space y negated (`viso_target`), so
 //!   their rows are stored top-down like every other backend's and a sample
 //!   at `v = 0` reads the top; the surface keeps GL's own orientation;
@@ -166,6 +170,8 @@ struct Display {
     pbuffer: EGLSurface,
     buffer_age: bool,
     partial_update: bool,
+    /// Whether a window can be made in the sRGB colorspace.
+    srgb_colorspace: bool,
 }
 
 /// The compiler's own context, current on one thread at a time.
@@ -323,6 +329,7 @@ impl Gles3Backend {
             pbuffer,
             buffer_age: has("EGL_EXT_buffer_age"),
             partial_update: has("EGL_KHR_partial_update"),
+            srgb_colorspace: has("EGL_KHR_gl_colorspace"),
         });
         if !shared.is_null() {
             *self.compile.lock().expect("compile context lock") = Some(CompileContext {
@@ -1166,12 +1173,25 @@ fn texture_format(format: TextureFormat) -> (GLenum, GLenum, GLenum) {
         TextureFormat::Astc4x4Unorm => (GL_COMPRESSED_RGBA_ASTC_4X4_KHR, 0, 0),
         TextureFormat::Astc6x6Unorm => (GL_COMPRESSED_RGBA_ASTC_6X6_KHR, 0, 0),
         TextureFormat::Astc8x8Unorm => (GL_COMPRESSED_RGBA_ASTC_8X8_KHR, 0, 0),
+        TextureFormat::Bgra8UnormSrgb | TextureFormat::Rgba8UnormSrgb => {
+            (GL_SRGB8_ALPHA8, GL_RGBA, GL_UNSIGNED_BYTE)
+        }
+        TextureFormat::Bc1RgbaUnormSrgb => (GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT, 0, 0),
+        TextureFormat::Bc3RgbaUnormSrgb => (GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT, 0, 0),
+        TextureFormat::Bc7RgbaUnormSrgb => (GL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM_EXT, 0, 0),
+        TextureFormat::Etc2Rgb8UnormSrgb => (GL_COMPRESSED_SRGB8_ETC2, 0, 0),
+        TextureFormat::Etc2Rgb8A1UnormSrgb => (GL_COMPRESSED_SRGB8_PUNCHTHROUGH_ALPHA1_ETC2, 0, 0),
+        TextureFormat::Etc2Rgba8UnormSrgb => (GL_COMPRESSED_SRGB8_ALPHA8_ETC2_EAC, 0, 0),
+        TextureFormat::Astc4x4UnormSrgb => (GL_COMPRESSED_SRGB8_ALPHA8_ASTC_4X4_KHR, 0, 0),
+        TextureFormat::Astc6x6UnormSrgb => (GL_COMPRESSED_SRGB8_ALPHA8_ASTC_6X6_KHR, 0, 0),
+        TextureFormat::Astc8x8UnormSrgb => (GL_COMPRESSED_SRGB8_ALPHA8_ASTC_8X8_KHR, 0, 0),
     }
 }
 
-/// The formats beyond the baseline the current context samples: ETC2 and
-/// the packed 16-bit formats are core in OpenGL ES 3.0; ASTC and BC come with
-/// their extensions (BC needs S3TC for BC1/BC3 and BPTC for BC7).
+/// The formats beyond the baseline the current context samples: ETC2 is core
+/// in OpenGL ES 3.0; ASTC and BC come with their extensions (BC needs S3TC
+/// and its sRGB variants for BC1/BC3 and BPTC for BC7). None of the packed
+/// 16-bit ones: they have no sRGB variant to decode a sample (ADR 0048).
 fn sampled_formats(gl: &Gl) -> SampledFormats {
     let mut count = 0;
     // SAFETY: the context is current; the query writes one integer.
@@ -1190,14 +1210,14 @@ fn sampled_formats(gl: &Gl) -> SampledFormats {
         })
         .collect();
     let has = |name: &str| names.iter().any(|n| n == name);
-    let mut sampled = SampledFormats::RGB565
-        | SampledFormats::RGBA4444
-        | SampledFormats::RGBA5551
-        | SampledFormats::ETC2;
+    let mut sampled = SampledFormats::ETC2;
     if has("GL_KHR_texture_compression_astc_ldr") || has("GL_OES_texture_compression_astc") {
         sampled |= SampledFormats::ASTC;
     }
-    if has("GL_EXT_texture_compression_s3tc") && has("GL_EXT_texture_compression_bptc") {
+    if has("GL_EXT_texture_compression_s3tc")
+        && has("GL_EXT_texture_compression_s3tc_srgb")
+        && has("GL_EXT_texture_compression_bptc")
+    {
         sampled |= SampledFormats::BC;
     }
     sampled
@@ -1522,7 +1542,7 @@ impl GpuBackend for Gles3Backend {
             .get(id.into())
             .expect("texture handle does not resolve");
         let (name, format) = (t.name, t.format);
-        let data = if format == TextureFormat::Bgra8Unorm {
+        let data = if format.linear() == TextureFormat::Bgra8Unorm {
             self.swizzle.clear();
             self.swizzle.extend(
                 bytes
@@ -1649,18 +1669,49 @@ impl GpuBackend for Gles3Backend {
             }
             _ => (Native::Pbuffer, std::ptr::null_mut()),
         };
+        let linear = match native {
+            // SAFETY: the platform keeps the scanout alive with its window.
+            Native::Scanout(scanout) => match unsafe { (*scanout).format() } {
+                ScanoutFormat::Xrgb8888 => TextureFormat::Bgra8Unorm,
+                ScanoutFormat::Rgb565 => TextureFormat::Rgb565Unorm,
+            },
+            _ => config_format(egl, d.display, d.config),
+        };
+        // An 8-bit window encodes in the sRGB colorspace where EGL offers it.
+        let format = match linear.srgb() {
+            Some(srgb) if d.srgb_colorspace => srgb,
+            _ => linear,
+        };
+        let colorspace = if format.is_srgb() {
+            [EGL_GL_COLORSPACE_KHR, EGL_GL_COLORSPACE_SRGB_KHR]
+        } else {
+            [EGL_NONE, EGL_NONE]
+        };
         let egl_surface = if matches!(native, Native::Pbuffer) {
-            let attribs = [EGL_WIDTH, w, EGL_HEIGHT, h, EGL_NONE];
+            let attribs = [
+                EGL_WIDTH,
+                w,
+                EGL_HEIGHT,
+                h,
+                colorspace[0],
+                colorspace[1],
+                EGL_NONE,
+            ];
             // SAFETY: a pbuffer of the display's config; attributes
             // terminated.
             unsafe { (egl.eglCreatePbufferSurface)(d.display, d.config, attribs.as_ptr()) }
         } else {
+            let attribs = [
+                colorspace[0] as EGLAttrib,
+                colorspace[1] as EGLAttrib,
+                EGL_NONE as EGLAttrib,
+            ];
             // SAFETY: `window` is the platform's native window for this
             // display (a `wl_egl_window`, an `xcb_window_t*`, an
             // `ANativeWindow`, a `gbm_surface`), alive until the surface is
-            // destroyed.
+            // destroyed; the attribute list is terminated.
             unsafe {
-                (egl.eglCreatePlatformWindowSurface)(d.display, d.config, window, std::ptr::null())
+                (egl.eglCreatePlatformWindowSurface)(d.display, d.config, window, attribs.as_ptr())
             }
         };
         assert!(
@@ -1672,14 +1723,6 @@ impl GpuBackend for Gles3Backend {
             // SAFETY: the platform keeps the scanout alive with its window.
             Native::Scanout(scanout) => (unsafe { (*scanout).turns() }) & 3,
             _ => 0,
-        };
-        let format = match native {
-            // SAFETY: the platform keeps the scanout alive with its window.
-            Native::Scanout(scanout) => match unsafe { (*scanout).format() } {
-                ScanoutFormat::Xrgb8888 => TextureFormat::Bgra8Unorm,
-                ScanoutFormat::Rgb565 => TextureFormat::Rgb565Unorm,
-            },
-            _ => config_format(egl, d.display, d.config),
         };
         let display = d.display;
         self.make_current(egl_surface);

@@ -23,7 +23,7 @@
 
 use std::collections::HashMap;
 
-use viso_gpu::{ColorDomain, TextureFormat, TextureId, f32_to_f16};
+use viso_gpu::{ColorDomain, TextureFormat, TextureId, f32_to_f16, srgb};
 use viso_math::{ExtendMode, InterpolationSpace, LinearStraight, linear_to_srgb, srgb_to_linear};
 
 use crate::primitive::GradientStop;
@@ -130,9 +130,10 @@ pub struct GradientLutAtlas {
 impl GradientLutAtlas {
     /// The format a gradient-LUT texture must be created with for `domain`.
     ///
-    /// An SDR or wide-gamut ramp is 8-bit unorm: its authored stops live inside
-    /// `[0, 1]`, and 256 texels of that range is exactly what [`LUT_WIDTH`] is
-    /// sized for. An HDR ramp is half-float, because the bake quantizes through
+    /// An SDR or wide-gamut ramp is 8-bit sRGB: its authored stops live inside
+    /// `[0, 1]`, 256 texels of that range is exactly what [`LUT_WIDTH`] is
+    /// sized for, and the encoding spends the 8 bits evenly over what the eye
+    /// tells apart, so a dark ramp does not band. An HDR ramp is half-float, because the bake quantizes through
     /// this texel and an unorm one would clamp a stop above 1.0 *before* the
     /// blur/composite chain ever saw it — the one place a gradient could silently
     /// lose the extended range its target can display.
@@ -140,7 +141,7 @@ impl GradientLutAtlas {
         if domain.requires_extended_range() {
             TextureFormat::Rgba16Float
         } else {
-            TextureFormat::Rgba8Unorm
+            TextureFormat::Rgba8UnormSrgb
         }
     }
 
@@ -267,6 +268,11 @@ impl GradientLutAtlas {
                     self.pixels[off + i * 2] = bytes[0];
                     self.pixels[off + i * 2 + 1] = bytes[1];
                 }
+            } else if self.format.is_srgb() {
+                for (i, c) in channels[..3].iter().enumerate() {
+                    self.pixels[off + i] = srgb::encode(*c);
+                }
+                self.pixels[off + 3] = to_u8(premul.a);
             } else {
                 for (i, c) in channels.iter().enumerate() {
                     self.pixels[off + i] = to_u8(*c);
@@ -527,6 +533,23 @@ mod tests {
         assert!((px[0] as i32 - 128).abs() <= 3, "r={}", px[0]);
         assert_eq!(px[1], 0);
         assert!((px[2] as i32 - 128).abs() <= 3, "b={}", px[2]);
+        assert_eq!(px[3], 255);
+    }
+
+    #[test]
+    fn an_srgb_bake_stores_the_midpoint_encoded() {
+        let format = GradientLutAtlas::format_for(ColorDomain::Sdr);
+        assert_eq!(format, TextureFormat::Rgba8UnormSrgb);
+        let mut atlas = GradientLutAtlas::new(1, TextureId::new(0), format);
+        atlas.alloc(key(vec![
+            stop(0.0, 1.0, 0.0, 0.0, 1.0),
+            stop(1.0, 0.0, 0.0, 1.0, 1.0),
+        ]));
+        let mid = (LUT_WIDTH / 2) as usize * BPT as usize;
+        let px = &atlas.pixels()[mid..mid + 4];
+        // Half the light of each is sRGB 188.
+        assert!((px[0] as i32 - 188).abs() <= 2, "r={}", px[0]);
+        assert!((px[2] as i32 - 188).abs() <= 2, "b={}", px[2]);
         assert_eq!(px[3], 255);
     }
 

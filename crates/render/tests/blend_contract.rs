@@ -21,7 +21,7 @@
 //! Everything is asserted through the public surface: `Primitive::Blend` markers
 //! in, `FrameStats` and read-back pixels out.
 
-use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle, SurfaceId, TextureFormat};
+use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle, SurfaceId, TextureFormat, srgb};
 use viso_render::{
     Blend, BlendRealization, Border, ColorEffect, FrameStats, LayerClip, Primitive, Quad, Rect,
     Renderer, Rgba, plan_blend,
@@ -30,8 +30,8 @@ use viso_render::{
 const W: u32 = 64;
 const H: u32 = 64;
 
-/// Per-channel tolerance (in 0..=255) for a pixel comparison: absorbs the unorm
-/// round-trip through two pooled targets, far too small to hide a wrong blend
+/// Per-channel tolerance (in stored sRGB bytes) for a pixel comparison: absorbs
+/// the round-trip through two pooled targets, far too small to hide a wrong blend
 /// function or a destination read that landed at the wrong UV.
 const TOL: i32 = 3;
 
@@ -269,16 +269,17 @@ fn blended(mode: Blend, dst: [f32; 3], src: [f32; 3]) -> [f32; 3] {
     let px = gpu.read_pixels_bgra8(surface);
     let i = ((H / 2) * W + W / 2) as usize * 4;
     [
-        px[i + 2] as f32 / 255.0,
-        px[i + 1] as f32 / 255.0,
-        px[i] as f32 / 255.0,
+        srgb::decode(px[i + 2]),
+        srgb::decode(px[i + 1]),
+        srgb::decode(px[i]),
     ]
 }
 
+/// Compared as the surface stores them: sRGB-encoded bytes.
 fn assert_rgb_close(actual: [f32; 3], expect: [f32; 3], what: &str) {
     for c in 0..3 {
-        let a = (actual[c] * 255.0).round() as i32;
-        let e = (expect[c] * 255.0).round() as i32;
+        let a = i32::from(srgb::encode(actual[c]));
+        let e = i32::from(srgb::encode(expect[c]));
         assert!(
             (a - e).abs() <= TOL,
             "{what}: channel {c} is {a}, expected {e} (±{TOL}); got {actual:?} want {expect:?}"
@@ -557,9 +558,9 @@ fn layer_opacity_enters_the_blend_as_source_alpha() {
     let px = gpu.read_pixels_bgra8(surface);
     let i = ((H / 2) * W + W / 2) as usize * 4;
     let actual = [
-        px[i + 2] as f32 / 255.0,
-        px[i + 1] as f32 / 255.0,
-        px[i] as f32 / 255.0,
+        srgb::decode(px[i + 2]),
+        srgb::decode(px[i + 1]),
+        srgb::decode(px[i]),
     ];
     // co = as*(1-ab)*cs + as*ab*B(cb,cs) + (1-as)*ab*cb, with ab = 1, as = 0.5.
     let expect = [

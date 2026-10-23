@@ -41,7 +41,8 @@
 //!   [`WebGpuBackend::request`].
 //! - **Surfaces are canvases** found by their `data-viso-canvas` attribute
 //!   ([`RawWindowHandle::WebCanvas`]), configured opaque in the adapter's
-//!   preferred format.
+//!   preferred format and drawn through an `-srgb` view of it, which encodes
+//!   what the pipelines write (ADR 0048).
 //! - **Device loss** (the `lost` promise) makes [`begin_frame`](GpuBackend::begin_frame)
 //!   return `None` for good; validation errors surface through
 //!   `uncapturederror` and are counted in [`WebGpuBackend::validation_errors`].
@@ -194,6 +195,8 @@ extern "C" {
     type GpuTexture;
     #[wasm_bindgen(method, js_name = createView)]
     fn create_view(this: &GpuTexture) -> GpuTextureView;
+    #[wasm_bindgen(method, js_name = createView)]
+    fn create_view_with(this: &GpuTexture, desc: &Object) -> GpuTextureView;
     #[wasm_bindgen(method, js_name = destroy)]
     fn destroy_texture(this: &GpuTexture);
 
@@ -1832,6 +1835,17 @@ fn gpu_format(format: TextureFormat) -> &'static str {
         TextureFormat::Astc4x4Unorm => "astc-4x4-unorm",
         TextureFormat::Astc6x6Unorm => "astc-6x6-unorm",
         TextureFormat::Astc8x8Unorm => "astc-8x8-unorm",
+        TextureFormat::Bgra8UnormSrgb => "bgra8unorm-srgb",
+        TextureFormat::Rgba8UnormSrgb => "rgba8unorm-srgb",
+        TextureFormat::Bc1RgbaUnormSrgb => "bc1-rgba-unorm-srgb",
+        TextureFormat::Bc3RgbaUnormSrgb => "bc3-rgba-unorm-srgb",
+        TextureFormat::Bc7RgbaUnormSrgb => "bc7-rgba-unorm-srgb",
+        TextureFormat::Etc2Rgb8UnormSrgb => "etc2-rgb8unorm-srgb",
+        TextureFormat::Etc2Rgb8A1UnormSrgb => "etc2-rgb8a1unorm-srgb",
+        TextureFormat::Etc2Rgba8UnormSrgb => "etc2-rgba8unorm-srgb",
+        TextureFormat::Astc4x4UnormSrgb => "astc-4x4-unorm-srgb",
+        TextureFormat::Astc6x6UnormSrgb => "astc-6x6-unorm-srgb",
+        TextureFormat::Astc8x8UnormSrgb => "astc-8x8-unorm-srgb",
     }
 }
 
@@ -2269,10 +2283,12 @@ impl GpuBackend for WebGpuBackend {
         let context = canvas.get_context("webgpu");
         assert!(!context.is_null(), "the canvas has no WebGPU context");
         let context: GpuCanvasContext = context.unchecked_into();
+        let view = self.preferred.srgb().unwrap_or(self.preferred);
         context
             .configure(&obj(&[
                 ("device", self.device.clone()),
                 ("format", gpu_format(self.preferred).into()),
+                ("viewFormats", arr(&[gpu_format(view).into()]).into()),
                 ("usage", TEXTURE_RENDER_ATTACHMENT.into()),
                 ("alphaMode", "opaque".into()),
             ]))
@@ -2281,7 +2297,7 @@ impl GpuBackend for WebGpuBackend {
             .insert(WebGpuSurface {
                 canvas,
                 context,
-                format: self.preferred,
+                format: view,
                 width: width.max(1),
                 height: height.max(1),
             })
@@ -2321,14 +2337,13 @@ impl GpuBackend for WebGpuBackend {
         }
         self.reclaim_completed();
         self.evict_idle_program_groups();
-        let texture = self.surface(surface).context.get_current_texture().ok()?;
+        let s = self.surface(surface);
+        let texture = s.context.get_current_texture().ok()?;
+        let view = texture.create_view_with(&obj(&[("format", gpu_format(s.format).into())]));
         if let Some(clock) = &mut self.clock {
             clock.stamped = 0;
         }
-        self.acquired = Some(Acquired {
-            surface,
-            view: texture.create_view(),
-        });
+        self.acquired = Some(Acquired { surface, view });
         self.current_epoch = self.current_epoch.next();
         Some(Frame {
             surface,

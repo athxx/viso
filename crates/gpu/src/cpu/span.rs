@@ -11,6 +11,13 @@
 //! - **over:** `d' = sat(s + div255(d * (255 - sa)))` per channel, with
 //!   `div255(x) = (x + 128 + ((x + 128) >> 8)) >> 8`, the exact rounded
 //!   quotient for every product of two bytes.
+//!
+//! An sRGB target runs the scalar kernels at the end instead: a pixel is
+//! decoded to linear light, composited in `f32`, and encoded, its alpha
+//! packed as above (ADR 0048). An opaque source only encodes; a transparent
+//! black one leaves the pixel as it is.
+
+use crate::srgb;
 
 /// The exact rounded `x / 255` for `x <= 255 * 255`.
 #[inline(always)]
@@ -55,6 +62,81 @@ pub(super) fn over_row(dst: &mut [[u8; 4]], src: &[[u8; 4]]) {
     let done = simd::over(dst, src);
     for (d, &s) in dst[done..].iter_mut().zip(&src[done..]) {
         *d = over1(*d, s);
+    }
+}
+
+/// One premultiplied linear color encoded into sRGB bytes, red and blue
+/// swapped for a BGRA target.
+#[inline(always)]
+pub(super) fn encode(c: [f32; 4], bgra: bool) -> [u8; 4] {
+    let e = srgb::encode;
+    let [r, g, b, a] = [e(c[0]), e(c[1]), e(c[2]), pack1(c[3])];
+    if bgra { [b, g, r, a] } else { [r, g, b, a] }
+}
+
+/// sRGB bytes decoded to premultiplied linear color.
+#[inline(always)]
+pub(super) fn decode(d: [u8; 4], bgra: bool) -> [f32; 4] {
+    let [r, g, b, a] = if bgra { [d[2], d[1], d[0], d[3]] } else { d };
+    let dec = srgb::decode;
+    [dec(r), dec(g), dec(b), f32::from(a) / 255.0]
+}
+
+/// `s` over the linear color `d`, both premultiplied.
+#[inline(always)]
+pub(super) fn over_linear(d: [f32; 4], s: [f32; 4]) -> [f32; 4] {
+    let inv = 1.0 - s[3];
+    std::array::from_fn(|c| s[c] + d[c] * inv)
+}
+
+/// Whether `s` leaves what it is drawn over as it is.
+#[inline(always)]
+pub(super) fn clear(s: [f32; 4]) -> bool {
+    s == [0.0; 4]
+}
+
+/// `src` encoded into `out` (equal lengths). A run of one color — a fill —
+/// encodes once.
+pub(super) fn encode_row(src: &[[f32; 4]], out: &mut [[u8; 4]], bgra: bool) {
+    debug_assert_eq!(src.len(), out.len());
+    let mut last: Option<([f32; 4], [u8; 4])> = None;
+    for (o, &s) in out.iter_mut().zip(src) {
+        *o = match last {
+            Some((ls, lo)) if ls == s => lo,
+            _ => {
+                let e = encode(s, bgra);
+                last = Some((s, e));
+                e
+            }
+        };
+    }
+}
+
+/// `src` composited over the sRGB pixels `dst` in linear light (equal
+/// lengths). A pixel drawn as its neighbour was — the same source over the
+/// same destination, or the same opaque source — takes its result, so a fill
+/// over a fill decodes and encodes once a run.
+pub(super) fn over_srgb_row(dst: &mut [[u8; 4]], src: &[[f32; 4]], bgra: bool) {
+    debug_assert_eq!(src.len(), dst.len());
+    // The last source drawn, the pixel it was drawn over, and the result.
+    let mut last: Option<([f32; 4], [u8; 4], [u8; 4])> = None;
+    for (d, &s) in dst.iter_mut().zip(src) {
+        if let Some((ls, ld, lo)) = last
+            && ls == s
+            && (ld == *d || s[3] >= 1.0)
+        {
+            *d = lo;
+            continue;
+        }
+        let under = *d;
+        if s[3] >= 1.0 {
+            *d = encode(s, bgra);
+        } else if !clear(s) {
+            *d = encode(over_linear(decode(under, bgra), s), bgra);
+        } else {
+            continue;
+        }
+        last = Some((s, under, *d));
     }
 }
 

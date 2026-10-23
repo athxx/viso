@@ -221,7 +221,7 @@ pub use viso_gpu_abi::{
     SampledFormats, SamplerDesc, SamplerId, SchemaAttr, ShaderCode, ShaderLang, SurfaceId,
     TextureDesc, TextureFormat, TextureId, f16_to_f32, f32_to_f16, rgb565_to_8,
 };
-pub use viso_gpu_abi::{instance, program, resource, scene};
+pub use viso_gpu_abi::{instance, program, resource, scene, srgb};
 /// Re-exported so consumers of [`GpuBackend::create_surface`] can name the
 /// handle type without depending on `viso-handle` directly.
 pub use viso_handle::RawWindowHandle;

@@ -213,14 +213,15 @@ impl SceneUniforms {
 
     /// The color of a surface point at `world` with the unit normal `normal`,
     /// the texture coordinate `uv` and the instance color `color`
-    /// (premultiplied, the target's encoding), by the uniforms' material:
+    /// (premultiplied linear light), by the uniforms' material:
     /// - lit: hemispheric ambient, Lambert diffuse and Blinn-Phong specular
     ///   from the light;
     /// - unlit: the color as is;
     /// - sprite: the color as is, covering a disc across `uv` that fades
     ///   smoothly to its rim;
     ///
-    /// then fog, all in linear light, encoded back for the target.
+    /// then fog, all in linear light, clamped to `[0, 1]` and premultiplied:
+    /// the target's sRGB format encodes it.
     ///
     /// The scene programs of every backend compute the same expression.
     pub fn shade(
@@ -234,7 +235,7 @@ impl SceneUniforms {
         if a <= 0.0 {
             return [0.0; 4];
         }
-        let base: [f32; 3] = core::array::from_fn(|i| decode(color[i] / a));
+        let base: [f32; 3] = core::array::from_fn(|i| (color[i] / a).max(0.0));
         let to_eye = sub([self.camera[0], self.camera[1], self.camera[2]], world);
         let distance = length(to_eye);
         let fog = 1.0 - (-self.fog[3] * distance).exp();
@@ -265,13 +266,9 @@ impl SceneUniforms {
             }
             base
         };
-        let lit: [f32; 3] = core::array::from_fn(|i| c[i] + (self.fog[i] - c[i]) * fog);
-        [
-            encode(lit[0]) * a,
-            encode(lit[1]) * a,
-            encode(lit[2]) * a,
-            a,
-        ]
+        let lit: [f32; 3] =
+            core::array::from_fn(|i| (c[i] + (self.fog[i] - c[i]) * fog).clamp(0.0, 1.0));
+        [lit[0] * a, lit[1] * a, lit[2] * a, a]
     }
 }
 
@@ -282,18 +279,6 @@ pub fn disc(uv: [f32; 2]) -> f32 {
     let (x, y) = (uv[0] * 2.0 - 1.0, uv[1] * 2.0 - 1.0);
     let t = (1.0 - (x * x + y * y).sqrt()).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
-}
-
-/// An encoded channel in linear light: the 2.2 power the scene programs use.
-#[inline]
-pub fn decode(c: f32) -> f32 {
-    c.max(0.0).powf(2.2)
-}
-
-/// A linear channel encoded for the target, clamped to `[0, 1]`.
-#[inline]
-pub fn encode(c: f32) -> f32 {
-    c.clamp(0.0, 1.0).powf(1.0 / 2.2)
 }
 
 #[inline]

@@ -427,10 +427,11 @@ impl Assets {
                     }
                 }
             };
+            // An image holds sRGB-encoded color: its texture decodes a sample.
             let desc = TextureDesc {
                 width: image.width,
                 height: image.height,
-                format: image.format,
+                format: image.format.srgb().unwrap_or(image.format),
                 render_target: false,
                 label: "asset",
             };

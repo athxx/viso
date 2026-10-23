@@ -182,7 +182,7 @@ fn a_rounded_clip_cuts_its_groups_corners() {
 #[test]
 fn an_rgb565_panel_composites_groups_through_alpha_intermediates() {
     let mut panel = Kit::new(CpuRaster::new(), TextureFormat::Rgb565Unorm);
-    assert_eq!(panel.r.intermediate_format(), TextureFormat::Bgra8Unorm);
+    assert_eq!(panel.r.intermediate_format(), TextureFormat::Bgra8UnormSrgb);
     let group = rect(20.0, 20.0, 60.0, 40.0);
     let green = Rgba::new(0.0, 1.0, 0.0, 1.0);
     let px = panel.draw(&[
@@ -195,13 +195,15 @@ fn an_rgb565_panel_composites_groups_through_alpha_intermediates() {
         let i = ((y * W + x) * 4) as usize;
         [px[i], px[i + 1], px[i + 2], px[i + 3]]
     };
-    // Half green over the clear color, in 565 steps; opaque outside the group.
+    // Half green over the clear color in linear light, sRGB-encoded in 565
+    // steps (green 0.525 is 191, red 0.025 is 44, blue 0.04 is 56); opaque
+    // outside the group, the clear's 0.05 there 63.
     let [b, g, r, a] = at(60, 50);
     assert_eq!(a, 255);
-    assert!((125..=140).contains(&g), "green {g}");
-    assert!(r < 32 && b < 48, "red {r}, blue {b}");
+    assert!((183..=199).contains(&g), "green {g}");
+    assert!(r < 56 && b < 72, "red {r}, blue {b}");
     assert_eq!(at(5, 5)[3], 255);
-    assert!(at(5, 5)[1] < 24);
+    assert!((55..=72).contains(&at(5, 5)[1]), "clear {:?}", at(5, 5));
 }
 
 /// A blitter doing the fills itself, counting them.
