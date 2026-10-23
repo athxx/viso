@@ -686,9 +686,12 @@ fn kind_of(content: Option<&Content>) -> InspectKind {
         None => InspectKind::Container,
         Some(Content::Text { .. }) => InspectKind::Text,
         Some(Content::Image { .. } | Content::Scene { .. }) => InspectKind::Image,
-        Some(Content::Path { .. } | Content::Spinner(_) | Content::PageDots(_)) => {
-            InspectKind::Path
-        }
+        Some(
+            Content::Path { .. }
+            | Content::Spinner(_)
+            | Content::Progress(_)
+            | Content::PageDots(_),
+        ) => InspectKind::Path,
         Some(Content::Shader { .. }) => InspectKind::Shader,
         Some(Content::Asset { .. }) => InspectKind::Asset,
     }

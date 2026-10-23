@@ -487,6 +487,17 @@ const P = {
     else if (!on && el.open) el.close();
   },
   range: (el, v, name) => { el[name] = v === null ? "" : String(v); },
+  // A progress indicator's value, bounds or tint: its fill shows the
+  // value's fraction of its range, and with no value it runs.
+  progress(el, v, name) {
+    if (name === "tint") { el.style.color = v === null ? "" : color(v); return; }
+    const attr = name === "value" ? "aria-valuenow" : "aria-value" + name;
+    if (v === null) el.removeAttribute(attr); else el.setAttribute(attr, String(v));
+    const n = (a, d) => { const s = el.getAttribute(a); return s === null ? d : Number(s); };
+    const min = n("aria-valuemin", 0), max = n("aria-valuemax", 1), now = n("aria-valuenow", null);
+    if (now === null) el.style.removeProperty("--vx-at");
+    else el.style.setProperty("--vx-at", String(max > min ? Math.min(Math.max((now - min) / (max - min), 0), 1) : 0));
+  },
   input: (el, v) => { const s = text(v); if (el.value !== s) el.value = s; },
   placeholder: (el, v) => attr(el, "placeholder", v),
   secure: (el, v) => { el.type = truth(v) ? "password" : "text"; },

@@ -688,6 +688,9 @@ impl Jsx<'_> {
                             refs.push(format!("st.effect(() => show.layer(el, {v}));"));
                         }
                         Prop::Range(name) => attrs.push(format!("{name}={{show.num({v})}}")),
+                        Prop::Progress(name) => refs.push(format!(
+                            "st.effect(() => show.progress(el, {v}, \"{name}\"));"
+                        )),
                         Prop::InputValue => attrs.push(format!("value={{show.text({v})}}")),
                         Prop::Placeholder => attrs.push(format!("placeholder={{show.opt({v})}}")),
                         Prop::Secure => attrs.push(format!(

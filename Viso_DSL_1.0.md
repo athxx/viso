@@ -4994,6 +4994,8 @@ Widget 事件的 Payload 是 Prelude Record：`Toggle`/`CheckBox`/`Disclosure` �
 
 `Toggle` 使用 `checked` 而不是 `on`：`on` 是 View Item 起始位置的 Contextual Keyword，同时 `checked` 与语义状态同名（ADR 0021）。
 
+进度指示：`ProgressBar` 与 `ProgressRing` 显示工作进行到哪里，`Spinner` 只说明工作正在进行；三者都不是交互 Widget，不获得焦点，默认角色为 `progress_indicator`。`ProgressBar`/`ProgressRing` 的 `value: Option<F32> = Option::None` 是 `min: F32 = 0.0`..`max: F32 = 1.0` 内的进度（`PAINT|SEMANTICS`，越界时夹在范围内），`Option::None` 表示时长未知；三者另有 `tint: Option<Color> = Option::None`（Styleable；`PAINT`，`None` 为强调蓝）与 `label: String = ""`（Localizable；没有 `semantics.label` 时的可访问名称）。`ProgressBar` 是一条胶囊形轨道（`tint` 的 24% 不透明度），未指定尺寸时为 160×4dp，从起始边（从右到左时为右边）按 `value` 在范围中的份额填充；`ProgressRing` 是 32dp 的圆环，线宽为边长的十分之一，从顶部顺时针画出份额。`value` 变化时填充以 80 ms 时间常数的指数缓动趋近新值，途中再变化时从当前位置继续，减少动态效果时立即到位；时长未知时条上一段填充按 `cubic-bezier(0.4, 0, 0.2, 1)` 先伸后缩地扫过轨道（1.8 s 一轮），环上一段弧追逐自身绕圈（与 Material 转圈同一曲线），从未知变为已知时填充从零长出。`Spinner` 为 20dp 的系统转圈（Apple 平台为八根辐条、领头辐条每 125 ms 前进一格只改节点旋转，其他平台为追逐的弧），显示时一直转动。运动中的指示器每帧重绘（只标记 `PAINT`），停下的、以及自身或祖先隐藏或完全透明的不唤醒帧，再显示时从原处继续。语义：有 `value` 时报告数值与范围（iOS 读作百分比），无 `value` 时不报告数值，没有增减动作。HTML 导出为 `<div role="progressbar">`，带 `aria-valuemin`/`aria-valuemax` 与有值时的 `aria-valuenow`，填充份额为 CSS 变量 `--vx-at`（`vx-progress` 以 `::before` 宽度、`vx-ring` 以 `conic-gradient` 绘制，`@property` 使其过渡），缺少 `aria-valuenow` 时以 CSS 动画扫过或转动；`vx-spinner` 为转动的渐变环；`tint` 为元素的 `color`；随 State 变化时由页面脚本更新属性与份额。
+
 ### U7.6 NodeRef 动作
 
 Named Node `n` 在同一 Component 的 Action 与 Handler 中以 `n: NodeRef<T>` 可见（§49.1）：
@@ -5040,9 +5042,9 @@ Named Node `n` 在同一 Component 的 Action 与 Handler 中以 `n: NodeRef<T>`
 | `semantics.hidden`        | `Bool`           | `false`                         |
 | `semantics.heading_level` | `Option<U8>`     | `Option::None`                  |
 
-- `Role { group; button; check_box; slider; radio; label; text_field; tab; tab_list; navigation; dialog; status; region; tree; tree_item; heading; image; list; list_item; secure_field; spin_button; menu; menu_item; link; menu_item_check_box; menu_item_radio; menu_bar; separator; list_box; list_option; combo_box; tooltip; table; row; cell; column_header; editable_combo_box; }`；
+- `Role { group; button; check_box; slider; radio; label; text_field; tab; tab_list; navigation; dialog; status; region; tree; tree_item; heading; image; list; list_item; secure_field; spin_button; menu; menu_item; link; menu_item_check_box; menu_item_radio; menu_bar; separator; list_box; list_option; combo_box; tooltip; table; row; cell; column_header; editable_combo_box; progress_indicator; }`；
 - `LiveRegion { off; polite; assertive; }`；
-- 默认角色：`Button` → `button`；`Toggle`、`CheckBox` → `check_box`；`Slider` → `slider`；`TextInput` → `text_field`；`NumberField` → `spin_button`；`Tabs` → `tab_list`，每页为 `tab`；`RadioGroup` 每项为 `radio`；`Text` → `label`；`Modal`、`Sheet` → `dialog`；`Toast` → `status`（隐含 `polite`）；`NavigationStack` → `navigation`；`VirtualList` → `list`；`GameViewport` → `image`；容器 → `group`。
+- 默认角色：`Button` → `button`；`Toggle`、`CheckBox` → `check_box`；`Slider` → `slider`；`TextInput` → `text_field`；`NumberField` → `spin_button`；`Tabs` → `tab_list`，每页为 `tab`；`RadioGroup` 每项为 `radio`；`Text` → `label`；`Modal`、`Sheet` → `dialog`；`Toast` → `status`（隐含 `polite`）；`ProgressBar`、`ProgressRing`、`Spinner` → `progress_indicator`；`NavigationStack` → `navigation`；`VirtualList` → `list`；`GameViewport` → `image`；容器 → `group`。
 
 ### U8.2 规则
 

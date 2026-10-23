@@ -133,14 +133,8 @@ impl Spinner {
         let radius = side * 0.5 - width * 0.5;
         // Turns clockwise from the top.
         let (from, to, arrow) = if self.spinning {
-            let least = width / (TAU * radius);
-            let cycles = self.time / CYCLE;
-            let (k, u) = (cycles.floor(), cycles.fract());
-            let base = k * (REACH - least);
-            let head = base + least + (REACH - least) * fast_out_slow_in((u * 2.0).min(1.0));
-            let tail = base + (REACH - least) * fast_out_slow_in((u * 2.0 - 1.0).max(0.0));
-            let turn = (CYCLE_TURN * cycles + base).fract() - base;
-            (tail + turn, head + turn, 0.0)
+            let (from, to) = chase(self.time, width / (TAU * radius));
+            (from, to, 0.0)
         } else {
             // A pull's reach: the arc starts growing at two fifths of it.
             let grown = ((self.progress.clamp(0.0, 1.0) - 0.4).max(0.0) * 5.0 / 3.0).min(1.0);
@@ -183,6 +177,18 @@ impl Spinner {
     }
 }
 
+/// Where an arc chasing its tail round a ring stands `time` seconds in, at
+/// least `least` long: its tail and head, in turns clockwise from the top.
+pub(crate) fn chase(time: f32, least: f32) -> (f32, f32) {
+    let cycles = time / CYCLE;
+    let (k, u) = (cycles.floor(), cycles.fract());
+    let base = k * (REACH - least);
+    let head = base + least + (REACH - least) * fast_out_slow_in((u * 2.0).min(1.0));
+    let tail = base + (REACH - least) * fast_out_slow_in((u * 2.0 - 1.0).max(0.0));
+    let turn = (CYCLE_TURN * cycles + base).fract() - base;
+    (tail + turn, head + turn)
+}
+
 /// `color` at `alpha` of its opacity.
 fn faded(color: Rgba, alpha: f32) -> Rgba {
     Rgba {
@@ -193,7 +199,7 @@ fn faded(color: Rgba, alpha: f32) -> Rgba {
 
 /// An arc of the circle about `center` of `radius`, from `from` to `to`
 /// (radians clockwise from the top), as cubics of at most a quarter turn.
-fn arc(cmds: &mut Vec<PathCmd>, center: Point, radius: f32, from: f32, to: f32) {
+pub(crate) fn arc(cmds: &mut Vec<PathCmd>, center: Point, radius: f32, from: f32, to: f32) {
     let at = |a: f32| {
         let (sin, cos) = (a - PI * 0.5).sin_cos();
         (sin, cos)
@@ -228,7 +234,7 @@ fn arc(cmds: &mut Vec<PathCmd>, center: Point, radius: f32, from: f32, to: f32) 
 }
 
 /// Material's standard easing, `cubic-bezier(0.4, 0, 0.2, 1)`, at `x`.
-fn fast_out_slow_in(x: f32) -> f32 {
+pub(crate) fn fast_out_slow_in(x: f32) -> f32 {
     let bezier = |p1: f32, p2: f32, t: f32| {
         let u = 1.0 - t;
         3.0 * u * u * t * p1 + 3.0 * u * t * t * p2 + t * t * t
@@ -282,6 +288,11 @@ impl BuildCx<'_> {
         self.store.set_transform_origin(id, Alignment2D::Center);
         self.store.set_hittable(id, false);
         handle
+    }
+
+    /// Spins the spinner `handle` names, as [`NodeStore::set_spinning`].
+    pub fn spin(&mut self, handle: Handle) {
+        self.store.set_spinning(handle.id(), true);
     }
 }
 
@@ -356,15 +367,18 @@ impl NodeStore {
             if !store.spinners.spokes.contains(&(id, chain)) {
                 return;
             }
-            store.set_rotation(id, (step % SPOKES) as f32 * TAU / SPOKES as f32);
+            // Spokes out of sight keep their step without moving.
+            if store.shows(id) {
+                store.set_rotation(id, (step % SPOKES) as f32 * TAU / SPOKES as f32);
+            }
             store.queue_step(id, chain, (step + 1) % SPOKES);
         }));
     }
 
-    /// Whether an arc spins: the frame loop beats while one does.
+    /// Whether an arc that shows spins: the frame loop beats while one does.
     #[inline]
     pub fn is_spinning(&self) -> bool {
-        !self.spinners.arcs.is_empty()
+        self.spinners.arcs.iter().any(|&id| self.shows(id))
     }
 
     /// Advance every spinning arc by a frame of `delta`, repainting it.
@@ -378,7 +392,9 @@ impl NodeStore {
                 self.spinners.arcs.swap_remove(i);
                 continue;
             }
-            self.change_spinner(id, |s| s.time += dt);
+            if self.shows(id) {
+                self.change_spinner(id, |s| s.time += dt);
+            }
         }
     }
 }

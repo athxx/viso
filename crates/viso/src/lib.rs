@@ -1594,6 +1594,7 @@ impl WindowState {
             || self.store.is_transitioning()
             || self.store.is_scroll_moving()
             || self.store.is_spinning()
+            || self.store.is_progressing()
             || self.store.refreshes_due()
             || self.store.snaps_due()
             || self.store.row_gestures_due()
@@ -3800,6 +3801,10 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     if ws.store.is_spinning() {
                         ws.store.tick_spinners(cx.frame_delta());
                     }
+                    // The progress indicators run, or ease to their values.
+                    if ws.store.is_progressing() {
+                        ws.store.tick_progress(cx.frame_delta());
+                    }
                     ws.store.set_dirty_cause(DirtyCause::Other);
                     // Advance the games the window's views run — the ticks
                     // their clocks owe, then their frame hooks — after the dev
@@ -4562,13 +4567,14 @@ pub mod prelude {
         Button, ButtonStyle, CheckBox, CheckBoxStyle, Grid, GridViewStyle, Icon, IconStyle, Image,
         ImageStyle, Label, LabelStyle, Modal, ModalHandle, ModalHandleSlot, ModalStyle, NavHandle,
         NavHandleSlot, NavigationStack, NavigationStackStyle, NumberField, Popup, PopupHandle,
-        PopupHandleSlot, PopupStyle, RadioGroup, RadioStyle, Scroll, ScrollViewStyle, Sheet,
-        SheetDetent, SheetEdge, SheetHandle, SheetHandleSlot, SheetStyle, Slider, SliderStyle,
-        Splitter, SplitterStyle, Tabs, TabsStyle, TextInput, TextInputStyle, Toast, ToastEdge,
-        ToastHandle, ToastHandleSlot, ToastStyle, Toggle, ToggleStyle, View, ViewStyle,
-        VirtualList, VirtualListViewStyle, button, checkbox, grid, icon, image, label, modal,
-        navigation_stack, number_field, popup, radio_group, rich_text, scroll, sheet, slider,
-        splitter, tabs, text_input, toast, toggle, view, virtual_list,
+        PopupHandleSlot, PopupStyle, ProgressIndicator, RadioGroup, RadioStyle, Scroll,
+        ScrollViewStyle, Sheet, SheetDetent, SheetEdge, SheetHandle, SheetHandleSlot, SheetStyle,
+        Slider, SliderStyle, Spinner, Splitter, SplitterStyle, Tabs, TabsStyle, TextInput,
+        TextInputStyle, Toast, ToastEdge, ToastHandle, ToastHandleSlot, ToastStyle, Toggle,
+        ToggleStyle, View, ViewStyle, VirtualList, VirtualListViewStyle, button, checkbox, grid,
+        icon, image, label, modal, navigation_stack, number_field, popup, progress_bar,
+        progress_ring, radio_group, rich_text, scroll, sheet, slider, spinner, splitter, tabs,
+        text_input, toast, toggle, view, virtual_list,
     };
     // The top-level Window control (§68 public application lifecycle): a window
     // is not a node control — it does not enter the UI tree — so it appears as an

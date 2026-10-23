@@ -269,7 +269,7 @@ export enum Role {
     navigation; dialog; status; region; tree; tree_item; heading; list; list_item;
     secure_field; spin_button; menu; menu_item; link; menu_item_check_box; menu_item_radio;
     menu_bar; separator; list_box; list_option; combo_box; tooltip; table; row; cell;
-    column_header; editable_combo_box;
+    column_header; editable_combo_box; progress_indicator;
 }
 
 export record Environment {

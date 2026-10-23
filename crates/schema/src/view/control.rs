@@ -92,11 +92,20 @@ pub enum ControlKind {
     /// carried, then shown following the pointer with its content at its
     /// top start corner.
     DragPreview = 21,
+    /// `ProgressBar`: a track filled from its start as far as its `value`
+    /// stands in `min..=max`; with no value, a stretch of fill sweeps along
+    /// it while work of unknown length runs.
+    Progress = 22,
+    /// `ProgressRing`: a ring drawn round clockwise from the top as far as
+    /// its `value` stands; with no value, an arc chases round it.
+    Ring = 23,
+    /// `Spinner`: the system's spinner, turning while it shows.
+    Spinner = 24,
 }
 
 impl ControlKind {
     /// Every kind, by discriminant.
-    pub const ALL: [ControlKind; 22] = [
+    pub const ALL: [ControlKind; 25] = [
         ControlKind::Check,
         ControlKind::Slider,
         ControlKind::Select,
@@ -119,6 +128,9 @@ impl ControlKind {
         ControlKind::ReorderHandle,
         ControlKind::Sheet,
         ControlKind::DragPreview,
+        ControlKind::Progress,
+        ControlKind::Ring,
+        ControlKind::Spinner,
     ];
 
     /// The kind native widget `widget` is.
@@ -145,6 +157,9 @@ impl ControlKind {
             "SwipeActions" => ControlKind::SwipeActions,
             "ReorderHandle" => ControlKind::ReorderHandle,
             "DragPreview" => ControlKind::DragPreview,
+            "ProgressBar" => ControlKind::Progress,
+            "ProgressRing" => ControlKind::Ring,
+            "Spinner" => ControlKind::Spinner,
             _ => ControlKind::Plain,
         }
     }
@@ -175,6 +190,9 @@ impl ControlKind {
                 | ControlKind::SwipeRow
                 | ControlKind::SwipeActions
                 | ControlKind::DragPreview
+                | ControlKind::Progress
+                | ControlKind::Ring
+                | ControlKind::Spinner
         )
     }
 
@@ -184,7 +202,12 @@ impl ControlKind {
         self.responds()
             || matches!(
                 self,
-                ControlKind::SwipeRow | ControlKind::SwipeActions | ControlKind::DragPreview
+                ControlKind::SwipeRow
+                    | ControlKind::SwipeActions
+                    | ControlKind::DragPreview
+                    | ControlKind::Progress
+                    | ControlKind::Ring
+                    | ControlKind::Spinner
             )
     }
 
@@ -328,7 +351,20 @@ impl ControlKind {
             (ControlKind::TextInput, "multiline") => ControlInput::Multiline,
             (ControlKind::TextInput, "input") => ControlInput::InputKind,
             (ControlKind::TextInput, "max_length") => ControlInput::MaxLength,
-            (ControlKind::Check | ControlKind::Switch, "label") => ControlInput::Caption,
+            (ControlKind::Progress | ControlKind::Ring, "value") => ControlInput::Value,
+            (ControlKind::Progress | ControlKind::Ring, "min") => ControlInput::Min,
+            (ControlKind::Progress | ControlKind::Ring, "max") => ControlInput::Max,
+            (ControlKind::Progress | ControlKind::Ring | ControlKind::Spinner, "tint") => {
+                ControlInput::Tint
+            }
+            (
+                ControlKind::Check
+                | ControlKind::Switch
+                | ControlKind::Progress
+                | ControlKind::Ring
+                | ControlKind::Spinner,
+                "label",
+            ) => ControlInput::Caption,
             (ControlKind::Slider | ControlKind::Number, "min") => ControlInput::Min,
             (ControlKind::Slider | ControlKind::Number, "max") => ControlInput::Max,
             (ControlKind::Slider | ControlKind::Number, "step") => ControlInput::Step,
@@ -373,6 +409,9 @@ impl ControlKind {
             ControlKind::ReorderHandle => "ReorderHandle",
             ControlKind::Sheet => "Sheet",
             ControlKind::DragPreview => "DragPreview",
+            ControlKind::Progress => "Progress",
+            ControlKind::Ring => "Ring",
+            ControlKind::Spinner => "Spinner",
         }
     }
 
@@ -399,6 +438,7 @@ pub fn widget_role(widget: &str) -> Option<Role> {
         "NavigationStack" => Role::Navigation,
         "Modal" | "Sheet" => Role::Dialog,
         "Toast" => Role::Status,
+        "ProgressBar" | "ProgressRing" | "Spinner" => Role::ProgressIndicator,
         _ => return None,
     })
 }
@@ -443,6 +483,7 @@ pub fn source_role(variant: &str) -> Option<Role> {
         "cell" => Role::Cell,
         "column_header" => Role::ColumnHeader,
         "editable_combo_box" => Role::EditableComboBox,
+        "progress_indicator" => Role::ProgressIndicator,
         _ => return None,
     })
 }
@@ -453,7 +494,7 @@ pub fn source_name(role: Role) -> &'static str {
 }
 
 /// Every variant [`source_role`] takes, in the order of [`Role::ALL`].
-pub const SOURCE_ROLES: [&str; 37] = [
+pub const SOURCE_ROLES: [&str; 38] = [
     "group",
     "button",
     "check_box",
@@ -491,6 +532,7 @@ pub const SOURCE_ROLES: [&str; 37] = [
     "cell",
     "column_header",
     "editable_combo_box",
+    "progress_indicator",
 ];
 
 /// A layout property a node's value sets as the view's values change: one

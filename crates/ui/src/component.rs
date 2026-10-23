@@ -784,6 +784,8 @@ pub struct NodeStore {
     pub(crate) refreshers: crate::refresh::Refreshers,
     /// Cold: the spinners that spin.
     pub(crate) spinners: crate::spinner::Spinners,
+    /// Cold: the progress indicators that move.
+    pub(crate) progresses: crate::progress::Progresses,
     /// Cold: the nodes pinned at their viewport's start edge.
     pub(crate) stickies: crate::sticky::Stickies,
     /// Cold: the viewports that snap to their items.
@@ -935,6 +937,7 @@ impl NodeStore {
         self.bars.clear();
         self.refreshers.clear();
         self.spinners.clear();
+        self.progresses.clear();
         self.stickies.clear();
         self.snaps.clear();
         self.actives.clear();
@@ -2939,6 +2942,18 @@ impl NodeStore {
         }
     }
 
+    /// Node `id`'s progress indicator, to change in place; the caller marks
+    /// it.
+    pub(crate) fn progress_mut(&mut self, id: NodeId) -> Option<&mut crate::progress::Progress> {
+        if !self.arena.is_live(id) {
+            return None;
+        }
+        match self.content_payload[id.index() as usize].as_deref_mut() {
+            Some(Content::Progress(progress)) => Some(progress),
+            _ => None,
+        }
+    }
+
     /// Node `id`'s spinner, to change in place; the caller marks it.
     pub(crate) fn spinner_mut(&mut self, id: NodeId) -> Option<&mut crate::spinner::Spinner> {
         if !self.arena.is_live(id) {
@@ -3724,6 +3739,23 @@ impl NodeStore {
     #[inline]
     pub fn hidden(&self, id: NodeId) -> bool {
         self.concealed(id.index() as usize)
+    }
+
+    /// Whether node `id` shows: live, and neither it nor an ancestor hidden
+    /// or fully transparent. What runs only to be seen — a spinner, a
+    /// progress indicator's sweep — stops beating frames while it does not.
+    pub fn shows(&self, id: NodeId) -> bool {
+        if !self.arena.is_live(id) {
+            return false;
+        }
+        let mut at = Some(id);
+        while let Some(node) = at {
+            if self.hidden(node) || self.opacity(node) <= 0.0 {
+                return false;
+            }
+            at = self.arena.parent(node);
+        }
+        true
     }
 
     /// Whether the slot `i` is out of layout and paint.
@@ -5045,6 +5077,7 @@ impl NodeStore {
         self.bars.forget(i as u32);
         self.refreshers.forget(i as u32);
         self.spinners.forget(i as u32);
+        self.progresses.forget(i as u32);
         self.stickies.forget(i as u32);
         self.snaps.forget(i as u32);
         self.actives.forget(i as u32);

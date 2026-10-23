@@ -500,11 +500,16 @@ fn paint_own(store: &NodeStore, node: NodeId, world: Rect, out: &mut Vec<Primiti
             }
             marks.ring
         } else {
-            let mask = (radius > 0.0).then_some(RoundMask {
-                rect: world,
-                radius: Corners::uniform(radius),
-            });
-            paint_content(content, world, mask, store.access_cues(), out);
+            if let Content::Progress(progress) = content {
+                let rtl = store.layout_direction(node) == crate::adaptive::LayoutDirection::Rtl;
+                progress.paint(world, rtl, out);
+            } else {
+                let mask = (radius > 0.0).then_some(RoundMask {
+                    rect: world,
+                    radius: Corners::uniform(radius),
+                });
+                paint_content(content, world, mask, store.access_cues(), out);
+            }
             false
         };
         let link = store
@@ -814,6 +819,7 @@ pub(crate) fn paint_content(
             ..
         } => paint_asset(draw, *natural, *fit, *tint, world, mask, out),
         Content::Spinner(spinner) => spinner.paint(world, out),
+        Content::Progress(progress) => progress.paint(world, false, out),
         Content::PageDots(dots) => dots.paint(world, out),
     }
 }

@@ -307,6 +307,7 @@ export const show = {
   italic: (v) => (Number(v ?? 0n) === 1 ? "italic" : undefined),
   spans: pieces,
   number: P.number,
+  progress: P.progress,
   maskSize: (v) => {
     const fit = fits[Number(v ?? 0n)] || "contain";
     return fit === "fill" ? "100% 100%" : fit;

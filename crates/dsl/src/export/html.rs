@@ -149,6 +149,9 @@ pub(super) enum Prop {
     },
     /// A slider's `value`, `min`, `max` or `step`.
     Range(&'static str),
+    /// A progress indicator's `value`, `min` or `max`: its `aria-value*`,
+    /// and the fraction `--vx-at` its fill shows; with no value it runs.
+    Progress(&'static str),
     InputValue,
     /// A text field's `placeholder` attribute.
     Placeholder,
@@ -555,6 +558,9 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             (_, "TextInput" | "NumberField") => "vx-input",
             (_, "Toggle" | "CheckBox") => "vx-check",
             (_, "Slider") => "vx-range",
+            (_, "ProgressBar") => "vx-progress",
+            (_, "ProgressRing") => "vx-ring",
+            (_, "Spinner") => "vx-spinner",
             (_, "Image" | "Svg") if masked => "vx-mask",
             (_, "Image" | "Svg") => "vx-image",
             _ => "vx-leaf",
@@ -613,6 +619,10 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 el.attr("max", "1");
                 el.attr("step", "any");
                 el.attr("value", "0");
+            }
+            "ProgressBar" | "ProgressRing" => {
+                el.attr("aria-valuemin", "0");
+                el.attr("aria-valuemax", "1");
             }
             _ => {}
         }
@@ -1092,6 +1102,86 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         }
     }
 
+    /// Writes a progress indicator's value and bounds as `aria-value*`, the
+    /// fraction its fill shows as `--vx-at`, its tint as its `color` and its
+    /// label as its `aria-label`. With no value it has no `aria-valuenow`,
+    /// which its rule shows running.
+    fn progress(
+        &mut self,
+        control: &Control,
+        el: &mut Element,
+        decls: &mut Vec<(&'static str, String)>,
+        wires: &mut Vec<Wire>,
+        at: TextRange,
+    ) {
+        let mut fixed = [Some(0.0), Some(1.0), None];
+        let mut changes = false;
+        for (i, (entry, name, attr, what)) in [
+            (
+                control.min,
+                "min",
+                "aria-valuemin",
+                "the progress's minimum",
+            ),
+            (
+                control.max,
+                "max",
+                "aria-valuemax",
+                "the progress's maximum",
+            ),
+            (
+                control.value,
+                "value",
+                "aria-valuenow",
+                "the progress's value",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if entry.is_none() {
+                continue;
+            }
+            match self.bind(wires, entry, Prop::Progress(name), what, at) {
+                Some(f) => {
+                    fixed[i] = f.float();
+                    if let Some(v) = fixed[i] {
+                        el.attr(attr, &css::number(v));
+                    }
+                }
+                None => changes = true,
+            }
+        }
+        // The script keeps the fraction of any that change.
+        if let ([Some(min), Some(max), Some(value)], false) = (fixed, changes) {
+            let span = max - min;
+            let at = if span > 0.0 {
+                ((value - min) / span).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            decls.push(("--vx-at", css::number(at)));
+        }
+        // No tint keeps the theme's accent.
+        if let Some(Fixed::Value(tint)) =
+            self.bind(wires, control.tint, Prop::Progress("tint"), "the tint", at)
+            && tint.as_int().is_some()
+        {
+            decls.push(("color", Fixed::Value(tint).color()));
+        }
+        if control.semantics.label.is_none()
+            && let Some(fixed) = self.bind(
+                wires,
+                control.caption,
+                Prop::Label { alt: false },
+                "the label",
+                at,
+            )
+        {
+            el.attr("aria-label", &fixed.text());
+        }
+    }
+
     /// Writes a number field's number, its bounds, its step and the places
     /// it shows: the keyboard and pattern of what it holds, its bounds as
     /// `aria-valuemin`/`aria-valuemax`, and its step and places as
@@ -1356,6 +1446,9 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                         el.attr(name, &fixed.text());
                     }
                 }
+            }
+            ControlKind::Progress | ControlKind::Ring | ControlKind::Spinner => {
+                self.progress(control, el, decls, wires, at);
             }
             ControlKind::Viewer => {
                 for (entry, name, what) in [
@@ -2715,6 +2808,7 @@ fn aria_role(role: Role, tag: &str, widget: &str) -> Option<&'static str> {
         (Role::Row, ..) => "row",
         (Role::Cell, ..) => "cell",
         (Role::ColumnHeader, ..) => "columnheader",
+        (Role::ProgressIndicator, ..) => "progressbar",
     })
 }
 

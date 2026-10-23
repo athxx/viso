@@ -182,7 +182,7 @@ Rules:
 
 ## W9 — Widgets
 
-- [ ] `ProgressBar` (determinate/indeterminate), `ProgressRing`, `Spinner`.
+- [x] `ProgressBar` (determinate/indeterminate), `ProgressRing`, `Spinner`.
 - [ ] `Stepper`, `SegmentedControl`, `Chip` (filter/input), `Badge`, `Avatar`,
   `LinkLabel`.
 - [ ] `SearchField` with suggestions (built on W4 placement).

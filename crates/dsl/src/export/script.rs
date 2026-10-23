@@ -322,6 +322,9 @@ fn mount(out: &mut String, index: usize, content: &Content, eval: &Eval<'_>, roo
                         Prop::Open => format!("P.open({el}, {value})"),
                         Prop::Layer { .. } => format!("P.layer({el}, {value})"),
                         Prop::Range(name) => format!("P.range({el}, {value}, \"{name}\")"),
+                        Prop::Progress(name) => {
+                            format!("P.progress({el}, {value}, \"{name}\")")
+                        }
                         Prop::InputValue => format!("P.input({el}, {value})"),
                         Prop::Placeholder => format!("P.placeholder({el}, {value})"),
                         Prop::Secure => format!("P.secure({el}, {value})"),

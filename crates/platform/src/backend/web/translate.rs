@@ -382,6 +382,7 @@ pub(crate) fn aria_role(role: SemanticsRole) -> Option<&'static str> {
         R::Row => "row",
         R::Cell => "cell",
         R::ColumnHeader => "columnheader",
+        R::ProgressIndicator => "progressbar",
         R::Window | R::Container | R::Label => return None,
     })
 }
@@ -712,6 +713,10 @@ mod tests {
     #[test]
     fn the_mirror_speaks_aria() {
         assert_eq!(aria_role(SemanticsRole::Slider), Some("slider"));
+        assert_eq!(
+            aria_role(SemanticsRole::ProgressIndicator),
+            Some("progressbar")
+        );
         assert_eq!(aria_role(SemanticsRole::Container), None);
         assert_eq!(aria_role(SemanticsRole::Label), None);
         assert!(named_by_content(SemanticsRole::Label) && !named_by_content(SemanticsRole::Button));

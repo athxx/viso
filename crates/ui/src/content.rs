@@ -151,6 +151,8 @@ pub enum Content {
     Spinner(crate::spinner::Spinner),
     /// Page dots: a snapping viewport's items, the one it rests on lit.
     PageDots(crate::page_dots::PageDots),
+    /// A progress indicator: how far work has come.
+    Progress(crate::progress::Progress),
 }
 
 /// An image a brush node samples: the resource its texture parameter names,
@@ -182,6 +184,7 @@ impl Content {
             | Content::Path { natural, .. }
             | Content::Asset { natural, .. } => *natural,
             Content::Spinner(spinner) => spinner.natural,
+            Content::Progress(progress) => progress.natural,
             Content::PageDots(dots) => dots.natural(),
             Content::Shader { .. } | Content::Scene { .. } => Vec2::ZERO,
         }
@@ -197,6 +200,7 @@ impl Content {
             | Content::Path { natural, .. }
             | Content::Asset { natural, .. } => natural.x,
             Content::Spinner(spinner) => spinner.natural.x,
+            Content::Progress(progress) => progress.natural.x,
             Content::PageDots(dots) => dots.natural().x,
             Content::Shader { .. } | Content::Scene { .. } => 0.0,
         }
@@ -215,6 +219,7 @@ impl Content {
             | Content::Shader { .. }
             | Content::Scene { .. }
             | Content::Spinner(_)
+            | Content::Progress(_)
             | Content::PageDots(_) => None,
         }
     }

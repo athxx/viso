@@ -197,6 +197,23 @@ const SLIDER: &[WidgetProperty] = &[
     prop("step", "Option<F32>"),
 ];
 
+/// A `ProgressBar`'s or `ProgressRing`'s `value` within `min..=max`, none
+/// while work of unknown length runs; its fill's `tint` and the `label` it is
+/// named by.
+const PROGRESS: &[WidgetProperty] = &[
+    prop("value", "Option<F32>"),
+    prop("min", "F32"),
+    prop("max", "F32"),
+    look("tint", "Option<Color>"),
+    prop("label", "String").localizable(),
+];
+
+/// A `Spinner`'s `tint` and the `label` it is named by.
+const SPINNER: &[WidgetProperty] = &[
+    look("tint", "Option<Color>"),
+    prop("label", "String").localizable(),
+];
+
 /// The parameters of the brush shader painting a `ShaderView`'s box.
 const SHADER_VIEW: &[WidgetProperty] = &[prop("shader", "Shader")];
 
@@ -565,6 +582,21 @@ pub const STANDARD: &[NativeWidget] = &[
         &[IMAGE, LAYOUT, TRANSFORM, FOCUS],
     ),
     layout("Svg", WidgetNode::Leaf, &[SVG, LAYOUT, TRANSFORM, FOCUS]),
+    layout(
+        "ProgressBar",
+        WidgetNode::Leaf,
+        &[PROGRESS, LAYOUT, TRANSFORM, FOCUS],
+    ),
+    layout(
+        "ProgressRing",
+        WidgetNode::Leaf,
+        &[PROGRESS, LAYOUT, TRANSFORM, FOCUS],
+    ),
+    layout(
+        "Spinner",
+        WidgetNode::Leaf,
+        &[SPINNER, LAYOUT, TRANSFORM, FOCUS],
+    ),
     layout(
         "ShaderView",
         WidgetNode::Leaf,

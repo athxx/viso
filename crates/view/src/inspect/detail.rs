@@ -399,6 +399,12 @@ fn groups(store: &NodeStore, id: NodeId) -> Vec<PropertyGroup> {
             add(&mut content, "look", format!("{:?}", spinner.look));
             add(&mut content, "spinning", spinner.spinning.to_string());
         }
+        Some(Content::Progress(progress)) => {
+            add(&mut content, "kind", "progress".into());
+            add(&mut content, "shape", format!("{:?}", progress.shape));
+            let value = progress.value.map_or("none".into(), number);
+            add(&mut content, "value", value);
+        }
         Some(Content::PageDots(dots)) => {
             add(&mut content, "kind", "page_dots".into());
             add(&mut content, "count", dots.count.to_string());

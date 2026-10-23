@@ -1942,3 +1942,47 @@ fn a_drag_source_and_a_drop_target_export_to_the_browser_s_drag_and_drop() {
         "the drop hands over its text as its kind, and the source hears it copied: {dom}"
     );
 }
+
+const PROGRESS: &str = r##"
+export component Progress {
+    state done: Option<F32> = Option::None;
+    view {
+        Column {
+            ProgressBar { value: Option::Some(30.0); max: 120.0; label: "Uploading"; tint: Option::Some(#ff0000); }
+            ProgressRing { label: "Syncing"; }
+            ProgressBar { value: done; on click { done = Option::Some(0.5); } semantics.label: "Saving"; }
+            Spinner {}
+        }
+    }
+}
+"##;
+
+#[test]
+fn progress_exports_as_a_progressbar_whose_fill_is_its_fraction() {
+    let page = export(PROGRESS, false).unwrap();
+    let index = &page.index;
+    assert!(
+        index.contains(
+            "class=\"vx-progress s1\" aria-valuemin=\"0\" aria-valuemax=\"120\" role=\"progressbar\" aria-valuenow=\"30\" aria-label=\"Uploading\""
+        ),
+        "{index}"
+    );
+    assert!(
+        index.contains("class=\"vx-ring s2\" aria-valuemin=\"0\" aria-valuemax=\"1\" role=\"progressbar\" aria-label=\"Syncing\""),
+        "{index}"
+    );
+    assert!(
+        index.contains("class=\"vx-spinner s2\" role=\"progressbar\""),
+        "{index}"
+    );
+    let css = &page.styles;
+    assert!(css.contains("--vx-at: 0.25;"), "{css}");
+    assert!(css.contains("color: #ff0000;"), "{css}");
+    assert!(
+        css.contains(".vx-progress:not([aria-valuenow])::before"),
+        "{css}"
+    );
+    let script = page.script.as_deref().unwrap();
+    assert!(script.contains("P.progress("), "{script}");
+    assert!(script.contains("\"value\")"), "{script}");
+}

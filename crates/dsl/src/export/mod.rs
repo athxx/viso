@@ -352,6 +352,22 @@ dialog.vx-layer:not([open]), .vx-layer[hidden] { display: none; }
 .vx-toast { pointer-events: none; }
 .vx-toast > * { pointer-events: auto; }
 .vx-mask { display: block; mask: center / contain no-repeat; -webkit-mask: center / contain no-repeat; }
+.vx-progress, .vx-ring, .vx-spinner { color: var(--colors-primary); }
+.vx-progress { width: 160px; height: 4px; }
+.vx-ring { width: 32px; height: 32px; }
+.vx-spinner { width: 20px; height: 20px; }
+.vx-progress { position: relative; overflow: hidden; border-radius: 9999px; background: color-mix(in srgb, currentColor 20%, transparent); }
+.vx-progress::before { content: \"\"; position: absolute; inset-block: 0; inset-inline-start: 0; width: calc(var(--vx-at, 0) * 100%); border-radius: inherit; background: currentColor; transition: width 250ms cubic-bezier(0.33, 1, 0.68, 1); }
+.vx-progress:not([aria-valuenow])::before { width: 40%; animation: vx-sweep 1.6s cubic-bezier(0.4, 0, 0.2, 1) infinite; }
+.vx-progress:not([aria-valuenow]):dir(rtl)::before { animation-direction: reverse; }
+.vx-ring, .vx-spinner { border-radius: 50%; mask: radial-gradient(farthest-side, transparent calc(80% - 0.5px), #000 80%); -webkit-mask: radial-gradient(farthest-side, transparent calc(80% - 0.5px), #000 80%); }
+.vx-ring { background: conic-gradient(currentColor calc(var(--vx-at, 0) * 1turn), color-mix(in srgb, currentColor 20%, transparent) 0); transition: --vx-at 250ms cubic-bezier(0.33, 1, 0.68, 1); }
+.vx-ring:not([aria-valuenow]) { background: conic-gradient(currentColor 0.27turn, color-mix(in srgb, currentColor 20%, transparent) 0); animation: vx-turn 1.2s linear infinite; }
+.vx-spinner { background: conic-gradient(transparent 0.1turn, currentColor); animation: vx-turn 0.9s linear infinite; }
+@property --vx-at { syntax: \"<number>\"; inherits: false; initial-value: 0; }
+@keyframes vx-sweep { from { inset-inline-start: -40%; } to { inset-inline-start: 100%; } }
+@keyframes vx-turn { to { transform: rotate(1turn); } }
+@media (prefers-reduced-motion: reduce) { .vx-progress::before, .vx-ring { transition: none; } }
 ";
 
 fn styles(page: &html::Lowered) -> String {

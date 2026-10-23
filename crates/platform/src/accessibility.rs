@@ -96,6 +96,9 @@ pub enum SemanticsRole {
     ColumnHeader,
     /// A text field that opens a list box of suggestions for it.
     EditableComboBox,
+    /// How far work has come: its value within its range, or none while
+    /// work of unknown length runs.
+    ProgressIndicator,
 }
 
 /// How an assistive technology announces a change to a node's content.

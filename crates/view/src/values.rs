@@ -29,14 +29,15 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use viso_behavior::{Fault, FaultKind, Value};
+use viso_ui::content::Content;
 use viso_ui::resource::{ResourceId, ResourceRevision};
 use viso_ui::shader::BrushProgram;
 use viso_ui::{Alignment2D, BoundSize, LayoutValue, LengthTerms};
 use viso_ui::{
     AssetFit, Border, BuildCx, CheckMark, CheckShape, CursorIcon, Easing, FieldLook, FieldSeed,
     FontSize, InputKind, LiveRegion, LookValue, NodeId, NodeStore, NumberFormat, PageTransition,
-    Rgba, Role, SemanticState, Semantics, Shadow, Srgb, StateId, StructureCx, TextRequest, Timing,
-    Vec2, focus_node, number_kind,
+    ProgressShape, Rgba, Role, SemanticState, Semantics, Shadow, Spinner, SpinnerLook, Srgb,
+    StateId, StructureCx, TextRequest, Timing, Vec2, focus_node, number_kind,
 };
 
 use crate::control::{Control, ControlInput, ControlKind, Holds, LayoutSlot, Switched, When};
@@ -65,6 +66,20 @@ const COLOR: Rgba = Rgba {
     b: 0.06,
     a: 1.0,
 };
+
+/// The fill of a progress indicator or spinner that binds no `tint`.
+const ACCENT: Rgba = Rgba {
+    r: 0.22,
+    g: 0.45,
+    b: 0.85,
+    a: 1.0,
+};
+
+/// The size a progress bar, a progress ring and a spinner measure to where
+/// their layout gives none, in logical pixels.
+const BAR: Vec2 = Vec2 { x: 160.0, y: 4.0 };
+const RING: Vec2 = Vec2 { x: 32.0, y: 32.0 };
+const SPINNER: f32 = 20.0;
 
 /// Delivers the value each node of `nodes` shows, then registers one structure
 /// hook that re-delivers, on a frame changing cells they read, the values of
@@ -596,7 +611,14 @@ impl Shown {
                     Some((text, _)) => Some(text.as_str()),
                     None => value.as_str(),
                 },
-                (None, ControlKind::Check | ControlKind::Switch) => caption.as_str(),
+                (
+                    None,
+                    ControlKind::Check
+                    | ControlKind::Switch
+                    | ControlKind::Progress
+                    | ControlKind::Ring
+                    | ControlKind::Spinner,
+                ) => caption.as_str(),
                 (None, _) => None,
             };
             let role = match semantics.role.unwrap_or_default() {
@@ -1043,6 +1065,39 @@ impl Shown {
                     ..SemanticState::default()
                 };
                 store.set_semantic_state(self.node, state);
+            }
+            // A progress indicator with no value runs; one with a value
+            // shows its fraction of `min..=max`.
+            ControlKind::Progress | ControlKind::Ring => {
+                let (lo, hi) = (float(min, 0.0), float(max, 1.0));
+                let at = value
+                    .as_float()
+                    .map(|v| (v as f32).clamp(lo.min(hi), hi.max(lo)));
+                let state = SemanticState {
+                    value: at,
+                    range: at.map(|_| (lo, hi)),
+                    ..SemanticState::default()
+                };
+                store.set_semantic_state(self.node, state);
+                let fraction = at.map(|v| if hi > lo { (v - lo) / (hi - lo) } else { 0.0 });
+                let (shape, natural) = match control.kind {
+                    ControlKind::Progress => (ProgressShape::Bar, BAR),
+                    _ => (ProgressShape::Ring, RING),
+                };
+                let ink = tint.as_int().map_or(ACCENT, |_| color(tint));
+                store.set_progress(self.node, shape, natural, ink, fraction);
+            }
+            // A spinner turns while it shows.
+            ControlKind::Spinner => {
+                let ink = tint.as_int().map_or(ACCENT, |_| color(tint));
+                if store.spinner(self.node).is_none() {
+                    let spinner = Spinner::new(SpinnerLook::native(), SPINNER, ink);
+                    store.set_content_payload(self.node, Content::Spinner(spinner));
+                    store.set_transform_origin(self.node, Alignment2D::Center);
+                    store.set_spinning(self.node, true);
+                } else {
+                    store.set_spinner_color(self.node, ink);
+                }
             }
             ControlKind::Select => select(store, self.node, value.as_int().unwrap_or(0)),
             ControlKind::Disclosure => {

@@ -163,11 +163,14 @@ pub enum Role {
     /// for it, announcing whether it is `expanded` (WAI-ARIA `role=combobox`
     /// on a text input).
     EditableComboBox,
+    /// A progress indicator: how far work has come, its value within its
+    /// range, or that work runs whose end is unknown, with no value.
+    ProgressIndicator,
 }
 
 impl Role {
     /// Every role, in declaration order.
-    pub const ALL: [Role; 37] = [
+    pub const ALL: [Role; 38] = [
         Role::Group,
         Role::Button,
         Role::CheckBox,
@@ -205,6 +208,7 @@ impl Role {
         Role::Cell,
         Role::ColumnHeader,
         Role::EditableComboBox,
+        Role::ProgressIndicator,
     ];
 
     /// The role whose [`label`](Self::label) is `label`.
@@ -254,6 +258,7 @@ impl Role {
             Role::Cell => "cell",
             Role::ColumnHeader => "columnheader",
             Role::EditableComboBox => "editablecombobox",
+            Role::ProgressIndicator => "progressindicator",
         }
     }
 }

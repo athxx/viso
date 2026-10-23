@@ -772,14 +772,21 @@ impl<'a, 'l> Lowering<'a, 'l> {
         }
         // A scene has no intrinsic size: a viewport fills what it is given
         // on each axis it does not size.
-        if type_name == "GameViewport" {
+        // A progress indicator or spinner measures to its natural size on
+        // each axis it does not size.
+        let default = match type_name.as_str() {
+            "GameViewport" => Some(LengthIr::Fill { weight: 1.0 }),
+            "ProgressBar" | "ProgressRing" | "Spinner" => Some(LengthIr::Fit),
+            _ => None,
+        };
+        if let Some(default) = default {
             let lengths = style.lengths.as_deref();
             if style.width.is_none() && lengths.is_none_or(|l| l.width.is_none()) {
-                style.width = Some(LengthIr::Fill { weight: 1.0 });
+                style.width = Some(default);
             }
             let lengths = style.lengths.as_deref();
             if style.height.is_none() && lengths.is_none_or(|l| l.height.is_none()) {
-                style.height = Some(LengthIr::Fill { weight: 1.0 });
+                style.height = Some(default);
             }
         }
         style.settle_rules(&laid_slots(&laid));

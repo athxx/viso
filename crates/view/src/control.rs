@@ -86,7 +86,10 @@ impl Drive for Control {
             | ControlKind::SwipeRow
             | ControlKind::SwipeActions
             | ControlKind::ReorderHandle
-            | ControlKind::DragPreview => None,
+            | ControlKind::DragPreview
+            | ControlKind::Progress
+            | ControlKind::Ring
+            | ControlKind::Spinner => None,
         }
     }
 }
