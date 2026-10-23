@@ -745,6 +745,8 @@ pub struct NodeStore {
     pub(crate) holds: crate::long_press::Holds,
     /// The nodes that take pinches and the pinches under way.
     pub(crate) pinches: crate::pinch::Pinches,
+    /// Cold: the viewers and how each one's content shows.
+    pub(crate) viewers: crate::viewer::Viewers,
     /// Cold: the nodes folded to their first child.
     pub(crate) folds: crate::fold::Folds,
     /// Cold: the text fields and the marks they draw.
@@ -907,6 +909,7 @@ impl NodeStore {
         self.drags.clear();
         self.holds.clear();
         self.pinches.clear();
+        self.viewers.clear();
         self.folds.clear();
         self.paged.clear();
         self.fields.clear();
@@ -5184,6 +5187,7 @@ impl NodeStore {
         self.lay_layers(root, surface, scratch);
         self.follow_tails();
         self.settle_scroll_requests();
+        self.fit_viewers();
         self.sync_refreshers();
         self.sync_stickies();
         self.sync_snaps();
@@ -5417,6 +5421,8 @@ impl NodeStore {
         // applies, once layout knows the range.
         self.follow_tails();
         self.settle_scroll_requests();
+        // A viewer keeps its content within the bounds its boxes now set.
+        self.fit_viewers();
         // A refresher starts or ends and its indicator follows its pull.
         self.sync_refreshers();
         self.sync_stickies();
@@ -6792,6 +6798,18 @@ impl<'a> BuildCx<'a> {
     /// Make an already-declared node take pinches (default: it takes none).
     pub fn pinchable(&mut self, handle: Handle, takes: bool) -> Handle {
         self.store.set_pinchable(handle.id, takes);
+        handle
+    }
+
+    /// Make an already-declared node a viewer of its one content child
+    /// within `limits`, or no longer one with `None` (see
+    /// [`NodeStore::set_viewer`]).
+    pub fn viewer(
+        &mut self,
+        handle: Handle,
+        limits: Option<crate::viewer::ViewerLimits>,
+    ) -> Handle {
+        self.store.set_viewer(handle.id, limits);
         handle
     }
 

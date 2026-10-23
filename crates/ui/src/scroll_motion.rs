@@ -150,18 +150,18 @@ const MIN_TRAVEL: f32 = 4.0;
 const STOP_VELOCITY: f64 = 5.0;
 /// Over this speed (pt/s) a press on a coast catches it whole: the press
 /// reaches no control. Slower, the coast stops and the press goes through.
-const CATCH_VELOCITY: f64 = 40.0;
+pub(crate) const CATCH_VELOCITY: f64 = 40.0;
 /// How soon (seconds) after a catch a flick the same way adds its speed.
 const BOOST_WINDOW: f32 = 0.4;
 /// A pull `raw` points past the end shows `raw·c·d / (raw·c + d)` of it,
 /// `d` being this share of the viewport's extent: just over half the travel
 /// at first, flattening so it never shows more than `d`.
-const PULL_COEFF: f32 = 0.55;
-const PULL_RANGE: f32 = 0.35;
+pub(crate) const PULL_COEFF: f32 = 0.55;
+pub(crate) const PULL_RANGE: f32 = 0.35;
 /// The spring a pull relaxes along, `x(t) = (x0 + (v0 + λ·x0)·t)·e^(−λ·t)`:
 /// critically damped, its `λ` per second. A coast reaching the end at `v`
 /// overshoots by `v/(λ·e)` and settles in about `7.5/λ` seconds.
-const SPRING: f64 = 20.0;
+pub(crate) const SPRING: f64 = 20.0;
 /// The spring a glide eases its offset along, `λ` per second: nine tenths
 /// of the way in about `4/λ` seconds, whatever the distance.
 const GLIDE: f64 = 14.0;
@@ -174,7 +174,7 @@ const GLIDE_STILL: f64 = 10.0;
 const STRETCH: f32 = 0.25;
 /// The longest step (seconds) one frame advances a coast: a hitch catches
 /// up a little rather than jumping.
-const MAX_STEP: f64 = 0.1;
+pub(crate) const MAX_STEP: f64 = 0.1;
 /// The weight of a frame's interval in the running average a step's length
 /// is held near, and the band around that average it is held to, so one
 /// late or early frame does not jerk the motion.
@@ -265,9 +265,9 @@ struct Fling {
 
 /// A coast's motion along its curve.
 #[derive(Debug, Clone, Copy)]
-struct Motion {
+pub(crate) struct Motion {
     /// The offset's speed (pt/s), signed as the offset moves.
-    velocity: f64,
+    pub(crate) velocity: f64,
     /// Seconds since release.
     age: f64,
     /// The running average of the frame interval (seconds).
@@ -278,7 +278,7 @@ struct Motion {
 }
 
 impl Motion {
-    fn new(velocity: f64, curve: FlingCurve) -> Motion {
+    pub(crate) fn new(velocity: f64, curve: FlingCurve) -> Motion {
         let spline = match curve {
             FlingCurve::Spline => {
                 let (distance, duration) = spline_target(velocity);
@@ -296,7 +296,7 @@ impl Motion {
     }
 
     /// Advance by a frame of `delta`; the offset's travel over it.
-    fn advance(&mut self, delta: Duration) -> f64 {
+    pub(crate) fn advance(&mut self, delta: Duration) -> f64 {
         let raw = delta.as_secs_f64().min(MAX_STEP);
         self.step = if self.step <= 0.0 {
             raw
@@ -352,7 +352,7 @@ impl Motion {
         target - emitted
     }
 
-    fn done(&self) -> bool {
+    pub(crate) fn done(&self) -> bool {
         match self.curve {
             FlingCurve::Decay { .. } => self.velocity.abs() < STOP_VELOCITY,
             FlingCurve::Spline => self.age >= self.spline.1,
@@ -555,6 +555,7 @@ impl NodeStore {
             || self.motions.pulls.iter().any(|p| p.spring.is_some())
             || self.refreshers.easing()
             || self.snap_aims()
+            || self.viewers.moving()
     }
 
     /// Whether viewport `id` glides toward a target.
@@ -839,6 +840,7 @@ impl NodeStore {
             self.motions.pulls[i] = pull;
         }
         self.tick_refreshers(dt as f32);
+        self.tick_viewers(delta);
     }
 
     /// Ease every glide `dt` seconds along its spring.
@@ -1025,6 +1027,7 @@ impl NodeStore {
             }
             node = self.arena().parent(n);
         }
+        brisk |= self.catch_viewers(target);
         if brisk {
             self.motions.swallowed = Some(pointer);
         }
@@ -1064,6 +1067,7 @@ impl NodeStore {
     /// Stop the coasts and glides of the viewports at or above `target`: a
     /// wheel there moves them now.
     pub(crate) fn stop_coasts_over(&mut self, target: NodeId) {
+        self.stop_viewer_coasts(target);
         if self.motions.flings.is_empty() && self.motions.glides.is_empty() {
             return;
         }
@@ -1080,6 +1084,7 @@ impl NodeStore {
     /// lifted.
     pub(crate) fn hold_pulls_over(&mut self, target: NodeId) {
         self.motions.pinned = None;
+        self.stop_viewer_coasts(target);
         if self.motions.pulls.is_empty() {
             return;
         }
@@ -1128,17 +1133,18 @@ impl NodeStore {
     /// on, the viewports they moved coast at the speed they lifted at, and a
     /// pull they held springs back.
     pub(crate) fn lift_pad(&mut self, target: NodeId) {
+        // A viewer they moved lets go first; the rest is the viewports'.
+        let v = self.motions.pad.1.velocity();
+        let v = self.lift_viewer(target, v);
         if self.motions.physics.system_coast {
             // A snapping viewport snaps instead, and the system's coast
             // leaves it be.
-            let v = self.motions.pad.1.velocity();
             if let Some(viewport) = self.snap_lift(target, Vec2 { x: -v.x, y: -v.y }) {
                 self.motions.pinned = Some(viewport);
             }
             self.let_go_pulls();
             return;
         }
-        let v = self.motions.pad.1.velocity();
         self.motions.pad.1 = VelocityTracker::default();
         // The offset moved by the samples' deltas: the finger's way is back.
         self.release_pan(target, Vec2 { x: -v.x, y: -v.y });

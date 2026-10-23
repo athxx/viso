@@ -769,7 +769,7 @@ fn pan_step(
 /// one past its end.
 fn pan_by(store: &mut NodeStore, from: NodeId, delta: Vec2) {
     let rest = store.ease_pulls(from, delta);
-    let (_, left) = scroll_chain_rest(store, from, rest);
+    let (_, left) = scroll_chain_rest(store, from, rest, true);
     if left != Vec2::ZERO {
         store.pull_on(from, left);
     }
@@ -777,7 +777,7 @@ fn pan_by(store: &mut NodeStore, from: NodeId, delta: Vec2) {
 
 /// Whether some scroll viewport at or above `from` scrolls along `axis` and has
 /// room left for a `delta` of that sign.
-fn can_scroll(store: &NodeStore, from: NodeId, axis: Axis, delta: f32) -> bool {
+pub(crate) fn can_scroll(store: &NodeStore, from: NodeId, axis: Axis, delta: f32) -> bool {
     let mut node = Some(from);
     while let Some(n) = node {
         if store.scroll_axis(n) == Some(axis) {
@@ -886,7 +886,7 @@ pub fn route_scroll(store: &mut NodeStore, root: NodeId, ev: ScrollEvent) -> boo
             if store.coast_pinned(target) {
                 return true;
             }
-            let (moved, left) = scroll_chain_rest(store, target, delta);
+            let (moved, left) = scroll_chain_rest(store, target, delta, false);
             if left != Vec2::ZERO {
                 store.bounce_coast(
                     target,
@@ -912,13 +912,19 @@ pub fn route_scroll(store: &mut NodeStore, root: NodeId, ev: ScrollEvent) -> boo
 /// absorbing its own axis's component while it has range left in the direction
 /// of travel. Shared by the wheel route and the touch pan.
 fn scroll_chain(store: &mut NodeStore, target: NodeId, delta: Vec2) -> bool {
-    scroll_chain_rest(store, target, delta).0
+    scroll_chain_rest(store, target, delta, false).0
 }
 
 /// [`scroll_chain`], also returning what of `delta` no viewport moved: an
 /// axis no viewport had room for whole, or what passed the end of the one
-/// that took it.
-fn scroll_chain_rest(store: &mut NodeStore, target: NodeId, delta: Vec2) -> (bool, Vec2) {
+/// that took it. A viewer on the way pans first, pulled on past its bounds
+/// when `elastic` (fingers drive it).
+fn scroll_chain_rest(
+    store: &mut NodeStore,
+    target: NodeId,
+    delta: Vec2,
+    elastic: bool,
+) -> (bool, Vec2) {
     // Remaining delta to place; each viewport consumes its own axis's component.
     let mut remaining = delta;
     let mut consumed = false;
@@ -928,6 +934,20 @@ fn scroll_chain_rest(store: &mut NodeStore, target: NodeId, delta: Vec2) -> (boo
     // the delta on its axis if it has range left in the direction of travel.
     let mut node = Some(target);
     while let Some(n) = node {
+        // A viewer pans its content, on either axis.
+        if store.is_viewer(n) {
+            let took = store.scroll_viewer(n, remaining, elastic);
+            if took.x != 0.0 {
+                remaining.x = 0.0;
+            }
+            if took.y != 0.0 {
+                remaining.y = 0.0;
+            }
+            consumed |= took != Vec2::ZERO;
+            if remaining == Vec2::ZERO {
+                break;
+            }
+        }
         // A text field scrolls its own text, on either axis.
         if store.field_marks(n).is_some() {
             let moved = store.scroll_field(n, remaining);

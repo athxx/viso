@@ -11,7 +11,8 @@
 //! interactive controls under [`controls`] (Button, CheckBox, Toggle,
 //! RadioGroup, Slider, TextInput, Splitter). Tier 3 completes the layout
 //! structures — [`scroll`] (Scroll), the virtualized [`list`] (VirtualList),
-//! the two-dimensional track [`grid`] (Grid), and the draggable-pane Splitter.
+//! the two-dimensional track [`grid`] (Grid), the draggable-pane Splitter, and
+//! the pan-and-zoom [`interactive_viewer`] (InteractiveViewer).
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
@@ -21,6 +22,7 @@ pub mod document;
 pub mod grid;
 pub mod icon;
 pub mod image;
+pub mod interactive_viewer;
 pub mod lazy_grid;
 pub mod list;
 pub mod pager;
@@ -56,6 +58,9 @@ pub use document::{Document, DocumentStyle, DocumentText, html, markdown};
 pub use grid::{Grid, GridViewStyle, grid};
 pub use icon::{Icon, IconStyle, icon};
 pub use image::{Image, ImageStyle, image, image_asset};
+pub use interactive_viewer::{
+    InteractiveViewer, InteractiveViewerStyle, ViewerHandle, ViewerHandleSlot, interactive_viewer,
+};
 pub use lazy_grid::{LazyGrid, LazyGridStyle, lazy_grid};
 pub use list::{VirtualList, VirtualListViewStyle, virtual_list};
 pub use pager::{Carousel, CarouselStyle, Pager, PagerStyle, carousel, pager};

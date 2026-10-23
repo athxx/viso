@@ -505,6 +505,8 @@ pub enum StoreRequest {
     SnapTo(NodeId, usize),
     /// Turn a paged stack to a page.
     Page(NodeId, Option<usize>, crate::navigation::PageTransition),
+    /// Move a viewer's content.
+    Viewer(NodeId, crate::viewer::ViewerMove),
 }
 
 impl StoreRequest {
@@ -530,6 +532,7 @@ impl StoreRequest {
             StoreRequest::Refreshing(id, on) => store.set_refreshing(id, on),
             StoreRequest::SnapTo(id, index) => store.snap_to_item(id, index),
             StoreRequest::Page(stack, page, transition) => store.set_page(stack, page, transition),
+            StoreRequest::Viewer(id, to) => store.move_viewer(id, to),
         }
     }
 }
@@ -959,6 +962,11 @@ impl<'a> EventCx<'a> {
     /// ([`NodeStore::set_refreshing`]).
     pub fn set_refreshing(&mut self, id: NodeId, on: bool) {
         self.store_requests.push(StoreRequest::Refreshing(id, on));
+    }
+
+    /// Move viewer `id`'s content as `to` asks ([`NodeStore::move_viewer`]).
+    pub fn move_viewer(&mut self, id: NodeId, to: crate::viewer::ViewerMove) {
+        self.store_requests.push(StoreRequest::Viewer(id, to));
     }
 
     /// Bring snapping viewport `id` to rest on item `index`

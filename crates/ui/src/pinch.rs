@@ -360,20 +360,22 @@ impl NodeStore {
         pinch.record(PinchPhase::End, scale, rotation, focal);
     }
 
-    /// After pointer `pointer`'s sample was dispatched: clears the pinch
-    /// sample it carried, and forgets a pinch it ended.
+    /// After pointer `pointer`'s sample was dispatched: a viewer's pinch
+    /// zooms it by the sample, the pinch sample it carried clears, and a
+    /// pinch it ended is forgotten.
     pub(crate) fn settle_pinch(&mut self, pointer: PointerId) {
         let Some(i) = self.pinches.of(pointer) else {
             return;
         };
         let pinch = &mut self.pinches.pinches[i];
-        if pinch
-            .sample
-            .take()
-            .is_some_and(|s| s.phase == PinchPhase::End)
-        {
+        let (node, touch) = (pinch.node, !matches!(pinch.source, Source::Wheel { .. }));
+        let Some(sample) = pinch.sample.take() else {
+            return;
+        };
+        if sample.phase == PinchPhase::End {
             self.pinches.pinches.swap_remove(i);
         }
+        self.steer_viewer_pinch(node, sample, touch);
     }
 
     /// Whether a wheel's pinch has rested long enough to end.

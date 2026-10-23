@@ -1,5 +1,6 @@
 //! Keyboard scrolling: the arrow keys, Page Up and Page Down, Space, Home and
-//! End scroll the viewport the keyboard is in when nothing takes them.
+//! End scroll the viewport the keyboard is in when nothing takes them; a
+//! viewer the keyboard is in pans and zooms first ([`viewer`](crate::viewer)).
 //!
 //! A key scrolls only when no handler on the focused node's route stopped it
 //! and the focus is not in a field that edits text: what a control does with
@@ -80,6 +81,9 @@ impl NodeStore {
     /// `apple` reads Apple's key conventions. Returns whether a viewport
     /// took it.
     pub fn scroll_by_key(&mut self, root: NodeId, ev: &KeyEvent, apple: bool) -> bool {
+        if self.viewer_key(root, ev) {
+            return true;
+        }
         let Some((step, axis)) = step_of(ev, apple) else {
             return false;
         };

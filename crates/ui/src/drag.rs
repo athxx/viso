@@ -277,6 +277,11 @@ impl NodeStore {
             self.drags.forget(pointer);
             return false;
         }
+        let total = vec(at, d.origin);
+        if !d.started && total.x.hypot(total.y) >= slop && self.viewer_yields(d.node, total) {
+            self.drags.forget(pointer);
+            return false;
+        }
         d.started || !d.behind_scroll
     }
 
@@ -378,18 +383,21 @@ impl NodeStore {
         d.last = at;
     }
 
-    /// After pointer `pointer`'s sample was dispatched: clears the drag
-    /// sample it carried, and forgets a drag it ended along with the capture
-    /// the drag took.
+    /// After pointer `pointer`'s sample was dispatched: a viewer's drag pans
+    /// it by the sample, the drag sample it carried clears, and a drag it
+    /// ended is forgotten along with the capture the drag took.
     pub(crate) fn settle_drag(&mut self, pointer: PointerId) {
         let Some(d) = self.drags.of_mut(pointer) else {
             return;
         };
-        let ended = d.sample.take().is_some_and(|s| s.phase == DragPhase::End);
-        if !ended {
+        let node = d.node;
+        let sample = d.sample.take();
+        if let Some(sample) = sample {
+            self.steer_viewer_drag(node, pointer, sample);
+        }
+        if !sample.is_some_and(|s| s.phase == DragPhase::End) {
             return;
         }
-        let node = d.node;
         self.drop_drag(pointer);
         if self.capture_of(pointer) == Some(node) {
             self.set_capture(pointer, None);
