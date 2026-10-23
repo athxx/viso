@@ -462,6 +462,8 @@ pub struct VirtualListState {
     /// The header row the viewport's start shows while the window no longer
     /// holds it: mounted past the window, pinned at the start edge.
     pinned: Option<MountedItem>,
+    /// The row lifted to reorder, held mounted past the window while it is.
+    held: Option<MountedItem>,
     /// The key of the header to keep when its row leaves the window.
     keep: Option<ItemKey>,
     /// The host showing the current header, raised above the rows.
@@ -526,6 +528,7 @@ impl VirtualListState {
             headers: Vec::new(),
             headers_stale: false,
             pinned: None,
+            held: None,
             keep: None,
             header_host: None,
             pages: false,
@@ -619,7 +622,12 @@ impl VirtualListState {
         self.flow = Flow::List(HeightTree::new(self.item_count, extent));
         self.height_cache = HeightCache::with_fallback(extent);
         let size = self.page_size();
-        for row in self.mounted.iter_mut().chain(self.pinned.as_mut()) {
+        for row in self
+            .mounted
+            .iter_mut()
+            .chain(self.pinned.as_mut())
+            .chain(self.held.as_mut())
+        {
             row.item_top = self.flow.top(row.logical_index);
             cx.store.set_fixed_size(row.host, size);
             cx.store.set_row_offset(row.host, row.item_top);
@@ -805,9 +813,13 @@ impl VirtualListState {
     }
 
     /// A row leaving the window parks its host, but the current header's row
-    /// stays mounted, pinned past the window.
+    /// stays mounted, pinned past the window, and a lifted row held.
     fn leave(&mut self, row: MountedItem, store: &mut NodeStore) {
-        if self.keep != Some(row.key) {
+        if store.is_lifted(row.host) {
+            if let Some(old) = self.held.replace(row) {
+                park(store, &mut self.pool, old.host);
+            }
+        } else if self.keep != Some(row.key) {
             park(store, &mut self.pool, row.host);
         } else if let Some(old) = self.pinned.replace(row) {
             park(store, &mut self.pool, old.host);
@@ -1070,9 +1082,16 @@ impl VirtualListState {
     /// allocate one under the canvas), empty its old body and build the row's.
     fn mount(&mut self, logical: usize, key: ItemKey, cx: &mut StructureCx<'_>) -> MountedItem {
         let item_top = self.flow.top(logical);
-        // The pinned header's row comes back into the window as it is.
-        if let Some(row) = self.pinned.filter(|row| row.key == key) {
-            self.pinned = None;
+        // The pinned header's row, or the held lifted one, comes back into
+        // the window as it is.
+        let back = if self.pinned.is_some_and(|row| row.key == key) {
+            self.pinned.take()
+        } else if self.held.is_some_and(|row| row.key == key) {
+            self.held.take()
+        } else {
+            None
+        };
+        if let Some(row) = back {
             if row.item_top != item_top {
                 cx.store.set_row_offset(row.host, item_top);
                 cx.store
@@ -1125,7 +1144,7 @@ impl VirtualListState {
     /// writing only the hosts whose place moved.
     fn announce_positions(&self, store: &mut NodeStore) {
         let count = u32::try_from(self.item_count).unwrap_or(u32::MAX);
-        for row in self.mounted.iter().chain(&self.pinned) {
+        for row in self.mounted.iter().chain(&self.pinned).chain(&self.held) {
             let index = u32::try_from(row.logical_index + 1).unwrap_or(u32::MAX);
             let state = store.semantic_state(row.host).unwrap_or_default();
             if state.position != Some((index, count)) {
@@ -1189,8 +1208,10 @@ impl VirtualListState {
     /// Free the parked hosts, which sit outside the tree: as the list itself is
     /// dropped.
     fn free_pool(&mut self, store: &mut NodeStore, effects: &mut EffectStore) {
-        // The pinned header's host is the canvas's; it goes with it.
+        // The pinned header's and the held row's hosts are the canvas's;
+        // they go with it.
         self.pinned = None;
+        self.held = None;
         for host in self.pool.drain(..) {
             store.free_tree(host, effects, &mut self.scratch_free);
         }
@@ -1412,6 +1433,15 @@ fn reconcile_one(viewport: NodeId, state: &mut VirtualListState, cx: &mut Struct
         cx.store.is_scroll(viewport),
         "virtual list viewport must be a scroll node"
     );
+
+    // A row held mounted past the window as it was lifted leaves once it
+    // lies down.
+    if let Some(row) = state.held.filter(|row| !cx.store.is_lifted(row.host)) {
+        state.held = None;
+        if cx.store.arena().is_live(row.host) {
+            park(cx.store, &mut state.pool, row.host);
+        }
+    }
 
     // Steady-path gate: scroll unchanged and data clean → nothing to do. The
     // scroll itself already moved the world rects (TRANSFORM class); no relayout.

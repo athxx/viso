@@ -81,7 +81,7 @@ impl NodeStore {
     /// `apple` reads Apple's key conventions. Returns whether a viewport
     /// took it.
     pub fn scroll_by_key(&mut self, root: NodeId, ev: &KeyEvent, apple: bool) -> bool {
-        if self.viewer_key(root, ev) || self.swipe_key(ev) {
+        if self.reorder_key(ev) || self.viewer_key(root, ev) || self.swipe_key(ev) {
             return true;
         }
         let Some((step, axis)) = step_of(ev, apple) else {

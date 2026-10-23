@@ -45,8 +45,8 @@ const STRETCH_SHARE: f32 = 0.15;
 const FULL_HOLD: f64 = 0.15;
 /// Within this many points of its rest, and slower than [`SETTLE_STILL`],
 /// a spring arrived.
-const SETTLE_NEAR: f64 = 0.5;
-const SETTLE_STILL: f64 = 10.0;
+pub(super) const SETTLE_NEAR: f64 = 0.5;
+pub(super) const SETTLE_STILL: f64 = 10.0;
 /// How much more across than along a trackpad's swipe must start to be the
 /// row's.
 const PAD_ACROSS: f32 = 1.5;

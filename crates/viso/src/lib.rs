@@ -1596,6 +1596,7 @@ impl WindowState {
             || self.store.is_spinning()
             || self.store.refreshes_due()
             || self.store.snaps_due()
+            || self.store.row_gestures_due()
             || self.store.frame_clients_want_frame()
             || self.draws_clock
     }

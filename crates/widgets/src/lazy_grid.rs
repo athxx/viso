@@ -207,7 +207,7 @@ impl Component for LazyGrid {
         if let Some(is_full) = self.full.borrow_mut().take() {
             cx.full_line_items(handle, is_full);
         }
-        install_viewport_events(cx, handle, None, self.on_snap.as_ref());
+        install_viewport_events(cx, handle, None, self.on_snap.as_ref(), None);
         let mut semantics = Semantics::role(Role::List);
         if let Some(label) = &self.label {
             semantics = semantics.with_label(label.clone());

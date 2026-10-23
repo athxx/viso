@@ -27,6 +27,7 @@ pub mod interactive_viewer;
 pub mod lazy_grid;
 pub mod list;
 pub mod pager;
+pub mod reorder_handle;
 pub mod scroll;
 pub mod swipe_row;
 pub mod text;
@@ -66,6 +67,7 @@ pub use interactive_viewer::{
 pub use lazy_grid::{LazyGrid, LazyGridStyle, lazy_grid};
 pub use list::{VirtualList, VirtualListViewStyle, virtual_list};
 pub use pager::{Carousel, CarouselStyle, Pager, PagerStyle, carousel, pager};
+pub use reorder_handle::{ReorderHandle, ReorderHandleStyle, reorder_handle};
 pub use scroll::{Scroll, ScrollViewStyle, scroll};
 pub use swipe_row::{
     SwipeAction, SwipeRow, SwipeRowHandle, SwipeRowHandleSlot, SwipeRowStyle, swipe_action,

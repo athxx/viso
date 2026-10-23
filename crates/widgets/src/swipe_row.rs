@@ -389,7 +389,7 @@ impl Component for SwipeRow {
             let tap = match ev.row_gesture() {
                 Some(RowGesture::Swiped(SwipeEdge::Leading)) => leading_tap.as_ref(),
                 Some(RowGesture::Swiped(SwipeEdge::Trailing)) => trailing_tap.as_ref(),
-                None => return,
+                _ => return,
             };
             if let Some(tap) = tap {
                 (tap.borrow_mut())(ev);

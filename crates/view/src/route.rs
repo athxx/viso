@@ -34,7 +34,9 @@ pub fn payload(route: EventRoute, cx: &EventCx<'_>) -> Option<Value> {
         return cx.snapped().map(|index| record([Value::Int(index as i64)]));
     }
     if route == EventRoute::FullSwiped {
-        let viso_ui::RowGesture::Swiped(edge) = cx.row_gesture()?;
+        let Some(viso_ui::RowGesture::Swiped(edge)) = cx.row_gesture() else {
+            return None;
+        };
         let edge = match edge {
             viso_ui::SwipeEdge::Leading => 0,
             viso_ui::SwipeEdge::Trailing => 1,

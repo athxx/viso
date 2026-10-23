@@ -154,7 +154,7 @@ impl Component for Pager {
             Some(mut page) => cx.virtual_list(style, self.count, move |i, cx| page(i, cx)),
             None => cx.virtual_list(style, self.count, |_, _| {}),
         };
-        install_viewport_events(cx, pages, None, self.on_page.as_ref());
+        install_viewport_events(cx, pages, None, self.on_page.as_ref(), None);
         let mut semantics = Semantics::role(Role::Group);
         if let Some(label) = &self.label {
             semantics = semantics.with_label(label.clone());
@@ -281,7 +281,7 @@ impl Component for Carousel {
                 );
             },
         );
-        install_viewport_events(cx, handle, None, self.on_snap.as_ref());
+        install_viewport_events(cx, handle, None, self.on_snap.as_ref(), None);
         let mut semantics = Semantics::role(Role::Group);
         if let Some(label) = &self.label {
             semantics = semantics.with_label(label.clone());

@@ -37,23 +37,33 @@ pub(crate) type RefreshHandler = Rc<RefCell<dyn FnMut(&mut EventCx<'_>, Handle)>
 /// What a snapping viewport runs when it settles on an item, with the item.
 pub(crate) type SnapHandler = Rc<RefCell<dyn FnMut(&mut EventCx<'_>, Handle, usize)>>;
 
+/// What a reorderable viewport runs when a row lifted from one place came
+/// to rest at another, with the two.
+pub(crate) type ReorderHandler = Rc<RefCell<dyn FnMut(&mut EventCx<'_>, Handle, usize, usize)>>;
+
 /// Make the viewport `handle` names run `refresh` when a pull, or an
-/// assistive technology, asks it to refresh, and `snap` when it settles on
-/// an item.
+/// assistive technology, asks it to refresh, `snap` when it settles on an
+/// item, and `reorder` when one of its rows was carried elsewhere, which
+/// makes its rows reorderable.
 pub(crate) fn install_viewport_events(
     cx: &mut BuildCx<'_>,
     handle: Handle,
     refresh: Option<&RefreshHandler>,
     snap: Option<&SnapHandler>,
+    reorder: Option<&ReorderHandler>,
 ) {
-    if refresh.is_none() && snap.is_none() {
+    if refresh.is_none() && snap.is_none() && reorder.is_none() {
         return;
     }
     if snap.is_some() {
         cx.tell_snaps(handle, true);
     }
+    if reorder.is_some() {
+        cx.reorder_list(handle, true);
+    }
     let refresh = refresh.map(Rc::clone);
     let snap = snap.map(Rc::clone);
+    let reorder = reorder.map(Rc::clone);
     cx.on_key(handle, move |ev| {
         if let Some(refresh) = &refresh
             && ev.refresh()
@@ -62,6 +72,11 @@ pub(crate) fn install_viewport_events(
         }
         if let (Some(snap), Some(index)) = (&snap, ev.snapped()) {
             (snap.borrow_mut())(ev, handle, index);
+        }
+        if let (Some(reorder), Some(viso_ui::RowGesture::Reordered { from, to })) =
+            (&reorder, ev.row_gesture())
+        {
+            (reorder.borrow_mut())(ev, handle, from, to);
         }
     });
 }
@@ -151,6 +166,7 @@ pub struct Scroll {
     label: Option<String>,
     on_refresh: Option<RefreshHandler>,
     on_snap: Option<SnapHandler>,
+    on_reorder: Option<ReorderHandler>,
 }
 
 /// Construct a [`Scroll`] viewport with the given style and no content yet.
@@ -163,6 +179,7 @@ pub fn scroll(style: ScrollViewStyle) -> Scroll {
         label: None,
         on_refresh: None,
         on_snap: None,
+        on_reorder: None,
     }
 }
 
@@ -209,6 +226,19 @@ impl Scroll {
         self.on_snap = Some(Rc::new(RefCell::new(handler)));
         self
     }
+
+    /// Let the rows of its content — the children of its content child —
+    /// be carried to other places by their [`reorder_handle`](crate::reorder_handle)s:
+    /// `handler` runs with the viewport's handle, the place a row was lifted
+    /// from and the place it came to rest at among the rows without it, and
+    /// moves the items so in that frame.
+    pub fn on_reorder(
+        mut self,
+        handler: impl FnMut(&mut EventCx<'_>, Handle, usize, usize) + 'static,
+    ) -> Self {
+        self.on_reorder = Some(Rc::new(RefCell::new(handler)));
+        self
+    }
 }
 
 impl Component for Scroll {
@@ -234,7 +264,13 @@ impl Component for Scroll {
                 }
             },
         );
-        install_viewport_events(cx, handle, self.on_refresh.as_ref(), self.on_snap.as_ref());
+        install_viewport_events(
+            cx,
+            handle,
+            self.on_refresh.as_ref(),
+            self.on_snap.as_ref(),
+            self.on_reorder.as_ref(),
+        );
 
         // A scroll viewport is a `Group` to an assistive technology; carry the
         // label when one was authored.

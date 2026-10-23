@@ -165,6 +165,7 @@ pub struct VirtualList {
     label: Option<String>,
     on_refresh: Option<crate::scroll::RefreshHandler>,
     on_snap: Option<crate::scroll::SnapHandler>,
+    on_reorder: Option<crate::scroll::ReorderHandler>,
     /// Which rows head a section, taken by `build` as the row builder is.
     headers: RefCell<Option<viso_ui::StickyOf>>,
 }
@@ -180,6 +181,7 @@ pub fn virtual_list(style: VirtualListViewStyle) -> VirtualList {
         label: None,
         on_refresh: None,
         on_snap: None,
+        on_reorder: None,
         headers: RefCell::new(None),
     }
 }
@@ -239,6 +241,18 @@ impl VirtualList {
         self.on_snap = Some(std::rc::Rc::new(RefCell::new(handler)));
         self
     }
+
+    /// Let its rows be carried to other places by their
+    /// [`reorder_handle`](crate::reorder_handle)s, as
+    /// [`Scroll::on_reorder`](crate::Scroll::on_reorder) does; a lifted row
+    /// stays mounted wherever the list scrolls.
+    pub fn on_reorder(
+        mut self,
+        handler: impl FnMut(&mut viso_ui::EventCx<'_>, viso_ui::Handle, usize, usize) + 'static,
+    ) -> Self {
+        self.on_reorder = Some(std::rc::Rc::new(RefCell::new(handler)));
+        self
+    }
 }
 
 impl Component for VirtualList {
@@ -277,6 +291,7 @@ impl Component for VirtualList {
             handle,
             self.on_refresh.as_ref(),
             self.on_snap.as_ref(),
+            self.on_reorder.as_ref(),
         );
         // A virtual list is a `Group` to an assistive technology; carry the label
         // when one was authored.

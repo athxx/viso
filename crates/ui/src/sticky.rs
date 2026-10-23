@@ -83,12 +83,14 @@ impl NodeStore {
     /// The translate node `id`'s pin adds to its own.
     #[inline]
     pub(crate) fn pin_of(&self, id: NodeId) -> Vec2 {
-        if self.stickies.list.is_empty() {
-            return Vec2::ZERO;
-        }
-        self.stickies
-            .find(id)
-            .map_or(Vec2::ZERO, |k| self.stickies.list[k].pin)
+        let pin = if self.stickies.list.is_empty() {
+            Vec2::ZERO
+        } else {
+            self.stickies
+                .find(id)
+                .map_or(Vec2::ZERO, |k| self.stickies.list[k].pin)
+        };
+        pin + self.reorder_shift_of(id)
     }
 
     /// Pin node `id` `pin` past where it lays out, raising it above its

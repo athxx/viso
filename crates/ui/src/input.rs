@@ -427,6 +427,9 @@ pub fn route_contact(
         PointerPhase::Leave if contact.direct => store.release_hold(pointer),
         _ => {}
     }
+    if ev.phase == PointerPhase::Down {
+        store.press_reorder();
+    }
     // A press on a coasting viewport catches it; a brisk one is only that,
     // as is one within the list of a swipe row it shuts.
     if ev.phase == PointerPhase::Down

@@ -1662,8 +1662,11 @@ impl NodeStore {
             Some(Placement::Stack(placed)) => placed.layer,
             _ => 0,
         };
-        // A pinned node rides above the siblings of its layer.
-        layer.saturating_add(i32::from(self.is_pinned(id)))
+        // A pinned node rides above the siblings of its layer, and a lifted
+        // row above them all.
+        layer
+            .saturating_add(i32::from(self.is_pinned(id)))
+            .saturating_add(2 * i32::from(self.is_lifted(id)))
     }
 
     /// Whether `id`'s children paint by layer: it is a stack one of whose
@@ -1673,6 +1676,7 @@ impl NodeStore {
         (matches!(self.layout[id.index() as usize], LayoutInput::Stack { .. })
             && self.arena.children(id).any(|c| self.stack_layer(c) != 0))
             || self.raises_children(id)
+            || self.lifts_child(id)
     }
 
     /// Rewrite a Grid container's tracks, gaps, cell alignment, subgrid axes
@@ -4489,6 +4493,7 @@ impl NodeStore {
                         self.roved(node);
                     }
                     self.swipe_focus(other);
+                    self.reorder_focus(other);
                 }
             }
         }
@@ -5210,6 +5215,7 @@ impl NodeStore {
         self.settle_scroll_requests();
         self.fit_viewers();
         self.fit_swipes();
+        self.fit_reorders();
         self.sync_refreshers();
         self.sync_stickies();
         self.sync_snaps();
@@ -5447,6 +5453,7 @@ impl NodeStore {
         self.fit_viewers();
         // A swipe row stays open as far as its actions now reach.
         self.fit_swipes();
+        self.fit_reorders();
         // A refresher starts or ends and its indicator follows its pull.
         self.sync_refreshers();
         self.sync_stickies();
@@ -6845,6 +6852,20 @@ impl<'a> BuildCx<'a> {
         parts: Option<crate::row_gesture::SwipeParts>,
     ) -> Handle {
         self.store.set_swipe_row(handle.id, parts);
+        handle
+    }
+
+    /// Make an already-declared node a reorderable list, or no longer one
+    /// (see [`NodeStore::set_reorder_list`]).
+    pub fn reorder_list(&mut self, handle: Handle, takes: bool) -> Handle {
+        self.store.set_reorder_list(handle.id, takes);
+        handle
+    }
+
+    /// Make an already-declared node a handle of the reorderable row it lies
+    /// in (see [`NodeStore::set_reorder_handle`]).
+    pub fn reorder_handle(&mut self, handle: Handle) -> Handle {
+        self.store.set_reorder_handle(handle.id, true);
         handle
     }
 
