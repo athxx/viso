@@ -91,6 +91,7 @@ pub fn property_dirty_class(name: &str) -> DirtyClass {
         "focus_ring" => D::PAINT,
         // An access key is announced, and cued in the node's text.
         "access_key" => D::PAINT | D::SEMANTICS,
+        "drag_axis" => D::HIT_TEST,
 
         // Turning input off restyles the node through its `disabled`
         // selector and announces it disabled; what hit testing finds is

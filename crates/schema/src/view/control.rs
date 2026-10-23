@@ -204,6 +204,7 @@ impl ControlKind {
             (_, "hero") => ControlInput::Hero,
             (_, "focus_ring") => ControlInput::FocusRing,
             (_, "access_key") => ControlInput::AccessKey,
+            (_, "drag_axis") => ControlInput::DragAxis,
             (
                 ControlKind::Label
                 | ControlKind::Button
@@ -738,6 +739,8 @@ pub enum ControlInput {
     /// The node's `access_key`: the letter that, with Alt held, reaches it,
     /// underlined in its text while Alt is.
     AccessKey,
+    /// The node's `drag_axis`: the axis it drags along alone, if any.
+    DragAxis,
     /// A text's `font_style`: upright or italic.
     FontStyle,
     /// A text's `spans`: its pieces, drawn each its own way.
@@ -859,6 +862,8 @@ pub struct NodeEntries {
     pub focus_ring: Option<u32>,
     /// The entry of its `access_key`.
     pub access_key: Option<u32>,
+    /// The entry of its `drag_axis`.
+    pub drag_axis: Option<u32>,
 }
 
 /// The handler-table entries of the style of a text a node shows: an absent
@@ -990,7 +995,7 @@ pub enum Switched {
 
 impl ControlInput {
     /// Every input, by wire tag.
-    pub const ALL: [ControlInput; 59] = [
+    pub const ALL: [ControlInput; 60] = [
         ControlInput::Value,
         ControlInput::Min,
         ControlInput::Max,
@@ -1050,6 +1055,7 @@ impl ControlInput {
         ControlInput::Hero,
         ControlInput::FocusRing,
         ControlInput::AccessKey,
+        ControlInput::DragAxis,
     ];
 
     /// Its wire tag: its place in [`ControlInput::ALL`].
@@ -1200,6 +1206,7 @@ impl Control {
             ControlInput::Hero => self.node.hero,
             ControlInput::FocusRing => self.node.focus_ring,
             ControlInput::AccessKey => self.node.access_key,
+            ControlInput::DragAxis => self.node.drag_axis,
             ControlInput::TextColor => self.text.color,
             ControlInput::SoftWrap => self.text.soft_wrap,
             ControlInput::FontWeight => self.text.font_weight,
@@ -1275,6 +1282,7 @@ impl Control {
             ControlInput::Hero => &mut self.node.hero,
             ControlInput::FocusRing => &mut self.node.focus_ring,
             ControlInput::AccessKey => &mut self.node.access_key,
+            ControlInput::DragAxis => &mut self.node.drag_axis,
             ControlInput::TextColor => &mut self.text.color,
             ControlInput::SoftWrap => &mut self.text.soft_wrap,
             ControlInput::FontWeight => &mut self.text.font_weight,
@@ -1356,6 +1364,7 @@ impl Encode for Control {
             self.node.hero,
             self.node.focus_ring,
             self.node.access_key,
+            self.node.drag_axis,
         ]
         .into_iter()
         .chain(self.text.all())
@@ -1486,6 +1495,7 @@ impl Decode for Control {
             hero: entry()?,
             focus_ring: entry()?,
             access_key: entry()?,
+            drag_axis: entry()?,
         };
         control.text = TextEntries {
             color: entry()?,
@@ -1773,6 +1783,7 @@ mod tests {
                 hero: Some(30),
                 focus_ring: Some(31),
                 access_key: Some(32),
+                drag_axis: Some(33),
             },
             text: TextEntries {
                 color: None,

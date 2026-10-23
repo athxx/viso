@@ -1348,6 +1348,45 @@ export component Pinches {
 }
 
 #[test]
+fn a_drag_along_an_axis_leaves_a_press_across_it_to_the_scroll() {
+    const SRC: &str = r#"
+export component Rows {
+    state drags = 0;
+    view {
+        Column {
+            Scroll {
+                width: 200dp; height: 100dp;
+                Column {
+                    width: 200dp; height: 400dp;
+                    Row {
+                        width: 200dp; height: 50dp;
+                        drag_axis: Axis::row;
+                        on drag_start(event) { drags += 1; }
+                    }
+                }
+            }
+        }
+    }
+}
+"#;
+    for mut rt in [Rt::reloaded(SRC), Rt::packaged(SRC)] {
+        let [scroll] = rt.children_of_root()[..] else {
+            panic!("a scroll");
+        };
+        rt.touch(1, 100.0, 40.0, PointerPhase::Down);
+        rt.touch(1, 101.0, 10.0, PointerPhase::Move);
+        rt.touch(1, 101.0, 10.0, PointerPhase::Up);
+        assert_eq!(rt.int("drags"), 0, "up the scroll's axis");
+        assert_eq!(rt.store.scroll(scroll).y, 30.0, "the scroll took it");
+        rt.touch(2, 100.0, 10.0, PointerPhase::Down);
+        rt.touch(2, 140.0, 11.0, PointerPhase::Move);
+        rt.touch(2, 140.0, 11.0, PointerPhase::Up);
+        assert_eq!(rt.int("drags"), 1, "along the drag's");
+        assert!(!rt.faulted());
+    }
+}
+
+#[test]
 fn an_access_key_is_cued_in_the_text_and_reaches_its_control() {
     const SRC: &str = r#"
 export component Keys {

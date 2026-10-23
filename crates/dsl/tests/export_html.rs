@@ -579,6 +579,28 @@ fn a_pinch_exports_as_two_touches_and_a_control_wheel() {
     assert!(dom.contains(">ends=2<"), "and rests: {dom}");
 }
 
+#[test]
+fn a_drag_axis_exports_as_the_axis_a_touch_drags_along() {
+    const AXIS: &str = r#"
+export component Axed {
+    state n = 0;
+    view {
+        Column {
+            Row { width: 40dp; height: 20dp; drag_axis: Axis::row; on drag_start(e) { n += 1; } }
+        }
+    }
+}
+"#;
+    let page = export(AXIS, false).unwrap();
+    assert!(
+        page.index.contains("data-drag-axis=\"row\""),
+        "{}",
+        page.index
+    );
+    let script = page.script.unwrap();
+    assert!(script.contains("pan-y"), "the page still scrolls across it");
+}
+
 const CLIPPED: &str = r#"
 export component Clipped {
     state on = true;

@@ -67,6 +67,7 @@ const FOCUS: &[WidgetProperty] = &[
     prop("autofocus", "Bool"),
     prop("focus_ring", "Bool"),
     prop("access_key", "String"),
+    prop("drag_axis", "Option<Axis>"),
     prop("cursor", "Cursor"),
     prop("enabled", "Bool"),
 ];

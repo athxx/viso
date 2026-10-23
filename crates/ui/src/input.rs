@@ -133,6 +133,9 @@ struct ContactSlot {
     origin: [f32; 2],
     last: [f32; 2],
     gesture: Gesture,
+    /// The axis a pan moves along, decided as it began: viewports across it
+    /// stay put however the finger strays.
+    pan_axis: Axis,
     /// A direct contact's latest samples, for the speed a pan lifts at.
     track: VelocityTracker,
 }
@@ -212,6 +215,7 @@ impl PointerContacts {
                 origin: [0.0; 2],
                 last: [0.0; 2],
                 gesture: Gesture::Held,
+                pan_axis: Axis::Column,
                 track: VelocityTracker::default(),
             });
         }
@@ -234,6 +238,7 @@ impl PointerContacts {
             origin: at,
             last: at,
             gesture: Gesture::Pending,
+            pan_axis: Axis::Column,
             track,
         });
     }
@@ -444,8 +449,12 @@ pub fn route_contact(
                 store.contacts_mut().begin(pointer, [ev.x, ev.y], now);
             }
             // A drag armed above no scroll viewport, or one that started, and
-            // a pinch's finger keep the contact from a pan.
-            PointerPhase::Move if !store.drag_leads(pointer) && !store.pinch_leads(pointer) => {
+            // a pinch's finger keep the contact from a pan; a drag along one
+            // axis lets go of a contact that moves across it.
+            PointerPhase::Move
+                if !store.drag_leads_at(pointer, [ev.x, ev.y], slop)
+                    && !store.pinch_leads(pointer) =>
+            {
                 if let Some(ran) = pan_step(store, states, bindings, pointer, &ev) {
                     store.drop_drag(pointer);
                     chain.clear();
@@ -468,7 +477,8 @@ pub fn route_contact(
                         && let (Some(from), Some(now)) = (slot.captor, store.input_time())
                     {
                         slot.track.push(now, [ev.x, ev.y]);
-                        store.release_pan(from, slot.track.velocity());
+                        let speed = slot.track.velocity().on(slot.pan_axis);
+                        store.release_pan(from, axis_vec(slot.pan_axis, speed));
                     }
                     store.let_go_pulls();
                     chain.clear();
@@ -703,14 +713,13 @@ fn pan_step(
         Gesture::Pan => {
             // Content follows the finger: a finger moving up reveals later
             // content, so the offset grows by the negated travel.
-            pan_by(
-                store,
-                from,
-                Vec2 {
-                    x: slot.last[0] - at[0],
-                    y: slot.last[1] - at[1],
-                },
-            );
+            let axis = slot.pan_axis;
+            let back = [slot.last[0] - at[0], slot.last[1] - at[1]];
+            let along = match axis {
+                Axis::Row => back[0],
+                Axis::Column => back[1],
+            };
+            pan_by(store, from, axis_vec(axis, along));
             Some(true)
         }
         Gesture::Pending => {
@@ -737,6 +746,7 @@ fn pan_step(
             // `Leave`, which clears its press without a click.
             if let Some(s) = store.contacts_mut().slot_mut(pointer) {
                 s.gesture = Gesture::Pan;
+                s.pan_axis = axis;
             }
             store.set_pressed(None);
             hover_dispatch(
@@ -4282,6 +4292,100 @@ mod contact_tests {
             "the second press took it"
         );
         s.touch(1, 30.0, 20.0, PointerPhase::Up);
+    }
+
+    #[test]
+    fn a_drag_along_one_axis_leaves_a_press_across_it_to_the_viewport() {
+        let mut s = scene(false);
+        s.store.set_draggable(s.a, true);
+        s.store.set_drag_axis(s.a, Some(Axis::Row));
+        // Up the viewport's axis: the viewport pans.
+        s.touch(1, 10.0, 30.0, PointerPhase::Down);
+        s.touch(1, 11.0, 10.0, PointerPhase::Move);
+        assert!(!s.store.dragging(s.a));
+        assert_eq!(s.store.scroll(s.root).y, 20.0, "the pan took it");
+        s.touch(1, 11.0, 10.0, PointerPhase::Up);
+        // Along the drag's: the drag. The row now sits 20 higher.
+        s.touch(2, 10.0, 10.0, PointerPhase::Down);
+        s.touch(2, 30.0, 11.0, PointerPhase::Move);
+        assert!(s.store.dragging(s.a));
+        assert_eq!(s.store.scroll(s.root).y, 20.0, "no pan");
+        s.touch(2, 30.0, 11.0, PointerPhase::Up);
+        assert_eq!(s.store.drag_axis(s.a), Some(Axis::Row));
+    }
+
+    #[test]
+    fn a_pan_keeps_to_the_axis_it_began_on_across_nested_viewports() {
+        let mut store = NodeStore::new();
+        let mut inner = None;
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.scroll(
+                ScrollStyle {
+                    axis: Axis::Column,
+                    size: Size::fixed(100.0, 100.0),
+                    ..Default::default()
+                },
+                |cx| {
+                    cx.flex(
+                        FlexStyle {
+                            axis: Axis::Column,
+                            size: Size::fixed(100.0, 300.0),
+                            ..Default::default()
+                        },
+                        |cx| {
+                            let row = cx.scroll(
+                                ScrollStyle {
+                                    axis: Axis::Row,
+                                    size: Size::fixed(100.0, 50.0),
+                                    ..Default::default()
+                                },
+                                |cx| {
+                                    cx.leaf(LeafStyle {
+                                        size: Size::fixed(300.0, 50.0),
+                                        ..Default::default()
+                                    });
+                                },
+                            );
+                            inner = Some(row.id());
+                        },
+                    );
+                },
+            );
+            cx.root().unwrap()
+        };
+        let inner = inner.unwrap();
+        store.layout(root, Rect::new(0.0, 0.0, 100.0, 100.0), &mut Vec::new());
+        let mut states = StateStore::new();
+        let bindings = BindingTable::new();
+        let mut chain = Vec::new();
+        let mut touch = |store: &mut NodeStore, x: f32, y: f32, phase| {
+            route_contact(
+                store,
+                &mut states,
+                &bindings,
+                root,
+                PointerContact {
+                    id: PointerId(1),
+                    direct: true,
+                },
+                PointerEvent {
+                    x,
+                    y,
+                    phase,
+                    buttons: PointerButtons::PRIMARY,
+                    modifiers: Modifiers::default(),
+                },
+                &mut chain,
+            );
+        };
+        touch(&mut store, 80.0, 40.0, PointerPhase::Down);
+        touch(&mut store, 78.0, 20.0, PointerPhase::Move);
+        assert_eq!(store.scroll(root).y, 20.0, "up: the outer pans");
+        touch(&mut store, 40.0, 15.0, PointerPhase::Move);
+        assert_eq!(store.scroll(inner).x, 0.0, "the inner stays put");
+        assert_eq!(store.scroll(root).y, 25.0);
+        touch(&mut store, 40.0, 15.0, PointerPhase::Up);
     }
 
     #[test]

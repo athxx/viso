@@ -738,6 +738,7 @@ fn control_tokens(control: Control) -> TokenStream {
     );
     let focus_ring = entry(control.node.focus_ring);
     let access_key = entry(control.node.access_key);
+    let drag_axis = entry(control.node.drag_axis);
     let text = control.text;
     let (text_color, soft_wrap) = (entry(text.color), entry(text.soft_wrap));
     let (font_weight, font_family) = (entry(text.font_weight), entry(text.font_family));
@@ -857,6 +858,7 @@ fn control_tokens(control: Control) -> TokenStream {
                 hero: #hero,
                 focus_ring: #focus_ring,
                 access_key: #access_key,
+                drag_axis: #drag_axis,
             },
             text: ::viso::__private::viso_view::TextEntries {
                 color: #text_color,

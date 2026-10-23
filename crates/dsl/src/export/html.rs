@@ -160,6 +160,8 @@ pub(super) enum Prop {
     FocusRing,
     /// The letter that, with the browser's access-key modifiers, reaches it.
     AccessKey,
+    /// The axis it drags along alone, if any.
+    DragAxis,
     /// How a navigation stack's pages trade places.
     Turn,
     /// An asset's source, as an image or as a mask.
@@ -1511,6 +1513,16 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             at,
         ) {
             el.attr("accesskey", &fixed.text());
+        }
+        if let Some(fixed) = self.bind(
+            wires,
+            control.node.drag_axis,
+            Prop::DragAxis,
+            "the axis it drags along",
+            at,
+        ) && let Some(axis) = fixed.int()
+        {
+            el.attr("data-drag-axis", if axis == 0 { "row" } else { "column" });
         }
         if let Some(fixed) = self.bind(
             wires,

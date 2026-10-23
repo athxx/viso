@@ -17,7 +17,7 @@
 
 use crate::component::NodeStore;
 use crate::input::PointerId;
-use crate::layout::Vec2;
+use crate::layout::{Axis, Vec2};
 use crate::node::NodeId;
 use crate::scroll_motion::VelocityTracker;
 
@@ -107,6 +107,8 @@ struct Drag {
     started: bool,
     /// A touch reaches a scroll viewport below the node first.
     behind_scroll: bool,
+    /// The axis the node drags along alone, if it keeps to one.
+    axis: Option<Axis>,
     sample: Option<DragSample>,
     track: VelocityTracker,
 }
@@ -116,12 +118,15 @@ struct Drag {
 #[derive(Debug, Default)]
 pub(crate) struct Drags {
     takers: Vec<NodeId>,
+    /// The takers that drag along one axis alone, and the axis.
+    axes: Vec<(NodeId, Axis)>,
     drags: Vec<Drag>,
 }
 
 impl Drags {
     pub(crate) fn clear(&mut self) {
         self.takers.clear();
+        self.axes.clear();
         self.drags.clear();
     }
 
@@ -137,6 +142,18 @@ impl Drags {
         let at = self.drags.iter().position(|d| d.pointer == pointer)?;
         Some(self.drags.swap_remove(at))
     }
+}
+
+/// Whether `travel` past `slop` runs across `axis` rather than along it.
+fn crosses(travel: Vec2, axis: Axis, slop: f32) -> bool {
+    if travel.x.hypot(travel.y) < slop {
+        return false;
+    }
+    let (along, across) = match axis {
+        Axis::Row => (travel.x, travel.y),
+        Axis::Column => (travel.y, travel.x),
+    };
+    across.abs() > along.abs()
 }
 
 fn vec(to: [f32; 2], from: [f32; 2]) -> Vec2 {
@@ -160,6 +177,29 @@ impl NodeStore {
     /// Whether node `id` takes drags.
     pub fn draggable(&self, id: NodeId) -> bool {
         self.drags.takers.contains(&id)
+    }
+
+    /// Makes node `id` drag along `axis` alone, or along either with
+    /// `None`: a press that travels across the axis is no drag of its, and a
+    /// viewport above may pan it.
+    pub fn set_drag_axis(&mut self, id: NodeId, axis: Option<Axis>) {
+        let mut axes = std::mem::take(&mut self.drags.axes);
+        axes.retain(|&(n, _)| n != id && self.arena().is_live(n));
+        if let Some(axis) = axis
+            && self.arena().is_live(id)
+        {
+            axes.push((id, axis));
+        }
+        self.drags.axes = axes;
+    }
+
+    /// The axis node `id` drags along alone, if it keeps to one.
+    pub fn drag_axis(&self, id: NodeId) -> Option<Axis> {
+        self.drags
+            .axes
+            .iter()
+            .find(|&&(n, _)| n == id)
+            .map(|&(_, axis)| axis)
     }
 
     /// Whether node `id` won a drag that runs.
@@ -203,6 +243,7 @@ impl NodeStore {
                 if let Some(now) = self.input_time() {
                     track.push(now, at);
                 }
+                let axis = self.drag_axis(n);
                 self.drags.drags.push(Drag {
                     pointer,
                     node: n,
@@ -210,6 +251,7 @@ impl NodeStore {
                     last: at,
                     started: false,
                     behind_scroll,
+                    axis,
                     sample: None,
                     track,
                 });
@@ -220,12 +262,22 @@ impl NodeStore {
         }
     }
 
-    /// Whether pointer `pointer`'s drag decides its moves before a pan may:
-    /// one that started, or one armed above no scroll viewport.
-    pub(crate) fn drag_leads(&self, pointer: PointerId) -> bool {
-        self.drags
-            .of(pointer)
-            .is_some_and(|d| d.started || !d.behind_scroll)
+    /// Whether pointer `pointer`'s drag decides its move to `at` before a
+    /// pan may: one that started, or one armed above no scroll viewport. A
+    /// drag along one axis that the pointer leaves past `slop` across it is
+    /// dropped first, and leads nothing.
+    pub(crate) fn drag_leads_at(&mut self, pointer: PointerId, at: [f32; 2], slop: f32) -> bool {
+        let Some(d) = self.drags.of(pointer) else {
+            return false;
+        };
+        if !d.started
+            && let Some(axis) = d.axis
+            && crosses(vec(at, d.origin), axis, slop)
+        {
+            self.drags.forget(pointer);
+            return false;
+        }
+        d.started || !d.behind_scroll
     }
 
     /// Forgets pointer `pointer`'s armed drag: a pan took the contact.
@@ -269,6 +321,12 @@ impl NodeStore {
         }
         let total = vec(at, origin);
         if total.x.hypot(total.y) < slop {
+            return None;
+        }
+        if let Some(axis) = self.drags.of(pointer).and_then(|d| d.axis)
+            && crosses(total, axis, slop)
+        {
+            self.drags.forget(pointer);
             return None;
         }
         if !self.arena().is_live(node) {

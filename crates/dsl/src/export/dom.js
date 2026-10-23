@@ -499,6 +499,11 @@ const P = {
   hero: (el, v) => attr(el, "data-hero", v),
   ring: (el, v) => { el.style.outline = truth(v) ? "" : "none"; },
   key: (el, v) => attr(el, "accesskey", v),
+  axis: (el, v) => {
+    if (v === null) delete el.dataset.dragAxis;
+    else el.dataset.dragAxis = v === 0n ? "row" : "column";
+    if (el.$drag) el.style.touchAction = dragTouch(el);
+  },
   source(el, v, mask) {
     const u = url(v);
     if (!mask) el.src = u;
@@ -579,10 +584,13 @@ addEventListener("click", (e) => {
 // as a `viso-drag` event: its phase (0 start, 1 move, 2 end), the pointer
 // event, the travel since the last sample and since the press, and the
 // velocity (px/s) over the last 40ms of samples, none once cancelled.
+// What a touch on `el` the browser may still pan: the axis across its drag's.
+const dragTouch = (el) => ({ row: "pan-y", column: "pan-x" })[el.dataset.dragAxis] ?? "none";
+
 const draggable = (el) => {
   if (el.$drag) return;
   el.$drag = true;
-  el.style.touchAction = "none";
+  el.style.touchAction = dragTouch(el);
   let press = null;
   const velocity = (e) => {
     const t = e.timeStamp, x = e.clientX, y = e.clientY;
@@ -613,7 +621,11 @@ const draggable = (el) => {
     if (!press || e.pointerId !== press.id) return;
     if (press.on) return send(1, e);
     velocity(e);
-    if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < slop(e)) return;
+    const dx = e.clientX - press.x, dy = e.clientY - press.y;
+    if (Math.hypot(dx, dy) < slop(e)) return;
+    // A drag along one axis lets go of a press that travels across it.
+    const axis = el.dataset.dragAxis;
+    if (axis && (axis === "row") !== (Math.abs(dx) >= Math.abs(dy))) { press = null; return; }
     press.on = true;
     el.setPointerCapture(e.pointerId);
     el.dataset.visoDragging = "";

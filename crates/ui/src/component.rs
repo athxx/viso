@@ -6781,6 +6781,14 @@ impl<'a> BuildCx<'a> {
         handle
     }
 
+    /// Make an already-declared node drag along `axis` alone, or along
+    /// either with `None` (the default): a press that travels across it is
+    /// left to a viewport above.
+    pub fn drag_axis(&mut self, handle: Handle, axis: Option<crate::layout::Axis>) -> Handle {
+        self.store.set_drag_axis(handle.id, axis);
+        handle
+    }
+
     /// Make an already-declared node take pinches (default: it takes none).
     pub fn pinchable(&mut self, handle: Handle, takes: bool) -> Handle {
         self.store.set_pinchable(handle.id, takes);

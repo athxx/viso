@@ -225,6 +225,8 @@ pub(crate) fn control_cells(
         control.page_transition,
         control.node.hero,
         control.node.focus_ring,
+        control.node.access_key,
+        control.node.drag_axis,
     ])
     .flatten()
     .chain(arms)
@@ -245,9 +247,9 @@ pub(crate) fn control_cells(
 /// caption, its `translate`, `scale`, `rotation` and `transform_origin`, and
 /// its `cursor`, its text's `font_style`, `spans` and `selectable`, its
 /// `shadow`, a refreshable viewport's `refreshing`, its `sticky`, and a
-/// navigation stack's `page_transition`, its `hero`, its `focus_ring` and its
-/// `access_key`.
-const SHOWN: usize = 50;
+/// navigation stack's `page_transition`, its `hero`, its `focus_ring`, its
+/// `access_key` and its `drag_axis`.
+const SHOWN: usize = 51;
 
 /// The input of each value a node shows, in order.
 const SHOWN_INPUTS: [ControlInput; SHOWN] = [
@@ -301,6 +303,7 @@ const SHOWN_INPUTS: [ControlInput; SHOWN] = [
     ControlInput::Hero,
     ControlInput::FocusRing,
     ControlInput::AccessKey,
+    ControlInput::DragAxis,
 ];
 
 /// Where its `translate` sits among the values a node shows.
@@ -332,6 +335,9 @@ const HERO: usize = 47;
 
 /// Where its `focus_ring` sits among the values a node shows.
 const FOCUS_RING: usize = 48;
+
+/// Where its `drag_axis` sits among the values a node shows.
+const DRAG_AXIS: usize = 50;
 
 /// Where its `access_key` sits among the values a node shows.
 const ACCESS_KEY: usize = 49;
@@ -547,6 +553,7 @@ impl Shown {
             hero,
             focus_ring,
             access_key,
+            drag_axis,
         ] = &shows;
         let access_key = access_key.as_str().and_then(|key| key.chars().next());
         let spanned = crate::text_style::spans(pieces);
@@ -667,6 +674,14 @@ impl Shown {
         }
         if shown(ACCESS_KEY) && changed(ACCESS_KEY) {
             store.set_access_key(self.node, access_key);
+        }
+        if shown(DRAG_AXIS) && changed(DRAG_AXIS) {
+            let axis = match drag_axis {
+                Value::Int(0) => Some(viso_ui::Axis::Row),
+                Value::Int(_) => Some(viso_ui::Axis::Column),
+                _ => None,
+            };
+            store.set_drag_axis(self.node, axis);
         }
         // An autofocus node takes the focus as it mounts, unless something
         // already holds it.

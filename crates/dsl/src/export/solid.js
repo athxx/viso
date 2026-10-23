@@ -282,6 +282,7 @@ export const show = {
   truth,
   color,
   opt: (v) => (v === null ? undefined : text(v)),
+  axis: (v) => (v === null ? undefined : v === 0n ? "row" : "column"),
   num: (v) => (v === null ? undefined : String(v)),
   url,
   fit: (v) => fits[Number(v ?? 0n)] || "contain",
