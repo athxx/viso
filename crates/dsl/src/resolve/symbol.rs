@@ -5,7 +5,7 @@
 //! same declaration — reordered, reformatted, moved within a file, recompiled on a
 //! different machine — mint the same `SymbolId`; an unrelated declaration, or the
 //! same name in a different module, mints a different one. This is what lets hot
-//! reload (Slice O) and AOT artifacts (Slice P) match a new build's symbol against
+//! reload and AOT artifacts match a new build's symbol against
 //! an old one without a name table.
 //!
 //! The fingerprint is a fixed, versioned **FNV-1a-128** we own outright: a constant
@@ -16,7 +16,7 @@
 //! here on purpose: `DefaultHasher` is unspecified and seedable, so it could never
 //! back a durable id.
 //!
-//! Canonical fingerprint inputs (doc section 10.4.3): package identity, module path,
+//! Canonical fingerprint inputs: package identity, module path,
 //! declaration kind, and canonical declaration path — each length-prefixed so no two
 //! distinct input tuples can collide by concatenation. The [`FINGERPRINT_VERSION`]
 //! tag rides along in artifact metadata; bumping it (or any constant below) is an
@@ -183,7 +183,7 @@ impl Fnv1a128 {
 /// `package` is the package identity string; `module_path` is the `::`-joined module
 /// path; `decl_path` is the canonical dotted path to the declaration within its
 /// module (e.g. `Counter.bump` for an action on a component). These are the four
-/// inputs doc section 10.4.3 fixes as canonical — nothing position- or text-derived.
+/// canonical inputs — nothing position- or text-derived.
 #[derive(Debug, Clone, Copy)]
 pub struct SymbolIdentity<'a> {
     pub package: &'a str,

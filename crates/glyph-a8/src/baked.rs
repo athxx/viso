@@ -2,7 +2,7 @@
 //! a fixed set of sizes, stored compressed and read in place.
 //!
 //! A product whose UI font sizes are fixed bakes its packaged faces at those
-//! sizes (Text/Font Runtime §3.6). The runtime glyph cache reads a glyph's
+//! sizes. The runtime glyph cache reads a glyph's
 //! coverage from here before it would rasterize it, and a build that bakes
 //! every face links no rasterizer at all.
 //!

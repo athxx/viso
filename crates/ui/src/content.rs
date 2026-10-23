@@ -2,7 +2,7 @@
 //! node that draws text, an image, a vector path, an asset or a brush program — everything the paint step
 //! needs beyond a node's background quad.
 //!
-//! `viso-ui` cannot shape text or decode images: the architecture DAG allows it
+//! `viso-ui` cannot shape text or decode images: the crate graph allows it
 //! to depend on `viso-render` (for the primitive data types) but not on
 //! `viso-text`, so it never owns a font stack. Content is therefore produced by
 //! an upper tier that owns the font resolver, shaper, and residency pools: that
@@ -74,8 +74,8 @@ pub enum Content {
         /// The `max_width` (physical px) this run was shaped/wrapped at, or `None`
         /// when shaped unconstrained (single-line natural). The layout pass
         /// compares a wrap-eligible leaf's assigned box width against this to
-        /// decide whether the run must reflow to a narrower width (DL1
-        /// constraint downflow); `viso-ui` records the mismatch as data and the
+        /// decide whether the run must reflow to a narrower width (constraint
+        /// downflow); `viso-ui` records the mismatch as data and the
         /// facade — which owns the font stack — does the reshape.
         shaped_at_width: Option<f32>,
         /// How the run depends on its box's width, from its request's style

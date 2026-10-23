@@ -12,7 +12,7 @@
 //! [`crate::position`], not in the engine, so the analysis logic never deals with
 //! encoding concerns.
 //!
-//! Cold-path tooling throughout (AGENTS 7.2).
+//! Cold-path tooling throughout.
 
 use viso_dsl::TextRange;
 use viso_dsl::TextSize;

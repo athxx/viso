@@ -20,8 +20,8 @@
 //! invalidation, not a rebuild.
 //!
 //! The popup is dismissible from the keyboard: the content is focusable and honors
-//! Escape to close (an interactive control must have a keyboard equivalent,
-//! AGENTS section 15), firing an optional `on_dismiss`. An app captures a
+//! Escape to close (an interactive control must have a keyboard equivalent),
+//! firing an optional `on_dismiss`. An app captures a
 //! [`PopupHandle`] (see [`Popup::handle`]) and calls
 //! [`open`](PopupHandle::open)/[`close`](PopupHandle::close)/[`toggle`](PopupHandle::toggle)
 //! from the anchor's own controls.
@@ -441,8 +441,8 @@ impl Component for Popup {
 
                 // The floating content: authored once, flagged overlay (top layer),
                 // and hidden until opened. Its root is focusable and closes on
-                // Escape, and is a Group in the semantics tree (a dialog role is a
-                // Modal refinement, a later slice).
+                // Escape, and is a Group in the semantics tree (the dialog role
+                // belongs to Modal).
                 let mut arrow = None;
                 let content = cx.flex(
                     FlexStyle {

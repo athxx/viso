@@ -1,6 +1,5 @@
 //! The dev channel between `viso run` (the host) and a running dev artifact
-//! (the runtime): `viso-ende` binary frames, one message family per direction
-//! (`Viso_Hot_Reload.md` §33–§37, §46).
+//! (the runtime): `viso-ende` binary frames, one message family per direction.
 //!
 //! A frame is a four-byte little-endian length and one message, at most
 //! [`MAX_FRAME`] bytes. Each message starts with a stable one-byte tag. The
@@ -186,9 +185,9 @@ id128! {
     DevSessionId;
     /// One launch of a running app within a session.
     RuntimeSessionId;
-    /// The build the artifact was launched as (`Viso_CLI.md` §46).
+    /// The build the artifact was launched as.
     BuildId;
-    /// The project's source graph (`Viso_CLI.md` §46).
+    /// The project's source graph.
     ProjectFingerprint;
     /// The app schema patches are compiled against.
     SchemaFingerprint;
@@ -205,7 +204,7 @@ impl Revision {
     pub const LAUNCH: Revision = Revision(1);
 }
 
-/// A patch domain, with its stable wire tag (§39).
+/// A patch domain, with its stable wire tag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Domain {
@@ -265,7 +264,7 @@ impl Domains {
     }
 }
 
-/// Where the runtime runs (§4.1, §5).
+/// Where the runtime runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeTarget {
     DesktopHost,
@@ -286,7 +285,7 @@ impl RuntimeTarget {
     }
 }
 
-/// A §51 stage, where a patch failed or what it reached.
+/// A patch pipeline stage, where a patch failed or what it reached.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Stage {
@@ -326,7 +325,7 @@ impl Stage {
         Stage::SnapshotRestore,
     ];
 
-    /// The §51 spelling.
+    /// The stage's stable spelling.
     pub fn as_str(self) -> &'static str {
         match self {
             Stage::Watch => "watch",
@@ -348,7 +347,7 @@ impl Stage {
     }
 }
 
-/// The runtime's first frame: who it is and what it can apply (§34, §4.1).
+/// The runtime's first frame: who it is and what it can apply.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeHello {
     pub protocol_version: u16,
@@ -373,7 +372,7 @@ pub struct RuntimeHello {
     pub inspector: InspectorCaps,
 }
 
-/// The host's acceptance of a runtime (§34).
+/// The host's acceptance of a runtime.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostHello {
     pub protocol_version: u16,
@@ -419,7 +418,7 @@ impl fmt::Display for Reject {
     }
 }
 
-/// One patch: a revision step of the running app (§35). Its sections, at most
+/// One patch: a revision step of the running app. Its sections, at most
 /// one per domain and in tag order, commit together or not at all.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PatchBundle {
@@ -514,7 +513,7 @@ pub struct CommitCounts {
 }
 
 impl CommitCounts {
-    /// What the commit reset: states, focus, scroll or handlers (§8).
+    /// What the commit reset: states, focus, scroll or handlers.
     pub fn scoped_resets(&self) -> u32 {
         self.reset
             .saturating_add(self.focus_lost)
@@ -523,10 +522,10 @@ impl CommitCounts {
     }
 }
 
-/// How many of a view's nodes carry each `DirtyClass` (`viso_schema::DirtyClass`,
-/// AGENTS §11), observed once a commit finished. A property patch that
+/// How many of a view's nodes carry each `DirtyClass` (`viso_schema::DirtyClass`),
+/// observed once a commit finished. A property patch that
 /// touches one node's one class reports a single `1` here and nothing else —
-/// the precise mask the commit targeted (§12), not every flag a node happens
+/// the precise mask the commit targeted, not every flag a node happens
 /// to carry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DirtyCounts {
@@ -562,7 +561,7 @@ impl DirtyCounts {
     }
 
     /// Each nonzero class, by name, in `viso_schema::DirtyClass`'s bit order —
-    /// the human line (§53) and the JSON event (§36.4) both name classes
+    /// the human line and the JSON event both name classes
     /// this way.
     pub fn nonzero(&self) -> impl Iterator<Item = (&'static str, u32)> {
         [
@@ -593,7 +592,7 @@ pub struct Notice {
 }
 
 /// One state cell a commit reset, by its own owning key: the narrowest scope
-/// `Viso_Hot_Reload.md` §8's `PATCH_WITH_SCOPED_RESET` names, so the ACK says
+/// `PATCH_WITH_SCOPED_RESET` names, so the ACK says
 /// *which* state reset, not only how many did ([`PatchAck::scoped_resets`]
 /// for the total count).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -625,7 +624,7 @@ pub struct ResourceCommit {
     pub dirty: DirtyCounts,
 }
 
-/// A patch applied (§37).
+/// A patch applied.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PatchAck {
     /// The revision the runtime now matches.
@@ -667,7 +666,7 @@ pub struct GameCommit {
 }
 
 impl PatchAck {
-    /// What the commit reset, over every view (§37).
+    /// What the commit reset, over every view.
     pub fn scoped_resets(&self) -> u32 {
         self.files
             .iter()
@@ -675,7 +674,7 @@ impl PatchAck {
     }
 }
 
-/// A patch refused; the runtime keeps `last_good_revision` (§37).
+/// A patch refused; the runtime keeps `last_good_revision`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PatchNack {
     pub base_revision: Revision,
@@ -691,7 +690,7 @@ pub struct PatchNack {
 pub const NACK_UNKNOWN_SESSION: &str = "NACK_UNKNOWN_SESSION";
 /// The patch was compiled for another build.
 pub const NACK_BUILD_MISMATCH: &str = "NACK_BUILD_MISMATCH";
-/// The patch's base is not the runtime's revision (§36).
+/// The patch's base is not the runtime's revision.
 pub const NACK_REVISION_MISMATCH: &str = "NACK_REVISION_MISMATCH";
 /// The patch does not move the revision forward.
 pub const NACK_REVISION_ORDER: &str = "NACK_REVISION_ORDER";
@@ -1136,7 +1135,7 @@ pub struct RuntimeIdentity {
 }
 
 impl RuntimeIdentity {
-    /// Checks `patch` against the runtime before anything is staged (§36): it
+    /// Checks `patch` against the runtime before anything is staged: it
     /// must name this session and launch, this build, start at the current
     /// revision, move forward, and carry only advertised domains. A refusal
     /// keeps the current revision.

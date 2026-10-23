@@ -1766,8 +1766,8 @@ pub(crate) fn pinned(tree: &impl LayoutTree, child: u32) -> [bool; 2] {
 /// its own box (`bounds`); its content is placed at the viewport origin with its
 /// natural main extent — deliberately *not* clamped to the viewport, so content
 /// longer than the viewport along `axis` overflows and becomes scrollable. The
-/// cross extent fills the viewport (content is only scrollable on `axis` this
-/// slice). The scroll offset is not applied here: `bounds` stays the unscrolled
+/// cross extent fills the viewport (content is only scrollable on `axis`). The
+/// scroll offset is not applied here: `bounds` stays the unscrolled
 /// layout truth and the world transform pass shifts the subtree by `-scroll`.
 ///
 /// The content extent (what the scroll clamp needs) is recorded via

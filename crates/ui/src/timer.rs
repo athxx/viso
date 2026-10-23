@@ -10,14 +10,14 @@
 //! does **not** cost a frame while it waits. The registry surfaces the
 //! [`earliest`](TimerRegistry::earliest) deadline; the scheduler turns that into
 //! a `ControlFlow::WaitUntil(deadline)` so the OS blocks the loop until the
-//! deadline instead of spinning through beats (the zero-CPU-when-idle contract,
-//! section 7.1). The driver calls [`fire_due`](TimerRegistry::fire_due) once at
+//! deadline instead of spinning through beats (the zero-CPU-when-idle contract).
+//! The driver calls [`fire_due`](TimerRegistry::fire_due) once at
 //! each frame head with the current instant; every timer whose deadline has
 //! passed fires and is removed.
 //!
-//! Steady-state cost: the registry is a single `Vec` (no per-node map — section
-//! 45), `earliest` and `fire_due` are flat passes with no heap allocation
-//! (section 28), and it empties itself as timers fire so the frame loop can halt
+//! Steady-state cost: the registry is a single `Vec` (no per-node map),
+//! `earliest` and `fire_due` are flat passes with no heap allocation, and it
+//! empties itself as timers fire so the frame loop can halt
 //! (a driver's `next_timer_deadline` reads
 //! [`earliest`](TimerRegistry::earliest); an empty registry returns `None`).
 
@@ -111,8 +111,8 @@ struct Timer {
     on_fire: Option<OnFire>,
 }
 
-/// The set of live one-shot timers. A flat `Vec` (section 45: no per-node map on
-/// a path consulted every frame to compute the next deadline); timers
+/// The set of live one-shot timers. A flat `Vec` (no per-node map on a path
+/// consulted every frame to compute the next deadline); timers
 /// swap-remove themselves as they fire, so a settled UI leaves it empty and the
 /// frame loop blocks with no pending deadline.
 #[derive(Default)]

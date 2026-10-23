@@ -1,12 +1,12 @@
 //! Compile candidate + validate — the first, purely functional stage of the hot
-//! reload transaction (architecture section 42; AGENTS 21.7).
+//! reload transaction.
 //!
 //! A hot reload is not a rebuild. It is a transaction whose early stages are all
 //! pure functions of the new source and the prior compiled state; nothing here
 //! touches the live UI tree. `plan` drives exactly the shared fragment frontend
 //! the `ui!` proc-macro drives (tokenize → parse → resolve → lower UI/Binding IR
 //! → key analysis), which is the runtime form of the "three source forms share
-//! one frontend" contract (section 21.5). It collects every fatal diagnostic and,
+//! one frontend" contract. It collects every fatal diagnostic and,
 //! if any is present, returns `Err` — the caller short-circuits before commit, so
 //! the live tree is left at its last-good state without any snapshot (the
 //! keep-last-good invariant; see the module docs).

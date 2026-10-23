@@ -1,4 +1,4 @@
-//! The reload tier of a game build (Viso_DSL_1.0.md section 110): which
+//! The reload tier of a game build: which
 //! layer a running game swaps a new build in at, chosen by comparing the
 //! last-good build's Behavior IR with the candidate's by stable identity.
 //!
@@ -149,7 +149,7 @@ pub struct GameReload {
     pub changes: Vec<GameChange>,
 }
 
-/// The code a reload diagnostic carries (Viso_DSL_1.0.md appendix C).
+/// The code a reload diagnostic carries.
 pub const RELOAD_TIER: &str = "E5103";
 
 impl GameReload {

@@ -48,19 +48,19 @@
 //!
 //! # Memory pressure sheds, never flushes
 //!
-//! An OS low-memory warning must not cascade-flush the whole text cache (spec
-//! section 18): a face upgrade never flushes app-wide text caches, and neither
-//! does transient memory pressure. [`shed_to_pressure_budget`] shrinks the cache
-//! to a smaller *pressure budget* by running the same coldest-first
-//! Probation-then-demote eviction the ordinary budget uses — it is a temporary
-//! lower ceiling, not a `clear()`. Pinned faces (the live working set: default
-//! UI face, in-flight shaping/raster, the focused document face) are never
-//! evicted, so the visible working set keeps rendering untouched while cold
-//! one-shot residency is reclaimed. When pressure clears, [`restore_budget`]
-//! lifts the ceiling back and the working set simply repopulates on demand. The
-//! pressure ceiling never drops below the pinned working set's own cost: if
-//! meeting it would require evicting a pin, eviction stops rather than violate a
-//! live scope, exactly as the ordinary budget does.
+//! An OS low-memory warning must not cascade-flush the whole text cache: a face
+//! upgrade never flushes app-wide text caches, and neither does transient
+//! memory pressure. [`shed_to_pressure_budget`] shrinks the cache to a smaller
+//! *pressure budget* by running the same coldest-first Probation-then-demote
+//! eviction the ordinary budget uses — it is a temporary lower ceiling, not a
+//! `clear()`. Pinned faces (the live working set: default UI face, in-flight
+//! shaping/raster, the focused document face) are never evicted, so the visible
+//! working set keeps rendering untouched while cold one-shot residency is
+//! reclaimed. When pressure clears, [`restore_budget`] lifts the ceiling back
+//! and the working set simply repopulates on demand. The pressure ceiling never
+//! drops below the pinned working set's own cost: if meeting it would require
+//! evicting a pin, eviction stops rather than violate a live scope, exactly as
+//! the ordinary budget does.
 //!
 //! [`advance_epoch`]: FontCache::advance_epoch
 //! [`take_evicted`]: FontCache::take_evicted
@@ -351,7 +351,7 @@ impl FontCache {
     /// Shed cold residency down to a smaller *pressure budget* in response to an
     /// OS low-memory warning, without flushing the working set.
     ///
-    /// This is spec section 18's guarantee under memory pressure: pressure lowers
+    /// This is the guarantee under memory pressure: pressure lowers
     /// the ceiling, it does not clear the cache. The same coldest-first
     /// eviction the resting budget uses runs against the reduced ceiling —
     /// Probation faces evict first, Protected demotes only if Probation is

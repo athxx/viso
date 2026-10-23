@@ -16,7 +16,7 @@
 //! [`E2003`](ResolveErrorKind::CyclicImport).
 //!
 //! This is a cold-path structure (built once during resolution), so `HashMap`/`Vec`/
-//! owned paths are appropriate (AGENTS section 7.2).
+//! owned paths are appropriate.
 
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
@@ -128,7 +128,7 @@ pub enum ResolveErrorKind {
 }
 
 impl ResolveErrorKind {
-    /// The stable diagnostic code (spec section 30).
+    /// The stable diagnostic code.
     pub const fn code(self) -> &'static str {
         match self {
             ResolveErrorKind::UnresolvedModule

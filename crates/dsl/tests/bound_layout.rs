@@ -1,4 +1,4 @@
-//! Layout properties bound to values (§U3): a node's size, rules, padding,
+//! Layout properties bound to values: a node's size, rules, padding,
 //! gaps, arrangement, grid tracks, stack alignment and absolute insets each
 //! lay out by the value they read, under hot reload and from the release
 //! package, follow a state change and the environment, and lay out again

@@ -1,4 +1,4 @@
-//! The AI generation loop (§157): sources written with the mistakes generated
+//! The AI generation loop: sources written with the mistakes generated
 //! code makes most — the removed `child` and event arrow, `Float`, a misspelled
 //! property, event, method, action or variant, a number where text goes, mixed
 //! numeric types, `?.` on a value that is not optional — are repaired by
@@ -310,7 +310,7 @@ fn a_generated_game_is_repaired_and_plays_its_tape() {
     assert_eq!(back, still, "a still stick holds the point");
 }
 
-/// The loop's metrics over the whole set (§157): the first-pass parse and
+/// The loop's metrics over the whole set: the first-pass parse and
 /// check rates, the mean rounds, and the diagnostic-guided repair rate, which
 /// must be total — every generated mistake carries its own fix.
 #[test]

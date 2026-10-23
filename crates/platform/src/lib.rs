@@ -82,7 +82,7 @@ pub use viso_handle::RawWindowHandle;
 /// Opaque handle to a platform GPU surface.
 ///
 /// Distinct from [`WindowId`]: a window is an OS shell; a surface is the
-/// drawable it hosts. In Phase 1 they map 1:1, but the split lets a window host
+/// drawable it hosts. Today they map 1:1, but the split lets a window host
 /// several surfaces later without churning event routing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SurfaceId(pub u32);
@@ -130,8 +130,8 @@ pub trait PlatformApp {
     /// [`WindowChrome::SelfDrawn`](crate::WindowChrome::SelfDrawn) hands over:
     /// the app knows where its caption is (the OS no longer does), so it tells
     /// the backend which parts of it behave like a title bar. The regions are
-    /// small compact rects (§29), copied into the window's cache — no callback,
-    /// no UI type crosses the boundary (§3.5). Replaces any prior set; an empty
+    /// small compact rects, copied into the window's cache — no callback, no UI
+    /// type crosses the boundary. Replaces any prior set; an empty
     /// slice clears them. A no-op on backends without self-drawn chrome
     /// (headless/native-only), which is why this carries a default body.
     fn set_draggable_regions(&mut self, window: WindowId, regions: &[LogicalRect]) {
@@ -145,7 +145,7 @@ pub trait PlatformApp {
         let _ = (window, fullscreen);
     }
 
-    /// Publish a semantics delta for `window` (ADR 0030, ADR 0042). The app
+    /// Publish a semantics delta for `window`. The app
     /// sends a full tree after [`AccessRequest::Activated`] and only changed
     /// nodes after that. A no-op on backends without an accessibility bridge
     /// ([`PlatformCaps::accessibility`] is `false`).
@@ -307,7 +307,7 @@ pub trait Window {
     /// time* whether to draw its own window buttons or yield to the OS overlay —
     /// the single build never has to wait for the event. The event still fires
     /// afterward to refine the box on resize/scale. `Some`/`None` here carries
-    /// the presence of native buttons (§24 data contract, not `target_os`); the
+    /// the presence of native buttons (a data contract, not `target_os`); the
     /// default is `None` for backends with no self-drawn chrome (headless).
     fn chrome_geom(&self) -> Option<LogicalRect> {
         None

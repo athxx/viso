@@ -1,4 +1,4 @@
-//! The opacity planner (§14.5): decide how a group's opacity is realized —
+//! The opacity planner: decide how a group's opacity is realized —
 //! folded into its children for free, or paid for with an isolation layer — and
 //! record *why* a layer was needed when one is.
 //!
@@ -12,37 +12,37 @@
 //!   — where two translucent children overlap, per-child opacity double-blends
 //!   the overlap, but the group is meant to composite once and then fade. Only
 //!   then does the group need to render to an isolation layer (an offscreen pass)
-//!   and composite that layer back at the group opacity (§14.5, §3145).
+//!   and composite that layer back at the group opacity.
 //!
 //! So the planner's job is to *avoid* the offscreen path whenever it is
 //! semantically safe: a fully-opaque group is a no-op; a group whose children
 //! provably do not overlap pushes its opacity into the children and stays local;
 //! only an overlapping translucent group escalates to a layer. When overlap is
-//! unknown, the planner keeps correctness and uses a layer (§14.5: "when unsure,
-//! keep correctness and use a layer").
+//! unknown, the planner keeps correctness and uses a layer ("when unsure, keep
+//! correctness and use a layer").
 //!
-//! This is a cold-path decision (§7.2), the same shape as the
+//! This is a cold-path decision, the same shape as the
 //! [`clip`](crate::clip) planner: the plan is computed once when a group is
 //! ingested — beside where its [`EffectCost`] is assigned — and carries *what to
-//! do* plus, for a layer, the [`LayerReason`] the Effect Planner (§3145) records.
+//! do* plus, for a layer, the [`LayerReason`] the Effect Planner records.
 //! The renderer carries the plan out; this module does not itself allocate a
 //! target.
 
 use crate::EffectCost;
 
-/// Why a potential offscreen layer exists (§3149). Every layer the renderer
+/// Why a potential offscreen layer exists. Every layer the renderer
 /// creates is tagged with its reason so the Effect Planner can try to eliminate
-/// it and the inspector can show *why* a group cost an offscreen pass (§62).
+/// it and the inspector can show *why* a group cost an offscreen pass.
 ///
-/// C0.4 introduces the enum and populates the [`GroupOpacity`](LayerReason::GroupOpacity)
-/// case; the remaining reasons are the vocabulary the later effect lanes
+/// The opacity planner populates the [`GroupOpacity`](LayerReason::GroupOpacity)
+/// case; the remaining reasons are the vocabulary the other effect lanes
 /// (backdrop filters, advanced blend, snapshot cache) tag their layers with, so
 /// the reason a layer carries is nameable from one place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LayerReason {
     /// A group opacity whose children overlap, so per-child opacity would
     /// double-blend the overlap: the subtree renders to a layer composited back
-    /// at the group's opacity. The only reason C0.4 produces.
+    /// at the group's opacity. The only reason the opacity planner produces.
     GroupOpacity,
     /// A group filter that samples neighbors (blur, displacement) — an image
     /// filter lane, not yet produced here.
@@ -94,14 +94,14 @@ impl LayerReason {
         }
     }
 
-    /// What a layer kept alive *only* by this reason costs to realize (§7.5).
+    /// What a layer kept alive *only* by this reason costs to realize.
     ///
     /// Most reasons buy a plain offscreen color pass. A backdrop filter also
     /// captures the pixels behind the group, and an advanced blend reads the
     /// destination it composites over — the two rungs above `NeedsOffscreen` on
     /// the ladder. Every reason is [`Nonlocal`](crate::EffectLocality::Nonlocal)
     /// by construction: a reason that *survives* planning is, by definition, an
-    /// effect that could not be shaded in place (§3120).
+    /// effect that could not be shaded in place.
     pub fn cost(self) -> EffectCost {
         match self {
             LayerReason::BackdropFilter => EffectCost::NeedsBackdrop,
@@ -131,13 +131,13 @@ impl LayerReason {
 }
 
 /// What the planner knows about whether a group's children overlap — the fact
-/// that decides between the free fold and an isolation layer (§14.5).
+/// that decides between the free fold and an isolation layer.
 ///
 /// This is deliberately a three-state fact, not a bool: `Unknown` is distinct
 /// from `Overlapping` because the safe response to both is a layer, but the
 /// inspector and the later planner passes benefit from knowing an escalation was
-/// a *proven* overlap versus a *conservative* fallback (§14.5's "when unsure,
-/// keep correctness").
+/// a *proven* overlap versus a *conservative* fallback ("when unsure, keep
+/// correctness").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ChildOverlap {
     /// The children provably do not overlap (disjoint bounds, or a single child):
@@ -187,7 +187,7 @@ pub enum OpacityPlan {
 }
 
 impl OpacityPlan {
-    /// The realization cost of this plan (§7.5): folding or a no-op stays
+    /// The realization cost of this plan: folding or a no-op stays
     /// [`Local`](EffectCost::Local); an isolation layer is
     /// [`NeedsOffscreen`](EffectCost::NeedsOffscreen).
     pub fn cost(&self) -> EffectCost {
@@ -211,7 +211,7 @@ impl OpacityPlan {
     }
 }
 
-/// Plan how a group opacity is realized (§14.5).
+/// Plan how a group opacity is realized.
 ///
 /// `opacity` is the group factor; `overlap` is what is known about the children.
 /// The ladder, cheapest first:
@@ -222,7 +222,7 @@ impl OpacityPlan {
 /// 3. Otherwise (overlapping, or overlap [`Unknown`](ChildOverlap::Unknown)) the
 ///    group isolates — [`OpacityPlan::IsolateLayer`] tagged
 ///    [`LayerReason::GroupOpacity`]. Choosing the layer for `Unknown` is the
-///    "when unsure, keep correctness" rule (§14.5).
+///    "when unsure, keep correctness" rule.
 ///
 /// `opacity` is clamped to `[0, 1]`; a value `<= 0` is treated as a fully
 /// transparent fold factor (the group contributes nothing) rather than a layer,
@@ -307,7 +307,7 @@ mod tests {
     }
 
     /// Unknown overlap keeps correctness by isolating, exactly as overlapping
-    /// does (§14.5: "when unsure, keep correctness and use a layer").
+    /// does ("when unsure, keep correctness and use a layer").
     #[test]
     fn unknown_overlap_isolates_for_correctness() {
         let plan = plan_group_opacity(0.3, ChildOverlap::Unknown);
@@ -359,7 +359,7 @@ mod tests {
         }
     }
 
-    /// Every reason that survives planning is nonlocal — the §3120 definition of
+    /// Every reason that survives planning is nonlocal — the definition of
     /// "may consider an offscreen target" — and the two reasons that need more
     /// than a color pass rank above it.
     #[test]

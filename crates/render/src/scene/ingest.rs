@@ -1,5 +1,5 @@
 //! Ingest-diff: fold a frame's primitive stream into the retained stores,
-//! bumping only the revision planes a field-wise change actually moved (§8.4).
+//! bumping only the revision planes a field-wise change actually moved.
 //!
 //! The renderer's immediate walk resolves each primitive to its lowered
 //! instance and lowering context, then hands it here through one `ingest_*`
@@ -12,14 +12,14 @@
 //! 2. mutates the store in place *only* where a field differs, and bumps *only*
 //!    the affected revision plane(s) — an unchanged primitive touches neither
 //!    the store nor any plane (this is what makes "0 primitive reconstruction"
-//!    hold under a whole-tree re-emit, §8.4);
+//!    hold under a whole-tree re-emit);
 //! 3. records the slot, lowering context, and bounds in the paint-order spine,
 //!    assigning the stable [`PrimitiveId`], and accumulates the per-frame dirty
 //!    counters ([`super::store::DirtyPlanes`] → [`IngestStats`]).
 //!
 //! A kind/count/sequence change at a slot is a *structural* change: the store's
 //! `ingest_*` appends a fresh entry (cold growth) or, on a shrink, `finish_frame`
-//! trims the tail. Those are the cold paths (§9.5); the steady path — same tree,
+//! trims the tail. Those are the cold paths; the steady path — same tree,
 //! same order — appends nothing and trims nothing.
 //!
 //! The field → plane mapping is the primitive semantics this module owns; the
@@ -178,7 +178,7 @@ impl Instance {
     }
 }
 
-/// Per-frame ingest tallies (§61), accumulated as the frame's primitives are
+/// Per-frame ingest tallies, accumulated as the frame's primitives are
 /// folded in. Plain integer counters — no allocation, reset each `begin_frame`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct IngestStats {
@@ -232,7 +232,7 @@ impl Scene {
             self.ingest_stats.dirty_primitives += 1;
         }
         // Handed to the `record` call that follows, which stamps this primitive's
-        // paint-order slot only if something about it moved (§3202).
+        // paint-order slot only if something about it moved.
         self.set_pending_dirty(dirty.any());
         self.ingest_stats.visible_primitives += 1;
     }
@@ -453,7 +453,7 @@ impl Scene {
 
     /// Ingest a vector path: diff against the retained entry, re-tessellating
     /// only on a geometry change (a transform-only, paint-only, or fully-equal
-    /// revisit re-uses the cached tessellation, §13.4), bump the moved planes,
+    /// revisit re-uses the cached tessellation), bump the moved planes,
     /// record its slot.
     pub fn ingest_path(
         &mut self,
@@ -464,10 +464,10 @@ impl Scene {
         // The device scale drives the tessellation quality bucket. Surface/layer
         // DPI is not yet threaded to lowering, so this round tessellates at the
         // identity scale (bucket 0); the hysteresis machinery is exercised by the
-        // store's unit tests. DPI wiring lands with the surface/layer scale (§13.4).
+        // store's unit tests. DPI wiring lands with the surface/layer scale.
         let (slot, dirty) = self.paths.ingest(path, 1.0);
         // The tessellator runs only on a geometry rebuild (or a cold append);
-        // transform-only and paint-only reuse the cached geometry (§13.4).
+        // transform-only and paint-only reuse the cached geometry.
         if dirty.geometry || dirty.appended {
             self.ingest_stats.path_tessellations += 1;
         }
@@ -556,7 +556,7 @@ impl Scene {
 
     /// Fold an emit's clip rect into the clip store, bumping the clip plane on a
     /// change. The identity-separated clip lets a scroll that only shifts a clip
-    /// bump `ClipRevision` without disturbing geometry/paint (§8.5). Returns
+    /// bump `ClipRevision` without disturbing geometry/paint. Returns
     /// whether the clip moved. Does not itself record — the owning primitive's
     /// `ingest_*` records the paint-order entry.
     pub fn ingest_clip(&mut self, rect: Option<Rect>) -> bool {
@@ -567,7 +567,7 @@ impl Scene {
         changed
     }
 
-    /// Resolve a nested clip stack into a retained [`ClipChainId`] (§14.2).
+    /// Resolve a nested clip stack into a retained [`ClipChainId`].
     ///
     /// `rects` is the ordered axis-aligned clip stack (outermost first), folded
     /// once into the returned descriptor's box; `mask` is the complex tail's
@@ -578,7 +578,7 @@ impl Scene {
     ///
     /// Returns the chain's id and its descriptor. The descriptor's
     /// [`is_empty`](ClipChainDescriptor::is_empty) is the subtree-reject signal
-    /// (§14.3): an empty clip means every primitive under the chain is discarded.
+    ///: an empty clip means every primitive under the chain is discarded.
     pub fn resolve_clip_chain(
         &mut self,
         rects: &[Rect],
@@ -594,7 +594,7 @@ impl Scene {
 
     /// Fold an emit's world-space origin into the transform store, bumping the
     /// transform plane on a change. A pure move (origin shift, unchanged
-    /// geometry/paint) dirties `TransformRevision` alone (§8.5). Returns whether
+    /// geometry/paint) dirties `TransformRevision` alone. Returns whether
     /// the transform moved.
     pub fn ingest_transform(&mut self, origin: [f32; 2]) -> bool {
         let (_id, changed) = self.transforms.ingest(origin);
@@ -605,7 +605,7 @@ impl Scene {
     }
 
     /// Fold a resolved fill/stroke brush into the brush store, bumping the paint
-    /// plane on a change (§8.5). Returns whether the brush moved. The deferred
+    /// plane on a change. Returns whether the brush moved. The deferred
     /// [`Brush::ImagePattern`]/[`Brush::ShaderBrush`] variants are rejected inside
     /// the store rather than stored as no-ops.
     pub fn ingest_brush(&mut self, brush: Brush) -> bool {

@@ -3,7 +3,7 @@
 //! the host as a [`MountEntry`]; the host watches, compiles and plans the
 //! project, and each edit it accepts arrives as a typed patch that commits to
 //! the running windows as one hot reload transaction at the next frame
-//! boundary (`Viso_Hot_Reload.md` §3, §9, §35–§37).
+//! boundary.
 //!
 //! The app watches no file, reads no project source and links no compiler. A
 //! patch's `ui` section carries, for each reloaded file, the candidate view in
@@ -983,7 +983,7 @@ impl HotReloadSession {
     /// Takes what the dev channel delivered: the host's acceptance, patches,
     /// each checked against the revision the runtime will match and loaded
     /// before it is staged, its new shaders validated against and handed to
-    /// the compilers of `windows`, and NACKed when any fails (§36, §38), and
+    /// the compilers of `windows`, and NACKed when any fails, and
     /// failures; then the patches whose compiles finished. Returns whether a
     /// patch became ready to commit or a failure changed.
     fn receive(&mut self, windows: &[WindowState]) -> bool {

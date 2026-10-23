@@ -2,8 +2,8 @@
 //!
 //! This is the *transport* tier: OS-normalized samples with positions already
 //! in logical points, but **not yet hit-tested** against any UI tree. Hit
-//! resolution and widget-facing events live above the platform layer (Phase 3+,
-//! against the `NodeArena`); this crate only reports what the OS delivered.
+//! resolution and widget-facing events live above the platform layer (against
+//! the `NodeArena`); this crate only reports what the OS delivered.
 //!
 //! Design points, decided by the behavior study:
 //! - DPI/scale is *window geometry state*, delivered via one geometry event

@@ -3,31 +3,30 @@
 //!
 //! This module holds **no** `cx`/store types: it is plain data (`DockNode`,
 //! `DockTree`, `PanelKey`, `DropPart`) and total functions over it, so every
-//! structural edit is unit-testable without building a single node (AGENTS
-//! section 35). The build walk in [`super::build`] reads this tree to author
+//! structural edit is unit-testable without building a single node. The build
+//! walk in [`super::build`] reads this tree to author
 //! nodes; the reconcile step in [`super::reconcile`] applies committed edits and
 //! turns them into live geometry.
 //!
 //! The model is an **owned `Box`-linked enum tree**, not a flat
 //! `HashMap<Id, Node>`: Viso already owns a generational node arena and forbids a
-//! second synthetic-id map on any traversed path (AGENTS sections 8.2, 29, 45). A
+//! second synthetic-id map on any traversed path. A
 //! dock tree is small (a few dozen nodes), changes only on discrete drag/command
 //! actions, and is walked whole at reconcile — so a `Box`-linked tree is
 //! cache-friendly, edits in `O(depth)`, and hashes nothing.
 //!
 //! There is deliberately no `Leaf` variant: a single un-tabbed panel is a
 //! [`DockNode::Tabs`] with one panel and `strip: false` (its tab strip hidden).
-//! One variant fewer means one build path and one edit path, and it matches the
-//! reference dock's `hide_tab_bar` on a lone panel.
+//! One variant fewer means one build path and one edit path.
 
 use viso_ui::Axis;
 
 /// A stable, `Copy` identity for a dockable panel. The application assigns one per
 /// panel when registering its content builder; the tree references panels **only**
 /// by key, never by position, so a panel keeps its identity — and its built-once
-/// content subtree and reactive cells — as it moves between docked areas
-/// (AGENTS section 8.6, 21.8). A small integer, not a string: identity on a
-/// traversed path is an ID, never a hashed name (AGENTS section 29).
+/// content subtree and reactive cells — as it moves between docked areas. A small
+/// integer, not a string: identity on a traversed path is an ID, never a hashed
+/// name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PanelKey(pub u32);
 
@@ -37,7 +36,7 @@ pub struct PanelKey(pub u32);
 /// N-way splits are expressed as nested binary `Split`s — the same way a binary
 /// tree expresses an arbitrary partition — so there is exactly one split arm to
 /// build, edit, and reconcile. `fraction` is the leading child's share of the
-/// split's main-axis extent, in `0.0..=1.0`, mirroring the reference splitter's
+/// split's main-axis extent, in `0.0..=1.0`, mirroring the standalone splitter's
 /// fraction model.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DockNode {
@@ -92,9 +91,8 @@ pub enum DropPart {
 }
 
 /// A floating panel: a single panel detached from the docked tree, drawn over the
-/// scene at an absolute rectangle. Floating panels are a Viso addition over the
-/// reference dock (which has none); a float can be dragged back onto a drop band
-/// to redock.
+/// scene at an absolute rectangle. A float can be dragged back onto a drop band to
+/// redock.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Floating {
     /// The detached panel.
@@ -356,8 +354,7 @@ fn join_tabs(node: &mut DockNode, target: PanelKey, key: PanelKey) -> bool {
 /// and the former region on the other. Returns whether the target was found.
 ///
 /// The `target` may be the whole tree root, in which case the root itself is
-/// wrapped — matching the reference dock, where dropping onto the root's edge
-/// splits the entire dock.
+/// wrapped, so dropping onto the root's edge splits the entire dock.
 fn wrap_target(
     node: &mut DockNode,
     target: PanelKey,

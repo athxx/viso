@@ -1,4 +1,4 @@
-//! The seam a 2D accelerator plugs into (§30.4): an i.MX PXP, an Allwinner
+//! The seam a 2D accelerator plugs into: an i.MX PXP, an Allwinner
 //! G2D, an STM32 DMA2D. The raster offers it the rectangle work it would
 //! otherwise do with the CPU; whatever it declines, the raster does itself,
 //! so a device without one, or with one that handles only some formats,

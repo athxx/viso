@@ -1,5 +1,5 @@
 //! `viso-dev-protocol` — the development link between `viso` (the CLI) and a
-//! dev runtime (ADR 0042).
+//! dev runtime.
 //!
 //! The host and the runtime speak the framed messages of [`wire`]; a patch
 //! carries the typed UI and game sections of [`patch`] and the asset blobs of

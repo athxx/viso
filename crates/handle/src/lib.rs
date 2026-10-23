@@ -86,7 +86,7 @@ pub enum RawWindowHandle {
     },
 
     /// Linux with no compositor: the display itself, scanned out through
-    /// KMS (§48.1.1). The platform owns the planes, the buffers and the page
+    /// KMS. The platform owns the planes, the buffers and the page
     /// flips; the backend draws a frame and hands it over through the
     /// [`Scanout`].
     Scanout {

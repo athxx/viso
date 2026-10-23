@@ -1,6 +1,6 @@
-//! F4 frozen-contract pin: the persistent data path's packed batch key, render
-//! chunk projection, dirty-range coalescer, and instance-pool upload discipline
-//! (§9.1, §9.3, §9.6). D/C/E/M/A build their draw submission and incremental
+//! Frozen-contract pin: the persistent data path's packed batch key, render
+//! chunk projection, dirty-range coalescer, and instance-pool upload discipline.
+//! The draw layers above build their draw submission and incremental
 //! rebuild on exactly these shapes — a field widened in the key, a chunk stage
 //! dropped, the coalescer's bridge threshold moved, or the pool re-uploading a
 //! clean frame would ripple invisibly into every consumer.
@@ -16,13 +16,13 @@ use viso_render::batch::planner::{BatchItem, joins};
 use viso_render::pool::{GAP_THRESHOLD, InstancePool, Range, coalesce};
 use viso_render::{BatchFamily, BatchKey, BatchTarget, Rect, RenderChunk, RenderChunkId};
 
-/// The four original pipeline families and their frozen low-three-bit tags
-/// (§9.6). The tag lives in `BatchKey` bits `0..3`.
+/// The four original pipeline families and their frozen low-three-bit tags.
+/// The tag lives in `BatchKey` bits `0..3`.
 ///
 /// Mergeability is pinned alongside them, and the set is wider than the tags: the
-/// texture-sampling families merge too, because the bind group is part of the key
-/// (§20.2), so an equal key is an equal resource and a run of images or glyph runs
-/// on one atlas is one instanced draw. What stays unmergeable is the composite
+/// texture-sampling families merge too, because the bind group is part of the key,
+/// so an equal key is an equal resource and a run of images or glyph runs on one atlas
+/// is one instanced draw. What stays unmergeable is the composite
 /// families, which carry per-draw state their key does not name.
 #[test]
 fn batch_family_tags_and_mergeability_are_frozen() {
@@ -194,7 +194,7 @@ fn render_chunk_shape_and_growth_are_frozen() {
     assert_eq!(chunk.order, (3, 6), "order span extends one per absorb");
 }
 
-/// The dirty-range coalescer's contract (§9.3): a sorted, strictly-increasing
+/// The dirty-range coalescer's contract: a sorted, strictly-increasing
 /// list of changed slots becomes contiguous `Range { start, len }` upload spans,
 /// bridging clean gaps of at most `GAP_THRESHOLD` and splitting past it. One
 /// changed slot is one minimal range (the hover case); no changes are no ranges.
@@ -235,7 +235,7 @@ fn coalescer_ranges_and_thresholds_are_frozen() {
     assert_eq!(split[0], Range { start: 2, len: 1 });
 }
 
-/// The instance pool's upload discipline (§9.1): a pool is a grow-only device
+/// The instance pool's upload discipline: a pool is a grow-only device
 /// buffer diffed against a CPU shadow. An unchanged frame uploads zero bytes and
 /// issues zero `write_buffer` calls; a one-slot change uploads exactly one slot's
 /// bytes; the buffer grows (never shrinks) and its capacity is a high-water mark.

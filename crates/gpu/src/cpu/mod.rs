@@ -1,4 +1,4 @@
-//! `CpuRaster` — the CPU rasterizer backend (§30.4): the production backend
+//! `CpuRaster` — the CPU rasterizer backend: the production backend
 //! of the Embedded-CPU profile, the compatibility path of a device without a
 //! GPU, and the deterministic reference the golden tests and headless runs
 //! draw with.

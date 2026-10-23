@@ -67,7 +67,7 @@ impl CompositionClause {
     }
 }
 
-/// The active IME composition over a paragraph: a spec-12.17 logical edit state.
+/// The active IME composition over a paragraph: a logical edit state.
 ///
 /// Every field is a logical position or range, and the whole state carries a
 /// [`Revision`]. Nothing here is a visual glyph index. When there is no active

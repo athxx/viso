@@ -1,4 +1,4 @@
-//! Order-safe batch planner contract (§9.6): the public paint stream lowers into
+//! Order-safe batch planner contract: the public paint stream lowers into
 //! the maximum contiguous run of compatible instances *within* paint order, and
 //! the render-chunk projection lines up one-to-one with the emitted draws.
 //!
@@ -167,7 +167,7 @@ fn incompatible_primitive_splits_equal_key_quads_in_order() {
 #[test]
 fn batch_key_packs_and_unpacks_losslessly() {
     // The packed key round-trips through its field accessors for every family,
-    // every target class, and a bound resource — the frozen §9.6 field layout.
+    // every target class, and a bound resource — the frozen field layout.
     for (family, tag) in [
         (BatchFamily::Quad, 0u64),
         (BatchFamily::Image, 1),

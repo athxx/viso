@@ -4,8 +4,7 @@
 //! The framework's packaged/external font input is sfnt only (TTF/OTF/TTC/OTC);
 //! it does not decode or decompress WOFF2. A caller holding a compressed web
 //! font decompresses it to sfnt before supplying the bytes here, or injects
-//! already-decoded sfnt through the external font-provider seam (see ADR 0028
-//! and ADR 0026).
+//! already-decoded sfnt through the external font-provider seam.
 //!
 //! Given owned bytes, this identifies the container from its sfnt magic and
 //! reports how many faces it holds, so the resolver can register each as a
@@ -48,7 +47,7 @@ fn leading_tag(bytes: &[u8]) -> Option<u32> {
 /// Detect the sfnt container format of owned font bytes.
 ///
 /// Returns `None` for a non-sfnt container — including WOFF/WOFF2, which the
-/// framework never decodes (ADR 0028). The caller decompresses such a container
+/// framework never decodes. The caller decompresses such a container
 /// to sfnt before offering it here. `None` is a routing decision, not a parse
 /// error: the bytes may still be a valid font the caller must unwrap first.
 pub fn detect(bytes: &[u8]) -> Option<FontFormat> {
@@ -66,7 +65,7 @@ pub fn detect(bytes: &[u8]) -> Option<FontFormat> {
 /// header. This is the enumeration the resolver drives to register every face
 /// in a collection under its own [`crate::FontFaceId`] and face index. Reading
 /// the collection count reuses `ttf-parser`, which owns the sfnt parsing this
-/// subsystem prefers not to reimplement (section 3.7).
+/// subsystem prefers not to reimplement.
 pub fn face_count(bytes: &[u8]) -> Option<u32> {
     match detect(bytes)? {
         FontFormat::Sfnt => Some(1),
@@ -151,7 +150,7 @@ mod tests {
 
     #[test]
     fn woff2_and_foreign_containers_are_not_detected() {
-        // `wOF2` — the framework never decodes WOFF2 (ADR 0028); it routes as a
+        // `wOF2` — the framework never decodes WOFF2; it routes as a
         // non-sfnt container the caller must decompress first.
         assert_eq!(detect(b"wOF2\x00\x01\x00\x00"), None);
         // `wOFF` — WOFF1, likewise foreign.

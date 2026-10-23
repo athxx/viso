@@ -2,12 +2,8 @@
 //! of one authoring pass (`VirtualList::build`), one `layout`, and one
 //! `paint_tree` lowering.
 //!
-//! This is the section 71 microbench slot for the second Tier 3 (layout
-//! structure) control — a virtualized scrolling list — and copies the
-//! `text_input_build.rs` reactive template. It is deliberately a skeleton this
-//! slice: it exercises the real `build` -> `layout` -> `paint_tree` path so a
-//! regression is measurable, but the baseline numbers are recorded in a later
-//! slice (per the plan: establish the framework first).
+//! It exercises the real `build` -> `layout` -> `paint_tree` path so a regression is
+//! measurable.
 //!
 //! `VirtualList` registers per-list state into the reactive cx's `VirtualLists`,
 //! so it must build through `BuildCx::with_reactive` (a plain `BuildCx::new` has
@@ -18,8 +14,7 @@
 //! needs no facade or render dev-dependency and adds no dependency edge.
 //!
 //! Run release (`CARGO_TARGET_DIR=/tmp/rust_tmp cargo bench -p viso-widgets`);
-//! criterion defaults to a release profile. Debug timing is not a perf result
-//! (AGENTS section 36).
+//! criterion defaults to a release profile. Debug timing is not a perf result.
 
 use std::hint::black_box;
 

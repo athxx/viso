@@ -1,4 +1,4 @@
-//! Typed dense generational identifiers for the retained scene (§8).
+//! Typed dense generational identifiers for the retained scene.
 //!
 //! Every retained entity — a primitive, a transform, a brush, a clip, an image,
 //! a geometry, a path, a mesh, a chunk — is addressed by a fixed-width
@@ -15,7 +15,7 @@
 //! of a kind in the flat primitive stream owns the Nth slot of its store, frame
 //! after frame, because the sole producer re-emits the whole tree in stable
 //! pre-order every frame (`ui::component::repaint_dirty`). Positional identity
-//! is what lets the ingest diff (F3.2) recognise an unchanged primitive and
+//! is what lets the ingest diff recognise an unchanged primitive and
 //! mutate nothing. The `generation` field still travels in the handle so a slot
 //! reused after a structural change (a kind swap, a shrink) invalidates stale
 //! handles held by tooling or chunk records; the steady-state diff path never
@@ -84,58 +84,58 @@ macro_rules! scene_id {
 
 scene_id!(
     /// A primitive's stable identity across frames, assigned positionally by the
-    /// ingest walk (§8). The retained analogue of a node's paint slot.
+    /// ingest walk. The retained analogue of a node's paint slot.
     PrimitiveId
 );
 scene_id!(
     /// A transform entry, separated from its primitive so a pure move dirties the
-    /// transform plane alone (§8, §8.5).
+    /// transform plane alone.
     TransformId
 );
 scene_id!(
     /// A brush (fill/stroke paint) entry, separated so a recolor dirties the
-    /// paint plane alone (§8.5).
+    /// paint plane alone.
     BrushId
 );
 scene_id!(
-    /// A clip-rect entry in the clip store (§8).
+    /// A clip-rect entry in the clip store.
     ClipId
 );
 scene_id!(
-    /// An image draw's entry in the image store (§8).
+    /// An image draw's entry in the image store.
     ImageId
 );
 scene_id!(
     /// A geometry entry — the resolved shape of a primitive, independent of its
-    /// paint and transform (§8).
+    /// paint and transform.
     GeometryId
 );
 scene_id!(
-    /// A vector path's entry in the path store; keys its tessellation cache (§8).
+    /// A vector path's entry in the path store; keys its tessellation cache.
     PathId
 );
 scene_id!(
-    /// A caller-supplied triangle mesh's entry in the mesh store (§8).
+    /// A caller-supplied triangle mesh's entry in the mesh store.
     MeshId
 );
 scene_id!(
-    /// A resolved chain of nested clips (§8). Populated by F4's chunking.
+    /// A resolved chain of nested clips. Populated by chunking.
     ClipChainId
 );
 scene_id!(
-    /// A resolved chain of layer/filter effects (§8). Populated by F4.
+    /// A resolved chain of layer/filter effects.
     EffectChainId
 );
 scene_id!(
-    /// A material (pipeline family + variant + resources) summary (§8).
+    /// A material (pipeline family + variant + resources) summary.
     MaterialId
 );
 scene_id!(
-    /// A render chunk — an order range with a uniform batch key (§8, §9). F4.
+    /// A render chunk — an order range with a uniform batch key.
     RenderChunkId
 );
 scene_id!(
-    /// A paint chunk — a coalesced run of same-paint primitives (§8). F4.
+    /// A paint chunk — a coalesced run of same-paint primitives.
     PaintChunkId
 );
 

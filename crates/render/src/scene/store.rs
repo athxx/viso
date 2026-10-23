@@ -1,12 +1,12 @@
-//! Per-type compact stores for the retained scene (§8, §8.5).
+//! Per-type compact stores for the retained scene.
 //!
 //! Each primitive kind lives in its own dense store — solid quads, images,
 //! glyph runs, vector paths, meshes — plus the identity-separated
-//! transform/brush/clip stores a later stage bumps independently (§8.5). The
+//! transform/brush/clip stores a later stage bumps independently. The
 //! stores are SoA/AoS `Vec`s of plain data, never `Vec<Box<dyn …>>`: the whole
 //! point is that lowering a frame walks contiguous memory, not a pointer chase.
 //!
-//! Storage **persists across frames** (§8.4, §9.1). `begin_frame` resets a
+//! Storage **persists across frames**. `begin_frame` resets a
 //! per-store *cursor* to zero without touching the entries; the ingest walk
 //! then re-visits each slot in paint order (`ingest_*`), diffing the incoming
 //! primitive against the retained entry at that positional slot. A slot is
@@ -14,12 +14,12 @@
 //! the quad store, frame after frame, stable because the sole producer
 //! re-emits the whole tree in stable pre-order — so an unchanged scene mutates
 //! nothing and re-uses last frame's allocations, keeping the counting-allocator
-//! bench flat (§28). Growth past the retained length appends (cold); a shrink
+//! bench flat. Growth past the retained length appends (cold); a shrink
 //! is trimmed by `finish_frame` at the cursor.
 //!
 //! Each `ingest_*` returns which revision planes the field-wise comparison
 //! moved ([`DirtyPlanes`]) so the caller ([`super::ingest`]) bumps only the
-//! planes a change actually touched (§8.4); an unchanged slot bumps nothing.
+//! planes a change actually touched; an unchanged slot bumps nothing.
 //! The store owns the comparison because it owns the entry layout; the field →
 //! plane mapping is the primitive semantics [`super::ingest`] documents.
 //!
@@ -114,7 +114,7 @@ pub struct GlyphRunEntry {
     pub lane: crate::primitive::GlyphLane,
 }
 
-/// Which revision planes an ingested primitive moved at its slot (§8.4).
+/// Which revision planes an ingested primitive moved at its slot.
 /// Returned by every `ingest_*`; the caller ([`super::ingest`]) bumps exactly
 /// the planes flagged here and no others. An all-`false` result means the slot
 /// was byte-identical — zero store mutation, zero bump.
@@ -189,7 +189,7 @@ impl DirtyPlanes {
     }
 }
 
-/// Dense store of solid/bordered quads (§8). AoS: one `QuadEntry` per quad, in
+/// Dense store of solid/bordered quads. AoS: one `QuadEntry` per quad, in
 /// paint order, addressed by [`PrimitiveId`] via the paint-order record.
 /// Entries persist across frames; a cursor walks them.
 #[derive(Debug, Default)]
@@ -289,7 +289,7 @@ pub struct AnalyticRRectEntry {
     pub instance: AnalyticRRectInstance,
 }
 
-/// Dense store of analytic rounded rectangles (§8). Same AoS/cursor shape as
+/// Dense store of analytic rounded rectangles. Same AoS/cursor shape as
 /// [`SolidQuadStore`]; the diff splits `rect_pos` → transform,
 /// `rect_size`/`radius`/`border_width` → geometry, `color`/`border_color` →
 /// paint.
@@ -391,7 +391,7 @@ pub struct AnalyticEllipseEntry {
     pub instance: AnalyticEllipseInstance,
 }
 
-/// Dense store of analytic ellipses (§8). Same AoS/cursor shape as
+/// Dense store of analytic ellipses. Same AoS/cursor shape as
 /// [`SolidQuadStore`]; the diff splits `rect_pos` → transform,
 /// `rect_size`/`border_width` → geometry, `color`/`border_color` → paint.
 #[derive(Debug, Default)]
@@ -490,7 +490,7 @@ pub struct AnalyticCapsuleEntry {
     pub instance: AnalyticCapsuleInstance,
 }
 
-/// Dense store of analytic capsules (§8). Same AoS/cursor shape as
+/// Dense store of analytic capsules. Same AoS/cursor shape as
 /// [`AnalyticEllipseStore`]; the diff splits `rect_pos` → transform,
 /// `rect_size`/`border_width` → geometry, `color`/`border_color` → paint.
 #[derive(Debug, Default)]
@@ -587,7 +587,7 @@ pub struct AnalyticLineEntry {
     pub instance: AnalyticLineInstance,
 }
 
-/// Dense store of analytic lines (§8). Same AoS/cursor shape as the other
+/// Dense store of analytic lines. Same AoS/cursor shape as the other
 /// analytic stores; the diff splits `p0`/`p1` → transform,
 /// `width`/`cap`/`join`/`miter_limit`/`border_width` → geometry,
 /// `color`/`border_color` → paint.
@@ -688,7 +688,7 @@ pub struct AnalyticShadowEntry {
     pub instance: ShadowInstance,
 }
 
-/// Dense store of analytic shadows (§8). Same AoS/cursor shape as the other
+/// Dense store of analytic shadows. Same AoS/cursor shape as the other
 /// analytic stores; the diff splits `rect_pos`/`offset` → transform,
 /// `rect_size`/`radius`/`sigma`/`spread`/`shape` → geometry, `color` → paint.
 #[derive(Debug, Default)]
@@ -782,7 +782,7 @@ impl AnalyticShadowStore {
 }
 
 /// A retained gradient draw: its lowered instance and the LUT texture the
-/// renderer binds for it (§8.5). The instance is finalized during lowering — the
+/// renderer binds for it. The instance is finalized during lowering — the
 /// renderer resolves `lut_v`/`use_lut` against its LUT atlas before ingest — so
 /// the entry holds the whole [`GradientInstance`] plus the atlas `texture` that
 /// backs the ramp (the resource plane, like [`ImageEntry`]). A two-stop inline
@@ -792,11 +792,11 @@ impl AnalyticShadowStore {
 pub struct GradientEntry {
     /// The lowered instance, in world space (origin not yet subtracted).
     pub instance: GradientInstance,
-    /// The 1D LUT atlas texture the ramp is baked into (bound per draw, §16.1).
+    /// The 1D LUT atlas texture the ramp is baked into (bound per draw).
     pub texture: viso_gpu::TextureId,
 }
 
-/// Dense store of gradient fills (§8). Same AoS/cursor shape as the analytic
+/// Dense store of gradient fills. Same AoS/cursor shape as the analytic
 /// stores, plus the per-draw LUT texture like [`ImageStore`]; the diff splits
 /// `rect_pos` → transform, `rect_size`/`kind`/`extend`/`p0`/`p1`/`lut_v`/
 /// `use_lut` → geometry, `color0`/`color1` → paint, `texture` → resource. A
@@ -889,7 +889,7 @@ pub struct ShaderEntry {
     pub textures: ProgramTextures,
 }
 
-/// Dense store of user-program draws (§8). The diff splits `rect_pos` →
+/// Dense store of user-program draws. The diff splits `rect_pos` →
 /// transform, `rect_size`/`program` → geometry, `params` → paint, `textures`
 /// → resource. An unchanged node re-emits the same shared `params`, so its
 /// diff is a pointer compare.
@@ -969,7 +969,7 @@ impl ShaderStore {
     }
 }
 
-/// Dense store of image draws (§8). Entries persist across frames.
+/// Dense store of image draws. Entries persist across frames.
 #[derive(Debug, Default)]
 pub struct ImageStore {
     entries: Vec<ImageEntry>,
@@ -1071,7 +1071,7 @@ impl ImageStore {
     }
 }
 
-/// Dense store of glyph runs (§8). The runs' glyph instances are packed into
+/// Dense store of glyph runs. The runs' glyph instances are packed into
 /// one shared `instances` vector each frame (SoA-friendly: one contiguous
 /// upload). The previous frame's packed instances are kept in `prev` (buffers
 /// swapped at `begin_frame`) so a run's glyphs can be diffed position/uv/color
@@ -1294,7 +1294,7 @@ impl GlyphRunStore {
 
 /// The color/opacity a path is painted with — the per-primitive paint, held
 /// separately from the retained [`PathGeometry`] so a recolor never
-/// re-tessellates (§13.4). `fill`/`stroke_color` are straight-linear RGBA
+/// re-tessellates. `fill`/`stroke_color` are straight-linear RGBA
 /// matching the source `Path`; `opacity` is a whole-path multiplier (1.0 today,
 /// reserved for a group-opacity plane).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1320,7 +1320,7 @@ impl PathPaint {
 
 /// The placement of a retained [`PathGeometry`] relative to the local space it
 /// was tessellated in — the per-primitive transform, held separately so a
-/// move/zoom that leaves the shape intact never re-tessellates (§13.4). This
+/// move/zoom that leaves the shape intact never re-tessellates. This
 /// round carries translate + uniform scale; non-uniform scale / rotation route
 /// through a geometry rebuild.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1352,7 +1352,7 @@ pub struct GeometryKey {
 }
 
 /// A retained vector path split into a cached colorless tessellation plus the
-/// cheap per-primitive paint/transform layered on at lowering (§13.4). The
+/// cheap per-primitive paint/transform layered on at lowering. The
 /// geometry is keyed by [`GeometryKey`]; a transform- or paint-only change
 /// reuses `geometry` untouched rather than re-running the tessellator.
 #[derive(Debug, Clone)]
@@ -1371,7 +1371,7 @@ pub struct PathEntry {
     pub path: Path,
 }
 
-/// Dense store of vector paths with an in-line retessellation cache (§13.4). A
+/// Dense store of vector paths with an in-line retessellation cache. A
 /// path whose structural fingerprint and quality bucket are unchanged reuses its
 /// cached [`PathGeometry`]; the tessellator runs only on a geometry change. A
 /// pure translation/uniform-scale updates [`PathTransform`] and a recolor updates
@@ -1400,7 +1400,7 @@ impl VectorPathStore {
     }
 
     /// Diff a path against the retained entry at the cursor, classifying the
-    /// change into independent planes (§13.4):
+    /// change into independent planes:
     ///
     /// - **geometry** — the structural fingerprint or quality bucket changed:
     ///   re-tessellate into a fresh [`PathGeometry`]. This is the only path that
@@ -1419,7 +1419,7 @@ impl VectorPathStore {
             let prev = &self.entries[index];
             // The quality bucket is chosen relative to the bucket this entry is
             // already cached at, so the boundary hysteresis holds across the
-            // scale hovering near a step (§13.4).
+            // scale hovering near a step.
             let bucket = quality_bucket(device_scale, prev.geom_key.quality_bucket);
             let fingerprint = path.geometry_fingerprint();
             let geometry =
@@ -1525,7 +1525,7 @@ const QUALITY_STEPS: [f32; 3] = [1.5, 2.5, 4.0];
 /// scale. A bucket only steps *up* once the scale exceeds `boundary * (1 + H)`
 /// and only steps *down* once it falls below `boundary * (1 - H)`; between those
 /// the previous bucket is held. This stops a scale hovering on a boundary (e.g.
-/// a pinch-zoom settling near 2.0×) from re-tessellating every frame (§13.4).
+/// a pinch-zoom settling near 2.0×) from re-tessellating every frame.
 const QUALITY_HYSTERESIS: f32 = 0.1;
 
 /// The quality bucket a path should tessellate at for `device_scale`, given the
@@ -1562,7 +1562,7 @@ pub fn quality_bucket(device_scale: f32, prev: u16) -> u16 {
 }
 
 /// A caller-supplied triangle mesh, stored as its vertices/indices (no
-/// tessellation — a mesh is already triangulated, §8).
+/// tessellation — a mesh is already triangulated).
 #[derive(Debug, Clone)]
 pub struct MeshEntry {
     /// The mesh vertices, in the mesh's own space (base-zero indices).
@@ -1571,7 +1571,7 @@ pub struct MeshEntry {
     pub indices: Vec<u32>,
 }
 
-/// Dense store of caller-supplied meshes (§8). Entries persist across frames.
+/// Dense store of caller-supplied meshes. Entries persist across frames.
 #[derive(Debug, Default)]
 pub struct MeshStore {
     entries: Vec<MeshEntry>,
@@ -1654,7 +1654,7 @@ impl MeshStore {
     }
 }
 
-/// A retained clip rect (§8). Identity-separated so a clip change bumps the
+/// A retained clip rect. Identity-separated so a clip change bumps the
 /// clip plane alone.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ClipEntry {
@@ -1662,7 +1662,7 @@ pub struct ClipEntry {
     pub rect: Option<crate::primitive::Rect>,
 }
 
-/// Dense store of effective clips referenced by primitives (§8). Entries
+/// Dense store of effective clips referenced by primitives. Entries
 /// persist across frames.
 #[derive(Debug, Default)]
 pub struct ClipStore {
@@ -1723,7 +1723,7 @@ impl ClipStore {
     }
 }
 
-/// The cache key of a *complex* (path/mask) clip in a resolved chain (§14.2).
+/// The cache key of a *complex* (path/mask) clip in a resolved chain.
 ///
 /// A rect-only chain resolves to a pure [`ClipChainDescriptor::rect`] and carries
 /// no mask key. A chain whose tail is an arbitrary-path clip must be re-rastered
@@ -1759,7 +1759,7 @@ pub struct ClipMaskKey {
     pub composition: ClipComposition,
 }
 
-/// The fill rule a path clip's coverage is computed under (§14.2 mask key).
+/// The fill rule a path clip's coverage is computed under (part of the mask key).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ClipFillRule {
     /// Nonzero winding.
@@ -1769,7 +1769,7 @@ pub enum ClipFillRule {
 }
 
 /// How a clip in a resolved chain composes with the clip enclosing it
-/// (§14.2 mask key). Intersection is the default; the others are part of the key
+/// (part of the mask key). Intersection is the default; the others are part of the key
 /// because they select different covered pixels for the same geometry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ClipComposition {
@@ -1784,7 +1784,7 @@ pub enum ClipComposition {
 
 /// A resolved clip chain: the pre-intersected axis-aligned box plus, for a
 /// complex tail, the mask key that says whether the retained coverage is still
-/// valid (§14.2).
+/// valid.
 ///
 /// This is the "pre-resolved clip descriptor" a [`ClipChainId`] names. Resolving
 /// a stack of nested clips folds all the axis-aligned rects into a single
@@ -1798,7 +1798,7 @@ pub enum ClipComposition {
 pub struct ClipChainDescriptor {
     /// The intersection of every axis-aligned rect in the chain, in world space.
     /// A zero-area rect here is an [empty clip](Self::is_empty): the whole subtree
-    /// under this chain draws nothing (§14.3).
+    /// under this chain draws nothing.
     pub rect: crate::primitive::Rect,
     /// The complex tail's mask key, or `None` for a rect-only chain.
     pub mask: Option<ClipMaskKey>,
@@ -1808,7 +1808,7 @@ impl ClipChainDescriptor {
     /// Whether this chain clips everything away: its folded rect has zero area,
     /// so no primitive under it can be visible. The renderer uses this to reject
     /// the whole subtree immediately rather than emit draws that the scissor
-    /// would discard pixel by pixel (§14.3).
+    /// would discard pixel by pixel.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.rect.w <= 0.0 || self.rect.h <= 0.0
@@ -1816,7 +1816,7 @@ impl ClipChainDescriptor {
 }
 
 /// One retained resolved-chain entry: its descriptor and the identity of the
-/// input stack it was resolved from (§14.2).
+/// input stack it was resolved from.
 ///
 /// `input` is the resolution key — the sequence of clip stores/keys the chain was
 /// built from, hashed to a compact fingerprint. It is what lets an unchanged
@@ -1831,7 +1831,7 @@ pub struct ClipChainEntry {
     pub descriptor: ClipChainDescriptor,
 }
 
-/// Dense store of resolved clip chains (§14.2), populating [`ClipChainId`].
+/// Dense store of resolved clip chains, populating [`ClipChainId`].
 ///
 /// Mirrors [`ClipStore`]'s retained cursor/diff/truncate discipline: the Nth
 /// chain resolved this frame owns the Nth slot, frame after frame. The store's
@@ -1923,7 +1923,7 @@ impl ClipChainStore {
     }
 }
 
-/// A retained affine transform (§8.5). Carries the world-space origin an emit
+/// A retained affine transform. Carries the world-space origin an emit
 /// subtracts; the identity separation lets a pure move bump this store's plane
 /// alone.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1933,7 +1933,7 @@ pub struct TransformEntry {
     pub origin: [f32; 2],
 }
 
-/// Dense store of transforms (§8.5). Entries persist across frames.
+/// Dense store of transforms. Entries persist across frames.
 #[derive(Debug, Default)]
 pub struct TransformStore {
     entries: Vec<TransformEntry>,
@@ -1990,7 +1990,7 @@ impl TransformStore {
     }
 }
 
-/// The paint model a brush resolves to (§12 Brush model). A fill/stroke is one
+/// The paint model a brush resolves to. A fill/stroke is one
 /// of these; the store diffs them by value so a recolor bumps the paint plane
 /// alone.
 ///
@@ -1999,7 +1999,7 @@ impl TransformStore {
 /// the paint diff sees the change. The gradient variants name the fill's slot in
 /// the [`GradientStore`] (the gradient's lowered geometry + LUT live there),
 /// keeping the brush a pure paint identity: moving or recoloring the gradient
-/// still diffs its brush entry. [`Brush::ImagePattern`] (§12.4) and
+/// still diffs its brush entry. [`Brush::ImagePattern`] and
 /// [`Brush::ShaderBrush`] are declared for the model but not yet lowered; their
 /// [`BrushStore::ingest`] path is an explicit `todo!`, never a silent no-op.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -2012,14 +2012,14 @@ pub enum Brush {
     RadialGradient(GeometryId),
     /// A sweep gradient, resolved into the [`GradientStore`] slot `id`.
     SweepGradient(GeometryId),
-    /// A tiled/stretched image fill (§12.4). Declared for the model; lowering is
-    /// deferred (D2.2).
+    /// A tiled/stretched image fill. Declared for the model; lowering is
+    /// deferred.
     ImagePattern(ImageId),
     /// A user shader fill. Declared for the model; lowering is deferred.
     ShaderBrush,
 }
 
-/// A retained brush — a resolved fill/stroke paint (§8.5). The store exists so
+/// A retained brush — a resolved fill/stroke paint. The store exists so
 /// the diff can bump paint independently, and so the freeze pins its shape.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BrushEntry {
@@ -2027,7 +2027,7 @@ pub struct BrushEntry {
     pub brush: Brush,
 }
 
-/// Dense store of brushes (§8.5). Entries persist across frames.
+/// Dense store of brushes. Entries persist across frames.
 #[derive(Debug, Default)]
 pub struct BrushStore {
     entries: Vec<BrushEntry>,
@@ -2057,7 +2057,7 @@ impl BrushStore {
     pub fn ingest(&mut self, brush: Brush) -> (BrushId, bool) {
         match brush {
             Brush::ImagePattern(_) => {
-                todo!("ImagePattern brush lowering is deferred to D2.2 (§12.4)")
+                todo!("ImagePattern brush lowering is not supported yet")
             }
             Brush::ShaderBrush => todo!("ShaderBrush lowering is not implemented"),
             _ => {}
@@ -2333,7 +2333,7 @@ mod tests {
     }
 
     /// Disjoint rects fold to a zero-area box — an empty clip that rejects the
-    /// whole subtree (§14.3).
+    /// whole subtree.
     #[test]
     fn disjoint_rects_are_an_empty_clip() {
         let mut store = ClipChainStore::default();

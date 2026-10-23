@@ -1,8 +1,7 @@
 //! The frame loop of an app that mounts a `view!`, for the hot reload parity
-//! check (`Viso_Hot_Reload.md` §1.2): run once as is and once with
-//! `--features hot-reload`, the two differ only by the dev path — the session
-//! adopting the mount and starting its watcher, and its per-frame check for a
-//! staged edit. A release artifact compiles neither.
+//! check: run once as is and once with `--features hot-reload`, the two differ
+//! only by the dev path — the session adopting the mount and starting its
+//! watcher, and its per-frame check for a staged edit. A release artifact compiles neither.
 //!
 //! `frame_loop/view/startup` is the app brought up with one frame;
 //! `frame_loop/view/240` adds 240 frames that each toggle the `if show` branch

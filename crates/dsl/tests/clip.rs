@@ -1,4 +1,4 @@
-//! A node's `clip` (§U4): its children are seen and hit only inside its box,
+//! A node's `clip`: its children are seen and hit only inside its box,
 //! rounded by its `corner_radius`, until it stops clipping — under hot reload
 //! and from the release package.
 

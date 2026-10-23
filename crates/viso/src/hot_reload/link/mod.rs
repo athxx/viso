@@ -1,7 +1,6 @@
-//! The app's end of the dev channel to `viso run` (`Viso_Hot_Reload.md` §34,
-//! §46): connect to the address the CLI passed, introduce the launch
-//! with a [`RuntimeHello`], and once the host accepts it carry patches in and
-//! ACKs, NACKs and reports out.
+//! The app's end of the dev channel to `viso run`: connect to the address the
+//! CLI passed, introduce the launch with a [`RuntimeHello`], and once the host
+//! accepts it carry patches in and ACKs, NACKs and reports out.
 //!
 //! Two threads own the socket. The link thread connects, shakes hands, starts
 //! the reader and then writes: it drains a bounded outgoing queue the loop

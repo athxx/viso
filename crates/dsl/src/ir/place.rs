@@ -1,5 +1,5 @@
-//! Constant folding for where a child sits in a `Stack` or an `Absolute`
-//! (§U3.6): a stack's `content_align`, its children's `stack.align` and
+//! Constant folding for where a child sits in a `Stack` or an `Absolute`:
+//! a stack's `content_align`, its children's `stack.align` and
 //! `stack.layer`, and an absolute child's `absolute.*` insets.
 //!
 //! Each fold yields `None` for a value that is not a constant.

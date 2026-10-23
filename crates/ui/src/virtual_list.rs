@@ -399,7 +399,7 @@ pub struct VirtualListState {
     /// Builds one item's body; cold, invoked only on mount/rebind.
     builder: ItemBuilder,
     /// The rows' template: every row built the same way shares its binding
-    /// edges and adds only its base (§18.1).
+    /// edges and adds only its base.
     template: Template,
     /// Optional stable-identity map. `None` = the logical index is identity (the
     /// original behavior: a survivor is matched by index, so a reorder rebuilds

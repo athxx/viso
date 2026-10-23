@@ -1,4 +1,4 @@
-//! Commit-1 grammar tests: the precedence-correct expression parser and the
+//! Grammar tests: the precedence-correct expression parser and the
 //! red-tree navigation layer built over the typed CST.
 //!
 //! The expression parser is exercised through the bare-expression fragment entry

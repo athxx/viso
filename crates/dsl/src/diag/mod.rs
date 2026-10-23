@@ -71,7 +71,7 @@ pub enum Applicability {
 }
 
 impl Applicability {
-    /// The section 138 JSON spelling.
+    /// The JSON spelling.
     pub fn as_str(self) -> &'static str {
         match self {
             Applicability::MachineApplicable => "machine-applicable",

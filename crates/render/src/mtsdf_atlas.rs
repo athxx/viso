@@ -7,7 +7,7 @@
 //! fourth the true signed distance, so this texture is created as
 //! [`TextureFormat::Rgba8Data`]: never premultiplied, never sRGB-encoded, never
 //! promoted to a wider color domain. A distance is geometry, and a color domain
-//! has nothing to say about it (§13.2).
+//! has nothing to say about it.
 //!
 //! Its pages are budgeted by the MTSDF pool of the caller's residency,
 //! independently of the coverage and color atlases.

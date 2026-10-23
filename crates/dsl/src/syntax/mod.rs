@@ -8,10 +8,10 @@
 //! input, however malformed or truncated, makes the lexer panic or the parser
 //! stop at the first error.
 //!
-//! Pipeline position (AGENTS 21.2):
-//! `source → [tokenizer] → [lossless CST] → AST → …`. The typed grammar, AST,
-//! and name resolution are the next slice; this slice delivers the token stream,
-//! the green tree, and a coarse declaration/brace-granularity parse.
+//! Pipeline position:
+//! `source → [tokenizer] → [lossless CST] → AST → …`. This layer delivers the
+//! token stream, the green tree, and a coarse declaration/brace-granularity parse;
+//! the typed grammar, AST, and name resolution build on it.
 //!
 //! Coordinate model: tokens store a byte-offset [`TextRange`]; a per-source
 //! [`LineIndex`] derives line/column, Unicode-scalar, and UTF-16 coordinates on

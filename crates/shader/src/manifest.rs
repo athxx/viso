@@ -1,9 +1,9 @@
 //! The pipeline manifest: the compile-time-enumerated set of standard render
-//! pipelines (architecture section 7 / §7.5).
+//! pipelines.
 //!
 //! Historically the four built-in shaders were compiled lazily, on the first
 //! draw that needed them — `newLibraryWithSource(…)` ran on the hot path the
-//! first time a Button painted. §7.1 forbids that: the standard pipelines are a
+//! first time a Button painted. That is not allowed: the standard pipelines are a
 //! *fixed, known* set, so their backend artifacts (MSL for Metal, a built-in tag
 //! for the headless raster) and validated instance reflection must be enumerated
 //! ahead of time and prewarmed at device init, never materialized on a draw.
@@ -11,13 +11,13 @@
 //! This module is that enumeration. [`standard_manifest`] returns one
 //! [`PipelineEntry`] per implemented standard pipeline, each carrying:
 //!
-//! - the [`PipelineFamily`] it belongs to (§7.5) and its packed [`VariantKey`];
+//! - the [`PipelineFamily`] it belongs to and its packed [`VariantKey`];
 //! - the [`PrimitiveKind`] whose program it runs, served per backend language
 //!   by [`PipelineEntry::code`] (MSL byte-equal to the `testdata` oracles,
 //!   WGSL/HLSL printed from the same IR, SPIR-V frozen);
 //! - the [`InstanceSchema`] the shader declares (its reflection), which the
 //!   renderer cross-checks against the derived `#[derive(GpuPod)]` layout at
-//!   registration (§36.1);
+//!   registration;
 //! - the [`BuiltinShader`] tag the headless raster dispatches on;
 //! - the vertex/fragment entry-point names.
 //!
@@ -38,7 +38,7 @@ use crate::msl::{
 };
 use std::sync::OnceLock;
 
-/// A standard pipeline family (§7.5).
+/// A standard pipeline family.
 ///
 /// A family names a *shape/material class* that maps to one shader and one
 /// fixed-function state combination — not a per-draw parameter. Color, radius,
@@ -46,32 +46,30 @@ use std::sync::OnceLock;
 /// never spawn a new family or variant (no uber-shader, no permutation
 /// explosion).
 ///
-/// The full taxonomy is frozen here as the F2 contract. The four built-ins
-/// implemented today populate a subset; the remaining families are declared but
-/// have no manifest entry yet — the D drawing layer fills them in as it grows,
-/// binding to this same stable enum.
+/// The full taxonomy is frozen here. The built-ins implemented today populate a
+/// subset; the remaining families are declared but have no manifest entry yet,
+/// and new built-ins bind to this same stable enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PipelineFamily {
     /// A solid (optionally bordered) axis-aligned rectangle — the Quad built-in.
     SolidRect,
     /// An analytic rounded rectangle (SDF-antialiased). Folded into the Quad
-    /// built-in today (its shader is a rounded-rect SDF); a dedicated variant is
-    /// a D-layer refinement.
+    /// built-in today (its shader is a rounded-rect SDF).
     AnalyticRRect,
-    /// An analytic ellipse/circle (SDF-antialiased). No F2 built-in yet.
+    /// An analytic ellipse/circle (SDF-antialiased). No built-in yet.
     AnalyticEllipse,
     /// An analytic capsule/stadium (SDF-antialiased): a rounded box whose corner
-    /// radius is the smaller half-extent. Implemented as a D-layer built-in.
+    /// radius is the smaller half-extent. Implemented as a built-in.
     AnalyticCapsule,
-    /// An analytic line/segment (SDF-antialiased). No F2 built-in yet.
+    /// An analytic line/segment (SDF-antialiased). No built-in yet.
     AnalyticLine,
     /// A textured image quad sampling an atlas/texture — the Image built-in.
     Image,
-    /// A gradient fill (linear/radial/…). No F2 built-in yet.
+    /// A gradient fill (linear/radial/…). No built-in yet.
     Gradient,
     /// A soft drop shadow for an analytic shape (rounded box / ellipse / capsule),
     /// its coverage a closed-form Gaussian ramp over the shape's signed distance.
-    /// Implemented as a D-layer built-in.
+    /// Implemented as a built-in.
     AnalyticShadow,
     /// A filled vector path (per-vertex mesh) — the shared Mesh built-in.
     PathFill,
@@ -84,7 +82,7 @@ pub enum PipelineFamily {
     /// field atlas, so one field serves a range of sizes with sharp corners. A
     /// family of its own rather than a variant of [`PipelineFamily::MaskComposite`]:
     /// the fragment decode and the atlas format both differ, which is exactly what
-    /// makes a pipeline (§7.5).
+    /// makes a pipeline.
     ScalableText,
     /// A separable Gaussian blur of an offscreen layer's content — the Blur
     /// built-in samples a source texture along one axis. One pass per axis; the
@@ -122,7 +120,7 @@ pub enum ColorTargetClass {
     Bgra8,
 }
 
-/// A packed key identifying one concrete pipeline within a family (§7.5).
+/// A packed key identifying one concrete pipeline within a family.
 ///
 /// A variant is created **only** for dimensions that genuinely change the
 /// compiled pipeline object or its fixed-function state — the shader family, the
@@ -189,7 +187,7 @@ pub struct PipelineEntry {
     /// The built-in program this pipeline runs, in any backend language.
     pub kind: PrimitiveKind,
     /// The instance layout the shader declares (its reflection), cross-checked
-    /// against the derived `#[derive(GpuPod)]` layout at registration (§36.1).
+    /// against the derived `#[derive(GpuPod)]` layout at registration.
     pub schema: InstanceSchema,
     /// The fixed-function color-blend state this family's shader was written
     /// against. Part of the pipeline object, so it belongs to the manifest rather
@@ -222,7 +220,7 @@ impl PipelineEntry {
     }
 }
 
-/// The enumerated set of standard pipelines (§7.1/§7.5).
+/// The enumerated set of standard pipelines.
 ///
 /// A small owned table of [`PipelineEntry`]s. Built once via [`standard_manifest`]
 /// and consumed by the renderer at device init to create every standard pipeline
@@ -246,7 +244,7 @@ impl PipelineManifest {
     }
 }
 
-/// The process-wide standard pipeline manifest (§7.1).
+/// The process-wide standard pipeline manifest.
 ///
 /// Materialized once on first call (a cold, device-init path) and cached in a
 /// `OnceLock`; every later call returns the same `&'static` table with no
@@ -441,7 +439,7 @@ mod tests {
         assert!(m.entry(PipelineFamily::AdvancedBlend).is_some());
     }
 
-    /// The §33 rule that default UI does not globally enable MSAA, stated as the
+    /// The rule that default UI does not globally enable MSAA, stated as the
     /// arithmetic it reduces to: every shipped pipeline is single-sampled with no
     /// depth attachment. [`VariantKey`] can *express* a 4× sample count — that is
     /// what makes it a pipeline-changing dimension — but nothing in the standard

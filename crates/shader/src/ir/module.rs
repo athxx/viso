@@ -1,18 +1,18 @@
 //! One typed shader IR value describing a built-in primitive's GPU interface —
 //! the single source of truth that emits *both* the MSL `InstanceIn`/`VertexIn`
-//! struct *and* the [`InstanceSchema`](viso_gpu_abi::InstanceSchema) the pipeline validates against
-//! (architecture section 36 / AGENTS 19).
+//! struct *and* the [`InstanceSchema`](viso_gpu_abi::InstanceSchema) the pipeline validates
+//! against.
 //!
 //! ## What the IR owns, and what it carries
 //!
-//! The load-bearing win of this slice is collapsing a duplicated field contract:
-//! before, each built-in spelled its per-instance fields twice — once as a
+//! The load-bearing win of the IR is collapsing a duplicated field contract:
+//! otherwise each built-in spells its per-instance fields twice — once as a
 //! `packed_float*` MSL `struct` and once as a parallel `SchemaAttr` list — kept in
 //! lockstep only by name-order test assertions, with byte offsets never
-//! cross-checked (the section-56 "implicit shader instance field-order ABI").
+//! cross-checked (an implicit shader instance field-order ABI).
 //! Here a [`ShaderIr`]'s [`attributes`](ShaderIr::attributes) field list is the
 //! *only* place that contract is written; the MSL struct, the schema, and the
-//! section-36.1 offset expectations all project from it, so they cannot drift.
+//! registration-time offset expectations all project from it, so they cannot drift.
 //!
 //! The IR is strongly typed at the **interface** layer — instance/uniform/varying
 //! fields, texture/sampler bindings, and buffer indices are typed data. The
@@ -20,7 +20,7 @@
 //! fragment (the exact math the hand-written built-ins already shipped), not an
 //! expression AST: building an expression-level shader AST is only needed once
 //! users write shader *logic* rather than instantiating built-ins, and that is
-//! explicitly out of scope this slice (it would prematurely duplicate the
+//! explicitly out of scope (it would prematurely duplicate the
 //! `viso-dsl` frontend). The pipeline shape `source → parsed syntax → typed IR →
 //! validation → codegen` is satisfied with a Rust-side structured IR builder as
 //! the "parsed syntax → typed IR" front, which is the right front for built-ins.
@@ -204,7 +204,7 @@ impl ShaderIr {
 
     /// The expected byte offset of each attribute field in a tightly-packed
     /// `#[repr(C)]` layout, as `(name, offset)` pairs, plus the total packed
-    /// stride. This is the section-36.1 expectation the GPU-side
+    /// stride. This is the expectation the GPU-side
     /// `validate_against` cross-checks against the CPU `offset_of!` truth.
     ///
     /// Every allowed field is 4-byte-aligned, so the prefix sum of packed sizes is
@@ -698,7 +698,7 @@ pub fn analytic_rrect_ir() -> ShaderIr {
     }
 }
 
-/// Analytic shadow fast lane (architecture section 15.1): a soft drop shadow for
+/// Analytic shadow fast lane: a soft drop shadow for
 /// the analytic shape families — rounded box, ellipse/circle, capsule — drawn as
 /// one expanded instance quad whose coverage is a closed-form Gaussian ramp over
 /// the shape's signed distance. It is deliberately *not* the mask/blur/composite

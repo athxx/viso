@@ -1,4 +1,4 @@
-//! Type acceptance (§153), from source through the whole frontend: the safe
+//! Type acceptance, from source through the whole frontend: the safe
 //! widening ladders and the forbidden implicit conversions, the removed
 //! `Float`, `StableKey` keys, closures typed by the function type they meet,
 //! capability propagation, the computed cycle path, `MixedLength` and the

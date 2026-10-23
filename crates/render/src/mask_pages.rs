@@ -2,7 +2,7 @@
 //! [`MaskCache`](crate::mask::MaskCache) page, and the coverage written since
 //! the last upload.
 //!
-//! This is the storage half of the mask model (§14.4). The cache owns the
+//! This is the storage half of the mask model. The cache owns the
 //! *policy* — which pages exist, packing ROIs into them, keying so a stable
 //! mask is built once, and reclaiming slots — and hands back a [`MaskSlot`]
 //! naming where a coverage bitmap belongs. `MaskPages` owns the *device*

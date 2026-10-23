@@ -1,12 +1,11 @@
 //! The default caption wrap, driven end to end through the real facade frame
 //! loop (`drive_scripted` + `FixedStepClock`, the same pump `viso::run` uses).
 //!
-//! Mirroring makepad's `show_caption_bar: true` default, the facade wraps every
-//! window's authored content in a self-drawn caption band unless the app opts
-//! out. An app that authors no title bar therefore settles with a window-centered
-//! title above its own content — no authoring — while an app that sets
-//! `caption: false` in its `window_config` keeps its returned root as the window
-//! root verbatim.
+//! By default the facade wraps every window's authored content in a self-drawn
+//! caption band unless the app opts out. An app that authors no title bar
+//! therefore settles with a window-centered title above its own content — no
+//! authoring — while an app that sets `caption: false` in its `window_config`
+//! keeps its returned root as the window root verbatim.
 //!
 //! These assert the seam against the headless backend (launch window id 1), which
 //! lays the tree out against its surface so the caption band's world box is real.

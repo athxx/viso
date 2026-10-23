@@ -1,4 +1,4 @@
-//! Constant folding for a grid's template and a grid child's cell (§U3.5).
+//! Constant folding for a grid's template and a grid child's cell.
 //!
 //! A track list folds to the runtime's flat [`TrackSizing`] template, a
 //! `tracks(n, t)` expanded in place; `Track::fixed` of a plain `dp` length is
@@ -58,7 +58,7 @@ pub(super) fn variant(value: &Expr, owner: &str) -> Option<String> {
     }
 }
 
-/// A plain-`dp` length constant, clamped non-negative (§19.8).
+/// A plain-`dp` length constant, clamped non-negative.
 fn dp(value: &Expr, consts: &Consts, what: &str) -> Option<Result<f32, String>> {
     let terms = length::fold_terms(value, consts)?;
     Some(if terms.needs_env() || terms.pct != 0.0 {

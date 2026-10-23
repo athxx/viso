@@ -53,7 +53,7 @@ pub struct PackagedFace {
     /// ISO 15924 codes of the scripts the face's `cmap` substantially covers.
     pub scripts: &'static [&'static str],
     /// The face's glyphs rasterized at build time for the sizes the build
-    /// declared ([`BakedFace`] pages, §3.6); empty when it baked none.
+    /// declared ([`BakedFace`] pages); empty when it baked none.
     pub baked: &'static [u8],
 }
 

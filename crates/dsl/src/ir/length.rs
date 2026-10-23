@@ -1,4 +1,4 @@
-//! Constant folding for length-family property values (DSL §19).
+//! Constant folding for length-family property values.
 //!
 //! A length constant folds term-wise: every `dp`/`px`/`sp`/`em`/`%` literal
 //! contributes to its own coefficient, and `+`, `-`, unary `-`, scalar `*` and
@@ -183,8 +183,8 @@ enum Folded {
 
 /// Folds a size property (`width`, `height`).
 ///
-/// A pure-`dp` constant is `Fixed`, clamped to the non-negative size domain
-/// (§19.8); one with a `%` term is `Relative`, whose clamp happens at layout once
+/// A pure-`dp` constant is `Fixed`, clamped to the non-negative size domain;
+/// one with a `%` term is `Relative`, whose clamp happens at layout once
 /// the basis is known; one with an environment term keeps its terms. Anything
 /// else — a non-constant, a scalar, a non-length unit, a non-finite result —
 /// yields `None`.
@@ -286,7 +286,7 @@ pub(super) fn record_head(node: &SyntaxNode) -> Vec<String> {
 }
 
 /// Folds a gap property. Only a constant without a `%` term folds: a pure-`dp`
-/// one to its extent, clamped non-negative (§19.8), one with an environment
+/// one to its extent, clamped non-negative, one with an environment
 /// term to its terms.
 pub(super) fn fold_gap(value: &Expr, consts: &Consts) -> Option<Lowered> {
     let t = fold_length(value, consts)?;
@@ -333,7 +333,7 @@ pub(super) enum Padding {
 /// Folds a `padding` property: a length (every edge), `EdgeInsets::zero()`,
 /// `EdgeInsets::all(v)`, `EdgeInsets::axes(inline: a, block: b)` or an
 /// `EdgeInsets { .. }` literal whose fields are constants, a missing field
-/// being `0dp`. Each edge is clamped non-negative (§19.8), a `%` term's at
+/// being `0dp`. Each edge is clamped non-negative, a `%` term's at
 /// layout once the parent's content box is known. A value that is not a
 /// constant yields `None`.
 pub(super) fn fold_padding(value: &Expr, consts: &Consts) -> Option<Padding> {
@@ -379,7 +379,7 @@ pub(super) fn fold_margin(value: &Expr, consts: &Consts) -> Option<EdgeTermsIr> 
 }
 
 /// Folds a size bound (`min_width`, `max_height`, ..) to its terms, a `dp`
-/// one clamped non-negative (§19.8). A greatest bound also takes
+/// one clamped non-negative. A greatest bound also takes
 /// `Option::None` (unbounded, `Some(None)`) and `Option::Some(length)`.
 pub(super) fn fold_bound(value: &Expr, consts: &Consts, greatest: bool) -> Option<Option<TermsIr>> {
     let length = |value: &Expr| {
@@ -579,7 +579,7 @@ fn fold(expr: &Expr, consts: &Consts) -> Option<Folded> {
     }
 }
 
-/// The §19.3 arithmetic over folded constants. Length ± scalar, length × length
+/// The dimensional arithmetic over folded constants. Length ± scalar, length × length
 /// and length / length are not lengths and do not fold; neither does a division
 /// by a constant zero (`E2109` belongs to the type checker).
 fn binary(bin: &BinaryExpr, consts: &Consts) -> Option<Folded> {

@@ -1,4 +1,4 @@
-//! The physics integration contract (§106, §106.5, §106.7): the
+//! The physics integration contract: the
 //! `PrePhysics` and `PostPhysics` phases around the step, the order contacts
 //! reach the listeners in, an engine a host installs held to the game's
 //! determinism tier (`E9104`), degraded snapshots of an engine that cannot

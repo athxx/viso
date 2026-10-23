@@ -1,4 +1,4 @@
-//! A0's whole claim in one place (§20, §7.2): these are specializations, not
+//! The GPU-specialization claim in one place: these are specializations, not
 //! prerequisites.
 //!
 //! Three lanes were added — a compute tessellation lane, a bindless binding model, a
@@ -6,13 +6,12 @@
 //! own conditions. What that per-lane pinning cannot state is the property the three
 //! share, because it is a property of the *set*: no ordinary frame enters any of
 //! them, none of them is on unless something measured asked for it, and a renderer
-//! whose backend offers none of the three still draws every D-section primitive
-//! correctly.
+//! whose backend offers none of the three still draws every primitive correctly.
 //!
-//! That last part is why this file is short. "D0~D3 remains correct with zero compute
-//! dependency" is not one assertion; it is the entire rest of the suite passing on a
-//! backend that reports every A0 capability absent — which is the only backend there
-//! is here. What is left to state explicitly is the *defaults*, and that the three
+//! That last part is why this file is short. "Every primitive remains correct with zero
+//! compute dependency" is not one assertion; it is the entire rest of the suite passing
+//! on a backend that reports every specialization capability absent — which is the only
+//! backend there is here. What is left to state explicitly is the *defaults*, and that the three
 //! capability answers really are all no.
 
 use viso_gpu::{CpuRaster, GpuBackend};
@@ -23,9 +22,9 @@ use viso_render::{
 
 /// An undescribed workload selects the portable realization in all three lanes.
 ///
-/// The shared shape of every A0 decision: the measured inputs default to zero, a
+/// The shared shape of every specialization decision: the measured inputs default to zero, a
 /// zeroed workload fails every condition, and so "nobody measured anything" and "stay
-/// on the path that always works" are the same state (§7.3). A lane that defaulted to
+/// on the path that always works" are the same state. A lane that defaulted to
 /// its fast path would be a lane you had to opt *out* of.
 #[test]
 fn nothing_measured_means_nothing_specialized() {
@@ -47,7 +46,7 @@ fn nothing_measured_means_nothing_specialized() {
     assert_eq!(CullPlan::default(), CullPlan::PerPrimitive);
 }
 
-/// Every A0 capability is absent here, and each is reported as the thing it is rather
+/// Every specialization capability is absent here, and each is reported as the thing it is rather
 /// than as a boolean convenience: a dispatch entry point exists or does not, a
 /// resource table has a size, an indirect draw reads its counts from memory or does
 /// not. All three answers are no, so all three lanes are unreachable and the frames
@@ -61,7 +60,7 @@ fn this_backend_offers_none_of_the_three() {
     assert!(!caps.indirect_draw);
 }
 
-/// An ordinary frame, drawn for real, reports zero of every A0 counter — the
+/// An ordinary frame, drawn for real, reports zero of every specialization counter — the
 /// arithmetic form of "a specialization you did not ask for did not happen". A future
 /// lane that leaked into the default path trips this without anyone reading a diff.
 #[test]

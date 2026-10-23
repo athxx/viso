@@ -1,4 +1,4 @@
-//! Bytecode against native lowering of System IR (§108.2): one fixed tick
+//! Bytecode against native lowering of System IR: one fixed tick
 //! of the differential test's games (`tests/native/*.vs`), each run by the
 //! scheduler interpreting its bytecode and running its systems lowered to
 //! Rust (`tests/native/*.rs`). `crowd` is bytecode-bound; `colony` spends

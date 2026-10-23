@@ -1,6 +1,5 @@
 //! The commit of a typed UI patch: the only stage of a hot reload that
-//! touches the live tree (`Viso_Hot_Reload.md` §12, §13, §38, §41; AGENTS
-//! 21.7).
+//! touches the live tree.
 //!
 //! The host compiles, validates and plans every edit before it sends one, so
 //! by the time a [`ViewPatch`](super::wire::ViewPatch) reaches a running app
@@ -158,8 +157,8 @@ pub struct CommitReport {
     /// ones whose live value does not convert.
     pub reset: u32,
     /// Every cell [`reset`](Self::reset) counts, by its own owning key — the
-    /// narrowest scope `Viso_Hot_Reload.md` §8's `PATCH_WITH_SCOPED_RESET`
-    /// names, so the ACK can say *which* state reset instead of only how
+    /// narrowest scope `PATCH_WITH_SCOPED_RESET` names, so the ACK can say
+    /// *which* state reset instead of only how
     /// many did.
     pub state_resets: Vec<ScopedReset>,
     /// The reset of each kept state whose live value did not convert.
@@ -174,7 +173,7 @@ pub struct CommitReport {
     pub handlers_lost: bool,
     /// How many of the view's static nodes carry each [`DirtyClass`] once
     /// the commit finished — what the next frame's layout and paint have to
-    /// redo, named for the diagnostic line (§53) and the ACK (§37).
+    /// redo, named for the diagnostic line and the ACK.
     pub dirty: DirtyCounts,
 }
 

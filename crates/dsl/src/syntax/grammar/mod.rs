@@ -1,10 +1,10 @@
 //! The typed grammar parser: an event-driven recursive-descent + Pratt parser
 //! that turns the flat token stream into a lossless, typed green tree.
 //!
-//! This supersedes the coarse skeleton parser (Slice K). It keeps the same two
+//! This supersedes the coarse skeleton parser. It keeps the same two
 //! contracts — **losslessness** (`root.text() == source`, trivia and all) and
 //! **recovery** (no input panics or stops the parser at the first error) — but
-//! produces the grammar's real node kinds (Appendix A) instead of coarse
+//! produces the grammar's real node kinds instead of coarse
 //! `Item`/`Block` grouping.
 //!
 //! ## Why an event buffer
@@ -62,7 +62,7 @@ pub fn parse_expr(tokens: &[Token], source: &str) -> Parse {
     parse_entry(tokens, source, Entry::Expr)
 }
 
-/// The DSL entry productions. The three source forms (AGENTS 21.5) route through
+/// The DSL entry productions. The three source forms route through
 /// one grammar so `ui!` / `component!` / `view!` share resolution downstream;
 /// [`Entry::Expr`] is a fragment entry for an isolated expression.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,7 +110,7 @@ enum Event {
     Finish,
     /// Consumes the next significant token into the current node, retagged as
     /// `kind` when set: a recognized contextual keyword becomes its keyword kind
-    /// and a keyword in a label position becomes `Ident` (§12.4–§12.5).
+    /// and a keyword in a label position becomes `Ident`.
     ///
     /// `len` takes only that many bytes of the token and leaves the rest as the
     /// next significant token: a `>>`, `>=` or `>>=` split so a generic list can
@@ -338,8 +338,8 @@ impl<'t, 's> Parser<'t, 's> {
     }
 
     /// The contextual keyword the token `n` ahead spells, if it is a plain
-    /// identifier whose text is one (§12.3). Whether it *acts* as a keyword is
-    /// the caller's §12.4 lookahead decision.
+    /// identifier whose text is one. Whether it *acts* as a keyword is
+    /// the caller's lookahead decision.
     fn nth_contextual(&self, n: usize) -> Option<SyntaxKind> {
         if self.nth(n) != SyntaxKind::Ident {
             return None;
@@ -949,7 +949,7 @@ fn raw_covers_all(tokens: &[Token], raw: usize) -> bool {
     tokens[raw..].iter().all(|t| t.kind == SyntaxKind::Eof)
 }
 
-/// A binding or declaration name (§12.5): an identifier, a raw identifier or a
+/// A binding or declaration name: an identifier, a raw identifier or a
 /// contextual keyword. A strict keyword here is E1301; it is still consumed as
 /// the name so the declaration keeps its shape.
 fn name(p: &mut Parser) {
@@ -963,12 +963,12 @@ fn name(p: &mut Parser) {
     }
 }
 
-/// Whether the cursor is at a label (§12.5): any identifier or keyword.
+/// Whether the cursor is at a label: any identifier or keyword.
 fn at_label(p: &Parser) -> bool {
     p.nth_is_ident(0) || p.current().is_keyword()
 }
 
-/// A label (§12.5): member names, `::` path segments, field and variant names,
+/// A label: member names, `::` path segments, field and variant names,
 /// named-argument and attribute labels. Any identifier or keyword is accepted
 /// and a keyword is recorded as `Ident`.
 fn label(p: &mut Parser) {

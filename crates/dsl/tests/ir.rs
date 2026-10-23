@@ -410,7 +410,7 @@ fn dirty_class_bit_positions_are_stable() {
     assert!(!set.contains(DirtyClass::LAYOUT));
 }
 
-// --- Section 3: Binding IR + keyed lists -------------------------------------
+// --- Binding IR + keyed lists ------------------------------------------------
 //
 // The Binding IR pass turns each pending property into `source -> (node, class)`
 // edges, and the keys pass flags stateful repeated content without a stable key.

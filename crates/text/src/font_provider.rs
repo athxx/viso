@@ -7,7 +7,7 @@
 //! an app-declared family, a resolved system face, or an external byte request
 //! answers, and hides that split from the shaping and fallback paths.
 //!
-//! # External font source (spec section 16.3)
+//! # External font source
 //!
 //! A packaged app face's bytes are read lazily through
 //! [`crate::app_fonts::AssetSource`]; a system face arrives resolved from the
@@ -62,7 +62,7 @@ pub struct ExternalFaceId(pub u32);
 /// The unit is deliberately coarse — a cluster, a small character set, a script
 /// page, a named subset, or the whole face — never a single scalar, because
 /// on-demand describes *coverage granularity*, not network-request granularity
-/// (spec section 17). The transport is free to satisfy a wider range than asked.
+/// The transport is free to satisfy a wider range than asked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SubsetRange {
     /// The face this subset belongs to.
@@ -86,8 +86,8 @@ pub struct SubsetRange {
 pub trait ExternalFontProvider {
     /// Fetch the sfnt bytes for a subset request, if the transport can supply
     /// them now. The returned bytes must be a valid sfnt (the caller may inject
-    /// a decompressed WOFF2 as sfnt; this crate never decodes WOFF2, per ADR
-    /// 0028). `index` is the face index within a returned collection.
+    /// a decompressed WOFF2 as sfnt; this crate never decodes WOFF2). `index`
+    /// is the face index within a returned collection.
     fn fetch_subset(&self, range: &SubsetRange) -> Option<FetchedSubset>;
 }
 
@@ -454,7 +454,7 @@ mod tests {
     #[test]
     fn a_stale_revision_blob_is_refused() {
         // A slow transport returns a subset for an older revision after a newer
-        // one was requested (progressive subset arrival, spec section 17): the
+        // one was requested (progressive subset arrival): the
         // stale blob must not overwrite the newer resolution.
         let mut c = ExternalFetchCoordinator::default();
         c.request(range(9, 3), Priority::CriticalVisible);

@@ -1,5 +1,5 @@
 //! A component's handlers interpreted against the same handlers lowered to
-//! Rust (ADR 0041), on the differential test's fixture
+//! Rust, on the differential test's fixture
 //! (`tests/differential/core.vs`, lowered in `tests/differential/core.rs`):
 //! a release `view!` runs the lowered code, a debug build the interpreter.
 //!

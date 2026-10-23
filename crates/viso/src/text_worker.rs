@@ -1,16 +1,16 @@
 //! Off-main text work: paragraph shaping and line breaking, and exact-coverage
 //! glyph rasterization, run on a worker thread against face bytes the main
-//! thread hands over (§12.20, §14.4). A glyph a packaged face baked at its
-//! size is decoded from the face's pages instead of rasterized; a build
-//! without the `rasterizer` feature has nothing else, and draws a size it did
-//! not bake from the nearest one it did (§3.6).
+//! thread hands over. A glyph a packaged face baked at its size is decoded from
+//! the face's pages instead of rasterized; a build without the `rasterizer`
+//! feature has nothing else, and draws a size it did not bake from the nearest
+//! one it did.
 //!
 //! The unit of work is a whole paragraph. The worker keeps each paragraph's
 //! retained lines, applies the new text as a range edit, and lays it out with
 //! the paragraph's own incremental reflow, so an edit reshapes exactly what a
-//! main-thread layout would and a worker boundary never cuts a shaped run
-//! (§12.7, §12.9). What comes back is the paragraph's complete line set, which
-//! the main thread commits atomically in place of the last good one (§12.21).
+//! main-thread layout would and a worker boundary never cuts a shaped run.
+//! What comes back is the paragraph's complete line set, which the main thread
+//! commits atomically in place of the last good one.
 //!
 //! Whatever needs a platform handle stays on the main thread: system fallback
 //! resolution, and color and platform-outline rasterization. When a cluster

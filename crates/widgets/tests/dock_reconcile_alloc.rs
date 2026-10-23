@@ -4,17 +4,17 @@
 //! The dock's reconcile step (reconcile.rs) is, per seam, exactly a pair of
 //! `NodeStore::set_flex_child_weight` writes followed by a `layout` pass — it
 //! rewrites two `Length::Fill` weights in place and re-runs the parent's
-//! leftover-space sweep, reusing the caller's layout scratch. Section 7.1 forbids
-//! per-frame allocation in a layout loop, and section 7.3 forbids claiming that
-//! zero-alloc property without measuring it. `reconcile_seams` is `pub(super)`, so
+//! leftover-space sweep, reusing the caller's layout scratch. A layout loop must
+//! not allocate per frame, and that zero-alloc property is measured rather than
+//! assumed. `reconcile_seams` is `pub(super)`, so
 //! (exactly as the `dock/seam_reconcile_frame` bench does) this arms a counting
 //! global allocator and drives the reconcile step's *identical viso-ui foundation*
 //! — the two-fill-pane split a dock split authors — proving a warmed drag frame
 //! (weight rewrite + relayout) allocates nothing.
 //!
 //! A second test pins the structural counterpart: adding a live pane to the split
-//! and relaying out (the shape a redock produces — a genuine structural change,
-//! section 8.1) allocates a *bounded, recorded* amount, so a regression that turns
+//! and relaying out (the shape a redock produces — a genuine structural change)
+//! allocates a *bounded, recorded* amount, so a regression that turns
 //! the steady drag path structural, or that unbounds the structural path, is
 //! caught either way.
 //!
@@ -178,7 +178,7 @@ fn build_split_scene() -> (NodeStore, NodeId, NodeId, NodeId) {
 
 /// A warmed steady-state seam-drag reconcile frame — the per-seam work of
 /// `reconcile_seams`: rewrite both pane weights, then re-lay-out the split —
-/// allocates nothing. This is the section 8 zero-alloc proof: a fill child
+/// allocates nothing. This is the zero-alloc proof: a fill child
 /// contributes no natural size, so a weight rewrite marks only `LAYOUT | PAINT`
 /// and the relayout re-runs the parent's fill sweep into the reused scratch with
 /// no heap.
@@ -220,8 +220,7 @@ fn steady_seam_reconcile_frame_is_allocation_free() {
     );
 }
 
-/// The structural counterpart: a redock genuinely changes structure (section 8.1),
-/// so it may allocate — but a bounded, recorded amount. This appends a third live
+/// The structural counterpart: a redock genuinely changes structure, so it may allocate — but a bounded, recorded amount. This appends a third live
 /// fill pane to the warmed split (the shape a redock produces) and relays out,
 /// asserting the allocation count is non-zero yet bounded, so a regression that
 /// unbounds the structural path — or that silently made the *steady* drag path

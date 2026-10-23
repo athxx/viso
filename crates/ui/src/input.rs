@@ -2763,7 +2763,7 @@ mod tests {
         assert_eq!(*log.borrow(), vec![0, 1]);
     }
 
-    // ---- hover: per-node enter/leave synthesis (section 8.4) ----
+    // ---- hover: per-node enter/leave synthesis ----
 
     fn move_to(x: f32, y: f32) -> PointerEvent {
         PointerEvent {

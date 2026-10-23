@@ -49,15 +49,14 @@ use viso_render::{
 use viso_runtime::{LoopWaker, TaskSet};
 
 /// The application entry into the tree: a component declares its children into
-/// the [`BuildCx`]. This slice has no reactive state, so `build` takes `&self`;
-/// state and incremental rebuild arrive with the reactive slice.
+/// the [`BuildCx`]. `build` takes `&self`: a component holds no reactive state
+/// itself; its cells live in the build context (`cx.state`).
 pub trait Component {
     /// Declare this component's subtree into the build context.
     fn build(&self, cx: &mut BuildCx<'_>);
 }
 
-/// A typed handle onto a built node. This slice carries only the [`NodeId`];
-/// the typed payload lands with real widgets.
+/// A typed handle onto a built node. It carries only the [`NodeId`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Handle {
     id: NodeId,
@@ -426,7 +425,7 @@ pub struct NodeStore {
     /// How many nodes have rules: while none does, layout reads no slot.
     ruled: u32,
     /// Warm: whether a node moves its own box without a relayout — set by its
-    /// first translate and kept, so it stays a transform root (§21) while it
+    /// first translate and kept, so it stays a transform root while it
     /// lives. Scroll viewports move their content and need no flag.
     transform_root: Vec<bool>,
     /// Hot: per-node scroll offset, nonzero only on [`LayoutInput::Scroll`]
@@ -490,7 +489,7 @@ pub struct NodeStore {
     layout: Vec<LayoutInput>,
     /// Warm: paint style.
     style: Vec<BoxStyle>,
-    /// Warm: measured natural size cache (recomputed each frame this slice).
+    /// Warm: measured natural size cache (recomputed each frame).
     measured: Vec<Measured>,
     /// Hot: whether a node participates in hit testing. Default `true` — a
     /// laid-out node is hittable, including a transparent pure-layout container
@@ -503,14 +502,14 @@ pub struct NodeStore {
     /// to zero (contributing nothing to a parent's main-axis sum), lays out to a
     /// zero rect, and emits no paint primitive for itself or any descendant — all
     /// without a structural rebuild. Shared substrate for Tabs and the wider
-    /// Tier 4 hide/show family (NavigationStack/Modal/Popup/Sheet).
+    /// hide/show family (NavigationStack/Modal/Popup/Sheet).
     hidden: Vec<bool>,
     /// Hot: whether a node clips its children to its box (its `clip`), which
     /// paint, hit testing and the reach read.
     clips: Vec<bool>,
     /// Hot: whether a node is an overlay — painted in a deferred top layer, after
     /// every non-overlay node, regardless of its position in the tree. Default
-    /// `false` — a node opts *in* to the top layer (the Tier 4 overlay family:
+    /// `false` — a node opts *in* to the top layer (the overlay family:
     /// Popup/Modal/Sheet/Toast). Unlike `hidden` it does not touch layout: an
     /// overlay still lays out in place (a popup is anchored to its parent's box),
     /// so flipping it marks PAINT only, not LAYOUT. Paint collects overlay subtrees
@@ -540,8 +539,8 @@ pub struct NodeStore {
     /// The subtree focus traversal is confined to, or `None` for the whole tree.
     /// When set (an open modal/dialog traps the ring), [`focus_next`] starts its
     /// pre-order from this node instead of the passed root, so Tab cycles only
-    /// within the scoped subtree. One slot per store — a single active trap this
-    /// slice — reset to `None` on a structural rebuild. Mirrors [`focused`]: a
+    /// within the scoped subtree. One slot per store — a single active trap —
+    /// reset to `None` on a structural rebuild. Mirrors [`focused`]: a
     /// single retained slot, zero steady-state cost, not a per-Tab recomputation.
     ///
     /// [`focus_next`]: crate::input::focus_next
@@ -551,7 +550,7 @@ pub struct NodeStore {
     /// no interactive node (or has left the window). The router diffs this slot
     /// against each pointer-move hit to synthesize per-node enter/leave; it is a
     /// pure move-time projection of the hit target, never a hot per-node column.
-    /// One slot per store — a single pointer this slice — reset to `None` on a
+    /// One slot per store — a single pointer — reset to `None` on a
     /// structural rebuild. Mirrors [`capture`]/[`focused`]: a single retained
     /// slot, zero steady-state cost when the hover target does not change.
     ///
@@ -604,7 +603,7 @@ pub struct NodeStore {
     /// flush writes the current cell value here (via
     /// [`set_semantic_state`](Self::set_semantic_state)), and the SEMANTICS-derive
     /// pass reads it (`&self`) — so live state reaches the derived tree through a
-    /// node column, never a cross-layer StateStore read (AGENTS section 3.5),
+    /// node column, never a cross-layer StateStore read,
     /// mirroring the `focused` slot. Heap-free ([`SemanticState`] is `Copy`), so
     /// the column reuses its slots with no per-frame allocation.
     semantic_state: Vec<Option<SemanticState>>,
@@ -808,7 +807,7 @@ pub struct NodeStore {
     /// Cold: the clients the frame loop advances, each owned by a node.
     /// Empty in a window that runs no game.
     frame_clients: crate::frame_client::FrameClients,
-    /// What the last paint left: its transform roots (§21), where each
+    /// What the last paint left: its transform roots, where each
     /// node's primitives sit, what the last incremental paint rewrote.
     painting: crate::paint::PaintSlot,
     /// The slots of the nodes whose box moved since the last paint.
@@ -817,7 +816,7 @@ pub struct NodeStore {
     /// snapped displacement, a transform root, a fade or an overlay started or
     /// stopped, or so many boxes moved that a splice would not pay.
     repaint_pending: bool,
-    /// Warm: the template instance each node belongs to (§18.1), tagged
+    /// Warm: the template instance each node belongs to, tagged
     /// [`OWNER_KEPT`] when its slot is part of the instance's block;
     /// [`NO_OWNER`] for a node no instance built.
     owner: Vec<u32>,
@@ -879,8 +878,7 @@ impl NodeStore {
     }
 
     /// Drop every node, resetting to empty. Used when a structural rebuild
-    /// replaces the whole tree (this slice rebuilds wholesale; targeted
-    /// structural diffing lands later).
+    /// replaces the whole tree (the rebuild is wholesale).
     pub fn clear(&mut self) {
         self.arena.clear();
         node_columns!(self.clear());
@@ -2035,7 +2033,7 @@ impl NodeStore {
     /// / [`arena_append_child`](Self::arena_append_child) needs: to re-home a node
     /// under the same parent another node already lives under, a caller resolves that
     /// parent from the sibling. A discrete-action lookup off the compact link store,
-    /// never a per-frame path (AGENTS section 8.3).
+    /// never a per-frame path.
     #[inline]
     pub fn parent(&self, child: NodeId) -> Option<NodeId> {
         self.arena.parent(child)
@@ -2900,8 +2898,8 @@ impl NodeStore {
     }
 
     /// Set a node's live accessibility state, replacing any prior value, and mark
-    /// it SEMANTICS-dirty so the next derive re-folds it (AGENTS section 11: an
-    /// accessibility-state change invalidates SEMANTICS). A live-guarded write —
+    /// it SEMANTICS-dirty so the next derive re-folds it (an accessibility-state
+    /// change invalidates SEMANTICS). A live-guarded write —
     /// a stale handle is a no-op. SEMANTICS bubbles, so ancestors learn their
     /// subtree changed without a separate mark.
     ///
@@ -3038,8 +3036,8 @@ impl NodeStore {
     /// changed payload can resize a `Fit` node and must re-measure, re-lay-out,
     /// and repaint. A live-guarded write — a stale handle is a no-op.
     ///
-    /// Text content additionally marks SEMANTICS (AGENTS section 11:
-    /// `text content -> MEASURE + LAYOUT + PAINT + SEMANTICS`). A text node's
+    /// Text content additionally marks SEMANTICS
+    /// (`text content -> MEASURE + LAYOUT + PAINT + SEMANTICS`). A text node's
     /// visible run is its accessible name when no separate label is authored, so
     /// replacing that run in place (a reactive text change re-shaped by the upper
     /// tier) must re-derive the accessibility tree. Image and path content carry
@@ -3399,7 +3397,7 @@ impl NodeStore {
     /// reflow drain: a width-only reshape wraps the same text to a new height, so
     /// it must re-measure/re-lay-out/repaint, but the accessible name is
     /// unchanged — dirtying the semantics tree on every resize frame would be
-    /// spurious (AGENTS section 11/15 invalidation contract). The text-*content*
+    /// spurious. The text-*content*
     /// change path ([`Self::set_content_payload`]) still marks SEMANTICS; this is
     /// the reflow-only sibling. A live-guarded write — a stale handle is a no-op.
     pub fn set_reflowed_content(&mut self, id: NodeId, mut content: Content) {
@@ -5181,7 +5179,7 @@ impl NodeStore {
         }
     }
 
-    /// Open an instance scope for instance `owner` (§18.1): the nodes built
+    /// Open an instance scope for instance `owner`: the nodes built
     /// until it closes fill a block of `len` slots, or, with `None`, are
     /// ordinary nodes the scope lists. A fixed-capacity store with no room
     /// for the block opens a scope without one.
@@ -5790,7 +5788,7 @@ impl NodeStore {
             disabled,
             // Live state comes from the node's own side column (`&self`), never
             // a cross-layer state-store read: a control's projection binding
-            // wrote it in the flush phase (AGENTS section 3.5).
+            // wrote it in the flush phase.
             state: self.semantic_state(id),
             active: self.active_descendant(id),
             bounds: self.bounds(id),
@@ -5842,9 +5840,9 @@ impl NodeStore {
 
     /// Re-derive the accessibility tree only when a SEMANTICS invalidation is
     /// pending, returning the new tree (or `None` when SEMANTICS is clean, so a
-    /// frame with no semantic change does no work). The whole tree is rebuilt
-    /// this slice — SEMANTICS bubbles to the root, so any change reaches `root`;
-    /// per-subtree caching is a later refinement once a consumer needs it.
+    /// frame with no semantic change does no work). The whole tree is rebuilt —
+    /// SEMANTICS bubbles to the root, so any change reaches `root`; there is no
+    /// per-subtree caching.
     pub fn derive_semantics_dirty(&self, root: NodeId) -> Option<SemanticsTree> {
         if !self.any_dirty_class(DirtyClass::SEMANTICS) {
             return None;
@@ -6172,7 +6170,7 @@ impl LayoutTree for NodeStore {
         // Quantize the assigned width to integer physical px before comparing:
         // a continuous drag-resize assigns a slightly different sub-pixel width
         // every frame, and reshaping on every one would defeat the text cache
-        // (AGENTS section 20 / ADR 0025 "unchanged width must not reshape").
+        // ("unchanged width must not reshape").
         let width = match self.check_marks[index as usize] {
             Some((mark, shown)) => {
                 let (text, baseline) = caption_of(self.content_payload[index as usize].as_deref());
@@ -6394,7 +6392,7 @@ impl<'a> BuildCx<'a> {
     /// The per-window chrome facts seeded for this build (default `(Native,
     /// None)` when unseeded). A caption widget reads this to choose whether to
     /// reserve a leading spacer for native OS buttons or to draw its own —
-    /// driven by the data contract, not `target_os` (section 24).
+    /// driven by the data contract, not `target_os`.
     #[inline]
     pub fn chrome(&self) -> ChromeContext {
         self.chrome
@@ -6606,7 +6604,7 @@ impl<'a> BuildCx<'a> {
     /// [`GridStyle::column_line_names`] / [`GridStyle::row_line_names`], resolved to
     /// 0-based line indices at build time — the stored placement is the same
     /// `Option<u16>` a numeric [`place`](Self::place) produces, so the runtime path
-    /// never carries a `String` (see section 29). An unknown name auto-flows that
+    /// never carries a `String`. An unknown name auto-flows that
     /// axis (`None`), the same as omitting it. Pass `None` for an axis to auto-flow
     /// it explicitly.
     pub fn place_named(
@@ -6634,7 +6632,7 @@ impl<'a> BuildCx<'a> {
     /// Place the next grid child into a named **template area** declared in the
     /// grid's [`GridStyle::areas`]. The area name resolves to an explicit
     /// [`GridPlacement`] (start column/row + spans) at build time; the runtime path
-    /// stays `String`-free (section 29). An unknown area name (or a grid with no
+    /// stays `String`-free. An unknown area name (or a grid with no
     /// `areas` table) leaves the child to auto-flow, the same as no `place` call.
     pub fn place_area(&mut self, name: &str) {
         if let Some(placement) = self
@@ -7360,7 +7358,7 @@ impl<'a> BuildCx<'a> {
         node
     }
 
-    /// Build `f` as one instance of `template` (§18.1): the nodes and states
+    /// Build `f` as one instance of `template`: the nodes and states
     /// it creates fill blocks of their own and the edges it binds are the
     /// instance's, shared through `template` with every instance that binds
     /// the same way. The instance lives while one of its nodes does; once its
@@ -7466,7 +7464,7 @@ impl<'a> BuildCx<'a> {
     /// the live accessibility [`SemanticState`] to write into the node's side
     /// column. The projection re-runs in the flush phase whenever a cell it read
     /// changes, keeping the semantics derive pass single-layer — the derive reads
-    /// only the node column (`&self`), never the state store (AGENTS section 3.5).
+    /// only the node column (`&self`), never the state store.
     ///
     /// This runs the projection once now, so the node carries its live state from
     /// the first frame (before any interaction). Returns the handle so wiring
@@ -8504,9 +8502,9 @@ mod tests {
 
     #[test]
     fn set_text_content_marks_semantics_but_image_content_does_not() {
-        // AGENTS section 11: `text content -> MEASURE + LAYOUT + PAINT + SEMANTICS`
-        // but image/path content carries no intrinsic accessible name, so it
-        // stays MEASURE | LAYOUT | PAINT. A reactive text change re-shaped in
+        // `text content -> MEASURE + LAYOUT + PAINT + SEMANTICS`, but image/path
+        // content carries no intrinsic accessible name, so it stays
+        // MEASURE | LAYOUT | PAINT. A reactive text change re-shaped in
         // place must re-derive the accessibility tree; an image swap must not.
         use viso_render::GlyphInstanceData;
         let mut store = NodeStore::new();
@@ -8563,7 +8561,7 @@ mod tests {
         );
         assert!(
             store.dirty(text_leaf).intersects(DirtyClass::SEMANTICS),
-            "replacing a text run in place marks SEMANTICS (section 11)"
+            "replacing a text run in place marks SEMANTICS"
         );
         assert!(
             store
@@ -8851,7 +8849,7 @@ mod tests {
 
     #[test]
     fn realloc_after_clear_defaults_focusable_and_key_handler() {
-        // Set focus + a handler, rebuild wholesale (this slice frees by
+        // Set focus + a handler, rebuild wholesale (a rebuild frees by
         // clearing), then alloc a fresh node into index 0: it comes back with
         // focus off and no handler, proving the alloc path defaults both columns.
         let mut store = NodeStore::new();
@@ -9965,9 +9963,9 @@ mod tests {
         );
     }
 
-    // --- DL1: width-aware text reflow recorder + queue ----------------------
+    // --- width-aware text reflow recorder + queue ---------------------------
     //
-    // These drive the `viso-ui` half of the two-phase reflow (ADR 0027): the
+    // These drive the `viso-ui` half of the two-phase reflow: the
     // Flex layout pass records a reflow request for a wrap-eligible text leaf
     // whose assigned box width disagrees with the width its run was shaped at,
     // the store queues it, and the facade (not exercised here) drains and
@@ -10178,7 +10176,7 @@ mod tests {
     fn subpixel_width_jitter_does_not_reenqueue_a_settled_reflow() {
         // A run already shaped at 100 sits in a box whose width jitters by a
         // sub-pixel amount (a drag-resize frame). The quantize-to-integer +
-        // 0.5px guard (ADR 0025 / §20) must not re-enqueue a reshape.
+        // 0.5px guard must not re-enqueue a reshape.
         let (mut store, col, _leaf) = wrap_scene(
             Length::fill(),
             text_run(Vec2 { x: 100.0, y: 60.0 }, Some(100.0), true),

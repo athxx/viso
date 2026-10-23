@@ -1,5 +1,4 @@
-//! `viso-gpu-abi` — what a GPU backend reads, described without one
-//! (ADR 0042).
+//! `viso-gpu-abi` — what a GPU backend reads, described without one.
 //!
 //! An instance struct's layout and the shader's declared [`InstanceSchema`]
 //! ([`instance`]); a user program's code, its ABI and the CPU program the

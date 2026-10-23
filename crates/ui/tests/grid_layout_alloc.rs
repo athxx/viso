@@ -1,10 +1,9 @@
 //! The allocation-profile dimension of grid re-layout: a warmed steady-state
-//! `layout_grid` pass over a stable grid must touch no heap. ADR 0009's
-//! allocation-shape consequence noted that `layout_grid` allocated ~12 per-call
-//! `Vec`s (placements, occupied bitset, cell regions, per-axis track/auto/size/
-//! offset buffers) every frame; section 7.1 forbids per-frame allocation in
-//! layout loops, and section 7.3 forbids claiming the hoist without measuring
-//! it. This arms a counting global allocator and drives a real re-layout of a
+//! `layout_grid` pass over a stable grid must touch no heap. Without the hoisted
+//! scratch, `layout_grid` would allocate ~12 per-call `Vec`s (placements, occupied
+//! bitset, cell regions, per-axis track/auto/size/offset buffers) every frame;
+//! layout loops must not allocate per frame, and the hoist is measured rather than
+//! assumed. This arms a counting global allocator and drives a real re-layout of a
 //! 12x20 grid — the same shape the `grid_relayout_12x20` bench times — proving
 //! the hoisted `GridScratch` pool is checked out, cleared, and returned with no
 //! allocation once warmed.

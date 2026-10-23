@@ -1,5 +1,5 @@
 //! Steady-state renderer microbenchmarks and the hot-path allocation/dispatch
-//! invariant (§7.1, §17.4).
+//! invariant.
 //!
 //! Two things are measured here, both through the public API (benches are an
 //! external crate and cannot touch `pub(crate)` internals, so we drive whole
@@ -18,8 +18,7 @@
 //!    to catch regressions.
 //!
 //! Run release (`CARGO_TARGET_DIR=/tmp/rust_tmp cargo bench -p viso-render`);
-//! criterion defaults to a release profile. Debug timing is not a perf result
-//! (§36).
+//! criterion defaults to a release profile. Debug timing is not a perf result.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::hint::black_box;
@@ -141,7 +140,7 @@ fn setup() -> Harness {
     }
 }
 
-/// The D0.4 large-scene sizes: a moderate grid the steady-state / hover / scroll
+/// The large-scene sizes: a moderate grid the steady-state / hover / scroll
 /// proofs run against, and a large one the criterion timing bench uses to show
 /// the per-frame cost is O(dirty), not O(scene). Kept as counts so the grid
 /// dimensions are derived, not hand-tuned.
@@ -153,7 +152,7 @@ const GRID_100K: usize = 100_000;
 ///
 /// Deliberately quads only: the hover/scroll proofs need the quad pool to be the
 /// sole participant in `sync`, so a single changed tile is provably one upload
-/// range (§9.1) with no other family's traffic mixed in. The tiles are laid on a
+/// range with no other family's traffic mixed in. The tiles are laid on a
 /// fixed pitch starting at the origin; the surface stays [`W`]×[`H`] (most tiles
 /// fall outside it, which is irrelevant — this measures the CPU data path
 /// (lower + diff + coalesce + upload), not rasterizer coverage).
@@ -344,14 +343,14 @@ fn setup_family_grid(family: Family, count: usize) -> Harness {
 }
 
 // ---------------------------------------------------------------------------
-// D2 gate (§31 `## D2`): many gradients, image grid, sprite atlas, and
+// Gradient/image gate: many gradients, image grid, sprite atlas, and
 // texture-binding pressure. Each scene proves the same steady-state contract
-// the D0/D1 gates prove for quads/analytics, plus the two D2-specific ones:
+// the quad and analytic gates prove, plus the two gradient/image-specific ones:
 // an unchanged gradient bakes no LUT row (0 upload), and no image draw creates a
 // per-primitive texture.
 // ---------------------------------------------------------------------------
 
-/// The D2 gradient/image grid size — smaller than the 10k analytic grids because
+/// The gradient/image grid size — smaller than the 10k analytic grids because
 /// each cell here is heavier (a baked LUT row or a textured draw), but still large
 /// enough that a whole-scene re-upload would dwarf a one-cell change.
 const GRID_1K: usize = 1_000;
@@ -407,7 +406,7 @@ fn lut_palette_stops(slot: usize) -> Vec<GradientStop> {
 /// the rest are inline 2-stop gradients (no LUT). The 3-stop cells cycle a fixed
 /// palette of [`LUT_PALETTE`] distinct [`LutKey`]s, so the scene has many
 /// gradient draws over a bounded, atlas-sized set of baked rows — the real "many
-/// gradients" steady-state workload (§31 D2), not a one-ramp scene and not an
+/// gradients" steady-state workload, not a one-ramp scene and not an
 /// overflow thrash. `palette_shift` offsets the palette so a caller can compose
 /// a distinct-but-still-bounded variant.
 fn gradient_grid_scene(count: usize) -> Vec<Primitive> {
@@ -591,7 +590,7 @@ fn upload_test_texture(gpu: &mut CpuRaster, label: &'static str) -> (TextureId, 
     (texture, [tw, th])
 }
 
-/// §12/§31 D2 proof — "many gradients": an unchanged gradient grid bakes no LUT
+/// "Many gradients" proof: an unchanged gradient grid bakes no LUT
 /// row and uploads nothing, and recoloring one gradient re-bakes exactly that
 /// gradient (one LUT row + one instance), never the whole scene.
 fn assert_gradient_grid_steady_and_local() {
@@ -602,24 +601,23 @@ fn assert_gradient_grid_steady_and_local() {
     let textures = h.gpu.texture_count();
 
     // Steady baseline: an unchanged gradient scene rebakes no LUT row, so it
-    // uploads nothing (§31 D2: "0 gradient-LUT rebuild unless the gradient
-    // changed").
+    // uploads nothing ("0 gradient-LUT rebuild unless the gradient changed").
     h.renderer.upload(&mut h.gpu, &h.scene);
     let steady = h.renderer.frame_stats();
     assert_eq!(
         steady.uploaded_ranges, 0,
         "an unchanged gradient grid must upload zero ranges — no LUT rebake, no \
-         instance re-upload (§31 D2)"
+         instance re-upload"
     );
     assert_eq!(
         steady.gpu_upload_bytes, 0,
-        "an unchanged gradient grid must upload zero bytes (§31 D2)"
+        "an unchanged gradient grid must upload zero bytes"
     );
     assert_eq!(
         h.gpu.texture_count(),
         textures,
         "a steady gradient frame must create no texture — the LUT atlas is \
-         persistent (§17.4)"
+         persistent"
     );
 
     // Recolor one 3-stop gradient (i % 3 == 0 → has a LUT row) so the change
@@ -640,7 +638,7 @@ fn assert_gradient_grid_steady_and_local() {
     let changed = h.renderer.frame_stats();
     assert_eq!(
         changed.dirty_primitives, 1,
-        "recoloring one gradient must dirty exactly one primitive (§8.4)"
+        "recoloring one gradient must dirty exactly one primitive"
     );
     assert!(
         changed.gpu_upload_bytes > 0,
@@ -650,11 +648,11 @@ fn assert_gradient_grid_steady_and_local() {
         h.gpu.texture_count(),
         textures,
         "recoloring a gradient rewrites the LUT atlas in place — no new texture \
-         (§17.4)"
+        "
     );
 }
 
-/// §12.6/§31 D2 proof — "image grid" and "sprite atlas": a grid of image/sprite
+/// "Image grid" and "sprite atlas" proof: a grid of image/sprite
 /// draws over one shared texture is steady (0 upload unchanged), creates no
 /// per-draw texture, and collapses to a single texture binding (the whole grid
 /// shares one (texture, sampler), so the planner emits one binding, and a steady
@@ -682,17 +680,17 @@ fn assert_image_grid_shares_one_binding(build: impl Fn(TextureId, [u32; 2]) -> V
     let steady = h.renderer.frame_stats();
     assert_eq!(
         steady.uploaded_ranges, 0,
-        "an unchanged image grid must upload zero ranges (§9.1)"
+        "an unchanged image grid must upload zero ranges"
     );
     assert_eq!(
         steady.gpu_upload_bytes, 0,
-        "an unchanged image grid must upload zero bytes (§9.1)"
+        "an unchanged image grid must upload zero bytes"
     );
     assert_eq!(
         h.gpu.texture_count(),
         textures,
         "an image grid must create no per-draw texture — every draw shares the \
-         one uploaded texture (§31 D2: no per-primitive texture creation)"
+         one uploaded texture"
     );
     // One shared (texture, sampler) ⇒ the image draws form one contiguous batch
     // with a single texture binding, entered once. The scene has no other
@@ -701,11 +699,11 @@ fn assert_image_grid_shares_one_binding(build: impl Fn(TextureId, [u32; 2]) -> V
     assert_eq!(
         steady.texture_binding_switches, 1,
         "an image grid over one shared texture must bind that texture exactly \
-         once, not once per draw (§16.2/§31)"
+         once, not once per draw"
     );
 }
 
-/// §31 D2 proof — "texture-binding pressure": `n` distinct textures each backing
+/// "Texture-binding pressure" proof: `n` distinct textures each backing
 /// a run of image draws force exactly `n` texture bindings (one per texture, none
 /// per draw), and the scene is still steady (0 upload unchanged) with no
 /// per-draw texture creation.
@@ -738,12 +736,12 @@ fn assert_texture_pressure_binds_once_per_texture() {
     let steady = h.renderer.frame_stats();
     assert_eq!(
         steady.uploaded_ranges, 0,
-        "an unchanged multi-texture grid must upload zero ranges (§9.1)"
+        "an unchanged multi-texture grid must upload zero ranges"
     );
     assert_eq!(
         h.gpu.texture_count(),
         tex_count,
-        "a steady multi-texture frame must create no texture (§17.4/§31 D2)"
+        "a steady multi-texture frame must create no texture"
     );
     // Draws are grouped by texture, so each texture is bound once for its run:
     // exactly N_TEX binding switches, bounded by the distinct-texture count, not
@@ -751,25 +749,25 @@ fn assert_texture_pressure_binds_once_per_texture() {
     assert_eq!(
         steady.texture_binding_switches, N_TEX as u32,
         "distinct-texture draws must bind once per texture, not once per draw — \
-         binding count scales with distinct textures (§31 D2)"
+         binding count scales with distinct textures"
     );
 }
 
 // ---------------------------------------------------------------------------
-// C0.6 gate (§31 `## C0` compositing matrix): clip / layer / opacity / blend
+// Compositing-matrix gate: clip / layer / opacity / blend
 // steady state, measured on the hot compositing path — `Primitive::Layer` +
 // `Primitive::LayerEnd`. Two regimes, distinguished only by `opacity`:
 //
 // - `opacity == 1.0`: the layer is an in-pass hardware-scissor clip. A deep
 //   nest of such layers must open *zero* offscreen passes, allocate no target,
-//   and stay steady frame to frame (§14, §16.2).
+//   and stay steady frame to frame.
 // - `opacity < 1.0`: the `Layer..LayerEnd` subtree renders to an offscreen
 //   target composited back as a modulated quad. Many translucent layers must
 //   reuse a *pooled* target set — one pass per translucent layer, bounded
-//   transient bytes, and **no** texture growth across steady frames (§17.4).
+//   transient bytes, and **no** texture growth across steady frames.
 //
 // These prove the compositing foundation pays only the cost its tier demands
-// and never defaults to an offscreen — the whole point of C0 (§14).
+// and never defaults to an offscreen — the whole point of the matrix.
 // ---------------------------------------------------------------------------
 
 /// A tile quad at pixel `(x, y)` with a per-index hue, the same shape a
@@ -797,12 +795,12 @@ fn layer_tile(i: usize, x: f32, y: f32) -> Primitive {
 /// clip inset one pixel inside its parent, wrapping one tile per level. At
 /// `opacity == 1.0` this is a deep in-pass scissor nest (no offscreen); at
 /// `opacity < 1.0` every level is its own offscreen composite — the "deep clip"
-/// and "nested opacity" rows of the §31 matrix, selected by `opacity`.
+/// and "nested opacity" rows of the compositing matrix, selected by `opacity`.
 ///
 /// The innermost level carries a second, overlapping tile. Every outer level
 /// already contains a nested layer, which makes its children's overlap unknowable
 /// cheaply and so keeps its target; the innermost would otherwise hold a single
-/// child and have its opacity folded into it (§3145), turning this fixture into a
+/// child and have its opacity folded into it, turning this fixture into a
 /// measurement of `depth - 1` targets. The extra tile sits inside the first, so
 /// the union — and every byte the nest allocates — is unchanged.
 fn nested_layer_scene(depth: usize, opacity: f32) -> Vec<Primitive> {
@@ -858,12 +856,12 @@ fn sibling_layer_scene(count: usize, opacity: f32) -> Vec<Primitive> {
 /// [`sibling_layer_scene`] with each layer's content blurred at `sigma`: the
 /// same flat run of small ROIs, but every scope now needs an offscreen target
 /// *plus* its ladder's scratch. At `sigma > 0` this is the "many small-ROI
-/// blurs" row of the §31 matrix.
+/// blurs" row of the compositing matrix.
 ///
 /// Each scope wraps a tile *and* a smaller tile inside it. The second child is
 /// what keeps the row measuring targets: a translucent group over one child has
 /// provably non-overlapping children, so the planner would push its opacity down
-/// and eliminate the layer entirely (§3145). Two overlapping children is the case
+/// and eliminate the layer entirely. Two overlapping children is the case
 /// the group genuinely exists for, and because the inner tile is contained the
 /// ROI, the target bytes, and the pool behaviour are exactly the single tile's.
 fn blurred_sibling_layer_scene(count: usize, opacity: f32, sigma: f32) -> Vec<Primitive> {
@@ -905,11 +903,11 @@ fn blurred_sibling_layer_scene(count: usize, opacity: f32, sigma: f32) -> Vec<Pr
     scene
 }
 
-/// C0.6 proof — a deep `opacity == 1.0` clip nest is pure in-pass scissoring: it
+/// Proof that a deep `opacity == 1.0` clip nest is pure in-pass scissoring: it
 /// opens **no** offscreen pass, allocates no target, and holds an unchanged
 /// frame steady (0 upload, 0 texture growth, identical [`FrameStats`]). This is
-/// the §31 "deep Rect clip" row — clip depth must never escalate to an
-/// offscreen (§14/§16.2).
+/// the "deep Rect clip" row — clip depth must never escalate to an
+/// offscreen.
 fn assert_deep_clip_nest_opens_no_offscreen() {
     const DEPTH: usize = 32;
     let mut h = setup_scene(nested_layer_scene(DEPTH, 1.0));
@@ -923,7 +921,7 @@ fn assert_deep_clip_nest_opens_no_offscreen() {
     assert_eq!(
         steady.offscreen_passes, 0,
         "a deep opacity==1 clip nest must open zero offscreen passes — it clips \
-         in-pass with a hardware scissor, never an offscreen target (§14/§16.2)"
+         in-pass with a hardware scissor, never an offscreen target"
     );
     assert_eq!(
         steady.transient_target_bytes, 0,
@@ -931,26 +929,26 @@ fn assert_deep_clip_nest_opens_no_offscreen() {
     );
     assert_eq!(
         steady.uploaded_ranges, 0,
-        "an unchanged clip nest must upload zero ranges (§9.1)"
+        "an unchanged clip nest must upload zero ranges"
     );
     assert_eq!(
         steady.gpu_upload_bytes, 0,
-        "an unchanged clip nest must upload zero bytes (§9.1)"
+        "an unchanged clip nest must upload zero bytes"
     );
     assert_eq!(
         h.gpu.texture_count(),
         textures,
         "a steady clip nest must create no texture — no offscreen is opened \
-         (§17.4)"
+        "
     );
 }
 
-/// C0.6 proof — translucent layers pay one offscreen pass each, but reuse a
+/// Proof that translucent layers pay one offscreen pass each, but reuse a
 /// **pooled** target set: across steady frames the backend's texture count does
 /// not grow, transient bytes are bounded by the (bounded) live-pass set, and
-/// [`FrameStats`] is identical frame to frame. This is the §31 "nested opacity /
+/// [`FrameStats`] is identical frame to frame. This is the "nested opacity /
 /// blend stress" row — the offscreen cost is paid by tier and reused, never
-/// re-allocated per frame (§17.4).
+/// re-allocated per frame.
 fn assert_translucent_layers_reuse_pooled_targets(
     build: impl Fn() -> Vec<Primitive>,
     layers: usize,
@@ -967,7 +965,7 @@ fn assert_translucent_layers_reuse_pooled_targets(
     assert_eq!(
         baseline.offscreen_passes, layers,
         "each translucent layer opens exactly one offscreen pass — bounded by \
-         the layer count, not the frame index (§14.5)"
+         the layer count, not the frame index"
     );
     assert!(
         baseline.transient_target_bytes > 0,
@@ -989,17 +987,17 @@ fn assert_translucent_layers_reuse_pooled_targets(
             textures,
             "frame {i}: a translucent frame created a texture — offscreen \
              targets must be pooled/reused across frames, not re-allocated \
-             (§17.4)"
+            "
         );
         assert_eq!(
             steady.uploaded_ranges, 0,
             "frame {i}: an unchanged translucent scene must upload zero ranges \
-             (§9.1)"
+            "
         );
     }
 }
 
-/// §9.1 proof for an analytic `family`: a paint-only change to one primitive
+/// Proof for an analytic `family` that a paint-only change to one primitive
 /// uploads exactly one coalesced range of one instance of that family's stride,
 /// never the whole scene — the same guarantee [`assert_hover_uploads_one_range`]
 /// proves for quads, extended to each new analytic pool.
@@ -1012,11 +1010,11 @@ fn assert_family_hover_uploads_one_range(family: Family) {
     let steady = h.renderer.frame_stats();
     assert_eq!(
         steady.uploaded_ranges, 0,
-        "{family:?}: an unchanged 10k grid must upload zero ranges (§9.1)"
+        "{family:?}: an unchanged 10k grid must upload zero ranges"
     );
     assert_eq!(
         steady.gpu_upload_bytes, 0,
-        "{family:?}: an unchanged 10k grid must upload zero bytes (§9.1)"
+        "{family:?}: an unchanged 10k grid must upload zero bytes"
     );
 
     let target = GRID_10K / 2;
@@ -1036,27 +1034,27 @@ fn assert_family_hover_uploads_one_range(family: Family) {
     assert_eq!(
         hover.uploaded_ranges, 1,
         "{family:?}: a one-primitive paint change must coalesce to exactly one \
-         upload range (§9.1/§9.3)"
+         upload range"
     );
     assert_eq!(
         hover.gpu_upload_bytes,
         family.instance_stride(),
         "{family:?}: a one-primitive paint change must upload exactly one \
-         instance's bytes (§9.1)"
+         instance's bytes"
     );
     assert_eq!(
         hover.dirty_primitives, 1,
         "{family:?}: a one-primitive paint change must dirty exactly one \
-         primitive (§8.4)"
+         primitive"
     );
     assert_eq!(
         hover.path_tessellations, 0,
         "{family:?}: analytic families never tessellate, and no geometry plane \
-         moved (§8.4)"
+         moved"
     );
 }
 
-/// §8.7 proof for an analytic `family`: a scroll (every primitive shifted) is a
+/// Proof for an analytic `family` that a scroll (every primitive shifted) is a
 /// transform-plane event that re-tessellates nothing and grows no buffer.
 fn assert_family_scroll_is_transform_only(family: Family) {
     let mut h = setup_family_grid(family, GRID_10K);
@@ -1079,21 +1077,21 @@ fn assert_family_scroll_is_transform_only(family: Family) {
     );
     assert_eq!(
         scroll.path_tessellations, 0,
-        "{family:?}: a transform-only change must re-tessellate nothing (§8.7)"
+        "{family:?}: a transform-only change must re-tessellate nothing"
     );
     assert_eq!(
         scroll.instance_rebuilds, 0,
         "{family:?}: a scroll rewrites existing slots in place — no buffer is \
-         rebuilt/grown (§8.7/§9.1)"
+         rebuilt/grown"
     );
     assert_eq!(
         h.gpu.buffer_count(),
         buffers,
-        "{family:?}: a scroll must not allocate a new GPU buffer (§17.4)"
+        "{family:?}: a scroll must not allocate a new GPU buffer"
     );
 }
 
-/// §9.1 proof — a paint-only change to one tile uploads exactly one coalesced
+/// Proof that a paint-only change to one tile uploads exactly one coalesced
 /// range of one instance, never the whole scene.
 ///
 /// Warms two frames of a 10k-tile grid (frame one grows + fills the pool; frame
@@ -1102,7 +1100,7 @@ fn assert_family_scroll_is_transform_only(family: Family) {
 ///   - syncs exactly one range (`uploaded_ranges == 1`), not one per slot;
 ///   - uploads exactly one `QuadInstance`'s worth of bytes;
 ///   - bumps `dirty_primitives` by one and re-tessellates no path (a color change
-///     is a paint-plane event — geometry/tessellation untouched, §8.4).
+///     is a paint-plane event — geometry/tessellation untouched).
 fn assert_hover_uploads_one_range() {
     let mut h = setup_grid(GRID_10K);
     frame(&mut h);
@@ -1113,11 +1111,11 @@ fn assert_hover_uploads_one_range() {
     let steady = h.renderer.frame_stats();
     assert_eq!(
         steady.uploaded_ranges, 0,
-        "an unchanged 10k grid must upload zero ranges (§9.1)"
+        "an unchanged 10k grid must upload zero ranges"
     );
     assert_eq!(
         steady.gpu_upload_bytes, 0,
-        "an unchanged 10k grid must upload zero bytes (§9.1)"
+        "an unchanged 10k grid must upload zero bytes"
     );
 
     // Hover: recolor exactly one tile in the middle of the scene.
@@ -1138,32 +1136,32 @@ fn assert_hover_uploads_one_range() {
     assert_eq!(
         hover.uploaded_ranges, 1,
         "a one-tile paint change must coalesce to exactly one upload range, \
-         not one per slot and not a full-scene re-upload (§9.1/§9.3)"
+         not one per slot and not a full-scene re-upload"
     );
     assert_eq!(
         hover.gpu_upload_bytes,
         size_of::<viso_render::QuadInstance>(),
-        "a one-tile paint change must upload exactly one instance's bytes (§9.1)"
+        "a one-tile paint change must upload exactly one instance's bytes"
     );
     assert_eq!(
         hover.dirty_primitives, 1,
-        "a one-tile paint change must dirty exactly one primitive (§8.4)"
+        "a one-tile paint change must dirty exactly one primitive"
     );
     assert_eq!(
         hover.path_tessellations, 0,
         "a paint-only change must re-tessellate nothing — quads never tessellate, \
-         and no geometry plane moved (§8.4)"
+         and no geometry plane moved"
     );
 }
 
-/// §8.7 proof — a scroll (every tile's position shifted) is a transform-plane
+/// Proof that a scroll (every tile's position shifted) is a transform-plane
 /// event that never re-tessellates and never grows a buffer.
 ///
 /// Shifting `rect_pos` on every tile dirties the transform plane for all N, so
 /// the frame re-uploads instances (position lives in the instance) — but it must
 /// do so by rewriting existing slots, not by rebuilding/growing buffers, and it
 /// must re-tessellate nothing (quads carry no tessellation; no geometry plane
-/// moved). This is the §8.7 "transform ≠ layout/geometry" contract at the data
+/// moved). This is the "transform ≠ layout/geometry" contract at the data
 /// path: a scroll touches transform only.
 fn assert_scroll_is_transform_only() {
     let mut h = setup_grid(GRID_10K);
@@ -1190,16 +1188,16 @@ fn assert_scroll_is_transform_only() {
     );
     assert_eq!(
         scroll.path_tessellations, 0,
-        "a transform-only change must re-tessellate nothing (§8.7)"
+        "a transform-only change must re-tessellate nothing"
     );
     assert_eq!(
         scroll.instance_rebuilds, 0,
-        "a scroll rewrites existing slots in place — no buffer is rebuilt/grown (§8.7/§9.1)"
+        "a scroll rewrites existing slots in place — no buffer is rebuilt/grown"
     );
     assert_eq!(
         h.gpu.buffer_count(),
         buffers,
-        "a scroll must not allocate a new GPU buffer (§17.4)"
+        "a scroll must not allocate a new GPU buffer"
     );
 }
 
@@ -1232,7 +1230,7 @@ fn path_grid_scene(count: usize) -> Vec<Primitive> {
     scene
 }
 
-/// §13.4 proof — the retained vector-mesh lane. A grid of filled+stroked paths is
+/// Proof of the retained vector-mesh lane. A grid of filled+stroked paths is
 /// tessellated once; thereafter an unchanged frame re-tessellates nothing and
 /// uploads nothing, a scroll (whole-scene translation) reuses the cached geometry
 /// and re-tessellates nothing, and a recolor re-tessellates nothing (color is
@@ -1248,20 +1246,20 @@ fn assert_path_grid_is_retained() {
     let buffers = h.gpu.buffer_count();
 
     // Steady baseline: an unchanged path grid re-tessellates nothing and uploads
-    // nothing (geometry + paint + transform all cached, §13.4 F4 steady state).
+    // nothing (geometry + paint + transform all cached).
     h.renderer.upload(&mut h.gpu, &h.scene);
     let steady = h.renderer.frame_stats();
     assert_eq!(
         steady.path_tessellations, 0,
-        "an unchanged path grid must re-tessellate nothing (§13.4)"
+        "an unchanged path grid must re-tessellate nothing"
     );
     assert_eq!(
         steady.uploaded_ranges, 0,
-        "an unchanged path grid must upload zero ranges (§13.4 F4 steady state)"
+        "an unchanged path grid must upload zero ranges"
     );
     assert_eq!(
         steady.gpu_upload_bytes, 0,
-        "an unchanged path grid must upload zero bytes (§13.4 F4 steady state)"
+        "an unchanged path grid must upload zero bytes"
     );
 
     // Scroll: shift every path by a constant vector. Position lives in the cmds,
@@ -1289,12 +1287,12 @@ fn assert_path_grid_is_retained() {
     assert_eq!(
         scroll.path_tessellations, 0,
         "a transform-only change must re-tessellate nothing — the cached geometry \
-         is reused, only the per-primitive transform moves (§13.4)"
+         is reused, only the per-primitive transform moves"
     );
     assert_eq!(
         h.gpu.buffer_count(),
         buffers,
-        "a scroll must not allocate a new GPU buffer (§17.4)"
+        "a scroll must not allocate a new GPU buffer"
     );
 
     // Recolor every path's fill. Color is applied at lowering over the cached
@@ -1310,7 +1308,7 @@ fn assert_path_grid_is_retained() {
     assert_eq!(
         recolor.path_tessellations, 0,
         "a paint-only change must re-tessellate nothing — color is applied at \
-         lowering, not baked into the retained geometry (§13.4)"
+         lowering, not baked into the retained geometry"
     );
 }
 
@@ -1385,10 +1383,10 @@ fn dashed_stroke_scene(count: usize) -> Vec<Primitive> {
     scene
 }
 
-/// §31 `## D3` gate — small stable SVG-like paths and stroke/dash-heavy paths.
+/// Path gate: small stable SVG-like paths and stroke/dash-heavy paths.
 /// Both are curve/dash workloads that tessellate once on the cold frame; a
 /// subsequent unchanged frame must re-tessellate nothing and upload nothing
-/// (the retained vector-mesh + stroke-geometry caches hold, §13.4).
+/// (the retained vector-mesh + stroke-geometry caches hold).
 fn assert_curve_and_dash_scenes_are_retained() {
     for (label, scene) in [
         ("svg-like", svg_like_path_scene(64)),
@@ -1408,20 +1406,20 @@ fn assert_curve_and_dash_scenes_are_retained() {
         let steady = h.renderer.frame_stats();
         assert_eq!(
             steady.path_tessellations, 0,
-            "{label}: an unchanged curve/dash scene must re-tessellate nothing (§13.4)"
+            "{label}: an unchanged curve/dash scene must re-tessellate nothing"
         );
         assert_eq!(
             steady.uploaded_ranges, 0,
-            "{label}: an unchanged curve/dash scene must upload zero ranges (§13.4)"
+            "{label}: an unchanged curve/dash scene must upload zero ranges"
         );
         assert_eq!(
             steady.gpu_upload_bytes, 0,
-            "{label}: an unchanged curve/dash scene must upload zero bytes (§13.4)"
+            "{label}: an unchanged curve/dash scene must upload zero bytes"
         );
     }
 }
 
-/// §31 `## D3` gate — path churn. When a subset of paths change geometry each
+/// Path-churn gate: when a subset of paths change geometry each
 /// frame, re-tessellation must scale with the churn set, not the whole scene:
 /// the cache holds the untouched paths and only the mutated ones re-tessellate.
 fn assert_path_churn_is_local() {
@@ -1461,14 +1459,14 @@ fn assert_path_churn_is_local() {
 }
 
 // ---------------------------------------------------------------------------
-// E0.2 gate (§15.3 / §20.1): the fusion decision for a decorated shape
-// (`shadow + fill + border`). The phase is benchmark-gated — a fused
+// Decorated-shape fusion gate: the fusion decision for a decorated shape
+// (`shadow + fill + border`). Fusion is benchmark-gated — a fused
 // `DecoratedShape` pipeline is built only if the register-pressure / overdraw
 // measurement justifies it. This gate measures the half that is observable in a
 // headless CPU backend (draw-call / batch / pipeline-switch structure and the
 // shaded-quad-area overdraw proxy) and records the verdict; the register-pressure
 // / shaded-pixel-time half is a real-device measurement `FrameStats` +
-// `CpuRaster` cannot express and is flagged, not asserted (§7.3).
+// `CpuRaster` cannot express and is flagged, not asserted.
 // ---------------------------------------------------------------------------
 
 /// The decorated-card grid size for the fusion gate: enough cards that the
@@ -1478,12 +1476,12 @@ const DECORATED_CARDS: usize = 256;
 
 /// A grid of `count` decorated cards. Each card is a soft drop shadow drawn
 /// *under* a rounded rect that carries both a fill and a border — the exact
-/// `shadow + fill + border` triple §15.3 asks about. The shadow and the rrect
+/// `shadow + fill + border` triple the fusion decision is about. The shadow and the rrect
 /// are emitted in paint order (shadow first) so the planner may not reorder them
 /// across the family barrier: this is the *separate-draw* baseline the fusion
 /// decision is measured against.
 ///
-/// Deliberately no pure `Rect`: §15.3's hard constraint keeps a plain rect on the
+/// Deliberately no pure `Rect`: a hard constraint keeps a plain rect on the
 /// shorter Quad pipeline, so it never enters the decorated path and is not part
 /// of this measurement.
 fn decorated_card_scene(count: usize) -> Vec<Primitive> {
@@ -1554,7 +1552,7 @@ fn shadow_quad_area(s: &AnalyticShadow) -> f32 {
     (s.rect.w + 2.0 * pad_x) * (s.rect.h + 2.0 * pad_y)
 }
 
-/// E0.2 fusion gate. The decorated-card grid draws `shadow + fill + border` as
+/// Decorated-shape fusion gate. The decorated-card grid draws `shadow + fill + border` as
 /// separate analytic draws today; this pins the structure the fusion decision
 /// turns on and records the verdict.
 ///
@@ -1568,12 +1566,12 @@ fn shadow_quad_area(s: &AnalyticShadow) -> f32 {
 /// `shadow + fill + border` body over that larger area for every card. The area
 /// ratio is the overdraw proxy.
 ///
-/// NOT observable here (the other half of the §20.1 gate): real-Metal shader
+/// NOT observable here (the other half of the gate): real-Metal shader
 /// register pressure and shaded-pixel time on device. `FrameStats` has no
 /// overdraw or GPU-timing counter and `CpuRaster` is a CPU rasterizer, so
 /// whether the fused fragment's extra ALU + the larger shaded area actually beat
 /// the separate path's extra draw/switch cost is a device measurement, not a
-/// headless one (§7.3). The fused pipeline is therefore deferred until that
+/// headless one. The fused pipeline is therefore deferred until that
 /// measurement exists; this gate lands the measurable half and the barrier proof.
 fn assert_decorated_fusion_gate() {
     let scene = decorated_card_scene(DECORATED_CARDS);
@@ -1638,8 +1636,8 @@ fn assert_decorated_fusion_gate() {
 }
 
 // ---------------------------------------------------------------------------
-// E0.4 — §31 shadow gate. Two proofs the analytic-shadow fast lane scales the
-// way §15/§20 promises, both through observable headless counters.
+// Shadow gate. Two proofs the analytic-shadow fast lane scales as intended,
+// both through observable headless counters.
 //
 // 1. `assert_analytic_shadow_lane_scales`: a grid of 1k analytic shadows. Every
 //    shadow is one instance on the single shared shadow family, so the whole
@@ -1650,16 +1648,17 @@ fn assert_decorated_fusion_gate() {
 //    coverage mask is keyed on {geometry, sigma, spread}, so a frame that
 //    changes only the shadow's color/offset rebuilds no mask, while a frame
 //    that changes the path's geometry rebuilds exactly its two slots. This is
-//    the "reused when only color/offset change" contract of §15.4.
+//    the "reused when only color/offset change" contract.
 //
 // NOT observable here (flagged, not asserted): real-device shaded-pixel time
 // for a thousand overlapping soft shadows, and the visual quality of the sharp
-// E0 path-shadow mask vs a true blurred one. `FrameStats` has no GPU-timing or
-// overdraw counter and `CpuRaster` is a CPU rasterizer (§7.3/§36).
+// path-shadow mask vs a true blurred one. `FrameStats` has no GPU-timing or
+// overdraw counter and `CpuRaster` is a CPU rasterizer.
 // ---------------------------------------------------------------------------
 
-/// The analytic-shadow grid size for the §31 gate: 1k shadows, matching the D1/D2
-/// grid gates so the shadow lane is measured at the same scale as its siblings.
+/// The analytic-shadow grid size for the shadow gate: 1k shadows, matching the
+/// analytic and gradient/image grid gates so the shadow lane is measured at the
+/// same scale as its siblings.
 const SHADOW_GRID: usize = 1_000;
 
 /// A grid of `count` analytic drop shadows, no accompanying fill — this isolates
@@ -1696,7 +1695,7 @@ fn analytic_shadow_grid_scene(count: usize) -> Vec<Primitive> {
     scene
 }
 
-/// E0.4 gate, part 1 (§15/§31): 1k analytic shadows stay one mergeable batch on
+/// Shadow gate, part 1: 1k analytic shadows stay one mergeable batch on
 /// one pipeline with no offscreen, and a warmed steady frame is upload- and
 /// tessellation-free.
 fn assert_analytic_shadow_lane_scales() {
@@ -1732,16 +1731,16 @@ fn assert_analytic_shadow_lane_scales() {
     );
 
     // Steady state: an unchanged grid uploads nothing, tessellates nothing, and
-    // opens no offscreen texture (§9.1/§17.4).
+    // opens no offscreen texture.
     h.renderer.upload(&mut h.gpu, &h.scene);
     let steady = h.renderer.frame_stats();
     assert_eq!(
         steady.uploaded_ranges, 0,
-        "an unchanged 1k-shadow grid uploads zero ranges (§9.1)"
+        "an unchanged 1k-shadow grid uploads zero ranges"
     );
     assert_eq!(
         steady.gpu_upload_bytes, 0,
-        "an unchanged 1k-shadow grid uploads zero bytes (§9.1)"
+        "an unchanged 1k-shadow grid uploads zero bytes"
     );
     assert_eq!(
         steady.path_tessellations, 0,
@@ -1750,7 +1749,7 @@ fn assert_analytic_shadow_lane_scales() {
     assert_eq!(
         h.gpu.texture_count(),
         textures,
-        "the analytic-shadow lane opens no offscreen target (§16.2)"
+        "the analytic-shadow lane opens no offscreen target"
     );
 }
 
@@ -1789,7 +1788,7 @@ fn shadowed_path_at(ox: f32, oy: f32, alpha: f32, off: [f32; 2]) -> Primitive {
     }))
 }
 
-/// E0.4 gate, part 2 (§15.4): the path-shadow coverage cache is keyed on
+/// Shadow gate, part 2: the path-shadow coverage cache is keyed on
 /// {geometry, sigma, spread}, so re-tinting or re-offsetting the shadow reuses
 /// the cached mask (0 rebuilds), while moving the path's geometry rebuilds
 /// exactly its own two slots (shadow silhouette + fill) — never the scene.
@@ -1815,7 +1814,7 @@ fn assert_path_shadow_reuse_is_local() {
 
     // Re-tint and re-offset one shadow only. The key excludes color/offset, so
     // the cached coverage is reused — zero rebuilds — and the offset moves at
-    // composite time (§15.4 "reused when only color/offset change").
+    // composite time ("reused when only color/offset change").
     h.scene[0] = shadowed_path_at(4.0, 4.0, 0.8, [6.0, 2.0]);
     h.renderer.upload(&mut h.gpu, &h.scene);
     assert_eq!(
@@ -1836,7 +1835,7 @@ fn assert_path_shadow_reuse_is_local() {
 }
 
 // ---------------------------------------------------------------------------
-// E1.5 — the §31 blur / transient-resource gate. Three proofs, all read off
+// Blur / transient-resource gate. Three proofs, all read off
 // `FrameStats` on a warmed renderer:
 //
 // * **Blur tiers** — small / medium / large sigma on one ROI-sized layer. The
@@ -1844,11 +1843,11 @@ fn assert_path_shadow_reuse_is_local() {
 //   either skipped (sub-pixel), two full-resolution separable passes, or a
 //   four-step downsample-then-blur ladder. Crucially the large tier addresses
 //   *fewer* scratch bytes than the medium one despite twice the passes, because
-//   it runs at reduced extent (§16.3).
+//   it runs at reduced extent.
 // * **Many small-ROI blurs** — a flat run of independently blurred layers. Each
 //   pays its own offscreen + ladder, but the transient pool aliases them down:
 //   the pooled physical count and the live-set peak stay far below the bytes the
-//   passes address (§16.4/§17.4).
+//   passes address.
 // * **Idle blurred scene** — a static scene holding a gradient LUT, a
 //   path-shadow coverage mask, analytic shadows and a blur ladder inside one
 //   layer rebuilds *nothing* on a repeat frame: no mask, no tessellation, no
@@ -1857,7 +1856,7 @@ fn assert_path_shadow_reuse_is_local() {
 // NOT observable here (flagged, not asserted): on-device shaded-pixel time per
 // tier — the sigma at which downsampling beats a wider kernel is reasoned from
 // the tap budget and asserted only as *pass and byte structure*, never as Metal
-// time (§7.3/§36). "Does not continuously submit" is a present-loop property
+// time. "Does not continuously submit" is a present-loop property
 // owned by `runtime/benches/frame_loop.rs::assert_idle_does_no_work`; from the
 // render crate only "an idle upload does no work" is visible. `CpuRaster`
 // is a CPU rasterizer with no bandwidth or overdraw counter, so the bandwidth
@@ -1911,7 +1910,7 @@ struct BlurTier {
     passes: u32,
 }
 
-/// E1.5 gate, part 1 (§16.3/§31): the ladder's cost is set by tier, not by
+/// Blur gate, part 1: the ladder's cost is set by tier, not by
 /// sigma. A sub-pixel blur is free — the ladder plans no rung, so an opaque
 /// layer asking for one stays inline and pays no offscreen target either. Every
 /// realized tier is one offscreen pass plus 2 or 4 ladder passes and never more,
@@ -1967,7 +1966,7 @@ fn assert_blur_ladder_tiers_scale() {
         assert_eq!(
             baseline.offscreen_passes, tier.offscreen,
             "{label}: a realized blur is exactly one offscreen pass, a skipped \
-             one is none (§16.2)"
+             one is none"
         );
         assert_eq!(
             baseline.blur_passes, tier.passes,
@@ -1978,13 +1977,13 @@ fn assert_blur_ladder_tiers_scale() {
             baseline.render_passes,
             1 + tier.offscreen + tier.passes as usize,
             "{label}: the compiled plan is the offscreen pass + each ladder rung \
-             + the surface pass (§16.1)"
+             + the surface pass"
         );
         assert_eq!(
             baseline.transient_target_bytes,
             tier.offscreen * roi_bytes,
             "{label}: the layer's target is its tight ROI's size class, \
-             independent of sigma (§16.4)"
+             independent of sigma"
         );
         assert!(
             baseline.transient_peak_bytes <= baseline.transient_pool_bytes,
@@ -2012,12 +2011,12 @@ fn assert_blur_ladder_tiers_scale() {
             );
             assert_eq!(
                 steady.transient_target_allocations, 0,
-                "{label}: a steady blurred frame mints no pooled texture (§17.4)"
+                "{label}: a steady blurred frame mints no pooled texture"
             );
             assert_eq!(
                 steady.render_graph_compiles, 0,
                 "{label}: the topology is unchanged, so the pass plan is reused \
-                 (§16.1)"
+                "
             );
             assert_eq!(
                 h.gpu.texture_count(),
@@ -2049,7 +2048,7 @@ fn assert_blur_ladder_tiers_scale() {
         scratch[3] < scratch[2],
         "the large tier's four reduced-extent rungs address *fewer* scratch \
          bytes than the medium tier's two full-resolution ones ({} vs {}) — \
-         downsampling is the point (§16.3)",
+         downsampling is the point",
         scratch[3],
         scratch[2]
     );
@@ -2072,7 +2071,7 @@ const BLUR_SIBLINGS: usize = 64;
 /// rather than tier selection.
 const BLUR_SIBLING_SIGMA: f32 = 2.0;
 
-/// E1.5 gate, part 2 (§16.4/§17.4/§31): [`BLUR_SIBLINGS`] small-ROI blurs each
+/// Blur gate, part 2: [`BLUR_SIBLINGS`] small-ROI blurs each
 /// pay their own offscreen pass and their own two-rung ladder, but the transient
 /// planner aliases their targets: the pooled physical count is a small constant
 /// above the number of targets that must survive to the surface pass, and the
@@ -2123,7 +2122,7 @@ fn assert_many_small_roi_blurs_bound_transient_memory() {
     assert!(
         baseline.transient_targets < virtuals,
         "the pool must alias: {} physical targets for {virtuals} declared \
-         virtuals (§16.4)",
+         virtuals",
         baseline.transient_targets
     );
     assert!(
@@ -2137,7 +2136,7 @@ fn assert_many_small_roi_blurs_bound_transient_memory() {
         baseline.transient_peak_bytes * 2 < addressed,
         "the concurrent live set is a fraction of the bytes the passes address \
          ({} B peak vs {addressed} B addressed) — lifetimes, not pass count, \
-         set the memory bill (§16.4)",
+         set the memory bill",
         baseline.transient_peak_bytes
     );
     assert!(
@@ -2157,11 +2156,11 @@ fn assert_many_small_roi_blurs_bound_transient_memory() {
         );
         assert_eq!(
             steady.uploaded_ranges, 0,
-            "an unchanged blurred fan-out uploads zero ranges (§9.1)"
+            "an unchanged blurred fan-out uploads zero ranges"
         );
         assert_eq!(
             steady.transient_target_allocations, 0,
-            "a steady fan-out mints no pooled texture (§17.4)"
+            "a steady fan-out mints no pooled texture"
         );
         assert_eq!(
             h.gpu.texture_count(),
@@ -2187,7 +2186,7 @@ const FROSTED_PANEL_SIZE: f32 = 12.0;
 const FROSTED_PANEL_PITCH: f32 = 20.0;
 
 /// A row of `count` backdrop-blurred panels over one opaque background, each
-/// carrying a small opaque tile of its own content — the §17.2 sharing case as a
+/// carrying a small opaque tile of its own content — the backdrop-sharing case as a
 /// real toolbar/sidebar would author it.
 fn frosted_panel_row_scene(count: usize, sigma: f32) -> Vec<Primitive> {
     let mut scene = vec![Primitive::Quad(Quad {
@@ -2240,7 +2239,7 @@ fn frosted_panel_row_scene(count: usize, sigma: f32) -> Vec<Primitive> {
     scene
 }
 
-/// E2.1 gate (§17.1/§17.2/§31): a frosted row's backdrop cost is set by the
+/// Frosted-row gate: a frosted row's backdrop cost is set by the
 /// *group*, not the panel count. [`FROSTED_PANELS`] panels over one background
 /// take **one** capture pass over the union ROI and **one** blur ladder — the same
 /// pass plan a single panel produces — and add only their own composites. The
@@ -2282,7 +2281,7 @@ fn assert_frosted_panel_row_shares_one_capture() {
     );
     assert_eq!(
         baseline.backdrop_captures, 1,
-        "the whole row shares one capture, not {FROSTED_PANELS} (§17.2)"
+        "the whole row shares one capture, not {FROSTED_PANELS}"
     );
     assert_eq!(
         baseline.blur_passes, single.blur_passes,
@@ -2292,7 +2291,7 @@ fn assert_frosted_panel_row_shares_one_capture() {
     assert_eq!(
         baseline.render_passes, single.render_passes,
         "sharing adds composites, never passes — capture + ladder + surface, the \
-         same plan either way (§17.1)"
+         same plan either way"
     );
     assert!(
         baseline.backdrop_capture_pixels < FROSTED_PANELS * single.backdrop_capture_pixels,
@@ -2318,7 +2317,7 @@ fn assert_frosted_panel_row_shares_one_capture() {
         );
         assert_eq!(
             steady.transient_target_allocations, 0,
-            "a steady capture comes back from the pool (§17.4)"
+            "a steady capture comes back from the pool"
         );
         assert_eq!(
             steady.render_graph_compiles, 0,
@@ -2342,8 +2341,8 @@ const GRADED_CARD_SIZE: f32 = 12.0;
 const GRADED_CARD_PITCH: f32 = 14.0;
 
 /// The chain every card carries: five effects, every one of them affine on
-/// straight linear RGBA, so the whole run is expressible as a single 4x5 matrix
-/// (§17.3). Authored the way a theme would — a mild tone/color grade — not as a
+/// straight linear RGBA, so the whole run is expressible as a single 4x5 matrix.
+/// Authored the way a theme would — a mild tone/color grade — not as a
 /// synthetic worst case.
 const GRADED_CHAIN: [ColorEffect; 5] = [
     ColorEffect::Brightness(1.08),
@@ -2362,7 +2361,7 @@ fn graded_chain_split() -> Vec<ColorEffect> {
 }
 
 /// A row of `count` color-graded cards, each a layer carrying `effects` over its
-/// own opaque tile — the §17.3 fusion case as a themed list/gallery authors it.
+/// own opaque tile — the color-fusion case as a themed list/gallery authors it.
 fn graded_card_scene(count: usize, effects: &[ColorEffect]) -> Vec<Primitive> {
     let mut scene = Vec::with_capacity(count * (effects.len() + 3));
     for i in 0..count {
@@ -2395,7 +2394,7 @@ fn graded_card_scene(count: usize, effects: &[ColorEffect]) -> Vec<Primitive> {
     scene
 }
 
-/// E2.2 gate (§17.3/§31): a color chain's cost is set by how many *ops* it fuses
+/// Color-chain gate: a color chain's cost is set by how many *ops* it fuses
 /// into, never by how many effects the author wrote. [`GRADED_CARDS`] cards each
 /// carrying the five-effect [`GRADED_CHAIN`] plan exactly the pass count of the
 /// same row carrying one effect — one op per card, riding the composite each
@@ -2446,7 +2445,7 @@ fn assert_color_chain_fuses_to_one_pass() {
 
     assert_eq!(
         baseline.color_effect_ops, cards,
-        "each card's {effects} effects fuse into one op (§17.3)"
+        "each card's {effects} effects fuse into one op"
     );
     assert_eq!(
         baseline.color_transform_passes, 0,
@@ -2504,7 +2503,7 @@ fn assert_color_chain_fuses_to_one_pass() {
         );
         assert_eq!(
             steady.transient_target_allocations, 0,
-            "a steady graded layer comes back from the pool (§17.4)"
+            "a steady graded layer comes back from the pool"
         );
         assert_eq!(
             steady.render_graph_compiles, 0,
@@ -2530,7 +2529,7 @@ fn assert_color_chain_fuses_to_one_pass() {
     }
 }
 
-/// How many blended tiles the E2.3 row carries, and their geometry — a row of
+/// How many blended tiles the blended row carries, and their geometry — a row of
 /// small badges over a shared background, the shape a themed list paints when its
 /// rows carry a non-`SrcOver` blend.
 const BLENDED_CARDS: usize = 8;
@@ -2597,7 +2596,7 @@ fn blended_card_scene(count: usize, mode: Blend) -> Vec<Primitive> {
     scene
 }
 
-/// E2.3 gate (§17.1/§31): an advanced blend is isolated through the planner and
+/// Advanced-blend gate: an advanced blend is isolated through the planner and
 /// pays only the layer target it already needs plus one *bounded* destination
 /// snapshot — no third render-target pass per blend, and nothing on the common
 /// path.
@@ -2648,7 +2647,7 @@ fn assert_blend_isolation_costs_no_extra_pass() {
     // never a pass.
     assert_eq!(
         common.blend_isolations, 0,
-        "`SrcOver` is fixed-function: it must never isolate (§C0.5)"
+        "`SrcOver` is fixed-function: it must never isolate"
     );
     assert_eq!(
         common.offscreen_passes, 0,
@@ -2715,7 +2714,7 @@ fn assert_blend_isolation_costs_no_extra_pass() {
         );
         assert_eq!(
             steady.transient_target_allocations, 0,
-            "the layer target and the snapshot both come back from the pool (§17.4)"
+            "the layer target and the snapshot both come back from the pool"
         );
         assert_eq!(
             steady.render_graph_compiles, 0,
@@ -2729,7 +2728,7 @@ fn assert_blend_isolation_costs_no_extra_pass() {
     }
 }
 
-/// How many translucent cards the E2.4 row carries, and their geometry — a row of
+/// How many translucent cards the faded row carries, and their geometry — a row of
 /// faded tiles, the shape a themed list paints while its rows animate their group
 /// opacity.
 const FADED_CARDS: usize = 16;
@@ -2814,7 +2813,7 @@ fn faded_card_scene(count: usize, overlap: bool) -> Vec<Primitive> {
     scene
 }
 
-/// E2.4 gate (§3102/§3120/§3145/§31): a group opacity is a multiply, not a render
+/// Group-opacity gate: a group opacity is a multiply, not a render
 /// target, whenever the planner can prove it.
 ///
 /// Two rows of the same geometry and the same opacity, differing only in whether
@@ -2822,9 +2821,9 @@ fn faded_card_scene(count: usize, overlap: bool) -> Vec<Primitive> {
 /// no transient byte, one surface pass — the group factor rides into each child's
 /// alpha. The overlapping row is the forbidden default made visible: it is what
 /// every group opacity would cost if the planner did not try, one target and one
-/// composite per card. The ratio between them is the whole point of §3145.
+/// composite per card. The ratio between them is the whole point of the Effect Planner.
 ///
-/// The gate also pins the §3202 half on the same frame: an unchanged row reports
+/// The gate also pins the backdrop-dependency half on the same frame: an unchanged row reports
 /// no dirty backdrop ROI, so a static screen with frosted chrome does no repeat
 /// capture work on the effect planner's account.
 fn assert_group_opacity_folds_without_a_target() {
@@ -2880,7 +2879,7 @@ fn assert_group_opacity_folds_without_a_target() {
     // What the fold costs: nothing.
     assert_eq!(
         baseline.offscreen_passes, 0,
-        "a folded group allocates no render target (§3145)"
+        "a folded group allocates no render target"
     );
     assert_eq!(
         baseline.transient_target_bytes, 0,
@@ -2902,7 +2901,7 @@ fn assert_group_opacity_folds_without_a_target() {
     // What the same row costs when the proof fails — the forbidden default.
     assert_eq!(
         control.opacity_folds, 0,
-        "overlapping children must not be folded: correctness first (§14.5)"
+        "overlapping children must not be folded: correctness first"
     );
     assert_eq!(
         control.offscreen_passes, FADED_CARDS,
@@ -2943,7 +2942,7 @@ fn assert_group_opacity_folds_without_a_target() {
         );
     }
 
-    // §3202: the frosted row's backdrop dependency is a fact about its ROI's
+    // The frosted row's backdrop dependency is a fact about its ROI's
     // content, so an unchanged frame dirties nothing.
     let mut frosted = setup_scene(frosted_panel_row_scene(FROSTED_PANELS, FROSTED_PANEL_SIGMA));
     frame(&mut frosted);
@@ -2958,7 +2957,7 @@ fn assert_group_opacity_folds_without_a_target() {
         assert_eq!(
             steady.backdrop_dirty_rois, 0,
             "idle frame {f}: nothing changed behind any panel, so no ROI is dirty \
-             (§3202)"
+            "
         );
         assert!(
             frosted
@@ -2971,13 +2970,13 @@ fn assert_group_opacity_folds_without_a_target() {
     }
 }
 
-/// Panel counts the E2.5 sharing sweep walks. Bounded above by the surface: at
+/// Panel counts the backdrop-sharing sweep walks. Bounded above by the surface: at
 /// [`FROSTED_PANEL_PITCH`] a seventh panel would not fit inside `W`, and a panel
 /// the surface clips changes the union ROI for a reason that has nothing to do
 /// with sharing.
 const FROSTED_SWEEP: [usize; 4] = [1, 2, 4, 6];
 
-/// E2.5 gate, part 1 (§17.2/§31): a shared backdrop's *plan* is flat in the
+/// Effect-lane gate, part 1: a shared backdrop's *plan* is flat in the
 /// number of panels sharing it. Across [`FROSTED_SWEEP`] the row always takes one
 /// capture, plans the same ladder and the same render passes as a single panel,
 /// and only its composite draws grow — which is the shape of the contract, since
@@ -3016,7 +3015,7 @@ fn assert_shared_backdrop_cost_is_flat_in_panel_count() {
     for (i, &(count, s)) in sweep.iter().enumerate() {
         assert_eq!(
             s.backdrop_captures, 1,
-            "{count} panels at one sigma must share one capture, not {count} (§17.2)"
+            "{count} panels at one sigma must share one capture, not {count}"
         );
         assert_eq!(
             s.blur_passes, one.blur_passes,
@@ -3026,7 +3025,7 @@ fn assert_shared_backdrop_cost_is_flat_in_panel_count() {
         assert_eq!(
             s.render_passes, one.render_passes,
             "{count} panels plan the passes of one: sharing adds composites, never \
-             passes (§17.1)"
+             passes"
         );
         assert_eq!(
             s.color_transform_passes, 0,
@@ -3083,7 +3082,7 @@ fn assert_shared_backdrop_cost_is_flat_in_panel_count() {
     }
 }
 
-/// E2.5 gate, part 2 (§17.3/§31): chain length reaches nothing the GPU pays for.
+/// Effect-lane gate, part 2: chain length reaches nothing the GPU pays for.
 /// Sweeping a mergeable chain from one effect to [`GRADED_CHAIN`]'s full length
 /// leaves every cost counter of the row identical — same draws, same instances,
 /// same passes, same fused op per card, same transient bytes — while the authored
@@ -3114,7 +3113,7 @@ fn assert_color_fusion_is_flat_in_chain_length() {
 
         assert_eq!(
             s.color_effect_ops, cards,
-            "a chain of {n} mergeable effects is one op per card (§17.3)"
+            "a chain of {n} mergeable effects is one op per card"
         );
         assert_eq!(
             s.color_transform_passes, 0,
@@ -3181,7 +3180,7 @@ const REFRESH_RATES: [u32; 4] = [60, 120, 144, 240];
 /// The full glass screen: a frosted row over a background (backdrop capture +
 /// shared ladder), and on top of it the whole idle effect stack inside a blurred
 /// translucent layer (content ladder, gradient LUT rows, a path-shadow coverage
-/// mask, analytic shadows). Every cache and every E2 mechanism live in one frame,
+/// mask, analytic shadows). Every cache and every effect mechanism live in one frame,
 /// so a single counter regression names itself.
 fn glass_screen_scene() -> Vec<Primitive> {
     let mut scene = frosted_panel_row_scene(FROSTED_PANELS, FROSTED_PANEL_SIGMA);
@@ -3189,7 +3188,7 @@ fn glass_screen_scene() -> Vec<Primitive> {
     scene
 }
 
-/// E2.5 gate, part 3 (§7.1/§17.4/§3202/§31): the static-UI target. An existing
+/// Effect-lane gate, part 3: the static-UI target. An existing
 /// glass/blur/shadow screen that nobody touches costs the same frame forever — at
 /// every refresh rate in [`REFRESH_RATES`]. Each of the 564 frames reproduces the
 /// warmed [`FrameStats`] exactly, dirties **no** backdrop ROI, rebuilds no mask,
@@ -3251,7 +3250,7 @@ fn assert_static_glass_holds_at_every_refresh_rate() {
             assert_eq!(
                 idle.backdrop_dirty_rois, 0,
                 "{hz} Hz frame {f}: nothing moved behind any panel, so no backdrop \
-                 ROI is dirty (§3202)"
+                 ROI is dirty"
             );
             assert!(
                 h.renderer.backdrop_dependencies().iter().all(|d| !d.dirty),
@@ -3288,7 +3287,7 @@ fn assert_static_glass_holds_at_every_refresh_rate() {
                     allocs, first_allocs,
                     "{hz} Hz frame {f}: submit's heap traffic drifted from the \
                      cadence's first frame ({allocs} vs {first_allocs}) — a steady \
-                     frame's cost must not grow with the frame index (§7.1)"
+                     frame's cost must not grow with the frame index"
                 );
             }
         }
@@ -3328,7 +3327,7 @@ fn idle_effect_scene(sigma: f32) -> Vec<Primitive> {
     scene
 }
 
-/// E1.5 gate, part 3 (§7.1/§9.1/§16.1/§31): a static idle scene rebuilds no
+/// Blur gate, part 3: a static idle scene rebuilds no
 /// cache. With gradient LUT rows, a path-shadow coverage mask, analytic shadows
 /// and a blur ladder all live, repeat uploads of the unchanged scene build zero
 /// masks, tessellate zero paths, upload zero bytes, allocate zero pooled
@@ -3361,29 +3360,29 @@ fn assert_idle_blurred_scene_rebuilds_nothing() {
         assert_eq!(
             idle.clip_mask_builds, 0,
             "idle frame {f}: no clip or shadow coverage mask is rebuilt \
-             (§14.4/§15.4)"
+            "
         );
         assert_eq!(
             idle.path_tessellations, 0,
-            "idle frame {f}: no path is re-tessellated (§16.3)"
+            "idle frame {f}: no path is re-tessellated"
         );
         assert_eq!(
             idle.uploaded_ranges, 0,
-            "idle frame {f}: no instance range is re-uploaded (§9.1)"
+            "idle frame {f}: no instance range is re-uploaded"
         );
         assert_eq!(
             idle.gpu_upload_bytes, 0,
             "idle frame {f}: no gradient LUT row is re-baked and no instance byte \
-             re-sent (§9.1)"
+             re-sent"
         );
         assert_eq!(
             idle.transient_target_allocations, 0,
-            "idle frame {f}: the ladder's targets come back from the pool (§17.4)"
+            "idle frame {f}: the ladder's targets come back from the pool"
         );
         assert_eq!(
             idle.render_graph_compiles, 0,
             "idle frame {f}: the topology is unchanged, so the compiled plan is \
-             reused (§16.1)"
+             reused"
         );
         assert_eq!(
             h.gpu.texture_count(),
@@ -3405,7 +3404,7 @@ fn frame(h: &mut Harness) {
         .submit(&mut h.gpu, h.surface, CLEAR, [W as f32, H as f32]);
 }
 
-/// The §7.1/§17.4 invariant, checked before benchmarking: once warmed up,
+/// The steady-state invariant, checked before benchmarking: once warmed up,
 /// re-drawing an unchanged scene allocates no new GPU resources and emits the
 /// same draw calls.
 fn assert_steady_state_is_allocation_free() {
@@ -3430,7 +3429,7 @@ fn assert_steady_state_is_allocation_free() {
     // captured under the counting allocator. In steady state the renderer's
     // `encode` scratch (viewports/commands/passes) is reused via `Vec::clear`, so
     // the only heap traffic left is the headless backend's fixed per-command
-    // instance-byte copy — a constant that must not grow frame to frame (§7.1).
+    // instance-byte copy — a constant that must not grow frame to frame.
     let mut submit_allocs = [0usize; 2];
 
     // Two more identical frames must not create any GPU resource, and must lower
@@ -3484,7 +3483,7 @@ fn assert_steady_state_is_allocation_free() {
     // Because the renderer's scratch is reused, the *only* frame-to-frame heap
     // traffic is that fixed backend baseline, so two identical steady frames must
     // allocate exactly the same amount. Any per-frame growth here (as with the
-    // old per-frame `Vec`s in `encode`) would make the counts diverge (§7.1).
+    // old per-frame `Vec`s in `encode`) would make the counts diverge.
     assert_eq!(
         submit_allocs[0], submit_allocs[1],
         "submit allocated a different amount on two identical steady frames \
@@ -3656,23 +3655,23 @@ fn bench_steady_state(c: &mut Criterion) {
     // The clock a brush reads moves without an upload: a frame that only
     // advances it costs what an unchanged frame costs.
     assert_clock_frames_upload_nothing();
-    // D0.4 gate: the persistent data path holds a local change to a local upload
-    // (§9.1) and a scroll to the transform plane (§8.7), at 10k tiles.
+    // Data-path gate: the persistent data path holds a local change to a local upload
+    // and a scroll to the transform plane, at 10k tiles.
     assert_hover_uploads_one_range();
     assert_scroll_is_transform_only();
 
-    // D3.2 gate (§13.4): the retained vector-mesh lane. A path grid tessellates
+    // Vector-mesh gate: the retained vector-mesh lane. A path grid tessellates
     // once, then holds an unchanged frame to zero re-tessellation + zero upload,
     // a scroll to transform-only, and a recolor to paint-only.
     assert_path_grid_is_retained();
 
-    // D3.5 gate (§31 `## D3`): curve/dash-heavy path scenes tessellate once and
+    // Path gate: curve/dash-heavy path scenes tessellate once and
     // then hold steady (0 re-tessellation, 0 upload), and path churn stays local
     // — re-tessellation scales with the changed set, not the scene.
     assert_curve_and_dash_scenes_are_retained();
     assert_path_churn_is_local();
 
-    // D1 gate: each analytic family's pool holds the same two invariants in
+    // Analytic-family gate: each analytic family's pool holds the same two invariants in
     // isolation — a one-primitive hover uploads exactly one instance of that
     // family's stride, and a scroll is transform-only with no buffer growth.
     for family in [
@@ -3685,7 +3684,7 @@ fn bench_steady_state(c: &mut Criterion) {
         assert_family_scroll_is_transform_only(family);
     }
 
-    // D2 gate (§31 `## D2`): many gradients, image grid, sprite atlas, and
+    // Gradient/image gate: many gradients, image grid, sprite atlas, and
     // texture-binding pressure. Steady state rebakes no gradient LUT (0 upload),
     // creates no per-primitive texture, and binds once per distinct texture; a
     // one-gradient recolor rebakes exactly that gradient.
@@ -3694,7 +3693,7 @@ fn bench_steady_state(c: &mut Criterion) {
     assert_image_grid_shares_one_binding(|tex, size| sprite_atlas_scene(tex, size, GRID_1K));
     assert_texture_pressure_binds_once_per_texture();
 
-    // C0.6 gate (§31 `## C0` compositing matrix): the clip/layer/opacity/blend
+    // Compositing-matrix gate: the clip/layer/opacity/blend
     // foundation pays only its tier's cost. A deep opacity==1 clip nest opens no
     // offscreen (in-pass scissor); nested and many-sibling translucent layers
     // each open one pooled offscreen pass and reuse it across steady frames with
@@ -3708,20 +3707,20 @@ fn bench_steady_state(c: &mut Criterion) {
     );
     assert_translucent_layers_reuse_pooled_targets(|| sibling_layer_scene(SIBLINGS, 0.5), SIBLINGS);
 
-    // E0.2 gate (§15.3 / §20.1): the decorated-shape fusion decision. Pins the
+    // Decorated-shape fusion gate: the fusion decision. Pins the
     // separate-draw batch/switch structure and the shaded-quad overdraw proxy the
     // fusion turns on; the register-pressure / GPU-time half is a device
     // measurement this backend cannot express (see the fn doc).
     assert_decorated_fusion_gate();
 
-    // E0.4 gate (§15/§15.4/§31): the analytic-shadow fast lane at 1k shadows
+    // Shadow gate: the analytic-shadow fast lane at 1k shadows
     // stays one mergeable batch on one pipeline with no offscreen and holds a
     // steady frame upload-free; the general-path shadow's coverage cache reuses
     // its mask across color/offset changes and rebuilds only the moved path.
     assert_analytic_shadow_lane_scales();
     assert_path_shadow_reuse_is_local();
 
-    // E1.5 gate (§16.3/§16.4/§31): the blur ladder's cost is set by tier and its
+    // Blur gate: the blur ladder's cost is set by tier and its
     // scratch shrinks as sigma grows past the tap budget; a fan-out of small-ROI
     // blurs aliases down to ~one pooled target per layer; and a static
     // effect-heavy blurred scene rebuilds no cache when it idles.
@@ -3729,29 +3728,29 @@ fn bench_steady_state(c: &mut Criterion) {
     assert_many_small_roi_blurs_bound_transient_memory();
     assert_idle_blurred_scene_rebuilds_nothing();
 
-    // E2.1 gate (§17.1/§17.2/§31): a row of frosted panels shares one capture
+    // Frosted-row gate: a row of frosted panels shares one capture
     // pass and one ladder with the union ROI — the pass plan of a single panel —
     // instead of one full-surface capture and ladder per panel.
     assert_frosted_panel_row_shares_one_capture();
 
-    // E2.2 gate (§17.3/§31): a row of color-graded cards plans the pass count of
+    // Color-chain gate: a row of color-graded cards plans the pass count of
     // a single effect no matter how long its mergeable chain is, and only a
     // non-expressible stage buys one extra pass per card.
     assert_color_chain_fuses_to_one_pass();
 
-    // E2.3 gate (§17.1/§31): a row of advanced-blend badges isolates through the
+    // Advanced-blend gate: a row of advanced-blend badges isolates through the
     // planner for the price of the layer target it already needed plus one bounded
     // destination snapshot, while the same row under `SrcOver` stays a single
     // fixed-function surface pass.
     assert_blend_isolation_costs_no_extra_pass();
 
-    // E2.4 gate (§3102/§3120/§3145/§3202/§31): a row of translucent cards whose
+    // Group-opacity gate: a row of translucent cards whose
     // children provably do not overlap pushes its group opacity into them and pays
     // nothing, while the identical row with overlapping children pays a target per
     // card; and an idle frosted row dirties no backdrop ROI.
     assert_group_opacity_folds_without_a_target();
 
-    // E2.5 gate (§31 `## E2`): the lane's own scaling and static-UI targets. A
+    // Effect-lane gate: the lane's own scaling and static-UI targets. A
     // shared backdrop's pass plan and its memory peak are flat / sub-linear in the
     // number of sharers; a mergeable color chain's length reaches no cost counter
     // at all; and a glass/blur/shadow screen nobody touches holds every counter,
@@ -3776,10 +3775,10 @@ fn bench_steady_state(c: &mut Criterion) {
         b.iter(|| frame(black_box(&mut h)));
     });
 
-    // D0.4 large-scene timing: at 100k tiles, a steady (unchanged) `upload` is the
+    // Large-scene timing: at 100k tiles, a steady (unchanged) `upload` is the
     // diff-and-coalesce cost with zero uploads, and a one-tile hover `upload` is
     // that plus a single-instance write. Both must scale with the dirty set, not
-    // the scene — this bench is the regression sentinel for that (§9.1). A leading
+    // the scene — this bench is the regression sentinel for that. A leading
     // warm frame moves the pool past its one-time growth.
     let mut big = setup_grid(GRID_100K);
     frame(&mut big);
@@ -3805,12 +3804,12 @@ fn bench_steady_state(c: &mut Criterion) {
         });
     });
 
-    // E0.4 timing (§15/§31): a steady `upload` of 1k analytic shadows is the
+    // Shadow timing: a steady `upload` of 1k analytic shadows is the
     // diff-and-coalesce cost of the shared shadow pool with zero GPU work — the
     // high-refresh sentinel for the analytic-shadow lane (all closed-form
-    // coverage, no offscreen). Debug timing is not a perf result (§36); run
+    // coverage, no offscreen). Debug timing is not a perf result; run
     // release. On-device shaded-pixel time for overlapping soft shadows is a
-    // separate measurement this headless backend cannot express (§7.3).
+    // separate measurement this headless backend cannot express.
     let mut shadows = setup_scene(analytic_shadow_grid_scene(SHADOW_GRID));
     frame(&mut shadows);
     frame(&mut shadows);
@@ -3822,7 +3821,7 @@ fn bench_steady_state(c: &mut Criterion) {
         });
     });
 
-    // D2 timings (§31 `## D2`). A steady `upload` of each workload is the
+    // Gradient/image timings. A steady `upload` of each workload is the
     // diff-and-coalesce cost with zero GPU work; the gradient recolor is the
     // one-LUT-row-rebake path. All scale with the dirty set, not the scene.
     let mut grad = setup_scene(gradient_grid_scene(GRID_1K));
@@ -3869,7 +3868,7 @@ fn bench_steady_state(c: &mut Criterion) {
         });
     });
 
-    // D3.5 timings (§31 `## D3`). A large static SVG-like path scene warms its
+    // Path timings. A large static SVG-like path scene warms its
     // caches once; thereafter a steady `upload` is diff-and-coalesce with zero
     // GPU work, and a small-churn `upload` re-tessellates only the changed paths.
     // Both scale with the dirty set, not the scene.
@@ -3911,11 +3910,11 @@ fn bench_steady_state(c: &mut Criterion) {
         });
     });
 
-    // C0.6 timings (§31 `## C0`). A deep in-pass clip nest is the pure-scissor
+    // Compositing-matrix timings. A deep in-pass clip nest is the pure-scissor
     // compositing cost (no offscreen); the translucent nests/siblings add the
     // pooled-offscreen open/close cost. All are steady `upload`s of an unchanged
     // scene — the diff-and-coalesce path with the targets reused, not the frame
-    // rate. High-refresh cadence (see the note in the C0.6 checklist) is a
+    // rate. High-refresh cadence is a
     // present-loop property this microbench cannot observe.
     let mut clip = setup_scene(nested_layer_scene(32, 1.0));
     frame(&mut clip);
@@ -3949,7 +3948,7 @@ fn bench_steady_state(c: &mut Criterion) {
         });
     });
 
-    // E0.2 timing (§15.3 / §20.1): the separate-draw decorated-card baseline —
+    // Decorated-shape timing: the separate-draw decorated-card baseline —
     // one shadow + one rrect per card, `2N` draws. This is the cost a fused
     // `DecoratedShape` family would be measured against on device; here it is the
     // steady diff-and-coalesce upload of the separate path.
@@ -3964,10 +3963,10 @@ fn bench_steady_state(c: &mut Criterion) {
         });
     });
 
-    // E1.5 timing (§16.3/§31): the blur tiers and the small-ROI fan-out. `upload`
+    // Blur timing: the blur tiers and the small-ROI fan-out. `upload`
     // is where the ladder is planned and its targets are claimed; `frame` also
     // encodes every rung, so the pair separates plan reuse from multi-pass encode
-    // cost. Neither is device shaded-pixel time (§36).
+    // cost. Neither is device shaded-pixel time.
     let mut blur_small = setup_scene(blurred_layer_scene(2.0));
     frame(&mut blur_small);
     frame(&mut blur_small);
@@ -4011,11 +4010,11 @@ fn bench_steady_state(c: &mut Criterion) {
         b.iter(|| frame(black_box(&mut many_blurs)));
     });
 
-    // E2.1 timing (§17.1/§17.2/§31): the frosted row. `upload` is where the
+    // Frosted-row timing: the frosted row. `upload` is where the
     // sharing decision runs and the capture's target/ladder are claimed, so it is
     // the cost of *planning* a shared backdrop; `frame` also encodes the capture
     // pass, its rungs, and one composite per panel. Neither is device shaded-pixel
-    // time (§36).
+    // time.
     let mut frosted_row = setup_scene(frosted_panel_row_scene(FROSTED_PANELS, FROSTED_PANEL_SIGMA));
     frame(&mut frosted_row);
     frame(&mut frosted_row);
@@ -4031,12 +4030,12 @@ fn bench_steady_state(c: &mut Criterion) {
         b.iter(|| frame(black_box(&mut frosted_row)));
     });
 
-    // E2.2 timing (§17.3/§31): the graded row. `upload` is where the chain fuses
+    // Color-chain timing: the graded row. `upload` is where the chain fuses
     // and the fused matrix is folded into the composite instance, so it is the
     // cost of *planning* the grade; `frame` also encodes one composite per card
     // through the color-transform pipeline. The split row pays one extra scratch
     // pass per card, so the pair brackets the fused/split difference in CPU terms
-    // — neither is device shaded-pixel time (§36).
+    // — neither is device shaded-pixel time.
     let mut graded = setup_scene(graded_card_scene(GRADED_CARDS, &GRADED_CHAIN));
     frame(&mut graded);
     frame(&mut graded);
@@ -4058,13 +4057,13 @@ fn bench_steady_state(c: &mut Criterion) {
         b.iter(|| frame(black_box(&mut graded_split)));
     });
 
-    // E2.3 timing (§17.1/§31): the blended row. `upload` is where the blend is
+    // Advanced-blend timing: the blended row. `upload` is where the blend is
     // classified, the layer is forced offscreen, and its bounded snapshot is
     // claimed — the cost of *planning* an isolation; `frame` also encodes the
     // snapshot pass and one two-texture composite per badge. The `SrcOver` control
     // brackets what isolation costs over the fixed-function lane, and the
     // non-separable row brackets the fragment's spread across the family. None of
-    // these is device shaded-pixel time (§36).
+    // these is device shaded-pixel time.
     let mut blended = setup_scene(blended_card_scene(BLENDED_CARDS, BLENDED_MODE));
     frame(&mut blended);
     frame(&mut blended);
@@ -4093,7 +4092,7 @@ fn bench_steady_state(c: &mut Criterion) {
         b.iter(|| frame(black_box(&mut src_over_cards)));
     });
 
-    // E2.4 (§3145/§36): what the Effect Planner's cheapest rung is worth. Both
+    // Group opacity: what the Effect Planner's cheapest rung is worth. Both
     // rows author the same geometry at the same group opacity; only the children's
     // overlap differs, so the pair brackets the fold against the target it avoids.
     // `upload` is where the subtree is scanned, the plan is made and — in the
@@ -4102,7 +4101,7 @@ fn bench_steady_state(c: &mut Criterion) {
     // card. The scan is O(n²) in a group's foldable children by design (it is a
     // pairwise disjointness proof, capped at a small child count), so `faded_cards_
     // upload_steady` is also the guard that the proof does not grow into the cost
-    // it exists to remove. None of this is device shaded-pixel time (§36).
+    // it exists to remove. None of this is device shaded-pixel time.
     let mut faded = setup_scene(faded_card_scene(FADED_CARDS, false));
     frame(&mut faded);
     frame(&mut faded);
@@ -4124,15 +4123,15 @@ fn bench_steady_state(c: &mut Criterion) {
         b.iter(|| frame(black_box(&mut faded_isolated)));
     });
 
-    // E2.5 timing (§31/§36): the static glass screen — a shared backdrop capture
+    // Static-screen timing: the static glass screen — a shared backdrop capture
     // and ladder, a content ladder, gradient LUT rows, a path-shadow mask and
     // analytic shadows, all live at once. `upload` is what a frame of an untouched
-    // screen costs on the CPU (diff, plan, and the §3202 dependency scan, all of
+    // screen costs on the CPU (diff, plan, and the backdrop dependency scan, all of
     // which must find nothing to do); `frame` adds encoding every pass. This row is
     // the one to read against a refresh budget — 16.67 / 8.33 / 6.94 / 4.17 ms at
     // 60 / 120 / 144 / 240 Hz — though it is `CpuRaster` CPU rasterization,
     // not device shaded-pixel time, so the budget comparison bounds the framework's
-    // own per-frame cost and nothing else (§7.3/§36).
+    // own per-frame cost and nothing else.
     let mut glass = setup_scene(glass_screen_scene());
     frame(&mut glass);
     frame(&mut glass);

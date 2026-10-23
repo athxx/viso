@@ -37,8 +37,8 @@
 //!
 //! `rustybuzz` produces `UNSAFE_TO_BREAK` by default, so this signal is always
 //! present — Viso keeps it conservatively and never guesses that a boundary is
-//! safe. The actual worker reshape orchestration (spec 12.9's reshape-and-fit
-//! flow) belongs to the paragraph layer, not here; this layer only supplies the
+//! safe. The actual worker reshape orchestration (the reshape-and-fit flow)
+//! belongs to the paragraph layer, not here; this layer only supplies the
 //! metadata and the boundary queries it reads.
 
 use crate::FontFaceId;
@@ -198,7 +198,7 @@ impl ShapedRun {
 /// The direction a run is shaped in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Direction {
-    /// Left-to-right (Latin, and the P0 baseline).
+    /// Left-to-right (Latin, and the default).
     LeftToRight,
     /// Right-to-left (Arabic, Hebrew); filled in with the BiDi stage.
     RightToLeft,
@@ -251,7 +251,7 @@ impl Shaper {
         });
         buffer.push_str(text);
 
-        // No explicit OpenType feature overrides at the P0 baseline; the shaper
+        // No explicit OpenType feature overrides; the shaper
         // applies the face's default feature set.
         let glyph_buffer = rustybuzz::shape(&rb_face, &[], buffer);
 

@@ -1,12 +1,9 @@
 //! Microbench skeleton for the `Modal` overlay control: the cost of one authoring
 //! pass (`Modal::build`), one `layout`, and one `paint_tree` lowering.
 //!
-//! This is the section 71 microbench slot for the fourth Tier 4 (navigation /
-//! overlay) widget — a scrim-backed dialog layer with no in-place anchor that
-//! opens over the whole surface — and copies the `popup_build.rs` template. It
-//! exercises the real `build` -> `layout` -> `paint_tree` path so a regression is
-//! measurable; the baseline numbers are recorded in a later slice (per the plan:
-//! establish the framework first).
+//! `Modal` is a scrim-backed dialog layer with no in-place anchor that opens over the
+//! whole surface. The bench exercises the real `build` -> `layout` -> `paint_tree` path
+//! so a regression is measurable.
 //!
 //! `Modal` authors one `Bool` open cell (`cx.state`) and binds it to the modal's
 //! `PAINT`, so it must build through `BuildCx::with_reactive` (a plain
@@ -22,8 +19,7 @@
 //! and adds no dependency edge.
 //!
 //! Run release (`CARGO_TARGET_DIR=/tmp/rust_tmp cargo bench -p viso-widgets`);
-//! criterion defaults to a release profile. Debug timing is not a perf result
-//! (AGENTS section 36).
+//! criterion defaults to a release profile. Debug timing is not a perf result.
 
 use std::cell::RefCell;
 use std::hint::black_box;

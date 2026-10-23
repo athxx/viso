@@ -1,4 +1,4 @@
-//! The property to dirty-class mapping table (AGENTS section 11).
+//! The property to dirty-class mapping table.
 //!
 //! Every property/state binding must declare exactly what it invalidates, so a
 //! paint-only change never forces its ancestors to re-measure. This module owns
@@ -14,10 +14,10 @@ pub use viso_schema::DirtyClass;
 /// The dirty classes a write to the property named `name` invalidates.
 ///
 /// `name` is the property's leading path segment (`text`, `color`, `width`, …).
-/// The mapping follows AGENTS section 11: text content re-measures, re-lays-out,
+/// The mapping: text content re-measures, re-lays-out,
 /// repaints, and updates semantics; a pure color/background repaints only; a
 /// dimension re-measures and re-lays-out; a transform moves its transform root
-/// and nothing else (ADR 0043); accessibility text updates semantics only.
+/// and nothing else; accessibility text updates semantics only.
 ///
 /// An unrecognized property returns the conservative default
 /// `MEASURE | LAYOUT | PAINT` — a structural repaint that stops short of
@@ -55,12 +55,12 @@ pub fn property_dirty_class(name: &str) -> DirtyClass {
         "overflow" => D::LAYOUT | D::PAINT,
 
         // Transform-only changes move the node's transform root: no measure,
-        // layout, paint or hit-test work (section 8.7, ADR 0043).
+        // layout, paint or hit-test work.
         "transform" | "translate" | "scale" | "rotation" | "transform_origin" | "offset"
         | "scroll" => D::TRANSFORM,
 
         // Corner radius and border affect the painted shape only: a border
-        // strokes inside the box (§U3.3).
+        // strokes inside the box.
         "radius" | "corner_radius" | "border" | "border_width" => D::PAINT,
 
         // Clipping cuts what the children paint and where they are hit to

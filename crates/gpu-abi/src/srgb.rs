@@ -1,6 +1,6 @@
 //! The sRGB transfer function as the CPU raster runs it: a byte decoded to
 //! linear light through a 256-entry table, linear light encoded to a byte
-//! through a 4096-entry one (ADR 0048). Both follow IEC 61966-2-1 — a linear
+//! through a 4096-entry one. Both follow IEC 61966-2-1 — a linear
 //! toe below the breakpoint, a gamma-2.4 curve above — and the encode
 //! rounds in encoded space, as a GPU writing an sRGB attachment does.
 

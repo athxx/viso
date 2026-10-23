@@ -1,4 +1,4 @@
-//! The statement grammar (Appendix A.11). A block is `"{" Statement* TailExpr?
+//! The statement grammar. A block is `"{" Statement* TailExpr?
 //! "}"`; a statement is a `let`, an assignment, an expression statement, one of
 //! the jump statements (`return`/`break`/`continue`/`emit`), a `transaction`, or
 //! one of the imperative control-flow forms (`if`/`match`/`while`/`for`/`loop`).
@@ -14,7 +14,7 @@
 //! ## Leading `if` / `match` are statements, not tail expressions
 //!
 //! At statement start a bare `if`/`match` is parsed as an `IfStatement` /
-//! `MatchStatement` (Appendix A.11 note), so an `if`/`match` that is meant to be
+//! `MatchStatement`, so an `if`/`match` that is meant to be
 //! the block's tail value must be parenthesized or `return`ed. Preferring the
 //! statement form here removes the `Statement* TailExpression?` ambiguity.
 
@@ -192,7 +192,7 @@ fn transaction_stmt(p: &mut Parser) {
     m.complete(p, SyntaxKind::TransactionStmt);
 }
 
-/// `"start" CallExpression ("as" IDENT)? StartHandlers? ";"` (§39). The call
+/// `"start" CallExpression ("as" IDENT)? StartHandlers? ";"`. The call
 /// is a postfix expression, so `as` names the slot instead of casting.
 fn start_stmt(p: &mut Parser) {
     let m = p.start();

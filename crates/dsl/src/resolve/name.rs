@@ -6,8 +6,8 @@
 //! while the interner keeps the original text for diagnostics and reverse lookup.
 //!
 //! This is a cold-path structure: interning happens once during resolution, not on
-//! any runtime frame path, so a `HashMap` + owned `String`s are appropriate here
-//! (AGENTS section 7.2). The identity that leaves the compiler is [`super::SymbolId`],
+//! any runtime frame path, so a `HashMap` + owned `String`s are appropriate here.
+//! The identity that leaves the compiler is [`super::SymbolId`],
 //! not `NameId`; a `NameId` is only meaningful within the interner that minted it.
 
 use std::borrow::Cow;
@@ -43,7 +43,7 @@ impl NameId {
 /// A string→[`NameId`] interner with reverse lookup.
 ///
 /// Interning is idempotent: the same text always returns the same `NameId` within
-/// one interner. Text is keyed by its NFC form (spec section 11), so two spellings
+/// one interner. Text is keyed by its NFC form, so two spellings
 /// that normalize alike are one name; the reverse direction
 /// ([`NameInterner::text`]) recovers that normalized string.
 #[derive(Debug, Default)]

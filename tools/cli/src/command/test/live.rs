@@ -1,6 +1,6 @@
 //! The `ui` domain played by the app live: on a simulator or emulator as
 //! `viso run <ios|android>` runs it, or in a headless browser as `viso run
-//! web-gpu` serves it, launched fresh for each case (`Viso_CLI.md` §22).
+//! web-gpu` serves it, launched fresh for each case.
 //!
 //! The case's session is a `viso run` of this executable, its events read as
 //! JSON; in a browser the page is opened headless once the session serves

@@ -1,4 +1,4 @@
-//! `viso inspect`: what the app shows and holds (`Viso_CLI.md` §24).
+//! `viso inspect`: what the app shows and holds.
 //!
 //! The app is the one the project's `viso run` session runs, asked through
 //! the session's control endpoint, or a headless run of it built for the

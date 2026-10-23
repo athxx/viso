@@ -1,12 +1,9 @@
 //! Microbench skeleton for the `Popup` overlay control: the cost of one authoring
 //! pass (`Popup::build`), one `layout`, and one `paint_tree` lowering.
 //!
-//! This is the section 71 microbench slot for the third Tier 4 (navigation /
-//! overlay) widget — a persistent anchor with a floating content layer that opens
-//! over the scene — and copies the `navigation_stack_build.rs` template. It
-//! exercises the real `build` -> `layout` -> `paint_tree` path so a regression is
-//! measurable; the baseline numbers are recorded in a later slice (per the plan:
-//! establish the framework first).
+//! `Popup` is a persistent anchor with a floating content layer that opens over the
+//! scene. The bench exercises the real `build` -> `layout` -> `paint_tree` path so a
+//! regression is measurable.
 //!
 //! `Popup` authors one `Bool` open cell (`cx.state`) and binds it to the popup's
 //! `PAINT`, so it must build through `BuildCx::with_reactive` (a plain
@@ -19,8 +16,7 @@
 //! so it needs no facade or render dev-dependency and adds no dependency edge.
 //!
 //! Run release (`CARGO_TARGET_DIR=/tmp/rust_tmp cargo bench -p viso-widgets`);
-//! criterion defaults to a release profile. Debug timing is not a perf result
-//! (AGENTS section 36).
+//! criterion defaults to a release profile. Debug timing is not a perf result.
 
 use std::cell::RefCell;
 use std::hint::black_box;

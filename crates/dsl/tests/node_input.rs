@@ -1,4 +1,4 @@
-//! A node's `enabled` and `autofocus` (§U3.3): a disabled node and its
+//! A node's `enabled` and `autofocus`: a disabled node and its
 //! subtree take no pointer event, no focus and read as disabled until it is
 //! enabled again, and the first `autofocus` node takes the focus as it
 //! mounts, a reload giving it none back — under hot reload and from the

@@ -1,4 +1,4 @@
-//! UI IR — the static retained-tree template a view lowers to (AGENTS section 59).
+//! UI IR — the static retained-tree template a view lowers to.
 //!
 //! A declarative view is *not* a per-frame rebuild. The compiler lowers it once
 //! into this UI IR: a tree of [`UiNode`]s carrying folded static style, the
@@ -11,7 +11,7 @@
 //! This module is the *shape* of the IR plus the static-style folding that turns
 //! literal property values (`width: 12dp`, `axis: column`) into concrete layout
 //! inputs. A property whose value is not a compile-time constant is not folded —
-//! it is recorded as a [`PendingProperty`] for the Binding IR pass (section 3)
+//! it is recorded as a [`PendingProperty`] for the Binding IR pass
 //! to turn into a `StateId -> (node, DirtyClass)` edge. The length/axis
 //! mirrors below carry just enough for the emitter to construct the runtime
 //! `Size`/`Axis`/style structs.
@@ -909,7 +909,7 @@ pub struct PendingProperty {
     /// The span of the value expression, so the binding pass can look up its
     /// resolved reads via `collect_reads`.
     pub value: TextRange,
-    /// The dirty classes a write to this property invalidates (section 11).
+    /// The dirty classes a write to this property invalidates.
     pub dirty: DirtyClass,
     /// The component instance whose view the value belongs to: `0` for the
     /// view's own component, else an index into [`UiTree::instances`] plus one.
@@ -976,7 +976,7 @@ pub struct UiIfArm {
 }
 
 /// A keyed repetition. The iterable and key spans feed the Binding IR / keys
-/// passes (sections 10, 21.8).
+/// passes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UiFor {
     /// The loop binding name (`item`).

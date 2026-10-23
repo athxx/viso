@@ -1,4 +1,4 @@
-//! The accessibility bridge boundary (ADR 0030, ADR 0042).
+//! The accessibility bridge boundary.
 //!
 //! Outbound, the app pushes [`SemanticsDelta`]s through
 //! [`PlatformApp::update_accessibility`](crate::PlatformApp::update_accessibility):

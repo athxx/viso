@@ -1,5 +1,5 @@
 //! State and node migration plan — the third, purely functional stage of
-//! the hot reload transaction (architecture section 42.1; AGENTS 21.7).
+//! the hot reload transaction.
 //!
 //! Given the reactive-source identities the last-good tree was built from, the
 //! identities the candidate compiled, and the structural patch that aligns the two

@@ -8,9 +8,9 @@
 //! a single scroll through the picker would churn the hot working set: the faces
 //! the open document is actually rendering would be pushed toward eviction by
 //! faces the user is merely glancing at. Byte-budget SLRU already resists that at
-//! the eviction level, but the stronger guarantee this spec asks for (section 18)
-//! is that the picker scan has an **independent cache lifetime** — it must not
-//! even *reach* the working cache.
+//! the eviction level, but the stronger guarantee required here is that the
+//! picker scan has an **independent cache lifetime** — it must not even *reach*
+//! the working cache.
 //!
 //! This catalog is that separate lifetime. Enumeration produces compact
 //! descriptors only ([`CatalogFace`]), never parsed bytes — enumerating three
@@ -31,7 +31,7 @@
 //!
 //! # What is *not* here
 //!
-//! On a runtime that withholds system fonts (WASM / Canvas, section 16.1) the
+//! On a runtime that withholds system fonts (WASM / Canvas) the
 //! catalog simply enumerates nothing — there is no implicit browser local-font
 //! enumeration and no bundled default. An empty catalog is the correct, total
 //! answer, exactly as [`NoSystemFonts`](crate::system_fonts::NoSystemFonts) is
@@ -136,7 +136,7 @@ impl SystemFontCatalog {
     }
 
     /// Whether the catalog enumerated no faces (an empty catalog is the correct
-    /// answer on a system-font-less runtime, section 16.1).
+    /// answer on a system-font-less runtime).
     pub fn is_empty(&self) -> bool {
         self.faces.is_empty()
     }
@@ -306,7 +306,7 @@ mod tests {
 
     #[test]
     fn a_system_font_less_runtime_enumerates_nothing() {
-        // On a runtime that withholds system fonts (section 16.1) the catalog is
+        // On a runtime that withholds system fonts the catalog is
         // simply empty — no implicit local-font enumeration, no bundled default.
         let catalog = SystemFontCatalog::default();
         assert!(catalog.is_empty());

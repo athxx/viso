@@ -1,6 +1,5 @@
-//! The renderer's 3D scene API (ADR 0047): frames handed to scene slots,
-//! uploaded meshes, and the scene draws of the stream resolved to images of
-//! their targets.
+//! The renderer's 3D scene API: frames handed to scene slots, uploaded meshes,
+//! and the scene draws of the stream resolved to images of their targets.
 
 use viso_gpu::GpuBackend;
 

@@ -244,7 +244,7 @@ pub struct FrameDetail {
     pub batches: Vec<BatchDetail>,
     /// The device memory and caches behind them.
     pub resources: Vec<ResourceDetail>,
-    /// What its present redrew of the surface (§30.3).
+    /// What its present redrew of the surface.
     pub damage: FrameDamage,
 }
 

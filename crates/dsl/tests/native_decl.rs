@@ -1,4 +1,4 @@
-//! Handwritten `native` declarations (§47): parsed into typed declarations at
+//! Handwritten `native` declarations: parsed into typed declarations at
 //! the top level and in components, typed and lowered as native imports of
 //! the module's path, checked against a registry that has their library
 //! (`E6101`), and linked to the Rust library that implements them.

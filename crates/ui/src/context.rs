@@ -5,9 +5,9 @@
 //! tool: a `LayoutCx` cannot launch a network request, create a window, or
 //! submit arbitrary GPU work.
 //!
-//! Phase 0 defines these as marker types so signatures like
-//! `fn layout(&mut self, cx: &mut LayoutCx<'_>, ..)` can be written against a
-//! stable contract before the real capabilities are filled in.
+//! The phase contexts without live state are marker types, so signatures like
+//! `fn layout(&mut self, cx: &mut LayoutCx<'_>, ..)` are written against a
+//! stable contract.
 
 use core::marker::PhantomData;
 use std::any::Any;
@@ -415,7 +415,7 @@ pub struct EventCx<'a> {
     /// Node visibility flips a handler recorded this dispatch, applied by the
     /// router to the node store after the handler returns — the same deferred
     /// shape as [`edits`](Self::edits), since the cx holds no node store to flip
-    /// the flag directly. A hide/show control (Tabs and the wider Tier 4 family)
+    /// the flag directly. A hide/show control (Tabs and the wider overlay family)
     /// records `(panel, hidden)` pairs to swap which panel shows. Empty (and
     /// allocation-free) for the overwhelmingly common dispatch that shows nothing.
     hidden_requests: Vec<(NodeId, bool)>,

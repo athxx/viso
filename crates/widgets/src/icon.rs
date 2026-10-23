@@ -10,8 +10,8 @@
 //!
 //! It maps to exactly one `viso-ui` node: a leaf with a transparent box (the
 //! path is the content), a path content payload, and a [`Role::Group`] semantics
-//! node (a non-interactive presentational element; a dedicated `Role::Icon`
-//! variant is a later slice). Its size defaults to [`Length::Fixed`] at the
+//! node (a non-interactive presentational element; there is no dedicated
+//! `Role::Icon` variant). Its size defaults to [`Length::Fixed`] at the
 //! icon's intrinsic size, and its intrinsic size drives a [`Length::Fit`] axis's
 //! measure. By default the outline is filled with a near-black foreground and not
 //! stroked.
@@ -38,7 +38,7 @@ const FOREGROUND: Rgba = Rgba {
 /// paints as a solid monochrome shape. `size` defaults to [`Length::Fixed`] at
 /// the icon's intrinsic size; override it with a [`Length::Fit`] or
 /// [`Length::Fill`] axis to shrink-to-content or flex (the geometry is drawn at
-/// its authored coordinates — object-fit scaling is a later slice).
+/// its authored coordinates, with no object-fit scaling).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct IconStyle {
     /// Interior fill color. Defaults to a near-black foreground; set to `None`

@@ -1,7 +1,7 @@
 //! The resolution pass — what each name refers to.
 //!
 //! Given the [`ModuleGraph`](super::ModuleGraph) and the source units behind it, the
-//! resolver answers *reference questions*, not *type questions* (that is Slice M).
+//! resolver answers *reference questions*, not *type questions* (type inference answers those).
 //! For each module it:
 //!
 //! 1. builds a [`SymbolTable`] of the module's top-level declarations, minting a
@@ -20,7 +20,7 @@
 //!    bindings, and `let`/parameter names open local scopes whose uses resolve to a
 //!    [`LocalSlot`](super::scope::LocalSlot).
 //!
-//! Everything is cold-path (AGENTS section 7.2): resolution runs once per build.
+//! Everything is cold-path: resolution runs once per build.
 
 use crate::ast::{
     AstNode, Block, CompilationUnit, ComponentDecl, EventHandler, Expr, Item, Member, NamedNode,
@@ -60,7 +60,7 @@ pub enum Resolution {
     Env,
     /// The `theme` a view reads, typed `Theme`: the other context binding.
     Theme,
-    /// The game a view's root runs (ADR 0045), read only through the calls
+    /// The game a view's root runs, read only through the calls
     /// `game.<query>()`, `game.is_paused()`, `game.tick()`, `game.pause()` and
     /// `game.resume()`.
     Game,
@@ -94,7 +94,7 @@ pub struct ResolvedRef {
 /// (never its position), so the id alone cannot locate the declaration in source.
 /// Recording the name-token span here — captured at the single mint site, no
 /// second tree walk — is what lets goto-definition and rename find and rewrite the
-/// definition. This is a cold-path tooling aid (AGENTS 7.2); the compiler proper
+/// definition. This is a cold-path tooling aid; the compiler proper
 /// does not consult it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SymbolDecl {
@@ -462,7 +462,7 @@ fn stable_value(attr: &SyntaxNode) -> Option<String> {
 /// The id a `@stable("id")` attribute pins on `decl`: a contiguous run of
 /// `Attribute` siblings immediately before `decl`, or — when `decl` sits
 /// inside an `export` wrapper — immediately before that wrapper, matching
-/// where `@migrate`/`@persist` are accepted (DSL §25, §88).
+/// where `@migrate`/`@persist` are accepted.
 fn stable_id(decl: &SyntaxNode) -> Option<String> {
     use crate::syntax::SyntaxKind;
     fn scan(mut node: SyntaxNode) -> Option<String> {

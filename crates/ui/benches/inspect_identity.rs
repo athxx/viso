@@ -1,18 +1,17 @@
-//! Two architecture contracts the Inspector slice must *measure*, not assert:
+//! Two contracts the Inspector must *measure*, not assert:
 //!
-//! 1. **Identity performance contract (architecture 10.4.13).** The runtime win
+//! 1. **Identity performance contract.** The runtime win
 //!    is "hash / probe / pointer-chasing -> direct indexed access": node
 //!    liveness and per-node hot data resolve by a dense array index keyed on the
 //!    generational `NodeId`, never a string or a stable-symbol hash lookup. This
 //!    bench contrasts the dense-index path against a `HashMap<NodeId, _>`
-//!    baseline over 1M lookups so the gap is a number, not a claim — the exact
-//!    comparison 10.4.13 names ("stable Symbol HashMap lookup vs dense array
-//!    lookup").
+//!    baseline over 1M lookups so the gap is a number, not a claim ("stable
+//!    Symbol HashMap lookup vs dense array lookup").
 //!
-//! 2. **The Inspector surfaces are cold (architecture 60 / 7.2).** 9.A4 landed
-//!    `inspect_tree` / `paint_ranges` / `derive_semantics` / `snapshot_ui` as
-//!    read-only `&NodeStore` readouts that mutate nothing. Architecture 35 / 7.3
-//!    forbid claiming "cold / doesn't tax the frame" without a measurement, so a
+//! 2. **The Inspector surfaces are cold.** `inspect_tree` / `paint_ranges` /
+//!    `derive_semantics` / `snapshot_ui` are read-only `&NodeStore` readouts that
+//!    mutate nothing. "Cold / doesn't tax the frame" is not claimed without a
+//!    measurement, so a
 //!    startup assertion pins the steady-frame counter (the `paint_tree` primitive
 //!    count) as *unchanged* whether or not the inspect surfaces run between
 //!    frames, and a `steady_frame` / `steady_frame_with_inspect_between` pair
@@ -211,7 +210,7 @@ fn paint_count(store: &NodeStore, root: NodeId, out: &mut Vec<Primitive>) -> usi
     out.len()
 }
 
-/// Startup hard assertion (architecture 66 headless-assertion convention): the
+/// Startup hard assertion (headless-assertion convention): the
 /// steady-frame counter is deterministic across frames, and running every cold
 /// inspect surface between two frames does not change it. Panicking here fails
 /// the bench binary, so a regression that lets inspection perturb the frame is
@@ -258,8 +257,8 @@ fn assert_inspect_is_cold() {
     );
 
     // Counter-consistency sentinel: the cold `paint_ranges` twin reaches the
-    // exact same primitive count as the hot `paint_tree` walk (the property 9.A4
-    // proved), so the two never disagree on the instance count.
+    // exact same primitive count as the hot `paint_tree` walk, so the two never
+    // disagree on the instance count.
     assert_eq!(
         ranges.total_primitives(),
         n,

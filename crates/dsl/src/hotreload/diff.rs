@@ -1,5 +1,5 @@
 //! Structural diff — the second, purely functional stage of the hot reload
-//! transaction (architecture section 42; AGENTS 21.7).
+//! transaction.
 //!
 //! A hot reload is not a rebuild. Given the last-good template and a freshly
 //! compiled candidate template, this stage computes the directed patch that

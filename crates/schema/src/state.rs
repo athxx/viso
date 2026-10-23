@@ -26,7 +26,7 @@ impl StateKey {
     }
 }
 
-/// A scalar state value. Type-erased for this slice's store; the variants cover
+/// A scalar state value. Type-erased for the store; the variants cover
 /// the scalars the reactive link needs to carry (numbers, a flag, a color).
 ///
 /// A color is kept as four straight `f32` channels — the same shape the paint

@@ -4,7 +4,7 @@
 //!
 //! The stream walk only folds each primitive into its store and records paint
 //! order; `lower_from_scene` is the single source of truth that derives the
-//! instance buffers and segments from the scene (§8). This test drives `upload`
+//! instance buffers and segments from the scene. This test drives `upload`
 //! with the full `test_scene` — quads, an image, a glyph run, a filled+stroked
 //! path, a mesh, an opaque scissor-clip layer, and a translucent offscreen layer
 //! that composites back — so every `StoreRef` arm and both passes are exercised.
@@ -12,7 +12,7 @@
 //! It runs `upload` twice: the second frame reuses the cleared-not-freed stores
 //! (`begin_frame`), so an unchanged scene mutates no store and the derived
 //! scratch is identical to the first frame — the steady-state "0 primitive
-//! reconstruction" guarantee (§8.4) under a whole-tree re-emit.
+//! reconstruction" guarantee under a whole-tree re-emit.
 
 use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle, TextureDesc, TextureFormat};
 use viso_render::{GlyphLane, GlyphRunDraw, Renderer, test_glyphs, test_scene, test_texture};

@@ -1,7 +1,7 @@
 //! Pointer routing through the public facade: a synthetic click reaches the hit
 //! node's handler, the write it makes lands in the state store's pending set,
 //! and the frame flush turns that changed cell into targeted node dirtying via
-//! the compiled binding — the full Slice D chain (hit-test → dispatch → handler
+//! the compiled binding — the full chain (hit-test → dispatch → handler
 //! write → invalidation), end to end.
 //!
 //! Like `hit_test`, this drives the ui stores directly (all reachable through

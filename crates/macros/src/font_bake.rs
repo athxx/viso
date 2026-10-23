@@ -1,4 +1,4 @@
-//! Build-time glyph baking for embedded targets (Text/Font Runtime §3.6).
+//! Build-time glyph baking for embedded targets.
 //!
 //! `viso build` for an embedded target whose `Viso.toml` declares the font
 //! sizes its UI draws at sets two more variables for the compiler:

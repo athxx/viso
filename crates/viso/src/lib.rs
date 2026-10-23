@@ -93,11 +93,11 @@ pub use window::{WindowBuilder, WindowHandle, window};
 
 pub use viso_ui::context::AppCx;
 
-// The introspection snapshot model (architecture section 34/62), re-exported so
-// a tool depending only on the `viso` facade — Studio transport (Slice B), the
-// `viso inspect --json` CLI (Slice C) — names one `viso::InspectSnapshot` and
-// its `snapshot_ui` builder rather than reaching into `viso-ui`. A cold-path
-// tooling surface: deliberately kept out of the default prelude (section 6.2).
+// The introspection snapshot model, re-exported so a tool depending only on the
+// `viso` facade — Studio transport, the `viso inspect --json` CLI — names one
+// `viso::InspectSnapshot` and its `snapshot_ui` builder rather than reaching
+// into `viso-ui`. A cold-path tooling surface: deliberately kept out of the
+// default prelude.
 pub use viso_ui::{InspectSnapshot, snapshot_ui};
 
 // The UI-tier window configuration is the shape a `window(...)` author fills in
@@ -221,11 +221,11 @@ macro_rules! __behavior {
 // The facade's own code and tests expand the macros too.
 extern crate self as viso;
 
-// The SVG input lane (§13), re-exported as `viso::svg` so an app that has SVG
-// bytes calls `viso::svg::parse_svg(..)` without naming the internal crates. A cold-path input codec (parse once, cache the resulting
-// primitives), deliberately kept out of the default prelude (§3.2): most apps
-// never touch it, and `SvgScene`/`SvgError` are not part of the default mental
-// model.
+// The SVG input lane, re-exported as `viso::svg` so an app that has SVG bytes
+// calls `viso::svg::parse_svg(..)` without naming the internal crates. A
+// cold-path input codec (parse once, cache the resulting primitives),
+// deliberately kept out of the default prelude: most apps never touch it, and
+// `SvgScene`/`SvgError` are not part of the default mental model.
 pub use viso_render::svg;
 
 /// Fonts packaged into the binary from the crate's `assets/fonts/`:
@@ -343,7 +343,7 @@ pub fn run<A: Application>() {
 
 /// Deterministic headless-loop harness for facade integration tests.
 ///
-/// Not part of the public API — this is the section 66 first-class headless
+/// Not part of the public API — this is the first-class headless
 /// seam, hidden from docs and only meant to be reached by this crate's own
 /// integration tests. It drives the *real* [`AppDriver`] frame loop (the same
 /// one [`run`] uses) through a [`Scheduler`] over a scripted [`HeadlessApp`],
@@ -514,7 +514,7 @@ pub mod __test_support {
         /// A single read-only introspection snapshot of the first window's
         /// settled frame — the node tree, per-node paint spans, semantics tree,
         /// draw batches, and frame counters, aggregated by
-        /// [`viso_ui::snapshot_ui`] (architecture section 34/62). This is the
+        /// [`viso_ui::snapshot_ui`]. This is the
         /// one model Studio transport and `viso inspect --json` will share.
         ///
         /// A cold-path readout off `&self` accessors; it mutates nothing and
@@ -708,7 +708,7 @@ struct AppDriver<A: Application> {
     app: Option<A>,
     /// The application-scope context. `AppCx` is a lifetime-marked capability
     /// handle; the facade owns it for the whole session, so it is `'static`
-    /// here. (In Phase 1 it is a marker type; real capabilities land later.)
+    /// here.
     cx: AppCx<'static>,
     /// The live windows. One `Application` drives every window, but each window
     /// owns its own retained tree, reactive state, GPU surface, animations, and
@@ -716,7 +716,7 @@ struct AppDriver<A: Application> {
     /// single-digit window count, and every frame *iterates all windows* (it
     /// never keys a lookup by id on the hot path), so a linear `Vec` is the
     /// most compact, cache-friendly layout — a `HashMap` would only add a hash
-    /// and a heap bucket per access with nothing to lookup against (section 45).
+    /// and a heap bucket per access with nothing to lookup against.
     /// Ordered by open time; `windows[0]` is the launch window.
     windows: Vec<WindowState>,
     /// Reusable scratch the flush phase drains each window's queued window-open
@@ -839,7 +839,7 @@ struct WindowState {
     /// widget registered as draggable, converts them to logical rects, and pushes
     /// them through the `set_draggable_regions` back-channel only when they differ
     /// from this cache — so a steady frame whose caption did not move re-pushes
-    /// nothing (the back-channel is a cold path, section 7.2). Empty until a
+    /// nothing (the back-channel is a cold path). Empty until a
     /// caption first lays out; a window with no caption never fills it.
     draggable_cache: Vec<LogicalRect>,
     /// Who draws this window's chrome, known when the window opens (from its
@@ -882,7 +882,7 @@ struct WindowState {
     /// time (`bind_semantic_state`); the flush wakes those whose dependencies
     /// changed and writes each affected node's `semantic_state` column, so the
     /// semantics derive pass reads live accessibility state (checked / value /
-    /// range) from a node column without a cross-layer read (AGENTS section 3.5).
+    /// range) from a node column without a cross-layer read.
     projectors: SemanticProjector,
     /// Virtualized lists keyed by viewport node. Reconciled each frame before
     /// layout: reads each list's scroll, remounts only the visible range's hosts,
@@ -1192,7 +1192,7 @@ impl<A: Application> AppDriver<A> {
     }
 
     /// The live window state for `id`, by linear scan. Windows number in the
-    /// single digits, so this is cheaper than a keyed map (section 45).
+    /// single digits, so this is cheaper than a keyed map.
     fn window_mut(&mut self, id: WindowId) -> Option<&mut WindowState> {
         self.windows.iter_mut().find(|w| w.window == id)
     }
@@ -1301,8 +1301,8 @@ impl WindowState {
         ws.store.__install_task_host(cx.loop_waker(), services);
         // Record who draws this window's chrome. Known at open time from the
         // window config; the build-time half of the chrome data contract a
-        // caption widget reads through `BuildCx::chrome` (section 24 — driven by
-        // data, not `target_os`).
+        // caption widget reads through `BuildCx::chrome` (driven by data,
+        // not `target_os`).
         ws.chrome = chrome;
         // Seed the native traffic-light box synchronously, before the single
         // build reads it: the facade queried `RuntimeCx::window_chrome_geom` the
@@ -1332,8 +1332,8 @@ impl WindowState {
         // surface to attach, and on a real-GPU target such as Metal
         // `create_surface` would reject the non-native handle — so we stay
         // `gpu = None` for the session and draw nothing. The retained tree below
-        // is built and driven regardless; this is section 66's headless backend
-        // as a first-class path, not a degraded one.
+        // is built and driven regardless; this is the headless backend as a
+        // first-class path, not a degraded one.
         let native_handle = match cx.raw_handle(window) {
             // A headless build draws every window through the software raster,
             // which takes the headless handle.
@@ -1353,7 +1353,7 @@ impl WindowState {
             let surface = backend.create_surface(raw, w.max(1), h.max(1));
             // Both the format and the color space come from the surface, so the
             // renderer's intermediate targets are planned for the domain this
-            // window actually composites in (§19).
+            // window actually composites in.
             let renderer = footprint::renderer(&mut backend, surface);
 
             ws.gpu = Some(GpuState {
@@ -1953,7 +1953,7 @@ impl WindowState {
     /// Recompute the caption's draggable regions from the just-laid-out tree and,
     /// only when they differ from the last push, hand them to the platform through
     /// `set_draggable_regions` — the cold back-channel that turns a primary press on
-    /// the caption into a native window drag (section 7.2). A caption widget
+    /// the caption into a native window drag. A caption widget
     /// registers its blank band via `BuildCx::register_draggable`; the store keeps
     /// those node ids in a small retained list, and here we resolve each to its
     /// world box — already in logical points (layout runs logical), the same space
@@ -2421,7 +2421,7 @@ impl WindowState {
     /// cap is a safety net, not the mechanism — a normal Column/Row paragraph
     /// settles in one reshape pass (the second pass observes no mismatch and the
     /// loop exits). Returns the number of reshape passes run, for the caller's
-    /// first-frame double-shape counter (§61); `0` on the steady frame that
+    /// first-frame double-shape counter; `0` on the steady frame that
     /// enqueued nothing.
     ///
     /// The first appearance of a wrapped `Fill` paragraph is shaped twice — once
@@ -2492,7 +2492,7 @@ impl WindowState {
 
 /// Translate a UI-tier [`WindowConfig`] into the platform config the facade
 /// hands to `create_window`. The one place the `viso-ui -> viso-platform` name
-/// gap is bridged (section 3.5): the app and every handler name only the UI
+/// gap is bridged: the app and every handler name only the UI
 /// config; the facade resolves it at the open-drain point. Shared by the launch
 /// path and the deferred `window(...)` path so the translation lives once.
 fn to_platform_config(cfg: &WindowConfig) -> viso_platform::WindowConfig {
@@ -2736,7 +2736,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         let app = self.app.as_mut();
         // Read the native traffic-light box the instant the window exists, so the
         // single build below sees it and a self-drawn caption yields to the OS
-        // overlay instead of drawing its own buttons (section 24 data contract).
+        // overlay instead of drawing its own buttons (chrome data contract).
         let chrome_geom = cx.window_chrome_geom(id);
         // The wrap captures the caption root into this cell during the synchronous
         // build inside `open`; read it back afterward to hold for fullscreen hide.
@@ -3602,7 +3602,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // independent — a linear walk of `self.windows` is the whole fan-out.
         // A single-window app (the common case) walks a one-element vec; the
         // cost scales with the window count, not with any per-window map lookup
-        // (section 45: we iterate all windows, never key one).
+        // (we iterate all windows, never key one).
         #[cfg(any(feature = "hot-reload", feature = "headless"))]
         if phase == FramePhase::CollectInput {
             self.begin_profiled_frame();
@@ -4070,7 +4070,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         ws.dispatch_text_work();
                         passes
                     };
-                    // First-frame double-shape visibility (§61): a wrapped `Fill`
+                    // First-frame double-shape visibility: a wrapped `Fill`
                     // paragraph is shaped once unconstrained then once at its width
                     // on the frame it appears/resizes; this surfaces that one-time
                     // cost, gated so a steady frame (zero passes) pays only the
@@ -4560,7 +4560,7 @@ fn lower_modifiers(m: viso_runtime::Modifiers) -> Modifiers {
 pub mod prelude {
     pub use crate::{Application, run};
     // `cx.services()` on a handler's context: the file dialog, share sheet and
-    // permission prompts an ordinary app reaches for (ADR 0032).
+    // permission prompts an ordinary app reaches for.
     pub use crate::services::ServicesExt;
     pub use viso_ui::context::AppCx;
     pub use viso_ui::dirty::DirtyClass;
@@ -4608,19 +4608,19 @@ pub mod prelude {
         range_slider, rich_text, scroll, search_field, segmented_control, sheet, slider, spinner,
         splitter, stepper, tabs, text_input, time_picker, toast, toggle, view, virtual_list,
     };
-    // The top-level Window control (§68 public application lifecycle): a window
+    // The top-level Window control (public application lifecycle): a window
     // is not a node control — it does not enter the UI tree — so it appears as an
     // application-level handle, not a `Component`. `window(cfg).content(..).open(ev)`
     // opens another OS window mid-session and hands back a `WindowHandle` to close
     // it. `WindowConfig` is the (title, size) shape the author fills in. These are
     // commonly used, stable, and unambiguous, so they belong in the default set.
     pub use crate::{WindowBuilder, WindowChrome, WindowConfig, WindowHandle, window};
-    // The application-menu model (§68 lifecycle): an app returns a `Menu` tree
+    // The application-menu model (application lifecycle): an app returns a `Menu` tree
     // from `Application::menu`, wiring custom items to `MenuCommandId`s it picks
     // and shortcuts through `Accel`; standard entries use `SystemAction`. Menus
     // are an application-level concern like `window`, so they belong here.
     pub use viso_platform::{Accel, Menu, MenuCommandId, SystemAction};
-    // The declarative view-fragment entry point (§21.5): a small local `ui! { … }`
+    // The declarative view-fragment entry point: a small local `ui! { … }`
     // fragment lowers, at Rust compile time, to a static `BuildCx` builder closure.
     pub use crate::ui;
     // 2D geometry, owned by `viso-math`.

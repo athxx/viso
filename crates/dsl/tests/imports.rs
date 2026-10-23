@@ -1,4 +1,4 @@
-//! A one-file compile reads the package's modules its source imports (§22):
+//! A one-file compile reads the package's modules its source imports:
 //! a `fn`, a `const` and a `record` of a sibling module reach the view under
 //! hot reload and from the release package, a module that does not compile
 //! fails the importer at its import, and an import with nowhere to read

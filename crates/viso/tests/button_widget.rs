@@ -1,4 +1,4 @@
-//! Section 71 validation pack for the `Button` control — the first interactive
+//! Validation pack for the `Button` control — the first interactive
 //! widget — driven through the public facade. This mirrors the `icon_widget.rs`
 //! template (golden + a11y + allocation) and adds the two sections an
 //! interactive control needs: a pointer input tape and a keyboard input tape,
@@ -19,7 +19,7 @@
 //! - **a11y snapshot** — a `Button`'s derived semantics node is `Role::Button`
 //!   and its accessible name is the visible caption;
 //! - **allocation profile** — a warmed-up `Button` frame allocates nothing per
-//!   frame (architecture section 47 hot-path contract), same CountingAlloc +
+//!   frame (hot-path contract), same CountingAlloc +
 //!   `frame_stats`/`*_count()` steady-state asserts as `icon_widget.rs`.
 //!
 //! Building through `Button::build` is the point: it proves the widget lowers to

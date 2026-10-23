@@ -1,5 +1,5 @@
 //! The binding table: the compiled edges from a [`StateId`] to the nodes it
-//! invalidates and the dirty classes each edge carries (§18.1).
+//! invalidates and the dirty classes each edge carries.
 //!
 //! This is the static fast path of the reactive model. An edge is registered
 //! once (at build/reconcile time) and read every flush; it turns "state `count`
@@ -40,7 +40,7 @@ use crate::dirty::DirtyClass;
 use crate::node::NodeId;
 use crate::state::{ScopeSlots, StateId, StateStore};
 
-/// The reactive-binding observability counters (AGENTS section 10.3).
+/// The reactive-binding observability counters.
 ///
 /// A compiler-known typed binding must never silently fall back to runtime
 /// dynamic tracking, and the dynamic path must never define the cost of the
@@ -347,7 +347,7 @@ pub struct BindingTable {
     canon: Edges,
     external: Vec<u32>,
     freed: Vec<u32>,
-    /// Reactive-path observability (section 10.3). Bumped at bind time (dynamic
+    /// Reactive-path observability. Bumped at bind time (dynamic
     /// subscriptions / fallback nodes) and at evaluation time (static/dynamic
     /// edges walked). Strippable; never gates correctness.
     counters: ReactiveCounters,
@@ -446,8 +446,8 @@ impl BindingTable {
 
     /// Register a dynamic (runtime) reactive edge. Shares [`Binding`] shape with
     /// the static edges but lives in the separate dynamic region so it never
-    /// perturbs the compiled layout. Used by dynamic scripts and, in a later
-    /// slice, by `Computed` dependency registration.
+    /// perturbs the compiled layout. Used by dynamic scripts and by `Computed`
+    /// dependency registration.
     pub fn bind_dynamic(&mut self, state: StateId, node: NodeId, class: DirtyClass) {
         let idx = state.index() as usize;
         if idx >= self.dynamic_runs.len() {
@@ -485,7 +485,7 @@ impl BindingTable {
     /// the recompiled Binding IR is the new source of truth, so the prior edges
     /// must be voided before the new ones are installed (there is no unbind — a
     /// compiled edge set is rebuilt, not patched). The dynamic region is left
-    /// untouched because it is an explicit runtime escape hatch (section 10.3),
+    /// untouched because it is an explicit runtime escape hatch,
     /// not part of the compiled template; an instance's edges go with the
     /// instance. Cold path (reload only).
     pub fn clear_static(&mut self) {
@@ -570,7 +570,7 @@ impl BindingTable {
         }
     }
 
-    /// The reactive-path counters (section 10.3), for an inspector, a test, or a
+    /// The reactive-path counters, for an inspector, a test, or a
     /// benchmark comparing the static / mixed / dynamic paths.
     #[inline]
     pub fn counters(&self) -> &ReactiveCounters {

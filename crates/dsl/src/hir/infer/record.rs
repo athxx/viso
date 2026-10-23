@@ -487,7 +487,7 @@ impl InferCx<'_> {
     }
 
     /// Types a property value or a record-field initializer against its
-    /// type, with the implicit promotions such a slot allows (§U1.3): a `T`
+    /// type, with the implicit promotions such a slot allows: a `T`
     /// initializes an `Option<T>`, and a length an `EdgeInsets` as `all` of it.
     pub(crate) fn infer_promoted(&mut self, value: &Expr, target: &Ty) -> Ty {
         let range = value.syntax().text_range();

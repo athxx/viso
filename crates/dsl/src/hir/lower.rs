@@ -15,9 +15,8 @@
 //! `&self` trait methods answer from (type, effect class, whether it is a reactive source).
 //! The trait methods are then pure lookups, so a body walk borrows the env immutably.
 //!
-//! The reference framework has no static type/effect/capability layer to port, so this whole
-//! pass is Viso-owned; it consumes the resolver's durable [`SymbolId`] identities and
-//! slot-based locals unchanged.
+//! The pass consumes the resolver's durable [`SymbolId`] identities and slot-based locals
+//! unchanged.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -317,7 +316,7 @@ pub fn lower(
         module_diagnostics.push(start..diagnostics.len());
     }
 
-    // Debug-only HIR-complete assertion (spec node-contract section): no core node of a
+    // Debug-only HIR-complete assertion: no core node of a
     // package that compiled cleanly may keep an undetermined type. A user error recovers
     // with an undetermined type and surfaces as a diagnostic, so only a residue without one
     // is a lowering bug.
@@ -539,7 +538,7 @@ fn lower_module(
             }
         }
         // Module-level `fn`/`action`/`task` bodies, `const` values and record field defaults
-        // are type-checked here; their HIR nodes land with their consumer slice.
+        // are type-checked here.
         match decl {
             Item::Component(c) => {
                 env.focus_component(&c);
@@ -1332,8 +1331,8 @@ fn lower_member_values(
 fn hir_is_complete(components: &[HirComponent], callables: &[HirCallable]) -> bool {
     for component in components {
         for state in &component.schema.states {
-            // A state whose type was annotated may be a nominal `Unknown` (resolved elsewhere
-            // this slice); an omitted-type state must have been determined.
+            // A state whose type was annotated may be a nominal `Unknown` (resolved
+            // elsewhere); an omitted-type state must have been determined.
             if !state.type_was_annotated && state.meta.type_is_undetermined() {
                 return false;
             }
@@ -1527,7 +1526,7 @@ impl CapabilityGraphBuilder {
     }
 }
 
-/// The attribute marking a system `fn` a query a view reads (ADR 0045).
+/// The attribute marking a system `fn` a query a view reads.
 pub(super) const QUERY_ATTRIBUTE: &str = "query";
 
 // --- The concrete module environment ----------------------------------------------------

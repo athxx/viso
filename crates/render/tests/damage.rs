@@ -1,4 +1,4 @@
-//! Damage-driven present (§30.3): a frame redraws only what changed, and what
+//! Damage-driven present: a frame redraws only what changed, and what
 //! it shows is exactly what drawing the whole frame shows.
 //!
 //! Each case presents a scene on a renderer that keeps its surface, changes

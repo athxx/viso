@@ -8,9 +8,9 @@
 //! many writes in one transaction collapse into a single flush and a single
 //! targeted recompute.
 //!
-//! This slice stores a small set of scalar value kinds behind one type-erased
+//! The store holds a small set of scalar value kinds behind one type-erased
 //! [`StateValue`] enum rather than a generic `State<T>`; that is enough to drive
-//! the reactive link end to end. Full generic typing lands later.
+//! the reactive link end to end.
 //!
 //! A [`StateKey`] side map gives each cell a durable, position-independent
 //! identity, so a transactional hot reload can match a state cell in the old
@@ -49,7 +49,7 @@ impl StateId {
 }
 
 /// The outcome of migrating one state cell across a hot reload, so the engine
-/// can account for what was preserved versus reset (architecture section 42.1).
+/// can account for what was preserved versus reset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StateMigration {
     /// The prior value survived unchanged (same key, compatible value).
@@ -120,7 +120,7 @@ pub(crate) struct ScopeSlots {
 /// are O(1) and allocation-free on the steady path (the pending set is a reused
 /// buffer); the flush drains the pending set once per frame.
 ///
-/// The local cells of a template instance (§18.1) come from a block of
+/// The local cells of a template instance come from a block of
 /// consecutive slots, so a binding names its source as an offset from the
 /// block's base; see [`crate::binding`].
 #[derive(Default)]
@@ -138,7 +138,7 @@ pub struct StateStore {
     pending: Vec<StateId>,
     /// Durable identity → current cell, populated only for cells that carry a
     /// [`StateKey`] (compiler-declared state). This is a cold-path map touched
-    /// at build/reload time, never on a frame path (section 45), so a hash map
+    /// at build/reload time, never on a frame path, so a hash map
     /// is fine.
     keys: HashMap<StateKey, StateId>,
     /// The adaptive environment, published through revision cells of this
@@ -437,9 +437,8 @@ impl StateStore {
         self.keys.get(&key).copied().filter(|&id| self.is_live(id))
     }
 
-    /// Migrate one state cell across a hot reload, keyed by durable identity
-    /// (architecture section 42.1). Cold path — runs once per reload, never on a
-    /// frame.
+    /// Migrate one state cell across a hot reload, keyed by durable identity.
+    /// Cold path — runs once per reload, never on a frame.
     ///
     /// `key` identifies the cell in both builds. `new_initial` is the recompiled
     /// initializer. `widen` is the compiler's safe-widening rule: given the prior

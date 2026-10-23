@@ -1,4 +1,4 @@
-//! Release native lowering of System IR (§108.2): a game's systems compiled
+//! Release native lowering of System IR: a game's systems compiled
 //! to Rust and run by the same scheduler.
 //!
 //! The System IR is the verified bytecode of the chunks a module's systems

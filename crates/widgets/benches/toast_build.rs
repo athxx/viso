@@ -1,14 +1,12 @@
 //! Microbench skeleton for the `Toast` control: the cost of one authoring pass
 //! (`Toast::build`), one `layout`, and one `paint_tree` lowering.
 //!
-//! This is the section 71 microbench slot for the sixth Tier 4 (navigation /
-//! overlay) widget — a non-modal, auto-dismissing status overlay pinned to a
-//! surface edge — and copies the `sheet_build.rs` template. It exercises the real
-//! `build` -> `layout` -> `paint_tree` path so a regression is measurable. Unlike
-//! the `Sheet` the toast has no scrim and no slide animation, so this bench
-//! measures the static shown-state scene cost with nothing ticked elsewhere; the
-//! one-shot auto-dismiss timer's per-frame cost lives in `viso-ui`'s `timer_arm`
-//! bench, not here.
+//! `Toast` is a non-modal, auto-dismissing status overlay pinned to a surface edge. The
+//! bench exercises the real `build` -> `layout` -> `paint_tree` path so a regression is
+//! measurable. Unlike the `Sheet` the toast has no scrim and no slide animation, so this
+//! bench measures the static shown-state scene cost with nothing ticked elsewhere; the
+//! one-shot auto-dismiss timer's per-frame cost lives in `viso-ui`'s `timer_arm` bench,
+//! not here.
 //!
 //! `Toast` authors one `Bool` open cell (`cx.state`) and binds it, so it must
 //! build through `BuildCx::with_reactive` (a plain `BuildCx::new` panics on
@@ -22,8 +20,7 @@
 //! dev-dependency and adds no dependency edge.
 //!
 //! Run release (`CARGO_TARGET_DIR=/tmp/rust_tmp cargo bench -p viso-widgets`);
-//! criterion defaults to a release profile. Debug timing is not a perf result
-//! (AGENTS section 36).
+//! criterion defaults to a release profile. Debug timing is not a perf result.
 
 use std::cell::RefCell;
 use std::hint::black_box;
@@ -40,8 +37,7 @@ use viso_widgets::{ToastEdge, ToastHandleSlot, toast};
 const W: f32 = 400.0;
 const H: f32 = 240.0;
 
-/// The fixed panel size — a small centered notification body, matching the
-/// validation pack's content leaf.
+/// The fixed panel size — a small centered notification body.
 const PANEL_W: f32 = 160.0;
 const PANEL_H: f32 = 32.0;
 

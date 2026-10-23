@@ -4,11 +4,11 @@
 //! bytes (no boxing, no string), so a lossless CST node is compact even though
 //! it carries far more distinct kinds than a coarse highlighter would. The
 //! ordering groups trivia, then literals, then identifiers, then keywords, then
-//! punctuation, then the handful of CST node kinds the builder needs now — the
-//! grammar in the next slice appends the rest of the node kinds at the end.
+//! punctuation, then the handful of CST node kinds the tree builder needs, then
+//! the grammar's node kinds.
 //!
-//! Context words (spec section 12.7 — `viso`, `empty`, prelude types like `Bool`, unit
-//! suffixes) are deliberately **not** keywords: they lex as [`SyntaxKind::Ident`]
+//! Context words (`viso`, `empty`, prelude types like `Bool`, unit suffixes) are
+//! deliberately **not** keywords: they lex as [`SyntaxKind::Ident`]
 //! and only gain meaning at parse/resolve time. Keyword case matters: `state` is
 //! a keyword, `State` is an ordinary identifier.
 
@@ -33,26 +33,26 @@ pub enum SyntaxKind {
     ModuleDocComment,
 
     // --- Literals ---
-    /// Decimal / `0x` / `0o` / `0b` integer, optional typed suffix (spec section 15).
+    /// Decimal / `0x` / `0o` / `0b` integer, optional typed suffix.
     IntLiteral,
-    /// Decimal float with a mandatory fraction or exponent (spec section 16).
+    /// Decimal float with a mandatory fraction or exponent.
     FloatLiteral,
-    /// A numeric body immediately followed by a unit suffix or `%` (spec section 19).
+    /// A numeric body immediately followed by a unit suffix or `%`.
     UnitLiteral,
-    /// `"..."` string with escapes (spec section 17).
+    /// `"..."` string with escapes.
     StringLiteral,
-    /// `r"..."` / `r#"..."#` raw string (spec section 17).
+    /// `r"..."` / `r#"..."#` raw string.
     RawStringLiteral,
-    /// `'c'` character literal (spec section 17).
+    /// `'c'` character literal.
     CharLiteral,
-    /// `#RGB` / `#RGBA` / `#RRGGBB` / `#RRGGBBAA` color literal (spec section 18).
+    /// `#RGB` / `#RGBA` / `#RRGGBB` / `#RRGGBBAA` color literal.
     ColorLiteral,
 
     // --- Names ---
     /// An ordinary identifier (also every context word and `true`/`false`/`None`
     /// are *keywords*, but prelude type names, `viso`, `empty` lex here).
     Ident,
-    /// `r#name` raw identifier (spec section 11); decodes to an ordinary symbol name.
+    /// `r#name` raw identifier; decodes to an ordinary symbol name.
     RawIdent,
     /// An identifier naming a package module ahead of `::` in a path
     /// (`model::twice`'s `model`). The lexer never produces one: resolution
@@ -60,7 +60,7 @@ pub enum SyntaxKind {
     /// path's segments are the declaration's name and what follows it.
     ModuleQualifier,
 
-    // --- Declaration keywords (spec section 12.1) ---
+    // --- Declaration keywords ---
     ImportKw,
     ExportKw,
     AsKw,
@@ -94,7 +94,7 @@ pub enum SyntaxKind {
     RequiresKw,
     CapabilityKw,
 
-    // --- Control-flow / behavior keywords (spec section 12.2) ---
+    // --- Control-flow / behavior keywords ---
     LetKw,
     MutKw,
     ReturnKw,
@@ -121,7 +121,7 @@ pub enum SyntaxKind {
     ErrorKw,
     CancelledKw,
 
-    // --- View / resource keywords (spec section 12.3) ---
+    // --- View / resource keywords ---
     NodeKw,
     FillKw,
     BindKw,
@@ -136,7 +136,7 @@ pub enum SyntaxKind {
     ScopeKw,
     EmptyKw,
 
-    // --- Shader keywords (spec section 12.4) ---
+    // --- Shader keywords ---
     ShaderKw,
     VertexKw,
     FragmentKw,
@@ -147,7 +147,7 @@ pub enum SyntaxKind {
     TextureKw,
     SamplerKw,
 
-    // --- Type / literal keywords (spec section 12.5) ---
+    // --- Type / literal keywords ---
     TrueKw,
     FalseKw,
     NoneKw,
@@ -155,7 +155,7 @@ pub enum SyntaxKind {
     SelfTypeKw,
     DynKw,
 
-    // --- Reserved-but-forbidden words (spec section 12.6). Lexed as their own kind so
+    // --- Reserved-but-forbidden words. Lexed as their own kind so
     // the parser can emit a precise "reserved word" diagnostic rather than
     // silently treating them as identifiers. ---
     ChildKw,
@@ -171,7 +171,7 @@ pub enum SyntaxKind {
     YieldKw,
     TryKw,
 
-    // --- Delimiters (spec section 13) ---
+    // --- Delimiters ---
     /// `(`
     LParen,
     /// `)`
@@ -195,7 +195,7 @@ pub enum SyntaxKind {
     /// `@`
     At,
 
-    // --- Operators (spec section 13) ---
+    // --- Operators ---
     /// `=`
     Eq,
     /// `+=`
@@ -284,8 +284,8 @@ pub enum SyntaxKind {
     Error,
 
     // --- CST node kinds (not produced by the lexer; built by the tree builder
-    // / parser). Slice K needs only the root and an error wrapper; the grammar
-    // slice appends its production node kinds after these. ---
+    // / parser). The flat tree needs only the root and an error wrapper; the
+    // grammar's production node kinds follow these. ---
     /// The document root node.
     Root,
     /// A node wrapping tokens the parser could not fit into a valid production;
@@ -300,70 +300,70 @@ pub enum SyntaxKind {
     /// A `{ ... }`-delimited block, children between the braces preserved.
     Block,
 
-    // --- Grammar node kinds (Appendix A). The typed parser produces these; the
+    // --- Grammar node kinds. The typed parser produces these; the
     // coarse `Item` is superseded by the specific declaration nodes below. New
     // kinds are appended at the end so earlier discriminants stay put within a
     // build (the value is never serialized). ---
-    /// The `.vs` file entry: `ImportDecl* TopLevelDecl* EOF` (A.2).
+    /// The `.vs` file entry: `ImportDecl* TopLevelDecl* EOF`.
     CompilationUnit,
-    /// The `ui!` entry: `ViewStructureItem* EOF` (A.2) — a bare view fragment.
+    /// The `ui!` entry: `ViewStructureItem* EOF` — a bare view fragment.
     ViewFragment,
-    /// The `component!` entry: `ImportDecl* ComponentDecl EOF` (A.2).
+    /// The `component!` entry: `ImportDecl* ComponentDecl EOF`.
     ComponentEntry,
 
     // Declarations.
-    /// `import ModulePath ImportSuffix? ";"` (A.2).
+    /// `import ModulePath ImportSuffix? ";"`.
     ImportDecl,
-    /// A `::`-separated module path `IDENT ("::" IDENT)*` (A.2).
+    /// A `::`-separated module path `IDENT ("::" IDENT)*`.
     ModulePath,
-    /// One `{ a, b as c }` selective-import item (A.2).
+    /// One `{ a, b as c }` selective-import item.
     ImportItem,
-    /// The renamed-import tail `"as" IDENT` on an import or item (A.2).
+    /// The renamed-import tail `"as" IDENT` on an import or item.
     RenameClause,
     /// An `export`-prefixed top-level declaration; visibility travels with the
-    /// wrapped declaration (A.2).
+    /// wrapped declaration.
     ExportDecl,
-    /// A leading `@Path(args)` attribute (A.2).
+    /// A leading `@Path(args)` attribute.
     Attribute,
-    /// The parenthesized argument list of an attribute (A.2).
+    /// The parenthesized argument list of an attribute.
     AttributeArgs,
-    /// `record IDENT ... "{" RecordField* "}"` (A.4).
+    /// `record IDENT ... "{" RecordField* "}"`.
     RecordDecl,
-    /// `Attribute* IDENT ":" Type ("=" Expr)? ";"` inside a record (A.4).
+    /// `Attribute* IDENT ":" Type ("=" Expr)? ";"` inside a record.
     RecordField,
-    /// `enum IDENT ... "{" EnumVariant* "}"` (A.4).
+    /// `enum IDENT ... "{" EnumVariant* "}"`.
     EnumDecl,
-    /// `Attribute* IDENT VariantPayload? ";"` inside an enum (A.4).
+    /// `Attribute* IDENT VariantPayload? ";"` inside an enum.
     EnumVariant,
-    /// A tuple or record payload attached to an enum variant (A.4).
+    /// A tuple or record payload attached to an enum variant.
     VariantPayload,
-    /// `const IDENT ":" Type "=" Expr ";"` (A.4).
+    /// `const IDENT ":" Type "=" Expr ";"`.
     ConstDecl,
-    /// `type IDENT GenericParams? "=" Type ";"` (A.4).
+    /// `type IDENT GenericParams? "=" Type ";"`.
     TypeAliasDecl,
-    /// `component IDENT ... "{" ComponentMember* "}"` (A.6).
+    /// `component IDENT ... "{" ComponentMember* "}"`.
     ComponentDecl,
     /// `system IDENT ... "{" ... "}"` — a scheduler system declaration.
     SystemDecl,
-    /// `fn IDENT GenericParams? "(" ParamList ")" ReturnType? ... Block` (A.5).
+    /// `fn IDENT GenericParams? "(" ParamList ")" ReturnType? ... Block`.
     FnDecl,
-    /// `action IDENT "(" ParamList ")" ReturnType? Block` (A.5).
+    /// `action IDENT "(" ParamList ")" ReturnType? Block`.
     ActionDecl,
-    /// `task IDENT "(" ParamList ")" ReturnType? Block` (A.5).
+    /// `task IDENT "(" ParamList ")" ReturnType? Block`.
     TaskDecl,
-    /// `input IDENT ":" Type ("=" Expr)? ";"` (A.6).
+    /// `input IDENT ":" Type ("=" Expr)? ";"`.
     InputDecl,
-    /// `state IDENT (":" Type)? "=" Expr ";"` (A.6) — `=` is initialization.
+    /// `state IDENT (":" Type)? "=" Expr ";"` — `=` is initialization.
     StateDecl,
-    /// `computed IDENT (":" Type)? "=" Expr ";"` (A.6).
+    /// `computed IDENT (":" Type)? "=" Expr ";"`.
     ComputedDecl,
-    /// `event IDENT "(" EventParam* ")" ";"` (A.6).
+    /// `event IDENT "(" EventParam* ")" ";"`.
     EventDecl,
-    /// One `IDENT ":" Type` inside an event parameter list (A.6).
+    /// One `IDENT ":" Type` inside an event parameter list.
     EventParam,
-    /// `slot IDENT ":" Type ("=" SlotDefault)? ";"` (A.6).
+    /// `slot IDENT ":" Type ("=" SlotDefault)? ";"`.
     SlotDecl,
-    /// `effect IDENT EffectDeps? EffectRun? EffectBody` (§37).
+    /// `effect IDENT EffectDeps? EffectRun? EffectBody`.
     EffectDecl,
     /// `when "(" Expr ("," Expr)* ","? ")"` — an effect's dependency list.
     EffectDeps,
@@ -373,7 +373,7 @@ pub enum SyntaxKind {
     EffectBody,
     /// `cleanup Block` — what an effect undoes before it re-runs or ends.
     CleanupClause,
-    /// `resource IDENT ":" Type "{" ResourceItem* "}"` (§38).
+    /// `resource IDENT ":" Type "{" ResourceItem* "}"`.
     ResourceDecl,
     /// `load = Expr ;` — the task call a resource loads by.
     ResourceLoad,
@@ -383,14 +383,13 @@ pub enum SyntaxKind {
     ResourcePolicy,
     /// `scope = Expr ;` — where a resource's cache lives.
     ResourceScope,
-    /// `theme IDENT ThemeBase? "{" ThemeItem* "}"` (§60).
+    /// `theme IDENT ThemeBase? "{" ThemeItem* "}"`.
     ThemeDecl,
     /// `":" TypePath` — the theme a theme starts from.
     ThemeBase,
     /// `IDENT "=" Expr ";"` — one field of a theme.
     ThemeItem,
-    /// `style IDENT for TypePath StyleBases? "{" (PropertyBinding | StyleWhen)* "}"`
-    /// (§59).
+    /// `style IDENT for TypePath StyleBases? "{" (PropertyBinding | StyleWhen)* "}"`.
     StyleDecl,
     /// `":" TypePath ("+" TypePath)*` — the styles a style applies first.
     StyleBases,
@@ -399,93 +398,93 @@ pub enum SyntaxKind {
     StyleWhen,
 
     // Generics / parameters / types.
-    /// A `< ... >` list of generic parameters on a declaration (A.4).
+    /// A `< ... >` list of generic parameters on a declaration.
     GenericParams,
-    /// One generic parameter (a type or const parameter) (A.4).
+    /// One generic parameter (a type or const parameter).
     GenericParam,
-    /// An `implements Trait (+ Trait)*` clause (A.4).
+    /// An `implements Trait (+ Trait)*` clause.
     ImplementsClause,
-    /// A `where` clause (A.4).
+    /// A `where` clause.
     WhereClause,
-    /// A `requires { ... }` capability clause (A.5).
+    /// A `requires { ... }` capability clause.
     CapabilityClause,
-    /// A `"(" Parameter,* ")"` parameter list (A.5).
+    /// A `"(" Parameter,* ")"` parameter list.
     ParamList,
-    /// One `"mut"? IDENT ":" Type ("=" Expr)?` parameter (A.5).
+    /// One `"mut"? IDENT ":" Type ("=" Expr)?` parameter.
     Param,
-    /// A `"->" Type` return type (A.5).
+    /// A `"->" Type` return type.
     ReturnType,
-    /// A `TypePathSegment ("::" TypePathSegment)*` type path (A.3).
+    /// A `TypePathSegment ("::" TypePathSegment)*` type path.
     TypePath,
-    /// One `IDENT GenericArgs?` segment of a type path (A.3).
+    /// One `IDENT GenericArgs?` segment of a type path.
     TypePathSegment,
-    /// A `< GenericArg,* >` list of generic arguments (A.3).
+    /// A `< GenericArg,* >` list of generic arguments.
     GenericArgs,
-    /// A tuple type `"(" Type,* ")"` (A.3).
+    /// A tuple type `"(" Type,* ")"`.
     TupleType,
-    /// An array or slice type `"[" Type (";" Expr)? "]"` (A.3).
+    /// An array or slice type `"[" Type (";" Expr)? "]"`.
     ArrayType,
-    /// A trait-object type `"dyn" TypePath` (A.3).
+    /// A trait-object type `"dyn" TypePath`.
     DynType,
 
     // View.
-    /// `view ViewBlock` (A.8).
+    /// `view ViewBlock`.
     ViewDecl,
-    /// A `"{" ViewStructureItem* "}"` view block (A.8).
+    /// A `"{" ViewStructureItem* "}"` view block.
     ViewBlock,
-    /// `node IDENT ":" ComponentType NodeBody` (A.8).
+    /// `node IDENT ":" ComponentType NodeBody`.
     NamedNode,
-    /// `ComponentType NodeBody` — an anonymous child node (A.8).
+    /// `ComponentType NodeBody` — an anonymous child node.
     AnonymousNode,
-    /// `part IDENT ":" ComponentType NodeBody` (A.8).
+    /// `part IDENT ":" ComponentType NodeBody`.
     PartNode,
-    /// `use TypePath "(" ArgumentList ")" NodeBody? ";"` — a template use (§58).
+    /// `use TypePath "(" ArgumentList ")" NodeBody? ";"` — a template use.
     TemplateUse,
-    /// `override part IDENT "{" PartOverrideItem* "}"` (§57).
+    /// `override part IDENT "{" PartOverrideItem* "}"`.
     PartOverride,
-    /// `replace part IDENT ViewBlock` (§57).
+    /// `replace part IDENT ViewBlock`.
     PartReplace,
-    /// A `"{" NodeMember* "}"` node body (A.8).
+    /// A `"{" NodeMember* "}"` node body.
     NodeBody,
-    /// `PropertyPath ":" Expr ";"` — a property binding (A.8).
+    /// `PropertyPath ":" Expr ";"` — a property binding.
     PropertyBinding,
-    /// An `IDENT ("." IDENT)*` property path (A.8).
+    /// An `IDENT ("." IDENT)*` property path.
     PropertyPath,
-    /// `bind PropertyPath "<=>" AssignablePath ("using" TypePath)? ";"` (A.8).
+    /// `bind PropertyPath "<=>" AssignablePath ("using" TypePath)? ";"`.
     TwoWayBinding,
-    /// `on EventPhase? IDENT ("(" Pattern ")")? Block` (A.8).
+    /// `on EventPhase? IDENT ("(" Pattern ")")? Block`.
     EventHandler,
-    /// `fill IDENT ViewBlock` (A.8).
+    /// `fill IDENT ViewBlock`.
     FillClause,
-    /// `if HeadExpr ("preserve" STRING)? ViewBlock ("else" ...)?` (A.8).
+    /// `if HeadExpr ("preserve" STRING)? ViewBlock ("else" ...)?`.
     ViewIf,
-    /// `for Pattern "in" HeadExpr "key" HeadExpr ViewBlock` (A.8).
+    /// `for Pattern "in" HeadExpr "key" HeadExpr ViewBlock`.
     ViewFor,
-    /// `match HeadExpr "{" ViewMatchArm,* "}"` (A.8).
+    /// `match HeadExpr "{" ViewMatchArm,* "}"`.
     ViewMatch,
-    /// `Pattern ("if" Expr)? "=>" ViewBlock` inside a view match (A.8).
+    /// `Pattern ("if" Expr)? "=>" ViewBlock` inside a view match.
     ViewMatchArm,
 
     // Statements.
-    /// `let "mut"? Pattern (":" Type)? "=" Expr ";"` (A.11).
+    /// `let "mut"? Pattern (":" Type)? "=" Expr ";"`.
     LetStmt,
-    /// `AssignablePath AssignmentOperator Expr ";"` (A.11).
+    /// `AssignablePath AssignmentOperator Expr ";"`.
     AssignStmt,
-    /// An `AssignablePath` (the left side of an assignment) (A.11).
+    /// An `AssignablePath` (the left side of an assignment).
     AssignablePath,
-    /// `Expr ";"` — an expression statement (A.11).
+    /// `Expr ";"` — an expression statement.
     ExprStmt,
-    /// `return Expr? ";"` (A.11).
+    /// `return Expr? ";"`.
     ReturnStmt,
-    /// `break Expr? ";"` (A.11).
+    /// `break Expr? ";"`.
     BreakStmt,
-    /// `continue ";"` (A.11).
+    /// `continue ";"`.
     ContinueStmt,
-    /// `emit IDENT "(" ArgumentList ")" ";"` (A.11).
+    /// `emit IDENT "(" ArgumentList ")" ";"`.
     EmitStmt,
-    /// `transaction Block` (A.11).
+    /// `transaction Block`.
     TransactionStmt,
-    /// `start CallExpr StartSlot? StartHandlers? ";"` (§39).
+    /// `start CallExpr StartSlot? StartHandlers? ";"`.
     StartStmt,
     /// `as IDENT` — the task slot a `start` runs in.
     StartSlot,
@@ -499,104 +498,104 @@ pub enum SyntaxKind {
     StartError,
     /// `cancelled Block`.
     StartCancelled,
-    /// `while HeadExpr Block` (A.11).
+    /// `while HeadExpr Block`.
     WhileStmt,
-    /// `for Pattern "in" HeadExpr Block` — a behavior loop (no key) (A.11).
+    /// `for Pattern "in" HeadExpr Block` — a behavior loop (no key).
     ForStmt,
-    /// `loop Block` (A.11).
+    /// `loop Block`.
     LoopStmt,
-    /// `if HeadExpr Block ("else" (IfStmt | Block))?` — statement form (A.11).
+    /// `if HeadExpr Block ("else" (IfStmt | Block))?` — statement form.
     IfStmt,
-    /// A `match` used in statement position (A.11).
+    /// A `match` used in statement position.
     MatchStmt,
 
     // Expressions.
-    /// A literal expression (int/float/string/color/bool/None/…) (A.12).
+    /// A literal expression (int/float/string/color/bool/None/…).
     LiteralExpr,
-    /// A path expression `Path` / `self` / `Self` (A.12).
+    /// A path expression `Path` / `self` / `Self`.
     PathExpr,
-    /// A binary operator expression `lhs op rhs` (A.12).
+    /// A binary operator expression `lhs op rhs`.
     BinaryExpr,
-    /// A prefix unary expression `op expr` (A.12).
+    /// A prefix unary expression `op expr`.
     UnaryExpr,
-    /// A `expr "as" Type` cast (A.12).
+    /// A `expr "as" Type` cast.
     CastExpr,
-    /// A range expression `lo (".." | "..=") hi` (A.12).
+    /// A range expression `lo (".." | "..=") hi`.
     RangeExpr,
-    /// A call `callee GenericCallArgs? "(" ArgumentList ")"` (A.12).
+    /// A call `callee GenericCallArgs? "(" ArgumentList ")"`.
     CallExpr,
-    /// An index `expr "[" Expr "]"` (A.12).
+    /// An index `expr "[" Expr "]"`.
     IndexExpr,
-    /// A field access `expr "." IDENT` (A.12).
+    /// A field access `expr "." IDENT`.
     FieldExpr,
-    /// An optional field access `expr "?." IDENT` (A.12).
+    /// An optional field access `expr "?." IDENT`.
     OptionalFieldExpr,
-    /// A try `expr "?"` (A.12).
+    /// A try `expr "?"`.
     TryExpr,
-    /// A turbofish `"::" GenericArgs` on a call (A.12).
+    /// A turbofish `"::" GenericArgs` on a call.
     GenericCallArgs,
-    /// A `"(" Expr,* ")"` — parenthesized expr or tuple (A.12).
+    /// A `"(" Expr,* ")"` — parenthesized expr or tuple.
     ParenExpr,
-    /// A tuple expression `"(" Expr "," ... ")"` (A.12).
+    /// A tuple expression `"(" Expr "," ... ")"`.
     TupleExpr,
-    /// A list expression `"[" Expr,* "]"` (A.12).
+    /// A list expression `"[" Expr,* "]"`.
     ListExpr,
-    /// A record expression `Path GenericCallArgs? "{" RecordInitializer,* "}"` (A.12).
+    /// A record expression `Path GenericCallArgs? "{" RecordInitializer,* "}"`.
     RecordExpr,
-    /// One `IDENT (":" Expr)?` or `".." Expr` record initializer (A.12).
+    /// One `IDENT (":" Expr)?` or `".." Expr` record initializer.
     RecordExprField,
-    /// An `if ... else ...` expression (both arms required) (A.12).
+    /// An `if ... else ...` expression (both arms required).
     IfExpr,
-    /// A `match` expression (A.12).
+    /// A `match` expression.
     MatchExpr,
-    /// `Pattern ("if" Expr)? "=>" (Expr | Block)` in a match expression (A.12).
+    /// `Pattern ("if" Expr)? "=>" (Expr | Block)` in a match expression.
     MatchArm,
-    /// A closure `"move"? (ClosureParams | "||") ... (Expr | Block)` (A.12).
+    /// A closure `"move"? (ClosureParams | "||") ... (Expr | Block)`.
     ClosureExpr,
-    /// A `"|" ClosureParameter,* "|"` closure parameter list (A.12).
+    /// A `"|" ClosureParameter,* "|"` closure parameter list.
     ClosureParams,
-    /// One `"mut"? Pattern (":" Type)?` closure parameter (A.12).
+    /// One `"mut"? Pattern (":" Type)?` closure parameter.
     ClosureParam,
-    /// An `IDENT ":" Expr` or positional `Expr` call argument (A.12).
+    /// An `IDENT ":" Expr` or positional `Expr` call argument.
     Argument,
-    /// The argument list inside a call `"(" Argument,* ")"` (A.12).
+    /// The argument list inside a call `"(" Argument,* ")"`.
     ArgumentList,
 
     // Patterns.
-    /// A top-level pattern; wraps the specific pattern shapes below (A.13).
+    /// A top-level pattern; wraps the specific pattern shapes below.
     Pattern,
-    /// An `a | b | c` or-pattern (A.13).
+    /// An `a | b | c` or-pattern.
     OrPattern,
-    /// An `IDENT "@" Pattern` binding pattern (A.13).
+    /// An `IDENT "@" Pattern` binding pattern.
     BindingPattern,
-    /// A `lo (".." | "..=") hi` range pattern (A.13).
+    /// A `lo (".." | "..=") hi` range pattern.
     RangePattern,
-    /// The wildcard `_` pattern (A.13).
+    /// The wildcard `_` pattern.
     WildcardPattern,
-    /// A literal pattern (A.13).
+    /// A literal pattern.
     LiteralPattern,
-    /// An `"mut"? IDENT` identifier (binding) pattern (A.13).
+    /// An `"mut"? IDENT` identifier (binding) pattern.
     IdentPattern,
-    /// A `"(" Pattern,* ")"` tuple pattern (A.13).
+    /// A `"(" Pattern,* ")"` tuple pattern.
     TuplePattern,
-    /// A `"[" ListPatternItem,* "]"` list pattern (A.13).
+    /// A `"[" ListPatternItem,* "]"` list pattern.
     ListPattern,
-    /// A `TypePath (…)`/`{…}` constructor pattern (A.13).
+    /// A `TypePath (…)`/`{…}` constructor pattern.
     ConstructorPattern,
-    /// A `IDENT "::" IDENT (…)` qualified-variant pattern (A.13).
+    /// A `IDENT "::" IDENT (…)` qualified-variant pattern.
     QualifiedVariantPattern,
-    /// One `IDENT (":" Pattern)?` / `".."` field in a record constructor pattern (A.13).
+    /// One `IDENT (":" Pattern)?` / `".."` field in a record constructor pattern.
     RecordPatternField,
-    /// A `".." IDENT?` rest item inside a list pattern (A.13).
+    /// A `".." IDENT?` rest item inside a list pattern.
     RestPattern,
-    /// A `"(" Pattern ")"` grouped pattern (A.13).
+    /// A `"(" Pattern ")"` grouped pattern.
     ParenPattern,
-    /// A `Block` in expression position (A.12 `PrimaryExpression`).
+    /// A `Block` in expression position (a `PrimaryExpression`).
     BlockExpr,
-    /// A `"const" ConstExpression` generic argument (§26).
+    /// A `"const" ConstExpression` generic argument.
     ConstGenericArg,
 
-    // Shader Profile (§97).
+    // Shader Profile.
     /// `shader IDENT GenericParams? { ShaderMember* }`.
     ShaderDecl,
     /// `uniform IDENT : Type ;` in a shader.
@@ -616,19 +615,18 @@ pub enum SyntaxKind {
 
     /// `native (fn|action|task) IDENT GenericParams? ( ParamList ) ReturnType?
     /// WhereClause? CapabilityClause? ;` or `native type IDENT GenericParams?
-    /// (: TraitBounds)? WhereClause? ;` (§47).
+    /// (: TraitBounds)? WhereClause? ;`.
     NativeDecl,
-    /// `trait IDENT GenericParams? (: TraitBounds)? WhereClause? { TraitMember* }`
-    /// (§30).
+    /// `trait IDENT GenericParams? (: TraitBounds)? WhereClause? { TraitMember* }`.
     TraitDecl,
-    /// `impl GenericParams? Type (for Type)? WhereClause? { ImplMember* }` (§31).
+    /// `impl GenericParams? Type (for Type)? WhereClause? { ImplMember* }`.
     ImplDecl,
     /// `type IDENT (: TraitBounds)? ;` in a trait, `type IDENT = Type ;` in an
-    /// impl (§30, §31).
+    /// impl.
     AssocTypeDecl,
 
     /// `template IDENT GenericParams? ParamList WhereClause? "{" TemplateMember+
-    /// "}"` (§58).
+    /// "}"`.
     TemplateDecl,
 
     /// The component-member fragment entry: `ComponentMember* EOF` — members
@@ -997,8 +995,8 @@ impl SyntaxKind {
         )
     }
 
-    /// Whether this kind is a keyword kind, strict or contextual (spec section
-    /// 12). Context words (section 12.7) are `Ident`, so they return `false`.
+    /// Whether this kind is a keyword kind, strict or contextual. Context words
+    /// are `Ident`, so they return `false`.
     #[inline]
     pub fn is_keyword(self) -> bool {
         // Keywords occupy one contiguous run in the enum: from the first
@@ -1019,7 +1017,7 @@ impl SyntaxKind {
     }
 
     /// Whether this kind is one of the declaration keywords the skeleton parser
-    /// treats as an item boundary and a recovery sync point (spec section 12.1).
+    /// treats as an item boundary and a recovery sync point.
     #[inline]
     pub fn is_item_start(self) -> bool {
         matches!(
@@ -1054,9 +1052,9 @@ impl SyntaxKind {
         )
     }
 
-    /// Whether this kind is a contextual keyword (spec section 12.3). The lexer
+    /// Whether this kind is a contextual keyword. The lexer
     /// never produces one: the word lexes as [`Self::Ident`], and the parser
-    /// retags it only where section 12.4 recognizes it.
+    /// retags it only where its keyword position recognizes it.
     #[inline]
     pub fn is_contextual_keyword(self) -> bool {
         matches!(
@@ -1112,15 +1110,15 @@ impl SyntaxKind {
         )
     }
 
-    /// Whether this kind is a strict keyword (spec sections 12.1–12.2): a word
+    /// Whether this kind is a strict keyword: a word
     /// that can never be a binding or declaration name.
     #[inline]
     pub fn is_strict_keyword(self) -> bool {
         self.is_keyword() && !self.is_contextual_keyword()
     }
 
-    /// The contextual keyword `text` spells, if any (spec section 12.3). Used by
-    /// the parser at the section 12.4 recognition positions.
+    /// The contextual keyword `text` spells, if any. Used by
+    /// the parser at the contextual-keyword recognition positions.
     #[inline]
     pub fn contextual_keyword(text: &str) -> Option<SyntaxKind> {
         Some(match text {
@@ -1178,7 +1176,7 @@ impl SyntaxKind {
 
     /// Classify an identifier's text as its strict keyword kind, or
     /// [`Self::Ident`] if it is not one; contextual keywords lex as identifiers. A closed `match` on the byte string — no map, no
-    /// allocation — because the keyword set is small and fixed (spec section 12).
+    /// allocation — because the keyword set is small and fixed.
     ///
     /// `text` must be the exact source spelling of a normal identifier (not a
     /// raw identifier: `r#state` is always [`Self::RawIdent`], never a keyword).

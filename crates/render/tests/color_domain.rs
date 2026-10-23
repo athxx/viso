@@ -1,4 +1,4 @@
-//! Color-domain contract: what format an intermediate target gets (§19).
+//! Color-domain contract: what format an intermediate target gets.
 //!
 //! A frame's offscreen targets — the backdrop capture, the offscreen layer, the
 //! blur scratch, the color scratch — are not free-floating buffers. They sit
@@ -103,7 +103,7 @@ fn an_sdr_surface_keeps_its_intermediates_at_eight_bits() {
 /// A wide-gamut target is a different *space*, not a different precision: P3
 /// primaries at 8 bits are the same format as sRGB at 8 bits. So it is classified
 /// apart from SDR while keeping the same narrow intermediates — the distinction
-/// §19 asks for is three domains, not three formats.
+/// that matters is three domains, not three formats.
 #[test]
 fn a_wide_gamut_surface_is_wider_in_space_not_in_range() {
     let (_gpu, _s, r) = renderer(TextureFormat::Bgra8Unorm, ColorSpace::DisplayP3);
@@ -133,7 +133,7 @@ fn an_hdr_surface_keeps_its_intermediates_extended() {
     assert_eq!(r.intermediate_format(), TextureFormat::Rgba16Float);
 }
 
-/// The three domains are exactly the three §19 names, and each extended-linear
+/// The three domains are exactly the three named ones, and each extended-linear
 /// space collapses onto the HDR one — the domain is what a format is planned
 /// against, so several spaces sharing one is the point, not a loss.
 #[test]

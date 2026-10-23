@@ -131,9 +131,7 @@ fn kept(value: f64, unit: Unit) -> f64 {
 /// every subject.
 pub(super) fn markdown(meta: &Meta, rows: &[Row]) -> String {
     let mut out = String::from("# Footprint baseline\n\n");
-    out.push_str(
-        "Written by `cargo xtask footprint --record`; the method is Architecture §50A.5.\n\n",
-    );
+    out.push_str("Written by `cargo xtask footprint --record`.\n\n");
     out.push_str(&format!("- Date: {}\n", meta.date));
     out.push_str(&format!("- Machine: {}\n", meta.machine));
     out.push_str(&format!("- Toolchain: {}\n", meta.rustc));

@@ -1,14 +1,14 @@
-//! Effect Planner contract (§3102, §3120, §3145, §3202).
+//! Effect Planner contract.
 //!
 //! One sentence governs this file: *offscreen is an expensive mechanism, not a
-//! convenient default* (§3145). Four properties make that sentence enforceable
+//! convenient default*. Four properties make that sentence enforceable
 //! rather than aspirational:
 //!
 //! 1. **Local and nonlocal are one threshold, not two lists.** An effect that is
 //!    a pure function of the fragment it shades fuses into the draw that was
-//!    going to run anyway (§3102); only an effect needing neighbor samples, the
-//!    previous framebuffer, or group isolation may even *consider* a target
-//!    (§3120). The frontier is a single rung on the [`EffectCost`] ladder, so the
+//!    going to run anyway; only an effect needing neighbor samples, the
+//!    previous framebuffer, or group isolation may even *consider* a target.
+//!    The frontier is a single rung on the [`EffectCost`] ladder, so the
 //!    two facts cannot drift apart.
 //! 2. **A layer states its reason and the planner tries to take it away.** Every
 //!    potential layer raises a [`LayerReason`]; the planner walks the elimination
@@ -20,7 +20,7 @@
 //!    when no two children overlap. A headless readback compares the folded
 //!    group against the same coverage authored directly, and the overlapping /
 //!    nested / non-foldable cases assert the planner refuses to fold.
-//! 4. **A backdrop's damage is scoped to its ROI (§3202).** A frosted panel does
+//! 4. **A backdrop's damage is scoped to its ROI.** A frosted panel does
 //!    not re-capture because *something* changed; it re-captures because
 //!    something changed *behind it*. Two panels over separate content must be
 //!    independently dirty.
@@ -140,13 +140,13 @@ fn pixels(primitives: &[Primitive]) -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
-// 1. Local vs nonlocal is one threshold (§3102 / §3120)
+// 1. Local vs nonlocal is one threshold
 // ---------------------------------------------------------------------------
 
-/// The §3102 effects — opacity, tint, a color matrix, brightness/contrast/
+/// The local effects — opacity, tint, a color matrix, brightness/contrast/
 /// saturation, a simple gradient, a simple mask, a blend the fixed-function
 /// stage expresses — all land below the frontier and therefore fuse into the
-/// draw shader; the §3120 effects all land at or above it. "May consider an
+/// draw shader; the nonlocal effects all land at or above it. "May consider an
 /// offscreen target" and "is nonlocal" are the same predicate, not two.
 #[test]
 fn locality_is_the_offscreen_frontier() {
@@ -155,11 +155,8 @@ fn locality_is_the_offscreen_frontier() {
         EffectCost::Analytic,
         EffectCost::NeedsMask,
     ] {
-        assert!(local.is_local(), "{local:?} shades in place (§3102)");
-        assert!(
-            !local.needs_offscreen(),
-            "{local:?} must not buy a target (§3102)"
-        );
+        assert!(local.is_local(), "{local:?} shades in place");
+        assert!(!local.needs_offscreen(), "{local:?} must not buy a target");
     }
     for nonlocal in [
         EffectCost::NeedsOffscreen,
@@ -331,7 +328,7 @@ fn overlapping_children_keep_the_layer() {
 /// A nested group is where "do the children overlap?" stops being a cheap
 /// question: the inner group's own compositing sits between the outer fade and
 /// the leaves. Rather than answer it expensively or wrongly, the scan reports
-/// unknown overlap and the planner keeps the layer (§14.5, "when unsure, keep
+/// unknown overlap and the planner keeps the layer ("when unsure, keep
 /// correctness").
 #[test]
 fn a_nested_group_keeps_the_outer_layer() {
@@ -474,7 +471,7 @@ fn an_advanced_blend_survives_as_a_destination_read() {
     );
 }
 
-/// Adjacent color effects are §3102 local: the whole chain collapses into one
+/// Adjacent color effects are local: the whole chain collapses into one
 /// fused op inside the draw shader. The planner records that as a pass-saving
 /// elimination — it does not remove the reason the layer exists, it removes the
 /// passes the chain would otherwise have cost.
@@ -541,7 +538,7 @@ fn a_shared_capture_retires_the_backdrop_reason() {
 }
 
 // ---------------------------------------------------------------------------
-// 4. Effect damage is scoped to the ROI (§3202)
+// 4. Effect damage is scoped to the ROI
 // ---------------------------------------------------------------------------
 
 /// Two frosted panels, each over its own content, far enough apart that they
@@ -642,7 +639,7 @@ fn a_static_frame_dirties_no_backdrop() {
     }
 }
 
-/// A scene with no backdrop reports no dependencies at all — the §3202 bookkeeping
+/// A scene with no backdrop reports no dependencies at all — the backdrop-dependency bookkeeping
 /// is not a per-frame cost every scene pays.
 #[test]
 fn no_backdrop_means_no_dependency() {

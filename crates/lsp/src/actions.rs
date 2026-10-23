@@ -1,4 +1,4 @@
-//! Code actions and structured edits (§143) over the protocol: the quick fixes
+//! Code actions and structured edits over the protocol: the quick fixes
 //! the compiler's diagnostics carry, the structured edits a cursor position
 //! fully determines, and the `viso/structuredEdit` request an agent sends a
 //! [`StructuredEdit`] through as JSON.

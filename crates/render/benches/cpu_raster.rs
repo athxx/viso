@@ -1,4 +1,4 @@
-//! The CPU raster as an embedded panel's renderer (§30.4): an 800×480 UI
+//! The CPU raster as an embedded panel's renderer: an 800×480 UI
 //! drawn whole, and redrawn where 5% of it changed, on an XRGB8888 panel
 //! taking linear and sRGB-encoded bytes and on an RGB565 one, on one thread
 //! and on four.

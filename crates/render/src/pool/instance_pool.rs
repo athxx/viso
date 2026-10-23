@@ -1,10 +1,10 @@
-//! A persistent, grow-only device buffer with per-slot dirty upload (§9.1).
+//! A persistent, grow-only device buffer with per-slot dirty upload.
 //!
 //! One pool backs one instance family that shares a pipeline and stride (the
 //! quad / image / glyph instance streams, and the mesh vertex / index streams).
 //! The buffer is created once and lives for the renderer's lifetime; it grows
 //! only when a frame's instance count first exceeds every previous frame's, and
-//! growth retires the old buffer through the F1 deferred-destruction path rather
+//! growth retires the old buffer through the backend's deferred-destruction path rather
 //! than leaking it.
 //!
 //! # Why a shadow diff
@@ -21,9 +21,9 @@
 //! - a one-slot change issues **one** minimal upload of that slot's bytes,
 //! - a full re-fill (first frame, or after a grow) issues one upload of the lot.
 //!
-//! This is the §9.1 contract: a local paint change costs a local upload, never
+//! This is the pool's contract: a local paint change costs a local upload, never
 //! a full-scene re-upload. The changed slots are handed to the dirty-range
-//! [`coalescer`](super::coalescer) (§9.3), which merges runs separated by a
+//! [`coalescer`](super::coalescer), which merges runs separated by a
 //! short gap of clean slots into one upload range — trading a few redundantly
 //! shipped clean slots for far fewer `write_buffer` calls — and splits on a
 //! wide gap. Each coalesced range is emitted as one contiguous upload.
@@ -77,7 +77,7 @@ pub struct InstancePool<T> {
     /// the last [`sync`](Self::sync): the summed size of the slots uploaded this
     /// frame (`changed slots × stride`). Zero on an unchanged frame. A plain
     /// counter read by [`last_upload_bytes`](Self::last_upload_bytes) into
-    /// `FrameStats::gpu_upload_bytes` (§61); it never allocates.
+    /// `FrameStats::gpu_upload_bytes`; it never allocates.
     last_upload_bytes: usize,
 }
 
@@ -141,7 +141,7 @@ impl<T: Copy + 'static> InstancePool<T> {
     /// Bytes uploaded by the most recent [`sync`](Self::sync): the changed slots
     /// (or the whole array on a grow) times the element stride. Zero after an
     /// unchanged frame. The renderer sums this across its pools into
-    /// `FrameStats::gpu_upload_bytes` (§61).
+    /// `FrameStats::gpu_upload_bytes`.
     pub fn last_upload_bytes(&self) -> usize {
         self.last_upload_bytes
     }

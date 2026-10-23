@@ -1,4 +1,4 @@
-//! `StableKey` (§80.1): which types may identify a resource load or a keyed
+//! `StableKey`: which types may identify a resource load or a keyed
 //! view row. Integers, `Bool`, `Char`, `String` and `Unit` are stable keys, and
 //! so is a tuple, record, `Option` or enum all of whose members are; a float,
 //! a list, a map, a handle or a function is not.

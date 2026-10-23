@@ -1,4 +1,4 @@
-//! The retained scene (§8): the renderer's internal, frame-persistent model of
+//! The retained scene: the renderer's internal, frame-persistent model of
 //! what is on screen, built *under* the frozen immediate-mode `upload`/`submit`
 //! API. The renderer still ingests the same flat `&[Primitive]` stream every
 //! frame; the scene is where that stream is retained so a later stage can diff
@@ -22,20 +22,20 @@
 //! to the scene through one [`ingest`] call per kind ([`Scene::ingest_quad`], …),
 //! which diffs it against the retained store entry at its positional slot, mutates
 //! the store only where a field moved, bumps only the revision planes that change
-//! touched (§8.4), and records the store slot + lowering context (`clip`,
+//! touched, and records the store slot + lowering context (`clip`,
 //! `target`, `origin`) in paint order. The GPU scratch and draw segments are then
 //! derived from the retained scene by replaying the paint-order record — the walk
-//! no longer produces them directly (§8).
+//! no longer produces them directly.
 //!
 //! The stores **persist across frames**: [`Scene::begin_frame`] resets each
 //! store's cursor to zero (it does not clear entries), the ingest walk re-visits
 //! the slots in paint order, and [`Scene::finish_frame`] trims any tail the walk
 //! did not reach (the scene shrank). An unchanged scene therefore mutates no
 //! store and bumps no plane — the "0 primitive reconstruction" guarantee under a
-//! whole-tree re-emit (§8.4).
+//! whole-tree re-emit.
 //!
 //! The paint-order record is the bridge: it captures paint order (a correctness
-//! contract, §8.6) and the per-emit context the stores deliberately do *not*
+//! contract) and the per-emit context the stores deliberately do *not*
 //! bake into their entries, so one geometry can be re-lowered under different
 //! layer origins across frames.
 
@@ -108,13 +108,13 @@ pub struct PaintEntry {
 }
 
 /// The retained scene: the per-kind stores, the revision planes, and the
-/// paint-order record tying them together (§8).
+/// paint-order record tying them together.
 ///
 /// Owned by the [`Renderer`](crate::renderer::Renderer) and diffed each frame
 /// against the ingested primitive stream. Storage persists across frames;
 /// [`Scene::begin_frame`] only resets the per-store cursors, so a steady-state
 /// scene of the same shape mutates nothing, reuses last frame's allocations, and
-/// keeps the counting-allocator bench flat (§28).
+/// keeps the counting-allocator bench flat.
 #[derive(Debug, Default)]
 pub struct Scene {
     /// Solid/bordered quads, in paint order.
@@ -143,7 +143,7 @@ pub struct Scene {
     pub meshes: MeshStore,
     /// Effective clip rects (identity-separated).
     pub clips: ClipStore,
-    /// Resolved clip chains (§14.2): nested clips pre-intersected once into a
+    /// Resolved clip chains: nested clips pre-intersected once into a
     /// descriptor keyed so an unchanged chain skips re-resolution.
     pub clip_chains: ClipChainStore,
     /// Transforms (identity-separated; a pure move bumps this plane alone).
@@ -156,7 +156,7 @@ pub struct Scene {
     pub paint_order: Vec<PaintEntry>,
     /// One content stamp per paint-order slot: the value of
     /// [`Revisions::content`] at the last frame in which *that slot's* primitive
-    /// changed (§3202).
+    /// changed.
     ///
     /// Unlike `paint_order`, this vector is **retained across frames** — it is the
     /// history a ROI-scoped consumer diffs against. A backdrop capture's
@@ -173,14 +173,14 @@ pub struct Scene {
     /// One damage key per paint-order slot, retained across frames like
     /// `content_stamps`: the entry it was computed from, its key, and its world
     /// extent where the bounds lack one. Recomputed only when the slot's entry
-    /// changed (§30.3).
+    /// changed.
     keys: Vec<(StoreRef, u64, Option<Rect>)>,
     /// Whether the primitive currently being recorded had any dirty plane. `None`
     /// means no plane report arrived for it — the case for a composite the
     /// renderer synthesizes, which is conservatively treated as dirty because its
     /// pixels come from a pass rather than from a diffed store.
     pending_dirty: Option<bool>,
-    /// Per-frame ingest tallies (§61), reset at [`Scene::begin_frame`].
+    /// Per-frame ingest tallies, reset at [`Scene::begin_frame`].
     pub ingest_stats: IngestStats,
     /// The stream index of the primitive being ingested, which every entry it
     /// records carries.
@@ -294,7 +294,7 @@ impl Scene {
             .map_or((0, None), |&(_, key, extent)| (key, extent))
     }
 
-    /// The content stamp of paint-order slot `index` (§3202): the
+    /// The content stamp of paint-order slot `index`: the
     /// [`Revisions::content`] value as of the last frame that slot's primitive
     /// changed. Out-of-range slots report `0`, which compares as "older than
     /// anything", so a consumer never mistakes a missing slot for fresh content.

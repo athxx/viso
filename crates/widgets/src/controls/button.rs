@@ -3,15 +3,15 @@
 //! A `Button` is a focusable box that fires a single `on_click` callback on
 //! either a primary-pointer click (press then release) or a keyboard activation
 //! (Enter/Space while focused). Pointer and keyboard activation are the *same*
-//! action: an interactive control must have a keyboard equivalent (AGENTS
-//! section 15), so the callback is shared between both handlers rather than
+//! action: an interactive control must have a keyboard equivalent, so the
+//! callback is shared between both handlers rather than
 //! duplicated.
 //!
 //! It maps to one interactive `viso-ui` node: a background leaf carrying a
 //! visible box, a composed [`Label`](crate::Label) child for the caption, a
 //! pointer handler, a key handler, a `focusable` flag, and a reactive `pressed`
 //! cell bound to `PAINT` so the pressed-state fill repaints the node alone (a
-//! targeted invalidation — no rebuild, architecture section 47). Its accessible
+//! targeted invalidation — no rebuild). Its accessible
 //! role is [`Role::Button`] with the caption as its name.
 //!
 //! An `&` in the caption marks its access key: `button("&Save")` shows
@@ -257,8 +257,8 @@ impl Component for Button {
         // Pointer activation and hover feedback. Primary press arms `pressed`;
         // primary release over the button fires `on_click` and disarms. `Enter`
         // (synthesized per-node by the router on pointer-over) sets `hovered`;
-        // `Leave` means the pointer left this node (ADR 0022 merged the old
-        // window-level leave into per-node leave), so it clears both `hovered`
+        // `Leave` means the pointer left this node (leave is per-node, not
+        // window-level), so it clears both `hovered`
         // and any armed `pressed`. One press-then-release is one click.
         let pointer_cb = self.on_click.clone();
         cx.on_pointer(root, move |ev| {
@@ -302,7 +302,7 @@ impl Component for Button {
         });
 
         // Explicit Button role with the caption as its accessible name, so the
-        // name matches the visible label (AGENTS section 15).
+        // name matches the visible label.
         cx.semantics(root, Semantics::role(Role::Button).with_label(caption.text));
     }
 }
@@ -635,7 +635,7 @@ mod tests {
 
     /// Hover is a paint-only visual: entering and leaving the button never
     /// changes its accessible semantics — the snapshot is byte-identical across
-    /// resting, hover, and pressed (ADR 0022: hover is not a semantic state).
+    /// resting, hover, and pressed (hover is not a semantic state).
     #[test]
     fn hover_and_press_do_not_change_semantics() {
         let mut rx = Reactive::new();

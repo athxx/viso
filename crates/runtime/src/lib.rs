@@ -8,8 +8,7 @@
 //! This crate defines the frame-phase and scheduling *contract* only. Widget
 //! implementation, layout, and paint live above it and are not visible here.
 //!
-//! Phase 1 status: the frame scheduler and event pump are live. The
-//! [`Scheduler`] implements [`viso_platform::AppHandler`] and drives blank
+//! The [`Scheduler`] implements [`viso_platform::AppHandler`] and drives
 //! 12-phase frames against a real platform window, staying UI-agnostic via the
 //! [`FrameDriver`] inversion.
 

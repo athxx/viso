@@ -1,6 +1,6 @@
-//! The backend's copy of a published semantics tree (ADR 0030, ADR 0042), for
-//! the bridges Viso builds itself out of native objects (iOS, Web). They fold
-//! each [`SemanticsDelta`] in directly.
+//! The backend's copy of a published semantics tree, for the bridges Viso
+//! builds itself out of native objects (iOS, Web). They fold each
+//! [`SemanticsDelta`] in directly.
 
 use std::collections::{HashMap, HashSet};
 

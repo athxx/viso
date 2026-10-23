@@ -2,19 +2,18 @@
 //!
 //! [`build_tree`] walks the owned [`DockNode`] tree (see [`super::tree`]) once and
 //! authors flex containers, seams, tab strips, and panel content into the
-//! [`BuildCx`], recording the built node ids the later drag/reconcile steps need.
+//! [`BuildCx`], recording the built node ids the drag/reconcile steps need.
 //! This is the tree→node half of the "tree-as-warm-state" model: the tree is the
 //! source of truth, the node arena is its rendered projection, and a structural
-//! edit re-authors only the changed subtree (a later section) rather than
-//! rebuilding the arena each frame.
+//! edit touches only the changed subtree rather than rebuilding the arena each
+//! frame.
 //!
 //! A panel's content builder runs exactly once, the first time its panel is
-//! authored, and its built node id is recorded in the keyed `panels` map so a
-//! later section can remount the *existing* node when the panel moves between
+//! authored, and its built node id is recorded in the keyed `panels` map so the
+//! reconcile step can remount the *existing* node when the panel moves between
 //! docked areas — the panel keeps its identity, its subtree, and its reactive
-//! cells across a redock (AGENTS section 8.1: no rebuild for a move). Section 1
-//! authors a static arrangement with no drag or command wiring; the seam and zone
-//! records exist so sections 2+ can drive live geometry without re-walking.
+//! cells across a redock (no rebuild for a move). The seam and zone records let
+//! the drag and reconcile steps drive live geometry without re-walking.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -29,37 +28,38 @@ use super::semantics;
 use super::tree::{DockNode, PanelKey};
 use super::{DockStyle, PanelContent};
 
-/// The default seam thickness on the split's main axis, matching the reference
+/// The default seam thickness on the split's main axis, matching the standalone
 /// splitter's `BAR_SIZE` so a dock seam and a standalone splitter read alike.
 pub(super) const SEAM_SIZE: f32 = 6.0;
 
 /// The smallest extent, in logical pixels, a pane may be dragged down to before a
-/// seam stops — the minimum-pane-size floor (AGENTS section 15: the same floor
-/// bounds a keyboard step). Applied by the drag/reconcile sections; defined here
-/// beside `SEAM_SIZE` as the shared seam geometry constant.
-// Consumed by the seam-drag clamp in section 2 (live seam drag + min sizes); the
-// static build in section 1 authors geometry but never clamps.
+/// seam stops — the minimum-pane-size floor (the same floor bounds a keyboard
+/// step). Applied by the drag/reconcile steps; defined here beside `SEAM_SIZE` as
+/// the shared seam geometry constant.
+// Consumed by the seam-drag clamp; the build walk authors geometry but never
+// clamps.
 #[allow(dead_code)]
 pub(super) const MIN_PANE: f32 = 50.0;
 
 /// The map from a panel's stable [`PanelKey`] to the node id its content was built
 /// into. Filled during the build walk (written once), read by the drag and
-/// reconcile sections at event time to remount an existing panel node when it
+/// reconcile steps at event time to remount an existing panel node when it
 /// moves. Keyed lookup on a *discrete* action (a redock), never a per-frame path,
-/// so a `HashMap` is the right structure here (AGENTS section 45).
+/// so a `HashMap` is the right structure here.
 pub(super) type PanelNodes = Rc<RefCell<HashMap<PanelKey, NodeId>>>;
 
 /// One built seam: the flex container holding a split's two panes and its bar, plus
 /// the two pane containers whose fill weights a live drag rewrites, and the seam's
-/// three reactive drag cells. Recorded during the walk so a later section can drive
-/// the seam without re-walking the tree — the seam's warm side-record.
+/// three reactive drag cells. Recorded during the walk so the drag and reconcile
+/// steps can drive the seam without re-walking the tree — the seam's warm
+/// side-record.
 ///
-/// The three cells mirror the reference splitter's drag model: `fraction` is the
-/// leading pane's share (bound to the container's `PAINT`), `down_pos` and
-/// `start_frac` anchor a delta drag. Section 1 authors them and binds `fraction`;
-/// the drag handler and the store-mutating reconcile step land in section 2.
+/// The three cells mirror the splitter's drag model: `fraction` is the leading
+/// pane's share (bound to the container's `PAINT`), `down_pos` and `start_frac`
+/// anchor a delta drag. The build walk authors them and binds `fraction`; the
+/// drag handler and the store-mutating reconcile step drive them.
 // `container`/`fraction`/`down_pos`/`start_frac` are read by the seam-drag handler
-// and the weight-rewriting reconcile step in section 2; section 1 records them.
+// and the weight-rewriting reconcile step; the build walk records them.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub(super) struct SeamRec {
@@ -81,8 +81,8 @@ pub(super) struct SeamRec {
 
 /// One built dock region and its screen node, for drop-target hit resolution. A
 /// panel drag resolves the pointer against these warm rectangles (an `EventCx`
-/// cannot hit-test arbitrary nodes): section 1 records the region node and the
-/// primary panel key it holds, and the drag-to-redock section fills `rect` from the
+/// cannot hit-test arbitrary nodes): the build walk records the region node and the
+/// primary panel key it holds, and the drag-to-redock path fills `rect` from the
 /// node's resolved bounds before a drag begins. Recorded per tab group (the smallest
 /// droppable region).
 #[derive(Debug, Clone, Copy)]
@@ -112,7 +112,7 @@ pub(super) type SharedZones = Rc<RefCell<Vec<ZoneRec>>>;
 /// a scalar state cell, so it rides this queue instead.
 pub(super) type RedockIntents = Rc<RefCell<Vec<super::drag::RedockIntent>>>;
 
-/// What the build walk records for the sections that follow: the seams to drive,
+/// What the build walk records for the drag and reconcile steps: the seams to drive,
 /// the zones to hit-test, the keyed panel nodes to remount, plus the shared drag
 /// channel (drop-hint node, redock intent queue, shared zone registry) the
 /// drag-to-redock handlers close over. All warm (written once at build, read on
@@ -219,7 +219,7 @@ pub(super) fn build_tree(
 /// Author a binary split: a flex along `axis` holding pane A (fill weight
 /// `fraction`), a fixed-thickness bar leaf, and pane B (fill weight
 /// `1 - fraction`). Both panes are fill children so the split scales with its
-/// container; the reconcile section rewrites the weights live from the drag cell.
+/// container; the reconcile step rewrites the weights live from the drag cell.
 #[allow(clippy::too_many_arguments)]
 fn build_split(
     cx: &mut BuildCx<'_>,
@@ -232,9 +232,9 @@ fn build_split(
     panels: &PanelNodes,
     out: &mut BuildOut,
 ) -> viso_ui::Handle {
-    // Three drag cells per seam, mirroring the reference splitter: the leading
-    // pane's fraction (bound to PAINT below), and the press anchors for a delta
-    // drag. Section 1 authors and binds them; section 2 drives them.
+    // Three drag cells per seam, mirroring the splitter: the leading pane's
+    // fraction (bound to PAINT below), and the press anchors for a delta drag.
+    // The build authors and binds them; the drag handler drives them.
     let frac0 = fraction.clamp(0.0, 1.0);
     let cell_fraction = cx.state(StateValue::Float(frac0));
     let cell_down = cx.state(StateValue::Float(0.0));
@@ -290,7 +290,7 @@ fn build_split(
             pane_a_id = Some(pane_a.id());
 
             // The seam bar: a fixed-thickness leaf across the cross axis, named for
-            // an assistive technology (the keyboard-resize target, section 2).
+            // an assistive technology (the keyboard-resize target).
             let bar = cx.leaf(LeafStyle {
                 size: bar_size,
                 style: style.seam,
@@ -319,7 +319,7 @@ fn build_split(
     );
 
     // The fraction cell repaints the split container on a drag (the seam moves);
-    // the reconcile section additionally rewrites the pane weights (LAYOUT).
+    // the reconcile step additionally rewrites the pane weights (LAYOUT).
     cx.bind(cell_fraction, container, DirtyClass::PAINT);
 
     // Record the seam now that the pane ids are known. Both panes always build
@@ -347,8 +347,8 @@ fn build_split(
 
 /// Author a tab group: a column of a tab strip (shown when `strip`) over the
 /// selected panel's content. Panels build once; the unselected ones are hidden at
-/// build time (folded out of layout and paint) and revealed by a later section's
-/// deferred `hidden` flip — the reference tabs discipline, keyed here by panel.
+/// build time (folded out of layout and paint) and revealed by a deferred `hidden`
+/// flip — the tabs control's discipline, keyed here by panel.
 #[allow(clippy::too_many_arguments)]
 fn build_tabs(
     cx: &mut BuildCx<'_>,
@@ -389,8 +389,9 @@ fn build_tabs(
         |cx| {
             if show_strip {
                 // A tab strip labelled as a `TabList`; each tab a named `Tab`. The
-                // selection/switch wiring is section 3 (imperative) — section 1
-                // authors the strip shape and roles so the a11y snapshot is stable.
+                // selection/switch is driven imperatively through the `DockHandle`;
+                // the build authors the strip shape and roles so the a11y snapshot is
+                // stable.
                 let strip_handle = cx.flex(
                     FlexStyle {
                         axis: viso_ui::Axis::Row,
@@ -482,9 +483,8 @@ fn build_tabs(
 
     // Wire drag-to-redock onto each tab leaf now that the group container exists:
     // dragging a tab records a redock intent against the drop zone the pointer ends
-    // over, resolved by the drag section from the warm zone rects. The strip shows
-    // no tabs when a group is lone, so a lone panel has nothing to grab — its redock
-    // path is a future section's floating-panel chrome.
+    // over, resolved by the drag handler from the warm zone rects. The strip shows
+    // no tabs when a group is lone, so a lone panel has nothing to grab.
     for (key, tab) in tab_handles {
         super::drag::wire_panel_drag(cx, tab, key, out.hint, &out.intents, &out.zones_shared);
     }
@@ -493,7 +493,7 @@ fn build_tabs(
 }
 
 /// A [`Size`] whose main-axis length is `main` and cross-axis length is `cross`
-/// for the given split `axis` (the reference splitter's `size_on` helper: `Size`
+/// for the given split `axis` (like the splitter's `size_on` helper: `Size`
 /// stores width/height, not main/cross).
 fn size_on(axis: viso_ui::Axis, main: Length, cross: Length) -> Size {
     match axis {

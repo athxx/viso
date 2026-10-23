@@ -1,4 +1,4 @@
-//! Section 71 validation pack for the `Icon` vector control, driven through the
+//! Validation pack for the `Icon` vector control, driven through the
 //! public facade. `Icon` is the next content control after `Image`; this mirrors
 //! the `image_widget.rs` template, but needs no texture fixture — the geometry is
 //! authored inline and the renderer rasterizes the path directly:
@@ -9,10 +9,9 @@
 //!   icon's intrinsic size and that the pixels (the tessellated fill) match a
 //!   blessed baseline;
 //! - **a11y snapshot** — an `Icon`'s derived semantics node is `Role::Group` (a
-//!   presentational, non-interactive element; a dedicated `Role::Icon` is a later
-//!   slice);
+//!   presentational, non-interactive element);
 //! - **allocation profile** — a warmed-up `Icon` frame allocates nothing per frame
-//!   (architecture section 47 hot-path contract), same CountingAlloc +
+//!   (hot-path contract), same CountingAlloc +
 //!   `frame_stats`/`*_count()` steady-state asserts as `image_widget.rs`.
 //!
 //! Building through `Icon::build` is the point: it proves the widget lowers to a

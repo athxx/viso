@@ -6,8 +6,7 @@
 //! The main thread never waits on font resolution. A run renders with its
 //! current best face immediately; when a newer face revision arrives (a fetched
 //! packaged asset, or a wider subset from an external provider), this decides the
-//! *narrowest* invalidation that revision demands and never more (spec section
-//! 17):
+//! *narrowest* invalidation that revision demands and never more:
 //!
 //! ```text
 //! FontRevision
@@ -19,7 +18,7 @@
 //!
 //! A face upgrade never flushes the whole application's text caches: a laid-out
 //! paragraph whose shaped result and resident glyphs are unaffected keeps
-//! rendering untouched (spec section 18). This type owns the per-run last-good
+//! rendering untouched. This type owns the per-run last-good
 //! face and revision and the scope decision; it does not perform the reshape —
 //! it tells the caller the smallest scope that must.
 
@@ -229,7 +228,7 @@ mod tests {
 
         // Upgrading RUN's face returns a scope naming only RUN and PARA. The
         // other run and its paragraph are absent from the scope entirely: a face
-        // upgrade is not an application-wide text-cache flush (spec section 18).
+        // upgrade is not an application-wide text-cache flush.
         let scope = p.note_upgrade(RUN, RevisionEffect::ReshapeRun);
         assert_ne!(scope.run, OTHER_RUN);
         assert_ne!(scope.paragraph, ParagraphId(99));

@@ -3,7 +3,7 @@
 //!
 //! The runtime does not read the wall clock directly. It reads it through a
 //! [`FrameClock`] so headless tests can inject a [`ManualClock`] and step time
-//! by a fixed `dt` each frame — the section 66 deterministic-time contract.
+//! by a fixed `dt` each frame — the headless deterministic-time contract.
 //! Production uses [`WallClock`], a zero-state wrapper over [`Instant::now`]
 //! that costs a single syscall per frame (the delta a driver needs to advance
 //! animations by real elapsed time). This is taking the semantics (an

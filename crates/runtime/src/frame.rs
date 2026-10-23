@@ -1,11 +1,9 @@
-//! One frame's worth of phase orchestration (§11.2).
+//! One frame's worth of phase orchestration.
 //!
 //! `run_frame` walks [`FramePhase::ORDER`] and calls the driver once per phase.
-//! In Phase 1 every phase body is a no-op in the facade's driver — this is the
-//! "blank frame": the 12-phase loop provably ticks against a live window, but
-//! produces no pixels (the GPU swapchain is Phase 2). The `Submit` phase is a
-//! plain hook here with no special handling; it becomes the GPU submit point
-//! later.
+//! A driver whose phase bodies are all no-ops runs a "blank frame": the 12-phase
+//! loop ticks against a live window but produces no pixels. The `Submit` phase
+//! is a plain hook here with no special handling.
 
 use crate::context::RuntimeCx;
 use crate::driver::FrameDriver;

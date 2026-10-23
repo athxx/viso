@@ -1,5 +1,5 @@
-//! Section 71 validation pack for the `VirtualList` widget — the second Tier 3
-//! (layout structure) control — driven through the public facade. `VirtualList`
+//! Validation pack for the `VirtualList` widget — a layout structure
+//! control — driven through the public facade. `VirtualList`
 //! is a virtualized scrolling list: a scroll viewport over a fixed-extent canvas
 //! sized to the whole logical collection, so only a window of rows is ever
 //! mounted while the scroll range spans every item. This pack mirrors
@@ -20,9 +20,9 @@
 //!   and carries an authored label; it declares no interactive handlers of its own
 //!   (the scroll gesture is routed by `viso-ui`, not a widget handler);
 //! - **allocation profile** — a warmed-up steady `VirtualList` frame (paint of a
-//!   settled window) allocates nothing per frame (architecture section 47
-//!   hot-path contract), same CountingAlloc + `frame_stats`/`*_count()`
-//!   steady-state asserts as `scroll_widget.rs`.
+//!   settled window) allocates nothing per frame (hot-path contract), same
+//!   CountingAlloc + `frame_stats`/`*_count()` steady-state asserts as
+//!   `scroll_widget.rs`.
 //!
 //! Building through `VirtualList::build` (not raw `cx.virtual_list`) is the point:
 //! it proves the widget lowers to the same retained viewport+canvas the primitive

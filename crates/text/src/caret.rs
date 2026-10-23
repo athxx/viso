@@ -34,7 +34,7 @@ use crate::shaping::Direction;
 use crate::text_position::{TextOffset, TextPosition};
 
 /// A caret over a single laid-out line: the current position plus the preferred
-/// inline x that vertical motion (Up/Down, a later slice) keeps sticky.
+/// inline x that vertical motion (Up/Down) keeps sticky.
 ///
 /// It holds no text of its own — it is a cursor *into* a [`LineLayout`], which
 /// is passed to each motion call. That keeps the caret a small value and makes

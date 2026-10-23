@@ -14,8 +14,7 @@
 //! you navigate and cached per parent so repeated `children()`/`parent()` calls
 //! over the same subtree return the same `Rc`-shared handles (pointer-stable
 //! identity, and no re-walk). It is a cold-path editor/compiler structure, so the
-//! `Rc` sharing and the interior-mutable child cache are deliberate and allowed
-//! (AGENTS section 7.2).
+//! `Rc` sharing and the interior-mutable child cache are deliberate and allowed.
 //!
 //! Identity: two [`SyntaxNode`]s are the same tree position when they wrap the
 //! same green node pointer at the same absolute offset — see [`SyntaxNode::eq`].

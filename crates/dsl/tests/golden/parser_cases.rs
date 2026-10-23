@@ -92,7 +92,7 @@ pub const CASES: &[Case] = &[
     unit("ActionDecl", "component C { action inc( { } }", &["E1404"]),
     unit("ViewDecl", "component C { view { Text { } } }", OK),
     unit("ViewDecl", "component C { view { Text { } }", &["E1401"]),
-    // --- Contextual keywords as ordinary names (§12.3) --------------------
+    // --- Contextual keywords as ordinary names ----------------------------
     unit(
         "contextual as name",
         "component C { state state = 0; state view = 1; state key = 2; }",
@@ -130,7 +130,7 @@ pub const CASES: &[Case] = &[
     unit("ConstDecl", "const N: I64 = 4;", OK),
     unit("ConstDecl", "const N: I64 4;", &["E1404"]),
     unit("ConstDecl", "const N: I64 = ;", &["E1405"]),
-    // --- Generics (§26) --------------------------------------------------
+    // --- Generics --------------------------------------------------------
     unit(
         "GenericParams",
         "fn id<T: Clone, const N: I64 = 4>(x: T) -> T { x }",
@@ -214,7 +214,7 @@ pub const CASES: &[Case] = &[
         OK,
     ),
     expr("MatchExpr", "match v { S::idle 0 }", &["E1404"]),
-    // --- Patterns (A.13) ------------------------------------------------
+    // --- Patterns -------------------------------------------------------
     expr("WildcardPattern", "match v { _ => 0 }", OK),
     expr(
         "LiteralPattern",
@@ -254,7 +254,7 @@ pub const CASES: &[Case] = &[
         OK,
     ),
     expr("ParenPattern", "match v { (a | b) => 0 }", OK),
-    // --- View (§14) -----------------------------------------------------
+    // --- View -----------------------------------------------------------
     frag("AnonymousNode", "Text { text: \"hi\"; }", OK),
     frag("AnonymousNode", "Text { text: \"hi\" }", &["E1404"]),
     frag("NamedNode", "node title: Text { text: label; }", OK),

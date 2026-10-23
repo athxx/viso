@@ -1,8 +1,8 @@
 //! Incremental recompute: marking a node dirty must recompute only the affected
 //! subtree, and a paint-only change must never make an ancestor layout dirty.
 //!
-//! These drive `NodeStore` directly (the reactive write path that will feed
-//! `mark_dirty` lands in a later slice), asserting the layered-propagation and
+//! These drive `NodeStore` directly (bypassing the reactive write path that
+//! feeds `mark_dirty`), asserting the layered-propagation and
 //! incremental-recompute contract with the `FrameRecompute` counters rather than
 //! pixels — the pipeline's pixel correctness is covered by `headless_scene`.
 

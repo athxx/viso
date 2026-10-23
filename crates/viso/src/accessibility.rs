@@ -1,7 +1,6 @@
-//! The facade half of the accessibility OS bridge (ADR 0030, ADR 0042): turns
-//! a window's derived [`SemanticsTree`] into the [`SemanticsDelta`]s the
-//! platform publishes, and an assistive technology's actions back into
-//! ordinary input.
+//! The facade half of the accessibility OS bridge: turns a window's derived
+//! [`SemanticsTree`] into the [`SemanticsDelta`]s the platform publishes, and
+//! an assistive technology's actions back into ordinary input.
 //!
 //! A window holds an [`AccessBridge`] only while an assistive technology
 //! listens on a backend with a bridge. The first delta carries the whole tree;

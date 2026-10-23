@@ -1,4 +1,4 @@
-//! Build-time font subsetting for embedded targets (§37.8).
+//! Build-time font subsetting for embedded targets.
 //!
 //! `viso build` for an embedded target sets two variables for the compiler:
 //!

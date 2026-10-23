@@ -1,4 +1,4 @@
-//! The view grammar (Appendix A.8). A `view` declaration wraps a `ViewBlock` —
+//! The view grammar. A `view` declaration wraps a `ViewBlock` —
 //! `"{" ViewStructureItem* "}"` — and every node body is another brace block of
 //! members. Unlike an imperative [`block`](super::stmt::block), a view block holds
 //! no statements or tail expression: only nodes, control flow, property bindings,
@@ -12,9 +12,9 @@
 //! imperative half (`let`/assignment) lives in [`super::stmt`]. The two never
 //! collide because a view block is never entered from statement position.
 //!
-//! ## `child` is gone
+//! ## There is no `child` slot
 //!
-//! Makepad's implicit `child` slot is replaced by explicit node identity, so a
+//! There is no implicit `child` slot; nodes carry explicit identity, so a
 //! bare `child` node/name is diagnosed as E3001: an anonymous node is written as
 //! its `Type { ... }` directly, and a named one as `node name: Type { ... }`.
 
@@ -172,7 +172,7 @@ pub(super) fn node_member(p: &mut Parser) {
 }
 
 /// The contextual keyword the cursor acts as at a node-body / view-block item
-/// start (§12.4): `node IDENT :`, `part IDENT :`, `on IDENT`, `bind IDENT`,
+/// start: `node IDENT :`, `part IDENT :`, `on IDENT`, `bind IDENT`,
 /// `fill IDENT`, `use IDENT`, `override part`, `replace part`. Otherwise the
 /// word is an ordinary identifier (`on: x;` binds a property named `on`).
 fn view_keyword(p: &Parser) -> Option<SyntaxKind> {
@@ -437,7 +437,7 @@ fn part_replace(p: &mut Parser) {
 }
 
 /// `"use" TypePath "(" ArgumentList ")" ("{" (FillClause | PartOverride |
-/// PartReplace)* "}")? ";"` (§58). The body parses as a node body; HIR admits
+/// PartReplace)* "}")? ";"`. The body parses as a node body; HIR admits
 /// only the three forms.
 fn template_use(p: &mut Parser) {
     let m = p.start();

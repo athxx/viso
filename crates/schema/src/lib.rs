@@ -1,4 +1,4 @@
-//! `viso-schema` — the data that crosses the compile boundary (ADR 0042).
+//! `viso-schema` — the data that crosses the compile boundary.
 //!
 //! The compiler (`viso-dsl`, the LSP, `viso check`) produces these types and
 //! the runtime (`viso-ui`, `viso-view`) consumes them, so neither links the

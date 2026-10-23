@@ -1,4 +1,4 @@
-//! The section 36 hit-testing baseline for hover synthesis: what a `Move`
+//! The hit-testing baseline for hover synthesis: what a `Move`
 //! sample costs on the steady path versus when it crosses a node boundary.
 //!
 //! The router's `route_pointer` hit-tests every non-captured `Move`, reads the
@@ -6,9 +6,8 @@
 //! per-node `Leave`/`Enter` pair (`sync_hover`). The steady case — the pointer
 //! moving within the node it already hovers — is a hit test plus one
 //! `new == old` comparison and no dispatch; the cross-node case adds the
-//! leave+enter dispatch through two handlers. Section 7.3 forbids asserting the
-//! steady case is cheap without measuring it, so this bench times both against
-//! the same tree.
+//! leave+enter dispatch through two handlers. The steady case is not assumed
+//! cheap without measuring it, so this bench times both against the same tree.
 //!
 //! Shape: a row of two sibling leaves under a flex root. `move_within` re-sends
 //! two samples that both land on the same leaf (hover never changes — no

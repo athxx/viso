@@ -13,7 +13,7 @@
 //! audio systems starts them on the device the app installed
 //! ([`install_game_audio`]), also when a reload adds them.
 //!
-//! The views of the root read the game through queries (ADR 0045): the
+//! The views of the root read the game through queries: the
 //! session runs each query a view observes once a frame, after the frame's
 //! ticks and hooks, keeps its value, and raises the query's revision cells as
 //! the frame settles only when the value changed. A view pauses the game

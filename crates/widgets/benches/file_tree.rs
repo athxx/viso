@@ -2,12 +2,10 @@
 //! pure reflatten a toggle triggers, and — the interactive hot path — one full
 //! expand/collapse reconcile frame through the public [`FileTreeHandle`].
 //!
-//! This is the section 71 microbench slot for the Tier 5 file browser, alongside
-//! `dock.rs`. The file tree eats the Tier 3 virtual list (architecture section
-//! 12.4), so its cost story is not "how many nodes does a 100k-file tree mount"
-//! (the answer is: only a visible window) but "what does a toggle cost": edit the
-//! open set, reflatten the forest into the visible-row list, and drive the keyed
-//! list's item count so the substrate diffs the new key set. Four phases:
+//! The file tree is built on the virtual list, so its cost story is not "how many nodes
+//! does a 100k-file tree mount" (the answer is: only a visible window) but "what does a
+//! toggle cost": edit the open set, reflatten the forest into the visible-row list, and
+//! drive the keyed list's item count so the substrate diffs the new key set. Four phases:
 //!
 //! - `file_tree/build_wide` authors a wide, one-level-deep tree (one root over
 //!   1000 collapsed children) through the public [`file_tree`] builder, so the
@@ -29,7 +27,7 @@
 //! It drives only `viso-ui` + `viso-widgets`, so it needs no facade or render
 //! dev-dependency and adds no dependency edge. Run release
 //! (`CARGO_TARGET_DIR=/tmp/rust_tmp cargo bench -p viso-widgets --bench file_tree`);
-//! debug timing is not a perf result (AGENTS section 36).
+//! debug timing is not a perf result.
 
 use std::hint::black_box;
 

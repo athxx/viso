@@ -1,4 +1,4 @@
-//! Bounds a retained primitive carries (§8).
+//! Bounds a retained primitive carries.
 //!
 //! Each primitive resolves through the same pipeline of rectangles, computed
 //! without ever re-parsing a path — the geometry store hands over the tight
@@ -18,7 +18,7 @@
 
 use crate::primitive::Rect;
 
-/// The bounds of one retained primitive (§8). Plain rectangles, cheap to copy.
+/// The bounds of one retained primitive. Plain rectangles, cheap to copy.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Bounds {
     /// Tight fill extent in world space.

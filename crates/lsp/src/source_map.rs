@@ -13,7 +13,7 @@
 //! Re-deriving on edit is a full re-tokenize → re-parse → re-resolve. The frontend
 //! does offer incremental relexing ([`reparse_tokens`](viso_dsl::reparse_tokens)),
 //! but editor edits are rare next to frame work and a document is small, so the
-//! simpler full path is the right cold-path choice here (AGENTS 7.2); switching to
+//! simpler full path is the right cold-path choice here; switching to
 //! incremental is a transparent optimization behind this same interface.
 
 use std::collections::HashMap;

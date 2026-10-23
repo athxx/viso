@@ -49,7 +49,7 @@ impl SvgScene {
     /// control points makes it a conservative bound — the control hull contains
     /// the curve, so a bulging curve is never under-reported. The fold runs
     /// through [`viso_math::point_bounds`] over one contiguous point array, the
-    /// SIMD-accelerated min/max reduction (§13.6); the strided post-stroke
+    /// SIMD-accelerated min/max reduction; the strided post-stroke
     /// `geo_bounds` fold in the renderer stays scalar and points contiguous
     /// callers such as this one here.
     pub fn content_bounds(&self) -> Option<Rect> {

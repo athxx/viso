@@ -1,4 +1,4 @@
-//! Order-safe batch planning (§9.6): fold a paint-ordered stream of primitives
+//! Order-safe batch planning: fold a paint-ordered stream of primitives
 //! into the fewest contiguous draw commands that still preserve visual order.
 //!
 //! # The key, not the comparison
@@ -9,18 +9,18 @@
 //! color-target class, and the depth/stencil class. Rather than compare those
 //! fields one by one at each merge site, the planner packs the state-fixing
 //! dimensions into one integer [`BatchKey`] and merges on integer equality
-//! (§16.2, §29 — batch identity is a packed key, never a string). Two adjacent
+//! (batch identity is a packed key, never a string). Two adjacent
 //! primitives join their draw exactly when their keys are equal *and* their
 //! structural clip and pass target match.
 //!
 //! # Order safety
 //!
-//! Paint order is a correctness contract (§8.6): a primitive may only join the
+//! Paint order is a correctness contract: a primitive may only join the
 //! draw **immediately before it**. The planner never reaches back past an
 //! intervening primitive to group a non-adjacent one, so the emitted draws,
 //! read front to back, replay the scene in exactly its submission order. The
 //! goal is the *maximum contiguous run of compatible instances*, not the fewest
-//! possible draws (§9.6): widening the window to reorder across an intervening
+//! possible draws: widening the window to reorder across an intervening
 //! primitive is only sound for spans explicitly marked reorder-safe, which this
 //! layer does not yet mint — so the safe, order-preserving adjacency merge is
 //! the whole policy here.
@@ -158,8 +158,8 @@ impl BatchFamily {
     /// sample one texture — images, glyph runs, gradients — merge too, because the
     /// texture is *part of* the key: an equal key means an equal bind group, so a
     /// run of them is one resource and one draw (both text lanes included — a
-    /// field atlas batches exactly like a coverage atlas). That is the §20.2 fallback doing
-    /// its work: atlas the content, and bind-group batching collapses a screen of
+    /// field atlas batches exactly like a coverage atlas). That is the binding fallback
+    /// doing its work: atlas the content, and bind-group batching collapses a screen of
     /// icons or a page of text into a draw per atlas, which is the draw count a
     /// resource table would have reached with backend support this RHI does not
     /// need.
@@ -226,7 +226,7 @@ impl BatchTarget {
     }
 }
 
-/// A packed key over the GPU state a single draw command fixes (§9.6, §16.2).
+/// A packed key over the GPU state a single draw command fixes.
 ///
 /// Two adjacent primitives can share one draw only if their keys are equal (and
 /// their structural clip matches — a clip is four floats, compared alongside the
@@ -249,8 +249,8 @@ impl BatchTarget {
 ///
 /// The reserved fields carry the single class this renderer uses today; they
 /// exist in the layout so that adding blend modes, MSAA, or a depth pass later
-/// packs into an existing field without moving the frozen ones (§9.6 names the
-/// full field set as the batch key's identity).
+/// packs into an existing field without moving the frozen ones (the full field set is
+/// the batch key's identity).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BatchKey(u64);
 
@@ -375,7 +375,7 @@ pub struct BatchItem {
 /// primitive→batch map can never drift apart. A primitive joins the previous
 /// draw only when both are mergeable, their packed keys are equal, and their
 /// structural clips and spaces match — the adjacency-only, order-preserving
-/// policy (§8.6, §9.6).
+/// policy.
 pub fn joins(prev: &BatchItem, next: &BatchItem) -> bool {
     prev.mergeable
         && next.mergeable

@@ -2,12 +2,8 @@
 //! authoring pass (`TextInput::build`), one `layout`, and one `paint_tree`
 //! lowering.
 //!
-//! This is the section 71 microbench slot for the sixth Tier 2 (interactive)
-//! control — a single-line editable text field — and copies the
-//! `slider_build.rs` template. It is deliberately a skeleton this slice: it
-//! exercises the real `build` -> `layout` -> `paint_tree` path so a regression
-//! is measurable, but the baseline numbers are recorded in a later slice (per
-//! the plan: establish the framework first).
+//! `TextInput` is a single-line editable text field. The bench exercises the real `build` -> `layout` ->
+//! `paint_tree` path so a regression is measurable.
 //!
 //! `TextInput` is a single focusable leaf backed by an edit `Buffer` registered
 //! into the reactive cx's `TextEdits`, so it must build through
@@ -18,8 +14,7 @@
 //! dependency edge.
 //!
 //! Run release (`CARGO_TARGET_DIR=/tmp/rust_tmp cargo bench -p viso-widgets`);
-//! criterion defaults to a release profile. Debug timing is not a perf result
-//! (AGENTS section 36).
+//! criterion defaults to a release profile. Debug timing is not a perf result.
 
 use std::hint::black_box;
 

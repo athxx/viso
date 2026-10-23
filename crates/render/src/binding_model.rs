@@ -1,13 +1,13 @@
-//! How a draw addresses the textures it samples (§20.2).
+//! How a draw addresses the textures it samples.
 //!
 //! A draw fixes its resources. Bind one texture per draw and a frame that paints
 //! twenty images from twenty textures costs twenty draws, because each texture
-//! change ends the batch. §20.2 names the fast path out of that: where the backend
+//! change ends the batch. There is a fast path out of that: where the backend
 //! offers a resource table — Metal argument/resource tables, a D3D12 descriptor
 //! heap, Vulkan descriptor indexing, WebGPU binding arrays — the instance carries
 //! a `texture_index` into the table and the texture stops being draw state at all.
 //!
-//! And then it names the fallback, which is the part that has to be good: **atlas,
+//! And there is the fallback, which is the part that has to be good: **atlas,
 //! a small texture set, and bind-group batching**. That is not a consolation
 //! prize. Almost every real UI frame samples a handful of distinct resources — one
 //! glyph atlas, one icon atlas, a gradient LUT page — so once adjacent draws that
@@ -15,7 +15,7 @@
 //! would, without any backend support at all. Bindless pays only past the point
 //! where the resource set stops being small.
 //!
-//! The rule §20.2 states about both halves is that the **public paint API does not
+//! The rule for both halves is that the **public paint API does not
 //! change with the answer**. A host draws [`crate::Primitive::Image`]; it never
 //! selects a binding model, never sees a `texture_index`, and never writes a
 //! different scene for a backend without tables. So this module is the decision
@@ -23,12 +23,12 @@
 //! workload belongs in, and the renderer's actual batching — the fallback — is
 //! implemented where batches are formed, not here.
 //!
-//! The thresholds are internal benchmark parameters (§20.2 fixes no ABI): they are
+//! The thresholds are internal benchmark parameters, not ABI: they are
 //! the crossover of one atlas policy against one table's indexing cost, and both
 //! move. What is stable is the shape — a capability veto, a resource set too large
 //! to atlas, and a batch-break count that is actually costing draws.
 
-/// How a draw names the textures it samples (§20.2).
+/// How a draw names the textures it samples.
 ///
 /// Not a quality ranking. Both models produce identical pixels; they differ in how
 /// many draws a frame of images costs, and only once the resource set is large.
@@ -44,7 +44,7 @@ pub enum BindingModel {
     #[default]
     PerDraw,
     /// The draw binds a table of `slots` textures and each instance selects one by
-    /// index (§20.2).
+    /// index.
     ///
     /// Wins where the resource set is genuinely large and unatlasable — a document
     /// of hundreds of independent images, a tile grid streaming distinct pages —
@@ -65,7 +65,7 @@ pub enum BindingModel {
 /// atlas, a gradient LUT page, a handful of offscreen layer targets. At that size
 /// merging adjacent same-resource draws already collapses the frame to a few
 /// batches, and a table would add indexing to save nothing. Internal benchmark
-/// parameter (§20.2).
+/// parameter.
 const SMALL_TEXTURE_SET: u32 = 16;
 
 /// Texture-caused batch breaks per frame below which the per-draw model is not
@@ -74,11 +74,11 @@ const SMALL_TEXTURE_SET: u32 = 16;
 /// The count that matters is not how many textures exist but how often paint order
 /// *alternates* between them — a hundred images drawn atlas-first cost one break.
 /// Below this floor the draws bindless would remove are too few to pay for the
-/// table. Internal benchmark parameter (§20.2).
+/// table. Internal benchmark parameter.
 const COSTLY_BATCH_BREAKS: u32 = 64;
 
-/// What a frame asks of the texture binding path, as the §20.2 entry conditions
-/// name it.
+/// What a frame asks of the texture binding path, as the fast path's entry
+/// conditions name it.
 ///
 /// Every field but the capability is a property of the *frame*, so the decision is
 /// portable: a backend without tables simply never offers the fast path, and the
@@ -93,8 +93,7 @@ pub struct TextureWorkload {
     /// and bindless is only the answer to what atlasing could not merge.
     pub distinct_textures: u32,
     /// Draws this frame that ended because the next primitive sampled a different
-    /// texture — the cost the fast path removes, measured rather than assumed
-    /// (§7.3).
+    /// texture — the cost the fast path removes, measured rather than assumed.
     pub texture_batch_breaks: u32,
 }
 
@@ -124,15 +123,15 @@ impl TextureWorkload {
 }
 
 impl BindingModel {
-    /// Pick the binding model for a frame's texture workload (§20.2).
+    /// Pick the binding model for a frame's texture workload.
     ///
-    /// Conjunctive, like every other §20 lane decision: the backend must offer a
+    /// Conjunctive, like every other lane decision: the backend must offer a
     /// table large enough for the frame, the resource set must be past what
     /// atlasing answers, and per-draw binding must actually be breaking batches.
     /// Any one missing yields [`BindingModel::PerDraw`], so every incomplete
     /// description of a frame lands on the model that works on every backend —
     /// which is what makes "the public paint API does not change across backends"
-    /// (§20.2) true by construction rather than by review.
+    /// true by construction rather than by review.
     pub fn select(workload: TextureWorkload) -> BindingModel {
         if workload.fits_in_the_table()
             && workload.resource_set_is_large()
@@ -146,7 +145,7 @@ impl BindingModel {
         }
     }
 
-    /// Whether an instance carries a texture index under this model — the §20.2
+    /// Whether an instance carries a texture index under this model — the
     /// `instance.texture_index` fast path.
     ///
     /// `false` for [`PerDraw`](Self::PerDraw), which is why no instance ABI in this
@@ -161,7 +160,7 @@ impl BindingModel {
 mod tests {
     use super::*;
 
-    /// The workload §20.2 names the fast path for: a large unatlasable resource set
+    /// The workload the fast path exists for: a large unatlasable resource set
     /// interleaved in paint order, on a backend with a table big enough for it.
     fn a_document_of_hundreds_of_images() -> TextureWorkload {
         TextureWorkload {
@@ -232,7 +231,7 @@ mod tests {
         }
     }
 
-    /// The §20.2 hard rule's own shape: an ordinary UI frame — one glyph atlas, one
+    /// The hard rule's own shape: an ordinary UI frame — one glyph atlas, one
     /// icon atlas, a gradient page, a few layer targets — stays on the portable
     /// model even on a backend with a huge table, because atlasing already did the
     /// work a table would do.
@@ -259,7 +258,7 @@ mod tests {
 
     /// Many textures, grouped in paint order: the set is large but nothing is
     /// breaking, so there are no draws for a table to save. This is the case that
-    /// separates "large" from "costly" and keeps the decision honest (§7.3).
+    /// separates "large" from "costly" and keeps the decision honest.
     #[test]
     fn a_large_but_well_ordered_set_has_nothing_to_fix() {
         let grouped = TextureWorkload {

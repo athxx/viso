@@ -1,4 +1,4 @@
-//! The scalable-text lane contract (§13.2): a second glyph raster lane that
+//! The scalable-text lane contract: a second glyph raster lane that
 //! samples a multi-channel distance field instead of exact coverage.
 //!
 //! Viso 1.0 ships exactly two glyph lanes. The A8 coverage lane is the default —

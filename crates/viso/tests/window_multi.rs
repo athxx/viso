@@ -1,8 +1,8 @@
-//! Section 71 validation pack for the `Window` control — the Tier 4 finale, an
-//! application-level handle rather than a node control. A window does not enter
-//! the UI tree (no build/layout/paint of its own); it is a top-level OS surface
-//! that *hosts* a tree, opened mid-session through the public `window()` seam and
-//! closed through a `WindowHandle`. So this pack asserts a dimension no widget
+//! Validation pack for the `Window` control — an application-level handle
+//! rather than a node control. A window does not enter the UI tree (no
+//! build/layout/paint of its own); it is a top-level OS surface that *hosts* a
+//! tree, opened mid-session through the public `window()` seam and closed
+//! through a `WindowHandle`. So this pack asserts a dimension no widget
 //! pack does: *per-window isolation* — two windows own disjoint retained trees,
 //! stores, geometry, semantics, and frame work, and closing one tears down
 //! exactly its state through the single `on_window_closed` path.
@@ -30,7 +30,7 @@
 //!   windows expose two independent semantics trees; closing a window removes its
 //!   tree wholesale (its store is dropped);
 //! - **allocation profile** — a warmed-up two-window idle steady frame is
-//!   deterministic and reuses GPU resources (section 17.4 / 47): each window's
+//!   deterministic and reuses GPU resources: each window's
 //!   per-frame paint/upload/submit allocates the same amount on two identical
 //!   frames, no GPU resource is created per frame, and each window's `frame_stats`
 //!   is unchanged frame to frame. Opening and closing a window are one-time
@@ -644,8 +644,8 @@ fn each_windows_steady_frame_is_deterministic_and_reuses_gpu_resources() {
     // The headless raster legitimately re-encodes into its pixel buffer each
     // frame, so a full frame is not zero-alloc; what must hold (the steady-frame
     // invariant, per window) is that two identical frames of the *same* window
-    // allocate the same amount, no GPU resource is created per frame (section
-    // 17.4), and its `frame_stats` is unchanged frame to frame (section 47). The
+    // allocate the same amount, no GPU resource is created per frame, and its
+    // `frame_stats` is unchanged frame to frame. The
     // two windows are independent, so each is measured on its own.
     let mut windows = [
         WindowRaster::new(MAIN_FILL, MAIN_W, MAIN_H),

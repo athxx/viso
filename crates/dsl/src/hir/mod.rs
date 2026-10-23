@@ -8,21 +8,19 @@
 //! name resolution and domain IR (doc pipeline: name-resolved AST → Typed HIR →
 //! effect/capability check → domain IR).
 //!
-//! Every HIR node carries the doc's node contract: a resolved symbol, an inferred
+//! Every HIR node carries the node contract: a resolved symbol, an inferred
 //! type, an effect class, a capability set, an ownership mode, the reactive sources
 //! it reads, its source origin, and a constant value where one is statically known.
 //! After lowering there must be no unresolved identifier, no untyped numeric literal,
 //! no undetermined effect class, and no implicit dynamic — the whole point of the
 //! layer is to discharge those into concrete facts or diagnostics.
 //!
-//! Like the rest of the frontend this is cold-path (AGENTS section 7.2): lowering
+//! Like the rest of the frontend this is cold-path: lowering
 //! runs once per build, never on a frame path, so `String`/`HashMap`/`Rc` are fine.
-//! The zero-allocation contract binds what this layer *lowers to* (the UI/Binding IR
-//! of the next slice), not the layer itself.
+//! The zero-allocation contract binds what this layer *lowers to* (the UI/Binding IR),
+//! not the layer itself.
 //!
-//! The reference framework's script layer is a single-file dynamic VM with no static
-//! type/effect/capability checker, so there is nothing to port here: this layer is
-//! Viso-owned, built on the resolver's slot-based local scopes and durable symbol
+//! This layer is built on the resolver's slot-based local scopes and durable symbol
 //! identities.
 
 mod access;

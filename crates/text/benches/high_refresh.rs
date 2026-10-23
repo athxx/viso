@@ -1,4 +1,4 @@
-//! High-refresh regression gate for the text subsystem (section 36, `text`).
+//! High-refresh regression gate for the text subsystem.
 //!
 //! High refresh rates do not make text *work* faster; they make the per-frame
 //! budget smaller. A 240Hz display gives a frame every ~4.17ms, and the text
@@ -13,11 +13,11 @@
 //! make high refresh feasible, and measures the residual per-frame cost against
 //! each tier's budget:
 //!
-//! 1. **Steady-state zero-reshape** (TF-P3.1): a warmed paragraph re-laid out on
+//! 1. **Steady-state zero-reshape**: a warmed paragraph re-laid out on
 //!    an unchanged frame reshapes nothing — `shape_call_count` does not move.
 //!    Because the steady frame reshapes nothing, its cost is independent of the
 //!    refresh rate, which is what lets one pipeline serve all four tiers.
-//! 2. **Main-thread zero-shaping under a high-refresh edit cadence** (TF-P3.3):
+//! 2. **Main-thread zero-shaping under a high-refresh edit cadence**:
 //!    driving edits at each tier's frame cadence through the worker scheduler,
 //!    the main thread shapes nothing on every step — hits and misses alike.
 //! 3. **Per-tier steady-frame budget**: the measured steady-frame text
@@ -28,7 +28,7 @@
 //! All three run once at startup (like `render/benches/renderer_steady_state.rs`
 //! and `runtime/benches/frame_loop.rs`) so a regression fails the bench binary
 //! immediately. Run release: criterion defaults to a release profile; debug
-//! timing is not a perf result (section 36).
+//! timing is not a perf result.
 
 use std::hint::black_box;
 use std::time::Instant;
@@ -49,7 +49,7 @@ struct Tier {
     budget_us: f64,
 }
 
-/// The four gated refresh tiers with their spec 14.4 budgets.
+/// The four gated refresh tiers with their budgets.
 const TIERS: [Tier; 4] = [
     Tier {
         hz: 60,
@@ -154,7 +154,7 @@ fn assert_edit_cadence_never_shapes_on_main() {
 
 /// GATE 3 — the measured steady-frame text maintenance cost sits under each
 /// tier's budget with headroom. Returns nothing; asserts on gross regression and
-/// prints the per-frame time for section 36 trend reporting.
+/// prints the per-frame time for trend reporting.
 fn assert_steady_frame_within_tier_budgets() {
     let text = "the quick brown fox jumps over the lazy dog again and again";
     let full = shape_run(text, Direction::LeftToRight).width_ems;

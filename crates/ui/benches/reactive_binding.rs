@@ -1,5 +1,5 @@
 //! The "state invalidation" benchmark category, specialized to the three reactive
-//! dependency paths section 10.3 requires kept measurable and distinct: a fully
+//! dependency paths that must stay measurable and distinct: a fully
 //! *static* (compiled) binding path, a fully *dynamic* (runtime-registered) path, and
 //! a *mixed* path. Each is one changed state fanning out to `FANOUT` bound nodes,
 //! flushed through the public `flush_state_transactions` seam — the same call the
@@ -12,8 +12,8 @@
 //!    walk that records `static_binding_eval` and never touches the dynamic counters.
 //!    A typed binding silently drifting onto the dynamic fallback (a `dynamic_*`
 //!    counter moving off zero on the static harness) fails the bench binary
-//!    immediately, the section 10.3 "strict typed example does zero dynamic fallback"
-//!    guard, mirroring `large_list.rs`'s steady-state assertion.
+//!    immediately (the "strict typed example does zero dynamic fallback" guard),
+//!    mirroring `large_list.rs`'s steady-state assertion.
 //! 2. The per-flush cost of each path, so a regression that makes the static fast
 //!    path pay dynamic-path cost — or the reverse — shows up as a timing delta
 //!    between the three functions rather than hiding in an aggregate.
@@ -117,7 +117,7 @@ fn flush(h: &mut Harness) -> u32 {
     h.store.flush_state_transactions(&h.changed, &h.bindings)
 }
 
-/// The section 10.3 strict-typed guard, checked before benchmarking: the static path
+/// The strict-typed guard, checked before benchmarking: the static path
 /// walks exactly `FANOUT` *static* edges and never moves a dynamic counter — a typed
 /// binding does zero dynamic fallback. The dynamic and mixed paths are checked as the
 /// negative controls, so the assertion is not trivially true for an unwired table.

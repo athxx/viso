@@ -1,10 +1,9 @@
 //! The [`CaptionBar`] widget — a unified title-bar content strip.
 //!
 //! A `CaptionBar` carries the *content* of a window's title bar (a centered
-//! title, and — in later slices — a leading tab/icon area and trailing window
-//! buttons) as one widget that looks identical on every OS. The window *buttons*
+//! title and trailing window buttons) as one widget that looks identical on every OS. The window *buttons*
 //! diverge by platform convention, but that divergence is driven by a **data
-//! contract**, never by `target_os` (AGENTS section 24):
+//! contract**, never by `target_os`:
 //!
 //! - [`WindowChrome`](viso_ui::WindowChrome) (the chrome mode, from the window
 //!   config) decides whether self-drawn min/max/close buttons are *allowed* at all;
@@ -34,7 +33,7 @@
 //! leading section stays empty on macOS, the title band spans the whole bar, and
 //! `Justify::Center` places the title at the window's center. On Windows/Linux
 //! the self-drawn buttons occupy the trailing section and the title centers in
-//! the room that remains — the platform convention, matching the reference.
+//! the room that remains — the platform convention.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -78,14 +77,13 @@ const TITLE: Rgba = Rgba {
 const PADDING: f32 = 8.0;
 
 /// The width of a single self-drawn window button hit box, in logical points.
-/// Matches the desktop convention of a wide, easy-to-hit target (makepad's
-/// desktop button is 46×29); the glyph itself is small and centered within it.
+/// Matches the desktop convention of a wide, easy-to-hit target; the glyph
+/// itself is small and centered within it.
 const BUTTON_WIDTH: f32 = 46.0;
 
 /// The half-extent of a window-button glyph from the button's center, in logical
 /// points. The min line spans `2 * GLYPH` wide; the max box is `2 * GLYPH`
-/// square; the close cross spans `2 * GLYPH` on each diagonal. Mirrors makepad's
-/// `sz = 4.5` in `desktop_button.rs`.
+/// square; the close cross spans `2 * GLYPH` on each diagonal.
 const GLYPH: f32 = 4.5;
 
 /// The stroke width of a window-button glyph.
@@ -165,12 +163,11 @@ impl WindowButtonKind {
     }
 
     /// The glyph geometry, in a `2 * GLYPH`-square local space centered on the
-    /// button's own center — stroked, not filled. Mirrors the three makepad
-    /// `desktop_button.rs` SDF paths (line / rect / cross) as `PathCmd` strokes
-    /// (divergence: vector paths, not per-button SDF shaders).
+    /// button's own center — stroked, not filled: a line, a rect, or a cross as
+    /// `PathCmd` strokes.
     fn glyph(self) -> Vec<PathCmd> {
         // Local space spans [0, 2*GLYPH] on each axis; `c` is its center, so the
-        // geometry matches makepad's center-relative `c.x ± sz` / `c.y ± sz`.
+        // geometry is center-relative (`c ± GLYPH`).
         let c = GLYPH;
         match self {
             WindowButtonKind::Minimize => vec![
@@ -252,13 +249,12 @@ impl Default for CaptionBarStyle {
 /// Construct one with [`caption_bar`] and adjust it with the chainable setters.
 /// It maps to a full-width [`Axis::Row`] flex (the bar) with three children:
 ///
-/// - a **leading** `Fit` section — a native-button spacer (when the platform has
-///   reported a traffic-light box, macOS) plus, in later slices, tabs/icons;
+/// - a **leading** `Fit` section — empty: the native traffic-light buttons
+///   (macOS) float above the caption and take no layout width;
 /// - a **centered title** — a [`Length::Fill`] section whose own
 ///   [`Justify::Center`] centers the reused [`crate::Label`];
-/// - a **trailing** `Fit` section — empty in this slice; self-drawn min/max/close
-///   buttons land here (step 3) when `chrome == SelfDrawn` and no native buttons
-///   were reported.
+/// - a **trailing** `Fit` section — the self-drawn min/max/close buttons when
+///   `chrome == SelfDrawn` and no native buttons were reported, otherwise empty.
 ///
 /// Its accessible role is [`Role::Group`] — the bar is a non-interactive
 /// container; the interactive window buttons carry their own `Button` semantics
@@ -266,8 +262,8 @@ impl Default for CaptionBarStyle {
 ///
 /// Invalidation: the bar is static content built once. The native-button spacer
 /// starts at width 0 when no traffic-light geometry has arrived yet and is grown
-/// later by the facade through a targeted `LAYOUT | PAINT` size update (step 4),
-/// never a rebuild.
+/// later by the facade through a targeted `LAYOUT | PAINT` size update, never a
+/// rebuild.
 pub struct CaptionBar {
     /// The window title, shown centered and used as the accessible name.
     title: String,
@@ -470,12 +466,11 @@ impl CaptionBar {
     /// fullscreen via `set_hidden` — can capture it. [`Component::build`]
     /// delegates here and discards the handle. Splitting it this way keeps the
     /// caption id reachable without widening the `Component` trait's `build`
-    /// return type across every widget (AGENTS section 40).
+    /// return type across every widget.
     pub fn build_root(&self, cx: &mut BuildCx<'_>) -> viso_ui::Handle {
         // Read the per-window chrome facts once, at build time. Two forward-flowing
-        // signals decide the leading reserve and (in later slices) whether to
-        // self-draw window buttons — driven by the data contract, never `target_os`
-        // (AGENTS section 24).
+        // signals decide the bar height and whether to self-draw window buttons —
+        // driven by the data contract, never `target_os`.
         let ChromeContext {
             chrome,
             buttons_width,
@@ -612,7 +607,7 @@ impl CaptionBar {
 
         // The bar is a non-interactive container: a `Group` with the title as its
         // accessible name. Interactive window buttons carry their own `Button`
-        // semantics when they exist (step 3).
+        // semantics when they exist.
         cx.semantics(
             root,
             Semantics::role(Role::Group).with_label(self.title.clone()),

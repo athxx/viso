@@ -2,7 +2,7 @@
 //! index widths. The vector-mesh lane (Path/Mesh) tessellates into a real
 //! vertex + index buffer and draws it as one indexed triangle list; small
 //! geometry (≤ 64k vertices) uses a 16-bit index buffer, larger geometry a
-//! 32-bit one (§13.4). This proves the backend binds each width correctly:
+//! 32-bit one. This proves the backend binds each width correctly:
 //! the same two-triangle quad, drawn once with `U16` indices and once with
 //! `U32` indices, rasterizes identically.
 

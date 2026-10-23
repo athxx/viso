@@ -1,4 +1,4 @@
-//! Color effects and their fusion into render-target ops (§17.3, §16.2).
+//! Color effects and their fusion into render-target ops.
 //!
 //! Every effect in this module is a *per-pixel recolor*: it reads one source
 //! pixel and writes one destination pixel, with no neighbourhood and no
@@ -23,7 +23,7 @@
 //! scaling that one row ([`ColorOp::with_opacity`]).
 //!
 //! This is a cold-path module: chains are fused once when a layer is ingested,
-//! never per frame (§7.2), and the result is plain `Copy` data with no
+//! never per frame, and the result is plain `Copy` data with no
 //! allocation of its own.
 
 /// Rec. 709 luminance weights (`feColorMatrix` / CSS filter convention): the
@@ -225,7 +225,7 @@ impl ColorMatrix {
     }
 }
 
-/// One authored color effect on a layer (§17.3).
+/// One authored color effect on a layer.
 ///
 /// The first nine variants are affine and therefore *mergeable*: any run of
 /// them fuses into a single [`ColorOp`] regardless of length or order.
@@ -368,7 +368,7 @@ impl ColorOp {
 }
 
 /// Compile `effects` into the fewest [`ColorOp`]s that reproduce them, pushing
-/// the result onto `out` in application order (§17.3).
+/// the result onto `out` in application order.
 ///
 /// The rule is one line of algebra: affine stages compose into the current
 /// matrix, and successive gammas multiply their exponents
@@ -386,7 +386,7 @@ impl ColorOp {
 /// `effects` is an iterator, not a slice, so the renderer can fuse a chain
 /// straight out of the primitive stream without materializing it; `out` is not
 /// cleared, so the caller appends into a reusable arena and remembers the range.
-/// Between them the whole compile is allocation-free (§7.1, §28).
+/// Between them the whole compile is allocation-free.
 pub fn fuse(effects: impl IntoIterator<Item = ColorEffect>, out: &mut Vec<ColorOp>) {
     let mut cur = ColorOp::IDENTITY;
     for effect in effects {

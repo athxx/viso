@@ -1,7 +1,7 @@
-//! Texture binding contract (§20.2): what a frame of images and text costs when
+//! Texture binding contract: what a frame of images and text costs when
 //! a draw can bind only one texture at a time.
 //!
-//! §20.2 offers a fast path — a resource table the instance indexes — and then
+//! The renderer offers a fast path — a resource table the instance indexes — and then
 //! names the fallback that has to carry every backend without one: **atlas, a
 //! small texture set, and bind-group batching**. This file is the fallback's
 //! contract, measured through the public paint stream and `FrameStats`:
@@ -237,7 +237,7 @@ fn the_cost_is_switches_in_paint_order_not_texture_count() {
 }
 
 /// A different *family* between two images is a barrier even when they share a
-/// texture: batching never reorders paint order to save a draw (§16.2).
+/// texture: batching never reorders paint order to save a draw.
 #[test]
 fn an_opaque_quad_between_two_images_is_still_a_barrier() {
     let stats = scene(|gpu| {
@@ -256,7 +256,7 @@ fn an_opaque_quad_between_two_images_is_still_a_barrier() {
 
 /// An honest description of an ordinary frame — a few textures, a few switches —
 /// selects the portable model even against a backend claiming a huge table, which
-/// is §20.2's hard rule: bindless is for a resource set atlasing could not shrink,
+/// is the hard rule: bindless is for a resource set atlasing could not shrink,
 /// not for images in general.
 #[test]
 fn an_ordinary_textured_frame_stays_on_the_portable_model() {

@@ -1,4 +1,4 @@
-//! The Rust-side entry points of the Viso DSL (AGENTS section 21.5): `ui!`,
+//! The Rust-side entry points of the Viso DSL: `ui!`,
 //! `component!` and `view!`.
 //!
 //! A proc-macro crate is a compile-time dylib, so — unlike the leaf `viso-macros`
@@ -7,15 +7,15 @@
 //! differ only in the grammar entry they parse and where their source comes from,
 //! and share resolution, typed HIR, UI IR, Binding IR and diagnostics. The mounted
 //! view is a static `viso_ui` builder expression: no runtime parse, no per-frame
-//! rebuild (section 59).
+//! rebuild.
 //!
 //! The emitted tokens name `::viso::__private::viso_ui::…` and
 //! `::viso::__private::viso_view::…` paths: the facade `viso` re-exports the
 //! macros and the crates their expansion builds with, so an app that depends
 //! on `viso` alone expands them. This crate depends on neither.
 //!
-//! A compiler-known typed binding never silently falls back to dynamic tracking
-//! (section 10.3): each reactive read becomes a static `cx.bind` edge.
+//! A compiler-known typed binding never silently falls back to dynamic tracking:
+//! each reactive read becomes a static `cx.bind` edge.
 
 mod emit;
 mod expand;

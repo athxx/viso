@@ -1,9 +1,9 @@
-//! Self-contained shader diagnostics (architecture section 30 / 36, AGENTS 19).
+//! Self-contained shader diagnostics.
 //!
 //! `viso-shader` sits below `viso-dsl` in the crate DAG (render → shader → gpu;
-//! dsl is above), so it cannot import the DSL's `Diagnostic` even though
-//! architecture section 36 permits the two compilers to *share* diagnostic
-//! infrastructure — the dependency direction forbids that specific edge. This
+//! dsl is above), so it cannot import the DSL's `Diagnostic` even though the
+//! two compilers may *share* diagnostic infrastructure — the dependency
+//! direction forbids that specific edge. This
 //! module therefore carries a parallel-but-independent diagnostic type: the same
 //! severity ordering, a stable string code, notes, and a rendered message, so a
 //! future shared renderer could treat both uniformly, without `viso-shader`
@@ -16,8 +16,7 @@
 //! no span.
 //!
 //! This is a cold-path structure — diagnostics are assembled once per compile,
-//! never on a frame path — so owned `String`/`Vec` fields are appropriate
-//! (AGENTS section 7.2).
+//! never on a frame path — so owned `String`/`Vec` fields are appropriate.
 
 use crate::CompileStage;
 use crate::ir::body::lex::Span;

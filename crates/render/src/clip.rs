@@ -1,4 +1,4 @@
-//! The clip planner (§14.1): classify a requested clip into the cheapest tier
+//! The clip planner: classify a requested clip into the cheapest tier
 //! that realizes it correctly, and encode the "what actually clips children"
 //! policy that keeps ordinary rounded containers off the offscreen path.
 //!
@@ -8,13 +8,13 @@
 //! in-place draw); an arbitrary path needs a coverage mask built first; a stable
 //! repeated complex clip earns a cached (retained R8) realization so it is built
 //! once and reused. Defaulting every non-rect clip to an offscreen layer is the
-//! anti-pattern this planner exists to prevent (§14): cost is paid by tier.
+//! anti-pattern this planner exists to prevent: cost is paid by tier.
 //!
-//! This is a cold-path decision (§7.2): the tier is chosen once when a clip is
+//! This is a cold-path decision: the tier is chosen once when a clip is
 //! ingested — the same place [`EffectCost`] is assigned to a primitive — and
 //! stored beside the resolved clip, never recomputed per frame on the hot path.
 //! The planner returns *what to do*; the renderer and the retained
-//! [`ClipChain`](crate::scene) machinery (C0.2) carry out and cache the result.
+//! [`ClipChain`](crate::scene) machinery carry out and cache the result.
 
 use crate::EffectCost;
 use crate::primitive::Corners;
@@ -37,7 +37,7 @@ pub enum ClipShape {
     RoundRect {
         /// The clip box in points.
         rect: Rect,
-        /// Per-corner radii, normalized against `rect` by the planner (§11.2).
+        /// Per-corner radii, normalized against `rect` by the planner.
         radii: Corners,
     },
     /// An arbitrary path clip, described here only by its axis-aligned bounds
@@ -69,7 +69,7 @@ pub enum ClipTier {
     /// A retained coverage mask (R8 `ClipMaskAtlas`) built once and reused across
     /// frames — a stable repeated complex clip. Same per-frame cost class as
     /// [`Mask`](ClipTier::Mask) the frame it is first built; free afterward while
-    /// the geometry is unchanged (C0.2).
+    /// the geometry is unchanged.
     CachedMask,
 }
 
@@ -80,7 +80,7 @@ impl ClipTier {
             ClipTier::Scissor => EffectCost::Local,
             ClipTier::Analytic => EffectCost::Analytic,
             // A cached mask still costs a mask build the frame it is realized;
-            // C0.2's retained ClipChain is what makes later frames free, not a
+            // the retained ClipChain is what makes later frames free, not a
             // cheaper cost class here.
             ClipTier::Mask | ClipTier::CachedMask => EffectCost::NeedsMask,
         }
@@ -108,7 +108,7 @@ pub struct ClipPlan {
     pub bounds: Rect,
 }
 
-/// Classify a clip [`ClipShape`] into the cheapest tier that realizes it (§14.1).
+/// Classify a clip [`ClipShape`] into the cheapest tier that realizes it.
 ///
 /// `stable` marks a clip whose geometry repeats unchanged across frames (a
 /// retained container's clip, not a per-frame-rebuilt one); a stable *complex*
@@ -162,7 +162,7 @@ pub fn plan_clip(shape: ClipShape, stable: bool) -> ClipPlan {
 }
 
 /// Whether a container clips its children, and if so how, given only that it has
-/// a border radius and whether it is a scroll viewport (§14).
+/// a border radius and whether it is a scroll viewport.
 ///
 /// This encodes the policy that keeps the common case cheap: **a border radius
 /// does not imply clip-children**. An ordinary rounded container is

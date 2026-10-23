@@ -1,4 +1,4 @@
-//! Color effect fusion contract (§17.3).
+//! Color effect fusion contract.
 //!
 //! The property this file defends is a cost one, and it is easy to lose: a UI
 //! that asks for `brightness → contrast → saturation` is asking for *one*
@@ -120,7 +120,7 @@ fn assert_pixel_close(actual: [f32; 4], expect: [f32; 4], what: &str) {
 // 1. A mergeable run is one op and no extra passes
 // ---------------------------------------------------------------------------
 
-/// The headline case from §17.3: `Brightness → Contrast → Saturation` must not
+/// The headline case: `Brightness → Contrast → Saturation` must not
 /// become three render-target passes. It fuses into one matrix, that matrix
 /// rides the composite the layer already draws, and the frame costs the layer's
 /// own offscreen pass plus the surface — two passes total.
@@ -401,7 +401,7 @@ fn layer_opacity_rides_the_fused_op() {
 // ---------------------------------------------------------------------------
 
 /// The scratch targets a split chain ping-pongs on come from the transient pool,
-/// so a repeated frame allocates nothing new and replans nothing (§16.3, §17.4).
+/// so a repeated frame allocates nothing new and replans nothing.
 #[test]
 fn a_repeated_frame_allocates_and_recompiles_nothing() {
     let (mut gpu, _surface, mut r) = renderer();

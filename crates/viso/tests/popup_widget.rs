@@ -1,4 +1,4 @@
-//! Section 71 validation pack for the `Popup` control — a persistent anchor with
+//! Validation pack for the `Popup` control — a persistent anchor with
 //! a floating content layer that opens over the scene — driven through the public
 //! facade. Mirrors `navigation_stack_widget.rs` (golden + input tapes + a11y +
 //! allocation) with the popup's own structure: the anchor and content build once
@@ -26,7 +26,7 @@
 //! - **a11y snapshot** — the derived tree carries a `Group` root over a `Group`
 //!   content; the content is focusable and declares a key handler for Escape;
 //! - **allocation profile** — a warmed-up open `Popup` frame allocates nothing per
-//!   frame (architecture section 47 hot-path contract), plus an *open-then-close
+//!   frame (hot-path contract), plus an *open-then-close
 //!   flip* frame: driving a close through the deferred seam flips `hidden` (which
 //!   marks `LAYOUT | PAINT`), so the flip re-runs `store.layout`; the flip's
 //!   one-time layout cost folds into warmup and the steady assert holds only after

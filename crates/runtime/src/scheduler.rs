@@ -95,7 +95,7 @@ impl<D: FrameDriver, C: FrameClock> Scheduler<D, C> {
     ///
     /// Identical to [`run`](Self::run) but returns the owned driver once the
     /// pump exits (a scripted headless app drains its queue and returns, or the
-    /// last window closes). The point is section 66: a headless test drives the
+    /// last window closes). The point is headless testing: a test drives the
     /// *real* frame loop end to end and then reads the driver's final state —
     /// the animation registry emptied, the store's world rects re-derived — with
     /// no manually-driven `NodeStore` shim standing in for the loop.
@@ -302,8 +302,8 @@ impl<D: FrameDriver, C: FrameClock> AppHandler for Loop<D, C> {
                 app.request_redraw(window);
             }
             RawEvent::CloseRequested { window, accept } => {
-                // Phase 1 accepts every close (no unsaved-state veto yet); the
-                // handshake plumbing is in place for later phases to deny.
+                // Every close is accepted (there is no unsaved-state veto); the
+                // handshake plumbing is in place for a handler to deny.
                 let _ = window;
                 let _ = accept.is_accepted();
             }

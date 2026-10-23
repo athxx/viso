@@ -21,7 +21,7 @@
 //! Every retained outline is admitted into the vector pool of
 //! [`GlyphResidency`], which carries its own byte budget ([`OUTLINE_POOL`]) and
 //! page-age CLOCK eviction, independent of the coverage and distance-field
-//! pools (§13.6, §13.9). The cache is the owner of that pool's contents: it
+//! pools. The cache is the owner of that pool's contents: it
 //! drains the vector pool's reclaims itself, drops exactly the outlines on the
 //! reclaimed pages, and a later request for one re-tessellates it once.
 //!

@@ -7,10 +7,10 @@
 //! mount 100k nodes. The visible rows are the flatten of the tree under the set
 //! of open folders, fed to a keyed virtual list, so only a window of rows (plus
 //! overscan) is ever mounted, and an expand or collapse reuses the surviving
-//! rows' host nodes rather than rebuilding the list (architecture section 12.4).
+//! rows' host nodes rather than rebuilding the list.
 //!
 //! Like [`Dock`](super::dock::Dock), this is a control that is a directory rather
-//! than a single file (AGENTS section 5): the data model, the build walk, the
+//! than a single file: the data model, the build walk, the
 //! imperative command handle, the structural reconcile step, and the
 //! accessibility contract each own a file.
 //!
@@ -19,14 +19,13 @@
 //! The tree is an owned [`TreeNode`] forest — the control's **warm** source of
 //! truth — plus two [`NodeKey`]-keyed sets: which folders are open, and which
 //! rows are selected. A `NodeKey` is a stable path identity, so a folder keeps its
-//! expanded and selected state as the tree collapses, reopens, or reorders
-//! (AGENTS section 8.6, 21.8). The model's [`flatten`](model::flatten) reads the
-//! tree and the open set into the flat visible-row list the build walk authors and
-//! the reconcile step re-drives. A click or a key writes an *intent*; the
+//! expanded and selected state as the tree collapses, reopens, or reorders. The
+//! model's [`flatten`](model::flatten) reads the tree and the open set into the
+//! flat visible-row list the build walk authors and the reconcile step re-drives. A click or a key writes an *intent*; the
 //! reconcile step (holding `&mut NodeStore` and `&mut VirtualLists`) edits the
 //! open/selection/focus state, reflattens, and drives the keyed list — the same
 //! handler-writes-intent / reconcile-applies split the dock and the virtualized
-//! list use, and the reason this control opens an ADR.
+//! list use.
 //!
 //! # Registering a tree
 //!
@@ -80,9 +79,8 @@ pub use model::{NodeKey, SelectOp, TreeNode, VisibleRow};
 use model::flatten;
 
 /// The keyed map from a row's [`NodeKey`] to the host node the build walk mounted
-/// for it, shared with the reconcile step (a later section) so it can address a
-/// row by key rather than searching the arena — a discrete-action lookup, never a
-/// per-frame path (AGENTS section 45).
+/// for it, shared with the reconcile step so it can address a row by key rather
+/// than searching the arena — a discrete-action lookup, never a per-frame path.
 pub(crate) type RowNodes = Rc<RefCell<HashMap<NodeKey, NodeId>>>;
 
 /// The flattened visible-row list, shared between the build walk (whose keyed
@@ -90,13 +88,12 @@ pub(crate) type RowNodes = Rc<RefCell<HashMap<NodeKey, NodeId>>>;
 /// into it on an expand/collapse, then drives the list's item count). A **warm**
 /// cell: rewritten only on a discrete toggle, never a per-frame path — the shared
 /// cell is what lets the substrate diff by [`NodeKey`] and reuse surviving rows'
-/// hosts across a structural reconcile (architecture section 12.4).
+/// hosts across a structural reconcile.
 pub(crate) type VisibleRows = Rc<RefCell<Vec<VisibleRow>>>;
 
 /// The key-to-label index, resolved once from the tree and shared with the row
 /// builder so a row body never walks the tree at mount time. Cold data (the
-/// display strings) behind an [`Rc`], read only when a row mounts (AGENTS
-/// section 8.4).
+/// display strings) behind an [`Rc`], read only when a row mounts.
 pub(crate) type Labels = Rc<HashMap<NodeKey, String>>;
 
 /// How many rows a [`FileTree`] lets the user select at once.

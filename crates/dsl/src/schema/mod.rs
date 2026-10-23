@@ -175,7 +175,7 @@ pub struct HandleSchema {
     pub thread: ThreadDomain,
 }
 
-/// The section 139 schema object of one symbol.
+/// The schema object of one symbol.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Schema {
     /// What it describes.
@@ -697,7 +697,7 @@ pub(crate) fn dirty_names(class: DirtyClass) -> Vec<&'static str> {
 }
 
 impl Schema {
-    /// Writes the section 139 schema object.
+    /// Writes the schema object.
     pub fn write_json(&self, w: &mut JsonWriter) {
         w.begin_object();
         w.name("schema_version");

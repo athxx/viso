@@ -1,12 +1,12 @@
-//! F4.4 dirty-range coalescing (§9.3): the pool turns the slots that changed
+//! Dirty-range coalescing: the pool turns the slots that changed
 //! this frame into a few contiguous upload ranges — bridging short gaps of clean
 //! slots to avoid many tiny `write_buffer` calls, splitting on wide gaps — so a
 //! local change stays a local upload and an unchanged frame uploads nothing.
 //!
 //! [`InstancePool::sync`] returns the number of `write_buffer` calls it issued,
 //! which equals the number of coalesced ranges. These tests drive `sync`
-//! against a real [`CpuRaster`] and assert that count for the shapes §9.3
-//! cares about; the pure gap-threshold arithmetic is unit-tested inside the
+//! against a real [`CpuRaster`] and assert that count for the shapes that
+//! matter; the pure gap-threshold arithmetic is unit-tested inside the
 //! coalescer module. The bytes reaching the GPU are unaffected by bridging —
 //! a bridged clean slot re-uploads the value already there — which the golden
 //! test pins separately.

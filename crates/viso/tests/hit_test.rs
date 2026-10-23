@@ -1,8 +1,8 @@
 //! Hit testing through the public facade: a point maps to the topmost hittable
 //! node. Like `reactive_wiring`, this drives the ui store directly (all reachable
-//! through `viso::ui`) rather than the live scheduler, because pointer routing
-//! that consumes the hit test lands in the next slice. Here we prove the query
-//! itself over a real laid-out tree built through the facade path.
+//! through `viso::ui`) rather than the live scheduler, leaving the pointer
+//! routing that consumes the hit test to `pointer_routing`. Here we prove the
+//! query itself over a real laid-out tree built through the facade path.
 
 use viso::render::{Rect, Rgba};
 use viso::ui::{Axis, BoxStyle, BuildCx, FlexStyle, Inset, LeafStyle, NodeStore, Size, hit_test};

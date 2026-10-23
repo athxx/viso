@@ -1,5 +1,4 @@
-//! `viso-shader` — the shader compilation pipeline (architecture section 36 /
-//! AGENTS 19).
+//! `viso-shader` — the shader compilation pipeline.
 //!
 //! Flow: source → parsed syntax → typed IR → validation → backend codegen.
 //! On hot reload, a shader compile error must preserve the last-good pipeline
@@ -10,12 +9,12 @@
 //! [`InstanceSchema`](viso_gpu_abi::InstanceSchema) project from that single value
 //! (see the [`ir`] module docs). Packing rules and per-primitive math are
 //! represented directly in a typed IR
-//! without sharing a script VM, the divergence AGENTS 19 mandates.
+//! without sharing a script VM.
 //!
 //! Diagnostics are self-contained: `viso-shader` sits below `viso-dsl` in the
-//! crate DAG, so it cannot import the DSL's `Diagnostic`; architecture section 36
-//! permits sharing diagnostic infrastructure but the dependency direction
-//! forbids that specific edge, so this crate carries its own.
+//! crate DAG, so it cannot import the DSL's `Diagnostic`; sharing diagnostic
+//! infrastructure would be permitted, but the dependency direction forbids that
+//! specific edge, so this crate carries its own.
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
@@ -43,8 +42,7 @@ pub use msl::{
 };
 pub use reload::{CompiledShader, ShaderPipeline};
 
-/// The stages a shader source passes through, in order (architecture section 36
-/// / AGENTS 19).
+/// The stages a shader source passes through, in order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompileStage {
     Source,

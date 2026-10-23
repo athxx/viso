@@ -6,7 +6,7 @@
 //! The dock's arrangement is a *tree* ([`DockTree`]), which a reactive scalar cell
 //! cannot hold, so the tree is the dock's owned **warm** state: built once, read by
 //! the build walk and the reconcile step, edited only by discrete command/drag
-//! actions (module docs, [ADR 0023](../../../../docs/adr/0023-dock-live-relayout-and-tree-state.md)).
+//! actions (see the module docs).
 //! The handle owns that tree behind an `Rc<RefCell<..>>` (the same ownership shape
 //! the navigation stack's `NavHandle` uses for its page list) alongside the keyed
 //! panel-node map and the seam records the build walk produced.
@@ -18,19 +18,18 @@
 //!   and defers a `set_hidden` flip per sibling panel node through the
 //!   [`EventCx`](viso_ui::EventCx) — a handler holds no node store, so the router
 //!   applies the flips after the handler returns. No structural change: a hidden
-//!   panel folds out of layout and paint through the retained `hidden` flag
-//!   (AGENTS section 8.4 / 11).
+//!   panel folds out of layout and paint through the retained `hidden` flag.
 //! - **[`dock`](DockHandle::dock)/[`undock`](DockHandle::undock)/[`float`](DockHandle::float)/[`close`](DockHandle::close)**
 //!   edit the tree's *structure* (via the pure transforms in [`tree`](super::tree)).
 //!   The reconcile step ([`reconcile`](super::reconcile)) reads the edited tree and
-//!   the seam fractions and rewrites live geometry; the node remounting a redocked
-//!   panel's built-once subtree is the drag-to-redock section's job. A closed or
+//!   the seam fractions and rewrites live geometry, including remounting a
+//!   redocked panel's built-once subtree. A closed or
 //!   undocked-into-nothing panel's node is hidden so it leaves layout immediately.
 //!
 //! The reconcile intent-drain [`reconcile`](DockHandle::reconcile) is what a host
-//! calls after an input transaction with `&mut NodeStore`: it rewrites every seam's
-//! pane weights from its committed fraction (the seam-drag section's live-relayout
-//! path) — the caller `reconcile_seams` needs so it is no longer dead code.
+//! calls after an input transaction with `&mut NodeStore`: it applies the committed
+//! redock intents and rewrites every seam's pane weights from its committed fraction
+//! (the live-relayout path of a seam drag).
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -43,7 +42,7 @@ use super::tree::{DockTree, DropPart, PanelKey};
 /// The dock's warm, owned state, shared between the build walk (which fills it),
 /// the [`DockHandle`] (which edits it on a command), and the reconcile step (which
 /// reads it). Not a bag of reactive scalar cells — a scalar cell cannot hold a tree
-/// (module docs, ADR 0023). Written once at build, then read and edited only on
+/// (see the module docs). Written once at build, then read and edited only on
 /// discrete command/drag actions, never a per-frame path, so the `RefCell` borrow
 /// is uncontended.
 pub(super) struct DockState {
@@ -106,8 +105,7 @@ pub struct DockHandle {
     state: DockStateCell,
     /// The keyed panel-node map, filled by the build walk. A command resolves a
     /// panel's built-once node here to flip its visibility, or to remount its
-    /// built-once node when a redock moves it (a discrete-action cold lookup, AGENTS
-    /// section 45).
+    /// built-once node when a redock moves it (a discrete-action cold lookup).
     panels: PanelNodes,
     /// The shared drag channel a drag-to-redock drop writes into; the reconcile step
     /// drains its intents, applies the tree edits, remounts the moved panel nodes,
@@ -169,8 +167,7 @@ impl DockHandle {
 
     /// Undock `key`: alias for [`close`](DockHandle::close) — the panel leaves the
     /// docked tree and its node folds out of layout. Distinguished by name so an app
-    /// reads "undock this panel" at the call site; a later section may reattach an
-    /// undocked panel as a float.
+    /// reads "undock this panel" at the call site.
     pub fn undock(&self, ev: &mut EventCx<'_>, key: PanelKey) {
         self.close(ev, key);
     }
@@ -179,7 +176,7 @@ impl DockHandle {
     /// store, then rewrite every seam's pane weights from its committed fraction. A
     /// host calls this after an input transaction with `&mut NodeStore` and the state
     /// store the drag handlers wrote into — the handler-writes-intent /
-    /// reconcile-mutates-store split (ADR 0023).
+    /// reconcile-mutates-store split.
     ///
     /// Two effects, in order:
     ///
@@ -188,7 +185,7 @@ impl DockHandle {
     ///   the pure tree edit ([`DockTree::dock`]), remount the moved panel's built-once
     ///   node under its new region (an arena detach + re-append, never a rebuild), hide
     ///   the drop hint, and refresh the zone rects from resolved bounds. A structural
-    ///   change (AGENTS section 8.1), so it runs before the geometry pass.
+    ///   change, so it runs before the geometry pass.
     /// - **Seam weights** ([`reconcile_seams`](super::reconcile::reconcile_seams)):
     ///   rewrite every seam's pane weights from its committed fraction against the
     ///   store's resolved extents — the live seam-drag path.

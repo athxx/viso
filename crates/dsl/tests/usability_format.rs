@@ -1,4 +1,4 @@
-//! The human usability samples (§156) are already in canonical form: the
+//! The human usability samples are already in canonical form: the
 //! formatter leaves each unchanged, so formatting a sample a person just
 //! wrote from them moves nothing they did not type.
 

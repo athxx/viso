@@ -7,7 +7,7 @@
 //!   composites in integers ([`super::span`]), as an 8-bit attachment does.
 //! - Their sRGB variants (`Bgra8UnormSrgb`, `Rgba8UnormSrgb`): the same bytes,
 //!   color sRGB-encoded. A write decodes the destination, composites in
-//!   linear light and encodes; a sample decodes (ADR 0048).
+//!   linear light and encodes; a sample decodes.
 //! - `Rgb565Unorm`: two bytes per pixel, opaque, sRGB-encoded. A write widens
 //!   the destination to bytes, decodes, composites, encodes and narrows back
 //!   — rounded, or through a 4×4 ordered dither for the draws that ask for it

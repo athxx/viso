@@ -19,10 +19,10 @@
 //! [`EventCx`] has none).
 //!
 //! Printable typing is IME-commit-driven: there is no key-to-insert path, which
-//! is what makes the control IME-aware from the first slice (AGENTS section 20).
+//! is what makes the control IME-aware.
 //!
 //! Its accessible role is [`Role::TextField`] with the given label as its
-//! accessible name (AGENTS section 15). A [`placeholder`](TextInput::placeholder)
+//! accessible name. A [`placeholder`](TextInput::placeholder)
 //! draws while the field is empty, and a [`secure`](TextInput::secure) field
 //! draws a bullet per grapheme, gives nothing to copy or cut, keeps no undo
 //! history, and is a [`Role::SecureField`].
@@ -126,8 +126,7 @@ impl Default for TextInputStyle {
 /// See the [module docs](self) for a build example. The edit state lives in a
 /// retained [`Buffer`](viso_ui::Buffer) in the driver registry; editing queues
 /// intents that the router applies and the shape pass folds in, re-shaping only
-/// this field's text — a targeted invalidation, not a rebuild (architecture
-/// section 47).
+/// this field's text — a targeted invalidation, not a rebuild.
 pub struct TextInput {
     /// The accessible name (a caption/label for the field; not the editable text).
     label: String,
@@ -301,9 +300,9 @@ impl Component for TextInput {
         });
 
         // A text field's accessible role, with the given label as its accessible
-        // name (AGENTS section 15). The live text/selection is proven through the
-        // buffer and the input tapes; surfacing them in the derived tree is a later
-        // slice (the derive pass has no edit registry).
+        // name. The live text/selection is proven through the buffer and the input
+        // tapes and is not surfaced in the derived tree (the derive pass has no
+        // edit registry).
         let role = if self.look.secure {
             Role::SecureField
         } else {

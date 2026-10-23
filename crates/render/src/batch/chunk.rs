@@ -1,4 +1,4 @@
-//! The render chunk (§9.6): one contiguous draw the planner emitted, and the
+//! The render chunk: one contiguous draw the planner emitted, and the
 //! unit of incremental rebuild.
 //!
 //! A [`RenderChunk`] is the maximal run of paint-order-adjacent primitives that
@@ -12,7 +12,7 @@ use super::planner::{BatchFamily, BatchKey};
 use crate::primitive::Rect;
 
 /// A render chunk's index into the frame's chunk list — the stable handle
-/// architecture section 62 names for `RenderChunkId -> ranges`.
+/// for `RenderChunkId -> ranges` introspection.
 ///
 /// `RenderChunkId(i)` addresses the `i`-th [`RenderChunk`] the planner emitted,
 /// in submission order. It addresses the same contiguous runs as

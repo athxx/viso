@@ -1,5 +1,5 @@
 //! A text's `font_weight`, `font_family`, `line_height`, `max_lines`,
-//! `overflow` and `align` (§U5), from source to the text request its node
+//! `overflow` and `align`, from source to the text request its node
 //! declares: constant or reading state, under hot reload and from the release
 //! package, on a `Text`, a `Button` and a `TextInput`.
 

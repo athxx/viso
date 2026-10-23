@@ -1,11 +1,11 @@
 //! Reactive-read collection — which reactive sources an expression observes.
 //!
 //! A binding's *reactive reads* are the state, input, and computed members it reads while
-//! evaluating; they are what the next slice's binding IR turns into precise invalidation
-//! edges (`StateId -> Label.text`, spec reactive-binding section), so the frontend must
-//! collect them here rather than fall back to runtime dependency tracking. This slice
-//! collects the three core reactive kinds — `state`, `input`, `computed` — leaving theme
-//! tokens and other sources to their consumer slices.
+//! evaluating; they are what the binding IR turns into precise invalidation edges
+//! (`StateId -> Label.text`), so the frontend must collect them here rather than fall
+//! back to runtime dependency tracking. Collection covers the three core reactive
+//! kinds — `state`, `input`, `computed`; theme tokens and other sources are not
+//! collected here.
 //!
 //! Collection walks the expression's resolved name uses: each path head that resolves to
 //! a symbol the environment classifies as a reactive source contributes that symbol. It

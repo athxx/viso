@@ -1,4 +1,4 @@
-//! `start` statements (§39): the policy a named task slot runs under and the
+//! `start` statements: the policy a named task slot runs under and the
 //! handler items, each at most once (`E4302`).
 
 use viso_behavior::TaskPolicy;

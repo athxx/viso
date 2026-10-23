@@ -637,7 +637,7 @@ mod tests {
 
     #[test]
     fn common_page_reuses_candidate_without_per_char_os_query() {
-        // The DoD: a page of many runs of the same shape queries the OS once and
+        // A page of many runs of the same shape queries the OS once and
         // serves every later run from the remembered candidate's local coverage.
         let provider = CountingProvider::new(true);
         let mut fb = FontFallback::new(1000);

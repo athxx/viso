@@ -18,7 +18,7 @@
 //!   records these at each mint site). A [`SymbolId`] is a position-independent
 //!   fingerprint, so this map is the only way back to the definition in source.
 //!
-//! Cold-path tooling (AGENTS 7.2): plain `HashMap`s over an already-resolved
+//! Cold-path tooling: plain `HashMap`s over an already-resolved
 //! module, built once per open/edit.
 
 use std::collections::HashMap;

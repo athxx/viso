@@ -1,7 +1,8 @@
-//! Frozen contract for the destination-dependent effect lane (§17, §3102-§3202).
+//! Frozen contract for the destination-dependent effect lane.
 //!
-//! Six contracts are pinned here, because M0's frosted/glass material, M1 and A0
-//! compose *entirely* out of them and must never have to redefine one:
+//! Six contracts are pinned here, because the frosted/glass material, the native
+//! material lane and the GPU specializations compose *entirely* out of them and
+//! must never have to redefine one:
 //!
 //! 1. **Backdrop dependency + shared capture.** What joins one capture group and
 //!    what opens a second, and the promise that a shared group's plan is the plan
@@ -26,7 +27,7 @@
 //! The behavioural coverage lives in `backdrop_contract.rs`,
 //! `color_effect_contract.rs`, `blend_contract.rs` and
 //! `effect_planner_contract.rs`; this file exists to state the contracts in one
-//! place, through the public surface only, so that a downstream slice that breaks
+//! place, through the public surface only, so that downstream work that breaks
 //! one trips a test whose name says which promise it broke.
 
 use std::mem::size_of;
@@ -70,7 +71,7 @@ fn quad(rect: Rect) -> Primitive {
 /// A quad strictly inside `r`, so a group holding both has provably overlapping
 /// children and cannot have its opacity folded away — the fixtures below pin what
 /// a *layer* costs, so the planner must not be able to sidestep them by removing
-/// the layer (§3145).
+/// the layer.
 fn contained(r: Rect) -> Primitive {
     quad(rect(
         r.x + r.w * 0.25,
@@ -133,7 +134,7 @@ fn panel(clip: Rect, sigma: f32) -> Vec<Primitive> {
 
 /// Two panels blurring at the same sigma, close enough that one padded ROI covers
 /// both, share **one** capture and **one** ladder: the pass plan of a single
-/// panel. Sharing adds composite draws, never passes (§17.1/§17.2).
+/// panel. Sharing adds composite draws, never passes.
 #[test]
 fn panels_at_one_sigma_share_one_capture_and_one_ladder() {
     let (mut gpu, _s, mut r) = renderer(W, H);
@@ -151,7 +152,7 @@ fn panels_at_one_sigma_share_one_capture_and_one_ladder() {
     assert_eq!(single.backdrop_captures, 1, "one panel is one capture");
     assert_eq!(
         shared.backdrop_captures, 1,
-        "two panels at one sigma join one capture group (§17.2)"
+        "two panels at one sigma join one capture group"
     );
     assert_eq!(
         shared.blur_passes, single.blur_passes,
@@ -159,7 +160,7 @@ fn panels_at_one_sigma_share_one_capture_and_one_ladder() {
     );
     assert_eq!(
         shared.render_passes, single.render_passes,
-        "sharing adds composites, never passes (§17.1)"
+        "sharing adds composites, never passes"
     );
     assert!(
         shared.draw_calls > single.draw_calls,
@@ -248,8 +249,8 @@ fn a_capture_is_bounded_by_its_roi_not_the_surface() {
 // ---------------------------------------------------------------------------
 
 /// Crossing a blur tier changes how many rungs read the capture and nothing else:
-/// still one capture, still one dependency. The tier belongs to the ladder (E1),
-/// the capture to the group (E2.1), and this pins that they stay separable.
+/// still one capture, still one dependency. The tier belongs to the ladder,
+/// the capture to the group, and this pins that they stay separable.
 #[test]
 fn a_backdrop_tier_change_adds_rungs_not_captures() {
     let (mut gpu, _s, mut r) = renderer(W, H);
@@ -308,8 +309,7 @@ fn graded(clip: Rect, effects: &[ColorEffect]) -> Vec<Primitive> {
 }
 
 /// A maximal run of affine stages fuses to **one** op that rides the composite
-/// the layer already draws — zero passes of its own, no matter how long the run
-/// (§17.3).
+/// the layer already draws — zero passes of its own, no matter how long the run.
 #[test]
 fn an_affine_run_is_one_op_and_no_pass_of_its_own() {
     let (mut gpu, _s, mut r) = renderer(W, H);
@@ -437,7 +437,7 @@ fn blended(clip: Rect, mode: Blend) -> Vec<Primitive> {
 
 /// A blend the fixed-function stage cannot express reads its destination through
 /// a snapshot bounded by the group's ROI — never the surface — and pays for it
-/// inside the layer target it already needed (§14.6).
+/// inside the layer target it already needed.
 #[test]
 fn an_advanced_blend_reads_a_bounded_destination() {
     let (mut gpu, _s, mut r) = renderer(W, H);
@@ -490,8 +490,8 @@ fn src_over_never_isolates() {
 // 5. Local / Nonlocal and the elimination ladder
 // ---------------------------------------------------------------------------
 
-/// The frontier: exactly which rungs of the cost ladder are local (§3102) and
-/// which are nonlocal (§3120), plus what each rung actually demands. A local
+/// The frontier: exactly which rungs of the cost ladder are local and
+/// which are nonlocal, plus what each rung actually demands. A local
 /// class shades in place and therefore demands *nothing* — no target, no capture,
 /// no destination read; every nonlocal class demands at least one of them. That
 /// implication is the frontier, and `is_local` / `locality` must agree with it.
@@ -588,7 +588,7 @@ fn the_locality_frontier_is_one_threshold() {
                 !offscreen && !backdrop && !destination,
                 "{}: a local class shades in place, so it must demand no pixels it \
                  does not own — a mask is a separate coverage build, not a read of \
-                 someone else's color (§3102)",
+                 someone else's color",
                 cost.label()
             );
         } else {
@@ -623,7 +623,7 @@ fn a_chain_is_as_nonlocal_as_its_worst_link() {
 
 /// The eight reasons are a closed, ordered vocabulary with distinct labels, and
 /// every one of them is nonlocal at a pinned rung — "a reason survived planning"
-/// and "this effect needs a target" are the same statement (§3149).
+/// and "this effect needs a target" are the same statement.
 #[test]
 fn the_layer_reason_vocabulary_is_closed_and_nonlocal() {
     assert_eq!(LayerReason::ALL.len(), 8);
@@ -632,7 +632,7 @@ fn the_layer_reason_vocabulary_is_closed_and_nonlocal() {
         assert!(!reason.label().is_empty());
         assert!(
             !reason.cost().is_local(),
-            "{} raised a layer, so it cannot be local (§3120)",
+            "{} raised a layer, so it cannot be local",
             reason.label()
         );
     }
@@ -662,7 +662,7 @@ fn the_layer_reason_vocabulary_is_closed_and_nonlocal() {
 }
 
 /// The six rungs are a closed, ordered vocabulary too, and both sets are single
-/// bytes — a plan is a value, not an allocation (§28).
+/// bytes — a plan is a value, not an allocation.
 #[test]
 fn the_elimination_ladder_is_closed_and_the_sets_are_bytes() {
     assert_eq!(LayerElimination::ALL.len(), 6);
@@ -684,7 +684,7 @@ fn the_elimination_ladder_is_closed_and_the_sets_are_bytes() {
     assert_eq!(
         set.iter().collect::<Vec<_>>(),
         vec![LayerReason::GroupOpacity, LayerReason::AdvancedBlend],
-        "iteration follows LayerReason::ALL, so an inspector dump is stable (§62)"
+        "iteration follows LayerReason::ALL, so an inspector dump is stable"
     );
     set.remove(LayerReason::GroupOpacity);
     assert_eq!(set, ReasonSet::of(LayerReason::AdvancedBlend));
@@ -853,7 +853,7 @@ fn the_scissor_rung_is_the_outcome_of_the_ladder() {
 
 /// Two panels over two separate quads. Recoloring what is under the first dirties
 /// **its** ROI and leaves the second's revision untouched — a backdrop is damaged
-/// by what changed behind it, not by the frame having changed (§3202).
+/// by what changed behind it, not by the frame having changed.
 #[test]
 fn damage_is_scoped_to_the_roi_that_changed() {
     let (mut gpu, _s, mut r) = renderer(W, H);

@@ -1,4 +1,4 @@
-//! The persistent GPU data path (§9.1).
+//! The persistent GPU data path.
 //!
 //! A frame's instance data lives in long-lived device buffers that persist
 //! across frames, not in buffers rebuilt from scratch every frame. The renderer
@@ -12,7 +12,7 @@
 //! in the scene. A pool keeps a CPU shadow of what currently sits in its device
 //! buffer, diffs the freshly lowered array against it slot by slot, and writes
 //! back only the changed runs — so an unchanged frame performs zero uploads and
-//! a one-slot change performs one minimal upload (§9.1).
+//! a one-slot change performs one minimal upload.
 //!
 //! [`write_buffer`]: viso_gpu::GpuBackend::write_buffer
 

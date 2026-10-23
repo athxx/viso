@@ -1,4 +1,4 @@
-//! Effect cost metadata (§7.5, §30): how a primitive or effect must be realized
+//! Effect cost metadata: how a primitive or effect must be realized
 //! on the GPU, and what that realization costs the frame.
 //!
 //! Every drawable carries one [`EffectCost`] class. The class is *what the
@@ -6,20 +6,20 @@
 //! analytically, build a coverage mask, render it through an offscreen pass,
 //! capture the backdrop behind it, read the destination, or route it to a
 //! compute pass. The class drives the frame's resource decisions (mask
-//! allocation, offscreen passes, backdrop capture) and the matching §30
+//! allocation, offscreen passes, backdrop capture) and the matching frame
 //! counters, and it lets the inspector show *why* a primitive costs what it
-//! costs without unsafe memory poking (§62).
+//! costs without unsafe memory poking.
 //!
 //! This is a cold-path contract: the class is computed once when a primitive is
 //! ingested (or an effect chain is built), stored beside it, and read by the
-//! planner and the inspector — never recomputed per frame on the hot path
-//! (§7.2). The classes are ordered by increasing realization cost, so a chain's
+//! planner and the inspector — never recomputed per frame on the hot path.
+//! The classes are ordered by increasing realization cost, so a chain's
 //! dominating cost is the maximum over its links.
 
-/// How a drawable must be realized on the GPU, ordered by increasing cost
-/// (§7.5). A primitive or effect chain carries the single class that dominates
+/// How a drawable must be realized on the GPU, ordered by increasing cost.
+/// A primitive or effect chain carries the single class that dominates
 /// its realization; the renderer reads it to decide which resources the frame
-/// needs and which §30 counters advance.
+/// needs and which frame counters advance.
 ///
 /// The variants are ordered cheapest-first so `max` over a chain yields the
 /// dominating cost, and the discriminant doubles as a coarse cost rank.
@@ -27,7 +27,7 @@
 #[repr(u8)]
 pub enum EffectCost {
     /// Drawn in place in the current pass with no extra target, mask, or read:
-    /// a solid rect, an opaque image, a glyph run. The D0 steady-state case —
+    /// a solid rect, an opaque image, a glyph run. The steady-state case —
     /// nothing but instances and one draw. Cheapest.
     #[default]
     Local = 0,
@@ -57,17 +57,17 @@ pub enum EffectCost {
 }
 
 /// Whether an effect can be evaluated from the fragment it is shading alone
-/// (§3102) or needs pixels it does not own (§3120).
+/// or needs pixels it does not own.
 ///
 /// This is the single most consequential fact about an effect, because it decides
 /// whether the effect is *free* — folded into the draw shader that was going to
 /// run anyway — or whether it buys a render target:
 ///
-/// - **Local** (§3102): the output pixel is a pure function of the source pixel.
+/// - **Local**: the output pixel is a pure function of the source pixel.
 ///   Opacity, tint, a color matrix, brightness/contrast/saturation, a simple
 ///   gradient, a simple mask, a blend the fixed-function stage expresses. These
 ///   fuse into the existing draw shader; the frame allocates nothing for them.
-/// - **Nonlocal** (§3120): the output pixel depends on neighbor samples, on the
+/// - **Nonlocal**: the output pixel depends on neighbor samples, on the
 ///   previous framebuffer, or on the group being composited in isolation first.
 ///   Blur, backdrop blur, a large/general shadow, a destination-dependent
 ///   advanced blend, displacement, group opacity over overlapping children. Only
@@ -81,12 +81,11 @@ pub enum EffectCost {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[repr(u8)]
 pub enum EffectLocality {
-    /// Evaluated from the shaded fragment alone — fuses into the draw shader
-    /// (§3102).
+    /// Evaluated from the shaded fragment alone — fuses into the draw shader.
     #[default]
     Local = 0,
     /// Needs neighbor samples, the previous framebuffer, or group isolation —
-    /// only these effects may consider an offscreen target (§3120).
+    /// only these effects may consider an offscreen target.
     Nonlocal = 1,
 }
 
@@ -139,12 +138,12 @@ impl EffectCost {
         matches!(self, EffectCost::DestinationRead)
     }
 
-    /// Whether this class is local (§3102) or nonlocal (§3120): the one threshold
+    /// Whether this class is local or nonlocal: the one threshold
     /// on the ladder at [`NeedsOffscreen`](EffectCost::NeedsOffscreen) — a class
     /// below it shades in place, a class at or above it needs pixels the fragment
     /// does not own. [`NeedsMask`](EffectCost::NeedsMask) stays local: the mask is
     /// a separate coverage build, but the masked draw itself still shades in place
-    /// from its own fragment (§3102's "simple mask").
+    /// from its own fragment (a "simple mask" is local).
     pub fn locality(self) -> EffectLocality {
         if self >= EffectCost::NeedsOffscreen {
             EffectLocality::Nonlocal
@@ -153,7 +152,7 @@ impl EffectCost {
         }
     }
 
-    /// Whether this class fuses into the existing draw shader (§3102).
+    /// Whether this class fuses into the existing draw shader.
     pub fn is_local(self) -> bool {
         self.locality() == EffectLocality::Local
     }
@@ -231,7 +230,7 @@ mod tests {
         );
     }
 
-    /// The Local/Nonlocal frontier (§3102 vs §3120) is one threshold on the
+    /// The Local/Nonlocal frontier is one threshold on the
     /// ladder, and it coincides exactly with "may consider an offscreen target".
     #[test]
     fn locality_is_one_threshold_on_the_ladder() {

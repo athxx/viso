@@ -572,7 +572,7 @@ export system Camera implements FrameUpdate {
     assert_eq!(faults.first().map(|f| f.code), Some("E7106"), "{faults:?}");
 }
 
-/// §105.1 and §107, as the specification writes them.
+/// The specification's example games, as it writes them.
 #[test]
 fn the_specification_games_run() {
     let tiny = r#"

@@ -1,11 +1,10 @@
-//! The compact release UI package format (architecture section 41; AGENTS 21.6,
-//! 60).
+//! The compact release UI package format.
 //!
-//! A release build lowers the same shared frontend IR that Slice N mounts through
-//! builder tokens and Slice O commits into a live tree — but here into a *compact,
-//! dependency-free byte blob* that an app instantiates at startup with **no DSL
-//! compiler present**. That is the load-bearing exit criterion: the release path
-//! carries none of the compiler's developer metadata.
+//! A release build lowers the same shared frontend IR that the proc-macro mounts
+//! through builder tokens and hot reload commits into a live tree — but here into a
+//! *compact, dependency-free byte blob* that an app instantiates at startup with
+//! **no DSL compiler present**. The release path carries none of the compiler's
+//! developer metadata.
 //!
 //! So the package deliberately holds **only** what the runtime needs to rebuild the
 //! retained tree and its reactive bindings:
@@ -14,11 +13,11 @@
 //!   [`AotStyle`] of layout scalars and the [`NodeLengths`] that read the
 //!   environment — where a node's pre-order index is its stable identity, exactly
 //!   the numbering the binding edges reference (the same `NodeKey` convention
-//!   Slice O's `commit.rs` walks);
+//!   the live commit's `commit.rs` walks);
 //! - a binding edge table `(StateKey, node index, DirtyClass bits)`.
 //!
-//! What it does **not** carry is every form of developer-only metadata the section
-//! 60 rule says must be strippable: no property-name strings, no type names, no
+//! What it does **not** carry is every form of developer-only metadata, which must
+//! be strippable: no property-name strings, no type names, no
 //! source spans, no symbol string table. A binding needs only the durable
 //! [`StateKey`] identity and the [`DirtyClass`](crate::dirty::DirtyClass) it
 //! invalidates — `commit.rs` already
@@ -26,7 +25,7 @@
 //!
 //! # Wire form
 //!
-//! The blob is read in place (architecture §50A.6): from memory-mapped flash or
+//! The blob is read in place: from memory-mapped flash or
 //! an mmap, with nothing of it copied into RAM.
 //!
 //! ```text
@@ -51,8 +50,8 @@
 //! builds and the development commit edits; it decodes through the same view.
 //! The decoder is *bounded*: a truncated, corrupt-magic, wrong-version, or
 //! otherwise malformed blob returns a [`DecodeError`] and never panics — the
-//! safety precondition for loading an untrusted asset blob (section 30: a bad
-//! layout is a diagnosable error, never a silent miscompile or a panic).
+//! safety precondition for loading an untrusted asset blob (a bad layout is a
+//! diagnosable error, never a silent miscompile or a panic).
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;

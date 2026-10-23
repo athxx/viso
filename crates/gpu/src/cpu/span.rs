@@ -14,7 +14,7 @@
 //!
 //! An sRGB target runs the scalar kernels at the end instead: a pixel is
 //! decoded to linear light, composited in `f32`, and encoded, its alpha
-//! packed as above (ADR 0048). An opaque source only encodes; a transparent
+//! packed as above. An opaque source only encodes; a transparent
 //! black one leaves the pixel as it is.
 
 use crate::srgb;

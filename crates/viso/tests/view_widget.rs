@@ -1,11 +1,10 @@
-//! Section 71 validation pack for the `View` container widget, driven through
-//! the public facade. `View` is the first Tier 1 widget; this is the template
-//! the later Tier 1 controls (Label/Image/Icon) copy:
+//! Validation pack for the `View` container widget, driven through
+//! the public facade. This is the template the Label/Image/Icon packs follow:
 //!
 //! - **golden screenshot** — build a `View` tree with `View::build`, lay it out,
 //!   paint it through the headless backend, compare pixels to a blessed baseline;
 //! - **allocation profile** — a warmed-up `View` frame allocates nothing per
-//!   frame (architecture section 47 hot-path contract), same CountingAlloc +
+//!   frame (hot-path contract), same CountingAlloc +
 //!   `frame_stats`/`*_count()` steady-state asserts as `content_alloc.rs`;
 //! - **a11y snapshot** — a `View`'s derived semantics node is `Role::Group` and
 //!   carries an authored label;

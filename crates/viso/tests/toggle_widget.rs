@@ -1,4 +1,4 @@
-//! Section 71 validation pack for the `Toggle` control — a switch: a two-state
+//! Validation pack for the `Toggle` control — a switch: a two-state
 //! on/off toggle — driven through the public facade. Mirrors `checkbox_widget.rs`
 //! (golden + a11y + allocation + the two interactive input tapes) with the
 //! toggle's own mark: a pill *track* whose knob sits at its far end while on,
@@ -21,9 +21,9 @@
 //! - **a11y snapshot** — a `Toggle`'s derived semantics node is `Role::CheckBox`
 //!   (a switch is a two-state boolean toggle), its accessible name is the
 //!   visible caption, and it carries the live on/off state projected from the
-//!   reactive cell (section 8.1);
+//!   reactive cell;
 //! - **allocation profile** — a warmed-up `Toggle` frame allocates nothing per
-//!   frame (architecture section 47 hot-path contract), same CountingAlloc +
+//!   frame (hot-path contract), same CountingAlloc +
 //!   `frame_stats`/`*_count()` steady-state asserts as `checkbox_widget.rs`.
 //!
 //! Building through `Toggle::build` is the point: it proves the widget lowers to
@@ -415,7 +415,7 @@ fn toggle_derives_a_checkbox_semantics_node_named_by_its_caption() {
 
     // Seed the switch on so the derived `checked` state is a non-default value:
     // the build writes the semantic-state column immediately, so the first
-    // derive already carries the live on/off state (section 8.1).
+    // derive already carries the live on/off state.
     let root = {
         let widget = toggle("Wi-Fi").on(true);
         let mut cx = BuildCx::with_reactive(

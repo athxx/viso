@@ -39,8 +39,8 @@ const FULL_UV: Rect = Rect {
 /// `size` defaults to [`Length::Fixed`] at the texture's intrinsic pixel size,
 /// so an image occupies its natural dimensions. Override it with a
 /// [`Length::Fit`] or [`Length::Fill`] axis to shrink-to-content or flex (the
-/// paint path stretches the texture to fill the node's box — object-fit
-/// contain/cover is a later slice).
+/// paint path stretches the texture to fill the node's box; there is no
+/// object-fit contain/cover).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ImageStyle {
     /// Source sub-rect in normalized `0..1` UV space. Defaults to the full

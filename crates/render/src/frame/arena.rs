@@ -1,4 +1,4 @@
-//! A per-frame bump allocator for transient render scratch (§9.4).
+//! A per-frame bump allocator for transient render scratch.
 //!
 //! Frame lowering needs a handful of short-lived working sets — the visible
 //! chunk list, batch scratch, clip scratch, small pass descriptors, and the
@@ -15,7 +15,7 @@
 //! The backing buffer grows only on the cold path, when a frame's total scratch
 //! first exceeds every previous frame's (a high-water mark, like the renderer's
 //! instance scratch). Once warmed, a frame that fits the high-water mark bumps
-//! within the existing buffer and performs **zero heap allocation** (§9.4, §28):
+//! within the existing buffer and performs **zero heap allocation**:
 //! the counting-allocator test pins this. `reset` never shrinks or frees, so the
 //! capacity a workload reaches is retained for the next frame.
 //!
@@ -171,7 +171,7 @@ impl FrameArena {
     /// out slices only at frame start, when no slice is live — but to stay sound
     /// even if a workload grows mid-frame, existing bytes are copied over).
     ///
-    /// Doubling keeps growth amortized O(1); this is the cold path (§9.4), hit
+    /// Doubling keeps growth amortized O(1); this is the cold path, hit
     /// only when a frame's scratch first exceeds every previous frame's.
     #[cold]
     fn grow(&self, needed: usize) {

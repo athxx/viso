@@ -1,10 +1,10 @@
-//! `viso-gpu` — a deliberately small GPU RHI (§17).
+//! `viso-gpu` — a deliberately small GPU RHI.
 //!
 //! Concepts stay close to: Device, Queue, Buffer, Texture, Sampler, Pipeline,
 //! BindGroup, CommandEncoder, Surface, Fence. The backend is selected at
-//! compile time; there is no per-primitive `dyn GpuBackend` dispatch (§17.2).
+//! compile time; there is no per-primitive `dyn GpuBackend` dispatch.
 //!
-//! This crate must never see widgets, layout, or state (§17.1).
+//! This crate must never see widgets, layout, or state.
 //!
 //! Resource handles are generation-safe (`{index, generation}`): a stale handle
 //! is detectable and never resolves to a different live resource.
@@ -25,7 +25,7 @@ pub mod d3d12;
 /// The OpenGL ES 3 backend (Linux/Android, with the `gles` feature).
 #[cfg(all(feature = "gles", any(target_os = "linux", target_os = "android")))]
 pub mod gles;
-/// The native Metal backend (compiled only on Apple targets; ADR 0029 cfg select).
+/// The native Metal backend (compiled only on Apple targets; selected by cfg).
 #[cfg(target_vendor = "apple")]
 pub mod metal;
 pub mod retire;
@@ -68,7 +68,7 @@ pub use webgpu::{WebGpuBackend, WebGpuCompiler, WebGpuProgram};
 
 /// The concrete GPU backend for this target, selected at compile time.
 ///
-/// ADR 0029: there is one [`GpuBackend`] trait for source-level unification, but
+/// There is one [`GpuBackend`] trait for source-level unification, but
 /// the facade holds *this concrete type* monomorphized so the frame hot path has
 /// no `dyn GpuBackend` dispatch. On macOS and iOS it is the native
 /// [`MetalBackend`]; on Windows the [`D3D12Backend`]; on Linux and Android the
@@ -204,7 +204,7 @@ macro_rules! __linux_backend {
     };
 }
 
-/// Create the GPU device/backend for this target (ADR 0029 cfg static select).
+/// Create the GPU device/backend for this target (selected statically by cfg).
 ///
 /// The facade calls this once at launch and stores the returned [`Backend`] by
 /// value. Backends that need a live window (Metal) create their surface later
@@ -274,7 +274,7 @@ raw_id!(
 );
 
 /// Marker for a `#[repr(C)]` type that is safe to upload as per-instance GPU
-/// data (§18).
+/// data.
 ///
 /// Host structs and GPU instance data are separate concerns. This trait is
 /// intended to be implemented only by the `#[derive(GpuPod)]` macro,

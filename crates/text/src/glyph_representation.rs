@@ -18,7 +18,7 @@
 //! frame whose [`TransformSample`] lands in the same raster bucket, with the same
 //! rotation and hints, and with no timer or completion due, returns the cached
 //! decision without evaluating any policy — translation, scroll, opacity, color,
-//! and clip are not inputs at all, so they can never cause a promotion (§13.4).
+//! and clip are not inputs at all, so they can never cause a promotion.
 //!
 //! # Work is requested, never done here
 //!
@@ -26,7 +26,7 @@
 //! what to draw now — always the last-good representation — and at most one
 //! representation to produce off the frame. The caller reports completion with
 //! [`RepresentationState::ready`] and the switch happens at the next `resolve`,
-//! so a representation never changes mid-frame (§13.3). The representation the
+//! so a representation never changes mid-frame. The representation the
 //! run stopped drawing is handed back as a release, so a glyph holds two
 //! representations only while a transition is in flight and never keeps
 //! coverage, a field, and an outline resident at once.
@@ -56,7 +56,7 @@ pub enum GlyphImageKind {
     ColorVector,
 }
 
-/// Which promotion thresholds a run uses (§13.7).
+/// Which promotion thresholds a run uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunClass {
     /// Latin and other general text.
@@ -115,7 +115,7 @@ impl Representation {
 ///
 /// Only what can change the right representation is here. Translation, scroll,
 /// opacity, color, and clip are deliberately absent, so none of them can
-/// trigger a promotion (§13.4).
+/// trigger a promotion.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TransformSample {
     /// Frame timestamp on a monotonic clock. Every threshold is a duration, so a
@@ -138,7 +138,7 @@ pub struct Resolution {
     /// with one exception: when `request == Some(draw)` the drawn representation
     /// was lost or invalidated, and `draw` is exact coverage the caller admits
     /// now on its normal coverage path — coverage is always correct, so the
-    /// glyph is degraded rather than dropped (§13.11).
+    /// glyph is degraded rather than dropped.
     pub draw: Representation,
     /// Produce this off the frame and report it with
     /// [`RepresentationState::ready`] (or [`RepresentationState::lost`] if it
@@ -150,7 +150,7 @@ pub struct Resolution {
     pub release: Option<Representation>,
 }
 
-/// Promotion thresholds. Calibrated by benchmark, never ABI (§13.4).
+/// Promotion thresholds. Calibrated by benchmark, never ABI.
 #[derive(Debug, Clone, Copy)]
 struct Policy {
     /// How long raster-bucket changes must keep arriving before they count as a
@@ -325,7 +325,7 @@ impl RepresentationState {
 
     /// Report that `representation` is gone or cannot be produced: evicted
     /// under residency pressure, failed generation or validation, a missed
-    /// deadline, or an unsupported backend (§13.11). A lost drawn representation
+    /// deadline, or an unsupported backend. A lost drawn representation
     /// falls back to exact coverage at the next resolve; a lost pending one is
     /// abandoned. Either way promotion backs off for a while.
     pub fn lost(&mut self, representation: Representation) {
@@ -510,7 +510,7 @@ fn scaled_target(px_per_em: f32) -> Representation {
 }
 
 /// Whether a drawn scalable representation still serves `px_per_em` inside its
-/// quality window (§13.5).
+/// quality window.
 fn covers(representation: Representation, px_per_em: f32) -> bool {
     match representation.kind {
         GlyphImageKind::ScalableMtsdf => {

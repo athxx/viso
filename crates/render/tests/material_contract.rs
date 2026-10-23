@@ -1,10 +1,10 @@
-//! Frosted material surface contract (§18).
+//! Frosted material surface contract.
 //!
 //! A material surface is the composition every glass UI asks for:
 //! `backdrop → blur → saturation/tint → optional grain → rounded mask →
-//! border/highlight`. Each stage already exists and is frozen lower down — E2's
-//! backdrop capture and sharing, E1's blur ladder and ROI, E2's fused `ColorOp`,
-//! E0's analytic rounded rect. The contract this file defends is that composing
+//! border/highlight`. Each stage already exists and is frozen lower down — the
+//! backdrop capture and sharing, the blur ladder and ROI, the fused `ColorOp`,
+//! the analytic rounded rect. The contract this file defends is that composing
 //! them costs *nothing new*:
 //!
 //! 1. **One draw, no new passes or targets.** A frosted panel composites through
@@ -16,7 +16,7 @@
 //!    composite each — the material surface joins the very same capture group a
 //!    backdrop layer would.
 //! 3. **The grain is a function of the pixel, never of time.** Two identical
-//!    frames read back byte-identical, so a static screen stays static (the E2.5
+//!    frames read back byte-identical, so a static screen stays static (the static-UI
 //!    gate) even with noise turned all the way up.
 //! 4. **The mask rounds and the color op tints**, verified by read-back rather
 //!    than by counter.
@@ -75,7 +75,7 @@ fn background() -> Primitive {
 
 /// The single fused op for one matrix-expressible effect — the shape a widget
 /// hands a material surface, written through the public `fuse` so the test does
-/// not restate E2's matrices.
+/// not restate the color-effect matrices.
 fn fused(effect: ColorEffect) -> ColorOp {
     let mut ops = Vec::new();
     fuse([effect], &mut ops);
@@ -135,7 +135,7 @@ fn pixel(px: &[u8], x: u32, y: u32) -> [f32; 4] {
 
 /// A frosted surface costs exactly one extra draw over the equivalent backdrop
 /// layer, and not one extra render pass, transient target, capture, or blur rung.
-/// This is the whole point of fusing the chain into one fragment: the §18 stack
+/// This is the whole point of fusing the chain into one fragment: the material stack
 /// is a *pipeline*, not a pass chain.
 #[test]
 fn a_frosted_surface_adds_no_pass_target_or_capture() {
@@ -222,7 +222,7 @@ fn a_subpixel_sigma_captures_nothing_and_keeps_the_border() {
 }
 
 // ---------------------------------------------------------------------------
-// 2. Sharing is inherited from E2, not reimplemented
+// 2. Sharing is inherited from the backdrop group, not reimplemented
 // ---------------------------------------------------------------------------
 
 /// Four frosted panels over one background at one sigma: one capture, one blur
@@ -269,7 +269,7 @@ fn n_panels_share_one_capture_and_one_blur_ladder() {
 }
 
 /// Two panels at *different* sigmas cannot share: one blurred backdrop cannot
-/// serve two blur radii, so the group splits. The sharing rule is E2's, so this
+/// serve two blur radii, so the group splits. The sharing rule is the backdrop group's, so this
 /// pins that a material surface routes through it rather than around it.
 #[test]
 fn panels_at_different_sigmas_do_not_share() {
@@ -412,7 +412,7 @@ fn a_chain_of_local_color_effects_fuses_into_the_one_composite() {
 
 /// Two identical uploads of a noisy frosted panel read back byte-identical. The
 /// grain hashes the integer device pixel, so there is no clock in the fragment and
-/// a static screen stays static — the E2.5 static-UI gate, extended to material
+/// a static screen stays static — the static-UI gate, extended to material
 /// surfaces at full noise amplitude.
 #[test]
 fn noise_is_deterministic_across_identical_frames() {
@@ -475,7 +475,7 @@ fn noise_varies_per_pixel_but_only_when_asked_for() {
 
 /// A rounded frosted panel leaves its corners untouched: inside the panel's rect
 /// but outside the corner arc the background shows through unchanged, while the
-/// panel's center carries the material's darkened glass. The mask is E0's
+/// panel's center carries the material's darkened glass. The mask is the analytic
 /// per-corner rrect SDF evaluated in the material fragment, so the surface rounds
 /// without a clip mask, a stencil, or a second draw.
 #[test]

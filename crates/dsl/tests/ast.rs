@@ -1,6 +1,6 @@
-//! Commit-3 tests: the typed AST layer projected over the green/red tree.
+//! Tests of the typed AST layer projected over the green/red tree.
 //!
-//! These cast the red roots produced by the commit-1/2 grammar fixtures into typed
+//! These cast the red roots produced by the grammar fixtures into typed
 //! wrappers and read them back through typed accessors — asserting that a cast
 //! succeeds only for the matching kind, that accessors return the expected child
 //! views, and that all three Rust-side entry productions (`ui!` fragment,
@@ -240,7 +240,7 @@ fn all_three_entry_productions_cast() {
     );
 }
 
-// --- Section 1: view control-flow + two-way + fill + handler accessors -------
+// --- view control-flow + two-way + fill + handler accessors ------------------
 
 /// Collects the top-level view items of a `ui!` fragment.
 fn fragment_items(src: &str) -> Vec<ViewItem> {
@@ -464,7 +464,7 @@ fn fill_clause_reads_slot_name_and_body() {
     );
 }
 
-// --- Section 1: expression-fold accessors ------------------------------------
+// --- expression-fold accessors -----------------------------------------------
 
 /// Parses `src` as a bare expression and returns its sole top-level expression
 /// node — the concrete kind (`LiteralExpr`/`BinaryExpr`/…) is then cast from it.

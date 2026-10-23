@@ -1,4 +1,4 @@
-//! The Web accessibility bridge (ADR 0030, ADR 0042): an ARIA mirror of the
+//! The Web accessibility bridge: an ARIA mirror of the
 //! published tree, transparent elements laid over the canvas where each node
 //! draws.
 //!

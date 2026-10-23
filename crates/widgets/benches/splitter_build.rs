@@ -2,11 +2,8 @@
 //! authoring pass (`Splitter::build`), one `layout`, and one `paint_tree`
 //! lowering.
 //!
-//! This is the section 71 microbench slot for the fourth Tier 3 (layout
-//! structure) widget — a draggable two-pane divider — and copies the
-//! `slider_build.rs` template. It exercises the real `build` -> `layout` ->
-//! `paint_tree` path so a regression is measurable; the baseline numbers are
-//! recorded in a later slice (per the plan: establish the framework first).
+//! `Splitter` is a draggable two-pane divider. The bench exercises the real `build` -> `layout` ->
+//! `paint_tree` path so a regression is measurable.
 //!
 //! `Splitter` authors three float cells (`cx.state`: the split fraction plus the
 //! drag anchor pair) and binds the fraction to the root's `PAINT`, so it must
@@ -18,8 +15,7 @@
 //! dependency edge.
 //!
 //! Run release (`CARGO_TARGET_DIR=/tmp/rust_tmp cargo bench -p viso-widgets`);
-//! criterion defaults to a release profile. Debug timing is not a perf result
-//! (AGENTS section 36).
+//! criterion defaults to a release profile. Debug timing is not a perf result.
 
 use std::hint::black_box;
 

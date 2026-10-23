@@ -1,4 +1,4 @@
-//! Human usability samples (§156): one source per task of the usability
+//! Human usability samples: one source per task of the usability
 //! study, each compiling with no diagnostic at all, and the behavior each task
 //! asks for checked headless — the counter counts, the list adds, the layout
 //! follows the size class, a local scope reads its own width, the Quick Game

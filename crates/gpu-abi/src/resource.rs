@@ -2,7 +2,7 @@
 //!
 //! Descriptors are plain data passed to `GpuBackend` create-methods,
 //! which return the typed handles from `lib.rs`. Kept backend-neutral: no Metal
-//! / D3D / Vulkan types leak here (§17.1).
+//! / D3D / Vulkan types leak here.
 
 /// Texture / render-target pixel format.
 ///
@@ -10,12 +10,12 @@
 /// block-compressed ones (BC, ETC2, ASTC) hold a fixed-size block of texels
 /// that the sampler decodes, so a texture of them is written whole blocks at a
 /// time and is never a render target. Every color format's texels are
-/// premultiplied (Rendering §5.4–§5.5), compressed ones included: an encoder
+/// premultiplied, compressed ones included: an encoder
 /// compresses premultiplied texels.
 ///
 /// A `*Srgb` format stores the same bytes as its linear twin, holding
 /// sRGB-encoded color: sampling decodes it to linear light, rendering into it
-/// encodes, and blending into it runs in linear light (ADR 0048). Its texels
+/// encodes, and blending into it runs in linear light. Its texels
 /// are premultiplied in linear light, `enc(dec(c) · a)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TextureFormat {
@@ -42,7 +42,7 @@ pub enum TextureFormat {
     /// domain, since a distance is not a color in any domain.
     Rgba8Data,
     /// Opaque 16-bit color, 5:6:5 with red in the high bits of a little-endian
-    /// `u16` — the panel format of most embedded displays (§30.4). It has no
+    /// `u16` — the panel format of most embedded displays. It has no
     /// alpha, so it is a surface format, never a layer's.
     Rgb565Unorm,
     /// 16-bit color with alpha, 4:4:4:4 with red in the high nibble and alpha
@@ -225,7 +225,7 @@ impl TextureFormat {
     }
 
     /// The capability a backend reports to sample the format natively; empty
-    /// for the baseline every backend samples (§6.3).
+    /// for the baseline every backend samples.
     pub const fn sampled_class(self) -> SampledFormats {
         match self.linear() {
             TextureFormat::Rgb565Unorm => SampledFormats::RGB565,
@@ -517,7 +517,7 @@ pub struct TextureDesc {
 /// Descriptor for `GpuBackend::create_sampler`.
 ///
 /// `Hash`/`Eq` make this usable as an interning key: the renderer keeps one
-/// sampler per distinct descriptor rather than one per draw (§17.1, §12).
+/// sampler per distinct descriptor rather than one per draw.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SamplerDesc {
     /// Minification/magnification filter.
@@ -548,7 +548,7 @@ impl Default for SamplerDesc {
 /// [`PipelineDesc::msl`]. The headless software rasterizer has no
 /// shader compiler, so it uses this tag to select the CPU fill routine that
 /// reproduces the corresponding shader's SDF/AA/blend math. Every Viso
-/// primitive maps to exactly one built-in program (§30, §D layer).
+/// primitive maps to exactly one built-in program.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinShader {
     /// A (optionally rounded, optionally bordered) axis-aligned quad.
@@ -596,7 +596,7 @@ pub enum BuiltinShader {
     /// A frosted material composite: samples a blurred backdrop, tints it through an
     /// affine color matrix plus an optional gamma, adds grain hashed from the integer
     /// device pixel, and masks the result with the surface's own rounded rect — the
-    /// whole §18 chain minus the passes that produced the backdrop and the border
+    /// whole material chain minus the passes that produced the backdrop and the border
     /// drawn over it.
     Material,
     /// An isolated advanced-blend composite: samples an isolated layer (source) and
@@ -618,7 +618,7 @@ pub enum BuiltinShader {
 /// carries (MSL on Metal), and `variant` is its packed pipeline-variant identity.
 /// `instance_schema` is the layout the shader's vertex-input struct declares,
 /// validated against the derived instance layout of the instance type at
-/// registration (§32/§36.1).
+/// registration.
 #[derive(Debug, Clone, Copy)]
 pub struct PipelineDesc {
     /// Debug label.
@@ -793,20 +793,20 @@ pub struct Caps {
     pub max_texture_size: u32,
     /// Whether the backend renders to a real display (false for headless).
     pub presents_to_display: bool,
-    /// Whether this backend can dispatch compute kernels (§20.1).
+    /// Whether this backend can dispatch compute kernels.
     ///
     /// A device capability *and* an RHI one: the answer is `false` until the
     /// backend actually exposes a dispatch entry point, because a capability the
     /// layers above cannot call is not a capability. The Metal and headless
     /// backends therefore both report `false` today — Metal's device has compute,
-    /// this RHI has no encoder for it (§17.1 keeps the RHI small).
+    /// this RHI has no encoder for it (the RHI is kept small).
     ///
     /// Upper layers read this as a *veto*, never as an instruction: a compute lane
     /// is entered on a measured benefit over a large dynamic workload, and this
-    /// only says whether that lane exists to be entered at all (§20.1, §7.2).
+    /// only says whether that lane exists to be entered at all.
     pub compute_dispatch: bool,
     /// How many textures one draw can address through a resource table, or `0`
-    /// when the backend binds textures per draw (§20.2).
+    /// when the backend binds textures per draw.
     ///
     /// The bindless capability behind Metal argument/resource tables, a D3D12
     /// descriptor heap, Vulkan descriptor indexing, and WebGPU binding arrays,
@@ -818,11 +818,11 @@ pub struct Caps {
     /// Reported honestly, like [`compute_dispatch`](Self::compute_dispatch): both
     /// backends answer `0` because this RHI's [`BindGroupDesc`] binds one texture
     /// per slot at creation and has no table to index. The public paint API does
-    /// not change with the answer (§20.2) — only how many draws a frame of images
+    /// not change with the answer — only how many draws a frame of images
     /// costs.
     pub bindless_texture_slots: u32,
     /// Whether a draw can read its vertex/instance counts from a buffer the GPU
-    /// wrote, rather than from arguments the CPU passed (§24.1).
+    /// wrote, rather than from arguments the CPU passed.
     ///
     /// The other half of GPU-driven rendering: a compute kernel decides what is
     /// visible and writes the draw arguments, and an indirect draw consumes them, so
@@ -832,9 +832,9 @@ pub struct Caps {
     ///
     /// Reported honestly, like the other two: both backends answer `false`, because
     /// this RHI's draw commands carry their counts inline and no encoder here reads
-    /// them from memory (§17.1). Upper layers read it as a *veto* — a culling plan
+    /// them from memory. Upper layers read it as a *veto* — a culling plan
     /// escalates on scene shape and measured cull cost, and this only says whether
-    /// the GPU plan exists to be reached at all (§20, §7.2).
+    /// the GPU plan exists to be reached at all.
     pub indirect_draw: bool,
     /// The alignment, in bytes, of a user program draw's instance offset
     /// ([`crate::program`]): the program reads its instances from a storage
@@ -843,12 +843,12 @@ pub struct Caps {
     /// `minStorageBufferOffsetAlignment`). A power of two, at least 4.
     pub program_instance_align: u32,
     /// Whether a filled path is cheaper as scanline coverage than as
-    /// triangles (§30.4). A device rasterizes a convex fan for free and keeps
+    /// triangles. A device rasterizes a convex fan for free and keeps
     /// paths tessellated unless their outline is complex; the CPU raster pays
     /// per triangle, so it fills every path through a coverage mask, built
     /// once per outline and composited like a glyph.
     pub coverage_paths: bool,
-    /// The formats beyond the baseline the device samples (§6.3): the
+    /// The formats beyond the baseline the device samples: the
     /// 16-bit packed ones and the block-compressed families. An image in a
     /// format outside the set is decoded to RGBA8 before upload.
     pub sampled: SampledFormats,

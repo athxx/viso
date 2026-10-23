@@ -2,8 +2,8 @@
 //! control inside a scroll viewport, pans past the slop, and lifts — and a
 //! second finger pressing and lifting alongside — must allocate nothing once
 //! the per-pointer contact table and the route scratch have reached their
-//! high-water mark. Section 7.1 forbids asserting that without measuring, so a
-//! counting allocator arms around real samples.
+//! high-water mark. Rather than asserting that without measuring, a counting
+//! allocator arms around real samples.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::Ordering;

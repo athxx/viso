@@ -115,21 +115,21 @@ unicode-segmentation = "1"
 # icu_segmenter 2.3 targets UAX#14 Unicode 15.1.0 — the conformance corpus is
 # version-matched to that. Compiled data only: the LSTM models for the no-space scripts come in with
 # `viso-text/complex-line-break`, so a build that drops them links none.
-icu_segmenter = { version = "2.3", default-features = false, features = ["compiled_data"] }
-icu_properties = "2.3"
+icu_segmenter = { version = "2.4", default-features = false, features = ["compiled_data"] }
+icu_properties = "2.4"
 # BCP-47 locale parsing for CJK line-break tailoring. `line_break_tailoring.rs`
 # resolves a content locale to the ja/zh bucket the way icu_segmenter does
 # internally (language ∈ {ja, zh}), so the public locale choice and the table
 # icu selects never disagree. Already a transitive icu dep; declared direct here.
-icu_locale_core = "2.3"
+icu_locale_core = "2.4"
 # Messages (`viso::i18n`): CLDR plural rules choose a `plural`/`selectordinal`
 # case, the decimal formatter writes numbers in the reader's locale, and the
 # fallback chain (zh-TW → zh-Hant → und) picks the catalog a locale reads.
 # Same ICU4X 2.3 family; with their compiled data they add ~130 KB to a release
 # binary (measured on aarch64-apple-darwin, all CLDR locales).
-icu_plurals = "2.3"
-icu_decimal = "2.3"
-icu_locale_fallback = "2.3"
+icu_plurals = "2.4"
+icu_decimal = "2.4"
+icu_locale_fallback = "2.4"
 fixed_decimal = { version = "0.7", features = ["ryu"] }
 # `cross_platform` game math (`viso::math` transcendentals, input lengths): the
 # musl/FreeBSD algorithms ported to Rust, built from IEEE basic operations and
@@ -141,7 +141,7 @@ libm = { version = "0.2.16", default-features = false }
 toml_edit = "0.25"
 # NFC for DSL identifiers: two spellings that normalize alike are one name in the
 # symbol table, and a distinct raw spelling of a declared name is reported.
-icu_normalizer = "2.3"
+icu_normalizer = "2.4"
 # Pure-Rust PNG decoder for color-bitmap emoji strikes (sbix/CBDT PNG data that
 # ttf-parser hands back as raw bytes). Same decoder family makepad's color-emoji
 # path uses; decoded RGBA is premultiplied into the color glyph atlas.

@@ -1,4 +1,4 @@
-//! Section 71 validation pack for the `CheckBox` control — a two-state toggle —
+//! Validation pack for the `CheckBox` control — a two-state toggle —
 //! driven through the public facade. Mirrors `button_widget.rs` (golden + a11y +
 //! allocation) plus the two interactive sections: a pointer input tape and a
 //! keyboard input tape, proving a primary click and a keyboard activation drive
@@ -20,10 +20,9 @@
 //!   checkbox receives no key dispatch;
 //! - **a11y snapshot** — a `CheckBox`'s derived semantics node is
 //!   `Role::CheckBox`, its accessible name is the visible caption, and it
-//!   carries the live checked state projected from the reactive cell
-//!   (section 8.1);
+//!   carries the live checked state projected from the reactive cell;
 //! - **allocation profile** — a warmed-up `CheckBox` frame allocates nothing per
-//!   frame (architecture section 47 hot-path contract), same CountingAlloc +
+//!   frame (hot-path contract), same CountingAlloc +
 //!   `frame_stats`/`*_count()` steady-state asserts as `button_widget.rs`.
 //!
 //! Building through `CheckBox::build` is the point: it proves the widget lowers
@@ -415,7 +414,7 @@ fn checkbox_derives_a_checkbox_semantics_node_named_by_its_caption() {
 
     // Seed the box checked so the derived `checked` state is a non-default
     // value: the build writes the semantic-state column immediately, so the
-    // first derive already carries the live checked state (section 8.1).
+    // first derive already carries the live checked state.
     let root = {
         let widget = checkbox("Sound").checked(true);
         let mut cx = BuildCx::with_reactive(

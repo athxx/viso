@@ -1,9 +1,9 @@
-//! Frozen `#[repr(C)]` layout of the GPU instance/vertex structs (§18 / §36.1).
+//! Frozen `#[repr(C)]` layout of the GPU instance/vertex structs.
 //!
 //! These structs are the CPU half of the three-way instance ABI: the
 //! `#[derive(GpuPod)]` layout here, the shader's `InstanceIn`/`VertexIn` struct,
-//! and the headless field reader must all agree. F3 (retained stores) and F4
-//! (instance pool / upload ring / coalescer) place these bytes directly into
+//! and the headless field reader must all agree. The retained stores and the
+//! instance pool / upload ring / coalescer place these bytes directly into
 //! long-lived device buffers and diff them by slot, so any shift in a field
 //! offset or the stride silently corrupts every consumer downstream.
 //!

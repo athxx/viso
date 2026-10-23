@@ -7,7 +7,7 @@
 /// `generation` is bumped when that slot is reclaimed, so a handle left over
 /// from a destroyed resource is detectable and never resolves to whatever new
 /// resource later took its slot. The `{index, generation}` shape matches the
-/// runtime `NodeId` (§8.2).
+/// runtime `NodeId`.
 macro_rules! resource_id {
     ($(#[$m:meta])* $name:ident) => {
         $(#[$m])*

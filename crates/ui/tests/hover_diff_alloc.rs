@@ -1,9 +1,8 @@
 //! The allocation-profile dimension of the hover-synthesis steady path: a
 //! `Move` sample that stays within the node it already hovers must allocate
-//! nothing. ADR 0022 states the steady-state move within a hovered node is "a
-//! hit-test plus one `new == old` comparison: no dispatch, no allocation";
-//! section 35 / section 7.3 forbid asserting that without measuring it, so this
-//! test arms a counting global allocator and drives real within-node moves.
+//! nothing. The steady-state move within a hovered node is "a hit-test plus one
+//! `new == old` comparison: no dispatch, no allocation"; rather than asserting that
+//! without measuring it, this test arms a counting global allocator and drives real within-node moves.
 //!
 //! The route reuses the caller's `chain` scratch `Vec` (cleared, not
 //! reallocated, once warmed) and, on the steady path, dispatches nothing — so a

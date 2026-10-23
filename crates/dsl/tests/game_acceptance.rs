@@ -1,4 +1,4 @@
-//! The game acceptance list (Viso_DSL_1.0.md section 155), each item run
+//! The game acceptance list, each item run
 //! headless against compiled `.vs` source.
 
 use std::rc::Rc;

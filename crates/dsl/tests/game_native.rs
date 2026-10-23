@@ -1,4 +1,4 @@
-//! Release native lowering of System IR (§108.2): a game's systems lowered
+//! Release native lowering of System IR: a game's systems lowered
 //! from bytecode to Rust, compiled with this test, and run by the same
 //! scheduler. The lowered modules are checked in (`native/*.rs`, from
 //! `native/*.vs`) and must be what the lowering writes today (`VISO_BLESS=1`

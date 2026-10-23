@@ -1,4 +1,4 @@
-//! `theme` declarations (§60, U12.2): a constant `Theme` whose items name its
+//! `theme` declarations: a constant `Theme` whose items name its
 //! fields, each once (`E2001` for no such field, `E2103` for a second value or
 //! one of another type); a field no item gives comes from the base theme, else
 //! from its default, and one with neither is `E2103`. The values are pure

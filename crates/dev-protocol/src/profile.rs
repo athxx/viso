@@ -105,7 +105,7 @@ pub enum Count {
     Instances,
     /// Bytes uploaded to the GPU.
     UploadBytes,
-    /// Pixels the frame redrew (§30.3): none when nothing on screen changed.
+    /// Pixels the frame redrew: none when nothing on screen changed.
     DamagePx,
     /// Rects its damage merged into; `0` for a frame redrawn whole.
     DamageRects,

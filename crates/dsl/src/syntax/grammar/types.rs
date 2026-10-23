@@ -1,4 +1,4 @@
-//! The type grammar (Appendix A.3). A type is a function type, a tuple type, an
+//! The type grammar. A type is a function type, a tuple type, an
 //! array or slice type, a trait-object type, `Self`, or a `::`-separated type
 //! path whose segments each carry an optional `<...>` generic-argument list.
 //!
@@ -129,7 +129,7 @@ fn trait_object_type(p: &mut Parser) {
     m.complete(p, SyntaxKind::DynType);
 }
 
-/// A `TypePath ("+" TypePath)*` list of trait bounds (A.3).
+/// A `TypePath ("+" TypePath)*` list of trait bounds.
 pub(super) fn trait_bounds(p: &mut Parser) {
     type_path_as_bound(p);
     while p.at(SyntaxKind::Plus) {

@@ -92,7 +92,7 @@ type ChildBuilder = Box<dyn Fn(&mut BuildCx<'_>)>;
 /// ```
 ///
 /// Invalidation: `View` declares only structure/layout/paint through the layout
-/// node it maps to; it holds no reactive state of its own this slice, so a
+/// node it maps to; it holds no reactive state of its own, so a
 /// change to the container is expressed by rebuilding it (see the crate-level
 /// note on the rebuild path for content). Semantics default to [`Role::Group`].
 pub struct View {

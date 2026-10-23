@@ -1,9 +1,9 @@
-//! The `animation` benchmark category (AGENTS section 36): the per-frame cost of
+//! The `animation` benchmark category: the per-frame cost of
 //! [`AnimationRegistry::tick`], the transform-only animation hot path a sheet
 //! drawer (and every future translate animation) rides on.
 //!
-//! Section 28 lists animation ticks as a hot path that must carry no hidden
-//! allocation, and section 8.7 fixes the contract: a tick advances each live
+//! Animation ticks are a hot path that must carry no hidden allocation, and the
+//! contract is fixed: a tick advances each live
 //! animation by writing an interpolated world-space offset through
 //! `NodeStore::set_translate` — a `TRANSFORM | HIT_TEST | PAINT` write that never
 //! re-measures or re-lays out. This bench measures that steady per-frame cost at

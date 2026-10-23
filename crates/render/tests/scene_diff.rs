@@ -1,11 +1,11 @@
-//! F3.2 ingest-diff invariants: the retained scene bumps only the revision
+//! Ingest-diff invariants: the retained scene bumps only the revision
 //! plane a change actually moved, and an unchanged scene mutates nothing.
 //!
 //! The renderer ingests the same flat `&[Primitive]` stream every frame, but
 //! the retained stores persist across frames (`begin_frame` resets a cursor, it
 //! does not clear entries). Each `ingest_*` diffs the incoming primitive against
 //! the retained entry at its positional slot and reports which fields moved; the
-//! scene bumps only the matching planes (§8.4). These tests drive `upload`
+//! scene bumps only the matching planes. These tests drive `upload`
 //! across frames and read back [`Renderer::scene_revisions`] and
 //! [`Renderer::frame_stats`] to prove:
 //!

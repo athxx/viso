@@ -1,4 +1,4 @@
-//! The 3D scene lane end to end through the renderer (ADR 0047): a scene draw
+//! The 3D scene lane end to end through the renderer: a scene draw
 //! renders its slot's frame into the slot's target and composites it into its
 //! rect, renders again only when the frame or the size changed, culls what the
 //! camera cannot see, grows its target in 64-pixel steps, draws unlit meshes

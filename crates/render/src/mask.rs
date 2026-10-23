@@ -1,11 +1,11 @@
-//! The mask model and retained mask cache (§14.4): resolve a requested mask into
+//! The mask model and retained mask cache: resolve a requested mask into
 //! a cached coverage realization keyed so a stable mask is built once and reused,
 //! stored tight (R8, ROI-sized, page-allocated) rather than as a permanent
 //! full-screen RGBA texture.
 //!
 //! A mask is a per-pixel coverage/luminance field a later draw multiplies through
 //! — a clip-path coverage, a soft alpha mask, an image or path used as a stencil.
-//! Four kinds are supported at the baseline (§14.4): [`MaskKind::Alpha`] and
+//! Four kinds are supported at the baseline: [`MaskKind::Alpha`] and
 //! [`MaskKind::Luminance`] as the two composition modes, and
 //! [`MaskKind::Image`] / [`MaskKind::Path`] as the two sources. Higher-level mask
 //! boolean algebra is a later lane and does not change this baseline.
@@ -21,7 +21,7 @@
 //!   max-rects [`RectPacker`](crate::rect_packer) the glyph and color atlases use,
 //!   so many small masks share one texture instead of each owning a target.
 //!
-//! This is a cold-path resource cache (§7.2, §45): the key is computed once when a
+//! This is a cold-path resource cache: the key is computed once when a
 //! mask is requested (the same place a clip's [`ClipTier`](crate::ClipTier) is
 //! chosen), and the cache is a keyed retained map — a stable mask hits its retained
 //! slot with no re-raster, and slots untouched for a frame are reclaimed. The hot
@@ -35,7 +35,7 @@ use crate::primitive::Rect;
 use crate::rect_packer::RectPacker;
 use crate::scene::store::ClipFillRule;
 
-/// Which mask a request realizes (§14.4). The first two are composition modes
+/// Which mask a request realizes. The first two are composition modes
 /// (how the mask's texel is interpreted), the last two are sources (where the
 /// coverage comes from). All four are baseline; boolean combinations are a later
 /// lane that reuses this vocabulary.
@@ -67,7 +67,7 @@ impl MaskKind {
 }
 
 /// The pixel format a mask is stored in. R8 is the default and the common case;
-/// RGBA is used only when color information is genuinely needed (§14.4).
+/// RGBA is used only when color information is genuinely needed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MaskFormat {
     /// Single 8-bit coverage channel — the default for alpha/luminance/path masks
@@ -97,7 +97,7 @@ impl MaskFormat {
 /// it. `kind` is the composition/source; `needs_color` says whether an image
 /// source must keep its channels (ignored for coverage-only kinds); `roi` is the
 /// tight region the mask covers, in texels (points × the device scale); `key` is the exact set of
-/// inputs the mask's pixels are a function of (§14.4 cache key).
+/// inputs the mask's pixels are a function of (the cache key).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MaskRequest {
     /// The mask kind (composition mode / source).
@@ -124,7 +124,7 @@ impl MaskRequest {
     }
 }
 
-/// The cache key of a retained mask (§14.4): the exact set of inputs the mask's
+/// The cache key of a retained mask: the exact set of inputs the mask's
 /// pixels are a function of, so an unchanged key means the retained realization
 /// is still valid and no re-raster is owed.
 ///
@@ -177,7 +177,7 @@ pub struct MaskResolution {
     pub slot: MaskSlot,
     /// Whether this resolve rasterized the mask (a cold build or a re-raster after
     /// a key change). `false` means a cache hit: the retained slot was reused with
-    /// no raster, the stable-mask fast path (§14.4). Advances `clip_mask_builds`
+    /// no raster, the stable-mask fast path. Advances `clip_mask_builds`
     /// when `true`.
     pub rasterized: bool,
 }
@@ -190,13 +190,13 @@ struct MaskEntry {
     last_used: u64,
 }
 
-/// The retained mask cache (§14.4): a keyed store of coverage realizations backed
+/// The retained mask cache: a keyed store of coverage realizations backed
 /// by a shared page, so a stable mask is built once and reused.
 ///
 /// The cache is keyed by [`MaskKey`] (not positional like the scene's cursor
 /// stores) because a mask's identity is its inputs, not its paint-order slot — the
 /// same clip path masked under the same transform is the same mask wherever it
-/// appears. This is a cold-path resource cache (§45): the lookup happens once per
+/// appears. This is a cold-path resource cache: the lookup happens once per
 /// masked draw when it is planned, not per pixel or per frame for an unchanged
 /// mask.
 ///
@@ -272,7 +272,7 @@ impl MaskCache {
     ///
     /// On a hit — an entry with the same [`MaskKey`] exists — the retained slot is
     /// returned untouched and `rasterized` is `false`: the stable-mask fast path,
-    /// no re-raster (§14.4). On a miss, the ROI is page-allocated (tight, in the
+    /// no re-raster. On a miss, the ROI is page-allocated (tight, in the
     /// request's [`format`](MaskRequest::format)), an entry is recorded, and
     /// `rasterized` is `true` so the caller knows a build is owed and
     /// `clip_mask_builds` advances. A miss no page has room for adds a page.
@@ -489,7 +489,7 @@ mod tests {
     }
 
     /// A stable mask — same key next frame — is a cache hit: the retained slot is
-    /// reused and nothing is re-rastered (§14.4).
+    /// reused and nothing is re-rastered.
     #[test]
     fn stable_mask_hits_without_re_raster() {
         let mut cache = MaskCache::new(256, 256);

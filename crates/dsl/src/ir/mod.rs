@@ -1,4 +1,4 @@
-//! UI IR / Binding IR — the view-lowering passes (AGENTS sections 21.2, 59).
+//! UI IR / Binding IR — the view-lowering passes.
 //!
 //! [`crate::hir::lower`] types each component; these passes walk a component's
 //! `view` block (a `ui!` fragment is the view of a stateless one) and lower it
@@ -7,9 +7,9 @@
 //! - **UI IR** ([`ui_ir`]): a static retained-tree template — a [`ui_ir::UiTree`]
 //!   of [`ui_ir::UiNode`]s with folded compile-time style, control-flow regions,
 //!   and the properties still needing a runtime binding. Mounted once, never
-//!   rebuilt per frame (section 59).
+//!   rebuilt per frame.
 //! - the **property → dirty-class** table ([`dirty_map`]) that tags every binding
-//!   with exactly what a write invalidates (section 11).
+//!   with exactly what a write invalidates.
 //! - the **Binding IR** ([`binding_ir`]) and keyed-list analysis ([`keys`]) over
 //!   that template.
 //!

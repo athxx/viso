@@ -1,4 +1,4 @@
-//! Splicing runs of leaf entries into the retained scene (§9.7).
+//! Splicing runs of leaf entries into the retained scene.
 //!
 //! A leaf — a quad, an analytic shape or shadow, an image, a glyph run — is
 //! one paint-order entry over one slot of its kind's store, and every store

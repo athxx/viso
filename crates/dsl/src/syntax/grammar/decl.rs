@@ -1,4 +1,4 @@
-//! The declaration grammar (Appendix A.2, A.4–A.7). A compilation unit is a run
+//! The declaration grammar. A compilation unit is a run
 //! of imports followed by top-level declarations; a component/system body is a run
 //! of typed members. This is the declarative surface of the `:` vs `=` split — a
 //! `:` separates a name from its type (`input x: T`, `field: T`, `name: Type`),
@@ -134,7 +134,7 @@ fn decl_core(p: &mut Parser) {
         SyntaxKind::ActionKw => fn_like_decl(p, SyntaxKind::ActionDecl),
         SyntaxKind::TaskKw => fn_like_decl(p, SyntaxKind::TaskDecl),
         SyntaxKind::ShaderKw => shader_decl(p),
-        // Standard/Advanced declarations parsed but not resolved this slice.
+        // Standard/Advanced declarations.
         SyntaxKind::NativeKw => native_decl(p),
         SyntaxKind::TraitKw => trait_decl(p),
         SyntaxKind::ImplKw => impl_decl(p),
@@ -174,7 +174,7 @@ fn component_rest(p: &mut Parser) {
 }
 
 /// `"template" IDENT GenericParams? "(" ParameterList ")" WhereClause? "{"
-/// TemplateMember+ "}"` (§58). Members parse as a component's; HIR admits only
+/// TemplateMember+ "}"`. Members parse as a component's; HIR admits only
 /// `slot`, `const`, `fn` and `view`.
 fn template_decl(p: &mut Parser) {
     let m = p.start();
@@ -247,7 +247,7 @@ pub(super) fn member(p: &mut Parser) {
     }
 }
 
-/// `"shader" IDENT GenericParams? "{" ShaderMember* "}"` (§97).
+/// `"shader" IDENT GenericParams? "{" ShaderMember* "}"`.
 fn shader_decl(p: &mut Parser) {
     let m = p.start();
     p.bump_any(); // `shader`
@@ -331,7 +331,7 @@ fn state_decl(p: &mut Parser) {
     m.complete(p, SyntaxKind::StateDecl);
 }
 
-/// `"effect" IDENT EffectDeps? EffectRun? EffectBody` (§37): the dependency
+/// `"effect" IDENT EffectDeps? EffectRun? EffectBody`: the dependency
 /// list is `"when" "(" Expression ("," Expression)* ","? ")"`, never empty;
 /// the run policy is `"run" Path`; the body is `"{" Statement* ("cleanup"
 /// Block)? "}"`.
@@ -383,7 +383,7 @@ fn effect_decl(p: &mut Parser) {
     m.complete(p, SyntaxKind::EffectDecl);
 }
 
-/// `"resource" IDENT ":" Type "{" ResourceItem* "}"` (§38), each item one of
+/// `"resource" IDENT ":" Type "{" ResourceItem* "}"`, each item one of
 /// `load`, `key`, `policy`, `scope` `"=" Expression ";"`. An unknown item is
 /// an error; which items are given, and how often, the checker decides.
 fn resource_decl(p: &mut Parser) {
@@ -718,7 +718,7 @@ fn fn_like(p: &mut Parser, kind: SyntaxKind, signature: bool) {
 }
 
 /// `"trait" IDENT GenericParams? (":" TraitBounds)? WhereClause? "{" TraitMember*
-/// "}"` (§30). A member is a callable signature (or one with a default body), an
+/// "}"`. A member is a callable signature (or one with a default body), an
 /// associated `type IDENT (":" TraitBounds)? ";"`, or `const IDENT ":" Type ";"`.
 fn trait_decl(p: &mut Parser) {
     let m = p.start();
@@ -733,8 +733,8 @@ fn trait_decl(p: &mut Parser) {
     m.complete(p, SyntaxKind::TraitDecl);
 }
 
-/// `"impl" GenericParams? Type ("for" Type)? WhereClause? "{" ImplMember* "}"`
-/// (§31): `impl Trait for Type` implements a trait, `impl Type` adds inherent
+/// `"impl" GenericParams? Type ("for" Type)? WhereClause? "{" ImplMember* "}"`:
+/// `impl Trait for Type` implements a trait, `impl Type` adds inherent
 /// members. A member is a callable, `type IDENT "=" Type ";"` or a `const`.
 fn impl_decl(p: &mut Parser) {
     let m = p.start();
@@ -789,7 +789,7 @@ fn assoc_member(p: &mut Parser, in_trait: bool) {
 /// `"native" ("fn" | "action" | "task") IDENT GenericParams? "(" ParameterList
 /// ")" ReturnType WhereClause? CapabilityClause? ";"` or `"native" "type" IDENT
 /// GenericParams? (":" TraitBounds)? WhereClause? ";"` — a handwritten native
-/// declaration (§47): a signature the native schema implements, without a body.
+/// declaration: a signature the native schema implements, without a body.
 fn native_decl(p: &mut Parser) {
     let m = p.start();
     p.bump_any(); // `native`

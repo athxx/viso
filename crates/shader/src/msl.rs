@@ -3,8 +3,8 @@
 //!
 //! Each built-in used to carry two hand-maintained copies of one field contract —
 //! a `packed_float*` MSL `struct` and a parallel [`InstanceSchema`] — kept in
-//! lockstep only by name-order test assertions (the section-56 "implicit shader
-//! instance field-order ABI"). Both now project from one [`ShaderIr`] value: the
+//! lockstep only by name-order test assertions (an implicit shader instance
+//! field-order ABI). Both now project from one [`ShaderIr`] value: the
 //! `*_MSL()` accessors return [`emit_msl`](crate::ir::codegen_msl::emit_msl) of
 //! the primitive's IR and the `*_schema()` fns return
 //! [`emit_schema_attrs`](crate::ir::codegen_msl::emit_schema_attrs) of the *same*
@@ -40,7 +40,7 @@ use crate::ir::module::{
     image_ir, material_ir, mesh_ir, mtsdf_ir, quad_ir, scene_ir,
 };
 
-/// The built-in primitive shaders (architecture section 15.3). One entry per
+/// The built-in primitive shaders. One entry per
 /// [`Primitive`] kind in `viso-render`; each maps to an IR-derived MSL program and
 /// an instance schema.
 ///

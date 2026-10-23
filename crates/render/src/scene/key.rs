@@ -1,4 +1,4 @@
-//! What a retained entry draws, as a damage key (§30.3): a hash of every
+//! What a retained entry draws, as a damage key: a hash of every
 //! field that decides its pixels, and, for the kinds whose bounds the walk
 //! does not compute (glyph runs, paths, meshes), the world-space extent it
 //! covers.

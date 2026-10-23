@@ -9,7 +9,7 @@
 //! however the bands are spread over workers.
 //!
 //! A tile no item touches is not visited at all: a pass that loads its target
-//! (a partial redraw, §30.3) costs only the tiles its draws cover. A pass that
+//! (a partial redraw) costs only the tiles its draws cover. A pass that
 //! clears fills each band before drawing into it.
 //!
 //! A pass can also be a [`Layer`]: binned but not drawn, its texture never

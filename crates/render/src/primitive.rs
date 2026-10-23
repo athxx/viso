@@ -97,7 +97,7 @@ impl Quad {
 /// Per-corner radii for an [`AnalyticRRect`], in points. Order follows
 /// the fill's quadrant test: `left_top`, `right_top`, `right_bottom`,
 /// `left_bottom`. A corner radius of `0` is a sharp corner. Oversized radii are
-/// scaled to fit by [`Corners::normalized`] during lowering (§11.2); the SDF
+/// scaled to fit by [`Corners::normalized`] during lowering; the SDF
 /// additionally clamps each corner as a final safety net.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Corners {
@@ -130,9 +130,9 @@ impl Corners {
         }
     }
 
-    /// Scale these radii to fit a `width`×`height` box, following the CSS
-    /// overlapping-curves rule (§11.2): when two radii sharing an edge sum to
-    /// more than that edge's length, every radius shrinks by the *single*
+    /// Scale these radii to fit a `width`×`height` box, following the
+    /// overlapping-curves rule (CSS Backgrounds 3 §5.5): when two radii sharing
+    /// an edge sum to more than that edge's length, every radius shrinks by the *single*
     /// smallest edge ratio, so the shape stays proportional instead of each
     /// corner clamping independently and distorting. Negative inputs floor to
     /// `0`. Widgets pass their authored radii straight through — the normalize
@@ -207,7 +207,7 @@ pub struct AnalyticRRect {
 
 impl AnalyticRRect {
     /// Lower this rounded rect to its GPU instance. Per-corner radii are
-    /// normalized to the rect (§11.2) so oversized authored radii scale down
+    /// normalized to the rect so oversized authored radii scale down
     /// proportionally rather than distorting corner by corner.
     pub fn to_instance(&self) -> AnalyticRRectInstance {
         let radius = self.radius.normalized(self.rect.w, self.rect.h);
@@ -303,7 +303,7 @@ impl AnalyticCapsule {
 /// The silhouette an [`AnalyticShadow`] casts, selecting the SDF the fast lane
 /// evaluates its Gaussian coverage against.
 ///
-/// Every requested §15 shape folds onto one of three distance functions, matching
+/// Every requested shadow shape folds onto one of three distance functions, matching
 /// the shader/headless `shape` discriminator: a rounded box subsumes `Rect`
 /// (radius 0) and `RRect` (per-corner radii); an ellipse subsumes `Circle` and
 /// `Ellipse`; a capsule is a rounded box whose radius is the smaller half-extent.
@@ -329,13 +329,13 @@ impl ShadowShape {
     }
 }
 
-/// A soft drop shadow for an analytic shape, drawn by the §15 fast lane: one extra
+/// A soft drop shadow for an analytic shape, drawn by the shadow fast lane: one extra
 /// instanced quad under the shape whose coverage is a closed-form Gaussian ramp
 /// over the shape's signed distance — no blur target, no offscreen composite.
 ///
 /// The shadow silhouette is `rect` grown by `spread` and shaped by `shape`
 /// (rounded box / ellipse / capsule), blurred with standard deviation `sigma`
-/// (the blur-radius semantic of §15.2) and displaced by `offset`. `radius` is the
+/// (blur-radius semantic) and displaced by `offset`. `radius` is the
 /// per-corner rounding used only when `shape` is [`ShadowShape::RoundedBox`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AnalyticShadow {
@@ -347,7 +347,7 @@ pub struct AnalyticShadow {
     pub radius: Corners,
     /// Shadow displacement in points.
     pub offset: [f32; 2],
-    /// Blur standard deviation in pixels (§15.2 blur-radius semantic).
+    /// Blur standard deviation in pixels (blur-radius semantic).
     pub sigma: f32,
     /// Silhouette grow (`+`) / shrink (`-`) in pixels applied before the blur.
     pub spread: f32,
@@ -355,13 +355,13 @@ pub struct AnalyticShadow {
     pub shape: ShadowShape,
     /// `false` for an outer drop shadow (fills the silhouette, fades outward);
     /// `true` for an inner shadow (darkens the interior near the edge, fading
-    /// toward the center) — the analytic §20.3 lane, no mask/blur target.
+    /// toward the center) — the analytic inner-shadow lane, no mask/blur target.
     pub inner: bool,
 }
 
 impl AnalyticShadow {
     /// Lower this shadow to its GPU instance. Per-corner radii are normalized to
-    /// the rect (§11.2) exactly as [`AnalyticRRect::to_instance`], so oversized
+    /// the rect exactly as [`AnalyticRRect::to_instance`], so oversized
     /// authored radii scale down proportionally; `offset`/`sigma`/`spread`/`shape`
     /// pass through unchanged.
     pub fn to_instance(&self) -> ShadowInstance {
@@ -512,7 +512,7 @@ pub struct Gradient {
     /// The color stops, ordered by ascending `offset`. Two stops lower to an
     /// inline instance pair; three or more bake a LUT row.
     pub stops: Vec<GradientStop>,
-    /// The color space the stops are interpolated in (§12.3) — an explicit
+    /// The color space the stops are interpolated in — an explicit
     /// choice, never inferred from the target format.
     pub interp: InterpolationSpace,
 }
@@ -639,7 +639,7 @@ pub struct LayerClip {
     pub backdrop_sigma: f32,
 }
 
-/// Which realization draws a material surface (§19).
+/// Which realization draws a material surface.
 ///
 /// Two lanes exist because they are good at opposite things, and neither one
 /// dominates: the GPU lane is composable and identical everywhere, the native lane
@@ -674,7 +674,7 @@ pub enum MaterialLane {
     Native,
 }
 
-/// The trade-offs that pick a material lane (§19). Every field is a property of the
+/// The trade-offs that pick a material lane. Every field is a property of the
 /// *use site*, not of a platform, so the decision is portable: a backend that has no
 /// native material simply never offers the native lane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -698,7 +698,7 @@ pub struct MaterialLaneNeeds {
 }
 
 impl MaterialLane {
-    /// Pick a lane from the use site's needs (§19).
+    /// Pick a lane from the use site's needs.
     ///
     /// The precedence is deliberate, and it is *correctness before fidelity*: any
     /// requirement the native lane cannot meet rules it out, and only then does
@@ -726,7 +726,7 @@ impl MaterialLane {
 /// Carries geometry plus the *generic* material parameters the surface authored —
 /// never a platform material name. The platform layer owns the mapping from these
 /// numbers to its own vocabulary, which is what keeps platform-private material APIs
-/// out of the render IR (§19); naming and per-platform semantics belong to
+/// out of the render IR; naming and per-platform semantics belong to
 /// `Viso_Visual_Materials.md`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NativeMaterialRegion {
@@ -748,7 +748,7 @@ pub struct NativeMaterialRegion {
     pub opacity: f32,
 }
 
-/// A frosted material surface: one leaf primitive for the whole §18 chain
+/// A frosted material surface: one leaf primitive for the whole material chain
 /// `backdrop → blur → saturation/tint → optional noise → material mask →
 /// border/highlight`.
 ///
@@ -791,7 +791,7 @@ pub struct FrostedMaterial {
     /// The border/highlight ring, drawn as an analytic rounded rect over the
     /// surface. [`Border::NONE`] for none.
     pub border: Border,
-    /// Which realization draws the surface (§19). [`MaterialLane::Gpu`] by default —
+    /// Which realization draws the surface. [`MaterialLane::Gpu`] by default —
     /// the portable answer; [`MaterialLane::Native`] reserves the region for the
     /// platform's own material instead of capturing and blurring a backdrop.
     pub lane: MaterialLane,
@@ -813,7 +813,7 @@ impl FrostedMaterial {
         }
     }
 
-    /// The surface's mask radii, normalized against the rect (§11.2) exactly as
+    /// The surface's mask radii, normalized against the rect exactly as
     /// [`AnalyticRRect::to_instance`] does, so the mask and the border ring round
     /// identically.
     pub fn radii(&self) -> [f32; 4] {
@@ -908,7 +908,7 @@ impl ImageDraw {
 }
 
 /// How a source image is scaled into its destination rect when their aspect
-/// ratios differ (§12.4). The solve is pure geometry, done on the CPU at
+/// ratios differ. The solve is pure geometry, done on the CPU at
 /// lowering; the GPU only ever sees the resulting [`ImageDraw`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fit {
@@ -972,14 +972,14 @@ impl Align2 {
 
 /// The author-facing image: a source region of a texture drawn into a
 /// destination rect with a scaling policy, alignment, opacity, and sampler
-/// (§12.4/§12.5). It carries pixel-space inputs and solves fit/align (and, for
+///. It carries pixel-space inputs and solves fit/align (and, for
 /// an atlas sub-region, half-texel bleed) on the CPU into a single low-level
 /// [`ImageDraw`]; [`ImageInstance`]'s frozen GPU layout is unchanged.
 ///
 /// `src` is the source sub-region in **texture pixels** (`None` = the whole
 /// texture). When `src` is a proper sub-region it is treated as an atlas cell:
 /// its normalized UV rect is inset by half a texel on every side so bilinear
-/// sampling never bleeds a neighbouring cell (§12.6). A `None`/full-texture
+/// sampling never bleeds a neighbouring cell. A `None`/full-texture
 /// source is never inset.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ImageRect {
@@ -1122,7 +1122,7 @@ impl ImageRect {
 }
 
 /// A single sprite lifted from an atlas: the `region` (in atlas texels) drawn
-/// into `dest` (§12.6). This is just the ergonomic name for an [`ImageRect`]
+/// into `dest`. This is just the ergonomic name for an [`ImageRect`]
 /// whose source is an atlas cell — it carries the same fit/align/opacity and
 /// inherits the half-texel bleed guard, so it never samples a neighbour.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1183,7 +1183,7 @@ impl SpriteRegion {
 
 /// A nine-patch image: a `region` split by `insets` into 4 fixed corners, 4
 /// single-axis-stretched edges, and a two-axis-stretched center, drawn into
-/// `dest` (§12.6). Expanded on the CPU into 9 [`ImageDraw`]s over the Image
+/// `dest`. Expanded on the CPU into 9 [`ImageDraw`]s over the Image
 /// family — no new pipeline. `insets` is `[left, top, right, bottom]` in the
 /// source's own texels; the same absolute inset widths are preserved on screen
 /// (corners never scale), and only the interior stretches.
@@ -1279,7 +1279,7 @@ impl NineSlice {
 }
 
 /// A repeating tile: `tile` (a source cell in texels) laid out across `dest`
-/// (§12.6). The fast path is a **single** [`ImageDraw`] whose UV rect exceeds
+///. The fast path is a **single** [`ImageDraw`] whose UV rect exceeds
 /// `0..1` and relies on a `Repeat`/`Mirror` sampler to wrap — one instance, no
 /// CPU expansion. That fast path only holds for a whole-texture tile (`tile`
 /// covering the full texture); an atlas sub-cell cannot use wrap-around
@@ -1406,7 +1406,7 @@ impl TiledImage {
     }
 }
 
-/// How the renderer should back an image's texels (§12): a caller/upper-layer
+/// How the renderer should back an image's texels: a caller/upper-layer
 /// hint that selects the texture-resource strategy, resolved on the cold
 /// upload path (never per frame).
 ///
@@ -1503,7 +1503,7 @@ pub struct GlyphInstanceData {
 /// into coverage. Viso 1.0 has exactly these two raster lanes: there is no plain
 /// single-channel SDF lane, because a single channel cannot hold a sharp corner
 /// and the exact-coverage lane is strictly better wherever a fixed size is known
-/// (§13.2).
+///.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GlyphLane {
     /// Exact single-channel A8 coverage: the texel *is* the coverage. The
@@ -1522,7 +1522,7 @@ pub enum GlyphLane {
 ///
 /// The glyphs are pre-laid-out by [`viso_text`]; the run carries them as flat
 /// per-glyph instance data plus the atlas [`TextureId`] they sample. The whole
-/// run is a single color (`color`) — Phase 2 does not support per-glyph color.
+/// run is a single color (`color`); per-glyph color is not supported.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GlyphRunDraw {
     /// The positioned glyphs, one screen quad each.
@@ -1749,38 +1749,38 @@ pub struct Path {
     pub fill: Option<Rgba>,
     /// Stroke, if the outline is painted (drawn over the fill).
     pub stroke: Option<Stroke>,
-    /// A soft shadow cast by this path's silhouette, if any (§15.4/§20.2). Drawn
+    /// A soft shadow cast by this path's silhouette, if any. Drawn
     /// under the path via the tight-mask fallback lane — the path's own coverage
     /// mask, offset and tinted; no analytic SDF exists for an arbitrary outline.
     pub shadow: Option<PathShadow>,
 }
 
-/// A soft shadow cast by an arbitrary [`Path`] silhouette (§15.4/§20.2).
+/// A soft shadow cast by an arbitrary [`Path`] silhouette.
 ///
 /// Unlike [`AnalyticShadow`] there is no closed-form SDF for a general outline, so
 /// this lowers through the tight-coverage-mask fallback: the path's own coverage
 /// is rasterized to one R8 mask (the same mask lane a self-masked fill uses),
 /// then composited under the path, displaced by `offset` and tinted by `color`.
 /// The unshaded mask is keyed on `{geometry, sigma}` and reused across frames when
-/// only `color`/`offset` change (§20.2).
+/// only `color`/`offset` change.
 ///
-/// `sigma` is recorded and folds into the mask's cache key so the E1 separable
-/// blur drops in without re-keying; E0's minimal fallback composites the sharp
-/// mask (no convolution pass — full ROI/blur is E1). `inner` selects an inner
-/// shadow, which E0 routes through the same mask lane (§20.3 general-path side).
+/// `sigma` is recorded and folds into the mask's cache key so a separable blur
+/// drops in without re-keying; the current minimal fallback composites the sharp
+/// mask (no convolution pass). `inner` selects an inner shadow, which routes
+/// through the same mask lane.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PathShadow {
     /// Shadow color (straight linear RGBA; `a` scales the whole ramp).
     pub color: Rgba,
     /// Shadow displacement in points.
     pub offset: [f32; 2],
-    /// Blur standard deviation in pixels (§15.2 blur-radius semantic). Recorded in
-    /// the mask cache key; E0 composites the sharp mask, E1 applies the blur.
+    /// Blur standard deviation in pixels (blur-radius semantic). Recorded in the
+    /// mask cache key; the current fallback composites the sharp mask unblurred.
     pub sigma: f32,
-    /// Silhouette grow (`+`) / shrink (`-`) in pixels. Recorded in the key; the E0
-    /// fallback does not yet dilate the mask (E1), so it affects the key only.
+    /// Silhouette grow (`+`) / shrink (`-`) in pixels. Recorded in the key; the
+    /// fallback does not yet dilate the mask, so it affects the key only.
     pub spread: f32,
-    /// `false` = drop shadow under the path; `true` = inner shadow (§20.3).
+    /// `false` = drop shadow under the path; `true` = inner shadow.
     pub inner: bool,
 }
 
@@ -1804,7 +1804,7 @@ pub struct Mesh {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SceneSlot(pub u32);
 
-/// A 3D scene drawn into a rect (ADR 0047): the slot's frame rendered at the
+/// A 3D scene drawn into a rect: the slot's frame rendered at the
 /// rect's device-pixel size and composited like an image.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SceneDraw {
@@ -1879,7 +1879,7 @@ pub enum Primitive {
     Image(ImageDraw),
     /// A linear/radial/sweep gradient fill over an axis-aligned rect.
     Gradient(Gradient),
-    /// A soft drop shadow for an analytic shape, drawn by the §15 fast lane.
+    /// A soft drop shadow for an analytic shape, drawn by the shadow fast lane.
     AnalyticShadow(AnalyticShadow),
     /// A frosted material surface: a blurred backdrop, tinted, grained and masked
     /// to the surface's own rounded rect, plus its border ring.
@@ -1897,7 +1897,7 @@ pub enum Primitive {
     /// [`Primitive::LayerEnd`]. A `LayerClip::opacity < 1` layer additionally
     /// renders its subtree offscreen and composites it back at that opacity.
     Layer(LayerClip),
-    /// Attach one per-pixel color effect to the layer just opened (§17.3).
+    /// Attach one per-pixel color effect to the layer just opened.
     ///
     /// Valid only immediately after [`Primitive::Layer`], before that layer's
     /// content: a run of these markers is the layer's effect chain, applied in
@@ -1906,7 +1906,7 @@ pub enum Primitive {
     /// merge (see [`fuse`](crate::color_effect::fuse)). Anywhere else in the
     /// stream the marker is ignored.
     ColorEffect(Box<ColorEffect>),
-    /// Set the blend mode the layer just opened composites with (§14.6).
+    /// Set the blend mode the layer just opened composites with.
     ///
     /// Same placement rule as [`Primitive::ColorEffect`]: valid only in the marker
     /// run immediately after [`Primitive::Layer`], and ignored anywhere else. The
@@ -1918,7 +1918,7 @@ pub enum Primitive {
     /// behind it, so the common `SrcOver` pipeline stays untouched.
     Blend(Blend),
     /// Round the clip of the layer just opened: its clip rect with these
-    /// corners (§14.1).
+    /// corners.
     ///
     /// Same placement rule as [`Primitive::ColorEffect`]: valid only in the
     /// marker run immediately after [`Primitive::Layer`], ignored anywhere
@@ -1930,7 +1930,7 @@ pub enum Primitive {
     /// layer, close its offscreen pass and emit the composite).
     LayerEnd,
     /// Open transform root `slot`: what follows, up to the matching
-    /// [`Primitive::TransformEnd`], moves with that root (§21). Geometry is
+    /// [`Primitive::TransformEnd`], moves with that root. Geometry is
     /// written as of the frame it was painted; when only the roots' places
     /// change, [`Renderer::set_transforms`] maps the draws of each root to its
     /// place, so a scroll, slide, zoom or spin re-encodes draws and rewrites no
@@ -2488,7 +2488,7 @@ pub struct GeoVertex {
 /// A triangle-list index buffer at the narrowest width that addresses its mesh:
 /// `U16` when the vertex count fits in `u16`, else `U32`. Small icon/SVG
 /// geometry pays half the index bandwidth and device memory; large geometry
-/// stays correct at 32-bit (§13.4). Chosen once when geometry is built, cached
+/// stays correct at 32-bit. Chosen once when geometry is built, cached
 /// with it, never re-decided per frame.
 #[derive(Debug, Clone, PartialEq)]
 pub enum IndexBuffer {
@@ -2547,7 +2547,7 @@ impl IndexBuffer {
 }
 
 /// A retained, **colorless** tessellation of a [`Path`], in the path's local
-/// space (§13.4). Holds only what is invariant under a recolor or a
+/// space. Holds only what is invariant under a recolor or a
 /// transform-only change: vertex positions, AA coverage, and the triangle-list
 /// index buffer. Fill vertices come first, then stroke vertices; `fill_vert_end`
 /// marks the boundary so lowering paints each span with its own color.
@@ -2598,7 +2598,7 @@ const ROUND_STEP: f32 = 0.5;
 
 impl Path {
     /// Tessellate this path's **geometry** — colorless local-space vertices and
-    /// indices (§13.4). Fill vertices are emitted first (span `[0, fill_vert_end)`),
+    /// indices. Fill vertices are emitted first (span `[0, fill_vert_end)`),
     /// then stroke vertices, so lowering can paint each span with its own color.
     /// The fill/stroke *colors* are ignored here (only their presence matters):
     /// a recolor reuses this result unchanged. Curves flatten at
@@ -2611,7 +2611,7 @@ impl Path {
         self.tessellate_geometry_at(0)
     }
 
-    /// Tessellate this path's geometry at quality `bucket` (§13.4). A higher
+    /// Tessellate this path's geometry at quality `bucket`. A higher
     /// bucket flattens curves finer — the chord tolerance is
     /// `FLATTEN_TOLERANCE / (bucket + 1)` — so a path drawn at a larger device
     /// scale stays smooth. Bucket 0 matches [`tessellate_geometry`]. Only the
@@ -2701,7 +2701,7 @@ impl Path {
     /// to a sub-pixel grid. Two outlines with this same fingerprint are the same
     /// shape up to a pure translation, so they share a tessellation — the offset
     /// between them is carried as a [`PathTransform`], never re-tessellated
-    /// (§13.4). Coordinates quantize at `1/16` px, finer than
+    ///. Coordinates quantize at `1/16` px, finer than
     /// [`FLATTEN_TOLERANCE`], so a difference that would change the flattened mesh
     /// always changes the fingerprint.
     pub fn geometry_fingerprint(&self) -> u64 {
@@ -2969,8 +2969,8 @@ fn point_line_dist(p: Point, a: Point, b: Point) -> f32 {
 }
 
 /// Fan-triangulate a filled subpath from its centroid, with a 1px coverage-AA
-/// fringe around the outline. Assumes a simple, roughly convex polygon (Phase 2
-/// scope). No-op for degenerate outlines (< 3 points).
+/// fringe around the outline. Assumes a simple, roughly convex polygon. No-op for
+/// degenerate outlines (< 3 points).
 fn fill_subpath(points: &[Point], verts: &mut Vec<GeoVertex>, indices: &mut Vec<u32>) {
     // Drop a duplicated closing point so the outline is a clean ring.
     let ring: &[Point] = match points.split_last() {
@@ -3827,7 +3827,7 @@ mod tests {
     fn oversized_corners_scale_by_one_uniform_factor() {
         // Top edge wants 30+10 across a 20-wide box → the tightest ratio is
         // 20/40 = 0.5, and every corner shrinks by that same factor so the
-        // shape stays proportional (CSS overlapping-curves rule, §11.2).
+        // shape stays proportional (CSS Backgrounds 3 §5.5, overlapping curves).
         let c = Corners {
             left_top: 30.0,
             right_top: 10.0,
@@ -4322,7 +4322,7 @@ mod tests {
         );
     }
 
-    // ---- D3.3 stroke geometry --------------------------------------------
+    // ---- stroke geometry -------------------------------------------------
 
     /// A short open horizontal polyline (two points) with the given stroke.
     fn open_line(stroke: Stroke) -> Path {

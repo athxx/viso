@@ -1,4 +1,4 @@
-//! The Android accessibility bridge (ADR 0030): an AccessKit injecting
+//! The Android accessibility bridge: an AccessKit injecting
 //! adapter on the activity's host view.
 //!
 //! The adapter installs its delegate on the UI thread and calls the handlers

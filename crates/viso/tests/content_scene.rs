@@ -1,4 +1,4 @@
-//! End-to-end headless golden for the paint-all-primitives slice: build a real
+//! End-to-end headless golden for painting every primitive: build a real
 //! retained tree with a text leaf and a textured-image leaf, run measure +
 //! layout, paint through the UI `paint_tree` path (which lowers `Content::Text`
 //! and `Content::Image` to renderer primitives), rasterize on the headless

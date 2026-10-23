@@ -1,5 +1,4 @@
-//! Headless game scenarios (Viso_DSL_1.0.md section 110.5; Viso_CLI.md
-//! section 22.3): a package's systems run on an input tape for a number of
+//! Headless game scenarios: a package's systems run on an input tape for a number of
 //! frames, each tick's `@probe` states traced as JSON and checked against the
 //! scenario's expectations, the run ending with its snapshot hash and entity
 //! snapshot.

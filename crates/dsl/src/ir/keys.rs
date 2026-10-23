@@ -1,4 +1,4 @@
-//! Keyed-list identity — stable keys for repeated view content (AGENTS section 21.8).
+//! Keyed-list identity — stable keys for repeated view content.
 //!
 //! A `for` region mounts a body per iterated item. When that body carries
 //! per-item *identity* — an event handler bound to the item, or a reactive
@@ -10,7 +10,7 @@
 //! The grammar already makes `key` mandatory on every `for` and hard-errors
 //! (`E3401`) when it is missing, so a well-formed source always carries a key.
 //! This pass covers the *recovered* case — a `for` the parser continued past
-//! without a key — and the strict-mode contract of section 21.8: a keyless `for`
+//! without a key — and the strict-mode contract: a keyless `for`
 //! whose body is *stateful* is a distinct strict finding (`E3402`, a warning),
 //! surfaced at the IR level so the emitter and strict CI see a semantic result
 //! rather than only the syntactic parse error. A keyless `for` whose body is
@@ -35,7 +35,7 @@ use crate::resolve::SymbolId;
 use crate::syntax::span::TextRange;
 
 /// The strict-mode diagnostic code for a stateful `for` body without a stable
-/// key (section 21.8). Distinct from the parser's mandatory-`key` error
+/// key. Distinct from the parser's mandatory-`key` error
 /// (`E3401`): this is the *semantic* strict finding, a warning the emitter and CI
 /// read even when the parse recovered.
 pub const KEYLESS_STATEFUL_FOR: &str = "E3402";
@@ -50,7 +50,7 @@ pub struct KeyedFor {
     /// Empty when the key is a constant / loop-local, or when there is no key.
     pub key_reads: BTreeSet<SymbolId>,
     /// Whether a `key` clause was present. `false` is the recovered / keyless
-    /// case section 21.8 governs.
+    /// case the strict-mode contract governs.
     pub keyed: bool,
     /// Whether the body carries per-item identity (a handler or a binding) — the
     /// condition under which a missing key is a strict finding.
@@ -63,7 +63,7 @@ pub struct KeyedFor {
 pub struct KeyIr {
     /// Every `for` region, in pre-order.
     pub fors: Vec<KeyedFor>,
-    /// Strict-mode findings (section 21.8): a warning per keyless stateful `for`.
+    /// Strict-mode findings: a warning per keyless stateful `for`.
     pub diagnostics: Vec<Diagnostic>,
 }
 

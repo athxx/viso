@@ -1,5 +1,4 @@
-//! Hot reload transaction integration tests (architecture section 42; AGENTS 21.7,
-//! 35, 66).
+//! Hot reload transaction integration tests.
 //!
 //! These drive the full `plan → diff → migrate → commit` pipeline against a live
 //! headless runtime — no window, no GPU, deterministic. Each test mounts a
@@ -7,7 +6,7 @@
 //! tree, the reactive state cells, and the focus, scroll and edit state of
 //! kept nodes.
 //!
-//! The three cases mirror the plan's testing section:
+//! The three cases:
 //!
 //! 1. a valid property-only edit atomically patches in place — kept nodes keep their
 //!    `NodeId` (instance reuse) and their state cells keep their value;
@@ -378,7 +377,7 @@ fn an_inserted_sibling_keeps_every_other_node_s_live_identity() {
     // A node-level op names only the inserted node; every other static node
     // keeps the exact `NodeId` it already had, not a carried-over value on a
     // fresh instance. The siblings are different types so the diff's
-    // structural alignment is unambiguous (AGENTS 21.8: an unnamed run of the
+    // structural alignment is unambiguous (an unnamed run of the
     // *same* type aligns by position, not by which one a human would call
     // "the same node" — a different test, not this one).
     let (mut live, last_good) =

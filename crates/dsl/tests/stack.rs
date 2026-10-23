@@ -1,5 +1,5 @@
 //! A `Stack`'s `content_align` and its children's `stack.*`, and an
-//! `Absolute`'s children's `absolute.*` insets (§U3.6), from source to layout:
+//! `Absolute`'s children's `absolute.*` insets, from source to layout:
 //! each lays out under hot reload and from the release package, a stack paints
 //! and hits its children by layer, an inset that reads the environment folds
 //! against it at layout, and a reload rewrites the alignments and the insets

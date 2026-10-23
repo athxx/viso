@@ -1,4 +1,4 @@
-//! Section 71 validation pack for the `Toast` control — a non-modal, auto-dismissing
+//! Validation pack for the `Toast` control — a non-modal, auto-dismissing
 //! status overlay layered over the whole scene that neither dims the background nor
 //! takes focus, and hides itself once its `duration` elapses — driven through the
 //! public facade. Mirrors `sheet_widget.rs` (golden + facade-loop input tape + a11y +
@@ -34,9 +34,9 @@
 //!   polite live region) and is *not* focusable: a toast announces itself without moving
 //!   focus, the key non-modal difference from a `Dialog`;
 //! - **allocation profile** — a warmed-up shown `Toast` paint frame allocates nothing per
-//!   frame (architecture section 47 hot-path contract): the toast has no animation, so a
+//!   frame (hot-path contract): the toast has no animation, so a
 //!   steady shown frame is a pure paint/upload/submit with reused GPU resources; and the
-//!   `fire_due` timer-fire step (the section 28 auto-dismiss tick) allocates nothing —
+//!   `fire_due` timer-fire step (the auto-dismiss tick) allocates nothing —
 //!   `fire_due` swap-removes the fired timer and calls a boxed `FnOnce` that flips one
 //!   `hidden` flag, touching no heap.
 //!
@@ -791,10 +791,9 @@ fn a_steady_shown_toast_frame_is_deterministic_and_reuses_gpu_resources() {
     // each frame, so a full render frame is not zero-alloc; what must hold (the modal
     // steady-frame invariant) is that two identical frames allocate the *same* amount (no
     // unbounded scratch churn), no GPU resource is created per frame (buffers/textures/bind
-    // groups reused — section 17.4), and `frame_stats` is unchanged frame to frame (section
-    // 47: an unchanging scene neither leaks resources nor drifts its draw work). The
-    // per-frame zero-alloc contract is asserted on the isolated non-render hot path —
-    // `fire_due` — below.
+    // groups reused), and `frame_stats` is unchanged frame to frame (an unchanging scene
+    // neither leaks resources nor drifts its draw work). The per-frame zero-alloc contract
+    // is asserted on the isolated non-render hot path — `fire_due` — below.
     let mut h = setup_alloc();
 
     for _ in 0..4 {
@@ -858,7 +857,7 @@ fn a_steady_shown_toast_frame_is_deterministic_and_reuses_gpu_resources() {
 
 #[test]
 fn the_auto_dismiss_fire_step_is_allocation_free() {
-    // Section 28: the auto-dismiss timer fire is a hot-path tick. `fire_due` swap-removes the
+    // The auto-dismiss timer fire is a hot-path tick. `fire_due` swap-removes the
     // reached timer and calls its boxed `FnOnce`, which flips one `hidden` flag — no heap
     // touch. Measure the fire step in isolation (no renderer): crossing the deadline and
     // running `fire_due` must not allocate.
@@ -884,7 +883,7 @@ fn the_auto_dismiss_fire_step_is_allocation_free() {
     assert_eq!(
         ALLOCS.load(Ordering::Relaxed),
         0,
-        "the auto-dismiss timer fire must be allocation-free (section 28 ticks)"
+        "the auto-dismiss timer fire must be allocation-free (animation ticks)"
     );
 
     // The fire ran: the content is hidden and the registry emptied.

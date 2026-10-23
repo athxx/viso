@@ -12,7 +12,7 @@
 //! reply` plus any diagnostics to publish, so the whole protocol surface is unit-
 //! testable without a transport. The bin only wires stdin/stdout framing to it.
 //!
-//! Cold-path throughout (AGENTS 7.2): a handful of these run per editor keystroke.
+//! Cold-path throughout: a handful of these run per editor keystroke.
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -634,8 +634,8 @@ fn lsp_severity(severity: Severity) -> u8 {
 ///
 /// The single-document server resolves each file as a one-segment module named after
 /// its file stem (the last path component without extension), which is enough for the
-/// intra-document goto/references/rename this slice provides. Cross-module resolution
-/// across files is deferred (see the crate docs / todo).
+/// intra-document goto/references/rename this server provides. There is no
+/// cross-module resolution across files.
 fn module_path_of(uri: &str) -> Vec<String> {
     let stem = uri
         .rsplit(['/', '\\'])

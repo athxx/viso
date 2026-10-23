@@ -1,7 +1,7 @@
 //! The accessibility tree through the public facade: authored role/label folded
 //! with live state (focus, bounds, handler-derived roles) into a flat, snapshot-
-//! able `SemanticsTree`, re-derived only when a semantic invalidation is pending
-//! — Slice G end to end.
+//! able `SemanticsTree`, re-derived only when a semantic invalidation is
+//! pending, end to end.
 //!
 //! Like `keyboard_routing` and `style_token`, this drives the ui stores directly
 //! (all reachable through `viso::ui`) rather than standing up a live scheduler
@@ -141,7 +141,7 @@ fn label_change_re_derives_one_node() {
     assert_eq!(node_b.role, Role::Group, "the sibling is untouched");
     assert_eq!(node_b.label, None);
 
-    // No text node this slice: a label is SEMANTICS-only, never MEASURE/LAYOUT.
+    // No text node: a label is SEMANTICS-only, never MEASURE/LAYOUT.
     let dirty_a = store.dirty(a);
     assert!(dirty_a.intersects(DirtyClass::SEMANTICS));
     assert!(

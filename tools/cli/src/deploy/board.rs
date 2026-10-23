@@ -1,4 +1,4 @@
-//! A device target's board reached over SSH (Hot Reload §27A): the dev
+//! A device target's board reached over SSH: the dev
 //! artifact and the project's assets are copied into a session directory
 //! under the login's home with `scp`, and the app is started there with
 //! `ssh`, the dev variables in its environment; its stdout and stderr come

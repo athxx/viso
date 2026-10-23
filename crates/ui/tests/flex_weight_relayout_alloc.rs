@@ -10,7 +10,7 @@
 //! `LAYOUT | PAINT`; a warmed `layout` pass reuses its caller-owned scratch. So a
 //! steady-state weight rewrite + relayout allocates zero. A regression that
 //! reallocated the layout scratch, boxed a closure per call, or rebuilt the flex
-//! children instead of re-sizing them is what this pins (section 7.1 / section 28).
+//! children instead of re-sizing them is what this pins.
 //!
 //! Run single-threaded (`--test-threads=1`): the counter is process-wide, so a
 //! concurrent test's allocations would contaminate the armed window.

@@ -1,5 +1,5 @@
 //! Batch geometry reductions over `[Point]` slices — the SIMD-accelerated
-//! reductions behind the render tessellator's cold-path preprocessing (§13.6).
+//! reductions behind the render tessellator's cold-path preprocessing.
 //!
 //! Two reductions live here:
 //!

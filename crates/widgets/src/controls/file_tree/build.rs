@@ -7,13 +7,13 @@
 //! stable [`NodeKey`] (not its scroll index) is what lets an expand or collapse —
 //! which changes the row count and shifts every row below the toggle — reuse the
 //! surviving rows' host nodes and their state, mounting only the rows that newly
-//! entered the window (architecture section 12.4).
+//! entered the window.
 //!
 //! The walk is cold: it runs once when the tree is authored, and each row body
 //! runs only when its row is (re)mounted, never on the per-frame hot path. A row
 //! is an indent spacer sized to `depth * indent`, a disclosure chevron for a
 //! directory (blank for a file), and the node's label — the label fetched from the
-//! warm tree by key at mount time, kept off the hot [`VisibleRow`] (section 8.4).
+//! warm tree by key at mount time, kept off the hot [`VisibleRow`].
 //!
 //! The row builder reads the flattened rows through a **shared** warm cell
 //! ([`VisibleRows`]) rather than an owned snapshot: the substrate invokes the
@@ -22,7 +22,7 @@
 //! count lets the substrate diff by [`NodeKey`] — mounting the rows that entered,
 //! recycling those that left, and reusing every survivor's host. The keyed list,
 //! the shared `visible` cell, the shared label index, and the `row_nodes` map this
-//! walk fills are the substrate the reconcile step (a later section) drives.
+//! walk fills are the substrate the reconcile step drives.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -41,7 +41,7 @@ use super::{FileTreeStyle, Labels, RowNodes, VisibleRows};
 
 /// Author the file tree's subtree: a keyed virtual list over the currently
 /// visible rows, filling `row_nodes` with each mounted row's host node so the
-/// reconcile step (a later section) can find a row by key. Returns the list
+/// reconcile step can find a row by key. Returns the list
 /// viewport node so the caller can attach the tree's container semantics to it and
 /// so the reconcile step can drive this list's item count.
 ///
@@ -86,7 +86,7 @@ pub fn build_tree(
             let row = row_visible.borrow()[index];
             let node = build_row(cx, row, &labels, &style);
             // Record this row's host by key, so the reconcile step can address it
-            // directly rather than searching the arena (section 45).
+            // directly rather than searching the arena.
             row_nodes.borrow_mut().insert(row.key, node);
         },
     );

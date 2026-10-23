@@ -1,14 +1,13 @@
 //! Read-only node-tree introspection for the inspector, Studio, and tests.
 //!
-//! Architecture section 34/62 ask that a `NodeId`'s tree, layout box, and dirty
-//! reasons be inspectable without unsafe memory poking — through the same model
+//! A `NodeId`'s tree, layout box, and dirty reasons are inspectable without unsafe memory poking — through the same model
 //! the runtime itself uses, so a tool, a headless golden test, and an AI
 //! automation all read one contract. [`NodeStore::inspect_tree`] walks the live
 //! arena from a root and snapshots each node into a flat, self-contained
 //! [`InspectTree`], mirroring the accessibility [`SemanticsTree`](crate::semantics::SemanticsTree)
 //! shape: `nodes[0]` is the root, each node names its children by index.
 //!
-//! This is a cold path (architecture section 7.2) — it allocates a fresh
+//! This is a cold path — it allocates a fresh
 //! snapshot and is never touched by the steady-state per-node traversal. It only
 //! reads the store's existing accessors (`bounds`/`world`/`dirty`/the flag
 //! columns/`content_payload`), so building a snapshot changes no node state and
@@ -141,7 +140,7 @@ impl InspectTree {
 impl NodeStore {
     /// Snapshot the live subtree rooted at `root` into an [`InspectTree`].
     ///
-    /// A cold-path introspection surface (architecture section 34/62): it walks
+    /// A cold-path introspection surface: it walks
     /// ancestry links from `root` in pre-order and records each node's identity,
     /// ancestry, derived kind, layout/world boxes, dirty reasons, and flags. It
     /// reads only existing `&self` accessors, so it mutates no node state and
@@ -186,8 +185,7 @@ impl NodeStore {
 }
 
 /// The half-open `[start, start + len)` span one node occupies in the paint
-/// primitive stream, answering architecture section 62's
-/// `NodeId -> paint primitive ranges`. The span is **inclusive of descendants**:
+/// primitive stream, answering `NodeId -> paint primitive ranges`. The span is **inclusive of descendants**:
 /// it runs from the node's own first primitive through the last primitive of its
 /// last painted child (and, for a scroll viewport, through the closing
 /// `LayerEnd`). So a child's span nests inside its parent's — the same
@@ -270,7 +268,7 @@ impl PaintRanges {
 /// [`paint_tree`](crate::paint::paint_tree) produces — while recording each
 /// node's span into a [`PaintRanges`].
 ///
-/// A cold-path introspection surface (architecture section 34/62): it runs the
+/// A cold-path introspection surface: it runs the
 /// frame's own paint walk with a span recorder, so the two can never drift; the
 /// frame's instance of the walk records nothing and carries no branch for it.
 /// `out` is not cleared — append semantics match `paint_tree`.
@@ -304,15 +302,14 @@ impl crate::paint::PaintSpans for PaintRanges {
 // --- JSON serialization of the introspection snapshots --------------------
 //
 // The one canonical machine-readable form of every inspect surface, for Studio
-// transport and `viso inspect --json` (architecture section 34's "same
-// underlying model"). It reuses `viso_ende::JsonWriter` — the crate already
+// transport and `viso inspect --json` (the "same underlying model"). It reuses `viso_ende::JsonWriter` — the crate already
 // depends on `viso-ende` — rather than pulling in a serialization framework
-// (no serde). IDs are emitted as numbers, never strings (architecture section
-// 16.2 / 29). All of it is cold-path (section 7.2): it walks a snapshot that is
+// (no serde). IDs are emitted as numbers, never strings. All of it is cold-path:
+// it walks a snapshot that is
 // itself built off `&self` accessors, so nothing here touches a hot path.
 //
 // The `viso-render` batch snapshot cannot carry its own JSON (`viso-render` may
-// not depend on `viso-ende` under the section 10 DAG), so this crate — which
+// not depend on `viso-ende` in the crate graph), so this crate — which
 // already sees both its own snapshots and the render batch snapshot's public
 // fields — writes the batch JSON over those fields directly.
 
@@ -558,14 +555,14 @@ fn write_batch(w: &mut JsonWriter, b: &InspectBatch) {
     w.end_object();
 }
 
-/// A single read-only introspection snapshot aggregating every architecture
-/// section 62 surface a frame exposes: the node tree, per-node paint spans, the
+/// A single read-only introspection snapshot aggregating every inspect surface a
+/// frame exposes: the node tree, per-node paint spans, the
 /// derived semantics tree, the frame's draw batches, and the frame counters.
 ///
 /// It is the one model Studio transport, `viso inspect --json`, and headless
-/// golden tests share (architecture section 34). Built by [`snapshot_ui`] off
+/// golden tests share. Built by [`snapshot_ui`] off
 /// `&self` accessors plus the render crate's own batch/stats snapshot — a cold
-/// path (section 7.2) that mutates no state and never runs on the steady frame
+/// path that mutates no state and never runs on the steady frame
 /// path. Its fields are public so a consumer can read a surface directly, and
 /// [`to_json`](Self::to_json) emits the canonical wire form.
 #[derive(Debug, Clone, PartialEq)]
@@ -585,8 +582,7 @@ pub struct InspectSnapshot {
 impl InspectSnapshot {
     /// Serializes the whole snapshot to the canonical compact JSON:
     /// `{"tree":…,"paint":…,"semantics":…,"batches":[…],"counters":{…}}`. The
-    /// `counters` object uses the architecture section 61 names
-    /// (`draw_calls`, `instances`, `node_count`, `visible_node_count`).
+    /// `counters` object uses the names (`draw_calls`, `instances`, `node_count`, `visible_node_count`).
     pub fn to_json(&self) -> String {
         let mut w = JsonWriter::new();
         w.begin_object();
@@ -652,7 +648,7 @@ impl InspectSnapshot {
 
 /// Builds an [`InspectSnapshot`] for the subtree rooted at `root`.
 ///
-/// A cold-path aggregator (architecture section 34/62): it composes the
+/// A cold-path aggregator: it composes the
 /// existing UI-side surfaces — [`inspect_tree`](NodeStore::inspect_tree),
 /// [`paint_ranges`], and [`derive_semantics`](NodeStore::derive_semantics) —
 /// with the render-side `batches`/`stats` the caller reads from the renderer

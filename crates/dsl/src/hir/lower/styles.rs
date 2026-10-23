@@ -1,4 +1,4 @@
-//! `style` declarations (§59, U2.3, U12.1): a style is for a node type its
+//! `style` declarations: a style is for a node type its
 //! file names — a native widget or a user component (`E2001` otherwise); its
 //! bases are styles of the file or imported ones (`E2001` for a name that resolves to
 //! nothing, `E2103` for one that is no style or is for another type) on no

@@ -2,8 +2,7 @@
 //! it out, lowering it to primitives, and — the interactive hot path — one
 //! seam-drag reconcile frame.
 //!
-//! This is the section 71 microbench slot for the first Tier 5 (composite
-//! container) control, and copies the `splitter_build.rs` template. Four phases:
+//! Four phases:
 //!
 //! - `dock/build_32` authors a balanced 32-panel dock (a deep nest of binary
 //!   splits) through the public [`dock`] builder, so the build-walk cost — flex
@@ -23,7 +22,7 @@
 //! It drives only `viso-ui` + `viso-widgets`, so it needs no facade or render
 //! dev-dependency and adds no dependency edge. Run release
 //! (`CARGO_TARGET_DIR=/tmp/rust_tmp cargo bench -p viso-widgets --bench dock`);
-//! debug timing is not a perf result (AGENTS section 36).
+//! debug timing is not a perf result.
 
 use std::hint::black_box;
 

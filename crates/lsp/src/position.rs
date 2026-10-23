@@ -12,7 +12,7 @@
 //! ever emits positions), but the server must map an incoming cursor position back
 //! to a byte offset to answer goto/references/rename.
 //!
-//! All cold-path (AGENTS 7.2): a handful of these run per editor request.
+//! All cold-path: a handful of these run per editor request.
 
 use viso_dsl::LineIndex;
 use viso_dsl::TextRange;

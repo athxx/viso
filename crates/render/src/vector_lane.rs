@@ -1,13 +1,13 @@
-//! Which lane rasterizes vector geometry (§20.1).
+//! Which lane rasterizes vector geometry.
 //!
 //! Viso has one vector lane today: the CPU flattens and tessellates an outline,
-//! and the GPU draws the resulting mesh. §20.1 describes a second one — bin the
+//! and the GPU draws the resulting mesh. A second one is possible — bin the
 //! path segments into tiles on the GPU, prefix-sum the per-tile allocation,
 //! accumulate coverage per tile, then fine-raster — and it is genuinely faster
 //! for one shape of workload: a large, *churning* segment population where the
 //! CPU tessellator, not the GPU, is the frame's limit.
 //!
-//! The load-bearing part of §20.1 is not that pipeline, though. It is the rule
+//! The load-bearing part of this module is not that pipeline, though. It is the rule
 //! that the compute lane is **workload specialization**: twenty ordinary
 //! buttons, a panel, or a few dozen stable paths must never be routed through
 //! compute dispatch for the sake of architectural uniformity. A dispatch is not
@@ -22,22 +22,22 @@
 //!
 //! 1. **A measurement is required.** [`VectorWorkload::tessellation_share`] is a
 //!    measured fraction of the frame budget, and it defaults to `0.0`. A caller
-//!    that has not profiled cannot reach the compute lane at all — §7.3 as a
-//!    type, not as a comment.
+//!    that has not profiled cannot reach the compute lane at all — a rule
+//!    enforced by a type, not by a comment.
 //! 2. **Scale is required.** Below [`LARGE_SEGMENT_COUNT`] segments the answer is
 //!    the CPU lane even when the measurement says tessellation dominates, because
 //!    at that size the fix is the tessellator, not a dispatch.
 //! 3. **Churn is required.** A large but *stable* path population belongs in
-//!    retained cached geometry (§33's "general stable path can be retained cached
-//!    geometry"), which costs nothing per frame. Re-binning it on the GPU every
-//!    frame would be work that the CPU lane had already stopped doing.
+//!    retained cached geometry, which costs nothing per frame. Re-binning it on
+//!    the GPU every frame would be work that the CPU lane had already stopped
+//!    doing.
 //!
-//! The thresholds below are internal benchmark parameters, not public ABI
-//! (§20.1): they are the crossover of one tessellator against one dispatch cost,
-//! and both move. What is stable is the *shape* of the policy — measured
+//! The thresholds below are internal benchmark parameters, not public ABI:
+//! they are the crossover of one tessellator against one dispatch cost, and
+//! both move. What is stable is the *shape* of the policy — measured
 //! bottleneck AND scale AND churn, with capability as a veto.
 
-/// Which lane turns vector outlines into pixels (§20.1).
+/// Which lane turns vector outlines into pixels.
 ///
 /// Not a quality ranking: the two lanes produce the same coverage, and differ
 /// only in where the work happens and what fixed cost it carries.
@@ -52,7 +52,7 @@ pub enum VectorLane {
     #[default]
     CpuTessellate,
     /// The GPU bins segments into tiles, allocates per-tile work with a parallel
-    /// prefix sum, accumulates coverage, and fine-rasters (§20.1).
+    /// prefix sum, accumulates coverage, and fine-rasters.
     ///
     /// Wins only where the CPU tessellator is the measured frame limit over a
     /// large, churning segment population: a vector editor dragging control
@@ -67,19 +67,19 @@ pub enum VectorLane {
 ///
 /// A scene this small that spends a quarter of its frame tessellating has a
 /// tessellator problem, and moving the same work to a dispatch would hide it
-/// behind a larger fixed cost. Internal benchmark parameter (§20.1).
+/// behind a larger fixed cost. Internal benchmark parameter.
 const LARGE_SEGMENT_COUNT: u32 = 50_000;
 
 /// Segments re-tessellated per frame above which a workload counts as churning.
 ///
 /// Below this a large scene is *stable*, and stable geometry belongs in the
 /// retained mesh cache, where its per-frame cost is already zero. Internal
-/// benchmark parameter (§20.1).
+/// benchmark parameter.
 const CHURNING_SEGMENTS_PER_FRAME: u32 = 10_000;
 
 /// Clip/composite operations per frame that make a large workload count as
 /// churning even when its segments are stable — the "frequent
-/// clipping/compositing" entry condition in §20.1, where the per-tile coverage
+/// clipping/compositing" entry condition, where the per-tile coverage
 /// the compute lane already computes is what the clips need anyway.
 const HEAVY_CLIP_COMPOSITE_OPS: u32 = 1_000;
 
@@ -88,10 +88,10 @@ const HEAVY_CLIP_COMPOSITE_OPS: u32 = 1_000;
 ///
 /// A quarter of the frame is the point past which no other optimization in the
 /// frame can pay for itself while tessellation stands still. Internal benchmark
-/// parameter (§20.1); the *requirement* that it be measured is not (§7.3).
+/// parameter; the *requirement* that it be measured is not.
 const TESSELLATION_BOTTLENECK_SHARE: f32 = 0.25;
 
-/// What a frame's vector workload looks like, as the entry conditions in §20.1
+/// What a frame's vector workload looks like, as the lane's entry conditions
 /// name it.
 ///
 /// Every field is a property of the *workload*, not of a backend or a platform,
@@ -109,13 +109,13 @@ pub struct VectorWorkload {
     /// Segments re-tessellated this frame: the churn. Zero for a scene whose
     /// paths are all retained from an earlier frame.
     pub remeshed_segments_per_frame: u32,
-    /// Clip and composite operations this frame — the §20.1 "frequent
+    /// Clip and composite operations this frame — the "frequent
     /// clipping/compositing" condition.
     pub clip_composite_ops: u32,
     /// Measured fraction of the frame budget CPU tessellation took, in `[0, 1]`.
     ///
     /// `0.0` means *not measured*, which is the default and which pins the answer
-    /// to the CPU lane: §7.3 forbids acting on an unmeasured performance claim,
+    /// to the CPU lane: acting on an unmeasured performance claim is forbidden,
     /// and this is where that rule is enforced rather than reviewed.
     pub tessellation_share: f32,
 }
@@ -143,13 +143,13 @@ impl VectorWorkload {
 }
 
 impl VectorLane {
-    /// Pick the lane for a workload (§20.1).
+    /// Pick the lane for a workload.
     ///
     /// Conjunctive by design: capability, a measured bottleneck, and a
     /// large-and-dynamic scene shape must *all* hold. Any one of them missing
     /// yields [`VectorLane::CpuTessellate`], so every way of being wrong about a
     /// workload degrades to the lane that is correct everywhere — which is the
-    /// §7.2 requirement that ordinary UI keep working with zero compute
+    /// requirement that ordinary UI keep working with zero compute
     /// dependency, expressed as the default branch of the decision rather than as
     /// a reviewer's promise.
     pub fn select(workload: VectorWorkload) -> VectorLane {
@@ -170,7 +170,7 @@ mod tests {
 
     /// A vector editor mid-drag: a large segment population, re-tessellated every
     /// frame, with tessellation measured as the frame's limit on a backend that
-    /// can dispatch. This is the one shape §20.1 describes the lane for.
+    /// can dispatch. This is the one shape the lane exists for.
     fn vector_editor_mid_drag() -> VectorWorkload {
         VectorWorkload {
             compute_available: true,
@@ -201,7 +201,7 @@ mod tests {
 
     #[test]
     fn an_unmeasured_workload_never_enters_the_compute_lane() {
-        // Same scene, no profile. §7.3: the share is the measurement, and without
+        // Same scene, no profile. The share is the measurement, and without
         // it the answer cannot be "compute is faster".
         let unmeasured = VectorWorkload {
             tessellation_share: 0.0,
@@ -257,7 +257,7 @@ mod tests {
 
     #[test]
     fn heavy_clipping_counts_as_churn_at_scale() {
-        // §20.1's other entry condition: the segments are stable but the frame is
+        // The lane's other entry condition: the segments are stable but the frame is
         // dominated by clip/composite work, which per-tile coverage answers
         // directly.
         let clip_heavy = VectorWorkload {
@@ -275,7 +275,7 @@ mod tests {
         assert_eq!(VectorLane::select(small), VectorLane::CpuTessellate);
     }
 
-    /// The §20.1 hard rule, stated as arithmetic: no plausible ordinary-UI scene
+    /// The hard rule, stated as arithmetic: no plausible ordinary-UI scene
     /// reaches the compute lane, on a backend that *can* dispatch, even with
     /// tessellation measured at the bottleneck. Nothing about the answer depends
     /// on a reviewer noticing.

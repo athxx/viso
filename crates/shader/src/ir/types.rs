@@ -1,7 +1,6 @@
 //! The shader IR type system — the single source of truth for how a GPU
 //! scalar/vector field is spelled in Metal, projected to a validation
-//! [`AttrFormat`], and sized/aligned for the CPU↔GPU offset cross-check
-//! (architecture section 36 / AGENTS 19).
+//! [`AttrFormat`], and sized/aligned for the CPU↔GPU offset cross-check.
 //!
 //! Every `[f32; N>=2]` field is `packed_floatN` so the emitted `struct` matches
 //! the CPU `#[repr(C)]` layout with no inter-field
@@ -44,7 +43,7 @@ impl ScalarType {
 /// A shader IR type: a scalar, or a vector of 2/3/4 lanes of one scalar.
 ///
 /// This is the interface-layer (instance/uniform/varying field) type.
-/// Body-level expression types are out of scope this slice — built-in
+/// Body-level expression types are out of scope — built-in
 /// primitives carry their algorithm body as structured MSL fragments, not an
 /// expression AST.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,7 +130,7 @@ impl IrType {
 
     /// The byte size this field occupies in a tightly-packed `#[repr(C)]` /
     /// `packed_*` layout: `lanes * scalar_size` (a `packed_floatN` has no
-    /// trailing pad). This is the arithmetic the section-36.1 offset cross-check
+    /// trailing pad). This is the arithmetic the registration-time offset cross-check
     /// runs to derive each field's expected byte offset from the field list.
     pub const fn packed_size(self) -> usize {
         match self {

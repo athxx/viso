@@ -4,7 +4,7 @@
 //! The language-server protocol frames each message as an HTTP-like header block
 //! (`Content-Length: N\r\n\r\n`) followed by `N` bytes of JSON. This module reads and
 //! writes that framing over any [`std::io::BufRead`]/[`std::io::Write`] — there is no
-//! async runtime and no transport library (AGENTS 25). The server bin wires stdin/
+//! async runtime and no transport library. The server bin wires stdin/
 //! stdout to it; tests wire in-memory buffers.
 
 pub mod json;

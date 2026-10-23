@@ -3,7 +3,7 @@
 //! theme swap (a state write on the token's backing cell) re-resolves *only*
 //! the bound nodes through the ordinary flush, an untokenized node is never
 //! touched, a token change dirties STYLE + PAINT but not LAYOUT, and a frame
-//! with no token change runs no style cascade — Slice F end to end.
+//! with no token change runs no style cascade — end to end.
 //!
 //! Like `keyboard_routing`, this drives the ui stores directly (all reachable
 //! through `viso::ui`) rather than standing up a live scheduler and a window:

@@ -1,4 +1,4 @@
-//! Splicing a repaint into the stream the last paint emitted (§9.7).
+//! Splicing a repaint into the stream the last paint emitted.
 //!
 //! A paint records, for every node it painted, where its primitives landed:
 //! its own drawables and the end of its subtree. A later frame whose paint,

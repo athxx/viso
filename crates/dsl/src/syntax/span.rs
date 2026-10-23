@@ -4,7 +4,7 @@
 //! Every token stores exactly one span, in **UTF-8 byte offsets** — the natural
 //! coordinate for `&source[range]` slicing, `Copy`, and four bytes each. Editors
 //! and the language server also need line/column, Unicode-scalar, and UTF-16
-//! coordinates (spec section 9), but storing three ranges on every token would triple
+//! coordinates, but storing three ranges on every token would triple
 //! the hot token vector for data that is only queried at the margins. Instead a
 //! [`LineIndex`] is built once per source and converts a byte offset into any of
 //! those coordinates in `O(log lines)`; tokens stay lean.

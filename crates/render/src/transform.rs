@@ -1,4 +1,4 @@
-//! Transform roots in the primitive stream (§21).
+//! Transform roots in the primitive stream.
 //!
 //! A [`Primitive::Transform`](crate::Primitive::Transform) bracket names the
 //! transform root its content moves with. Geometry inside it is written as of

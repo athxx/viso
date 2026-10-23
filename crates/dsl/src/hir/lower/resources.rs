@@ -1,4 +1,4 @@
-//! `resource` members (§38): the configuration items, each once, `load` and
+//! `resource` members: the configuration items, each once, `load` and
 //! `key` required (`E4301`); the policy list and the scope (`E4302`); a pure
 //! `key` whose type is `StableKey` (`E2701`); a `load` that is a task call
 //! (`E4401`) producing the declared `Result<T, E>` (`E2103`). Each lowers to an

@@ -208,7 +208,7 @@ pub fn rejection_stage(diagnostics: &[Diagnostic]) -> Stage {
 }
 
 /// The diagnostic code `code` as the compiler's `&'static str`, when it has
-/// the appendix C shape (`E` and four digits). A runtime names only codes the
+/// the diagnostic-code shape (`E` and four digits). A runtime names only codes the
 /// compiler has, so the few distinct ones are leaked once each.
 pub fn intern_code(code: &str) -> Option<&'static str> {
     let bytes = code.as_bytes();

@@ -1,7 +1,7 @@
 //! The file tree's accessibility contract — the [`Role::Tree`] container and the
 //! per-row [`Role::TreeItem`] semantics an assistive technology reads.
 //!
-//! Accessibility is mandatory architecture (AGENTS section 15), so the a11y mapping
+//! Accessibility is mandatory, so the a11y mapping
 //! lives in its own file rather than scattered through the build and reconcile
 //! steps. Two concerns:
 //!

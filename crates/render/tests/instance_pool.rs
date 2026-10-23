@@ -1,11 +1,11 @@
-//! F4.2 persistent instance pool invariants (§9.1): a local change costs a
+//! Persistent instance pool invariants: a local change costs a
 //! local upload, never a full-scene re-upload.
 //!
 //! [`InstancePool`] keeps a CPU shadow of what currently sits in its device
 //! buffer and, on [`sync`](InstancePool::sync), diffs the freshly lowered
 //! draw-order array against that shadow, uploading only the maximal runs of
 //! changed slots. These tests drive `sync` against a real [`CpuRaster`]
-//! and assert the §9.1 contract through its observable surface — the write
+//! and assert that contract through its observable surface — the write
 //! count `sync` returns, `buffer()`/`capacity()`/`len()`, and the backend's
 //! `buffer_count()` (create/retire accounting) — to prove:
 //!

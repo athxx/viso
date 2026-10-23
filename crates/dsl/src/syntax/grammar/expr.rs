@@ -3,7 +3,7 @@
 //!
 //! ## Precedence
 //!
-//! The levels follow A.12, tightest first: postfix/primary, prefix unary
+//! The levels, tightest first: postfix/primary, prefix unary
 //! (`! ~ + - await`), `as` cast, `* / %`, `+ -`, `<< >>`, `&`, `^`, `|`, the
 //! single comparison level (`== != < <= > >=`), `&&`, `||`, `??`, and range
 //! (`.. ..=`). Comparison and range are **non-associative**: a second operator

@@ -1,4 +1,4 @@
-//! The one frontend behind the three DSL source forms (AGENTS section 21.5).
+//! The one frontend behind the three DSL source forms.
 //!
 //! `ui! { … }` enters at the ViewFragment production, `component! { … }` at the
 //! ComponentDecl entry, and `view!("x.vs")` at a whole compilation unit. That entry
@@ -71,7 +71,7 @@ pub fn check_language_version(version: &str, at: TextRange) -> Option<Diagnostic
 const FRAGMENT_PACKAGE: &str = "<ui!>";
 
 /// Where a component-declaring source lives: its package and the module path its
-/// source path derives (there is no in-file `module` header, section 21.5.3), plus
+/// source path derives (there is no in-file `module` header), plus
 /// the language version the package pins, if any, and where the package's other
 /// modules are read from.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

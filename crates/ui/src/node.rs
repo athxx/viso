@@ -142,7 +142,7 @@ impl core::fmt::Display for ArenaFull {
 ///
 /// Besides single slots the arena hands out *blocks*: runs of consecutive
 /// slots an instance of a template fills in order, so a binding can name its
-/// target as an offset from the block's base (§18.1). A block is reserved
+/// target as an offset from the block's base. A block is reserved
 /// whole and released whole; a slot of a reserved block that is freed stays
 /// out of the free list until its block is released. Released blocks are
 /// kept by length and reused by the next block of the same length, so the

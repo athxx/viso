@@ -1,4 +1,4 @@
-//! The canonical minimal Viso application (AGENTS section 1): a centered,
+//! The canonical minimal Viso application: a centered,
 //! multilingual greeting.
 //!
 //! One [`label`] renders English, Chinese, Thai, and a color emoji in a single

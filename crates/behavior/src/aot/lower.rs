@@ -32,7 +32,7 @@ pub fn lower_systems(module: &Module, krate: &str) -> String {
 /// The Rust module running every chunk of `module`: each handler, region
 /// entry, computed value, effect, initializer, function and closure, and each
 /// task as a resumable state machine. With it installed a component runs
-/// without the interpreter (ADR 0041). `krate` is the path the generated code
+/// without the interpreter. `krate` is the path the generated code
 /// names this crate by.
 ///
 /// The output is deterministic: the same module lowers to the same text.

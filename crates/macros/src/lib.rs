@@ -1,13 +1,13 @@
-//! `viso-macros` — compile-time code generation (§9).
+//! `viso-macros` — compile-time code generation.
 //!
 //! Hosts Viso's proc macros. Implemented so far:
 //! - [`macro@GpuPod`] — derive an explicit, validated GPU instance layout
-//!   for a `#[repr(C)]` struct (§18, §32): named per-field offsets instead of an
+//!   for a `#[repr(C)]` struct: named per-field offsets instead of an
 //!   implicit trailing-memory convention.
 //! - [`packaged_fonts!`] — scan `assets/fonts/` at build time and embed each
-//!   face with the metadata the font manifest keeps (§3.1), subset to the
+//!   face with the metadata the font manifest keeps, subset to the
 //!   build's characters for an embedded target, its glyphs baked at the
-//!   target's declared sizes (§37.8).
+//!   target's declared sizes.
 //!
 //! Planned: `#[component]`, state/binding metadata, `.vs` schema, static
 //! template generation, compile-time diagnostics.

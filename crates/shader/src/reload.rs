@@ -1,6 +1,6 @@
-//! Hot-reload last-good pipeline holder (architecture section 36 / AGENTS 19).
+//! Hot-reload last-good pipeline holder.
 //!
-//! AGENTS 19 requires that a shader compile error during hot reload preserve the
+//! A shader compile error during hot reload must preserve the
 //! last-good pipeline when possible. This module is that guarantee for the shader
 //! side: a [`ShaderPipeline`] holds one [`CompiledShader`] — the IR, its emitted
 //! MSL, and its validated schema — and [`ShaderPipeline::reload`] only replaces it
@@ -12,15 +12,15 @@
 //! state stays at last-good with no snapshot to restore), but **independent and
 //! VM-free**: there is only plain data here — an [`ir::module::ShaderIr`], an owned
 //! MSL `String`, and a schema — plus the cold-path validation. No script VM is
-//! shared, satisfying the AGENTS 19 divergence (the shader and DSL compilers may
+//! shared (the shader and DSL compilers may
 //! share diagnostic *shape* but never a runtime VM).
 //!
-//! Validation reuses the GPU-side [`InstanceLayout::validate_against`], which since
-//! the section-36.1 change cross-checks attribute count, name, format, **byte
+//! Validation reuses the GPU-side [`InstanceLayout::validate_against`], which
+//! cross-checks attribute count, name, format, **byte
 //! offset, and stride** against the CPU `#[repr(C)]` layout. So a reload whose IR
 //! disagrees with the real instance struct — a shifted field, a wrong format, a
 //! stride mismatch — is rejected here rather than silently corrupting GPU memory
-//! at draw time (architecture section 30 / 53).
+//! at draw time.
 
 use viso_gpu_abi::{InstanceLayout, LayoutError, SchemaAttr};
 
@@ -120,7 +120,7 @@ impl ShaderPipeline {
     }
 }
 
-/// Run the section-36.1 ABI validation of a compiled shader's schema against a CPU
+/// Run the ABI validation of a compiled shader's schema against a CPU
 /// instance layout, mapping any [`LayoutError`] to a self-contained
 /// [`Diagnostic`]. Cold path (reload / registration), so allocating the message is
 /// fine.
@@ -167,8 +167,9 @@ fn layout_error_diagnostic(err: &LayoutError) -> Diagnostic {
             "instance stride is {cpu_stride} bytes but the shader packs one instance as {shader_stride}"
         ),
     };
-    Diagnostic::error(CODE_ABI_MISMATCH, CompileStage::Validation, message)
-        .with_note("the CPU instance struct and the shader's declared layout must agree byte-for-byte (architecture section 36.1)")
+    Diagnostic::error(CODE_ABI_MISMATCH, CompileStage::Validation, message).with_note(
+        "the CPU instance struct and the shader's declared layout must agree byte-for-byte",
+    )
 }
 
 #[cfg(test)]

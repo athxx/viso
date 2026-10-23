@@ -10,7 +10,7 @@ pub use viso_schema::DirtyClass;
 use crate::node::NodeId;
 use crate::state::StateId;
 
-/// Per-class dirty worklists (ADR 0043): for each class, the slots that gained
+/// Per-class dirty worklists: for each class, the slots that gained
 /// it since the last [`clear`](DirtyLists::clear), each appended once on that
 /// class's 0→1 transition. A pass reads its class's list instead of scanning
 /// every node, so an idle frame's passes cost O(1) and a busy frame's cost the

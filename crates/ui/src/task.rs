@@ -1,4 +1,4 @@
-//! UI tasks: futures a handler spawns, owned by the handler's node (ADR 0032).
+//! UI tasks: futures a handler spawns, owned by the handler's node.
 //!
 //! A handler spawns through [`EventCx::spawn`](crate::EventCx::spawn) or
 //! [`EventCx::spawn_then`](crate::EventCx::spawn_then). The spawn is queued on

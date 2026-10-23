@@ -1,4 +1,4 @@
-//! Loop control, window identity, and configuration types (§9, §11.1).
+//! Loop control, window identity, and configuration types.
 //!
 //! These are the values that cross the platform↔runtime boundary *besides*
 //! events: the identity of a window, how to create one, what the runtime tells
@@ -11,21 +11,21 @@ use core::time::Duration;
 ///
 /// Assigned by the platform layer at window creation and echoed back on every
 /// event that targets that window. Distinct from [`crate::SurfaceId`], which is
-/// the GPU-surface identity; in Phase 1 they map 1:1, but the split lets a
-/// window later host several surfaces (§17) without churning event routing.
+/// the GPU-surface identity; today they map 1:1, but the split lets a window
+/// later host several surfaces without churning event routing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct WindowId(pub u32);
 
 /// A rectangle in logical (pre-scale) points, top-left origin.
 ///
-/// The platform layer holds no general geometry vocabulary (§23 keeps it
-/// narrow) — events carry bare `f64` fields. This is the one shape that crosses
+/// The platform layer holds no general geometry vocabulary (it stays narrow) —
+/// events carry bare `f64` fields. This is the one shape that crosses
 /// the boundary in both directions for self-drawn chrome: the app pushes
 /// draggable caption regions down as a slice of these
 /// ([`PlatformApp::set_draggable_regions`](crate::PlatformApp::set_draggable_regions)),
 /// and the backend reports the native traffic-light bounding box back up in the
 /// same coordinate space (via a chrome-geometry event). Four `f64` — compact
-/// data, not a shared object (§29), `Copy` so hit-testing a cached slice in
+/// data, not a shared object, `Copy` so hit-testing a cached slice in
 /// `mouseDown` allocates nothing.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LogicalRect {

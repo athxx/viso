@@ -63,7 +63,7 @@
 //! the `AudioListener` hooks each frame.
 //!
 //! A view reads the game its root runs through the `@query` functions of its
-//! systems and pauses it through a [`GameControl`] (ADR 0045).
+//! systems and pauses it through a [`GameControl`].
 
 mod audio;
 mod clock;

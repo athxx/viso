@@ -1,12 +1,12 @@
-//! F4.3 fence-recycle contract (§9.2): the only device buffers that ever churn
+//! Fence-recycle contract: the only device buffers that ever churn
 //! are an [`InstancePool`]'s backing buffer when it grows, and those are freed
-//! through F1's deferred-destruction path — never in the frame that still reads
+//! through the backend's deferred-destruction path — never in the frame that still reads
 //! them, never leaked afterwards.
 //!
 //! There is no separate transient upload ring in this architecture: the five
 //! persistent pools are the sole `write_buffer` consumers (an unchanged frame
 //! uploads nothing, which a ring could not match), uniforms ride inline by value
-//! in the draw command, and offscreen layers reuse a texture pool. So §9.2's
+//! in the draw command, and offscreen layers reuse a texture pool. So the
 //! intent — no per-frame buffer realloc, fence-safe reclaim of what does churn —
 //! reduces to the grow path, which these tests exercise against a real
 //! [`CpuRaster`] through its observable surface:

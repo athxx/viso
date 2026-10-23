@@ -1,5 +1,5 @@
 //! The named nodes a view's actions and handlers reach as a `NodeRef`, and
-//! the requests they make of them (U7.6).
+//! the requests they make of them.
 //!
 //! A `NodeRef` holds a key: the inlined instance whose view names the node in
 //! its high 16 bits, the node's place among that component's named nodes in

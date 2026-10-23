@@ -1,4 +1,4 @@
-//! Patching an uploaded frame in place (§9.7).
+//! Patching an uploaded frame in place.
 //!
 //! A frame that only repaints — a hover recolors a card, a progress label
 //! changes color — rewrites a handful of primitives of the stream it uploaded

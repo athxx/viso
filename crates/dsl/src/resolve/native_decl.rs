@@ -1,4 +1,4 @@
-//! Handwritten `native` declarations (§47): signatures a `.vs` module states
+//! Handwritten `native` declarations: signatures a `.vs` module states
 //! for natives a Rust library implements, as interface stubs and in tests.
 //!
 //! A declaration names the native at its module's path: `native fn hash(..)`

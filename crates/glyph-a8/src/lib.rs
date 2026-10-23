@@ -1,6 +1,6 @@
 //! `viso-glyph-a8` — the exact A8 coverage of a glyph, rasterized or baked.
 //!
-//! A glyph's MaskA8 image (Text/Font Runtime §13.1) has two sources that must
+//! A glyph's MaskA8 image has two sources that must
 //! agree pixel for pixel:
 //!
 //! - [`rasterize_coverage`] (feature `raster`): the outline from `ttf-parser`,

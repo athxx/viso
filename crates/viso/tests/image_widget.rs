@@ -1,4 +1,4 @@
-//! Section 71 validation pack for the `Image` texture control, driven through
+//! Validation pack for the `Image` texture control, driven through
 //! the public facade. `Image` is the next content control after `Label`; this
 //! mirrors the `label_widget.rs` template plus the texture-fixture bypass
 //! `content_scene.rs` uses:
@@ -11,10 +11,9 @@
 //!   both that the `Fixed` leaf measured to the texture's intrinsic size and that
 //!   the pixels match a blessed baseline;
 //! - **a11y snapshot** — an `Image`'s derived semantics node is `Role::Group`
-//!   (a presentational, non-interactive element; a dedicated `Role::Image` is a
-//!   later slice);
+//!   (a presentational, non-interactive element);
 //! - **allocation profile** — a warmed-up `Image` frame allocates nothing per
-//!   frame (architecture section 47 hot-path contract), same CountingAlloc +
+//!   frame (hot-path contract), same CountingAlloc +
 //!   `frame_stats`/`*_count()` steady-state asserts as `label_widget.rs`.
 //!
 //! Building through `Image::build` is the point: it proves the widget lowers to

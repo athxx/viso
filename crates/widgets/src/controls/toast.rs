@@ -17,7 +17,7 @@
 //! 3. **Auto-dismiss.** Opening a modal leaves it open until something closes it;
 //!    showing a toast arms a one-shot [timer](viso_ui::TimerRegistry) that hides
 //!    the content once `duration` elapses. The timer costs no frame while it
-//!    waits (the scheduler blocks on its deadline — section 7.1), so a shown
+//!    waits (the scheduler blocks on its deadline), so a shown
 //!    toast is zero-CPU until it auto-dismisses.
 //!
 //! Like [`Modal`], the content builds once and is shown/hidden through the

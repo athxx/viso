@@ -1,13 +1,13 @@
-//! Separate monotone revision planes for the retained scene (§8.4).
+//! Separate monotone revision planes for the retained scene.
 //!
-//! Each plane is an independent `u64` bump counter. The diff (F3.2) bumps only
+//! Each plane is an independent `u64` bump counter. The diff bumps only
 //! the plane a change touches, so a paint-only edit — a recolor, an opacity
 //! tween — advances `paint` and leaves `geometry` exactly where it was, which is
 //! what lets the tessellation cache and the geometry stores stay untouched. A
 //! consumer (a chunk, an upload plan, a bounds cache) records the plane values
 //! it last observed and rebuilds only when the planes it depends on have moved.
 //!
-//! The planes are deliberately narrow and orthogonal (§11's dirty classes,
+//! The planes are deliberately narrow and orthogonal (the dirty classes,
 //! seen from the renderer): geometry vs paint vs transform vs clip vs resource
 //! vs effect vs visibility. Collapsing them into one counter would make every
 //! local change look like a full-scene change to every consumer — the exact
@@ -24,7 +24,7 @@ pub struct Revisions {
     /// layer opacity. The plane a recolor touches, and only it.
     pub paint: u64,
     /// Bumped when a transform changes: a pure move/scale that shifts geometry
-    /// without changing its shape (§8.5).
+    /// without changing its shape.
     pub transform: u64,
     /// Bumped when a clip rect or the clip stack structure changes.
     pub clip: u64,
@@ -34,7 +34,7 @@ pub struct Revisions {
     /// Bumped when a layer/filter effect changes (offscreen compositing).
     pub effect: u64,
     /// Bumped when visibility changes: a primitive entering or leaving the
-    /// culled set. Populated by F4's visibility pass.
+    /// culled set. Populated by the visibility pass.
     pub visibility: u64,
 }
 
@@ -102,7 +102,7 @@ impl Revisions {
     /// look like a reshape (the exact collapse this module exists to avoid). It
     /// is the stamp for consumers whose dependency is "the pixels under this
     /// rect", where every plane matters equally: a backdrop capture cannot tell a
-    /// moved quad from a recolored one, both change what it samples (§3202).
+    /// moved quad from a recolored one, both change what it samples.
     ///
     /// Monotone because each plane only ever advances, so a stamp taken later is
     /// never below one taken earlier, and `max` over a set of stamps is the
@@ -129,7 +129,7 @@ mod tests {
         let before = r;
         r.bump_paint();
         // Only paint moved; geometry (and every other plane) is untouched — the
-        // core §8.4 guarantee a paint-only change must satisfy.
+        // core guarantee a paint-only change must satisfy.
         assert_eq!(r.paint, before.paint + 1);
         assert_eq!(r.geometry, before.geometry);
         assert_eq!(r.transform, before.transform);
@@ -140,7 +140,7 @@ mod tests {
     }
 
     /// The content stamp moves for every plane and only ever forward — the two
-    /// properties a ROI-scoped dependency revision needs (§3202).
+    /// properties a ROI-scoped dependency revision needs.
     #[test]
     fn content_moves_with_every_plane() {
         let mut r = Revisions::new();

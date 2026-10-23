@@ -1,4 +1,4 @@
-//! A HUD reads the game its view's root runs (ADR 0045): a binding on a
+//! A HUD reads the game its view's root runs: a binding on a
 //! system's `@query` shows its value from the first frame and updates only
 //! when the value changes, a region on `game.is_paused()` switches as the
 //! view pauses and resumes the game, under hot reload and from the release

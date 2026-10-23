@@ -1,6 +1,6 @@
-//! Advanced blend isolation contract (§14.6).
+//! Advanced blend isolation contract.
 //!
-//! The property this file defends is the one §14.6 states outright: a blend the
+//! The property this file defends: a blend the
 //! fixed-function stage cannot express must not pollute the common `SrcOver`
 //! pipeline. Two halves, both asserted here:
 //!
@@ -419,7 +419,7 @@ fn every_advanced_mode_isolates_with_one_bounded_capture() {
 
 /// The capture is bounded by the layer's rect, not by the surface. A small
 /// blended layer must not re-render the whole frame into a full-surface target —
-/// that is the cost blowup §14.6 exists to prevent.
+/// that is the cost blowup isolation exists to prevent.
 #[test]
 fn the_destination_snapshot_is_bounded_by_the_layer() {
     let (mut gpu, _s, mut r) = renderer();

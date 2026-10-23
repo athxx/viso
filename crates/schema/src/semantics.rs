@@ -1,8 +1,8 @@
 //! Accessibility roles and live-region settings.
 
 /// The accessibility role of a node — what kind of thing it is to an assistive
-/// technology. Coarse this slice (the roles the current widgets need); grows as
-/// widgets land. [`Group`](Role::Group) is the default for a pure
+/// technology. Coarse (the roles the current widgets need).
+/// [`Group`](Role::Group) is the default for a pure
 /// layout/decoration node that carries no authored semantics and is not
 /// interactive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -40,16 +40,16 @@ pub enum Role {
     /// An editable text field: accepts typed characters and IME composition,
     /// carries a caret and an optional selection. The live text value, caret,
     /// and selection are held in the control's own reactive cells, not this cold
-    /// role; this slice announces the role and name and proves the editing state
-    /// through the control's cells and input tapes (the derive pass has no state
-    /// store today — the same treatment as [`CheckBox`](Role::CheckBox)).
+    /// role; the role and name are announced, and the editing state is carried
+    /// by the control's cells and input tapes (the derive pass has no state
+    /// store — the same treatment as [`CheckBox`](Role::CheckBox)).
     TextField,
     /// One selectable tab in a [`TabList`](Role::TabList): activating it shows
     /// its associated panel and hides the others. Which tab is selected is held
-    /// in the control's own reactive cell, not this cold role; this slice
-    /// announces the role and name and proves the selection through the control's
-    /// cell and input tapes (the derive pass has no state store today — the same
-    /// treatment as [`CheckBox`](Role::CheckBox)).
+    /// in the control's own reactive cell, not this cold role; the role and name
+    /// are announced, and the selection is carried by the control's cell and
+    /// input tapes (the derive pass has no state store — the same treatment as
+    /// [`CheckBox`](Role::CheckBox)).
     Tab,
     /// The container of a set of [`Tab`](Role::Tab)s — the tab strip. Groups the
     /// tabs so an assistive technology can present them as one selectable set.
@@ -57,19 +57,18 @@ pub enum Role {
     /// A navigation container holding a stack of pages, of which only the top is
     /// visible. Pushing a page reveals it and hides the one below; popping does
     /// the reverse. Which page is on top is held in the control's own reactive
-    /// cell, not this cold role; this slice announces the role and proves the
-    /// stack depth through the control's cell and input tapes (the derive pass
-    /// has no state store today — the same treatment as
-    /// [`CheckBox`](Role::CheckBox)).
+    /// cell, not this cold role; the role is announced, and the stack depth is
+    /// carried by the control's cell and input tapes (the derive pass has no
+    /// state store — the same treatment as [`CheckBox`](Role::CheckBox)).
     Navigation,
     /// A modal dialog: a window layered over the scene that takes focus and, while
     /// open, confines keyboard navigation to its own subtree (a focus scope) so
     /// the background is inert until it closes. An assistive technology announces
     /// it as a dialog and scopes its reading to the dialog's content. Whether the
     /// dialog is open is held in the control's own reactive cell, not this cold
-    /// role; this slice announces the role and proves the open state and focus
-    /// trap through the control's cell and input tapes (the derive pass has no
-    /// state store today — the same treatment as [`CheckBox`](Role::CheckBox)).
+    /// role; the role is announced, and the open state and focus trap are carried
+    /// by the control's cell and input tapes (the derive pass has no state
+    /// store — the same treatment as [`CheckBox`](Role::CheckBox)).
     Dialog,
     /// A polite live region: a transient status message layered over the scene
     /// that announces itself without moving focus (WAI-ARIA `role=status`). The
@@ -77,10 +76,10 @@ pub enum Role {
     /// role. Unlike a [`Dialog`](Role::Dialog) it neither takes focus nor traps
     /// keyboard navigation — an assistive technology reads it when it appears and
     /// the user keeps working. Whether the status is showing is held in the
-    /// control's own reactive cell, not this cold role; this slice announces the
-    /// role and proves the show/auto-dismiss through the control's cell, input
-    /// tapes, and the one-shot timer (the derive pass has no state store today —
-    /// the same treatment as [`CheckBox`](Role::CheckBox)).
+    /// control's own reactive cell, not this cold role; the role is announced,
+    /// and the show/auto-dismiss is carried by the control's cell, input tapes,
+    /// and the one-shot timer (the derive pass has no state store — the same
+    /// treatment as [`CheckBox`](Role::CheckBox)).
     Status,
     /// A named landmark region: a perceivable, standalone section of the scene an
     /// assistive technology can navigate to and announce by name (WAI-ARIA
@@ -307,8 +306,8 @@ impl LiveRegion {
 /// control's reactive cell drives a parallel binding that writes this struct
 /// into the node's side column during the flush phase (where both stores are
 /// live); the derive pass then reads only the node column (`&self`), never the
-/// state store, preserving the one-way dependency direction (AGENTS section
-/// 3.5). Mirrors the `focused` slot precedent — live state reaches semantics
+/// state store, preserving the one-way dependency direction. Mirrors the
+/// `focused` slot precedent — live state reaches semantics
 /// through a node column, not a cross-layer read.
 ///
 /// `Copy` and heap-free: every field is a small scalar, so the side column

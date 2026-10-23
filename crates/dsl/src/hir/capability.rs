@@ -1,7 +1,7 @@
-//! Capability sets — the compile-time capability model (spec capability section).
+//! Capability sets — the compile-time capability model.
 //!
 //! A capability is a named permission a callable needs (network, timer, filesystem, …).
-//! The doc's model is a *set*, not a string bag checked at runtime: a call site's
+//! The model is a *set*, not a string bag checked at runtime: a call site's
 //! required capabilities are the union of what the callables it invokes declare, a
 //! caller missing one of a callee's capabilities is a compile error (`E2601`), and a
 //! private callable's capability set is inferred from the typed call graph rather than
@@ -25,7 +25,7 @@ use crate::syntax::TextRange;
 ///
 /// Ordered (a `BTreeSet`) so a component's capability set renders and compares
 /// identically across runs — the compilation pipeline must be deterministic. Capability
-/// names are the doc's dotted paths (`network`, `timer`, `filesystem`, …), interned as
+/// names are dotted paths (`network`, `timer`, `filesystem`, …), interned as
 /// owned strings on this cold path.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CapabilitySet {
@@ -41,7 +41,7 @@ impl CapabilitySet {
     }
 
     /// Whether the set is empty (the common case for a core callable with no native
-    /// calls in this slice).
+    /// calls).
     pub fn is_empty(&self) -> bool {
         self.names.is_empty()
     }
@@ -117,7 +117,7 @@ pub struct CapabilityNode {
 /// `requires {}` upper bound.
 ///
 /// The inferred set of a callable is the union of its own direct conferrals and the
-/// inferred sets of everything it (transitively) calls — the doc's "a call site's required
+/// inferred sets of everything it (transitively) calls — "a call site's required
 /// capabilities are the union of its callees' sets". Iterating the union to a fixed point
 /// makes it transitive and terminates on cycles (a recursive or mutually-recursive call
 /// group converges once no set grows). Then, for every callable that declared a

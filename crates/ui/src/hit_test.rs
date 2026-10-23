@@ -288,7 +288,7 @@ mod tests {
     fn overlapping_children_return_topmost() {
         // A Stack-like overlap: both children fill the same box (a container with
         // no gap/padding and two fill-sized leaves stacked by absolute placement
-        // is not available this slice, so overlap them by fixing both to the full
+        // is not available, so overlap them by fixing both to the full
         // surface and axis Row with zero gap — the layout places them at the same
         // origin only if the container lets them; instead build a container whose
         // two children both start at x=0 by giving the container column axis so

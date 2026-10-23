@@ -1,5 +1,4 @@
-//! The hot reload transaction (architecture section 42; AGENTS 21.7;
-//! `Viso_Hot_Reload.md` §9–§13).
+//! The hot reload transaction.
 //!
 //! Hot reload in Viso is a transaction, not a rebuild. A new source is turned
 //! into a live UI change through an ordered pipeline whose stages before the
@@ -17,7 +16,7 @@
 //! Because every fallible stage runs before the commit and produces only plain
 //! data, a failure short-circuits before anything mutates: the live tree is left
 //! at its last-good state with no snapshot to restore (the keep-last-good
-//! invariant — see ADR 0015). The commit is the runtime's (`viso-view`'s dev
+//! invariant). The commit is the runtime's (`viso-view`'s dev
 //! module): a running app applies the patch [`view_patch`] lowers, and an
 //! in-process host commits the same package and plan.
 
@@ -48,8 +47,8 @@ const PLAN_FORMAT: u32 = 2;
 /// compiler's version and plan layout, and the content of every standard native
 /// library (their functions, types, traits and widgets). A `view!` expansion
 /// embeds it in the mount record, so a dev session compiles patches only for a
-/// runtime built against the schema it compiles with (`Viso_Hot_Reload.md`
-/// §4.1). Cold: computed once per process.
+/// runtime built against the schema it compiles with. Cold: computed once per
+/// process.
 pub fn schema_fingerprint() -> u128 {
     static FINGERPRINT: std::sync::OnceLock<u128> = std::sync::OnceLock::new();
     *FINGERPRINT.get_or_init(|| {

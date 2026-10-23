@@ -1,5 +1,5 @@
-//! The 3D scene lane (ADR 0047): lit, depth-tested meshes drawn into a
-//! scene's own target, which the 2D scene composites like an image.
+//! The 3D scene lane: lit, depth-tested meshes drawn into a scene's own target,
+//! which the 2D scene composites like an image.
 //!
 //! A scene is retained render data, not UI nodes. Its owner fills a
 //! [`SceneFrame`] — a camera, the lighting, a background and one batch of

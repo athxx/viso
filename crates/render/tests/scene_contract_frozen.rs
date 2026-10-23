@@ -1,7 +1,7 @@
-//! F3 frozen-contract pin: the retained scene's identity, revision, and bounds
-//! surface (§8, §8.4, §8.5). F4 — instance pool, upload ring, coalescer, batch
-//! planner, render chunk — binds to exactly these shapes; D/C/E/M/A build on the
-//! scene above them. A silent shift in any of them (a field widened, a plane
+//! Frozen-contract pin: the retained scene's identity, revision, and bounds
+//! surface. The data path — instance pool, upload ring, coalescer, batch
+//! planner, render chunk — binds to exactly these shapes; the draw layers build
+//! on the scene above them. A silent shift in any of them (a field widened, a plane
 //! dropped, an id no longer mirroring the RHI handle) would ripple invisibly
 //! into every consumer, so this test freezes them all in one place.
 //!
@@ -24,7 +24,7 @@ type PlaneProbe = (fn(&mut Revisions), fn(&Revisions) -> u64);
 
 /// The typed generational scene id is a frozen eight-byte `{index, generation}`
 /// pair, four-byte aligned, mirroring `viso_gpu::slots::RawId` so one identity
-/// discipline spans the whole stack (§8.2).
+/// discipline spans the whole stack.
 #[test]
 fn scene_id_shape_is_frozen() {
     assert_eq!(size_of::<SceneId>(), 8, "SceneId is two u32s");
@@ -45,7 +45,7 @@ fn scene_id_shape_is_frozen() {
 
 /// Every typed handle is a transparent newtype over `SceneId`: same eight bytes,
 /// same alignment, with `new`/`index`/`generation`. The set of typed ids is
-/// itself frozen — F4 chunk/material records name them by type.
+/// itself frozen — chunk/material records name them by type.
 #[test]
 fn every_typed_id_is_a_transparent_scene_id() {
     macro_rules! assert_transparent {
@@ -78,7 +78,7 @@ fn every_typed_id_is_a_transparent_scene_id() {
 }
 
 /// The scene tracks exactly seven independent revision planes, each a `u64` bump
-/// counter (§8.4). The struct is 56 bytes of plain counters — a consumer
+/// counter. The struct is 56 bytes of plain counters — a consumer
 /// snapshots it and compares field-wise. A dropped or widened plane is a break.
 #[test]
 fn revision_planes_are_frozen() {
@@ -91,7 +91,7 @@ fn revision_planes_are_frozen() {
     assert_eq!(Revisions::default(), Revisions::new());
 
     // Each plane bumps alone: a change to one leaves the other six untouched,
-    // the core §8.4 guarantee every consumer relies on.
+    // the core guarantee every consumer relies on.
     let base = Revisions::new();
     let bumps: [PlaneProbe; 7] = [
         (Revisions::bump_geometry, |r| r.geometry),
@@ -113,7 +113,7 @@ fn revision_planes_are_frozen() {
     }
 }
 
-/// A primitive carries exactly two bounds, `world` and `paint` (§8.5), and
+/// A primitive carries exactly two bounds, `world` and `paint`, and
 /// `paint` inflates by half the stroke width plus the filter footprint —
 /// computed numerically, never by re-parsing a path. Damage, culling and
 /// visibility read `paint`; the clipped extent is derived from `world`.

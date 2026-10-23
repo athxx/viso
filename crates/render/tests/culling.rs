@@ -1,12 +1,12 @@
-//! Culling contract (§20, §24.1): who decides what is visible, and what it costs.
+//! Culling contract: who decides what is visible, and what it costs.
 //!
-//! §20 allows escalating from a per-primitive CPU bounds test to chunk-level CPU
+//! The renderer allows escalating from a per-primitive CPU bounds test to chunk-level CPU
 //! rejection and then to a GPU cull feeding indirect draws, and states the rule that
 //! matters more than any of them: **50 UI nodes must never produce a compute
 //! dispatch for "GPU-driven"**. Culling is an optimization for scenes far larger
 //! than their viewport, not an architecture every frame pays into.
 //!
-//! Pinned from both ends, like the §20.1 vector lane:
+//! Pinned from both ends, like the vector lane:
 //!
 //! 1. **The policy.** [`CullPlan::select`] is conjunctive at each escalation, so an
 //!    incompletely described scene lands on the plain bounds test, and the GPU plan
@@ -19,7 +19,7 @@
 //! walk's answer — is pinned in the module's unit tests, where the reference walk
 //! lives. Here the concern is which plan a scene gets and what a frame reports.
 //!
-//! Thresholds are deliberately not asserted as values (§20 fixes no ABI); what is
+//! Thresholds are deliberately not asserted as values (they are not ABI); what is
 //! pinned is which way each condition points.
 
 use viso_gpu::{Caps, CpuRaster, GpuBackend, RawWindowHandle, SurfaceId, TextureFormat};
@@ -72,7 +72,7 @@ fn clip(r: Rect) -> Primitive {
 // 1. The policy: escalation is by scene shape, capability last
 // ---------------------------------------------------------------------------
 
-/// The scene §24.1 names GPU culling for, on a backend with both halves of the
+/// The scene GPU culling exists for, on a backend with both halves of the
 /// capability and with culling profiled as a real share of the frame.
 fn a_zoomed_out_graph() -> CullWorkload {
     CullWorkload {
@@ -118,7 +118,7 @@ fn a_huge_offscreen_scene_is_what_gpu_culling_is_for() {
 
 /// Scale alone is never evidence: an enormous, almost entirely offscreen scene that
 /// nobody profiled still culls on the CPU, because `cull_share` defaults to zero and
-/// "not measured" and "not the bottleneck" are the same input (§7.3).
+/// "not measured" and "not the bottleneck" are the same input.
 #[test]
 fn an_unprofiled_frame_cannot_reach_the_gpu_plan() {
     let huge = CullWorkload {
@@ -145,7 +145,7 @@ fn a_fully_visible_scene_is_not_a_culling_problem() {
     assert_eq!(CullPlan::select(visible), CullPlan::PerPrimitive);
 }
 
-/// §20's hard rule over the scene sizes it names, under the most favorable
+/// The hard rule over ordinary UI scene sizes, under the most favorable
 /// conditions a backend could report: everything off screen, culling measured as the
 /// entire frame, both capabilities present. Scale is the only thing these lack, and
 /// it is enough.

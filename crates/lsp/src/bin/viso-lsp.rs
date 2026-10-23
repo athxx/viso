@@ -6,9 +6,9 @@
 //! hands it to [`Server::handle`](viso_lsp::server::Server::handle), writes the reply
 //! and any diagnostics, and repeats until the client sends `exit`. Every real
 //! decision lives in the engine below it; a frontend tool adapts a protocol, it does
-//! not host an executor (AGENTS 25).
+//! not host an executor.
 //!
-//! Cold-path throughout (AGENTS 7.2): a handful of messages per editor keystroke.
+//! Cold-path throughout: a handful of messages per editor keystroke.
 
 use std::io::{self, BufReader, BufWriter};
 use std::process::ExitCode;

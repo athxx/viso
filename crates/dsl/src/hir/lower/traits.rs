@@ -1,4 +1,4 @@
-//! Traits, impls, generic parameters and aliases (§26, §30–§32, §78, §79):
+//! Traits, impls, generic parameters and aliases:
 //! collected into the package's [`TraitTable`] as each module's scope is
 //! built, then checked as the module lowers — each impl against its trait,
 //! each bound against a trait, impls against each other — and their member

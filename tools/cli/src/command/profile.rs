@@ -1,5 +1,5 @@
 //! `viso profile`: the frames the app draws, sampled, summarized and kept as
-//! a trace (`Viso_CLI.md` §25).
+//! a trace.
 //!
 //! The app is the one the project's `viso run` session runs, asked through
 //! the session's control endpoint for its next frames or those of the next

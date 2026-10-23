@@ -1,13 +1,12 @@
-//! The blend model and its realization classifier (§14.6): the set of blend
+//! The blend model and its realization classifier: the set of blend
 //! modes a drawable can composite with, and the cold-path decision of *how* each
 //! one is realized — a plain hardware blend, a destination read, or an isolated
-//! offscreen composite routed to the Effect Planner (E2).
+//! offscreen composite routed to the Effect Planner.
 //!
 //! A blend mode says how a source color combines with the destination already in
 //! the target. Three tiers matter to the renderer, and the whole point of the
-//! classifier is to keep the common one cheap (§14.6: "复杂 blend 不允许污染最
-//! 常用 `SrcOver` pipeline" — advanced blends must not pollute the SrcOver
-//! pipeline):
+//! classifier is to keep the common one cheap — advanced blends must not pollute
+//! the `SrcOver` pipeline:
 //!
 //! - **Fixed-function.** The Porter-Duff compositing operators plus `Plus` are
 //!   expressible directly by the hardware blender's factor/equation state
@@ -25,14 +24,14 @@
 //!   must composite an isolated layer. They carry [`EffectCost::NeedsOffscreen`]
 //!   and tag their layer [`LayerReason::AdvancedBlend`].
 //!
-//! Per §14.6 the last two tiers "must explicitly enter the Effect Planner": this
+//! The last two tiers must explicitly enter the Effect Planner: this
 //! module *classifies and records* the tier (the cost class and, for isolation,
 //! the layer reason) at ingest and hands it to the planner. It does not itself
-//! read the destination or allocate a target — that realization is E2. The
-//! implementation strategy is the spec's ladder: fixed-function where available,
+//! read the destination or allocate a target — the planner realizes it. The
+//! implementation strategy is a ladder: fixed-function where available,
 //! else a backend destination-read fast path, else a bounded offscreen composite.
 //!
-//! This is a cold-path decision (§7.2), the same shape as the
+//! This is a cold-path decision, the same shape as the
 //! [`clip`](crate::clip) and [`opacity`](crate::opacity) planners: the plan is
 //! computed once when a drawable's blend is set, beside its [`EffectCost`], and
 //! carries what tier the mode falls in.
@@ -40,7 +39,7 @@
 use crate::EffectCost;
 use crate::opacity::LayerReason;
 
-/// A blend mode a drawable composites with (§14.6). The standard Porter-Duff
+/// A blend mode a drawable composites with. The standard Porter-Duff
 /// compositing operators, the separable artistic modes, and the non-separable
 /// HSL modes — the full SVG/CSS `mix-blend-mode` set.
 ///
@@ -120,7 +119,7 @@ pub enum Blend {
     Luminosity,
 }
 
-/// How a blend mode must be realized — the tier the classifier assigns (§14.6).
+/// How a blend mode must be realized — the tier the classifier assigns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BlendRealization {
     /// Expressible by the hardware blender's factor/equation state: an in-place
@@ -138,7 +137,7 @@ pub enum BlendRealization {
 }
 
 impl Blend {
-    /// The realization tier of this mode (§14.6).
+    /// The realization tier of this mode.
     pub fn realization(self) -> BlendRealization {
         use Blend::*;
         match self {
@@ -158,8 +157,8 @@ impl Blend {
     }
 
     /// Whether this mode is *advanced* — a destination read or an isolation blend
-    /// that must enter the Effect Planner (E2) rather than the `SrcOver` pipeline
-    /// (§14.6). The complement of [`is_fixed_function`](Blend::is_fixed_function).
+    /// that must enter the Effect Planner rather than the `SrcOver` pipeline.
+    /// The complement of [`is_fixed_function`](Blend::is_fixed_function).
     pub fn is_advanced(self) -> bool {
         !self.is_fixed_function()
     }
@@ -184,7 +183,7 @@ impl Blend {
 pub struct BlendPlan {
     /// The requested blend mode.
     pub mode: Blend,
-    /// The realization cost class (§7.5).
+    /// The realization cost class.
     pub cost: EffectCost,
     /// The layer reason, present only when the mode isolates
     /// ([`LayerReason::AdvancedBlend`]).
@@ -203,7 +202,7 @@ impl BlendPlan {
     }
 }
 
-/// Classify how a blend mode is realized (§14.6), mapping its tier onto a cost
+/// Classify how a blend mode is realized, mapping its tier onto a cost
 /// class and, for an isolation blend, a [`LayerReason::AdvancedBlend`]:
 ///
 /// - fixed-function → [`EffectCost::Local`], no layer;
@@ -239,7 +238,7 @@ mod tests {
 
     /// The default blend is `SrcOver`, and it is the fixed-function hot path:
     /// local cost, no destination read, no layer — the common `SrcOver` pipeline
-    /// is not polluted by the advanced machinery (§14.6).
+    /// is not polluted by the advanced machinery.
     #[test]
     fn src_over_is_the_fixed_function_default() {
         assert_eq!(Blend::default(), Blend::SrcOver);

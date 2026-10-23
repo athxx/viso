@@ -1,15 +1,15 @@
-//! Frame phases (architecture §11.2).
+//! Frame phases.
 //!
 //! A frame proceeds through these phases in order. Implementations may merge
 //! adjacent phases for performance, but the *semantics* of each phase must
 //! remain distinguishable. Each phase is paired with a purpose-specific
-//! context (§11.3) so that, e.g., a layout function cannot accidentally
+//! context so that, e.g., a layout function cannot accidentally
 //! launch a network request or submit arbitrary GPU work.
 
 /// The ordered phases of a single frame.
 ///
 /// The discriminant order is the execution order and is part of the contract.
-/// Rules (ADR 0043):
+/// Rules:
 ///
 /// - every write of phases 2–5 joins one transaction, flushed once in 6;
 /// - an empty phase costs O(1), decided by a dirty worklist, never a walk;

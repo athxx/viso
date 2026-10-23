@@ -26,7 +26,7 @@ pub struct HotReloadReport {
     /// State cells that started from their initializer.
     pub reset: u32,
     /// Every [`reset`](Self::reset) state's own identity — the narrowest
-    /// scope `Viso_Hot_Reload.md` §8's `PATCH_WITH_SCOPED_RESET` names, the
+    /// scope `PATCH_WITH_SCOPED_RESET` names, the
     /// compiler's bridge of the runtime `StateKey` back to the `SymbolId` it
     /// already reasons in.
     pub state_resets: Vec<SymbolId>,
@@ -84,13 +84,13 @@ pub struct HotReload {
 
 /// Run one hot reload transaction: recompile `source`, diff it against the
 /// last-good template, plan the state/focus/scroll migration, and atomically commit
-/// it to the live runtime (architecture section 42; AGENTS 21.7).
+/// it to the live runtime.
 ///
 /// The pipeline is `plan → diff → migrate → commit`, and every stage before the
 /// commit is a pure function that mutates nothing. A compile or validation error in
 /// `plan` short-circuits at the `?` with `Err(diagnostics)` **before** `commit` is
 /// reached, so the live tree stays at its last-good state with no snapshot to
-/// restore — the keep-last-good invariant (see the module docs and ADR 0015). On
+/// restore — the keep-last-good invariant (see the module docs). On
 /// success the live tree, bindings, state, focus, and scroll have been transitioned
 /// to the candidate, and the returned [`HotReload`] carries both the report and the
 /// candidate to adopt as the next baseline.

@@ -1,5 +1,4 @@
-//! `paint_scale`: what a frame that changes a little costs as the tree grows
-//! (Rendering §9.7).
+//! `paint_scale`: what a frame that changes a little costs as the tree grows.
 //!
 //! - `hover/cards_N`: one leaf of a page of `N` cards (a row with a
 //!   background and three leaves each) changes color; the frame repaints and

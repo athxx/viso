@@ -1,5 +1,4 @@
-//! The release ahead-of-time UI package: format and loader (architecture section
-//! 41; AGENTS 21.6, 60).
+//! The release ahead-of-time UI package: format and loader.
 //!
 //! A release build lowers the shared frontend IR into a compact, dependency-free
 //! byte blob ([`package`]) that an app instantiates at startup ([`load`]) with **no

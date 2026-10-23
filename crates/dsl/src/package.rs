@@ -1,5 +1,5 @@
 //! The filesystem package loader: every `.vs` file under a package's source root,
-//! each given the module path its file path derives (section 22), parsed, then
+//! each given the module path its file path derives, parsed, then
 //! resolved and lowered together as one module graph so imports between files
 //! resolve.
 //!

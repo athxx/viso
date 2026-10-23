@@ -1,9 +1,9 @@
 //! The text an embedded build ships, and what its text runtime is cut to by
 //! it: the static text `packaged_fonts!()` subsets the app's fonts to
-//! (Text/Font Runtime §3.4) — every string literal of the package's `.vs`
+//! — every string literal of the package's `.vs`
 //! files, of each `ui!` and `component!` in its Rust sources, and the text of
 //! every locale of its message catalogs — and whether the Unicode data for
-//! line breaking Thai, Lao, Khmer and Myanmar stays in (§3.7).
+//! line breaking Thai, Lao, Khmer and Myanmar stays in.
 //!
 //! The text is a superset of what the app can show: a literal that names an
 //! asset or a theme counts as text too. Each string is written once, in byte

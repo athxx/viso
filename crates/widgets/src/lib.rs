@@ -1,4 +1,4 @@
-//! `viso-widgets` — the official UI kit (section 9, Part XV).
+//! `viso-widgets` — the official UI kit.
 //!
 //! Primitive controls, layout containers, navigation, overlays, adaptive UI,
 //! desktop shell, and theme defaults. Each widget is built natively on the viso
@@ -6,11 +6,11 @@
 //! [`viso_ui::Component`] that declares its subtree into a `BuildCx`, mapping to
 //! retained nodes — never an `Rc<RefCell<dyn Widget>>` object.
 //!
-//! Tier 1: the primitive presentational controls — layout [`containers`] (View),
-//! [`text`] (Label), [`image`] (Image), and [`icon`] (Icon). Tier 2 begins the
-//! interactive controls under [`controls`] (Button, CheckBox, Toggle,
-//! RadioGroup, Slider, TextInput, Splitter). Tier 3 completes the layout
-//! structures — [`scroll`] (Scroll), the virtualized [`list`] (VirtualList),
+//! The primitive presentational controls are layout [`containers`] (View),
+//! [`text`] (Label), [`image`] (Image), and [`icon`] (Icon). The interactive
+//! controls live under [`controls`] (Button, CheckBox, Toggle, RadioGroup,
+//! Slider, TextInput, Splitter, and more). The layout structures are
+//! [`scroll`] (Scroll), the virtualized [`list`] (VirtualList),
 //! the two-dimensional track [`grid`] (Grid), the draggable-pane Splitter, and
 //! the pan-and-zoom [`interactive_viewer`] (InteractiveViewer), and the
 //! [`swipe_row`] (SwipeRow) whose content slides aside to show its actions.

@@ -1,6 +1,6 @@
 //! Lexical scopes and the per-module symbol table.
 //!
-//! Resolution splits a module's names across three **namespaces** (doc section 40):
+//! Resolution splits a module's names across three **namespaces**:
 //! a value namespace (state, computed, inputs, consts, functions, actions, tasks),
 //! a type namespace (records, enums, type aliases, and the component/system types
 //! themselves), and an event namespace (declared events). Two declarations may share
@@ -15,8 +15,8 @@
 //! Local scopes use a dense slot idiom: a `view` block, a `for` body, and a
 //! `fn`/`action`/handler body each open a scope whose bindings are dense **slots**
 //! resolved by walking the scope stack innermost-first. This is a cold-path structure
-//! (built once per module during resolution), so `HashMap`/`Vec` are appropriate
-//! (AGENTS section 7.2); the durable identity a name resolves *to* is a
+//! (built once per module during resolution), so `HashMap`/`Vec` are appropriate;
+//! the durable identity a name resolves *to* is a
 //! [`SymbolId`](super::SymbolId), never a slot — slots are module-local.
 
 use std::collections::HashMap;
@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use super::name::NameId;
 use super::symbol::SymbolId;
 
-/// Which of a module's three name namespaces a symbol lives in (doc section 40).
+/// Which of a module's three name namespaces a symbol lives in.
 ///
 /// A name may be defined once per namespace; the same name in two namespaces is not
 /// a collision. The resolver picks the namespace from the *use* position: a type

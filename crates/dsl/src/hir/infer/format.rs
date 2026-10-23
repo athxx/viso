@@ -264,7 +264,7 @@ fn is_ident(text: &str) -> bool {
         && chars.all(|c| c == '_' || c.is_alphanumeric())
 }
 
-/// Whether a value of type `ty` implements `Display` (§17): the scalars, text,
+/// Whether a value of type `ty` implements `Display`: the scalars, text,
 /// the single-unit length family and the other dimensional scalars do; a record
 /// or enum does not. A nominal type this module does not declare as a record or
 /// enum, and an undetermined type, are not reported.

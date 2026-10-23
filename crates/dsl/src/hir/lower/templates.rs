@@ -1,4 +1,4 @@
-//! `template` declarations (§58) and the `part`s of a view (§57): a template
+//! `template` declarations and the `part`s of a view: a template
 //! is a component without state, its parameters its inputs, placed by `use`
 //! and inlined into its caller's view like a component; its member set, the
 //! parts a view exposes, and the expansion of `use` proven finite (`E3601`).

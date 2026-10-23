@@ -449,7 +449,7 @@ pub(crate) struct Mounted {
     me: Weak<RefCell<Mounted>>,
     regions: Rc<ViewRegions>,
     /// Each arm's template, by region: every mount of an arm (each item of a
-    /// `for`) that binds the same way shares its edges (§18.1).
+    /// `for`) that binds the same way shares its edges.
     templates: Vec<Vec<Template>>,
     /// The live cell of each [`ViewRegions::states`] key.
     cells: Vec<Option<StateId>>,

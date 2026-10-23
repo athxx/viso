@@ -1,10 +1,10 @@
-//! Material lane contract (§19).
+//! Material lane contract.
 //!
-//! A material surface has two realizations, and §19's rule is that choosing
+//! A material surface has two realizations, and the rule is that choosing
 //! between them is a *policy over trade-offs*, not a quality ranking:
 //!
-//! - The **GPU lane** is what M0 built: Viso captures the backdrop, blurs it, and
-//!   composites the §18 chain in one draw. Composable, frame-synchronous, identical
+//! - The **GPU lane**: Viso captures the backdrop, blurs it, and composites the
+//!   material chain in one draw. Composable, frame-synchronous, identical
 //!   on every backend.
 //! - The **native lane** hands the material to the platform, which composites it
 //!   behind the Viso surface. It matches the system exactly and costs Viso nothing,
@@ -150,7 +150,7 @@ fn the_border_ring_is_viso_s_on_both_lanes() {
 /// The region the renderer hands the platform carries geometry plus the generic
 /// parameters the surface authored, and nothing else. There is no platform material
 /// name anywhere in it — that mapping is the platform layer's job, which is what
-/// keeps platform-private material APIs out of the render IR (§19).
+/// keeps platform-private material APIs out of the render IR.
 #[test]
 fn a_reserved_region_carries_geometry_and_generic_parameters() {
     let r = rect(24.0, 16.0, 64.0, 40.0);

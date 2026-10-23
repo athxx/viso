@@ -3,21 +3,21 @@
 //! toggle (a structural change) allocates a bounded, recorded amount.
 //!
 //! The file tree's reconcile step (reconcile.rs) is the store-mutating half of the
-//! handler-writes-intent / reconcile-mutates-store split (ADR 0023/0024): a command
+//! handler-writes-intent / reconcile-mutates-store split: a command
 //! only pushes an [`Intent`], and this step — holding `&mut NodeStore` and
 //! `&mut VirtualLists` — drains the queue, edits the open set, reflattens the forest
 //! into the shared visible-row cell, and drives the keyed list's item count. Its
 //! defining fast-path property is the empty-queue early return: a frame with no
-//! expand/collapse does *no* work — no reflatten, no allocation. Section 7.1 forbids
-//! per-frame allocation on a steady path, and section 7.3 forbids claiming that
-//! zero-alloc property without measuring it. [`FileTreeHandle::reconcile`] is public,
+//! expand/collapse does *no* work — no reflatten, no allocation. A steady path must
+//! not allocate per frame, and that zero-alloc property is measured rather than
+//! assumed. [`FileTreeHandle::reconcile`] is public,
 //! so this arms a counting global allocator and drives the real handle: a warmed
 //! reconcile with an empty intent queue (the per-frame steady case — the tree is not
 //! being toggled) allocates nothing.
 //!
 //! A second test pins the structural counterpart: pushing a toggle intent and
 //! reconciling reflattens the visible rows and resizes the list's height cache — a
-//! genuine structural change (section 8.1), so it allocates a *bounded, recorded*
+//! genuine structural change, so it allocates a *bounded, recorded*
 //! amount over a small fixture. A regression that made the steady no-toggle path
 //! reflatten every frame, or that unbounded the toggle path (cloning the tree, say),
 //! is caught either way.
@@ -205,7 +205,7 @@ fn steady_reconcile_frame_without_toggle_is_allocation_free() {
 }
 
 /// The structural counterpart: a real toggle reflattens the visible rows and resizes
-/// the list's height cache (section 8.1), so it may allocate — but a bounded, recorded
+/// the list's height cache, so it may allocate — but a bounded, recorded
 /// amount over a small fixture. This catches a regression that unbounds the toggle
 /// path (e.g. cloning the tree per toggle) or that silently made the steady no-toggle
 /// path structural.

@@ -1,4 +1,4 @@
-//! The methods of `NodeRef<T>` (U7.6): `focus`, `blur`, `scroll_into_view`,
+//! The methods of `NodeRef<T>`: `focus`, `blur`, `scroll_into_view`,
 //! `animate` and `play` on any named node, `scroll_to` and `scroll_by` on a
 //! `Scroll`, `scroll_to_index` and `scroll_to_key` on a `VirtualList`; each
 //! scroll takes a last `smooth: Bool`, gliding there when true. Each
@@ -7,7 +7,7 @@
 //! reached; the value is `()`, and `animate`'s and `play`'s the `Animation`
 //! it starts,
 //! whose `cancel` and `finish` queue requests of their own and whose
-//! `is_running` answers at once (U6.3).
+//! `is_running` answers at once.
 
 use viso_behavior::NodeAction;
 

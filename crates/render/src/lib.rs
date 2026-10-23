@@ -1,13 +1,9 @@
-//! `viso-render` — paint primitives, batching, and the render graph (§16).
+//! `viso-render` — paint primitives, batching, and the render graph.
 //!
 //! The UI produces paint/primitive *data*; the renderer decides batching,
-//! atlas usage, clip/layer strategy, GPU uploads, and pass ordering (§16.1).
-//! Users never manually select a batch boundary for correctness (§16.2), and
+//! atlas usage, clip/layer strategy, GPU uploads, and pass ordering.
+//! Users never manually select a batch boundary for correctness, and
 //! there is no public `new_batch: true` escape hatch.
-//!
-//! Phase 2 status: the Quad primitive is a full vertical slice
-//! (primitive → instance → headless raster → golden); the other primitives
-//! land incrementally.
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
@@ -46,24 +42,24 @@ pub mod transform;
 pub mod transient;
 pub mod vector_lane;
 
-// The blend model and its realization classifier (§14.6): fixed-function
+// The blend model and its realization classifier: fixed-function
 // Porter-Duff stays local; separable artistic modes read the destination;
 // non-separable HSL modes isolate (tagged AdvancedBlend) and defer to the
-// Effect Planner (E2). Cold-path classifier, not in the prelude (§3.2).
+// Effect Planner. Cold-path classifier, not in the prelude.
 pub use atlas_plane::AtlasPlane;
 pub use blend::{Blend, BlendPlan, BlendRealization, plan_blend};
 pub use clip::{ClipPlan, ClipShape, ClipTier, clips_children, plan_clip};
 pub use color_atlas::{ColorAlloc, ColorAtlas};
-// Per-pixel color effects and their fusion (§17.3): a run of affine effects
+// Per-pixel color effects and their fusion: a run of affine effects
 // compiles into one matrix op, so only a non-expressible stage costs an extra
 // render-target pass. Authored via `Primitive::ColorEffect`; the fused `ColorOp`
-// is the renderer's unit of work, not normally named by apps (§3.2).
+// is the renderer's unit of work, not normally named by apps.
 pub use color_effect::{ColorEffect, ColorMatrix, ColorOp, fuse};
 pub use effect_cost::{EffectCost, EffectLocality};
-// The Effect Planner (§3145): every potential layer records why it might exist,
-// the §3161 elimination ladder tries to remove each reason in order, and an
+// The Effect Planner: every potential layer records why it might exist,
+// the elimination ladder tries to remove each reason in order, and an
 // offscreen target is created only when one survives. Cold-path planner, not in
-// the prelude (§3.2).
+// the prelude.
 pub use effect_plan::{
     EliminationSet, LayerElimination, LayerPlan, LayerRequest, ReasonSet, plan_layer,
 };
@@ -73,20 +69,20 @@ pub use inspect::{
     BatchId, BatchPipeline, InspectBatch, InspectBatches, InspectPrimitives, PrimitiveRange,
     RenderResources,
 };
-// The mask model and retained mask cache (§14.4): coverage realizations stored
+// The mask model and retained mask cache: coverage realizations stored
 // tight (R8, ROI-sized, page-allocated), keyed so a stable mask is built once.
-// Consumed by the render walk and the widget layer, not by normal apps (§3.2 —
-// not in the prelude).
+// Consumed by the render walk and the widget layer, not by normal apps (not in the
+// prelude).
 pub use mask::{MaskCache, MaskFormat, MaskKey, MaskKind, MaskRequest, MaskResolution, MaskSlot};
 pub use mask_pages::MaskPages;
 pub use mtsdf_atlas::{MtsdfAlloc, MtsdfAtlas};
 pub use raster_mask::{path_bounds, rasterize_path_coverage};
-// The opacity planner (§14.5): fold group opacity into children for free, or pay
+// The opacity planner: fold group opacity into children for free, or pay
 // for an isolation layer only when overlapping children make per-child opacity
 // non-equivalent. LayerReason is the layer-tag vocabulary the Effect Planner
-// (§3145) records. Cold-path planner, not in the prelude (§3.2).
+// records. Cold-path planner, not in the prelude.
 pub use opacity::{ChildOverlap, LayerReason, OpacityPlan, fold_child_opacity, plan_group_opacity};
-// Compact vector-path storage (§13). Not in the prelude yet (§3.2) — the widget
+// Compact vector-path storage. Not in the prelude yet — the widget
 // layer promotes these once it consumes them.
 pub use path::{ConvexityHint, FillRule, PathArena, PathMetadata, SimpleShapeHint};
 pub use primitive::{
@@ -114,38 +110,38 @@ pub use viso_shader::program::{
 // What a package's brush is built for, and the expression keeping only the
 // target backend's code.
 pub use viso_gpu::{__per_backend, ShaderLang};
-// Which lane rasterizes vector geometry (§20.1). The compute lane is workload
+// Which lane rasterizes vector geometry. The compute lane is workload
 // specialization, so the *decision* is public (a host can describe its workload
 // and see the answer) while the kernels behind it are not a frozen contract.
 pub use vector_lane::{VectorLane, VectorWorkload};
 
-// How a draw addresses the textures it samples (§20.2). The *decision* is public
+// How a draw addresses the textures it samples. The *decision* is public
 // so a host can describe a frame and see which model it lands in; the fast path's
 // resource table is a backend capability, and the paint API is the same either way.
 pub use binding_model::{BindingModel, TextureWorkload};
 pub use cull::{ChunkGrid, ChunkedCull, CullOutcome, CullPlan, CullWorkload};
 // GPU handles that appear in this crate's public API. `TextureId` is carried by
 // `ImageDraw`/`GlyphRunDraw`; `BindGroupId`/`PipelineId` are the resource handles
-// on `InspectBatch`'s public fields (architecture 62: `BatchId -> pipeline/
-// resources` must be nameable). Re-export the exact set so a crate depending only
+// on `InspectBatch`'s public fields (`BatchId -> pipeline/resources` must be
+// nameable). Re-export the exact set so a crate depending only
 // on `viso-render` (the DAG lets `viso-ui`/tools reach it) can name them without a
 // direct `viso-gpu` edge. `viso-gpu` is already a `viso-render` dependency.
 // `SamplerDesc` (and its `FilterMode`/`AddressMode`) is carried by `ImageDraw`
 // and the high-level image primitives, so it is part of this crate's public API
 // even though it is a GPU-descriptor type; re-export it (not into the prelude —
-// §3.2, these are consumed by the widget layer, not by normal apps directly).
+// these are consumed by the widget layer, not by normal apps directly).
 pub use viso_gpu::{AddressMode, BindGroupId, FilterMode, PipelineId, SamplerDesc, TextureId};
 use viso_text::{Direction, Shaper, rasterize_coverage};
 
 pub use batch::{BatchFamily, BatchItem, BatchKey, BatchTarget, RenderChunk, RenderChunkId};
-// The retained brush model (§8.5, §12): `Brush` names the fill a primitive
+// The retained brush model: `Brush` names the fill a primitive
 // resolves to, and the gradient interpolation/extend policy is an explicit
-// color-space choice (§12.3), never inferred from a texture format. Not in the
-// prelude yet (§3.2) — the widget layer promotes these once it consumes them.
+// color-space choice, never inferred from a texture format. Not in the
+// prelude yet — the widget layer promotes these once it consumes them.
 pub use scene::store::Brush;
-// The resolved clip-chain descriptor (§14.2): nested clips pre-intersected once,
+// The resolved clip-chain descriptor: nested clips pre-intersected once,
 // keyed so an unchanged chain skips re-resolution. Consumed by the render walk
-// and the widget layer, not by normal apps (§3.2 — not in the prelude).
+// and the widget layer, not by normal apps (not in the prelude).
 pub use scene::store::{ClipChainDescriptor, ClipComposition, ClipFillRule, ClipMaskKey};
 pub use viso_math::{Affine2, ExtendMode, InterpolationSpace, Srgb};
 
@@ -277,10 +273,9 @@ pub fn test_glyphs(origin: [f32; 2], font_size: f32) -> TestGlyphs {
     }
 }
 
-/// A small pure-Viso demo scene used by the facade's example and the golden
-/// test (§67 exit criterion "test scene 可绘制").
+/// A small pure-Viso demo scene used by the facade's example and the golden test.
 ///
-/// Phase 2 slice: two overlapping rounded quads — an opaque fill and a
+/// The scene holds two overlapping rounded quads — an opaque fill and a
 /// bordered one — exercising fill, corner radius, and border stroke; a
 /// [`Primitive::Layer`] clip wrapping an oversized quad to exercise rectangular
 /// clipping (the quad extends past the clip on all sides, so the golden captures
@@ -294,7 +289,7 @@ pub fn test_glyphs(origin: [f32; 2], font_size: f32) -> TestGlyphs {
 /// [`Primitive::AnalyticEllipse`] with a border, exercising the two analytic
 /// Box-SDF families' fill and inner/outer border AA; a multi-line
 /// [`Primitive::GlyphRun`] (`glyphs`, from [`test_glyphs`]) sampling an A8
-/// coverage atlas, exercising the text vertical slice; and a translucent
+/// coverage atlas, exercising the text path; and a translucent
 /// [`Primitive::Layer`] (`opacity < 1`) wrapping a solid quad, exercising the
 /// offscreen render-to-texture path and opacity compositing (the subtree is
 /// rendered into a texture and blended back at the layer rect). Coordinates

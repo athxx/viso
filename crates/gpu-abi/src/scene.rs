@@ -1,4 +1,4 @@
-//! The interface of the 3D scene built-in ([`BuiltinShader::Scene`], ADR 0047):
+//! The interface of the 3D scene built-in ([`BuiltinShader::Scene`]):
 //! the vertex, instance and uniform layouts the renderer writes, every backend's
 //! scene program reads, and the CPU raster reproduces.
 //!

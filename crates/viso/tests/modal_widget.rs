@@ -1,4 +1,4 @@
-//! Section 71 validation pack for the `Modal` control — a dialog layered over the
+//! Validation pack for the `Modal` control — a dialog layered over the
 //! whole scene that dims the background, takes focus, and traps keyboard navigation
 //! inside its content while open — driven through the public facade. Mirrors
 //! `popup_widget.rs` (golden + input tapes + a11y + allocation) with the modal's own
@@ -35,7 +35,7 @@
 //! - **a11y snapshot** — the derived tree carries a `Group` root over a `Dialog`
 //!   content; the content is focusable and declares a key handler for Escape;
 //! - **allocation profile** — a warmed-up open `Modal` frame allocates nothing per
-//!   frame (architecture section 47 hot-path contract), exercised across an
+//!   frame (hot-path contract), exercised across an
 //!   open→close→open flip: each `hidden` flip marks `LAYOUT | PAINT`, so it re-runs
 //!   `store.layout`; the flips' one-time layout cost folds into warmup and the steady
 //!   assert holds only after the scene settles on the open dialog (the state that

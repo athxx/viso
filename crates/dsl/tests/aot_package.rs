@@ -1,5 +1,4 @@
-//! Release AOT package end-to-end tests (architecture section 41; AGENTS 21.6, 60,
-//! 66) — the executable form of Slice P's exit criterion.
+//! Release AOT package end-to-end tests.
 //!
 //! The non-negotiable exit criterion is: **an AOT-packaged app boots and renders with
 //! the DSL compiler absent from the release graph.** These headless, deterministic
@@ -11,7 +10,7 @@
 //!
 //! The comparison test closes the argument that the AOT package is the same lowering
 //! the other two targets produce: the tree instantiated from the blob is structurally
-//! identical to the one Slice O's live commit builds from the same source, so the
+//! identical to the one the live commit builds from the same source, so the
 //! three targets (macro tokens, live commit, AOT package) are genuinely one frontend.
 
 #[path = "support/reload.rs"]
@@ -139,7 +138,7 @@ fn labelled() -> viso_dsl::hotreload::CandidatePlan {
 
 #[test]
 fn a_corrupt_asset_is_rejected_not_a_panic() {
-    // Loading an untrusted asset must never panic on a malformed blob (section 30);
+    // Loading an untrusted asset must never panic on a malformed blob;
     // the bounded decoder returns an error a release app can degrade on.
     let mut blob = build_package("Row { Text {} }").expect("compiles");
     blob[0] ^= 0xff; // clobber the wire magic
@@ -175,7 +174,7 @@ fn a_fragment_without_a_rust_scope_names_no_rust_component() {
 
 #[test]
 fn the_packaged_tree_matches_the_live_commit_tree_structurally() {
-    // Both the live commit (Slice O) and the AOT package (Slice P) descend from the same
+    // Both the live commit and the AOT package descend from the same
     // frontend, so from one source they must build the same-shape tree. We can't compare
     // NodeIds across two runtimes, but pre-order arity and per-node child fan-out are the
     // structure — and those must agree.
@@ -195,7 +194,7 @@ fn the_packaged_tree_matches_the_live_commit_tree_structurally() {
     .expect("root");
     let aot_shape = child_counts(&aot.store, aot_root);
 
-    // Live commit path: the same source, mounted through the Slice O commit.
+    // Live commit path: the same source, mounted through the live commit.
     let commit_shape = live_commit_child_counts(source);
 
     assert_eq!(
@@ -232,7 +231,7 @@ fn child_counts_walk(store: &NodeStore, node: NodeId, out: &mut Vec<usize>) {
     }
 }
 
-/// Mount `source` through the Slice O live commit and return its pre-order child-count
+/// Mount `source` through the live commit and return its pre-order child-count
 /// shape — the reference the AOT tree is compared against.
 fn live_commit_child_counts(source: &str) -> Vec<usize> {
     use reload::{LiveRuntime, hot_reload};

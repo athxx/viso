@@ -1,4 +1,4 @@
-//! The `em` and `%` basis of a length (§19.4), from source to layout: in
+//! The `em` and `%` basis of a length, from source to layout: in
 //! `font_size` they read the parent's resolved font size, in every other
 //! property the node's own — including a `font_size` the same node sets.
 

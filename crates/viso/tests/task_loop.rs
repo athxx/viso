@@ -1,4 +1,4 @@
-//! UI tasks through the real frame loop (ADR 0032): a handler spawns a task
+//! UI tasks through the real frame loop: a handler spawns a task
 //! that awaits a service reply, and its continuation writes state at a frame
 //! boundary.
 //!

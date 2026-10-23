@@ -1,4 +1,4 @@
-//! Structured edits (§143): each edit addresses its target by Symbol ID or
+//! Structured edits: each edit addresses its target by Symbol ID or
 //! Syntax ID, lays its text out in place, and is refused when the edited
 //! source has an error the source did not.
 

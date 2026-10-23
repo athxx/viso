@@ -1,15 +1,14 @@
 //! The Inspector facade end to end: build a real retained tree, lay it out,
 //! paint it, and drive it through the headless renderer, then aggregate every
-//! architecture section 62 introspection surface into one `InspectSnapshot` and
-//! serialize it to JSON — the one model Studio transport (Slice B) and
-//! `viso inspect --json` (Slice C) share (architecture section 34), proven with
+//! introspection surface into one `InspectSnapshot` and serialize it to JSON —
+//! the one model Studio transport and `viso inspect --json` share, proven with
 //! a *live* renderer producing *real* batches rather than a fabricated snapshot.
 //!
 //! Like `headless_scene`, it assembles the scene from public building blocks and
-//! rasterizes through the first-class headless backend (section 66) — the same
+//! rasterizes through the first-class headless backend — the same
 //! Component → Node → Flex → paint → renderer pipeline the facade drives on
 //! Metal, but deterministic and display-free. The snapshot is a cold-path
-//! readout (section 7.2): it only reads `&self` accessors and the renderer's own
+//! readout: it only reads `&self` accessors and the renderer's own
 //! batch/stats snapshot, mutating nothing.
 
 use viso::gpu::{CpuRaster, GpuBackend, RawWindowHandle};
@@ -134,7 +133,7 @@ fn snapshot_json_round_trips_a_live_frame() {
     .to_json();
 
     // A valid, non-empty document carrying every top-level surface and the
-    // section 61 counter vocabulary. (Byte-exact schema is asserted in the
+    // counter vocabulary. (Byte-exact schema is asserted in the
     // viso-ui unit test; here we prove the facade path produces the live wire
     // form.)
     assert!(json.starts_with('{') && json.ends_with('}'));

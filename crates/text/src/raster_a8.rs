@@ -7,7 +7,7 @@
 //! `viso-glyph-a8`: [`rasterize_coverage`], which walks the `ttf-parser`
 //! outline through `ab_glyph_rasterizer`, and a [`BakedFace`], the pages a
 //! build rasterized ahead of time with that same function for the sizes it
-//! declared (§3.6). Producing pixels and owning where they live are separate
+//! declared. Producing pixels and owning where they live are separate
 //! lifecycles; the latter belongs to the caller and to `viso-render`.
 
 pub use viso_glyph_a8::{

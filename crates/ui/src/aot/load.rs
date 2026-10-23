@@ -1,5 +1,4 @@
-//! The release AOT loader: instantiate a compact [`AotPackage`] into a live tree
-//! (architecture section 41; AGENTS 21.6, 60).
+//! The release AOT loader: instantiate a compact [`AotPackage`] into a live tree.
 //!
 //! This is the runtime twin of the hot-reload commit's `build_tree`/`build_node` —
 //! it authors the exact same live tree, but from a compact, dependency-free package
@@ -49,7 +48,7 @@ const NEUTRAL_STATE: StateValue = StateValue::Int(0);
 /// flash, an mmap — one node record at a time, so nothing of it is copied.
 ///
 /// A malformed blob returns a [`DecodeError`] rather than panicking — the bounded
-/// decoder is the safety precondition for loading an untrusted asset (section 30) —
+/// decoder is the safety precondition for loading an untrusted asset —
 /// and it does so before anything is instantiated. A well-formed but empty
 /// package instantiates nothing and returns `None`.
 pub fn load_from_bytes(

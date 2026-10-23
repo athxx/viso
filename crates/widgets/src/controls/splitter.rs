@@ -3,13 +3,13 @@
 //! A `Splitter` lays two panes side by side (a horizontal split, `Axis::Row`) or
 //! stacked (a vertical split, `Axis::Column`) with a thin draggable bar between
 //! them. Dragging the bar with the primary pointer or nudging it with the arrow
-//! keys moves the split — the two are the *same* action semantically, so an
-//! interactive control must have a keyboard equivalent (AGENTS section 15) — and
+//! keys moves the split — the two are the *same* action semantically, since an
+//! interactive control must have a keyboard equivalent — and
 //! both drive one shared `on_change`, reporting the new split *fraction* in
 //! `0.0..=1.0` (pane A's share of the main-axis extent).
 //!
 //! The internal state is that fraction, kept as a small `Copy` `Float` cell like
-//! the reference [`Slider`](crate::Slider). Dragging is *delta*-based: a press
+//! the [`Slider`](crate::Slider)'s. Dragging is *delta*-based: a press
 //! records the down position on the main axis and the fraction at that instant,
 //! and each move adds `(pos - down_pos) / extent` to the recorded fraction — so
 //! the bar tracks the finger without the handler needing the container's world
@@ -22,14 +22,12 @@
 //! `fraction` cell bound to `PAINT`, composed of pane A (sized to its build-time
 //! share of the main axis), the divider bar (a fixed leaf), and pane B (filling
 //! the rest). Dragging writes the `fraction` cell, repainting the container alone
-//! (a targeted invalidation — no rebuild, architecture section 47), and reports
-//! the new fraction through `on_change` so the app owns the live pane sizing. Its
-//! accessible role is [`Role::Group`] with an authored label. A divider that
-//! *re-lays* the panes in place as the cell moves (rather than the app driving the
-//! panes from the reported fraction) is a later slice: a bound layout cell does
-//! not re-derive a leaf's build-time size today, matching the [`Slider`] thumb
-//! precedent (the thumb sits at its build-time position; sliding it in paint is a
-//! later slice).
+//! (a targeted invalidation — no rebuild), and reports the new fraction through
+//! `on_change` so the app owns the live pane sizing. Its accessible role is
+//! [`Role::Group`] with an authored label. The divider does not *re-lay* the
+//! panes in place as the cell moves: a bound layout cell does not re-derive a
+//! leaf's build-time size, so the app drives the panes from the reported
+//! fraction.
 //!
 //! ```
 //! use viso_widgets::splitter;
@@ -303,9 +301,9 @@ impl Component for Splitter {
         let extent = self.extent;
 
         // Pane A takes its build-time share of the free main-axis room (the extent
-        // minus the divider), and pane B fills the rest. Live re-sizing from the
-        // cell is a later slice (a bound layout cell does not re-derive a leaf's
-        // build-time size); the app re-sizes the panes from the reported fraction.
+        // minus the divider), and pane B fills the rest. The cell does not re-size
+        // them live (a bound layout cell does not re-derive a leaf's build-time
+        // size); the app re-sizes the panes from the reported fraction.
         let free = (extent - bar_size).max(0.0);
         let pane_a_main = frac0 * free;
         let pane_a_size = size_on(
@@ -430,7 +428,7 @@ impl Component for Splitter {
 
         // Keyboard step: Left/Up decrement and Right/Down increment the fraction by
         // a small step, firing the same `on_change` — the accessibility equivalent
-        // of the drag (AGENTS section 15). For a row split Left/Right are the
+        // of the drag. For a row split Left/Right are the
         // natural axis; for a column split Up/Down are — both pairs are accepted so
         // either orientation is keyboard-drivable. Auto-repeat is honored so a held
         // arrow ramps the split.
@@ -453,9 +451,9 @@ impl Component for Splitter {
         });
 
         // A splitter is a resizable-pane group; its accessible name is the authored
-        // label (AGENTS section 15). The live fraction is proven by the reactive
-        // cell and input tapes; wiring it into the derived tree is a later slice
-        // (the derive pass has no state store).
+        // label. The live fraction is proven by the reactive cell and input tapes
+        // and is not surfaced in the derived tree (the derive pass has no state
+        // store).
         cx.semantics(
             root,
             Semantics::role(Role::Group).with_label(self.label.clone()),

@@ -1,4 +1,4 @@
-//! The frame-local transient render-target pool and its lifetime planner (§16.4).
+//! The frame-local transient render-target pool and its lifetime planner.
 //!
 //! Effects that cannot be drawn in place — group opacity, content blur, and every
 //! later offscreen effect — need a render target for part of a frame and nothing
@@ -212,7 +212,7 @@ struct PhysicalTarget {
 }
 
 /// Per-frame accounting for the transient pool, surfaced through `FrameStats`
-/// (§30) so the §31 budget gate can be written against real numbers.
+/// so a budget gate can be written against real numbers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TransientStats {
     /// The largest number of bytes of transient target memory live at once this
@@ -229,7 +229,7 @@ pub struct TransientStats {
     pub allocations: u32,
 }
 
-/// The frame-local transient render-target pool (§16.4): declare virtual targets
+/// The frame-local transient render-target pool: declare virtual targets
 /// while recording passes, [`assign`](Self::assign) them onto pooled physicals
 /// once the frame's pass timeline is known, then read back concrete handles.
 pub struct TransientTargets {
@@ -610,7 +610,7 @@ mod tests {
     }
 
     /// Two same-key targets whose lifetimes do not overlap share one physical
-    /// texture — the whole point of the planner (§16.4). A ping-pong chain of four
+    /// texture — the whole point of the planner. A ping-pong chain of four
     /// passes needs two textures, not four, and the peak is two live at once.
     #[test]
     fn disjoint_lifetimes_alias_one_texture() {

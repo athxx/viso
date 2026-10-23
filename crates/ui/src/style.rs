@@ -72,7 +72,7 @@ impl Default for BoxStyle {
 /// literal, so a partially-tokenized style keeps its untokenized fields.
 ///
 /// Only `fill` (a `color.*` token) and `radius` (a `radius.*`/scalar token) are
-/// tokenizable this slice — that is all [`BoxStyle`] carries. `border` stays a
+/// tokenizable — that is all [`BoxStyle`] carries. `border` stays a
 /// literal until a border token has a consumer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct StyleId {

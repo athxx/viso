@@ -1,5 +1,5 @@
 //! The states of a system as tooling reads them: the `@probe` states a
-//! headless game test traces every tick (Viso_DSL_1.0.md section 110.5), and
+//! headless game test traces every tick, and
 //! every state `viso game peek` reads from a running game, each with how its
 //! values are written to JSON.
 //!

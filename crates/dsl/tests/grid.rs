@@ -1,5 +1,5 @@
 //! A `Grid`'s tracks, gaps, cell alignment, adaptive columns and template
-//! areas, and its children's `grid.*` cells (§U3.5), from source to layout:
+//! areas, and its children's `grid.*` cells, from source to layout:
 //! each lays out under hot reload and from the release package, a gap that
 //! reads the environment folds against it at layout, and a reload rewrites
 //! the template and the cells in place.

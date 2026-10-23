@@ -1,5 +1,5 @@
 //! The footprint profile a build is made for, and the memory budget its
-//! caches share (Architecture §50A.3–§50A.4).
+//! caches share.
 //!
 //! A profile is fixed when the app is built: `viso build` passes the target's
 //! `profile` (`VISO_FOOTPRINT`), its `budget` (`VISO_BUDGET`) and its

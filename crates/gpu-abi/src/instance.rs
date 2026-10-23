@@ -1,6 +1,6 @@
 //! Per-instance GPU vertex layout: the explicit descriptor for how a
 //! `#[repr(C)]` instance struct is read as GPU memory, rejecting any reliance on
-//! an implicit "everything after field X is GPU memory" convention (§18/§56).
+//! an implicit "everything after field X is GPU memory" convention.
 //!
 //! `#[derive(GpuPod)]` (in `viso-macros`) emits a `const LAYOUT:
 //! InstanceLayout` for the annotated `#[repr(C)]` struct: one [`InstanceField`]
@@ -17,7 +17,7 @@
 ///
 /// The scalar base type and component count together determine how the field is
 /// declared in the shader's vertex-input struct and how the backend describes
-/// the vertex attribute. Only 4-byte-aligned scalars are allowed (§32).
+/// the vertex attribute. Only 4-byte-aligned scalars are allowed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttrFormat {
     /// `f32` scalar / `float`.
@@ -138,7 +138,7 @@ pub enum LayoutError {
     },
     /// An attribute's real byte offset in the `#[repr(C)]` struct (from
     /// `offset_of!`) does not match the offset the shader reads it at (the tight
-    /// prefix-sum of preceding attribute sizes). This is the section-36.1 CPU↔GPU
+    /// prefix-sum of preceding attribute sizes). This is the CPU↔GPU
     /// cross-check: a name/format match is not enough if padding, field reordering,
     /// or a wrong `repr` shifts a field, so the two sides would read different bytes
     /// for the same attribute.
@@ -170,14 +170,14 @@ impl InstanceLayout {
     /// satisfying the exit criterion "GPU instance layout has
     /// compile-time/registration validation".
     ///
-    /// The offset/stride cross-check is the section-36.1 CPU↔GPU ABI guard: the
+    /// The offset/stride cross-check is the CPU↔GPU ABI guard: the
     /// shader reads each attribute at the tight prefix-sum of preceding attribute
     /// sizes (all GPU attributes are 4-byte-aligned, so a shader packs them with no
     /// gaps), while the CPU offset is the real `#[repr(C)]` `offset_of!` value. If
     /// padding, field reordering, or a wrong `repr` shifts any field — or leaves
     /// trailing padding in the stride — the two sides read different bytes for the
     /// same attribute; catching that here turns silent memory corruption into a
-    /// registration-time error (architecture section 30 / 53). The explicit
+    /// registration-time error. The explicit
     /// cross-check is the point: correctness never rests on both sides happening
     /// to apply the same packing rule.
     pub fn validate_against(&self, schema: &InstanceSchema) -> Result<(), LayoutError> {

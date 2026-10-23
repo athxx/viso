@@ -207,8 +207,8 @@ mod tests {
 
     #[test]
     fn slider_and_radio_roles_are_distinct() {
-        // The two roles added this slice — a slider no longer borrows CheckBox,
-        // and a radio option no longer borrows CheckBox.
+        // A slider and a radio option each have their own role rather than
+        // borrowing CheckBox.
         let slider = Semantics::role(Role::Slider).with_label("Volume");
         assert_eq!(slider.role, Role::Slider);
         assert_eq!(slider.label.as_deref(), Some("Volume"));

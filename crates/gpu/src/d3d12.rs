@@ -122,7 +122,7 @@ const PITCH_ALIGN: u32 = D3D12_TEXTURE_DATA_PITCH_ALIGNMENT;
 const TEXTURE_REST: D3D12_RESOURCE_STATES = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
 /// The swapchain's format and flags (kept identical across `ResizeBuffers`).
 /// A flip-model swapchain takes no sRGB format; its buffers' views are
-/// [`SURFACE_FORMAT`], which encodes what the pipelines write (ADR 0048).
+/// [`SURFACE_FORMAT`], which encodes what the pipelines write.
 const SWAP_FORMAT: DXGI_FORMAT = DXGI_FORMAT_B8G8R8A8_UNORM;
 /// The format a surface reports and its buffers' render-target views take.
 const SURFACE_FORMAT: TextureFormat = TextureFormat::Bgra8UnormSrgb;
@@ -1991,7 +1991,7 @@ impl GpuBackend for D3D12Backend {
             BufferCount: SWAP_BUFFERS,
             Scaling: DXGI_SCALING_STRETCH,
             // Sequential, not discard: a back buffer keeps the frame it last
-            // showed, so a frame redraws only what changed since (§30.3).
+            // showed, so a frame redraws only what changed since.
             SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
             AlphaMode: DXGI_ALPHA_MODE_IGNORE,
             Flags: SWAP_FLAGS.0 as u32,
@@ -2860,7 +2860,7 @@ fn dxgi_format(format: TextureFormat) -> DXGI_FORMAT {
 
 /// The formats beyond the baseline `device` samples with filtering: BC on
 /// every feature level 11 device. Not B5G6R5: it has no sRGB variant to
-/// decode a sample (ADR 0048).
+/// decode a sample.
 fn sampled_formats(device: &ID3D12Device) -> SampledFormats {
     let samples = |format: DXGI_FORMAT| {
         let mut support = D3D12_FEATURE_DATA_FORMAT_SUPPORT {

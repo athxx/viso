@@ -1,8 +1,7 @@
 //! `viso snapshot capture|compare|update [<scenario>|<component>]`: the
 //! images, with the tree, layout and paint that drew them, the UI scenarios
 //! under `tests/ui/` take with `expect snapshot "<name>"` steps, and those of
-//! components shown alone, held to the goldens under `tests/snapshots/`
-//! (`Viso_CLI.md` §23).
+//! components shown alone, held to the goldens under `tests/snapshots/`.
 //!
 //! A name that is no scenario's names a component, `Name` or `module::Name`:
 //! it is mounted alone in a headless run, with its inputs' defaults, and its

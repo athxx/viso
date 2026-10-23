@@ -1,4 +1,4 @@
-//! A container's `padding` (§U3.3), from source to layout: every form of a
+//! A container's `padding`, from source to layout: every form of a
 //! constant `EdgeInsets` pads the content under hot reload and the release
 //! package, and a padding the runtime cannot lay out is a diagnostic, never
 //! dropped.

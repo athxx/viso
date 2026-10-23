@@ -1,5 +1,5 @@
 //! UI scenarios played by headless runs of the app, for `viso test ui` and
-//! `viso snapshot` (`Viso_CLI.md` §22.2, §23).
+//! `viso snapshot`.
 //!
 //! The scenarios under `tests/ui/` are planned and parsed first, so one that
 //! does not parse fails at its line without a build. The app is then built

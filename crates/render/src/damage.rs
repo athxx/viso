@@ -1,4 +1,4 @@
-//! Damage: the surface pixels a frame changes (§30.3).
+//! Damage: the surface pixels a frame changes.
 //!
 //! Every frame the renderer lists what the surface pass draws, one entry per
 //! paint-order slot that lands on the surface: a 64-bit key of everything that

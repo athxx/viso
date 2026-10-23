@@ -1082,7 +1082,7 @@ define_class!(
             let shared = ivars.shared.clone();
             // AppKit demands a synchronous accept/deny, but Viso's handler runs
             // later on the pump — so we cannot honor a veto here without
-            // deferring the actual close. Phase 1 accepts every close: enqueue
+            // deferring the actual close. Every close is accepted: enqueue
             // the veto-handshake event (the app still sees it, its `accept`
             // starts true and is not read back) followed by the WindowClosed
             // the scheduler counts against open windows, then let AppKit close.

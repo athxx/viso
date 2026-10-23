@@ -1,8 +1,8 @@
-//! Frame scheduling contract (architecture §12).
+//! Frame scheduling contract.
 //!
 //! `redraw()` is NOT an ordinary application responsibility. The runtime
 //! aggregates redraw *reasons* and decides whether/when to run a frame.
-//! Crucially, when nothing is dirty the runtime must go truly idle (§12.1):
+//! Crucially, when nothing is dirty the runtime must go truly idle:
 //! no continuous layout, paint, submit, tree traversal, or per-component
 //! polling.
 
@@ -60,7 +60,7 @@ impl FrameDecision {
     /// How the platform pump should behave given this decision.
     ///
     /// Idle ([`FrameDecision::NoFrame`]) blocks the pump ([`ControlFlow::Wait`])
-    /// so an idle app spends zero CPU (§12.1); anything that wants a frame
+    /// so an idle app spends zero CPU; anything that wants a frame
     /// keeps the pump spinning ([`ControlFlow::Poll`]) so the next display beat
     /// arrives promptly.
     pub fn to_control_flow(self) -> ControlFlow {

@@ -1,4 +1,4 @@
-//! The dock's accessibility contract, isolated in one file (AGENTS section 15).
+//! The dock's accessibility contract, isolated in one file.
 //!
 //! Every role a dock node carries is decided here, not scattered through the build
 //! walk, so the a11y contract reads as one policy and the snapshot test in this
@@ -10,17 +10,18 @@
 //!   than a mute [`Group`](Role::Group), and semantically a standalone section
 //!   rather than a page stack ([`Navigation`](Role::Navigation));
 //! - a **multi-panel tab group** is a [`Region`](Role::Region) holding a
-//!   [`TabList`](Role::TabList) of [`Tab`](Role::Tab)s (the reference tabs mapping);
+//!   [`TabList`](Role::TabList) of [`Tab`](Role::Tab)s (the same mapping as the
+//!   tabs control);
 //! - a **lone panel group** (its tab strip hidden) drops to a [`Group`](Role::Group)
 //!   named by its one panel — a single panel needs no tablist ceremony;
 //! - a **panel's content root** is a [`Group`](Role::Group) named by the panel, so
-//!   an assistive technology announces which panel it entered (the nav-page
-//!   precedent);
-//! - a **resize seam** is a [`Group`](Role::Group) named `resize`, keeping the
-//!   Splitter precedent and a keyboard-resize equivalent (AGENTS section 15);
+//!   an assistive technology announces which panel it entered (as a
+//!   navigation-stack page does);
+//! - a **resize seam** is a [`Group`](Role::Group) named `resize`, like a
+//!   Splitter, with a keyboard-resize equivalent;
 //! - a **drop hint** and **floating chrome** are mute [`Group`](Role::Group)s —
 //!   transient decoration that announces no interaction, since the redock drag has
-//!   a `DockHandle` keyboard equivalent (a later section).
+//!   a programmatic `DockHandle` equivalent.
 //!
 //! The label a panel announces is [`panel_label`]; a dock without registered
 //! content still names each panel distinctly by its key, so the snapshot is stable.
@@ -32,12 +33,12 @@ use viso_ui::{Role, Semantics};
 use super::PanelContent;
 use super::tree::PanelKey;
 
-/// The seam's accessible name — the keyboard-resize target's label (AGENTS
-/// section 15: a visual resize has a named keyboard equivalent).
+/// The seam's accessible name — the keyboard-resize target's label (a visual
+/// resize has a named keyboard equivalent).
 pub(super) const SEAM_LABEL: &str = "resize";
 
-/// A panel's accessible label. A registered panel has no separate label in this
-/// slice (content builders are opaque closures), so every panel announces by its
+/// A panel's accessible label. A registered panel has no separate label (content
+/// builders are opaque closures), so every panel announces by its
 /// stable key — distinct, stable across a redock, and independent of position.
 /// The keyed name is what a screen reader reads when it enters the panel and what
 /// the snapshot pins.

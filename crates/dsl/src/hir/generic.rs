@@ -1,4 +1,4 @@
-//! User traits, impls and generics (§26, §30, §31, §78, §79): what a package
+//! User traits, impls and generics: what a package
 //! declares, collected once before any body is typed, and the questions typing
 //! asks of it — whether a type meets a bound, which callable a method or an
 //! associated name is on a type, and what an associated type or an alias
@@ -162,7 +162,7 @@ pub(crate) enum Owner {
     Trait(SymbolId),
 }
 
-/// A trait the compiler implements for every type its rule admits (§79).
+/// A trait the compiler implements for every type its rule admits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AutoTrait {
     /// Every value can be copied.

@@ -11,9 +11,9 @@
 //!
 //! The tree is **lossless**: every token — including whitespace, comments, and
 //! error tokens — becomes a green token, so `root.text()` reconstructs the
-//! source byte-for-byte. Slice K builds a single flat [`SyntaxKind::Root`] whose
-//! children are all the lexed tokens; the grammar-driven node structure lands in
-//! the next slice, but the round-trip contract holds already.
+//! source byte-for-byte. [`flat_tree`] builds a single flat [`SyntaxKind::Root`]
+//! whose children are all the lexed tokens; the grammar-driven node structure
+//! keeps the same round-trip contract.
 //!
 //! The tree also models the two recovery shapes the parser needs: an
 //! [`SyntaxKind::ErrorNode`] wraps tokens that did not fit a production, and a
@@ -299,9 +299,8 @@ impl GreenBuilder {
 /// [`SyntaxKind::Root`] whose children are every token in order (trivia and
 /// errors included, the final [`SyntaxKind::Eof`] dropped since it is empty).
 ///
-/// This is the Slice K primitive: it proves the green layer round-trips
-/// (`root.text() == source`) before any grammar exists. The grammar-driven node
-/// structure replaces this flat wrap in the next slice.
+/// This primitive proves the green layer round-trips (`root.text() == source`)
+/// without any grammar.
 pub fn flat_tree(tokens: &[Token], source: &str) -> Rc<GreenNode> {
     let mut builder = GreenBuilder::new();
     builder.start_node(SyntaxKind::Root);

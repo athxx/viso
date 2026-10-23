@@ -1,4 +1,4 @@
-//! The typed HIR node shapes — the doc's node contract (spec node-contract section).
+//! The typed HIR node shapes — the node contract.
 //!
 //! Every HIR node carries the same eight facts, held here in [`HirMeta`]: the symbol it
 //! resolved to, the type inference gave it, the effect class it carries, the capability
@@ -7,12 +7,11 @@
 //! (a [`HirState`], [`HirComputed`], [`HirInput`], [`HirCallable`], …) is that metadata
 //! plus the member-specific fields lowering fills in.
 //!
-//! This slice lowers the *core* surface — component/input/state/computed/event/callable/
-//! view — into these nodes. Advanced members (trait/impl/generics/native/shader) are not
-//! lowered to typed nodes yet; they keep a source origin only, to be filled in by their
-//! consumer slice. The nodes deliberately hold owned `String`/`Vec`/`Rc` data: this is
-//! cold-path frontend state (AGENTS section 7.2), and the zero-allocation contract binds
-//! what these lower *to* (the UI/Binding IR of the next slice), not the nodes themselves.
+//! These nodes cover the *core* surface — component/input/state/computed/event/callable/
+//! view. Advanced members (trait/impl/generics/native/shader) are not lowered to these
+//! typed nodes; they keep a source origin only. The nodes deliberately hold owned
+//! `String`/`Vec`/`Rc` data: this is cold-path frontend state, and the zero-allocation
+//! contract binds what these lower *to* (the UI/Binding IR), not the nodes themselves.
 
 use std::collections::BTreeSet;
 
@@ -26,9 +25,9 @@ use super::effect::EffectClass;
 use super::reads::DerivedReads;
 use super::ty::Ty;
 
-/// How a binding owns the value it holds — the doc's ownership-mode axis of the node
-/// contract. This slice distinguishes only the coarse modes the core surface needs;
-/// borrow/lifetime refinement lands with its consumer slice.
+/// How a binding owns the value it holds — the ownership-mode axis of the node
+/// contract. Only the coarse modes the core surface needs are distinguished; there is
+/// no borrow/lifetime refinement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OwnershipMode {
     /// The binding owns its value outright (a `state`, a `let`, a record field).
@@ -41,9 +40,9 @@ pub enum OwnershipMode {
     None,
 }
 
-/// A statically known constant value, when inference could fold one. This slice folds
-/// only the shapes the core numeric/scalar surface needs; richer constant folding is a
-/// later concern. `None` on a node's [`HirMeta`] means "not a known constant", which is
+/// A statically known constant value, when inference could fold one. Only the shapes
+/// the core numeric/scalar surface needs are folded. `None` on a node's [`HirMeta`]
+/// means "not a known constant", which is
 /// the common case.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConstValue {
@@ -57,7 +56,7 @@ pub enum ConstValue {
     Str(String),
 }
 
-/// The eight-field node contract every HIR node carries (spec node-contract section).
+/// The eight-field node contract every HIR node carries.
 ///
 /// After lowering, none of these is allowed to be left undetermined for a core node:
 /// `resolved_symbol` is set for every declaration, `inferred_type` is never an
@@ -203,9 +202,9 @@ pub struct HirSlot {
 
 /// The typed schema of one component: its members grouped by kind, in declaration order.
 ///
-/// This is the spec member-classification result — every core member of a `component`
-/// (or `system`) lowered and bucketed. The `view` is held as its source span this slice
-/// (view IR is Slice N); the members carry the full node contract.
+/// This is the member-classification result — every core member of a `component`
+/// (or `system`) lowered and bucketed. The `view` is held as its source span (the view
+/// IR lowers it); the members carry the full node contract.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComponentSchema {
     /// The component's name.

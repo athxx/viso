@@ -1,4 +1,4 @@
-//! The `node_arena` benchmark category (§68 exit criterion): create, traverse,
+//! The `node_arena` benchmark category: create, traverse,
 //! and remove a 100k-node retained tree over the generational [`NodeArena`].
 //! This is the identity/tree substrate every subsystem sits on, so its
 //! create/traverse/remove costs bound the ceiling of any structural churn a

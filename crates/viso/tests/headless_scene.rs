@@ -1,4 +1,4 @@
-//! End-to-end headless slice test: build a real retained tree with the public
+//! End-to-end headless test: build a real retained tree with the public
 //! building blocks, run measure + layout, paint to primitives, and rasterize
 //! through the headless backend — the same Component → Node → Flex → paint →
 //! renderer pipeline the facade drives on Metal, but deterministic and

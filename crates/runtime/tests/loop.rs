@@ -3,7 +3,7 @@
 //! These exercise the whole `Scheduler` ↔ `PlatformApp` funnel without an OS:
 //! a scripted [`RawEvent`] queue is played through [`Scheduler`] (whose loop is the
 //! `AppHandler`), and a counting [`FrameDriver`] records how many times each
-//! phase ran. The invariants under test are the Phase 1 exit criteria: the loop
+//! phase ran. The invariants under test: the loop
 //! drives blank frames on beats, does no work when idle, and stops when the last
 //! window closes or the platform returns `Exit`.
 
@@ -343,7 +343,7 @@ fn on_window_closed_fires_per_window_and_the_last_close_exits() {
 
 #[test]
 fn close_requested_is_accepted_in_phase_1() {
-    // Phase 1 accepts every close: the accept cell stays accepted after handling.
+    // Every close is accepted: the accept cell stays accepted after handling.
     let accept = AcceptCell::new();
     let script = vec![RawEvent::CloseRequested {
         window: WindowId(1),

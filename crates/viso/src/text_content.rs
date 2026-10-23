@@ -6,8 +6,7 @@
 //! The main thread never shapes. A node whose text, wrap width, or locale
 //! changed keeps drawing its last good lines while the worker lays the new
 //! ones out; the finished layout is committed in one step once every glyph it
-//! draws has coverage, within a per-frame commit budget (§12.20, §12.21,
-//! §14.4).
+//! draws has coverage, within a per-frame commit budget.
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -52,7 +51,7 @@ use crate::text_worker::{
 
 const ATLAS_SIZE: u32 = 1024;
 /// Page edge length: the atlas plane is cut into `256 × 256` pages, and the page
-/// is the unit of residency and of eviction (§13.9). Sixteen pages per plane is
+/// is the unit of residency and of eviction. Sixteen pages per plane is
 /// enough granularity that reclaiming the coldest one costs a small fraction of
 /// the working set, and few enough that the CLOCK sweep is trivially cheap.
 const ATLAS_PAGE: u32 = 256;
@@ -76,7 +75,7 @@ pub(crate) const DEFAULT_FRAME_INTERVAL: Duration = Duration::from_nanos(16_666_
 
 /// The main thread's per-frame budget for committing worker results at a
 /// display refresh of one frame per `interval`: `min(500µs, 5% of the frame)`
-/// — 500µs at 60Hz, 416µs at 120Hz, 347µs at 144Hz, 208µs at 240Hz (§14.4).
+/// — 500µs at 60Hz, 416µs at 120Hz, 347µs at 144Hz, 208µs at 240Hz.
 /// At least one result commits per frame, so a backlog always drains.
 pub(crate) fn text_commit_budget(interval: Duration) -> Duration {
     (interval / 20).min(Duration::from_micros(500))
@@ -102,7 +101,7 @@ pub(crate) struct TextCounters {
     main_commit_micros: Cell<u64>,
     rasters: Cell<u64>,
     atlas_upload_bytes: Cell<u64>,
-    /// Pages reclaimed this frame, across all pools (§25 eviction visibility).
+    /// Pages reclaimed this frame, across all pools (eviction visibility).
     evictions: Cell<u64>,
     /// Admissions the packer refused this frame, forcing a re-aim.
     admission_failures: Cell<u64>,
@@ -569,7 +568,7 @@ pub(crate) struct TextShaper {
     color_atlas: Option<ColorAtlas>,
     /// Which glyph is resident on which page, and which page is coldest. The
     /// metadata half of the atlas lives in `viso-text`; the atlases above own the
-    /// pixels of the pages it names (§13.9, §13.10).
+    /// pixels of the pages it names.
     residency: GlyphResidency,
     /// Scratch for draining reclaimed pages; reused so a reclaim allocates
     /// nothing after warm-up and a steady-state frame drains an empty vec.
@@ -925,7 +924,7 @@ impl TextShaper {
     /// point into them, and page age cannot tell them from cold pages because
     /// unchanged text is never re-rendered to touch them. The text on screen
     /// therefore never goes missing while its coverage is re-rasterized, and a
-    /// warning repeated under sustained pressure costs no raster (§19).
+    /// warning repeated under sustained pressure costs no raster.
     /// Returns the plane bytes retired.
     pub(crate) fn trim(&mut self, mut retire: impl FnMut(TextureId)) -> usize {
         self.faces.shed_to_pressure_budget(0);
@@ -3642,7 +3641,7 @@ mod tests {
 
     /// Pool budgets are independent: filling the RGBA pool reclaims color pages
     /// and nothing else. The A8 coverage pool keeps every glyph and every page —
-    /// §13.10's `memory pressure 不引发全 Text cache 连锁清空`.
+    /// memory pressure never cascades into clearing every text cache.
     ///
     /// Runs on every target with a system-font provider: the provider resolves a
     /// color emoji face and the platform or portable color raster fills the RGBA

@@ -1,8 +1,8 @@
-//! The trait-based RHI: a single source-level GPU interface (§17.2).
+//! The trait-based RHI: a single source-level GPU interface.
 //!
 //! There is exactly one `GpuBackend` trait; the concrete backend is chosen at
 //! compile time by [`create_device`] and the facade holds it monomorphized, so
-//! the frame hot path has no `dyn GpuBackend` dispatch (ADR 0029). The trait
+//! the frame hot path has no `dyn GpuBackend` dispatch. The trait
 //! exists to keep the Metal and headless-raster backends *source-compatible* and
 //! to let cold-path code (setup, tests) be backend-generic.
 //!
@@ -73,7 +73,7 @@ pub struct DepthAttachment {
 ///
 /// The commands are referenced by range rather than by a borrowed slice so a
 /// pass carries no lifetime and can live in a renderer-owned scratch buffer that
-/// is cleared and refilled each frame (0 steady-state heap allocations, §7.1).
+/// is cleared and refilled each frame (0 steady-state heap allocations).
 #[derive(Debug, Clone, Copy)]
 pub struct RenderPass {
     /// Where this pass renders.
@@ -181,7 +181,7 @@ pub enum Geometry {
         index_buffer: BufferId,
         /// Width of each index in `index_buffer` (16- or 32-bit). Small geometry
         /// (≤ 64k vertices) uses [`IndexFormat::U16`] to halve index bandwidth
-        /// and residency; larger geometry uses [`IndexFormat::U32`] (§13.4).
+        /// and residency; larger geometry uses [`IndexFormat::U32`].
         index_format: IndexFormat,
         /// Offset (in indices) of this draw's first index into `index_buffer`.
         /// Multiple mesh draws (e.g. different clips) share one index buffer;
@@ -420,7 +420,7 @@ pub trait GpuBackend {
         self.present(frame);
     }
 
-    /// Recover from a lost or reset device on `surface` (§6.4).
+    /// Recover from a lost or reset device on `surface`.
     ///
     /// A device loss (GPU reset, driver restart, display reconfiguration) or an
     /// abandoned frame invalidates any drawable held between

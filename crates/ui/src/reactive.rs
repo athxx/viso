@@ -1069,8 +1069,8 @@ type ProjectFn = Box<dyn FnMut(&mut ComputeCx<'_>) -> SemanticState>;
 /// its control's reactive cell(s). Structurally a [`Computed`] whose downstream
 /// effect is *writing a node column* (`set_semantic_state`) rather than marking a
 /// dirty class — so it lives apart from [`ComputedStore`], whose slot caches a
-/// [`StateValue`] and whose contract is pure derivation to a dirty class (AGENTS
-/// section 10.5). The projection carries no value cache: its output lands in the
+/// [`StateValue`] and whose contract is pure derivation to a dirty class. The
+/// projection carries no value cache: its output lands in the
 /// node's [`SemanticState`](crate::semantics::SemanticState) column, and
 /// `set_semantic_state` marks `SEMANTICS`, so the memo boundary is "only the
 /// cells in this frame's `changed` set wake it" — an unchanged frame projects
@@ -1088,14 +1088,14 @@ struct ProjectSlot {
 
 /// The store of semantic-state projections, keyed by generational [`ProjectId`].
 ///
-/// This is the parallel binding that keeps the semantics derive pass single-layer
-/// (AGENTS section 3.5): a control's reactive cell drives a projection here that,
+/// This is the parallel binding that keeps the semantics derive pass single-layer:
+/// a control's reactive cell drives a projection here that,
 /// in the flush phase where both the [`StateStore`] and [`NodeStore`] are live,
 /// reads the cell value and writes the node's `semantic_state` column via
 /// [`NodeStore::set_semantic_state`]. The semantics derive pass then reads only
 /// that node column (`&self`), never the state store — mirroring the `focused`
-/// slot precedent (live state reaches semantics through a node column, not a
-/// cross-layer read).
+/// slot (live state reaches semantics through a node column, not a cross-layer
+/// read).
 ///
 /// Waking is driven by a reverse index, exactly like [`ComputedStore`] and
 /// [`EffectStore`]: [`wake`](SemanticProjector::wake) looks up the projections
@@ -1826,8 +1826,8 @@ mod tests {
     #[test]
     fn set_semantic_state_marks_semantics_dirty() {
         // The write end of the projection: a live-guarded assign that marks the
-        // node SEMANTICS-dirty (AGENTS section 11: an accessibility-state change
-        // invalidates SEMANTICS), and a stale handle is a no-op.
+        // node SEMANTICS-dirty (an accessibility-state change invalidates
+        // SEMANTICS), and a stale handle is a no-op.
         let mut store = NodeStore::new();
         let leaf = sink_node(&mut store);
         assert!(store.dirty(leaf).is_empty(), "a fresh build starts clean");

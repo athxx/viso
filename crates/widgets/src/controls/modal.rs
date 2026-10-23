@@ -24,8 +24,7 @@
 //! reactive `Bool` cell bound to the modal's `PAINT` makes an open/close one
 //! targeted invalidation, not a rebuild. The content is a [`Role::Dialog`] in the
 //! semantics tree, focusable, and honors Escape to close (an interactive control
-//! must have a keyboard equivalent, AGENTS section 15), firing an optional
-//! `on_dismiss`.
+//! must have a keyboard equivalent), firing an optional `on_dismiss`.
 //!
 //! The focus snapshot/restore and the scope install/clear ride the deferred-request
 //! seam: the open/close handler records `request_focus` / `set_focus_scope` /

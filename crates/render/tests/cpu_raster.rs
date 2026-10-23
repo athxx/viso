@@ -1,4 +1,4 @@
-//! The CPU raster as a production backend (§30.4): a layer composited from
+//! The CPU raster as a production backend: a layer composited from
 //! tiles draws the pixels a whole offscreen target would, in a fraction of
 //! the memory; a panel without alpha still composites groups; a rounded clip
 //! cuts its group's corners; a 2D accelerator's fills land where the

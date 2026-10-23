@@ -1,5 +1,5 @@
-//! The calls a view reads and pauses the game its root runs through (ADR
-//! 0045): `game.<query>()` reads a system's `@query` function by name,
+//! The calls a view reads and pauses the game its root runs through:
+//! `game.<query>()` reads a system's `@query` function by name,
 //! `game.is_paused()` and `game.tick()` the game's clock, and `game.pause()`
 //! and `game.resume()` are the actions of `viso::game::session`. Anything
 //! else on `game` is `E2001`; a view of a package without a system has no

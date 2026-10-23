@@ -1,10 +1,10 @@
-//! The section 8.3 decision-gate baseline for the incremental STYLE layer:
+//! The decision-gate baseline for the incremental STYLE layer:
 //! `NodeStore::resolve_styles` re-resolves the warm style of every STYLE-dirty
 //! *bound* node after a theme swap, but it finds those nodes by scanning the
 //! whole dirty array (`0..dirty.len()`) and testing the STYLE bit on each. The
-//! backlog note asks whether that full scan is hot enough — on a large tree with
-//! only a few token-bound nodes — to justify caching a "bound node list". Section
-//! 7.3 forbids answering by assertion: this bench measures the scan first.
+//! question is whether that full scan is hot enough — on a large tree with only a
+//! few token-bound nodes — to justify caching a "bound node list"; this bench
+//! measures the scan rather than answering by assertion.
 //!
 //! Shape: a wide tree where only a small fraction of leaves carry a style token
 //! bound to a theme cell; a theme swap writes that cell, the flush marks STYLE on
@@ -50,7 +50,7 @@ struct Harness {
 /// Build the scene: one flex root over `CONTAINERS` containers of `LEAVES` leaves,
 /// every `BOUND_STRIDE`-th leaf given a `fill` style token bound to a single
 /// shared theme color cell (the token's backing cell). This is the "large tree,
-/// few styled nodes" shape the backlog note calls out.
+/// few styled nodes" shape.
 fn setup() -> Harness {
     let mut store = NodeStore::new();
     let mut states = StateStore::new();

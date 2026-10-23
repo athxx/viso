@@ -1,18 +1,18 @@
-//! D0 frozen-contract pin: the frame counter roster (§30/§61) and the effect
-//! cost classification (§7.5/§62) the whole draw layer above D0 reports through.
+//! Frozen-contract pin: the frame counter roster and the effect cost
+//! classification the whole draw layer reports through.
 //!
 //! `FrameStats` is the renderer's public performance surface — Studio, the
 //! inspector, the steady-state bench, and every later layer's own gate read it
 //! by field. `EffectCost` is the per-drawable cost class the inspector shows and
-//! the planner will branch on. D0 freezes both: the set of counters and the set
-//! of cost classes are the contract D1→A0 extend but never silently reshape.
+//! the planner will branch on. Both are frozen: the set of counters and the set
+//! of cost classes are the contract later layers extend but never silently reshape.
 //!
 //! The steady-state bench already exercises the counters against a live data
 //! path (one-slot hover, transform-only scroll), but a bench is not part of
 //! `cargo test --workspace`; this integration test is the `cargo test` gate that
 //! fails loudly the moment a counter is dropped/renamed or a cost class moves.
 //! Two halves:
-//!   1. the counter *roster* — every §30 counter is present, named, and zero by
+//!   1. the counter *roster* — every counter is present, named, and zero by
 //!      default (a construction with all fields named breaks to compile if one is
 //!      dropped or renamed);
 //!   2. the cost *classification* — the seven classes, their cheapest-first
@@ -20,7 +20,7 @@
 
 use viso_render::{EffectCost, FrameStats};
 
-/// The §30/§61 counter roster is frozen: `FrameStats` carries exactly these
+/// The counter roster is frozen: `FrameStats` carries exactly these
 /// fields, each an integer counter that defaults to zero. Naming every field in
 /// a struct literal means dropping or renaming any counter fails to compile —
 /// this is the single place that has to change (deliberately) when the roster
@@ -39,7 +39,7 @@ fn frame_stats_roster_is_frozen() {
         render_chunks: 4,
         pipeline_switches: 5,
         texture_binding_switches: 6,
-        // Retained-scene ingest tallies (§8.4/§61).
+        // Retained-scene ingest tallies.
         visible_primitives: 7,
         culled_primitives: 8,
         dirty_primitives: 9,
@@ -52,12 +52,12 @@ fn frame_stats_roster_is_frozen() {
         programs: 45,
         clock_instances: 46,
         program_pipelines: 47,
-        // Data-path / upload discipline (§9.1/§9.3/§30).
+        // Data-path / upload discipline.
         uploaded_ranges: 13,
         instance_rebuilds: 14,
         clip_mask_builds: 15,
         gpu_upload_bytes: 16,
-        // Offscreen / pipeline lifetime (§30).
+        // Offscreen / pipeline lifetime.
         offscreen_passes: 17,
         transient_target_bytes: 18,
         blur_passes: 19,
@@ -69,23 +69,23 @@ fn frame_stats_roster_is_frozen() {
         blend_isolations: 34,
         material_composites: 39,
         native_material_regions: 40,
-        // Effect Planner decisions (§3145/§3202).
+        // Effect Planner decisions.
         layers_planned: 35,
         layers_eliminated: 36,
         opacity_folds: 37,
         backdrop_dirty_rois: 38,
         shader_pipeline_creations: 21,
-        // Transient render-target pool occupancy (§16.4/§30).
+        // Transient render-target pool occupancy.
         transient_targets: 22,
         transient_peak_bytes: 23,
         transient_pool_bytes: 24,
         transient_target_allocations: 25,
-        // Compiled pass plan (§16.1/§25).
+        // Compiled pass plan.
         render_passes: 26,
         render_pass_merges: 27,
         culled_render_passes: 28,
         render_graph_compiles: 29,
-        // GPU-driven bounds (§20.1, §24.1): ordinary UI reports zero of both.
+        // GPU-driven bounds: ordinary UI reports zero of both.
         compute_dispatches: 41,
         indirect_draws: 42,
     };
@@ -192,7 +192,7 @@ fn frame_stats_roster_is_frozen() {
     assert_eq!(z.program_pipelines, 0);
 }
 
-/// The seven effect cost classes are frozen in cheapest-first order (§7.5): the
+/// The seven effect cost classes are frozen in cheapest-first order: the
 /// discriminant is a monotonic cost rank, `default()` is the cheapest class, and
 /// `Ord` agrees with realization cost. A later layer that adds a class must place
 /// it at the right rank and update this list deliberately.
@@ -216,7 +216,7 @@ fn effect_cost_classes_are_frozen() {
         "the cheapest class is the default"
     );
 
-    // The label roster is the inspector/overlay contract (§62): a stable,
+    // The label roster is the inspector/overlay contract: a stable,
     // distinct lowercase name per class.
     let labels = [
         (EffectCost::Local, "local"),
@@ -234,7 +234,7 @@ fn effect_cost_classes_are_frozen() {
 
 /// The cost-class predicates and the dominating rule are frozen: they are what
 /// the planner reads to decide a frame's mask/offscreen/backdrop resources, and
-/// a chain's cost is the maximum (cheapest-first) over its links (§7.5).
+/// a chain's cost is the maximum (cheapest-first) over its links.
 #[test]
 fn effect_cost_semantics_are_frozen() {
     // Resource predicates map each class to the frame resource it forces.

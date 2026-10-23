@@ -2,8 +2,8 @@
 //! flat token stream into a lossless CST at declaration/brace granularity.
 //!
 //! This is deliberately *not* the typed grammar — no EBNF productions, no
-//! `:` vs `=` context split, no precedence-correct expressions. Those land in
-//! the next slice. What this pass does provide is the tree *shape* the CST
+//! `:` vs `=` context split, no precedence-correct expressions. Those belong to
+//! the typed grammar. What this pass does provide is the tree *shape* the CST
 //! contract requires: every token lands under a node, balanced `{...}` become
 //! [`SyntaxKind::Block`] nodes, top-level declarations (a declaration keyword up
 //! to their terminating `;` or `{...}`) become [`SyntaxKind::Item`] nodes, and on
@@ -64,13 +64,13 @@ pub enum ParseErrorKind {
     /// A conditional's `preserve` was not followed by a string literal; a branch
     /// cache identity is a compile-time string.
     PreserveNotLiteral,
-    /// A strict keyword was used in a binding or declaration position (§12.5).
+    /// A strict keyword was used in a binding or declaration position.
     ReservedIdent,
     /// An expression wrote generic arguments without a turbofish (`foo<T>(x)`
-    /// instead of `foo::<T>(x)`, §26).
+    /// instead of `foo::<T>(x)`).
     GenericWithoutTurbofish,
     /// A const generic argument was written without its `const` marker
-    /// (`Matrix<F32, 4>` instead of `Matrix<F32, const 4>`, §26).
+    /// (`Matrix<F32, 4>` instead of `Matrix<F32, const 4>`).
     ConstArgWithoutConst,
     /// Constructs nested deeper than the parser's depth budget; the innermost
     /// construct past the budget is kept as an error node, unparsed.
@@ -81,8 +81,8 @@ pub enum ParseErrorKind {
 }
 
 impl ParseErrorKind {
-    /// The stable Appendix C code for this error. Structural errors are
-    /// `E1401`–`E1407`; both non-associative chains share `E2802` (§63.1).
+    /// The stable diagnostic code for this error. Structural errors are
+    /// `E1401`–`E1407`; both non-associative chains share `E2802`.
     pub const fn code(self) -> &'static str {
         match self {
             ParseErrorKind::UnclosedDelimiter => "E1401",
@@ -358,7 +358,7 @@ impl<'t, 's> Parser<'t, 's> {
 
     /// Parses a balanced `(...)` or `[...]` group, closed by `closer`. Used only
     /// to keep delimiter nesting balanced inside blocks; the contents are left
-    /// flat (the typed grammar refines them in the next slice).
+    /// flat (the typed grammar refines them).
     fn parse_group(&mut self, closer: SyntaxKind) {
         let start = self.offset();
         self.builder.start_node(SyntaxKind::Block);

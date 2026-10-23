@@ -1,4 +1,4 @@
-//! Commit-2 grammar tests: the declaration surface of a `.vs` compilation unit —
+//! Grammar tests: the declaration surface of a `.vs` compilation unit —
 //! imports/exports, component/system members, record/enum/type/const, and the
 //! callable forms. These assert the *shape* of the typed tree the declaration
 //! grammar produces, the `:` (type/binding) vs `=` (initializer) split, multi-error

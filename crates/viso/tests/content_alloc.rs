@@ -1,7 +1,6 @@
-//! Steady-state allocation invariant for the paint-all-primitives slice: adding
-//! the `content_payload` column and painting text + image content must not cost
-//! a per-frame heap allocation on the warmed-up frame path (AGENTS section 7.1,
-//! hot-path contract; architecture section 47 widget performance contract).
+//! Steady-state allocation invariant for painting every primitive: adding the
+//! `content_payload` column and painting text + image content must not cost a
+//! per-frame heap allocation on the warmed-up frame path (hot-path contract).
 //!
 //! This is the UI-side counterpart to `crates/render/benches/renderer_steady_state.rs`,
 //! which asserts the same invariant for a hand-assembled render `test_scene`.

@@ -4,7 +4,7 @@
 //!
 //! # Wire form
 //!
-//! The blob is read in place (architecture §50A.6): a [`ProtocolTag`], the
+//! The blob is read in place: a [`ProtocolTag`], the
 //! magic `VPK1`, then a section table ([`viso_ende::Sections`]) of twelve
 //! sections, each starting on an eight-byte boundary of the blob:
 //!
@@ -71,7 +71,7 @@ pub struct ViewPackage {
     /// The static nodes the view's actions and handlers reach as a
     /// `NodeRef`, ascending by key.
     pub named: Vec<ViewNamed>,
-    /// The game queries the view reads (ADR 0045).
+    /// The game queries the view reads.
     pub game: Vec<ViewGame>,
     /// The assets the view can show, ascending by resource.
     pub assets: Vec<ViewAsset>,
@@ -118,7 +118,7 @@ pub struct ViewEnv {
     pub anchor: u32,
 }
 
-/// A query of the game a view's root runs (ADR 0045): what a HUD reads of
+/// A query of the game a view's root runs: what a HUD reads of
 /// the game's state.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum GameQuery {

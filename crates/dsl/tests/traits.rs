@@ -1,4 +1,4 @@
-//! User traits, impls and generics (§26, §30, §31, §78, §79): inherent
+//! User traits, impls and generics: inherent
 //! methods and associated items, trait methods with defaults, bounds and
 //! `where`, generic callables monomorphized per instantiation, generic records
 //! and enums, associated types, const generics and trait objects — and the

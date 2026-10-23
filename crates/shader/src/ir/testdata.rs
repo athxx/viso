@@ -1,6 +1,6 @@
 //! Frozen copies of the original hand-written built-in MSL, kept only for tests.
 //!
-//! Before Slice Q these four strings were the shipping source of truth in
+//! These four strings were once the shipping source of truth in
 //! `msl.rs`; now the MSL is derived from the typed [`ir`](crate::ir). These frozen
 //! literals let the codegen tests assert the derived MSL is *byte-for-byte* the
 //! historical text — an independent oracle, not a tautology against the live
@@ -239,7 +239,7 @@ fragment float4 fragment_main(VOut in [[stage_in]],
 /// The intended GLYPHRUN MSL, frozen as a codegen oracle.
 ///
 /// The glyph path samples a single-channel A8 coverage atlas directly (`cov =
-/// texel.r`), adjusted by the ink's luminance (ADR 0048); there is no
+/// texel.r`), adjusted by the ink's luminance; there is no
 /// signed-distance decode and no per-instance `px_range`.
 /// This text is the on-device-verified target, not a pre-migration baseline.
 pub const GLYPHRUN_MSL_ORIGINAL: &str = r##"

@@ -1,4 +1,4 @@
-//! `effect` members (§37): the run policy against the dependency list
+//! `effect` members: the run policy against the dependency list
 //! (`E4203`), pure dependency expressions, the body's reads against the
 //! dependencies (`E4201`), and the lowering of each to a dependency entry and a
 //! body that returns its cleanup.

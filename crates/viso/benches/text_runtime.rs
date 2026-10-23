@@ -1,4 +1,4 @@
-//! Regression gate for the wired text runtime (section 36, `text`).
+//! Regression gate for the wired text runtime.
 //!
 //! `viso-text`'s `high_refresh` and `incremental_edit` benches gate the
 //! paragraph and scheduling primitives on their own; they stay as the floor.
@@ -15,7 +15,7 @@
 //! 2. **Incremental edit**: one same-width token edit in the middle of 500,
 //!    2000, and 8000 words shapes a bounded handful of runs whatever the
 //!    document size, and lands on the lines a fresh runtime lays out.
-//! 3. **Section 26 matrix**, the rows this runtime drives headlessly: startup
+//! 3. **Scenario matrix**, the rows this runtime drives headlessly: startup
 //!    and first system resolve, Latin/CJK cold and warm resolution, mixed
 //!    Latin/CJK/emoji and a ZWJ sequence, the face SLRU hot set, text input,
 //!    a 10k-line code editor scroll, caret queries, steady A8 scroll, and page
@@ -39,7 +39,7 @@ use viso::__test_support::{TextDraw, TextHarness, TextStats, text_commit_budget}
 const DEJAVU: &[u8] = include_bytes!("../fixtures/DejaVuSans-subset.ttf");
 const SIZE: f32 = 16.0;
 
-/// A refresh tier and the commit budget spec 14.4 derives for it.
+/// A refresh tier and the commit budget derived for it.
 struct Tier {
     hz: u32,
     budget_us: u64,
@@ -277,7 +277,7 @@ fn skip(row: &str) {
     println!("text runtime: {row} skipped: no system font provider on this target");
 }
 
-/// §26 startup and resolution: the first frame resolves the UI face with one
+/// Startup and resolution: the first frame resolves the UI face with one
 /// system query; warm frames never query again, CJK included.
 fn assert_resolution_rows() {
     if !system_fonts() {
@@ -368,7 +368,7 @@ fn cjk_text(count: usize) -> String {
         .collect()
 }
 
-/// §26 face cache: a steady hot set touches recency at most once per face per
+/// Face cache: a steady hot set touches recency at most once per face per
 /// frame and never misses.
 fn assert_face_slru_hot_set() {
     let mut text = TextHarness::with_font(DEJAVU);
@@ -393,7 +393,7 @@ fn assert_face_slru_hot_set() {
     );
 }
 
-/// §26 text input: typing at the end of a paragraph costs each keystroke the
+/// Text input: typing at the end of a paragraph costs each keystroke the
 /// last line, not the paragraph; the caret never shapes.
 fn assert_text_input_and_caret_rows() {
     let mut text = TextHarness::with_font(DEJAVU);
@@ -445,7 +445,7 @@ fn code_line(at: usize) -> String {
     format!("let value{at:05} be the sum of line {at} and more")
 }
 
-/// §26 code editor scroll: a 10k-line document scrolled a line a frame, each
+/// Code editor scroll: a 10k-line document scrolled a line a frame, each
 /// line a paragraph, mounted only while visible. Every line is laid out once
 /// as it enters, the glyph set stays resident so nothing uploads after the
 /// first screen, and the main thread never shapes.
@@ -493,7 +493,7 @@ fn assert_code_editor_scroll() {
     );
 }
 
-/// §26 atlas: turning pages over evicts cold glyphs without a full reset — the
+/// Atlas: turning pages over evicts cold glyphs without a full reset — the
 /// hot pair stays resident and drawn every frame.
 fn assert_page_eviction_without_reset() {
     let mut text = TextHarness::with_font_and_atlas(DEJAVU, 96, 32);

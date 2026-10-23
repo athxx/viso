@@ -1,5 +1,5 @@
 //! The input tape: what a game's ticks saw of its input, recorded or written
-//! by hand, to replay a run tick for tick (Viso_DSL_1.0.md section 110.5).
+//! by hand, to replay a run tick for tick.
 //!
 //! A tape holds actions and the move vector, never raw keys, so remapping an
 //! `InputMap` leaves it valid. Its header names the run it reproduces: the

@@ -1,4 +1,4 @@
-//! Styles as a node applies them (§59, U12.1): what `styles: [A, B]` gives a
+//! Styles as a node applies them: what `styles: [A, B]` gives a
 //! node, and the selectors a `when` reads.
 //!
 //! A node's styles apply left to right, each after its bases (depth first, in

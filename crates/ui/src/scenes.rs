@@ -1,4 +1,4 @@
-//! The 3D scenes a node store's nodes show, by slot (ADR 0047).
+//! The 3D scenes a node store's nodes show, by slot.
 //!
 //! A node whose content is [`Content::Scene`](crate::content::Content::Scene)
 //! owns one slot here: the [`SceneFrame`] it shows, the revision of that

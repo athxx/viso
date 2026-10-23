@@ -1,11 +1,11 @@
-//! Vector lane contract (§20.1): compute is workload specialization.
+//! Vector lane contract: compute is workload specialization.
 //!
-//! §20.1 describes a second vector lane — GPU binning, a parallel prefix
+//! The renderer has a second vector lane — GPU binning, a parallel prefix
 //! allocation, per-tile coverage, fine raster — and then states the rule that
 //! matters more than the pipeline: it is entered **only** when a benchmark proves
 //! a large dynamic workload benefits. Twenty ordinary buttons, a panel, or a few
 //! dozen stable paths must never be routed through compute dispatch for the sake
-//! of architectural uniformity (§7.2).
+//! of architectural uniformity.
 //!
 //! That rule is easy to state and easy to erode, so it is pinned from both ends
 //! here:
@@ -20,8 +20,8 @@
 //!    dependency": a future lane that dispatched for a button would fail here
 //!    without anyone having to review it.
 //!
-//! The thresholds themselves are deliberately not asserted as values — §20.1 says
-//! the algorithm and its crossovers are not public ABI. What is pinned is the
+//! The thresholds themselves are deliberately not asserted as values — the
+//! algorithm and its crossovers are not public ABI. What is pinned is the
 //! *shape*: which way each condition points, and that all of them are required.
 
 use viso_gpu::{Caps, CpuRaster, GpuBackend, RawWindowHandle, SurfaceId, TextureFormat};
@@ -82,7 +82,7 @@ fn button(i: usize) -> Vec<Primitive> {
 
 /// A filled, curved blob — the general-path case, so the scene is not made only
 /// of straight segments a tessellator trivially handles. A fill-only concave or
-/// curved path takes the self-masked coverage lane (§14.4); adding a stroke sends
+/// curved path takes the self-masked coverage lane; adding a stroke sends
 /// the same outline down the tessellated lane instead, so `outlined` selects which
 /// of the two CPU lanes the caller wants to exercise.
 fn blob(cx: f32, cy: f32, r: f32, outlined: bool) -> Primitive {
@@ -123,7 +123,7 @@ fn blob(cx: f32, cy: f32, r: f32, outlined: bool) -> Primitive {
 // 1. The policy: all three conditions are required
 // ---------------------------------------------------------------------------
 
-/// The workload §20.1 names the lane for: a large churning segment population on
+/// The workload the lane exists for: a large churning segment population on
 /// a compute-capable backend where tessellation is the *measured* limit.
 fn a_vector_editor_mid_drag() -> VectorWorkload {
     VectorWorkload {
@@ -198,7 +198,7 @@ fn every_condition_is_individually_necessary() {
     }
 }
 
-/// The measurement is the gate §7.3 asks for, and it is a *type*, not a comment:
+/// The measurement is the gate, and it is a *type*, not a comment:
 /// the share defaults to zero, so "we did not profile" and "tessellation is not
 /// the bottleneck" are the same input and give the same answer.
 #[test]
@@ -235,7 +235,7 @@ fn a_large_stable_scene_stays_with_retained_geometry() {
     );
 }
 
-/// The §20.1 hard rule over the scenes it actually names, on a backend that can
+/// The hard rule over ordinary UI scenes, on a backend that can
 /// dispatch and with tessellation measured as the frame's limit — the most
 /// favorable case the rule has to survive.
 #[test]
@@ -309,7 +309,7 @@ fn a_screen_of_buttons_dispatches_nothing() {
 /// composite machinery, so the assertion covers a frame with real pass structure
 /// rather than a single flat draw list. Half the blobs are outlined so *both* CPU
 /// vector lanes are in the frame: the self-masked coverage lane a fill-only curve
-/// takes (§14.4) and the tessellated lane a stroke forces.
+/// takes and the tessellated lane a stroke forces.
 #[test]
 fn dozens_of_curved_paths_under_a_layer_dispatch_nothing() {
     let (mut gpu, surface, mut r) = renderer();

@@ -1,12 +1,12 @@
-//! The renderer facade: lower primitives → batches → GPU draw commands (§16).
+//! The renderer facade: lower primitives → batches → GPU draw commands.
 //!
 //! [`Renderer`] is generic over the [`GpuBackend`] so the same code drives the
-//! Metal and headless-raster backends (ADR 0029: the concrete backend is chosen
-//! at compile time by the facade, so there is no per-frame `dyn` dispatch). It
+//! Metal and headless-raster backends (the concrete backend is chosen at
+//! compile time by the facade, so there is no per-frame `dyn` dispatch). It
 //! owns the cold-path GPU resources (the Quad and Image pipelines, persistent
 //! instance buffers) and turns each frame's `&[Primitive]` into one [`DrawList`].
 //!
-//! Phase 2 slice: [`Primitive::Quad`] and [`Primitive::Image`] are lowered.
+//! [`Primitive::Quad`] and [`Primitive::Image`] are lowered.
 //! Adjacent quads sharing one clip merge into a single instanced draw; each
 //! image is a draw carrying its texture's bind group. Quad and Image draws are
 //! ordered by the flat primitive stream so their z-order interleaves correctly.
@@ -98,7 +98,7 @@ const MATERIAL_STRIDE: usize = core::mem::size_of::<MaterialInstance>();
 /// is 64 KB — ample for a frame's distinct multi-stop gradients while trivial
 /// beside image/glyph atlases.
 const GRADIENT_LUT_ROWS: u32 = 64;
-/// Edges of the renderer-owned R8 clip/mask pages (§14.4): square coverage
+/// Edges of the renderer-owned R8 clip/mask pages: square coverage
 /// textures ROIs pack into via the mask cache's max-rects allocator. The first
 /// page is 128² (16 KiB), each added one twice the last, up to 2048² (4 MiB)
 /// — so a few icons cost a few KiB, and a frame's distinct path clips, each a
@@ -106,8 +106,8 @@ const GRADIENT_LUT_ROWS: u32 = 64;
 const MASK_PAGE_MIN: u32 = 128;
 const MASK_PAGE_MAX: u32 = 2048;
 
-/// A stable revision hash of a path's command stream, for the mask cache key
-/// (§14.4). The coverage of a filled path is a pure function of its commands, so
+/// A stable revision hash of a path's command stream, for the mask cache key.
+/// The coverage of a filled path is a pure function of its commands, so
 /// hashing the raw `f32` bits of every point gives a key that changes exactly
 /// when the geometry does: an unchanged path re-resolves to the same slot with
 /// no re-raster, an edited path bumps the key and rebuilds.
@@ -329,7 +329,7 @@ impl PassTarget {
 /// stream and its `Layer`/`LayerEnd` clip stack, preserving submission order so
 /// primitives interleave by z-order. Adjacent primitives join one segment when
 /// their batch key and clip match — for the texture-sampling families the key
-/// includes the bind group, so a run sharing one atlas is one draw (§20.2).
+/// includes the bind group, so a run sharing one atlas is one draw.
 /// `clip == None` means unclipped.
 ///
 /// The meaning of `start`/`count` depends on `kind`: instances for
@@ -404,9 +404,8 @@ pub(crate) enum PassTarget {
 struct OffscreenPass {
     /// The transient target this pass draws into. `None` until the pass is
     /// finalized at `LayerEnd`, when the content ROI is known and a target of
-    /// that ROI's size class is declared against the frame-local pool (§16.2,
-    /// §16.4). The concrete texture is resolved later, in
-    /// [`TransientTargets::assign`].
+    /// that ROI's size class is declared against the frame-local pool. The
+    /// concrete texture is resolved later, in [`TransientTargets::assign`].
     base: Option<TargetId>,
     /// The transient target the composite samples: `base` for an unblurred layer,
     /// the last rung of the blur ladder for a blurred one. `None` until finalize.
@@ -435,7 +434,7 @@ struct OffscreenPass {
     /// The blend this layer composites with, and the backdrop capture holding the
     /// bounded destination snapshot it reads — `None` for the overwhelmingly
     /// common `SrcOver` layer, whose composite is a plain image draw on the
-    /// fixed-function blend state (§14.6).
+    /// fixed-function blend state.
     ///
     /// When set, the composite is lowered as one `AdvancedBlend` draw instead:
     /// the fragment samples both this pass's `sample` target and the capture,
@@ -448,7 +447,7 @@ struct OffscreenPass {
     /// layer its scissor clips.
     mask: Option<RoundMask>,
     /// What decides its composite beyond its content: its region, opacity,
-    /// blur, color chain and mask, as a damage key (§30.3).
+    /// blur, color chain and mask, as a damage key.
     key: u64,
     /// The transform root it was opened in: its content is drawn where that
     /// root painted it, and its composite goes to the root's place.
@@ -461,13 +460,14 @@ struct OffscreenPass {
 ///
 /// `1.0` would only ever accept a union that wastes nothing (so two panels with
 /// a gap between them never share); an unbounded factor would let two panels in
-/// opposite screen corners share one near-full-screen capture — the §17.2
-/// forbidden default in reverse. This is the internal knob between those, tuned
-/// against the §31 bench, not a public parameter.
+/// opposite screen corners share one near-full-screen capture — exactly the
+/// full-screen capture that ROI-scoped backdrops exist to avoid. This is the
+/// internal knob between those, tuned against the steady-state bench, not a
+/// public parameter.
 const BACKDROP_UNION_SLACK: f32 = 2.0;
 
 /// How many children a layer may hold before the planner stops trying to prove
-/// them disjoint and reports [`ChildOverlap::Unknown`] instead (§14.5).
+/// them disjoint and reports [`ChildOverlap::Unknown`] instead.
 ///
 /// The proof is pairwise, so it is quadratic in the child count; the cap bounds
 /// the cold-path work at `32 * 31 / 2` rect intersections per translucent layer
@@ -478,7 +478,7 @@ const BACKDROP_UNION_SLACK: f32 = 2.0;
 const MAX_FOLD_CHILDREN: usize = 32;
 
 /// What the Effect Planner needs to know about a layer's own subtree, gathered by
-/// one look-ahead over the primitive stream at the layer's open (§3145).
+/// one look-ahead over the primitive stream at the layer's open.
 ///
 /// Both facts are cheap and neither can be recovered later: by the time the
 /// subtree has been walked, its children have already been ingested with the
@@ -489,24 +489,24 @@ struct SubtreeFacts {
     /// decides whether a group opacity can be pushed into them.
     overlap: ChildOverlap,
     /// Whether the subtree contains a shadow shaded in closed form, which is why
-    /// it never asked for a blurred copy of itself (E0's analytic shadow).
+    /// it never asked for a blurred copy of itself (an analytic shadow).
     analytic_shadow: bool,
 }
 
 /// Look ahead over the layer opened at `layer_index` and gather the facts the
-/// Effect Planner needs about its content (§3145).
+/// Effect Planner needs about its content.
 ///
 /// A group opacity folds into its children only when they provably do not overlap
 /// *and* every one of them can actually carry the factor — a straight-alpha
 /// instance whose alpha the renderer may scale. Anything else reports
 /// [`ChildOverlap::Unknown`], which the planner treats as overlap and pays a pass
-/// for (§14.5's "when unsure, keep correctness"):
+/// for ("when unsure, keep correctness"):
 ///
 /// - a **nested layer**, whose own subtree would have to be folded through too;
 /// - a **gradient**, whose inline stops are stored premultiplied and whose LUT
 ///   form has no per-instance alpha at all;
 /// - a **path** or **mesh**, whose payloads are owned vectors — rewriting their
-///   colors would allocate on the walk (§28);
+///   colors would allocate on the walk;
 /// - a **glyph run**, whose glyphs are separate instances that may overlap each
 ///   other inside the run (italic and script faces routinely do), so per-instance
 ///   folding could double-blend within one "child".
@@ -611,8 +611,7 @@ fn pairwise_disjoint(rects: &[Rect]) -> bool {
 
 /// One backdrop capture pass: the content already submitted *behind* one (or one
 /// shared group of) backdrop layers, re-rendered into a tight ROI target, blurred
-/// by the standard ladder, and composited under each member layer's own content
-/// (§17.1, §17.2).
+/// by the standard ladder, and composited under each member layer's own content.
 ///
 /// The capture is a *re-render*, not a read of the attachment the member layers
 /// draw into: it depends on the producers of the content behind them, which the
@@ -677,7 +676,7 @@ struct LayerEntry {
     /// exactly this layer's recorded children (`paint_order[start..]`). Unused
     /// for a main-target layer.
     paint_order_start: usize,
-    /// The layer's requested content-blur sigma in physical pixels (§16.2, E1.2).
+    /// The layer's requested content-blur sigma in physical pixels.
     /// `0.0` means no blur; `> 0.0` inserts a separable Gaussian ladder between
     /// this layer's offscreen render and its composite. Only meaningful for an
     /// offscreen (`Offscreen`) target.
@@ -691,7 +690,7 @@ struct LayerEntry {
     /// Number of fused color ops this layer owns (see `color_start`).
     color_len: u32,
     /// The group opacity the Effect Planner pushed into this layer's children
-    /// instead of buying an isolation pass for it (§14.5, §3161 rung 1), already
+    /// instead of buying an isolation pass for it, already
     /// multiplied with whatever the ancestors folded. `1.0` when nothing is folded
     /// — the case for every offscreen layer, and for every opaque layer.
     ///
@@ -735,7 +734,7 @@ pub(crate) enum LayerDrawn {
 }
 
 /// What one backdrop capture depends on, and whether that dependency moved since
-/// the previous frame (§3202).
+/// the previous frame.
 ///
 /// A backdrop filter is the one effect whose input is *not* its own properties: it
 /// samples whatever happens to be painted behind it. So its invalidation cannot be
@@ -793,10 +792,10 @@ pub(crate) enum SampledSource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CompositeLowering {
     /// The layer's blend mode needs a destination read, so the composite is one
-    /// advanced-blend draw binding both textures (§14.6).
+    /// advanced-blend draw binding both textures.
     AdvancedBlend,
     /// The layer's color chain fused into one op, so the composite recolors while
-    /// it composites (§17.3).
+    /// it composites.
     ColorTransform,
     /// The ordinary case: one textured quad through the image pipeline.
     Image,
@@ -804,7 +803,7 @@ pub(crate) enum CompositeLowering {
 
 /// A (source, destination) texture pair's bind group, cached the same way and for
 /// the same reason as [`TextureBinding`] — an isolated advanced blend is the one
-/// draw that binds two textures at once (§14.6). The shared linear-clamp sampler
+/// draw that binds two textures at once. The shared linear-clamp sampler
 /// is implied rather than keyed: a blend always samples both its layer and its
 /// destination snapshot with it, since both are pooled transient targets.
 struct BlendBinding {
@@ -814,7 +813,7 @@ struct BlendBinding {
 }
 
 /// Interns [`SamplerDesc`] to a shared [`SamplerId`] so the renderer keeps one
-/// device sampler per distinct descriptor, never one per draw (§12, §17.1). The
+/// device sampler per distinct descriptor, never one per draw. The
 /// cardinality is tiny (a handful of filter/address combinations), so a scanned
 /// `Vec` is leaner than a hash map and matches `texture_bindings`' cold-path
 /// pattern; a lookup happens once when a new descriptor first appears.
@@ -835,8 +834,8 @@ impl SamplerCache {
     }
 }
 
-/// The built-in pipelines the renderer prewarms once in [`Renderer::new`]
-/// (§7.1): SolidRect (quad), AnalyticRRect, AnalyticEllipse, AnalyticCapsule,
+/// The built-in pipelines the renderer prewarms once in [`Renderer::new`]:
+/// SolidRect (quad), AnalyticRRect, AnalyticEllipse, AnalyticCapsule,
 /// AnalyticLine, Image, MaskComposite (glyph), PathFill (mesh), Gradient,
 /// AnalyticShadow, ContentBlur (blur), ColorTransform (fused color effects),
 /// AdvancedBlend (isolated destination-read blends), MaterialComposite
@@ -850,8 +849,8 @@ const SHADER_PIPELINE_PREWARM_COUNT: u32 = 15;
 /// Read after [`Renderer::upload`] and before [`Renderer::submit`]: `upload`
 /// has built the full segment list (one segment per draw command, across the
 /// offscreen and main passes) but `submit` has not consumed it. Exposed for
-/// tooling/tests/benches (§34, §61); the steady-state bench asserts these stay
-/// constant across identical frames, guarding the dispatch contract (§7.1).
+/// tooling/tests/benches; the steady-state bench asserts these stay
+/// constant across identical frames, guarding the dispatch contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct FrameStats {
     /// Total draw commands this frame will encode, summed over every pass
@@ -861,17 +860,17 @@ pub struct FrameStats {
     /// quad/image/glyph/composite segments, indices for mesh segments. A stable
     /// scene keeps this fixed, so it doubles as a change detector for the bench.
     pub instances: usize,
-    /// Retained primitives the ingest walk visited this frame (§61). One per
+    /// Retained primitives the ingest walk visited this frame. One per
     /// `ingest_*` call, composites excluded (they are per-frame derived draws).
     pub visible_primitives: u32,
     /// Retained primitives whose diff moved at least one revision plane this
-    /// frame — the steady-state target is 0 for an unchanged scene (§61, §8.4).
+    /// frame — the steady-state target is 0 for an unchanged scene.
     pub dirty_primitives: u32,
-    /// Quad instances retained this frame (§61).
+    /// Quad instances retained this frame.
     pub quad_instances: u32,
-    /// Glyph instances retained this frame, summed across runs (§61).
+    /// Glyph instances retained this frame, summed across runs.
     pub glyph_instances: u32,
-    /// User-program boxes retained this frame (§61).
+    /// User-program boxes retained this frame.
     pub shader_instances: u32,
     /// User-program boxes drawn this frame whose program reads `time`: while
     /// any is drawn, the next frame differs with nothing else changing.
@@ -885,36 +884,36 @@ pub struct FrameStats {
     /// idle for an edit that comes back to them.
     pub program_pipelines: u32,
     /// Paths (re-)tessellated this frame — a geometry/paint change or a cold
-    /// append; a cache hit does not count (§61).
+    /// append; a cache hit does not count.
     pub path_tessellations: u32,
-    /// Order-safe batches the planner emitted this frame (§9.6, §61): the count
+    /// Order-safe batches the planner emitted this frame: the count
     /// of contiguous draws after adjacent compatible primitives merged. One
     /// batch is one draw command today, so this equals `draw_calls`; the two
     /// stay separate counters because a later pass (indirect/multi-draw) can
     /// fold several batches into one call without changing the batch count.
     pub batches: usize,
-    /// Render chunks encoded this frame (§30): one per draw command across all
+    /// Render chunks encoded this frame: one per draw command across all
     /// passes. One chunk is one draw command today, so this tracks `draw_calls`;
     /// kept separate so a later chunking pass can group draws without moving the
     /// draw-call count.
     pub render_chunks: usize,
     /// Times the encoded pipeline changed between two adjacent draw commands in
-    /// execution order (§30). A run of same-family segments is one switch on
+    /// execution order. A run of same-family segments is one switch on
     /// entry; fewer switches means less state churn on the GPU.
     pub pipeline_switches: u32,
     /// Times the bound texture set changed between two adjacent draw commands in
-    /// execution order (§30). Untextured (solid-rect) draws carry no binding, so
+    /// execution order. Untextured (solid-rect) draws carry no binding, so
     /// a pure-quad frame reports 0.
     pub texture_binding_switches: u32,
     /// Contiguous upload ranges written to GPU buffers this frame, summed over
-    /// every pool (§30, §9.3): the number of `write_buffer` calls the dirty-range
+    /// every pool: the number of `write_buffer` calls the dirty-range
     /// coalescer produced. Zero on a steady frame; a single local change is one
     /// range, not one per slot.
     pub uploaded_ranges: usize,
-    /// Offscreen render-to-texture passes this frame (§30): one per translucent
-    /// layer. Zero for a flat scene with no group opacity (the D0 case).
+    /// Offscreen render-to-texture passes this frame: one per translucent
+    /// layer. Zero for a flat scene with no group opacity.
     pub offscreen_passes: usize,
-    /// Bytes this frame's offscreen layer passes *address* (§30): summed
+    /// Bytes this frame's offscreen layer passes *address*: summed
     /// `width * height * bytes_per_texel` over every offscreen pass's pooled
     /// target. Zero when there are no offscreen passes.
     ///
@@ -924,48 +923,48 @@ pub struct FrameStats {
     /// concurrently-live footprint and `transient_pool_bytes` for what the pool
     /// retains.
     pub transient_target_bytes: usize,
-    /// Separable Gaussian blur passes this frame (§30): the number of single-axis
+    /// Separable Gaussian blur passes this frame: the number of single-axis
     /// blur passes chained ahead of a layer composite. A blurred layer that fits
     /// the small-radius tier contributes two (one horizontal, one vertical); zero
     /// when no layer blurs its content.
     pub blur_passes: u32,
-    /// Bytes this frame's blur rungs *address* (§30): summed
+    /// Bytes this frame's blur rungs *address*: summed
     /// `width * height * bytes_per_texel` over every blur pass's pooled
     /// destination. Zero when there are no blur passes. A per-pass sum with the
     /// same aliasing caveat as `transient_target_bytes`.
     pub blur_target_bytes: usize,
-    /// Fused color ops this frame (§17.3): the number of `ColorOp`s the layers'
+    /// Fused color ops this frame: the number of `ColorOp`s the layers'
     /// color-effect chains compiled down to, *not* the number of effects authored.
     /// A chain of nine matrix-expressible effects reports `1`, because they all
     /// multiply into one matrix; a stage the matrix cannot express splits the run
     /// and adds one.
     pub color_effect_ops: u32,
-    /// Extra render-target passes the frame's color ops cost (§17.3): one per
+    /// Extra render-target passes the frame's color ops cost: one per
     /// fused op beyond the first of each chain, since the last op of every chain
     /// rides that layer's composite draw. `0` for every chain that fused
     /// completely — the property "consecutive compatible effects do not each get a
     /// pass" is exactly `color_transform_passes == 0`.
     pub color_transform_passes: u32,
-    /// Backdrop capture passes this frame (§17.1, §17.2): one per *group* of
+    /// Backdrop capture passes this frame: one per *group* of
     /// backdrop layers, not one per layer. `N` frosted panels sharing one
     /// background report `1`, and the blur ladder over that one capture is shared
     /// too (`blur_passes` does not scale with `N` either). Zero when no layer asks
     /// for a backdrop.
     pub backdrop_captures: u32,
-    /// Pixels this frame's backdrop captures re-render (§17.1): summed
+    /// Pixels this frame's backdrop captures re-render: summed
     /// `used_width * used_height` over every capture. This is the ROI-only cost
     /// the "capture only the required region" rule bounds — a small panel over a
     /// 4K window captures its own padded rect, never the framebuffer.
     pub backdrop_capture_pixels: usize,
-    /// Layers this frame isolated because their blend mode is not `SrcOver`
-    /// (§14.6): one per layer routed through the advanced-blend pipeline. Zero for
+    /// Layers this frame isolated because their blend mode is not `SrcOver`:
+    /// one per layer routed through the advanced-blend pipeline. Zero for
     /// every ordinary frame — this counter is precisely the "does the common
     /// `SrcOver` pipeline stay clean" gate, and each isolation costs one offscreen
     /// pass plus a share of one bounded destination snapshot (counted in
     /// `backdrop_captures`, which conflates both kinds of destination snapshot:
     /// the frosted-glass backdrop and the blend's bounded destination read).
     pub blend_isolations: u32,
-    /// Frosted material surfaces composited this frame (§18): one per
+    /// Frosted material surfaces composited this frame: one per
     /// [`FrostedMaterial`] whose backdrop resolved to a capture. The fused chain
     /// `backdrop → blur → color transform → noise → rounded mask → opacity` is a
     /// *single* draw, so this counter never adds a pass or a target of its own —
@@ -974,7 +973,7 @@ pub struct FrameStats {
     ///
     /// [`FrostedMaterial`]: crate::FrostedMaterial
     pub material_composites: u32,
-    /// Regions reserved this frame for a [`MaterialLane::Native`] surface (§19).
+    /// Regions reserved this frame for a [`MaterialLane::Native`] surface.
     ///
     /// These cost Viso nothing at all — no capture, no blur rung, no composite, no
     /// draw — because the platform's own material composites behind the Viso surface.
@@ -983,102 +982,102 @@ pub struct FrameStats {
     ///
     /// [`MaterialLane::Native`]: crate::MaterialLane::Native
     pub native_material_regions: u32,
-    /// Potential layers the Effect Planner considered this frame (§3145): one per
+    /// Potential layers the Effect Planner considered this frame: one per
     /// `Primitive::Layer` in the stream, whether or not it ended up costing a pass.
     /// The denominator for the two counters below.
     pub layers_planned: u32,
     /// Planned layers where at least one rung of the elimination ladder fired
-    /// (§3161) — the layer either vanished entirely or got cheaper. Counted per
+    /// — the layer either vanished entirely or got cheaper. Counted per
     /// layer, not per rung.
     pub layers_eliminated: u32,
     /// Planned layers whose group opacity was pushed into provably-disjoint
-    /// children instead of buying an isolation pass (§14.5). Each one is an
+    /// children instead of buying an isolation pass. Each one is an
     /// offscreen pass and its transient bytes that the frame did not pay for —
     /// the counter that makes "offscreen is an expensive mechanism, not a
     /// convenient default" measurable.
     pub opacity_folds: u32,
     /// Backdrop captures whose region-of-interest saw its content change since the
-    /// previous frame (§3202). A frosted panel over static content reports 0 even
+    /// previous frame. A frosted panel over static content reports 0 even
     /// while an unrelated panel elsewhere reports 1: the dependency is scoped to
     /// the ROI, not to the effect's own properties.
     pub backdrop_dirty_rois: u32,
-    /// Peak concurrently-live transient render-target bytes this frame (§16.4,
-    /// §31): the maximum, over every graph pass slot, of the pooled bytes whose
+    /// Peak concurrently-live transient render-target bytes this frame:
+    /// the maximum, over every graph pass slot, of the pooled bytes whose
     /// `[first_write, last_read]` interval covers that slot. This is the real
     /// high-water footprint the frame's offscreen work demands — the figure a
     /// memory gate bounds, and always `<= transient_pool_bytes`.
     pub transient_peak_bytes: usize,
-    /// Bytes the transient target pool currently retains (§16.4): summed over
+    /// Bytes the transient target pool currently retains: summed over
     /// every physical texture it holds, including ones this frame left idle (they
     /// are kept for a bounded number of frames so a steady scene stops
     /// allocating). The resident cost of the pool, not of one frame.
     pub transient_pool_bytes: usize,
-    /// Physical transient textures created this frame (§16.4). A steady scene
+    /// Physical transient textures created this frame. A steady scene
     /// whose layers keep their size classes reports 0 — every target is served
     /// from the pool, so no `create_texture` reaches the backend (exit criterion:
     /// never one texture per shadow / per clip / per material surface).
     pub transient_target_allocations: u32,
-    /// Physical transient textures the pool holds after this frame (§16.4).
+    /// Physical transient textures the pool holds after this frame.
     /// Bounded by the peak concurrent demand of any recent frame, not by the
     /// number of effects drawn.
     pub transient_targets: usize,
-    /// Render passes the graph compiled for this frame (§16.1, §30): the passes
+    /// Render passes the graph compiled for this frame: the passes
     /// handed to the backend, and therefore the frame's render-target switch
     /// count. At least 1 (the surface) after any upload. Lower than
     /// `offscreen_passes + blur_passes + color_transform_passes + 1` exactly when
     /// the graph merged or culled something.
     pub render_passes: usize,
     /// Passes the graph folded into a preceding pass because both write the same
-    /// attachment (§16.5): each merge is one render-target switch — and, on a tile
+    /// attachment: each merge is one render-target switch — and, on a tile
     /// GPU, one attachment store/load cycle — that the frame does not pay.
     pub render_pass_merges: u32,
-    /// Passes the graph dropped because nothing samples what they write (§16.1).
+    /// Passes the graph dropped because nothing samples what they write.
     /// Zero for a scene whose every offscreen layer is composited, which is the
     /// normal case; nonzero means work was planned and then found dead.
     pub culled_render_passes: u32,
     /// `1` when this frame rebuilt the pass plan, `0` when it reused the cached
-    /// one (§16.1). Topology alone drives a rebuild: a resize, a scroll, a
+    /// one. Topology alone drives a rebuild: a resize, a scroll, a
     /// recolor, or a blur sigma change that keeps the ladder's shape all reuse the
     /// plan, so a steady scene reports 0 from its second frame onward.
     pub render_graph_compiles: u32,
-    /// GPU pipelines created since the renderer was built (§30). The four
+    /// GPU pipelines created since the renderer was built. The four
     /// builtins are prewarmed once at construction and never recompiled at
-    /// steady state (§7.1: no runtime first-use compile), so this is a fixed
+    /// steady state (no runtime first-use compile), so this is a fixed
     /// prewarm count, not a per-frame value.
     pub shader_pipeline_creations: u32,
     /// Retained primitives skipped this frame because they fell fully outside the
-    /// visible/clip region (§30). No culling stage exists yet, so this is 0;
+    /// visible/clip region. No culling stage exists yet, so this is 0;
     /// a later layer lights it up without changing the counter's meaning.
     pub culled_primitives: u32,
-    /// Instance buffers rebuilt (grown, forcing a full re-upload) this frame
-    /// (§30). Amortized to 0 at steady state once buffers reach their high-water
+    /// Instance buffers rebuilt (grown, forcing a full re-upload) this frame.
+    /// Amortized to 0 at steady state once buffers reach their high-water
     /// mark; a later layer wires the pool's grow signal in here.
     pub instance_rebuilds: u32,
-    /// Hardware clip masks built this frame (§30). D0 clips are axis-aligned
+    /// Hardware clip masks built this frame. Rectangular clips are axis-aligned
     /// scissors, never masks, so this is 0; the masked-clip layer lights it up.
     pub clip_mask_builds: u32,
     /// Bytes uploaded to GPU instance/vertex/index buffers this frame, summed
-    /// over every pool (§61). Zero on a steady frame that changed nothing — a
-    /// local paint change uploads only its changed slots (§9.1).
+    /// over every pool. Zero on a steady frame that changed nothing — a
+    /// local paint change uploads only its changed slots.
     pub gpu_upload_bytes: usize,
-    /// Compute dispatches this frame (§20.1, §61).
+    /// Compute dispatches this frame.
     ///
     /// Zero for every scene this renderer can draw: the vector lane is CPU
     /// tessellation, and no backend exposes a dispatch encoder
     /// ([`Caps::compute_dispatch`](viso_gpu::Caps::compute_dispatch)). The counter
-    /// exists ahead of the lane because the §20.1 hard rule is a *bound*, not an
+    /// exists ahead of the lane because the hard rule is a *bound*, not an
     /// implementation detail — ordinary UI must read `0` here forever, so the
     /// number a test can assert has to be reported whether or not a dispatch could
     /// happen. A compute lane that lit this up for twenty buttons would be a
     /// regression visible in this field.
     pub compute_dispatches: u32,
     /// Draws this frame whose vertex/instance counts came from a GPU-written buffer
-    /// rather than from the CPU (§24.1, §61).
+    /// rather than from the CPU.
     ///
     /// Zero for every scene this renderer can draw: culling is the per-primitive
     /// bounds test, and no backend exposes indirect draw
     /// ([`Caps::indirect_draw`](viso_gpu::Caps::indirect_draw)). Reported for the
-    /// same reason as [`compute_dispatches`](Self::compute_dispatches) — §20's hard
+    /// same reason as [`compute_dispatches`](Self::compute_dispatches) — the hard
     /// rule that 50 UI nodes are never "GPU-driven" is a bound a test must be able
     /// to assert, and together the two fields say a frame decided its own visibility
     /// on the CPU, which is what makes that rule arithmetic rather than editorial.
@@ -1092,7 +1091,7 @@ pub struct Renderer {
     /// The quad pipeline writing its color without blending: the clear of a
     /// partially redrawn frame's damaged rects.
     clear_pipeline: PipelineId,
-    /// What the surface pass draws and what the last frame presented (§30.3).
+    /// What the surface pass draws and what the last frame presented.
     present: present::Presenter,
     /// Reused surface commands of a partial redraw.
     partial_scratch: Vec<DrawCommand>,
@@ -1116,30 +1115,29 @@ pub struct Renderer {
     analytic_shadow_pipeline: PipelineId,
     /// The ContentBlur built-in pipeline (registered once): one separable
     /// Gaussian pass, chained horizontally then vertically to blur an offscreen
-    /// layer's content before compositing it (§16.2, E1.2).
+    /// layer's content before compositing it.
     blur_pipeline: PipelineId,
     /// The ColorTransform built-in pipeline (registered once): one fused color op
     /// — an affine color matrix plus an optional gamma — applied to a source
-    /// texture (§17.3, E2.2).
+    /// texture.
     color_transform_pipeline: PipelineId,
     /// The AdvancedBlend built-in pipeline (registered once): one isolated blend
     /// composite that samples the layer and the bounded destination snapshot behind
     /// it, evaluates a mode the fixed-function blender cannot express, and writes
-    /// with [`BlendMode::Replace`] (§14.6, E2.3).
+    /// with [`BlendMode::Replace`].
     advanced_blend_pipeline: PipelineId,
     /// The MaterialComposite built-in pipeline (registered once): one frosted
     /// material surface — the shared blurred backdrop, a fused color op,
-    /// deterministic grain, and a per-corner rounded mask — in a single draw
-    /// (§18, M0.1).
+    /// deterministic grain, and a per-corner rounded mask — in a single draw.
     material_pipeline: PipelineId,
     /// The default linear-filter clamp sampler, used by glyph runs, gradient
     /// LUT sampling, and offscreen-layer compositing (all of which want bilinear
     /// clamp). Image draws select their sampler via `sampler_cache` instead.
     sampler: SamplerId,
-    /// Interns image draws' [`SamplerDesc`] to shared [`SamplerId`]s (§12).
+    /// Interns image draws' [`SamplerDesc`] to shared [`SamplerId`]s.
     sampler_cache: SamplerCache,
     /// Persistent quad instance pool: a long-lived device buffer uploaded per
-    /// changed slot against a CPU shadow (§9.1), so a local paint change costs a
+    /// changed slot against a CPU shadow, so a local paint change costs a
     /// local upload rather than a full-buffer re-upload.
     quad_pool: InstancePool<QuadInstance>,
     /// Persistent analytic rounded-rectangle instance pool (same slot-diff
@@ -1183,7 +1181,7 @@ pub struct Renderer {
     /// `TextureId` is created once in [`Renderer::new`] and its dirty rows are
     /// flushed to the device each frame after lowering.
     gradient_lut: GradientLutAtlas,
-    /// The retained clip/mask coverage cache (§14.4): keys a requested mask to a
+    /// The retained clip/mask coverage cache: keys a requested mask to a
     /// packed slot in one of its pages so a stable mask is rasterized once and
     /// reused. Cold-path policy; the physical textures live in `mask_pages`.
     mask_cache: MaskCache,
@@ -1191,7 +1189,7 @@ pub struct Renderer {
     /// blitted since the last upload. Internal textures like `gradient_lut`,
     /// made as the cache adds pages and flushed each frame.
     mask_pages: MaskPages,
-    /// Clip masks rasterized this frame (§30/§61). Reset at frame start, bumped
+    /// Clip masks rasterized this frame. Reset at frame start, bumped
     /// each time a masked clip actually rasterizes coverage; surfaced as
     /// [`FrameStats::clip_mask_builds`]. Steady state evicts/rasterizes nothing,
     /// so this returns to 0.
@@ -1209,13 +1207,13 @@ pub struct Renderer {
     /// pair, not a (texture, sampler): folding both into one scanned `Vec` would
     /// make every ordinary image draw compare a field it never sets.
     blend_bindings: Vec<BlendBinding>,
-    /// Layers isolated by a non-`SrcOver` blend this frame (§14.6). Reset at frame
+    /// Layers isolated by a non-`SrcOver` blend this frame. Reset at frame
     /// start, surfaced as [`FrameStats::blend_isolations`].
     blend_isolations: u32,
-    /// Every layer plan the Effect Planner produced this frame, in stream order
-    /// (§3145). Cleared at frame start and retained afterwards so the inspector can
+    /// Every layer plan the Effect Planner produced this frame, in stream order.
+    /// Cleared at frame start and retained afterwards so the inspector can
     /// answer "why did this group cost a pass?" from the same data the renderer
-    /// decided on — no unsafe poking, no second decision path (§62). Three bytes of
+    /// decided on — no unsafe poking, no second decision path. Three bytes of
     /// bitset plus a float per layer, and a `Vec` whose capacity survives the frame.
     layer_plans: Vec<LayerPlan>,
     /// Every layer the last upload opened, in stream order, one per plan.
@@ -1236,7 +1234,7 @@ pub struct Renderer {
     layers_planned: u32,
     layers_eliminated: u32,
     opacity_folds: u32,
-    /// Backdrop captures whose ROI content moved since the previous frame (§3202).
+    /// Backdrop captures whose ROI content moved since the previous frame.
     /// Reset at frame start, surfaced as [`FrameStats::backdrop_dirty_rois`].
     backdrop_dirty_rois: u32,
     /// One [`BackdropDependency`] per backdrop capture, **retained across frames**:
@@ -1349,10 +1347,10 @@ pub struct Renderer {
     /// This frame's fused color ops, in layer-open order: the arena
     /// [`LayerEntry::color_start`] / `color_len` index into, filled by
     /// [`fuse`](crate::color_effect::fuse) when a layer's effect chain is read.
-    /// Cleared per frame, so a steady scene reuses the allocation (§7.1).
+    /// Cleared per frame, so a steady scene reuses the allocation.
     color_ops: Vec<ColorOp>,
     /// This frame's backdrop captures, in creation order — one per *group* of
-    /// backdrop layers that share a background (§17.2), not one per layer. Each
+    /// backdrop layers that share a background, not one per layer. Each
     /// re-renders the content already recorded behind its group into a tight ROI
     /// target and blurs it; the group's members each composite that one blurred
     /// result under their own content. Reused each frame.
@@ -1361,13 +1359,13 @@ pub struct Renderer {
     /// does not deduplicate reads, and one producer can contribute many paint
     /// entries to a capture. Cleared per capture, retained across frames.
     backdrop_reads: Vec<TargetId>,
-    /// The frame-local transient render-target pool (§16.4): every offscreen
+    /// The frame-local transient render-target pool: every offscreen
     /// layer and every blur rung declares a virtual target here, and one
     /// lifetime-aware assignment pass maps those virtuals onto reusable physical
     /// textures keyed by format / usage / size class / sample count. Replaces
     /// per-effect `create_texture`/`destroy_texture`.
     transient: TransientTargets,
-    /// This frame's pass topology (§16.1, §25): every offscreen layer, every blur
+    /// This frame's pass topology: every offscreen layer, every blur
     /// rung, and the surface records a node here with the target it writes and the
     /// targets it samples. The graph validates the dependency order, culls
     /// unread passes, merges adjacent passes sharing an attachment, derives every
@@ -1380,33 +1378,33 @@ pub struct Renderer {
     /// The frame's draw commands, flat across all passes in execution order,
     /// reused each frame. `passes` slices this by range. Borrow-free, so its
     /// backing allocation is retained across frames via `clear` (0 steady-state
-    /// heap allocations in `encode`, §7.1).
+    /// heap allocations in `encode`).
     commands: Vec<DrawCommand>,
     /// The frame's render passes (offscreen layers first, then surface), reused
     /// each frame. Each references its commands by range into `commands`.
     passes: Vec<RenderPass>,
-    /// The retained scene (§8), diffed each frame from the ingested primitive
+    /// The retained scene, diffed each frame from the ingested primitive
     /// stream and the single source of truth for the frame's GPU scratch: the
     /// stream walk only folds primitives into its stores and records paint order,
     /// then [`Renderer::lower_from_scene`] derives every instance buffer and
-    /// [`Segment`] from the scene (§8).
+    /// [`Segment`] from the scene.
     scene: Scene,
-    /// The 3D scenes the stream draws, their meshes and targets (ADR 0047).
+    /// The 3D scenes the stream draws, their meshes and targets.
     scene3d: crate::scene3d::SceneLane,
     /// Bytes uploaded to instance/vertex/index buffers by the last
     /// [`upload`](Self::upload), summed over every pool (each pool's
     /// [`last_upload_bytes`](InstancePool::last_upload_bytes)). Zero on a steady
     /// frame that changed nothing. Read by [`frame_stats`](Self::frame_stats)
-    /// into `FrameStats::gpu_upload_bytes` (§61); a plain counter, no alloc.
+    /// into `FrameStats::gpu_upload_bytes`; a plain counter, no alloc.
     gpu_upload_bytes: usize,
     /// Contiguous upload ranges the last [`upload`](Self::upload) wrote across
     /// every pool — the sum of each pool's [`sync`](InstancePool::sync) return,
     /// which is the number of `write_buffer` calls the dirty-range coalescer
-    /// produced (§9.3). Zero on a steady frame; a single local change is one
-    /// range. Read into `FrameStats::uploaded_ranges` (§30); a plain counter.
+    /// produced. Zero on a steady frame; a single local change is one
+    /// range. Read into `FrameStats::uploaded_ranges`; a plain counter.
     uploaded_ranges: usize,
     /// The surface size in logical points `[width, height]`, the outer clamp
-    /// for every offscreen ROI (`content ∩ clip ∩ surface`, §16.2). Defaults to
+    /// for every offscreen ROI (`content ∩ clip ∩ surface`). Defaults to
     /// [`Rect::INFINITE`]'s extent (no surface clamp) until
     /// [`set_surface_size`](Self::set_surface_size) reports the real size.
     surface_size: [f32; 2],
@@ -1419,7 +1417,7 @@ pub struct Renderer {
     surface_moved: bool,
     /// Offscreen-pass children lowered this frame whose paint bounds fell fully
     /// outside their pass's tight ROI (the clip excluded them), so their draw
-    /// was skipped (§16.2). Read into `FrameStats::culled_primitives` (§61).
+    /// was skipped. Read into `FrameStats::culled_primitives`.
     culled_this_frame: u32,
     /// Program draws this frame whose slot held no program for their
     /// parameters, so they painted nothing. Read into
@@ -1486,7 +1484,7 @@ const BLUR_MAX_TAPS: u32 = 32;
 ///
 /// `width`/`height` are the *used* extent: the tight sub-rect this rung writes
 /// and the next samples. The pooled texture backing it may be larger (its size
-/// class, §16.4), which is why `axis` is a plain unit direction — the per-tap uv
+/// class), which is why `axis` is a plain unit direction — the per-tap uv
 /// step needs the *physical* source extent, known only once the planner has
 /// assigned a texture, so the normalization happens at instance-build time.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1503,7 +1501,7 @@ struct BlurStep {
     radius: f32,
 }
 
-/// The separable Gaussian ladder for one blurred layer (§16, E1.2).
+/// The separable Gaussian ladder for one blurred layer.
 ///
 /// A plan is a pure function of the requested sigma and the source ROI extent
 /// ([`blur_plan`]); it owns no GPU resources. An empty plan means the blur is a
@@ -1529,7 +1527,7 @@ impl BlurPlan {
 }
 
 /// Plan the separable Gaussian ladder for a `sigma`-pixel blur of a `src_w`×
-/// `src_h` offscreen ROI (§16.2, E1.2). Pure: no allocation of GPU targets, only
+/// `src_h` offscreen ROI. Pure: no allocation of GPU targets, only
 /// the step descriptors the renderer realizes.
 ///
 /// The tiers, cheapest first:
@@ -1636,11 +1634,11 @@ fn blur_plan(sigma: f32, src_w: u32, src_h: u32) -> BlurPlan {
 /// [`Renderer::blur_scratch`]. Transient — rebuilt every frame in
 /// `finalize_offscreen`, encoded from the compiled plan in [`Renderer::encode`].
 ///
-/// The target it *writes* lives on its graph node, not here (§41): the graph is
+/// The target it *writes* lives on its graph node, not here: the graph is
 /// what lowers attachments and load ops. `source` is a *virtual* id — the concrete
 /// texture and bind group are resolved from [`Renderer::transient`] after the
 /// frame's assignment pass, so a rung's scratch texture can be recycled from an
-/// earlier rung whose lifetime has ended (§16.4).
+/// earlier rung whose lifetime has ended.
 struct BlurPass {
     source: TargetId,
     /// The *physical* extent of `target` — what the shader maps pixels to NDC
@@ -1665,7 +1663,7 @@ struct ColorPass {
 }
 
 /// One frosted material surface's parameters, as resolved during the frame's
-/// primitive walk (§18). Held per frame on the renderer rather than inline in
+/// primitive walk. Held per frame on the renderer rather than inline in
 /// [`StoreRef::MaterialComposite`]: the composite is a derived draw, and a
 /// paint-order entry is visited for every primitive, so it carries an index.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1676,8 +1674,8 @@ struct MaterialRecord {
     /// Per-corner radii, already normalized against the rect
     /// (`[top_left, top_right, bottom_right, bottom_left]`).
     radius: [f32; 4],
-    /// The fused color op applied to the blurred backdrop — E2's frozen 4×5
-    /// matrix plus optional gamma, reused verbatim.
+    /// The fused color op applied to the blurred backdrop — the color chain's
+    /// 4×5 matrix plus optional gamma, reused verbatim.
     op: ColorOp,
     /// Grain amplitude in unit color, `0.0` for none.
     noise: f32,
@@ -1690,7 +1688,7 @@ struct MaterialRecord {
 ///
 /// The fused op's 4×5 matrix splits into row vectors plus the offset column, the
 /// same shape [`color_transform_instance`] produces — the material pipeline runs
-/// E2's color stage inline rather than in a pass of its own.
+/// the color stage inline rather than in a pass of its own.
 fn material_instance(
     record: MaterialRecord,
     rect_pos: [f32; 2],
@@ -1786,7 +1784,7 @@ impl Renderer {
         color_space: ColorSpace,
     ) -> Self {
         // Every standard pipeline is created from its frozen manifest entry, not
-        // from caller-assembled source. This is the device-init prewarm (§7.1):
+        // from caller-assembled source. This is the device-init prewarm:
         // the fixed set is materialized once, so no draw ever triggers a runtime
         // shader compile.
         let manifest = standard_manifest();
@@ -2094,7 +2092,7 @@ impl Renderer {
     /// device `scale`, physical pixels per logical point. Primitives, clips
     /// and the viewport handed to [`submit`](Self::submit) are in logical
     /// points; scissors and every offscreen target are physical. The logical
-    /// surface is the outer clamp for every offscreen ROI (§16.2). Call before
+    /// surface is the outer clamp for every offscreen ROI. Call before
     /// [`upload`](Self::upload); until then ROIs clamp only to content and
     /// clip, at scale 1.
     pub fn set_surface_size(&mut self, size: [f32; 2], scale: f32) {
@@ -2287,7 +2285,7 @@ impl Renderer {
         self.color_space
     }
 
-    /// Which of SDR / wide-gamut / HDR this renderer is drawing for (§19) — the
+    /// Which of SDR / wide-gamut / HDR this renderer is drawing for — the
     /// classification its intermediate formats are planned against.
     pub fn color_domain(&self) -> ColorDomain {
         self.color_space.domain()
@@ -2342,7 +2340,7 @@ impl Renderer {
 
     /// Get (or lazily create) the two-texture bind group an isolated advanced-blend
     /// composite draws with: the isolated layer as `source`, the bounded snapshot of
-    /// what is behind it as `destination` (§14.6).
+    /// what is behind it as `destination`.
     ///
     /// Slot order is the contract — slot 0 is the source, slot 1 the destination —
     /// because the shader names its samplers by role (`tex`, `dst_tex`) and binds
@@ -2377,8 +2375,8 @@ impl Renderer {
         bind_group
     }
 
-    /// Lower a solid-fill-only [`Primitive::Path`] as a self-masked solid fill
-    /// (§14.4): rasterize its own coverage into an R8 mask-page slot and emit one
+    /// Lower a solid-fill-only [`Primitive::Path`] as a self-masked solid fill:
+    /// rasterize its own coverage into an R8 mask-page slot and emit one
     /// masked draw — the ROI world rect as geometry, the slot as UV, the fill as
     /// the constant color — through the reused glyph coverage pipeline (a masked
     /// solid fill is one coverage texture times a constant color, exactly the
@@ -2467,19 +2465,19 @@ impl Renderer {
         true
     }
 
-    /// Draw an arbitrary path's drop shadow through the mask lane (§15.4/§20.2).
+    /// Draw an arbitrary path's drop shadow through the mask lane.
     ///
-    /// The E0 fallback rasterizes the path's own tight coverage once — keyed on
+    /// The fallback rasterizes the path's own tight coverage once — keyed on
     /// {geometry, sigma} so it is a distinct slot from the shape's own fill mask
     /// and survives color/offset-only changes — then composites it offset by
     /// `offset` and tinted by `color` under the shape. There is no separable blur
-    /// convolution yet: the cached mask is sharp and the recorded sigma leans the
-    /// key forward to E1, where the ROI-padded blurred reblit drops in without a
-    /// re-key. A soft `sigma` therefore reads as a sharp offset silhouette until
-    /// E1 lands; the geometry/offset/color/bounds contract is already final.
+    /// convolution yet: the cached mask is sharp and the recorded sigma is part of
+    /// the key so a ROI-padded blurred reblit can drop in without a re-key. A soft
+    /// `sigma` therefore reads as a sharp offset silhouette; the
+    /// geometry/offset/color/bounds contract is already final.
     ///
     /// Returns `false` (caller keeps the normal fill lane, shadow undrawn) for a
-    /// degenerate path, an inner shadow (routed to the analytic lane — §20.3), or
+    /// degenerate path, an inner shadow (routed to the analytic lane), or
     /// a packer-declined ROI.
     fn mask_path_shadow<B: GpuBackend>(
         &mut self,
@@ -2488,8 +2486,8 @@ impl Renderer {
         shadow: &crate::primitive::PathShadow,
         ctx: EmitContext,
     ) -> bool {
-        // Inner shadows on a general path are an E1 filter-lane concern; the
-        // analytic families carry inner shadow directly (§20.3), so the general
+        // Inner shadows on a general path are a filter-lane concern; the
+        // analytic families carry inner shadow directly, so the general
         // path lane only serves the outer drop shadow.
         if shadow.inner {
             return false;
@@ -2506,7 +2504,7 @@ impl Renderer {
         }
 
         // Fold sigma into the geometry revision so a shadow mask never aliases the
-        // shape's own solid-fill mask (same cmds, no sigma) and so E1's blurred
+        // shape's own solid-fill mask (same cmds, no sigma) and so a blurred
         // reblit re-keys automatically when the blur radius changes.
         let source_revision = {
             use std::hash::{Hash, Hasher};
@@ -2589,9 +2587,9 @@ impl Renderer {
     /// context `(clip, target, origin)` from the `Layer`/`LayerEnd` stack and
     /// opens/closes offscreen passes — but it no longer produces the GPU scratch
     /// directly: it only diffs each primitive into the stores (bumping the moved
-    /// revision planes, §8.4) and records its paint-order slot. The scratch and
+    /// revision planes) and records its paint-order slot. The scratch and
     /// segments are then derived from the retained scene by [`lower_from_scene`],
-    /// which is the single source of truth (F3.3, §8).
+    /// which is the single source of truth.
     ///
     /// Growing an instance buffer allocates a new one only when the frame needs
     /// more capacity than before; steady-state frames reuse the buffers.
@@ -2649,7 +2647,7 @@ impl Renderer {
             self.scene.source = prim_index as u32;
             let (clip, target, origin) = self.active();
             // The group opacity the Effect Planner pushed into this primitive's
-            // ancestors (§14.5). `1.0` — the steady state everywhere outside a
+            // ancestors. `1.0` — the steady state everywhere outside a
             // folded group — leaves every instance byte-identical.
             let fold = self.active_fold();
             let ctx = self.emit_context();
@@ -2688,7 +2686,7 @@ impl Renderer {
                     // owns: a 2-stop linear-RGB gradient interpolates exactly in
                     // the shader (inline `color0`/`color1`), so it needs no LUT;
                     // a 3+-stop or non-linear-space gradient bakes a 1D row into
-                    // the renderer-internal atlas and samples it (§10.1, §12.3).
+                    // the renderer-internal atlas and samples it.
                     let use_lut = gradient.stops.len() >= 3
                         || gradient.interp != InterpolationSpace::LinearRgb;
                     let lut_v = if use_lut {
@@ -2729,7 +2727,7 @@ impl Renderer {
                         self.mask_path_shadow(backend, path, shadow, ctx);
                     }
                     // A concave or curve-bearing solid-fill-only path is a
-                    // self-masked solid fill (§14.4): its own coverage is one R8
+                    // self-masked solid fill: its own coverage is one R8
                     // mask, and the fill color times that coverage is exactly the
                     // glyph fragment, so it lowers as a single masked draw sampling
                     // its mask-page slot rather than through tessellation — the lane
@@ -2795,7 +2793,7 @@ impl Renderer {
                     // backdrop dependency, joins (or opens) the capture group for
                     // it exactly the way a backdrop layer does — so `N` panels at
                     // one sigma still cost one capture and one blur ladder — and
-                    // then composites the whole §18 chain in a single draw.
+                    // then composites the whole material chain in a single draw.
                     let world_clip = match clip {
                         Some(c) => material.rect.intersect(c),
                         None => material.rect,
@@ -2811,7 +2809,7 @@ impl Renderer {
                         // so capturing and blurring a backdrop here would pay for a
                         // frosted panel twice and then hide one of them. The region is
                         // reported with its generic parameters only — the platform
-                        // layer owns the mapping to its material vocabulary (§19).
+                        // layer owns the mapping to its material vocabulary.
                         //
                         // Only on the surface pass: a material composited *behind* the
                         // Viso surface cannot be scaled, blurred, or blended by an
@@ -2847,8 +2845,8 @@ impl Renderer {
                         self.scene
                             .ingest_material_composite(capture, index, ctx, bounds);
                     }
-                    // The border/highlight ring is an ordinary analytic rrect
-                    // (§18): a transparent fill with a stroke, so it batches with
+                    // The border/highlight ring is an ordinary analytic rrect:
+                    // a transparent fill with a stroke, so it batches with
                     // every other rrect on screen and needs no shader of its own.
                     if let Some(border) = material.border_rrect() {
                         let mut inst = border.to_instance();
@@ -2873,7 +2871,7 @@ impl Renderer {
                         layer.clip,
                     );
                     // A backdrop is an explicit dependency on the content already
-                    // recorded behind this layer (§17.1): join (or open) the
+                    // recorded behind this layer: join (or open) the
                     // capture group for it and record the composite *now*, before
                     // the layer's own content, so the blurred backdrop lands
                     // under it. Only layers drawing straight into the surface
@@ -2901,7 +2899,7 @@ impl Renderer {
                     }
                     // The layer's marker run is everything between this
                     // primitive and the layer's first real content: color
-                    // effects (§17.3) and blend modes (§14.6), in any order.
+                    // effects and blend modes, in any order.
                     // Both kinds are pure annotations on this layer, so the run
                     // is scanned once here and the two markers read out of it
                     // independently — a `Blend` between two `ColorEffect`s ends
@@ -2941,14 +2939,14 @@ impl Renderer {
                         .unwrap_or_default();
                     // How many effects the author wrote, before fusion — the
                     // denominator the planner compares the fused op count against
-                    // to know whether fusing actually removed anything (§3161).
+                    // to know whether fusing actually removed anything.
                     let color_effects = markers
                         .clone()
                         .filter(|p| matches!(p, Primitive::ColorEffect(_)))
                         .count();
                     // Fusing the color chain here — straight off the stream,
                     // into the shared arena — is what makes a run of mergeable
-                    // effects one op instead of one pass each (§17.3).
+                    // effects one op instead of one pass each.
                     let color_start = self.color_ops.len() as u32;
                     fuse(
                         markers.filter_map(|p| match p {
@@ -2959,7 +2957,7 @@ impl Renderer {
                     );
                     let color_len = self.color_ops.len() as u32 - color_start;
                     // Every reason this layer might exist, and every rung of the
-                    // elimination ladder that can retire one (§3145). The subtree
+                    // elimination ladder that can retire one. The subtree
                     // scan that proves the children disjoint is the one part of
                     // this that is not free, so it runs only for the layer that
                     // could use the answer — a translucent one.
@@ -3041,10 +3039,9 @@ impl Renderer {
                         // and the pass sized/composited at LayerEnd; the origin
                         // recorded here is provisional (the clip top-left) and
                         // repatched to the ROI top-left then. A blur forces the
-                        // offscreen path even at full opacity (§16.2, E1.2), and so
-                        // does a color chain that computes anything (§17.3, E2.2)
-                        // and a blend the fixed-function stage cannot express
-                        // (§14.6, E2.3).
+                        // offscreen path even at full opacity, and so
+                        // does a color chain that computes anything
+                        // and a blend the fixed-function stage cannot express.
                         // Its region of interest is cut against the surface and
                         // the clip as painted, so a shift cannot move it.
                         self.transforms.taint();
@@ -3092,7 +3089,7 @@ impl Renderer {
                 // of markers that follows it and fuses them in one pass. Walking
                 // over them again here is the no-op that keeps the chain a pure
                 // annotation on the layer — and makes a marker anywhere else in
-                // the stream harmless rather than an error (§17.3, §14.6).
+                // the stream harmless rather than an error.
                 Primitive::ColorEffect(_) | Primitive::Blend(_) | Primitive::ClipCorners(_) => {}
                 Primitive::Transform(slot) => {
                     self.transforms
@@ -3109,7 +3106,7 @@ impl Renderer {
                         // Size the pass to its tight content ROI, claim the
                         // texture, and repatch its children's origin to the ROI
                         // top-left — all deferred to here because the content
-                        // union isn't known until the subtree is walked (§16.2).
+                        // union isn't known until the subtree is walked.
                         let surface = self.surface_rect();
                         self.finalize_offscreen(idx, &entry, surface);
                         // Composite the finished offscreen texture back into the
@@ -3156,7 +3153,7 @@ impl Renderer {
             self.mask_pages.sync(backend, self.mask_cache.page_edges());
         }
 
-        // Realize this frame's backdrop captures (§17.1, §17.2) ahead of the
+        // Realize this frame's backdrop captures ahead of the
         // surface pass that consumes them. They can only be recorded here: a
         // group's ROI is not final until the walk ends, since a later layer can
         // still join it and grow the union.
@@ -3181,11 +3178,11 @@ impl Renderer {
         }
 
         // Compile the frame's pass plan — validate, cull, merge — or reuse the
-        // cached one when the topology is unchanged (§16.1).
+        // cached one when the topology is unchanged.
         self.graph.compile();
 
-        // Map this frame's virtual transient targets onto physical textures
-        // (§16.4). Each was declared during the walk at the slot of the pass that
+        // Map this frame's virtual transient targets onto physical textures.
+        // Each was declared during the walk at the slot of the pass that
         // writes it; the graph's recorded reads are what close their lifetimes, so
         // it drives the interval analysis. `assign` then walks the virtuals in
         // write order and hands each the first pooled texture of a compatible key
@@ -3200,7 +3197,7 @@ impl Renderer {
         self.lower_from_scene(backend);
 
         // Flush any gradient LUT rows baked this frame into the atlas texture
-        // (§12.2: bake once, upload once). The atlas coalesces the frame's newly
+        // (bake once, upload once). The atlas coalesces the frame's newly
         // baked rows into one contiguous dirty span; a frame that baked no new
         // gradient uploads nothing.
         if let Some((x, y, w, h, bytes)) = self.gradient_lut.take_dirty() {
@@ -3220,12 +3217,12 @@ impl Renderer {
 
     /// Reconcile each family's persistent device buffer with the freshly
     /// lowered draw-order scratch, uploading only the slots that changed since
-    /// last frame (§9.1) — a local paint change is a local upload, an
+    /// last frame — a local paint change is a local upload, an
     /// unchanged frame uploads nothing.
     fn sync_pools<B: GpuBackend>(&mut self, backend: &mut B) {
         // Each `sync` returns the number of `write_buffer` calls it issued (the
-        // coalesced dirty-range count, §9.3); summed, that is this frame's
-        // `uploaded_ranges` counter (§30). A steady frame syncs zero ranges.
+        // coalesced dirty-range count); summed, that is this frame's
+        // `uploaded_ranges` counter. A steady frame syncs zero ranges.
         self.uploaded_ranges = self.quad_pool.sync(backend, &self.quad_scratch)
             + self
                 .analytic_rrect_pool
@@ -3261,9 +3258,9 @@ impl Renderer {
         self.uploaded_ranges += program_ranges;
 
         // Sum the bytes each pool actually handed to the backend this frame into
-        // the frame-scoped upload counter (§61). A steady frame that changed no
+        // the frame-scoped upload counter. A steady frame that changed no
         // slot uploaded nothing, so this is 0 — the same signal the steady-state
-        // bench uses to prove a local change stays a local upload (§9.1).
+        // bench uses to prove a local change stays a local upload.
         self.gpu_upload_bytes = self.quad_pool.last_upload_bytes()
             + self.analytic_rrect_pool.last_upload_bytes()
             + self.analytic_ellipse_pool.last_upload_bytes()
@@ -3299,7 +3296,7 @@ impl Renderer {
     }
 
     /// Lower the retained scene to this frame's instance scratch + submission-
-    /// ordered [`Segment`]s (§8). The paint-order record is the frozen spine: for
+    /// ordered [`Segment`]s. The paint-order record is the frozen spine: for
     /// each entry, pull the retained store slot, subtract the emit's origin, push
     /// the instance(s), and open or extend the covering segment. Same-kind runs
     /// under the same clip and target merge into one draw; images, glyph runs, and
@@ -3332,7 +3329,7 @@ impl Renderer {
 
         // Take the paint-order record so the store/backend borrows below do not
         // overlap the record borrow. It is swapped back before returning, so the
-        // record's `Vec` allocation is reused across frames (kept flat, §28).
+        // record's `Vec` allocation is reused across frames (kept flat).
         let record = std::mem::take(&mut self.scene.paint_order);
         for (i, entry) in record.iter().enumerate() {
             let clip = entry.context.clip;
@@ -3343,7 +3340,7 @@ impl Renderer {
             let origin = entry.context.origin;
             // Cull an offscreen child whose world paint bounds fall fully outside
             // its pass's tight ROI — only possible when the clip excluded it, so
-            // its scissor would draw nothing (§16.2). The composite has no
+            // its scissor would draw nothing. The composite has no
             // offscreen target, so it is never culled here.
             if let PassTarget::Offscreen(idx) = target {
                 let paint = entry.bounds.paint;
@@ -3376,13 +3373,13 @@ impl Renderer {
             self.segment_entries.clear();
         }
 
-        // Re-render each backdrop capture's under-content into its own pass
-        // (§17.1). Appended *after* the main walk so every main-walk instance
+        // Re-render each backdrop capture's under-content into its own pass.
+        // Appended *after* the main walk so every main-walk instance
         // keeps the cursor it already had — a capture's duplicated instances land
         // at the tail of the same family scratch, and `encode` selects a pass's
         // draws by segment target, not by scratch order. A shared capture is
         // walked once for the whole group, which is what makes N frosted panels
-        // over one background cost one re-render, not N (§17.2).
+        // over one background cost one re-render, not N.
         for i in 0..self.backdrop_captures.len() {
             let roi = self.backdrop_captures[i].roi;
             let target = PassTarget::Capture(i);
@@ -3446,7 +3443,7 @@ impl Renderer {
     ///
     /// Split out of [`lower_from_scene`](Self::lower_from_scene) because a
     /// primitive is lowered once per pass that draws it: once for its own target,
-    /// and again for each backdrop capture whose ROI it falls behind (§17.1). The
+    /// and again for each backdrop capture whose ROI it falls behind. The
     /// context is passed in rather than read off the entry so the capture walk can
     /// retarget and re-origin it without touching the retained record.
     fn lower_entry<B: GpuBackend>(
@@ -3572,7 +3569,7 @@ impl Renderer {
                 self.image_scratch.push(inst);
                 // Adjacent images sampling the same texture join one instanced
                 // draw: the bind group is part of the key, so an equal key is an
-                // equal resource (§20.2 bind-group batching).
+                // equal resource (bind-group batching).
                 self.merge_or_push(Segment {
                     kind: SegmentKind::Image { bind_group },
                     start,
@@ -3592,7 +3589,7 @@ impl Renderer {
                 let start = self.gradient_scratch.len() as u32;
                 self.gradient_scratch.push(inst);
                 // Gradients sharing a baked LUT page join one draw, so a screen
-                // of gradient fills costs a draw per page (§20.2).
+                // of gradient fills costs a draw per page.
                 self.merge_or_push(Segment {
                     kind: SegmentKind::Gradient { bind_group },
                     start,
@@ -3673,7 +3670,7 @@ impl Renderer {
                 // with `Replace` — the destination is already in the fragment, so
                 // the blend state must not mix it in twice. One draw, two textures,
                 // no pass added, and the common `SrcOver` pipeline is left exactly
-                // as it was (§14.6, E2.3).
+                // as it was.
                 if let Some((mode, capture)) = self.offscreen_passes[pass].blend {
                     let cap = &self.backdrop_captures[capture];
                     let (roi, cap_used) = (cap.roi, cap.used);
@@ -3732,7 +3729,7 @@ impl Renderer {
                 // the color-transform pipeline instead of the plain image one: same
                 // quad, same source texture, one extra matrix multiply in the
                 // fragment shader — which is how an N-effect fusable chain costs
-                // zero extra render-target passes (§17.3, E2.2). The op already
+                // zero extra render-target passes. The op already
                 // carries the layer opacity in its alpha row, so the composite's
                 // tint has nothing left to say and is dropped.
                 if let Some(op) = self.offscreen_passes[pass].color {
@@ -3778,8 +3775,7 @@ impl Renderer {
                 let count = self.glyph_scratch.len() as u32 - start;
                 // A run is one instanced draw, and adjacent runs on the same
                 // atlas join it — which is what collapses a page of text, and the
-                // masked path fills that share the mask page, to a draw per atlas
-                // (§20.2).
+                // masked path fills that share the mask page, to a draw per atlas.
                 self.merge_or_push(Segment {
                     kind: match e.lane {
                         crate::GlyphLane::CoverageA8 => SegmentKind::GlyphRun { bind_group },
@@ -3801,17 +3797,17 @@ impl Renderer {
                 // the per-primitive paint to color, producing the frozen
                 // `MeshVertex` layout. The cached geometry stays colorless and
                 // in its own local space, so a recolor/transform-only change
-                // reuses it without re-tessellating (§13.4).
+                // reuses it without re-tessellating.
                 //
                 // The colored vertices flow through the `mesh_vertex_pool`
                 // ring, whose CPU shadow diff makes an unchanged geometry +
-                // paint + transform frame a zero-byte upload — the F4 "static
+                // paint + transform frame a zero-byte upload — the "static
                 // geometry stays off the ring" guarantee in effect for the
                 // steady state. A dedicated device-local geometry buffer that
                 // keeps the colorless mesh resident and passes paint/transform
                 // through a per-primitive uniform (so even a dirty recolor
                 // uploads no vertices) needs a mesh-shader uniform dimension
-                // and is a §13 follow-up.
+                // and is a follow-up.
                 let geo = &e.geometry;
                 let [ox, oy] = e.xform.offset;
                 let scale = e.xform.scale;
@@ -3901,7 +3897,7 @@ impl Renderer {
                 // A frosted surface: the same shared capture a backdrop layer
                 // samples, but composited through the material pipeline, which
                 // folds the color transform, the grain, the rounded mask, and the
-                // opacity into that one draw (§18). No extra pass, no extra
+                // opacity into that one draw. No extra pass, no extra
                 // target, and no capture of its own.
                 let record = self.material_records[material];
                 let cap = &self.backdrop_captures[capture];
@@ -3942,7 +3938,7 @@ impl Renderer {
         }
     }
 
-    /// The frame's counters (§30, §61), as they stand after the last
+    /// The frame's counters, as they stand after the last
     /// [`upload`](Self::upload).
     ///
     /// Every [`Segment`] maps 1:1 to a draw command across all passes
@@ -3955,10 +3951,10 @@ impl Renderer {
     /// pool syncs. `offscreen_passes` and `transient_target_bytes` come from
     /// this frame's translucent-layer passes. `render_passes`,
     /// `render_pass_merges`, `culled_render_passes`, and `render_graph_compiles`
-    /// come from the compiled pass plan (§16.1). `shader_pipeline_creations` is the
-    /// fixed prewarm count (§7.1: no runtime compile). The counters with no
+    /// come from the compiled pass plan. `shader_pipeline_creations` is the
+    /// fixed prewarm count (no runtime compile). The counters with no
     /// source in this layer stay 0 with their meaning fixed (see [`FrameStats`]).
-    /// Every layer plan this frame's walk produced, in stream order (§3145, §62).
+    /// Every layer plan this frame's walk produced, in stream order.
     /// A plan names the reasons the layer was requested for, the ladder rungs that
     /// fired, and the reasons that survived — so an inspector or a test can show
     /// *why* a group cost an offscreen pass, reading exactly the values the
@@ -3967,7 +3963,7 @@ impl Renderer {
         &self.layer_plans
     }
 
-    /// One entry per backdrop capture this frame, in capture order (§3202, §62):
+    /// One entry per backdrop capture this frame, in capture order:
     /// the ROI its dependency is scoped to, that dependency's revision, and whether
     /// it moved since the previous frame. This is how "only that effect's ROI is
     /// dirty" is observed — two frosted panels over unrelated content report
@@ -4147,29 +4143,29 @@ impl Renderer {
             culled_render_passes: graph.culled,
             render_graph_compiles: graph.compiles,
             shader_pipeline_creations: SHADER_PIPELINE_PREWARM_COUNT,
-            // Masks rasterized into the page this frame (§14.4): cold builds,
+            // Masks rasterized into the page this frame: cold builds,
             // re-rasters after a key change, and re-blits after a repack.
             clip_mask_builds: self.mask_builds_this_frame,
-            // Offscreen children the tight ROI excluded this frame (§16.2).
+            // Offscreen children the tight ROI excluded this frame.
             culled_primitives: self.culled_this_frame,
             shader_instances: ingest.shader_instances,
             clock_instances: self.programs.clock_instances(),
             program_draws_dropped: self.program_draws_dropped,
             programs: self.programs.installed() as u32,
             program_pipelines: self.programs.pipelines() as u32,
-            // Counters no stage below D0 lights up yet; meaning fixed, value 0.
+            // Counters no stage lights up yet; meaning fixed, value 0.
             instance_rebuilds: 0,
             gpu_upload_bytes: self.gpu_upload_bytes,
             // The vector lane is CPU tessellation for every scene this renderer
-            // draws, and no backend offers a dispatch encoder (§20.1).
+            // draws, and no backend offers a dispatch encoder.
             compute_dispatches: 0,
             // Every draw carries its own counts: culling is the per-primitive bounds
-            // test above, and no backend reads draw arguments from memory (§24.1).
+            // test above, and no backend reads draw arguments from memory.
             indirect_draws: 0,
         }
     }
 
-    /// A snapshot of the retained scene's revision planes (§8.4, §62), as they
+    /// A snapshot of the retained scene's revision planes, as they
     /// stand after the last [`upload`](Self::upload).
     ///
     /// Each plane is an independent monotone counter the ingest diff bumps only
@@ -4233,8 +4229,8 @@ impl Renderer {
     /// The resource a recorded paint-order entry samples, or `None` for the
     /// families that bind none (quads, analytics, meshes).
     ///
-    /// For the cold-path introspection walks (§34, §62): the bind group is part
-    /// of the batch key (§20.2), so a walk that ignored the resource would merge
+    /// For the cold-path introspection walks: the bind group is part
+    /// of the batch key, so a walk that ignored the resource would merge
     /// two adjacent images of *different* textures and drift from the segment
     /// list. Read-only, so it cannot intern a real `BindGroupId` — it reports the
     /// inputs a bind group is built from instead, which is enough because equality
@@ -4358,7 +4354,7 @@ impl Renderer {
         self.material_pipeline
     }
 
-    /// The regions this frame reserved for the platform's own material (§19), in
+    /// The regions this frame reserved for the platform's own material, in
     /// paint order, valid until the next [`upload`](Self::upload).
     ///
     /// The platform layer reads this to place, size and round its native material
@@ -4475,7 +4471,7 @@ impl Renderer {
         }
     }
 
-    /// The group opacity folded into whatever is drawn right now (§3161 rung 1):
+    /// The group opacity folded into whatever is drawn right now:
     /// the innermost layer's accumulated fold factor, or `1.0` at the top level.
     /// Kept out of [`active`](Renderer::active) because every caller of that
     /// function wants the clip/target triple and only the drawable arms multiply
@@ -4551,7 +4547,7 @@ impl Renderer {
     /// inflated by the blur's reach (`BLUR_RADIUS_SIGMAS * sigma` — the widest tap
     /// offset the ladder can read, so the visible sub-rect is never contaminated
     /// by the target's transparent border) intersected with the surface. Never the
-    /// whole screen (§17.1): "capture only the required ROI". `None` when the
+    /// whole screen: "capture only the required ROI". `None` when the
     /// padded clip misses the surface entirely, in which case no capture is made.
     fn backdrop_roi(&self, world_clip: Rect, sigma: f32) -> Option<Rect> {
         let reach = (BLUR_RADIUS_SIGMAS * sigma).ceil();
@@ -4566,7 +4562,7 @@ impl Renderer {
     }
 
     /// Join `roi` into the most recent backdrop capture group when the two are
-    /// compatible, or open a new group; returns the capture index (§17.2).
+    /// compatible, or open a new group; returns the capture index.
     ///
     /// This is what keeps "N frosted panels = N full-screen captures + N blurs"
     /// from being the default: a row of panels over the same background shares one
@@ -4641,7 +4637,7 @@ impl Renderer {
     }
 
     /// Realize every backdrop capture this frame opened, in creation order, just
-    /// before the surface pass consumes them (§17.1).
+    /// before the surface pass consumes them.
     ///
     /// Per capture: declare a transient target of exactly its ROI, open a graph
     /// node for it, register a read edge to every *producer* of the content the
@@ -4695,7 +4691,7 @@ impl Renderer {
             // The graph does not deduplicate reads, and one offscreen layer can
             // contribute many entries to a capture, so fold the sources here.
             reads.clear();
-            // The ROI-scoped dependency revision (§3202), accumulated over exactly
+            // The ROI-scoped dependency revision, accumulated over exactly
             // the entries this capture samples: the newest content stamp among
             // them, plus how many there were. The count is what catches a removal
             // at the tail, where no surviving slot's stamp moves.
@@ -4773,11 +4769,11 @@ impl Renderer {
     /// `world_clip`, returning its index in `offscreen_passes`. No GPU work and no
     /// target declaration here: the ROI is only known at
     /// [`Renderer::finalize_offscreen`], so the target is never larger than the
-    /// visible content (§16.2). `rect` holds the clip provisionally until then.
+    /// visible content. `rect` holds the clip provisionally until then.
     ///
     /// `blend` is `Some((mode, capture))` only for a layer isolated by an advanced
     /// blend, naming the mode and the backdrop capture holding the bounded
-    /// destination snapshot its composite reads (§14.6).
+    /// destination snapshot its composite reads.
     fn open_offscreen(
         &mut self,
         world_clip: Rect,
@@ -4804,7 +4800,7 @@ impl Renderer {
 
     /// Size the offscreen pass at `idx` to its tight content ROI, declare the
     /// transient target it writes, and repatch every recorded child of the pass to
-    /// the ROI top-left origin (§16.2). Called from `LayerEnd` before
+    /// the ROI top-left origin. Called from `LayerEnd` before
     /// [`close_offscreen`](Self::close_offscreen).
     ///
     /// The ROI is `content_union ∩ clip ∩ surface`: never the full clip (a small
@@ -4814,7 +4810,7 @@ impl Renderer {
     ///
     /// No GPU resource is created here. The pass takes the next graph slot and
     /// declares a *virtual* target of the ROI's size class against the frame-local
-    /// pool (§16.4); the concrete texture is picked once the whole frame's
+    /// pool; the concrete texture is picked once the whole frame's
     /// lifetimes are known, in [`TransientTargets::assign`]. The pass viewport is
     /// therefore the pooled extent (what the shaders map pixels to NDC against),
     /// and `used` the tight ROI extent it actually writes at the target top-left.
@@ -4872,13 +4868,13 @@ impl Renderer {
             }
         }
 
-        // Insert the separable Gaussian ladder (§16.2, E1.2) between this pass's
+        // Insert the separable Gaussian ladder between this pass's
         // render and its composite. The plan is a pure function of the sigma and
         // the ROI extent; a sub-pixel blur plans no steps and leaves the pass
         // sampling its base texture unchanged.
         self.build_blur(idx, entry.blur_sigma);
 
-        // Then the layer's fused color ops (§17.3, E2.2), which read what the blur
+        // Then the layer's fused color ops, which read what the blur
         // ladder left. A chain that fused to one op adds no pass at all — that op
         // rides the composite draw.
         self.build_color_chain(idx, entry);
@@ -4928,7 +4924,7 @@ impl Renderer {
     /// steps for `sigma` over the base ROI, declare one transient target per step,
     /// chain the passes base → step0 → step1 → …, append a [`BlurPass`] (with its
     /// [`BlurInstance`]) for each, and repoint the pass's composite target at the
-    /// final blurred one (§16.2, E1.2).
+    /// final blurred one.
     ///
     /// A no-op plan (sub-pixel sigma) leaves `offscreen_passes[idx].sample` on the
     /// base target, so the composite samples the unblurred content — the blur
@@ -4958,7 +4954,7 @@ impl Renderer {
     /// should be sampled from — `base` itself when the plan is empty (a sub-pixel
     /// sigma). Shared by content blur ([`build_blur`](Self::build_blur)) and
     /// backdrop blur ([`realize_backdrop_captures`](Self::realize_backdrop_captures)):
-    /// both blur one tight-ROI texture, so both share one ladder (§16.2, §17.2).
+    /// both blur one tight-ROI texture, so both share one ladder.
     fn build_blur_chain(&mut self, base: TargetId, used: [u32; 2], sigma: f32) -> TargetId {
         let plan = blur_plan(sigma * self.scale, used[0], used[1]);
         if plan.is_empty() {
@@ -5017,7 +5013,7 @@ impl Renderer {
 
     /// Realize the fused color-effect chain of the offscreen pass at `idx`: the
     /// ops `entry` claimed in [`Renderer::color_ops`], applied to whatever the blur
-    /// ladder left the pass sampling (§17.3, E2.2).
+    /// ladder left the pass sampling.
     ///
     /// The last op is *not* given a pass: it is stored on the pass as
     /// [`OffscreenPass::color`], with the layer opacity folded into its alpha row,
@@ -5034,7 +5030,7 @@ impl Renderer {
     /// an `AdvancedBlend` draw, which carries no color matrix, so *every* op gets a
     /// rung and the layer opacity rides the blend instance instead of the final
     /// op's alpha row. Such a layer pays one more pass than a `SrcOver` one — the
-    /// honest price of a composite that already reads two textures (§14.6).
+    /// honest price of a composite that already reads two textures.
     fn build_color_chain(&mut self, idx: usize, entry: &LayerEntry) {
         if entry.color_len == 0 {
             return;
@@ -5242,7 +5238,7 @@ impl Renderer {
                             commands.push(self.command_for(seg, vp));
                         }
                     }
-                    // One step of a separable blur ladder (§16.2, E1.2): a single
+                    // One step of a separable blur ladder: a single
                     // full-target quad reading the previous step's target.
                     PassWork::Blur(i) => {
                         let blur = &self.blur_passes[i as usize];
@@ -5259,8 +5255,8 @@ impl Renderer {
                             scissor: None,
                         });
                     }
-                    // One op of a color chain that could not fuse all the way down
-                    // (§17.3, E2.2): a single full-target quad applying one matrix
+                    // One op of a color chain that could not fuse all the way down:
+                    // a single full-target quad applying one matrix
                     // (plus gamma) to the previous op's target. A fully fusable
                     // chain emits none of these — its one op rides the composite.
                     PassWork::ColorTransform(i) => {
@@ -5278,7 +5274,7 @@ impl Renderer {
                         });
                     }
                     // The content behind one (or one shared group of) backdrop
-                    // layers, re-rendered into a tight ROI target (§17.1). The
+                    // layers, re-rendered into a tight ROI target. The
                     // draws are the duplicated instances `lower_from_scene`
                     // appended for this capture, selected by their segment target.
                     PassWork::BackdropCapture(i) => {
@@ -5459,7 +5455,7 @@ impl Renderer {
             },
             // A composite whose layer fused a color chain: the same quad an
             // `Image` segment would draw, through the pipeline that applies the
-            // fused matrix (§17.3, E2.2).
+            // fused matrix.
             SegmentKind::ColorTransform { bind_group } => DrawCommand {
                 pipeline: self.color_transform_pipeline,
                 bind_group: Some(bind_group),
@@ -5473,7 +5469,7 @@ impl Renderer {
             },
             // An isolated layer's blend composite: the same quad again, through the
             // pipeline that samples both the layer and its destination snapshot and
-            // writes with `Replace` (§14.6, E2.3).
+            // writes with `Replace`.
             SegmentKind::AdvancedBlend { bind_group } => DrawCommand {
                 pipeline: self.advanced_blend_pipeline,
                 bind_group: Some(bind_group),
@@ -5487,7 +5483,7 @@ impl Renderer {
             },
             // A frosted material surface: the same generated quad, through the
             // pipeline that samples the shared blurred backdrop and applies the
-            // whole §18 chain in one fragment (M0.1).
+            // whole material chain in one fragment.
             SegmentKind::Program { slot, bind_group } => {
                 self.programs
                     .command(slot, bind_group, seg.start, seg.count, viewport, scissor)
@@ -5557,8 +5553,8 @@ impl Renderer {
                         ),
                         // Path/Mesh indices are rebased into the shared 32-bit
                         // index ring, so the frame draw is always U32. Native
-                        // 16-bit index buffers live on the static geometry store
-                        // (§13.4 F4 boundary), which selects its own width.
+                        // 16-bit index buffers live on the static geometry store,
+                        // which selects its own width.
                         index_format: IndexFormat::U32,
                         index_offset: seg.start,
                         index_count: seg.count,
@@ -5666,7 +5662,7 @@ mod tests {
     /// A quad of an explicit size, used to place one child *inside* another so the
     /// two provably overlap without moving the group's content union — the shape a
     /// fixture needs when it is asserting isolation-pass geometry rather than the
-    /// planner's fold (§14.5).
+    /// planner's fold.
     fn quad_sized(x: f32, y: f32, w: f32, h: f32) -> Primitive {
         Primitive::Quad(Quad {
             rect: Rect { x, y, w, h },
@@ -5736,7 +5732,7 @@ mod tests {
     }
 
     /// A solid-filled *concave* path (a chevron/arrow with one reflex vertex,
-    /// fill only, no stroke): the self-masked solid-fill case (§14.4). A convex
+    /// fill only, no stroke): the self-masked solid-fill case. A convex
     /// outline keeps the tessellated lane, so the mask-lane fixtures must be
     /// non-convex to divert.
     fn solid_path(ox: f32, oy: f32) -> Primitive {
@@ -5779,7 +5775,7 @@ mod tests {
     }
 
     /// A stable path re-resolves to its retained slot with no re-raster: the
-    /// second identical frame builds zero masks (the §14.4 stable fast path).
+    /// second identical frame builds zero masks (the stable fast path).
     #[test]
     fn stable_masked_solid_fill_rebuilds_nothing() {
         let mut gpu = CpuRaster::new();
@@ -5828,7 +5824,7 @@ mod tests {
     /// An outer path shadow builds a second mask (distinct from the fill mask, so
     /// keyed apart by sigma) and composites it offset by the drop through the
     /// reused glyph-coverage pipeline — two masked instances, shadow under fill,
-    /// and because both sample the same mask page they are one draw (§20.2).
+    /// and because both sample the same mask page they are one draw.
     #[test]
     fn outer_path_shadow_builds_a_second_offset_mask() {
         let mut gpu = CpuRaster::new();
@@ -5855,7 +5851,7 @@ mod tests {
         );
     }
 
-    /// An inner path shadow is an E1 filter-lane concern: the general path lane
+    /// An inner path shadow is a filter-lane concern: the general path lane
     /// declines it, so only the fill mask is built.
     #[test]
     fn inner_path_shadow_skips_the_general_lane() {
@@ -6099,7 +6095,7 @@ mod tests {
         r.upload(&mut gpu, &[image(tex), image(tex)]);
         // One cached bind group for the shared texture — and because the bind group
         // is part of the batch key, the two images are also one instanced draw
-        // (§20.2 bind-group batching), not two draws of the same resource.
+        // (bind-group batching), not two draws of the same resource.
         assert_eq!(r.texture_bindings.len(), 1);
         assert_eq!(r.segments.len(), 1);
         assert_eq!(r.segments[0].count, 2);
@@ -6287,9 +6283,9 @@ mod tests {
         );
 
         // Exactly one offscreen pass, sized to the tight content ROI — the 10×10
-        // quad, not the 20×20 layer clip (§16.2): the target never exceeds the
+        // quad, not the 20×20 layer clip: the target never exceeds the
         // visible content. The *physical* target is the ROI's size class, since
-        // it comes from the frame-local alias pool (§16.4).
+        // it comes from the frame-local alias pool.
         assert_eq!(r.offscreen_passes.len(), 1);
         let pass = &r.offscreen_passes[0];
         assert_eq!(pass.used, [10, 10]);
@@ -6324,7 +6320,7 @@ mod tests {
     }
 
     /// A small panel inside a large-but-onscreen clip sizes its offscreen target
-    /// to the panel's content, not the clip and not the surface (§16.2): the
+    /// to the panel's content, not the clip and not the surface: the
     /// forbidden "small panel → full-screen target" shape never occurs. A second
     /// child placed outside a tight clip is culled at lowering.
     #[test]
@@ -6348,11 +6344,11 @@ mod tests {
 
         // Sized to the panel, never the 4000×4000 clip nor the 64×64 surface. The
         // written region is exactly the ROI; the pooled texture behind it is the
-        // ROI's size class (§16.4), which is still far below the surface.
+        // ROI's size class, which is still far below the surface.
         assert_eq!(r.offscreen_passes.len(), 1);
         assert_eq!(r.offscreen_passes[0].used, [10, 10]);
         assert_eq!(r.offscreen_passes[0].viewport, [16.0, 16.0]);
-        // The transient-target budget reflects the tight size (§61 resource gate).
+        // The transient-target budget reflects the tight size.
         let bytes = r.frame_stats().transient_target_bytes;
         assert_eq!(bytes, 16 * 16 * 4);
         assert!(
@@ -6765,7 +6761,7 @@ mod tests {
     /// The compiled plan is what the backend sees: one pass per offscreen layer,
     /// one per blur rung, one surface pass — and nothing merged or culled, since
     /// every pass in a real frame writes a distinct attachment that something
-    /// downstream samples (§16.1).
+    /// downstream samples.
     #[test]
     fn the_pass_plan_counts_every_attachment_the_frame_writes() {
         let mut gpu = CpuRaster::new();
@@ -6843,7 +6839,7 @@ mod tests {
         );
     }
 
-    /// The headline property of E2.2 (§17.3): three mergeable effects are one
+    /// The headline property of color-op fusion: three mergeable effects are one
     /// fused op, that op rides the composite the layer already draws, and the
     /// frame therefore costs **one** offscreen pass and **zero** extra
     /// render-target passes — not three.
@@ -7034,7 +7030,7 @@ mod tests {
     }
 
     /// Two identical frames plan the same graph and reuse the same pooled
-    /// scratch: a split color chain is steady-state stable (§16.3, §17.4).
+    /// scratch: a split color chain is steady-state stable.
     #[test]
     fn steady_state_color_chain_reuses_pooled_targets() {
         let mut gpu = CpuRaster::new();
@@ -7214,7 +7210,7 @@ mod tests {
         );
     }
 
-    /// Topology alone drives a recompile (§16.1): a second identical frame reuses
+    /// Topology alone drives a recompile: a second identical frame reuses
     /// the plan, and so does a frame that only moves geometry, recolors it, resizes
     /// the surface, or nudges a sigma within its ladder tier — all of which change
     /// extents and payloads but not the pass graph.
@@ -7287,7 +7283,7 @@ mod tests {
 
     /// A sigma large enough to enter the downsampling tier plans more rungs than a
     /// small one, which *is* a topology change — the plan-reuse contract covers
-    /// parameter drift, not a different ladder shape (§16.1, §16.3).
+    /// parameter drift, not a different ladder shape.
     #[test]
     fn crossing_a_blur_ladder_tier_recompiles_the_pass_plan() {
         let scene = |sigma: f32| {

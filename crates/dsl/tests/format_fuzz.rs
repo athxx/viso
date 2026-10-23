@@ -1,4 +1,4 @@
-//! Formatter fuzz (§152.1): random and mutated sources never make the
+//! Formatter fuzz: random and mutated sources never make the
 //! formatter panic, and over every documentation example that parses as a
 //! compilation unit, the formatted text parses to the same tree — node kinds
 //! and significant tokens — and formats to itself.

@@ -1,4 +1,4 @@
-//! Section 71 validation pack for the `Splitter` control — a draggable divider
+//! Validation pack for the `Splitter` control — a draggable divider
 //! between two resizable panes — driven through the public facade. Mirrors
 //! `slider_widget.rs` (golden + a11y + allocation + the two interactive input
 //! tapes) with the splitter's own structure: a focusable flex container holding
@@ -23,7 +23,7 @@
 //!   pointer and a key handler and is focusable (the inverse of the presentational
 //!   controls, whose derived node has no handlers);
 //! - **allocation profile** — a warmed-up `Splitter` frame allocates nothing per
-//!   frame (architecture section 47 hot-path contract), same CountingAlloc +
+//!   frame (hot-path contract), same CountingAlloc +
 //!   `frame_stats`/`*_count()` steady-state asserts as `slider_widget.rs`.
 //!
 //! Building through `Splitter::build` is the point: it proves the widget lowers to

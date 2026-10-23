@@ -1,4 +1,4 @@
-//! Real-Metal verification of the "no runtime shader compilation" contract (§7.1).
+//! Real-Metal verification of the "no runtime shader compilation" contract.
 //!
 //! The standard pipelines are a fixed, known set. They must be compiled once, at
 //! device init, from the frozen manifest MSL — never lazily on the first draw

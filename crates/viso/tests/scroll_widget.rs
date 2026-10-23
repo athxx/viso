@@ -1,5 +1,5 @@
-//! Section 71 validation pack for the `Scroll` viewport widget — the first
-//! Tier 3 (layout structure) control — driven through the public facade. `Scroll`
+//! Validation pack for the `Scroll` viewport widget — a layout structure
+//! control — driven through the public facade. `Scroll`
 //! is a minimal scroll viewport: a clip box that scrolls a single content child
 //! along one axis. This pack mirrors `view_widget.rs` with the viewport's own
 //! structure and the scroll gesture as its interactive tape:
@@ -14,7 +14,7 @@
 //! - **a11y snapshot** — a `Scroll`'s derived semantics node is `Role::Group` and
 //!   carries an authored label; it declares no interactive handlers of its own;
 //! - **allocation profile** — a warmed-up `Scroll` frame allocates nothing per
-//!   frame (architecture section 47 hot-path contract), same CountingAlloc +
+//!   frame (hot-path contract), same CountingAlloc +
 //!   `frame_stats`/`*_count()` steady-state asserts as `view_widget.rs`.
 //!
 //! Building through `Scroll::build` (not raw `cx.scroll`) is the point: it proves

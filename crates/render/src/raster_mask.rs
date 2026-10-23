@@ -1,4 +1,4 @@
-//! Path -> R8 coverage rasterization for the clip/mask cold path (§14.4).
+//! Path -> R8 coverage rasterization for the clip/mask cold path.
 //!
 //! The mask model's baseline realization is "always one-channel coverage": an
 //! arbitrary vector path clip is rasterized to an 8-bit coverage bitmap, tight

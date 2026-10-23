@@ -1,5 +1,5 @@
 //! Platform services from a handler: file dialogs, share, notifications,
-//! permissions, secure storage and haptics (ADR 0031, ADR 0032).
+//! permissions, secure storage and haptics.
 //!
 //! A handler reaches the session's registry through [`ServicesExt::services`]
 //! and awaits the reply in a task:

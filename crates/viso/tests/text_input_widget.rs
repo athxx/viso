@@ -1,4 +1,4 @@
-//! Section 71 validation pack for the `TextInput` control — a single-line
+//! Validation pack for the `TextInput` control — a single-line
 //! editable text field with selection and IME composition — driven through the
 //! public facade. TextInput is the first *editable* control, so beyond the
 //! Toggle/Button pack (golden + a11y + allocation + a pointer and a keyboard
@@ -25,7 +25,7 @@
 //! - **a11y snapshot** — a `TextInput`'s derived semantics node is
 //!   `Role::TextField` and its accessible name is the authored label;
 //! - **allocation profile** — a warmed-up `TextInput` frame allocates nothing per
-//!   frame (architecture section 47 hot-path contract), same CountingAlloc +
+//!   frame (hot-path contract), same CountingAlloc +
 //!   `frame_stats`/`*_count()` steady-state asserts as `toggle_widget.rs`.
 //!
 //! The editing tapes are the point: they prove the widget's `on_key` handler,

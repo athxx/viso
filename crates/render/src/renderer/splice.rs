@@ -1,4 +1,4 @@
-//! Splicing an uploaded frame (§9.7).
+//! Splicing an uploaded frame.
 //!
 //! A frame whose shape changed in one place — a virtual list mounts a row and
 //! unmounts another, a label's text gains a glyph — rewrites a run of the

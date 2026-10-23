@@ -1,8 +1,8 @@
-//! Commit-2 grammar tests: the view surface — a component's `view` block and its
+//! Grammar tests: the view surface — a component's `view` block and its
 //! node bodies. These assert node identity (`node id: Type {}` / anonymous
 //! `Type {}`), the declarative `:` property binding, event handlers, two-way
-//! bindings, keyed `for`, and the diagnostics that enforce the language's breaks
-//! from Makepad: `child` is reserved (E3001), a `for` without `key` is E3401, and
+//! bindings, keyed `for`, and the diagnostics that enforce the language's rules:
+//! `child` is reserved (E3001), a `for` without `key` is E3401, and
 //! an arrow-bodied handler is E3201. Every input round-trips byte-for-byte.
 
 use viso_dsl::syntax::grammar::{Entry, parse, parse_entry};
@@ -161,7 +161,7 @@ fn view_if_and_match_parse() {
 
 #[test]
 fn child_is_reserved() {
-    // Makepad's implicit `child` slot is gone; a `child` node/member is E3001.
+    // There is no implicit `child` slot; a `child` node/member is E3001.
     assert!(unit_has_error(
         &view_of("child { }"),
         ParseErrorKind::ChildReserved

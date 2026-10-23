@@ -1,4 +1,4 @@
-//! The Windows accessibility bridge (ADR 0030): an AccessKit subclassing
+//! The Windows accessibility bridge: an AccessKit subclassing
 //! adapter on each window.
 //!
 //! UI Automation asks for the tree inside `WM_GETOBJECT`, while the adapter

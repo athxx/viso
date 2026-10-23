@@ -779,7 +779,7 @@ impl<'s> Lexer<'s> {
     // --- Punctuation -------------------------------------------------------
 
     /// A delimiter or operator, or an unknown character. Longest-match over the
-    /// multi-byte operators (spec section 13).
+    /// multi-byte operators.
     fn punct_or_unknown(&mut self, start: usize) -> Token {
         let b0 = self.bytes[self.pos];
         let b1 = self.peek_byte_at(1);
@@ -933,7 +933,7 @@ fn is_ident_start_byte(b: u8) -> bool {
     b == b'_' || b.is_ascii_alphabetic() || b >= 0x80
 }
 
-/// Whether `ch` can start an identifier (spec section 11): `_` or `XID_Start`.
+/// Whether `ch` can start an identifier: `_` or `XID_Start`.
 #[inline]
 fn is_ident_start(ch: char) -> bool {
     if ch.is_ascii() {
@@ -942,7 +942,7 @@ fn is_ident_start(ch: char) -> bool {
     CodePointSetData::new::<XidStart>().contains(ch)
 }
 
-/// Whether `ch` can continue an identifier (spec section 11): `XID_Continue`.
+/// Whether `ch` can continue an identifier: `XID_Continue`.
 #[inline]
 fn is_ident_continue(ch: char) -> bool {
     if ch.is_ascii() {

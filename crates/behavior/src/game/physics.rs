@@ -1,4 +1,4 @@
-//! The physics a game world steps its bodies with (§106, §108): the
+//! The physics a game world steps its bodies with: the
 //! [`Physics`] contract an engine implements, and [`Kinematic`], the
 //! built-in engine.
 //!

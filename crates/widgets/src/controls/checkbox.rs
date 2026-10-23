@@ -4,7 +4,7 @@
 //! ticked while it is checked. A primary-pointer click (press then release)
 //! or a keyboard activation (Enter/Space while focused) flips its `checked`
 //! state and fires `on_change` with the new value: the two are the same
-//! action, so the callback is shared (AGENTS section 15).
+//! action, so the callback is shared.
 //!
 //! Unlike a [`Button`](crate::Button), whose press is momentary, a `CheckBox`
 //! *toggles*: each activation writes the inverse of its `checked` cell, so the

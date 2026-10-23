@@ -105,7 +105,7 @@ pub struct EnvRead {
     pub anchor: NodeKey,
 }
 
-/// A game query a view reads (ADR 0045).
+/// A game query a view reads.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GameRead {
     /// The component's state slot holding it.
@@ -116,7 +116,7 @@ pub struct GameRead {
 
 impl ViewBehavior {
     /// The module compiled to Rust, every chunk, for the release build to
-    /// install in place of interpreting it (ADR 0041). `krate` is the path the
+    /// install in place of interpreting it. `krate` is the path the
     /// code names `viso_behavior` by where it is compiled.
     pub fn native_code(&self, krate: &str) -> String {
         viso_behavior::aot::lower_module(&self.module, krate)

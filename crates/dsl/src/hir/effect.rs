@@ -1,4 +1,4 @@
-//! Static effect checking — the doc's call matrix over the resolved call graph.
+//! Static effect checking — the call matrix over the resolved call graph.
 //!
 //! Every callable carries an [`EffectClass`]: a `fn` is `Pure` or `Read` (it reads
 //! state but mutates nothing), an `action` is a synchronous `Action` mutation, and a
@@ -42,7 +42,7 @@ use crate::resolve::{Resolution, ResolvedRef};
 use crate::syntax::{SyntaxKind, SyntaxNode, TextRange};
 use viso_behavior::native::ThreadDomain;
 
-/// The effect a callable carries — the doc's four-way classification.
+/// The effect a callable carries — a four-way classification.
 ///
 /// `Pure` reads nothing observable and mutates nothing; `Read` observes reactive state
 /// but does not mutate (both are what a `fn` may be); `Action` is a synchronous
@@ -103,7 +103,7 @@ impl BodyContext {
     }
 
     /// Whether a body in this context may call a callable of effect class `callee`.
-    /// This is the doc's call matrix.
+    /// This is the call matrix.
     fn permits(self, callee: EffectClass) -> bool {
         match self {
             // View/Computed/fn: pure and read only.

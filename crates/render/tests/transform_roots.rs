@@ -1,4 +1,4 @@
-//! Transform roots (§21): moving a root re-encodes its draws and rewrites no
+//! Transform roots: moving a root re-encodes its draws and rewrites no
 //! instance.
 //!
 //! Each case paints a scene once, moves its roots with `set_transforms`, and

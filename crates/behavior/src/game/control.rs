@@ -1,4 +1,4 @@
-//! What a view does to the game its root runs (ADR 0045): `game.pause()` and
+//! What a view does to the game its root runs: `game.pause()` and
 //! `game.resume()` are the actions `viso::game::session` declares, which ask
 //! the [`GameControl`] the view's host lends its VM. The session takes the
 //! request at its next frame.

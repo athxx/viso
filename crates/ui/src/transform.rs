@@ -1,4 +1,4 @@
-//! Transform roots: what moves without a relayout (§21, ADR 0043).
+//! Transform roots: what moves without a relayout.
 //!
 //! A node's on-screen box is its layout `bounds` plus a *displacement*: the
 //! translate of the node itself and of every ancestor, less the scroll of

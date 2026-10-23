@@ -1,4 +1,4 @@
-//! Structured edits (§143): a change named by what it does and where, by
+//! Structured edits: a change named by what it does and where, by
 //! [`SymbolId`] and [`SyntaxId`] instead of by line and column, so a tool or an
 //! AI agent cannot land an edit on a line that has drifted since it looked.
 //!
@@ -13,7 +13,7 @@
 //! of that kind. It survives every edit outside its declaration and every edit
 //! inside it that adds no sibling of the same kind before it on its path.
 //!
-//! Cold-path tooling throughout (AGENTS 7.2): one edit reparses and compiles the
+//! Cold-path tooling throughout: one edit reparses and compiles the
 //! file twice.
 
 use std::cell::OnceCell;
@@ -142,7 +142,7 @@ impl FromStr for SyntaxId {
     }
 }
 
-/// One structured edit (§143). Code fields (types, expressions, statements,
+/// One structured edit. Code fields (types, expressions, statements,
 /// nodes) are source text, laid out into place by the edit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StructuredEdit {

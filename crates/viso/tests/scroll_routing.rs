@@ -2,7 +2,7 @@
 //! innermost scroll viewport under the pointer, moves its offset (clamped to the
 //! scrollable range), and dirties only transform/hit-test/paint — never layout —
 //! so a scroll re-derives world rects and repaints without a relayout. The full
-//! Slice H chain (hit-test → viewport select → clamp → targeted invalidation),
+//! chain (hit-test → viewport select → clamp → targeted invalidation),
 //! end to end.
 //!
 //! Like `pointer_routing`, this drives the ui stores directly (all reachable
@@ -74,7 +74,7 @@ fn wheel_scrolls_the_viewport_and_dirties_only_its_transform() {
     assert_eq!(store.scroll(viewport), Vec2 { x: 0.0, y: 60.0 });
 
     // A scroll moves the content's transform root: no relayout, no repaint,
-    // no hit-test rebuild (ADR 0043).
+    // no hit-test rebuild.
     let d = store.dirty(viewport);
     assert!(d.contains(DirtyClass::TRANSFORM));
     assert!(!d.intersects(

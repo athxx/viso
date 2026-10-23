@@ -686,7 +686,7 @@ impl<'a> ViewWalk<'a> {
 
     /// Checks the node of the component `component`, its type at `at`, whose
     /// body `body` forwards gesture handlers onto the component's view root,
-    /// as that root (U8.2).
+    /// as that root.
     fn forwarded_access(&mut self, component: SymbolId, at: TextRange, body: &NodeBody) {
         let events = self.env.component_events(component).unwrap_or_default();
         let inputs = self.env.component_inputs(component).unwrap_or_default();

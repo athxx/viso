@@ -5,14 +5,14 @@
 //! This module holds **no** `cx`/store types: it is plain data ([`TreeNode`],
 //! [`NodeKey`], [`VisibleRow`]) and total functions over it — expand/collapse,
 //! selection, the focus-cursor arithmetic, and the prefix flatten — so every
-//! structural edit is unit-testable without building a single node (AGENTS
-//! section 35). The build walk in [`super::build`] reads the flattened rows to
+//! structural edit is unit-testable without building a single node. The build
+//! walk in [`super::build`] reads the flattened rows to
 //! author nodes; the reconcile step in [`super::reconcile`] edits the open and
 //! selection sets, reflattens, and drives the virtual list.
 //!
 //! The model is an **owned tree of `Vec`-linked children**, not a flat
 //! `HashMap<Id, Node>`: Viso already owns a generational node arena and forbids a
-//! second synthetic-id map on any traversed path (AGENTS sections 8.2, 29, 45). A
+//! second synthetic-id map on any traversed path. A
 //! file tree changes only on discrete expand/collapse/select actions and is
 //! walked whole only at flatten time (a cold, discrete-action path), so an owned
 //! tree is cache-friendly and hashes nothing on the traversed path.
@@ -20,7 +20,7 @@
 //! Expansion and selection live in [`NodeKey`]-keyed sets, not in the tree nodes:
 //! a key is a stable path identity, so collapsing a folder and reopening it — or
 //! reordering the underlying data — keeps a descendant's expanded and selected
-//! state (the spec's "stable key preserves expanded state"). The flatten reads
+//! state. The flatten reads
 //! the open set to decide which folders to descend into; it never mutates the
 //! tree.
 
@@ -29,9 +29,8 @@ use std::collections::HashSet;
 /// A stable, `Copy` identity for a tree node — a hash of the node's path. The
 /// tree, the open set, and the selection set all reference a node **only** by
 /// key, never by position, so a node keeps its expanded and selected state as the
-/// tree collapses, reopens, or reorders (the spec's "stable key preserves
-/// expanded state"). A small integer, not a string: identity on a traversed path
-/// is an ID, never a hashed name re-hashed each frame (AGENTS section 29).
+/// tree collapses, reopens, or reorders. A small integer, not a string: identity
+/// on a traversed path is an ID, never a hashed name re-hashed each frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeKey(pub u64);
 
@@ -57,7 +56,7 @@ pub struct TreeNode {
 /// One flattened visible row: a node the flatten decided is currently visible,
 /// carrying just the hot facts a row build and the reconcile need. `Copy` and
 /// heap-free — the label stays in the [`TreeNode`], fetched by `key` only when a
-/// row mounts (AGENTS section 8.4). `depth` is the node's nesting level (the root
+/// row mounts. `depth` is the node's nesting level (the root
 /// forest is depth 0), used to indent the row; `expanded` is meaningful only for a
 /// directory (a file row's disclosure state is `false`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -289,7 +288,7 @@ pub fn apply_select(
 /// This is the model's core read: the tree plus the open set define exactly which
 /// rows are visible, so expanding or collapsing a folder is "edit `open`, then
 /// reflatten". Pure — it reads the tree and the set and allocates one output
-/// `Vec`, mutating neither (AGENTS section 10.5).
+/// `Vec`, mutating neither.
 pub fn flatten(roots: &[TreeNode], open: &HashSet<NodeKey>) -> Vec<VisibleRow> {
     let mut out = Vec::new();
     for root in roots {

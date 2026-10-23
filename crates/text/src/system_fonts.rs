@@ -106,7 +106,7 @@ pub trait ColorGlyphRasterizer {
 ///
 /// A WASM/Canvas runtime has no system fonts to draw on — no CSS `system-ui`, no
 /// browser local-font enumeration, no OS installed-font access, and the
-/// framework ships no implicit bundled default face (spec section 16.1). Such a
+/// framework ships no implicit bundled default face. Such a
 /// runtime wires this provider so the App-first / System-second resolution has a
 /// System step that categorically answers nothing: a request the application's
 /// own manifest does not satisfy resolves to [`crate::resolver::Resolved::Missing`],
@@ -154,7 +154,7 @@ mod tests {
     #[test]
     fn wasm_runtime_has_no_implicit_system_or_framework_font() {
         // A WASM/Canvas runtime ships no system fonts and no implicit framework
-        // default face (spec section 16.1). Model that runtime as one whose
+        // default face. Model that runtime as one whose
         // System step is the zero-provider, then ask for every role with an
         // empty manifest — the application declares nothing.
         //
@@ -193,8 +193,8 @@ mod tests {
     fn packaged_app_font_still_resolves_without_system_fonts() {
         // "No implicit font" is not "no fonts": a WASM project's own packaged
         // family still resolves through the App-first step, even though the
-        // System step owns nothing. This keeps section 16.2 honest — packaged
-        // fonts remain a project resource under the zero-system-font runtime.
+        // System step owns nothing. Packaged fonts remain a project resource
+        // under the zero-system-font runtime.
         let manifest = FontManifest::from_declared(
             vec![ManifestEntry {
                 family: "Inter".to_owned(),

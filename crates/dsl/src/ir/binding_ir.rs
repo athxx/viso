@@ -1,4 +1,4 @@
-//! Binding IR — the compiled `source -> (node, dirty class)` edges (AGENTS sections 10.2, 10.3).
+//! Binding IR — the compiled `source -> (node, dirty class)` edges.
 //!
 //! The UI IR ([`crate::ir::ui_ir`]) folds compile-time-constant properties into
 //! static style and leaves every reactive property as a [`PendingProperty`]. This
@@ -10,7 +10,7 @@
 //! and no runtime dependency discovery.
 //!
 //! A compiler-known typed binding must never silently fall back to runtime dynamic
-//! tracking (section 10.3): a pending property whose value reads at least one
+//! tracking: a pending property whose value reads at least one
 //! reactive source becomes one or more [`BindingKind::Static`] edges. A property
 //! that reads *no* reactive source is not a binding at all — it is a constant the
 //! UI IR should have folded, or an unresolved name the frontend already
@@ -44,7 +44,7 @@ use crate::syntax::span::TextRange;
 pub struct NodeKey(pub u32);
 
 /// Whether an edge rides the compiled static fast path or the explicit dynamic
-/// fallback (section 10.3).
+/// fallback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BindingKind {
     /// A compiler-known typed binding: a property reads a reactive source resolved
@@ -67,14 +67,14 @@ pub struct BindingEdge {
     pub node: NodeKey,
     /// The bound property's leading name, for diagnostics and the emitter.
     pub property: String,
-    /// The dirty classes a write to that property invalidates (section 11).
+    /// The dirty classes a write to that property invalidates.
     pub class: DirtyClass,
     /// Static fast path or explicit dynamic fallback.
     pub kind: BindingKind,
 }
 
 /// The Binding IR for a lowered view: the compiled edges plus the observability
-/// counts a strict typed example asserts against (section 10.3).
+/// counts a strict typed example asserts against.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BindingIr {
     /// Every compiled edge, in deterministic order (pre-order node, then source).

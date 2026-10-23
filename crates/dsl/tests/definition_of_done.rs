@@ -1,4 +1,4 @@
-//! The Definition of Done (§158), one test per item. Items a dedicated suite
+//! The Definition of Done, one test per item. Items a dedicated suite
 //! already pins are checked here at their contract (the suite is named on the
 //! test); the rest are checked in full:
 //!
@@ -12,7 +12,7 @@
 //! - a component with state, computed, action and view running, updating
 //!   without any render call, a keyed list keeping identity, a rejected reload
 //!   keeping the last good;
-//! - diagnostics carrying the §138 fields, a system on a fixed tick;
+//! - diagnostics carrying their structured fields, a system on a fixed tick;
 //! - and the safety items: no parser panic on hostile input, the verifier
 //!   refusing an out-of-range register, a stale node handle detected.
 //!
@@ -225,7 +225,7 @@ fn precedence_and_associativity_are_golden_trees() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
-    // Comparison and range do not associate (§63.1).
+    // Comparison and range do not associate.
     for chain in ["a < b < c", "a == b != c", "a .. b .. c"] {
         let parsed = parse_expr(&tokenize(chain), chain);
         assert_eq!(

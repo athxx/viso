@@ -1,4 +1,4 @@
-//! `viso-svg` — the SVG input lane (§13): bytes parsed once into a normalized
+//! `viso-svg` — the SVG input lane: bytes parsed once into a normalized
 //! vector document, with no renderer, so tooling checks an SVG asset without
 //! linking one. The renderer lowers the document to its primitives
 //! (`viso_render::svg`).

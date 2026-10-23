@@ -1,4 +1,4 @@
-//! Backdrop capture & sharing contract (§17.1, §17.2).
+//! Backdrop capture & sharing contract.
 //!
 //! A backdrop is the one effect whose input is "whatever is already drawn behind
 //! me". The two things that must never regress:
@@ -216,7 +216,7 @@ fn neighbouring_panels_share_one_capture_and_one_ladder() {
     );
     // Each panel still composites itself — one instance each — but the two
     // composites sample the same blurred source, so bind-group batching puts them
-    // in one draw (§20.2): the second panel costs an instance, not a draw call.
+    // in one draw: the second panel costs an instance, not a draw call.
     assert_eq!(shared.instances, single.instances + 1);
     assert_eq!(
         shared.draw_calls, single.draw_calls,

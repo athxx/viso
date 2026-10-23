@@ -1,13 +1,11 @@
 //! Microbench skeleton for the `Sheet` edge-drawer control: the cost of one
 //! authoring pass (`Sheet::build`), one `layout`, and one `paint_tree` lowering.
 //!
-//! This is the section 71 microbench slot for the fifth Tier 4 (navigation /
-//! overlay) widget — a scrim-backed drawer that slides in from a surface edge —
-//! and copies the `modal_build.rs` template. It exercises the real `build` ->
-//! `layout` -> `paint_tree` path so a regression is measurable; the slide itself
-//! is a transform-only animation ticked elsewhere (see `viso-ui`'s
-//! `animation_tick` bench), so this bench measures the static open-state scene
-//! cost, not the motion.
+//! `Sheet` is a scrim-backed drawer that slides in from a surface edge. The bench
+//! exercises the real `build` -> `layout` -> `paint_tree` path so a regression is
+//! measurable; the slide itself is a transform-only animation ticked elsewhere (see
+//! `viso-ui`'s `animation_tick` bench), so this bench measures the static open-state
+//! scene cost, not the motion.
 //!
 //! `Sheet` authors one `Bool` open cell (`cx.state`) and binds it to the sheet's
 //! `PAINT`, so it must build through `BuildCx::with_reactive` (a plain
@@ -19,8 +17,7 @@
 //! dependency edge.
 //!
 //! Run release (`CARGO_TARGET_DIR=/tmp/rust_tmp cargo bench -p viso-widgets`);
-//! criterion defaults to a release profile. Debug timing is not a perf result
-//! (AGENTS section 36).
+//! criterion defaults to a release profile. Debug timing is not a perf result.
 
 use std::cell::RefCell;
 use std::hint::black_box;

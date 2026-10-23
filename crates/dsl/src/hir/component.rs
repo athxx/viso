@@ -172,7 +172,7 @@ pub(crate) fn lower_component(
                 };
 
                 // A private state that omitted its type must infer a single concrete type;
-                // an undetermined result is a compile error (spec state section), unless
+                // an undetermined result is a compile error, unless
                 // it reads a later state, which the ordering pass reports instead.
                 let untyped = !type_was_annotated && is_undetermined(&ty);
 

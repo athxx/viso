@@ -1,7 +1,7 @@
 //! Batch geometry reductions over point slices — the public, scalar-ABI entry
 //! points to the SIMD-accelerated kernels in [`simd`](crate::simd).
 //!
-//! These back the render tessellator's cold-path preprocessing (§13.6): folding
+//! These back the render tessellator's cold-path preprocessing: folding
 //! a flattened outline to its bounding box, and computing per-segment arc
 //! lengths for dash splitting. The signatures are the plain scalar `[Point]` /
 //! `[f32]` ABI; a target-appropriate SIMD kernel is selected behind them at

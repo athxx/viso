@@ -1,5 +1,5 @@
 //! `cargo xtask mcu-smoke`: the crates that keep the MCU-ready invariants
-//! (Architecture §50A.6) checked for a Cortex-M4F/M7 microcontroller,
+//! checked for a Cortex-M4F/M7 microcontroller,
 //! `thumbv7em-none-eabihf`, with no default features and so no `std`.
 //!
 //! Each crate is checked even after one fails, so one run reports them all.

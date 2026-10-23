@@ -248,7 +248,7 @@ impl BidiInfo {
     /// whole document: rule L1 is a per-line rule, so it is applied over the
     /// line's own byte slice against the paragraph's base level. This is O(line),
     /// never O(document) — a single line query in a ten-thousand-line paragraph
-    /// costs the same as one in a ten-line note (AGENTS.md section 7 hot path).
+    /// costs the same as one in a ten-line note.
     fn line_levels(&self, start: TextOffset, end: TextOffset) -> Vec<Level> {
         let lo = start.0.min(self.levels.len());
         let hi = end.0.min(self.levels.len());

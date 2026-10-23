@@ -1,4 +1,4 @@
-//! Runtime acceptance (§154), from source through the mounted view: capture
+//! Runtime acceptance, from source through the mounted view: capture
 //! before target before bubble, paint-only writes that lay nothing out, keyed
 //! identity, preserved-branch eviction, stale loads, fault rollback and
 //! environment changes touching only their dependents.

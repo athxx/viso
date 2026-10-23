@@ -5,11 +5,11 @@
 //! fingerprint mints durable [`SymbolId`]s for declarations, and a deterministic
 //! [`ModuleGraph`] wires source units together by their `import` edges. It answers
 //! *what each name refers to*, not *what type it has* — type, effect, and capability
-//! checking belong to the next slice.
+//! checking happen in a later pass.
 //!
 //! Everything here is cold-path: resolution runs once per build, never on a frame
-//! path, so interning, hashing, and graph structures may allocate freely (AGENTS
-//! section 7.2). The identities they produce — `SymbolId` above all — are what the
+//! path, so interning, hashing, and graph structures may allocate freely. The
+//! identities they produce — `SymbolId` above all — are what the
 //! hot-path layers downstream are lowered against.
 
 mod module;

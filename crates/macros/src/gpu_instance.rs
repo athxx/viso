@@ -10,9 +10,9 @@
 //!    forwarding to `LAYOUT.validate_against(schema)`.
 //!
 //! This is the explicit alternative to reinterpreting "all bytes after field X"
-//! as instance data (§18/§56): every field is named and its offset recorded,
+//! as instance data: every field is named and its offset recorded,
 //! then cross-checked against the shader's declared schema at pipeline
-//! registration (§32). It is keyed on byte offsets since the instance struct
+//! registration. It is keyed on byte offsets since the instance struct
 //! *is* the `#[repr(C)]` layout.
 //!
 //! Field types are restricted to 4-byte-aligned GPU scalars/vectors:
@@ -73,7 +73,7 @@ pub fn derive(input: DeriveInput) -> TokenStream {
     }
 
     quote! {
-        // A GpuPod type must be `Copy` (§7.3): it is uploaded as a plain byte
+        // A GpuPod type must be `Copy`: it is uploaded as a plain byte
         // range, so it can carry no `Drop` glue or move-only state. Asserting it
         // here turns a missing `Copy` into a clear error at the derive site
         // rather than a downstream trait-bound failure at the first upload.
@@ -98,7 +98,7 @@ pub fn derive(input: DeriveInput) -> TokenStream {
             };
 
             /// Validate this instance layout against a shader's declared schema
-            /// (offset/format cross-check at pipeline-registration time, §32).
+            /// (offset/format cross-check at pipeline-registration time).
             pub fn validate_against(
                 schema: &::viso_gpu::InstanceSchema,
             ) -> ::core::result::Result<(), ::viso_gpu::LayoutError> {

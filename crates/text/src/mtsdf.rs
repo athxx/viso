@@ -5,7 +5,7 @@
 //! signed distance field so it stays sharp across a range of scales and
 //! rotations without re-rasterizing per frame. The three color channels carry
 //! *per-edge-group pseudo distances* — that is what reconstructs a sharp corner
-//! instead of rounding it (§13.2) — and the alpha channel carries the glyph's
+//! instead of rounding it — and the alpha channel carries the glyph's
 //! **true** signed distance, which drives anti-aliasing and, at generation time,
 //! the sign-clash error correction that removes multi-channel interpolation
 //! artifacts.
@@ -17,12 +17,12 @@
 //!
 //! The data is plain linear numbers, never color: a field texture must be
 //! created with a non-sRGB format and sampled linearly, or every distance is
-//! silently gamma-warped (§13.2).
+//! silently gamma-warped.
 //!
-//! Per §13.5 a field is only valid inside a *quality window* around the
-//! resolution bucket it was generated at. A request outside the window takes the
-//! next bucket, or — past the top of the ladder — hands off to the retained
-//! outline lane; one field is never stretched without bound.
+//! A field is only valid inside a *quality window* around the resolution bucket
+//! it was generated at. A request outside the window takes the next bucket, or
+//! — past the top of the ladder — hands off to the retained outline lane; one
+//! field is never stretched without bound.
 //!
 //! Viso 1.0 deliberately has **no plain single-channel SDF lane**: exact A8
 //! coverage ([`crate::raster_a8`]) serves fixed-size text better than a
@@ -46,7 +46,7 @@ pub const DISTANCE_RANGE: f32 = 4.0;
 /// border and the edge would harden into the texture's edge.
 pub const FIELD_PAD: u32 = 3;
 
-/// Revision of the generator and its error correction (§13.5). A field carries
+/// Revision of the generator and its error correction. A field carries
 /// it so a cached field from an older generator is recognizably stale rather
 /// than silently mixed with new ones.
 pub const GENERATOR_REVISION: u32 = 1;
@@ -83,14 +83,14 @@ const FLATTEN_MAX: u32 = 96;
 /// (about 8°) is a corner and splits the edge coloring.
 const CORNER_CROSS: f32 = 0.141_120_01;
 
-/// Which resolution to serve a request at (§13.5).
+/// Which resolution to serve a request at.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MtsdfPlan {
     /// Generate (or reuse) the field at this bucket's px-per-em. The request is
     /// inside that bucket's quality window.
     Bucket(f32),
     /// Past the top of the ladder: no field can serve this scale, so the caller
-    /// hands off to the retained outline lane ([`crate::outline_cache`], §13.6)
+    /// hands off to the retained outline lane ([`crate::outline_cache`])
     /// rather than magnifying the largest field further.
     Outline,
 }
@@ -112,7 +112,7 @@ pub fn plan(px_per_em: f32) -> MtsdfPlan {
 }
 
 /// The quality window of a field generated at `bucket` px-per-em: the effective
-/// px-per-em range it may serve before the caller re-[`plan`]s (§13.5). The same
+/// px-per-em range it may serve before the caller re-[`plan`]s. The same
 /// range every generated [`MtsdfGlyph`] records.
 pub fn window(bucket: f32) -> (f32, f32) {
     (bucket * WINDOW_MIN, bucket * WINDOW_MAX)
@@ -127,12 +127,12 @@ pub struct MtsdfRequest<'a> {
     pub index: u32,
     /// The instance of a variable face the field is generated at.
     pub variations: Variations,
-    /// The face's runtime identity, recorded on the field (§13.5).
+    /// The face's runtime identity, recorded on the field.
     pub face: FontFaceId,
     /// Glyph index within the face.
     pub glyph: u16,
     /// The face's revision, recorded so a field outlives its face only as long
-    /// as the face is unchanged (§13.5).
+    /// as the face is unchanged.
     pub revision: FontRevision,
     /// Bucket px-per-em from [`plan`]. A caller may pass any positive value; the
     /// recorded window is derived from it either way.
@@ -186,7 +186,7 @@ impl MtsdfGlyph {
         self.width == 0 || self.height == 0
     }
 
-    /// Whether this field may serve `px_per_em` (§13.5).
+    /// Whether this field may serve `px_per_em`.
     pub fn in_window(&self, px_per_em: f32) -> bool {
         px_per_em >= self.min_px_per_em && px_per_em <= self.max_px_per_em
     }
@@ -574,7 +574,7 @@ impl MtsdfGenerator {
                     inside * DISTANCE_RANGE
                 };
 
-                // Error correction (§13.5): the multi-channel median and the true
+                // Error correction: the multi-channel median and the true
                 // distance may legitimately differ in magnitude — that is the
                 // corner being reconstructed — but never in sign. Where they do,
                 // the median is an interpolation artifact and the true distance
@@ -1074,7 +1074,7 @@ mod tests {
     #[test]
     fn a_generated_field_reconstructs_coverage_at_the_window_edges() {
         // The quality window is the claim that one field serves a range of
-        // scales (§13.5). Both edges must still reconstruct the glyph; if they
+        // scales. Both edges must still reconstruct the glyph; if they
         // did not, the window would be a lie and the ladder would need more
         // buckets.
         for ratio in [WINDOW_MIN, WINDOW_MAX] {
@@ -1116,7 +1116,7 @@ mod tests {
 
     #[test]
     fn generation_allocates_no_scratch_after_warm_up() {
-        // Scratch reuse across generations is a hot-path contract (§28): the
+        // Scratch reuse across generations is a hot-path contract: the
         // first glyph sizes the buffers, later glyphs of the same bucket reuse
         // them. Warm up on the widest glyph so later ones fit.
         let mut generator = MtsdfGenerator::default();
@@ -1139,7 +1139,7 @@ mod tests {
 
     #[test]
     fn a_request_past_a_window_takes_the_next_bucket() {
-        // Never stretch one field without bound (§13.5): each request lands on
+        // Never stretch one field without bound: each request lands on
         // the smallest bucket whose window reaches it, and stepping past a
         // window steps up a bucket rather than magnifying further.
         assert_eq!(plan(16.0), MtsdfPlan::Bucket(16.0));
@@ -1155,7 +1155,7 @@ mod tests {
 
     #[test]
     fn past_the_ladder_the_request_hands_off_to_the_outline() {
-        // §13.6: past the top bucket's window there is no field to serve the
+        // Past the top bucket's window there is no field to serve the
         // scale, so the caller falls back to the retained outline.
         let top = BUCKETS[BUCKETS.len() - 1];
         assert_eq!(plan(top * WINDOW_MAX), MtsdfPlan::Bucket(top));

@@ -1,6 +1,5 @@
 //! Dirty-range coalescing: turn the slots that changed this frame into a few
-//! contiguous upload ranges rather than one `write_buffer` per changed slot
-//! (§9.3).
+//! contiguous upload ranges rather than one `write_buffer` per changed slot.
 //!
 //! # Why bridge clean slots
 //!
@@ -22,7 +21,7 @@
 //!
 //! # Allocation
 //!
-//! Coalescing is a hot-path, per-frame step (§9.3, §28). [`Runs`] folds the
+//! Coalescing is a hot-path, per-frame step. [`Runs`] folds the
 //! changed slots in as the diff meets them and hands back each range as it
 //! closes, so the pool uploads while it diffs and keeps no list of changed
 //! slots or ranges: whatever changed, no frame touches the heap. A frame with

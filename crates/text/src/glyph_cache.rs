@@ -1402,7 +1402,7 @@ mod tests {
     fn memory_pressure_sheds_one_pool_and_leaves_the_others_whole() {
         // Fill all four pools, then shed only the RGBA pool. No other pool loses
         // a glyph, a page, or a byte: pressure never cascades into a text-cache
-        // clear (§13.10 DoD).
+        // clear.
         let page = PoolBudget::new(8, 100);
         let mut res = GlyphResidency::with_pool_budgets(page, page, page, page);
         for g in 0..6u16 {

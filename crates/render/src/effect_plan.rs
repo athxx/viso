@@ -1,11 +1,11 @@
-//! The Effect Planner (§3145): decide whether a potential layer becomes an
+//! The Effect Planner: decide whether a potential layer becomes an
 //! offscreen target, by trying to eliminate every reason it exists.
 //!
-//! "Offscreen is an expensive mechanism, not a convenient default" (§3145). A
+//! "Offscreen is an expensive mechanism, not a convenient default." A
 //! `saveLayer`-shaped API invites the opposite habit: the author asks for a
 //! layer, the renderer allocates one. This module inverts that. A layer arrives
 //! as a [`LayerRequest`] — *what was asked for* — which the planner turns into a
-//! set of [`LayerReason`]s, then walks the §3161 elimination ladder in order:
+//! set of [`LayerReason`]s, then walks the elimination ladder in order:
 //!
 //! 1. push the opacity into the children?
 //! 2. fuse the color matrix?
@@ -18,7 +18,7 @@
 //! created. The output [`LayerPlan`] records all three sets — requested,
 //! eliminated, surviving — so the inspector can answer *why* a group cost a pass,
 //! and so a test can assert the elimination that fired rather than only its
-//! effect on a counter (§62).
+//! effect on a counter.
 //!
 //! Two kinds of elimination live in the same ladder, and the distinction matters
 //! when reading a plan:
@@ -28,13 +28,12 @@
 //!   and [`SharedBackdrop`] — a shared capture hands the group a texture it can
 //!   sample in place, so the backdrop filter stops needing a target of its own.
 //! - An elimination that removes **passes** leaves the layer but makes it
-//!   cheaper: [`CollapsedAdjacentEffects`] (an N-effect chain costs one op, E2.2),
+//!   cheaper: [`CollapsedAdjacentEffects`] (an N-effect chain costs one op),
 //!   [`AnalyticShadow`] (a shadow shaded in closed form never asked for a blur
-//!   layer, E0), [`ScissorInsteadOfClipLayer`] (the clip rides the pass's
-//!   scissor, C0).
+//!   layer), [`ScissorInsteadOfClipLayer`] (the clip rides the pass's scissor).
 //!
 //! The planner is a pure function on facts the renderer has already gathered — a
-//! cold-path decision taken once per layer per frame (§7.2), no allocation, no
+//! cold-path decision taken once per layer per frame, no allocation, no
 //! target claimed here. The renderer carries the plan out.
 //!
 //! [`OpacityPushedIntoChildren`]: LayerElimination::OpacityPushedIntoChildren
@@ -47,8 +46,8 @@
 use crate::opacity::{ChildOverlap, LayerReason, OpacityPlan, plan_group_opacity};
 use crate::{EffectCost, EffectLocality};
 
-/// One rung of the §3161 elimination ladder — an attempt the planner makes to
-/// avoid an offscreen target, in the order the specification lists them.
+/// One rung of the elimination ladder — an attempt the planner makes to avoid an
+/// offscreen target, in the order the planner tries them.
 ///
 /// The discriminant order *is* the trial order, so an [`EliminationSet`] prints
 /// and iterates in the order the planner tried its rungs.
@@ -56,30 +55,30 @@ use crate::{EffectCost, EffectLocality};
 pub enum LayerElimination {
     /// The group's opacity was multiplied into each child instead of fading a
     /// composited layer — correct because the children provably do not overlap
-    /// (§14.5). Removes [`LayerReason::GroupOpacity`].
+    /// Removes [`LayerReason::GroupOpacity`].
     OpacityPushedIntoChildren = 0,
-    /// The group's color chain merged into a single matrix (§3178). When the
+    /// The group's color chain merged into a single matrix. When the
     /// merged chain computes nothing, it removes [`LayerReason::ImageFilter`]
     /// outright; otherwise it is the pass-saving half of the same fusion.
     FusedColorMatrix = 1,
     /// The group's clip was realized as the pass's scissor rectangle rather than
-    /// as a clip layer — the C0 default, recorded whenever a clipped group ends
+    /// as a clip layer — the clip planner's default, recorded whenever a clipped group ends
     /// up staying in its parent's pass.
     ScissorInsteadOfClipLayer = 2,
-    /// A shadow in the group is shaded in closed form (E0's analytic soft shadow)
+    /// A shadow in the group is shaded in closed form (the analytic soft shadow)
     /// rather than by blurring a rendered copy of the shape, so it never asked for
     /// an image-filter layer.
     AnalyticShadow = 3,
     /// The group's backdrop capture joined an existing capture group instead of
-    /// opening its own (§17.1, E2.1): one snapshot pass serves every member.
+    /// opening its own: one snapshot pass serves every member.
     SharedBackdrop = 4,
-    /// Two or more adjacent effects on this group collapsed into one op (§3178,
-    /// E2.2): an N-effect chain costs one op instead of N passes.
+    /// Two or more adjacent effects on this group collapsed into one op: an
+    /// N-effect chain costs one op instead of N passes.
     CollapsedAdjacentEffects = 5,
 }
 
 impl LayerElimination {
-    /// Every rung, in §3161 trial order.
+    /// Every rung, in trial order.
     pub const ALL: [LayerElimination; 6] = [
         LayerElimination::OpacityPushedIntoChildren,
         LayerElimination::FusedColorMatrix,
@@ -109,7 +108,7 @@ impl LayerElimination {
 
 /// A set of [`LayerReason`]s as one byte — the eight reasons fit a `u8` exactly,
 /// so a plan carries its three sets in three bytes with no allocation and no
-/// per-layer `Vec` (§28).
+/// per-layer `Vec`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct ReasonSet(u8);
 
@@ -160,7 +159,7 @@ impl ReasonSet {
     }
 }
 
-/// A set of [`LayerElimination`]s as one byte: which rungs of the §3161 ladder
+/// A set of [`LayerElimination`]s as one byte: which rungs of the ladder
 /// actually fired for a layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct EliminationSet(u8);
@@ -194,7 +193,7 @@ impl EliminationSet {
         self.0.count_ones()
     }
 
-    /// The rungs that fired, in §3161 trial order.
+    /// The rungs that fired, in trial order.
     pub fn iter(self) -> impl Iterator<Item = LayerElimination> {
         LayerElimination::ALL
             .into_iter()
@@ -212,24 +211,24 @@ impl EliminationSet {
 /// Every field is a *fact already established* by an earlier lane — the planner
 /// classifies and eliminates, it does not measure. The renderer fills this in at
 /// the layer-open site from the authored [`LayerClip`](crate::LayerClip), the
-/// fused color chain (E2.2), the blend marker (E2.3), the backdrop group it
-/// joined (E2.1), and a look-ahead over the layer's own subtree.
+/// fused color chain, the blend marker, the backdrop group it joined, and a
+/// look-ahead over the layer's own subtree.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LayerRequest {
     /// The group opacity in `[0, 1]`. `1.0` asks for nothing.
     pub opacity: f32,
     /// What is known about whether the group's children overlap — the fact that
-    /// decides whether the opacity can be pushed down (§14.5).
+    /// decides whether the opacity can be pushed down.
     pub overlap: ChildOverlap,
     /// The group's content is blurred by an effective sigma the ladder will
-    /// actually realize (a sub-pixel sigma is not a blur, §16.2).
+    /// actually realize (a sub-pixel sigma is not a blur).
     pub blurs_content: bool,
-    /// The group filters the pixels behind it (backdrop blur, §17.1).
+    /// The group filters the pixels behind it (backdrop blur).
     pub filters_backdrop: bool,
     /// The group composites with a blend the fixed-function stage cannot express,
-    /// so it must read what it draws over (§14.6).
+    /// so it must read what it draws over.
     pub advanced_blend: bool,
-    /// Color effects authored on this group, before fusion (§17.3).
+    /// Color effects authored on this group, before fusion.
     pub color_effects: u32,
     /// Color ops left *after* fusion. `0` means the chain computes nothing.
     pub fused_color_ops: u32,
@@ -242,9 +241,9 @@ pub struct LayerRequest {
     /// The group sits on a boundary with a native material / platform layer.
     pub native_material_boundary: bool,
     /// The group's backdrop capture joined an existing capture group rather than
-    /// opening its own (E2.1).
+    /// opening its own.
     pub shared_backdrop: bool,
-    /// The group contains a shadow shaded in closed form (E0), so no blur layer
+    /// The group contains a shadow shaded in closed form, so no blur layer
     /// was requested for it.
     pub analytic_shadow: bool,
 }
@@ -269,12 +268,12 @@ impl Default for LayerRequest {
     }
 }
 
-/// The planner's verdict for one potential layer (§3145).
+/// The planner's verdict for one potential layer.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LayerPlan {
     /// Every reason this layer could exist for, before any elimination.
     pub requested: ReasonSet,
-    /// Which rungs of the §3161 ladder fired.
+    /// Which rungs of the ladder fired.
     pub eliminated: EliminationSet,
     /// The reasons that survived. Empty means no offscreen target: the group
     /// stays in its parent's pass.
@@ -286,8 +285,8 @@ pub struct LayerPlan {
 
 impl LayerPlan {
     /// Whether this layer must render to an offscreen target: true exactly when a
-    /// reason survived every elimination (§3145's "offscreen is created only when
-    /// all fail").
+    /// reason survived every elimination ("offscreen is created only when all
+    /// fail").
     pub fn needs_offscreen(&self) -> bool {
         !self.surviving.is_empty()
     }
@@ -298,13 +297,13 @@ impl LayerPlan {
             .contains(LayerElimination::OpacityPushedIntoChildren)
     }
 
-    /// The dominating realization cost of the surviving reasons (§7.5). A fully
+    /// The dominating realization cost of the surviving reasons. A fully
     /// eliminated layer is [`EffectCost::Local`].
     pub fn cost(&self) -> EffectCost {
         EffectCost::dominating(self.surviving.iter().map(LayerReason::cost))
     }
 
-    /// Whether this layer ended up local (§3102) or nonlocal (§3120). A layer is
+    /// Whether this layer ended up local or nonlocal. A layer is
     /// nonlocal exactly when it needs a target — the frontier and the offscreen
     /// decision are the same decision.
     pub fn locality(&self) -> EffectLocality {
@@ -318,21 +317,21 @@ impl LayerPlan {
     }
 }
 
-/// Run the Effect Planner over one potential layer (§3145).
+/// Run the Effect Planner over one potential layer.
 ///
-/// Collects the [`LayerReason`]s the request raises, then walks the §3161
+/// Collects the [`LayerReason`]s the request raises, then walks the
 /// elimination ladder in order. Two rungs can remove a reason:
 ///
 /// - **push opacity into children**: a translucent group whose children provably
-///   do not overlap fades each child instead of a composited layer (§14.5), which
-///   is decided by [`plan_group_opacity`] — the same pure planner C0.4 defined, so
+///   do not overlap fades each child instead of a composited layer, which
+///   is decided by [`plan_group_opacity`] — the same pure opacity planner, so
 ///   the fold rule lives in exactly one place.
 /// - **fuse the color matrix**: a chain that fuses to zero ops computes nothing,
-///   so the target it would have been evaluated in is not needed (§3178).
+///   so the target it would have been evaluated in is not needed.
 ///
 /// The remaining four rungs are recorded facts about *how* the surviving work was
-/// made cheap — they are what the planner "accretes" from C0 (scissor), E0
-/// (analytic shadow), E2.1 (shared backdrop) and E2.2 (collapsed effects). A
+/// made cheap — they are what the planner "accretes" from the clip planner
+/// (scissor), the analytic shadow, the shared backdrop and collapsed effects. A
 /// layer with an empty surviving set stays in its parent's pass; anything else
 /// gets a target, and its cost is the dominating surviving reason.
 pub fn plan_layer(request: &LayerRequest) -> LayerPlan {
@@ -474,7 +473,7 @@ mod tests {
     }
 
     /// Overlapping children keep the layer, and `Unknown` overlap behaves exactly
-    /// like proven overlap — the "when unsure, keep correctness" rule (§14.5).
+    /// like proven overlap — the "when unsure, keep correctness" rule.
     #[test]
     fn overlapping_group_opacity_survives() {
         for overlap in [ChildOverlap::Overlapping, ChildOverlap::Unknown] {
@@ -548,7 +547,7 @@ mod tests {
         assert!(plan.needs_offscreen());
     }
 
-    /// A blur is nonlocal by definition (§3120): no rung of the ladder can push
+    /// A blur is nonlocal by definition: no rung of the ladder can push
     /// neighbor sampling into a child's shader. The target survives, so the
     /// opacity fold is withdrawn — the composite draw carries the factor for free.
     #[test]

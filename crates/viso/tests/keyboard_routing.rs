@@ -2,7 +2,7 @@
 //! tree order and wraps, a key event reaches the *focused* node's handler and
 //! bubbles through its ancestry, an IME preedit and commit both land on the
 //! focused node, and a focus request a handler makes is applied by the router —
-//! the full Slice E chain (focus target → dispatch → handler write / focus
+//! the full chain (focus target → dispatch → handler write / focus
 //! move → invalidation), end to end.
 //!
 //! Like `pointer_routing`, this drives the ui stores directly (all reachable
@@ -10,8 +10,8 @@
 //! window: the facade's `on_input` calls the exact same `KeyRouter`/`focus_next`
 //! this test drives, so exercising them over a facade-built tree proves the same
 //! path without a platform surface. Key handlers are installed with
-//! `set_key_handler` after building (there is no build-time `on_key` yet — the
-//! focus/key surface is framework-level this slice, not authored per node).
+//! `set_key_handler` after building (there is no build-time `on_key` — the
+//! focus/key surface is framework-level, not authored per node).
 
 use std::cell::RefCell;
 use std::rc::Rc;

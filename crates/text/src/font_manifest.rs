@@ -18,7 +18,7 @@
 //! ([`FontManifest::from_discovered`]): the manifest is metadata only, so
 //! constructing it — even for thousands of faces — parses no font bytes. The
 //! first real use of a face triggers the lazy asset read and parse in the
-//! resolver, not manifest construction (section 3.1).
+//! resolver, not manifest construction.
 
 use crate::font_request::{FontRole, FontSlant, FontWeight, FontWidth};
 
@@ -120,7 +120,7 @@ impl FontManifest {
     /// This does no font parsing: it moves and orders metadata records. The
     /// bytes behind each [`AssetRef`] are read and parsed lazily by the
     /// resolver on first use, so constructing a manifest over thousands of
-    /// discovered faces costs no startup parse (section 3.1).
+    /// discovered faces costs no startup parse.
     pub fn from_discovered(
         mut discovered: Vec<DiscoveredFace>,
         role_bindings: Vec<(FontRole, String)>,
@@ -360,12 +360,12 @@ mod tests {
 
     #[test]
     fn three_thousand_discovered_faces_parse_nothing_at_startup() {
-        // Simulate a project (or system) with 3000 discovered faces: constructing
-        // the manifest must not scale startup work with the face count. The DoD
-        // (section 3.1 / spec: "3000 fonts must not make startup a function of
-        // 3000 parses") is that manifest construction and lookup read zero font
-        // assets — the byte read, and therefore the parse, is deferred to the
-        // resolver on first real use.
+        // Simulate a project (or system) with 3000 discovered faces:
+        // constructing the manifest must not scale startup work with the face
+        // count: 3000 fonts must not make startup a function of 3000 parses, so
+        // manifest construction and lookup read zero font assets — the byte
+        // read, and therefore the parse, is deferred to the resolver on first
+        // real use.
         const N: u32 = 3000;
         let discovered: Vec<DiscoveredFace> = (0..N)
             .map(|i| {

@@ -1,8 +1,8 @@
 //! Pointer and keyboard dragging for a dock's seams.
 //!
-//! Section 2 wires the resize seams: each seam bar authored by [`build`](super::build)
-//! gets a pointer handler and a key handler that drive the seam's `fraction` cell,
-//! reusing the reference splitter's delta-from-anchor drag model (the three
+//! Each seam bar authored by [`build`](super::build) gets a pointer handler and a
+//! key handler that drive the seam's `fraction` cell, reusing the splitter's
+//! delta-from-anchor drag model (the three
 //! `Float` cells `fraction`/`down_pos`/`start_frac`, a `capture_pointer` on press,
 //! a delta-over-extent move, a `release_pointer` on release, and a keyboard step).
 //! The handlers only ever *write the cell* — they hold no node geometry, because an
@@ -12,7 +12,7 @@
 //! step's job (the handler-writes-intent / reconcile-mutates-store split the
 //! virtual list uses).
 //!
-//! The panel drag-to-redock half lives alongside it (section 4): [`wire_panel_drag`]
+//! The panel drag-to-redock half lives alongside it: [`wire_panel_drag`]
 //! attaches a pointer handler to each tab leaf that, on a primary drag, resolves the
 //! pointer against the warm drop-zone rectangles the build walk recorded, toggles a
 //! pre-authored drop-hint overlay over the zone the pointer is over, and on release
@@ -29,7 +29,7 @@ use super::build::{RedockIntents, SeamRec, SharedZones};
 use super::tree::{DropPart, PanelKey};
 
 /// The fraction step one arrow-key press moves a seam — the keyboard equivalent of
-/// a drag (AGENTS section 15), matching the reference splitter's `KEY_STEP_FRACTION`
+/// a drag, matching the standalone splitter's `KEY_STEP_FRACTION`
 /// so a dock seam and a standalone splitter resize alike from the keyboard.
 pub(super) const KEY_STEP_FRACTION: f32 = 0.02;
 
@@ -39,12 +39,12 @@ pub(super) const KEY_STEP_FRACTION: f32 = 0.02;
 /// writes the raw fraction; the reconcile step reclamps the committed fraction
 /// against the *actual* resolved extent and the minimum-pane floor, so this value
 /// only scales the drag's pixel sensitivity, never the final geometry. Matches the
-/// reference splitter's default extent so the feel is identical.
+/// standalone splitter's default extent so the feel is identical.
 const NOMINAL_EXTENT: f32 = 600.0;
 
 /// Read a `Float` state cell through an [`EventCx`], defaulting to `0.0` for a stale
 /// handle or a non-float value (neither happens in normal use — the seam cells are
-/// authored as `Float` and live as long as the seam). The reference splitter's
+/// authored as `Float` and live as long as the seam). The standalone splitter's
 /// `read_f32` helper, local to the dock so the two drag models stay independent.
 fn read_f32(ev: &EventCx<'_>, cell: StateId) -> f32 {
     match ev.get(cell) {
@@ -65,7 +65,7 @@ fn main_axis_pos(axis: Axis, x: f32, y: f32) -> f32 {
 /// seam's `fraction` cell. Called once per seam during the build walk, after the
 /// seam record is known.
 ///
-/// The pointer handler mirrors the reference splitter: a primary press records the
+/// The pointer handler mirrors the standalone splitter: a primary press records the
 /// press anchor (the main-axis position and the fraction at that instant) and
 /// captures the pointer to the bar so subsequent samples route here even off the
 /// bar; each move adds the pixel delta over the nominal extent to the recorded
@@ -117,7 +117,7 @@ pub(super) fn wire_seam(cx: &mut BuildCx<'_>, bar: viso_ui::Handle, seam: &SeamR
         }
         // For a row split Left/Right are the natural axis and for a column split
         // Up/Down are; both pairs are accepted so either orientation resizes from
-        // the keyboard (the reference splitter's convention).
+        // the keyboard (the standalone splitter's convention).
         let dir = match k.key {
             Key::Right | Key::Down => 1.0,
             Key::Left | Key::Up => -1.0,
@@ -130,8 +130,7 @@ pub(super) fn wire_seam(cx: &mut BuildCx<'_>, bar: viso_ui::Handle, seam: &SeamR
 
 /// The fraction of a drop zone's shorter edge that forms an edge band. A pointer
 /// within this fraction of the target's left/right/top/bottom edge resolves to the
-/// matching split; anywhere more central resolves to a center (tab) drop. Matches
-/// the reference dock's edge-band proportion so the drop feel is identical.
+/// matching split; anywhere more central resolves to a center (tab) drop.
 const DROP_EDGE_BAND: f32 = 0.25;
 
 /// A committed redock: what a panel drop asks the reconcile step to do to the tree.

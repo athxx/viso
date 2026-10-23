@@ -1,15 +1,14 @@
-//! The allocation-profile dimension of section 8.1's reactive semantic-state
-//! path: a warmed-up projection wake must allocate nothing. `SemanticProjector`
-//! documents that "a wake allocates nothing on the steady path"; section 35 /
-//! section 7.3 forbid asserting that without measuring it, so this test arms a
-//! counting global allocator and drives real wakes.
+//! The allocation-profile dimension of the reactive semantic-state path: a
+//! warmed-up projection wake must allocate nothing. `SemanticProjector` documents
+//! that "a wake allocates nothing on the steady path"; rather than asserting that
+//! without measuring it, this test arms a counting global allocator and drives
+//! real wakes.
 //!
 //! Steady state matters because the mechanism has three reused buffers that only
 //! reach their capacity after the first wakes: the `wake_scratch` target list,
 //! the per-projection dependency `Vec`s in the reverse index, and the projector's
-//! reused dependency cursor. A fresh cursor per projection (the shape before this
-//! section's fix) would allocate once per woken projection every wake — this test
-//! is what pins that regression.
+//! reused dependency cursor. A fresh cursor per projection would allocate once per
+//! woken projection every wake — this test is what pins that regression.
 //!
 //! Run single-threaded (`--test-threads=1`): the counter is process-wide, so a
 //! concurrent test's allocations would contaminate the armed window.

@@ -7,11 +7,11 @@
 //! with the elapsed delta; the registry advances every live animation by
 //! writing the interpolated offset through [`NodeStore::set_translate`] — a
 //! `TRANSFORM | HIT_TEST | PAINT` write that never re-measures or re-lays out
-//! the node (the section 8.7 contract). This is the machinery a sheet drawer
+//! the node. This is the machinery a sheet drawer
 //! rides in on.
 //!
-//! Steady-state cost: the registry is a single `Vec` (no per-node map — section
-//! 45), `tick` is a flat pass with no heap allocation (section 28), and it
+//! Steady-state cost: the registry is a single `Vec` (no per-node map), `tick`
+//! is a flat pass with no heap allocation, and it
 //! empties itself as animations finish so the frame loop can halt (the
 //! zero-CPU-when-idle contract — a driver's `wants_animation` reads
 //! [`is_empty`](AnimationRegistry::is_empty)).
@@ -114,8 +114,8 @@ impl TranslateAnim {
     }
 }
 
-/// The set of live transform animations. A flat `Vec` (section 45: no per-node
-/// map on a path touched every animating frame); animations swap-remove
+/// The set of live transform animations. A flat `Vec` (no per-node map on a
+/// path touched every animating frame); animations swap-remove
 /// themselves as they finish, so a settled UI leaves it empty and the frame
 /// loop halts.
 #[derive(Default)]

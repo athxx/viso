@@ -671,7 +671,7 @@ impl Ink {
 
     /// Coverage `cov` adjusted so a glyph blended in linear light keeps the
     /// weight it has blended in encoded space: exactly so for a black ink on
-    /// white and a white one on black (ADR 0048).
+    /// white and a white one on black.
     #[inline]
     fn coverage(self, cov: f32) -> f32 {
         let dec = |v: f32| crate::srgb::decode((v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);

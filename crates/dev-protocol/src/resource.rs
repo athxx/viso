@@ -1,4 +1,4 @@
-//! The resource patch (`Viso_Hot_Reload.md` §22): the assets a revision
+//! The resource patch: the assets a revision
 //! replaces, and the blobs that carry their bytes.
 //!
 //! An asset can be far larger than a frame, so its bytes travel apart from the

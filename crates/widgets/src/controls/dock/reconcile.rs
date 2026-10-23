@@ -11,8 +11,8 @@
 //! weight, so pane A takes `fraction` of the container and pane B the remainder —
 //! the split resizes live and proportionally, and scales with the container.
 //!
-//! This is the "tree-as-warm-state + reconcile drives live re-layout" pattern the
-//! module's ADR records: the same handler-writes-intent / reconcile-mutates-store
+//! This is the "tree-as-warm-state + reconcile drives live re-layout" pattern: the
+//! same handler-writes-intent / reconcile-mutates-store
 //! split the virtual list uses, generalized to a control that owns a store-mutating
 //! reconcile step. The step is allocation-free and touches only the seams it is
 //! given (it rewrites two `Length`s per seam in place); it is not a per-frame path
@@ -78,7 +78,7 @@ fn clamp_to_floor(store: &NodeStore, seam: &SeamRec, raw: f32) -> f32 {
 /// hide the drop hint and refresh the zone rects from resolved bounds.
 ///
 /// This is the structural half of the reconcile step (a redock genuinely changes
-/// tree structure, AGENTS section 8.1), run before [`reconcile_seams`] rewrites the
+/// tree structure), run before [`reconcile_seams`] rewrites the
 /// live geometry. Unlike the seam path it does not rebuild anything: a panel keeps
 /// its identity — its built-once content subtree and its reactive cells — as it
 /// moves, so a **center/tab-bar join** is a pure arena move (detach the panel node,
@@ -407,8 +407,8 @@ mod tests {
     }
 
     /// Test 5 — live re-layout: driving a seam's fraction to 0.7 and reconciling
-    /// makes pane A occupy 0.7 of the split's free space. This is the gap #1 proof —
-    /// a build that only sizes panes once (the reference splitter) could not do it.
+    /// makes pane A occupy 0.7 of the split's free space — something a build that
+    /// only sizes panes once (as the standalone splitter does) could not do.
     #[test]
     fn reconcile_resizes_panes_live_from_the_fraction() {
         let (tree, contents) = row_split_tree();

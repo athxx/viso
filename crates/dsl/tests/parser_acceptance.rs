@@ -1,4 +1,4 @@
-//! Parser acceptance (§152): the nesting and token budgets, the block-item
+//! Parser acceptance: the nesting and token budgets, the block-item
 //! `if`/`match` classification, the syntax that only one context admits, the
 //! lexical boundaries, keywords in label and binding positions, confusable
 //! identifiers, recovery inside a component, and random edits reparsed

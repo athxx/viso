@@ -4,7 +4,7 @@
 //! knob slides to the far end while it is on. A primary-pointer click (press
 //! then release) or a keyboard activation (Enter/Space while focused) flips
 //! its `on` state and fires `on_change` with the new value: the two are the
-//! same action, so the callback is shared (AGENTS section 15).
+//! same action, so the callback is shared.
 //!
 //! A `Toggle` is the structural sibling of a [`CheckBox`](crate::CheckBox):
 //! the same one node, its mark a switch rather than a box — the affordance

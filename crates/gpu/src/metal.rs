@@ -237,7 +237,7 @@ pub struct MetalBackend {
     /// Reused across `begin_frame` calls to drain the retire queue without a
     /// per-frame heap allocation.
     reclaim_scratch: Vec<Retired>,
-    /// How many times MSL has been compiled into a `MTLLibrary` (§7.1). Every
+    /// How many times MSL has been compiled into a `MTLLibrary`. Every
     /// standard pipeline is compiled once at device init; a well-formed frame
     /// never adds to this. A test snapshots it after prewarm and asserts a paint
     /// leaves it unchanged — the "no runtime shader compilation" contract.
@@ -306,11 +306,11 @@ impl MetalBackend {
                 max_texture_size,
                 presents_to_display: true,
                 // The device has compute; this backend exposes no dispatch
-                // encoder, so nothing above it may plan one (§20.1).
+                // encoder, so nothing above it may plan one.
                 compute_dispatch: false,
                 // Metal has argument tables; this backend's bind groups bind one
-                // texture per slot at creation, so there is no table to index
-                // (§20.2). Atlas + bind-group batching is the path that exists.
+                // texture per slot at creation, so there is no table to index.
+                // Atlas + bind-group batching is the path that exists.
                 bindless_texture_slots: 0,
                 indirect_draw: false,
                 program_instance_align: 4,
@@ -389,7 +389,7 @@ impl MetalBackend {
 
     /// How many times MSL has been compiled into a `MTLLibrary` since this
     /// backend was created. The standard pipelines account for one compile each
-    /// at device init (§7.1); a steady-state frame adds none. Instrumentation for
+    /// at device init; a steady-state frame adds none. Instrumentation for
     /// the no-runtime-compile test — not a hot-path value.
     pub fn library_compiles(&self) -> u64 {
         self.library_compiles.load(Ordering::Relaxed)
@@ -1433,7 +1433,7 @@ fn pixel_format(f: TextureFormat) -> MTLPixelFormat {
 /// The formats beyond the baseline `device` samples: ETC2 and ASTC on an
 /// Apple GPU (every iOS device, Apple silicon Macs), BC where the device
 /// reports it (every Mac, iPads with an M-series GPU). None of the packed
-/// 16-bit ones: they have no sRGB variant to decode a sample (ADR 0048).
+/// 16-bit ones: they have no sRGB variant to decode a sample.
 fn sampled_formats(device: &ProtocolObject<dyn MTLDevice>) -> SampledFormats {
     let mut sampled = SampledFormats::empty();
     if device.supportsFamily(MTLGPUFamily::Apple2) {

@@ -2,9 +2,9 @@
 //!
 //! Editors re-lex on every keystroke; re-tokenizing a whole file each time is
 //! wasteful when one character changed. This module re-lexes only the region an
-//! edit touched, reusing the token spans on either side. The guiding invariant —
-//! the acceptance contract for the slice — is that the incremental token stream
-//! is **identical** to a full re-lex of the edited source. When any assumption
+//! edit touched, reusing the token spans on either side. The guiding invariant is
+//! that the incremental token stream is **identical** to a full re-lex of the
+//! edited source. When any assumption
 //! that would break that identity does not hold, this falls back to a full
 //! re-lex, so correctness never depends on the fast path being taken.
 //!
@@ -14,7 +14,7 @@
 //! adjacent to the edit may merge with or split from its neighbor (typing `x`
 //! after `foo` extends the identifier), so the reused prefix ends a few tokens
 //! *before* the edit and the reused suffix begins a few tokens *after* it; the
-//! seam is re-lexed and the result stitched. This slice re-lexes from the token
+//! seam is re-lexed and the result stitched. This module re-lexes from the token
 //! boundary at or before the edit start to end of input and reuses only the
 //! untouched prefix — a correct, conservative version of that idea; a tighter
 //! suffix-reuse pass can follow when profiling shows it matters.

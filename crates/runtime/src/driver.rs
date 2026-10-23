@@ -32,9 +32,9 @@ pub enum Lifecycle {
 
 /// The app-layer hooks the frame scheduler drives.
 ///
-/// Every method is a no-op-able seam: Phase 1 wires the *loop*, and the facade's
-/// driver leaves the phase bodies empty ("blank frames"). Real layout/paint fill
-/// these in as their subsystems land.
+/// Every method is a no-op-able seam: the scheduler owns the *loop*, and a driver
+/// that leaves the phase bodies empty runs "blank frames". The facade's driver
+/// fills them in.
 pub trait FrameDriver {
     /// Called exactly once, after the platform pump is live (on `AppLaunched`),
     /// before any window event. The driver constructs app state and its first

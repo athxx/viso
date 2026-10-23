@@ -2400,7 +2400,7 @@ impl GpuBackend for VulkanBackend {
                 .or_else(|| formats.iter().find(|s| s.format == f))
                 .copied()
         };
-        // An sRGB format encodes what the pipelines write (ADR 0048); a plain
+        // An sRGB format encodes what the pipelines write; a plain
         // unorm one is the last resort of a surface that offers no other.
         let (format, chosen) = [
             TextureFormat::Bgra8UnormSrgb,
@@ -3447,7 +3447,7 @@ fn vk_format(format: TextureFormat) -> vk::Format {
 
 /// The formats beyond the baseline the device samples: a block-compressed
 /// family when its feature is enabled (`features`). None of the packed 16-bit
-/// ones: they have no sRGB variant to decode a sample (ADR 0048).
+/// ones: they have no sRGB variant to decode a sample.
 fn sampled_formats(features: &vk::PhysicalDeviceFeatures) -> SampledFormats {
     let mut sampled = SampledFormats::empty();
     for (enabled, class) in [

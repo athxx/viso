@@ -1,4 +1,4 @@
-//! Section 71 validation pack for the `NavigationStack` control — a stack of
+//! Validation pack for the `NavigationStack` control — a stack of
 //! pages of which only the top is visible — driven through the public facade.
 //! Mirrors `tabs_widget.rs` (golden + input tapes + a11y + allocation) with the
 //! navigation stack's own structure: every page builds once into an overlapping
@@ -26,7 +26,7 @@
 //! - **a11y snapshot** — the derived tree carries a `Navigation` root over `Group`
 //!   pages; the root is focusable and declares a key handler for the back gesture;
 //! - **allocation profile** — a warmed-up `NavigationStack` frame allocates nothing
-//!   per frame (architecture section 47 hot-path contract), plus a *push-then-pop
+//!   per frame (hot-path contract), plus a *push-then-pop
 //!   flip* frame: driving a push through the deferred seam flips `hidden` (which
 //!   marks `LAYOUT | PAINT`), so the flip re-runs `store.layout`; the flip's
 //!   one-time layout cost folds into warmup and the steady assert holds only after

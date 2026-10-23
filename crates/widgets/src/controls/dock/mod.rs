@@ -3,8 +3,8 @@
 //! A `Dock` arranges a set of application-supplied panels into a tree of split
 //! and tabbed regions, with draggable seams between splits, a keyboard-equivalent
 //! resize on each seam, drag-to-redock of any tab, undock, and detachment into a
-//! floating panel drawn over the scene. It is the repository's first control that
-//! is a directory rather than a single file (AGENTS section 5): the layout tree,
+//! floating panel drawn over the scene. It is a control that is a directory
+//! rather than a single file: the layout tree,
 //! the build walk, pointer dragging, the live-relayout reconcile step, the
 //! imperative command handle, and the accessibility contract each own a file.
 //!
@@ -15,12 +15,11 @@
 //! reconcile step; not a bag of reactive scalar cells, which could not hold a
 //! tree). Panels are referenced only by a stable [`PanelKey`], never by position,
 //! so a panel keeps its identity — and its built-once content subtree and
-//! reactive cells — as it moves between docked areas (AGENTS section 8.6, 21.8).
+//! reactive cells — as it moves between docked areas.
 //! The build walk in [`build`] authors the retained node subtree for the tree
 //! once; a discrete drag or command writes an *intent*, and the reconcile step
 //! (holding `&mut NodeStore`) turns it into a live layout change — the same
-//! handler-writes-intent / reconcile-applies split the virtualized list uses, and
-//! the reason this control is documented by an ADR.
+//! handler-writes-intent / reconcile-applies split the virtualized list uses.
 //!
 //! # Registering panels
 //!
@@ -86,11 +85,11 @@ pub use tree::{DockNode, DockTree, DropPart, Floating, PanelKey};
 /// dock's panel area. Boxed so a dock can hold a heterogeneous set of panel
 /// closures, keyed by [`PanelKey`]. A panel builds exactly once, the first time
 /// its region is authored; a redock remounts the *existing* node rather than
-/// rerunning the builder (AGENTS section 8.1).
+/// rerunning the builder.
 pub type PanelContent = Box<dyn Fn(&mut BuildCx<'_>)>;
 
 /// The seam bar's fill — a neutral divider that reads against either pane, matching
-/// the reference splitter's bar so a dock seam and a standalone splitter read alike.
+/// the standalone splitter's bar so a dock seam and a standalone splitter read alike.
 const SEAM_FILL: Rgba = Rgba {
     r: 0.3,
     g: 0.31,
@@ -110,7 +109,7 @@ const TAB_FILL: Rgba = Rgba {
 /// chip's fill, and the control's own size request within its parent.
 ///
 /// `size` defaults to [`Size::fill`] so the dock fills its parent region.
-/// `seam` and `tab` default to neutral fills matching the reference splitter and
+/// `seam` and `tab` default to neutral fills matching the standalone splitter and
 /// tab strip. All fields are `Copy`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DockStyle {
@@ -200,9 +199,8 @@ impl Dock {
 impl Component for Dock {
     fn build(&self, cx: &mut BuildCx<'_>) {
         // The keyed panel-node map, filled once by the build walk and read by the
-        // drag/reconcile steps (a later section) to remount an existing panel node
-        // when it moves. A discrete-action lookup, never a per-frame path
-        // (AGENTS section 45).
+        // drag/reconcile steps to remount an existing panel node when it moves. A
+        // discrete-action lookup, never a per-frame path.
         let panels: PanelNodes = Rc::new(RefCell::new(HashMap::new()));
 
         // The walk's side-records: the seams a live drag drives, the zones a panel
@@ -215,8 +213,8 @@ impl Component for Dock {
 
         // The dock is a named landmark region wrapping the docked tree, so an
         // assistive technology can navigate to it. The docked region tree is
-        // authored under it; floating panels attach to an overlay container in a
-        // later section.
+        // authored under it; floating panels attach to the separate floats overlay
+        // canvas.
         let region = cx.flex(
             viso_ui::FlexStyle {
                 axis: viso_ui::Axis::Column,

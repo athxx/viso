@@ -292,7 +292,7 @@ fn image_family<B: GpuBackend>(gpu: &mut B) -> Vec<Primitive> {
 
 /// Render the vector-path scene: a filled+stroked convex outline (a pentagon) and
 /// a filled+stroked concave outline (a five-pointed star), tessellated through the
-/// retained vector-mesh lane (§13.4) and rasterized headless. Covers fill + stroke
+/// retained vector-mesh lane and rasterized headless. Covers fill + stroke
 /// over both convex and concave geometry.
 fn path() -> Vec<Primitive> {
     let stroke = Stroke::new(2.0, Rgba::new(0.05, 0.1, 0.2, 1.0));
@@ -339,7 +339,7 @@ fn path() -> Vec<Primitive> {
     ]
 }
 
-/// Render open-subpath stroke features exercised by D3.3: square and round
+/// Render open-subpath stroke features: square and round
 /// caps, a real round join, and a dashed stroke — all through the retained
 /// vector-mesh lane, rasterized headless.
 fn stroke() -> Vec<Primitive> {

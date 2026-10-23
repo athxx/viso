@@ -1,5 +1,5 @@
 //! `list_100k_scroll`: one scroll frame of a 100k-row virtual list, from the
-//! offset write to the renderer taking the moved displacements (§21, ADR 0043).
+//! offset write to the renderer taking the moved displacements.
 //!
 //! A within-row scroll mounts nothing, so the frame is: reconcile (a no-op),
 //! relayout (nothing dirty), recompute the transform roots, find nothing to

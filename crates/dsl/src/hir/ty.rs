@@ -6,7 +6,7 @@
 //! placeholders for as-yet-undetermined numeric literals. `Float` is deliberately
 //! absent (there is no width-ambiguous float type); naming it is a hard error.
 //!
-//! The conversion rules are the doc's: a small implicit safe-widening ladder and an
+//! The conversion rules are a small implicit safe-widening ladder and an
 //! everything-else-is-explicit policy. Widening never crosses the signed/unsigned
 //! boundary, never int↔float, and never narrows (including `F64 -> F32`).
 
@@ -32,7 +32,7 @@ pub struct PackageTypes {
 
 /// A resolved static type.
 ///
-/// The scalar and UI-dimensional variants are the doc's unique primitive list; the
+/// The scalar and UI-dimensional variants are the unique primitive list; the
 /// nominal variant carries the declaration's `SymbolId`; the structural variants are
 /// tuple/function/list/option. [`Ty::InferInt`] and [`Ty::InferFloat`] are the
 /// undetermined numeric-literal placeholders that inference must resolve before HIR
@@ -108,7 +108,7 @@ pub enum Ty {
     /// `NodeRef<T>`: a named node of a component's view, by the widget or
     /// component type it names.
     NodeRef(Box<str>),
-    /// `Animation`: an animation `NodeRef::animate` started (U6.3).
+    /// `Animation`: an animation `NodeRef::animate` started.
     Animation,
 
     // --- inference placeholders ---------------------------------------------
@@ -578,7 +578,7 @@ impl Ty {
         *self == Ty::Unknown || self.parts().into_iter().any(Ty::has_unknown)
     }
 
-    /// Whether `self` implicitly and safely widens to `target` (doc's allowed set):
+    /// Whether `self` implicitly and safely widens to `target` (the allowed set):
     /// the signed ladder `I8→I16→I32→I64`, the unsigned ladder `U8→…→U64`, and
     /// `F32→F64`, and any length-family member to `MixedLength`. Equal types
     /// trivially widen. Nothing crosses signedness, nothing goes int↔float, nothing

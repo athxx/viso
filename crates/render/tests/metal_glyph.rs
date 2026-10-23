@@ -158,7 +158,7 @@ fn glyph_a8_coverage_direct_sample_on_metal() {
 
     // Expected per output texel: premultiplied over transparent black. With
     // straight color `c` and sampled coverage `k = cov/255` adjusted by the
-    // ink's luminance `l` (ADR 0048), alpha `a = c.a * k'` and stored RGB
+    // ink's luminance `l`, alpha `a = c.a * k'` and stored RGB
     // (premultiplied) = c.rgb * a. Byte order is BGRA.
     let dec = |v: f32| {
         if v <= 0.04045 {

@@ -1,4 +1,4 @@
-//! The 1.0 render-runtime acceptance gate (§33).
+//! The 1.0 render-runtime acceptance gate.
 //!
 //! Every other test file in this crate defends one mechanism against regression.
 //! This one is different in kind: it is the shipping checklist, and each test states
@@ -245,7 +245,7 @@ fn every_shape_has_its_own_primitive() {
     );
     // Only the two `Path` entries are geometry at all, and they take the two
     // routes a path can take: the stroked arc is tessellated, while the concave
-    // curved fill is cheaper as its own cached coverage mask (§14.4) — a masked
+    // curved fill is cheaper as its own cached coverage mask — a masked
     // draw, not a tessellation. Eight of the eleven shapes reach neither route.
     assert_eq!(
         s.path_tessellations, 1,
@@ -350,7 +350,7 @@ fn stroke_style_is_honored_in_every_dimension() {
 ///
 /// The shapes are grouped by kind, which is what makes the draw-call bound a
 /// statement about instancing rather than about reordering. Batching may not
-/// reorder across an overlap it cannot prove absent (§16.2), so an interleaved
+/// reorder across an overlap it cannot prove absent, so an interleaved
 /// scene legitimately switches pipelines; what must hold either way is that 40
 /// rounded rects are one draw, not 40.
 #[test]

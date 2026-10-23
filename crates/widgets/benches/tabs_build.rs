@@ -1,12 +1,8 @@
 //! Microbench skeleton for the `Tabs` panel-switching control: the cost of one
 //! authoring pass (`Tabs::build`), one `layout`, and one `paint_tree` lowering.
 //!
-//! This is the section 71 microbench slot for the first Tier 4 (navigation /
-//! overlay) widget — a strip of selectable tabs over a shared panel area — and
-//! copies the `splitter_build.rs` template. It exercises the real `build` ->
-//! `layout` -> `paint_tree` path so a regression is measurable; the baseline
-//! numbers are recorded in a later slice (per the plan: establish the framework
-//! first).
+//! `Tabs` is a strip of selectable tabs over a shared panel area. The bench exercises the
+//! real `build` -> `layout` -> `paint_tree` path so a regression is measurable.
 //!
 //! `Tabs` authors one `Int` selection cell (`cx.state`) and binds it to each tab
 //! button's `PAINT`, so it must build through `BuildCx::with_reactive` (a plain
@@ -19,8 +15,7 @@
 //! dependency edge.
 //!
 //! Run release (`CARGO_TARGET_DIR=/tmp/rust_tmp cargo bench -p viso-widgets`);
-//! criterion defaults to a release profile. Debug timing is not a perf result
-//! (AGENTS section 36).
+//! criterion defaults to a release profile. Debug timing is not a perf result.
 
 use std::hint::black_box;
 

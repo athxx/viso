@@ -1,6 +1,6 @@
-//! Nearest-name suggestions for an unresolved name (section 105.2): the declared
+//! Nearest-name suggestions for an unresolved name: the declared
 //! names within a small edit distance, ranked closest first, attached to the
-//! `E2001` diagnostic as related spans and `maybe-incorrect` fixes (section 138).
+//! `E2001` diagnostic as related spans and `maybe-incorrect` fixes.
 //!
 //! Cold path: this runs only when a name already failed to resolve.
 

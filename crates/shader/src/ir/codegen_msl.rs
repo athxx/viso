@@ -1,5 +1,5 @@
-//! IR → Metal Shading Language codegen (architecture section 36 / AGENTS 19,
-//! "backend codegen"; MSL first).
+//! IR → Metal Shading Language codegen (the "backend codegen" stage; MSL
+//! first).
 //!
 //! [`emit_msl`] prints the declarations of one [`ShaderIr`] — the `InstanceIn`/
 //! `VertexIn` attribute struct, the inline `Uniforms`, the `VOut` varyings, and

@@ -1,4 +1,4 @@
-//! UI task identity, wakeup and cancellation (ADR 0032).
+//! UI task identity, wakeup and cancellation.
 //!
 //! A [`TaskSet`] owns futures that run on the loop thread. Their wakers may be
 //! woken from any thread: a wake records the task's id on a shared ready list

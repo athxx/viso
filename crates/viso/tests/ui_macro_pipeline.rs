@@ -7,8 +7,8 @@
 //!   * the *structural* pipeline — a sized `ui!` fragment mounts, `store.layout` gives
 //!     it real world geometry, `paint_tree` + `Renderer::upload/submit` run through the
 //!     headless backend without panic, and `frame_stats` is observable. The emitter
-//!     folds only the axis/size seam this slice (color/background folding is a
-//!     consuming-slice concern), so the tree is intentionally invisible and the claim
+//!     folds only the axis/size seam (color/background folding is left to the
+//!     consumer), so the tree is intentionally invisible and the claim
 //!     is on geometry, not pixels — asserting fills here would require styling the
 //!     emitter does not yet produce.
 //!

@@ -41,8 +41,7 @@ const DEFAULT_COLOR: Rgba = Rgba {
 ///
 /// `size` defaults to [`Length::Fit`] on both axes, so a label shrinks to the
 /// shaped run's natural size. Override it with a [`Length::Fixed`] or
-/// [`Length::Fill`] axis to give the label a fixed or flexible box (text
-/// wrapping and overflow within a constrained box are a later slice).
+/// [`Length::Fill`] axis to give the label a fixed or flexible box.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LabelStyle {
     /// Font size in logical pixels (scaled by DPI at shape time).
@@ -92,8 +91,8 @@ impl Default for LabelStyle {
 /// ```
 ///
 /// Invalidation: `Label` declares a text request that the shaping tier turns
-/// into node content; changing the text is expressed by rebuilding the label
-/// (reactive text binding is a later slice). Semantics are [`Role::Label`] with
+/// into node content; changing the text is expressed by rebuilding the label.
+/// Semantics are [`Role::Label`] with
 /// the visible text as the accessible name.
 pub struct Label {
     text: String,

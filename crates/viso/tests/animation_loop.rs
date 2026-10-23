@@ -1,4 +1,4 @@
-//! Section 66 facade integration pack for the transform-only animation clock —
+//! Facade integration pack for the transform-only animation clock —
 //! the frame-loop wiring the Sheet control (and every future slide/settle) rides
 //! on. Unlike the widget packs, which drive a `NodeStore` by hand, this pack
 //! drives the *real* [`AppDriver`] frame loop end to end through a scripted
@@ -173,7 +173,7 @@ fn animation_frame_moves_world_without_relayout() {
 
     // World moved (proved in the sibling test) — here we additionally assert the
     // final frame relaid *nothing*: the animation advanced world with zero layout
-    // work, which is exactly the section 8.7 transform/layout split.
+    // work, which is exactly the transform/layout split.
     let recompute = app.recompute();
     assert_eq!(
         recompute.laid_out, 0,

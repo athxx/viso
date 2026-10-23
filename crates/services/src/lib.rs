@@ -1,11 +1,11 @@
-//! `viso-services` — the app service protocols (§49, ADR 0031).
+//! `viso-services` — the app service protocols.
 //!
 //! Low-frequency OS capabilities an app calls through one registry,
 //! [`Services`]: file dialogs, share, notifications, permissions, secure
 //! storage, haptics, opening URLs in other apps. Each is a small trait with one implementation per OS
 //! and a scripted [`Mock`] for headless tests, so app code carries no
 //! `cfg(target_os)` branches. These are cold paths: trait objects and
-//! allocation are fine here (§7.2).
+//! allocation are fine here.
 //!
 //! Calls return at once; an answer that needs the user or the OS arrives
 //! later through a [`Reply`].

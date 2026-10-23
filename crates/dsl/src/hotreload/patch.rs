@@ -1,5 +1,5 @@
 //! Lowering a planned reload into the typed UI patch a running app commits
-//! with no compiler present (`Viso_Hot_Reload.md` §9–§13).
+//! with no compiler present.
 //!
 //! The diff and the migration plan align the last-good and candidate
 //! templates by [`NodeKey`] and their states by [`SymbolId`]; the patch names

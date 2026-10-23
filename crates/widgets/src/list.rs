@@ -6,7 +6,7 @@
 //! the scroll range still spans every item. A 100k-row list mounts ~a viewport's
 //! worth of row nodes (plus overscan), never 100k — the per-frame reconcile the
 //! driver runs mounts the first window, then recycles a bounded handful of hosts
-//! on each scroll-boundary crossing (architecture section 12.4).
+//! on each scroll-boundary crossing.
 //!
 //! It differs from [`Scroll`](crate::Scroll) on purpose. `Scroll` lays its whole
 //! content child out once and clips the overflow — right for a bounded block of

@@ -1,4 +1,4 @@
-//! Frozen contract for the offscreen effect pipeline (§16.1, §16.3, §16.4).
+//! Frozen contract for the offscreen effect pipeline.
 //!
 //! Four contracts are pinned here, because the backdrop / shared-pyramid /
 //! Effect-Planner work builds directly on them and must not silently redefine
@@ -21,8 +21,8 @@
 //!    within-tier sigma changes all reuse the cached plan.
 //!
 //! The in-crate unit tests cover the pure functions directly; this integration
-//! test exists because a `cargo test --workspace` run is the gate that a
-//! downstream slice actually trips, and because it can only see the *public*
+//! test exists because a `cargo test --workspace` run is the gate that
+//! downstream work actually trips, and because it can only see the *public*
 //! surface — which is precisely what "frozen" has to mean.
 
 use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle, SamplerDesc, TextureFormat};
@@ -59,7 +59,7 @@ fn rect(x: f32, y: f32, w: f32, h: f32) -> Rect {
 }
 
 /// A quad strictly inside `r`, so a group containing both provably has
-/// overlapping children (§14.5) and cannot have its opacity pushed down into
+/// overlapping children and cannot have its opacity pushed down into
 /// them. Since the inner quad adds nothing to the union, every ROI byte assertion
 /// is the same as for `r` alone — which is the point: these fixtures pin the
 /// *target sizing*, and the planner must not be able to sidestep them by
@@ -673,8 +673,8 @@ fn load_ops_are_derived_from_the_attachment() {
     assert_eq!(g.surface_slot(), 1);
 }
 
-/// A pass nothing samples is dropped: the graph owns liveness, so an upstream
-/// slice may record speculatively without the backend paying for it.
+/// A pass nothing samples is dropped: the graph owns liveness, so upstream
+/// code may record speculatively without the backend paying for it.
 #[test]
 fn the_graph_culls_passes_nothing_reads() {
     let mut pool = TransientTargets::new();

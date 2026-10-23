@@ -2,12 +2,9 @@
 //! one authoring pass (`NavigationStack::build`), one `layout`, and one
 //! `paint_tree` lowering.
 //!
-//! This is the section 71 microbench slot for the second Tier 4 (navigation /
-//! overlay) widget — a stack of pages of which only the top is visible — and
-//! copies the `tabs_build.rs` template. It exercises the real `build` ->
-//! `layout` -> `paint_tree` path so a regression is measurable; the baseline
-//! numbers are recorded in a later slice (per the plan: establish the framework
-//! first).
+//! `NavigationStack` is a stack of pages of which only the top is visible. The bench
+//! exercises the real `build` -> `layout` -> `paint_tree` path so a regression is
+//! measurable.
 //!
 //! `NavigationStack` authors one `Int` depth cell (`cx.state`) and binds it to the
 //! stack's `PAINT`, so it must build through `BuildCx::with_reactive` (a plain
@@ -20,8 +17,7 @@
 //! dependency edge.
 //!
 //! Run release (`CARGO_TARGET_DIR=/tmp/rust_tmp cargo bench -p viso-widgets`);
-//! criterion defaults to a release profile. Debug timing is not a perf result
-//! (AGENTS section 36).
+//! criterion defaults to a release profile. Debug timing is not a perf result.
 
 use std::cell::RefCell;
 use std::hint::black_box;

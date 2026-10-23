@@ -1,10 +1,9 @@
 //! The allocation-profile dimension of the keyed virtual-list reorder path: a
 //! warmed within-window reorder (a pure permutation of the visible key set) must
 //! MOVE the surviving hosts, not rebuild them — and moving is a re-anchor
-//! (`set_row_offset` + a dirty mark), which touches no heap. section 12.4 lists
-//! stable item keys as a virtualization contract clause; section 35 / section 7.3
-//! forbid asserting "reorder reuses without allocating" without measuring it, so
-//! this arms a counting global allocator and drives a real keyed reconcile over
+//! (`set_row_offset` + a dirty mark), which touches no heap. Stable item keys are
+//! a virtualization contract clause; rather than asserting "reorder reuses without
+//! allocating" without measuring it, this arms a counting global allocator and drives a real keyed reconcile over
 //! a within-window swap.
 //!
 //! The reconcile's `new_keys` scratch is taken from and restored to the list
@@ -236,7 +235,7 @@ fn steady_keyed_reorder_reuses_hosts_allocation_free() {
     }
 
     // Two armed reorders. We measure the RECONCILE step specifically — the keyed
-    // diff whose contract (section 12.4 stable keys) is "reorder re-anchors the
+    // diff whose contract (stable keys) is "reorder re-anchors the
     // surviving host rather than rebuilding it". Mutating the mapping and marking
     // data dirty happen before arming; only `reconcile_only` runs armed. Its
     // `new_keys` scratch is warmed, and every visible key survives, so the diff

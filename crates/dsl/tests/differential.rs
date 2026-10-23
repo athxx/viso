@@ -1,4 +1,4 @@
-//! Native lowering against the interpreter (§108.2, ADR 0041): every chunk of
+//! Native lowering against the interpreter: every chunk of
 //! a module lowered to Rust (`lower_module`), compiled with this test, and run
 //! step for step beside the interpreter. Each scripted step — a call, a task
 //! start and every resume, a `done` handler — must give both the same value or

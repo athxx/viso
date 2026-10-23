@@ -1,4 +1,4 @@
-//! The Linux accessibility bridge (ADR 0030): an AccessKit AT-SPI adapter per
+//! The Linux accessibility bridge: an AccessKit AT-SPI adapter per
 //! window, shared by the X11 and Wayland backends.
 //!
 //! The adapter talks to the accessibility bus from a thread of its own and

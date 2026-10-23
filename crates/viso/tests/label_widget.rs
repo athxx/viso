@@ -1,4 +1,4 @@
-//! Section 71 validation pack for the `Label` static-text control, driven
+//! Validation pack for the `Label` static-text control, driven
 //! through the public facade. `Label` is the first content control after
 //! `View`; this mirrors the `view_widget.rs` template plus the content-payload
 //! fixture bypass `content_scene.rs`/`content_alloc.rs` use:
@@ -13,7 +13,7 @@
 //! - **a11y snapshot** — a `Label`'s derived semantics node is `Role::Label`
 //!   and its accessible name is the visible text;
 //! - **allocation profile** — a warmed-up `Label` frame allocates nothing per
-//!   frame (architecture section 47 hot-path contract), same CountingAlloc +
+//!   frame (hot-path contract), same CountingAlloc +
 //!   `frame_stats`/`*_count()` steady-state asserts as `view_widget.rs`.
 //!
 //! Building through `Label::build` is the point: it proves the widget lowers to

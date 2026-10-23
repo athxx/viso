@@ -1,5 +1,5 @@
 //! The `ui` domain: each scenario under `tests/ui/` played by its own run of
-//! a headless build of the app (`Viso_CLI.md` §22.2).
+//! a headless build of the app.
 //!
 //! A case passes when its report ends with every step passed and each
 //! snapshot it took holds to its golden, as `viso snapshot compare` holds it;

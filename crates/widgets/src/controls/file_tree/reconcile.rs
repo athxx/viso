@@ -2,8 +2,7 @@
 //! intents into a reflattened, re-driven virtual list.
 //!
 //! This is the store-mutating half of the handler-writes-intent /
-//! reconcile-mutates-store split ([ADR 0023](../../../../docs/adr/0023-dock-live-relayout-and-tree-state.md)):
-//! a command holds only an [`EventCx`](viso_ui::EventCx) and can do no more than push
+//! reconcile-mutates-store split: a command holds only an [`EventCx`](viso_ui::EventCx) and can do no more than push
 //! an [`Intent`](super::command::Intent); this step, holding `&mut NodeStore` and
 //! `&mut VirtualLists`, is where the arrangement actually changes. It runs in the
 //! frame's Layout phase *before* the substrate's
@@ -11,15 +10,15 @@
 //! relationship the dock's reconcile uses, so the item-count change it commits is
 //! visible to the keyed diff on the same frame.
 //!
-//! The effect is deliberately small (architecture section 12.4): drain the intents,
+//! The effect is deliberately small: drain the intents,
 //! edit the [`NodeKey`](super::model::NodeKey)-keyed open set, reflatten the tree into
 //! the shared visible-row cell, and drive the list's item count with
 //! [`set_item_count`](viso_ui::virtual_list::set_item_count). That single item-count
 //! change (which internally marks the list data-dirty) is all the substrate needs: on
 //! its next pass it diffs the new key set against the mounted rows, mounts the rows
 //! that entered the window, recycles those that left, and reuses every survivor's
-//! host node — the tree is never rebuilt, and a row that stayed visible keeps its host,
-//! its state, and (a later section) its focus.
+//! host node — the tree is never rebuilt, and a row that stayed visible keeps its host
+//! and its state.
 //!
 //! After the arrangement settles, the step refreshes each visible row's live
 //! `Role::TreeItem` accessibility state — `aria-expanded` for a directory and

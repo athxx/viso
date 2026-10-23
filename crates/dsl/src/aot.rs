@@ -1,10 +1,9 @@
 //! The build-time release AOT emitter: lower a compiled [`CandidatePlan`] into a
-//! compact [`viso_schema::aot::AotPackage`] and encode it (architecture section 41;
-//! AGENTS 21.6, 60).
+//! compact [`viso_schema::aot::AotPackage`] and encode it.
 //!
-//! This is the third lowering target of the one shared frontend. Slice N lowers the
-//! IR to `viso_ui` builder tokens through the proc-macro; Slice O commits it into a
-//! live tree at hot-reload time (`commit.rs`); this emitter serializes it into the
+//! This is the third lowering target of the one shared frontend. The proc-macro
+//! lowers the IR to `viso_ui` builder tokens; hot reload commits it into a live
+//! tree (`commit.rs`); this emitter serializes it into the
 //! compact, dependency-free package a release app instantiates at startup with **no
 //! DSL compiler present**. All three consume the same [`plan`]/frontend and walk the
 //! same static-node subset in the same pre-order, so they build structurally
@@ -19,14 +18,13 @@
 //! regions travel as the [`ViewPackage::regions`] templates the loader mounts
 //! under those nodes.
 //!
-//! What the package deliberately drops is every form of developer-only metadata
-//! (section 60): a node's `type_name`/`local_name`, a property's name, source spans.
+//! What the package deliberately drops is every form of developer-only metadata:
+//! a node's `type_name`/`local_name`, a property's name, source spans.
 //! A binding needs only the durable [`StateKey`] identity (the `(hi, lo)` layout-twin
 //! of the compiler's `SymbolId`) and the [`DirtyClass`] bits it invalidates — so the
-//! property name is diagnostics-only and never enters the package. This is the
-//! load-bearing exit criterion of Slice P made concrete: the release asset carries
-//! none of the compiler's metadata, and the loader that reads it links with the
-//! compiler absent.
+//! property name is diagnostics-only and never enters the package. The release asset
+//! carries none of the compiler's metadata, and the loader that reads it links with
+//! the compiler absent.
 
 use viso_ende::Encode;
 use viso_schema::AssetBytes;
@@ -59,7 +57,7 @@ use crate::view_regions::StaticNodes;
 /// fatal diagnostics that make it uncompilable.
 ///
 /// This is "build time: the same frontend that hot reload drives lowers the source
-/// into a compact UI IR embedded as an asset" (section 41) made into one call:
+/// into a compact UI IR embedded as an asset" made into one call:
 /// [`plan`] runs the shared frontend and short-circuits on any fatal diagnostic, then
 /// [`emit_package`] lowers the validated plan and [`AotPackage::encode_to_vec`] frames
 /// it. The bytes are what an app embeds and the loader decodes — nothing here is
@@ -111,7 +109,7 @@ pub fn build_mount_package_for(
 /// The behavior of the encoded [`ViewPackage`] `blob` compiled to Rust, every
 /// chunk, for the app to build beside the package and hand the loader
 /// (`viso_view::ViewLoad::native`), which then runs it in place of the
-/// interpreter (ADR 0041); `None` for a view without behavior. `krate` is the
+/// interpreter; `None` for a view without behavior. `krate` is the
 /// path the code names `viso_behavior` by where it is compiled. The code is
 /// tied to the module's build hash: the loader refuses it for any other build.
 ///

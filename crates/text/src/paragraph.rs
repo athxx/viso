@@ -28,7 +28,7 @@
 //! trigger shaping (the text caching contract, and the hit-test contract that
 //! the hit-test map is retained paragraph metadata). Each line owns its visual
 //! runs in left-to-right visual order, and each [`VisualRun`] carries the
-//! spec-12.12 field contract — its logical text range, its visual inline extent,
+//! field contract — its logical text range, its visual inline extent,
 //! its direction and embedding level, the shaped-run face identity, and the
 //! cluster map that ties source byte offsets to inline positions. The forbidden
 //! shape is keeping only a flat visual glyph array and dropping the logical
@@ -37,10 +37,10 @@
 //! runs, which is what makes BiDi-correct caret placement and hit testing
 //! possible without re-deriving anything.
 //!
-//! Full line breaking and width fit — turning a paragraph plus a width into this
-//! line set, incrementally and cached — is the next slice; this layer defines
-//! the retained layout the caret/selection/hit-test readers are written against
-//! and the single-line construction they exercise.
+//! Full line breaking and width fit — turning a paragraph plus a width into
+//! this line set, incrementally and cached — is [`Paragraph`]'s job; this layer
+//! defines the retained layout the caret/selection/hit-test readers are written
+//! against and the single-line construction they exercise.
 
 use crate::bidi::{BaseDirection, BidiInfo, BidiLevel};
 use crate::line_break::{BreakOpportunity, LineBreaker};
@@ -71,7 +71,7 @@ pub struct CaretStop {
 /// line's visual (left-to-right) order, carrying the full logical-to-visual
 /// mapping.
 ///
-/// This is the spec-12.12 run contract. It never degrades to a bare glyph array:
+/// This is the run contract. It never degrades to a bare glyph array:
 /// `logical_range` keeps the source truth, `caret_stops` ties every legal caret
 /// position to its inline x (built from grapheme boundaries and shaped-glyph
 /// advances), and `direction`/`level` record how logical order maps to visual
@@ -191,7 +191,7 @@ impl LineLayout {
     /// Lay out one line covering the source sub-range `[range.0, range.1)`,
     /// slicing into a paragraph-wide `bidi` resolution.
     ///
-    /// BiDi is paragraph-context-sensitive (spec 12.19), so the embedding levels
+    /// BiDi is paragraph-context-sensitive, so the embedding levels
     /// must come from a resolution over the whole paragraph, not the line slice;
     /// this reuses that shared `bidi` and only restricts the direction-run
     /// enumeration and visual reorder to the line's range (UAX#9 rule L2 applies
@@ -622,12 +622,12 @@ fn shift_line(line: &LineLayout, from: TextOffset, delta: isize) -> LineLayout {
 
 /// The version key a paragraph's cached layout was computed against.
 ///
-/// Layout is reused only when this key is unchanged (spec section 20: unchanged
-/// text/font/features/width must not reshape or reflow). It deliberately excludes
-/// nothing that changes glyph geometry or fit: the source text, the base
-/// direction, a caller-opaque style epoch standing for font + shaping features,
-/// and the target width. Two keys comparing equal guarantees the same laid-out
-/// result, so a cache hit is a true no-op.
+/// Layout is reused only when this key is unchanged (unchanged
+/// text/font/features/width must not reshape or reflow). It deliberately
+/// excludes nothing that changes glyph geometry or fit: the source text, the
+/// base direction, a caller-opaque style epoch standing for font + shaping
+/// features, and the target width. Two keys comparing equal guarantees the same
+/// laid-out result, so a cache hit is a true no-op.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct LayoutKey {
     /// Hash of the source text — cheap to compare, and combined with `text_len`
@@ -664,11 +664,11 @@ impl LayoutKey {
 
 /// A per-line signature used by incremental reflow's stable-stop condition.
 ///
-/// When an edit reflows lines forward, propagation stops at the first line whose
-/// signature matches the pre-edit layout's line at the same logical start (spec
-/// 12.19): a matching end offset and inline width means the line, and every line
-/// after it, is unaffected and its old layout can be spliced back unchanged. The
-/// signature is exactly what makes "reflow only what changed" equal a full
+/// When an edit reflows lines forward, propagation stops at the first line
+/// whose signature matches the pre-edit layout's line at the same logical
+/// start: a matching end offset and inline width means the line, and every line
+/// after it, is unaffected and its old layout can be spliced back unchanged.
+/// The signature is exactly what makes "reflow only what changed" equal a full
 /// recompute — it never stops early on a line that would in fact differ.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct LineSignature {
@@ -694,12 +694,11 @@ impl LineSignature {
 /// version-keyed reuse gate and edit-scoped incremental reflow.
 ///
 /// The paragraph owns its source text and base direction and produces a set of
-/// display lines fitted to a target width by breaking at UAX#14 opportunities. It
-/// reshapes/reflows only when its [`LayoutKey`] changes (spec section 20), and an
-/// edit reflows forward only until a line signature restabilizes (spec 12.19) —
-/// but the incremental result is defined to equal a full recompute, and the
-/// [`Self::layout_full`] path exists precisely so the two can be checked against
-/// each other.
+/// display lines fitted to a target width by breaking at UAX#14 opportunities.
+/// It reshapes/reflows only when its [`LayoutKey`] changes, and an edit reflows
+/// forward only until a line signature restabilizes — but the incremental
+/// result is defined to equal a full recompute, and the [`Self::layout_full`]
+/// path exists precisely so the two can be checked against each other.
 ///
 /// Shaping is injected: [`Self::layout`] takes a shaping callback rather than
 /// owning font bytes, so the crate stays headless and a single shaper drives both
@@ -947,7 +946,7 @@ impl Paragraph {
     /// The dirty mark is the incremental reflow's entry: the next [`Self::layout`]
     /// reflows from the line containing `range.0` and stops when a line signature
     /// restabilizes. Offsets must be char boundaries; the replacement is spliced
-    /// verbatim (no normalization, per spec 12.3).
+    /// verbatim (no normalization).
     pub fn edit(&mut self, range: (TextOffset, TextOffset), replacement: &str) {
         let (start, end) = (
             range.0.0.min(self.text.len()),
@@ -1008,9 +1007,9 @@ impl Paragraph {
     /// that affects layout changed, and otherwise reflowing incrementally from
     /// the dirtied region forward until a line signature restabilizes.
     ///
-    /// Returns `true` when a (re)layout ran, `false` on a pure cache hit (spec
-    /// section 20: unchanged text/font/features/width does no work). The result
-    /// is guaranteed identical to [`Self::layout_full`] with the same inputs.
+    /// Returns `true` when a (re)layout ran, `false` on a pure cache hit
+    /// (unchanged text/font/features/width does no work). The result is
+    /// guaranteed identical to [`Self::layout_full`] with the same inputs.
     pub fn layout(&mut self, width: f32, shape: &mut ShapeFn<'_>) -> bool {
         let key = LayoutKey::new(&self.text, self.base, self.style_epoch, width);
 
@@ -1099,10 +1098,11 @@ impl Paragraph {
     /// Break and lay out lines covering `[from, text.len())` to `width`, greedily
     /// fitting at UAX#14 opportunities.
     ///
-    /// `old_tail` lets an incremental reflow stop early: once a freshly-computed
-    /// line's signature matches an old line at the same start, the remaining old
-    /// lines are unaffected and are spliced back verbatim (spec 12.19 stable
-    /// stop). For a full layout `old_tail` is empty and every line is computed.
+    /// `old_tail` lets an incremental reflow stop early: once a
+    /// freshly-computed line's signature matches an old line at the same start,
+    /// the remaining old lines are unaffected and are spliced back verbatim
+    /// (the stable stop). For a full layout `old_tail` is empty and every line
+    /// is computed.
     fn compute_lines(
         &self,
         width: f32,
@@ -1186,8 +1186,8 @@ impl Paragraph {
         // `breaks` is sorted by offset; skip straight to the first opportunity
         // past `line_start` instead of rescanning the whole document per line —
         // otherwise a line near the middle of a huge paragraph scans every prior
-        // break every call, making incremental reflow O(document) (AGENTS.md
-        // section 7 hot path). `partition_point` is the sorted lower bound.
+        // break every call, making incremental reflow O(document).
+        // `partition_point` is the sorted lower bound.
         for &(at, class) in &breaks[first..] {
             let candidate_w = self.measure(bidi, line_start, at, cache);
             let fits = candidate_w <= width;
@@ -1428,7 +1428,7 @@ mod tests {
 
     /// Structural equality of two laid-out line sets: same line count, and each
     /// line matches in logical range, width, and every visual run (logical range,
-    /// inline extent, direction, level, face, and caret stops). This is the DoD
+    /// inline extent, direction, level, face, and caret stops). This is the
     /// comparison — bit-for-bit layout identity, not a coarse signature.
     fn lines_eq(a: &[LineLayout], b: &[LineLayout]) -> bool {
         if a.len() != b.len() {
@@ -1499,7 +1499,7 @@ mod tests {
 
     #[test]
     fn incremental_edit_equals_full_recompute() {
-        // The DoD: after an edit, an incremental relayout must produce a line set
+        // After an edit, an incremental relayout must produce a line set
         // identical to laying the edited text out from scratch.
         let text = "the quick brown fox jumps over the lazy dog";
         let width = measured_width("the quick brown ") + 0.01;
@@ -1685,7 +1685,7 @@ mod tests {
         assert!(lines_eq(incremental.lines(), &full_lines));
     }
 
-    // --- TF-P3.1: retained shaped runs / steady-state no reshape ---
+    // --- Retained shaped runs / steady-state no reshape ---
 
     /// A shaping callback that also tallies how many times it was actually
     /// invoked, so a test can distinguish "the paragraph asked to shape" from "the
@@ -1705,7 +1705,7 @@ mod tests {
 
     #[test]
     fn steady_state_frame_shapes_nothing() {
-        // The DoD frame-counter proof: a static paragraph laid out once and then
+        // The frame-counter proof: a static paragraph laid out once and then
         // laid out again with identical inputs must issue zero shape calls on the
         // second (steady-state) frame. The gate returns before any shaping, so the
         // paragraph's own counter and the callback's own counter both stay put.
@@ -1836,7 +1836,7 @@ mod tests {
 
     #[test]
     fn very_large_paragraph_incremental_edit_equals_full_recompute() {
-        // The TF-P6.3 correctness 对拍 on an editor-scale paragraph: an edit deep
+        // A differential correctness check on an editor-scale paragraph: an edit deep
         // inside a several-thousand-line document, relaid incrementally, must be
         // bit-for-bit identical to laying the whole edited document out from
         // scratch. A whole-paragraph layout cache gets this only by doing the

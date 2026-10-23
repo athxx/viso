@@ -1,6 +1,6 @@
-//! Frame arena steady-state invariant (§9.4, §28).
+//! Frame arena steady-state invariant.
 //!
-//! The frame arena is the allocation foundation the F4 planner and coalescer
+//! The frame arena is the allocation foundation the batch planner and coalescer
 //! draw their per-frame scratch from. Its whole reason to exist is that a warmed
 //! frame — one whose scratch fits the high-water mark reached by earlier frames —
 //! must not touch the heap: it bumps a cursor inside a retained buffer and is

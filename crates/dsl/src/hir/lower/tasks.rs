@@ -1,4 +1,4 @@
-//! `task` members (§36): a task sees the component as it was when it started,
+//! `task` members: a task sees the component as it was when it started,
 //! so it reads no state, input or computed — directly or through a `fn` — once
 //! it may have suspended (`E4102`).
 

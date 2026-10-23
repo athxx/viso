@@ -1,5 +1,5 @@
 //! The "state invalidation" benchmark category, specialized to the reactive
-//! *accessibility-state* path section 8.1 adds: a control's live state (checked /
+//! *accessibility-state* path: a control's live state (checked /
 //! value / selection) reaching the derived semantics tree. Two per-frame costs
 //! are measured, both incurred only when a bound cell actually changes:
 //!
@@ -29,14 +29,14 @@ use viso_ui::{
     SemanticState, Semantics, StateId, StateStore, StateValue, TextEdits, VirtualLists,
 };
 
-/// The section 8.2 decision-gate baseline: a wide, labeled tree so the
+/// The decision-gate baseline: a wide, labeled tree so the
 /// full-rebuild cost center — a `String` label clone per labeled node in
 /// `derive_semantics` — is real, not hidden in a 256-node flat fan-out. A single
 /// leaf's label changes (marking SEMANTICS, which bubbles to the root), then the
 /// *whole* tree is re-derived from the root, exactly as today's
 /// `derive_semantics_dirty` does. This measures whether the full rebuild on a
 /// one-node change is hot enough to justify per-subtree incremental derivation
-/// before any incremental machinery is written (AGENTS section 7.3).
+/// before any incremental machinery is written.
 const CONTAINERS: usize = 100;
 
 /// Labeled leaves per container. `CONTAINERS * LEAVES` labeled nodes carry a
@@ -244,7 +244,7 @@ fn bench_semantic_projection(c: &mut Criterion) {
     });
 }
 
-/// The section 8.2 decision-gate baseline: on a wide labeled tree, change a single
+/// The decision-gate baseline: on a wide labeled tree, change a single
 /// leaf's label (marking SEMANTICS, which bubbles to the root) and time the full
 /// re-derive from the root — today's `derive_semantics_dirty` behavior. This is the
 /// cost per-subtree incremental derivation would try to beat; the number decides

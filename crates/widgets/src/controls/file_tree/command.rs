@@ -6,9 +6,8 @@
 //! The tree's arrangement is a *forest* of owned [`TreeNode`]s plus a
 //! [`NodeKey`]-keyed open set, which a reactive scalar cell cannot hold, so it is the
 //! control's owned **warm** state: built once, read by the build walk and the
-//! reconcile step, edited only by discrete expand/collapse actions (module docs,
-//! [ADR 0024](../../../../docs/adr/0024-file-tree-flattened-visible-model.md)). The
-//! handle owns that state behind an `Rc<RefCell<..>>` (the same ownership shape the
+//! reconcile step, edited only by discrete expand/collapse actions (see the module
+//! docs). The handle owns that state behind an `Rc<RefCell<..>>` (the same ownership shape the
 //! dock's `DockHandle` uses for its tree) alongside the shared warm cells the build
 //! walk produced: the flattened visible rows and the keyed row-node map.
 //!
@@ -18,9 +17,9 @@
 //! [`Intent`] onto a shared queue; the reconcile step ([`reconcile`](super::reconcile))
 //! reads the edited open set, reflattens the visible rows into the shared cell, and
 //! drives the keyed virtual list's item count — the handler-writes-intent /
-//! reconcile-mutates-store split (ADR 0023). The keyed reconcile then diffs by
+//! reconcile-mutates-store split. The keyed reconcile then diffs by
 //! [`NodeKey`], mounting rows that entered the window, recycling those that left, and
-//! reusing every survivor's host (architecture section 12.4).
+//! reusing every survivor's host.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -55,7 +54,7 @@ pub(super) enum Intent {
 /// The file tree's warm, owned state, shared between the build walk (which fills the
 /// `visible`/`row_nodes` cells), the [`FileTreeHandle`] (which reads and edits it on a
 /// command), and the reconcile step (which reflattens against it). Not a bag of
-/// reactive scalar cells — a scalar cell cannot hold a tree (module docs, ADR 0024).
+/// reactive scalar cells — a scalar cell cannot hold a tree (see the module docs).
 /// Written once at build, then read and edited only on discrete expand/collapse
 /// actions, never a per-frame path, so the `RefCell` borrow is uncontended.
 pub(super) struct FileTreeState {
@@ -65,7 +64,7 @@ pub(super) struct FileTreeState {
     /// by the reconcile step from drained intents.
     pub(super) open: std::collections::HashSet<NodeKey>,
     /// The selected rows, by key: the set the reconcile step edits from `Select`
-    /// intents and (a later section) writes to each row's `aria-selected`. A stable
+    /// intents and writes to each row's `aria-selected`. A stable
     /// key, so a row keeps its selected state across a collapse/reopen or a reorder.
     pub(super) selection: std::collections::HashSet<NodeKey>,
     /// The focus cursor — the row the keyboard steps from and a `Select` last touched.
@@ -84,8 +83,8 @@ pub(super) struct FileTreeState {
     /// The shared flattened visible-row cell the build walk's keyed closures read
     /// live; the reconcile step reflattens into it on an expand/collapse.
     pub(super) visible: VisibleRows,
-    /// The keyed row-node map the build walk fills, so a later section can address a
-    /// row by key without searching the arena (a discrete-action lookup, section 45).
+    /// The keyed row-node map the build walk fills, so a row can be addressed by key
+    /// without searching the arena (a discrete-action lookup).
     #[allow(dead_code)]
     pub(super) row_nodes: RowNodes,
 }
@@ -150,7 +149,7 @@ impl FileTreeHandle {
     /// decide the step, then records intents the [`reconcile`](FileTreeHandle::reconcile)
     /// step applies. Does nothing for a key release or a key the tree doesn't bind.
     ///
-    /// The bindings (every one with a mouse equivalent, AGENTS section 15):
+    /// The bindings (every one with a mouse equivalent):
     /// - `Up`/`Down` move the focus cursor one visible row (skipping collapsed
     ///   subtrees, since a hidden row isn't visible);
     /// - `Right` discloses a collapsed folder, or steps into an open folder's first
@@ -230,7 +229,7 @@ impl FileTreeHandle {
     }
 
     /// Handle a mouse click on the row `key` with the event's modifiers — the mouse
-    /// equivalent of the keyboard selection gestures (AGENTS section 15). Chooses the
+    /// equivalent of the keyboard selection gestures. Chooses the
     /// [`SelectOp`] the way a file browser does: `Shift` extends a range; a platform
     /// multi-select modifier (`Ctrl`/`Cmd`) toggles the one row; a plain click replaces
     /// the selection. In `Single` mode every click replaces (only `Replace` is
@@ -256,10 +255,10 @@ impl FileTreeHandle {
     /// drive the keyed virtual list's item count so the substrate diffs by
     /// [`NodeKey`] on its next pass. A host calls this after an input transaction with
     /// `&mut NodeStore`/`&mut VirtualLists` — the handler-writes-intent /
-    /// reconcile-mutates-store split (ADR 0023).
+    /// reconcile-mutates-store split.
     ///
     /// Delegates to [`reconcile_open`](super::reconcile::reconcile_open): a structural
-    /// change (AGENTS section 8.1) that runs before the frame's
+    /// change that runs before the frame's
     /// [`virtual_list::reconcile`](viso_ui::virtual_list::reconcile) geometry pass, the
     /// same phase relationship the dock's reconcile uses.
     pub fn reconcile(&self, store: &mut NodeStore, lists: &mut VirtualLists) {

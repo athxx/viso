@@ -1,4 +1,4 @@
-//! Templates and parts (§57, §58): a `template` parses to a typed declaration
+//! Templates and parts: a `template` parses to a typed declaration
 //! and expands at each `use` into its caller's view, its parameters given by
 //! the arguments, its slots by `fill`, and its parts overridden or replaced by
 //! the caller; and the diagnostics of each (`E3601` for a member a template

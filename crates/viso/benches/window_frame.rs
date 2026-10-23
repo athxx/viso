@@ -1,4 +1,4 @@
-//! Microbenchmarks for the multi-window control — the Tier 4 finale.
+//! Microbenchmarks for the multi-window control.
 //!
 //! A window is not a node control: it has no build/layout/paint of its own, so
 //! there is nothing to bench in a `BuildCx` the way the widget packs do. Its real
@@ -17,9 +17,9 @@
 //!    → `windows.retain(…)`, dropping exactly that window's `WindowState`.
 //! 3. `window/fan_out/N` — the per-frame cost of `run_phase` iterating N live
 //!    windows (N ∈ {1, 4, 16}). This is the load-bearing measurement for the
-//!    `Vec<WindowState>` linear-scan choice (ADR 0020 / section 45): the per-frame
-//!    access pattern is *iterate all windows*, so the cost must scale linearly in
-//!    N with no hidden per-window overhead. Reported per group so a superlinear
+//!    `Vec<WindowState>` linear-scan choice: the per-frame access pattern is
+//!    *iterate all windows*, so the cost must scale linearly in N with no
+//!    hidden per-window overhead. Reported per group so a superlinear
 //!    regression (an accidental map rebuild, an O(N²) fold) shows up as a
 //!    faster-than-linear climb across the three sizes.
 

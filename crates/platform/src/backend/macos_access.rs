@@ -1,4 +1,4 @@
-//! The macOS accessibility bridge (ADR 0030): an AccessKit subclassing adapter
+//! The macOS accessibility bridge: an AccessKit subclassing adapter
 //! on each window's content view, fed the tree updates each
 //! [`SemanticsDelta`] converts to.
 //!

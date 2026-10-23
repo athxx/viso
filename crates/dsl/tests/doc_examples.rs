@@ -1,4 +1,4 @@
-//! Documentation examples (§152.1): every ```viso block of the specification
+//! Documentation examples: every ```viso block of the specification
 //! and the rationale is accepted by one parser entry, every ```viso-invalid
 //! block is rejected by all of them, and no example leaves a `...` placeholder
 //! outside a comment. Blocks of the lexical part only have to tokenize.

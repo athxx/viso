@@ -1,7 +1,7 @@
 //! Text memory budgets, one per cache, resolved from a small set of memory
 //! classes.
 //!
-//! Every text cache is budgeted in bytes on its own (spec section 19): the face
+//! Every text cache is budgeted in bytes on its own: the face
 //! cache and the global shaping cache never share a ceiling, so exhausting one
 //! never evicts from the other. The runtime does not expose byte figures; it
 //! resolves a [`MemoryClass`] for the device and reads each cache's budget from

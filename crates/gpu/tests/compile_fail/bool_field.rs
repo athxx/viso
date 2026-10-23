@@ -1,4 +1,4 @@
-//! `bool` has no fixed-width GPU representation (§7.3), so a `bool` field must be
+//! `bool` has no fixed-width GPU representation, so a `bool` field must be
 //! rejected at the field span like any other unsupported type.
 
 use viso_gpu::GpuPod;

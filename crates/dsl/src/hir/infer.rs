@@ -2,7 +2,7 @@
 //!
 //! This walks a resolved expression tree and assigns each expression a [`Ty`],
 //! emitting the numeric diagnostics (`E2101`/`E2102`/`E2103`) as it goes. It is the
-//! piece that discharges the doc's "no untyped numeric literal after HIR" contract:
+//! piece that discharges the "no untyped numeric literal after HIR" contract:
 //! an integer/float literal is not a runtime type until inference pins it, either
 //! from an expected type flowing down or, failing that, from the host default
 //! (`1` -> `I64`, `1.0` -> `F64`).
@@ -506,7 +506,7 @@ impl<'a> InferCx<'a> {
         }
     }
 
-    /// Types a suffixed literal by its suffix (§19.1): a unit suffix gives its
+    /// Types a suffixed literal by its suffix: a unit suffix gives its
     /// dimension and a numeric type suffix (`2u8`, `1.5f32`) its scalar, range
     /// checked. An unknown suffix was already reported by the lexer.
     fn type_unit_literal(&mut self, text: &str, expected: Option<&Ty>, node: &SyntaxNode) -> Ty {
@@ -546,7 +546,7 @@ impl<'a> InferCx<'a> {
             }
             Some(target) if is_float_ty(target) => {
                 // An integer literal in a float slot is a legal literal instantiation
-                // (`1` where `F32` is expected is the float one), per the doc's
+                // (`1` where `F32` is expected is the float one), per the
                 // "instantiate the literal, do not convert" rule.
                 target.clone()
             }
@@ -698,7 +698,7 @@ impl<'a> InferCx<'a> {
                 ));
                 return Ty::Unknown;
             }
-            // `tracks(count, track)` is `count` copies of `track` (§U3.5).
+            // `tracks(count, track)` is `count` copies of `track`.
             if segments.len() == 1 && segments[0].text() == "tracks" {
                 let track = Ty::named(crate::resolve::prelude::track_enum());
                 if let [count, each] = args.as_slice() {
@@ -993,7 +993,8 @@ impl<'a> InferCx<'a> {
 
     /// Types a binary expression. Comparison/logical operators yield `Bool`; arithmetic
     /// and bitwise operators yield the operands' common numeric type (widened to fit),
-    /// with `E2102` on an illegal implicit mix. Dimensional operands follow §19.3.
+    /// with `E2102` on an illegal implicit mix. Dimensional operands follow the
+    /// dimensional arithmetic table.
     ///
     /// A bare number (an unsuffixed literal, or `-`/`()`/arithmetic over them) takes
     /// its type from the other operand, so the typed side is inferred first.
@@ -1090,7 +1091,7 @@ impl<'a> InferCx<'a> {
         expr.map_or(Ty::Unknown, |e| self.infer_expr(e, expected))
     }
 
-    /// The §19.3 arithmetic table for a binary expression with a dimensional operand.
+    /// The arithmetic table for a binary expression with a dimensional operand.
     /// Each side carries whether it may act as a scale factor (`F32` or a bare
     /// number). An illegal combination is reported and yields `Unknown`.
     fn infer_dimension_arith(
@@ -1745,8 +1746,8 @@ fn bare_literal_token(node: &SyntaxNode) -> Option<SyntaxToken> {
         .filter(|t| matches!(t.kind(), SyntaxKind::IntLiteral | SyntaxKind::FloatLiteral))
 }
 
-/// Splits a suffixed literal into its numeric body and the type its suffix names
-/// (§19.1). `None` for a suffix outside the closed set.
+/// Splits a suffixed literal into its numeric body and the type its suffix names.
+/// `None` for a suffix outside the closed set.
 pub(crate) fn split_unit_literal(text: &str) -> Option<(&str, Ty)> {
     const SUFFIXES: [(&str, Ty); 25] = [
         ("dp", Ty::Dp),
@@ -2335,7 +2336,7 @@ mod tests {
         assert_eq!(codes(cx.diagnostics()), ["E2103"]);
     }
 
-    // --- dimensional arithmetic (§19.3) -------------------------------------
+    // --- dimensional arithmetic ---------------------------------------------
 
     /// Infers a fragment where `name` is bound to a symbol of type `ty`.
     fn infer_bound(src: &str, name: &str, ty: Ty, expected: Option<&Ty>) -> (Ty, Vec<Diagnostic>) {

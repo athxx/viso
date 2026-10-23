@@ -1,8 +1,8 @@
-//! Section 71 validation pack for the `Grid` widget — the third Tier 3 (layout
-//! structure) control — driven through the public facade. `Grid` is a
+//! Validation pack for the `Grid` widget — a layout structure
+//! control — driven through the public facade. `Grid` is a
 //! two-dimensional track layout: children fall into the cells of a column×row
 //! template, auto-flowing row-major or pinned to an explicit cell with a span.
-//! It is non-interactive (a structural container, unlike the interactive Tier 2
+//! It is non-interactive (a structural container, unlike the interactive
 //! controls) and non-reactive (a plain `BuildCx`, unlike `VirtualList`), so this
 //! pack mirrors `scroll_widget.rs` with the track solver's geometry as its tape
 //! in place of a pointer/scroll gesture:
@@ -20,7 +20,7 @@
 //! - **a11y snapshot** — a `Grid`'s derived semantics node is `Role::Group` and
 //!   carries an authored label; it declares no interactive handlers of its own;
 //! - **allocation profile** — a warmed-up `Grid` frame allocates nothing per
-//!   frame (architecture section 47 hot-path contract), same CountingAlloc +
+//!   frame (hot-path contract), same CountingAlloc +
 //!   `frame_stats`/`*_count()` steady-state asserts as `scroll_widget.rs`.
 //!
 //! Building through `Grid::build` (not raw `cx.grid`) is the point: it proves the

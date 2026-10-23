@@ -1,6 +1,6 @@
 //! The conversions a value takes where its slot types it: a single-unit length
-//! widening to `MixedLength` (§19.4), and a length standing for `fixed` of a
-//! `Sizing` or `all` of an `EdgeInsets` (§U1.3). Inference records each where
+//! widening to `MixedLength`, and a length standing for `fixed` of a
+//! `Sizing` or `all` of an `EdgeInsets`. Inference records each where
 //! it types the value; lowering converts the value's representation there.
 
 use super::InferCx;

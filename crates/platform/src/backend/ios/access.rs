@@ -1,4 +1,4 @@
-//! The iOS accessibility bridge (ADR 0030, ADR 0042): the root view is a
+//! The iOS accessibility bridge: the root view is a
 //! UIAccessibility container holding one element per announced node.
 //!
 //! The bridge folds each [`SemanticsDelta`] the facade publishes into a

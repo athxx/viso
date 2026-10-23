@@ -333,7 +333,7 @@ impl ExtendedLinear {
 
 /// The color space a gradient's stops are interpolated *in* — an explicit
 /// author choice, never inferred from the target texture format or color-target
-/// class (§12.3). Interpolating the same two stops in different spaces yields
+/// class. Interpolating the same two stops in different spaces yields
 /// visibly different midtones (linear-RGB darkens the midpoint of a
 /// red→green ramp; gamma sRGB keeps it brighter), so the space is part of the
 /// gradient's identity and its baked LUT key.
@@ -352,13 +352,13 @@ pub enum InterpolationSpace {
     /// then decode each interpolated texel back to linear for storage. Matches
     /// the "web" gradient look.
     Srgb,
-    /// Interpolate in the perceptual OkLab space. Reserved; not implemented in
-    /// D2.1 — constructing a gradient with this space is rejected at bake time.
+    /// Interpolate in the perceptual OkLab space. Reserved, not implemented:
+    /// constructing a gradient with this space is rejected at bake time.
     OkLab,
 }
 
-/// How a gradient samples parameter values outside the `[0, 1]` stop range
-/// (§12.2). Applied to the gradient parameter `t` before the LUT/stop lookup;
+/// How a gradient samples parameter values outside the `[0, 1]` stop range.
+/// Applied to the gradient parameter `t` before the LUT/stop lookup;
 /// distinct from a texture address mode, which wraps texel coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ExtendMode {

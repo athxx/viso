@@ -4,7 +4,7 @@
 //! Text layout ([`viso_text`]) owns shaping, per-glyph coverage bitmaps, and
 //! *residency metadata* — which glyph lives on which page, and which page is
 //! coldest — but never touches a GPU texture. Packing, UV assignment, dirty
-//! tracking, and upload are the renderer's job (§16.1). This module is that seam:
+//! tracking, and upload are the renderer's job. This module is that seam:
 //! name a page and hand it a [`CoverageBitmap`], and it returns the normalized UV
 //! sub-rect where the bitmap now lives.
 //!

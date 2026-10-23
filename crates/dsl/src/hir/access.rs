@@ -1,4 +1,4 @@
-//! What a view owes assistive technology and translation (U8.2, U10.3): a
+//! What a view owes assistive technology and translation: a
 //! node of a widget that is no standard interactive one, handling a pointer
 //! or key gesture, has a role other than `group` and an accessible name
 //! (`E3704`) and a keyboard path — it is focusable and handles `click`

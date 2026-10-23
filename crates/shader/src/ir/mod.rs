@@ -1,6 +1,6 @@
 //! The typed shader IR: one strongly-typed value per built-in primitive that is
 //! the single source of truth for both the emitted MSL and the validated
-//! [`InstanceSchema`](viso_gpu_abi::InstanceSchema) (architecture section 36 / AGENTS 19).
+//! [`InstanceSchema`](viso_gpu_abi::InstanceSchema).
 //!
 //! - [`types`] — the IR type system (scalar/vector, MSL spelling, `AttrFormat`
 //!   projection, packed size/alignment for the offset cross-check).

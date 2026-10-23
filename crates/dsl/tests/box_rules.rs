@@ -1,4 +1,4 @@
-//! Size bounds, `margin` and a `%` padding (§U3.3), from source to layout:
+//! Size bounds, `margin` and a `%` padding, from source to layout:
 //! each reads the parent's content box under hot reload and from the release
 //! package, a rule that reads the environment folds against it at layout, and
 //! a reload rebinds the rules in place.

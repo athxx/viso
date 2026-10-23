@@ -122,8 +122,7 @@ mod color {
     /// resolved emoji face's `(ps_name, expected_glyph_count)` once; from then on
     /// a `FontFaceId` names it. Per-ppem `CTFont`s are cached under each face; the
     /// face is re-opened by name on the first miss. Cold path — one `dyn` call per
-    /// uncached color glyph — so interior-mutable `RefCell`/`HashMap` is fine
-    /// (see AGENTS.md section 42).
+    /// uncached color glyph — so interior-mutable `RefCell`/`HashMap` is fine.
     pub struct CoreTextColorRaster {
         /// Shared registry of live `CTFont` handles the provider resolved. A face
         /// is rasterized through the exact handle CoreText picked during the

@@ -1,4 +1,4 @@
-//! A text's `spans` and `font_style` (§U5), from source to the text request
+//! A text's `spans` and `font_style`, from source to the text request
 //! its node declares: its pieces joined into its text, each drawn its own
 //! way, constant or reading state, under hot reload and from the release
 //! package.

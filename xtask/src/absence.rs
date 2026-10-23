@@ -1,5 +1,5 @@
 //! `cargo xtask check-release-absence`: prove a release artifact carries no
-//! development layer (`Viso_Hot_Reload.md` §1, §58, §64).
+//! development layer.
 //!
 //! ```text
 //! cargo xtask check-release-absence [-p <package>] [--target host|ios-sim|android|web]

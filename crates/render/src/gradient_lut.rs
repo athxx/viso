@@ -4,7 +4,7 @@
 //! A gradient with three or more stops (or a non-linear
 //! [`InterpolationSpace`]) is too expensive to evaluate per fragment, so its
 //! ramp is baked once into a [`LUT_WIDTH`]-texel row of premultiplied linear
-//! RGBA and sampled at `(t, lut_v)` thereafter (§12.2 tier three). Two-stop
+//! RGBA and sampled at `(t, lut_v)` thereafter. Two-stop
 //! linear-space gradients skip this atlas entirely and lerp inline in the
 //! shader.
 //!

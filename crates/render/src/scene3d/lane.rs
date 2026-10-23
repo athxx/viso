@@ -35,7 +35,7 @@ struct VertexLayout {
 }
 
 /// What the scene lane did in the frames since the counters were last
-/// taken (§61).
+/// taken.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SceneStats {
     /// Scene passes rendered.

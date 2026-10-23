@@ -1,4 +1,4 @@
-//! Damage-driven present (§30.3): what a frame redraws, and how it is shown.
+//! Damage-driven present: what a frame redraws, and how it is shown.
 //!
 //! After an upload the renderer lists what its surface pass draws
 //! ([`SurfaceDraw`]): one entry per paint-order slot landing on the surface,

@@ -42,7 +42,7 @@
 //! - **Surfaces are canvases** found by their `data-viso-canvas` attribute
 //!   ([`RawWindowHandle::WebCanvas`]), configured opaque in the adapter's
 //!   preferred format and drawn through an `-srgb` view of it, which encodes
-//!   what the pipelines write (ADR 0048).
+//!   what the pipelines write.
 //! - **Device loss** (the `lost` promise) makes [`begin_frame`](GpuBackend::begin_frame)
 //!   return `None` for good; validation errors surface through
 //!   `uncapturederror` and are counted in [`WebGpuBackend::validation_errors`].

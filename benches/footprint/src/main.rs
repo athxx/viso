@@ -1,4 +1,4 @@
-//! The reference app of `cargo xtask footprint` (Architecture §50A.5).
+//! The reference app of `cargo xtask footprint`.
 //!
 //! `counter` is a label and a button that increments the count it shows;
 //! `list` adds a 10 000-row virtual list under them, which the headless

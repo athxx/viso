@@ -1,6 +1,6 @@
 # Footprint baseline
 
-Written by `cargo xtask footprint --record`; the method is Architecture §50A.5.
+Written by `cargo xtask footprint --record`.
 
 - Date: 2026-10-18
 - Machine: Apple M4, 16 GiB, macOS 27.0.1 (26A434)

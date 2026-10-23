@@ -1,4 +1,4 @@
-//! The frame's render graph (§16.1, §25): which passes exist, what each one
+//! The frame's render graph: which passes exist, what each one
 //! reads and writes, and the order they execute in.
 //!
 //! The renderer does not decide pass order by hand. Every pass that draws —
@@ -133,7 +133,7 @@ impl CompiledPass {
     }
 }
 
-/// What one compile produced, reported through `FrameStats` (§30).
+/// What one compile produced, reported through `FrameStats`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct GraphStats {
     /// Compiled passes this frame — one backend render pass each, so this is the

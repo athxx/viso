@@ -395,7 +395,7 @@ pub const PAYLOAD_ENUMS: &[(&str, &[&str])] = &[
 ///
 /// A capture handler runs as the sample walks down to its target — on the
 /// node's ancestors' capture leg, and on the target itself; any other handler
-/// runs on the target and as the sample bubbles back up (§52).
+/// runs on the target and as the sample bubbles back up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Route {
     /// The event it runs on.

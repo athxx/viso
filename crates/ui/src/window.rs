@@ -2,7 +2,7 @@
 //! the application to open another top-level OS window mid-session.
 //!
 //! A control cannot open a window itself — the UI tier holds no platform seam
-//! (`viso-ui` does not depend on `viso-platform`, section 3.5), and even if it
+//! (`viso-ui` does not depend on `viso-platform`), and even if it
 //! did, the new window's node store does not exist yet at the moment a handler
 //! runs. So opening a window rides the same deferred-request seam as an
 //! animation or a timer: a handler records a [`WindowOpenRequest`] through
@@ -33,14 +33,14 @@ use crate::node::NodeId;
 /// writes the new window's raw id into once it creates the OS window. A
 /// facade-level `WindowHandle` holds the *same* cell, so reading it back yields
 /// the opened window's id (and lets the handle close it later). The id is raw
-/// (`u32`) because the UI tier cannot name the platform `WindowId` (section 3.5);
+/// (`u32`) because the UI tier cannot name the platform `WindowId`;
 /// the facade wraps it back. `None` inside the cell means "not opened yet"; the
 /// facade fills it at the drain point.
 pub type WindowIdSlot = Rc<Cell<Option<u32>>>;
 
 /// UI-tier mirror of the platform window configuration. The UI tier cannot name
-/// the platform `WindowConfig` (section 3.5 forbids the `viso-ui -> viso-platform`
-/// edge), so a handler describes the window it wants with this small value and
+/// the platform `WindowConfig` (there is no `viso-ui -> viso-platform` edge), so a
+/// handler describes the window it wants with this small value and
 /// the facade translates it into the platform config when it opens the window.
 ///
 /// Kept deliberately minimal — title, logical size, chrome, caption — matching
@@ -54,7 +54,7 @@ pub struct WindowConfig {
     /// The initial logical (pre-scale) size, in points: `(width, height)`.
     pub size: (f64, f64),
     /// Who draws the window chrome. See [`WindowChrome`]. Because the UI tier
-    /// cannot name the platform `WindowChrome` (section 3.5), this is a mirror
+    /// cannot name the platform `WindowChrome`, this is a mirror
     /// enum the facade translates at the platform seam.
     pub chrome: WindowChrome,
     /// Whether the facade wraps the window's content in a self-drawn caption bar
@@ -85,7 +85,7 @@ impl Default for WindowConfig {
 
 /// UI-tier mirror of the platform window-chrome choice.
 ///
-/// The UI tier cannot name the platform `WindowChrome` (section 3.5 forbids the
+/// The UI tier cannot name the platform `WindowChrome` (there is no
 /// `viso-ui -> viso-platform` edge), so a handler picks chrome with this small
 /// value and the facade translates it into the platform enum when it opens the
 /// window. See the platform `WindowChrome` for the semantics of each variant.
@@ -99,14 +99,14 @@ pub enum WindowChrome {
 }
 
 /// Per-window chrome facts a caption widget reads at build time to decide its
-/// layout. UI-tier only (no `viso-platform` types, section 3.5): the facade
+/// layout. UI-tier only (no `viso-platform` types): the facade
 /// translates the platform traffic-light [`LogicalRect`](viso_platform::control::LogicalRect)
 /// into these scalars before it builds the window's tree.
 ///
 /// A caption reads this through [`BuildCx::chrome`](crate::BuildCx::chrome) to
 /// choose whether to reserve a leading spacer for native OS buttons or to draw
-/// its own min/max/close — driven by the data contract, never by `target_os`
-/// (section 24). Two forward-flowing signals:
+/// its own min/max/close — driven by the data contract, never by `target_os`.
+/// Two forward-flowing signals:
 ///
 /// - `chrome` (the [`WindowChrome`] mode, known when the window opens) decides
 ///   whether self-drawn buttons are *allowed* at all;
@@ -136,7 +136,7 @@ pub struct ChromeContext {
     /// The caption bar height, in logical points, that pins the OS traffic lights
     /// wrapped and vertically centered — derived facade-side from the measured
     /// button box as `ceil(top_inset * 2 + box_height)` (twice the box's top gap
-    /// plus its height), never from `target_os` (section 24). `Some` is the bar
+    /// plus its height), never from `target_os`. `Some` is the bar
     /// height verbatim: on a full-size self-drawn content view the buttons hug the
     /// top and this is a compact bar; a native titled window reports a taller box
     /// and the bar grows to it. `None` when no native box was reported (yet); the

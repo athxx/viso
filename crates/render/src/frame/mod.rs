@@ -1,9 +1,9 @@
-//! Frame-scoped transient state (§9.4).
+//! Frame-scoped transient state.
 //!
 //! Everything under this module lives for exactly one frame and is reclaimed
 //! wholesale at frame end. Today that is the [`FrameArena`] — a bump allocator
 //! for the visible chunk list, batch/clip scratch, small pass descriptors, and
-//! radix/coalescer scratch that the planner (F4.5) and coalescer (F4.4) carve
+//! radix/coalescer scratch that the planner and coalescer carve
 //! from. The renderer owns one [`Frame`] for the process's lifetime and calls
 //! [`Frame::reset`] at the start of each lowering pass, so the arena's backing
 //! buffer is retained and steady-state frames allocate nothing on the heap.
@@ -16,7 +16,7 @@ pub use arena::FrameArena;
 ///
 /// Held for the process lifetime by `Renderer`; [`reset`](Self::reset) rewinds
 /// its arena in O(1) at the start of every lowering pass so a warmed frame
-/// reuses the same backing memory (§9.4, §28). Grouping the frame's transient
+/// reuses the same backing memory. Grouping the frame's transient
 /// state behind one handle keeps the reset a single call and gives the planner
 /// and coalescer one place to draw scratch from.
 #[derive(Default)]

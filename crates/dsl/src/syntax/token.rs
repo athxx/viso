@@ -67,7 +67,7 @@ impl Token {
 /// A recoverable lexical error, attached to the [`Token`] it was found on.
 ///
 /// Each variant maps to a stable diagnostic code (see [`LexError::code`]) so the
-/// diagnostics layer (spec section 30) can render a primary span plus a note without
+/// diagnostics layer can render a primary span plus a note without
 /// re-deriving the cause. The lexer never aborts on these — it records the error,
 /// classifies the span as best it can, and keeps going, so a single malformed
 /// token never truncates the token stream.
@@ -116,15 +116,15 @@ pub enum LexError {
     /// A NUL byte (`U+0000`) appeared in the source.
     NulInSource,
     /// An identifier mixes scripts in a way known to be visually confusable
-    /// (a cheap heuristic now; full Unicode confusable analysis lands with the
-    /// symbol table). Warning severity — the token is still a valid identifier.
+    /// (a cheap heuristic, not full Unicode confusable analysis). Warning
+    /// severity — the token is still a valid identifier.
     ConfusableIdent,
     /// A byte or character the lexer could not begin any token with.
     UnexpectedCharacter,
 }
 
 impl LexError {
-    /// The stable diagnostic code for this error (DSL spec Appendix C). The string
+    /// The stable diagnostic code for this error. The string
     /// is part of the diagnostic contract and must stay stable across releases.
     /// Several variants share a code where the spec groups their cause.
     pub const fn code(self) -> &'static str {

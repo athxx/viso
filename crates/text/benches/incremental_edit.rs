@@ -1,19 +1,17 @@
-//! Incremental-reflow regression gate for very large paragraphs (section 36,
-//! `text`; TF-P6.3).
+//! Incremental-reflow regression gate for very large paragraphs.
 //!
 //! The paragraph pipeline reflows *incrementally*: an edit dirties a byte range,
 //! and [`Paragraph::layout`](viso_text::paragraph::Paragraph::layout) reflows
-//! forward from the dirtied line only until a line signature restabilizes
-//! (spec 12.19). The result is defined to equal a full recompute, but the cost
+//! forward from the dirtied line only until a line signature restabilizes.
+//! The result is defined to equal a full recompute, but the cost
 //! is meant to be **O(edited lines), not O(document)** — a single keystroke in a
 //! ten-thousand-line editor buffer must cost the same as one in a ten-line note.
 //!
-//! Makepad has no such incremental path: its layouter keys a whole-paragraph LRU
-//! on the full layout params, so any edit is a cache miss that re-lays the entire
-//! paragraph. This gate is the Viso-owned divergence made measurable — it asserts
-//! that the incremental edit reshapes only a bounded handful of runs regardless
-//! of document size, and that the wall-clock per-edit cost does not scale with
-//! the document.
+//! A layouter that keys a whole-paragraph cache on the full layout params turns
+//! any edit into a cache miss that re-lays the entire paragraph. This gate
+//! makes the incremental path measurable: it asserts that the incremental edit
+//! reshapes only a bounded handful of runs regardless of document size, and
+//! that the wall-clock per-edit cost does not scale with the document.
 //!
 //! Two invariants are gated (once at startup, like `high_refresh.rs`):
 //!
@@ -22,13 +20,13 @@
 //!    same small constant number of runs — it does not grow with the document.
 //! 2. **Incremental equals full**: the incrementally reflowed lines match a full
 //!    recompute of the edited text in line count and every line's source range
-//!    and width (spec 12.19). The bit-for-bit run/caret identity is proven by the
+//!    and width. The bit-for-bit run/caret identity is proven by the
 //!    in-crate test `very_large_paragraph_incremental_edit_equals_full_recompute`;
 //!    this gate checks the structure a downstream crate can observe.
 //!
 //! Then a criterion measurement tracks the per-edit relayout time on a large
 //! (8000-word) paragraph over time. Run release: criterion defaults to a release
-//! profile; debug timing is not a perf result (section 36).
+//! profile; debug timing is not a perf result.
 
 use std::hint::black_box;
 
@@ -155,8 +153,8 @@ fn line_structure_matches(a: &[LineLayout], b: &[LineLayout]) -> bool {
 }
 
 /// GATE 2 — the incrementally reflowed lines match a full recompute of the edited
-/// text in line count, source ranges, and widths on a large paragraph (spec
-/// 12.19: the incremental result is defined to equal a full recompute).
+/// text in line count, source ranges, and widths on a large paragraph (the
+/// incremental result is defined to equal a full recompute).
 fn assert_incremental_equals_full() {
     for &words in &[500usize, 2000, 8000] {
         let (_reshape, incremental) = edit_and_measure_reshape(words);

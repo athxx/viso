@@ -1,4 +1,4 @@
-//! The pattern grammar (Appendix A.13, §70). Every pattern, including each
+//! The pattern grammar. Every pattern, including each
 //! nested subpattern, is wrapped in a [`SyntaxKind::Pattern`] node whose single
 //! child is the production that matched: an or-pattern, an `@` binding, a range,
 //! or a primary pattern.

@@ -1,4 +1,4 @@
-//! Section 66 facade integration pack for the one-shot timer clock — the
+//! Facade integration pack for the one-shot timer clock — the
 //! frame-loop wiring the Toast control (and every future auto-dismiss/delay)
 //! rides on. Like the animation pack, it drives the *real* [`AppDriver`] frame
 //! loop end to end through a scripted headless pump with a self-stepping

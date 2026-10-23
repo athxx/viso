@@ -2,13 +2,12 @@
 //! query the scheduler runs every idle frame to compute its `WaitUntil` deadline,
 //! and the `fire_due` pass the driver runs at each frame head.
 //!
-//! Section 36 lists no timer category (the timer store is new with Tier 4's
-//! `Toast`), but the registry sits on two per-frame paths and section 28 forbids
-//! hidden allocation on them, so it needs its own floor:
+//! The registry sits on two per-frame paths that must carry no hidden allocation,
+//! so it needs its own floor:
 //!
 //! - `earliest` is a flat min over live deadlines — consulted every idle frame to
-//!   decide how long the loop blocks (section 7.1's zero-CPU-when-idle contract
-//!   rides on it), so its cost is paid whenever any overlay is pending.
+//!   decide how long the loop blocks (the zero-CPU-when-idle contract rides on
+//!   it), so its cost is paid whenever any overlay is pending.
 //! - `fire_due` is a reverse walk that liveness-checks each timer and fires the
 //!   ones whose deadline has passed — run once at every frame head that observes a
 //!   deadline, and (via a beat) the frame that a timer's deadline wakes.
@@ -26,7 +25,7 @@
 //!
 //! It drives only `viso-ui` and adds no dependency edge. Run release
 //! (`CARGO_TARGET_DIR=/tmp/rust_tmp cargo bench -p viso-ui`); criterion defaults
-//! to a release profile. Debug timing is not a perf result (AGENTS section 36).
+//! to a release profile. Debug timing is not a perf result.
 
 use std::hint::black_box;
 use std::time::{Duration, Instant};

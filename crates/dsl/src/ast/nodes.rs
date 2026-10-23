@@ -282,7 +282,7 @@ ast_node!(
     ViewDecl = ViewDecl
 );
 ast_node!(
-    /// `shader IDENT GenericParams? { ShaderMember* }` (§97).
+    /// `shader IDENT GenericParams? { ShaderMember* }`.
     ShaderDecl = ShaderDecl
 );
 ast_node!(
@@ -315,7 +315,7 @@ ast_node!(
 );
 ast_node!(
     /// `native (fn|action|task|type) IDENT … ;` — a handwritten native
-    /// declaration (§47).
+    /// declaration.
     NativeDecl = NativeDecl
 );
 ast_node!(
@@ -331,24 +331,24 @@ ast_node!(
     AssocTypeDecl = AssocTypeDecl
 );
 ast_node!(
-    /// `template IDENT GenericParams? ( ParamList ) WhereClause? { Member* }` (§58).
+    /// `template IDENT GenericParams? ( ParamList ) WhereClause? { Member* }`.
     TemplateDecl = TemplateDecl
 );
 ast_node!(
     /// `part IDENT : ComponentType NodeBody` — a node a template or component
-    /// exposes to its callers (§57).
+    /// exposes to its callers.
     PartNode = PartNode
 );
 ast_node!(
-    /// `use TypePath ( ArgumentList ) NodeBody? ;` — a template use (§58).
+    /// `use TypePath ( ArgumentList ) NodeBody? ;` — a template use.
     TemplateUse = TemplateUse
 );
 ast_node!(
-    /// `override part IDENT { PartOverrideItem* }` (§57).
+    /// `override part IDENT { PartOverrideItem* }`.
     PartOverride = PartOverride
 );
 ast_node!(
-    /// `replace part IDENT ViewBlock` (§57).
+    /// `replace part IDENT ViewBlock`.
     PartReplace = PartReplace
 );
 
@@ -1601,7 +1601,7 @@ ast_node!(
     FillClause = FillClause
 );
 ast_node!(
-    /// A pattern (A.13). Every pattern and subpattern is a `Pattern` node whose
+    /// A pattern. Every pattern and subpattern is a `Pattern` node whose
     /// single child is the production that matched (identifier, wildcard,
     /// literal, tuple, list, constructor, qualified variant, range, `@` binding
     /// or `|` alternatives).

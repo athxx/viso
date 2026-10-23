@@ -1,4 +1,4 @@
-//! UI IR + Binding IR -> `viso_ui` builder `TokenStream` (AGENTS section 21.5, 59).
+//! UI IR + Binding IR -> `viso_ui` builder `TokenStream`.
 //!
 //! The shared DSL frontend turns a view — a `ui!` fragment, or the `view` block of
 //! a `component!` or a `.vs` component — into a static [`UiTree`] template plus a
@@ -8,10 +8,10 @@
 //! `&mut ::viso::__private::viso_ui::BuildCx<'_>`, records each reactive binding against the
 //! retained node it targets, and evaluates to the root's `::viso::__private::viso_ui::Handle`.
 //!
-//! No runtime parse, no per-frame rebuild (section 59): every node is a direct
+//! No runtime parse, no per-frame rebuild: every node is a direct
 //! `cx.flex` / `cx.leaf` / … call, and every static [`BindingEdge`] becomes one
 //! `cx.bind(<state>, <handle>, <DirtyClass>)` call — the compiled binding metadata
-//! of section 10.2 that feeds the retained `BindingTable` static fast path.
+//! that feeds the retained `BindingTable` static fast path.
 //!
 //! The walk replicates the Binding IR's pre-order [`NodeKey`] numbering exactly, so
 //! the `Handle` captured for each builder call aligns with the `NodeKey` each edge

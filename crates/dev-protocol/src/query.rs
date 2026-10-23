@@ -1,4 +1,4 @@
-//! A question about a running game (`Viso_CLI.md` §22.3): what `viso game
+//! A question about a running game: what `viso game
 //! peek` and `viso game record` ask a dev runtime through `viso run`, and its
 //! answer.
 //!

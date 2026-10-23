@@ -1,28 +1,28 @@
-//! Compact vector-path storage (§13).
+//! Compact vector-path storage.
 //!
 //! [`PathArena`] is the storage form of a vector outline: a **structure-of-arrays**
 //! command stream — one `u8` tag per command in `tags`, and its coordinates
 //! appended as bare `f32` pairs into `points`. There is no per-segment enum,
-//! `Box`, or vtable (§13.2); a cubic is one `Cubic` tag plus six packed floats,
+//! `Box`, or vtable; a cubic is one `Cubic` tag plus six packed floats,
 //! not a heap object.
 //!
 //! Curved conveniences (`arc`, `conic`) lower to canonical `Quad`/`Cubic`
-//! segments at build time (§13.1), so the stored stream is always one of the
-//! five canonical commands — a consumer (D3.2 flatten/tessellate) never sees an
+//! segments at build time, so the stored stream is always one of the
+//! five canonical commands — a consumer (flatten/tessellate) never sees an
 //! `Arc` or `Conic` tag.
 //!
 //! Creation-time [`PathMetadata`] (bounds, segment count, a convexity hint, a
 //! simple-shape hint, a complexity score) is computed incrementally as commands
 //! are pushed, so the command stream is scanned **once at build time, never
-//! per render** (§13). The [`FillRule`] (`NonZero`/`EvenOdd`, §13.3) is carried
+//! per render**. The [`FillRule`] (`NonZero`/`EvenOdd`) is carried
 //! on the arena.
 //!
 //! This module is CPU-only storage. Flattening, tessellation, and GPU geometry
-//! are the vector-mesh lane (D3.2) and consume this arena via [`PathArena::cmds`].
+//! are the vector-mesh lane and consume this arena via [`PathArena::cmds`].
 
 use crate::primitive::{PathCmd, Point, Rect};
 
-/// The interior-fill winding rule for a path (§13.3).
+/// The interior-fill winding rule for a path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FillRule {
     /// A point is inside when the signed crossing count of a ray is non-zero.
@@ -40,7 +40,7 @@ pub enum FillRule {
 /// of `f32` pairs from [`PathArena::points`].
 ///
 /// `Arc`/`Conic` are intentionally absent — they lower to `Quad`/`Cubic` at
-/// build time (§13.1), so the stored stream is always canonical.
+/// build time, so the stored stream is always canonical.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tag {
     /// Begin a subpath: consumes 1 point.
@@ -80,7 +80,7 @@ impl Tag {
     }
 }
 
-/// A coarse convexity classification computed at build time (§13). A hint, not a
+/// A coarse convexity classification computed at build time. A hint, not a
 /// proof: `Convex` means every turn kept the same sign and no subpath restart
 /// occurred, so the fill lane may take a fan-triangulation fast path; anything
 /// else is `Concave` and takes the general path.
@@ -97,7 +97,7 @@ pub enum ConvexityHint {
 
 /// A build-time recognition hint for outlines that are exactly a common shape,
 /// letting the renderer route them to an analytic primitive instead of the mesh
-/// lane (§13). Conservative: only set when the command pattern matches exactly.
+/// lane. Conservative: only set when the command pattern matches exactly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SimpleShapeHint {
     /// No recognised simple shape (the general case).
@@ -111,7 +111,7 @@ pub enum SimpleShapeHint {
     Ellipse,
 }
 
-/// Creation-time path metadata (§13). Computed incrementally while commands are
+/// Creation-time path metadata. Computed incrementally while commands are
 /// pushed so the command stream is never re-scanned per render.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PathMetadata {
@@ -143,7 +143,7 @@ impl Default for PathMetadata {
     }
 }
 
-/// Compact structure-of-arrays vector path (§13.2).
+/// Compact structure-of-arrays vector path.
 ///
 /// Build with [`move_to`](Self::move_to)/[`line_to`](Self::line_to)/
 /// [`quad_to`](Self::quad_to)/[`cubic_to`](Self::cubic_to)/[`close`](Self::close);
@@ -156,7 +156,7 @@ pub struct PathArena {
     tags: Vec<u8>,
     /// Packed `x, y` coordinates; each tag consumes `Tag::point_count()` pairs.
     points: Vec<f32>,
-    /// Interior fill rule (§13.3).
+    /// Interior fill rule.
     fill_rule: FillRule,
     /// Creation-time metadata, kept current as commands are pushed.
     meta: PathMetadata,
@@ -205,7 +205,7 @@ impl PathArena {
         a
     }
 
-    /// Set the interior fill rule (§13.3). Metadata is unaffected.
+    /// Set the interior fill rule. Metadata is unaffected.
     pub fn set_fill_rule(&mut self, rule: FillRule) {
         self.fill_rule = rule;
     }
@@ -215,7 +215,7 @@ impl PathArena {
         self.fill_rule
     }
 
-    /// The creation-time metadata (§13) — always current, never re-scanned.
+    /// The creation-time metadata — always current, never re-scanned.
     pub fn metadata(&self) -> &PathMetadata {
         &self.meta
     }
@@ -283,7 +283,7 @@ impl PathArena {
         self.recognize_simple_shape();
     }
 
-    /// Append a circular arc, lowering it to canonical cubic segments (§13.1).
+    /// Append a circular arc, lowering it to canonical cubic segments.
     ///
     /// The arc is centered at `center` with `radius`, sweeping from `start_rad`
     /// through `sweep_rad` (positive = counter-clockwise in a y-down space). It
@@ -326,7 +326,7 @@ impl PathArena {
     }
 
     /// Append a rational quadratic (conic) of `weight`, lowering it to canonical
-    /// quadratic segments (§13.1).
+    /// quadratic segments.
     ///
     /// `weight == 1` is an ordinary quadratic and is emitted directly. Otherwise
     /// the conic is subdivided (the standard de Casteljau conic split) until each
@@ -338,7 +338,7 @@ impl PathArena {
     }
 
     /// Iterate the stored stream as canonical [`PathCmd`]s. This reconstructs the
-    /// authoring enum on the fly from the SoA — for consumers (the D3.2 flatten/
+    /// authoring enum on the fly from the SoA — for consumers (the flatten/
     /// tessellate lane) that want a command view without the arena owning a
     /// `Vec<PathCmd>`.
     pub fn cmds(&self) -> impl Iterator<Item = PathCmd> + '_ {

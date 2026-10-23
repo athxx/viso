@@ -4,8 +4,8 @@
 //! `serde`/`serde_json` dependency and the protocol surface this server implements
 //! is small and fixed (a handful of request/response/notification shapes). A tiny
 //! owned [`Json`] value with a recursive-descent parser and a string serializer is
-//! the right cold-path adapter here (AGENTS 25 — a frontend adapts a protocol; it
-//! does not pull in a general runtime), and it keeps the whole transport unit-
+//! the right cold-path adapter here (a frontend adapts a protocol; it does not
+//! pull in a general runtime), and it keeps the whole transport unit-
 //! testable without a transport.
 //!
 //! This is not a general-purpose JSON library: it handles exactly the value forms

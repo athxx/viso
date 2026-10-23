@@ -1,4 +1,4 @@
-//! The typed UI patch (`Viso_Hot_Reload.md` §9, §12, §13, §35): what the host
+//! The typed UI patch: what the host
 //! sends for each `.vs` file it reloads, and the runtime commits with no
 //! compiler present.
 //!
@@ -149,8 +149,8 @@ pub struct NodeCarry {
     pub carries: MigratableState,
 }
 
-/// A node-level mutation of the last-good tree (`Viso_Hot_Reload.md` §12,
-/// §66): every [`NodeRef`] here names a node of the *last-good* tree, the one
+/// A node-level mutation of the last-good tree: every [`NodeRef`] here names a
+/// node of the *last-good* tree, the one
 /// the runtime already holds live when it applies the plan, so each
 /// operation resolves independently of the order the runtime runs them in —
 /// a kept node's live id never moves until something names it.

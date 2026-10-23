@@ -20,7 +20,7 @@ use viso_runtime::{
     Scheduler,
 };
 
-/// The Phase 1 blank-frame driver: opens one window, every phase a no-op.
+/// The blank-frame driver: opens one window, every phase a no-op.
 struct BlankDriver;
 
 impl FrameDriver for BlankDriver {

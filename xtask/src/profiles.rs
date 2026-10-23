@@ -1,6 +1,5 @@
 //! `cargo xtask check-profiles [--target <triple>]...`: hold each embedded
-//! footprint profile's dependency closure to what the profile must not link
-//! (Architecture §50A.3).
+//! footprint profile's dependency closure to what the profile must not link.
 //!
 //! The facade is resolved by `cargo tree` as `viso build` builds a device
 //! target of that profile: its default features off (`desktop`, the Linux

@@ -1,4 +1,4 @@
-//! `Gles3Backend` — OpenGL ES 3.0 over EGL (§33.1, ADR 0044): the backend of
+//! `Gles3Backend` — OpenGL ES 3.0 over EGL: the backend of
 //! the Embedded-GPU profile, for the SoCs whose drivers are GL only (Mali,
 //! Vivante, VideoCore, PowerVR) and for any Linux or Android device when the
 //! profile asks for it.
@@ -26,7 +26,7 @@
 //!   variants are `SRGB8_ALPHA8`, which GLES encodes into and decodes from;
 //! - an 8-bit **window** is created in the sRGB colorspace
 //!   (`EGL_KHR_gl_colorspace`), reporting `Bgra8UnormSrgb`, so the default
-//!   framebuffer encodes what the pipelines write (ADR 0048);
+//!   framebuffer encodes what the pipelines write;
 //! - **texture targets** render with clip-space y negated (`viso_target`), so
 //!   their rows are stored top-down like every other backend's and a sample
 //!   at `v = 0` reads the top; the surface keeps GL's own orientation;
@@ -39,7 +39,7 @@
 //! compiler can run on any thread ([`Gles3Compiler`]); its vertex array is
 //! made when it is installed, vertex arrays not being shared.
 //!
-//! A partial redraw (§30.3) costs the damage: the surface reports
+//! A partial redraw costs the damage: the surface reports
 //! `EGL_BUFFER_AGE_EXT`, declares the region a frame draws — its pass's
 //! scissors — with `EGL_KHR_partial_update` before the first draw, so a tiler
 //! loads only those tiles, and presents with `eglSwapBuffersWithDamage`.
@@ -1191,7 +1191,7 @@ fn texture_format(format: TextureFormat) -> (GLenum, GLenum, GLenum) {
 /// The formats beyond the baseline the current context samples: ETC2 is core
 /// in OpenGL ES 3.0; ASTC and BC come with their extensions (BC needs S3TC
 /// and its sRGB variants for BC1/BC3 and BPTC for BC7). None of the packed
-/// 16-bit ones: they have no sRGB variant to decode a sample (ADR 0048).
+/// 16-bit ones: they have no sRGB variant to decode a sample.
 fn sampled_formats(gl: &Gl) -> SampledFormats {
     let mut count = 0;
     // SAFETY: the context is current; the query writes one integer.

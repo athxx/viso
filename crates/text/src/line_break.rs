@@ -23,10 +23,10 @@
 //!
 //! The LSTM models are the largest Unicode data the text runtime carries, so
 //! they come with the `complex-line-break` feature. A build whose declared
-//! locales and shipped text use none of the four scripts turns it off
-//! (Text/Font Runtime §3.7): the segmenter is then the rule table alone, those
-//! runs break only where any text may (spaces, punctuation), and the width fit
-//! falls back to grapheme breaks for a run wider than the line.
+//! locales and shipped text use none of the four scripts turns it off: the
+//! segmenter is then the rule table alone, those runs break only where any text
+//! may (spaces, punctuation), and the width fit falls back to grapheme breaks
+//! for a run wider than the line.
 //!
 //! `icu_segmenter` gives break *positions*; it does not classify them as
 //! mandatory or allowed on its stable surface. UAX#14 rule LB4/LB5 make a break

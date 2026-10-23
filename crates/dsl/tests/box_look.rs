@@ -1,4 +1,4 @@
-//! A box's `corner_radius`, `border` and `shadow` (§U3.3): constant or reading state, a
+//! A box's `corner_radius`, `border` and `shadow`: constant or reading state, a
 //! `%` radius a share of the shorter side of the box as it paints, an `sp` one
 //! following the text scale, and a style's `when` switching both, under hot
 //! reload and from the release package.

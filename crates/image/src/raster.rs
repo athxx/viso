@@ -193,7 +193,7 @@ fn check_size(width: usize, height: usize) -> Result<(u32, u32), AssetError> {
 
 /// `pixels` of `channels` channels each (gray, gray-alpha, RGB or RGBA) as
 /// premultiplied RGBA8, premultiplied in linear light: a channel `c` of
-/// alpha `a` stores `enc(dec(c) · a)` (ADR 0048).
+/// alpha `a` stores `enc(dec(c) · a)`.
 fn premultiplied(
     pixels: &[u8],
     channels: usize,

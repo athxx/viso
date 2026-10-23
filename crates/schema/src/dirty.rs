@@ -67,7 +67,7 @@ impl DirtyClass {
     /// The raw bitset byte.
     ///
     /// This is the stable wire form of a class set: the release AOT package
-    /// (architecture section 41) stores a binding's invalidation classes as this
+    /// stores a binding's invalidation classes as this
     /// byte and rebuilds them with [`from_bits`](Self::from_bits) at load time. The
     /// bit positions are the `1 << n` constants above; they are the format's own
     /// contract, so the emitter and loader read and write the same byte directly.

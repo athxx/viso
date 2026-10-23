@@ -1,4 +1,4 @@
-//! `viso-ui` — the retained UI runtime (Part V).
+//! `viso-ui` — the retained UI runtime.
 //!
 //! The UI is a real retained tree keyed by a compact generational
 //! [`node::NodeId`] over a [`node::NodeArena`] — *not*

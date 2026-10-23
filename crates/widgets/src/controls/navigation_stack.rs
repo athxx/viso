@@ -13,19 +13,18 @@
 //! stack also honors a back gesture (Escape or Backspace while focused, or the
 //! system back action: a mouse's back button, Android's back).
 //! Pointer/programmatic navigation and the keyboard back gesture are the *same*
-//! action semantically, so an interactive control must have a keyboard equivalent
-//! (AGENTS section 15).
+//! action semantically, since an interactive control must have a keyboard
+//! equivalent.
 //!
 //! All pages build once, at build time. Pushing and popping do not rebuild them:
 //! the stack is a paged stack ([`NodeStore::set_page`](viso_ui::NodeStore::set_page)),
 //! which folds every page but the top out of layout and paint without a
-//! structural change (architecture section 8.4 / section 11). A handler cannot
+//! structural change. A handler cannot
 //! navigate directly (an [`EventCx`] holds no node store), so the turn is a
 //! deferred request the router applies after the handler returns — the same
 //! discipline as a state edit. Navigating writes a reactive `depth` cell bound
 //! to the stack's `PAINT`; the pages' visibility and motion are the deferred
-//! turn's. Lazy pages (build only the visible page, build the rest on first
-//! reveal) are a later slice; this slice builds all pages.
+//! turn's.
 //!
 //! ```
 //! use std::cell::RefCell;

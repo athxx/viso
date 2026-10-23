@@ -1,4 +1,4 @@
-//! Explanations for the text Inspector (§25): why a fallback walk chose the
+//! Explanations for the text Inspector: why a fallback walk chose the
 //! face it did, why a cache missed and which eviction caused it, and what
 //! representation a glyph draws in.
 //!

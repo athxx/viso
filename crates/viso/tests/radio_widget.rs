@@ -1,4 +1,4 @@
-//! Section 71 validation pack for the `RadioGroup` control — a single-select
+//! Validation pack for the `RadioGroup` control — a single-select
 //! group of options — driven through the public facade. Mirrors
 //! `toggle_widget.rs` (golden + a11y + allocation + the two interactive input
 //! tapes) with the group's own structure: a `Column` of focusable options,
@@ -23,10 +23,10 @@
 //! - **a11y snapshot** — a `RadioGroup`'s derived semantics root is `Role::Group`
 //!   and each option is a `Role::Radio` named by its caption; the derived tree
 //!   also carries each option's live `checked` state, projected from the shared
-//!   selection cell (section 8.1), so an assistive technology reads which option
+//!   selection cell, so an assistive technology reads which option
 //!   is currently chosen — and mutual exclusion is visible after a selection;
 //! - **allocation profile** — a warmed-up `RadioGroup` frame allocates nothing
-//!   per frame (architecture section 47 hot-path contract), same CountingAlloc +
+//!   per frame (hot-path contract), same CountingAlloc +
 //!   `frame_stats`/`*_count()` steady-state asserts as `toggle_widget.rs`.
 //!
 //! Building through `RadioGroup::build` is the point: it proves the widget lowers

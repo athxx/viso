@@ -1,4 +1,4 @@
-//! `shader` declarations and `@shader_value` records (§97–§99): each shader's
+//! `shader` declarations and `@shader_value` records: each shader's
 //! interface and bodies checked against the closed shader type set, the
 //! shader syntax subset and the render profile's stage rules, and lowered into
 //! a [`viso_shader::program::Program`].

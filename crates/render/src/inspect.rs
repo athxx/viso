@@ -1,25 +1,25 @@
 //! Read-only batch and primitive introspection for the inspector, Studio, and
 //! tests.
 //!
-//! Architecture section 34/62 ask that a `BatchId`'s pipeline and resources, and
-//! a `PrimitiveId`'s geometry ranges, be inspectable without unsafe memory
-//! poking — through the same model the renderer itself uses, so a tool, a
-//! headless golden test, and an AI automation all read one contract.
+//! A `BatchId`'s pipeline and resources, and a `PrimitiveId`'s geometry ranges,
+//! are inspectable without unsafe memory poking — through the same model the
+//! renderer itself uses, so a tool, a headless golden test, and an AI
+//! automation all read one contract.
 //! [`Renderer::inspect_batches`] snapshots the frame's
 //! draw segments (built by [`upload`](crate::Renderer::upload), before
 //! [`submit`](crate::Renderer::submit)) into a flat, self-contained
 //! [`InspectBatches`], mirroring the UI node-tree introspection shape: one row
 //! per batch, each naming its pipeline, resources, and range.
 //!
-//! This is a cold path (architecture section 7.2): it allocates a fresh snapshot
+//! This is a cold path: it allocates a fresh snapshot
 //! from `&self` and is never touched by the steady-state frame path (which reads
 //! the private segment list directly). It only reads the renderer's existing
 //! segment list and pipeline handles, so building a snapshot changes no renderer
 //! state.
 //!
 //! The batch identity here is [`BatchId`] — a batch's index into the frame's
-//! segment list. It is the stable handle architecture section 62 names
-//! (`BatchId -> pipeline/resources`); the batch's true draw command is derived
+//! segment list. It is the stable handle for `BatchId -> pipeline/resources`;
+//! the batch's true draw command is derived
 //! from the segment exactly as the encoder derives it.
 //!
 //! [`Renderer::inspect_primitives`] is the retained-scene counterpart: it
@@ -96,8 +96,8 @@ pub struct RenderResources {
     pub transient_peak_bytes: u64,
 }
 
-/// A batch's index into the frame's segment list — the stable handle
-/// architecture section 62 names for `BatchId -> pipeline/resources`.
+/// A batch's index into the frame's segment list — the stable handle for
+/// `BatchId -> pipeline/resources`.
 ///
 /// `BatchId(i)` addresses `inspect_batches().batches[i]`, the `i`-th draw
 /// command the frame will encode, in submission order. (Distinct from
@@ -223,8 +223,8 @@ pub struct InspectBatch {
     /// Whether this batch draws into an offscreen pass (a translucent layer's
     /// render-to-texture) rather than the main surface pass.
     pub offscreen: bool,
-    /// How this batch must be realized on the GPU (architecture section 62 —
-    /// "why does this batch cost what it costs"). A main-pass draw of a solid
+    /// How this batch must be realized on the GPU ("why does this batch cost
+    /// what it costs"). A main-pass draw of a solid
     /// quad / image / glyph run / mesh is [`EffectCost::Local`]; a draw routed
     /// into an offscreen pass is realized through a transient target, reported
     /// as [`EffectCost::NeedsOffscreen`]. Masks, backdrops, destination-read
@@ -312,8 +312,8 @@ impl InspectBatches {
 /// [`BatchId`] draws it, through which pipeline, and the half-open geometry
 /// sub-range it occupies inside that batch's buffer.
 ///
-/// This is the `PrimitiveId -> ranges` view architecture section 62 names,
-/// the retained-scene counterpart to [`InspectBatch`]'s `BatchId -> resources`.
+/// This is the `PrimitiveId -> ranges` view, the retained-scene counterpart to
+/// [`InspectBatch`]'s `BatchId -> resources`.
 /// A tool can ask "where did this primitive end up?" and get the exact draw and
 /// buffer slice, without unsafe memory poking.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -390,7 +390,7 @@ impl InspectPrimitives {
 impl Renderer {
     /// Snapshot the frame's draw batches into an [`InspectBatches`].
     ///
-    /// A cold-path introspection surface (architecture section 34/62): it reads
+    /// A cold-path introspection surface: it reads
     /// the segment list [`upload`](Self::upload) built and maps each segment to
     /// an [`InspectBatch`] — deriving its pipeline label and concrete
     /// [`PipelineId`] from the segment kind exactly as the encoder does, and
@@ -494,7 +494,7 @@ impl Renderer {
             range: (seg.start, seg.count),
             clip: seg.clip,
             offscreen,
-            // D0 realizes every draw in place; a draw routed into an offscreen
+            // The base path realizes every draw in place; a draw routed into an offscreen
             // pass is realized through a transient target. Later layers set the
             // richer classes when masks / backdrops / blend reads appear.
             cost: if offscreen {
@@ -506,8 +506,7 @@ impl Renderer {
     }
 
     /// Snapshot every retained primitive's geometry range into an
-    /// [`InspectPrimitives`] — the `PrimitiveId -> ranges` view (architecture
-    /// section 34/62).
+    /// [`InspectPrimitives`] — the `PrimitiveId -> ranges` view.
     ///
     /// A cold-path introspection surface: it replays the retained scene's
     /// paint-order record exactly as [`lower_from_scene`](Self::lower_from_scene)
@@ -542,7 +541,7 @@ impl Renderer {
         let mut program_ends: Vec<usize> = Vec::new();
 
         // The resource each entry samples, as the dense stand-in the merge key
-        // needs: the bind group is part of the key (§20.2), so two adjacent images
+        // needs: the bind group is part of the key, so two adjacent images
         // of different textures must not look alike here.
         let mut resources = ResourceIndex::default();
 
@@ -741,7 +740,7 @@ impl Renderer {
     }
 
     /// Project the frame's draw segments into the paint-order `RenderChunk`
-    /// stream — the `RenderChunkId -> ranges` view (architecture section 62).
+    /// stream — the `RenderChunkId -> ranges` view.
     ///
     /// A cold-path introspection surface, produced only when tooling asks. It is
     /// not a hot-path structure and does not replace the segment list: the
@@ -860,7 +859,7 @@ impl Renderer {
             }
 
             // The resource is part of the boundary — a texture change ends a batch
-            // (§20.2) — so it is packed here the same way `inspect_primitives`
+            // — so it is packed here the same way `inspect_primitives`
             // packs it, as a dense stand-in for the bind group. The emitted chunk
             // still carries the real bind group, read from its segment.
             let item = BatchItem {
@@ -888,16 +887,15 @@ impl Renderer {
     }
 
     /// A dev-only debug overlay dump: the frame's [`FrameStats`] counters
-    /// (architecture section 61) followed by the per-batch cost list
-    /// (architecture section 62), as one readable multi-line string a debug HUD
-    /// or a test can print verbatim.
+    /// followed by the per-batch cost list, as one readable multi-line string a
+    /// debug HUD or a test can print verbatim.
     ///
-    /// This is the cold-path, release-strippable overlay stub architecture
-    /// section 60 mandates: it is compiled only under `debug_assertions`, so a
-    /// release build carries none of it and pays no steady-state cost. It reads
-    /// only `&self` in the same window as [`frame_stats`](Self::frame_stats) and
-    /// [`inspect_batches`](Self::inspect_batches) (after [`upload`](Self::upload),
-    /// before [`submit`](Self::submit)) and mutates no renderer state.
+    /// This is the cold-path, release-strippable overlay stub: it is compiled only
+    /// under `debug_assertions`, so a release build carries none of it and pays no
+    /// steady-state cost. It reads only `&self` in the same window as
+    /// [`frame_stats`](Self::frame_stats) and [`inspect_batches`](Self::inspect_batches)
+    /// (after [`upload`](Self::upload), before [`submit`](Self::submit)) and mutates
+    /// no renderer state.
     ///
     /// It renders text only — laying the numbers out as GPU primitives is a
     /// later layer's job; this stub fixes the *content* the overlay reports.
@@ -1123,7 +1121,7 @@ mod tests {
                 backdrop_sigma: 0.0,
             }),
             // Two overlapping children: the group opacity cannot be pushed into
-            // them, so the layer really does isolate (§14.5).
+            // them, so the layer really does isolate.
             quad(4.0, 4.0),
             quad(8.0, 8.0),
             Primitive::LayerEnd,
@@ -1252,7 +1250,7 @@ mod tests {
                 backdrop_sigma: 0.0,
             }),
             // Two overlapping children: the group opacity cannot be pushed into
-            // them, so the layer really does isolate (§14.5).
+            // them, so the layer really does isolate.
             quad(4.0, 4.0),
             quad(8.0, 8.0),
             Primitive::LayerEnd,

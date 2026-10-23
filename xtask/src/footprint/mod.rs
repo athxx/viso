@@ -1,5 +1,5 @@
 //! `cargo xtask footprint`: what the reference app costs in each footprint
-//! profile, beside Makepad's equivalent apps (Architecture §50A.5).
+//! profile, beside Makepad's equivalent apps.
 //!
 //! ```text
 //! cargo xtask footprint [--check | --record] [--runs <n>]
