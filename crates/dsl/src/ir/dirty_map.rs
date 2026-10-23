@@ -71,6 +71,12 @@ pub fn property_dirty_class(name: &str) -> DirtyClass {
         // holds open, and repaints the spinner.
         "refreshing" => D::TRANSFORM | D::PAINT,
         "sticky" => D::TRANSFORM | D::PAINT | D::HIT_TEST,
+
+        // The page a navigation stack shows enters layout, paint and the
+        // semantics tree; how its pages move and the tag a node flies by are
+        // read only when the stack next turns.
+        "current" => D::MEASURE | D::LAYOUT | D::PAINT | D::SEMANTICS,
+        "page_transition" | "hero" => D::EMPTY,
         // An item spanning a grid's line moves the items after it.
         "list.full_line" => D::LAYOUT | D::PAINT,
 

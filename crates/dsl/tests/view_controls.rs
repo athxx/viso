@@ -897,3 +897,54 @@ export component Page {
         assert!(!rt.faulted());
     }
 }
+
+#[test]
+fn a_hero_flies_between_a_navigation_stack_s_pages() {
+    const HEROES: &str = r#"
+export component Page {
+    state page: U32 = 0;
+    view {
+        NavigationStack {
+            width: 400dp;
+            height: 300dp;
+            page_transition: PageTransition::fade;
+            bind current <=> page;
+            Stack {
+                width: 400dp;
+                height: 300dp;
+                on click { page = 1; }
+                Column { width: 40dp; height: 40dp; hero: "card"; }
+            }
+            Stack {
+                width: 400dp;
+                height: 300dp;
+                content_align: Alignment2D::center;
+                Column { width: 80dp; height: 80dp; hero: "card"; }
+            }
+        }
+    }
+}
+"#;
+    for mut rt in [Rt::reloaded(HEROES), Rt::packaged(HEROES)] {
+        let stack = rt.root.expect("mounted");
+        let [first, second] = rt.children(stack)[..] else {
+            panic!("two pages");
+        };
+        let (from, to) = (rt.children(first)[0], rt.children(second)[0]);
+        assert_eq!(rt.store.hero(to), Some("card"));
+        rt.click(200.0, 200.0);
+        assert_eq!(rt.int("page"), 1);
+        let r = rt.store.world(to);
+        assert!(
+            (r.x + r.w / 2.0 - 20.0).abs() < 0.5 && (r.w - 40.0).abs() < 0.5,
+            "it starts where the other stands: {r:?}"
+        );
+        assert_eq!(rt.store.opacity(from), 0.0);
+        for _ in 0..40 {
+            rt.store
+                .tick_transitions(std::time::Duration::from_millis(16));
+        }
+        assert_eq!(rt.store.world(to).w, 80.0);
+        assert!(!rt.faulted());
+    }
+}

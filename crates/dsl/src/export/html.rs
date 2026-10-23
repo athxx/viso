@@ -154,6 +154,8 @@ pub(super) enum Prop {
     },
     /// The page a navigation stack shows.
     Page,
+    /// The tag a node flies between a navigation stack's pages by.
+    Hero,
     /// How a navigation stack's pages trade places.
     Turn,
     /// An asset's source, as an image or as a mask.
@@ -1463,6 +1465,11 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         ) && fixed.truth()
         {
             el.style(STICKY);
+        }
+        if let Some(fixed) = self.bind(wires, control.node.hero, Prop::Hero, "its hero tag", at)
+            && matches!(fixed, Fixed::Value(Value::Str(_)))
+        {
+            el.attr("data-hero", &fixed.text());
         }
         if let Some(fixed) = self.bind(
             wires,

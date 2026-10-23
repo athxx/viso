@@ -13,30 +13,55 @@
 //! the speed it has. A page leaving takes no pointer. The table is cold: a
 //! store with no paged stack pays one emptiness check where a node's
 //! visibility is read.
+//!
+//! A shared element ([`NodeStore::set_hero`]) flies between the pages: once
+//! the arriving page is laid out, each of its showing nodes whose hero tag a
+//! showing node of the leaving page shares moves from where that one stands,
+//! scaled to its width, to its own place over the turn's timing — its
+//! translate and scale compensated for its page's own move, so it travels
+//! straight across the screen — while the one it left hides.
 
 use core::time::Duration;
 
-use crate::animation::{CubicBezier, Easing, LookTransition, LookValue, Run, Spring, Timing};
+use crate::animation::{
+    CubicBezier, Easing, Keyframe, Keyframes, LookTransition, LookValue, Pace, Run, Spring, Timing,
+    TrackRun,
+};
 use crate::component::NodeStore;
 use crate::dirty::DirtyClass;
 use crate::layout::Vec2;
 use crate::node::{NodeId, NodeIndex};
 
-/// The paged stacks, each with the index of the child it shows. Cold and
-/// small: a handful of navigation stacks at most.
+/// The paged stacks, each with the index of the child it shows, and the
+/// shared elements. Cold and small: a handful of navigation stacks at most.
 #[derive(Debug, Default)]
 pub(crate) struct Paged {
     stacks: Vec<(NodeId, Option<usize>)>,
+    /// The nodes with a hero tag, and the tag.
+    heroes: Vec<(NodeId, Box<str>)>,
+    /// The turn whose heroes fly once its arriving page is laid out: the
+    /// page leaving, the one arriving, and the turn's timing.
+    flight: Option<(NodeId, NodeId, Timing)>,
+    /// The heroes a flight hides while the ones they left fly.
+    holds: Vec<NodeId>,
 }
 
 impl Paged {
     pub(crate) fn clear(&mut self) {
         self.stacks.clear();
+        self.heroes.clear();
+        self.flight = None;
+        self.holds.clear();
     }
 
     /// Forgets the slot `index`, freed or reused.
     pub(crate) fn forget(&mut self, index: u32) {
+        if self.stacks.is_empty() && self.heroes.is_empty() {
+            return;
+        }
         self.stacks.retain(|(n, _)| n.index() != index);
+        self.heroes.retain(|(n, _)| n.index() != index);
+        self.holds.retain(|n| n.index() != index);
     }
 
     fn at(&self, index: NodeIndex) -> Option<Option<usize>> {
@@ -185,6 +210,7 @@ impl NodeStore {
         if was == page {
             return;
         }
+        self.land_heroes();
         let from = was.and_then(|i| self.page_at(stack, i));
         let to = page.and_then(|i| self.page_at(stack, i));
         let back = matches!((was, page), (Some(a), Some(b)) if b < a);
@@ -207,6 +233,9 @@ impl NodeStore {
                 self.leaving.push(from);
                 let (dx, fade) = moves.into;
                 self.move_page(to, dx, fade, (true, entering), moves.timing, None);
+                if !self.reduced_motion() && !self.paged.heroes.is_empty() {
+                    self.paged.flight = Some((from, to, moves.timing));
+                }
                 let (dx, fade) = moves.out;
                 let moved =
                     self.move_page(from, dx, fade, (false, false), moves.timing, Some(from));
@@ -237,6 +266,166 @@ impl NodeStore {
             .iter()
             .find(|&&(n, _)| n == stack)
             .and_then(|&(_, page)| page)
+    }
+
+    /// Tags node `id` a hero: turned between pages, a node of the arriving
+    /// page flies from where the leaving page's node of the same tag stands
+    /// (see the [module docs](self)). `None` or an empty tag untags it. A
+    /// stale handle is a no-op.
+    pub fn set_hero(&mut self, id: NodeId, tag: Option<&str>) {
+        if !self.arena().is_live(id) {
+            return;
+        }
+        self.paged.heroes.retain(|(n, _)| *n != id);
+        if let Some(tag) = tag.filter(|tag| !tag.is_empty()) {
+            self.paged.heroes.push((id, tag.into()));
+        }
+    }
+
+    /// Node `id`'s hero tag.
+    pub fn hero(&self, id: NodeId) -> Option<&str> {
+        self.paged
+            .heroes
+            .iter()
+            .find(|(n, _)| *n == id)
+            .map(|(_, tag)| &**tag)
+    }
+
+    /// Ends the last turn's hero flights where they are headed and shows the
+    /// heroes they hid.
+    fn land_heroes(&mut self) {
+        self.paged.flight = None;
+        for hero in std::mem::take(&mut self.paged.holds) {
+            if let Some(at) = self
+                .animations
+                .iter()
+                .position(|a| a.motion.moves(hero, &LookValue::Opacity(1.0)))
+            {
+                let ended = self.animations.swap_remove(at);
+                self.end_animation(ended, false);
+            }
+        }
+    }
+
+    /// Flies the heroes of the turn waiting for its arriving page's layout.
+    pub(crate) fn fly_heroes(&mut self) {
+        let Some((from, to, timing)) = self.paged.flight.take() else {
+            return;
+        };
+        if !self.arena().is_live(from) || !self.arena().is_live(to) {
+            return;
+        }
+        let heroes = &self.paged.heroes;
+        let pairs: Vec<(NodeId, NodeId)> = heroes
+            .iter()
+            .filter(|&&(hero, _)| self.shows_in(hero, to))
+            .filter_map(|(hero, tag)| {
+                heroes
+                    .iter()
+                    .find(|(left, t)| t == tag && self.shows_in(*left, from))
+                    .map(|&(left, _)| (left, *hero))
+            })
+            .collect();
+        for (left, hero) in pairs {
+            self.fly(left, hero, timing);
+        }
+    }
+
+    /// Whether `id` shows within `page`: under it, and neither hidden nor
+    /// folded on the way up.
+    fn shows_in(&self, id: NodeId, page: NodeId) -> bool {
+        let mut at = Some(id);
+        while let Some(node) = at {
+            if node == page {
+                return true;
+            }
+            if self.hidden(node) {
+                return false;
+            }
+            at = self.arena().parent(node);
+        }
+        false
+    }
+
+    /// Flies `hero` from where `left` stands, scaled to its width, to its own
+    /// place over `timing`, hiding `left` meanwhile.
+    fn fly(&mut self, left: NodeId, hero: NodeId, timing: Timing) {
+        let source = self.world(left);
+        let bounds = self.bounds(hero);
+        if bounds.w <= 0.0 || bounds.h <= 0.0 || source.w <= 0.0 {
+            return;
+        }
+        // Where its middle stands at the start: its page's place now, then
+        // its own translate and scale about its origin.
+        let above = self.transform_above(hero).translation();
+        let (fx, fy) = self.turn(hero).origin.fractions();
+        let fx = if self.direction_at(hero.index()) == crate::adaptive::LayoutDirection::Rtl {
+            1.0 - fx
+        } else {
+            fx
+        };
+        let origin = Vec2 {
+            x: bounds.x + fx * bounds.w,
+            y: bounds.y + fy * bounds.h,
+        };
+        let middle = Vec2 {
+            x: bounds.x + bounds.w * 0.5,
+            y: bounds.y + bounds.h * 0.5,
+        };
+        let scale = source.w / bounds.w;
+        let start = Vec2 {
+            x: source.x + source.w * 0.5 - above.x - origin.x - scale * (middle.x - origin.x),
+            y: source.y + source.h * 0.5 - above.y - origin.y - scale * (middle.y - origin.y),
+        };
+        for start in [LookValue::Translate(start), LookValue::Scale(scale)] {
+            let target = self.shown(hero, &start);
+            self.run_animation(hero, target, (false, timing.reduced), None, |_, carried| {
+                Some(Run::Move(
+                    LookTransition::new(hero, start, target, timing).carrying(carried),
+                ))
+            });
+            self.hush(hero);
+            self.show_look(hero, start);
+        }
+        // The node it left hides while it flies.
+        let lasts = timing.delay
+            + match timing.pace {
+                Pace::Eased { duration, .. } => duration,
+                Pace::Spring(spring) => Duration::from_secs_f32(spring.settle_time(1e-3)),
+            };
+        let shown = self.presented(left, &LookValue::Opacity(1.0));
+        let held = Keyframes::new(
+            lasts,
+            [
+                Keyframe::new(0.0, LookValue::Opacity(0.0)),
+                Keyframe::new(1.0, LookValue::Opacity(0.0)),
+            ],
+        );
+        let started = self.run_animation(
+            left,
+            LookValue::Opacity(1.0),
+            (false, timing.reduced),
+            None,
+            |_, _| TrackRun::new(left, shown, held).map(Run::Track),
+        );
+        if started.is_some() {
+            self.hush(left);
+            self.show_look(left, LookValue::Opacity(0.0));
+            self.paged.holds.push(left);
+        }
+    }
+
+    /// Makes the last animation started on `id` quiet: no end its watchers
+    /// hear.
+    fn hush(&mut self, id: NodeId) {
+        if let Some(running) = self
+            .animations
+            .iter_mut()
+            .rev()
+            .find(|a| a.motion.node() == id)
+        {
+            running.quiet = true;
+        }
     }
 
     /// Whether `stack` is a paged stack.
@@ -584,5 +773,123 @@ mod tests {
         assert_eq!(store.back_target(), Some(root));
         store.set_page(root, Some(0), PageTransition::None);
         assert_eq!(store.back_target(), Some(a), "the deeper one shows now");
+    }
+
+    /// A 400 × 300 stack of two pages, each holding a hero tagged `card`:
+    /// 40 × 40 at the first page's top-left, 80 × 80 in the second's middle.
+    fn heroes() -> (NodeStore, NodeId, [NodeId; 4]) {
+        let mut store = NodeStore::new();
+        let mut nodes = Vec::new();
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.stack(
+                StackStyle {
+                    size: Size::fixed(400.0, 300.0),
+                    ..Default::default()
+                },
+                |cx| {
+                    for (align, side) in [
+                        (crate::layout::Alignment2D::TopStart, 40.0),
+                        (crate::layout::Alignment2D::Center, 80.0),
+                    ] {
+                        let page = cx.stack(
+                            StackStyle {
+                                align,
+                                size: Size::fill(),
+                                ..Default::default()
+                            },
+                            |cx| {
+                                let card = cx.leaf(LeafStyle {
+                                    size: Size::fixed(side, side),
+                                    ..Default::default()
+                                });
+                                cx.hero(card, "card");
+                                nodes.push(card.id());
+                            },
+                        );
+                        nodes.push(page.id());
+                    }
+                },
+            );
+            cx.root().unwrap()
+        };
+        store.set_page(root, Some(0), PageTransition::None);
+        lay(&mut store, root);
+        (store, root, [nodes[1], nodes[0], nodes[3], nodes[2]])
+    }
+
+    fn lay(store: &mut NodeStore, root: NodeId) {
+        let surface = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 400.0,
+            h: 300.0,
+        };
+        store.layout(root, surface, &mut Vec::new());
+    }
+
+    fn middle(store: &NodeStore, id: NodeId) -> (f32, f32) {
+        let r = store.world(id);
+        (r.x + r.w / 2.0, r.y + r.h / 2.0)
+    }
+
+    #[test]
+    fn a_hero_flies_from_the_node_it_shares_a_tag_with_as_the_pages_slide() {
+        let (mut store, root, [_, from, _, to]) = heroes();
+        assert_eq!(store.hero(to), Some("card"));
+        store.set_page(root, Some(1), PageTransition::Slide);
+        lay(&mut store, root);
+        let near = |(ax, ay): (f32, f32), (bx, by): (f32, f32)| {
+            (ax - bx).abs() < 0.5 && (ay - by).abs() < 0.5
+        };
+        assert!(
+            near(middle(&store, to), (20.0, 20.0)),
+            "it starts where the other stands, its page off the edge: {:?}",
+            middle(&store, to)
+        );
+        assert!(
+            (store.world(to).w - 40.0).abs() < 0.5,
+            "scaled to its width"
+        );
+        assert_eq!(store.opacity(from), 0.0, "the one it left hides");
+        store.tick_transitions(ms(120));
+        let (x, y) = middle(&store, to);
+        assert!(x > 20.0 && x < 200.0 && y > 20.0 && y < 150.0, "{x}, {y}");
+        assert!(
+            ((x - 20.0) / 180.0 - (y - 20.0) / 130.0).abs() < 0.01,
+            "straight across the screen, though its page slides: {x}, {y}"
+        );
+        for _ in 0..200 {
+            store.tick_transitions(ms(16));
+        }
+        assert!(near(middle(&store, to), (200.0, 150.0)));
+        assert_eq!(store.world(to).w, 80.0);
+        assert_eq!(store.opacity(from), 1.0, "it shows again once landed");
+        assert!(store.take_animation_ends().is_empty());
+    }
+
+    #[test]
+    fn a_hero_lands_when_the_stack_turns_again_and_none_fly_under_reduced_motion() {
+        let (mut store, root, [_, from, _, to]) = heroes();
+        store.set_page(root, Some(1), PageTransition::Fade);
+        lay(&mut store, root);
+        assert_eq!(store.opacity(from), 0.0);
+        store.tick_transitions(ms(50));
+        store.set_page(root, Some(0), PageTransition::Fade);
+        lay(&mut store, root);
+        assert_eq!(store.opacity(to), 0.0, "it flies back, the other hiding");
+        assert!(
+            store.opacity(from) > 0.0,
+            "the one it flew from shows again"
+        );
+        for _ in 0..40 {
+            store.tick_transitions(ms(16));
+        }
+        assert_eq!(store.world(from).w, 40.0);
+        store.set_reduced_motion(true);
+        store.set_page(root, Some(1), PageTransition::Fade);
+        lay(&mut store, root);
+        assert_eq!(store.world(to).w, 80.0, "no flight");
+        assert_eq!(store.opacity(from), 1.0);
     }
 }

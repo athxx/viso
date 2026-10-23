@@ -705,6 +705,7 @@ impl Jsx<'_> {
                             refs.push(format!("st.effect(() => show.select(el, {v}, {radio}));"));
                         }
                         Prop::Page => refs.push(format!("st.effect(() => show.page(el, {v}));")),
+                        Prop::Hero => attrs.push(format!("data-hero={{show.opt({v})}}")),
                         Prop::Turn => refs.push(format!("st.effect(() => show.turn(el, {v}));")),
                         Prop::Source { mask: false } => {
                             attrs.push(format!("src={{show.url({v})}}"))

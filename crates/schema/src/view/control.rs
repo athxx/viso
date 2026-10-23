@@ -192,6 +192,7 @@ impl ControlKind {
             (_, "cursor") => ControlInput::Cursor,
             (_, "refreshing") => ControlInput::Refreshing,
             (_, "sticky") => ControlInput::Sticky,
+            (_, "hero") => ControlInput::Hero,
             (ControlKind::Label | ControlKind::TextInput | ControlKind::Number, "color") => {
                 ControlInput::TextColor
             }
@@ -688,6 +689,9 @@ pub enum ControlInput {
     /// The node's `sticky`: whether it stays at its viewport's start edge
     /// while its parent passes under it.
     Sticky,
+    /// The node's `hero`: the tag it flies between a navigation stack's pages
+    /// by.
+    Hero,
     /// A text's `font_style`: upright or italic.
     FontStyle,
     /// A text's `spans`: its pieces, drawn each its own way.
@@ -803,6 +807,8 @@ pub struct NodeEntries {
     pub refreshing: Option<u32>,
     /// The entry of its `sticky`.
     pub sticky: Option<u32>,
+    /// The entry of its `hero`.
+    pub hero: Option<u32>,
 }
 
 /// The handler-table entries of the style of a text a node shows: an absent
@@ -934,7 +940,7 @@ pub enum Switched {
 
 impl ControlInput {
     /// Every input, by wire tag.
-    pub const ALL: [ControlInput; 56] = [
+    pub const ALL: [ControlInput; 57] = [
         ControlInput::Value,
         ControlInput::Min,
         ControlInput::Max,
@@ -991,6 +997,7 @@ impl ControlInput {
         ControlInput::Refreshing,
         ControlInput::Sticky,
         ControlInput::PageTransition,
+        ControlInput::Hero,
     ];
 
     /// Its wire tag: its place in [`ControlInput::ALL`].
@@ -1138,6 +1145,7 @@ impl Control {
             ControlInput::Cursor => self.node.cursor,
             ControlInput::Refreshing => self.node.refreshing,
             ControlInput::Sticky => self.node.sticky,
+            ControlInput::Hero => self.node.hero,
             ControlInput::TextColor => self.text.color,
             ControlInput::SoftWrap => self.text.soft_wrap,
             ControlInput::FontWeight => self.text.font_weight,
@@ -1210,6 +1218,7 @@ impl Control {
             ControlInput::Cursor => &mut self.node.cursor,
             ControlInput::Refreshing => &mut self.node.refreshing,
             ControlInput::Sticky => &mut self.node.sticky,
+            ControlInput::Hero => &mut self.node.hero,
             ControlInput::TextColor => &mut self.text.color,
             ControlInput::SoftWrap => &mut self.text.soft_wrap,
             ControlInput::FontWeight => &mut self.text.font_weight,
@@ -1288,6 +1297,7 @@ impl Encode for Control {
             self.node.cursor,
             self.node.refreshing,
             self.node.sticky,
+            self.node.hero,
         ]
         .into_iter()
         .chain(self.text.all())
@@ -1415,6 +1425,7 @@ impl Decode for Control {
             cursor: entry()?,
             refreshing: entry()?,
             sticky: entry()?,
+            hero: entry()?,
         };
         control.text = TextEntries {
             color: entry()?,
@@ -1697,6 +1708,7 @@ mod tests {
                 cursor: Some(26),
                 refreshing: Some(28),
                 sticky: Some(29),
+                hero: Some(30),
             },
             text: TextEntries {
                 color: None,

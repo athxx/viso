@@ -326,11 +326,23 @@ const standing = (c) => {
   return { transform: s.transform === "none" ? "translateX(0px)" : s.transform, opacity: s.opacity };
 };
 const across = (dx, opacity) => ({ transform: "translateX(" + dx + "px)", opacity: String(opacity) });
+// The heroes showing within `page`, by tag.
+const heroesIn = (page) => {
+  const out = new Map();
+  for (const h of [page, ...page.querySelectorAll("[data-hero]")]) {
+    if (!h.dataset.hero) continue;
+    if (h.getClientRects().length && !out.has(h.dataset.hero)) out.set(h.dataset.hero, h);
+  }
+  return out;
+};
 // A navigation stack shows the page at `v`, folding the others away. Turned
 // from another page, the two move as its transition says: the arriving one
 // in from where it enters, the leaving one out to where it leaves, folding
 // once there and taking no pointer meanwhile. Pages stack in their order. A
-// turn while one is under way takes each page on from where it stands.
+// turn while one is under way takes each page on from where it stands. Each
+// hero of the arriving page flies from where the leaving page's hero of its
+// tag stands, scaled to its width, straight across the screen as its page
+// moves, while the one it left hides.
 const page = (el, v) => {
   const to = v === null ? -1 : Number(v);
   const first = el.$page === undefined;
@@ -338,6 +350,9 @@ const page = (el, v) => {
   const from = first ? -1 : el.$page;
   el.$page = to;
   const pages = items(el);
+  const flies = !first && !reduced.matches && pages[from] && pages[to];
+  const left = flies ? heroesIn(pages[from]) : new Map();
+  const sources = new Map([...left].map(([tag, h]) => [tag, h.getBoundingClientRect()]));
   const moving = el.$moving || new Map();
   el.$moving = moving;
   const was = new Map();
@@ -377,9 +392,28 @@ const page = (el, v) => {
   const rest = across(0, 1);
   a.removeAttribute("data-vx-away");
   a.inert = true;
+  // Each hero's box at rest, measured before its page moves.
+  const landing = [];
+  if (sources.size) {
+    for (const [tag, h] of heroesIn(b)) {
+      if (sources.has(tag)) landing.push([tag, h, h.getBoundingClientRect()]);
+    }
+  }
   const arrive = b.animate([was.get(b) || into, rest], timing);
   const leave = a.animate([was.get(a) || rest, out], timing);
   moving.set(b, arrive).set(a, leave);
+  const shift = new DOMMatrixReadOnly((was.get(b) || into).transform);
+  for (const [tag, h, box] of landing) {
+    const src = sources.get(tag);
+    if (!box.width || !src.width) continue;
+    const [ox, oy] = getComputedStyle(h).transformOrigin.split(" ").map(parseFloat);
+    const k = src.width / box.width;
+    const tx = src.x + src.width / 2 - box.x - ox - k * (box.width / 2 - ox) - shift.m41;
+    const ty = src.y + src.height / 2 - box.y - oy - k * (box.height / 2 - oy) - shift.m42;
+    const fly = h.animate([{ transform: "translate(" + tx + "px, " + ty + "px) scale(" + k + ")" }, { transform: "none" }], timing);
+    const gone = left.get(tag);
+    moving.set(h, fly).set(gone, gone.animate([{ opacity: 0 }, { opacity: 0 }], timing));
+  }
   arrive.onfinish = () => { if (moving.get(b) === arrive) moving.delete(b); };
   leave.onfinish = () => {
     if (moving.get(a) !== leave) return;
@@ -462,6 +496,7 @@ const P = {
   selected: (el, v, radio) => select(el, v === null ? 0n : v, radio),
   page,
   turn: (el, v) => { el.$turn = Number(v ?? 0n); },
+  hero: (el, v) => attr(el, "data-hero", v),
   source(el, v, mask) {
     const u = url(v);
     if (!mask) el.src = u;

@@ -157,7 +157,7 @@ Rules:
   detection.
 - [x] Keyframes: multi-stop tracks, repeat count / infinite, reverse, alternate.
 - [x] Reduced motion: platform setting honored by transitions, springs and scroll glides.
-- [ ] Navigation transitions: push/pop slide, fade, platform default; shared-element
+- [x] Navigation transitions: push/pop slide, fade, platform default; shared-element
   (hero) transition.
 - [ ] Animated `Toggle` thumb, `Checkbox` check, `Disclosure` chevron.
 

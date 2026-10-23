@@ -5126,6 +5126,7 @@ impl NodeStore {
         self.sync_refreshers();
         self.sync_stickies();
         self.sync_snaps();
+        self.fly_heroes();
         if self.sync_scroll_bars() {
             let mut redo = Vec::new();
             self.relayout_dirty(root, surface, scratch, &mut redo);
@@ -5359,6 +5360,7 @@ impl NodeStore {
         self.sync_refreshers();
         self.sync_stickies();
         self.sync_snaps();
+        self.fly_heroes();
         // The bars follow their viewports; a thumb whose length changed lays
         // out again, alone in its track.
         if self.sync_scroll_bars() {
@@ -6787,6 +6789,14 @@ impl<'a> BuildCx<'a> {
     pub fn page(&mut self, handle: Handle, page: Option<usize>) -> Handle {
         self.store
             .set_page(handle.id, page, crate::navigation::PageTransition::None);
+        handle
+    }
+
+    /// Tag an already-declared node a hero, which flies between the pages of
+    /// a navigation stack to the node of the same tag
+    /// ([`NodeStore::set_hero`]).
+    pub fn hero(&mut self, handle: Handle, tag: &str) -> Handle {
+        self.store.set_hero(handle.id, Some(tag));
         handle
     }
 

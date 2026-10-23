@@ -4660,6 +4660,7 @@ export record AdaptiveColumns { mode: AutoRepeat = AutoRepeat::fill; min: MixedL
 | `clip`             | `Bool`        | `false`               | `PAINT\|HIT_TEST`            |
 | `visible`          | `Bool`        | `true`                | `PAINT\|HIT_TEST\|SEMANTICS` |
 | `sticky`           | `Bool`        | `false`               | `TRANSFORM\|PAINT\|HIT_TEST` |
+| `hero`             | `Option<String>` | `Option::None`     | 无（下次换页读取）           |
 
 - `Offset { x: MixedLength = 0dp; y: MixedLength = 0dp; }` 不声明 `percent_basis`，含 Percent 分量是 `E3104`；
 - 变换在布局之后应用，不改变任何节点的布局尺寸与兄弟位置；Hit Test 使用变换后的几何；`translate.x` 是物理方向，不随 RTL 翻转；
@@ -4667,6 +4668,7 @@ export record AdaptiveColumns { mode: AutoRepeat = AutoRepeat::fill; min: MixedL
 - `visible: false` 保留布局空间，但不绘制、不参与命中测试，并从语义树移除；需要同时移除布局空间时使用 `if`；
 - `clip: true` 按自身 Border Box 与 `corner_radius` 裁剪子节点的绘制与命中测试；滚动视口总是裁剪。
 - `sticky: true` 的节点在最近的滚动视口滚过它时停在视口起点边（纵向为上边，横向为起点边，RTL 为右边），直到父节点的末端把它推走（分组标题随其分组离开）；可绑定。停靠只叠加在节点自身 `translate` 之上，只标记 `TRANSFORM`；停靠中的节点在兄弟之上绘制与命中。`VirtualList` 行根的 `sticky` 不作用于行根本身，而是按 Item 求值，标出各分组的标题行（U9.3）。HTML 导出为 `position: sticky`。
+- `hero: "tag"` 标记共享元素：`NavigationStack` 换页时，到达页中正在显示、带某个标签的节点从离开页中同标签节点所在之处飞到自己的位置——起点按两者中心对齐、按宽度之比缩放，平移与缩放补偿其所在页自身的移动，因此在屏幕上直线穿行——与页面移动同一时序；其间离开页的那个节点隐藏。到达页布局之后才起飞；再次换页时进行中的飞行落定、隐藏的节点重新显示；减少动态效果或 `PageTransition::none` 时不飞。页自身也可以是 hero。HTML 导出为 `data-hero`，页面脚本以 Web Animations 飞行。
 - `transform_origin` 的 `start`/`end` 随布局方向翻转；`scale`、`rotation` 绕它先缩放后旋转（顺时针），再平移 `translate`。
 
 ---

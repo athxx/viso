@@ -1377,3 +1377,43 @@ export component Pages {
         "both pages show as they move: {dom}"
     );
 }
+
+#[test]
+fn a_hero_exports_its_tag_and_flies_between_the_pages() {
+    const HEROES: &str = r#"
+export component Pages {
+    state page: U32 = 0;
+    view {
+        NavigationStack {
+            width: 400dp;
+            height: 300dp;
+            page_transition: PageTransition::fade;
+            bind current <=> page;
+            Button { text: "Open"; width: 40dp; height: 40dp; hero: "card"; on click { page = 1; } }
+            Text { text: "Card"; width: 80dp; height: 80dp; hero: "card"; }
+        }
+    }
+}
+"#;
+    let page = export(HEROES, false).unwrap();
+    assert_eq!(
+        page.index.matches("data-hero=\"card\"").count(),
+        2,
+        "{}",
+        page.index
+    );
+    let script = page.script.clone().unwrap();
+    let Some(chrome) = chrome() else {
+        eprintln!("no Chrome: the page is not run");
+        return;
+    };
+    let turn = "\nsetTimeout(() => document.querySelector('button').click(), 50);\n\
+        setTimeout(() => document.body.append('flights=' + document.getAnimations().map((a) =>\n\
+          a.effect.getKeyframes().map((k) => k.transform && k.transform.includes('scale(0.5)') ? 'fly' : k.opacity).join(' ')\n\
+        ).join(';') + '.'), 100);\n";
+    let dom = run_in_chrome(&page, &(script + turn), "export-heroes", &[], chrome);
+    assert!(
+        dom.contains(";fly ;0 0."),
+        "the arriving hero flies from the other's place at its scale, which hides: {dom}"
+    );
+}
