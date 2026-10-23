@@ -72,6 +72,7 @@ pub use controls::{
 };
 pub use controls::{Stepper, StepperStyle, stepper};
 pub use controls::{TOOLTIP_GRACE, TOOLTIP_LINGER, TOOLTIP_TOUCH, Tooltip, TooltipStyle, tooltip};
+pub use controls::{TimeNames, TimePicker, TimePickerStyle, time_picker};
 pub use document::{Document, DocumentStyle, DocumentText, html, markdown};
 pub use drag_drop::{Draggable, DraggableStyle, DropZone, DropZoneStyle, draggable, drop_zone};
 pub use grid::{Grid, GridViewStyle, grid};

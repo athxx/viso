@@ -224,7 +224,7 @@ Rules:
   light-dismiss panel at the picked day (or today, the nearest pickable); a pick closes
   it and refocuses the field, Escape/outside press close unchanged, Tab goes round the
   calendar's buttons and days; `combobox` + `dialog` semantics.
-- [ ] `TimePicker`: hour/minute (and AM/PM by the locale's hour cycle) spin segments,
+- [x] `TimePicker`: hour/minute (and AM/PM by the locale's hour cycle) spin segments,
   typed digits, minute step.
 - [ ] `DataGrid`: virtualized rows and columns, resize, reorder, sort, cell/row
   selection, keyboard navigation, `grid` semantics.

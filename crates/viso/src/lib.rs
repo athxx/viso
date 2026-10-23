@@ -4600,13 +4600,13 @@ pub mod prelude {
         ScrollViewStyle, SearchField, SearchFieldHandle, SearchFieldHandleSlot, SegmentedControl,
         SegmentedStyle, Sheet, SheetDetent, SheetEdge, SheetHandle, SheetHandleSlot, SheetStyle,
         Slider, SliderStyle, Spinner, Splitter, SplitterStyle, Stepper, StepperStyle, Tabs,
-        TabsStyle, TextInput, TextInputStyle, Toast, ToastEdge, ToastHandle, ToastHandleSlot,
-        ToastStyle, Toggle, ToggleStyle, View, ViewStyle, VirtualList, VirtualListViewStyle,
-        avatar, badge, button, calendar, checkbox, chip, color_picker, date_picker, dot_badge,
-        grid, icon, image, knob, label, link_label, modal, navigation_stack, number_field, popup,
-        progress_bar, progress_ring, radio_group, range_slider, rich_text, scroll, search_field,
-        segmented_control, sheet, slider, spinner, splitter, stepper, tabs, text_input, toast,
-        toggle, view, virtual_list,
+        TabsStyle, TextInput, TextInputStyle, TimePicker, Toast, ToastEdge, ToastHandle,
+        ToastHandleSlot, ToastStyle, Toggle, ToggleStyle, View, ViewStyle, VirtualList,
+        VirtualListViewStyle, avatar, badge, button, calendar, checkbox, chip, color_picker,
+        date_picker, dot_badge, grid, icon, image, knob, label, link_label, modal,
+        navigation_stack, number_field, popup, progress_bar, progress_ring, radio_group,
+        range_slider, rich_text, scroll, search_field, segmented_control, sheet, slider, spinner,
+        splitter, stepper, tabs, text_input, time_picker, toast, toggle, view, virtual_list,
     };
     // The top-level Window control (§68 public application lifecycle): a window
     // is not a node control — it does not enter the UI tree — so it appears as an

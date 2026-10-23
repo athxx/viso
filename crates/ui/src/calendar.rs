@@ -1,10 +1,13 @@
-//! Calendar dates, the week and the clock a locale keeps, and the marks
-//! under a week's days.
+//! Calendar dates and times of day, the week and the clock a locale keeps,
+//! and the marks under a week's days.
 //!
 //! A [`Date`] is a day of the proleptic Gregorian calendar. It counts as a
 //! number of days from 1970-01-01 ([`Date::days`]), which is how a reactive
 //! cell holds one ([`Date::to_state`]): it sorts, subtracts and steps without
 //! a calendar, and stepping by months clamps to the end of a short month.
+//!
+//! A [`Time`] is a time of day to the second, held as seconds from
+//! midnight ([`Time::to_state`], [`NO_TIME`] for none).
 //!
 //! [`first_weekday`] and [`hour_cycle`] read a BCP 47 locale for the day its
 //! weeks start on and whether its clock runs to twelve or to twenty-four,
@@ -210,6 +213,123 @@ impl Date {
 impl fmt::Display for Date {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:04}-{:02}-{:02}", self.year, self.month, self.day)
+    }
+}
+
+/// What a time cell holds when it holds no time.
+pub const NO_TIME: i32 = i32::MIN;
+
+/// A time of day, to the second.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct Time {
+    hour: u8,
+    minute: u8,
+    second: u8,
+}
+
+/// The seconds in a day.
+const DAY_SECONDS: i32 = 86_400;
+
+impl Time {
+    /// Midnight.
+    pub const MIDNIGHT: Time = Time {
+        hour: 0,
+        minute: 0,
+        second: 0,
+    };
+
+    /// `hour` (`0` to `23`), `minute` and `second` (`0` to `59`), if they
+    /// make a time.
+    pub fn new(hour: u32, minute: u32, second: u32) -> Option<Time> {
+        (hour < 24 && minute < 60 && second < 60).then_some(Time {
+            hour: hour as u8,
+            minute: minute as u8,
+            second: second as u8,
+        })
+    }
+
+    /// The time `seconds` after midnight, round the clock.
+    pub fn from_seconds(seconds: i32) -> Time {
+        let s = seconds.rem_euclid(DAY_SECONDS);
+        Time {
+            hour: (s / 3600) as u8,
+            minute: (s / 60 % 60) as u8,
+            second: (s % 60) as u8,
+        }
+    }
+
+    /// The seconds from midnight to it.
+    pub fn seconds(self) -> i32 {
+        i32::from(self.hour) * 3600 + i32::from(self.minute) * 60 + i32::from(self.second)
+    }
+
+    /// Its hour, `0` to `23`.
+    pub fn hour(self) -> u32 {
+        u32::from(self.hour)
+    }
+
+    pub fn minute(self) -> u32 {
+        u32::from(self.minute)
+    }
+
+    pub fn second(self) -> u32 {
+        u32::from(self.second)
+    }
+
+    /// Whether it is after noon.
+    pub fn is_pm(self) -> bool {
+        self.hour >= 12
+    }
+
+    /// Its hour on a twelve-hour clock, `1` to `12`.
+    pub fn hour12(self) -> u32 {
+        match self.hour % 12 {
+            0 => 12,
+            h => u32::from(h),
+        }
+    }
+
+    /// The time `text` writes as `HH:MM` or `HH:MM:SS`.
+    pub fn parse(text: &str) -> Option<Time> {
+        let mut parts = text.trim().split(':');
+        let hour = parts.next()?.parse().ok()?;
+        let minute = parts.next()?.parse().ok()?;
+        let second = match parts.next() {
+            Some(s) => s.parse().ok()?,
+            None => 0,
+        };
+        if parts.next().is_some() {
+            return None;
+        }
+        Time::new(hour, minute, second)
+    }
+
+    /// Now, by the system clock in universal time.
+    pub fn now() -> Time {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        Time::from_seconds((secs % 86_400) as i32)
+    }
+
+    /// It as a cell holds it.
+    pub fn to_state(self) -> StateValue {
+        StateValue::Int(self.seconds())
+    }
+
+    /// The time a cell holds, `None` for [`NO_TIME`] or any other value.
+    pub fn of_state(value: Option<StateValue>) -> Option<Time> {
+        match value {
+            Some(StateValue::Int(s)) if s != NO_TIME => Some(Time::from_seconds(s)),
+            _ => None,
+        }
+    }
+}
+
+/// `HH:MM:SS`.
+impl fmt::Display for Time {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:02}:{:02}:{:02}", self.hour, self.minute, self.second)
     }
 }
 
@@ -595,6 +715,24 @@ mod tests {
         assert_eq!(oct.grid_start(Weekday::Sunday), date(2026, 9, 27));
         assert_eq!(oct.grid_start(Weekday::Thursday), date(2026, 10, 1));
         assert_eq!(oct.grid_start(Weekday::Friday), date(2026, 9, 25));
+    }
+
+    #[test]
+    fn times_count_seconds_round_the_clock() {
+        let t = Time::new(13, 5, 9).unwrap();
+        assert_eq!(t.seconds(), 47_109);
+        assert_eq!(Time::from_seconds(47_109), t);
+        assert_eq!(Time::from_seconds(-60), Time::new(23, 59, 0).unwrap());
+        assert_eq!(Time::from_seconds(86_400), Time::MIDNIGHT);
+        assert_eq!((t.hour12(), t.is_pm()), (1, true));
+        assert_eq!(Time::MIDNIGHT.hour12(), 12);
+        assert_eq!(Time::new(24, 0, 0), None);
+        assert_eq!(Time::parse("09:41"), Time::new(9, 41, 0));
+        assert_eq!(Time::parse("23:59:59"), Time::new(23, 59, 59));
+        assert_eq!(Time::parse("9:60"), None);
+        assert_eq!(t.to_string(), "13:05:09");
+        assert_eq!(Time::of_state(Some(StateValue::Int(NO_TIME))), None);
+        assert_eq!(Time::of_state(Some(t.to_state())), Some(t));
     }
 
     #[test]
