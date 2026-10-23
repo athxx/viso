@@ -1144,6 +1144,25 @@ export component C { view { Column { Chip { styles: [Lit]; } } } }
 }
 
 #[test]
+fn a_node_that_wears_no_focus_ring_exports_without_the_browser_s_outline() {
+    const RINGS: &str = r#"
+export component Rings {
+    state plain = true;
+    view {
+        Column {
+            Button { text: "Own"; focus_ring: false; }
+            Button { text: "Bound"; focus_ring: plain; on click { plain = false; } }
+        }
+    }
+}
+"#;
+    let page = export(RINGS, false).unwrap();
+    assert!(page.index.contains("outline: none"), "{}", page.index);
+    let script = page.script.as_deref().unwrap();
+    assert!(script.contains("P.ring(e["), "{script}");
+}
+
+#[test]
 fn a_disclosure_exports_as_details_with_its_header_as_summary() {
     const PANEL: &str = r#"
 export component Panel {

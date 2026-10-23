@@ -655,6 +655,7 @@ mod tests {
             reduce_motion: false,
             text_scale: 1.5,
             overlay_scroll_bars: false,
+            accent: Some([1.0, 0.5, 0.0]),
         };
         app.set_appearance(dark);
         assert_eq!(app.appearance(), dark);

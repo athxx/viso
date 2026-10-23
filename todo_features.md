@@ -264,7 +264,7 @@ Rules:
 - [ ] Biometric authentication service.
 - [ ] Push notification registration (APNs/FCM).
 - [ ] Background tasks service.
-- [ ] Focus-visible ring drawn by the framework on focused controls (keyboard focus
+- [x] Focus-visible ring drawn by the framework on focused controls (keyboard focus
   only, platform style).
 - [ ] Access keys on buttons, checks and labelled fields (`&` mnemonics, Alt+letter,
   cues while Alt is held) beyond the menu bar.

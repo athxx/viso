@@ -100,6 +100,8 @@ objc2-app-kit = { version = "0.3", features = [
     "NSScreen",
     "NSScroller",
     "NSControl",
+    "NSColor",
+    "NSColorSpace",
 ] }
 
 # iOS / iPadOS: UIKit via objc2 (default features: every class the backend

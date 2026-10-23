@@ -28,6 +28,7 @@ mod edit_history;
 pub mod field_input;
 mod field_marks;
 pub mod flush;
+pub mod focus_ring;
 pub mod fold;
 pub mod frame_client;
 pub mod grid;
@@ -100,6 +101,7 @@ pub use flush::{
     ADAPTIVE_ROUNDS, AdaptiveCycle, EffectsRan, ReactiveCycle, SETTLE_ROUNDS, Unsettled,
     run_effects, settle_adaptive, settle_states,
 };
+pub use focus_ring::FocusRingStyle;
 pub use frame_client::{FrameClient, SharedClient};
 pub use grid::{
     AdaptiveColumns, AutoRepeat, GridAreas, GridPlacement, GridStyle, LineNames, TrackMax,

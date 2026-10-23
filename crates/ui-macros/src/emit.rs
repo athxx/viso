@@ -736,6 +736,7 @@ fn control_tokens(control: Control) -> TokenStream {
         entry(control.node.sticky),
         entry(control.node.hero),
     );
+    let focus_ring = entry(control.node.focus_ring);
     let text = control.text;
     let (text_color, soft_wrap) = (entry(text.color), entry(text.soft_wrap));
     let (font_weight, font_family) = (entry(text.font_weight), entry(text.font_family));
@@ -853,6 +854,7 @@ fn control_tokens(control: Control) -> TokenStream {
                 refreshing: #refreshing,
                 sticky: #sticky,
                 hero: #hero,
+                focus_ring: #focus_ring,
             },
             text: ::viso::__private::viso_view::TextEntries {
                 color: #text_color,

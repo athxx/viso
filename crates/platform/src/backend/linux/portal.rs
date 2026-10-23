@@ -92,6 +92,8 @@ impl Settings {
                 .and_then(|v| f64::try_from(&*v).ok()),
             self.value(GNOME_INTERFACE, "overlay-scrolling")
                 .and_then(|v| bool::try_from(&*v).ok()),
+            self.value(APPEARANCE, "accent-color")
+                .and_then(|v| <(f64, f64, f64)>::try_from(v).ok()),
         )
     }
 

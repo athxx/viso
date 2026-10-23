@@ -200,6 +200,13 @@ pub(super) fn read_appearance() -> Appearance {
             w!("Control Panel\\Accessibility"),
             w!("DynamicScrollbars"),
         ) != Some(0),
+        // Settings > Personalization > Colors > Accent color, `0xAABBGGRR`.
+        accent: read_dword(w!("Software\\Microsoft\\Windows\\DWM"), w!("AccentColor")).map(
+            |abgr| {
+                let channel = |shift: u32| ((abgr >> shift) & 0xff) as f32 / 255.0;
+                [channel(0), channel(8), channel(16)]
+            },
+        ),
     }
 }
 

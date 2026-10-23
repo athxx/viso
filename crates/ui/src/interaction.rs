@@ -17,6 +17,7 @@
 //! all.
 
 use crate::component::NodeStore;
+use crate::dirty::DirtyClass;
 use crate::input::PointerId;
 use crate::node::NodeId;
 use crate::state::{StateId, StateStore, StateValue};
@@ -173,7 +174,14 @@ impl NodeStore {
     /// Records whether the focus came from the keyboard or an assistive
     /// technology rather than a pointer.
     pub fn set_focus_visible(&mut self, visible: bool) {
+        if self.interaction_states.focus_visible == visible {
+            return;
+        }
         self.interaction_states.set_focus_visible(visible);
+        match self.focused() {
+            Some(node) if !visible => self.mark_dirty(node, DirtyClass::PAINT),
+            _ => self.ring_landed(),
+        }
     }
 
     /// Raises the revision cell once something the states derive from moved

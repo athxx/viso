@@ -767,6 +767,8 @@ pub struct NodeStore {
     pub(crate) motions: crate::scroll_motion::ScrollMotions,
     /// Cold: the viewports' scroll bars and how they look.
     pub(crate) bars: crate::scroll_bar::Bars,
+    /// Cold: the focus ring, how it looks, and the nodes that wear none.
+    pub(crate) ring: crate::focus_ring::FocusRing,
     /// Cold: the viewports that refresh when pulled, and how they show it.
     pub(crate) refreshers: crate::refresh::Refreshers,
     /// Cold: the spinners that spin.
@@ -910,6 +912,7 @@ impl NodeStore {
         self.anchors.clear();
         self.wakes.clear();
         self.shadows.clear();
+        self.ring.clear();
         self.access.clear();
         self.motions.clear();
         self.bars.clear();
@@ -4087,6 +4090,7 @@ impl NodeStore {
     pub fn is_transitioning(&self) -> bool {
         !self.transitions.is_empty()
             || !self.animations.is_empty()
+            || self.ring.appearing()
             || !self.animation_ends.is_empty()
     }
 
@@ -4094,6 +4098,7 @@ impl NodeStore {
     /// node shows; one that arrives is written at its target and dropped, as is
     /// one whose node is gone. A flat pass with no allocation.
     pub fn tick_transitions(&mut self, delta: Duration) {
+        self.tick_ring(delta);
         let mut i = self.transitions.len();
         while i > 0 {
             i -= 1;
@@ -4442,11 +4447,15 @@ impl NodeStore {
         match id {
             Some(node) if !self.arena.is_live(node) => {}
             other => {
-                if self.focused != other {
+                let moved = self.focused != other;
+                if moved {
                     self.interaction_states.moved();
                     self.focus_from.get_or_insert(self.focused);
                 }
                 self.focused = other;
+                if moved {
+                    self.ring_landed();
+                }
             }
         }
     }
@@ -4985,6 +4994,7 @@ impl NodeStore {
         self.layers.forget(i as u32);
         self.anchors.forget(i as u32);
         self.shadows.forget(i as u32);
+        self.ring.forget(i as u32);
         self.access.forget(i as u32);
         self.bars.forget(i as u32);
         self.refreshers.forget(i as u32);
@@ -6792,6 +6802,14 @@ impl<'a> BuildCx<'a> {
     /// router's job; this only declares the node eligible.
     pub fn focusable(&mut self, handle: Handle, focusable: bool) -> Handle {
         self.store.set_focusable(handle.id, focusable);
+        handle
+    }
+
+    /// Whether an already-declared node wears the focus ring while the
+    /// keyboard focused it (default `true`): `false` for one that shows its
+    /// focus its own way. Returns the handle so authoring chains inline.
+    pub fn focus_ring(&mut self, handle: Handle, wears: bool) -> Handle {
+        self.store.set_focus_ring(handle.id, wears);
         handle
     }
 

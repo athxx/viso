@@ -193,6 +193,7 @@ impl ControlKind {
             (_, "refreshing") => ControlInput::Refreshing,
             (_, "sticky") => ControlInput::Sticky,
             (_, "hero") => ControlInput::Hero,
+            (_, "focus_ring") => ControlInput::FocusRing,
             (ControlKind::Label | ControlKind::TextInput | ControlKind::Number, "color") => {
                 ControlInput::TextColor
             }
@@ -692,6 +693,9 @@ pub enum ControlInput {
     /// The node's `hero`: the tag it flies between a navigation stack's pages
     /// by.
     Hero,
+    /// The node's `focus_ring`: whether it wears the framework's focus ring
+    /// while the keyboard focused it.
+    FocusRing,
     /// A text's `font_style`: upright or italic.
     FontStyle,
     /// A text's `spans`: its pieces, drawn each its own way.
@@ -809,6 +813,8 @@ pub struct NodeEntries {
     pub sticky: Option<u32>,
     /// The entry of its `hero`.
     pub hero: Option<u32>,
+    /// The entry of its `focus_ring`.
+    pub focus_ring: Option<u32>,
 }
 
 /// The handler-table entries of the style of a text a node shows: an absent
@@ -940,7 +946,7 @@ pub enum Switched {
 
 impl ControlInput {
     /// Every input, by wire tag.
-    pub const ALL: [ControlInput; 57] = [
+    pub const ALL: [ControlInput; 58] = [
         ControlInput::Value,
         ControlInput::Min,
         ControlInput::Max,
@@ -998,6 +1004,7 @@ impl ControlInput {
         ControlInput::Sticky,
         ControlInput::PageTransition,
         ControlInput::Hero,
+        ControlInput::FocusRing,
     ];
 
     /// Its wire tag: its place in [`ControlInput::ALL`].
@@ -1146,6 +1153,7 @@ impl Control {
             ControlInput::Refreshing => self.node.refreshing,
             ControlInput::Sticky => self.node.sticky,
             ControlInput::Hero => self.node.hero,
+            ControlInput::FocusRing => self.node.focus_ring,
             ControlInput::TextColor => self.text.color,
             ControlInput::SoftWrap => self.text.soft_wrap,
             ControlInput::FontWeight => self.text.font_weight,
@@ -1219,6 +1227,7 @@ impl Control {
             ControlInput::Refreshing => &mut self.node.refreshing,
             ControlInput::Sticky => &mut self.node.sticky,
             ControlInput::Hero => &mut self.node.hero,
+            ControlInput::FocusRing => &mut self.node.focus_ring,
             ControlInput::TextColor => &mut self.text.color,
             ControlInput::SoftWrap => &mut self.text.soft_wrap,
             ControlInput::FontWeight => &mut self.text.font_weight,
@@ -1298,6 +1307,7 @@ impl Encode for Control {
             self.node.refreshing,
             self.node.sticky,
             self.node.hero,
+            self.node.focus_ring,
         ]
         .into_iter()
         .chain(self.text.all())
@@ -1426,6 +1436,7 @@ impl Decode for Control {
             refreshing: entry()?,
             sticky: entry()?,
             hero: entry()?,
+            focus_ring: entry()?,
         };
         control.text = TextEntries {
             color: entry()?,
@@ -1709,6 +1720,7 @@ mod tests {
                 refreshing: Some(28),
                 sticky: Some(29),
                 hero: Some(30),
+                focus_ring: Some(31),
             },
             text: TextEntries {
                 color: None,

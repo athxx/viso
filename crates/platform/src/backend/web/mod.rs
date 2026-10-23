@@ -609,6 +609,7 @@ fn current_appearance() -> Appearance {
         reduce_motion: matches(REDUCED_MOTION),
         text_scale: text_scale(),
         overlay_scroll_bars: true,
+        accent: None,
     }
 }
 

@@ -684,6 +684,9 @@ pub struct Appearance {
     /// Scroll bars show only while scrolling, over the content; else the
     /// user asked to always see them, beside it.
     pub overlay_scroll_bars: bool,
+    /// The user's accent color as gamma-encoded sRGB channels in `[0, 1]`,
+    /// where the system has one.
+    pub accent: Option<[f32; 3]>,
 }
 
 impl Default for Appearance {
@@ -694,6 +697,7 @@ impl Default for Appearance {
             reduce_motion: false,
             text_scale: 1.0,
             overlay_scroll_bars: true,
+            accent: None,
         }
     }
 }

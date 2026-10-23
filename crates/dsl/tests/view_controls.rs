@@ -784,6 +784,39 @@ export component Panel {
 }
 
 #[test]
+fn a_node_can_show_its_focus_its_own_way_instead_of_the_ring() {
+    const RINGS: &str = r#"
+export component Rings {
+    state plain = true;
+    view {
+        Column {
+            Button { text: "Ringed"; }
+            Button { text: "Own"; focus_ring: false; }
+            Button {
+                text: "Bound";
+                width: 100dp;
+                height: 20dp;
+                focus_ring: plain;
+                on click { plain = false; }
+            }
+        }
+    }
+}
+"#;
+    for mut rt in [Rt::reloaded(RINGS), Rt::packaged(RINGS)] {
+        let [ringed, own, bound] = rt.children_of_root()[..] else {
+            panic!("three buttons");
+        };
+        assert!(rt.store.wears_focus_ring(ringed));
+        assert!(!rt.store.wears_focus_ring(own));
+        assert!(rt.store.wears_focus_ring(bound));
+        let at = rt.store.world(bound);
+        rt.click(at.x + 2.0, at.y + 2.0);
+        assert!(!rt.store.wears_focus_ring(bound), "it follows its binding");
+    }
+}
+
+#[test]
 fn a_modal_covers_the_surface_traps_focus_and_asks_to_close_on_its_scrim_or_escape() {
     const MODAL: &str = r#"
 export component Page {

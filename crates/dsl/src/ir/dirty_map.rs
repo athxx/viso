@@ -87,6 +87,8 @@ pub fn property_dirty_class(name: &str) -> DirtyClass {
         // Whether a node takes focus is what it is announced as; a mounting
         // node's autofocus moves the focus, which re-reads semantics.
         "focusable" | "autofocus" => D::SEMANTICS,
+        // The focus ring is drawn round the focused node.
+        "focus_ring" => D::PAINT,
 
         // Turning input off restyles the node through its `disabled`
         // selector and announces it disabled; what hit testing finds is

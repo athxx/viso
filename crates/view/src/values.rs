@@ -224,6 +224,7 @@ pub(crate) fn control_cells(
         control.node.sticky,
         control.page_transition,
         control.node.hero,
+        control.node.focus_ring,
     ])
     .flatten()
     .chain(arms)
@@ -244,8 +245,8 @@ pub(crate) fn control_cells(
 /// caption, its `translate`, `scale`, `rotation` and `transform_origin`, and
 /// its `cursor`, its text's `font_style`, `spans` and `selectable`, its
 /// `shadow`, a refreshable viewport's `refreshing`, its `sticky`, and a
-/// navigation stack's `page_transition`, and its `hero`.
-const SHOWN: usize = 48;
+/// navigation stack's `page_transition`, its `hero` and its `focus_ring`.
+const SHOWN: usize = 49;
 
 /// The input of each value a node shows, in order.
 const SHOWN_INPUTS: [ControlInput; SHOWN] = [
@@ -297,6 +298,7 @@ const SHOWN_INPUTS: [ControlInput; SHOWN] = [
     ControlInput::Sticky,
     ControlInput::PageTransition,
     ControlInput::Hero,
+    ControlInput::FocusRing,
 ];
 
 /// Where its `translate` sits among the values a node shows.
@@ -325,6 +327,9 @@ const STICKY: usize = 45;
 
 /// Where its `hero` sits among the values a node shows.
 const HERO: usize = 47;
+
+/// Where its `focus_ring` sits among the values a node shows.
+const FOCUS_RING: usize = 48;
 
 /// Where its background, opacity, corner radius and border sit among the
 /// values a node shows.
@@ -535,6 +540,7 @@ impl Shown {
             sticky,
             paging,
             hero,
+            focus_ring,
         ] = &shows;
         let spanned = crate::text_style::spans(pieces);
         let changed = |at: usize| prior.is_none_or(|prior| prior[at] != shows[at]);
@@ -646,6 +652,9 @@ impl Shown {
         }
         if shown(HERO) && changed(HERO) {
             store.set_hero(self.node, hero.as_str());
+        }
+        if shown(FOCUS_RING) && changed(FOCUS_RING) {
+            store.set_focus_ring(self.node, truth(focus_ring, true));
         }
         // An autofocus node takes the focus as it mounts, unless something
         // already holds it.

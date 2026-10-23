@@ -156,6 +156,8 @@ pub(super) enum Prop {
     Page,
     /// The tag a node flies between a navigation stack's pages by.
     Hero,
+    /// Whether it wears the browser's focus outline.
+    FocusRing,
     /// How a navigation stack's pages trade places.
     Turn,
     /// An asset's source, as an image or as a mask.
@@ -1477,6 +1479,16 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             && matches!(fixed, Fixed::Value(Value::Str(_)))
         {
             el.attr("data-hero", &fixed.text());
+        }
+        if let Some(fixed) = self.bind(
+            wires,
+            control.node.focus_ring,
+            Prop::FocusRing,
+            "whether it wears the focus ring",
+            at,
+        ) && !fixed.truth()
+        {
+            el.style("outline: none");
         }
         if let Some(fixed) = self.bind(
             wires,

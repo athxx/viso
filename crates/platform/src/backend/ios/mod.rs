@@ -240,6 +240,8 @@ fn appearance_of(traits: &UITraitCollection) -> Appearance {
         // SAFETY: as above.
         text_scale: text_scale_of(&*unsafe { traits.preferredContentSizeCategory() }),
         overlay_scroll_bars: true,
+        // An app's tint, not the system, is its accent.
+        accent: None,
     }
 }
 

@@ -42,17 +42,6 @@ use viso_render::{
 /// The opaque white tint that passes a premultiplied color-atlas texel through
 /// the Image shader unchanged (`texel * float4(1,1,1,1)`), so a color-bitmap
 /// glyph paints exactly as its emoji artwork stores it.
-/// The focus ring of a link or a read-only text: its color, its width and
-/// its room from what it goes round.
-const RING: Rgba = Rgba {
-    r: 0.23,
-    g: 0.48,
-    b: 0.96,
-    a: 1.0,
-};
-const RING_WIDTH: f32 = 2.0;
-const RING_GAP: f32 = 1.0;
-
 const WHITE: Rgba = Rgba {
     r: 1.0,
     g: 1.0,
@@ -420,6 +409,11 @@ fn paint_subtree<S: PaintSpans>(
     if faded {
         out.push(Primitive::LayerEnd);
     }
+    // The focus ring goes round the node over its subtree, outside its own
+    // clip, moving with it.
+    if let Some(progress) = store.focus_ring_on(root) {
+        paint_focus_ring(store, root, world, progress, out);
+    }
     if own {
         out.push(Primitive::TransformEnd);
     }
@@ -519,10 +513,10 @@ fn paint_own(store: &NodeStore, node: NodeId, world: Rect, out: &mut Vec<Primiti
         match link {
             Some(link) => {
                 for rect in store.link_boxes(node, link) {
-                    paint_ring(rect, out);
+                    paint_ring(store, rect, out);
                 }
             }
-            None if ring => paint_ring(world, out),
+            None if ring => paint_ring(store, world, out),
             None => {}
         }
     }
@@ -545,19 +539,24 @@ fn paint_shadow(shadow: crate::shadow::Shadow, world: Rect, radius: f32, out: &m
 }
 
 /// The focus ring round `rect`, worn by a focused link (round each of its
-/// line boxes) or a read-only field while the keyboard moved the focus: a
-/// rounded outline just outside it.
+/// line boxes) or a read-only field while the keyboard moved the focus.
 #[cold]
-fn paint_ring(rect: Rect, out: &mut Vec<Primitive>) {
-    out.push(Primitive::Quad(Quad {
-        rect: rect.inflate(RING_GAP + RING_WIDTH),
-        color: Rgba::TRANSPARENT,
-        radius: RING_GAP + RING_WIDTH,
-        border: Border {
-            width: RING_WIDTH,
-            color: RING,
-        },
-    }));
+fn paint_ring(store: &NodeStore, rect: Rect, out: &mut Vec<Primitive>) {
+    store.focus_ring_style().paint(rect, 0.0, 1.0, out);
+}
+
+/// The focus ring round focused `node` at `world`, `progress` of the way in,
+/// rounded as its corners are.
+#[cold]
+fn paint_focus_ring(
+    store: &NodeStore,
+    node: NodeId,
+    world: Rect,
+    progress: f32,
+    out: &mut Vec<Primitive>,
+) {
+    let radius = corner_radius(&store.style(node), world);
+    store.focus_ring_style().paint(world, radius, progress, out);
 }
 
 /// A text field at `world`, clipped to it: its selection, its text `content`,

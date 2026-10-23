@@ -43,11 +43,12 @@ use objc2::{AnyThread, ClassType, DefinedClass, MainThreadOnly, define_class, ms
 use objc2_app_kit::{
     NSAllRomanInputSourcesLocaleIdentifier, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
-    NSApplicationTerminateReply, NSBackingStoreType, NSCursor, NSEvent, NSEventMask,
-    NSEventModifierFlags, NSEventPhase, NSMenu, NSMenuItem, NSPasteboard, NSPasteboardTypeString,
-    NSPreferredScrollerStyleDidChangeNotification, NSScreen, NSScroller, NSScrollerStyle,
-    NSTextInputClient, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow, NSWindowDelegate,
-    NSWindowStyleMask, NSWindowTitleVisibility, NSWorkspace,
+    NSApplicationTerminateReply, NSBackingStoreType, NSColor, NSColorSpace, NSCursor, NSEvent,
+    NSEventMask, NSEventModifierFlags, NSEventPhase, NSMenu, NSMenuItem, NSPasteboard,
+    NSPasteboardTypeString, NSPreferredScrollerStyleDidChangeNotification, NSScreen, NSScroller,
+    NSScrollerStyle, NSSystemColorsDidChangeNotification, NSTextInputClient, NSTrackingArea,
+    NSTrackingAreaOptions, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
+    NSWindowTitleVisibility, NSWorkspace,
     NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification,
 };
 use objc2_foundation::{
@@ -187,6 +188,13 @@ impl MacApp {
                 &app_delegate,
                 sel!(accessibilityDisplayOptionsChanged:),
                 Some(NSPreferredScrollerStyleDidChangeNotification),
+                None,
+            );
+            // So does the accent color, which no view hears of.
+            NSNotificationCenter::defaultCenter().addObserver_selector_name_object(
+                &app_delegate,
+                sel!(accessibilityDisplayOptionsChanged:),
+                Some(NSSystemColorsDidChangeNotification),
                 None,
             );
             // The preferred languages change outside the app, in Settings.
@@ -332,6 +340,12 @@ fn current_appearance(app: &NSApplication) -> Appearance {
         text_scale: 1.0,
         overlay_scroll_bars: NSScroller::preferredScrollerStyle(MainThreadMarker::from(app))
             == NSScrollerStyle::Overlay,
+        accent: NSColor::controlAccentColor()
+            .colorUsingColorSpace(&NSColorSpace::sRGBColorSpace())
+            .map(|c| {
+                [c.redComponent(), c.greenComponent(), c.blueComponent()]
+                    .map(|v| (v as f32).clamp(0.0, 1.0))
+            }),
     }
 }
 

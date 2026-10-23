@@ -383,6 +383,7 @@ fn appearance_of(bits: i32, font_scale: f32) -> Appearance {
             1.0
         },
         overlay_scroll_bars: true,
+        accent: None,
     }
 }
 
