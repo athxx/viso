@@ -146,7 +146,7 @@ impl ControlKind {
             "Tabs" | "RadioGroup" => ControlKind::Select,
             "TextInput" => ControlKind::TextInput,
             "NumberField" => ControlKind::Number,
-            "Text" => ControlKind::Label,
+            "Text" | "LinkLabel" => ControlKind::Label,
             "Button" => ControlKind::Button,
             "Image" | "Svg" => ControlKind::Asset,
             "ShaderView" => ControlKind::Shader,
@@ -377,6 +377,7 @@ impl ControlKind {
             (ControlKind::Viewer, "max_scale") => ControlInput::Max,
             (ControlKind::Sheet, "detent") => ControlInput::Min,
             (ControlKind::Viewer, "pan_margin") => ControlInput::PanMargin,
+            (ControlKind::Label, "url") => ControlInput::Url,
             (ControlKind::SwipeRow, "full_swipe") | (ControlKind::SwipeActions, "edge") => {
                 ControlInput::Value
             }
@@ -432,7 +433,7 @@ pub fn widget_role(widget: &str) -> Option<Role> {
         "TextInput" => Role::TextField,
         "NumberField" => Role::SpinButton,
         "Tabs" => Role::TabList,
-        "Text" => Role::Label,
+        "Text" | "LinkLabel" => Role::Label,
         "Image" | "Svg" | "GameViewport" => Role::Image,
         "VirtualList" => Role::List,
         "NavigationStack" => Role::Navigation,
@@ -899,6 +900,8 @@ pub enum ControlInput {
     PageTransition,
     /// A viewer's `pan_margin`: how far past its bounds its content moves.
     PanMargin,
+    /// A link label's `url`: where its text leads.
+    Url,
 }
 
 /// A view-driven native node: its kind and the handler-table entries that
@@ -938,6 +941,8 @@ pub struct Control {
     pub page_transition: Option<u32>,
     /// The entry of how far past its bounds a viewer's content moves.
     pub pan_margin: Option<u32>,
+    /// The entry of where a link label's text leads.
+    pub url: Option<u32>,
     /// The shader a shader view paints with, by its index in the view's
     /// shader table; its value gives the shader's parameters.
     pub shader: Option<u32>,
@@ -1125,7 +1130,7 @@ pub enum Switched {
 
 impl ControlInput {
     /// Every input, by wire tag.
-    pub const ALL: [ControlInput; 65] = [
+    pub const ALL: [ControlInput; 66] = [
         ControlInput::Value,
         ControlInput::Min,
         ControlInput::Max,
@@ -1191,6 +1196,7 @@ impl ControlInput {
         ControlInput::DragKind,
         ControlInput::DropAccepts,
         ControlInput::DropOperation,
+        ControlInput::Url,
     ];
 
     /// Its wire tag: its place in [`ControlInput::ALL`].
@@ -1284,6 +1290,7 @@ impl Control {
             caption: None,
             page_transition: None,
             pan_margin: None,
+            url: None,
             shader: None,
             look: Look::default(),
             arms: Box::new([]),
@@ -1367,6 +1374,7 @@ impl Control {
             ControlInput::Caption => self.caption,
             ControlInput::PageTransition => self.page_transition,
             ControlInput::PanMargin => self.pan_margin,
+            ControlInput::Url => self.url,
         }
     }
 
@@ -1448,6 +1456,7 @@ impl Control {
             ControlInput::Caption => &mut self.caption,
             ControlInput::PageTransition => &mut self.page_transition,
             ControlInput::PanMargin => &mut self.pan_margin,
+            ControlInput::Url => &mut self.url,
         };
         *slot = Some(entry);
     }
@@ -1476,6 +1485,7 @@ impl Encode for Control {
             self.caption,
             self.page_transition,
             self.pan_margin,
+            self.url,
             self.shader,
             look.background,
             look.opacity,
@@ -1600,6 +1610,7 @@ impl Decode for Control {
             caption: entry()?,
             page_transition: entry()?,
             pan_margin: entry()?,
+            url: entry()?,
             shader: entry()?,
             look: Look {
                 background: entry()?,
@@ -1888,6 +1899,7 @@ mod tests {
             caption: Some(15),
             page_transition: Some(9),
             pan_margin: Some(34),
+            url: Some(35),
             shader: Some(2),
             look: Look {
                 background: Some(3),

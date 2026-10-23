@@ -149,6 +149,8 @@ pub(super) enum Prop {
     },
     /// A slider's `value`, `min`, `max` or `step`.
     Range(&'static str),
+    /// A link label's `url`, its `<a>`'s `href`.
+    Href,
     /// A progress indicator's `value`, `min` or `max`: its `aria-value*`,
     /// and the fraction `--vx-at` its fill shows; with no value it runs.
     Progress(&'static str),
@@ -544,6 +546,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             ("TextInput" | "NumberField" | "Toggle" | "CheckBox" | "Slider", _) => "input",
             ("Image" | "Svg", _) if !masked => "img",
             ("Text", _) => "span",
+            ("LinkLabel", _) => "a",
             (_, Some(Role::Navigation)) => "nav",
             _ => "div",
         };
@@ -553,7 +556,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             (NodeKind::Stack, _) => "vx-stack",
             (NodeKind::Absolute, _) => "vx-absolute",
             (NodeKind::Scroll | NodeKind::VirtualList, _) => "vx-scroll",
-            (_, "Text") => "vx-text",
+            (_, "Text" | "LinkLabel") => "vx-text",
             (_, "Button") => "vx-button",
             (_, "TextInput" | "NumberField") => "vx-input",
             (_, "Toggle" | "CheckBox") => "vx-check",
@@ -580,6 +583,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             el.classes.push("vx-radio".to_owned());
         }
         match node.type_name.as_str() {
+            "LinkLabel" => el.classes.push("vx-link".to_owned()),
             "Modal" | "Sheet" => el.classes.push("vx-layer".to_owned()),
             "Toast" => el
                 .classes
@@ -1281,6 +1285,11 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                             el.text = Some(fixed.text());
                         }
                     }
+                }
+                if let Some(fixed) =
+                    self.bind(wires, control.url, Prop::Href, "where the link leads", at)
+                {
+                    el.attr("href", &fixed.text());
                 }
                 if let Some(Fixed::Value(on)) = self.bind(
                     wires,

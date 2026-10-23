@@ -6,7 +6,7 @@
 use std::cell::RefCell;
 use std::time::Duration;
 
-use viso::__test_support::drive_scripted;
+use viso::__test_support::{drive_scripted, drive_scripted_with_services};
 use viso::platform::{
     CursorIcon, KeyCode as Key, Modifiers as RawModifiers, PointerButtons as RawButtons,
     PointerPhase as RawPhase, RawEvent, RawKey, RawPointer, WindowId,
@@ -174,4 +174,115 @@ fn tab_reaches_each_link_in_turn_and_enter_follows_the_focused_one() {
     script.push(redraw());
     drive_scripted::<LinksApp>(script, STEP);
     assert_eq!(followed(), ["/docs", "/site"]);
+}
+
+/// A link label with no `on_link`, under a column that keeps nothing.
+struct LabelApp;
+
+impl Application for LabelApp {
+    fn new(cx: &mut AppCx) -> Self {
+        cx.load_font(&include_bytes!("../../text/tests/fixtures/DejaVuSans-subset.ttf")[..]);
+        LabelApp
+    }
+
+    fn window_config(&self) -> viso::ui::WindowConfig {
+        viso::ui::WindowConfig {
+            caption: false,
+            ..Default::default()
+        }
+    }
+
+    fn build(&mut self, cx: &mut BuildCx<'_>) {
+        cx.flex(
+            FlexStyle {
+                size: Size::fill(),
+                axis: Axis::Column,
+                ..FlexStyle::default()
+            },
+            |cx| {
+                link_label("docs", "https://example.org/docs")
+                    .font_size(20.0)
+                    .build(cx);
+            },
+        );
+    }
+}
+
+#[test]
+fn a_link_no_handler_keeps_opens_with_the_system_and_one_kept_does_not() {
+    let mock = viso::services::Mock::new();
+    let mut script = vec![redraw(), redraw()];
+    script.extend(key(Key::Tab));
+    script.extend(key(Key::Enter));
+    script.push(redraw());
+    drive_scripted_with_services::<LabelApp>(script.clone(), STEP, mock.services());
+    assert_eq!(
+        mock.calls(),
+        [viso::services::Call::OpenUrl(
+            "https://example.org/docs".into()
+        )]
+    );
+
+    followed();
+    let kept = viso::services::Mock::new();
+    let mut script = vec![redraw(), redraw()];
+    script.extend(key(Key::Tab));
+    script.extend(key(Key::Enter));
+    script.push(redraw());
+    drive_scripted_with_services::<LinksApp>(script, STEP, kept.services());
+    assert_eq!(followed(), ["/docs"]);
+    assert!(kept.calls().is_empty(), "the label's on_link kept it");
+}
+
+viso::component! {
+    DocsLink {
+        view {
+            Column {
+                width: 400dp;
+                height: 100dp;
+                LinkLabel {
+                    text: "docs";
+                    url: "https://example.org/dsl";
+                    font_size: 20dp;
+                }
+            }
+        }
+    }
+}
+
+/// A view's `LinkLabel`.
+struct DslApp;
+
+impl Application for DslApp {
+    fn new(cx: &mut AppCx) -> Self {
+        cx.load_font(&include_bytes!("../../text/tests/fixtures/DejaVuSans-subset.ttf")[..]);
+        DslApp
+    }
+
+    fn window_config(&self) -> viso::ui::WindowConfig {
+        viso::ui::WindowConfig {
+            caption: false,
+            ..Default::default()
+        }
+    }
+
+    fn build(&mut self, cx: &mut BuildCx<'_>) {
+        DocsLink::build(cx);
+    }
+}
+
+#[test]
+fn a_view_s_link_label_opens_its_url_with_the_system() {
+    let mock = viso::services::Mock::new();
+    let mut script = vec![redraw(), redraw()];
+    script.extend(key(Key::Tab));
+    script.extend(key(Key::Enter));
+    script.push(redraw());
+    drive_scripted_with_services::<DslApp>(script, STEP, mock.services());
+    assert_eq!(
+        mock.calls(),
+        [viso::services::Call::OpenUrl(
+            "https://example.org/dsl".into()
+        )]
+    );
 }

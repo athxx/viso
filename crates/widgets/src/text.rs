@@ -155,6 +155,30 @@ pub fn rich_text<S: AsRef<str>>(pieces: impl IntoIterator<Item = (S, SpanStyle)>
     out
 }
 
+/// The ink of a [`link_label`]: the system link blue.
+const LINK: Rgba = Rgba {
+    r: 0.0,
+    g: 0.133,
+    b: 0.604,
+    a: 1.0,
+};
+
+/// A [`Label`] that is one link: `text`, underlined in the system link blue,
+/// leading to `url`. A click or Enter on it opens `url` in the app the URL
+/// belongs to — the browser for a web page — unless [`Label::on_link`] or a
+/// handler of an ancestor keeps it ([`EventCx::prevent_default`]).
+/// Assistive technology reads it as a link named by its text.
+///
+/// ```
+/// use viso_widgets::link_label;
+///
+/// let docs = link_label("Documentation", "https://example.org/docs");
+/// ```
+pub fn link_label(text: impl Into<String>, url: impl Into<std::sync::Arc<str>>) -> Label {
+    let text = text.into();
+    rich_text([(text, SpanStyle::default().link(url).color(LINK))])
+}
+
 impl Label {
     /// Set the font size in logical pixels.
     pub fn font_size(mut self, font_size: f32) -> Self {
@@ -208,8 +232,10 @@ impl Label {
     }
 
     /// Run `handler` with where a link leads when a click or Enter activates
-    /// one of the label's links ([`SpanStyle::link`]). A label without one
-    /// lets the activation reach its ancestors.
+    /// one of the label's links ([`SpanStyle::link`]), in place of the
+    /// system opening it. A label without one lets the activation reach its
+    /// ancestors, and the link opens unless one of them keeps it
+    /// ([`EventCx::prevent_default`]).
     pub fn on_link(mut self, handler: impl FnMut(&mut EventCx<'_>, &str) + 'static) -> Self {
         self.on_link = Some(Rc::new(RefCell::new(handler)));
         self
@@ -338,6 +364,7 @@ impl Label {
                 if let Some(target) = ev.link() {
                     if let Some(on_link) = &on_link {
                         ev.stop_propagation();
+                        ev.prevent_default();
                         (on_link.borrow_mut())(ev, target);
                     }
                 } else if selectable {

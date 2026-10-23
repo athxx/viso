@@ -4,6 +4,7 @@ use std::rc::Rc;
 
 use crate::files::FileDialogs;
 use crate::haptics::Haptics;
+use crate::launcher::Launcher;
 use crate::notifications::Notifications;
 use crate::permissions::Permissions;
 use crate::secure_storage::SecureStorage;
@@ -25,6 +26,7 @@ pub struct Services {
     permissions: Rc<dyn Permissions>,
     secure_storage: Rc<dyn SecureStorage>,
     haptics: Rc<dyn Haptics>,
+    launcher: Rc<dyn Launcher>,
 }
 
 impl Services {
@@ -43,7 +45,8 @@ impl Services {
             notifications: none.clone(),
             permissions: none.clone(),
             secure_storage: none.clone(),
-            haptics: none,
+            haptics: none.clone(),
+            launcher: none,
         }
     }
 
@@ -69,6 +72,10 @@ impl Services {
 
     pub fn haptics(&self) -> &dyn Haptics {
         &*self.haptics
+    }
+
+    pub fn launcher(&self) -> &dyn Launcher {
+        &*self.launcher
     }
 
     pub fn with_files(mut self, files: impl FileDialogs + 'static) -> Self {
@@ -101,6 +108,11 @@ impl Services {
         self
     }
 
+    pub fn with_launcher(mut self, launcher: impl Launcher + 'static) -> Self {
+        self.launcher = Rc::new(launcher);
+        self
+    }
+
     /// Build a registry from shared implementations.
     pub(crate) fn from_parts(
         files: Rc<dyn FileDialogs>,
@@ -109,6 +121,7 @@ impl Services {
         permissions: Rc<dyn Permissions>,
         secure_storage: Rc<dyn SecureStorage>,
         haptics: Rc<dyn Haptics>,
+        launcher: Rc<dyn Launcher>,
     ) -> Self {
         Self {
             files,
@@ -117,6 +130,7 @@ impl Services {
             permissions,
             secure_storage,
             haptics,
+            launcher,
         }
     }
 }

@@ -165,6 +165,9 @@ const TEXT: &[WidgetProperty] = &[prop("text", "String").localizable()];
 /// whether its text can be selected and copied.
 const SPANS: &[WidgetProperty] = &[prop("spans", "List<Span>"), prop("selectable", "Bool")];
 
+/// A `LinkLabel`'s `url`: where its text leads.
+const LINK: &[WidgetProperty] = &[prop("url", "String")];
+
 const TEXT_INPUT: &[WidgetProperty] = &[
     two_way("value", "String"),
     prop("placeholder", "String").localizable(),
@@ -532,6 +535,11 @@ pub const STANDARD: &[NativeWidget] = &[
         "Text",
         WidgetNode::Leaf,
         &[TEXT, SPANS, TEXT_STYLE, LAYOUT, TRANSFORM, FOCUS],
+    ),
+    layout(
+        "LinkLabel",
+        WidgetNode::Leaf,
+        &[TEXT, LINK, TEXT_STYLE, LAYOUT, TRANSFORM, FOCUS],
     ),
     layout(
         "TextInput",

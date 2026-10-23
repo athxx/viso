@@ -688,6 +688,7 @@ impl Jsx<'_> {
                             refs.push(format!("st.effect(() => show.layer(el, {v}));"));
                         }
                         Prop::Range(name) => attrs.push(format!("{name}={{show.num({v})}}")),
+                        Prop::Href => attrs.push(format!("href={{show.opt({v})}}")),
                         Prop::Progress(name) => refs.push(format!(
                             "st.effect(() => show.progress(el, {v}, \"{name}\"));"
                         )),

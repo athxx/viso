@@ -403,6 +403,9 @@ pub struct EventCx<'a> {
     /// the remaining dispatch chain after this handler returns. Shared by the
     /// pointer, key, and IME paths.
     stop: bool,
+    /// Set by [`EventCx::prevent_default`]: the framework skips what it
+    /// does after the event.
+    prevented: bool,
     /// Edit intents a text-control handler recorded this dispatch, applied by the
     /// router to the dispatching node's edit buffer after the handler returns —
     /// the same deferred shape as [`focus_request`](Self::focus_request), since
@@ -584,6 +587,7 @@ impl<'a> EventCx<'a> {
             capture_request: None,
             focus_scope_request: None,
             stop: false,
+            prevented: false,
             edits: Vec::new(),
             hidden_requests: Vec::new(),
             animation_requests: Vec::new(),
@@ -630,6 +634,7 @@ impl<'a> EventCx<'a> {
             capture_request: None,
             focus_scope_request: None,
             stop: false,
+            prevented: false,
             edits: Vec::new(),
             hidden_requests: Vec::new(),
             animation_requests: Vec::new(),
@@ -675,6 +680,7 @@ impl<'a> EventCx<'a> {
             capture_request: None,
             focus_scope_request: None,
             stop: false,
+            prevented: false,
             edits: Vec::new(),
             hidden_requests: Vec::new(),
             animation_requests: Vec::new(),
@@ -720,6 +726,7 @@ impl<'a> EventCx<'a> {
             capture_request: None,
             focus_scope_request: None,
             stop: false,
+            prevented: false,
             edits: Vec::new(),
             hidden_requests: Vec::new(),
             animation_requests: Vec::new(),
@@ -1674,6 +1681,23 @@ impl<'a> EventCx<'a> {
     #[doc(hidden)]
     pub fn __stop_requested(&self) -> bool {
         self.stop
+    }
+
+    /// Keep the framework from doing what it does once the event has been
+    /// through its handlers: an activated link no handler kept opens in the
+    /// app its URL belongs to ([`NodeStore::take_link_opens`]). The walk goes
+    /// on unless the handler also stops it.
+    #[inline]
+    pub fn prevent_default(&mut self) {
+        self.prevented = true;
+    }
+
+    /// Whether a handler of this dispatch called
+    /// [`prevent_default`](Self::prevent_default).
+    #[doc(hidden)]
+    #[inline]
+    pub fn __default_prevented(&self) -> bool {
+        self.prevented
     }
 }
 

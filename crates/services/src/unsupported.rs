@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use crate::files::{FileDialogs, OpenOptions, PickedFile, SaveOptions};
 use crate::haptics::{Haptic, Haptics};
+use crate::launcher::Launcher;
 use crate::notifications::{Notification, Notifications};
 use crate::permissions::{Permission, PermissionState, Permissions};
 use crate::reply::{Reply, ServiceError, ServiceResult};
@@ -19,6 +20,12 @@ impl FileDialogs for Unsupported {
     }
 
     fn save(&self, _: SaveOptions, _: Vec<u8>) -> Reply<Option<PathBuf>> {
+        Reply::err(ServiceError::Unsupported)
+    }
+}
+
+impl Launcher for Unsupported {
+    fn open_url(&self, _: &str) -> Reply<()> {
         Reply::err(ServiceError::Unsupported)
     }
 }

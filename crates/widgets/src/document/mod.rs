@@ -312,7 +312,9 @@ impl Document {
     }
 
     /// Run `handler` with where a link leads when a click or Enter activates
-    /// one. Without one the activation reaches the document's ancestors.
+    /// one, in place of the system opening it. Without one the activation
+    /// reaches the document's ancestors, and the link opens unless one of
+    /// them keeps it ([`EventCx::prevent_default`]).
     pub fn on_link(mut self, handler: impl FnMut(&mut EventCx<'_>, &str) + 'static) -> Self {
         self.on_link = Some(Rc::new(RefCell::new(handler)));
         self
@@ -444,6 +446,7 @@ impl Component for Document {
             cx.on_key(root, move |ev| {
                 if let Some(target) = ev.link() {
                     ev.stop_propagation();
+                    ev.prevent_default();
                     (on_link.borrow_mut())(ev, target);
                 }
             });

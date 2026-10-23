@@ -1,10 +1,11 @@
 //! The Windows services: the common item dialogs, the share sheet, tray
-//! balloons, the Credential Manager. Windows gates none of these behind a
+//! balloons, the Credential Manager, the shell opening URLs. Windows gates none of these behind a
 //! permission, and has no haptics.
 
 mod credentials;
 mod dialogs;
 mod share;
+mod shell_open;
 mod tray;
 
 use std::rc::Rc;
@@ -25,6 +26,7 @@ pub(crate) fn services(app: &str) -> Services {
         Rc::new(Ungated),
         Rc::new(credentials::Credentials::new(app)),
         Rc::new(Unsupported),
+        Rc::new(shell_open::ShellOpen),
     )
 }
 

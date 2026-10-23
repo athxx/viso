@@ -1,7 +1,8 @@
 //! The Android services, through `dev.viso.services.VisoServices`: the
 //! storage access framework's document pickers, the share chooser,
 //! `NotificationManager` and the notification permission, values sealed by
-//! an Android keystore key, and the view's haptic feedback.
+//! an Android keystore key, the view's haptic feedback, and `ACTION_VIEW`
+//! for URLs.
 //!
 //! The pickers take no title. A saved document is a content URI, not a
 //! path, so `save` answers `Ok(None)`.
@@ -16,6 +17,7 @@ use jni_sys::jvalue;
 use self::bridge::{Method, Pending, ask, outcome, state, with_java};
 use crate::files::{FileDialogs, OpenOptions, PickedFile, SaveOptions};
 use crate::haptics::{Haptic, Haptics};
+use crate::launcher::{Launcher, launch};
 use crate::notifications::{Notification, Notifications};
 use crate::permissions::{Permission, PermissionState, Permissions};
 use crate::registry::Services;
@@ -26,6 +28,7 @@ use crate::share::{Share, ShareItem};
 pub(crate) fn services(_app: &str) -> Services {
     let android = Rc::new(Android);
     Services::from_parts(
+        android.clone(),
         android.clone(),
         android.clone(),
         android.clone(),
@@ -96,6 +99,20 @@ impl Share for Android {
                 Method::Share,
                 &[java.activity(), token, java.string(&text)?],
             )
+        })
+    }
+}
+
+impl Launcher for Android {
+    fn open_url(&self, url: &str) -> Reply<()> {
+        launch(url, |url| {
+            let url = url.to_owned();
+            ask(Pending::Done, move |java, token| {
+                java.call_void(
+                    Method::OpenUrl,
+                    &[java.activity(), token, java.string(&url)?],
+                )
+            })
         })
     }
 }

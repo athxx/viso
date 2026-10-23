@@ -1,5 +1,5 @@
 //! The macOS services: AppKit panels and sharing picker, UserNotifications,
-//! the Keychain, the trackpad's haptic engine.
+//! the Keychain, the trackpad's haptic engine, `NSWorkspace` opening URLs.
 
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -11,7 +11,7 @@ use objc2::{AnyThread, MainThreadMarker};
 use objc2_app_kit::{
     NSApplication, NSHapticFeedbackManager, NSHapticFeedbackPattern,
     NSHapticFeedbackPerformanceTime, NSHapticFeedbackPerformer, NSModalResponse, NSModalResponseOK,
-    NSOpenPanel, NSSavePanel, NSSharingServicePicker,
+    NSOpenPanel, NSSavePanel, NSSharingServicePicker, NSWorkspace,
 };
 use objc2_foundation::{NSArray, NSPoint, NSRect, NSRectEdge, NSSize, NSString, NSURL};
 
@@ -20,6 +20,7 @@ use super::keychain::Keychain;
 use super::user_notifications::UserNotifications;
 use crate::files::{FileDialogs, OpenOptions, PickedFile, SaveOptions};
 use crate::haptics::{Haptic, Haptics};
+use crate::launcher::{Launcher, launch};
 use crate::registry::Services;
 use crate::reply::{Completer, Reply, ServiceError, ServiceResult, reply};
 use crate::share::{Share, ShareItem};
@@ -33,6 +34,7 @@ pub(crate) fn services(app: &str) -> Services {
         notifications.clone(),
         notifications,
         Rc::new(Keychain::new(app)),
+        appkit.clone(),
         appkit,
     )
 }
@@ -111,6 +113,23 @@ impl FileDialogs for AppKit {
             Ok(Some(path))
         });
         reply
+    }
+}
+
+impl Launcher for AppKit {
+    fn open_url(&self, url: &str) -> Reply<()> {
+        launch(url, |url| {
+            let Some(url) = NSURL::URLWithString(&NSString::from_str(url)) else {
+                return Reply::err(ServiceError::Failed(format!("not a URL: {url}")));
+            };
+            // No app here opens the URL's scheme when the workspace refuses.
+            let opened = NSWorkspace::sharedWorkspace().openURL(&url);
+            Reply::ready(if opened {
+                Ok(())
+            } else {
+                Err(ServiceError::Unsupported)
+            })
+        })
     }
 }
 

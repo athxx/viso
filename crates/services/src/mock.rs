@@ -8,6 +8,7 @@ use std::rc::Rc;
 
 use crate::files::{FileDialogs, OpenOptions, PickedFile, SaveOptions};
 use crate::haptics::{Haptic, Haptics};
+use crate::launcher::{Launcher, launch};
 use crate::notifications::{Notification, Notifications};
 use crate::permissions::{Permission, PermissionState, Permissions};
 use crate::registry::Services;
@@ -33,6 +34,7 @@ pub enum Call {
     SecureSet(String),
     SecureRemove(String),
     Haptic(Haptic),
+    OpenUrl(String),
 }
 
 #[derive(Default)]
@@ -55,7 +57,8 @@ struct MockState {
 /// - Notifications need the permission granted and answer
 ///   [`ServiceError::Denied`] otherwise.
 /// - Secure storage is an in-memory map.
-/// - Share and haptics succeed.
+/// - Share and haptics succeed, and so does opening a URL that opens
+///   anywhere.
 ///
 /// Clones share one state, so a test keeps a clone to inspect what the code
 /// under test did with [`services`](Self::services).
@@ -73,6 +76,7 @@ impl Mock {
     pub fn services(&self) -> Services {
         let this = Rc::new(self.clone());
         Services::from_parts(
+            this.clone(),
             this.clone(),
             this.clone(),
             this.clone(),
@@ -144,6 +148,13 @@ impl FileDialogs for Mock {
                 .pop_front()
                 .unwrap_or(Err(ServiceError::Cancelled)),
         )
+    }
+}
+
+impl Launcher for Mock {
+    fn open_url(&self, url: &str) -> Reply<()> {
+        self.record(Call::OpenUrl(url.to_owned()));
+        launch(url, |_| Reply::ready(Ok(())))
     }
 }
 

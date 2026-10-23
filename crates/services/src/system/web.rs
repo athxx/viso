@@ -1,6 +1,7 @@
 //! The Web services, on the browser's own APIs: a file `<input>` and a
 //! download link, `navigator.share`, the Notification API and its
-//! permission, and `navigator.vibrate`. Pages have no secure storage.
+//! permission, `navigator.vibrate`, and `window.open` for URLs. Pages have
+//! no secure storage.
 //!
 //! Browsers show the file chooser, the share sheet and the permission
 //! prompt only while the page has transient user activation, so these
@@ -24,6 +25,7 @@ use web_sys::{
 
 use crate::files::{FileDialogs, OpenOptions, PickedFile, SaveOptions};
 use crate::haptics::{Haptic, Haptics};
+use crate::launcher::{Launcher, launch};
 use crate::notifications::{Notification, Notifications};
 use crate::permissions::{Permission, PermissionState, Permissions};
 use crate::registry::Services;
@@ -42,6 +44,7 @@ pub(crate) fn services(_app: &str) -> Services {
         web.clone(),
         web.clone(),
         Rc::new(Unsupported),
+        web.clone(),
         web,
     )
 }
@@ -150,6 +153,21 @@ fn download(name: &str, contents: &[u8]) -> ServiceResult<()> {
         )
         .map_err(failure)?;
     Ok(())
+}
+
+impl Launcher for Web {
+    /// A new browsing context, cut off from the page: the browser's popup
+    /// blocker may still refuse it outside a click's handler, which the page
+    /// cannot see.
+    fn open_url(&self, url: &str) -> Reply<()> {
+        launch(url, |url| {
+            Reply::ready(window().and_then(|w| {
+                w.open_with_url_and_target_and_features(url, "_blank", "noopener,noreferrer")
+                    .map(|_| ())
+                    .map_err(failure)
+            }))
+        })
+    }
 }
 
 impl Share for Web {

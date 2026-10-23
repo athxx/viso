@@ -322,6 +322,7 @@ fn mount(out: &mut String, index: usize, content: &Content, eval: &Eval<'_>, roo
                         Prop::Open => format!("P.open({el}, {value})"),
                         Prop::Layer { .. } => format!("P.layer({el}, {value})"),
                         Prop::Range(name) => format!("P.range({el}, {value}, \"{name}\")"),
+                        Prop::Href => format!("P.href({el}, {value})"),
                         Prop::Progress(name) => {
                             format!("P.progress({el}, {value}, \"{name}\")")
                         }

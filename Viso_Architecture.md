@@ -944,7 +944,7 @@ CLI 依赖 `viso-dsl`、`viso-dev-protocol`、`viso-schema`、`viso-image`、`vi
 
 ### `viso-services`
 
-统一 app service protocol。当前（ADR 0031）：files、share、notifications、permissions、secure_storage、haptics；`Reply<T>` 一次性应答，`Services` 注册表。目标：camera、location、media、networking adapter。
+统一 app service protocol。当前（ADR 0031）：files、share、notifications、permissions、secure_storage、haptics、launcher；`Reply<T>` 一次性应答，`Services` 注册表。目标：camera、location、media、networking adapter。
 
 低频 service 可以使用 trait object，避免把所有 OS 逻辑塞回 platform/runtime。
 
@@ -3854,7 +3854,7 @@ Arc<dyn ClipboardService>
 
 ### 49.3 协议与实现（ADR 0031）
 
-`viso-services` 定义六个 object-safe 协议：files、share、notifications、permissions、secure_storage、haptics。异步调用返回一次性的 `Reply<T>`：它是 `Future`，也可以不经 executor 用 `try_take` 轮询。配对的 `Completer` 是 `Send`，可以在 OS 回调所在的任意线程完成；被丢弃而未应答时，结果为 `Cancelled`。
+`viso-services` 定义七个 object-safe 协议：files、share、notifications、permissions、secure_storage、haptics、launcher。`Launcher::open_url` 把绝对 URL 交给系统打开它的应用（macOS `NSWorkspace`、iOS `UIApplication`、Windows `ShellExecuteW`、Linux OpenURI portal 回退 `xdg-open`、Android `ACTION_VIEW`、Web `window.open`），拒绝 `file:`、`javascript:`、`data:`、`vbscript:`、`blob:`、`about:` 等在本机执行或读取的 scheme（`Denied`）。文字中被激活的链接若沿路由无处理器调用 `EventCx::prevent_default`，store 记下其目标，facade 每帧取出并交给 `open_url`。异步调用返回一次性的 `Reply<T>`：它是 `Future`，也可以不经 executor 用 `try_take` 轮询。配对的 `Completer` 是 `Send`，可以在 OS 回调所在的任意线程完成；被丢弃而未应答时，结果为 `Cancelled`。
 
 `Services` 是注册表，每个协议占一个固定字段。`Services::system(app)` 按编译目标选择 OS 实现，`Services::unsupported()` 对所有调用返回 `Unsupported`，`Mock` 用于 headless 测试并记录调用。
 

@@ -310,6 +310,22 @@ public final class VisoServices {
         });
     }
 
+    // Opening URLs: an app that takes browsable links of the URL's scheme.
+
+    static void openUrl(Activity activity, long token, String url) {
+        activity.runOnUiThread(() -> {
+            Intent view = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+            view.addCategory(Intent.CATEGORY_BROWSABLE);
+            try {
+                activity.startActivity(view);
+            } catch (ActivityNotFoundException missing) {
+                nativeDone(token, UNSUPPORTED, null);
+                return;
+            }
+            nativeDone(token, OK, null);
+        });
+    }
+
     // Notifications.
 
     static void notify(Activity activity, long token, String id, String title, String body) {

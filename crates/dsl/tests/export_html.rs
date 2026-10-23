@@ -1986,3 +1986,30 @@ fn progress_exports_as_a_progressbar_whose_fill_is_its_fraction() {
     assert!(script.contains("P.progress("), "{script}");
     assert!(script.contains("\"value\")"), "{script}");
 }
+
+const LINK_LABEL: &str = r##"
+export component Links {
+    state to: String = "https://example.org/b";
+    view {
+        Column {
+            LinkLabel { text: "Docs"; url: "https://example.org/docs"; }
+            LinkLabel { text: "Next"; url: to; on click { to = "https://example.org/c"; } }
+        }
+    }
+}
+"##;
+
+#[test]
+fn a_link_label_exports_as_an_anchor_to_its_url() {
+    let page = export(LINK_LABEL, false).unwrap();
+    let index = &page.index;
+    assert!(
+        index.contains("<a class=\"vx-text vx-link")
+            && index.contains("href=\"https://example.org/docs\""),
+        "{index}"
+    );
+    assert!(index.contains(">Docs</a>"), "{index}");
+    assert!(page.styles.contains(".vx-link {"), "{}", page.styles);
+    let script = page.script.as_deref().unwrap();
+    assert!(script.contains("P.href("), "{script}");
+}

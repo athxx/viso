@@ -77,4 +77,4 @@ pub use swipe_row::{
     SwipeAction, SwipeRow, SwipeRowHandle, SwipeRowHandleSlot, SwipeRowStyle, swipe_action,
     swipe_row,
 };
-pub use text::{Label, LabelStyle, label, rich_text};
+pub use text::{Label, LabelStyle, label, link_label, rich_text};

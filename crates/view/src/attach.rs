@@ -326,6 +326,11 @@ fn handler(
                     None => continue,
                 },
             };
+            // A link an `on link` takes is the view's to follow, not the
+            // system's to open.
+            if route.event == EventRoute::Link {
+                cx.prevent_default();
+            }
             host.dispatch(route.handler, payload, &scope, cx);
         }
     }

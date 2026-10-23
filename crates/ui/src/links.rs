@@ -10,8 +10,14 @@
 //! shaped content's ([`TextInk::links`]), so a link is hit where it shows.
 //! The table is cold and small: one entry for each host.
 //!
+//! A link the handlers that heard it did not keep — none called
+//! [`EventCx::prevent_default`] — opens: it waits in the store until the
+//! driver hands it to the system ([`NodeStore::take_link_opens`]), as a
+//! browser follows a link no script took.
+//!
 //! [`SpanStyle::link`]: crate::text_style::SpanStyle::link
 //! [`EventCx::link`]: crate::context::EventCx::link
+//! [`EventCx::prevent_default`]: crate::context::EventCx::prevent_default
 //! [`TextInk::links`]: crate::content::TextInk::links
 
 use std::sync::Arc;
@@ -44,11 +50,14 @@ struct Host {
 #[derive(Debug, Default)]
 pub(crate) struct Links {
     hosts: Vec<Host>,
+    /// The activated links no handler kept, oldest first, to open.
+    opens: Vec<Arc<str>>,
 }
 
 impl Links {
     pub(crate) fn clear(&mut self) {
         self.hosts.clear();
+        self.opens.clear();
     }
 
     /// Forgets the slot `index`, freed or reused.
@@ -113,6 +122,17 @@ impl NodeStore {
             }
             _ => {}
         }
+    }
+
+    /// Queues `target`, a link activated that no handler kept, to open.
+    pub(crate) fn queue_link_open(&mut self, target: &str) {
+        self.links.opens.push(target.into());
+    }
+
+    /// The links to open since the last call, oldest first: the driver hands
+    /// each to the system, which opens it in the app its URL belongs to.
+    pub fn take_link_opens(&mut self) -> Vec<Arc<str>> {
+        std::mem::take(&mut self.links.opens)
     }
 
     /// Where node `id`'s links lead, in order; empty for no host.

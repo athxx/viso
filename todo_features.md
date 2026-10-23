@@ -218,7 +218,7 @@ Rules:
   on Linux/Android, `fetch` on web): request/response, streaming body, cancel, timeouts,
   redirects.
 - [ ] WebSocket service (native and web).
-- [ ] `open_url` service.
+- [x] `open_url` service.
 - [ ] Network reachability.
 
 ## W12 — Platform extras

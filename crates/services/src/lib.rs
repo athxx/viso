@@ -2,7 +2,7 @@
 //!
 //! Low-frequency OS capabilities an app calls through one registry,
 //! [`Services`]: file dialogs, share, notifications, permissions, secure
-//! storage, haptics. Each is a small trait with one implementation per OS
+//! storage, haptics, opening URLs in other apps. Each is a small trait with one implementation per OS
 //! and a scripted [`Mock`] for headless tests, so app code carries no
 //! `cfg(target_os)` branches. These are cold paths: trait objects and
 //! allocation are fine here (§7.2).
@@ -17,6 +17,7 @@
 mod app_data;
 mod files;
 mod haptics;
+mod launcher;
 mod mock;
 mod notifications;
 mod permissions;
@@ -33,6 +34,7 @@ pub use app_data::LocalStorage;
 pub use app_data::app_data_dir;
 pub use files::{FileDialogs, FileFilter, OpenOptions, PickedFile, SaveOptions};
 pub use haptics::{Haptic, Haptics};
+pub use launcher::Launcher;
 pub use mock::{Call, Mock};
 pub use notifications::{Notification, Notifications};
 pub use permissions::{Permission, PermissionState, Permissions};

@@ -36,8 +36,8 @@ use viso_ui::{Alignment2D, BoundSize, LayoutValue, LengthTerms};
 use viso_ui::{
     AssetFit, Border, BuildCx, CheckMark, CheckShape, CursorIcon, Easing, FieldLook, FieldSeed,
     FontSize, InputKind, LiveRegion, LookValue, NodeId, NodeStore, NumberFormat, PageTransition,
-    ProgressShape, Rgba, Role, SemanticState, Semantics, Shadow, Spinner, SpinnerLook, Srgb,
-    StateId, StructureCx, TextRequest, Timing, Vec2, focus_node, number_kind,
+    ProgressShape, Rgba, Role, SemanticState, Semantics, Shadow, SpanStyle, Spinner, SpinnerLook,
+    Srgb, StateId, StructureCx, TextRequest, TextSpan, Timing, Vec2, focus_node, number_kind,
 };
 
 use crate::control::{Control, ControlInput, ControlKind, Holds, LayoutSlot, Switched, When};
@@ -64,6 +64,14 @@ const COLOR: Rgba = Rgba {
     r: 0.05,
     g: 0.05,
     b: 0.06,
+    a: 1.0,
+};
+
+/// The ink of a link label that binds no `color`: the system link blue.
+const LINK: Rgba = Rgba {
+    r: 0.0,
+    g: 0.133,
+    b: 0.604,
     a: 1.0,
 };
 
@@ -248,6 +256,7 @@ pub(crate) fn control_cells(
         control.node.drag_kind,
         control.node.drop_accepts,
         control.node.drop_operation,
+        control.url,
     ])
     .flatten()
     .chain(arms)
@@ -271,7 +280,7 @@ pub(crate) fn control_cells(
 /// navigation stack's `page_transition`, its `hero`, its `focus_ring`, its
 /// `access_key`, its `drag_axis`, a viewer's `pan_margin`, and its `drag`,
 /// `drag_kind`, `drop_accepts` and `drop_operation`.
-const SHOWN: usize = 56;
+const SHOWN: usize = 57;
 
 /// The input of each value a node shows, in order.
 const SHOWN_INPUTS: [ControlInput; SHOWN] = [
@@ -331,6 +340,7 @@ const SHOWN_INPUTS: [ControlInput; SHOWN] = [
     ControlInput::DragKind,
     ControlInput::DropAccepts,
     ControlInput::DropOperation,
+    ControlInput::Url,
 ];
 
 /// Where its `translate` sits among the values a node shows.
@@ -371,6 +381,9 @@ const ACCESS_KEY: usize = 49;
 
 /// Where a viewer's `pan_margin` sits among the values a node shows.
 const PAN_MARGIN: usize = 51;
+
+/// Where a link label's `url` sits among the values a node shows.
+const URL: usize = 56;
 
 /// Where its `drag`, `drag_kind`, `drop_accepts` and `drop_operation` sit
 /// among the values a node shows.
@@ -594,6 +607,7 @@ impl Shown {
             drag_kind,
             drop_accepts,
             drop_operation,
+            url,
         ] = &shows;
         let access_key = access_key.as_str().and_then(|key| key.chars().next());
         let spanned = crate::text_style::spans(pieces);
@@ -851,7 +865,7 @@ impl Shown {
             && (0..LOOK)
                 .chain(TEXT..TRANSLATE)
                 .chain(PIECES..SHADOW)
-                .chain([ACCESS_KEY, PAN_MARGIN])
+                .chain([ACCESS_KEY, PAN_MARGIN, URL])
                 .all(|at| !changed(at))
             && !repaint
         {
@@ -946,7 +960,20 @@ impl Shown {
                 }
             }
             ControlKind::Label | ControlKind::Button => {
-                let mut request = match spanned {
+                // A link label's text is one link, in the link blue.
+                let linked = url.as_str().filter(|url| !url.is_empty()).map(|url| {
+                    let shown = value.as_str().unwrap_or_default().to_owned();
+                    let mut style = SpanStyle::default().link(url);
+                    if !given(TEXT) {
+                        style = style.color(LINK);
+                    }
+                    let span = TextSpan {
+                        range: 0..shown.len(),
+                        style,
+                    };
+                    (shown, vec![span])
+                });
+                let mut request = match linked.or(spanned) {
                     Some((shown, spans)) => TextRequest {
                         text: shown,
                         spans,

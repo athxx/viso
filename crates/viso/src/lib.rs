@@ -3871,6 +3871,20 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     }
                 }
 
+                // The links no handler kept open in the apps their URLs
+                // belong to; what the system answers is not the app's to see.
+                let services = self
+                    .services
+                    .as_deref()
+                    .and_then(|any| any.downcast_ref::<services::Services>());
+                for ws in &mut self.windows {
+                    for url in ws.store.take_link_opens() {
+                        if let Some(services) = services {
+                            drop(services.launcher().open_url(&url));
+                        }
+                    }
+                }
+
                 // Session-level window open/close drain, once per frame after
                 // every window has flushed its own transaction. A `window(...)`
                 // handler or a `WindowHandle::close` recorded its request through
@@ -4572,7 +4586,7 @@ pub mod prelude {
         Slider, SliderStyle, Spinner, Splitter, SplitterStyle, Tabs, TabsStyle, TextInput,
         TextInputStyle, Toast, ToastEdge, ToastHandle, ToastHandleSlot, ToastStyle, Toggle,
         ToggleStyle, View, ViewStyle, VirtualList, VirtualListViewStyle, button, checkbox, grid,
-        icon, image, label, modal, navigation_stack, number_field, popup, progress_bar,
+        icon, image, label, link_label, modal, navigation_stack, number_field, popup, progress_bar,
         progress_ring, radio_group, rich_text, scroll, sheet, slider, spinner, splitter, tabs,
         text_input, toast, toggle, view, virtual_list,
     };

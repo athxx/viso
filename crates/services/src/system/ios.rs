@@ -1,6 +1,6 @@
 //! The iOS services: the document picker and activity sheet presented from
 //! the key window's topmost controller, UserNotifications, the Keychain,
-//! UIKit's feedback generators.
+//! UIKit's feedback generators, `UIApplication` opening URLs.
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -10,7 +10,7 @@ use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
-use objc2_foundation::{NSArray, NSError, NSString, NSURL};
+use objc2_foundation::{NSArray, NSDictionary, NSError, NSString, NSURL};
 use objc2_ui_kit::{
     UIActivityType, UIActivityViewController, UIApplication, UIDocumentPickerDelegate,
     UIDocumentPickerViewController, UIImpactFeedbackGenerator, UIImpactFeedbackStyle,
@@ -24,6 +24,7 @@ use super::keychain::Keychain;
 use super::user_notifications::UserNotifications;
 use crate::files::{FileDialogs, OpenOptions, PickedFile, SaveOptions};
 use crate::haptics::{Haptic, Haptics};
+use crate::launcher::{Launcher, launch};
 use crate::registry::Services;
 use crate::reply::{Completer, Reply, ServiceError, ServiceResult, reply};
 use crate::share::{Share, ShareItem};
@@ -37,6 +38,7 @@ pub(crate) fn services(app: &str) -> Services {
         notifications.clone(),
         notifications,
         Rc::new(Keychain::new(app)),
+        uikit.clone(),
         uikit,
     )
 }
@@ -217,6 +219,42 @@ impl FileDialogs for UiKit {
             )));
         }
         reply
+    }
+}
+
+impl Launcher for UiKit {
+    fn open_url(&self, url: &str) -> Reply<()> {
+        launch(url, |url| {
+            let mtm = match main_thread() {
+                Ok(mtm) => mtm,
+                Err(e) => return Reply::err(e),
+            };
+            let Some(url) = NSURL::URLWithString(&NSString::from_str(url)) else {
+                return Reply::err(ServiceError::Failed(format!("not a URL: {url}")));
+            };
+            let (completer, reply) = reply();
+            let completer = Cell::new(Some(completer));
+            // No app here opens the URL's scheme when UIKit answers no.
+            let handler = RcBlock::new(move |opened: Bool| {
+                if let Some(completer) = completer.take() {
+                    completer.complete(if opened.as_bool() {
+                        Ok(())
+                    } else {
+                        Err(ServiceError::Unsupported)
+                    });
+                }
+            });
+            // SAFETY: an empty options dictionary is a valid one, and the
+            // handler takes the `BOOL` UIKit calls it with on the main thread.
+            unsafe {
+                UIApplication::sharedApplication(mtm).openURL_options_completionHandler(
+                    &url,
+                    &NSDictionary::new(),
+                    Some(&handler),
+                );
+            }
+            reply
+        })
     }
 }
 

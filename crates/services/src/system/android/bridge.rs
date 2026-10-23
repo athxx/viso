@@ -46,10 +46,11 @@ pub(super) enum Method {
     SecretSet,
     SecretRemove,
     Vibrate,
+    OpenUrl,
 }
 
 /// Name and signature of each [`Method`], in declaration order.
-const METHODS: [(&CStr, &CStr); 11] = [
+const METHODS: [(&CStr, &CStr); 12] = [
     (
         c"openDocument",
         c"(Landroid/app/Activity;J[Ljava/lang/String;Z)V",
@@ -79,6 +80,7 @@ const METHODS: [(&CStr, &CStr); 11] = [
         c"(Landroid/app/Activity;JLjava/lang/String;)V",
     ),
     (c"vibrate", c"(Landroid/app/Activity;I)I"),
+    (c"openUrl", c"(Landroid/app/Activity;JLjava/lang/String;)V"),
 ];
 
 /// The loaded class, a global reference, and its method ids.

@@ -487,6 +487,7 @@ const P = {
     else if (!on && el.open) el.close();
   },
   range: (el, v, name) => { el[name] = v === null ? "" : String(v); },
+  href: (el, v) => attr(el, "href", v),
   // A progress indicator's value, bounds or tint: its fill shows the
   // value's fraction of its range, and with no value it runs.
   progress(el, v, name) {

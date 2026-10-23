@@ -377,6 +377,7 @@ impl PointerRouter {
 struct Dispatched {
     ran: bool,
     stop: bool,
+    prevented: bool,
 }
 
 /// Free-function form of [`PointerRouter::route`]: the mouse's route.
@@ -1087,14 +1088,22 @@ fn walk_chain(
         );
         ran |= d.ran;
         if d.stop {
-            return Dispatched { ran, stop: true };
+            return Dispatched {
+                ran,
+                stop: true,
+                prevented: false,
+            };
         }
     }
     // Target: exactly once.
     let d = dispatch(store, target, Hop::TARGET);
     ran |= d.ran;
     if d.stop {
-        return Dispatched { ran, stop: true };
+        return Dispatched {
+            ran,
+            stop: true,
+            prevented: false,
+        };
     }
     // Bubble: the node just below the target, up to root.
     for (i, &node) in chain[..n - 1].iter().enumerate().rev() {
@@ -1105,10 +1114,18 @@ fn walk_chain(
         );
         ran |= d.ran;
         if d.stop {
-            return Dispatched { ran, stop: true };
+            return Dispatched {
+                ran,
+                stop: true,
+                prevented: false,
+            };
         }
     }
-    Dispatched { ran, stop: false }
+    Dispatched {
+        ran,
+        stop: false,
+        prevented: false,
+    }
 }
 
 /// Where on the dispatch chain a node's handler runs: the leg of the walk, and
@@ -1200,7 +1217,11 @@ fn pointer_dispatch(
             event,
         );
     }
-    Dispatched { ran: true, stop }
+    Dispatched {
+        ran: true,
+        stop,
+        prevented: false,
+    }
 }
 
 /// Deliver a synthesized per-node hover phase ([`PointerPhase::Enter`] /
@@ -1770,7 +1791,9 @@ impl KeyRouter {
 
     /// Tell a text and then its ancestors that its link to `target` was
     /// activated, driving each one's key handler with it (read via
-    /// `cx.link()`) until one stops it. Returns whether a handler ran.
+    /// `cx.link()`) until one stops it; unless one prevents the default, the
+    /// link then opens ([`NodeStore::take_link_opens`]). Returns whether a
+    /// handler ran.
     pub fn route_link(
         store: &mut NodeStore,
         states: &mut StateStore,
@@ -1779,16 +1802,20 @@ impl KeyRouter {
         node: NodeId,
         target: &str,
     ) -> bool {
-        let mut ran = false;
+        let (mut ran, mut prevented) = (false, false);
         let mut at = Some(node).filter(|&n| store.arena().is_live(n));
         while let Some(n) = at {
             let d =
                 key_handler_dispatch(store, states, bindings, edits, n, KeyPayload::Link(target));
             ran |= d.ran;
+            prevented |= d.prevented;
             if d.stop {
                 break;
             }
             at = store.parent(n);
+        }
+        if !prevented {
+            store.queue_link_open(target);
         }
         ran
     }
@@ -2118,7 +2145,20 @@ fn key_dispatch(
     let Some(mut handler) = store.take_key_handler(node) else {
         return Dispatched::default();
     };
-    let (request, stop, recorded, hidden, scope, anims, timers, opens, closes, tasks, asks) = {
+    let (
+        request,
+        stop,
+        prevented,
+        recorded,
+        hidden,
+        scope,
+        anims,
+        timers,
+        opens,
+        closes,
+        tasks,
+        asks,
+    ) = {
         let mut cx = EventCx::__new_key(states, bindings, ev);
         cx.__set_focused(store.focused());
         cx.__set_services(store.__services());
@@ -2127,6 +2167,7 @@ fn key_dispatch(
         (
             cx.__take_focus_request(),
             cx.__stop_requested(),
+            cx.__default_prevented(),
             cx.__take_edits(),
             cx.__take_hidden_requests(),
             cx.__take_focus_scope_request(),
@@ -2169,7 +2210,11 @@ fn key_dispatch(
     for id in closes {
         store.queue_window_close(id);
     }
-    Dispatched { ran: true, stop }
+    Dispatched {
+        ran: true,
+        stop,
+        prevented,
+    }
 }
 
 /// IME twin of [`key_dispatch`]: drives the key handler with the IME event so a
@@ -2216,7 +2261,20 @@ fn key_handler_dispatch(
     let Some(mut handler) = store.take_key_handler(node) else {
         return Dispatched::default();
     };
-    let (request, stop, recorded, hidden, scope, anims, timers, opens, closes, tasks, asks) = {
+    let (
+        request,
+        stop,
+        prevented,
+        recorded,
+        hidden,
+        scope,
+        anims,
+        timers,
+        opens,
+        closes,
+        tasks,
+        asks,
+    ) = {
         let mut cx = match payload {
             KeyPayload::Ime(ev) => EventCx::__new_ime(states, bindings, ev),
             KeyPayload::TextChange(text) => EventCx::__new_text_change(states, bindings, text),
@@ -2239,6 +2297,7 @@ fn key_handler_dispatch(
         (
             cx.__take_focus_request(),
             cx.__stop_requested(),
+            cx.__default_prevented(),
             cx.__take_edits(),
             cx.__take_hidden_requests(),
             cx.__take_focus_scope_request(),
@@ -2281,7 +2340,11 @@ fn key_handler_dispatch(
     for id in closes {
         store.queue_window_close(id);
     }
-    Dispatched { ran: true, stop }
+    Dispatched {
+        ran: true,
+        stop,
+        prevented,
+    }
 }
 
 /// Queue the intents a key/IME handler recorded onto the dispatching node's edit

@@ -352,6 +352,7 @@ dialog.vx-layer:not([open]), .vx-layer[hidden] { display: none; }
 .vx-toast { pointer-events: none; }
 .vx-toast > * { pointer-events: auto; }
 .vx-mask { display: block; mask: center / contain no-repeat; -webkit-mask: center / contain no-repeat; }
+.vx-link { color: #0066cc; text-decoration: underline; cursor: pointer; }
 .vx-progress, .vx-ring, .vx-spinner { color: var(--colors-primary); }
 .vx-progress { width: 160px; height: 4px; }
 .vx-ring { width: 32px; height: 32px; }
