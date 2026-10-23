@@ -314,6 +314,80 @@ const select = (el, v, radio) => {
     c.tabIndex = on ? 0 : -1;
   });
 };
+// The transition a stack's pages trade places by where it names this
+// platform's own: a slide on Apple's, a shared axis on Android, else a fade.
+const nativeTurn = () => {
+  const ua = navigator.userAgent;
+  return /Mac|iPhone|iPad/.test(ua) ? 1 : /Android/.test(ua) ? 2 : 3;
+};
+// Where a page stands and how opaque it is now, mid-move included.
+const standing = (c) => {
+  const s = getComputedStyle(c);
+  return { transform: s.transform === "none" ? "translateX(0px)" : s.transform, opacity: s.opacity };
+};
+const across = (dx, opacity) => ({ transform: "translateX(" + dx + "px)", opacity: String(opacity) });
+// A navigation stack shows the page at `v`, folding the others away. Turned
+// from another page, the two move as its transition says: the arriving one
+// in from where it enters, the leaving one out to where it leaves, folding
+// once there and taking no pointer meanwhile. Pages stack in their order. A
+// turn while one is under way takes each page on from where it stands.
+const page = (el, v) => {
+  const to = v === null ? -1 : Number(v);
+  const first = el.$page === undefined;
+  if (!first && to === el.$page) return;
+  const from = first ? -1 : el.$page;
+  el.$page = to;
+  const pages = items(el);
+  const moving = el.$moving || new Map();
+  el.$moving = moving;
+  const was = new Map();
+  for (const [c, a] of moving) {
+    was.set(c, standing(c));
+    a.cancel();
+  }
+  moving.clear();
+  pages.forEach((c, i) => {
+    c.toggleAttribute("data-vx-away", i !== to);
+    c.inert = false;
+  });
+  if (first) return;
+  const a = pages[from], b = pages[to];
+  if (!a || !b) return;
+  let kind = el.$turn ?? Number(el.dataset.turn || 0);
+  if (kind === 0) kind = nativeTurn();
+  if ((kind === 1 || kind === 2) && reduced.matches) kind = 3;
+  if (kind === 4) return;
+  const back = to < from;
+  const on = getComputedStyle(el).direction === "rtl" ? -1 : 1;
+  const w = el.clientWidth;
+  let timing, into, out;
+  if (kind === 1) {
+    const [css, seconds] = spring({ f: [16 * Math.PI * Math.PI, 8 * Math.PI, 1] });
+    timing = { duration: seconds * 1000, easing: css };
+    const full = w * on, drift = -w * 0.3 * on;
+    [into, out] = back ? [across(drift, 1), across(full, 1)] : [across(full, 1), across(drift, 1)];
+  } else if (kind === 2) {
+    timing = { duration: 300, easing: "cubic-bezier(0.2, 0, 0, 1)" };
+    const step = (back ? -30 : 30) * on;
+    [into, out] = [across(step, 0), across(-step, 0)];
+  } else {
+    timing = { duration: 200, easing: "cubic-bezier(0.65, 0, 0.35, 1)" };
+    [into, out] = back ? [across(0, 1), across(0, 0)] : [across(0, 0), across(0, 1)];
+  }
+  const rest = across(0, 1);
+  a.removeAttribute("data-vx-away");
+  a.inert = true;
+  const arrive = b.animate([was.get(b) || into, rest], timing);
+  const leave = a.animate([was.get(a) || rest, out], timing);
+  moving.set(b, arrive).set(a, leave);
+  arrive.onfinish = () => { if (moving.get(b) === arrive) moving.delete(b); };
+  leave.onfinish = () => {
+    if (moving.get(a) !== leave) return;
+    moving.delete(a);
+    a.inert = false;
+    if (items(el).indexOf(a) !== el.$page) a.setAttribute("data-vx-away", "");
+  };
+};
 const url = (v) => {
   if (v === null || typeof v !== "object") return "";
   return A.get(String(BigInt.asUintN(64, v.f[0]))) || "";
@@ -386,6 +460,8 @@ const P = {
     el.setAttribute("aria-valuenow", el.value);
   },
   selected: (el, v, radio) => select(el, v === null ? 0n : v, radio),
+  page,
+  turn: (el, v) => { el.$turn = Number(v ?? 0n); },
   source(el, v, mask) {
     const u = url(v);
     if (!mask) el.src = u;
@@ -625,6 +701,22 @@ const listen = (el, route, capture, control, fire) => {
       e.preventDefault();
       fire(rec([a.getAttribute("href")]));
     }), capture);
+  } else if (route === 22) {
+    // A back gesture past the first page asks for the one before: Escape or
+    // Backspace on the stack itself, the browser's back key, or the mouse's
+    // back button anywhere in it, which the deepest stack takes.
+    const back = (e) => {
+      const at = el.$page ?? 0;
+      if (at <= 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      fire(rec([BigInt(at - 1)]));
+    };
+    el.addEventListener("keydown", live((e) => {
+      if (e.repeat || e.isComposing) return;
+      if (e.key === "BrowserBack" || ((e.key === "Escape" || e.key === "Backspace") && e.target === el)) back(e);
+    }), capture);
+    el.addEventListener("mouseup", live((e) => { if (e.button === 3) back(e); }), capture);
   } else if (route >= 15) {
     draggable(el);
     el.addEventListener("viso-drag", live((e) => {
@@ -663,6 +755,7 @@ const sync = (el, control, value) => {
   else if (control === 1) el.value = v === null ? el.min : String(v);
   else if (control === 13) P.number(el, v);
   else if (control === 2) select(el, v === null ? 0n : v, el.$radio);
+  else if (control === 14) page(el, v);
   else if (v !== null) P.input(el, v);
 };
 

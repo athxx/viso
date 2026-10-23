@@ -239,6 +239,37 @@ impl NodeStore {
             .and_then(|&(_, page)| page)
     }
 
+    /// Whether `stack` is a paged stack.
+    pub fn is_paged(&self, stack: NodeId) -> bool {
+        self.paged.stacks.iter().any(|&(n, _)| n == stack)
+    }
+
+    /// The paged stack a system back action turns back: the deepest one
+    /// past its first page that shows, its ancestors included. `None` for
+    /// none.
+    pub fn back_target(&self) -> Option<NodeId> {
+        self.paged
+            .stacks
+            .iter()
+            .filter(|&&(stack, page)| {
+                page.is_some_and(|p| p > 0) && self.arena().is_live(stack) && self.showing(stack)
+            })
+            .map(|&(stack, _)| stack)
+            .max_by_key(|&stack| self.depth_of(stack))
+    }
+
+    /// Whether `id` and each of its ancestors shows.
+    fn showing(&self, id: NodeId) -> bool {
+        let mut at = Some(id);
+        while let Some(node) = at {
+            if self.hidden(node) {
+                return false;
+            }
+            at = self.arena().parent(node);
+        }
+        true
+    }
+
     /// The child of `stack` at `index`.
     fn page_at(&self, stack: NodeId, index: usize) -> Option<NodeId> {
         self.arena().children(stack).nth(index)
@@ -537,5 +568,21 @@ mod tests {
         store.set_page(root, None, PageTransition::Slide);
         assert!(store.hidden(a) && store.hidden(b) && store.hidden(c));
         assert!(!store.is_transitioning(), "to no page nothing moves");
+    }
+
+    #[test]
+    fn a_back_action_turns_the_deepest_showing_stack_past_its_first_page() {
+        let (mut store, root, [a, _, _]) = stack();
+        assert_eq!(store.back_target(), None, "on its first page");
+        store.set_page(root, Some(2), PageTransition::None);
+        assert_eq!(store.back_target(), Some(root));
+        store.set_hidden(root, true);
+        assert_eq!(store.back_target(), None, "a stack that does not show");
+        store.set_hidden(root, false);
+        // A stack paged within the first page, which does not show.
+        store.set_page(a, Some(1), PageTransition::None);
+        assert_eq!(store.back_target(), Some(root));
+        store.set_page(root, Some(0), PageTransition::None);
+        assert_eq!(store.back_target(), Some(a), "the deeper one shows now");
     }
 }

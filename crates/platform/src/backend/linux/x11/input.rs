@@ -224,6 +224,9 @@ pub(super) fn pointer_id(kind: PointerKind, source: u16, touch: u32) -> PointerI
     }
 }
 
+/// The X button number of a mouse's back button: the system back action.
+pub(super) const BACK_BUTTON: u32 = 8;
+
 /// The buttons an X button number stands for.
 pub(super) fn button(detail: u32) -> PointerButtons {
     match detail {

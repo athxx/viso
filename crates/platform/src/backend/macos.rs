@@ -1926,12 +1926,16 @@ define_class!(
 
         #[unsafe(method(otherMouseDown:))]
         fn other_mouse_down(&self, event: &NSEvent) {
-            self.pointer(event, PointerPhase::Down, PointerButtons::MIDDLE, true);
+            if !self.back_button(event, true) {
+                self.pointer(event, PointerPhase::Down, PointerButtons::MIDDLE, true);
+            }
         }
 
         #[unsafe(method(otherMouseUp:))]
         fn other_mouse_up(&self, event: &NSEvent) {
-            self.pointer(event, PointerPhase::Up, PointerButtons::MIDDLE, false);
+            if !self.back_button(event, false) {
+                self.pointer(event, PointerPhase::Up, PointerButtons::MIDDLE, false);
+            }
         }
 
         #[unsafe(method(mouseMoved:))]
@@ -2213,6 +2217,22 @@ impl VisoContentView {
             // Hand the drag to AppKit; it tracks the mouse until release.
             window.performWindowDragWithEvent(event);
         }
+        true
+    }
+
+    /// A mouse's back button (button 3) is the system back action, not a
+    /// pointer button: enqueue it as [`KeyCode::Back`]. Whether `event` was it.
+    fn back_button(&self, event: &NSEvent, pressed: bool) -> bool {
+        if event.buttonNumber() != 3 {
+            return false;
+        }
+        self.push(RawEvent::Key(RawKey {
+            window: self.ivars().window,
+            code: KeyCode::Back,
+            pressed,
+            repeat: false,
+            modifiers: modifiers_of(event),
+        }));
         true
     }
 

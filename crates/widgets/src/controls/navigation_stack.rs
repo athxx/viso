@@ -10,7 +10,8 @@
 //! stack has no internal button strip — it is driven by application logic: an app captures a
 //! [`NavHandle`] (see [`NavigationStack::handle`]) and calls
 //! [`NavHandle::push`]/[`NavHandle::pop`] from a page's own controls, and the
-//! stack also honors a keyboard back gesture (Escape or Backspace while focused).
+//! stack also honors a back gesture (Escape or Backspace while focused, or the
+//! system back action: a mouse's back button, Android's back).
 //! Pointer/programmatic navigation and the keyboard back gesture are the *same*
 //! action semantically, so an interactive control must have a keyboard equivalent
 //! (AGENTS section 15).
@@ -167,8 +168,8 @@ impl Default for NavigationStackStyle {
 /// Construct one with [`navigation_stack`], add pages with [`NavigationStack::page`],
 /// give it behavior with [`NavigationStack::on_navigate`], and capture a
 /// [`NavHandle`] with [`NavigationStack::handle`] to push/pop from application
-/// code. A keyboard back gesture (Escape or Backspace while the stack is focused)
-/// pops.
+/// code. A back gesture (Escape or Backspace while the stack is focused, or the
+/// system back action) pops.
 ///
 /// See the [module docs](self) for a build example. Invalidation: navigating
 /// writes a reactive `depth` cell bound to the stack's `PAINT`, and defers a pair
@@ -339,16 +340,17 @@ impl Component for NavigationStack {
         cx.page(root, Some(0));
         let stack = root.id();
 
-        // The stack is a focusable navigation container: a keyboard back gesture
-        // (Escape or Backspace while it is focused) pops. Auto-repeat is ignored so
-        // a held key pops once.
+        // The stack is a focusable navigation container: a back gesture
+        // (Escape or Backspace while it is focused, or the system back action,
+        // which reaches the deepest stack past its first page focused or not)
+        // pops. Auto-repeat is ignored so a held key pops once.
         cx.focusable(root, true);
         cx.on_key(root, move |ev| {
             let Some(k) = ev.key() else { return };
             if !k.pressed || k.repeat {
                 return;
             }
-            if matches!(k.key, Key::Escape | Key::Backspace)
+            if matches!(k.key, Key::Escape | Key::Backspace | Key::Back)
                 && let Some(StateValue::Int(cur)) = ev.get(depth)
                 && cur > 0
             {

@@ -1298,6 +1298,17 @@ impl X11 {
             }
             return;
         }
+        if e.detail == input::BACK_BUTTON {
+            self.pump.key(
+                id,
+                crate::event::KeyCode::Back,
+                None,
+                modifiers,
+                pressed,
+                false,
+            );
+            return;
+        }
         let button = input::button(e.detail);
         if button.is_empty() {
             return;

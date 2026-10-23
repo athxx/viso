@@ -834,3 +834,66 @@ export component Page {
         assert!(!rt.faulted());
     }
 }
+
+#[test]
+fn a_navigation_stack_shows_its_current_page_slides_to_the_next_and_goes_back() {
+    const STACK: &str = r#"
+export component Page {
+    state page: U32 = 0;
+    state backs = 0;
+    view {
+        NavigationStack {
+            width: 400dp;
+            height: 300dp;
+            page_transition: PageTransition::slide;
+            bind current <=> page;
+            on current_changed(event) { backs += 1; }
+            Column { width: 400dp; height: 300dp; on click { page = 1; } }
+            Column { width: 400dp; height: 300dp; }
+            Column { width: 400dp; height: 300dp; }
+        }
+    }
+}
+"#;
+    for mut rt in [Rt::reloaded(STACK), Rt::packaged(STACK)] {
+        let stack = rt.root.expect("mounted");
+        let [first, second, third] = rt.children(stack)[..] else {
+            panic!("three pages");
+        };
+        assert!(!rt.store.hidden(first) && rt.store.hidden(second) && rt.store.hidden(third));
+        assert!(
+            rt.store.clips(stack),
+            "a stack clips its pages as they move"
+        );
+
+        rt.click(10.0, 10.0);
+        assert_eq!(rt.int("page"), 1);
+        assert!(
+            !rt.store.hidden(second) && !rt.store.hidden(first),
+            "both show as they move"
+        );
+        assert_eq!(
+            rt.store.translate(second).x,
+            400.0,
+            "it slides in from the edge"
+        );
+        for _ in 0..120 {
+            rt.store
+                .tick_transitions(std::time::Duration::from_millis(16));
+        }
+        assert!(rt.store.hidden(first) && !rt.store.hidden(second));
+        assert_eq!(rt.store.translate(second).x, 0.0);
+
+        rt.store.set_focused(stack.into());
+        rt.key(Key::Back);
+        assert_eq!(
+            (rt.int("page"), rt.int("backs")),
+            (0, 1),
+            "back asks for the page before"
+        );
+        assert!(!rt.store.hidden(first));
+        rt.key(Key::Escape);
+        assert_eq!(rt.int("backs"), 1, "the first page has none before it");
+        assert!(!rt.faulted());
+    }
+}

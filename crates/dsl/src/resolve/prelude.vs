@@ -195,6 +195,9 @@ export record Shadow {
 // The values of the standard widgets' enum properties.
 export enum Axis { row; column; }
 export enum Snap { start; center; end; pages; }
+// How a navigation stack's pages trade places: `native` as this platform's
+// own navigation does.
+export enum PageTransition { native; slide; shared_axis; fade; none; }
 export enum Justify { start; center; end; }
 export enum Align { start; center; end; stretch; }
 export enum GridAlign { stretch; start; center; end; }

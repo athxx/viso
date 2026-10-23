@@ -213,7 +213,11 @@ const SELECTED: &[WidgetProperty] = &[two_way("selected", "U32")];
 const DISCLOSURE: &[WidgetProperty] = &[two_way("expanded", "Bool")];
 const OPEN: &[WidgetProperty] = &[two_way("open", "Bool")];
 
-const CURRENT: &[WidgetProperty] = &[two_way("current", "U32")];
+/// The page a `NavigationStack` shows, and how its pages trade places.
+const CURRENT: &[WidgetProperty] = &[
+    two_way("current", "U32"),
+    look("page_transition", "PageTransition"),
+];
 
 /// The constant width an `AdaptiveScope` classifies instead of the width its
 /// parent gives it, and the direction its subtree's lines run in instead of
@@ -489,9 +493,10 @@ pub const STANDARD: &[NativeWidget] = &[
         .interactive(),
     layout(
         "NavigationStack",
-        FLEX_NODE,
-        &[CURRENT, LAYOUT, TRANSFORM, FOCUS],
+        WidgetNode::Stack,
+        &[CURRENT, STACK, LAYOUT, TRANSFORM, FOCUS],
     )
+    .provides(&STACK_CHILD)
     .events(&[CURRENT_EVENTS, STANDARD_EVENTS])
     .slots(CHILDREN)
     .migratable(

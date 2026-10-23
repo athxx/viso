@@ -730,6 +730,11 @@ pub(super) fn active_child(store: &NodeStore, parent: NodeId) -> Option<u32> {
 /// Shows `node`'s immediate child at ordinal `index` and hides every other —
 /// the [`active_child`] carry's inverse, applied to the rebuilt node.
 fn restore_active_child(store: &mut NodeStore, node: NodeId, index: u32) {
+    if store.is_paged(node) {
+        let page = usize::try_from(index).ok();
+        store.set_page(node, page, viso_ui::PageTransition::None);
+        return;
+    }
     let mut child = store.arena().first_child(node);
     let mut ordinal = 0u32;
     while let Some(id) = child {

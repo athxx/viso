@@ -1315,3 +1315,65 @@ fn a_page_eases_as_the_runtime_does() {
         }
     }
 }
+
+#[test]
+fn a_navigation_stack_exports_its_pages_folded_but_one_and_turns_them_with_web_animations() {
+    const STACK: &str = r#"
+export component Pages {
+    state page: U32 = 0;
+    view {
+        NavigationStack {
+            width: 200dp;
+            height: 100dp;
+            page_transition: PageTransition::shared_axis;
+            bind current <=> page;
+            Button { text: "Next"; width: 40dp; height: 20dp; on click { page = 1; } }
+            Text { text: "Second"; }
+        }
+    }
+}
+"#;
+    let page = export(STACK, false).unwrap();
+    let index = &page.index;
+    assert!(
+        index.contains("role=\"navigation\"") || index.contains("<nav"),
+        "{index}"
+    );
+    assert!(index.contains("data-turn=\"2\""), "{index}");
+
+    assert!(
+        page.styles
+            .contains("[data-vx-away] { display: none !important; }")
+    );
+    let script = page.script.clone().unwrap();
+    assert!(script.contains("P.page(e["), "{script}");
+    assert!(
+        script.contains(", 22, false, 14, (p) =>"),
+        "the stack hears its back gesture: {script}"
+    );
+    let Some(chrome) = chrome() else {
+        eprintln!("no Chrome: the page is not run");
+        return;
+    };
+    // Headless Chrome's virtual time does not run an animation's timeline,
+    // so how the pages move is read off their animations.
+    let turn = "\nsetTimeout(() => document.querySelector('button').click(), 50);\n\
+        setTimeout(() => document.body.append('moved=' + document.getAnimations().map((a) =>\n\
+          a.effect.getKeyframes().map((k) => k.transform + '/' + k.opacity).join(' ') + '|' + a.effect.getTiming().duration\n\
+        ).join(';') + '.'), 100);\n";
+    let still = run_in_chrome(&page, &script, "export-pages-still", &[], chrome.clone());
+    assert_eq!(
+        still.matches("data-vx-away").count(),
+        1,
+        "the page it does not show folds: {still}"
+    );
+    let dom = run_in_chrome(&page, &(script + turn), "export-pages", &[], chrome);
+    assert!(
+        dom.contains("moved=translateX(30px)/0 translateX(0px)/1|300;translateX(0px)/1 translateX(-30px)/0|300."),
+        "the arriving page moves in, the leaving one out: {dom}"
+    );
+    assert!(
+        !dom.contains("data-vx-away"),
+        "both pages show as they move: {dom}"
+    );
+}

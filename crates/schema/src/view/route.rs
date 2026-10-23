@@ -59,11 +59,14 @@ pub enum EventRoute {
     /// A snapping `Scroll`'s or `VirtualList`'s `snap_changed`: it came to
     /// rest on, heads for, or shows another item.
     SnapChanged = 21,
+    /// A `NavigationStack`'s `current_changed`: a back gesture asked it to
+    /// show another page.
+    CurrentChanged = 22,
 }
 
 impl EventRoute {
     /// Every route, by discriminant.
-    pub const ALL: [EventRoute; 22] = [
+    pub const ALL: [EventRoute; 23] = [
         EventRoute::Click,
         EventRoute::Tap,
         EventRoute::PointerDown,
@@ -86,6 +89,7 @@ impl EventRoute {
         EventRoute::Link,
         EventRoute::Refresh,
         EventRoute::SnapChanged,
+        EventRoute::CurrentChanged,
     ];
 
     /// The route of standard DSL event `event`, `None` for an event the runtime
@@ -122,6 +126,7 @@ impl EventRoute {
             EventRoute::Link => "link",
             EventRoute::Refresh => "refresh",
             EventRoute::SnapChanged => "snap_changed",
+            EventRoute::CurrentChanged => "current_changed",
         }
     }
 
@@ -150,6 +155,7 @@ impl EventRoute {
             EventRoute::Link => "Link",
             EventRoute::Refresh => "Refresh",
             EventRoute::SnapChanged => "SnapChanged",
+            EventRoute::CurrentChanged => "CurrentChanged",
         }
     }
 
@@ -195,7 +201,10 @@ impl EventRoute {
     pub fn is_control(self) -> bool {
         matches!(
             self,
-            EventRoute::Changed | EventRoute::Submitted | EventRoute::SelectedChanged
+            EventRoute::Changed
+                | EventRoute::Submitted
+                | EventRoute::SelectedChanged
+                | EventRoute::CurrentChanged
         )
     }
 }

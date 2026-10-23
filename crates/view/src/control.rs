@@ -64,6 +64,7 @@ impl Drive for Control {
             ControlKind::Dialog => dismiss(self, host, scope, cx),
             ControlKind::Slider => slider(self, host, scope, cx),
             ControlKind::Select => select(self, host, scope, cx),
+            ControlKind::Pages => pages(self, host, scope, cx),
             ControlKind::TextInput => text_input(self, host, scope, cx),
             ControlKind::Number => number(self, host, scope, cx),
             ControlKind::Viewport => viewport(cx),
@@ -214,7 +215,7 @@ fn dismiss(
 ) -> Option<(EventRoute, Value)> {
     let escape = cx
         .key()
-        .is_some_and(|k| k.pressed && !k.repeat && k.key == Key::Escape);
+        .is_some_and(|k| k.pressed && !k.repeat && matches!(k.key, Key::Escape | Key::Back));
     let closes = match cx.pointer().map(|p| p.phase) {
         Some(phase) if cx.phase() == DispatchPhase::Target => {
             cx.stop_propagation();
@@ -338,6 +339,34 @@ fn select(
         next
     };
     (next != current).then(|| (EventRoute::SelectedChanged, field(Value::Int(next))))
+}
+
+/// A navigation stack's response: a back gesture — Escape or Backspace
+/// while the stack itself is focused, or the system back action from
+/// anywhere in it — past its first page asks for the page before.
+fn pages(
+    control: &Control,
+    host: &mut ViewHost,
+    scope: &Scope,
+    cx: &mut EventCx<'_>,
+) -> Option<(EventRoute, Value)> {
+    let k = cx.key()?;
+    let back = k.pressed
+        && !k.repeat
+        && match k.key {
+            Key::Back => true,
+            Key::Escape | Key::Backspace => cx.phase() == DispatchPhase::Target,
+            _ => false,
+        };
+    if !back {
+        return None;
+    }
+    let current = read(host, control.value, scope, cx).as_int().unwrap_or(0);
+    if current <= 0 {
+        return None;
+    }
+    cx.stop_propagation();
+    Some((EventRoute::CurrentChanged, field(Value::Int(current - 1))))
 }
 
 /// The fraction of a slider's range one arrow key moves a stepless slider.

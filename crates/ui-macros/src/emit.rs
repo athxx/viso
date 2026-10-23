@@ -707,10 +707,11 @@ fn control_tokens(control: Control) -> TokenStream {
         entry(control.multiline),
         entry(control.caption),
     );
-    let (input_kind, max_length, precision) = (
+    let (input_kind, max_length, precision, page_transition) = (
         entry(control.input_kind),
         entry(control.max_length),
         entry(control.precision),
+        entry(control.page_transition),
     );
     let semantics = control.semantics;
     let role = match semantics.role {
@@ -815,6 +816,7 @@ fn control_tokens(control: Control) -> TokenStream {
             max_length: #max_length,
             precision: #precision,
             caption: #caption,
+            page_transition: #page_transition,
             shader: #shader,
             look: ::viso::__private::viso_view::Look {
                 background: #background,

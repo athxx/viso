@@ -152,6 +152,10 @@ pub(super) enum Prop {
     Selected {
         radio: bool,
     },
+    /// The page a navigation stack shows.
+    Page,
+    /// How a navigation stack's pages trade places.
+    Turn,
     /// An asset's source, as an image or as a mask.
     Source {
         mask: bool,
@@ -261,6 +265,9 @@ pub(super) struct Lower<'v, 'e, 'a> {
     /// Whether the node being lowered is a disclosure's header, its first
     /// child: the `<summary>` of its `<details>`.
     summary: bool,
+    /// Whether the node being lowered is a page its navigation stack folds
+    /// away: not the one it shows.
+    away: bool,
     /// The tree being lowered, whose spans of other files' components it
     /// reports where the page's source places them.
     tree: Option<&'v UiTree>,
@@ -286,6 +293,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             anchors: false,
             stretch: false,
             summary: false,
+            away: false,
             tree: None,
         }
     }
@@ -498,6 +506,9 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             None => false,
         };
         let summary = std::mem::take(&mut self.summary);
+        if std::mem::take(&mut self.away) {
+            el.attr("data-vx-away", "");
+        }
         el.tag = match (node.type_name.as_str(), role) {
             _ if summary => "summary",
             ("Disclosure", _) => "details",
@@ -719,6 +730,8 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                     match item {
                         UiItem::Node(n) => {
                             self.summary = index == 0 && node.type_name == "Disclosure";
+                            self.away =
+                                kind == ControlKind::Pages && selected.is_some_and(|s| s != index);
                             self.node(n, child, item_of, depth, templated, out);
                             index += 1;
                         }
@@ -1259,6 +1272,24 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                         el.attr(name, &fixed.text());
                     }
                 }
+            }
+            ControlKind::Pages => {
+                // Its transition first, so a turn reads the current one.
+                if let Some(fixed) = self.bind(
+                    wires,
+                    control.page_transition,
+                    Prop::Turn,
+                    "how the pages trade places",
+                    at,
+                ) {
+                    el.attr("data-turn", &fixed.int().unwrap_or(0).to_string());
+                }
+                selected = match control.value {
+                    Some(entry) => self
+                        .bind(wires, Some(entry), Prop::Page, "the page", at)
+                        .and_then(|fixed| fixed.int()),
+                    None => Some(0),
+                };
             }
             ControlKind::Select => {
                 let radio = node.type_name == "RadioGroup";

@@ -33,6 +33,8 @@ use crate::event::{
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 const BTN_MIDDLE: u32 = 0x112;
+/// A mouse's back button: the system back action.
+const BTN_SIDE: u32 = 0x113;
 
 /// Touch points get ids of their own, apart from the mouse.
 const TOUCH_BIT: u64 = 1 << 32;
@@ -355,6 +357,20 @@ impl Seat {
                 state: button_state,
             } => {
                 self.last_serial = serial;
+                if button == BTN_SIDE {
+                    let pressed = known(button_state) == Some(wl_pointer::ButtonState::Pressed);
+                    if let Some(window) = p.focus {
+                        state.pump.key(
+                            window,
+                            crate::event::KeyCode::Back,
+                            None,
+                            modifiers,
+                            pressed,
+                            false,
+                        );
+                    }
+                    return;
+                }
                 let button = match button {
                     BTN_LEFT => PointerButtons::PRIMARY,
                     BTN_RIGHT => PointerButtons::SECONDARY,

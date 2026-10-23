@@ -2980,12 +2980,16 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 }
                 if menu_key != edit_menu::MenuKey::Ignored {
                     // The drawn context menu takes the keys it answers.
-                } else if matches!(k.key, viso_runtime::Key::Tab | viso_runtime::Key::Escape)
-                    && k.pressed
+                } else if matches!(
+                    k.key,
+                    viso_runtime::Key::Tab | viso_runtime::Key::Escape | viso_runtime::Key::Back
+                ) && k.pressed
                 {
-                    // A handler may take Tab or Escape first; else Tab moves
-                    // the focus and Escape dismisses the innermost transient
-                    // layer (a tooltip, a list the focus is not in).
+                    // A handler may take Tab, Escape or the system back
+                    // action first; else Tab moves the focus, Escape
+                    // dismisses the innermost transient layer (a tooltip, a
+                    // list the focus is not in), and back does so too or,
+                    // with none, turns the deepest navigation stack back.
                     let ev = KeyEvent {
                         key: k.key,
                         pressed: k.pressed,
@@ -3012,6 +3016,20 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                             &ws.bindings,
                             &mut ws.text_edits,
                             layer,
+                        );
+                    } else if matches!(k.key, viso_runtime::Key::Back)
+                        && !k.repeat
+                        && let Some(stack) = ws.store.back_target()
+                    {
+                        KeyRouter::route_back(
+                            &mut ws.store,
+                            &mut ws.states,
+                            &ws.bindings,
+                            &mut ws.text_edits,
+                            root,
+                            stack,
+                            ev,
+                            &mut ws.route_chain,
                         );
                     }
                 } else if let Some((host, target)) = ws.store.link_key(

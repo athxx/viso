@@ -34,9 +34,9 @@ use viso_ui::shader::BrushProgram;
 use viso_ui::{Alignment2D, BoundSize, LayoutValue, LengthTerms};
 use viso_ui::{
     AssetFit, Border, BuildCx, CheckMark, CheckShape, CursorIcon, Easing, FieldLook, FieldSeed,
-    FontSize, InputKind, LiveRegion, LookValue, NodeId, NodeStore, NumberFormat, Rgba, Role,
-    SemanticState, Semantics, Shadow, Srgb, StateId, StructureCx, TextRequest, Timing, Vec2,
-    focus_node, number_kind,
+    FontSize, InputKind, LiveRegion, LookValue, NodeId, NodeStore, NumberFormat, PageTransition,
+    Rgba, Role, SemanticState, Semantics, Shadow, Srgb, StateId, StructureCx, TextRequest, Timing,
+    Vec2, focus_node, number_kind,
 };
 
 use crate::control::{Control, ControlInput, ControlKind, Holds, LayoutSlot, Switched, When};
@@ -222,6 +222,7 @@ pub(crate) fn control_cells(
         control.node.cursor,
         control.node.refreshing,
         control.node.sticky,
+        control.page_transition,
     ])
     .flatten()
     .chain(arms)
@@ -241,8 +242,9 @@ pub(crate) fn control_cells(
 /// `max_length`, a number field's `step` and `precision` and a check's
 /// caption, its `translate`, `scale`, `rotation` and `transform_origin`, and
 /// its `cursor`, its text's `font_style`, `spans` and `selectable`, its
-/// `shadow`, a refreshable viewport's `refreshing`, and its `sticky`.
-const SHOWN: usize = 46;
+/// `shadow`, a refreshable viewport's `refreshing`, its `sticky`, and a
+/// navigation stack's `page_transition`.
+const SHOWN: usize = 47;
 
 /// The input of each value a node shows, in order.
 const SHOWN_INPUTS: [ControlInput; SHOWN] = [
@@ -292,6 +294,7 @@ const SHOWN_INPUTS: [ControlInput; SHOWN] = [
     ControlInput::Shadow,
     ControlInput::Refreshing,
     ControlInput::Sticky,
+    ControlInput::PageTransition,
 ];
 
 /// Where its `translate` sits among the values a node shows.
@@ -525,6 +528,7 @@ impl Shown {
             shadow,
             refreshing,
             sticky,
+            paging,
         ] = &shows;
         let spanned = crate::text_style::spans(pieces);
         let changed = |at: usize| prior.is_none_or(|prior| prior[at] != shows[at]);
@@ -738,6 +742,15 @@ impl Shown {
         }
         match control.kind {
             ControlKind::Plain | ControlKind::Dialog | ControlKind::Toast => {}
+            // A navigation stack shows its current page, clipping the pages
+            // as they trade places unless its `clip` says.
+            ControlKind::Pages => {
+                if first && !given(NODE + 4) {
+                    store.set_clip(self.node, true);
+                }
+                let page = value.as_int().and_then(|v| usize::try_from(v).ok());
+                store.set_page(self.node, page, page_transition(paging));
+            }
             // The game of the view's root fills the scene each frame.
             ControlKind::Viewport => {
                 if let Some(slot) = store.set_scene(self.node) {
@@ -1119,6 +1132,18 @@ fn cursor_of(value: &Value) -> Option<CursorIcon> {
     ];
     let at = usize::try_from(value.as_int()?).ok()?;
     CURSORS.get(at).copied()
+}
+
+/// A `PageTransition` value as the transition it names, `native` for any
+/// other.
+fn page_transition(value: &Value) -> PageTransition {
+    match value.as_int() {
+        Some(1) => PageTransition::Slide,
+        Some(2) => PageTransition::SharedAxis,
+        Some(3) => PageTransition::Fade,
+        Some(4) => PageTransition::None,
+        _ => PageTransition::Native,
+    }
 }
 
 /// An `ImageFit` value as the fit it names, `contain` for any other.

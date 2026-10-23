@@ -318,6 +318,8 @@ export const show = {
       easing(f[2]) + " " + (instant ? "0s" : s(f[1]));
   },
   select,
+  page,
+  turn: P.turn,
 };
 
 export { $, envField, fault, settle };

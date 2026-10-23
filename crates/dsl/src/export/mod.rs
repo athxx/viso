@@ -329,6 +329,7 @@ body { font-family: var(--typography-family); font-size: var(--typography-base-s
 .vx-list.vx-pages.vx-across > * { block-size: auto; inline-size: 100%; }
 .vx-lanes > [style*=\"sticky\"] { grid-column: 1 / -1; }
 .vx-lanes.vx-across > [style*=\"sticky\"] { grid-column: auto; grid-row: 1 / -1; }
+[data-vx-away] { display: none !important; }
 .vx-text { white-space: pre; user-select: none; -webkit-user-select: none; }
 .vx-text.vx-selectable { user-select: text; -webkit-user-select: text; cursor: text; }
 .vx-button { font: inherit; color: inherit; background: none; border: 0; border-radius: 0; padding: 0; margin: 0; text-align: start; white-space: pre; cursor: pointer; }

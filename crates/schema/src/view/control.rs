@@ -62,11 +62,16 @@ pub enum ControlKind {
     /// a drag scrubs and the arrows and the wheel step by `step`; reports
     /// each number its text comes to read as.
     Number = 13,
+    /// `NavigationStack`: shows the child at `current`, the pages trading
+    /// places as its `page_transition` says; a back gesture (Escape or
+    /// Backspace while it is focused, or the system back action) reports
+    /// `current` one lower.
+    Pages = 14,
 }
 
 impl ControlKind {
     /// Every kind, by discriminant.
-    pub const ALL: [ControlKind; 14] = [
+    pub const ALL: [ControlKind; 15] = [
         ControlKind::Check,
         ControlKind::Slider,
         ControlKind::Select,
@@ -81,6 +86,7 @@ impl ControlKind {
         ControlKind::Toast,
         ControlKind::Viewport,
         ControlKind::Number,
+        ControlKind::Pages,
     ];
 
     /// The kind native widget `widget` is.
@@ -99,6 +105,7 @@ impl ControlKind {
             "Image" | "Svg" => ControlKind::Asset,
             "ShaderView" => ControlKind::Shader,
             "GameViewport" => ControlKind::Viewport,
+            "NavigationStack" => ControlKind::Pages,
             _ => ControlKind::Plain,
         }
     }
@@ -110,6 +117,7 @@ impl ControlKind {
             "changed" => EventRoute::Changed,
             "submitted" => EventRoute::Submitted,
             "selected_changed" => EventRoute::SelectedChanged,
+            "current_changed" => EventRoute::CurrentChanged,
             _ => return None,
         };
         self.reports(route).then_some(route)
@@ -142,6 +150,7 @@ impl ControlKind {
                 EventRoute::Changed
             ) | (ControlKind::TextInput, EventRoute::Submitted)
                 | (ControlKind::Select, EventRoute::SelectedChanged)
+                | (ControlKind::Pages, EventRoute::CurrentChanged)
         )
     }
 
@@ -213,6 +222,7 @@ impl ControlKind {
             | (ControlKind::Dialog | ControlKind::Toast, "open")
             | (ControlKind::Slider, "value")
             | (ControlKind::Select, "selected")
+            | (ControlKind::Pages, "current")
             | (ControlKind::TextInput | ControlKind::Number, "value")
             | (ControlKind::Label, "text")
             | (ControlKind::Asset, "source")
@@ -230,6 +240,7 @@ impl ControlKind {
             (ControlKind::Number, "precision") => ControlInput::Precision,
             (ControlKind::Asset, "fit") => ControlInput::Fit,
             (ControlKind::Asset, "tint") => ControlInput::Tint,
+            (ControlKind::Pages, "page_transition") => ControlInput::PageTransition,
             _ => return None,
         })
     }
@@ -251,6 +262,7 @@ impl ControlKind {
             ControlKind::Shader => "Shader",
             ControlKind::Viewport => "Viewport",
             ControlKind::Number => "Number",
+            ControlKind::Pages => "Pages",
         }
     }
 
@@ -712,6 +724,8 @@ pub enum ControlInput {
     Precision,
     /// A check's `label`: the caption it shows and is named by.
     Caption,
+    /// A navigation stack's `page_transition`: how its pages trade places.
+    PageTransition,
 }
 
 /// A view-driven native node: its kind and the handler-table entries that
@@ -747,6 +761,8 @@ pub struct Control {
     pub precision: Option<u32>,
     /// The entry of a check's caption.
     pub caption: Option<u32>,
+    /// The entry of how a navigation stack's pages trade places.
+    pub page_transition: Option<u32>,
     /// The shader a shader view paints with, by its index in the view's
     /// shader table; its value gives the shader's parameters.
     pub shader: Option<u32>,
@@ -918,7 +934,7 @@ pub enum Switched {
 
 impl ControlInput {
     /// Every input, by wire tag.
-    pub const ALL: [ControlInput; 55] = [
+    pub const ALL: [ControlInput; 56] = [
         ControlInput::Value,
         ControlInput::Min,
         ControlInput::Max,
@@ -974,6 +990,7 @@ impl ControlInput {
         ControlInput::Shadow,
         ControlInput::Refreshing,
         ControlInput::Sticky,
+        ControlInput::PageTransition,
     ];
 
     /// Its wire tag: its place in [`ControlInput::ALL`].
@@ -1065,6 +1082,7 @@ impl Control {
             max_length: None,
             precision: None,
             caption: None,
+            page_transition: None,
             shader: None,
             look: Look::default(),
             arms: Box::new([]),
@@ -1138,6 +1156,7 @@ impl Control {
             ControlInput::MaxLength => self.max_length,
             ControlInput::Precision => self.precision,
             ControlInput::Caption => self.caption,
+            ControlInput::PageTransition => self.page_transition,
         }
     }
 
@@ -1209,6 +1228,7 @@ impl Control {
             ControlInput::MaxLength => &mut self.max_length,
             ControlInput::Precision => &mut self.precision,
             ControlInput::Caption => &mut self.caption,
+            ControlInput::PageTransition => &mut self.page_transition,
         };
         *slot = Some(entry);
     }
@@ -1235,6 +1255,7 @@ impl Encode for Control {
             self.max_length,
             self.precision,
             self.caption,
+            self.page_transition,
             self.shader,
             look.background,
             look.opacity,
@@ -1349,6 +1370,7 @@ impl Decode for Control {
             max_length: entry()?,
             precision: entry()?,
             caption: entry()?,
+            page_transition: entry()?,
             shader: entry()?,
             look: Look {
                 background: entry()?,
@@ -1625,6 +1647,7 @@ mod tests {
             max_length: None,
             precision: Some(22),
             caption: Some(15),
+            page_transition: Some(9),
             shader: Some(2),
             look: Look {
                 background: Some(3),

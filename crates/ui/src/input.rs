@@ -1782,6 +1782,30 @@ impl KeyRouter {
             && key_handler_dispatch(store, states, bindings, edits, layer, KeyPayload::Dismiss).ran
     }
 
+    /// Route the system back action `ev` to paged stack `stack` (as
+    /// [`NodeStore::back_target`] finds it), through its ancestry: the
+    /// stack takes it at the target leg, as it would focused. Returns
+    /// whether a handler ran.
+    #[allow(clippy::too_many_arguments)]
+    pub fn route_back(
+        store: &mut NodeStore,
+        states: &mut StateStore,
+        bindings: &BindingTable,
+        edits: &mut TextEdits,
+        root: NodeId,
+        stack: NodeId,
+        ev: KeyEvent,
+        chain: &mut Vec<NodeId>,
+    ) -> bool {
+        if !store.arena().is_live(stack) {
+            chain.clear();
+            return false;
+        }
+        dispatch_chain(store, root, stack, chain, |s, n, _| {
+            key_dispatch(s, states, bindings, edits, n, &ev)
+        })
+    }
+
     /// Tell each viewport a pull asked to refresh, through its key handler
     /// ([`EventCx::refresh`]). Returns whether a handler ran.
     pub fn route_refreshes(
