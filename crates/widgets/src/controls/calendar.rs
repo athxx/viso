@@ -216,18 +216,18 @@ impl Default for CalendarStyle {
 
 /// A month of days to pick a date from. Construct one with [`calendar`].
 pub struct Calendar {
-    label: String,
-    value: Option<Date>,
-    cell: Option<StateId>,
-    min: Option<Date>,
-    max: Option<Date>,
-    unavailable: Option<Refusal>,
-    first_weekday: Option<Weekday>,
-    week_numbers: bool,
-    today: Option<Date>,
-    names: DateNames,
-    style: CalendarStyle,
-    on_change: SharedChange,
+    pub(crate) label: String,
+    pub(crate) value: Option<Date>,
+    pub(crate) cell: Option<StateId>,
+    pub(crate) min: Option<Date>,
+    pub(crate) max: Option<Date>,
+    pub(crate) unavailable: Option<Refusal>,
+    pub(crate) first_weekday: Option<Weekday>,
+    pub(crate) week_numbers: bool,
+    pub(crate) today: Option<Date>,
+    pub(crate) names: DateNames,
+    pub(crate) style: CalendarStyle,
+    pub(crate) on_change: SharedChange,
 }
 
 /// A calendar named `label` with no date picked, showing this month.
@@ -333,10 +333,10 @@ enum Look {
 /// What a calendar shares between its handlers and its hook.
 pub(crate) struct Month {
     /// The picked date and the month shown, a [`Date::month_index`].
-    value: StateId,
+    pub(crate) value: StateId,
     month: StateId,
     /// The day the grid starts on, and the weeks' first day.
-    start: Cell<Date>,
+    pub(crate) start: Cell<Date>,
     first: Cell<Weekday>,
     fixed_first: Option<Weekday>,
     min: Option<Date>,
@@ -345,8 +345,8 @@ pub(crate) struct Month {
     today: Option<Date>,
     title: NodeId,
     table: NodeId,
-    previous: NodeId,
-    next: NodeId,
+    pub(crate) previous: NodeId,
+    pub(crate) next: NodeId,
     heads: [NodeId; DAYS],
     weeks: [NodeId; WEEKS],
     numbers: Option<[NodeId; WEEKS]>,
@@ -546,7 +546,7 @@ impl Month {
     }
 
     /// Focus `date`, showing its month.
-    fn go(&self, ev: &mut EventCx<'_>, date: Date) {
+    pub(crate) fn go(&self, ev: &mut EventCx<'_>, date: Date) {
         let index = date.month_index();
         if ev.get(self.month) != Some(StateValue::Int(index)) {
             ev.set(self.month, StateValue::Int(index));
@@ -557,6 +557,47 @@ impl Month {
         if ev.focused() != Some(cell) {
             ev.request_focus(cell);
         }
+    }
+
+    /// The day to focus on arriving: the picked one, else today, the
+    /// nearest that may be picked.
+    pub(crate) fn landing(&self, ev: &EventCx<'_>) -> Option<Date> {
+        let from = Date::of_state(ev.get(self.value))
+            .unwrap_or_else(|| self.today.unwrap_or_else(Date::today));
+        self.settle(from, 1).or_else(|| self.settle(from, -1))
+    }
+
+    /// Its Tab stops in order, as a panel going round them has them: the
+    /// buttons that can turn the month, then the day to land on in the month
+    /// shown — the picked one, else the first that may be picked.
+    pub(crate) fn stops(&self, ev: &EventCx<'_>) -> Vec<NodeId> {
+        let month = self.shown_month(ev.get(self.month));
+        let before = month.add_days(-1);
+        let after = month.add_months(1);
+        let mut stops = Vec::with_capacity(3);
+        if self.min.is_none_or(|m| before >= m) {
+            stops.push(self.previous);
+        }
+        if self.max.is_none_or(|m| after <= m) {
+            stops.push(self.next);
+        }
+        let picked =
+            Date::of_state(ev.get(self.value)).filter(|d| d.month_index() == month.month_index());
+        let day = picked.or_else(|| {
+            self.settle(month, 1)
+                .filter(|d| d.month_index() == month.month_index())
+        });
+        if let Some(day) = day {
+            let start = month.grid_start(self.first.get());
+            let k = (day.days() - start.days()).clamp(0, (WEEKS * DAYS) as i32 - 1) as usize;
+            stops.push(self.day(k));
+        }
+        stops
+    }
+
+    /// Whether `node` is one of its days.
+    pub(crate) fn holds(&self, node: NodeId) -> bool {
+        self.days.iter().flatten().any(|&d| d == node)
     }
 
     /// Show the month `by` months on.

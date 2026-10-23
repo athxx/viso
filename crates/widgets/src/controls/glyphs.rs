@@ -67,6 +67,24 @@ pub(crate) fn chevron_start(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
     stroked(cx, cmds, ink, 1.5)
 }
 
+/// A page of a calendar: a date's field.
+pub(crate) fn calendar_glyph(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
+    let cmds = vec![
+        PathCmd::MoveTo(Point::new(3.0, 4.0)),
+        PathCmd::LineTo(Point::new(13.0, 4.0)),
+        PathCmd::LineTo(Point::new(13.0, 13.5)),
+        PathCmd::LineTo(Point::new(3.0, 13.5)),
+        PathCmd::Close,
+        PathCmd::MoveTo(Point::new(3.0, 7.0)),
+        PathCmd::LineTo(Point::new(13.0, 7.0)),
+        PathCmd::MoveTo(Point::new(5.75, 2.25)),
+        PathCmd::LineTo(Point::new(5.75, 4.5)),
+        PathCmd::MoveTo(Point::new(10.25, 2.25)),
+        PathCmd::LineTo(Point::new(10.25, 4.5)),
+    ];
+    stroked(cx, cmds, ink, 1.3)
+}
+
 /// A chevron pointing down: a list that opens below.
 pub(crate) fn chevron_down(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
     let cmds = vec![

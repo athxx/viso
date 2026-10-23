@@ -220,7 +220,10 @@ Rules:
   table/row/column-header/cell semantics, roving days, arrows/Home/End/Page Up/Down
   (Shift a year) turning the month, min/max and refused days passed over, week numbers,
   overridable `DateNames`.
-- [ ] `DatePicker`: a field showing the date that opens a calendar in an anchored popup.
+- [x] `DatePicker`: a field showing the date that opens a calendar in an anchored
+  light-dismiss panel at the picked day (or today, the nearest pickable); a pick closes
+  it and refocuses the field, Escape/outside press close unchanged, Tab goes round the
+  calendar's buttons and days; `combobox` + `dialog` semantics.
 - [ ] `TimePicker`: hour/minute (and AM/PM by the locale's hour cycle) spin segments,
   typed digits, minute step.
 - [ ] `DataGrid`: virtualized rows and columns, resize, reorder, sort, cell/row

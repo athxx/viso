@@ -61,6 +61,7 @@ pub use controls::{
     MenuHandle, MenuHandleSlot, MenuItem, MenuStyle, Shortcut, context_menu, menu, menu_bar,
     menu_item, separator,
 };
+pub use controls::{DatePicker, DatePickerStyle, date_picker};
 pub use controls::{
     SearchField, SearchFieldHandle, SearchFieldHandleSlot, SearchFieldStyle, search_field,
 };
