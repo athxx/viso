@@ -23,14 +23,17 @@ use objc2_ui_kit::{
     UIAccessibilityIsSwitchControlRunning, UIAccessibilityIsVoiceOverRunning,
     UIAccessibilityLayoutChangedNotification, UIAccessibilityPostNotification,
     UIAccessibilityTraitAdjustable, UIAccessibilityTraitButton, UIAccessibilityTraitImage,
-    UIAccessibilityTraitLink, UIAccessibilityTraitNotEnabled, UIAccessibilityTraitSelected,
-    UIAccessibilityTraitStaticText, UIAccessibilityTraits, UIResponder,
+    UIAccessibilityTraitLink, UIAccessibilityTraitNotEnabled, UIAccessibilityTraitSearchField,
+    UIAccessibilityTraitSelected, UIAccessibilityTraitStaticText, UIAccessibilityTraits,
+    UIResponder,
 };
 
 use super::view::VisoView;
 use super::{LOOP, WINDOW, drive, guarded, push};
 use crate::access_mirror::TreeMirror;
-use crate::accessibility::{AccessAction, AccessNode, AccessRequest, SemanticsDelta, SemanticsId};
+use crate::accessibility::{
+    AccessAction, AccessNode, AccessRequest, SemanticsDelta, SemanticsId, SemanticsRole,
+};
 use crate::backend::ios_translate::{
     ElementKind, announced, element_kind, shows_selected, spoken_value,
 };
@@ -156,7 +159,7 @@ fn send(request: AccessRequest) {
 /// The UIKit traits a node's element announces.
 fn traits(node: &AccessNode) -> UIAccessibilityTraits {
     // SAFETY: the trait constants are immutable UIKit values.
-    let (button, adjustable, text, image, link, selected, not_enabled) = unsafe {
+    let (button, adjustable, text, image, link, selected, not_enabled, search) = unsafe {
         (
             UIAccessibilityTraitButton,
             UIAccessibilityTraitAdjustable,
@@ -165,6 +168,7 @@ fn traits(node: &AccessNode) -> UIAccessibilityTraits {
             UIAccessibilityTraitLink,
             UIAccessibilityTraitSelected,
             UIAccessibilityTraitNotEnabled,
+            UIAccessibilityTraitSearchField,
         )
     };
     let mut traits = match element_kind(node) {
@@ -180,6 +184,9 @@ fn traits(node: &AccessNode) -> UIAccessibilityTraits {
     }
     if node.state.disabled {
         traits |= not_enabled;
+    }
+    if node.role == SemanticsRole::SearchField {
+        traits |= search;
     }
     traits
 }

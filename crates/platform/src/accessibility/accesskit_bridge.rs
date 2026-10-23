@@ -153,6 +153,7 @@ fn role(role: SemanticsRole) -> Role {
         SemanticsRole::ColumnHeader => Role::ColumnHeader,
         SemanticsRole::EditableComboBox => Role::EditableComboBox,
         SemanticsRole::ProgressIndicator => Role::ProgressIndicator,
+        SemanticsRole::SearchField => Role::SearchInput,
         SemanticsRole::Tab => Role::Tab,
         SemanticsRole::TabList => Role::TabList,
         SemanticsRole::Navigation => Role::Navigation,

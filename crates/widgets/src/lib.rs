@@ -59,6 +59,9 @@ pub use controls::{
     MenuHandle, MenuHandleSlot, MenuItem, MenuStyle, Shortcut, context_menu, menu, menu_bar,
     menu_item, separator,
 };
+pub use controls::{
+    SearchField, SearchFieldHandle, SearchFieldHandleSlot, SearchFieldStyle, search_field,
+};
 pub use controls::{SegmentedControl, SegmentedStyle, segmented_control};
 pub use controls::{
     Select, SelectHandle, SelectHandleSlot, SelectKind, SelectOption, SelectStyle, select,

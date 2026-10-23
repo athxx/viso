@@ -568,6 +568,7 @@ pub fn source_role(variant: &str) -> Option<Role> {
         "column_header" => Role::ColumnHeader,
         "editable_combo_box" => Role::EditableComboBox,
         "progress_indicator" => Role::ProgressIndicator,
+        "search_field" => Role::SearchField,
         _ => return None,
     })
 }
@@ -578,7 +579,7 @@ pub fn source_name(role: Role) -> &'static str {
 }
 
 /// Every variant [`source_role`] takes, in the order of [`Role::ALL`].
-pub const SOURCE_ROLES: [&str; 38] = [
+pub const SOURCE_ROLES: [&str; 39] = [
     "group",
     "button",
     "check_box",
@@ -617,6 +618,7 @@ pub const SOURCE_ROLES: [&str; 38] = [
     "column_header",
     "editable_combo_box",
     "progress_indicator",
+    "search_field",
 ];
 
 /// A layout property a node's value sets as the view's values change: one
@@ -1964,6 +1966,7 @@ mod tests {
         assert_eq!(roles, Role::ALL);
         assert_eq!(source_role("checkbox"), None);
         assert_eq!(source_name(Role::TextField), "text_field");
+        assert_eq!(source_name(Role::SearchField), "search_field");
         assert_eq!(widget_role("Button"), Some(Role::Button));
         assert_eq!(widget_role("CheckBox"), Some(Role::CheckBox));
         assert_eq!(widget_role("Text"), Some(Role::Label));

@@ -197,7 +197,13 @@ Rules:
 - [x] DSL leaves with no authored size (`Text`, `Button`, a `RadioGroup` option) measure to their content (`fit`) instead of building `Fixed(0)`, on the macro, hot-reload and package paths alike.
 - [x] `Chip` (filter/input/assist: selection with a growing tick, a removable cross,
   Delete and an accessibility "Remove" action), `Badge`, `Avatar`, `LinkLabel`.
-- [ ] `SearchField` with suggestions (built on W4 placement).
+- [x] `SearchField` with suggestions (built on W4 placement): magnifier, clear button,
+  immediate or debounced `on_change`, a pooled anchored suggestion list with the query's
+  letters in bold, arrows/Enter/click to take one, Escape closes then clears,
+  `searchfield` semantics with expanded + active descendant.
+- [ ] DSL nodes for the list-backed fields — `ComboBox`, `SearchField` (children as
+  suggestions, two-way `value`, `changed`/`submitted`) — and their HTML export
+  (`<input type="search">`, `role=combobox` with a listbox).
 - [ ] Slider: vertical, range (two thumbs), step marks, wheel, live thumb; `Knob`
   (rotary).
 - [ ] `ColorPicker` (HSV wheel/square, alpha, hex input).

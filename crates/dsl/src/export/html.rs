@@ -3158,6 +3158,8 @@ fn aria_role(role: Role, tag: &str, widget: &str) -> Option<&'static str> {
         (Role::Cell, ..) => "cell",
         (Role::ColumnHeader, ..) => "columnheader",
         (Role::ProgressIndicator, ..) => "progressbar",
+        (Role::SearchField, "input", _) => return None,
+        (Role::SearchField, ..) => "searchbox",
     })
 }
 

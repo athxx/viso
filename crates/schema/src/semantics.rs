@@ -166,11 +166,14 @@ pub enum Role {
     /// A progress indicator: how far work has come, its value within its
     /// range, or that work runs whose end is unknown, with no value.
     ProgressIndicator,
+    /// A text field that searches (WAI-ARIA `role=searchbox`), announcing
+    /// whether a list of suggestions for it is `expanded`.
+    SearchField,
 }
 
 impl Role {
     /// Every role, in declaration order.
-    pub const ALL: [Role; 38] = [
+    pub const ALL: [Role; 39] = [
         Role::Group,
         Role::Button,
         Role::CheckBox,
@@ -209,6 +212,7 @@ impl Role {
         Role::ColumnHeader,
         Role::EditableComboBox,
         Role::ProgressIndicator,
+        Role::SearchField,
     ];
 
     /// The role whose [`label`](Self::label) is `label`.
@@ -259,6 +263,7 @@ impl Role {
             Role::ColumnHeader => "columnheader",
             Role::EditableComboBox => "editablecombobox",
             Role::ProgressIndicator => "progressindicator",
+            Role::SearchField => "searchfield",
         }
     }
 }

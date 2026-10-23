@@ -506,6 +506,8 @@ pub enum StoreRequest {
     Text(NodeId, Box<crate::content::TextRequest>),
     /// Show a descendant of a node as its active one.
     Active(NodeId, Option<NodeId>),
+    /// Give a node other semantics.
+    Semantics(NodeId, Box<crate::semantics::Semantics>),
     /// Edit another node's text.
     Edit(NodeId, EditIntent),
     /// Work a scroll bar.
@@ -546,6 +548,7 @@ impl StoreRequest {
             }
             StoreRequest::Text(id, request) => store.set_text(id, *request),
             StoreRequest::Active(id, active) => store.set_active_descendant(id, active),
+            StoreRequest::Semantics(id, semantics) => store.set_semantics(id, *semantics),
             StoreRequest::Edit(id, intent) => store.queue_edit(id, intent),
             StoreRequest::Bar(track, input) => store.bar_input(track, input),
             StoreRequest::Refreshing(id, on) => store.set_refreshing(id, on),
@@ -1592,6 +1595,13 @@ impl<'a> EventCx<'a> {
     pub fn set_text(&mut self, id: NodeId, request: crate::content::TextRequest) {
         self.store_requests
             .push(StoreRequest::Text(id, Box::new(request)));
+    }
+
+    /// Give node `id` `semantics` in place of its own
+    /// ([`NodeStore::set_semantics`]): a list row naming what it shows now.
+    pub fn set_semantics(&mut self, id: NodeId, semantics: crate::semantics::Semantics) {
+        self.store_requests
+            .push(StoreRequest::Semantics(id, Box::new(semantics)));
     }
 
     /// Show `active`, a descendant of `id`, as the one active while `id`

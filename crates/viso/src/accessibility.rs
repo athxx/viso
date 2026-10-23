@@ -259,6 +259,7 @@ fn semantics_role(role: Role, named: bool) -> SemanticsRole {
         Role::ColumnHeader => SemanticsRole::ColumnHeader,
         Role::EditableComboBox => SemanticsRole::EditableComboBox,
         Role::ProgressIndicator => SemanticsRole::ProgressIndicator,
+        Role::SearchField => SemanticsRole::SearchField,
         Role::Tab => SemanticsRole::Tab,
         Role::TabList => SemanticsRole::TabList,
         Role::Navigation => SemanticsRole::Navigation,

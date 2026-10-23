@@ -99,6 +99,8 @@ pub enum SemanticsRole {
     /// How far work has come: its value within its range, or none while
     /// work of unknown length runs.
     ProgressIndicator,
+    /// A text field that searches, perhaps with a list of suggestions.
+    SearchField,
 }
 
 /// How an assistive technology announces a change to a node's content.

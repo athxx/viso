@@ -5054,7 +5054,7 @@ Named Node `n` 在同一 Component 的 Action 与 Handler 中以 `n: NodeRef<T>`
 | `semantics.hidden`        | `Bool`           | `false`                         |
 | `semantics.heading_level` | `Option<U8>`     | `Option::None`                  |
 
-- `Role { group; button; check_box; slider; radio; label; text_field; tab; tab_list; navigation; dialog; status; region; tree; tree_item; heading; image; list; list_item; secure_field; spin_button; menu; menu_item; link; menu_item_check_box; menu_item_radio; menu_bar; separator; list_box; list_option; combo_box; tooltip; table; row; cell; column_header; editable_combo_box; progress_indicator; }`；
+- `Role { group; button; check_box; slider; radio; label; text_field; tab; tab_list; navigation; dialog; status; region; tree; tree_item; heading; image; list; list_item; secure_field; spin_button; menu; menu_item; link; menu_item_check_box; menu_item_radio; menu_bar; separator; list_box; list_option; combo_box; tooltip; table; row; cell; column_header; editable_combo_box; progress_indicator; search_field; }`；
 - `LiveRegion { off; polite; assertive; }`；
 - 默认角色：`Button` → `button`；`Toggle`、`CheckBox` → `check_box`；`Chip` → 有 `selected` 时 `check_box`，否则 `button`；`Slider` → `slider`；`TextInput` → `text_field`；`NumberField`、`Stepper` → `spin_button`；`Tabs` → `tab_list`，每页为 `tab`；`RadioGroup`、`SegmentedControl` 每项为 `radio`；`Text`、`LinkLabel`、`Badge` → `label`；`Avatar` → `image`；`Modal`、`Sheet` → `dialog`；`Toast` → `status`（隐含 `polite`）；`ProgressBar`、`ProgressRing`、`Spinner` → `progress_indicator`；`NavigationStack` → `navigation`；`VirtualList` → `list`；`GameViewport` → `image`；容器 → `group`。
 

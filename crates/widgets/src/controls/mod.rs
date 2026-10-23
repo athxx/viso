@@ -25,6 +25,7 @@ mod navigation_stack;
 mod number_field;
 mod popup;
 mod radio;
+mod search_field;
 mod segmented;
 mod select;
 mod sheet;
@@ -63,6 +64,9 @@ pub use navigation_stack::{
 pub use number_field::{NumberField, number_field};
 pub use popup::{Popup, PopupArrow, PopupHandle, PopupHandleSlot, PopupStyle, popover, popup};
 pub use radio::{RadioGroup, RadioStyle, radio_group};
+pub use search_field::{
+    SearchField, SearchFieldHandle, SearchFieldHandleSlot, SearchFieldStyle, search_field,
+};
 pub use segmented::{SegmentedControl, SegmentedStyle, segmented_control};
 pub use select::{
     Select, SelectHandle, SelectHandleSlot, SelectKind, SelectOption, SelectStyle, select,
