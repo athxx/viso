@@ -1,15 +1,15 @@
 //! Section 71 validation pack for the `RadioGroup` control — a single-select
 //! group of options — driven through the public facade. Mirrors
 //! `toggle_widget.rs` (golden + a11y + allocation + the two interactive input
-//! tapes) with the group's own structure: a `Column` of focusable option rows,
-//! each a circular *dot* leaf followed by a composed `Label` caption. A primary
-//! click and a keyboard activation on a row both drive the same `on_change` and
-//! write the row's index into one shared selection cell — mutual exclusion is
-//! structural (one `Int` cell bound to every row's `PAINT`).
+//! tapes) with the group's own structure: a `Column` of focusable options,
+//! each one caption node drawing a circle beside it, filled with a dot while
+//! selected. A primary click and a keyboard activation on an option both drive
+//! the same `on_change` and write its index into one shared selection cell —
+//! mutual exclusion is structural (one `Int` cell every option projects).
 //!
 //! - **golden screenshot + measure** — build a `RadioGroup` with
-//!   `RadioGroup::build` (a column of `dot + Label` rows), attach a deterministic
-//!   glyph run to each caption leaf (the facade `TextShaper` is `pub(crate)`, so
+//!   `RadioGroup::build` (a column of option nodes), attach a deterministic
+//!   glyph run as each caption (the facade `TextShaper` is `pub(crate)`, so
 //!   integration tests shape via the shared `viso-render` fixtures rather than a
 //!   real font stack), lay it out, and confirm the pixels match a blessed
 //!   baseline;
@@ -89,11 +89,9 @@ fn surface_rect() -> Rect {
 }
 
 /// Build a padded dark `View` wrapping a single `RadioGroup`, and return the
-/// root, the group's node, and each option row's caption leaf. The group is the
-/// container's only child, so its node is the root's first child; within the
-/// group, the option rows are the children in order, and within each row the dot
-/// leaf is the *first* child and the caption `Label` leaf the *second*. Wrapping
-/// in a fill container keeps the group at its `Fit` intrinsic size rather than
+/// root, the group's node, and its options, in order. The group is the
+/// container's only child, so its node is the root's first child. Wrapping in
+/// a fill container keeps the group at its `Fit` intrinsic size rather than
 /// filling the surface.
 fn build_scene(store: &mut NodeStore) -> (NodeId, NodeId, Vec<NodeId>) {
     // The group authors a shared selection cell, so it must build through a
@@ -133,23 +131,11 @@ fn build_scene(store: &mut NodeStore) -> (NodeId, NodeId, Vec<NodeId>) {
         .first_child(root)
         .expect("the view has the group as its only child");
 
-    // Walk the group's option rows in order; each row's caption leaf is the
-    // second child (after the dot leaf).
-    let mut captions = Vec::new();
-    let mut row = store.arena().first_child(group_id);
-    while let Some(r) = row {
-        let caption = store
-            .arena()
-            .first_child(r)
-            .and_then(|dot| store.arena().next_sibling(dot))
-            .expect("each option row has a caption leaf as its second child");
-        captions.push(caption);
-        row = store.arena().next_sibling(r);
-    }
-    (root, group_id, captions)
+    let options = store.arena().children(group_id).collect();
+    (root, group_id, options)
 }
 
-/// Attach the shared deterministic glyph run to each caption leaf so the golden
+/// Attach the shared deterministic glyph run as each option's caption so the golden
 /// is font/atlas-stable without a real font stack — the same fixture bypass
 /// `toggle_widget.rs` uses. All captions share one atlas.
 fn attach_captions(gpu: &mut CpuRaster, store: &mut NodeStore, captions: &[NodeId]) {
@@ -188,7 +174,7 @@ fn attach_captions(gpu: &mut CpuRaster, store: &mut NodeStore, captions: &[NodeI
 // --- golden screenshot + measure -------------------------------------------
 
 #[test]
-fn radio_group_renders_dots_and_captions_and_matches_golden() {
+fn radio_group_renders_its_circles_beside_their_captions_and_matches_golden() {
     let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);

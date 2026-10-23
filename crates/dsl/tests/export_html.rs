@@ -1182,6 +1182,29 @@ export component Keys {
 }
 
 #[test]
+fn a_radio_group_s_caption_options_export_their_circles() {
+    const RADIOS: &str = r#"
+export component Sizes {
+    state size: U32 = 0;
+    view {
+        RadioGroup {
+            bind selected <=> size;
+            Text { text: "Small"; }
+            Row { Text { text: "Composed"; } }
+        }
+    }
+}
+"#;
+    let page = export(RADIOS, false).unwrap();
+    assert_eq!(page.index.matches("vx-radio").count(), 1, "{}", page.index);
+    assert!(
+        page.styles.contains(".vx-radio[aria-checked"),
+        "{}",
+        page.styles
+    );
+}
+
+#[test]
 fn a_disclosure_exports_as_details_with_its_header_as_summary() {
     const PANEL: &str = r#"
 export component Panel {

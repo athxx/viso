@@ -549,6 +549,13 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         {
             el.classes.push("vx-chevron".to_owned());
         }
+        // A radio group's caption option draws the circle that fills with it.
+        if item.is_some_and(|(role, _)| role == Role::Radio)
+            && node.kind == NodeKind::Leaf
+            && !matches!(node.type_name.as_str(), "Toggle" | "CheckBox")
+        {
+            el.classes.push("vx-radio".to_owned());
+        }
         match node.type_name.as_str() {
             "Modal" | "Sheet" => el.classes.push("vx-layer".to_owned()),
             "Toast" => el

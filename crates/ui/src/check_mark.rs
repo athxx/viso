@@ -1,5 +1,6 @@
 //! A check's own drawing beside its caption: a `CheckBox`'s box with its
-//! mark, a `Toggle`'s track with its knob, a disclosure header's chevron.
+//! mark, a `Toggle`'s track with its knob, a radio option's circle with its
+//! dot, a disclosure header's chevron.
 //!
 //! A check is one node: its caption is its text content, and the mark sits
 //! at its start edge (its end edge right to left), centred on the caption's
@@ -26,6 +27,9 @@ pub enum CheckShape {
     /// A chevron pointing toward the end edge, turned to point down while
     /// checked: what a disclosure's header shows of whether it is expanded.
     Chevron,
+    /// A circle, filled with a dot in it while checked: a radio option,
+    /// checked while it is the one selected.
+    Radio,
 }
 
 /// What a check draws beside its caption.
@@ -56,7 +60,7 @@ impl CheckMark {
     fn size(self, baseline: f32) -> Vec2 {
         let side = (baseline * LINE_OVER_BASELINE).max(SIDE_MIN);
         match self.shape {
-            CheckShape::Box | CheckShape::Chevron => Vec2 { x: side, y: side },
+            CheckShape::Box | CheckShape::Chevron | CheckShape::Radio => Vec2 { x: side, y: side },
             CheckShape::Switch => Vec2 {
                 x: side * 1.75,
                 y: side,
@@ -132,12 +136,12 @@ impl CheckMark {
         if self.checked { 1.0 } else { 0.0 }
     }
 
-    /// How its mark moves between its states: a box fills and ticks and a
-    /// chevron turns over a short ease, a knob slides on a spring that carries a quick change of
-    /// mind on.
+    /// How its mark moves between its states: a box fills and ticks, a
+    /// circle fills and its dot grows and a chevron turns over a short ease,
+    /// a knob slides on a spring that carries a quick change of mind on.
     pub(crate) fn timing(self) -> Timing {
         match self.shape {
-            CheckShape::Box | CheckShape::Chevron => {
+            CheckShape::Box | CheckShape::Chevron | CheckShape::Radio => {
                 Timing::eased(Duration::from_millis(150), Easing::EASE_OUT)
             }
             CheckShape::Switch => Timing::spring(Spring::with_response(0.28, 1.0)),
@@ -146,7 +150,8 @@ impl CheckMark {
 
     /// Draws the mark into `rect` (world space) inked `ink`, `progress` of
     /// the way from unchecked to checked: a box's fill fades in and its tick
-    /// draws along its stroke, a knob slides along its track as the track
+    /// draws along its stroke, a circle's fill fades in as its dot grows from
+    /// its centre, a knob slides along its track as the track
     /// fills, a chevron turns a quarter clockwise (counterclockwise right to
     /// left, where it points left at rest).
     pub(crate) fn paint(
@@ -221,6 +226,35 @@ impl CheckMark {
                     stroke: Some(stroke),
                     shadow: None,
                 })));
+            }
+            CheckShape::Radio => {
+                out.push(Primitive::Quad(Quad {
+                    rect,
+                    color: faded(ink, p),
+                    radius: rect.h * 0.5,
+                    border: if p >= 1.0 {
+                        Border::NONE
+                    } else {
+                        Border {
+                            width: (rect.h * 0.09).max(1.0),
+                            color: faded(ink, 0.6 + 0.4 * p),
+                        }
+                    },
+                }));
+                let dot = rect.h * 0.4 * p;
+                if dot > 0.0 {
+                    out.push(Primitive::Quad(Quad {
+                        rect: Rect {
+                            x: rect.x + (rect.w - dot) * 0.5,
+                            y: rect.y + (rect.h - dot) * 0.5,
+                            w: dot,
+                            h: dot,
+                        },
+                        color: on_ink,
+                        radius: dot * 0.5,
+                        border: Border::NONE,
+                    }));
+                }
             }
             CheckShape::Switch => {
                 out.push(Primitive::Quad(Quad {
@@ -382,6 +416,41 @@ mod tests {
         assert_eq!(knob_x(1.0), (1.0, 14.0));
         let (fill, x) = knob_x(0.5);
         assert!((fill - 0.64).abs() < 1e-6 && x == 8.0);
+    }
+
+    #[test]
+    fn a_radio_fills_its_circle_and_grows_its_dot_from_the_centre() {
+        let radio = CheckMark {
+            shape: CheckShape::Radio,
+            checked: true,
+        };
+        let draw = |p| {
+            let mut out = Vec::new();
+            radio.paint(
+                Rect::new(0.0, 0.0, 20.0, 20.0),
+                Rgba::new(0.1, 0.2, 0.9, 1.0),
+                p,
+                false,
+                &mut out,
+            );
+            out.into_iter()
+                .map(|p| match p {
+                    Primitive::Quad(q) => q,
+                    other => panic!("{other:?}"),
+                })
+                .collect::<Vec<_>>()
+        };
+        let [circle] = draw(0.0)[..] else {
+            panic!("an empty circle")
+        };
+        assert_eq!((circle.color.a, circle.radius), (0.0, 10.0));
+        assert!(circle.border.width > 0.0);
+        let [circle, dot] = draw(1.0)[..] else {
+            panic!("a circle and its dot")
+        };
+        assert_eq!(circle.color.a, 1.0);
+        assert_eq!(dot.rect, Rect::new(6.0, 6.0, 8.0, 8.0));
+        assert_eq!(dot.radius, 4.0);
     }
 
     #[test]

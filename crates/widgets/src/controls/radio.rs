@@ -4,30 +4,25 @@
 //! A radio group is "one selected value out of N". Unlike a [`CheckBox`] or a
 //! [`Toggle`] — each of which owns its *own* boolean cell — every option in a
 //! group shares *one* reactive `selected` cell holding the chosen index as an
-//! [`StateValue::Int`]. Each option binds that same cell to its own `PAINT`, so
-//! activating one option writes the shared cell to its index, which repaints
-//! *both* the newly-selected and the previously-selected option in a single
-//! targeted invalidation (architecture section 47) — mutual exclusion is
-//! structural, not hand-coded. One `i32` drives the whole group.
+//! [`StateValue::Int`]. Each option projects that cell into its semantic state
+//! as `checked = (selected == index)`, which carries it to the accessibility
+//! tree and moves the option's mark to it, so a selection repaints the newly-
+//! and the previously-selected option alone, their marks easing over —
+//! mutual exclusion is structural, not hand-coded. One `i32` drives the whole
+//! group.
 //!
-//! Each option is a focusable flex row carrying a circular dot leaf and a
-//! [`Label`](crate::Label) caption; the group is a column of those rows. A
-//! primary-pointer click or a keyboard activation (Enter/Space while focused)
-//! selects the option under it and fires `on_change` once with the newly
-//! selected index. Pointer and keyboard activation are the *same* action (an
-//! interactive control must have a keyboard equivalent, AGENTS section 15), so
-//! the callback is shared between both handlers rather than duplicated. An
-//! `&` in a caption marks the option's access key: Alt with it takes the
-//! focus to the option and selects it.
+//! Each option is one focusable node, as a [`CheckBox`] is: its caption is
+//! its text and its [`CheckMark`] a circle at its start edge, filled with a
+//! dot while selected; the group is a column of them. A primary-pointer click,
+//! Enter or Space selects the option and fires `on_change` once with its
+//! index. The group is one Tab stop (a roving group, landing on the selected
+//! option); the arrows move the focus and the selection to the next or
+//! previous option, wrapping, and Home and End to the first and last. An `&`
+//! in a caption marks the option's access key: Alt with it takes the focus to
+//! the option and selects it.
 //!
 //! Its accessible role is [`Role::Group`] for the container with a
-//! [`Role::Radio`] per option named by its caption. Each option projects its live
-//! selection into the derived semantics tree: a per-option binding reads the
-//! shared `selected` cell in the flush phase (both stores live) and writes the
-//! option's node `semantic_state` column with `checked = (selected == index)`,
-//! which the `&self` derive pass reads without ever touching the state store
-//! (dependency direction, architecture section 3.5). The first frame carries the
-//! seeded selection because the binding writes an initial value at build.
+//! [`Role::Radio`] per option named by its caption.
 //!
 //! ```
 //! use viso_widgets::radio_group;
@@ -50,16 +45,21 @@
 //! let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists, &mut text_edits, &mut projectors);
 //! group.build(&mut cx);
 //! ```
+//!
+//! [`CheckBox`]: crate::CheckBox
+//! [`Toggle`]: crate::Toggle
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use viso_ui::adaptive::LayoutDirection;
 use viso_ui::{
-    Access, Align, Axis, Border, BoxStyle, BuildCx, Component, DirtyClass, EventCx, FlexStyle,
-    Inset, Justify, Key, LeafStyle, Length, PointerButtons, PointerPhase, Rgba, Role,
+    Access, Align, Axis, BoxStyle, BuildCx, CheckMark, CheckShape, Component, EventCx, FlexStyle,
+    Inset, Justify, Key, LeafStyle, Length, NodeId, PointerButtons, PointerPhase, Rgba, Role,
     SemanticState, Semantics, Size, StateId, StateValue,
 };
 
+use super::check::INK;
 use crate::controls::mnemonic::Mnemonic;
 
 /// A shared, mutable change callback carrying the newly-selected index. It is
@@ -69,89 +69,27 @@ use crate::controls::mnemonic::Mnemonic;
 /// re-enters the `RefCell` borrow.
 type SharedChange = Rc<RefCell<Option<Box<dyn FnMut(&mut EventCx<'_>, usize)>>>>;
 
-/// A deselected dot's fill — a neutral empty circle.
-const DESELECTED: Rgba = Rgba {
-    r: 0.16,
-    g: 0.17,
-    b: 0.20,
-    a: 1.0,
-};
-
-/// A selected dot's fill — a bright accent so the choice reads at a glance.
-const SELECTED: Rgba = Rgba {
-    r: 0.22,
-    g: 0.45,
-    b: 0.85,
-    a: 1.0,
-};
-
-/// The caption color: near-white for contrast against a dark surface.
-const CAPTION: Rgba = Rgba {
-    r: 0.98,
-    g: 0.98,
-    b: 1.0,
-    a: 1.0,
-};
-
-/// A dot's border, giving the deselected circle a visible outline.
-const BORDER: Rgba = Rgba {
-    r: 0.45,
-    g: 0.47,
-    b: 0.52,
-    a: 1.0,
-};
-
-/// The default border width of a dot.
-const BORDER_WIDTH: f32 = 1.5;
-
-/// The default diameter of a (circular) dot.
-const DOT: f32 = 18.0;
-
-/// The gap between a dot and its caption.
-const GAP: f32 = 8.0;
-
 /// The vertical gap between options in the group's column.
 const ROW_GAP: f32 = 8.0;
 
-/// The visual and layout parameters of a [`RadioGroup`]: the dot's deselected and
-/// selected fills, the dot's diameter, and the group's own size request within
-/// its parent.
-///
-/// `size` defaults to [`Length::Fit`] on both axes so the group shrinks to its
-/// options; override it with a [`Length::Fixed`] or [`Length::Fill`] axis for a
-/// fixed or flexing box. `deselected` and `selected` default to a bordered empty
-/// circle and a filled accent circle. All fields are `Copy`.
+/// The look and size of a [`RadioGroup`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RadioStyle {
-    /// The group's own size request within its parent. Defaults to `Fit` on both
-    /// axes (shrink to the tallest/widest option stack).
+    /// The group's own size request within its parent. Defaults to `Fit` on
+    /// both axes (shrink to its options).
     pub size: Size,
-    /// A dot's diameter (it is circular).
-    pub dot: f32,
-    /// A dot's fill/border while deselected.
-    pub deselected: BoxStyle,
-    /// A dot's fill while selected.
-    pub selected: BoxStyle,
+    /// The captions' color, which inks the circles and their dots too.
+    pub color: Rgba,
 }
 
 impl Default for RadioStyle {
     fn default() -> Self {
-        // A full circle: corner radius is half the diameter.
-        let radius = DOT / 2.0;
         RadioStyle {
             size: Size {
                 width: Length::Fit,
                 height: Length::Fit,
             },
-            dot: DOT,
-            deselected: BoxStyle {
-                border: Border {
-                    width: BORDER_WIDTH,
-                    color: BORDER,
-                },
-                ..BoxStyle::solid(DESELECTED).with_radius(radius)
-            },
-            selected: BoxStyle::solid(SELECTED).with_radius(radius),
+            color: INK,
         }
     }
 }
@@ -159,16 +97,18 @@ impl Default for RadioStyle {
 /// A set of mutually exclusive options with a single selection.
 ///
 /// Construct one with [`radio_group`] and attach behavior with the chainable
-/// setters. Selecting an option — a primary-pointer press then release on it, or
-/// Enter/Space while it is focused — writes the shared `selected` cell to that
-/// option's index and fires `on_change` once with the new index.
+/// setters. Selecting an option — a primary-pointer press then release on it,
+/// Enter/Space while it is focused, an arrow moving to it, or its access key —
+/// writes the shared `selected` cell to that option's index and fires
+/// `on_change` once with the new index.
 ///
 /// See the [module docs](self) for a build example. Invalidation: selecting
-/// writes a reactive `selected` cell bound to each option's `PAINT`, repainting
-/// the newly- and previously-selected options without a rebuild; the captions
-/// and structure are static.
+/// writes the reactive `selected` cell, repainting the newly- and
+/// previously-selected options without a rebuild; the captions and structure
+/// are static.
 pub struct RadioGroup {
-    /// The option captions, also used as each option's accessible name.
+    /// The option captions, also used as each option's accessible name; an
+    /// `&` marks an option's access key.
     options: Vec<String>,
     /// The initially-selected option index (defaults to `0`).
     selected: usize,
@@ -223,6 +163,12 @@ impl RadioGroup {
         self.style.size = size;
         self
     }
+
+    /// Set the captions' color, which inks the circles and their dots too.
+    pub fn color(mut self, color: Rgba) -> Self {
+        self.style.color = color;
+        self
+    }
 }
 
 /// Drive the shared callback with the newly-selected index if one is set; a
@@ -236,13 +182,7 @@ fn fire(cb: &SharedChange, ev: &mut EventCx<'_>, index: usize) {
 
 /// Select `index` into the shared cell (as an `Int`) and fire `on_change` — but
 /// only when it is a genuine change. Selecting the already-selected option is a
-/// no-op: no cell write, no callback. This also coalesces the capture/bubble
-/// double-dispatch a router performs when the activation lands on a leaf inside
-/// an option row (the row is then an ancestor, so its handler runs on both the
-/// capture and bubble passes): the first pass writes the new index and fires,
-/// the second reads the just-written value and short-circuits. `EventCx::set`
-/// writes the cell eagerly (the flush is deferred, but the stored value updates
-/// now), so the guard sees the first pass's write within the same route.
+/// no-op: no cell write, no callback.
 fn select(cb: &SharedChange, ev: &mut EventCx<'_>, cell: StateId, index: usize) {
     let next = StateValue::Int(index as i32);
     if ev.get(cell) == Some(next) {
@@ -252,19 +192,32 @@ fn select(cb: &SharedChange, ev: &mut EventCx<'_>, cell: StateId, index: usize) 
     fire(cb, ev, index);
 }
 
+/// The option an arrow, Home or End moves to from option `index` of `count`:
+/// down and toward the end edge go on, up and toward the start go back,
+/// wrapping.
+fn step(key: Key, index: usize, count: usize, rtl: bool) -> Option<usize> {
+    let (end, start) = if rtl {
+        (Key::Left, Key::Right)
+    } else {
+        (Key::Right, Key::Left)
+    };
+    Some(match key {
+        Key::Home => 0,
+        Key::End => count - 1,
+        k if k == Key::Down || k == end => (index + 1) % count,
+        k if k == Key::Up || k == start => (index + count - 1) % count,
+        _ => return None,
+    })
+}
+
 impl Component for RadioGroup {
     fn build(&self, cx: &mut BuildCx<'_>) {
-        // One shared `selected` cell holding the chosen index. Every option binds
-        // this same cell to its PAINT, so a selection repaints the newly- and
-        // previously-selected options in one targeted invalidation (not a
-        // rebuild). Which fill a dot paints is chosen from this cell.
+        // One shared `selected` cell holding the chosen index; each option
+        // projects it into its own checked state, which moves its mark.
         let selected = cx.state(StateValue::Int(self.selected as i32));
-
-        let dot_box = self.style.deselected;
-        let dot_size = self.style.dot;
-
-        // The group is a column of option rows. Each row is a focusable flex row:
-        // a circular dot leaf followed by the caption.
+        let color = self.style.color;
+        let captions: Vec<Mnemonic> = self.options.iter().map(|o| Mnemonic::of(o)).collect();
+        let mut options = Vec::with_capacity(captions.len());
         let group = cx.flex(
             FlexStyle {
                 axis: Axis::Column,
@@ -276,103 +229,81 @@ impl Component for RadioGroup {
                 style: BoxStyle::NONE,
             },
             |cx| {
-                for (index, caption) in self.options.iter().enumerate() {
-                    let caption = Mnemonic::of(caption);
-                    let row = cx.flex(
-                        FlexStyle {
-                            axis: Axis::Row,
-                            gap: GAP,
-                            padding: Inset::all(0.0),
-                            align: Align::Center,
-                            justify: Justify::Start,
-                            size: Size {
-                                width: Length::Fit,
-                                height: Length::Fit,
-                            },
-                            style: BoxStyle::NONE,
+                for (index, caption) in captions.iter().enumerate() {
+                    let option = cx.leaf(LeafStyle {
+                        size: Size {
+                            width: Length::Fit,
+                            height: Length::Fit,
                         },
-                        |cx| {
-                            cx.leaf(LeafStyle {
-                                size: Size::fixed(dot_size, dot_size),
-                                style: dot_box,
-                            });
-                            caption.label().color(CAPTION).build(cx);
+                        style: BoxStyle::NONE,
+                    });
+                    cx.text_request(option, caption.label().color(color).request());
+                    cx.check_mark(
+                        option,
+                        CheckMark {
+                            shape: CheckShape::Radio,
+                            checked: index == self.selected,
                         },
                     );
-
-                    // Bind the shared cell to this option's PAINT so a selection
-                    // repaints just the affected rows. The dot's fill swap is
-                    // expressed by rebinding the box in paint via the cell; this
-                    // slice paints the deselected dot and marks PAINT dirty on
-                    // selection so the frame re-emits the node.
-                    cx.bind(selected, row, DirtyClass::PAINT);
-
-                    // Project the shared selection into this option's semantic
-                    // state: in the flush phase (both stores live) read the shared
-                    // cell and write this node's `checked = (selected == index)`,
-                    // which the `&self` derive pass reads without touching the
-                    // state store. Seeded at build so the first frame is correct.
-                    cx.bind_semantic_state(row, move |cx| {
-                        let chosen = match cx.get(selected) {
-                            Some(StateValue::Int(i)) => i as usize == index,
-                            _ => false,
-                        };
-                        SemanticState::checked(chosen)
-                    });
-                    cx.focusable(row, true);
-                    if let Some(key) = caption.char() {
-                        cx.access_key(row, key);
-                    }
-
-                    // Pointer activation: a primary press-then-release selects this
-                    // option and fires `on_change` with its index. One press/
-                    // release is one selection — the release is the activation,
-                    // matching the click gate used across the controls.
-                    let pointer_cb = self.on_change.clone();
-                    cx.on_pointer(row, move |ev| {
-                        let Some(p) = ev.pointer() else { return };
-                        if p.phase == PointerPhase::Up
-                            && p.buttons.contains(PointerButtons::PRIMARY)
-                        {
-                            select(&pointer_cb, ev, selected, index);
-                        }
-                    });
-
-                    // Keyboard activation: Enter/Space pressed (not an auto-repeat)
-                    // selects the focused option and fires the same `on_change` —
-                    // the accessibility equivalent of the pointer click.
-                    let key_cb = self.on_change.clone();
-                    let id = row.id();
-                    cx.on_key(row, move |ev| {
-                        if ev.access() == Some(Access::Key) {
-                            ev.stop_propagation();
-                            ev.request_focus(id);
-                            select(&key_cb, ev, selected, index);
-                        } else if let Some(k) = ev.key()
-                            && k.pressed
-                            && !k.repeat
-                            && matches!(k.key, Key::Enter | Key::Space)
-                        {
-                            ev.stop_propagation();
-                            select(&key_cb, ev, selected, index);
-                        }
-                    });
-
-                    // Each option is an interactive, named node with the dedicated
-                    // `Role::Radio` and its caption as its accessible name (AGENTS
-                    // section 15). The live checked state is carried by the
-                    // projection above, not the authored (static) semantics.
                     cx.semantics(
-                        row,
+                        option,
                         Semantics::role(Role::Radio).with_label(caption.text.as_str()),
                     );
+                    cx.bind_semantic_state(option, move |cx| {
+                        let chosen = matches!(
+                            cx.get(selected),
+                            Some(StateValue::Int(i)) if i as usize == index
+                        );
+                        SemanticState::checked(chosen)
+                    });
+                    cx.focusable(option, true);
+                    if let Some(key) = caption.char() {
+                        cx.access_key(option, key);
+                    }
+                    options.push(option);
                 }
             },
         );
-
-        // The container groups the options; `Role::Group` is the accessible
-        // wrapper. The column `cx.flex` returned the container's handle.
+        cx.roving(group);
         cx.semantics(group, Semantics::role(Role::Group));
+
+        let ids: Rc<[NodeId]> = options.iter().map(|o| o.id()).collect();
+        for (index, &option) in options.iter().enumerate() {
+            let cb = self.on_change.clone();
+            cx.on_pointer(option, move |ev| {
+                let Some(p) = ev.pointer() else { return };
+                if p.phase == PointerPhase::Up && p.buttons.contains(PointerButtons::PRIMARY) {
+                    select(&cb, ev, selected, index);
+                }
+            });
+            let cb = self.on_change.clone();
+            let ids = Rc::clone(&ids);
+            cx.on_key(option, move |ev| {
+                if ev.access() == Some(Access::Key) {
+                    ev.stop_propagation();
+                    ev.request_focus(ids[index]);
+                    select(&cb, ev, selected, index);
+                    return;
+                }
+                let Some(k) = ev.key().copied() else { return };
+                if !k.pressed {
+                    return;
+                }
+                if matches!(k.key, Key::Enter | Key::Space) {
+                    ev.stop_propagation();
+                    if !k.repeat {
+                        select(&cb, ev, selected, index);
+                    }
+                    return;
+                }
+                let rtl = ev.env().environment().layout_direction == LayoutDirection::Rtl;
+                if let Some(next) = step(k.key, index, ids.len(), rtl) {
+                    ev.stop_propagation();
+                    ev.request_focus(ids[next]);
+                    select(&cb, ev, selected, next);
+                }
+            });
+        }
     }
 }
 
@@ -382,8 +313,8 @@ mod tests {
     use std::cell::Cell;
     use std::rc::Rc;
     use viso_ui::{
-        BindingTable, KeyEvent, Modifiers, NodeId, NodeStore, PointerEvent, SemanticProjector,
-        SemanticState, StateId, StateStore, TextEdits, VirtualLists,
+        BindingTable, CheckMark, CheckShape, KeyEvent, Modifiers, NodeId, NodeStore, PointerEvent,
+        SemanticProjector, SemanticState, StateId, StateStore, TextEdits, VirtualLists,
     };
 
     /// The reactive stores a group build writes into, kept together so a test can
@@ -518,34 +449,56 @@ mod tests {
         out
     }
 
-    /// A group builds a column of one interactive row per option: each row has a
-    /// pointer handler, a key handler, a focusable flag, a `CheckBox` semantics
-    /// node named by its caption, and two composed children (the dot leaf and the
-    /// caption). The container is a `Group`.
+    /// A group builds a column of one focusable option per caption: each a
+    /// caption drawing a radio mark, checked on the seeded selection, with a
+    /// pointer and a key handler. The column is one roving Tab stop.
     #[test]
     fn radio_group_builds_a_focusable_option_per_caption() {
         let mut rx = Reactive::new();
-        let root = rx.build(radio_group(["Low", "Medium", "High"]));
+        let root = rx.build(radio_group(["Low", "Medium", "High"]).selected(1));
 
         let rows = children(&rx.store, root);
-        assert_eq!(rows.len(), 3, "one option row per caption");
-
-        for row in &rows {
-            assert!(
-                rx.store.has_handler(*row),
-                "each option attaches a pointer handler"
-            );
-            assert!(
-                rx.store.has_key_handler(*row),
-                "each option attaches a key handler"
-            );
+        assert_eq!(rows.len(), 3, "one option per caption");
+        assert!(rx.store.is_roving(root), "the group is one Tab stop");
+        for (index, row) in rows.iter().enumerate() {
+            assert!(rx.store.has_handler(*row));
+            assert!(rx.store.has_key_handler(*row));
             assert!(rx.store.focusable(*row), "each option is focusable");
+            assert!(children(&rx.store, *row).is_empty(), "one node");
             assert_eq!(
-                children(&rx.store, *row).len(),
-                2,
-                "each option row composes a dot leaf and a caption"
+                rx.store.check_mark(*row),
+                Some(CheckMark {
+                    shape: CheckShape::Radio,
+                    checked: index == 1,
+                })
             );
         }
+    }
+
+    /// The arrows move the selection to the next or previous option, wrapping,
+    /// and Home and End to the ends.
+    #[test]
+    fn the_arrows_move_the_selection_and_wrap() {
+        let last = Rc::new(Cell::new(None::<usize>));
+        let l = last.clone();
+        let mut rx = Reactive::new();
+        let root =
+            rx.build(radio_group(["A", "B", "C"]).on_change(move |_ev, index| l.set(Some(index))));
+        let cell = shared_cell();
+        let rows = children(&rx.store, root);
+
+        rx.key(rows[0], key_ev(Key::Down, true, false));
+        assert_eq!(rx.selected(cell), Some(1));
+        rx.key(rows[1], key_ev(Key::Right, true, true));
+        assert_eq!(rx.selected(cell), Some(2), "a held arrow walks on");
+        rx.key(rows[2], key_ev(Key::Down, true, false));
+        assert_eq!(rx.selected(cell), Some(0), "wrapping");
+        rx.key(rows[0], key_ev(Key::Up, true, false));
+        assert_eq!(rx.selected(cell), Some(2));
+        rx.key(rows[2], key_ev(Key::Home, true, false));
+        assert_eq!(last.get(), Some(0));
+        rx.key(rows[0], key_ev(Key::End, true, false));
+        assert_eq!(last.get(), Some(2));
     }
 
     /// The container's semantics is `Group`; each option's is `Radio` named by

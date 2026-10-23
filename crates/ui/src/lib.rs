@@ -52,6 +52,7 @@ pub mod page_dots;
 pub mod paint;
 pub mod reactive;
 pub mod refresh;
+pub mod roving;
 pub mod scenes;
 pub mod scroll_bar;
 pub mod scroll_motion;

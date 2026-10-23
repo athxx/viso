@@ -1370,11 +1370,21 @@ pub fn focus_next(store: &mut NodeStore, root: NodeId, forward: bool) -> Option<
         return Some(host);
     }
     // Pre-order walk (first_child, then next_sibling), collecting focusables in
-    // the tree's natural order and skipping disabled subtrees.
+    // the tree's natural order and skipping disabled subtrees. A roving group
+    // is one stop: the focused member, else the one it lands on.
+    let old = store.focused();
     let mut order: Vec<NodeId> = Vec::new();
     let mut stack: Vec<NodeId> = vec![scope_root];
     while let Some(node) = stack.pop() {
         if !store.enabled(node) {
+            continue;
+        }
+        if node != scope_root && store.is_roving(node) {
+            let members = roving_members(store, node);
+            let stop = old
+                .filter(|f| members.contains(f))
+                .or_else(|| store.rover(node, &members));
+            order.extend(stop);
             continue;
         }
         if store.focusable(node) {
@@ -1394,7 +1404,6 @@ pub fn focus_next(store: &mut NodeStore, root: NodeId, forward: bool) -> Option<
         return None;
     }
 
-    let old = store.focused();
     let new = match old.and_then(|f| order.iter().position(|&n| n == f)) {
         Some(idx) => {
             let len = order.len();
@@ -1414,6 +1423,25 @@ pub fn focus_next(store: &mut NodeStore, root: NodeId, forward: bool) -> Option<
     store.enter_links(new, forward);
     apply_focus(store, old, Some(new), true);
     Some(new)
+}
+
+/// The focusable, enabled nodes under roving group `group`, in tree order.
+fn roving_members(store: &NodeStore, group: NodeId) -> Vec<NodeId> {
+    let mut members = Vec::new();
+    let mut stack: Vec<NodeId> = store.arena().children(group).collect();
+    stack.reverse();
+    while let Some(node) = stack.pop() {
+        if !store.enabled(node) {
+            continue;
+        }
+        if store.focusable(node) {
+            members.push(node);
+        }
+        let at = stack.len();
+        stack.extend(store.arena().children(node));
+        stack[at..].reverse();
+    }
+    members
 }
 
 /// Focus `node` directly, as an assistive technology's focus action does:

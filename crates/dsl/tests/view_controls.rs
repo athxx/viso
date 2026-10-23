@@ -750,6 +750,48 @@ export component Panel {
 }
 
 #[test]
+fn a_radio_group_s_caption_options_draw_a_circle_that_fills_with_the_selection() {
+    const RADIOS: &str = r#"
+export component Sizes {
+    state size: U32 = 1;
+    view {
+        Column {
+            RadioGroup {
+                bind selected <=> size;
+                Text { text: "Small"; width: 100dp; height: 20dp; }
+                Text { text: "Large"; width: 100dp; height: 20dp; }
+                Row { Text { text: "Composed"; } }
+            }
+        }
+    }
+}
+"#;
+    for mut rt in [Rt::reloaded(RADIOS), Rt::packaged(RADIOS)] {
+        let [group] = rt.children_of_root()[..] else {
+            panic!("a group");
+        };
+        let [small, large, composed] = rt.children(group)[..] else {
+            panic!("three options");
+        };
+        let radio = |checked| {
+            Some(CheckMark {
+                shape: CheckShape::Radio,
+                checked,
+            })
+        };
+        assert_eq!(rt.store.check_mark(small), radio(false));
+        assert_eq!(rt.store.check_mark(large), radio(true));
+        assert_eq!(rt.store.check_mark(composed), None, "it draws its own");
+
+        rt.click(10.0, 10.0);
+        assert_eq!(rt.int("size"), 0);
+        assert_eq!(rt.store.check_mark(small), radio(true));
+        assert_eq!(rt.store.check_mark(large), radio(false));
+        assert!(rt.store.is_transitioning(), "the circles ease over");
+    }
+}
+
+#[test]
 fn a_disclosure_s_caption_header_draws_a_chevron_that_turns_with_it() {
     const DISCLOSURE: &str = r#"
 export component Panel {

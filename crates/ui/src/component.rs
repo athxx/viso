@@ -769,6 +769,8 @@ pub struct NodeStore {
     pub(crate) bars: crate::scroll_bar::Bars,
     /// Cold: the focus ring, how it looks, and the nodes that wear none.
     pub(crate) ring: crate::focus_ring::FocusRing,
+    /// Cold: the roving groups Tab stops at once.
+    pub(crate) roving: crate::roving::Roving,
     /// Cold: the viewports that refresh when pulled, and how they show it.
     pub(crate) refreshers: crate::refresh::Refreshers,
     /// Cold: the spinners that spin.
@@ -914,6 +916,7 @@ impl NodeStore {
         self.shadows.clear();
         self.ring.clear();
         self.access.clear();
+        self.roving.clear();
         self.motions.clear();
         self.bars.clear();
         self.refreshers.clear();
@@ -2881,6 +2884,7 @@ impl NodeStore {
         if let Some(mark) = self.check_mark(id) {
             let follows = match mark.shape {
                 crate::check_mark::CheckShape::Chevron => state.expanded,
+                crate::check_mark::CheckShape::Radio => state.checked.or(state.selected),
                 _ => state.checked,
             };
             if let Some(checked) = follows {
@@ -4455,6 +4459,9 @@ impl NodeStore {
                 self.focused = other;
                 if moved {
                     self.ring_landed();
+                    if let Some(node) = other {
+                        self.roved(node);
+                    }
                 }
             }
         }
@@ -4996,6 +5003,7 @@ impl NodeStore {
         self.shadows.forget(i as u32);
         self.ring.forget(i as u32);
         self.access.forget(i as u32);
+        self.roving.forget(i as u32);
         self.bars.forget(i as u32);
         self.refreshers.forget(i as u32);
         self.spinners.forget(i as u32);
@@ -6893,6 +6901,14 @@ impl<'a> BuildCx<'a> {
     /// layout.
     pub fn set_overlay(&mut self, handle: Handle, overlay: bool) -> Handle {
         self.store.set_overlay(handle.id, overlay);
+        handle
+    }
+
+    /// Make a declared node a roving group, Tab stopping once among the
+    /// focusable nodes under it (see [`NodeStore::set_roving`]). Returns the
+    /// handle.
+    pub fn roving(&mut self, handle: Handle) -> Handle {
+        self.store.set_roving(handle.id, true);
         handle
     }
 

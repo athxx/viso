@@ -336,7 +336,9 @@ summary::-webkit-details-marker { display: none; }
 details[open] > .vx-chevron::before { transform: rotate(135deg); }
 .vx-chevron:dir(rtl)::before { transform: rotate(-135deg); }
 details[open] > .vx-chevron:dir(rtl)::before { transform: rotate(-225deg); }
-@media (prefers-reduced-motion: reduce) { .vx-chevron::before { transition: none; } }
+.vx-radio::before { content: \"\"; display: inline-block; box-sizing: border-box; width: 1em; height: 1em; margin-inline-end: 0.5em; vertical-align: -0.15em; border-radius: 50%; border: 0.09em solid color-mix(in srgb, currentColor 60%, transparent); box-shadow: inset 0 0 0 0 currentColor; transition: border-color 150ms cubic-bezier(0.33, 1, 0.68, 1), box-shadow 150ms cubic-bezier(0.33, 1, 0.68, 1); }
+.vx-radio[aria-checked=\"true\"]::before { border-color: currentColor; box-shadow: inset 0 0 0 0.21em currentColor; }
+@media (prefers-reduced-motion: reduce) { .vx-chevron::before, .vx-radio::before { transition: none; } }
 .vx-text { white-space: pre; user-select: none; -webkit-user-select: none; }
 .vx-text.vx-selectable { user-select: text; -webkit-user-select: text; cursor: text; }
 .vx-button { font: inherit; color: inherit; background: none; border: 0; border-radius: 0; padding: 0; margin: 0; text-align: start; white-space: pre; cursor: pointer; }

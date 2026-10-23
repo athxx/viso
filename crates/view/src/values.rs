@@ -822,6 +822,25 @@ impl Shown {
                 if let Some(key) = access_key {
                     request.cue(key);
                 }
+                // A radio group's option that is one caption draws the circle
+                // that fills with its selection; a composed one draws its own.
+                if first
+                    && store.arena().first_child(self.node).is_none()
+                    && store.check_mark(self.node).is_none()
+                    && store
+                        .semantics(self.node)
+                        .is_some_and(|s| s.role == Role::Radio)
+                {
+                    let checked = store
+                        .semantic_state(self.node)
+                        .and_then(|s| s.checked.or(s.selected))
+                        .unwrap_or(false);
+                    let radio = CheckMark {
+                        shape: CheckShape::Radio,
+                        checked,
+                    };
+                    store.set_check_mark(self.node, Some(radio));
+                }
                 let selectable = truth(selectable, false);
                 let was = store.field_marks(self.node).is_some();
                 // A text takes the focus while it is selectable, unless its
