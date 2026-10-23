@@ -683,7 +683,7 @@ pub fn snapshot_ui(
 /// What a node draws, from its content payload.
 fn kind_of(content: Option<&Content>) -> InspectKind {
     match content {
-        None => InspectKind::Container,
+        None | Some(Content::Segments(_)) => InspectKind::Container,
         Some(Content::Text { .. }) => InspectKind::Text,
         Some(Content::Image { .. } | Content::Scene { .. }) => InspectKind::Image,
         Some(

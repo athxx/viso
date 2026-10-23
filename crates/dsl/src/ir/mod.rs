@@ -59,6 +59,42 @@ use ui_ir::{Laid, Placement, StackPlacement};
 
 /// A badge's count size, in sp.
 const BADGE_FONT: f32 = 11.0;
+/// The room a segmented control's track keeps round its segments.
+const SEGMENTED_INSET: f32 = 2.0;
+
+/// Gives each leaf among `items` — a segmented control's segments, in or out
+/// of a control-flow region — that sizes neither axis a share of the track's
+/// width and its caption's height.
+fn share_track(items: &mut [UiItem]) {
+    for item in items {
+        match item {
+            UiItem::Node(node) => {
+                let lengths = node.style.lengths();
+                if node.kind == NodeKind::Leaf
+                    && node.style.width.is_none()
+                    && node.style.height.is_none()
+                    && lengths.width.is_none()
+                    && lengths.height.is_none()
+                {
+                    node.style.width = Some(LengthIr::Fill { weight: 1.0 });
+                    node.style.height = Some(LengthIr::Fit);
+                }
+            }
+            UiItem::If(region) => {
+                for arm in &mut region.arms {
+                    share_track(&mut arm.items);
+                }
+            }
+            UiItem::For(region) => share_track(&mut region.body),
+            UiItem::Match(region) => {
+                for arm in &mut region.arms {
+                    share_track(&mut arm.items);
+                }
+            }
+        }
+    }
+}
+
 /// An avatar's side unless sized, in dp, and its initials' size as a share
 /// of its side.
 const AVATAR_SIDE: f32 = 40.0;
@@ -777,6 +813,10 @@ impl<'a, 'l> Lowering<'a, 'l> {
         if kind == NodeKind::Grid {
             self.place_areas(style.grid.as_deref(), &mut children);
         }
+        // A segmented control's unsized caption segments share its track.
+        if type_name == "SegmentedControl" {
+            share_track(&mut children);
+        }
         // A scene has no intrinsic size: a viewport fills what it is given
         // on each axis it does not size.
         // A progress indicator or spinner measures to its natural size on
@@ -801,6 +841,23 @@ impl<'a, 'l> Lowering<'a, 'l> {
             if style.height.is_none() && lengths.is_none_or(|l| l.height.is_none()) {
                 style.height = Some(default);
             }
+        }
+        // A segmented control's track keeps a little room round its
+        // segments, which stretch to its height.
+        if type_name == "SegmentedControl" {
+            let pct = style.rules.as_deref().map(|r| r.padding_pct);
+            if style.padding.is_none()
+                && style.lengths().padding.is_none()
+                && pct.is_none_or(|pct| pct == Default::default())
+            {
+                style.padding = Some(ui_ir::InsetIr {
+                    left: SEGMENTED_INSET,
+                    top: SEGMENTED_INSET,
+                    right: SEGMENTED_INSET,
+                    bottom: SEGMENTED_INSET,
+                });
+            }
+            style.align.get_or_insert(Align::Stretch);
         }
         // A badge's count draws small; an avatar's initials grow with its
         // side.

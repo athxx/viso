@@ -301,6 +301,9 @@ pub enum LookValue {
     /// How far a check's mark has moved toward checked: `0` unchecked, `1`
     /// checked.
     Check(f32),
+    /// How far a segmented control's thumb has slid to the selected
+    /// segment: `0` where it slid from, `1` on the segment.
+    Thumb(f32),
 }
 
 impl LookValue {
@@ -327,7 +330,8 @@ impl LookValue {
             | LookValue::Height(v)
             | LookValue::Scale(v)
             | LookValue::Rotation(v)
-            | LookValue::Check(v) => [v, 0.0, 0.0, 0.0],
+            | LookValue::Check(v)
+            | LookValue::Thumb(v) => [v, 0.0, 0.0, 0.0],
         }
     }
 
@@ -357,6 +361,7 @@ impl LookValue {
             LookValue::Scale(_) => LookValue::Scale(size(p[0])),
             LookValue::Rotation(_) => LookValue::Rotation(p[0]),
             LookValue::Check(_) => LookValue::Check(unit(p[0])),
+            LookValue::Thumb(_) => LookValue::Thumb(unit(p[0])),
         }
     }
 

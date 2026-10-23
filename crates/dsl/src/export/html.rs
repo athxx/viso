@@ -300,6 +300,9 @@ pub(super) struct Lower<'v, 'e, 'a> {
     anchors: bool,
     /// Whether the flex container being lowered stretches its children.
     stretch: bool,
+    /// Whether the container being lowered is a segmented control, whose
+    /// caption items are its segments.
+    segmented: bool,
     /// Whether the node being lowered is a disclosure's header, its first
     /// child: the `<summary>` of its `<details>`.
     summary: bool,
@@ -330,6 +333,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             rooted: BTreeSet::new(),
             anchors: false,
             stretch: false,
+            segmented: false,
             summary: false,
             away: false,
             tree: None,
@@ -590,15 +594,22 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         {
             el.classes.push("vx-chevron".to_owned());
         }
-        // A radio group's caption option draws the circle that fills with it.
+        // A radio group's caption option draws the circle that fills with
+        // it; a segmented control's is a segment its thumb slides under.
         if item.is_some_and(|(role, _)| role == Role::Radio)
             && node.kind == NodeKind::Leaf
             && !matches!(node.type_name.as_str(), "Toggle" | "CheckBox")
         {
-            el.classes.push("vx-radio".to_owned());
+            let class = if self.segmented {
+                "vx-segment"
+            } else {
+                "vx-radio"
+            };
+            el.classes.push(class.to_owned());
         }
         match node.type_name.as_str() {
             "LinkLabel" => el.classes.push("vx-link".to_owned()),
+            "SegmentedControl" => el.classes.push("vx-segmented".to_owned()),
             "Modal" | "Sheet" => el.classes.push("vx-layer".to_owned()),
             "Toast" => el
                 .classes
@@ -653,7 +664,9 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                     el.attr("role", name);
                 }
             }
-            None if node.type_name == "RadioGroup" => el.attr("role", "radiogroup"),
+            None if matches!(node.type_name.as_str(), "RadioGroup" | "SegmentedControl") => {
+                el.attr("role", "radiogroup")
+            }
             None => {}
         }
         if let Some((role, selected)) = item {
@@ -784,10 +797,12 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         };
         let item_role = match node.type_name.as_str() {
             "Tabs" => Some(Role::Tab),
-            "RadioGroup" => Some(Role::Radio),
+            "RadioGroup" | "SegmentedControl" => Some(Role::Radio),
             "VirtualList" => Some(Role::ListItem),
             _ => None,
         };
+        let segmented =
+            std::mem::replace(&mut self.segmented, node.type_name == "SegmentedControl");
         let stretch = std::mem::replace(
             &mut self.stretch,
             node.kind == NodeKind::Flex && node.style.align == Some(Align::Stretch),
@@ -819,6 +834,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             }
         }
         self.stretch = stretch;
+        self.segmented = segmented;
         let children = std::mem::replace(&mut out.nodes, siblings);
         out.nodes.push(Piece::Element {
             el: Box::new(el),
@@ -1863,8 +1879,9 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                     None => Some(0),
                 };
             }
-            ControlKind::Select => {
-                let radio = node.type_name == "RadioGroup";
+            ControlKind::Select | ControlKind::Segmented => {
+                let radio =
+                    control.kind == ControlKind::Segmented || node.type_name == "RadioGroup";
                 match control.value {
                     Some(entry) => {
                         if let Some(fixed) = self.bind(
@@ -1878,6 +1895,25 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                         }
                     }
                     None => selected = Some(0),
+                }
+                // A tint inks the track, the thumb and the hairlines.
+                if let Some(tint) = control
+                    .tint
+                    .filter(|_| control.kind == ControlKind::Segmented)
+                {
+                    match self.fixed(tint, "the tint", at) {
+                        Fixed::Changes => wires.push(Wire::Prop {
+                            entry: tint,
+                            prop: Prop::Var {
+                                name: "--vx-ink".to_owned(),
+                                token: VarToken::Color,
+                            },
+                        }),
+                        Fixed::Value(v) if v.as_int().is_some() => {
+                            decls.push(("--vx-ink", Fixed::Value(v).color()));
+                        }
+                        _ => {}
+                    }
                 }
             }
             ControlKind::Asset => {

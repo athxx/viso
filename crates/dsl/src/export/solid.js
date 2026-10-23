@@ -223,7 +223,7 @@ class Store {
   }
 
   sync(el, control, value) {
-    if (control === 2) el.$radio = el.getAttribute("role") === "radiogroup";
+    if (control === 2 || control === 29) el.$radio = el.getAttribute("role") === "radiogroup";
     el.$sync = () => sync(el, control, value);
   }
 }

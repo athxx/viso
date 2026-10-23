@@ -155,6 +155,10 @@ pub enum Content {
     Progress(crate::progress::Progress),
     /// A stepper: a minus and a plus that step a number.
     Stepper(crate::stepper::Stepper),
+    /// Segments: the thumb a segmented control's selected segment sits on,
+    /// drawn under its segments. A container's content, sizing it no
+    /// further.
+    Segments(crate::segments::Segments),
 }
 
 /// An image a brush node samples: the resource its texture parameter names,
@@ -189,7 +193,7 @@ impl Content {
             Content::Progress(progress) => progress.natural,
             Content::PageDots(dots) => dots.natural(),
             Content::Stepper(stepper) => stepper.natural,
-            Content::Shader { .. } | Content::Scene { .. } => Vec2::ZERO,
+            Content::Shader { .. } | Content::Scene { .. } | Content::Segments(_) => Vec2::ZERO,
         }
     }
 
@@ -206,7 +210,7 @@ impl Content {
             Content::Progress(progress) => progress.natural.x,
             Content::PageDots(dots) => dots.natural().x,
             Content::Stepper(stepper) => stepper.natural.x,
-            Content::Shader { .. } | Content::Scene { .. } => 0.0,
+            Content::Shader { .. } | Content::Scene { .. } | Content::Segments(_) => 0.0,
         }
     }
 
@@ -225,7 +229,8 @@ impl Content {
             | Content::Spinner(_)
             | Content::Progress(_)
             | Content::PageDots(_)
-            | Content::Stepper(_) => None,
+            | Content::Stepper(_)
+            | Content::Segments(_) => None,
         }
     }
 }

@@ -61,6 +61,7 @@ pub mod row_gesture;
 pub mod scenes;
 pub mod scroll_bar;
 pub mod scroll_motion;
+pub mod segments;
 pub mod semantics;
 pub mod shader;
 pub mod shadow;

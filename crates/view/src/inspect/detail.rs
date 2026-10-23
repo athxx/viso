@@ -415,6 +415,11 @@ fn groups(store: &NodeStore, id: NodeId) -> Vec<PropertyGroup> {
             add(&mut content, "lower", stepper.lower.to_string());
             add(&mut content, "upper", stepper.upper.to_string());
         }
+        Some(Content::Segments(segments)) => {
+            add(&mut content, "kind", "segments".into());
+            let selected = segments.selected.map_or("none".into(), |i| i.to_string());
+            add(&mut content, "selected", selected);
+        }
         Some(Content::Shader { .. }) => add(&mut content, "kind", "shader".into()),
         Some(Content::Asset { .. }) => add(&mut content, "kind", "asset".into()),
         Some(Content::Scene { slot, revision }) => {

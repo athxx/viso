@@ -195,7 +195,7 @@ fn select(cb: &SharedChange, ev: &mut EventCx<'_>, cell: StateId, index: usize) 
 /// The option an arrow, Home or End moves to from option `index` of `count`:
 /// down and toward the end edge go on, up and toward the start go back,
 /// wrapping.
-fn step(key: Key, index: usize, count: usize, rtl: bool) -> Option<usize> {
+pub(crate) fn step(key: Key, index: usize, count: usize, rtl: bool) -> Option<usize> {
     let (end, start) = if rtl {
         (Key::Left, Key::Right)
     } else {

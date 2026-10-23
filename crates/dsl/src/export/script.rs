@@ -385,7 +385,7 @@ fn mount(out: &mut String, index: usize, content: &Content, eval: &Eval<'_>, roo
                 }
                 Wire::Sync { kind, entry } => {
                     let value = entry.map_or("null".to_owned(), thunk);
-                    if *kind == ControlKind::Select {
+                    if matches!(kind, ControlKind::Select | ControlKind::Segmented) {
                         let _ = writeln!(
                             out,
                             "  {el}.$radio = {el}.getAttribute(\"role\") === \"radiogroup\";"

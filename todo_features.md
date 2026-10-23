@@ -193,7 +193,8 @@ Rules:
 
 - [x] `ProgressBar` (determinate/indeterminate), `ProgressRing`, `Spinner`.
 - [x] `Stepper` (hold to repeat with acceleration, wrap, keys, spin-button semantics).
-- [ ] `SegmentedControl`.
+- [x] `SegmentedControl` (spring-sliding thumb that follows live segment boxes, fading hairlines, equal shares, roving keys, radio semantics, HTML thumb via CSS vars).
+- [ ] DSL leaves with no authored size (`Text`, `Button`, a `RadioGroup` option) build `Fixed(0)`: make them measure to their content.
 - [x] `Chip` (filter/input/assist: selection with a growing tick, a removable cross,
   Delete and an accessibility "Remove" action), `Badge`, `Avatar`, `LinkLabel`.
 - [ ] `SearchField` with suggestions (built on W4 placement).

@@ -313,6 +313,19 @@ const select = (el, v, radio) => {
     c.setAttribute(k, on ? "true" : "false");
     c.tabIndex = on ? 0 : -1;
   });
+  if (el.classList.contains("vx-segmented")) {
+    thumb(el);
+    if (!el.$thumb) {
+      el.$thumb = new ResizeObserver(() => thumb(el));
+      el.$thumb.observe(el);
+    }
+  }
+};
+// A segmented control's thumb under its selected segment, sliding there.
+const thumb = (el) => {
+  const c = items(el).find((c) => c.getAttribute("aria-checked") === "true");
+  el.style.setProperty("--vx-thumb-x", (c ? c.offsetLeft : 0) + "px");
+  el.style.setProperty("--vx-thumb-w", (c ? c.offsetWidth : 0) + "px");
 };
 // The transition a stack's pages trade places by where it names this
 // platform's own: a slide on Apple's, a shared axis on Android, else a fade.
@@ -1904,7 +1917,7 @@ const sync = (el, control, value) => {
   else if (control === 10 || control === 11 || control === 20) P.layer(el, v);
   else if (control === 1) el.value = v === null ? el.min : String(v);
   else if (control === 13) P.number(el, v);
-  else if (control === 2) select(el, v === null ? 0n : v, el.$radio);
+  else if (control === 2 || control === 29) select(el, v === null ? 0n : v, el.$radio);
   else if (control === 14) page(el, v);
   else if (v !== null) P.input(el, v);
 };

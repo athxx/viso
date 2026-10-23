@@ -279,6 +279,10 @@ const SVG: &[WidgetProperty] = &[
 
 const SELECTED: &[WidgetProperty] = &[two_way("selected", "U32")];
 
+/// A `SegmentedControl`'s `selected` segment and the `tint` its track,
+/// thumb and hairlines are inked with.
+const SEGMENTED: &[WidgetProperty] = &[two_way("selected", "U32"), look("tint", "Option<Color>")];
+
 /// Whether a `Disclosure` shows its body.
 const DISCLOSURE: &[WidgetProperty] = &[two_way("expanded", "Bool")];
 const OPEN: &[WidgetProperty] = &[two_way("open", "Bool")];
@@ -744,6 +748,14 @@ pub const STANDARD: &[NativeWidget] = &[
         .events(&[SELECTED_EVENTS, STANDARD_EVENTS])
         .slots(CHILDREN)
         .interactive(),
+    layout(
+        "SegmentedControl",
+        ROW,
+        &[SEGMENTED, LAYOUT, TRANSFORM, FOCUS],
+    )
+    .events(&[SELECTED_EVENTS, STANDARD_EVENTS])
+    .slots(CHILDREN)
+    .interactive(),
     layout(
         "FocusScope",
         COLUMN,

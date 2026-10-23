@@ -575,7 +575,7 @@ struct Walk<'a> {
     /// Each node its component reaches as a `NodeRef`, by its key.
     named: Vec<(u32, NodeKey)>,
     /// The role the next node takes as an item: a tab of a `Tabs`, a radio
-    /// button of a `RadioGroup`, whose direct children (in or out of a
+    /// button of a `RadioGroup` or a `SegmentedControl`, whose direct children (in or out of a
     /// control-flow region) are its items.
     item: Option<viso_schema::Role>,
 }
@@ -657,7 +657,7 @@ impl<'a> Walk<'a> {
         }
         let items = match node.type_name.as_str() {
             "Tabs" => Some(viso_schema::Role::Tab),
-            "RadioGroup" => Some(viso_schema::Role::Radio),
+            "RadioGroup" | "SegmentedControl" => Some(viso_schema::Role::Radio),
             _ => None,
         };
         self.item = items;

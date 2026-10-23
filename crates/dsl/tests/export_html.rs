@@ -2122,3 +2122,37 @@ fn steppers_export_as_spin_buttons_their_script_steps() {
     let script = page.script.as_deref().unwrap();
     assert!(script.contains("P.stepper("), "{script}");
 }
+
+const SEGMENTED: &str = r##"
+export component Ranges {
+    state range: U32 = 1;
+    view {
+        Column {
+            SegmentedControl {
+                bind selected <=> range;
+                tint: Option::Some(#3366ee);
+                Text { text: "Day"; }
+                Text { text: "Week"; }
+            }
+        }
+    }
+}
+"##;
+
+#[test]
+fn a_segmented_control_exports_as_a_radio_group_its_script_slides_a_thumb_in() {
+    let page = export(SEGMENTED, false).unwrap();
+    let index = &page.index;
+    assert!(index.contains("vx-segmented"), "{index}");
+    assert!(index.contains("role=\"radiogroup\""), "{index}");
+    assert_eq!(index.matches("vx-segment ").count(), 2, "{index}");
+    assert!(!index.contains("vx-radio"), "{index}");
+    assert!(page.styles.contains("--vx-ink:"), "{}", page.styles);
+    assert!(
+        page.styles.contains(".vx-segmented::before {"),
+        "{}",
+        page.styles
+    );
+    let script = page.script.as_deref().unwrap();
+    assert!(script.contains("P.selected("), "{script}");
+}

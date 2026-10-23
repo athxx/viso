@@ -32,6 +32,7 @@ use viso_behavior::{Fault, FaultKind, Value};
 use viso_ui::content::Content;
 use viso_ui::plate::{BADGE_FILL, BADGE_INK, avatar_fill, badge_count, initials};
 use viso_ui::resource::{ResourceId, ResourceRevision};
+use viso_ui::segments::Segments;
 use viso_ui::shader::BrushProgram;
 use viso_ui::{Alignment2D, BoundSize, FontWeight, LayoutValue, LengthTerms};
 use viso_ui::{
@@ -1019,7 +1020,9 @@ impl Shown {
                     request.cue(key);
                 }
                 // A radio group's option that is one caption draws the circle
-                // that fills with its selection; a composed one draws its own.
+                // that fills with its selection, and a segmented control's is
+                // a segment centred over its thumb; a composed one draws its
+                // own.
                 if first
                     && store.arena().first_child(self.node).is_none()
                     && store.check_mark(self.node).is_none()
@@ -1031,11 +1034,16 @@ impl Shown {
                         .semantic_state(self.node)
                         .and_then(|s| s.checked.or(s.selected))
                         .unwrap_or(false);
-                    let radio = CheckMark {
-                        shape: CheckShape::Radio,
-                        checked,
+                    let segment = store
+                        .arena()
+                        .parent(self.node)
+                        .is_some_and(|parent| store.segments(parent).is_some());
+                    let shape = if segment {
+                        CheckShape::Segment
+                    } else {
+                        CheckShape::Radio
                     };
-                    store.set_check_mark(self.node, Some(radio));
+                    store.set_check_mark(self.node, Some(CheckMark { shape, checked }));
                 }
                 let selectable = truth(selectable, false);
                 let was = store.field_marks(self.node).is_some();
@@ -1255,6 +1263,43 @@ impl Shown {
                 }
             }
             ControlKind::Select => select(store, self.node, value.as_int().unwrap_or(0)),
+            // A segmented control's track, inked its tint or the text color,
+            // draws the thumb under its selected segment; its caption items
+            // are segments, a composed one draws its own.
+            ControlKind::Segmented => {
+                let at = value.as_int().unwrap_or(0);
+                if first || changed(4) {
+                    let ink = tint.as_int().map_or(COLOR, |_| color(tint));
+                    let faded = |a: f32| Rgba {
+                        a: ink.a * a,
+                        ..ink
+                    };
+                    let shown = u32::try_from(at).ok();
+                    let segments = Segments::new(faded(0.24), faded(0.2), shown);
+                    store.set_content_payload(self.node, Content::Segments(segments));
+                    if !given(LOOK) {
+                        store.set_fill(self.node, faded(0.1));
+                    }
+                    if first && !given(LOOK + 2) {
+                        store.set_corner_radius(self.node, SEGMENTED_RADIUS);
+                    }
+                    let mut child = store.arena().first_child(self.node);
+                    while let Some(id) = child {
+                        child = store.arena().next_sibling(id);
+                        if let Some(mark) = store.check_mark(id)
+                            && mark.shape == CheckShape::Radio
+                        {
+                            let segment = CheckMark {
+                                shape: CheckShape::Segment,
+                                ..mark
+                            };
+                            store.set_check_mark(id, Some(segment));
+                        }
+                    }
+                }
+                select(store, self.node, at);
+                store.select_segment(self.node, u32::try_from(at).ok());
+            }
             ControlKind::Disclosure => {
                 let expanded = value.as_int().is_some_and(|v| v != 0);
                 store.set_folded(self.node, !expanded);
@@ -1421,10 +1466,15 @@ fn describe_node(store: &mut NodeStore, node: NodeId, said: &Said<'_>) {
     );
 }
 
-/// Marks the child of `node` at `selected` selected and each other child not.
 /// A corner radius of half the shorter side: a pill, or a circle.
 const ROUND: LengthTerms = LengthTerms {
     pct: 0.5,
+    ..LengthTerms::ZERO
+};
+
+/// A segmented control's track's corner radius unless styled.
+const SEGMENTED_RADIUS: LengthTerms = LengthTerms {
+    dp: 8.0,
     ..LengthTerms::ZERO
 };
 
@@ -1441,6 +1491,7 @@ fn plate(store: &mut NodeStore, node: NodeId, round: bool) {
     }
 }
 
+/// Marks the child of `node` at `selected` selected and each other child not.
 fn select(store: &mut NodeStore, node: NodeId, selected: i64) {
     let links = |store: &NodeStore, id| store.arena().links(id);
     let mut child = links(store, node).and_then(|l| l.first_child);

@@ -67,7 +67,7 @@ impl Drive for Control {
             ControlKind::Dialog => dismiss(self, host, scope, cx),
             ControlKind::Sheet => sheet(self, host, scope, cx),
             ControlKind::Slider => slider(self, host, scope, cx),
-            ControlKind::Select => select(self, host, scope, cx),
+            ControlKind::Select | ControlKind::Segmented => select(self, host, scope, cx),
             ControlKind::Pages => pages(self, host, scope, cx),
             ControlKind::TextInput => text_input(self, host, scope, cx),
             ControlKind::Number => number(self, host, scope, cx),

@@ -505,6 +505,8 @@ fn paint_own(store: &NodeStore, node: NodeId, world: Rect, out: &mut Vec<Primiti
                 progress.paint(world, rtl, out);
             } else if let Content::Stepper(stepper) = content {
                 stepper.paint(world, store.reads_rtl(node), out);
+            } else if let Content::Segments(segments) = content {
+                segments.paint(store, node, world, out);
             } else {
                 let mask = (radius > 0.0).then_some(RoundMask {
                     rect: world,
@@ -829,6 +831,9 @@ pub(crate) fn paint_content(
         Content::Progress(progress) => progress.paint(world, false, out),
         Content::PageDots(dots) => dots.paint(world, out),
         Content::Stepper(stepper) => stepper.paint(world, false, out),
+        // Segments read their container's children, which only a node's own
+        // paint reaches.
+        Content::Segments(_) => {}
     }
 }
 

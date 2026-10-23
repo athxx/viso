@@ -365,6 +365,12 @@ dialog.vx-layer:not([open]), .vx-layer[hidden] { display: none; }
 .vx-step + .vx-step::before { content: \"\"; position: absolute; inset-inline-start: -2.5px; top: 25%; height: 50%; width: 1px; background-color: color-mix(in srgb, currentColor 25%, transparent); }
 .vx-step:active:not(.vx-spent) { background-color: color-mix(in srgb, currentColor 14%, transparent); }
 .vx-step.vx-spent { opacity: 0.3; cursor: default; }
+.vx-segmented { position: relative; isolation: isolate; border-radius: 8px; background-color: color-mix(in srgb, var(--vx-ink, currentColor) 10%, transparent); user-select: none; -webkit-user-select: none; }
+.vx-segmented::before { content: \"\"; position: absolute; z-index: -1; left: 0; top: 2px; bottom: 2px; width: var(--vx-thumb-w, 0px); transform: translateX(var(--vx-thumb-x, 0px)); border-radius: 6px; background-color: color-mix(in srgb, var(--vx-ink, currentColor) 24%, transparent); box-shadow: 0 1px 4px rgb(0 0 0 / 0.2); transition: transform 300ms cubic-bezier(0.25, 1, 0.5, 1), width 300ms cubic-bezier(0.25, 1, 0.5, 1); }
+.vx-segment { display: flex; align-items: center; justify-content: center; box-sizing: border-box; min-height: 28px; padding: 5px 12px; text-align: center; cursor: pointer; background: linear-gradient(color-mix(in srgb, var(--vx-ink, currentColor) 20%, transparent), color-mix(in srgb, var(--vx-ink, currentColor) 20%, transparent)) left center / 1px 50% no-repeat; transition: background-size 150ms cubic-bezier(0.33, 1, 0.68, 1); }
+.vx-segment:dir(rtl) { background-position: right center; }
+.vx-segment:first-child, .vx-segment[aria-checked=\"true\"], .vx-segment[aria-checked=\"true\"] + .vx-segment { background-size: 0 50%; }
+@media (prefers-reduced-motion: reduce) { .vx-segmented::before, .vx-segment { transition: none; } }
 .vx-badge { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; min-width: 1.4545em; height: 1.4545em; padding: 0 0.3636em; border-radius: 999px; background-color: #b3261e; color: #fff; font-weight: 500; line-height: 1; white-space: nowrap; }
 .vx-badge.vx-dot { min-width: 8px; width: 8px; height: 8px; padding: 0; }
 .vx-avatar { display: inline-flex; align-items: center; justify-content: center; overflow: hidden; border-radius: 50%; color: #fff; font-weight: 500; line-height: 1; background-size: cover; background-position: center; user-select: none; }

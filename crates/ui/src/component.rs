@@ -2924,7 +2924,8 @@ impl NodeStore {
                 crate::check_mark::CheckShape::Chevron => state.expanded,
                 crate::check_mark::CheckShape::Radio => state.checked.or(state.selected),
                 crate::check_mark::CheckShape::Plate => None,
-                crate::check_mark::CheckShape::Chip { .. } => state.checked.or(state.selected),
+                crate::check_mark::CheckShape::Chip { .. }
+                | crate::check_mark::CheckShape::Segment => state.checked.or(state.selected),
                 _ => state.checked,
             };
             if let Some(checked) = follows {
@@ -3944,6 +3945,10 @@ impl NodeStore {
                 Some((_, shown)) => LookValue::Check(shown),
                 None => *of,
             },
+            LookValue::Thumb(_) => match self.content_payload[i].as_deref() {
+                Some(Content::Segments(segments)) => LookValue::Thumb(segments.shown()),
+                _ => *of,
+            },
         }
     }
 
@@ -3962,6 +3967,7 @@ impl NodeStore {
                 }
             }
             LookValue::Translate(offset) => self.set_translate(id, offset),
+            LookValue::Thumb(shown) => self.slide_thumb(id, shown),
             LookValue::Check(progress) => {
                 if let Some((mark, shown)) = &mut self.check_marks[id.index() as usize]
                     && *shown != progress
@@ -5948,6 +5954,17 @@ impl LayoutTree for NodeStore {
         *slot = r;
         self.turn_moved |= self.turn[index as usize].turns();
         self.note_moved(index);
+        // A segmented control's thumb and hairlines sit on its segments'
+        // boxes: a segment that moves repaints them.
+        let parent = self.arena.parent_of(NodeIndex::new(index));
+        if !parent.is_none()
+            && matches!(
+                self.content_payload[parent.slot()].as_deref(),
+                Some(Content::Segments(_))
+            )
+        {
+            self.note_moved(parent.get());
+        }
     }
 
     #[inline]

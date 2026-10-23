@@ -119,11 +119,15 @@ pub enum ControlKind {
     /// steps on, the arrows step it, Page Up/Down by ten, Home/End to the
     /// bounds. Reports each number it steps to.
     Stepper = 28,
+    /// `SegmentedControl`: a [`Select`](Self::Select) laid out as a row of
+    /// segments on one track, a thumb sliding under the selected one; a
+    /// child that is one caption is centred with room round it.
+    Segmented = 29,
 }
 
 impl ControlKind {
     /// Every kind, by discriminant.
-    pub const ALL: [ControlKind; 29] = [
+    pub const ALL: [ControlKind; 30] = [
         ControlKind::Check,
         ControlKind::Slider,
         ControlKind::Select,
@@ -153,6 +157,7 @@ impl ControlKind {
         ControlKind::Avatar,
         ControlKind::Chip,
         ControlKind::Stepper,
+        ControlKind::Segmented,
     ];
 
     /// The kind native widget `widget` is.
@@ -186,6 +191,7 @@ impl ControlKind {
             "Avatar" => ControlKind::Avatar,
             "Chip" => ControlKind::Chip,
             "Stepper" => ControlKind::Stepper,
+            "SegmentedControl" => ControlKind::Segmented,
             _ => ControlKind::Plain,
         }
     }
@@ -259,7 +265,10 @@ impl ControlKind {
                     | ControlKind::Stepper,
                 EventRoute::Changed
             ) | (ControlKind::TextInput, EventRoute::Submitted)
-                | (ControlKind::Select, EventRoute::SelectedChanged)
+                | (
+                    ControlKind::Select | ControlKind::Segmented,
+                    EventRoute::SelectedChanged
+                )
                 | (ControlKind::Pages, EventRoute::CurrentChanged)
                 | (ControlKind::Sheet, EventRoute::DetentChanged)
                 | (ControlKind::Button | ControlKind::Chip, EventRoute::Click)
@@ -386,7 +395,7 @@ impl ControlKind {
             | (ControlKind::Disclosure, "expanded")
             | (ControlKind::Dialog | ControlKind::Sheet | ControlKind::Toast, "open")
             | (ControlKind::Slider, "value")
-            | (ControlKind::Select, "selected")
+            | (ControlKind::Select | ControlKind::Segmented, "selected")
             | (ControlKind::Pages, "current")
             | (ControlKind::TextInput | ControlKind::Number, "value")
             | (ControlKind::Label | ControlKind::Button, "text")
@@ -407,7 +416,8 @@ impl ControlKind {
                 | ControlKind::Spinner
                 | ControlKind::Badge
                 | ControlKind::Avatar
-                | ControlKind::Stepper,
+                | ControlKind::Stepper
+                | ControlKind::Segmented,
                 "tint",
             ) => ControlInput::Tint,
             (ControlKind::Badge, "count") | (ControlKind::Avatar, "image") => ControlInput::Value,
@@ -485,6 +495,7 @@ impl ControlKind {
             ControlKind::Avatar => "Avatar",
             ControlKind::Chip => "Chip",
             ControlKind::Stepper => "Stepper",
+            ControlKind::Segmented => "Segmented",
         }
     }
 

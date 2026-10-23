@@ -17,6 +17,10 @@
 //! and tinted while selected, the caption inside it after a tick that grows
 //! in as it is selected (the chip widening to make room), and before a
 //! cross at its end edge when it is removable.
+//!
+//! A segment draws no mark either: its caption sits in the middle of its
+//! node with room round it, and the segmented control it is part of draws
+//! the thumb under the selected one.
 
 use viso_render::{
     Border, LineCap, LineJoin, Path, PathCmd, Point, Primitive, Quad, Rect, Rgba, Stroke,
@@ -49,6 +53,9 @@ pub enum CheckShape {
     /// growing in before the caption as it checks; with a cross at its end
     /// edge when `removable`.
     Chip { removable: bool },
+    /// No mark: a segmented control's segment, its caption centred with
+    /// room round it; the control draws the thumb under the selected one.
+    Segment,
 }
 
 /// What a check draws beside its caption.
@@ -82,6 +89,12 @@ const CHIP_CROSS: f32 = 1.0625;
 const CHIP_ICON: f32 = 0.5625;
 const CHIP_INSET: f32 = 0.25;
 
+/// A segment's least height, the room over and under its caption together,
+/// and the room on each side of it.
+const SEGMENT_MIN: f32 = 28.0;
+const SEGMENT_ROOM: f32 = 10.0;
+const SEGMENT_PAD: f32 = 12.0;
+
 /// Where a check's mark and caption sit in its node.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct MarkPlace {
@@ -101,7 +114,7 @@ impl CheckMark {
                 x: side * 1.75,
                 y: side,
             },
-            CheckShape::Plate | CheckShape::Chip { .. } => Vec2::ZERO,
+            CheckShape::Plate | CheckShape::Chip { .. } | CheckShape::Segment => Vec2::ZERO,
         }
     }
 
@@ -134,6 +147,19 @@ impl CheckMark {
         if rtl { x <= trail } else { x >= size.x - trail }
     }
 
+    /// A plate's or a segment's natural size round a caption of natural
+    /// size `text`, and the room it keeps on each side of the caption.
+    fn centred(self, text: Vec2) -> (Vec2, f32) {
+        if self.shape == CheckShape::Segment {
+            let natural = Vec2 {
+                x: text.x + SEGMENT_PAD * 2.0,
+                y: (text.y + SEGMENT_ROOM).max(SEGMENT_MIN),
+            };
+            return (natural, SEGMENT_PAD);
+        }
+        Self::plate(text)
+    }
+
     /// A plate's natural size round a caption of natural size `text`, and
     /// the room it keeps on each side of the caption.
     fn plate(text: Vec2) -> (Vec2, f32) {
@@ -156,8 +182,8 @@ impl CheckMark {
     /// caption that draws anything, the gap after it.
     fn lead(self, text: Vec2, baseline: f32, shown: f32) -> f32 {
         match self.shape {
-            CheckShape::Plate => {
-                let (plate, _) = Self::plate(text);
+            CheckShape::Plate | CheckShape::Segment => {
+                let (plate, _) = self.centred(text);
                 return (plate.x - text.x) * 0.5;
             }
             CheckShape::Chip { removable } => {
@@ -182,7 +208,7 @@ impl CheckMark {
     /// whose first line has `baseline`, its mark `shown` of the way checked.
     pub(crate) fn natural(self, text: Vec2, baseline: f32, shown: f32) -> Vec2 {
         match self.shape {
-            CheckShape::Plate => return Self::plate(text).0,
+            CheckShape::Plate | CheckShape::Segment => return self.centred(text).0,
             CheckShape::Chip { removable } => {
                 let height = Self::chip_height(text);
                 let (lead, trail) = Self::chip_room(removable, height, shown);
@@ -204,7 +230,9 @@ impl CheckMark {
     /// of the way checked.
     pub(crate) fn caption_width(self, width: f32, text: Vec2, baseline: f32, shown: f32) -> f32 {
         match self.shape {
-            CheckShape::Plate => (width - Self::plate(text).1 * 2.0).max(0.0),
+            CheckShape::Plate | CheckShape::Segment => {
+                (width - self.centred(text).1 * 2.0).max(0.0)
+            }
             CheckShape::Chip { removable } => {
                 let (lead, trail) = Self::chip_room(removable, Self::chip_height(text), shown);
                 (width - lead - trail).max(0.0)
@@ -250,8 +278,8 @@ impl CheckMark {
                 },
             };
         }
-        if self.shape == CheckShape::Plate {
-            let natural = Self::plate(text).0;
+        if matches!(self.shape, CheckShape::Plate | CheckShape::Segment) {
+            let natural = self.centred(text).0;
             let (w, h) = if size.x > 0.0 {
                 (size.x, size.y)
             } else {
@@ -315,6 +343,7 @@ impl CheckMark {
             | CheckShape::Chevron
             | CheckShape::Radio
             | CheckShape::Plate
+            | CheckShape::Segment
             | CheckShape::Chip { .. } => {
                 Timing::eased(Duration::from_millis(150), Easing::EASE_OUT)
             }
@@ -346,7 +375,7 @@ impl CheckMark {
         let p = progress.clamp(0.0, 1.0);
         let on_ink = contrast(ink);
         match self.shape {
-            CheckShape::Plate => {}
+            CheckShape::Plate | CheckShape::Segment => {}
             CheckShape::Chip { removable } => chip(rect, ink, p, removable, rtl, out),
             CheckShape::Box => {
                 out.push(Primitive::Quad(Quad {
