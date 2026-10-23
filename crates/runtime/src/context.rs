@@ -232,6 +232,13 @@ impl<'a> RuntimeCx<'a> {
         self.app.request_paste(window);
     }
 
+    /// Carry `drag` on from `window` as a drag the OS runs; whether it
+    /// started. A started drag ends with an
+    /// [`InputSample::DragEnded`](crate::InputSample::DragEnded).
+    pub fn start_drag(&mut self, window: WindowId, drag: viso_platform::DragOut) -> bool {
+        self.app.start_drag(window, drag)
+    }
+
     /// Show `icon` while the mouse is over `window`'s content.
     pub fn set_cursor(&mut self, window: WindowId, icon: CursorIcon) {
         self.app.set_cursor(window, icon);

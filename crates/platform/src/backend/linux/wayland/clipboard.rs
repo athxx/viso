@@ -3,7 +3,8 @@
 //! offer through a pipe on a background thread. A drag from another client
 //! over a window reaches the app at each move, its offer accepted or not as
 //! the app answers, and dropped, its data is read the same way before the app
-//! takes it.
+//! takes it. A drag the app carries out of a window is a data source the
+//! compositor runs from the button's grab, written out to whoever takes it.
 
 use std::fs::File;
 use std::io::{Read, Write};
@@ -76,7 +77,23 @@ pub(super) struct Clipboard {
     dropped: Option<WlDataOffer>,
     /// Our own selection and its text, while the compositor holds it.
     own: Option<(WlDataSource, String)>,
+    /// The drag the app carries out, while the compositor runs it.
+    out: Option<Carried>,
 }
+
+/// A drag the app carries out of `window`.
+struct Carried {
+    source: WlDataSource,
+    window: WindowId,
+    text: String,
+    /// A `text/uri-list`; empty for none.
+    uris: String,
+    /// The action the compositor last settled on.
+    action: DndAction,
+}
+
+/// The user data of the source of a drag the app carries out.
+pub(super) struct DragSource;
 
 impl Clipboard {
     pub(super) fn new(manager: Option<WlDataDeviceManager>) -> Self {
@@ -87,6 +104,7 @@ impl Clipboard {
             drag: None,
             dropped: None,
             own: None,
+            out: None,
         }
     }
 
@@ -111,6 +129,52 @@ impl Clipboard {
         {
             device.release();
         }
+    }
+
+    /// Carries `drag` out of `window`, whose `surface` the button press
+    /// with `serial` grabbed. Returns whether it started.
+    pub(super) fn start_drag(
+        &mut self,
+        qh: &QueueHandle<State>,
+        window: WindowId,
+        surface: &wayland_client::protocol::wl_surface::WlSurface,
+        drag: &crate::DragOut,
+        serial: u32,
+    ) -> bool {
+        let (Some(manager), Some(device)) = (&self.manager, &self.device) else {
+            return false;
+        };
+        if self.out.is_some() {
+            return false;
+        }
+        let (text, uris) = (drag.plain_text(), drag.uri_list());
+        let source = manager.create_data_source(qh, DragSource);
+        if !uris.is_empty() {
+            source.offer("text/uri-list".to_owned());
+        }
+        if !text.is_empty() {
+            for mime in TEXT_MIMES {
+                source.offer(mime.to_owned());
+            }
+        }
+        // Wayland has no link; a drop that would link copies.
+        let mut actions = DndAction::empty();
+        if drag.actions.copies || drag.actions.links {
+            actions |= DndAction::Copy;
+        }
+        if drag.actions.moves {
+            actions |= DndAction::Move;
+        }
+        source.set_actions(actions);
+        device.start_drag(Some(&source), surface, None, serial);
+        self.out = Some(Carried {
+            source,
+            window,
+            text,
+            uris,
+            action: DndAction::empty(),
+        });
+        true
     }
 
     /// Put `text` on the clipboard, quoting the input `serial` that asked.
@@ -427,6 +491,54 @@ impl Dispatch<WlDataSource, ()> for State {
                     *own = None;
                 }
                 source.destroy();
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<WlDataSource, DragSource> for State {
+    fn event(
+        state: &mut Self,
+        source: &WlDataSource,
+        event: wl_data_source::Event,
+        _: &DragSource,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let Some(out) = state.clipboard.out.as_mut().filter(|o| o.source == *source) else {
+            source.destroy();
+            return;
+        };
+        match event {
+            wl_data_source::Event::Send { mime_type, fd } => {
+                let bytes = if mime_type == "text/uri-list" {
+                    out.uris.clone()
+                } else {
+                    out.text.clone()
+                }
+                .into_bytes();
+                let _ = std::thread::Builder::new()
+                    .name("viso-drag".into())
+                    .spawn(move || {
+                        let _ = File::from(fd).write_all(&bytes);
+                    });
+            }
+            wl_data_source::Event::Action {
+                dnd_action: WEnum::Value(action),
+            } => out.action = action,
+            wl_data_source::Event::DndFinished | wl_data_source::Event::Cancelled => {
+                let finished = matches!(event, wl_data_source::Event::DndFinished);
+                let out = state.clipboard.out.take().expect("matched above");
+                out.source.destroy();
+                let action = if !finished {
+                    None
+                } else if out.action.contains(DndAction::Move) {
+                    Some(DropAction::Move)
+                } else {
+                    Some(DropAction::Copy)
+                };
+                state.drag_ended(out.window, action);
             }
             _ => {}
         }

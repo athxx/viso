@@ -86,10 +86,11 @@ impl WaylandApp {
         })
     }
 
-    fn with_state(&self, f: impl FnOnce(&mut State)) {
+    fn with_state<T>(&self, f: impl FnOnce(&mut State) -> T) -> T {
         let mut wl = self.wl.borrow_mut();
-        f(&mut wl.state);
+        let out = f(&mut wl.state);
         let _ = wl.state.conn.flush();
+        out
     }
 }
 
@@ -180,6 +181,10 @@ impl PlatformApp for WaylandApp {
 
     fn request_paste(&mut self, window: WindowId) {
         self.with_state(|state| state.chore(Chore::Paste(window)));
+    }
+
+    fn start_drag(&mut self, window: WindowId, drag: crate::DragOut) -> bool {
+        self.with_state(|state| state.start_drag(window, &drag))
     }
 
     fn set_cursor(&mut self, window: WindowId, icon: CursorIcon) {
@@ -567,6 +572,32 @@ impl State {
         } else {
             self.pump.push_redraw(id);
         }
+    }
+
+    /// Carries `drag` out of `window`, from the grab of the button holding
+    /// it.
+    fn start_drag(&mut self, window: WindowId, drag: &crate::DragOut) -> bool {
+        let Some(i) = self.index(window) else {
+            return false;
+        };
+        let Some(serial) = self.seat.as_ref().map(|s| s.press_serial) else {
+            return false;
+        };
+        if self.windows[i].buttons.is_empty() {
+            return false;
+        }
+        let surface = self.windows[i].surface.clone();
+        self.clipboard
+            .start_drag(&self.qh, window, &surface, drag, serial)
+    }
+
+    /// The drag the app carried out of `window` ended, doing `action`: the
+    /// compositor kept the button's release.
+    fn drag_ended(&mut self, window: WindowId, action: Option<crate::DropAction>) {
+        if let Some(i) = self.index(window) {
+            self.windows[i].buttons = PointerButtons::NONE;
+        }
+        self.pump.push(RawEvent::DragEnded { window, action });
     }
 
     fn copy(&mut self, text: &str) {

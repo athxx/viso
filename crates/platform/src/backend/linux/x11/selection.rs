@@ -1,6 +1,8 @@
 //! The CLIPBOARD selection: owning it for the app's copies, converting it
 //! for pastes, with INCR transfers both ways for text larger than one
-//! request. A hidden utility window is the owner and the requestor.
+//! request. A hidden utility window is the owner and the requestor. It owns
+//! `XdndSelection` too while the app carries a drag out, and answers for the
+//! dragged text and `text/uri-list` the same way.
 
 use x11rb::connection::{Connection, RequestConnection};
 use x11rb::errors::{ConnectionError, ReplyError, ReplyOrIdError};
@@ -19,6 +21,9 @@ pub(super) struct Clipboard {
     window: Window,
     /// The text the app put on the clipboard, while it owns the selection.
     owned: Option<Owned>,
+    /// What the drag the app carries out holds, while it owns
+    /// `XdndSelection`.
+    dragged: Option<Owned>,
     /// INCR transfers to other clients, advanced as they delete each chunk.
     outgoing: Vec<Outgoing>,
     incoming: Option<Incoming>,
@@ -26,6 +31,8 @@ pub(super) struct Clipboard {
 
 struct Owned {
     text: String,
+    /// A `text/uri-list`; empty for none.
+    uris: String,
     time: Timestamp,
 }
 
@@ -64,6 +71,7 @@ impl Clipboard {
         Ok(Self {
             window,
             owned: None,
+            dragged: None,
             outgoing: Vec::new(),
             incoming: None,
         })
@@ -81,9 +89,49 @@ impl Clipboard {
         let owner = conn.get_selection_owner(atoms.CLIPBOARD)?.reply()?.owner;
         self.owned = (owner == self.window).then(|| Owned {
             text: text.to_owned(),
+            uris: String::new(),
             time,
         });
         Ok(())
+    }
+
+    /// The window that owns the selections, and is a drag's source.
+    pub(super) fn window(&self) -> Window {
+        self.window
+    }
+
+    /// Take ownership of `XdndSelection` with a drag's `text` and `uris` (a
+    /// `text/uri-list`, empty for none). Returns whether it took it.
+    pub(super) fn set_drag(
+        &mut self,
+        conn: &XCBConnection,
+        atoms: &Atoms,
+        text: String,
+        uris: String,
+        time: Timestamp,
+    ) -> Result<bool, ReplyError> {
+        conn.set_selection_owner(self.window, atoms.XdndSelection, time)?;
+        let owner = conn
+            .get_selection_owner(atoms.XdndSelection)?
+            .reply()?
+            .owner;
+        self.dragged = (owner == self.window).then_some(Owned { text, uris, time });
+        Ok(self.dragged.is_some())
+    }
+
+    /// The types a drag the selection holds offers, the richest first.
+    pub(super) fn drag_types(&self, atoms: &Atoms) -> Vec<Atom> {
+        let Some(dragged) = &self.dragged else {
+            return Vec::new();
+        };
+        let list = (!dragged.uris.is_empty()).then_some(atoms.TEXT_URI_LIST);
+        let text = (!dragged.text.is_empty()).then_some([
+            atoms.UTF8_STRING,
+            atoms.TEXT_PLAIN_UTF8,
+            atoms.TEXT_PLAIN,
+            Atom::from(AtomEnum::STRING),
+        ]);
+        list.into_iter().chain(text.into_iter().flatten()).collect()
     }
 
     /// Start reading CLIPBOARD for `window`. The app's own copy answers at
@@ -257,8 +305,17 @@ impl Clipboard {
         } else {
             e.property
         };
-        let answered = e.selection == atoms.CLIPBOARD
-            && self.answer(conn, atoms, e.requestor, property, e.target)?;
+        let which = if e.selection == atoms.CLIPBOARD {
+            self.owned.as_ref()
+        } else if e.selection == atoms.XdndSelection {
+            self.dragged.as_ref()
+        } else {
+            None
+        };
+        let answered = match which.map(|o| (o.text.clone(), o.uris.clone(), o.time)) {
+            Some(owned) => self.answer(conn, atoms, e.requestor, property, e.target, owned)?,
+            None => false,
+        };
         conn.send_event(
             false,
             e.requestor,
@@ -283,26 +340,28 @@ impl Clipboard {
         requestor: Window,
         property: Atom,
         target: Atom,
+        (text, uris, time): (String, String, Timestamp),
     ) -> Result<bool, ConnectionError> {
-        let Some(owned) = &self.owned else {
-            return Ok(false);
-        };
         let string = Atom::from(AtomEnum::STRING);
         if target == atoms.TARGETS {
+            let mut targets = vec![
+                atoms.TARGETS,
+                atoms.TIMESTAMP,
+                atoms.UTF8_STRING,
+                atoms.TEXT_PLAIN_UTF8,
+                atoms.TEXT,
+                string,
+                atoms.TEXT_PLAIN,
+            ];
+            if !uris.is_empty() {
+                targets.push(atoms.TEXT_URI_LIST);
+            }
             conn.change_property32(
                 PropMode::REPLACE,
                 requestor,
                 property,
                 AtomEnum::ATOM,
-                &[
-                    atoms.TARGETS,
-                    atoms.TIMESTAMP,
-                    atoms.UTF8_STRING,
-                    atoms.TEXT_PLAIN_UTF8,
-                    atoms.TEXT,
-                    string,
-                    atoms.TEXT_PLAIN,
-                ],
+                &targets,
             )?;
             return Ok(true);
         }
@@ -312,17 +371,19 @@ impl Clipboard {
                 requestor,
                 property,
                 AtomEnum::INTEGER,
-                &[owned.time],
+                &[time],
             )?;
             return Ok(true);
         }
-        let (kind, data) = if target == atoms.UTF8_STRING
+        let (kind, data) = if target == atoms.TEXT_URI_LIST && !uris.is_empty() {
+            (atoms.TEXT_URI_LIST, uris.into_bytes())
+        } else if target == atoms.UTF8_STRING
             || target == atoms.TEXT_PLAIN_UTF8
             || target == atoms.TEXT
         {
-            (atoms.UTF8_STRING, owned.text.as_bytes().to_vec())
+            (atoms.UTF8_STRING, text.into_bytes())
         } else if target == string || target == atoms.TEXT_PLAIN {
-            (string, latin1(&owned.text))
+            (string, latin1(&text))
         } else {
             return Ok(false);
         };
@@ -353,6 +414,9 @@ impl Clipboard {
     pub(super) fn on_clear(&mut self, atoms: &Atoms, e: &SelectionClearEvent) {
         if e.selection == atoms.CLIPBOARD && e.owner == self.window {
             self.owned = None;
+        }
+        if e.selection == atoms.XdndSelection && e.owner == self.window {
+            self.dragged = None;
         }
     }
 }

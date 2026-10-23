@@ -503,6 +503,7 @@ pub(crate) fn input_name(
             Some([g.x / scale, g.y / scale]),
         ),
         InputSample::Copy(_) => return None,
+        InputSample::DragEnded { action, .. } => (format!("drag_ended {action:?}"), None),
         InputSample::EditMenu(e) => (format!("edit_menu {:?}", e.action), None),
         InputSample::Drop(d) => {
             let phase = match d.phase {

@@ -1,5 +1,6 @@
-//! Drags from outside the app: what one offers a window, and the answer the
-//! window gives the OS.
+//! Drags across the app's edge: what one from outside offers a window and
+//! the answer the window gives the OS, and what one the app carries out of
+//! its windows holds.
 //!
 //! A backend sends a [`RawDrop`] for each step of a drag over one of its
 //! windows — every move over it, its leaving, its drop — with one
@@ -134,6 +135,64 @@ impl DropReply {
     }
 }
 
+/// A drag the app carries out of its windows: its text, its link and its
+/// files, any of which may be absent, and the actions a drop may do.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DragOut {
+    pub text: Option<String>,
+    pub uri: Option<String>,
+    pub files: Vec<PathBuf>,
+    pub actions: DropActions,
+}
+
+impl DragOut {
+    /// Its files and link as a `text/uri-list`, files first.
+    pub fn uri_list(&self) -> String {
+        let mut list = String::new();
+        for uri in self.files.iter().filter_map(|f| file_uri(f)) {
+            list.push_str(&uri);
+            list.push_str("\r\n");
+        }
+        if let Some(uri) = &self.uri {
+            list.push_str(uri);
+            list.push_str("\r\n");
+        }
+        list
+    }
+
+    /// Its text, else its link, else its files' paths, a line each.
+    pub fn plain_text(&self) -> String {
+        if let Some(text) = self.text.as_ref().or(self.uri.as_ref()) {
+            return text.clone();
+        }
+        let paths: Vec<_> = self.files.iter().map(|f| f.to_string_lossy()).collect();
+        paths.join("\n")
+    }
+}
+
+/// The `file:` URI of absolute path `path`, its bytes outside the unreserved
+/// set escaped; `None` for a relative path.
+pub fn file_uri(path: &std::path::Path) -> Option<String> {
+    if !path.is_absolute() {
+        return None;
+    }
+    let text = path.to_string_lossy();
+    let text = text.replace('\\', "/");
+    let mut uri = String::from("file://");
+    if !text.starts_with('/') {
+        // A Windows drive path goes as `/C:/…`.
+        uri.push('/');
+    }
+    for b in text.bytes() {
+        if b.is_ascii_alphanumeric() || b"/-._~:".contains(&b) {
+            uri.push(b as char);
+        } else {
+            uri.push_str(&format!("%{b:02X}"));
+        }
+    }
+    Some(uri)
+}
+
 /// What a `text/uri-list` holds: its files, by path, and its first link
 /// that is no file. Comment lines and blank ones are skipped.
 pub fn uri_list(list: &str) -> (Vec<PathBuf>, Option<String>) {
@@ -208,6 +267,26 @@ mod tests {
         );
         assert_eq!(link.as_deref(), Some("https://example.org/x"));
         assert_eq!(file_path("file://elsewhere/x"), None);
+    }
+
+    #[test]
+    fn a_drag_out_lists_its_files_as_uris_that_read_back() {
+        let out = DragOut {
+            text: None,
+            uri: Some("https://example.org/x".into()),
+            files: vec![PathBuf::from("/tmp/b c/你.png")],
+            actions: DropActions::ALL,
+        };
+        let list = out.uri_list();
+        assert_eq!(
+            list,
+            "file:///tmp/b%20c/%E4%BD%A0.png\r\nhttps://example.org/x\r\n"
+        );
+        let (files, link) = uri_list(&list);
+        assert_eq!(files, out.files);
+        assert_eq!(link, out.uri);
+        assert_eq!(out.plain_text(), "https://example.org/x");
+        assert_eq!(file_uri(std::path::Path::new("rel")), None);
     }
 
     #[test]

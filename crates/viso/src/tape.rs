@@ -158,6 +158,8 @@ impl TapeRecorder {
             },
             InputSample::Paste(t) => TapeInput::Paste(t.text.clone()),
             InputSample::Copy(c) => TapeInput::Copy { cut: c.cut },
+            // A drag the OS ran is the OS's: a replay starts none to end.
+            InputSample::DragEnded { .. } => return,
             InputSample::EditMenu(e) => match e.action {
                 EditMenuAction::SelectAll => TapeInput::SelectAll,
                 EditMenuAction::Closed => TapeInput::EditMenuClosed,

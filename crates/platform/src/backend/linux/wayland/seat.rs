@@ -58,6 +58,8 @@ pub(super) struct Seat {
     text_input: Option<TextInput>,
     /// The latest input serial, for requests that need a user action.
     pub(super) last_serial: u32,
+    /// The serial of the latest button press, whose grab a drag starts from.
+    pub(super) press_serial: u32,
     xkb: Option<Keyboard>,
     key_focus: Option<WindowId>,
     /// Keycodes whose press reached the app, so each release does too.
@@ -143,6 +145,7 @@ impl Seat {
             touch: None,
             text_input,
             last_serial: 0,
+            press_serial: 0,
             xkb: Keyboard::new(),
             key_focus: None,
             delivered: Vec::new(),
@@ -394,6 +397,9 @@ impl Seat {
                     _ => return,
                 };
                 let pressed = known(button_state) == Some(wl_pointer::ButtonState::Pressed);
+                if pressed {
+                    self.press_serial = serial;
+                }
                 self.on_button(state, button, pressed, serial, time, modifiers);
             }
             wl_pointer::Event::Axis { axis, value, .. } => {

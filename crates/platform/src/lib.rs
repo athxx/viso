@@ -60,8 +60,8 @@ pub use control::{
     WindowId,
 };
 pub use drop::{
-    DropAction, DropActions, DropKinds, DropOffer, DropPhase, DropReply, RawDrop, file_path,
-    uri_list,
+    DragOut, DropAction, DropActions, DropKinds, DropOffer, DropPhase, DropReply, RawDrop,
+    file_path, file_uri, uri_list,
 };
 pub use event::{
     AcceptCell, Appearance, ClipboardReply, ClipboardShortcut, ColorScheme, CursorIcon,
@@ -212,6 +212,16 @@ pub trait PlatformApp {
     /// [`PlatformCaps::loupe`] is false.
     fn set_loupe(&mut self, window: WindowId, loupe: Option<Loupe>) {
         let _ = (window, loupe);
+    }
+
+    /// Carry `drag` on from `window` as a drag the OS runs, the mouse button
+    /// that carries it still held: other apps' windows, and the app's own,
+    /// see it as a drag from outside. Returns whether it started; a started
+    /// drag ends with one [`RawEvent::DragEnded`]. `false` where the OS
+    /// starts drags only from its own gestures (web, iOS) or has none.
+    fn start_drag(&mut self, window: WindowId, drag: DragOut) -> bool {
+        let _ = (window, drag);
+        false
     }
 
     /// The current system appearance. Changes arrive as

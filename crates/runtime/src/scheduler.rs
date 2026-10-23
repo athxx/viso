@@ -487,6 +487,11 @@ impl<D: FrameDriver, C: FrameClock> AppHandler for Loop<D, C> {
                 );
                 self.reasons.add(RedrawReason::InputDirty);
             }
+            RawEvent::DragEnded { window, action } => {
+                self.driver
+                    .on_input(InputSample::DragEnded { window, action }, self.clock.peek());
+                self.reasons.add(RedrawReason::InputDirty);
+            }
             RawEvent::EditMenu { window, action } => {
                 self.driver.on_input(
                     InputSample::EditMenu(EditMenuSample { window, action }),

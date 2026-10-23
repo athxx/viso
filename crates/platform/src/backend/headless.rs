@@ -37,6 +37,9 @@ pub struct HeadlessApp {
     /// The in-process clipboard: what `set_clipboard_text` stored and
     /// `request_paste` hands back.
     clipboard: Option<String>,
+    /// The drags the app carried out, by window; the script ends each with
+    /// a [`RawEvent::DragEnded`].
+    drags: Vec<(WindowId, crate::DragOut)>,
     appearance: Appearance,
     locale: String,
     /// What [`PlatformApp::display_features`] reports for every window.
@@ -81,6 +84,7 @@ impl HeadlessApp {
             script: VecDeque::new(),
             pending_redraws: VecDeque::new(),
             clipboard: None,
+            drags: Vec::new(),
             appearance: Appearance::default(),
             locale: "und".to_owned(),
             display_features: Vec::new(),
@@ -163,6 +167,11 @@ impl HeadlessApp {
     /// The clipboard's current text.
     pub fn clipboard(&self) -> Option<&str> {
         self.clipboard.as_deref()
+    }
+
+    /// The drags the app carried out of its windows, in order.
+    pub fn drags(&self) -> &[(WindowId, crate::DragOut)] {
+        &self.drags
     }
 
     /// The cursor last set on `window`.
@@ -370,6 +379,11 @@ impl PlatformApp for HeadlessApp {
         if let Some(text) = self.clipboard.clone() {
             self.script.push_front(RawEvent::Paste { window, text });
         }
+    }
+
+    fn start_drag(&mut self, window: WindowId, drag: crate::DragOut) -> bool {
+        self.drags.push((window, drag));
+        true
     }
 
     fn set_cursor(&mut self, window: WindowId, icon: CursorIcon) {

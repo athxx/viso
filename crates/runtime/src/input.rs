@@ -189,6 +189,12 @@ pub enum InputSample {
     EditMenu(EditMenuSample),
     /// A step of a drag from outside the app.
     Drop(DropSample),
+    /// The drag the app carried out of `window` ended: let go where it did
+    /// `action`, or put back (`None`).
+    DragEnded {
+        window: WindowId,
+        action: Option<DropAction>,
+    },
 }
 
 impl InputSample {
@@ -208,6 +214,7 @@ impl InputSample {
             InputSample::Copy(c) => c.window,
             InputSample::EditMenu(e) => e.window,
             InputSample::Drop(d) => d.window,
+            InputSample::DragEnded { window, .. } => *window,
         }
     }
 }

@@ -162,6 +162,13 @@ impl PlatformApp for X11App {
         let _ = x11.conn.flush();
     }
 
+    fn start_drag(&mut self, window: WindowId, drag: crate::DragOut) -> bool {
+        let mut x11 = self.x11.borrow_mut();
+        let started = x11.start_drag(window, &drag);
+        let _ = x11.conn.flush();
+        started
+    }
+
     fn request_paste(&mut self, window: WindowId) {
         let mut x11 = self.x11.borrow_mut();
         x11.chore(Chore::Paste(window));
@@ -829,6 +836,39 @@ impl X11 {
         self.pump.push(RawEvent::WindowClosed { window: id });
     }
 
+    /// Carries `drag` out of `window`, a button held in it: the selection
+    /// window takes `XdndSelection` and speaks for it.
+    fn start_drag(&mut self, window: WindowId, drag: &crate::DragOut) -> bool {
+        let Some(i) = self.index(window) else {
+            return false;
+        };
+        if self.windows[i].buttons.is_empty() || self.xdnd.carrying() {
+            return false;
+        }
+        let taken = self.clipboard.set_drag(
+            &self.conn,
+            &self.atoms,
+            drag.plain_text(),
+            drag.uri_list(),
+            self.last_time,
+        );
+        if !matches!(taken, Ok(true)) {
+            return false;
+        }
+        let types = self.clipboard.drag_types(&self.atoms);
+        let source = self.clipboard.window();
+        self.xdnd
+            .start(&self.conn, &self.atoms, window, source, types, drag.actions);
+        true
+    }
+
+    /// The drag carried out came to `outcome`: ended, the app hears so.
+    fn carried(&mut self, outcome: dnd::Outcome, from: Option<WindowId>) {
+        if let (dnd::Outcome::Ended(action), Some(window)) = (outcome, from) {
+            self.pump.push(RawEvent::DragEnded { window, action });
+        }
+    }
+
     fn copy(&mut self, text: &str) {
         let _ = self
             .clipboard
@@ -1109,6 +1149,13 @@ impl X11 {
     }
 
     fn on_client_message(&mut self, e: &ClientMessageEvent) {
+        if e.format == 32 && e.window == self.clipboard.window() {
+            let from = self.xdnd.carried_from();
+            match self.xdnd.on_source_message(&self.conn, &self.atoms, e) {
+                dnd::Outcome::Ignored => {}
+                outcome => return self.carried(outcome, from),
+            }
+        }
         if e.format == 32
             && let Some(i) = self.index_xid(e.window)
         {
@@ -1231,6 +1278,16 @@ impl X11 {
 
     fn on_key(&mut self, e: &KeyPressEvent, pressed: bool) {
         self.last_time = e.time;
+        if self.xdnd.carrying() {
+            // Escape puts the drag carried out back; other keys wait.
+            if pressed && translate::key_code(u32::from(e.detail)) == crate::event::KeyCode::Escape
+            {
+                let from = self.xdnd.carried_from();
+                let outcome = self.xdnd.give_up(&self.conn, &self.atoms);
+                self.carried(outcome, from);
+            }
+            return;
+        }
         let Some(i) = self.index_xid(e.event) else {
             return;
         };
@@ -1373,6 +1430,21 @@ impl X11 {
         if button.is_empty() {
             return;
         }
+        if self.xdnd.carrying() {
+            // The drag carried out has the pointer: a release lets it go.
+            let win = &mut self.windows[i];
+            win.buttons = if pressed {
+                PointerButtons(win.buttons.0 | button.0)
+            } else {
+                PointerButtons(win.buttons.0 & !button.0)
+            };
+            if !pressed {
+                let from = self.xdnd.carried_from();
+                let outcome = self.xdnd.let_go(&self.conn, &self.atoms, e.time);
+                self.carried(outcome, from);
+            }
+            return;
+        }
         if pressed && button == PointerButtons::PRIMARY && self.chrome_press(i, e, x, y) {
             return;
         }
@@ -1513,6 +1585,15 @@ impl X11 {
         if e.flags
             .contains(xinput::PointerEventFlags::POINTER_EMULATED)
         {
+            return;
+        }
+        if self.xdnd.carrying() {
+            let at = (
+                to_i16(input::fp1616(e.root_x)),
+                to_i16(input::fp1616(e.root_y)),
+            );
+            self.xdnd
+                .carry(&self.conn, &self.atoms, self.root, at, e.time);
             return;
         }
         let Some(i) = self.index_xid(e.event) else {

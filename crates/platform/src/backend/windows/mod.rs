@@ -96,6 +96,9 @@ struct PumpQueue {
     /// Set by a [`LoopWaker`] kick from any thread; drained as one
     /// `RawEvent::Wakeup`, by the pump or by a modal loop's drive.
     woken: Arc<AtomicBool>,
+    /// A drag the app carries out of a window, run by OLE once the handler
+    /// that started it returns.
+    drag_out: Option<(WindowId, crate::DragOut)>,
 }
 
 type Shared = Rc<RefCell<PumpQueue>>;
@@ -295,10 +298,25 @@ fn deliver(
     };
     let outer = std::mem::replace(&mut shared.borrow_mut().handling, true);
     let flow = handler.handle(app, event);
-    {
+    let drag_out = {
         let mut q = shared.borrow_mut();
         q.handling = outer;
         q.flow = Some(flow);
+        if outer { None } else { q.drag_out.take() }
+    };
+    if let Some((window, drag)) = drag_out {
+        // OLE runs the drag in its own loop, whose messages the procedure
+        // drives as usual: no handler is on the stack now.
+        let state = shared
+            .borrow()
+            .windows
+            .iter()
+            .find(|w| w.id == window)
+            .cloned();
+        if let Some(state) = state {
+            let action = drop::drag_out(&state, &drag);
+            state.push(RawEvent::DragEnded { window, action });
+        }
     }
     match after {
         Some(After::Copy(reply, window)) => {
@@ -723,6 +741,18 @@ impl PlatformApp for WinApp {
         if let Some(text) = system::read_clipboard(Some(state.hwnd.get())) {
             state.push(RawEvent::Paste { window, text });
         }
+    }
+
+    fn start_drag(&mut self, window: WindowId, drag: crate::DragOut) -> bool {
+        let held = self
+            .state(window)
+            .is_some_and(|s| !s.buttons.get().is_empty());
+        let mut q = self.shared.borrow_mut();
+        if !held || q.drag_out.is_some() {
+            return false;
+        }
+        q.drag_out = Some((window, drag));
+        true
     }
 
     fn set_cursor(&mut self, window: WindowId, icon: CursorIcon) {

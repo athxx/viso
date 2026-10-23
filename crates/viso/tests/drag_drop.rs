@@ -295,3 +295,30 @@ fn a_link_dragged_in_from_outside_drops_on_the_zone_taking_links() {
     let _ = run(&[steps]);
     assert_eq!(heard(), [(2, "enter".to_owned()), (2, "leave".to_owned())]);
 }
+
+#[test]
+fn carried_past_the_window_s_edge_the_card_s_text_leaves_with_the_os() {
+    // Past the right edge the OS takes the drag; the script stands in for
+    // the app that took a copy.
+    let mut steps = vec![
+        pointer(PointerKind::Mouse, 50.0, 20.0, false, PointerPhase::Moved),
+        pointer(PointerKind::Mouse, 50.0, 20.0, true, PointerPhase::Down),
+    ];
+    for x in [80.0, 200.0, 290.0, 340.0] {
+        steps.extend([
+            pointer(PointerKind::Mouse, x, 20.0, true, PointerPhase::Moved),
+            redraw(),
+        ]);
+    }
+    let _ = run(&[steps.clone()]);
+    assert_eq!(heard(), [], "the OS has it, and has not let it go");
+    steps.extend([
+        RawEvent::DragEnded {
+            window: WIN,
+            action: Some(viso::platform::DropAction::Copy),
+        },
+        redraw(),
+    ]);
+    let _ = run(&[steps]);
+    assert_eq!(heard(), [(9, "Some(Copy)".to_owned())]);
+}

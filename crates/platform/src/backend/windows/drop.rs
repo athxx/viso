@@ -1,5 +1,7 @@
 //! A window as an OLE drop target: a drag from outside reaches the app step
-//! by step, and OLE hears the app's answer to each.
+//! by step, and OLE hears the app's answer to each. And the drags the app
+//! carries out of a window, which the shell runs from a data object holding
+//! their files, link and text.
 //!
 //! OLE calls the target from the message loop, inside the pump's OS turn, so
 //! each step is driven through the app at once and the effect it answers
@@ -7,27 +9,36 @@
 
 use std::cell::RefCell;
 use std::ffi::OsString;
-use std::os::windows::ffi::OsStringExt;
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 
-use ::windows::Win32::Foundation::{HGLOBAL, HWND, POINT, POINTL};
+use ::windows::Win32::Foundation::{GlobalFree, HGLOBAL, HWND, POINT, POINTL};
 use ::windows::Win32::Graphics::Gdi::ScreenToClient;
-use ::windows::Win32::System::Com::{DVASPECT_CONTENT, FORMATETC, IDataObject, TYMED_HGLOBAL};
+use ::windows::Win32::System::Com::{
+    DVASPECT_CONTENT, FORMATETC, IDataObject, STGMEDIUM, STGMEDIUM_0, TYMED_HGLOBAL,
+};
 use ::windows::Win32::System::DataExchange::RegisterClipboardFormatW;
-use ::windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
+use ::windows::Win32::System::Memory::{
+    GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock,
+};
 use ::windows::Win32::System::Ole::{
     CF_HDROP, CF_UNICODETEXT, DROPEFFECT, DROPEFFECT_COPY, DROPEFFECT_LINK, DROPEFFECT_MOVE,
     DROPEFFECT_NONE, IDropTarget, IDropTarget_Impl, RegisterDragDrop, ReleaseStgMedium,
     RevokeDragDrop,
 };
 use ::windows::Win32::System::SystemServices::MODIFIERKEYS_FLAGS;
-use ::windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
+use ::windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
+use ::windows::Win32::UI::Shell::{
+    DROPFILES, DragQueryFileW, HDROP, SHCreateDataObject, SHDoDragDrop,
+};
 use ::windows::core::{Ref, implement, w};
 
 use super::WindowState;
 use crate::backend::win32_translate as translate;
-use crate::drop::{DropAction, DropActions, DropKinds, DropOffer, DropPhase, DropReply, RawDrop};
+use crate::drop::{
+    DragOut, DropAction, DropActions, DropKinds, DropOffer, DropPhase, DropReply, RawDrop,
+};
 use crate::event::RawEvent;
 
 /// Makes `state`'s window a drop target. OLE holds the target until
@@ -251,5 +262,114 @@ fn files_of(block: HGLOBAL) -> Vec<PathBuf> {
                 (got > 0).then(|| PathBuf::from(OsString::from_wide(&buf[..got])))
             })
             .collect()
+    }
+}
+
+/// Runs `drag` from `state`'s window, held by the mouse, until it is let go
+/// or put back; what the drop did.
+pub(super) fn drag_out(state: &WindowState, drag: &DragOut) -> Option<DropAction> {
+    let data = data_object(drag)?;
+    let mut allowed = DROPEFFECT_NONE;
+    for (yes, effect) in [
+        (drag.actions.copies, DROPEFFECT_COPY),
+        (drag.actions.moves, DROPEFFECT_MOVE),
+        (drag.actions.links, DROPEFFECT_LINK),
+    ] {
+        if yes {
+            allowed.0 |= effect.0;
+        }
+    }
+    // SAFETY: a live window of this thread, which initialized OLE; the shell
+    // supplies the drop source and the drag image.
+    let done = unsafe { SHDoDragDrop(Some(state.hwnd.get()), &data, None, allowed) };
+    // OLE kept the button's release, and the capture with it.
+    state.buttons.set(crate::event::PointerButtons::NONE);
+    // SAFETY: a plain call; it fails harmlessly with no capture held.
+    let _ = unsafe { ReleaseCapture() };
+    let effect = done.ok()?;
+    [
+        (DROPEFFECT_MOVE, DropAction::Move),
+        (DROPEFFECT_COPY, DropAction::Copy),
+        (DROPEFFECT_LINK, DropAction::Link),
+    ]
+    .into_iter()
+    .find(|(e, _)| effect.0 & e.0 != 0)
+    .map(|(_, action)| action)
+}
+
+/// A shell data object holding `drag`'s files, link and text.
+fn data_object(drag: &DragOut) -> Option<IDataObject> {
+    // SAFETY: an empty shell data object, which takes any global format set
+    // on it.
+    let data: IDataObject = unsafe { SHCreateDataObject(None, None, None) }.ok()?;
+    if !drag.files.is_empty() {
+        let mut list = Vec::new();
+        for file in &drag.files {
+            list.extend(file.as_os_str().encode_wide());
+            list.push(0);
+        }
+        list.push(0);
+        let header = DROPFILES {
+            pFiles: std::mem::size_of::<DROPFILES>() as u32,
+            fWide: true.into(),
+            ..DROPFILES::default()
+        };
+        // SAFETY: `DROPFILES` is plain data, viewed as its own bytes.
+        let head = unsafe {
+            std::slice::from_raw_parts(
+                (&raw const header).cast::<u8>(),
+                std::mem::size_of::<DROPFILES>(),
+            )
+        };
+        let mut bytes = head.to_vec();
+        bytes.extend(list.iter().flat_map(|u| u.to_le_bytes()));
+        set_global(&data, CF_HDROP.0, &bytes);
+    }
+    if let Some(uri) = &drag.uri {
+        // SAFETY: a constant name.
+        let url = unsafe { RegisterClipboardFormatW(w!("UniformResourceLocatorW")) } as u16;
+        if url != 0 {
+            set_global(&data, url, &wide_bytes(uri));
+        }
+    }
+    let text = drag.plain_text();
+    if !text.is_empty() {
+        set_global(&data, CF_UNICODETEXT.0, &wide_bytes(&text));
+    }
+    Some(data)
+}
+
+/// `text` as nul-ended UTF-16, in bytes.
+fn wide_bytes(text: &str) -> Vec<u8> {
+    text.encode_utf16()
+        .chain([0])
+        .flat_map(u16::to_le_bytes)
+        .collect()
+}
+
+/// Hands the data object a global block of format `f` holding `bytes`.
+fn set_global(data: &IDataObject, f: u16, bytes: &[u8]) {
+    // SAFETY: the block is allocated `bytes.len()` long and written within
+    // it while locked; the data object owns it once `SetData` takes it, and
+    // it is freed here if not.
+    unsafe {
+        let Ok(block) = GlobalAlloc(GMEM_MOVEABLE, bytes.len()) else {
+            return;
+        };
+        let dst = GlobalLock(block).cast::<u8>();
+        if dst.is_null() {
+            let _ = GlobalFree(Some(block));
+            return;
+        }
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
+        let _ = GlobalUnlock(block);
+        let medium = STGMEDIUM {
+            tymed: TYMED_HGLOBAL.0 as u32,
+            u: STGMEDIUM_0 { hGlobal: block },
+            pUnkForRelease: std::mem::ManuallyDrop::new(None),
+        };
+        if data.SetData(&format(f), &medium, true).is_err() {
+            let _ = GlobalFree(Some(block));
+        }
     }
 }

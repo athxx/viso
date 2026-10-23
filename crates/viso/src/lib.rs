@@ -2633,6 +2633,23 @@ impl WindowState {
 
 /// What a drag from outside offers, as data a target may take: its files,
 /// its link and its text, each empty until the OS gives its contents.
+/// What a drag carries out of the app: its text, link and files. A drop
+/// elsewhere may copy or move its text, and copy or link to its files, which
+/// stay where they are.
+fn drag_out(data: &viso_ui::DragData) -> viso_platform::DragOut {
+    let files = data.files().map(<[_]>::to_vec).unwrap_or_default();
+    viso_platform::DragOut {
+        text: data.as_text().map(str::to_owned),
+        uri: data.uri().map(str::to_owned),
+        actions: viso_platform::DropActions {
+            moves: files.is_empty(),
+            copies: true,
+            links: !files.is_empty(),
+        },
+        files,
+    }
+}
+
 fn outside_data(offer: &viso_runtime::DropOffer) -> viso_ui::DragData {
     use viso_ui::{DragData, DragItem};
     let mut data = DragData::new();
@@ -3198,6 +3215,14 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     viso_ui::DropOperation::Move => viso_runtime::DropAction::Move,
                     viso_ui::DropOperation::Copy => viso_runtime::DropAction::Copy,
                     viso_ui::DropOperation::Link => viso_runtime::DropAction::Link,
+                }));
+            }
+            viso_runtime::InputSample::DragEnded { action, .. } => {
+                // The drag the OS took ended: its source hears how.
+                ws.store.drag_out_ended(action.map(|a| match a {
+                    viso_runtime::DropAction::Move => viso_ui::DropOperation::Move,
+                    viso_runtime::DropAction::Copy => viso_ui::DropOperation::Copy,
+                    viso_runtime::DropAction::Link => viso_ui::DropOperation::Link,
                 }));
             }
             viso_runtime::InputSample::EditMenu(e) => {
@@ -4058,6 +4083,12 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         if was_editing != entry.is_some() {
                             cx.show_soft_keyboard(ws.window, entry.is_some());
                         }
+                    }
+                    // A drag carried past the window's edge goes on as the
+                    // OS's, where the OS takes one.
+                    if let Some(data) = ws.store.drag_out_asked() {
+                        let started = cx.start_drag(ws.window, drag_out(&data));
+                        ws.store.drag_out_started(started);
                     }
                     // The mouse shows the cursor the node under it names; the
                     // platform hears of it only when it changes.

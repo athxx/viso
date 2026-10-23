@@ -58,7 +58,7 @@ use crate::event::{
 use crate::handler::AppHandler;
 use crate::menu::Menu;
 use crate::panel::setting;
-use crate::{Instant, LogicalRect, PlatformApp, RawWindowHandle, TextEntry, Window};
+use crate::{Instant, PlatformApp, RawWindowHandle, TextEntry, Window};
 
 /// The display's one window.
 const WINDOW: WindowId = WindowId(1);
@@ -936,7 +936,8 @@ impl Display for KmsDisplay {
                     self.pump.push(RawEvent::WindowClosed { window });
                 }
             }
-            After::Redrawn(_) => {}
+            // A panel has no other clients to drag from.
+            After::Redrawn(_) | After::Dropped(..) => {}
         }
     }
 }

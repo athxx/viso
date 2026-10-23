@@ -2,6 +2,12 @@
 //! of the app's windows reaches the app step by step, each `XdndPosition`
 //! answered by an `XdndStatus` once the app has heard it, and the drop by an
 //! `XdndFinished` once the app has taken what the selection holds.
+//!
+//! And as a source, for the drags the app carries out of a window: the
+//! selection window owns `XdndSelection` and speaks for the drag, the
+//! pointer's moves find the aware window under it, each told `XdndPosition`
+//! once it answered the last, and let go over one that took it the drag
+//! ends with that window's `XdndFinished`.
 
 use x11rb::connection::Connection;
 use x11rb::errors::ReplyError;
@@ -9,6 +15,7 @@ use x11rb::protocol::xproto::{
     self, Atom, AtomEnum, ClientMessageEvent, ConnectionExt as _, EventMask, Property,
     PropertyNotifyEvent, SelectionNotifyEvent,
 };
+use x11rb::wrapper::ConnectionExt as _;
 use x11rb::xcb_ffi::XCBConnection;
 
 use super::atoms::Atoms;
@@ -41,6 +48,42 @@ pub(super) struct Xdnd {
     /// The target, source and asked action of a drop the app is taking,
     /// which the visit no longer holds once its data is read.
     finishing: Option<(xproto::Window, xproto::Window, Atom)>,
+    outbound: Option<Outbound>,
+}
+
+/// A drag the app carries out of window `window`.
+struct Outbound {
+    window: WindowId,
+    /// The window that owns `XdndSelection` and is named as the source.
+    source: xproto::Window,
+    types: Vec<Atom>,
+    /// The action asked of each target.
+    asked: Atom,
+    allowed: DropActions,
+    target: Option<Target>,
+    /// Let go over a target that took it, waiting for its `XdndFinished`.
+    dropped: bool,
+}
+
+/// The aware window a drag the app carries out is over.
+struct Target {
+    window: xproto::Window,
+    version: u32,
+    /// The action its last `XdndStatus` took; `None` while it takes none.
+    accepted: Option<Atom>,
+    /// A position told and not yet answered.
+    waiting: bool,
+    /// The latest position and its time, held until the last is answered.
+    pending: Option<(u32, u32)>,
+}
+
+/// What a step of a drag the app carries out came to.
+pub(super) enum Outcome {
+    /// Not a step of one.
+    Ignored,
+    Going,
+    /// It ended, doing this.
+    Ended(Option<DropAction>),
 }
 
 /// What a client message of the protocol asks of the app.
@@ -304,6 +347,244 @@ impl Xdnd {
         let message = ClientMessageEvent::new(32, source, kind, data);
         let _ = conn.send_event(false, source, EventMask::NO_EVENT, message);
     }
+}
+
+impl Xdnd {
+    /// Whether the app carries a drag out.
+    pub(super) fn carrying(&self) -> bool {
+        self.outbound.is_some()
+    }
+
+    /// Starts carrying a drag out of `window`, offering `types`, which the
+    /// selection window `source` owns `XdndSelection` for.
+    pub(super) fn start(
+        &mut self,
+        conn: &XCBConnection,
+        atoms: &Atoms,
+        window: WindowId,
+        source: xproto::Window,
+        types: Vec<Atom>,
+        allowed: DropActions,
+    ) {
+        let _ = conn.change_property32(
+            xproto::PropMode::REPLACE,
+            source,
+            atoms.XdndTypeList,
+            AtomEnum::ATOM,
+            &types,
+        );
+        let asked = [
+            (allowed.copies, atoms.XdndActionCopy),
+            (allowed.moves, atoms.XdndActionMove),
+            (allowed.links, atoms.XdndActionLink),
+        ]
+        .into_iter()
+        .find_map(|(yes, a)| yes.then_some(a))
+        .unwrap_or(atoms.XdndActionCopy);
+        self.outbound = Some(Outbound {
+            window,
+            source,
+            types,
+            asked,
+            allowed,
+            target: None,
+            dropped: false,
+        });
+    }
+
+    /// The window the drag carried out started from.
+    pub(super) fn carried_from(&self) -> Option<WindowId> {
+        self.outbound.as_ref().map(|o| o.window)
+    }
+
+    /// The pointer carrying the drag out moved to (`x`, `y`) on the root
+    /// window at `time`.
+    pub(super) fn carry(
+        &mut self,
+        conn: &XCBConnection,
+        atoms: &Atoms,
+        root: xproto::Window,
+        (x, y): (i16, i16),
+        time: u32,
+    ) {
+        let Some(out) = self.outbound.as_mut().filter(|o| !o.dropped) else {
+            return;
+        };
+        let under = aware_under(conn, atoms, root, x, y);
+        if out.target.as_ref().map(|t| t.window) != under.map(|u| u.0) {
+            if let Some(old) = out.target.take() {
+                tell(conn, old.window, atoms.XdndLeave, [out.source, 0, 0, 0, 0]);
+            }
+            if let Some((window, version)) = under {
+                let version = version.min(VERSION);
+                let more = u32::from(out.types.len() > 3);
+                let mut data = [out.source, version << 24 | more, 0, 0, 0];
+                for (slot, &t) in data[2..].iter_mut().zip(&out.types) {
+                    *slot = t;
+                }
+                tell(conn, window, atoms.XdndEnter, data);
+                out.target = Some(Target {
+                    window,
+                    version,
+                    accepted: None,
+                    waiting: false,
+                    pending: None,
+                });
+            }
+        }
+        let Some(target) = out.target.as_mut() else {
+            return;
+        };
+        let at = (u32::from(x as u16) << 16) | u32::from(y as u16);
+        if target.waiting {
+            target.pending = Some((at, time));
+            return;
+        }
+        let asked = if target.version >= 2 { out.asked } else { 0 };
+        tell(
+            conn,
+            target.window,
+            atoms.XdndPosition,
+            [out.source, 0, at, time, asked],
+        );
+        target.waiting = true;
+        let _ = conn.flush();
+    }
+
+    /// The button carrying the drag out was let go at `time`: over a
+    /// target that took it, it is dropped there; anywhere else it ends.
+    pub(super) fn let_go(&mut self, conn: &XCBConnection, atoms: &Atoms, time: u32) -> Outcome {
+        let Some(out) = self.outbound.as_mut().filter(|o| !o.dropped) else {
+            return Outcome::Ignored;
+        };
+        match &out.target {
+            Some(t) if t.accepted.is_some() => {
+                tell(conn, t.window, atoms.XdndDrop, [out.source, 0, time, 0, 0]);
+                out.dropped = true;
+                let _ = conn.flush();
+                Outcome::Going
+            }
+            _ => self.give_up(conn, atoms),
+        }
+    }
+
+    /// The drag carried out is put back: the target it was over hears it
+    /// leave.
+    pub(super) fn give_up(&mut self, conn: &XCBConnection, atoms: &Atoms) -> Outcome {
+        let Some(out) = self.outbound.take() else {
+            return Outcome::Ignored;
+        };
+        if let Some(t) = &out.target {
+            tell(conn, t.window, atoms.XdndLeave, [out.source, 0, 0, 0, 0]);
+            let _ = conn.flush();
+        }
+        Outcome::Ended(None)
+    }
+
+    /// An `XdndStatus` or `XdndFinished` to the selection window, from the
+    /// target of the drag the app carries out.
+    pub(super) fn on_source_message(
+        &mut self,
+        conn: &XCBConnection,
+        atoms: &Atoms,
+        e: &ClientMessageEvent,
+    ) -> Outcome {
+        let data = e.data.as_data32();
+        let Some(out) = self.outbound.as_mut() else {
+            return Outcome::Ignored;
+        };
+        let Some(target) = out.target.as_mut().filter(|t| t.window == data[0]) else {
+            return Outcome::Ignored;
+        };
+        if e.type_ == atoms.XdndStatus {
+            target.accepted = (data[1] & 1 != 0).then(|| {
+                if target.version >= 2 && data[4] != x11rb::NONE {
+                    data[4]
+                } else {
+                    atoms.XdndActionCopy
+                }
+            });
+            target.waiting = false;
+            if let Some((at, time)) = target.pending.take() {
+                let asked = if target.version >= 2 { out.asked } else { 0 };
+                tell(
+                    conn,
+                    target.window,
+                    atoms.XdndPosition,
+                    [out.source, 0, at, time, asked],
+                );
+                target.waiting = true;
+                let _ = conn.flush();
+            }
+            return Outcome::Going;
+        }
+        if e.type_ == atoms.XdndFinished && out.dropped {
+            let done = if target.version >= 5 {
+                (data[1] & 1 != 0).then_some(data[2])
+            } else {
+                target.accepted
+            };
+            let allowed = out.allowed;
+            self.outbound = None;
+            let action = done
+                .and_then(|a| action_of(atoms, a))
+                .filter(|&a| allowed.allows(a))
+                .or_else(|| done.map(|_| DropAction::Copy));
+            return Outcome::Ended(action);
+        }
+        Outcome::Ignored
+    }
+}
+
+/// Sends client message `kind` with `data` to `window`.
+fn tell(conn: &XCBConnection, window: xproto::Window, kind: Atom, data: [u32; 5]) {
+    let message = ClientMessageEvent::new(32, window, kind, data);
+    let _ = conn.send_event(false, window, EventMask::NO_EVENT, message);
+}
+
+/// The innermost window under (`x`, `y`) on `root` that speaks XDND, and
+/// its version.
+fn aware_under(
+    conn: &XCBConnection,
+    atoms: &Atoms,
+    root: xproto::Window,
+    x: i16,
+    y: i16,
+) -> Option<(xproto::Window, u32)> {
+    let mut at = root;
+    loop {
+        let child = conn
+            .translate_coordinates(root, at, x, y)
+            .ok()?
+            .reply()
+            .ok()?
+            .child;
+        if child == x11rb::NONE {
+            return None;
+        }
+        let version = conn
+            .get_property(false, child, atoms.XdndAware, AtomEnum::ATOM, 0, 1)
+            .ok()
+            .and_then(|c| c.reply().ok())
+            .and_then(|r| r.value32()?.next());
+        if let Some(version) = version {
+            // A frame's client is the aware window; nothing inside it is.
+            return Some((child, version));
+        }
+        at = child;
+    }
+}
+
+/// The action named by `atom`.
+fn action_of(atoms: &Atoms, atom: Atom) -> Option<DropAction> {
+    [
+        (atoms.XdndActionCopy, DropAction::Copy),
+        (atoms.XdndActionMove, DropAction::Move),
+        (atoms.XdndActionLink, DropAction::Link),
+    ]
+    .into_iter()
+    .find(|&(a, _)| a == atom)
+    .map(|(_, action)| action)
 }
 
 impl Visit {

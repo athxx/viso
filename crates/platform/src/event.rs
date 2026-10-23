@@ -933,6 +933,13 @@ pub enum RawEvent {
     /// A step of a drag from outside the app over a window; the handler
     /// answers through its [`DropReply`](crate::DropReply).
     Drop(crate::drop::RawDrop),
+    /// The drag [`PlatformApp::start_drag`](crate::PlatformApp::start_drag)
+    /// started from `window` ended: let go where it did `action`, or put back
+    /// (`None`).
+    DragEnded {
+        window: WindowId,
+        action: Option<crate::drop::DropAction>,
+    },
     /// The app moved to the background: it is no longer visible and should stop
     /// animating. On mobile the drawable may be torn down after this.
     Suspended,

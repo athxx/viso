@@ -22,6 +22,12 @@
 //! reading order; Tab and the arrows step it through them, Space or Enter
 //! drops it on the one it is over and Escape puts it back.
 //!
+//! Data with text, a link or files leaves the app with the mouse: carried
+//! past the window's edge it is handed to the OS ([`NodeStore::drag_out_asked`]),
+//! the preview goes, and the drag goes on as one the OS runs, over other
+//! apps' windows and the app's own alike; the source hears how it ended once
+//! the OS tells ([`NodeStore::drag_out_ended`]).
+//!
 //! What a target and a source hear is told through their key handlers after
 //! the input that decided it ([`KeyRouter::route_drops`](crate::KeyRouter::route_drops)).
 //! The preview's motion is an offset past its own translate, marking only
@@ -172,6 +178,16 @@ impl DragData {
     }
 
     /// Whether it offers a representation `accept` takes.
+    /// Whether it offers anything another app takes: text, a link or files.
+    pub fn leaves_the_app(&self) -> bool {
+        self.items.iter().any(|item| {
+            matches!(
+                item,
+                DragItem::Text(_) | DragItem::Uri(_) | DragItem::Files(_)
+            )
+        })
+    }
+
     pub fn offers(&self, accept: DragAccept) -> bool {
         self.items.iter().any(|item| {
             matches!(
@@ -294,6 +310,20 @@ struct Session {
     at: Vec2,
     grip: Vec2,
     over: Option<NodeId>,
+    outward: Outward,
+}
+
+/// Where a carried drag stands with the OS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Outward {
+    /// Inside the app.
+    In,
+    /// Carried past the window's edge, waiting to be handed to the OS.
+    Asked,
+    /// The OS runs it.
+    Gone,
+    /// The OS took none: it stays inside the app.
+    Kept,
 }
 
 /// A drag from outside the app over the window.
@@ -595,6 +625,27 @@ impl NodeStore {
             }
         }
         let at = Vec2::new(at[0], at[1]);
+        let Some(s) = self.drag_drops.session.as_mut() else {
+            return true;
+        };
+        if s.outward == Outward::Gone {
+            // The OS has the drag; its samples are nobody's.
+            return true;
+        }
+        if !direct
+            && s.outward == Outward::In
+            && phase == PointerPhase::Move
+            && s.data.leaves_the_app()
+        {
+            let window = self.world(root);
+            if !(window.x <= at.x
+                && at.x < window.x + window.w
+                && window.y <= at.y
+                && at.y < window.y + window.h)
+            {
+                self.drag_drops.session.as_mut().unwrap().outward = Outward::Asked;
+            }
+        }
         match phase {
             PointerPhase::Move => self.carry_to(root, at),
             PointerPhase::Up => {
@@ -640,6 +691,7 @@ impl NodeStore {
             at,
             grip,
             over: None,
+            outward: Outward::In,
         });
         // A preview a drop left still gliding back goes at once.
         if let Some(old) = self.drag_drops.shown.take() {
@@ -809,6 +861,58 @@ impl NodeStore {
             let to = shown.offset;
             self.move_preview(to, false, true);
         }
+    }
+
+    /// The data carried past the window's edge, to hand to the OS; answer
+    /// with [`NodeStore::drag_out_started`].
+    pub fn drag_out_asked(&self) -> Option<Rc<DragData>> {
+        let s = self.drag_drops.session.as_ref()?;
+        (s.outward == Outward::Asked).then(|| Rc::clone(&s.data))
+    }
+
+    /// Whether the OS took the drag [`NodeStore::drag_out_asked`] named:
+    /// taken, the target it was over hears it leave and its preview goes;
+    /// not, it stays inside the app.
+    pub fn drag_out_started(&mut self, started: bool) {
+        let Some(s) = self
+            .drag_drops
+            .session
+            .as_mut()
+            .filter(|s| s.outward == Outward::Asked)
+        else {
+            return;
+        };
+        if !started {
+            s.outward = Outward::Kept;
+            return;
+        }
+        s.outward = Outward::Gone;
+        let (over, at, data) = (s.over.take(), s.at, Rc::clone(&s.data));
+        if let Some(over) = over {
+            self.tell_target(over, DropPhase::Leave, at, &data);
+        }
+        if let Some(shown) = self.drag_drops.shown.take()
+            && self.arena().is_live(shown.node)
+        {
+            self.put_preview(&shown, Vec2::ZERO);
+            self.set_hidden(shown.node, true);
+        }
+        self.interaction_states.moved();
+    }
+
+    /// The drag the OS took ended, doing `operation` where it was let go,
+    /// or put back (`None`): its source hears so.
+    pub fn drag_out_ended(&mut self, operation: Option<DropOperation>) {
+        if !self
+            .drag_drops
+            .session
+            .as_ref()
+            .is_some_and(|s| s.outward == Outward::Gone)
+        {
+            return;
+        }
+        let s = self.drag_drops.session.take().unwrap();
+        self.end_carry(&s, DragEnd { operation });
     }
 
     /// Puts the drag under way back: the target it was over hears it leave
@@ -1212,6 +1316,43 @@ mod tests {
         }
         assert!(store.hidden(preview) && store.drag_preview_shown().is_none());
         assert_eq!(store.translate(preview), Vec2::ZERO);
+    }
+
+    #[test]
+    fn carried_past_the_window_s_edge_text_goes_on_as_the_os_s_drag() {
+        let (mut store, root, [source, cards, _, preview]) = scene();
+        let p = PointerId::MOUSE;
+        store.arm_drag_source(p, source, [10.0, 10.0], false);
+        store.steer_drag_drop(root, p, PointerPhase::Move, [60.0, 100.0], 4.0, false);
+        assert!(store.drop_over(cards));
+        assert!(store.drag_out_asked().is_none(), "inside the window");
+        told(&mut store);
+        store.steer_drag_drop(root, p, PointerPhase::Move, [320.0, 100.0], 4.0, false);
+        let data = store.drag_out_asked().expect("past the edge");
+        assert_eq!(data.as_text(), Some("seven"));
+        store.drag_out_started(true);
+        assert!(matches!(
+            &told(&mut store)[..],
+            [(n, DropTell::Target(e))] if *n == cards && e.phase == DropPhase::Leave
+        ));
+        assert!(store.hidden(preview) && store.drag_out_asked().is_none());
+        // The OS has the pointer: its samples reach nothing.
+        store.steer_drag_drop(root, p, PointerPhase::Move, [60.0, 100.0], 4.0, false);
+        assert!(!store.drop_over(cards) && told(&mut store).is_empty());
+        store.drag_out_ended(Some(DropOperation::Copy));
+        assert!(matches!(
+            &told(&mut store)[..],
+            [(n, DropTell::Source(DragEnd { operation: Some(DropOperation::Copy) }))]
+                if *n == source
+        ));
+        assert!(!store.drag_drop_running());
+
+        // Where the OS takes none, it stays inside.
+        store.arm_drag_source(p, source, [10.0, 10.0], false);
+        store.steer_drag_drop(root, p, PointerPhase::Move, [320.0, 100.0], 4.0, false);
+        store.drag_out_started(false);
+        store.steer_drag_drop(root, p, PointerPhase::Move, [60.0, 100.0], 4.0, false);
+        assert!(store.drop_over(cards) && store.drag_out_asked().is_none());
     }
 
     #[test]

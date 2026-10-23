@@ -178,7 +178,7 @@ Rules:
   drag preview, keyboard alternative.
 - [x] OS file/text drop into a window: macOS, Windows, X11 (XDND), Wayland, web, iOS
   (UIDropInteraction), Android.
-- [ ] Drag out to the OS (files/text) on desktop.
+- [x] Drag out to the OS (files/text) on desktop.
 
 ## W9 — Widgets
 

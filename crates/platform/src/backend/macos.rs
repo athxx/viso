@@ -44,8 +44,9 @@ use objc2_app_kit::{
     NSAllRomanInputSourcesLocaleIdentifier, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
     NSApplicationTerminateReply, NSBackingStoreType, NSColor, NSColorSpace, NSCursor,
-    NSDragOperation, NSDraggingInfo, NSEvent, NSEventMask, NSEventModifierFlags, NSEventPhase,
-    NSMenu, NSMenuItem, NSPasteboard, NSPasteboardTypeFileURL, NSPasteboardTypeString,
+    NSDragOperation, NSDraggingContext, NSDraggingInfo, NSDraggingItem, NSDraggingSession,
+    NSDraggingSource, NSEvent, NSEventMask, NSEventModifierFlags, NSEventPhase, NSMenu, NSMenuItem,
+    NSPasteboard, NSPasteboardItem, NSPasteboardTypeFileURL, NSPasteboardTypeString,
     NSPasteboardTypeURL, NSPreferredScrollerStyleDidChangeNotification, NSScreen, NSScroller,
     NSScrollerStyle, NSSystemColorsDidChangeNotification, NSTextInputClient, NSTrackingArea,
     NSTrackingAreaOptions, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
@@ -56,7 +57,7 @@ use objc2_foundation::{
     MainThreadMarker, NSArray, NSAttributedString, NSAttributedStringKey,
     NSCurrentLocaleDidChangeNotification, NSDate, NSDefaultRunLoopMode, NSLocale, NSNotification,
     NSNotificationCenter, NSObject, NSObjectProtocol, NSPoint, NSProcessInfo, NSRange,
-    NSRangePointer, NSRect, NSSize, NSString,
+    NSRangePointer, NSRect, NSSize, NSString, NSURL,
 };
 
 use crate::RawWindowHandle;
@@ -882,6 +883,13 @@ impl PlatformApp for MacApp {
     }
 
     fn show_soft_keyboard(&mut self, _window: WindowId, _show: bool) {}
+
+    fn start_drag(&mut self, window: WindowId, drag: crate::DragOut) -> bool {
+        self.windows
+            .iter()
+            .find(|w| w.id == window)
+            .is_some_and(|win| win.content_view.start_drag(&drag))
+    }
 
     fn appearance(&self) -> Appearance {
         current_appearance(&self.app)
@@ -1813,6 +1821,12 @@ struct ViewIvars {
     /// What a drag from outside over the view offers, read as it came, and
     /// the app's answer.
     arrival: RefCell<Option<(DropOffer, DropReply)>>,
+    /// The last press or drag of a mouse button, which a drag the app
+    /// carries out of the view starts from.
+    last_mouse: RefCell<Option<Retained<NSEvent>>>,
+    /// The actions the drag the app carried out of the view allows, while
+    /// it runs.
+    drag_out: Cell<Option<NSDragOperation>>,
 }
 
 /// The magnify among a view's trackpad gestures.
@@ -1996,6 +2010,7 @@ define_class!(
             if self.try_begin_window_drag(event) {
                 return;
             }
+            self.note_mouse(event);
             self.pointer(event, PointerPhase::Down, PointerButtons::PRIMARY, true);
         }
 
@@ -2006,6 +2021,7 @@ define_class!(
 
         #[unsafe(method(rightMouseDown:))]
         fn right_mouse_down(&self, event: &NSEvent) {
+            self.note_mouse(event);
             self.pointer(event, PointerPhase::Down, PointerButtons::SECONDARY, true);
         }
 
@@ -2017,6 +2033,7 @@ define_class!(
         #[unsafe(method(otherMouseDown:))]
         fn other_mouse_down(&self, event: &NSEvent) {
             if !self.back_button(event, true) {
+                self.note_mouse(event);
                 self.pointer(event, PointerPhase::Down, PointerButtons::MIDDLE, true);
             }
         }
@@ -2035,16 +2052,19 @@ define_class!(
 
         #[unsafe(method(mouseDragged:))]
         fn mouse_dragged(&self, event: &NSEvent) {
+            self.note_mouse(event);
             self.pointer(event, PointerPhase::Moved, PointerButtons::NONE, false);
         }
 
         #[unsafe(method(rightMouseDragged:))]
         fn right_mouse_dragged(&self, event: &NSEvent) {
+            self.note_mouse(event);
             self.pointer(event, PointerPhase::Moved, PointerButtons::NONE, false);
         }
 
         #[unsafe(method(otherMouseDragged:))]
         fn other_mouse_dragged(&self, event: &NSEvent) {
+            self.note_mouse(event);
             self.pointer(event, PointerPhase::Moved, PointerButtons::NONE, false);
         }
 
@@ -2296,6 +2316,27 @@ define_class!(
             catch_unwind(AssertUnwindSafe(|| self.drag_drop(sender))).unwrap_or(false)
         }
     }
+
+    unsafe impl NSDraggingSource for VisoContentView {
+        #[unsafe(method(draggingSession:sourceOperationMaskForDraggingContext:))]
+        fn dragging_source_mask(
+            &self,
+            _session: &NSDraggingSession,
+            _context: NSDraggingContext,
+        ) -> NSDragOperation {
+            self.ivars().drag_out.get().unwrap_or(NSDragOperation::None)
+        }
+
+        #[unsafe(method(draggingSession:endedAtPoint:operation:))]
+        fn dragging_source_ended(
+            &self,
+            _session: &NSDraggingSession,
+            _at: NSPoint,
+            operation: NSDragOperation,
+        ) {
+            let _ = catch_unwind(AssertUnwindSafe(|| self.drag_out_ended(operation)));
+        }
+    }
 );
 
 impl VisoContentView {
@@ -2325,6 +2366,8 @@ impl VisoContentView {
             context_menu: Cell::new(None),
             gestures: Cell::new(0),
             arrival: RefCell::new(None),
+            last_mouse: RefCell::new(None),
+            drag_out: Cell::new(None),
         });
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
         // SAFETY: the pasteboard type names are immutable AppKit constants.
@@ -2438,6 +2481,108 @@ impl VisoContentView {
         let p = self.convertPoint_fromView(window_point, None);
         let k = self.ivars().logical.get();
         (p.x * k, p.y * k)
+    }
+
+    fn note_mouse(&self, event: &NSEvent) {
+        *self.ivars().last_mouse.borrow_mut() = Some(objc2::Message::retain(event));
+    }
+
+    /// Carries `drag` on from the last mouse press or drag as a drag AppKit
+    /// runs. Returns whether it started.
+    fn start_drag(&self, drag: &crate::DragOut) -> bool {
+        let ivars = self.ivars();
+        let Some(event) = ivars.last_mouse.borrow().clone() else {
+            return false;
+        };
+        if ivars.buttons.get() == 0 || ivars.drag_out.get().is_some() {
+            return false;
+        }
+        let workspace = NSWorkspace::sharedWorkspace();
+        let at = self.convertPoint_fromView(event.locationInWindow(), None);
+        let item = |writer: &ProtocolObject<dyn objc2_app_kit::NSPasteboardWriting>,
+                    icon: Retained<objc2_app_kit::NSImage>,
+                    i: usize| {
+            let item = NSDraggingItem::initWithPasteboardWriter(NSDraggingItem::alloc(), writer);
+            let shift = i as f64 * 4.0;
+            let frame = NSRect::new(
+                NSPoint::new(at.x - 16.0 + shift, at.y - 16.0 + shift),
+                NSSize::new(32.0, 32.0),
+            );
+            // SAFETY: the contents are an image, which a dragging item draws.
+            unsafe { item.setDraggingFrame_contents(frame, Some(&icon)) };
+            item
+        };
+        let mut items = Vec::new();
+        for (i, file) in drag.files.iter().enumerate() {
+            let path = NSString::from_str(&file.to_string_lossy());
+            let url = NSURL::fileURLWithPath(&path);
+            items.push(item(
+                ProtocolObject::from_ref(&*url),
+                workspace.iconForFile(&path),
+                i,
+            ));
+        }
+        if items.is_empty() {
+            let board = NSPasteboardItem::new();
+            // SAFETY: the pasteboard type names are immutable AppKit constants.
+            let (url_type, string_type) = unsafe { (NSPasteboardTypeURL, NSPasteboardTypeString) };
+            if let Some(uri) = &drag.uri {
+                board.setString_forType(&NSString::from_str(uri), url_type);
+            }
+            let text = drag.plain_text();
+            if text.is_empty() {
+                return false;
+            }
+            board.setString_forType(&NSString::from_str(&text), string_type);
+            let kind = if drag.uri.is_some() {
+                "public.url"
+            } else {
+                "public.plain-text"
+            };
+            #[allow(deprecated)]
+            let icon = workspace.iconForFileType(&NSString::from_str(kind));
+            items.push(item(ProtocolObject::from_ref(&*board), icon, 0));
+        }
+        let mut mask = NSDragOperation::None;
+        for (allowed, op) in [
+            (drag.actions.copies, NSDragOperation::Copy),
+            (drag.actions.moves, NSDragOperation::Move),
+            (drag.actions.links, NSDragOperation::Link),
+        ] {
+            if allowed {
+                mask |= op;
+            }
+        }
+        ivars.drag_out.set(Some(mask));
+        let session = self.beginDraggingSessionWithItems_event_source(
+            &NSArray::from_retained_slice(&items),
+            &event,
+            ProtocolObject::from_ref(self),
+        );
+        session.setAnimatesToStartingPositionsOnCancelOrFail(true);
+        true
+    }
+
+    /// The drag the app carried out ended, doing `operation`: AppKit kept the
+    /// button's release, so none is held now.
+    fn drag_out_ended(&self, operation: NSDragOperation) {
+        let ivars = self.ivars();
+        ivars.drag_out.set(None);
+        ivars.buttons.set(0);
+        let action = if operation.contains(NSDragOperation::Move) {
+            Some(DropAction::Move)
+        } else if operation.contains(NSDragOperation::Copy) {
+            Some(DropAction::Copy)
+        } else if operation.contains(NSDragOperation::Link) {
+            Some(DropAction::Link)
+        } else {
+            None
+        };
+        self.push(RawEvent::DragEnded {
+            window: ivars.window,
+            action,
+        });
+        self.deliver_now();
     }
 
     /// If the press falls inside a declared draggable caption region, start a
