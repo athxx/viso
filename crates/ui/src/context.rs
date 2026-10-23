@@ -532,6 +532,8 @@ pub enum StoreRequest {
     Slide(NodeId, crate::slider::Slide),
     /// Show a slider's thumbs elsewhere.
     ShowSlider(NodeId, f32, f32),
+    /// Carry on or let go of a colour plane's drag, or move its focus.
+    Plane(NodeId, crate::color_plane::PlaneChange),
 }
 
 impl StoreRequest {
@@ -565,6 +567,7 @@ impl StoreRequest {
             StoreRequest::HoldStep(id, half) => store.hold_step(id, half),
             StoreRequest::Slide(id, slide) => store.slide(id, slide),
             StoreRequest::ShowSlider(id, low, high) => store.show_slider(id, low, high),
+            StoreRequest::Plane(id, change) => store.change_plane(id, change),
         }
     }
 }
@@ -1157,6 +1160,19 @@ impl<'a> EventCx<'a> {
     pub fn show_slider(&mut self, id: NodeId, low: f32, high: f32) {
         self.store_requests
             .push(StoreRequest::ShowSlider(id, low, high));
+    }
+
+    /// Node `id`'s colour plane, if it draws one; `None` on the state-only
+    /// paths.
+    pub fn color_plane(&self, id: NodeId) -> Option<crate::color_plane::ColorPlane> {
+        self.place
+            .and_then(|place| place.store.color_plane(id).copied())
+    }
+
+    /// Record what a handler makes of colour plane `id`'s drag or focus
+    /// ([`color_plane`](crate::color_plane)).
+    pub fn change_plane(&mut self, id: NodeId, change: crate::color_plane::PlaneChange) {
+        self.store_requests.push(StoreRequest::Plane(id, change));
     }
 
     /// Hold half `half` of stepper `id` down, or let go of its hold

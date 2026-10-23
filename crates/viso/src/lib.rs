@@ -4592,9 +4592,9 @@ pub mod prelude {
     // widget is a `Component` an app authors and builds into its `BuildCx`, so
     // these belong in the default set as they land.
     pub use viso_widgets::{
-        Avatar, Badge, Button, ButtonStyle, CheckBox, CheckBoxStyle, Chip, ChipStyle, Grid,
-        GridViewStyle, Icon, IconStyle, Image, ImageStyle, Label, LabelStyle, Modal, ModalHandle,
-        ModalHandleSlot, ModalStyle, NavHandle, NavHandleSlot, NavigationStack,
+        Avatar, Badge, Button, ButtonStyle, CheckBox, CheckBoxStyle, Chip, ChipStyle, ColorPicker,
+        Grid, GridViewStyle, Icon, IconStyle, Image, ImageStyle, Label, LabelStyle, Modal,
+        ModalHandle, ModalHandleSlot, ModalStyle, NavHandle, NavHandleSlot, NavigationStack,
         NavigationStackStyle, NumberField, Popup, PopupHandle, PopupHandleSlot, PopupStyle,
         ProgressIndicator, RadioGroup, RadioStyle, RangeSlider, Scroll, ScrollViewStyle,
         SearchField, SearchFieldHandle, SearchFieldHandleSlot, SegmentedControl, SegmentedStyle,
@@ -4602,10 +4602,10 @@ pub mod prelude {
         SliderStyle, Spinner, Splitter, SplitterStyle, Stepper, StepperStyle, Tabs, TabsStyle,
         TextInput, TextInputStyle, Toast, ToastEdge, ToastHandle, ToastHandleSlot, ToastStyle,
         Toggle, ToggleStyle, View, ViewStyle, VirtualList, VirtualListViewStyle, avatar, badge,
-        button, checkbox, chip, dot_badge, grid, icon, image, knob, label, link_label, modal,
-        navigation_stack, number_field, popup, progress_bar, progress_ring, radio_group,
-        range_slider, rich_text, scroll, search_field, segmented_control, sheet, slider, spinner,
-        splitter, stepper, tabs, text_input, toast, toggle, view, virtual_list,
+        button, checkbox, chip, color_picker, dot_badge, grid, icon, image, knob, label,
+        link_label, modal, navigation_stack, number_field, popup, progress_bar, progress_ring,
+        radio_group, range_slider, rich_text, scroll, search_field, segmented_control, sheet,
+        slider, spinner, splitter, stepper, tabs, text_input, toast, toggle, view, virtual_list,
     };
     // The top-level Window control (§68 public application lifecycle): a window
     // is not a node control — it does not enter the UI tree — so it appears as an

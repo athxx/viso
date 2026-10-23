@@ -15,6 +15,11 @@
 //! ring with a quarter open at the bottom, filled round clockwise, and a
 //! face with a line pointing at the value.
 //!
+//! A bar can paint its track with colour rather than fill it
+//! ([`TrackPaint`]): the hues round from red, or a colour running from clear
+//! to opaque over a checkerboard; its thumb is then a ring the track shows
+//! through.
+//!
 //! [`slider_input`] reads what a sample asks of a slider, so every driver
 //! moves the same way. A press on a bar's track jumps the nearer thumb
 //! there, one on a thumb picks it up where it is, and a drag carries it; a
@@ -33,6 +38,7 @@ use viso_render::{
     Rgba, ShadowShape, Stroke,
 };
 
+use crate::color_plane::{CHECK, Hsv, Shade, checkerboard, rounded_mesh};
 use crate::component::{BuildCx, Handle, LeafStyle, NodeStore};
 use crate::content::Content;
 use crate::context::EventCx;
@@ -69,6 +75,8 @@ const EASE: f32 = 0.06;
 const WHEEL_STEP: f32 = 16.0;
 /// The high bits of a wheel's wake token; its low bits the steps, signed.
 const WHEEL: u32 = 0x534c_0000;
+/// How many cells a coloured track is cut into along its length.
+const COLOR_CELLS: u32 = 48;
 /// How many steps Page Up and Page Down take.
 pub const PAGE: f64 = 10.0;
 
@@ -79,6 +87,18 @@ pub enum SliderShape {
     Bar(Axis),
     /// A ring round a face, a line on the face pointing at the value.
     Knob,
+}
+
+/// What a bar's track shows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TrackPaint {
+    /// Its track colour, filled up to the value.
+    Plain,
+    /// The hues, from red round to red.
+    Hue,
+    /// This colour, clear at the start and opaque at the end, over a
+    /// checkerboard.
+    Alpha(Rgba),
 }
 
 /// One of a slider's thumbs: a range's lower and upper, a plain slider's
@@ -129,6 +149,8 @@ pub struct Slider {
     pub track: Rgba,
     pub fill: Rgba,
     pub thumb: Rgba,
+    /// What a bar's track shows.
+    pub paint: TrackPaint,
     /// The drag carrying a thumb, if one is.
     pub drag: Option<Drag>,
     /// The thumb of a range that has the focus, ringed; a plain slider's
@@ -163,6 +185,7 @@ impl Slider {
             track,
             fill,
             thumb,
+            paint: TrackPaint::Plain,
             drag: None,
             focus: None,
             wheel: 0.0,
@@ -183,6 +206,12 @@ impl Slider {
     /// The same filling from `origin`.
     pub fn with_origin(mut self, origin: Option<f32>) -> Slider {
         self.origin = origin.map(clamp01);
+        self
+    }
+
+    /// The same with its track showing `paint`.
+    pub fn with_paint(mut self, paint: TrackPaint) -> Slider {
+        self.paint = paint;
         self
     }
 
@@ -324,6 +353,13 @@ impl Slider {
             }
         };
         let ends = (at(0.0), at(1.0));
+        if self.paint != TrackPaint::Plain {
+            let track = stretch(ends.0, ends.1, (lie.thumb * 0.6).max(TRACK));
+            self.paint_colors(track, axis, &lie, out);
+            let p = at(self.shown[1]);
+            self.paint_ring(p, lie.thumb * 0.5, out);
+            return;
+        }
         out.push(pill(stretch(ends.0, ends.1, thick), self.track));
         let [low, high] = self.shown;
         let (from, to) = match (self.range, self.origin) {
@@ -390,6 +426,65 @@ impl Slider {
                 },
             }));
         }
+    }
+
+    /// A coloured track filling `track`, the colour at each point the one at
+    /// the fraction it stands for along a bar lying as `lie`.
+    fn paint_colors(&self, track: Rect, axis: Axis, lie: &Lie, out: &mut Vec<Primitive>) {
+        let radius = (track.w.min(track.h) * 0.5).min(CHECK);
+        let cells = match axis {
+            Axis::Row => [COLOR_CELLS, 1],
+            Axis::Column => [1, COLOR_CELLS],
+        };
+        let fraction = |x: f32, y: f32| {
+            if lie.span <= 0.0 {
+                return 0.0;
+            }
+            let along =
+                (track.x + x - lie.start.x) * lie.way.x + (track.y + y - lie.start.y) * lie.way.y;
+            clamp01(along / lie.span)
+        };
+        match self.paint {
+            TrackPaint::Plain => {}
+            TrackPaint::Hue => {
+                let color = |x: f32, y: f32| Hsv::new(fraction(x, y), 1.0, 1.0).to_rgba(1.0);
+                out.push(Primitive::Mesh(rounded_mesh(
+                    track,
+                    radius,
+                    cells,
+                    Shade::Smooth(&color),
+                )));
+            }
+            TrackPaint::Alpha(tint) => {
+                out.push(Primitive::Mesh(checkerboard(track, radius)));
+                let color = |x: f32, y: f32| Rgba {
+                    a: fraction(x, y),
+                    ..tint
+                };
+                out.push(Primitive::Mesh(rounded_mesh(
+                    track,
+                    radius,
+                    cells,
+                    Shade::Smooth(&color),
+                )));
+            }
+        }
+    }
+
+    /// A ring of radius `r` about `p` the track shows through, ringed again
+    /// when it has the focus.
+    fn paint_ring(&self, p: Vec2, r: f32, out: &mut Vec<Primitive>) {
+        let ring = |r: f32, width: f32, color: Rgba| {
+            Primitive::AnalyticEllipse(AnalyticEllipse {
+                rect: Rect::new(p.x - r, p.y - r, r * 2.0, r * 2.0),
+                color: Rgba::TRANSPARENT,
+                border: Border { width, color },
+            })
+        };
+        let r = if self.held().is_some() { r + 1.0 } else { r };
+        out.push(ring(r + 0.75, 1.0, Rgba::new(0.0, 0.0, 0.0, 0.35)));
+        out.push(ring(r, 3.0, self.thumb));
+        out.push(ring(r - 3.0, 0.75, Rgba::new(0.0, 0.0, 0.0, 0.25)));
     }
 
     fn paint_knob(&self, rect: Rect, out: &mut Vec<Primitive>) {
@@ -813,6 +908,17 @@ impl NodeStore {
         }
         slider.value = value;
         self.settle_slider(id);
+    }
+
+    /// Paint slider `id`'s track with `paint`.
+    pub fn paint_slider(&mut self, id: NodeId, paint: TrackPaint) {
+        let Some(slider) = self.slider_mut(id) else {
+            return;
+        };
+        if slider.paint != paint {
+            slider.paint = paint;
+            self.mark_dirty(id, DirtyClass::PAINT);
+        }
     }
 
     /// Land slider `id`'s thumbs where they are told to stand, at once.

@@ -507,6 +507,8 @@ fn paint_own(store: &NodeStore, node: NodeId, world: Rect, out: &mut Vec<Primiti
                 stepper.paint(world, store.reads_rtl(node), out);
             } else if let Content::Slider(slider) = content {
                 slider.paint(world, store.reads_rtl(node), out);
+            } else if let Content::ColorPlane(plane) = content {
+                plane.paint(world, out);
             } else if let Content::Segments(segments) = content {
                 segments.paint(store, node, world, out);
             } else {
@@ -834,6 +836,7 @@ pub(crate) fn paint_content(
         Content::PageDots(dots) => dots.paint(world, out),
         Content::Stepper(stepper) => stepper.paint(world, false, out),
         Content::Slider(slider) => slider.paint(world, false, out),
+        Content::ColorPlane(plane) => plane.paint(world, out),
         // Segments read their container's children, which only a node's own
         // paint reaches.
         Content::Segments(_) => {}

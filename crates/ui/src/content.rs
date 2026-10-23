@@ -161,6 +161,9 @@ pub enum Content {
     Segments(crate::segments::Segments),
     /// A slider: a value along a track, or round a knob.
     Slider(crate::slider::Slider),
+    /// A colour plane: a colour's tones at its hue, a ring of hues round
+    /// them, or the colour itself.
+    ColorPlane(crate::color_plane::ColorPlane),
 }
 
 /// An image a brush node samples: the resource its texture parameter names,
@@ -196,6 +199,7 @@ impl Content {
             Content::PageDots(dots) => dots.natural(),
             Content::Stepper(stepper) => stepper.natural,
             Content::Slider(slider) => slider.natural,
+            Content::ColorPlane(plane) => plane.natural,
             Content::Shader { .. } | Content::Scene { .. } | Content::Segments(_) => Vec2::ZERO,
         }
     }
@@ -214,6 +218,7 @@ impl Content {
             Content::PageDots(dots) => dots.natural().x,
             Content::Stepper(stepper) => stepper.natural.x,
             Content::Slider(slider) => slider.natural.x,
+            Content::ColorPlane(plane) => plane.natural.x,
             Content::Shader { .. } | Content::Scene { .. } | Content::Segments(_) => 0.0,
         }
     }
@@ -235,6 +240,7 @@ impl Content {
             | Content::PageDots(_)
             | Content::Stepper(_)
             | Content::Slider(_)
+            | Content::ColorPlane(_)
             | Content::Segments(_) => None,
         }
     }

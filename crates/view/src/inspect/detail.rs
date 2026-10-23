@@ -425,6 +425,17 @@ fn groups(store: &NodeStore, id: NodeId) -> Vec<PropertyGroup> {
             };
             add(&mut content, "value", value);
         }
+        Some(Content::ColorPlane(plane)) => {
+            add(&mut content, "kind", "color_plane".into());
+            add(&mut content, "shape", format!("{:?}", plane.shape));
+            let hsv = plane.hsv;
+            add(
+                &mut content,
+                "hsv",
+                format!("{} {} {}", number(hsv.h), number(hsv.s), number(hsv.v)),
+            );
+            add(&mut content, "alpha", number(plane.alpha));
+        }
         Some(Content::Segments(segments)) => {
             add(&mut content, "kind", "segments".into());
             let selected = segments.selected.map_or("none".into(), |i| i.to_string());
