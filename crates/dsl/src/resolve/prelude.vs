@@ -84,6 +84,20 @@ export record FullSwipeEvent { edge: SwipeEdge; }
 export record ReorderEvent { from: U32; to: U32; }
 // The edge of the surface a `Sheet` slides in from.
 export enum SheetEdge { bottom; top; leading; trailing; }
+// What a drop does with the data it takes. A `DropEvent`'s `kind` is the
+// index among the target's `drop_accepts` of the kind it takes the data as;
+// `text` is that kind's text, `files` the paths of `"files"`.
+export enum DropOperation { move; copy; link; }
+export record DropEvent {
+    position: Point;
+    kind: U32;
+    text: String;
+    files: List<String>;
+    operation: DropOperation;
+}
+// How a drag of a node's data ended: what the target it was dropped on did,
+// none for data put back.
+export record DropEnd { operation: Option<DropOperation>; }
 
 // How a move's progress follows its time: Penner's curves accelerating
 // (`in_*`), decelerating (`out_*`) or both, `ease_*` the cubic ones, a CSS

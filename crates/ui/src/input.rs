@@ -420,6 +420,14 @@ pub fn route_contact(
     } else {
         MOUSE_SLOP
     };
+    // A drag carrying data takes the pointer's samples; no node sees them.
+    if store.steer_drag_drop(root, pointer, ev.phase, [ev.x, ev.y], slop, contact.direct) {
+        if matches!(ev.phase, PointerPhase::Up | PointerPhase::Leave) && contact.direct {
+            store.contacts_mut().end(pointer);
+        }
+        chain.clear();
+        return true;
+    }
     // A press that travels past the slop or lifts is no long press.
     match ev.phase {
         PointerPhase::Move => store.follow_hold(pointer, [ev.x, ev.y], slop),
@@ -621,6 +629,7 @@ fn route_sample(
             store.press(target, pointer);
             store.arm_drag(pointer, target, [ev.x, ev.y], contact.direct);
             store.arm_hold(pointer, target, [ev.x, ev.y], contact.direct);
+            store.arm_drag_source(pointer, target, [ev.x, ev.y], contact.direct);
             if contact.direct && !store.contacts().is_panning_any() {
                 store.arm_pinch(pointer, target, [ev.x, ev.y]);
             }
@@ -2043,6 +2052,30 @@ impl KeyRouter {
         ran
     }
 
+    /// Tell each drop target and drag source what a drag decided
+    /// ([`crate::drag_drop`]), through their key handlers. Returns whether
+    /// any handler ran.
+    pub fn route_drops(
+        store: &mut NodeStore,
+        states: &mut StateStore,
+        bindings: &BindingTable,
+        edits: &mut TextEdits,
+    ) -> bool {
+        let mut told = Vec::new();
+        store.take_drop_tells(&mut told);
+        let mut ran = false;
+        for (node, tell) in &told {
+            if store.arena().is_live(*node) {
+                let payload = match tell {
+                    crate::drag_drop::DropTell::Target(event) => KeyPayload::Drop(event),
+                    crate::drag_drop::DropTell::Source(end) => KeyPayload::DragEnd(*end),
+                };
+                ran |= key_handler_dispatch(store, states, bindings, edits, *node, payload).ran;
+            }
+        }
+        ran
+    }
+
     /// Deliver every wake whose time came ([`EventCx::wake_after`]) to its
     /// node's key handler, in the order they fired; a node gone drops its
     /// wake. Returns whether a handler ran.
@@ -2166,6 +2199,8 @@ enum KeyPayload<'e> {
     Snap(usize),
     Row(crate::row_gesture::RowGesture),
     Detent(usize),
+    Drop(&'e crate::drag_drop::DropEvent),
+    DragEnd(crate::drag_drop::DragEnd),
 }
 
 /// Call one node's key handler with `payload`, then apply everything the
@@ -2194,6 +2229,8 @@ fn key_handler_dispatch(
             KeyPayload::Snap(index) => EventCx::__new_snap(states, bindings, index),
             KeyPayload::Row(gesture) => EventCx::__new_row_gesture(states, bindings, gesture),
             KeyPayload::Detent(detent) => EventCx::__new_sheet_detent(states, bindings, detent),
+            KeyPayload::Drop(event) => EventCx::__new_drop(states, bindings, event),
+            KeyPayload::DragEnd(end) => EventCx::__new_drag_end(states, bindings, end),
         };
         cx.__set_focused(store.focused());
         cx.__set_services(store.__services());

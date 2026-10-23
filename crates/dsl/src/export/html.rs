@@ -95,6 +95,9 @@ pub(super) enum Wire {
     /// Makes the element a sheet: its panel slides in from its edge to its
     /// detent while open, and a drag carries it between them or off.
     Sheet,
+    /// Has the page carry drags of `data-drag` elements to `data-drop-accepts`
+    /// ones.
+    DragDrop,
 }
 
 /// The style of a sticky element: held at its scroller's start edge, over
@@ -1410,6 +1413,16 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 }
                 decls.push(("touch-action", "none".to_owned()));
             }
+            // A preview lies off the page, put away there as the image its
+            // parent's drag shows.
+            ControlKind::DragPreview => {
+                el.attr("data-drag-preview", "");
+                el.attr("aria-hidden", "true");
+                decls.push(("position", "fixed".to_owned()));
+                decls.push(("inset-block-start", "0".to_owned()));
+                decls.push(("inset-inline-start", "-100000px".to_owned()));
+                decls.push(("pointer-events", "none".to_owned()));
+            }
             // A panel lies below its row's content, filling the row.
             ControlKind::SwipeActions => {
                 let edge = self
@@ -1651,6 +1664,47 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         ) && let Some(axis) = fixed.int()
         {
             el.attr("data-drag-axis", if axis == 0 { "row" } else { "column" });
+        }
+        let carries = [
+            control.node.drag,
+            control.node.drag_kind,
+            control.node.drop_accepts,
+            control.node.drop_operation,
+        ];
+        if carries.iter().any(Option::is_some) {
+            wires.push(Wire::DragDrop);
+        }
+        for (entry, name, what) in [
+            (control.node.drag, "data-drag", "the text it carries"),
+            (
+                control.node.drag_kind,
+                "data-drag-kind",
+                "the kind it carries",
+            ),
+            (
+                control.node.drop_accepts,
+                "data-drop-accepts",
+                "the kinds it takes",
+            ),
+            (
+                control.node.drop_operation,
+                "data-drop-operation",
+                "what a drop on it does",
+            ),
+        ] {
+            match self.bind(wires, entry, Prop::Data(name), what, at) {
+                Some(Fixed::Value(Value::Nil)) | None => {}
+                Some(Fixed::Value(Value::List(kinds))) => {
+                    let kinds: Vec<String> = kinds.iter().map(text_of).collect();
+                    el.attr(name, &kinds.join("\n"));
+                }
+                Some(fixed) => {
+                    el.attr(name, &fixed.text());
+                    if name == "data-drag" {
+                        el.attr("draggable", "true");
+                    }
+                }
+            }
         }
         if let Some(fixed) = self.bind(
             wires,
@@ -2016,6 +2070,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                             r#":is([aria-selected="true"],[role="radio"][aria-checked="true"])"#
                         }
                         viso_schema::Interaction::Dragging => "[data-viso-dragging]",
+                        viso_schema::Interaction::DropOver => "[data-viso-drop-over]",
                     }
                     .to_owned(),
                 ),

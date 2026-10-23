@@ -229,6 +229,10 @@ pub(crate) fn control_cells(
         control.node.access_key,
         control.node.drag_axis,
         control.pan_margin,
+        control.node.drag,
+        control.node.drag_kind,
+        control.node.drop_accepts,
+        control.node.drop_operation,
     ])
     .flatten()
     .chain(arms)
@@ -250,8 +254,9 @@ pub(crate) fn control_cells(
 /// its `cursor`, its text's `font_style`, `spans` and `selectable`, its
 /// `shadow`, a refreshable viewport's `refreshing`, its `sticky`, and a
 /// navigation stack's `page_transition`, its `hero`, its `focus_ring`, its
-/// `access_key`, its `drag_axis` and a viewer's `pan_margin`.
-const SHOWN: usize = 52;
+/// `access_key`, its `drag_axis`, a viewer's `pan_margin`, and its `drag`,
+/// `drag_kind`, `drop_accepts` and `drop_operation`.
+const SHOWN: usize = 56;
 
 /// The input of each value a node shows, in order.
 const SHOWN_INPUTS: [ControlInput; SHOWN] = [
@@ -307,6 +312,10 @@ const SHOWN_INPUTS: [ControlInput; SHOWN] = [
     ControlInput::AccessKey,
     ControlInput::DragAxis,
     ControlInput::PanMargin,
+    ControlInput::Drag,
+    ControlInput::DragKind,
+    ControlInput::DropAccepts,
+    ControlInput::DropOperation,
 ];
 
 /// Where its `translate` sits among the values a node shows.
@@ -347,6 +356,10 @@ const ACCESS_KEY: usize = 49;
 
 /// Where a viewer's `pan_margin` sits among the values a node shows.
 const PAN_MARGIN: usize = 51;
+
+/// Where its `drag`, `drag_kind`, `drop_accepts` and `drop_operation` sit
+/// among the values a node shows.
+const CARRY: usize = 52;
 
 /// Where its background, opacity, corner radius and border sit among the
 /// values a node shows.
@@ -562,6 +575,10 @@ impl Shown {
             access_key,
             drag_axis,
             pan_margin,
+            drag,
+            drag_kind,
+            drop_accepts,
+            drop_operation,
         ] = &shows;
         let access_key = access_key.as_str().and_then(|key| key.chars().next());
         let spanned = crate::text_style::spans(pieces);
@@ -703,6 +720,14 @@ impl Shown {
             };
             store.set_drag_axis(self.node, axis);
         }
+        // A node carrying text is a drag source; one listing kinds, a drop
+        // target taking them.
+        if (shown(CARRY) || shown(CARRY + 1)) && (changed(CARRY) || changed(CARRY + 1)) {
+            store.set_drag_source(self.node, drag_data(drag, drag_kind));
+        }
+        if (shown(CARRY + 2) || shown(CARRY + 3)) && (changed(CARRY + 2) || changed(CARRY + 3)) {
+            store.set_drop_target(self.node, drop_target(drop_accepts, drop_operation));
+        }
         // An autofocus node takes the focus as it mounts, unless something
         // already holds it.
         if prior.is_none() && truth(autofocus, false) && store.focused().is_none() {
@@ -835,6 +860,16 @@ impl Shown {
                 }
                 let full = value.as_int().unwrap_or(2);
                 store.set_swipe_row_of_children(self.node, Some((full & 1 != 0, full & 2 != 0)));
+            }
+            // A preview is a layer its parent, a drag source, shows as it is
+            // carried.
+            ControlKind::DragPreview => {
+                if first {
+                    store.set_layer(self.node, true);
+                    if let Some(source) = store.arena().parent(self.node) {
+                        store.set_drag_preview(source, Some(self.node));
+                    }
+                }
             }
             // A row's panel of actions waits past the edge it names.
             ControlKind::SwipeActions => {
@@ -1250,6 +1285,58 @@ fn input_kind_of(value: &Value) -> InputKind {
         Some(7) => InputKind::Search,
         _ => InputKind::Text,
     }
+}
+
+/// What a node carrying `text` as `kind` offers a drag: plain text, a link
+/// (and its text), files one path a line, or a value of the kind the app
+/// names holding the text as a `String`; none without text.
+fn drag_data(text: &Value, kind: &Value) -> Option<viso_ui::DragData> {
+    use viso_ui::{DragData, DragItem, DragKind};
+    let text = text.as_str()?;
+    Some(match kind.as_str().unwrap_or("text") {
+        "text" => DragData::text(text),
+        "uri" => DragData::new()
+            .with(DragItem::Uri(text.into()))
+            .with(DragItem::Text(text.into())),
+        "files" => DragData::new().with(DragItem::Files(
+            text.lines()
+                .filter(|l| !l.is_empty())
+                .map(std::path::PathBuf::from)
+                .collect(),
+        )),
+        named => DragData::new().with(DragItem::Value(
+            DragKind::named(named),
+            Rc::new(text.to_owned()),
+        )),
+    })
+}
+
+/// The drop target a node listing the kinds `kinds` is, a drop on it doing
+/// `operation`; none listing none.
+fn drop_target(kinds: &Value, operation: &Value) -> Option<viso_ui::DropTarget> {
+    use viso_ui::{DragAccept, DragKind, DropOperation, DropTarget};
+    let Value::List(kinds) = kinds else {
+        return None;
+    };
+    let accepts: Vec<DragAccept> = kinds
+        .iter()
+        .filter_map(Value::as_str)
+        .map(|kind| match kind {
+            "text" => DragAccept::Text,
+            "uri" => DragAccept::Uri,
+            "files" => DragAccept::Files,
+            named => DragAccept::Value(DragKind::named(named)),
+        })
+        .collect();
+    if accepts.is_empty() {
+        return None;
+    }
+    let operation = match operation.as_int() {
+        Some(1) => DropOperation::Copy,
+        Some(2) => DropOperation::Link,
+        _ => DropOperation::Move,
+    };
+    Some(DropTarget { accepts, operation })
 }
 
 /// A `Cursor` value as the pointer shape it names, none for any other.

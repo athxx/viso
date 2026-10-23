@@ -61,7 +61,10 @@ const TRANSFORM: &[WidgetProperty] = &[
     prop("hero", "Option<String>"),
 ];
 
-/// Focus properties every node but `Fragment` takes.
+/// Focus, pointer and drag-and-drop properties every node but `Fragment`
+/// takes: `drag` makes a node a drag source carrying that text as its
+/// `drag_kind` (`"text"`, `"uri"`, `"files"` one path a line, or a kind the
+/// app names), and `drop_accepts` a drop target taking the kinds it lists.
 const FOCUS: &[WidgetProperty] = &[
     prop("focusable", "Bool"),
     prop("autofocus", "Bool"),
@@ -70,6 +73,10 @@ const FOCUS: &[WidgetProperty] = &[
     prop("drag_axis", "Option<Axis>"),
     prop("cursor", "Cursor"),
     prop("enabled", "Bool"),
+    prop("drag", "Option<String>"),
+    prop("drag_kind", "String"),
+    prop("drop_accepts", "List<String>"),
+    prop("drop_operation", "DropOperation"),
 ];
 
 /// The `semantics.*` group.
@@ -345,6 +352,10 @@ const STANDARD_EVENTS: &[WidgetEvent] = &[
     WidgetEvent::new("blur", "FocusEvent"),
     WidgetEvent::new("animation_end", "AnimationEnd"),
     WidgetEvent::routed("link", "LinkEvent"),
+    WidgetEvent::routed("drop", "DropEvent"),
+    WidgetEvent::routed("drop_enter", "DropEvent"),
+    WidgetEvent::routed("drop_leave", "DropEvent"),
+    WidgetEvent::routed("drop_end", "DropEnd"),
 ];
 
 const TOGGLE_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("changed", "ToggleChanged")];
@@ -474,6 +485,13 @@ pub const STANDARD: &[NativeWidget] = &[
         ROW,
         &[SWIPE_ACTIONS, FLEX, LAYOUT, TRANSFORM, FOCUS],
     )
+    .slots(CHILDREN),
+    layout(
+        "DragPreview",
+        WidgetNode::Stack,
+        &[STACK, LAYOUT, TRANSFORM, FOCUS],
+    )
+    .provides(&STACK_CHILD)
     .slots(CHILDREN),
     layout(
         "ReorderHandle",

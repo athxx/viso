@@ -377,6 +377,12 @@ impl Rt {
             &self.bindings,
             &mut self.text_edits,
         );
+        KeyRouter::route_drops(
+            &mut self.store,
+            &mut self.states,
+            &self.bindings,
+            &mut self.text_edits,
+        );
         let mut changed = Vec::new();
         self.states.take_pending(&mut changed);
         self.store
@@ -1677,6 +1683,102 @@ export component Groceries {
         key(&mut rt, Key::Up);
         key(&mut rt, Key::Enter);
         assert_eq!(rt.int("moved"), 120, "the keyboard carries it up");
+        assert!(!rt.faulted());
+    }
+}
+
+#[test]
+fn a_dragged_card_drops_on_the_zone_taking_its_kind() {
+    const SRC: &str = r#"
+export component Board {
+    state enters = 0;
+    state leaves = 0;
+    state taken = "";
+    state kind: U32 = 9;
+    state copied = false;
+    state ended: Option<DropOperation> = Some(DropOperation::link);
+    view {
+        Column {
+            width: 300dp;
+            height: 300dp;
+            Stack {
+                width: 100dp;
+                height: 40dp;
+                drag: "7";
+                drag_kind: "card";
+                on drop_end(e) { ended = e.operation; }
+                DragPreview { Column { width: 100dp; height: 40dp; } }
+            }
+            Column {
+                width: 300dp;
+                height: 100dp;
+                drop_accepts: ["text", "card"];
+                drop_operation: DropOperation::copy;
+                on drop_enter(e) { enters += 1; }
+                on drop_leave(e) { leaves += 1; }
+                on drop(e) {
+                    taken = e.text;
+                    kind = e.kind;
+                    copied = e.operation == DropOperation::copy;
+                }
+            }
+            Column {
+                width: 300dp;
+                height: 100dp;
+                drop_accepts: ["uri"];
+                on drop_enter(e) { enters += 100; }
+            }
+        }
+    }
+}
+"#;
+    for mut rt in [Rt::reloaded(SRC), Rt::packaged(SRC)] {
+        let [card, cards, _links] = rt.children_of_root()[..] else {
+            panic!("a card and two zones");
+        };
+        let preview = rt.children(card)[0];
+        assert!(rt.store.is_drag_source(card) && rt.store.is_drop_target(cards));
+        assert!(rt.store.hidden(preview), "its preview is put away");
+
+        rt.pointer(50.0, 20.0, PointerPhase::Down);
+        for k in 1..=10 {
+            rt.pointer(
+                50.0 + 10.0 * k as f32,
+                20.0 + 20.0 * k as f32,
+                PointerPhase::Move,
+            );
+        }
+        assert!(rt.store.drag_drop_running());
+        assert!(!rt.store.hidden(preview), "it shows its preview, lifted");
+        assert_eq!(
+            (rt.int("enters"), rt.int("leaves")),
+            (1, 1),
+            "past the card zone, over the link one"
+        );
+        rt.pointer(150.0, 100.0, PointerPhase::Move);
+        assert!(rt.store.drop_over(cards));
+        rt.pointer(150.0, 100.0, PointerPhase::Up);
+        assert_eq!(rt.int("enters"), 2);
+        assert_eq!(rt.state("taken"), Some(Value::Str(Rc::new("7".into()))));
+        assert_eq!(rt.int("kind"), 1, "as its second kind");
+        assert_eq!(rt.int("copied"), 1);
+        assert_eq!(
+            rt.state("ended"),
+            Some(Value::Int(1)),
+            "the source heard it copied"
+        );
+        assert!(!rt.store.drag_drop_running());
+
+        rt.pointer(50.0, 20.0, PointerPhase::Down);
+        for k in 1..=5 {
+            rt.pointer(50.0 + 30.0 * k as f32, 20.0, PointerPhase::Move);
+        }
+        rt.pointer(200.0, 20.0, PointerPhase::Up);
+        assert_eq!(
+            rt.state("ended"),
+            Some(Value::Nil),
+            "let go over nothing, it is put back"
+        );
         assert!(!rt.faulted());
     }
 }

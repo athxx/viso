@@ -88,11 +88,15 @@ pub enum ControlKind {
     /// `detent_changed`, or off, and a drag off, a press on the scrim or
     /// Escape reports `open` false. It traps the focus while open.
     Sheet = 20,
+    /// `DragPreview`: a layer, put away until its parent, a drag source, is
+    /// carried, then shown following the pointer with its content at its
+    /// top start corner.
+    DragPreview = 21,
 }
 
 impl ControlKind {
     /// Every kind, by discriminant.
-    pub const ALL: [ControlKind; 21] = [
+    pub const ALL: [ControlKind; 22] = [
         ControlKind::Check,
         ControlKind::Slider,
         ControlKind::Select,
@@ -114,6 +118,7 @@ impl ControlKind {
         ControlKind::SwipeActions,
         ControlKind::ReorderHandle,
         ControlKind::Sheet,
+        ControlKind::DragPreview,
     ];
 
     /// The kind native widget `widget` is.
@@ -139,6 +144,7 @@ impl ControlKind {
             "SwipeRow" => ControlKind::SwipeRow,
             "SwipeActions" => ControlKind::SwipeActions,
             "ReorderHandle" => ControlKind::ReorderHandle,
+            "DragPreview" => ControlKind::DragPreview,
             _ => ControlKind::Plain,
         }
     }
@@ -168,13 +174,18 @@ impl ControlKind {
                 | ControlKind::Toast
                 | ControlKind::SwipeRow
                 | ControlKind::SwipeActions
+                | ControlKind::DragPreview
         )
     }
 
     /// Whether a node of the kind needs its control even reading nothing: it
     /// responds itself, or what it is follows from its kind alone.
     pub fn stands_alone(self) -> bool {
-        self.responds() || matches!(self, ControlKind::SwipeRow | ControlKind::SwipeActions)
+        self.responds()
+            || matches!(
+                self,
+                ControlKind::SwipeRow | ControlKind::SwipeActions | ControlKind::DragPreview
+            )
     }
 
     /// Whether the control reports `route`.
@@ -244,6 +255,10 @@ impl ControlKind {
             (_, "focus_ring") => ControlInput::FocusRing,
             (_, "access_key") => ControlInput::AccessKey,
             (_, "drag_axis") => ControlInput::DragAxis,
+            (_, "drag") => ControlInput::Drag,
+            (_, "drag_kind") => ControlInput::DragKind,
+            (_, "drop_accepts") => ControlInput::DropAccepts,
+            (_, "drop_operation") => ControlInput::DropOperation,
             (
                 ControlKind::Label
                 | ControlKind::Button
@@ -357,6 +372,7 @@ impl ControlKind {
             ControlKind::SwipeActions => "SwipeActions",
             ControlKind::ReorderHandle => "ReorderHandle",
             ControlKind::Sheet => "Sheet",
+            ControlKind::DragPreview => "DragPreview",
         }
     }
 
@@ -793,6 +809,14 @@ pub enum ControlInput {
     AccessKey,
     /// The node's `drag_axis`: the axis it drags along alone, if any.
     DragAxis,
+    /// The node's `drag`: the text it carries as a drag source, if any.
+    Drag,
+    /// The node's `drag_kind`: the kind its `drag` is carried as.
+    DragKind,
+    /// The node's `drop_accepts`: the kinds it takes as a drop target.
+    DropAccepts,
+    /// The node's `drop_operation`: what a drop on it does.
+    DropOperation,
     /// A text's `font_style`: upright or italic.
     FontStyle,
     /// A text's `spans`: its pieces, drawn each its own way.
@@ -920,6 +944,14 @@ pub struct NodeEntries {
     pub access_key: Option<u32>,
     /// The entry of its `drag_axis`.
     pub drag_axis: Option<u32>,
+    /// The entry of its `drag`.
+    pub drag: Option<u32>,
+    /// The entry of its `drag_kind`.
+    pub drag_kind: Option<u32>,
+    /// The entry of its `drop_accepts`.
+    pub drop_accepts: Option<u32>,
+    /// The entry of its `drop_operation`.
+    pub drop_operation: Option<u32>,
 }
 
 /// The handler-table entries of the style of a text a node shows: an absent
@@ -1051,7 +1083,7 @@ pub enum Switched {
 
 impl ControlInput {
     /// Every input, by wire tag.
-    pub const ALL: [ControlInput; 61] = [
+    pub const ALL: [ControlInput; 65] = [
         ControlInput::Value,
         ControlInput::Min,
         ControlInput::Max,
@@ -1113,6 +1145,10 @@ impl ControlInput {
         ControlInput::AccessKey,
         ControlInput::DragAxis,
         ControlInput::PanMargin,
+        ControlInput::Drag,
+        ControlInput::DragKind,
+        ControlInput::DropAccepts,
+        ControlInput::DropOperation,
     ];
 
     /// Its wire tag: its place in [`ControlInput::ALL`].
@@ -1265,6 +1301,10 @@ impl Control {
             ControlInput::FocusRing => self.node.focus_ring,
             ControlInput::AccessKey => self.node.access_key,
             ControlInput::DragAxis => self.node.drag_axis,
+            ControlInput::Drag => self.node.drag,
+            ControlInput::DragKind => self.node.drag_kind,
+            ControlInput::DropAccepts => self.node.drop_accepts,
+            ControlInput::DropOperation => self.node.drop_operation,
             ControlInput::TextColor => self.text.color,
             ControlInput::SoftWrap => self.text.soft_wrap,
             ControlInput::FontWeight => self.text.font_weight,
@@ -1342,6 +1382,10 @@ impl Control {
             ControlInput::FocusRing => &mut self.node.focus_ring,
             ControlInput::AccessKey => &mut self.node.access_key,
             ControlInput::DragAxis => &mut self.node.drag_axis,
+            ControlInput::Drag => &mut self.node.drag,
+            ControlInput::DragKind => &mut self.node.drag_kind,
+            ControlInput::DropAccepts => &mut self.node.drop_accepts,
+            ControlInput::DropOperation => &mut self.node.drop_operation,
             ControlInput::TextColor => &mut self.text.color,
             ControlInput::SoftWrap => &mut self.text.soft_wrap,
             ControlInput::FontWeight => &mut self.text.font_weight,
@@ -1426,6 +1470,10 @@ impl Encode for Control {
             self.node.focus_ring,
             self.node.access_key,
             self.node.drag_axis,
+            self.node.drag,
+            self.node.drag_kind,
+            self.node.drop_accepts,
+            self.node.drop_operation,
         ]
         .into_iter()
         .chain(self.text.all())
@@ -1558,6 +1606,10 @@ impl Decode for Control {
             focus_ring: entry()?,
             access_key: entry()?,
             drag_axis: entry()?,
+            drag: entry()?,
+            drag_kind: entry()?,
+            drop_accepts: entry()?,
+            drop_operation: entry()?,
         };
         control.text = TextEntries {
             color: entry()?,
@@ -1847,6 +1899,10 @@ mod tests {
                 focus_ring: Some(31),
                 access_key: Some(32),
                 drag_axis: Some(33),
+                drag: Some(34),
+                drag_kind: Some(35),
+                drop_accepts: Some(36),
+                drop_operation: Some(37),
             },
             text: TextEntries {
                 color: None,

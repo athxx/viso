@@ -218,6 +218,9 @@ class Store {
   sheet(el) {
     sheet(el);
   }
+  dragDrop() {
+    dragDrop();
+  }
 
   sync(el, control, value) {
     if (control === 2) el.$radio = el.getAttribute("role") === "radiogroup";

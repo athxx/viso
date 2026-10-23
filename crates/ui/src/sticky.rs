@@ -90,7 +90,7 @@ impl NodeStore {
                 .find(id)
                 .map_or(Vec2::ZERO, |k| self.stickies.list[k].pin)
         };
-        pin + self.reorder_shift_of(id) + self.sheet_slide_of(id)
+        pin + self.reorder_shift_of(id) + self.sheet_slide_of(id) + self.drag_preview_offset_of(id)
     }
 
     /// Pin node `id` `pin` past where it lays out, raising it above its

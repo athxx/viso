@@ -424,7 +424,12 @@ const page = (el, v) => {
 };
 // A `data-` attribute `name` the script reads for value `v`: a length in
 // px, a viewer's double tap empty for none.
-const datum = (v, name) => (name === "data-pan-margin" ? String(dp(v)) : v === null ? "" : String(v));
+const datum = (v, name) => {
+  if (name === "data-pan-margin") return String(dp(v));
+  // No text to carry makes no drag source.
+  if (v === null) return name === "data-drag" ? null : "";
+  return Array.isArray(v) ? v.map(String).join("\n") : String(v);
+};
 
 const url = (v) => {
   if (v === null || typeof v !== "object") return "";
@@ -504,7 +509,10 @@ const P = {
   hero: (el, v) => attr(el, "data-hero", v),
   ring: (el, v) => { el.style.outline = truth(v) ? "" : "none"; },
   key: (el, v) => attr(el, "accesskey", v),
-  data: (el, v, name) => attr(el, name, datum(v, name)),
+  data(el, v, name) {
+    attr(el, name, datum(v, name));
+    if (name === "data-drag") el.draggable = v !== null;
+  },
   axis: (el, v) => {
     if (v === null) delete el.dataset.dragAxis;
     else el.dataset.dragAxis = v === 0n ? "row" : "column";
@@ -1429,6 +1437,103 @@ const reorderList = (el) => {
   }, true);
 };
 
+// Drag and drop, by the browser's own: a `data-drag` element is a source
+// carrying its text as its `data-drag-kind` (`text` without one), its
+// `data-drag-preview` child the image the drag shows; a `data-drop-accepts`
+// element is a target taking the kinds it lists, one a line, the innermost
+// under the pointer that takes one of the drag's being the one it is over,
+// `data-viso-drop-over` meanwhile. A target hears a `viso-drop` event
+// `{ phase, e, taken }` (`phase` 0 as the drag comes over it, 1 as it leaves,
+// 2 as it is let go over it; `taken` the index among its kinds of the one it
+// takes it as) and the source a `viso-dragend` `{ operation }`, the index of
+// what the drop did, `null` for one put back. Files from outside the page
+// come as kind `files`.
+const DROPS = ["move", "copy", "link"];
+const kindType = (kind) => ({ text: "text/plain", uri: "text/uri-list", files: "Files" })[kind] ?? "application/x-viso." + kind.toLowerCase();
+const dropKinds = (el) => (el.dataset.dropAccepts ?? "").split("\n").filter(Boolean);
+const takenBy = (el, dt) => {
+  const types = [...dt.types];
+  return dropKinds(el).findIndex((k) => types.includes(kindType(k)));
+};
+let dragDropping = false;
+const dragDrop = () => {
+  if (dragDropping) return;
+  dragDropping = true;
+  // The operation of a drop on this page; one elsewhere is the browser's.
+  let carried = null, over = null, dropped = null;
+  const tell = (el, phase, e) => el.dispatchEvent(new CustomEvent("viso-drop", { detail: { phase, e, taken: Math.max(takenBy(el, e.dataTransfer), 0) } }));
+  const targetOf = (e) => {
+    let el = e.target instanceof Element ? e.target : null;
+    while (el && (el = el.closest("[data-drop-accepts]"))) {
+      if (el !== carried && !off(el) && takenBy(el, e.dataTransfer) >= 0) return el;
+      el = el.parentElement;
+    }
+    return null;
+  };
+  const come = (to, e) => {
+    if (to === over) return;
+    const was = over;
+    over = to;
+    if (was) { was.removeAttribute("data-viso-drop-over"); tell(was, 1, e); }
+    if (to) { to.setAttribute("data-viso-drop-over", ""); tell(to, 0, e); }
+  };
+  document.addEventListener("dragstart", (e) => {
+    const el = e.target instanceof Element ? e.target.closest("[data-drag]") : null;
+    if (!el || off(el)) return;
+    const kind = el.dataset.dragKind || "text", t = el.dataset.drag, dt = e.dataTransfer;
+    if (kind === "uri") dt.setData("text/uri-list", t);
+    dt.setData(kind === "uri" || kind === "files" ? "text/plain" : kindType(kind), t);
+    dt.effectAllowed = "all";
+    const preview = [...el.children].find((c) => c.hasAttribute("data-drag-preview"));
+    if (preview) {
+      const r = el.getBoundingClientRect();
+      dt.setDragImage(preview, e.clientX - r.left, e.clientY - r.top);
+    }
+    el.setAttribute("data-viso-dragging", "");
+    carried = el;
+    dropped = null;
+  });
+  document.addEventListener("dragenter", (e) => { if (targetOf(e)) e.preventDefault(); });
+  document.addEventListener("dragover", (e) => {
+    const to = targetOf(e);
+    come(to, e);
+    if (!to) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = DROPS[Number(to.dataset.dropOperation || 0)] ?? "move";
+  });
+  // Leaving the page leaves the target.
+  document.addEventListener("dragleave", (e) => { if (!e.relatedTarget) come(null, e); });
+  document.addEventListener("drop", (e) => {
+    const to = targetOf(e);
+    if (!to) return;
+    e.preventDefault();
+    over = null;
+    to.removeAttribute("data-viso-drop-over");
+    dropped = Number(to.dataset.dropOperation || 0);
+    tell(to, 2, e);
+  });
+  document.addEventListener("dragend", (e) => {
+    come(null, e);
+    const el = carried;
+    carried = null;
+    if (!el) return;
+    el.removeAttribute("data-viso-dragging");
+    const op = dropped ?? DROPS.indexOf(e.dataTransfer.dropEffect);
+    el.dispatchEvent(new CustomEvent("viso-dragend", { detail: { operation: op < 0 ? null : op } }));
+  });
+};
+
+// The `DropEvent` of a `viso-drop` on `el`: the text of the kind it takes
+// the data as, readable only once let go, and the files of `files`.
+const dropEvent = (el, d) => {
+  const dt = d.e.dataTransfer, kind = dropKinds(el)[d.taken] ?? "text";
+  const dropped = d.phase === 2;
+  let t = dropped ? dt.getData(kind === "files" ? "text/plain" : kindType(kind)) : "";
+  if (kind === "uri" && dropped) t = t.split("\n").find((l) => l && !l.startsWith("#")) ?? "";
+  const files = kind !== "files" || !dropped ? [] : dt.files.length ? [...dt.files].map((f) => f.name) : t.split("\n").filter(Boolean);
+  return rec([point(d.e, el), BigInt(d.taken), kind === "files" ? "" : t, files, BigInt(Number(el.dataset.dropOperation || 0))]);
+};
+
 // Calls `fire` with the payload of a primary press at or under `el` that no
 // nearer element took, once it held still for the long-press delay.
 const holdable = (el, fire) => {
@@ -1584,6 +1689,18 @@ const listen = (el, route, capture, control, fire) => {
   } else if (route === 29) {
     reorderList(el);
     el.addEventListener("viso-reorder", (e) => fire(rec([BigInt(e.detail.from), BigInt(e.detail.to)])), capture);
+  } else if (route >= 31 && route <= 33) {
+    dragDrop();
+    const phase = [2, 0, 1][route - 31];
+    el.addEventListener("viso-drop", (e) => {
+      if (e.target === el && e.detail.phase === phase) fire(dropEvent(el, e.detail));
+    }, capture);
+  } else if (route === 34) {
+    dragDrop();
+    el.addEventListener("viso-dragend", (e) => {
+      const op = e.detail.operation;
+      if (e.target === el) fire(rec([op === null ? null : BigInt(op)]));
+    }, capture);
   } else if (route >= 25 && route <= 27) {
     pinchable(el);
     el.addEventListener("viso-pinch", live((e) => {

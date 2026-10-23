@@ -110,6 +110,7 @@ impl NodeStore {
                 self.semantic_state(node).and_then(|s| s.selected) == Some(true)
             }
             Interaction::Dragging => self.dragging(node),
+            Interaction::DropOver => self.drop_over(node),
         }
     }
 

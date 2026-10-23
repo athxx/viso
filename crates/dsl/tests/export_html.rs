@@ -1875,3 +1875,70 @@ export component Pages {
         "the arriving hero flies from the other's place at its scale, which hides: {dom}"
     );
 }
+
+const CARRIED: &str = r#"
+export component Board {
+    state taken = "";
+    state kind: U32 = 9;
+    state enters = 0;
+    state ended: Option<DropOperation> = None;
+    view {
+        Column {
+            Stack {
+                width: 100dp;
+                height: 40dp;
+                drag: "7";
+                drag_kind: "card";
+                on drop_end(e) { ended = e.operation; }
+                DragPreview { Column { width: 100dp; height: 40dp; } }
+            }
+            Column {
+                width: 300dp;
+                height: 100dp;
+                drop_accepts: ["text", "card"];
+                drop_operation: DropOperation::copy;
+                on drop_enter(e) { enters += 1; }
+                on drop(e) { taken = e.text; kind = e.kind; }
+            }
+            Text { text: format("taken={} kind={} enters={} ended={}", taken, kind, enters, ended == Some(DropOperation::copy)); }
+        }
+    }
+}
+"#;
+
+#[test]
+fn a_drag_source_and_a_drop_target_export_to_the_browser_s_drag_and_drop() {
+    let page = export(CARRIED, false).unwrap();
+    assert!(
+        page.index.contains("data-drag=\"7\"")
+            && page.index.contains("draggable=\"true\"")
+            && page.index.contains("data-drag-kind=\"card\"")
+            && page.index.contains("data-drop-accepts=\"text\ncard\"")
+            && page.index.contains("data-drop-operation=\"1\"")
+            && page.index.contains("data-drag-preview"),
+        "{}",
+        page.index
+    );
+    let script = page.script.clone().unwrap();
+    assert!(script.contains("dragDrop();"), "{script}");
+    let Some(chrome) = chrome() else {
+        eprintln!("no Chrome: the page is not run");
+        return;
+    };
+    let carry = "\nconst dt = new DataTransfer();\n\
+        const on = (el, type) => { const r = el.getBoundingClientRect(); el.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt, clientX: r.left + 10, clientY: r.top + 10 })); };\n\
+        const source = () => document.querySelector('[data-drag]');\n\
+        const zone = () => document.querySelector('[data-drop-accepts]');\n\
+        setTimeout(() => { on(source(), 'dragstart'); on(zone(), 'dragenter'); on(zone(), 'dragover'); }, 50);\n\
+        setTimeout(() => document.body.append('over=' + zone().hasAttribute('data-viso-drop-over') + ' lifted=' + source().hasAttribute('data-viso-dragging') + '.'), 200);\n\
+        setTimeout(() => { on(zone(), 'drop'); on(source(), 'dragend'); }, 300);\n";
+    let dom = run_in_chrome(&page, &(script + carry), "export-carried", &[], chrome);
+    assert!(
+        dom.contains("over=true lifted=true."),
+        "the zone takes the card's kind: {dom}"
+    );
+    assert!(
+        dom.contains("taken=7 kind=1 enters=1 ended=true"),
+        "the drop hands over its text as its kind, and the source hears it copied: {dom}"
+    );
+}

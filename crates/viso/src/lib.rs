@@ -1598,6 +1598,7 @@ impl WindowState {
             || self.store.snaps_due()
             || self.store.row_gestures_due()
             || self.store.sheets_due()
+            || self.store.drops_due()
             || self.store.frame_clients_want_frame()
             || self.draws_clock
     }
@@ -3007,8 +3008,9 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         ev,
                         &mut ws.route_chain,
                     );
-                    if taken {
-                        // The handler did what the key does.
+                    if taken || ws.store.carry_key(&ev) {
+                        // The handler, or a gesture the keys carry on, did
+                        // what the key does.
                     } else if matches!(k.key, viso_runtime::Key::Tab) {
                         focus_next(&mut ws.store, root, !modifiers.shift);
                     } else if let Some(layer) = ws.store.dismissed_by_escape() {
@@ -3636,6 +3638,16 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // The sheets a drag moved hear where it left them.
                     if ws.store.sheets_due() {
                         KeyRouter::route_sheets(
+                            &mut ws.store,
+                            &mut ws.states,
+                            &ws.bindings,
+                            &mut ws.text_edits,
+                        );
+                        ws.tell_focus();
+                    }
+                    // The targets and sources a drag passed hear what it did.
+                    if ws.store.drops_due() {
+                        KeyRouter::route_drops(
                             &mut ws.store,
                             &mut ws.states,
                             &ws.bindings,

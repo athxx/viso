@@ -206,7 +206,7 @@ impl NodeStore {
 
     /// Whether node `id` won a drag that runs.
     pub fn dragging(&self, id: NodeId) -> bool {
-        self.drags.drags.iter().any(|d| d.started && d.node == id)
+        self.drags.drags.iter().any(|d| d.started && d.node == id) || self.drag_lifted(id)
     }
 
     /// The node pointer `pointer`'s started drag runs on.

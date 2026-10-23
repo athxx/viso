@@ -559,6 +559,7 @@ impl NodeStore {
             || self.row_gestures.moving()
             || self.reorder_scrolled()
             || self.sheets.moving()
+            || self.drag_drops.moving()
     }
 
     /// Whether viewport `id` glides toward a target.
@@ -847,6 +848,7 @@ impl NodeStore {
         self.tick_swipes(delta);
         self.tick_reorders(delta);
         self.tick_sheets(delta);
+        self.tick_drag_drops(delta);
     }
 
     /// Ease every glide `dt` seconds along its spring.

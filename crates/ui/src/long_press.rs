@@ -100,6 +100,7 @@ impl NodeStore {
             .takers
             .iter()
             .any(|&(n, direct_only)| n == id && (direct || !direct_only))
+            || (direct && self.holds_lift(id))
     }
 
     /// The long press pointer `pointer`'s dispatch carries.
@@ -120,7 +121,7 @@ impl NodeStore {
         direct: bool,
     ) {
         self.holds.forget(pointer);
-        if self.holds.takers.is_empty() {
+        if self.holds.takers.is_empty() && !(direct && self.drag_drops_armable()) {
             return;
         }
         let mut node = Some(target);
@@ -188,6 +189,11 @@ pub fn deliver_long_presses(
     while let Some(at) = store.holds.holds.iter().position(|h| h.due) {
         let hold = store.holds.holds.swap_remove(at);
         if !store.arena().is_live(hold.node) || store.inert(hold.node) {
+            continue;
+        }
+        // A hold on a drag source lifts its data.
+        if hold.direct && store.hold_lifts(hold.pointer, hold.node, hold.origin) {
+            ran = true;
             continue;
         }
         store.release_press(hold.pointer);

@@ -371,6 +371,10 @@ pub struct EventCx<'a> {
     row_gesture: Option<crate::row_gesture::RowGesture>,
     /// The detent a drag brought a sheet to, if this dispatch tells it.
     sheet_detent: Option<usize>,
+    /// What a drag did over the drop target, if this dispatch tells it.
+    drop_event: Option<&'a crate::drag_drop::DropEvent>,
+    /// How the source's drag ended, if this dispatch tells it.
+    drag_end: Option<crate::drag_drop::DragEnd>,
     /// The token of the wake this dispatch delivers.
     woken: Option<u32>,
     /// Whether the focus came to or left the node this dispatch tells.
@@ -595,6 +599,8 @@ impl<'a> EventCx<'a> {
             snapped: None,
             row_gesture: None,
             sheet_detent: None,
+            drop_event: None,
+            drag_end: None,
             woken: None,
             focus_change: None,
             access: None,
@@ -639,6 +645,8 @@ impl<'a> EventCx<'a> {
             snapped: None,
             row_gesture: None,
             sheet_detent: None,
+            drop_event: None,
+            drag_end: None,
             woken: None,
             focus_change: None,
             access: None,
@@ -682,6 +690,8 @@ impl<'a> EventCx<'a> {
             snapped: None,
             row_gesture: None,
             sheet_detent: None,
+            drop_event: None,
+            drag_end: None,
             woken: None,
             focus_change: None,
             access: None,
@@ -725,6 +735,8 @@ impl<'a> EventCx<'a> {
             snapped: None,
             row_gesture: None,
             sheet_detent: None,
+            drop_event: None,
+            drag_end: None,
             woken: None,
             focus_change: None,
             access: None,
@@ -815,6 +827,32 @@ impl<'a> EventCx<'a> {
     ) -> Self {
         let mut cx = Self::__new(states, bindings);
         cx.sheet_detent = Some(detent);
+        cx
+    }
+
+    /// Assemble the event context that tells a drop target what a drag did
+    /// over it: the handler reads it via [`EventCx::drop_event`].
+    #[doc(hidden)]
+    pub fn __new_drop(
+        states: &'a mut StateStore,
+        bindings: &'a BindingTable,
+        event: &'a crate::drag_drop::DropEvent,
+    ) -> Self {
+        let mut cx = Self::__new(states, bindings);
+        cx.drop_event = Some(event);
+        cx
+    }
+
+    /// Assemble the event context that tells a drag source how its drag
+    /// ended: the handler reads it via [`EventCx::drag_end`].
+    #[doc(hidden)]
+    pub fn __new_drag_end(
+        states: &'a mut StateStore,
+        bindings: &'a BindingTable,
+        end: crate::drag_drop::DragEnd,
+    ) -> Self {
+        let mut cx = Self::__new(states, bindings);
+        cx.drag_end = Some(end);
         cx
     }
 
@@ -1001,6 +1039,18 @@ impl<'a> EventCx<'a> {
     /// its place among its detents least first, if this dispatch tells it.
     pub fn sheet_detent(&self) -> Option<usize> {
         self.sheet_detent
+    }
+
+    /// What a drag did over this drop target ([`NodeStore::set_drop_target`]),
+    /// if this dispatch tells it.
+    pub fn drop_event(&self) -> Option<&crate::drag_drop::DropEvent> {
+        self.drop_event
+    }
+
+    /// How this drag source's drag ([`NodeStore::set_drag_source`]) ended,
+    /// if this dispatch tells it.
+    pub fn drag_end(&self) -> Option<crate::drag_drop::DragEnd> {
+        self.drag_end
     }
 
     /// Present sheet `id`, or put it away ([`NodeStore::present_sheet`]).

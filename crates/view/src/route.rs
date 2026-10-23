@@ -49,6 +49,9 @@ pub fn payload(route: EventRoute, cx: &EventCx<'_>) -> Option<Value> {
         };
         return Some(record([Value::Int(from as i64), Value::Int(to as i64)]));
     }
+    if route.is_drop() {
+        return drop_payload(route, cx);
+    }
     if route.is_key() {
         let key = cx.key()?;
         return (key.pressed == (route == EventRoute::KeyDown)).then(|| key_event(key));
@@ -108,6 +111,61 @@ pub fn payload(route: EventRoute, cx: &EventCx<'_>) -> Option<Value> {
             modifiers(pointer.modifiers),
         ]),
     })
+}
+
+/// The `DropEvent` a drop target hears of a drag, its position local to
+/// the target: the index among its `drop_accepts` of the kind it takes the
+/// data as, that kind's text and files; or the `DropEnd` its source hears.
+fn drop_payload(route: EventRoute, cx: &EventCx<'_>) -> Option<Value> {
+    use viso_ui::{DragAccept, DropOperation, DropPhase};
+    let operation = |op: DropOperation| {
+        Value::Int(match op {
+            DropOperation::Move => 0,
+            DropOperation::Copy => 1,
+            DropOperation::Link => 2,
+        })
+    };
+    if route == EventRoute::DropEnd {
+        let end = cx.drag_end()?;
+        return Some(record([end.operation.map_or(Value::Nil, operation)]));
+    }
+    let ev = cx.drop_event()?;
+    let phase = match route {
+        EventRoute::Drop => DropPhase::Drop,
+        EventRoute::DropEnter => DropPhase::Enter,
+        _ => DropPhase::Leave,
+    };
+    if ev.phase != phase {
+        return None;
+    }
+    let data = &ev.data;
+    let text = match ev.taken_as {
+        Some(DragAccept::Uri) => data.uri(),
+        Some(DragAccept::Value(kind)) => data.value_of(kind).and_then(|v| {
+            v.downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| v.downcast_ref::<&'static str>().copied())
+        }),
+        Some(DragAccept::Files) => None,
+        Some(DragAccept::Text) | None => data.as_text(),
+    };
+    let files = match ev.taken_as {
+        Some(DragAccept::Files) => data
+            .files()
+            .unwrap_or_default()
+            .iter()
+            .map(|path| Value::str(path.to_string_lossy().into_owned()))
+            .collect(),
+        _ => Vec::new(),
+    };
+    let at = cx.local(ev.at.x, ev.at.y);
+    Some(record([
+        point(at.x, at.y),
+        Value::Int(ev.taken as i64),
+        Value::str(text.unwrap_or_default()),
+        Value::List(Rc::new(files)),
+        operation(ev.operation),
+    ]))
 }
 
 /// The `ClickEvent` a keyboard activation of the dispatching node delivers:

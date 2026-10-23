@@ -432,6 +432,46 @@ fn a_stack_and_an_absolute_place_their_children() {
 }
 
 #[test]
+fn a_drag_source_and_a_drop_target_mount_with_its_preview_put_away() {
+    let build = viso::ui! {
+        Column {
+            width: 300dp;
+            height: 300dp;
+            Stack {
+                width: 100dp;
+                height: 40dp;
+                drag: "7";
+                drag_kind: "card";
+                DragPreview { Column { width: 100dp; height: 40dp; } }
+            }
+            Column { width: 300dp; height: 100dp; drop_accepts: ["card"]; }
+        }
+    };
+    let mut store = NodeStore::new();
+    let mut states = StateStore::new();
+    let mut bindings = BindingTable::new();
+    let mut lists = VirtualLists::new();
+    let mut text_edits = TextEdits::new();
+    let mut projectors = SemanticProjector::new();
+    let root = {
+        let mut cx = BuildCx::with_reactive(
+            &mut store,
+            &mut states,
+            &mut bindings,
+            &mut lists,
+            &mut text_edits,
+            &mut projectors,
+        );
+        build(&mut cx).id()
+    };
+    let mut kids = store.arena().children(root);
+    let (card, zone) = (kids.next().unwrap(), kids.next().unwrap());
+    let preview = store.arena().children(card).next().expect("its preview");
+    assert!(store.is_drag_source(card) && store.is_drop_target(zone));
+    assert!(store.is_layer(preview) && store.hidden(preview));
+}
+
+#[test]
 fn a_sheet_mounts_against_its_edge_resting_at_its_detents() {
     use viso::render::Rect;
 

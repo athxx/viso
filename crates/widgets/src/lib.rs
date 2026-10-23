@@ -20,6 +20,7 @@
 pub mod containers;
 pub mod controls;
 pub mod document;
+pub mod drag_drop;
 pub mod grid;
 pub mod icon;
 pub mod image;
@@ -58,6 +59,7 @@ pub use controls::{
 };
 pub use controls::{TOOLTIP_GRACE, TOOLTIP_LINGER, TOOLTIP_TOUCH, Tooltip, TooltipStyle, tooltip};
 pub use document::{Document, DocumentStyle, DocumentText, html, markdown};
+pub use drag_drop::{Draggable, DraggableStyle, DropZone, DropZoneStyle, draggable, drop_zone};
 pub use grid::{Grid, GridViewStyle, grid};
 pub use icon::{Icon, IconStyle, icon};
 pub use image::{Image, ImageStyle, image, image_asset};

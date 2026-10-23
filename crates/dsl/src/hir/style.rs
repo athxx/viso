@@ -30,13 +30,14 @@ use crate::resolve::{Resolution, ResolvedRef, SymbolId};
 use crate::syntax::{SyntaxKind, TextRange};
 
 /// The interaction selectors and the state each reads.
-pub(crate) const INTERACTION_SELECTORS: [(&str, Interaction); 6] = [
+pub(crate) const INTERACTION_SELECTORS: [(&str, Interaction); 7] = [
     ("hover", Interaction::Hovered),
     ("pressed", Interaction::Pressed),
     ("focused", Interaction::Focused),
     ("focus_visible", Interaction::FocusVisible),
     ("selected", Interaction::Selected),
     ("dragging", Interaction::Dragging),
+    ("drop_over", Interaction::DropOver),
 ];
 
 /// The standard selectors a node's own property decides: the selector, the

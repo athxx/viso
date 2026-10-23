@@ -85,7 +85,8 @@ impl Drive for Control {
             | ControlKind::Toast
             | ControlKind::SwipeRow
             | ControlKind::SwipeActions
-            | ControlKind::ReorderHandle => None,
+            | ControlKind::ReorderHandle
+            | ControlKind::DragPreview => None,
         }
     }
 }

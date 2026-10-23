@@ -89,11 +89,23 @@ pub enum EventRoute {
     /// A `Sheet`'s `detent_changed`: a drag let go brought it to rest at
     /// another detent.
     DetentChanged = 30,
+    /// `drop` (`DropEvent`): data a drag carried was let go over the node,
+    /// a drop target taking it.
+    Drop = 31,
+    /// `drop_enter` (`DropEvent`): a drag carrying data the node takes came
+    /// over it.
+    DropEnter = 32,
+    /// `drop_leave` (`DropEvent`): the drag left the node, or was put back
+    /// over it.
+    DropLeave = 33,
+    /// `drop_end` (`DropEnd`): a drag of the node's data ended, dropped or
+    /// put back.
+    DropEnd = 34,
 }
 
 impl EventRoute {
     /// Every route, by discriminant.
-    pub const ALL: [EventRoute; 31] = [
+    pub const ALL: [EventRoute; 35] = [
         EventRoute::Click,
         EventRoute::Tap,
         EventRoute::PointerDown,
@@ -125,6 +137,10 @@ impl EventRoute {
         EventRoute::FullSwiped,
         EventRoute::Reordered,
         EventRoute::DetentChanged,
+        EventRoute::Drop,
+        EventRoute::DropEnter,
+        EventRoute::DropLeave,
+        EventRoute::DropEnd,
     ];
 
     /// The route of standard DSL event `event`, `None` for an event the runtime
@@ -170,6 +186,10 @@ impl EventRoute {
             EventRoute::FullSwiped => "full_swiped",
             EventRoute::Reordered => "reordered",
             EventRoute::DetentChanged => "detent_changed",
+            EventRoute::Drop => "drop",
+            EventRoute::DropEnter => "drop_enter",
+            EventRoute::DropLeave => "drop_leave",
+            EventRoute::DropEnd => "drop_end",
         }
     }
 
@@ -207,6 +227,10 @@ impl EventRoute {
             EventRoute::FullSwiped => "FullSwiped",
             EventRoute::Reordered => "Reordered",
             EventRoute::DetentChanged => "DetentChanged",
+            EventRoute::Drop => "Drop",
+            EventRoute::DropEnter => "DropEnter",
+            EventRoute::DropLeave => "DropLeave",
+            EventRoute::DropEnd => "DropEnd",
         }
     }
 
@@ -223,7 +247,8 @@ impl EventRoute {
     /// Whether the node's key handler delivers it: a key sample, an
     /// activated link, which reaches a text and its ancestors that way, a
     /// refresh asked of a viewport, the item a snapping one settles on, a
-    /// swipe row's full swipe, or a list's reorder.
+    /// swipe row's full swipe, a list's reorder, or what a drag and drop
+    /// tells its target and its source.
     pub fn by_key_handler(self) -> bool {
         self.is_key()
             || matches!(
@@ -234,6 +259,15 @@ impl EventRoute {
                     | EventRoute::FullSwiped
                     | EventRoute::Reordered
             )
+            || self.is_drop()
+    }
+
+    /// Whether a drag and drop tells it.
+    pub fn is_drop(self) -> bool {
+        matches!(
+            self,
+            EventRoute::Drop | EventRoute::DropEnter | EventRoute::DropLeave | EventRoute::DropEnd
+        )
     }
 
     /// Whether a drag the node wins delivers it.
@@ -310,6 +344,11 @@ pub const PAYLOAD_RECORDS: &[(&str, &[&str])] = &[
     ("SelectionChanged", &["value"]),
     ("FullSwipeEvent", &["edge"]),
     ("ReorderEvent", &["from", "to"]),
+    (
+        "DropEvent",
+        &["position", "kind", "text", "files", "operation"],
+    ),
+    ("DropEnd", &["operation"]),
 ];
 
 /// The prelude enums a payload names a variant of, with their variants in order.
@@ -318,6 +357,7 @@ pub const PAYLOAD_ENUMS: &[(&str, &[&str])] = &[
     ("PointerKind", &["mouse", "touch", "pen"]),
     ("SwipeDirection", &["left", "right", "up", "down"]),
     ("SwipeEdge", &["leading", "trailing"]),
+    ("DropOperation", &["move", "copy", "link"]),
     ("Animate", &["translate", "scale", "rotation", "opacity"]),
     (
         "Key",

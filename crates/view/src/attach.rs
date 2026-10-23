@@ -35,17 +35,18 @@ pub fn attach(
         cx.on_pointer(node, handler);
     }
     if let Some(keys) = keys {
-        // A refresh, a snap, a full swipe, a reorder and a waiting tap come without
-        // the focus.
+        // A refresh, a snap, a full swipe, a reorder, a drop and a waiting
+        // tap come without the focus.
         let focus = keys.iter().any(|r| {
-            !matches!(
-                r.event,
-                EventRoute::Refresh
-                    | EventRoute::SnapChanged
-                    | EventRoute::FullSwiped
-                    | EventRoute::Reordered
-                    | EventRoute::Tap
-            )
+            !r.event.is_drop()
+                && !matches!(
+                    r.event,
+                    EventRoute::Refresh
+                        | EventRoute::SnapChanged
+                        | EventRoute::FullSwiped
+                        | EventRoute::Reordered
+                        | EventRoute::Tap
+                )
         }) || control.as_ref().is_some_and(|c| c.responds());
         cx.on_key(node, handler(host, keys, control, wait, scope));
         if focus {
@@ -137,19 +138,20 @@ pub fn attach_node(
 
 /// Whether a node whose key handler runs `keys` takes the focus for them as
 /// it is re-attached: links take it as their text holds them, not as heard,
-/// a text as it is selectable, and a refresh, a snap, a full swipe and a
-/// waiting tap come without it.
+/// a text as it is selectable, and a refresh, a snap, a full swipe, a drop
+/// and a waiting tap come without it.
 fn takes_focus(keys: &[Route], control: Option<&Control>) -> bool {
     keys.iter().any(|r| {
-        !matches!(
-            r.event,
-            EventRoute::Link
-                | EventRoute::Refresh
-                | EventRoute::SnapChanged
-                | EventRoute::FullSwiped
-                | EventRoute::Reordered
-                | EventRoute::Tap
-        )
+        !r.event.is_drop()
+            && !matches!(
+                r.event,
+                EventRoute::Link
+                    | EventRoute::Refresh
+                    | EventRoute::SnapChanged
+                    | EventRoute::FullSwiped
+                    | EventRoute::Reordered
+                    | EventRoute::Tap
+            )
     }) || control.is_some_and(|c| c.kind.responds())
 }
 

@@ -751,6 +751,7 @@ pub struct NodeStore {
     pub(crate) row_gestures: crate::row_gesture::RowGestures,
     /// The window's sheets ([`crate::sheet`]).
     pub(crate) sheets: crate::sheet::Sheets,
+    pub(crate) drag_drops: crate::drag_drop::DragDrops,
     /// Cold: the nodes folded to their first child.
     pub(crate) folds: crate::fold::Folds,
     /// Cold: the text fields and the marks they draw.
@@ -916,6 +917,7 @@ impl NodeStore {
         self.viewers.clear();
         self.row_gestures.clear();
         self.sheets.clear();
+        self.drag_drops.clear();
         self.folds.clear();
         self.paged.clear();
         self.fields.clear();
@@ -4497,6 +4499,7 @@ impl NodeStore {
                     }
                     self.swipe_focus(other);
                     self.reorder_focus(other);
+                    self.drag_focus(other);
                 }
             }
         }
@@ -5220,6 +5223,7 @@ impl NodeStore {
         self.fit_swipes();
         self.fit_reorders();
         self.fit_sheets();
+        self.fit_drag_drops();
         self.sync_refreshers();
         self.sync_stickies();
         self.sync_snaps();
@@ -5459,6 +5463,7 @@ impl NodeStore {
         self.fit_swipes();
         self.fit_reorders();
         self.fit_sheets();
+        self.fit_drag_drops();
         // A refresher starts or ends and its indicator follows its pull.
         self.sync_refreshers();
         self.sync_stickies();
@@ -6911,6 +6916,28 @@ impl<'a> BuildCx<'a> {
         handle
     }
 
+    /// Make an already-declared node a drag source offering `data` (see
+    /// [`NodeStore::set_drag_source`]).
+    pub fn drag_source(&mut self, handle: Handle, data: crate::drag_drop::DragData) -> Handle {
+        self.store.set_drag_source(handle.id, Some(data));
+        handle
+    }
+
+    /// Make an already-declared node the layer drag source `source` shows
+    /// while it is carried (see [`NodeStore::set_drag_preview`]).
+    pub fn drag_preview(&mut self, source: Handle, preview: Handle) -> Handle {
+        self.store.set_layer(preview.id, true);
+        self.store.set_drag_preview(source.id, Some(preview.id));
+        preview
+    }
+
+    /// Make an already-declared node a drop target (see
+    /// [`NodeStore::set_drop_target`]).
+    pub fn drop_target(&mut self, handle: Handle, target: crate::drag_drop::DropTarget) -> Handle {
+        self.store.set_drop_target(handle.id, Some(target));
+        handle
+    }
+
     /// Open sheet `sheet` at detent `detent`, by its place among its detents
     /// least first (see [`NodeStore::set_sheet_detent`]).
     pub fn sheet_detent(&mut self, sheet: Handle, detent: usize) -> Handle {
@@ -7005,6 +7032,12 @@ impl<'a> BuildCx<'a> {
     /// and F10 reach ([`crate::access`]).
     pub fn menu_bar(&mut self, handle: Handle) -> Handle {
         self.store.set_menu_bar(Some(handle.id));
+        handle
+    }
+
+    /// Make an already-declared node and its subtree paint at `opacity`.
+    pub fn opacity(&mut self, handle: Handle, opacity: f32) -> Handle {
+        self.store.set_opacity(handle.id, opacity);
         handle
     }
 

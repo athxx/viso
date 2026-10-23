@@ -24,6 +24,7 @@ pub mod context;
 pub mod cursor;
 pub mod dirty;
 pub mod drag;
+pub mod drag_drop;
 mod edit_history;
 pub mod field_input;
 mod field_marks;
@@ -102,6 +103,10 @@ pub use content::{BrushImage, Content, InkRun, LinkBox, TextInk, TextMark, TextR
 pub use context::{EventCx, FocusChange, StateWriter};
 pub use dirty::{DirtyCause, DirtyClass, DirtyLists, DirtyMark};
 pub use drag::{DragPhase, DragSample, MOUSE_SLOP, SWIPE_SPEED, SwipeDirection};
+pub use drag_drop::{
+    DragAccept, DragData, DragEnd, DragItem, DragKind, DropEvent, DropOperation, DropPhase,
+    DropTarget,
+};
 pub use flush::{
     ADAPTIVE_ROUNDS, AdaptiveCycle, EffectsRan, ReactiveCycle, SETTLE_ROUNDS, Unsettled,
     run_effects, settle_adaptive, settle_states,

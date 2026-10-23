@@ -401,6 +401,9 @@ fn mount(out: &mut String, index: usize, content: &Content, eval: &Eval<'_>, roo
                 Wire::Sheet => {
                     let _ = writeln!(out, "  sheet({el});");
                 }
+                Wire::DragDrop => {
+                    let _ = writeln!(out, "  dragDrop();");
+                }
                 Wire::Anchor(instance) => {
                     let _ = writeln!(
                         out,
@@ -515,7 +518,8 @@ pub(super) fn roots(page: &Lowered, eval: &Eval<'_>) -> BTreeSet<FuncId> {
                     | Wire::Anchor(_)
                     | Wire::Viewer
                     | Wire::SwipeRow
-                    | Wire::Sheet => {}
+                    | Wire::Sheet
+                    | Wire::DragDrop => {}
                 }
             }
         }

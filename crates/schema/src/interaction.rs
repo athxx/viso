@@ -17,19 +17,22 @@ pub enum Interaction {
     FocusVisible = 3,
     /// The node's tab strip or radio group selects it.
     Selected = 4,
-    /// The node won a drag that runs.
+    /// The node won a drag that runs, or its data is being carried.
     Dragging = 5,
+    /// A drag whose data the node takes as a drop target is over it.
+    DropOver = 6,
 }
 
 impl Interaction {
     /// Every state, by tag.
-    pub const ALL: [Interaction; 6] = [
+    pub const ALL: [Interaction; 7] = [
         Interaction::Hovered,
         Interaction::Pressed,
         Interaction::Focused,
         Interaction::FocusVisible,
         Interaction::Selected,
         Interaction::Dragging,
+        Interaction::DropOver,
     ];
 
     /// The state with tag `tag`.

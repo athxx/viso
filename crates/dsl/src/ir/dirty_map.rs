@@ -92,6 +92,8 @@ pub fn property_dirty_class(name: &str) -> DirtyClass {
         // An access key is announced, and cued in the node's text.
         "access_key" => D::PAINT | D::SEMANTICS,
         "drag_axis" => D::HIT_TEST,
+        // What a node carries and takes is read as a drag lifts and passes.
+        "drag" | "drag_kind" | "drop_accepts" | "drop_operation" => D::EMPTY,
         // A viewer's limits keep its content's transform within them; the
         // scale a double tap zooms to is read as it lands.
         "min_scale" | "max_scale" | "pan_margin" => D::TRANSFORM,

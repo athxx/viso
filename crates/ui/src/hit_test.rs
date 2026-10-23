@@ -50,8 +50,10 @@ impl HitTestTree {
         if !store.arena().is_live(root) {
             return None;
         }
+        let preview = store.drag_preview_shown();
         for overlay in store.top_layer().rev() {
             if overlay != root
+                && Some(overlay) != preview
                 && Self::holds(store, root, overlay)
                 && let Some(hit) =
                     Self::hit_under(store, overlay, px, py, store.transform_above(overlay))

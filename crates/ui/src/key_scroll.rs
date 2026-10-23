@@ -76,12 +76,24 @@ fn step_of(ev: &KeyEvent, apple: bool) -> Option<(Step, Option<Axis>)> {
 }
 
 impl NodeStore {
+    /// A key for a gesture the keyboard carries on: a drag carrying data,
+    /// a lifted row, an open swipe row. Returns whether one took it; the
+    /// window offers Tab and Escape here before moving the focus or
+    /// dismissing a layer.
+    pub fn carry_key(&mut self, ev: &KeyEvent) -> bool {
+        self.drag_key(ev) || self.reorder_key(ev) || self.swipe_key(ev)
+    }
+
     /// Scroll the viewport the keyboard is in under `root` as key `ev` asks,
     /// if it is one that scrolls: see [`key_scroll`](crate::key_scroll).
     /// `apple` reads Apple's key conventions. Returns whether a viewport
     /// took it.
     pub fn scroll_by_key(&mut self, root: NodeId, ev: &KeyEvent, apple: bool) -> bool {
-        if self.reorder_key(ev) || self.viewer_key(root, ev) || self.swipe_key(ev) {
+        if self.drag_key(ev)
+            || self.reorder_key(ev)
+            || self.viewer_key(root, ev)
+            || self.swipe_key(ev)
+        {
             return true;
         }
         let Some((step, axis)) = step_of(ev, apple) else {

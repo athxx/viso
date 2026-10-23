@@ -174,7 +174,7 @@ Rules:
 
 ## W8 — Drag and drop
 
-- [ ] In-app DnD: drag sources with typed payloads, drop targets with accept/hover/drop,
+- [x] In-app DnD: drag sources with typed payloads, drop targets with accept/hover/drop,
   drag preview, keyboard alternative.
 - [ ] OS file/text drop into a window: macOS, Windows, X11 (XDND), Wayland, web, iOS
   (UIDropInteraction), Android.
