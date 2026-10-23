@@ -687,6 +687,9 @@ pub struct Appearance {
     /// The user's accent color as gamma-encoded sRGB channels in `[0, 1]`,
     /// where the system has one.
     pub accent: Option<[f32; 3]>,
+    /// How soon after a click the next one makes it a double click, where
+    /// the system says.
+    pub double_click: Option<core::time::Duration>,
 }
 
 impl Default for Appearance {
@@ -698,6 +701,7 @@ impl Default for Appearance {
             text_scale: 1.0,
             overlay_scroll_bars: true,
             accent: None,
+            double_click: None,
         }
     }
 }

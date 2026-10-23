@@ -221,6 +221,23 @@ impl Rt {
         self.pointer(x, y, PointerPhase::Up);
     }
 
+    /// The time passing that fires every timer armed so far, then the wakes
+    /// they deliver.
+    fn wait(&mut self) {
+        let mut timers = Vec::new();
+        self.store.take_timer_requests(&mut timers);
+        for timer in timers {
+            (timer.on_fire)(&mut self.store);
+        }
+        KeyRouter::route_wakes(
+            &mut self.store,
+            &mut self.states,
+            &self.bindings,
+            &mut self.text_edits,
+        );
+        self.settle();
+    }
+
     /// A wheel scroll of `delta_y` at `(x, y)`.
     fn wheel(&mut self, x: f32, y: f32, delta_y: f32) {
         let event = ScrollEvent {
@@ -1107,6 +1124,49 @@ export component Clicks {
         assert_eq!(rt.int("clicks"), 2);
         rt.key(Key::A);
         assert_eq!(rt.int("clicks"), 2);
+        assert!(!rt.faulted());
+    }
+}
+
+#[test]
+fn a_tap_waits_out_a_double_tap_and_a_double_tap_takes_its_place() {
+    const SRC: &str = r#"
+export component Taps {
+    state taps = 0;
+    state doubles = 0;
+    state plain = 0;
+    view {
+        Column {
+            Row {
+                width: 100dp; height: 40dp;
+                on tap { taps += 1; }
+                on double_tap(event) { doubles += 1; }
+            }
+            Row { width: 100dp; height: 40dp; on tap { plain += 1; } }
+        }
+    }
+}
+"#;
+    for mut rt in [Rt::reloaded(SRC), Rt::packaged(SRC)] {
+        let [both, plain] = rt.children_of_root()[..] else {
+            panic!("two rows");
+        };
+        assert!(!rt.store.focusable(both), "a waiting tap takes no focus");
+        rt.click(10.0, 10.0);
+        assert_eq!(rt.int("taps"), 0, "the tap waits");
+        rt.wait();
+        assert_eq!(rt.int("taps"), 1, "and runs when no second press came");
+
+        rt.click(10.0, 10.0);
+        rt.click(12.0, 10.0);
+        assert_eq!(rt.int("doubles"), 1);
+        rt.wait();
+        assert_eq!(rt.int("taps"), 1, "a double tap is no tap");
+        assert_eq!(rt.int("doubles"), 1);
+
+        rt.click(10.0, 50.0);
+        assert_eq!(rt.int("plain"), 1, "a tap alone runs at once");
+        assert!(!rt.store.focusable(plain));
         assert!(!rt.faulted());
     }
 }

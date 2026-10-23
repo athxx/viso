@@ -6904,6 +6904,15 @@ impl<'a> BuildCx<'a> {
         handle
     }
 
+    /// Make a declared node count the clicks pressed at or under it, so its
+    /// handlers tell a double or triple click or tap from a single one
+    /// ([`EventCx::clicks`](crate::context::EventCx::clicks)). Returns the
+    /// handle.
+    pub fn count_clicks(&mut self, handle: Handle) -> Handle {
+        self.store.count_clicks(handle.id);
+        handle
+    }
+
     /// Make a declared node a roving group, Tab stopping once among the
     /// focusable nodes under it (see [`NodeStore::set_roving`]). Returns the
     /// handle.

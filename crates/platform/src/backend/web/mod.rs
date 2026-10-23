@@ -610,6 +610,7 @@ fn current_appearance() -> Appearance {
         text_scale: text_scale(),
         overlay_scroll_bars: true,
         accent: None,
+        double_click: None,
     }
 }
 

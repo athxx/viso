@@ -384,6 +384,8 @@ fn appearance_of(bits: i32, font_scale: f32) -> Appearance {
         },
         overlay_scroll_bars: true,
         accent: None,
+        // `ViewConfiguration.getDoubleTapTimeout()`, a platform constant.
+        double_click: Some(core::time::Duration::from_millis(300)),
     }
 }
 

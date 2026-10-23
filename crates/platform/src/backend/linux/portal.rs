@@ -16,6 +16,8 @@ use crate::event::Appearance;
 
 const APPEARANCE: &str = "org.freedesktop.appearance";
 const GNOME_INTERFACE: &str = "org.gnome.desktop.interface";
+const GNOME_MOUSE: &str = "org.gnome.desktop.peripherals.mouse";
+const KDE_GLOBALS: &str = "org.kde.kdeglobals.KDE";
 
 /// How long startup waits for the portal's first answer before painting
 /// with the default appearance (the thread keeps going and reports later).
@@ -52,7 +54,7 @@ fn follow(waker: &Waker, first: &mpsc::SyncSender<Appearance>) {
         else {
             continue;
         };
-        if namespace != APPEARANCE && namespace != GNOME_INTERFACE {
+        if ![APPEARANCE, GNOME_INTERFACE, GNOME_MOUSE, KDE_GLOBALS].contains(&namespace.as_str()) {
             continue;
         }
         let next = settings.read();
@@ -94,6 +96,12 @@ impl Settings {
                 .and_then(|v| bool::try_from(&*v).ok()),
             self.value(APPEARANCE, "accent-color")
                 .and_then(|v| <(f64, f64, f64)>::try_from(v).ok()),
+            self.value(GNOME_MOUSE, "double-click")
+                .and_then(|v| i32::try_from(&*v).ok())
+                .or_else(|| {
+                    self.value(KDE_GLOBALS, "DoubleClickInterval")
+                        .and_then(|v| i32::try_from(&*v).ok())
+                }),
         )
     }
 

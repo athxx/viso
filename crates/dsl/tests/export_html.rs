@@ -457,6 +457,46 @@ fn a_drag_and_a_long_press_export_as_pointer_gestures_and_the_winner_as_dragging
     assert!(script.contains(", 18, false, "), "{script}");
 }
 
+const TAPPED: &str = r#"
+export component Tapped {
+    state taps = 0;
+    state doubles = 0;
+    view {
+        Column {
+            Row {
+                width: 40dp; height: 20dp;
+                on tap { taps += 1; }
+                on double_tap(event) { doubles += 1; }
+            }
+            Text { text: format("taps={}", taps); }
+            Text { text: format("doubles={}", doubles); }
+        }
+    }
+}
+"#;
+
+#[test]
+fn a_double_tap_exports_as_dblclick_and_the_tap_waits_it_out() {
+    let page = export(TAPPED, false).unwrap();
+    let script = page.script.clone().unwrap();
+    assert!(script.contains(", 23, false, "), "{script}");
+    assert!(script.contains("\"dblclick\""), "{script}");
+    let Some(chrome) = chrome() else {
+        eprintln!("no Chrome: the page is not run");
+        return;
+    };
+    let taps = "\nconst row = () => document.querySelector('body div div');\n\
+        const press = (type, detail) => row().dispatchEvent(new MouseEvent(type, { bubbles: true, detail }));\n\
+        setTimeout(() => press('click', 1), 50);\n\
+        setTimeout(() => document.body.append('early=' + document.body.textContent.includes('taps=1') + '.'), 100);\n\
+        setTimeout(() => { press('click', 1); press('click', 2); press('dblclick', 2); }, 700);\n\
+        setTimeout(() => document.body.append('late=' + document.body.textContent.includes('taps=1') + '.'), 1400);\n";
+    let dom = run_in_chrome(&page, &(script + taps), "export-tapped", &[], chrome);
+    assert!(dom.contains("early=false."), "the tap waits: {dom}");
+    assert!(dom.contains("late=true."), "and runs alone: {dom}");
+    assert!(dom.contains(">doubles=1<"), "{dom}");
+}
+
 const CLIPPED: &str = r#"
 export component Clipped {
     state on = true;

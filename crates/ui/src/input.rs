@@ -4324,6 +4324,21 @@ mod contact_tests {
         );
     }
 
+    #[test]
+    fn a_run_of_clicks_keeps_open_for_the_system_s_double_click_time() {
+        let mut s = scene(false);
+        s.store.count_clicks(s.a);
+        let interval = Duration::from_millis(250);
+        s.store.set_click_interval(interval);
+        s.touch(1, 10.0, 10.0, PointerPhase::Down);
+        let mut timers = Vec::new();
+        s.store.take_timer_requests(&mut timers);
+        assert_eq!(
+            timers.iter().map(|t| t.delay).collect::<Vec<_>>(),
+            [interval]
+        );
+    }
+
     impl Scene {
         /// Fires every timer the store asked for, then the long presses due.
         fn wait(&mut self) -> bool {

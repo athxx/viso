@@ -655,7 +655,17 @@ const DOM = ["click", "click", "pointerdown", "pointermove", "pointerup", "point
 // listener, but a pointer still leaves what it left.
 const listen = (el, route, capture, control, fire) => {
   const live = (f) => (e) => { if (route === 6 || !off(e.target)) f(e); };
-  if (route <= 6) {
+  if (route === 1) {
+    // Where a double tap is heard too, a tap waits out the double-click time
+    // and runs only when no second press came.
+    el.addEventListener("click", live((e) => {
+      if (!el.$double) return fire(pointer(1, e, el));
+      clearTimeout(el.$tap);
+      if (e.detail > 1) return;
+      const tap = pointer(1, e, el);
+      el.$tap = setTimeout(() => fire(tap), 500);
+    }), capture);
+  } else if (route <= 6) {
     el.addEventListener(DOM[route], live((e) => fire(pointer(route, e, el))), capture);
   } else if (route <= 8) {
     el.addEventListener(DOM[route], live((e) => fire(rec([key(e), bool(e.repeat), mods(e)]))), capture);
@@ -754,6 +764,9 @@ const listen = (el, route, capture, control, fire) => {
       if (e.key === "BrowserBack" || ((e.key === "Escape" || e.key === "Backspace") && e.target === el)) back(e);
     }), capture);
     el.addEventListener("mouseup", live((e) => { if (e.button === 3) back(e); }), capture);
+  } else if (route === 23) {
+    el.$double = true;
+    el.addEventListener("dblclick", live((e) => fire(rec([point(e, el), kind(e)]))), capture);
   } else if (route >= 15) {
     draggable(el);
     el.addEventListener("viso-drag", live((e) => {

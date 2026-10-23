@@ -21,7 +21,10 @@ use crate::syntax::{SyntaxKind, SyntaxNode, TextRange};
 
 /// The events whose handler makes a node interactive.
 pub(crate) fn is_gesture(event: &str) -> bool {
-    matches!(event, "click" | "tap" | "long_press" | "key_down") || event.starts_with("drag_")
+    matches!(
+        event,
+        "click" | "tap" | "double_tap" | "long_press" | "key_down"
+    ) || event.starts_with("drag_")
 }
 
 fn report(strict: bool, code: &'static str, at: TextRange, message: String) -> Diagnostic {

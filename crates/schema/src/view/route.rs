@@ -8,7 +8,9 @@ use viso_ende::{DecodeError, Decoder, Encoder};
 pub enum EventRoute {
     /// `click` (`ClickEvent`): a pointer release on the node.
     Click = 0,
-    /// `tap` (`TapEvent`): a pointer release on the node.
+    /// `tap` (`TapEvent`): a pointer release on the node; on a node that
+    /// hears double taps too, once no second press follows within the
+    /// double-click time.
     Tap = 1,
     /// `pointer_down` (`PointerEvent`).
     PointerDown = 2,
@@ -62,11 +64,14 @@ pub enum EventRoute {
     /// A `NavigationStack`'s `current_changed`: a back gesture asked it to
     /// show another page.
     CurrentChanged = 22,
+    /// `double_tap` (`TapEvent`): the release of a second press on the node
+    /// soon after and near the first.
+    DoubleTap = 23,
 }
 
 impl EventRoute {
     /// Every route, by discriminant.
-    pub const ALL: [EventRoute; 23] = [
+    pub const ALL: [EventRoute; 24] = [
         EventRoute::Click,
         EventRoute::Tap,
         EventRoute::PointerDown,
@@ -90,6 +95,7 @@ impl EventRoute {
         EventRoute::Refresh,
         EventRoute::SnapChanged,
         EventRoute::CurrentChanged,
+        EventRoute::DoubleTap,
     ];
 
     /// The route of standard DSL event `event`, `None` for an event the runtime
@@ -127,6 +133,7 @@ impl EventRoute {
             EventRoute::Refresh => "refresh",
             EventRoute::SnapChanged => "snap_changed",
             EventRoute::CurrentChanged => "current_changed",
+            EventRoute::DoubleTap => "double_tap",
         }
     }
 
@@ -156,6 +163,7 @@ impl EventRoute {
             EventRoute::Refresh => "Refresh",
             EventRoute::SnapChanged => "SnapChanged",
             EventRoute::CurrentChanged => "CurrentChanged",
+            EventRoute::DoubleTap => "DoubleTap",
         }
     }
 

@@ -242,6 +242,7 @@ fn appearance_of(traits: &UITraitCollection) -> Appearance {
         overlay_scroll_bars: true,
         // An app's tint, not the system, is its accent.
         accent: None,
+        double_click: None,
     }
 }
 

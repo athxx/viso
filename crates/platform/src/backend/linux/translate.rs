@@ -20,6 +20,8 @@
     allow(dead_code)
 )]
 
+use std::time::Duration;
+
 use crate::event::{Appearance, ColorScheme, CursorIcon, KeyCode, Modifiers};
 use crate::menu::{Accel, Menu, MenuCommandId, SystemAction};
 
@@ -283,8 +285,11 @@ pub(crate) fn monitor_scale(width_px: u32, width_mm: u32) -> f64 {
 /// `org.gnome.desktop.interface text-scaling-factor` and
 /// `org.gnome.desktop.interface overlay-scrolling` and
 /// `org.freedesktop.appearance accent-color` (sRGB channels, out of `[0, 1]`
-/// when unset). Unset values keep the light, standard-contrast, animated,
-/// unscaled, overlay-scrolling default with no accent.
+/// when unset), and the double-click time in milliseconds
+/// (`org.gnome.desktop.peripherals.mouse double-click`, or KDE's
+/// `DoubleClickInterval`). Unset values keep the light, standard-contrast,
+/// animated, unscaled, overlay-scrolling default with no accent and the
+/// framework's double-click time.
 #[cfg_attr(not(any(feature = "x11", feature = "wayland")), allow(dead_code))]
 pub(crate) fn portal_appearance(
     color_scheme: Option<u32>,
@@ -293,6 +298,7 @@ pub(crate) fn portal_appearance(
     text_scaling: Option<f64>,
     overlay_scrolling: Option<bool>,
     accent: Option<(f64, f64, f64)>,
+    double_click: Option<i32>,
 ) -> Appearance {
     Appearance {
         color_scheme: if color_scheme == Some(1) {
@@ -310,6 +316,10 @@ pub(crate) fn portal_appearance(
             .map(|(r, g, b)| [r, g, b])
             .filter(|c| c.iter().all(|v| (0.0..=1.0).contains(v)))
             .map(|c| c.map(|v| v as f32)),
+        double_click: double_click
+            .and_then(|ms| u64::try_from(ms).ok())
+            .filter(|&ms| ms > 0)
+            .map(Duration::from_millis),
     }
 }
 
@@ -762,15 +772,17 @@ mod tests {
             Some(1.25),
             Some(false),
             Some((0.2, 0.5, 1.0)),
+            Some(400),
         );
         assert_eq!(dark.accent, Some([0.2, 0.5, 1.0]));
+        assert_eq!(dark.double_click, Some(Duration::from_millis(400)));
         assert!(!dark.overlay_scroll_bars);
         assert_eq!(dark.color_scheme, ColorScheme::Dark);
         assert!(dark.high_contrast);
         assert!(dark.reduce_motion);
         assert_eq!(dark.text_scale, 1.25);
         assert_eq!(
-            portal_appearance(Some(2), None, None, None, None, None),
+            portal_appearance(Some(2), None, None, None, None, None, None),
             Appearance::default()
         );
         assert_eq!(
@@ -780,12 +792,13 @@ mod tests {
                 Some(true),
                 Some(0.0),
                 Some(true),
-                Some((-1.0, -1.0, -1.0))
+                Some((-1.0, -1.0, -1.0)),
+                Some(0)
             ),
             Appearance::default()
         );
         assert_eq!(
-            portal_appearance(None, None, None, None, None, None),
+            portal_appearance(None, None, None, None, None, None, None),
             Appearance::default()
         );
     }

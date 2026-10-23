@@ -4872,6 +4872,7 @@ component Shake {
 | ---------------------------------------------- | ---------------- | ---------- | -------- | ------------------------------------------------ |
 | `click`                                        | `ClickEvent`     | Bubble     | 是       | 激活：指针轻点、焦点上 Enter/Space、辅助技术 Click |
 | `tap`                                          | `TapEvent`       | Bubble     | 是       | 手势竞技场 Tap（仅指针）                         |
+| `double_tap`                                   | `TapEvent`       | Bubble     | 是       | 手势竞技场 双击（仅指针）                        |
 | `long_press`                                   | `LongPressEvent` | Bubble     | 是       | 手势竞技场                                       |
 | `drag_start` / `drag_move` / `drag_end`        | `DragEvent`      | Bubble     | 是       | 手势竞技场 Pan                                   |
 | `pointer_down` / `_move` / `_up` / `_cancel`   | `PointerEvent`   | Bubble     | 是       | 原始指针                                         |
@@ -4898,11 +4899,11 @@ Payload 基线字段：
 规则：
 
 - 分派顺序 Capture → Target → Bubble → Default Action（§52），可用 `event.stop_propagation()` 与 `event.prevent_default()` 中断；
-- `tap`、`long_press`、`drag_*` 在手势竞技场竞争，胜者独占该指针序列；`click` 不参与竞争，但同一节点上 `drag` 胜出时不产生 `click`；
+- `tap`、`double_tap`、`long_press`、`drag_*` 在手势竞技场竞争，胜者独占该指针序列；`click` 不参与竞争，但同一节点上 `drag` 胜出时不产生 `click`；
 - `hover_*` 不是语义事件：触摸设备上不触发，指针 Capture 期间被抑制；任何功能不得只依赖 hover（U8.2）；
 - Handler 在 Action Transaction 中运行，可以 `start` Task；Task 随节点子树 Dispose 取消（ADR 0032）。
 
-当前实现：`drag_*` 与 `long_press` 由运行时投递。主按钮按下时，按下节点及其祖先中最近的声明了 `drag_*` 的节点武装一次拖动；指针离按下点超过阈值（鼠标 4dp，触摸 8dp）时拖动开始：该节点获得指针 Capture，按下被取消（抬起不产生 `click`/`tap`），先收到 `drag_start`，此后每次移动收到 `drag_move`，抬起或取消时收到 `drag_end`，期间处于 `dragging`。触摸落点与拖动节点之间有滚动视口时，视口先仲裁：可平移则平移胜出、拖动作废，无可平移余量时拖动胜出；拖动节点在视口内（或就是视口）时拖动胜出。`position` 为分派节点的局部坐标，`delta` 是相对上一个拖动样本的位移（`drag_start` 为相对按下点），`total` 是相对按下点的位移，均沿窗口坐标轴。主按钮按下还为最近的声明了 `long_press` 的节点武装一次长按：按下保持 500ms、期间未移出阈值也未抬起时，该节点收到 `long_press`（`position` 为按下点），按下被取消（抬起不产生点击），已武装的拖动作废，触摸指针 Capture 到该节点（此后不再平移）。Web 导出以 Pointer Events 实现两者：拖动开始时 `setPointerCapture`，节点带 `data-viso-dragging`；拖动或长按之后的那次指针点击被吞掉。
+当前实现：`drag_*` 与 `long_press` 由运行时投递。主按钮按下时，按下节点及其祖先中最近的声明了 `drag_*` 的节点武装一次拖动；指针离按下点超过阈值（鼠标 4dp，触摸 8dp）时拖动开始：该节点获得指针 Capture，按下被取消（抬起不产生 `click`/`tap`），先收到 `drag_start`，此后每次移动收到 `drag_move`，抬起或取消时收到 `drag_end`，期间处于 `dragging`。触摸落点与拖动节点之间有滚动视口时，视口先仲裁：可平移则平移胜出、拖动作废，无可平移余量时拖动胜出；拖动节点在视口内（或就是视口）时拖动胜出。`position` 为分派节点的局部坐标，`delta` 是相对上一个拖动样本的位移（`drag_start` 为相对按下点），`total` 是相对按下点的位移，均沿窗口坐标轴。主按钮按下还为最近的声明了 `long_press` 的节点武装一次长按：按下保持 500ms、期间未移出阈值也未抬起时，该节点收到 `long_press`（`position` 为按下点），按下被取消（抬起不产生点击），已武装的拖动作废，触摸指针 Capture 到该节点（此后不再平移）。Web 导出以 Pointer Events 实现两者：拖动开始时 `setPointerCapture`，节点带 `data-viso-dragging`；拖动或长按之后的那次指针点击被吞掉。声明了 `double_tap` 的节点为按在其中的主按钮按下计数连击：距上一次按下不超过系统双击时间（macOS `NSEvent.doubleClickInterval`、Windows `GetDoubleClickTime`、GNOME/KDE 设置门户，取不到时 500ms）、相距不超过阈值的按下接续同一串，第二次按下的抬起派发 `double_tap`（`position` 为抬起点）。同一节点同时声明 `tap` 时，`tap` 等待：单击抬起后等满双击时间，期间没有第二次按下才派发 `tap`，第二次按下取消它；只声明 `tap` 的节点立即派发。等待中的 `tap` 不使节点可聚焦。Web 导出以 `dblclick` 实现 `double_tap`，同时声明 `tap` 时单击（`detail` 为 1）推迟 500ms 派发、再次点击取消。
 
 ### U7.2 `focusable` 与焦点顺序
 
@@ -5034,14 +5035,14 @@ Named Node `n` 在同一 Component 的 Action 与 Handler 中以 `n: NodeRef<T>`
 
 - **只影响语义**：`semantics.*` 变化只标记 `SEMANTICS`，不得引起布局或 Paint；
 - **状态投影**：`checked`、`value`、`range`、`expanded`、`selected` 由 Widget Property 自动投影（ADR 0021），作者不应在 `semantics.value` 中重复；
-- **交互节点必须可访问**（CLAUDE.md §15）：在非标准交互 Widget 的节点（如 `Row`）或用户 Component 根节点上声明 `click`、`tap`、`long_press`、`drag_*` 或 `key_down` Handler 时，该节点必须：(1) 设置非 `group` 的 `semantics.role`；(2) 有可访问名称（`semantics.label` 或可推导的文本内容）；(3) 有等价键盘路径，即 `focusable: true` 且处理 `click`，只处理 `tap`/`pointer_*` 不算。违反 (1) 或 (2) 是 `E3704`，违反 (3) 是 `E3708`，两者默认为警告，`viso check --a11y strict` 提升为错误；
+- **交互节点必须可访问**（CLAUDE.md §15）：在非标准交互 Widget 的节点（如 `Row`）或用户 Component 根节点上声明 `click`、`tap`、`double_tap`、`long_press`、`drag_*` 或 `key_down` Handler 时，该节点必须：(1) 设置非 `group` 的 `semantics.role`；(2) 有可访问名称（`semantics.label` 或可推导的文本内容）；(3) 有等价键盘路径，即 `focusable: true` 且处理 `click`，只处理 `tap`/`pointer_*` 不算。违反 (1) 或 (2) 是 `E3704`，违反 (3) 是 `E3708`，两者默认为警告，`viso check --a11y strict` 提升为错误；
 - **Live Region**：设置 `semantics.live` 的子树文本变化时由 AccessKit 通告，`polite` 排队、`assertive` 打断；表单错误文本应使用 `polite`；
 - **隐藏**：`semantics.hidden: true` 把子树从语义树移除但保留绘制，用于纯装饰；`visible: false` 同时移除绘制与语义；
 - **辅助技术动作**：Focus、Click、Increment、Decrement 走普通输入路径（ADR 0030），触发同一套 Handler。
 
 当前实现：View 的原生节点投影 `semantics.role` 与 `semantics.label`。`semantics.role` 是常量 `Role::<variant>`，其他值或未知 Variant 使视图无法挂载（消息列出全部 Variant）；未写时取上表的 Widget 默认角色（`Image`、`Svg` 无名称时为装饰）。可访问名称取 `semantics.label`，否则 `Text`、`Button` 取其 `text`；两者随所读 State 变化重新投影，只标记 `SEMANTICS`。`semantics.hint`、`semantics.value`、`semantics.hidden`、`semantics.heading_level` 同样随所读 State 重新投影；`semantics.live` 是常量 `LiveRegion::<variant>`（其他值使视图无法挂载）。`semantics.hidden` 为真的节点连同子树留在界面上，但不进入语义树。`Tabs` 的直接子节点（含控制流区域中的）默认角色为 `tab`，`RadioGroup` 的为 `radio`，`NavigationStack` 为 `navigation`；作者写的 `semantics.role` 优先。AccessKit 与 Web 后端分别以 description/`aria-description`、value/`aria-valuetext`、live/`aria-live`、level/`aria-level` 发布。`Modal`、`Sheet` 默认角色为 `dialog`，`Toast` 为 `status`（`live` 默认 `polite`）。
 
-标准交互 Widget 是 `Button`、`Toggle`、`CheckBox`、`Slider`、`TextInput`、`NumberField`、`Tabs`、`RadioGroup`、`NavigationStack`、`Disclosure`、`Modal`、`Sheet`（Widget Schema 的 `interactive` 标记）。其他原生 Widget 的节点（包括用户 Component 视图的根节点）处理 `click`、`tap`、`long_press`、`drag_*` 或 `key_down` 时：未绑定 `semantics.role`、或绑定为 `Role::group`，报 `E3704`；节点及其子树中没有 `semantics.label` 或 `text` 绑定，报 `E3704`；没有 `focusable`（或其值为字面量 `false`）、或不处理 `click`，报 `E3708`。均为警告，构建配置的 `a11y_strict`（`--a11y strict`）使之成为错误。调用方在用户 Component 节点上转发到其视图根节点的手势 Handler（不是该 Component 声明的 Event）按根节点检查：根节点与调用方的 Property 合并（调用方的后写优先），名称取两者任一处的 `semantics.label` 或 `text`；根节点是标准交互 Widget 时不报。
+标准交互 Widget 是 `Button`、`Toggle`、`CheckBox`、`Slider`、`TextInput`、`NumberField`、`Tabs`、`RadioGroup`、`NavigationStack`、`Disclosure`、`Modal`、`Sheet`（Widget Schema 的 `interactive` 标记）。其他原生 Widget 的节点（包括用户 Component 视图的根节点）处理 `click`、`tap`、`double_tap`、`long_press`、`drag_*` 或 `key_down` 时：未绑定 `semantics.role`、或绑定为 `Role::group`，报 `E3704`；节点及其子树中没有 `semantics.label` 或 `text` 绑定，报 `E3704`；没有 `focusable`（或其值为字面量 `false`）、或不处理 `click`，报 `E3708`。均为警告，构建配置的 `a11y_strict`（`--a11y strict`）使之成为错误。调用方在用户 Component 节点上转发到其视图根节点的手势 Handler（不是该 Component 声明的 Event）按根节点检查：根节点与调用方的 Property 合并（调用方的后写优先），名称取两者任一处的 `semantics.label` 或 `text`；根节点是标准交互 Widget 时不报。
 
 ---
 

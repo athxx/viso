@@ -3,9 +3,10 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use viso_behavior::Value;
 use viso_ui::{
     Access, BuildCx, DispatchPhase, EventCx, Handle, NodeId, NodeStore, Notice, NoticeHandler,
-    NoticeKinds, StateStore,
+    NoticeKinds, PointerPhase, StateStore,
 };
 
 use crate::control::{Control, ControlKind, Drive};
@@ -27,19 +28,26 @@ pub fn attach(
     scope: &Scope,
 ) -> Handle {
     let (keys, pointers) = split(routes, control.as_ref());
+    let wait = tap_wait(routes);
     if let Some(pointers) = pointers {
-        cx.on_pointer(node, handler(host, pointers, control.clone(), scope));
+        let handler = handler(host, pointers, control.clone(), wait.clone(), scope);
+        cx.on_pointer(node, handler);
     }
     if let Some(keys) = keys {
-        // A refresh, and a snap, come without the focus.
-        let focus = keys
-            .iter()
-            .any(|r| !matches!(r.event, EventRoute::Refresh | EventRoute::SnapChanged))
-            || control.as_ref().is_some_and(|c| c.responds());
-        cx.on_key(node, handler(host, keys, control, scope));
+        // A refresh, a snap and a waiting tap come without the focus.
+        let focus = keys.iter().any(|r| {
+            !matches!(
+                r.event,
+                EventRoute::Refresh | EventRoute::SnapChanged | EventRoute::Tap
+            )
+        }) || control.as_ref().is_some_and(|c| c.responds());
+        cx.on_key(node, handler(host, keys, control, wait, scope));
         if focus {
             cx.focusable(node, true);
         }
+    }
+    if counts(routes) {
+        cx.count_clicks(node);
     }
     if drags(routes) {
         cx.draggable(node, true);
@@ -78,18 +86,23 @@ pub fn attach_node(
         None => store.unwatch(id),
     }
     let (keys, pointers) = split(routes, control.as_ref());
+    let wait = tap_wait(routes);
     if let Some(pointers) = pointers {
-        store.set_pointer_handler(
-            id,
-            Box::new(handler(host, pointers, control.clone(), scope)),
-        );
+        let handler = handler(host, pointers, control.clone(), wait.clone(), scope);
+        store.set_pointer_handler(id, Box::new(handler));
     }
     if let Some(keys) = keys {
         let focus = takes_focus(&keys, control.as_ref());
-        store.set_key_handler(id, Box::new(handler(host, keys, control, scope)));
+        let handler = handler(host, keys, control, wait, scope);
+        store.set_key_handler(id, Box::new(handler));
         if focus {
             store.set_focusable(id, true);
         }
+    }
+    if counts(routes) {
+        store.count_clicks(id);
+    } else {
+        store.uncount_clicks(id);
     }
     store.set_draggable(id, drags(routes));
     store.set_long_pressable(id, holds(routes));
@@ -101,14 +114,57 @@ pub fn attach_node(
 
 /// Whether a node whose key handler runs `keys` takes the focus for them as
 /// it is re-attached: links take it as their text holds them, not as heard,
-/// a text as it is selectable, and a refresh and a snap come without it.
+/// a text as it is selectable, and a refresh, a snap and a waiting tap come
+/// without it.
 fn takes_focus(keys: &[Route], control: Option<&Control>) -> bool {
     keys.iter().any(|r| {
         !matches!(
             r.event,
-            EventRoute::Link | EventRoute::Refresh | EventRoute::SnapChanged
+            EventRoute::Link | EventRoute::Refresh | EventRoute::SnapChanged | EventRoute::Tap
         )
     }) || control.is_some_and(|c| c.kind.responds())
+}
+
+/// Whether `routes` hear double taps: the node counts its clicks.
+fn counts(routes: &[Route]) -> bool {
+    routes
+        .iter()
+        .any(|route| route.event == EventRoute::DoubleTap)
+}
+
+/// Whether `routes` hear both taps and double taps: a tap then waits out the
+/// click interval, and runs only when no second press came.
+fn waits(routes: &[Route]) -> bool {
+    counts(routes) && routes.iter().any(|route| route.event == EventRoute::Tap)
+}
+
+/// The tap a node that [`waits`] holds back, shared by its pointer handler,
+/// which hears the release, and its key handler, which hears the wake.
+type TapWait = Rc<RefCell<Waiting>>;
+
+/// A held-back tap and the wake that lets it run.
+#[derive(Default)]
+struct Waiting {
+    /// The token of the wake the tap waits on; a later press moves it on, so
+    /// a stale wake runs nothing.
+    token: u32,
+    tap: Option<Value>,
+}
+
+/// Wakes a waiting tap's carry this bit, kept off any token a control arms.
+const TAP_WAKE: u32 = 1 << 31;
+
+impl Waiting {
+    /// Drops the waiting tap and moves the token on.
+    fn cancel(&mut self) -> u32 {
+        self.tap = None;
+        self.token = self.token.wrapping_add(1) & !TAP_WAKE;
+        self.token | TAP_WAKE
+    }
+}
+
+fn tap_wait(routes: &[Route]) -> Option<TapWait> {
+    waits(routes).then(TapWait::default)
 }
 
 /// Whether `routes` hear the item a snapping viewport settles on.
@@ -143,6 +199,7 @@ fn holds(routes: &[Route]) -> bool {
 /// from a key; a label responds to nothing.
 fn split(routes: &[Route], control: Option<&Control>) -> (Option<Vec<Route>>, Option<Vec<Route>>) {
     let control = control.filter(|control| control.responds());
+    let waits = waits(routes);
     let pick = |key: bool| {
         let picked: Vec<Route> = routes
             .iter()
@@ -151,7 +208,8 @@ fn split(routes: &[Route], control: Option<&Control>) -> (Option<Vec<Route>>, Op
                 !route.event.is_notice()
                     && (route.event.is_control()
                         || control.is_some_and(|c| c.kind.reports(route.event))
-                        || route.event.by_key_handler() == key)
+                        || route.event.by_key_handler() == key
+                        || (key && waits && route.event == EventRoute::Tap))
             })
             .collect();
         (control.is_some() || !picked.is_empty()).then_some(picked)
@@ -162,7 +220,8 @@ fn split(routes: &[Route], control: Option<&Control>) -> (Option<Vec<Route>>, Op
 /// The node handler that runs `control`'s response to the sample under
 /// dispatch, then every route of `routes` the sample fires, in declaration
 /// order: a standard route on the target and bubble legs of the walk, a
-/// control's route when the control reports it.
+/// control's route when the control reports it. With `wait`, a tap runs from
+/// the wake its release arms, unless a second press came first.
 ///
 /// A handler never runs inside another: the router takes a node's handler out
 /// of the store before calling it and state writes are deferred to the flush, so
@@ -172,6 +231,7 @@ fn handler(
     host: &Rc<RefCell<ViewHost>>,
     routes: Vec<Route>,
     control: Option<Control>,
+    wait: Option<TapWait>,
     scope: &Scope,
 ) -> impl FnMut(&mut EventCx<'_>) + 'static {
     let host = Rc::clone(host);
@@ -193,7 +253,22 @@ fn handler(
             .as_ref()
             .and_then(|control| control.drive(&mut host, &scope, cx));
         let phase = cx.phase();
+        // A double tap's second press cancels the tap waiting on its first.
+        if let Some(wait) = &wait
+            && cx.pointer().is_some_and(|p| p.phase == PointerPhase::Down)
+            && cx.clicks() > 1
+        {
+            wait.borrow_mut().cancel();
+        }
         for &route in &routes {
+            if route.event == EventRoute::Tap
+                && let Some(wait) = &wait
+            {
+                if let Some(tap) = held_tap(wait, route, phase, cx) {
+                    host.dispatch(route.handler, tap, &scope, cx);
+                }
+                continue;
+            }
             let payload = match &change {
                 // A control reports its change once, on its own node.
                 Some((changed, value)) if *changed == route.event => value.clone(),
@@ -206,6 +281,34 @@ fn handler(
             host.dispatch(route.handler, payload, &scope, cx);
         }
     }
+}
+
+/// The tap a node that waits runs on this dispatch: the one its wake lets
+/// through. A single tap's release holds its tap back and arms the wake.
+fn held_tap(
+    wait: &TapWait,
+    route: Route,
+    phase: DispatchPhase,
+    cx: &mut EventCx<'_>,
+) -> Option<Value> {
+    let mut wait = wait.borrow_mut();
+    if let Some(token) = cx.woken() {
+        return (token == wait.token | TAP_WAKE)
+            .then(|| wait.tap.take())
+            .flatten();
+    }
+    if !runs_in(route, phase) {
+        return None;
+    }
+    let tap = crate::route::payload(route.event, cx)?;
+    let token = wait.cancel();
+    if cx.clicks() == 1
+        && let Some(node) = cx.node()
+    {
+        wait.tap = Some(tap);
+        cx.wake_after(node, cx.click_interval(), token);
+    }
+    None
 }
 
 /// The notices `routes` run on and the handler that runs them, dispatching

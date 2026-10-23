@@ -33,7 +33,8 @@ impl WindowState {
     /// Writes the parts of the system appearance the environment carries; the
     /// text scale also resizes the window's `sp` lengths, reduced motion also
     /// reduces the motion of its store, the scheme and scroll bar preference
-    /// restyle its scroll bars, and the scheme and accent its focus ring.
+    /// restyle its scroll bars, the scheme and accent its focus ring, and the
+    /// double-click time how its clicks run on.
     pub(crate) fn report_appearance(&mut self, appearance: Appearance) {
         let text_scale = if appearance.text_scale.is_finite() && appearance.text_scale > 0.0 {
             appearance.text_scale
@@ -62,6 +63,11 @@ impl WindowState {
             .map(|[r, g, b]| viso_render::Srgb { r, g, b, a: 1.0 }.into_linear_straight());
         self.store
             .set_focus_ring_style(viso_ui::FocusRingStyle::native(accent, dark));
+        self.store.set_click_interval(
+            appearance
+                .double_click
+                .unwrap_or(viso_ui::clicks::CLICK_INTERVAL),
+        );
         let lengths = self.store.length_env();
         if lengths.text_scale != text_scale {
             self.store.set_length_env(viso_ui::LengthEnv {

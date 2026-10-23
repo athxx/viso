@@ -1,12 +1,14 @@
 //! Click counting: a press soon after and near the one before it counts on
 //! from it, so a handler tells a double or triple click from a single one.
 //!
-//! A primary press of a pointer within [`CLICK_INTERVAL`] of that pointer's
+//! A primary press of a pointer within the click interval of that pointer's
 //! last press, no further from it than the slop, is the next click of the
 //! same run, up to three; anything else starts a run at one. The interval is
-//! a timer armed at each press, so the count needs no clock of its own and
-//! replays as the input does. Only a press at or under a node that counts
-//! clicks (a text field) is counted, so a store with none arms nothing.
+//! the system's double-click time ([`NodeStore::set_click_interval`]),
+//! [`CLICK_INTERVAL`] where it has none; it is a timer armed at each press,
+//! so the count needs no clock of its own and replays as the input does.
+//! Only a press at or under a node that counts clicks (a text field, a node
+//! that hears double taps) is counted, so a store with none arms nothing.
 //! Fingers and pens are one pointer here: each tap is a contact of its own,
 //! and a double tap is two of them.
 
@@ -17,7 +19,8 @@ use crate::input::PointerId;
 use crate::node::NodeId;
 use crate::timer::TimerRequest;
 
-/// How soon after a press the next one continues its run.
+/// How soon after a press the next one continues its run, where the system
+/// has no double-click time.
 pub const CLICK_INTERVAL: Duration = Duration::from_millis(500);
 
 /// The most clicks a run counts: presses on after a triple click are triple
@@ -41,11 +44,23 @@ struct Press {
 
 /// The nodes that count clicks and the last press of each pointer, as many
 /// as press together. Cold.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct Clicks {
     counters: Vec<NodeId>,
     presses: Vec<Press>,
     next: u64,
+    interval: Duration,
+}
+
+impl Default for Clicks {
+    fn default() -> Self {
+        Clicks {
+            counters: Vec::new(),
+            presses: Vec::new(),
+            next: 0,
+            interval: CLICK_INTERVAL,
+        }
+    }
 }
 
 impl Clicks {
@@ -63,8 +78,19 @@ impl Clicks {
 }
 
 impl NodeStore {
+    /// How soon after a press the next one continues its run of clicks.
+    pub fn click_interval(&self) -> Duration {
+        self.clicks.interval
+    }
+
+    /// Make `interval` how soon after a press the next one continues its run
+    /// of clicks: the system's double-click time.
+    pub fn set_click_interval(&mut self, interval: Duration) {
+        self.clicks.interval = interval;
+    }
+
     /// Makes node `id` count no more clicks of its own.
-    pub(crate) fn uncount_clicks(&mut self, id: NodeId) {
+    pub fn uncount_clicks(&mut self, id: NodeId) {
         self.clicks.counters.retain(|&n| n != id);
     }
 
@@ -119,7 +145,8 @@ impl NodeStore {
             token,
             open: true,
         });
-        self.queue_timer(TimerRequest::new(root, CLICK_INTERVAL, move |store| {
+        let interval = self.clicks.interval;
+        self.queue_timer(TimerRequest::new(root, interval, move |store| {
             if let Some(press) = store
                 .clicks
                 .presses

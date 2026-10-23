@@ -19,6 +19,7 @@ use ::windows::Win32::System::Memory::{
 };
 use ::windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
 use ::windows::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
+use ::windows::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime;
 use ::windows::Win32::UI::WindowsAndMessaging::{
     GWL_STYLE, GetWindowLongPtrW, GetWindowPlacement, HWND_TOP, LoadCursorW,
     SPI_GETCLIENTAREAANIMATION, SPI_GETHIGHCONTRAST, SPI_GETWHEELSCROLLCHARS,
@@ -207,6 +208,13 @@ pub(super) fn read_appearance() -> Appearance {
                 [channel(0), channel(8), channel(16)]
             },
         ),
+        // Settings > Bluetooth & devices > Mouse > Double-click speed.
+        // SAFETY: `GetDoubleClickTime` takes nothing and only reads a
+        // system setting.
+        double_click: Some(Duration::from_millis(u64::from(unsafe {
+            GetDoubleClickTime()
+        })))
+        .filter(|d| !d.is_zero()),
     }
 }
 

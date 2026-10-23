@@ -47,7 +47,9 @@ pub fn payload(route: EventRoute, cx: &EventCx<'_>) -> Option<Value> {
     }
     let pointer = cx.pointer()?;
     let phase = match route {
-        EventRoute::Click | EventRoute::Tap | EventRoute::PointerUp => PointerPhase::Up,
+        EventRoute::Click | EventRoute::Tap | EventRoute::DoubleTap | EventRoute::PointerUp => {
+            PointerPhase::Up
+        }
         EventRoute::PointerDown => PointerPhase::Down,
         EventRoute::PointerMove => PointerPhase::Move,
         EventRoute::HoverEnter => PointerPhase::Enter,
@@ -59,7 +61,15 @@ pub fn payload(route: EventRoute, cx: &EventCx<'_>) -> Option<Value> {
     }
     // An activation is a release on the node the press began in, with the
     // pointer still inside it and no gesture having taken the contact.
-    if matches!(route, EventRoute::Click | EventRoute::Tap) && !cx.in_state(Interaction::Pressed) {
+    if matches!(
+        route,
+        EventRoute::Click | EventRoute::Tap | EventRoute::DoubleTap
+    ) && !cx.in_state(Interaction::Pressed)
+    {
+        return None;
+    }
+    // A double tap is the release of a run's second press.
+    if route == EventRoute::DoubleTap && cx.clicks() != 2 {
         return None;
     }
     let at = cx.local(pointer.x, pointer.y);
@@ -67,9 +77,10 @@ pub fn payload(route: EventRoute, cx: &EventCx<'_>) -> Option<Value> {
     let kind = pointer_kind(cx.pointer_id());
     Some(match route {
         EventRoute::Click => record([position, modifiers(pointer.modifiers)]),
-        EventRoute::Tap | EventRoute::HoverEnter | EventRoute::HoverLeave => {
-            record([position, kind])
-        }
+        EventRoute::Tap
+        | EventRoute::DoubleTap
+        | EventRoute::HoverEnter
+        | EventRoute::HoverLeave => record([position, kind]),
         _ => record([
             position,
             Value::Int(button(pointer.buttons)),

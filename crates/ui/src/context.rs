@@ -1149,11 +1149,21 @@ impl<'a> EventCx<'a> {
 
     /// How many clicks the press under dispatch is in its run: `1` for a
     /// single click, `2` for a double and `3` for a triple. A press comes
-    /// within [`CLICK_INTERVAL`](crate::clicks::CLICK_INTERVAL) of the last,
-    /// near it, to count on.
+    /// within the [click interval](Self::click_interval) of the last, near
+    /// it, to count on; only presses at or under a node that counts clicks
+    /// ([`BuildCx::count_clicks`](crate::component::BuildCx::count_clicks))
+    /// are counted.
     pub fn clicks(&self) -> u8 {
         self.place
             .map_or(1, |place| place.store.click_count(self.pointer_id))
+    }
+
+    /// How soon after a press the next one continues its run of clicks: the
+    /// system's double-click time.
+    pub fn click_interval(&self) -> core::time::Duration {
+        self.place.map_or(crate::clicks::CLICK_INTERVAL, |place| {
+            place.store.click_interval()
+        })
     }
 
     /// Whether the pointer under dispatch is a direct contact — a finger or

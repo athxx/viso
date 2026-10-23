@@ -346,6 +346,10 @@ fn current_appearance(app: &NSApplication) -> Appearance {
                 [c.redComponent(), c.greenComponent(), c.blueComponent()]
                     .map(|v| (v as f32).clamp(0.0, 1.0))
             }),
+        // System Settings > Mouse > Double-click speed.
+        double_click: core::time::Duration::try_from_secs_f64(NSEvent::doubleClickInterval())
+            .ok()
+            .filter(|d| !d.is_zero()),
     }
 }
 
