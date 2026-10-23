@@ -43,6 +43,13 @@ fn node_id(id: SemanticsId) -> NodeId {
     NodeId(id.0)
 }
 
+/// An access key as a shortcut reads: `Alt+F`.
+fn alt_shortcut(key: char) -> String {
+    let mut out = String::from("Alt+");
+    out.extend(key.to_uppercase());
+    out
+}
+
 fn node_of(node: AccessNode) -> Node {
     let mut out = Node::new(role(node.role));
     if let Some(label) = node.label {
@@ -64,6 +71,9 @@ fn node_of(node: AccessNode) -> Node {
     }
     if let Some(level) = node.level {
         out.set_level(usize::from(level));
+    }
+    if let Some(key) = node.access_key {
+        out.set_access_key(alt_shortcut(key));
     }
     let b = node.bounds;
     out.set_bounds(Rect {
@@ -198,6 +208,7 @@ mod tests {
             value: Some("Loud".into()),
             live: SemanticsLive::Polite,
             level: None,
+            access_key: None,
             bounds: SemanticsRect {
                 x: 10.0,
                 y: 4.0,
@@ -301,6 +312,7 @@ mod tests {
         let node = node_of(AccessNode {
             role: SemanticsRole::TreeItem,
             level: Some(2),
+            access_key: Some('f'),
             live: SemanticsLive::Assertive,
             state: SemanticsState {
                 toggled: Some(true),
@@ -317,6 +329,7 @@ mod tests {
         assert_eq!(node.is_expanded(), Some(false));
         assert_eq!(node.is_selected(), Some(true));
         assert_eq!(node.level(), Some(2));
+        assert_eq!(node.access_key(), Some("Alt+F"));
         assert_eq!(node.live(), Some(Live::Assertive));
         assert!(node.supports_action(Action::Click));
         let quiet = node_of(AccessNode::default());

@@ -1660,8 +1660,9 @@ impl KeyRouter {
     }
 
     /// Tell the control whose access key `key` is, under `root`, that it was
-    /// pressed with Alt held ([`NodeStore::access_target`]).
-    /// Returns whether a handler ran.
+    /// pressed with Alt held ([`NodeStore::access_target`]); one with no
+    /// handler of its own to hear it takes the focus, if it can. Returns
+    /// whether a handler ran or the focus moved.
     pub fn route_access(
         store: &mut NodeStore,
         states: &mut StateStore,
@@ -1673,6 +1674,9 @@ impl KeyRouter {
         let Some(node) = store.access_target(root, key) else {
             return false;
         };
+        if !store.has_key_handler(node) {
+            return focus_node(store, node);
+        }
         key_handler_dispatch(
             store,
             states,
@@ -1719,6 +1723,15 @@ impl KeyRouter {
             return;
         }
         for node in store.cued() {
+            // Its caption's underlines, on it or a child, show or hide.
+            let mut stack = vec![node];
+            while let Some(at) = stack.pop() {
+                if matches!(store.content_payload(at), Some(crate::content::Content::Text { ink, .. }) if ink.as_ref().is_some_and(|ink| !ink.cues.is_empty()))
+                {
+                    store.mark_dirty(at, DirtyClass::PAINT);
+                }
+                stack.extend(store.arena().children(at));
+            }
             key_handler_dispatch(
                 store,
                 states,

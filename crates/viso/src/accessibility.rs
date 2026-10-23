@@ -370,6 +370,7 @@ impl Walk<'_> {
             value: row.value.take(),
             live: semantics_live(row.live),
             level: row.heading_level,
+            access_key: store.access_key(row.id).filter(|_| row.link.is_none()),
             bounds: SemanticsRect {
                 x: rect.x * self.scale,
                 y: rect.y * self.scale,

@@ -190,6 +190,9 @@ pub struct SpanStyle {
     pub background: Option<Rgba>,
     pub underline: bool,
     pub strikethrough: bool,
+    /// An underline drawn only while the window's access keys show their
+    /// cues (Alt held): the mark of an access key.
+    pub cue: bool,
     /// How far its baseline sits above the line's, a superscript's up and a
     /// subscript's down (negative); `em` and `%` of its own size.
     pub raise: Option<LengthTerms>,
@@ -253,6 +256,13 @@ impl SpanStyle {
         self
     }
 
+    /// Underlined while the window's access keys show their cues: the mark
+    /// of an access key.
+    pub fn cue(mut self) -> Self {
+        self.cue = true;
+        self
+    }
+
     /// Its baseline `em` of its own size above the line's.
     pub fn raise(mut self, em: f32) -> Self {
         self.raise = Some(LengthTerms {
@@ -295,6 +305,7 @@ impl SpanStyle {
             || self.background.is_some()
             || self.underline
             || self.strikethrough
+            || self.cue
             || self.link.is_some()
     }
 }

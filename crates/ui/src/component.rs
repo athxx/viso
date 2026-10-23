@@ -6896,6 +6896,32 @@ impl<'a> BuildCx<'a> {
         handle
     }
 
+    /// The first node of `handle`'s subtree, itself first, that takes the
+    /// focus, in tree order.
+    pub fn focusable_within(&self, handle: Handle) -> Option<Handle> {
+        let arena = self.store.arena();
+        let mut stack = vec![handle.id];
+        while let Some(node) = stack.pop() {
+            if self.store.focusable(node) {
+                return Some(Handle { id: node });
+            }
+            let at = stack.len();
+            stack.extend(arena.children(node));
+            stack[at..].reverse();
+        }
+        None
+    }
+
+    /// Make `name` the accessible name of a declared node that authors
+    /// semantics, as a caption beside it names it. Returns the handle.
+    pub fn accessible_name(&mut self, handle: Handle, name: &str) -> Handle {
+        if let Some(semantics) = self.store.semantics(handle.id) {
+            let named = semantics.clone().with_label(name);
+            self.store.set_semantics(handle.id, named);
+        }
+        handle
+    }
+
     /// Attach authored semantics (role + label) to an already-declared node, for
     /// an accessible tree. Mirrors `on_pointer`: associates a node with its
     /// accessible facts. Returns the handle so authoring chains inline.

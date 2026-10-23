@@ -58,7 +58,7 @@ fn a_label_text_and_a_field_value_compile_to_value_entries() {
         }
     };
     assert_eq!(text(1, ControlKind::Label), "2 items");
-    assert_eq!(text(2, ControlKind::Label), "Go");
+    assert_eq!(text(2, ControlKind::Button), "Go");
     assert_eq!(text(3, ControlKind::TextInput), "Ada");
     assert_eq!(view.control(NodeKey(4)), None, "a label without a text");
 }

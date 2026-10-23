@@ -16,8 +16,8 @@ use std::rc::Rc;
 use viso_behavior::{Aggregate, Fault, FaultKind, Value};
 
 use viso_ui::{
-    DispatchPhase, EventCx, FieldEvent, Key, KeyEvent, NodeId, NodeStore, PointerButtons,
-    PointerPhase, field_input, number_input,
+    Access, DispatchPhase, EventCx, FieldEvent, Key, KeyEvent, Modifiers, NodeId, NodeStore,
+    PointerButtons, PointerPhase, field_input, number_input,
 };
 
 use crate::host::ViewHost;
@@ -61,6 +61,7 @@ impl Drive for Control {
         match self.kind {
             ControlKind::Check | ControlKind::Switch => toggle(self, host, scope, cx),
             ControlKind::Disclosure => disclose(self, host, scope, cx),
+            ControlKind::Button => click(cx),
             ControlKind::Dialog => dismiss(self, host, scope, cx),
             ControlKind::Slider => slider(self, host, scope, cx),
             ControlKind::Select => select(self, host, scope, cx),
@@ -160,7 +161,7 @@ fn toggle(
     let flips = match (cx.pointer(), cx.key()) {
         (Some(p), _) => p.phase == PointerPhase::Up,
         (_, Some(k)) => activates(k),
-        _ => false,
+        _ => cx.access() == Some(Access::Key),
     };
     if !flips {
         return None;
@@ -168,6 +169,21 @@ fn toggle(
     take_key(cx);
     let checked = read(host, control.value, scope, cx).as_int().unwrap_or(0) != 0;
     Some((EventRoute::Changed, field(Value::bool(!checked))))
+}
+
+/// A button's response: Space or Enter on it, or its access key, reports a
+/// click, as a release on it does.
+fn click(cx: &mut EventCx<'_>) -> Option<(EventRoute, Value)> {
+    if cx.phase() != DispatchPhase::Target {
+        return None;
+    }
+    let held = match (cx.key(), cx.access()) {
+        (Some(k), _) if activates(k) => k.modifiers,
+        (_, Some(Access::Key)) => Modifiers::default(),
+        _ => return None,
+    };
+    cx.stop_propagation();
+    Some((EventRoute::Click, crate::route::key_click(cx, held)))
 }
 
 /// A game viewport's response: a press on it takes the keyboard focus, so

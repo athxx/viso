@@ -4,11 +4,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use viso_ui::{
-    BuildCx, DispatchPhase, EventCx, Handle, NodeId, NodeStore, Notice, NoticeHandler, NoticeKinds,
-    StateStore,
+    Access, BuildCx, DispatchPhase, EventCx, Handle, NodeId, NodeStore, Notice, NoticeHandler,
+    NoticeKinds, StateStore,
 };
 
-use crate::control::{Control, Drive};
+use crate::control::{Control, ControlKind, Drive};
 use crate::host::ViewHost;
 use crate::scope::Scope;
 
@@ -139,7 +139,8 @@ fn holds(routes: &[Route]) -> bool {
 
 /// The routes a key handler runs and the routes a pointer handler runs, `None`
 /// for a kind of handler the node needs none of. A control drives both, and the
-/// routes it reports run from either; a label responds to nothing.
+/// routes it reports run from either — a button's `click` from a release and
+/// from a key; a label responds to nothing.
 fn split(routes: &[Route], control: Option<&Control>) -> (Option<Vec<Route>>, Option<Vec<Route>>) {
     let control = control.filter(|control| control.responds());
     let pick = |key: bool| {
@@ -148,7 +149,9 @@ fn split(routes: &[Route], control: Option<&Control>) -> (Option<Vec<Route>>, Op
             .copied()
             .filter(|route| {
                 !route.event.is_notice()
-                    && (route.event.is_control() || route.event.by_key_handler() == key)
+                    && (route.event.is_control()
+                        || control.is_some_and(|c| c.kind.reports(route.event))
+                        || route.event.by_key_handler() == key)
             })
             .collect();
         (control.is_some() || !picked.is_empty()).then_some(picked)
@@ -177,6 +180,15 @@ fn handler(
         let Ok(mut host) = host.try_borrow_mut() else {
             return;
         };
+        // Its access key takes the focus to it; a button clicks instead.
+        if cx.access() == Some(Access::Key)
+            && control
+                .as_ref()
+                .is_none_or(|c| c.kind != ControlKind::Button)
+            && let Some(node) = cx.node()
+        {
+            cx.request_focus(node);
+        }
         let change = control
             .as_ref()
             .and_then(|control| control.drive(&mut host, &scope, cx));

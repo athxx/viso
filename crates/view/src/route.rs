@@ -80,6 +80,13 @@ pub fn payload(route: EventRoute, cx: &EventCx<'_>) -> Option<Value> {
     })
 }
 
+/// The `ClickEvent` a keyboard activation of the dispatching node delivers:
+/// at the node's middle, with the keys' modifiers.
+pub(crate) fn key_click(cx: &EventCx<'_>, held: Modifiers) -> Value {
+    let size = cx.size().unwrap_or_default();
+    record([point(size.x * 0.5, size.y * 0.5), modifiers(held)])
+}
+
 /// The `DragEvent` of `route` when the sample under dispatch is that sample of
 /// a drag. Its position is local to the dispatching node, its travel in window
 /// axes.

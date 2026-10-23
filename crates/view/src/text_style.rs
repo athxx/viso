@@ -114,6 +114,7 @@ pub(crate) fn spans(value: &Value) -> Option<(String, Vec<TextSpan>)> {
             strikethrough: strikethrough.as_int().is_some_and(|v| v != 0),
             raise: length(raise),
             link: link.as_str().map(Arc::from),
+            cue: false,
         };
         if style != SpanStyle::default() && start < text.len() {
             spans.push(TextSpan {

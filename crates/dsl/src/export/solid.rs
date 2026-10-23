@@ -706,6 +706,7 @@ impl Jsx<'_> {
                         }
                         Prop::Page => refs.push(format!("st.effect(() => show.page(el, {v}));")),
                         Prop::Hero => attrs.push(format!("data-hero={{show.opt({v})}}")),
+                        Prop::AccessKey => attrs.push(format!("accesskey={{show.opt({v})}}")),
                         Prop::FocusRing => style.push((
                             "outline".to_owned(),
                             format!("show.truth({v}) ? undefined : \"none\""),

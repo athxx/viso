@@ -235,6 +235,19 @@ impl Rt {
         self.settle();
     }
 
+    /// `key` pressed with Alt held, reaching the node whose access key it is.
+    fn access(&mut self, key: char) {
+        KeyRouter::route_access(
+            &mut self.store,
+            &mut self.states,
+            &self.bindings,
+            &mut self.text_edits,
+            self.root.expect("mounted"),
+            key,
+        );
+        self.settle();
+    }
+
     /// A press of `key` to the focused node.
     fn key(&mut self, key: Key) {
         self.key_with(key, Modifiers::default());
@@ -1025,6 +1038,77 @@ export component Page {
                 .tick_transitions(std::time::Duration::from_millis(16));
         }
         assert_eq!(rt.store.world(to).w, 80.0);
+        assert!(!rt.faulted());
+    }
+}
+
+#[test]
+fn a_button_takes_the_focus_and_clicks_on_space_or_enter() {
+    const SRC: &str = r#"
+export component Clicks {
+    state clicks = 0;
+    view {
+        Column {
+            Button { text: "Go"; width: 100dp; height: 20dp; on click { clicks += 1; } }
+        }
+    }
+}
+"#;
+    for mut rt in [Rt::reloaded(SRC), Rt::packaged(SRC)] {
+        let [button] = rt.children_of_root()[..] else {
+            panic!("a button");
+        };
+        assert!(rt.store.focusable(button), "a button takes the focus");
+        rt.store.set_focused(Some(button));
+        rt.key(Key::Enter);
+        rt.key(Key::Space);
+        assert_eq!(rt.int("clicks"), 2);
+        rt.key(Key::A);
+        assert_eq!(rt.int("clicks"), 2);
+        assert!(!rt.faulted());
+    }
+}
+
+#[test]
+fn an_access_key_is_cued_in_the_text_and_reaches_its_control() {
+    const SRC: &str = r#"
+export component Keys {
+    state clicks = 0;
+    state wrap = false;
+    view {
+        Column {
+            Button { text: "Save"; access_key: "s"; on click { clicks += 1; } }
+            CheckBox { label: "Word wrap"; access_key: "W"; bind checked <=> wrap; }
+            TextInput { width: 100dp; height: 20dp; access_key: "n"; }
+        }
+    }
+}
+"#;
+    for mut rt in [Rt::reloaded(SRC), Rt::packaged(SRC)] {
+        let [button, check, field] = rt.children_of_root()[..] else {
+            panic!("three controls");
+        };
+        assert_eq!(rt.store.access_key(button), Some('s'));
+        let cued = |rt: &Rt, node| {
+            let request = rt.store.text_request(node).expect("a text");
+            request
+                .spans
+                .iter()
+                .filter(|s| s.style.cue)
+                .map(|s| s.range.clone())
+                .collect::<Vec<_>>()
+                .pop()
+        };
+        assert_eq!(cued(&rt, button), Some(0..1));
+        assert_eq!(cued(&rt, check), Some(0..1), "whatever its case");
+
+        rt.access('s');
+        assert_eq!(rt.int("clicks"), 1);
+        rt.access('w');
+        assert_eq!(rt.int("wrap"), 1);
+        assert_eq!(rt.store.focused(), Some(check));
+        rt.access('n');
+        assert_eq!(rt.store.focused(), Some(field));
         assert!(!rt.faulted());
     }
 }

@@ -504,7 +504,7 @@ fn paint_own(store: &NodeStore, node: NodeId, world: Rect, out: &mut Vec<Primiti
                 rect: world,
                 radius: Corners::uniform(radius),
             });
-            paint_content(content, world, mask, out);
+            paint_content(content, world, mask, store.access_cues(), out);
             false
         };
         let link = store
@@ -589,7 +589,7 @@ fn paint_field(marks: &FieldMarks, content: &Content, world: Rect, out: &mut Vec
         y: oy,
         ..world
     };
-    paint_content(content, text, None, out);
+    paint_content(content, text, None, false, out);
     out.extend(marks.underlines.iter().map(|r| quad(r, marks.ink)));
     out.extend(marks.caret.iter().map(|r| quad(r, marks.ink)));
     out.push(Primitive::LayerEnd);
@@ -654,18 +654,19 @@ fn paint_check(
         w: text.x,
         h: text.y,
     };
-    paint_content(content, caption, None, out);
+    paint_content(content, caption, None, store.access_cues(), out);
 }
 
 /// Lower one node's [`Content`] to a primitive, translating its node-local
 /// coordinates by the node's `world` origin. The image variant fills the node's
 /// whole `world` box (a content leaf sizes to the image's intrinsic size, so the
 /// box already matches unless a fixed size overrides it). `mask` rounds the
-/// images it draws.
+/// images it draws; a text's access-key underlines draw when `cues`.
 pub(crate) fn paint_content(
     content: &Content,
     world: Rect,
     mask: Option<RoundMask>,
+    cues: bool,
     out: &mut Vec<Primitive>,
 ) {
     let ox = world.x;
@@ -729,6 +730,9 @@ pub(crate) fn paint_content(
                         from = from.max(to);
                     }
                     out.extend(ink.lines.iter().map(mark));
+                    if cues {
+                        out.extend(ink.cues.iter().map(mark));
+                    }
                 }
             }
             // Color-bitmap glyphs (emoji) reuse the Image pipeline: each is one

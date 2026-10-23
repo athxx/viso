@@ -14,6 +14,10 @@
 //! targeted invalidation — no rebuild, architecture section 47). Its accessible
 //! role is [`Role::Button`] with the caption as its name.
 //!
+//! An `&` in the caption marks its access key: `button("&Save")` shows
+//! "Save", its S underlined while Alt is held, and Alt+S clicks it (off Apple
+//! systems; `&&` is an `&`).
+//!
 //! ```
 //! use viso_widgets::button;
 //! use viso_ui::{SemanticProjector, BuildCx, BindingTable, Component, NodeStore, StateStore, TextEdits, VirtualLists};
@@ -37,11 +41,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use viso_ui::{
-    Align, Axis, BoxStyle, BuildCx, Component, EventCx, FlexStyle, Inset, InteractionStyle,
+    Access, Align, Axis, BoxStyle, BuildCx, Component, EventCx, FlexStyle, Inset, InteractionStyle,
     Justify, Key, Length, PointerButtons, PointerPhase, Rgba, Role, Semantics, Size, StateValue,
 };
 
-use crate::label;
+use crate::controls::mnemonic::Mnemonic;
 
 /// A shared, mutable click callback. It is cloned into both the pointer handler
 /// and the key handler at build time so a pointer click and a keyboard
@@ -128,13 +132,15 @@ impl Default for ButtonStyle {
 ///
 /// Construct one with [`button`] and attach behavior with the chainable setters.
 /// The `on_click` callback fires once per activation — a primary-pointer press
-/// then release over the button, or Enter/Space while the button is focused.
+/// then release over the button, Enter/Space while the button is focused, or
+/// its access key (`&` in the caption) with Alt held.
 ///
 /// See the [module docs](self) for a build example. Invalidation: pressing the
 /// button flips a reactive `pressed` cell bound to `PAINT`, repainting the
 /// button's own node without a rebuild; the caption and structure are static.
 pub struct Button {
-    /// The visible caption, also used as the accessible name.
+    /// The visible caption, also used as the accessible name; an `&` marks
+    /// its access key.
     label: String,
     style: ButtonStyle,
     /// The shared click callback (see [`SharedClick`]). `None` until
@@ -211,7 +217,7 @@ impl Component for Button {
         // padding. `build` takes `&self`, so the styles (`Copy`) are read by value
         // and the caption is cloned (cold, build-time — not a per-frame path).
         let resting = self.style.background;
-        let caption = self.label.clone();
+        let caption = Mnemonic::of(&self.label);
         let root = cx.flex(
             FlexStyle {
                 axis: Axis::Row,
@@ -223,7 +229,7 @@ impl Component for Button {
                 style: resting,
             },
             |cx| {
-                label(caption.clone()).color(CAPTION).build(cx);
+                caption.label().color(CAPTION).build(cx);
             },
         );
 
@@ -244,6 +250,9 @@ impl Component for Button {
             },
         );
         cx.focusable(root, true);
+        if let Some(key) = caption.char() {
+            cx.access_key(root, key);
+        }
 
         // Pointer activation and hover feedback. Primary press arms `pressed`;
         // primary release over the button fires `on_click` and disarms. `Enter`
@@ -279,7 +288,10 @@ impl Component for Button {
         // same `on_click` — the accessibility equivalent of the pointer click.
         let key_cb = self.on_click.clone();
         cx.on_key(root, move |ev| {
-            if let Some(k) = ev.key()
+            if ev.access() == Some(Access::Key) {
+                ev.stop_propagation();
+                fire(&key_cb, ev);
+            } else if let Some(k) = ev.key()
                 && k.pressed
                 && !k.repeat
                 && matches!(k.key, Key::Enter | Key::Space)
@@ -291,10 +303,7 @@ impl Component for Button {
 
         // Explicit Button role with the caption as its accessible name, so the
         // name matches the visible label (AGENTS section 15).
-        cx.semantics(
-            root,
-            Semantics::role(Role::Button).with_label(self.label.clone()),
-        );
+        cx.semantics(root, Semantics::role(Role::Button).with_label(caption.text));
     }
 }
 

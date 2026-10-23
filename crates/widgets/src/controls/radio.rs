@@ -16,7 +16,9 @@
 //! selects the option under it and fires `on_change` once with the newly
 //! selected index. Pointer and keyboard activation are the *same* action (an
 //! interactive control must have a keyboard equivalent, AGENTS section 15), so
-//! the callback is shared between both handlers rather than duplicated.
+//! the callback is shared between both handlers rather than duplicated. An
+//! `&` in a caption marks the option's access key: Alt with it takes the
+//! focus to the option and selects it.
 //!
 //! Its accessible role is [`Role::Group`] for the container with a
 //! [`Role::Radio`] per option named by its caption. Each option projects its live
@@ -53,12 +55,12 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use viso_ui::{
-    Align, Axis, Border, BoxStyle, BuildCx, Component, DirtyClass, EventCx, FlexStyle, Inset,
-    Justify, Key, LeafStyle, Length, PointerButtons, PointerPhase, Rgba, Role, SemanticState,
-    Semantics, Size, StateId, StateValue,
+    Access, Align, Axis, Border, BoxStyle, BuildCx, Component, DirtyClass, EventCx, FlexStyle,
+    Inset, Justify, Key, LeafStyle, Length, PointerButtons, PointerPhase, Rgba, Role,
+    SemanticState, Semantics, Size, StateId, StateValue,
 };
 
-use crate::label;
+use crate::controls::mnemonic::Mnemonic;
 
 /// A shared, mutable change callback carrying the newly-selected index. It is
 /// cloned into every option's pointer and key handler at build time so a pointer
@@ -275,7 +277,7 @@ impl Component for RadioGroup {
             },
             |cx| {
                 for (index, caption) in self.options.iter().enumerate() {
-                    let caption = caption.clone();
+                    let caption = Mnemonic::of(caption);
                     let row = cx.flex(
                         FlexStyle {
                             axis: Axis::Row,
@@ -294,7 +296,7 @@ impl Component for RadioGroup {
                                 size: Size::fixed(dot_size, dot_size),
                                 style: dot_box,
                             });
-                            label(caption.clone()).color(CAPTION).build(cx);
+                            caption.label().color(CAPTION).build(cx);
                         },
                     );
 
@@ -318,6 +320,9 @@ impl Component for RadioGroup {
                         SemanticState::checked(chosen)
                     });
                     cx.focusable(row, true);
+                    if let Some(key) = caption.char() {
+                        cx.access_key(row, key);
+                    }
 
                     // Pointer activation: a primary press-then-release selects this
                     // option and fires `on_change` with its index. One press/
@@ -337,8 +342,13 @@ impl Component for RadioGroup {
                     // selects the focused option and fires the same `on_change` —
                     // the accessibility equivalent of the pointer click.
                     let key_cb = self.on_change.clone();
+                    let id = row.id();
                     cx.on_key(row, move |ev| {
-                        if let Some(k) = ev.key()
+                        if ev.access() == Some(Access::Key) {
+                            ev.stop_propagation();
+                            ev.request_focus(id);
+                            select(&key_cb, ev, selected, index);
+                        } else if let Some(k) = ev.key()
                             && k.pressed
                             && !k.repeat
                             && matches!(k.key, Key::Enter | Key::Space)
@@ -354,7 +364,7 @@ impl Component for RadioGroup {
                     // projection above, not the authored (static) semantics.
                     cx.semantics(
                         row,
-                        Semantics::role(Role::Radio).with_label(caption.clone()),
+                        Semantics::role(Role::Radio).with_label(caption.text.as_str()),
                     );
                 }
             },

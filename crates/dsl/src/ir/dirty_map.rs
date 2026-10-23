@@ -89,6 +89,8 @@ pub fn property_dirty_class(name: &str) -> DirtyClass {
         "focusable" | "autofocus" => D::SEMANTICS,
         // The focus ring is drawn round the focused node.
         "focus_ring" => D::PAINT,
+        // An access key is announced, and cued in the node's text.
+        "access_key" => D::PAINT | D::SEMANTICS,
 
         // Turning input off restyles the node through its `disabled`
         // selector and announces it disabled; what hit testing finds is

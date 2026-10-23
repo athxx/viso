@@ -332,6 +332,7 @@ fn mount(out: &mut String, index: usize, content: &Content, eval: &Eval<'_>, roo
                         Prop::Page => format!("P.page({el}, {value})"),
                         Prop::Hero => format!("P.hero({el}, {value})"),
                         Prop::FocusRing => format!("P.ring({el}, {value})"),
+                        Prop::AccessKey => format!("P.key({el}, {value})"),
                         Prop::Turn => format!("P.turn({el}, {value})"),
                         Prop::Source { mask } => format!("P.source({el}, {value}, {mask})"),
                         Prop::Fit { mask } => format!("P.fit({el}, {value}, {mask})"),

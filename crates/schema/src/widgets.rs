@@ -66,6 +66,7 @@ const FOCUS: &[WidgetProperty] = &[
     prop("focusable", "Bool"),
     prop("autofocus", "Bool"),
     prop("focus_ring", "Bool"),
+    prop("access_key", "String"),
     prop("cursor", "Cursor"),
     prop("enabled", "Bool"),
 ];

@@ -791,7 +791,7 @@ fn what_changes_is_driven_by_the_page_script() {
         "{script}"
     );
     assert!(
-        script.contains("on(e[1], 0, false, 4, (p) => f"),
+        script.contains("on(e[1], 0, false, 15, (p) => f"),
         "{script}"
     );
     assert!(script.contains("$.ck(\"i64\", "), "{script}");
@@ -1160,6 +1160,25 @@ export component Rings {
     assert!(page.index.contains("outline: none"), "{}", page.index);
     let script = page.script.as_deref().unwrap();
     assert!(script.contains("P.ring(e["), "{script}");
+}
+
+#[test]
+fn an_access_key_exports_as_the_element_s_accesskey() {
+    const KEYS: &str = r#"
+export component Keys {
+    state key = "o";
+    view {
+        Column {
+            Button { text: "Save"; access_key: "s"; }
+            Button { text: "Open"; access_key: key; on click { key = "p"; } }
+        }
+    }
+}
+"#;
+    let page = export(KEYS, false).unwrap();
+    assert!(page.index.contains(r#"accesskey="s""#), "{}", page.index);
+    let script = page.script.as_deref().unwrap();
+    assert!(script.contains("P.key(e["), "{script}");
 }
 
 #[test]

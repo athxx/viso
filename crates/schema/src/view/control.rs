@@ -27,8 +27,7 @@ pub enum ControlKind {
     /// `TextInput`: pointer, key and IME samples edit its text; every settled
     /// edit reports the new text, and Enter submits. Its `value` seeds the text.
     TextInput = 3,
-    /// `Text` and `Button`: shows the text of its `text`; it has no built-in
-    /// response.
+    /// `Text`: shows the text of its `text`; it has no built-in response.
     Label = 4,
     /// Any other native node: it shows only its [`Look`] and has no built-in
     /// response.
@@ -67,11 +66,15 @@ pub enum ControlKind {
     /// Backspace while it is focused, or the system back action) reports
     /// `current` one lower.
     Pages = 14,
+    /// `Button`: shows the text of its `text` as a [`Label`](Self::Label)
+    /// does, and takes the focus; Space or Enter on it, or its access key,
+    /// reports `click` as a release on it does.
+    Button = 15,
 }
 
 impl ControlKind {
     /// Every kind, by discriminant.
-    pub const ALL: [ControlKind; 15] = [
+    pub const ALL: [ControlKind; 16] = [
         ControlKind::Check,
         ControlKind::Slider,
         ControlKind::Select,
@@ -87,6 +90,7 @@ impl ControlKind {
         ControlKind::Viewport,
         ControlKind::Number,
         ControlKind::Pages,
+        ControlKind::Button,
     ];
 
     /// The kind native widget `widget` is.
@@ -101,7 +105,8 @@ impl ControlKind {
             "Tabs" | "RadioGroup" => ControlKind::Select,
             "TextInput" => ControlKind::TextInput,
             "NumberField" => ControlKind::Number,
-            "Text" | "Button" => ControlKind::Label,
+            "Text" => ControlKind::Label,
+            "Button" => ControlKind::Button,
             "Image" | "Svg" => ControlKind::Asset,
             "ShaderView" => ControlKind::Shader,
             "GameViewport" => ControlKind::Viewport,
@@ -151,6 +156,7 @@ impl ControlKind {
             ) | (ControlKind::TextInput, EventRoute::Submitted)
                 | (ControlKind::Select, EventRoute::SelectedChanged)
                 | (ControlKind::Pages, EventRoute::CurrentChanged)
+                | (ControlKind::Button, EventRoute::Click)
         )
     }
 
@@ -176,7 +182,10 @@ impl ControlKind {
             (_, "transition.width") => ControlInput::WidthTransition,
             (_, "transition.height") => ControlInput::HeightTransition,
             (
-                ControlKind::Label | ControlKind::TextInput | ControlKind::Number,
+                ControlKind::Label
+                | ControlKind::Button
+                | ControlKind::TextInput
+                | ControlKind::Number,
                 "transition.color",
             ) => ControlInput::ColorTransition,
             (_, "semantics.label") => ControlInput::Label,
@@ -194,31 +203,60 @@ impl ControlKind {
             (_, "sticky") => ControlInput::Sticky,
             (_, "hero") => ControlInput::Hero,
             (_, "focus_ring") => ControlInput::FocusRing,
-            (ControlKind::Label | ControlKind::TextInput | ControlKind::Number, "color") => {
-                ControlInput::TextColor
-            }
-            (ControlKind::Label | ControlKind::TextInput | ControlKind::Number, "soft_wrap") => {
-                ControlInput::SoftWrap
-            }
-            (ControlKind::Label | ControlKind::TextInput | ControlKind::Number, "font_weight") => {
-                ControlInput::FontWeight
-            }
-            (ControlKind::Label | ControlKind::TextInput | ControlKind::Number, "font_family") => {
-                ControlInput::FontFamily
-            }
-            (ControlKind::Label | ControlKind::TextInput | ControlKind::Number, "font_style") => {
-                ControlInput::FontStyle
-            }
-            (ControlKind::Label, "spans") => ControlInput::Spans,
+            (_, "access_key") => ControlInput::AccessKey,
+            (
+                ControlKind::Label
+                | ControlKind::Button
+                | ControlKind::TextInput
+                | ControlKind::Number,
+                "color",
+            ) => ControlInput::TextColor,
+            (
+                ControlKind::Label
+                | ControlKind::Button
+                | ControlKind::TextInput
+                | ControlKind::Number,
+                "soft_wrap",
+            ) => ControlInput::SoftWrap,
+            (
+                ControlKind::Label
+                | ControlKind::Button
+                | ControlKind::TextInput
+                | ControlKind::Number,
+                "font_weight",
+            ) => ControlInput::FontWeight,
+            (
+                ControlKind::Label
+                | ControlKind::Button
+                | ControlKind::TextInput
+                | ControlKind::Number,
+                "font_family",
+            ) => ControlInput::FontFamily,
+            (
+                ControlKind::Label
+                | ControlKind::Button
+                | ControlKind::TextInput
+                | ControlKind::Number,
+                "font_style",
+            ) => ControlInput::FontStyle,
+            (ControlKind::Label | ControlKind::Button, "spans") => ControlInput::Spans,
             (ControlKind::Label, "selectable") => ControlInput::Selectable,
-            (ControlKind::Label | ControlKind::TextInput | ControlKind::Number, "line_height") => {
-                ControlInput::LineHeight
-            }
-            (ControlKind::Label | ControlKind::TextInput | ControlKind::Number, "align") => {
-                ControlInput::TextAlign
-            }
-            (ControlKind::Label, "max_lines") => ControlInput::MaxLines,
-            (ControlKind::Label, "overflow") => ControlInput::Overflow,
+            (
+                ControlKind::Label
+                | ControlKind::Button
+                | ControlKind::TextInput
+                | ControlKind::Number,
+                "line_height",
+            ) => ControlInput::LineHeight,
+            (
+                ControlKind::Label
+                | ControlKind::Button
+                | ControlKind::TextInput
+                | ControlKind::Number,
+                "align",
+            ) => ControlInput::TextAlign,
+            (ControlKind::Label | ControlKind::Button, "max_lines") => ControlInput::MaxLines,
+            (ControlKind::Label | ControlKind::Button, "overflow") => ControlInput::Overflow,
             (ControlKind::Check | ControlKind::Switch, "checked")
             | (ControlKind::Disclosure, "expanded")
             | (ControlKind::Dialog | ControlKind::Toast, "open")
@@ -226,7 +264,7 @@ impl ControlKind {
             | (ControlKind::Select, "selected")
             | (ControlKind::Pages, "current")
             | (ControlKind::TextInput | ControlKind::Number, "value")
-            | (ControlKind::Label, "text")
+            | (ControlKind::Label | ControlKind::Button, "text")
             | (ControlKind::Asset, "source")
             | (ControlKind::Shader, "shader")
             | (ControlKind::Viewport, "camera") => ControlInput::Value,
@@ -265,6 +303,7 @@ impl ControlKind {
             ControlKind::Viewport => "Viewport",
             ControlKind::Number => "Number",
             ControlKind::Pages => "Pages",
+            ControlKind::Button => "Button",
         }
     }
 
@@ -696,6 +735,9 @@ pub enum ControlInput {
     /// The node's `focus_ring`: whether it wears the framework's focus ring
     /// while the keyboard focused it.
     FocusRing,
+    /// The node's `access_key`: the letter that, with Alt held, reaches it,
+    /// underlined in its text while Alt is.
+    AccessKey,
     /// A text's `font_style`: upright or italic.
     FontStyle,
     /// A text's `spans`: its pieces, drawn each its own way.
@@ -815,6 +857,8 @@ pub struct NodeEntries {
     pub hero: Option<u32>,
     /// The entry of its `focus_ring`.
     pub focus_ring: Option<u32>,
+    /// The entry of its `access_key`.
+    pub access_key: Option<u32>,
 }
 
 /// The handler-table entries of the style of a text a node shows: an absent
@@ -946,7 +990,7 @@ pub enum Switched {
 
 impl ControlInput {
     /// Every input, by wire tag.
-    pub const ALL: [ControlInput; 58] = [
+    pub const ALL: [ControlInput; 59] = [
         ControlInput::Value,
         ControlInput::Min,
         ControlInput::Max,
@@ -1005,6 +1049,7 @@ impl ControlInput {
         ControlInput::PageTransition,
         ControlInput::Hero,
         ControlInput::FocusRing,
+        ControlInput::AccessKey,
     ];
 
     /// Its wire tag: its place in [`ControlInput::ALL`].
@@ -1154,6 +1199,7 @@ impl Control {
             ControlInput::Sticky => self.node.sticky,
             ControlInput::Hero => self.node.hero,
             ControlInput::FocusRing => self.node.focus_ring,
+            ControlInput::AccessKey => self.node.access_key,
             ControlInput::TextColor => self.text.color,
             ControlInput::SoftWrap => self.text.soft_wrap,
             ControlInput::FontWeight => self.text.font_weight,
@@ -1228,6 +1274,7 @@ impl Control {
             ControlInput::Sticky => &mut self.node.sticky,
             ControlInput::Hero => &mut self.node.hero,
             ControlInput::FocusRing => &mut self.node.focus_ring,
+            ControlInput::AccessKey => &mut self.node.access_key,
             ControlInput::TextColor => &mut self.text.color,
             ControlInput::SoftWrap => &mut self.text.soft_wrap,
             ControlInput::FontWeight => &mut self.text.font_weight,
@@ -1308,6 +1355,7 @@ impl Encode for Control {
             self.node.sticky,
             self.node.hero,
             self.node.focus_ring,
+            self.node.access_key,
         ]
         .into_iter()
         .chain(self.text.all())
@@ -1437,6 +1485,7 @@ impl Decode for Control {
             sticky: entry()?,
             hero: entry()?,
             focus_ring: entry()?,
+            access_key: entry()?,
         };
         control.text = TextEntries {
             color: entry()?,
@@ -1552,7 +1601,9 @@ mod tests {
         assert_eq!(ControlKind::of("CheckBox"), ControlKind::Check);
         assert_eq!(ControlKind::of("Toggle"), ControlKind::Switch);
         assert!(ControlKind::Switch.responds());
-        assert_eq!(ControlKind::of("Button"), ControlKind::Label);
+        assert_eq!(ControlKind::of("Button"), ControlKind::Button);
+        assert!(ControlKind::Button.responds());
+        assert!(ControlKind::Button.reports(EventRoute::Click));
         assert_eq!(ControlKind::of("Column"), ControlKind::Plain);
         assert!(!ControlKind::Label.responds());
         assert!(!ControlKind::Plain.responds());
@@ -1721,6 +1772,7 @@ mod tests {
                 sticky: Some(29),
                 hero: Some(30),
                 focus_ring: Some(31),
+                access_key: Some(32),
             },
             text: TextEntries {
                 color: None,

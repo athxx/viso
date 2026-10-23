@@ -158,6 +158,8 @@ pub(super) enum Prop {
     Hero,
     /// Whether it wears the browser's focus outline.
     FocusRing,
+    /// The letter that, with the browser's access-key modifiers, reaches it.
+    AccessKey,
     /// How a navigation stack's pages trade places.
     Turn,
     /// An asset's source, as an image or as a mask.
@@ -654,7 +656,11 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                     kind,
                 });
             }
-            if kind.responds() && routes.iter().any(|r| kind.reports(r.event)) {
+            if kind.responds()
+                && routes
+                    .iter()
+                    .any(|r| r.event.is_control() && kind.reports(r.event))
+            {
                 let entry = control.as_ref().and_then(|c| c.value);
                 wires.push(Wire::Sync { kind, entry });
             }
@@ -1141,7 +1147,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         let mut selected = None;
         let mask = el.tag != "img";
         match control.kind {
-            ControlKind::Label => {
+            ControlKind::Label | ControlKind::Button => {
                 match self.bind(
                     wires,
                     control.text.spans,
@@ -1489,6 +1495,15 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         ) && !fixed.truth()
         {
             el.style("outline: none");
+        }
+        if let Some(fixed) = self.bind(
+            wires,
+            control.node.access_key,
+            Prop::AccessKey,
+            "its access key",
+            at,
+        ) {
+            el.attr("accesskey", &fixed.text());
         }
         if let Some(fixed) = self.bind(
             wires,

@@ -4911,6 +4911,7 @@ Payload 基线字段：
 | `focusable` | `Bool` | `false`；标准交互 Widget 为 `true` | `SEMANTICS`              |
 | `autofocus` | `Bool` | `false`                        | —（仅挂载时读取）            |
 | `focus_ring` | `Bool` | `true`                        | `PAINT`                      |
+| `access_key` | `String` | 无                          | `PAINT\|SEMANTICS`           |
 | `enabled`   | `Bool` | `true`（交互 Widget）          | `STYLE\|SEMANTICS`           |
 
 - 焦点顺序是 Focus Scope 内可聚焦节点的**源码先序顺序**，不随 RTL 翻转，也不受 `stack.layer`、`translate` 影响；
@@ -4919,6 +4920,9 @@ Payload 基线字段：
 - `enabled: false` 的节点不可聚焦、不接收指针与键盘事件，语义上暴露为 disabled，并激活 `disabled` 选择器；
 - 焦点移动时旧节点与新节点都标记 `PAINT|SEMANTICS`（ADR 0030）；
 - 键盘或辅助技术移来的焦点（`focus_visible`）由框架在节点外画焦点环，指针按下得到的焦点不画；环沿节点盒子外缘、按其圆角放大，画在其子树之上、自身裁剪之外，随其平移与旋转；样式随平台：Apple 为强调色半透明光晕、从外 6dp 处 200 ms 收拢淡入，Windows 为 2px 前景色加 1px 背景色的双色描边，Linux 为半透明强调色 2px 描边、200 ms 淡入，Android 为 Material 3dp 指示框、外移 2dp，Web 运行时为浏览器式 2px 描边；强调色取系统设置（macOS `controlAccentColor`、Windows 个性化强调色、XDG portal `accent-color`），减少动态效果时立即出现；文本框显示光标而不画环，带链接的文字环绕聚焦的链接；`focus_ring: false` 的节点自行表现焦点（例如 `when focus_visible`），不画框架的环。Web 导出由浏览器的 `:focus-visible` 轮廓表现，`focus_ring: false` 导出为 `outline: none`。
+- `access_key` 的首个字符是节点的访问键（不分大小写）：非 Apple 系统上，焦点链没有处理的 Alt+该键送到树序中（焦点之后的）下一个可见、可用、在焦点作用域内持有它的节点——`Button` 收到 `click`，`CheckBox`/`Toggle` 获得焦点并翻转，其他可聚焦节点获得焦点（焦点环照常显示）；节点文本（`Button`/`Text` 的 `text` 与 `spans`、`CheckBox`/`Toggle` 的 `label`）中首个该字母在 Alt 按住期间显示下划线，松开或窗口失去焦点时消失；多个节点同键时依次轮转；Apple 系统上 Option 用于输入字符，访问键不生效、不显示下划线。辅助技术读到 `Alt+键` 快捷键（AccessKit `access_key`、Web `aria-keyshortcuts`）。HTML 导出为 `accesskey` 属性（由浏览器按其修饰键激活，不画下划线）。
+
+`Button` 默认可聚焦，焦点在其上时按 Space 或 Enter 收到 `click`（位置为节点中点，修饰键为按下时的），与指针轻点相同。
 
 当前实现：`enabled` 与 `autofocus` 可为常量或读取值，宏路径、热重载与 Release 包相同。`enabled: false` 使节点及其子树 inert：命中落在其中的指针事件不分派给任何节点（包括祖先，按下不会穿透到外层可点击节点），也不进入 `hover`/`pressed` 状态；指针离开时仍收到 `hover_leave`；滚动照常传给外层滚动容器。inert 节点不可聚焦，Tab 跳过整个子树，辅助技术的动作不作用于它；禁用时焦点或按下位于子树内则被清除。语义树中该节点与其子树标为 disabled（AccessKit `disabled`、Web `aria-disabled`、iOS `NotEnabled`），不暴露动作。节点自身的 `enabled` 仍决定 `disabled` 选择器。`autofocus` 只在节点首次挂载时读取：此时没有节点持有焦点则聚焦它（源码先序中第一个生效），热重载重新挂载不再触发。HTML 导出：禁用的元素带 `data-viso-off` 与 `aria-disabled`（原生控件另加 `disabled`），运行时丢弃目标位于其中的事件并收回子树的 Tab 停靠点；`autofocus` 导出为同名属性，读取值时在挂载后、无焦点时聚焦。
 

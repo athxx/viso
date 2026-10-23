@@ -498,6 +498,7 @@ const P = {
   turn: (el, v) => { el.$turn = Number(v ?? 0n); },
   hero: (el, v) => attr(el, "data-hero", v),
   ring: (el, v) => { el.style.outline = truth(v) ? "" : "none"; },
+  key: (el, v) => attr(el, "accesskey", v),
   source(el, v, mask) {
     const u = url(v);
     if (!mask) el.src = u;

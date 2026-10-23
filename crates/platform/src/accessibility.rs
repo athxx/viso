@@ -182,6 +182,8 @@ pub struct AccessNode {
     pub live: SemanticsLive,
     /// A heading's level, 1 the topmost.
     pub level: Option<u8>,
+    /// The letter it answers to with Alt held, lowercase.
+    pub access_key: Option<char>,
     pub bounds: SemanticsRect,
     pub state: SemanticsState,
     pub actions: AccessActions,

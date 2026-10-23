@@ -241,6 +241,8 @@ struct PreparedLayout {
     fills: Vec<TextMark>,
     /// The underlines and strikethroughs its spans draw over them.
     strokes: Vec<TextMark>,
+    /// The underlines of its access keys, drawn while their cues show.
+    cues: Vec<TextMark>,
     /// Where its links draw, a box for each line of each.
     links: Vec<LinkBox>,
 }
@@ -257,6 +259,8 @@ struct PaintSpan {
     background: Option<Rgba>,
     underline: bool,
     strikethrough: bool,
+    /// Whether it is an access key, underlined while the cues show.
+    cue: bool,
     /// Which of the text's links it is, counted in the order they appear.
     link: Option<u16>,
 }
@@ -1118,7 +1122,7 @@ impl TextShaper {
         let mut glyphs = Vec::new();
         let mut offsets = Vec::with_capacity(lines.len());
         let mut rows = Vec::with_capacity(lines.len() + 1);
-        let (mut fills, mut strokes) = (Vec::new(), Vec::new());
+        let (mut fills, mut strokes, mut cues) = (Vec::new(), Vec::new(), Vec::new());
         let mut links: Vec<LinkBox> = Vec::new();
         let mut first_baseline = None;
         let mut y = 0.0f32;
@@ -1216,22 +1220,23 @@ impl TextShaper {
                         });
                     }
                     let px = 1.0 / placing.dpi.max(1.0);
-                    let mut stroke = |(at, thickness): (f32, f32)| {
-                        strokes.push(TextMark {
-                            rect: Rect::new(
-                                x,
-                                ground - at * look.size,
-                                w,
-                                (thickness * look.size).max(px),
-                            ),
-                            color: span.color,
-                        });
+                    let mark = |(at, thickness): (f32, f32)| TextMark {
+                        rect: Rect::new(
+                            x,
+                            ground - at * look.size,
+                            w,
+                            (thickness * look.size).max(px),
+                        ),
+                        color: span.color,
                     };
                     if span.underline {
-                        stroke(metrics.underline_em);
+                        strokes.push(mark(metrics.underline_em));
                     }
                     if span.strikethrough {
-                        stroke(metrics.strikeout_em);
+                        strokes.push(mark(metrics.strikeout_em));
+                    }
+                    if span.cue {
+                        cues.push(mark(metrics.underline_em));
                     }
                 }
             }
@@ -1248,6 +1253,7 @@ impl TextShaper {
             offsets,
             fills,
             strokes,
+            cues,
             links,
         }
     }
@@ -1358,6 +1364,7 @@ impl TextShaper {
                     background: look.background,
                     underline: look.underline,
                     strikethrough: look.strikethrough,
+                    cue: look.cue,
                     link,
                 });
             }
@@ -1610,6 +1617,7 @@ impl TextShaper {
                 runs: inks,
                 fills: layout.fills.clone(),
                 lines: layout.strokes.clone(),
+                cues: layout.cues.clone(),
                 links: layout.links.clone(),
             })
         });

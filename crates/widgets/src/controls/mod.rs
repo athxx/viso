@@ -16,6 +16,7 @@ mod combo_box;
 mod dock;
 mod file_tree;
 mod glyphs;
+mod labelled;
 mod menu;
 mod mnemonic;
 mod modal;
@@ -45,6 +46,7 @@ pub use file_tree::{
     FileTree, FileTreeHandle, FileTreeHandleSlot, FileTreeStyle, NodeKey, SelectMode, SelectOp,
     TreeNode, VisibleRow, file_tree,
 };
+pub use labelled::{Labelled, labelled};
 pub use menu::{
     ContextMenu, HOVER_GRACE, HOVER_OPEN, Menu, MenuBar, MenuBarHandle, MenuBarHandleSlot,
     MenuBarStyle, MenuEntry, MenuHandle, MenuHandleSlot, MenuItem, MenuStyle, Shortcut, TYPE_AHEAD,

@@ -444,6 +444,12 @@ pub(crate) fn aria_attributes(node: &AccessNode, mut set: impl FnMut(&'static st
         "aria-level",
         node.level.map(|level| level.to_string()).as_deref(),
     );
+    let shortcut = node.access_key.map(|key| {
+        let mut out = String::from("Alt+");
+        out.extend(key.to_uppercase());
+        out
+    });
+    set("aria-keyshortcuts", shortcut.as_deref());
     // Focusable by a screen reader, not by Tab: the canvas's own focus
     // order stays the only one.
     set(
@@ -744,6 +750,7 @@ mod tests {
         let heading = AccessNode {
             role: SemanticsRole::Heading,
             level: Some(2),
+            access_key: Some('h'),
             state: SemanticsState {
                 expanded: Some(false),
                 selected: Some(true),
@@ -755,6 +762,7 @@ mod tests {
         let set = attributes(&heading);
         assert_eq!(value(&set, "aria-disabled"), Some("true"));
         assert_eq!(value(&set, "aria-level"), Some("2"));
+        assert_eq!(value(&set, "aria-keyshortcuts"), Some("Alt+H"));
         assert_eq!(value(&set, "aria-expanded"), Some("false"));
         assert_eq!(value(&set, "aria-selected"), Some("true"));
     }

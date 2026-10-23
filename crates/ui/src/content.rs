@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 use crate::asset::{AssetDraw, AssetFit};
 use crate::layout::Vec2;
-use crate::text_style::{FontSize, TextSpan, TextStyle, WidthUse};
+use crate::text_style::{FontSize, SpanStyle, TextSpan, TextStyle, WidthUse};
 use viso_render::asset::ResourceId;
 use viso_render::{
     GlyphInstanceData, PathCmd, ProgramSlot, Rect, Rgba, SceneSlot, Stroke, TextureId,
@@ -256,6 +256,52 @@ pub struct TextRequest {
     pub spans: Vec<TextSpan>,
 }
 
+impl TextRequest {
+    /// Cue access key `key` in it: the first letter of its text that is the
+    /// key, whatever its case, is underlined while the window's access-key
+    /// cues show, drawn as its span draws it otherwise. A text without the
+    /// letter is left as it is.
+    pub fn cue(&mut self, key: char) {
+        let fold = |c: char| c.to_lowercase().next().unwrap_or(c);
+        let key = fold(key);
+        let Some((at, c)) = self.text.char_indices().find(|&(_, c)| fold(c) == key) else {
+            return;
+        };
+        let range = at..at + c.len_utf8();
+        let cued = |style: SpanStyle| TextSpan {
+            range: range.clone(),
+            style: SpanStyle { cue: true, ..style },
+        };
+        let mut out = Vec::with_capacity(self.spans.len() + 3);
+        let mut covered = false;
+        for span in self.spans.drain(..) {
+            if span.range.start >= range.end || span.range.end <= range.start {
+                out.push(span);
+                continue;
+            }
+            covered = true;
+            if span.range.start < range.start {
+                out.push(TextSpan {
+                    range: span.range.start..range.start,
+                    style: span.style.clone(),
+                });
+            }
+            out.push(cued(span.style.clone()));
+            if span.range.end > range.end {
+                out.push(TextSpan {
+                    range: range.end..span.range.end,
+                    style: span.style,
+                });
+            }
+        }
+        if !covered {
+            let at = out.partition_point(|s| s.range.start <= range.start);
+            out.insert(at, cued(SpanStyle::default()));
+        }
+        self.spans = out;
+    }
+}
+
 /// How a text of styled spans is painted beyond its glyphs: the colors runs
 /// of them draw in, and the fills and lines its spans add.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -267,6 +313,9 @@ pub struct TextInk {
     pub fills: Vec<TextMark>,
     /// Underlines and strikethroughs, drawn over them.
     pub lines: Vec<TextMark>,
+    /// The underlines of its access keys, drawn over them only while the
+    /// window shows its access keys' cues.
+    pub cues: Vec<TextMark>,
     /// Where its links draw, a box for each line each is on, in node-local
     /// space: what a pointer hits and what the focus ring goes round.
     pub links: Vec<LinkBox>,
@@ -300,6 +349,43 @@ pub struct TextMark {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cue_underlines_the_key_s_first_letter_within_its_span() {
+        let mut request = TextRequest {
+            text: "Save As".into(),
+            font_size: FontSize::Fixed(12.0),
+            color: Rgba::TRANSPARENT,
+            soft_wrap: false,
+            locale: None,
+            style: TextStyle::default(),
+            spans: vec![TextSpan {
+                range: 4..7,
+                style: SpanStyle::default().bold(),
+            }],
+        };
+        let mut plain = request.clone();
+        plain.cue('S');
+        assert_eq!(plain.spans[0].range, 0..1, "the first S, before the span");
+        assert!(plain.spans[0].style.cue);
+        request.cue('a');
+        request.cue('a');
+        assert_eq!(request.spans.len(), 2, "cued once");
+        assert_eq!(request.spans[0].range, 1..2, "the a of Save");
+        assert!(request.spans[0].style.cue && request.spans[0].style.weight.is_none());
+        request.text = "Copy  As".into();
+        request.spans = vec![TextSpan {
+            range: 4..8,
+            style: SpanStyle::default().bold(),
+        }];
+        request.cue('a');
+        let ranges: Vec<_> = request.spans.iter().map(|s| s.range.clone()).collect();
+        assert_eq!(ranges, [4..6, 6..7, 7..8], "the span splits round it");
+        assert!(request.spans[1].style.cue && request.spans[1].style.weight.is_some());
+        let before = request.clone();
+        request.cue('z');
+        assert_eq!(request, before, "no such letter");
+    }
 
     #[test]
     fn natural_reads_each_variant() {

@@ -245,8 +245,9 @@ pub(crate) fn control_cells(
 /// caption, its `translate`, `scale`, `rotation` and `transform_origin`, and
 /// its `cursor`, its text's `font_style`, `spans` and `selectable`, its
 /// `shadow`, a refreshable viewport's `refreshing`, its `sticky`, and a
-/// navigation stack's `page_transition`, its `hero` and its `focus_ring`.
-const SHOWN: usize = 49;
+/// navigation stack's `page_transition`, its `hero`, its `focus_ring` and its
+/// `access_key`.
+const SHOWN: usize = 50;
 
 /// The input of each value a node shows, in order.
 const SHOWN_INPUTS: [ControlInput; SHOWN] = [
@@ -299,6 +300,7 @@ const SHOWN_INPUTS: [ControlInput; SHOWN] = [
     ControlInput::PageTransition,
     ControlInput::Hero,
     ControlInput::FocusRing,
+    ControlInput::AccessKey,
 ];
 
 /// Where its `translate` sits among the values a node shows.
@@ -330,6 +332,9 @@ const HERO: usize = 47;
 
 /// Where its `focus_ring` sits among the values a node shows.
 const FOCUS_RING: usize = 48;
+
+/// Where its `access_key` sits among the values a node shows.
+const ACCESS_KEY: usize = 49;
 
 /// Where its background, opacity, corner radius and border sit among the
 /// values a node shows.
@@ -541,18 +546,21 @@ impl Shown {
             paging,
             hero,
             focus_ring,
+            access_key,
         ] = &shows;
+        let access_key = access_key.as_str().and_then(|key| key.chars().next());
         let spanned = crate::text_style::spans(pieces);
         let changed = |at: usize| prior.is_none_or(|prior| prior[at] != shows[at]);
         let secure = truth(secure, false);
         if semantics.says_anything()
             && ((SEMANTICS..NODE).any(changed)
                 || (FIELD..TRANSLATE).any(changed)
-                || (control.kind == ControlKind::Label && (changed(0) || changed(PIECES + 1))))
+                || (matches!(control.kind, ControlKind::Label | ControlKind::Button)
+                    && (changed(0) || changed(PIECES + 1))))
         {
             let name = match (label.as_str(), control.kind) {
                 (Some(label), _) => Some(label),
-                (None, ControlKind::Label) => match &spanned {
+                (None, ControlKind::Label | ControlKind::Button) => match &spanned {
                     Some((text, _)) => Some(text.as_str()),
                     None => value.as_str(),
                 },
@@ -599,9 +607,10 @@ impl Shown {
             move_of(TURN + 1, look.rotation_transition),
         ];
         let color_move = match control.kind {
-            ControlKind::Label | ControlKind::TextInput | ControlKind::Number => {
-                move_of(TEXT, look.color_transition.filter(|_| given(TEXT)))
-            }
+            ControlKind::Label
+            | ControlKind::Button
+            | ControlKind::TextInput
+            | ControlKind::Number => move_of(TEXT, look.color_transition.filter(|_| given(TEXT))),
             _ => None,
         };
         let store = &mut *cx.store;
@@ -655,6 +664,9 @@ impl Shown {
         }
         if shown(FOCUS_RING) && changed(FOCUS_RING) {
             store.set_focus_ring(self.node, truth(focus_ring, true));
+        }
+        if shown(ACCESS_KEY) && changed(ACCESS_KEY) {
+            store.set_access_key(self.node, access_key);
         }
         // An autofocus node takes the focus as it mounts, unless something
         // already holds it.
@@ -752,6 +764,7 @@ impl Shown {
             && (0..LOOK)
                 .chain(TEXT..TRANSLATE)
                 .chain(PIECES..SHADOW)
+                .chain([ACCESS_KEY])
                 .all(|at| !changed(at))
             && !repaint
         {
@@ -796,8 +809,8 @@ impl Shown {
                     store.set_asset(self.node, resource, asset_fit(fit), tint);
                 }
             }
-            ControlKind::Label => {
-                let request = match spanned {
+            ControlKind::Label | ControlKind::Button => {
+                let mut request = match spanned {
                     Some((shown, spans)) => TextRequest {
                         text: shown,
                         spans,
@@ -805,6 +818,10 @@ impl Shown {
                     },
                     None => text(value),
                 };
+                // A text shows its access key's cue.
+                if let Some(key) = access_key {
+                    request.cue(key);
+                }
                 let selectable = truth(selectable, false);
                 let was = store.field_marks(self.node).is_some();
                 // A text takes the focus while it is selectable, unless its
@@ -877,8 +894,12 @@ impl Shown {
                 store.set_check_mark(self.node, Some(CheckMark { shape, checked }));
                 // A check with no caption still shapes an empty one, which
                 // sizes and inks its mark.
-                if first || (given(FIELD + 7) && changed(FIELD + 7)) {
-                    store.set_text_request(self.node, text(caption));
+                if first || (given(FIELD + 7) && changed(FIELD + 7)) || changed(ACCESS_KEY) {
+                    let mut request = text(caption);
+                    if let Some(key) = access_key {
+                        request.cue(key);
+                    }
+                    store.set_text_request(self.node, request);
                 }
             }
             ControlKind::Slider => {

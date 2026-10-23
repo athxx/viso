@@ -3353,6 +3353,15 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         if let Some(ws) = self.windows.iter_mut().find(|w| w.window == window) {
             if !focused {
                 ws.store.release_client_input();
+                // Nor Alt's: the access keys' cues go.
+                ws.alt_alone = false;
+                KeyRouter::route_cues(
+                    &mut ws.store,
+                    &mut ws.states,
+                    &ws.bindings,
+                    &mut ws.text_edits,
+                    false,
+                );
             }
             // An inactive window shows no caret and greys its selection.
             ws.active = focused;

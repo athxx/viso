@@ -8,16 +8,19 @@
 //! inverse and fires the change callback with it. The cell projects into the
 //! node's semantic state, which carries it to the accessibility tree and moves
 //! the mark to it, so a flip repaints the one node, its mark easing over.
+//!
+//! An `&` in the caption marks its access key: Alt with it takes the focus to
+//! the check and flips it.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use viso_ui::{
-    BoxStyle, BuildCx, CheckMark, CheckShape, EventCx, Key, LeafStyle, PointerButtons,
+    Access, BoxStyle, BuildCx, CheckMark, CheckShape, EventCx, Key, LeafStyle, PointerButtons,
     PointerPhase, Rgba, Role, SemanticState, Semantics, Size, StateId, StateValue,
 };
 
-use crate::label;
+use crate::controls::mnemonic::Mnemonic;
 
 /// A shared, mutable change callback carrying the new checked value, cloned
 /// into the pointer and the key handler so both drive the same one. Pointer
@@ -64,7 +67,8 @@ impl Check<'_> {
             size: self.size,
             style: BoxStyle::NONE,
         });
-        cx.text_request(node, label(self.caption).color(self.color).request());
+        let caption = Mnemonic::of(self.caption);
+        cx.text_request(node, caption.label().color(self.color).request());
         cx.check_mark(
             node,
             CheckMark {
@@ -74,12 +78,15 @@ impl Check<'_> {
         );
         cx.semantics(
             node,
-            Semantics::role(Role::CheckBox).with_label(self.caption),
+            Semantics::role(Role::CheckBox).with_label(caption.text.as_str()),
         );
         cx.bind_semantic_state(node, move |cx| {
             SemanticState::checked(matches!(cx.get(cell), Some(StateValue::Bool(true))))
         });
         cx.focusable(node, true);
+        if let Some(key) = caption.char() {
+            cx.access_key(node, key);
+        }
 
         let cb = self.on_change.clone();
         cx.on_pointer(node, move |ev| {
@@ -89,8 +96,13 @@ impl Check<'_> {
             }
         });
         let cb = self.on_change.clone();
+        let id = node.id();
         cx.on_key(node, move |ev| {
-            if let Some(k) = ev.key()
+            if ev.access() == Some(Access::Key) {
+                ev.stop_propagation();
+                ev.request_focus(id);
+                flip(ev, cell, &cb);
+            } else if let Some(k) = ev.key()
                 && k.pressed
                 && !k.repeat
                 && matches!(k.key, Key::Enter | Key::Space)
