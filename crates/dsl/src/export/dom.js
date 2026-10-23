@@ -422,9 +422,9 @@ const page = (el, v) => {
     if (items(el).indexOf(a) !== el.$page) a.setAttribute("data-vx-away", "");
   };
 };
-// A viewer's `data-` attribute `name` for value `v`: a length in px, a
-// double tap's scale empty for none.
-const viewing = (v, name) => (name === "data-pan-margin" ? String(dp(v)) : v === null ? "" : String(v));
+// A `data-` attribute `name` the script reads for value `v`: a length in
+// px, a viewer's double tap empty for none.
+const datum = (v, name) => (name === "data-pan-margin" ? String(dp(v)) : v === null ? "" : String(v));
 
 const url = (v) => {
   if (v === null || typeof v !== "object") return "";
@@ -503,7 +503,7 @@ const P = {
   hero: (el, v) => attr(el, "data-hero", v),
   ring: (el, v) => { el.style.outline = truth(v) ? "" : "none"; },
   key: (el, v) => attr(el, "accesskey", v),
-  viewer: (el, v, name) => attr(el, name, viewing(v, name)),
+  data: (el, v, name) => attr(el, name, datum(v, name)),
   axis: (el, v) => {
     if (v === null) delete el.dataset.dragAxis;
     else el.dataset.dragAxis = v === 0n ? "row" : "column";
@@ -910,6 +910,212 @@ const viewer = (el) => {
   fit();
 };
 
+// The swipe row standing open, if one does: one at a time.
+let swiped = null;
+
+// Makes `el` a swipe row: a drag across slides its first child not marked
+// `data-swipe-edge` aside, and the panel marked for the edge it uncovers
+// (0 leading, 1 trailing) slides in after it, its edge held to the
+// content's. Let go past half the panel's actions or flicked open, it
+// springs open on them, else shut; an edge `data-full-swipe` names (bit 0
+// leading, bit 1 trailing; trailing unless set) lets a swipe carry the
+// content off, which tells the row by a `viso-fullswipe` event before it
+// springs back. A trackpad's swipe across slides it too, a press elsewhere
+// in its list or a scroll shuts it, the press clicking nothing, and a press
+// on an action shuts it once it clicks. The focus coming to an action opens
+// the row on it; Escape shuts it.
+const swipeRow = (el) => {
+  if (el.$swipe) return;
+  el.dataset.dragAxis = "row";
+  draggable(el);
+  if (getComputedStyle(el).position === "static") el.style.position = "relative";
+  el.style.isolation = "isolate";
+  const v = { x: 0, raw: 0, run: null, full: null, focus: false, pad: null };
+  el.$swipe = v;
+  const panel = (edge) => [...el.children].find((c) => c.dataset.swipeEdge === String(edge));
+  const content = () => [...el.children].find((c) => c.dataset.swipeEdge === undefined);
+  const rtl = () => getComputedStyle(el).direction === "rtl";
+  // The way the content slides to show `edge`'s actions: 1 to the right.
+  const sign = (edge) => ((edge === 0) !== rtl() ? 1 : -1);
+  const edgeOf = (x) => (x * sign(0) > 0 ? 0 : 1);
+  const width = () => el.clientWidth;
+  const reach = (edge) => {
+    const p = panel(edge);
+    if (!p || !p.children.length) return 0;
+    let lo = Infinity, hi = -Infinity;
+    for (const c of p.children) {
+      lo = Math.min(lo, c.offsetLeft);
+      hi = Math.max(hi, c.offsetLeft + c.offsetWidth);
+    }
+    return Math.min(Math.max(hi - lo, 0), width());
+  };
+  const full = (edge) => (Number(el.dataset.fullSwipe || 2) & (edge === 0 ? 1 : 2)) !== 0 && reach(edge) > 0;
+  const mark = (edge) => Math.min(Math.max(width() * 0.55, reach(edge) + 48), width() * 0.95);
+  const stretch = () => width() * 0.15;
+  const eased = (m, d) => (d <= 0 ? 0 : (m * 0.55 * d) / (m * 0.55 + d));
+  const uneased = (m, d) => { if (d <= 0) return 0; const s = Math.min(m, d * 0.999); return (s * d) / (0.55 * (d - s)); };
+  // Where the content shows for a travel of `raw`, and back.
+  const shape = (raw) => {
+    if (raw === 0) return 0;
+    const edge = edgeOf(raw), r = reach(edge), m = Math.abs(raw);
+    if (r === 0) return 0;
+    const shown = full(edge) ? Math.min(m, width()) : m <= r ? m : r + eased(m - r, stretch());
+    return Math.sign(raw) * shown;
+  };
+  const unshape = (x) => {
+    if (x === 0) return 0;
+    const edge = edgeOf(x), r = reach(edge), m = Math.abs(x);
+    return Math.sign(x) * (full(edge) || m <= r ? m : r + uneased(m - r, stretch()));
+  };
+  const parts = () => [[content(), 0], [panel(0), -sign(0)], [panel(1), -sign(1)]].filter(([n]) => n);
+  const put = (x) => {
+    for (const [n, away] of parts()) n.style.transform = "translateX(" + (x + away * width()) + "px)";
+  };
+  const show = () => put(v.x);
+  // Ends the spring under way where it has come to.
+  const stop = () => {
+    if (!v.run) return;
+    const { anims, at, from, seconds, timer } = v.run;
+    v.run = null;
+    clearTimeout(timer);
+    v.x = at(Math.min((performance.now() - from) / 1000, seconds));
+    for (const a of anims) a.cancel();
+    show();
+  };
+  // Springs to `to` from moving at `speed` px/s, critically damped; then
+  // `then` runs.
+  const spring = (to, speed, then) => {
+    stop();
+    const e0 = v.x - to;
+    const at = (t) => to + (e0 + (speed + 20 * e0) * t) * Math.exp(-20 * t);
+    let seconds = 0;
+    if (!reduced.matches) while (seconds < 1.5 && (Math.abs(at(seconds) - to) > 0.5 || seconds < 0.05)) seconds += 1 / 60;
+    v.x = to;
+    show();
+    if (seconds === 0) return then && then();
+    const n = Math.ceil(seconds * 60);
+    const anims = parts().map(([node, away]) => {
+      const frames = [];
+      for (let i = 0; i <= n; i++) frames.push({ transform: "translateX(" + (at((seconds * i) / n) + away * width()) + "px)" });
+      return node.animate(frames, { duration: seconds * 1000, easing: "linear" });
+    });
+    const timer = setTimeout(() => { if (v.run && v.run.timer === timer) { v.run = null; if (then) then(); } }, seconds * 1000);
+    v.run = { anims, at, from: performance.now(), seconds, timer };
+  };
+  const shut = () => {
+    v.full = null;
+    v.focus = false;
+    if (swiped === el) swiped = null;
+    spring(0, 0);
+  };
+  const open = (edge, speed = 0) => {
+    if (swiped && swiped !== el) swiped.$swipe.shut();
+    swiped = el;
+    spring(sign(edge) * reach(edge), speed);
+  };
+  v.shut = shut;
+  // Lets the row go moving at `speed` px/s across.
+  const release = (speed) => {
+    const x = v.x, way = x !== 0 ? x : speed;
+    if (way === 0) return shut();
+    const edge = edgeOf(way), r = reach(edge);
+    if (x !== 0 && full(edge) && Math.abs(x) >= mark(edge)) {
+      if (swiped && swiped !== el) swiped.$swipe.shut();
+      swiped = el;
+      return spring(sign(edge) * width(), speed, () => {
+        el.dispatchEvent(new CustomEvent("viso-fullswipe", { detail: { edge } }));
+        setTimeout(shut, reduced.matches ? 0 : 150);
+      });
+    }
+    const opens = Math.abs(speed) >= 400 ? x === 0 || speed * x > 0 : r > 0 && Math.abs(x) >= r / 2;
+    if (opens && r > 0) open(edge, speed);
+    else shut();
+  };
+  el.addEventListener("viso-drag", (e) => {
+    if (e.target !== el) return;
+    const d = e.detail;
+    if (d.phase === 0) {
+      stop();
+      if (swiped && swiped !== el) swiped.$swipe.shut();
+      v.raw = unshape(v.x);
+    }
+    v.raw += d.dx;
+    v.x = shape(v.raw);
+    show();
+    if (d.phase === 2) release(d.vx);
+  });
+  // A trackpad's swipe across, until it rests a moment.
+  el.addEventListener("wheel", (e) => {
+    if (e.ctrlKey || e.deltaMode !== 0 || e.$swipe) return;
+    if (!v.pad && Math.abs(e.deltaX) <= Math.abs(e.deltaY) * 1.5) return;
+    e.$swipe = el;
+    e.preventDefault();
+    if (!v.pad) {
+      stop();
+      if (swiped && swiped !== el) swiped.$swipe.shut();
+      v.raw = unshape(v.x);
+      v.pad = { timer: 0, seen: [] };
+    }
+    clearTimeout(v.pad.timer);
+    v.raw -= e.deltaX;
+    v.x = shape(v.raw);
+    v.pad.seen.push([e.timeStamp, v.raw]);
+    show();
+    v.pad.timer = setTimeout(() => {
+      const seen = v.pad.seen;
+      v.pad = null;
+      const a = seen[Math.max(seen.length - 4, 0)], b = seen[seen.length - 1];
+      const dt = (b[0] - a[0]) / 1000;
+      release(dt > 0.01 ? (b[1] - a[1]) / dt : 0);
+    }, 120);
+  }, { passive: false });
+  // A press on an action shuts the row once the action clicked.
+  el.addEventListener("click", (e) => {
+    if (swiped === el && [panel(0), panel(1)].some((p) => p && p.contains(e.target))) shut();
+  });
+  el.addEventListener("focusin", (e) => {
+    const edge = [0, 1].find((k) => panel(k) && panel(k).contains(e.target));
+    if (edge === undefined) return;
+    if (swiped !== el || edgeOf(v.x) !== edge) {
+      open(edge);
+      v.focus = true;
+    }
+  });
+  el.addEventListener("focusout", (e) => {
+    if (!v.focus) return;
+    if ([panel(0), panel(1)].some((p) => p && p.contains(e.relatedTarget))) return;
+    shut();
+  });
+  el.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape" || swiped !== el) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if ([panel(0), panel(1)].some((p) => p && p.contains(document.activeElement)) && el.tabIndex >= 0) el.focus();
+    shut();
+  });
+  for (const [edge, p] of [[0, panel(0)], [1, panel(1)]]) {
+    if (p) p.style.justifyContent = edge === 0 ? "flex-end" : "flex-start";
+  }
+  new ResizeObserver(() => { if (!v.run && v.x !== 0) v.x = sign(edgeOf(v.x)) * reach(edgeOf(v.x)); show(); }).observe(el);
+  show();
+};
+
+// A press anywhere but on the open swipe row's actions shuts it, and one
+// within its list clicks nothing; a scroll elsewhere shuts it too.
+addEventListener("pointerdown", (e) => {
+  const row = swiped;
+  if (!row) return;
+  const on = [...row.children].some((c) => c.dataset.swipeEdge !== undefined && c.contains(e.target));
+  if (on) return;
+  let list = row.parentElement;
+  while (list && list !== document.body && !/(auto|scroll)/.test(getComputedStyle(list).overflowY + getComputedStyle(list).overflowX)) list = list.parentElement;
+  if ((list && list !== document.body ? list : row).contains(e.target)) claimed = true;
+  row.$swipe.shut();
+}, true);
+addEventListener("wheel", (e) => {
+  if (swiped && !e.$swipe && !swiped.contains(e.target)) swiped.$swipe.shut();
+}, { passive: true });
+
 // Calls `fire` with the payload of a primary press at or under `el` that no
 // nearer element took, once it held still for the long-press delay.
 const holdable = (el, fire) => {
@@ -1057,6 +1263,8 @@ const listen = (el, route, capture, control, fire) => {
   } else if (route === 23) {
     el.$double = true;
     el.addEventListener("dblclick", live((e) => fire(rec([point(e, el), kind(e)]))), capture);
+  } else if (route === 28) {
+    el.addEventListener("viso-fullswipe", (e) => fire(rec([BigInt(e.detail.edge)])), capture);
   } else if (route >= 25 && route <= 27) {
     pinchable(el);
     el.addEventListener("viso-pinch", live((e) => {

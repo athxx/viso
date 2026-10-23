@@ -807,6 +807,24 @@ impl Shown {
                 };
                 store.set_viewer(self.node, Some(limits));
             }
+            // A swipe row takes its panels among its children, clipping them
+            // past its edges unless its `clip` says; a full swipe runs on
+            // the edges its `full_swipe` names, the trailing one unless set.
+            ControlKind::SwipeRow => {
+                if first && !given(NODE + 4) {
+                    store.set_clip(self.node, true);
+                }
+                let full = value.as_int().unwrap_or(2);
+                store.set_swipe_row_of_children(self.node, Some((full & 1 != 0, full & 2 != 0)));
+            }
+            // A row's panel of actions waits past the edge it names.
+            ControlKind::SwipeActions => {
+                let edge = match value.as_int() {
+                    Some(0) => viso_ui::SwipeEdge::Leading,
+                    _ => viso_ui::SwipeEdge::Trailing,
+                };
+                store.set_swipe_panel(self.node, Some(edge));
+            }
             // A navigation stack shows its current page, clipping the pages
             // as they trade places unless its `clip` says.
             ControlKind::Pages => {

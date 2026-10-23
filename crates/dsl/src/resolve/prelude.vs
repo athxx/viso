@@ -76,6 +76,11 @@ export record KeyEvent { key: Key; repeat: Bool; modifiers: Modifiers; }
 export record FocusEvent { focus_visible: Bool; }
 export record ScrollChanged { offset: Offset; viewport: SizeDp; content: SizeDp; }
 export record VisibleRange { first: U64; last: U64; count: U64; }
+// An edge of a `SwipeRow`, the way it reads, and which edges a full swipe
+// runs the first action of.
+export enum SwipeEdge { leading; trailing; }
+export enum FullSwipe { none; leading; trailing; both; }
+export record FullSwipeEvent { edge: SwipeEdge; }
 
 // How a move's progress follows its time: Penner's curves accelerating
 // (`in_*`), decelerating (`out_*`) or both, `ease_*` the cubic ones, a CSS

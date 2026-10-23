@@ -623,7 +623,7 @@ impl<'a> Walk<'a> {
         }
         let kind = ControlKind::of(&node.type_name);
         let item = self.item.take();
-        if kind.responds()
+        if kind.stands_alone()
             || !node.control_reads.is_empty()
             || node.styled.is_some()
             || node.role.is_some()

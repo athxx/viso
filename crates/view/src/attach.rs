@@ -35,11 +35,15 @@ pub fn attach(
         cx.on_pointer(node, handler);
     }
     if let Some(keys) = keys {
-        // A refresh, a snap and a waiting tap come without the focus.
+        // A refresh, a snap, a full swipe and a waiting tap come without
+        // the focus.
         let focus = keys.iter().any(|r| {
             !matches!(
                 r.event,
-                EventRoute::Refresh | EventRoute::SnapChanged | EventRoute::Tap
+                EventRoute::Refresh
+                    | EventRoute::SnapChanged
+                    | EventRoute::FullSwiped
+                    | EventRoute::Tap
             )
         }) || control.as_ref().is_some_and(|c| c.responds());
         cx.on_key(node, handler(host, keys, control, wait, scope));
@@ -109,7 +113,9 @@ pub fn attach_node(
     } else {
         store.uncount_clicks(id);
     }
-    store.set_draggable(id, drags(routes));
+    // A viewer and a swipe row take their own drags.
+    let own = store.is_viewer(id) || store.is_swipe_row(id);
+    store.set_draggable(id, drags(routes) || own);
     store.set_long_pressable(id, holds(routes));
     store.set_pinchable(id, pinches(routes));
     if refreshes(routes) || store.is_refreshable(id) {
@@ -120,13 +126,17 @@ pub fn attach_node(
 
 /// Whether a node whose key handler runs `keys` takes the focus for them as
 /// it is re-attached: links take it as their text holds them, not as heard,
-/// a text as it is selectable, and a refresh, a snap and a waiting tap come
-/// without it.
+/// a text as it is selectable, and a refresh, a snap, a full swipe and a
+/// waiting tap come without it.
 fn takes_focus(keys: &[Route], control: Option<&Control>) -> bool {
     keys.iter().any(|r| {
         !matches!(
             r.event,
-            EventRoute::Link | EventRoute::Refresh | EventRoute::SnapChanged | EventRoute::Tap
+            EventRoute::Link
+                | EventRoute::Refresh
+                | EventRoute::SnapChanged
+                | EventRoute::FullSwiped
+                | EventRoute::Tap
         )
     }) || control.is_some_and(|c| c.kind.responds())
 }

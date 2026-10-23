@@ -708,8 +708,8 @@ impl Jsx<'_> {
                         Prop::Hero => attrs.push(format!("data-hero={{show.opt({v})}}")),
                         Prop::AccessKey => attrs.push(format!("accesskey={{show.opt({v})}}")),
                         Prop::DragAxis => attrs.push(format!("data-drag-axis={{show.axis({v})}}")),
-                        Prop::Viewer(name) => {
-                            attrs.push(format!("{name}={{show.viewer({v}, \"{name}\")}}"))
+                        Prop::Data(name) => {
+                            attrs.push(format!("{name}={{show.data({v}, \"{name}\")}}"))
                         }
                         Prop::FocusRing => style.push((
                             "outline".to_owned(),
@@ -790,6 +790,7 @@ impl Jsx<'_> {
                 }
                 Wire::Region(_) => {}
                 Wire::Viewer => refs.push("st.viewer(el);".to_owned()),
+                Wire::SwipeRow => refs.push("st.swipeRow(el);".to_owned()),
                 Wire::Anchor(instance) => {
                     if let Some(eval) = self.eval {
                         let reads = script::anchored_reads(eval, *instance);

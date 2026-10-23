@@ -28,7 +28,7 @@ use crate::adaptive::LayoutDirection;
 use crate::component::NodeStore;
 use crate::drag::{DragPhase, DragSample, SWIPE_SPEED};
 use crate::input::{Key, KeyEvent, ScrollPhase};
-use crate::layout::Vec2;
+use crate::layout::{Alignment2D, Justify, Placement, Size, StackPlacement, Vec2};
 use crate::node::NodeId;
 use crate::row_gesture::RowGesture;
 use crate::scroll_motion::{MAX_STEP, SPRING, VelocityTracker};
@@ -140,6 +140,11 @@ enum Pad {
 #[derive(Debug, Default)]
 pub(crate) struct Swipes {
     list: Vec<Swipe>,
+    /// The nodes marked as an edge's panel of the row they are a child of.
+    panels: Vec<(NodeId, SwipeEdge)>,
+    /// The rows made of their own children as they come and go, with the
+    /// edges a full swipe runs on.
+    auto: Vec<(NodeId, bool, bool)>,
     pad: Option<Pad>,
     /// The travel a trackpad's swipe of a row summed, and its speed.
     pad_at: f32,
@@ -149,6 +154,8 @@ pub(crate) struct Swipes {
 impl Swipes {
     pub(crate) fn clear(&mut self) {
         self.list.clear();
+        self.panels.clear();
+        self.auto.clear();
         self.pad = None;
     }
 
@@ -211,6 +218,123 @@ impl NodeStore {
             s.run = Run::Still;
         }
         self.show_swipe(i);
+    }
+
+    /// Mark node `id` as the panel of `edge`'s actions of the swipe row it
+    /// is a child of, or no longer one with `None`; a row already set up
+    /// takes it among its parts ([`swipe_parts_of`](Self::swipe_parts_of)).
+    /// A panel lies below the row's content filling the row, and a flex one
+    /// packs its actions against the content's side.
+    pub fn set_swipe_panel(&mut self, id: NodeId, edge: Option<SwipeEdge>) {
+        let panels = &mut self.row_gestures.swipes.panels;
+        let was = panels.iter().find(|&&(n, _)| n == id).map(|&(_, e)| e);
+        if was == edge {
+            return;
+        }
+        let mut panels = std::mem::take(panels);
+        panels.retain(|&(n, _)| n != id && self.arena().is_live(n));
+        if let Some(edge) = edge.filter(|_| self.arena().is_live(id)) {
+            panels.push((id, edge));
+        }
+        self.row_gestures.swipes.panels = panels;
+        if let Some(row) = self.arena().parent(id) {
+            self.refit_swipe_row(row);
+        }
+        if let Some(edge) = edge {
+            self.set_placement(
+                id,
+                Placement::Stack(StackPlacement {
+                    align: Some(Alignment2D::TopStart),
+                    layer: -1,
+                }),
+            );
+            self.set_fixed_size(id, Size::fill());
+            if let Some((axis, _, align)) = self.flex_arrangement(id) {
+                let justify = match edge {
+                    SwipeEdge::Leading => Justify::End,
+                    SwipeEdge::Trailing => Justify::Start,
+                };
+                self.set_flex_arrangement(id, (axis, justify, align));
+            }
+        }
+    }
+
+    /// Make node `id` a swipe row of its own children
+    /// ([`swipe_parts_of`](Self::swipe_parts_of)), a full swipe running on
+    /// the leading and the trailing edge as `full` says, re-reading them as
+    /// they come and go; or no longer one with `None`. Until it has content
+    /// it is none.
+    pub fn set_swipe_row_of_children(&mut self, id: NodeId, full: Option<(bool, bool)>) {
+        let mut auto = std::mem::take(&mut self.row_gestures.swipes.auto);
+        auto.retain(|&(n, ..)| n != id && self.arena().is_live(n));
+        if let Some((leading, trailing)) = full.filter(|_| self.arena().is_live(id)) {
+            auto.push((id, leading, trailing));
+        }
+        self.row_gestures.swipes.auto = auto;
+        if full.is_some() {
+            self.refit_swipe_row(id);
+        } else {
+            self.set_swipe_row(id, None);
+        }
+    }
+
+    /// Re-reads the parts of row `id` if it is made of its own children.
+    fn refit_swipe_row(&mut self, id: NodeId) {
+        let Some(&(_, leading, trailing)) = self
+            .row_gestures
+            .swipes
+            .auto
+            .iter()
+            .find(|&&(n, ..)| n == id)
+        else {
+            return;
+        };
+        let parts = self.swipe_parts_of(id, leading, trailing);
+        let now = self
+            .swipe_index(id)
+            .map(|i| self.row_gestures.swipes.list[i].parts);
+        if parts != now {
+            self.set_swipe_row(id, parts);
+        }
+    }
+
+    /// The edge whose panel node `id` is marked as.
+    pub fn swipe_panel_edge(&self, id: NodeId) -> Option<SwipeEdge> {
+        self.row_gestures
+            .swipes
+            .panels
+            .iter()
+            .find(|&&(n, _)| n == id)
+            .map(|&(_, e)| e)
+    }
+
+    /// The parts node `id`'s children make as a swipe row: the first child
+    /// marked as each edge's panel ([`set_swipe_panel`](Self::set_swipe_panel)),
+    /// and as its content the first other child; `None` without one.
+    pub fn swipe_parts_of(
+        &self,
+        id: NodeId,
+        full_leading: bool,
+        full_trailing: bool,
+    ) -> Option<SwipeParts> {
+        let (mut content, mut leading, mut trailing) = (None, None, None);
+        for child in self.arena().children(id) {
+            if self.is_chrome(child) {
+                continue;
+            }
+            match self.swipe_panel_edge(child) {
+                Some(SwipeEdge::Leading) => leading = leading.or(Some(child)),
+                Some(SwipeEdge::Trailing) => trailing = trailing.or(Some(child)),
+                None => content = content.or(Some(child)),
+            }
+        }
+        Some(SwipeParts {
+            content: content?,
+            leading,
+            trailing,
+            full_leading,
+            full_trailing,
+        })
     }
 
     /// Whether node `id` is a swipe row.
@@ -749,6 +873,12 @@ impl NodeStore {
     /// far as its actions now reach, and each shows where it stands in the
     /// width it now has.
     pub(crate) fn fit_swipes(&mut self) {
+        for k in 0..self.row_gestures.swipes.auto.len() {
+            let row = self.row_gestures.swipes.auto[k].0;
+            if self.arena().is_live(row) {
+                self.refit_swipe_row(row);
+            }
+        }
         if self.row_gestures.swipes.list.is_empty() {
             return;
         }

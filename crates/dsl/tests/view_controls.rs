@@ -365,6 +365,12 @@ impl Rt {
                 &text,
             );
         }
+        KeyRouter::route_row_gestures(
+            &mut self.store,
+            &mut self.states,
+            &self.bindings,
+            &mut self.text_edits,
+        );
         let mut changed = Vec::new();
         self.states.take_pending(&mut changed);
         self.store
@@ -1472,6 +1478,53 @@ export component Photo {
         rt.click(50.0, 50.0);
         assert_eq!(rt.store.viewer_scale(viewer), Some(1.0), "and back");
         assert_eq!(pan(&rt), viso_ui::Vec2::ZERO);
+        assert!(!rt.faulted());
+    }
+}
+
+#[test]
+fn a_swipe_row_opens_on_its_actions_and_a_full_swipe_reports_its_edge() {
+    const SRC: &str = r#"
+export component Inbox {
+    state deleted = 0;
+    state flagged = 0;
+    view {
+        Column {
+            SwipeRow {
+                width: 300dp; height: 40dp;
+                on full_swiped(e) { if e.edge == SwipeEdge::trailing { deleted += 1; } }
+                Column { width: 100%; height: 100%; }
+                SwipeActions {
+                    edge: SwipeEdge::trailing;
+                    Button { width: 70dp; height: 40dp; text: "Flag"; on click { flagged += 1; } }
+                    Button { width: 70dp; height: 40dp; text: "Delete"; on click { deleted += 10; } }
+                }
+            }
+        }
+    }
+}
+"#;
+    for mut rt in [Rt::reloaded(SRC), Rt::packaged(SRC)] {
+        rt.store.set_reduced_motion(true);
+        let row = rt.children_of_root()[0];
+        assert!(rt.store.is_swipe_row(row) && rt.store.clips(row));
+        let drag = |rt: &mut Rt, from: f32, to: f32| {
+            rt.pointer(from, 20.0, PointerPhase::Down);
+            for k in 1..=5 {
+                let x = from + (to - from) * k as f32 / 5.0;
+                rt.pointer(x, 20.0, PointerPhase::Move);
+            }
+            rt.pointer(to, 20.0, PointerPhase::Up);
+        };
+        drag(&mut rt, 250.0, 150.0);
+        assert_eq!(rt.store.swipe_open(row), Some(viso_ui::SwipeEdge::Trailing));
+        assert_eq!(rt.store.swipe_offset(row), Some(-140.0));
+        rt.click(260.0, 20.0);
+        assert_eq!(rt.int("deleted"), 10, "the action runs");
+        assert_eq!(rt.store.swipe_offset(row), Some(0.0), "and shuts the row");
+        drag(&mut rt, 290.0, 20.0);
+        assert_eq!(rt.int("deleted"), 11, "a full swipe reports its edge");
+        assert_eq!(rt.int("flagged"), 0);
         assert!(!rt.faulted());
     }
 }

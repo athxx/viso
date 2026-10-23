@@ -630,7 +630,7 @@ fn an_interactive_viewer_exports_as_a_clipped_box_its_script_pans_and_zooms() {
     let script = page.script.clone().unwrap();
     assert!(script.contains("viewer("), "{script}");
     assert!(
-        script.contains("P.viewer("),
+        script.contains("P.data("),
         "the bound limit follows its state"
     );
     let Some(chrome) = chrome() else {
@@ -650,6 +650,68 @@ fn an_interactive_viewer_exports_as_a_clipped_box_its_script_pans_and_zooms() {
     assert!(
         dom.contains("wheeled=translate(0px, -160px) scale(2.5)."),
         "a wheel pans to the bound and the margin past it: {dom}"
+    );
+}
+
+const SWIPED_ROW: &str = r#"
+export component Inbox {
+    state deleted = 0;
+    view {
+        Column {
+            SwipeRow {
+                width: 300dp; height: 40dp;
+                full_swipe: FullSwipe::trailing;
+                on full_swiped(e) { if e.edge == SwipeEdge::trailing { deleted += 1; } }
+                Column { width: 100%; height: 100%; }
+                SwipeActions {
+                    edge: SwipeEdge::trailing;
+                    Button { width: 70dp; height: 40dp; text: "Flag"; }
+                    Button { width: 70dp; height: 40dp; text: "Delete"; on click { deleted += 10; } }
+                }
+            }
+            Text { text: format("deleted={}", deleted); }
+        }
+    }
+}
+"#;
+
+#[test]
+fn a_swipe_row_exports_as_a_clipped_row_its_script_slides_open() {
+    let page = export(SWIPED_ROW, false).unwrap();
+    assert!(
+        page.index.contains("data-swipe-edge=\"1\"") && page.index.contains("data-full-swipe"),
+        "{}",
+        page.index
+    );
+    let all = format!("{}{}", page.index, page.styles);
+    assert!(all.contains("overflow: hidden"), "{all}");
+    let script = page.script.clone().unwrap();
+    assert!(script.contains("swipeRow("), "{script}");
+    let Some(chrome) = chrome() else {
+        eprintln!("no Chrome: the page is not run");
+        return;
+    };
+    let swipe = "\nconst row = () => document.querySelector('[data-full-swipe]');\n\
+        const content = () => row().firstElementChild;\n\
+        const at = (type, x) => content().dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: 1, pointerType: 'mouse', isPrimary: true, button: type === 'pointermove' ? -1 : 0, clientX: x, clientY: 20 }));\n\
+        const drag = (t, from, to) => { setTimeout(() => at('pointerdown', from), t); for (let k = 1; k <= 5; k++) setTimeout(() => at('pointermove', from + (to - from) * k / 5), t + 100 * k); setTimeout(() => at('pointerup', to), t + 600); };\n\
+        drag(50, 250, 150);\n\
+        setTimeout(() => document.body.append('opened=' + content().style.transform + '.'), 1500);\n\
+        setTimeout(() => [...row().querySelectorAll('button')].find((b) => b.textContent === 'Delete').click(), 1600);\n\
+        setTimeout(() => document.body.append('shut=' + content().style.transform + '.'), 2500);\n\
+        drag(2600, 290, 20);\n";
+    let dom = run_in_chrome(&page, &(script + swipe), "export-swipe-row", &[], chrome);
+    assert!(
+        dom.contains("opened=translateX(-140px)."),
+        "a slow drag past half the actions opens on them: {dom}"
+    );
+    assert!(
+        dom.contains("shut=translateX(0px)."),
+        "an action shuts it: {dom}"
+    );
+    assert!(
+        dom.contains(">deleted=11<"),
+        "the action ran, then a full swipe: {dom}"
     );
 }
 

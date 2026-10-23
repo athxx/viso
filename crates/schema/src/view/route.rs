@@ -80,11 +80,14 @@ pub enum EventRoute {
     /// `pinch_end` (`PinchEvent`): a finger lifted, the trackpad's gesture
     /// ended, or the wheel rested.
     PinchEnd = 27,
+    /// A `SwipeRow`'s `full_swiped` (`FullSwipeEvent`): a full swipe carried
+    /// its content off toward an edge.
+    FullSwiped = 28,
 }
 
 impl EventRoute {
     /// Every route, by discriminant.
-    pub const ALL: [EventRoute; 28] = [
+    pub const ALL: [EventRoute; 29] = [
         EventRoute::Click,
         EventRoute::Tap,
         EventRoute::PointerDown,
@@ -113,6 +116,7 @@ impl EventRoute {
         EventRoute::PinchStart,
         EventRoute::PinchMove,
         EventRoute::PinchEnd,
+        EventRoute::FullSwiped,
     ];
 
     /// The route of standard DSL event `event`, `None` for an event the runtime
@@ -155,6 +159,7 @@ impl EventRoute {
             EventRoute::PinchStart => "pinch_start",
             EventRoute::PinchMove => "pinch_move",
             EventRoute::PinchEnd => "pinch_end",
+            EventRoute::FullSwiped => "full_swiped",
         }
     }
 
@@ -189,6 +194,7 @@ impl EventRoute {
             EventRoute::PinchStart => "PinchStart",
             EventRoute::PinchMove => "PinchMove",
             EventRoute::PinchEnd => "PinchEnd",
+            EventRoute::FullSwiped => "FullSwiped",
         }
     }
 
@@ -204,12 +210,16 @@ impl EventRoute {
 
     /// Whether the node's key handler delivers it: a key sample, an
     /// activated link, which reaches a text and its ancestors that way, a
-    /// refresh asked of a viewport, or the item a snapping one settles on.
+    /// refresh asked of a viewport, the item a snapping one settles on, or a
+    /// swipe row's full swipe.
     pub fn by_key_handler(self) -> bool {
         self.is_key()
             || matches!(
                 self,
-                EventRoute::Link | EventRoute::Refresh | EventRoute::SnapChanged
+                EventRoute::Link
+                    | EventRoute::Refresh
+                    | EventRoute::SnapChanged
+                    | EventRoute::FullSwiped
             )
     }
 
@@ -284,6 +294,7 @@ pub const PAYLOAD_RECORDS: &[(&str, &[&str])] = &[
     ("AnimationEnd", &["target", "finished"]),
     ("LinkEvent", &["url"]),
     ("SelectionChanged", &["value"]),
+    ("FullSwipeEvent", &["edge"]),
 ];
 
 /// The prelude enums a payload names a variant of, with their variants in order.
@@ -291,6 +302,7 @@ pub const PAYLOAD_ENUMS: &[(&str, &[&str])] = &[
     ("PointerButton", &["primary", "secondary", "middle"]),
     ("PointerKind", &["mouse", "touch", "pen"]),
     ("SwipeDirection", &["left", "right", "up", "down"]),
+    ("SwipeEdge", &["leading", "trailing"]),
     ("Animate", &["translate", "scale", "rotation", "opacity"]),
     (
         "Key",

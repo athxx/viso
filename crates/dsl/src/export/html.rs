@@ -88,6 +88,9 @@ pub(super) enum Wire {
     Anchor(u32),
     /// Makes the element a viewer of its child: it pans and zooms it.
     Viewer,
+    /// Makes the element a swipe row: a drag across slides its content
+    /// aside to show its panels.
+    SwipeRow,
 }
 
 /// The style of a sticky element: held at its scroller's start edge, over
@@ -164,8 +167,9 @@ pub(super) enum Prop {
     AccessKey,
     /// The axis it drags along alone, if any.
     DragAxis,
-    /// A viewer's limit or double-tap scale, by its `data-` attribute.
-    Viewer(&'static str),
+    /// A `data-` attribute the script reads: a viewer's limit or double-tap
+    /// scale, a swipe row's full swipe, a swipe panel's edge.
+    Data(&'static str),
     /// How a navigation stack's pages trade places.
     Turn,
     /// An asset's source, as an image or as a mask.
@@ -1318,7 +1322,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                         "the scale a double tap zooms to",
                     ),
                 ] {
-                    if let Some(fixed) = self.bind(wires, entry, Prop::Viewer(name), what, at) {
+                    if let Some(fixed) = self.bind(wires, entry, Prop::Data(name), what, at) {
                         let shown = match &fixed {
                             Fixed::Value(Value::Agg(length)) => length
                                 .fields
@@ -1334,6 +1338,38 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                     el.style("overflow: hidden");
                 }
                 wires.push(Wire::Viewer);
+            }
+            ControlKind::SwipeRow => {
+                if let Some(fixed) = self.bind(
+                    wires,
+                    control.value,
+                    Prop::Data("data-full-swipe"),
+                    "the edges a full swipe runs on",
+                    at,
+                ) {
+                    el.attr("data-full-swipe", &fixed.text());
+                }
+                if control.node.clip.is_none() {
+                    el.style("overflow: hidden");
+                }
+                wires.push(Wire::SwipeRow);
+            }
+            // A panel lies below its row's content, filling the row.
+            ControlKind::SwipeActions => {
+                let edge = self
+                    .bind(
+                        wires,
+                        control.value,
+                        Prop::Data("data-swipe-edge"),
+                        "the edge the actions wait past",
+                        at,
+                    )
+                    .and_then(|fixed| fixed.int())
+                    .unwrap_or(1);
+                el.attr("data-swipe-edge", &edge.to_string());
+                decls.push(("position", "absolute".to_owned()));
+                decls.push(("inset", "0".to_owned()));
+                decls.push(("z-index", "-1".to_owned()));
             }
             ControlKind::Pages => {
                 // Its transition first, so a turn reads the current one.

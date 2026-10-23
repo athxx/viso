@@ -96,6 +96,10 @@ pub fn property_dirty_class(name: &str) -> DirtyClass {
         // scale a double tap zooms to is read as it lands.
         "min_scale" | "max_scale" | "pan_margin" => D::TRANSFORM,
         "double_tap" => D::EMPTY,
+        // A swipe row reads which edges a full swipe runs on as one is let
+        // go; a panel's edge places it past that side of the row.
+        "full_swipe" => D::EMPTY,
+        "edge" => D::LAYOUT | D::TRANSFORM,
 
         // Turning input off restyles the node through its `disabled`
         // selector and announces it disabled; what hit testing finds is

@@ -78,9 +78,12 @@ impl Drive for Control {
                 }
                 None
             }
-            ControlKind::Plain | ControlKind::Asset | ControlKind::Shader | ControlKind::Toast => {
-                None
-            }
+            ControlKind::Plain
+            | ControlKind::Asset
+            | ControlKind::Shader
+            | ControlKind::Toast
+            | ControlKind::SwipeRow
+            | ControlKind::SwipeActions => None,
         }
     }
 }

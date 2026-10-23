@@ -334,7 +334,7 @@ fn mount(out: &mut String, index: usize, content: &Content, eval: &Eval<'_>, roo
                         Prop::FocusRing => format!("P.ring({el}, {value})"),
                         Prop::AccessKey => format!("P.key({el}, {value})"),
                         Prop::DragAxis => format!("P.axis({el}, {value})"),
-                        Prop::Viewer(name) => format!("P.viewer({el}, {value}, \"{name}\")"),
+                        Prop::Data(name) => format!("P.data({el}, {value}, \"{name}\")"),
                         Prop::Turn => format!("P.turn({el}, {value})"),
                         Prop::Source { mask } => format!("P.source({el}, {value}, {mask})"),
                         Prop::Fit { mask } => format!("P.fit({el}, {value}, {mask})"),
@@ -394,6 +394,9 @@ fn mount(out: &mut String, index: usize, content: &Content, eval: &Eval<'_>, roo
                 }
                 Wire::Viewer => {
                     let _ = writeln!(out, "  viewer({el});");
+                }
+                Wire::SwipeRow => {
+                    let _ = writeln!(out, "  swipeRow({el});");
                 }
                 Wire::Anchor(instance) => {
                     let _ = writeln!(
@@ -507,7 +510,8 @@ pub(super) fn roots(page: &Lowered, eval: &Eval<'_>) -> BTreeSet<FuncId> {
                     Wire::Sync { entry: None, .. }
                     | Wire::Region(_)
                     | Wire::Anchor(_)
-                    | Wire::Viewer => {}
+                    | Wire::Viewer
+                    | Wire::SwipeRow => {}
                 }
             }
         }

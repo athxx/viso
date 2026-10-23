@@ -74,11 +74,17 @@ pub enum ControlKind {
     /// within `min_scale..=max_scale` and bounds `pan_margin` widens; a
     /// double tap zooms to its `double_tap` scale and back.
     Viewer = 16,
+    /// `SwipeRow`: a drag across slides its content aside to show the
+    /// `SwipeActions` among its children; a full swipe toward an edge its
+    /// `full_swipe` names reports `full_swiped`.
+    SwipeRow = 17,
+    /// `SwipeActions`: the panel of a `SwipeRow`'s actions on its `edge`.
+    SwipeActions = 18,
 }
 
 impl ControlKind {
     /// Every kind, by discriminant.
-    pub const ALL: [ControlKind; 17] = [
+    pub const ALL: [ControlKind; 19] = [
         ControlKind::Check,
         ControlKind::Slider,
         ControlKind::Select,
@@ -96,6 +102,8 @@ impl ControlKind {
         ControlKind::Pages,
         ControlKind::Button,
         ControlKind::Viewer,
+        ControlKind::SwipeRow,
+        ControlKind::SwipeActions,
     ];
 
     /// The kind native widget `widget` is.
@@ -117,6 +125,8 @@ impl ControlKind {
             "GameViewport" => ControlKind::Viewport,
             "NavigationStack" => ControlKind::Pages,
             "InteractiveViewer" => ControlKind::Viewer,
+            "SwipeRow" => ControlKind::SwipeRow,
+            "SwipeActions" => ControlKind::SwipeActions,
             _ => ControlKind::Plain,
         }
     }
@@ -143,7 +153,15 @@ impl ControlKind {
                 | ControlKind::Asset
                 | ControlKind::Shader
                 | ControlKind::Toast
+                | ControlKind::SwipeRow
+                | ControlKind::SwipeActions
         )
+    }
+
+    /// Whether a node of the kind needs its control even reading nothing: it
+    /// responds itself, or what it is follows from its kind alone.
+    pub fn stands_alone(self) -> bool {
+        self.responds() || matches!(self, ControlKind::SwipeRow | ControlKind::SwipeActions)
     }
 
     /// Whether the control reports `route`.
@@ -292,6 +310,9 @@ impl ControlKind {
             (ControlKind::Viewer, "min_scale") => ControlInput::Min,
             (ControlKind::Viewer, "max_scale") => ControlInput::Max,
             (ControlKind::Viewer, "pan_margin") => ControlInput::PanMargin,
+            (ControlKind::SwipeRow, "full_swipe") | (ControlKind::SwipeActions, "edge") => {
+                ControlInput::Value
+            }
             _ => return None,
         })
     }
@@ -316,6 +337,8 @@ impl ControlKind {
             ControlKind::Pages => "Pages",
             ControlKind::Button => "Button",
             ControlKind::Viewer => "Viewer",
+            ControlKind::SwipeRow => "SwipeRow",
+            ControlKind::SwipeActions => "SwipeActions",
         }
     }
 

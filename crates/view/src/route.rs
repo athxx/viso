@@ -33,6 +33,14 @@ pub fn payload(route: EventRoute, cx: &EventCx<'_>) -> Option<Value> {
     if route == EventRoute::SnapChanged {
         return cx.snapped().map(|index| record([Value::Int(index as i64)]));
     }
+    if route == EventRoute::FullSwiped {
+        let viso_ui::RowGesture::Swiped(edge) = cx.row_gesture()?;
+        let edge = match edge {
+            viso_ui::SwipeEdge::Leading => 0,
+            viso_ui::SwipeEdge::Trailing => 1,
+        };
+        return Some(record([Value::Int(edge)]));
+    }
     if route.is_key() {
         let key = cx.key()?;
         return (key.pressed == (route == EventRoute::KeyDown)).then(|| key_event(key));

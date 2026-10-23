@@ -2235,6 +2235,23 @@ impl NodeStore {
             .then(|| self.layout[id.index() as usize].size())
     }
 
+    /// A Flex container's axis, main-axis placement and cross-axis
+    /// alignment; `None` for any other node.
+    pub fn flex_arrangement(&self, id: NodeId) -> Option<(Axis, Justify, Align)> {
+        if !self.arena.is_live(id) {
+            return None;
+        }
+        match self.layout[id.index() as usize] {
+            LayoutInput::Flex {
+                axis,
+                justify,
+                align,
+                ..
+            } => Some((axis, justify, align)),
+            _ => None,
+        }
+    }
+
     /// Rewrite a Flex container's axis, main-axis placement and cross-axis
     /// alignment in place, marking it `LAYOUT | PAINT`, and `MEASURE` too when
     /// its axis turns. A no-op for a stale handle, an unchanged arrangement or

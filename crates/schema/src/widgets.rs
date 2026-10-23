@@ -240,6 +240,12 @@ const VIEWER: &[WidgetProperty] = &[
     prop("double_tap", "Option<F32>"),
 ];
 
+/// Which edges of a `SwipeRow` a full swipe runs the first action of.
+const SWIPE_ROW: &[WidgetProperty] = &[prop("full_swipe", "FullSwipe")];
+
+/// The edge of its `SwipeRow` a `SwipeActions` panel waits past.
+const SWIPE_ACTIONS: &[WidgetProperty] = &[prop("edge", "SwipeEdge")];
+
 const FOCUS_SCOPE: &[WidgetProperty] = &[prop("trap", "Bool"), prop("restore_focus", "Bool")];
 
 const KEY_SHORTCUT: &[WidgetProperty] =
@@ -349,6 +355,7 @@ const VIRTUAL_LIST_EVENTS: &[WidgetEvent] = &[
     WidgetEvent::signal("refresh"),
     WidgetEvent::new("snap_changed", "SelectionChanged"),
 ];
+const SWIPE_ROW_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("full_swiped", "FullSwipeEvent")];
 const KEY_SHORTCUT_EVENTS: &[WidgetEvent] = &[WidgetEvent::signal("triggered")];
 
 /// Any number of children, in the default slot `children`.
@@ -432,6 +439,19 @@ pub const STANDARD: &[NativeWidget] = &[
     )
     .slots(CONTENT)
     .interactive(),
+    layout(
+        "SwipeRow",
+        WidgetNode::Stack,
+        &[SWIPE_ROW, LAYOUT, TRANSFORM, FOCUS],
+    )
+    .events(&[SWIPE_ROW_EVENTS, STANDARD_EVENTS])
+    .slots(CHILDREN),
+    layout(
+        "SwipeActions",
+        ROW,
+        &[SWIPE_ACTIONS, FLEX, LAYOUT, TRANSFORM, FOCUS],
+    )
+    .slots(CHILDREN),
     layout(
         "Scroll",
         WidgetNode::Scroll,
