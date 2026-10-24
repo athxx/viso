@@ -258,6 +258,8 @@ pub fn notice_payload(notice: &Notice) -> (EventRoute, Value) {
             EventRoute::AnimationEnd,
             record([animate(target), Value::Int(i64::from(finished))]),
         ),
+        Notice::AssetLoaded { size: natural } => (EventRoute::Loaded, size(natural)),
+        Notice::AssetFailed => (EventRoute::Failed, Value::Nil),
     }
 }
 

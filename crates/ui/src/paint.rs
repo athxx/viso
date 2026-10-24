@@ -880,7 +880,7 @@ fn paint_asset(
         }
     };
     match draw {
-        AssetDraw::Nothing => {}
+        AssetDraw::Nothing | AssetDraw::Failed => {}
         AssetDraw::Raster(texture) => {
             // A cover crops in the texture rather than drawing past the box.
             let (rect, uv) = if fit == AssetFit::Cover {

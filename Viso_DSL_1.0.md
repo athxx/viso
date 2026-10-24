@@ -4749,6 +4749,7 @@ view {
 - 解码不在帧路径上：解码完成前节点不绘制，已知尺寸即参与布局；资源的新内容（如热重载）解码并驻留前旧内容继续绘制，之后只脏显示该资源的节点：尺寸不变为 `PAINT`，改变为 `MEASURE|LAYOUT|PAINT`；
 - 以下情形报 `E3713`：`asset` 不是恰好一个参数；参数不是不含插值的字符串字面量（要在资源间选择，在 `asset("…")` 值之间分支）；路径越出 `assets/`；文件不存在（附最接近的已有路径作为 Fix）；文件不是 PNG、JPEG 或 SVG；本次编译没有资源目录；以及 `ImageAsset`/`SvgAsset` 的 Record 表达式；
 - 把 `SvgAsset` 绑到 `Image` 的 `source`、`ImageAsset` 绑到 `Svg` 的 `source`，或绑定其他类型的值，是 `E2103`；
+- `Image`/`Svg` 的事件 `loaded(SizeDp)` 在来源绘制出来后投递其固有尺寸（换为另一来源、或同一来源的新修订以另一尺寸绘出时再次投递），`failed` 在来源读不到或无法解码时投递；两者都在布局之后投递，Handler 写入的状态进入下一帧事务；
 - `Image`/`Svg` 有 `semantics.label` 时语义角色为 `Role::image`，以该标签为替代文本；没有标签的图像是装饰，不被辅助技术朗读；
 - Rust 代码以 `viso::asset!("…")` 取得同一资源（同样的路径检查与 `E3713`，字节同样嵌入），由 `viso::widgets::image_asset` 显示。
 

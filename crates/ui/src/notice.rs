@@ -1,6 +1,6 @@
 //! Notices: what a node reports about itself once a frame has laid out, rather
 //! than from an input sample — a viewport's scroll, a virtual list's visible
-//! rows, the end of an animation it ran.
+//! rows, the end of an animation it ran, the asset it shows loading.
 //!
 //! A node that has a handler for one is watched: after the frame's layout,
 //! [`deliver_notices`] reads each watched node's state and, when it moved since
@@ -15,7 +15,9 @@
 //! animations ended.
 
 use crate::animation::LookValue;
+use crate::asset::AssetDraw;
 use crate::component::NodeStore;
+use crate::content::Content;
 use crate::layout::{Axis, Vec2};
 use crate::node::NodeId;
 use crate::state::StateStore;
@@ -39,6 +41,12 @@ pub enum Notice {
     },
     /// An animation the node ran ended ([`NodeStore::animate`]).
     AnimationEnd { target: LookValue, finished: bool },
+    /// The asset the node shows drew, at its natural size: once it loads,
+    /// and again when a new one — or a new revision of it — loads at another
+    /// size.
+    AssetLoaded { size: Vec2 },
+    /// The asset the node shows could not be read or did not decode.
+    AssetFailed,
 }
 
 /// Which notices a watched node reports.
@@ -49,6 +57,7 @@ impl NoticeKinds {
     pub const SCROLL: Self = Self(1);
     pub const VISIBLE_RANGE: Self = Self(2);
     pub const ANIMATION_END: Self = Self(4);
+    pub const ASSET: Self = Self(8);
 
     pub fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
@@ -78,6 +87,8 @@ struct Watch {
     scroll: Option<(Vec2, Vec2, Vec2)>,
     /// The visible rows last delivered.
     range: Option<(usize, usize, usize)>,
+    /// The asset notice last delivered.
+    asset: Option<Notice>,
     /// Taken out while it runs.
     handler: Option<NoticeHandler>,
 }
@@ -109,6 +120,7 @@ impl NodeStore {
             kinds,
             scroll: None,
             range: None,
+            asset: None,
             handler: Some(handler),
         });
     }
@@ -160,7 +172,7 @@ pub fn deliver_notices(
             continue;
         }
         let kinds = store.notices().watches[at].kinds;
-        let mut due: [Option<Notice>; 2] = [None, None];
+        let mut due: [Option<Notice>; 3] = [None, None, None];
         if kinds.contains(NoticeKinds::SCROLL) && store.is_scroll(node) {
             let now = (
                 store.scroll(node),
@@ -193,6 +205,26 @@ pub fn deliver_notices(
                     });
                     watch.range = Some(now);
                 }
+            }
+        }
+        if kinds.contains(NoticeKinds::ASSET) {
+            let now = match store.content_payload(node) {
+                Some(Content::Asset { draw, natural, .. }) => match draw {
+                    AssetDraw::Nothing => None,
+                    AssetDraw::Failed => Some(Notice::AssetFailed),
+                    AssetDraw::Raster(_) | AssetDraw::Vector(_) => {
+                        Some(Notice::AssetLoaded { size: *natural })
+                    }
+                },
+                _ => None,
+            };
+            let watch = &mut store.notices_mut().watches[at];
+            // Loading again — a new asset — is delivered once it settles.
+            if now.is_none() {
+                watch.asset = None;
+            } else if watch.asset != now {
+                due[2] = now;
+                watch.asset = now;
             }
         }
         if due.iter().any(Option::is_some)

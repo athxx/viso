@@ -508,6 +508,11 @@ const VIRTUAL_LIST_EVENTS: &[WidgetEvent] = &[
 const REORDER_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("reordered", "ReorderEvent")];
 const SWIPE_ROW_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("full_swiped", "FullSwipeEvent")];
 const KEY_SHORTCUT_EVENTS: &[WidgetEvent] = &[WidgetEvent::signal("triggered")];
+/// An image's source loading.
+const LOAD_EVENTS: &[WidgetEvent] = &[
+    WidgetEvent::new("loaded", "SizeDp"),
+    WidgetEvent::signal("failed"),
+];
 
 /// Any number of children, in the default slot `children`.
 const CHILDREN: &[WidgetSlot] = &[WidgetSlot::default("children", SlotCardinality::Many)];
@@ -724,8 +729,10 @@ pub const STANDARD: &[NativeWidget] = &[
         "Image",
         WidgetNode::Leaf,
         &[IMAGE, LAYOUT, TRANSFORM, FOCUS],
-    ),
-    layout("Svg", WidgetNode::Leaf, &[SVG, LAYOUT, TRANSFORM, FOCUS]),
+    )
+    .events(&[LOAD_EVENTS, STANDARD_EVENTS]),
+    layout("Svg", WidgetNode::Leaf, &[SVG, LAYOUT, TRANSFORM, FOCUS])
+        .events(&[LOAD_EVENTS, STANDARD_EVENTS]),
     layout(
         "ProgressBar",
         WidgetNode::Leaf,

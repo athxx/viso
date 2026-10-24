@@ -407,6 +407,7 @@ fn notices(
         .fold(NoticeKinds::default(), |kinds, route| match route.event {
             EventRoute::ScrollChanged => kinds | NoticeKinds::SCROLL,
             EventRoute::AnimationEnd => kinds | NoticeKinds::ANIMATION_END,
+            EventRoute::Loaded | EventRoute::Failed => kinds | NoticeKinds::ASSET,
             _ => kinds | NoticeKinds::VISIBLE_RANGE,
         });
     if kinds.is_empty() {

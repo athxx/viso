@@ -1,19 +1,27 @@
 //! Image controls — the [`Image`] widget.
 //!
-//! `Image` is one leaf node that draws a picture: an asset ([`image_asset`]),
-//! a PNG, JPEG or SVG embedded with `asset!("…")` and decoded off the frame
-//! path, or an already-resident texture ([`image`]). An asset's node shows
-//! nothing until it is decoded and resident, then draws at its natural size
-//! unless its box is set, fitted into the box by its [`AssetFit`]; a texture
-//! draws at once, written directly at build time.
+//! `Image` is one leaf node that draws a picture: an asset ([`image_asset`])
+//! — embedded with `asset!("…")`, given as bytes or read from a file, in any
+//! raster format or SVG, decoded off the frame path — or an already-resident
+//! texture ([`image`]). An asset's node shows nothing until it is decoded and
+//! resident, then draws at its natural size unless its box is set, fitted
+//! into the box by its [`AssetFit`]; a texture draws at once, written
+//! directly at build time.
+//!
+//! An asset image may show a [`placeholder`](Image::placeholder) while it
+//! loads and an [`error`](Image::error) view once it fails, layered over it
+//! in one stack, and report either with [`on_load`](Image::on_load).
 //!
 //! Its semantics are [`Role::Image`] named by its [`label`](Image::label), the
 //! text alternative; an image without one is decoration, a mute
 //! [`Role::Group`].
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use viso_ui::{
-    Asset, AssetFit, BoxStyle, BuildCx, Component, LeafStyle, Length, Rect, Rgba, Role, Semantics,
-    Size, TextureId, Vec2,
+    Alignment2D, Asset, AssetFit, BoxStyle, BuildCx, Component, Handle, LeafStyle, Length, Notice,
+    NoticeKinds, Rect, Rgba, Role, Semantics, Size, StackStyle, StateStore, TextureId, Vec2,
 };
 
 /// A white (identity) tint: the texture is drawn unmodulated.
@@ -80,7 +88,24 @@ pub struct Image {
     style: ImageStyle,
     /// The text alternative; `None` for decoration.
     label: Option<String>,
+    /// Shown while an asset loads.
+    placeholder: Option<Box<dyn Component>>,
+    /// Shown once an asset fails.
+    error: Option<Box<dyn Component>>,
+    on_load: Option<OnLoad>,
 }
+
+/// How an asset image's loading ended.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ImageLoad {
+    /// It drew, at its natural size.
+    Loaded { size: Vec2 },
+    /// Its bytes could not be read or did not decode.
+    Failed,
+}
+
+/// An [`Image::on_load`] handler, shared by the builds of the image.
+type OnLoad = Rc<RefCell<dyn FnMut(ImageLoad, &mut StateStore)>>;
 
 /// What an [`Image`] draws.
 enum ImageSource {
@@ -111,6 +136,9 @@ pub fn image(texture: TextureId, width: f32, height: f32) -> Image {
             },
         },
         label: None,
+        placeholder: None,
+        error: None,
+        on_load: None,
     }
 }
 
@@ -148,6 +176,9 @@ pub fn image_asset(asset: Asset) -> Image {
             },
         },
         label: None,
+        placeholder: None,
+        error: None,
+        on_load: None,
     }
 }
 
@@ -165,6 +196,28 @@ impl Image {
     /// technology; an image without one is decoration.
     pub fn label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
+        self
+    }
+
+    /// Show `placeholder` over an asset image's box while it loads — a
+    /// skeleton, a spinner, a blurred thumbnail.
+    pub fn placeholder(mut self, placeholder: impl Component + 'static) -> Self {
+        self.placeholder = Some(Box::new(placeholder));
+        self
+    }
+
+    /// Show `error` over an asset image's box once its bytes could not be
+    /// read or did not decode.
+    pub fn error(mut self, error: impl Component + 'static) -> Self {
+        self.error = Some(Box::new(error));
+        self
+    }
+
+    /// Call `handler` once an asset image draws — with its natural size, and
+    /// again whenever a new picture of it loads at another — or fails; what
+    /// it writes is the next frame's transaction.
+    pub fn on_load(mut self, handler: impl FnMut(ImageLoad, &mut StateStore) + 'static) -> Self {
+        self.on_load = Some(Rc::new(RefCell::new(handler)));
         self
     }
 
@@ -190,15 +243,13 @@ impl Image {
     }
 }
 
-impl Component for Image {
-    fn build(&self, cx: &mut BuildCx<'_>) {
-        // One leaf: a transparent box (the texture is the content), carrying the
-        // image content payload directly — no shaping step, since the texture is
-        // already resident. The payload's `natural` drives a `Fit` axis's
-        // measure. `TextureId`/`Rect`/`Rgba`/`Vec2` are `Copy`, so this is a
-        // cheap, allocation-free declaration.
+impl Image {
+    /// The leaf drawing the picture, sized `size`: a transparent box (the
+    /// picture is the content) whose payload's `natural` drives a `Fit`
+    /// axis's measure.
+    fn picture(&self, cx: &mut BuildCx<'_>, size: Size) -> Handle {
         let handle = cx.leaf(LeafStyle {
-            size: self.style.size,
+            size,
             style: BoxStyle::NONE,
         });
         match &self.source {
@@ -208,13 +259,75 @@ impl Component for Image {
             ImageSource::Asset { asset, fit } => {
                 let tint = (self.style.tint != NO_TINT).then_some(self.style.tint);
                 cx.asset(handle, asset, *fit, tint);
+                if let Some(on_load) = &self.on_load {
+                    let on_load = Rc::clone(on_load);
+                    let report = move |notice: &Notice, states: &mut StateStore| {
+                        let load = match *notice {
+                            Notice::AssetLoaded { size } => ImageLoad::Loaded { size },
+                            Notice::AssetFailed => ImageLoad::Failed,
+                            _ => return,
+                        };
+                        (on_load.borrow_mut())(load, states);
+                    };
+                    cx.watch(handle, NoticeKinds::ASSET, Box::new(report));
+                }
             }
         }
+        handle
+    }
+}
+
+impl Component for Image {
+    fn build(&self, cx: &mut BuildCx<'_>) {
+        let fallbacks = matches!(self.source, ImageSource::Asset { .. })
+            && (self.placeholder.is_some() || self.error.is_some());
         let semantics = match &self.label {
             Some(label) => Semantics::role(Role::Image).with_label(label.clone()),
             None => Semantics::role(Role::Group),
         };
-        cx.semantics(handle, semantics);
+        if !fallbacks {
+            let handle = self.picture(cx, self.style.size);
+            cx.semantics(handle, semantics);
+            return;
+        }
+        // The picture under its fallbacks, one stack sized as the image: an
+        // axis that fits its content fits the picture, any other fills it.
+        let inner = |l: Length| match l {
+            Length::Fit => Length::Fit,
+            _ => Size::fill().width,
+        };
+        let size = Size {
+            width: inner(self.style.size.width),
+            height: inner(self.style.size.height),
+        };
+        let (mut picture, mut loading, mut failed) = (None, None, None);
+        let layer = StackStyle {
+            align: Alignment2D::Center,
+            size: Size::fill(),
+            ..StackStyle::default()
+        };
+        let outer = cx.stack(
+            StackStyle {
+                align: Alignment2D::Center,
+                size: self.style.size,
+                ..StackStyle::default()
+            },
+            |cx| {
+                picture = Some(self.picture(cx, size));
+                for (view, at) in [
+                    (&self.placeholder, &mut loading),
+                    (&self.error, &mut failed),
+                ] {
+                    if let Some(view) = view {
+                        *at = Some(cx.stack(layer, |cx| view.build(cx)));
+                    }
+                }
+            },
+        );
+        if let Some(picture) = picture {
+            cx.asset_fallbacks(picture, loading, failed);
+        }
+        cx.semantics(outer, semantics);
     }
 }
 
@@ -385,5 +498,55 @@ mod tests {
         );
         let sem = store.semantics(root).expect("semantics present");
         assert_eq!(sem.role, Role::Group, "a presentational image is a Group");
+    }
+
+    /// An asset image with fallbacks is a stack: the picture, the placeholder
+    /// shown while it loads, and the error view, hidden until it fails.
+    #[test]
+    fn an_asset_image_with_fallbacks_layers_them_over_its_picture() {
+        use viso_ui::resource::ResourceRevision;
+        use viso_ui::{AssetDraw, BuildCx, Content, NodeStore};
+
+        let photo = Asset::bytes(&b"not an image"[..]);
+        let id = photo.id;
+        let swatch = |r: f32| {
+            image(TextureId::new(9), 4.0, 4.0).tint(Rgba {
+                r,
+                g: 0.0,
+                b: 0.0,
+                a: 1.0,
+            })
+        };
+        let mut store = NodeStore::new();
+        let mut cx = BuildCx::new(&mut store);
+        image_asset(photo)
+            .placeholder(swatch(0.5))
+            .error(swatch(1.0))
+            .label("Photo")
+            .build(&mut cx);
+        let root = cx.root().expect("a root");
+        let layers: Vec<_> = store.arena().children(root).collect();
+        assert_eq!(layers.len(), 3);
+        assert!(matches!(
+            store.content_payload(layers[0]),
+            Some(Content::Asset { resource, .. }) if *resource == id
+        ));
+        assert!(
+            !store.hidden(layers[1]),
+            "the placeholder shows while it loads"
+        );
+        assert!(store.hidden(layers[2]));
+        assert_eq!(store.semantics(root).expect("semantics").role, Role::Image);
+
+        store.fail_asset(id, ResourceRevision::default());
+        assert!(matches!(
+            store.content_payload(layers[0]),
+            Some(Content::Asset {
+                draw: AssetDraw::Failed,
+                ..
+            })
+        ));
+        assert!(store.hidden(layers[1]));
+        assert!(!store.hidden(layers[2]), "the error shows once it fails");
     }
 }

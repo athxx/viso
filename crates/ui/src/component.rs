@@ -403,6 +403,14 @@ pub enum ScrollBehavior {
     Smooth,
 }
 
+/// The nodes an asset node shows in place of its picture.
+#[derive(Debug, Clone, Copy)]
+struct AssetFallbacks {
+    node: NodeId,
+    loading: Option<NodeId>,
+    failed: Option<NodeId>,
+}
+
 /// The retained node store: the arena plus parallel side-storage arrays, all
 /// indexed by [`NodeId::index`]. Allocation pushes to every array in lockstep
 /// so the index stays aligned; freeing leaves stale values in place and relies
@@ -632,6 +640,9 @@ pub struct NodeStore {
     scratch_scene_marks: Vec<(NodeId, u64)>,
     /// The assets `Content::Asset` nodes show, by resource.
     assets: AssetTable,
+    /// Cold: the nodes shown in place of an asset node's picture while it
+    /// loads and once it fails, by the asset node.
+    asset_fallbacks: Vec<AssetFallbacks>,
     /// Cold: per-node unshaped text request, index-aligned but mostly `None`.
     /// `viso-ui` cannot shape text (no font stack), so a text node records what
     /// it wants drawn here and an upper tier that owns text preparation drains
@@ -912,6 +923,7 @@ impl NodeStore {
         self.dirty_lists.reset();
         self.shaders.clear();
         self.assets.clear();
+        self.asset_fallbacks.clear();
         self.animation_requests.clear();
         self.leaving.clear();
         self.transitions.clear();
@@ -3240,7 +3252,7 @@ impl NodeStore {
     fn raster(&self, resource: ResourceId) -> Option<TextureId> {
         match self.assets.resolve(resource).0 {
             AssetDraw::Raster(texture) => Some(texture),
-            AssetDraw::Nothing | AssetDraw::Vector(_) => None,
+            AssetDraw::Nothing | AssetDraw::Failed | AssetDraw::Vector(_) => None,
         }
     }
 
@@ -3302,6 +3314,10 @@ impl NodeStore {
             slot.as_deref(),
             Some(Content::Asset { natural: n, .. }) if *n == natural
         );
+        let shown = match &content {
+            Content::Asset { draw, .. } if !self.asset_fallbacks.is_empty() => Some(draw.clone()),
+            _ => None,
+        };
         *slot = Some(Box::new(content));
         let classes = if same_size {
             DirtyClass::PAINT
@@ -3309,6 +3325,9 @@ impl NodeStore {
             DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT
         };
         self.mark_dirty(id, classes);
+        if let Some(draw) = shown {
+            self.show_fallbacks(id, &draw);
+        }
     }
 
     /// The assets this store's nodes show.
@@ -3383,7 +3402,7 @@ impl NodeStore {
         let natural = Vec2::new(w, h);
         let raster = match draw {
             AssetDraw::Raster(texture) => Some(texture),
-            AssetDraw::Nothing | AssetDraw::Vector(_) => None,
+            AssetDraw::Nothing | AssetDraw::Failed | AssetDraw::Vector(_) => None,
         };
         for i in 0..self.content_payload.len() {
             if let Some(Content::Shader { images, .. }) = self.content_payload[i].as_deref_mut() {
@@ -3418,7 +3437,59 @@ impl NodeStore {
             *n = natural;
             if let Some(id) = self.arena.live_id(i as u32) {
                 self.mark_dirty(id, classes);
+                self.show_fallbacks(id, &draw);
             }
+        }
+    }
+
+    /// Shows `loading` in place of asset node `id`'s picture while it loads
+    /// and `failed` once it fails, hiding each otherwise. A live-guarded
+    /// write — a stale handle is a no-op.
+    pub fn set_asset_fallbacks(
+        &mut self,
+        id: NodeId,
+        loading: Option<NodeId>,
+        failed: Option<NodeId>,
+    ) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        let arena = &self.arena;
+        self.asset_fallbacks
+            .retain(|f| f.node != id && arena.is_live(f.node));
+        self.asset_fallbacks.push(AssetFallbacks {
+            node: id,
+            loading,
+            failed,
+        });
+        let draw = match self.content_payload(id) {
+            Some(Content::Asset { draw, .. }) => draw.clone(),
+            _ => AssetDraw::Nothing,
+        };
+        self.show_fallbacks(id, &draw);
+    }
+
+    /// Shows asset node `id`'s fallback for what it now draws, hiding the
+    /// other.
+    fn show_fallbacks(&mut self, id: NodeId, draw: &AssetDraw) {
+        let Some(f) = self.asset_fallbacks.iter().find(|f| f.node == id) else {
+            return;
+        };
+        let (loading, failed) = (f.loading, f.failed);
+        if let Some(node) = loading {
+            self.set_hidden(node, *draw != AssetDraw::Nothing);
+        }
+        if let Some(node) = failed {
+            self.set_hidden(node, *draw != AssetDraw::Failed);
+        }
+    }
+
+    /// Records that `resource`'s bytes at `revision` could not be read or did
+    /// not decode, and rewrites the nodes showing it; ignored when the table
+    /// holds newer bytes or a payload as new.
+    pub fn fail_asset(&mut self, resource: ResourceId, revision: ResourceRevision) {
+        if self.assets.fail(resource, revision) {
+            self.refresh_asset(resource);
         }
     }
 
@@ -7469,6 +7540,20 @@ impl<'a> BuildCx<'a> {
             }
         }
         self.store.set_asset(handle.id, asset.id, fit, tint);
+        handle
+    }
+
+    /// Show `loading` in place of asset node `handle`'s picture while it
+    /// loads and `failed` once it fails, hiding each otherwise (see
+    /// [`NodeStore::set_asset_fallbacks`]).
+    pub fn asset_fallbacks(
+        &mut self,
+        handle: Handle,
+        loading: Option<Handle>,
+        failed: Option<Handle>,
+    ) -> Handle {
+        self.store
+            .set_asset_fallbacks(handle.id, loading.map(|h| h.id), failed.map(|h| h.id));
         handle
     }
 

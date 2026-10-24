@@ -90,6 +90,32 @@ fn an_asset_is_typed_by_its_format_and_shown_by_its_node() {
 }
 
 #[test]
+fn an_image_reports_its_source_loading() {
+    let source = "export component Card {
+    state ready = false;
+    state broken = false;
+    state wide = 0dp;
+    view {
+        Column {
+            Image {
+                source: asset(\"images/photo.jpg\");
+                on loaded(size) { ready = true; wide = size.width; }
+                on failed { broken = true; }
+            }
+            Svg { source: asset(\"icons/close.svg\"); on loaded(size) { ready = true; } }
+        }
+    }
+}";
+    assert_eq!(errors(&compile(source)), []);
+    let elsewhere =
+        "export component C { state n = 0; view { Column { on loaded(size) { n = 1; } } } }";
+    assert!(
+        !errors(&compile(elsewhere)).is_empty(),
+        "only a picture loads"
+    );
+}
+
+#[test]
 fn a_node_takes_only_its_kind_of_asset() {
     let wrong = "export component C { view { Image { source: asset(\"icons/close.svg\"); } } }";
     let compiled = compile(wrong);

@@ -47,6 +47,8 @@ use viso_schema::resource::AssetFormat;
 pub enum AssetDraw {
     /// Nothing yet: the asset is not decoded, or its raster not resident.
     Nothing,
+    /// Nothing: its bytes could not be read or did not decode.
+    Failed,
     Raster(TextureId),
     Vector(Arc<VectorScene>),
 }
@@ -150,6 +152,8 @@ pub enum AssetState {
     Resident { size: [f32; 2] },
     /// A vector scene of `size`, drawn as paths.
     Vector { size: [f32; 2] },
+    /// Its bytes could not be read or did not decode.
+    Failed,
 }
 
 /// One resource of the table.
@@ -161,6 +165,8 @@ pub(crate) struct AssetEntry {
     pub(crate) bytes: Option<AssetBytes>,
     /// The file its bytes are read from, when they are not at hand.
     pub(crate) file: Option<Arc<Path>>,
+    /// The newest revision that could not be read or did not decode.
+    pub(crate) failed: Option<ResourceRevision>,
     /// The newest payload provided, and its revision: a vector's for as long
     /// as it draws, a raster's until its texture is attached.
     pub(crate) payload: Option<(ResourceRevision, AssetPayload)>,
@@ -189,6 +195,7 @@ impl AssetEntry {
             offered,
             bytes: None,
             file: None,
+            failed: None,
             payload: None,
             texture: None,
             users: 0,
@@ -206,9 +213,19 @@ impl AssetEntry {
         }
     }
 
-    /// Whether it holds no bytes, no payload and no texture.
+    /// Whether it holds no bytes, no payload and no texture, nor failed.
     fn holds_nothing(&self) -> bool {
-        self.bytes.is_none() && self.payload.is_none() && self.texture.is_none()
+        self.bytes.is_none()
+            && self.payload.is_none()
+            && self.texture.is_none()
+            && self.failed.is_none()
+    }
+
+    /// Whether its newest bytes failed and it has nothing older to draw.
+    fn fails(&self) -> bool {
+        self.failed.is_some_and(|f| f >= self.offered)
+            && self.texture.is_none()
+            && self.payload.is_none()
     }
 
     /// The newest revision decoded: provided, or resident.
@@ -248,6 +265,7 @@ impl AssetTable {
             .entry(id)
             .or_insert_with(|| AssetEntry::new(revision));
         let newer = entry.decoded().is_none_or(|r| revision > r)
+            && entry.failed.is_none_or(|f| revision > f)
             && (entry.bytes.is_none() || revision > entry.offered);
         if newer {
             entry.offered = revision;
@@ -325,6 +343,7 @@ impl AssetTable {
             .iter()
             .map(|(id, e)| {
                 let state = match (&e.texture, &e.payload, &e.bytes) {
+                    _ if e.fails() => AssetState::Failed,
                     (Some(t), ..) => AssetState::Resident { size: t.size },
                     (None, Some((_, AssetPayload::Vector(scene))), _) => {
                         AssetState::Vector { size: scene.size }
@@ -483,6 +502,9 @@ impl AssetTable {
         let Some(entry) = self.entries.get(&id) else {
             return (AssetDraw::Nothing, [0.0; 2]);
         };
+        if entry.fails() {
+            return (AssetDraw::Failed, [0.0; 2]);
+        }
         match (&entry.payload, entry.texture) {
             (Some((_, AssetPayload::Vector(scene))), _) => {
                 (AssetDraw::Vector(Arc::clone(scene)), scene.size)
@@ -516,6 +538,25 @@ impl AssetTable {
         }
         entry.payload = Some((revision, payload));
         self.unswept |= entry.users == 0;
+        self.revision += 1;
+        true
+    }
+
+    /// Records that `id`'s bytes at `revision` could not be read or did not
+    /// decode, dropping them; `false` when the table holds newer bytes or a
+    /// payload as new. A texture or scene of an older revision keeps drawing.
+    pub(crate) fn fail(&mut self, id: ResourceId, revision: ResourceRevision) -> bool {
+        let Some(entry) = self.entries.get_mut(&id) else {
+            return false;
+        };
+        let stale = revision < entry.offered
+            || entry.decoded().is_some_and(|r| r >= revision)
+            || entry.failed.is_some_and(|f| f >= revision);
+        if stale {
+            return false;
+        }
+        entry.bytes = None;
+        entry.failed = Some(revision);
         self.revision += 1;
         true
     }
@@ -673,5 +714,95 @@ mod tests {
         store.free_tree(leaf, &mut effects, &mut scratch);
         assert_eq!(store.assets_mut().sweep(u64::MAX, |_| {}), 1);
         assert!(!store.assets().knows(id), "its bytes are not kept");
+    }
+
+    #[test]
+    fn its_fallbacks_show_while_it_loads_and_once_it_fails_and_its_watcher_hears_each() {
+        use crate::notice::{Notice, NoticeKinds, deliver_notices};
+        use crate::state::StateStore;
+        use crate::virtual_list::VirtualLists;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let mut store = NodeStore::new();
+        let (mut picture, mut loading, mut failed) = (None, None, None);
+        {
+            let mut cx = BuildCx::new(&mut store);
+            cx.stack(Default::default(), |cx| {
+                let leaf = |cx: &mut BuildCx<'_>| {
+                    cx.leaf(LeafStyle {
+                        size: Size::fixed(4.0, 4.0),
+                        style: BoxStyle::NONE,
+                    })
+                };
+                picture = Some(leaf(cx));
+                loading = Some(leaf(cx));
+                failed = Some(leaf(cx));
+            });
+        }
+        let (picture, loading, failed) = (picture.unwrap(), loading.unwrap(), failed.unwrap());
+        let (good, bad) = (ResourceId::of("good.png"), ResourceId::of("bad.png"));
+        let r = ResourceRevision(1);
+        for id in [good, bad] {
+            store.assets_mut().offer(id, r, AssetBytes::Static(b"png"));
+        }
+        store.set_asset(picture.id(), bad, AssetFit::Fill, None);
+        store.set_asset_fallbacks(picture.id(), Some(loading.id()), Some(failed.id()));
+        assert!(!store.hidden(loading.id()), "loading");
+        assert!(store.hidden(failed.id()));
+
+        let heard = Rc::new(RefCell::new(Vec::new()));
+        let log = Rc::clone(&heard);
+        store.watch(
+            picture.id(),
+            NoticeKinds::ASSET,
+            Box::new(move |notice: &Notice, _: &mut StateStore| log.borrow_mut().push(*notice)),
+        );
+        let (lists, mut states) = (VirtualLists::new(), StateStore::new());
+        assert_eq!(
+            deliver_notices(&mut store, &lists, &mut states),
+            0,
+            "still loading"
+        );
+
+        // It does not decode: the error shows, once heard.
+        store.fail_asset(bad, r);
+        assert_eq!(store.assets().resolve(bad).0, AssetDraw::Failed);
+        assert!(store.hidden(loading.id()));
+        assert!(!store.hidden(failed.id()));
+        deliver_notices(&mut store, &lists, &mut states);
+        deliver_notices(&mut store, &lists, &mut states);
+        assert_eq!(*heard.borrow(), [Notice::AssetFailed]);
+        assert!(!store.assets_mut().fail(bad, r), "reported once");
+
+        // Another source loads: loading shows again until it draws.
+        store.set_asset(picture.id(), good, AssetFit::Fill, None);
+        assert!(!store.hidden(loading.id()));
+        assert!(store.hidden(failed.id()));
+        deliver_notices(&mut store, &lists, &mut states);
+        store.provide_asset(good, r, raster());
+        store.attach_texture(good, r, TextureId::new(1));
+        assert!(store.hidden(loading.id()) && store.hidden(failed.id()));
+        deliver_notices(&mut store, &lists, &mut states);
+        assert_eq!(
+            *heard.borrow(),
+            [
+                Notice::AssetFailed,
+                Notice::AssetLoaded {
+                    size: crate::Vec2::new(4.0, 4.0)
+                }
+            ]
+        );
+
+        // A newer revision that fails keeps the picture it had.
+        let r2 = ResourceRevision(2);
+        store
+            .assets_mut()
+            .offer(good, r2, AssetBytes::Static(b"bad"));
+        store.fail_asset(good, r2);
+        assert_eq!(
+            store.assets().resolve(good).0,
+            AssetDraw::Raster(TextureId::new(1))
+        );
     }
 }

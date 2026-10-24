@@ -169,6 +169,19 @@ impl Worker {
     }
 }
 
+/// Gives `store` resource `id`'s payload at `revision`, or its failure.
+fn give(
+    store: &mut NodeStore,
+    id: ResourceId,
+    revision: ResourceRevision,
+    payload: Option<AssetPayload>,
+) {
+    match payload {
+        Some(payload) => store.provide_asset(id, revision, payload),
+        None => store.fail_asset(id, revision),
+    }
+}
+
 /// `bytes` decoded by the format they are in, a raster in a format outside
 /// `sampled` decoded on to RGBA8.
 ///
@@ -278,21 +291,19 @@ impl Assets {
             if self.decoding.get(&done.id) == Some(&done.revision) {
                 self.decoding.remove(&done.id);
             }
-            if let Some(payload) = self.settle(done) {
-                payloads.push(payload);
-            }
+            payloads.push(self.settle(done));
         }
         for store in stores {
             for (id, revision, payload) in &payloads {
                 if store.assets().knows(*id) {
-                    store.provide_asset(*id, *revision, payload.clone());
+                    give(store, *id, *revision, payload.clone());
                 }
             }
         }
     }
 
-    /// Records a result: the payload to provide, or the failure reported.
-    fn settle(&mut self, done: Done) -> Option<(ResourceId, ResourceRevision, AssetPayload)> {
+    /// Records a result: the payload to provide, or, reported, none.
+    fn settle(&mut self, done: Done) -> (ResourceId, ResourceRevision, Option<AssetPayload>) {
         match done.result {
             Ok(payload) => {
                 self.counters.decodes += 1;
@@ -304,7 +315,7 @@ impl Assets {
                     self.decoded
                         .insert(done.id, (done.revision, Held::of(&payload)));
                 }
-                Some((done.id, done.revision, payload))
+                (done.id, done.revision, Some(payload))
             }
             Err(error) => {
                 self.counters.decode_failures += 1;
@@ -314,7 +325,7 @@ impl Assets {
                     "[viso] asset {:016x} (revision {}) does not decode: {error}",
                     done.id.0, done.revision.0
                 );
-                None
+                (done.id, done.revision, None)
             }
         }
     }
@@ -403,7 +414,14 @@ impl Assets {
                 continue;
             }
             let pending = |at: Option<&ResourceRevision>| at.is_some_and(|r| *r >= revision);
-            if pending(self.failed.get(&id)) || pending(self.decoding.get(&id)) {
+            // Known not to decode: the table learns it, nothing is retried.
+            if let Some(&failed) = self.failed.get(&id)
+                && failed >= revision
+            {
+                store.fail_asset(id, failed);
+                continue;
+            }
+            if pending(self.decoding.get(&id)) {
                 continue;
             }
             if self.worker.is_none() && !self.inline {
@@ -432,9 +450,8 @@ impl Assets {
                         revision,
                         result: input.decode(sampled),
                     };
-                    if let Some((id, revision, payload)) = self.settle(done) {
-                        store.provide_asset(id, revision, payload);
-                    }
+                    let (id, revision, payload) = self.settle(done);
+                    give(store, id, revision, payload);
                 }
             }
         }
@@ -814,8 +831,26 @@ mod tests {
         assert!(matches!(draw, AssetDraw::Raster(_)), "{draw:?}");
         assert_eq!(size, [8.0, 4.0]);
         assert!(matches!(drawn(&store, nodes[1]).0, AssetDraw::Vector(_)));
-        assert_eq!(drawn(&store, nodes[2]).0, AssetDraw::Nothing);
-        assert_eq!(assets.counters().decode_failures, 1, "the missing file");
+        assert_eq!(
+            drawn(&store, nodes[2]).0,
+            AssetDraw::Failed,
+            "the missing file"
+        );
+        assert_eq!(assets.counters().decode_failures, 1);
+        // A window showing it later learns it at once, nothing retried.
+        let mut later = NodeStore::new();
+        let leaf = {
+            let mut cx = BuildCx::new(&mut later);
+            let leaf = cx.leaf(LeafStyle {
+                size: Size::fixed(40.0, 40.0),
+                style: BoxStyle::NONE,
+            });
+            cx.asset(leaf, &missing, AssetFit::Contain, None);
+            leaf.id()
+        };
+        serve(&mut assets, &mut later, &mut gpu);
+        assert_eq!(drawn(&later, leaf).0, AssetDraw::Failed);
+        assert_eq!(assets.counters().decode_failures, 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

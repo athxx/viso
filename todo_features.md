@@ -250,8 +250,9 @@ Rules:
   QOI, AVIF (still, grid, sequence; HDR tone-mapped); streaming `Animation` frames;
   EXIF orientation; build-time conversion keeps animated images as written.
 - [ ] AVIF on the web through the browser's decoder (`createImageBitmap`).
-- [ ] Runtime image loading: file path, bytes, URL (on W11); decode cache with memory
-  budget, placeholder/error states, `on_load`.
+- [x] Runtime image loading: file path, bytes; decode cache with memory budget (LRU of
+  images no node shows), placeholder/error states, `on_load` (DSL `loaded`/`failed`).
+- [ ] Image loading from a URL, on the W11 HTTP client.
 - [ ] `AnimatedImage` playback (frame timing, loop count, pause off-screen).
 - [ ] Video playback (`Video` widget): AVFoundation, Media Foundation, GStreamer,
   MediaCodec, HTML video; the external/YUV texture path in render.

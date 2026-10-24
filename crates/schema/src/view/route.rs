@@ -104,11 +104,18 @@ pub enum EventRoute {
     /// A `Chip`'s `removed`: a release on its cross, or Delete or Backspace
     /// on it, asked it to go.
     Removed = 35,
+    /// An `Image`'s or `Svg`'s `loaded` (`SizeDp`): its source drew, at its
+    /// natural size — once it loads, and again when a new one loads at
+    /// another size.
+    Loaded = 36,
+    /// An `Image`'s or `Svg`'s `failed`: its source could not be read or did
+    /// not decode.
+    Failed = 37,
 }
 
 impl EventRoute {
     /// Every route, by discriminant.
-    pub const ALL: [EventRoute; 36] = [
+    pub const ALL: [EventRoute; 38] = [
         EventRoute::Click,
         EventRoute::Tap,
         EventRoute::PointerDown,
@@ -145,6 +152,8 @@ impl EventRoute {
         EventRoute::DropLeave,
         EventRoute::DropEnd,
         EventRoute::Removed,
+        EventRoute::Loaded,
+        EventRoute::Failed,
     ];
 
     /// The route of standard DSL event `event`, `None` for an event the runtime
@@ -195,6 +204,8 @@ impl EventRoute {
             EventRoute::DropLeave => "drop_leave",
             EventRoute::DropEnd => "drop_end",
             EventRoute::Removed => "removed",
+            EventRoute::Loaded => "loaded",
+            EventRoute::Failed => "failed",
         }
     }
 
@@ -237,6 +248,8 @@ impl EventRoute {
             EventRoute::DropLeave => "DropLeave",
             EventRoute::DropEnd => "DropEnd",
             EventRoute::Removed => "Removed",
+            EventRoute::Loaded => "Loaded",
+            EventRoute::Failed => "Failed",
         }
     }
 
@@ -297,7 +310,11 @@ impl EventRoute {
     pub fn is_notice(self) -> bool {
         matches!(
             self,
-            EventRoute::ScrollChanged | EventRoute::VisibleRangeChanged | EventRoute::AnimationEnd
+            EventRoute::ScrollChanged
+                | EventRoute::VisibleRangeChanged
+                | EventRoute::AnimationEnd
+                | EventRoute::Loaded
+                | EventRoute::Failed
         )
     }
 
