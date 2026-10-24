@@ -3576,7 +3576,7 @@ mod tests {
             "Text { visible: enabled; }",
             "Text { visible: enabled; }\n            \
              Svg { source: asset(\"icons/star.svg\"); width: 24dp; height: 24dp; }\n            \
-             Image { source: asset(\"photos/day.jpg\"); }",
+             Image { source: asset(\"photos/day.jpg\"); animate: false; }",
         );
         let patch = edits.patch(&host, 1, 2, &named);
         let red = star(10, 20, "#f00");
@@ -3608,6 +3608,10 @@ mod tests {
             shown(&ws, photo).1,
             [8.0, 4.0],
             "sized before it is resident"
+        );
+        assert!(
+            !ws.store.plays_asset(photo),
+            "an image whose `animate` is false holds its first frame"
         );
         ws.relayout_and_paint();
         ws.store.clear_dirty();

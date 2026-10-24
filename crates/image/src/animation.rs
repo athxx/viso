@@ -384,6 +384,12 @@ fn draw(dst: &mut [u8], src: &[u8], blend: Blend) {
     }
 }
 
+// An animation decodes off the thread that opened it.
+const _: () = {
+    const fn send<T: Send>() {}
+    send::<Animation>();
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;

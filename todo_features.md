@@ -253,7 +253,8 @@ Rules:
 - [x] Runtime image loading: file path, bytes; decode cache with memory budget (LRU of
   images no node shows), placeholder/error states, `on_load` (DSL `loaded`/`failed`).
 - [ ] Image loading from a URL, on the W11 HTTP client.
-- [ ] `AnimatedImage` playback (frame timing, loop count, pause off-screen).
+- [x] Animated image playback in `Image` (frame timing, loop count, pause off-screen / still /
+  reduced motion; `animate` in Rust and DSL), decoded off the frame path into the resident texture.
 - [ ] Video playback (`Video` widget): AVFoundation, Media Foundation, GStreamer,
   MediaCodec, HTML video; the external/YUV texture path in render.
 - [ ] Camera capture service and `CameraView`.

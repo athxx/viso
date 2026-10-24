@@ -72,6 +72,7 @@ mod headless;
 #[cfg(any(feature = "hot-reload", feature = "headless"))]
 mod inspect;
 mod persist;
+mod playback;
 mod profile;
 #[cfg(any(feature = "headless", feature = "hot-reload"))]
 mod scenario;
@@ -956,6 +957,10 @@ struct WindowState {
     revealed: Option<FieldKey>,
     /// When the caret next blinks, while it blinks.
     caret_due: Option<Instant>,
+    /// When the next frame of an animated image playing in the window is due.
+    animation_due: Option<Instant>,
+    /// The animated images playing in the window.
+    players: playback::Players,
     /// Whether the window is the active one, taking the keys.
     active: bool,
     /// The marks a field drew before the ones it was just given, kept so
@@ -1221,6 +1226,40 @@ impl<A: Application> AppDriver<A> {
             };
             self.assets.evicted(evicted);
         }
+        let windows = &self.windows;
+        self.assets
+            .playback
+            .forget(|id| windows.iter().any(|ws| ws.store.assets().knows(id)));
+    }
+
+    /// Writes each window's animated images' frames that came due at `now`
+    /// and records when the next is.
+    fn play_animations(&mut self, now: Instant, waker: &dyn Fn() -> viso_platform::LoopWaker) {
+        let playback = &mut self.assets.playback;
+        playback.receive();
+        for ws in &mut self.windows {
+            ws.animation_due = None;
+            let (w, h) = ws.logical_surface();
+            let Some(gpu) = ws.gpu.as_mut() else {
+                continue;
+            };
+            let viewport = Rect {
+                x: 0.0,
+                y: 0.0,
+                w,
+                h,
+            };
+            let still = ws.states.env().environment().reduced_motion;
+            ws.animation_due = ws.players.step(
+                &mut ws.store,
+                &mut gpu.backend,
+                playback,
+                now,
+                viewport,
+                still,
+                waker,
+            );
+        }
     }
 
     /// The live window state for `id`, by linear scan. Windows number in the
@@ -1273,6 +1312,8 @@ impl WindowState {
             blink: None,
             revealed: None,
             caret_due: None,
+            animation_due: None,
+            players: playback::Players::default(),
             active: true,
             marks: viso_ui::FieldMarks::default(),
             route_chain: Vec::new(),
@@ -3469,14 +3510,17 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         let now = cx.frame_now();
         // A decoded asset frames the windows that show assets.
         let decoded = self.assets.receive();
+        let played = self.assets.playback.receive();
         for ws in &self.windows {
             let timer_due = ws
                 .timers
                 .earliest()
                 .into_iter()
                 .chain(ws.caret_due)
+                .chain(ws.animation_due)
                 .any(|at| at <= now);
-            let asset_due = decoded && !ws.store.assets().is_empty();
+            let asset_due =
+                (decoded && !ws.store.assets().is_empty()) || (played && !ws.players.is_empty());
             if ws.store.tasks_woken() || timer_due || asset_due {
                 cx.request_redraw(ws.window);
             }
@@ -3944,6 +3988,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     }
                 }
                 self.sweep_assets();
+                self.play_animations(cx.frame_now(), &|| cx.loop_waker());
                 for ws in &mut self.windows {
                     ws.store.set_dirty_cause(DirtyCause::Other);
                 }
@@ -4309,12 +4354,13 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                                 );
                                 let a = self.assets.counters();
                                 eprintln!(
-                                    "viso: assets decodes={} decode_failures={} uploads={} upload_bytes={} evictions={}",
+                                    "viso: assets decodes={} decode_failures={} uploads={} upload_bytes={} evictions={} animation_frames={}",
                                     a.decodes,
                                     a.decode_failures,
                                     a.uploads,
                                     a.upload_bytes,
                                     a.evictions,
+                                    self.assets.playback.frames(),
                                 );
                                 if let Some(text) = &ws.text {
                                     let c = text.counters();
@@ -4541,7 +4587,13 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // falls fully idle (the zero-CPU-when-idle contract).
         self.windows
             .iter()
-            .flat_map(|w| w.timers.earliest().into_iter().chain(w.caret_due))
+            .flat_map(|w| {
+                w.timers
+                    .earliest()
+                    .into_iter()
+                    .chain(w.caret_due)
+                    .chain(w.animation_due)
+            })
             .min()
     }
 }

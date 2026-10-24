@@ -532,6 +532,7 @@ impl ControlKind {
             (ControlKind::Number, "precision") => ControlInput::Precision,
             (ControlKind::Asset, "fit") => ControlInput::Fit,
             (ControlKind::Asset, "tint") => ControlInput::Tint,
+            (ControlKind::Asset, "animate") => ControlInput::Animate,
             (ControlKind::Pages, "page_transition") => ControlInput::PageTransition,
             (ControlKind::Viewer, "double_tap") => ControlInput::Value,
             (ControlKind::Viewer, "min_scale") => ControlInput::Min,
@@ -1106,6 +1107,8 @@ pub enum ControlInput {
     /// A search field's `debounce`: how long the typing rests before the
     /// query is reported.
     Debounce,
+    /// An image's `animate`: whether an animated picture plays.
+    Animate,
 }
 
 /// A view-driven native node: its kind and the handler-table entries that
@@ -1169,6 +1172,8 @@ pub struct Control {
     pub empty_text: Option<u32>,
     /// The entry of how long a search field's typing rests before it reports.
     pub debounce: Option<u32>,
+    /// The entry of whether an image's animated picture plays.
+    pub animate: Option<u32>,
     /// The shader a shader view paints with, by its index in the view's
     /// shader table; its value gives the shader's parameters.
     pub shader: Option<u32>,
@@ -1356,7 +1361,7 @@ pub enum Switched {
 
 impl ControlInput {
     /// Every input, by wire tag.
-    pub const ALL: [ControlInput; 77] = [
+    pub const ALL: [ControlInput; 78] = [
         ControlInput::Value,
         ControlInput::Min,
         ControlInput::Max,
@@ -1434,6 +1439,7 @@ impl ControlInput {
         ControlInput::FreeText,
         ControlInput::EmptyText,
         ControlInput::Debounce,
+        ControlInput::Animate,
     ];
 
     /// Its wire tag: its place in [`ControlInput::ALL`].
@@ -1539,6 +1545,7 @@ impl Control {
             free_text: None,
             empty_text: None,
             debounce: None,
+            animate: None,
             shader: None,
             look: Look::default(),
             arms: Box::new([]),
@@ -1634,6 +1641,7 @@ impl Control {
             ControlInput::FreeText => self.free_text,
             ControlInput::EmptyText => self.empty_text,
             ControlInput::Debounce => self.debounce,
+            ControlInput::Animate => self.animate,
         }
     }
 
@@ -1727,6 +1735,7 @@ impl Control {
             ControlInput::FreeText => &mut self.free_text,
             ControlInput::EmptyText => &mut self.empty_text,
             ControlInput::Debounce => &mut self.debounce,
+            ControlInput::Animate => &mut self.animate,
         };
         *slot = Some(entry);
     }
@@ -1767,6 +1776,7 @@ impl Encode for Control {
             self.free_text,
             self.empty_text,
             self.debounce,
+            self.animate,
             self.shader,
             look.background,
             look.opacity,
@@ -1903,6 +1913,7 @@ impl Decode for Control {
             free_text: entry()?,
             empty_text: entry()?,
             debounce: entry()?,
+            animate: entry()?,
             shader: entry()?,
             look: Look {
                 background: entry()?,
@@ -2204,6 +2215,7 @@ mod tests {
             free_text: Some(44),
             empty_text: Some(45),
             debounce: Some(46),
+            animate: Some(47),
             shader: Some(2),
             look: Look {
                 background: Some(3),

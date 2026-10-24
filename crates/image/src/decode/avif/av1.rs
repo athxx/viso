@@ -52,6 +52,12 @@ pub(crate) struct Av1 {
     picture: Option<Dav1dPicture>,
 }
 
+// SAFETY: the context and the picture are this value's alone — nothing else
+// holds a reference to either — and the decoder's API may be called from any
+// thread as long as no two calls on one context overlap, which `&mut self` on
+// every call guarantees; its own worker threads are joined when it closes.
+unsafe impl Send for Av1 {}
+
 impl Av1 {
     /// A decoder running `threads` threads, refusing frames past the
     /// raster limit.

@@ -296,6 +296,7 @@ pub(crate) fn control_cells(
         control.free_text,
         control.empty_text,
         control.debounce,
+        control.animate,
     ])
     .flatten()
     .chain(arms)
@@ -322,8 +323,9 @@ pub(crate) fn control_cells(
 /// a chip's `removable`, a stepper's `wrap`, a slider's `origin`, `marks`
 /// and `axis`, a colour picker's `alpha` and `wheel`, and a combo box's
 /// `options`, `free_text` and `empty_text` — a search field's `suggestions`
-/// are its `options` — and a search field's `debounce`.
-const SHOWN: usize = 68;
+/// are its `options` — a search field's `debounce`, and an image's
+/// `animate`.
+const SHOWN: usize = 69;
 
 /// The input of each value a node shows, in order.
 const SHOWN_INPUTS: [ControlInput; SHOWN] = [
@@ -395,6 +397,7 @@ const SHOWN_INPUTS: [ControlInput; SHOWN] = [
     ControlInput::FreeText,
     ControlInput::EmptyText,
     ControlInput::Debounce,
+    ControlInput::Animate,
 ];
 
 /// Where its `translate` sits among the values a node shows.
@@ -690,6 +693,7 @@ impl Shown {
             free_text,
             empty_text,
             debounce,
+            animate,
         ] = &shows;
         let access_key = access_key.as_str().and_then(|key| key.chars().next());
         let spanned = crate::text_style::spans(pieces);
@@ -1117,6 +1121,7 @@ impl Shown {
                     offer(store, host, resource);
                     let tint = tint.as_int().map(|_| color(tint));
                     store.set_asset(self.node, resource, asset_fit(fit), tint);
+                    store.set_asset_still(self.node, !truth(animate, true));
                 }
             }
             ControlKind::Label | ControlKind::Button => {

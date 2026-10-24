@@ -36,6 +36,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::node::NodeId;
 use viso_render::TextureId;
 use viso_render::asset::{AssetKind, RasterImage, ResourceId, ResourceRevision, VectorScene};
 
@@ -173,19 +174,20 @@ pub(crate) struct AssetEntry {
     /// A raster's texture in this store's window; it draws until the newest
     /// payload's replaces it.
     pub(crate) texture: Option<Resident>,
-    /// How many nodes show it.
-    pub(crate) users: u32,
+    /// The nodes showing it, a node once for each time it shows it.
+    pub(crate) users: Vec<NodeId>,
     /// When it was last shown, on the table's clock.
     pub(crate) shown: u64,
 }
 
-/// A raster's texture, the revision it was uploaded from, that raster's size
-/// and the bytes the texture takes.
+/// A raster's texture, the revision it was uploaded from, that raster's size,
+/// its texels and the bytes the texture takes.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Resident {
     pub(crate) revision: ResourceRevision,
     pub(crate) texture: TextureId,
     pub(crate) size: [f32; 2],
+    pub(crate) texels: (u32, u32),
     pub(crate) bytes: u64,
 }
 
@@ -198,7 +200,7 @@ impl AssetEntry {
             failed: None,
             payload: None,
             texture: None,
-            users: 0,
+            users: Vec::new(),
             shown: 0,
         }
     }
@@ -381,28 +383,36 @@ impl AssetTable {
         Some((t.revision, t.texture))
     }
 
+    /// The texels of `id`'s texture in this window, wide and high.
+    pub fn texture_size(&self, id: ResourceId) -> Option<(u32, u32)> {
+        Some(self.entries.get(&id)?.texture?.texels)
+    }
+
     /// The bytes of the textures resident in this window, in the formats they
     /// are stored in.
     pub fn texture_bytes(&self) -> u64 {
         self.texture_bytes
     }
 
-    /// Counts a node showing `id`, recording that a node wants it when the
-    /// table holds nothing of it.
-    pub(crate) fn hold(&mut self, id: ResourceId) {
+    /// Records `node` showing `id`, and that a node wants it when the table
+    /// holds nothing of it.
+    pub(crate) fn hold(&mut self, id: ResourceId, node: NodeId) {
         self.want(id);
         if let Some(entry) = self.entries.get_mut(&id) {
-            entry.users += 1;
+            entry.users.push(node);
         }
     }
 
-    /// Counts a node no longer showing `id`.
-    pub(crate) fn release(&mut self, id: ResourceId) {
+    /// Records `node` no longer showing `id`.
+    pub(crate) fn release(&mut self, id: ResourceId, node: NodeId) {
         let Some(entry) = self.entries.get_mut(&id) else {
             return;
         };
-        entry.users = entry.users.saturating_sub(1);
-        if entry.users == 0 {
+        // The newest first: a node unmounting is most often the last mounted.
+        if let Some(at) = entry.users.iter().rposition(|&n| n == node) {
+            entry.users.swap_remove(at);
+        }
+        if entry.users.is_empty() {
             self.clock += 1;
             entry.shown = self.clock;
             self.unswept = true;
@@ -411,7 +421,13 @@ impl AssetTable {
 
     /// How many nodes show `id`.
     pub fn users(&self, id: ResourceId) -> u32 {
-        self.entries.get(&id).map_or(0, |e| e.users)
+        self.entries.get(&id).map_or(0, |e| e.users.len() as u32)
+    }
+
+    /// The nodes showing `id`, in no order; a node showing it twice — a
+    /// brush sampling it twice — is there twice.
+    pub fn nodes(&self, id: ResourceId) -> &[NodeId] {
+        self.entries.get(&id).map_or(&[], |e| &e.users)
     }
 
     /// Whether a resource lost its last node, or one no node shows gained
@@ -436,7 +452,7 @@ impl AssetTable {
         let before = self.entries.len();
         let mut scenes = 0;
         self.entries.retain(|id, e| {
-            if e.users > 0 {
+            if !e.users.is_empty() {
                 return true;
             }
             let kept = e.kept_bytes();
@@ -537,7 +553,7 @@ impl AssetTable {
             entry.offered = revision;
         }
         entry.payload = Some((revision, payload));
-        self.unswept |= entry.users == 0;
+        self.unswept |= entry.users.is_empty();
         self.revision += 1;
         true
     }
@@ -574,23 +590,26 @@ impl AssetTable {
         let Some(entry) = self.entries.get_mut(&id) else {
             return Err(texture);
         };
-        let (size, bytes) = match &entry.payload {
-            Some((r, AssetPayload::Raster(image))) if *r == revision => {
-                (image.size(), image.texture_bytes())
-            }
+        let (size, texels, bytes) = match &entry.payload {
+            Some((r, AssetPayload::Raster(image))) if *r == revision => (
+                image.size(),
+                (image.width, image.height),
+                image.texture_bytes(),
+            ),
             _ => return Err(texture),
         };
         let old = entry.texture.replace(Resident {
             revision,
             texture,
             size,
+            texels,
             bytes,
         });
         self.texture_bytes += bytes;
         if let Some(old) = old {
             self.texture_bytes -= old.bytes;
         }
-        self.unswept |= entry.users == 0;
+        self.unswept |= entry.users.is_empty();
         entry.payload = None;
         self.revision += 1;
         Ok(old.map(|t| t.texture))
@@ -621,7 +640,7 @@ mod tests {
 
     /// A store of `n` leaves under one root, each showing its own resource,
     /// decoded and resident as texture `i`.
-    fn shown(n: u32) -> (NodeStore, Vec<crate::node::NodeId>, Vec<ResourceId>) {
+    fn shown(n: u32) -> (NodeStore, Vec<NodeId>, Vec<ResourceId>) {
         let mut store = NodeStore::new();
         let mut leaves = Vec::new();
         {

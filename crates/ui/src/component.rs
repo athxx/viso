@@ -643,6 +643,10 @@ pub struct NodeStore {
     /// Cold: the nodes shown in place of an asset node's picture while it
     /// loads and once it fails, by the asset node.
     asset_fallbacks: Vec<AssetFallbacks>,
+    /// Cold: the asset nodes that hold an animation still, on its first frame.
+    still_assets: Vec<NodeId>,
+    /// Reused to repaint the nodes showing an asset.
+    scratch_asset_nodes: Vec<NodeId>,
     /// Cold: per-node unshaped text request, index-aligned but mostly `None`.
     /// `viso-ui` cannot shape text (no font stack), so a text node records what
     /// it wants drawn here and an upper tier that owns text preparation drains
@@ -924,6 +928,7 @@ impl NodeStore {
         self.shaders.clear();
         self.assets.clear();
         self.asset_fallbacks.clear();
+        self.still_assets.clear();
         self.animation_requests.clear();
         self.leaving.clear();
         self.transitions.clear();
@@ -3195,7 +3200,7 @@ impl NodeStore {
         }
         let mut content = content;
         self.arriving(id, &mut content);
-        self.leave_content(id.index() as usize);
+        self.leave_content(id);
         self.content_payload[id.index() as usize] = Some(Box::new(content));
         self.mark_dirty(id, classes);
     }
@@ -3220,7 +3225,7 @@ impl NodeStore {
             return;
         }
         for &resource in images {
-            self.assets.hold(resource);
+            self.assets.hold(resource, id);
         }
         let images = images
             .iter()
@@ -3234,7 +3239,7 @@ impl NodeStore {
             self.content_payload(id),
             Some(Content::Shader { program, .. }) if *program == slot
         );
-        self.leave_content(id.index() as usize);
+        self.leave_content(id);
         let classes = if same {
             DirtyClass::PAINT
         } else {
@@ -3307,8 +3312,8 @@ impl NodeStore {
         if self.content_payload[id.index() as usize].as_deref() == Some(&content) {
             return;
         }
-        self.assets.hold(resource);
-        self.leave_content(id.index() as usize);
+        self.assets.hold(resource, id);
+        self.leave_content(id);
         let slot = &mut self.content_payload[id.index() as usize];
         let same_size = matches!(
             slot.as_deref(),
@@ -3484,6 +3489,63 @@ impl NodeStore {
         }
     }
 
+    /// Marks PAINT on every node showing `resource`, a brush sampling it
+    /// included: its texture's texels changed where they lie.
+    pub fn repaint_asset(&mut self, resource: ResourceId) {
+        let mut nodes = std::mem::take(&mut self.scratch_asset_nodes);
+        nodes.clear();
+        nodes.extend_from_slice(self.assets.nodes(resource));
+        for &node in &nodes {
+            self.mark_dirty(node, DirtyClass::PAINT);
+        }
+        self.scratch_asset_nodes = nodes;
+    }
+
+    /// Holds the animation asset node `id` shows still, on its first frame,
+    /// or lets it play (the default). An animation several nodes show plays
+    /// while any of them on screen lets it. A live-guarded write — a stale
+    /// handle is a no-op.
+    pub fn set_asset_still(&mut self, id: NodeId, still: bool) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        let arena = &self.arena;
+        self.still_assets.retain(|&n| n != id && arena.is_live(n));
+        if still {
+            self.still_assets.push(id);
+        }
+    }
+
+    /// Whether asset node `id` lets an animation it shows play.
+    pub fn plays_asset(&self, id: NodeId) -> bool {
+        !self.still_assets.contains(&id)
+    }
+
+    /// Whether any of node `id`'s box shows inside `viewport`, a rect in
+    /// world space: it and its ancestors are shown — not hidden, folded or
+    /// paged away, nor fully transparent — and no ancestor that clips cuts it
+    /// away. Cold: a walk up its ancestors.
+    pub fn on_screen(&self, id: NodeId, viewport: Rect) -> bool {
+        if !self.arena.is_live(id) {
+            return false;
+        }
+        let mut rect = self.world(id).intersect(viewport);
+        let mut at = Some(id);
+        while let Some(node) = at {
+            if self.concealed(node.index() as usize) || self.opacity(node) <= 0.0 {
+                return false;
+            }
+            if node != id && self.clips(node) {
+                rect = rect.intersect(self.world(node));
+            }
+            if rect.w <= 0.0 || rect.h <= 0.0 {
+                return false;
+            }
+            at = self.arena.parent(node);
+        }
+        true
+    }
+
     /// Records that `resource`'s bytes at `revision` could not be read or did
     /// not decode, and rewrites the nodes showing it; ignored when the table
     /// holds newer bytes or a payload as new.
@@ -3495,18 +3557,18 @@ impl NodeStore {
 
     /// Lets go of the program or scene slot node `index` paints with and of
     /// the assets it shows, if it does: its content is about to change.
-    fn leave_content(&mut self, index: usize) {
-        match self.content_payload[index].as_deref() {
+    fn leave_content(&mut self, node: NodeId) {
+        match self.content_payload[node.index() as usize].as_deref() {
             Some(Content::Shader {
                 program, images, ..
             }) => {
                 self.shaders.leave(*program);
                 for image in images.iter() {
-                    self.assets.release(image.resource);
+                    self.assets.release(image.resource, node);
                 }
             }
             Some(Content::Scene { slot, .. }) => self.scenes.leave(*slot),
-            Some(Content::Asset { resource, .. }) => self.assets.release(*resource),
+            Some(Content::Asset { resource, .. }) => self.assets.release(*resource, node),
             _ => {}
         }
     }
@@ -3522,7 +3584,7 @@ impl NodeStore {
         if let Some(Content::Scene { slot, .. }) = self.content_payload(id) {
             return Some(*slot);
         }
-        self.leave_content(id.index() as usize);
+        self.leave_content(id);
         let slot = self.scenes.take(id);
         self.content_payload[id.index() as usize] =
             Some(Box::new(Content::Scene { slot, revision: 0 }));
@@ -3591,7 +3653,7 @@ impl NodeStore {
             return false;
         }
         let index = node.index() as usize;
-        self.leave_content(index);
+        self.leave_content(node);
         self.content_payload[index] = None;
         let owner = self.owner[index];
         if owner == NO_OWNER {
@@ -3618,7 +3680,7 @@ impl NodeStore {
             return;
         }
         self.arriving(id, &mut content);
-        self.leave_content(id.index() as usize);
+        self.leave_content(id);
         self.content_payload[id.index() as usize] = Some(Box::new(content));
         self.mark_dirty(
             id,
@@ -7554,6 +7616,13 @@ impl<'a> BuildCx<'a> {
     ) -> Handle {
         self.store
             .set_asset_fallbacks(handle.id, loading.map(|h| h.id), failed.map(|h| h.id));
+        handle
+    }
+
+    /// Hold the animation asset node `handle` shows still, on its first
+    /// frame, or let it play (see [`NodeStore::set_asset_still`]).
+    pub fn asset_still(&mut self, handle: Handle, still: bool) -> Handle {
+        self.store.set_asset_still(handle.id, still);
         handle
     }
 

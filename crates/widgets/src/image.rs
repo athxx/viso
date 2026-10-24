@@ -93,6 +93,8 @@ pub struct Image {
     /// Shown once an asset fails.
     error: Option<Box<dyn Component>>,
     on_load: Option<OnLoad>,
+    /// Whether an animated asset plays.
+    animate: bool,
 }
 
 /// How an asset image's loading ended.
@@ -139,6 +141,7 @@ pub fn image(texture: TextureId, width: f32, height: f32) -> Image {
         placeholder: None,
         error: None,
         on_load: None,
+        animate: true,
     }
 }
 
@@ -179,6 +182,7 @@ pub fn image_asset(asset: Asset) -> Image {
         placeholder: None,
         error: None,
         on_load: None,
+        animate: true,
     }
 }
 
@@ -221,6 +225,14 @@ impl Image {
         self
     }
 
+    /// Set whether an animated asset — GIF, APNG, animated WebP, an AVIF
+    /// sequence — plays (the default) or holds its first frame. Playing,
+    /// it pauses while off screen and under reduced motion.
+    pub fn animate(mut self, animate: bool) -> Self {
+        self.animate = animate;
+        self
+    }
+
     /// Set the source sub-rect of a texture in normalized `0..1` UV space
     /// (defaults to the full texture).
     pub fn uv(mut self, uv: Rect) -> Self {
@@ -259,6 +271,9 @@ impl Image {
             ImageSource::Asset { asset, fit } => {
                 let tint = (self.style.tint != NO_TINT).then_some(self.style.tint);
                 cx.asset(handle, asset, *fit, tint);
+                if !self.animate {
+                    cx.asset_still(handle, true);
+                }
                 if let Some(on_load) = &self.on_load {
                     let on_load = Rc::clone(on_load);
                     let report = move |notice: &Notice, states: &mut StateStore| {
@@ -498,6 +513,22 @@ mod tests {
         );
         let sem = store.semantics(root).expect("semantics present");
         assert_eq!(sem.role, Role::Group, "a presentational image is a Group");
+    }
+
+    /// An asset image plays an animation unless told to hold it still.
+    #[test]
+    fn an_asset_image_plays_unless_it_is_held_still() {
+        use viso_ui::{BuildCx, NodeStore};
+
+        for animate in [true, false] {
+            let mut store = NodeStore::new();
+            let mut cx = BuildCx::new(&mut store);
+            image_asset(Asset::bytes(&b"GIF89a"[..]))
+                .animate(animate)
+                .build(&mut cx);
+            let root = cx.root().expect("a root");
+            assert_eq!(store.plays_asset(root), animate);
+        }
     }
 
     /// An asset image with fallbacks is a stack: the picture, the placeholder

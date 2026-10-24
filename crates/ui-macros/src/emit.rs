@@ -737,6 +737,7 @@ fn control_tokens(control: Control) -> TokenStream {
     let free_text = entry(control.free_text);
     let empty_text = entry(control.empty_text);
     let debounce = entry(control.debounce);
+    let animate = entry(control.animate);
     let semantics = control.semantics;
     let role = match semantics.role {
         Some(role) => {
@@ -866,6 +867,7 @@ fn control_tokens(control: Control) -> TokenStream {
             free_text: #free_text,
             empty_text: #empty_text,
             debounce: #debounce,
+            animate: #animate,
             shader: #shader,
             look: ::viso::__private::viso_view::Look {
                 background: #background,

@@ -99,13 +99,32 @@ enum Input {
 const MAX_FILE: u64 = 1 << 30;
 
 impl Input {
-    /// Its payload, or why it has none.
-    fn decode(&self, sampled: SampledFormats) -> Result<AssetPayload, AssetError> {
-        match self {
-            Input::Bytes(bytes) => decode(bytes, sampled),
-            Input::File(path) => decode(&read(path)?, sampled),
-        }
+    /// Its payload — an animation's first frame, with the bytes the rest
+    /// play from — or why it has none.
+    fn decode(&self, sampled: SampledFormats) -> Result<Decoded, AssetError> {
+        let bytes = match self {
+            Input::Bytes(bytes) => bytes.clone(),
+            Input::File(path) => read(path)?,
+        };
+        let payload = decode(&bytes, sampled)?;
+        let animated = matches!(payload, AssetPayload::Raster(_)) && animates(&bytes);
+        Ok((payload, animated.then_some(bytes)))
     }
+}
+
+/// A payload, and an animation's bytes.
+type Decoded = (AssetPayload, Option<AssetBytes>);
+
+/// Whether `bytes`, decoded to a raster, play more frames than the first.
+#[cfg(not(viso_converted_rasters))]
+fn animates(bytes: &AssetBytes) -> bool {
+    !viso_image::texture::is_texture(bytes) && viso_image::is_animated(bytes)
+}
+
+/// A build that converted every raster ships no animation.
+#[cfg(viso_converted_rasters)]
+fn animates(_: &AssetBytes) -> bool {
+    false
 }
 
 /// The bytes of the file at `path`, at most [`MAX_FILE`] of them.
@@ -130,7 +149,7 @@ fn read(path: &Path) -> Result<AssetBytes, AssetError> {
 struct Done {
     id: ResourceId,
     revision: ResourceRevision,
-    result: Result<AssetPayload, AssetError>,
+    result: Result<Decoded, AssetError>,
 }
 
 /// The main thread's slice for decoding where no worker thread runs: a
@@ -246,6 +265,8 @@ pub(crate) struct Assets {
     /// The formats every device served so far samples; every format until
     /// one is.
     sampled: Option<SampledFormats>,
+    /// The animated images, playing.
+    pub(crate) playback: crate::playback::Playback,
     counters: AssetCounters,
 }
 
@@ -305,8 +326,11 @@ impl Assets {
     /// Records a result: the payload to provide, or, reported, none.
     fn settle(&mut self, done: Done) -> (ResourceId, ResourceRevision, Option<AssetPayload>) {
         match done.result {
-            Ok(payload) => {
+            Ok((payload, animation)) => {
                 self.counters.decodes += 1;
+                if let Some(bytes) = animation {
+                    self.playback.animated(done.id, done.revision, bytes);
+                }
                 let newer = self
                     .decoded
                     .get(&done.id)
@@ -343,6 +367,9 @@ impl Assets {
         payload: AssetPayload,
         stores: impl Iterator<Item = &'s mut NodeStore>,
     ) {
+        if matches!(payload, AssetPayload::Raster(_)) && animates(&bytes) {
+            self.playback.animated(id, revision, bytes.clone());
+        }
         self.latest.insert(id, (revision, bytes));
         self.decoded.insert(id, (revision, Held::of(&payload)));
         for store in stores {
