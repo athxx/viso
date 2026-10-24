@@ -275,7 +275,11 @@ Rules:
     each picture into the video's texture and copying only where it cannot.
   - [ ] Zero-copy on the other backends, with their players: shared D3D texture →
     D3D12, hardware buffer → Vulkan, `<video>` → WebGPU.
-  - [ ] Media Foundation, GStreamer, MediaCodec/MediaPlayer and `<video>` players.
+  - [x] Media Foundation player on Windows: the media engine on a thread of its own
+    in the multithreaded apartment, decoding through its own D3D11 device, each new
+    frame drawn into a BGRA target and read back through a staging texture into
+    recycled buffers.
+  - [ ] GStreamer, MediaCodec/MediaPlayer and `<video>` players.
 - [ ] Camera capture service and `CameraView`.
 - [ ] Audio: input (microphone), file decoding (WAV, Ogg Vorbis, MP3, FLAC), Web Audio
   output, PulseAudio/PipeWire output.

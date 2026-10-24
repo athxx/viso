@@ -1,7 +1,8 @@
 //! `viso-media` — media played through the OS.
 //!
 //! A [`VideoPlayer`] plays a file, a URL or bytes through the platform's own
-//! player: macOS and iOS through AVFoundation. The platform decodes in
+//! player: macOS and iOS through AVFoundation, Windows through Media
+//! Foundation's media engine. The platform decodes in
 //! hardware, keeps sound and picture in step and drives the audio device; the
 //! caller polls it from the thread that runs the loop for what changed
 //! ([`VideoPlayer::poll`]) and for the picture to show now

@@ -3,12 +3,18 @@
 #[cfg(target_vendor = "apple")]
 mod apple;
 #[cfg(not(target_vendor = "apple"))]
+mod no_picture;
+#[cfg(not(any(target_vendor = "apple", target_os = "windows")))]
 mod unsupported;
+#[cfg(target_os = "windows")]
+mod windows;
 
 #[cfg(target_vendor = "apple")]
 use apple as imp;
-#[cfg(not(target_vendor = "apple"))]
+#[cfg(not(any(target_vendor = "apple", target_os = "windows")))]
 use unsupported as imp;
+#[cfg(target_os = "windows")]
+use windows as imp;
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -307,7 +313,10 @@ pub(crate) struct Spilled {
 impl Spilled {
     /// `bytes` in a new file of the temporary directory, named for the
     /// container they are in.
-    #[cfg_attr(not(target_vendor = "apple"), allow(dead_code))]
+    #[cfg_attr(
+        not(any(target_vendor = "apple", target_os = "windows")),
+        allow(dead_code)
+    )]
     pub(crate) fn new(bytes: &[u8]) -> std::io::Result<Spilled> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let name = format!(
@@ -321,7 +330,10 @@ impl Spilled {
         Ok(Spilled { path })
     }
 
-    #[cfg_attr(not(target_vendor = "apple"), allow(dead_code))]
+    #[cfg_attr(
+        not(any(target_vendor = "apple", target_os = "windows")),
+        allow(dead_code)
+    )]
     pub(crate) fn path(&self) -> &Path {
         &self.path
     }

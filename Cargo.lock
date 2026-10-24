@@ -3191,6 +3191,8 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "objc2-io-surface",
  "viso-handle",
+ "windows",
+ "windows-core",
 ]
 
 [[package]]
