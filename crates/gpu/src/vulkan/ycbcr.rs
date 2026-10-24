@@ -22,6 +22,8 @@ use viso_handle::ExternalHolds;
 use crate::retire::Epoch;
 
 pub(super) const VERTEX: &[u8] = include_bytes!("ycbcr.vert.spv");
+/// The vertex stage of a conversion, turning the picture upright.
+const TURNED: &[u8] = include_bytes!("turned.vert.spv");
 const FRAGMENT: &[u8] = include_bytes!("ycbcr.frag.spv");
 
 /// How many sources stay made: a few players' buffers.
@@ -107,7 +109,7 @@ pub(super) struct Target {
 impl Converter {
     pub(super) fn new(device: &ash::Device) -> Converter {
         Converter {
-            vertex: module(device, VERTEX),
+            vertex: module(device, TURNED),
             fragment: module(device, FRAGMENT),
             kinds: Vec::new(),
             sources: Vec::new(),
@@ -303,7 +305,7 @@ impl Converter {
             let set_layouts = [set_layout];
             let ranges = [vk::PushConstantRange::default()
                 .stage_flags(vk::ShaderStageFlags::VERTEX)
-                .size(16)];
+                .size(PLACED as u32)];
             let layout = device
                 .create_pipeline_layout(
                     &vk::PipelineLayoutCreateInfo::default()
@@ -326,8 +328,9 @@ impl Converter {
     }
 
     /// Records the conversion of source `at`'s `region` — its offset and
-    /// scale in texture coordinates — into `target`, which rests in the
-    /// shader-read layout and returns to it.
+    /// scale in texture coordinates — into `target`, turned `turns` quarter
+    /// turns clockwise; the target rests in the shader-read layout and
+    /// returns to it.
     ///
     /// # Safety
     ///
@@ -343,6 +346,7 @@ impl Converter {
         pass: vk::RenderPass,
         at: usize,
         region: [f32; 4],
+        turns: u8,
         target: &Target,
     ) {
         let source = &self.sources[at];
@@ -391,8 +395,8 @@ impl Converter {
             min_depth: 0.0,
             max_depth: 1.0,
         };
-        let mut words = [0u8; 16];
-        for (i, v) in region.iter().enumerate() {
+        let mut words = [0u8; PLACED];
+        for (i, v) in place(region, turns).iter().enumerate() {
             words[i * 4..i * 4 + 4].copy_from_slice(&v.to_ne_bytes());
         }
         // SAFETY: the caller's contract; the source and the kind's objects
@@ -583,19 +587,76 @@ unsafe fn destroy_source(device: &ash::Device, source: &mut Source) {
     }
 }
 
+/// The bytes of a conversion's push constants: where the target's corner
+/// and its two edges fall in the source.
+const PLACED: usize = 32;
+
+/// Where the target's top-left corner falls in the source and the steps
+/// across and down it take there, for the picture's `region` — its offset
+/// and scale in the source's texture coordinates — turned `turns` quarter
+/// turns clockwise: origin, across, down, and two words of padding.
+fn place(region: [f32; 4], turns: u8) -> [f32; 8] {
+    let [x, y, w, h] = region;
+    // In the region's own coordinates, 0 to 1 each way.
+    let (origin, across, down) = match turns % 4 {
+        0 => ([0.0, 0.0], [1.0, 0.0], [0.0, 1.0]),
+        // Turned a quarter clockwise, the target's top row is the source's
+        // left column read upward.
+        1 => ([0.0, 1.0], [0.0, -1.0], [1.0, 0.0]),
+        2 => ([1.0, 1.0], [-1.0, 0.0], [0.0, -1.0]),
+        _ => ([1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]),
+    };
+    [
+        x + origin[0] * w,
+        y + origin[1] * h,
+        across[0] * w,
+        across[1] * h,
+        down[0] * w,
+        down[1] * h,
+        0.0,
+        0.0,
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::VulkanBackend;
+    use super::place;
     use crate::GpuBackend;
 
-    /// The frozen modules, compiled from `ycbcr.vert` with
-    /// `glslangValidator -V --target-env vulkan1.0` (the planar conversion
-    /// draws through it too) and `ycbcr.frag` with `--target-env vulkan1.1`,
-    /// pass the Khronos validator.
+    /// Where a target point reads the source, for a placement.
+    fn read(placed: [f32; 8], p: [f32; 2]) -> [f32; 2] {
+        [
+            placed[0] + p[0] * placed[2] + p[1] * placed[4],
+            placed[1] + p[0] * placed[3] + p[1] * placed[5],
+        ]
+    }
+
+    /// Turned a quarter clockwise, the source's bottom-left corner shows at
+    /// the top left and its top-left at the top right; each turn keeps to
+    /// the picture's region.
+    #[test]
+    fn a_turned_picture_reads_its_region_from_the_turned_corner() {
+        let region = [0.25, 0.5, 0.5, 0.25];
+        let corners = |turns| {
+            let placed = place(region, turns);
+            [read(placed, [0.0, 0.0]), read(placed, [1.0, 0.0])]
+        };
+        assert_eq!(corners(0), [[0.25, 0.5], [0.75, 0.5]]);
+        assert_eq!(corners(1), [[0.25, 0.75], [0.25, 0.5]]);
+        assert_eq!(corners(2), [[0.75, 0.75], [0.25, 0.75]]);
+        assert_eq!(corners(3), [[0.75, 0.5], [0.75, 0.75]]);
+        assert_eq!(corners(4), corners(0));
+    }
+
+    /// The frozen modules, compiled from `ycbcr.vert` (the planar
+    /// conversion's) and `turned.vert` with `glslangValidator -V
+    /// --target-env vulkan1.0` and `ycbcr.frag` with `--target-env
+    /// vulkan1.1`, pass the Khronos validator.
     #[test]
     fn the_conversion_shaders_are_valid_spir_v() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/vulkan");
-        for name in ["ycbcr.vert.spv", "ycbcr.frag.spv"] {
+        for name in ["ycbcr.vert.spv", "turned.vert.spv", "ycbcr.frag.spv"] {
             let Ok(out) = std::process::Command::new("spirv-val")
                 .args(["--target-env", "vulkan1.1"])
                 .arg(dir.join(name))
@@ -629,7 +690,7 @@ mod tests {
             return;
         };
         let id = gpu.converted_texture(4, 2);
-        gpu.convert(id, at, [0.0, 0.0, 1.0, 1.0]);
+        gpu.convert(id, at, [0.0, 0.0, 1.0, 1.0], 0);
         let px = gpu.read_texture(id);
         for texel in px.chunks(4).enumerate() {
             let (i, t) = texel;

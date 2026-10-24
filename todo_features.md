@@ -332,7 +332,7 @@ Rules:
     `enumerateDevices` listing); the `examples/camera` app.
   - [x] Apple: `AVCaptureSession` pictures as IOSurfaces.
   - [x] Windows: a Media Foundation source reader through the shared textures.
-  - [ ] Android: Camera2 through the hardware buffer reader, its rotation and the
+  - [x] Android: Camera2 through the hardware buffer reader, its rotation and the
     permission asked.
 - [ ] Audio: input (microphone), file decoding (WAV, Ogg Vorbis, MP3, FLAC), Web Audio
   output, PulseAudio/PipeWire output.

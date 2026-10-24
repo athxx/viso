@@ -1005,10 +1005,11 @@ impl VulkanBackend {
         id
     }
 
-    /// The source `image` names — made of it if it is new — and the region
-    /// of it the picture is, as an offset and a scale in its texture
-    /// coordinates. `None` where the device cannot convert it.
-    fn external_source(&mut self, image: &ExternalImage) -> Option<(usize, [f32; 4])> {
+    /// The source `image` names — made of it if it is new — the region of
+    /// it the picture is, as an offset and a scale in its texture
+    /// coordinates, and the quarter turns clockwise that make it upright.
+    /// `None` where the device cannot convert it.
+    fn external_source(&mut self, image: &ExternalImage) -> Option<(usize, [f32; 4], u8)> {
         if !self.ycbcr {
             return None;
         }
@@ -1021,6 +1022,7 @@ impl VulkanBackend {
                 y,
                 width,
                 height,
+                turns,
             } => {
                 let converter = self
                     .converter
@@ -1062,6 +1064,7 @@ impl VulkanBackend {
                         width as f32 / bw,
                         height as f32 / bh,
                     ],
+                    turns,
                 ))
             }
             _ => None,
@@ -1069,9 +1072,9 @@ impl VulkanBackend {
     }
 
     /// Records the conversion of source `at`'s `region` into texture `id`,
-    /// holding the source's buffer until the frame it is recorded in
-    /// completes.
-    fn convert(&mut self, id: TextureId, at: usize, region: [f32; 4]) {
+    /// turned `turns` quarter turns clockwise, holding the source's buffer
+    /// until the frame it is recorded in completes.
+    fn convert(&mut self, id: TextureId, at: usize, region: [f32; 4], turns: u8) {
         self.ensure_recording();
         let pass = self.render_pass(vk::Format::R8G8B8A8_UNORM, true, None);
         let t = self.texture(id);
@@ -1099,6 +1102,7 @@ impl VulkanBackend {
                 pass,
                 at,
                 region,
+                turns,
                 &target,
             );
         }
@@ -2798,10 +2802,10 @@ impl GpuBackend for VulkanBackend {
         if let ExternalImage::DmaBuf { .. } = image {
             return self.write_dma_buf(None, image);
         }
-        let (at, region) = self.external_source(image)?;
+        let (at, region, turns) = self.external_source(image)?;
         let (width, height) = image.size();
         let id = self.converted_texture(width, height);
-        self.convert(id, at, region);
+        self.convert(id, at, region, turns);
         Some(id)
     }
 
@@ -2816,10 +2820,10 @@ impl GpuBackend for VulkanBackend {
         if let ExternalImage::DmaBuf { .. } = image {
             return self.write_dma_buf(Some(id), image) == Some(id);
         }
-        let Some((at, region)) = self.external_source(image) else {
+        let Some((at, region, turns)) = self.external_source(image) else {
             return false;
         };
-        self.convert(id, at, region);
+        self.convert(id, at, region, turns);
         true
     }
 

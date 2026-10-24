@@ -5,12 +5,12 @@ export component Camera {
 
     view {
         Column {
-            width: 640dp;
+            width: 100%;
             gap: 8dp;
             CameraView {
                 facing: if back { CameraFacing::back } else { CameraFacing::front };
-                width: 640dp;
-                height: 360dp;
+                width: 100%;
+                height: 480dp;
                 bind playing <=> playing;
                 on loaded(size) { shown = true; }
                 semantics.label: "The camera's picture";

@@ -129,6 +129,14 @@ pub(crate) fn nearest_mode(modes: &[CameraMode], request: &CameraRequest) -> Opt
 /// Which way a camera of `name` faces, where the platform does not say: a
 /// built-in one toward the user, one named for a side that way, any other
 /// plugged in.
+#[cfg(any(
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
 pub(crate) fn facing_by_name(name: &str) -> CameraFacing {
     let name = name.to_ascii_lowercase();
     let named = |words: &[&str]| words.iter().any(|word| name.contains(word));
@@ -244,6 +252,14 @@ mod tests {
         );
     }
 
+    #[cfg(any(
+        target_os = "windows",
+        target_os = "linux",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    ))]
     #[test]
     fn a_camera_named_for_its_side_faces_that_way() {
         assert_eq!(facing_by_name("Integrated Camera"), CameraFacing::Front);

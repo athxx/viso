@@ -143,11 +143,11 @@ pub enum ExternalImage {
         /// Its height in texels.
         height: u32,
     },
-    /// Android: an `AHardwareBuffer` a decoder wrote, in a Y′CbCr format of
-    /// the device's (or RGBA), for a GPU to sample; the picture is the
-    /// `width` × `height` region at (`x`, `y`). Written by the time it is
-    /// handed over; a backend holds `holds` while any frame in flight reads
-    /// it.
+    /// Android: an `AHardwareBuffer` a decoder or camera wrote, in a Y′CbCr
+    /// format of the device's (or RGBA), for a GPU to sample; the picture is
+    /// the `width` × `height` region at (`x`, `y`), shown turned `turns`
+    /// quarter turns clockwise. Written by the time it is handed over; a
+    /// backend holds `holds` while any frame in flight reads it.
     AndroidHardwareBuffer {
         /// `AHardwareBuffer *`, borrowed.
         buffer: *mut c_void,
@@ -157,10 +157,13 @@ pub enum ExternalImage {
         x: u32,
         /// The picture's top edge in the buffer, in texels.
         y: u32,
-        /// Its width in texels.
+        /// Its width in the buffer, in texels.
         width: u32,
-        /// Its height in texels.
+        /// Its height in the buffer, in texels.
         height: u32,
+        /// The quarter turns clockwise that show it upright, as a camera's
+        /// sensor lies in the device; its size shown swaps for an odd one.
+        turns: u8,
     },
     /// Linux: a picture in NV12 planes in a dma-buf a decoder wrote, laid
     /// out linearly, for a GPU to read where it lies. Written by the time it
@@ -203,9 +206,15 @@ pub enum ExternalImage {
 }
 
 impl ExternalImage {
-    /// Its size in texels.
+    /// Its size in texels, as it shows.
     pub fn size(&self) -> (u32, u32) {
         match *self {
+            ExternalImage::AndroidHardwareBuffer {
+                width,
+                height,
+                turns,
+                ..
+            } if turns % 2 == 1 => (height, width),
             ExternalImage::IoSurface { width, height, .. }
             | ExternalImage::DxgiShared { width, height, .. }
             | ExternalImage::AndroidHardwareBuffer { width, height, .. }

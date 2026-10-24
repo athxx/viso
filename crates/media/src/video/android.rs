@@ -6,8 +6,8 @@
 //! a caller that copies them.
 //!
 //! The Java class comes from the APK, loaded through the activity the app's
-//! framework hands over once ([`attach`]); until then a player opens
-//! nothing, as `Unsupported`. What the player reports arrives on the Java
+//! framework hands over ([`attach`]); until then a player opens nothing, as
+//! `Unsupported`. A camera's capture is driven the same way ([`capture`]). What the player reports arrives on the Java
 //! main thread and is posted to the player's channel. Bytes are read where
 //! they lie, through a direct `ByteBuffer`, never written out.
 
@@ -15,7 +15,7 @@ use std::cell::RefCell;
 use std::ffi::{CStr, c_int, c_void};
 use std::ptr;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use jni_sys::{
@@ -34,6 +34,8 @@ macro_rules! env_call {
         ((**$env).v1_6.$f)($env $(, $arg)*)
     };
 }
+
+mod capture;
 
 type AImageReader = c_void;
 type AImage = c_void;
@@ -125,6 +127,8 @@ struct Java {
     set_volume: jmethodID,
     set_looping: jmethodID,
     close: jmethodID,
+    /// The camera class's, where the APK has it.
+    camera: Option<capture::Methods>,
 }
 
 // SAFETY: the VM, global references and method ids are not tied to the
@@ -135,20 +139,36 @@ unsafe impl Sync for Java {}
 
 static JAVA: OnceLock<Java> = OnceLock::new();
 
-/// Takes, once, what players need from the app's activity: the VM, the
-/// player class through the activity's class loader, and the application
-/// context. Later calls do nothing.
+/// The app's activity last handed over, a global reference, or null: what a
+/// camera asks the user's leave through.
+static ACTIVITY: Mutex<usize> = Mutex::new(0);
+
+/// Takes what players need from the app's activity: once, the VM, the
+/// player classes through the activity's class loader, and the application
+/// context; each time, the activity itself.
 ///
 /// # Safety
 ///
 /// `env` is the calling thread's `JNIEnv` and `activity` a live reference
 /// to the app's activity.
 pub(crate) unsafe fn attach(env: *mut JNIEnv, activity: jobject) {
+    // SAFETY: the caller's contract; the old global reference is deleted
+    // once it is replaced.
+    unsafe {
+        let mut kept = ACTIVITY.lock().unwrap_or_else(|e| e.into_inner());
+        let same = *kept != 0 && env_call!(env, IsSameObject, *kept as jobject, activity);
+        if !same {
+            if *kept != 0 {
+                env_call!(env, DeleteGlobalRef, *kept as jobject);
+            }
+            *kept = env_call!(env, NewGlobalRef, activity) as usize;
+        }
+    }
     if JAVA.get().is_some() {
         return;
     }
     // SAFETY: the caller's contract; every local reference made here is
-    // freed by the frame popped before returning, the two kept made global.
+    // freed by the frame popped before returning, those kept made global.
     unsafe {
         if env_call!(env, PushLocalFrame, 16) != JNI_OK {
             return;
@@ -217,6 +237,7 @@ unsafe fn load(env: *mut JNIEnv, activity: jobject) -> Option<Java> {
         if env_call!(env, RegisterNatives, class, natives.as_ptr(), 1) != JNI_OK {
             return None;
         }
+        let camera = capture::Methods::load(env, loader, load_class);
         let java = Java {
             vm,
             new: method(
@@ -234,6 +255,7 @@ unsafe fn load(env: *mut JNIEnv, activity: jobject) -> Option<Java> {
             set_volume: method(env, class, c"setVolume", c"(FZ)V")?,
             set_looping: method(env, class, c"setLooping", c"(Z)V")?,
             close: method(env, class, c"close", c"()V")?,
+            camera,
             class: env_call!(env, NewGlobalRef, class),
             context: env_call!(env, NewGlobalRef, context),
         };
@@ -327,7 +349,7 @@ fn env(java: &Java) -> Option<*mut JNIEnv> {
 ///
 /// `mailbox` is the player's `Sender`, which outlives every call: the Java
 /// side calls only until its `close` returns, before the sender is freed.
-extern "system" fn native_event(
+pub(super) extern "system" fn native_event(
     _env: *mut JNIEnv,
     _class: jclass,
     mailbox: jlong,
@@ -359,7 +381,21 @@ struct Taken {
     /// The picture's region of the image, chroma starting on an even
     /// sample: left, top, width, height.
     crop: (u32, u32, u32, u32),
+    /// The quarter turns clockwise that show it upright.
+    turns: u8,
     time: Duration,
+}
+
+impl Taken {
+    /// The picture's size as it shows.
+    fn shown_size(&self) -> (u32, u32) {
+        let (_, _, width, height) = self.crop;
+        if self.turns % 2 == 1 {
+            (height, width)
+        } else {
+            (width, height)
+        }
+    }
 }
 
 /// The picture of the image last taken: its hardware buffer, for a GPU to
@@ -368,6 +404,8 @@ struct Taken {
 pub(crate) struct Picture<'a> {
     taken: &'a Taken,
     rows: &'a RefCell<Vec<u8>>,
+    /// Where rows are turned upright, for a picture that needs it.
+    turned: &'a RefCell<Vec<u8>>,
 }
 
 impl std::fmt::Debug for Picture<'_> {
@@ -388,10 +426,12 @@ impl Picture<'_> {
             y,
             width,
             height,
+            turns: t.turns,
         })
     }
 
-    /// Calls `f` with the picture turned into RGBA rows and their stride.
+    /// Calls `f` with the picture turned into RGBA rows, upright, and their
+    /// stride.
     pub(crate) fn read(&self, f: impl FnOnce(&[u8], usize)) -> bool {
         let mut rows = self.rows.borrow_mut();
         let (x, y, width, height) = self.taken.crop;
@@ -399,7 +439,19 @@ impl Picture<'_> {
         if !unsafe { to_rgba(self.taken.image, x, y, width, height, &mut rows) } {
             return false;
         }
-        f(&rows, width as usize * 4);
+        if self.taken.turns.is_multiple_of(4) {
+            f(&rows, width as usize * 4);
+            return true;
+        }
+        let mut turned = self.turned.borrow_mut();
+        turn(
+            &rows,
+            width as usize,
+            height as usize,
+            self.taken.turns,
+            &mut turned,
+        );
+        f(&turned, self.taken.shown_size().0 as usize * 4);
         true
     }
 
@@ -408,15 +460,96 @@ impl Picture<'_> {
     }
 }
 
-pub(crate) struct Player {
-    java: &'static Java,
-    /// The `VisoVideo`, a global reference.
-    video: jobject,
-    reports: Receiver<Report>,
-    /// The sender the Java side posts to, freed once it is closed.
-    mailbox: *mut Sender<Report>,
-    /// What the direct buffer of the bytes points into, kept while it plays.
-    _bytes: Option<std::sync::Arc<[u8]>>,
+/// A movie the player plays, or a camera.
+pub(crate) enum Player {
+    Movie(Movie),
+    Camera(capture::Capture),
+}
+
+impl Player {
+    pub(crate) fn open(source: &VideoSource) -> Result<Player, VideoError> {
+        match source {
+            VideoSource::Camera(request) => capture::Capture::open(request).map(Player::Camera),
+            _ => Movie::open(source).map(Player::Movie),
+        }
+    }
+
+    pub(crate) fn poll(&mut self) -> Option<VideoEvent> {
+        match self {
+            Player::Movie(movie) => movie.poll(),
+            Player::Camera(camera) => camera.poll(),
+        }
+    }
+
+    pub(crate) fn frame(&mut self) -> Option<Frame<'_>> {
+        match self {
+            Player::Movie(movie) => movie.frame(),
+            Player::Camera(camera) => camera.frame(),
+        }
+    }
+
+    pub(crate) fn play(&mut self) {
+        match self {
+            Player::Movie(movie) => movie.play(),
+            Player::Camera(camera) => camera.play(),
+        }
+    }
+
+    pub(crate) fn pause(&mut self) {
+        match self {
+            Player::Movie(movie) => movie.pause(),
+            Player::Camera(camera) => camera.pause(),
+        }
+    }
+
+    pub(crate) fn is_playing(&self) -> bool {
+        match self {
+            Player::Movie(movie) => movie.is_playing(),
+            Player::Camera(camera) => camera.is_playing(),
+        }
+    }
+
+    pub(crate) fn position(&self) -> Duration {
+        match self {
+            Player::Movie(movie) => movie.position(),
+            // A camera is always now.
+            Player::Camera(_) => Duration::ZERO,
+        }
+    }
+
+    pub(crate) fn seek(&mut self, time: Duration) {
+        if let Player::Movie(movie) = self {
+            movie.seek(time);
+        }
+    }
+
+    pub(crate) fn set_rate(&mut self, rate: f32) {
+        if let Player::Movie(movie) = self {
+            movie.set_rate(rate);
+        }
+    }
+
+    pub(crate) fn set_volume(&mut self, volume: f32) {
+        if let Player::Movie(movie) = self {
+            movie.set_volume(volume);
+        }
+    }
+
+    pub(crate) fn set_muted(&mut self, muted: bool) {
+        if let Player::Movie(movie) = self {
+            movie.set_muted(muted);
+        }
+    }
+
+    pub(crate) fn set_looping(&mut self, looping: bool) {
+        if let Player::Movie(movie) = self {
+            movie.set_looping(looping);
+        }
+    }
+}
+
+/// The reader pictures are drawn into, and the images taken from it.
+struct Images {
     reader: Option<Reader>,
     /// The image last taken.
     shown: Option<Taken>,
@@ -425,9 +558,193 @@ pub(crate) struct Player {
     /// The holds of each of the reader's buffers, which outlive the images
     /// lent over them.
     holds: Vec<(*mut AHardwareBuffer, Arc<ExternalHolds>)>,
-    /// The picture last turned into rows, for a caller that copies.
+    /// The picture last turned into rows, for a caller that copies, and
+    /// those rows turned upright.
     rows: RefCell<Vec<u8>>,
+    turned: RefCell<Vec<u8>>,
+}
+
+impl Images {
+    fn new() -> Images {
+        Images {
+            reader: None,
+            shown: None,
+            spent: Vec::new(),
+            holds: Vec::new(),
+            rows: RefCell::default(),
+            turned: RefCell::default(),
+        }
+    }
+
+    /// Whether it reads `width` × `height` pictures already.
+    fn reads(&self, width: jint, height: jint) -> bool {
+        self.reader
+            .as_ref()
+            .is_some_and(|r| r.width == width && r.height == height)
+    }
+
+    /// A new reader of `width` × `height`, whose window, as a surface, is
+    /// handed to `aim` — which points the producer at it — before the old
+    /// reader goes. Whether it was made.
+    ///
+    /// # Safety
+    ///
+    /// `env` is the calling thread's environment.
+    unsafe fn read_into(
+        &mut self,
+        env: *mut JNIEnv,
+        width: jint,
+        height: jint,
+        aim: impl FnOnce(jobject),
+    ) -> bool {
+        let mut reader = ptr::null_mut();
+        // SAFETY: a new reader, its window owned by it; the surface made
+        // over the window is a local reference handed to the producer,
+        // which keeps its own, then deleted. The old reader is deleted once
+        // the producer draws into the new one.
+        unsafe {
+            if AImageReader_newWithUsage(
+                width,
+                height,
+                AIMAGE_FORMAT_YUV_420_888,
+                USAGE,
+                IMAGES,
+                &mut reader,
+            ) != AMEDIA_OK
+            {
+                return false;
+            }
+            let mut window = ptr::null_mut();
+            if AImageReader_getWindow(reader, &mut window) != AMEDIA_OK {
+                AImageReader_delete(reader);
+                return false;
+            }
+            let surface = ANativeWindow_toSurface(env, window);
+            if surface.is_null() {
+                clear(env);
+                AImageReader_delete(reader);
+                return false;
+            }
+            aim(surface);
+            env_call!(env, DeleteLocalRef, surface);
+            let old = self.reader.replace(Reader {
+                reader,
+                width,
+                height,
+            });
+            if let Some(old) = old {
+                self.let_go();
+                AImageReader_delete(old.reader);
+            }
+        }
+        true
+    }
+
+    /// Takes the reader's newest image, if it has one, shown until the next
+    /// at `time`, turned `turns` quarter turns clockwise.
+    fn take(&mut self, time: Duration, turns: u8) -> bool {
+        // SAFETY: each spent image was acquired from the reader and not yet
+        // deleted; one no GPU holds is deleted once.
+        self.spent.retain(|t| {
+            let held = t.holds.is_held();
+            if !held {
+                unsafe { AImage_delete(t.image) };
+            }
+            held
+        });
+        let Some(reader) = self.reader.as_ref().map(|r| r.reader) else {
+            return false;
+        };
+        let mut image = ptr::null_mut();
+        // SAFETY: the newest image of the reader, read into locals and kept
+        // until it is deleted.
+        let (crop, buffer) = unsafe {
+            if AImageReader_acquireLatestImage(reader, &mut image) != AMEDIA_OK || image.is_null() {
+                return false;
+            }
+            let Some(crop) = crop_of(image) else {
+                AImage_delete(image);
+                return false;
+            };
+            let mut buffer = ptr::null_mut();
+            if AImage_getHardwareBuffer(image, &mut buffer) != AMEDIA_OK {
+                buffer = ptr::null_mut();
+            }
+            (crop, buffer)
+        };
+        let holds = match self.holds.iter().find(|(b, _)| *b == buffer) {
+            Some((_, holds)) => Arc::clone(holds),
+            None => {
+                let holds = ExternalHolds::new();
+                self.holds.push((buffer, Arc::clone(&holds)));
+                holds
+            }
+        };
+        let taken = Taken {
+            image,
+            buffer,
+            holds,
+            crop,
+            turns,
+            time,
+        };
+        if let Some(old) = self.shown.replace(taken) {
+            self.spent.push(old);
+        }
+        true
+    }
+
+    /// The image last taken, as a frame.
+    fn shown(&self) -> Option<Frame<'_>> {
+        let taken = self.shown.as_ref()?;
+        let (width, height) = taken.shown_size();
+        Some(Frame::native_picture(
+            width,
+            height,
+            taken.time,
+            Picture {
+                taken,
+                rows: &self.rows,
+                turned: &self.turned,
+            },
+        ))
+    }
+
+    /// Deletes every image taken from the reader, and forgets its buffers.
+    fn let_go(&mut self) {
+        for t in self.shown.take().into_iter().chain(self.spent.drain(..)) {
+            // SAFETY: each was acquired from the reader and is deleted once;
+            // a GPU still reading its buffer holds a reference of its own.
+            unsafe { AImage_delete(t.image) };
+        }
+        self.holds.clear();
+    }
+}
+
+impl Drop for Images {
+    fn drop(&mut self) {
+        self.let_go();
+        if let Some(reader) = self.reader.take() {
+            // SAFETY: the reader nothing draws into any more, deleted once.
+            unsafe { AImageReader_delete(reader.reader) };
+        }
+    }
+}
+
+/// A movie: the system's player, drawing into a reader of the picture's
+/// size.
+pub(crate) struct Movie {
+    java: &'static Java,
+    /// The `VisoVideo`, a global reference.
+    video: jobject,
+    reports: Receiver<Report>,
+    /// The sender the Java side posts to, freed once it is closed.
+    mailbox: *mut Sender<Report>,
+    /// What the direct buffer of the bytes points into, kept while it plays.
+    _bytes: Option<std::sync::Arc<[u8]>>,
+    images: Images,
     ready: bool,
+
     failed: bool,
     wants_play: bool,
     looping: bool,
@@ -440,8 +757,8 @@ pub(crate) struct Player {
     at: Duration,
 }
 
-impl Player {
-    pub(crate) fn open(source: &VideoSource) -> Result<Player, VideoError> {
+impl Movie {
+    fn open(source: &VideoSource) -> Result<Movie, VideoError> {
         let java = JAVA.get().ok_or(VideoError::Unsupported)?;
         let env = env(java).ok_or(VideoError::WrongThread)?;
         // A URI the player reads, or bytes it reads in place, kept alive
@@ -501,17 +818,13 @@ impl Player {
                 }
             }
         };
-        Ok(Player {
+        Ok(Movie {
             java,
             video,
             reports,
             mailbox,
             _bytes: kept,
-            reader: None,
-            shown: None,
-            spent: Vec::new(),
-            holds: Vec::new(),
-            rows: RefCell::default(),
+            images: Images::new(),
             ready: false,
             failed: false,
             wants_play: false,
@@ -528,15 +841,7 @@ impl Player {
 
     /// Calls the `void` method `method` of the player with `args`.
     fn call(&self, method: jmethodID, args: &[jvalue]) {
-        let Some(env) = env(self.java) else {
-            return;
-        };
-        // SAFETY: a call of one of `VisoVideo`'s methods, with the
-        // arguments its descriptor names; an exception is cleared.
-        unsafe {
-            env_call!(env, CallVoidMethodA, self.video, method, args.as_ptr());
-            clear(env);
-        }
+        call(self.java, self.video, method, args);
     }
 
     pub(crate) fn poll(&mut self) -> Option<VideoEvent> {
@@ -608,129 +913,30 @@ impl Player {
     /// Points the player at a reader `width` × `height`, unless it draws
     /// into one of that size already, or the size is none.
     fn draw_into(&mut self, width: jint, height: jint) {
-        if width <= 0
-            || height <= 0
-            || self
-                .reader
-                .as_ref()
-                .is_some_and(|r| r.width == width && r.height == height)
-        {
+        if width <= 0 || height <= 0 || self.images.reads(width, height) {
             return;
         }
         let Some(env) = env(self.java) else {
             return;
         };
-        let mut reader = ptr::null_mut();
-        // SAFETY: a new reader, its window owned by it; the surface made
-        // over the window is a local reference handed to the player, which
-        // keeps its own, then deleted. The old reader is deleted once the
-        // player draws into the new one.
+        let (java, video) = (self.java, self.video);
+        // SAFETY: this thread's environment; the surface is handed to the
+        // player's `setSurface`, the type its descriptor names.
         unsafe {
-            if AImageReader_newWithUsage(
-                width,
-                height,
-                AIMAGE_FORMAT_YUV_420_888,
-                USAGE,
-                IMAGES,
-                &mut reader,
-            ) != AMEDIA_OK
-            {
-                return;
-            }
-            let mut window = ptr::null_mut();
-            if AImageReader_getWindow(reader, &mut window) != AMEDIA_OK {
-                AImageReader_delete(reader);
-                return;
-            }
-            let surface = ANativeWindow_toSurface(env, window);
-            if surface.is_null() {
-                clear(env);
-                AImageReader_delete(reader);
-                return;
-            }
-            self.call(self.java.set_surface, &[jvalue { l: surface }]);
-            env_call!(env, DeleteLocalRef, surface);
-            let old = self.reader.replace(Reader {
-                reader,
-                width,
-                height,
+            self.images.read_into(env, width, height, |surface| {
+                call(java, video, java.set_surface, &[jvalue { l: surface }]);
             });
-            if let Some(old) = old {
-                self.let_go_images();
-                AImageReader_delete(old.reader);
-            }
         }
     }
 
     pub(crate) fn frame(&mut self) -> Option<Frame<'_>> {
-        // SAFETY: each spent image was acquired from the reader and not yet
-        // deleted; one no GPU holds is deleted once.
-        self.spent.retain(|t| {
-            let held = t.holds.is_held();
-            if !held {
-                unsafe { AImage_delete(t.image) };
-            }
-            held
-        });
-        let reader = self.reader.as_ref()?.reader;
-        let mut image = ptr::null_mut();
-        // SAFETY: the newest image of the player's reader, read into locals
-        // and kept until it is deleted.
-        let (crop, buffer) = unsafe {
-            if AImageReader_acquireLatestImage(reader, &mut image) != AMEDIA_OK || image.is_null() {
-                return None;
-            }
-            let Some(crop) = crop_of(image) else {
-                AImage_delete(image);
-                return None;
-            };
-            let mut buffer = ptr::null_mut();
-            if AImage_getHardwareBuffer(image, &mut buffer) != AMEDIA_OK {
-                buffer = ptr::null_mut();
-            }
-            (crop, buffer)
-        };
-        let holds = match self.holds.iter().find(|(b, _)| *b == buffer) {
-            Some((_, holds)) => Arc::clone(holds),
-            None => {
-                let holds = ExternalHolds::new();
-                self.holds.push((buffer, Arc::clone(&holds)));
-                holds
-            }
-        };
         // An image's own stamp is when it shows, on the system clock; where
         // in the video it lies is the player's position.
-        let taken = Taken {
-            image,
-            buffer,
-            holds,
-            crop,
-            time: self.position(),
-        };
-        if let Some(old) = self.shown.replace(taken) {
-            self.spent.push(old);
+        let time = self.position();
+        if !self.images.take(time, 0) {
+            return None;
         }
-        let taken = self.shown.as_ref()?;
-        let (_, _, width, height) = taken.crop;
-        Some(Frame::native_picture(
-            width,
-            height,
-            taken.time,
-            Picture {
-                taken,
-                rows: &self.rows,
-            },
-        ))
-    }
-
-    /// Deletes every image taken from the reader, and forgets its buffers.
-    fn let_go_images(&mut self) {
-        for t in self.shown.take().into_iter().chain(self.spent.drain(..)) {
-            // SAFETY: each was acquired from the reader and is deleted once;
-            // a GPU still reading its buffer holds a reference of its own.
-            unsafe { AImage_delete(t.image) };
-        }
-        self.holds.clear();
+        self.images.shown()
     }
 
     pub(crate) fn play(&mut self) {
@@ -848,7 +1054,7 @@ impl Player {
     }
 }
 
-impl Drop for Player {
+impl Drop for Movie {
     fn drop(&mut self) {
         // Closing releases the player, after which nothing reports to the
         // mailbox and the reader has no producer.
@@ -857,14 +1063,43 @@ impl Drop for Player {
             // SAFETY: the player's global reference, deleted once.
             unsafe { env_call!(env, DeleteGlobalRef, self.video) };
         }
-        // SAFETY: the mailbox the Java side no longer reports to, and the
-        // reader nothing draws into, each freed once.
-        self.let_go_images();
-        unsafe {
-            drop(Box::from_raw(self.mailbox));
-            if let Some(reader) = self.reader.take() {
-                AImageReader_delete(reader.reader);
-            }
+        // SAFETY: the mailbox the Java side no longer reports to, freed
+        // once; the images go after.
+        unsafe { drop(Box::from_raw(self.mailbox)) };
+    }
+}
+
+/// Calls the `void` method `method` of `object` with `args`, clearing an
+/// exception it throws.
+fn call(java: &Java, object: jobject, method: jmethodID, args: &[jvalue]) {
+    let Some(env) = env(java) else {
+        return;
+    };
+    // SAFETY: callers name a method of the object's class and hand the
+    // arguments its descriptor names.
+    unsafe {
+        env_call!(env, CallVoidMethodA, object, method, args.as_ptr());
+        clear(env);
+    }
+}
+
+/// `rows`, `width` × `height` RGBA texels, turned `turns` quarter turns
+/// clockwise into `out`.
+fn turn(rows: &[u8], width: usize, height: usize, turns: u8, out: &mut Vec<u8>) {
+    out.clear();
+    out.resize(rows.len(), 0);
+    let shown_width = if turns % 2 == 1 { height } else { width };
+    for y in 0..height {
+        for x in 0..width {
+            let (tx, ty) = match turns % 4 {
+                1 => (height - 1 - y, x),
+                2 => (width - 1 - x, height - 1 - y),
+                3 => (y, width - 1 - x),
+                _ => (x, y),
+            };
+            let from = (y * width + x) * 4;
+            let to = (ty * shown_width + tx) * 4;
+            out[to..to + 4].copy_from_slice(&rows[from..from + 4]);
         }
     }
 }
@@ -972,7 +1207,4 @@ unsafe fn to_rgba(
     )
 }
 
-/// The cameras this target has: none it captures from yet.
-pub(crate) fn cameras() -> Vec<super::CameraInfo> {
-    Vec::new()
-}
+pub(crate) use capture::cameras;
