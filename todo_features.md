@@ -349,7 +349,7 @@ Rules:
     (AVCaptureSession, Media Foundation, Camera2, the GStreamer device monitor,
     `getUserMedia`) behind `install()`; `examples/camera` on it.
     - [x] Apple, through `Frame::pixel_buffer`.
-    - [ ] Android.
+    - [x] Android, through `ImageReader` and the extension's own dex.
     - [ ] Windows.
     - [ ] Linux and the BSDs.
     - [ ] Web.

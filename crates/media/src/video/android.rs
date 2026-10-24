@@ -7,15 +7,18 @@
 //!
 //! The Java class comes from the APK, loaded through the activity the app's
 //! framework hands over ([`attach`]); until then a player opens nothing, as
-//! `Unsupported`. A camera's capture is driven the same way ([`capture`]). What the player reports arrives on the Java
-//! main thread and is posted to the player's channel. Bytes are read where
-//! they lie, through a direct `ByteBuffer`, never written out.
+//! `Unsupported`. What the player reports arrives on the Java main thread
+//! and is posted to the player's channel. Bytes are read where they lie,
+//! through a direct `ByteBuffer`, never written out.
+//!
+//! Extensions draw their live pictures into the same kind of reader
+//! ([`ImageReader`]).
 
 use std::cell::RefCell;
 use std::ffi::{CStr, c_int, c_void};
 use std::ptr;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use jni_sys::{
@@ -34,8 +37,6 @@ macro_rules! env_call {
         ((**$env).v1_6.$f)($env $(, $arg)*)
     };
 }
-
-mod capture;
 
 type AImageReader = c_void;
 type AImage = c_void;
@@ -127,8 +128,6 @@ struct Java {
     set_volume: jmethodID,
     set_looping: jmethodID,
     close: jmethodID,
-    /// The camera class's, where the APK has it.
-    camera: Option<capture::Methods>,
 }
 
 // SAFETY: the VM, global references and method ids are not tied to the
@@ -139,31 +138,15 @@ unsafe impl Sync for Java {}
 
 static JAVA: OnceLock<Java> = OnceLock::new();
 
-/// The app's activity last handed over, a global reference, or null: what a
-/// camera asks the user's leave through.
-static ACTIVITY: Mutex<usize> = Mutex::new(0);
-
-/// Takes what players need from the app's activity: once, the VM, the
-/// player classes through the activity's class loader, and the application
-/// context; each time, the activity itself.
+/// Takes what players need from the app's activity, once: the VM, the
+/// player class through the activity's class loader, and the application
+/// context.
 ///
 /// # Safety
 ///
 /// `env` is the calling thread's `JNIEnv` and `activity` a live reference
 /// to the app's activity.
 pub(crate) unsafe fn attach(env: *mut JNIEnv, activity: jobject) {
-    // SAFETY: the caller's contract; the old global reference is deleted
-    // once it is replaced.
-    unsafe {
-        let mut kept = ACTIVITY.lock().unwrap_or_else(|e| e.into_inner());
-        let same = *kept != 0 && env_call!(env, IsSameObject, *kept as jobject, activity);
-        if !same {
-            if *kept != 0 {
-                env_call!(env, DeleteGlobalRef, *kept as jobject);
-            }
-            *kept = env_call!(env, NewGlobalRef, activity) as usize;
-        }
-    }
     if JAVA.get().is_some() {
         return;
     }
@@ -237,7 +220,6 @@ unsafe fn load(env: *mut JNIEnv, activity: jobject) -> Option<Java> {
         if env_call!(env, RegisterNatives, class, natives.as_ptr(), 1) != JNI_OK {
             return None;
         }
-        let camera = capture::Methods::load(env, loader, load_class);
         let java = Java {
             vm,
             new: method(
@@ -255,7 +237,6 @@ unsafe fn load(env: *mut JNIEnv, activity: jobject) -> Option<Java> {
             set_volume: method(env, class, c"setVolume", c"(FZ)V")?,
             set_looping: method(env, class, c"setLooping", c"(Z)V")?,
             close: method(env, class, c"close", c"()V")?,
-            camera,
             class: env_call!(env, NewGlobalRef, class),
             context: env_call!(env, NewGlobalRef, context),
         };
@@ -460,93 +441,7 @@ impl Picture<'_> {
     }
 }
 
-/// A movie the player plays, or a camera.
-pub(crate) enum Player {
-    Movie(Movie),
-    Camera(capture::Capture),
-}
-
-impl Player {
-    pub(crate) fn open(source: &VideoSource) -> Result<Player, VideoError> {
-        match source {
-            VideoSource::Camera(request) => capture::Capture::open(request).map(Player::Camera),
-            _ => Movie::open(source).map(Player::Movie),
-        }
-    }
-
-    pub(crate) fn poll(&mut self) -> Option<VideoEvent> {
-        match self {
-            Player::Movie(movie) => movie.poll(),
-            Player::Camera(camera) => camera.poll(),
-        }
-    }
-
-    pub(crate) fn frame(&mut self) -> Option<Frame<'_>> {
-        match self {
-            Player::Movie(movie) => movie.frame(),
-            Player::Camera(camera) => camera.frame(),
-        }
-    }
-
-    pub(crate) fn play(&mut self) {
-        match self {
-            Player::Movie(movie) => movie.play(),
-            Player::Camera(camera) => camera.play(),
-        }
-    }
-
-    pub(crate) fn pause(&mut self) {
-        match self {
-            Player::Movie(movie) => movie.pause(),
-            Player::Camera(camera) => camera.pause(),
-        }
-    }
-
-    pub(crate) fn is_playing(&self) -> bool {
-        match self {
-            Player::Movie(movie) => movie.is_playing(),
-            Player::Camera(camera) => camera.is_playing(),
-        }
-    }
-
-    pub(crate) fn position(&self) -> Duration {
-        match self {
-            Player::Movie(movie) => movie.position(),
-            // A camera is always now.
-            Player::Camera(_) => Duration::ZERO,
-        }
-    }
-
-    pub(crate) fn seek(&mut self, time: Duration) {
-        if let Player::Movie(movie) = self {
-            movie.seek(time);
-        }
-    }
-
-    pub(crate) fn set_rate(&mut self, rate: f32) {
-        if let Player::Movie(movie) = self {
-            movie.set_rate(rate);
-        }
-    }
-
-    pub(crate) fn set_volume(&mut self, volume: f32) {
-        if let Player::Movie(movie) = self {
-            movie.set_volume(volume);
-        }
-    }
-
-    pub(crate) fn set_muted(&mut self, muted: bool) {
-        if let Player::Movie(movie) = self {
-            movie.set_muted(muted);
-        }
-    }
-
-    pub(crate) fn set_looping(&mut self, looping: bool) {
-        if let Player::Movie(movie) = self {
-            movie.set_looping(looping);
-        }
-    }
-}
+pub(crate) type Player = Movie;
 
 /// The reader pictures are drawn into, and the images taken from it.
 struct Images {
@@ -758,7 +653,7 @@ pub(crate) struct Movie {
 }
 
 impl Movie {
-    fn open(source: &VideoSource) -> Result<Movie, VideoError> {
+    pub(crate) fn open(source: &VideoSource) -> Result<Movie, VideoError> {
         let java = JAVA.get().ok_or(VideoError::Unsupported)?;
         let env = env(java).ok_or(VideoError::WrongThread)?;
         // A URI the player reads, or bytes it reads in place, kept alive
@@ -1207,4 +1102,59 @@ unsafe fn to_rgba(
     )
 }
 
-pub(crate) use capture::cameras;
+/// The cameras the platform's players capture: none, an extension answers.
+pub(crate) fn cameras() -> Vec<super::CameraInfo> {
+    Vec::new()
+}
+
+/// An `AImageReader` an extension's producer draws YUV pictures into — a
+/// camera's capture session, a virtual display — each lent to the GPU as
+/// its hardware buffer, sampled in place and turned upright in the same
+/// pass; turned into RGBA rows only for a caller that copies.
+pub struct ImageReader(Images);
+
+impl Default for ImageReader {
+    fn default() -> ImageReader {
+        ImageReader::new()
+    }
+}
+
+impl ImageReader {
+    /// A reader of nothing yet.
+    pub fn new() -> ImageReader {
+        ImageReader(Images::new())
+    }
+
+    /// A new reader of `width` × `height` pictures (`YUV_420_888`, sampled
+    /// by the GPU and read by the CPU), whose `android.view.Surface`, a
+    /// local reference valid for the call, is handed to `aim` to point the
+    /// producer at; the old reader goes after. Whether it was made.
+    ///
+    /// # Safety
+    ///
+    /// `env` is the calling thread's `JNIEnv`.
+    pub unsafe fn read_into(
+        &mut self,
+        env: *mut c_void,
+        width: i32,
+        height: i32,
+        aim: impl FnOnce(*mut c_void),
+    ) -> bool {
+        // SAFETY: the caller's contract.
+        unsafe {
+            self.0
+                .read_into(env.cast(), width, height, |surface| aim(surface.cast()))
+        }
+    }
+
+    /// Takes the newest picture drawn, if one came since, shown at `time`
+    /// turned `turns` quarter turns clockwise. Whether one did.
+    pub fn take(&mut self, time: Duration, turns: u8) -> bool {
+        self.0.take(time, turns)
+    }
+
+    /// The picture taken last, valid until the next is taken.
+    pub fn shown(&self) -> Option<Frame<'_>> {
+        self.0.shown()
+    }
+}
