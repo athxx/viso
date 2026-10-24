@@ -3081,6 +3081,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "viso-example-video"
+version = "0.0.0"
+dependencies = [
+ "viso",
+]
+
+[[package]]
 name = "viso-footprint"
 version = "0.0.0"
 dependencies = [
@@ -3183,6 +3190,7 @@ dependencies = [
 name = "viso-media"
 version = "0.0.0"
 dependencies = [
+ "jni-sys 0.4.1",
  "libc",
  "objc2 0.6.4",
  "objc2-av-foundation",

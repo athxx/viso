@@ -283,7 +283,12 @@ Rules:
     time, on the loop's thread without waiting, each picture handed out mapped in
     place; buffering holds playback, a paused seek shows its preroll, closing on a
     thread of its own; the player tests run on every target with a player.
-  - [ ] MediaCodec/MediaPlayer and `<video>` players.
+  - [x] MediaPlayer player on Android: driven through a Java class of `viso-media`'s
+    (packed into the APK), the activity handed over once by the facade; pictures through
+    an `AImageReader` turned into RGBA, bytes read in place through a direct buffer;
+    `Frame::rgba`; a paused video's picture polled for after ready or a seek; the
+    `examples/video` app.
+  - [ ] `<video>` player on the web.
 - [ ] Camera capture service and `CameraView`.
 - [ ] Audio: input (microphone), file decoding (WAV, Ogg Vorbis, MP3, FLAC), Web Audio
   output, PulseAudio/PipeWire output.

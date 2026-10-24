@@ -51,6 +51,13 @@ pub(crate) trait Play: Sized {
 
 impl Play for VideoPlayer {
     fn open(source: &viso_media::VideoSource) -> Result<Self, VideoError> {
+        // Android's players are Java's, reached through the activity.
+        #[cfg(target_os = "android")]
+        viso_platform::backend::android::with_activity(|env, activity| {
+            // SAFETY: this thread's environment and a live reference to the
+            // activity, both valid for the closure.
+            unsafe { viso_media::attach_android(env.cast(), activity.cast()) }
+        });
         VideoPlayer::open(source)
     }
     fn poll(&mut self) -> Option<VideoEvent> {

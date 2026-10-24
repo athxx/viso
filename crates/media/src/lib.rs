@@ -3,7 +3,9 @@
 //! A [`VideoPlayer`] plays a file, a URL or bytes through the platform's own
 //! player: macOS and iOS through AVFoundation, Windows through Media
 //! Foundation's media engine, Linux and the BSDs through GStreamer (opened at
-//! run time, so a system without it only fails to open videos). The platform decodes in
+//! run time, so a system without it only fails to open videos), Android
+//! through `MediaPlayer` (once the activity is handed over,
+//! [`attach_android`]). The platform decodes in
 //! hardware, keeps sound and picture in step and drives the audio device; the
 //! caller polls it from the thread that runs the loop for what changed
 //! ([`VideoPlayer::poll`]) and for the picture to show now
@@ -15,4 +17,6 @@
 
 mod video;
 
+#[cfg(target_os = "android")]
+pub use video::attach_android;
 pub use video::{Frame, PixelLayout, VideoError, VideoEvent, VideoInfo, VideoPlayer, VideoSource};

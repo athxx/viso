@@ -11,12 +11,11 @@
 //! the next replaces it.
 
 use std::ffi::{CStr, CString, c_char, c_int, c_uint, c_void};
-use std::path::Path;
 use std::ptr;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use super::{Frame, Spilled, VideoError, VideoEvent, VideoInfo, VideoSource};
+use super::{Frame, Spilled, VideoError, VideoEvent, VideoInfo, VideoSource, file_uri};
 
 pub(crate) use super::no_picture::Picture;
 
@@ -896,34 +895,4 @@ unsafe fn error_text(gst: &Gst, message: *mut Message) -> String {
 fn spill(bytes: &[u8]) -> Result<(String, Option<Spilled>), VideoError> {
     let spilled = Spilled::new(bytes).map_err(|e| VideoError::Open(e.to_string()))?;
     Ok((file_uri(spilled.path()), Some(spilled)))
-}
-
-/// The `file://` URI of `path`, made absolute, every byte outside the
-/// unreserved set and `/` escaped.
-fn file_uri(path: &Path) -> String {
-    use std::fmt::Write;
-    use std::os::unix::ffi::OsStrExt;
-    let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-    let mut uri = String::from("file://");
-    for &b in path.as_os_str().as_bytes() {
-        if b.is_ascii_alphanumeric() || b"/-._~".contains(&b) {
-            uri.push(b as char);
-        } else {
-            let _ = write!(uri, "%{b:02X}");
-        }
-    }
-    uri
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_path_becomes_an_escaped_file_uri() {
-        assert_eq!(
-            file_uri(Path::new("/tmp/a b/clip#1.mp4")),
-            "file:///tmp/a%20b/clip%231.mp4"
-        );
-    }
 }

@@ -235,11 +235,12 @@ fn android(o: &Options) -> Result<PathBuf, String> {
         &sdk.cargo_env(abi),
     )?;
     let out = target_dir.join("bundle/android").join(&bin);
-    // The Java shell, and the services' Java half.
+    // The Java shell, and the services' and media's Java halves.
     let shell = android::Shell {
         java: vec![
             root.join("crates/platform/android/java"),
             root.join("crates/services/android/java"),
+            root.join("crates/media/android/java"),
         ],
         manifest: root.join("crates/platform/android/AndroidManifest.xml"),
     };

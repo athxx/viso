@@ -1,0 +1,12 @@
+[package]
+name = "viso-example-video"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# A clip from `assets/`, named in `.vs` with `asset("…")` and embedded in the
+# binary, played through the platform's player under the framework's
+# controls.
+[dependencies]
+viso = { workspace = true }

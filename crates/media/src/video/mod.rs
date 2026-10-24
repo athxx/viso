@@ -1,5 +1,7 @@
 //! Video playback through the platform's player.
 
+#[cfg(target_os = "android")]
+mod android;
 #[cfg(target_vendor = "apple")]
 mod apple;
 #[cfg(any(
@@ -13,6 +15,7 @@ mod gstreamer;
 #[cfg(not(target_vendor = "apple"))]
 mod no_picture;
 #[cfg(not(any(
+    target_os = "android",
     target_vendor = "apple",
     target_os = "windows",
     target_os = "linux",
@@ -24,7 +27,11 @@ mod no_picture;
 mod unsupported;
 #[cfg(target_os = "windows")]
 mod windows;
+#[cfg(any(target_os = "android", test))]
+mod yuv;
 
+#[cfg(target_os = "android")]
+use android as imp;
 #[cfg(target_vendor = "apple")]
 use apple as imp;
 #[cfg(any(
@@ -36,6 +43,7 @@ use apple as imp;
 ))]
 use gstreamer as imp;
 #[cfg(not(any(
+    target_os = "android",
     target_vendor = "apple",
     target_os = "windows",
     target_os = "linux",
@@ -131,6 +139,9 @@ pub enum PixelLayout {
     /// Four bytes a texel — blue, green, red, alpha — sRGB-encoded and
     /// opaque.
     Bgra8,
+    /// Four bytes a texel — red, green, blue, alpha — sRGB-encoded and
+    /// opaque.
+    Rgba8,
 }
 
 /// A picture to show, valid until the player's next: texels at hand, or
@@ -173,6 +184,22 @@ impl<'a> Frame<'a> {
             time,
             texels: Texels::Rows {
                 layout: PixelLayout::Bgra8,
+                rows,
+                stride,
+            },
+        }
+    }
+
+    /// A picture of `width` × `height` RGBA texels (`PixelLayout::Rgba8`),
+    /// row after row from the top in `rows`, each `stride` bytes apart, shown
+    /// at `time`.
+    pub fn rgba(width: u32, height: u32, rows: &'a [u8], stride: usize, time: Duration) -> Self {
+        Frame {
+            width,
+            height,
+            time,
+            texels: Texels::Rows {
+                layout: PixelLayout::Rgba8,
                 rows,
                 stride,
             },
@@ -243,7 +270,23 @@ impl<'a> Frame<'a> {
             }
         };
         match self.texels {
-            Texels::Rows { rows, stride, .. } => {
+            Texels::Rows {
+                layout: PixelLayout::Rgba8,
+                rows,
+                stride,
+            } => {
+                out.clear();
+                out.reserve(w * h * 4);
+                for row in rows.chunks(stride).take(h) {
+                    out.extend_from_slice(&row[..w * 4]);
+                }
+                true
+            }
+            Texels::Rows {
+                layout: PixelLayout::Bgra8,
+                rows,
+                stride,
+            } => {
                 copy(rows, stride, out);
                 true
             }
@@ -336,6 +379,39 @@ impl VideoPlayer {
     }
 }
 
+/// Android: gives the players what they need of the app's activity — the
+/// Java VM, the player class from the APK, the application context. Players
+/// open as `Unsupported` until it is called; calls after the first do
+/// nothing. The app's framework calls it.
+///
+/// # Safety
+///
+/// `env` is the calling thread's `JNIEnv` and `activity` a live local or
+/// global reference to the app's activity.
+#[cfg(target_os = "android")]
+pub unsafe fn attach_android(env: *mut std::ffi::c_void, activity: *mut std::ffi::c_void) {
+    // SAFETY: the caller's contract.
+    unsafe { android::attach(env.cast(), activity.cast()) }
+}
+
+/// The `file://` URI of `path`, made absolute, every byte outside the
+/// unreserved set and `/` escaped.
+#[cfg(all(unix, not(target_vendor = "apple")))]
+fn file_uri(path: &Path) -> String {
+    use std::fmt::Write;
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut uri = String::from("file://");
+    for &b in path.as_os_str().as_bytes() {
+        if b.is_ascii_alphanumeric() || b"/-._~".contains(&b) {
+            uri.push(b as char);
+        } else {
+            let _ = write!(uri, "%{b:02X}");
+        }
+    }
+    uri
+}
+
 /// Bytes written to a file of their own for a player that reads only
 /// files, removed when dropped.
 pub(crate) struct Spilled {
@@ -413,6 +489,15 @@ fn extension(bytes: &[u8]) -> &'static str {
 mod tests {
     use super::*;
 
+    #[cfg(all(unix, not(target_vendor = "apple")))]
+    #[test]
+    fn a_path_becomes_an_escaped_file_uri() {
+        assert_eq!(
+            file_uri(Path::new("/tmp/a b/clip#1.mp4")),
+            "file:///tmp/a%20b/clip%231.mp4"
+        );
+    }
+
     #[test]
     fn spilled_bytes_are_named_for_their_container_and_removed_when_dropped() {
         assert_eq!(extension(b"\x1a\x45\xdf\xa3\x01\x00webm"), "webm");
@@ -425,6 +510,16 @@ mod tests {
         assert!(path.exists());
         drop(spilled);
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn an_rgba_frame_copies_out_tightly_packed_as_it_lies() {
+        let rows = [1, 2, 3, 255, 0, 0, 0, 0, 4, 5, 6, 255, 0, 0, 0, 0];
+        let frame = Frame::rgba(1, 2, &rows, 8, Duration::ZERO);
+        assert_eq!(frame.layout(), PixelLayout::Rgba8);
+        let mut out = Vec::new();
+        assert!(frame.copy_rgba(&mut out));
+        assert_eq!(out, [1, 2, 3, 255, 4, 5, 6, 255]);
     }
 
     #[test]

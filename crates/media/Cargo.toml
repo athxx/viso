@@ -79,6 +79,10 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
     "NSRunLoop",
 ] }
 
+# MediaPlayer through JNI, its pictures through the NDK's image reader.
+[target.'cfg(target_os = "android")'.dependencies]
+jni-sys = "0.4"
+
 # GStreamer, opened at run time.
 [target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly"))'.dependencies]
 libc = "0.2"
