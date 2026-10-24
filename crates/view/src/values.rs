@@ -43,6 +43,7 @@ use viso_ui::search_field::{Report as SearchReport, SearchParts, SearchSpec};
 use viso_ui::segments::Segments;
 use viso_ui::shader::BrushProgram;
 use viso_ui::slider::{Slider as SliderMark, SliderRange, SliderShape};
+use viso_ui::video_controls::{VideoControls, VideoControlsStyle, VideoLabels};
 use viso_ui::{
     Alignment2D, BoundSize, FontWeight, LayoutValue, LengthTerms, Playback, VideoSource,
 };
@@ -304,6 +305,8 @@ pub(crate) fn control_cells(
         control.muted,
         control.volume,
         control.rate,
+        control.controls,
+        control.fullscreen,
     ])
     .flatten()
     .chain(arms)
@@ -331,8 +334,9 @@ pub(crate) fn control_cells(
 /// and `axis`, a colour picker's `alpha` and `wheel`, and a combo box's
 /// `options`, `free_text` and `empty_text` — a search field's `suggestions`
 /// are its `options` — a search field's `debounce`, an image's `animate`,
-/// and a video's `playing`, `looping`, `muted`, `volume` and `rate`.
-const SHOWN: usize = 74;
+/// and a video's `playing`, `looping`, `muted`, `volume`, `rate`,
+/// `controls` and `fullscreen`.
+const SHOWN: usize = 76;
 
 /// The input of each value a node shows, in order.
 const SHOWN_INPUTS: [ControlInput; SHOWN] = [
@@ -410,7 +414,14 @@ const SHOWN_INPUTS: [ControlInput; SHOWN] = [
     ControlInput::Muted,
     ControlInput::Volume,
     ControlInput::Rate,
+    ControlInput::Controls,
+    ControlInput::Fullscreen,
 ];
+
+/// Where a video's `controls` and `fullscreen` sit among the values a node
+/// shows.
+const CONTROLS: usize = SHOWN - 2;
+const FULLSCREEN: usize = SHOWN - 1;
 
 /// Where its `translate` sits among the values a node shows.
 const TRANSLATE: usize = 35;
@@ -711,6 +722,8 @@ impl Shown {
             muted,
             volume,
             rate,
+            controls,
+            fullscreen,
         ] = &shows;
         let access_key = access_key.as_str().and_then(|key| key.chars().next());
         let spanned = crate::text_style::spans(pieces);
@@ -827,6 +840,9 @@ impl Shown {
                     ..ComboSpec::default()
                 };
                 show_combo(&mut self.parts, self.node, cx, host, spec, stale, value);
+            }
+            ControlKind::Video if first || changed(CONTROLS) => {
+                show_video_controls(&mut self.parts, self.node, cx, truth(controls, false));
             }
             ControlKind::SearchField => {
                 let stale = [FIELD, FIELD + 7, LISTED + 3].into_iter().any(changed);
@@ -1162,6 +1178,9 @@ impl Shown {
                         rate: float(rate, 1.0),
                     };
                     store.declare_playback(self.node, playback);
+                }
+                if changed(FULLSCREEN) {
+                    store.set_fullscreen(self.node, truth(fullscreen, false));
                 }
             }
             ControlKind::Label | ControlKind::Button => {
@@ -1778,6 +1797,7 @@ enum Parts {
     Picker(ColorPickerParts),
     Combo(ComboParts),
     Search(SearchParts),
+    Video(VideoControls),
 }
 
 impl Parts {
@@ -1787,6 +1807,7 @@ impl Parts {
             Parts::Picker(parts) => parts.column().id(),
             Parts::Combo(parts) => parts.root().id(),
             Parts::Search(parts) => parts.root().id(),
+            Parts::Video(parts) => parts.root(),
         }
     }
 
@@ -1826,6 +1847,30 @@ fn parts_size(store: &NodeStore, node: NodeId) -> viso_ui::Size {
 fn unbuild(parts: &mut Option<Parts>, node: NodeId, cx: &mut StructureCx<'_>) {
     if let Some(old) = parts.take().filter(|p| p.live(node, cx.store)) {
         cx.store.free_tree(old.root(), cx.effects, &mut Vec::new());
+    }
+}
+
+/// A video shows the framework's controls over its picture while `shown`,
+/// built inside node `node` once and dropped when it no longer shows them.
+fn show_video_controls(
+    parts: &mut Option<Parts>,
+    node: NodeId,
+    cx: &mut StructureCx<'_>,
+    shown: bool,
+) {
+    let built = parts.as_ref().is_some_and(|p| p.live(node, cx.store));
+    if !shown {
+        unbuild(parts, node, cx);
+    } else if !built {
+        let mut build = BuildCx::with_parent(cx.store, cx.states, cx.bindings, node);
+        let controls = VideoControls::build(
+            &mut build,
+            node,
+            node,
+            VideoControlsStyle::default(),
+            VideoLabels::default(),
+        );
+        *parts = Some(Parts::Video(controls));
     }
 }
 

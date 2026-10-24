@@ -16,13 +16,21 @@
 //! where it is; [`on_progress`](Video::on_progress) and
 //! [`on_ended`](Video::on_ended) report it.
 //!
+//! With [`controls`](Video::controls) it shows the framework's controls over
+//! its pictures ([`viso_ui::video_controls`]): a play button, a scrubber, the
+//! time, mute and volume, full screen, and the keys that steer them — built
+//! once and driven by what the player reports, with no rebuild. They need a
+//! reactive build ([`BuildCx::with_reactive`]).
+//!
 //! Its semantics are [`Role::Image`] named by its [`label`](Video::label);
-//! a video without one is decoration, a mute [`Role::Group`].
+//! a video without one is decoration, a mute [`Role::Group`]. With controls
+//! it is a [`Role::Group`] so they are reached inside it.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
+use viso_ui::video_controls::{VideoControls, VideoControlsStyle, VideoLabels};
 use viso_ui::{
     Alignment2D, AssetFit, BoxStyle, BuildCx, Component, EventCx, Handle, LeafStyle, Length,
     NodeId, Notice, NoticeKinds, Playback, Rgba, Role, Semantics, Size, StackStyle, StateStore,
@@ -62,6 +70,8 @@ pub struct Video {
     on_progress: Option<OnProgress>,
     on_ended: Option<OnEnded>,
     slot: Option<VideoHandleSlot>,
+    /// The controls shown over it, if any.
+    controls: Option<(VideoControlsStyle, VideoLabels)>,
 }
 
 /// A [`Video::on_load`] handler, shared by the builds of the video.
@@ -108,6 +118,11 @@ impl VideoHandle {
         ev.seek_video(self.0, time);
     }
 
+    /// Show it full screen, or bring it back.
+    pub fn set_fullscreen(self, ev: &mut EventCx<'_>, on: bool) {
+        ev.set_fullscreen(self.0, on);
+    }
+
     /// Ask it to play as `playback` says.
     pub fn set_playback(self, ev: &mut EventCx<'_>, playback: Playback) {
         ev.set_playback(self.0, playback);
@@ -140,6 +155,7 @@ pub fn video(source: impl Into<VideoSource>) -> Video {
         on_progress: None,
         on_ended: None,
         slot: None,
+        controls: None,
     }
 }
 
@@ -237,6 +253,24 @@ impl Video {
         self
     }
 
+    /// Show the framework's controls over it (defaults to none).
+    pub fn controls(mut self, controls: bool) -> Self {
+        self.controls = controls.then(|| self.controls.take().unwrap_or_default());
+        self
+    }
+
+    /// Show its controls as `style` says.
+    pub fn controls_style(mut self, style: VideoControlsStyle) -> Self {
+        self.controls.get_or_insert_with(Default::default).0 = style;
+        self
+    }
+
+    /// Name its controls for assistive technology by `labels`.
+    pub fn controls_labels(mut self, labels: VideoLabels) -> Self {
+        self.controls.get_or_insert_with(Default::default).1 = labels;
+        self
+    }
+
     /// Leave the built video's [`VideoHandle`] in `slot`.
     pub fn handle(mut self, slot: &VideoHandleSlot) -> Self {
         self.slot = Some(Rc::clone(slot));
@@ -297,49 +331,55 @@ impl Video {
 impl Component for Video {
     fn build(&self, cx: &mut BuildCx<'_>) {
         let semantics = match &self.label {
+            Some(label) if self.controls.is_some() => {
+                Semantics::role(Role::Group).with_label(label.clone())
+            }
             Some(label) => Semantics::role(Role::Image).with_label(label.clone()),
             None => Semantics::role(Role::Group),
         };
+        let controls = |cx: &mut BuildCx<'_>, video: NodeId, screen: NodeId| {
+            if let Some((style, labels)) = &self.controls {
+                VideoControls::build(cx, video, screen, *style, labels.clone());
+            }
+        };
         if self.poster.is_none() && self.error.is_none() {
             let handle = self.picture(cx, self.size);
+            cx.inside(handle, |cx| controls(cx, handle.id(), handle.id()));
             cx.semantics(handle, semantics);
             return;
         }
-        // The picture under its stand-ins, one stack sized as the video: an
-        // axis that fits its content fits the picture, any other fills it.
-        let inner = |l: Length| match l {
-            Length::Fit => Length::Fit,
-            _ => Size::fill().width,
-        };
-        let size = Size {
-            width: inner(self.size.width),
-            height: inner(self.size.height),
-        };
+        // The picture under its stand-ins and its controls, one stack sized
+        // as the video: the picture fills it, a fit axis fitting the larger
+        // of the picture and a stand-in.
         let (mut picture, mut loading, mut failed) = (None, None, None);
         let layer = StackStyle {
             align: Alignment2D::Center,
             size: Size::fill(),
             ..StackStyle::default()
         };
-        let outer = cx.stack(
+        let stack = cx.stack(
             StackStyle {
                 align: Alignment2D::Center,
                 size: self.size,
                 ..StackStyle::default()
             },
             |cx| {
-                picture = Some(self.picture(cx, size));
+                let shown = self.picture(cx, Size::fill());
+                picture = Some(shown);
                 for (view, at) in [(&self.poster, &mut loading), (&self.error, &mut failed)] {
                     if let Some(view) = view {
                         *at = Some(cx.stack(layer, |cx| view.build(cx)));
                     }
+                }
+                if let Some(stack) = cx.parent() {
+                    controls(cx, shown.id(), stack);
                 }
             },
         );
         if let Some(picture) = picture {
             cx.asset_fallbacks(picture, loading, failed);
         }
-        cx.semantics(outer, semantics);
+        cx.semantics(stack, semantics);
     }
 }
 
@@ -440,6 +480,51 @@ mod tests {
             },
         );
         assert!(store.playback(node).unwrap().playing);
+    }
+
+    #[test]
+    fn its_controls_lie_over_the_picture_or_over_the_stack_with_its_stand_ins() {
+        use viso_ui::{SemanticProjector, TextEdits, VirtualLists};
+        let build = |widget: Video| {
+            let mut store = NodeStore::new();
+            let (mut states, mut bindings) = (StateStore::new(), BindingTable::new());
+            let (mut lists, mut edits) = (VirtualLists::new(), TextEdits::new());
+            let mut projectors = SemanticProjector::new();
+            let root = {
+                let mut cx = BuildCx::with_reactive(
+                    &mut store,
+                    &mut states,
+                    &mut bindings,
+                    &mut lists,
+                    &mut edits,
+                    &mut projectors,
+                );
+                widget.build(&mut cx);
+                cx.root().unwrap()
+            };
+            (store, root)
+        };
+        // Alone, the picture holds them.
+        let (store, root) = build(
+            video(VideoSource::file("a.mp4"))
+                .controls(true)
+                .label("Intro"),
+        );
+        assert!(store.videos().get(root).is_some());
+        assert_eq!(store.arena().children(root).count(), 1);
+        assert_eq!(store.semantics(root).unwrap().role, Role::Group);
+
+        // With a poster, the stack holds them over it, and goes full screen.
+        let poster = video(VideoSource::file("p.mp4"));
+        let (store, root) = build(
+            video(VideoSource::file("a.mp4"))
+                .poster(poster)
+                .controls(true),
+        );
+        let kids: Vec<_> = store.arena().children(root).collect();
+        assert_eq!(kids.len(), 3, "picture, poster, controls");
+        assert!(store.videos().get(kids[0]).is_some());
+        assert_eq!(store.arena().children(kids[0]).count(), 0);
     }
 
     #[test]

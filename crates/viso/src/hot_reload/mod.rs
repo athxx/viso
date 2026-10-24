@@ -3552,29 +3552,28 @@ mod tests {
     }
 
     #[test]
-    fn a_video_node_plays_its_url_as_its_properties_ask_and_an_edit_asks_again() {
+    fn a_video_node_plays_its_url_under_its_controls_as_its_properties_ask_and_an_edit_asks_again()
+    {
         let mut ws = counter();
         let (mut session, mut host, mut edits) = session(&mut ws, COUNTER);
-        let video = |playing: &str| {
+        let video = |playing: &str, more: &str| {
             COUNTER.replace(
                 "Text { visible: enabled; }",
                 &format!(
                     "Text {{ visible: enabled; }}\n            \
                      Video {{ url: \"https://example.com/a.m3u8\"; playing: {playing}; \
-                     muted: true; volume: 0.5; fit: ImageFit::cover; }}"
+                     muted: true; volume: 0.5; fit: ImageFit::cover; {more} }}"
                 ),
             )
         };
-        let patch = edits.patch(&host, 1, 2, &video("true"));
-        assert!(matches!(
-            apply_on(
-                &mut session,
-                &mut host,
-                std::slice::from_mut(&mut ws),
-                &patch
-            ),
-            RuntimeMessage::Ack(_)
-        ));
+        let patch = edits.patch(&host, 1, 2, &video("true", ""));
+        let reply = apply_on(
+            &mut session,
+            &mut host,
+            std::slice::from_mut(&mut ws),
+            &patch,
+        );
+        assert!(matches!(reply, RuntimeMessage::Ack(_)), "{reply:?}");
         edits.acked();
         let node = children(&ws.store, ws.root.unwrap())[2];
         let entry = ws.store.videos().get(node).expect("a video node");
@@ -3596,7 +3595,7 @@ mod tests {
         // Its end pauses it; an edit asking the same again leaves it so, one
         // asking otherwise asks again, and the video plays on where it was.
         ws.store.set_video_playing(node, false);
-        let patch = edits.patch(&host, 2, 3, &video("true && enabled"));
+        let patch = edits.patch(&host, 2, 3, &video("true && enabled", ""));
         assert!(matches!(
             apply_on(
                 &mut session,
@@ -3609,7 +3608,12 @@ mod tests {
         edits.acked();
         let node = children(&ws.store, ws.root.unwrap())[2];
         assert!(!ws.store.playback(node).unwrap().playing);
-        let patch = edits.patch(&host, 3, 4, &video("false"));
+        let patch = edits.patch(
+            &host,
+            3,
+            4,
+            &video("false", "controls: true; fullscreen: true;"),
+        );
         assert!(matches!(
             apply_on(
                 &mut session,
@@ -3623,6 +3627,24 @@ mod tests {
         let entry = ws.store.videos().get(node).unwrap();
         assert!(!entry.playback.playing);
         assert_eq!(entry.resource, resource, "the same video");
+        // Its controls lie over it, and it shows full screen.
+        assert_eq!(children(&ws.store, node).len(), 1);
+        assert_eq!(ws.store.fullscreen(), Some(node));
+
+        edits.acked();
+        let patch = edits.patch(&host, 4, 5, &video("false", "controls: false;"));
+        assert!(matches!(
+            apply_on(
+                &mut session,
+                &mut host,
+                std::slice::from_mut(&mut ws),
+                &patch
+            ),
+            RuntimeMessage::Ack(_)
+        ));
+        let node = children(&ws.store, ws.root.unwrap())[2];
+        assert!(children(&ws.store, node).is_empty());
+        assert_eq!(ws.store.fullscreen(), None);
     }
 
     #[test]

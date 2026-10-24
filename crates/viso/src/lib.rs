@@ -3726,10 +3726,12 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // the caption must yield. `set_hidden` marks LAYOUT|PAINT, so the next
         // frame reflows the body to fill the reclaimed strip. A window with no
         // caption, or an event for an already-closed window, is a no-op.
-        if let Some(ws) = self.window_mut(window)
-            && let Some(cap) = ws.caption
-        {
-            ws.store.set_hidden(cap, fullscreen);
+        // Leaving it brings back a node shown full screen.
+        if let Some(ws) = self.window_mut(window) {
+            if let Some(cap) = ws.caption {
+                ws.store.set_hidden(cap, fullscreen);
+            }
+            ws.store.window_fullscreen_changed(fullscreen);
         }
     }
 
@@ -4068,6 +4070,9 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 for ws in &mut self.windows {
                     if let Some(text) = ws.store.take_copied() {
                         cx.set_clipboard_text(&text);
+                    }
+                    if let Some(on) = ws.store.take_fullscreen_ask() {
+                        cx.set_fullscreen(ws.window, on);
                     }
                     ws.store.take_window_opens(&mut ws.scratch_opens);
                     self.pending_opens.append(&mut ws.scratch_opens);

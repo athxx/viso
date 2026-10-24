@@ -411,6 +411,7 @@ fn notices(
             EventRoute::Progress | EventRoute::Ended | EventRoute::PlayingChanged => {
                 kinds | NoticeKinds::VIDEO
             }
+            EventRoute::FullscreenChanged => kinds | NoticeKinds::FULLSCREEN,
             _ => kinds | NoticeKinds::VISIBLE_RANGE,
         });
     if kinds.is_empty() {

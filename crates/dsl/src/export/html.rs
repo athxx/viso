@@ -1207,12 +1207,32 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             (control.playing, "autoplay", "whether it plays"),
             (control.looping, "loop", "whether it loops"),
             (control.muted, "muted", "whether it is muted"),
+            (
+                control.controls,
+                "controls",
+                "whether it shows its controls",
+            ),
         ] {
             if let Some(fixed) = self.bind(wires, entry, Prop::Media(attr), what, at)
                 && fixed.truth()
             {
                 el.attr(attr, "");
             }
+        }
+        if let Some(fixed) = self.bind(
+            wires,
+            control.fullscreen,
+            Prop::Media("fullscreen"),
+            "whether it shows full screen",
+            at,
+        ) && fixed.truth()
+        {
+            self.need(
+                Need::Unsupported,
+                at,
+                "a page goes full screen only at a gesture of its reader's",
+                Vec::new(),
+            );
         }
         for (entry, name, what, default) in [
             (control.volume, "volume", "its volume", 1.0),

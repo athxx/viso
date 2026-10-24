@@ -544,6 +544,8 @@ pub enum StoreRequest {
     Play(NodeId, bool),
     /// Move a video to a time.
     Seek(NodeId, std::time::Duration),
+    /// Show a node full screen, or bring it back.
+    Fullscreen(NodeId, bool),
 }
 
 impl StoreRequest {
@@ -583,6 +585,7 @@ impl StoreRequest {
             StoreRequest::Playback(id, playback) => store.set_playback(id, playback),
             StoreRequest::Play(id, playing) => store.set_video_playing(id, playing),
             StoreRequest::Seek(id, time) => store.seek_video(id, time),
+            StoreRequest::Fullscreen(id, on) => store.set_fullscreen(id, on),
         }
     }
 }
@@ -1205,6 +1208,18 @@ impl<'a> EventCx<'a> {
     /// Move video node `id` to `time` ([`NodeStore::seek_video`]).
     pub fn seek_video(&mut self, id: NodeId, time: std::time::Duration) {
         self.store_requests.push(StoreRequest::Seek(id, time));
+    }
+
+    /// Show node `id` full screen, or bring it back, once the handler
+    /// returns ([`NodeStore::set_fullscreen`]).
+    pub fn set_fullscreen(&mut self, id: NodeId, on: bool) {
+        self.store_requests.push(StoreRequest::Fullscreen(id, on));
+    }
+
+    /// The node shown full screen; `None` for none and on the state-only
+    /// paths.
+    pub fn fullscreen(&self) -> Option<NodeId> {
+        self.place.and_then(|place| place.store.fullscreen())
     }
 
     /// Node `id`'s colour plane, if it draws one; `None` on the state-only

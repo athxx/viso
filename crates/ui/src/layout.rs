@@ -118,7 +118,8 @@ pub enum LayoutInput {
         /// The container's own size request within its parent.
         size: Size,
     },
-    /// A leaf that occupies its requested [`Size`].
+    /// A leaf that occupies its requested [`Size`]. Its children, if any,
+    /// lie over its box as a stack's do and never size it.
     Leaf {
         /// Size request within the parent.
         size: Size,
@@ -1126,7 +1127,21 @@ pub fn layout_on(
             layout_placed(tree, root, bounds, basis, padding, None, scratch);
             return;
         }
-        LayoutInput::Leaf { .. } => return, // Leaf: bounds are final.
+        LayoutInput::Leaf { .. } => {
+            // A leaf's children lie over its box as a stack's do, centred
+            // unless placed, and never size it: a video's controls over its
+            // picture.
+            layout_placed(
+                tree,
+                root,
+                bounds,
+                Basis::DEFINITE,
+                Inset::all(0.0),
+                Some(Alignment2D::Center),
+                scratch,
+            );
+            return;
+        }
         LayoutInput::Grid { .. } => {
             // Top-level grid (or a grid child of a non-grid parent): it solves
             // both of its own axes — no inherited tracks.

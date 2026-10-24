@@ -700,6 +700,12 @@ const P = {
       if (truth(v)) el.play().catch(() => {}); else el.pause();
     } else if (name === "loop") el.loop = truth(v);
     else if (name === "muted") el.muted = truth(v);
+    else if (name === "controls") el.controls = truth(v);
+    else if (name === "fullscreen") {
+      // Asked from a gesture's handler, it goes; the browser keeps the say.
+      if (truth(v) && document.fullscreenElement !== el) el.requestFullscreen?.().catch(() => {});
+      else if (!truth(v) && document.fullscreenElement === el) document.exitFullscreen().catch(() => {});
+    }
     else if (name === "volume") el.volume = Math.min(Math.max(Number(v ?? 1), 0), 1);
     else el.playbackRate = Number(v ?? 1);
   },
@@ -2008,6 +2014,8 @@ const listen = (el, route, capture, control, fire) => {
   } else if (route === 40) {
     el.addEventListener("play", () => fire(bool(true)), capture);
     el.addEventListener("pause", () => fire(bool(false)), capture);
+  } else if (route === 41) {
+    el.addEventListener("fullscreenchange", () => fire(bool(document.fullscreenElement === el)));
   } else if (route >= 25 && route <= 27) {
     pinchable(el);
     el.addEventListener("viso-pinch", live((e) => {

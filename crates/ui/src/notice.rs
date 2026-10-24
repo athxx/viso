@@ -57,6 +57,9 @@ pub enum Notice {
     /// The video the node shows stopped playing, or plays again, since the
     /// watcher last heard.
     VideoPlaying(bool),
+    /// The node — or a node holding it — went full screen, or came back,
+    /// since the watcher last heard ([`NodeStore::set_fullscreen`]).
+    Fullscreen(bool),
 }
 
 /// Which notices a watched node reports.
@@ -69,6 +72,7 @@ impl NoticeKinds {
     pub const ANIMATION_END: Self = Self(4);
     pub const ASSET: Self = Self(8);
     pub const VIDEO: Self = Self(16);
+    pub const FULLSCREEN: Self = Self(32);
 
     pub fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
@@ -92,7 +96,10 @@ pub type NoticeHandler = Box<dyn FnMut(&Notice, &mut StateStore)>;
 
 /// One watched node.
 struct Watch {
+    /// The node the watch belongs to, which it goes with.
     node: NodeId,
+    /// The node it reports on: `node` itself, or one it hangs on.
+    subject: NodeId,
     kinds: NoticeKinds,
     /// The scroll last seen, `None` before the first layout.
     scroll: Option<(Vec2, Vec2, Vec2)>,
@@ -102,6 +109,8 @@ struct Watch {
     asset: Option<Notice>,
     /// The video status last delivered.
     video: Option<VideoStatus>,
+    /// Whether the subject was full screen when last looked at.
+    fullscreen: Option<bool>,
     /// Taken out while it runs.
     handler: Option<NoticeHandler>,
 }
@@ -123,6 +132,20 @@ impl NodeStore {
     /// Watches node `id` for the notices `kinds` names, calling `handler` with
     /// each, in place of any handler it had; empty `kinds` stops watching it.
     pub fn watch(&mut self, id: NodeId, kinds: NoticeKinds, handler: NoticeHandler) {
+        self.watch_on(id, id, kinds, handler);
+    }
+
+    /// Watches node `subject` on behalf of node `id`, as
+    /// [`watch`](Self::watch) does `id` itself: the watch is `id`'s, goes
+    /// when either is freed, and leaves any watch of `subject`'s own alone —
+    /// the parts a control builds inside a node hear that node this way.
+    pub fn watch_on(
+        &mut self,
+        id: NodeId,
+        subject: NodeId,
+        kinds: NoticeKinds,
+        handler: NoticeHandler,
+    ) {
         let watches = &mut self.notices_mut().watches;
         watches.retain(|watch| watch.node != id);
         if kinds.is_empty() {
@@ -130,11 +153,13 @@ impl NodeStore {
         }
         watches.push(Watch {
             node: id,
+            subject,
             kinds,
             scroll: None,
             range: None,
             asset: None,
             video: None,
+            fullscreen: None,
             handler: Some(handler),
         });
     }
@@ -180,13 +205,19 @@ pub fn deliver_notices(
     }
     let mut at = 0;
     while at < store.notices().watches.len() {
-        let node = store.notices().watches[at].node;
-        if !store.arena().is_live(node) {
+        let Watch {
+            node,
+            subject,
+            kinds,
+            ..
+        } = store.notices().watches[at];
+        if !store.arena().is_live(node) || !store.arena().is_live(subject) {
             store.notices_mut().watches.swap_remove(at);
             continue;
         }
-        let kinds = store.notices().watches[at].kinds;
-        let mut due: [Option<Notice>; 6] = [None; 6];
+        let mut due: [Option<Notice>; 7] = [None; 7];
+        // The subject's state, as the node's own is read for a watch of it.
+        let node = subject;
         if kinds.contains(NoticeKinds::SCROLL) && store.is_scroll(node) {
             let now = (
                 store.scroll(node),
@@ -258,6 +289,15 @@ pub fn deliver_notices(
                 watch.video = Some(now);
             }
         }
+        if kinds.contains(NoticeKinds::FULLSCREEN) {
+            let now = store.fullscreen().is_some_and(|f| store.within(node, f));
+            let watch = &mut store.notices_mut().watches[at];
+            if watch.fullscreen.is_some_and(|seen| seen != now) {
+                due[6] = Some(Notice::Fullscreen(now));
+            }
+            watch.fullscreen = Some(now);
+        }
+        let node = store.notices().watches[at].node;
         if due.iter().any(Option::is_some)
             && let Some(mut handler) = store.notices_mut().watches[at].handler.take()
         {

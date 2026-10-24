@@ -110,7 +110,7 @@ impl Default for Playback {
 }
 
 /// What a video's player reports.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VideoStatus {
     /// Whether it opened and can play.
     pub ready: bool,
@@ -124,6 +124,26 @@ pub struct VideoStatus {
     pub waiting: bool,
     /// Whether it played to its end and stopped there.
     pub ended: bool,
+    /// Whether its sound is silenced.
+    pub muted: bool,
+    /// Its sound's volume, from 0 to 1.
+    pub volume: f32,
+}
+
+impl Default for VideoStatus {
+    /// Not yet open, at the start, sounding at full volume.
+    fn default() -> VideoStatus {
+        VideoStatus {
+            ready: false,
+            position: Duration::ZERO,
+            duration: None,
+            playing: false,
+            waiting: false,
+            ended: false,
+            muted: false,
+            volume: 1.0,
+        }
+    }
 }
 
 /// One video node.

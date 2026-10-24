@@ -275,6 +275,7 @@ pub fn notice_payload(notice: &Notice) -> (EventRoute, Value) {
         Notice::VideoPlaying(playing) => {
             (EventRoute::PlayingChanged, Value::Int(i64::from(playing)))
         }
+        Notice::Fullscreen(on) => (EventRoute::FullscreenChanged, Value::Int(i64::from(on))),
     }
 }
 

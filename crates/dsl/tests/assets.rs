@@ -117,15 +117,19 @@ fn an_image_reports_its_source_loading() {
 }
 
 #[test]
-fn a_video_plays_its_asset_or_url_and_writes_back_its_playing() {
+fn a_video_plays_its_asset_or_url_under_its_controls_and_writes_back_its_playing() {
     let source = "export component Clip {
     state playing = true;
     state at = 0ms;
     state done = false;
+    state full = false;
     view {
         Column {
             Video {
                 source: asset(\"clips/intro.mp4\");
+                controls: true;
+                bind fullscreen <=> full;
+                on fullscreen_changed(on) { done = on; }
                 bind playing <=> playing;
                 looping: false;
                 muted: true;

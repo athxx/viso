@@ -743,6 +743,8 @@ fn control_tokens(control: Control) -> TokenStream {
     let muted = entry(control.muted);
     let volume = entry(control.volume);
     let rate = entry(control.rate);
+    let controls = entry(control.controls);
+    let fullscreen = entry(control.fullscreen);
     let semantics = control.semantics;
     let role = match semantics.role {
         Some(role) => {
@@ -878,6 +880,8 @@ fn control_tokens(control: Control) -> TokenStream {
             muted: #muted,
             volume: #volume,
             rate: #rate,
+            controls: #controls,
+            fullscreen: #fullscreen,
             shader: #shader,
             look: ::viso::__private::viso_view::Look {
                 background: #background,

@@ -266,6 +266,8 @@ impl<P: Play> Videos<P> {
                 }
             }
             status.playing = player.is_playing();
+            status.muted = wish.muted;
+            status.volume = wish.volume;
             if !status.playing {
                 status.waiting = false;
             }

@@ -4731,7 +4731,7 @@ Text {
 | ------ | ----------------------------- |
 | `Image` | `source: ImageAsset`（未绑定时不绘制，固有尺寸为零；`MEASURE\|LAYOUT\|PAINT`）；`fit: ImageFit = ImageFit::contain`（`PAINT`）；`tint: Option<Color> = Option::None`（与像素逐通道相乘；`PAINT`）；`animate: Bool = true`（动画图片——GIF、APNG、动画 WebP、AVIF 序列——是否播放；不在屏幕上或系统减少动态时总是停在当前帧；`false` 停在首帧；`PAINT`） |
 | `Svg`   | `source: SvgAsset`（同上）；`fit`、`tint` 同 `Image`（`tint` 与每条路径的填充、描边颜色相乘，白色保持原色，可为单色图标着色） |
-| `Video` | `source: Option<VideoAsset> = Option::None`（未绑定且无 `url` 时不绘制；`MEASURE\|LAYOUT\|PAINT`）；`url: String = ""`（非空时代替 `source` 播放：含 `://` 的由平台播放器自行拉取，含 HLS 播放列表，否则为文件路径）；`fit`、`tint` 同 `Image`；`playing: Bool = false`（双向：播放到末尾停下时写回 `false`）；`looping: Bool = false`；`muted: Bool = false`；`volume: F32 = 1.0`（0 到 1）；`rate: F32 = 1.0`（倍速）；固有尺寸为视频画面的像素尺寸 |
+| `Video` | `source: Option<VideoAsset> = Option::None`（未绑定且无 `url` 时不绘制；`MEASURE\|LAYOUT\|PAINT`）；`url: String = ""`（非空时代替 `source` 播放：含 `://` 的由平台播放器自行拉取，含 HLS 播放列表，否则为文件路径）；`fit`、`tint` 同 `Image`；`playing: Bool = false`（双向：播放到末尾停下时写回 `false`）；`looping: Bool = false`；`muted: Bool = false`；`volume: F32 = 1.0`（0 到 1）；`rate: F32 = 1.0`（倍速）；`controls: Bool = false`（在画面上显示框架自带的控制条）；`fullscreen: Bool = false`（双向：全屏显示该节点；控制条、按键或窗口退出全屏时写回）；固有尺寸为视频画面的像素尺寸 |
 | `GameViewport` | `camera: Option<CameraRig> = Option::None`（视口自己的相机，缺省用 Stage 的相机；`PAINT`）；无固有尺寸，未写宽高的轴为 Fill；可获得焦点（§106.2） |
 
 ```viso
@@ -4751,10 +4751,12 @@ view {
 - 以下情形报 `E3713`：`asset` 不是恰好一个参数；参数不是不含插值的字符串字面量（要在资源间选择，在 `asset("…")` 值之间分支）；路径越出 `assets/`；文件不存在（附最接近的已有路径作为 Fix）；文件不是位图、SVG 或视频；本次编译没有资源目录；以及 `ImageAsset`/`SvgAsset`/`VideoAsset` 的 Record 表达式；
 - 把 `SvgAsset` 绑到 `Image` 的 `source`、`ImageAsset` 绑到 `Svg` 的 `source`，或绑定其他类型的值，是 `E2103`；
 - `Image`/`Svg` 的事件 `loaded(SizeDp)` 在来源绘制出来后投递其固有尺寸（换为另一来源、或同一来源的新修订以另一尺寸绘出时再次投递），`failed` 在来源读不到或无法解码时投递；两者都在布局之后投递，Handler 写入的状态进入下一帧事务；
-- `Video` 经各平台自带的播放器解码、出声并保持音画同步（AVFoundation、Media Foundation、GStreamer、MediaCodec、浏览器的 `<video>`），平台播放不了的格式报 `failed`；打开时停在首帧，首帧显示时投递 `loaded(SizeDp)`；`progress(VideoProgress)` 在就绪、播放与暂停、等待数据变化时投递，播放中每秒约四次投递位置（`VideoProgress { position: Duration; duration: Option<Duration>; playing: Bool; waiting: Bool; }`，直播流的 `duration` 为 `None`）；`ended` 在播到末尾停下时投递（循环时不投递）；`playing_changed(Bool)` 在播放状态改变时投递并写回双向的 `playing`。同一节点上 `source`/`url` 不变时视频保持其播放位置，换来源则从头开始；只有 `playing` 等属性的值变化才会重新要求播放器，播放器自己停下（播完）的状态不会被无关的重建打回。正在播放且在屏幕上可见时每帧取新画面写入同一个 texture，只重绘该节点；移出屏幕继续播放（声音不断）但不再取画面；
+- `Video` 经各平台自带的播放器解码、出声并保持音画同步（AVFoundation、Media Foundation、GStreamer、MediaCodec、浏览器的 `<video>`），平台播放不了的格式报 `failed`；打开时停在首帧，首帧显示时投递 `loaded(SizeDp)`；`progress(VideoProgress)` 在就绪、播放与暂停、等待数据变化时投递，播放中每秒约四次投递位置（`VideoProgress { position: Duration; duration: Option<Duration>; playing: Bool; waiting: Bool; }`，直播流的 `duration` 为 `None`）；`ended` 在播到末尾停下时投递（循环时不投递）；`playing_changed(Bool)` 在播放状态改变时投递并写回双向的 `playing`；`fullscreen_changed(Bool)` 在进入或退出全屏时投递并写回双向的 `fullscreen`。同一节点上 `source`/`url` 不变时视频保持其播放位置，换来源则从头开始；只有 `playing` 等属性的值变化才会重新要求播放器，播放器自己停下（播完）的状态不会被无关的重建打回。正在播放且在屏幕上可见时每帧取新画面写入同一个 texture，只重绘该节点；移出屏幕继续播放（声音不断）但不再取画面；
 - HTML 导出为 `<video class="vx-video" playsinline preload="metadata">`，`playing`、`looping`、`muted` 为 `autoplay`、`loop`、`muted` 属性，`volume`、`rate` 与变化的值由页面脚本设置；浏览器通常只允许静音的视频自动播放；`tint` 不能导出；
+- `controls: true` 的 `Video` 在画面上叠一层控制部件：暂停时居中的大播放图标、等待数据时的 Spinner，底部一条控制栏——进度条（拖动即 seek）之下依次是播放/暂停、静音、音量滑块、`已播 / 总长` 时间与全屏按钮。播放中且无指针移动、按键或拖动约 2.5 秒后控制栏淡出，指针移动、按键、暂停或播完时淡入；淡出时按在控制栏上只会唤回它。鼠标单击画面播放/暂停、双击进入/退出全屏；触摸单击显示/隐藏控制栏，双击画面前半/后半后退/前进 10 秒。焦点在任一部件上时：Space/K 播放暂停，←/→ 5 秒（J/L 10 秒），↑/↓ 音量，Home/End 首尾，数字键跳到十分之几处，M 静音，F 全屏，Esc 退出全屏。各按钮是以当前动作命名的 `button`，进度条与音量是 `slider`（进度条的值为已播秒数）。部件只读播放器的报告、只发播放请求，画面仍是视频节点自己的；
+- 全屏（`fullscreen` 或控制条）把节点作为覆盖整个窗口的层显示在黑底上，焦点留在其中，并请求窗口全屏（窗口已全屏时不动它）；退出时节点回到原位，窗口恢复原状；窗口自行退出全屏（系统按钮、手势）或节点被释放时同样退出。窗口总是铺满屏幕的平台上节点仍覆盖窗口；导出的页面只在读者手势中进入全屏；
 - `Image`/`Svg`/`Video` 有 `semantics.label` 时语义角色为 `Role::image`，以该标签为替代文本；没有标签的图像是装饰，不被辅助技术朗读；
-- Rust 代码以 `viso::asset!("…")` 取得同一资源（同样的路径检查与 `E3713`，字节同样嵌入），由 `viso::widgets::image_asset` 显示，视频由 `viso::widgets::video` 播放（也接受 `VideoSource::file` / `url` / `bytes`）；`Video::handle` 交出的 `VideoHandle` 在 Handler 中 `play` / `pause` / `toggle` / `seek` 并读取 `status`。
+- Rust 代码以 `viso::asset!("…")` 取得同一资源（同样的路径检查与 `E3713`，字节同样嵌入），由 `viso::widgets::image_asset` 显示，视频由 `viso::widgets::video` 播放（也接受 `VideoSource::file` / `url` / `bytes`）；`Video::controls` 显示同一套控制部件（`controls_style` / `controls_labels` 定制外观与无障碍名称），`Video::handle` 交出的 `VideoHandle` 在 Handler 中 `play` / `pause` / `toggle` / `seek` / `set_fullscreen` 并读取 `status`。
 
 ---
 

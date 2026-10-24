@@ -337,6 +337,8 @@ const VIDEO: &[WidgetProperty] = &[
     prop("muted", "Bool"),
     prop("volume", "F32"),
     prop("rate", "F32"),
+    prop("controls", "Bool"),
+    two_way("fullscreen", "Bool"),
 ];
 
 /// An `Svg`'s scene, from `asset("…")`, and how it fills the box.
@@ -536,6 +538,7 @@ const LOAD_EVENTS: &[WidgetEvent] = &[
 /// as it plays, and its end.
 const VIDEO_EVENTS: &[WidgetEvent] = &[
     WidgetEvent::new("playing_changed", "Bool"),
+    WidgetEvent::new("fullscreen_changed", "Bool"),
     WidgetEvent::new("progress", "VideoProgress"),
     WidgetEvent::signal("ended"),
 ];

@@ -143,8 +143,11 @@ pub enum ControlKind {
     SearchField = 33,
     /// `Video`: plays the video of its `source` or its `url` through the
     /// platform's player, fitted and tinted, as its `playing`, `looping`,
-    /// `muted`, `volume` and `rate` ask; reports `playing_changed` when it
-    /// stops at its end, and where it is as it plays.
+    /// `muted`, `volume` and `rate` ask, full screen while `fullscreen`,
+    /// under the framework's controls — parts it builds inside it — with
+    /// `controls`; reports `playing_changed` when it stops at its end or its
+    /// controls play or pause it, `fullscreen_changed`, and where it is as it
+    /// plays.
     Video = 34,
 }
 
@@ -547,6 +550,8 @@ impl ControlKind {
             (ControlKind::Video, "muted") => ControlInput::Muted,
             (ControlKind::Video, "volume") => ControlInput::Volume,
             (ControlKind::Video, "rate") => ControlInput::Rate,
+            (ControlKind::Video, "controls") => ControlInput::Controls,
+            (ControlKind::Video, "fullscreen") => ControlInput::Fullscreen,
             (ControlKind::Pages, "page_transition") => ControlInput::PageTransition,
             (ControlKind::Viewer, "double_tap") => ControlInput::Value,
             (ControlKind::Viewer, "min_scale") => ControlInput::Min,
@@ -1134,6 +1139,10 @@ pub enum ControlInput {
     Volume,
     /// A video's `rate`: how many times its speed it plays at.
     Rate,
+    /// A video's `controls`: whether the framework's controls show over it.
+    Controls,
+    /// A video's `fullscreen`: whether it shows full screen.
+    Fullscreen,
 }
 
 /// A view-driven native node: its kind and the handler-table entries that
@@ -1209,6 +1218,10 @@ pub struct Control {
     pub volume: Option<u32>,
     /// The entry of how many times its speed a video plays at.
     pub rate: Option<u32>,
+    /// The entry of whether a video shows the framework's controls.
+    pub controls: Option<u32>,
+    /// The entry of whether a video shows full screen.
+    pub fullscreen: Option<u32>,
     /// The shader a shader view paints with, by its index in the view's
     /// shader table; its value gives the shader's parameters.
     pub shader: Option<u32>,
@@ -1396,7 +1409,7 @@ pub enum Switched {
 
 impl ControlInput {
     /// Every input, by wire tag.
-    pub const ALL: [ControlInput; 83] = [
+    pub const ALL: [ControlInput; 85] = [
         ControlInput::Value,
         ControlInput::Min,
         ControlInput::Max,
@@ -1480,6 +1493,8 @@ impl ControlInput {
         ControlInput::Muted,
         ControlInput::Volume,
         ControlInput::Rate,
+        ControlInput::Controls,
+        ControlInput::Fullscreen,
     ];
 
     /// Its wire tag: its place in [`ControlInput::ALL`].
@@ -1591,6 +1606,8 @@ impl Control {
             muted: None,
             volume: None,
             rate: None,
+            controls: None,
+            fullscreen: None,
             shader: None,
             look: Look::default(),
             arms: Box::new([]),
@@ -1692,6 +1709,8 @@ impl Control {
             ControlInput::Muted => self.muted,
             ControlInput::Volume => self.volume,
             ControlInput::Rate => self.rate,
+            ControlInput::Controls => self.controls,
+            ControlInput::Fullscreen => self.fullscreen,
         }
     }
 
@@ -1791,6 +1810,8 @@ impl Control {
             ControlInput::Muted => &mut self.muted,
             ControlInput::Volume => &mut self.volume,
             ControlInput::Rate => &mut self.rate,
+            ControlInput::Controls => &mut self.controls,
+            ControlInput::Fullscreen => &mut self.fullscreen,
         };
         *slot = Some(entry);
     }
@@ -1837,6 +1858,8 @@ impl Encode for Control {
             self.muted,
             self.volume,
             self.rate,
+            self.controls,
+            self.fullscreen,
             self.shader,
             look.background,
             look.opacity,
@@ -1979,6 +2002,8 @@ impl Decode for Control {
             muted: entry()?,
             volume: entry()?,
             rate: entry()?,
+            controls: entry()?,
+            fullscreen: entry()?,
             shader: entry()?,
             look: Look {
                 background: entry()?,
@@ -2286,6 +2311,8 @@ mod tests {
             muted: Some(50),
             volume: Some(51),
             rate: Some(52),
+            controls: Some(53),
+            fullscreen: Some(54),
             shader: Some(2),
             look: Look {
                 background: Some(3),

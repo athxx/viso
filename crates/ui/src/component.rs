@@ -792,6 +792,8 @@ pub struct NodeStore {
     pub(crate) links: crate::links::Links,
     /// Cold: the nodes laid out over the whole surface.
     pub(crate) layers: crate::layer::Layers,
+    /// Cold: the node shown full screen, and the window's own state.
+    pub(crate) fullscreen: crate::fullscreen::Fullscreen,
     /// The anchored layers (cold): each one's anchor and where it went.
     pub(crate) anchors: crate::anchored::Anchors,
     /// The wakes whose time came, waiting to reach their nodes.
@@ -968,6 +970,7 @@ impl NodeStore {
         self.cursors.clear();
         self.links.clear();
         self.layers.clear();
+        self.fullscreen.clear();
         self.anchors.clear();
         self.wakes.clear();
         self.shadows.clear();
@@ -6911,6 +6914,17 @@ impl<'a> BuildCx<'a> {
         self.stack.pop();
         self.pending_placement = None;
         Handle { id }
+    }
+
+    /// Declare `children` under the already-declared node `handle`, after
+    /// any it has: under a leaf they lie over its box and never size it, as
+    /// a video's controls over its picture.
+    pub fn inside<R>(&mut self, handle: Handle, children: impl FnOnce(&mut BuildCx<'_>) -> R) -> R {
+        self.stack.push(handle.id);
+        let out = children(self);
+        self.stack.pop();
+        self.pending_placement = None;
+        out
     }
 
     /// Declare a flex container that is an adaptive scope: the readers under

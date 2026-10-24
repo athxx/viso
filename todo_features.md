@@ -264,8 +264,11 @@ Rules:
     per-node playback state and requests), the facade driving players into textures,
     the `Video` widget and the DSL `Video` node (`VideoAsset`, `url`, two-way
     `playing`, `progress`/`ended`/`playing_changed`; HTML export as `<video>`).
-  - [ ] Video controls: a built-in overlay (play/pause, scrubber, time, mute,
-    fullscreen) for the widget and the DSL `controls` property.
+  - [x] Video controls: the framework's parts over the picture (play/pause, spinner,
+    scrubber, time, mute and volume, full screen; fading bar, pointer, touch and
+    keys), shared by `Video::controls` and the DSL `controls`; a leaf's children
+    lie over it; node full screen (`set_fullscreen`, the window asked along) and
+    the DSL two-way `fullscreen`/`fullscreen_changed`; HTML `controls`.
   - [x] Zero-copy frames on Apple: `ExternalImage` in `viso-handle`, the backend's
     `import_external`/`adopt_external`, IOSurface → Metal (one texture a surface,
     use count held until no frame in flight samples it), the facade adopting

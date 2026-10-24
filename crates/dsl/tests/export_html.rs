@@ -2273,11 +2273,14 @@ fn a_video_exports_as_a_video_element_its_script_steers_and_hears() {
 export component Clip {
     state playing = false;
     state at = 0ms;
+    state full = false;
     view {
         Column {
             Video {
                 source: asset("clips/intro.mp4");
                 width: 64dp; height: 48dp;
+                controls: true;
+                bind fullscreen <=> full;
                 fit: ImageFit::cover;
                 looping: true; muted: true; volume: 0.5;
                 bind playing <=> playing;
@@ -2301,13 +2304,21 @@ export component Clip {
         " loop",
         " muted",
         " autoplay",
+        " controls",
     ] {
         assert!(index.contains(want), "{want}: {index}");
     }
     assert!(page.styles.contains("object-fit: cover"), "{}", page.styles);
     assert_eq!(page.assets, ["clips/intro.mp4"]);
     let script = page.script.as_deref().unwrap();
-    for want in ["\"volume\")", "\"autoplay\")", ", 38, ", ", 40, "] {
+    for want in [
+        "\"volume\")",
+        "\"autoplay\")",
+        "\"fullscreen\")",
+        ", 38, ",
+        ", 40, ",
+        ", 41, ",
+    ] {
         assert!(script.contains(want), "{want}: {script}");
     }
     assert!(static_only.is_err(), "a static page sets no volume");

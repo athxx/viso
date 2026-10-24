@@ -120,11 +120,15 @@ pub enum EventRoute {
     /// A `Video`'s `playing_changed` (`Bool`): it stopped at its end, or plays
     /// again; it writes back a two-way `playing`.
     PlayingChanged = 40,
+    /// A `Video`'s `fullscreen_changed` (`Bool`): it went full screen, or
+    /// came back — from its controls, the keys or the window; it writes back
+    /// a two-way `fullscreen`.
+    FullscreenChanged = 41,
 }
 
 impl EventRoute {
     /// Every route, by discriminant.
-    pub const ALL: [EventRoute; 41] = [
+    pub const ALL: [EventRoute; 42] = [
         EventRoute::Click,
         EventRoute::Tap,
         EventRoute::PointerDown,
@@ -166,6 +170,7 @@ impl EventRoute {
         EventRoute::Progress,
         EventRoute::Ended,
         EventRoute::PlayingChanged,
+        EventRoute::FullscreenChanged,
     ];
 
     /// The route of standard DSL event `event`, `None` for an event the runtime
@@ -221,6 +226,7 @@ impl EventRoute {
             EventRoute::Progress => "progress",
             EventRoute::Ended => "ended",
             EventRoute::PlayingChanged => "playing_changed",
+            EventRoute::FullscreenChanged => "fullscreen_changed",
         }
     }
 
@@ -268,6 +274,7 @@ impl EventRoute {
             EventRoute::Progress => "Progress",
             EventRoute::Ended => "Ended",
             EventRoute::PlayingChanged => "PlayingChanged",
+            EventRoute::FullscreenChanged => "FullscreenChanged",
         }
     }
 
@@ -336,6 +343,7 @@ impl EventRoute {
                 | EventRoute::Progress
                 | EventRoute::Ended
                 | EventRoute::PlayingChanged
+                | EventRoute::FullscreenChanged
         )
     }
 

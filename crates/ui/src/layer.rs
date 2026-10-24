@@ -142,6 +142,7 @@ impl NodeStore {
         let anchored = self.anchored_box(index, surface);
         let bounds = match anchored {
             Some((_, laid)) => laid,
+            None if self.covers_surface(index) => surface,
             None => layout::root_box(self, index, surface),
         };
         let within = Vec2 {
