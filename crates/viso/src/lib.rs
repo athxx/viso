@@ -1198,6 +1198,31 @@ impl<A: Application> AppDriver<A> {
         }
     }
 
+    /// Keeps what each window holds of the images no node shows within the
+    /// images budget, less what the other windows' textures take: the least
+    /// recently shown go first.
+    fn sweep_assets(&mut self) {
+        let budget = footprint::budget().images;
+        let total: u64 = self
+            .windows
+            .iter()
+            .map(|ws| ws.store.assets().texture_bytes())
+            .sum();
+        for ws in &mut self.windows {
+            let own = ws.store.assets().texture_bytes();
+            let allowance = budget.saturating_sub(total - own);
+            let evicted = match ws.gpu.as_mut() {
+                Some(gpu) => ws.store.assets_mut().sweep(allowance, |texture| {
+                    gpu.renderer.release_texture(&mut gpu.backend, texture);
+                }),
+                // Without a device no texture is resident to release.
+                None if own == 0 => ws.store.assets_mut().sweep(allowance, |_| {}),
+                None => 0,
+            };
+            self.assets.evicted(evicted);
+        }
+    }
+
     /// The live window state for `id`, by linear scan. Windows number in the
     /// single digits, so this is cheaper than a keyed map.
     fn window_mut(&mut self, id: WindowId) -> Option<&mut WindowState> {
@@ -1694,6 +1719,9 @@ impl WindowState {
         });
         gpu.renderer.trim_caches(&mut gpu.backend);
         text.trim(|texture| gpu.renderer.release_texture(&mut gpu.backend, texture));
+        self.store
+            .assets_mut()
+            .evict_unshown(|texture| gpu.renderer.release_texture(&mut gpu.backend, texture));
         for (&id, request) in &self.text_sources {
             self.store.set_text_request(id, (**request).clone());
         }
@@ -3915,6 +3943,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         ws.assets_served = ws.store.assets().revision();
                     }
                 }
+                self.sweep_assets();
                 for ws in &mut self.windows {
                     ws.store.set_dirty_cause(DirtyCause::Other);
                 }
@@ -4280,8 +4309,12 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                                 );
                                 let a = self.assets.counters();
                                 eprintln!(
-                                    "viso: assets decodes={} decode_failures={} uploads={} upload_bytes={}",
-                                    a.decodes, a.decode_failures, a.uploads, a.upload_bytes,
+                                    "viso: assets decodes={} decode_failures={} uploads={} upload_bytes={} evictions={}",
+                                    a.decodes,
+                                    a.decode_failures,
+                                    a.uploads,
+                                    a.upload_bytes,
+                                    a.evictions,
                                 );
                                 if let Some(text) = &ws.text {
                                     let c = text.counters();

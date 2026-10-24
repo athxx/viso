@@ -9,7 +9,9 @@
 //! when it is done, and its result is provided to every window on the next
 //! frame. The app keeps decoded payloads only weakly — the tables hold them,
 //! and a table lets go of a raster's pixels once its texture is attached — so
-//! a resident image costs its texture and nothing on the CPU. A payload that
+//! a resident image costs its texture and nothing on the CPU. An image no node
+//! shows any more stays resident for one that shows it again, within the
+//! images budget: past it, the least recently shown is let go of. A payload that
 //! does not decode is reported once and never retried at that revision.
 //!
 //! An image the build converted to its target's texel format is read, not
@@ -49,6 +51,8 @@ pub(crate) struct AssetCounters {
     pub(crate) uploads: u64,
     /// The bytes those uploads wrote.
     pub(crate) upload_bytes: u64,
+    /// Images no node showed, let go of to keep within the budget.
+    pub(crate) evictions: u64,
 }
 
 /// A decoded payload the app remembers while some table holds it.
@@ -195,6 +199,11 @@ pub(crate) struct Assets {
 impl Assets {
     pub(crate) fn counters(&self) -> AssetCounters {
         self.counters
+    }
+
+    /// Counts `n` images a window let go of.
+    pub(crate) fn evicted(&mut self, n: usize) {
+        self.counters.evictions += n as u64;
     }
 
     /// Takes the worker's results; `true` when any arrived, for the caller to
@@ -552,6 +561,7 @@ mod tests {
                 decode_failures: 0,
                 uploads: 1,
                 upload_bytes: 8 * 4 * 4,
+                evictions: 0,
             }
         );
         assert!(

@@ -3183,7 +3183,7 @@ impl NodeStore {
         }
         let mut content = content;
         self.arriving(id, &mut content);
-        self.leave_shader(id.index() as usize);
+        self.leave_content(id.index() as usize);
         self.content_payload[id.index() as usize] = Some(Box::new(content));
         self.mark_dirty(id, classes);
     }
@@ -3207,6 +3207,9 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
+        for &resource in images {
+            self.assets.hold(resource);
+        }
         let images = images
             .iter()
             .map(|&resource| BrushImage {
@@ -3219,7 +3222,7 @@ impl NodeStore {
             self.content_payload(id),
             Some(Content::Shader { program, .. }) if *program == slot
         );
-        self.leave_shader(id.index() as usize);
+        self.leave_content(id.index() as usize);
         let classes = if same {
             DirtyClass::PAINT
         } else {
@@ -3292,7 +3295,8 @@ impl NodeStore {
         if self.content_payload[id.index() as usize].as_deref() == Some(&content) {
             return;
         }
-        self.leave_shader(id.index() as usize);
+        self.assets.hold(resource);
+        self.leave_content(id.index() as usize);
         let slot = &mut self.content_payload[id.index() as usize];
         let same_size = matches!(
             slot.as_deref(),
@@ -3418,12 +3422,20 @@ impl NodeStore {
         }
     }
 
-    /// Lets go of the program or scene slot node `index` paints with, if it
-    /// paints with one: its content is about to change.
-    fn leave_shader(&mut self, index: usize) {
+    /// Lets go of the program or scene slot node `index` paints with and of
+    /// the assets it shows, if it does: its content is about to change.
+    fn leave_content(&mut self, index: usize) {
         match self.content_payload[index].as_deref() {
-            Some(Content::Shader { program, .. }) => self.shaders.leave(*program),
+            Some(Content::Shader {
+                program, images, ..
+            }) => {
+                self.shaders.leave(*program);
+                for image in images.iter() {
+                    self.assets.release(image.resource);
+                }
+            }
             Some(Content::Scene { slot, .. }) => self.scenes.leave(*slot),
+            Some(Content::Asset { resource, .. }) => self.assets.release(*resource),
             _ => {}
         }
     }
@@ -3439,7 +3451,7 @@ impl NodeStore {
         if let Some(Content::Scene { slot, .. }) = self.content_payload(id) {
             return Some(*slot);
         }
-        self.leave_shader(id.index() as usize);
+        self.leave_content(id.index() as usize);
         let slot = self.scenes.take(id);
         self.content_payload[id.index() as usize] =
             Some(Box::new(Content::Scene { slot, revision: 0 }));
@@ -3508,7 +3520,7 @@ impl NodeStore {
             return false;
         }
         let index = node.index() as usize;
-        self.leave_shader(index);
+        self.leave_content(index);
         self.content_payload[index] = None;
         let owner = self.owner[index];
         if owner == NO_OWNER {
@@ -3535,7 +3547,7 @@ impl NodeStore {
             return;
         }
         self.arriving(id, &mut content);
-        self.leave_shader(id.index() as usize);
+        self.leave_content(id.index() as usize);
         self.content_payload[id.index() as usize] = Some(Box::new(content));
         self.mark_dirty(
             id,

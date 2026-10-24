@@ -147,8 +147,10 @@ pub struct MemoryBudget {
     /// One glyph atlas plane: its texels (A8), rounded down to a square of
     /// whole pages.
     pub glyph_atlas: u64,
-    /// The textures of the images shown. An image a node shows stays
-    /// resident, so this is checked like a hard limit, never evicted from.
+    /// The textures of the images. An image a node shows stays resident, so
+    /// this is checked like a hard limit; one no node shows stays resident
+    /// within it for a node that shows it again, the least recently shown let
+    /// go of first.
     pub images: u64,
 }
 

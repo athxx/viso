@@ -19,7 +19,13 @@
 //!    facade to release once no frame in flight draws it.
 //!
 //! A node's [`Content::Asset`](crate::content::Content::Asset) carries what it
-//! draws, so paint reads no table. Providing a new payload rewrites only the
+//! draws, so paint reads no table.
+//!
+//! The table counts the nodes showing each resource — a brush sampling it
+//! counts too. One no node shows any more stays decoded, its texture resident,
+//! for a node that shows it again; [`sweep`](AssetTable::sweep) keeps what
+//! those hold within a budget, letting go of the least recently shown first,
+//! and forgets the ones holding nothing worth keeping. Providing a new payload rewrites only the
 //! nodes showing that resource: `PAINT` when the natural size holds, `MEASURE |
 //! LAYOUT | PAINT` when it moves. Every change bumps the table's
 //! [`revision`](AssetTable::revision); the facade compares it against the one it
@@ -108,6 +114,10 @@ pub(crate) struct AssetEntry {
     /// A raster's texture in this store's window; it draws until the newest
     /// payload's replaces it.
     pub(crate) texture: Option<Resident>,
+    /// How many nodes show it.
+    pub(crate) users: u32,
+    /// When it was last shown, on the table's clock.
+    pub(crate) shown: u64,
 }
 
 /// A raster's texture, the revision it was uploaded from, that raster's size
@@ -127,6 +137,18 @@ impl AssetEntry {
             bytes: None,
             payload: None,
             texture: None,
+            users: 0,
+            shown: 0,
+        }
+    }
+
+    /// The bytes it holds that a node showing it again draws from at once: its
+    /// texture's, or its vector scene's.
+    fn kept_bytes(&self) -> u64 {
+        match (&self.texture, &self.payload) {
+            (Some(t), _) => t.bytes,
+            (None, Some((_, AssetPayload::Vector(scene)))) => scene.bytes(),
+            _ => 0,
         }
     }
 
@@ -145,6 +167,16 @@ pub struct AssetTable {
     revision: u64,
     /// The bytes of the textures attached, in the formats they are stored in.
     texture_bytes: u64,
+    /// Ticks once each time a resource loses its last node.
+    clock: u64,
+    /// Whether a resource lost its last node, or one gained something to
+    /// keep, since the last sweep.
+    unswept: bool,
+    /// The budget and texture bytes of the last sweep.
+    swept: (u64, u64),
+    /// Reused by a sweep: the resources no node shows, least recently shown
+    /// first, and what each keeps.
+    idle: Vec<(u64, ResourceId, u64)>,
 }
 
 impl AssetTable {
@@ -256,6 +288,99 @@ impl AssetTable {
         self.texture_bytes
     }
 
+    /// Counts a node showing `id`, recording that a node wants it when the
+    /// table holds nothing of it.
+    pub(crate) fn hold(&mut self, id: ResourceId) {
+        self.want(id);
+        if let Some(entry) = self.entries.get_mut(&id) {
+            entry.users += 1;
+        }
+    }
+
+    /// Counts a node no longer showing `id`.
+    pub(crate) fn release(&mut self, id: ResourceId) {
+        let Some(entry) = self.entries.get_mut(&id) else {
+            return;
+        };
+        entry.users = entry.users.saturating_sub(1);
+        if entry.users == 0 {
+            self.clock += 1;
+            entry.shown = self.clock;
+            self.unswept = true;
+        }
+    }
+
+    /// How many nodes show `id`.
+    pub fn users(&self, id: ResourceId) -> u32 {
+        self.entries.get(&id).map_or(0, |e| e.users)
+    }
+
+    /// Whether a resource lost its last node, or one no node shows gained
+    /// something to keep, since the last [`sweep`](Self::sweep).
+    pub fn unswept(&self) -> bool {
+        self.unswept
+    }
+
+    /// Forgets the resources no node shows that keep nothing, then lets go of
+    /// those that do, least recently shown first, until the table's textures
+    /// and the scenes no node shows take at most `budget` bytes; `release`
+    /// takes each texture let go of. A table no node left and nothing grew in
+    /// since the last
+    /// sweep, at the same budget, is left as it is. Returns how many it let go
+    /// of.
+    pub fn sweep(&mut self, budget: u64, mut release: impl FnMut(TextureId)) -> usize {
+        if !self.unswept && self.swept == (budget, self.texture_bytes) {
+            return 0;
+        }
+        self.unswept = false;
+        let mut idle = std::mem::take(&mut self.idle);
+        let before = self.entries.len();
+        let mut scenes = 0;
+        self.entries.retain(|id, e| {
+            if e.users > 0 {
+                return true;
+            }
+            let kept = e.kept_bytes();
+            if e.texture.is_none() {
+                scenes += kept;
+            }
+            idle.push((e.shown, *id, kept));
+            kept > 0
+        });
+        let mut evicted = before - self.entries.len();
+        idle.retain(|&(_, _, kept)| kept > 0);
+        idle.sort_unstable_by_key(|&(shown, ..)| shown);
+        for &(_, id, kept) in &idle {
+            if self.texture_bytes + scenes <= budget {
+                break;
+            }
+            let Some(entry) = self.entries.remove(&id) else {
+                continue;
+            };
+            match entry.texture {
+                Some(t) => {
+                    self.texture_bytes -= t.bytes;
+                    release(t.texture);
+                }
+                None => scenes -= kept,
+            }
+            evicted += 1;
+        }
+        idle.clear();
+        self.idle = idle;
+        self.swept = (budget, self.texture_bytes);
+        if evicted > 0 {
+            self.revision += 1;
+        }
+        evicted
+    }
+
+    /// Lets go of everything no node shows (see [`sweep`](Self::sweep)).
+    pub fn evict_unshown(&mut self, release: impl FnMut(TextureId)) -> usize {
+        self.unswept = true;
+        self.sweep(0, release)
+    }
+
     /// Moves with every change of what the table holds.
     pub fn revision(&self) -> u64 {
         self.revision
@@ -310,6 +435,7 @@ impl AssetTable {
             entry.offered = revision;
         }
         entry.payload = Some((revision, payload));
+        self.unswept |= entry.users == 0;
         self.revision += 1;
         true
     }
@@ -343,6 +469,7 @@ impl AssetTable {
         if let Some(old) = old {
             self.texture_bytes -= old.bytes;
         }
+        self.unswept |= entry.users == 0;
         entry.payload = None;
         self.revision += 1;
         Ok(old.map(|t| t.texture))
@@ -354,5 +481,117 @@ impl AssetTable {
         }
         self.entries.clear();
         self.texture_bytes = 0;
+        self.unswept = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::component::{BuildCx, NodeStore};
+    use crate::content::Content;
+    use crate::reactive::EffectStore;
+    use crate::{BoxStyle, LeafStyle, Size};
+
+    /// A 4 × 4 raster: 64 bytes resident.
+    fn raster() -> AssetPayload {
+        AssetPayload::Raster(Arc::new(RasterImage::rgba8(4, 4, vec![255; 64])))
+    }
+
+    /// A store of `n` leaves under one root, each showing its own resource,
+    /// decoded and resident as texture `i`.
+    fn shown(n: u32) -> (NodeStore, Vec<crate::node::NodeId>, Vec<ResourceId>) {
+        let mut store = NodeStore::new();
+        let mut leaves = Vec::new();
+        {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(Default::default(), |cx| {
+                for _ in 0..n {
+                    let leaf = LeafStyle {
+                        size: Size::fixed(4.0, 4.0),
+                        style: BoxStyle::NONE,
+                    };
+                    leaves.push(cx.leaf(leaf).id());
+                }
+            });
+        }
+        let ids: Vec<ResourceId> = (0..n)
+            .map(|i| ResourceId::of(&format!("photo{i}.png")))
+            .collect();
+        let r = ResourceRevision(1);
+        for (i, (&leaf, &id)) in leaves.iter().zip(&ids).enumerate() {
+            store.assets_mut().offer(id, r, AssetBytes::Static(b"png"));
+            store.set_asset(leaf, id, AssetFit::Fill, None);
+            store.provide_asset(id, r, raster());
+            store.attach_texture(id, r, TextureId::new(i as u32));
+        }
+        (store, leaves, ids)
+    }
+
+    #[test]
+    fn an_image_no_node_shows_stays_until_the_budget_wants_it_least_recent_first() {
+        let (mut store, leaves, ids) = shown(3);
+        assert_eq!(store.assets().users(ids[0]), 1);
+        assert_eq!(store.assets().texture_bytes(), 3 * 64);
+        let mut released = Vec::new();
+        assert_eq!(
+            store.assets_mut().sweep(0, |t| released.push(t)),
+            0,
+            "every image is shown"
+        );
+
+        // The second, then the first, stop showing.
+        let (mut effects, mut scratch) = (EffectStore::default(), Vec::new());
+        store.free_tree(leaves[1], &mut effects, &mut scratch);
+        store.free_tree(leaves[0], &mut effects, &mut scratch);
+        assert_eq!(store.assets().users(ids[1]), 0);
+        assert!(store.assets().unswept());
+        // Within the budget both stay.
+        assert_eq!(store.assets_mut().sweep(3 * 64, |t| released.push(t)), 0);
+        assert!(store.assets().knows(ids[1]));
+        // The budget an image short: the least recently shown goes.
+        assert_eq!(store.assets_mut().sweep(2 * 64, |t| released.push(t)), 1);
+        assert_eq!(released, [TextureId::new(1)]);
+        assert!(!store.assets().knows(ids[1]));
+        assert!(store.assets().knows(ids[0]));
+        assert_eq!(store.assets().texture_bytes(), 2 * 64);
+
+        // Shown again, it draws at once from what was kept.
+        store.set_asset(leaves[2], ids[0], AssetFit::Fill, None);
+        assert_eq!(store.assets().users(ids[0]), 1);
+        assert_eq!(store.assets().users(ids[2]), 0, "the node moved off it");
+        match store.content_payload(leaves[2]) {
+            Some(Content::Asset { draw, .. }) => {
+                assert_eq!(*draw, AssetDraw::Raster(TextureId::new(0)));
+            }
+            other => panic!("{other:?}"),
+        }
+        // A trim lets go of everything no node shows.
+        released.clear();
+        assert_eq!(store.assets_mut().evict_unshown(|t| released.push(t)), 1);
+        assert_eq!(released, [TextureId::new(2)]);
+        assert_eq!(store.assets().texture_bytes(), 64);
+    }
+
+    #[test]
+    fn a_resource_no_node_shows_that_keeps_nothing_is_forgotten() {
+        let mut store = NodeStore::new();
+        let leaf = {
+            let mut cx = BuildCx::new(&mut store);
+            let leaf = LeafStyle {
+                size: Size::fixed(4.0, 4.0),
+                style: BoxStyle::NONE,
+            };
+            cx.leaf(leaf).id()
+        };
+        let id = ResourceId::of("never.png");
+        store
+            .assets_mut()
+            .offer(id, ResourceRevision(1), AssetBytes::Static(b"png"));
+        store.set_asset(leaf, id, AssetFit::Fill, None);
+        let (mut effects, mut scratch) = (EffectStore::default(), Vec::new());
+        store.free_tree(leaf, &mut effects, &mut scratch);
+        assert_eq!(store.assets_mut().sweep(u64::MAX, |_| {}), 1);
+        assert!(!store.assets().knows(id), "its bytes are not kept");
     }
 }

@@ -39,6 +39,12 @@ pub struct VectorScene {
 }
 
 impl VectorScene {
+    /// About the bytes it holds.
+    pub fn bytes(&self) -> u64 {
+        let cmds: usize = self.paths.iter().map(|p| p.cmds.capacity()).sum();
+        (self.paths.len() * size_of::<Path>() + cmds * size_of::<PathCmd>()) as u64
+    }
+
     /// Its paths placed into `rect`, stretched to fill it, each color multiplied
     /// by `tint` when given (white keeps the colors, a color with full alpha
     /// recolors a monochrome icon by its alpha).
