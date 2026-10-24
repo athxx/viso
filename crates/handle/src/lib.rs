@@ -162,6 +162,32 @@ pub enum ExternalImage {
         /// Its height in texels.
         height: u32,
     },
+    /// Linux: a picture in NV12 planes in a dma-buf a decoder wrote, laid
+    /// out linearly, for a GPU to read where it lies. Written by the time it
+    /// is handed over; a backend holds `holds` while any frame in flight
+    /// reads it.
+    DmaBuf {
+        /// The dma-buf's file descriptor, borrowed: a backend that keeps it
+        /// takes a duplicate.
+        fd: i32,
+        /// Its length in bytes.
+        len: u64,
+        /// Where the luma and the chroma plane start in it.
+        offsets: [u64; 2],
+        /// The bytes between the planes' rows.
+        strides: [u32; 2],
+        /// The holds on the buffer, as for [`ExternalImage::DxgiShared`].
+        holds: *const ExternalHolds,
+        matrix: YuvMatrix,
+        /// Full range rather than studio range.
+        full_range: bool,
+        /// Chroma sited with the left luma sample of its pair.
+        left_chroma: bool,
+        /// Its width in texels.
+        width: u32,
+        /// Its height in texels.
+        height: u32,
+    },
     /// The web: the picture an `HTMLVideoElement` shows now, which the
     /// browser keeps on the GPU. A backend copies it there into a texture of
     /// its own, never through the CPU.
@@ -183,6 +209,7 @@ impl ExternalImage {
             ExternalImage::IoSurface { width, height, .. }
             | ExternalImage::DxgiShared { width, height, .. }
             | ExternalImage::AndroidHardwareBuffer { width, height, .. }
+            | ExternalImage::DmaBuf { width, height, .. }
             | ExternalImage::WebVideo { width, height, .. } => (width, height),
         }
     }

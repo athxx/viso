@@ -13,10 +13,15 @@ mod apple;
 ))]
 mod gstreamer;
 #[cfg(not(any(
-    target_vendor = "apple",
+    all(target_arch = "wasm32", target_os = "unknown"),
     target_os = "android",
+    target_vendor = "apple",
     target_os = "windows",
-    all(target_arch = "wasm32", target_os = "unknown")
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
 )))]
 mod no_picture;
 #[cfg(not(any(
@@ -183,7 +188,12 @@ enum Texels<'a> {
             target_vendor = "apple",
             target_os = "android",
             target_os = "windows",
-            all(target_arch = "wasm32", target_os = "unknown")
+            all(target_arch = "wasm32", target_os = "unknown"),
+            target_os = "linux",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
         )),
         allow(dead_code)
     )]
@@ -294,7 +304,12 @@ impl<'a> Frame<'a> {
             target_vendor = "apple",
             target_os = "android",
             target_os = "windows",
-            all(target_arch = "wasm32", target_os = "unknown")
+            all(target_arch = "wasm32", target_os = "unknown"),
+            target_os = "linux",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
         )),
         allow(dead_code)
     )]
@@ -332,11 +347,19 @@ impl<'a> Frame<'a> {
         }
     }
 
-    /// Its NV12 planes, for a GPU to convert; `None` for a picture in other
-    /// texels.
+    /// Its NV12 planes, for a GPU to convert — mapped, for a picture in a
+    /// platform buffer that has them; `None` for a picture in other texels.
     pub fn planes(&self) -> Option<viso_handle::Nv12<'a>> {
         match self.texels {
             Texels::Planes { picture, .. } => Some(picture),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Texels::Native(picture) => picture.planes(),
             _ => None,
         }
     }

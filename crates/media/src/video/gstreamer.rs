@@ -1,30 +1,35 @@
 //! Linux and the BSDs: GStreamer's `playbin`, loaded at run time, its
-//! pictures taken from an `appsink` as NV12 planes, which the GPU converts,
-//! or as BGRA rows once a copy is wanted.
+//! pictures taken from an `appsink` as NV12 planes — in a dma-buf the GPU
+//! reads where it lies, or in memory at hand it uploads — which the GPU
+//! converts, or as BGRA rows once a copy is wanted.
 //!
 //! The libraries are opened on first use, so a program runs where GStreamer
 //! is not installed and only its videos fail, as `Unsupported`. `playbin`
 //! picks the demuxer and decoder (hardware where the system ranks one
 //! first), hands decoded Y′CbCr over as NV12 — as decoders write it, or
 //! reinterleaved, never converted to RGB on the CPU — and keeps sound and
-//! picture in step on its own threads. A picture copied out as rows instead
-//! is converted here, then the sink asks for BGRA, which GStreamer's own
-//! converter writes faster, from the next on; everything this side does is on the loop's thread and never
+//! picture in step on its own threads. A hardware decoder exporting linear
+//! dma-bufs hands them over as they are; the sink takes buffers laid out as
+//! their video metadata says, padded rows and all, so none is copied to fit.
+//! A dma-buf a backend does not import is mapped, and the sink then asks
+//! for memory at hand; a picture copied out as rows is converted here, and
+//! the sink then asks for BGRA, which GStreamer's own converter writes
+//! faster, from the next on; everything this side does is on the loop's thread and never
 //! waits. The bus is read when polled; the sink holds the picture due now,
 //! which is handed out mapped where GStreamer wrote it, with no copy, until
 //! the next replaces it.
 
-use std::cell::Cell;
-use std::ffi::{CStr, CString, c_char, c_int, c_uint, c_void};
+use std::cell::{Cell, RefCell};
+use std::ffi::{CStr, CString, c_char, c_int, c_uint, c_ulong, c_void};
 use std::ptr;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use viso_handle::{Nv12, YuvMatrix};
+use viso_handle::{ExternalHolds, ExternalImage, Nv12, YuvMatrix};
 
-use super::{Frame, Spilled, VideoError, VideoEvent, VideoInfo, VideoSource, file_uri, yuv};
-
-pub(crate) use super::no_picture::Picture;
+use super::{
+    Frame, PixelLayout, Spilled, VideoError, VideoEvent, VideoInfo, VideoSource, file_uri, yuv,
+};
 
 type GstElement = c_void;
 type GstBus = c_void;
@@ -35,6 +40,8 @@ type GstStructure = c_void;
 type GstQuery = c_void;
 type GstPad = c_void;
 type GstEvent = c_void;
+type GstMemory = c_void;
+type GstPadProbeInfo = c_void;
 
 /// The head of `GstMiniObject`, the same in every 1.x release.
 #[repr(C)]
@@ -55,6 +62,41 @@ struct MiniObject {
 struct Message {
     mini_object: MiniObject,
     kind: c_uint,
+}
+
+/// The head of `GstQuery`.
+#[repr(C)]
+struct Query {
+    mini_object: MiniObject,
+    kind: c_uint,
+}
+
+/// `GstMemory`.
+#[repr(C)]
+struct Memory {
+    mini_object: MiniObject,
+    allocator: *mut c_void,
+    parent: *mut c_void,
+    maxsize: usize,
+    align: usize,
+    offset: usize,
+    size: usize,
+}
+
+/// The head of `GstVideoMeta`: where a buffer's planes lie.
+#[repr(C)]
+struct VideoMeta {
+    flags: c_uint,
+    info: *const c_void,
+    buffer: *mut c_void,
+    frame_flags: c_uint,
+    format: c_int,
+    id: c_int,
+    width: c_uint,
+    height: c_uint,
+    n_planes: c_uint,
+    offset: [usize; 4],
+    stride: [c_int; 4],
 }
 
 /// The head of `GstBuffer`.
@@ -102,6 +144,22 @@ const MESSAGE_ASYNC_DONE: c_uint = 1 << 21;
 
 const MAP_READ: c_uint = 1 << 0;
 
+/// `GST_QUERY_ALLOCATION`: number 140, downstream and serialized.
+const QUERY_ALLOCATION: c_uint = (140 << 8) | (1 << 1) | (1 << 2);
+/// `GST_PAD_PROBE_TYPE_QUERY_DOWNSTREAM | GST_PAD_PROBE_TYPE_PUSH`: a query
+/// on its way in, before the pad answers it.
+const PROBE_QUERY_IN: c_uint = (1 << 9) | (1 << 12);
+const PROBE_OK: c_int = 1;
+const PROBE_HANDLED: c_int = 4;
+
+/// What the sink takes: linear NV12 dma-bufs where the libraries to read
+/// them are, NV12 or BGRA in memory at hand, BGRA alone once rows are
+/// wanted.
+const CAPS_DMA_BUF: &CStr = c"video/x-raw(memory:DMABuf),format=DMA_DRM,drm-format=NV12; \
+    video/x-raw(memory:DMABuf),format=NV12; video/x-raw,format={ NV12, BGRA }";
+const CAPS_AT_HAND: &CStr = c"video/x-raw,format={ NV12, BGRA }";
+const CAPS_ROWS: &CStr = c"video/x-raw,format=BGRA";
+
 /// `playbin`'s video, audio, software volume and deinterlacing, without the
 /// subtitles it would otherwise draw over the picture.
 const PLAY_FLAGS: c_int = 0x1 | 0x2 | 0x10 | 0x200;
@@ -141,6 +199,24 @@ struct Gst {
     element_get_static_pad: unsafe extern "C" fn(*mut GstElement, *const c_char) -> *mut GstPad,
     event_new_reconfigure: unsafe extern "C" fn() -> *mut GstEvent,
     pad_push_event: unsafe extern "C" fn(*mut GstPad, *mut GstEvent) -> c_int,
+    pad_add_probe: unsafe extern "C" fn(
+        *mut GstPad,
+        c_uint,
+        unsafe extern "C" fn(*mut GstPad, *mut GstPadProbeInfo, *mut c_void) -> c_int,
+        *mut c_void,
+        *mut c_void,
+    ) -> c_ulong,
+    pad_probe_info_get_query: unsafe extern "C" fn(*mut GstPadProbeInfo) -> *mut GstQuery,
+    query_add_allocation_meta: unsafe extern "C" fn(*mut GstQuery, usize, *const GstStructure),
+    buffer_n_memory: unsafe extern "C" fn(*mut GstBuffer) -> c_uint,
+    buffer_peek_memory: unsafe extern "C" fn(*mut GstBuffer, c_uint) -> *mut GstMemory,
+    mini_object_get_qdata: unsafe extern "C" fn(*mut c_void, u32) -> *mut c_void,
+    mini_object_set_qdata:
+        unsafe extern "C" fn(*mut c_void, u32, *mut c_void, unsafe extern "C" fn(*mut c_void)),
+    /// The quark the holds of a dma-buf's memory are kept under on it.
+    holds_quark: u32,
+    /// What reads dma-bufs and buffers' video metadata, where installed.
+    video: Option<VideoLibs>,
     app_sink_set_caps: unsafe extern "C" fn(*mut GstElement, *const GstCaps),
     app_sink_try_pull_sample: unsafe extern "C" fn(*mut GstElement, u64) -> *mut GstSample,
     app_sink_try_pull_preroll: unsafe extern "C" fn(*mut GstElement, u64) -> *mut GstSample,
@@ -149,6 +225,15 @@ struct Gst {
     error_free: unsafe extern "C" fn(*mut GError),
     free: unsafe extern "C" fn(*mut c_void),
     main_context_iteration: unsafe extern "C" fn(*mut c_void, c_int) -> c_int,
+}
+
+/// The entry points of `libgstallocators` and `libgstvideo` used.
+struct VideoLibs {
+    is_dmabuf_memory: unsafe extern "C" fn(*mut GstMemory) -> c_int,
+    dmabuf_memory_get_fd: unsafe extern "C" fn(*mut GstMemory) -> c_int,
+    buffer_get_video_meta: unsafe extern "C" fn(*mut GstBuffer) -> *mut VideoMeta,
+    /// `GstVideoMeta`'s API type.
+    video_meta_api: usize,
 }
 
 // SAFETY: the table holds plain function pointers into libraries that stay
@@ -201,9 +286,16 @@ impl Gst {
         let app = Library::open(c"libgstapp-1.0.so.0")?;
         let gobject = Library::open(c"libgobject-2.0.so.0")?;
         let glib = Library::open(c"libglib-2.0.so.0")?;
+        // SAFETY: the C signature of `g_quark_from_static_string`; the
+        // string is static.
+        let holds_quark = unsafe {
+            let quark: unsafe extern "C" fn(*const c_char) -> u32 =
+                glib.get(c"g_quark_from_static_string")?;
+            quark(c"viso-holds".as_ptr())
+        };
         // SAFETY: each symbol is given its C signature from the GStreamer,
         // GObject and GLib headers.
-        let table = unsafe {
+        let mut table = unsafe {
             Gst {
                 element_factory_make: gst.get(c"gst_element_factory_make")?,
                 element_set_state: gst.get(c"gst_element_set_state")?,
@@ -232,6 +324,15 @@ impl Gst {
                 element_get_static_pad: gst.get(c"gst_element_get_static_pad")?,
                 event_new_reconfigure: gst.get(c"gst_event_new_reconfigure")?,
                 pad_push_event: gst.get(c"gst_pad_push_event")?,
+                pad_add_probe: gst.get(c"gst_pad_add_probe")?,
+                pad_probe_info_get_query: gst.get(c"gst_pad_probe_info_get_query")?,
+                query_add_allocation_meta: gst.get(c"gst_query_add_allocation_meta")?,
+                buffer_n_memory: gst.get(c"gst_buffer_n_memory")?,
+                buffer_peek_memory: gst.get(c"gst_buffer_peek_memory")?,
+                mini_object_get_qdata: gst.get(c"gst_mini_object_get_qdata")?,
+                mini_object_set_qdata: gst.get(c"gst_mini_object_set_qdata")?,
+                holds_quark,
+                video: None,
                 app_sink_set_caps: app.get(c"gst_app_sink_set_caps")?,
                 app_sink_try_pull_sample: app.get(c"gst_app_sink_try_pull_sample")?,
                 app_sink_try_pull_preroll: app.get(c"gst_app_sink_try_pull_preroll")?,
@@ -252,15 +353,148 @@ impl Gst {
             // SAFETY: the error `gst_init_check` handed over.
             unsafe { (table.error_free)(error) };
         }
-        started.then_some(table)
+        if !started {
+            return None;
+        }
+        // SAFETY: each symbol is given its C signature from the GStreamer
+        // headers; the API type is asked for once GStreamer is started.
+        table.video = unsafe {
+            (|| {
+                let allocators = Library::open(c"libgstallocators-1.0.so.0")?;
+                let video = Library::open(c"libgstvideo-1.0.so.0")?;
+                let api: unsafe extern "C" fn() -> usize =
+                    video.get(c"gst_video_meta_api_get_type")?;
+                Some(VideoLibs {
+                    is_dmabuf_memory: allocators.get(c"gst_is_dmabuf_memory")?,
+                    dmabuf_memory_get_fd: allocators.get(c"gst_dmabuf_memory_get_fd")?,
+                    buffer_get_video_meta: video.get(c"gst_buffer_get_video_meta")?,
+                    video_meta_api: api(),
+                })
+            })()
+        };
+        Some(table)
     }
 }
 
-/// A picture handed out, mapped until the next replaces it.
+/// A picture handed out, until the next replaces it: mapped, or a dma-buf
+/// mapped only once asked.
 struct Shown {
     sample: *mut GstSample,
     buffer: *mut GstBuffer,
-    map: MapInfo,
+    map: RefCell<MapInfo>,
+    mapped: Cell<bool>,
+    /// The holds of the dma-buf it lies in.
+    holds: Option<Arc<ExternalHolds>>,
+}
+
+impl Shown {
+    /// The bytes of its buffer, mapped if they are not yet; `None` where it
+    /// cannot be mapped.
+    ///
+    /// # Safety
+    ///
+    /// The buffer is the sample's, alive while it is; the bytes are valid
+    /// until it is unmapped, which only the player's next picture does.
+    unsafe fn bytes<'a>(&'a self, gst: &Gst) -> Option<&'a [u8]> {
+        let mut map = self.map.borrow_mut();
+        // SAFETY: the caller's contract; mapped once, for reading.
+        unsafe {
+            if !self.mapped.get() {
+                if (gst.buffer_map)(self.buffer, &mut *map, MAP_READ) == 0 || map.data.is_null() {
+                    return None;
+                }
+                self.mapped.set(true);
+            }
+            Some(std::slice::from_raw_parts(map.data, map.size))
+        }
+    }
+}
+
+/// An empty mapping, filled by `gst_buffer_map`.
+fn no_map() -> MapInfo {
+    MapInfo {
+        memory: ptr::null_mut(),
+        flags: 0,
+        data: ptr::null_mut(),
+        size: 0,
+        maxsize: 0,
+        user_data: [ptr::null_mut(); 4],
+        reserved: [ptr::null_mut(); 4],
+    }
+}
+
+/// A picture in a dma-buf, named for a GPU to read where it lies, mapped
+/// only when asked for its planes or rows.
+#[derive(Clone, Copy)]
+pub(crate) struct Picture<'a> {
+    gst: &'static Gst,
+    shown: &'a Shown,
+    image: ExternalImage,
+    layout: Layout,
+    colors: Colors,
+    width: u32,
+    height: u32,
+    /// Set once its planes are asked for: the backend does not import it.
+    mapped: &'a Cell<bool>,
+    /// Set once it is copied out as rows.
+    copied: &'a Cell<bool>,
+    rows: &'a RefCell<Vec<u8>>,
+}
+
+impl std::fmt::Debug for Picture<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Picture")
+            .field("image", &self.image)
+            .finish()
+    }
+}
+
+impl<'a> Picture<'a> {
+    pub(crate) fn external(&self, _: u32, _: u32) -> Option<ExternalImage> {
+        Some(self.image)
+    }
+
+    /// Its planes, mapped.
+    pub(crate) fn planes(&self) -> Option<Nv12<'a>> {
+        self.mapped.set(true);
+        // SAFETY: the shown picture's buffer, valid for `'a`.
+        let bytes = unsafe { self.shown.bytes(self.gst) }?;
+        self.layout
+            .planes(bytes, self.width, self.height, self.colors)
+    }
+
+    /// Calls `f` with its texels as RGBA rows, converted from its planes.
+    pub(crate) fn read(&self, f: impl FnOnce(&[u8], usize)) -> bool {
+        self.copied.set(true);
+        let Some(planes) = self.planes() else {
+            return false;
+        };
+        let mut rows = self.rows.borrow_mut();
+        let (w, h) = (planes.width as usize, planes.height as usize);
+        let plane = |bytes, row_stride, pixel_stride| yuv::Plane {
+            bytes,
+            row_stride,
+            pixel_stride,
+        };
+        if !yuv::to_rgba(
+            w,
+            h,
+            plane(planes.y, planes.y_stride, 1),
+            plane(planes.uv, planes.uv_stride, 2),
+            plane(planes.uv.get(1..).unwrap_or_default(), planes.uv_stride, 2),
+            planes.matrix,
+            planes.full_range,
+            &mut rows,
+        ) {
+            return false;
+        }
+        f(&rows, w * 4);
+        true
+    }
+
+    pub(crate) fn layout(&self) -> PixelLayout {
+        PixelLayout::Rgba8
+    }
 }
 
 pub(crate) struct Player {
@@ -279,8 +513,17 @@ pub(crate) struct Player {
     planes: Option<Colors>,
     /// Set once a picture in planes is copied out as rows.
     copied: Cell<bool>,
+    /// Set once a dma-buf's planes are asked for.
+    mapped: Cell<bool>,
+    /// The sink was asked for memory at hand alone.
+    at_hand: bool,
     /// The sink was asked for BGRA alone.
     rows: bool,
+    /// The rows a dma-buf's picture is converted into when copied.
+    converted: RefCell<Vec<u8>>,
+    /// Pictures in dma-bufs replaced while a backend still holds them, kept
+    /// from their pool until it lets go.
+    spent: Vec<(*mut GstSample, Arc<ExternalHolds>)>,
     ready: bool,
     /// The source is live: it does not preroll, and plays to be ready.
     live: bool,
@@ -327,9 +570,28 @@ impl Player {
                 return Err(VideoError::Unsupported);
             }
             (gst.object_ref)(sink);
-            let caps = (gst.caps_from_string)(c"video/x-raw,format={ NV12, BGRA }".as_ptr());
+            let wanted = if gst.video.is_some() {
+                CAPS_DMA_BUF
+            } else {
+                CAPS_AT_HAND
+            };
+            let caps = (gst.caps_from_string)(wanted.as_ptr());
             (gst.app_sink_set_caps)(sink, caps);
             (gst.mini_object_unref)(caps);
+            // Buffers laid out as their metadata says are taken as they are.
+            if let Some(video) = &gst.video {
+                let pad = (gst.element_get_static_pad)(sink, c"sink".as_ptr());
+                if !pad.is_null() {
+                    (gst.pad_add_probe)(
+                        pad,
+                        PROBE_QUERY_IN,
+                        offer_video_meta,
+                        video.video_meta_api as *mut c_void,
+                        ptr::null_mut(),
+                    );
+                    (gst.object_unref)(pad);
+                }
+            }
             // The sink keeps the newest picture due, in step with the clock,
             // and ends without waiting for it to be taken: a video no node
             // shows is not pulled from.
@@ -377,7 +639,11 @@ impl Player {
                 height: 0,
                 planes: None,
                 copied: Cell::new(false),
+                mapped: Cell::new(false),
+                at_hand: gst.video.is_none(),
                 rows: false,
+                converted: RefCell::default(),
+                spent: Vec::new(),
                 ready: false,
                 live,
                 failed: false,
@@ -579,8 +845,14 @@ impl Player {
             return None;
         }
         if self.copied.get() && !self.rows {
-            self.want_rows();
+            self.rows = true;
+            self.at_hand = true;
+            self.want(CAPS_ROWS);
+        } else if self.mapped.get() && !self.at_hand {
+            self.at_hand = true;
+            self.want(CAPS_AT_HAND);
         }
+        self.let_go_spent();
         let gst = self.gst;
         let mut sample = std::mem::replace(&mut self.first, ptr::null_mut());
         // SAFETY: pulls from the player's sink, not waiting; every sample
@@ -618,70 +890,174 @@ impl Player {
                 return None;
             }
             self.read_caps((gst.sample_get_caps)(sample));
-            let mut map = MapInfo {
-                memory: ptr::null_mut(),
-                flags: 0,
-                data: ptr::null_mut(),
-                size: 0,
-                maxsize: 0,
-                user_data: [ptr::null_mut(); 4],
-                reserved: [ptr::null_mut(); 4],
-            };
-            let (width, height) = (self.width as usize, self.height as usize);
-            let layout = match self.planes {
-                Some(_) => nv12_layout(width, height),
-                None => Layout {
-                    stride: width * 4,
-                    chroma: 0,
-                    size: width * 4 * height,
-                },
-            };
-            if self.width == 0
-                || (gst.buffer_map)(buffer, &mut map, MAP_READ) == 0
-                || map.data.is_null()
-                || map.size < layout.size
-            {
-                if !map.data.is_null() {
-                    (gst.buffer_unmap)(buffer, &mut map);
-                }
+            let (width, height) = (self.width, self.height);
+            let Some(layout) = self.layout_of(buffer) else {
                 (gst.mini_object_unref)(sample);
                 return None;
-            }
-            self.release_shown();
+            };
             let pts = (*buffer.cast::<Buffer>()).pts;
             let time = if pts == CLOCK_TIME_NONE {
                 self.at
             } else {
                 Duration::from_nanos(pts)
             };
-            let shown = self.shown.insert(Shown {
+            // A dma-buf: named for the GPU, mapped only once asked.
+            if let Some(colors) = self.planes
+                && let Some((image, holds)) = self.dma_buf(buffer, &layout, colors)
+            {
+                self.release_shown();
+                let shown = self.shown.insert(Shown {
+                    sample,
+                    buffer,
+                    map: RefCell::new(no_map()),
+                    mapped: Cell::new(false),
+                    holds: Some(holds),
+                });
+                let picture = Picture {
+                    gst,
+                    shown,
+                    image,
+                    layout,
+                    colors,
+                    width,
+                    height,
+                    mapped: &self.mapped,
+                    copied: &self.copied,
+                    rows: &self.converted,
+                };
+                return Some(Frame::native_picture(width, height, time, picture));
+            }
+            let shown = Shown {
                 sample,
                 buffer,
-                map,
-            });
-            let bytes = std::slice::from_raw_parts(shown.map.data, shown.map.size);
-            let Some(colors) = self.planes else {
-                return Some(Frame::bgra(
-                    self.width,
-                    self.height,
-                    bytes,
-                    layout.stride,
-                    time,
-                ));
+                map: RefCell::new(no_map()),
+                mapped: Cell::new(false),
+                holds: None,
             };
-            let picture = Nv12 {
-                width: self.width,
-                height: self.height,
-                y: bytes,
-                y_stride: layout.stride,
-                uv: &bytes[layout.chroma..],
-                uv_stride: layout.stride,
+            if width == 0 || shown.bytes(gst).is_none_or(|b| b.len() < layout.size) {
+                if shown.mapped.get() {
+                    (gst.buffer_unmap)(buffer, &mut *shown.map.borrow_mut());
+                }
+                (gst.mini_object_unref)(sample);
+                return None;
+            }
+            self.release_shown();
+            let shown = self.shown.insert(shown);
+            let bytes = shown.bytes(gst)?;
+            let Some(colors) = self.planes else {
+                return Some(Frame::bgra(width, height, bytes, layout.strides[0], time));
+            };
+            let picture = layout.planes(bytes, width, height, colors)?;
+            Some(Frame::nv12_watched(picture, &self.copied, time))
+        }
+    }
+
+    /// Where the planes of `buffer`, a picture of the caps last read, lie:
+    /// as its video metadata says, else as GStreamer lays them out without.
+    ///
+    /// # Safety
+    ///
+    /// `buffer` is a live buffer of a sample this player holds.
+    unsafe fn layout_of(&self, buffer: *mut GstBuffer) -> Option<Layout> {
+        let (width, height) = (self.width as usize, self.height as usize);
+        let planes = if self.planes.is_some() { 2 } else { 1 };
+        let default = if planes == 2 {
+            nv12_layout(width, height)
+        } else {
+            Layout {
+                offsets: [0, 0],
+                strides: [width * 4, 0],
+                size: width * 4 * height,
+            }
+        };
+        let Some(video) = &self.gst.video else {
+            return Some(default);
+        };
+        // SAFETY: the caller's buffer; its metadata, when there, is read in
+        // place.
+        let meta = unsafe { (video.buffer_get_video_meta)(buffer).as_ref() };
+        let Some(meta) = meta else {
+            return Some(default);
+        };
+        if (meta.n_planes as usize) < planes || meta.stride[..planes].iter().any(|&s| s <= 0) {
+            return None;
+        }
+        let strides = [meta.stride[0] as usize, meta.stride[1].max(0) as usize];
+        let offsets = [meta.offset[0], if planes == 2 { meta.offset[1] } else { 0 }];
+        let size = if planes == 2 {
+            (offsets[0] + strides[0] * height).max(offsets[1] + strides[1] * height.div_ceil(2))
+        } else {
+            offsets[0] + strides[0] * height
+        };
+        Some(Layout {
+            offsets,
+            strides,
+            size,
+        })
+    }
+
+    /// The dma-buf `buffer` lies in, as the external image a GPU reads where
+    /// it lies, and the holds its memory keeps; `None` for a buffer in
+    /// memory of another kind, or in more than one.
+    ///
+    /// # Safety
+    ///
+    /// `buffer` is a live buffer of a sample this player holds.
+    unsafe fn dma_buf(
+        &self,
+        buffer: *mut GstBuffer,
+        layout: &Layout,
+        colors: Colors,
+    ) -> Option<(ExternalImage, Arc<ExternalHolds>)> {
+        let gst = self.gst;
+        let video = gst.video.as_ref()?;
+        // SAFETY: the caller's buffer and its one memory, borrowed; the
+        // descriptor is the memory's own, borrowed while the sample is kept.
+        unsafe {
+            if (gst.buffer_n_memory)(buffer) != 1 {
+                return None;
+            }
+            let memory = (gst.buffer_peek_memory)(buffer, 0);
+            if memory.is_null() || (video.is_dmabuf_memory)(memory) == 0 {
+                return None;
+            }
+            let fd = (video.dmabuf_memory_get_fd)(memory);
+            if fd < 0 {
+                return None;
+            }
+            let len = libc::lseek(fd, 0, libc::SEEK_END);
+            if len <= 0 {
+                return None;
+            }
+            let start = (*memory.cast::<Memory>()).offset;
+            let holds = holds_of(gst, memory);
+            let image = ExternalImage::DmaBuf {
+                fd,
+                len: len as u64,
+                offsets: layout.offsets.map(|o| (start + o) as u64),
+                strides: layout.strides.map(|s| s as u32),
+                holds: Arc::as_ptr(&holds),
                 matrix: colors.matrix,
                 full_range: colors.full_range,
                 left_chroma: colors.left_chroma,
+                width: self.width,
+                height: self.height,
             };
-            Some(Frame::nv12_watched(picture, &self.copied, time))
+            Some((image, holds))
         }
+    }
+
+    /// Releases the pictures in dma-bufs no backend holds any longer.
+    fn let_go_spent(&mut self) {
+        let gst = self.gst;
+        self.spent.retain(|(sample, holds)| {
+            let held = holds.is_held();
+            if !held {
+                // SAFETY: the sample was kept here, released once.
+                unsafe { (gst.mini_object_unref)(*sample) };
+            }
+            held
+        });
     }
 
     /// The size `caps` give, read again only when they change.
@@ -711,20 +1087,28 @@ impl Player {
             self.caps = caps;
             self.width = width.max(0) as u32;
             self.height = height.max(0) as u32;
-            self.planes = (text(c"format") == Some(b"NV12"))
-                .then(|| colors(text(c"colorimetry"), text(c"chroma-site"), self.height));
+            let nv12 = match text(c"format") {
+                Some(b"NV12") => true,
+                // Linear NV12, as asked for.
+                Some(b"DMA_DRM") => matches!(
+                    text(c"drm-format"),
+                    Some(b"NV12" | b"NV12:0x0000000000000000")
+                ),
+                _ => false,
+            };
+            self.planes =
+                nv12.then(|| colors(text(c"colorimetry"), text(c"chroma-site"), self.height));
         }
     }
 
-    /// Asks the sink for BGRA rows alone, which GStreamer's converter
-    /// writes from the next picture on.
-    fn want_rows(&mut self) {
-        self.rows = true;
+    /// Asks the sink for `wanted` alone, which GStreamer negotiates for the
+    /// pictures after.
+    fn want(&mut self, wanted: &CStr) {
         let gst = self.gst;
         // SAFETY: calls on the player's sink; the caps and the pad are
         // released once, the event handed to the pad, which takes it.
         unsafe {
-            let caps = (gst.caps_from_string)(c"video/x-raw,format=BGRA".as_ptr());
+            let caps = (gst.caps_from_string)(wanted.as_ptr());
             (gst.app_sink_set_caps)(self.sink, caps);
             (gst.mini_object_unref)(caps);
             let pad = (gst.element_get_static_pad)(self.sink, c"sink".as_ptr());
@@ -736,12 +1120,17 @@ impl Player {
     }
 
     fn release_shown(&mut self) {
-        if let Some(mut shown) = self.shown.take() {
+        if let Some(shown) = self.shown.take() {
             // SAFETY: the picture's buffer is unmapped once, then its sample
-            // released once.
+            // released once, or kept while a backend holds its dma-buf.
             unsafe {
-                (self.gst.buffer_unmap)(shown.buffer, &mut shown.map);
-                (self.gst.mini_object_unref)(shown.sample);
+                if shown.mapped.get() {
+                    (self.gst.buffer_unmap)(shown.buffer, &mut *shown.map.borrow_mut());
+                }
+                match shown.holds {
+                    Some(holds) if holds.is_held() => self.spent.push((shown.sample, holds)),
+                    _ => (self.gst.mini_object_unref)(shown.sample),
+                }
             }
         }
     }
@@ -895,6 +1284,11 @@ impl Drop for Player {
     fn drop(&mut self) {
         self.release_shown();
         let gst = self.gst;
+        for (sample, _) in self.spent.drain(..) {
+            // SAFETY: each kept sample released once; a backend still
+            // reading a dma-buf holds a duplicate of its descriptor.
+            unsafe { (gst.mini_object_unref)(sample) };
+        }
         if !self.first.is_null() {
             // SAFETY: the first picture, never handed out, released once.
             unsafe { (gst.mini_object_unref)(self.first) };
@@ -1017,12 +1411,34 @@ fn colors(colorimetry: Option<&[u8]>, site: Option<&[u8]>, height: u32) -> Color
     out
 }
 
-/// Where a picture's texels lie in its buffer: the bytes between rows, the
-/// offset of the chroma plane, and the bytes the whole takes.
+/// Where a picture's planes lie in its buffer — one of rows, or luma then
+/// chroma — the bytes between their rows, and the bytes they take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Layout {
-    stride: usize,
-    chroma: usize,
+    offsets: [usize; 2],
+    strides: [usize; 2],
     size: usize,
+}
+
+impl Layout {
+    /// The NV12 planes of the `width` × `height` picture in `bytes`, encoded
+    /// as `colors` say; `None` where they do not fit.
+    fn planes(self, bytes: &[u8], width: u32, height: u32, colors: Colors) -> Option<Nv12<'_>> {
+        if bytes.len() < self.size {
+            return None;
+        }
+        Some(Nv12 {
+            width,
+            height,
+            y: bytes.get(self.offsets[0]..)?,
+            y_stride: self.strides[0],
+            uv: bytes.get(self.offsets[1]..)?,
+            uv_stride: self.strides[1],
+            matrix: colors.matrix,
+            full_range: colors.full_range,
+            left_chroma: colors.left_chroma,
+        })
+    }
 }
 
 /// The layout GStreamer gives an NV12 picture of `width` × `height` with no
@@ -1033,10 +1449,59 @@ fn nv12_layout(width: usize, height: usize) -> Layout {
     let rows = height.next_multiple_of(2);
     let chroma = stride * rows;
     Layout {
-        stride,
-        chroma,
+        offsets: [0, chroma],
+        strides: [stride, stride],
         size: chroma + stride * rows / 2,
     }
+}
+
+/// The holds kept on dma-buf `memory`, made at its first picture and freed
+/// with it, so they name it alone for as long as anyone holds them.
+///
+/// # Safety
+///
+/// `memory` is a live `GstMemory`.
+unsafe fn holds_of(gst: &Gst, memory: *mut GstMemory) -> Arc<ExternalHolds> {
+    /// Drops the memory's own count of its holds.
+    unsafe extern "C" fn release(holds: *mut c_void) {
+        // SAFETY: the pointer `Arc::into_raw` gave when the holds were kept
+        // on the memory, dropped once, as the memory goes.
+        drop(unsafe { Arc::from_raw(holds.cast_const().cast::<ExternalHolds>()) });
+    }
+    // SAFETY: the caller's memory; the data kept on it is an `Arc` it owns
+    // one count of, released with it.
+    unsafe {
+        let kept = (gst.mini_object_get_qdata)(memory, gst.holds_quark);
+        if !kept.is_null() {
+            return ExternalHolds::retain(kept.cast_const().cast());
+        }
+        let holds = ExternalHolds::new();
+        let owned = Arc::into_raw(Arc::clone(&holds)).cast_mut().cast();
+        (gst.mini_object_set_qdata)(memory, gst.holds_quark, owned, release);
+        holds
+    }
+}
+
+/// Answers the sink's allocation query: buffers laid out as their video
+/// metadata says are taken as they are, so upstream need not copy padded
+/// ones to fit.
+unsafe extern "C" fn offer_video_meta(
+    _: *mut GstPad,
+    info: *mut GstPadProbeInfo,
+    api: *mut c_void,
+) -> c_int {
+    let Some(gst) = gst() else {
+        return PROBE_OK;
+    };
+    // SAFETY: the probe's info and the query it carries, live for the call.
+    unsafe {
+        let query = (gst.pad_probe_info_get_query)(info);
+        if query.is_null() || (*query.cast::<Query>()).kind != QUERY_ALLOCATION {
+            return PROBE_OK;
+        }
+        (gst.query_add_allocation_meta)(query, api as usize, ptr::null());
+    }
+    PROBE_HANDLED
 }
 
 /// `bytes` in a file of their own, and its URI.
@@ -1076,8 +1541,34 @@ mod tests {
     #[test]
     fn an_nv12_buffer_without_metadata_lies_as_gstreamer_lays_it() {
         let l = nv12_layout(64, 48);
-        assert_eq!((l.stride, l.chroma, l.size), (64, 64 * 48, 64 * 48 * 3 / 2));
+        assert_eq!(
+            (l.offsets, l.strides, l.size),
+            ([0, 64 * 48], [64, 64], 64 * 48 * 3 / 2)
+        );
         let l = nv12_layout(3, 3);
-        assert_eq!((l.stride, l.chroma, l.size), (4, 16, 24));
+        assert_eq!((l.offsets, l.strides, l.size), ([0, 16], [4, 4], 24));
+        let colors = colors(None, None, 3);
+        assert!(l.planes(&[0; 23], 3, 3, colors).is_none());
+        let planes = l.planes(&[0; 24], 3, 3, colors).unwrap();
+        assert_eq!((planes.y.len(), planes.uv.len()), (24, 8));
+    }
+
+    /// The allocation query is the one the probe answers.
+    #[test]
+    fn the_allocation_query_is_known_by_its_number() {
+        let Some(gst) = gst() else {
+            eprintln!("no GStreamer; skipped");
+            return;
+        };
+        let lib = Library::open(c"libgstreamer-1.0.so.0").unwrap();
+        // SAFETY: the C signature of `gst_query_new_allocation`; the query
+        // made is read and released once.
+        unsafe {
+            let new: unsafe extern "C" fn(*mut GstCaps, c_int) -> *mut GstQuery =
+                lib.get(c"gst_query_new_allocation").unwrap();
+            let query = new(ptr::null_mut(), 0);
+            assert_eq!((*query.cast::<Query>()).kind, QUERY_ALLOCATION);
+            (gst.mini_object_unref)(query);
+        }
     }
 }

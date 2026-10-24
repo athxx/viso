@@ -210,8 +210,10 @@ mod player {
             if let Some(frame) = player.frame() {
                 let picture = frame.planes().expect("a picture in planes");
                 assert_eq!((picture.width, picture.height), (64, 48));
-                assert_eq!((picture.y_stride, picture.uv_stride), (64, 64));
-                assert!(picture.y.len() >= 64 * 48 && picture.uv.len() >= 64 * 24);
+                // Rows as the buffer's metadata lays them, padded or not.
+                assert!(picture.y_stride >= 64 && picture.uv_stride >= 64);
+                assert!(picture.y.len() >= picture.y_stride * 47 + 64);
+                assert!(picture.uv.len() >= picture.uv_stride * 23 + 64);
                 planes += 1;
             }
             assert!(

@@ -127,6 +127,10 @@ objc2-quartz-core = { version = "0.3", features = [
 # types and non-`#[repr(C)]` structs. External crate; not a viso-* edge.
 trybuild = "1"
 
+# Dma-bufs allocated from a heap and written on the CPU, imported.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+libc = "0.2"
+
 # IOSurfaces written on the CPU, imported as textures.
 [target.'cfg(target_vendor = "apple")'.dev-dependencies]
 objc2-core-foundation = { version = "0.3", features = ["CFDictionary", "CFNumber", "CFString"] }

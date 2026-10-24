@@ -127,6 +127,9 @@ struct Played<P> {
     /// sought to, which a player may hand over a little later.
     awaits: Option<Instant>,
     /// The backend took none of its pictures where they lie: the rest are
+    /// converted or copied without asking again.
+    refused: bool,
+    /// The backend converted none of its pictures' planes: the rest are
     /// copied without asking again.
     copied: bool,
     /// The texture its pictures are shown as.
@@ -220,6 +223,7 @@ impl<P: Play> Videos<P> {
                 },
                 ready: false,
                 awaits: None,
+                refused: false,
                 copied: false,
                 texture: None,
             });
@@ -364,7 +368,7 @@ impl<P: Play> Videos<P> {
             let shown_as = p.texture.filter(|t| t.size == size);
             // In place where the backend adopts it: the same texture pointed
             // at the new picture, or a new one over it.
-            if !p.copied
+            if !p.refused
                 && let Some(image) = frame.native()
             {
                 if let Some(t) = shown_as.filter(|t| t.adopted)
@@ -386,7 +390,7 @@ impl<P: Play> Videos<P> {
                     self.frames += 1;
                     continue;
                 }
-                p.copied = true;
+                p.refused = true;
             }
             // Planes at hand, converted on the GPU where the backend does:
             // into the texture it converted the last into, or a new one.

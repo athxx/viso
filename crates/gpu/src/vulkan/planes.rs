@@ -5,18 +5,124 @@
 //! so it samples as sRGB, as any other color image.
 //!
 //! The pipeline is made once; the plane images once per texture, rewritten
-//! by every picture after.
+//! by every picture after. Planes in a dma-buf are copied into them on the
+//! GPU from a buffer over the dma-buf's memory, imported once per buffer, a
+//! few kept while their producer reuses them.
+
+use std::sync::Arc;
 
 use ash::vk;
+use viso_handle::ExternalHolds;
 
 use super::ycbcr::{self, Target};
 use crate::Nv12;
+use crate::retire::Epoch;
 
 const FRAGMENT: &[u8] = include_bytes!("nv12.frag.spv");
 
 /// The bytes of the push constants: the region, the matrix's three rows and
 /// the chroma site.
 const PUSHED: usize = 80;
+
+/// How many imported dma-bufs stay: a few players' buffer pools.
+const IMPORTS: usize = 16;
+
+/// A dma-buf imported as a buffer, named by its holds.
+struct Imported {
+    holds: Arc<ExternalHolds>,
+    buffer: vk::Buffer,
+    memory: vk::DeviceMemory,
+}
+
+/// The dma-bufs imported, the latest used last, and those let go while a
+/// frame in flight may read them, with the epoch they were last recorded
+/// in.
+#[derive(Default)]
+pub(super) struct Imports {
+    kept: Vec<Imported>,
+    dead: Vec<(Epoch, Imported)>,
+}
+
+impl Imports {
+    /// The index of the import of the dma-buf `holds` names, moved to the
+    /// latest.
+    pub(super) fn source_of(&mut self, holds: *const ExternalHolds) -> Option<usize> {
+        let at = self
+            .kept
+            .iter()
+            .position(|i| std::ptr::eq(Arc::as_ptr(&i.holds), holds))?;
+        let import = self.kept.remove(at);
+        self.kept.push(import);
+        Some(self.kept.len() - 1)
+    }
+
+    /// Keeps `buffer` over `memory`, named by `holds`, as the latest; the
+    /// oldest goes once too many are kept, when no frame after `epoch`
+    /// reads it.
+    pub(super) fn keep(
+        &mut self,
+        holds: Arc<ExternalHolds>,
+        buffer: vk::Buffer,
+        memory: vk::DeviceMemory,
+        epoch: Epoch,
+    ) -> usize {
+        if self.kept.len() == IMPORTS {
+            let old = self.kept.remove(0);
+            self.dead.push((epoch, old));
+        }
+        self.kept.push(Imported {
+            holds,
+            buffer,
+            memory,
+        });
+        self.kept.len() - 1
+    }
+
+    /// Import `at`'s buffer and holds.
+    pub(super) fn get(&self, at: usize) -> (vk::Buffer, &Arc<ExternalHolds>) {
+        let import = &self.kept[at];
+        (import.buffer, &import.holds)
+    }
+
+    /// Destroys the imports let go whose epoch `completed` has passed.
+    pub(super) fn reclaim(&mut self, device: &ash::Device, completed: Epoch) {
+        self.dead.retain(|(epoch, import)| {
+            let done = *epoch <= completed;
+            if done {
+                // SAFETY: no frame up to the one that last read it is in
+                // flight.
+                unsafe { destroy_import(device, import) };
+            }
+            !done
+        });
+    }
+
+    /// Destroys every import.
+    pub(super) fn destroy(&mut self, device: &ash::Device) {
+        for (_, import) in self.dead.drain(..) {
+            // SAFETY: called with the device idle; each once.
+            unsafe { destroy_import(device, &import) };
+        }
+        for import in self.kept.drain(..) {
+            // SAFETY: as above.
+            unsafe { destroy_import(device, &import) };
+        }
+    }
+}
+
+/// Destroys an import's buffer and memory, which closes the dma-buf's
+/// duplicate.
+///
+/// # Safety
+///
+/// No command in flight reads it; it is destroyed once.
+unsafe fn destroy_import(device: &ash::Device, import: &Imported) {
+    // SAFETY: the caller's contract; the buffer goes before its memory.
+    unsafe {
+        device.destroy_buffer(import.buffer, None);
+        device.free_memory(import.memory, None);
+    }
+}
 
 /// The conversion's pipeline and what it is made through.
 pub(super) struct Planar {
@@ -561,6 +667,122 @@ mod tests {
             ..picture
         };
         assert_eq!(gpu.write_nv12(Some(id), &short), None);
+        assert_eq!(
+            gpu.validation_errors(),
+            0,
+            "the validation layer reported errors"
+        );
+        gpu.destroy_texture(id);
+    }
+
+    /// A dma-buf of `bytes`, allocated from the system heap and written
+    /// through a mapping; `None` where there is no heap to allocate from.
+    #[cfg(target_os = "linux")]
+    fn dma_buf(bytes: &[u8]) -> Option<std::os::fd::OwnedFd> {
+        use std::os::fd::{AsRawFd, FromRawFd};
+        #[repr(C)]
+        struct Allocation {
+            len: u64,
+            fd: u32,
+            fd_flags: u32,
+            heap_flags: u64,
+        }
+        // `DMA_HEAP_IOCTL_ALLOC`: `_IOWR('H', 0, struct dma_heap_allocation_data)`.
+        const ALLOC: libc::c_ulong = 0xc018_4800;
+        let heap = std::fs::File::open("/dev/dma_heap/system").ok()?;
+        let mut alloc = Allocation {
+            len: bytes.len() as u64,
+            fd: 0,
+            fd_flags: (libc::O_RDWR | libc::O_CLOEXEC) as u32,
+            heap_flags: 0,
+        };
+        // SAFETY: the heap's allocation ioctl over a local of its layout; the
+        // descriptor it returns is owned here, mapped for the length
+        // allocated, written and unmapped.
+        unsafe {
+            if libc::ioctl(heap.as_raw_fd(), ALLOC, &mut alloc) != 0 {
+                return None;
+            }
+            let fd = std::os::fd::OwnedFd::from_raw_fd(alloc.fd as i32);
+            let map = libc::mmap(
+                std::ptr::null_mut(),
+                bytes.len(),
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                fd.as_raw_fd(),
+                0,
+            );
+            if map == libc::MAP_FAILED {
+                return None;
+            }
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), map.cast::<u8>(), bytes.len());
+            libc::munmap(map, bytes.len());
+            Some(fd)
+        }
+    }
+
+    /// NV12 planes in a dma-buf are read where they lie, the buffer imported
+    /// once and held while a frame reads it, and a second picture adopted
+    /// into the same texture.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn nv12_planes_in_a_dma_buf_are_converted_where_they_lie() {
+        use std::os::fd::AsRawFd;
+        use viso_handle::{ExternalHolds, ExternalImage};
+        let Some(mut gpu) = VulkanBackend::try_new_with(true) else {
+            eprintln!("no Vulkan device; skipped");
+            return;
+        };
+        if gpu.dma_bufs.is_none() {
+            eprintln!("no dma-buf import here; skipped");
+            return;
+        }
+        // Four by two, rows eight bytes apart, the chroma plane at 64: a red
+        // block and a white one, studio range in BT.601.
+        let mut bytes = vec![0u8; 4096];
+        for row in 0..2 {
+            bytes[row * 8..row * 8 + 4].copy_from_slice(&[81, 81, 235, 235]);
+        }
+        bytes[64..68].copy_from_slice(&[90, 240, 128, 128]);
+        let Some(fd) = dma_buf(&bytes) else {
+            eprintln!("no dma-buf heap here; skipped");
+            return;
+        };
+        let holds = ExternalHolds::new();
+        let picture = |width: u32| ExternalImage::DmaBuf {
+            fd: fd.as_raw_fd(),
+            len: bytes.len() as u64,
+            offsets: [0, 64],
+            strides: [8, 8],
+            holds: std::sync::Arc::as_ptr(&holds),
+            matrix: YuvMatrix::Bt601,
+            full_range: false,
+            left_chroma: false,
+            width,
+            height: 2,
+        };
+        let image = picture(4);
+        let id = gpu.import_external(&image).expect("the dma-buf imported");
+        assert!(holds.is_held(), "held while the frame reads it");
+        let px = gpu.read_texture(id);
+        let red = &px[..4];
+        assert!(
+            red[0] >= 250 && red[1] <= 4 && red[2] <= 4 && red[3] == 255,
+            "{red:?}"
+        );
+        let white = &px[12..16];
+        assert!(white.iter().all(|&c| c >= 250), "{white:?}");
+        assert!(
+            gpu.adopt_external(id, &image),
+            "the same texture written again"
+        );
+        let wider = picture(12);
+        assert!(!gpu.adopt_external(id, &wider), "a picture of another size");
+        assert!(gpu.import_external(&wider).is_none(), "planes past its end");
+        for _ in 0..3 {
+            gpu.read_texture(id);
+        }
+        assert!(!holds.is_held(), "let go once the frames complete");
         assert_eq!(
             gpu.validation_errors(),
             0,

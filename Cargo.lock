@@ -3110,6 +3110,7 @@ dependencies = [
  "bitflags",
  "block2 0.6.2",
  "js-sys",
+ "libc",
  "libloading",
  "objc2 0.6.4",
  "objc2-core-foundation",

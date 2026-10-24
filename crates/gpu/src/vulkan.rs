@@ -332,6 +332,12 @@ pub struct VulkanBackend {
     converter: Option<ycbcr::Converter>,
     /// The conversion of NV12 planes at hand, made at the first.
     planar: Option<planes::Planar>,
+    /// The dma-bufs imported, read where they lie.
+    imports: planes::Imports,
+    /// Dma-buf import (`VK_KHR_external_memory_fd`,
+    /// `VK_EXT_external_memory_dma_buf`).
+    #[cfg(unix)]
+    dma_bufs: Option<khr::external_memory_fd::Device>,
     /// Holds on external pictures, each let go once the epoch it was
     /// converted in completes.
     held: Vec<(Epoch, ExternalHold)>,
@@ -593,15 +599,15 @@ impl VulkanBackend {
         // external pictures in Y′CbCr are sampled through.
         // SAFETY: `physical` belongs to `instance`; the query fills the
         // chained local.
-        let ycbcr = api_version >= vk::API_VERSION_1_1
+        let device_1_1 = api_version >= vk::API_VERSION_1_1
             && unsafe { instance.get_physical_device_properties(physical) }.api_version
-                >= vk::API_VERSION_1_1
-            && {
-                let mut conversion = vk::PhysicalDeviceSamplerYcbcrConversionFeatures::default();
-                let mut all = vk::PhysicalDeviceFeatures2::default().push_next(&mut conversion);
-                unsafe { instance.get_physical_device_features2(physical, &mut all) };
-                conversion.sampler_ycbcr_conversion == vk::TRUE
-            };
+                >= vk::API_VERSION_1_1;
+        let ycbcr = device_1_1 && {
+            let mut conversion = vk::PhysicalDeviceSamplerYcbcrConversionFeatures::default();
+            let mut all = vk::PhysicalDeviceFeatures2::default().push_next(&mut conversion);
+            unsafe { instance.get_physical_device_features2(physical, &mut all) };
+            conversion.sampler_ycbcr_conversion == vk::TRUE
+        };
         #[cfg(target_os = "android")]
         let hardware_buffers = ycbcr
             && has_device_ext(ash::android::external_memory_android_hardware_buffer::NAME)
@@ -611,6 +617,16 @@ impl VulkanBackend {
             device_enabled
                 .push(ash::android::external_memory_android_hardware_buffer::NAME.as_ptr());
             device_enabled.push(ext::queue_family_foreign::NAME.as_ptr());
+        }
+        // Dma-bufs, core external memory since 1.1.
+        #[cfg(unix)]
+        let dma_bufs = device_1_1
+            && has_device_ext(khr::external_memory_fd::NAME)
+            && has_device_ext(ext::external_memory_dma_buf::NAME);
+        #[cfg(unix)]
+        if dma_bufs {
+            device_enabled.push(khr::external_memory_fd::NAME.as_ptr());
+            device_enabled.push(ext::external_memory_dma_buf::NAME.as_ptr());
         }
         let mut conversion = vk::PhysicalDeviceSamplerYcbcrConversionFeatures::default()
             .sampler_ycbcr_conversion(true);
@@ -666,6 +682,8 @@ impl VulkanBackend {
             }
         });
 
+        #[cfg(unix)]
+        let dma_bufs = dma_bufs.then(|| khr::external_memory_fd::Device::new(&instance, &device));
         #[cfg(target_os = "android")]
         let hardware_buffers = hardware_buffers.then(|| {
             ash::android::external_memory_android_hardware_buffer::Device::new(&instance, &device)
@@ -719,6 +737,9 @@ impl VulkanBackend {
             ycbcr,
             converter: None,
             planar: None,
+            imports: planes::Imports::default(),
+            #[cfg(unix)]
+            dma_bufs,
             held: Vec::new(),
             #[cfg(target_os = "android")]
             hardware_buffers,
@@ -1084,6 +1105,281 @@ impl VulkanBackend {
         if let Some(holds) = converter.holds(at) {
             let epoch = self.recording.unwrap_or(self.current_epoch);
             self.held.push((epoch, holds.hold()));
+        }
+    }
+
+    /// Texture `id` where it is one planes are converted into, of `width` ×
+    /// `height`, else a new one; its plane images and the planar pipeline
+    /// made if they are not yet.
+    fn plane_target(&mut self, id: Option<TextureId>, width: u32, height: u32) -> TextureId {
+        let id = match id {
+            Some(id)
+                if self.textures.get(id.into()).is_some_and(|t| {
+                    t.converted.is_some() && (t.width, t.height) == (width, height)
+                }) =>
+            {
+                id
+            }
+            _ => self.converted_texture(width, height),
+        };
+        if self.planar.is_none() {
+            let pass = self.render_pass(vk::Format::R8G8B8A8_UNORM, true, None);
+            // SAFETY: the pass has one UNORM color attachment.
+            self.planar =
+                Some(unsafe { planes::Planar::new(&self.device, self.pipeline_cache, pass) });
+        }
+        let made = self
+            .textures
+            .get(id.into())
+            .and_then(|t| t.converted.as_ref())
+            .is_some_and(|c| c.planes.is_some());
+        if !made && let Some(planar) = &self.planar {
+            let memory_type = |bits| {
+                self.memory_type(
+                    bits,
+                    vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                    vk::MemoryPropertyFlags::empty(),
+                )
+            };
+            let made = planar.planes(&self.device, memory_type, width, height);
+            if let Some(c) = self
+                .textures
+                .get_mut(id.into())
+                .and_then(|t| t.converted.as_mut())
+            {
+                c.planes = Some(made);
+            }
+        }
+        id
+    }
+
+    /// Records the upload of the planes at `staged` into texture `id`'s
+    /// plane images and their conversion into it, as `picture` is encoded;
+    /// `foreign` is a buffer owned outside Vulkan they are read from,
+    /// acquired for the upload and released after.
+    fn convert_planes(
+        &mut self,
+        id: TextureId,
+        picture: &Nv12<'_>,
+        staged: [planes::Staged; 2],
+        foreign: Option<vk::Buffer>,
+    ) {
+        self.ensure_recording();
+        let pass = self.render_pass(vk::Format::R8G8B8A8_UNORM, true, None);
+        let cmd = self.slots[self.slot].upload;
+        let family = self.queue_family;
+        let Some(t) = self.textures.get_mut(id.into()) else {
+            return;
+        };
+        let Some(c) = t.converted.as_mut() else {
+            return;
+        };
+        let target = ycbcr::Target {
+            image: t.image,
+            framebuffer: c.framebuffer,
+            width: t.width,
+            height: t.height,
+        };
+        let (Some(planes), Some(planar)) = (c.planes.as_mut(), &self.planar) else {
+            return;
+        };
+        let barrier = |acquire: bool, buffer: vk::Buffer| {
+            let b = vk::BufferMemoryBarrier::default()
+                .buffer(buffer)
+                .size(vk::WHOLE_SIZE);
+            if acquire {
+                b.src_queue_family_index(vk::QUEUE_FAMILY_EXTERNAL)
+                    .dst_queue_family_index(family)
+                    .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+            } else {
+                b.src_queue_family_index(family)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_EXTERNAL)
+                    .src_access_mask(vk::AccessFlags::TRANSFER_READ)
+            }
+        };
+        // SAFETY: `cmd` is the open upload recording, outside a render pass,
+        // which orders every use of the planes and the target on the one
+        // queue; the planes were made for the target's size, the staged rows
+        // cover them, and the target's framebuffer was made against the
+        // pass; a foreign buffer is owned by this queue for the copies alone.
+        unsafe {
+            if let Some(buffer) = foreign {
+                self.device.cmd_pipeline_barrier(
+                    cmd,
+                    vk::PipelineStageFlags::TOP_OF_PIPE,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[barrier(true, buffer)],
+                    &[],
+                );
+            }
+            planar.record(&self.device, cmd, pass, picture, planes, staged, &target);
+            if let Some(buffer) = foreign {
+                self.device.cmd_pipeline_barrier(
+                    cmd,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[barrier(false, buffer)],
+                    &[],
+                );
+            }
+        }
+    }
+
+    /// Writes the NV12 picture in the dma-buf `image` names into texture
+    /// `id`, as [`write_nv12`](GpuBackend::write_nv12) does, the buffer
+    /// imported once and read where it lies; `None` where the device does
+    /// not import dma-bufs or the planes do not fit.
+    #[cfg(unix)]
+    fn write_dma_buf(&mut self, id: Option<TextureId>, image: &ExternalImage) -> Option<TextureId> {
+        let ExternalImage::DmaBuf {
+            fd,
+            len,
+            offsets,
+            strides,
+            holds,
+            matrix,
+            full_range,
+            left_chroma,
+            width,
+            height,
+        } = *image
+        else {
+            return None;
+        };
+        let fds = self.dma_bufs.as_ref()?;
+        let (cw, ch) = (u64::from(width.div_ceil(2)), u64::from(height.div_ceil(2)));
+        let fits = |offset: u64, stride: u32, row: u64, rows: u64| {
+            stride > 0
+                && u64::from(stride) >= row
+                && offset
+                    .checked_add(u64::from(stride) * (rows.max(1) - 1) + row)
+                    .is_some_and(|end| end <= len)
+        };
+        if width == 0
+            || height == 0
+            || !strides[1].is_multiple_of(2)
+            || !offsets[0].is_multiple_of(4)
+            || !offsets[1].is_multiple_of(4)
+            || !fits(offsets[0], strides[0], u64::from(width), u64::from(height))
+            || !fits(offsets[1], strides[1], cw * 2, ch)
+        {
+            return None;
+        }
+        let epoch = self.recording.unwrap_or(self.current_epoch);
+        let at = match self.imports.source_of(holds) {
+            Some(at) => at,
+            None => {
+                // SAFETY: the producer keeps the dma-buf and its holds alive
+                // while it hands the image over; the duplicate is Vulkan's
+                // once imported.
+                let Some((buffer, memory)) = (unsafe { self.import_dma_buf(fds, fd, len) }) else {
+                    self.dma_bufs = None;
+                    return None;
+                };
+                // SAFETY: as above.
+                let holds = unsafe { viso_handle::ExternalHolds::retain(holds) };
+                self.imports.keep(holds, buffer, memory, epoch)
+            }
+        };
+        let (buffer, holds) = self.imports.get(at);
+        let hold = holds.hold();
+        let id = self.plane_target(id, width, height);
+        let picture = Nv12 {
+            width,
+            height,
+            y: &[],
+            y_stride: strides[0] as usize,
+            uv: &[],
+            uv_stride: strides[1] as usize,
+            matrix,
+            full_range,
+            left_chroma,
+        };
+        let staged = |offset: u64, row_length: u32| planes::Staged {
+            buffer,
+            offset,
+            row_length,
+        };
+        self.convert_planes(
+            id,
+            &picture,
+            [
+                staged(offsets[0], strides[0]),
+                staged(offsets[1], strides[1] / 2),
+            ],
+            Some(buffer),
+        );
+        let epoch = self.recording.unwrap_or(self.current_epoch);
+        self.held.push((epoch, hold));
+        Some(id)
+    }
+
+    /// A transfer-source buffer over the dma-buf `fd` of `len` bytes, bound
+    /// to memory imported from a duplicate of it; `None` where the device
+    /// refuses it, the duplicate then left open.
+    ///
+    /// # Safety
+    ///
+    /// `fd` is a live dma-buf of at least `len` bytes.
+    #[cfg(unix)]
+    unsafe fn import_dma_buf(
+        &self,
+        fds: &khr::external_memory_fd::Device,
+        fd: i32,
+        len: u64,
+    ) -> Option<(vk::Buffer, vk::DeviceMemory)> {
+        use std::os::fd::{AsRawFd, BorrowedFd, IntoRawFd};
+        let kind = vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT;
+        // SAFETY: the caller's contract: the descriptor is live for the call.
+        let owned = unsafe { BorrowedFd::borrow_raw(fd) }
+            .try_clone_to_owned()
+            .ok()?;
+        let mut external = vk::ExternalMemoryBufferCreateInfo::default().handle_types(kind);
+        let info = vk::BufferCreateInfo::default()
+            .size(len)
+            .usage(vk::BufferUsageFlags::TRANSFER_SRC)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .push_next(&mut external);
+        // SAFETY: plain object creation and import on a live device; the
+        // duplicate is handed to Vulkan only by a successful allocation, and
+        // closed by `owned` otherwise; the buffer is bound once.
+        unsafe {
+            let mut props = vk::MemoryFdPropertiesKHR::default();
+            fds.get_memory_fd_properties(kind, owned.as_raw_fd(), &mut props)
+                .ok()?;
+            let buffer = self.device.create_buffer(&info, None).ok()?;
+            let req = self.device.get_buffer_memory_requirements(buffer);
+            let bits = req.memory_type_bits & props.memory_type_bits;
+            if bits == 0 || req.size > len {
+                self.device.destroy_buffer(buffer, None);
+                return None;
+            }
+            let raw = owned.into_raw_fd();
+            let mut import = vk::ImportMemoryFdInfoKHR::default()
+                .handle_type(kind)
+                .fd(raw);
+            let mut dedicated = vk::MemoryDedicatedAllocateInfo::default().buffer(buffer);
+            let alloc = vk::MemoryAllocateInfo::default()
+                .allocation_size(len)
+                .memory_type_index(bits.trailing_zeros())
+                .push_next(&mut import)
+                .push_next(&mut dedicated);
+            let Ok(memory) = self.device.allocate_memory(&alloc, None) else {
+                // Some drivers close the descriptor of a failed import too:
+                // it is left, and the device asked for no more.
+                self.device.destroy_buffer(buffer, None);
+                return None;
+            };
+            if self.device.bind_buffer_memory(buffer, memory, 0).is_err() {
+                self.device.free_memory(memory, None);
+                self.device.destroy_buffer(buffer, None);
+                return None;
+            }
+            Some((buffer, memory))
         }
     }
 
@@ -1573,6 +1869,7 @@ impl VulkanBackend {
         let completed = self.completed_epoch();
         let fence = Fence::at(completed);
         self.held.retain(|(epoch, _)| *epoch > completed);
+        self.imports.reclaim(&self.device, completed);
         if let Some(converter) = &mut self.converter {
             converter.reclaim(&self.device, completed);
         }
@@ -2497,6 +2794,10 @@ impl GpuBackend for VulkanBackend {
     }
 
     fn import_external(&mut self, image: &ExternalImage) -> Option<TextureId> {
+        #[cfg(unix)]
+        if let ExternalImage::DmaBuf { .. } = image {
+            return self.write_dma_buf(None, image);
+        }
         let (at, region) = self.external_source(image)?;
         let (width, height) = image.size();
         let id = self.converted_texture(width, height);
@@ -2510,6 +2811,10 @@ impl GpuBackend for VulkanBackend {
         };
         if t.converted.is_none() || (t.width, t.height) != image.size() {
             return false;
+        }
+        #[cfg(unix)]
+        if let ExternalImage::DmaBuf { .. } = image {
+            return self.write_dma_buf(Some(id), image) == Some(id);
         }
         let Some((at, region)) = self.external_source(image) else {
             return false;
@@ -2528,48 +2833,7 @@ impl GpuBackend for VulkanBackend {
         if w == 0 || h == 0 || !picture.uv_stride.is_multiple_of(2) {
             return None;
         }
-        let id = match id {
-            Some(id)
-                if self
-                    .textures
-                    .get(id.into())
-                    .is_some_and(|t| t.converted.is_some() && (t.width, t.height) == (w, h)) =>
-            {
-                id
-            }
-            _ => self.converted_texture(w, h),
-        };
-        let pass = self.render_pass(vk::Format::R8G8B8A8_UNORM, true, None);
-        if self.planar.is_none() {
-            // SAFETY: the pass has one UNORM color attachment.
-            self.planar =
-                Some(unsafe { planes::Planar::new(&self.device, self.pipeline_cache, pass) });
-        }
-        let made = self
-            .textures
-            .get(id.into())
-            .and_then(|t| t.converted.as_ref())
-            .is_some_and(|c| c.planes.is_some());
-        if !made {
-            let memory_type = |bits| {
-                self.memory_type(
-                    bits,
-                    vk::MemoryPropertyFlags::DEVICE_LOCAL,
-                    vk::MemoryPropertyFlags::empty(),
-                )
-            };
-            let made = self
-                .planar
-                .as_ref()?
-                .planes(&self.device, memory_type, w, h);
-            if let Some(c) = self
-                .textures
-                .get_mut(id.into())
-                .and_then(|t| t.converted.as_mut())
-            {
-                c.planes = Some(made);
-            }
-        }
+        let id = self.plane_target(id, w, h);
         self.ensure_recording();
         let (buffer, offset) = self.stage_aligned(luma, 4);
         let luma = planes::Staged {
@@ -2583,30 +2847,7 @@ impl GpuBackend for VulkanBackend {
             offset,
             row_length: (picture.uv_stride / 2) as u32,
         };
-        let cmd = self.slots[self.slot].upload;
-        let t = self.textures.get_mut(id.into())?;
-        let target = ycbcr::Target {
-            image: t.image,
-            framebuffer: t.converted.as_ref()?.framebuffer,
-            width: w,
-            height: h,
-        };
-        let planes = t.converted.as_mut()?.planes.as_mut()?;
-        // SAFETY: `cmd` is the open upload recording, outside a render pass,
-        // which orders every use of the planes and the target on the one
-        // queue; the planes were made for this size, the staged rows cover
-        // them, and the target's framebuffer was made against the pass.
-        unsafe {
-            self.planar.as_ref()?.record(
-                &self.device,
-                cmd,
-                pass,
-                picture,
-                planes,
-                [luma, chroma],
-                &target,
-            );
-        }
+        self.convert_planes(id, picture, [luma, chroma], None);
         Some(id)
     }
 
@@ -3324,6 +3565,7 @@ impl Drop for VulkanBackend {
             if let Some(mut planar) = self.planar.take() {
                 planar.destroy(&self.device);
             }
+            self.imports.destroy(&self.device);
             for b in self.buffers.drain() {
                 destroy_buffer(&self.device, b);
             }

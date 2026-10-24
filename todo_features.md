@@ -312,7 +312,12 @@ Rules:
     the texture's own R8/R8G8 images and converts them by matrix, range and
     chroma site in a plain shader (Vulkan); BGRA renegotiated once rows are
     copied; CPU conversion where the backend converts none.
-  - [ ] dmabuf import where the decoder exports one.
+  - [x] Dma-buf import where the decoder exports one: the sink asks for linear NV12
+    in `memory:DMABuf` and offers `GstVideoMeta`, so padded buffers come as they are;
+    `ExternalImage::DmaBuf` with holds kept on the memory; Vulkan imports the fd as a
+    buffer (`VK_EXT_external_memory_dma_buf`) and copies the planes on the GPU into
+    the converted texture; a backend that refuses gets mapped planes, then memory at
+    hand.
 - [ ] Camera capture service and `CameraView`.
 - [ ] Audio: input (microphone), file decoding (WAV, Ogg Vorbis, MP3, FLAC), Web Audio
   output, PulseAudio/PipeWire output.
