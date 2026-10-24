@@ -248,6 +248,83 @@ mod player {
         }
     }
 
+    /// The default camera, where there is one the process may use: ready
+    /// at its first picture, with no length; paused, it lets the camera go,
+    /// and plays on when asked again. Skipped where there is none, or the
+    /// user has not let the process capture.
+    fn a_camera_plays_live_where_one_is_allowed() {
+        let cameras = viso_media::cameras();
+        if cameras.is_empty() {
+            println!("no camera; skipped");
+            return;
+        }
+        assert!(cameras.iter().all(|c| !c.id.is_empty()));
+        let request = viso_media::CameraRequest {
+            width: 640,
+            height: 480,
+            ..Default::default()
+        };
+        let mut player = match VideoPlayer::open(&VideoSource::Camera(request)) {
+            Ok(player) => player,
+            Err(viso_media::VideoError::Denied) => {
+                println!("the camera is refused; skipped");
+                return;
+            }
+            Err(error) => panic!("{error}"),
+        };
+        let start = Instant::now();
+        let info = loop {
+            match player.poll() {
+                Some(VideoEvent::Ready(info)) => break info,
+                Some(VideoEvent::Failed(viso_media::VideoError::Denied)) => {
+                    println!("the camera is refused; skipped");
+                    return;
+                }
+                Some(other) => panic!("{other:?}"),
+                None => {}
+            }
+            if start.elapsed() > Duration::from_secs(10) {
+                println!("the camera never answered (access not given?); skipped");
+                return;
+            }
+            turn(0.01);
+        };
+        println!(
+            "camera: {}x{} at {:?}, facing {:?}",
+            info.width, info.height, info.frame_rate, info.facing
+        );
+        assert!(info.width > 0 && info.height > 0);
+        assert_eq!(
+            (info.duration, info.seekable, info.audio),
+            (None, false, false)
+        );
+        assert!(info.facing.is_some());
+        let picture = |player: &mut VideoPlayer| {
+            let start = Instant::now();
+            loop {
+                if let Some(frame) = player.frame() {
+                    let mut rgba = Vec::new();
+                    assert!(frame.copy_rgba(&mut rgba));
+                    assert_eq!(rgba.len(), (frame.width * frame.height * 4) as usize);
+                    return;
+                }
+                while player.poll().is_some() {}
+                assert!(start.elapsed() < Duration::from_secs(5), "no picture");
+                turn(0.01);
+            }
+        };
+        picture(&mut player);
+        player.play();
+        assert!(player.is_playing());
+        picture(&mut player);
+        player.pause();
+        turn(0.3);
+        while player.frame().is_some() {}
+        player.play();
+        picture(&mut player);
+        assert_eq!(player.position(), Duration::ZERO);
+    }
+
     pub fn run() {
         #[cfg(not(any(target_vendor = "apple", target_os = "windows")))]
         {
@@ -268,6 +345,10 @@ mod player {
                 bytes_play_as_their_file_would_and_a_seek_shows_its_picture_while_paused,
             ),
             ("what_is_not_a_video_fails", what_is_not_a_video_fails),
+            (
+                "a_camera_plays_live_where_one_is_allowed",
+                a_camera_plays_live_where_one_is_allowed,
+            ),
         ] {
             test();
             println!("test {name} ... ok");

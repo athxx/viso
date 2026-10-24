@@ -330,7 +330,7 @@ Rules:
   - [x] Web: `getUserMedia` into the `<video>` player (ideal size, rate and facing,
     or the exact device; tracks stopped while paused; a refusal is `Denied`;
     `enumerateDevices` listing); the `examples/camera` app.
-  - [ ] Apple: `AVCaptureSession` pictures as IOSurfaces.
+  - [x] Apple: `AVCaptureSession` pictures as IOSurfaces.
   - [ ] Windows: a Media Foundation source reader through the shared textures.
   - [ ] Android: Camera2 through the hardware buffer reader, its rotation and the
     permission asked.
