@@ -439,6 +439,10 @@ pub(crate) fn aria_attributes(node: &AccessNode, mut set: impl FnMut(&'static st
     set("aria-posinset", index.map(|i| i.to_string()).as_deref());
     set("aria-setsize", count.map(|c| c.to_string()).as_deref());
     set("aria-disabled", state.disabled.then_some("true"));
+    set("aria-required", state.required.then_some("true"));
+    set("aria-invalid", state.invalid.then_some("true"));
+    let error = node.error_message.map(element_id);
+    set("aria-errormessage", error.as_deref());
     let active = node.active_descendant.map(element_id);
     set("aria-activedescendant", active.as_deref());
     set("aria-description", node.description.as_deref());
@@ -813,6 +817,25 @@ mod tests {
         assert_eq!(value(&set, "aria-keyshortcuts"), Some("Alt+H"));
         assert_eq!(value(&set, "aria-expanded"), Some("false"));
         assert_eq!(value(&set, "aria-selected"), Some("true"));
+        assert_eq!(value(&set, "aria-invalid"), None);
+
+        let field = AccessNode {
+            role: SemanticsRole::TextField,
+            state: SemanticsState {
+                required: true,
+                invalid: true,
+                ..SemanticsState::default()
+            },
+            error_message: Some(SemanticsId(7)),
+            ..AccessNode::default()
+        };
+        let set = attributes(&field);
+        assert_eq!(value(&set, "aria-required"), Some("true"));
+        assert_eq!(value(&set, "aria-invalid"), Some("true"));
+        assert_eq!(
+            value(&set, "aria-errormessage").map(str::to_owned),
+            Some(element_id(SemanticsId(7)))
+        );
     }
 
     #[test]

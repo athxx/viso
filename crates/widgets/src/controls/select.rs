@@ -1100,3 +1100,19 @@ impl SelectHandle {
         self.0.open.get()
     }
 }
+
+impl crate::FormControl for Select {
+    fn value(&self) -> crate::FieldValue<'_> {
+        crate::FieldValue::Choice(self.selected)
+    }
+
+    fn reporting(self, mut report: crate::OnValue) -> Self {
+        let own = self.on_change.clone();
+        self.on_change(move |ev, i| {
+            if let Some(own) = &own {
+                (own.borrow_mut())(ev, i);
+            }
+            report(ev, crate::FieldValue::Choice(Some(i)));
+        })
+    }
+}

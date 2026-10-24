@@ -150,6 +150,22 @@ impl Component for CheckBox {
     }
 }
 
+impl crate::FormControl for CheckBox {
+    fn value(&self) -> crate::FieldValue<'_> {
+        crate::FieldValue::Flag(self.checked)
+    }
+
+    fn reporting(self, mut report: crate::OnValue) -> Self {
+        let mut own = self.on_change.borrow_mut().take();
+        self.on_change(move |ev, on| {
+            if let Some(own) = own.as_mut() {
+                own(ev, on);
+            }
+            report(ev, crate::FieldValue::Flag(on));
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -297,6 +297,7 @@ fn semantics_state(state: Option<SemanticState>, disabled: bool) -> SemanticsSta
         selected: state.selected,
         position: state.position,
         disabled,
+        ..SemanticsState::default()
     }
 }
 
@@ -372,11 +373,25 @@ impl Walk<'_> {
         if live && store.check_mark(row.id).is_some_and(|m| m.removes()) {
             actions = actions.with(AccessAction::Remove);
         }
+        // A refused value's reason is read with the node's description: the
+        // error relation alone is not read by every reader.
+        let validity = row.validity;
+        let error = validity.error.filter(|_| validity.invalid);
+        let reason = error.and_then(|e| store.semantics(e)?.label.as_deref());
+        let hint = row.hint.take();
+        let description = match (reason, hint) {
+            (Some(reason), Some(hint)) => Some(format!("{reason}. {hint}")),
+            (Some(reason), None) => Some(reason.to_owned()),
+            (None, hint) => hint,
+        };
+        let mut state = semantics_state(row.state, row.disabled);
+        state.required = validity.required;
+        state.invalid = validity.invalid;
         AccessNode {
             id: row_id(row),
             role,
             label,
-            description: row.hint.take(),
+            description,
             value: row.value.take(),
             live: semantics_live(row.live),
             level: row.heading_level,
@@ -387,9 +402,10 @@ impl Walk<'_> {
                 width: rect.w * self.scale,
                 height: rect.h * self.scale,
             },
-            state: semantics_state(row.state, row.disabled),
+            state,
             actions,
             active_descendant: row.active.map(semantics_id),
+            error_message: error.map(semantics_id),
             children,
         }
     }
@@ -610,6 +626,47 @@ mod tests {
             panic!("a key press and release");
         };
         assert_eq!(press.key, Key::Left);
+    }
+
+    #[test]
+    fn a_refused_field_reads_its_reason_with_its_description() {
+        let (mut store, root, [reason, field]) = scene();
+        store.set_semantics(reason, Semantics::role(Role::Label).with_label("Too loud"));
+        store.set_semantics(
+            field,
+            Semantics::role(Role::Slider)
+                .with_label("Volume")
+                .with_hint("Sets the level"),
+        );
+        let validity = viso_ui::Validity {
+            required: true,
+            invalid: true,
+            error: Some(reason),
+        };
+        store.set_validity(field, validity);
+        let mut bridge = AccessBridge::new();
+        let update = bridge.update(&store, root, 1.0).expect("first update");
+        let volume = node(&update, field);
+        assert!(volume.state.required && volume.state.invalid);
+        assert_eq!(volume.error_message, Some(semantics_id(reason)));
+        assert_eq!(
+            volume.description.as_deref(),
+            Some("Too loud. Sets the level")
+        );
+        store.set_validity(
+            field,
+            viso_ui::Validity {
+                invalid: false,
+                ..validity
+            },
+        );
+        let update = bridge
+            .update(&store, root, 1.0)
+            .expect("its validity changed");
+        let volume = node(&update, field);
+        assert!(volume.state.required && !volume.state.invalid);
+        assert_eq!(volume.error_message, None);
+        assert_eq!(volume.description.as_deref(), Some("Sets the level"));
     }
 
     #[test]

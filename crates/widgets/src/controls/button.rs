@@ -41,8 +41,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use viso_ui::{
-    Access, Align, Axis, BoxStyle, BuildCx, Component, EventCx, FlexStyle, Inset, InteractionStyle,
-    Justify, Key, Length, PointerButtons, PointerPhase, Rgba, Role, Semantics, Size, StateValue,
+    Access, Align, Axis, BoxStyle, BuildCx, Component, DispatchPhase, EventCx, FlexStyle, Inset,
+    InteractionStyle, Justify, Key, Length, PointerButtons, PointerPhase, Rgba, Role, Semantics,
+    Size, StateValue,
 };
 
 use crate::controls::mnemonic::Mnemonic;
@@ -262,6 +263,11 @@ impl Component for Button {
         // and any armed `pressed`. One press-then-release is one click.
         let pointer_cb = self.on_click.clone();
         cx.on_pointer(root, move |ev| {
+            // A press on the caption reaches the button capturing and then
+            // bubbling: it acts once, bubbling.
+            if ev.phase() == DispatchPhase::Capture {
+                return;
+            }
             let Some(p) = ev.pointer() else { return };
             let phase = p.phase;
             let primary = p.buttons.contains(PointerButtons::PRIMARY);
@@ -269,7 +275,8 @@ impl Component for Button {
                 PointerPhase::Down if primary => {
                     ev.set(pressed, StateValue::Bool(true));
                 }
-                PointerPhase::Up if primary => {
+                // Only a release ending a press on it clicks.
+                PointerPhase::Up if primary && ev.get(pressed) == Some(StateValue::Bool(true)) => {
                     ev.set(pressed, StateValue::Bool(false));
                     fire(&pointer_cb, ev);
                 }

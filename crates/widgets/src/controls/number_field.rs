@@ -187,6 +187,22 @@ impl Component for NumberField {
     }
 }
 
+impl crate::FormControl for NumberField {
+    fn value(&self) -> crate::FieldValue<'_> {
+        crate::FieldValue::Number(self.value)
+    }
+
+    fn reporting(self, mut report: crate::OnValue) -> Self {
+        let mut own = self.on_change.borrow_mut().take();
+        self.on_change(move |ev, n| {
+            if let Some(own) = own.as_mut() {
+                own(ev, n);
+            }
+            report(ev, crate::FieldValue::Number(n));
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

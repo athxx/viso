@@ -4613,6 +4613,8 @@ pub mod prelude {
         range_slider, rich_text, scroll, search_field, segmented_control, sheet, slider, spinner,
         splitter, stepper, tabs, text_input, time_picker, toast, toggle, view, virtual_list,
     };
+    // Forms: a checked field, the form gathering fields, a group of fields.
+    pub use viso_widgets::{Field, FieldValue, Fieldset, Form, field, fieldset};
     // The top-level Window control (public application lifecycle): a window
     // is not a node control — it does not enter the UI tree — so it appears as an
     // application-level handle, not a `Component`. `window(cfg).content(..).open(ev)`

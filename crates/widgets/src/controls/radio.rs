@@ -307,6 +307,22 @@ impl Component for RadioGroup {
     }
 }
 
+impl crate::FormControl for RadioGroup {
+    fn value(&self) -> crate::FieldValue<'_> {
+        crate::FieldValue::Choice(Some(self.selected))
+    }
+
+    fn reporting(self, mut report: crate::OnValue) -> Self {
+        let mut own = self.on_change.borrow_mut().take();
+        self.on_change(move |ev, i| {
+            if let Some(own) = own.as_mut() {
+                own(ev, i);
+            }
+            report(ev, crate::FieldValue::Choice(Some(i)));
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

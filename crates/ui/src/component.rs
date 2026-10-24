@@ -793,7 +793,9 @@ pub struct NodeStore {
     /// Cold: the viewports that snap to their items.
     pub(crate) snaps: crate::snap::Snaps,
     /// Cold: the nodes that show a descendant as active.
-    actives: crate::semantics::ActiveDescendants,
+    actives: crate::semantics::Sparse<NodeId>,
+    /// Cold: the form controls a value is checked of.
+    validities: crate::semantics::Sparse<crate::semantics::Validity>,
     /// Where the focus was before it last moved, until the move is told.
     focus_from: Option<Option<NodeId>>,
     /// Cold: the nodes whose lengths read the environment (`px`, `sp`, `em`),
@@ -944,6 +946,7 @@ impl NodeStore {
         self.stickies.clear();
         self.snaps.clear();
         self.actives.clear();
+        self.validities.clear();
         self.focus_scope = None;
         self.draggable_regions.clear();
         self.tasks.clear();
@@ -2888,6 +2891,23 @@ impl NodeStore {
     /// mark `id` SEMANTICS-dirty. A stale handle is a no-op.
     pub fn set_active_descendant(&mut self, id: NodeId, active: Option<NodeId>) {
         if self.arena.is_live(id) && self.actives.set(id.index(), active) {
+            self.mark_dirty(id, DirtyClass::SEMANTICS);
+        }
+    }
+
+    /// What checking form control `id`'s value says of it; the default for a
+    /// node nothing is checked of. An error node gone reads as none.
+    pub fn validity(&self, id: NodeId) -> crate::semantics::Validity {
+        let mut validity = self.validities.get(id.index()).unwrap_or_default();
+        validity.error = validity.error.filter(|&e| self.arena.is_live(e));
+        validity
+    }
+
+    /// Say what checking form control `id`'s value says of it, marking it
+    /// SEMANTICS-dirty when that changed. A stale handle is a no-op.
+    pub fn set_validity(&mut self, id: NodeId, validity: crate::semantics::Validity) {
+        let value = (validity != crate::semantics::Validity::default()).then_some(validity);
+        if self.arena.is_live(id) && self.validities.set(id.index(), value) {
             self.mark_dirty(id, DirtyClass::SEMANTICS);
         }
     }
@@ -5110,6 +5130,7 @@ impl NodeStore {
         self.stickies.forget(i as u32);
         self.snaps.forget(i as u32);
         self.actives.forget(i as u32);
+        self.validities.forget(i as u32);
         self.clips[i] = false;
         self.overlay[i] = false;
         self.chrome[i] = false;
@@ -5795,6 +5816,7 @@ impl NodeStore {
             // wrote it in the flush phase.
             state: self.semantic_state(id),
             active: self.active_descendant(id),
+            validity: self.validity(id),
             bounds: self.bounds(id),
             children: Vec::new(),
         });
@@ -5834,6 +5856,7 @@ impl NodeStore {
                 disabled,
                 state: None,
                 active: None,
+                validity: crate::semantics::Validity::default(),
                 bounds,
                 children: Vec::new(),
             });

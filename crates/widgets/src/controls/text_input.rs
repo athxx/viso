@@ -312,6 +312,29 @@ impl Component for TextInput {
     }
 }
 
+impl crate::FormControl for TextInput {
+    fn value(&self) -> crate::FieldValue<'_> {
+        crate::FieldValue::Text(&self.value)
+    }
+
+    fn reporting(self, mut report: crate::OnValue) -> Self {
+        let mut own = self.on_change.borrow_mut().take();
+        self.on_change(move |ev, text| {
+            if let Some(own) = own.as_mut() {
+                own(ev, text);
+            }
+            report(ev, crate::FieldValue::Text(text));
+        })
+    }
+
+    fn submitting(self, mut submit: crate::OnSubmit) -> Self {
+        if self.on_submit.borrow().is_some() {
+            return self;
+        }
+        self.on_submit(move |ev| submit(ev))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

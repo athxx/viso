@@ -496,3 +496,19 @@ fn line(text: &str, size: f32, ink: Rgba) -> TextRequest {
         style: TextStyle::default(),
     }
 }
+
+impl crate::FormControl for DatePicker {
+    fn value(&self) -> crate::FieldValue<'_> {
+        crate::FieldValue::Date(self.calendar.value)
+    }
+
+    fn reporting(self, mut report: crate::OnValue) -> Self {
+        let mut own = self.on_change.borrow_mut().take();
+        self.on_change(move |ev, date| {
+            if let Some(own) = own.as_mut() {
+                own(ev, date);
+            }
+            report(ev, crate::FieldValue::Date(Some(date)));
+        })
+    }
+}

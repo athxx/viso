@@ -141,6 +141,10 @@ pub struct SemanticsState {
     pub position: Option<(u32, u32)>,
     /// Whether it is disabled: shown, but taking no input.
     pub disabled: bool,
+    /// Whether it must be given a value.
+    pub required: bool,
+    /// Whether the value it holds is refused.
+    pub invalid: bool,
 }
 
 /// The set of [`AccessAction`]s a node supports, one bit each.
@@ -197,6 +201,8 @@ pub struct AccessNode {
     /// The node it shows as active while it keeps the focus itself: a combo
     /// box's highlighted option.
     pub active_descendant: Option<SemanticsId>,
+    /// The node whose text says why its value is refused.
+    pub error_message: Option<SemanticsId>,
     /// Its children in document order.
     pub children: Vec<SemanticsId>,
 }

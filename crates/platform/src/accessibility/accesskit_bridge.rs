@@ -8,8 +8,8 @@
 //! conversion is per node and keeps no state.
 
 use accesskit::{
-    Action, ActionData, ActionRequest, CustomAction, Live, Node, NodeId, Rect, Role, TreeId,
-    TreeInfo, TreeUpdate,
+    Action, ActionData, ActionRequest, CustomAction, Invalid, Live, Node, NodeId, Rect, Role,
+    TreeId, TreeInfo, TreeUpdate,
 };
 
 use super::{
@@ -105,6 +105,15 @@ fn node_of(node: AccessNode) -> Node {
     }
     if state.disabled {
         out.set_disabled();
+    }
+    if state.required {
+        out.set_required();
+    }
+    if state.invalid {
+        out.set_invalid(Invalid::True);
+    }
+    if let Some(error) = node.error_message {
+        out.set_error_message(node_id(error));
     }
     if let Some(active) = node.active_descendant {
         out.set_active_descendant(node_id(active));
@@ -242,6 +251,7 @@ mod tests {
                 .with(AccessAction::Increment)
                 .with(AccessAction::Decrement),
             active_descendant: None,
+            error_message: None,
             children: Vec::new(),
         }
     }
@@ -383,6 +393,25 @@ mod tests {
             "no custom action named"
         );
         assert_eq!(request(&ask(Action::ScrollIntoView)), None);
+    }
+
+    #[test]
+    fn a_refused_required_field_names_its_error() {
+        let field = node_of(AccessNode {
+            state: SemanticsState {
+                required: true,
+                invalid: true,
+                ..SemanticsState::default()
+            },
+            error_message: Some(SemanticsId(7)),
+            ..slider()
+        });
+        assert!(field.is_required());
+        assert_eq!(field.invalid(), Some(Invalid::True));
+        assert_eq!(field.error_message(), Some(NodeId(7)));
+        let quiet = node_of(slider());
+        assert!(!quiet.is_required());
+        assert_eq!(quiet.invalid(), None);
     }
 
     #[test]

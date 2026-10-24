@@ -236,7 +236,9 @@ Rules:
 - [x] `Splitter` live relayout: fraction or pinned-pane placement, grab-held drag, pane
   minimums, step/Home/End/Enter-fold keys, `separator` semantics with value and step actions.
 - [x] `Skeleton` / shimmer placeholder.
-- [ ] Form: field validation, error text, `Form` submit, field groups.
+- [x] Form: field validation (required, rules, shown once the focus leaves or on submit),
+  error text, `Form` submit (focus the first refused, Enter in a text field), field groups;
+  `required`/`invalid`/error-message semantics.
 
 ## W10 — Media
 

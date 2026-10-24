@@ -115,6 +115,9 @@ pub struct SemanticsNode {
     /// The descendant it shows as active while it keeps the focus itself: a
     /// combo box's highlighted option (WAI-ARIA `aria-activedescendant`).
     pub active: Option<NodeId>,
+    /// Whether it must be given a value, and whether the one it holds is
+    /// refused and which node says why.
+    pub validity: Validity,
     /// The node's layout box.
     pub bounds: Rect,
     /// Indices of this node's children within [`SemanticsTree::nodes`], in tree
@@ -322,6 +325,7 @@ mod tests {
                     disabled: false,
                     state: None,
                     active: None,
+                    validity: Validity::default(),
                     bounds: ZERO_RECT,
                     children: vec![1],
                 },
@@ -338,6 +342,7 @@ mod tests {
                     disabled: false,
                     state: None,
                     active: None,
+                    validity: Validity::default(),
                     bounds: ZERO_RECT,
                     children: Vec::new(),
                 },
@@ -350,14 +355,22 @@ mod tests {
     }
 }
 
-/// The nodes that show a descendant as active (cold): one entry for each,
-/// in slot order.
-#[derive(Debug, Default)]
-pub(crate) struct ActiveDescendants {
-    entries: Vec<(u32, NodeId)>,
+/// A cold column a few nodes carry a value in: one entry for each, in slot
+/// order.
+#[derive(Debug)]
+pub(crate) struct Sparse<T> {
+    entries: Vec<(u32, T)>,
 }
 
-impl ActiveDescendants {
+impl<T> Default for Sparse<T> {
+    fn default() -> Self {
+        Sparse {
+            entries: Vec::new(),
+        }
+    }
+}
+
+impl<T: Copy + PartialEq> Sparse<T> {
     pub(crate) fn clear(&mut self) {
         self.entries.clear();
     }
@@ -374,30 +387,41 @@ impl ActiveDescendants {
     }
 
     #[inline]
-    pub(crate) fn get(&self, index: u32) -> Option<NodeId> {
+    pub(crate) fn get(&self, index: u32) -> Option<T> {
         if self.entries.is_empty() {
             return None;
         }
         self.find(index).ok().map(|at| self.entries[at].1)
     }
 
-    /// Set slot `index`'s active descendant, or none; whether it changed.
-    pub(crate) fn set(&mut self, index: u32, active: Option<NodeId>) -> bool {
-        match (self.find(index), active) {
-            (Ok(at), Some(a)) if self.entries[at].1 == a => false,
-            (Ok(at), Some(a)) => {
-                self.entries[at].1 = a;
+    /// Set slot `index`'s value, or none; whether it changed.
+    pub(crate) fn set(&mut self, index: u32, value: Option<T>) -> bool {
+        match (self.find(index), value) {
+            (Ok(at), Some(v)) if self.entries[at].1 == v => false,
+            (Ok(at), Some(v)) => {
+                self.entries[at].1 = v;
                 true
             }
             (Ok(at), None) => {
                 self.entries.remove(at);
                 true
             }
-            (Err(at), Some(a)) => {
-                self.entries.insert(at, (index, a));
+            (Err(at), Some(v)) => {
+                self.entries.insert(at, (index, v));
                 true
             }
             (Err(_), None) => false,
         }
     }
+}
+
+/// What checking a form control's value says of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Validity {
+    /// Whether it must be given a value.
+    pub required: bool,
+    /// Whether the value it holds is refused.
+    pub invalid: bool,
+    /// The node whose text says why, while it is refused.
+    pub error: Option<NodeId>,
 }

@@ -144,6 +144,22 @@ impl Component for Toggle {
     }
 }
 
+impl crate::FormControl for Toggle {
+    fn value(&self) -> crate::FieldValue<'_> {
+        crate::FieldValue::Flag(self.on)
+    }
+
+    fn reporting(self, mut report: crate::OnValue) -> Self {
+        let mut own = self.on_change.borrow_mut().take();
+        self.on_change(move |ev, on| {
+            if let Some(own) = own.as_mut() {
+                own(ev, on);
+            }
+            report(ev, crate::FieldValue::Flag(on));
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

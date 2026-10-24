@@ -189,7 +189,7 @@ pub use scenes::{SceneSlots, SceneSync, SceneTarget};
 pub use scroll_bar::{ScrollBarStyle, ScrollBars};
 pub use scroll_motion::{FlingCurve, OverscrollStyle, ScrollPhysics};
 pub use semantics::{
-    InspectKind, LiveRegion, Role, SemanticState, Semantics, SemanticsNode, SemanticsTree,
+    InspectKind, LiveRegion, Role, SemanticState, Semantics, SemanticsNode, SemanticsTree, Validity,
 };
 pub use shader::ShaderSlots;
 pub use shadow::Shadow;

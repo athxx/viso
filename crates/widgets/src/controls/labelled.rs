@@ -54,6 +54,11 @@ impl<F: Component> Labelled<F> {
         self.gap = gap;
         self
     }
+
+    /// The field it names.
+    pub(crate) fn field(&self) -> &F {
+        &self.field
+    }
 }
 
 impl<F: Component> Component for Labelled<F> {

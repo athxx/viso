@@ -19,6 +19,7 @@ mod combo_box;
 mod date_picker;
 mod dock;
 mod file_tree;
+mod form;
 mod glyphs;
 mod labelled;
 mod menu;
@@ -57,6 +58,9 @@ pub use dock::{
 pub use file_tree::{
     FileTree, FileTreeHandle, FileTreeHandleSlot, FileTreeStyle, NodeKey, SelectMode, SelectOp,
     TreeNode, VisibleRow, file_tree,
+};
+pub use form::{
+    Field, FieldValue, Fieldset, Form, FormControl, FormStyle, OnSubmit, OnValue, field, fieldset,
 };
 pub use labelled::{Labelled, labelled};
 pub use menu::{
