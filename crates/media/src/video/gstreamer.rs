@@ -1904,17 +1904,7 @@ fn facing_of(location: Option<&str>, name: &str) -> CameraFacing {
         Some("front") => CameraFacing::Front,
         Some("back") => CameraFacing::Back,
         Some(_) => CameraFacing::External,
-        None => {
-            let name = name.to_ascii_lowercase();
-            if ["integrated", "built-in", "facetime", "internal"]
-                .iter()
-                .any(|word| name.contains(word))
-            {
-                CameraFacing::Front
-            } else {
-                CameraFacing::External
-            }
-        }
+        None => camera::facing_by_name(name),
     }
 }
 

@@ -15,6 +15,11 @@
 //! through a staging texture, into a buffer the player hands back once it
 //! has shown the next, only for a picture wanted while paused and once a
 //! caller has asked for rows; without shared textures every frame is.
+//!
+//! A camera's thread reads it the same way ([`capture`]), into the same
+//! shared textures.
+
+mod capture;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -57,7 +62,9 @@ use windows::core::{BSTR, Interface, PCWSTR, implement};
 
 use viso_handle::{ExternalHolds, ExternalImage};
 
-use super::{Frame, PixelLayout, Spilled, VideoError, VideoEvent, VideoInfo, VideoSource};
+use super::{
+    CameraRequest, Frame, PixelLayout, Spilled, VideoError, VideoEvent, VideoInfo, VideoSource,
+};
 
 /// How long the thread looks for a frame wanted while paused.
 const DUE_FOR: Duration = Duration::from_secs(2);
@@ -77,7 +84,26 @@ enum Ask {
     Looping(bool),
     /// One of the engine's notifications.
     Heard(u32),
+    /// A picture a camera's reader read.
+    Captured(capture::Read),
     Close,
+}
+
+/// What a player's thread plays.
+enum Work {
+    Movie(String),
+    Camera(CameraRequest),
+}
+
+/// What a player's thread takes requests on and hands back on.
+struct Lines {
+    asked: Receiver<Ask>,
+    tell: Sender<VideoEvent>,
+    shots: Sender<Shot>,
+    /// Buffers shown and done with, to fill again.
+    refill: Receiver<Vec<u8>>,
+    position: Arc<AtomicU64>,
+    wants_rows: Arc<AtomicBool>,
 }
 
 /// A picture: in a shared texture at a fence value, read back in BGRA rows
@@ -195,6 +221,8 @@ pub(crate) struct Player {
     wants_play: bool,
     looping: bool,
     ended: bool,
+    /// Whether it plays a camera, which is always now.
+    live: bool,
     thread: Option<JoinHandle<()>>,
     /// The file bytes were written to, removed once the thread is gone.
     _spilled: Option<Spilled>,
@@ -202,13 +230,14 @@ pub(crate) struct Player {
 
 impl Player {
     pub(crate) fn open(source: &VideoSource) -> Result<Player, VideoError> {
-        let (url, spilled) = match source {
-            VideoSource::File(path) => (file_url(path), None),
-            VideoSource::Url(url) => (url.clone(), None),
+        let (work, spilled) = match source {
+            VideoSource::File(path) => (Work::Movie(file_url(path)), None),
+            VideoSource::Url(url) => (Work::Movie(url.clone()), None),
             VideoSource::Bytes(bytes) => spill(bytes)?,
             VideoSource::Static(bytes) => spill(bytes)?,
-            VideoSource::Camera(_) => return Err(VideoError::Unsupported),
+            VideoSource::Camera(request) => (Work::Camera(request.clone()), None),
         };
+        let live = matches!(work, Work::Camera(_));
         let (asks, asked) = mpsc::channel();
         let (tell, events) = mpsc::channel();
         let (send_shot, shots) = mpsc::channel();
@@ -232,14 +261,33 @@ impl Player {
                 // down on it once the engine is gone.
                 let started = unsafe { MFStartup(MF_VERSION, MFSTARTUP_FULL) }.is_ok();
                 if started {
-                    match Engine::new(&url, heard) {
-                        Ok(engine) => {
-                            let _ = opened.send(Ok(()));
-                            engine.run(asked, tell, send_shot, refill, at, rows_wanted);
-                        }
-                        Err(error) => {
-                            let _ = opened.send(Err(error));
-                        }
+                    let lines = Lines {
+                        asked,
+                        tell,
+                        shots: send_shot,
+                        refill,
+                        position: at,
+                        wants_rows: rows_wanted,
+                    };
+                    match work {
+                        Work::Movie(url) => match Engine::new(&url, heard) {
+                            Ok(engine) => {
+                                let _ = opened.send(Ok(()));
+                                engine.run(lines);
+                            }
+                            Err(error) => {
+                                let _ = opened.send(Err(error));
+                            }
+                        },
+                        Work::Camera(request) => match capture::Capture::new(&request, heard) {
+                            Ok(camera) => {
+                                let _ = opened.send(Ok(()));
+                                camera.run(lines);
+                            }
+                            Err(error) => {
+                                let _ = opened.send(Err(error));
+                            }
+                        },
                     }
                     // SAFETY: balances the start above, with no engine left.
                     let _ = unsafe { MFShutdown() };
@@ -263,6 +311,7 @@ impl Player {
                 wants_play: false,
                 looping: false,
                 ended: false,
+                live,
                 thread: Some(thread),
                 _spilled: spilled,
             }),
@@ -331,6 +380,9 @@ impl Player {
     }
 
     pub(crate) fn seek(&mut self, time: Duration) {
+        if self.live {
+            return;
+        }
         self.ended = false;
         self.position.store(nanos(time), Ordering::Relaxed);
         let _ = self.asks.send(Ask::Seek(time));
@@ -401,16 +453,170 @@ struct Sharing {
     value: u64,
 }
 
-/// The media engine and the device it decodes on, owned by its thread.
-struct Engine {
-    engine: IMFMediaEngine,
+/// Where a thread draws its frames, on a device of its own: shared textures
+/// a backend reads where the device shares a fence, else a render target of
+/// its own; and the staging copy rows are read back through.
+struct Canvas {
     device: ID3D11Device,
     context: ID3D11DeviceContext,
-    /// Kept for as long as the engine decodes through it.
-    _manager: IMFDXGIDeviceManager,
     /// `None` where the device shares no fence.
     sharing: Option<Sharing>,
     targets: Option<Targets>,
+}
+
+impl Canvas {
+    /// A canvas on a device of its own, whose context the thread shares with
+    /// Media Foundation.
+    fn new() -> windows::core::Result<Canvas> {
+        let (device, context) = device()?;
+        // SAFETY: a plain COM call on the live device.
+        if let Ok(threads) = device.cast::<ID3D11Multithread>() {
+            let _ = unsafe { threads.SetMultithreadProtected(true) };
+        }
+        let sharing = sharing(&device, &context);
+        Ok(Canvas {
+            device,
+            context,
+            sharing,
+            targets: None,
+        })
+    }
+
+    /// A device manager Media Foundation decodes through on the canvas's
+    /// device.
+    fn manager(&self) -> windows::core::Result<IMFDXGIDeviceManager> {
+        // SAFETY: plain calls on live objects; the token and manager are
+        // locals the first call fills.
+        unsafe {
+            let mut token = 0u32;
+            let mut manager = None;
+            MFCreateDXGIDeviceManager(&mut token, &mut manager)?;
+            let manager: IMFDXGIDeviceManager = manager.ok_or_else(windows::core::Error::empty)?;
+            manager.ResetDevice(&self.device, token)?;
+            Ok(manager)
+        }
+    }
+
+    /// Draws a picture of `width` × `height` through `write`: into a slot no
+    /// one holds where textures are shared, signalling the fence once it is
+    /// written, else into a target of its own. Reads it back into a buffer
+    /// handed back by the player, or a new one, where `read_back` or there is
+    /// no slot; returns the rows, empty where not read, and the slot with its
+    /// fence value.
+    #[allow(clippy::type_complexity)]
+    fn draw(
+        &mut self,
+        width: u32,
+        height: u32,
+        read_back: bool,
+        refill: &Receiver<Vec<u8>>,
+        write: impl FnOnce(&ID3D11DeviceContext, &ID3D11Texture2D) -> Option<()>,
+    ) -> Option<(Vec<u8>, Option<(Arc<Slot>, u64)>)> {
+        if width == 0 || height == 0 {
+            return None;
+        }
+        if self
+            .targets
+            .as_ref()
+            .is_none_or(|t| t.width != width || t.height != height)
+        {
+            self.targets = Some(Targets {
+                width,
+                height,
+                target: None,
+                slots: Vec::new(),
+                staging: None,
+            });
+        }
+        let t = self.targets.as_mut()?;
+        let slot = match &self.sharing {
+            Some(sharing) => {
+                let free = t
+                    .slots
+                    .iter()
+                    .find(|s| Arc::strong_count(s) == 1 && !s.holds.is_held())
+                    .cloned();
+                Some(match free {
+                    Some(slot) => slot,
+                    None if t.slots.len() < SLOTS => {
+                        let slot =
+                            Arc::new(slot(&self.device, &sharing.fence, width, height).ok()?);
+                        t.slots.push(Arc::clone(&slot));
+                        slot
+                    }
+                    // Every slot is shown or held: this frame is skipped,
+                    // the next tries again.
+                    None => return None,
+                })
+            }
+            None => None,
+        };
+        let target = match &slot {
+            Some(slot) => slot.texture.clone(),
+            None => match &t.target {
+                Some(target) => target.clone(),
+                None => t
+                    .target
+                    .insert(texture(&self.device, width, height, false).ok()?)
+                    .clone(),
+            },
+        };
+        write(&self.context, &target)?;
+        // SAFETY: the textures are this thread's, made on its device, and the
+        // staging texture is mapped for reading only around the copy of its
+        // rows, each `RowPitch` bytes apart for its height.
+        unsafe {
+            let slot = match (slot, &mut self.sharing) {
+                (Some(slot), Some(sharing)) => {
+                    sharing.value += 1;
+                    sharing
+                        .context
+                        .Signal(&sharing.fence.fence, sharing.value)
+                        .ok()?;
+                    // Another device waits on the fence: the work signalling
+                    // it goes to the GPU now.
+                    self.context.Flush();
+                    Some((slot, sharing.value))
+                }
+                _ => None,
+            };
+            let mut rows = Vec::new();
+            if slot.is_none() || read_back {
+                let staging = match &t.staging {
+                    Some(staging) => staging.clone(),
+                    None => t
+                        .staging
+                        .insert(staging(&self.device, width, height).ok()?)
+                        .clone(),
+                };
+                self.context.CopyResource(&staging, &target);
+                let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+                self.context
+                    .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
+                    .ok()?;
+                let row = width as usize * 4;
+                rows = refill.try_recv().unwrap_or_default();
+                rows.clear();
+                rows.reserve(row * height as usize);
+                let base = mapped.pData.cast::<u8>().cast_const();
+                for y in 0..height as usize {
+                    let line =
+                        std::slice::from_raw_parts(base.add(y * mapped.RowPitch as usize), row);
+                    rows.extend_from_slice(line);
+                }
+                self.context.Unmap(&staging, 0);
+            }
+            Some((rows, slot))
+        }
+    }
+}
+
+/// The media engine and the canvas it decodes onto, owned by its thread.
+struct Engine {
+    engine: IMFMediaEngine,
+    canvas: Canvas,
+    /// Kept for as long as the engine decodes through it.
+    _manager: IMFDXGIDeviceManager,
     ready: bool,
     wants_play: bool,
     looping: bool,
@@ -433,22 +639,11 @@ struct Engine {
 impl Engine {
     fn new(url: &str, heard: Sender<Ask>) -> Result<Engine, VideoError> {
         let open = |what: &str, e: windows::core::Error| VideoError::Open(format!("{what}: {e}"));
-        let (device, context) = device().map_err(|e| open("Direct3D 11", e))?;
+        let canvas = Canvas::new().map_err(|e| open("Direct3D 11", e))?;
+        let manager = canvas.manager().map_err(|e| open("DXGI", e))?;
         // SAFETY: plain COM calls on live objects of this thread's
         // apartment; each out-pointer is a local the call fills.
         unsafe {
-            // The engine and this thread share the device's context.
-            if let Ok(threads) = device.cast::<ID3D11Multithread>() {
-                let _ = threads.SetMultithreadProtected(true);
-            }
-            let mut token = 0u32;
-            let mut manager = None;
-            MFCreateDXGIDeviceManager(&mut token, &mut manager).map_err(|e| open("DXGI", e))?;
-            let manager: IMFDXGIDeviceManager =
-                manager.ok_or_else(|| VideoError::Open("no DXGI manager".to_owned()))?;
-            manager
-                .ResetDevice(&device, token)
-                .map_err(|e| open("DXGI", e))?;
             let mut attributes: Option<IMFAttributes> = None;
             MFCreateAttributes(&mut attributes, 3).map_err(|e| open("attributes", e))?;
             let attributes =
@@ -475,14 +670,10 @@ impl Engine {
             engine
                 .SetSource(&BSTR::from(url))
                 .map_err(|e| open("source", e))?;
-            let sharing = sharing(&device, &context);
             Ok(Engine {
                 engine,
-                device,
-                context,
+                canvas,
                 _manager: manager,
-                sharing,
-                targets: None,
                 ready: false,
                 wants_play: false,
                 looping: false,
@@ -500,15 +691,15 @@ impl Engine {
 
     /// Takes what the player asks and what the engine tells until the
     /// player closes, drawing each new frame.
-    fn run(
-        mut self,
-        asked: Receiver<Ask>,
-        tell: Sender<VideoEvent>,
-        shots: Sender<Shot>,
-        refill: Receiver<Vec<u8>>,
-        position: Arc<AtomicU64>,
-        wants_rows: Arc<AtomicBool>,
-    ) {
+    fn run(mut self, lines: Lines) {
+        let Lines {
+            asked,
+            tell,
+            shots,
+            refill,
+            position,
+            wants_rows,
+        } = lines;
         loop {
             if self.due.is_some_and(|since| since.elapsed() > DUE_FOR) {
                 self.due = None;
@@ -627,6 +818,7 @@ impl Engine {
                     let _ = self.engine.SetLoop(looping);
                 }
                 Ask::Heard(event) => return self.hear(event, tell),
+                Ask::Captured(_) => {}
                 Ask::Close => return false,
             }
         }
@@ -682,7 +874,7 @@ impl Engine {
             } else if is(MF_MEDIA_ENGINE_EVENT_SEEKED) {
                 self.due = Some(Instant::now());
             } else if is(MF_MEDIA_ENGINE_EVENT_FORMATCHANGE) {
-                self.targets = None;
+                self.canvas.targets = None;
                 self.due = Some(Instant::now());
             }
         }
@@ -712,16 +904,12 @@ impl Engine {
         }
     }
 
-    /// Draws the engine's frame if it has a new one: into a slot no one
-    /// holds where textures are shared, else into a target of its own; read
-    /// back into a buffer handed back by the player, or a new one, where
-    /// rows are wanted.
+    /// Draws the engine's frame if it has a new one; read back where rows
+    /// are wanted or a paused picture is.
     fn draw(&mut self, refill: &Receiver<Vec<u8>>, wants_rows: bool) -> Option<Shot> {
-        // SAFETY: the engine is asked on its thread; the textures are this
-        // thread's, made on the engine's device, and the staging texture is
-        // mapped for reading only around the copy of its rows, each
-        // `RowPitch` bytes apart for its height.
-        unsafe {
+        // SAFETY: the engine is asked on its thread, and draws into a texture
+        // of its canvas, made on the device it decodes on.
+        let (pts, width, height) = unsafe {
             let pts = self.engine.OnVideoStreamTick().ok()?;
             if pts < 0 || self.last.is_some_and(|(seen, _)| seen == pts) && self.due.is_none() {
                 return None;
@@ -730,128 +918,48 @@ impl Engine {
             self.engine
                 .GetNativeVideoSize(Some(&mut width), Some(&mut height))
                 .ok()?;
-            if width == 0 || height == 0 {
-                return None;
-            }
-            if self
-                .targets
-                .as_ref()
-                .is_none_or(|t| t.width != width || t.height != height)
-            {
-                self.targets = Some(Targets {
-                    width,
-                    height,
-                    target: None,
-                    slots: Vec::new(),
-                    staging: None,
-                });
-            }
-            let t = self.targets.as_mut()?;
-            let slot = match &self.sharing {
-                Some(sharing) => {
-                    let free = t
-                        .slots
-                        .iter()
-                        .find(|s| Arc::strong_count(s) == 1 && !s.holds.is_held())
-                        .cloned();
-                    Some(match free {
-                        Some(slot) => slot,
-                        None if t.slots.len() < SLOTS => {
-                            let slot =
-                                Arc::new(slot(&self.device, &sharing.fence, width, height).ok()?);
-                            t.slots.push(Arc::clone(&slot));
-                            slot
-                        }
-                        // Every slot is shown or held: this frame is
-                        // skipped, the next tick tries again.
-                        None => return None,
-                    })
-                }
-                None => None,
-            };
-            let target = match &slot {
-                Some(slot) => slot.texture.clone(),
-                None => match &t.target {
-                    Some(target) => target.clone(),
-                    None => t
-                        .target
-                        .insert(texture(&self.device, width, height, false).ok()?)
-                        .clone(),
-                },
-            };
-            let rect = RECT {
-                left: 0,
-                top: 0,
-                right: width as i32,
-                bottom: height as i32,
-            };
-            let black = MFARGB {
-                rgbBlue: 0,
-                rgbGreen: 0,
-                rgbRed: 0,
-                rgbAlpha: 255,
-            };
-            self.engine
-                .TransferVideoFrame(&target, None, &rect, Some(&black))
-                .ok()?;
-            let slot = match (slot, &mut self.sharing) {
-                (Some(slot), Some(sharing)) => {
-                    sharing.value += 1;
-                    sharing
-                        .context
-                        .Signal(&sharing.fence.fence, sharing.value)
-                        .ok()?;
-                    // Another device waits on the fence: the work signalling
-                    // it goes to the GPU now.
-                    self.context.Flush();
-                    Some((slot, sharing.value))
-                }
-                _ => None,
-            };
-            let mut rows = Vec::new();
-            if slot.is_none() || wants_rows || self.due.is_some() {
-                let staging = match &t.staging {
-                    Some(staging) => staging.clone(),
-                    None => t
-                        .staging
-                        .insert(staging(&self.device, width, height).ok()?)
-                        .clone(),
+            (pts, width, height)
+        };
+        let engine = &self.engine;
+        let (rows, slot) = self.canvas.draw(
+            width,
+            height,
+            wants_rows || self.due.is_some(),
+            refill,
+            |_, target| {
+                let rect = RECT {
+                    left: 0,
+                    top: 0,
+                    right: width as i32,
+                    bottom: height as i32,
                 };
-                self.context.CopyResource(&staging, &target);
-                let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-                self.context
-                    .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
-                    .ok()?;
-                let row = width as usize * 4;
-                rows = refill.try_recv().unwrap_or_default();
-                rows.clear();
-                rows.reserve(row * height as usize);
-                let base = mapped.pData.cast::<u8>().cast_const();
-                for y in 0..height as usize {
-                    let line =
-                        std::slice::from_raw_parts(base.add(y * mapped.RowPitch as usize), row);
-                    rows.extend_from_slice(line);
-                }
-                self.context.Unmap(&staging, 0);
-            }
-            let now = Instant::now();
-            if let Some((seen, _)) = self.last
-                && pts > seen
-            {
-                // The engine's times are in hundreds of nanoseconds.
-                let step = Duration::from_nanos((pts - seen) as u64 * 100);
-                self.interval = step.clamp(Duration::from_millis(4), Duration::from_millis(50));
-            }
-            self.last = Some((pts, now));
-            self.due = None;
-            Some(Shot {
-                rows,
-                slot,
-                width,
-                height,
-                time: Duration::from_nanos(pts as u64 * 100),
-            })
+                let black = MFARGB {
+                    rgbBlue: 0,
+                    rgbGreen: 0,
+                    rgbRed: 0,
+                    rgbAlpha: 255,
+                };
+                // SAFETY: as above.
+                unsafe { engine.TransferVideoFrame(target, None, &rect, Some(&black)) }.ok()
+            },
+        )?;
+        let now = Instant::now();
+        if let Some((seen, _)) = self.last
+            && pts > seen
+        {
+            // The engine's times are in hundreds of nanoseconds.
+            let step = Duration::from_nanos((pts - seen) as u64 * 100);
+            self.interval = step.clamp(Duration::from_millis(4), Duration::from_millis(50));
         }
+        self.last = Some((pts, now));
+        self.due = None;
+        Some(Shot {
+            rows,
+            slot,
+            width,
+            height,
+            time: Duration::from_nanos(pts as u64 * 100),
+        })
     }
 }
 
@@ -1024,9 +1132,9 @@ fn staging(
 }
 
 /// `bytes` in a file of their own, and its URL.
-fn spill(bytes: &[u8]) -> Result<(String, Option<Spilled>), VideoError> {
+fn spill(bytes: &[u8]) -> Result<(Work, Option<Spilled>), VideoError> {
     let spilled = Spilled::new(bytes).map_err(|e| VideoError::Open(e.to_string()))?;
-    Ok((file_url(spilled.path()), Some(spilled)))
+    Ok((Work::Movie(file_url(spilled.path())), Some(spilled)))
 }
 
 /// The `file:` URL of `path`, made absolute, its reserved bytes escaped.
@@ -1050,7 +1158,4 @@ fn nanos(time: Duration) -> u64 {
     u64::try_from(time.as_nanos()).unwrap_or(u64::MAX)
 }
 
-/// The cameras this target has: none it captures from yet.
-pub(crate) fn cameras() -> Vec<super::CameraInfo> {
-    Vec::new()
-}
+pub(crate) use capture::cameras;

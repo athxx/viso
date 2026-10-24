@@ -10,6 +10,7 @@
 #![cfg_attr(
     not(any(
         target_vendor = "apple",
+        target_os = "windows",
         target_os = "linux",
         target_os = "freebsd",
         target_os = "openbsd",
@@ -125,6 +126,21 @@ pub(crate) fn nearest_mode(modes: &[CameraMode], request: &CameraRequest) -> Opt
         .map(|(i, _)| i)
 }
 
+/// Which way a camera of `name` faces, where the platform does not say: a
+/// built-in one toward the user, one named for a side that way, any other
+/// plugged in.
+pub(crate) fn facing_by_name(name: &str) -> CameraFacing {
+    let name = name.to_ascii_lowercase();
+    let named = |words: &[&str]| words.iter().any(|word| name.contains(word));
+    if named(&["rear", "back"]) {
+        CameraFacing::Back
+    } else if named(&["front", "integrated", "built-in", "facetime", "internal"]) {
+        CameraFacing::Front
+    } else {
+        CameraFacing::External
+    }
+}
+
 /// The camera of `cameras` that `choice` names: the default is the first
 /// facing the user, else the first.
 pub(crate) fn chosen<'a>(
@@ -226,5 +242,13 @@ mod tests {
             Some("usb".into()),
             "none facing so: the default"
         );
+    }
+
+    #[test]
+    fn a_camera_named_for_its_side_faces_that_way() {
+        assert_eq!(facing_by_name("Integrated Camera"), CameraFacing::Front);
+        assert_eq!(facing_by_name("Surface Camera Front"), CameraFacing::Front);
+        assert_eq!(facing_by_name("Surface Camera Rear"), CameraFacing::Back);
+        assert_eq!(facing_by_name("Logitech BRIO"), CameraFacing::External);
     }
 }

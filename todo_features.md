@@ -331,7 +331,7 @@ Rules:
     or the exact device; tracks stopped while paused; a refusal is `Denied`;
     `enumerateDevices` listing); the `examples/camera` app.
   - [x] Apple: `AVCaptureSession` pictures as IOSurfaces.
-  - [ ] Windows: a Media Foundation source reader through the shared textures.
+  - [x] Windows: a Media Foundation source reader through the shared textures.
   - [ ] Android: Camera2 through the hardware buffer reader, its rotation and the
     permission asked.
 - [ ] Audio: input (microphone), file decoding (WAV, Ogg Vorbis, MP3, FLAC), Web Audio
