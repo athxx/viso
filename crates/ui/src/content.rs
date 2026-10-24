@@ -153,6 +153,8 @@ pub enum Content {
     PageDots(crate::page_dots::PageDots),
     /// A progress indicator: how far work has come.
     Progress(crate::progress::Progress),
+    /// A plot: data drawn into the node's box. Its leaf sizes it.
+    Plot(Box<crate::plot::Plot>),
     /// A stepper: a minus and a plus that step a number.
     Stepper(crate::stepper::Stepper),
     /// Segments: the thumb a segmented control's selected segment sits on,
@@ -210,6 +212,7 @@ impl Content {
             Content::Shader { .. }
             | Content::Scene { .. }
             | Content::Shimmer(_)
+            | Content::Plot(_)
             | Content::Segments(_)
             | Content::Days(_) => Vec2::ZERO,
         }
@@ -233,6 +236,7 @@ impl Content {
             Content::Shader { .. }
             | Content::Scene { .. }
             | Content::Shimmer(_)
+            | Content::Plot(_)
             | Content::Segments(_)
             | Content::Days(_) => 0.0,
         }
@@ -252,6 +256,7 @@ impl Content {
             | Content::Scene { .. }
             | Content::Spinner(_)
             | Content::Progress(_)
+            | Content::Plot(_)
             | Content::PageDots(_)
             | Content::Stepper(_)
             | Content::Slider(_)

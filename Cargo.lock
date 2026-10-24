@@ -2676,6 +2676,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "viso-charts"
+version = "0.0.0"
+dependencies = [
+ "viso",
+ "viso-math",
+ "viso-ui",
+ "viso-widgets",
+]
+
+[[package]]
 name = "viso-cli"
 version = "0.0.0"
 dependencies = [

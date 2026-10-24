@@ -258,7 +258,11 @@ fn the_keys_step_the_bar_send_it_to_the_ends_and_fold_the_leading_pane() {
     let start = run(SplitAt::Start(200.0), Axis::Row, &[]);
     let focus = click(bar_at(&start));
     let [lead, bar, trail] = parts(&start);
-    let app = run(SplitAt::Start(200.0), Axis::Row, &[focus.clone()]);
+    let app = run(
+        SplitAt::Start(200.0),
+        Axis::Row,
+        std::slice::from_ref(&focus),
+    );
     assert_eq!(app.store().focused(), Some(bar), "a press focuses the bar");
     let app = run(
         SplitAt::Start(200.0),

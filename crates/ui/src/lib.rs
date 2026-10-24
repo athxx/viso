@@ -55,6 +55,7 @@ pub mod page_dots;
 pub mod paint;
 pub mod pinch;
 pub mod plate;
+pub mod plot;
 pub mod progress;
 pub mod reactive;
 pub mod refresh;
@@ -179,6 +180,7 @@ pub use links::LinkPointer;
 pub use navigation::PageTransition;
 pub use number_format::{NumberFormat, number_kind};
 pub use page_dots::{PageDots, PageDotsStyle};
+pub use plot::{Plot, PlotBar, PlotGrid, PlotLayer, PlotMark};
 pub use progress::{Progress, ProgressShape};
 pub use reactive::{
     Cleanup, ComputeCx, ComputedId, ComputedStore, DepCursor, EffectCx, EffectId, EffectStore,

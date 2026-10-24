@@ -228,7 +228,7 @@ Rules:
   typed digits, minute step.
 - [x] `DataGrid`: virtualized rows and columns, resize, reorder, sort, cell/row
   selection, keyboard navigation, `grid` semantics.
-- [ ] Charts (in `extras/`): line, bar, area, scatter, sparkline.
+- [x] Charts (in `extras/`): line, bar, area, scatter, sparkline.
 - [x] Tabs: overflow scroll (a vertical wheel scrolls the strip across, the selected
   tab scrolls into view), close buttons (middle press, Delete; permanent tabs), drag and
   Ctrl+Shift+Page Up/Down reorder; `tabpanel` role; hidden flex children take no fill

@@ -209,7 +209,7 @@ fn the_field_shows_the_date_and_a_press_opens_the_calendar_at_it() {
 fn a_pick_closes_reports_and_focuses_the_field() {
     let (p, app) = layout();
     let open = click(middle(app.store(), p.field));
-    let app = run(&[open.clone()]);
+    let app = run(std::slice::from_ref(&open));
     let day = middle(app.store(), p.days[2 * 7 + 1]);
     let app = run(&[open.clone(), click(day)]);
     let store = app.store();
@@ -241,7 +241,7 @@ fn escape_and_a_press_outside_close_it_unchanged() {
     assert!(app.store().hidden(p.panel));
     assert_eq!(app.store().focused(), Some(p.field));
     assert!(heard().is_empty());
-    let shown = run(&[open.clone()]);
+    let shown = run(std::slice::from_ref(&open));
     let r = shown.store().world(p.panel);
     let outside = (r.x + r.w + 40.0, r.y + r.h * 0.5);
     let app = run(&[open.clone(), click(outside)]);

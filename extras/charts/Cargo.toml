@@ -1,0 +1,16 @@
+[package]
+name = "viso-charts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# Charts: line, area, bar and scatter charts and sparklines, drawn by the
+# UI's plot content. Optional, outside the default widget set.
+[dependencies]
+viso-math = { workspace = true, features = ["std"] }
+viso-ui = { workspace = true }
+viso-widgets = { workspace = true }
+
+[dev-dependencies]
+viso = { workspace = true, features = ["headless"] }

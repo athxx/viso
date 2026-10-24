@@ -161,6 +161,16 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
                 dev: &[],
             },
         ),
+        // Charts are an optional extra over the widgets, drawn by the UI's
+        // plot content; their tests drive the facade headless.
+        (
+            "viso-charts",
+            Allowed {
+                dir: "extras/charts",
+                deps: &["viso-ui", "viso-widgets", "viso-math"],
+                dev: &["viso"],
+            },
+        ),
         // dsl works against a schema/registry, NOT concrete widgets or the
         // runtime: it emits schema data (`viso-schema`)
         // and dev-link patches (`viso-dev-protocol`), encodes them with

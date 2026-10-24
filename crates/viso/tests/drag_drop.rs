@@ -272,7 +272,7 @@ fn a_link_dragged_in_from_outside_drops_on_the_zone_taking_links() {
     let reply = DropReply::new();
     let mut steps = vec![outside(DropPhase::Over, 150.0, 100.0, &reply), redraw()];
     // Over the card zone, which takes no link, nothing answers.
-    let _ = run(&[steps.clone()]);
+    let _ = run(std::slice::from_ref(&steps));
     assert_eq!(reply.get(), None);
     assert_eq!(heard(), []);
     steps = [150.0, 190.0]
@@ -310,7 +310,7 @@ fn carried_past_the_window_s_edge_the_card_s_text_leaves_with_the_os() {
             redraw(),
         ]);
     }
-    let _ = run(&[steps.clone()]);
+    let _ = run(std::slice::from_ref(&steps));
     assert_eq!(heard(), [], "the OS has it, and has not let it go");
     steps.extend([
         RawEvent::DragEnded {

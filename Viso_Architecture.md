@@ -627,6 +627,7 @@ viso/
 │   ├── dsl/  lsp/
 │   ├── behavior/  view/   viso-behavior（VM）/ viso-view（compiled view 运行时）
 │   └── services/
+├── extras/charts/   viso-charts（折线/面积/柱状/散点图与 sparkline，选装）
 ├── tools/project/   viso-project（项目发现/配置/构建身份）
 ├── tools/package/   viso-package（打包/图标/资源转换）
 ├── tools/cli/       viso-cli（`viso` 命令：参数、输出、exit code）
@@ -636,7 +637,7 @@ viso/
 └── xtask/           cargo xtask check-deps 等
 ```
 
-目标（尚未建立）：`crates/schema/`（viso-schema，ADR 0042）、`integrations/`（tokio/tracing/serde/accesskit 等 adapter）、`extras/`（code-editor/markdown/pdf/browser/charts/map/xr）、`tools/inspector`、`tools/studio`、`tools/packager`、`vendor/`。新增目录或 crate 时必须同步 §9、§10 与 xtask allowlist。
+目标（尚未建立）：`crates/schema/`（viso-schema，ADR 0042）、`integrations/`（tokio/tracing/serde/accesskit 等 adapter）、`extras/` 的其余部分（code-editor/markdown/pdf/browser/map/xr）、`tools/inspector`、`tools/studio`、`tools/packager`、`vendor/`。新增目录或 crate 时必须同步 §9、§10 与 xtask allowlist。
 
 ### 8.1 为什么不是几十个 crate
 
@@ -958,6 +959,7 @@ CLI 依赖 `viso-dsl`、`viso-dev-protocol`、`viso-schema`、`viso-image`、`vi
 |---|---|---|
 | `viso`（facade） | runtime, ui, ui-macros, widgets, dsl（dev）, view, behavior, services, render, image, dev-protocol, gpu, platform, handle, text, shader, macros, ende, math, schema | `behavior` 的解释器只在 `vm` feature 下编入（ADR 0041） |
 | `viso-widgets` | ui, math | — |
+| `viso-charts`（extras） | ui, widgets, math；测试另 dev-depend viso | — |
 | `viso-ui-macros` | dsl | — |
 | `viso-lsp` | dsl | — |
 | `viso-cli` | project, package, dsl, dev-protocol, schema, ende, image, svg, text | — |
@@ -3707,6 +3709,10 @@ IR/runtime 使用 `PropertyId`、`TokenId`、`NodeKey`、`ComponentTypeId` 等�
 **滚动条**（`viso_ui::scroll_bar`）：`ScrollStyle`/`VirtualListStyle` 的 `bars`（默认 `ScrollBars::Auto`）让视口建一条轨道和其中的滑块。轨道是视口的 chrome 子节点（`NodeStore::is_chrome`，显式标记，不按子节点位置推断）：布局把它沿视口末端（从右向左的纵向视口在左侧）贴边放置，内容不受它影响；绘制在内容变换结束后以视口自身空间绘制，命中测试先于内容测试且不随偏移移动；视口子节点重链且含 chrome 时拼接退回整树重绘（罕见）。每次布局后同步滑块：长度为可见比例（不短于 `min_thumb`，越界时向端点压缩），经外观长度写入（仅长度变化时重排一次）；位置只写平移，滚动仍只标 `TRANSFORM`。外观由窗口的 `ScrollBarStyle` 决定：facade 按系统外观设置——`Appearance::overlay_scroll_bars`（macOS `NSScroller.preferredScrollerStyle` 及其变更通知、Windows“始终显示滚动条”`DynamicScrollbars`、GNOME `overlay-scrolling`，移动平台与 Web 恒为真）为真时取 `native(dark)`（macOS 覆盖式、iOS/Android 指示条、Windows 11/GTK 细条），否则取 `classic(dark)`。覆盖式滚动条浮在内容上，偏移变化或指针停留时显示，停止后经 `linger` 再淡出（期间再动或被按住则顺延）；经典滚动条通过 `LayoutInput::Scroll::gutter` 在内容旁留出轨道宽度，可滚动时常显。可交互样式：指针悬停时滑块加粗并显示轨道；拖动滑块偏移随之；按在轨道上向按压处翻页（视口的 7/8），按住 300 ms 后每 50 ms 继续，直到滑块到达按压处；按住跳转修饰键（Apple 为 Option，其他为 Shift）时滑块跳到按压处并可接着拖动。轨道只在显示且可交互时可命中，指示条样式不接收指针。
 
 **双向滚动**：`ScrollStyle::across`/`VirtualListStyle::across`（部件 `ScrollViewStyle::across`，DSL `across: true`）让视口在其轴之外也横跨滚动（`LayoutInput::Scroll::across`，`NodeStore::scrolls_on(id, axis)` 判断某方向是否可滚；`scroll_axis` 仍是内容堆叠、吸附、尾随、刷新与 sticky 所沿的主轴）。布局时内容两个方向都取自然尺寸（横向上至少铺满视口，`Fill` 不再按视口截断），两向都记入 `content`，`scroll_range` 按视口减去滚动条留白计算；从右向左时内容右边与视口右边对齐、横向偏移取 `[-range, 0]`。滚轮、触控板与系统惯性按轴分别交给链上第一个该向有余量的视口；触摸平移起始方向接近某轴（次轴位移小于主轴一半）时锁定该轴，斜向起始且首个承接视口两向可滚时两向自由平移，松手两向各自惯性（只在主轴回弹，横向到边即停）；方向键按其轴、Page/Space/Home/End 按主轴；`scroll_into_view`/`Reveal` 两向都做最小滚动。`ScrollBars::Auto` 为每个可滚方向各建一条滚动条：纵条贴右（RTL 贴左）、横条贴底，两条都在时各自让出对角；经典样式的留白按方向记在 `gutter: Vec2`（`x` 为纵条宽、`y` 为横条高），`scroll_thumb_on(id, axis)` 取某向滑块。虚拟列表的行横向长度由 `NodeStore::set_list_across(viewport, extent)` 设定（画布横向 `Fixed`，不足视口时仍铺满），表格列宽之和即走此路径；滚动仍只标 `TRANSFORM`。
+
+**绘图内容**（`viso_ui::plot`）：`Content::Plot(Box<Plot>)` 是节点的绘图内容，图层的点都存于单位方格（`x` 自起始边 0 到末端 1，`y` 自底 0 到顶 1），绘制时才映射进节点布局后的框（RTL 起始边在右），所以改尺寸只重绘（`PAINT`），线宽、点径、圆角保持 pt 尺寸。图层：`Line`（点列，可单调三次平滑，Fritsch–Carlson 斜率，不越过数据点）、`Area`（上沿与下沿或基线之间填充，可描上沿；凹形填充走渲染器的 nonzero 遮罩通道）、`Bars`（同一带内 `slot/slots` 并排、组居中，单根不宽于 `max_width`，带间与堆叠段间留 `gap`，只圆数据端）、`Dots`（可带底色环）；`PlotGrid` 画横向发丝网格线与零线，`PlotMark` 画悬停带、十字准线与带环的高亮点（`NodeStore::set_plot_mark` 只换标记、共享图层 `Arc`）。`y` 不是数的点在该处断开线与面积。一条线的点多于框的像素列数四倍时，每个像素列只取首、最低、最高、末四点（M4），视觉不变而工作量随框宽而非数据量。
+
+**图表**（`extras/charts`，`viso-charts`）：`line_chart`/`area_chart`/`bar_chart`/`scatter_chart(label, Vec<Series>)` 与 `sparkline`。`series(name, values)` 按类别（`categories`）或下标取值，`series_xy` 取 `(x, y)` 点；数据先算成模型（刻度、轴标签、单位方格图层、每个位置每条序列的读数），再交给一个绘图节点。`y` 轴取整刻度（1/2/5×10ⁿ，按步长定小数，千以上紧凑 `2K`/`1.5M`），面积与柱包含 0；类别 `x` 轴以带中心为位置、过密时隔几个标注，数值 `x` 轴折线保持数据域、散点外扩到整刻度。轴标签与刻度对齐靠固定行高：`y` 标签列以弹性空隙均分、绘图区上下各内缩半行，`x` 标签以百分比插入定位在 `Absolute` 里。序列配色是固定顺序的八色（浅/深两套，相邻色在常见色觉缺陷下仍可分），颜色随序列而非名次，隐藏一条其余不变色；两条以上序列显示图例，每项是复选框（指针或 Space/Enter 切换显隐，坐标轴随显示的序列重算）。悬停：折线/面积在最近的 `x` 位置画十字准线并读出所有序列，柱状高亮整带，散点取 24pt 内最近的点；触摸点按即读。图表是一个 tab stop，左右（RTL 镜像）、Home/End 移动读数，Enter 触发 `on_select`，Escape 收起；读数框是 polite live region（`Role::Status`），其标签即读数文本。`ChartHandle::set_series`/`set_categories` 换数据，结构钩子重算模型、重设绘图并重建轴标签与图例。处理器只写共享状态并递增修订号。
 
 **数据表格**（`viso_widgets::data_grid`）：`DataGrid` 是一个横跨滚动的虚拟列表，第 0 行是列头（`set_sticky_of` 钉在顶部），其余每行一条数据；每行是一条横排：先一块占位叶子顶替视口左侧未建的列，再是视口横向可见的列（两侧各多建一列）。列表每次 reconcile 用 `watch_across(lists, viewport, watch)` 告诉表格横向偏移与可见宽（`AcrossView`）及已挂的行（`VirtualListState::mounted_rows()`），表格据此逐行增删单元格（前进只拆前端、补后端，跳远才整行重建），百万行百列只挂一屏单元格。命中测试按几何算：画布世界矩形加行高、列起点（`columns::at`）定位行列，不给单元格挂处理器。列头末端 8pt 是改宽把手（`ResizeCol` 光标），拖动实时改宽；拖动列头越过 4pt 后列随指针换位；单击可排序列头升序、再点降序，`on_sort` 之后自动重建单元格。选择分 `GridSelect::{None, Rows, Cells}`：按下选中，Shift 延伸，主修饰键追加（已选中行则剔除），拖动边走边选；键盘方向键（RTL 镜像）、Home/End、Page Up/Down、主修饰键到边，Shift 延伸，Space 切换，主修饰键+A 全选，主修饰键+C 以制表符分隔复制，Enter/F2 或双击激活单元格；列头上 Enter/Space 排序，主修饰键+Shift+左右移列，Alt+左右改宽。光标所在单元格滚入视野：纵向交给列表的 `show_index`（最小滚动，避开钉住的列头，未挂的行按高度模型定位），横向按列起点算。处理器只写共享状态并递增一个修订号，结构钩子统一应用（`LOOKS` 重设填色与边框只标 `PAINT`/`SEMANTICS`，`WIDTHS` 改宽重新布局，`CELLS` 重建已挂单元格，`COUNT` 改行数）。
 

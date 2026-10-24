@@ -412,6 +412,11 @@ fn groups(store: &NodeStore, id: NodeId) -> Vec<PropertyGroup> {
             let value = progress.value.map_or("none".into(), number);
             add(&mut content, "value", value);
         }
+        Some(Content::Plot(plot)) => {
+            add(&mut content, "kind", "plot".into());
+            add(&mut content, "layers", plot.layers.len().to_string());
+            add(&mut content, "marked", plot.mark.is_some().to_string());
+        }
         Some(Content::PageDots(dots)) => {
             add(&mut content, "kind", "page_dots".into());
             add(&mut content, "count", dots.count.to_string());
