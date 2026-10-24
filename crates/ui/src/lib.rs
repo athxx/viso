@@ -19,6 +19,7 @@ pub mod binding;
 pub mod calendar;
 pub mod check_mark;
 pub mod clicks;
+pub mod color_picker;
 pub mod color_plane;
 pub mod component;
 pub mod content;

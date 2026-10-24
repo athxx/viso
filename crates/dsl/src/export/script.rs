@@ -325,6 +325,7 @@ fn mount(out: &mut String, index: usize, content: &Content, eval: &Eval<'_>, roo
                         Prop::Href => format!("P.href({el}, {value})"),
                         Prop::Pressed => format!("P.pressed({el}, {value})"),
                         Prop::Stepper(name) => format!("P.stepper({el}, {value}, \"{name}\")"),
+                        Prop::Picker(name) => format!("P.picker({el}, {value}, \"{name}\")"),
                         Prop::Badge(name) => format!("P.badge({el}, {value}, \"{name}\")"),
                         Prop::Avatar(name) => format!("P.avatar({el}, {value}, \"{name}\")"),
                         Prop::Progress(name) => {

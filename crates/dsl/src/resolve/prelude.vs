@@ -138,6 +138,7 @@ export record AnimationEnd { target: Animate; finished: Bool; }
 
 export record ToggleChanged { value: Bool; }
 export record SliderChanged { value: F32; }
+export record ColorChanged { value: Color; }
 export record TextChanged { value: String; }
 export record NumberChanged { value: F64; }
 export record LinkEvent { url: String; }

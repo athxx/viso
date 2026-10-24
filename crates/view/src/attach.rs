@@ -27,6 +27,7 @@ pub fn attach(
     control: Option<Control>,
     scope: &Scope,
 ) -> Handle {
+    let routes = &sink(host, node.id(), routes, control.as_ref(), scope);
     let control_kind = control.as_ref().map(|c| c.kind);
     let (keys, pointers) = split(routes, control.as_ref());
     let wait = tap_wait(routes);
@@ -94,6 +95,7 @@ pub fn attach_node(
     scope: &Scope,
 ) {
     store.clear_event_handlers(id);
+    let routes = &sink(host, id, routes, control.as_ref(), scope);
     match notices(host, routes, scope) {
         Some((kinds, watcher)) => store.watch(id, kinds, watcher),
         None => store.unwatch(id),
@@ -134,6 +136,28 @@ pub fn attach_node(
     if reorders(routes) || store.is_reorder_list(id) {
         store.set_reorder_list(id, reorders(routes));
     }
+}
+
+/// The routes of `routes` node `id` runs itself: those its parts report,
+/// when the framework builds its parts, go to `host` for the parts to fire.
+fn sink(
+    host: &Rc<RefCell<ViewHost>>,
+    id: NodeId,
+    routes: &[Route],
+    control: Option<&Control>,
+    scope: &Scope,
+) -> Vec<Route> {
+    let Some(kind) = control.map(|c| c.kind).filter(|kind| kind.builds_parts()) else {
+        return routes.to_vec();
+    };
+    let (reported, own): (Vec<Route>, Vec<Route>) = routes
+        .iter()
+        .copied()
+        .partition(|route| kind.reports(route.event));
+    if let Ok(mut host) = host.try_borrow_mut() {
+        host.set_sink(id, reported, scope);
+    }
+    own
 }
 
 /// Whether a node whose key handler runs `keys` takes the focus for them as

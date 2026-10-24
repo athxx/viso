@@ -167,6 +167,9 @@ struct Parts {
 }
 
 fn parts(store: &NodeStore, root: NodeId, which: usize) -> Parts {
+    let shown = |ids: Vec<NodeId>| -> Vec<NodeId> {
+        ids.into_iter().filter(|&id| !store.hidden(id)).collect()
+    };
     let picker = store.arena().children(root).nth(which).unwrap();
     let kids: Vec<NodeId> = store.arena().children(picker).collect();
     let (plane, row) = (kids[0], *kids.last().unwrap());
@@ -174,8 +177,9 @@ fn parts(store: &NodeStore, root: NodeId, which: usize) -> Parts {
     let field = row.next().unwrap();
     Parts {
         plane,
-        stops: store.arena().children(plane).collect(),
-        bars: kids[1..kids.len() - 1].to_vec(),
+        // The parts a picker does not use are hidden.
+        stops: shown(store.arena().children(plane).collect()),
+        bars: shown(kids[1..kids.len() - 1].to_vec()),
         hex: store.arena().first_child(field).unwrap(),
         swatch: row.next().unwrap(),
     }

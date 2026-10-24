@@ -197,13 +197,20 @@ pub fn parse_hex(text: &str) -> Option<Rgba> {
 
 /// Straight linear `color` as `#RRGGBB`, or `#RRGGBBAA` when `alpha` asks.
 pub fn format_hex(color: Rgba, alpha: bool) -> String {
-    let byte = |c: f32| (clamp01(c) * 255.0).round() as u8;
-    let [r, g, b] = [color.r, color.g, color.b].map(|c| byte(linear_to_srgb(c)));
+    let packed = rgba32(color);
     if alpha {
-        format!("#{r:02X}{g:02X}{b:02X}{:02X}", byte(color.a))
+        format!("#{packed:08X}")
     } else {
-        format!("#{r:02X}{g:02X}{b:02X}")
+        format!("#{:06X}", packed >> 8)
     }
+}
+
+/// Straight linear `color` as 8-bit sRGB packed `0xRRGGBBAA`, its alpha
+/// linear.
+pub fn rgba32(color: Rgba) -> u32 {
+    let byte = |c: f32| (clamp01(c) * 255.0).round() as u32;
+    let [r, g, b] = [color.r, color.g, color.b].map(|c| byte(linear_to_srgb(c)));
+    (r << 24) | (g << 16) | (b << 8) | byte(color.a)
 }
 
 /// How a colour plane draws.

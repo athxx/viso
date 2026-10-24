@@ -823,12 +823,11 @@ impl<'a, 'l> Lowering<'a, 'l> {
         // each axis it does not size.
         // A badge measures to its count's pill, an avatar is a 40dp circle.
         // A chip measures to its caption with the room round it, a stepper
-        // to its 96 by 32 pill.
+        // to its 96 by 32 pill, a colour picker to its parts.
         let default = match type_name.as_str() {
             "GameViewport" => Some(LengthIr::Fill { weight: 1.0 }),
-            "ProgressBar" | "ProgressRing" | "Spinner" | "Badge" | "Chip" | "Stepper" => {
-                Some(LengthIr::Fit)
-            }
+            "ProgressBar" | "ProgressRing" | "Spinner" | "Badge" | "Chip" | "Stepper"
+            | "ColorPicker" => Some(LengthIr::Fit),
             "Avatar" => Some(LengthIr::Fixed(AVATAR_SIDE)),
             _ => None,
         };

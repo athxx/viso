@@ -156,6 +156,9 @@ pub(super) enum Prop {
     /// A stepper's `value`, `min`, `max`, `step`, `wrap` or `tint`, which
     /// the script steps by and shows.
     Stepper(&'static str),
+    /// A colour picker's `value` or `alpha`: its colour input's colour and
+    /// its opacity range's value, or whether the range shows.
+    Picker(&'static str),
     /// A badge's `count` or `max`, which the script shows as its text.
     Badge(&'static str),
     /// An avatar's `name` or `image`, which the script shows as its
@@ -610,6 +613,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         match node.type_name.as_str() {
             "LinkLabel" => el.classes.push("vx-link".to_owned()),
             "SegmentedControl" => el.classes.push("vx-segmented".to_owned()),
+            "ColorPicker" => el.classes.push("vx-color".to_owned()),
             "Modal" | "Sheet" => el.classes.push("vx-layer".to_owned()),
             "Toast" => el
                 .classes
@@ -1134,6 +1138,60 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 None
             }
             fixed => Some(fixed),
+        }
+    }
+
+    /// Writes a colour picker as a colour input and, when it picks an
+    /// opacity, a range of it: its colour, opaque, the input's value and
+    /// its alpha the range's, its label the group's `aria-label`. The
+    /// browser's own picker stands for a wheel.
+    fn color_picker(
+        &mut self,
+        control: &Control,
+        el: &mut Element,
+        wires: &mut Vec<Wire>,
+        at: TextRange,
+    ) {
+        let colour = match self.bind(
+            wires,
+            control.value,
+            Prop::Picker("value"),
+            "the picked colour",
+            at,
+        ) {
+            Some(Fixed::Value(v)) => v.as_int().map(|c| c as u32),
+            _ => None,
+        };
+        let alpha = match self.bind(
+            wires,
+            control.alpha,
+            Prop::Picker("alpha"),
+            "whether the picker takes an opacity",
+            at,
+        ) {
+            Some(fixed) => fixed.truth(),
+            // Unset, it takes one; changing, the script shows it or not.
+            None => true,
+        };
+        // An unpicked picker starts at its opaque blue.
+        let rgba = colour.unwrap_or(0x417ed9ff);
+        let hex = format!("#{:06x}", rgba >> 8);
+        let opacity = css::number(f64::from(rgba & 0xff) / 255.0);
+        let hidden = if alpha { "" } else { " hidden" };
+        el.markup = Some(format!(
+            "<input type=\"color\" class=\"vx-color-value\" aria-label=\"Colour\" value=\"{hex}\">\
+             <input type=\"range\" class=\"vx-range vx-color-alpha\" aria-label=\"Opacity\" min=\"0\" max=\"1\" step=\"any\" value=\"{opacity}\"{hidden}>"
+        ));
+        if control.semantics.label.is_none()
+            && let Some(fixed) = self.bind(
+                wires,
+                control.caption,
+                Prop::Label { alt: false },
+                "the label",
+                at,
+            )
+        {
+            el.attr("aria-label", &fixed.text());
         }
     }
 
@@ -1825,6 +1883,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             }
             ControlKind::Badge => self.badge(key, control, el, decls, wires, at),
             ControlKind::Stepper => self.stepper(control, el, decls, wires, at),
+            ControlKind::ColorPicker => self.color_picker(control, el, wires, at),
             ControlKind::Avatar => self.avatar(key, control, el, decls, wires, at),
             ControlKind::Viewer => {
                 for (entry, name, what) in [

@@ -321,6 +321,14 @@ const select = (el, v, radio) => {
     }
   }
 };
+// A colour picker's colour as its colour input and opacity range show it:
+// rgba, packed, its alpha whole while the range is hidden.
+const picked = (el) => {
+  const [c, a] = el.querySelectorAll("input");
+  const rgb = parseInt((c?.value || "#000000").slice(1), 16) || 0;
+  const alpha = !a || a.hidden ? 255 : Math.round(Math.min(Math.max(Number(a.value), 0), 1) * 255);
+  return BigInt(((rgb << 8) | alpha) >>> 0);
+};
 // A knob's fill and pointer at its value's fraction of its range.
 const knob = (el) => {
   if (!el.classList.contains("vx-knob")) return;
@@ -529,6 +537,16 @@ const P = {
   range: (el, v, name) => { el[name] = v === null ? "" : String(v); knob(el); },
   href: (el, v) => attr(el, "href", v),
   pressed: (el, v) => attr(el, "aria-pressed", truth(v) ? "true" : "false"),
+  // A colour picker's colour, shown on its colour input and its opacity
+  // range, or whether it takes an opacity.
+  picker(el, v, name) {
+    const [c, a] = el.querySelectorAll("input");
+    if (name === "alpha") { if (a) a.hidden = !truth(v); return; }
+    if (v === null) return;
+    const n = Number(BigInt.asUintN(32, v));
+    if (c) c.value = "#" + (n >>> 8).toString(16).padStart(6, "0");
+    if (a) a.value = String((n & 255) / 255);
+  },
   // A stepper's number, bounds, step, wrap or tint: the halves that can
   // step no further are spent.
   stepper(el, v, name) {
@@ -1751,6 +1769,7 @@ const listen = (el, route, capture, control, fire) => {
       if (control === 20) el.addEventListener("viso-dismiss", () => fire(rec([bool(false)])), capture);
     }
     else if (control === 1 || control === 30) el.addEventListener("input", () => { knob(el); fire(rec([Number(el.value)])); }, capture);
+    else if (control === 31) el.addEventListener("input", (e) => { if (e.target !== el) fire(rec([picked(el)])); }, capture);
     else if (control === 13) {
       // Each number the text reads as within the bounds; Enter and the
       // focus leaving settle the text, the arrows step it.

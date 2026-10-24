@@ -692,6 +692,9 @@ impl Jsx<'_> {
                         Prop::Stepper(name) => refs.push(format!(
                             "st.effect(() => show.stepper(el, {v}, \"{name}\"));"
                         )),
+                        Prop::Picker(name) => refs.push(format!(
+                            "st.effect(() => show.picker(el, {v}, \"{name}\"));"
+                        )),
                         Prop::Pressed => attrs.push(format!(
                             "aria-pressed={{show.truth({v}) ? \"true\" : \"false\"}}"
                         )),

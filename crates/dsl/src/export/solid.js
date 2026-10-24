@@ -310,6 +310,7 @@ export const show = {
   progress: P.progress,
   badge: P.badge,
   stepper: P.stepper,
+  picker: P.picker,
   avatar: P.avatar,
   maskSize: (v) => {
     const fit = fits[Number(v ?? 0n)] || "contain";

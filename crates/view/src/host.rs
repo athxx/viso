@@ -288,6 +288,16 @@ pub struct ViewHost {
     /// The nodes its actions and handlers reach as a `NodeRef`, and what they
     /// ask of them.
     pub(crate) nodes: crate::nodes::NodeRefs,
+    /// The routes each node whose parts the framework builds reports
+    /// through, and the scope they run in: its parts fire them.
+    sinks: Vec<Sink>,
+}
+
+/// The routes a node whose parts the framework builds reports through.
+struct Sink {
+    node: NodeId,
+    routes: Box<[crate::attach::Route]>,
+    scope: Scope,
 }
 
 /// Where a view's `@persist` states load from and are stored, decided at the
@@ -422,6 +432,7 @@ impl ViewHost {
             assets: Vec::new(),
             shaders: Vec::new(),
             nodes: crate::nodes::NodeRefs::default(),
+            sinks: Vec::new(),
         })
     }
 
@@ -1048,6 +1059,47 @@ impl ViewHost {
     /// Returns whether it committed. A fault is kept as
     /// [`last_fault`](Self::last_fault); the transaction's writes and events are
     /// then discarded.
+    /// Has node `node`'s parts report through `routes` in `scope`, in place
+    /// of what they reported through.
+    pub(crate) fn set_sink(
+        &mut self,
+        node: NodeId,
+        routes: Vec<crate::attach::Route>,
+        scope: &Scope,
+    ) {
+        self.sinks.retain(|sink| sink.node != node);
+        if !routes.is_empty() {
+            self.sinks.push(Sink {
+                node,
+                routes: routes.into(),
+                scope: scope.clone(),
+            });
+        }
+    }
+
+    /// Drops the routes of the nodes `live` no longer holds.
+    pub(crate) fn prune_sinks(&mut self, live: impl Fn(NodeId) -> bool) {
+        self.sinks.retain(|sink| live(sink.node));
+    }
+
+    /// Runs each of node `node`'s routes of `event` with `payload`, as its
+    /// parts report it.
+    pub(crate) fn fire(
+        &mut self,
+        node: NodeId,
+        event: viso_schema::view::route::EventRoute,
+        payload: Value,
+        cells: &mut dyn StateCells,
+    ) {
+        let Some(at) = self.sinks.iter().position(|sink| sink.node == node) else {
+            return;
+        };
+        let (routes, scope) = (self.sinks[at].routes.clone(), self.sinks[at].scope.clone());
+        for route in routes.iter().filter(|route| route.event == event) {
+            self.dispatch(route.handler, payload.clone(), &scope, cells);
+        }
+    }
+
     pub fn dispatch(
         &mut self,
         handler: u32,

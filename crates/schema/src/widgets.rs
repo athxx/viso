@@ -240,6 +240,15 @@ const KNOB: &[WidgetProperty] = &[
     look("tint", "Option<Color>"),
 ];
 
+/// A `ColorPicker`'s `value`, whether it picks an opacity (`alpha`), whether
+/// its hue goes round a ring (`wheel`), and the `label` that names it.
+const COLOR_PICKER: &[WidgetProperty] = &[
+    two_way("value", "Color"),
+    prop("alpha", "Bool"),
+    prop("wheel", "Bool"),
+    prop("label", "String").localizable(),
+];
+
 /// A `ProgressBar`'s or `ProgressRing`'s `value` within `min..=max`, none
 /// while work of unknown length runs; its fill's `tint` and the `label` it is
 /// named by.
@@ -447,6 +456,7 @@ const CHIP_EVENTS: &[WidgetEvent] = &[
     WidgetEvent::signal("removed"),
 ];
 const SLIDER_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("changed", "SliderChanged")];
+const COLOR_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("changed", "ColorChanged")];
 const NUMBER_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("changed", "NumberChanged")];
 const TEXT_INPUT_EVENTS: &[WidgetEvent] = &[
     WidgetEvent::new("changed", "TextChanged"),
@@ -668,6 +678,14 @@ pub const STANDARD: &[NativeWidget] = &[
     layout("Knob", WidgetNode::Leaf, &[KNOB, LAYOUT, TRANSFORM, FOCUS])
         .events(&[SLIDER_EVENTS, STANDARD_EVENTS])
         .interactive(),
+    // Its parts are the framework's: it takes no children.
+    layout(
+        "ColorPicker",
+        COLUMN,
+        &[COLOR_PICKER, LAYOUT, TRANSFORM, FOCUS],
+    )
+    .events(&[COLOR_EVENTS, STANDARD_EVENTS])
+    .interactive(),
     layout(
         "Image",
         WidgetNode::Leaf,

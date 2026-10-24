@@ -126,11 +126,16 @@ pub enum ControlKind {
     /// `Knob`: a [`Slider`](Self::Slider) drawn as a ring round a face, a
     /// drag up or right turning it.
     Knob = 30,
+    /// `ColorPicker`: a colour picked on a square of tones (or a ring of
+    /// hues round one, with `wheel`), a hue bar, an opacity bar (with
+    /// `alpha`) and a hex field, parts the framework builds inside it.
+    /// Reports each colour picked.
+    ColorPicker = 31,
 }
 
 impl ControlKind {
     /// Every kind, by discriminant.
-    pub const ALL: [ControlKind; 31] = [
+    pub const ALL: [ControlKind; 32] = [
         ControlKind::Check,
         ControlKind::Slider,
         ControlKind::Select,
@@ -162,6 +167,7 @@ impl ControlKind {
         ControlKind::Stepper,
         ControlKind::Segmented,
         ControlKind::Knob,
+        ControlKind::ColorPicker,
     ];
 
     /// The kind native widget `widget` is.
@@ -197,6 +203,7 @@ impl ControlKind {
             "Stepper" => ControlKind::Stepper,
             "SegmentedControl" => ControlKind::Segmented,
             "Knob" => ControlKind::Knob,
+            "ColorPicker" => ControlKind::ColorPicker,
             _ => ControlKind::Plain,
         }
     }
@@ -233,7 +240,14 @@ impl ControlKind {
                 | ControlKind::Spinner
                 | ControlKind::Badge
                 | ControlKind::Avatar
+                | ControlKind::ColorPicker
         )
+    }
+
+    /// Whether the node's parts are the framework's, built inside it: they
+    /// respond, and report what the node reports.
+    pub fn builds_parts(self) -> bool {
+        self == ControlKind::ColorPicker
     }
 
     /// Whether a node of the kind needs its control even reading nothing: it
@@ -250,6 +264,7 @@ impl ControlKind {
                     | ControlKind::Spinner
                     | ControlKind::Badge
                     | ControlKind::Avatar
+                    | ControlKind::ColorPicker
             )
     }
 
@@ -268,7 +283,8 @@ impl ControlKind {
                     | ControlKind::TextInput
                     | ControlKind::Number
                     | ControlKind::Chip
-                    | ControlKind::Stepper,
+                    | ControlKind::Stepper
+                    | ControlKind::ColorPicker,
                 EventRoute::Changed
             ) | (ControlKind::TextInput, EventRoute::Submitted)
                 | (
@@ -400,7 +416,7 @@ impl ControlKind {
             | (ControlKind::Chip, "selected")
             | (ControlKind::Disclosure, "expanded")
             | (ControlKind::Dialog | ControlKind::Sheet | ControlKind::Toast, "open")
-            | (ControlKind::Slider | ControlKind::Knob, "value")
+            | (ControlKind::Slider | ControlKind::Knob | ControlKind::ColorPicker, "value")
             | (ControlKind::Select | ControlKind::Segmented, "selected")
             | (ControlKind::Pages, "current")
             | (ControlKind::TextInput | ControlKind::Number, "value")
@@ -439,9 +455,12 @@ impl ControlKind {
                 | ControlKind::Ring
                 | ControlKind::Spinner
                 | ControlKind::Badge
-                | ControlKind::Stepper,
+                | ControlKind::Stepper
+                | ControlKind::ColorPicker,
                 "label",
             ) => ControlInput::Caption,
+            (ControlKind::ColorPicker, "alpha") => ControlInput::Alpha,
+            (ControlKind::ColorPicker, "wheel") => ControlInput::Wheel,
             (ControlKind::Chip, "removable") => ControlInput::Removable,
             (
                 ControlKind::Slider
@@ -520,6 +539,7 @@ impl ControlKind {
             ControlKind::Stepper => "Stepper",
             ControlKind::Segmented => "Segmented",
             ControlKind::Knob => "Knob",
+            ControlKind::ColorPicker => "ColorPicker",
         }
     }
 
@@ -537,6 +557,7 @@ pub fn widget_role(widget: &str) -> Option<Role> {
         "Button" | "ReorderHandle" => Role::Button,
         "Toggle" | "CheckBox" | "Chip" => Role::CheckBox,
         "Slider" | "Knob" => Role::Slider,
+        "ColorPicker" => Role::Group,
         "TextInput" => Role::TextField,
         "NumberField" | "Stepper" => Role::SpinButton,
         "Tabs" => Role::TabList,
@@ -1028,6 +1049,10 @@ pub enum ControlInput {
     Marks,
     /// A slider's `axis`: the way it runs.
     Axis,
+    /// A colour picker's `alpha`: whether it picks an opacity.
+    Alpha,
+    /// A colour picker's `wheel`: whether its hue goes round a ring.
+    Wheel,
 }
 
 /// A view-driven native node: its kind and the handler-table entries that
@@ -1079,6 +1104,10 @@ pub struct Control {
     pub marks: Option<u32>,
     /// The entry of the way a slider runs.
     pub axis: Option<u32>,
+    /// The entry of whether a colour picker picks an opacity.
+    pub alpha: Option<u32>,
+    /// The entry of whether a colour picker's hue goes round a ring.
+    pub wheel: Option<u32>,
     /// The shader a shader view paints with, by its index in the view's
     /// shader table; its value gives the shader's parameters.
     pub shader: Option<u32>,
@@ -1266,7 +1295,7 @@ pub enum Switched {
 
 impl ControlInput {
     /// Every input, by wire tag.
-    pub const ALL: [ControlInput; 71] = [
+    pub const ALL: [ControlInput; 73] = [
         ControlInput::Value,
         ControlInput::Min,
         ControlInput::Max,
@@ -1338,6 +1367,8 @@ impl ControlInput {
         ControlInput::FillOrigin,
         ControlInput::Marks,
         ControlInput::Axis,
+        ControlInput::Alpha,
+        ControlInput::Wheel,
     ];
 
     /// Its wire tag: its place in [`ControlInput::ALL`].
@@ -1437,6 +1468,8 @@ impl Control {
             fill_origin: None,
             marks: None,
             axis: None,
+            alpha: None,
+            wheel: None,
             shader: None,
             look: Look::default(),
             arms: Box::new([]),
@@ -1526,6 +1559,8 @@ impl Control {
             ControlInput::FillOrigin => self.fill_origin,
             ControlInput::Marks => self.marks,
             ControlInput::Axis => self.axis,
+            ControlInput::Alpha => self.alpha,
+            ControlInput::Wheel => self.wheel,
         }
     }
 
@@ -1613,6 +1648,8 @@ impl Control {
             ControlInput::FillOrigin => &mut self.fill_origin,
             ControlInput::Marks => &mut self.marks,
             ControlInput::Axis => &mut self.axis,
+            ControlInput::Alpha => &mut self.alpha,
+            ControlInput::Wheel => &mut self.wheel,
         };
         *slot = Some(entry);
     }
@@ -1647,6 +1684,8 @@ impl Encode for Control {
             self.fill_origin,
             self.marks,
             self.axis,
+            self.alpha,
+            self.wheel,
             self.shader,
             look.background,
             look.opacity,
@@ -1777,6 +1816,8 @@ impl Decode for Control {
             fill_origin: entry()?,
             marks: entry()?,
             axis: entry()?,
+            alpha: entry()?,
+            wheel: entry()?,
             shader: entry()?,
             look: Look {
                 background: entry()?,
@@ -2072,6 +2113,8 @@ mod tests {
             fill_origin: Some(38),
             marks: Some(39),
             axis: Some(40),
+            alpha: Some(41),
+            wheel: Some(42),
             shader: Some(2),
             look: Look {
                 background: Some(3),

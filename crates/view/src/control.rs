@@ -69,6 +69,8 @@ impl Drive for Control {
             ControlKind::Dialog => dismiss(self, host, scope, cx),
             ControlKind::Sheet => sheet(self, host, scope, cx),
             ControlKind::Slider | ControlKind::Knob => slider(self, host, scope, cx),
+            // Its parts respond, and report through the host.
+            ControlKind::ColorPicker => None,
             ControlKind::Select | ControlKind::Segmented => select(self, host, scope, cx),
             ControlKind::Pages => pages(self, host, scope, cx),
             ControlKind::TextInput => text_input(self, host, scope, cx),
@@ -561,7 +563,7 @@ fn read(host: &mut ViewHost, entry: Option<u32>, scope: &Scope, cx: &EventCx<'_>
 }
 
 /// A widget change payload: a record of the one field `value`.
-fn field(value: Value) -> Value {
+pub(crate) fn field(value: Value) -> Value {
     Value::Agg(Rc::new(Aggregate {
         tag: 0,
         fields: Box::new([value]),

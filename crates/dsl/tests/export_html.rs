@@ -2186,3 +2186,32 @@ fn a_slider_runs_up_tinted_and_a_knob_turns_to_its_fraction() {
     assert!(page.styles.contains("--vx-at: 0.75"), "{}", page.styles);
     assert!(page.styles.contains(".vx-knob {"), "{}", page.styles);
 }
+
+const PICKERS: &str = r##"
+export component Paint {
+    state fill: Color = #3366ee80;
+    state clear = true;
+    view {
+        Column {
+            ColorPicker { label: "Fill"; bind value <=> fill; alpha: clear; }
+            ColorPicker { value: #ff0000; alpha: false; }
+        }
+    }
+}
+"##;
+
+#[test]
+fn a_colour_picker_exports_as_a_colour_input_and_an_opacity_range() {
+    let page = export(PICKERS, false).unwrap();
+    let index = &page.index;
+    assert_eq!(index.matches("type=\"color\"").count(), 2, "{index}");
+    assert!(index.contains("value=\"#ff0000\""), "{index}");
+    assert!(index.contains("role=\"group\""), "{index}");
+    assert!(index.contains("aria-label=\"Fill\""), "{index}");
+    // The second takes no opacity: its range is hidden.
+    assert_eq!(index.matches("vx-color-alpha").count(), 2, "{index}");
+    assert_eq!(index.matches(" hidden>").count(), 1, "{index}");
+    assert!(page.styles.contains(".vx-color {"), "{}", page.styles);
+    let script = page.script.as_deref().unwrap();
+    assert!(script.contains("P.picker("), "{script}");
+}

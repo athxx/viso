@@ -731,6 +731,8 @@ fn control_tokens(control: Control) -> TokenStream {
     let fill_origin = entry(control.fill_origin);
     let marks = entry(control.marks);
     let axis = entry(control.axis);
+    let alpha = entry(control.alpha);
+    let wheel = entry(control.wheel);
     let semantics = control.semantics;
     let role = match semantics.role {
         Some(role) => {
@@ -854,6 +856,8 @@ fn control_tokens(control: Control) -> TokenStream {
             fill_origin: #fill_origin,
             marks: #marks,
             axis: #axis,
+            alpha: #alpha,
+            wheel: #wheel,
             shader: #shader,
             look: ::viso::__private::viso_view::Look {
                 background: #background,

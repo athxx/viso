@@ -363,6 +363,11 @@ dialog.vx-layer:not([open]), .vx-layer[hidden] { display: none; }
 .vx-chip[aria-pressed=\"true\"]::before { width: 18px; margin-inline: -4px 8px; }
 .vx-chip[data-removable=\"true\"]::after { content: \"\\00d7\"; flex: none; width: 18px; margin-inline: 8px -4px; font-size: 18px; text-align: center; opacity: 0.8; }
 @media (prefers-reduced-motion: reduce) { .vx-chip, .vx-chip::before { transition: none; } }
+.vx-color { display: inline-flex; flex-direction: column; gap: 10px; min-width: 160px; }
+.vx-color-value { display: block; box-sizing: border-box; width: 100%; height: 40px; margin: 0; padding: 0; border: 0; border-radius: 6px; background: none; cursor: pointer; }
+.vx-color-value::-webkit-color-swatch-wrapper { padding: 0; }
+.vx-color-value::-webkit-color-swatch { border: 0; border-radius: 6px; }
+.vx-color-value::-moz-color-swatch { border: 0; border-radius: 6px; }
 .vx-stepper { display: inline-flex; box-sizing: border-box; width: 96px; height: 32px; border-radius: 8px; background-color: color-mix(in srgb, currentColor 8%, transparent); user-select: none; -webkit-user-select: none; touch-action: manipulation; }
 .vx-step { flex: 1; display: flex; align-items: center; justify-content: center; margin: 2px; padding: 0; border: 0; border-radius: 6px; background-color: transparent; color: inherit; font: inherit; font-size: 20px; line-height: 1; cursor: pointer; }
 .vx-step + .vx-step { position: relative; }

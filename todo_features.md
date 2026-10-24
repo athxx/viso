@@ -204,8 +204,10 @@ Rules:
 - [ ] DSL nodes for the list-backed fields — `ComboBox`, `SearchField` (children as
   suggestions, two-way `value`, `changed`/`submitted`) — and their HTML export
   (`<input type="search">`, `role=combobox` with a listbox).
-- [ ] DSL `ColorPicker` node (two-way colour `value`, `alpha`, `wheel`, `changed`) and its
-  HTML export (`<input type="color">` plus an opacity range).
+- [x] DSL `ColorPicker` node (two-way colour `value`, `alpha`, `wheel`, `changed`) and its
+  HTML export (`<input type="color">` plus an opacity range): the picker's parts move to a
+  shared `viso_ui::color_picker` the widget and the node both build, the node's parts
+  built inside it by the view and reporting through a host sink.
 - [x] Slider: vertical, range (two thumbs), step marks, wheel, live thumb; `Knob`
   (rotary). One shared `viso_ui::slider` content and input for the widgets and the DSL
   (`Slider` gains `origin`/`marks`/`axis`/`tint`, new `Knob`); jump-or-pick-up press,

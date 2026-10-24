@@ -29,6 +29,11 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use viso_behavior::{Fault, FaultKind, Value};
+use viso_schema::view::route::EventRoute;
+use viso_ui::color_picker::{
+    ColorPickerParts, ColorPickerStyle, DEFAULT_COLOR, PickSink, PickerSpec,
+};
+use viso_ui::color_plane::rgba32;
 use viso_ui::content::Content;
 use viso_ui::plate::{BADGE_FILL, BADGE_INK, avatar_fill, badge_count, initials};
 use viso_ui::resource::{ResourceId, ResourceRevision};
@@ -43,7 +48,9 @@ use viso_ui::{
     Srgb, StateId, StructureCx, TextRequest, TextSpan, Timing, Vec2, focus_node, number_kind,
 };
 
-use crate::control::{Control, ControlInput, ControlKind, Holds, LayoutSlot, Switched, When};
+use crate::control::{
+    Control, ControlInput, ControlKind, Holds, LayoutSlot, Switched, When, field,
+};
 use crate::host::ViewHost;
 use crate::layout_values::{alignment, layout_value, length};
 use crate::scope::Scope;
@@ -134,6 +141,7 @@ pub fn mount_values(
             {
                 shown.shows = before.shows.clone();
                 shown.program = before.program.clone();
+                shown.parts = before.parts.clone();
                 shown.seeded = true;
             }
             shown
@@ -279,6 +287,8 @@ pub(crate) fn control_cells(
         control.fill_origin,
         control.marks,
         control.axis,
+        control.alpha,
+        control.wheel,
     ])
     .flatten()
     .chain(arms)
@@ -302,9 +312,9 @@ pub(crate) fn control_cells(
 /// navigation stack's `page_transition`, its `hero`, its `focus_ring`, its
 /// `access_key`, its `drag_axis`, a viewer's `pan_margin`, and its `drag`,
 /// `drag_kind`, `drop_accepts` and `drop_operation`, a link label's `url`
-/// a chip's `removable`, a stepper's `wrap`, and a slider's `origin`,
-/// `marks` and `axis`.
-const SHOWN: usize = 62;
+/// a chip's `removable`, a stepper's `wrap`, a slider's `origin`, `marks`
+/// and `axis`, and a colour picker's `alpha` and `wheel`.
+const SHOWN: usize = 64;
 
 /// The input of each value a node shows, in order.
 const SHOWN_INPUTS: [ControlInput; SHOWN] = [
@@ -370,6 +380,8 @@ const SHOWN_INPUTS: [ControlInput; SHOWN] = [
     ControlInput::FillOrigin,
     ControlInput::Marks,
     ControlInput::Axis,
+    ControlInput::Alpha,
+    ControlInput::Wheel,
 ];
 
 /// Where its `translate` sits among the values a node shows.
@@ -473,6 +485,8 @@ pub(crate) struct Shown {
     /// first delivery and after a hot reload, which restyles the node from
     /// its constants and so wants each of them again.
     laid: Option<Box<[Value]>>,
+    /// A colour picker's parts, once built inside it.
+    parts: Option<ColorPickerParts>,
 }
 
 impl Shown {
@@ -497,6 +511,7 @@ impl Shown {
             seeded: false,
             program: None,
             laid: None,
+            parts: None,
         };
         shown.rescope(scope, host);
         shown
@@ -652,6 +667,8 @@ impl Shown {
             fill_origin,
             marks,
             axis,
+            alpha,
+            wheel,
         ] = &shows;
         let access_key = access_key.as_str().and_then(|key| key.chars().next());
         let spanned = crate::text_style::spans(pieces);
@@ -690,7 +707,8 @@ impl Shown {
                     | ControlKind::Progress
                     | ControlKind::Ring
                     | ControlKind::Spinner
-                    | ControlKind::Avatar,
+                    | ControlKind::Avatar
+                    | ControlKind::ColorPicker,
                 ) => caption.as_str(),
                 (None, _) => None,
             };
@@ -744,6 +762,10 @@ impl Shown {
             | ControlKind::Number => move_of(TEXT, look.color_transition.filter(|_| given(TEXT))),
             _ => None,
         };
+        if control.kind == ControlKind::ColorPicker {
+            let (alpha, wheel) = (truth(alpha, true), truth(wheel, false));
+            show_picker(&mut self.parts, self.node, cx, host, value, alpha, wheel);
+        }
         let store = &mut *cx.store;
         // A dialog or a toast is a layer that shows while open; a dialog
         // traps the focus meanwhile, and a toast's own box lets the pointer
@@ -937,7 +959,11 @@ impl Shown {
             return;
         }
         match control.kind {
-            ControlKind::Plain | ControlKind::Dialog | ControlKind::Sheet | ControlKind::Toast => {}
+            ControlKind::Plain
+            | ControlKind::Dialog
+            | ControlKind::Sheet
+            | ControlKind::Toast
+            | ControlKind::ColorPicker => {}
             // A viewer clips its content unless its `clip` says, and keeps
             // the content within its limits as they change.
             ControlKind::Viewer => {
@@ -1565,6 +1591,74 @@ pub(crate) fn resource(value: &Value) -> Option<ResourceId> {
     };
     let id = asset.fields.first()?.as_int()?;
     Some(ResourceId(id.cast_unsigned()))
+}
+
+/// A colour picker builds its parts inside node `node` the first time it
+/// shows, or again once they are gone, takes an opacity as `alpha` says and
+/// a wheel as `wheel` says, and shows its `value` — a packed sRGB colour —
+/// unless the colour it holds already reads as it. Each colour picked runs
+/// the node's `changed` routes in `host`.
+fn show_picker(
+    parts: &mut Option<ColorPickerParts>,
+    node: NodeId,
+    cx: &mut StructureCx<'_>,
+    host: &mut ViewHost,
+    value: &Value,
+    alpha: bool,
+    wheel: bool,
+) {
+    let held = value.as_int().map(|c| c as u32);
+    let at = |c: u32| Srgb::from_rgba32(c).into_linear_straight();
+    let live = parts.as_ref().is_some_and(|p| {
+        let column = p.column().id();
+        cx.store.arena().is_live(column) && cx.store.parent(column) == Some(node)
+    });
+    let built = match parts.as_ref().filter(|_| live) {
+        Some(built) => {
+            built.configure(cx, alpha, wheel);
+            built.clone()
+        }
+        None => {
+            host.prune_sinks(|n| cx.store.arena().is_live(n));
+            let this = host.this.clone();
+            let sink: PickSink = Box::new(move |ev, color| {
+                let Some(host) = this.upgrade() else { return };
+                let Ok(mut host) = host.try_borrow_mut() else {
+                    return;
+                };
+                let payload = field(Value::Int(i64::from(rgba32(color))));
+                host.fire(node, EventRoute::Changed, payload, ev);
+            });
+            // Unsized, it is the picker's own width; sized, its parts fill
+            // it, the plane as tall as a fixed width asks.
+            let mut style = ColorPickerStyle::default();
+            let fill = match cx.store.layout_input(node).size().width {
+                viso_ui::Length::Fixed(width) => {
+                    style.width = width;
+                    true
+                }
+                viso_ui::Length::Fit => false,
+                _ => true,
+            };
+            let spec = PickerSpec {
+                value: held.map_or(DEFAULT_COLOR.to_rgba(1.0), at),
+                alpha,
+                wheel,
+                fill,
+                style,
+                ..PickerSpec::default()
+            };
+            let mut build = BuildCx::with_parent(cx.store, cx.states, cx.bindings, node);
+            let built = ColorPickerParts::build(&mut build, spec, Some(sink));
+            *parts = Some(built.clone());
+            built
+        }
+    };
+    if let Some(held) = held
+        && rgba32(built.color(cx)) != held
+    {
+        built.show_color(cx, at(held));
+    }
 }
 
 /// Offers `resource`'s bytes to the store the first time a node shows it:
