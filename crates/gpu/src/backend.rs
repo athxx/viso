@@ -11,7 +11,7 @@
 //! the DAG edge one-way: `viso-render → viso-gpu` (render knows about draw
 //! commands; gpu never knows about primitives, batches, or widgets).
 
-use viso_handle::{ExternalImage, RawWindowHandle};
+use viso_handle::{ExternalImage, Nv12, RawWindowHandle};
 
 use crate::instance::InstanceLayout;
 use crate::program::ProgramCompiler;
@@ -388,6 +388,17 @@ pub trait GpuBackend {
     fn adopt_external(&mut self, id: TextureId, image: &ExternalImage) -> bool {
         let _ = (id, image);
         false
+    }
+
+    /// Write `picture`, in NV12 planes at hand, into texture `id` — one
+    /// this made, of its size — or else into a new one, converting it on the
+    /// GPU: the planes are uploaded as they are, and the texture samples the
+    /// picture as sRGB-encoded color. Returns the texture written, or `None`
+    /// where the backend converts no planes; the caller converts them itself
+    /// instead.
+    fn write_nv12(&mut self, id: Option<TextureId>, picture: &Nv12<'_>) -> Option<TextureId> {
+        let _ = (id, picture);
+        None
     }
 
     /// Create a swapchain surface bound to a native window.

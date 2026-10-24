@@ -1,21 +1,28 @@
 //! Linux and the BSDs: GStreamer's `playbin`, loaded at run time, its
-//! pictures taken from an `appsink` as BGRA rows.
+//! pictures taken from an `appsink` as NV12 planes, which the GPU converts,
+//! or as BGRA rows once a copy is wanted.
 //!
 //! The libraries are opened on first use, so a program runs where GStreamer
 //! is not installed and only its videos fail, as `Unsupported`. `playbin`
 //! picks the demuxer and decoder (hardware where the system ranks one
-//! first), converts to BGRA and keeps sound and picture in step on its own
-//! threads; everything this side does is on the loop's thread and never
+//! first), hands decoded Y′CbCr over as NV12 — as decoders write it, or
+//! reinterleaved, never converted to RGB on the CPU — and keeps sound and
+//! picture in step on its own threads. A picture copied out as rows instead
+//! is converted here, then the sink asks for BGRA, which GStreamer's own
+//! converter writes faster, from the next on; everything this side does is on the loop's thread and never
 //! waits. The bus is read when polled; the sink holds the picture due now,
 //! which is handed out mapped where GStreamer wrote it, with no copy, until
 //! the next replaces it.
 
+use std::cell::Cell;
 use std::ffi::{CStr, CString, c_char, c_int, c_uint, c_void};
 use std::ptr;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use super::{Frame, Spilled, VideoError, VideoEvent, VideoInfo, VideoSource, file_uri};
+use viso_handle::{Nv12, YuvMatrix};
+
+use super::{Frame, Spilled, VideoError, VideoEvent, VideoInfo, VideoSource, file_uri, yuv};
 
 pub(crate) use super::no_picture::Picture;
 
@@ -26,6 +33,8 @@ type GstBuffer = c_void;
 type GstCaps = c_void;
 type GstStructure = c_void;
 type GstQuery = c_void;
+type GstPad = c_void;
+type GstEvent = c_void;
 
 /// The head of `GstMiniObject`, the same in every 1.x release.
 #[repr(C)]
@@ -128,6 +137,10 @@ struct Gst {
     structure_get_int: unsafe extern "C" fn(*mut GstStructure, *const c_char, *mut c_int) -> c_int,
     structure_get_fraction:
         unsafe extern "C" fn(*mut GstStructure, *const c_char, *mut c_int, *mut c_int) -> c_int,
+    structure_get_string: unsafe extern "C" fn(*mut GstStructure, *const c_char) -> *const c_char,
+    element_get_static_pad: unsafe extern "C" fn(*mut GstElement, *const c_char) -> *mut GstPad,
+    event_new_reconfigure: unsafe extern "C" fn() -> *mut GstEvent,
+    pad_push_event: unsafe extern "C" fn(*mut GstPad, *mut GstEvent) -> c_int,
     app_sink_set_caps: unsafe extern "C" fn(*mut GstElement, *const GstCaps),
     app_sink_try_pull_sample: unsafe extern "C" fn(*mut GstElement, u64) -> *mut GstSample,
     app_sink_try_pull_preroll: unsafe extern "C" fn(*mut GstElement, u64) -> *mut GstSample,
@@ -215,6 +228,10 @@ impl Gst {
                 caps_get_structure: gst.get(c"gst_caps_get_structure")?,
                 structure_get_int: gst.get(c"gst_structure_get_int")?,
                 structure_get_fraction: gst.get(c"gst_structure_get_fraction")?,
+                structure_get_string: gst.get(c"gst_structure_get_string")?,
+                element_get_static_pad: gst.get(c"gst_element_get_static_pad")?,
+                event_new_reconfigure: gst.get(c"gst_event_new_reconfigure")?,
+                pad_push_event: gst.get(c"gst_pad_push_event")?,
                 app_sink_set_caps: app.get(c"gst_app_sink_set_caps")?,
                 app_sink_try_pull_sample: app.get(c"gst_app_sink_try_pull_sample")?,
                 app_sink_try_pull_preroll: app.get(c"gst_app_sink_try_pull_preroll")?,
@@ -254,10 +271,16 @@ pub(crate) struct Player {
     shown: Option<Shown>,
     /// The picture the player was ready with, not yet handed out.
     first: *mut GstSample,
-    /// The caps last read, and the size and stride they gave.
+    /// The caps last read, and the size and texels they gave.
     caps: *mut GstCaps,
     width: u32,
     height: u32,
+    /// The pictures come as NV12 planes, encoded so; else as BGRA rows.
+    planes: Option<Colors>,
+    /// Set once a picture in planes is copied out as rows.
+    copied: Cell<bool>,
+    /// The sink was asked for BGRA alone.
+    rows: bool,
     ready: bool,
     /// The source is live: it does not preroll, and plays to be ready.
     live: bool,
@@ -304,7 +327,7 @@ impl Player {
                 return Err(VideoError::Unsupported);
             }
             (gst.object_ref)(sink);
-            let caps = (gst.caps_from_string)(c"video/x-raw,format=BGRA".as_ptr());
+            let caps = (gst.caps_from_string)(c"video/x-raw,format={ NV12, BGRA }".as_ptr());
             (gst.app_sink_set_caps)(sink, caps);
             (gst.mini_object_unref)(caps);
             // The sink keeps the newest picture due, in step with the clock,
@@ -352,6 +375,9 @@ impl Player {
                 caps: ptr::null_mut(),
                 width: 0,
                 height: 0,
+                planes: None,
+                copied: Cell::new(false),
+                rows: false,
                 ready: false,
                 live,
                 failed: false,
@@ -552,6 +578,9 @@ impl Player {
         if !self.ready || self.failed {
             return None;
         }
+        if self.copied.get() && !self.rows {
+            self.want_rows();
+        }
         let gst = self.gst;
         let mut sample = std::mem::replace(&mut self.first, ptr::null_mut());
         // SAFETY: pulls from the player's sink, not waiting; every sample
@@ -598,11 +627,19 @@ impl Player {
                 user_data: [ptr::null_mut(); 4],
                 reserved: [ptr::null_mut(); 4],
             };
-            let stride = self.width as usize * 4;
+            let (width, height) = (self.width as usize, self.height as usize);
+            let layout = match self.planes {
+                Some(_) => nv12_layout(width, height),
+                None => Layout {
+                    stride: width * 4,
+                    chroma: 0,
+                    size: width * 4 * height,
+                },
+            };
             if self.width == 0
                 || (gst.buffer_map)(buffer, &mut map, MAP_READ) == 0
                 || map.data.is_null()
-                || map.size < stride * self.height as usize
+                || map.size < layout.size
             {
                 if !map.data.is_null() {
                     (gst.buffer_unmap)(buffer, &mut map);
@@ -622,8 +659,28 @@ impl Player {
                 buffer,
                 map,
             });
-            let rows = std::slice::from_raw_parts(shown.map.data, shown.map.size);
-            Some(Frame::bgra(self.width, self.height, rows, stride, time))
+            let bytes = std::slice::from_raw_parts(shown.map.data, shown.map.size);
+            let Some(colors) = self.planes else {
+                return Some(Frame::bgra(
+                    self.width,
+                    self.height,
+                    bytes,
+                    layout.stride,
+                    time,
+                ));
+            };
+            let picture = Nv12 {
+                width: self.width,
+                height: self.height,
+                y: bytes,
+                y_stride: layout.stride,
+                uv: &bytes[layout.chroma..],
+                uv_stride: layout.stride,
+                matrix: colors.matrix,
+                full_range: colors.full_range,
+                left_chroma: colors.left_chroma,
+            };
+            Some(Frame::nv12_watched(picture, &self.copied, time))
         }
     }
 
@@ -647,9 +704,34 @@ impl Player {
             {
                 return;
             }
+            let text = |name: &CStr| {
+                let value = (gst.structure_get_string)(structure, name.as_ptr());
+                (!value.is_null()).then(|| CStr::from_ptr(value).to_bytes())
+            };
             self.caps = caps;
             self.width = width.max(0) as u32;
             self.height = height.max(0) as u32;
+            self.planes = (text(c"format") == Some(b"NV12"))
+                .then(|| colors(text(c"colorimetry"), text(c"chroma-site"), self.height));
+        }
+    }
+
+    /// Asks the sink for BGRA rows alone, which GStreamer's converter
+    /// writes from the next picture on.
+    fn want_rows(&mut self) {
+        self.rows = true;
+        let gst = self.gst;
+        // SAFETY: calls on the player's sink; the caps and the pad are
+        // released once, the event handed to the pad, which takes it.
+        unsafe {
+            let caps = (gst.caps_from_string)(c"video/x-raw,format=BGRA".as_ptr());
+            (gst.app_sink_set_caps)(self.sink, caps);
+            (gst.mini_object_unref)(caps);
+            let pad = (gst.element_get_static_pad)(self.sink, c"sink".as_ptr());
+            if !pad.is_null() {
+                (gst.pad_push_event)(pad, (gst.event_new_reconfigure)());
+                (gst.object_unref)(pad);
+            }
         }
     }
 
@@ -891,8 +973,111 @@ unsafe fn error_text(gst: &Gst, message: *mut Message) -> String {
     }
 }
 
+/// How a picture in NV12 planes was encoded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Colors {
+    matrix: YuvMatrix,
+    full_range: bool,
+    left_chroma: bool,
+}
+
+/// The encoding caps' `colorimetry` and `chroma-site` name, for a picture
+/// `height` rows tall where they name none.
+fn colors(colorimetry: Option<&[u8]>, site: Option<&[u8]>, height: u32) -> Colors {
+    let mut out = Colors {
+        matrix: yuv::matrix_for_height(height),
+        full_range: false,
+        // Unsaid, as H.264 and later codecs site it.
+        left_chroma: !matches!(site, Some(b"jpeg" | b"none")),
+    };
+    match colorimetry {
+        Some(b"bt601" | b"smpte170m") => out.matrix = YuvMatrix::Bt601,
+        Some(b"bt709" | b"smpte240m") => out.matrix = YuvMatrix::Bt709,
+        Some(b"bt2020" | b"bt2020-10" | b"bt2100-pq" | b"bt2100-hlg") => {
+            out.matrix = YuvMatrix::Bt2020;
+        }
+        Some(b"jpeg") => {
+            out.matrix = YuvMatrix::Bt601;
+            out.full_range = true;
+        }
+        // Range, matrix, transfer and primaries by number.
+        Some(fields) => {
+            let mut parts = fields.split(|&b| b == b':');
+            let (range, matrix) = (parts.next(), parts.next());
+            out.full_range = range == Some(b"1");
+            match matrix {
+                Some(b"3" | b"5") => out.matrix = YuvMatrix::Bt709,
+                Some(b"4") => out.matrix = YuvMatrix::Bt601,
+                Some(b"6") => out.matrix = YuvMatrix::Bt2020,
+                _ => {}
+            }
+        }
+        None => {}
+    }
+    out
+}
+
+/// Where a picture's texels lie in its buffer: the bytes between rows, the
+/// offset of the chroma plane, and the bytes the whole takes.
+struct Layout {
+    stride: usize,
+    chroma: usize,
+    size: usize,
+}
+
+/// The layout GStreamer gives an NV12 picture of `width` × `height` with no
+/// metadata of its own: rows rounded up to four bytes, the chroma plane after
+/// an even number of luma rows.
+fn nv12_layout(width: usize, height: usize) -> Layout {
+    let stride = width.next_multiple_of(4);
+    let rows = height.next_multiple_of(2);
+    let chroma = stride * rows;
+    Layout {
+        stride,
+        chroma,
+        size: chroma + stride * rows / 2,
+    }
+}
+
 /// `bytes` in a file of their own, and its URI.
 fn spill(bytes: &[u8]) -> Result<(String, Option<Spilled>), VideoError> {
     let spilled = Spilled::new(bytes).map_err(|e| VideoError::Open(e.to_string()))?;
     Ok((file_uri(spilled.path()), Some(spilled)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn caps_name_how_planes_were_encoded() {
+        let c = colors(Some(b"bt709"), Some(b"mpeg2"), 480);
+        assert_eq!(
+            c,
+            Colors {
+                matrix: YuvMatrix::Bt709,
+                full_range: false,
+                left_chroma: true,
+            }
+        );
+        let c = colors(Some(b"1:4:0:0"), Some(b"jpeg"), 1080);
+        assert_eq!(
+            (c.matrix, c.full_range, c.left_chroma),
+            (YuvMatrix::Bt601, true, false)
+        );
+        assert_eq!(
+            colors(Some(b"bt2100-pq"), None, 480).matrix,
+            YuvMatrix::Bt2020
+        );
+        assert_eq!(colors(None, None, 1080).matrix, YuvMatrix::Bt709);
+        assert_eq!(colors(None, None, 480).matrix, YuvMatrix::Bt601);
+    }
+
+    #[test]
+    fn an_nv12_buffer_without_metadata_lies_as_gstreamer_lays_it() {
+        let l = nv12_layout(64, 48);
+        assert_eq!((l.stride, l.chroma, l.size), (64, 64 * 48, 64 * 48 * 3 / 2));
+        let l = nv12_layout(3, 3);
+        assert_eq!((l.stride, l.chroma, l.size), (4, 16, 24));
+    }
 }

@@ -25,7 +25,7 @@ use jni_sys::{
 
 use viso_handle::{ExternalHolds, ExternalImage};
 
-use super::yuv::{self, Matrix, Plane};
+use super::yuv::{self, Plane};
 use super::{Frame, PixelLayout, VideoError, VideoEvent, VideoInfo, VideoSource, file_uri};
 
 /// Call a `JNIEnv` function.
@@ -957,6 +957,15 @@ unsafe fn to_rgba(
     ) else {
         return false;
     };
-    let matrix = Matrix::for_height(height);
-    yuv::to_rgba(width as usize, height as usize, y, u, v, matrix, rows)
+    let matrix = yuv::matrix_for_height(height);
+    yuv::to_rgba(
+        width as usize,
+        height as usize,
+        y,
+        u,
+        v,
+        matrix,
+        false,
+        rows,
+    )
 }

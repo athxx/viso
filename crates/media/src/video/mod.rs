@@ -35,7 +35,6 @@ mod unsupported;
 mod web;
 #[cfg(target_os = "windows")]
 mod windows;
-#[cfg(any(target_os = "android", test))]
 mod yuv;
 
 #[cfg(target_os = "android")]
@@ -67,6 +66,7 @@ use web as imp;
 #[cfg(target_os = "windows")]
 use windows as imp;
 
+use std::cell::Cell;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -188,6 +188,12 @@ enum Texels<'a> {
         allow(dead_code)
     )]
     Native(imp::Picture<'a>),
+    /// In NV12 planes at hand, which a GPU backend converts; copied out,
+    /// the player told through `copied` that rows are wanted.
+    Planes {
+        picture: viso_handle::Nv12<'a>,
+        copied: Option<&'a Cell<bool>>,
+    },
     /// In GPU memory alone, which the CPU does not read.
     External(viso_handle::ExternalImage),
 }
@@ -221,6 +227,47 @@ impl<'a> Frame<'a> {
                 layout: PixelLayout::Rgba8,
                 rows,
                 stride,
+            },
+        }
+    }
+
+    /// A picture in NV12 planes, shown at `time`: converted on the GPU
+    /// where the backend does, else on the CPU when copied.
+    pub fn nv12(picture: viso_handle::Nv12<'a>, time: Duration) -> Self {
+        Frame {
+            width: picture.width,
+            height: picture.height,
+            time,
+            texels: Texels::Planes {
+                picture,
+                copied: None,
+            },
+        }
+    }
+
+    /// [`nv12`](Self::nv12), `copied` set once the planes are copied out.
+    #[cfg_attr(
+        not(any(
+            target_os = "linux",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        )),
+        allow(dead_code)
+    )]
+    pub(crate) fn nv12_watched(
+        picture: viso_handle::Nv12<'a>,
+        copied: &'a Cell<bool>,
+        time: Duration,
+    ) -> Self {
+        Frame {
+            width: picture.width,
+            height: picture.height,
+            time,
+            texels: Texels::Planes {
+                picture,
+                copied: Some(copied),
             },
         }
     }
@@ -270,6 +317,7 @@ impl<'a> Frame<'a> {
         match self.texels {
             Texels::Rows { layout, .. } => layout,
             Texels::Native(picture) => picture.layout(),
+            Texels::Planes { .. } => PixelLayout::Rgba8,
             Texels::External(_) => PixelLayout::Bgra8,
         }
     }
@@ -278,9 +326,18 @@ impl<'a> Frame<'a> {
     /// only a copy shows.
     pub fn native(&self) -> Option<viso_handle::ExternalImage> {
         match self.texels {
-            Texels::Rows { .. } => None,
+            Texels::Rows { .. } | Texels::Planes { .. } => None,
             Texels::Native(picture) => picture.external(self.width, self.height),
             Texels::External(image) => Some(image),
+        }
+    }
+
+    /// Its NV12 planes, for a GPU to convert; `None` for a picture in other
+    /// texels.
+    pub fn planes(&self) -> Option<viso_handle::Nv12<'a>> {
+        match self.texels {
+            Texels::Planes { picture, .. } => Some(picture),
+            _ => None,
         }
     }
 
@@ -314,6 +371,30 @@ impl<'a> Frame<'a> {
             }
             Texels::Native(picture) => {
                 picture.read(|rows, stride| copy(picture.layout(), rows, stride, out))
+            }
+            Texels::Planes { picture, copied } => {
+                if let Some(copied) = copied {
+                    copied.set(true);
+                }
+                let plane = |bytes, row_stride, pixel_stride| yuv::Plane {
+                    bytes,
+                    row_stride,
+                    pixel_stride,
+                };
+                yuv::to_rgba(
+                    w,
+                    h,
+                    plane(picture.y, picture.y_stride, 1),
+                    plane(picture.uv, picture.uv_stride, 2),
+                    plane(
+                        picture.uv.get(1..).unwrap_or_default(),
+                        picture.uv_stride,
+                        2,
+                    ),
+                    picture.matrix,
+                    picture.full_range,
+                    out,
+                )
             }
             Texels::External(_) => false,
         }
@@ -544,6 +625,33 @@ mod tests {
         let mut out = Vec::new();
         assert!(frame.copy_rgba(&mut out));
         assert_eq!(out, [1, 2, 3, 255, 4, 5, 6, 255]);
+    }
+
+    #[test]
+    fn an_nv12_frame_names_its_planes_and_copies_out_converted() {
+        let (y, uv) = ([235u8, 16, 0, 0, 235, 16, 0, 0], [128u8, 128, 0, 0]);
+        let copied = Cell::new(false);
+        let picture = viso_handle::Nv12 {
+            width: 2,
+            height: 2,
+            y: &y,
+            y_stride: 4,
+            uv: &uv,
+            uv_stride: 4,
+            matrix: viso_handle::YuvMatrix::Bt601,
+            full_range: false,
+            left_chroma: true,
+        };
+        let frame = Frame::nv12_watched(picture, &copied, Duration::ZERO);
+        assert_eq!((frame.width, frame.height), (2, 2));
+        assert!(frame.native().is_none());
+        assert_eq!(frame.planes().map(|p| p.y_stride), Some(4));
+        assert!(!copied.get());
+        let mut out = Vec::new();
+        assert!(frame.copy_rgba(&mut out));
+        assert!(copied.get());
+        let white_black = [255, 255, 255, 255, 0, 0, 0, 255];
+        assert_eq!(out, [white_black, white_black].concat());
     }
 
     #[test]

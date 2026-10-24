@@ -21,7 +21,7 @@ use viso_handle::ExternalHolds;
 
 use crate::retire::Epoch;
 
-const VERTEX: &[u8] = include_bytes!("ycbcr.vert.spv");
+pub(super) const VERTEX: &[u8] = include_bytes!("ycbcr.vert.spv");
 const FRAGMENT: &[u8] = include_bytes!("ycbcr.frag.spv");
 
 /// How many sources stay made: a few players' buffers.
@@ -106,16 +106,9 @@ pub(super) struct Target {
 
 impl Converter {
     pub(super) fn new(device: &ash::Device) -> Converter {
-        let module = |bytes: &[u8]| {
-            let words = ash::util::read_spv(&mut Cursor::new(bytes)).expect("malformed SPIR-V");
-            let info = vk::ShaderModuleCreateInfo::default().code(&words);
-            // SAFETY: `words` is a whole SPIR-V module, validated when frozen.
-            unsafe { device.create_shader_module(&info, None) }
-                .expect("failed to create a Vulkan shader module")
-        };
         Converter {
-            vertex: module(VERTEX),
-            fragment: module(FRAGMENT),
+            vertex: module(device, VERTEX),
+            fragment: module(device, FRAGMENT),
             kinds: Vec::new(),
             sources: Vec::new(),
             dead: Vec::new(),
@@ -319,7 +312,7 @@ impl Converter {
                     None,
                 )
                 .expect("failed to create a pipeline layout");
-            let pipeline = self.pipeline(device, cache, pass, layout);
+            let pipeline = pipeline(device, cache, pass, layout, [self.vertex, self.fragment]);
             self.kinds.push(Kind {
                 encoding,
                 conversion,
@@ -330,67 +323,6 @@ impl Converter {
             });
         }
         Some(self.kinds.len() - 1)
-    }
-
-    /// The pipeline drawing one triangle over the target, its picture
-    /// sampled through the set `layout` names.
-    ///
-    /// # Safety
-    ///
-    /// `pass` is a live render pass with one color attachment and `layout`
-    /// a live pipeline layout of `device`.
-    unsafe fn pipeline(
-        &self,
-        device: &ash::Device,
-        cache: vk::PipelineCache,
-        pass: vk::RenderPass,
-        layout: vk::PipelineLayout,
-    ) -> vk::Pipeline {
-        let stages = [
-            vk::PipelineShaderStageCreateInfo::default()
-                .stage(vk::ShaderStageFlags::VERTEX)
-                .module(self.vertex)
-                .name(c"main"),
-            vk::PipelineShaderStageCreateInfo::default()
-                .stage(vk::ShaderStageFlags::FRAGMENT)
-                .module(self.fragment)
-                .name(c"main"),
-        ];
-        let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
-        let assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
-            .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
-        let viewport = vk::PipelineViewportStateCreateInfo::default()
-            .viewport_count(1)
-            .scissor_count(1);
-        let raster = vk::PipelineRasterizationStateCreateInfo::default()
-            .polygon_mode(vk::PolygonMode::FILL)
-            .cull_mode(vk::CullModeFlags::NONE)
-            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
-            .line_width(1.0);
-        let multisample = vk::PipelineMultisampleStateCreateInfo::default()
-            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
-        let attachments = [vk::PipelineColorBlendAttachmentState::default()
-            .color_write_mask(vk::ColorComponentFlags::RGBA)];
-        let blend = vk::PipelineColorBlendStateCreateInfo::default().attachments(&attachments);
-        let dynamic = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
-        let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic);
-        let info = [vk::GraphicsPipelineCreateInfo::default()
-            .stages(&stages)
-            .vertex_input_state(&vertex_input)
-            .input_assembly_state(&assembly)
-            .viewport_state(&viewport)
-            .rasterization_state(&raster)
-            .multisample_state(&multisample)
-            .color_blend_state(&blend)
-            .dynamic_state(&dynamic)
-            .layout(layout)
-            .render_pass(pass)
-            .subpass(0)];
-        // SAFETY: the caller's contract; the stages are this converter's live
-        // modules, whose interfaces match.
-        unsafe { device.create_graphics_pipelines(cache, &info, None) }
-            .map_err(|(_, e)| e)
-            .expect("failed to create the Y′CbCr pipeline")[0]
     }
 
     /// Records the conversion of source `at`'s `region` — its offset and
@@ -566,6 +498,76 @@ impl Converter {
     }
 }
 
+/// A shader module of the frozen SPIR-V `bytes`.
+pub(super) fn module(device: &ash::Device, bytes: &[u8]) -> vk::ShaderModule {
+    let words = ash::util::read_spv(&mut Cursor::new(bytes)).expect("malformed SPIR-V");
+    let info = vk::ShaderModuleCreateInfo::default().code(&words);
+    // SAFETY: `words` is a whole SPIR-V module, validated when frozen.
+    unsafe { device.create_shader_module(&info, None) }
+        .expect("failed to create a Vulkan shader module")
+}
+
+/// The pipeline drawing one triangle over a conversion's target, its
+/// picture sampled through the sets `layout` names.
+///
+/// # Safety
+///
+/// `pass` is a live render pass with one color attachment, `layout` a
+/// live pipeline layout of `device` and the modules live ones of it whose
+/// interfaces match `layout` and each other.
+pub(super) unsafe fn pipeline(
+    device: &ash::Device,
+    cache: vk::PipelineCache,
+    pass: vk::RenderPass,
+    layout: vk::PipelineLayout,
+    [vertex, fragment]: [vk::ShaderModule; 2],
+) -> vk::Pipeline {
+    let stages = [
+        vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::VERTEX)
+            .module(vertex)
+            .name(c"main"),
+        vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::FRAGMENT)
+            .module(fragment)
+            .name(c"main"),
+    ];
+    let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
+    let assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+        .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
+    let viewport = vk::PipelineViewportStateCreateInfo::default()
+        .viewport_count(1)
+        .scissor_count(1);
+    let raster = vk::PipelineRasterizationStateCreateInfo::default()
+        .polygon_mode(vk::PolygonMode::FILL)
+        .cull_mode(vk::CullModeFlags::NONE)
+        .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+        .line_width(1.0);
+    let multisample = vk::PipelineMultisampleStateCreateInfo::default()
+        .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+    let attachments = [vk::PipelineColorBlendAttachmentState::default()
+        .color_write_mask(vk::ColorComponentFlags::RGBA)];
+    let blend = vk::PipelineColorBlendStateCreateInfo::default().attachments(&attachments);
+    let dynamic = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+    let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic);
+    let info = [vk::GraphicsPipelineCreateInfo::default()
+        .stages(&stages)
+        .vertex_input_state(&vertex_input)
+        .input_assembly_state(&assembly)
+        .viewport_state(&viewport)
+        .rasterization_state(&raster)
+        .multisample_state(&multisample)
+        .color_blend_state(&blend)
+        .dynamic_state(&dynamic)
+        .layout(layout)
+        .render_pass(pass)
+        .subpass(0)];
+    // SAFETY: the caller's contract.
+    unsafe { device.create_graphics_pipelines(cache, &info, None) }
+        .map_err(|(_, e)| e)
+        .expect("failed to create a picture conversion pipeline")[0]
+}
+
 /// Destroys a source's objects.
 ///
 /// # Safety
@@ -586,9 +588,10 @@ mod tests {
     use super::super::VulkanBackend;
     use crate::GpuBackend;
 
-    /// The frozen modules, compiled from `ycbcr.vert` and `ycbcr.frag` with
-    /// `glslangValidator -V --target-env vulkan1.1`, pass the Khronos
-    /// validator.
+    /// The frozen modules, compiled from `ycbcr.vert` with
+    /// `glslangValidator -V --target-env vulkan1.0` (the planar conversion
+    /// draws through it too) and `ycbcr.frag` with `--target-env vulkan1.1`,
+    /// pass the Khronos validator.
     #[test]
     fn the_conversion_shaders_are_valid_spir_v() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/vulkan");

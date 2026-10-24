@@ -5,7 +5,8 @@
 //! `viso-gpu` ([`GpuBackend::create_surface`]) to build a swapchain, and
 //! [`ExternalImage`], a picture another framework wrote into memory the GPU
 //! samples in place — a video frame from `viso-media` — which a backend
-//! adopts as a texture. They live in their own leaf crate so producer and
+//! adopts as a texture, or an [`Nv12`] picture in planes at hand, which it
+//! converts. They live in their own leaf crate so producer and
 //! consumer can name them without depending on each other.
 //!
 //! The one non-data variant is [`RawWindowHandle::Scanout`]: a display with
@@ -285,6 +286,63 @@ pub trait Scanout {
     fn presented(&self, damage: &[(u32, u32, u32, u32)]);
 }
 
+/// A picture in 4:2:0 Y′CbCr planes at hand: luma, then Cb and Cr
+/// interleaved at half resolution both ways (NV12).
+#[derive(Debug, Clone, Copy)]
+pub struct Nv12<'a> {
+    pub width: u32,
+    pub height: u32,
+    /// The luma rows, `y_stride` bytes apart.
+    pub y: &'a [u8],
+    pub y_stride: usize,
+    /// The chroma rows, `uv_stride` bytes apart, Cb then Cr a sample.
+    pub uv: &'a [u8],
+    pub uv_stride: usize,
+    pub matrix: YuvMatrix,
+    /// Full range (0–255) rather than studio range (16–235, 16–240).
+    pub full_range: bool,
+    /// Chroma sited with the left luma sample of its pair, as H.264 and
+    /// later codecs site it, rather than midway between the two.
+    pub left_chroma: bool,
+}
+
+/// The matrix a Y′CbCr picture was encoded with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum YuvMatrix {
+    Bt601,
+    Bt709,
+    Bt2020,
+}
+
+impl YuvMatrix {
+    /// The rows turning `(Y′, Cb, Cr, 1)`, each sampled as a unit value, into
+    /// gamma-encoded R, G and B, for 8-bit codes.
+    pub fn rows(self, full_range: bool) -> [[f32; 4]; 3] {
+        let (kr, kb) = match self {
+            YuvMatrix::Bt601 => (0.299, 0.114),
+            YuvMatrix::Bt709 => (0.2126, 0.0722),
+            YuvMatrix::Bt2020 => (0.2627, 0.0593),
+        };
+        let kg = 1.0 - kr - kb;
+        // Y′ = (Y - y0) * ys; Cb, Cr = (C - c0) * cs, chroma's zero the
+        // 8-bit code 128 in either range.
+        let (y0, ys, cs) = if full_range {
+            (0.0, 1.0, 1.0)
+        } else {
+            (16.0 / 255.0, 255.0 / 219.0, 255.0 / 224.0)
+        };
+        let (rv, gu, gv, bu) = (
+            2.0 * (1.0 - kr) * cs,
+            -2.0 * kb * (1.0 - kb) / kg * cs,
+            -2.0 * kr * (1.0 - kr) / kg * cs,
+            2.0 * (1.0 - kb) * cs,
+        );
+        let c0 = 128.0 / 255.0;
+        let row = |u: f32, v: f32| [ys, u, v, -y0 * ys - c0 * (u + v)];
+        [row(0.0, rv), row(gu, gv), row(bu, 0.0)]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -304,5 +362,51 @@ mod tests {
         assert!(!holds.is_held());
         drop(retained);
         assert_eq!(Arc::strong_count(&holds), 1);
+    }
+
+    fn convert(matrix: YuvMatrix, full: bool, ycc: [f32; 3]) -> [f32; 3] {
+        let v = [ycc[0], ycc[1], ycc[2], 1.0];
+        matrix
+            .rows(full)
+            .map(|row| row.iter().zip(v).map(|(a, b)| a * b).sum())
+    }
+
+    fn near(a: [f32; 3], b: [f32; 3]) -> bool {
+        a.iter().zip(b).all(|(a, b)| (a - b).abs() < 0.01)
+    }
+
+    /// Studio and full range black and white, and each matrix's primaries,
+    /// convert to the RGB they encode.
+    #[test]
+    fn the_matrix_rows_invert_each_encoding() {
+        let unit = |v: f32| v / 255.0;
+        for m in [YuvMatrix::Bt601, YuvMatrix::Bt709, YuvMatrix::Bt2020] {
+            let studio_white = convert(m, false, [unit(235.0), 0.5, 0.5]);
+            assert!(near(studio_white, [1.0; 3]), "{m:?}: {studio_white:?}");
+            let studio_black = convert(m, false, [unit(16.0), 0.5, 0.5]);
+            assert!(near(studio_black, [0.0; 3]), "{m:?}: {studio_black:?}");
+            assert!(near(
+                convert(m, true, [1.0, unit(128.0), unit(128.0)]),
+                [1.0; 3]
+            ));
+            assert!(near(
+                convert(m, true, [0.0, unit(128.0), unit(128.0)]),
+                [0.0; 3]
+            ));
+        }
+        // BT.709 full-range red: Y' = Kr, Cr = 0.5 at its peak.
+        let red = convert(
+            YuvMatrix::Bt709,
+            true,
+            [0.2126, unit(128.0) - 0.1146, unit(128.0) + 0.5],
+        );
+        assert!(near(red, [1.0, 0.0, 0.0]), "{red:?}");
+        // BT.601 studio red, as encoders write it.
+        let red = convert(
+            YuvMatrix::Bt601,
+            false,
+            [unit(81.0), unit(90.0), unit(240.0)],
+        );
+        assert!(near(red, [1.0, 0.0, 0.0]), "{red:?}");
     }
 }

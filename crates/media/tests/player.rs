@@ -194,7 +194,64 @@ mod player {
         assert!(player.frame().is_none());
     }
 
+    /// Pictures come as NV12 planes, which a GPU converts, until one is
+    /// copied out as rows; then as BGRA rows, which GStreamer converts.
+    #[cfg(not(any(target_vendor = "apple", target_os = "windows")))]
+    fn pictures_come_as_planes_until_one_is_copied_then_as_rows() {
+        let mut player = VideoPlayer::open(&clip()).unwrap();
+        player.set_looping(true);
+        until(&mut player, Duration::from_secs(5), |e| {
+            matches!(e, VideoEvent::Ready(_))
+        });
+        player.play();
+        let mut planes = 0;
+        let start = Instant::now();
+        while planes < 3 {
+            if let Some(frame) = player.frame() {
+                let picture = frame.planes().expect("a picture in planes");
+                assert_eq!((picture.width, picture.height), (64, 48));
+                assert_eq!((picture.y_stride, picture.uv_stride), (64, 64));
+                assert!(picture.y.len() >= 64 * 48 && picture.uv.len() >= 64 * 24);
+                planes += 1;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(3),
+                "{planes} pictures"
+            );
+            turn(0.005);
+        }
+        // Copied once, the pictures come as rows from a few on.
+        let start = Instant::now();
+        while shown(&mut player).is_none() {
+            while player.poll().is_some() {}
+            assert!(start.elapsed() < Duration::from_secs(3), "no picture");
+            turn(0.005);
+        }
+        let start = Instant::now();
+        loop {
+            if let Some(frame) = player.frame()
+                && frame.planes().is_none()
+            {
+                let mut rgba = Vec::new();
+                assert!(frame.copy_rgba(&mut rgba));
+                assert_eq!(rgba.len(), 64 * 48 * 4);
+                break;
+            }
+            while player.poll().is_some() {}
+            assert!(
+                start.elapsed() < Duration::from_secs(3),
+                "the pictures never came as rows"
+            );
+            turn(0.005);
+        }
+    }
+
     pub fn run() {
+        #[cfg(not(any(target_vendor = "apple", target_os = "windows")))]
+        {
+            pictures_come_as_planes_until_one_is_copied_then_as_rows();
+            println!("test pictures_come_as_planes_until_one_is_copied_then_as_rows ... ok");
+        }
         for (name, test) in [
             (
                 "opens_paused_on_its_first_picture_then_plays_each_to_its_end",

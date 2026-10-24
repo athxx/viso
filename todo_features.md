@@ -273,7 +273,7 @@ Rules:
     `import_external`/`adopt_external`, IOSurface → Metal (one texture a surface,
     use count held until no frame in flight samples it), the facade adopting
     each picture into the video's texture and copying only where it cannot.
-  - [ ] Zero-copy on the other backends, with their players:
+  - [x] Zero-copy on the other backends, with their players:
     - [x] `<video>` → WebGPU: `ExternalImage::WebVideo`, the element's current picture
       copied on the GPU (`copyExternalImageToTexture`, color-managed as the page shows
       it), the canvas readback only where the backend refuses; a player whose pictures
@@ -307,6 +307,12 @@ Rules:
     browser presents (`requestVideoFrameCallback`) drawn into an offscreen canvas and
     read back as RGBA; bytes through a blob URL; a refused autoplay leaves it paused; a
     changed report wakes the loop at once, so a paused video's controls show.
+  - [x] GStreamer pictures as NV12 planes converted on the GPU rather than by
+    `videoconvert` on the CPU: `GpuBackend::write_nv12` uploads the planes into
+    the texture's own R8/R8G8 images and converts them by matrix, range and
+    chroma site in a plain shader (Vulkan); BGRA renegotiated once rows are
+    copied; CPU conversion where the backend converts none.
+  - [ ] dmabuf import where the decoder exports one.
 - [ ] Camera capture service and `CameraView`.
 - [ ] Audio: input (microphone), file decoding (WAV, Ogg Vorbis, MP3, FLAC), Web Audio
   output, PulseAudio/PipeWire output.

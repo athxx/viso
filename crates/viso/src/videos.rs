@@ -138,8 +138,8 @@ struct Played<P> {
 struct Shown {
     texture: TextureId,
     size: (u32, u32),
-    /// Whether it samples the pictures where they lie, rather than holding
-    /// copies of them.
+    /// Whether the backend writes it — sampling the pictures where they
+    /// lie, or converting their planes — rather than it holding copies.
     adopted: bool,
 }
 
@@ -388,6 +388,30 @@ impl<P: Play> Videos<P> {
                 }
                 p.copied = true;
             }
+            // Planes at hand, converted on the GPU where the backend does:
+            // into the texture it converted the last into, or a new one.
+            if !p.copied
+                && let Some(planes) = frame.planes()
+            {
+                let into = shown_as.filter(|t| t.adopted).map(|t| t.texture);
+                if let Some(texture) = backend.write_nv12(into, &planes) {
+                    if Some(texture) == into {
+                        store.repaint_asset(p.resource);
+                    } else {
+                        if let Some(old) = store.show_video_frame(p.resource, texture, size) {
+                            renderer.release_texture(*backend, old);
+                        }
+                        p.texture = Some(Shown {
+                            texture,
+                            size,
+                            adopted: true,
+                        });
+                    }
+                    self.frames += 1;
+                    continue;
+                }
+                p.copied = true;
+            }
             if !frame.copy_rgba(&mut self.scratch) {
                 continue;
             }
@@ -460,6 +484,9 @@ mod tests {
         frames: VecDeque<(u32, u32, [u8; 3])>,
         /// Pictures in GPU memory, handed over before any of `frames`.
         external: VecDeque<viso_gpu::ExternalImage>,
+        /// Grey pictures in NV12 planes, full range: their size and luma,
+        /// handed over before any of `frames`.
+        planes: VecDeque<(u32, u32, u8)>,
         playing: bool,
         position: Duration,
         looping: bool,
@@ -476,6 +503,7 @@ mod tests {
     struct Fake {
         script: Rc<RefCell<Script>>,
         picture: Vec<u8>,
+        chroma: Vec<u8>,
     }
 
     impl Drop for Fake {
@@ -494,6 +522,7 @@ mod tests {
             Ok(Fake {
                 script,
                 picture: Vec::new(),
+                chroma: Vec::new(),
             })
         }
         fn poll(&mut self) -> Option<VideoEvent> {
@@ -503,6 +532,22 @@ mod tests {
             if let Some(image) = self.script.borrow_mut().external.pop_front() {
                 let (w, h) = image.size();
                 return Some(Frame::external(w, h, image, Duration::ZERO));
+            }
+            if let Some((w, h, luma)) = self.script.borrow_mut().planes.pop_front() {
+                self.picture = vec![luma; (w * h) as usize];
+                self.chroma = vec![128; (w * h / 2) as usize];
+                let picture = viso_media::Nv12 {
+                    width: w,
+                    height: h,
+                    y: &self.picture,
+                    y_stride: w as usize,
+                    uv: &self.chroma,
+                    uv_stride: w as usize,
+                    matrix: viso_media::YuvMatrix::Bt709,
+                    full_range: true,
+                    left_chroma: true,
+                };
+                return Some(Frame::nv12(picture, Duration::ZERO));
             }
             let (w, h, [r, g, b]) = self.script.borrow_mut().frames.pop_front()?;
             self.picture = [b, g, r, 255].repeat((w * h) as usize);
@@ -707,6 +752,24 @@ mod tests {
         win.step(SCREEN);
         assert_ne!(win.shown().0, before);
         assert_eq!(win.texel(), [9, 9, 9]);
+    }
+
+    #[test]
+    fn planes_a_backend_does_not_convert_are_converted_and_copied() {
+        let mut win = Window::new(VideoSource::file("clip.mp4"));
+        win.step(SCREEN);
+        let script = opened(0);
+        script.borrow_mut().events.push_back(ready(8, 6));
+        script.borrow_mut().planes.push_back((8, 6, 200));
+        win.step(SCREEN);
+        assert_eq!(win.texel(), [200; 3]);
+        let before = win.shown().0;
+        win.store.set_video_playing(win.leaf, true);
+        script.borrow_mut().planes.push_back((8, 6, 40));
+        win.step(SCREEN);
+        assert_eq!(win.texel(), [40; 3]);
+        assert_eq!(win.shown().0, before, "the same texture");
+        assert_eq!(win.videos.frames, 2);
     }
 
     /// A `side` × `side` BGRA IOSurface every texel of which is `bgra`.

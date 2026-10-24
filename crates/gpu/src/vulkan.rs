@@ -66,7 +66,7 @@ use crate::resource::{
 use crate::retire::{Epoch, Fence, ResourceKind, RetireQueue, Retired};
 use crate::scene::{self, SceneInstance};
 use crate::slots::SlotMap;
-use crate::{BindGroupId, BufferId, PipelineId, SamplerId, SurfaceId, TextureId};
+use crate::{BindGroupId, BufferId, Nv12, PipelineId, SamplerId, SurfaceId, TextureId};
 
 /// Frames the CPU may record ahead of the GPU.
 const FRAMES_IN_FLIGHT: usize = 2;
@@ -119,9 +119,17 @@ struct VulkanTexture {
     /// The framebuffer of passes with a depth attachment, and the depth
     /// texture it was built with.
     depth_framebuffer: Option<(TextureId, vk::Framebuffer)>,
-    /// A texture external pictures are converted into: its UNORM view and
-    /// the framebuffer over it the conversion draws into.
-    converted: Option<(vk::ImageView, vk::Framebuffer)>,
+    /// A texture pictures are converted into.
+    converted: Option<Converted>,
+}
+
+/// What a texture pictures are converted into keeps: its UNORM view, the
+/// framebuffer over it a conversion draws into, and the images planes at
+/// hand are uploaded into, made at the first.
+struct Converted {
+    view: vk::ImageView,
+    framebuffer: vk::Framebuffer,
+    planes: Option<planes::Planes>,
 }
 
 /// A registered pipeline.
@@ -322,6 +330,8 @@ pub struct VulkanBackend {
     /// The Y′CbCr conversions and sources, made at the first external
     /// picture.
     converter: Option<ycbcr::Converter>,
+    /// The conversion of NV12 planes at hand, made at the first.
+    planar: Option<planes::Planar>,
     /// Holds on external pictures, each let go once the epoch it was
     /// converted in completes.
     held: Vec<(Epoch, ExternalHold)>,
@@ -330,6 +340,7 @@ pub struct VulkanBackend {
     hardware_buffers: Option<ash::android::external_memory_android_hardware_buffer::Device>,
 }
 
+mod planes;
 mod ycbcr;
 
 /// What `AHardwareBuffer_describe` tells of a buffer.
@@ -707,6 +718,7 @@ impl VulkanBackend {
             clock,
             ycbcr,
             converter: None,
+            planar: None,
             held: Vec::new(),
             #[cfg(target_os = "android")]
             hardware_buffers,
@@ -963,7 +975,11 @@ impl VulkanBackend {
         let pass = self.render_pass(vk::Format::R8G8B8A8_UNORM, true, None);
         let framebuffer = self.create_framebuffer(pass, &[view], width.max(1), height.max(1));
         if let Some(t) = self.textures.get_mut(id.into()) {
-            t.converted = Some((view, framebuffer));
+            t.converted = Some(Converted {
+                view,
+                framebuffer,
+                planes: None,
+            });
         }
         id
     }
@@ -1038,7 +1054,7 @@ impl VulkanBackend {
         self.ensure_recording();
         let pass = self.render_pass(vk::Format::R8G8B8A8_UNORM, true, None);
         let t = self.texture(id);
-        let Some((_, framebuffer)) = t.converted else {
+        let Some(Converted { framebuffer, .. }) = t.converted else {
             return;
         };
         let target = ycbcr::Target {
@@ -2502,6 +2518,98 @@ impl GpuBackend for VulkanBackend {
         true
     }
 
+    fn write_nv12(&mut self, id: Option<TextureId>, picture: &Nv12<'_>) -> Option<TextureId> {
+        let (w, h) = (picture.width, picture.height);
+        let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+        let (luma, chroma) = (
+            rows_of(picture.y, picture.y_stride, w as usize, h as usize)?,
+            rows_of(picture.uv, picture.uv_stride, cw as usize * 2, ch as usize)?,
+        );
+        if w == 0 || h == 0 || !picture.uv_stride.is_multiple_of(2) {
+            return None;
+        }
+        let id = match id {
+            Some(id)
+                if self
+                    .textures
+                    .get(id.into())
+                    .is_some_and(|t| t.converted.is_some() && (t.width, t.height) == (w, h)) =>
+            {
+                id
+            }
+            _ => self.converted_texture(w, h),
+        };
+        let pass = self.render_pass(vk::Format::R8G8B8A8_UNORM, true, None);
+        if self.planar.is_none() {
+            // SAFETY: the pass has one UNORM color attachment.
+            self.planar =
+                Some(unsafe { planes::Planar::new(&self.device, self.pipeline_cache, pass) });
+        }
+        let made = self
+            .textures
+            .get(id.into())
+            .and_then(|t| t.converted.as_ref())
+            .is_some_and(|c| c.planes.is_some());
+        if !made {
+            let memory_type = |bits| {
+                self.memory_type(
+                    bits,
+                    vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                    vk::MemoryPropertyFlags::empty(),
+                )
+            };
+            let made = self
+                .planar
+                .as_ref()?
+                .planes(&self.device, memory_type, w, h);
+            if let Some(c) = self
+                .textures
+                .get_mut(id.into())
+                .and_then(|t| t.converted.as_mut())
+            {
+                c.planes = Some(made);
+            }
+        }
+        self.ensure_recording();
+        let (buffer, offset) = self.stage_aligned(luma, 4);
+        let luma = planes::Staged {
+            buffer,
+            offset,
+            row_length: picture.y_stride as u32,
+        };
+        let (buffer, offset) = self.stage_aligned(chroma, 4);
+        let chroma = planes::Staged {
+            buffer,
+            offset,
+            row_length: (picture.uv_stride / 2) as u32,
+        };
+        let cmd = self.slots[self.slot].upload;
+        let t = self.textures.get_mut(id.into())?;
+        let target = ycbcr::Target {
+            image: t.image,
+            framebuffer: t.converted.as_ref()?.framebuffer,
+            width: w,
+            height: h,
+        };
+        let planes = t.converted.as_mut()?.planes.as_mut()?;
+        // SAFETY: `cmd` is the open upload recording, outside a render pass,
+        // which orders every use of the planes and the target on the one
+        // queue; the planes were made for this size, the staged rows cover
+        // them, and the target's framebuffer was made against the pass.
+        unsafe {
+            self.planar.as_ref()?.record(
+                &self.device,
+                cmd,
+                pass,
+                picture,
+                planes,
+                [luma, chroma],
+                &target,
+            );
+        }
+        Some(id)
+    }
+
     fn create_sampler(&mut self, desc: &SamplerDesc) -> SamplerId {
         let (filter, mip) = match desc.filter {
             FilterMode::Nearest => (vk::Filter::NEAREST, vk::SamplerMipmapMode::NEAREST),
@@ -3213,6 +3321,9 @@ impl Drop for VulkanBackend {
             if let Some(mut converter) = self.converter.take() {
                 converter.destroy(&self.device);
             }
+            if let Some(mut planar) = self.planar.take() {
+                planar.destroy(&self.device);
+            }
             for b in self.buffers.drain() {
                 destroy_buffer(&self.device, b);
             }
@@ -3770,9 +3881,12 @@ unsafe fn destroy_texture(device: &ash::Device, t: VulkanTexture) {
         if let Some((_, fb)) = t.depth_framebuffer {
             device.destroy_framebuffer(fb, None);
         }
-        if let Some((view, fb)) = t.converted {
-            device.destroy_framebuffer(fb, None);
-            device.destroy_image_view(view, None);
+        if let Some(c) = t.converted {
+            device.destroy_framebuffer(c.framebuffer, None);
+            device.destroy_image_view(c.view, None);
+            if let Some(p) = c.planes {
+                planes::destroy_planes(device, p);
+            }
         }
         device.destroy_image_view(t.view, None);
         device.destroy_image(t.image, None);
@@ -3859,6 +3973,18 @@ unsafe fn transition(
             &[barrier],
         );
     }
+}
+
+/// The bytes of `rows` rows of `width` bytes each, `stride` apart, from the
+/// top of `bytes`; `None` where they do not fit.
+fn rows_of(bytes: &[u8], stride: usize, width: usize, rows: usize) -> Option<&[u8]> {
+    if stride < width {
+        return None;
+    }
+    let len = stride
+        .checked_mul(rows.checked_sub(1)?)?
+        .checked_add(width)?;
+    bytes.get(..len)
 }
 
 fn subresource_range(aspect: vk::ImageAspectFlags) -> vk::ImageSubresourceRange {
