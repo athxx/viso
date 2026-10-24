@@ -1,49 +1,19 @@
-//! Validation pack for the `Splitter` control — a draggable divider
-//! between two resizable panes — driven through the public facade. Mirrors
-//! `slider_widget.rs` (golden + a11y + allocation + the two interactive input
-//! tapes) with the splitter's own structure: a focusable flex container holding
-//! pane A (its build-time share of the main axis), a fixed divider bar leaf, and
-//! pane B (filling the rest). A primary *drag* and an *arrow-key* step drive the
-//! same `on_change` and move the reactive split-fraction cell.
-//!
-//! - **golden screenshot** — build a `Splitter` with `Splitter::build` (two
-//!   colored pane leaves around the neutral bar), lay it out over a fixed surface,
-//!   and confirm the pixels match a blessed baseline. Unlike the text controls the
-//!   splitter has no glyph content, so the golden is pure quads — no font fixture;
-//! - **pointer drag input tape** — `PointerRouter::route` over the splitter's world
-//!   box: a primary press *captures the pointer to the splitter* (so subsequent
-//!   samples route to it even outside its box), a move drags the fraction by the
-//!   pixel delta over the extent and fires `on_change`, a move past the extent
-//!   clamps to `1.0`, and the release frees the capture;
-//! - **keyboard step input tape** — with the splitter focused, `KeyRouter::route_key`
-//!   steps the fraction on the arrow keys (Right/Down up, Left/Up down) and fires
-//!   `on_change`; an unfocused splitter receives no key dispatch;
-//! - **a11y snapshot** — a `Splitter`'s derived semantics node is `Role::Group`
-//!   with its authored label, and — being interactive — it *declares* both a
-//!   pointer and a key handler and is focusable (the inverse of the presentational
-//!   controls, whose derived node has no handlers);
-//! - **allocation profile** — a warmed-up `Splitter` frame allocates nothing per
-//!   frame (hot-path contract), same CountingAlloc +
-//!   `frame_stats`/`*_count()` steady-state asserts as `slider_widget.rs`.
-//!
-//! Building through `Splitter::build` is the point: it proves the widget lowers to
-//! an interactive, content-bearing subtree the `viso-ui` input/paint path and
-//! `paint_tree` handle unchanged — including pointer *capture*, which a drag needs.
+//! The `Splitter` control's pixels and frame cost: two colored panes either
+//! side of the divider bar match a blessed golden, and a warmed-up frame
+//! allocates nothing. Its input and semantics are driven through the facade
+//! in `splitter.rs`.
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
 use std::path::PathBuf;
-use std::rc::Rc;
 use std::sync::atomic::Ordering;
 
 use viso::gpu::{CpuRaster, GpuBackend, RawWindowHandle};
 use viso::render::{FrameStats, Rect, Renderer, Rgba};
 use viso::ui::{
-    BindingTable, BoxStyle, BuildCx, Component, Key, KeyEvent, KeyRouter, LeafStyle, Modifiers,
-    NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase, PointerRouter, Role,
-    SemanticProjector, Size, StateStore, TextEdits, VirtualLists, paint_tree,
+    BindingTable, BoxStyle, BuildCx, Component, LeafStyle, NodeId, NodeStore, SemanticProjector,
+    Size, StateStore, TextEdits, VirtualLists, paint_tree,
 };
-use viso::widgets::splitter;
+use viso::widgets::{SplitAt, splitter};
 
 const W: u32 = 240;
 const H: u32 = 120;
@@ -87,8 +57,7 @@ fn pane_fill(color: Rgba) -> impl Fn(&mut BuildCx<'_>) + 'static {
 }
 
 /// Build a `Splitter` that fills the surface, split 40/60 on the row axis with
-/// two colored panes, and return the root. The `extent` is the surface width so
-/// the drag arithmetic (`dx / extent`) checks cleanly.
+/// two colored panes, and return the root.
 fn build_scene(store: &mut NodeStore) -> NodeId {
     // The splitter authors reactive cells, so it must build through a reactive cx;
     // the golden only paints (the routers are exercised separately), so throwaway
@@ -100,8 +69,7 @@ fn build_scene(store: &mut NodeStore) -> NodeId {
     let mut projectors = SemanticProjector::new();
 
     let widget = splitter("Editor / Preview")
-        .fraction(0.4)
-        .extent(W as f32)
+        .at(SplitAt::Fraction(0.4))
         .size(Size::fill())
         .panes(pane_fill(PANE_A), pane_fill(PANE_B));
 
@@ -180,235 +148,6 @@ fn splitter_renders_two_panes_and_a_divider_and_matches_golden() {
 
 fn golden_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden/splitter_widget.bgra8")
-}
-
-// --- interactive input tapes ------------------------------------------------
-
-/// A focusable splitter laid out as the root of its own tree, kept together with
-/// the reactive stores its handlers write into so a router can drive it. The
-/// splitter fills the surface (root `Fill`) so any central pointer sample hits it.
-/// Its `on_change` records the last carried fraction and bumps a counter.
-struct Interactive {
-    store: NodeStore,
-    states: StateStore,
-    bindings: BindingTable,
-    splitter: NodeId,
-    chain: Vec<NodeId>,
-}
-
-impl Interactive {
-    /// Build a fill splitter whose `on_change` records the new fraction and bumps
-    /// `counter`, laid out over the surface so a center-of-surface pointer sample
-    /// lands on it. `extent == W` and an initial fraction of `0.0` keep the drag
-    /// arithmetic (`dx / extent`) easy to check.
-    fn new(counter: Rc<Cell<u32>>, last: Rc<Cell<Option<f32>>>) -> Self {
-        let mut store = NodeStore::new();
-        let mut states = StateStore::new();
-        let mut bindings = BindingTable::new();
-        let mut lists = VirtualLists::new();
-        let mut text_edits = TextEdits::new();
-        let mut projectors = SemanticProjector::new();
-
-        let widget = splitter("Editor / Preview")
-            .fraction(0.0)
-            .extent(W as f32)
-            .size(Size::fill())
-            .panes(pane_fill(PANE_A), pane_fill(PANE_B))
-            .on_change(move |_ev, f| {
-                last.set(Some(f));
-                counter.set(counter.get() + 1);
-            });
-
-        let splitter = {
-            let mut cx = BuildCx::with_reactive(
-                &mut store,
-                &mut states,
-                &mut bindings,
-                &mut lists,
-                &mut text_edits,
-                &mut projectors,
-            );
-            widget.build(&mut cx);
-            cx.root().expect("splitter declares a root")
-        };
-
-        let mut scratch = Vec::new();
-        store.layout(splitter, surface_rect(), &mut scratch);
-
-        Interactive {
-            store,
-            states,
-            bindings,
-            splitter,
-            chain: Vec::new(),
-        }
-    }
-
-    /// Route a pointer sample through the public `PointerRouter`, exactly as the
-    /// facade's `on_input` does — including applying any capture the handler
-    /// requests. Returns whether any handler ran.
-    fn pointer(&mut self, ev: PointerEvent) -> bool {
-        PointerRouter::route(
-            &mut self.store,
-            &mut self.states,
-            &self.bindings,
-            self.splitter,
-            ev,
-            &mut self.chain,
-        )
-    }
-
-    /// Route a key sample through the public `KeyRouter` to the focused node.
-    fn key(&mut self, ev: KeyEvent) -> bool {
-        KeyRouter::route_key(
-            &mut self.store,
-            &mut self.states,
-            &self.bindings,
-            &mut TextEdits::new(),
-            self.splitter,
-            ev,
-            &mut self.chain,
-        )
-    }
-}
-
-/// A primary-button pointer sample at `(x, center)`, in the given phase.
-fn primary_at(x: f32, phase: PointerPhase) -> PointerEvent {
-    PointerEvent {
-        x,
-        y: H as f32 / 2.0,
-        phase,
-        buttons: PointerButtons::PRIMARY,
-        modifiers: Modifiers::default(),
-    }
-}
-
-fn key_ev(key: Key, pressed: bool, repeat: bool) -> KeyEvent {
-    KeyEvent {
-        key,
-        pressed,
-        repeat,
-        modifiers: Modifiers::default(),
-    }
-}
-
-#[test]
-fn pointer_drag_moves_fraction_captures_and_fires_change() {
-    let count = Rc::new(Cell::new(0u32));
-    let last = Rc::new(Cell::new(None::<f32>));
-    let mut ix = Interactive::new(count.clone(), last.clone());
-
-    // A primary press near the left of the surface anchors the drag and captures
-    // the pointer to the splitter — the router applies the request, so subsequent
-    // samples route to the splitter even outside its box.
-    assert!(
-        ix.pointer(primary_at(20.0, PointerPhase::Down)),
-        "the press hits the splitter's handler"
-    );
-    assert_eq!(
-        ix.store.capture(),
-        Some(ix.splitter),
-        "the press captures the pointer to the splitter so a drag keeps tracking"
-    );
-    assert_eq!(count.get(), 0, "the press alone does not fire a change");
-
-    // Move right by 60px over the W-px extent: +0.25 fraction. The splitter
-    // started at 0.0, so the fraction lands at 0.25.
-    assert!(ix.pointer(primary_at(80.0, PointerPhase::Move)));
-    assert_eq!(count.get(), 1, "the move fires one change");
-    assert_eq!(
-        last.get(),
-        Some(0.25),
-        "on_change carries the fraction dragged by dx/extent"
-    );
-
-    // A sample far to the right of the surface still routes here because the
-    // pointer is captured; it clamps the fraction to the far end (1.0).
-    assert!(ix.pointer(primary_at(10000.0, PointerPhase::Move)));
-    assert_eq!(
-        last.get(),
-        Some(1.0),
-        "a captured drag past the extent clamps to 1.0"
-    );
-
-    // The release frees the capture.
-    ix.pointer(primary_at(10000.0, PointerPhase::Up));
-    assert_eq!(
-        ix.store.capture(),
-        None,
-        "the release frees the pointer capture"
-    );
-}
-
-#[test]
-fn keyboard_step_requires_focus_and_moves_the_fraction() {
-    let count = Rc::new(Cell::new(0u32));
-    let last = Rc::new(Cell::new(None::<f32>));
-    let mut ix = Interactive::new(count.clone(), last.clone());
-
-    // Unfocused: the key router has no target, so nothing fires.
-    assert!(
-        !ix.key(key_ev(Key::Right, true, false)),
-        "an unfocused splitter receives no key dispatch"
-    );
-    assert_eq!(count.get(), 0);
-
-    ix.store.set_focused(Some(ix.splitter));
-
-    // The splitter starts at 0.0. An arrow press steps 2% of the extent per press.
-    assert!(ix.key(key_ev(Key::Right, true, false)));
-    assert_eq!(last.get(), Some(0.02), "Right steps the fraction up 2%");
-    assert!(ix.key(key_ev(Key::Down, true, false)));
-    assert_eq!(last.get(), Some(0.04), "Down steps up too");
-    assert!(ix.key(key_ev(Key::Left, true, false)));
-    assert_eq!(last.get(), Some(0.02), "Left steps back down");
-    assert!(ix.key(key_ev(Key::Up, true, false)));
-    assert_eq!(last.get(), Some(0.0), "Up steps down too");
-
-    ix.key(key_ev(Key::Right, false, false)); // key-up: ignored
-    assert_eq!(
-        count.get(),
-        4,
-        "each arrow press fired one change; the key-up did not"
-    );
-}
-
-// --- a11y snapshot ----------------------------------------------------------
-
-#[test]
-fn splitter_derives_a_group_semantics_node_named_by_its_label_and_is_interactive() {
-    let mut store = NodeStore::new();
-    let root = build_scene(&mut store);
-    let mut scratch = Vec::new();
-    store.layout(root, surface_rect(), &mut scratch);
-
-    let tree = store.derive_semantics(root);
-    let node = tree.root().expect("the derived tree has a root");
-    assert_eq!(
-        node.role,
-        Role::Group,
-        "a Splitter is a resizable-pane group"
-    );
-    assert_eq!(
-        node.label.as_deref(),
-        Some("Editor / Preview"),
-        "the accessible name is the authored label"
-    );
-
-    // Being interactive, the splitter's root declares both a pointer and a key
-    // handler and is focusable — the inverse of the presentational controls.
-    assert!(
-        store.has_handler(root),
-        "the splitter declares a pointer handler for dragging"
-    );
-    assert!(
-        store.has_key_handler(root),
-        "the splitter declares a key handler for arrow-key stepping"
-    );
-    assert!(
-        store.focusable(root),
-        "the splitter is focusable so the keyboard can drive it"
-    );
 }
 
 // --- allocation profile -----------------------------------------------------

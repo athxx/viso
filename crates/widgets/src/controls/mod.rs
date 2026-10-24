@@ -81,7 +81,7 @@ pub use select::{
 };
 pub use sheet::{Sheet, SheetDetent, SheetEdge, SheetHandle, SheetHandleSlot, SheetStyle, sheet};
 pub use slider::{RangeSlider, Slider, SliderStyle, knob, range_slider, slider};
-pub use splitter::{Splitter, SplitterStyle, splitter};
+pub use splitter::{SplitAt, Splitter, SplitterStyle, splitter};
 pub use stepper::{Stepper, StepperStyle, stepper};
 pub use tabs::{Tabs, TabsStyle, tabs};
 pub use text_input::{TextInput, TextInputStyle, text_input};

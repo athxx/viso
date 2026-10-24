@@ -29,7 +29,7 @@ use super::tree::{DockNode, PanelKey};
 use super::{DockStyle, PanelContent};
 
 /// The default seam thickness on the split's main axis, matching the standalone
-/// splitter's `BAR_SIZE` so a dock seam and a standalone splitter read alike.
+/// splitter's default bar so a dock seam and a standalone splitter read alike.
 pub(super) const SEAM_SIZE: f32 = 6.0;
 
 /// The smallest extent, in logical pixels, a pane may be dragged down to before a

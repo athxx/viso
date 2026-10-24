@@ -233,7 +233,8 @@ Rules:
   tab scrolls into view), close buttons (middle press, Delete; permanent tabs), drag and
   Ctrl+Shift+Page Up/Down reorder; `tabpanel` role; hidden flex children take no fill
   share or gap.
-- [ ] `Splitter` live relayout.
+- [x] `Splitter` live relayout: fraction or pinned-pane placement, grab-held drag, pane
+  minimums, step/Home/End/Enter-fold keys, `separator` semantics with value and step actions.
 - [x] `Skeleton` / shimmer placeholder.
 - [ ] Form: field validation, error text, `Form` submit, field groups.
 

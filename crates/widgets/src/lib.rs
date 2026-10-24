@@ -47,7 +47,7 @@ pub use controls::{
     ModalStyle, NavHandle, NavHandleSlot, NavigationStack, NavigationStackStyle, NodeKey,
     NumberField, PanelContent, PanelKey, Popup, PopupArrow, PopupHandle, PopupHandleSlot,
     PopupStyle, RadioGroup, RadioStyle, RangeSlider, SelectMode, SelectOp, Sheet, SheetDetent,
-    SheetEdge, SheetHandle, SheetHandleSlot, SheetStyle, Slider, SliderStyle, Splitter,
+    SheetEdge, SheetHandle, SheetHandleSlot, SheetStyle, Slider, SliderStyle, SplitAt, Splitter,
     SplitterStyle, Tabs, TabsStyle, TextInput, TextInputStyle, Toast, ToastEdge, ToastHandle,
     ToastHandleSlot, ToastStyle, Toggle, ToggleStyle, TreeNode, VisibleRow, button, caption_bar,
     checkbox, dock, file_tree, knob, labelled, modal, navigation_stack, number_field, popover,

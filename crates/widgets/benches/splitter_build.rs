@@ -5,8 +5,8 @@
 //! `Splitter` is a draggable two-pane divider. The bench exercises the real `build` -> `layout` ->
 //! `paint_tree` path so a regression is measurable.
 //!
-//! `Splitter` authors three float cells (`cx.state`: the split fraction plus the
-//! drag anchor pair) and binds the fraction to the root's `PAINT`, so it must
+//! `Splitter` authors state cells (`cx.state`: where the bar stands, the grab
+//! point, the fold and the bar's light) and a structure hook, so it must
 //! build through `BuildCx::with_reactive` (a plain `BuildCx::new` panics on
 //! `cx.state`). It also attaches pointer/key handlers driven by an `on_change`
 //! callback — the bench authors one so the handler-boxing cost is included, and
@@ -75,7 +75,6 @@ fn build_scene() -> (NodeStore, viso_ui::NodeId) {
             &mut r.projectors,
         );
         splitter("Editor / Preview")
-            .extent(W)
             .panes(pane, pane)
             .on_change(|_, _| {})
             .build(&mut cx);
@@ -108,7 +107,6 @@ fn bench_splitter(c: &mut Criterion) {
                 &mut r.projectors,
             );
             splitter("Editor / Preview")
-                .extent(W)
                 .panes(pane, pane)
                 .on_change(|_, _| {})
                 .build(&mut cx);

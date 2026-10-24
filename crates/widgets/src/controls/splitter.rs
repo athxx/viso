@@ -1,51 +1,44 @@
-//! The [`Splitter`] control — a draggable divider between two resizable panes.
+//! The [`Splitter`] control — two panes and a divider between them that the
+//! pointer or the keys move, the panes re-laid out live as it goes.
 //!
-//! A `Splitter` lays two panes side by side (a horizontal split, `Axis::Row`) or
-//! stacked (a vertical split, `Axis::Column`) with a thin draggable bar between
-//! them. Dragging the bar with the primary pointer or nudging it with the arrow
-//! keys moves the split — the two are the *same* action semantically, since an
-//! interactive control must have a keyboard equivalent — and
-//! both drive one shared `on_change`, reporting the new split *fraction* in
-//! `0.0..=1.0` (pane A's share of the main-axis extent).
+//! A splitter lays its panes side by side ([`Axis::Row`]) or stacked
+//! ([`Axis::Column`]) with a bar between them. Where the bar stands is a
+//! [`SplitAt`]: a share of the room the panes divide ([`SplitAt::Fraction`],
+//! both panes growing with the splitter), or the leading or trailing pane's
+//! extent ([`SplitAt::Start`], [`SplitAt::End`], that pane keeping its size
+//! as the splitter resizes, the other taking the rest). A move keeps the kind
+//! it was given.
 //!
-//! The internal state is that fraction, kept as a small `Copy` `Float` cell like
-//! the [`Slider`](crate::Slider)'s. Dragging is *delta*-based: a press
-//! records the down position on the main axis and the fraction at that instant,
-//! and each move adds `(pos - down_pos) / extent` to the recorded fraction — so
-//! the bar tracks the finger without the handler needing the container's world
-//! geometry (an `EventCx` handler has no node bounds). The press captures the
-//! pointer (`capture_pointer`) so a drag keeps receiving samples even when the
-//! cursor leaves the bar box; the release frees it.
+//! Dragging the bar moves it under the pointer, the grab point held; the
+//! arrow keys move it by a step (Shift a larger one), Home and End to the
+//! ends, and Enter folds the leading pane down to its minimum and back. The
+//! panes never shrink below their minimums ([`Splitter::min`]). Each move
+//! rewrites the two panes' sizes in place — a re-layout of the splitter's
+//! box, no rebuild — and reports the new place through `on_change`.
 //!
-//! It maps to one interactive `viso-ui` node: a focusable flex container (a row
-//! for a horizontal split, a column for a vertical one) carrying a reactive
-//! `fraction` cell bound to `PAINT`, composed of pane A (sized to its build-time
-//! share of the main axis), the divider bar (a fixed leaf), and pane B (filling
-//! the rest). Dragging writes the `fraction` cell, repainting the container alone
-//! (a targeted invalidation — no rebuild), and reports the new fraction through
-//! `on_change` so the app owns the live pane sizing. Its accessible role is
-//! [`Role::Group`] with an authored label. The divider does not *re-lay* the
-//! panes in place as the cell moves: a bound layout cell does not re-derive a
-//! leaf's build-time size, so the app drives the panes from the reported
-//! fraction.
+//! The bar is the one focusable node, a [`Role::Separator`] named by the
+//! splitter's label: a share reports its percentage (0–100), a pinned pane its
+//! extent in dp; assistive technology increments and decrements it like the
+//! arrows. The bar shows the resize cursor, and lights under the pointer and
+//! while dragged.
 //!
 //! ```
-//! use viso_widgets::splitter;
+//! use viso_widgets::{SplitAt, splitter};
 //! use viso_ui::{SemanticProjector, BuildCx, BindingTable, Component, LeafStyle, NodeStore, StateStore, TextEdits, VirtualLists};
 //! use viso_ui::{BoxStyle, Size};
 //!
 //! let split = splitter("Editor / Preview")
-//!     .fraction(0.6)
+//!     .at(SplitAt::Start(240.0))
+//!     .min(120.0, 160.0)
 //!     .panes(
 //!         |cx| { cx.leaf(LeafStyle { size: Size::fill(), style: BoxStyle::NONE }); },
 //!         |cx| { cx.leaf(LeafStyle { size: Size::fill(), style: BoxStyle::NONE }); },
 //!     )
-//!     .on_change(|_ev, f| {
-//!         // handle the new split fraction — e.g. resize the app's panes
-//!         let _ = f;
+//!     .on_change(|_ev, at| {
+//!         // remember where the user left it
+//!         let _ = at;
 //!     });
 //!
-//! // A splitter authors reactive state, so it builds through a reactive cx.
 //! let mut store = NodeStore::new();
 //! let mut states = StateStore::new();
 //! let mut bindings = BindingTable::new();
@@ -60,162 +53,204 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use viso_ui::{
-    Align, Axis, BoxStyle, BuildCx, Component, CursorIcon, DirtyClass, EventCx, FlexStyle, Inset,
-    Justify, Key, LeafStyle, Length, PointerButtons, PointerPhase, Rgba, Role, Semantics, Size,
-    StateId, StateValue,
+    Align, Axis, BoxStyle, BuildCx, Component, CursorIcon, EventCx, FlexStyle, Handle,
+    InteractionStyle, Justify, Key, LeafStyle, Length, NodeId, NodeStore, PointerButtons,
+    PointerPhase, Rect, Rgba, Role, SemanticState, Semantics, Size, StateId, StateValue,
 };
 
-/// A shared, mutable change callback carrying the new split fraction. It is cloned
-/// into both the pointer handler and the key handler at build time so a drag and
-/// an arrow-key step drive the same `on_change`. Pointer and keyboard input are
-/// never concurrent, so the runtime never re-enters the `RefCell` borrow.
-type SharedChange = Rc<RefCell<Option<Box<dyn FnMut(&mut EventCx<'_>, f32)>>>>;
+/// Where a splitter's bar stands.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SplitAt {
+    /// The leading pane's share, `0..=1`, of the room the panes divide (the
+    /// splitter's extent less the bar): both panes grow with the splitter.
+    Fraction(f32),
+    /// The leading pane's extent (dp): it keeps it as the splitter resizes.
+    Start(f32),
+    /// The trailing pane's extent (dp): it keeps it as the splitter resizes.
+    End(f32),
+}
 
-/// A pane's build-time content builder. It authors the pane's subtree into the
-/// container's flex; boxed so a `Splitter` can hold two heterogeneous closures.
-type PaneBuilder = Box<dyn Fn(&mut BuildCx<'_>)>;
+impl Default for SplitAt {
+    fn default() -> Self {
+        SplitAt::Fraction(0.5)
+    }
+}
 
-/// The divider bar's fill — a neutral seam that reads against either pane.
-const BAR: Rgba = Rgba {
-    r: 0.3,
-    g: 0.31,
-    b: 0.34,
-    a: 1.0,
-};
+/// Which kind of [`SplitAt`] a splitter keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Fraction,
+    Start,
+    End,
+}
 
-/// The default divider thickness on the main axis.
-const BAR_SIZE: f32 = 6.0;
+impl SplitAt {
+    fn kind(self) -> Kind {
+        match self {
+            SplitAt::Fraction(_) => Kind::Fraction,
+            SplitAt::Start(_) => Kind::Start,
+            SplitAt::End(_) => Kind::End,
+        }
+    }
 
-/// The main-axis extent a full `0.0..=1.0` drag is assumed to cover when the
-/// container's own size is `Fit`/unknown at build time. The delta model divides
-/// the pixel drag by this to a fraction; a `Fixed` container overrides it with its
-/// own main-axis length. Chosen as a common pane-region width.
-const DEFAULT_EXTENT: f32 = 400.0;
+    fn value(self) -> f32 {
+        match self {
+            SplitAt::Fraction(v) | SplitAt::Start(v) | SplitAt::End(v) => v,
+        }
+    }
 
-/// The fraction of the extent one arrow-key press moves the split.
-const KEY_STEP_FRACTION: f32 = 0.02;
+    /// The leading pane's extent, given the room `free` the panes divide.
+    fn lead(self, free: f32) -> f32 {
+        match self {
+            SplitAt::Fraction(f) => f * free,
+            SplitAt::Start(v) => v,
+            SplitAt::End(v) => free - v,
+        }
+    }
 
-/// The visual and layout parameters of a [`Splitter`]: the split axis, the divider
-/// thickness and fill, and the splitter's own size request within its parent.
-///
-/// `size` defaults to [`Length::Fill`] on both axes so the split fills its parent
-/// region; override it with a [`Length::Fixed`] axis for a fixed box. All fields
-/// are `Copy`.
+    /// The main-axis lengths of the two panes.
+    fn lengths(self) -> (Length, Length) {
+        match self {
+            SplitAt::Fraction(f) => (Length::Fill { weight: f }, Length::Fill { weight: 1.0 - f }),
+            SplitAt::Start(v) => (Length::Fixed(v), Length::fill()),
+            SplitAt::End(v) => (Length::fill(), Length::Fixed(v)),
+        }
+    }
+
+    /// Clamped into what its kind can hold.
+    fn sane(self) -> SplitAt {
+        let v = self.value();
+        match self {
+            SplitAt::Fraction(_) => SplitAt::Fraction(if v.is_finite() {
+                v.clamp(0.0, 1.0)
+            } else {
+                0.5
+            }),
+            SplitAt::Start(_) => SplitAt::Start(if v.is_finite() { v.max(0.0) } else { 0.0 }),
+            SplitAt::End(_) => SplitAt::End(if v.is_finite() { v.max(0.0) } else { 0.0 }),
+        }
+    }
+}
+
+impl Kind {
+    fn at(self, value: f32) -> SplitAt {
+        match self {
+            Kind::Fraction => SplitAt::Fraction(value),
+            Kind::Start => SplitAt::Start(value),
+            Kind::End => SplitAt::End(value),
+        }
+    }
+
+    /// The place that puts the leading pane at `lead` of `free`.
+    fn placing(self, lead: f32, free: f32) -> SplitAt {
+        match self {
+            Kind::Fraction => SplitAt::Fraction(if free > 0.0 { lead / free } else { 0.5 }),
+            Kind::Start => SplitAt::Start(lead),
+            Kind::End => SplitAt::End(free - lead),
+        }
+    }
+}
+
+/// How a [`Splitter`] looks.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SplitterStyle {
-    /// The split axis: [`Axis::Row`] places the panes side by side (a horizontal
-    /// split), [`Axis::Column`] stacks them (a vertical split).
+    /// [`Axis::Row`] sets the panes side by side, [`Axis::Column`] stacks
+    /// them.
     pub axis: Axis,
-    /// The splitter's own size request within its parent. Defaults to `Fill` on
-    /// both axes (fill the parent region).
+    /// The splitter's own size within its parent; it fills it by default.
     pub size: Size,
-    /// The divider's thickness on the main axis.
+    /// The bar's thickness on the main axis.
     pub bar_size: f32,
-    /// The divider's fill.
+    /// The bar at rest, under the pointer, and dragged.
     pub bar: BoxStyle,
+    pub hover: BoxStyle,
+    pub drag: BoxStyle,
+}
+
+const fn rgb(r: f32, g: f32, b: f32) -> Rgba {
+    Rgba { r, g, b, a: 1.0 }
 }
 
 impl Default for SplitterStyle {
     fn default() -> Self {
         SplitterStyle {
             axis: Axis::Row,
-            size: Size {
-                width: Length::Fill { weight: 1.0 },
-                height: Length::Fill { weight: 1.0 },
-            },
-            bar_size: BAR_SIZE,
-            bar: BoxStyle::solid(BAR),
+            size: Size::fill(),
+            bar_size: 6.0,
+            bar: BoxStyle::solid(rgb(0.3, 0.31, 0.34)),
+            hover: BoxStyle::solid(rgb(0.4, 0.42, 0.47)),
+            drag: BoxStyle::solid(rgb(0.22, 0.45, 0.85)),
         }
     }
 }
 
-/// A draggable divider between two resizable panes.
+/// How far an arrow moves the bar, and with Shift (dp).
+const STEP: f32 = 10.0;
+const BIG_STEP: f32 = 50.0;
+
+type Change = Rc<RefCell<Option<Box<dyn FnMut(&mut EventCx<'_>, SplitAt)>>>>;
+type Pane = Box<dyn Fn(&mut BuildCx<'_>)>;
+
+/// Two panes and a divider between them. Construct one with [`splitter`].
 ///
-/// Construct one with [`splitter`], give it two pane content builders with
-/// [`Splitter::panes`], and attach behavior with the chainable setters. Dragging
-/// the divider with the primary pointer or nudging it with the arrow keys moves
-/// the split and fires `on_change` with the new split *fraction* (pane A's share
-/// of the main-axis extent, in `0.0..=1.0`).
-///
-/// See the [module docs](self) for a build example. Invalidation: moving the
-/// split writes a reactive `fraction` cell bound to `PAINT`, repainting the
-/// splitter's own container without a rebuild; the panes are static (the app
-/// re-sizes them from the reported fraction).
+/// Invalidation: a move rewrites the two panes' sizes (`MEASURE | LAYOUT |
+/// PAINT` on the panes) and the bar's semantic value; the bar's light swaps
+/// its style (`PAINT`). Nothing is rebuilt.
 pub struct Splitter {
-    /// The accessible name.
     label: String,
-    /// The initial split fraction in `0.0..=1.0` (pane A's share).
-    fraction: f32,
-    /// The main-axis extent a full drag covers, overriding [`DEFAULT_EXTENT`] when
-    /// the style requests a `Fixed` main-axis size.
-    extent: f32,
+    at: SplitAt,
+    min: (f32, f32),
     style: SplitterStyle,
-    /// Pane A's content builder (the leading pane). `None` builds an empty pane.
-    pane_a: Option<PaneBuilder>,
-    /// Pane B's content builder (the trailing pane). `None` builds an empty pane.
-    pane_b: Option<PaneBuilder>,
-    /// The shared change callback (see [`SharedChange`]). `None` until
-    /// [`Splitter::on_change`] is called; a splitter with no handler still moves
-    /// its fraction cell, just without notifying anyone.
-    on_change: SharedChange,
+    panes: (Option<Pane>, Option<Pane>),
+    on_change: Change,
 }
 
-/// Construct a [`Splitter`] with the given accessible label, a default `0.5`
-/// centered split, a horizontal (`Axis::Row`) layout, and no panes or handler
-/// yet. Chain [`Splitter::panes`] to give it content, [`Splitter::fraction`] and
-/// [`Splitter::axis`] to shape the split, and [`Splitter::on_change`] to give it
-/// behavior.
+/// A splitter named `label`, its panes sharing the room evenly, side by side.
 pub fn splitter(label: impl Into<String>) -> Splitter {
     Splitter {
         label: label.into(),
-        fraction: 0.5,
-        extent: DEFAULT_EXTENT,
+        at: SplitAt::default(),
+        min: (0.0, 0.0),
         style: SplitterStyle::default(),
-        pane_a: None,
-        pane_b: None,
+        panes: (None, None),
         on_change: Rc::new(RefCell::new(None)),
     }
 }
 
 impl Splitter {
-    /// Set the two pane content builders — the leading pane (A) and the trailing
-    /// pane (B). Each authors its subtree into the container at build time.
+    /// Build the leading and the trailing pane.
     pub fn panes(
         mut self,
-        pane_a: impl Fn(&mut BuildCx<'_>) + 'static,
-        pane_b: impl Fn(&mut BuildCx<'_>) + 'static,
+        lead: impl Fn(&mut BuildCx<'_>) + 'static,
+        trail: impl Fn(&mut BuildCx<'_>) + 'static,
     ) -> Self {
-        self.pane_a = Some(Box::new(pane_a));
-        self.pane_b = Some(Box::new(pane_b));
+        self.panes = (Some(Box::new(lead)), Some(Box::new(trail)));
         self
     }
 
-    /// Set the change callback, fired with the new split fraction on a drag or an
-    /// arrow-key step. Replaces any previously set handler.
-    pub fn on_change(self, handler: impl FnMut(&mut EventCx<'_>, f32) + 'static) -> Self {
+    /// Stand the bar at `at` (default an even share).
+    pub fn at(mut self, at: SplitAt) -> Self {
+        self.at = at;
+        self
+    }
+
+    /// Keep the leading pane at least `lead` and the trailing one at least
+    /// `trail` across (dp) when the bar moves.
+    pub fn min(mut self, lead: f32, trail: f32) -> Self {
+        self.min = (lead.max(0.0), trail.max(0.0));
+        self
+    }
+
+    /// Call `handler` with where the bar stands after each move.
+    pub fn on_change(self, handler: impl FnMut(&mut EventCx<'_>, SplitAt) + 'static) -> Self {
         *self.on_change.borrow_mut() = Some(Box::new(handler));
         self
     }
 
-    /// Set the initial split fraction in `0.0..=1.0` (pane A's share of the
-    /// main-axis extent). Clamped into range at build time.
-    pub fn fraction(mut self, fraction: f32) -> Self {
-        self.fraction = fraction;
-        self
-    }
-
-    /// Set the split axis: [`Axis::Row`] (a horizontal split, the default) or
-    /// [`Axis::Column`] (a vertical split).
+    /// Set the panes side by side ([`Axis::Row`]) or stacked
+    /// ([`Axis::Column`]).
     pub fn axis(mut self, axis: Axis) -> Self {
         self.style.axis = axis;
-        self
-    }
-
-    /// Set the main-axis extent a full `0.0..=1.0` drag covers — the pixel span
-    /// the delta model divides by. Defaults to [`DEFAULT_EXTENT`]; set it to the
-    /// container's known main-axis size for a `Fixed`-sized splitter.
-    pub fn extent(mut self, extent: f32) -> Self {
-        self.extent = extent.max(0.0);
         self
     }
 
@@ -225,48 +260,14 @@ impl Splitter {
         self
     }
 
-    /// Set the splitter's own size request within its parent (defaults to `Fill`).
+    /// Set the splitter's own size within its parent (it fills it by default).
     pub fn size(mut self, size: Size) -> Self {
         self.style.size = size;
         self
     }
-
-    /// The initial split fraction clamped into `0.0..=1.0`.
-    fn initial_fraction(&self) -> f32 {
-        self.fraction.clamp(0.0, 1.0)
-    }
 }
 
-/// Drive the shared callback with the new split fraction if one is set; a
-/// handler-less splitter is a no-op. Pointer and keyboard activation never
-/// overlap, so the borrow is uncontended.
-fn fire(cb: &SharedChange, ev: &mut EventCx<'_>, fraction: f32) {
-    if let Some(f) = cb.borrow_mut().as_mut() {
-        f(ev, fraction);
-    }
-}
-
-/// Read a float state cell, defaulting to `0.0` for a stale handle or a non-float
-/// value (neither happens in normal use — the cells are authored as `Float` and
-/// live as long as the node).
-fn read_f32(ev: &EventCx<'_>, cell: StateId) -> f32 {
-    match ev.get(cell) {
-        Some(StateValue::Float(v)) => v,
-        _ => 0.0,
-    }
-}
-
-/// The pointer sample's coordinate on the split's main axis.
-fn main_axis_pos(axis: Axis, x: f32, y: f32) -> f32 {
-    match axis {
-        Axis::Row => x,
-        Axis::Column => y,
-    }
-}
-
-/// A [`Size`] whose main-axis length is `main` and cross-axis length is `cross`
-/// for the given split `axis` — the pane/bar sizing helper (`Size` stores width
-/// and height, not main/cross, so this maps the split axis onto them).
+/// `main` along `axis`, `cross` across it.
 fn size_on(axis: Axis, main: Length, cross: Length) -> Size {
     match axis {
         Axis::Row => Size {
@@ -280,526 +281,332 @@ fn size_on(axis: Axis, main: Length, cross: Length) -> Size {
     }
 }
 
+/// A rect's start and extent along `axis`.
+fn span(axis: Axis, r: Rect) -> (f32, f32) {
+    match axis {
+        Axis::Row => (r.x, r.w),
+        Axis::Column => (r.y, r.h),
+    }
+}
+
+/// A built splitter's nodes and the cells its moves go through.
+#[derive(Debug, Clone, Copy)]
+struct Seam {
+    axis: Axis,
+    kind: Kind,
+    bar_size: f32,
+    min: (f32, f32),
+    root: NodeId,
+    lead: NodeId,
+    trail: NodeId,
+    bar: NodeId,
+    /// The value of where the bar stands, in its kind's terms.
+    at: StateId,
+    /// Where on the bar the press took it, along the main axis.
+    grab: StateId,
+    /// The leading pane's extent before Enter folded it, or NaN.
+    unfolded: StateId,
+    dragging: StateId,
+    hover: StateId,
+}
+
+/// The splitter's geometry as an event sees it.
+struct Room {
+    /// The splitter's main-axis start and the room the panes divide.
+    start: f32,
+    extent: f32,
+    free: f32,
+    /// Whether the leading pane lies after the bar (a mirrored row).
+    mirrored: bool,
+}
+
+fn float(ev: &EventCx<'_>, cell: StateId) -> f32 {
+    match ev.get(cell) {
+        Some(StateValue::Float(v)) => v,
+        _ => f32::NAN,
+    }
+}
+
+impl Seam {
+    fn room(&self, ev: &EventCx<'_>) -> Option<Room> {
+        let root = ev.rect_of(self.root)?;
+        let (start, extent) = span(self.axis, root);
+        let mirrored = match (ev.rect_of(self.lead), ev.rect_of(self.bar)) {
+            (Some(lead), Some(bar)) => span(self.axis, bar).0 < span(self.axis, lead).0,
+            _ => false,
+        };
+        Some(Room {
+            start,
+            extent,
+            free: (extent - self.bar_size).max(0.0),
+            mirrored,
+        })
+    }
+
+    /// The leading pane's extent as the bar stands now.
+    fn lead_now(&self, ev: &EventCx<'_>, room: &Room) -> f32 {
+        self.kind.at(float(ev, self.at)).lead(room.free)
+    }
+
+    /// The leading pane's extent clamped to both panes' minimums.
+    fn clamp(&self, lead: f32, free: f32) -> f32 {
+        let (lo, hi) = (self.min.0, free - self.min.1);
+        if lo > hi {
+            // No room for both: share the shortfall by the minimums.
+            let total = self.min.0 + self.min.1;
+            return if total > 0.0 {
+                free * self.min.0 / total
+            } else {
+                free * 0.5
+            };
+        }
+        lead.clamp(lo, hi)
+    }
+
+    /// Stand the leading pane at `lead`, reporting the move.
+    fn place(&self, ev: &mut EventCx<'_>, room: &Room, lead: f32, change: &Change) {
+        let lead = self.clamp(lead, room.free);
+        let at = self.kind.placing(lead, room.free);
+        if float(ev, self.at) == at.value() {
+            return;
+        }
+        ev.set(self.at, StateValue::Float(at.value()));
+        if let Some(f) = change.borrow_mut().as_mut() {
+            f(ev, at);
+        }
+    }
+
+    fn pointer(&self, ev: &mut EventCx<'_>, change: &Change) {
+        let Some(p) = ev.pointer() else { return };
+        let main = match self.axis {
+            Axis::Row => p.x,
+            Axis::Column => p.y,
+        };
+        match p.phase {
+            PointerPhase::Enter => {
+                ev.set(self.hover, StateValue::Bool(true));
+            }
+            PointerPhase::Leave => {
+                ev.set(self.hover, StateValue::Bool(false));
+            }
+            PointerPhase::Down if p.buttons.contains(PointerButtons::PRIMARY) => {
+                let Some(bar) = ev.rect_of(self.bar) else {
+                    return;
+                };
+                ev.set(self.grab, StateValue::Float(main - span(self.axis, bar).0));
+                ev.set(self.dragging, StateValue::Bool(true));
+                ev.capture_pointer(self.bar);
+                ev.request_focus(self.bar);
+                ev.stop_propagation();
+            }
+            PointerPhase::Move if p.buttons.contains(PointerButtons::PRIMARY) => {
+                if ev.get(self.dragging) != Some(StateValue::Bool(true)) {
+                    return;
+                }
+                let Some(room) = self.room(ev) else { return };
+                // Where the bar's leading edge goes, from the splitter's start.
+                let edge = main - float(ev, self.grab) - room.start;
+                let lead = if room.mirrored {
+                    room.extent - edge - self.bar_size
+                } else {
+                    edge
+                };
+                self.place(ev, &room, lead, change);
+            }
+            PointerPhase::Up if ev.get(self.dragging) == Some(StateValue::Bool(true)) => {
+                ev.set(self.dragging, StateValue::Bool(false));
+                ev.release_pointer();
+            }
+            _ => {}
+        }
+    }
+
+    fn key(&self, ev: &mut EventCx<'_>, change: &Change) {
+        let Some(&k) = ev.key() else { return };
+        if !k.pressed {
+            return;
+        }
+        let Some(room) = self.room(ev) else { return };
+        let now = self.lead_now(ev, &room);
+        let step = if k.modifiers.shift { BIG_STEP } else { STEP };
+        // The arrows move the bar on screen: in a mirrored row the leading
+        // pane is on the right.
+        let toward_end = |key: Key| match key {
+            Key::Right => Some(!room.mirrored),
+            Key::Left => Some(room.mirrored),
+            Key::Down => Some(true),
+            Key::Up => Some(false),
+            _ => None,
+        };
+        let lead = match k.key {
+            Key::Home => 0.0,
+            Key::End => room.free,
+            Key::Enter => {
+                let unfolded = float(ev, self.unfolded);
+                if unfolded.is_nan() || now > self.min.0 + 0.5 {
+                    ev.set(self.unfolded, StateValue::Float(now));
+                    0.0
+                } else {
+                    ev.set(self.unfolded, StateValue::Float(f32::NAN));
+                    unfolded
+                }
+            }
+            key => match toward_end(key) {
+                Some(true) => now + step,
+                Some(false) => now - step,
+                None => return,
+            },
+        };
+        ev.stop_propagation();
+        if k.key != Key::Enter {
+            ev.set(self.unfolded, StateValue::Float(f32::NAN));
+        }
+        self.place(ev, &room, lead, change);
+    }
+
+    /// Size the panes, and report the bar's value, for where it stands.
+    fn show(&self, store: &mut NodeStore, value: f32) {
+        let at = self.kind.at(value);
+        let (lead, trail) = at.lengths();
+        let fill = Length::fill();
+        store.set_fixed_size(self.lead, size_on(self.axis, lead, fill));
+        store.set_fixed_size(self.trail, size_on(self.axis, trail, fill));
+        let state = match at {
+            SplitAt::Fraction(f) => SemanticState::slider(f * 100.0, 0.0, 100.0),
+            SplitAt::Start(v) | SplitAt::End(v) => SemanticState {
+                value: Some(v),
+                ..SemanticState::default()
+            },
+        };
+        store.set_semantic_state(self.bar, state);
+    }
+}
+
 impl Component for Splitter {
     fn build(&self, cx: &mut BuildCx<'_>) {
-        // Three reactive `Float` cells keep the drag self-contained: `fraction` is
-        // pane A's share (bound to PAINT so a move repaints the container alone, a
-        // targeted invalidation, not a rebuild); `down_pos` and `start_frac`
-        // record the press anchor so a move is a pure delta from it — the handler
-        // never needs the container's world geometry (an `EventCx` has no node
-        // bounds).
-        let frac0 = self.initial_fraction();
-        let fraction = cx.state(StateValue::Float(frac0));
-        let down_pos = cx.state(StateValue::Float(0.0));
-        let start_frac = cx.state(StateValue::Float(frac0));
-
-        // Read the (Copy) style and extent by value; `build` takes `&self`, so the
-        // label is cloned (cold, build-time — not a per-frame path).
-        let axis = self.style.axis;
-        let bar_size = self.style.bar_size;
-        let bar_box = self.style.bar;
-        let extent = self.extent;
-
-        // Pane A takes its build-time share of the free main-axis room (the extent
-        // minus the divider), and pane B fills the rest. The cell does not re-size
-        // them live (a bound layout cell does not re-derive a leaf's build-time
-        // size); the app re-sizes the panes from the reported fraction.
-        let free = (extent - bar_size).max(0.0);
-        let pane_a_main = frac0 * free;
-        let pane_a_size = size_on(
-            axis,
-            Length::Fixed(pane_a_main),
-            Length::Fill { weight: 1.0 },
-        );
-        let bar_leaf_size = size_on(axis, Length::Fixed(bar_size), Length::Fill { weight: 1.0 });
-        let pane_b_size = size_on(
-            axis,
-            Length::Fill { weight: 1.0 },
-            Length::Fill { weight: 1.0 },
-        );
-
-        let pane_a = self.pane_a.as_ref();
-        let pane_b = self.pane_b.as_ref();
-
+        let style = self.style;
+        let axis = style.axis;
+        let at0 = self.at.sane();
+        let at = cx.state(StateValue::Float(at0.value()));
+        let grab = cx.state(StateValue::Float(0.0));
+        let unfolded = cx.state(StateValue::Float(f32::NAN));
+        let dragging = cx.state(StateValue::Bool(false));
+        let hover = cx.state(StateValue::Bool(false));
+        let (lead_len, trail_len) = at0.lengths();
+        let pane = |cx: &mut BuildCx<'_>, main: Length, build: &Option<Pane>| -> Handle {
+            cx.flex(
+                FlexStyle {
+                    axis,
+                    align: Align::Stretch,
+                    justify: Justify::Start,
+                    size: size_on(axis, main, Length::fill()),
+                    ..FlexStyle::default()
+                },
+                |cx| {
+                    if let Some(build) = build {
+                        build(cx);
+                    }
+                },
+            )
+        };
+        let mut parts = None;
         let root = cx.flex(
             FlexStyle {
                 axis,
-                gap: 0.0,
-                padding: Inset::all(0.0),
                 align: Align::Stretch,
                 justify: Justify::Start,
-                size: self.style.size,
-                style: BoxStyle::NONE,
+                size: style.size,
+                ..FlexStyle::default()
             },
             |cx| {
-                // Pane A: its build-time share of the main axis, filling the cross
-                // axis, holding the author's leading content.
-                cx.flex(
-                    FlexStyle {
-                        axis,
-                        gap: 0.0,
-                        padding: Inset::all(0.0),
-                        align: Align::Stretch,
-                        justify: Justify::Start,
-                        size: pane_a_size,
-                        style: BoxStyle::NONE,
-                    },
-                    |cx| {
-                        if let Some(build) = pane_a {
-                            build(cx);
-                        }
-                    },
-                );
-                // The divider bar: a fixed-thickness leaf across the cross axis,
-                // showing the resize cursor across the split.
+                let lead = pane(cx, lead_len, &self.panes.0);
                 let bar = cx.leaf(LeafStyle {
-                    size: bar_leaf_size,
-                    style: bar_box,
+                    size: size_on(axis, Length::Fixed(style.bar_size), Length::fill()),
+                    style: style.bar,
                 });
-                cx.cursor(
-                    bar,
-                    match axis {
-                        Axis::Row => CursorIcon::ResizeCol,
-                        Axis::Column => CursorIcon::ResizeRow,
-                    },
-                );
-                // Pane B: fills the remaining main axis, holding the trailing
-                // content.
-                cx.flex(
-                    FlexStyle {
-                        axis,
-                        gap: 0.0,
-                        padding: Inset::all(0.0),
-                        align: Align::Stretch,
-                        justify: Justify::Start,
-                        size: pane_b_size,
-                        style: BoxStyle::NONE,
-                    },
-                    |cx| {
-                        if let Some(build) = pane_b {
-                            build(cx);
-                        }
-                    },
-                );
+                let trail = pane(cx, trail_len, &self.panes.1);
+                parts = Some((lead, bar, trail));
             },
         );
-
-        // Bind the fraction cell to the container's PAINT so a move repaints just
-        // this subtree.
-        cx.bind(fraction, root, DirtyClass::PAINT);
-        cx.focusable(root, true);
-
-        // Pointer drag: a primary press records the anchor (down-pos on the main
-        // axis + the fraction at that instant) and captures the pointer, so
-        // subsequent samples route here even outside the bar box. Each move adds
-        // the pixel delta over the extent to the recorded fraction and fires
-        // `on_change` with the new fraction. The release frees the capture. The
-        // delta model needs no node geometry — only the build-time `extent`.
-        let pointer_cb = self.on_change.clone();
-        let root_id = root.id();
-        cx.on_pointer(root, move |ev| {
-            let Some(p) = ev.pointer() else { return };
-            if !p.buttons.contains(PointerButtons::PRIMARY) && p.phase != PointerPhase::Up {
-                return;
-            }
-            match p.phase {
-                PointerPhase::Down => {
-                    ev.set(down_pos, StateValue::Float(main_axis_pos(axis, p.x, p.y)));
-                    ev.set(start_frac, StateValue::Float(read_f32(ev, fraction)));
-                    ev.capture_pointer(root_id);
-                }
-                PointerPhase::Move => {
-                    let dpos = main_axis_pos(axis, p.x, p.y) - read_f32(ev, down_pos);
-                    let delta = if extent > 0.0 { dpos / extent } else { 0.0 };
-                    let next = (read_f32(ev, start_frac) + delta).clamp(0.0, 1.0);
-                    if ev.set(fraction, StateValue::Float(next)) {
-                        fire(&pointer_cb, ev, next);
-                    }
-                }
-                PointerPhase::Up => {
-                    ev.release_pointer();
-                }
-                // Hover enter/leave and window leave are not drag input — the
-                // early return above already skips no-button samples, but the
-                // match stays exhaustive.
-                PointerPhase::Enter | PointerPhase::Leave => {}
-            }
-        });
-
-        // Keyboard step: Left/Up decrement and Right/Down increment the fraction by
-        // a small step, firing the same `on_change` — the accessibility equivalent
-        // of the drag. For a row split Left/Right are the
-        // natural axis; for a column split Up/Down are — both pairs are accepted so
-        // either orientation is keyboard-drivable. Auto-repeat is honored so a held
-        // arrow ramps the split.
-        let key_cb = self.on_change.clone();
-        cx.on_key(root, move |ev| {
-            let Some(k) = ev.key() else { return };
-            if !k.pressed {
-                return;
-            }
-            let dir = match k.key {
-                Key::Right | Key::Down => 1.0,
-                Key::Left | Key::Up => -1.0,
-                _ => return,
-            };
-            ev.stop_propagation();
-            let next = (read_f32(ev, fraction) + dir * KEY_STEP_FRACTION).clamp(0.0, 1.0);
-            if ev.set(fraction, StateValue::Float(next)) {
-                fire(&key_cb, ev, next);
-            }
-        });
-
-        // A splitter is a resizable-pane group; its accessible name is the authored
-        // label. The live fraction is proven by the reactive cell and input tapes
-        // and is not surfaced in the derived tree (the derive pass has no state
-        // store).
-        cx.semantics(
-            root,
-            Semantics::role(Role::Group).with_label(self.label.clone()),
+        let (lead, bar, trail) = parts.expect("the panes and the bar are built");
+        cx.cursor(
+            bar,
+            match axis {
+                Axis::Row => CursorIcon::ResizeCol,
+                Axis::Column => CursorIcon::ResizeRow,
+            },
         );
+        cx.interaction_style(
+            bar,
+            InteractionStyle {
+                resting: style.bar,
+                hover: style.hover,
+                pressed: style.drag,
+                pressed_cell: Some(dragging),
+                hover_cell: Some(hover),
+            },
+        );
+        cx.focusable(bar, true);
+        let mut semantics = Semantics::role(Role::Separator);
+        semantics.label = Some(self.label.clone());
+        cx.semantics(bar, semantics);
+
+        let seam = Seam {
+            axis,
+            kind: at0.kind(),
+            bar_size: style.bar_size,
+            min: self.min,
+            root: root.id(),
+            lead: lead.id(),
+            trail: trail.id(),
+            bar: bar.id(),
+            at,
+            grab,
+            unfolded,
+            dragging,
+            hover,
+        };
+        let change = self.on_change.clone();
+        cx.on_pointer(bar, move |ev| seam.pointer(ev, &change));
+        let change = self.on_change.clone();
+        cx.on_key(bar, move |ev| seam.key(ev, &change));
+        cx.structure(|s| {
+            seam.show(s.store, at0.value());
+            s.store.add_structure_hook([at], move |s, _| {
+                if let Some(StateValue::Float(v)) = s.states.get(seam.at)
+                    && s.store.arena().is_live(seam.bar)
+                {
+                    seam.show(s.store, v);
+                }
+            });
+        });
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
-    use std::rc::Rc;
-    use viso_ui::{
-        BindingTable, KeyEvent, Modifiers, NodeId, NodeStore, PointerEvent, SemanticProjector,
-        StateStore, TextEdits, VirtualLists,
-    };
 
-    /// The reactive stores a splitter build writes into, kept together so a test
-    /// can build a splitter and then drive its handlers against the same state.
-    struct Reactive {
-        store: NodeStore,
-        states: StateStore,
-        bindings: BindingTable,
-        lists: VirtualLists,
-        text_edits: TextEdits,
-        projectors: SemanticProjector,
-    }
-
-    impl Reactive {
-        fn new() -> Self {
-            Reactive {
-                store: NodeStore::new(),
-                states: StateStore::new(),
-                bindings: BindingTable::new(),
-                lists: VirtualLists::new(),
-                text_edits: TextEdits::new(),
-                projectors: SemanticProjector::new(),
-            }
-        }
-
-        /// Build a splitter through a reactive cx (a splitter authors state, so a
-        /// plain `BuildCx::new` would panic) and return its root node.
-        fn build(&mut self, s: Splitter) -> NodeId {
-            let mut cx = BuildCx::with_reactive(
-                &mut self.store,
-                &mut self.states,
-                &mut self.bindings,
-                &mut self.lists,
-                &mut self.text_edits,
-                &mut self.projectors,
-            );
-            s.build(&mut cx);
-            cx.root().expect("splitter declares a root node")
-        }
-
-        /// Feed a pointer sample to the root's pointer handler, restoring it after,
-        /// and return any pending capture request the handler made.
-        fn pointer(&mut self, root: NodeId, ev: PointerEvent) -> Option<Option<NodeId>> {
-            let mut handler = self.store.take_handler(root).expect("pointer handler");
-            let capture = {
-                let mut cx = EventCx::__new_pointer(&mut self.states, &self.bindings, &ev);
-                handler(&mut cx);
-                cx.__take_capture_request()
-            };
-            self.store.restore_handler(root, handler);
-            capture
-        }
-
-        /// Feed a key sample to the root's key handler, restoring it after.
-        fn key(&mut self, root: NodeId, ev: KeyEvent) {
-            let mut handler = self.store.take_key_handler(root).expect("key handler");
-            {
-                let mut cx = EventCx::__new_key(&mut self.states, &self.bindings, &ev);
-                handler(&mut cx);
-            }
-            self.store.restore_key_handler(root, handler);
-        }
-
-        /// The current value of the splitter's `fraction` cell — the first cell the
-        /// build authors (a fresh store mints index 0, generation 0).
-        fn fraction(&mut self) -> f32 {
-            let ev = still();
-            let cx = EventCx::__new_pointer(&mut self.states, &self.bindings, &ev);
-            match cx.get(fraction_cell()) {
-                Some(StateValue::Float(v)) => v,
-                _ => f32::NAN,
-            }
-        }
-    }
-
-    /// The splitter's `fraction` cell handle. The build authors `fraction` first,
-    /// so in a fresh store it is index 0, generation 0 — the handle a throwaway
-    /// store mints for its first `Float` cell (there is no public bare-`StateId`
-    /// constructor).
-    fn fraction_cell() -> StateId {
-        StateStore::new().alloc(StateValue::Float(0.0))
-    }
-
-    /// A still (no-button) pointer sample, for read-only state peeks.
-    fn still() -> PointerEvent {
-        PointerEvent {
-            x: 0.0,
-            y: 0.0,
-            phase: PointerPhase::Move,
-            buttons: PointerButtons::NONE,
-            modifiers: Modifiers::default(),
-        }
-    }
-
-    /// A primary-button pointer sample at `(x, y)` in the given phase.
-    fn primary_at(x: f32, y: f32, phase: PointerPhase) -> PointerEvent {
-        PointerEvent {
-            x,
-            y,
-            phase,
-            buttons: PointerButtons::PRIMARY,
-            modifiers: Modifiers::default(),
-        }
-    }
-
-    /// A key press/release sample.
-    fn key_ev(key: Key, pressed: bool, repeat: bool) -> KeyEvent {
-        KeyEvent {
-            key,
-            pressed,
-            repeat,
-            modifiers: Modifiers::default(),
-        }
-    }
-
-    /// Count a node's direct children by walking the arena sibling chain.
-    fn child_count(store: &NodeStore, parent: NodeId) -> usize {
-        let arena = store.arena();
-        arena.children(parent).count()
-    }
-
-    /// A splitter builds an interactive node: a pointer handler, a key handler, a
-    /// focusable flag, a `Group` semantics node named by its caption, and three
-    /// composed children (pane A, the divider bar, pane B).
     #[test]
-    fn splitter_builds_a_focusable_group_with_two_panes_and_a_bar() {
-        let mut rx = Reactive::new();
-        let root = rx.build(splitter("Editor / Preview"));
-
-        assert!(
-            rx.store.has_handler(root),
-            "splitter attaches a pointer handler"
-        );
-        assert!(
-            rx.store.has_key_handler(root),
-            "splitter attaches a key handler"
-        );
-        assert!(rx.store.focusable(root), "splitter is focusable");
+    fn each_kind_lays_out_and_reads_back_the_leading_pane() {
+        let free = 400.0;
+        for at in [
+            SplitAt::Fraction(0.25),
+            SplitAt::Start(100.0),
+            SplitAt::End(300.0),
+        ] {
+            assert_eq!(at.lead(free), 100.0, "{at:?}");
+            assert_eq!(at.kind().placing(100.0, free), at);
+        }
         assert_eq!(
-            child_count(&rx.store, root),
-            3,
-            "splitter composes pane A, the divider bar, and pane B"
+            SplitAt::Fraction(0.25).lengths(),
+            (Length::Fill { weight: 0.25 }, Length::Fill { weight: 0.75 })
         );
-
-        let sem = rx
-            .store
-            .semantics(root)
-            .expect("splitter authors semantics");
-        assert_eq!(sem.role, Role::Group);
-        assert_eq!(sem.label.as_deref(), Some("Editor / Preview"));
-    }
-
-    /// The chainable setters override the fraction, axis, extent, and size, and the
-    /// default is a centered `0.5` horizontal (`Axis::Row`) split at the default
-    /// extent, `Fill` on both axes.
-    #[test]
-    fn setters_override_defaults() {
-        let default = splitter("x");
-        assert_eq!(default.fraction, 0.5);
-        assert_eq!(default.extent, DEFAULT_EXTENT);
-        assert_eq!(default.style.axis, Axis::Row);
-        assert_eq!(default.style.size, Size::fill());
-
-        let widget = splitter("x")
-            .fraction(0.25)
-            .axis(Axis::Column)
-            .extent(800.0)
-            .size(Size::fixed(300.0, 300.0));
-        assert_eq!(widget.fraction, 0.25);
-        assert_eq!(widget.extent, 800.0);
-        assert_eq!(widget.style.axis, Axis::Column);
-        assert_eq!(widget.style.size, Size::fixed(300.0, 300.0));
-        // The build clamps the fraction into range.
-        assert!((widget.initial_fraction() - 0.25).abs() < 1e-6);
-        assert!((splitter("x").fraction(1.5).initial_fraction() - 1.0).abs() < 1e-6);
-        assert!((splitter("x").fraction(-0.5).initial_fraction() - 0.0).abs() < 1e-6);
-    }
-
-    /// A primary press records the anchor and captures the pointer to the root; a
-    /// move drags the fraction by the pixel delta over the extent and fires
-    /// `on_change` with the new fraction; the release frees capture.
-    #[test]
-    fn pointer_drag_moves_fraction_captures_and_fires_change() {
-        let last = Rc::new(Cell::new(None::<f32>));
-        let count = Rc::new(Cell::new(0u32));
-        let (l, c) = (last.clone(), count.clone());
-        let mut rx = Reactive::new();
-        // A 200px-extent row split starting centered at 0.5.
-        let root = rx.build(splitter("split").extent(200.0).on_change(move |_, f| {
-            l.set(Some(f));
-            c.set(c.get() + 1);
-        }));
-
-        assert!((rx.fraction() - 0.5).abs() < 1e-6, "starts centered");
-
-        // Press at x=100: records the anchor and requests capture to the root.
-        let cap = rx.pointer(root, primary_at(100.0, 0.0, PointerPhase::Down));
-        assert_eq!(cap, Some(Some(root)), "the press captures the pointer");
-        assert_eq!(count.get(), 0, "the press alone does not fire a change");
-
-        // Move right by 40px over a 200px extent: +0.2 -> 0.7.
-        rx.pointer(root, primary_at(140.0, 0.0, PointerPhase::Move));
-        assert!((rx.fraction() - 0.7).abs() < 1e-6, "dragged right by 0.2");
-        assert_eq!(count.get(), 1, "the move fires one change");
-        assert_eq!(last.get(), Some(0.7), "on_change carries the new fraction");
-
-        // Move past the far end: clamps to 1.0.
-        rx.pointer(root, primary_at(400.0, 0.0, PointerPhase::Move));
-        assert!((rx.fraction() - 1.0).abs() < 1e-6, "clamps at the far end");
-        assert_eq!(last.get(), Some(1.0));
-
-        // Release frees capture.
-        let cap = rx.pointer(root, primary_at(400.0, 0.0, PointerPhase::Up));
-        assert_eq!(cap, Some(None), "the release frees the capture");
-    }
-
-    /// A column split drags on the y axis: the same pixel delta on y moves the
-    /// fraction, and x is ignored.
-    #[test]
-    fn column_split_drags_on_the_y_axis() {
-        let mut rx = Reactive::new();
-        let root = rx.build(splitter("v").axis(Axis::Column).extent(200.0));
-
-        rx.pointer(root, primary_at(999.0, 50.0, PointerPhase::Down));
-        // A y move of +40 over 200 is +0.2 -> 0.7; the x jump is ignored.
-        rx.pointer(root, primary_at(0.0, 90.0, PointerPhase::Move));
-        assert!(
-            (rx.fraction() - 0.7).abs() < 1e-6,
-            "a column split reads the y delta"
+        assert_eq!(
+            SplitAt::End(80.0).lengths(),
+            (Length::fill(), Length::Fixed(80.0))
         );
-    }
-
-    /// The drag is a pure delta from the press anchor: a second press re-anchors,
-    /// so a move after it is measured from the new down position.
-    #[test]
-    fn drag_reanchors_on_each_press() {
-        let mut rx = Reactive::new();
-        let root = rx.build(splitter("s").extent(200.0));
-
-        // First drag to 0.7.
-        rx.pointer(root, primary_at(100.0, 0.0, PointerPhase::Down));
-        rx.pointer(root, primary_at(140.0, 0.0, PointerPhase::Move));
-        assert!((rx.fraction() - 0.7).abs() < 1e-6);
-        rx.pointer(root, primary_at(140.0, 0.0, PointerPhase::Up));
-
-        // Second press at x=10 re-anchors at 0.7; a move to x=30 is +20px = +0.1,
-        // landing at 0.8 — not measured from the original down position.
-        rx.pointer(root, primary_at(10.0, 0.0, PointerPhase::Down));
-        rx.pointer(root, primary_at(30.0, 0.0, PointerPhase::Move));
-        assert!(
-            (rx.fraction() - 0.8).abs() < 1e-6,
-            "the second drag deltas from the new anchor"
-        );
-    }
-
-    /// A non-primary button neither anchors nor drags.
-    #[test]
-    fn non_primary_pointer_does_not_drag() {
-        let count = Rc::new(Cell::new(0u32));
-        let c = count.clone();
-        let mut rx = Reactive::new();
-        let root = rx.build(splitter("s").on_change(move |_, _| c.set(c.get() + 1)));
-
-        let non_primary_down = PointerEvent {
-            buttons: PointerButtons::NONE,
-            ..primary_at(0.0, 0.0, PointerPhase::Down)
-        };
-        let cap = rx.pointer(root, non_primary_down);
-        assert_eq!(cap, None, "a non-primary press does not capture");
-        let non_primary_move = PointerEvent {
-            buttons: PointerButtons::NONE,
-            ..primary_at(60.0, 0.0, PointerPhase::Move)
-        };
-        rx.pointer(root, non_primary_move);
-        assert_eq!(count.get(), 0, "a non-primary drag fires nothing");
-    }
-
-    /// Arrow keys step the fraction and fire `on_change`; Right/Down increment,
-    /// Left/Up decrement, each by the key step.
-    #[test]
-    fn arrow_keys_step_the_fraction() {
-        let last = Rc::new(Cell::new(None::<f32>));
-        let count = Rc::new(Cell::new(0u32));
-        let (l, c) = (last.clone(), count.clone());
-        let mut rx = Reactive::new();
-        let root = rx.build(splitter("s").fraction(0.5).on_change(move |_, f| {
-            l.set(Some(f));
-            c.set(c.get() + 1);
-        }));
-
-        assert!((rx.fraction() - 0.5).abs() < 1e-6, "starts centered");
-
-        rx.key(root, key_ev(Key::Right, true, false));
-        assert!(
-            (rx.fraction() - (0.5 + KEY_STEP_FRACTION)).abs() < 1e-6,
-            "Right steps up one step"
-        );
-        rx.key(root, key_ev(Key::Down, true, false));
-        assert!(
-            (rx.fraction() - (0.5 + 2.0 * KEY_STEP_FRACTION)).abs() < 1e-6,
-            "Down steps up too"
-        );
-
-        rx.key(root, key_ev(Key::Left, true, false));
-        assert!(
-            (rx.fraction() - (0.5 + KEY_STEP_FRACTION)).abs() < 1e-6,
-            "Left steps down"
-        );
-        rx.key(root, key_ev(Key::Up, true, false));
-        assert!((rx.fraction() - 0.5).abs() < 1e-6, "Up steps down too");
-
-        assert_eq!(count.get(), 4, "each arrow press fired one change");
-
-        // A key-up and an unrelated key do nothing.
-        rx.key(root, key_ev(Key::Right, false, false));
-        rx.key(root, key_ev(Key::Enter, true, false));
-        assert_eq!(count.get(), 4, "key-up and Enter do not step");
-    }
-
-    /// A handler-less splitter still moves its fraction without panicking.
-    #[test]
-    fn splitter_without_handler_still_moves() {
-        let mut rx = Reactive::new();
-        let root = rx.build(splitter("s").extent(200.0));
-
-        rx.pointer(root, primary_at(100.0, 0.0, PointerPhase::Down));
-        rx.pointer(root, primary_at(140.0, 0.0, PointerPhase::Move)); // no callback
-        assert!(
-            (rx.fraction() - 0.7).abs() < 1e-6,
-            "still moves the fraction"
-        );
-        assert!(rx.store.focusable(root), "still focusable");
+        assert_eq!(SplitAt::Fraction(2.0).sane(), SplitAt::Fraction(1.0));
+        assert_eq!(SplitAt::Start(f32::NAN).sane(), SplitAt::Start(0.0));
     }
 }

@@ -358,7 +358,10 @@ impl Walk<'_> {
         if live && (row.link.is_some() || store.has_handler(row.id)) {
             actions = actions.with(AccessAction::Click);
         }
-        if live && matches!(row.role, Role::Slider | Role::SpinButton) {
+        if live
+            && (matches!(row.role, Role::Slider | Role::SpinButton)
+                || row.role == Role::Separator && store.focusable(row.id))
+        {
             actions = actions
                 .with(AccessAction::Increment)
                 .with(AccessAction::Decrement);
@@ -574,6 +577,39 @@ mod tests {
         assert_eq!(volume.state.numeric_range, Some((0.0, 1.0)));
         assert!(volume.actions.contains(AccessAction::Increment));
         assert_eq!(bridge.target(semantics_id(slider)), Some((slider, None)));
+    }
+
+    #[test]
+    fn a_focusable_separator_steps_like_a_slider() {
+        let (mut store, root, [rule, divider]) = scene();
+        store.set_semantics(rule, Semantics::role(Role::Separator));
+        store.set_focusable(rule, false);
+        store.set_semantics(
+            divider,
+            Semantics::role(Role::Separator).with_label("Sidebar"),
+        );
+        let mut bridge = AccessBridge::new();
+        let update = bridge.update(&store, root, 1.0).expect("first update");
+        assert!(
+            !node(&update, rule)
+                .actions
+                .contains(AccessAction::Increment)
+        );
+        let divider_node = node(&update, divider);
+        assert!(divider_node.actions.contains(AccessAction::Increment));
+        assert!(divider_node.actions.contains(AccessAction::Decrement));
+        let step = perform(
+            &mut store,
+            WindowId(1),
+            divider,
+            None,
+            AccessAction::Decrement,
+            1.0,
+        );
+        let Some([InputSample::Key(press), _]) = step else {
+            panic!("a key press and release");
+        };
+        assert_eq!(press.key, Key::Left);
     }
 
     #[test]
