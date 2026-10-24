@@ -1,6 +1,8 @@
-//! A raster asset as the renderer uploads it: PNG or JPEG decoded to the
+//! A raster asset as the renderer uploads it: an encoded image — PNG, JPEG,
+//! GIF, WebP, AVIF, BMP, ICO or QOI ([`crate::decode`]) — decoded to the
 //! texture convention, or a converted image ([`crate::texture`]) read in
-//! place.
+//! place. An animated image decodes to its first frame here; its frames play
+//! through [`crate::animation`].
 //!
 //! Decoding is bounded: a raster larger than [`MAX_DIMENSION`] on a side or
 //! [`MAX_PIXELS`] in all is refused before its pixels are allocated, so hostile
@@ -35,7 +37,7 @@ impl std::fmt::Display for AssetError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AssetError::Format => {
-                f.write_str("not a PNG, JPEG or SVG file, nor an image the build converted")
+                f.write_str("not an image file in a format Viso reads, nor one the build converted")
             }
             AssetError::Kind(format) => write!(f, "a {} file draws another way", format.name()),
             AssetError::Decode(why) => f.write_str(why),
@@ -174,7 +176,9 @@ impl RasterImage {
     }
 }
 
-fn check_size(width: usize, height: usize) -> Result<(u32, u32), AssetError> {
+/// `width × height` as a raster's size, refused when it has no pixels or is
+/// past [`MAX_DIMENSION`] or [`MAX_PIXELS`].
+pub(crate) fn check_size(width: usize, height: usize) -> Result<(u32, u32), AssetError> {
     let (w, h) = (
         u32::try_from(width).unwrap_or(u32::MAX),
         u32::try_from(height).unwrap_or(u32::MAX),
@@ -194,7 +198,7 @@ fn check_size(width: usize, height: usize) -> Result<(u32, u32), AssetError> {
 /// `pixels` of `channels` channels each (gray, gray-alpha, RGB or RGBA) as
 /// premultiplied RGBA8, premultiplied in linear light: a channel `c` of
 /// alpha `a` stores `enc(dec(c) · a)`.
-fn premultiplied(
+pub(crate) fn premultiplied(
     pixels: &[u8],
     channels: usize,
     w: u32,
@@ -217,17 +221,38 @@ fn premultiplied(
                 return Err(AssetError::Decode(format!("{channels} channels per pixel")));
             }
         };
-        let premul = |v: u8| match a {
-            255 => v,
-            0 => 0,
-            a => srgb::encode(srgb::decode(v) * (f32::from(a) / 255.0)),
-        };
-        rgba.extend_from_slice(&[premul(r), premul(g), premul(b), a]);
+        rgba.extend_from_slice(&premultiply([r, g, b, a]));
     }
     Ok(RasterImage::rgba8(w, h, rgba))
 }
 
-/// Decodes a PNG or JPEG, or reads a converted image, copying its texels.
+/// A straight-alpha sRGB pixel premultiplied in linear light.
+#[inline]
+pub(crate) fn premultiply([r, g, b, a]: [u8; 4]) -> [u8; 4] {
+    match a {
+        255 => [r, g, b, 255],
+        0 => [0; 4],
+        a => {
+            let a1 = f32::from(a) / 255.0;
+            let premul = |v: u8| srgb::encode(srgb::decode(v) * a1);
+            [premul(r), premul(g), premul(b), a]
+        }
+    }
+}
+
+/// Straight-alpha RGBA8 `src` premultiplied into `dst`, of the same length.
+pub(crate) fn premultiply_into(src: &[u8], dst: &mut [u8]) {
+    for (s, d) in src
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(dst.as_chunks_mut::<4>().0.iter_mut())
+    {
+        d.copy_from_slice(&premultiply([s[0], s[1], s[2], s[3]]));
+    }
+}
+
+/// Decodes an encoded image, or reads a converted image, copying its texels.
 ///
 /// # Errors
 ///
@@ -253,46 +278,8 @@ pub fn decode_raster_asset(bytes: &AssetBytes) -> Result<RasterImage, AssetError
     decode_encoded(bytes)
 }
 
-/// Decodes a PNG or JPEG.
 fn decode_encoded(bytes: &[u8]) -> Result<RasterImage, AssetError> {
-    use zune_core::bytestream::ZCursor;
-    use zune_core::options::DecoderOptions;
-    let error = |e: &dyn std::fmt::Display| AssetError::Decode(e.to_string().trim_end().to_owned());
-    match AssetFormat::sniff(bytes) {
-        Some(AssetFormat::Png) => {
-            let options = DecoderOptions::default()
-                .png_set_add_alpha_channel(true)
-                .png_set_strip_to_8bit(true)
-                .set_max_width(MAX_DIMENSION as usize)
-                .set_max_height(MAX_DIMENSION as usize);
-            let mut decoder = zune_png::PngDecoder::new_with_options(ZCursor::new(bytes), options);
-            decoder.decode_headers().map_err(|e| error(&e))?;
-            let (w, h) = decoder
-                .dimensions()
-                .ok_or_else(|| AssetError::Decode("the PNG has no header".to_owned()))?;
-            let (w, h) = check_size(w, h)?;
-            let pixels = decoder.decode_raw().map_err(|e| error(&e))?;
-            let channels = pixels.len() / (w as usize * h as usize);
-            premultiplied(&pixels, channels, w, h)
-        }
-        Some(AssetFormat::Jpeg) => {
-            let options = DecoderOptions::default()
-                .jpeg_set_out_colorspace(zune_core::colorspace::ColorSpace::RGB)
-                .set_max_width(MAX_DIMENSION as usize)
-                .set_max_height(MAX_DIMENSION as usize);
-            let mut decoder =
-                zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(bytes), options);
-            decoder.decode_headers().map_err(|e| error(&e))?;
-            let (w, h) = decoder
-                .dimensions()
-                .ok_or_else(|| AssetError::Decode("the JPEG has no header".to_owned()))?;
-            let (w, h) = check_size(w, h)?;
-            let pixels = decoder.decode().map_err(|e| error(&e))?;
-            premultiplied(&pixels, 3, w, h)
-        }
-        Some(format) => Err(AssetError::Kind(format)),
-        None => Err(AssetError::Format),
-    }
+    crate::decode::still(bytes)
 }
 
 #[cfg(test)]
@@ -314,8 +301,12 @@ mod tests {
             Some(AssetFormat::Svg)
         );
         assert_eq!(AssetFormat::sniff(b"<html><body/>"), None);
-        assert_eq!(AssetFormat::sniff(b"GIF89a"), None);
-        assert_eq!(decode_raster(b"GIF89a"), Err(AssetError::Format));
+        assert_eq!(AssetFormat::sniff(b"GIF89a"), Some(AssetFormat::Gif));
+        assert_eq!(decode_raster(b"GIF8"), Err(AssetError::Format));
+        assert!(matches!(
+            decode_raster(b"GIF89a"),
+            Err(AssetError::Decode(_))
+        ));
         assert_eq!(
             decode_raster(b"<svg/>"),
             Err(AssetError::Kind(AssetFormat::Svg))

@@ -50,8 +50,19 @@ pub fn normalize_path(path: &str) -> Option<String> {
 /// What an asset's bytes are.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum AssetFormat {
+    /// PNG, animated (APNG) too.
     Png,
     Jpeg,
+    /// GIF, animated too.
+    Gif,
+    /// WebP, lossy or lossless, animated too.
+    WebP,
+    /// AVIF, animated too.
+    Avif,
+    Bmp,
+    /// A Windows icon: the largest of the images it holds.
+    Ico,
+    Qoi,
     Svg,
 }
 
@@ -65,14 +76,38 @@ pub enum AssetKind {
 }
 
 impl AssetFormat {
-    /// The format `bytes` are in, read from their signature: the PNG and JPEG
-    /// magic numbers, an SVG root element within the document's head.
+    /// The format `bytes` are in, read from their signature: each raster
+    /// format's magic number — an AVIF's `ftyp` brand, a BMP's header size, an
+    /// icon's directory — or an SVG root element within the document's head.
     pub fn sniff(bytes: &[u8]) -> Option<AssetFormat> {
         if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
             return Some(AssetFormat::Png);
         }
         if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
             return Some(AssetFormat::Jpeg);
+        }
+        if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+            return Some(AssetFormat::Gif);
+        }
+        if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+            return Some(AssetFormat::WebP);
+        }
+        if is_avif(bytes) {
+            return Some(AssetFormat::Avif);
+        }
+        if bytes.starts_with(b"qoif") {
+            return Some(AssetFormat::Qoi);
+        }
+        // A BMP's info header is one of the sizes the versions use.
+        if bytes.len() >= 18 && bytes.starts_with(b"BM") {
+            let header = u32::from_le_bytes([bytes[14], bytes[15], bytes[16], bytes[17]]);
+            if matches!(header, 12 | 16 | 40 | 52 | 56 | 64 | 108 | 124) {
+                return Some(AssetFormat::Bmp);
+            }
+        }
+        // An icon's directory: reserved zero, type one, at least one image.
+        if bytes.len() >= 22 && bytes.starts_with(&[0, 0, 1, 0]) && (bytes[4] | bytes[5]) != 0 {
+            return Some(AssetFormat::Ico);
         }
         let head = &bytes[..bytes.len().min(4096)];
         let text = match core::str::from_utf8(head) {
@@ -89,8 +124,8 @@ impl AssetFormat {
 
     pub const fn kind(self) -> AssetKind {
         match self {
-            AssetFormat::Png | AssetFormat::Jpeg => AssetKind::Raster,
             AssetFormat::Svg => AssetKind::Vector,
+            _ => AssetKind::Raster,
         }
     }
 
@@ -99,9 +134,30 @@ impl AssetFormat {
         match self {
             AssetFormat::Png => "PNG",
             AssetFormat::Jpeg => "JPEG",
+            AssetFormat::Gif => "GIF",
+            AssetFormat::WebP => "WebP",
+            AssetFormat::Avif => "AVIF",
+            AssetFormat::Bmp => "BMP",
+            AssetFormat::Ico => "ICO",
+            AssetFormat::Qoi => "QOI",
             AssetFormat::Svg => "SVG",
         }
     }
+}
+
+/// Whether `bytes` open with an ISO media `ftyp` box naming an AVIF brand —
+/// `avif` or the image sequence's `avis` — as its major brand or a
+/// compatible one.
+fn is_avif(bytes: &[u8]) -> bool {
+    if bytes.len() < 16 || &bytes[4..8] != b"ftyp" {
+        return false;
+    }
+    let size = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+    let end = size.clamp(16, 64).min(bytes.len());
+    let avif = |brand: &[u8; 4]| brand == b"avif" || brand == b"avis";
+    let (brands, _) = bytes[16..end].as_chunks::<4>();
+    // The major brand, the minor version, then the compatible brands.
+    bytes[8..12].try_into().is_ok_and(avif) || brands.iter().any(avif)
 }
 
 /// An asset's encoded bytes: embedded in the binary, or loaded and shared.
@@ -122,6 +178,12 @@ impl core::ops::Deref for AssetBytes {
     }
 }
 
+impl AsRef<[u8]> for AssetBytes {
+    fn as_ref(&self) -> &[u8] {
+        self
+    }
+}
+
 impl PartialEq for AssetBytes {
     fn eq(&self, other: &AssetBytes) -> bool {
         **self == **other
@@ -133,5 +195,41 @@ impl Eq for AssetBytes {}
 impl core::fmt::Debug for AssetBytes {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "AssetBytes({} bytes)", self.len())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_raster_format_is_known_by_its_signature() {
+        let sniff = AssetFormat::sniff;
+        assert_eq!(sniff(b"GIF89a\x01\x00"), Some(AssetFormat::Gif));
+        assert_eq!(sniff(b"GIF87a"), Some(AssetFormat::Gif));
+        assert_eq!(sniff(b"RIFF\x10\0\0\0WEBPVP8L"), Some(AssetFormat::WebP));
+        assert_eq!(sniff(b"RIFF\x10\0\0\0WAVEfmt "), None);
+        assert_eq!(
+            sniff(b"\0\0\0\x1cftypavif\0\0\0\0avifmif1miaf"),
+            Some(AssetFormat::Avif)
+        );
+        // A sequence names `avis`; HEIC is another brand.
+        assert_eq!(
+            sniff(b"\0\0\0\x18ftypmif1\0\0\0\0avismsf1"),
+            Some(AssetFormat::Avif)
+        );
+        assert_eq!(sniff(b"\0\0\0\x18ftypheic\0\0\0\0mif1heic"), None);
+        assert_eq!(sniff(b"qoif\0\0\0\x01"), Some(AssetFormat::Qoi));
+        let mut bmp = alloc::vec::Vec::from(&b"BM"[..]);
+        bmp.extend_from_slice(&[0; 12]);
+        bmp.extend_from_slice(&40u32.to_le_bytes());
+        assert_eq!(sniff(&bmp), Some(AssetFormat::Bmp));
+        assert_eq!(sniff(b"BMW is not a bitmap"), None);
+        let mut ico = alloc::vec![0, 0, 1, 0, 1, 0];
+        ico.extend_from_slice(&[0; 16]);
+        assert_eq!(sniff(&ico), Some(AssetFormat::Ico));
+        ico[4] = 0;
+        assert_eq!(sniff(&ico), None, "no image in it");
+        assert_eq!(AssetFormat::Avif.kind(), AssetKind::Raster);
     }
 }

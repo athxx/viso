@@ -24,5 +24,20 @@ ab_glyph_rasterizer = { workspace = true }
 zune-png = { workspace = true }
 zune-jpeg = { workspace = true }
 zune-core = { workspace = true }
+zune-bmp = { workspace = true }
+zune-qoi = { workspace = true }
+gif = { workspace = true }
+image-webp = { workspace = true }
 # A snapshot's PNG is written compressed.
 miniz_oxide = { workspace = true }
+
+[features]
+# AVIF decoding. Off, an AVIF asset is a format the build does not read.
+avif = ["dep:zenavif-parse", "dep:rav1d"]
+
+# The AV1 decoder builds for every target but the web, whose browser decodes
+# AVIF itself. Its Rust paths alone: the published crate's assembly does not
+# build.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+zenavif-parse = { workspace = true, optional = true }
+rav1d = { workspace = true, optional = true }

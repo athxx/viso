@@ -57,7 +57,7 @@ windows-core = "0.62"
 libc = "0.2"
 
 [features]
-default = ["vm", "desktop", "native-vulkan", "rasterizer", "complex-line-break"]
+default = ["vm", "desktop", "native-vulkan", "rasterizer", "complex-line-break", "avif"]
 # Kept small and stable on purpose — no giant feature cartesian product
 # (§5). Backends resolve from the target, not from user feature combos.
 # The desktop display backends on Linux and the BSDs (Wayland and X11, with
@@ -109,6 +109,9 @@ cpu = ["viso-gpu/cpu"]
 # a square of screen pixels; the profile's budgets, workers and fonts apply as
 # they do on the device.
 emulate = ["viso-platform/emulate"]
+# AVIF image assets decoded at run time; an embedded profile leaves it off
+# and links no AV1 decoder.
+avif = ["viso-image/avif"]
 # The platform's fonts as fallbacks in an embedded profile, which otherwise
 # draws with the app's packaged fonts alone.
 system-fonts = []

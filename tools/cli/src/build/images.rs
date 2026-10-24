@@ -13,6 +13,7 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 use viso_dsl::assets::{ASSET_DIR, AssetCatalog, AssetFormat, overlay_of};
@@ -22,6 +23,7 @@ use viso_project::{
     DeviceTarget, Footprint, ImageQuality, Images, Layout, PixelFormat, Profile, Project, Rotation,
     Target,
 };
+use viso_schema::resource::AssetBytes;
 
 use super::RustPlan;
 
@@ -46,6 +48,8 @@ pub(crate) struct Converted {
     pub(crate) source_bytes: u64,
     /// Their converted files' bytes.
     pub(crate) converted_bytes: u64,
+    /// Animated images, shipped as written: a texture holds one frame.
+    pub(crate) animated: usize,
 }
 
 /// How a build for `target` — the board `device` describes, for a device
@@ -127,7 +131,7 @@ pub(crate) fn plan(
 ///
 /// What no longer needs a decoder is named too ([`CONVERTED_ENV`]): SVG when
 /// SVGs rasterize, and on a board — whose app shows no image the build did
-/// not see — PNG and JPEG.
+/// not see — every raster format, unless an animated image ships as written.
 ///
 /// # Errors
 ///
@@ -165,7 +169,7 @@ pub(crate) fn add_converted_images(
         plan.env
             .push((OVERLAY_ENV.to_owned(), overlay.into_os_string()));
     }
-    let board = device.is_some_and(|d| d.profile.value.is_embedded());
+    let board = device.is_some_and(|d| d.profile.value.is_embedded()) && converted.animated == 0;
     let kinds: Vec<&str> = [(board, "raster"), (svg.is_some(), "svg")]
         .into_iter()
         .filter_map(|(on, kind)| on.then_some(kind))
@@ -180,7 +184,7 @@ pub(crate) fn add_converted_images(
 /// Converts every image of `catalog` as `conversion` says (each SVG at `svg`
 /// times its size, or none), each result kept in `cache` by the hash of what
 /// made it and written into `overlay`, from which every other file is
-/// removed.
+/// removed. An animated image is left out, so it embeds as written.
 fn convert_catalog(
     catalog: &AssetCatalog,
     conversion: &Plan,
@@ -196,8 +200,14 @@ fn convert_catalog(
             continue;
         }
         let source = catalog.dir().join(path);
-        let bytes =
-            fs::read(&source).map_err(|e| format!("cannot read `{}`: {e}", source.display()))?;
+        let bytes: Arc<[u8]> = fs::read(&source)
+            .map_err(|e| format!("cannot read `{}`: {e}", source.display()))?
+            .into();
+        if format != AssetFormat::Svg && viso_image::is_animated(&AssetBytes::Shared(bytes.clone()))
+        {
+            converted.animated += 1;
+            continue;
+        }
         let key = cache_key(
             conversion,
             svg.filter(|_| format == AssetFormat::Svg),
@@ -321,7 +331,7 @@ mod tests {
     }
 
     #[test]
-    fn a_catalog_converts_once_and_its_overlay_holds_only_its_images() {
+    fn a_catalog_converts_once_and_its_overlay_holds_only_its_stills() {
         let dir = scratch("catalog");
         let assets = dir.join("assets");
         fs::create_dir_all(assets.join("icons")).unwrap();
@@ -336,6 +346,11 @@ mod tests {
              <circle cx=\"4\" cy=\"4\" r=\"3\" fill=\"#0a0\"/></svg>",
         )
         .unwrap();
+        fs::write(
+            assets.join("spinner.gif"),
+            include_bytes!("../../../../crates/image/tests/fixtures/anim.gif"),
+        )
+        .unwrap();
         let catalog = AssetCatalog::scan(&assets).unwrap();
         let conversion = Plan {
             sampler: Sampler::Cpu { rgb565: true },
@@ -346,8 +361,10 @@ mod tests {
         };
         let (cache, overlay) = (dir.join("cache"), dir.join("overlay"));
         let first = convert_catalog(&catalog, &conversion, Some(2.0), &cache, &overlay).unwrap();
-        assert_eq!((first.images, first.cached), (2, 0));
+        assert_eq!((first.images, first.cached, first.animated), (2, 0, 1));
         let into = overlay_of(&overlay, &assets);
+        // A texture holds one frame: the animation embeds as written.
+        assert!(!into.join("spinner.gif").exists());
         let svg = fs::read(into.join("icons/dot.svg")).unwrap();
         assert!(viso_image::texture::is_texture(&svg));
         let image = viso_image::decode_raster(&svg).unwrap();

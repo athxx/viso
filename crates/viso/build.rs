@@ -11,7 +11,7 @@
 //!
 //! A release build whose images `viso build` converted names what no longer
 //! needs decoding on the device: `VISO_IMAGES_CONVERTED` lists `raster` (every
-//! PNG and JPEG is converted: no raster decoder links,
+//! raster is converted — none animated: no raster decoder links,
 //! `cfg(viso_converted_rasters)`) and `svg` (every SVG is rasterized: no SVG
 //! parser links, `cfg(viso_converted_svg)`).
 //!

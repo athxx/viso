@@ -191,13 +191,23 @@ fn windows_path(path: &str) -> String {
 /// Whether a file of `name` is compressed: what is compressed already is
 /// stored as it is.
 fn compressed(name: &str) -> bool {
-    !name.ends_with(".png")
+    let encoded = ["png", "jpg", "jpeg", "gif", "webp", "avif"];
+    !name
+        .rsplit_once('.')
+        .is_some_and(|(_, ext)| encoded.contains(&ext))
 }
 
 /// Its MIME type, by extension.
 fn content_type(name: &str) -> &'static str {
     match name.rsplit_once('.').map(|(_, ext)| ext) {
         Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("avif") => "image/avif",
+        Some("bmp") => "image/bmp",
+        Some("ico") => "image/x-icon",
+        Some("svg") => "image/svg+xml",
         Some("exe" | "dll") => "application/x-msdownload",
         _ => "application/octet-stream",
     }

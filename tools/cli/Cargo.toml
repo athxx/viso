@@ -20,7 +20,7 @@ viso-schema = { workspace = true }
 # A changed asset is decoded as the app would before it is sent: a raster
 # through the image decoder, an SVG through its parser, a font through the
 # text runtime's. Snapshots and icons are images too.
-viso-image = { workspace = true }
+viso-image = { workspace = true, features = ["avif"] }
 viso-svg = { workspace = true }
 viso-text = { workspace = true }
 viso-ende = { workspace = true }

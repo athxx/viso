@@ -291,11 +291,15 @@ pub(super) fn stage_loaded(
         Ok(Some(converted)) if converted.images > 0 => out.progress(
             "images",
             &format!(
-                "{} images converted ({} from cache): {} bytes as written, {} converted",
+                "{} images converted ({} from cache): {} bytes as written, {} converted{}",
                 converted.images,
                 converted.cached,
                 converted.source_bytes,
-                converted.converted_bytes
+                converted.converted_bytes,
+                match converted.animated {
+                    0 => String::new(),
+                    n => format!("; {n} animated, as written"),
+                }
             ),
         ),
         Ok(_) => {}

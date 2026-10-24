@@ -246,8 +246,10 @@ Rules:
 
 ## W10 — Media
 
-- [ ] Image decoders: GIF (animated), WebP (lossy/lossless/animated), APNG, BMP, ICO,
-  QOI.
+- [x] Image decoders: GIF (animated), WebP (lossy/lossless/animated), APNG, BMP, ICO,
+  QOI, AVIF (still, grid, sequence; HDR tone-mapped); streaming `Animation` frames;
+  EXIF orientation; build-time conversion keeps animated images as written.
+- [ ] AVIF on the web through the browser's decoder (`createImageBitmap`).
 - [ ] Runtime image loading: file path, bytes, URL (on W11); decode cache with memory
   budget, placeholder/error states, `on_load`.
 - [ ] `AnimatedImage` playback (frame timing, loop count, pause off-screen).

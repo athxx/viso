@@ -151,6 +151,16 @@ zune-png = "0.5"
 miniz_oxide = "0.9"
 zune-jpeg = "0.5"
 zune-core = "0.5"
+# The other raster formats an image asset may be in: BMP and QOI of the same
+# decoder family, GIF and WebP (each animated too) from image-rs.
+zune-bmp = "0.5"
+zune-qoi = "0.5"
+gif = { version = "0.14", default-features = false, features = ["std"] }
+image-webp = "0.2"
+# AVIF: the ISO media container (grids, transforms, sequences) and the AV1
+# decoder, dav1d's Rust port.
+zenavif-parse = "0.6"
+rav1d = { version = "1.1", default-features = false, features = ["bitdepth_8", "bitdepth_16"] }
 # WOFF2 web fonts embed their sfnt tables as one brotli stream (WOFF2 §4).
 # `viso-woff2` (libs/woff2) decompresses them to sfnt; the core facade never
 # touches WOFF2 (it only accepts sfnt), so this is only depended on by that

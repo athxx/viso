@@ -865,7 +865,7 @@ SVG 输入通道：bytes 一次性解析为规范化 vector 文档（`tree::Tree
 
 ### `viso-image`
 
-CPU 上的 raster 图像：PNG/JPEG asset 解码为 premultiplied RGBA8（header 先行检查尺寸上限）；构建期把图像转换为 target 采样的 texel 格式（`convert`：16-bit packed、BC1/BC3/BC7、ETC2、ASTC 4×4/6×6/8×8 的 Viso 自有纯 Rust 编解码器 `codec`，Mitchell 重采样 `resample`，SVG 构建期光栅化 `vector`）与其容器 `texture`（`VTX1`）——解码器同时是不支持该格式的设备的 fallback；headless snapshot 的 straight-alpha 图像及其 PNG 写出与感知比较。renderer 与 CLI 共用；格式词汇来自 leaf `viso-gpu-abi`，不链接任何 backend。
+CPU 上的 raster 图像：PNG/APNG、JPEG、GIF、WebP（有损/无损/动画）、AVIF（静图、grid、序列；8/10/12-bit，按 nclx 或 AV1 序列头的 CICP 换算，PQ/HLG 色调映射到 SDR，`clap`/`irot`/`imir`；`avif` feature，纯 Rust AV1 解码，wasm 交给浏览器）、BMP、ICO、QOI asset 解码为 premultiplied RGBA8（header 先行检查尺寸上限，按 EXIF orientation 摆正）；动画（`Animation`）流式逐帧合成到一张画布（region + blend/dispose，或解码器自行合成的整帧），内存只有画布与当前帧，循环次数与帧时长按文件，≤10 ms 的帧按 100 ms 显示；构建期把图像转换为 target 采样的 texel 格式（`convert`：16-bit packed、BC1/BC3/BC7、ETC2、ASTC 4×4/6×6/8×8 的 Viso 自有纯 Rust 编解码器 `codec`，Mitchell 重采样 `resample`，SVG 构建期光栅化 `vector`）与其容器 `texture`（`VTX1`）——解码器同时是不支持该格式的设备的 fallback；headless snapshot 的 straight-alpha 图像及其 PNG 写出与感知比较。renderer 与 CLI 共用；格式词汇来自 leaf `viso-gpu-abi`，不链接任何 backend。
 
 ### `viso-ui`
 
@@ -4125,12 +4125,12 @@ assets/
 需要高级 manifest 时再增加声明能力。
 
 Build scanner 按 target profile 做资源转换，runtime 不再做格式转换：
-- release 构建（`viso build`，非 dev）由 CLI 把 `assets/` 的每张 PNG/JPEG（`images.svg = "raster"` 时连同 SVG）经 `viso_image::convert` 转换为 target 采样的格式，写入 `VISO_ASSET_OVERLAY` 指向的 overlay 目录（按 asset 目录规范路径分目录，路径不变；结果按 sha256(converter 版本, plan, 源字节) 缓存，字节不变不重写，未变 asset 不触发重编译）；`asset!` / `view!` / AOT package 经 `viso_dsl::assets::embedded_file` 嵌入转换后的文件，没有时嵌入源文件；
+- release 构建（`viso build`，非 dev）由 CLI 把 `assets/` 的每张 raster 静图（`images.svg = "raster"` 时连同 SVG；动图一帧容纳不下，按原文件嵌入）经 `viso_image::convert` 转换为 target 采样的格式，写入 `VISO_ASSET_OVERLAY` 指向的 overlay 目录（按 asset 目录规范路径分目录，路径不变；结果按 sha256(converter 版本, plan, 源字节) 缓存，字节不变不重写，未变 asset 不触发重编译）；`asset!` / `view!` / AOT package 经 `viso_dsl::assets::embedded_file` 嵌入转换后的文件，没有时嵌入源文件；
 - 格式族由 target 决定：desktop → BC，iOS/Android → ASTC，embedded-gpu → ETC2，embedded-cpu → `CpuRaster` 原样采样的 RGBA8 / RGB565 / RGBA5551 / RGBA4444；web 与 headless 保留源文件。族内按 alpha（无 / 1-bit / soft）与 `images.quality`（`lossless` / `high` / `balanced` / `compact`）选格式（表见 `viso_image::convert`）；
 - 有 display 尺寸的 board 把超出 cover fit 所示 texel 的图像预缩小（旋转后的面板尺寸），块压缩格式拉伸到整块；两者都保留 natural size，布局不变；
 - 容器 `VTX1`：32 字节 header（格式码、texel 尺寸、natural size、字节数）+ texel，texel 偏移 32、相对 blob 8 字节对齐；runtime 读 header 后借用 texel（`AssetBytes::Static` 直接交给 `create_texture_static`，`CpuRaster` 在 flash/binary 原地采样，不复制），无解码；
 - 设备不采样该格式（`Caps::samples` / `SampledFormats`）时，asset worker 用同一软件解码器解为 RGBA8 再上传——转换永远不让图像不可显示；
-- 全部转换后 facade 不链接对应解码器：board 上 `VISO_IMAGES_CONVERTED=raster`（`cfg(viso_converted_rasters)`，无 PNG/JPEG 解码），`svg = "raster"` 时 `svg`（`cfg(viso_converted_svg)`，无 SVG 解析/lower）；
+- 全部转换后 facade 不链接对应解码器：board 上 `VISO_IMAGES_CONVERTED=raster`（`cfg(viso_converted_rasters)`，无 raster 解码；有动图原样嵌入时不设），`svg = "raster"` 时 `svg`（`cfg(viso_converted_svg)`，无 SVG 解析/lower）；
 - SVG 默认在构建期解析，运行时 lower 为 primitive 流（`viso-svg`）；
 - 字体子集与 baked atlas 见 §37.8；
 - 转换结果进入 AOT package，可以 XIP 读取（§50A.6）。

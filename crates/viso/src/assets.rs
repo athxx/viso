@@ -129,7 +129,7 @@ impl Worker {
 /// `sampled` decoded on to RGBA8.
 ///
 /// A build whose images were all converted links no decoder for what it
-/// never ships: no PNG and JPEG decoder (`viso_converted_rasters`), no SVG
+/// never ships: no raster decoder (`viso_converted_rasters`), no SVG
 /// parser (`viso_converted_svg`); such a file is reported as not decoding.
 pub(crate) fn decode(
     bytes: &AssetBytes,
