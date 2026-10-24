@@ -11,9 +11,9 @@ use viso_ui::{
 
 use super::state::{Level, MarkCell, MenuHandle, MenuState, Row, Start};
 use super::{Close, Mark, MenuEntry, MenuItem, MenuStyle};
-use crate::controls::glyphs::{check, chevron_end, dot, glyph_slot};
 use crate::controls::mnemonic::Mnemonic;
 use crate::label;
+use viso_ui::glyphs::{check, chevron_end, dot, glyph_slot};
 
 /// The menu state the handlers built before it reach.
 type Shared = Rc<OnceCell<Rc<MenuState>>>;

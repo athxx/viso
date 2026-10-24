@@ -329,6 +329,49 @@ const picked = (el) => {
   const alpha = !a || a.hidden ? 255 : Math.round(Math.min(Math.max(Number(a.value), 0), 1) * 255);
   return BigInt(((rgb << 8) | alpha) >>> 0);
 };
+// A combo box's or a search field's input and list, the list given an id of
+// its own the first time, so copies of one template each keep theirs.
+let lists = 0;
+const listed = (el) => {
+  const input = el.querySelector("input"), list = el.querySelector("datalist");
+  if (list && !el.$listed) {
+    el.$listed = true;
+    list.id = "vx-listed-" + ++lists;
+    input.setAttribute("list", list.id);
+  }
+  return [input, list];
+};
+// Whether a combo box offers `text`.
+const offered = (el, text) => [...(listed(el)[1]?.options ?? [])].some((o) => o.value === text);
+// A search field's typing: each query once the typing rests for its
+// debounce, at once when emptied or on Enter, as a `viso-query`; Enter and
+// a suggestion taken submit it, as a `viso-submit`.
+const searching = (el) => {
+  if (el.$searching) return;
+  el.$searching = true;
+  const [input] = listed(el);
+  let wait;
+  const report = () => {
+    clearTimeout(wait);
+    wait = undefined;
+    el.dispatchEvent(new CustomEvent("viso-query", { detail: input.value }));
+  };
+  const submit = () => el.dispatchEvent(new CustomEvent("viso-submit"));
+  input.addEventListener("input", (e) => {
+    clearTimeout(wait);
+    const ms = Number(el.dataset.debounce || 0);
+    // A suggestion taken replaces the text whole.
+    const taken = !(e instanceof InputEvent) || e.inputType === "insertReplacementText";
+    if (taken && input.value) { report(); submit(); }
+    else if (!ms || !input.value) report();
+    else wait = setTimeout(report, ms);
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || e.repeat || e.isComposing) return;
+    if (wait !== undefined) report();
+    submit();
+  });
+};
 // A knob's fill and pointer at its value's fraction of its range.
 const knob = (el) => {
   if (!el.classList.contains("vx-knob")) return;
@@ -546,6 +589,27 @@ const P = {
     const n = Number(BigInt.asUintN(32, v));
     if (c) c.value = "#" + (n >>> 8).toString(16).padStart(6, "0");
     if (a) a.value = String((n & 255) / 255);
+  },
+  // A combo box's or a search field's text, placeholder, name, the labels
+  // its list offers, whether a combo box takes any text, or how long a
+  // search field waits.
+  listed(el, v, name) {
+    const [input, list] = listed(el);
+    const text = v === null ? null : String(v);
+    if (name === "options") {
+      list?.replaceChildren(...(Array.isArray(v) ? v : []).map((label) => {
+        const o = document.createElement("option");
+        o.value = String(label);
+        return o;
+      }));
+    } else if (name === "free") attr(el, "data-free", truth(v) ? "true" : null);
+    else if (name === "debounce") attr(el, "data-debounce", v === null ? null : String(Number(v) * 1000));
+    else if (name === "placeholder") attr(input, "placeholder", text);
+    else if (name === "label") attr(input, "aria-label", text);
+    else {
+      el.$held = text ?? "";
+      if (input.value !== el.$held) input.value = el.$held;
+    }
   },
   // A stepper's number, bounds, step, wrap or tint: the halves that can
   // step no further are spent.
@@ -1770,6 +1834,23 @@ const listen = (el, route, capture, control, fire) => {
     }
     else if (control === 1 || control === 30) el.addEventListener("input", () => { knob(el); fire(rec([Number(el.value)])); }, capture);
     else if (control === 31) el.addEventListener("input", (e) => { if (e.target !== el) fire(rec([picked(el)])); }, capture);
+    else if (control === 32) {
+      // Free text is taken on Enter or as the focus leaves; otherwise only
+      // an option is, and any other text goes back to the one held.
+      const [input] = listed(el);
+      const take = () => { el.$held = input.value; fire(rec([input.value])); };
+      input.addEventListener("input", () => {
+        if (el.dataset.free !== "true" && offered(el, input.value)) take();
+      }, capture);
+      input.addEventListener("change", () => {
+        if (el.dataset.free === "true") { if (input.value !== (el.$held ?? input.defaultValue)) take(); }
+        else if (!offered(el, input.value)) input.value = el.$held ?? input.defaultValue;
+      }, capture);
+    }
+    else if (control === 33) {
+      searching(el);
+      el.addEventListener("viso-query", (e) => fire(rec([e.detail])), capture);
+    }
     else if (control === 13) {
       // Each number the text reads as within the bounds; Enter and the
       // focus leaving settle the text, the arrows step it.
@@ -1790,6 +1871,9 @@ const listen = (el, route, capture, control, fire) => {
       }, capture);
     }
     else el.addEventListener("input", () => fire(rec([el.value])), capture);
+  } else if (route === 10 && control === 33) {
+    searching(el);
+    el.addEventListener("viso-submit", () => fire(null), capture);
   } else if (route === 10) {
     el.addEventListener("keydown", live((e) => {
       if (e.key === "Enter" && !e.repeat && !e.isComposing) fire(null);

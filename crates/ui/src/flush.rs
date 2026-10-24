@@ -115,7 +115,7 @@ pub fn settle_states(
     let mut rounds = 0;
     store.sync_interactions(states);
     store.settle_frame_clients(states);
-    while states.has_pending() || store.has_pending_effects() {
+    while states.has_pending() || store.has_pending_effects() || store.has_pending_projections() {
         changed.clear();
         states.take_pending(changed);
         if rounds == SETTLE_ROUNDS {
@@ -133,6 +133,7 @@ pub fn settle_states(
         store.flush_state_transactions(changed, bindings);
         run_structure_hooks(store, states, bindings, effects, lists, changed);
         projectors.wake(changed, states, store);
+        projectors.adopt(states, store);
         // The effects the commit mounted queue first, then those it woke;
         // they run after the frame presents (`run_effects`).
         effects.adopt(store);

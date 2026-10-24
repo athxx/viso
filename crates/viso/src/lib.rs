@@ -438,6 +438,13 @@ pub mod __test_support {
             ws.text_edits.get(node).map(|b| b.text.as_str())
         }
 
+        /// The text text field `node` in the launch window holds, focused or
+        /// not.
+        pub fn field_text(&self, node: super::NodeId) -> Option<&str> {
+            let ws = &self.driver.windows[0];
+            ws.text_edits.get(node).map(|b| b.text.as_str())
+        }
+
         /// The selection of the focused text control in the launch window, as
         /// a byte range of its text.
         pub fn focused_selection(&self) -> Option<(usize, usize)> {

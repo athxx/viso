@@ -201,9 +201,11 @@ Rules:
   immediate or debounced `on_change`, a pooled anchored suggestion list with the query's
   letters in bold, arrows/Enter/click to take one, Escape closes then clears,
   `searchfield` semantics with expanded + active descendant.
-- [ ] DSL nodes for the list-backed fields — `ComboBox`, `SearchField` (children as
-  suggestions, two-way `value`, `changed`/`submitted`) — and their HTML export
-  (`<input type="search">`, `role=combobox` with a listbox).
+- [x] DSL nodes for the list-backed fields — `ComboBox`, `SearchField` (a typed
+  `options`/`suggestions: List<String>`, two-way `value`, `changed`/`submitted`) — and
+  their HTML export (`<input type="search">`, `role=combobox`, each over a `<datalist>`):
+  the fields' logic moves to shared `viso_ui::combo_box`/`search_field` parts written
+  through `PartWrites`, so a view's delivery drives them as a handler does.
 - [x] DSL `ColorPicker` node (two-way colour `value`, `alpha`, `wheel`, `changed`) and its
   HTML export (`<input type="color">` plus an opacity range): the picker's parts move to a
   shared `viso_ui::color_picker` the widget and the node both build, the node's parts

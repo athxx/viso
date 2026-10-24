@@ -131,11 +131,21 @@ pub enum ControlKind {
     /// `alpha`) and a hex field, parts the framework builds inside it.
     /// Reports each colour picked.
     ColorPicker = 31,
+    /// `ComboBox`: a text field over a list of its `options` it filters as
+    /// the user types, choosing one of them or, with `free_text`, taking
+    /// any text; parts the framework builds inside it. Reports each value
+    /// it takes.
+    ComboBox = 32,
+    /// `SearchField`: a text field that reports its query as the user
+    /// types, after a `debounce`, and shows its `suggestions` below it;
+    /// parts the framework builds inside it. Reports each query, and a
+    /// search submitted by Enter or a suggestion chosen.
+    SearchField = 33,
 }
 
 impl ControlKind {
     /// Every kind, by discriminant.
-    pub const ALL: [ControlKind; 32] = [
+    pub const ALL: [ControlKind; 34] = [
         ControlKind::Check,
         ControlKind::Slider,
         ControlKind::Select,
@@ -168,6 +178,8 @@ impl ControlKind {
         ControlKind::Segmented,
         ControlKind::Knob,
         ControlKind::ColorPicker,
+        ControlKind::ComboBox,
+        ControlKind::SearchField,
     ];
 
     /// The kind native widget `widget` is.
@@ -204,6 +216,8 @@ impl ControlKind {
             "SegmentedControl" => ControlKind::Segmented,
             "Knob" => ControlKind::Knob,
             "ColorPicker" => ControlKind::ColorPicker,
+            "ComboBox" => ControlKind::ComboBox,
+            "SearchField" => ControlKind::SearchField,
             _ => ControlKind::Plain,
         }
     }
@@ -241,13 +255,18 @@ impl ControlKind {
                 | ControlKind::Badge
                 | ControlKind::Avatar
                 | ControlKind::ColorPicker
+                | ControlKind::ComboBox
+                | ControlKind::SearchField
         )
     }
 
     /// Whether the node's parts are the framework's, built inside it: they
     /// respond, and report what the node reports.
     pub fn builds_parts(self) -> bool {
-        self == ControlKind::ColorPicker
+        matches!(
+            self,
+            ControlKind::ColorPicker | ControlKind::ComboBox | ControlKind::SearchField
+        )
     }
 
     /// Whether a node of the kind needs its control even reading nothing: it
@@ -265,6 +284,8 @@ impl ControlKind {
                     | ControlKind::Badge
                     | ControlKind::Avatar
                     | ControlKind::ColorPicker
+                    | ControlKind::ComboBox
+                    | ControlKind::SearchField
             )
     }
 
@@ -284,14 +305,17 @@ impl ControlKind {
                     | ControlKind::Number
                     | ControlKind::Chip
                     | ControlKind::Stepper
-                    | ControlKind::ColorPicker,
+                    | ControlKind::ColorPicker
+                    | ControlKind::ComboBox
+                    | ControlKind::SearchField,
                 EventRoute::Changed
-            ) | (ControlKind::TextInput, EventRoute::Submitted)
-                | (
-                    ControlKind::Select | ControlKind::Segmented,
-                    EventRoute::SelectedChanged
-                )
-                | (ControlKind::Pages, EventRoute::CurrentChanged)
+            ) | (
+                ControlKind::TextInput | ControlKind::SearchField,
+                EventRoute::Submitted
+            ) | (
+                ControlKind::Select | ControlKind::Segmented,
+                EventRoute::SelectedChanged
+            ) | (ControlKind::Pages, EventRoute::CurrentChanged)
                 | (ControlKind::Sheet, EventRoute::DetentChanged)
                 | (ControlKind::Button | ControlKind::Chip, EventRoute::Click)
                 | (ControlKind::Chip, EventRoute::Removed)
@@ -419,12 +443,27 @@ impl ControlKind {
             | (ControlKind::Slider | ControlKind::Knob | ControlKind::ColorPicker, "value")
             | (ControlKind::Select | ControlKind::Segmented, "selected")
             | (ControlKind::Pages, "current")
-            | (ControlKind::TextInput | ControlKind::Number, "value")
+            | (
+                ControlKind::TextInput
+                | ControlKind::Number
+                | ControlKind::ComboBox
+                | ControlKind::SearchField,
+                "value",
+            )
             | (ControlKind::Label | ControlKind::Button, "text")
             | (ControlKind::Asset, "source")
             | (ControlKind::Shader, "shader")
             | (ControlKind::Viewport, "camera") => ControlInput::Value,
-            (ControlKind::TextInput, "placeholder") => ControlInput::Placeholder,
+            (
+                ControlKind::TextInput | ControlKind::ComboBox | ControlKind::SearchField,
+                "placeholder",
+            ) => ControlInput::Placeholder,
+            (ControlKind::ComboBox, "options") | (ControlKind::SearchField, "suggestions") => {
+                ControlInput::Options
+            }
+            (ControlKind::ComboBox, "free_text") => ControlInput::FreeText,
+            (ControlKind::ComboBox, "empty_text") => ControlInput::EmptyText,
+            (ControlKind::SearchField, "debounce") => ControlInput::Debounce,
             (ControlKind::TextInput, "secure") => ControlInput::Secure,
             (ControlKind::TextInput, "multiline") => ControlInput::Multiline,
             (ControlKind::TextInput, "input") => ControlInput::InputKind,
@@ -456,7 +495,9 @@ impl ControlKind {
                 | ControlKind::Spinner
                 | ControlKind::Badge
                 | ControlKind::Stepper
-                | ControlKind::ColorPicker,
+                | ControlKind::ColorPicker
+                | ControlKind::ComboBox
+                | ControlKind::SearchField,
                 "label",
             ) => ControlInput::Caption,
             (ControlKind::ColorPicker, "alpha") => ControlInput::Alpha,
@@ -540,6 +581,8 @@ impl ControlKind {
             ControlKind::Segmented => "Segmented",
             ControlKind::Knob => "Knob",
             ControlKind::ColorPicker => "ColorPicker",
+            ControlKind::ComboBox => "ComboBox",
+            ControlKind::SearchField => "SearchField",
         }
     }
 
@@ -1053,6 +1096,16 @@ pub enum ControlInput {
     Alpha,
     /// A colour picker's `wheel`: whether its hue goes round a ring.
     Wheel,
+    /// A combo box's `options` or a search field's `suggestions`: the
+    /// labels its list shows.
+    Options,
+    /// A combo box's `free_text`: whether it takes any text.
+    FreeText,
+    /// A combo box's `empty_text`: what its list says when nothing matches.
+    EmptyText,
+    /// A search field's `debounce`: how long the typing rests before the
+    /// query is reported.
+    Debounce,
 }
 
 /// A view-driven native node: its kind and the handler-table entries that
@@ -1108,6 +1161,14 @@ pub struct Control {
     pub alpha: Option<u32>,
     /// The entry of whether a colour picker's hue goes round a ring.
     pub wheel: Option<u32>,
+    /// The entry of the labels a combo box's or a search field's list shows.
+    pub options: Option<u32>,
+    /// The entry of whether a combo box takes any text.
+    pub free_text: Option<u32>,
+    /// The entry of what a combo box's list says when nothing matches.
+    pub empty_text: Option<u32>,
+    /// The entry of how long a search field's typing rests before it reports.
+    pub debounce: Option<u32>,
     /// The shader a shader view paints with, by its index in the view's
     /// shader table; its value gives the shader's parameters.
     pub shader: Option<u32>,
@@ -1295,7 +1356,7 @@ pub enum Switched {
 
 impl ControlInput {
     /// Every input, by wire tag.
-    pub const ALL: [ControlInput; 73] = [
+    pub const ALL: [ControlInput; 77] = [
         ControlInput::Value,
         ControlInput::Min,
         ControlInput::Max,
@@ -1369,6 +1430,10 @@ impl ControlInput {
         ControlInput::Axis,
         ControlInput::Alpha,
         ControlInput::Wheel,
+        ControlInput::Options,
+        ControlInput::FreeText,
+        ControlInput::EmptyText,
+        ControlInput::Debounce,
     ];
 
     /// Its wire tag: its place in [`ControlInput::ALL`].
@@ -1470,6 +1535,10 @@ impl Control {
             axis: None,
             alpha: None,
             wheel: None,
+            options: None,
+            free_text: None,
+            empty_text: None,
+            debounce: None,
             shader: None,
             look: Look::default(),
             arms: Box::new([]),
@@ -1561,6 +1630,10 @@ impl Control {
             ControlInput::Axis => self.axis,
             ControlInput::Alpha => self.alpha,
             ControlInput::Wheel => self.wheel,
+            ControlInput::Options => self.options,
+            ControlInput::FreeText => self.free_text,
+            ControlInput::EmptyText => self.empty_text,
+            ControlInput::Debounce => self.debounce,
         }
     }
 
@@ -1650,6 +1723,10 @@ impl Control {
             ControlInput::Axis => &mut self.axis,
             ControlInput::Alpha => &mut self.alpha,
             ControlInput::Wheel => &mut self.wheel,
+            ControlInput::Options => &mut self.options,
+            ControlInput::FreeText => &mut self.free_text,
+            ControlInput::EmptyText => &mut self.empty_text,
+            ControlInput::Debounce => &mut self.debounce,
         };
         *slot = Some(entry);
     }
@@ -1686,6 +1763,10 @@ impl Encode for Control {
             self.axis,
             self.alpha,
             self.wheel,
+            self.options,
+            self.free_text,
+            self.empty_text,
+            self.debounce,
             self.shader,
             look.background,
             look.opacity,
@@ -1818,6 +1899,10 @@ impl Decode for Control {
             axis: entry()?,
             alpha: entry()?,
             wheel: entry()?,
+            options: entry()?,
+            free_text: entry()?,
+            empty_text: entry()?,
+            debounce: entry()?,
             shader: entry()?,
             look: Look {
                 background: entry()?,
@@ -2115,6 +2200,10 @@ mod tests {
             axis: Some(40),
             alpha: Some(41),
             wheel: Some(42),
+            options: Some(43),
+            free_text: Some(44),
+            empty_text: Some(45),
+            debounce: Some(46),
             shader: Some(2),
             look: Look {
                 background: Some(3),

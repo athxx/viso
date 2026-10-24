@@ -70,7 +70,7 @@ impl Drive for Control {
             ControlKind::Sheet => sheet(self, host, scope, cx),
             ControlKind::Slider | ControlKind::Knob => slider(self, host, scope, cx),
             // Its parts respond, and report through the host.
-            ControlKind::ColorPicker => None,
+            ControlKind::ColorPicker | ControlKind::ComboBox | ControlKind::SearchField => None,
             ControlKind::Select | ControlKind::Segmented => select(self, host, scope, cx),
             ControlKind::Pages => pages(self, host, scope, cx),
             ControlKind::TextInput => text_input(self, host, scope, cx),

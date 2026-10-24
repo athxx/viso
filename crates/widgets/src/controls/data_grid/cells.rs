@@ -12,8 +12,8 @@ use viso_ui::{
 };
 
 use super::{Grid, GridSelect, Pending, RowCells, columns};
-use crate::controls::glyphs::{chevron_down, chevron_up, glyph_slot};
 use crate::text::label;
+use viso_ui::glyphs::{chevron_down, chevron_up, glyph_slot};
 
 /// The line under each row.
 const LINE: f32 = 1.0;

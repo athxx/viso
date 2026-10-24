@@ -54,8 +54,7 @@ use viso_ui::{
 };
 
 use super::calendar::{Calendar, CalendarStyle, DateNames, Month, calendar};
-use super::glyphs::calendar_glyph;
-use super::select::unhit_below;
+use viso_ui::glyphs::calendar_glyph;
 
 /// What runs with a picked date.
 type SharedChange = Rc<RefCell<Option<Box<dyn FnMut(&mut EventCx<'_>, Date)>>>>;
@@ -348,7 +347,7 @@ impl Component for DatePicker {
                         calendar_glyph(cx, style.quiet);
                     },
                 );
-                unhit_below(cx, field.id());
+                cx.unhit_below(field);
                 let mut month = None;
                 let panel = cx.flex(
                     FlexStyle {

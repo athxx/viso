@@ -1,16 +1,16 @@
 //! The small drawn glyphs controls show: checks, chevrons, a radio's dot, a
 //! magnifier and a cross.
 
-use viso_ui::{
+use crate::{
     Align, Axis, BoxStyle, BuildCx, FlexStyle, Handle, Justify, LeafStyle, LineCap, LineJoin,
     PathCmd, Point, Rgba, Size, Stroke, Vec2,
 };
 
 /// The side of a glyph's box.
-pub(crate) const GLYPH: f32 = 16.0;
+pub const GLYPH: f32 = 16.0;
 
 /// A box of a glyph's side, `inner` centred in it.
-pub(crate) fn glyph_slot(cx: &mut BuildCx<'_>, inner: impl FnOnce(&mut BuildCx<'_>)) -> Handle {
+pub fn glyph_slot(cx: &mut BuildCx<'_>, inner: impl FnOnce(&mut BuildCx<'_>)) -> Handle {
     cx.flex(
         FlexStyle {
             axis: Axis::Row,
@@ -38,7 +38,7 @@ fn stroked(cx: &mut BuildCx<'_>, cmds: Vec<PathCmd>, ink: Rgba, width: f32) -> H
 }
 
 /// A check mark.
-pub(crate) fn check(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
+pub fn check(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
     let cmds = vec![
         PathCmd::MoveTo(Point::new(3.5, 8.5)),
         PathCmd::LineTo(Point::new(6.5, 11.5)),
@@ -48,7 +48,7 @@ pub(crate) fn check(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
 }
 
 /// A chevron pointing toward the end of lines: a submenu's.
-pub(crate) fn chevron_end(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
+pub fn chevron_end(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
     let cmds = vec![
         PathCmd::MoveTo(Point::new(6.0, 4.0)),
         PathCmd::LineTo(Point::new(10.0, 8.0)),
@@ -58,7 +58,7 @@ pub(crate) fn chevron_end(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
 }
 
 /// A chevron pointing toward the start of lines: back.
-pub(crate) fn chevron_start(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
+pub fn chevron_start(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
     let cmds = vec![
         PathCmd::MoveTo(Point::new(10.0, 4.0)),
         PathCmd::LineTo(Point::new(6.0, 8.0)),
@@ -68,7 +68,7 @@ pub(crate) fn chevron_start(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
 }
 
 /// A page of a calendar: a date's field.
-pub(crate) fn calendar_glyph(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
+pub fn calendar_glyph(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
     let cmds = vec![
         PathCmd::MoveTo(Point::new(3.0, 4.0)),
         PathCmd::LineTo(Point::new(13.0, 4.0)),
@@ -86,7 +86,7 @@ pub(crate) fn calendar_glyph(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
 }
 
 /// A chevron pointing down: a list that opens below.
-pub(crate) fn chevron_down(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
+pub fn chevron_down(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
     let cmds = vec![
         PathCmd::MoveTo(Point::new(4.0, 6.0)),
         PathCmd::LineTo(Point::new(8.0, 10.0)),
@@ -96,7 +96,7 @@ pub(crate) fn chevron_down(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
 }
 
 /// A chevron pointing up: a column sorted ascending.
-pub(crate) fn chevron_up(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
+pub fn chevron_up(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
     let cmds = vec![
         PathCmd::MoveTo(Point::new(4.0, 10.0)),
         PathCmd::LineTo(Point::new(8.0, 6.0)),
@@ -106,7 +106,7 @@ pub(crate) fn chevron_up(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
 }
 
 /// Two chevrons, up over down: a list that opens over its button.
-pub(crate) fn chevrons_up_down(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
+pub fn chevrons_up_down(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
     let cmds = vec![
         PathCmd::MoveTo(Point::new(5.0, 6.0)),
         PathCmd::LineTo(Point::new(8.0, 3.0)),
@@ -148,7 +148,7 @@ fn circle(x: f32, y: f32, r: f32) -> [PathCmd; 6] {
 }
 
 /// A radio item's dot: a filled circle.
-pub(crate) fn dot(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
+pub fn dot(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
     let leaf = cx.leaf(LeafStyle {
         size: Size::fixed(GLYPH, GLYPH),
         style: BoxStyle::NONE,
@@ -159,7 +159,7 @@ pub(crate) fn dot(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
 }
 
 /// A magnifier: a lens with its handle toward the bottom end.
-pub(crate) fn magnifier(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
+pub fn magnifier(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
     let mut cmds = circle(7.0, 7.0, 4.5).to_vec();
     cmds.extend([
         PathCmd::MoveTo(Point::new(10.4, 10.4)),
@@ -169,7 +169,7 @@ pub(crate) fn magnifier(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
 }
 
 /// A cross: what closes a tab.
-pub(crate) fn cross(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
+pub fn cross(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
     let (a, b) = (GLYPH * 0.5 - 3.5, GLYPH * 0.5 + 3.5);
     let cmds = vec![
         PathCmd::MoveTo(Point::new(a, a)),
@@ -181,7 +181,7 @@ pub(crate) fn cross(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
 }
 
 /// A cross on a filled disc: what clears a field.
-pub(crate) fn clear(cx: &mut BuildCx<'_>, disc: Rgba, ink: Rgba) -> Handle {
+pub fn clear(cx: &mut BuildCx<'_>, disc: Rgba, ink: Rgba) -> Handle {
     cx.flex(
         FlexStyle {
             axis: Axis::Row,

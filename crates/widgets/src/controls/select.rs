@@ -41,9 +41,9 @@ use viso_ui::{
     TextRequest, TextStyle, Vec2, primary_is_logo,
 };
 
-use super::glyphs::{GLYPH, check, chevron_down, chevrons_up_down, glyph_slot};
 use super::menu::TYPE_AHEAD;
 use crate::label;
+use viso_ui::glyphs::{GLYPH, check, chevron_down, chevrons_up_down, glyph_slot};
 
 /// How far a release lands from the press that opened the list before it
 /// chooses: closer, it is the click that opened it.
@@ -420,7 +420,7 @@ fn build(cx: &mut BuildCx<'_>, select: &Select) -> Rc<SelectState> {
                     }
                 },
             );
-            unhit_below(cx, field.id());
+            cx.unhit_below(field);
             let (panel, scroller, rows) = panel(cx, select, field, chosen, chosen_cell, &shared);
             parts = Some((field, text.expect("built"), panel, scroller, rows));
         },
@@ -475,17 +475,6 @@ fn build(cx: &mut BuildCx<'_>, select: &Select) -> Rc<SelectState> {
     });
     let _ = shared.set(Rc::clone(&state));
     state
-}
-
-/// Make everything below `node` let the pointer through to it.
-pub(super) fn unhit_below(cx: &mut BuildCx<'_>, node: NodeId) {
-    cx.structure(|s| {
-        let mut stack: Vec<NodeId> = s.store.arena().children(node).collect();
-        while let Some(id) = stack.pop() {
-            s.store.set_hittable(id, false);
-            stack.extend(s.store.arena().children(id));
-        }
-    });
 }
 
 /// Build the list's panel against `field`: returns it, its scroll viewport
@@ -639,7 +628,7 @@ fn row(
                 .build_node(cx);
         },
     );
-    unhit_below(cx, node.id());
+    cx.unhit_below(node);
     if !option.enabled {
         cx.structure(|s| {
             s.store.set_enabled(node.id(), false);

@@ -2215,3 +2215,47 @@ fn a_colour_picker_exports_as_a_colour_input_and_an_opacity_range() {
     let script = page.script.as_deref().unwrap();
     assert!(script.contains("P.picker("), "{script}");
 }
+
+const LISTED: &str = r##"
+export component Find {
+    state fruit = "Cherry";
+    state query = "";
+    state hits: List<String> = [];
+    view {
+        Column {
+            ComboBox {
+                label: "Fruit";
+                options: ["Apple", "Banana", "Cherry"];
+                bind value <=> fruit;
+            }
+            ComboBox { label: "City"; free_text: true; placeholder: "Where"; options: ["Bern"]; }
+            SearchField {
+                label: "Find";
+                debounce: 250ms;
+                suggestions: hits;
+                bind value <=> query;
+                on submitted { query = ""; }
+            }
+        }
+    }
+}
+"##;
+
+#[test]
+fn combo_boxes_and_search_fields_export_as_inputs_over_a_datalist() {
+    let page = export(LISTED, false).unwrap();
+    let index = &page.index;
+    assert_eq!(index.matches("role=\"combobox\"").count(), 2, "{index}");
+    assert_eq!(index.matches("type=\"search\"").count(), 1, "{index}");
+    assert_eq!(index.matches("<datalist").count(), 3, "{index}");
+    assert!(index.contains("value=\"Cherry\""), "{index}");
+    assert!(index.contains("<option value=\"Banana\">"), "{index}");
+    assert!(index.contains("aria-label=\"Fruit\""), "{index}");
+    assert!(index.contains("placeholder=\"Where\""), "{index}");
+    assert!(index.contains("placeholder=\"Search\""), "{index}");
+    assert!(index.contains("data-free=\"true\""), "{index}");
+    assert!(index.contains("data-debounce=\"250\""), "{index}");
+    assert!(page.styles.contains(".vx-combo"), "{}", page.styles);
+    let script = page.script.as_deref().unwrap();
+    assert!(script.contains("P.listed("), "{script}");
+}

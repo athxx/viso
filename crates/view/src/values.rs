@@ -25,8 +25,9 @@
 
 use std::cell::RefCell;
 use std::collections::HashSet;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::sync::Arc;
+use std::time::Duration;
 
 use viso_behavior::{Fault, FaultKind, Value};
 use viso_schema::view::route::EventRoute;
@@ -34,9 +35,11 @@ use viso_ui::color_picker::{
     ColorPickerParts, ColorPickerStyle, DEFAULT_COLOR, PickSink, PickerSpec,
 };
 use viso_ui::color_plane::rgba32;
+use viso_ui::combo_box::{ComboOption, ComboParts, ComboSpec, Commit, Pick};
 use viso_ui::content::Content;
 use viso_ui::plate::{BADGE_FILL, BADGE_INK, avatar_fill, badge_count, initials};
 use viso_ui::resource::{ResourceId, ResourceRevision};
+use viso_ui::search_field::{Report as SearchReport, SearchParts, SearchSpec};
 use viso_ui::segments::Segments;
 use viso_ui::shader::BrushProgram;
 use viso_ui::slider::{Slider as SliderMark, SliderRange, SliderShape};
@@ -289,6 +292,10 @@ pub(crate) fn control_cells(
         control.axis,
         control.alpha,
         control.wheel,
+        control.options,
+        control.free_text,
+        control.empty_text,
+        control.debounce,
     ])
     .flatten()
     .chain(arms)
@@ -313,8 +320,10 @@ pub(crate) fn control_cells(
 /// `access_key`, its `drag_axis`, a viewer's `pan_margin`, and its `drag`,
 /// `drag_kind`, `drop_accepts` and `drop_operation`, a link label's `url`
 /// a chip's `removable`, a stepper's `wrap`, a slider's `origin`, `marks`
-/// and `axis`, and a colour picker's `alpha` and `wheel`.
-const SHOWN: usize = 64;
+/// and `axis`, a colour picker's `alpha` and `wheel`, and a combo box's
+/// `options`, `free_text` and `empty_text` — a search field's `suggestions`
+/// are its `options` — and a search field's `debounce`.
+const SHOWN: usize = 68;
 
 /// The input of each value a node shows, in order.
 const SHOWN_INPUTS: [ControlInput; SHOWN] = [
@@ -382,6 +391,10 @@ const SHOWN_INPUTS: [ControlInput; SHOWN] = [
     ControlInput::Axis,
     ControlInput::Alpha,
     ControlInput::Wheel,
+    ControlInput::Options,
+    ControlInput::FreeText,
+    ControlInput::EmptyText,
+    ControlInput::Debounce,
 ];
 
 /// Where its `translate` sits among the values a node shows.
@@ -436,6 +449,10 @@ const WRAP: usize = 58;
 /// node shows.
 const SLIDE: usize = 59;
 
+/// Where a combo box's `options`, `free_text` and `empty_text` and a search
+/// field's `debounce` sit among the values a node shows.
+const LISTED: usize = 64;
+
 /// Where its `drag`, `drag_kind`, `drop_accepts` and `drop_operation` sit
 /// among the values a node shows.
 const CARRY: usize = 52;
@@ -485,8 +502,8 @@ pub(crate) struct Shown {
     /// first delivery and after a hot reload, which restyles the node from
     /// its constants and so wants each of them again.
     laid: Option<Box<[Value]>>,
-    /// A colour picker's parts, once built inside it.
-    parts: Option<ColorPickerParts>,
+    /// The parts the framework builds inside it, once built.
+    parts: Option<Parts>,
 }
 
 impl Shown {
@@ -669,6 +686,10 @@ impl Shown {
             axis,
             alpha,
             wheel,
+            options,
+            free_text,
+            empty_text,
+            debounce,
         ] = &shows;
         let access_key = access_key.as_str().and_then(|key| key.chars().next());
         let spanned = crate::text_style::spans(pieces);
@@ -762,9 +783,56 @@ impl Shown {
             | ControlKind::Number => move_of(TEXT, look.color_transition.filter(|_| given(TEXT))),
             _ => None,
         };
-        if control.kind == ControlKind::ColorPicker {
-            let (alpha, wheel) = (truth(alpha, true), truth(wheel, false));
-            show_picker(&mut self.parts, self.node, cx, host, value, alpha, wheel);
+        match control.kind {
+            ControlKind::ColorPicker => {
+                let (alpha, wheel) = (truth(alpha, true), truth(wheel, false));
+                show_picker(&mut self.parts, self.node, cx, host, value, alpha, wheel);
+            }
+            ControlKind::ComboBox => {
+                // Its parts are built again when what they are built from
+                // changes.
+                let stale = [FIELD, FIELD + 7]
+                    .into_iter()
+                    .chain(LISTED..LISTED + 3)
+                    .any(changed);
+                let spec = ComboSpec {
+                    options: labels(options).into_iter().map(ComboOption::new).collect(),
+                    free: truth(free_text, false),
+                    placeholder: placeholder.as_str().unwrap_or_default().to_owned(),
+                    empty: empty_text
+                        .as_str()
+                        .map_or_else(|| ComboSpec::default().empty, str::to_owned),
+                    label: caption.as_str().map(str::to_owned),
+                    ..ComboSpec::default()
+                };
+                show_combo(&mut self.parts, self.node, cx, host, spec, stale, value);
+            }
+            ControlKind::SearchField => {
+                let stale = [FIELD, FIELD + 7, LISTED + 3].into_iter().any(changed);
+                let spec = SearchSpec {
+                    placeholder: placeholder
+                        .as_str()
+                        .map_or_else(|| SearchSpec::default().placeholder, str::to_owned),
+                    label: caption.as_str().map(str::to_owned),
+                    debounce: debounce
+                        .as_float()
+                        .and_then(|s| Duration::try_from_secs_f64(s).ok())
+                        .unwrap_or_default(),
+                    ..SearchSpec::default()
+                };
+                let suggestions = changed(LISTED).then(|| labels(options));
+                show_search(
+                    &mut self.parts,
+                    self.node,
+                    cx,
+                    host,
+                    spec,
+                    stale,
+                    value,
+                    suggestions,
+                );
+            }
+            _ => {}
         }
         let store = &mut *cx.store;
         // A dialog or a toast is a layer that shows while open; a dialog
@@ -963,7 +1031,9 @@ impl Shown {
             | ControlKind::Dialog
             | ControlKind::Sheet
             | ControlKind::Toast
-            | ControlKind::ColorPicker => {}
+            | ControlKind::ColorPicker
+            | ControlKind::ComboBox
+            | ControlKind::SearchField => {}
             // A viewer clips its content unless its `clip` says, and keeps
             // the content within its limits as they change.
             ControlKind::Viewer => {
@@ -1599,7 +1669,7 @@ pub(crate) fn resource(value: &Value) -> Option<ResourceId> {
 /// unless the colour it holds already reads as it. Each colour picked runs
 /// the node's `changed` routes in `host`.
 fn show_picker(
-    parts: &mut Option<ColorPickerParts>,
+    parts: &mut Option<Parts>,
     node: NodeId,
     cx: &mut StructureCx<'_>,
     host: &mut ViewHost,
@@ -1609,16 +1679,12 @@ fn show_picker(
 ) {
     let held = value.as_int().map(|c| c as u32);
     let at = |c: u32| Srgb::from_rgba32(c).into_linear_straight();
-    let live = parts.as_ref().is_some_and(|p| {
-        let column = p.column().id();
-        cx.store.arena().is_live(column) && cx.store.parent(column) == Some(node)
-    });
-    let built = match parts.as_ref().filter(|_| live) {
-        Some(built) => {
+    let built = match parts.as_ref().filter(|p| p.live(node, cx.store)) {
+        Some(Parts::Picker(built)) => {
             built.configure(cx, alpha, wheel);
             built.clone()
         }
-        None => {
+        _ => {
             host.prune_sinks(|n| cx.store.arena().is_live(n));
             let this = host.this.clone();
             let sink: PickSink = Box::new(move |ev, color| {
@@ -1650,7 +1716,7 @@ fn show_picker(
             };
             let mut build = BuildCx::with_parent(cx.store, cx.states, cx.bindings, node);
             let built = ColorPickerParts::build(&mut build, spec, Some(sink));
-            *parts = Some(built.clone());
+            *parts = Some(Parts::Picker(built.clone()));
             built
         }
     };
@@ -1658,6 +1724,179 @@ fn show_picker(
         && rgba32(built.color(cx)) != held
     {
         built.show_color(cx, at(held));
+    }
+}
+
+/// The parts the framework builds inside a node.
+#[derive(Clone)]
+enum Parts {
+    Picker(ColorPickerParts),
+    Combo(ComboParts),
+    Search(SearchParts),
+}
+
+impl Parts {
+    /// Their column.
+    fn root(&self) -> NodeId {
+        match self {
+            Parts::Picker(parts) => parts.column().id(),
+            Parts::Combo(parts) => parts.root().id(),
+            Parts::Search(parts) => parts.root().id(),
+        }
+    }
+
+    /// Whether they still stand inside node `node`.
+    fn live(&self, node: NodeId, store: &NodeStore) -> bool {
+        let root = self.root();
+        store.arena().is_live(root) && store.parent(root) == Some(node)
+    }
+}
+
+/// The strings of a list of them, those not strings left out.
+fn labels(list: &Value) -> Vec<String> {
+    match list {
+        Value::List(items) => items
+            .iter()
+            .filter_map(|item| item.as_str().map(str::to_owned))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// How wide the parts built inside node `node` are: as wide as they ask
+/// while it is unsized, else as wide as it is.
+fn parts_size(store: &NodeStore, node: NodeId) -> viso_ui::Size {
+    let width = match store.layout_input(node).size().width {
+        viso_ui::Length::Fit => viso_ui::Length::Fit,
+        _ => viso_ui::Length::Fill { weight: 1.0 },
+    };
+    viso_ui::Size {
+        width,
+        height: viso_ui::Length::Fit,
+    }
+}
+
+/// Drops the parts inside node `node` so they are built again: their column
+/// and what it holds go, and the routes their reports ran.
+fn unbuild(parts: &mut Option<Parts>, node: NodeId, cx: &mut StructureCx<'_>) {
+    if let Some(old) = parts.take().filter(|p| p.live(node, cx.store)) {
+        cx.store.free_tree(old.root(), cx.effects, &mut Vec::new());
+    }
+}
+
+/// A combo box builds its parts inside node `node` from `spec` the first
+/// time it shows, once they are gone, or again when they are `stale`, and
+/// shows its `value` — the chosen option's label, or with free text any
+/// text — unless it holds it already. Each value it takes runs the node's
+/// `changed` routes in `host`: an option chosen, or free text taken.
+fn show_combo(
+    parts: &mut Option<Parts>,
+    node: NodeId,
+    cx: &mut StructureCx<'_>,
+    host: &mut ViewHost,
+    mut spec: ComboSpec,
+    stale: bool,
+    value: &Value,
+) {
+    let held = value.as_str();
+    let built = match parts.as_ref().filter(|p| !stale && p.live(node, cx.store)) {
+        Some(Parts::Combo(built)) => built.clone(),
+        _ => {
+            unbuild(parts, node, cx);
+            host.prune_sinks(|n| cx.store.arena().is_live(n));
+            let report = |host: Weak<RefCell<ViewHost>>| {
+                move |ev: &mut viso_ui::EventCx<'_>, text: &str| {
+                    let Some(host) = host.upgrade() else { return };
+                    let Ok(mut host) = host.try_borrow_mut() else {
+                        return;
+                    };
+                    host.fire(node, EventRoute::Changed, field(Value::str(text)), ev);
+                }
+            };
+            let (pick, commit): (Option<Pick>, Option<Commit>) = if spec.free {
+                (None, Some(Box::new(report(host.this.clone()))))
+            } else {
+                let labels: Vec<String> = spec.options.iter().map(|o| o.label.clone()).collect();
+                let report = report(host.this.clone());
+                let pick: Pick = Box::new(move |ev, at| report(ev, &labels[at]));
+                (Some(pick), None)
+            };
+            let text = held.unwrap_or_default();
+            spec.selected = spec.options.iter().position(|o| o.label == text);
+            spec.text = text.to_owned();
+            spec.size = parts_size(cx.store, node);
+            let mut build = BuildCx::with_parent(cx.store, cx.states, cx.bindings, node);
+            let built = ComboParts::build(&mut build, &spec, pick, commit);
+            *parts = Some(Parts::Combo(built.clone()));
+            return;
+        }
+    };
+    if let Some(held) = held
+        && built.text() != held
+    {
+        if spec.free {
+            built.set_text(cx, held);
+        } else {
+            let at = spec.options.iter().position(|o| o.label == held);
+            built.select(cx, at);
+        }
+    }
+}
+
+/// A search field builds its parts inside node `node` from `spec` the first
+/// time it shows, once they are gone, or again when they are `stale`; shows
+/// its `value`, its query, unless it holds it already, and `suggestions`
+/// when they changed. Each query it reports runs the node's `changed`
+/// routes in `host`, and each search submitted its `submitted` routes.
+#[allow(clippy::too_many_arguments)]
+fn show_search(
+    parts: &mut Option<Parts>,
+    node: NodeId,
+    cx: &mut StructureCx<'_>,
+    host: &mut ViewHost,
+    mut spec: SearchSpec,
+    stale: bool,
+    value: &Value,
+    suggestions: Option<Vec<String>>,
+) {
+    let held = value.as_str();
+    let built = match parts.as_ref().filter(|p| !stale && p.live(node, cx.store)) {
+        Some(Parts::Search(built)) => built.clone(),
+        _ => {
+            unbuild(parts, node, cx);
+            host.prune_sinks(|n| cx.store.arena().is_live(n));
+            let this = host.this.clone();
+            let change: SearchReport = Box::new(move |ev, text| {
+                let Some(host) = this.upgrade() else { return };
+                let Ok(mut host) = host.try_borrow_mut() else {
+                    return;
+                };
+                host.fire(node, EventRoute::Changed, field(Value::str(text)), ev);
+            });
+            let this = host.this.clone();
+            let submit: SearchReport = Box::new(move |ev, _| {
+                let Some(host) = this.upgrade() else { return };
+                let Ok(mut host) = host.try_borrow_mut() else {
+                    return;
+                };
+                host.fire(node, EventRoute::Submitted, Value::Nil, ev);
+            });
+            spec.text = held.unwrap_or_default().to_owned();
+            spec.size = parts_size(cx.store, node);
+            let mut build = BuildCx::with_parent(cx.store, cx.states, cx.bindings, node);
+            let built = SearchParts::build(&mut build, &spec, Some(change), Some(submit));
+            *parts = Some(Parts::Search(built.clone()));
+            built.set_suggestions(cx, suggestions.unwrap_or_default());
+            return;
+        }
+    };
+    if let Some(held) = held
+        && built.text() != held
+    {
+        built.set_text(cx, held);
+    }
+    if let Some(suggestions) = suggestions {
+        built.set_suggestions(cx, suggestions);
     }
 }
 

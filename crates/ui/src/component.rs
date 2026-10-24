@@ -818,6 +818,9 @@ pub struct NodeStore {
     /// Cold: the effects builds registered since the last flush, which the
     /// flush moves into its [`EffectStore`] and runs for the first time.
     pending_effects: crate::reactive::PendingEffects,
+    /// Cold, transient: the semantic-state projections a build without the
+    /// projector registry registered, waiting for the flush to adopt them.
+    pending_projections: crate::reactive::PendingProjections,
     /// Cold: what runs when the app goes to the background or the window
     /// closes. Empty in a tree that persists nothing.
     suspend_hooks: crate::suspend::SuspendHooks,
@@ -969,6 +972,7 @@ impl NodeStore {
         self.notices.clear();
         self.lengths.clear();
         self.pending_effects.clear();
+        self.pending_projections.clear();
         self.suspend_hooks.clear();
         self.frame_clients.clear();
         self.scopes.clear();
@@ -997,6 +1001,16 @@ impl NodeStore {
 
     pub(crate) fn pending_effects_mut(&mut self) -> &mut crate::reactive::PendingEffects {
         &mut self.pending_effects
+    }
+
+    /// Whether a semantic-state projection registered since the last flush
+    /// waits to run.
+    pub fn has_pending_projections(&self) -> bool {
+        !self.pending_projections.is_empty()
+    }
+
+    pub(crate) fn pending_projections_mut(&mut self) -> &mut crate::reactive::PendingProjections {
+        &mut self.pending_projections
     }
 
     /// The arena backing the tree.
@@ -6995,6 +7009,17 @@ impl<'a> BuildCx<'a> {
         Handle { id }
     }
 
+    /// Leaves the nodes inside `handle` out of hit testing, so a press on
+    /// any of them lands on `handle` itself: a row whose label and glyphs
+    /// are its look. Call it once they are built.
+    pub fn unhit_below(&mut self, handle: Handle) {
+        let mut stack: Vec<NodeId> = self.store.arena().children(handle.id).collect();
+        while let Some(id) = stack.pop() {
+            self.store.set_hittable(id, false);
+            stack.extend(self.store.arena().children(id));
+        }
+    }
+
     /// Attach a pointer handler to an already-declared node and return the
     /// handle so registration chains inline (`cx.on_pointer(cx.leaf(..), |ev| ..)`).
     /// The mirror of how a binding associates state to a node: this associates a
@@ -7626,18 +7651,22 @@ impl<'a> BuildCx<'a> {
     /// the first frame (before any interaction). Returns the handle so wiring
     /// chains inline. A control pairs this with its [`bind`](Self::bind) PAINT
     /// edge: one cell drives both the visual repaint and the semantic-state
-    /// column. Requires a [`BuildCx::with_reactive`] cx (see [`BuildCx::state`]).
+    /// column. A cx without the projector registry, as
+    /// [`BuildCx::with_parent`] makes, leaves the projection for the next
+    /// flush to adopt and run.
     pub fn bind_semantic_state(
         &mut self,
         node: Handle,
         project: impl FnMut(&mut ComputeCx<'_>) -> SemanticState + 'static,
     ) -> Handle {
-        // Borrow the three fields disjointly so the projection can run against the
-        // live state store and node store at build time.
-        let projectors = self
-            .projectors
-            .as_deref_mut()
-            .expect("bind_semantic_state() requires a with_reactive BuildCx");
+        // Without the registry — parts a view builds inside a node — the
+        // projection waits on the store for the flush to adopt and run it.
+        let Some(projectors) = self.projectors.as_deref_mut() else {
+            self.store
+                .pending_projections
+                .push(node.id, Box::new(project));
+            return node;
+        };
         let states = self
             .states
             .as_deref()

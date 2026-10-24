@@ -21,7 +21,6 @@ mod date_picker;
 mod dock;
 mod file_tree;
 mod form;
-mod glyphs;
 mod labelled;
 mod menu;
 mod mnemonic;

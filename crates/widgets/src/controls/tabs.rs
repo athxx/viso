@@ -66,8 +66,8 @@ use viso_ui::{
     StructureCx,
 };
 
-use super::glyphs::{cross, glyph_slot};
 use crate::label;
+use viso_ui::glyphs::{cross, glyph_slot};
 
 /// What runs with a tab selected or closed.
 type SharedTab = Rc<RefCell<Option<Box<dyn FnMut(&mut EventCx<'_>, usize)>>>>;

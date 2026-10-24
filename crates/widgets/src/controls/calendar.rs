@@ -64,7 +64,7 @@ use viso_ui::{
     StructureCx, TextAlign, TextRequest, TextStyle,
 };
 
-use super::glyphs::{chevron_end, chevron_start};
+use viso_ui::glyphs::{chevron_end, chevron_start};
 
 /// What runs with a picked date.
 type SharedChange = Rc<RefCell<Option<Box<dyn FnMut(&mut EventCx<'_>, Date)>>>>;

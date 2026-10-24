@@ -159,6 +159,11 @@ pub(super) enum Prop {
     /// A colour picker's `value` or `alpha`: its colour input's colour and
     /// its opacity range's value, or whether the range shows.
     Picker(&'static str),
+    /// A combo box's or a search field's `value`, `options`, `placeholder`
+    /// or `label`, a combo box's `free_text` or a search field's
+    /// `debounce`: its input's text, placeholder or name, the labels its
+    /// list offers, whether it takes any text, or how long it waits.
+    Listed(&'static str),
     /// A badge's `count` or `max`, which the script shows as its text.
     Badge(&'static str),
     /// An avatar's `name` or `image`, which the script shows as its
@@ -614,6 +619,8 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             "LinkLabel" => el.classes.push("vx-link".to_owned()),
             "SegmentedControl" => el.classes.push("vx-segmented".to_owned()),
             "ColorPicker" => el.classes.push("vx-color".to_owned()),
+            "ComboBox" => el.classes.push("vx-combo".to_owned()),
+            "SearchField" => el.classes.push("vx-search".to_owned()),
             "Modal" | "Sheet" => el.classes.push("vx-layer".to_owned()),
             "Toast" => el
                 .classes
@@ -1193,6 +1200,98 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         {
             el.attr("aria-label", &fixed.text());
         }
+    }
+
+    /// Writes a combo box or a search field as a text input over a
+    /// `<datalist>` of its options or suggestions, which the browser filters
+    /// as the user types: a combo box's a `combobox`, a search field's a
+    /// `search` input, each named by its label. A combo box without free
+    /// text takes only an option, and a search field's `debounce` is how
+    /// long, in milliseconds, its script waits to report a query.
+    fn listed(
+        &mut self,
+        key: u32,
+        control: &Control,
+        el: &mut Element,
+        wires: &mut Vec<Wire>,
+        at: TextRange,
+    ) {
+        let search = control.kind == ControlKind::SearchField;
+        let mut text = |this: &mut Self, entry, name, what| {
+            this.bind(wires, entry, Prop::Listed(name), what, at)
+                .map(|fixed| fixed.text())
+        };
+        let value = text(self, control.value, "value", "the text");
+        let placeholder = text(self, control.placeholder, "placeholder", "the placeholder")
+            .or_else(|| search.then(|| "Search".to_owned()));
+        let label = match control.semantics.label {
+            None => text(self, control.caption, "label", "the label"),
+            Some(_) => None,
+        };
+        let options = match self.bind(
+            wires,
+            control.options,
+            Prop::Listed("options"),
+            "the labels its list offers",
+            at,
+        ) {
+            Some(Fixed::Value(Value::List(items))) => items.iter().map(text_of).collect(),
+            _ => Vec::new(),
+        };
+        if search {
+            if let Some(fixed) = self.bind(
+                wires,
+                control.debounce,
+                Prop::Listed("debounce"),
+                "how long it waits",
+                at,
+            ) && let Some(secs) = fixed.float()
+            {
+                el.attr("data-debounce", &css::number(secs * 1000.0));
+            }
+        } else if let Some(fixed) = self.bind(
+            wires,
+            control.free_text,
+            Prop::Listed("free"),
+            "whether it takes any text",
+            at,
+        ) && fixed.truth()
+        {
+            el.attr("data-free", "true");
+        }
+        let list = format!("vx-l{key}");
+        let mut markup = String::from(if search {
+            "<input type=\"search\" class=\"vx-listed-value\""
+        } else {
+            "<input class=\"vx-listed-value\" role=\"combobox\" aria-autocomplete=\"list\""
+        });
+        let mut put = |name: &str, value: &str| {
+            markup.push(' ');
+            markup.push_str(name);
+            markup.push_str("=\"");
+            escape_attr(value, &mut markup);
+            markup.push('"');
+        };
+        put("list", &list);
+        for (name, value) in [
+            ("value", value),
+            ("placeholder", placeholder),
+            ("aria-label", label),
+        ] {
+            if let Some(value) = value.filter(|v| !v.is_empty()) {
+                put(name, &value);
+            }
+        }
+        markup.push_str("><datalist id=\"");
+        markup.push_str(&list);
+        markup.push_str("\">");
+        for option in &options {
+            markup.push_str("<option value=\"");
+            escape_attr(option, &mut markup);
+            markup.push_str("\"></option>");
+        }
+        markup.push_str("</datalist>");
+        el.markup = Some(markup);
     }
 
     /// Writes a progress indicator's value and bounds as `aria-value*`, the
@@ -1884,6 +1983,9 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             ControlKind::Badge => self.badge(key, control, el, decls, wires, at),
             ControlKind::Stepper => self.stepper(control, el, decls, wires, at),
             ControlKind::ColorPicker => self.color_picker(control, el, wires, at),
+            ControlKind::ComboBox | ControlKind::SearchField => {
+                self.listed(key, control, el, wires, at);
+            }
             ControlKind::Avatar => self.avatar(key, control, el, decls, wires, at),
             ControlKind::Viewer => {
                 for (entry, name, what) in [

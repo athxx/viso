@@ -311,6 +311,7 @@ export const show = {
   badge: P.badge,
   stepper: P.stepper,
   picker: P.picker,
+  listed: P.listed,
   avatar: P.avatar,
   maskSize: (v) => {
     const fit = fits[Number(v ?? 0n)] || "contain";

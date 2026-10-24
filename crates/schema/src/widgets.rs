@@ -249,6 +249,29 @@ const COLOR_PICKER: &[WidgetProperty] = &[
     prop("label", "String").localizable(),
 ];
 
+/// A `ComboBox`'s `value` — the chosen option's label, or with `free_text`
+/// any text — its `options`, what it shows while empty and when nothing
+/// matches, and the `label` that names it.
+const COMBO_BOX: &[WidgetProperty] = &[
+    two_way("value", "String"),
+    prop("options", "List<String>"),
+    prop("free_text", "Bool"),
+    prop("placeholder", "String").localizable(),
+    prop("empty_text", "String").localizable(),
+    prop("label", "String").localizable(),
+];
+
+/// A `SearchField`'s `value` — its query — the `suggestions` it shows, how
+/// long the typing rests before the query is reported (`debounce`), what it
+/// shows while empty, and the `label` that names it.
+const SEARCH_FIELD: &[WidgetProperty] = &[
+    two_way("value", "String"),
+    prop("suggestions", "List<String>"),
+    prop("debounce", "Duration"),
+    prop("placeholder", "String").localizable(),
+    prop("label", "String").localizable(),
+];
+
 /// A `ProgressBar`'s or `ProgressRing`'s `value` within `min..=max`, none
 /// while work of unknown length runs; its fill's `tint` and the `label` it is
 /// named by.
@@ -457,6 +480,7 @@ const CHIP_EVENTS: &[WidgetEvent] = &[
 ];
 const SLIDER_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("changed", "SliderChanged")];
 const COLOR_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("changed", "ColorChanged")];
+const TEXT_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("changed", "TextChanged")];
 const NUMBER_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("changed", "NumberChanged")];
 const TEXT_INPUT_EVENTS: &[WidgetEvent] = &[
     WidgetEvent::new("changed", "TextChanged"),
@@ -678,7 +702,17 @@ pub const STANDARD: &[NativeWidget] = &[
     layout("Knob", WidgetNode::Leaf, &[KNOB, LAYOUT, TRANSFORM, FOCUS])
         .events(&[SLIDER_EVENTS, STANDARD_EVENTS])
         .interactive(),
-    // Its parts are the framework's: it takes no children.
+    // Their parts are the framework's: they take no children.
+    layout("ComboBox", COLUMN, &[COMBO_BOX, LAYOUT, TRANSFORM, FOCUS])
+        .events(&[TEXT_EVENTS, STANDARD_EVENTS])
+        .interactive(),
+    layout(
+        "SearchField",
+        COLUMN,
+        &[SEARCH_FIELD, LAYOUT, TRANSFORM, FOCUS],
+    )
+    .events(&[TEXT_INPUT_EVENTS, STANDARD_EVENTS])
+    .interactive(),
     layout(
         "ColorPicker",
         COLUMN,

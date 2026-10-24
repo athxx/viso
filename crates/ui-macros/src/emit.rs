@@ -733,6 +733,10 @@ fn control_tokens(control: Control) -> TokenStream {
     let axis = entry(control.axis);
     let alpha = entry(control.alpha);
     let wheel = entry(control.wheel);
+    let options = entry(control.options);
+    let free_text = entry(control.free_text);
+    let empty_text = entry(control.empty_text);
+    let debounce = entry(control.debounce);
     let semantics = control.semantics;
     let role = match semantics.role {
         Some(role) => {
@@ -858,6 +862,10 @@ fn control_tokens(control: Control) -> TokenStream {
             axis: #axis,
             alpha: #alpha,
             wheel: #wheel,
+            options: #options,
+            free_text: #free_text,
+            empty_text: #empty_text,
+            debounce: #debounce,
             shader: #shader,
             look: ::viso::__private::viso_view::Look {
                 background: #background,

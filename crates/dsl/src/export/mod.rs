@@ -363,6 +363,10 @@ dialog.vx-layer:not([open]), .vx-layer[hidden] { display: none; }
 .vx-chip[aria-pressed=\"true\"]::before { width: 18px; margin-inline: -4px 8px; }
 .vx-chip[data-removable=\"true\"]::after { content: \"\\00d7\"; flex: none; width: 18px; margin-inline: 8px -4px; font-size: 18px; text-align: center; opacity: 0.8; }
 @media (prefers-reduced-motion: reduce) { .vx-chip, .vx-chip::before { transition: none; } }
+.vx-combo, .vx-search { display: inline-flex; flex-direction: column; min-width: 160px; }
+.vx-search { min-width: 200px; }
+.vx-listed-value { box-sizing: border-box; width: 100%; font: inherit; padding: 6px 10px; border: 1px solid #c4c7cf; border-radius: 6px; background: #fff; color: inherit; }
+.vx-listed-value:focus-visible { outline: 2px solid #417ed9; outline-offset: 1px; }
 .vx-color { display: inline-flex; flex-direction: column; gap: 10px; min-width: 160px; }
 .vx-color-value { display: block; box-sizing: border-box; width: 100%; height: 40px; margin: 0; padding: 0; border: 0; border-radius: 6px; background: none; cursor: pointer; }
 .vx-color-value::-webkit-color-swatch-wrapper { padding: 0; }

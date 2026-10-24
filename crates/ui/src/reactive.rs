@@ -288,6 +288,26 @@ impl PendingEffects {
     }
 }
 
+/// The semantic-state projections a build without the projector registry —
+/// the parts a view builds inside a node — registers, waiting for the flush
+/// to adopt and run them.
+#[derive(Default)]
+pub(crate) struct PendingProjections(Vec<(NodeId, ProjectFn)>);
+
+impl PendingProjections {
+    pub(crate) fn push(&mut self, node: NodeId, project: ProjectFn) {
+        self.0.push((node, project));
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
 /// A pure cached derivation over state.
 ///
 /// The `eval` closure reads state through the [`ComputeCx`] and returns the
@@ -1182,6 +1202,24 @@ impl SemanticProjector {
         }
     }
 
+    /// Moves the projections registered on `store` since the last call into
+    /// the registry and runs each once, so its node carries its live state;
+    /// one whose node was freed meanwhile is dropped. Returns how many ran.
+    pub fn adopt(&mut self, states: &StateStore, store: &mut crate::NodeStore) -> u32 {
+        let pending = std::mem::take(&mut store.pending_projections_mut().0);
+        let mut ran = 0;
+        for (node, project) in pending {
+            if !store.arena().is_live(node) {
+                continue;
+            }
+            let id = self.alloc(node, project);
+            if self.project(id, states, store) {
+                ran += 1;
+            }
+        }
+        ran
+    }
+
     /// Whether `id` refers to a currently-live projection.
     #[inline]
     pub fn is_live(&self, id: ProjectId) -> bool {
@@ -1205,6 +1243,11 @@ impl SemanticProjector {
             return false;
         };
         if !slot.occupied || slot.generation != id.generation {
+            return false;
+        }
+        // A projection outlives no node: one whose node was freed goes.
+        if !nodes.arena().is_live(slot.node) {
+            self.free(id);
             return false;
         }
 
