@@ -25,4 +25,6 @@ pub use video::{
 };
 #[cfg(target_os = "android")]
 pub use video::{ImageReader, attach_android};
+#[cfg(target_os = "windows")]
+pub use video::{SharedCanvas, SharedPictures};
 pub use viso_handle::{Nv12, YuvMatrix};

@@ -9,7 +9,6 @@
 // What the targets that capture share; one without a camera uses none of it.
 #![cfg_attr(
     not(any(
-        target_os = "windows",
         target_os = "linux",
         target_os = "freebsd",
         target_os = "openbsd",
@@ -129,7 +128,6 @@ pub(crate) fn nearest_mode(modes: &[CameraMode], request: &CameraRequest) -> Opt
 /// built-in one toward the user, one named for a side that way, any other
 /// plugged in.
 #[cfg(any(
-    target_os = "windows",
     target_os = "linux",
     target_os = "freebsd",
     target_os = "openbsd",
@@ -252,7 +250,6 @@ mod tests {
     }
 
     #[cfg(any(
-        target_os = "windows",
         target_os = "linux",
         target_os = "freebsd",
         target_os = "openbsd",

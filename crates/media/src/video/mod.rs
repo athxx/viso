@@ -43,6 +43,8 @@ mod unsupported;
 mod web;
 #[cfg(target_os = "windows")]
 mod windows;
+#[cfg(target_os = "windows")]
+pub use windows::{SharedCanvas, SharedPictures};
 mod yuv;
 
 #[cfg(target_os = "android")]

@@ -16,10 +16,8 @@
 //! has shown the next, only for a picture wanted while paused and once a
 //! caller has asked for rows; without shared textures every frame is.
 //!
-//! A camera's thread reads it the same way ([`capture`]), into the same
-//! shared textures.
-
-mod capture;
+//! An extension's thread draws its live pictures the same way
+//! ([`SharedCanvas`]), into the same shared textures.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -62,9 +60,7 @@ use windows::core::{BSTR, Interface, PCWSTR, implement};
 
 use viso_handle::{ExternalHolds, ExternalImage};
 
-use super::{
-    CameraRequest, Frame, PixelLayout, Spilled, VideoError, VideoEvent, VideoInfo, VideoSource,
-};
+use super::{Frame, PixelLayout, Spilled, VideoError, VideoEvent, VideoInfo, VideoSource};
 
 /// How long the thread looks for a frame wanted while paused.
 const DUE_FOR: Duration = Duration::from_secs(2);
@@ -84,26 +80,14 @@ enum Ask {
     Looping(bool),
     /// One of the engine's notifications.
     Heard(u32),
-    /// A picture a camera's reader read.
-    Captured(capture::Read),
     Close,
-}
-
-/// What a player's thread plays.
-enum Work {
-    Movie(String),
-    Camera(CameraRequest),
 }
 
 /// What a player's thread takes requests on and hands back on.
 struct Lines {
     asked: Receiver<Ask>,
     tell: Sender<VideoEvent>,
-    shots: Sender<Shot>,
-    /// Buffers shown and done with, to fill again.
-    refill: Receiver<Vec<u8>>,
     position: Arc<AtomicU64>,
-    wants_rows: Arc<AtomicBool>,
 }
 
 /// A picture: in a shared texture at a fence value, read back in BGRA rows
@@ -207,22 +191,13 @@ impl Drop for SharedFence {
 pub(crate) struct Player {
     asks: Sender<Ask>,
     events: Receiver<VideoEvent>,
-    shots: Receiver<Shot>,
-    /// Buffers shown and done with, for the thread to fill again.
-    spent: Sender<Vec<u8>>,
-    /// The picture last handed out, and whether the next call hands it out.
-    shown: Option<Shot>,
-    fresh: bool,
-    /// Whether a caller has asked for rows a picture had none of.
-    wants_rows: Arc<AtomicBool>,
+    pictures: SharedPictures,
     /// Where the engine is, in nanoseconds, as the thread last read it.
     position: Arc<AtomicU64>,
     /// Whether it was asked to play and has not ended since.
     wants_play: bool,
     looping: bool,
     ended: bool,
-    /// Whether it plays a camera, which is always now.
-    live: bool,
     thread: Option<JoinHandle<()>>,
     /// The file bytes were written to, removed once the thread is gone.
     _spilled: Option<Spilled>,
@@ -230,23 +205,18 @@ pub(crate) struct Player {
 
 impl Player {
     pub(crate) fn open(source: &VideoSource) -> Result<Player, VideoError> {
-        let (work, spilled) = match source {
-            VideoSource::File(path) => (Work::Movie(file_url(path)), None),
-            VideoSource::Url(url) => (Work::Movie(url.clone()), None),
+        let (url, spilled) = match source {
+            VideoSource::File(path) => (file_url(path), None),
+            VideoSource::Url(url) => (url.clone(), None),
             VideoSource::Bytes(bytes) => spill(bytes)?,
             VideoSource::Static(bytes) => spill(bytes)?,
-            VideoSource::Camera(request) => (Work::Camera(request.clone()), None),
+            VideoSource::Camera(_) => return Err(VideoError::Unsupported),
         };
-        let live = matches!(work, Work::Camera(_));
         let (asks, asked) = mpsc::channel();
         let (tell, events) = mpsc::channel();
-        let (send_shot, shots) = mpsc::channel();
-        let (spent, refill) = mpsc::channel();
         let (opened, open) = mpsc::channel();
         let position = Arc::new(AtomicU64::new(0));
         let at = Arc::clone(&position);
-        let wants_rows = Arc::new(AtomicBool::new(false));
-        let rows_wanted = Arc::clone(&wants_rows);
         let heard = asks.clone();
         let thread = std::thread::Builder::new()
             .name("viso-video".to_owned())
@@ -264,30 +234,16 @@ impl Player {
                     let lines = Lines {
                         asked,
                         tell,
-                        shots: send_shot,
-                        refill,
                         position: at,
-                        wants_rows: rows_wanted,
                     };
-                    match work {
-                        Work::Movie(url) => match Engine::new(&url, heard) {
-                            Ok(engine) => {
-                                let _ = opened.send(Ok(()));
-                                engine.run(lines);
-                            }
-                            Err(error) => {
-                                let _ = opened.send(Err(error));
-                            }
-                        },
-                        Work::Camera(request) => match capture::Capture::new(&request, heard) {
-                            Ok(camera) => {
-                                let _ = opened.send(Ok(()));
-                                camera.run(lines);
-                            }
-                            Err(error) => {
-                                let _ = opened.send(Err(error));
-                            }
-                        },
+                    match Engine::new(&url, heard) {
+                        Ok((engine, pictures)) => {
+                            let _ = opened.send(Ok(pictures));
+                            engine.run(lines);
+                        }
+                        Err(error) => {
+                            let _ = opened.send(Err(error));
+                        }
                     }
                     // SAFETY: balances the start above, with no engine left.
                     let _ = unsafe { MFShutdown() };
@@ -299,19 +255,14 @@ impl Player {
             })
             .map_err(|e| VideoError::Open(e.to_string()))?;
         match open.recv() {
-            Ok(Ok(())) => Ok(Player {
+            Ok(Ok(pictures)) => Ok(Player {
                 asks,
                 events,
-                shots,
-                spent,
-                shown: None,
-                fresh: false,
-                wants_rows,
+                pictures,
                 position,
                 wants_play: false,
                 looping: false,
                 ended: false,
-                live,
                 thread: Some(thread),
                 _spilled: spilled,
             }),
@@ -336,34 +287,7 @@ impl Player {
     }
 
     pub(crate) fn frame(&mut self) -> Option<Frame<'_>> {
-        while let Ok(shot) = self.shots.try_recv() {
-            if let Some(old) = self.shown.replace(shot) {
-                let _ = self.spent.send(old.rows);
-            }
-            self.fresh = true;
-        }
-        if !std::mem::take(&mut self.fresh) {
-            return None;
-        }
-        let shot = self.shown.as_ref()?;
-        if shot.slot.is_none() {
-            return Some(Frame::bgra(
-                shot.width,
-                shot.height,
-                &shot.rows,
-                shot.width as usize * 4,
-                shot.time,
-            ));
-        }
-        Some(Frame::native_picture(
-            shot.width,
-            shot.height,
-            shot.time,
-            Picture {
-                shot,
-                wants_rows: &self.wants_rows,
-            },
-        ))
+        self.pictures.frame()
     }
 
     pub(crate) fn play(&mut self) {
@@ -380,9 +304,6 @@ impl Player {
     }
 
     pub(crate) fn seek(&mut self, time: Duration) {
-        if self.live {
-            return;
-        }
         self.ended = false;
         self.position.store(nanos(time), Ordering::Relaxed);
         let _ = self.asks.send(Ask::Seek(time));
@@ -611,10 +532,155 @@ impl Canvas {
     }
 }
 
+/// Where an extension's thread draws its live pictures — a camera's, a
+/// screen's — on a Direct3D 11 device of its own (on the adapter a GPU
+/// backend picks, multithread protected): into a few shared textures the
+/// backend reads where they lie, each signalled through a shared fence once
+/// written, or into a target of its own where the device shares no fence.
+/// Rows are read back through a staging texture only once a caller copied a
+/// picture, or where nothing is shared. Its pictures are taken on the
+/// loop's thread from the [`SharedPictures`] made with it.
+pub struct SharedCanvas {
+    canvas: Canvas,
+    shots: Sender<Shot>,
+    /// Buffers shown and done with, to fill again.
+    refill: Receiver<Vec<u8>>,
+    wants_rows: Arc<AtomicBool>,
+}
+
+impl SharedCanvas {
+    /// A canvas on a device of its own, and where its pictures are taken.
+    pub fn new() -> windows::core::Result<(SharedCanvas, SharedPictures)> {
+        let canvas = Canvas::new()?;
+        let (shots, taken) = mpsc::channel();
+        let (spent, refill) = mpsc::channel();
+        let wants_rows = Arc::new(AtomicBool::new(false));
+        Ok((
+            SharedCanvas {
+                canvas,
+                shots,
+                refill,
+                wants_rows: Arc::clone(&wants_rows),
+            },
+            SharedPictures {
+                shots: taken,
+                spent,
+                shown: None,
+                fresh: false,
+                wants_rows,
+            },
+        ))
+    }
+
+    /// The device it draws on, which a decoder or capture produces onto.
+    pub fn device(&self) -> &ID3D11Device {
+        &self.canvas.device
+    }
+
+    /// A device manager Media Foundation decodes or converts through on its
+    /// device.
+    pub fn dxgi_manager(&self) -> windows::core::Result<IMFDXGIDeviceManager> {
+        self.canvas.manager()
+    }
+
+    /// Draws a BGRA picture of `width` × `height`, shown at `time`, through
+    /// `write` — which fills the texture it is handed, on the device's
+    /// context — and hands it to the pictures. Whether it was drawn: not
+    /// while every texture is still shown or held, nor where `write` fails.
+    pub fn draw(
+        &mut self,
+        width: u32,
+        height: u32,
+        time: Duration,
+        write: impl FnOnce(&ID3D11DeviceContext, &ID3D11Texture2D) -> Option<()>,
+    ) -> bool {
+        self.draw_read(width, height, time, false, write)
+    }
+
+    /// [`draw`](Self::draw), read back as rows too where `read_back`.
+    fn draw_read(
+        &mut self,
+        width: u32,
+        height: u32,
+        time: Duration,
+        read_back: bool,
+        write: impl FnOnce(&ID3D11DeviceContext, &ID3D11Texture2D) -> Option<()>,
+    ) -> bool {
+        let read_back = read_back || self.wants_rows.load(Ordering::Relaxed);
+        let Some((rows, slot)) = self
+            .canvas
+            .draw(width, height, read_back, &self.refill, write)
+        else {
+            return false;
+        };
+        let _ = self.shots.send(Shot {
+            rows,
+            slot,
+            width,
+            height,
+            time,
+        });
+        true
+    }
+
+    /// Forgets the textures of the size drawn last: the next picture's are
+    /// made anew.
+    fn resize(&mut self) {
+        self.canvas.targets = None;
+    }
+}
+
+/// The pictures a [`SharedCanvas`] draws, taken on the loop's thread.
+pub struct SharedPictures {
+    shots: Receiver<Shot>,
+    /// Buffers shown and done with, for the canvas to fill again.
+    spent: Sender<Vec<u8>>,
+    /// The picture last handed out, and whether the next call hands it out.
+    shown: Option<Shot>,
+    fresh: bool,
+    /// Whether a caller has asked for rows a picture had none of.
+    wants_rows: Arc<AtomicBool>,
+}
+
+impl SharedPictures {
+    /// The picture drawn last, when it is not the one this returned last:
+    /// in its shared texture, or as rows.
+    pub fn frame(&mut self) -> Option<Frame<'_>> {
+        while let Ok(shot) = self.shots.try_recv() {
+            if let Some(old) = self.shown.replace(shot) {
+                let _ = self.spent.send(old.rows);
+            }
+            self.fresh = true;
+        }
+        if !std::mem::take(&mut self.fresh) {
+            return None;
+        }
+        let shot = self.shown.as_ref()?;
+        if shot.slot.is_none() {
+            return Some(Frame::bgra(
+                shot.width,
+                shot.height,
+                &shot.rows,
+                shot.width as usize * 4,
+                shot.time,
+            ));
+        }
+        Some(Frame::native_picture(
+            shot.width,
+            shot.height,
+            shot.time,
+            Picture {
+                shot,
+                wants_rows: &self.wants_rows,
+            },
+        ))
+    }
+}
+
 /// The media engine and the canvas it decodes onto, owned by its thread.
 struct Engine {
     engine: IMFMediaEngine,
-    canvas: Canvas,
+    canvas: SharedCanvas,
     /// Kept for as long as the engine decodes through it.
     _manager: IMFDXGIDeviceManager,
     ready: bool,
@@ -637,10 +703,10 @@ struct Engine {
 }
 
 impl Engine {
-    fn new(url: &str, heard: Sender<Ask>) -> Result<Engine, VideoError> {
+    fn new(url: &str, heard: Sender<Ask>) -> Result<(Engine, SharedPictures), VideoError> {
         let open = |what: &str, e: windows::core::Error| VideoError::Open(format!("{what}: {e}"));
-        let canvas = Canvas::new().map_err(|e| open("Direct3D 11", e))?;
-        let manager = canvas.manager().map_err(|e| open("DXGI", e))?;
+        let (canvas, pictures) = SharedCanvas::new().map_err(|e| open("Direct3D 11", e))?;
+        let manager = canvas.dxgi_manager().map_err(|e| open("DXGI", e))?;
         // SAFETY: plain COM calls on live objects of this thread's
         // apartment; each out-pointer is a local the call fills.
         unsafe {
@@ -670,7 +736,7 @@ impl Engine {
             engine
                 .SetSource(&BSTR::from(url))
                 .map_err(|e| open("source", e))?;
-            Ok(Engine {
+            let engine = Engine {
                 engine,
                 canvas,
                 _manager: manager,
@@ -685,7 +751,8 @@ impl Engine {
                 last: None,
                 interval: Duration::from_millis(16),
                 due: None,
-            })
+            };
+            Ok((engine, pictures))
         }
     }
 
@@ -695,10 +762,7 @@ impl Engine {
         let Lines {
             asked,
             tell,
-            shots,
-            refill,
             position,
-            wants_rows,
         } = lines;
         loop {
             if self.due.is_some_and(|since| since.elapsed() > DUE_FOR) {
@@ -740,9 +804,7 @@ impl Engine {
                 if now.is_finite() && now >= 0.0 && self.seek.is_none() {
                     position.store(nanos(Duration::from_secs_f64(now)), Ordering::Relaxed);
                 }
-                if let Some(shot) = self.draw(&refill, wants_rows.load(Ordering::Relaxed)) {
-                    let _ = shots.send(shot);
-                }
+                self.draw();
             }
         }
         // SAFETY: the engine stops on the thread that made it, before its
@@ -818,7 +880,6 @@ impl Engine {
                     let _ = self.engine.SetLoop(looping);
                 }
                 Ask::Heard(event) => return self.hear(event, tell),
-                Ask::Captured(_) => {}
                 Ask::Close => return false,
             }
         }
@@ -874,7 +935,7 @@ impl Engine {
             } else if is(MF_MEDIA_ENGINE_EVENT_SEEKED) {
                 self.due = Some(Instant::now());
             } else if is(MF_MEDIA_ENGINE_EVENT_FORMATCHANGE) {
-                self.canvas.targets = None;
+                self.canvas.resize();
                 self.due = Some(Instant::now());
             }
         }
@@ -906,7 +967,7 @@ impl Engine {
 
     /// Draws the engine's frame if it has a new one; read back where rows
     /// are wanted or a paused picture is.
-    fn draw(&mut self, refill: &Receiver<Vec<u8>>, wants_rows: bool) -> Option<Shot> {
+    fn draw(&mut self) -> Option<()> {
         // SAFETY: the engine is asked on its thread, and draws into a texture
         // of its canvas, made on the device it decodes on.
         let (pts, width, height) = unsafe {
@@ -921,12 +982,11 @@ impl Engine {
             (pts, width, height)
         };
         let engine = &self.engine;
-        let (rows, slot) = self.canvas.draw(
-            width,
-            height,
-            wants_rows || self.due.is_some(),
-            refill,
-            |_, target| {
+        // The engine's times are in hundreds of nanoseconds.
+        let time = Duration::from_nanos(pts as u64 * 100);
+        let drawn = self
+            .canvas
+            .draw_read(width, height, time, self.due.is_some(), |_, target| {
                 let rect = RECT {
                     left: 0,
                     top: 0,
@@ -941,8 +1001,10 @@ impl Engine {
                 };
                 // SAFETY: as above.
                 unsafe { engine.TransferVideoFrame(target, None, &rect, Some(&black)) }.ok()
-            },
-        )?;
+            });
+        if !drawn {
+            return None;
+        }
         let now = Instant::now();
         if let Some((seen, _)) = self.last
             && pts > seen
@@ -953,13 +1015,7 @@ impl Engine {
         }
         self.last = Some((pts, now));
         self.due = None;
-        Some(Shot {
-            rows,
-            slot,
-            width,
-            height,
-            time: Duration::from_nanos(pts as u64 * 100),
-        })
+        Some(())
     }
 }
 
@@ -1132,9 +1188,9 @@ fn staging(
 }
 
 /// `bytes` in a file of their own, and its URL.
-fn spill(bytes: &[u8]) -> Result<(Work, Option<Spilled>), VideoError> {
+fn spill(bytes: &[u8]) -> Result<(String, Option<Spilled>), VideoError> {
     let spilled = Spilled::new(bytes).map_err(|e| VideoError::Open(e.to_string()))?;
-    Ok((Work::Movie(file_url(spilled.path())), Some(spilled)))
+    Ok((file_url(spilled.path()), Some(spilled)))
 }
 
 /// The `file:` URL of `path`, made absolute, its reserved bytes escaped.
@@ -1158,4 +1214,7 @@ fn nanos(time: Duration) -> u64 {
     u64::try_from(time.as_nanos()).unwrap_or(u64::MAX)
 }
 
-pub(crate) use capture::cameras;
+/// The cameras the platform's players capture: none, an extension answers.
+pub(crate) fn cameras() -> Vec<super::CameraInfo> {
+    Vec::new()
+}

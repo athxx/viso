@@ -350,7 +350,8 @@ Rules:
     `getUserMedia`) behind `install()`; `examples/camera` on it.
     - [x] Apple, through `Frame::pixel_buffer`.
     - [x] Android, through `ImageReader` and the extension's own dex.
-    - [ ] Windows.
+    - [x] Windows, through `SharedCanvas` / `SharedPictures`, which the media engine's
+      player now draws through too.
     - [ ] Linux and the BSDs.
     - [ ] Web.
 - [ ] Audio as an extension, `viso-ext/viso-audio`; the core adds no audio API (a
