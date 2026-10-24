@@ -18,7 +18,6 @@ use viso_gpu::{
     BindGroupDesc, Binding, BlendMode, BufferDesc, BufferUsage, BuiltinShader, CpuRaster, CullMode,
     DepthState, GpuBackend, GpuPod, LoadOp, PipelineDesc, ShaderCode, TextureDesc, TextureFormat,
 };
-use viso_shader::{PrimitiveKind, shader_code};
 
 #[repr(C)]
 #[derive(Clone, Copy, GpuPod)]
@@ -355,6 +354,7 @@ mod metal {
 
     use naga::back::msl;
     use viso_gpu::{MetalBackend, ShaderLang};
+    use viso_shader::{PrimitiveKind, shader_code};
 
     #[test]
     fn metal_draws_what_the_cpu_raster_draws() {

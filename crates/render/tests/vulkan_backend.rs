@@ -51,10 +51,14 @@ fn bytes_of<T: Copy>(v: &T) -> &[u8] {
     unsafe { std::slice::from_raw_parts((v as *const T).cast::<u8>(), size_of::<T>()) }
 }
 
-fn viewport(w: u32, h: u32) -> [u8; 8] {
-    let mut out = [0u8; 8];
-    out[..4].copy_from_slice(&(w as f32).to_le_bytes());
-    out[4..].copy_from_slice(&(h as f32).to_le_bytes());
+/// The view uniforms: the viewport in pixels, then the identity place — no
+/// shift, unit axes.
+fn viewport(w: u32, h: u32) -> [u8; 32] {
+    let words = [w as f32, h as f32, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0];
+    let mut out = [0u8; 32];
+    for (i, v) in words.into_iter().enumerate() {
+        out[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+    }
     out
 }
 
@@ -188,8 +192,19 @@ fn glyph_a8_coverage_direct_sample_on_vulkan() {
 
     let px = gpu.read_texture(out);
     assert_eq!(px.len(), (W * 4) as usize);
+    // Coverage `k` is adjusted by the ink's luminance `l` before it scales
+    // the color, as on every backend.
+    let dec = |v: f32| {
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let l = 0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2];
     for (i, &c8) in cov.iter().enumerate() {
-        let a = color[3] * c8 as f32 / 255.0;
+        let k = c8 as f32 / 255.0;
+        let a = color[3] * ((1.0 - l) * (1.0 - dec(1.0 - k)) + l * dec(k));
         let want =
             [color[2] * a, color[1] * a, color[0] * a, a].map(|v| (v * 255.0).round() as i32);
         let got: [i32; 4] = std::array::from_fn(|c| px[i * 4 + c] as i32);
@@ -199,6 +214,54 @@ fn glyph_a8_coverage_direct_sample_on_vulkan() {
                 "texel {i}: coverage {c8} → want {want:?}, got {got:?}"
             );
         }
+    }
+    assert_no_validation_errors(&gpu);
+}
+
+/// A texture written again after a frame sampled it is sampled as written
+/// the next frame: each write reaches the GPU before the draws after it.
+#[test]
+fn a_texture_written_again_is_sampled_anew() {
+    let Some(mut gpu) = device() else { return };
+    const W: u32 = 4;
+    let out = target(&mut gpu, W, 1);
+    let atlas = gpu.create_texture(&TextureDesc {
+        width: 4,
+        height: 1,
+        format: TextureFormat::R8Unorm,
+        render_target: false,
+        label: "vulkan-rewritten",
+    });
+    let sampler = gpu.create_sampler(&SamplerDesc {
+        filter: FilterMode::Nearest,
+        address: AddressMode::ClampToEdge,
+    });
+    let bg = gpu.create_bind_group(&BindGroupDesc {
+        label: "vulkan-rewritten-bg",
+        bindings: vec![Binding::Texture(atlas), Binding::Sampler(sampler)],
+    });
+    let pipe = pipeline(
+        &mut gpu,
+        PipelineFamily::MaskComposite,
+        TextureFormat::Bgra8Unorm,
+        &GlyphInstance::LAYOUT,
+    );
+    let inst = instance_buffer(
+        &mut gpu,
+        &GlyphInstance {
+            rect_pos: [0.0, 0.0],
+            rect_size: [W as f32, 1.0],
+            uv_pos: [0.0, 0.0],
+            uv_size: [1.0, 1.0],
+            color: [1.0; 4],
+        },
+    );
+    for cov in [[255u8, 0, 255, 0], [0, 255, 0, 255], [255, 255, 0, 0]] {
+        gpu.write_texture(atlas, 0, 0, 4, 1, &cov);
+        draw_one(&mut gpu, out, W, 1, pipe, bg, inst, None);
+        let px = gpu.read_texture(out);
+        let alpha: Vec<u8> = px.chunks(4).map(|t| t[3]).collect();
+        assert_eq!(alpha, cov, "the frame after the write samples it");
     }
     assert_no_validation_errors(&gpu);
 }

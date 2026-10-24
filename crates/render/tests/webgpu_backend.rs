@@ -53,10 +53,14 @@ fn bytes_of<T: Copy>(v: &T) -> &[u8] {
     unsafe { std::slice::from_raw_parts((v as *const T).cast::<u8>(), size_of::<T>()) }
 }
 
-fn viewport(w: u32, h: u32) -> [u8; 8] {
-    let mut out = [0u8; 8];
-    out[..4].copy_from_slice(&(w as f32).to_le_bytes());
-    out[4..].copy_from_slice(&(h as f32).to_le_bytes());
+/// The view uniforms: the viewport in pixels, then the identity place — no
+/// shift, unit axes.
+fn viewport(w: u32, h: u32) -> [u8; 32] {
+    let words = [w as f32, h as f32, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0];
+    let mut out = [0u8; 32];
+    for (i, v) in words.into_iter().enumerate() {
+        out[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+    }
     out
 }
 
@@ -192,8 +196,19 @@ async fn glyph_a8_coverage_direct_sample_on_webgpu() {
 
     let px = gpu.read_texture(out).await;
     assert_eq!(px.len(), (W * 4) as usize);
+    // Coverage `k` is adjusted by the ink's luminance `l` before it scales
+    // the color, as on every backend.
+    let dec = |v: f32| {
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let l = 0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2];
     for (i, &c8) in cov.iter().enumerate() {
-        let a = color[3] * c8 as f32 / 255.0;
+        let k = c8 as f32 / 255.0;
+        let a = color[3] * ((1.0 - l) * (1.0 - dec(1.0 - k)) + l * dec(k));
         let want =
             [color[2] * a, color[1] * a, color[0] * a, a].map(|v| (v * 255.0).round() as i32);
         let got: [i32; 4] = std::array::from_fn(|c| px[i * 4 + c] as i32);

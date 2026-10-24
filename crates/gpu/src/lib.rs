@@ -11,12 +11,6 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
-#[cfg(all(
-    feature = "vulkan",
-    not(any(target_os = "linux", target_os = "android"))
-))]
-extern crate ash_portable as ash;
-
 pub mod backend;
 pub mod cpu;
 /// The native Direct3D 12 backend (compiled only on Windows).

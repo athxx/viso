@@ -31,11 +31,11 @@ libloading = { version = "0.8", optional = true }
 [features]
 default = ["native-vulkan"]
 # Vulkan as the native backend on Linux and Android; no effect elsewhere. A
-# CPU-drawn or GLES build leaves it off and links no Vulkan bindings.
-native-vulkan = ["dep:ash"]
+# CPU-drawn or GLES build leaves it off and links no Vulkan code.
+native-vulkan = []
 # The Vulkan backend on every target: beside the native one where another is
 # native (MoltenVK on macOS, the Vulkan runtime on Windows).
-vulkan = ["dep:ash", "dep:ash-portable"]
+vulkan = ["dep:ash"]
 # The OpenGL ES 3 backend as this build's backend on Linux and Android, for
 # the GPUs whose drivers are GL only (the embedded-gpu profile, ADR 0044).
 gles = ["dep:libloading"]
@@ -46,12 +46,14 @@ headless = []
 # platform gives it (a KMS scanout): the embedded-cpu profile (ADR 0044).
 cpu = []
 
-# Vulkan bindings (loader resolved at runtime, no link-time dependency): on
-# Linux and Android for `native-vulkan` or `vulkan`, elsewhere for `vulkan`.
+# Vulkan bindings (loader resolved at runtime, no link-time dependency):
+# always on Linux and Android, elsewhere for `vulkan`. One name on every
+# target, as Cargo takes a package under one name only; a feature cannot
+# depend on a target, so Linux and Android have it whether used or not.
 [target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
-ash = { version = "0.38", optional = true }
+ash = "0.38"
 [target.'cfg(not(any(target_os = "linux", target_os = "android")))'.dependencies]
-ash-portable = { package = "ash", version = "0.38", optional = true }
+ash = { version = "0.38", optional = true }
 
 # Windows: the native Direct3D 12 backend (DXGI swapchains, FXC for HLSL).
 # External crate, not a viso-* edge.
