@@ -279,7 +279,11 @@ Rules:
     in the multithreaded apartment, decoding through its own D3D11 device, each new
     frame drawn into a BGRA target and read back through a staging texture into
     recycled buffers.
-  - [ ] GStreamer, MediaCodec/MediaPlayer and `<video>` players.
+  - [x] GStreamer player on Linux and the BSDs: `playbin` + `appsink` opened at run
+    time, on the loop's thread without waiting, each picture handed out mapped in
+    place; buffering holds playback, a paused seek shows its preroll, closing on a
+    thread of its own; the player tests run on every target with a player.
+  - [ ] MediaCodec/MediaPlayer and `<video>` players.
 - [ ] Camera capture service and `CameraView`.
 - [ ] Audio: input (microphone), file decoding (WAV, Ogg Vorbis, MP3, FLAC), Web Audio
   output, PulseAudio/PipeWire output.

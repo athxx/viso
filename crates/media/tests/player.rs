@@ -3,11 +3,18 @@
 //! with its run loop turning. Run without the test harness, which would run
 //! it on a thread of its own.
 
-#[cfg(target_vendor = "apple")]
-mod apple {
+#[cfg(any(
+    target_vendor = "apple",
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
+mod player {
     use std::time::{Duration, Instant};
 
-    use objc2_foundation::{NSDate, NSRunLoop};
     use viso_media::{VideoEvent, VideoPlayer, VideoSource};
 
     const CLIP: &[u8] = include_bytes!("fixtures/three.mp4");
@@ -17,8 +24,16 @@ mod apple {
     }
 
     /// Turns the main run loop for `seconds`.
+    #[cfg(target_vendor = "apple")]
     fn turn(seconds: f64) {
+        use objc2_foundation::{NSDate, NSRunLoop};
         NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(seconds));
+    }
+
+    /// Waits `seconds`: the player needs no loop of this thread's.
+    #[cfg(not(target_vendor = "apple"))]
+    fn turn(seconds: f64) {
+        std::thread::sleep(Duration::from_secs_f64(seconds));
     }
 
     /// Polls `player` until `want` holds of an event, or panics after
@@ -45,16 +60,19 @@ mod apple {
     fn shown(player: &mut VideoPlayer) -> Option<char> {
         let frame = player.frame()?;
         // It lies in an IOSurface of its size, which a GPU samples in place.
-        let Some(viso_handle::ExternalImage::IoSurface {
-            surface,
-            width,
-            height,
-        }) = frame.native()
-        else {
-            panic!("a frame not in an IOSurface");
-        };
-        assert!(!surface.is_null());
-        assert_eq!((width, height), (frame.width, frame.height));
+        #[cfg(target_vendor = "apple")]
+        {
+            let Some(viso_handle::ExternalImage::IoSurface {
+                surface,
+                width,
+                height,
+            }) = frame.native()
+            else {
+                panic!("a frame not in an IOSurface");
+            };
+            assert!(!surface.is_null());
+            assert_eq!((width, height), (frame.width, frame.height));
+        }
         let mut rgba = Vec::new();
         assert!(frame.copy_rgba(&mut rgba));
         let at =
@@ -199,6 +217,14 @@ mod apple {
 }
 
 fn main() {
-    #[cfg(target_vendor = "apple")]
-    apple::run();
+    #[cfg(any(
+        target_vendor = "apple",
+        target_os = "windows",
+        target_os = "linux",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    ))]
+    player::run();
 }

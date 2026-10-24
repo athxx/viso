@@ -3183,6 +3183,7 @@ dependencies = [
 name = "viso-media"
 version = "0.0.0"
 dependencies = [
+ "libc",
  "objc2 0.6.4",
  "objc2-av-foundation",
  "objc2-core-foundation",

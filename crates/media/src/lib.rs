@@ -2,7 +2,8 @@
 //!
 //! A [`VideoPlayer`] plays a file, a URL or bytes through the platform's own
 //! player: macOS and iOS through AVFoundation, Windows through Media
-//! Foundation's media engine. The platform decodes in
+//! Foundation's media engine, Linux and the BSDs through GStreamer (opened at
+//! run time, so a system without it only fails to open videos). The platform decodes in
 //! hardware, keeps sound and picture in step and drives the audio device; the
 //! caller polls it from the thread that runs the loop for what changed
 //! ([`VideoPlayer::poll`]) and for the picture to show now

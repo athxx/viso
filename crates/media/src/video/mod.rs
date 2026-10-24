@@ -2,16 +2,48 @@
 
 #[cfg(target_vendor = "apple")]
 mod apple;
+#[cfg(any(
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
+mod gstreamer;
 #[cfg(not(target_vendor = "apple"))]
 mod no_picture;
-#[cfg(not(any(target_vendor = "apple", target_os = "windows")))]
+#[cfg(not(any(
+    target_vendor = "apple",
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+)))]
 mod unsupported;
 #[cfg(target_os = "windows")]
 mod windows;
 
 #[cfg(target_vendor = "apple")]
 use apple as imp;
-#[cfg(not(any(target_vendor = "apple", target_os = "windows")))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
+use gstreamer as imp;
+#[cfg(not(any(
+    target_vendor = "apple",
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+)))]
 use unsupported as imp;
 #[cfg(target_os = "windows")]
 use windows as imp;
@@ -314,7 +346,11 @@ impl Spilled {
     /// `bytes` in a new file of the temporary directory, named for the
     /// container they are in.
     #[cfg_attr(
-        not(any(target_vendor = "apple", target_os = "windows")),
+        not(any(
+            target_vendor = "apple",
+            windows,
+            all(unix, not(target_os = "android"))
+        )),
         allow(dead_code)
     )]
     pub(crate) fn new(bytes: &[u8]) -> std::io::Result<Spilled> {
@@ -331,7 +367,11 @@ impl Spilled {
     }
 
     #[cfg_attr(
-        not(any(target_vendor = "apple", target_os = "windows")),
+        not(any(
+            target_vendor = "apple",
+            windows,
+            all(unix, not(target_os = "android"))
+        )),
         allow(dead_code)
     )]
     pub(crate) fn path(&self) -> &Path {

@@ -870,7 +870,7 @@ CPU 上的 raster 图像：PNG/APNG、JPEG、GIF、WebP（有损/无损/动画�
 
 ### `viso-media`
 
-经各 target 自带播放器播放媒体（ADR 0049）：`VideoPlayer` 打开文件、URL（平台自行拉取，含 HLS）或内存字节（只读文件的播放器写入临时文件，播放器释放时删除），打开时暂停；在 loop 线程上 `poll` 就绪（尺寸、时长、帧率、有无声音、可否 seek）/ 结束 / 失败 / 等待数据，`frame` 只在画面变化时交出当前应显示的一帧（BGRA，平台视频处理器已完成 YUV 矩阵、范围与 HDR 映射）：画面所在的平台内存以 `Frame::native()` 交出为 `viso_handle::ExternalImage`，`copy_rgba` 才把它映射到 CPU 复制出来（不能映射的纯 GPU 帧由 `Frame::external` 构造，只能被采纳）；play / pause / seek（暂停时也显示目标帧）/ rate / volume / muted / looping。解码、声音输出与音画同步都在平台。macOS / iOS 走 AVFoundation（`AVPlayer` + `AVPlayerItemVideoOutput`，IOSurface 背书的 BGRA pixel buffer）；Windows 走 Media Foundation 的 `IMFMediaEngine`（独占一条 MTA 线程，经自建 D3D11 设备硬解，新帧 `TransferVideoFrame` 进 BGRA 渲染目标、经 staging 纹理读回到循环复用的缓冲，位置无锁共享）；其余 target 暂报 `Unsupported`。叶子 crate，不依赖框架其他 crate。
+经各 target 自带播放器播放媒体（ADR 0049）：`VideoPlayer` 打开文件、URL（平台自行拉取，含 HLS）或内存字节（只读文件的播放器写入临时文件，播放器释放时删除），打开时暂停；在 loop 线程上 `poll` 就绪（尺寸、时长、帧率、有无声音、可否 seek）/ 结束 / 失败 / 等待数据，`frame` 只在画面变化时交出当前应显示的一帧（BGRA，平台视频处理器已完成 YUV 矩阵、范围与 HDR 映射）：画面所在的平台内存以 `Frame::native()` 交出为 `viso_handle::ExternalImage`，`copy_rgba` 才把它映射到 CPU 复制出来（不能映射的纯 GPU 帧由 `Frame::external` 构造，只能被采纳）；play / pause / seek（暂停时也显示目标帧）/ rate / volume / muted / looping。解码、声音输出与音画同步都在平台。macOS / iOS 走 AVFoundation（`AVPlayer` + `AVPlayerItemVideoOutput`，IOSurface 背书的 BGRA pixel buffer）；Windows 走 Media Foundation 的 `IMFMediaEngine`（独占一条 MTA 线程，经自建 D3D11 设备硬解，新帧 `TransferVideoFrame` 进 BGRA 渲染目标、经 staging 纹理读回到循环复用的缓冲，位置无锁共享）；Linux / BSD 走 GStreamer `playbin` + `appsink`（运行时 dlopen，未安装时只是视频报 `Unsupported`；全部调用在 loop 线程且不等待，bus 在 poll 时读取，帧以 GStreamer 写入的映射内存原地交出、不再复制，暂停时取 preroll 显示 seek 目标帧，关闭在独立线程完成以免等网络）；其余 target 暂报 `Unsupported`。叶子 crate，不依赖框架其他 crate。
 
 ### `viso-ui`
 
