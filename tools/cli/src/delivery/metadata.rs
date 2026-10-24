@@ -193,6 +193,19 @@ fn msix_name(name: &str) -> String {
         .collect()
 }
 
+/// What `project` asks the user for, with the reason shown, as the packager
+/// names it: what a dev build declares too, so it may ask as the shipped
+/// app does.
+pub(crate) fn usage(project: &Project) -> Vec<(Access, String)> {
+    project
+        .manifest
+        .package
+        .permissions
+        .iter()
+        .map(|(p, reason)| (access(p.value), reason.value.clone()))
+        .collect()
+}
+
 /// The packager's name for `permission`.
 fn access(permission: Permission) -> Access {
     match permission {

@@ -358,6 +358,7 @@ pub(super) fn stage_loaded(
         web: config.settings.web,
         dir: layout.build(identity),
         android,
+        usage: crate::delivery::metadata::usage(&project),
         delivery,
     };
     let doing = if packaging { "packaging" } else { "building" };

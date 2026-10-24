@@ -49,7 +49,7 @@ use viso_dev_protocol::wire::{
     DEV_TOKEN_ENV, DEV_WINDOW_ENV, WindowGeometry,
 };
 use viso_package::android::{self, Abi, Sdk, Shell};
-use viso_package::{apple, web as bundle};
+use viso_package::{Access, apple, web as bundle};
 use viso_project::{DeviceProfile, Profile, Target};
 
 use crate::build::cargo::Package;
@@ -366,9 +366,10 @@ fn signal(child: &Child) {
 }
 
 impl Deploy {
-    /// How the dev artifact is built for this deploy; a board's build is
-    /// its device target's.
-    pub(crate) fn plan(&self) -> BuildPlan {
+    /// How the dev artifact is built for this deploy, declaring what the
+    /// app asks the user for, `usage`; a board's build is its device
+    /// target's.
+    pub(crate) fn plan(&self, usage: &[(Access, String)]) -> BuildPlan {
         match self {
             Deploy::Board(_) => BuildPlan {
                 rust: RustPlan::default(),
@@ -378,17 +379,25 @@ impl Deploy {
                 rust: rust_plan(Target::Host, None, Profile::Dev, None),
                 package: None,
             },
-            Deploy::Simulator { .. } => BuildPlan {
-                rust: rust_plan(Target::Ios, None, Profile::Dev, None),
-                package: Some(once_per_executable(|exe, bin, dir| {
-                    let app = apple::bundle(exe, dir, &apple::Info::dev(bin), true)?;
-                    apple::sign(&app.path, None, None, &dir.join("sign"))?;
-                    Ok(app.path)
-                })),
-            },
+            Deploy::Simulator { .. } => {
+                let usage = usage.to_vec();
+                BuildPlan {
+                    rust: rust_plan(Target::Ios, None, Profile::Dev, None),
+                    package: Some(once_per_executable(move |exe, bin, dir| {
+                        let info = apple::Info {
+                            usage: usage.clone(),
+                            ..apple::Info::dev(bin)
+                        };
+                        let app = apple::bundle(exe, dir, &info, true)?;
+                        apple::sign(&app.path, None, None, &dir.join("sign"))?;
+                        Ok(app.path)
+                    })),
+                }
+            }
             Deploy::Emulator { sdk, shell, .. } => {
                 let abi = Abi::host();
                 let (sdk, shell) = (sdk.clone(), shell.clone());
+                let access: Vec<Access> = usage.iter().map(|(a, _)| *a).collect();
                 BuildPlan {
                     rust: rust_plan(Target::Android, None, Profile::Dev, Some(&sdk)),
                     package: Some(once_per_executable(move |exe, bin, dir| {
@@ -399,6 +408,7 @@ impl Deploy {
                             bin,
                             &shell,
                             android::Flavor::Dev,
+                            &access,
                         ))
                         .map(|apk| apk.path)
                     })),

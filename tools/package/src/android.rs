@@ -275,7 +275,8 @@ pub struct Packing<'a> {
 }
 
 impl<'a> Packing<'a> {
-    /// A dev or `viso build` APK of `library`, for `abi`.
+    /// A dev or `viso build` APK of `library`, for `abi`, asking for
+    /// `access` as well.
     pub fn dev(
         library: &Path,
         abi: Abi,
@@ -283,13 +284,20 @@ impl<'a> Packing<'a> {
         bin: &'a str,
         shell: &'a Shell,
         flavor: Flavor,
+        access: &[Access],
     ) -> Packing<'a> {
+        let mut manifest = Manifest::dev(bin, flavor);
+        for access in access {
+            if !manifest.access.contains(access) {
+                manifest.access.push(*access);
+            }
+        }
         Packing {
             libraries: vec![(abi, library.to_owned())],
             dir,
             bin,
             shell,
-            manifest: Manifest::dev(bin, flavor),
+            manifest,
             flavor,
             icons: Vec::new(),
             key: Key::Debug,
@@ -786,6 +794,28 @@ mod tests {
             package: package_name("demo"),
         };
         assert_eq!(apk.component(), "dev.viso.demo/dev.viso.VisoActivity");
+    }
+
+    #[test]
+    fn a_dev_apk_asks_for_what_the_app_declares_once() {
+        let shell = Shell {
+            java: Vec::new(),
+            manifest: PathBuf::new(),
+        };
+        let dir = Path::new("/out");
+        let packing = Packing::dev(
+            Path::new("/lib.so"),
+            Abi::Arm64,
+            dir,
+            "a",
+            &shell,
+            Flavor::Dev,
+            &[Access::Camera, Access::Notifications],
+        );
+        assert_eq!(
+            packing.manifest.access,
+            [Access::Notifications, Access::Camera]
+        );
     }
 
     #[test]

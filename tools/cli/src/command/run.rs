@@ -759,7 +759,7 @@ pub(super) fn session(
                  passed",
             );
         }
-        let mut plan = deploy.plan();
+        let mut plan = deploy.plan(&crate::delivery::metadata::usage(&project));
         if let Some(device_plan) = device_plan {
             plan.rust = device_plan;
             let device = resolved.config.device.as_ref();

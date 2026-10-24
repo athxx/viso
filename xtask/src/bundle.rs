@@ -250,7 +250,13 @@ fn android(o: &Options) -> Result<PathBuf, String> {
         android::Flavor::Dev
     };
     let apk = sdk.package(&android::Packing::dev(
-        &built, abi, &out, &bin, &shell, flavor,
+        &built,
+        abi,
+        &out,
+        &bin,
+        &shell,
+        flavor,
+        &[],
     ))?;
 
     if o.run {
