@@ -33,6 +33,7 @@ pub mod pager;
 pub mod progress;
 pub mod reorder_handle;
 pub mod scroll;
+pub mod skeleton;
 pub mod swipe_row;
 pub mod text;
 
@@ -87,6 +88,10 @@ pub use pager::{Carousel, CarouselStyle, Pager, PagerStyle, carousel, pager};
 pub use progress::{ProgressIndicator, Spinner, progress_bar, progress_ring, spinner};
 pub use reorder_handle::{ReorderHandle, ReorderHandleStyle, reorder_handle};
 pub use scroll::{Scroll, ScrollViewStyle, scroll};
+pub use skeleton::{
+    Placeholder, Skeleton, SkeletonStyle, placeholder, skeleton_circle, skeleton_rect,
+    skeleton_text,
+};
 pub use swipe_row::{
     SwipeAction, SwipeRow, SwipeRowHandle, SwipeRowHandleSlot, SwipeRowStyle, swipe_action,
     swipe_row,

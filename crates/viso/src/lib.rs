@@ -1594,6 +1594,7 @@ impl WindowState {
             || self.store.is_transitioning()
             || self.store.is_scroll_moving()
             || self.store.is_spinning()
+            || self.store.is_shimmering()
             || self.store.is_progressing()
             || self.store.is_sliding()
             || self.store.refreshes_due()
@@ -3810,6 +3811,10 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // The spinning arcs chase on.
                     if ws.store.is_spinning() {
                         ws.store.tick_spinners(cx.frame_delta());
+                    }
+                    // The placeholders shimmer on.
+                    if ws.store.is_shimmering() {
+                        ws.store.tick_shimmers(cx.frame_delta());
                     }
                     // The progress indicators run, or ease to their values.
                     if ws.store.is_progressing() {

@@ -436,6 +436,10 @@ fn groups(store: &NodeStore, id: NodeId) -> Vec<PropertyGroup> {
             );
             add(&mut content, "alpha", number(plane.alpha));
         }
+        Some(Content::Shimmer(shimmer)) => {
+            add(&mut content, "kind", "shimmer".into());
+            add(&mut content, "look", format!("{:?}", shimmer.look));
+        }
         Some(Content::Days(days)) => {
             add(&mut content, "kind", "days".into());
             let mark = |d: Option<u8>| d.map_or("none".into(), |d| d.to_string());

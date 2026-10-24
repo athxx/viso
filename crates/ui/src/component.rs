@@ -783,6 +783,8 @@ pub struct NodeStore {
     pub(crate) refreshers: crate::refresh::Refreshers,
     /// Cold: the spinners that spin.
     pub(crate) spinners: crate::spinner::Spinners,
+    /// Cold: the shimmers that move, and their clock.
+    pub(crate) shimmers: crate::shimmer::Shimmers,
     /// Cold: the progress indicators that move.
     pub(crate) progresses: crate::progress::Progresses,
     pub(crate) sliders: crate::slider::Sliders,
@@ -936,6 +938,7 @@ impl NodeStore {
         self.bars.clear();
         self.refreshers.clear();
         self.spinners.clear();
+        self.shimmers.clear();
         self.progresses.clear();
         self.sliders.clear();
         self.stickies.clear();
@@ -5101,6 +5104,7 @@ impl NodeStore {
         self.bars.forget(i as u32);
         self.refreshers.forget(i as u32);
         self.spinners.forget(i as u32);
+        self.shimmers.forget(i as u32);
         self.progresses.forget(i as u32);
         self.sliders.forget(i as u32);
         self.stickies.forget(i as u32);

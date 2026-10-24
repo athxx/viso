@@ -234,7 +234,7 @@ Rules:
   Ctrl+Shift+Page Up/Down reorder; `tabpanel` role; hidden flex children take no fill
   share or gap.
 - [ ] `Splitter` live relayout.
-- [ ] `Skeleton` / shimmer placeholder.
+- [x] `Skeleton` / shimmer placeholder.
 - [ ] Form: field validation, error text, `Form` submit, field groups.
 
 ## W10 — Media

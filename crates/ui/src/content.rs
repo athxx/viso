@@ -164,6 +164,9 @@ pub enum Content {
     /// A colour plane: a colour's tones at its hue, a ring of hues round
     /// them, or the colour itself.
     ColorPlane(crate::color_plane::ColorPlane),
+    /// A shimmer: a block holding the place of content on its way. Its leaf
+    /// sizes it.
+    Shimmer(crate::shimmer::Shimmer),
     /// Days: the marks a week row draws under its days — the selected, today
     /// and the one under the pointer. A container's content, sizing it no
     /// further.
@@ -206,6 +209,7 @@ impl Content {
             Content::ColorPlane(plane) => plane.natural,
             Content::Shader { .. }
             | Content::Scene { .. }
+            | Content::Shimmer(_)
             | Content::Segments(_)
             | Content::Days(_) => Vec2::ZERO,
         }
@@ -228,6 +232,7 @@ impl Content {
             Content::ColorPlane(plane) => plane.natural.x,
             Content::Shader { .. }
             | Content::Scene { .. }
+            | Content::Shimmer(_)
             | Content::Segments(_)
             | Content::Days(_) => 0.0,
         }
@@ -251,6 +256,7 @@ impl Content {
             | Content::Stepper(_)
             | Content::Slider(_)
             | Content::ColorPlane(_)
+            | Content::Shimmer(_)
             | Content::Segments(_)
             | Content::Days(_) => None,
         }

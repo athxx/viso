@@ -68,6 +68,7 @@ pub mod semantics;
 pub mod shader;
 pub mod shadow;
 pub mod sheet;
+pub mod shimmer;
 pub mod slider;
 pub mod snap;
 pub mod spinner;
@@ -192,6 +193,7 @@ pub use semantics::{
 };
 pub use shader::ShaderSlots;
 pub use shadow::Shadow;
+pub use shimmer::{Shimmer, ShimmerLook};
 pub use snap::{ScrollSnap, SnapAlign};
 pub use spinner::{Spinner, SpinnerLook};
 pub use state::{StateId, StateStore, StateValue};
