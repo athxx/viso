@@ -3052,6 +3052,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "viso-example-camera"
+version = "0.0.0"
+dependencies = [
+ "viso",
+]
+
+[[package]]
 name = "viso-example-hello-world"
 version = "0.0.0"
 dependencies = [

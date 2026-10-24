@@ -327,7 +327,9 @@ Rules:
     `facing`/`device`, front cameras mirrored through the asset's flipped uv,
     two-way `playing`, capturing by default; HTML export through `getUserMedia`),
     the facade opening cameras and listing them (`viso::cameras`).
-  - [ ] Web: `getUserMedia` into the `<video>` player.
+  - [x] Web: `getUserMedia` into the `<video>` player (ideal size, rate and facing,
+    or the exact device; tracks stopped while paused; a refusal is `Denied`;
+    `enumerateDevices` listing); the `examples/camera` app.
   - [ ] Apple: `AVCaptureSession` pictures as IOSurfaces.
   - [ ] Windows: a Media Foundation source reader through the shared textures.
   - [ ] Android: Camera2 through the hardware buffer reader, its rotation and the

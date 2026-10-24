@@ -8,6 +8,13 @@
 //! browser says when it presents a new picture through
 //! `requestVideoFrameCallback`, and only then is one handed out. Bytes play
 //! from a blob URL, revoked when the player goes.
+//!
+//! A camera is the stream `getUserMedia` gives, shown by the same element:
+//! asked for at opening, its tracks stopped while paused — which lets the
+//! device go — and asked for again to play on. The browser asks the user the
+//! first time; a refusal is [`VideoError::Denied`]. The cameras are listed
+//! by `enumerateDevices`, which answers later: a listing answers what the
+//! last one found, and names them only once the user let the page capture.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -18,6 +25,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::convert::IntoWasmAbi;
 use wasm_bindgen::prelude::*;
 
+use super::camera::{CameraChoice, CameraFacing, CameraInfo, CameraRequest};
 use super::{Frame, PixelLayout, VideoError, VideoEvent, VideoInfo, VideoSource};
 
 #[wasm_bindgen]
@@ -47,6 +55,8 @@ extern "C" {
 
     #[wasm_bindgen(method, setter = src)]
     fn set_src(this: &Video, src: &str);
+    #[wasm_bindgen(method, setter = srcObject)]
+    fn set_src_object(this: &Video, stream: Option<&MediaStream>);
     #[wasm_bindgen(method, setter = crossOrigin)]
     fn set_cross_origin(this: &Video, value: &str);
     #[wasm_bindgen(method, setter = preload)]
@@ -121,6 +131,26 @@ extern "C" {
     type ImageData;
     #[wasm_bindgen(method, getter)]
     fn data(this: &ImageData) -> Uint8ClampedArray;
+
+    type MediaStream;
+    #[wasm_bindgen(method, js_name = getTracks)]
+    fn get_tracks(this: &MediaStream) -> Array;
+    #[wasm_bindgen(method, js_name = getVideoTracks)]
+    fn get_video_tracks(this: &MediaStream) -> Array;
+
+    type MediaStreamTrack;
+    #[wasm_bindgen(method)]
+    fn stop(this: &MediaStreamTrack);
+    #[wasm_bindgen(method, js_name = getSettings)]
+    fn get_settings(this: &MediaStreamTrack) -> JsValue;
+
+    type MediaDevices;
+    #[wasm_bindgen(thread_local_v2, js_namespace = navigator, js_name = mediaDevices)]
+    static MEDIA_DEVICES: Option<MediaDevices>;
+    #[wasm_bindgen(method, catch, js_name = getUserMedia)]
+    fn get_user_media(this: &MediaDevices, constraints: &JsValue) -> Result<Promise, JsValue>;
+    #[wasm_bindgen(method, catch, js_name = enumerateDevices)]
+    fn enumerate_devices(this: &MediaDevices) -> Result<Promise, JsValue>;
 
     type Blob;
     #[wasm_bindgen(constructor, catch)]
@@ -219,6 +249,8 @@ impl Picture<'_> {
 
 pub(crate) struct Player {
     video: Video,
+    /// A camera's stream, for a player of one.
+    capture: Option<Capture>,
     /// The blob URL the bytes play from, revoked when the player goes.
     blob: Option<String>,
     back: RefCell<Readback>,
@@ -254,22 +286,30 @@ impl Player {
             return Err(VideoError::Unsupported);
         }
         let (src, blob) = match source {
-            VideoSource::File(path) => (path.to_string_lossy().into_owned(), None),
-            VideoSource::Url(url) => (url.clone(), None),
+            VideoSource::File(path) => (Some(path.to_string_lossy().into_owned()), None),
+            VideoSource::Url(url) => (Some(url.clone()), None),
             VideoSource::Bytes(bytes) => blob_url(bytes)?,
             VideoSource::Static(bytes) => blob_url(bytes)?,
-            VideoSource::Camera(_) => return Err(VideoError::Unsupported),
+            VideoSource::Camera(_) => (None, None),
+        };
+        let capture = match source {
+            VideoSource::Camera(request) => Some(Capture::new(request)?),
+            _ => None,
         };
         video.set_attribute("style", HIDDEN);
         video.set_attribute("aria-hidden", "true");
         video.set_plays_inline(true);
         video.set_preload("auto");
-        // A picture read back must not taint the canvas: a cross-origin
-        // source is fetched with CORS.
-        if blob.is_none() && src.contains("://") {
-            video.set_cross_origin("anonymous");
+        if let Some(src) = &src {
+            // A picture read back must not taint the canvas: a cross-origin
+            // source is fetched with CORS.
+            if blob.is_none() && src.contains("://") {
+                video.set_cross_origin("anonymous");
+            }
+            video.set_src(src);
+        } else {
+            video.set_muted(true);
         }
-        video.set_src(&src);
         append_to_body(&video);
         let presented = Rc::new(Cell::new(f64::NAN));
         let asked = Rc::new(Cell::new(false));
@@ -291,6 +331,7 @@ impl Player {
         };
         Ok(Player {
             video,
+            capture,
             blob,
             back: RefCell::default(),
             presented,
@@ -315,6 +356,20 @@ impl Player {
         if self.failed {
             return None;
         }
+        if let Some(capture) = &mut self.capture {
+            // Captured from while it opens, and while it plays.
+            let wanted = !self.ready || self.wants_play;
+            match capture.answered(&self.video, wanted) {
+                Ok(true) => {
+                    let _ = self.video.play().catch(&self.on_refused);
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    self.failed = true;
+                    return Some(VideoEvent::Failed(error));
+                }
+            }
+        }
         let video = &self.video;
         if let Some(error) = video.error() {
             self.failed = true;
@@ -338,7 +393,12 @@ impl Player {
             }
             self.ready = true;
             self.due = true;
-            if self.wants_play {
+            let facing = self.capture.as_ref().map(Capture::facing);
+            if let Some(capture) = &mut self.capture {
+                if !self.wants_play {
+                    capture.release(&self.video);
+                }
+            } else if self.wants_play {
                 self.start();
             }
             let length = video.duration();
@@ -351,7 +411,7 @@ impl Player {
                 frame_rate: None,
                 audio: has_audio(video),
                 seekable: duration.is_some() && video.seekable().length() > 0,
-                facing: None,
+                facing,
             }));
         }
         if self.refused.replace(false) {
@@ -419,6 +479,13 @@ impl Player {
     }
 
     pub(crate) fn play(&mut self) {
+        if let Some(capture) = &mut self.capture {
+            self.wants_play = true;
+            if self.ready {
+                capture.ask();
+            }
+            return;
+        }
         if std::mem::take(&mut self.ended) {
             self.seek(Duration::ZERO);
         }
@@ -431,15 +498,26 @@ impl Player {
     pub(crate) fn pause(&mut self) {
         self.wants_play = false;
         self.video.pause();
+        if self.ready
+            && let Some(capture) = &mut self.capture
+        {
+            capture.release(&self.video);
+        }
     }
 
     pub(crate) fn seek(&mut self, time: Duration) {
+        if self.capture.is_some() {
+            return;
+        }
         self.ended = false;
         self.seeking = true;
         self.video.set_current_time(time.as_secs_f64());
     }
 
     pub(crate) fn set_rate(&mut self, rate: f32) {
+        if self.capture.is_some() {
+            return;
+        }
         let rate = if rate.is_finite() && rate > 0.0 {
             rate
         } else {
@@ -462,6 +540,9 @@ impl Player {
     }
 
     pub(crate) fn position(&self) -> Duration {
+        if self.capture.is_some() {
+            return Duration::ZERO;
+        }
         Duration::from_secs_f64(self.video.current_time().max(0.0))
     }
 
@@ -474,6 +555,9 @@ impl Drop for Player {
     fn drop(&mut self) {
         // Emptied and taken out of the page, the element frees its decoder.
         self.video.pause();
+        if let Some(capture) = &mut self.capture {
+            capture.release(&self.video);
+        }
         self.video.remove_attribute("src");
         self.video.load();
         self.video.remove();
@@ -483,12 +567,12 @@ impl Drop for Player {
     }
 }
 
-/// A blob URL over a copy of `bytes`.
-fn blob_url(bytes: &[u8]) -> Result<(String, Option<String>), VideoError> {
+/// A blob URL over a copy of `bytes`, to play and to revoke.
+fn blob_url(bytes: &[u8]) -> Result<(Option<String>, Option<String>), VideoError> {
     let parts = Array::of1(&Uint8Array::from(bytes));
     let blob = Blob::new(&parts).map_err(|e| VideoError::Open(format!("{e:?}")))?;
     let url = create_object_url(&blob);
-    Ok((url.clone(), Some(url)))
+    Ok((Some(url.clone()), Some(url)))
 }
 
 /// Whether the video has sound, where the browser says; taken to have it
@@ -507,7 +591,227 @@ fn has_audio(video: &Video) -> bool {
         .unwrap_or(true)
 }
 
-/// The cameras this target has: none it captures from yet.
-pub(crate) fn cameras() -> Vec<super::CameraInfo> {
-    Vec::new()
+/// A camera's stream, asked of the browser.
+struct Capture {
+    /// What `getUserMedia` is asked for.
+    constraints: JsValue,
+    /// Which way the camera asked for faces, where the request says.
+    asked: Option<CameraFacing>,
+    /// The browser's answer to the last ask, until taken.
+    answer: Rc<RefCell<Option<Result<MediaStream, JsValue>>>>,
+    on_stream: Closure<dyn FnMut(JsValue)>,
+    on_refusal: Closure<dyn FnMut(JsValue)>,
+    /// Whether an answer is awaited.
+    pending: bool,
+    /// The stream the element shows.
+    stream: Option<MediaStream>,
+}
+
+impl Capture {
+    /// The capture `request` asks for, asked for at once.
+    fn new(request: &CameraRequest) -> Result<Capture, VideoError> {
+        let set = |object: &js_sys::Object, key: &str, value: &JsValue| {
+            let _ = js_sys::Reflect::set(object, &JsValue::from_str(key), value);
+        };
+        let ideal = |value: &JsValue| {
+            let object = js_sys::Object::new();
+            set(&object, "ideal", value);
+            object
+        };
+        let video = js_sys::Object::new();
+        set(&video, "width", &ideal(&request.width.max(1).into()));
+        set(&video, "height", &ideal(&request.height.max(1).into()));
+        set(
+            &video,
+            "frameRate",
+            &ideal(&request.frame_rate.max(1).into()),
+        );
+        let asked = match &request.camera {
+            CameraChoice::Default => None,
+            CameraChoice::Facing(facing) => Some(*facing),
+            CameraChoice::Id(id) => {
+                let exact = js_sys::Object::new();
+                set(&exact, "exact", &JsValue::from_str(id));
+                set(&video, "deviceId", &exact);
+                None
+            }
+        };
+        let mode = match asked {
+            Some(CameraFacing::Front) => Some("user"),
+            Some(CameraFacing::Back) => Some("environment"),
+            Some(CameraFacing::External) | None => None,
+        };
+        if let Some(mode) = mode {
+            set(&video, "facingMode", &ideal(&JsValue::from_str(mode)));
+        }
+        let constraints = js_sys::Object::new();
+        set(&constraints, "video", &video);
+        set(&constraints, "audio", &JsValue::FALSE);
+        let answer = Rc::new(RefCell::new(None));
+        let on_stream = {
+            let answer = Rc::clone(&answer);
+            Closure::<dyn FnMut(JsValue)>::new(move |stream: JsValue| {
+                *answer.borrow_mut() = Some(Ok(stream.unchecked_into()));
+            })
+        };
+        let on_refusal = {
+            let answer = Rc::clone(&answer);
+            Closure::<dyn FnMut(JsValue)>::new(move |error: JsValue| {
+                *answer.borrow_mut() = Some(Err(error));
+            })
+        };
+        let mut capture = Capture {
+            constraints: constraints.into(),
+            asked,
+            answer,
+            on_stream,
+            on_refusal,
+            pending: false,
+            stream: None,
+        };
+        if MEDIA_DEVICES.with(Option::is_none) {
+            return Err(VideoError::Unsupported);
+        }
+        capture.ask();
+        Ok(capture)
+    }
+
+    /// Asks for the stream, unless it is shown or asked for already.
+    fn ask(&mut self) {
+        if self.stream.is_some() || self.pending {
+            return;
+        }
+        let asked = MEDIA_DEVICES.with(|devices| {
+            let promise = devices.as_ref()?.get_user_media(&self.constraints).ok()?;
+            let _ = promise.then2(&self.on_stream, &self.on_refusal);
+            Some(())
+        });
+        self.pending = asked.is_some();
+        if asked.is_none() {
+            *self.answer.borrow_mut() = Some(Err(JsValue::from_str("NotFoundError")));
+        }
+    }
+
+    /// Takes the browser's answer: a stream `video` shows while `wanted`,
+    /// else lets go of at once. Returns whether `video` shows a new one.
+    fn answered(&mut self, video: &Video, wanted: bool) -> Result<bool, VideoError> {
+        let Some(answer) = self.answer.borrow_mut().take() else {
+            return Ok(false);
+        };
+        self.pending = false;
+        let stream = answer.map_err(refusal)?;
+        if !wanted {
+            stop(&stream);
+            return Ok(false);
+        }
+        video.set_src_object(Some(&stream));
+        self.stream = Some(stream);
+        Ok(true)
+    }
+
+    /// Stops the stream's tracks, which lets the camera go; an answer still
+    /// awaited is let go of as it comes.
+    fn release(&mut self, video: &Video) {
+        if let Some(stream) = self.stream.take() {
+            stop(&stream);
+            video.set_src_object(None);
+        }
+    }
+
+    /// Which way the camera shown faces: as its track says, else as asked,
+    /// else toward the user, as a computer's own camera does.
+    fn facing(&self) -> CameraFacing {
+        let said = self.stream.as_ref().and_then(|stream| {
+            let track: MediaStreamTrack = stream.get_video_tracks().get(0).dyn_into().ok()?;
+            js_sys::Reflect::get(&track.get_settings(), &JsValue::from_str("facingMode"))
+                .ok()?
+                .as_string()
+        });
+        match said.as_deref() {
+            Some("user") => CameraFacing::Front,
+            Some("environment") => CameraFacing::Back,
+            Some(_) => CameraFacing::External,
+            None => self.asked.unwrap_or(CameraFacing::Front),
+        }
+    }
+}
+
+/// Stops each of `stream`'s tracks.
+fn stop(stream: &MediaStream) {
+    for track in stream.get_tracks().iter() {
+        track.unchecked_into::<MediaStreamTrack>().stop();
+    }
+}
+
+/// The error a refused `getUserMedia` stands for.
+fn refusal(error: JsValue) -> VideoError {
+    let name = js_sys::Reflect::get(&error, &JsValue::from_str("name"))
+        .ok()
+        .and_then(|name| name.as_string())
+        .or_else(|| error.as_string())
+        .unwrap_or_default();
+    match name.as_str() {
+        "NotAllowedError" | "SecurityError" => VideoError::Denied,
+        "NotFoundError" | "OverconstrainedError" => VideoError::Open("no such camera".into()),
+        _ => VideoError::Open(format!("the camera cannot be opened: {name}")),
+    }
+}
+
+thread_local! {
+    /// The cameras the last listing found, and whether one is under way.
+    static LISTED: Rc<RefCell<(Vec<CameraInfo>, bool)>> = Rc::default();
+}
+
+/// The cameras the last listing found; a new one starts, its answer kept
+/// for the next call.
+pub(crate) fn cameras() -> Vec<CameraInfo> {
+    let listed = LISTED.with(Rc::clone);
+    if !std::mem::replace(&mut listed.borrow_mut().1, true) {
+        let found = Rc::clone(&listed);
+        let on_devices = Closure::once(move |devices: JsValue| {
+            let devices: Array = devices.unchecked_into();
+            let get = |device: &JsValue, key: &str| {
+                js_sys::Reflect::get(device, &JsValue::from_str(key))
+                    .ok()
+                    .and_then(|v| v.as_string())
+                    .unwrap_or_default()
+            };
+            let cameras = devices
+                .iter()
+                .filter(|device| get(device, "kind") == "videoinput")
+                .map(|device| {
+                    let name = get(&device, "label");
+                    let lower = name.to_ascii_lowercase();
+                    let facing = if lower.contains("back") || lower.contains("rear") {
+                        CameraFacing::Back
+                    } else if lower.contains("front")
+                        || lower.contains("facetime")
+                        || lower.contains("integrated")
+                        || lower.contains("built-in")
+                    {
+                        CameraFacing::Front
+                    } else {
+                        CameraFacing::External
+                    };
+                    CameraInfo {
+                        id: get(&device, "deviceId"),
+                        name,
+                        facing,
+                    }
+                })
+                .collect();
+            *found.borrow_mut() = (cameras, false);
+        });
+        let started = MEDIA_DEVICES.with(|devices| {
+            let promise = devices.as_ref()?.enumerate_devices().ok()?;
+            let _ = promise.then(&on_devices);
+            Some(())
+        });
+        if started.is_some() {
+            on_devices.forget();
+        } else {
+            listed.borrow_mut().1 = false;
+        }
+    }
+    listed.borrow().0.clone()
 }
