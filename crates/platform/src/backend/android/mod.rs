@@ -7,7 +7,8 @@
 //! the first `nativeStart`, attaches to the VM and calls the app's `main`, so
 //! [`PlatformApp::run`] owns its loop like on the desktop:
 //! - frames come from `AChoreographer`, posted only while a redraw is pending
-//!   and a surface exists;
+//!   and a surface exists; [`ControlFlow::Poll`] asks for one, so a frame the
+//!   runtime holds pending is beaten even when nothing else asked;
 //! - [`ControlFlow::WaitUntil`] and [`ControlFlow::Wait`] sleep in
 //!   `ALooper_pollOnce`, which the inbox and the choreographer both wake;
 //! - the surface is lent to the app between `surfaceChanged` and
@@ -1006,8 +1007,11 @@ impl PlatformApp for AndroidApp {
             }
             let timeout = match flow {
                 ControlFlow::Exit => break,
+                // A frame is pending: the next vsync beats it, whether or not
+                // anything else asked for one.
                 ControlFlow::Poll => {
                     flow = ControlFlow::Wait;
+                    request_frame();
                     0
                 }
                 ControlFlow::Wait => -1,
