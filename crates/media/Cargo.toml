@@ -11,7 +11,11 @@ rust-version.workspace = true
 # stack (AVFoundation, Media Foundation, GStreamer, the NDK's media, the
 # browser's), none of which the window/input layer needs.
 #
-# A leaf: it depends on nothing of the framework.
+# It depends on nothing of the framework but the handle vocabulary, which
+# names a frame a GPU samples in place.
+[dependencies]
+viso-handle = { workspace = true }
+
 [target.'cfg(target_vendor = "apple")'.dependencies]
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = [
@@ -45,6 +49,14 @@ objc2-core-video = { version = "0.3", default-features = false, features = [
     "CVPixelBuffer",
     "CVReturn",
     "CVBase",
+    "CVPixelBufferIOSurface",
+    "objc2-io-surface",
+] }
+objc2-io-surface = { version = "0.3", default-features = false, features = [
+    "std",
+    "objc2",
+    "objc2-core-foundation",
+    "IOSurfaceRef",
 ] }
 objc2-av-foundation = { version = "0.3", default-features = false, features = [
     "std",

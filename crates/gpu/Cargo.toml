@@ -103,6 +103,15 @@ objc2-metal = { version = "0.3", features = [
     "MTLPixelFormat",
     "MTLDrawable",
     "MTLTypes",
+    "MTLAllocation",
+    "objc2-io-surface",
+] }
+# A video frame's IOSurface, sampled in place by a texture over it.
+objc2-io-surface = { version = "0.3", default-features = false, features = [
+    "std",
+    "objc2",
+    "objc2-core-foundation",
+    "IOSurfaceRef",
 ] }
 objc2-quartz-core = { version = "0.3", features = [
     "CAMetalLayer",
@@ -115,3 +124,15 @@ objc2-quartz-core = { version = "0.3", features = [
 # Compile-fail tests proving `#[derive(GpuInstance)]` rejects unsupported field
 # types and non-`#[repr(C)]` structs. External crate; not a viso-* edge.
 trybuild = "1"
+
+# IOSurfaces written on the CPU, imported as textures.
+[target.'cfg(target_vendor = "apple")'.dev-dependencies]
+objc2-core-foundation = { version = "0.3", features = ["CFDictionary", "CFNumber", "CFString"] }
+objc2-io-surface = { version = "0.3", default-features = false, features = [
+    "std",
+    "objc2",
+    "objc2-core-foundation",
+    "libc",
+    "IOSurfaceRef",
+    "IOSurfaceTypes",
+] }

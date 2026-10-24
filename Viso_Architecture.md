@@ -788,7 +788,7 @@ OS abstraction：
 
 ### `viso-handle`
 
-叶子 crate，只定义 `RawWindowHandle`：由 `viso-platform` 产生、`viso-gpu` 消费以创建 surface，使二者无需互相依赖。
+叶子 crate，定义两种原生句柄：`RawWindowHandle`——由 `viso-platform` 产生、`viso-gpu` 消费以创建 surface；`ExternalImage`——其他框架写入 GPU 可原地采样内存的画面（macOS / iOS 的 `IoSurface`，BGRA、sRGB 编码），由 `viso-media` 交出、`viso-gpu` 采纳为 texture。生产者与消费者因此无需互相依赖。
 
 ### `viso-gpu`
 
@@ -797,7 +797,7 @@ OS abstraction：
 - device；
 - queue；
 - buffer；
-- texture；
+- texture（含外部画面：`import_external` 建一个原地采样 `ExternalImage` 的 texture，`adopt_external` 把同一 texture 指向同尺寸的新画面；Metal 以 `newTextureWithDescriptor:iosurface:plane:` 包装 IOSurface，每个 IOSurface 只包装一次（最近 16 个），采样中的 surface 记 use count 使其 pool 不往里写新画面，被替换的在其所在帧完成后才归还；不支持的 backend 返回 `None` / `false`，调用方回落为复制）；
 - sampler；
 - pipeline；
 - bind group；
@@ -870,7 +870,7 @@ CPU 上的 raster 图像：PNG/APNG、JPEG、GIF、WebP（有损/无损/动画�
 
 ### `viso-media`
 
-经各 target 自带播放器播放媒体（ADR 0049）：`VideoPlayer` 打开文件、URL（平台自行拉取，含 HLS）或内存字节（只读文件的播放器写入临时文件，播放器释放时删除），打开时暂停；在 loop 线程上 `poll` 就绪（尺寸、时长、帧率、有无声音、可否 seek）/ 结束 / 失败 / 等待数据，`frame` 只在画面变化时交出当前应显示的一帧（BGRA，平台视频处理器已完成 YUV 矩阵、范围与 HDR 映射）；play / pause / seek（暂停时也显示目标帧）/ rate / volume / muted / looping。解码、声音输出与音画同步都在平台。macOS / iOS 走 AVFoundation（`AVPlayer` + `AVPlayerItemVideoOutput`，IOSurface 背书的 BGRA pixel buffer）；其余 target 暂报 `Unsupported`。叶子 crate，不依赖框架其他 crate。
+经各 target 自带播放器播放媒体（ADR 0049）：`VideoPlayer` 打开文件、URL（平台自行拉取，含 HLS）或内存字节（只读文件的播放器写入临时文件，播放器释放时删除），打开时暂停；在 loop 线程上 `poll` 就绪（尺寸、时长、帧率、有无声音、可否 seek）/ 结束 / 失败 / 等待数据，`frame` 只在画面变化时交出当前应显示的一帧（BGRA，平台视频处理器已完成 YUV 矩阵、范围与 HDR 映射）：画面所在的平台内存以 `Frame::native()` 交出为 `viso_handle::ExternalImage`，`copy_rgba` 才把它映射到 CPU 复制出来（不能映射的纯 GPU 帧由 `Frame::external` 构造，只能被采纳）；play / pause / seek（暂停时也显示目标帧）/ rate / volume / muted / looping。解码、声音输出与音画同步都在平台。macOS / iOS 走 AVFoundation（`AVPlayer` + `AVPlayerItemVideoOutput`，IOSurface 背书的 BGRA pixel buffer）；其余 target 暂报 `Unsupported`。叶子 crate，不依赖框架其他 crate。
 
 ### `viso-ui`
 
@@ -976,7 +976,7 @@ CLI 依赖 `viso-dsl`、`viso-dev-protocol`、`viso-schema`、`viso-image`、`vi
 | `viso-render` | math, schema, text, image, svg, shader, gpu | — |
 | `viso-svg` | math | — |
 | `viso-image` | schema, gpu-abi, svg, math | — |
-| `viso-media` | —（叶子；各 target 的媒体栈） | — |
+| `viso-media` | handle（各 target 的媒体栈） | — |
 | `viso-text` | glyph-a8 | — |
 | `viso-shader` | gpu-abi, ende | — |
 | `viso-gpu` | handle, macros, gpu-abi | — |
@@ -4020,7 +4020,7 @@ fonts   = { charset = ["latin", "gb2312"] }
 - `MemoryBudget { heap, gpu, faces, shaping, glyph_atlas, images }`：profile 给默认值，target 的 `budget` 覆盖，`Application::memory_budget()` 在第一个窗口打开前读一次。`faces` / `shaping` 直接成为 face SLRU 与 shaping cache 的字节预算，`glyph_atlas` 决定 atlas plane 边长（整页取整）；
 - 运行时图片来源：`Asset::bytes`（运行时给出的字节，每次构造是一个独立 resource，保留 `Asset` 即可复用其解码）与 `Asset::file`（路径即 resource，build 时只登记，worker 在帧路径外读取——至多 1 GiB——再解码；无 worker 时在 idle slice 内读取）；URL 来源随网络服务加入；读不到或无法解码的资源在每个显示它的 table 里记为 failed（`AssetDraw::Failed`，不重试；已有旧修订的 texture/scene 时继续画旧的），asset node 可登记 loading / failed 两个替身节点（`set_asset_fallbacks`），随所画内容切换 hidden；`NoticeKinds::ASSET` 在布局后投递 `AssetLoaded { size }` / `AssetFailed`，`Image` widget 的 `placeholder` / `error` / `on_load` 与 DSL 的 `loaded` / `failed` 事件都建在其上；
 - 动画图片（GIF、APNG、动画 WebP、AVIF 序列）：asset worker 解出首帧作为 texture，同时交回编码字节；app 级 `Playback` 持有这些字节，在独立线程（无线程时在帧路径内联）逐帧解码，每个窗口的 `Players` 只在帧到期时用 `write_texture` 原地改写已驻留的 texture 并只重绘显示它的节点——不重建 texture、不触发 layout。按文件给的帧时长与循环次数播放（无限或 N 次后停在末帧）；没有任何显示它的节点在视口内可见（含祖先隐藏、透明、裁剪）、所有节点都被 `set_asset_still` 静止（`Image::animate(false)` / DSL `animate: false`）或系统要求减少动态时暂停并保留剩余时长；下一帧的到期时间进入事件循环的 timer deadline，静止时不唤醒；texture 被替换或释放时关闭对应解码器，`animation_frames` 计数写入的帧；
-- 视频（ADR 0049）：video node 是一个 asset node，其 resource 不由解码器填充而由 facade 提供（asset table 中的 hosted 条目：不进入 `wanted`、不被 sweep），因而直接得到 fit、tint、圆角 mask、poster / error 替身、`loaded` / `failed` 通知与可见性判断；store 另有每个 video node 一条的 `VideoTable`——来源、app 的请求（`Playback { playing, looping, muted, volume, rate }` 与待执行的 seek）、播放器的报告（`VideoStatus { ready, position, duration, playing, waiting, ended }`）。node 即视频的身份：同一来源保持播放位置，换来源得到新 resource。build 端经 `declare_playback` 声明请求，只有声明值变化才覆盖当前请求，handler 的暂停与播完停下不被无关重建打回；handler 经 `EventCx::play_video` / `seek_video` / `set_playback` 提出请求。facade 的 `Videos` 每帧在 loop 线程上：关闭失去节点的播放器（释放 texture），为新条目打开 `viso_media::VideoPlayer`（打开失败即 failed），把请求差异与 seek 交给播放器，poll 事件（就绪时登记固有尺寸，结束时把请求置为暂停），刷新 status（位置按 250 ms 量化以免每帧都产生通知）；首帧或节点在视口内可见时取画面，同尺寸写入原 texture 并只 `PAINT` 显示它的节点，尺寸变化才新建 texture 并重新 layout。播放且可见时窗口逐帧出帧，加载中或在屏幕外播放时以 100 ms 的 timer 轮询；`video_frames` 计数写入的画面。`NoticeKinds::VIDEO` 投递 `Video(status)`（每次变化）、`VideoEnded`（一次）与 `VideoPlaying(bool)`，`Video` widget 的 `on_progress` / `on_ended` 与 DSL 的 `progress` / `ended` / `playing_changed`（写回双向 `playing`）建在其上；
+- 视频（ADR 0049）：video node 是一个 asset node，其 resource 不由解码器填充而由 facade 提供（asset table 中的 hosted 条目：不进入 `wanted`、不被 sweep），因而直接得到 fit、tint、圆角 mask、poster / error 替身、`loaded` / `failed` 通知与可见性判断；store 另有每个 video node 一条的 `VideoTable`——来源、app 的请求（`Playback { playing, looping, muted, volume, rate }` 与待执行的 seek）、播放器的报告（`VideoStatus { ready, position, duration, playing, waiting, ended }`）。node 即视频的身份：同一来源保持播放位置，换来源得到新 resource。build 端经 `declare_playback` 声明请求，只有声明值变化才覆盖当前请求，handler 的暂停与播完停下不被无关重建打回；handler 经 `EventCx::play_video` / `seek_video` / `set_playback` 提出请求。facade 的 `Videos` 每帧在 loop 线程上：关闭失去节点的播放器（释放 texture），为新条目打开 `viso_media::VideoPlayer`（打开失败即 failed），把请求差异与 seek 交给播放器，poll 事件（就绪时登记固有尺寸，结束时把请求置为暂停），刷新 status（位置按 250 ms 量化以免每帧都产生通知）；首帧或节点在视口内可见时取画面：画面在 GPU 内存（IOSurface）且 backend 能采纳时零拷贝——首帧 `import_external`，之后 `adopt_external` 把同一 texture 指向新画面；否则复制 texel，同尺寸写入原 texture；两者都只 `PAINT` 显示它的节点，尺寸变化才新建 texture 并重新 layout。播放且可见时窗口逐帧出帧，加载中或在屏幕外播放时以 100 ms 的 timer 轮询；`video_frames` 计数写入的画面。`NoticeKinds::VIDEO` 投递 `Video(status)`（每次变化）、`VideoEnded`（一次）与 `VideoPlaying(bool)`，`Video` widget 的 `on_progress` / `on_ended` 与 DSL 的 `progress` / `ended` / `playing_changed`（写回双向 `playing`）建在其上；
 - `images` 同时是图片缓存的上限：asset table 按 node 计数每个 resource 的使用者（brush 采样也算），没有 node 再显示的图片保留 texture（vector 保留 scene），再显示时立即绘制；每帧 settle 后，有资源失去最后一个使用者、或字节数 / 份额变化的窗口做一次 sweep——先丢弃没有可保留内容的条目，再按最近显示时间从旧到新释放，直到该窗口的 texture 加未显示的 scene 不超过 `images` 减其他窗口的 texture 字节；trim 释放全部未显示的图片；显示中的图片从不释放；
 - 每帧结束检查三条硬限制：heap（安装 `viso::alloc::Counting` 时统计的 live bytes）、gpu（renderer 的 buffer / gradient ramp / mask pages / transient target 加 glyph atlas plane 与图片 texture 字节，仅在设了 gpu 限制时测量）、images（窗口内驻留图片 texture，增量计数）。第一次超出时所有窗口执行与 `LowMemory` 相同的 trim（丢弃可重建的缓存与切走的分支），仍超出则报告一次 `BudgetExceeded`（stderr 与 Inspector 的 `budget` 资源组），回到限制内后重新计；
 - worker 数：target 的 `workers`，否则 profile 默认，否则按机器；`0` 时 text shaping 与 asset decode 在主线程按时间片（text 按 span 预算的 8 倍，asset 4 ms）执行，结果与多线程一致；CpuRaster 的光栅线程数取同一个值；

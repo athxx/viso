@@ -372,7 +372,7 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
             "viso-media",
             Allowed {
                 dir: "crates/media",
-                deps: &[],
+                deps: &["viso-handle"],
                 dev: &[],
             },
         ),

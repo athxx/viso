@@ -44,8 +44,19 @@ mod apple {
     /// is brightest.
     fn shown(player: &mut VideoPlayer) -> Option<char> {
         let frame = player.frame()?;
+        // It lies in an IOSurface of its size, which a GPU samples in place.
+        let Some(viso_handle::ExternalImage::IoSurface {
+            surface,
+            width,
+            height,
+        }) = frame.native()
+        else {
+            panic!("a frame not in an IOSurface");
+        };
+        assert!(!surface.is_null());
+        assert_eq!((width, height), (frame.width, frame.height));
         let mut rgba = Vec::new();
-        frame.copy_rgba(&mut rgba);
+        assert!(frame.copy_rgba(&mut rgba));
         let at =
             ((frame.height as usize / 2) * frame.width as usize + frame.width as usize / 2) * 4;
         let [r, g, b] = [rgba[at], rgba[at + 1], rgba[at + 2]];

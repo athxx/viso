@@ -1,13 +1,16 @@
 //! A window's videos: one platform player a video node, steered by what the
-//! app asks of the node and reporting back what it does, its pictures
-//! written into a texture of the window's renderer.
+//! app asks of the node and reporting back what it does, its pictures shown
+//! as a texture of the window's renderer.
 //!
 //! A player opens when its node first shows its source and closes when the
 //! node lets it go. While it plays and a node shows it on screen, the window
 //! beats each frame and takes each new picture: the first, and any of another
-//! size, becomes a texture of its own; the rest are written into it, marking
-//! only `PAINT`. Off screen it plays on unread. A player loading, or playing
-//! where nothing beats for it, is polled on a timer instead.
+//! size, becomes a texture of its own; the rest go into it, marking only
+//! `PAINT`. A picture the GPU already holds is sampled where it lies — the
+//! texture adopts it, no texel copied — where the backend can; otherwise its
+//! texels are written into the texture. Off screen it plays on unread. A
+//! player loading, or playing where nothing beats for it, is polled on a
+//! timer instead.
 
 use std::time::Duration;
 
@@ -107,8 +110,18 @@ struct Played<P> {
     /// What was last asked of the player.
     asked: Playback,
     ready: bool,
-    /// The texture its pictures are written into, and its size.
-    texture: Option<(TextureId, (u32, u32))>,
+    /// The texture its pictures are shown as.
+    texture: Option<Shown>,
+}
+
+/// The texture a video's pictures are shown as.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Shown {
+    texture: TextureId,
+    size: (u32, u32),
+    /// Whether it samples the pictures where they lie, rather than holding
+    /// copies of them.
+    adopted: bool,
 }
 
 /// What a step leaves for the loop.
@@ -307,27 +320,57 @@ impl<P: Play> Videos<P> {
             let Some(frame) = player.frame() else {
                 continue;
             };
-            frame.copy_rgba(&mut self.scratch);
-            let texels = (frame.width, frame.height);
-            match p.texture {
-                Some((texture, at)) if at == texels => {
-                    backend.write_texture(texture, 0, 0, texels.0, texels.1, &self.scratch);
+            let size = (frame.width, frame.height);
+            let shown_as = p.texture.filter(|t| t.size == size);
+            // In place where the backend adopts it: the same texture pointed
+            // at the new picture, or a new one over it.
+            if let Some(image) = frame.native() {
+                if let Some(t) = shown_as.filter(|t| t.adopted)
+                    && backend.adopt_external(t.texture, &image)
+                {
+                    store.repaint_asset(p.resource);
+                    self.frames += 1;
+                    continue;
+                }
+                if let Some(texture) = backend.import_external(&image) {
+                    if let Some(old) = store.show_video_frame(p.resource, texture, size) {
+                        renderer.release_texture(*backend, old);
+                    }
+                    p.texture = Some(Shown {
+                        texture,
+                        size,
+                        adopted: true,
+                    });
+                    self.frames += 1;
+                    continue;
+                }
+            }
+            if !frame.copy_rgba(&mut self.scratch) {
+                continue;
+            }
+            match shown_as.filter(|t| !t.adopted) {
+                Some(t) => {
+                    backend.write_texture(t.texture, 0, 0, size.0, size.1, &self.scratch);
                     store.repaint_asset(p.resource);
                 }
-                _ => {
+                None => {
                     // A video's texels are sRGB-encoded: sampling decodes them.
                     let texture = backend.create_texture(&TextureDesc {
-                        width: texels.0,
-                        height: texels.1,
+                        width: size.0,
+                        height: size.1,
                         format: TextureFormat::Rgba8UnormSrgb,
                         render_target: false,
                         label: "video",
                     });
-                    backend.write_texture(texture, 0, 0, texels.0, texels.1, &self.scratch);
-                    if let Some(old) = store.show_video_frame(p.resource, texture, texels) {
+                    backend.write_texture(texture, 0, 0, size.0, size.1, &self.scratch);
+                    if let Some(old) = store.show_video_frame(p.resource, texture, size) {
                         renderer.release_texture(*backend, old);
                     }
-                    p.texture = Some((texture, texels));
+                    p.texture = Some(Shown {
+                        texture,
+                        size,
+                        adopted: false,
+                    });
                 }
             }
             self.frames += 1;
@@ -362,7 +405,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::rc::Rc;
     use viso_gpu::{CpuRaster, RawWindowHandle};
-    use viso_media::{PixelLayout, VideoInfo};
+    use viso_media::VideoInfo;
     use viso_ui::{AssetDraw, AssetFit, BoxStyle, BuildCx, Content, LeafStyle, Size};
 
     /// What a scripted player does: the events it reports and the pictures
@@ -372,6 +415,8 @@ mod tests {
         events: VecDeque<VideoEvent>,
         /// Each picture: its size and one RGB colour.
         frames: VecDeque<(u32, u32, [u8; 3])>,
+        /// Pictures in GPU memory, handed over before any of `frames`.
+        external: VecDeque<viso_gpu::ExternalImage>,
         playing: bool,
         position: Duration,
         looping: bool,
@@ -412,16 +457,19 @@ mod tests {
             self.script.borrow_mut().events.pop_front()
         }
         fn frame(&mut self) -> Option<Frame<'_>> {
+            if let Some(image) = self.script.borrow_mut().external.pop_front() {
+                let (w, h) = image.size();
+                return Some(Frame::external(w, h, image, Duration::ZERO));
+            }
             let (w, h, [r, g, b]) = self.script.borrow_mut().frames.pop_front()?;
             self.picture = [b, g, r, 255].repeat((w * h) as usize);
-            Some(Frame {
-                width: w,
-                height: h,
-                layout: PixelLayout::Bgra8,
-                rows: &self.picture,
-                stride: w as usize * 4,
-                time: Duration::ZERO,
-            })
+            Some(Frame::bgra(
+                w,
+                h,
+                &self.picture,
+                w as usize * 4,
+                Duration::ZERO,
+            ))
         }
         fn play(&mut self) {
             self.script.borrow_mut().playing = true;
@@ -610,6 +658,116 @@ mod tests {
         win.step(SCREEN);
         assert_ne!(win.shown().0, before);
         assert_eq!(win.texel(), [9, 9, 9]);
+    }
+
+    /// A `side` × `side` BGRA IOSurface every texel of which is `bgra`.
+    #[cfg(target_vendor = "apple")]
+    fn surface(
+        side: u32,
+        bgra: [u8; 4],
+    ) -> objc2_core_foundation::CFRetained<objc2_io_surface::IOSurfaceRef> {
+        use objc2_core_foundation::{CFDictionary, CFNumber, CFString, CFType};
+        use objc2_io_surface::{
+            IOSurfaceLockOptions, IOSurfaceRef, kIOSurfaceBytesPerElement, kIOSurfaceHeight,
+            kIOSurfacePixelFormat, kIOSurfaceWidth,
+        };
+        let (w, h, bytes, format) = (
+            CFNumber::new_i32(side as i32),
+            CFNumber::new_i32(side as i32),
+            CFNumber::new_i32(4),
+            CFNumber::new_i32(i32::from_be_bytes(*b"BGRA")),
+        );
+        // SAFETY: the keys are IOSurface's own statics.
+        let keys: [&CFString; 4] = unsafe {
+            [
+                kIOSurfaceWidth,
+                kIOSurfaceHeight,
+                kIOSurfaceBytesPerElement,
+                kIOSurfacePixelFormat,
+            ]
+        };
+        let values: [&CFType; 4] = [&w, &h, &bytes, &format];
+        let properties = CFDictionary::<CFString, CFType>::from_slices(&keys, &values);
+        // SAFETY: the properties are CFStrings to CFNumbers, as
+        // IOSurfaceCreate takes them; the surface is locked while its rows
+        // are written, each `bytes_per_row` apart for its height.
+        unsafe {
+            let surface = IOSurfaceRef::new(properties.as_ref()).expect("an IOSurface");
+            surface.lock(IOSurfaceLockOptions::empty(), std::ptr::null_mut());
+            let base = surface.base_address().as_ptr().cast::<u8>();
+            let stride = surface.bytes_per_row();
+            for y in 0..side as usize {
+                for x in 0..side as usize {
+                    std::ptr::copy_nonoverlapping(bgra.as_ptr(), base.add(y * stride + x * 4), 4);
+                }
+            }
+            surface.unlock(IOSurfaceLockOptions::empty(), std::ptr::null_mut());
+            surface
+        }
+    }
+
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    fn a_picture_in_gpu_memory_is_adopted_into_one_texture_no_texel_copied() {
+        use viso_gpu::{ExternalImage, MetalBackend, TextureFormat};
+        use viso_ui::DirtyClass;
+        OPENED.with(|o| o.borrow_mut().clear());
+        let mut store = NodeStore::new();
+        let leaf = {
+            let mut cx = BuildCx::new(&mut store);
+            let handle = cx.leaf(LeafStyle {
+                size: Size::fixed(40.0, 30.0),
+                style: BoxStyle::NONE,
+            });
+            cx.video(
+                handle,
+                &VideoSource::file("clip.mp4"),
+                AssetFit::Contain,
+                None,
+            );
+            handle.id()
+        };
+        store.layout(leaf, SCREEN, &mut Vec::new());
+        let mut backend = MetalBackend::new();
+        let mut renderer = Renderer::new(&mut backend, TextureFormat::Bgra8UnormSrgb);
+        let mut videos = Videos::<Fake>::default();
+        let mut now = Instant::now();
+        let mut step = |store: &mut NodeStore, backend: &mut MetalBackend| {
+            now += Duration::from_millis(16);
+            videos.step(store, Some((backend, &mut renderer)), now, SCREEN)
+        };
+        let image = |surface: &objc2_io_surface::IOSurfaceRef| ExternalImage::IoSurface {
+            surface: std::ptr::from_ref(surface).cast_mut().cast(),
+            width: 4,
+            height: 4,
+        };
+        let shown = |store: &NodeStore| match store.content_payload(leaf) {
+            Some(Content::Asset {
+                draw: AssetDraw::Raster(texture),
+                ..
+            }) => *texture,
+            other => panic!("{other:?}"),
+        };
+
+        step(&mut store, &mut backend);
+        let script = opened(0);
+        let (red, blue) = (surface(4, [0, 0, 255, 255]), surface(4, [255, 0, 0, 255]));
+        script.borrow_mut().events.push_back(ready(4, 4));
+        script.borrow_mut().external.push_back(image(&red));
+        step(&mut store, &mut backend);
+        let texture = shown(&store);
+        assert_eq!(backend.read_texture(texture), [0, 0, 255, 255].repeat(16));
+        assert_eq!(red.use_count(), 1, "the texture samples it");
+
+        // The next picture: the same texture, pointed at it; only a repaint.
+        store.clear_dirty();
+        script.borrow_mut().external.push_back(image(&blue));
+        step(&mut store, &mut backend);
+        assert_eq!(shown(&store), texture);
+        assert_eq!(backend.read_texture(texture), [255, 0, 0, 255].repeat(16));
+        assert!(store.dirty(leaf).contains(DirtyClass::PAINT));
+        assert!(!store.dirty(leaf).contains(DirtyClass::LAYOUT));
+        assert_eq!(store.assets().texture_bytes(), 4 * 4 * 4);
     }
 
     #[test]

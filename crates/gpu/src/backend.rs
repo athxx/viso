@@ -11,7 +11,7 @@
 //! the DAG edge one-way: `viso-render → viso-gpu` (render knows about draw
 //! commands; gpu never knows about primitives, batches, or widgets).
 
-use viso_handle::RawWindowHandle;
+use viso_handle::{ExternalImage, RawWindowHandle};
 
 use crate::instance::InstanceLayout;
 use crate::program::ProgramCompiler;
@@ -364,6 +364,30 @@ pub trait GpuBackend {
         let texture = self.create_texture(desc);
         self.write_texture(texture, 0, 0, desc.width, desc.height, texels);
         texture
+    }
+
+    /// Create a texture sampling `image` where it lies, no texel copied: the
+    /// backend adopts the memory another framework wrote it into, sampling
+    /// its texels as sRGB-encoded color. `None` where the backend cannot
+    /// adopt it; the caller copies the texels into a texture of its own
+    /// instead.
+    ///
+    /// The texture keeps the image's memory from being written again until
+    /// no frame in flight samples it; retire it with
+    /// [`destroy_texture`](Self::destroy_texture).
+    fn import_external(&mut self, image: &ExternalImage) -> Option<TextureId> {
+        let _ = image;
+        None
+    }
+
+    /// Point texture `id`, which [`import_external`](Self::import_external)
+    /// made, at `image`, of the same size: the next frame samples it, and the
+    /// memory the texture sampled before is let go once no frame in flight
+    /// does. Returns `false` — the texture as it was — for another size, a
+    /// texture not imported, or a backend that adopts nothing.
+    fn adopt_external(&mut self, id: TextureId, image: &ExternalImage) -> bool {
+        let _ = (id, image);
+        false
     }
 
     /// Create a swapchain surface bound to a native window.

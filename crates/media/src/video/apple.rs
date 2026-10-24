@@ -1,5 +1,6 @@
 //! macOS and iOS: an `AVPlayer` whose item hands its pictures to an
-//! `AVPlayerItemVideoOutput` as BGRA pixel buffers, read where they lie.
+//! `AVPlayerItemVideoOutput` as BGRA pixel buffers backed by IOSurfaces, which
+//! a GPU samples where they lie and the CPU maps only to copy.
 
 use std::ptr::NonNull;
 use std::time::Duration;
@@ -15,17 +16,66 @@ use objc2_core_foundation::CFString;
 use objc2_core_media::{CMTime, CMTimeFlags, kCMTimeZero};
 use objc2_core_video::{
     CVPixelBuffer, CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow,
-    CVPixelBufferGetHeight, CVPixelBufferGetPixelFormatType, CVPixelBufferGetWidth,
-    CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress,
-    kCVPixelBufferIOSurfacePropertiesKey, kCVPixelBufferMetalCompatibilityKey,
-    kCVPixelBufferPixelFormatTypeKey, kCVPixelFormatType_32BGRA,
+    CVPixelBufferGetHeight, CVPixelBufferGetIOSurface, CVPixelBufferGetPixelFormatType,
+    CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags,
+    CVPixelBufferUnlockBaseAddress, kCVPixelBufferIOSurfacePropertiesKey,
+    kCVPixelBufferMetalCompatibilityKey, kCVPixelBufferPixelFormatTypeKey,
+    kCVPixelFormatType_32BGRA,
 };
 use objc2_foundation::{NSDictionary, NSNumber, NSString, NSURL};
 
-use super::{Frame, PixelLayout, Spilled, VideoError, VideoEvent, VideoInfo, VideoSource};
+use super::{Frame, Spilled, VideoError, VideoEvent, VideoInfo, VideoSource};
 
 unsafe extern "C" {
     fn mach_absolute_time() -> u64;
+}
+
+/// A picture the output handed over: a BGRA pixel buffer.
+#[derive(Clone, Copy)]
+pub(crate) struct Picture<'a>(&'a CVPixelBuffer);
+
+impl std::fmt::Debug for Picture<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Picture")
+    }
+}
+
+impl Picture<'_> {
+    /// The IOSurface the buffer lies in, which the buffer keeps alive.
+    pub(crate) fn external(&self, width: u32, height: u32) -> Option<viso_handle::ExternalImage> {
+        let surface = CVPixelBufferGetIOSurface(Some(self.0))?;
+        Some(viso_handle::ExternalImage::IoSurface {
+            surface: objc2_core_foundation::CFRetained::as_ptr(&surface)
+                .as_ptr()
+                .cast(),
+            width,
+            height,
+        })
+    }
+
+    /// Calls `f` with the buffer's rows mapped for reading and their stride;
+    /// returns whether they could be mapped.
+    pub(crate) fn read(&self, f: impl FnOnce(&[u8], usize)) -> bool {
+        // SAFETY: the buffer is locked read-only around the read of its base
+        // address and rows, which lie `stride` bytes apart for its height,
+        // and unlocked after.
+        unsafe {
+            if CVPixelBufferLockBaseAddress(self.0, CVPixelBufferLockFlags::ReadOnly) != 0 {
+                return false;
+            }
+            let base = CVPixelBufferGetBaseAddress(self.0).cast::<u8>();
+            let stride = CVPixelBufferGetBytesPerRow(self.0);
+            let height = CVPixelBufferGetHeight(self.0);
+            let read = NonNull::new(base).map(|base| {
+                f(
+                    std::slice::from_raw_parts(base.as_ptr(), stride * height),
+                    stride,
+                );
+            });
+            CVPixelBufferUnlockBaseAddress(self.0, CVPixelBufferLockFlags::ReadOnly);
+            read.is_some()
+        }
+    }
 }
 
 /// Where the player is in opening.
@@ -51,7 +101,7 @@ pub(crate) struct Player {
     ended: bool,
     /// Whether it last waited for data.
     waiting: bool,
-    /// The picture last returned, locked for reading until the next.
+    /// The picture last returned, kept until the next.
     held: Option<Retained<CVPixelBuffer>>,
     held_time: Duration,
 }
@@ -164,8 +214,7 @@ impl Player {
             return None;
         }
         // SAFETY: the output belongs to the player's item; a pixel buffer it
-        // hands over is retained by `Retained`, locked for reading before
-        // its base address is read and unlocked once the next replaces it.
+        // hands over is retained by `Retained` until the next replaces it.
         unsafe {
             let now = self
                 .output
@@ -180,29 +229,16 @@ impl Player {
             if CVPixelBufferGetPixelFormatType(&buffer) != kCVPixelFormatType_32BGRA {
                 return None;
             }
-            self.release_held();
-            if CVPixelBufferLockBaseAddress(&buffer, CVPixelBufferLockFlags::ReadOnly) != 0 {
-                return None;
-            }
             self.held_time = seconds(shown).unwrap_or(self.held_time);
             self.held = Some(buffer);
-            let buffer = self.held.as_deref()?;
-            let base = CVPixelBufferGetBaseAddress(buffer);
-            let stride = CVPixelBufferGetBytesPerRow(buffer);
-            let (width, height) = (
-                CVPixelBufferGetWidth(buffer),
-                CVPixelBufferGetHeight(buffer),
-            );
-            let base = NonNull::new(base.cast::<u8>())?;
-            Some(Frame {
-                width: width as u32,
-                height: height as u32,
-                layout: PixelLayout::Bgra8,
-                rows: std::slice::from_raw_parts(base.as_ptr(), stride * height),
-                stride,
-                time: self.held_time,
-            })
         }
+        let buffer = self.held.as_deref()?;
+        Some(Frame::native_picture(
+            CVPixelBufferGetWidth(buffer) as u32,
+            CVPixelBufferGetHeight(buffer) as u32,
+            self.held_time,
+            Picture(buffer),
+        ))
     }
 
     pub(crate) fn play(&mut self) {
@@ -337,20 +373,10 @@ impl Player {
             .map(|e| e.localizedDescription().to_string())
             .unwrap_or_else(|| "the player failed".to_owned())
     }
-
-    fn release_held(&mut self) {
-        if let Some(buffer) = self.held.take() {
-            // SAFETY: the held buffer was locked read-only when it was taken.
-            unsafe {
-                CVPixelBufferUnlockBaseAddress(&buffer, CVPixelBufferLockFlags::ReadOnly);
-            }
-        }
-    }
 }
 
 impl Drop for Player {
     fn drop(&mut self) {
-        self.release_held();
         // SAFETY: the player stops and its output leaves the item on the
         // thread that made them.
         unsafe {

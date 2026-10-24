@@ -29,8 +29,9 @@ use block2::RcBlock;
 use objc2::msg_send;
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::{AnyObject, ProtocolObject};
-use objc2_core_foundation::{CGRect, CGSize};
+use objc2_core_foundation::{CFRetained, CGRect, CGSize};
 use objc2_foundation::NSString;
+use objc2_io_surface::IOSurfaceRef;
 use objc2_metal::{
     MTLBlendFactor, MTLBlendOperation, MTLBuffer, MTLClearColor, MTLCommandBuffer,
     MTLCommandEncoder, MTLCommandQueue, MTLCompareFunction, MTLCompileOptions,
@@ -43,7 +44,7 @@ use objc2_metal::{
     MTLViewport, MTLWinding,
 };
 use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer, CATransaction};
-use viso_handle::RawWindowHandle;
+use viso_handle::{ExternalImage, RawWindowHandle};
 
 use crate::backend::{
     DrawCommand, DrawList, Frame, Geometry, GpuBackend, IndexFormat, LoadOp, RenderPass,
@@ -69,11 +70,39 @@ struct MetalBuffer {
 }
 
 /// A GPU texture: the `MTLTexture` plus its format (to compute the row stride
-/// on `write_texture`).
+/// on `write_texture`), and the IOSurface it samples when imported.
 struct MetalTexture {
     texture: Retained<ProtocolObject<dyn MTLTexture>>,
     format: TextureFormat,
+    external: Option<Adopted>,
 }
+
+/// An IOSurface a texture samples, marked in use — which keeps the pool it
+/// came from from writing a new picture into it — until let go.
+struct Adopted(CFRetained<IOSurfaceRef>);
+
+impl Adopted {
+    fn new(surface: CFRetained<IOSurfaceRef>) -> Adopted {
+        surface.increment_use_count();
+        Adopted(surface)
+    }
+}
+
+impl Drop for Adopted {
+    fn drop(&mut self) {
+        self.0.decrement_use_count();
+    }
+}
+
+/// An IOSurface and a texture sampling it.
+type SurfaceTexture = (
+    CFRetained<IOSurfaceRef>,
+    Retained<ProtocolObject<dyn MTLTexture>>,
+);
+
+/// How many IOSurfaces keep a texture over them: those a few videos' pools
+/// cycle through.
+const SURFACE_TEXTURES: usize = 16;
 
 /// A sampler state object.
 struct MetalSampler {
@@ -237,6 +266,12 @@ pub struct MetalBackend {
     /// Reused across `begin_frame` calls to drain the retire queue without a
     /// per-frame heap allocation.
     reclaim_scratch: Vec<Retired>,
+    /// A texture over each IOSurface imported lately, the latest last: a
+    /// video's pool cycles through a few, so each is wrapped once.
+    surface_textures: Vec<SurfaceTexture>,
+    /// IOSurfaces an imported texture sampled before its latest, let go once
+    /// the frame of the epoch each was replaced in completes.
+    let_go: Vec<(Epoch, Adopted)>,
     /// How many times MSL has been compiled into a `MTLLibrary`. Every
     /// standard pipeline is compiled once at device init; a well-formed frame
     /// never adds to this. A test snapshots it after prewarm and asserts a paint
@@ -321,6 +356,8 @@ impl MetalBackend {
             current_epoch: Epoch::START,
             completed: Arc::new(AtomicU64::new(0)),
             reclaim_scratch: Vec::new(),
+            surface_textures: Vec::new(),
+            let_go: Vec::new(),
             library_compiles: Arc::new(AtomicU64::new(0)),
             clock: Arc::new(FrameClock {
                 on: AtomicBool::new(false),
@@ -336,6 +373,63 @@ impl MetalBackend {
         self.buffers
             .get(id.into())
             .expect("buffer handle does not resolve")
+    }
+
+    /// Lets go of the IOSurfaces no frame in flight samples any more.
+    fn let_go_completed(&mut self) {
+        let completed = Epoch(self.completed.load(Ordering::Acquire));
+        self.let_go.retain(|(epoch, _)| *epoch > completed);
+    }
+
+    /// The IOSurface `image` names, retained, and a texture sampling it as
+    /// sRGB-encoded BGRA: the one made for it lately, else a new one.
+    fn surface_texture(&mut self, image: &ExternalImage) -> Option<SurfaceTexture> {
+        let ExternalImage::IoSurface {
+            surface,
+            width,
+            height,
+        } = *image;
+        let surface = NonNull::new(surface.cast::<IOSurfaceRef>())?;
+        // SAFETY: the image names a live IOSurface, as its producer
+        // promises while it is handed over; retaining it keeps it alive.
+        let surface = unsafe { CFRetained::retain(surface) };
+        let at = self
+            .surface_textures
+            .iter()
+            .position(|(s, _)| CFRetained::as_ptr(s) == CFRetained::as_ptr(&surface));
+        if let Some(at) = at {
+            let entry = self.surface_textures.remove(at);
+            let texture = entry.1.clone();
+            self.surface_textures.push(entry);
+            if (texture.width(), texture.height()) == (width as usize, height as usize) {
+                return Some((surface, texture));
+            }
+            self.surface_textures.pop();
+        }
+        let td = MTLTextureDescriptor::new();
+        td.setTextureType(objc2_metal::MTLTextureType::Type2D);
+        td.setPixelFormat(MTLPixelFormat::BGRA8Unorm_sRGB);
+        td.setUsage(MTLTextureUsage::ShaderRead);
+        td.setStorageMode(if self.device.hasUnifiedMemory() {
+            objc2_metal::MTLStorageMode::Shared
+        } else {
+            objc2_metal::MTLStorageMode::Managed
+        });
+        // SAFETY: positive dimensions, the surface's own, and one mip level
+        // on a fresh descriptor; plane 0 is the one plane of a BGRA surface.
+        let texture = unsafe {
+            td.setWidth(width as usize);
+            td.setHeight(height as usize);
+            td.setMipmapLevelCount(1);
+            self.device
+                .newTextureWithDescriptor_iosurface_plane(&td, &surface, 0)?
+        };
+        if self.surface_textures.len() == SURFACE_TEXTURES {
+            self.surface_textures.remove(0);
+        }
+        self.surface_textures
+            .push((surface.clone(), texture.clone()));
+        Some((surface, texture))
     }
 
     /// Resolve a texture handle (see [`buffer`](Self::buffer) for the panic).
@@ -405,6 +499,7 @@ impl MetalBackend {
         self.reclaim_scratch.clear();
         self.retire_queue
             .drain_completed(fence, &mut self.reclaim_scratch);
+        self.let_go_completed();
         for entry in self.reclaim_scratch.drain(..) {
             match entry.kind {
                 ResourceKind::Buffer => {
@@ -580,8 +675,53 @@ impl GpuBackend for MetalBackend {
             .insert(MetalTexture {
                 texture,
                 format: desc.format,
+                external: None,
             })
             .into()
+    }
+
+    fn import_external(&mut self, image: &ExternalImage) -> Option<TextureId> {
+        self.let_go_completed();
+        let (surface, texture) = self.surface_texture(image)?;
+        Some(
+            self.textures
+                .insert(MetalTexture {
+                    texture,
+                    format: TextureFormat::Bgra8UnormSrgb,
+                    external: Some(Adopted::new(surface)),
+                })
+                .into(),
+        )
+    }
+
+    fn adopt_external(&mut self, id: TextureId, image: &ExternalImage) -> bool {
+        self.let_go_completed();
+        let (width, height) = image.size();
+        let Some(slot) = self.textures.get(id.into()) else {
+            return false;
+        };
+        let Some(Adopted(current)) = &slot.external else {
+            return false;
+        };
+        if (slot.texture.width(), slot.texture.height()) != (width as usize, height as usize) {
+            return false;
+        }
+        let ExternalImage::IoSurface { surface, .. } = *image;
+        if std::ptr::eq(CFRetained::as_ptr(current).as_ptr(), surface.cast()) {
+            return true;
+        }
+        let Some((surface, texture)) = self.surface_texture(image) else {
+            return false;
+        };
+        let epoch = self.current_epoch;
+        let Some(slot) = self.textures.get_mut(id.into()) else {
+            return false;
+        };
+        slot.texture = texture;
+        if let Some(old) = slot.external.replace(Adopted::new(surface)) {
+            self.let_go.push((epoch, old));
+        }
+        true
     }
 
     fn create_sampler(&mut self, desc: &SamplerDesc) -> SamplerId {

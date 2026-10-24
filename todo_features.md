@@ -266,8 +266,12 @@ Rules:
     `playing`, `progress`/`ended`/`playing_changed`; HTML export as `<video>`).
   - [ ] Video controls: a built-in overlay (play/pause, scrubber, time, mute,
     fullscreen) for the widget and the DSL `controls` property.
-  - [ ] Zero-copy frames: native handles adopted by the backend (IOSurface → Metal,
-    shared D3D texture → D3D12, hardware buffer → Vulkan, `<video>` → WebGPU).
+  - [x] Zero-copy frames on Apple: `ExternalImage` in `viso-handle`, the backend's
+    `import_external`/`adopt_external`, IOSurface → Metal (one texture a surface,
+    use count held until no frame in flight samples it), the facade adopting
+    each picture into the video's texture and copying only where it cannot.
+  - [ ] Zero-copy on the other backends, with their players: shared D3D texture →
+    D3D12, hardware buffer → Vulkan, `<video>` → WebGPU.
   - [ ] Media Foundation, GStreamer, MediaCodec/MediaPlayer and `<video>` players.
 - [ ] Camera capture service and `CameraView`.
 - [ ] Audio: input (microphone), file decoding (WAV, Ogg Vorbis, MP3, FLAC), Web Audio

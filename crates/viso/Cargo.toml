@@ -169,6 +169,18 @@ web-sys = { version = "0.3", optional = true, features = [
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion = "0.7"
 
+# IOSurfaces a scripted player hands over, adopted by the Metal backend.
+[target.'cfg(target_vendor = "apple")'.dev-dependencies]
+objc2-core-foundation = { version = "0.3", features = ["CFDictionary", "CFNumber", "CFString"] }
+objc2-io-surface = { version = "0.3", default-features = false, features = [
+    "std",
+    "objc2",
+    "objc2-core-foundation",
+    "libc",
+    "IOSurfaceRef",
+    "IOSurfaceTypes",
+] }
+
 # Multi-window microbenchmarks: window open/close cost and the per-frame
 # `run_phase` fan-out over N windows (validating the linear `Vec<WindowState>`).
 [[bench]]

@@ -95,33 +95,122 @@ pub enum PixelLayout {
     Bgra8,
 }
 
-/// A picture to show: its texels, row after row from the top, each row
-/// `stride` bytes apart.
+/// A picture to show, valid until the player's next: texels at hand, or
+/// memory a GPU samples in place ([`native`](Self::native)), read on the CPU
+/// only when copied out.
 #[derive(Debug, Clone, Copy)]
 pub struct Frame<'a> {
     pub width: u32,
     pub height: u32,
-    pub layout: PixelLayout,
-    pub rows: &'a [u8],
-    pub stride: usize,
     /// Where in the video it shows.
     pub time: Duration,
+    texels: Texels<'a>,
 }
 
-impl Frame<'_> {
-    /// Writes its texels into `out`, tightly packed, in RGBA order.
-    pub fn copy_rgba(&self, out: &mut Vec<u8>) {
+/// Where a frame's texels lie.
+#[derive(Debug, Clone, Copy)]
+enum Texels<'a> {
+    /// At hand, in `layout`, row after row from the top, each `stride` bytes
+    /// apart.
+    Rows {
+        layout: PixelLayout,
+        rows: &'a [u8],
+        stride: usize,
+    },
+    /// In a buffer of the platform's, mapped for the CPU only to be copied.
+    #[cfg_attr(not(target_vendor = "apple"), allow(dead_code))]
+    Native(imp::Picture<'a>),
+    /// In GPU memory alone, which the CPU does not read.
+    External(viso_handle::ExternalImage),
+}
+
+impl<'a> Frame<'a> {
+    /// A picture of `width` × `height` BGRA texels (`PixelLayout::Bgra8`),
+    /// row after row from the top in `rows`, each `stride` bytes apart, shown
+    /// at `time`.
+    pub fn bgra(width: u32, height: u32, rows: &'a [u8], stride: usize, time: Duration) -> Self {
+        Frame {
+            width,
+            height,
+            time,
+            texels: Texels::Rows {
+                layout: PixelLayout::Bgra8,
+                rows,
+                stride,
+            },
+        }
+    }
+
+    /// A picture of `width` × `height` texels in GPU memory alone, as
+    /// `image` names it, shown at `time`: only a backend that adopts it shows
+    /// it.
+    pub fn external(
+        width: u32,
+        height: u32,
+        image: viso_handle::ExternalImage,
+        time: Duration,
+    ) -> Self {
+        Frame {
+            width,
+            height,
+            time,
+            texels: Texels::External(image),
+        }
+    }
+
+    #[cfg_attr(not(target_vendor = "apple"), allow(dead_code))]
+    pub(crate) fn native_picture(
+        width: u32,
+        height: u32,
+        time: Duration,
+        picture: imp::Picture<'a>,
+    ) -> Self {
+        Frame {
+            width,
+            height,
+            time,
+            texels: Texels::Native(picture),
+        }
+    }
+
+    /// How its texels are laid out when copied.
+    pub fn layout(&self) -> PixelLayout {
+        match self.texels {
+            Texels::Rows { layout, .. } => layout,
+            Texels::Native(_) | Texels::External(_) => PixelLayout::Bgra8,
+        }
+    }
+
+    /// The memory it lies in, for a GPU to sample in place; `None` for one
+    /// only a copy shows.
+    pub fn native(&self) -> Option<viso_handle::ExternalImage> {
+        match self.texels {
+            Texels::Rows { .. } => None,
+            Texels::Native(picture) => picture.external(self.width, self.height),
+            Texels::External(image) => Some(image),
+        }
+    }
+
+    /// Writes its texels into `out`, tightly packed, in RGBA order. Returns
+    /// whether they could be read: not for a picture in GPU memory alone.
+    pub fn copy_rgba(&self, out: &mut Vec<u8>) -> bool {
         let (w, h) = (self.width as usize, self.height as usize);
-        out.clear();
-        out.reserve(w * h * 4);
-        match self.layout {
-            PixelLayout::Bgra8 => {
-                for row in self.rows.chunks(self.stride).take(h) {
-                    for texel in row[..w * 4].as_chunks::<4>().0 {
-                        out.extend_from_slice(&[texel[2], texel[1], texel[0], texel[3]]);
-                    }
+        let copy = |rows: &[u8], stride: usize, out: &mut Vec<u8>| {
+            out.clear();
+            out.reserve(w * h * 4);
+            for row in rows.chunks(stride).take(h) {
+                for texel in row[..w * 4].as_chunks::<4>().0 {
+                    out.extend_from_slice(&[texel[2], texel[1], texel[0], texel[3]]);
                 }
             }
+        };
+        match self.texels {
+            Texels::Rows { rows, stride, .. } => {
+                copy(rows, stride, out);
+                true
+            }
+            Texels::Native(picture) => picture.read(|rows, stride| copy(rows, stride, out)),
+            Texels::External(_) => false,
         }
     }
 }
@@ -293,16 +382,10 @@ mod tests {
             1, 2, 3, 255, 4, 5, 6, 255, 0, 0, 0, 0, //
             7, 8, 9, 255, 10, 11, 12, 255, 0, 0, 0, 0,
         ];
-        let frame = Frame {
-            width: 2,
-            height: 2,
-            layout: PixelLayout::Bgra8,
-            rows: &rows,
-            stride: 12,
-            time: Duration::ZERO,
-        };
+        let frame = Frame::bgra(2, 2, &rows, 12, Duration::ZERO);
+        assert!(frame.native().is_none());
         let mut out = Vec::new();
-        frame.copy_rgba(&mut out);
+        assert!(frame.copy_rgba(&mut out));
         assert_eq!(
             out,
             [3, 2, 1, 255, 6, 5, 4, 255, 9, 8, 7, 255, 12, 11, 10, 255]

@@ -1,10 +1,12 @@
-//! `viso-handle` — the shared native-window-handle vocabulary (DAG leaf).
+//! `viso-handle` — the shared native-handle vocabulary (DAG leaf).
 //!
-//! A single type, [`RawWindowHandle`], produced by `viso-platform`
+//! [`RawWindowHandle`], produced by `viso-platform`
 //! ([`Window::raw_handle`](../viso_platform/trait.Window.html)) and consumed by
-//! `viso-gpu` ([`GpuBackend::create_surface`]) to build a swapchain. It lives in
-//! its own leaf crate so both can name it without `viso-gpu` depending on
-//! `viso-platform` directly.
+//! `viso-gpu` ([`GpuBackend::create_surface`]) to build a swapchain, and
+//! [`ExternalImage`], a picture another framework wrote into memory the GPU
+//! samples in place — a video frame from `viso-media` — which a backend
+//! adopts as a texture. They live in their own leaf crate so producer and
+//! consumer can name them without depending on each other.
 //!
 //! The one non-data variant is [`RawWindowHandle::Scanout`]: a display with
 //! no compositor is presented to through the platform's page flips, so the
@@ -96,6 +98,36 @@ pub enum RawWindowHandle {
 
     /// No native surface — the headless backend renders into a CPU framebuffer.
     Headless,
+}
+
+/// A picture held in memory a GPU samples in place, as the framework that
+/// wrote it hands it over: no texel is copied to show it.
+///
+/// The handle is valid only while what it came from is (a video frame, until
+/// the player's next); a backend that keeps showing it takes its own
+/// reference, and keeps the producer from writing into it again until no
+/// frame in flight samples it.
+#[derive(Debug, Clone, Copy)]
+pub enum ExternalImage {
+    /// Apple: an `IOSurfaceRef` of one plane of four-byte texels — blue,
+    /// green, red, alpha — sRGB-encoded and opaque.
+    IoSurface {
+        /// `IOSurfaceRef`.
+        surface: *mut c_void,
+        /// Its width in texels.
+        width: u32,
+        /// Its height in texels.
+        height: u32,
+    },
+}
+
+impl ExternalImage {
+    /// Its size in texels.
+    pub fn size(&self) -> (u32, u32) {
+        match *self {
+            ExternalImage::IoSurface { width, height, .. } => (width, height),
+        }
+    }
 }
 
 /// The pixel layouts a scanout buffer is in, both little-endian as DRM
