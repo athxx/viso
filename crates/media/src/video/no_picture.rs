@@ -22,4 +22,8 @@ impl Picture<'_> {
     pub(crate) fn read(&self, _: impl FnOnce(&[u8], usize)) -> bool {
         match self.never {}
     }
+
+    pub(crate) fn layout(&self) -> super::PixelLayout {
+        match self.never {}
+    }
 }

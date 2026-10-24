@@ -52,7 +52,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use js_sys::{Array, Object, Promise, Reflect, Uint8Array};
-use viso_handle::RawWindowHandle;
+use viso_handle::{ExternalImage, RawWindowHandle};
+use wasm_bindgen::convert::RefFromWasmAbi;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
@@ -179,6 +180,13 @@ extern "C" {
     fn write_buffer(this: &GpuQueue, buffer: &GpuBuffer, offset: f64, data: &[u8]);
     #[wasm_bindgen(method, js_name = writeTexture)]
     fn write_texture(this: &GpuQueue, dst: &Object, data: &[u8], layout: &Object, size: &Object);
+    #[wasm_bindgen(method, catch, js_name = copyExternalImageToTexture)]
+    fn copy_external_image_to_texture(
+        this: &GpuQueue,
+        src: &Object,
+        dst: &Object,
+        size: &Object,
+    ) -> Result<(), JsValue>;
     #[wasm_bindgen(method)]
     fn submit(this: &GpuQueue, buffers: &Array);
 
@@ -438,6 +446,9 @@ struct WebGpuTexture {
     width: u32,
     height: u32,
     render_target: bool,
+    /// Made by `import_external`: written only by copies of an external
+    /// image.
+    external: bool,
 }
 
 /// A registered pipeline.
@@ -1133,6 +1144,34 @@ impl WebGpuBackend {
         self.buffers
             .get(id.into())
             .expect("buffer handle does not resolve")
+    }
+
+    /// Copies the picture `image` names into `texture`, of its size, on the
+    /// GPU; `false` where the browser refuses, as for a picture another
+    /// origin keeps from being read.
+    fn copy_external(&self, image: &ExternalImage, texture: &GpuTexture) -> bool {
+        let ExternalImage::WebVideo {
+            element,
+            width,
+            height,
+        } = *image
+        else {
+            return false;
+        };
+        // SAFETY: the producer holds the value `element` indexes alive while
+        // the image is handed over; the anchor borrows it and is never
+        // dropped, so the index is not freed here.
+        let element = unsafe { JsValue::ref_from_abi(element) };
+        self.queue
+            .copy_external_image_to_texture(
+                &obj(&[("source", (*element).clone())]),
+                &obj(&[
+                    ("texture", JsValue::clone(texture)),
+                    ("colorSpace", "srgb".into()),
+                ]),
+                &extent(width, height),
+            )
+            .is_ok()
     }
 
     fn texture(&self, id: TextureId) -> &WebGpuTexture {
@@ -1935,8 +1974,57 @@ impl GpuBackend for WebGpuBackend {
                 width,
                 height,
                 render_target: desc.render_target,
+                external: false,
             })
             .into()
+    }
+
+    fn import_external(&mut self, image: &ExternalImage) -> Option<TextureId> {
+        let ExternalImage::WebVideo { width, height, .. } = *image else {
+            return None;
+        };
+        // The browser converts the picture to sRGB as it copies, and the
+        // texture samples it decoded, as any other color image.
+        let texture = self.device.create_texture(&obj(&[
+            ("size", extent(width.max(1), height.max(1)).into()),
+            ("format", gpu_format(TextureFormat::Rgba8UnormSrgb).into()),
+            (
+                "usage",
+                (TEXTURE_BINDING | TEXTURE_COPY_DST | TEXTURE_COPY_SRC | TEXTURE_RENDER_ATTACHMENT)
+                    .into(),
+            ),
+            ("label", "external image".into()),
+        ]));
+        if !self.copy_external(image, &texture) {
+            texture.destroy_texture();
+            return None;
+        }
+        let view = texture.create_view();
+        Some(
+            self.textures
+                .insert(WebGpuTexture {
+                    texture,
+                    view,
+                    format: TextureFormat::Rgba8UnormSrgb,
+                    width,
+                    height,
+                    render_target: false,
+                    external: true,
+                })
+                .into(),
+        )
+    }
+
+    fn adopt_external(&mut self, id: TextureId, image: &ExternalImage) -> bool {
+        let Some(t) = self.textures.get(id.into()) else {
+            return false;
+        };
+        if !t.external || (t.width, t.height) != image.size() {
+            return false;
+        }
+        // The copy is queued after every frame submitted so far, so none of
+        // them sees the new picture.
+        self.copy_external(image, &t.texture)
     }
 
     fn create_sampler(&mut self, desc: &SamplerDesc) -> SamplerId {

@@ -126,6 +126,9 @@ struct Played<P> {
     /// Since when a picture is due though it is paused: the first, or one
     /// sought to, which a player may hand over a little later.
     awaits: Option<Instant>,
+    /// The backend took none of its pictures where they lie: the rest are
+    /// copied without asking again.
+    copied: bool,
     /// The texture its pictures are shown as.
     texture: Option<Shown>,
 }
@@ -217,6 +220,7 @@ impl<P: Play> Videos<P> {
                 },
                 ready: false,
                 awaits: None,
+                copied: false,
                 texture: None,
             });
         }
@@ -360,7 +364,9 @@ impl<P: Play> Videos<P> {
             let shown_as = p.texture.filter(|t| t.size == size);
             // In place where the backend adopts it: the same texture pointed
             // at the new picture, or a new one over it.
-            if let Some(image) = frame.native() {
+            if !p.copied
+                && let Some(image) = frame.native()
+            {
                 if let Some(t) = shown_as.filter(|t| t.adopted)
                     && backend.adopt_external(t.texture, &image)
                 {
@@ -380,6 +386,7 @@ impl<P: Play> Videos<P> {
                     self.frames += 1;
                     continue;
                 }
+                p.copied = true;
             }
             if !frame.copy_rgba(&mut self.scratch) {
                 continue;

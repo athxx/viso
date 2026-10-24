@@ -1,24 +1,24 @@
 //! The web: the browser's `<video>`, which fetches, decodes and plays the
-//! sound itself; each picture it presents drawn into an offscreen canvas
-//! and read back as RGBA rows.
+//! sound itself; each picture it presents named for the GPU backend to copy
+//! where it lies, or drawn into an offscreen canvas and read back as RGBA
+//! rows where it cannot.
 //!
 //! The element lives in the page, hidden, so every browser keeps decoding
 //! its pictures. Its state is read when polled, never waited on; the
 //! browser says when it presents a new picture through
-//! `requestVideoFrameCallback`, and only then is one read. Bytes play from a
-//! blob URL, revoked when the player goes.
+//! `requestVideoFrameCallback`, and only then is one handed out. Bytes play
+//! from a blob URL, revoked when the player goes.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
 use js_sys::{Array, Function, Promise, Uint8Array, Uint8ClampedArray};
 use wasm_bindgen::JsCast;
+use wasm_bindgen::convert::IntoWasmAbi;
 use wasm_bindgen::prelude::*;
 
-use super::{Frame, VideoError, VideoEvent, VideoInfo, VideoSource};
-
-pub(crate) use super::no_picture::Picture;
+use super::{Frame, PixelLayout, VideoError, VideoEvent, VideoInfo, VideoSource};
 
 #[wasm_bindgen]
 extern "C" {
@@ -140,13 +140,88 @@ const HAVE_FUTURE_DATA: u32 = 3;
 const HIDDEN: &str = "position:fixed;left:0;top:0;width:1px;height:1px;\
      opacity:0;pointer-events:none;z-index:-1";
 
+/// The picture the element shows now: named for a GPU backend to copy, or
+/// read back through the offscreen canvas.
+#[derive(Clone, Copy)]
+pub(crate) struct Picture<'a> {
+    video: &'a Video,
+    back: &'a RefCell<Readback>,
+}
+
+impl std::fmt::Debug for Picture<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Picture")
+    }
+}
+
+/// What a picture is read back through, made at the first read.
+#[derive(Default)]
+struct Readback {
+    canvas: Option<(Canvas, Context, u32, u32)>,
+    rows: Vec<u8>,
+    /// A cross-origin source without CORS: its pictures cannot be read.
+    tainted: bool,
+}
+
+impl Picture<'_> {
+    /// The element, borrowed by the index of the value it is held in.
+    pub(crate) fn external(&self, width: u32, height: u32) -> Option<viso_handle::ExternalImage> {
+        let element: &JsValue = self.video.as_ref();
+        Some(viso_handle::ExternalImage::WebVideo {
+            element: element.into_abi(),
+            width,
+            height,
+        })
+    }
+
+    /// Calls `f` with the picture's rows, drawn into the canvas and read
+    /// back, and their stride; returns whether they could be read.
+    pub(crate) fn read(&self, f: impl FnOnce(&[u8], usize)) -> bool {
+        let mut back = self.back.borrow_mut();
+        let back = &mut *back;
+        let (width, height) = (self.video.video_width(), self.video.video_height());
+        if back.tainted || width == 0 || height == 0 {
+            return false;
+        }
+        let (canvas, context, w, h) = back.canvas.get_or_insert_with(|| {
+            let canvas = Canvas::new(width, height);
+            let options = js_sys::Object::new();
+            let _ = js_sys::Reflect::set(
+                &options,
+                &JsValue::from_str("willReadFrequently"),
+                &JsValue::TRUE,
+            );
+            let context = canvas.get_context("2d", &options);
+            (canvas, context, width, height)
+        });
+        if (*w, *h) != (width, height) {
+            canvas.set_width(width);
+            canvas.set_height(height);
+            (*w, *h) = (width, height);
+        }
+        context.draw_image(self.video, 0.0, 0.0);
+        let Ok(image) = context.get_image_data(0.0, 0.0, f64::from(width), f64::from(height))
+        else {
+            back.tainted = true;
+            return false;
+        };
+        let data = image.data();
+        back.rows.resize(data.length() as usize, 0);
+        data.copy_to(&mut back.rows);
+        f(&back.rows, width as usize * 4);
+        true
+    }
+
+    pub(crate) fn layout(&self) -> PixelLayout {
+        PixelLayout::Rgba8
+    }
+}
+
 pub(crate) struct Player {
     video: Video,
     /// The blob URL the bytes play from, revoked when the player goes.
     blob: Option<String>,
-    /// Where the canvas pictures are drawn into and read back from, made at
-    /// the first.
-    canvas: Option<(Canvas, Context, u32, u32)>,
+    back: RefCell<Readback>,
     /// The media time of the picture the browser presented last and that
     /// is not yet read; NaN for none.
     presented: Rc<Cell<f64>>,
@@ -159,7 +234,6 @@ pub(crate) struct Player {
     /// Whether the browser calls back when it presents a picture; without,
     /// a picture is read whenever the position moves.
     callbacks: bool,
-    rows: Vec<u8>,
     ready: bool,
     failed: bool,
     wants_play: bool,
@@ -217,14 +291,13 @@ impl Player {
         Ok(Player {
             video,
             blob,
-            canvas: None,
+            back: RefCell::default(),
             presented,
             asked,
             on_presented,
             refused,
             on_refused,
             callbacks: true,
-            rows: Vec::new(),
             ready: false,
             failed: false,
             wants_play: false,
@@ -252,6 +325,12 @@ impl Player {
             }));
         }
         let state = video.ready_state();
+        if self.back.get_mut().tainted {
+            self.failed = true;
+            return Some(VideoEvent::Failed(VideoError::Play(
+                "a cross-origin picture without CORS cannot be read".into(),
+            )));
+        }
         if !self.ready {
             if state < HAVE_CURRENT_DATA {
                 return None;
@@ -320,41 +399,16 @@ impl Player {
         if width == 0 || height == 0 {
             return None;
         }
-        let (canvas, context, w, h) = self.canvas.get_or_insert_with(|| {
-            let canvas = Canvas::new(width, height);
-            let options = js_sys::Object::new();
-            let _ = js_sys::Reflect::set(
-                &options,
-                &JsValue::from_str("willReadFrequently"),
-                &JsValue::TRUE,
-            );
-            let context = canvas.get_context("2d", &options);
-            (canvas, context, width, height)
-        });
-        if (*w, *h) != (width, height) {
-            canvas.set_width(width);
-            canvas.set_height(height);
-            (*w, *h) = (width, height);
-        }
-        context.draw_image(video, 0.0, 0.0);
-        let Ok(image) = context.get_image_data(0.0, 0.0, f64::from(width), f64::from(height))
-        else {
-            // A cross-origin source without CORS: its pictures cannot be
-            // read.
-            self.failed = true;
-            return None;
-        };
-        let data = image.data();
-        self.rows.resize(data.length() as usize, 0);
-        data.copy_to(&mut self.rows);
         self.read_at = now;
         let time = if presented.is_nan() { now } else { presented };
-        Some(Frame::rgba(
+        Some(Frame::native_picture(
             width,
             height,
-            &self.rows,
-            width as usize * 4,
             Duration::from_secs_f64(time.max(0.0)),
+            Picture {
+                video: &self.video,
+                back: &self.back,
+            },
         ))
     }
 

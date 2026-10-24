@@ -12,7 +12,10 @@ mod apple;
     target_os = "dragonfly"
 ))]
 mod gstreamer;
-#[cfg(not(target_vendor = "apple"))]
+#[cfg(not(any(
+    target_vendor = "apple",
+    all(target_arch = "wasm32", target_os = "unknown")
+)))]
 mod no_picture;
 #[cfg(not(any(
     all(target_arch = "wasm32", target_os = "unknown"),
@@ -172,8 +175,14 @@ enum Texels<'a> {
         rows: &'a [u8],
         stride: usize,
     },
-    /// In a buffer of the platform's, mapped for the CPU only to be copied.
-    #[cfg_attr(not(target_vendor = "apple"), allow(dead_code))]
+    /// In a buffer of the platform's, read on the CPU only to be copied.
+    #[cfg_attr(
+        not(any(
+            target_vendor = "apple",
+            all(target_arch = "wasm32", target_os = "unknown")
+        )),
+        allow(dead_code)
+    )]
     Native(imp::Picture<'a>),
     /// In GPU memory alone, which the CPU does not read.
     External(viso_handle::ExternalImage),
@@ -229,7 +238,13 @@ impl<'a> Frame<'a> {
         }
     }
 
-    #[cfg_attr(not(target_vendor = "apple"), allow(dead_code))]
+    #[cfg_attr(
+        not(any(
+            target_vendor = "apple",
+            all(target_arch = "wasm32", target_os = "unknown")
+        )),
+        allow(dead_code)
+    )]
     pub(crate) fn native_picture(
         width: u32,
         height: u32,
@@ -248,7 +263,8 @@ impl<'a> Frame<'a> {
     pub fn layout(&self) -> PixelLayout {
         match self.texels {
             Texels::Rows { layout, .. } => layout,
-            Texels::Native(_) | Texels::External(_) => PixelLayout::Bgra8,
+            Texels::Native(picture) => picture.layout(),
+            Texels::External(_) => PixelLayout::Bgra8,
         }
     }
 
@@ -266,37 +282,33 @@ impl<'a> Frame<'a> {
     /// whether they could be read: not for a picture in GPU memory alone.
     pub fn copy_rgba(&self, out: &mut Vec<u8>) -> bool {
         let (w, h) = (self.width as usize, self.height as usize);
-        let copy = |rows: &[u8], stride: usize, out: &mut Vec<u8>| {
+        let copy = |layout: PixelLayout, rows: &[u8], stride: usize, out: &mut Vec<u8>| {
             out.clear();
             out.reserve(w * h * 4);
             for row in rows.chunks(stride).take(h) {
-                for texel in row[..w * 4].as_chunks::<4>().0 {
-                    out.extend_from_slice(&[texel[2], texel[1], texel[0], texel[3]]);
+                let row = &row[..w * 4];
+                match layout {
+                    PixelLayout::Rgba8 => out.extend_from_slice(row),
+                    PixelLayout::Bgra8 => {
+                        for texel in row.as_chunks::<4>().0 {
+                            out.extend_from_slice(&[texel[2], texel[1], texel[0], texel[3]]);
+                        }
+                    }
                 }
             }
         };
         match self.texels {
             Texels::Rows {
-                layout: PixelLayout::Rgba8,
+                layout,
                 rows,
                 stride,
             } => {
-                out.clear();
-                out.reserve(w * h * 4);
-                for row in rows.chunks(stride).take(h) {
-                    out.extend_from_slice(&row[..w * 4]);
-                }
+                copy(layout, rows, stride, out);
                 true
             }
-            Texels::Rows {
-                layout: PixelLayout::Bgra8,
-                rows,
-                stride,
-            } => {
-                copy(rows, stride, out);
-                true
+            Texels::Native(picture) => {
+                picture.read(|rows, stride| copy(picture.layout(), rows, stride, out))
             }
-            Texels::Native(picture) => picture.read(|rows, stride| copy(rows, stride, out)),
             Texels::External(_) => false,
         }
     }

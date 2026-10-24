@@ -76,6 +76,11 @@ impl Picture<'_> {
             read.is_some()
         }
     }
+
+    /// The buffer's texels are BGRA, as the output was asked for.
+    pub(crate) fn layout(&self) -> super::PixelLayout {
+        super::PixelLayout::Bgra8
+    }
 }
 
 /// Where the player is in opening.

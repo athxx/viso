@@ -388,7 +388,10 @@ impl MetalBackend {
             surface,
             width,
             height,
-        } = *image;
+        } = *image
+        else {
+            return None;
+        };
         let surface = NonNull::new(surface.cast::<IOSurfaceRef>())?;
         // SAFETY: the image names a live IOSurface, as its producer
         // promises while it is handed over; retaining it keeps it alive.
@@ -706,7 +709,9 @@ impl GpuBackend for MetalBackend {
         if (slot.texture.width(), slot.texture.height()) != (width as usize, height as usize) {
             return false;
         }
-        let ExternalImage::IoSurface { surface, .. } = *image;
+        let ExternalImage::IoSurface { surface, .. } = *image else {
+            return false;
+        };
         if std::ptr::eq(CFRetained::as_ptr(current).as_ptr(), surface.cast()) {
             return true;
         }

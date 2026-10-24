@@ -273,8 +273,13 @@ Rules:
     `import_external`/`adopt_external`, IOSurface → Metal (one texture a surface,
     use count held until no frame in flight samples it), the facade adopting
     each picture into the video's texture and copying only where it cannot.
-  - [ ] Zero-copy on the other backends, with their players: shared D3D texture →
-    D3D12, hardware buffer → Vulkan, `<video>` → WebGPU.
+  - [ ] Zero-copy on the other backends, with their players:
+    - [x] `<video>` → WebGPU: `ExternalImage::WebVideo`, the element's current picture
+      copied on the GPU (`copyExternalImageToTexture`, color-managed as the page shows
+      it), the canvas readback only where the backend refuses; a player whose pictures
+      were refused once is copied without asking again; the example clip tagged BT.601.
+    - [ ] Shared D3D texture → D3D12.
+    - [ ] Hardware buffer → Vulkan.
   - [x] Media Foundation player on Windows: the media engine on a thread of its own
     in the multithreaded apartment, decoding through its own D3D11 device, each new
     frame drawn into a BGRA target and read back through a staging texture into

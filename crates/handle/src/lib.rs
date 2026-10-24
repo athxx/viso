@@ -119,13 +119,26 @@ pub enum ExternalImage {
         /// Its height in texels.
         height: u32,
     },
+    /// The web: the picture an `HTMLVideoElement` shows now, which the
+    /// browser keeps on the GPU. A backend copies it there into a texture of
+    /// its own, never through the CPU.
+    WebVideo {
+        /// The wasm-bindgen heap index of the `JsValue` the element is held
+        /// in, borrowed.
+        element: u32,
+        /// Its width in texels.
+        width: u32,
+        /// Its height in texels.
+        height: u32,
+    },
 }
 
 impl ExternalImage {
     /// Its size in texels.
     pub fn size(&self) -> (u32, u32) {
         match *self {
-            ExternalImage::IoSurface { width, height, .. } => (width, height),
+            ExternalImage::IoSurface { width, height, .. }
+            | ExternalImage::WebVideo { width, height, .. } => (width, height),
         }
     }
 }
