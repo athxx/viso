@@ -124,9 +124,8 @@ impl NodeStore {
         axis: Option<Axis>,
     ) -> Option<(NodeId, Axis)> {
         let takes = |n: NodeId| {
-            let along = self.scroll_axis(n)?;
-            (axis.is_none_or(|a| a == along) && self.scroll_range(n, along) > 0.0)
-                .then_some((n, along))
+            let along = axis.unwrap_or(self.scroll_axis(n)?);
+            (self.scrolls_on(n, along) && self.scroll_range(n, along) > 0.0).then_some((n, along))
         };
         let mut at = from;
         while let Some(n) = at {

@@ -2,7 +2,8 @@
 //! the rows its viewport and overscan show, follows its items as they change,
 //! and its `NodeRef` scrolls to a row by index or key, mounted or not; a body
 //! that is not one keyed `for` is `E3707`. A list with `on refresh`
-//! refreshes while its `refreshing` says so.
+//! refreshes while its `refreshing` says so. A `Scroll` with `across`
+//! scrolls both ways.
 
 use std::collections::HashMap;
 
@@ -797,4 +798,30 @@ fn a_list_with_columns_lays_its_items_in_lanes_a_full_line_item_alone() {
     assert_eq!(local(at("2")), (270.0, 0.0, 130.0));
     assert_eq!(local(at("3")), (0.0, 60.0, 400.0), "alone on its line");
     assert_eq!(local(at("4")), (0.0, 120.0, 130.0));
+}
+
+const ACROSS: &str = "component Sheet {
+    view {
+        Column {
+            Scroll {
+                width: 200dp;
+                height: 200dp;
+                across: true;
+                scroll_bars: false;
+                Column { width: 500dp; height: 600dp; }
+            }
+        }
+    }
+}";
+
+#[test]
+fn a_scroll_across_scrolls_both_ways() {
+    let page = Page::load(ACROSS);
+    let viewport = page.child(page.root, 0);
+    assert!(page.store.scrolls_on(viewport, viso_ui::Axis::Row));
+    assert_eq!(page.store.scroll_range(viewport, viso_ui::Axis::Row), 300.0);
+    assert_eq!(
+        page.store.scroll_range(viewport, viso_ui::Axis::Column),
+        400.0
+    );
 }

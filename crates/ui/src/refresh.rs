@@ -790,7 +790,7 @@ impl NodeStore {
     pub(crate) fn scroll_distance(&self, id: NodeId, axis: Axis) -> f32 {
         let offset = self.scroll(id).on(axis);
         let rtl = axis == Axis::Row
-            && self.scroll_axis(id) == Some(Axis::Row)
+            && self.scrolls_on(id, Axis::Row)
             && self.direction_at(id.index()) == crate::adaptive::LayoutDirection::Rtl;
         if rtl { -offset } else { offset }.max(0.0)
     }

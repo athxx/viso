@@ -182,6 +182,9 @@ impl Default for LeafStyle {
 pub struct ScrollStyle {
     /// The axis the viewport scrolls along.
     pub axis: Axis,
+    /// Whether it scrolls across its axis too: its content then takes its
+    /// natural extent both ways, and it has a bar for each.
+    pub across: bool,
     /// The viewport's own size request within its parent (its visible box).
     pub size: Size,
     /// The viewport's own background/border (transparent = pure clip box).
@@ -206,6 +209,7 @@ impl Default for ScrollStyle {
     fn default() -> Self {
         ScrollStyle {
             axis: Axis::Column,
+            across: false,
             size: Size::fill(),
             style: BoxStyle::NONE,
             bars: crate::scroll_bar::ScrollBars::Auto,
@@ -225,6 +229,9 @@ impl Default for ScrollStyle {
 pub struct VirtualListStyle {
     /// The axis the list scrolls and stacks rows along.
     pub axis: Axis,
+    /// Whether it scrolls across its axis too, its rows as long across as
+    /// [`NodeStore::set_list_across`] says (a table's columns).
+    pub across: bool,
     /// The viewport's own size request within its parent (its visible box).
     pub size: Size,
     /// Extra rows mounted on each side of the visible window, so a small scroll
@@ -259,6 +266,7 @@ impl Default for VirtualListStyle {
     fn default() -> Self {
         VirtualListStyle {
             axis: Axis::Column,
+            across: false,
             size: Size::fill(),
             overscan: 4,
             estimated_row: crate::virtual_list::DEFAULT_ROW_HEIGHT,
@@ -1873,14 +1881,29 @@ impl NodeStore {
         matches!(self.layout[id.index() as usize], LayoutInput::Grid { .. })
     }
 
-    /// The axis a scroll viewport scrolls along, or `None` for a non-scroll node.
-    /// A viewport scrolls only along its own axis; the router uses this to pick
-    /// which ancestor absorbs a scroll delta.
+    /// The axis a scroll viewport scrolls along, or `None` for a non-scroll node:
+    /// the axis its content stacks on, and the one its snapping, tail, refresh
+    /// and stickies work along. See [`scrolls_on`](Self::scrolls_on) for
+    /// whether it scrolls a way.
     #[inline]
     pub fn scroll_axis(&self, id: NodeId) -> Option<Axis> {
         match self.layout[id.index() as usize] {
             LayoutInput::Scroll { axis, .. } => Some(axis),
             _ => None,
+        }
+    }
+
+    /// Whether node `id` is a scroll viewport scrolling along `axis`: its own
+    /// axis, or across it too.
+    #[inline]
+    pub fn scrolls_on(&self, id: NodeId, axis: Axis) -> bool {
+        match self.layout[id.index() as usize] {
+            LayoutInput::Scroll {
+                axis: along,
+                across,
+                ..
+            } => along == axis || across,
+            _ => false,
         }
     }
 
@@ -1891,7 +1914,7 @@ impl NodeStore {
     pub fn scroll_span(&self, id: NodeId, axis: Axis) -> (f32, f32) {
         let range = self.scroll_range(id, axis);
         if axis == Axis::Row
-            && self.scroll_axis(id) == Some(Axis::Row)
+            && self.scrolls_on(id, Axis::Row)
             && self.direction_at(id.index()) == crate::adaptive::LayoutDirection::Rtl
         {
             (-range, 0.0)
@@ -1903,17 +1926,29 @@ impl NodeStore {
         }
     }
 
-    /// The scrollable range of a node on `axis`: `max(0, content − viewport)`.
-    /// Zero when the content does not exceed the viewport (nothing to scroll).
+    /// The scrollable range of a node on `axis`: `max(0, content − viewport)`,
+    /// the viewport less the room its bars keep. Zero when the content does
+    /// not exceed the viewport (nothing to scroll).
     #[inline]
     pub fn scroll_range(&self, id: NodeId, axis: Axis) -> f32 {
         let i = id.index() as usize;
         let b = self.bounds[i];
+        let gutter = self.scroll_gutter(id);
         let viewport = match axis {
-            Axis::Row => b.w,
-            Axis::Column => b.h,
+            Axis::Row => b.w - gutter.x,
+            Axis::Column => b.h - gutter.y,
         };
         (self.content[i].on(axis) - viewport).max(0.0)
+    }
+
+    /// The room viewport `id` keeps for classic bars: `x` beside a vertical
+    /// one, `y` under a horizontal one.
+    #[inline]
+    pub(crate) fn scroll_gutter(&self, id: NodeId) -> Vec2 {
+        match self.layout[id.index() as usize] {
+            LayoutInput::Scroll { gutter, .. } => gutter,
+            _ => Vec2::ZERO,
+        }
     }
 
     /// A node's laid-out box extent along `axis` (its `bounds` width for Row,
@@ -2148,11 +2183,38 @@ impl NodeStore {
         }
         let i = canvas.index() as usize;
         if let LayoutInput::AbsoluteRows { size, .. } = &mut self.layout[i] {
-            match axis {
-                Axis::Row => size.width = Length::Fixed(extent),
-                Axis::Column => size.height = Length::Fixed(extent),
+            let length = match axis {
+                Axis::Row => &mut size.width,
+                Axis::Column => &mut size.height,
+            };
+            if *length == Length::Fixed(extent) {
+                return;
             }
+            *length = Length::Fixed(extent);
             self.request_moved(canvas);
+        }
+    }
+
+    /// Make the rows of virtual list `viewport` `extent` long across its
+    /// axis — a table's columns side by side: a list built to scroll
+    /// [`across`](VirtualListStyle::across) scrolls to show them, and with
+    /// less than it shows they still fill it. A stale handle or a node that
+    /// is not a list is a no-op.
+    pub fn set_list_across(&mut self, viewport: NodeId, extent: f32) {
+        if !self.arena.is_live(viewport) {
+            return;
+        }
+        let Some(axis) = self.scroll_axis(viewport) else {
+            return;
+        };
+        let canvas = self.arena.children(viewport).find(|c| {
+            matches!(
+                self.layout[c.index() as usize],
+                LayoutInput::AbsoluteRows { .. }
+            )
+        });
+        if let Some(canvas) = canvas {
+            self.set_absolute_rows_extent(canvas, crate::layout::cross_of(axis), extent.max(0.0));
         }
     }
 
@@ -2691,11 +2753,18 @@ impl NodeStore {
         let mut at = self.arena.parent(id);
         while let Some(viewport) = at {
             at = self.arena.parent(viewport);
-            let Some(axis) = self.scroll_axis(viewport) else {
+            if self.scroll_axis(viewport).is_none() {
                 continue;
-            };
+            }
             let (now, from) = (self.scroll(viewport), self.scroll_target(viewport));
-            let seen = self.unsnapped_world(viewport);
+            // What it shows: its box less the room its bars keep.
+            let mut seen = self.unsnapped_world(viewport);
+            let gutter = self.scroll_gutter(viewport);
+            if self.direction_at(viewport.index()) == crate::adaptive::LayoutDirection::Rtl {
+                seen.x += gutter.x;
+            }
+            seen.w -= gutter.x;
+            seen.h -= gutter.y;
             let x = rect.x + moved.x - (from.x - now.x);
             let y = rect.y + moved.y - (from.y - now.y);
             let fit = |start: f32, len: f32, view: f32, view_len: f32| {
@@ -2707,13 +2776,14 @@ impl NodeStore {
                     0.0
                 }
             };
-            let (least, most) = self.scroll_span(viewport, axis);
             let mut to = from;
-            match axis {
-                Axis::Row => to.x = (from.x + fit(x, rect.w, seen.x, seen.w)).clamp(least, most),
-                Axis::Column => {
-                    to.y = (from.y + fit(y, rect.h, seen.y, seen.h)).clamp(least, most);
-                }
+            if self.scrolls_on(viewport, Axis::Row) {
+                let (least, most) = self.scroll_span(viewport, Axis::Row);
+                to.x = (from.x + fit(x, rect.w, seen.x, seen.w)).clamp(least, most);
+            }
+            if self.scrolls_on(viewport, Axis::Column) {
+                let (least, most) = self.scroll_span(viewport, Axis::Column);
+                to.y = (from.y + fit(y, rect.h, seen.y, seen.h)).clamp(least, most);
             }
             moved.x -= to.x - now.x;
             moved.y -= to.y - now.y;
@@ -6686,8 +6756,9 @@ impl<'a> BuildCx<'a> {
     ) -> Handle {
         let input = LayoutInput::Scroll {
             axis: style.axis,
+            across: style.across,
             size: style.size,
-            gutter: 0.0,
+            gutter: Vec2::ZERO,
         };
         let id = self.push_node(input, style.style);
         self.stack.push(id);
@@ -6702,6 +6773,9 @@ impl<'a> BuildCx<'a> {
     fn viewport_ways(&mut self, id: NodeId, style: &ScrollStyle) {
         if style.bars == crate::scroll_bar::ScrollBars::Auto {
             self.scroll_bar(id, style.axis);
+            if style.across {
+                self.scroll_bar(id, crate::layout::cross_of(style.axis));
+            }
         }
         if style.tail {
             self.store.set_scroll_tail(id, true);
@@ -6782,8 +6856,9 @@ impl<'a> BuildCx<'a> {
         let viewport = self.push_node(
             LayoutInput::Scroll {
                 axis: style.axis,
+                across: style.across,
                 size: style.size,
-                gutter: 0.0,
+                gutter: Vec2::ZERO,
             },
             style.style,
         );
@@ -6811,6 +6886,7 @@ impl<'a> BuildCx<'a> {
             viewport,
             &ScrollStyle {
                 axis: style.axis,
+                across: style.across,
                 size: style.size,
                 style: style.style,
                 bars: style.bars,

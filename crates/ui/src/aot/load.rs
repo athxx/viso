@@ -448,6 +448,7 @@ fn scroll_style(node: &AotRecord) -> ScrollStyle {
         } else {
             crate::scroll_bar::ScrollBars::Hidden
         };
+        out.across = scroll.across;
         out.tail = scroll.tail;
         out.snap = scroll.snap.map(|snap| snap_of(snap, scroll.snap_inset));
         out.dots = scroll.dots.then(crate::page_dots::PageDotsStyle::default);

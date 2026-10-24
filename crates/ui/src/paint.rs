@@ -1150,6 +1150,7 @@ mod tests {
             cx.scroll(
                 ScrollStyle {
                     axis: Axis::Column,
+                    across: false,
                     size: Size::fixed(100.0, 100.0),
                     // A solid viewport background so its quad paints before the clip.
                     style: BoxStyle::solid(RED),
@@ -2316,6 +2317,7 @@ mod tests {
                     cx.scroll(
                         ScrollStyle {
                             axis: Axis::Column,
+                            across: false,
                             size: Size::fixed(100.0, 100.0),
                             style: BoxStyle::solid(RED),
                             bars: crate::scroll_bar::ScrollBars::Hidden,

@@ -511,7 +511,7 @@ impl NodeStore {
         let delta = -total.on(axis);
         let mut at = Some(target);
         while let Some(n) = at.filter(|&n| n != node) {
-            if self.scroll_axis(n) == Some(axis) {
+            if self.scrolls_on(n, axis) {
                 let offset = self.scroll(n).on(axis);
                 let (least, most) = self.scroll_span(n, axis);
                 if (delta > 0.0 && offset < most) || (delta < 0.0 && offset > least) {

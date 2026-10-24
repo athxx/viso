@@ -418,6 +418,7 @@ const SHEET_COUNT_SHIFT: u8 = 3;
 /// how far in from its edges, and whether page dots show them.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AotScroll {
+    pub across: bool,
     pub bars: bool,
     pub tail: bool,
     pub snap: Option<AotSnap>,
@@ -428,6 +429,7 @@ pub struct AotScroll {
 impl Default for AotScroll {
     fn default() -> Self {
         AotScroll {
+            across: false,
             bars: true,
             tail: false,
             snap: None,
@@ -458,13 +460,15 @@ impl AotSnap {
 }
 
 // A scroll is a byte: bit 0 its bars, bit 1 its tail, bit 2 its dots, bit 3
-// an inset following as an `f32`, and above them its snap, `0` for none, else
-// one past its tag.
+// an inset following as an `f32`, bits 4–6 its snap, `0` for none, else one
+// past its tag, and bit 7 whether it scrolls across.
 const SCROLL_BARS: u8 = 1;
 const SCROLL_TAIL: u8 = 1 << 1;
 const SCROLL_DOTS: u8 = 1 << 2;
 const SCROLL_INSET: u8 = 1 << 3;
 const SCROLL_SNAP_SHIFT: u8 = 4;
+const SCROLL_SNAP_MASK: u8 = 0b111;
+const SCROLL_ACROSS: u8 = 1 << 7;
 
 /// An adaptive scope: the node its subtree's size class classifies.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -1505,6 +1509,7 @@ fn encode_record(record: &AotRecord<'_>, enc: &mut Encoder) {
             (scroll.tail, SCROLL_TAIL),
             (scroll.dots, SCROLL_DOTS),
             (scroll.snap_inset != 0.0, SCROLL_INSET),
+            (scroll.across, SCROLL_ACROSS),
         ] {
             if on {
                 bits |= bit;
@@ -1665,7 +1670,7 @@ fn decode_record<'a>(dec: &mut Decoder<'a>) -> Result<AotRecord<'a>, DecodeError
     let scroll = if has(STYLE_SCROLLS) {
         let offset = dec.position();
         let bits = dec.read_u8()?;
-        let snap = match (bits >> SCROLL_SNAP_SHIFT) as usize {
+        let snap = match ((bits >> SCROLL_SNAP_SHIFT) & SCROLL_SNAP_MASK) as usize {
             0 => None,
             tag => Some(
                 *AotSnap::ALL
@@ -1679,6 +1684,7 @@ fn decode_record<'a>(dec: &mut Decoder<'a>) -> Result<AotRecord<'a>, DecodeError
             0.0
         };
         Some(AotScroll {
+            across: bits & SCROLL_ACROSS != 0,
             bars: bits & SCROLL_BARS != 0,
             tail: bits & SCROLL_TAIL != 0,
             snap,
@@ -2042,6 +2048,7 @@ mod tests {
                         avoid: None,
                         content_align: Some(Alignment2D::BottomEnd),
                         scroll: Some(AotScroll {
+                            across: true,
                             bars: false,
                             tail: true,
                             snap: Some(AotSnap::Pages),

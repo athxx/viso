@@ -264,6 +264,7 @@ impl Component for VirtualList {
         let item = self.item.borrow_mut().take();
         let style = VirtualListStyle {
             axis: self.style.axis,
+            across: false,
             size: self.style.size,
             overscan: self.style.overscan,
             estimated_row: self.style.estimated_row,

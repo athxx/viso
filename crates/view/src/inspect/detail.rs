@@ -203,10 +203,17 @@ fn groups(store: &NodeStore, id: NodeId) -> Vec<PropertyGroup> {
             );
         }
         LayoutInput::Leaf { .. } => add(&mut layout, "kind", "leaf".into()),
-        LayoutInput::Scroll { axis, .. } => {
+        LayoutInput::Scroll { axis, across, .. } => {
             add(&mut layout, "kind", "scroll".into());
             add(&mut layout, "axis", axis_name(axis).into());
             add(&mut layout, "range", number(store.scroll_range(id, axis)));
+            if across {
+                let cross = match axis {
+                    Axis::Row => Axis::Column,
+                    Axis::Column => Axis::Row,
+                };
+                add(&mut layout, "across", number(store.scroll_range(id, cross)));
+            }
         }
         LayoutInput::AbsoluteRows {
             axis,

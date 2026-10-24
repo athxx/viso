@@ -180,6 +180,7 @@ impl Component for LazyGrid {
         let s = self.style;
         let style = VirtualListStyle {
             axis: s.axis,
+            across: false,
             size: s.size,
             overscan: s.overscan,
             estimated_row: s.estimated_item,

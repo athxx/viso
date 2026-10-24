@@ -135,6 +135,7 @@ const STACK: &[WidgetProperty] = &[look("content_align", "Alignment2D")];
 
 const SCROLL: &[WidgetProperty] = &[
     prop("axis", "Axis"),
+    prop("across", "Bool"),
     prop("scroll_bars", "Bool"),
     prop("tail", "Bool"),
     prop("refreshing", "Bool"),
@@ -357,6 +358,7 @@ const VIRTUAL_LIST: &[WidgetProperty] = &[
     prop("axis", "Axis"),
     prop("estimated_extent", "MixedLength"),
     prop("overscan", "U32"),
+    prop("across", "Bool"),
     prop("scroll_bars", "Bool"),
     prop("tail", "Bool"),
     prop("refreshing", "Bool"),

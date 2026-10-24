@@ -483,6 +483,7 @@ pub(crate) fn aot_style(style: &StyleIr) -> AotStyle {
         content_align: style.content_align,
         place: style.place,
         scroll: style.scroll.map(|scroll| viso_schema::aot::AotScroll {
+            across: scroll.across,
             bars: scroll.bars,
             tail: scroll.tail,
             snap: scroll.snap,

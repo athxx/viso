@@ -90,6 +90,9 @@ pub struct ScrollViewStyle {
     /// at its natural extent along this axis, so overflow past the viewport's
     /// visible size becomes scrollable.
     pub axis: Axis,
+    /// Whether it scrolls across its axis too: a table, a picture wider and
+    /// taller than its view.
+    pub across: bool,
     /// The viewport's own visible size within its parent (the clip box). Content
     /// larger than this along `axis` scrolls; content is clipped to this box.
     pub size: Size,
@@ -112,6 +115,7 @@ impl Default for ScrollViewStyle {
     fn default() -> Self {
         ScrollViewStyle {
             axis: Axis::Column,
+            across: false,
             size: Size::fill(),
             background: BoxStyle::NONE,
             bars: ScrollBars::Auto,
@@ -250,6 +254,7 @@ impl Component for Scroll {
         let handle = cx.scroll(
             ScrollStyle {
                 axis: self.style.axis,
+                across: self.style.across,
                 size: self.style.size,
                 style: self.style.background,
                 bars: self.style.bars,

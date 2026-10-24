@@ -553,13 +553,15 @@ pub struct StyleIr {
     pub sheet: Option<AotSheet>,
 }
 
-/// How a viewport scrolls: whether it shows scroll bars (`scroll_bars`),
+/// How a viewport scrolls: whether it scrolls across its axis too
+/// (`across`), whether it shows scroll bars (`scroll_bars`),
 /// whether it opens at the end of its content and follows the end as the
 /// content grows (`tail`), how it comes to rest on its items (`snap`) and
 /// how far in from its edges (`snap_inset`, dp), and whether page dots show
 /// them (`page_dots`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ScrollIr {
+    pub across: bool,
     pub bars: bool,
     pub tail: bool,
     pub snap: Option<AotSnap>,
@@ -570,6 +572,7 @@ pub struct ScrollIr {
 impl Default for ScrollIr {
     fn default() -> Self {
         ScrollIr {
+            across: false,
             bars: true,
             tail: false,
             snap: None,

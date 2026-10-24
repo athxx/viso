@@ -780,8 +780,17 @@ impl NodeStore {
     /// A snapping viewport glides to the item the coast would near instead,
     /// however slow (see [`snap`](crate::snap)).
     pub fn fling(&mut self, id: NodeId, velocity: f32) {
+        if let Some(axis) = self.scroll_axis(id) {
+            self.fling_on(id, axis, velocity);
+        }
+    }
+
+    /// [`fling`](Self::fling) along `axis`, either way a viewport scrolls;
+    /// snapping works along its own axis.
+    pub(crate) fn fling_on(&mut self, id: NodeId, axis: Axis, velocity: f32) {
         let physics = self.motions.physics;
-        if self.snaps(id)
+        if self.scroll_axis(id) == Some(axis)
+            && self.snaps(id)
             && self.release_snap(
                 id,
                 velocity.clamp(-physics.max_velocity, physics.max_velocity),
@@ -789,15 +798,26 @@ impl NodeStore {
         {
             return;
         }
-        self.coast(id, velocity);
+        self.coast_on(id, axis, velocity);
     }
 
-    /// Coast viewport `id` from `velocity` (pt/s), snapping or not.
+    /// Coast viewport `id` along its axis from `velocity` (pt/s), snapping or
+    /// not.
     pub(crate) fn coast(&mut self, id: NodeId, velocity: f32) {
-        let Some(axis) = self.scroll_axis(id).filter(|_| self.arena().is_live(id)) else {
+        if let Some(axis) = self.scroll_axis(id) {
+            self.coast_on(id, axis, velocity);
+        }
+    }
+
+    /// Coast viewport `id` along `axis` from `velocity` (pt/s): a coast it
+    /// has the other way goes on.
+    pub(crate) fn coast_on(&mut self, id: NodeId, axis: Axis, velocity: f32) {
+        if !self.arena().is_live(id) || !self.scrolls_on(id, axis) {
             return;
-        };
-        self.motions.flings.retain(|f| f.viewport != id);
+        }
+        self.motions
+            .flings
+            .retain(|f| f.viewport != id || f.axis != axis);
         self.motions.glides.retain(|g| g.viewport != id);
         let physics = self.motions.physics;
         if velocity.abs() < physics.min_velocity {
@@ -1020,7 +1040,10 @@ impl NodeStore {
     /// A coast reached viewport `id`'s end at `velocity`: it carries on past
     /// the end and springs back, its overshoot easing under the limit.
     fn bounce(&mut self, id: NodeId, axis: Axis, velocity: f64) {
+        // A pull shows along a viewport's own axis; across, a coast ends at
+        // the edge.
         if self.motions.physics.overscroll == OverscrollStyle::None
+            || self.scroll_axis(id) != Some(axis)
             || self.scroll_range(id, axis) <= 0.0
         {
             return;
@@ -1377,7 +1400,7 @@ impl NodeStore {
                 })
                 .map_or(0.0, |c| c.velocity as f32);
             if speed.abs() >= self.motions.physics.min_velocity {
-                self.fling(viewport, speed + boost);
+                self.fling_on(viewport, axis, speed + boost);
             }
         }
         // A snapping viewport released too slowly to coast snaps where it is.
@@ -1422,7 +1445,7 @@ impl NodeStore {
     fn carrier(&self, from: NodeId, axis: Axis, delta: f32) -> Option<NodeId> {
         let mut node = Some(from);
         while let Some(n) = node {
-            if self.scroll_axis(n) == Some(axis) {
+            if self.scrolls_on(n, axis) {
                 let offset = self.scroll(n).on(axis);
                 let (least, most) = self.scroll_span(n, axis);
                 if (delta > 0.0 && offset < most) || (delta < 0.0 && offset > least) {

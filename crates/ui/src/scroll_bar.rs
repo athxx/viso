@@ -326,7 +326,7 @@ impl BuildCx<'_> {
         store.set_hittable(track, false);
         store.set_opacity(track, 0.0);
         if !style.overlay {
-            store.set_scroll_gutter(viewport, style.gutter());
+            store.set_scroll_gutter(viewport, axis, style.gutter());
             store.set_fill(track, style.track_color);
         }
         store.set_pointer_handler(track, Box::new(move |ev| bar_pointer(ev, track, axis)));
@@ -453,7 +453,7 @@ impl NodeStore {
                 bar.track,
                 crate::dirty::DirtyClass::MEASURE | crate::dirty::DirtyClass::LAYOUT,
             );
-            self.set_scroll_gutter(bar.viewport, style.gutter());
+            self.set_scroll_gutter(bar.viewport, bar.axis, style.gutter());
             let under = if style.overlay {
                 Rgba::TRANSPARENT
             } else {
@@ -474,12 +474,19 @@ impl NodeStore {
         }
     }
 
-    /// The room viewport `id` keeps across its axis for a classic bar.
-    pub(crate) fn set_scroll_gutter(&mut self, id: NodeId, gutter: f32) {
+    /// The room viewport `id` keeps for a classic bar along `axis`: beside a
+    /// vertical one, under a horizontal one.
+    pub(crate) fn set_scroll_gutter(&mut self, id: NodeId, axis: Axis, gutter: f32) {
         if let crate::layout::LayoutInput::Scroll { gutter: g, .. } = self.layout_input_mut(id)
-            && *g != gutter
+            && match axis {
+                Axis::Column => g.x,
+                Axis::Row => g.y,
+            } != gutter
         {
-            *g = gutter;
+            match axis {
+                Axis::Column => g.x = gutter,
+                Axis::Row => g.y = gutter,
+            }
             self.mark_dirty(
                 id,
                 crate::dirty::DirtyClass::MEASURE | crate::dirty::DirtyClass::LAYOUT,
@@ -487,12 +494,21 @@ impl NodeStore {
         }
     }
 
-    /// The thumb of viewport `id`'s bar, if it has one.
+    /// The thumb of viewport `id`'s bar along its axis, if it has one.
     pub fn scroll_thumb(&self, id: NodeId) -> Option<NodeId> {
         self.bars
             .bars
             .iter()
             .find(|b| b.viewport == id)
+            .map(|b| b.thumb)
+    }
+
+    /// The thumb of viewport `id`'s bar along `axis`, if it has one.
+    pub fn scroll_thumb_on(&self, id: NodeId, axis: Axis) -> Option<NodeId> {
+        self.bars
+            .bars
+            .iter()
+            .find(|b| b.viewport == id && b.axis == axis)
             .map(|b| b.thumb)
     }
 
@@ -520,7 +536,12 @@ impl NodeStore {
         let style = self.bars.style;
         let axis = bar.axis;
         let range = self.scroll_range(bar.viewport, axis);
-        let pull = self.overscroll(bar.viewport);
+        // A pull shows along the viewport's own axis.
+        let pull = if self.scroll_axis(bar.viewport) == Some(axis) {
+            self.overscroll(bar.viewport)
+        } else {
+            0.0
+        };
         let offset = self.scroll(bar.viewport).on(axis);
         let track = self.bounds(bar.track);
         let room = match axis {
@@ -534,9 +555,10 @@ impl NodeStore {
             }
             return false;
         }
+        let gutter = self.scroll_gutter(bar.viewport);
         let view = match axis {
-            Axis::Column => self.bounds(bar.viewport).h,
-            Axis::Row => self.bounds(bar.viewport).w,
+            Axis::Column => self.bounds(bar.viewport).h - gutter.y,
+            Axis::Row => self.bounds(bar.viewport).w - gutter.x,
         };
         let full = (room * view / (view + range)).clamp(style.min_thumb.min(room), room);
         // A pull past the end squeezes the thumb against it.

@@ -2562,6 +2562,65 @@ mod tests {
         h
     }
 
+    #[test]
+    fn a_list_scrolling_across_takes_the_length_its_rows_are_given() {
+        let mut h = ListHarness::new(50, 20.0, 1, 100.0);
+        let mut lists = VirtualLists::new();
+        let mut text_edits = crate::text_edit::TextEdits::new();
+        let mut projectors = crate::reactive::SemanticProjector::new();
+        let mut store = NodeStore::new();
+        let viewport = BuildCx::with_reactive(
+            &mut store,
+            &mut h.states,
+            &mut h.bindings,
+            &mut lists,
+            &mut text_edits,
+            &mut projectors,
+        )
+        .virtual_list(
+            VirtualListStyle {
+                across: true,
+                size: Size::fixed(100.0, 100.0),
+                estimated_row: 20.0,
+                bars: crate::scroll_bar::ScrollBars::Hidden,
+                ..Default::default()
+            },
+            50,
+            |_, cx| {
+                cx.leaf(LeafStyle {
+                    size: Size {
+                        width: Length::fill(),
+                        height: Length::Fixed(20.0),
+                    },
+                    ..Default::default()
+                });
+            },
+        )
+        .id();
+        store.mark_dirty(viewport, DirtyClass::MEASURE | DirtyClass::LAYOUT);
+        h.store = store;
+        h.lists = lists;
+        h.viewport = viewport;
+        h.frame();
+        h.frame();
+        // With no length across, the rows fill the viewport.
+        assert_eq!(h.store.scroll_range(viewport, Axis::Row), 0.0);
+        assert_eq!(h.store.bounds(h.host_of(0).unwrap()).w, 100.0);
+        h.store.set_list_across(viewport, 340.0);
+        h.frame();
+        assert_eq!(h.store.scroll_range(viewport, Axis::Row), 240.0);
+        assert_eq!(h.store.bounds(h.host_of(0).unwrap()).w, 340.0);
+        h.store.scroll_by(viewport, Vec2 { x: 90.0, y: 60.0 });
+        h.frame();
+        assert_eq!(h.store.scroll(viewport), Vec2 { x: 90.0, y: 60.0 });
+        assert!(h.host_of(3).is_some(), "the rows in view are mounted");
+        // Shorter than the viewport, they fill it again.
+        h.store.set_list_across(viewport, 40.0);
+        h.frame();
+        assert_eq!(h.store.scroll_range(viewport, Axis::Row), 0.0);
+        assert_eq!(h.store.scroll(viewport).x, 0.0, "the offset clamps");
+    }
+
     /// Frames, the motion advancing in each, until `h` stands still.
     fn coast_out(h: &mut ListHarness) {
         for _ in 0..240 {

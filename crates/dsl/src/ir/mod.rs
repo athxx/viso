@@ -1982,14 +1982,16 @@ fn fold_static(
                 _ => false,
             })
         }
-        "scroll_bars" | "tail" if matches!(kind, NodeKind::Scroll | NodeKind::VirtualList) => {
+        "across" | "scroll_bars" | "tail"
+            if matches!(kind, NodeKind::Scroll | NodeKind::VirtualList) =>
+        {
             folded(match fold_bool(value) {
                 Some(on) => {
                     let scroll = style.scroll.get_or_insert_with(ui_ir::ScrollIr::default);
-                    *if name == "tail" {
-                        &mut scroll.tail
-                    } else {
-                        &mut scroll.bars
+                    *match name {
+                        "tail" => &mut scroll.tail,
+                        "across" => &mut scroll.across,
+                        _ => &mut scroll.bars,
                     } = on;
                     true
                 }

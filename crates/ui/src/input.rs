@@ -136,6 +136,9 @@ struct ContactSlot {
     /// The axis a pan moves along, decided as it began: viewports across it
     /// stay put however the finger strays.
     pan_axis: Axis,
+    /// Whether the pan moves both ways: it began aslant on a viewport that
+    /// scrolls both ways.
+    pan_free: bool,
     /// A direct contact's latest samples, for the speed a pan lifts at.
     track: VelocityTracker,
 }
@@ -216,6 +219,7 @@ impl PointerContacts {
                 last: [0.0; 2],
                 gesture: Gesture::Held,
                 pan_axis: Axis::Column,
+                pan_free: false,
                 track: VelocityTracker::default(),
             });
         }
@@ -239,6 +243,7 @@ impl PointerContacts {
             last: at,
             gesture: Gesture::Pending,
             pan_axis: Axis::Column,
+            pan_free: false,
             track,
         });
     }
@@ -490,8 +495,13 @@ pub fn route_contact(
                         && let (Some(from), Some(now)) = (slot.captor, store.input_time())
                     {
                         slot.track.push(now, [ev.x, ev.y]);
-                        let speed = slot.track.velocity().on(slot.pan_axis);
-                        store.release_pan(from, axis_vec(slot.pan_axis, speed));
+                        let velocity = slot.track.velocity();
+                        let velocity = if slot.pan_free {
+                            velocity
+                        } else {
+                            axis_vec(slot.pan_axis, velocity.on(slot.pan_axis))
+                        };
+                        store.release_pan(from, velocity);
                     }
                     store.let_go_pulls();
                     chain.clear();
@@ -728,13 +738,16 @@ fn pan_step(
         Gesture::Pan => {
             // Content follows the finger: a finger moving up reveals later
             // content, so the offset grows by the negated travel.
-            let axis = slot.pan_axis;
-            let back = [slot.last[0] - at[0], slot.last[1] - at[1]];
-            let along = match axis {
-                Axis::Row => back[0],
-                Axis::Column => back[1],
+            let back = Vec2 {
+                x: slot.last[0] - at[0],
+                y: slot.last[1] - at[1],
             };
-            pan_by(store, from, axis_vec(axis, along));
+            let delta = if slot.pan_free {
+                back
+            } else {
+                axis_vec(slot.pan_axis, back.on(slot.pan_axis))
+            };
+            pan_by(store, from, delta);
             Some(true)
         }
         Gesture::Pending => {
@@ -759,9 +772,11 @@ fn pan_step(
             }
             // The pan wins the contact: the node it landed on loses it with a
             // `Leave`, which clears its press without a click.
+            let free = pans_free(store, from, axis, travel);
             if let Some(s) = store.contacts_mut().slot_mut(pointer) {
                 s.gesture = Gesture::Pan;
                 s.pan_axis = axis;
+                s.pan_free = free;
             }
             store.set_pressed(None);
             hover_dispatch(
@@ -777,6 +792,24 @@ fn pan_step(
             Some(true)
         }
     }
+}
+
+/// Whether a pan from `from` that began along `axis` with `travel` moves
+/// both ways: it began aslant, and the viewport it scrolls first scrolls
+/// across too with room to. One begun nearly along an axis keeps to it.
+fn pans_free(store: &NodeStore, from: NodeId, axis: Axis, travel: Vec2) -> bool {
+    let across = crate::layout::cross_of(axis);
+    if travel.on(across).abs() < travel.on(axis).abs() * 0.5 {
+        return false;
+    }
+    let mut node = Some(from);
+    while let Some(n) = node {
+        if store.scrolls_on(n, axis) && store.scroll_range(n, axis) > 0.0 {
+            return store.scrolls_on(n, across) && store.scroll_range(n, across) > 0.0;
+        }
+        node = store.arena().parent(n);
+    }
+    false
 }
 
 /// Move the offsets by a pan's `delta` from `from`: a pull eases first,
@@ -795,7 +828,7 @@ fn pan_by(store: &mut NodeStore, from: NodeId, delta: Vec2) {
 pub(crate) fn can_scroll(store: &NodeStore, from: NodeId, axis: Axis, delta: f32) -> bool {
     let mut node = Some(from);
     while let Some(n) = node {
-        if store.scroll_axis(n) == Some(axis) {
+        if store.scrolls_on(n, axis) {
             let offset = store.scroll(n).on(axis);
             let (least, most) = store.scroll_span(n, axis);
             let room = if delta > 0.0 {
@@ -990,39 +1023,39 @@ fn scroll_chain_rest(
                 break;
             }
         }
-        if let Some(axis) = store.scroll_axis(n) {
-            let component = remaining.on(axis);
-            if component != 0.0 {
-                let offset = store.scroll(n).on(axis);
-                let (least, most) = store.scroll_span(n, axis);
-                // Range left to travel in this delta's direction: toward the
-                // greatest offset for a positive delta, the least for a
-                // negative one.
-                let room = if component > 0.0 {
-                    most - offset
-                } else {
-                    offset - least
-                };
-                if room > 0.0 {
-                    let step = axis_vec(axis, component);
-                    store.scroll_by(n, step);
-                    consumed = true;
-                    let past = component - store.scroll(n).on(axis) + offset;
-                    match axis {
-                        Axis::Row => excess.x = past,
-                        Axis::Column => excess.y = past,
-                    }
-                    // This axis is now placed on this viewport; zero it so an
-                    // enclosing same-axis viewport does not double-apply it.
-                    match axis {
-                        Axis::Row => remaining.x = 0.0,
-                        Axis::Column => remaining.y = 0.0,
-                    }
-                    if remaining == Vec2::ZERO {
-                        break;
-                    }
-                }
+        for axis in [Axis::Column, Axis::Row] {
+            if !store.scrolls_on(n, axis) {
+                continue;
             }
+            let component = remaining.on(axis);
+            if component == 0.0 {
+                continue;
+            }
+            let offset = store.scroll(n).on(axis);
+            let (least, most) = store.scroll_span(n, axis);
+            // Range left to travel in this delta's direction: toward the
+            // greatest offset for a positive delta, the least for a
+            // negative one.
+            let room = if component > 0.0 {
+                most - offset
+            } else {
+                offset - least
+            };
+            if room <= 0.0 {
+                continue;
+            }
+            store.scroll_by(n, axis_vec(axis, component));
+            consumed = true;
+            let past = component - store.scroll(n).on(axis) + offset;
+            // This axis is now placed on this viewport; zero it so an
+            // enclosing same-axis viewport does not double-apply it.
+            match axis {
+                Axis::Row => (excess.x, remaining.x) = (past, 0.0),
+                Axis::Column => (excess.y, remaining.y) = (past, 0.0),
+            }
+        }
+        if remaining == Vec2::ZERO {
+            break;
         }
         node = store.arena().parent(n);
     }

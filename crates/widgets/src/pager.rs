@@ -138,6 +138,7 @@ impl Component for Pager {
         let page = self.page.borrow_mut().take();
         let style = VirtualListStyle {
             axis: self.style.axis,
+            across: false,
             size: self.style.size,
             overscan: 1,
             estimated_row: 0.0,
@@ -247,6 +248,7 @@ impl Component for Carousel {
         let handle = cx.scroll(
             ScrollStyle {
                 axis: Axis::Row,
+                across: false,
                 size: s.size,
                 style: s.background,
                 bars: ScrollBars::Hidden,

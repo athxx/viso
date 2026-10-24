@@ -415,10 +415,14 @@ fn incoming(nodes: &NodeStore, node: NodeId, axis: Axis) -> Option<f32> {
         };
         let input = nodes.input(parent.index());
         match input {
-            LayoutInput::Scroll { axis: along, .. }
-            | LayoutInput::AbsoluteRows { axis: along, .. }
-                if along == axis =>
-            {
+            LayoutInput::Scroll {
+                axis: along,
+                across,
+                ..
+            } if along == axis || across => {
+                return None;
+            }
+            LayoutInput::AbsoluteRows { axis: along, .. } if along == axis => {
                 return None;
             }
             LayoutInput::Flex { padding, .. } | LayoutInput::Grid { padding, .. } => {
