@@ -236,6 +236,7 @@ crates/
     text/
     svg/
     image/
+    media/
     render/
     ui/
     widgets/

@@ -623,6 +623,7 @@ viso/
 │   ├── math/  ende/  handle/
 │   ├── runtime/  platform/
 │   ├── gpu/  shader/  text/  render/  svg/
+│   ├── media/       viso-media（经 OS 播放器播放媒体，叶子，ADR 0049）
 │   ├── ui/  widgets/
 │   ├── dsl/  lsp/
 │   ├── behavior/  view/   viso-behavior（VM）/ viso-view（compiled view 运行时）
@@ -867,6 +868,10 @@ SVG 输入通道：bytes 一次性解析为规范化 vector 文档（`tree::Tree
 
 CPU 上的 raster 图像：PNG/APNG、JPEG、GIF、WebP（有损/无损/动画）、AVIF（静图、grid、序列；8/10/12-bit，按 nclx 或 AV1 序列头的 CICP 换算，PQ/HLG 色调映射到 SDR，`clap`/`irot`/`imir`；`avif` feature，纯 Rust AV1 解码，wasm 交给浏览器）、BMP、ICO、QOI asset 解码为 premultiplied RGBA8（header 先行检查尺寸上限，按 EXIF orientation 摆正）；动画（`Animation`）流式逐帧合成到一张画布（region + blend/dispose，或解码器自行合成的整帧），内存只有画布与当前帧，循环次数与帧时长按文件，≤10 ms 的帧按 100 ms 显示；构建期把图像转换为 target 采样的 texel 格式（`convert`：16-bit packed、BC1/BC3/BC7、ETC2、ASTC 4×4/6×6/8×8 的 Viso 自有纯 Rust 编解码器 `codec`，Mitchell 重采样 `resample`，SVG 构建期光栅化 `vector`）与其容器 `texture`（`VTX1`）——解码器同时是不支持该格式的设备的 fallback；headless snapshot 的 straight-alpha 图像及其 PNG 写出与感知比较。renderer 与 CLI 共用；格式词汇来自 leaf `viso-gpu-abi`，不链接任何 backend。
 
+### `viso-media`
+
+经各 target 自带播放器播放媒体（ADR 0049）：`VideoPlayer` 打开文件、URL（平台自行拉取，含 HLS）或内存字节（只读文件的播放器写入临时文件，播放器释放时删除），打开时暂停；在 loop 线程上 `poll` 就绪（尺寸、时长、帧率、有无声音、可否 seek）/ 结束 / 失败 / 等待数据，`frame` 只在画面变化时交出当前应显示的一帧（BGRA，平台视频处理器已完成 YUV 矩阵、范围与 HDR 映射）；play / pause / seek（暂停时也显示目标帧）/ rate / volume / muted / looping。解码、声音输出与音画同步都在平台。macOS / iOS 走 AVFoundation（`AVPlayer` + `AVPlayerItemVideoOutput`，IOSurface 背书的 BGRA pixel buffer）；其余 target 暂报 `Unsupported`。叶子 crate，不依赖框架其他 crate。
+
 ### `viso-ui`
 
 - NodeArena；
@@ -971,6 +976,7 @@ CLI 依赖 `viso-dsl`、`viso-dev-protocol`、`viso-schema`、`viso-image`、`vi
 | `viso-render` | math, schema, text, image, svg, shader, gpu | — |
 | `viso-svg` | math | — |
 | `viso-image` | schema, gpu-abi, svg, math | — |
+| `viso-media` | —（叶子；各 target 的媒体栈） | — |
 | `viso-text` | glyph-a8 | — |
 | `viso-shader` | gpu-abi, ende | — |
 | `viso-gpu` | handle, macros, gpu-abi | — |

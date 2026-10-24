@@ -257,6 +257,15 @@ Rules:
   reduced motion; `animate` in Rust and DSL), decoded off the frame path into the resident texture.
 - [ ] Video playback (`Video` widget): AVFoundation, Media Foundation, GStreamer,
   MediaCodec, HTML video; the external/YUV texture path in render.
+  - [x] `viso-media`: `VideoPlayer` over the OS player (open file/URL/bytes, poll
+    ready/ended/failed/waiting, frame when it changes, play/pause/seek/rate/volume/
+    mute/loop); AVFoundation on macOS and iOS.
+  - [ ] Video nodes in `viso-ui` (a resource of their own, provided by the facade;
+    per-node playback state and requests), the facade driving players into textures,
+    the `Video` widget and the DSL `Video` node.
+  - [ ] Zero-copy frames: native handles adopted by the backend (IOSurface → Metal,
+    shared D3D texture → D3D12, hardware buffer → Vulkan, `<video>` → WebGPU).
+  - [ ] Media Foundation, GStreamer, MediaCodec/MediaPlayer and `<video>` players.
 - [ ] Camera capture service and `CameraView`.
 - [ ] Audio: input (microphone), file decoding (WAV, Ogg Vorbis, MP3, FLAC), Web Audio
   output, PulseAudio/PipeWire output.

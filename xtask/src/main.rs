@@ -365,6 +365,16 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
                 dev: &[],
             },
         ),
+        // Media through the OS players: a leaf, its target-specific media
+        // stacks kept out of the window/input layer.
+        (
+            "viso-media",
+            Allowed {
+                dir: "crates/media",
+                deps: &[],
+                dev: &[],
+            },
+        ),
         // Tooling. The project/config model answers "what
         // project am I in, and what is the resolved configuration" as plain data, so
         // that `viso --help` and `viso config show` need no framework initialization

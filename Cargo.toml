@@ -18,6 +18,7 @@ members = [
     "crates/render",
     "crates/svg",
     "crates/image",
+    "crates/media",
     "crates/ui",
     "crates/ui-macros",
     "crates/widgets",
@@ -64,6 +65,7 @@ viso-ende = { path = "crates/ende", version = "0.0.0", default-features = false 
 viso-schema = { path = "crates/schema", version = "0.0.0" }
 viso-dev-protocol = { path = "crates/dev-protocol", version = "0.0.0" }
 viso-image = { path = "crates/image", version = "0.0.0" }
+viso-media = { path = "crates/media", version = "0.0.0" }
 viso-runtime = { path = "crates/runtime", version = "0.0.0" }
 viso-platform = { path = "crates/platform", version = "0.0.0", default-features = false }
 viso-handle = { path = "crates/handle", version = "0.0.0" }

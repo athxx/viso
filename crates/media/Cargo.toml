@@ -1,0 +1,72 @@
+[package]
+name = "viso-media"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# Media through the OS: video played by each platform's own player, which
+# decodes in hardware, keeps sound and picture in step and drives the audio
+# device itself. Its own crate because each target links a different media
+# stack (AVFoundation, Media Foundation, GStreamer, the NDK's media, the
+# browser's), none of which the window/input layer needs.
+#
+# A leaf: it depends on nothing of the framework.
+[target.'cfg(target_vendor = "apple")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSArray",
+    "NSDictionary",
+    "NSEnumerator",
+    "NSError",
+    "NSString",
+    "NSURL",
+    "NSValue",
+] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "CFString",
+    "CFDictionary",
+    "CFCGTypes",
+    "objc2",
+] }
+objc2-core-media = { version = "0.3", default-features = false, features = [
+    "std",
+    "objc2",
+    "CMTime",
+    "CMTimeRange",
+] }
+objc2-core-video = { version = "0.3", default-features = false, features = [
+    "std",
+    "objc2",
+    "CVBuffer",
+    "CVImageBuffer",
+    "CVPixelBuffer",
+    "CVReturn",
+    "CVBase",
+] }
+objc2-av-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "objc2-core-media",
+    "objc2-core-video",
+    "objc2-core-foundation",
+    "AVAsset",
+    "AVAssetTrack",
+    "AVMediaFormat",
+    "AVPlayer",
+    "AVPlayerItem",
+    "AVPlayerItemOutput",
+    "AVPlayerItemTrack",
+] }
+
+[target.'cfg(target_vendor = "apple")'.dev-dependencies]
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSDate",
+    "NSRunLoop",
+] }
+
+[[test]]
+name = "player"
+harness = false
