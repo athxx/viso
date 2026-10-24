@@ -16,6 +16,7 @@ mod checkbox;
 mod chip;
 mod color_picker;
 mod combo_box;
+mod data_grid;
 mod date_picker;
 mod dock;
 mod file_tree;
@@ -50,6 +51,10 @@ pub use checkbox::{CheckBox, CheckBoxStyle, checkbox};
 pub use chip::{Chip, ChipStyle, chip};
 pub use color_picker::{ColorPicker, ColorPickerLabels, ColorPickerStyle, color_picker};
 pub use combo_box::{ComboBox, ComboBoxHandle, ComboBoxHandleSlot, ComboBoxStyle, combo_box};
+pub use data_grid::{
+    CellBuilder, CellText, DataGrid, DataGridHandle, DataGridHandleSlot, DataGridStyle, GridColumn,
+    GridRange, GridSelect, GridSelection, data_grid, grid_column,
+};
 pub use date_picker::{DatePicker, DatePickerStyle, date_picker};
 pub use dock::{
     Dock, DockHandle, DockHandleSlot, DockNode, DockStyle, DockTree, DropPart, Floating,

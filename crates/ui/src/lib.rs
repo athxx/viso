@@ -189,7 +189,8 @@ pub use scenes::{SceneSlots, SceneSync, SceneTarget};
 pub use scroll_bar::{ScrollBarStyle, ScrollBars};
 pub use scroll_motion::{FlingCurve, OverscrollStyle, ScrollPhysics};
 pub use semantics::{
-    InspectKind, LiveRegion, Role, SemanticState, Semantics, SemanticsNode, SemanticsTree, Validity,
+    InspectKind, LiveRegion, Role, SemanticState, Semantics, SemanticsNode, SemanticsTree,
+    SortOrder, TableFacts, Validity,
 };
 pub use shader::ShaderSlots;
 pub use shadow::Shadow;
@@ -209,8 +210,8 @@ pub use token::{Theme, TokenId, TokenInterner, TokenNamespace};
 pub use viewer::{ViewerLimits, ViewerMove};
 pub use virtual_grid::{Columns, ListGrid};
 pub use virtual_list::{
-    HeightCache, HeightTree, ItemBuilder, StickyOf, VirtualListState, VirtualLists,
-    absorb_measurements, reconcile, set_item_count, set_sticky_of,
+    AcrossView, AcrossWatch, HeightCache, HeightTree, ItemBuilder, StickyOf, VirtualListState,
+    VirtualLists, absorb_measurements, reconcile, set_item_count, set_sticky_of, watch_across,
 };
 /// The renderer's asset vocabulary — resource identity, formats, decoded
 /// payloads — which the compiler names resources by and the facade decodes

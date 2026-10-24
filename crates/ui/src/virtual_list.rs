@@ -344,6 +344,20 @@ pub type KeyOf = Box<dyn Fn(usize) -> ItemKey>;
 /// the data changes.
 pub type StickyOf = Box<dyn Fn(usize) -> bool>;
 
+/// What a list scrolling across its axis shows across: how far it is
+/// scrolled from its start that way and how long it is that way, less the
+/// room its bars keep.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AcrossView {
+    pub offset: f32,
+    pub extent: f32,
+}
+
+/// Told, before the list mounts its rows, each time what its viewport shows
+/// across changed, with the rows mounted as `(logical, host)`: a table
+/// building only the columns in view. Rows mounted after see what it set.
+pub type AcrossWatch = Box<dyn FnMut(&mut StructureCx<'_>, AcrossView, &[(usize, NodeId)])>;
+
 /// One currently-mounted row: the logical item it shows, the host node whose body
 /// holds its widgets, and the main-axis offset the host sits at inside the canvas.
 #[derive(Debug, Clone, Copy)]
@@ -428,6 +442,8 @@ pub struct VirtualListState {
     /// The row the next reconcile scrolls to the start edge, mounted or not,
     /// and whether it glides there.
     reveal: Option<(usize, bool)>,
+    /// Whether that reveal scrolls only the least that shows the row whole.
+    reveal_least: bool,
     /// The row a glide is headed for: each reconcile aims it where the
     /// height model now puts the row.
     gliding_to: Option<usize>,
@@ -476,6 +492,12 @@ pub struct VirtualListState {
     snap_points: Vec<(f32, usize)>,
     /// Reused: the stretches about a probe a snap may rest on.
     snap_spans: Vec<(f32, f32, usize)>,
+    /// Told what the viewport shows across as it changes, and what it was
+    /// last told.
+    across: Option<AcrossWatch>,
+    across_seen: Option<AcrossView>,
+    /// Reused: the mounted rows handed to the across watch.
+    across_rows: Vec<(usize, NodeId)>,
 }
 
 impl VirtualListState {
@@ -517,6 +539,7 @@ impl VirtualListState {
             dirty_data: true,
             mounted_once: false,
             reveal: None,
+            reveal_least: false,
             gliding_to: None,
             scratch_free: Vec::new(),
             scratch_mounted: Vec::new(),
@@ -535,6 +558,9 @@ impl VirtualListState {
             page_extent: 0.0,
             snap_points: Vec::new(),
             snap_spans: Vec::new(),
+            across: None,
+            across_seen: None,
+            across_rows: Vec::new(),
         }
     }
 
@@ -928,6 +954,50 @@ impl VirtualListState {
         self.mounted.len()
     }
 
+    /// The rows mounted, as `(logical, host)`: those in the window and a
+    /// header or a lifted row held past it.
+    pub fn mounted_rows(&self) -> impl Iterator<Item = (usize, NodeId)> + '_ {
+        self.mounted
+            .iter()
+            .chain(&self.pinned)
+            .chain(&self.held)
+            .map(|row| (row.logical_index, row.host))
+    }
+
+    /// Tell `watch` what the viewport shows across as it changes (see
+    /// [`AcrossWatch`]); it is told at the next reconcile.
+    pub fn watch_across(&mut self, watch: AcrossWatch) {
+        self.across = Some(watch);
+        self.across_seen = None;
+    }
+
+    /// Tell the across watch what the viewport now shows across, if that
+    /// changed.
+    fn tell_across(&mut self, viewport: NodeId, cx: &mut StructureCx<'_>) {
+        let Some(mut watch) = self.across.take() else {
+            return;
+        };
+        let cross = crate::layout::cross_of(self.axis);
+        let gutter = cx.store.scroll_gutter(viewport);
+        let room = match cross {
+            Axis::Row => gutter.x,
+            Axis::Column => gutter.y,
+        };
+        let view = AcrossView {
+            offset: cx.store.scroll_distance(viewport, cross),
+            extent: (cx.store.bounds_main(viewport, cross) - room).max(0.0),
+        };
+        if self.across_seen != Some(view) {
+            self.across_seen = Some(view);
+            let mut rows = std::mem::take(&mut self.across_rows);
+            rows.clear();
+            rows.extend(self.mounted_rows());
+            watch(cx, view, &rows);
+            self.across_rows = rows;
+        }
+        self.across = Some(watch);
+    }
+
     /// The pool's current length (parked, reusable hosts). Conserved across a
     /// steady window slide — a recycle pops as many as it pushes.
     #[inline]
@@ -1196,6 +1266,16 @@ impl VirtualListState {
     ) {
         let smooth = behavior == crate::component::ScrollBehavior::Smooth;
         self.reveal = Some((index.min(self.item_count.saturating_sub(1)), smooth));
+        self.reveal_least = false;
+        self.dirty_data = true;
+    }
+
+    /// Scroll the least that shows row `index` (clamped to the last row)
+    /// whole, under its section's pinned header, at the next reconcile —
+    /// mounted or not: a cursor moved by the keyboard.
+    pub fn show_index(&mut self, index: usize) {
+        self.reveal = Some((index.min(self.item_count.saturating_sub(1)), false));
+        self.reveal_least = true;
         self.dirty_data = true;
     }
 
@@ -1397,6 +1477,7 @@ fn reconcile_one(viewport: NodeId, state: &mut VirtualListState, cx: &mut Struct
     // allows, on the extent the height model holds now.
     state.take_headers();
     state.flow.settle();
+    state.tell_across(viewport, cx);
     state.fit_lanes(viewport, cx);
     if state.pages {
         state.fit_pages(viewport, cx);
@@ -1413,8 +1494,18 @@ fn reconcile_one(viewport: NodeId, state: &mut VirtualListState, cx: &mut Struct
             started = true;
         } else {
             state.gliding_to = None;
-            let to = state.reveal_offset(index).min(room);
-            cx.store.seek_scroll(viewport, axis, to);
+            let mut to = state.reveal_offset(index);
+            if std::mem::take(&mut state.reveal_least) {
+                let gutter = cx.store.scroll_gutter(viewport);
+                let room_after = match axis {
+                    Axis::Row => gutter.x,
+                    Axis::Column => gutter.y,
+                };
+                let shown = (cx.store.bounds_main(viewport, axis) - room_after).max(0.0);
+                let end = state.flow.top(index) + state.flow.extent(index) - shown;
+                to = cx.store.scroll_distance(viewport, axis).max(end).min(to);
+            }
+            cx.store.seek_scroll(viewport, axis, to.min(room));
         }
     }
     // A glide the finger or the wheel stopped, or that arrived, aims no more.
@@ -1668,6 +1759,14 @@ pub fn set_item_count(lists: &mut VirtualLists, viewport: NodeId, item_count: us
         state.flow.resize(item_count);
         state.dirty_data = true;
         state.headers_stale = state.sticky_of.is_some() || state.full_of.is_some();
+    }
+}
+
+/// Tell `watch` what the list at `viewport` shows across as it changes: see
+/// [`AcrossWatch`].
+pub fn watch_across(lists: &mut VirtualLists, viewport: NodeId, watch: AcrossWatch) {
+    if let Some(state) = lists.get_mut(viewport) {
+        state.watch_across(watch);
     }
 }
 

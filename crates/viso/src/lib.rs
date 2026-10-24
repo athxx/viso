@@ -3187,6 +3187,37 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 let geometry = ws.text.as_ref().map(|t| t as &dyn text_edit::EditGeometry);
                 text_edit::reconcile(&mut ws.store, &mut ws.text_edits, geometry);
                 let Some(node) = ws.focused_text_node() else {
+                    // Another focused control copies as its shortcut asks:
+                    // what it hands the clipboard answers the platform.
+                    let apple = viso_ui::primary_is_logo();
+                    let ev = KeyEvent {
+                        key: if c.cut {
+                            viso_runtime::Key::X
+                        } else {
+                            viso_runtime::Key::C
+                        },
+                        pressed: true,
+                        repeat: false,
+                        modifiers: Modifiers {
+                            logo: apple,
+                            control: !apple,
+                            ..Modifiers::default()
+                        },
+                    };
+                    if ws.store.focused().is_some() {
+                        KeyRouter::route_key_taken(
+                            &mut ws.store,
+                            &mut ws.states,
+                            &ws.bindings,
+                            &mut ws.text_edits,
+                            root,
+                            ev,
+                            &mut ws.route_chain,
+                        );
+                    }
+                    if let Some(text) = ws.store.take_copied() {
+                        c.reply.set(text);
+                    }
                     return;
                 };
                 let Some(buffer) = ws.text_edits.get_mut(node) else {
@@ -3923,6 +3954,9 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 self.pending_opens.clear();
                 self.pending_closes.clear();
                 for ws in &mut self.windows {
+                    if let Some(text) = ws.store.take_copied() {
+                        cx.set_clipboard_text(&text);
+                    }
                     ws.store.take_window_opens(&mut ws.scratch_opens);
                     self.pending_opens.append(&mut ws.scratch_opens);
                     ws.store.take_window_closes(&mut ws.scratch_closes);
@@ -4615,6 +4649,11 @@ pub mod prelude {
     };
     // Forms: a checked field, the form gathering fields, a group of fields.
     pub use viso_widgets::{Field, FieldValue, Fieldset, Form, field, fieldset};
+    // The data grid: a table that scrolls both ways, with its handle.
+    pub use viso_widgets::{
+        DataGrid, DataGridHandle, DataGridHandleSlot, GridSelect, GridSelection, data_grid,
+        grid_column,
+    };
     // The top-level Window control (public application lifecycle): a window
     // is not a node control — it does not enter the UI tree — so it appears as an
     // application-level handle, not a `Component`. `window(cfg).content(..).open(ev)`

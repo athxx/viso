@@ -95,6 +95,16 @@ pub(crate) fn chevron_down(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
     stroked(cx, cmds, ink, 1.5)
 }
 
+/// A chevron pointing up: a column sorted ascending.
+pub(crate) fn chevron_up(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
+    let cmds = vec![
+        PathCmd::MoveTo(Point::new(4.0, 10.0)),
+        PathCmd::LineTo(Point::new(8.0, 6.0)),
+        PathCmd::LineTo(Point::new(12.0, 10.0)),
+    ];
+    stroked(cx, cmds, ink, 1.5)
+}
+
 /// Two chevrons, up over down: a list that opens over its button.
 pub(crate) fn chevrons_up_down(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
     let cmds = vec![

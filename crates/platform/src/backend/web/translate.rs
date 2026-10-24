@@ -12,7 +12,9 @@
     allow(dead_code)
 )]
 
-use crate::accessibility::{AccessAction, AccessNode, SemanticsId, SemanticsLive, SemanticsRole};
+use crate::accessibility::{
+    AccessAction, AccessNode, SemanticsId, SemanticsLive, SemanticsRole, SemanticsSort,
+};
 use crate::drop::{DropAction, DropActions, DropKinds};
 use crate::event::{
     CursorIcon, KeyCode, Modifiers, PointerButtons, PointerId, PointerKind, PointerPhase,
@@ -382,6 +384,8 @@ pub(crate) fn aria_role(role: SemanticsRole) -> Option<&'static str> {
         R::Row => "row",
         R::Cell => "cell",
         R::ColumnHeader => "columnheader",
+        R::Grid => "grid",
+        R::GridCell => "gridcell",
         R::ProgressIndicator => "progressbar",
         R::SearchField => "searchbox",
         R::TabPanel => "tabpanel",
@@ -441,6 +445,24 @@ pub(crate) fn aria_attributes(node: &AccessNode, mut set: impl FnMut(&'static st
     set("aria-disabled", state.disabled.then_some("true"));
     set("aria-required", state.required.then_some("true"));
     set("aria-invalid", state.invalid.then_some("true"));
+    let (rows, columns) = state.table_extent.unzip();
+    set("aria-rowcount", rows.map(|n| n.to_string()).as_deref());
+    set("aria-colcount", columns.map(|n| n.to_string()).as_deref());
+    // ARIA counts rows and columns from 1.
+    let (row, column) = state.table_place.unzip();
+    set("aria-rowindex", row.map(|i| (i + 1).to_string()).as_deref());
+    let column = column.filter(|_| role != SemanticsRole::Row);
+    set(
+        "aria-colindex",
+        column.map(|i| (i + 1).to_string()).as_deref(),
+    );
+    set(
+        "aria-sort",
+        state.sort.map(|sort| match sort {
+            SemanticsSort::Ascending => "ascending",
+            SemanticsSort::Descending => "descending",
+        }),
+    );
     let error = node.error_message.map(element_id);
     set("aria-errormessage", error.as_deref());
     let active = node.active_descendant.map(element_id);
@@ -836,6 +858,39 @@ mod tests {
             value(&set, "aria-errormessage").map(str::to_owned),
             Some(element_id(SemanticsId(7)))
         );
+
+        let cell = AccessNode {
+            role: SemanticsRole::GridCell,
+            state: SemanticsState {
+                table_place: Some((9, 2)),
+                ..SemanticsState::default()
+            },
+            ..AccessNode::default()
+        };
+        let set = attributes(&cell);
+        assert_eq!(value(&set, "role"), Some("gridcell"));
+        assert_eq!(value(&set, "aria-rowindex"), Some("10"), "from 1");
+        assert_eq!(value(&set, "aria-colindex"), Some("3"));
+        let grid = AccessNode {
+            role: SemanticsRole::Grid,
+            state: SemanticsState {
+                table_extent: Some((1001, 4)),
+                ..SemanticsState::default()
+            },
+            ..AccessNode::default()
+        };
+        let set = attributes(&grid);
+        assert_eq!(value(&set, "aria-rowcount"), Some("1001"));
+        assert_eq!(value(&set, "aria-colcount"), Some("4"));
+        let header = AccessNode {
+            role: SemanticsRole::ColumnHeader,
+            state: SemanticsState {
+                sort: Some(SemanticsSort::Ascending),
+                ..SemanticsState::default()
+            },
+            ..AccessNode::default()
+        };
+        assert_eq!(value(&attributes(&header), "aria-sort"), Some("ascending"));
     }
 
     #[test]

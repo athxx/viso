@@ -536,6 +536,8 @@ pub enum StoreRequest {
     Plane(NodeId, crate::color_plane::PlaneChange),
     /// Mark the day of a week row the pointer is over, or none.
     HoverDay(NodeId, Option<u8>),
+    /// Put text on the clipboard.
+    Copy(String),
 }
 
 impl StoreRequest {
@@ -571,6 +573,7 @@ impl StoreRequest {
             StoreRequest::ShowSlider(id, low, high) => store.show_slider(id, low, high),
             StoreRequest::Plane(id, change) => store.change_plane(id, change),
             StoreRequest::HoverDay(id, day) => store.hover_day(id, day),
+            StoreRequest::Copy(text) => store.copy_text(text),
         }
     }
 }
@@ -1182,6 +1185,12 @@ impl<'a> EventCx<'a> {
     /// none ([`calendar`](crate::calendar)).
     pub fn hover_day(&mut self, id: NodeId, day: Option<u8>) {
         self.store_requests.push(StoreRequest::HoverDay(id, day));
+    }
+
+    /// Put `text` on the system clipboard once the handler returns: a
+    /// control's own copy (a grid's selected cells).
+    pub fn copy_text(&mut self, text: impl Into<String>) {
+        self.store_requests.push(StoreRequest::Copy(text.into()));
     }
 
     /// Hold half `half` of stepper `id` down, or let go of its hold

@@ -691,6 +691,9 @@ pub struct NodeStore {
     /// and asks the platform to close each). Empty and allocation-free in the
     /// overwhelmingly common frame that closes no window.
     window_closes: Vec<u32>,
+    /// Cold, transient handoff: the text a handler put on the clipboard this
+    /// frame, until the facade hands it to the platform.
+    copied: Option<String>,
     /// Cold, transient handoff buffer (not index-aligned): text leaves the
     /// layout pass assigned a width their run was not shaped/wrapped at, sitting
     /// here between layout (which records `(id, width)` via
@@ -804,6 +807,8 @@ pub struct NodeStore {
     actives: crate::semantics::Sparse<NodeId>,
     /// Cold: the form controls a value is checked of.
     validities: crate::semantics::Sparse<crate::semantics::Validity>,
+    /// Cold: the tables, rows and cells that say where they stand.
+    tables: crate::semantics::Sparse<crate::semantics::TableFacts>,
     /// Where the focus was before it last moved, until the move is told.
     focus_from: Option<Option<NodeId>>,
     /// Cold: the nodes whose lengths read the environment (`px`, `sp`, `em`),
@@ -912,6 +917,7 @@ impl NodeStore {
         self.timer_requests.clear();
         self.window_opens.clear();
         self.window_closes.clear();
+        self.copied = None;
         self.text_reflows.clear();
         self.edit_requests.clear();
         self.text_seeds.clear();
@@ -955,6 +961,7 @@ impl NodeStore {
         self.snaps.clear();
         self.actives.clear();
         self.validities.clear();
+        self.tables.clear();
         self.focus_scope = None;
         self.draggable_regions.clear();
         self.tasks.clear();
@@ -2982,6 +2989,22 @@ impl NodeStore {
         }
     }
 
+    /// Where table, row or cell `id` stands: a table's rows and columns, a
+    /// row's or cell's place, a column header's sort; the default for a node
+    /// that says none.
+    pub fn table_facts(&self, id: NodeId) -> crate::semantics::TableFacts {
+        self.tables.get(id.index()).unwrap_or_default()
+    }
+
+    /// Say where table, row or cell `id` stands, marking it SEMANTICS-dirty
+    /// when that changed. A stale handle is a no-op.
+    pub fn set_table_facts(&mut self, id: NodeId, facts: crate::semantics::TableFacts) {
+        let value = (facts != crate::semantics::TableFacts::default()).then_some(facts);
+        if self.arena.is_live(id) && self.tables.set(id.index(), value) {
+            self.mark_dirty(id, DirtyClass::SEMANTICS);
+        }
+    }
+
     /// A node's live accessibility state (checked / value / range / expanded),
     /// if any. `None` = a node that carries no reactive semantic state (a plain
     /// container, a label, or a control before its projection binding has run).
@@ -3813,6 +3836,17 @@ impl NodeStore {
     pub fn take_window_closes(&mut self, out: &mut Vec<u32>) {
         out.clear();
         out.append(&mut self.window_closes);
+    }
+
+    /// Put `text` on the clipboard: the facade hands it to the platform after
+    /// the frame's input. The last of a frame wins.
+    pub fn copy_text(&mut self, text: String) {
+        self.copied = Some(text);
+    }
+
+    /// The text put on the clipboard since this was last asked, if any.
+    pub fn take_copied(&mut self) -> Option<String> {
+        self.copied.take()
     }
 
     /// A node's current pending invalidation set.
@@ -5201,6 +5235,7 @@ impl NodeStore {
         self.snaps.forget(i as u32);
         self.actives.forget(i as u32);
         self.validities.forget(i as u32);
+        self.tables.forget(i as u32);
         self.clips[i] = false;
         self.overlay[i] = false;
         self.chrome[i] = false;
@@ -5887,6 +5922,7 @@ impl NodeStore {
             state: self.semantic_state(id),
             active: self.active_descendant(id),
             validity: self.validity(id),
+            table: self.table_facts(id),
             bounds: self.bounds(id),
             children: Vec::new(),
         });
@@ -5927,6 +5963,7 @@ impl NodeStore {
                 state: None,
                 active: None,
                 validity: crate::semantics::Validity::default(),
+                table: crate::semantics::TableFacts::default(),
                 bounds,
                 children: Vec::new(),
             });
@@ -7309,6 +7346,22 @@ impl<'a> BuildCx<'a> {
     pub fn semantic_state(&mut self, handle: Handle, state: SemanticState) -> Handle {
         self.store.set_semantic_state(handle.id, state);
         handle
+    }
+
+    /// Say where the node `handle` names stands in a table (see
+    /// [`NodeStore::set_table_facts`]).
+    pub fn table_facts(&mut self, handle: Handle, facts: crate::semantics::TableFacts) -> Handle {
+        self.store.set_table_facts(handle.id, facts);
+        handle
+    }
+
+    /// Show the node `active` names as the descendant active in `owner`
+    /// while `owner` keeps the focus (see
+    /// [`NodeStore::set_active_descendant`]): a grid's cursor cell built as
+    /// its row mounts.
+    pub fn active_descendant(&mut self, owner: NodeId, active: Handle) -> Handle {
+        self.store.set_active_descendant(owner, Some(active.id));
+        active
     }
 
     /// Declare text to draw on an already-declared node. Mirrors `semantics`:

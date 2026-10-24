@@ -171,11 +171,16 @@ pub enum Role {
     /// The panel a [`Tab`](Role::Tab) shows (WAI-ARIA `role=tabpanel`),
     /// named by its tab.
     TabPanel,
+    /// A table whose cells take the focus and can be selected and acted on
+    /// (WAI-ARIA `role=grid`): a data grid.
+    Grid,
+    /// A cell of a [`Grid`](Role::Grid) (WAI-ARIA `role=gridcell`).
+    GridCell,
 }
 
 impl Role {
     /// Every role, in declaration order.
-    pub const ALL: [Role; 40] = [
+    pub const ALL: [Role; 42] = [
         Role::Group,
         Role::Button,
         Role::CheckBox,
@@ -216,6 +221,8 @@ impl Role {
         Role::ProgressIndicator,
         Role::SearchField,
         Role::TabPanel,
+        Role::Grid,
+        Role::GridCell,
     ];
 
     /// The role whose [`label`](Self::label) is `label`.
@@ -268,6 +275,8 @@ impl Role {
             Role::ProgressIndicator => "progressindicator",
             Role::SearchField => "searchfield",
             Role::TabPanel => "tabpanel",
+            Role::Grid => "grid",
+            Role::GridCell => "gridcell",
         }
     }
 }

@@ -311,6 +311,7 @@ pub(crate) fn announced(role: SemanticsRole) -> bool {
             | R::MenuBar
             | R::ListBox
             | R::Table
+            | R::Grid
             | R::Row
             | R::Separator
     )
@@ -331,9 +332,13 @@ pub(crate) fn element_kind(node: &AccessNode) -> ElementKind {
         | R::ListOption
         | R::ComboBox => ElementKind::Button,
         R::Slider | R::SpinButton => ElementKind::Adjustable,
-        R::Label | R::Status | R::Tooltip | R::Cell | R::ColumnHeader | R::ProgressIndicator => {
-            ElementKind::StaticText
-        }
+        R::Label
+        | R::Status
+        | R::Tooltip
+        | R::Cell
+        | R::GridCell
+        | R::ColumnHeader
+        | R::ProgressIndicator => ElementKind::StaticText,
         R::Image => ElementKind::Image,
         R::Link => ElementKind::Link,
         _ if node.actions.contains(AccessAction::Click) => ElementKind::Button,

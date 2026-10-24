@@ -594,6 +594,8 @@ pub fn source_role(variant: &str) -> Option<Role> {
         "progress_indicator" => Role::ProgressIndicator,
         "search_field" => Role::SearchField,
         "tab_panel" => Role::TabPanel,
+        "grid" => Role::Grid,
+        "grid_cell" => Role::GridCell,
         _ => return None,
     })
 }
@@ -604,7 +606,7 @@ pub fn source_name(role: Role) -> &'static str {
 }
 
 /// Every variant [`source_role`] takes, in the order of [`Role::ALL`].
-pub const SOURCE_ROLES: [&str; 40] = [
+pub const SOURCE_ROLES: [&str; 42] = [
     "group",
     "button",
     "check_box",
@@ -645,6 +647,8 @@ pub const SOURCE_ROLES: [&str; 40] = [
     "progress_indicator",
     "search_field",
     "tab_panel",
+    "grid",
+    "grid_cell",
 ];
 
 /// A layout property a node's value sets as the view's values change: one

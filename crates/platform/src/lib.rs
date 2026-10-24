@@ -52,7 +52,7 @@ pub mod wake;
 
 pub use accessibility::{
     AccessAction, AccessActions, AccessNode, AccessRequest, SemanticsDelta, SemanticsId,
-    SemanticsLive, SemanticsRect, SemanticsRole, SemanticsState,
+    SemanticsLive, SemanticsRect, SemanticsRole, SemanticsSort, SemanticsState,
 };
 pub use control::{
     ControlFlow, DEFAULT_FRAME_BUDGET, EditLabels, EditMenu, EditMenuAction, InputKind,

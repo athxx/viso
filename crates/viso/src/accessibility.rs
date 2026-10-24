@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 use viso_platform::{
     AccessAction, AccessActions, AccessNode, SemanticsDelta, SemanticsId, SemanticsLive,
-    SemanticsRect, SemanticsRole, SemanticsState, WindowId,
+    SemanticsRect, SemanticsRole, SemanticsSort, SemanticsState, WindowId,
 };
 use viso_runtime::{
     InputSample, Key, KeySample, Modifiers, PointerId, PointerKind, PointerPhase, PointerSample,
@@ -260,6 +260,8 @@ fn semantics_role(role: Role, named: bool) -> SemanticsRole {
         Role::ProgressIndicator => SemanticsRole::ProgressIndicator,
         Role::SearchField => SemanticsRole::SearchField,
         Role::TabPanel => SemanticsRole::TabPanel,
+        Role::Grid => SemanticsRole::Grid,
+        Role::GridCell => SemanticsRole::GridCell,
         Role::Tab => SemanticsRole::Tab,
         Role::TabList => SemanticsRole::TabList,
         Role::Navigation => SemanticsRole::Navigation,
@@ -387,6 +389,12 @@ impl Walk<'_> {
         let mut state = semantics_state(row.state, row.disabled);
         state.required = validity.required;
         state.invalid = validity.invalid;
+        state.table_extent = row.table.extent;
+        state.table_place = row.table.place;
+        state.sort = row.table.sort.map(|sort| match sort {
+            viso_ui::SortOrder::Ascending => SemanticsSort::Ascending,
+            viso_ui::SortOrder::Descending => SemanticsSort::Descending,
+        });
         AccessNode {
             id: row_id(row),
             role,

@@ -9,12 +9,12 @@
 
 use accesskit::{
     Action, ActionData, ActionRequest, CustomAction, Invalid, Live, Node, NodeId, Rect, Role,
-    TreeId, TreeInfo, TreeUpdate,
+    SortDirection, TreeId, TreeInfo, TreeUpdate,
 };
 
 use super::{
     AccessAction, AccessNode, AccessRequest, SemanticsDelta, SemanticsId, SemanticsLive,
-    SemanticsRole,
+    SemanticsRole, SemanticsSort,
 };
 
 /// The tree update carrying `delta`.
@@ -112,6 +112,22 @@ fn node_of(node: AccessNode) -> Node {
     if state.invalid {
         out.set_invalid(Invalid::True);
     }
+    if let Some((rows, columns)) = state.table_extent {
+        out.set_row_count(rows as usize);
+        out.set_column_count(columns as usize);
+    }
+    if let Some((row, column)) = state.table_place {
+        out.set_row_index(row as usize);
+        if node.role != SemanticsRole::Row {
+            out.set_column_index(column as usize);
+        }
+    }
+    if let Some(sort) = state.sort {
+        out.set_sort_direction(match sort {
+            SemanticsSort::Ascending => SortDirection::Ascending,
+            SemanticsSort::Descending => SortDirection::Descending,
+        });
+    }
     if let Some(error) = node.error_message {
         out.set_error_message(node_id(error));
     }
@@ -164,6 +180,8 @@ fn role(role: SemanticsRole) -> Role {
         SemanticsRole::ProgressIndicator => Role::ProgressIndicator,
         SemanticsRole::SearchField => Role::SearchInput,
         SemanticsRole::TabPanel => Role::TabPanel,
+        SemanticsRole::Grid => Role::Grid,
+        SemanticsRole::GridCell => Role::GridCell,
         SemanticsRole::Tab => Role::Tab,
         SemanticsRole::TabList => Role::TabList,
         SemanticsRole::Navigation => Role::Navigation,
@@ -424,5 +442,52 @@ mod tests {
         });
         assert_eq!(node.role(), Role::EditableComboBox);
         assert_eq!(node.active_descendant(), Some(NodeId(9)));
+    }
+
+    #[test]
+    fn a_grid_says_its_extent_its_cells_their_place_and_a_header_its_sort() {
+        let state = |state| AccessNode {
+            state,
+            ..AccessNode::default()
+        };
+        let grid = node_of(AccessNode {
+            role: SemanticsRole::Grid,
+            ..state(SemanticsState {
+                table_extent: Some((1001, 4)),
+                ..SemanticsState::default()
+            })
+        });
+        assert_eq!(grid.role(), Role::Grid);
+        assert_eq!(
+            (grid.row_count(), grid.column_count()),
+            (Some(1001), Some(4))
+        );
+        let cell = node_of(AccessNode {
+            role: SemanticsRole::GridCell,
+            ..state(SemanticsState {
+                table_place: Some((500, 2)),
+                ..SemanticsState::default()
+            })
+        });
+        assert_eq!(
+            (cell.row_index(), cell.column_index()),
+            (Some(500), Some(2))
+        );
+        let row = node_of(AccessNode {
+            role: SemanticsRole::Row,
+            ..state(SemanticsState {
+                table_place: Some((500, 0)),
+                ..SemanticsState::default()
+            })
+        });
+        assert_eq!((row.row_index(), row.column_index()), (Some(500), None));
+        let header = node_of(AccessNode {
+            role: SemanticsRole::ColumnHeader,
+            ..state(SemanticsState {
+                sort: Some(SemanticsSort::Descending),
+                ..SemanticsState::default()
+            })
+        });
+        assert_eq!(header.sort_direction(), Some(SortDirection::Descending));
     }
 }

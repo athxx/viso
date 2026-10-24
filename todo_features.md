@@ -226,7 +226,7 @@ Rules:
   calendar's buttons and days; `combobox` + `dialog` semantics.
 - [x] `TimePicker`: hour/minute (and AM/PM by the locale's hour cycle) spin segments,
   typed digits, minute step.
-- [ ] `DataGrid`: virtualized rows and columns, resize, reorder, sort, cell/row
+- [x] `DataGrid`: virtualized rows and columns, resize, reorder, sort, cell/row
   selection, keyboard navigation, `grid` semantics.
 - [ ] Charts (in `extras/`): line, bar, area, scatter, sparkline.
 - [x] Tabs: overflow scroll (a vertical wheel scrolls the strip across, the selected

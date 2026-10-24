@@ -103,6 +103,10 @@ pub enum SemanticsRole {
     SearchField,
     /// The panel a tab shows.
     TabPanel,
+    /// A table whose cells take the focus and can be selected.
+    Grid,
+    /// A cell of a grid.
+    GridCell,
 }
 
 /// How an assistive technology announces a change to a node's content.
@@ -145,6 +149,20 @@ pub struct SemanticsState {
     pub required: bool,
     /// Whether the value it holds is refused.
     pub invalid: bool,
+    /// A table's or grid's rows and columns, counting those not shown.
+    pub table_extent: Option<(u32, u32)>,
+    /// A row's, cell's or column header's 0-based row and column in its
+    /// table; a row reads only its row.
+    pub table_place: Option<(u32, u32)>,
+    /// How a column header's column is sorted, if it is.
+    pub sort: Option<SemanticsSort>,
+}
+
+/// How a column is sorted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SemanticsSort {
+    Ascending,
+    Descending,
 }
 
 /// The set of [`AccessAction`]s a node supports, one bit each.

@@ -3180,6 +3180,8 @@ fn aria_role(role: Role, tag: &str, widget: &str) -> Option<&'static str> {
         (Role::Tab, ..) => "tab",
         (Role::TabList, ..) => "tablist",
         (Role::TabPanel, ..) => "tabpanel",
+        (Role::Grid, ..) => "grid",
+        (Role::GridCell, ..) => "gridcell",
         (Role::Navigation, ..) => "navigation",
         (Role::Dialog, ..) => "dialog",
         (Role::Status, ..) => "status",

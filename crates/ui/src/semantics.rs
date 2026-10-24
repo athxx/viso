@@ -118,6 +118,8 @@ pub struct SemanticsNode {
     /// Whether it must be given a value, and whether the one it holds is
     /// refused and which node says why.
     pub validity: Validity,
+    /// Where it stands in a table, if it says.
+    pub table: TableFacts,
     /// The node's layout box.
     pub bounds: Rect,
     /// Indices of this node's children within [`SemanticsTree::nodes`], in tree
@@ -326,6 +328,7 @@ mod tests {
                     state: None,
                     active: None,
                     validity: Validity::default(),
+                    table: TableFacts::default(),
                     bounds: ZERO_RECT,
                     children: vec![1],
                 },
@@ -343,6 +346,7 @@ mod tests {
                     state: None,
                     active: None,
                     validity: Validity::default(),
+                    table: TableFacts::default(),
                     bounds: ZERO_RECT,
                     children: Vec::new(),
                 },
@@ -411,6 +415,36 @@ impl<T: Copy + PartialEq> Sparse<T> {
                 true
             }
             (Err(_), None) => false,
+        }
+    }
+}
+
+/// Where a node stands in a table: what an assistive technology reads of a
+/// grid whose rows and columns are not all built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TableFacts {
+    /// A table's or grid's rows and columns, counting those not built.
+    pub extent: Option<(u32, u32)>,
+    /// A row's, cell's or column header's 0-based row and column; a row
+    /// reads only its row.
+    pub place: Option<(u32, u32)>,
+    /// How a column header's column is sorted, if it is.
+    pub sort: Option<SortOrder>,
+}
+
+/// How a column is sorted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortOrder {
+    Ascending,
+    Descending,
+}
+
+impl SortOrder {
+    /// The other order.
+    pub fn reversed(self) -> SortOrder {
+        match self {
+            SortOrder::Ascending => SortOrder::Descending,
+            SortOrder::Descending => SortOrder::Ascending,
         }
     }
 }
