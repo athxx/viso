@@ -653,14 +653,18 @@ extern "system" fn native_start(
     // SAFETY: `extras` is a live `String[]` of names and values, or null.
     let vars = unsafe { read_pairs(env, extras) };
     // SAFETY: `activity` is a live local reference; the global reference
-    // made from it replaces (and deletes) the previous activity's.
+    // made from it replaces (and deletes) the previous activity's. The
+    // context crates outside the framework read (`ndk-context`) names the
+    // live one: released before the old reference goes, set to the new.
     unsafe {
         let global = env_call!(env, NewGlobalRef, activity);
         let mut slot = java.activity.lock().unwrap_or_else(|e| e.into_inner());
         if !slot.0.is_null() {
+            ndk_context::release_android_context();
             env_call!(env, DeleteGlobalRef, slot.0);
         }
         slot.0 = global;
+        ndk_context::initialize_android_context(java.vm.0.cast(), global.cast());
     }
     let first = LAUNCH
         .set(Launch {

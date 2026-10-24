@@ -334,10 +334,34 @@ Rules:
   - [x] Windows: a Media Foundation source reader through the shared textures.
   - [x] Android: Camera2 through the hardware buffer reader, its rotation and the
     permission asked.
-- [ ] Audio: input (microphone), file decoding (WAV, Ogg Vorbis, MP3, FLAC), Web Audio
-  output, PulseAudio/PipeWire output.
+  - [x] Cameras as an extension: the protocol stays in `viso-media` (`CameraRequest`,
+    `CameraInfo`, `VideoSource::Camera`, `cameras()`, `CameraView`) and a
+    `CameraProvider` an extension installs answers it; `Unsupported` without one.
+  - [ ] Live-picture hooks for extensions, handing pictures the way the platform players
+    do: a `LiveSource` (poll, frame, play, pause) a provider opens; Apple
+    `Frame::pixel_buffer`, Android `ImageReader`, Windows `SharedCanvas` (the decoding
+    device and the shared texture slots), GStreamer `LivePipeline` over a source element,
+    web `MediaStream`.
+  - [x] Android: the platform sets `ndk-context` (the VM, the activity), so `viso-ext`
+    crates reach Java; extension Java hears activity results through
+    `VisoActivity.Results`.
+  - [ ] `viso-ext/viso-camera`: the camera backends moved out of `viso-media`
+    (AVCaptureSession, Media Foundation, Camera2, the GStreamer device monitor,
+    `getUserMedia`) behind `install()`; `examples/camera` on it.
+- [ ] Audio as an extension, `viso-ext/viso-audio`; the core adds no audio API (a
+  video's sound stays with the platform player):
+  - [ ] device streams: outputs and inputs listed and watched, a realtime callback
+    filling f32 buffers, echo cancellation where the OS has it (CoreAudio, WASAPI,
+    AAudio, PulseAudio/PipeWire, Web Audio);
+  - [ ] playback of files and URLs through the platform players (WAV, Ogg Vorbis, MP3,
+    FLAC, AAC), sound effects, recording;
+  - [ ] the audio session (iOS category, Android focus) owned by it alone.
 
 ## W11 — Networking
+
+Scope to settle before starting: network and device services as `viso-ext` extensions,
+the core keeping only hooks (as W10's camera split does); and `viso-services` (files,
+share, notifications, launcher, secure storage, haptics) overlaps `viso-ext`.
 
 - [ ] HTTP client service (platform-native: URLSession, WinHTTP, libcurl-free Rust adapter
   on Linux/Android, `fetch` on web): request/response, streaming body, cancel, timeouts,

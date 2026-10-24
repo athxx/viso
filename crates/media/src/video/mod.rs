@@ -78,6 +78,7 @@ use std::cell::Cell;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -434,13 +435,100 @@ impl<'a> Frame<'a> {
     }
 }
 
+/// Live pictures an extension provides — a camera's, a screen's, a call's —
+/// played through a [`VideoPlayer`] as a video with no length: always at
+/// zero, not sought, silent. Polled and steered from the loop's thread.
+pub trait LiveSource {
+    /// What changed since the last poll, one event a call: ready on the
+    /// first picture, failed, waiting.
+    fn poll(&mut self) -> Option<VideoEvent>;
+    /// The picture to show now, when it is not the one this returned last.
+    fn frame(&mut self) -> Option<Frame<'_>>;
+    /// Captures, or goes on capturing.
+    fn play(&mut self);
+    /// Stops capturing, the last picture kept; a camera lets its device go.
+    fn pause(&mut self);
+    /// Whether it captures, or will once ready.
+    fn is_playing(&self) -> bool;
+}
+
+/// What answers for the cameras: an extension installs one once, with
+/// [`provide_cameras`], and [`VideoSource::Camera`] and [`cameras`] go to it.
+pub trait CameraProvider: Send + Sync {
+    /// The cameras the platform has now.
+    fn cameras(&self) -> Vec<CameraInfo>;
+    /// Opens the camera `request` chooses, on the loop's thread: paused,
+    /// ready on its first picture.
+    fn open(&self, request: &CameraRequest) -> Result<Box<dyn LiveSource>, VideoError>;
+}
+
+static CAMERAS: OnceLock<&'static dyn CameraProvider> = OnceLock::new();
+
+/// Installs `provider` to answer for the cameras. The first call wins;
+/// returns whether this one did.
+pub fn provide_cameras(provider: &'static dyn CameraProvider) -> bool {
+    CAMERAS.set(provider).is_ok()
+}
+
+/// The provider installed, else the platform's own.
+fn camera_provider() -> Option<&'static dyn CameraProvider> {
+    Some(CAMERAS.get().copied().unwrap_or(&Builtin))
+}
+
+/// The cameras the platform players capture themselves.
+struct Builtin;
+
+impl CameraProvider for Builtin {
+    fn cameras(&self) -> Vec<CameraInfo> {
+        imp::cameras()
+    }
+
+    fn open(&self, request: &CameraRequest) -> Result<Box<dyn LiveSource>, VideoError> {
+        let player = imp::Player::open(&VideoSource::Camera(request.clone()))?;
+        Ok(Box::new(BuiltinCamera(player)))
+    }
+}
+
+/// A platform player capturing a camera.
+struct BuiltinCamera(imp::Player);
+
+impl LiveSource for BuiltinCamera {
+    fn poll(&mut self) -> Option<VideoEvent> {
+        self.0.poll()
+    }
+
+    fn frame(&mut self) -> Option<Frame<'_>> {
+        self.0.frame()
+    }
+
+    fn play(&mut self) {
+        self.0.play();
+    }
+
+    fn pause(&mut self) {
+        self.0.pause();
+    }
+
+    fn is_playing(&self) -> bool {
+        self.0.is_playing()
+    }
+}
+
 /// A video played through the platform's player. Opened, polled and steered
 /// from the thread that runs the loop.
 ///
 /// It opens paused, at the start; [`play`](Self::play) starts it once ready
 /// or at once.
 pub struct VideoPlayer {
-    imp: imp::Player,
+    imp: Playing,
+}
+
+/// What a player plays.
+enum Playing {
+    /// A video, through the platform's player.
+    Video(Box<imp::Player>),
+    /// Live pictures, through an extension.
+    Live(Box<dyn LiveSource>),
 }
 
 impl fmt::Debug for VideoPlayer {
@@ -454,74 +542,117 @@ impl fmt::Debug for VideoPlayer {
 
 impl VideoPlayer {
     /// Opens `source`. It loads off the caller's thread; [`poll`](Self::poll)
-    /// tells when it is ready or failed.
+    /// tells when it is ready or failed. A camera opens through the
+    /// provider installed ([`provide_cameras`]); `Unsupported` without one.
     pub fn open(source: &VideoSource) -> Result<VideoPlayer, VideoError> {
-        imp::Player::open(source).map(|imp| VideoPlayer { imp })
+        let imp = match source {
+            VideoSource::Camera(request) => Playing::Live(
+                camera_provider()
+                    .ok_or(VideoError::Unsupported)?
+                    .open(request)?,
+            ),
+            _ => Playing::Video(Box::new(imp::Player::open(source)?)),
+        };
+        Ok(VideoPlayer { imp })
+    }
+
+    /// Plays `source`'s live pictures.
+    pub fn live(source: Box<dyn LiveSource>) -> VideoPlayer {
+        VideoPlayer {
+            imp: Playing::Live(source),
+        }
     }
 
     /// What changed since the last poll, one event a call; `None` when
     /// nothing did.
     pub fn poll(&mut self) -> Option<VideoEvent> {
-        self.imp.poll()
+        match &mut self.imp {
+            Playing::Video(player) => player.poll(),
+            Playing::Live(source) => source.poll(),
+        }
     }
 
     /// The picture to show now, when it is not the one this returned last.
     pub fn frame(&mut self) -> Option<Frame<'_>> {
-        self.imp.frame()
+        match &mut self.imp {
+            Playing::Video(player) => player.frame(),
+            Playing::Live(source) => source.frame(),
+        }
     }
 
     /// Plays from where it is, at its rate; from the start once it ended.
     pub fn play(&mut self) {
-        self.imp.play();
+        match &mut self.imp {
+            Playing::Video(player) => player.play(),
+            Playing::Live(source) => source.play(),
+        }
     }
 
     /// Holds it where it is.
     pub fn pause(&mut self) {
-        self.imp.pause();
+        match &mut self.imp {
+            Playing::Video(player) => player.pause(),
+            Playing::Live(source) => source.pause(),
+        }
     }
 
     /// Moves it to `time`, clamped to its length, the picture there shown
     /// even while paused.
     pub fn seek(&mut self, time: Duration) {
-        self.imp.seek(time);
+        if let Playing::Video(player) = &mut self.imp {
+            player.seek(time);
+        }
     }
 
     /// Plays at `rate` times its speed (defaults to 1).
     pub fn set_rate(&mut self, rate: f32) {
-        self.imp.set_rate(rate.clamp(0.0625, 16.0));
+        if let Playing::Video(player) = &mut self.imp {
+            player.set_rate(rate.clamp(0.0625, 16.0));
+        }
     }
 
     /// Plays its sound at `volume`, from 0 to 1 (defaults to 1).
     pub fn set_volume(&mut self, volume: f32) {
-        self.imp.set_volume(volume.clamp(0.0, 1.0));
+        if let Playing::Video(player) = &mut self.imp {
+            player.set_volume(volume.clamp(0.0, 1.0));
+        }
     }
 
     /// Silences it, or lets it sound.
     pub fn set_muted(&mut self, muted: bool) {
-        self.imp.set_muted(muted);
+        if let Playing::Video(player) = &mut self.imp {
+            player.set_muted(muted);
+        }
     }
 
     /// Starts it over each time it ends, or lets it end.
     pub fn set_looping(&mut self, looping: bool) {
-        self.imp.set_looping(looping);
+        if let Playing::Video(player) = &mut self.imp {
+            player.set_looping(looping);
+        }
     }
 
-    /// Where it is; a camera's is always zero.
+    /// Where it is; live pictures' is always zero.
     pub fn position(&self) -> Duration {
-        self.imp.position()
+        match &self.imp {
+            Playing::Video(player) => player.position(),
+            Playing::Live(_) => Duration::ZERO,
+        }
     }
 
     /// Whether it plays, or will once ready: asked to, and not ended.
     pub fn is_playing(&self) -> bool {
-        self.imp.is_playing()
+        match &self.imp {
+            Playing::Video(player) => player.is_playing(),
+            Playing::Live(source) => source.is_playing(),
+        }
     }
 }
 
-/// The cameras the platform has now, as [`CameraChoice::Id`] names them;
-/// none on a target without cameras. On the web the list is known once a
-/// camera was allowed, and comes a moment after the first call.
+/// The cameras the provider installed lists now ([`provide_cameras`]), as
+/// [`CameraChoice::Id`] names them; none without one.
 pub fn cameras() -> Vec<CameraInfo> {
-    imp::cameras()
+    camera_provider().map_or_else(Vec::new, |provider| provider.cameras())
 }
 
 /// Android: gives the players what they need of the app's activity — the
