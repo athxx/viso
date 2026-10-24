@@ -170,6 +170,27 @@ fn a_video_plays_its_asset_or_url_under_its_controls_and_writes_back_its_playing
 }
 
 #[test]
+fn a_camera_view_names_its_camera_by_facing_or_device() {
+    let source = "export component Preview {
+    state on = true;
+    view {
+        Column {
+            CameraView { facing: CameraFacing::front; mirror: false; bind playing <=> on; }
+            CameraView { device: \"cam-2\"; fit: ImageFit::contain; on loaded(size) { on = true; } }
+            CameraView {}
+        }
+    }
+}";
+    let compiled = compile(source);
+    assert_eq!(errors(&compiled), []);
+    let wrong = "export component C { view { CameraView { facing: \"front\"; } } }";
+    assert_eq!(
+        compile(wrong).errors().map(|d| d.code).collect::<Vec<_>>(),
+        ["E2103"]
+    );
+}
+
+#[test]
 fn a_node_takes_only_its_kind_of_asset() {
     let wrong = "export component C { view { Image { source: asset(\"icons/close.svg\"); } } }";
     let compiled = compile(wrong);

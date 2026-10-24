@@ -45,7 +45,8 @@ use viso_ui::shader::BrushProgram;
 use viso_ui::slider::{Slider as SliderMark, SliderRange, SliderShape};
 use viso_ui::video_controls::{VideoControls, VideoControlsStyle, VideoLabels};
 use viso_ui::{
-    Alignment2D, BoundSize, FontWeight, LayoutValue, LengthTerms, Playback, VideoSource,
+    Alignment2D, BoundSize, Camera, CameraFacing, FontWeight, LayoutValue, LengthTerms, Playback,
+    VideoSource,
 };
 use viso_ui::{
     AssetFit, Border, BuildCx, CheckMark, CheckShape, CursorIcon, Easing, FieldLook, FieldSeed,
@@ -307,6 +308,7 @@ pub(crate) fn control_cells(
         control.rate,
         control.controls,
         control.fullscreen,
+        control.mirror,
     ])
     .flatten()
     .chain(arms)
@@ -334,9 +336,9 @@ pub(crate) fn control_cells(
 /// and `axis`, a colour picker's `alpha` and `wheel`, and a combo box's
 /// `options`, `free_text` and `empty_text` — a search field's `suggestions`
 /// are its `options` — a search field's `debounce`, an image's `animate`,
-/// and a video's `playing`, `looping`, `muted`, `volume`, `rate`,
-/// `controls` and `fullscreen`.
-const SHOWN: usize = 76;
+/// a video's `playing`, `looping`, `muted`, `volume`, `rate`, `controls`
+/// and `fullscreen`, and a camera view's `mirror`.
+const SHOWN: usize = 77;
 
 /// The input of each value a node shows, in order.
 const SHOWN_INPUTS: [ControlInput; SHOWN] = [
@@ -416,12 +418,13 @@ const SHOWN_INPUTS: [ControlInput; SHOWN] = [
     ControlInput::Rate,
     ControlInput::Controls,
     ControlInput::Fullscreen,
+    ControlInput::Mirror,
 ];
 
 /// Where a video's `controls` and `fullscreen` sit among the values a node
 /// shows.
-const CONTROLS: usize = SHOWN - 2;
-const FULLSCREEN: usize = SHOWN - 1;
+const CONTROLS: usize = SHOWN - 3;
+const FULLSCREEN: usize = SHOWN - 2;
 
 /// Where its `translate` sits among the values a node shows.
 const TRANSLATE: usize = 35;
@@ -724,6 +727,7 @@ impl Shown {
             rate,
             controls,
             fullscreen,
+            mirror,
         ] = &shows;
         let access_key = access_key.as_str().and_then(|key| key.chars().next());
         let spanned = crate::text_style::spans(pieces);
@@ -1182,6 +1186,35 @@ impl Shown {
                 if changed(FULLSCREEN) {
                     store.set_fullscreen(self.node, truth(fullscreen, false));
                 }
+            }
+            // A camera view captures unless its `playing` says otherwise, from
+            // the camera its `device` names, else the first its `facing`
+            // names, else the default.
+            ControlKind::Camera => {
+                let device = url.as_str().filter(|device| !device.is_empty());
+                let camera = match (device, value.as_int()) {
+                    (Some(device), _) => Camera::id(device),
+                    (None, Some(facing)) => Camera::facing(match facing {
+                        0 => CameraFacing::Front,
+                        1 => CameraFacing::Back,
+                        _ => CameraFacing::External,
+                    }),
+                    (None, None) => Camera::default(),
+                };
+                let tint = tint.as_int().map(|_| color(tint));
+                store.set_video(
+                    self.node,
+                    &VideoSource::Camera(camera),
+                    asset_fit_or(fit, AssetFit::Cover),
+                    tint,
+                );
+                store.set_video_mirror(self.node, mirror.as_int().map(|on| on != 0));
+                let playback = Playback {
+                    playing: truth(playing, true),
+                    muted: true,
+                    ..Playback::default()
+                };
+                store.declare_playback(self.node, playback);
             }
             ControlKind::Label | ControlKind::Button => {
                 // A link label's text is one link, in the link blue.
@@ -2139,10 +2172,16 @@ fn page_transition(value: &Value) -> PageTransition {
 
 /// An `ImageFit` value as the fit it names, `contain` for any other.
 fn asset_fit(value: &Value) -> AssetFit {
+    asset_fit_or(value, AssetFit::Contain)
+}
+
+/// An `ImageFit` value as the fit it names, `unset` where none is given.
+fn asset_fit_or(value: &Value, unset: AssetFit) -> AssetFit {
     match value.as_int() {
+        Some(0) => AssetFit::Contain,
         Some(1) => AssetFit::Cover,
         Some(2) => AssetFit::Fill,
-        _ => AssetFit::Contain,
+        _ => unset,
     }
 }
 

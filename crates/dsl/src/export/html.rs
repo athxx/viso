@@ -98,6 +98,9 @@ pub(super) enum Wire {
     /// Has the page carry drags of `data-drag` elements to `data-drop-accepts`
     /// ones.
     DragDrop,
+    /// Makes the element a camera view: it shows the stream of the camera
+    /// its `data-vx-facing` or `data-vx-device` names.
+    Camera,
 }
 
 /// The style of a sticky element: held at its scroller's start edge, over
@@ -570,7 +573,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             ("TextInput", _) if lines => "textarea",
             ("TextInput" | "NumberField" | "Toggle" | "CheckBox" | "Slider" | "Knob", _) => "input",
             ("Image" | "Svg", _) if !masked => "img",
-            ("Video", _) => "video",
+            ("Video" | "CameraView", _) => "video",
             ("Text", _) => "span",
             ("LinkLabel", _) => "a",
             ("Badge" | "Avatar", _) => "span",
@@ -597,7 +600,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             (_, "Avatar") => "vx-avatar",
             (_, "Image" | "Svg") if masked => "vx-mask",
             (_, "Image" | "Svg") => "vx-image",
-            (_, "Video") => "vx-video",
+            (_, "Video" | "CameraView") => "vx-video",
             _ => "vx-leaf",
         };
         // A disclosure's caption header draws the chevron that turns with it.
@@ -1257,6 +1260,86 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 }
             }
         }
+    }
+
+    /// Writes a camera view as a muted `<video>` playing inline, which the
+    /// page's script gives the stream of its camera, asked of the browser:
+    /// the camera as `data-vx-facing` (`user`, `environment`) or
+    /// `data-vx-device`, a pause as `data-vx-paused`, the mirror asked as
+    /// `data-vx-mirror`, and how it fills its box as `object-fit`. A page
+    /// without script shows no camera.
+    fn camera(
+        &mut self,
+        control: &Control,
+        el: &mut Element,
+        decls: &mut Vec<(&'static str, String)>,
+        wires: &mut Vec<Wire>,
+        at: TextRange,
+    ) {
+        el.attr("playsinline", "");
+        el.attr("muted", "");
+        if self.static_only {
+            self.need(
+                Need::Dynamic,
+                at,
+                "a page captures from a camera from its script",
+                Vec::new(),
+            );
+            return;
+        }
+        if let Some(fixed) = self.bind(
+            wires,
+            control.value,
+            Prop::Media("facing"),
+            "which way its camera faces",
+            at,
+        ) && let Some(facing) = fixed.int().and_then(camera_facing)
+        {
+            el.attr("data-vx-facing", facing);
+        }
+        if let Some(fixed) = self.bind(wires, control.url, Prop::Media("device"), "its camera", at)
+            && !fixed.text().is_empty()
+        {
+            el.attr("data-vx-device", &fixed.text());
+        }
+        if let Some(fixed) = self.bind(
+            wires,
+            control.playing,
+            Prop::Media("capture"),
+            "whether it captures",
+            at,
+        ) && !fixed.truth()
+        {
+            el.attr("data-vx-paused", "");
+        }
+        if let Some(fixed) = self.bind(
+            wires,
+            control.mirror,
+            Prop::Media("mirror"),
+            "whether it shows mirrored",
+            at,
+        ) && let Some(on) = fixed.int()
+        {
+            el.attr("data-vx-mirror", if on != 0 { "1" } else { "0" });
+        }
+        if let Some(fixed) = self.bind(wires, control.fit, Prop::Fit { mask: false }, "the fit", at)
+        {
+            let fit = fit(fixed.int().unwrap_or(0));
+            if fit != "contain" {
+                decls.push(("object-fit", fit.into()));
+            }
+        } else if control.fit.is_none() {
+            decls.push(("object-fit", "cover".into()));
+        }
+        if control.tint.is_some() {
+            self.need(
+                Need::Unsupported,
+                at,
+                "a page does not tint a camera's picture",
+                Vec::new(),
+            );
+        }
+        wires.push(Wire::Camera);
     }
 
     /// Writes a colour picker as a colour input and, when it picks an
@@ -2095,6 +2178,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             ControlKind::Stepper => self.stepper(control, el, decls, wires, at),
             ControlKind::ColorPicker => self.color_picker(control, el, wires, at),
             ControlKind::Video => self.video(control, el, decls, wires, at),
+            ControlKind::Camera => self.camera(control, el, decls, wires, at),
             ControlKind::ComboBox | ControlKind::SearchField => {
                 self.listed(key, control, el, wires, at);
             }
@@ -3408,6 +3492,16 @@ fn transition(property: &str, spec: &Value) -> Option<(String, bool)> {
 }
 
 /// An `ImageFit` variant as `object-fit`.
+/// The `facingMode` a `CameraFacing` asks the browser for; none for a
+/// camera put wherever.
+fn camera_facing(facing: i64) -> Option<&'static str> {
+    match facing {
+        0 => Some("user"),
+        1 => Some("environment"),
+        _ => None,
+    }
+}
+
 pub(super) fn fit(tag: i64) -> &'static str {
     match tag {
         1 => "cover",

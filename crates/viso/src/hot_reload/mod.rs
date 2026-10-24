@@ -3648,6 +3648,75 @@ mod tests {
     }
 
     #[test]
+    fn a_camera_view_captures_from_the_camera_it_names_and_an_edit_asks_again() {
+        let mut ws = counter();
+        let (mut session, mut host, mut edits) = session(&mut ws, COUNTER);
+        let camera = |props: &str| {
+            COUNTER.replace(
+                "Text { visible: enabled; }",
+                &format!("Text {{ visible: enabled; }}\n            CameraView {{ {props} }}"),
+            )
+        };
+        let patch = edits.patch(&host, 1, 2, &camera("facing: CameraFacing::back;"));
+        let reply = apply_on(
+            &mut session,
+            &mut host,
+            std::slice::from_mut(&mut ws),
+            &patch,
+        );
+        assert!(matches!(reply, RuntimeMessage::Ack(_)), "{reply:?}");
+        edits.acked();
+        let node = children(&ws.store, ws.root.unwrap())[2];
+        let entry = ws.store.videos().get(node).expect("a video node");
+        assert_eq!(
+            entry.source,
+            viso_ui::VideoSource::Camera(viso_ui::Camera::facing(viso_ui::CameraFacing::Back))
+        );
+        assert!(entry.playback.playing && entry.playback.muted);
+        assert_eq!(entry.mirror, None);
+        assert!(matches!(
+            ws.store.content_payload(node),
+            Some(viso_ui::Content::Asset {
+                fit: viso_ui::AssetFit::Cover,
+                ..
+            })
+        ));
+
+        // Another camera, paused, mirrored as asked.
+        let patch = edits.patch(
+            &host,
+            2,
+            3,
+            &camera("device: \"cam-2\"; playing: false; mirror: true; fit: ImageFit::contain;"),
+        );
+        assert!(matches!(
+            apply_on(
+                &mut session,
+                &mut host,
+                std::slice::from_mut(&mut ws),
+                &patch
+            ),
+            RuntimeMessage::Ack(_)
+        ));
+        let node = children(&ws.store, ws.root.unwrap())[2];
+        let entry = ws.store.videos().get(node).unwrap();
+        assert_eq!(
+            entry.source,
+            viso_ui::VideoSource::Camera(viso_ui::Camera::id("cam-2"))
+        );
+        assert!(!entry.playback.playing);
+        assert_eq!(entry.mirror, Some(true));
+        assert!(matches!(
+            ws.store.content_payload(node),
+            Some(viso_ui::Content::Asset {
+                fit: viso_ui::AssetFit::Contain,
+                mirrored: true,
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn an_asset_patch_swaps_the_resource_and_dirties_only_the_nodes_showing_it() {
         let mut ws = counter();
         ws.surface_size = (800, 600);

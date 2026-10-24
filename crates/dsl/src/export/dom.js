@@ -693,7 +693,19 @@ const P = {
   // A video's `url`, which plays in place of its source when set, and how
   // it plays.
   media(el, v, name) {
-    if (name === "url") {
+    if (name === "facing" || name === "device") {
+      const key = name === "facing" ? "vxFacing" : "vxDevice";
+      const set = name === "facing" ? ["user", "environment"][Number(v ?? -1)] : v;
+      if (set) el.dataset[key] = set; else delete el.dataset[key];
+      camera(el);
+    } else if (name === "capture") {
+      if (truth(v)) delete el.dataset.vxPaused; else el.dataset.vxPaused = "";
+      camera(el);
+    } else if (name === "mirror") {
+      if (v === null || v === undefined) delete el.dataset.vxMirror;
+      else el.dataset.vxMirror = truth(v) ? "1" : "0";
+      mirrored(el);
+    } else if (name === "url") {
       if (v) el.src = v;
     } else if (name === "autoplay") {
       el.autoplay = truth(v);
@@ -925,6 +937,51 @@ const pinchable = (el) => {
     clearTimeout(rest);
     rest = setTimeout(() => { rest = 0; send(2, last.x, last.y, last.scale, last.turn); }, 150);
   }, { passive: false });
+};
+
+// Makes `el` a camera view: it shows the stream of the camera its
+// `data-vx-device` or `data-vx-facing` names (the browser's default without
+// either), asked of the browser, which asks its reader once. Paused
+// (`data-vx-paused`) it lets the camera go; a camera it cannot have fires
+// `error`. Called again, it asks for another camera only when they changed.
+const camera = (el) => {
+  const stop = () => {
+    for (const t of el.srcObject?.getTracks?.() ?? []) t.stop();
+    el.srcObject = null;
+  };
+  if (el.dataset.vxPaused !== undefined || !navigator.mediaDevices) {
+    el.$camera = null;
+    el.pause();
+    stop();
+    if (!navigator.mediaDevices) el.dispatchEvent(new Event("error"));
+    return;
+  }
+  const device = el.dataset.vxDevice, facing = el.dataset.vxFacing;
+  const key = (device ?? "") + "|" + (facing ?? "");
+  if (el.$camera === key) return;
+  el.$camera = key;
+  stop();
+  const video = device ? { deviceId: { exact: device } } : facing ? { facingMode: facing } : true;
+  navigator.mediaDevices.getUserMedia({ video, audio: false }).then((stream) => {
+    if (el.$camera !== key) {
+      for (const t of stream.getTracks()) t.stop();
+      return;
+    }
+    el.srcObject = stream;
+    mirrored(el);
+    el.play().catch(() => {});
+  }, () => {
+    if (el.$camera === key) el.dispatchEvent(new Event("error"));
+  });
+};
+// Shows camera view `el` flipped left to right as its `data-vx-mirror`
+// says, else when its camera faces the user, as a laptop's does.
+const mirrored = (el) => {
+  const asked = el.dataset.vxMirror;
+  const track = el.srcObject?.getVideoTracks?.()[0];
+  const facing = track?.getSettings?.().facingMode ?? el.dataset.vxFacing;
+  const on = asked === undefined ? facing !== "environment" : asked === "1";
+  el.style.scale = on ? "-1 1" : "";
 };
 
 // Makes `el` a viewer of its first element child: a drag pans the child, a

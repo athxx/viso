@@ -818,6 +818,7 @@ impl Jsx<'_> {
                 Wire::SwipeRow => refs.push("st.swipeRow(el);".to_owned()),
                 Wire::Sheet => refs.push("st.sheet(el);".to_owned()),
                 Wire::DragDrop => refs.push("st.dragDrop();".to_owned()),
+                Wire::Camera => refs.push("st.camera(el);".to_owned()),
                 Wire::Anchor(instance) => {
                     if let Some(eval) = self.eval {
                         let reads = script::anchored_reads(eval, *instance);

@@ -2261,6 +2261,52 @@ fn combo_boxes_and_search_fields_export_as_inputs_over_a_datalist() {
 }
 
 #[test]
+fn a_camera_view_exports_as_a_video_its_script_gives_the_camera_stream() {
+    let source = r#"
+export component Preview {
+    state on = true;
+    state front = true;
+    view {
+        Column {
+            CameraView { facing: CameraFacing::back; mirror: false; on playing_changed(p) { on = p; } }
+            CameraView { device: "cam-2"; bind playing <=> on; fit: ImageFit::fill; }
+            CameraView { facing: if front { CameraFacing::front } else { CameraFacing::back }; }
+        }
+    }
+}
+"#;
+    let page = export_in(source, None, false).unwrap();
+    let index = &page.index;
+    for want in [
+        "<video",
+        "vx-video",
+        "data-vx-facing=\"environment\"",
+        "data-vx-mirror=\"0\"",
+        "data-vx-device=\"cam-2\"",
+        "playsinline",
+        " muted",
+    ] {
+        assert!(index.contains(want), "{want}: {index}");
+    }
+    assert!(page.styles.contains("object-fit: cover"), "{}", page.styles);
+    assert!(page.styles.contains("object-fit: fill"), "{}", page.styles);
+    let script = page.script.as_deref().unwrap();
+    for want in [
+        "camera(",
+        "\"capture\")",
+        "\"facing\")",
+        "getUserMedia",
+        ", 40, ",
+    ] {
+        assert!(script.contains(want), "{want}: {script}");
+    }
+    assert!(
+        export_in(source, None, true).is_err(),
+        "a static page captures from no camera"
+    );
+}
+
+#[test]
 fn a_video_exports_as_a_video_element_its_script_steers_and_hears() {
     let dir = std::env::temp_dir().join(format!("viso-export-video-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("clips")).unwrap();

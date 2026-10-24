@@ -4732,6 +4732,7 @@ Text {
 | `Image` | `source: ImageAsset`（未绑定时不绘制，固有尺寸为零；`MEASURE\|LAYOUT\|PAINT`）；`fit: ImageFit = ImageFit::contain`（`PAINT`）；`tint: Option<Color> = Option::None`（与像素逐通道相乘；`PAINT`）；`animate: Bool = true`（动画图片——GIF、APNG、动画 WebP、AVIF 序列——是否播放；不在屏幕上或系统减少动态时总是停在当前帧；`false` 停在首帧；`PAINT`） |
 | `Svg`   | `source: SvgAsset`（同上）；`fit`、`tint` 同 `Image`（`tint` 与每条路径的填充、描边颜色相乘，白色保持原色，可为单色图标着色） |
 | `Video` | `source: Option<VideoAsset> = Option::None`（未绑定且无 `url` 时不绘制；`MEASURE\|LAYOUT\|PAINT`）；`url: String = ""`（非空时代替 `source` 播放：含 `://` 的由平台播放器自行拉取，含 HLS 播放列表，否则为文件路径）；`fit`、`tint` 同 `Image`；`playing: Bool = false`（双向：播放到末尾停下时写回 `false`）；`looping: Bool = false`；`muted: Bool = false`；`volume: F32 = 1.0`（0 到 1）；`rate: F32 = 1.0`（倍速）；`controls: Bool = false`（在画面上显示框架自带的控制条）；`fullscreen: Bool = false`（双向：全屏显示该节点；控制条、按键或窗口退出全屏时写回）；固有尺寸为视频画面的像素尺寸 |
+| `CameraView` | `facing: Option<CameraFacing> = Option::None`（`CameraFacing::front` / `back` / `external`：取第一个朝向如此的摄像头，没有则取平台默认）；`device: String = ""`（非空时按平台给的设备 ID 选摄像头，优先于 `facing`）；`fit: ImageFit = ImageFit::cover`；`tint` 同 `Image`；`playing: Bool = true`（双向；暂停时释放设备，画面停在最后一帧）；`mirror: Option<Bool> = Option::None`（未设时朝向用户的摄像头左右镜像显示）；固有尺寸为摄像头画面的像素尺寸 |
 | `GameViewport` | `camera: Option<CameraRig> = Option::None`（视口自己的相机，缺省用 Stage 的相机；`PAINT`）；无固有尺寸，未写宽高的轴为 Fill；可获得焦点（§106.2） |
 
 ```viso
@@ -4755,8 +4756,9 @@ view {
 - HTML 导出为 `<video class="vx-video" playsinline preload="metadata">`，`playing`、`looping`、`muted` 为 `autoplay`、`loop`、`muted` 属性，`volume`、`rate` 与变化的值由页面脚本设置；浏览器通常只允许静音的视频自动播放；`tint` 不能导出；
 - `controls: true` 的 `Video` 在画面上叠一层控制部件：暂停时居中的大播放图标、等待数据时的 Spinner，底部一条控制栏——进度条（拖动即 seek）之下依次是播放/暂停、静音、音量滑块、`已播 / 总长` 时间与全屏按钮。播放中且无指针移动、按键或拖动约 2.5 秒后控制栏淡出，指针移动、按键、暂停或播完时淡入；淡出时按在控制栏上只会唤回它。鼠标单击画面播放/暂停、双击进入/退出全屏；触摸单击显示/隐藏控制栏，双击画面前半/后半后退/前进 10 秒。焦点在任一部件上时：Space/K 播放暂停，←/→ 5 秒（J/L 10 秒），↑/↓ 音量，Home/End 首尾，数字键跳到十分之几处，M 静音，F 全屏，Esc 退出全屏。各按钮是以当前动作命名的 `button`，进度条与音量是 `slider`（进度条的值为已播秒数）。部件只读播放器的报告、只发播放请求，画面仍是视频节点自己的；
 - 全屏（`fullscreen` 或控制条）把节点作为覆盖整个窗口的层显示在黑底上，焦点留在其中，并请求窗口全屏（窗口已全屏时不动它）；退出时节点回到原位，窗口恢复原状；窗口自行退出全屏（系统按钮、手势）或节点被释放时同样退出。窗口总是铺满屏幕的平台上节点仍覆盖窗口；导出的页面只在读者手势中进入全屏；
-- `Image`/`Svg`/`Video` 有 `semantics.label` 时语义角色为 `Role::image`，以该标签为替代文本；没有标签的图像是装饰，不被辅助技术朗读；
-- Rust 代码以 `viso::asset!("…")` 取得同一资源（同样的路径检查与 `E3713`，字节同样嵌入），由 `viso::widgets::image_asset` 显示，视频由 `viso::widgets::video` 播放（也接受 `VideoSource::file` / `url` / `bytes`）；`Video::controls` 显示同一套控制部件（`controls_style` / `controls_labels` 定制外观与无障碍名称），`Video::handle` 交出的 `VideoHandle` 在 Handler 中 `play` / `pause` / `toggle` / `seek` / `set_fullscreen` 并读取 `status`。
+- `CameraView` 是摄像头的实时 `Video`：以 1280×720、30 帧为目标取摄像头最接近的模式，首帧显示时投递 `loaded(SizeDp)`，打不开（没有这个摄像头、用户拒绝授权）时投递 `failed`，`playing_changed(Bool)` 写回双向的 `playing`；没有时长与 seek，不出声。换 `facing` / `device` 重新打开摄像头，其余属性变化不重开；
+- `Image`/`Svg`/`Video`/`CameraView` 有 `semantics.label` 时语义角色为 `Role::image`，以该标签为替代文本；没有标签的图像是装饰，不被辅助技术朗读；
+- Rust 代码以 `viso::asset!("…")` 取得同一资源（同样的路径检查与 `E3713`，字节同样嵌入），由 `viso::widgets::image_asset` 显示，视频由 `viso::widgets::video` 播放（也接受 `VideoSource::file` / `url` / `bytes`）；`Video::controls` 显示同一套控制部件（`controls_style` / `controls_labels` 定制外观与无障碍名称），`Video::handle` 交出的 `VideoHandle` 在 Handler 中 `play` / `pause` / `toggle` / `seek` / `set_fullscreen` 并读取 `status`；摄像头由 `viso::widgets::camera_view(Camera::facing(CameraFacing::Front))` 显示（`Camera::id` 取 `viso::cameras()` 列出的某个，`.size(w, h)` / `.frame_rate(n)` 定目标模式，`mirror` / `playing` / `placeholder` / `error` 同上），`Video::mirror` 对任意视频生效。
 
 ---
 

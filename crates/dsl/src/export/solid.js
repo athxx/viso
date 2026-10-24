@@ -221,6 +221,9 @@ class Store {
   dragDrop() {
     dragDrop();
   }
+  camera(el) {
+    camera(el);
+  }
 
   sync(el, control, value) {
     if (control === 2 || control === 29) el.$radio = el.getAttribute("role") === "radiogroup";

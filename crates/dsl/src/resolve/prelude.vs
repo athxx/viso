@@ -205,6 +205,9 @@ export record ImageAsset { resource: I64; }
 export record SvgAsset { resource: I64; }
 export record VideoAsset { resource: I64; }
 export enum ImageFit { contain; cover; fill; }
+// Which way a `CameraView`'s camera faces: toward the user, away, or
+// wherever it is put.
+export enum CameraFacing { front; back; external; }
 
 // The layout schema: an axis's sizing (a length stands for `fixed` of it),
 // a grid's tracks and a box's border.

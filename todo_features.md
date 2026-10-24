@@ -323,8 +323,10 @@ Rules:
     (which camera, size, rate), `cameras()`, ready on the first picture, paused lets
     the device go, `VideoError::Denied`; GStreamer on Linux and the BSDs (device
     monitor; the source's nearest mode, raw before JPEG, `jpegdec` otherwise).
-  - [ ] `CameraView` widget and DSL node over the video node (`camera`, front cameras
-    mirrored, two-way `playing`), the facade opening cameras.
+  - [x] `CameraView` widget and DSL node over the video node (`VideoSource::Camera`,
+    `facing`/`device`, front cameras mirrored through the asset's flipped uv,
+    two-way `playing`, capturing by default; HTML export through `getUserMedia`),
+    the facade opening cameras and listing them (`viso::cameras`).
   - [ ] Web: `getUserMedia` into the `<video>` player.
   - [ ] Apple: `AVCaptureSession` pictures as IOSurfaces.
   - [ ] Windows: a Media Foundation source reader through the shared textures.

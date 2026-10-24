@@ -415,6 +415,9 @@ fn mount(out: &mut String, index: usize, content: &Content, eval: &Eval<'_>, roo
                 Wire::DragDrop => {
                     let _ = writeln!(out, "  dragDrop();");
                 }
+                Wire::Camera => {
+                    let _ = writeln!(out, "  camera({el});");
+                }
                 Wire::Anchor(instance) => {
                     let _ = writeln!(
                         out,
@@ -530,7 +533,8 @@ pub(super) fn roots(page: &Lowered, eval: &Eval<'_>) -> BTreeSet<FuncId> {
                     | Wire::Viewer
                     | Wire::SwipeRow
                     | Wire::Sheet
-                    | Wire::DragDrop => {}
+                    | Wire::DragDrop
+                    | Wire::Camera => {}
                 }
             }
         }

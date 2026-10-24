@@ -149,11 +149,16 @@ pub enum ControlKind {
     /// controls play or pause it, `fullscreen_changed`, and where it is as it
     /// plays.
     Video = 34,
+    /// `CameraView`: a [`Video`](Self::Video) of what the camera its
+    /// `facing` or `device` names captures, capturing while `playing` (from
+    /// the start unless it says otherwise), a camera facing the user
+    /// mirrored unless its `mirror` says otherwise.
+    Camera = 35,
 }
 
 impl ControlKind {
     /// Every kind, by discriminant.
-    pub const ALL: [ControlKind; 35] = [
+    pub const ALL: [ControlKind; 36] = [
         ControlKind::Check,
         ControlKind::Slider,
         ControlKind::Select,
@@ -189,6 +194,7 @@ impl ControlKind {
         ControlKind::ComboBox,
         ControlKind::SearchField,
         ControlKind::Video,
+        ControlKind::Camera,
     ];
 
     /// The kind native widget `widget` is.
@@ -228,6 +234,7 @@ impl ControlKind {
             "ComboBox" => ControlKind::ComboBox,
             "SearchField" => ControlKind::SearchField,
             "Video" => ControlKind::Video,
+            "CameraView" => ControlKind::Camera,
             _ => ControlKind::Plain,
         }
     }
@@ -255,6 +262,7 @@ impl ControlKind {
                 | ControlKind::Plain
                 | ControlKind::Asset
                 | ControlKind::Video
+                | ControlKind::Camera
                 | ControlKind::Shader
                 | ControlKind::Toast
                 | ControlKind::SwipeRow
@@ -541,8 +549,16 @@ impl ControlKind {
             (ControlKind::Slider, "marks") => ControlInput::Marks,
             (ControlKind::Slider, "axis") => ControlInput::Axis,
             (ControlKind::Number, "precision") => ControlInput::Precision,
-            (ControlKind::Asset | ControlKind::Video, "fit") => ControlInput::Fit,
-            (ControlKind::Asset | ControlKind::Video, "tint") => ControlInput::Tint,
+            (ControlKind::Asset | ControlKind::Video | ControlKind::Camera, "fit") => {
+                ControlInput::Fit
+            }
+            (ControlKind::Asset | ControlKind::Video | ControlKind::Camera, "tint") => {
+                ControlInput::Tint
+            }
+            (ControlKind::Camera, "facing") => ControlInput::Value,
+            (ControlKind::Camera, "device") => ControlInput::Url,
+            (ControlKind::Camera, "playing") => ControlInput::Playing,
+            (ControlKind::Camera, "mirror") => ControlInput::Mirror,
             (ControlKind::Asset, "animate") => ControlInput::Animate,
             (ControlKind::Video, "url") => ControlInput::Url,
             (ControlKind::Video, "playing") => ControlInput::Playing,
@@ -604,6 +620,7 @@ impl ControlKind {
             ControlKind::ComboBox => "ComboBox",
             ControlKind::SearchField => "SearchField",
             ControlKind::Video => "Video",
+            ControlKind::Camera => "Camera",
         }
     }
 
@@ -626,7 +643,7 @@ pub fn widget_role(widget: &str) -> Option<Role> {
         "NumberField" | "Stepper" => Role::SpinButton,
         "Tabs" => Role::TabList,
         "Text" | "LinkLabel" | "Badge" => Role::Label,
-        "Image" | "Svg" | "Video" | "GameViewport" | "Avatar" => Role::Image,
+        "Image" | "Svg" | "Video" | "CameraView" | "GameViewport" | "Avatar" => Role::Image,
         "VirtualList" => Role::List,
         "NavigationStack" => Role::Navigation,
         "Modal" | "Sheet" => Role::Dialog,
@@ -1143,6 +1160,9 @@ pub enum ControlInput {
     Controls,
     /// A video's `fullscreen`: whether it shows full screen.
     Fullscreen,
+    /// A camera view's `mirror`: whether its picture shows flipped left to
+    /// right.
+    Mirror,
 }
 
 /// A view-driven native node: its kind and the handler-table entries that
@@ -1222,6 +1242,8 @@ pub struct Control {
     pub controls: Option<u32>,
     /// The entry of whether a video shows full screen.
     pub fullscreen: Option<u32>,
+    /// The entry of whether a camera view's picture shows mirrored.
+    pub mirror: Option<u32>,
     /// The shader a shader view paints with, by its index in the view's
     /// shader table; its value gives the shader's parameters.
     pub shader: Option<u32>,
@@ -1409,7 +1431,7 @@ pub enum Switched {
 
 impl ControlInput {
     /// Every input, by wire tag.
-    pub const ALL: [ControlInput; 85] = [
+    pub const ALL: [ControlInput; 86] = [
         ControlInput::Value,
         ControlInput::Min,
         ControlInput::Max,
@@ -1495,6 +1517,7 @@ impl ControlInput {
         ControlInput::Rate,
         ControlInput::Controls,
         ControlInput::Fullscreen,
+        ControlInput::Mirror,
     ];
 
     /// Its wire tag: its place in [`ControlInput::ALL`].
@@ -1608,6 +1631,7 @@ impl Control {
             rate: None,
             controls: None,
             fullscreen: None,
+            mirror: None,
             shader: None,
             look: Look::default(),
             arms: Box::new([]),
@@ -1711,6 +1735,7 @@ impl Control {
             ControlInput::Rate => self.rate,
             ControlInput::Controls => self.controls,
             ControlInput::Fullscreen => self.fullscreen,
+            ControlInput::Mirror => self.mirror,
         }
     }
 
@@ -1812,6 +1837,7 @@ impl Control {
             ControlInput::Rate => &mut self.rate,
             ControlInput::Controls => &mut self.controls,
             ControlInput::Fullscreen => &mut self.fullscreen,
+            ControlInput::Mirror => &mut self.mirror,
         };
         *slot = Some(entry);
     }
@@ -1860,6 +1886,7 @@ impl Encode for Control {
             self.rate,
             self.controls,
             self.fullscreen,
+            self.mirror,
             self.shader,
             look.background,
             look.opacity,
@@ -2004,6 +2031,7 @@ impl Decode for Control {
             rate: entry()?,
             controls: entry()?,
             fullscreen: entry()?,
+            mirror: entry()?,
             shader: entry()?,
             look: Look {
                 background: entry()?,
@@ -2313,6 +2341,7 @@ mod tests {
             rate: Some(52),
             controls: Some(53),
             fullscreen: Some(54),
+            mirror: Some(55),
             shader: Some(2),
             look: Look {
                 background: Some(3),

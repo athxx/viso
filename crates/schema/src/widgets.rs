@@ -341,6 +341,19 @@ const VIDEO: &[WidgetProperty] = &[
     two_way("fullscreen", "Bool"),
 ];
 
+/// A `CameraView`'s camera — the first facing as `facing` says, or the one
+/// the platform names `device` — how it fills the box, whether it captures
+/// (from the start unless `playing` says otherwise), and whether its picture
+/// shows mirrored (a camera facing the user unless `mirror` says).
+const CAMERA_VIEW: &[WidgetProperty] = &[
+    prop("facing", "Option<CameraFacing>"),
+    prop("device", "String"),
+    look("fit", "ImageFit"),
+    look("tint", "Option<Color>"),
+    two_way("playing", "Bool"),
+    prop("mirror", "Option<Bool>"),
+];
+
 /// An `Svg`'s scene, from `asset("…")`, and how it fills the box.
 const SVG: &[WidgetProperty] = &[
     prop("source", "SvgAsset"),
@@ -542,6 +555,9 @@ const VIDEO_EVENTS: &[WidgetEvent] = &[
     WidgetEvent::new("progress", "VideoProgress"),
     WidgetEvent::signal("ended"),
 ];
+
+/// A camera view's: its capturing stopped or started.
+const CAMERA_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("playing_changed", "Bool")];
 
 /// Any number of children, in the default slot `children`.
 const CHILDREN: &[WidgetSlot] = &[WidgetSlot::default("children", SlotCardinality::Many)];
@@ -768,6 +784,12 @@ pub const STANDARD: &[NativeWidget] = &[
         &[VIDEO, LAYOUT, TRANSFORM, FOCUS],
     )
     .events(&[VIDEO_EVENTS, LOAD_EVENTS, STANDARD_EVENTS]),
+    layout(
+        "CameraView",
+        WidgetNode::Leaf,
+        &[CAMERA_VIEW, LAYOUT, TRANSFORM, FOCUS],
+    )
+    .events(&[CAMERA_EVENTS, LOAD_EVENTS, STANDARD_EVENTS]),
     layout(
         "ProgressBar",
         WidgetNode::Leaf,

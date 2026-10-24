@@ -88,6 +88,7 @@ impl Drive for Control {
             ControlKind::Plain
             | ControlKind::Asset
             | ControlKind::Video
+            | ControlKind::Camera
             | ControlKind::Shader
             | ControlKind::Toast
             | ControlKind::SwipeRow

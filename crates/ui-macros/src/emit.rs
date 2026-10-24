@@ -745,6 +745,7 @@ fn control_tokens(control: Control) -> TokenStream {
     let rate = entry(control.rate);
     let controls = entry(control.controls);
     let fullscreen = entry(control.fullscreen);
+    let mirror = entry(control.mirror);
     let semantics = control.semantics;
     let role = match semantics.role {
         Some(role) => {
@@ -882,6 +883,7 @@ fn control_tokens(control: Control) -> TokenStream {
             rate: #rate,
             controls: #controls,
             fullscreen: #fullscreen,
+            mirror: #mirror,
             shader: #shader,
             look: ::viso::__private::viso_view::Look {
                 background: #background,
