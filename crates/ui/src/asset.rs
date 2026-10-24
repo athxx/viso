@@ -32,12 +32,15 @@
 //! last served and does nothing on a frame it did not move.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use viso_render::TextureId;
 use viso_render::asset::{AssetKind, RasterImage, ResourceId, ResourceRevision, VectorScene};
 
 pub use viso_schema::resource::AssetBytes;
+use viso_schema::resource::AssetFormat;
 
 /// What a node showing an asset draws.
 #[derive(Debug, Clone, PartialEq)]
@@ -60,13 +63,61 @@ pub enum AssetFit {
     Fill,
 }
 
-/// An asset a Rust view shows, as `asset!("…")` embeds it: its resource, how
-/// it draws and its encoded bytes.
+/// An asset a Rust view shows: its resource, how it draws and where its
+/// encoded bytes come from — embedded with `asset!("…")`, given at run time
+/// ([`Asset::bytes`]) or read from a file ([`Asset::file`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Asset {
     pub id: ResourceId,
     pub kind: AssetKind,
-    pub bytes: AssetBytes,
+    pub source: AssetSource,
+}
+
+/// Where an asset's encoded bytes come from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AssetSource {
+    /// At hand: embedded, or given at run time.
+    Bytes(AssetBytes),
+    /// A file, read off the frame path when a node first shows it.
+    File(Arc<Path>),
+}
+
+/// The resources [`Asset::bytes`] numbers, apart from any a path names.
+const GIVEN: u64 = 0xb17e_5000_0000_0000;
+
+impl Asset {
+    /// An image in `bytes`, any format an asset may be in. Each call is a
+    /// resource of its own: keep the asset to show the image again without
+    /// decoding it again.
+    pub fn bytes(bytes: impl Into<Arc<[u8]>>) -> Asset {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let bytes = AssetBytes::Shared(bytes.into());
+        let kind = AssetFormat::sniff(&bytes).map_or(AssetKind::Raster, AssetFormat::kind);
+        Asset {
+            id: ResourceId(GIVEN | NEXT.fetch_add(1, Ordering::Relaxed)),
+            kind,
+            source: AssetSource::Bytes(bytes),
+        }
+    }
+
+    /// The image in the file at `path`, read and decoded off the frame path
+    /// when a node first shows it. The path is the resource: the same path
+    /// shows what was read of it while any table keeps it.
+    pub fn file(path: impl Into<PathBuf>) -> Asset {
+        let path: PathBuf = path.into();
+        let svg = path
+            .extension()
+            .is_some_and(|x| x.eq_ignore_ascii_case("svg"));
+        Asset {
+            id: ResourceId::of(&format!("file:{}", path.display())),
+            kind: if svg {
+                AssetKind::Vector
+            } else {
+                AssetKind::Raster
+            },
+            source: AssetSource::File(path.into()),
+        }
+    }
 }
 
 /// A decoded asset.
@@ -108,6 +159,8 @@ pub(crate) struct AssetEntry {
     pub(crate) offered: ResourceRevision,
     /// Those bytes, until a payload of their revision is provided.
     pub(crate) bytes: Option<AssetBytes>,
+    /// The file its bytes are read from, when they are not at hand.
+    pub(crate) file: Option<Arc<Path>>,
     /// The newest payload provided, and its revision: a vector's for as long
     /// as it draws, a raster's until its texture is attached.
     pub(crate) payload: Option<(ResourceRevision, AssetPayload)>,
@@ -135,6 +188,7 @@ impl AssetEntry {
         AssetEntry {
             offered,
             bytes: None,
+            file: None,
             payload: None,
             texture: None,
             users: 0,
@@ -150,6 +204,11 @@ impl AssetEntry {
             (None, Some((_, AssetPayload::Vector(scene)))) => scene.bytes(),
             _ => 0,
         }
+    }
+
+    /// Whether it holds no bytes, no payload and no texture.
+    fn holds_nothing(&self) -> bool {
+        self.bytes.is_none() && self.payload.is_none() && self.texture.is_none()
     }
 
     /// The newest revision decoded: provided, or resident.
@@ -206,11 +265,32 @@ impl AssetTable {
         }
     }
 
-    /// Every resource a node shows that the table holds nothing of: no bytes,
-    /// no payload, no texture.
+    /// Records that a node shows `id`, read from the file at `path`.
+    pub fn locate(&mut self, id: ResourceId, path: Arc<Path>) {
+        let entry = self
+            .entries
+            .entry(id)
+            .or_insert_with(|| AssetEntry::new(ResourceRevision::default()));
+        if entry.file.is_none() {
+            entry.file = Some(path);
+            self.revision += 1;
+        }
+    }
+
+    /// Every resource a node shows that the table holds nothing of — no
+    /// bytes, no payload, no texture — nor knows a file of.
     pub fn wanted(&self) -> impl Iterator<Item = ResourceId> + '_ {
-        self.entries.iter().filter_map(|(id, e)| {
-            (e.bytes.is_none() && e.payload.is_none() && e.texture.is_none()).then_some(*id)
+        self.entries
+            .iter()
+            .filter_map(|(id, e)| (e.file.is_none() && e.holds_nothing()).then_some(*id))
+    }
+
+    /// Every resource to read from its file: one the table holds nothing of
+    /// yet, with its revision and the file.
+    pub fn unread(&self) -> impl Iterator<Item = (ResourceId, ResourceRevision, &Arc<Path>)> {
+        self.entries.iter().filter_map(|(id, e)| match &e.file {
+            Some(path) if e.holds_nothing() => Some((*id, e.offered, path)),
+            _ => None,
         })
     }
 

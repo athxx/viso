@@ -120,14 +120,14 @@ pub fn image(texture: TextureId, width: f32, height: f32) -> Image {
 ///
 /// ```
 /// use viso_ui::resource::{AssetKind, ResourceId};
-/// use viso_ui::{Asset, AssetBytes, AssetFit, BuildCx, Component, NodeStore};
+/// use viso_ui::{Asset, AssetBytes, AssetFit, AssetSource, BuildCx, Component, NodeStore};
 /// use viso_widgets::image_asset;
 ///
 /// // `asset!("photos/day.png")` embeds a package asset as this value.
 /// let day = Asset {
 ///     id: ResourceId::of("photos/day.png"),
 ///     kind: AssetKind::Raster,
-///     bytes: AssetBytes::Static(b"\x89PNG\r\n\x1a\n"),
+///     source: AssetSource::Bytes(AssetBytes::Static(b"\x89PNG\r\n\x1a\n")),
 /// };
 /// let mut store = NodeStore::new();
 /// let mut cx = BuildCx::new(&mut store);
@@ -318,14 +318,14 @@ mod tests {
     /// its natural size, and with a label is an `Image` named by it.
     #[test]
     fn an_asset_image_shows_its_resource_and_is_named_by_its_label() {
-        use viso_ui::AssetBytes;
         use viso_ui::resource::{AssetKind, ResourceId};
+        use viso_ui::{AssetBytes, AssetSource};
 
         let id = ResourceId::of("icons/star.svg");
         let star = Asset {
             id,
             kind: AssetKind::Vector,
-            bytes: AssetBytes::Static(b"<svg/>"),
+            source: AssetSource::Bytes(AssetBytes::Static(b"<svg/>")),
         };
         let red = Rgba {
             r: 1.0,

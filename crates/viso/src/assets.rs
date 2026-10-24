@@ -30,6 +30,7 @@
 //! those.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Weak};
 use std::thread;
@@ -81,9 +82,48 @@ impl Held {
 struct Job {
     id: ResourceId,
     revision: ResourceRevision,
-    bytes: AssetBytes,
+    input: Input,
     /// The formats the devices it is uploaded into sample.
     sampled: SampledFormats,
+}
+
+/// What a job decodes.
+#[derive(Clone)]
+enum Input {
+    Bytes(AssetBytes),
+    /// The bytes of a file, read first.
+    File(Arc<Path>),
+}
+
+/// The most of a file an asset reads: past it the file does not load.
+const MAX_FILE: u64 = 1 << 30;
+
+impl Input {
+    /// Its payload, or why it has none.
+    fn decode(&self, sampled: SampledFormats) -> Result<AssetPayload, AssetError> {
+        match self {
+            Input::Bytes(bytes) => decode(bytes, sampled),
+            Input::File(path) => decode(&read(path)?, sampled),
+        }
+    }
+}
+
+/// The bytes of the file at `path`, at most [`MAX_FILE`] of them.
+fn read(path: &Path) -> Result<AssetBytes, AssetError> {
+    use std::io::Read;
+    let unread = |e: std::io::Error| AssetError::Decode(format!("`{}`: {e}", path.display()));
+    let file = std::fs::File::open(path).map_err(unread)?;
+    let mut bytes = Vec::new();
+    file.take(MAX_FILE + 1)
+        .read_to_end(&mut bytes)
+        .map_err(unread)?;
+    if bytes.len() as u64 > MAX_FILE {
+        return Err(AssetError::Decode(format!(
+            "`{}` is larger than {MAX_FILE} bytes",
+            path.display()
+        )));
+    }
+    Ok(AssetBytes::Shared(bytes.into()))
 }
 
 /// A decoded payload, or why it did not decode.
@@ -116,7 +156,7 @@ impl Worker {
                     let done = Done {
                         id: job.id,
                         revision: job.revision,
-                        result: decode(&job.bytes, job.sampled),
+                        result: job.input.decode(job.sampled),
                     };
                     if outbox.send(done).is_err() {
                         break;
@@ -188,7 +228,7 @@ pub(crate) struct Assets {
     /// The results received and not yet provided.
     arrived: Vec<Done>,
     /// Reused per window: the resources to serve.
-    scratch: Vec<(ResourceId, ResourceRevision, AssetBytes)>,
+    scratch: Vec<(ResourceId, ResourceRevision, Input)>,
     rasters: Vec<(ResourceId, ResourceRevision, Arc<RasterImage>)>,
     /// The formats every device served so far samples; every format until
     /// one is.
@@ -328,7 +368,7 @@ impl Assets {
             let newer = |id: ResourceId, than: Option<ResourceRevision>| {
                 let (revision, bytes) = self.latest.get(&id)?;
                 than.is_none_or(|than| *revision > than)
-                    .then(|| (id, *revision, bytes.clone()))
+                    .then(|| (id, *revision, Input::Bytes(bytes.clone())))
             };
             let table = store.assets();
             todo.extend(table.wanted().filter_map(|id| newer(id, None)));
@@ -337,17 +377,24 @@ impl Assets {
                     .undecoded()
                     .filter_map(|(id, revision, _)| newer(id, Some(revision))),
             );
-            for (id, revision, bytes) in todo.drain(..) {
-                store.assets_mut().offer(id, revision, bytes);
+            for (id, revision, input) in todo.drain(..) {
+                if let Input::Bytes(bytes) = input {
+                    store.assets_mut().offer(id, revision, bytes);
+                }
             }
         }
+        let table = store.assets();
         todo.extend(
-            store
-                .assets()
+            table
                 .undecoded()
-                .map(|(id, revision, bytes)| (id, revision, bytes.clone())),
+                .map(|(id, revision, bytes)| (id, revision, Input::Bytes(bytes.clone()))),
         );
-        for (id, revision, bytes) in todo.drain(..) {
+        todo.extend(
+            table
+                .unread()
+                .map(|(id, revision, path)| (id, revision, Input::File(Arc::clone(path)))),
+        );
+        for (id, revision, input) in todo.drain(..) {
             if let Some((decoded, held)) = self.decoded.get(&id)
                 && *decoded >= revision
                 && let Some(payload) = held.upgrade()
@@ -372,7 +419,7 @@ impl Assets {
             let job = Job {
                 id,
                 revision,
-                bytes: bytes.clone(),
+                input: input.clone(),
                 sampled,
             };
             match &self.worker {
@@ -383,7 +430,7 @@ impl Assets {
                     let done = Done {
                         id,
                         revision,
-                        result: decode(&bytes, sampled),
+                        result: input.decode(sampled),
                     };
                     if let Some((id, revision, payload)) = self.settle(done) {
                         store.provide_asset(id, revision, payload);
@@ -732,5 +779,43 @@ mod tests {
             AssetDraw::Raster(new),
             "the last good draws"
         );
+    }
+
+    #[test]
+    fn a_file_reads_and_decodes_off_the_frame_path_and_bytes_given_at_run_time_decode_too() {
+        let dir = std::env::temp_dir().join(format!("viso-assets-file-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("photo.jpg");
+        std::fs::write(&path, JPEG).unwrap();
+        let photo = viso_ui::Asset::file(&path);
+        let given = viso_ui::Asset::bytes(SVG);
+        assert_ne!(given.id, viso_ui::Asset::bytes(SVG).id, "each is its own");
+        let missing = viso_ui::Asset::file(dir.join("missing.png"));
+
+        let mut store = NodeStore::new();
+        let mut nodes = Vec::new();
+        {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(Default::default(), |cx| {
+                for asset in [&photo, &given, &missing] {
+                    let leaf = cx.leaf(LeafStyle {
+                        size: Size::fixed(40.0, 40.0),
+                        style: BoxStyle::NONE,
+                    });
+                    cx.asset(leaf, asset, AssetFit::Contain, None);
+                    nodes.push(leaf.id());
+                }
+            });
+        }
+        assert_eq!(store.assets().unread().count(), 2, "nothing read at build");
+        let (mut assets, mut gpu) = (Assets::default(), Gpu::new());
+        serve(&mut assets, &mut store, &mut gpu);
+        let (draw, size) = drawn(&store, nodes[0]);
+        assert!(matches!(draw, AssetDraw::Raster(_)), "{draw:?}");
+        assert_eq!(size, [8.0, 4.0]);
+        assert!(matches!(drawn(&store, nodes[1]).0, AssetDraw::Vector(_)));
+        assert_eq!(drawn(&store, nodes[2]).0, AssetDraw::Nothing);
+        assert_eq!(assets.counters().decode_failures, 1, "the missing file");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

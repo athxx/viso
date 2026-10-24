@@ -176,7 +176,9 @@ pub use viso_runtime::{InputKind, Instant, primary_is_logo};
 // `BoxStyle`, `TextRequest`, or `Content`. `viso-render` is already a `viso-ui`
 // dependency, so this adds no new edge.
 pub use access::Access;
-pub use asset::{Asset, AssetBytes, AssetDraw, AssetFit, AssetPayload, AssetState, AssetTable};
+pub use asset::{
+    Asset, AssetBytes, AssetDraw, AssetFit, AssetPayload, AssetSource, AssetState, AssetTable,
+};
 pub use cursor::CursorIcon;
 pub use field_input::{FieldEvent, FieldKey, field_input, field_key, number_input};
 pub use field_marks::FieldMarks;

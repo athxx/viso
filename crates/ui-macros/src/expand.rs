@@ -253,7 +253,9 @@ pub fn asset(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             ::viso::__private::viso_ui::Asset {
                 id: ::viso::__private::viso_ui::resource::ResourceId(#id),
                 kind: ::viso::__private::viso_ui::resource::AssetKind::#kind,
-                bytes: ::viso::__private::viso_ui::AssetBytes::Static(#bytes),
+                source: ::viso::__private::viso_ui::AssetSource::Bytes(
+                    ::viso::__private::viso_ui::AssetBytes::Static(#bytes),
+                ),
             }
         }})
     })();

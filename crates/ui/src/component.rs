@@ -19,7 +19,7 @@ use crate::animation::{
     AnimationEnd, AnimationEndHandler, AnimationId, EndedAnimation, Keyframes, LookTransition,
     LookValue, NodeAnimation, Parts, ReducedMotion, Run, Timing, TrackRun, TranslateAnim,
 };
-use crate::asset::{Asset, AssetDraw, AssetFit, AssetPayload, AssetTable};
+use crate::asset::{Asset, AssetDraw, AssetFit, AssetPayload, AssetSource, AssetTable};
 use crate::binding::{BindingTable, Template};
 use crate::check_mark::CheckMark;
 use crate::content::{BrushImage, Content, TextRequest};
@@ -7459,9 +7459,14 @@ impl<'a> BuildCx<'a> {
         tint: Option<Rgba>,
     ) -> Handle {
         if !self.store.assets.knows(asset.id) {
-            self.store
-                .assets
-                .offer(asset.id, ResourceRevision::default(), asset.bytes.clone());
+            match &asset.source {
+                AssetSource::Bytes(bytes) => {
+                    self.store
+                        .assets
+                        .offer(asset.id, ResourceRevision::default(), bytes.clone());
+                }
+                AssetSource::File(path) => self.store.assets.locate(asset.id, Arc::clone(path)),
+            }
         }
         self.store.set_asset(handle.id, asset.id, fit, tint);
         handle
