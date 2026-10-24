@@ -1,9 +1,8 @@
 //! macOS and iOS: an `AVPlayer` whose item hands its pictures to an
 //! `AVPlayerItemVideoOutput` as BGRA pixel buffers backed by IOSurfaces, which
-//! a GPU samples where they lie and the CPU maps only to copy; a camera's
-//! come the same way from a capture session ([`capture`]).
-
-mod capture;
+//! a GPU samples where they lie and the CPU maps only to copy. Live
+//! pictures an extension captures come the same way
+//! ([`Frame::pixel_buffer`]).
 
 use std::ptr::NonNull;
 use std::time::Duration;
@@ -94,93 +93,7 @@ enum Status {
     Failed,
 }
 
-/// A movie the player plays, or a camera.
-pub(crate) enum Player {
-    Movie(Movie),
-    Camera(capture::Capture),
-}
-
-impl Player {
-    pub(crate) fn open(source: &VideoSource) -> Result<Player, VideoError> {
-        match source {
-            VideoSource::Camera(request) => capture::Capture::open(request).map(Player::Camera),
-            _ => Movie::open(source).map(Player::Movie),
-        }
-    }
-
-    pub(crate) fn poll(&mut self) -> Option<VideoEvent> {
-        match self {
-            Player::Movie(movie) => movie.poll(),
-            Player::Camera(camera) => camera.poll(),
-        }
-    }
-
-    pub(crate) fn frame(&mut self) -> Option<Frame<'_>> {
-        match self {
-            Player::Movie(movie) => movie.frame(),
-            Player::Camera(camera) => camera.frame(),
-        }
-    }
-
-    pub(crate) fn play(&mut self) {
-        match self {
-            Player::Movie(movie) => movie.play(),
-            Player::Camera(camera) => camera.play(),
-        }
-    }
-
-    pub(crate) fn pause(&mut self) {
-        match self {
-            Player::Movie(movie) => movie.pause(),
-            Player::Camera(camera) => camera.pause(),
-        }
-    }
-
-    pub(crate) fn is_playing(&self) -> bool {
-        match self {
-            Player::Movie(movie) => movie.is_playing(),
-            Player::Camera(camera) => camera.is_playing(),
-        }
-    }
-
-    pub(crate) fn position(&self) -> Duration {
-        match self {
-            Player::Movie(movie) => movie.position(),
-            // A camera is always now.
-            Player::Camera(_) => Duration::ZERO,
-        }
-    }
-
-    pub(crate) fn seek(&mut self, time: Duration) {
-        if let Player::Movie(movie) = self {
-            movie.seek(time);
-        }
-    }
-
-    pub(crate) fn set_rate(&mut self, rate: f32) {
-        if let Player::Movie(movie) = self {
-            movie.set_rate(rate);
-        }
-    }
-
-    pub(crate) fn set_volume(&mut self, volume: f32) {
-        if let Player::Movie(movie) = self {
-            movie.set_volume(volume);
-        }
-    }
-
-    pub(crate) fn set_muted(&mut self, muted: bool) {
-        if let Player::Movie(movie) = self {
-            movie.set_muted(muted);
-        }
-    }
-
-    pub(crate) fn set_looping(&mut self, looping: bool) {
-        if let Player::Movie(movie) = self {
-            movie.set_looping(looping);
-        }
-    }
-}
+pub(crate) type Player = Movie;
 
 /// A movie: an `AVPlayer` of one item, its pictures through the item's
 /// output.
@@ -205,7 +118,7 @@ pub(crate) struct Movie {
 }
 
 impl Movie {
-    fn open(source: &VideoSource) -> Result<Movie, VideoError> {
+    pub(crate) fn open(source: &VideoSource) -> Result<Movie, VideoError> {
         let mtm = MainThreadMarker::new().ok_or(VideoError::WrongThread)?;
         let (url, spilled) = match source {
             VideoSource::File(path) => (file_url(path)?, None),
@@ -532,4 +445,21 @@ fn bgra_attributes() -> Retained<NSDictionary<NSString, AnyObject>> {
     NSDictionary::from_slices(&keys, &values)
 }
 
-pub(crate) use capture::cameras;
+/// The cameras the platform's players capture: none, an extension answers.
+pub(crate) fn cameras() -> Vec<super::CameraInfo> {
+    Vec::new()
+}
+
+impl<'a> Frame<'a> {
+    /// The picture in `buffer`, a BGRA pixel buffer backed by an IOSurface
+    /// (`kCVPixelBufferIOSurfacePropertiesKey`), shown at `time`: sampled in
+    /// place, mapped only to be copied. It is valid while `buffer` is.
+    pub fn pixel_buffer(buffer: &'a CVPixelBuffer, time: Duration) -> Frame<'a> {
+        Frame::native_picture(
+            CVPixelBufferGetWidth(buffer) as u32,
+            CVPixelBufferGetHeight(buffer) as u32,
+            time,
+            Picture(buffer),
+        )
+    }
+}

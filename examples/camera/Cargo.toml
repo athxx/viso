@@ -9,3 +9,4 @@ publish = false
 # pause the capture — letting the camera go — and turn to another camera.
 [dependencies]
 viso = { workspace = true }
+viso-camera = { path = "../../../viso-ext/viso-camera" }

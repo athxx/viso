@@ -2978,6 +2978,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "viso-camera"
+version = "0.0.1"
+dependencies = [
+ "block2 0.6.2",
+ "dispatch2",
+ "objc2 0.6.4",
+ "objc2-av-foundation",
+ "objc2-core-foundation",
+ "objc2-core-media",
+ "objc2-core-video",
+ "objc2-foundation 0.3.2",
+ "viso-media",
+]
+
+[[package]]
 name = "viso-charts"
 version = "0.0.0"
 dependencies = [
@@ -3065,6 +3080,7 @@ name = "viso-example-camera"
 version = "0.0.0"
 dependencies = [
  "viso",
+ "viso-camera",
 ]
 
 [[package]]
@@ -3207,8 +3223,6 @@ dependencies = [
 name = "viso-media"
 version = "0.0.0"
 dependencies = [
- "block2 0.6.2",
- "dispatch2",
  "jni-sys 0.4.1",
  "js-sys",
  "libc",

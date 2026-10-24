@@ -9,7 +9,6 @@
 // What the targets that capture share; one without a camera uses none of it.
 #![cfg_attr(
     not(any(
-        target_vendor = "apple",
         target_os = "windows",
         target_os = "linux",
         target_os = "freebsd",

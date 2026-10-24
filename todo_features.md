@@ -348,6 +348,11 @@ Rules:
   - [ ] `viso-ext/viso-camera`: the camera backends moved out of `viso-media`
     (AVCaptureSession, Media Foundation, Camera2, the GStreamer device monitor,
     `getUserMedia`) behind `install()`; `examples/camera` on it.
+    - [x] Apple, through `Frame::pixel_buffer`.
+    - [ ] Android.
+    - [ ] Windows.
+    - [ ] Linux and the BSDs.
+    - [ ] Web.
 - [ ] Audio as an extension, `viso-ext/viso-audio`; the core adds no audio API (a
   video's sound stays with the platform player):
   - [ ] device streams: outputs and inputs listed and watched, a realtime callback
