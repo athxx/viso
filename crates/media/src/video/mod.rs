@@ -14,6 +14,7 @@ mod apple;
 mod gstreamer;
 #[cfg(not(any(
     target_vendor = "apple",
+    target_os = "android",
     target_os = "windows",
     all(target_arch = "wasm32", target_os = "unknown")
 )))]
@@ -180,6 +181,7 @@ enum Texels<'a> {
     #[cfg_attr(
         not(any(
             target_vendor = "apple",
+            target_os = "android",
             target_os = "windows",
             all(target_arch = "wasm32", target_os = "unknown")
         )),
@@ -243,6 +245,7 @@ impl<'a> Frame<'a> {
     #[cfg_attr(
         not(any(
             target_vendor = "apple",
+            target_os = "android",
             target_os = "windows",
             all(target_arch = "wasm32", target_os = "unknown")
         )),

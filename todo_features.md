@@ -284,7 +284,12 @@ Rules:
       it (cached by its holds), waits for the fence on the GPU and copies it into its own
       texture, holding it until the copy completes; `ExternalHolds` in `viso-handle`;
       the decoding device on the high-performance adapter the backend picks.
-    - [ ] Hardware buffer → Vulkan.
+    - [x] Hardware buffer → Vulkan: the Android reader's buffers lent with per-buffer
+      holds and the crop; the Vulkan backend imports each (external format, dedicated
+      memory, cached by its holds), samples it through a Y′CbCr conversion made per
+      encoding as the device suggests, and draws it into its own sRGB texture's UNORM
+      view, owned from the foreign queue for the pass; rows only for a caller that
+      copies; a backend-private frozen conversion shader, tested on NV12 planes.
   - [x] Media Foundation player on Windows: the media engine on a thread of its own
     in the multithreaded apartment, decoding through its own D3D11 device, each new
     frame drawn into a BGRA target and read back through a staging texture into

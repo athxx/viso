@@ -142,6 +142,25 @@ pub enum ExternalImage {
         /// Its height in texels.
         height: u32,
     },
+    /// Android: an `AHardwareBuffer` a decoder wrote, in a Y′CbCr format of
+    /// the device's (or RGBA), for a GPU to sample; the picture is the
+    /// `width` × `height` region at (`x`, `y`). Written by the time it is
+    /// handed over; a backend holds `holds` while any frame in flight reads
+    /// it.
+    AndroidHardwareBuffer {
+        /// `AHardwareBuffer *`, borrowed.
+        buffer: *mut c_void,
+        /// The holds on the buffer, as for [`ExternalImage::DxgiShared`].
+        holds: *const ExternalHolds,
+        /// The picture's left edge in the buffer, in texels.
+        x: u32,
+        /// The picture's top edge in the buffer, in texels.
+        y: u32,
+        /// Its width in texels.
+        width: u32,
+        /// Its height in texels.
+        height: u32,
+    },
     /// The web: the picture an `HTMLVideoElement` shows now, which the
     /// browser keeps on the GPU. A backend copies it there into a texture of
     /// its own, never through the CPU.
@@ -162,6 +181,7 @@ impl ExternalImage {
         match *self {
             ExternalImage::IoSurface { width, height, .. }
             | ExternalImage::DxgiShared { width, height, .. }
+            | ExternalImage::AndroidHardwareBuffer { width, height, .. }
             | ExternalImage::WebVideo { width, height, .. } => (width, height),
         }
     }

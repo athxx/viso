@@ -50,7 +50,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use ash::vk;
 use ash::{ext, khr};
-use viso_handle::RawWindowHandle;
+use viso_handle::{ExternalHold, ExternalImage, RawWindowHandle};
 
 use crate::backend::{
     DrawCommand, DrawList, Frame, Geometry, GpuBackend, IndexFormat, InlineUniforms, LoadOp,
@@ -119,6 +119,9 @@ struct VulkanTexture {
     /// The framebuffer of passes with a depth attachment, and the depth
     /// texture it was built with.
     depth_framebuffer: Option<(TextureId, vk::Framebuffer)>,
+    /// A texture external pictures are converted into: its UNORM view and
+    /// the framebuffer over it the conversion draws into.
+    converted: Option<(vk::ImageView, vk::Framebuffer)>,
 }
 
 /// A registered pipeline.
@@ -314,6 +317,40 @@ pub struct VulkanBackend {
     uniform_align: u64,
     /// The frame clock, on a queue that takes timestamps.
     clock: Option<Clock>,
+    /// The device converts Y′CbCr images (`samplerYcbcrConversion`).
+    ycbcr: bool,
+    /// The Y′CbCr conversions and sources, made at the first external
+    /// picture.
+    converter: Option<ycbcr::Converter>,
+    /// Holds on external pictures, each let go once the epoch it was
+    /// converted in completes.
+    held: Vec<(Epoch, ExternalHold)>,
+    /// Android hardware buffers import (`VK_ANDROID_external_memory_android_hardware_buffer`).
+    #[cfg(target_os = "android")]
+    hardware_buffers: Option<ash::android::external_memory_android_hardware_buffer::Device>,
+}
+
+mod ycbcr;
+
+/// What `AHardwareBuffer_describe` tells of a buffer.
+#[cfg(target_os = "android")]
+#[repr(C)]
+#[derive(Default)]
+struct AHardwareBufferDesc {
+    width: u32,
+    height: u32,
+    layers: u32,
+    format: u32,
+    usage: u64,
+    stride: u32,
+    rfu0: u32,
+    rfu1: u64,
+}
+
+#[cfg(target_os = "android")]
+#[link(name = "nativewindow")]
+unsafe extern "C" {
+    fn AHardwareBuffer_describe(buffer: *const c_void, desc: *mut AHardwareBufferDesc);
 }
 
 impl Default for VulkanBackend {
@@ -541,10 +578,38 @@ impl VulkanBackend {
             .texture_compression_bc(supported.texture_compression_bc == vk::TRUE)
             .texture_compression_etc2(supported.texture_compression_etc2 == vk::TRUE)
             .texture_compression_astc_ldr(supported.texture_compression_astc_ldr == vk::TRUE);
-        let device_info = vk::DeviceCreateInfo::default()
+        // Y′CbCr conversion, core since 1.1, where the device has it: what
+        // external pictures in Y′CbCr are sampled through.
+        // SAFETY: `physical` belongs to `instance`; the query fills the
+        // chained local.
+        let ycbcr = api_version >= vk::API_VERSION_1_1
+            && unsafe { instance.get_physical_device_properties(physical) }.api_version
+                >= vk::API_VERSION_1_1
+            && {
+                let mut conversion = vk::PhysicalDeviceSamplerYcbcrConversionFeatures::default();
+                let mut all = vk::PhysicalDeviceFeatures2::default().push_next(&mut conversion);
+                unsafe { instance.get_physical_device_features2(physical, &mut all) };
+                conversion.sampler_ycbcr_conversion == vk::TRUE
+            };
+        #[cfg(target_os = "android")]
+        let hardware_buffers = ycbcr
+            && has_device_ext(ash::android::external_memory_android_hardware_buffer::NAME)
+            && has_device_ext(ext::queue_family_foreign::NAME);
+        #[cfg(target_os = "android")]
+        if hardware_buffers {
+            device_enabled
+                .push(ash::android::external_memory_android_hardware_buffer::NAME.as_ptr());
+            device_enabled.push(ext::queue_family_foreign::NAME.as_ptr());
+        }
+        let mut conversion = vk::PhysicalDeviceSamplerYcbcrConversionFeatures::default()
+            .sampler_ycbcr_conversion(true);
+        let mut device_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(&queue_info)
             .enabled_extension_names(&device_enabled)
             .enabled_features(&features);
+        if ycbcr {
+            device_info = device_info.push_next(&mut conversion);
+        }
         // SAFETY: `queue_family` has a graphics queue on `physical`, and every
         // extension was enumerated as supported by it.
         let device = unsafe { instance.create_device(physical, &device_info, None) }
@@ -590,6 +655,10 @@ impl VulkanBackend {
             }
         });
 
+        #[cfg(target_os = "android")]
+        let hardware_buffers = hardware_buffers.then(|| {
+            ash::android::external_memory_android_hardware_buffer::Device::new(&instance, &device)
+        });
         Ok(Self {
             entry,
             instance,
@@ -636,6 +705,11 @@ impl VulkanBackend {
             storage_align: limits.min_storage_buffer_offset_alignment.max(1),
             uniform_align: limits.min_uniform_buffer_offset_alignment.max(16),
             clock,
+            ycbcr,
+            converter: None,
+            held: Vec::new(),
+            #[cfg(target_os = "android")]
+            hardware_buffers,
         })
     }
 
@@ -738,6 +812,492 @@ impl VulkanBackend {
         }
         self.reclaim_completed();
         out
+    }
+
+    /// A texture as `desc` describes; `mutable` lets it be viewed in the
+    /// other encoding of its format too (an sRGB texture as UNORM).
+    fn new_texture(&mut self, desc: &TextureDesc, mutable: bool) -> TextureId {
+        let format = vk_format(desc.format);
+
+        let aspect = aspect_of(desc.format);
+        let depth = aspect == vk::ImageAspectFlags::DEPTH;
+        let mut usage = vk::ImageUsageFlags::SAMPLED
+            | vk::ImageUsageFlags::TRANSFER_DST
+            | vk::ImageUsageFlags::TRANSFER_SRC;
+        if desc.render_target {
+            usage |= if depth {
+                vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
+            } else {
+                vk::ImageUsageFlags::COLOR_ATTACHMENT
+            };
+        }
+        let info = vk::ImageCreateInfo::default()
+            .flags(if mutable {
+                vk::ImageCreateFlags::MUTABLE_FORMAT
+            } else {
+                vk::ImageCreateFlags::empty()
+            })
+            .image_type(vk::ImageType::TYPE_2D)
+            .format(format)
+            .extent(vk::Extent3D {
+                width: desc.width.max(1),
+                height: desc.height.max(1),
+                depth: 1,
+            })
+            .mip_levels(1)
+            .array_layers(1)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .tiling(vk::ImageTiling::OPTIMAL)
+            .usage(usage)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .initial_layout(vk::ImageLayout::UNDEFINED);
+        // SAFETY: `info` describes a single-mip 2D image with a positive extent;
+        // its memory comes from a type its requirements allow and is bound once.
+        let (image, memory) = unsafe {
+            let image = self
+                .device
+                .create_image(&info, None)
+                .expect("failed to create a Vulkan image");
+            let req = self.device.get_image_memory_requirements(image);
+            let alloc = vk::MemoryAllocateInfo::default()
+                .allocation_size(req.size)
+                .memory_type_index(self.memory_type(
+                    req.memory_type_bits,
+                    vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                    vk::MemoryPropertyFlags::empty(),
+                ));
+            let memory = self
+                .device
+                .allocate_memory(&alloc, None)
+                .expect("failed to allocate Vulkan image memory");
+            self.device
+                .bind_image_memory(image, memory, 0)
+                .expect("failed to bind Vulkan image memory");
+            (image, memory)
+        };
+        let view = self.create_view(image, format, aspect);
+        // A depth render target only ever serves as a pass's attachment.
+        let rest = if depth && desc.render_target {
+            vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+        } else {
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
+        };
+
+        // Zero the image and bring it to its resting layout, so a texture that is
+        // sampled before it is written reads transparent black, not garbage.
+        self.ensure_recording();
+        let cmd = self.slots[self.slot].upload;
+        // SAFETY: `cmd` is recording; the image is fresh (UNDEFINED) and has
+        // TRANSFER_DST usage.
+        unsafe {
+            transition(
+                &self.device,
+                cmd,
+                image,
+                aspect,
+                vk::ImageLayout::UNDEFINED,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            );
+            let range = [subresource_range(aspect)];
+            if depth {
+                self.device.cmd_clear_depth_stencil_image(
+                    cmd,
+                    image,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    &vk::ClearDepthStencilValue::default(),
+                    &range,
+                );
+            } else {
+                self.device.cmd_clear_color_image(
+                    cmd,
+                    image,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    &vk::ClearColorValue::default(),
+                    &range,
+                );
+            }
+            transition(
+                &self.device,
+                cmd,
+                image,
+                aspect,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                rest,
+            );
+        }
+        self.textures
+            .insert(VulkanTexture {
+                image,
+                memory,
+                view,
+                format: desc.format,
+                width: desc.width.max(1),
+                height: desc.height.max(1),
+                render_target: desc.render_target,
+                framebuffer: vk::Framebuffer::null(),
+                depth_framebuffer: None,
+                converted: None,
+            })
+            .into()
+    }
+
+    /// A texture of `width` × `height` external pictures are converted into:
+    /// sRGB, drawn into through its UNORM view.
+    fn converted_texture(&mut self, width: u32, height: u32) -> TextureId {
+        let id = self.new_texture(
+            &TextureDesc {
+                width,
+                height,
+                format: TextureFormat::Rgba8UnormSrgb,
+                render_target: true,
+                label: "external picture",
+            },
+            true,
+        );
+        let image = self.texture(id).image;
+        let view = self.create_view(
+            image,
+            vk::Format::R8G8B8A8_UNORM,
+            vk::ImageAspectFlags::COLOR,
+        );
+        let pass = self.render_pass(vk::Format::R8G8B8A8_UNORM, true, None);
+        let framebuffer = self.create_framebuffer(pass, &[view], width.max(1), height.max(1));
+        if let Some(t) = self.textures.get_mut(id.into()) {
+            t.converted = Some((view, framebuffer));
+        }
+        id
+    }
+
+    /// The source `image` names — made of it if it is new — and the region
+    /// of it the picture is, as an offset and a scale in its texture
+    /// coordinates. `None` where the device cannot convert it.
+    fn external_source(&mut self, image: &ExternalImage) -> Option<(usize, [f32; 4])> {
+        if !self.ycbcr {
+            return None;
+        }
+        match *image {
+            #[cfg(target_os = "android")]
+            ExternalImage::AndroidHardwareBuffer {
+                buffer,
+                holds,
+                x,
+                y,
+                width,
+                height,
+            } => {
+                let converter = self
+                    .converter
+                    .get_or_insert_with(|| ycbcr::Converter::new(&self.device));
+                let at = match converter.source_of(holds) {
+                    Some(at) => at,
+                    None => {
+                        // SAFETY: the producer keeps the buffer and its
+                        // holds alive while it hands the image over.
+                        let (made, encoding) = unsafe { self.import_hardware_buffer(buffer)? };
+                        // SAFETY: as above.
+                        let holds = unsafe { viso_handle::ExternalHolds::retain(holds) };
+                        let pass = self.render_pass(vk::Format::R8G8B8A8_UNORM, true, None);
+                        let epoch = self.recording.unwrap_or(self.current_epoch);
+                        let converter = self.converter.as_mut()?;
+                        // SAFETY: the image was just made and bound, sampled,
+                        // in the encoding's format; the pass has one UNORM
+                        // color attachment.
+                        unsafe {
+                            converter.make_source(
+                                &self.device,
+                                self.pipeline_cache,
+                                pass,
+                                made,
+                                encoding,
+                                Some(holds),
+                                epoch,
+                            )?
+                        }
+                    }
+                };
+                let (bw, bh) = self.converter.as_ref()?.size(at);
+                let (bw, bh) = (bw.max(1) as f32, bh.max(1) as f32);
+                Some((
+                    at,
+                    [
+                        x as f32 / bw,
+                        y as f32 / bh,
+                        width as f32 / bw,
+                        height as f32 / bh,
+                    ],
+                ))
+            }
+            _ => None,
+        }
+    }
+
+    /// Records the conversion of source `at`'s `region` into texture `id`,
+    /// holding the source's buffer until the frame it is recorded in
+    /// completes.
+    fn convert(&mut self, id: TextureId, at: usize, region: [f32; 4]) {
+        self.ensure_recording();
+        let pass = self.render_pass(vk::Format::R8G8B8A8_UNORM, true, None);
+        let t = self.texture(id);
+        let Some((_, framebuffer)) = t.converted else {
+            return;
+        };
+        let target = ycbcr::Target {
+            image: t.image,
+            framebuffer,
+            width: t.width,
+            height: t.height,
+        };
+        let cmd = self.slots[self.slot].upload;
+        let Some(converter) = &self.converter else {
+            return;
+        };
+        // SAFETY: `cmd` is recording outside a render pass on the backend's
+        // queue family; the target is a live converted texture whose
+        // framebuffer was made against the UNORM pass.
+        unsafe {
+            converter.record(
+                &self.device,
+                cmd,
+                self.queue_family,
+                pass,
+                at,
+                region,
+                &target,
+            );
+        }
+        if let Some(holds) = converter.holds(at) {
+            let epoch = self.recording.unwrap_or(self.current_epoch);
+            self.held.push((epoch, holds.hold()));
+        }
+    }
+
+    /// A source of the `width` × `height` picture in NV12 planes `y` and
+    /// `uv`, studio range in BT.601; `None` where the device does not
+    /// convert NV12.
+    #[cfg(test)]
+    fn nv12_source(&mut self, width: u32, height: u32, y: &[u8], uv: &[u8]) -> Option<usize> {
+        let format = vk::Format::G8_B8R8_2PLANE_420_UNORM;
+        // SAFETY: `physical` belongs to `instance`.
+        let features = unsafe {
+            self.instance
+                .get_physical_device_format_properties(self.physical, format)
+        }
+        .optimal_tiling_features;
+        let needed = vk::FormatFeatureFlags::SAMPLED_IMAGE
+            | vk::FormatFeatureFlags::TRANSFER_DST
+            | vk::FormatFeatureFlags::MIDPOINT_CHROMA_SAMPLES;
+        if !self.ycbcr || !features.contains(needed) {
+            return None;
+        }
+        let info = vk::ImageCreateInfo::default()
+            .image_type(vk::ImageType::TYPE_2D)
+            .format(format)
+            .extent(vk::Extent3D {
+                width,
+                height,
+                depth: 1,
+            })
+            .mip_levels(1)
+            .array_layers(1)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .tiling(vk::ImageTiling::OPTIMAL)
+            .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .initial_layout(vk::ImageLayout::UNDEFINED);
+        // SAFETY: the image's memory comes from a type its requirements
+        // allow and is bound once; the planes are copied in from staging
+        // while it is in the transfer layout, then it rests sampled.
+        unsafe {
+            let image = self.device.create_image(&info, None).ok()?;
+            let req = self.device.get_image_memory_requirements(image);
+            let alloc = vk::MemoryAllocateInfo::default()
+                .allocation_size(req.size)
+                .memory_type_index(self.memory_type(
+                    req.memory_type_bits,
+                    vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                    vk::MemoryPropertyFlags::empty(),
+                ));
+            let memory = self.device.allocate_memory(&alloc, None).ok()?;
+            self.device.bind_image_memory(image, memory, 0).ok()?;
+            self.ensure_recording();
+            let (y_buf, y_at) = self.stage_aligned(y, 4);
+            let (uv_buf, uv_at) = self.stage_aligned(uv, 4);
+            let cmd = self.slots[self.slot].upload;
+            transition(
+                &self.device,
+                cmd,
+                image,
+                vk::ImageAspectFlags::COLOR,
+                vk::ImageLayout::UNDEFINED,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            );
+            for (buffer, offset, aspect, w, h) in [
+                (y_buf, y_at, vk::ImageAspectFlags::PLANE_0, width, height),
+                (
+                    uv_buf,
+                    uv_at,
+                    vk::ImageAspectFlags::PLANE_1,
+                    width / 2,
+                    height / 2,
+                ),
+            ] {
+                let region = vk::BufferImageCopy::default()
+                    .buffer_offset(offset)
+                    .image_subresource(subresource_layers(aspect))
+                    .image_extent(vk::Extent3D {
+                        width: w,
+                        height: h,
+                        depth: 1,
+                    });
+                self.device.cmd_copy_buffer_to_image(
+                    cmd,
+                    buffer,
+                    image,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    &[region],
+                );
+            }
+            transition(
+                &self.device,
+                cmd,
+                image,
+                vk::ImageAspectFlags::COLOR,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            );
+            let encoding = ycbcr::Encoding {
+                format,
+                external: 0,
+                model: vk::SamplerYcbcrModelConversion::YCBCR_601,
+                range: vk::SamplerYcbcrRange::ITU_NARROW,
+                components: [vk::ComponentSwizzle::IDENTITY; 4],
+                x_chroma: vk::ChromaLocation::MIDPOINT,
+                y_chroma: vk::ChromaLocation::MIDPOINT,
+                // Nearest: each texel converts from its own samples alone.
+                linear: false,
+            };
+            let pass = self.render_pass(vk::Format::R8G8B8A8_UNORM, true, None);
+            let epoch = self.recording.unwrap_or(self.current_epoch);
+            let converter = self
+                .converter
+                .get_or_insert_with(|| ycbcr::Converter::new(&self.device));
+            converter.make_source(
+                &self.device,
+                self.pipeline_cache,
+                pass,
+                ycbcr::Image {
+                    image,
+                    memory,
+                    width,
+                    height,
+                    foreign: false,
+                },
+                encoding,
+                None,
+                epoch,
+            )
+        }
+    }
+
+    /// An image over the Android hardware buffer `buffer`, its memory
+    /// imported, and the encoding the device samples it in.
+    ///
+    /// # Safety
+    ///
+    /// `buffer` is a live `AHardwareBuffer`.
+    #[cfg(target_os = "android")]
+    unsafe fn import_hardware_buffer(
+        &self,
+        buffer: *mut c_void,
+    ) -> Option<(ycbcr::Image, ycbcr::Encoding)> {
+        let loader = self.hardware_buffers.as_ref()?;
+        let mut format = vk::AndroidHardwareBufferFormatPropertiesANDROID::default();
+        let mut props =
+            vk::AndroidHardwareBufferPropertiesANDROID::default().push_next(&mut format);
+        // SAFETY: the caller's contract; the query fills the chained locals.
+        unsafe {
+            loader
+                .get_android_hardware_buffer_properties(buffer.cast_const(), &mut props)
+                .ok()?;
+        }
+        let (size, bits) = (props.allocation_size, props.memory_type_bits);
+        let mut desc = AHardwareBufferDesc::default();
+        // SAFETY: as above; the call fills the local.
+        unsafe { AHardwareBuffer_describe(buffer.cast_const(), &mut desc) };
+        let external = if format.format == vk::Format::UNDEFINED {
+            format.external_format
+        } else {
+            0
+        };
+        let encoding = ycbcr::Encoding {
+            format: format.format,
+            external,
+            model: format.suggested_ycbcr_model,
+            range: format.suggested_ycbcr_range,
+            components: {
+                let c = format.sampler_ycbcr_conversion_components;
+                [c.r, c.g, c.b, c.a]
+            },
+            x_chroma: format.suggested_x_chroma_offset,
+            y_chroma: format.suggested_y_chroma_offset,
+            linear: format
+                .format_features
+                .contains(vk::FormatFeatureFlags::SAMPLED_IMAGE_YCBCR_CONVERSION_LINEAR_FILTER),
+        };
+        let mut handle = vk::ExternalMemoryImageCreateInfo::default()
+            .handle_types(vk::ExternalMemoryHandleTypeFlags::ANDROID_HARDWARE_BUFFER_ANDROID);
+        let mut external_format = vk::ExternalFormatANDROID::default().external_format(external);
+        let mut info = vk::ImageCreateInfo::default()
+            .image_type(vk::ImageType::TYPE_2D)
+            .format(format.format)
+            .extent(vk::Extent3D {
+                width: desc.width,
+                height: desc.height,
+                depth: 1,
+            })
+            .mip_levels(1)
+            .array_layers(1)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .tiling(vk::ImageTiling::OPTIMAL)
+            .usage(vk::ImageUsageFlags::SAMPLED)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .push_next(&mut handle);
+        if external != 0 {
+            info = info.push_next(&mut external_format);
+        }
+        // SAFETY: the image is made to import the buffer's memory, which is
+        // allocated dedicated to it from a type the buffer allows and bound
+        // once; the import takes a reference to the buffer.
+        unsafe {
+            let image = self.device.create_image(&info, None).ok()?;
+            let mut import = vk::ImportAndroidHardwareBufferInfoANDROID::default().buffer(buffer);
+            let mut dedicated = vk::MemoryDedicatedAllocateInfo::default().image(image);
+            let alloc = vk::MemoryAllocateInfo::default()
+                .allocation_size(size)
+                .memory_type_index(bits.trailing_zeros())
+                .push_next(&mut import)
+                .push_next(&mut dedicated);
+            let Ok(memory) = self.device.allocate_memory(&alloc, None) else {
+                self.device.destroy_image(image, None);
+                return None;
+            };
+            if self.device.bind_image_memory(image, memory, 0).is_err() {
+                self.device.destroy_image(image, None);
+                self.device.free_memory(memory, None);
+                return None;
+            }
+            Some((
+                ycbcr::Image {
+                    image,
+                    memory,
+                    width: desc.width,
+                    height: desc.height,
+                    foreign: true,
+                },
+                encoding,
+            ))
+        }
     }
 
     fn buffer(&self, id: BufferId) -> &VulkanBuffer {
@@ -996,6 +1556,10 @@ impl VulkanBackend {
     fn reclaim_completed(&mut self) {
         let completed = self.completed_epoch();
         let fence = Fence::at(completed);
+        self.held.retain(|(epoch, _)| *epoch > completed);
+        if let Some(converter) = &mut self.converter {
+            converter.reclaim(&self.device, completed);
+        }
         let device = &self.device;
         self.dead_framebuffers.retain(|&(epoch, fb)| {
             let done = epoch <= completed;
@@ -1913,121 +2477,29 @@ impl GpuBackend for VulkanBackend {
     }
 
     fn create_texture(&mut self, desc: &TextureDesc) -> TextureId {
-        let format = vk_format(desc.format);
-        let aspect = aspect_of(desc.format);
-        let depth = aspect == vk::ImageAspectFlags::DEPTH;
-        let mut usage = vk::ImageUsageFlags::SAMPLED
-            | vk::ImageUsageFlags::TRANSFER_DST
-            | vk::ImageUsageFlags::TRANSFER_SRC;
-        if desc.render_target {
-            usage |= if depth {
-                vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
-            } else {
-                vk::ImageUsageFlags::COLOR_ATTACHMENT
-            };
-        }
-        let info = vk::ImageCreateInfo::default()
-            .image_type(vk::ImageType::TYPE_2D)
-            .format(format)
-            .extent(vk::Extent3D {
-                width: desc.width.max(1),
-                height: desc.height.max(1),
-                depth: 1,
-            })
-            .mip_levels(1)
-            .array_layers(1)
-            .samples(vk::SampleCountFlags::TYPE_1)
-            .tiling(vk::ImageTiling::OPTIMAL)
-            .usage(usage)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .initial_layout(vk::ImageLayout::UNDEFINED);
-        // SAFETY: `info` describes a single-mip 2D image with a positive extent;
-        // its memory comes from a type its requirements allow and is bound once.
-        let (image, memory) = unsafe {
-            let image = self
-                .device
-                .create_image(&info, None)
-                .expect("failed to create a Vulkan image");
-            let req = self.device.get_image_memory_requirements(image);
-            let alloc = vk::MemoryAllocateInfo::default()
-                .allocation_size(req.size)
-                .memory_type_index(self.memory_type(
-                    req.memory_type_bits,
-                    vk::MemoryPropertyFlags::DEVICE_LOCAL,
-                    vk::MemoryPropertyFlags::empty(),
-                ));
-            let memory = self
-                .device
-                .allocate_memory(&alloc, None)
-                .expect("failed to allocate Vulkan image memory");
-            self.device
-                .bind_image_memory(image, memory, 0)
-                .expect("failed to bind Vulkan image memory");
-            (image, memory)
-        };
-        let view = self.create_view(image, format, aspect);
-        // A depth render target only ever serves as a pass's attachment.
-        let rest = if depth && desc.render_target {
-            vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-        } else {
-            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
-        };
+        self.new_texture(desc, false)
+    }
 
-        // Zero the image and bring it to its resting layout, so a texture that is
-        // sampled before it is written reads transparent black, not garbage.
-        self.ensure_recording();
-        let cmd = self.slots[self.slot].upload;
-        // SAFETY: `cmd` is recording; the image is fresh (UNDEFINED) and has
-        // TRANSFER_DST usage.
-        unsafe {
-            transition(
-                &self.device,
-                cmd,
-                image,
-                aspect,
-                vk::ImageLayout::UNDEFINED,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            );
-            let range = [subresource_range(aspect)];
-            if depth {
-                self.device.cmd_clear_depth_stencil_image(
-                    cmd,
-                    image,
-                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                    &vk::ClearDepthStencilValue::default(),
-                    &range,
-                );
-            } else {
-                self.device.cmd_clear_color_image(
-                    cmd,
-                    image,
-                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                    &vk::ClearColorValue::default(),
-                    &range,
-                );
-            }
-            transition(
-                &self.device,
-                cmd,
-                image,
-                aspect,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                rest,
-            );
+    fn import_external(&mut self, image: &ExternalImage) -> Option<TextureId> {
+        let (at, region) = self.external_source(image)?;
+        let (width, height) = image.size();
+        let id = self.converted_texture(width, height);
+        self.convert(id, at, region);
+        Some(id)
+    }
+
+    fn adopt_external(&mut self, id: TextureId, image: &ExternalImage) -> bool {
+        let Some(t) = self.textures.get(id.into()) else {
+            return false;
+        };
+        if t.converted.is_none() || (t.width, t.height) != image.size() {
+            return false;
         }
-        self.textures
-            .insert(VulkanTexture {
-                image,
-                memory,
-                view,
-                format: desc.format,
-                width: desc.width.max(1),
-                height: desc.height.max(1),
-                render_target: desc.render_target,
-                framebuffer: vk::Framebuffer::null(),
-                depth_framebuffer: None,
-            })
-            .into()
+        let Some((at, region)) = self.external_source(image) else {
+            return false;
+        };
+        self.convert(id, at, region);
+        true
     }
 
     fn create_sampler(&mut self, desc: &SamplerDesc) -> SamplerId {
@@ -2737,6 +3209,10 @@ impl Drop for VulkanBackend {
         // messenger before the counter it points at.
         unsafe {
             let _ = self.device.device_wait_idle();
+            self.held.clear();
+            if let Some(mut converter) = self.converter.take() {
+                converter.destroy(&self.device);
+            }
             for b in self.buffers.drain() {
                 destroy_buffer(&self.device, b);
             }
@@ -3293,6 +3769,10 @@ unsafe fn destroy_texture(device: &ash::Device, t: VulkanTexture) {
         }
         if let Some((_, fb)) = t.depth_framebuffer {
             device.destroy_framebuffer(fb, None);
+        }
+        if let Some((view, fb)) = t.converted {
+            device.destroy_framebuffer(fb, None);
+            device.destroy_image_view(view, None);
         }
         device.destroy_image_view(t.view, None);
         device.destroy_image(t.image, None);

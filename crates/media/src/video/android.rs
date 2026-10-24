@@ -1,8 +1,9 @@
 //! Android: the system's `MediaPlayer`, which decodes in hardware, plays
 //! the sound, keeps it and the picture in step and reads files, content
 //! URIs, HTTP and HLS, driven through the `dev.viso.media.VisoVideo` Java
-//! class; its pictures drawn into an `AImageReader` and turned into RGBA
-//! rows when taken.
+//! class; its pictures drawn into an `AImageReader` whose hardware buffers
+//! a GPU backend samples where they lie, and turned into RGBA rows only for
+//! a caller that copies them.
 //!
 //! The Java class comes from the APK, loaded through the activity the app's
 //! framework hands over once ([`attach`]); until then a player opens
@@ -10,10 +11,11 @@
 //! main thread and is posted to the player's channel. Bytes are read where
 //! they lie, through a direct `ByteBuffer`, never written out.
 
+use std::cell::RefCell;
 use std::ffi::{CStr, c_int, c_void};
 use std::ptr;
-use std::sync::OnceLock;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use jni_sys::{
@@ -21,10 +23,10 @@ use jni_sys::{
     jlong, jmethodID, jobject, jvalue,
 };
 
-use super::yuv::{self, Matrix, Plane};
-use super::{Frame, VideoError, VideoEvent, VideoInfo, VideoSource, file_uri};
+use viso_handle::{ExternalHolds, ExternalImage};
 
-pub(crate) use super::no_picture::Picture;
+use super::yuv::{self, Matrix, Plane};
+use super::{Frame, PixelLayout, VideoError, VideoEvent, VideoInfo, VideoSource, file_uri};
 
 /// Call a `JNIEnv` function.
 macro_rules! env_call {
@@ -35,6 +37,7 @@ macro_rules! env_call {
 
 type AImageReader = c_void;
 type AImage = c_void;
+type AHardwareBuffer = c_void;
 type ANativeWindow = c_void;
 
 #[repr(C)]
@@ -48,16 +51,24 @@ struct AImageCropRect {
 
 const AIMAGE_FORMAT_YUV_420_888: i32 = 0x23;
 const AMEDIA_OK: c_int = 0;
+/// `AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE | AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN`:
+/// sampled by a GPU where it lies, read by the CPU for a caller that copies.
+const USAGE: u64 = 0x100 | 0x3;
+/// The images a reader lends at once: one shown, a few a GPU still reads,
+/// one coming.
+const IMAGES: i32 = 5;
 
 #[link(name = "mediandk")]
 unsafe extern "C" {
-    fn AImageReader_new(
+    fn AImageReader_newWithUsage(
         width: i32,
         height: i32,
         format: i32,
+        usage: u64,
         max_images: i32,
         reader: *mut *mut AImageReader,
     ) -> c_int;
+    fn AImage_getHardwareBuffer(image: *const AImage, buffer: *mut *mut AHardwareBuffer) -> c_int;
     fn AImageReader_delete(reader: *mut AImageReader);
     fn AImageReader_getWindow(reader: *mut AImageReader, window: *mut *mut ANativeWindow) -> c_int;
     fn AImageReader_acquireLatestImage(reader: *mut AImageReader, image: *mut *mut AImage)
@@ -339,6 +350,64 @@ struct Reader {
     height: i32,
 }
 
+/// An image taken from the reader, shown until the next.
+struct Taken {
+    image: *mut AImage,
+    /// Its hardware buffer, or null where it has none.
+    buffer: *mut AHardwareBuffer,
+    holds: Arc<ExternalHolds>,
+    /// The picture's region of the image, chroma starting on an even
+    /// sample: left, top, width, height.
+    crop: (u32, u32, u32, u32),
+    time: Duration,
+}
+
+/// The picture of the image last taken: its hardware buffer, for a GPU to
+/// sample, or its planes turned into RGBA rows.
+#[derive(Clone, Copy)]
+pub(crate) struct Picture<'a> {
+    taken: &'a Taken,
+    rows: &'a RefCell<Vec<u8>>,
+}
+
+impl std::fmt::Debug for Picture<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Picture")
+    }
+}
+
+impl Picture<'_> {
+    /// The image's hardware buffer, with the picture's region of it.
+    pub(crate) fn external(&self, _: u32, _: u32) -> Option<ExternalImage> {
+        let t = self.taken;
+        let (x, y, width, height) = t.crop;
+        (!t.buffer.is_null()).then_some(ExternalImage::AndroidHardwareBuffer {
+            buffer: t.buffer,
+            holds: Arc::as_ptr(&t.holds),
+            x,
+            y,
+            width,
+            height,
+        })
+    }
+
+    /// Calls `f` with the picture turned into RGBA rows and their stride.
+    pub(crate) fn read(&self, f: impl FnOnce(&[u8], usize)) -> bool {
+        let mut rows = self.rows.borrow_mut();
+        let (x, y, width, height) = self.taken.crop;
+        // SAFETY: the image is held, not deleted, while its picture is lent.
+        if !unsafe { to_rgba(self.taken.image, x, y, width, height, &mut rows) } {
+            return false;
+        }
+        f(&rows, width as usize * 4);
+        true
+    }
+
+    pub(crate) fn layout(&self) -> PixelLayout {
+        PixelLayout::Rgba8
+    }
+}
+
 pub(crate) struct Player {
     java: &'static Java,
     /// The `VisoVideo`, a global reference.
@@ -349,8 +418,15 @@ pub(crate) struct Player {
     /// What the direct buffer of the bytes points into, kept while it plays.
     _bytes: Option<std::sync::Arc<[u8]>>,
     reader: Option<Reader>,
-    /// The picture last taken, as RGBA rows.
-    rows: Vec<u8>,
+    /// The image last taken.
+    shown: Option<Taken>,
+    /// Images shown before, each deleted once no GPU holds its buffer.
+    spent: Vec<Taken>,
+    /// The holds of each of the reader's buffers, which outlive the images
+    /// lent over them.
+    holds: Vec<(*mut AHardwareBuffer, Arc<ExternalHolds>)>,
+    /// The picture last turned into rows, for a caller that copies.
+    rows: RefCell<Vec<u8>>,
     ready: bool,
     failed: bool,
     wants_play: bool,
@@ -431,7 +507,10 @@ impl Player {
             mailbox,
             _bytes: kept,
             reader: None,
-            rows: Vec::new(),
+            shown: None,
+            spent: Vec::new(),
+            holds: Vec::new(),
+            rows: RefCell::default(),
             ready: false,
             failed: false,
             wants_play: false,
@@ -545,8 +624,14 @@ impl Player {
         // keeps its own, then deleted. The old reader is deleted once the
         // player draws into the new one.
         unsafe {
-            if AImageReader_new(width, height, AIMAGE_FORMAT_YUV_420_888, 3, &mut reader)
-                != AMEDIA_OK
+            if AImageReader_newWithUsage(
+                width,
+                height,
+                AIMAGE_FORMAT_YUV_420_888,
+                USAGE,
+                IMAGES,
+                &mut reader,
+            ) != AMEDIA_OK
             {
                 return;
             }
@@ -563,106 +648,87 @@ impl Player {
             }
             self.call(self.java.set_surface, &[jvalue { l: surface }]);
             env_call!(env, DeleteLocalRef, surface);
-            if let Some(old) = self.reader.replace(Reader {
+            let old = self.reader.replace(Reader {
                 reader,
                 width,
                 height,
-            }) {
+            });
+            if let Some(old) = old {
+                self.let_go_images();
                 AImageReader_delete(old.reader);
             }
         }
     }
 
     pub(crate) fn frame(&mut self) -> Option<Frame<'_>> {
+        // SAFETY: each spent image was acquired from the reader and not yet
+        // deleted; one no GPU holds is deleted once.
+        self.spent.retain(|t| {
+            let held = t.holds.is_held();
+            if !held {
+                unsafe { AImage_delete(t.image) };
+            }
+            held
+        });
         let reader = self.reader.as_ref()?.reader;
         let mut image = ptr::null_mut();
-        // SAFETY: the newest image of the player's reader, read while held
-        // and deleted after: each plane's bytes are its length long.
-        let (width, height, time) = unsafe {
+        // SAFETY: the newest image of the player's reader, read into locals
+        // and kept until it is deleted.
+        let (crop, buffer) = unsafe {
             if AImageReader_acquireLatestImage(reader, &mut image) != AMEDIA_OK || image.is_null() {
                 return None;
             }
-            let taken = self.take(image);
-            AImage_delete(image);
-            taken?
+            let Some(crop) = crop_of(image) else {
+                AImage_delete(image);
+                return None;
+            };
+            let mut buffer = ptr::null_mut();
+            if AImage_getHardwareBuffer(image, &mut buffer) != AMEDIA_OK {
+                buffer = ptr::null_mut();
+            }
+            (crop, buffer)
         };
-        Some(Frame::rgba(
+        let holds = match self.holds.iter().find(|(b, _)| *b == buffer) {
+            Some((_, holds)) => Arc::clone(holds),
+            None => {
+                let holds = ExternalHolds::new();
+                self.holds.push((buffer, Arc::clone(&holds)));
+                holds
+            }
+        };
+        // An image's own stamp is when it shows, on the system clock; where
+        // in the video it lies is the player's position.
+        let taken = Taken {
+            image,
+            buffer,
+            holds,
+            crop,
+            time: self.position(),
+        };
+        if let Some(old) = self.shown.replace(taken) {
+            self.spent.push(old);
+        }
+        let taken = self.shown.as_ref()?;
+        let (_, _, width, height) = taken.crop;
+        Some(Frame::native_picture(
             width,
             height,
-            &self.rows,
-            width as usize * 4,
-            time,
+            taken.time,
+            Picture {
+                taken,
+                rows: &self.rows,
+            },
         ))
     }
 
-    /// Turns `image` into the RGBA rows of the picture its crop names.
-    ///
-    /// # Safety
-    ///
-    /// `image` is an image acquired from the player's reader, not deleted.
-    unsafe fn take(&mut self, image: *mut AImage) -> Option<(u32, u32, Duration)> {
-        // SAFETY: the caller's contract; reads of the image into locals,
-        // its planes borrowed for as long as it is held.
-        unsafe {
-            let (mut w, mut h) = (0, 0);
-            AImage_getWidth(image, &mut w);
-            AImage_getHeight(image, &mut h);
-            let mut crop = AImageCropRect::default();
-            let cropped = AImage_getCropRect(image, &mut crop) == AMEDIA_OK
-                && crop.left >= 0
-                && crop.top >= 0
-                && crop.right > crop.left
-                && crop.bottom > crop.top
-                && crop.right <= w
-                && crop.bottom <= h;
-            if !cropped {
-                crop = AImageCropRect {
-                    left: 0,
-                    top: 0,
-                    right: w,
-                    bottom: h,
-                };
-            }
-            // Chroma starts on an even sample.
-            let (left, top) = ((crop.left & !1) as usize, (crop.top & !1) as usize);
-            let (width, height) = (
-                (crop.right as usize).saturating_sub(left),
-                (crop.bottom as usize).saturating_sub(top),
-            );
-            if width == 0 || height == 0 {
-                return None;
-            }
-            let plane = |index: c_int, x: usize, y: usize| -> Option<Plane<'static>> {
-                let (mut data, mut length, mut row, mut pixel) = (ptr::null_mut(), 0, 0, 0);
-                if AImage_getPlaneData(image, index, &mut data, &mut length) != AMEDIA_OK
-                    || AImage_getPlaneRowStride(image, index, &mut row) != AMEDIA_OK
-                    || AImage_getPlanePixelStride(image, index, &mut pixel) != AMEDIA_OK
-                    || data.is_null()
-                    || row <= 0
-                    || pixel <= 0
-                {
-                    return None;
-                }
-                let (row, pixel) = (row as usize, pixel as usize);
-                let start = y * row + x * pixel;
-                let bytes = std::slice::from_raw_parts(data, length.max(0) as usize);
-                Some(Plane {
-                    bytes: bytes.get(start..)?,
-                    row_stride: row,
-                    pixel_stride: pixel,
-                })
-            };
-            let y = plane(0, left, top)?;
-            let u = plane(1, left / 2, top / 2)?;
-            let v = plane(2, left / 2, top / 2)?;
-            let matrix = Matrix::for_height(height as u32);
-            if !yuv::to_rgba(width, height, y, u, v, matrix, &mut self.rows) {
-                return None;
-            }
-            // An image's own stamp is when it shows, on the system clock;
-            // where in the video it lies is the player's position.
-            Some((width as u32, height as u32, self.position()))
+    /// Deletes every image taken from the reader, and forgets its buffers.
+    fn let_go_images(&mut self) {
+        for t in self.shown.take().into_iter().chain(self.spent.drain(..)) {
+            // SAFETY: each was acquired from the reader and is deleted once;
+            // a GPU still reading its buffer holds a reference of its own.
+            unsafe { AImage_delete(t.image) };
         }
+        self.holds.clear();
     }
 
     pub(crate) fn play(&mut self) {
@@ -791,6 +857,7 @@ impl Drop for Player {
         }
         // SAFETY: the mailbox the Java side no longer reports to, and the
         // reader nothing draws into, each freed once.
+        self.let_go_images();
         unsafe {
             drop(Box::from_raw(self.mailbox));
             if let Some(reader) = self.reader.take() {
@@ -809,4 +876,87 @@ unsafe fn new_string(env: *mut JNIEnv, text: &str) -> jobject {
     let units: Vec<u16> = text.encode_utf16().collect();
     // SAFETY: the caller's contract; `NewString` copies `units`.
     unsafe { env_call!(env, NewString, units.as_ptr(), units.len() as jint) }
+}
+
+/// The picture's region of `image` — its crop, else all of it — with chroma
+/// starting on an even sample: left, top, width, height.
+///
+/// # Safety
+///
+/// `image` is an image acquired from a reader, not deleted.
+unsafe fn crop_of(image: *mut AImage) -> Option<(u32, u32, u32, u32)> {
+    let (mut w, mut h) = (0, 0);
+    let mut crop = AImageCropRect::default();
+    // SAFETY: the caller's contract; reads of the image into locals.
+    let cropped = unsafe {
+        AImage_getWidth(image, &mut w);
+        AImage_getHeight(image, &mut h);
+        AImage_getCropRect(image, &mut crop) == AMEDIA_OK
+    } && crop.left >= 0
+        && crop.top >= 0
+        && crop.right > crop.left
+        && crop.bottom > crop.top
+        && crop.right <= w
+        && crop.bottom <= h;
+    if !cropped {
+        crop = AImageCropRect {
+            left: 0,
+            top: 0,
+            right: w,
+            bottom: h,
+        };
+    }
+    let (left, top) = (crop.left & !1, crop.top & !1);
+    let (width, height) = (crop.right - left, crop.bottom - top);
+    (width > 0 && height > 0).then_some((left as u32, top as u32, width as u32, height as u32))
+}
+
+/// Turns the `width` × `height` region at (`left`, `top`) of `image` into
+/// RGBA rows in `rows`; `false` where its planes cannot be read.
+///
+/// # Safety
+///
+/// `image` is an image acquired from a reader, not deleted.
+unsafe fn to_rgba(
+    image: *mut AImage,
+    left: u32,
+    top: u32,
+    width: u32,
+    height: u32,
+    rows: &mut Vec<u8>,
+) -> bool {
+    let plane = |index: c_int, x: usize, y: usize| -> Option<Plane<'static>> {
+        let (mut data, mut length, mut row, mut pixel) = (ptr::null_mut(), 0, 0, 0);
+        // SAFETY: the caller's contract; the plane's bytes are its length
+        // long, borrowed while the image is held.
+        unsafe {
+            if AImage_getPlaneData(image, index, &mut data, &mut length) != AMEDIA_OK
+                || AImage_getPlaneRowStride(image, index, &mut row) != AMEDIA_OK
+                || AImage_getPlanePixelStride(image, index, &mut pixel) != AMEDIA_OK
+                || data.is_null()
+                || row <= 0
+                || pixel <= 0
+            {
+                return None;
+            }
+            let (row, pixel) = (row as usize, pixel as usize);
+            let start = y * row + x * pixel;
+            let bytes = std::slice::from_raw_parts(data, length.max(0) as usize);
+            Some(Plane {
+                bytes: bytes.get(start..)?,
+                row_stride: row,
+                pixel_stride: pixel,
+            })
+        }
+    };
+    let (left, top) = (left as usize, top as usize);
+    let (Some(y), Some(u), Some(v)) = (
+        plane(0, left, top),
+        plane(1, left / 2, top / 2),
+        plane(2, left / 2, top / 2),
+    ) else {
+        return false;
+    };
+    let matrix = Matrix::for_height(height);
+    yuv::to_rgba(width as usize, height as usize, y, u, v, matrix, rows)
 }
