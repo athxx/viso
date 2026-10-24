@@ -1415,6 +1415,10 @@ impl Player {
     }
 
     pub(crate) fn position(&self) -> Duration {
+        // A camera is always now.
+        if self.camera.is_some() {
+            return Duration::ZERO;
+        }
         if let Some(time) = self.sought.or(self.seek) {
             return time;
         }

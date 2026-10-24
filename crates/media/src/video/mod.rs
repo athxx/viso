@@ -506,7 +506,7 @@ impl VideoPlayer {
         self.imp.set_looping(looping);
     }
 
-    /// Where it is.
+    /// Where it is; a camera's is always zero.
     pub fn position(&self) -> Duration {
         self.imp.position()
     }
