@@ -275,6 +275,7 @@ impl<P: Play> Videos<P> {
                         p.ready = true;
                         status.ready = true;
                         status.duration = info.duration;
+                        status.facing = info.facing.map(facing);
                         size = Some((info.width, info.height));
                     }
                     VideoEvent::Ended => {
@@ -324,6 +325,7 @@ impl<P: Play> Videos<P> {
             }
             if let Some((w, h)) = size {
                 store.size_video(p.resource, w, h);
+                store.mirror_video(p.node);
             }
             let shown = store.on_screen(p.node, viewport);
             if !p.ready {
@@ -466,6 +468,42 @@ fn media_source(source: &VideoSource) -> viso_media::VideoSource {
         VideoSource::Bytes(viso_ui::AssetBytes::Shared(bytes)) => {
             viso_media::VideoSource::Bytes(std::sync::Arc::clone(bytes))
         }
+        VideoSource::Camera(camera) => viso_media::VideoSource::Camera(viso_media::CameraRequest {
+            camera: match &camera.choice {
+                viso_ui::CameraChoice::Default => viso_media::CameraChoice::Default,
+                viso_ui::CameraChoice::Facing(f) => viso_media::CameraChoice::Facing(match f {
+                    viso_ui::CameraFacing::Front => viso_media::CameraFacing::Front,
+                    viso_ui::CameraFacing::Back => viso_media::CameraFacing::Back,
+                    viso_ui::CameraFacing::External => viso_media::CameraFacing::External,
+                }),
+                viso_ui::CameraChoice::Id(id) => viso_media::CameraChoice::Id(id.to_string()),
+            },
+            width: camera.width,
+            height: camera.height,
+            frame_rate: camera.frame_rate,
+        }),
+    }
+}
+
+/// The cameras the platform has, for [`Camera::id`](viso_ui::Camera::id)
+/// to choose among; none where it has no camera, or captures from none.
+pub fn cameras() -> Vec<viso_ui::CameraInfo> {
+    viso_media::cameras()
+        .into_iter()
+        .map(|info| viso_ui::CameraInfo {
+            id: info.id.into(),
+            name: info.name,
+            facing: facing(info.facing),
+        })
+        .collect()
+}
+
+/// A camera's facing as a node reports it.
+fn facing(facing: viso_media::CameraFacing) -> viso_ui::CameraFacing {
+    match facing {
+        viso_media::CameraFacing::Front => viso_ui::CameraFacing::Front,
+        viso_media::CameraFacing::Back => viso_ui::CameraFacing::Back,
+        viso_media::CameraFacing::External => viso_ui::CameraFacing::External,
     }
 }
 
@@ -497,6 +535,8 @@ mod tests {
         muted: bool,
         seeks: Vec<Duration>,
         dropped: bool,
+        /// What it was opened on.
+        source: String,
     }
 
     thread_local! {
@@ -521,7 +561,10 @@ mod tests {
             if matches!(source, viso_media::VideoSource::Url(url) if url == "bad:") {
                 return Err(VideoError::Open("bad".into()));
             }
-            let script = Rc::new(RefCell::new(Script::default()));
+            let script = Rc::new(RefCell::new(Script {
+                source: format!("{source:?}"),
+                ..Script::default()
+            }));
             OPENED.with(|o| o.borrow_mut().push(Rc::clone(&script)));
             Ok(Fake {
                 script,
@@ -674,7 +717,50 @@ mod tests {
             frame_rate: Some(30.0),
             audio: true,
             seekable: true,
+            facing: None,
         })
+    }
+
+    #[test]
+    fn a_camera_opens_as_asked_and_shows_mirrored_once_it_faces_the_user() {
+        let camera = viso_ui::Camera::facing(viso_ui::CameraFacing::Front).size(640, 480);
+        let mut win = Window::new(VideoSource::Camera(camera));
+        win.step(SCREEN);
+        let script = opened(0);
+        let request = viso_media::CameraRequest {
+            camera: viso_media::CameraChoice::Facing(viso_media::CameraFacing::Front),
+            width: 640,
+            height: 480,
+            frame_rate: 30,
+        };
+        assert_eq!(
+            script.borrow().source,
+            format!("{:?}", viso_media::VideoSource::Camera(request))
+        );
+        let mirrored = |win: &Window| match win.store.content_payload(win.leaf) {
+            Some(Content::Asset { mirrored, .. }) => *mirrored,
+            other => panic!("{other:?}"),
+        };
+        assert!(!mirrored(&win));
+        script
+            .borrow_mut()
+            .events
+            .push_back(VideoEvent::Ready(VideoInfo {
+                width: 8,
+                height: 6,
+                duration: None,
+                frame_rate: Some(30.0),
+                audio: false,
+                seekable: false,
+                facing: Some(viso_media::CameraFacing::Front),
+            }));
+        script.borrow_mut().frames.push_back((8, 6, [255, 0, 0]));
+        win.step(SCREEN);
+        let status = win.store.video_status(win.leaf).unwrap();
+        assert_eq!(status.facing, Some(viso_ui::CameraFacing::Front));
+        assert_eq!(status.duration, None);
+        assert!(mirrored(&win));
+        assert_eq!(win.texel(), [255, 0, 0]);
     }
 
     #[test]

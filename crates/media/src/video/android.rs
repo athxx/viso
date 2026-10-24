@@ -601,6 +601,7 @@ impl Player {
             frame_rate: None,
             audio: report.c != 0,
             seekable: duration.is_some(),
+            facing: None,
         })
     }
 

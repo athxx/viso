@@ -70,6 +70,9 @@ pub struct Video {
     on_progress: Option<OnProgress>,
     on_ended: Option<OnEnded>,
     slot: Option<VideoHandleSlot>,
+    /// Whether the picture shows mirrored; `None` mirrors a camera facing
+    /// the user.
+    mirror: Option<bool>,
     /// The controls shown over it, if any.
     controls: Option<(VideoControlsStyle, VideoLabels)>,
 }
@@ -155,6 +158,7 @@ pub fn video(source: impl Into<VideoSource>) -> Video {
         on_progress: None,
         on_ended: None,
         slot: None,
+        mirror: None,
         controls: None,
     }
 }
@@ -207,6 +211,13 @@ impl Video {
     /// Set how many times its speed it plays at (defaults to 1).
     pub fn rate(mut self, rate: f32) -> Self {
         self.playback.rate = rate;
+        self
+    }
+
+    /// Set whether the picture shows flipped left to right (defaults to
+    /// mirroring a camera facing the user, and nothing else).
+    pub fn mirror(mut self, mirror: bool) -> Self {
+        self.mirror = Some(mirror);
         self
     }
 
@@ -284,6 +295,7 @@ impl Video {
             style: BoxStyle::NONE,
         });
         cx.video(handle, &self.source, self.fit, self.tint);
+        cx.video_mirror(handle, self.mirror);
         cx.playback(handle, self.playback);
         let mut kinds = NoticeKinds::default();
         if self.on_load.is_some() {

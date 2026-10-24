@@ -13,6 +13,12 @@
 //! player reports ([`VideoStatus`]). The node is the video's identity: showing
 //! the same source again keeps it playing where it is; another source starts
 //! a new resource, which the facade opens afresh.
+//!
+//! A camera plays as a live video ([`VideoSource::Camera`]): no length, no
+//! seeking, capturing while it plays and letting the device go while paused.
+//! The picture of one facing the user shows mirrored, as a mirror would show
+//! them, unless the node asks otherwise
+//! ([`NodeStore::set_video_mirror`](crate::component::NodeStore::set_video_mirror)).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -33,6 +39,110 @@ pub enum VideoSource {
     Url(Arc<str>),
     /// A whole file's encoded bytes: embedded, or given at run time.
     Bytes(AssetBytes),
+    /// What a camera captures, live.
+    Camera(Camera),
+}
+
+/// Which way a camera faces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CameraFacing {
+    /// Toward the user: a phone's selfie camera, a laptop's.
+    Front,
+    /// Away from the user: a phone's main camera.
+    Back,
+    /// Plugged in, facing wherever it is put.
+    External,
+}
+
+/// Which camera a node shows.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub enum CameraChoice {
+    /// The platform's default: a laptop's own, a phone's front.
+    #[default]
+    Default,
+    /// The first facing this way, else the default.
+    Facing(CameraFacing),
+    /// The one the platform names so.
+    Id(Arc<str>),
+}
+
+/// A camera a node shows, and the pictures wanted of it: the camera's
+/// nearest size, at least as large where it has one, and its nearest rate.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Camera {
+    pub choice: CameraChoice,
+    /// The picture's size wanted, in pixels.
+    pub width: u32,
+    pub height: u32,
+    /// The pictures wanted a second.
+    pub frame_rate: u32,
+}
+
+impl Default for Camera {
+    /// The default camera at 1280 × 720, 30 pictures a second: what a
+    /// preview needs, without the cost of the sensor's largest.
+    fn default() -> Camera {
+        Camera {
+            choice: CameraChoice::Default,
+            width: 1280,
+            height: 720,
+            frame_rate: 30,
+        }
+    }
+}
+
+impl Camera {
+    /// The first camera facing `facing`, else the default.
+    pub fn facing(facing: CameraFacing) -> Camera {
+        Camera {
+            choice: CameraChoice::Facing(facing),
+            ..Camera::default()
+        }
+    }
+
+    /// The camera the platform names `id`.
+    pub fn id(id: impl Into<Arc<str>>) -> Camera {
+        Camera {
+            choice: CameraChoice::Id(id.into()),
+            ..Camera::default()
+        }
+    }
+
+    /// Pictures of about `width` × `height` pixels.
+    pub fn size(mut self, width: u32, height: u32) -> Camera {
+        self.width = width;
+        self.height = height;
+        self
+    }
+
+    /// About `frame_rate` pictures a second.
+    pub fn frame_rate(mut self, frame_rate: u32) -> Camera {
+        self.frame_rate = frame_rate;
+        self
+    }
+}
+
+/// A camera the platform has, as `viso::cameras` lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CameraInfo {
+    /// What [`Camera::id`] names it by; stable while it is plugged in.
+    pub id: Arc<str>,
+    /// Its name, for people.
+    pub name: String,
+    pub facing: CameraFacing,
+}
+
+impl From<&CameraInfo> for Camera {
+    /// That camera, at the default size and rate.
+    fn from(info: &CameraInfo) -> Camera {
+        Camera::id(Arc::clone(&info.id))
+    }
+}
+
+impl From<Camera> for VideoSource {
+    fn from(camera: Camera) -> VideoSource {
+        VideoSource::Camera(camera)
+    }
 }
 
 impl VideoSource {
@@ -51,8 +161,9 @@ impl VideoSource {
         VideoSource::Bytes(AssetBytes::Shared(bytes.into()))
     }
 
-    /// Whether it plays the same video as `other`: the same path or URL, or
-    /// the same bytes — the same buffer at once, else byte for byte.
+    /// Whether it plays the same video as `other`: the same path or URL, the
+    /// same bytes — the same buffer at once, else byte for byte — or the
+    /// same camera asked the same of.
     pub fn same(&self, other: &VideoSource) -> bool {
         match (self, other) {
             (VideoSource::File(a), VideoSource::File(b)) => a == b,
@@ -60,6 +171,7 @@ impl VideoSource {
             (VideoSource::Bytes(a), VideoSource::Bytes(b)) => {
                 (a.as_ptr() == b.as_ptr() && a.len() == b.len()) || **a == **b
             }
+            (VideoSource::Camera(a), VideoSource::Camera(b)) => a == b,
             _ => false,
         }
     }
@@ -128,6 +240,8 @@ pub struct VideoStatus {
     pub muted: bool,
     /// Its sound's volume, from 0 to 1.
     pub volume: f32,
+    /// Which way the camera it shows faces, once ready; `None` for a video.
+    pub facing: Option<CameraFacing>,
 }
 
 impl Default for VideoStatus {
@@ -142,6 +256,7 @@ impl Default for VideoStatus {
             ended: false,
             muted: false,
             volume: 1.0,
+            facing: None,
         }
     }
 }
@@ -160,6 +275,17 @@ pub struct VideoEntry {
     /// A seek asked for and not yet made.
     pub seek: Option<Duration>,
     pub status: VideoStatus,
+    /// Whether its picture shows mirrored; `None` mirrors a camera facing
+    /// the user.
+    pub mirror: Option<bool>,
+}
+
+impl VideoEntry {
+    /// Whether its picture shows mirrored now.
+    pub fn mirrored(&self) -> bool {
+        self.mirror
+            .unwrap_or(self.status.facing == Some(CameraFacing::Front))
+    }
 }
 
 /// The resources video nodes are shown as, apart from any asset's.
@@ -224,6 +350,7 @@ impl VideoTable {
             declared: None,
             seek: None,
             status: VideoStatus::default(),
+            mirror: None,
         });
         (resource, true)
     }
@@ -255,7 +382,7 @@ mod tests {
     use crate::reactive::EffectStore;
     use crate::state::StateStore;
     use crate::virtual_list::VirtualLists;
-    use crate::{BoxStyle, LeafStyle, Size};
+    use crate::{BoxStyle, DirtyClass, LeafStyle, Size};
     use std::cell::RefCell;
     use std::rc::Rc;
     use viso_render::TextureId;
@@ -337,6 +464,39 @@ mod tests {
         assert!(store.videos().is_empty());
         assert_eq!(store.forget_video(other), None);
         assert!(!store.assets().knows(other));
+    }
+
+    #[test]
+    fn a_camera_facing_the_user_shows_mirrored_unless_its_node_asks_otherwise() {
+        let (mut store, node) = leaf();
+        let mirrored = |store: &NodeStore| match store.content_payload(node) {
+            Some(Content::Asset { mirrored, .. }) => *mirrored,
+            other => panic!("{other:?}"),
+        };
+        let front = VideoSource::from(Camera::facing(CameraFacing::Front));
+        assert!(front.same(&Camera::facing(CameraFacing::Front).into()));
+        assert!(!front.same(&Camera::facing(CameraFacing::Front).size(640, 480).into()));
+        store.set_video(node, &front, AssetFit::Cover, None);
+        assert!(!mirrored(&store), "its facing is not known yet");
+        // Ready, the player reports which way it faces.
+        store.videos_mut().get_mut(node).unwrap().status.facing = Some(CameraFacing::Front);
+        store.clear_dirty();
+        store.mirror_video(node);
+        assert!(mirrored(&store));
+        assert_eq!(store.dirty(node), DirtyClass::PAINT);
+        // A build showing it again keeps it so.
+        store.set_video(node, &front, AssetFit::Cover, None);
+        assert!(mirrored(&store));
+        store.set_video_mirror(node, Some(false));
+        assert!(!mirrored(&store));
+        store.set_video_mirror(node, None);
+        assert!(mirrored(&store));
+        // One facing away is not, unless asked.
+        store.videos_mut().get_mut(node).unwrap().status.facing = Some(CameraFacing::Back);
+        store.mirror_video(node);
+        assert!(!mirrored(&store));
+        store.set_video_mirror(node, Some(true));
+        assert!(mirrored(&store));
     }
 
     #[test]

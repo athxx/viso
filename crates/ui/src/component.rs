@@ -3304,6 +3304,19 @@ impl NodeStore {
         fit: AssetFit,
         tint: Option<Rgba>,
     ) {
+        self.show_asset(id, resource, fit, tint, false);
+    }
+
+    /// [`set_asset`](Self::set_asset), its raster drawn flipped left to
+    /// right when `mirrored`.
+    fn show_asset(
+        &mut self,
+        id: NodeId,
+        resource: ResourceId,
+        fit: AssetFit,
+        tint: Option<Rgba>,
+        mirrored: bool,
+    ) {
         if !self.arena.is_live(id) {
             return;
         }
@@ -3315,6 +3328,7 @@ impl NodeStore {
             natural,
             fit,
             tint,
+            mirrored,
         };
         if self.content_payload[id.index() as usize].as_deref() == Some(&content) {
             return;
@@ -3530,14 +3544,41 @@ impl NodeStore {
         } else {
             None
         };
-        let resource = match &kept {
-            Some(entry) => entry.resource,
-            None => self.videos.show(id, source).0,
+        let (resource, mirrored) = match &kept {
+            Some(entry) => (entry.resource, entry.mirrored()),
+            None => (self.videos.show(id, source).0, false),
         };
         self.assets.host(resource);
-        self.set_asset(id, resource, fit, tint);
+        self.show_asset(id, resource, fit, tint, mirrored);
         if let Some(entry) = kept {
             self.videos.restore(entry);
+        }
+    }
+
+    /// Asks video node `id`'s picture to show mirrored, or not; `None`
+    /// mirrors a camera facing the user. A node showing no video ignores it.
+    pub fn set_video_mirror(&mut self, id: NodeId, mirror: Option<bool>) {
+        if let Some(video) = self.videos.get_mut(id)
+            && video.mirror != mirror
+        {
+            video.mirror = mirror;
+            self.mirror_video(id);
+        }
+    }
+
+    /// Draws video node `id`'s picture mirrored as its entry now says: the
+    /// mirror asked of it, or the facing its camera reported. PAINT where
+    /// that changed.
+    pub fn mirror_video(&mut self, id: NodeId) {
+        let Some(mirror) = self.videos.get(id).map(|v| v.mirrored()) else {
+            return;
+        };
+        if let Some(Content::Asset { mirrored, .. }) =
+            self.content_payload[id.index() as usize].as_deref_mut()
+            && *mirrored != mirror
+        {
+            *mirrored = mirror;
+            self.mark_dirty(id, DirtyClass::PAINT);
         }
     }
 
@@ -7783,6 +7824,13 @@ impl<'a> BuildCx<'a> {
         tint: Option<Rgba>,
     ) -> Handle {
         self.store.set_video(handle.id, source, fit, tint);
+        handle
+    }
+
+    /// Ask video node `handle`'s picture to show mirrored, or not; `None`
+    /// mirrors a camera facing the user (see [`NodeStore::set_video_mirror`]).
+    pub fn video_mirror(&mut self, handle: Handle, mirror: Option<bool>) -> Handle {
+        self.store.set_video_mirror(handle.id, mirror);
         handle
     }
 

@@ -833,8 +833,9 @@ pub(crate) fn paint_content(
             natural,
             fit,
             tint,
+            mirrored,
             ..
-        } => paint_asset(draw, *natural, *fit, *tint, world, mask, out),
+        } => paint_asset(draw, *natural, *fit, *tint, *mirrored, world, mask, out),
         Content::Spinner(spinner) => spinner.paint(world, out),
         Content::Progress(progress) => progress.paint(world, false, out),
         Content::PageDots(dots) => dots.paint(world, out),
@@ -849,12 +850,15 @@ pub(crate) fn paint_content(
     }
 }
 
-/// An asset of `natural` size placed into `world` by `fit`.
+/// An asset of `natural` size placed into `world` by `fit`, a raster
+/// flipped left to right when `mirrored`.
+#[allow(clippy::too_many_arguments)]
 fn paint_asset(
     draw: &AssetDraw,
     natural: Vec2,
     fit: AssetFit,
     tint: Option<Rgba>,
+    mirrored: bool,
     world: Rect,
     mask: Option<RoundMask>,
     out: &mut Vec<Primitive>,
@@ -883,7 +887,7 @@ fn paint_asset(
         AssetDraw::Nothing | AssetDraw::Failed => {}
         AssetDraw::Raster(texture) => {
             // A cover crops in the texture rather than drawing past the box.
-            let (rect, uv) = if fit == AssetFit::Cover {
+            let (rect, mut uv) = if fit == AssetFit::Cover {
                 let (uw, uh) = (world.w / placed.w, world.h / placed.h);
                 let uv = Rect {
                     x: (1.0 - uw) * 0.5,
@@ -901,6 +905,11 @@ fn paint_asset(
                 };
                 (placed, full)
             };
+            // Mirrored, the texture is read from its right edge leftward.
+            if mirrored {
+                uv.x += uv.w;
+                uv.w = -uv.w;
+            }
             out.push(Primitive::Image(ImageDraw {
                 rect,
                 uv,
@@ -2108,6 +2117,38 @@ mod tests {
             }),
             Some(ProgramSlot(0))
         );
+    }
+
+    #[test]
+    fn a_mirrored_raster_reads_its_texture_from_the_right_edge() {
+        use crate::asset::{AssetDraw, AssetFit};
+        use viso_render::TextureId;
+        let world = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 40.0,
+            h: 20.0,
+        };
+        let uv = |fit, mirrored| {
+            let mut out = Vec::new();
+            let draw = AssetDraw::Raster(TextureId::new(1));
+            let natural = Vec2::new(20.0, 20.0);
+            paint_asset(&draw, natural, fit, None, mirrored, world, None, &mut out);
+            match &out[..] {
+                [Primitive::Image(image)] => (image.rect, image.uv),
+                other => panic!("{other:?}"),
+            }
+        };
+        let (rect, plain) = uv(AssetFit::Contain, false);
+        let (same, flipped) = uv(AssetFit::Contain, true);
+        assert_eq!(rect, same, "placed where it would be");
+        assert_eq!((plain.x, plain.w), (0.0, 1.0));
+        assert_eq!((flipped.x, flipped.w), (1.0, -1.0));
+        assert_eq!((flipped.y, flipped.h), (plain.y, plain.h));
+        // A cover's crop is flipped about its middle.
+        let (_, crop) = uv(AssetFit::Cover, true);
+        assert_eq!((crop.x, crop.w), (1.0, -1.0));
+        assert_eq!((crop.y, crop.h), (0.25, 0.5));
     }
 
     #[test]

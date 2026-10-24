@@ -351,6 +351,7 @@ impl Player {
                 frame_rate: None,
                 audio: has_audio(video),
                 seekable: duration.is_some() && video.seekable().length() > 0,
+                facing: None,
             }));
         }
         if self.refused.replace(false) {

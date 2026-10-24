@@ -131,6 +131,8 @@ pub enum Content {
         fit: AssetFit,
         /// Multiplies the asset's colors; `None` draws them as they are.
         tint: Option<Rgba>,
+        /// Drawn flipped left to right: a camera facing the user.
+        mirrored: bool,
     },
     /// The node's box painted by a brush program: the program in the store's
     /// [`ShaderSlots`](crate::shader::ShaderSlots) slot `program`, its

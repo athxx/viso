@@ -707,6 +707,7 @@ impl Engine {
                 frame_rate: None,
                 audio: self.engine.HasAudio().as_bool(),
                 seekable: duration.is_some(),
+                facing: None,
             }
         }
     }

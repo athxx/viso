@@ -593,8 +593,9 @@ pub(crate) struct Player {
     at: Duration,
     /// The file bytes were written to, removed once the pipeline is gone.
     spilled: Option<Spilled>,
-    /// A camera's: live, paused by letting the device go.
-    camera: bool,
+    /// A camera's, which way it faces: live, paused by letting the device
+    /// go.
+    camera: Option<CameraFacing>,
 }
 
 impl Player {
@@ -632,7 +633,7 @@ impl Player {
                 PLAY_FLAGS,
                 ptr::null::<c_char>(),
             );
-            Ok(Player::start(gst, pipeline, sink, spilled, false))
+            Ok(Player::start(gst, pipeline, sink, spilled, None))
         }
     }
 
@@ -656,7 +657,7 @@ impl Player {
             return Err(VideoError::Open("the camera has no source".to_owned()));
         }
         // SAFETY: the source was just made, handed over.
-        unsafe { Player::live(gst, source, request) }
+        unsafe { Player::live(gst, source, request, info.facing) }
     }
 
     /// A player of what the live `source` captures, in the mode of its
@@ -670,6 +671,7 @@ impl Player {
         gst: &'static Gst,
         source: *mut GstElement,
         request: &CameraRequest,
+        facing: CameraFacing,
     ) -> Result<Player, VideoError> {
         // SAFETY: the caller's source.
         let modes = unsafe { modes_of(gst, source, request) };
@@ -737,7 +739,7 @@ impl Player {
                     "the camera's pictures cannot be shown".to_owned(),
                 ));
             }
-            Ok(Player::start(gst, pipeline, sink, None, true))
+            Ok(Player::start(gst, pipeline, sink, None, Some(facing)))
         }
     }
 
@@ -753,7 +755,7 @@ impl Player {
         pipeline: *mut GstElement,
         sink: *mut GstElement,
         spilled: Option<Spilled>,
-        camera: bool,
+        camera: Option<CameraFacing>,
     ) -> Player {
         // SAFETY: the caller's pipeline; the bus is the player's reference.
         let (bus, live) = unsafe {
@@ -914,7 +916,7 @@ impl Player {
             (duration, seekable != 0 && duration.is_some())
         };
         let mut audio: c_int = 0;
-        if !self.camera {
+        if self.camera.is_none() {
             // SAFETY: `playbin`'s `n-audio` is an int, read into a local;
             // the list ends in NULL.
             unsafe {
@@ -943,6 +945,7 @@ impl Player {
             frame_rate,
             audio: audio > 0,
             seekable,
+            facing: self.camera,
         })
     }
 
@@ -1294,7 +1297,7 @@ impl Player {
 
     /// Holds the pipeline where it is; a camera's lets the device go.
     fn hold(&mut self) {
-        self.set_state(if self.camera {
+        self.set_state(if self.camera.is_some() {
             STATE_NULL
         } else {
             STATE_PAUSED
@@ -1302,7 +1305,7 @@ impl Player {
     }
 
     pub(crate) fn seek(&mut self, time: Duration) {
-        if self.camera {
+        if self.camera.is_some() {
             return;
         }
         self.ended = false;
@@ -1338,7 +1341,7 @@ impl Player {
     }
 
     pub(crate) fn set_rate(&mut self, rate: f32) {
-        if self.camera {
+        if self.camera.is_some() {
             return;
         }
         let rate = if rate.is_finite() && rate > 0.0 {
@@ -1378,7 +1381,7 @@ impl Player {
     }
 
     pub(crate) fn set_volume(&mut self, volume: f32) {
-        if self.camera {
+        if self.camera.is_some() {
             return;
         }
         // SAFETY: `playbin`'s `volume` is a double; the list ends in NULL.
@@ -1393,7 +1396,7 @@ impl Player {
     }
 
     pub(crate) fn set_muted(&mut self, muted: bool) {
-        if self.camera {
+        if self.camera.is_some() {
             return;
         }
         // SAFETY: `playbin`'s `mute` is a boolean; the list ends in NULL.
@@ -2048,7 +2051,7 @@ mod tests {
                 frame_rate: 30,
                 ..CameraRequest::default()
             };
-            Player::live(gst, source, &request).unwrap()
+            Player::live(gst, source, &request, CameraFacing::External).unwrap()
         };
         let until = |player: &mut Player, what: &dyn Fn(&mut Player) -> bool| {
             let start = std::time::Instant::now();
@@ -2072,6 +2075,7 @@ mod tests {
             (info.duration, info.seekable, info.audio),
             (None, false, false)
         );
+        assert_eq!(info.facing, Some(CameraFacing::External));
         player.play();
         until(&mut player, &|p| {
             p.frame().is_some_and(|f| (f.width, f.height) == (320, 240))

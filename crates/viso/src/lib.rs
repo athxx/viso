@@ -84,6 +84,7 @@ mod text_harness;
 mod text_worker;
 mod videos;
 use text_content::{ParagraphSlot, TextShaper};
+pub use videos::cameras;
 
 #[cfg(feature = "hot-reload")]
 mod hot_reload;

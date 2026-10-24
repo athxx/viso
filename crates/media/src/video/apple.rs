@@ -345,6 +345,7 @@ impl Player {
                 frame_rate,
                 audio,
                 seekable: duration.is_some() && self.item.seekableTimeRanges().count() > 0,
+                facing: None,
             }
         }
     }

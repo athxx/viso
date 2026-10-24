@@ -19,6 +19,7 @@
 
 pub mod avatar;
 pub mod badge;
+pub mod camera_view;
 pub mod containers;
 pub mod controls;
 pub mod document;
@@ -40,6 +41,7 @@ pub mod video;
 
 pub use avatar::{Avatar, avatar};
 pub use badge::{Badge, badge, dot_badge};
+pub use camera_view::{CameraView, camera_view};
 pub use containers::{View, ViewStyle, view};
 pub use controls::{
     Button, ButtonStyle, CaptionBar, CaptionBarStyle, CheckBox, CheckBoxStyle, Dock, DockHandle,

@@ -112,6 +112,8 @@ pub struct VideoInfo {
     pub audio: bool,
     /// Whether it can be sought.
     pub seekable: bool,
+    /// Which way the camera it captures faces; `None` for a video.
+    pub facing: Option<CameraFacing>,
 }
 
 /// What changed about a player since it was last polled.
