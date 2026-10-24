@@ -18,6 +18,14 @@
 
 mod video;
 
+#[cfg(any(
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
+pub use video::gstreamer_live;
 pub use video::{
     CameraChoice, CameraFacing, CameraInfo, CameraProvider, CameraRequest, Frame, LiveSource,
     PixelLayout, VideoError, VideoEvent, VideoInfo, VideoPlayer, VideoSource, cameras,

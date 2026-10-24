@@ -347,12 +347,13 @@ Rules:
     `VisoActivity.Results`.
   - [ ] `viso-ext/viso-camera`: the camera backends moved out of `viso-media`
     (AVCaptureSession, Media Foundation, Camera2, the GStreamer device monitor,
-    `getUserMedia`) behind `install()`; `examples/camera` on it.
+    `getUserMedia`) behind `install()`; the camera example moved into it
+    (`viso-camera/example`), so the framework's workspace needs no extension.
     - [x] Apple, through `Frame::pixel_buffer`.
     - [x] Android, through `ImageReader` and the extension's own dex.
     - [x] Windows, through `SharedCanvas` / `SharedPictures`, which the media engine's
       player now draws through too.
-    - [ ] Linux and the BSDs.
+    - [x] Linux and the BSDs, through `gstreamer_live` over the extension's source element.
     - [ ] Web.
 - [ ] Audio as an extension, `viso-ext/viso-audio`; the core adds no audio API (a
   video's sound stays with the platform player):

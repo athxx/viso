@@ -39,7 +39,6 @@ members = [
     "examples/persist",
     "examples/images",
     "examples/video",
-    "examples/camera",
     "examples/10-custom-shader",
     "benches/footprint",
 ]

@@ -1,5 +1,0 @@
-[package]
-name = "camera"
-
-[package.permissions]
-camera = "Shows what the camera sees"
