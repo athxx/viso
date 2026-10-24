@@ -278,7 +278,12 @@ Rules:
       copied on the GPU (`copyExternalImageToTexture`, color-managed as the page shows
       it), the canvas readback only where the backend refuses; a player whose pictures
       were refused once is copied without asking again; the example clip tagged BT.601.
-    - [ ] Shared D3D texture → D3D12.
+    - [x] Shared D3D texture → D3D12: the Windows player draws each frame into one of
+      four NT-handle shared textures no backend holds, signals a shared fence, and reads
+      rows back only for a paused picture or once a caller asked; the D3D12 backend opens
+      it (cached by its holds), waits for the fence on the GPU and copies it into its own
+      texture, holding it until the copy completes; `ExternalHolds` in `viso-handle`;
+      the decoding device on the high-performance adapter the backend picks.
     - [ ] Hardware buffer → Vulkan.
   - [x] Media Foundation player on Windows: the media engine on a thread of its own
     in the multithreaded apartment, decoding through its own D3D11 device, each new

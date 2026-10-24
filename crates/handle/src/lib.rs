@@ -21,6 +21,8 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 use core::ffi::c_void;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 /// An OS-native handle to a window's drawable surface.
 ///
@@ -119,6 +121,27 @@ pub enum ExternalImage {
         /// Its height in texels.
         height: u32,
     },
+    /// Windows: a shared Direct3D texture of four-byte texels — blue, green,
+    /// red, alpha (`DXGI_FORMAT_B8G8R8A8_UNORM`) — sRGB-encoded and opaque,
+    /// written by another device on the same adapter. A backend waits on
+    /// the GPU for `fence` to reach `value` before it reads the texture, and
+    /// holds `holds` while any frame in flight does.
+    DxgiShared {
+        /// An NT handle to the texture, borrowed.
+        texture: *mut c_void,
+        /// An NT handle to the shared fence its writer signals, borrowed.
+        fence: *mut c_void,
+        /// The fence value the picture is written by.
+        value: u64,
+        /// The holds on the texture: `Arc::as_ptr` of an
+        /// `Arc<ExternalHolds>` that lives as long as the texture, which
+        /// also names it uniquely while it lives.
+        holds: *const ExternalHolds,
+        /// Its width in texels.
+        width: u32,
+        /// Its height in texels.
+        height: u32,
+    },
     /// The web: the picture an `HTMLVideoElement` shows now, which the
     /// browser keeps on the GPU. A backend copies it there into a texture of
     /// its own, never through the CPU.
@@ -138,8 +161,59 @@ impl ExternalImage {
     pub fn size(&self) -> (u32, u32) {
         match *self {
             ExternalImage::IoSurface { width, height, .. }
+            | ExternalImage::DxgiShared { width, height, .. }
             | ExternalImage::WebVideo { width, height, .. } => (width, height),
         }
+    }
+}
+
+/// How many users hold an external image's memory: its producer writes into
+/// it again only once none does.
+#[derive(Debug, Default)]
+pub struct ExternalHolds {
+    count: AtomicU32,
+}
+
+impl ExternalHolds {
+    pub fn new() -> Arc<ExternalHolds> {
+        Arc::default()
+    }
+
+    /// Whether anyone holds it.
+    pub fn is_held(&self) -> bool {
+        self.count.load(Ordering::Acquire) != 0
+    }
+
+    /// The `Arc` the pointer an [`ExternalImage`] carries came from.
+    ///
+    /// # Safety
+    ///
+    /// `holds` is `Arc::as_ptr` of an `Arc<ExternalHolds>` alive for the
+    /// call, as an image's producer promises while it hands it over.
+    pub unsafe fn retain(holds: *const ExternalHolds) -> Arc<ExternalHolds> {
+        // SAFETY: the caller's contract: the pointer is a live `Arc`'s, whose
+        // strong count is raised for the one made here.
+        unsafe {
+            Arc::increment_strong_count(holds);
+            Arc::from_raw(holds)
+        }
+    }
+
+    /// One more hold, let go when dropped.
+    pub fn hold(self: &Arc<ExternalHolds>) -> ExternalHold {
+        self.count.fetch_add(1, Ordering::Relaxed);
+        ExternalHold(Arc::clone(self))
+    }
+}
+
+/// A hold on an external image's memory, let go when dropped.
+#[derive(Debug)]
+pub struct ExternalHold(Arc<ExternalHolds>);
+
+impl Drop for ExternalHold {
+    fn drop(&mut self) {
+        // Whatever the holder read is done before the producer writes again.
+        self.0.count.fetch_sub(1, Ordering::Release);
     }
 }
 
@@ -189,4 +263,26 @@ pub trait Scanout {
     fn present_pixels(&self, pixels: &[u8], stride: usize, damage: &[(u32, u32, u32, u32)]);
     /// A GPU-drawn frame was swapped into the GBM surface.
     fn presented(&self, damage: &[(u32, u32, u32, u32)]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn holds_count_their_holders_through_the_pointer_an_image_carries() {
+        let holds = ExternalHolds::new();
+        assert!(!holds.is_held());
+        // SAFETY: the pointer is a live `Arc`'s.
+        let retained = unsafe { ExternalHolds::retain(Arc::as_ptr(&holds)) };
+        assert_eq!(Arc::strong_count(&holds), 2);
+        let (a, b) = (retained.hold(), holds.hold());
+        assert!(holds.is_held());
+        drop(a);
+        assert!(holds.is_held(), "one is still held");
+        drop(b);
+        assert!(!holds.is_held());
+        drop(retained);
+        assert_eq!(Arc::strong_count(&holds), 1);
+    }
 }

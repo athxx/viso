@@ -54,7 +54,9 @@ use core::mem::ManuallyDrop;
 use std::cell::Cell;
 use std::ffi::CString;
 
-use viso_handle::RawWindowHandle;
+use std::sync::Arc;
+
+use viso_handle::{ExternalHold, ExternalHolds, ExternalImage, RawWindowHandle};
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, RECT, WAIT_OBJECT_0};
 use windows::Win32::Graphics::Direct3D::Fxc::{D3DCOMPILE_OPTIMIZATION_LEVEL3, D3DCompile};
 use windows::Win32::Graphics::Direct3D::{
@@ -129,6 +131,8 @@ const SURFACE_FORMAT: TextureFormat = TextureFormat::Bgra8UnormSrgb;
 const SWAP_FLAGS: DXGI_SWAP_CHAIN_FLAG = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
 /// How long `begin_frame` waits for the swapchain before skipping the frame.
 const FRAME_WAIT_MS: u32 = 1000;
+/// How many shared textures stay open: a few players' slots.
+const OPENED_SHARED: usize = 16;
 
 /// A buffer: a CPU-visible resource mapped for its lifetime.
 struct D3D12Buffer {
@@ -149,6 +153,16 @@ struct D3D12Texture {
     height: u32,
     rtv: Option<D3D12_CPU_DESCRIPTOR_HANDLE>,
     dsv: Option<D3D12_CPU_DESCRIPTOR_HANDLE>,
+    /// Made by `import_external`: written only by copies of external images.
+    external: bool,
+}
+
+/// A shared texture another device writes, opened on this one, with the
+/// fence it signals; named by the holds on it, which it keeps alive.
+struct Opened {
+    holds: Arc<ExternalHolds>,
+    resource: ID3D12Resource,
+    fence: ID3D12Fence,
 }
 
 /// A registered pipeline and the vertex stride its input layout reads.
@@ -417,6 +431,15 @@ pub struct D3D12Backend {
     reclaim_scratch: Vec<Retired>,
     /// The frame clock, on a queue that takes timestamps.
     clock: Option<Clock>,
+    /// The shared textures opened lately, the latest last.
+    opened: Vec<Opened>,
+    /// Holds on shared textures, each let go once the epoch it was copied
+    /// in completes; the texture and fence the copy reads are kept alive as
+    /// long, opened or not.
+    held: Vec<(Epoch, ExternalHold, ID3D12Resource, ID3D12Fence)>,
+    /// The fence values the next submission waits for on the GPU: the
+    /// pictures it copies are written by then.
+    waits: Vec<(ID3D12Fence, u64)>,
 }
 
 impl Default for D3D12Backend {
@@ -580,6 +603,9 @@ impl D3D12Backend {
             current_epoch: Epoch::START,
             reclaim_scratch: Vec::new(),
             clock: None,
+            opened: Vec::new(),
+            held: Vec::new(),
+            waits: Vec::new(),
         };
         backend.clock = backend.create_clock();
         Some(backend)
@@ -934,8 +960,12 @@ impl D3D12Backend {
         self.fence_value += 1;
         let slot = &mut self.slots[self.slot];
         // SAFETY: both lists were reset by `ensure_recording` and are closed here
-        // exactly once before execution.
+        // exactly once before execution; the waits are on live shared fences
+        // their writers signal.
         unsafe {
+            for (fence, value) in self.waits.drain(..) {
+                let _ = self.queue.Wait(&fence, value);
+            }
             slot.upload.Close().expect("close the upload command list");
             slot.draw.Close().expect("close the draw command list");
             self.queue.ExecuteCommandLists(&slot.lists);
@@ -965,8 +995,103 @@ impl D3D12Backend {
         Epoch(done)
     }
 
+    /// The shared texture `image` names, opened on this device: the one
+    /// opened for it lately, else newly; its index in `opened`. `None` where
+    /// it cannot be, as for a texture of another adapter.
+    fn open_shared(&mut self, image: &ExternalImage) -> Option<usize> {
+        let ExternalImage::DxgiShared {
+            texture,
+            fence,
+            holds,
+            ..
+        } = *image
+        else {
+            return None;
+        };
+        if let Some(at) = self
+            .opened
+            .iter()
+            .position(|o| std::ptr::eq(Arc::as_ptr(&o.holds), holds))
+        {
+            return Some(at);
+        }
+        // SAFETY: the image's producer keeps its holds alive while it hands
+        // the image over.
+        let holds = unsafe { ExternalHolds::retain(holds) };
+        let (mut resource, mut opened_fence) = (None::<ID3D12Resource>, None::<ID3D12Fence>);
+        // SAFETY: the handles are live NT handles the producer owns while it
+        // hands the image over; each call fills the local it is handed.
+        unsafe {
+            self.device
+                .OpenSharedHandle(HANDLE(texture), &mut resource)
+                .ok()?;
+            self.device
+                .OpenSharedHandle(HANDLE(fence), &mut opened_fence)
+                .ok()?;
+        }
+        // A few players' textures stay open; the oldest goes first.
+        if self.opened.len() == OPENED_SHARED {
+            self.opened.remove(0);
+        }
+        self.opened.push(Opened {
+            holds,
+            resource: resource?,
+            fence: opened_fence?,
+        });
+        Some(self.opened.len() - 1)
+    }
+
+    /// Copies the shared texture `opened[at]` into texture `id` once its
+    /// writer has signalled `image`'s fence value, holding it until the copy
+    /// completes.
+    fn copy_shared(&mut self, id: TextureId, at: usize, image: &ExternalImage) {
+        let ExternalImage::DxgiShared { value, .. } = *image else {
+            return;
+        };
+        self.let_go_completed();
+        let dst = self.texture(id).resource.clone();
+        let opened = &self.opened[at];
+        let (src, fence, hold) = (
+            opened.resource.clone(),
+            opened.fence.clone(),
+            opened.holds.hold(),
+        );
+        self.ensure_recording();
+        let cmd = &self.slots[self.slot].upload;
+        // SAFETY: `cmd` is recording; the texture rests in `TEXTURE_REST` and
+        // returns to it; the shared texture, in the common state, is promoted
+        // to a copy source by the copy and decays back once it completes;
+        // both are BGRA of one size.
+        unsafe {
+            cmd.ResourceBarrier(&[transition(
+                &dst,
+                TEXTURE_REST,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+            )]);
+            cmd.CopyResource(&dst, &src);
+            cmd.ResourceBarrier(&[transition(
+                &dst,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                TEXTURE_REST,
+            )]);
+        }
+        self.waits.push((fence.clone(), value));
+        let epoch = self.recording.unwrap_or(self.current_epoch);
+        self.held.push((epoch, hold, src, fence));
+    }
+
+    /// Lets go of the shared textures no copy in flight reads.
+    fn let_go_completed(&mut self) {
+        if self.held.is_empty() {
+            return;
+        }
+        let done = self.completed_epoch();
+        self.held.retain(|(epoch, ..)| epoch.0 > done.0);
+    }
+
     /// Release every retired resource the GPU can no longer reference.
     fn reclaim_completed(&mut self) {
+        self.let_go_completed();
         let fence = Fence::at(self.completed_epoch());
         self.reclaim_scratch.clear();
         self.retire_queue
@@ -1696,8 +1821,42 @@ impl GpuBackend for D3D12Backend {
                 height,
                 rtv,
                 dsv,
+                external: false,
             })
             .into()
+    }
+
+    fn import_external(&mut self, image: &ExternalImage) -> Option<TextureId> {
+        let ExternalImage::DxgiShared { width, height, .. } = *image else {
+            return None;
+        };
+        let at = self.open_shared(image)?;
+        let id = self.create_texture(&TextureDesc {
+            width,
+            height,
+            format: TextureFormat::Bgra8UnormSrgb,
+            render_target: false,
+            label: "external image",
+        });
+        if let Some(t) = self.textures.get_mut(id.into()) {
+            t.external = true;
+        }
+        self.copy_shared(id, at, image);
+        Some(id)
+    }
+
+    fn adopt_external(&mut self, id: TextureId, image: &ExternalImage) -> bool {
+        let Some(t) = self.textures.get(id.into()) else {
+            return false;
+        };
+        if !t.external || (t.width, t.height) != image.size() {
+            return false;
+        }
+        let Some(at) = self.open_shared(image) else {
+            return false;
+        };
+        self.copy_shared(id, at, image);
+        true
     }
 
     fn create_sampler(&mut self, desc: &SamplerDesc) -> SamplerId {
