@@ -451,6 +451,7 @@ impl Player {
             VideoSource::Url(url) => (Some(url.clone()), None, None),
             VideoSource::Bytes(bytes) => (None, Some(&bytes[..]), Some(bytes.clone())),
             VideoSource::Static(bytes) => (None, Some(*bytes), None),
+            VideoSource::Camera(_) => return Err(VideoError::Unsupported),
         };
         let (tell, reports) = mpsc::channel();
         let mailbox = Box::into_raw(Box::new(tell));
@@ -968,4 +969,9 @@ unsafe fn to_rgba(
         false,
         rows,
     )
+}
+
+/// The cameras this target has: none it captures from yet.
+pub(crate) fn cameras() -> Vec<super::CameraInfo> {
+    Vec::new()
 }

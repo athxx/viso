@@ -57,3 +57,8 @@ impl Player {
         match *self {}
     }
 }
+
+/// A target with no player has no cameras.
+pub(crate) fn cameras() -> Vec<super::CameraInfo> {
+    Vec::new()
+}

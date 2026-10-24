@@ -207,6 +207,7 @@ impl Player {
             VideoSource::Url(url) => (url.clone(), None),
             VideoSource::Bytes(bytes) => spill(bytes)?,
             VideoSource::Static(bytes) => spill(bytes)?,
+            VideoSource::Camera(_) => return Err(VideoError::Unsupported),
         };
         let (asks, asked) = mpsc::channel();
         let (tell, events) = mpsc::channel();
@@ -1046,4 +1047,9 @@ fn file_url(path: &Path) -> String {
 
 fn nanos(time: Duration) -> u64 {
     u64::try_from(time.as_nanos()).unwrap_or(u64::MAX)
+}
+
+/// The cameras this target has: none it captures from yet.
+pub(crate) fn cameras() -> Vec<super::CameraInfo> {
+    Vec::new()
 }

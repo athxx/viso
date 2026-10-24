@@ -27,6 +27,7 @@ use std::time::Duration;
 
 use viso_handle::{ExternalHolds, ExternalImage, Nv12, YuvMatrix};
 
+use super::camera::{self, CameraFacing, CameraInfo, CameraRequest};
 use super::{
     Frame, PixelLayout, Spilled, VideoError, VideoEvent, VideoInfo, VideoSource, file_uri, yuv,
 };
@@ -41,6 +42,8 @@ type GstQuery = c_void;
 type GstPad = c_void;
 type GstEvent = c_void;
 type GstMemory = c_void;
+type GstDevice = c_void;
+type GstDeviceMonitor = c_void;
 type GstPadProbeInfo = c_void;
 
 /// The head of `GstMiniObject`, the same in every 1.x release.
@@ -62,6 +65,14 @@ struct MiniObject {
 struct Message {
     mini_object: MiniObject,
     kind: c_uint,
+}
+
+/// `GList`.
+#[repr(C)]
+struct List {
+    data: *mut c_void,
+    next: *mut List,
+    prev: *mut List,
 }
 
 /// The head of `GstQuery`.
@@ -126,6 +137,7 @@ struct GError {
 }
 
 const STATE_NULL: c_uint = 1;
+const STATE_READY: c_uint = 2;
 const STATE_PAUSED: c_uint = 3;
 const STATE_PLAYING: c_uint = 4;
 const STATE_CHANGE_NO_PREROLL: c_int = 3;
@@ -213,6 +225,26 @@ struct Gst {
     mini_object_get_qdata: unsafe extern "C" fn(*mut c_void, u32) -> *mut c_void,
     mini_object_set_qdata:
         unsafe extern "C" fn(*mut c_void, u32, *mut c_void, unsafe extern "C" fn(*mut c_void)),
+    device_monitor_new: unsafe extern "C" fn() -> *mut GstDeviceMonitor,
+    device_monitor_add_filter:
+        unsafe extern "C" fn(*mut GstDeviceMonitor, *const c_char, *mut GstCaps) -> c_uint,
+    device_monitor_get_devices: unsafe extern "C" fn(*mut GstDeviceMonitor) -> *mut List,
+    device_get_display_name: unsafe extern "C" fn(*mut GstDevice) -> *mut c_char,
+    device_get_properties: unsafe extern "C" fn(*mut GstDevice) -> *mut GstStructure,
+    device_create_element: unsafe extern "C" fn(*mut GstDevice, *const c_char) -> *mut GstElement,
+    structure_free: unsafe extern "C" fn(*mut GstStructure),
+    pipeline_new: unsafe extern "C" fn(*const c_char) -> *mut GstElement,
+    bin_add: unsafe extern "C" fn(*mut GstElement, *mut GstElement) -> c_int,
+    pad_query_caps: unsafe extern "C" fn(*mut GstPad, *mut GstCaps) -> *mut GstCaps,
+    caps_get_size: unsafe extern "C" fn(*mut GstCaps) -> c_uint,
+    structure_copy: unsafe extern "C" fn(*mut GstStructure) -> *mut GstStructure,
+    structure_get_name: unsafe extern "C" fn(*mut GstStructure) -> *const c_char,
+    structure_fixate_field_nearest_int:
+        unsafe extern "C" fn(*mut GstStructure, *const c_char, c_int) -> c_int,
+    structure_fixate_field_nearest_fraction:
+        unsafe extern "C" fn(*mut GstStructure, *const c_char, c_int, c_int) -> c_int,
+    element_link: unsafe extern "C" fn(*mut GstElement, *mut GstElement) -> c_int,
+    list_free: unsafe extern "C" fn(*mut List),
     /// The quark the holds of a dma-buf's memory are kept under on it.
     holds_quark: u32,
     /// What reads dma-bufs and buffers' video metadata, where installed.
@@ -331,6 +363,25 @@ impl Gst {
                 buffer_peek_memory: gst.get(c"gst_buffer_peek_memory")?,
                 mini_object_get_qdata: gst.get(c"gst_mini_object_get_qdata")?,
                 mini_object_set_qdata: gst.get(c"gst_mini_object_set_qdata")?,
+                device_monitor_new: gst.get(c"gst_device_monitor_new")?,
+                device_monitor_add_filter: gst.get(c"gst_device_monitor_add_filter")?,
+                device_monitor_get_devices: gst.get(c"gst_device_monitor_get_devices")?,
+                device_get_display_name: gst.get(c"gst_device_get_display_name")?,
+                device_get_properties: gst.get(c"gst_device_get_properties")?,
+                device_create_element: gst.get(c"gst_device_create_element")?,
+                structure_free: gst.get(c"gst_structure_free")?,
+                pipeline_new: gst.get(c"gst_pipeline_new")?,
+                bin_add: gst.get(c"gst_bin_add")?,
+                pad_query_caps: gst.get(c"gst_pad_query_caps")?,
+                caps_get_size: gst.get(c"gst_caps_get_size")?,
+                structure_copy: gst.get(c"gst_structure_copy")?,
+                structure_get_name: gst.get(c"gst_structure_get_name")?,
+                structure_fixate_field_nearest_int: gst
+                    .get(c"gst_structure_fixate_field_nearest_int")?,
+                structure_fixate_field_nearest_fraction: gst
+                    .get(c"gst_structure_fixate_field_nearest_fraction")?,
+                element_link: gst.get(c"gst_element_link")?,
+                list_free: glib.get(c"g_list_free")?,
                 holds_quark,
                 video: None,
                 app_sink_set_caps: app.get(c"gst_app_sink_set_caps")?,
@@ -542,6 +593,8 @@ pub(crate) struct Player {
     at: Duration,
     /// The file bytes were written to, removed once the pipeline is gone.
     spilled: Option<Spilled>,
+    /// A camera's: live, paused by letting the device go.
+    camera: bool,
 }
 
 impl Player {
@@ -552,6 +605,7 @@ impl Player {
             VideoSource::Url(url) => (url.clone(), None),
             VideoSource::Bytes(bytes) => spill(bytes)?,
             VideoSource::Static(bytes) => spill(bytes)?,
+            VideoSource::Camera(request) => return Player::open_camera(request),
         };
         let uri = CString::new(uri).map_err(|_| VideoError::Open("a NUL in the URL".to_owned()))?;
         // SAFETY: GStreamer calls on objects made here; each property is
@@ -564,53 +618,10 @@ impl Player {
             if pipeline.is_null() {
                 return Err(VideoError::Unsupported);
             }
-            let sink = (gst.element_factory_make)(c"appsink".as_ptr(), ptr::null());
-            if sink.is_null() {
+            let Some(sink) = make_sink(gst) else {
                 (gst.object_unref)(pipeline);
                 return Err(VideoError::Unsupported);
-            }
-            (gst.object_ref)(sink);
-            let wanted = if gst.video.is_some() {
-                CAPS_DMA_BUF
-            } else {
-                CAPS_AT_HAND
             };
-            let caps = (gst.caps_from_string)(wanted.as_ptr());
-            (gst.app_sink_set_caps)(sink, caps);
-            (gst.mini_object_unref)(caps);
-            // Buffers laid out as their metadata says are taken as they are.
-            if let Some(video) = &gst.video {
-                let pad = (gst.element_get_static_pad)(sink, c"sink".as_ptr());
-                if !pad.is_null() {
-                    (gst.pad_add_probe)(
-                        pad,
-                        PROBE_QUERY_IN,
-                        offer_video_meta,
-                        video.video_meta_api as *mut c_void,
-                        ptr::null_mut(),
-                    );
-                    (gst.object_unref)(pad);
-                }
-            }
-            // The sink keeps the newest picture due, in step with the clock,
-            // and ends without waiting for it to be taken: a video no node
-            // shows is not pulled from.
-            (gst.object_set)(
-                sink,
-                c"max-buffers".as_ptr(),
-                1 as c_uint,
-                c"drop".as_ptr(),
-                1 as c_int,
-                c"sync".as_ptr(),
-                1 as c_int,
-                c"qos".as_ptr(),
-                1 as c_int,
-                c"enable-last-sample".as_ptr(),
-                0 as c_int,
-                c"wait-on-eos".as_ptr(),
-                0 as c_int,
-                ptr::null::<c_char>(),
-            );
             (gst.object_set)(
                 pipeline,
                 c"uri".as_ptr(),
@@ -621,42 +632,168 @@ impl Player {
                 PLAY_FLAGS,
                 ptr::null::<c_char>(),
             );
+            Ok(Player::start(gst, pipeline, sink, spilled, false))
+        }
+    }
+
+    /// Opens the camera `request` chooses, capturing once ready.
+    fn open_camera(request: &CameraRequest) -> Result<Player, VideoError> {
+        let gst = gst().ok_or(VideoError::Unsupported)?;
+        let devices = Devices::list(gst);
+        let infos: Vec<CameraInfo> = devices.0.iter().map(|(info, _)| info.clone()).collect();
+        let info = camera::chosen(&infos, &request.camera)
+            .ok_or_else(|| VideoError::Open("no such camera".to_owned()))?;
+        let device = devices.0.iter().find(|(i, _)| i == info).map(|(_, d)| *d);
+        // SAFETY: a device of the list, alive while it is; the element made
+        // of it is the player's.
+        let source = unsafe {
+            device.map_or(ptr::null_mut(), |d| {
+                (gst.device_create_element)(d, ptr::null())
+            })
+        };
+        drop(devices);
+        if source.is_null() {
+            return Err(VideoError::Open("the camera has no source".to_owned()));
+        }
+        // SAFETY: the source was just made, handed over.
+        unsafe { Player::live(gst, source, request) }
+    }
+
+    /// A player of what the live `source` captures, in the mode of its
+    /// nearest what `request` wants: raw where the source has that mode so,
+    /// else JPEG decoded; converted to what the sink takes.
+    ///
+    /// # Safety
+    ///
+    /// `source` is a floating or owned source element the player takes.
+    unsafe fn live(
+        gst: &'static Gst,
+        source: *mut GstElement,
+        request: &CameraRequest,
+    ) -> Result<Player, VideoError> {
+        // SAFETY: the caller's source.
+        let modes = unsafe { modes_of(gst, source, request) };
+        let caps = match preferred(&modes, request).map(|i| &modes[i]) {
+            Some(m) => format!(
+                "{},width={},height={},framerate={}/{}",
+                if m.jpeg { "image/jpeg" } else { "video/x-raw" },
+                m.mode.width,
+                m.mode.height,
+                m.rate.0,
+                m.rate.1
+            ),
+            // A source that says nothing of its modes negotiates its own.
+            None => "video/x-raw".to_owned(),
+        };
+        let jpeg = caps.starts_with("image/jpeg");
+        let caps = CString::new(caps).map_err(|_| VideoError::Unsupported)?;
+        // SAFETY: objects made here, each added to the pipeline, which then
+        // owns them; the caps are released once set.
+        unsafe {
+            let make = |name: &CStr| (gst.element_factory_make)(name.as_ptr(), ptr::null());
+            let pipeline = (gst.pipeline_new)(ptr::null());
+            let filter = make(c"capsfilter");
+            let decoder = if jpeg {
+                make(c"jpegdec")
+            } else {
+                ptr::null_mut()
+            };
+            let convert = make(c"videoconvert");
+            let sink = make_sink(gst);
+            let made = !pipeline.is_null()
+                && !filter.is_null()
+                && !convert.is_null()
+                && (decoder.is_null() != jpeg)
+                && sink.is_some();
+            let Some(sink) = sink.filter(|_| made) else {
+                for element in [pipeline, source, filter, decoder, convert] {
+                    if !element.is_null() {
+                        (gst.object_unref)(element);
+                    }
+                }
+                if let Some(sink) = sink {
+                    (gst.object_unref)(sink);
+                    (gst.object_unref)(sink);
+                }
+                return Err(VideoError::Unsupported);
+            };
+            let wanted = (gst.caps_from_string)(caps.as_ptr());
+            (gst.object_set)(filter, c"caps".as_ptr(), wanted, ptr::null::<c_char>());
+            (gst.mini_object_unref)(wanted);
+            let chain: Vec<_> = [source, filter, decoder, convert, sink]
+                .into_iter()
+                .filter(|e| !e.is_null())
+                .collect();
+            for &element in &chain {
+                (gst.bin_add)(pipeline, element);
+            }
+            if chain
+                .windows(2)
+                .any(|pair| (gst.element_link)(pair[0], pair[1]) == 0)
+            {
+                (gst.object_unref)(sink);
+                (gst.object_unref)(pipeline);
+                return Err(VideoError::Open(
+                    "the camera's pictures cannot be shown".to_owned(),
+                ));
+            }
+            Ok(Player::start(gst, pipeline, sink, None, true))
+        }
+    }
+
+    /// The player of `pipeline`, whose sink is `sink` (its own reference
+    /// held), started paused: a live pipeline plays at once, as it shows
+    /// nothing until it does.
+    ///
+    /// # Safety
+    ///
+    /// `pipeline` is a pipeline the player owns, `sink` the appsink in it.
+    unsafe fn start(
+        gst: &'static Gst,
+        pipeline: *mut GstElement,
+        sink: *mut GstElement,
+        spilled: Option<Spilled>,
+        camera: bool,
+    ) -> Player {
+        // SAFETY: the caller's pipeline; the bus is the player's reference.
+        let (bus, live) = unsafe {
             let bus = (gst.element_get_bus)(pipeline);
             let live = (gst.element_set_state)(pipeline, STATE_PAUSED) == STATE_CHANGE_NO_PREROLL;
             if live {
-                // A live source shows nothing until it plays.
                 (gst.element_set_state)(pipeline, STATE_PLAYING);
             }
-            Ok(Player {
-                gst,
-                pipeline,
-                sink,
-                bus,
-                shown: None,
-                first: ptr::null_mut(),
-                caps: ptr::null_mut(),
-                width: 0,
-                height: 0,
-                planes: None,
-                copied: Cell::new(false),
-                mapped: Cell::new(false),
-                at_hand: gst.video.is_none(),
-                rows: false,
-                converted: RefCell::default(),
-                spent: Vec::new(),
-                ready: false,
-                live,
-                failed: false,
-                wants_play: false,
-                looping: false,
-                ended: false,
-                waiting: false,
-                rate: 1.0,
-                seek: None,
-                sought: None,
-                at: Duration::ZERO,
-                spilled,
-            })
+            (bus, live)
+        };
+        Player {
+            gst,
+            pipeline,
+            sink,
+            bus,
+            shown: None,
+            first: ptr::null_mut(),
+            caps: ptr::null_mut(),
+            width: 0,
+            height: 0,
+            planes: None,
+            copied: Cell::new(false),
+            mapped: Cell::new(false),
+            at_hand: gst.video.is_none(),
+            rows: false,
+            converted: RefCell::default(),
+            spent: Vec::new(),
+            ready: false,
+            live,
+            failed: false,
+            wants_play: false,
+            looping: false,
+            ended: false,
+            waiting: false,
+            rate: 1.0,
+            seek: None,
+            sought: None,
+            at: Duration::ZERO,
+            spilled,
+            camera,
         }
     }
 
@@ -777,15 +914,17 @@ impl Player {
             (duration, seekable != 0 && duration.is_some())
         };
         let mut audio: c_int = 0;
-        // SAFETY: `playbin`'s `n-audio` is an int, read into a local; the
-        // list ends in NULL.
-        unsafe {
-            (gst.object_get)(
-                self.pipeline,
-                c"n-audio".as_ptr(),
-                &mut audio as *mut c_int,
-                ptr::null::<c_char>(),
-            );
+        if !self.camera {
+            // SAFETY: `playbin`'s `n-audio` is an int, read into a local;
+            // the list ends in NULL.
+            unsafe {
+                (gst.object_get)(
+                    self.pipeline,
+                    c"n-audio".as_ptr(),
+                    &mut audio as *mut c_int,
+                    ptr::null::<c_char>(),
+                );
+            }
         }
         if let Some(time) = self.seek.take() {
             self.seek_to(time);
@@ -793,7 +932,7 @@ impl Player {
             self.change_rate();
         }
         if self.live && !self.wants_play {
-            self.set_state(STATE_PAUSED);
+            self.hold();
         } else if self.wants_play && !self.live {
             self.set_state(STATE_PLAYING);
         }
@@ -1149,11 +1288,23 @@ impl Player {
         self.wants_play = false;
         if self.ready {
             self.at = self.position();
-            self.set_state(STATE_PAUSED);
+            self.hold();
         }
     }
 
+    /// Holds the pipeline where it is; a camera's lets the device go.
+    fn hold(&mut self) {
+        self.set_state(if self.camera {
+            STATE_NULL
+        } else {
+            STATE_PAUSED
+        });
+    }
+
     pub(crate) fn seek(&mut self, time: Duration) {
+        if self.camera {
+            return;
+        }
         self.ended = false;
         if self.ready {
             self.seek_to(time);
@@ -1187,6 +1338,9 @@ impl Player {
     }
 
     pub(crate) fn set_rate(&mut self, rate: f32) {
+        if self.camera {
+            return;
+        }
         let rate = if rate.is_finite() && rate > 0.0 {
             rate
         } else {
@@ -1224,6 +1378,9 @@ impl Player {
     }
 
     pub(crate) fn set_volume(&mut self, volume: f32) {
+        if self.camera {
+            return;
+        }
         // SAFETY: `playbin`'s `volume` is a double; the list ends in NULL.
         unsafe {
             (self.gst.object_set)(
@@ -1236,6 +1393,9 @@ impl Player {
     }
 
     pub(crate) fn set_muted(&mut self, muted: bool) {
+        if self.camera {
+            return;
+        }
         // SAFETY: `playbin`'s `mute` is a boolean; the list ends in NULL.
         unsafe {
             (self.gst.object_set)(
@@ -1504,6 +1664,264 @@ unsafe extern "C" fn offer_video_meta(
     PROBE_HANDLED
 }
 
+/// An appsink taking what the players take, with a reference of the
+/// caller's beside the one a bin it is added to takes.
+///
+/// # Safety
+///
+/// GStreamer is started.
+unsafe fn make_sink(gst: &Gst) -> Option<*mut GstElement> {
+    // SAFETY: calls on the sink made here; each property is set with the C
+    // type it is declared with, the list ending in NULL.
+    unsafe {
+        let sink = (gst.element_factory_make)(c"appsink".as_ptr(), ptr::null());
+        if sink.is_null() {
+            return None;
+        }
+        (gst.object_ref)(sink);
+        let wanted = if gst.video.is_some() {
+            CAPS_DMA_BUF
+        } else {
+            CAPS_AT_HAND
+        };
+        let caps = (gst.caps_from_string)(wanted.as_ptr());
+        (gst.app_sink_set_caps)(sink, caps);
+        (gst.mini_object_unref)(caps);
+        // Buffers laid out as their metadata says are taken as they are.
+        if let Some(video) = &gst.video {
+            let pad = (gst.element_get_static_pad)(sink, c"sink".as_ptr());
+            if !pad.is_null() {
+                (gst.pad_add_probe)(
+                    pad,
+                    PROBE_QUERY_IN,
+                    offer_video_meta,
+                    video.video_meta_api as *mut c_void,
+                    ptr::null_mut(),
+                );
+                (gst.object_unref)(pad);
+            }
+        }
+        // The sink keeps the newest picture due, in step with the clock,
+        // and ends without waiting for it to be taken: a video no node shows
+        // is not pulled from.
+        (gst.object_set)(
+            sink,
+            c"max-buffers".as_ptr(),
+            1 as c_uint,
+            c"drop".as_ptr(),
+            1 as c_int,
+            c"sync".as_ptr(),
+            1 as c_int,
+            c"qos".as_ptr(),
+            1 as c_int,
+            c"enable-last-sample".as_ptr(),
+            0 as c_int,
+            c"wait-on-eos".as_ptr(),
+            0 as c_int,
+            ptr::null::<c_char>(),
+        );
+        Some(sink)
+    }
+}
+
+/// The cameras GStreamer's device providers list — V4L2, PipeWire,
+/// libcamera — and the devices, released when dropped.
+struct Devices(Vec<(CameraInfo, *mut GstDevice)>, &'static Gst);
+
+impl Devices {
+    fn list(gst: &'static Gst) -> Devices {
+        let mut out = Vec::new();
+        // SAFETY: the monitor and the list are made here and released once;
+        // each device's reference is kept, its name and properties read and
+        // freed.
+        unsafe {
+            let monitor = (gst.device_monitor_new)();
+            if monitor.is_null() {
+                return Devices(out, gst);
+            }
+            (gst.device_monitor_add_filter)(monitor, c"Video/Source".as_ptr(), ptr::null_mut());
+            let list = (gst.device_monitor_get_devices)(monitor);
+            let mut at = list;
+            while let Some(node) = at.as_ref() {
+                let device = node.data;
+                at = node.next;
+                if device.is_null() {
+                    continue;
+                }
+                let name = (gst.device_get_display_name)(device);
+                let name_text = if name.is_null() {
+                    String::new()
+                } else {
+                    let text = CStr::from_ptr(name).to_string_lossy().into_owned();
+                    (gst.free)(name.cast());
+                    text
+                };
+                let properties = (gst.device_get_properties)(device);
+                let text = |key: &CStr| {
+                    if properties.is_null() {
+                        return None;
+                    }
+                    let value = (gst.structure_get_string)(properties, key.as_ptr());
+                    (!value.is_null()).then(|| CStr::from_ptr(value).to_string_lossy().into_owned())
+                };
+                let id = text(c"device.path")
+                    .or_else(|| text(c"api.v4l2.path"))
+                    .or_else(|| text(c"object.serial"))
+                    .unwrap_or_else(|| name_text.clone());
+                let facing = facing_of(text(c"api.libcamera.location").as_deref(), &name_text);
+                if !properties.is_null() {
+                    (gst.structure_free)(properties);
+                }
+                out.push((
+                    CameraInfo {
+                        id,
+                        name: name_text,
+                        facing,
+                    },
+                    device,
+                ));
+            }
+            (gst.list_free)(list);
+            (gst.object_unref)(monitor);
+        }
+        Devices(out, gst)
+    }
+}
+
+impl Drop for Devices {
+    fn drop(&mut self) {
+        for (_, device) in self.0.drain(..) {
+            // SAFETY: the list's reference to each device, released once.
+            unsafe { (self.1.object_unref)(device) };
+        }
+    }
+}
+
+/// A mode a camera source captures in, as its caps name it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Captured {
+    mode: camera::CameraMode,
+    /// In JPEG rather than raw.
+    jpeg: bool,
+    /// The rate as the caps name it.
+    rate: (c_int, c_int),
+}
+
+/// The modes `source` says it captures in once opened, each of its caps'
+/// sizes at the rate nearest the one asked and at its fastest; none where it
+/// says nothing.
+///
+/// # Safety
+///
+/// `source` is a live source element.
+unsafe fn modes_of(gst: &Gst, source: *mut GstElement, request: &CameraRequest) -> Vec<Captured> {
+    let mut out = Vec::new();
+    // SAFETY: the source is opened to know its modes; its pad and caps are
+    // references released once, each structure read through a copy fixated
+    // and freed.
+    unsafe {
+        (gst.element_set_state)(source, STATE_READY);
+        let pad = (gst.element_get_static_pad)(source, c"src".as_ptr());
+        if pad.is_null() {
+            return out;
+        }
+        let caps = (gst.pad_query_caps)(pad, ptr::null_mut());
+        (gst.object_unref)(pad);
+        if caps.is_null() {
+            return out;
+        }
+        let side = |v: u32| c_int::try_from(v.max(1)).unwrap_or(c_int::MAX);
+        let (w, h) = (side(request.width), side(request.height));
+        for i in 0..(gst.caps_get_size)(caps) {
+            let structure = (gst.caps_get_structure)(caps, i);
+            let name = CStr::from_ptr((gst.structure_get_name)(structure));
+            let jpeg = match name.to_bytes() {
+                b"video/x-raw" => false,
+                b"image/jpeg" => true,
+                _ => continue,
+            };
+            for rate in [side(request.frame_rate), 1000] {
+                let fixed = (gst.structure_copy)(structure);
+                (gst.structure_fixate_field_nearest_int)(fixed, c"width".as_ptr(), w);
+                (gst.structure_fixate_field_nearest_int)(fixed, c"height".as_ptr(), h);
+                (gst.structure_fixate_field_nearest_fraction)(
+                    fixed,
+                    c"framerate".as_ptr(),
+                    rate,
+                    1,
+                );
+                let (mut width, mut height, mut n, mut d) = (0, 0, 0, 0);
+                let read = (gst.structure_get_int)(fixed, c"width".as_ptr(), &mut width) != 0
+                    && (gst.structure_get_int)(fixed, c"height".as_ptr(), &mut height) != 0
+                    && (gst.structure_get_fraction)(fixed, c"framerate".as_ptr(), &mut n, &mut d)
+                        != 0;
+                (gst.structure_free)(fixed);
+                if read && width > 0 && height > 0 && n > 0 && d > 0 {
+                    let captured = Captured {
+                        mode: camera::CameraMode {
+                            width: width as u32,
+                            height: height as u32,
+                            frame_rate: f64::from(n) / f64::from(d),
+                        },
+                        jpeg,
+                        rate: (n, d),
+                    };
+                    if !out.contains(&captured) {
+                        out.push(captured);
+                    }
+                }
+            }
+        }
+        (gst.mini_object_unref)(caps.cast());
+    }
+    out
+}
+
+/// The mode of `modes` nearest what `request` wants, raw rather than JPEG
+/// where the source has it both ways: raw costs no decoding.
+fn preferred(modes: &[Captured], request: &CameraRequest) -> Option<usize> {
+    let plain: Vec<_> = modes.iter().map(|m| m.mode).collect();
+    let near = camera::nearest_mode(&plain, request)?;
+    let mode = plain[near];
+    let same = |m: &Captured| {
+        (m.mode.width, m.mode.height) == (mode.width, mode.height)
+            && (m.mode.frame_rate - mode.frame_rate).abs() < 0.01
+    };
+    modes.iter().position(|m| same(m) && !m.jpeg).or(Some(near))
+}
+
+/// Which way a camera faces, as libcamera says, else as its name does: a
+/// laptop's own is integrated in its lid, toward the user.
+fn facing_of(location: Option<&str>, name: &str) -> CameraFacing {
+    match location {
+        Some("front") => CameraFacing::Front,
+        Some("back") => CameraFacing::Back,
+        Some(_) => CameraFacing::External,
+        None => {
+            let name = name.to_ascii_lowercase();
+            if ["integrated", "built-in", "facetime", "internal"]
+                .iter()
+                .any(|word| name.contains(word))
+            {
+                CameraFacing::Front
+            } else {
+                CameraFacing::External
+            }
+        }
+    }
+}
+
+/// The cameras GStreamer lists; none where it is not installed.
+pub(crate) fn cameras() -> Vec<CameraInfo> {
+    gst().map_or_else(Vec::new, |gst| {
+        Devices::list(gst)
+            .0
+            .iter()
+            .map(|(info, _)| info.clone())
+            .collect()
+    })
+}
+
 /// `bytes` in a file of their own, and its URI.
 fn spill(bytes: &[u8]) -> Result<(String, Option<Spilled>), VideoError> {
     let spilled = Spilled::new(bytes).map_err(|e| VideoError::Open(e.to_string()))?;
@@ -1551,6 +1969,118 @@ mod tests {
         assert!(l.planes(&[0; 23], 3, 3, colors).is_none());
         let planes = l.planes(&[0; 24], 3, 3, colors).unwrap();
         assert_eq!((planes.y.len(), planes.uv.len()), (24, 8));
+    }
+
+    #[test]
+    fn a_camera_takes_its_nearest_mode_raw_where_it_has_it_so() {
+        let mode = |width, height, rate: c_int, jpeg| Captured {
+            mode: camera::CameraMode {
+                width,
+                height,
+                frame_rate: f64::from(rate),
+            },
+            jpeg,
+            rate: (rate, 1),
+        };
+        let modes = [
+            mode(1920, 1080, 30, true),
+            mode(1920, 1080, 5, false),
+            mode(1280, 720, 30, true),
+            mode(1280, 720, 10, false),
+            mode(1280, 720, 30, false),
+        ];
+        let request = CameraRequest::default();
+        assert_eq!(preferred(&modes, &request), Some(4), "raw at the same mode");
+        let large = CameraRequest {
+            width: 1920,
+            height: 1080,
+            ..request
+        };
+        assert_eq!(
+            preferred(&modes, &large),
+            Some(0),
+            "JPEG keeps up, raw does not"
+        );
+        assert_eq!(preferred(&[], &large), None);
+    }
+
+    #[test]
+    fn a_camera_faces_where_libcamera_or_its_name_says() {
+        assert_eq!(facing_of(Some("back"), "x"), CameraFacing::Back);
+        assert_eq!(facing_of(Some("front"), "x"), CameraFacing::Front);
+        assert_eq!(
+            facing_of(None, "Integrated Camera: Integrated C"),
+            CameraFacing::Front
+        );
+        assert_eq!(
+            facing_of(None, "HD Pro Webcam C920"),
+            CameraFacing::External
+        );
+    }
+
+    /// A live source plays as a camera does: ready at its first picture, in
+    /// the size asked, with no length; paused, it lets the source go, and
+    /// plays on when asked again.
+    #[test]
+    fn a_live_source_plays_as_a_camera() {
+        let Some(gst) = gst() else {
+            eprintln!("no GStreamer; skipped");
+            return;
+        };
+        // Listing cameras works where there are none.
+        let _ = cameras();
+        // SAFETY: a source made here, handed to the player.
+        let mut player = unsafe {
+            let source = (gst.element_factory_make)(c"videotestsrc".as_ptr(), ptr::null());
+            if source.is_null() {
+                eprintln!("no videotestsrc; skipped");
+                return;
+            }
+            (gst.object_set)(
+                source,
+                c"is-live".as_ptr(),
+                1 as c_int,
+                ptr::null::<c_char>(),
+            );
+            let request = CameraRequest {
+                width: 320,
+                height: 240,
+                frame_rate: 30,
+                ..CameraRequest::default()
+            };
+            Player::live(gst, source, &request).unwrap()
+        };
+        let until = |player: &mut Player, what: &dyn Fn(&mut Player) -> bool| {
+            let start = std::time::Instant::now();
+            while !what(player) {
+                assert!(start.elapsed() < Duration::from_secs(5), "timed out");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        let ready = std::cell::RefCell::new(None);
+        until(&mut player, &|p| {
+            match p.poll() {
+                Some(VideoEvent::Ready(info)) => *ready.borrow_mut() = Some(info),
+                Some(VideoEvent::Failed(why)) => panic!("{why:?}"),
+                _ => {}
+            }
+            ready.borrow().is_some()
+        });
+        let info = ready.take().unwrap();
+        assert_eq!((info.width, info.height), (320, 240));
+        assert_eq!(
+            (info.duration, info.seekable, info.audio),
+            (None, false, false)
+        );
+        player.play();
+        until(&mut player, &|p| {
+            p.frame().is_some_and(|f| (f.width, f.height) == (320, 240))
+        });
+        player.pause();
+        player.seek(Duration::from_secs(1));
+        player.set_rate(2.0);
+        player.play();
+        until(&mut player, &|p| p.frame().is_some());
     }
 
     /// The allocation query is the one the probe answers.

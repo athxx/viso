@@ -20,5 +20,8 @@ mod video;
 
 #[cfg(target_os = "android")]
 pub use video::attach_android;
-pub use video::{Frame, PixelLayout, VideoError, VideoEvent, VideoInfo, VideoPlayer, VideoSource};
+pub use video::{
+    CameraChoice, CameraFacing, CameraInfo, CameraRequest, Frame, PixelLayout, VideoError,
+    VideoEvent, VideoInfo, VideoPlayer, VideoSource, cameras,
+};
 pub use viso_handle::{Nv12, YuvMatrix};

@@ -123,6 +123,7 @@ impl Player {
             }
             VideoSource::Bytes(bytes) => spill(bytes)?,
             VideoSource::Static(bytes) => spill(bytes)?,
+            VideoSource::Camera(_) => return Err(VideoError::Unsupported),
         };
         // SAFETY: each call is made on the main thread with live objects,
         // as AVFoundation documents them; the dictionary's keys are the
@@ -435,4 +436,9 @@ fn bgra_attributes() -> Retained<NSDictionary<NSString, AnyObject>> {
     };
     let values: [&AnyObject; 3] = [&format, &metal, &surface];
     NSDictionary::from_slices(&keys, &values)
+}
+
+/// The cameras this target has: none it captures from yet.
+pub(crate) fn cameras() -> Vec<super::CameraInfo> {
+    Vec::new()
 }

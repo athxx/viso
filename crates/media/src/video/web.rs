@@ -258,6 +258,7 @@ impl Player {
             VideoSource::Url(url) => (url.clone(), None),
             VideoSource::Bytes(bytes) => blob_url(bytes)?,
             VideoSource::Static(bytes) => blob_url(bytes)?,
+            VideoSource::Camera(_) => return Err(VideoError::Unsupported),
         };
         video.set_attribute("style", HIDDEN);
         video.set_attribute("aria-hidden", "true");
@@ -503,4 +504,9 @@ fn has_audio(video: &Video) -> bool {
     get("mozHasAudio")
         .and_then(|has| has.as_bool())
         .unwrap_or(true)
+}
+
+/// The cameras this target has: none it captures from yet.
+pub(crate) fn cameras() -> Vec<super::CameraInfo> {
+    Vec::new()
 }

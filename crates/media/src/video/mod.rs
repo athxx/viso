@@ -4,6 +4,7 @@
 mod android;
 #[cfg(target_vendor = "apple")]
 mod apple;
+mod camera;
 #[cfg(any(
     target_os = "linux",
     target_os = "freebsd",
@@ -71,6 +72,8 @@ use web as imp;
 #[cfg(target_os = "windows")]
 use windows as imp;
 
+pub use camera::{CameraChoice, CameraFacing, CameraInfo, CameraRequest};
+
 use std::cell::Cell;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -90,6 +93,8 @@ pub enum VideoSource {
     Bytes(Arc<[u8]>),
     /// The encoded bytes of a whole file, embedded in the program.
     Static(&'static [u8]),
+    /// A camera, played live: what it captures, while it plays.
+    Camera(CameraRequest),
 }
 
 /// What a player knows of its video once it is ready.
@@ -134,6 +139,8 @@ pub enum VideoError {
     Open(String),
     /// It opened, then could not go on playing.
     Play(String),
+    /// The user did not let the app use the camera.
+    Denied,
 }
 
 impl fmt::Display for VideoError {
@@ -143,6 +150,7 @@ impl fmt::Display for VideoError {
             VideoError::WrongThread => f.write_str("a video opens on the loop's thread"),
             VideoError::Open(why) => write!(f, "the video could not be opened: {why}"),
             VideoError::Play(why) => write!(f, "the video stopped playing: {why}"),
+            VideoError::Denied => f.write_str("the camera was not allowed"),
         }
     }
 }
@@ -505,6 +513,13 @@ impl VideoPlayer {
     pub fn is_playing(&self) -> bool {
         self.imp.is_playing()
     }
+}
+
+/// The cameras the platform has now, as [`CameraChoice::Id`] names them;
+/// none on a target without cameras. On the web the list is known once a
+/// camera was allowed, and comes a moment after the first call.
+pub fn cameras() -> Vec<CameraInfo> {
+    imp::cameras()
 }
 
 /// Android: gives the players what they need of the app's activity — the

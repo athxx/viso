@@ -255,7 +255,7 @@ Rules:
 - [ ] Image loading from a URL, on the W11 HTTP client.
 - [x] Animated image playback in `Image` (frame timing, loop count, pause off-screen / still /
   reduced motion; `animate` in Rust and DSL), decoded off the frame path into the resident texture.
-- [ ] Video playback (`Video` widget): AVFoundation, Media Foundation, GStreamer,
+- [x] Video playback (`Video` widget): AVFoundation, Media Foundation, GStreamer,
   MediaCodec, HTML video; the external/YUV texture path in render.
   - [x] `viso-media`: `VideoPlayer` over the OS player (open file/URL/bytes, poll
     ready/ended/failed/waiting, frame when it changes, play/pause/seek/rate/volume/
@@ -319,6 +319,17 @@ Rules:
     the converted texture; a backend that refuses gets mapped planes, then memory at
     hand.
 - [ ] Camera capture service and `CameraView`.
+  - [x] Cameras as live videos in `viso-media`: `VideoSource::Camera(CameraRequest)`
+    (which camera, size, rate), `cameras()`, ready on the first picture, paused lets
+    the device go, `VideoError::Denied`; GStreamer on Linux and the BSDs (device
+    monitor; the source's nearest mode, raw before JPEG, `jpegdec` otherwise).
+  - [ ] `CameraView` widget and DSL node over the video node (`camera`, front cameras
+    mirrored, two-way `playing`), the facade opening cameras.
+  - [ ] Web: `getUserMedia` into the `<video>` player.
+  - [ ] Apple: `AVCaptureSession` pictures as IOSurfaces.
+  - [ ] Windows: a Media Foundation source reader through the shared textures.
+  - [ ] Android: Camera2 through the hardware buffer reader, its rotation and the
+    permission asked.
 - [ ] Audio: input (microphone), file decoding (WAV, Ogg Vorbis, MP3, FLAC), Web Audio
   output, PulseAudio/PipeWire output.
 
