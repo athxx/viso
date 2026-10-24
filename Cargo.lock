@@ -3191,6 +3191,7 @@ name = "viso-media"
 version = "0.0.0"
 dependencies = [
  "jni-sys 0.4.1",
+ "js-sys",
  "libc",
  "objc2 0.6.4",
  "objc2-av-foundation",
@@ -3200,6 +3201,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "objc2-io-surface",
  "viso-handle",
+ "wasm-bindgen",
  "windows",
  "windows-core",
 ]

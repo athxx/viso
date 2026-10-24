@@ -15,6 +15,7 @@ mod gstreamer;
 #[cfg(not(target_vendor = "apple"))]
 mod no_picture;
 #[cfg(not(any(
+    all(target_arch = "wasm32", target_os = "unknown"),
     target_os = "android",
     target_vendor = "apple",
     target_os = "windows",
@@ -25,6 +26,8 @@ mod no_picture;
     target_os = "dragonfly"
 )))]
 mod unsupported;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+mod web;
 #[cfg(target_os = "windows")]
 mod windows;
 #[cfg(any(target_os = "android", test))]
@@ -43,6 +46,7 @@ use apple as imp;
 ))]
 use gstreamer as imp;
 #[cfg(not(any(
+    all(target_arch = "wasm32", target_os = "unknown"),
     target_os = "android",
     target_vendor = "apple",
     target_os = "windows",
@@ -53,6 +57,8 @@ use gstreamer as imp;
     target_os = "dragonfly"
 )))]
 use unsupported as imp;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use web as imp;
 #[cfg(target_os = "windows")]
 use windows as imp;
 

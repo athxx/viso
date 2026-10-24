@@ -299,6 +299,10 @@ impl<P: Play> Videos<P> {
             } else {
                 entry.status.position
             };
+            // A report changed is heard on the next pass, which runs at once.
+            if status != entry.status {
+                step.due = earliest(step.due, now);
+            }
             entry.status = status;
             if failed {
                 p.player = None;
@@ -630,7 +634,13 @@ mod tests {
         script.borrow_mut().events.push_back(ready(8, 6));
         script.borrow_mut().frames.push_back((8, 6, [255, 0, 0]));
         let step = win.step(SCREEN);
-        assert_eq!(step, Step::default(), "a paused video asks for nothing");
+        assert_eq!(step.due, Some(win.now), "what it reported heard at once");
+        assert!(!step.beating);
+        assert_eq!(
+            win.step(SCREEN),
+            Step::default(),
+            "then a paused video asks for nothing"
+        );
         let (draw, natural) = win.shown();
         assert!(matches!(draw, AssetDraw::Raster(_)));
         assert_eq!(natural, [8.0, 6.0]);
@@ -854,6 +864,7 @@ mod tests {
         // Ready before its first picture: asked again soon, not on the slow
         // timer.
         script.borrow_mut().events.push_back(ready(8, 6));
+        assert_eq!(win.step(SCREEN).due, Some(win.now));
         let step = win.step(SCREEN);
         assert_eq!(step.due, Some(win.now + AWAITED));
         script.borrow_mut().frames.push_back((8, 6, [255, 0, 0]));
@@ -863,8 +874,7 @@ mod tests {
 
         // Sought while paused: asked again until the sought picture comes.
         win.store.seek_video(win.leaf, Duration::from_secs(1));
-        let step = win.step(SCREEN);
-        assert_eq!(step.due, Some(win.now + AWAITED));
+        assert_eq!(win.step(SCREEN).due, Some(win.now), "its new position");
         let step = win.step(SCREEN);
         assert_eq!(step.due, Some(win.now + AWAITED));
         script.borrow_mut().frames.push_back((8, 6, [0, 0, 255]));

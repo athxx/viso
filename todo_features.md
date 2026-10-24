@@ -288,7 +288,10 @@ Rules:
     an `AImageReader` turned into RGBA, bytes read in place through a direct buffer;
     `Frame::rgba`; a paused video's picture polled for after ready or a seek; the
     `examples/video` app.
-  - [ ] `<video>` player on the web.
+  - [x] `<video>` player on the web: a hidden element in the page, each picture the
+    browser presents (`requestVideoFrameCallback`) drawn into an offscreen canvas and
+    read back as RGBA; bytes through a blob URL; a refused autoplay leaves it paused; a
+    changed report wakes the loop at once, so a paused video's controls show.
 - [ ] Camera capture service and `CameraView`.
 - [ ] Audio: input (microphone), file decoding (WAV, Ogg Vorbis, MP3, FLAC), Web Audio
   output, PulseAudio/PipeWire output.

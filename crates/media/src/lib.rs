@@ -5,7 +5,8 @@
 //! Foundation's media engine, Linux and the BSDs through GStreamer (opened at
 //! run time, so a system without it only fails to open videos), Android
 //! through `MediaPlayer` (once the activity is handed over,
-//! [`attach_android`]). The platform decodes in
+//! [`attach_android`]), the web through a hidden `<video>` element. The
+//! platform decodes in
 //! hardware, keeps sound and picture in step and drives the audio device; the
 //! caller polls it from the thread that runs the loop for what changed
 //! ([`VideoPlayer::poll`]) and for the picture to show now

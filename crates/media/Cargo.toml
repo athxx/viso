@@ -83,6 +83,11 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
 [target.'cfg(target_os = "android")'.dependencies]
 jni-sys = "0.4"
 
+# The browser's `<video>`, bound directly to the browser API.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+wasm-bindgen = "0.2.128"
+js-sys = "0.3"
+
 # GStreamer, opened at run time.
 [target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly"))'.dependencies]
 libc = "0.2"
