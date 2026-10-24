@@ -10,7 +10,8 @@
 //! texture adopts it, no texel copied — where the backend can; otherwise its
 //! texels are written into the texture. Off screen it plays on unread. A
 //! player loading, or playing where nothing beats for it, is polled on a
-//! timer instead.
+//! timer instead; one paused is polled briefly after it is ready or sought,
+//! until the picture it then shows comes.
 
 use std::time::Duration;
 
@@ -22,6 +23,11 @@ use viso_ui::{NodeId, NodeStore, Playback, Rect, VideoSource, resource::Resource
 
 /// How often a player is polled while nothing beats for it.
 const POLL: Duration = Duration::from_millis(100);
+
+/// How often a paused player is asked for the picture it was ready with or
+/// sought to, and for how long.
+const AWAITED: Duration = Duration::from_millis(16);
+const AWAITED_FOR: Duration = Duration::from_secs(2);
 
 /// How far a playing video moves between reports of where it is.
 const REPORTED: Duration = Duration::from_millis(250);
@@ -110,6 +116,9 @@ struct Played<P> {
     /// What was last asked of the player.
     asked: Playback,
     ready: bool,
+    /// Since when a picture is due though it is paused: the first, or one
+    /// sought to, which a player may hand over a little later.
+    awaits: Option<Instant>,
     /// The texture its pictures are shown as.
     texture: Option<Shown>,
 }
@@ -200,6 +209,7 @@ impl<P: Play> Videos<P> {
                     ..Playback::default()
                 },
                 ready: false,
+                awaits: None,
                 texture: None,
             });
         }
@@ -301,6 +311,9 @@ impl<P: Play> Videos<P> {
                 step.due = earliest(step.due, now + POLL);
                 continue;
             }
+            if size.is_some() || sought.is_some() {
+                p.awaits = Some(now);
+            }
             if status.playing {
                 if shown {
                     step.beating = true;
@@ -320,8 +333,18 @@ impl<P: Play> Videos<P> {
                 continue;
             };
             let Some(frame) = player.frame() else {
+                if !status.playing
+                    && let Some(since) = p.awaits
+                {
+                    if now.saturating_duration_since(since) < AWAITED_FOR {
+                        step.due = earliest(step.due, now + AWAITED);
+                    } else {
+                        p.awaits = None;
+                    }
+                }
                 continue;
             };
+            p.awaits = None;
             let size = (frame.width, frame.height);
             let shown_as = p.texture.filter(|t| t.size == size);
             // In place where the backend adopts it: the same texture pointed
@@ -814,6 +837,39 @@ mod tests {
         assert!(!status.ended);
         assert_eq!(status.position, Duration::from_secs(1));
         assert_eq!(win.store.videos().get(win.leaf).unwrap().seek, None);
+    }
+
+    #[test]
+    fn a_paused_player_is_polled_for_the_picture_it_was_ready_with_or_sought_to() {
+        let mut win = Window::new(VideoSource::file("clip.mp4"));
+        win.step(SCREEN);
+        let script = opened(0);
+        // Ready before its first picture: asked again soon, not on the slow
+        // timer.
+        script.borrow_mut().events.push_back(ready(8, 6));
+        let step = win.step(SCREEN);
+        assert_eq!(step.due, Some(win.now + AWAITED));
+        script.borrow_mut().frames.push_back((8, 6, [255, 0, 0]));
+        let step = win.step(SCREEN);
+        assert_eq!(step, Step::default(), "the picture came");
+        assert_eq!(win.texel(), [255, 0, 0]);
+
+        // Sought while paused: asked again until the sought picture comes.
+        win.store.seek_video(win.leaf, Duration::from_secs(1));
+        let step = win.step(SCREEN);
+        assert_eq!(step.due, Some(win.now + AWAITED));
+        let step = win.step(SCREEN);
+        assert_eq!(step.due, Some(win.now + AWAITED));
+        script.borrow_mut().frames.push_back((8, 6, [0, 0, 255]));
+        let step = win.step(SCREEN);
+        assert_eq!(step, Step::default());
+        assert_eq!(win.texel(), [0, 0, 255]);
+
+        // One that never comes is given up.
+        win.store.seek_video(win.leaf, Duration::from_secs(2));
+        win.step(SCREEN);
+        win.now += AWAITED_FOR;
+        assert_eq!(win.step(SCREEN), Step::default());
     }
 
     #[test]
