@@ -1,6 +1,7 @@
 //! Notices: what a node reports about itself once a frame has laid out, rather
 //! than from an input sample — a viewport's scroll, a virtual list's visible
-//! rows, the end of an animation it ran, the asset it shows loading.
+//! rows, the end of an animation it ran, the asset it shows loading, the
+//! video it plays moving on.
 //!
 //! A node that has a handler for one is watched: after the frame's layout,
 //! [`deliver_notices`] reads each watched node's state and, when it moved since
@@ -21,6 +22,7 @@ use crate::content::Content;
 use crate::layout::{Axis, Vec2};
 use crate::node::NodeId;
 use crate::state::StateStore;
+use crate::video::VideoStatus;
 use crate::virtual_list::VirtualLists;
 
 /// What a node reports.
@@ -47,6 +49,14 @@ pub enum Notice {
     AssetLoaded { size: Vec2 },
     /// The asset the node shows could not be read or did not decode.
     AssetFailed,
+    /// What the player of the video the node shows reports, when it changed:
+    /// ready, a new position, playing or paused, waiting, ended.
+    Video(VideoStatus),
+    /// The video the node shows played to its end and stopped there.
+    VideoEnded,
+    /// The video the node shows stopped playing, or plays again, since the
+    /// watcher last heard.
+    VideoPlaying(bool),
 }
 
 /// Which notices a watched node reports.
@@ -58,6 +68,7 @@ impl NoticeKinds {
     pub const VISIBLE_RANGE: Self = Self(2);
     pub const ANIMATION_END: Self = Self(4);
     pub const ASSET: Self = Self(8);
+    pub const VIDEO: Self = Self(16);
 
     pub fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
@@ -89,6 +100,8 @@ struct Watch {
     range: Option<(usize, usize, usize)>,
     /// The asset notice last delivered.
     asset: Option<Notice>,
+    /// The video status last delivered.
+    video: Option<VideoStatus>,
     /// Taken out while it runs.
     handler: Option<NoticeHandler>,
 }
@@ -121,6 +134,7 @@ impl NodeStore {
             scroll: None,
             range: None,
             asset: None,
+            video: None,
             handler: Some(handler),
         });
     }
@@ -172,7 +186,7 @@ pub fn deliver_notices(
             continue;
         }
         let kinds = store.notices().watches[at].kinds;
-        let mut due: [Option<Notice>; 3] = [None, None, None];
+        let mut due: [Option<Notice>; 6] = [None; 6];
         if kinds.contains(NoticeKinds::SCROLL) && store.is_scroll(node) {
             let now = (
                 store.scroll(node),
@@ -225,6 +239,23 @@ pub fn deliver_notices(
             } else if watch.asset != now {
                 due[2] = now;
                 watch.asset = now;
+            }
+        }
+        if kinds.contains(NoticeKinds::VIDEO)
+            && let Some(now) = store.video_status(node)
+        {
+            let watch = &mut store.notices_mut().watches[at];
+            if watch.video != Some(now) {
+                due[3] = Some(Notice::Video(now));
+                if now.ended && !watch.video.is_some_and(|seen| seen.ended) {
+                    due[4] = Some(Notice::VideoEnded);
+                }
+                if let Some(seen) = watch.video
+                    && seen.playing != now.playing
+                {
+                    due[5] = Some(Notice::VideoPlaying(now.playing));
+                }
+                watch.video = Some(now);
             }
         }
         if due.iter().any(Option::is_some)

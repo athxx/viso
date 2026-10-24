@@ -645,6 +645,9 @@ pub struct NodeStore {
     asset_fallbacks: Vec<AssetFallbacks>,
     /// Cold: the asset nodes that hold an animation still, on its first frame.
     still_assets: Vec<NodeId>,
+    /// Cold: the video nodes — their sources, what the app asks of each and
+    /// what its player reports.
+    videos: crate::video::VideoTable,
     /// Reused to repaint the nodes showing an asset.
     scratch_asset_nodes: Vec<NodeId>,
     /// Cold: per-node unshaped text request, index-aligned but mostly `None`.
@@ -929,6 +932,7 @@ impl NodeStore {
         self.assets.clear();
         self.asset_fallbacks.clear();
         self.still_assets.clear();
+        self.videos.clear();
         self.animation_requests.clear();
         self.leaving.clear();
         self.transitions.clear();
@@ -3501,6 +3505,144 @@ impl NodeStore {
         self.scratch_asset_nodes = nodes;
     }
 
+    /// Shows on `id` the video `source` plays, placed into its box by `fit`
+    /// and multiplied by `tint`: its pictures once its player hands them
+    /// over, nothing (its stand-ins) before. A node already playing the same
+    /// source keeps playing it where it is; another source starts over,
+    /// paused. A live-guarded write — a stale handle is a no-op.
+    pub fn set_video(
+        &mut self,
+        id: NodeId,
+        source: &crate::video::VideoSource,
+        fit: AssetFit,
+        tint: Option<Rgba>,
+    ) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        // The entry is kept out while its content is rewritten, which would
+        // let go of it.
+        let kept = if self.videos.get(id).is_some_and(|v| v.source.same(source)) {
+            self.videos.forget(id)
+        } else {
+            None
+        };
+        let resource = match &kept {
+            Some(entry) => entry.resource,
+            None => self.videos.show(id, source).0,
+        };
+        self.assets.host(resource);
+        self.set_asset(id, resource, fit, tint);
+        if let Some(entry) = kept {
+            self.videos.restore(entry);
+        }
+    }
+
+    /// The video nodes, with their requests and reports.
+    pub fn videos(&self) -> &crate::video::VideoTable {
+        &self.videos
+    }
+
+    /// The video nodes, for the facade to take their requests and report
+    /// what their players do; a report changes what a watcher of
+    /// [`NoticeKinds::VIDEO`](crate::notice::NoticeKinds::VIDEO) hears next.
+    pub fn videos_mut(&mut self) -> &mut crate::video::VideoTable {
+        &mut self.videos
+    }
+
+    /// What video node `id`'s player reports; `None` for a node showing no
+    /// video.
+    pub fn video_status(&self, id: NodeId) -> Option<crate::video::VideoStatus> {
+        self.videos.get(id).map(|v| v.status)
+    }
+
+    /// What is asked of video node `id`; `None` for a node showing no video.
+    pub fn playback(&self, id: NodeId) -> Option<crate::video::Playback> {
+        self.videos.get(id).map(|v| v.playback)
+    }
+
+    /// Asks video node `id` to play as `playback` says. A node showing no
+    /// video ignores it.
+    pub fn set_playback(&mut self, id: NodeId, playback: crate::video::Playback) {
+        if let Some(video) = self.videos.get_mut(id) {
+            video.playback = playback;
+        }
+    }
+
+    /// Asks video node `id` to play as `playback` says when its build asks
+    /// for something other than it did last; what was asked since —
+    /// a pause from a handler, its end — stands otherwise.
+    pub fn declare_playback(&mut self, id: NodeId, playback: crate::video::Playback) {
+        if let Some(video) = self.videos.get_mut(id)
+            && video.declared != Some(playback)
+        {
+            video.declared = Some(playback);
+            video.playback = playback;
+        }
+    }
+
+    /// Asks video node `id` to play, or to pause.
+    pub fn set_video_playing(&mut self, id: NodeId, playing: bool) {
+        if let Some(video) = self.videos.get_mut(id) {
+            video.playback.playing = playing;
+        }
+    }
+
+    /// Asks video node `id` to move to `time`; the picture there shows even
+    /// while it is paused.
+    pub fn seek_video(&mut self, id: NodeId, time: std::time::Duration) {
+        if let Some(video) = self.videos.get_mut(id) {
+            video.seek = Some(time);
+        }
+    }
+
+    /// Records the natural size of the video shown as `resource` and lays
+    /// out again the nodes showing it when it moved.
+    pub fn size_video(&mut self, resource: ResourceId, width: u32, height: u32) {
+        if self
+            .assets
+            .size_hosted(resource, [width as f32, height as f32])
+        {
+            self.refresh_asset(resource);
+        }
+    }
+
+    /// Shows `texture`, of `texels`, as the picture of the video shown as
+    /// `resource`, rewriting the nodes showing it. Returns the texture for
+    /// the caller to release once no frame in flight draws it: the one
+    /// replaced, or `texture` itself when `resource` is no video's. A new
+    /// picture written into the texture shown already needs only
+    /// [`repaint_asset`](Self::repaint_asset).
+    pub fn show_video_frame(
+        &mut self,
+        resource: ResourceId,
+        texture: TextureId,
+        texels: (u32, u32),
+    ) -> Option<TextureId> {
+        let old = self.assets.attach_hosted(resource, texture, texels);
+        if old != Some(texture) {
+            self.refresh_asset(resource);
+        }
+        old
+    }
+
+    /// Records that the video shown as `resource` cannot play: its nodes show
+    /// their error stand-ins. Returns its texture for the caller to release.
+    pub fn fail_video(&mut self, resource: ResourceId) -> Option<TextureId> {
+        let old = self.assets.fail_hosted(resource);
+        self.refresh_asset(resource);
+        old
+    }
+
+    /// Forgets the video shown as `resource` once no node plays it, returning
+    /// its texture for the caller to release.
+    pub fn forget_video(&mut self, resource: ResourceId) -> Option<TextureId> {
+        if self.videos.of(resource).is_some() {
+            return None;
+        }
+        self.assets.forget_hosted(resource)
+    }
+
     /// Holds the animation asset node `id` shows still, on its first frame,
     /// or lets it play (the default). An animation several nodes show plays
     /// while any of them on screen lets it. A live-guarded write — a stale
@@ -3568,7 +3710,17 @@ impl NodeStore {
                 }
             }
             Some(Content::Scene { slot, .. }) => self.scenes.leave(*slot),
-            Some(Content::Asset { resource, .. }) => self.assets.release(*resource, node),
+            Some(Content::Asset { resource, .. }) => {
+                let resource = *resource;
+                self.assets.release(resource, node);
+                if self
+                    .videos
+                    .get(node)
+                    .is_some_and(|v| v.resource == resource)
+                {
+                    self.videos.forget(node);
+                }
+            }
             _ => {}
         }
     }
@@ -7602,6 +7754,28 @@ impl<'a> BuildCx<'a> {
             }
         }
         self.store.set_asset(handle.id, asset.id, fit, tint);
+        handle
+    }
+
+    /// Declare that `handle` shows the video `source` plays, placed into its
+    /// box by `fit` and multiplied by `tint` (see [`NodeStore::set_video`]):
+    /// paused at its start until [`set_playback`](NodeStore::set_playback)
+    /// asks otherwise. Returns the handle so authoring chains inline.
+    pub fn video(
+        &mut self,
+        handle: Handle,
+        source: &crate::video::VideoSource,
+        fit: AssetFit,
+        tint: Option<Rgba>,
+    ) -> Handle {
+        self.store.set_video(handle.id, source, fit, tint);
+        handle
+    }
+
+    /// Ask video node `handle` to play as `playback` says, when it asked
+    /// otherwise last build (see [`NodeStore::declare_playback`]).
+    pub fn playback(&mut self, handle: Handle, playback: crate::video::Playback) -> Handle {
+        self.store.declare_playback(handle.id, playback);
         handle
     }
 

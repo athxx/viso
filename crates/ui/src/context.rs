@@ -538,6 +538,12 @@ pub enum StoreRequest {
     HoverDay(NodeId, Option<u8>),
     /// Put text on the clipboard.
     Copy(String),
+    /// Ask a video to play as a playback says.
+    Playback(NodeId, crate::video::Playback),
+    /// Ask a video to play, or to pause.
+    Play(NodeId, bool),
+    /// Move a video to a time.
+    Seek(NodeId, std::time::Duration),
 }
 
 impl StoreRequest {
@@ -574,6 +580,9 @@ impl StoreRequest {
             StoreRequest::Plane(id, change) => store.change_plane(id, change),
             StoreRequest::HoverDay(id, day) => store.hover_day(id, day),
             StoreRequest::Copy(text) => store.copy_text(text),
+            StoreRequest::Playback(id, playback) => store.set_playback(id, playback),
+            StoreRequest::Play(id, playing) => store.set_video_playing(id, playing),
+            StoreRequest::Seek(id, time) => store.seek_video(id, time),
         }
     }
 }
@@ -1166,6 +1175,36 @@ impl<'a> EventCx<'a> {
     pub fn show_slider(&mut self, id: NodeId, low: f32, high: f32) {
         self.store_requests
             .push(StoreRequest::ShowSlider(id, low, high));
+    }
+
+    /// What video node `id`'s player reports; `None` for a node showing no
+    /// video and on the state-only paths.
+    pub fn video_status(&self, id: NodeId) -> Option<crate::video::VideoStatus> {
+        self.place.and_then(|place| place.store.video_status(id))
+    }
+
+    /// What is asked of video node `id`; `None` for a node showing no video
+    /// and on the state-only paths.
+    pub fn playback(&self, id: NodeId) -> Option<crate::video::Playback> {
+        self.place.and_then(|place| place.store.playback(id))
+    }
+
+    /// Ask video node `id` to play as `playback` says
+    /// ([`NodeStore::set_playback`]).
+    pub fn set_playback(&mut self, id: NodeId, playback: crate::video::Playback) {
+        self.store_requests
+            .push(StoreRequest::Playback(id, playback));
+    }
+
+    /// Ask video node `id` to play, or to pause
+    /// ([`NodeStore::set_video_playing`]).
+    pub fn play_video(&mut self, id: NodeId, playing: bool) {
+        self.store_requests.push(StoreRequest::Play(id, playing));
+    }
+
+    /// Move video node `id` to `time` ([`NodeStore::seek_video`]).
+    pub fn seek_video(&mut self, id: NodeId, time: std::time::Duration) {
+        self.store_requests.push(StoreRequest::Seek(id, time));
     }
 
     /// Node `id`'s colour plane, if it draws one; `None` on the state-only

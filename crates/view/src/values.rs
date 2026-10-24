@@ -43,7 +43,9 @@ use viso_ui::search_field::{Report as SearchReport, SearchParts, SearchSpec};
 use viso_ui::segments::Segments;
 use viso_ui::shader::BrushProgram;
 use viso_ui::slider::{Slider as SliderMark, SliderRange, SliderShape};
-use viso_ui::{Alignment2D, BoundSize, FontWeight, LayoutValue, LengthTerms};
+use viso_ui::{
+    Alignment2D, BoundSize, FontWeight, LayoutValue, LengthTerms, Playback, VideoSource,
+};
 use viso_ui::{
     AssetFit, Border, BuildCx, CheckMark, CheckShape, CursorIcon, Easing, FieldLook, FieldSeed,
     FontSize, InputKind, LiveRegion, LookValue, NodeId, NodeStore, NumberFormat, PageTransition,
@@ -297,6 +299,11 @@ pub(crate) fn control_cells(
         control.empty_text,
         control.debounce,
         control.animate,
+        control.playing,
+        control.looping,
+        control.muted,
+        control.volume,
+        control.rate,
     ])
     .flatten()
     .chain(arms)
@@ -323,9 +330,9 @@ pub(crate) fn control_cells(
 /// a chip's `removable`, a stepper's `wrap`, a slider's `origin`, `marks`
 /// and `axis`, a colour picker's `alpha` and `wheel`, and a combo box's
 /// `options`, `free_text` and `empty_text` — a search field's `suggestions`
-/// are its `options` — a search field's `debounce`, and an image's
-/// `animate`.
-const SHOWN: usize = 69;
+/// are its `options` — a search field's `debounce`, an image's `animate`,
+/// and a video's `playing`, `looping`, `muted`, `volume` and `rate`.
+const SHOWN: usize = 74;
 
 /// The input of each value a node shows, in order.
 const SHOWN_INPUTS: [ControlInput; SHOWN] = [
@@ -398,6 +405,11 @@ const SHOWN_INPUTS: [ControlInput; SHOWN] = [
     ControlInput::EmptyText,
     ControlInput::Debounce,
     ControlInput::Animate,
+    ControlInput::Playing,
+    ControlInput::Looping,
+    ControlInput::Muted,
+    ControlInput::Volume,
+    ControlInput::Rate,
 ];
 
 /// Where its `translate` sits among the values a node shows.
@@ -694,6 +706,11 @@ impl Shown {
             empty_text,
             debounce,
             animate,
+            playing,
+            looping,
+            muted,
+            volume,
+            rate,
         ] = &shows;
         let access_key = access_key.as_str().and_then(|key| key.chars().next());
         let spanned = crate::text_style::spans(pieces);
@@ -1122,6 +1139,29 @@ impl Shown {
                     let tint = tint.as_int().map(|_| color(tint));
                     store.set_asset(self.node, resource, asset_fit(fit), tint);
                     store.set_asset_still(self.node, !truth(animate, true));
+                }
+            }
+            // A `url` plays in place of the `source`; with neither, it shows
+            // nothing.
+            ControlKind::Video => {
+                let source = match url.as_str().filter(|url| !url.is_empty()) {
+                    Some(url) if url.contains("://") => Some(VideoSource::url(url)),
+                    Some(path) => Some(VideoSource::file(path)),
+                    None => resource(value)
+                        .and_then(|resource| host.asset_bytes(resource))
+                        .map(|bytes| VideoSource::Bytes(bytes.clone())),
+                };
+                if let Some(source) = source {
+                    let tint = tint.as_int().map(|_| color(tint));
+                    store.set_video(self.node, &source, asset_fit(fit), tint);
+                    let playback = Playback {
+                        playing: truth(playing, false),
+                        looping: truth(looping, false),
+                        muted: truth(muted, false),
+                        volume: float(volume, 1.0).clamp(0.0, 1.0),
+                        rate: float(rate, 1.0),
+                    };
+                    store.declare_playback(self.node, playback);
                 }
             }
             ControlKind::Label | ControlKind::Button => {

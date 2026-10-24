@@ -323,6 +323,22 @@ const IMAGE: &[WidgetProperty] = &[
     prop("animate", "Bool"),
 ];
 
+/// A `Video`'s video, from `asset("…")`, or the `url` the platform's player
+/// fetches in its place — a file, `https://`, an HLS playlist — how it fills
+/// the box, and how it plays: paused unless `playing`, at full `volume` and
+/// its own speed (`rate` 1) unless they say otherwise.
+const VIDEO: &[WidgetProperty] = &[
+    prop("source", "Option<VideoAsset>"),
+    prop("url", "String"),
+    look("fit", "ImageFit"),
+    look("tint", "Option<Color>"),
+    two_way("playing", "Bool"),
+    prop("looping", "Bool"),
+    prop("muted", "Bool"),
+    prop("volume", "F32"),
+    prop("rate", "F32"),
+];
+
 /// An `Svg`'s scene, from `asset("…")`, and how it fills the box.
 const SVG: &[WidgetProperty] = &[
     prop("source", "SvgAsset"),
@@ -514,6 +530,14 @@ const KEY_SHORTCUT_EVENTS: &[WidgetEvent] = &[WidgetEvent::signal("triggered")];
 const LOAD_EVENTS: &[WidgetEvent] = &[
     WidgetEvent::new("loaded", "SizeDp"),
     WidgetEvent::signal("failed"),
+];
+
+/// A video's: its playing stopped at its end or started again, where it is
+/// as it plays, and its end.
+const VIDEO_EVENTS: &[WidgetEvent] = &[
+    WidgetEvent::new("playing_changed", "Bool"),
+    WidgetEvent::new("progress", "VideoProgress"),
+    WidgetEvent::signal("ended"),
 ];
 
 /// Any number of children, in the default slot `children`.
@@ -735,6 +759,12 @@ pub const STANDARD: &[NativeWidget] = &[
     .events(&[LOAD_EVENTS, STANDARD_EVENTS]),
     layout("Svg", WidgetNode::Leaf, &[SVG, LAYOUT, TRANSFORM, FOCUS])
         .events(&[LOAD_EVENTS, STANDARD_EVENTS]),
+    layout(
+        "Video",
+        WidgetNode::Leaf,
+        &[VIDEO, LAYOUT, TRANSFORM, FOCUS],
+    )
+    .events(&[VIDEO_EVENTS, LOAD_EVENTS, STANDARD_EVENTS]),
     layout(
         "ProgressBar",
         WidgetNode::Leaf,

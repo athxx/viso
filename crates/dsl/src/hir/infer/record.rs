@@ -117,7 +117,8 @@ impl InferCx<'_> {
         let head = self.record_head(&heads);
         if let Some(RecordHead::Record(id)) = head
             && (id == crate::resolve::prelude::image_record()
-                || id == crate::resolve::prelude::svg_record())
+                || id == crate::resolve::prelude::svg_record()
+                || id == crate::resolve::prelude::video_record())
         {
             let name = self.describe(&Ty::named(id));
             self.diagnostics.push(Diagnostic::error(

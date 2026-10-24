@@ -4725,12 +4725,13 @@ Text {
 
 ### U5.1 图像
 
-包的资源放在 `Viso.toml` 旁的 `assets/` 目录中。`asset("…")` 以字符串字面量命名其中的一个文件：路径相对 `assets/`，以 `/` 分隔（`\` 视同 `/`），空段与 `.` 段被规范化掉，绝对路径与 `..` 不允许。编译期检查该文件存在，并按其字节（而非扩展名）判定格式：PNG、JPEG 得到 `ImageAsset`，SVG 得到 `SvgAsset`。这两个 Prelude Record 只由 `asset` 产生；作为普通值，它们可存入 State、在 `if`/`match` 中选择、作为 Input 传递。资源的身份是规范化路径的 64 位哈希，同一文件的不同拼写是同一资源；编译结果列出包用到的全部资源，Release 包只携带这些文件。
+包的资源放在 `Viso.toml` 旁的 `assets/` 目录中。`asset("…")` 以字符串字面量命名其中的一个文件：路径相对 `assets/`，以 `/` 分隔（`\` 视同 `/`），空段与 `.` 段被规范化掉，绝对路径与 `..` 不允许。编译期检查该文件存在，并按其字节（而非扩展名）判定格式：位图（PNG、JPEG、GIF、WebP、AVIF、BMP、ICO、QOI）得到 `ImageAsset`，SVG 得到 `SvgAsset`，视频（MP4、QuickTime、WebM、Matroska）得到 `VideoAsset`。这些 Prelude Record 只由 `asset` 产生；作为普通值，它们可存入 State、在 `if`/`match` 中选择、作为 Input 传递。资源的身份是规范化路径的 64 位哈希，同一文件的不同拼写是同一资源；编译结果列出包用到的全部资源，Release 包只携带这些文件。
 
 | Widget | Property（类型 = 默认；失效） |
 | ------ | ----------------------------- |
 | `Image` | `source: ImageAsset`（未绑定时不绘制，固有尺寸为零；`MEASURE\|LAYOUT\|PAINT`）；`fit: ImageFit = ImageFit::contain`（`PAINT`）；`tint: Option<Color> = Option::None`（与像素逐通道相乘；`PAINT`）；`animate: Bool = true`（动画图片——GIF、APNG、动画 WebP、AVIF 序列——是否播放；不在屏幕上或系统减少动态时总是停在当前帧；`false` 停在首帧；`PAINT`） |
 | `Svg`   | `source: SvgAsset`（同上）；`fit`、`tint` 同 `Image`（`tint` 与每条路径的填充、描边颜色相乘，白色保持原色，可为单色图标着色） |
+| `Video` | `source: Option<VideoAsset> = Option::None`（未绑定且无 `url` 时不绘制；`MEASURE\|LAYOUT\|PAINT`）；`url: String = ""`（非空时代替 `source` 播放：含 `://` 的由平台播放器自行拉取，含 HLS 播放列表，否则为文件路径）；`fit`、`tint` 同 `Image`；`playing: Bool = false`（双向：播放到末尾停下时写回 `false`）；`looping: Bool = false`；`muted: Bool = false`；`volume: F32 = 1.0`（0 到 1）；`rate: F32 = 1.0`（倍速）；固有尺寸为视频画面的像素尺寸 |
 | `GameViewport` | `camera: Option<CameraRig> = Option::None`（视口自己的相机，缺省用 Stage 的相机；`PAINT`）；无固有尺寸，未写宽高的轴为 Fill；可获得焦点（§106.2） |
 
 ```viso
@@ -4747,11 +4748,13 @@ view {
 - `ImageFit { contain; cover; fill; }`：`contain` 保持比例完整放入盒子并居中；`cover` 保持比例铺满盒子，居中裁去溢出部分；`fill` 拉伸到盒子；
 - 固有尺寸是图像的像素尺寸（SVG 取其 `viewBox` 与 `width`/`height`），1 像素计为 `1dp`；布局属性给出的尺寸优先；
 - 解码不在帧路径上：解码完成前节点不绘制，已知尺寸即参与布局；资源的新内容（如热重载）解码并驻留前旧内容继续绘制，之后只脏显示该资源的节点：尺寸不变为 `PAINT`，改变为 `MEASURE|LAYOUT|PAINT`；
-- 以下情形报 `E3713`：`asset` 不是恰好一个参数；参数不是不含插值的字符串字面量（要在资源间选择，在 `asset("…")` 值之间分支）；路径越出 `assets/`；文件不存在（附最接近的已有路径作为 Fix）；文件不是 PNG、JPEG 或 SVG；本次编译没有资源目录；以及 `ImageAsset`/`SvgAsset` 的 Record 表达式；
+- 以下情形报 `E3713`：`asset` 不是恰好一个参数；参数不是不含插值的字符串字面量（要在资源间选择，在 `asset("…")` 值之间分支）；路径越出 `assets/`；文件不存在（附最接近的已有路径作为 Fix）；文件不是位图、SVG 或视频；本次编译没有资源目录；以及 `ImageAsset`/`SvgAsset`/`VideoAsset` 的 Record 表达式；
 - 把 `SvgAsset` 绑到 `Image` 的 `source`、`ImageAsset` 绑到 `Svg` 的 `source`，或绑定其他类型的值，是 `E2103`；
 - `Image`/`Svg` 的事件 `loaded(SizeDp)` 在来源绘制出来后投递其固有尺寸（换为另一来源、或同一来源的新修订以另一尺寸绘出时再次投递），`failed` 在来源读不到或无法解码时投递；两者都在布局之后投递，Handler 写入的状态进入下一帧事务；
-- `Image`/`Svg` 有 `semantics.label` 时语义角色为 `Role::image`，以该标签为替代文本；没有标签的图像是装饰，不被辅助技术朗读；
-- Rust 代码以 `viso::asset!("…")` 取得同一资源（同样的路径检查与 `E3713`，字节同样嵌入），由 `viso::widgets::image_asset` 显示。
+- `Video` 经各平台自带的播放器解码、出声并保持音画同步（AVFoundation、Media Foundation、GStreamer、MediaCodec、浏览器的 `<video>`），平台播放不了的格式报 `failed`；打开时停在首帧，首帧显示时投递 `loaded(SizeDp)`；`progress(VideoProgress)` 在就绪、播放与暂停、等待数据变化时投递，播放中每秒约四次投递位置（`VideoProgress { position: Duration; duration: Option<Duration>; playing: Bool; waiting: Bool; }`，直播流的 `duration` 为 `None`）；`ended` 在播到末尾停下时投递（循环时不投递）；`playing_changed(Bool)` 在播放状态改变时投递并写回双向的 `playing`。同一节点上 `source`/`url` 不变时视频保持其播放位置，换来源则从头开始；只有 `playing` 等属性的值变化才会重新要求播放器，播放器自己停下（播完）的状态不会被无关的重建打回。正在播放且在屏幕上可见时每帧取新画面写入同一个 texture，只重绘该节点；移出屏幕继续播放（声音不断）但不再取画面；
+- HTML 导出为 `<video class="vx-video" playsinline preload="metadata">`，`playing`、`looping`、`muted` 为 `autoplay`、`loop`、`muted` 属性，`volume`、`rate` 与变化的值由页面脚本设置；浏览器通常只允许静音的视频自动播放；`tint` 不能导出；
+- `Image`/`Svg`/`Video` 有 `semantics.label` 时语义角色为 `Role::image`，以该标签为替代文本；没有标签的图像是装饰，不被辅助技术朗读；
+- Rust 代码以 `viso::asset!("…")` 取得同一资源（同样的路径检查与 `E3713`，字节同样嵌入），由 `viso::widgets::image_asset` 显示，视频由 `viso::widgets::video` 播放（也接受 `VideoSource::file` / `url` / `bytes`）；`Video::handle` 交出的 `VideoHandle` 在 Handler 中 `play` / `pause` / `toggle` / `seek` 并读取 `status`。
 
 ---
 
@@ -8975,7 +8978,7 @@ RecordPatternField
 | E3710  | `@selector` 或 `@styleable` 误用（§U2.3）               |
 | E3711  | Handler、控制流区域或 Component 实例未能挂载：Runtime 未投递该 Event、Behavior 未能 Lower，区域位于 View 根，或 `VirtualList` 位于另一 `VirtualList` 的行内，或实例无法内联，或 `ui!` Fragment 中的 Rust Component 带 Property、Handler 或子项，或以 Component Input 为目标的 `bind` 带 `using`，或 `AdaptiveScope` 的 `basis` 不是常量、`SafeArea`/`KeyboardAvoiding` 带 `padding`，或 `padding` 写在非容器节点上，或 `Grid` 的 `areas`/`grid.area` 不是常量，或 Style 以交互选择器切换用户 Component 的 Input、以 `when` 切换无运行时路径的 Property 或无基值的布局 Property（§40.1、§59、§52、§56.1、§96.3、§96.6、§123） |
 | E3712  | `@migrate` 误用：不标记 `fn`、`from` 缺失或不是类型拼写字符串、参数不是恰好一个 `from` 类型参数、未声明返回类型，或同一 `from` 与返回类型重复（§94.1） |
-| E3713  | 资源误用：`asset` 的参数不是恰好一个字符串字面量、路径越出 `assets/`、文件不存在或不是 PNG/JPEG/SVG、编译没有资源目录，或写出 `ImageAsset`/`SvgAsset` 的 Record 表达式（§U5.1） |
+| E3713  | 资源误用：`asset` 的参数不是恰好一个字符串字面量、路径越出 `assets/`、文件不存在或不是位图/SVG/视频、编译没有资源目录，或写出 `ImageAsset`/`SvgAsset`/`VideoAsset` 的 Record 表达式（§U5.1） |
 | E4101  | 非 Task 主体（Action、Event、Effect 等）中使用 Await    |
 | E4102  | Task 跨挂起访问可变 State（编译期；绕过检查时为运行时故障） |
 | E4201  | Effect 读取未声明依赖                                   |

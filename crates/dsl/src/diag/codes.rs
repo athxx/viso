@@ -2651,9 +2651,9 @@ fn widen(old: I64) -> F64 { old as F64 }
         explanation: "`asset(\"path\")` names a file under the package's `assets/` directory and is \
             checked at compile time, so the package knows every asset it ships. It takes \
             exactly one argument, a string literal without interpolation; the path is relative \
-            to `assets/` and may not climb out of it; the file must exist and be a PNG, JPEG \
-            or SVG. A compile without an assets directory, and a record expression building an \
-            `ImageAsset` or `SvgAsset` directly, are also rejected. To choose between assets \
+            to `assets/` and may not climb out of it; the file must exist and be an image, an SVG \
+            or a video. A compile without an assets directory, and a record expression building an \
+            `ImageAsset`, `SvgAsset` or `VideoAsset` directly, are also rejected. To choose between assets \
             at run time, branch between `asset(\"...\")` values.",
         example: Example::Source(
             r#"component A {

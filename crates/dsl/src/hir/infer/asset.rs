@@ -1,6 +1,7 @@
 //! The `asset("…")` built-in: a string literal naming a file under the
 //! package's `assets/`, checked when compiling, and typed by the file's format —
-//! an `ImageAsset` for a PNG or JPEG, an `SvgAsset` for an SVG (`E3713` otherwise).
+//! an `ImageAsset` for a raster, an `SvgAsset` for an SVG, a `VideoAsset` for a
+//! video (`E3713` otherwise).
 
 use super::InferCx;
 use super::format::template_literal;
@@ -9,7 +10,7 @@ use crate::assets::{AssetIssue, AssetUse};
 use crate::ast::{AstNode, Expr};
 use crate::diag::{Applicability, Diagnostic, Fix, TextEdit};
 use crate::hir::ty::Ty;
-use crate::resolve::prelude::{image_record, svg_record};
+use crate::resolve::prelude::{image_record, svg_record, video_record};
 use crate::syntax::SyntaxNode;
 use viso_schema::resource::{AssetFormat, AssetKind, ResourceId, normalize_path};
 
@@ -32,11 +33,12 @@ pub(crate) fn asset_record(format: AssetFormat) -> crate::resolve::SymbolId {
     match format.kind() {
         AssetKind::Raster => image_record(),
         AssetKind::Vector => svg_record(),
+        AssetKind::Video => video_record(),
     }
 }
 
 impl InferCx<'_> {
-    /// Types `asset(path)`: an `ImageAsset` or an `SvgAsset` by the format of the file
+    /// Types `asset(path)`: an `ImageAsset`, `SvgAsset` or `VideoAsset` by the format of the file
     /// `path` names, which must be a string literal under `assets/`.
     pub(super) fn check_asset(&mut self, args: &[Expr], node: &SyntaxNode) -> Ty {
         let [arg] = args else {
@@ -89,7 +91,7 @@ impl InferCx<'_> {
                         ),
                         AssetIssue::Missing { .. } => format!("`assets/{path}` does not exist"),
                         AssetIssue::Format => {
-                            format!("`assets/{path}` is not a PNG, JPEG or SVG file")
+                            format!("`assets/{path}` is not an image, SVG or video file")
                         }
                     },
                 );

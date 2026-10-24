@@ -28,6 +28,8 @@ viso-services = { workspace = true }
 viso-render = { workspace = true }
 # A headless snapshot step captures and writes its image.
 viso-image = { workspace = true }
+# Video nodes play through the OS player.
+viso-media = { workspace = true }
 viso-gpu = { workspace = true }
 viso-platform = { workspace = true }
 viso-text = { workspace = true }

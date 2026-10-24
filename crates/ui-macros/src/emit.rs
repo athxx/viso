@@ -738,6 +738,11 @@ fn control_tokens(control: Control) -> TokenStream {
     let empty_text = entry(control.empty_text);
     let debounce = entry(control.debounce);
     let animate = entry(control.animate);
+    let playing = entry(control.playing);
+    let looping = entry(control.looping);
+    let muted = entry(control.muted);
+    let volume = entry(control.volume);
+    let rate = entry(control.rate);
     let semantics = control.semantics;
     let role = match semantics.role {
         Some(role) => {
@@ -868,6 +873,11 @@ fn control_tokens(control: Control) -> TokenStream {
             empty_text: #empty_text,
             debounce: #debounce,
             animate: #animate,
+            playing: #playing,
+            looping: #looping,
+            muted: #muted,
+            volume: #volume,
+            rate: #rate,
             shader: #shader,
             look: ::viso::__private::viso_view::Look {
                 background: #background,

@@ -82,6 +82,7 @@ pub mod system_fonts;
 mod text_content;
 mod text_harness;
 mod text_worker;
+mod videos;
 use text_content::{ParagraphSlot, TextShaper};
 
 #[cfg(feature = "hot-reload")]
@@ -961,6 +962,11 @@ struct WindowState {
     animation_due: Option<Instant>,
     /// The animated images playing in the window.
     players: playback::Players,
+    /// The players of the window's video nodes.
+    videos: videos::Videos,
+    /// What the videos' last step left: whether one plays on screen, and
+    /// when one is next polled.
+    video_step: videos::Step,
     /// Whether the window is the active one, taking the keys.
     active: bool,
     /// The marks a field drew before the ones it was just given, kept so
@@ -1262,6 +1268,26 @@ impl<A: Application> AppDriver<A> {
         }
     }
 
+    /// Steps each window's videos at `now`: their players opened, closed and
+    /// steered, their pictures written.
+    fn play_videos(&mut self, now: Instant) {
+        for ws in &mut self.windows {
+            if ws.videos.is_empty() && ws.store.videos().is_empty() {
+                ws.video_step = videos::Step::default();
+                continue;
+            }
+            let (w, h) = ws.logical_surface();
+            let viewport = Rect {
+                x: 0.0,
+                y: 0.0,
+                w,
+                h,
+            };
+            let gpu = ws.gpu.as_mut().map(|g| (&mut g.backend, &mut g.renderer));
+            ws.video_step = ws.videos.step(&mut ws.store, gpu, now, viewport);
+        }
+    }
+
     /// The live window state for `id`, by linear scan. Windows number in the
     /// single digits, so this is cheaper than a keyed map.
     fn window_mut(&mut self, id: WindowId) -> Option<&mut WindowState> {
@@ -1314,6 +1340,8 @@ impl WindowState {
             caret_due: None,
             animation_due: None,
             players: playback::Players::default(),
+            videos: videos::Videos::default(),
+            video_step: videos::Step::default(),
             active: true,
             marks: viso_ui::FieldMarks::default(),
             route_chain: Vec::new(),
@@ -1676,6 +1704,7 @@ impl WindowState {
             || self.store.sheets_due()
             || self.store.drops_due()
             || self.store.frame_clients_want_frame()
+            || self.video_step.beating
             || self.draws_clock
     }
 
@@ -3518,6 +3547,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 .into_iter()
                 .chain(ws.caret_due)
                 .chain(ws.animation_due)
+                .chain(ws.video_step.due)
                 .any(|at| at <= now);
             let asset_due =
                 (decoded && !ws.store.assets().is_empty()) || (played && !ws.players.is_empty());
@@ -3989,6 +4019,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 }
                 self.sweep_assets();
                 self.play_animations(cx.frame_now(), &|| cx.loop_waker());
+                self.play_videos(cx.frame_now());
                 for ws in &mut self.windows {
                     ws.store.set_dirty_cause(DirtyCause::Other);
                 }
@@ -4354,13 +4385,14 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                                 );
                                 let a = self.assets.counters();
                                 eprintln!(
-                                    "viso: assets decodes={} decode_failures={} uploads={} upload_bytes={} evictions={} animation_frames={}",
+                                    "viso: assets decodes={} decode_failures={} uploads={} upload_bytes={} evictions={} animation_frames={} video_frames={}",
                                     a.decodes,
                                     a.decode_failures,
                                     a.uploads,
                                     a.upload_bytes,
                                     a.evictions,
                                     self.assets.playback.frames(),
+                                    ws.videos.frames,
                                 );
                                 if let Some(text) = &ws.text {
                                     let c = text.counters();
@@ -4593,6 +4625,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     .into_iter()
                     .chain(w.caret_due)
                     .chain(w.animation_due)
+                    .chain(w.video_step.due)
             })
             .min()
     }

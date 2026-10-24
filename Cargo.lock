@@ -2932,6 +2932,7 @@ dependencies = [
  "viso-image",
  "viso-macros",
  "viso-math",
+ "viso-media",
  "viso-platform",
  "viso-render",
  "viso-runtime",

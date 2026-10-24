@@ -203,7 +203,7 @@ pub fn view(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 }
 
 /// `asset!("images/logo.png")`: the file of the package's `assets/` the path
-/// names, checked to exist and to be a PNG, JPEG or SVG, as a
+/// names, checked to exist and to be an image, an SVG or a video, as a
 /// `viso_ui::Asset` embedding its bytes, or the file the build converted it
 /// to ([`embedded_asset`](viso_dsl::assets::embedded_asset)), as an aligned
 /// `static` — so editing it rebuilds the crate.
@@ -235,8 +235,11 @@ pub fn asset(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 .unwrap_or_default();
             return Err(fail(format!("`assets/{path}` does not exist{nearest}")));
         }
-        let format = AssetFormat::sniff(&head)
-            .ok_or_else(|| fail(format!("`assets/{path}` is not a PNG, JPEG or SVG file")))?;
+        let format = AssetFormat::sniff(&head).ok_or_else(|| {
+            fail(format!(
+                "`assets/{path}` is not an image, SVG or video file"
+            ))
+        })?;
         let (file, kind) = viso_dsl::assets::embedded_asset(&dir, &path, format);
         let file = file
             .to_str()
@@ -247,6 +250,7 @@ pub fn asset(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         let kind = match kind {
             AssetKind::Raster => quote! { Raster },
             AssetKind::Vector => quote! { Vector },
+            AssetKind::Video => quote! { Video },
         };
         Ok(quote! {{
             #overlay

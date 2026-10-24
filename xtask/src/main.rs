@@ -64,6 +64,7 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
                     "viso-services",
                     "viso-render",
                     "viso-image",
+                    "viso-media",
                     "viso-dev-protocol",
                     "viso-gpu",
                     "viso-platform",

@@ -141,11 +141,16 @@ pub enum ControlKind {
     /// parts the framework builds inside it. Reports each query, and a
     /// search submitted by Enter or a suggestion chosen.
     SearchField = 33,
+    /// `Video`: plays the video of its `source` or its `url` through the
+    /// platform's player, fitted and tinted, as its `playing`, `looping`,
+    /// `muted`, `volume` and `rate` ask; reports `playing_changed` when it
+    /// stops at its end, and where it is as it plays.
+    Video = 34,
 }
 
 impl ControlKind {
     /// Every kind, by discriminant.
-    pub const ALL: [ControlKind; 34] = [
+    pub const ALL: [ControlKind; 35] = [
         ControlKind::Check,
         ControlKind::Slider,
         ControlKind::Select,
@@ -180,6 +185,7 @@ impl ControlKind {
         ControlKind::ColorPicker,
         ControlKind::ComboBox,
         ControlKind::SearchField,
+        ControlKind::Video,
     ];
 
     /// The kind native widget `widget` is.
@@ -218,6 +224,7 @@ impl ControlKind {
             "ColorPicker" => ControlKind::ColorPicker,
             "ComboBox" => ControlKind::ComboBox,
             "SearchField" => ControlKind::SearchField,
+            "Video" => ControlKind::Video,
             _ => ControlKind::Plain,
         }
     }
@@ -244,6 +251,7 @@ impl ControlKind {
             ControlKind::Label
                 | ControlKind::Plain
                 | ControlKind::Asset
+                | ControlKind::Video
                 | ControlKind::Shader
                 | ControlKind::Toast
                 | ControlKind::SwipeRow
@@ -451,7 +459,7 @@ impl ControlKind {
                 "value",
             )
             | (ControlKind::Label | ControlKind::Button, "text")
-            | (ControlKind::Asset, "source")
+            | (ControlKind::Asset | ControlKind::Video, "source")
             | (ControlKind::Shader, "shader")
             | (ControlKind::Viewport, "camera") => ControlInput::Value,
             (
@@ -530,9 +538,15 @@ impl ControlKind {
             (ControlKind::Slider, "marks") => ControlInput::Marks,
             (ControlKind::Slider, "axis") => ControlInput::Axis,
             (ControlKind::Number, "precision") => ControlInput::Precision,
-            (ControlKind::Asset, "fit") => ControlInput::Fit,
-            (ControlKind::Asset, "tint") => ControlInput::Tint,
+            (ControlKind::Asset | ControlKind::Video, "fit") => ControlInput::Fit,
+            (ControlKind::Asset | ControlKind::Video, "tint") => ControlInput::Tint,
             (ControlKind::Asset, "animate") => ControlInput::Animate,
+            (ControlKind::Video, "url") => ControlInput::Url,
+            (ControlKind::Video, "playing") => ControlInput::Playing,
+            (ControlKind::Video, "looping") => ControlInput::Looping,
+            (ControlKind::Video, "muted") => ControlInput::Muted,
+            (ControlKind::Video, "volume") => ControlInput::Volume,
+            (ControlKind::Video, "rate") => ControlInput::Rate,
             (ControlKind::Pages, "page_transition") => ControlInput::PageTransition,
             (ControlKind::Viewer, "double_tap") => ControlInput::Value,
             (ControlKind::Viewer, "min_scale") => ControlInput::Min,
@@ -584,6 +598,7 @@ impl ControlKind {
             ControlKind::ColorPicker => "ColorPicker",
             ControlKind::ComboBox => "ComboBox",
             ControlKind::SearchField => "SearchField",
+            ControlKind::Video => "Video",
         }
     }
 
@@ -606,7 +621,7 @@ pub fn widget_role(widget: &str) -> Option<Role> {
         "NumberField" | "Stepper" => Role::SpinButton,
         "Tabs" => Role::TabList,
         "Text" | "LinkLabel" | "Badge" => Role::Label,
-        "Image" | "Svg" | "GameViewport" | "Avatar" => Role::Image,
+        "Image" | "Svg" | "Video" | "GameViewport" | "Avatar" => Role::Image,
         "VirtualList" => Role::List,
         "NavigationStack" => Role::Navigation,
         "Modal" | "Sheet" => Role::Dialog,
@@ -1109,6 +1124,16 @@ pub enum ControlInput {
     Debounce,
     /// An image's `animate`: whether an animated picture plays.
     Animate,
+    /// A video's `playing`: whether it plays.
+    Playing,
+    /// A video's `looping`: whether it starts over at its end.
+    Looping,
+    /// A video's `muted`: whether its sound is silenced.
+    Muted,
+    /// A video's `volume`: its sound's level, from 0 to 1.
+    Volume,
+    /// A video's `rate`: how many times its speed it plays at.
+    Rate,
 }
 
 /// A view-driven native node: its kind and the handler-table entries that
@@ -1174,6 +1199,16 @@ pub struct Control {
     pub debounce: Option<u32>,
     /// The entry of whether an image's animated picture plays.
     pub animate: Option<u32>,
+    /// The entry of whether a video plays.
+    pub playing: Option<u32>,
+    /// The entry of whether a video starts over at its end.
+    pub looping: Option<u32>,
+    /// The entry of whether a video's sound is silenced.
+    pub muted: Option<u32>,
+    /// The entry of a video's sound's level.
+    pub volume: Option<u32>,
+    /// The entry of how many times its speed a video plays at.
+    pub rate: Option<u32>,
     /// The shader a shader view paints with, by its index in the view's
     /// shader table; its value gives the shader's parameters.
     pub shader: Option<u32>,
@@ -1361,7 +1396,7 @@ pub enum Switched {
 
 impl ControlInput {
     /// Every input, by wire tag.
-    pub const ALL: [ControlInput; 78] = [
+    pub const ALL: [ControlInput; 83] = [
         ControlInput::Value,
         ControlInput::Min,
         ControlInput::Max,
@@ -1440,6 +1475,11 @@ impl ControlInput {
         ControlInput::EmptyText,
         ControlInput::Debounce,
         ControlInput::Animate,
+        ControlInput::Playing,
+        ControlInput::Looping,
+        ControlInput::Muted,
+        ControlInput::Volume,
+        ControlInput::Rate,
     ];
 
     /// Its wire tag: its place in [`ControlInput::ALL`].
@@ -1546,6 +1586,11 @@ impl Control {
             empty_text: None,
             debounce: None,
             animate: None,
+            playing: None,
+            looping: None,
+            muted: None,
+            volume: None,
+            rate: None,
             shader: None,
             look: Look::default(),
             arms: Box::new([]),
@@ -1642,6 +1687,11 @@ impl Control {
             ControlInput::EmptyText => self.empty_text,
             ControlInput::Debounce => self.debounce,
             ControlInput::Animate => self.animate,
+            ControlInput::Playing => self.playing,
+            ControlInput::Looping => self.looping,
+            ControlInput::Muted => self.muted,
+            ControlInput::Volume => self.volume,
+            ControlInput::Rate => self.rate,
         }
     }
 
@@ -1736,6 +1786,11 @@ impl Control {
             ControlInput::EmptyText => &mut self.empty_text,
             ControlInput::Debounce => &mut self.debounce,
             ControlInput::Animate => &mut self.animate,
+            ControlInput::Playing => &mut self.playing,
+            ControlInput::Looping => &mut self.looping,
+            ControlInput::Muted => &mut self.muted,
+            ControlInput::Volume => &mut self.volume,
+            ControlInput::Rate => &mut self.rate,
         };
         *slot = Some(entry);
     }
@@ -1777,6 +1832,11 @@ impl Encode for Control {
             self.empty_text,
             self.debounce,
             self.animate,
+            self.playing,
+            self.looping,
+            self.muted,
+            self.volume,
+            self.rate,
             self.shader,
             look.background,
             look.opacity,
@@ -1914,6 +1974,11 @@ impl Decode for Control {
             empty_text: entry()?,
             debounce: entry()?,
             animate: entry()?,
+            playing: entry()?,
+            looping: entry()?,
+            muted: entry()?,
+            volume: entry()?,
+            rate: entry()?,
             shader: entry()?,
             look: Look {
                 background: entry()?,
@@ -2216,6 +2281,11 @@ mod tests {
             empty_text: Some(45),
             debounce: Some(46),
             animate: Some(47),
+            playing: Some(48),
+            looping: Some(49),
+            muted: Some(50),
+            volume: Some(51),
+            rate: Some(52),
             shader: Some(2),
             look: Look {
                 background: Some(3),

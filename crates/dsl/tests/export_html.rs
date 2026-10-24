@@ -2259,3 +2259,56 @@ fn combo_boxes_and_search_fields_export_as_inputs_over_a_datalist() {
     let script = page.script.as_deref().unwrap();
     assert!(script.contains("P.listed("), "{script}");
 }
+
+#[test]
+fn a_video_exports_as_a_video_element_its_script_steers_and_hears() {
+    let dir = std::env::temp_dir().join(format!("viso-export-video-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("clips")).unwrap();
+    std::fs::write(
+        dir.join("clips/intro.mp4"),
+        include_bytes!("../../media/tests/fixtures/three.mp4"),
+    )
+    .unwrap();
+    let source = r#"
+export component Clip {
+    state playing = false;
+    state at = 0ms;
+    view {
+        Column {
+            Video {
+                source: asset("clips/intro.mp4");
+                width: 64dp; height: 48dp;
+                fit: ImageFit::cover;
+                looping: true; muted: true; volume: 0.5;
+                bind playing <=> playing;
+                on progress(p) { at = p.position; }
+            }
+            Video { url: "https://example.com/live.m3u8"; playing: true; muted: true; }
+        }
+    }
+}
+"#;
+    let page = export_in(source, Some(&dir), false).unwrap();
+    let static_only = export_in(source, Some(&dir), true);
+    std::fs::remove_dir_all(&dir).unwrap();
+    let index = &page.index;
+    for want in [
+        "<video",
+        "vx-video",
+        "src=\"assets/clips/intro.mp4\"",
+        "src=\"https://example.com/live.m3u8\"",
+        "playsinline",
+        " loop",
+        " muted",
+        " autoplay",
+    ] {
+        assert!(index.contains(want), "{want}: {index}");
+    }
+    assert!(page.styles.contains("object-fit: cover"), "{}", page.styles);
+    assert_eq!(page.assets, ["clips/intro.mp4"]);
+    let script = page.script.as_deref().unwrap();
+    for want in ["\"volume\")", "\"autoplay\")", ", 38, ", ", 40, "] {
+        assert!(script.contains(want), "{want}: {script}");
+    }
+    assert!(static_only.is_err(), "a static page sets no volume");
+}

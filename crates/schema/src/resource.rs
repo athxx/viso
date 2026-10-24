@@ -64,6 +64,13 @@ pub enum AssetFormat {
     Ico,
     Qoi,
     Svg,
+    /// MPEG-4 video: `.mp4`, `.m4v`.
+    Mp4,
+    /// QuickTime video.
+    Mov,
+    WebM,
+    /// Matroska video.
+    Mkv,
 }
 
 /// How an asset draws.
@@ -73,6 +80,8 @@ pub enum AssetKind {
     Raster,
     /// Paths, placed into the box at any size.
     Vector,
+    /// Pictures the platform's player decodes as it plays.
+    Video,
 }
 
 impl AssetFormat {
@@ -94,6 +103,9 @@ impl AssetFormat {
         }
         if is_avif(bytes) {
             return Some(AssetFormat::Avif);
+        }
+        if let Some(video) = video(bytes) {
+            return Some(video);
         }
         if bytes.starts_with(b"qoif") {
             return Some(AssetFormat::Qoi);
@@ -125,6 +137,9 @@ impl AssetFormat {
     pub const fn kind(self) -> AssetKind {
         match self {
             AssetFormat::Svg => AssetKind::Vector,
+            AssetFormat::Mp4 | AssetFormat::Mov | AssetFormat::WebM | AssetFormat::Mkv => {
+                AssetKind::Video
+            }
             _ => AssetKind::Raster,
         }
     }
@@ -141,6 +156,10 @@ impl AssetFormat {
             AssetFormat::Ico => "ICO",
             AssetFormat::Qoi => "QOI",
             AssetFormat::Svg => "SVG",
+            AssetFormat::Mp4 => "MP4",
+            AssetFormat::Mov => "QuickTime",
+            AssetFormat::WebM => "WebM",
+            AssetFormat::Mkv => "Matroska",
         }
     }
 }
@@ -158,6 +177,38 @@ fn is_avif(bytes: &[u8]) -> bool {
     let (brands, _) = bytes[16..end].as_chunks::<4>();
     // The major brand, the minor version, then the compatible brands.
     bytes[8..12].try_into().is_ok_and(avif) || brands.iter().any(avif)
+}
+
+/// The video container `bytes` open with: an ISO media `ftyp` box naming
+/// no image brand — QuickTime's `qt  ` as its major brand — or an EBML
+/// header, its doc type naming WebM or Matroska.
+fn video(bytes: &[u8]) -> Option<AssetFormat> {
+    if bytes.starts_with(&[0x1a, 0x45, 0xdf, 0xa3]) {
+        let head = &bytes[..bytes.len().min(64)];
+        return Some(if head.windows(4).any(|w| w == b"webm") {
+            AssetFormat::WebM
+        } else {
+            AssetFormat::Mkv
+        });
+    }
+    if bytes.len() < 12 || &bytes[4..8] != b"ftyp" {
+        return None;
+    }
+    if &bytes[8..12] == b"qt  " {
+        return Some(AssetFormat::Mov);
+    }
+    // HEIF stills and sequences share the box with video.
+    let size = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+    let end = size.clamp(12, 64).min(bytes.len());
+    let image = |brand: &[u8; 4]| {
+        matches!(
+            brand,
+            b"heic" | b"heix" | b"heim" | b"heis" | b"hevc" | b"hevx" | b"mif1" | b"msf1"
+        )
+    };
+    let major: &[u8; 4] = bytes[8..12].try_into().ok()?;
+    let (brands, _) = bytes[16.min(end)..end].as_chunks::<4>();
+    (!image(major) && !brands.iter().any(image)).then_some(AssetFormat::Mp4)
 }
 
 /// An asset's encoded bytes: embedded in the binary, or loaded and shared.
@@ -231,5 +282,31 @@ mod tests {
         ico[4] = 0;
         assert_eq!(sniff(&ico), None, "no image in it");
         assert_eq!(AssetFormat::Avif.kind(), AssetKind::Raster);
+    }
+
+    #[test]
+    fn each_video_container_is_known_by_its_signature() {
+        let sniff = AssetFormat::sniff;
+        assert_eq!(
+            sniff(b"\0\0\0\x20ftypisom\0\0\x02\0isomiso2avc1mp41"),
+            Some(AssetFormat::Mp4)
+        );
+        assert_eq!(sniff(b"\0\0\0\x14ftypM4V \0\0\0\0"), Some(AssetFormat::Mp4));
+        assert_eq!(
+            sniff(b"\0\0\0\x14ftypqt  \0\0\0\0qt  "),
+            Some(AssetFormat::Mov)
+        );
+        assert_eq!(
+            sniff(b"\x1a\x45\xdf\xa3\x9f\x42\x86\x81\x01\x42\x82\x84webm"),
+            Some(AssetFormat::WebM)
+        );
+        assert_eq!(
+            sniff(b"\x1a\x45\xdf\xa3\x9f\x42\x86\x81\x01\x42\x82\x88matroska"),
+            Some(AssetFormat::Mkv)
+        );
+        // A HEIF still or sequence is no video.
+        assert_eq!(sniff(b"\0\0\0\x18ftypmsf1\0\0\0\0msf1hevc"), None);
+        assert_eq!(sniff(b"\0\0\0\x0cftyp"), None, "no brand");
+        assert_eq!(AssetFormat::WebM.kind(), AssetKind::Video);
     }
 }

@@ -349,6 +349,7 @@ details[open] > .vx-chevron:dir(rtl)::before { transform: rotate(-225deg); }
 .vx-knob::-webkit-slider-thumb { -webkit-appearance: none; width: 0; height: 0; }
 .vx-knob::-moz-range-thumb { width: 0; height: 0; border: 0; }
 .vx-image { display: block; object-fit: contain; }
+.vx-video { display: block; object-fit: contain; }
 .vx-layer { position: fixed; inset: 0; width: auto; height: auto; max-width: none; max-height: none; margin: 0; padding: 0; border: 0; color: inherit; z-index: 1; }
 :where(dialog.vx-layer) { background: rgba(0, 0, 0, 0.32); }
 .vx-layer::backdrop { background: transparent; }

@@ -92,6 +92,16 @@ pub(crate) fn svg_record() -> SymbolId {
     })
 }
 
+/// The prelude record of a video asset, which only `asset("…")` makes.
+pub(crate) fn video_record() -> SymbolId {
+    fingerprint(SymbolIdentity {
+        package: PRELUDE_MODULE,
+        module_path: PRELUDE_MODULE,
+        kind: SymbolKind::Record,
+        decl_path: "VideoAsset",
+    })
+}
+
 /// The parsed and resolved prelude.
 pub(crate) struct Prelude {
     pub(crate) unit: CompilationUnit,
@@ -160,6 +170,7 @@ mod tests {
             "Environment",
             "ImageAsset",
             "SvgAsset",
+            "VideoAsset",
             "ImageFit",
         ] {
             assert!(names.contains(&expected), "missing {expected}");
@@ -168,5 +179,6 @@ mod tests {
         assert!(types.contains(&("Environment", environment())));
         assert!(types.contains(&("ImageAsset", image_record())));
         assert!(types.contains(&("SvgAsset", svg_record())));
+        assert!(types.contains(&("VideoAsset", video_record())));
     }
 }

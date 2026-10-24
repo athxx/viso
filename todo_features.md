@@ -260,9 +260,12 @@ Rules:
   - [x] `viso-media`: `VideoPlayer` over the OS player (open file/URL/bytes, poll
     ready/ended/failed/waiting, frame when it changes, play/pause/seek/rate/volume/
     mute/loop); AVFoundation on macOS and iOS.
-  - [ ] Video nodes in `viso-ui` (a resource of their own, provided by the facade;
+  - [x] Video nodes in `viso-ui` (a resource of their own, provided by the facade;
     per-node playback state and requests), the facade driving players into textures,
-    the `Video` widget and the DSL `Video` node.
+    the `Video` widget and the DSL `Video` node (`VideoAsset`, `url`, two-way
+    `playing`, `progress`/`ended`/`playing_changed`; HTML export as `<video>`).
+  - [ ] Video controls: a built-in overlay (play/pause, scrubber, time, mute,
+    fullscreen) for the widget and the DSL `controls` property.
   - [ ] Zero-copy frames: native handles adopted by the backend (IOSurface → Metal,
     shared D3D texture → D3D12, hardware buffer → Vulkan, `<video>` → WebGPU).
   - [ ] Media Foundation, GStreamer, MediaCodec/MediaPlayer and `<video>` players.

@@ -92,6 +92,7 @@ pub mod text_style;
 pub mod timer;
 pub mod token;
 pub mod transform;
+pub mod video;
 pub mod viewer;
 pub mod virtual_grid;
 pub mod virtual_list;
@@ -167,6 +168,7 @@ pub use text_style::{
     TextSpan, TextStyle, WidthUse,
 };
 pub use transform::{TransformTable, Turn};
+pub use video::{Playback, VideoEntry, VideoSource, VideoStatus, VideoTable};
 pub use viso_runtime::{InputKind, Instant, primary_is_logo};
 // Render primitive data types that already appear in this crate's public API —
 // `Content`'s payload fields (content.rs), `TextRequest::color`, and

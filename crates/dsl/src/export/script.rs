@@ -346,6 +346,7 @@ fn mount(out: &mut String, index: usize, content: &Content, eval: &Eval<'_>, roo
                         Prop::DragAxis => format!("P.axis({el}, {value})"),
                         Prop::Data(name) => format!("P.data({el}, {value}, \"{name}\")"),
                         Prop::Turn => format!("P.turn({el}, {value})"),
+                        Prop::Media(name) => format!("P.media({el}, {value}, \"{name}\")"),
                         Prop::Source { mask } => format!("P.source({el}, {value}, {mask})"),
                         Prop::Fit { mask } => format!("P.fit({el}, {value}, {mask})"),
                         Prop::Var { name, token } => match token {

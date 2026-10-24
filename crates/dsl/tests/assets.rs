@@ -1,8 +1,8 @@
 //! Assets in `.vs`: `asset("…")` names a file under the package's `assets/`,
-//! checked when compiling and typed by its format — an `ImageAsset` for a PNG
-//! or JPEG, which an `Image` shows, an `SvgAsset` for an SVG, which an `Svg`
-//! shows. Every
-//! misuse is `E3713`.
+//! checked when compiling and typed by its format — an `ImageAsset` for a
+//! raster, which an `Image` shows, an `SvgAsset` for an SVG, which an `Svg`
+//! shows, a `VideoAsset` for a video, which a `Video` plays. Every misuse is
+//! `E3713`.
 
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -22,7 +22,7 @@ fn origin() -> Origin {
     }
 }
 
-/// A catalog in `dir` holding a PNG, a JPEG and an SVG.
+/// A catalog in `dir` holding a PNG, a JPEG, an SVG and an MP4.
 fn catalog(dir: PathBuf) -> AssetCatalog {
     AssetCatalog::of(
         dir,
@@ -30,6 +30,7 @@ fn catalog(dir: PathBuf) -> AssetCatalog {
             ("images/logo.png".to_owned(), AssetFormat::Png),
             ("images/photo.jpg".to_owned(), AssetFormat::Jpeg),
             ("icons/close.svg".to_owned(), AssetFormat::Svg),
+            ("clips/intro.mp4".to_owned(), AssetFormat::Mp4),
         ],
     )
 }
@@ -116,6 +117,55 @@ fn an_image_reports_its_source_loading() {
 }
 
 #[test]
+fn a_video_plays_its_asset_or_url_and_writes_back_its_playing() {
+    let source = "export component Clip {
+    state playing = true;
+    state at = 0ms;
+    state done = false;
+    view {
+        Column {
+            Video {
+                source: asset(\"clips/intro.mp4\");
+                bind playing <=> playing;
+                looping: false;
+                muted: true;
+                volume: 0.5;
+                rate: 1.5;
+                fit: ImageFit::cover;
+                on progress(p) { at = p.position; }
+                on ended { done = true; }
+                on loaded(size) { done = false; }
+            }
+            Video { url: \"https://example.com/live.m3u8\"; playing: true; }
+        }
+    }
+}";
+    let compiled = compile(source);
+    assert_eq!(errors(&compiled), []);
+    assert!(
+        compiled
+            .assets
+            .iter()
+            .any(|a| a.path == "clips/intro.mp4" && a.format == AssetFormat::Mp4)
+    );
+    let wrong = "export component C { view { Video { source: asset(\"images/logo.png\"); } } }";
+    assert_eq!(
+        compile(wrong).errors().map(|d| d.code).collect::<Vec<_>>(),
+        ["E2103"]
+    );
+    let wrong = "export component C { view { Image { source: asset(\"clips/intro.mp4\"); } } }";
+    assert_eq!(
+        compile(wrong).errors().map(|d| d.code).collect::<Vec<_>>(),
+        ["E2103"]
+    );
+    let built = "export component C { view { Video { source: VideoAsset { resource: 1 }; } } }";
+    assert_eq!(
+        compile(built).errors().map(|d| d.code).collect::<Vec<_>>(),
+        ["E3713"]
+    );
+}
+
+#[test]
 fn a_node_takes_only_its_kind_of_asset() {
     let wrong = "export component C { view { Image { source: asset(\"icons/close.svg\"); } } }";
     let compiled = compile(wrong);
@@ -193,7 +243,7 @@ fn every_misuse_of_an_asset_is_reported() {
     assert_eq!(scanned.files().count(), 0);
     let (code, message, _) = misuse("asset(\"notes.txt\")", scanned);
     assert!(
-        code == "E3713" && message.contains("not a PNG, JPEG or SVG"),
+        code == "E3713" && message.contains("not an image, SVG or video"),
         "{message}"
     );
     std::fs::remove_dir_all(&dir).unwrap();

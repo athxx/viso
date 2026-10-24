@@ -690,6 +690,19 @@ const P = {
     if (!mask) el.src = u;
     else el.style.maskImage = el.style.webkitMaskImage = u ? 'url("' + u + '")' : "none";
   },
+  // A video's `url`, which plays in place of its source when set, and how
+  // it plays.
+  media(el, v, name) {
+    if (name === "url") {
+      if (v) el.src = v;
+    } else if (name === "autoplay") {
+      el.autoplay = truth(v);
+      if (truth(v)) el.play().catch(() => {}); else el.pause();
+    } else if (name === "loop") el.loop = truth(v);
+    else if (name === "muted") el.muted = truth(v);
+    else if (name === "volume") el.volume = Math.min(Math.max(Number(v ?? 1), 0), 1);
+    else el.playbackRate = Number(v ?? 1);
+  },
   fit(el, v, mask) {
     const fit = fits[Number(v ?? 0n)] || "contain";
     if (!mask) el.style.objectFit = fit;
@@ -1968,6 +1981,33 @@ const listen = (el, route, capture, control, fire) => {
       const op = e.detail.operation;
       if (e.target === el) fire(rec([op === null ? null : BigInt(op)]));
     }, capture);
+  } else if (route === 36) {
+    // An image's or a video's first picture, at its natural size.
+    const loaded = () => fire(rec([el.naturalWidth ?? el.videoWidth, el.naturalHeight ?? el.videoHeight]));
+    el.addEventListener(el.tagName === "VIDEO" ? "loadeddata" : "load", loaded, capture);
+    if (el.tagName === "IMG" && el.complete && el.naturalWidth) queueMicrotask(loaded);
+  } else if (route === 37) {
+    el.addEventListener("error", () => fire(null), capture);
+  } else if (route === 38) {
+    // Where a video is, how long it plays, whether it plays and whether it
+    // waits for data, each time one changes; its time a few times a second.
+    let waiting = false;
+    const report = () => fire(rec([
+      el.currentTime,
+      Number.isFinite(el.duration) ? el.duration : null,
+      bool(!el.paused && !el.ended),
+      bool(waiting),
+    ]));
+    for (const name of ["timeupdate", "durationchange", "play", "pause", "seeked", "ended"]) {
+      el.addEventListener(name, report, capture);
+    }
+    el.addEventListener("waiting", () => { waiting = true; report(); }, capture);
+    el.addEventListener("playing", () => { waiting = false; report(); }, capture);
+  } else if (route === 39) {
+    el.addEventListener("ended", () => fire(null), capture);
+  } else if (route === 40) {
+    el.addEventListener("play", () => fire(bool(true)), capture);
+    el.addEventListener("pause", () => fire(bool(false)), capture);
   } else if (route >= 25 && route <= 27) {
     pinchable(el);
     el.addEventListener("viso-pinch", live((e) => {

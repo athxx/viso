@@ -36,6 +36,7 @@ pub mod scroll;
 pub mod skeleton;
 pub mod swipe_row;
 pub mod text;
+pub mod video;
 
 pub use avatar::{Avatar, avatar};
 pub use badge::{Badge, badge, dot_badge};
@@ -104,3 +105,4 @@ pub use swipe_row::{
     swipe_row,
 };
 pub use text::{Label, LabelStyle, label, link_label, rich_text};
+pub use video::{Video, VideoHandle, VideoHandleSlot, video};

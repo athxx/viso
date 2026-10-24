@@ -109,13 +109,22 @@ pub enum EventRoute {
     /// another size.
     Loaded = 36,
     /// An `Image`'s or `Svg`'s `failed`: its source could not be read or did
-    /// not decode.
+    /// not decode. A `Video`'s too: it could not play.
     Failed = 37,
+    /// A `Video`'s `progress` (`VideoProgress`): where it is, how long it
+    /// plays, whether it plays and whether it waits for data, each time one
+    /// changes.
+    Progress = 38,
+    /// A `Video`'s `ended`: it played to its end and stopped there.
+    Ended = 39,
+    /// A `Video`'s `playing_changed` (`Bool`): it stopped at its end, or plays
+    /// again; it writes back a two-way `playing`.
+    PlayingChanged = 40,
 }
 
 impl EventRoute {
     /// Every route, by discriminant.
-    pub const ALL: [EventRoute; 38] = [
+    pub const ALL: [EventRoute; 41] = [
         EventRoute::Click,
         EventRoute::Tap,
         EventRoute::PointerDown,
@@ -154,6 +163,9 @@ impl EventRoute {
         EventRoute::Removed,
         EventRoute::Loaded,
         EventRoute::Failed,
+        EventRoute::Progress,
+        EventRoute::Ended,
+        EventRoute::PlayingChanged,
     ];
 
     /// The route of standard DSL event `event`, `None` for an event the runtime
@@ -206,6 +218,9 @@ impl EventRoute {
             EventRoute::Removed => "removed",
             EventRoute::Loaded => "loaded",
             EventRoute::Failed => "failed",
+            EventRoute::Progress => "progress",
+            EventRoute::Ended => "ended",
+            EventRoute::PlayingChanged => "playing_changed",
         }
     }
 
@@ -250,6 +265,9 @@ impl EventRoute {
             EventRoute::Removed => "Removed",
             EventRoute::Loaded => "Loaded",
             EventRoute::Failed => "Failed",
+            EventRoute::Progress => "Progress",
+            EventRoute::Ended => "Ended",
+            EventRoute::PlayingChanged => "PlayingChanged",
         }
     }
 
@@ -315,6 +333,9 @@ impl EventRoute {
                 | EventRoute::AnimationEnd
                 | EventRoute::Loaded
                 | EventRoute::Failed
+                | EventRoute::Progress
+                | EventRoute::Ended
+                | EventRoute::PlayingChanged
         )
     }
 
@@ -373,6 +394,10 @@ pub const PAYLOAD_RECORDS: &[(&str, &[&str])] = &[
         &["position", "kind", "text", "files", "operation"],
     ),
     ("DropEnd", &["operation"]),
+    (
+        "VideoProgress",
+        &["position", "duration", "playing", "waiting"],
+    ),
 ];
 
 /// The prelude enums a payload names a variant of, with their variants in order.

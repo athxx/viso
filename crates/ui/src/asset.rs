@@ -108,16 +108,20 @@ impl Asset {
     /// shows what was read of it while any table keeps it.
     pub fn file(path: impl Into<PathBuf>) -> Asset {
         let path: PathBuf = path.into();
-        let svg = path
-            .extension()
-            .is_some_and(|x| x.eq_ignore_ascii_case("svg"));
+        let is = |names: &[&str]| {
+            path.extension()
+                .is_some_and(|x| names.iter().any(|n| x.eq_ignore_ascii_case(n)))
+        };
+        let kind = if is(&["svg"]) {
+            AssetKind::Vector
+        } else if is(&["mp4", "m4v", "mov", "webm", "mkv"]) {
+            AssetKind::Video
+        } else {
+            AssetKind::Raster
+        };
         Asset {
             id: ResourceId::of(&format!("file:{}", path.display())),
-            kind: if svg {
-                AssetKind::Vector
-            } else {
-                AssetKind::Raster
-            },
+            kind,
             source: AssetSource::File(path.into()),
         }
     }
@@ -178,6 +182,10 @@ pub(crate) struct AssetEntry {
     pub(crate) users: Vec<NodeId>,
     /// When it was last shown, on the table's clock.
     pub(crate) shown: u64,
+    /// The natural size of a resource the facade provides itself — a
+    /// video's pictures — rather than from bytes it decodes; `None` for any
+    /// other.
+    pub(crate) hosted: Option<[f32; 2]>,
 }
 
 /// A raster's texture, the revision it was uploaded from, that raster's size,
@@ -202,6 +210,7 @@ impl AssetEntry {
             texture: None,
             users: Vec::new(),
             shown: 0,
+            hosted: None,
         }
     }
 
@@ -300,9 +309,9 @@ impl AssetTable {
     /// Every resource a node shows that the table holds nothing of — no
     /// bytes, no payload, no texture — nor knows a file of.
     pub fn wanted(&self) -> impl Iterator<Item = ResourceId> + '_ {
-        self.entries
-            .iter()
-            .filter_map(|(id, e)| (e.file.is_none() && e.holds_nothing()).then_some(*id))
+        self.entries.iter().filter_map(|(id, e)| {
+            (e.file.is_none() && e.hosted.is_none() && e.holds_nothing()).then_some(*id)
+        })
     }
 
     /// Every resource to read from its file: one the table holds nothing of
@@ -452,7 +461,8 @@ impl AssetTable {
         let before = self.entries.len();
         let mut scenes = 0;
         self.entries.retain(|id, e| {
-            if !e.users.is_empty() {
+            // What the facade provides it lets go of itself.
+            if !e.users.is_empty() || e.hosted.is_some() {
                 return true;
             }
             let kept = e.kept_bytes();
@@ -520,6 +530,12 @@ impl AssetTable {
         };
         if entry.fails() {
             return (AssetDraw::Failed, [0.0; 2]);
+        }
+        if let Some(size) = entry.hosted {
+            let draw = entry
+                .texture
+                .map_or(AssetDraw::Nothing, |t| AssetDraw::Raster(t.texture));
+            return (draw, size);
         }
         match (&entry.payload, entry.texture) {
             (Some((_, AssetPayload::Vector(scene))), _) => {
@@ -613,6 +629,89 @@ impl AssetTable {
         entry.payload = None;
         self.revision += 1;
         Ok(old.map(|t| t.texture))
+    }
+
+    /// Records `id` as a resource the facade provides itself, of no size
+    /// yet.
+    pub(crate) fn host(&mut self, id: ResourceId) {
+        let entry = self
+            .entries
+            .entry(id)
+            .or_insert_with(|| AssetEntry::new(ResourceRevision::default()));
+        if entry.hosted.is_none() {
+            entry.hosted = Some([0.0; 2]);
+            self.revision += 1;
+        }
+    }
+
+    /// Records hosted `id`'s natural size; `false` when it is not hosted or
+    /// already that size.
+    pub(crate) fn size_hosted(&mut self, id: ResourceId, size: [f32; 2]) -> bool {
+        let Some(entry) = self.entries.get_mut(&id) else {
+            return false;
+        };
+        if entry.hosted.is_none_or(|s| s == size) {
+            return false;
+        }
+        entry.hosted = Some(size);
+        self.revision += 1;
+        true
+    }
+
+    /// Records `texture`, of `texels`, as what hosted `id` shows. Returns the
+    /// texture it replaces, or `texture` itself when `id` is not hosted.
+    pub(crate) fn attach_hosted(
+        &mut self,
+        id: ResourceId,
+        texture: TextureId,
+        texels: (u32, u32),
+    ) -> Option<TextureId> {
+        let Some(entry) = self.entries.get_mut(&id) else {
+            return Some(texture);
+        };
+        let Some(size) = entry.hosted else {
+            return Some(texture);
+        };
+        let bytes = u64::from(texels.0) * u64::from(texels.1) * 4;
+        let old = entry.texture.replace(Resident {
+            revision: ResourceRevision::default(),
+            texture,
+            size,
+            texels,
+            bytes,
+        });
+        entry.failed = None;
+        self.texture_bytes += bytes;
+        if let Some(old) = old {
+            self.texture_bytes -= old.bytes;
+        }
+        self.revision += 1;
+        old.map(|t| t.texture)
+    }
+
+    /// Records that hosted `id` cannot show, dropping its texture, which comes
+    /// back for the caller to release.
+    pub(crate) fn fail_hosted(&mut self, id: ResourceId) -> Option<TextureId> {
+        let entry = self.entries.get_mut(&id)?;
+        entry.hosted?;
+        entry.failed = Some(entry.offered);
+        let old = entry.texture.take();
+        if let Some(old) = old {
+            self.texture_bytes -= old.bytes;
+        }
+        self.revision += 1;
+        old.map(|t| t.texture)
+    }
+
+    /// Forgets hosted `id`, whose texture comes back for the caller to
+    /// release.
+    pub(crate) fn forget_hosted(&mut self, id: ResourceId) -> Option<TextureId> {
+        self.entries.get(&id)?.hosted?;
+        let entry = self.entries.remove(&id)?;
+        self.revision += 1;
+        let old = entry.texture?;
+        self.texture_bytes -= old.bytes;
+        Some(old.texture)
     }
 
     pub(crate) fn clear(&mut self) {

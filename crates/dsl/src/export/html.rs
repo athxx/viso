@@ -202,6 +202,9 @@ pub(super) enum Prop {
     Data(&'static str),
     /// How a navigation stack's pages trade places.
     Turn,
+    /// What a video plays and how: its `url`, `playing`, `looping`,
+    /// `muted`, `volume` or `rate`, which the script gives its element.
+    Media(&'static str),
     /// An asset's source, as an image or as a mask.
     Source {
         mask: bool,
@@ -567,6 +570,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             ("TextInput", _) if lines => "textarea",
             ("TextInput" | "NumberField" | "Toggle" | "CheckBox" | "Slider" | "Knob", _) => "input",
             ("Image" | "Svg", _) if !masked => "img",
+            ("Video", _) => "video",
             ("Text", _) => "span",
             ("LinkLabel", _) => "a",
             ("Badge" | "Avatar", _) => "span",
@@ -593,6 +597,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             (_, "Avatar") => "vx-avatar",
             (_, "Image" | "Svg") if masked => "vx-mask",
             (_, "Image" | "Svg") => "vx-image",
+            (_, "Video") => "vx-video",
             _ => "vx-leaf",
         };
         // A disclosure's caption header draws the chevron that turns with it.
@@ -1145,6 +1150,92 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 None
             }
             fixed => Some(fixed),
+        }
+    }
+
+    /// Writes a video as a `<video>` playing inline: what it plays — its
+    /// `url` in place of its `source` — and how it fills its box as its
+    /// `src` and `object-fit`, how it plays as `autoplay`, `loop` and
+    /// `muted`, and what a page sets only from its script — the volume, the
+    /// rate, and anything that changes — as wires.
+    fn video(
+        &mut self,
+        control: &Control,
+        el: &mut Element,
+        decls: &mut Vec<(&'static str, String)>,
+        wires: &mut Vec<Wire>,
+        at: TextRange,
+    ) {
+        el.attr("playsinline", "");
+        el.attr("preload", "metadata");
+        let url = self.bind(wires, control.url, Prop::Media("url"), "the URL", at);
+        let by_url = match &url {
+            Some(fixed) => !fixed.text().is_empty(),
+            None => control.url.is_some(),
+        };
+        if let Some(fixed) = url.filter(|_| by_url) {
+            el.attr("src", &fixed.text());
+        } else if !by_url
+            && let Some(fixed) = self.bind(
+                wires,
+                control.value,
+                Prop::Source { mask: false },
+                "the source",
+                at,
+            )
+            && let Some(id) = fixed.resource()
+        {
+            let url = self.asset(id);
+            el.attr("src", &url);
+        }
+        if let Some(fixed) = self.bind(wires, control.fit, Prop::Fit { mask: false }, "the fit", at)
+        {
+            let fit = fit(fixed.int().unwrap_or(0));
+            if fit != "contain" {
+                decls.push(("object-fit", fit.into()));
+            }
+        }
+        if control.tint.is_some() {
+            self.need(
+                Need::Unsupported,
+                at,
+                "a page does not tint a video",
+                Vec::new(),
+            );
+        }
+        for (entry, attr, what) in [
+            (control.playing, "autoplay", "whether it plays"),
+            (control.looping, "loop", "whether it loops"),
+            (control.muted, "muted", "whether it is muted"),
+        ] {
+            if let Some(fixed) = self.bind(wires, entry, Prop::Media(attr), what, at)
+                && fixed.truth()
+            {
+                el.attr(attr, "");
+            }
+        }
+        for (entry, name, what, default) in [
+            (control.volume, "volume", "its volume", 1.0),
+            (control.rate, "rate", "its rate", 1.0),
+        ] {
+            if let Some(entry) = entry
+                && let Some(fixed) = self.bind(wires, Some(entry), Prop::Media(name), what, at)
+                && fixed.float().is_some_and(|v| v != default)
+            {
+                if self.static_only {
+                    self.need(
+                        Need::Dynamic,
+                        at,
+                        format!("a page sets {what} from its script"),
+                        vec!["a page without JavaScript plays at full volume and speed".to_owned()],
+                    );
+                } else {
+                    wires.push(Wire::Prop {
+                        entry,
+                        prop: Prop::Media(name),
+                    });
+                }
+            }
         }
     }
 
@@ -1983,6 +2074,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             ControlKind::Badge => self.badge(key, control, el, decls, wires, at),
             ControlKind::Stepper => self.stepper(control, el, decls, wires, at),
             ControlKind::ColorPicker => self.color_picker(control, el, wires, at),
+            ControlKind::Video => self.video(control, el, decls, wires, at),
             ControlKind::ComboBox | ControlKind::SearchField => {
                 self.listed(key, control, el, wires, at);
             }

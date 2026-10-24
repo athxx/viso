@@ -98,6 +98,14 @@ export record DropEvent {
 // How a drag of a node's data ended: what the target it was dropped on did,
 // none for data put back.
 export record DropEnd { operation: Option<DropOperation>; }
+// Where a `Video` is, how long it plays (none for a live stream or before it
+// is ready), whether it plays and whether it waits for data to play on.
+export record VideoProgress {
+    position: Duration;
+    duration: Option<Duration>;
+    playing: Bool;
+    waiting: Bool;
+}
 
 // How a move's progress follows its time: Penner's curves accelerating
 // (`in_*`), decelerating (`out_*`) or both, `ease_*` the cubic ones, a CSS
@@ -190,10 +198,12 @@ export record InputCapabilities {
 export enum LayoutDirection { ltr; rtl; }
 export record Locale { tag: String; }
 
-// Assets: only `asset("…")` makes an `ImageAsset` (PNG, JPEG), which an `Image`
-// shows, or an `SvgAsset`, which an `Svg` shows.
+// Assets: only `asset("…")` makes an `ImageAsset` (a raster), which an `Image`
+// shows, an `SvgAsset`, which an `Svg` shows, or a `VideoAsset` (MP4,
+// QuickTime, WebM, Matroska), which a `Video` plays.
 export record ImageAsset { resource: I64; }
 export record SvgAsset { resource: I64; }
+export record VideoAsset { resource: I64; }
 export enum ImageFit { contain; cover; fill; }
 
 // The layout schema: an axis's sizing (a length stands for `fixed` of it),

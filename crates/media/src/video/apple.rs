@@ -66,10 +66,8 @@ impl Player {
                     .ok_or_else(|| VideoError::Open(format!("`{url}` is not a URL")))?;
                 (url, None)
             }
-            VideoSource::Bytes(bytes) => {
-                let spilled = Spilled::new(bytes).map_err(|e| VideoError::Open(e.to_string()))?;
-                (file_url(spilled.path())?, Some(spilled))
-            }
+            VideoSource::Bytes(bytes) => spill(bytes)?,
+            VideoSource::Static(bytes) => spill(bytes)?,
         };
         // SAFETY: each call is made on the main thread with live objects,
         // as AVFoundation documents them; the dictionary's keys are the
@@ -371,6 +369,12 @@ fn seconds(time: CMTime) -> Option<Duration> {
     // SAFETY: a pure conversion of a valid time.
     let s = unsafe { time.seconds() };
     (s.is_finite() && s >= 0.0).then(|| Duration::from_secs_f64(s))
+}
+
+/// `bytes` written to a file of their own, and its URL.
+fn spill(bytes: &[u8]) -> Result<(Retained<NSURL>, Option<Spilled>), VideoError> {
+    let spilled = Spilled::new(bytes).map_err(|e| VideoError::Open(e.to_string()))?;
+    Ok((file_url(spilled.path())?, Some(spilled)))
 }
 
 fn file_url(path: &std::path::Path) -> Result<Retained<NSURL>, VideoError> {

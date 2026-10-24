@@ -33,6 +33,7 @@ pub(crate) const SHADER_TY: &str = "Shader";
 pub(crate) const PRELUDE_RECORDS: &[&str] = &[
     "ImageAsset",
     "SvgAsset",
+    "VideoAsset",
     "EdgeInsets",
     "Border",
     "Shadow",

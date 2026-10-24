@@ -738,6 +738,9 @@ impl Jsx<'_> {
                             format!("show.truth({v}) ? undefined : \"none\""),
                         )),
                         Prop::Turn => refs.push(format!("st.effect(() => show.turn(el, {v}));")),
+                        Prop::Media(name) => {
+                            refs.push(format!("st.effect(() => show.media(el, {v}, \"{name}\"));"))
+                        }
                         Prop::Source { mask: false } => {
                             attrs.push(format!("src={{show.url({v})}}"))
                         }

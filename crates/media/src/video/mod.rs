@@ -26,6 +26,8 @@ pub enum VideoSource {
     Url(String),
     /// The encoded bytes of a whole file, in memory.
     Bytes(Arc<[u8]>),
+    /// The encoded bytes of a whole file, embedded in the program.
+    Static(&'static [u8]),
 }
 
 /// What a player knows of its video once it is ready.

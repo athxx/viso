@@ -341,6 +341,7 @@ export const show = {
   select,
   page,
   turn: P.turn,
+  media: P.media,
 };
 
 export { $, envField, fault, settle };

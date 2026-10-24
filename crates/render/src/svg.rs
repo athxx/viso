@@ -113,12 +113,13 @@ pub fn decode_asset(bytes: &AssetBytes) -> Result<DecodedAsset, AssetError> {
     if viso_image::texture::is_texture(bytes) {
         return decode_raster_asset(bytes).map(DecodedAsset::Raster);
     }
-    match AssetFormat::sniff(bytes).map(AssetFormat::kind) {
-        Some(AssetKind::Raster) => decode_raster_asset(bytes).map(DecodedAsset::Raster),
-        Some(AssetKind::Vector) => parse_svg(bytes)
+    let format = AssetFormat::sniff(bytes).ok_or(AssetError::Format)?;
+    match format.kind() {
+        AssetKind::Raster => decode_raster_asset(bytes).map(DecodedAsset::Raster),
+        AssetKind::Vector => parse_svg(bytes)
             .map(|scene| DecodedAsset::Vector(scene.into_vector()))
             .map_err(|error| AssetError::Decode(error.to_string())),
-        None => Err(AssetError::Format),
+        AssetKind::Video => Err(AssetError::Kind(format)),
     }
 }
 

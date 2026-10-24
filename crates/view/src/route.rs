@@ -260,6 +260,21 @@ pub fn notice_payload(notice: &Notice) -> (EventRoute, Value) {
         ),
         Notice::AssetLoaded { size: natural } => (EventRoute::Loaded, size(natural)),
         Notice::AssetFailed => (EventRoute::Failed, Value::Nil),
+        Notice::Video(status) => (
+            EventRoute::Progress,
+            record([
+                Value::Float(status.position.as_secs_f64()),
+                status
+                    .duration
+                    .map_or(Value::Nil, |d| Value::Float(d.as_secs_f64())),
+                Value::Int(i64::from(status.playing)),
+                Value::Int(i64::from(status.waiting)),
+            ]),
+        ),
+        Notice::VideoEnded => (EventRoute::Ended, Value::Nil),
+        Notice::VideoPlaying(playing) => {
+            (EventRoute::PlayingChanged, Value::Int(i64::from(playing)))
+        }
     }
 }
 

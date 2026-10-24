@@ -211,18 +211,18 @@ pub(crate) fn decode(
     bytes: &AssetBytes,
     sampled: SampledFormats,
 ) -> Result<AssetPayload, AssetError> {
-    use viso_render::asset::AssetFormat;
+    use viso_render::asset::{AssetFormat, AssetKind};
     let raster = |image| Ok(AssetPayload::Raster(Arc::new(sampleable(image, sampled)?)));
     if viso_image::texture::is_texture(bytes) {
         return raster(viso_image::texture::read(bytes)?);
     }
-    match AssetFormat::sniff(bytes).map(AssetFormat::kind) {
+    match AssetFormat::sniff(bytes).map(|format| (format, format.kind())) {
+        // A video plays through the platform's player, never decoded here.
+        Some((format, AssetKind::Video)) => Err(AssetError::Kind(format)),
         #[cfg(not(viso_converted_rasters))]
-        Some(viso_render::asset::AssetKind::Raster) => {
-            raster(viso_render::asset::decode_raster_asset(bytes)?)
-        }
+        Some((_, AssetKind::Raster)) => raster(viso_render::asset::decode_raster_asset(bytes)?),
         #[cfg(not(viso_converted_svg))]
-        Some(viso_render::asset::AssetKind::Vector) => viso_render::svg::parse_svg(bytes)
+        Some((_, AssetKind::Vector)) => viso_render::svg::parse_svg(bytes)
             .map(|scene| AssetPayload::Vector(Arc::new(scene.into_vector())))
             .map_err(|error| AssetError::Decode(error.to_string())),
         #[cfg(any(viso_converted_rasters, viso_converted_svg))]

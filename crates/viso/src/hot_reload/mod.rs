@@ -3552,6 +3552,80 @@ mod tests {
     }
 
     #[test]
+    fn a_video_node_plays_its_url_as_its_properties_ask_and_an_edit_asks_again() {
+        let mut ws = counter();
+        let (mut session, mut host, mut edits) = session(&mut ws, COUNTER);
+        let video = |playing: &str| {
+            COUNTER.replace(
+                "Text { visible: enabled; }",
+                &format!(
+                    "Text {{ visible: enabled; }}\n            \
+                     Video {{ url: \"https://example.com/a.m3u8\"; playing: {playing}; \
+                     muted: true; volume: 0.5; fit: ImageFit::cover; }}"
+                ),
+            )
+        };
+        let patch = edits.patch(&host, 1, 2, &video("true"));
+        assert!(matches!(
+            apply_on(
+                &mut session,
+                &mut host,
+                std::slice::from_mut(&mut ws),
+                &patch
+            ),
+            RuntimeMessage::Ack(_)
+        ));
+        edits.acked();
+        let node = children(&ws.store, ws.root.unwrap())[2];
+        let entry = ws.store.videos().get(node).expect("a video node");
+        assert_eq!(
+            entry.source,
+            viso_ui::VideoSource::url("https://example.com/a.m3u8")
+        );
+        assert_eq!(
+            entry.playback,
+            viso_ui::Playback {
+                playing: true,
+                muted: true,
+                volume: 0.5,
+                ..viso_ui::Playback::default()
+            }
+        );
+        let resource = entry.resource;
+
+        // Its end pauses it; an edit asking the same again leaves it so, one
+        // asking otherwise asks again, and the video plays on where it was.
+        ws.store.set_video_playing(node, false);
+        let patch = edits.patch(&host, 2, 3, &video("true && enabled"));
+        assert!(matches!(
+            apply_on(
+                &mut session,
+                &mut host,
+                std::slice::from_mut(&mut ws),
+                &patch
+            ),
+            RuntimeMessage::Ack(_)
+        ));
+        edits.acked();
+        let node = children(&ws.store, ws.root.unwrap())[2];
+        assert!(!ws.store.playback(node).unwrap().playing);
+        let patch = edits.patch(&host, 3, 4, &video("false"));
+        assert!(matches!(
+            apply_on(
+                &mut session,
+                &mut host,
+                std::slice::from_mut(&mut ws),
+                &patch
+            ),
+            RuntimeMessage::Ack(_)
+        ));
+        let node = children(&ws.store, ws.root.unwrap())[2];
+        let entry = ws.store.videos().get(node).unwrap();
+        assert!(!entry.playback.playing);
+        assert_eq!(entry.resource, resource, "the same video");
+    }
+
+    #[test]
     fn an_asset_patch_swaps_the_resource_and_dirties_only_the_nodes_showing_it() {
         let mut ws = counter();
         ws.surface_size = (800, 600);

@@ -408,6 +408,9 @@ fn notices(
             EventRoute::ScrollChanged => kinds | NoticeKinds::SCROLL,
             EventRoute::AnimationEnd => kinds | NoticeKinds::ANIMATION_END,
             EventRoute::Loaded | EventRoute::Failed => kinds | NoticeKinds::ASSET,
+            EventRoute::Progress | EventRoute::Ended | EventRoute::PlayingChanged => {
+                kinds | NoticeKinds::VIDEO
+            }
             _ => kinds | NoticeKinds::VISIBLE_RANGE,
         });
     if kinds.is_empty() {
