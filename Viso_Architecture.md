@@ -911,7 +911,8 @@ PDF/browser/chart/map 等不是基础 widget，放 optional package/integration�
 - transactional hot reload 的 compile 侧（`crates/dsl/src/hotreload`：plan → diff → migrate，产出 `viso-dev-protocol` 的 patch 数据，ADR 0015）。commit（修改 retained state）是 apply 侧职责，只在 `viso-view` 的 dev 模块（ADR 0042）；进程内驱动 commit 的只有测试；
 - Release AOT emitter（ADR 0016）：UI IR / Binding IR 以 compact asset 输出，handler / binding evaluator / computed 以生成的 Rust 源码输出（ADR 0041）；
 - source map；
-- Behavior IR → bytecode lowering（`Program::bytecode`，ADR 0035），只服务 Dev 热更新与显式 dynamic。
+- Behavior IR → bytecode lowering（`Program::bytecode`，ADR 0035），只服务 Dev 热更新与显式 dynamic；
+- Native Package（ADR 0051）：扩展 crate 在 Cargo manifest 中声明的 Native Library，以 `viso-natives` JSON Schema 读入为 stub；`native_package::link_with` 先按标准 Registry 编译，出现 `E2001` 时经 `cargo metadata` 发现 App crate 直接依赖中的包并重编译，`view!`/`component!`、`viso check`/`export`/`dev`/`schema` 与 LSP 共用。展开把模块调用到的包的 Rust Library 交给 `viso-view` 的 Host，Host、其 Game 与 Release View Package 以 `Natives::shared`（每组 Library 一个进程内共享 Registry）链接。框架不认识任何扩展：HTTP 由 `viso-ext/viso-net` 的 `net` Library 提供。
 
 `viso-dsl` 只依赖 `viso-schema`、`viso-dev-protocol`、`viso-ende`、`viso-behavior`、`viso-shader` 与叶子 `viso-math`（Web 导出按其缓动曲线采样 CSS）；传递依赖闭包不含 `ui`/`render`/`gpu`（backend）/`runtime`/`platform`，这样 LSP、`viso check` 与 CI 分析不链接运行时栈（`check-deps` 的闭包规则执行）。Shader IR 的唯一 owner 是 `viso-shader`：`viso-dsl` 解析、检查 `.vs` 中的 shader 声明（与其余 DSL 共用 CST、resolver 与诊断），lower 为 `viso_shader::program::Program`，validation 与 codegen 由 `viso-shader` 完成。
 

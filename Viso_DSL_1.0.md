@@ -1893,7 +1893,7 @@ native_type_decl     = "type", identifier,
 
 ### 47.1 生成的 Native Schema
 
-Native Schema 由 Rust 侧生成（ADR 0036）：一个 Native Library 是一条模块路径（如 `viso::text`）下带版本的函数与 Handle 类型集合；编译器与运行时共享同一个 Registry，`.vs` 不重复声明签名。标准 Registry 含 `viso::text`、`viso::math`（`F64` 函数——`sqrt`/`abs`/`floor`/`round`/`min`/`max`/`clamp` 与 `sin`/`cos`/`tan`/`atan`/`atan2`/`exp`/`log`/`pow`/`hypot`，均为 `cross_platform`（§106.5）——与 `Vec2F32`/`Vec3F32` 值类型：`new`、Property `x`/`y`/`z`、`add`/`sub`/`scale`/`length`，单精度 IEEE 运算，`cross_platform`）、`viso::time`（`Stopwatch`）与 `viso::clipboard`。
+Native Schema 由 Rust 侧生成（ADR 0036）：一个 Native Library 是一条模块路径（如 `viso::text`）下带版本的函数与 Handle 类型集合；编译器与运行时共享同一个 Registry，`.vs` 不重复声明签名。标准 Registry 含 `viso::text`、`viso::math`（`F64` 函数——`sqrt`/`abs`/`floor`/`round`/`min`/`max`/`clamp` 与 `sin`/`cos`/`tan`/`atan`/`atan2`/`exp`/`log`/`pow`/`hypot`，均为 `cross_platform`（§106.5）——与 `Vec2F32`/`Vec3F32` 值类型：`new`、Property `x`/`y`/`z`、`add`/`sub`/`scale`/`length`，单精度 IEEE 运算，`cross_platform`）、`viso::time`（`Stopwatch`）与 `viso::clipboard`；扩展 crate 携带的 Library 见 §47.3。
 
 - 每个函数记录：名称、`fn`/`action`/`task` 分类、参数与返回的 Schema 类型、所需 Capability、线程域（`any`/`ui`/`worker`）、`deterministic`、`realtime_safe`、`@const`（编译期可求值，隐含 `deterministic`）与每次调用的预算成本；每个 Handle 类型记录方法、所有权（`shared`/`borrowed`）与线程域；
 - Schema Enum 是带 Variant 的 Native 类型，值为 Variant 序号而非 Handle：`import viso::game::Key;` 后写 `Key::Space`，未知 Variant 为 `E2001`（附最近候选）；
@@ -1914,6 +1914,37 @@ Native Schema 由 Rust 侧生成（ADR 0036）：一个 Native Library 是一条
 - 编译所用 Registry 已注册声明所在的 Library 时立即检查：路径未注册、`fn`/`action`/`task` 分类或签名哈希不同（参数名不计入签名）、`requires` 与 Schema 的 Capability 集合不同均为 `E6101`，调用使用已注册的 Schema；
 - 未注册该 Library 时，声明本身即其 Schema：调用按声明的类型、Effect 分类与 Capability 检查并 Lower 为该路径的 Native Import（`native fn` 为 Read，不确定、UI 线程）；运行前 `link` 到实现它的 Rust Library，路径缺失或签名不同为 `E6101`；
 - 同一作用域内重名（含与 `fn`/`action`/`task`/`const` 或成员重名）为 `E2002`。
+
+### 47.3 Native Package
+
+扩展 crate 携带的 Native Library 不经手写声明（ADR 0051）：Cargo 包在 manifest 中声明它们，App crate 直接依赖它即可在 `.vs` 中 `import`，不写注册代码。
+
+```toml
+[package.metadata.viso.natives]
+schema = "natives.json"   # Library 的 Schema，与 manifest 同目录
+library = "NATIVES"       # crate 中的 `&'static [&'static NativeLibrary]`
+feature = "dsl"           # 构建它们的 feature，可省略
+```
+
+- Schema 文件是 `viso_dsl::native_package::write` 写出的 `viso-natives` JSON（版本 1）：除实现外的每个函数与类型字段；包自身的测试从 Rust Library 写出并比较，不一致即失败；Trait 与 Widget 暂不携带；
+- 只发现 App crate 的直接 normal 依赖（`cargo metadata`；声明了 `feature` 的须已启用），每个 manifest 与 lock 文件在进程内只发现一次；两个 Library 声明同一路径为 `E6101`；
+- `view!` 与 `component!` 先按标准 Registry 编译，出现 `E2001` 时才发现并按标准 Library 加上这些包的 Library 重新编译，不依赖 Native Package 的 App 不运行 `cargo metadata`；展开把模块调用到的包的 Rust Library（如 `::viso_net::NATIVES`）交给 View 的 Host 链接，View 启动的 Game 同样链接，Release View Package 以 `ViewLoad::libraries` 交入；
+- `viso check`、`viso export`、`viso run` 的 dev 编译与 LSP 用同一规则（源文件所属 crate 为 `Viso.toml` 旁或文件之上最近的 `Cargo.toml`）；`viso schema` 预先发现，列出项目可调用的全部 Native；发现失败时作为 note 附在每个保留的 `E2001` 上；
+- Dev Session 的 Patch 只能链接 Live View 的 Host 已链接的 Library：首次调用构建未链接的包需要重新构建；
+- Capability 照旧：函数声明自己的 Capability，`Viso.toml` 的 `[package] capabilities` 授予，授权随模块到达 Host，授权之外的调用为 `E6103` Fault；`view!` 与 `component!` 以 `Viso.toml` 为编译依赖，改动授权即重新编译。
+
+示例（`viso-net` 的 `net` Library，`Viso.toml` 授予 `network.http`）：
+
+```viso
+import net::Http;
+
+task load_profile(id: I64, token: String) -> String {
+    let response = await Http::get(format("/users/{}", id)).bearer(token).send();
+    if response.ok { response.text } else { "" }
+}
+```
+
+`Http::get`/`post`/`put`/`patch`/`delete`/`head` 开始一个请求，`header`/`query`/`bearer`/`text`/`json`/`timeout` 各返回新的请求，`send` 是需要 `network.http` 的 Task；`Response` 的 Property 为 `status`、`ok`（2xx 且无错误）、`error`（未得到响应或读不出 Body 时为 `Some`）、`text`、`url`，方法 `header(name)`。非 2xx 状态与网络失败都是 `Response`，不使 Task Fault；请求经 Host 服务中的 `viso_net::Client`，否则经 `viso_net::dsl::set_client` 设置的 Client，否则为默认 Client。
 
 ---
 

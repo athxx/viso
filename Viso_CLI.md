@@ -1594,7 +1594,7 @@ invalid signing metadata shape
 
 `viso check` 不应该默认执行完整 package/signing。Rust 代码默认不检查；`--cargo` 以该 target 构建所用的 Rust target、features 与 profile 运行 `cargo check`（不产出可执行文件），编译器诊断作为 `diagnostic`（带 span）报告，失败为 `BUILD_FAILED`（exit 4）。
 
-当前实现：`.vs` 包整体解析、类型检查，并且每个文件挂载的视图按其 `view!` 的方式降级，所以视图无法挂载之处（`E3711`，如尚无运行时路径的 Property；`E9106`）在构建前报告，位置指向该文件。
+当前实现：`.vs` 包整体解析、类型检查，并且每个文件挂载的视图按其 `view!` 的方式降级，所以视图无法挂载之处（`E3711`，如尚无运行时路径的 Property；`E9106`）在构建前报告，位置指向该文件。包先按标准 Native Library 检查；出现 `E2001` 时经 `cargo metadata` 发现 `Viso.toml` 旁 `Cargo.toml` 的直接依赖中的 Native Package（ADR 0051、DSL §47.3）并按它们重新检查，视图降级与 `viso export` 同用该 Registry；发现失败时作为 note 附在 `E2001` 上。
 
 ### 17.3 Watch
 
@@ -1645,6 +1645,8 @@ viso schema --list widgets       # widgets | components | natives | types
 ```
 
 符号按完整路径或其任意 `::` 后缀匹配（`Button`、`text::upper`、`viso::time::Stopwatch`、`card::Card`）；后缀匹配多个符号时报告全部候选并 exit 1。`.member` 收窄到一个 Property、Event 或方法。可查询内置 Widget、Native Registry 中的 Library、函数和 Handle 类型，以及当前项目（`--project` 或向上找到的 `Viso.toml`；不在项目中时只查框架）声明的 Component、Template、Record 与 Enum：路径为 `<package>::<module>::<Name>`；Record 的字段与 Enum 的变体是其成员（`Point.x`、`Status.ready`）。
+
+项目有 `Cargo.toml` 时，Native 包括其直接依赖中的 Native Package 的 Library（DSL §47.3）；发现失败时为 `ENV_CARGO` warning，只列标准 Library。
 
 `--search TERM` 不区分大小写地列出路径包含 `TERM` 的符号与成员，每行一个路径及其类型或签名；无匹配时 exit 0。`--list GROUP` 列出一组的全部符号：`widgets`（框架 Widget）、`components`（项目组件及其声明位置）、`natives`（Native Library 与函数）、`types`（项目的 Record 与 Enum 及其声明位置，Native Handle 类型）。`--json` 下二者都输出一条 `result`，`payload: {schema_version, query | list, matches: [{path, kind, detail, origin}]}`，`origin` 为 `"framework"` 或项目声明的 `file:line:column`。
 
@@ -1778,7 +1780,9 @@ stdout 专属 JSON-RPC，任何日志只写 stderr；`--json` 不适用（§6.1�
 
 ```text
 已实现:
-    publishDiagnostics, goto definition, find references, rename,
+    publishDiagnostics（解析、Import 与名称解析的诊断；文件所属 crate 的
+        Native Package 在出现 `E2001` 时发现并参与解析，DSL §47.3）,
+    goto definition, find references, rename,
     formatting（与 `viso fmt` 同一 `viso_dsl::format`）,
     code actions（诊断的 fix）,
     hover（光标下诊断的 code：标题、解释与修复，来自 `viso explain` 读取的同一诊断 registry）
