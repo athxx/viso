@@ -25,7 +25,7 @@ Rules:
   with no transfer function, so author colors show darker than their sRGB value
   (`#1565c0` lands as `#022186`); encode exactly once (Rendering §5.4), sRGB images
   included, and re-bless the snapshot goldens (ADR 0048).
-- [ ] A surface with no sRGB format (a GLES 565 panel, EGL without
+- [x] A surface with no sRGB format (a GLES 565 panel, EGL without
   `EGL_KHR_gl_colorspace`) still draws unencoded: encode in a final composite pass.
 
 ## W1 — 3D scene lane and `GameViewport` (ADR 0047)
@@ -318,7 +318,7 @@ Rules:
     buffer (`VK_EXT_external_memory_dma_buf`) and copies the planes on the GPU into
     the converted texture; a backend that refuses gets mapped planes, then memory at
     hand.
-- [ ] Camera capture service and `CameraView`.
+- [x] Camera capture service and `CameraView`.
   - [x] Cameras as live videos in `viso-media`: `VideoSource::Camera(CameraRequest)`
     (which camera, size, rate), `cameras()`, ready on the first picture, paused lets
     the device go, `VideoError::Denied`; GStreamer on Linux and the BSDs (device

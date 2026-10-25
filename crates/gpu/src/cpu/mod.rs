@@ -266,6 +266,7 @@ impl CpuRaster {
                 indirect_draw: false,
                 program_instance_align: 4,
                 coverage_paths: true,
+                encodes_packed: true,
                 // The 16-bit formats sample in place; a block-compressed image
                 // is decoded before it is uploaded.
                 sampled: SampledFormats::RGB565

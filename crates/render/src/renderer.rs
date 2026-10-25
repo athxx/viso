@@ -55,6 +55,7 @@ use crate::transform::{NO_CHAIN, Space, TransformUpdate, Transforms};
 use crate::transient::{TargetDesc, TargetId, TargetUsage, TransientTargets};
 use viso_math::InterpolationSpace;
 
+mod output;
 mod patch;
 mod scene3d;
 mod splice;
@@ -1423,10 +1424,15 @@ pub struct Renderer {
     /// parameters, so they painted nothing. Read into
     /// `FrameStats::program_draws_dropped`.
     program_draws_dropped: u32,
-    /// The surface's own color-attachment format — what every prewarmed pipeline
-    /// was built against, so it is also the only format an offscreen pass can
-    /// legally use (a pipeline is bound to its attachment format).
+    /// The surface's own color-attachment format, what is presented.
     surface_format: TextureFormat,
+    /// The format every prewarmed pipeline was built against, so it is also
+    /// the only format an offscreen pass can legally use (a pipeline is bound
+    /// to its attachment format): the surface's, or for a surface that cannot
+    /// encode the working format [`output`] draws in.
+    target_format: TextureFormat,
+    /// The working target and last pass of a surface that cannot encode.
+    output: Option<output::OutputEncode>,
     /// The color space the compositor reads the surface through, as the backend
     /// reported it. Orthogonal to the format: the same 8-bit texels mean
     /// different colors in sRGB and Display P3.
@@ -1434,7 +1440,7 @@ pub struct Renderer {
     /// The pixel format every intermediate color target this frame is allocated
     /// with — backdrop captures, offscreen layers, blur scratch, color scratch.
     ///
-    /// The planner's rule is that this *is* [`surface_format`](Self::surface_format),
+    /// The planner's rule is that this *is* [`target_format`](Self::target_format),
     /// and that is a decision, not a shortcut. The surface's format is
     /// simultaneously the only one in the target's own domain, lossless for its
     /// precision, no wider than its precision needs, and compatible with the
@@ -1753,7 +1759,7 @@ impl Renderer {
     /// [`for_surface`](Self::for_surface), which asks the backend for both the
     /// format and the space rather than assuming either.
     pub fn new<B: GpuBackend>(backend: &mut B, surface_format: TextureFormat) -> Self {
-        Self::for_target(backend, surface_format, ColorSpace::Srgb)
+        Self::for_target(backend, surface_format, ColorSpace::Srgb, None)
     }
 
     /// The edge of the first clip/mask page, in texels (128 unless set): each
@@ -1770,19 +1776,27 @@ impl Renderer {
     /// surface it draws into, and it is the only way an extended-range target
     /// gets extended-range intermediates (see
     /// [`intermediate_format`](Self::intermediate_format)).
+    ///
+    /// A surface whose format cannot encode sRGB (a GLES window without an sRGB
+    /// colorspace, a 16-bit panel a device draws) is drawn in its sRGB format
+    /// and encoded into it by a last pass.
     pub fn for_surface<B: GpuBackend>(backend: &mut B, surface: SurfaceId) -> Self {
         let format = backend.surface_format(surface);
         let space = backend.surface_color_space(surface);
-        Self::for_target(backend, format, space)
+        let working = output::working_format(format, space, backend.caps().encodes_packed);
+        Self::for_target(backend, format, space, working)
     }
 
     /// The shared body of both constructors: build every pipeline against
-    /// `surface_format` and plan the intermediates for `color_space`'s domain.
+    /// `working`, or `surface_format` without one, and plan the intermediates
+    /// for `color_space`'s domain.
     fn for_target<B: GpuBackend>(
         backend: &mut B,
         surface_format: TextureFormat,
         color_space: ColorSpace,
+        working: Option<TextureFormat>,
     ) -> Self {
+        let target_format = working.unwrap_or(surface_format);
         // Every standard pipeline is created from its frozen manifest entry, not
         // from caller-assembled source. This is the device-init prewarm:
         // the fixed set is materialized once, so no draw ever triggers a runtime
@@ -1795,7 +1809,7 @@ impl Renderer {
             code: entry.code(B::SHADER_LANG),
             vertex_entry: entry.vertex_entry,
             fragment_entry: entry.fragment_entry,
-            color_format: surface_format,
+            color_format: target_format,
             depth: None,
             cull: viso_gpu::CullMode::None,
             // The blend state belongs to the family, not to this call site: every
@@ -2077,9 +2091,13 @@ impl Renderer {
             scale: 1.0,
             surface_moved: false,
             surface_format,
+            target_format,
+            output: working.map(|working| {
+                output::OutputEncode::new(backend, surface_format, working, sampler)
+            }),
             color_space,
-            intermediate_format: if surface_format.has_alpha() {
-                surface_format
+            intermediate_format: if target_format.has_alpha() {
+                target_format
             } else {
                 TextureFormat::Bgra8UnormSrgb
             },
@@ -2110,7 +2128,7 @@ impl Renderer {
     }
 
     /// Installs `pipeline`, a brush-profile program laid out by `layout` and
-    /// built for this renderer's [`surface_format`](Self::surface_format)
+    /// built for this renderer's [`target_format`](Self::target_format)
     /// with premultiplied source-over blending, in `slot`, where a
     /// [`ShaderDraw`](crate::ShaderDraw) names it. A program already in the
     /// slot is replaced and its pipeline destroyed once in-flight frames are
@@ -2241,7 +2259,7 @@ impl Renderer {
         code: &'a ProgramCode,
         layout: &BrushLayout,
     ) -> ProgramDesc<'a> {
-        crate::program::desc(label, code, layout, self.surface_format)
+        crate::program::desc(label, code, layout, self.target_format)
     }
 
     /// Empties `slot`, destroying its program's pipeline and buffer once
@@ -2275,9 +2293,16 @@ impl Renderer {
         self.programs.get(slot).map(|(pipeline, _)| pipeline)
     }
 
-    /// The color-attachment format every built-in pipeline was created against.
+    /// The format of the surface this renderer presents to.
     pub fn surface_format(&self) -> TextureFormat {
         self.surface_format
+    }
+
+    /// The color-attachment format every pipeline is created against, a
+    /// program's included: the surface's, or the sRGB format a surface that
+    /// cannot encode is drawn in before its last pass encodes it.
+    pub fn target_format(&self) -> TextureFormat {
+        self.target_format
     }
 
     /// The color space the compositor reads this renderer's surface through.
@@ -5172,6 +5197,9 @@ impl Renderer {
             viewport,
             &Region::Full,
         );
+        if let Some(output) = &mut self.output {
+            output.forget();
+        }
     }
 
     /// Build the draw list and hand it to the backend (no present).
@@ -5207,6 +5235,17 @@ impl Renderer {
         let mut passes = std::mem::take(&mut self.passes);
         commands.clear();
         passes.clear();
+
+        // A surface that cannot encode is drawn into the working target, which
+        // the last pass encodes into it.
+        let into = main;
+        let main = match &mut self.output {
+            Some(output) => {
+                let size = physical_size(viewport, self.scale);
+                RenderTarget::Texture(output.target(backend, size))
+            }
+            None => main,
+        };
 
         // The scenes filled since they last rendered, ahead of the 2D passes
         // that composite their targets.
@@ -5327,6 +5366,9 @@ impl Renderer {
                 first_command,
                 command_count: commands.len() as u32 - first_command,
             });
+        }
+        if let Some(output) = &self.output {
+            output.push(backend, &mut commands, &mut passes, into);
         }
 
         backend.encode(&DrawList {
@@ -5610,6 +5652,14 @@ fn snap(rect: Rect, scale: f32) -> Rect {
         w: (x1 - x0) / scale,
         h: (y1 - y0) / scale,
     }
+}
+
+/// The physical pixels a viewport of `viewport` points covers at `scale`.
+fn physical_size(viewport: [f32; 2], scale: f32) -> [u32; 2] {
+    [
+        (viewport[0] * scale).round() as u32,
+        (viewport[1] * scale).round() as u32,
+    ]
 }
 
 /// The inline uniform block every built-in reads: the target `viewport`
@@ -7322,6 +7372,117 @@ mod tests {
         assert_eq!(
             large.render_graph_compiles, 1,
             "more rungs is a different pass graph"
+        );
+    }
+
+    fn grey(rect: Rect, v: f32) -> Primitive {
+        Primitive::Quad(Quad {
+            rect,
+            color: Rgba::new(v, v, v, 1.0),
+            radius: 0.0,
+            border: Border::NONE,
+        })
+    }
+
+    /// What a renderer for a 32×32 surface stored in `format` presents of
+    /// `frames`, frame by frame, with whether each redrew only part of it.
+    fn present_in(format: TextureFormat, frames: &[&[Primitive]]) -> Vec<(Vec<u8>, bool)> {
+        let mut gpu = CpuRaster::new();
+        let surface = gpu.create_surface(RawWindowHandle::Headless, 32, 32);
+        gpu.set_surface_color_target(surface, format, ColorSpace::Srgb);
+        let mut r = Renderer::for_surface(&mut gpu, surface);
+        r.set_surface_size([32.0, 32.0], 1.0);
+        frames
+            .iter()
+            .map(|scene| {
+                r.upload(&mut gpu, scene);
+                r.submit(&mut gpu, surface, [0.0, 0.0, 0.0, 1.0], [32.0, 32.0]);
+                (
+                    gpu.read_pixels_bgra8(surface),
+                    matches!(r.last_damage(), Region::Rects(_)),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_surface_that_cannot_encode_is_drawn_in_srgb_and_encoded_by_a_last_pass() {
+        let mut gpu = CpuRaster::new();
+        let surface = gpu.create_surface(RawWindowHandle::Headless, 32, 32);
+        gpu.set_surface_color_target(surface, TextureFormat::Bgra8Unorm, ColorSpace::Srgb);
+        let r = Renderer::for_surface(&mut gpu, surface);
+        assert_eq!(r.surface_format(), TextureFormat::Bgra8Unorm);
+        assert_eq!(r.target_format(), TextureFormat::Bgra8UnormSrgb);
+        assert_eq!(r.intermediate_format(), TextureFormat::Bgra8UnormSrgb);
+
+        let full = Rect::new(0.0, 0.0, 32.0, 32.0);
+        let corner = Rect::new(4.0, 4.0, 4.0, 4.0);
+        let first: &[Primitive] = &[grey(full, 0.5)];
+        let second: &[Primitive] = &[grey(full, 0.5), grey(corner, 0.2)];
+        let unorm = present_in(TextureFormat::Bgra8Unorm, &[first, second]);
+        let srgb = present_in(TextureFormat::Bgra8UnormSrgb, &[first, second]);
+        // Half the light is stored as sRGB encodes it, not as 128.
+        let mid = (16 * 32 + 16) * 4;
+        assert_eq!(&unorm[0].0[mid..mid + 3], &[188, 188, 188]);
+        assert!(unorm[1].1, "the second frame redraws only the corner");
+        assert_eq!(unorm, srgb, "the bytes an sRGB surface stores");
+    }
+
+    #[test]
+    fn only_a_panel_the_backend_does_not_encode_takes_the_last_pass() {
+        use output::working_format;
+        let srgb = ColorSpace::Srgb;
+        assert_eq!(
+            working_format(TextureFormat::Rgb565Unorm, srgb, false),
+            Some(TextureFormat::Bgra8UnormSrgb)
+        );
+        assert_eq!(working_format(TextureFormat::Rgb565Unorm, srgb, true), None);
+        assert_eq!(
+            working_format(TextureFormat::Bgra8UnormSrgb, srgb, false),
+            None
+        );
+        assert_eq!(
+            working_format(
+                TextureFormat::Rgba16Float,
+                ColorSpace::ExtendedLinearSrgb,
+                false
+            ),
+            None
+        );
+
+        // The CPU raster encodes a 565 panel as it narrows.
+        let mut gpu = CpuRaster::new();
+        let surface = gpu.create_surface(RawWindowHandle::Headless, 8, 8);
+        gpu.set_surface_color_target(surface, TextureFormat::Rgb565Unorm, srgb);
+        let r = Renderer::for_surface(&mut gpu, surface);
+        assert_eq!(r.target_format(), TextureFormat::Rgb565Unorm);
+    }
+
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    fn the_last_pass_encodes_on_a_device() {
+        let mut gpu = viso_gpu::MetalBackend::new();
+        let format = TextureFormat::Bgra8Unorm;
+        let working = output::working_format(format, ColorSpace::Srgb, false);
+        let mut r = Renderer::for_target(&mut gpu, format, ColorSpace::Srgb, working);
+        let target = gpu.create_texture(&TextureDesc {
+            width: 32,
+            height: 32,
+            format,
+            render_target: true,
+            label: "unorm",
+        });
+        r.set_surface_size([32.0, 32.0], 1.0);
+        r.upload(&mut gpu, &[grey(Rect::new(0.0, 0.0, 32.0, 32.0), 0.5)]);
+        r.render_to_texture(&mut gpu, target, [0.0, 0.0, 0.0, 1.0], [32.0, 32.0]);
+        let mid = (16 * 32 + 16) * 4;
+        let pixels = gpu.read_texture(target);
+        assert!(
+            pixels[mid..mid + 3]
+                .iter()
+                .all(|&c| (187..=189).contains(&c)),
+            "{:?}",
+            &pixels[mid..mid + 4]
         );
     }
 }

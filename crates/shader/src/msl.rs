@@ -37,7 +37,7 @@ use crate::ir::codegen_msl::{emit_msl, emit_schema_attrs, schema_from_attrs};
 use crate::ir::module::{
     ShaderIr, advanced_blend_ir, analytic_capsule_ir, analytic_ellipse_ir, analytic_line_ir,
     analytic_rrect_ir, analytic_shadow_ir, blur_ir, color_transform_ir, glyphrun_ir, gradient_ir,
-    image_ir, material_ir, mesh_ir, mtsdf_ir, quad_ir, scene_ir,
+    image_ir, material_ir, mesh_ir, mtsdf_ir, output_encode_ir, quad_ir, scene_ir,
 };
 
 /// The built-in primitive shaders. One entry per
@@ -97,6 +97,9 @@ pub enum PrimitiveKind {
     AdvancedBlend,
     /// The 3D scene lane's lit, instanced mesh (`BuiltinShader::Scene`).
     Scene,
+    /// The sRGB encode of a frame drawn into a working target, for a surface
+    /// whose format cannot encode.
+    OutputEncode,
 }
 
 /// The MSL source for `kind`, or `None` if that primitive has no shader.
@@ -119,6 +122,7 @@ pub fn shader_source(kind: PrimitiveKind) -> Option<&'static str> {
         // Path and Mesh share the general per-vertex mesh pipeline.
         PrimitiveKind::Path | PrimitiveKind::Mesh => Some(MESH_MSL()),
         PrimitiveKind::Scene => Some(SCENE_MSL()),
+        PrimitiveKind::OutputEncode => Some(OUTPUT_ENCODE_MSL()),
         _ => None,
     }
 }
@@ -145,6 +149,7 @@ pub fn instance_schema(kind: PrimitiveKind) -> Option<InstanceSchema> {
         // Path and Mesh validate their per-vertex layout against `mesh_schema`.
         PrimitiveKind::Path | PrimitiveKind::Mesh => Some(mesh_schema()),
         PrimitiveKind::Scene => Some(scene_schema()),
+        PrimitiveKind::OutputEncode => Some(output_encode_schema()),
         _ => None,
     }
 }
@@ -185,6 +190,13 @@ pub fn image_schema() -> InstanceSchema {
 pub fn blur_schema() -> InstanceSchema {
     static CELL: OnceLock<Vec<SchemaAttr>> = OnceLock::new();
     cached_schema(&CELL, &blur_ir())
+}
+
+/// The instance schema the OutputEncode shader declares — projected from
+/// [`output_encode_ir`]: the Image-style quad fields and the dither step.
+pub fn output_encode_schema() -> InstanceSchema {
+    static CELL: OnceLock<Vec<SchemaAttr>> = OnceLock::new();
+    cached_schema(&CELL, &output_encode_ir())
 }
 
 /// The instance schema the ColorTransform shader declares — projected from
@@ -407,6 +419,15 @@ pub fn IMAGE_MSL() -> &'static str {
 pub fn BLUR_MSL() -> &'static str {
     static CELL: OnceLock<String> = OnceLock::new();
     cached_msl(&CELL, || emit_msl(&blur_ir()))
+}
+
+/// Inline MSL for the OutputEncode built-in (Metal backend), derived from
+/// [`output_encode_ir`]; the headless backend uses its `fill_output_encode`
+/// routine.
+#[allow(non_snake_case)]
+pub fn OUTPUT_ENCODE_MSL() -> &'static str {
+    static CELL: OnceLock<String> = OnceLock::new();
+    cached_msl(&CELL, || emit_msl(&output_encode_ir()))
 }
 
 /// Inline MSL for the ColorTransform built-in (Metal backend), derived from

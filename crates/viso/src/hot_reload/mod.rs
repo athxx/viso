@@ -1884,7 +1884,7 @@ fn shader_work(
                 {
                     continue;
                 }
-                let format = renderer.surface_format();
+                let format = renderer.target_format();
                 if let Err(error) = program.desc(viso_gpu::Backend::SHADER_LANG, format) {
                     let nack = PatchNack {
                         base_revision: staged.base_revision,

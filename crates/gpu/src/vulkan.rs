@@ -726,6 +726,7 @@ impl VulkanBackend {
                 program_instance_align: (limits.min_storage_buffer_offset_alignment.max(4) as u32)
                     .next_power_of_two(),
                 coverage_paths: false,
+                encodes_packed: false,
                 sampled,
             },
             retire_queue: RetireQueue::new(),

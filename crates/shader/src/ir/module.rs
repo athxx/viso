@@ -425,6 +425,42 @@ pub fn color_transform_ir() -> ShaderIr {
     }
 }
 
+/// Output-encode built-in: the last pass of a frame drawn into a working
+/// target, for a surface whose format cannot encode (a unorm window, an
+/// `Rgb565Unorm` panel). One quad samples the working target, whose texels are
+/// premultiplied linear light, and writes them through the sRGB transfer
+/// function, the encode the surface itself would otherwise have done; an
+/// ordered dither of `dither` (one output step, `0` = none) keeps a narrow
+/// panel's ramps from banding.
+pub fn output_encode_ir() -> ShaderIr {
+    static ATTRS: &[IrField] = &[
+        IrField::new("rect_pos", IrType::F32X2),
+        IrField::new("rect_size", IrType::F32X2),
+        IrField::new("uv_pos", IrType::F32X2),
+        IrField::new("uv_size", IrType::F32X2),
+        IrField::new("dither", IrType::F32),
+    ];
+    static UNIFORMS: &[IrField] = VIEW_UNIFORMS;
+    static VARYINGS: &[Varying] = &[
+        Varying::new("position", IrType::F32X4, " [[position]]", ""),
+        Varying::new("uv", IrType::F32X2, "", ""),
+        Varying::new("local", IrType::F32X2, "", "pixel-space sample position"),
+        Varying::new("dither", IrType::F32, "", "one output step, 0 = none"),
+    ];
+    ShaderIr {
+        kind: PrimitiveKind::OutputEncode,
+        vertex_source: VertexSource::PerInstance,
+        attributes: ATTRS,
+        instance_attributes: &[],
+        uniforms: UNIFORMS,
+        varyings: VARYINGS,
+        texture_count: 1,
+        vertex_body: OUTPUT_ENCODE_VERTEX_BODY,
+        helpers: OUTPUT_ENCODE_HELPERS,
+        fragment_body: OUTPUT_ENCODE_FRAGMENT_BODY,
+    }
+}
+
 /// Advanced-blend built-in: the isolated composite of a layer that asked for a
 /// blend mode the fixed-function stage cannot express. Per-instance data,
 /// uniforms at buffer 0, **two** textures — the isolated layer (source) at slot 0
@@ -1045,7 +1081,7 @@ pub fn scene_ir() -> ShaderIr {
 
 /// Every built-in's IR, in [`PrimitiveKind`] declaration order — the set the
 /// portable codegens and their oracles cover.
-pub fn builtin_irs() -> [ShaderIr; 16] {
+pub fn builtin_irs() -> [ShaderIr; 17] {
     [
         quad_ir(),
         image_ir(),
@@ -1063,6 +1099,7 @@ pub fn builtin_irs() -> [ShaderIr; 16] {
         analytic_line_ir(),
         gradient_ir(),
         scene_ir(),
+        output_encode_ir(),
     ]
 }
 
@@ -1831,6 +1868,62 @@ if (in.gamma != 1.0) {
     dst.rgb = pow(dst.rgb, float3(in.gamma));
 }
 return float4(dst.rgb * dst.a, dst.a);";
+
+const OUTPUT_ENCODE_VERTEX_BODY: &str = "\
+InstanceIn inst = instances[iid];
+
+float2 corner;
+switch (vid) {
+    case 0: corner = float2(0.0, 0.0); break;
+    case 1: corner = float2(1.0, 0.0); break;
+    case 2: corner = float2(0.0, 1.0); break;
+    case 3: corner = float2(1.0, 0.0); break;
+    case 4: corner = float2(1.0, 1.0); break;
+    default: corner = float2(0.0, 1.0); break;
+}
+
+float2 pos = float2(inst.rect_pos);
+float2 size = float2(inst.rect_size);
+float2 pixel = pos + corner * size;
+
+float2 vp = float2(u.viewport);
+float2 at = float2(u.axis_x) * pixel.x + float2(u.axis_y) * pixel.y + float2(u.shift);
+float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
+                    1.0 - at.y / vp.y * 2.0);
+
+VOut out;
+out.position = float4(ndc, 0.0, 1.0);
+out.uv = float2(inst.uv_pos) + corner * float2(inst.uv_size);
+out.local = pixel;
+out.dither = float(inst.dither);
+return out;";
+
+const OUTPUT_ENCODE_HELPERS: &str = "\
+// An ordered offset in [-0.5, 0.5] from an integer-lattice hash of the pixel:
+// exactly defined integer mixing, so the CPU rasterizer matches it bit for bit
+// and a still frame encodes the same every time.
+static inline float lattice(float2 p) {
+    uint x = uint(int(floor(p.x)));
+    uint y = uint(int(floor(p.y)));
+    uint h = (x * 0x9E3779B9u) ^ (y * 0x85EBCA6Bu);
+    h ^= h >> 15;
+    h *= 0x2C1B3C6Du;
+    h ^= h >> 12;
+    h *= 0x297A2D39u;
+    h ^= h >> 15;
+    return float(h & 0x00FFFFFFu) / 16777215.0 - 0.5;
+}";
+
+const OUTPUT_ENCODE_FRAGMENT_BODY: &str = "\
+// The working texel is premultiplied linear light; the surface stores the sRGB
+// encoding of it, `enc(dec(c) * a)`, as an `*Srgb` target would have.
+float4 texel = tex.sample(samp, in.uv);
+float3 c = clamp(texel.rgb, 0.0, 1.0);
+float3 lo = c * 12.92;
+float3 hi = 1.055 * pow(c, float3(1.0 / 2.4)) - 0.055;
+float3 enc = mix(hi, lo, step(c, float3(0.0031308)));
+enc = clamp(enc + in.dither * lattice(in.local), 0.0, 1.0);
+return float4(enc, texel.a);";
 
 const MATERIAL_VERTEX_BODY: &str = "\
 InstanceIn inst = instances[iid];

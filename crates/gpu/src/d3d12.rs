@@ -597,6 +597,7 @@ impl D3D12Backend {
                 indirect_draw: false,
                 program_instance_align: 4,
                 coverage_paths: false,
+                encodes_packed: false,
                 sampled,
             },
             retire_queue: RetireQueue::new(),

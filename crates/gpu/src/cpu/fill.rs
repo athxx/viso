@@ -104,6 +104,13 @@ pub(super) fn schema(builtin: BuiltinShader) -> &'static [(&'static str, AttrFor
             ("offset", F4),
             ("gamma", F1),
         ],
+        BuiltinShader::OutputEncode => &[
+            RECT[0],
+            RECT[1],
+            ("uv_pos", F2),
+            ("uv_size", F2),
+            ("dither", F1),
+        ],
         BuiltinShader::Material => &[
             RECT[0],
             RECT[1],
@@ -433,6 +440,7 @@ pub(super) fn bounds(
         | BuiltinShader::Mtsdf
         | BuiltinShader::Blur
         | BuiltinShader::ColorTransform
+        | BuiltinShader::OutputEncode
         | BuiltinShader::AdvancedBlend => {
             let (pos, _, size) = rect(i);
             if size[0] <= 0.0 || size[1] <= 0.0 {
@@ -448,6 +456,8 @@ pub(super) fn bounds(
 
 /// Whether `builtin` reads its texture 0 only through [`source_region`]'s
 /// mapping, so a layer it composites can be evaluated for one clip at a time.
+/// The output encode reads a target kept across frames, which must hold its
+/// pixels.
 pub(super) fn composites_by_region(builtin: BuiltinShader) -> bool {
     matches!(
         builtin,
@@ -650,6 +660,23 @@ pub(super) fn draw(
                     return [0.0; 4];
                 }
                 [dst[0] * dst[3], dst[1] * dst[3], dst[2] * dst[3], dst[3]]
+            });
+        }
+        BuiltinShader::OutputEncode => {
+            let Some((tex, samp)) = texture_bindings(cx, 0) else {
+                return;
+            };
+            let map = UvMap::of(i, 2, 3);
+            let (pos, size, dither) = (i.f2(0), i.f2(1), i.f1(4));
+            shade(cx, out, clip, |p| {
+                if !cx.covers(p, pos, size) {
+                    return [0.0; 4];
+                }
+                let [u, v] = map.at(p);
+                let texel = sample(&tex, &samp, u, v);
+                let d = dither * grain(p);
+                let enc = |c: f32| (f32::from(crate::srgb::encode(c)) / 255.0 + d).clamp(0.0, 1.0);
+                [enc(texel[0]), enc(texel[1]), enc(texel[2]), texel[3]]
             });
         }
         BuiltinShader::Material => material(cx, i, out, clip),

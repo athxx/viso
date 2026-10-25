@@ -34,7 +34,7 @@ use crate::msl::{
     PrimitiveKind, advanced_blend_schema, analytic_capsule_schema, analytic_ellipse_schema,
     analytic_line_schema, analytic_rrect_schema, analytic_shadow_schema, blur_schema,
     color_transform_schema, glyphrun_schema, gradient_schema, image_schema, material_schema,
-    mesh_schema, mtsdf_schema, quad_schema,
+    mesh_schema, mtsdf_schema, output_encode_schema, quad_schema,
 };
 use std::sync::OnceLock;
 
@@ -109,6 +109,12 @@ pub enum PipelineFamily {
     /// has already mixed the destination in, so the blend stage must not do it
     /// again.
     AdvancedBlend,
+    /// The sRGB encode of a frame drawn into a working target — the
+    /// OutputEncode built-in — for a surface whose format cannot encode (a
+    /// unorm window, an `Rgb565Unorm` panel): the transfer function applied
+    /// exactly once, by the last pass. Built against the surface's format, not
+    /// the working one, and written with [`BlendMode::Replace`].
+    OutputEncode,
 }
 
 /// The color-target class a pipeline renders into. Part of [`VariantKey`]
@@ -404,6 +410,16 @@ pub fn standard_manifest() -> &'static PipelineManifest {
                 vertex_entry: "vertex_main",
                 fragment_entry: "fragment_main",
             },
+            PipelineEntry {
+                family: PipelineFamily::OutputEncode,
+                variant: VariantKey::standard(PipelineFamily::OutputEncode),
+                builtin: BuiltinShader::OutputEncode,
+                kind: PrimitiveKind::OutputEncode,
+                schema: output_encode_schema(),
+                blend: BlendMode::Replace,
+                vertex_entry: "vertex_main",
+                fragment_entry: "fragment_main",
+            },
         ],
     })
 }
@@ -421,7 +437,7 @@ mod tests {
     #[test]
     fn manifest_enumerates_the_standard_builtins() {
         let m = standard_manifest();
-        assert_eq!(m.entries().len(), 15);
+        assert_eq!(m.entries().len(), 16);
         assert!(m.entry(PipelineFamily::SolidRect).is_some());
         assert!(m.entry(PipelineFamily::Image).is_some());
         assert!(m.entry(PipelineFamily::MaskComposite).is_some());
@@ -437,6 +453,7 @@ mod tests {
         assert!(m.entry(PipelineFamily::ColorTransform).is_some());
         assert!(m.entry(PipelineFamily::MaterialComposite).is_some());
         assert!(m.entry(PipelineFamily::AdvancedBlend).is_some());
+        assert!(m.entry(PipelineFamily::OutputEncode).is_some());
     }
 
     /// The rule that default UI does not globally enable MSAA, stated as the

@@ -2304,6 +2304,25 @@ pub struct BlurInstance {
     pub radius: f32,
 }
 
+/// GPU instance for the OutputEncode built-in shader: the quad covering the
+/// surface, the sub-rect of the working target it samples, and the dither step
+/// (`0` for an 8-bit surface). Field names/formats match `output_encode_schema`
+/// and the headless reader; stride 36.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, GpuPod)]
+pub struct OutputEncodeInstance {
+    /// Destination top-left in points.
+    pub rect_pos: [f32; 2],
+    /// Destination width/height in points.
+    pub rect_size: [f32; 2],
+    /// Source sub-rect origin in normalized texture coords.
+    pub uv_pos: [f32; 2],
+    /// Source sub-rect size in normalized texture coords.
+    pub uv_size: [f32; 2],
+    /// One output step of ordered dither; `0` is none.
+    pub dither: f32,
+}
+
 /// GPU instance for the ColorTransform built-in shader.
 ///
 /// Field names/formats match [`color_transform_schema`] and the headless

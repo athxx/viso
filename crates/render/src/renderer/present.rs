@@ -22,7 +22,7 @@
 //! of the screen updates only that.
 
 use viso_gpu::backend::{DrawCommand, Geometry};
-use viso_gpu::{BufferDesc, BufferId, BufferUsage, GpuBackend};
+use viso_gpu::{BufferDesc, BufferId, BufferUsage, Frame, GpuBackend};
 use viso_math::Affine2;
 
 use super::{
@@ -692,10 +692,11 @@ impl Renderer {
         let bounds = Rect::new(0.0, 0.0, viewport[0], viewport[1]);
         let redraw = match region {
             Region::Full => Region::Full,
-            _ => self
-                .present
-                .history
-                .redraw(&region, backend.frame_age(frame), bounds),
+            _ => self.present.history.redraw(
+                &region,
+                self.frame_age(backend, frame, viewport),
+                bounds,
+            ),
         };
         let stats = &mut self.present.stats;
         stats.damage_px = redraw.area(bounds) as u64;
@@ -745,6 +746,16 @@ impl Renderer {
         p.viewport = viewport;
         p.clear = clear;
         p.region = redraw;
+    }
+
+    /// How many presents ago what the surface pass draws over was presented:
+    /// the drawable's age, or the working target's for a surface that cannot
+    /// encode, whose last pass writes the drawable whole.
+    fn frame_age<B: GpuBackend>(&self, backend: &B, frame: Frame, viewport: [f32; 2]) -> u32 {
+        match &self.output {
+            Some(output) => output.age(super::physical_size(viewport, self.scale)),
+            None => backend.frame_age(frame),
+        }
     }
 
     /// Writes one clear quad per damaged rect, each the rect grown past its

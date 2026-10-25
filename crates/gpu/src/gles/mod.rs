@@ -244,6 +244,7 @@ impl Gles3Backend {
                 indirect_draw: false,
                 program_instance_align: 4,
                 coverage_paths: false,
+                encodes_packed: false,
                 // Read from the context once it opens (`init_state`).
                 sampled: SampledFormats::empty(),
             },

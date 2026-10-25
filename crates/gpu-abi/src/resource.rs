@@ -609,6 +609,10 @@ pub enum BuiltinShader {
     /// A lit, depth-tested 3D mesh drawn once per instance ([`crate::scene`]):
     /// the scene lane's one program.
     Scene,
+    /// The last pass of a frame drawn into a working target: samples it and
+    /// writes the sRGB encoding of each texel, for a surface whose format
+    /// cannot encode, written with [`BlendMode::Replace`].
+    OutputEncode,
 }
 
 /// Descriptor for a render pipeline (`GpuBackend::create_pipeline`).
@@ -848,6 +852,11 @@ pub struct Caps {
     /// per triangle, so it fills every path through a coverage mask, built
     /// once per outline and composited like a glyph.
     pub coverage_paths: bool,
+    /// Whether a draw into an `Rgb565Unorm` target stores sRGB-encoded color,
+    /// as a 16-bit image holds it. The CPU raster encodes as it narrows; a
+    /// device writes the shader's value as it is, so the renderer encodes for
+    /// such a surface in a last pass.
+    pub encodes_packed: bool,
     /// The formats beyond the baseline the device samples: the
     /// 16-bit packed ones and the block-compressed families. An image in a
     /// format outside the set is decoded to RGBA8 before upload.

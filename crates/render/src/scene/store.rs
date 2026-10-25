@@ -2467,7 +2467,7 @@ mod tests {
     /// failure mode this excludes is the quiet one: storing the brush, painting
     /// nothing, and leaving the caller to wonder where the fill went.
     #[test]
-    #[should_panic(expected = "ImagePattern brush lowering is deferred")]
+    #[should_panic(expected = "ImagePattern brush lowering is not supported yet")]
     fn an_image_pattern_brush_rejects_rather_than_painting_nothing() {
         let mut store = BrushStore::default();
         store.begin_frame();

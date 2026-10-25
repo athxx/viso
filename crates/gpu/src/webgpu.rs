@@ -1030,6 +1030,7 @@ impl WebGpuBackend {
             indirect_draw: false,
             program_instance_align: limits.min_storage_buffer_offset_alignment().max(4),
             coverage_paths: false,
+            encodes_packed: false,
             sampled,
         };
         let clock = timestamps.then(|| Clock::new(&device));
