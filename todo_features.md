@@ -429,7 +429,9 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
   - [x] Windows, WinHTTP, asynchronous: the next read asked for only while the app
     keeps up, HTTP/2, gzip, the system's proxy (built and linted, not yet run on
     Windows);
-  - [ ] Web, `fetch` with a `ReadableStream` body;
+  - [x] Web, `fetch` with the body read from its stream only while the app keeps up,
+    the page's clock and one `setTimeout` for the deadlines; the browser follows
+    redirects itself, and tells an upload's progress only at its end;
   - [ ] uploads and downloads: multipart forms, a file streamed up or down, progress
     both ways;
   - [ ] WebSocket: text, binary, ping and close; URLSessionWebSocketTask, WinHTTP's,
