@@ -280,7 +280,7 @@ pub(crate) fn wheel_delta(dx: f64, dy: f64, mode: u32, page: (f64, f64)) -> (f64
 pub(crate) fn css_cursor(icon: CursorIcon) -> &'static str {
     use CursorIcon as C;
     match icon {
-        C::Default => "default",
+        C::Default | C::Custom(_) => "default",
         C::Pointer => "pointer",
         C::Text => "text",
         C::VerticalText => "vertical-text",

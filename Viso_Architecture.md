@@ -2973,6 +2973,8 @@ fn on_key_down(&mut self, cx: &mut EventCx, event: KeyDown);
 - hover enter/leave；
 - wheel/trackpad precision。
 
+**光标**：节点经 `NodeStore::set_cursor` / `BuildCx::cursor` 命名鼠标在它及其子树上显示的光标（`CursorIcon`），离鼠标下节点最近的命名者胜出，捕获期间保持捕获开始时的光标。光标可以是系统形状，也可以是应用注册的图像：`CustomCursor::new(CursorImage)` 把直通 alpha 的 sRGB RGBA 像素（每边至多 `MAX_CURSOR_SIDE` = 256 像素）、热点与“每逻辑点几像素”的 scale 登记进进程级注册表，换回一个紧凑 id（`NonZeroU32`，`CursorIcon::Custom(id)` 仍是 `Copy + Eq + Hash`）；同一图像再登记得到同一 id，重建视图不增长注册表。`viso::cursor::decode` 把编码图像（PNG 等资源格式）读成 `CursorImage`。backend 在某窗口第一次显示某图像光标时才从注册表取像素构建 OS 光标并缓存（按 id 下标的稠密表 `CursorCache`，失败也记下不再重试），之后只是换用：macOS `NSCursor initWithImage:hotSpot:`（sRGB bitmap，按 scale 定点尺寸），Windows `CreateIconIndirect`（32 位 alpha 位图，按窗口 DPI 各建一份），Wayland 共享内存 ARGB buffer 的光标 surface（整数 buffer scale，补齐到整点），X11 Render `CreateCursor`（ARGB32 picture，按窗口 scale），KMS 硬件光标 buffer（预乘、随面板旋转），Web CSS `url(data:image/png…) x y` 加 `image-set` 高密度版本（浏览器读不懂的值不覆盖前一个），Android `PointerIcon.create(Bitmap, x, y)`（activity 按 id 保留 icon，像素只传一次）；iOS 没有图像光标。`PlatformCaps::custom_cursors` 为 false 的平台以默认箭头代替。光标变化在输入路由后立即经 `FrameDriver::after_input` 推给平台，不等下一帧（只移动鼠标、其余不变的输入不会请求帧）；帧尾同样同步一次，只在变化时调用 `PlatformApp::set_cursor`。
+
 ### 25.3 Gesture arena
 
 Touch/mobile 需要标准 gesture arbitration：

@@ -11,6 +11,7 @@ import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
+import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.net.Uri;
 import android.hardware.input.InputManager;
@@ -21,6 +22,7 @@ import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.os.VibratorManager;
 import android.provider.Settings;
+import android.util.SparseArray;
 import android.view.DisplayCutout;
 import android.view.InputDevice;
 import android.view.PointerIcon;
@@ -556,6 +558,23 @@ public class VisoActivity extends Activity
         runOnUiThread(() -> view.setPointerIcon(
                 type == 0 ? PointerIcon.getSystemIcon(this, PointerIcon.TYPE_NULL)
                         : PointerIcon.getSystemIcon(this, type)));
+    }
+
+    /** The pointer icons made from the app's cursor images, by index. */
+    private final SparseArray<PointerIcon> imageIcons = new SparseArray<>();
+
+    void setPointerImage(int id, int[] argb, int width, int height, float hotX, float hotY) {
+        runOnUiThread(() -> {
+            PointerIcon icon = imageIcons.get(id);
+            if (icon == null && argb != null) {
+                Bitmap bitmap = Bitmap.createBitmap(argb, width, height, Bitmap.Config.ARGB_8888);
+                icon = PointerIcon.create(bitmap, hotX, hotY);
+                imageIcons.put(id, icon);
+            }
+            if (icon != null) {
+                view.setPointerIcon(icon);
+            }
+        });
     }
 
     /** The label of the clip the app last set, to know its own copy. */

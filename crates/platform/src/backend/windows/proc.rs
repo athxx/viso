@@ -264,7 +264,7 @@ fn handle(
             None
         }
         WM_SETCURSOR if u32::from(loword(lparam.0 as usize)) == HTCLIENT => {
-            system::apply_cursor(state.cursor.get());
+            system::apply_cursor(state.cursor.get(), state.dpi.get());
             Some(LRESULT(1))
         }
         WM_MOUSEMOVE => {

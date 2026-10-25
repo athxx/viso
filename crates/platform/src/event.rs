@@ -24,6 +24,8 @@ use crate::clipboard::{ClipboardData, ClipboardReply, PasteReply};
 use crate::control::{LogicalRect, WindowId};
 use crate::menu::MenuCommandId;
 
+pub use crate::cursor::CursorIcon;
+
 /// A shared "should this proceed?" cell for veto handshakes.
 ///
 /// The platform layer creates it defaulting to `accept = true`, hands a clone
@@ -732,45 +734,6 @@ pub struct LogicalInsets {
     pub left: f64,
     pub bottom: f64,
     pub right: f64,
-}
-
-/// The mouse cursor shape a window shows over its content.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum CursorIcon {
-    #[default]
-    Default,
-    /// A link / clickable affordance (pointing hand).
-    Pointer,
-    Text,
-    VerticalText,
-    Crosshair,
-    Move,
-    Grab,
-    Grabbing,
-    NotAllowed,
-    Wait,
-    /// Busy but still interactive.
-    Progress,
-    Help,
-    ContextMenu,
-    Copy,
-    Alias,
-    ZoomIn,
-    ZoomOut,
-    /// Horizontal resize (`↔`).
-    ResizeEw,
-    /// Vertical resize (`↕`).
-    ResizeNs,
-    /// Diagonal resize (`↗↙`).
-    ResizeNesw,
-    /// Diagonal resize (`↖↘`).
-    ResizeNwse,
-    /// Column splitter.
-    ResizeCol,
-    /// Row splitter.
-    ResizeRow,
-    /// No cursor at all.
-    Hidden,
 }
 
 /// A committed text / IME segment (separate channel from key codes).

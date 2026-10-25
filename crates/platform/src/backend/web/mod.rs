@@ -30,15 +30,16 @@ use js_sys::{Array, Reflect};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::{Closure, JsValue};
 use web_sys::{
-    AddEventListenerOptions, Document, Event, EventTarget, FocusOptions, HtmlCanvasElement,
-    HtmlElement, HtmlInputElement, MediaQueryList, ResizeObserver, ResizeObserverBoxOptions,
-    ResizeObserverEntry, ResizeObserverOptions, ResizeObserverSize,
+    AddEventListenerOptions, CanvasRenderingContext2d, Document, Event, EventTarget, FocusOptions,
+    HtmlCanvasElement, HtmlElement, HtmlInputElement, ImageData, MediaQueryList, ResizeObserver,
+    ResizeObserverBoxOptions, ResizeObserverEntry, ResizeObserverOptions, ResizeObserverSize,
 };
 
 use super::drive::Drive;
 use super::web_translate::{css_cursor, css_px, is_apple, keyboard_inset, pixels};
 use crate::accessibility::SemanticsDelta;
 use crate::control::{ControlFlow, LogicalRect, PlatformError, TextEntry, WindowConfig, WindowId};
+use crate::cursor::{CursorCache, CursorImage, ScaledCursor};
 use crate::event::{
     Appearance, ColorScheme, CursorIcon, DisplayFeature, DisplayFeatureKind, LogicalInsets,
     PointerButtons, RawEvent,
@@ -137,6 +138,55 @@ fn current_page() -> Option<Rc<Page>> {
 
 fn dom_window() -> web_sys::Window {
     web_sys::window().expect("the web backend runs in a browser window")
+}
+
+thread_local! {
+    /// The CSS cursor values of the image cursors shown so far.
+    static IMAGE_CURSORS: RefCell<CursorCache<Vec<String>>> =
+        const { RefCell::new(CursorCache::new()) };
+}
+
+/// The CSS `cursor` values that show `image`, least demanding first: a PNG
+/// at one pixel to a point, then, for an image of another density, the
+/// image itself in an `image-set` (prefixed and not).
+fn image_cursor(image: &CursorImage) -> Option<Vec<String>> {
+    let plain = image.at_scale(1.0);
+    let url = png_url(&plain)?;
+    let [x, y] = plain.hotspot;
+    let mut values = vec![format!("url(\"{url}\") {x} {y}, auto")];
+    let k = image.scale();
+    if k != 1.0 {
+        let sharp = png_url(&image.at_scale(f64::from(k)))?;
+        let [x, y] = image.hotspot().map(|v| (v as f32 / k).round() as u32);
+        for set in ["-webkit-image-set", "image-set"] {
+            values.push(format!("{set}(url(\"{sharp}\") {k}x) {x} {y}, auto"));
+        }
+    }
+    Some(values)
+}
+
+/// A PNG data URL of `image`, encoded by the browser through a canvas.
+fn png_url(image: &ScaledCursor<'_>) -> Option<String> {
+    let canvas = document()
+        .create_element("canvas")
+        .ok()?
+        .dyn_into::<HtmlCanvasElement>()
+        .ok()?;
+    canvas.set_width(image.width);
+    canvas.set_height(image.height);
+    let cx = canvas
+        .get_context("2d")
+        .ok()??
+        .dyn_into::<CanvasRenderingContext2d>()
+        .ok()?;
+    let data = ImageData::new_with_u8_clamped_array_and_sh(
+        wasm_bindgen::Clamped(&image.rgba[..]),
+        image.width,
+        image.height,
+    )
+    .ok()?;
+    cx.put_image_data(&data, 0.0, 0.0).ok()?;
+    canvas.to_data_url().ok()
 }
 
 fn document() -> Document {
@@ -1031,11 +1081,22 @@ impl PlatformApp for WebApp {
         if let Some(w) = self.window.as_ref().filter(|_| window == WINDOW)
             && w.page.cursor.replace(icon) != icon
         {
-            let _ = w
-                .page
-                .canvas
-                .style()
-                .set_property("cursor", css_cursor(icon));
+            let style = w.page.canvas.style();
+            match icon {
+                CursorIcon::Custom(custom) => {
+                    // Each value the browser cannot read leaves the one
+                    // before it, so the sharpest it reads wins.
+                    let _ = style.set_property("cursor", "default");
+                    IMAGE_CURSORS.with_borrow_mut(|cache| {
+                        for value in cache.get(custom, image_cursor).into_iter().flatten() {
+                            let _ = style.set_property("cursor", value);
+                        }
+                    });
+                }
+                _ => {
+                    let _ = style.set_property("cursor", css_cursor(icon));
+                }
+            }
         }
     }
 
@@ -1084,6 +1145,7 @@ impl PlatformApp for WebApp {
             edit_menu: false,
             context_menu: false,
             loupe: false,
+            custom_cursors: true,
         }
     }
 

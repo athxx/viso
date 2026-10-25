@@ -1,0 +1,11 @@
+[package]
+name = "viso-example-pointer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The mouse beyond clicks: an image cursor the app draws itself, shown over a
+# panel. Built on the public facade alone.
+[dependencies]
+viso = { workspace = true }

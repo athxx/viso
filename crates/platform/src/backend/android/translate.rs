@@ -284,7 +284,7 @@ pub(crate) fn insets(px: [i32; 4], density: f64) -> LogicalInsets {
 pub(crate) fn pointer_icon(icon: CursorIcon) -> i32 {
     use CursorIcon as C;
     match icon {
-        C::Default => 1000,
+        C::Default | C::Custom(_) => 1000,
         C::ContextMenu => 1001,
         C::Pointer => 1002,
         C::Help => 1003,

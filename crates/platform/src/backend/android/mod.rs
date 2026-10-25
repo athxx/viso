@@ -364,7 +364,11 @@ struct Loop {
     focused: Cell<bool>,
     /// The mouse buttons last reported.
     mouse: Cell<PointerButtons>,
+    /// The pointer icon shown: a `PointerIcon.TYPE_*`, or an image
+    /// cursor's index one's-complemented.
     cursor: Cell<i32>,
+    /// The image cursors the activity holds an icon of, by index.
+    images: RefCell<Vec<bool>>,
     /// The system bars are hidden.
     fullscreen: Cell<bool>,
     /// The activity is finishing: `run` returns once the queue drains.
@@ -426,6 +430,7 @@ thread_local! {
         focused: Cell::new(true),
         mouse: Cell::new(PointerButtons::NONE),
         cursor: Cell::new(translate::pointer_icon(CursorIcon::Default)),
+        images: RefCell::new(Vec::new()),
         fullscreen: Cell::new(false),
         finishing: Cell::new(false),
         access: RefCell::new(None),
@@ -1163,10 +1168,45 @@ impl PlatformApp for AndroidApp {
     }
 
     fn set_cursor(&mut self, window: WindowId, icon: CursorIcon) {
-        let icon = translate::pointer_icon(icon);
-        if window == WINDOW && LOOP.with(|l| l.cursor.replace(icon)) != icon {
-            jni::set_pointer_icon(icon);
+        let key = match icon {
+            CursorIcon::Custom(custom) => !(custom.index() as i32),
+            _ => translate::pointer_icon(icon),
+        };
+        if window != WINDOW || LOOP.with(|l| l.cursor.replace(key)) == key {
+            return;
         }
+        let CursorIcon::Custom(custom) = icon else {
+            jni::set_pointer_icon(key);
+            return;
+        };
+        // The activity keeps each icon it made; only the first showing
+        // sends the pixels.
+        let known = LOOP.with(|l| {
+            let mut images = l.images.borrow_mut();
+            let at = custom.index();
+            if images.len() <= at {
+                images.resize(at + 1, false);
+            }
+            std::mem::replace(&mut images[at], true)
+        });
+        if known {
+            jni::set_pointer_image(custom.index() as i32, None);
+            return;
+        }
+        let density = LOOP.with(|l| l.density.get());
+        let image = custom.image();
+        let shown = image.at_scale(density);
+        let argb: Vec<i32> = shown
+            .rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|p| i32::from_be_bytes([p[3], p[0], p[1], p[2]]))
+            .collect();
+        jni::set_pointer_image(
+            custom.index() as i32,
+            Some((&argb, shown.width, shown.height, shown.hotspot)),
+        );
     }
 
     fn set_text_entry(&mut self, window: WindowId, entry: Option<TextEntry>) {
@@ -1252,7 +1292,11 @@ impl PlatformApp for AndroidApp {
     }
 
     fn capabilities(&self) -> crate::PlatformCaps {
-        crate::PlatformCaps::MOBILE
+        // A mouse's pointer takes image icons (API 24).
+        crate::PlatformCaps {
+            custom_cursors: true,
+            ..crate::PlatformCaps::MOBILE
+        }
     }
 
     fn loop_waker(&self) -> crate::LoopWaker {

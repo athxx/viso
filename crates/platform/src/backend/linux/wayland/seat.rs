@@ -2,13 +2,16 @@
 //! chrome moves and resizes, cursors), keyboard (the compositor's keymap,
 //! client-side repeat) and touch.
 
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 use std::time::Duration;
 
 use wayland_client::protocol::{
+    wl_buffer::WlBuffer,
     wl_keyboard::{self, WlKeyboard},
     wl_pointer::{self, WlPointer},
     wl_seat::{self, WlSeat},
+    wl_shm,
+    wl_shm_pool::WlShmPool,
     wl_surface::WlSurface,
     wl_touch::{self, WlTouch},
 };
@@ -27,9 +30,10 @@ use crate::Instant;
 use crate::backend::linux::translate::{self, Edge, RESIZE_BORDER};
 use crate::backend::linux::xkb::{KeyText, Keyboard};
 use crate::control::{WindowChrome, WindowId};
+use crate::cursor::{CursorImage, CustomCursor};
 use crate::event::{
-    GesturePhase, Modifiers, PointerButtons, PointerId, PointerKind, PointerPhase, RawEvent,
-    RawGesture, RawPointer, RawScroll, RawText,
+    CursorIcon, GesturePhase, Modifiers, PointerButtons, PointerId, PointerKind, PointerPhase,
+    RawEvent, RawGesture, RawPointer, RawScroll, RawText,
 };
 
 /// Linux input-event button codes.
@@ -88,6 +92,18 @@ struct Pointer {
     pinch_scale: f64,
     surface: WlSurface,
     theme: Option<Theme>,
+    /// The image cursors shown so far, each at the buffer scale it was
+    /// built for (`None` where no buffer could be made).
+    images: Vec<(CustomCursor, i32, Option<ImageBuffer>)>,
+}
+
+/// An image cursor's buffer: its size in buffer pixels and its hotspot in
+/// surface points.
+struct ImageBuffer {
+    buffer: WlBuffer,
+    width: i32,
+    height: i32,
+    hotspot: (i32, i32),
 }
 
 /// One axis's scrolling within a pointer frame.
@@ -233,6 +249,7 @@ impl Seat {
                     pinch_scale: 1.0,
                     surface,
                     theme: None,
+                    images: Vec::new(),
                 });
             }
             (false, Some(_)) => {
@@ -244,6 +261,9 @@ impl Seat {
                         pinch.destroy();
                     }
                     p.surface.destroy();
+                    for image in p.images.into_iter().filter_map(|(_, _, b)| b) {
+                        image.buffer.destroy();
+                    }
                     if p.pointer.version() >= 3 {
                         p.pointer.release();
                     }
@@ -282,8 +302,33 @@ impl Seat {
             return;
         };
         let win = &state.windows[i];
-        let icon = win.edge.map_or(win.cursor, Edge::cursor);
+        let mut icon = win.edge.map_or(win.cursor, Edge::cursor);
         let serial = p.enter_serial;
+        if let CursorIcon::Custom(custom) = icon {
+            let scale = (win.scale.ceil() as i32).max(1);
+            let at = match p
+                .images
+                .iter()
+                .position(|(c, s, _)| *c == custom && *s == scale)
+            {
+                Some(at) => at,
+                None => {
+                    let built = image_buffer(state, &custom.image(), scale);
+                    p.images.push((custom, scale, built));
+                    p.images.len() - 1
+                }
+            };
+            if let Some(image) = &p.images[at].2 {
+                p.surface.attach(Some(&image.buffer), 0, 0);
+                p.surface.set_buffer_scale(scale);
+                p.surface.damage_buffer(0, 0, image.width, image.height);
+                p.surface.commit();
+                let (x, y) = image.hotspot;
+                p.pointer.set_cursor(serial, Some(&p.surface), x, y);
+                return;
+            }
+            icon = CursorIcon::Default;
+        }
         if let Some(device) = &p.shape {
             match translate::cursor_shape(icon)
                 .and_then(|v| wp_cursor_shape_device_v1::Shape::try_from(v).ok())
@@ -882,6 +927,91 @@ fn axis_index(axis: Option<wl_pointer::Axis>) -> Option<usize> {
     }
 }
 
+/// A buffer of `image` at buffer scale `scale`, padded to a whole number of
+/// surface points: premultiplied ARGB in shared memory the compositor reads.
+fn image_buffer(state: &State, image: &CursorImage, scale: i32) -> Option<ImageBuffer> {
+    let shown = image.at_scale(f64::from(scale));
+    let pad = |n: u32| n.div_ceil(scale as u32) * scale as u32;
+    let (w, h) = (pad(shown.width), pad(shown.height));
+    let mut pixels = vec![0u8; w as usize * h as usize * 4];
+    for (y, row) in shown
+        .rgba
+        .chunks_exact(shown.width as usize * 4)
+        .enumerate()
+    {
+        let out = &mut pixels[y * w as usize * 4..][..row.len()];
+        for (o, p) in out
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(row.as_chunks::<4>().0)
+        {
+            let a = u16::from(p[3]);
+            let k = |c: u8| ((u16::from(c) * a + 127) / 255) as u8;
+            o.copy_from_slice(&[k(p[2]), k(p[1]), k(p[0]), p[3]]);
+        }
+    }
+    let file = shared_memory(&pixels)?;
+    let pool = state
+        .globals
+        .shm
+        .create_pool(file.as_fd(), pixels.len() as i32, &state.qh, ());
+    let buffer = pool.create_buffer(
+        0,
+        w as i32,
+        h as i32,
+        w as i32 * 4,
+        wl_shm::Format::Argb8888,
+        &state.qh,
+        (),
+    );
+    pool.destroy();
+    Some(ImageBuffer {
+        buffer,
+        width: w as i32,
+        height: h as i32,
+        hotspot: (
+            shown.hotspot[0] as i32 / scale,
+            shown.hotspot[1] as i32 / scale,
+        ),
+    })
+}
+
+/// An unnamed file in memory holding `bytes`, to share with the compositor.
+fn shared_memory(bytes: &[u8]) -> Option<std::fs::File> {
+    use std::io::Write;
+    #[cfg(target_os = "linux")]
+    let mut file = {
+        use std::os::fd::FromRawFd;
+        // SAFETY: a NUL-terminated name; the descriptor is fresh and owned
+        // by the returned file.
+        unsafe {
+            let fd = libc::memfd_create(c"viso-cursor".as_ptr(), libc::MFD_CLOEXEC);
+            if fd < 0 {
+                return None;
+            }
+            std::fs::File::from_raw_fd(fd)
+        }
+    };
+    #[cfg(not(target_os = "linux"))]
+    let mut file = {
+        let dir = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        let path = dir.join(format!("viso-cursor-{}", std::process::id()));
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .ok()?;
+        let _ = std::fs::remove_file(&path);
+        file
+    };
+    file.write_all(bytes).ok()?;
+    Some(file)
+}
+
 fn cursor_size() -> u32 {
     std::env::var("XCURSOR_SIZE")
         .ok()
@@ -1027,6 +1157,10 @@ impl Dispatch<WlTouch, ()> for State {
 
 // The cursor surface: its enter/leave events carry nothing we use.
 delegate_noop!(State: ignore WlSurface);
+// Image cursor buffers: the compositor's release of one changes nothing, as
+// each is attached again whenever it shows.
+delegate_noop!(State: WlShmPool);
+delegate_noop!(State: ignore WlBuffer);
 delegate_noop!(State: WpCursorShapeDeviceV1);
 
 #[cfg(test)]

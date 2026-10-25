@@ -292,6 +292,49 @@ impl<D: FrameDriver, C: FrameClock> Loop<D, C> {
 
 impl<D: FrameDriver, C: FrameClock> AppHandler for Loop<D, C> {
     fn handle(&mut self, app: &mut dyn PlatformApp, event: RawEvent) -> ControlFlow {
+        let input = input_window(&event);
+        let flow = self.dispatch(app, event);
+        if let Some(window) = input {
+            self.after_input(app, window);
+        }
+        flow
+    }
+}
+
+/// The window an input event is routed to, `None` for any other event.
+fn input_window(event: &RawEvent) -> Option<WindowId> {
+    Some(match event {
+        RawEvent::Pointer(p) => p.window,
+        RawEvent::Key(k) => k.window,
+        RawEvent::Text(t) => t.window,
+        RawEvent::ImePreedit(p) => p.window,
+        RawEvent::Scroll(s) => s.window,
+        RawEvent::Gesture(g) => g.window,
+        RawEvent::Paste { window, .. }
+        | RawEvent::CopyRequested { window, .. }
+        | RawEvent::DragEnded { window, .. }
+        | RawEvent::EditMenu { window, .. } => *window,
+        RawEvent::Drop(d) => d.window,
+        _ => return None,
+    })
+}
+
+impl<D: FrameDriver, C: FrameClock> Loop<D, C> {
+    /// Lets the driver push what the input it just routed changed for
+    /// `window` to the platform at once.
+    fn after_input(&mut self, app: &mut dyn PlatformApp, window: WindowId) {
+        let posted = {
+            let mut cx = RuntimeCx::new(app, Duration::ZERO, self.clock.peek());
+            self.driver.after_input(&mut cx, window);
+            if cx.state_dirty_requested() {
+                self.reasons.add(RedrawReason::StateDirty);
+            }
+            cx.take_posted()
+        };
+        self.deliver(app, posted);
+    }
+
+    fn dispatch(&mut self, app: &mut dyn PlatformApp, event: RawEvent) -> ControlFlow {
         match event {
             RawEvent::AppLaunched => {
                 self.launched = true;

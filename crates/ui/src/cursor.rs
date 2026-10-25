@@ -9,8 +9,12 @@
 //! runtime asks for the cursor once a frame and hands the platform a new one
 //! only when it changes. The table is cold and small: one entry for each node
 //! that names a cursor.
+//!
+//! A cursor may be an image the app registers once ([`CustomCursor::new`])
+//! and names like any shape (`CursorIcon::Custom(cursor)`); the platform
+//! builds its OS cursor the first time it shows and reuses it after.
 
-pub use viso_runtime::CursorIcon;
+pub use viso_runtime::{CursorError, CursorIcon, CursorImage, CustomCursor};
 
 use crate::component::NodeStore;
 use crate::input::PointerId;

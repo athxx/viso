@@ -44,13 +44,14 @@ use objc2::{AnyThread, ClassType, DefinedClass, MainThreadOnly, define_class, ms
 use objc2_app_kit::{
     NSAllRomanInputSourcesLocaleIdentifier, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
-    NSApplicationTerminateReply, NSBackingStoreType, NSColor, NSColorSpace, NSCursor,
-    NSDragOperation, NSDraggingContext, NSDraggingDestination, NSDraggingInfo, NSDraggingItem,
-    NSDraggingSession, NSDraggingSource, NSEvent, NSEventMask, NSEventModifierFlags, NSEventPhase,
-    NSMenu, NSMenuItem, NSPasteboard, NSPasteboardItem, NSPasteboardTypeFileURL,
-    NSPasteboardTypeString, NSPasteboardTypeURL, NSPreferredScrollerStyleDidChangeNotification,
-    NSScreen, NSScroller, NSScrollerStyle, NSSystemColorsDidChangeNotification, NSTextInputClient,
-    NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
+    NSApplicationTerminateReply, NSBackingStoreType, NSBitmapFormat, NSBitmapImageRep, NSColor,
+    NSColorSpace, NSCursor, NSDeviceRGBColorSpace, NSDragOperation, NSDraggingContext,
+    NSDraggingDestination, NSDraggingInfo, NSDraggingItem, NSDraggingSession, NSDraggingSource,
+    NSEvent, NSEventMask, NSEventModifierFlags, NSEventPhase, NSImage, NSMenu, NSMenuItem,
+    NSPasteboard, NSPasteboardItem, NSPasteboardTypeFileURL, NSPasteboardTypeString,
+    NSPasteboardTypeURL, NSPreferredScrollerStyleDidChangeNotification, NSScreen, NSScroller,
+    NSScrollerStyle, NSSystemColorsDidChangeNotification, NSTextInputClient, NSTrackingArea,
+    NSTrackingAreaOptions, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
     NSWindowTitleVisibility, NSWorkspace,
     NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification,
 };
@@ -67,6 +68,7 @@ use crate::control::{
     ControlFlow, EditLabels, EditMenu, EditMenuAction, LogicalRect, PlatformError, TextEntry,
     WindowChrome, WindowConfig, WindowId,
 };
+use crate::cursor::{CursorCache, CursorImage};
 use crate::drop::{DropAction, DropActions, DropKinds, DropOffer, DropPhase, DropReply, RawDrop};
 use crate::event::{
     AcceptCell, Appearance, ClipboardShortcut, ColorScheme, CursorIcon, DisplayFeature,
@@ -3179,6 +3181,13 @@ fn ns_cursor(icon: CursorIcon) -> Option<Retained<NSCursor>> {
     use CursorIcon as C;
     Some(match icon {
         C::Hidden => return None,
+        C::Custom(cursor) => {
+            return Some(
+                CUSTOM_CURSORS
+                    .with_borrow_mut(|cache| cache.get(cursor, image_cursor).cloned())
+                    .unwrap_or_else(NSCursor::arrowCursor),
+            );
+        }
         C::Default => NSCursor::arrowCursor(),
         C::Pointer => NSCursor::pointingHandCursor(),
         C::Text => NSCursor::IBeamCursor(),
@@ -3208,6 +3217,61 @@ fn ns_cursor(icon: CursorIcon) -> Option<Retained<NSCursor>> {
         C::ResizeNwse => class_cursor(sel!(_windowResizeNorthWestSouthEastCursor))
             .unwrap_or_else(NSCursor::crosshairCursor),
     })
+}
+
+thread_local! {
+    /// The image cursors built so far, on the main thread that shows them.
+    static CUSTOM_CURSORS: RefCell<CursorCache<Retained<NSCursor>>> =
+        const { RefCell::new(CursorCache::new()) };
+}
+
+/// An `NSCursor` showing `image`: one sRGB bitmap of its pixels, sized in
+/// points by its scale so AppKit draws it sharp at that density.
+fn image_cursor(image: &CursorImage) -> Option<Retained<NSCursor>> {
+    let (w, h) = (image.width() as isize, image.height() as isize);
+    // SAFETY: a null planes pointer asks the rep to allocate its own
+    // buffer of `h` rows of `w * 4` bytes, which the arguments describe:
+    // 8-bit RGBA, interleaved, unpremultiplied.
+    let rep = unsafe {
+        NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bitmapFormat_bytesPerRow_bitsPerPixel(
+            NSBitmapImageRep::alloc(),
+            std::ptr::null_mut(),
+            w,
+            h,
+            8,
+            4,
+            true,
+            false,
+            NSDeviceRGBColorSpace,
+            NSBitmapFormat::AlphaNonpremultiplied,
+            w * 4,
+            32,
+        )
+    }?;
+    let data = rep.bitmapData();
+    if data.is_null() || rep.bytesPerRow() != w * 4 {
+        return None;
+    }
+    // SAFETY: the rep owns `bytesPerRow * h` bytes at `data`, checked to be
+    // exactly the image's length, and nothing else holds them yet.
+    unsafe {
+        std::ptr::copy_nonoverlapping(image.rgba().as_ptr(), data, image.rgba().len());
+    }
+    let rep = rep
+        .bitmapImageRepByRetaggingWithColorSpace(&NSColorSpace::sRGBColorSpace())
+        .unwrap_or(rep);
+    let k = f64::from(image.scale());
+    let size = NSSize::new(w as f64 / k, h as f64 / k);
+    rep.setSize(size);
+    let ns_image = NSImage::initWithSize(NSImage::alloc(), size);
+    ns_image.addRepresentation(&rep);
+    let [hx, hy] = image.hotspot();
+    let hot = NSPoint::new(f64::from(hx) / k, f64::from(hy) / k);
+    Some(NSCursor::initWithImage_hotSpot(
+        NSCursor::alloc(),
+        &ns_image,
+        hot,
+    ))
 }
 
 /// The two-way resize cursors of releases that predate `columnResizeCursor` /

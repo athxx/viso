@@ -391,6 +391,9 @@ pub struct PlatformCaps {
     /// A system magnifier over a carried caret
     /// ([`PlatformApp::set_loupe`](crate::PlatformApp::set_loupe)).
     pub loupe: bool,
+    /// Image cursors ([`CursorIcon::Custom`](crate::CursorIcon::Custom));
+    /// without them a window shows the default arrow in their place.
+    pub custom_cursors: bool,
 }
 
 impl PlatformCaps {
@@ -405,6 +408,7 @@ impl PlatformCaps {
         edit_menu: false,
         context_menu: true,
         loupe: false,
+        custom_cursors: true,
     };
     /// A phone or tablet backend: one window, the system's clipboard and IME.
     pub const MOBILE: PlatformCaps = PlatformCaps {
@@ -417,6 +421,7 @@ impl PlatformCaps {
         edit_menu: true,
         context_menu: false,
         loupe: true,
+        custom_cursors: false,
     };
     /// A display driven with no display server (KMS): one window, nothing
     /// from a desktop and no accessibility bridge.
@@ -430,5 +435,6 @@ impl PlatformCaps {
         edit_menu: false,
         context_menu: false,
         loupe: false,
+        custom_cursors: true,
     };
 }

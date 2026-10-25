@@ -98,6 +98,13 @@ pub trait FrameDriver {
     /// every backend that never reports fullscreen, ignores it.
     fn on_fullscreen_changed(&mut self, _window: WindowId, _fullscreen: bool) {}
 
+    /// An input sample for `window` was routed ([`on_input`](Self::on_input)):
+    /// the driver hands the platform, through `cx`, what the sample changed
+    /// that must show at once rather than at the next frame — the cursor of
+    /// the node now under the mouse, a pointer lock a handler asked for.
+    /// Default no-op.
+    fn after_input(&mut self, _cx: &mut RuntimeCx<'_>, _window: WindowId) {}
+
     /// `window` became (`true`) or stopped being (`false`) the keyboard target.
     /// Default no-op.
     fn on_window_focus(&mut self, _window: WindowId, _focused: bool) {}

@@ -40,7 +40,8 @@ pub use schedule::{FrameDecision, RedrawReason, RedrawReasons};
 pub use scheduler::Scheduler;
 pub use task::{TaskId, TaskSet};
 pub use viso_platform::{
-    Appearance, ColorScheme, CursorIcon, DisplayFeature, DisplayFeatureKind, EditLabels, EditMenu,
-    EditMenuAction, GamepadButton, GamepadEvent, GamepadId, GamepadInfo, GamepadState, InputKind,
-    Instant, LogicalInsets, LoopWaker, Loupe, Rumble,
+    Appearance, ColorScheme, CursorError, CursorIcon, CursorImage, CustomCursor, DisplayFeature,
+    DisplayFeatureKind, EditLabels, EditMenu, EditMenuAction, GamepadButton, GamepadEvent,
+    GamepadId, GamepadInfo, GamepadState, InputKind, Instant, LogicalInsets, LoopWaker, Loupe,
+    Rumble,
 };

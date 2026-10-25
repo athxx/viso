@@ -19,6 +19,7 @@ use x11rb::cursor::Handle as CursorTheme;
 use x11rb::properties::{WmHints, WmHintsState, WmSizeHints, WmSizeHintsSpecification};
 use x11rb::protocol::Event;
 use x11rb::protocol::randr;
+use x11rb::protocol::render::{self, ConnectionExt as _};
 use x11rb::protocol::xinput::{self, XIEventMask};
 use x11rb::protocol::xkb::{self, ConnectionExt as _};
 use x11rb::protocol::xproto::{
@@ -38,6 +39,7 @@ use super::translate::{self, Edge, RESIZE_BORDER};
 use super::xkb::{self as keymap, KeyText, Keyboard};
 use super::{After, Chore, Display, Pump, WakeReceiver, Waker, poll_readable, wake_channel};
 use crate::control::{PlatformError, WindowChrome, WindowConfig, WindowId};
+use crate::cursor::{CursorImage, CustomCursor};
 use crate::event::{
     AcceptCell, Appearance, CursorIcon, Modifiers, PointerButtons, PointerKind, PointerPhase,
     RawEvent, RawImePreedit, RawPointer, RawScroll, RawText,
@@ -403,6 +405,9 @@ pub(crate) struct X11 {
     xdnd: dnd::Xdnd,
     cursor_theme: Option<CursorTheme>,
     cursors: Vec<(CursorIcon, xproto::Cursor)>,
+    /// The image cursors built so far, each at the scale (its bits) it was
+    /// built for; `None` where the server could not make one.
+    images: Vec<(CustomCursor, u64, Option<xproto::Cursor>)>,
     /// The scale `Xft.dpi` sets for every window, if any.
     xft_scale: Option<f64>,
     monitors: Vec<Monitor>,
@@ -499,6 +504,7 @@ impl X11 {
             xdnd: dnd::Xdnd::default(),
             cursor_theme: None,
             cursors: Vec::new(),
+            images: Vec::new(),
             xft_scale: None,
             monitors: Vec::new(),
             last_time: x11rb::CURRENT_TIME,
@@ -946,7 +952,13 @@ impl X11 {
         if self.windows[i].shown == Some(icon) {
             return;
         }
-        let Some(cursor) = self.cursor(icon) else {
+        let cursor = match icon {
+            CursorIcon::Custom(custom) => self
+                .image_cursor(custom, self.windows[i].scale)
+                .or_else(|| self.cursor(CursorIcon::Default)),
+            _ => self.cursor(icon),
+        };
+        let Some(cursor) = cursor else {
             return;
         };
         self.windows[i].shown = Some(icon);
@@ -971,6 +983,92 @@ impl X11 {
         };
         self.cursors.push((icon, cursor));
         Some(cursor)
+    }
+
+    /// The cursor showing `custom`'s image at `scale`, built the first time.
+    fn image_cursor(&mut self, custom: CustomCursor, scale: f64) -> Option<xproto::Cursor> {
+        let bits = scale.to_bits();
+        if let Some(&(_, _, c)) = self
+            .images
+            .iter()
+            .find(|(c, s, _)| *c == custom && *s == bits)
+        {
+            return c;
+        }
+        let built = self.build_image_cursor(&custom.image(), scale);
+        self.images.push((custom, bits, built));
+        built
+    }
+
+    /// A Render cursor of `image` at `scale`: its premultiplied pixels in a
+    /// 32-bit pixmap, read through the ARGB picture format.
+    fn build_image_cursor(&self, image: &CursorImage, scale: f64) -> Option<xproto::Cursor> {
+        let conn = &*self.conn;
+        let formats = conn.render_query_pict_formats().ok()?.reply().ok()?;
+        let format = formats
+            .formats
+            .iter()
+            .find(|f| {
+                let d = &f.direct;
+                f.type_ == render::PictType::DIRECT
+                    && f.depth == 32
+                    && (d.alpha_shift, d.alpha_mask) == (24, 0xff)
+                    && (d.red_shift, d.green_shift, d.blue_shift) == (16, 8, 0)
+            })?
+            .id;
+        let shown = image.at_scale(scale);
+        let (w, h) = (shown.width as u16, shown.height as u16);
+        let msb = conn.setup().image_byte_order == xproto::ImageOrder::MSB_FIRST;
+        let pixels: Vec<u8> = shown
+            .rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|p| {
+                let a = u16::from(p[3]);
+                let k = |c: u8| ((u16::from(c) * a + 127) / 255) as u8;
+                let (r, g, b) = (k(p[0]), k(p[1]), k(p[2]));
+                if msb {
+                    [p[3], r, g, b]
+                } else {
+                    [b, g, r, p[3]]
+                }
+            })
+            .collect();
+        let pixmap = conn.generate_id().ok()?;
+        conn.create_pixmap(32, pixmap, self.root, w, h).ok()?;
+        let made = (|| {
+            let gc = conn.generate_id().ok()?;
+            conn.create_gc(gc, pixmap, &xproto::CreateGCAux::new())
+                .ok()?;
+            // Bands of rows keep each request well under the server's limit.
+            let row = usize::from(w) * 4;
+            for (band, rows) in pixels.chunks(row * 64).enumerate() {
+                let _ = conn.put_image(
+                    xproto::ImageFormat::Z_PIXMAP,
+                    pixmap,
+                    gc,
+                    w,
+                    (rows.len() / row) as u16,
+                    0,
+                    (band * 64) as i16,
+                    0,
+                    32,
+                    rows,
+                );
+            }
+            let _ = conn.free_gc(gc);
+            let picture = conn.generate_id().ok()?;
+            conn.render_create_picture(picture, pixmap, format, &Default::default())
+                .ok()?;
+            let cursor = conn.generate_id().ok()?;
+            let [x, y] = shown.hotspot;
+            let made = conn.render_create_cursor(cursor, picture, x as u16, y as u16);
+            let _ = conn.render_free_picture(picture);
+            made.ok().map(|_| cursor)
+        })();
+        let _ = conn.free_pixmap(pixmap);
+        made
     }
 
     fn invisible_cursor(&self) -> Option<xproto::Cursor> {

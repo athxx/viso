@@ -64,6 +64,7 @@ mod app_menu;
 mod assets;
 pub use assets::ImageLoader;
 pub mod audio;
+pub mod cursor;
 mod edit_menu;
 mod environment;
 mod footprint;
@@ -1388,6 +1389,16 @@ impl<A: Application> AppDriver<A> {
 }
 
 impl WindowState {
+    /// Shows the cursor the node under the mouse names; the platform hears of
+    /// it only when it changes.
+    fn push_cursor(&mut self, cx: &mut RuntimeCx<'_>) {
+        let cursor = self.store.mouse_cursor();
+        if cursor != self.cursor {
+            self.cursor = cursor;
+            cx.set_cursor(self.window, cursor);
+        }
+    }
+
     /// A freshly-opened window's state: empty stores/registries and no GPU yet
     /// (the driver brings the surface up once it has the window's native handle).
     /// Mirrors the session-scope initialisation the single-window driver did on
@@ -3783,6 +3794,15 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         self.open_pending_urls(cx);
     }
 
+    fn after_input(&mut self, cx: &mut RuntimeCx<'_>, window: WindowId) {
+        let Some(ws) = self.window_mut(window) else {
+            return;
+        };
+        // The cursor follows the mouse as it moves, not at the next frame,
+        // which a move that changes nothing else never asks for.
+        ws.push_cursor(cx);
+    }
+
     fn on_window_focus(&mut self, window: WindowId, focused: bool) {
         #[cfg(any(feature = "hot-reload", feature = "headless"))]
         if let Some(recorder) = &mut self.recorder {
@@ -4523,13 +4543,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         let started = cx.start_drag(ws.window, drag_out(&data));
                         ws.store.drag_out_started(started);
                     }
-                    // The mouse shows the cursor the node under it names; the
-                    // platform hears of it only when it changes.
-                    let cursor = ws.store.mouse_cursor();
-                    if cursor != ws.cursor {
-                        ws.cursor = cursor;
-                        cx.set_cursor(ws.window, cursor);
-                    }
+                    ws.push_cursor(cx);
                     // The edit menu follows what a touch made of the focused
                     // field's selection, where the platform has one.
                     let caps = cx.capabilities();

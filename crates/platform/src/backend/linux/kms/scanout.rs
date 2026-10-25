@@ -19,6 +19,7 @@ use viso_handle::{GbmTarget, Scanout, ScanoutFormat};
 
 use super::drm::{self, Card, ModeInfo, Request};
 use super::gbm::Gbm;
+use crate::cursor::CursorImage;
 use crate::event::CursorIcon;
 
 /// `(x, y, w, h)` in pixels from the top-left.
@@ -1154,6 +1155,9 @@ fn draw_cursor(
     scale: f64,
     rotation: Rotation,
 ) -> (i32, i32) {
+    if let CursorIcon::Custom(custom) = icon {
+        return draw_image(dst, pitch, &custom.image(), scale, rotation);
+    }
     let (rows, hotspot): (&[&str], (u32, u32)) = match icon {
         CursorIcon::Text | CursorIcon::VerticalText => (&IBEAM, (3, 8)),
         CursorIcon::Crosshair => (&CROSS, (7, 7)),
@@ -1194,9 +1198,61 @@ fn draw_cursor(
     (hx as i32, hy as i32)
 }
 
+/// Draws an image cursor at `scale` into a cursor buffer, premultiplied and
+/// turned like the image, cut to the buffer; returns the hotspot in it.
+fn draw_image(
+    dst: &mut [u8],
+    pitch: usize,
+    image: &CursorImage,
+    scale: f64,
+    rotation: Rotation,
+) -> (i32, i32) {
+    dst.fill(0);
+    let shown = image.at_scale(scale);
+    let n = CURSOR;
+    let w = shown.width as usize;
+    for (y, row) in shown.rgba.chunks_exact(w * 4).enumerate().take(n as usize) {
+        for (x, p) in row.as_chunks::<4>().0.iter().enumerate().take(n as usize) {
+            let a = u32::from(p[3]);
+            if a == 0 {
+                continue;
+            }
+            let k = |c: u8| (u32::from(c) * a + 127) / 255;
+            let argb = a << 24 | k(p[0]) << 16 | k(p[1]) << 8 | k(p[2]);
+            let (px, py) = rotation.pixel(x as u32, y as u32, (n, n));
+            let o = py as usize * pitch + px as usize * 4;
+            dst[o..o + 4].copy_from_slice(&argb.to_le_bytes());
+        }
+    }
+    let [hx, hy] = shown.hotspot.map(|v| v.min(n - 1));
+    let (hx, hy) = rotation.pixel(hx, hy, (n, n));
+    (hx as i32, hy as i32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_image_cursor_draws_premultiplied_with_its_hotspot() {
+        let pixels = [[255, 0, 0, 255], [0, 0, 255, 128]].concat().repeat(2);
+        let image = CursorImage::new(2, 2, pixels, [1, 0]).unwrap();
+        let mut buf = vec![0u8; (CURSOR * CURSOR * 4) as usize];
+        let pitch = CURSOR as usize * 4;
+        let hot = draw_image(&mut buf, pitch, &image, 1.0, Rotation::R0);
+        assert_eq!(hot, (1, 0));
+        assert_eq!(
+            u32::from_le_bytes(buf[0..4].try_into().unwrap()),
+            0xffff_0000
+        );
+        assert_eq!(
+            u32::from_le_bytes(buf[4..8].try_into().unwrap()),
+            0x8000_0080
+        );
+        assert_eq!(&buf[8..12], &[0; 4]);
+        let hot = draw_image(&mut buf, pitch, &image, 2.0, Rotation::R0);
+        assert_eq!(hot, (2, 0), "twice the size at twice the scale");
+    }
 
     #[test]
     fn rotation_maps_points_and_pixels_the_same_way() {

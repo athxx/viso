@@ -105,6 +105,7 @@ objc2-app-kit = { version = "0.3", features = [
     "NSImage",
     "NSImageRep",
     "NSBitmapImageRep",
+    "NSGraphics",
     "NSCursor",
     "NSAppearance",
     "NSWorkspace",

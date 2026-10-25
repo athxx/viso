@@ -195,7 +195,7 @@ pub(crate) fn is_text(text: &str) -> bool {
 pub(crate) fn cursor_names(icon: CursorIcon) -> &'static [&'static str] {
     use CursorIcon as C;
     match icon {
-        C::Default => &["default", "left_ptr"],
+        C::Default | C::Custom(_) => &["default", "left_ptr"],
         C::Pointer => &["pointer", "hand2", "hand1"],
         C::Text => &["text", "xterm"],
         C::VerticalText => &["vertical-text", "text", "xterm"],
@@ -228,7 +228,7 @@ pub(crate) fn cursor_names(icon: CursorIcon) -> &'static [&'static str] {
 pub(crate) fn cursor_shape(icon: CursorIcon) -> Option<u32> {
     use CursorIcon as C;
     Some(match icon {
-        C::Default => 1,
+        C::Default | C::Custom(_) => 1,
         C::ContextMenu => 2,
         C::Help => 3,
         C::Pointer => 4,

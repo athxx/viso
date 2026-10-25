@@ -388,6 +388,7 @@ pub(crate) fn cursor_resource(icon: CursorIcon) -> Option<u16> {
         C::ResizeNesw => SIZENESW,
         C::ResizeNwse => SIZENWSE,
         C::Hidden => return None,
+        C::Custom(_) => ARROW,
     })
 }
 

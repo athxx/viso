@@ -1,6 +1,7 @@
 //! System services the window procedure and the app share: cursors,
 //! appearance and wheel settings, the dark title bar, fullscreen.
 
+use std::cell::RefCell;
 use std::ffi::c_void;
 use std::time::Duration;
 
@@ -8,34 +9,105 @@ use ::windows::Win32::Foundation::HWND;
 use ::windows::Win32::Globalization::GetUserDefaultLocaleName;
 use ::windows::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
 use ::windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
+    CreateBitmap, DeleteObject, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO,
+    MonitorFromWindow,
 };
 use ::windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
 use ::windows::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
 use ::windows::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime;
 use ::windows::Win32::UI::WindowsAndMessaging::{
-    GWL_STYLE, GetWindowLongPtrW, GetWindowPlacement, HWND_TOP, LoadCursorW,
-    SPI_GETCLIENTAREAANIMATION, SPI_GETHIGHCONTRAST, SPI_GETWHEELSCROLLCHARS,
-    SPI_GETWHEELSCROLLLINES, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE,
-    SWP_NOZORDER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SetCursor, SetWindowLongPtrW,
-    SetWindowPlacement, SetWindowPos, SystemParametersInfoW, WINDOWPLACEMENT, WS_OVERLAPPEDWINDOW,
+    CreateIconIndirect, GWL_STYLE, GetWindowLongPtrW, GetWindowPlacement, HCURSOR, HWND_TOP,
+    ICONINFO, LoadCursorW, SPI_GETCLIENTAREAANIMATION, SPI_GETHIGHCONTRAST,
+    SPI_GETWHEELSCROLLCHARS, SPI_GETWHEELSCROLLLINES, SWP_FRAMECHANGED, SWP_NOMOVE,
+    SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SetCursor,
+    SetWindowLongPtrW, SetWindowPlacement, SetWindowPos, SystemParametersInfoW, WINDOWPLACEMENT,
+    WS_OVERLAPPEDWINDOW,
 };
 use ::windows::core::{BOOL, PCWSTR, w};
 
 use super::translate;
 use super::{Restore, Shared, WindowState, menu};
+use crate::cursor::{CursorImage, CustomCursor};
 use crate::event::{Appearance, ColorScheme, CursorIcon, RawEvent};
 use crate::locale;
 
-/// Show `icon` now. `WM_SETCURSOR` calls this again whenever the pointer
-/// moves over the client area.
-pub(super) fn apply_cursor(icon: CursorIcon) {
+/// Show `icon` now, an image cursor at `dpi`. `WM_SETCURSOR` calls this
+/// again whenever the pointer moves over the client area.
+pub(super) fn apply_cursor(icon: CursorIcon, dpi: u32) {
+    let cursor = match icon {
+        CursorIcon::Custom(custom) => image_cursor(custom, dpi).or_else(arrow),
+        _ => translate::cursor_resource(icon).and_then(system_cursor),
+    };
+    // SAFETY: `cursor` is a shared system cursor or one this thread built
+    // and keeps alive for the process.
+    unsafe {
+        SetCursor(cursor);
+    }
+}
+
+fn arrow() -> Option<HCURSOR> {
+    translate::cursor_resource(CursorIcon::Default).and_then(system_cursor)
+}
+
+fn system_cursor(id: u16) -> Option<HCURSOR> {
     // SAFETY: loading a shared system cursor by its integer resource id
     // (`MAKEINTRESOURCE`), which needs no module and is never freed.
+    unsafe { LoadCursorW(None, PCWSTR(usize::from(id) as *const u16)).ok() }
+}
+
+thread_local! {
+    /// The image cursors built so far, each at the DPI it was built for.
+    static IMAGE_CURSORS: RefCell<Vec<(CustomCursor, u32, Option<HCURSOR>)>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// The cursor showing `cursor`'s image at `dpi`, built the first time.
+fn image_cursor(cursor: CustomCursor, dpi: u32) -> Option<HCURSOR> {
+    IMAGE_CURSORS.with_borrow_mut(|built| {
+        if let Some(&(_, _, h)) = built.iter().find(|(c, d, _)| *c == cursor && *d == dpi) {
+            return h;
+        }
+        let h = build_cursor(&cursor.image(), f64::from(dpi) / 96.0);
+        built.push((cursor, dpi, h));
+        h
+    })
+}
+
+/// A cursor of `image` at `scale` pixels to a point: a 32-bit colour bitmap
+/// whose alpha shapes it, over an empty mask.
+fn build_cursor(image: &CursorImage, scale: f64) -> Option<HCURSOR> {
+    let image = image.at_scale(scale);
+    let (w, h) = (image.width as i32, image.height as i32);
+    let bgra: Vec<u8> = image
+        .rgba
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .flat_map(|p| [p[2], p[1], p[0], p[3]])
+        .collect();
+    // A monochrome mask's rows are padded to 16 bits.
+    let mask = vec![0u8; (image.width as usize).div_ceil(16) * 2 * image.height as usize];
+    // SAFETY: both bitmaps are created from buffers of exactly their
+    // `w × h` size at their bit depth, which `CreateBitmap` copies; the
+    // icon copies the bitmaps in turn, so they are deleted after.
     unsafe {
-        let cursor = translate::cursor_resource(icon)
-            .and_then(|id| LoadCursorW(None, PCWSTR(usize::from(id) as *const u16)).ok());
-        SetCursor(cursor);
+        let color = CreateBitmap(w, h, 1, 32, Some(bgra.as_ptr().cast()));
+        let mono = CreateBitmap(w, h, 1, 1, Some(mask.as_ptr().cast()));
+        let info = ICONINFO {
+            fIcon: BOOL(0),
+            xHotspot: image.hotspot[0],
+            yHotspot: image.hotspot[1],
+            hbmMask: mono,
+            hbmColor: color,
+        };
+        let icon = if color.is_invalid() || mono.is_invalid() {
+            None
+        } else {
+            CreateIconIndirect(&info).ok()
+        };
+        let _ = DeleteObject(color.into());
+        let _ = DeleteObject(mono.into());
+        icon.map(|icon| HCURSOR(icon.0))
     }
 }
 
@@ -44,7 +116,7 @@ pub(super) fn set_cursor(state: &WindowState, icon: CursorIcon) {
     // Over the client area the change shows at once; elsewhere the next
     // `WM_SETCURSOR` applies it.
     if state.tracking_leave.get() {
-        apply_cursor(icon);
+        apply_cursor(icon, state.dpi.get());
     }
 }
 

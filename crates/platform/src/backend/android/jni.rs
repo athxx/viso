@@ -50,6 +50,7 @@ struct Methods {
     set_edit_menu: Global<jmethodID>,
     set_loupe: Global<jmethodID>,
     set_pointer_icon: Global<jmethodID>,
+    set_pointer_image: Global<jmethodID>,
     set_fullscreen: Global<jmethodID>,
     set_clipboard: Global<jmethodID>,
     request_clipboard: Global<jmethodID>,
@@ -342,6 +343,46 @@ pub(super) fn set_pointer_icon(icon: i32) {
     call_void(|m| m.set_pointer_icon, &[jvalue { i: icon }]);
 }
 
+/// Show image cursor `id`, making its icon first from `image` — straight
+/// ARGB pixels, their size and hotspot in pixels — when the activity has
+/// none yet.
+pub(super) fn set_pointer_image(id: i32, image: Option<(&[i32], u32, u32, [u32; 2])>) {
+    let Some(env) = env() else {
+        return;
+    };
+    let (pixels, w, h, [x, y]) = image.unwrap_or((&[], 0, 0, [0, 0]));
+    let mut array: jintArray = ptr::null_mut();
+    if image.is_some() {
+        let Ok(len) = jint::try_from(pixels.len()) else {
+            return;
+        };
+        // SAFETY: `env` is this thread's environment; the new array holds
+        // `len` ints, exactly the region copied into it from `pixels`.
+        unsafe {
+            array = env_call!(env, NewIntArray, len);
+            if !check(env) || array.is_null() {
+                return;
+            }
+            env_call!(env, SetIntArrayRegion, array, 0, len, pixels.as_ptr());
+        }
+    }
+    call_void(
+        |m| m.set_pointer_image,
+        &[
+            jvalue { i: id },
+            jvalue { l: array },
+            jvalue { i: w as jint },
+            jvalue { i: h as jint },
+            jvalue { f: x as jfloat },
+            jvalue { f: y as jfloat },
+        ],
+    );
+    if !array.is_null() {
+        // SAFETY: `array` is a local reference this function made.
+        unsafe { env_call!(env, DeleteLocalRef, array) };
+    }
+}
+
 pub(super) fn set_fullscreen(on: bool) {
     call_void(|m| m.set_fullscreen, &[jvalue { z: on }]);
 }
@@ -618,6 +659,7 @@ pub unsafe extern "system" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void
             set_edit_menu: method(c"setEditMenu", c"(ZFFFFI)V"),
             set_loupe: method(c"setLoupe", c"(ZFF)V"),
             set_pointer_icon: method(c"setPointerIcon", c"(I)V"),
+            set_pointer_image: method(c"setPointerImage", c"(I[IIIFF)V"),
             set_fullscreen: method(c"setFullscreen", c"(Z)V"),
             set_clipboard: method(
                 c"setClipboard",

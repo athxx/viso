@@ -567,6 +567,17 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
     warm and from the background; Linux X11 (Xvfb) cold plus two hand-overs. Not run:
     iOS, Windows, web, Wayland, universal/app links.
 - [ ] Custom cursors and pointer lock.
+  - [x] Image cursors: `CustomCursor::new(CursorImage)` registers straight RGBA, a hotspot
+    and a scale once and names it `CursorIcon::Custom(id)`; `viso::cursor::decode` reads an
+    encoded image. Each backend builds its OS cursor on first show and caches it (macOS
+    NSCursor, Windows CreateIconIndirect per DPI, Wayland shm surface, X11 Render cursor, KMS
+    hardware cursor, web CSS `url()`/`image-set`, Android `PointerIcon`); iOS reports
+    `custom_cursors: false`. The cursor follows the mouse right after input
+    (`FrameDriver::after_input`), not at the next frame. Verified: macOS live (the
+    `pointer` example's 64 px @2x ring reads back from the window server as a 32 pt cursor,
+    hotspot 16,16; the system crosshair over the other panel), headless facade tests, unit
+    tests (registry, resampling, cache, KMS drawing); Windows, Linux, web, Android, iOS
+    compile and pass clippy only.
 - [x] Fullscreen change events on every OS (Android hides the system bars, iOS the status
   bar and home indicator).
 - [ ] Window state persistence.

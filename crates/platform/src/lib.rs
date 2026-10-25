@@ -28,6 +28,7 @@ pub mod backend;
 pub mod browser;
 pub mod clipboard;
 pub mod control;
+pub mod cursor;
 pub mod drop;
 pub mod event;
 pub mod gamepad;
@@ -64,6 +65,7 @@ pub use control::{
     LogicalRect, Loupe, PlatformCaps, PlatformError, TextEntry, WindowChrome, WindowConfig,
     WindowId,
 };
+pub use cursor::{CursorError, CursorImage, CustomCursor, MAX_CURSOR_SIDE, ScaledCursor};
 pub use drop::{
     DragOut, DropAction, DropActions, DropKinds, DropOffer, DropPhase, DropReply, RawDrop,
     file_path, file_uri, uri_list,
@@ -187,7 +189,10 @@ pub trait PlatformApp {
     /// after a permission prompt (the web). The loop never waits on it.
     fn request_paste(&mut self, window: WindowId, kinds: ClipboardKinds, token: u32);
 
-    /// Show `icon` while the mouse is over `window`'s content.
+    /// Show `icon` while the mouse is over `window`'s content. An image
+    /// cursor's OS cursor is built the first time any window shows it and
+    /// reused after; where [`PlatformCaps::custom_cursors`] is false it shows
+    /// as the default arrow.
     fn set_cursor(&mut self, window: WindowId, icon: CursorIcon);
 
     /// Tell the input method about the focused text field: where its caret

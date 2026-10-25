@@ -3165,6 +3165,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "viso-example-pointer"
+version = "0.0.0"
+dependencies = [
+ "viso",
+]
+
+[[package]]
 name = "viso-example-video"
 version = "0.0.0"
 dependencies = [

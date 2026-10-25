@@ -192,7 +192,7 @@ pub use asset::{
     AssetTable,
 };
 pub use backdrop::Backdrop;
-pub use cursor::CursorIcon;
+pub use cursor::{CursorError, CursorIcon, CursorImage, CustomCursor};
 pub use feedback::Haptic;
 pub use field_input::{FieldEvent, FieldKey, field_input, field_key, number_input};
 pub use field_marks::FieldMarks;
