@@ -368,7 +368,9 @@ Rules:
     - [x] Android, AAudio, the devices and permission through the crate's Java;
     - [ ] Windows, WASAPI (built and linted for the target, not yet run: no Windows
       machine);
-    - [ ] Web, Web Audio.
+    - [x] Web, Web Audio: one context a stream, blocks moved through an AudioWorklet
+      to callbacks on the page's thread, waiting for the first touch (verified in
+      headless Chrome with fake devices).
   - [ ] playback of files and URLs through the platform players (WAV, Ogg Vorbis, MP3,
     FLAC, AAC), sound effects, recording;
   - [ ] the audio session (iOS category, Android focus) owned by it alone.
