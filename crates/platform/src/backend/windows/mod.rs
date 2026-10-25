@@ -19,6 +19,7 @@ mod lock;
 mod menu;
 mod proc;
 mod system;
+mod tray;
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -401,6 +402,8 @@ pub struct WinApp {
     launch_urls: Vec<String>,
     /// The game controllers, read from the first poll.
     gamepads: crate::gamepad::Gamepads,
+    /// The tray icon, while the app shows one.
+    tray: Option<tray::TrayIcon>,
 }
 
 impl WinApp {
@@ -431,6 +434,7 @@ impl WinApp {
             // SAFETY: reads the calling thread's id; no arguments.
             ui_thread: unsafe { GetCurrentThreadId() },
             gamepads: crate::gamepad::Gamepads::default(),
+            tray: None,
         })
     }
 
@@ -757,6 +761,16 @@ impl PlatformApp for WinApp {
         // The previous menu's accelerator table goes with it, after every
         // window has moved to the new bar.
         self.shared.borrow_mut().menu = native;
+    }
+
+    fn set_tray(&mut self, tray: Option<&crate::Tray>) {
+        match (tray, &self.tray) {
+            (None, _) => self.tray = None,
+            (Some(tray), Some(shown)) => shown.update(tray),
+            (Some(tray), None) => {
+                self.tray = tray::TrayIcon::new(self.hinstance, &self.shared, tray);
+            }
+        }
     }
 
     fn update_accessibility(&mut self, window: WindowId, delta: crate::SemanticsDelta) {

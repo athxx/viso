@@ -149,7 +149,7 @@ pub(super) fn detach(hwnd: HWND) {
 /// # Safety
 ///
 /// `menu` must be a live menu handle owned by the caller.
-unsafe fn append(menu: HMENU, entries: &[MenuEntry]) {
+pub(super) unsafe fn append(menu: HMENU, entries: &[MenuEntry]) {
     for entry in entries {
         // SAFETY: every label is NUL-terminated and outlives its call; a
         // popup handle appended to `menu` becomes owned by it.

@@ -67,6 +67,7 @@ fn backend_error(e: impl std::fmt::Display) -> PlatformError {
 pub(crate) struct WaylandApp {
     wl: Rc<RefCell<Wl>>,
     wakes: Rc<WakeReceiver>,
+    shell: super::shell::Shell,
     windows: Vec<WaylandWindow>,
     next_id: u32,
     /// The game controllers, read from the first poll.
@@ -81,10 +82,11 @@ impl WaylandApp {
         let mut state = State::new(conn, &globals, queue.handle(), waker.clone())?;
         // Seat capabilities and output scales arrive in the first round trip.
         queue.roundtrip(&mut state).map_err(backend_error)?;
-        state.pump.appearance = super::portal::spawn(waker);
+        state.pump.appearance = super::portal::spawn(waker.clone());
         Ok(Self {
             wl: Rc::new(RefCell::new(Wl { queue, state })),
             wakes: Rc::new(wakes),
+            shell: super::shell::Shell::new(waker),
             windows: Vec::new(),
             next_id: 1,
             gamepads: crate::gamepad::Gamepads::default(),
@@ -150,6 +152,10 @@ impl PlatformApp for WaylandApp {
 
     fn set_menu(&mut self, menu: &Menu) {
         self.wl.borrow_mut().state.pump.accels = translate::AccelTable::build(menu);
+    }
+
+    fn set_tray(&mut self, tray: Option<&crate::Tray>) {
+        self.shell.set_tray(tray);
     }
 
     fn set_draggable_regions(&mut self, window: WindowId, regions: &[LogicalRect]) {

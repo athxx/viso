@@ -51,6 +51,7 @@ pub mod menu;
     test
 ))]
 mod panel;
+pub mod shell;
 pub mod stdio;
 pub mod time;
 pub mod wake;
@@ -80,6 +81,7 @@ pub use gamepad::{GamepadButton, GamepadEvent, GamepadId, GamepadInfo, GamepadSt
 pub use handler::AppHandler;
 pub use launch::launch_var;
 pub use menu::{Accel, Menu, MenuCommandId, SystemAction};
+pub use shell::{IconImage, Tray, TrayEvent};
 pub use time::Instant;
 pub use wake::LoopWaker;
 // The native window handle lives in the `viso-handle` leaf crate so `viso-gpu`
@@ -128,6 +130,15 @@ pub trait PlatformApp {
     /// non-[`Menu::Main`] root, or calling on a backend with no menu concept
     /// (headless), is a no-op.
     fn set_menu(&mut self, menu: &Menu);
+
+    /// Show `tray` as the app's icon in the system tray or menu bar, or
+    /// update the one shown; `None` removes it. Cold path: called when the
+    /// app changes its tray. Picks of its menu arrive as
+    /// [`RawEvent::MenuCommand`], clicks on it as [`RawEvent::Tray`]. A no-op
+    /// where [`PlatformCaps::tray`] is false.
+    fn set_tray(&mut self, tray: Option<&Tray>) {
+        let _ = tray;
+    }
 
     /// Declare which regions of `window`'s self-drawn caption are draggable, in
     /// logical points (top-left origin). The backend caches the slice and, on a

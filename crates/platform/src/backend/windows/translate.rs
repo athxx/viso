@@ -501,7 +501,7 @@ pub(crate) struct AccelSpec {
 /// The menu bar as Win32 wants it: the entry tree (UTF-16, NUL-terminated
 /// labels with the shortcut after a tab), the action behind each command id
 /// (`id - FIRST_ID` indexes `actions`), and the accelerator rows.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub(crate) struct MenuPlan {
     pub(crate) entries: Vec<MenuEntry>,
     pub(crate) actions: Vec<MenuAction>,
@@ -514,10 +514,17 @@ pub(crate) const FIRST_ID: u16 = 1;
 
 impl MenuPlan {
     pub(crate) fn build(menu: &Menu) -> Self {
-        let mut plan = MenuPlan::default();
-        if let Menu::Main { items } = menu {
-            plan.entries = items.iter().filter_map(|m| plan.entry(m)).collect();
+        match menu {
+            Menu::Main { items } => Self::build_items(items),
+            _ => MenuPlan::default(),
         }
+    }
+
+    /// The plan of a menu whose entries are `items` themselves, such as the
+    /// tray icon's.
+    pub(crate) fn build_items(items: &[Menu]) -> Self {
+        let mut plan = MenuPlan::default();
+        plan.entries = items.iter().filter_map(|m| plan.entry(m)).collect();
         plan
     }
 
@@ -878,6 +885,19 @@ mod tests {
             MenuPlan::build(&Menu::item_plain("x", MenuCommandId(1))),
             MenuPlan::default()
         );
+    }
+
+    #[test]
+    fn a_tray_menu_plans_its_items_at_the_top() {
+        let plan = MenuPlan::build_items(&[
+            Menu::item_plain("Open", MenuCommandId(5)),
+            Menu::sub("More", [Menu::item_plain("Hide", MenuCommandId(6))]),
+            Menu::Line,
+        ]);
+        assert_eq!(plan.entries.len(), 3);
+        assert!(matches!(plan.entries[1], MenuEntry::Popup { .. }));
+        assert_eq!(plan.action(1), Some(MenuAction::Command(MenuCommandId(5))));
+        assert_eq!(plan.action(2), Some(MenuAction::Command(MenuCommandId(6))));
     }
 
     #[test]

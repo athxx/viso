@@ -115,6 +115,13 @@ objc2-app-kit = { version = "0.3", features = [
     "NSControl",
     "NSColor",
     "NSColorSpace",
+    "NSButton",
+    "NSStatusBar",
+    "NSStatusBarButton",
+    "NSStatusItem",
+    "NSBitmapImageRep",
+    "NSImageRep",
+    "NSGraphics",
 ] }
 
 # iOS / iPadOS: UIKit via objc2 (default features: every class the backend

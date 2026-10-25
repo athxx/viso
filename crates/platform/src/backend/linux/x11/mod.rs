@@ -61,6 +61,7 @@ pub(crate) struct X11App {
     wakes: Rc<WakeReceiver>,
     /// Handed to each window's accessibility adapter.
     waker: Waker,
+    shell: super::shell::Shell,
     windows: Vec<X11Window>,
     next_id: u32,
     /// The game controllers, read from the first poll.
@@ -76,6 +77,7 @@ impl X11App {
         Ok(Self {
             x11: Rc::new(RefCell::new(x11)),
             wakes: Rc::new(wakes),
+            shell: super::shell::Shell::new(waker.clone()),
             waker,
             windows: Vec::new(),
             next_id: 1,
@@ -131,6 +133,10 @@ impl PlatformApp for X11App {
 
     fn set_menu(&mut self, menu: &Menu) {
         self.x11.borrow_mut().pump.accels = translate::AccelTable::build(menu);
+    }
+
+    fn set_tray(&mut self, tray: Option<&crate::Tray>) {
+        self.shell.set_tray(tray);
     }
 
     fn set_draggable_regions(&mut self, window: WindowId, regions: &[LogicalRect]) {

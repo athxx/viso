@@ -141,6 +141,12 @@ impl<'a> RuntimeCx<'a> {
         self.app.set_menu(menu);
     }
 
+    /// Show, update or (with `None`) remove the app's tray icon; see
+    /// [`PlatformApp::set_tray`](viso_platform::PlatformApp::set_tray).
+    pub fn set_tray(&mut self, tray: Option<&viso_platform::Tray>) {
+        self.app.set_tray(tray);
+    }
+
     /// Declare `window`'s draggable self-drawn-caption regions (logical points,
     /// top-left origin). The platform starts a native window drag on a primary
     /// press inside one instead of routing a pointer event. A no-op on backends

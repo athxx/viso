@@ -81,6 +81,7 @@ mod profile;
 mod scenario;
 pub mod services;
 mod shaders;
+pub mod shell;
 pub mod system_fonts;
 mod text_content;
 mod text_harness;
@@ -314,6 +315,14 @@ pub trait Application: Sized + 'static {
         let _ = (cx, url);
     }
 
+    /// Handle a click on the app's tray icon, shown through
+    /// [`shell::set_tray`]. Picks of its menu reach
+    /// [`on_menu_command`](Self::on_menu_command). The default ignores every
+    /// click.
+    fn on_tray(&mut self, event: shell::TrayEvent) {
+        let _ = event;
+    }
+
     /// The memory budget the app's caches share, read once before the first
     /// window opens. The default is the build's: its footprint profile's
     /// figures with the target's `budget` overrides
@@ -513,6 +522,11 @@ pub mod __test_support {
         pub fn drawn_menu(&self) -> Option<(bool, viso_ui::Rect, Vec<(viso_ui::Rect, bool)>)> {
             let ws = &self.driver.windows[0];
             ws.drawn_menu.seen(&ws.store)
+        }
+
+        /// The tray icon the session last handed to the platform.
+        pub fn tray(&self) -> Option<&crate::shell::Tray> {
+            self.driver.shell.tray.as_ref()
         }
 
         /// The pointer cursor last pushed to the platform for the launch
@@ -814,6 +828,8 @@ struct AppDriver<A: Application> {
     menu_picks: app_menu::Picks,
     /// The links the app was asked to open that it has no window for yet.
     pending_urls: Vec<String>,
+    /// What the session shows in the desktop shell.
+    shell: shell::Shown,
     /// The development session: the mounted views, their watched files and
     /// the reloads staged for the next frame.
     #[cfg(feature = "hot-reload")]
@@ -1225,6 +1241,7 @@ impl<A: Application> AppDriver<A> {
 
     fn new(services: Option<services::Services>) -> Self {
         footprint::install(A::memory_budget());
+        shell::begin();
         Self {
             app: None,
             cx: AppCx::__new(),
@@ -1239,6 +1256,7 @@ impl<A: Application> AppDriver<A> {
             app_menu: None,
             menu_picks: Default::default(),
             pending_urls: Vec::new(),
+            shell: shell::Shown::default(),
             #[cfg(feature = "hot-reload")]
             hot_reload: hot_reload::HotReloadSession::default(),
             #[cfg(feature = "headless")]
@@ -2951,6 +2969,7 @@ fn outside_data(offer: &viso_runtime::DropOffer) -> viso_ui::DragData {
 
 impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
     fn on_launch(&mut self, cx: &mut RuntimeCx<'_>) {
+        shell::launch(cx);
         // Construct the user application now that the pump is live, then take the
         // faces it registered through `AppCx::load_font` so every window opened
         // this session loads them ahead of the system fallbacks.
@@ -2972,6 +2991,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
             cx.set_menu(&menu);
             self.app_menu = Some(menu);
         }
+        shell::apply(cx, &mut self.shell);
         // The OS services, created once on the loop thread now that the
         // platform is up; every window's handlers share them.
         if self.services.is_none() {
@@ -3745,6 +3765,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
     }
 
     fn on_wakeup(&mut self, cx: &mut RuntimeCx<'_>) {
+        shell::apply(cx, &mut self.shell);
         // A loop kick: a task woke (or was spawned), or a timer deadline
         // elapsed. Frame the windows with work, so the frame polls the tasks
         // and fires the timers.
@@ -3856,6 +3877,12 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 &mut ws.text_edits,
                 locked,
             );
+        }
+    }
+
+    fn on_tray(&mut self, event: viso_platform::TrayEvent) {
+        if let Some(app) = self.app.as_mut() {
+            app.on_tray(event);
         }
     }
 

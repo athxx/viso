@@ -71,6 +71,8 @@ pub struct HeadlessApp {
     feed: Option<HeadlessFeed>,
     /// The gamepads a test plugs in ([`HeadlessApp::gamepads`]).
     gamepads: Option<HeadlessGamepads>,
+    /// The tray icon shown, as last set.
+    tray: Option<crate::Tray>,
 }
 
 /// Where a driver hands a running [`HeadlessApp`] input, as the user's
@@ -117,6 +119,7 @@ impl HeadlessApp {
             surface: None,
             feed: None,
             gamepads: None,
+            tray: None,
         }
     }
 
@@ -190,6 +193,11 @@ impl HeadlessApp {
     /// What the clipboard holds.
     pub fn clipboard(&self) -> &ClipboardData {
         &self.clipboard
+    }
+
+    /// The tray icon shown, as the app last set it.
+    pub fn tray(&self) -> Option<&crate::Tray> {
+        self.tray.as_ref()
     }
 
     /// The drags the app carried out of its windows, in order.
@@ -403,6 +411,10 @@ impl PlatformApp for HeadlessApp {
         // No OS menu bar in headless: the app menu is a native-shell concept.
         // Kept as a no-op for interface parity so drivers install a menu
         // unconditionally without a target-specific branch.
+    }
+
+    fn set_tray(&mut self, tray: Option<&crate::Tray>) {
+        self.tray = tray.cloned();
     }
 
     fn close_window(&mut self, id: WindowId) {

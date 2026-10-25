@@ -1209,6 +1209,7 @@ impl PlatformApp for WebApp {
             loupe: false,
             custom_cursors: true,
             pointer_lock: true,
+            tray: false,
         }
     }
 

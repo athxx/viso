@@ -551,7 +551,16 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
     HTML, text and PNG out; HTML, text and PNG in; a 3 MB PNG both ways over INCR).
   - Not run: Windows, iOS and Android (clippy only; the Android Java shell compiles with
     `javac`), Wayland under a compositor (unit tests only: no seat in headless weston).
-- [ ] Tray / status-bar icon with menu.
+- [x] Tray / status-bar icon with menu.
+  - `viso::shell::set_tray` / `tray_supported` / `icon`, `Application::on_tray`; picks go
+    through `on_menu_command`; `PlatformCaps::tray`; headless records it (facade tests).
+  - macOS (`NSStatusItem`): verified with the `shell` example through Accessibility: the item
+    and tooltip show, a click reaches `on_tray`, the click-opened menu lists its entries, a pick
+    reaches `on_menu_command`, removal takes the item away. Secondary-click menu not exercised.
+  - Linux (StatusNotifierItem + dbusmenu on a background zbus thread): verified over a real
+    session bus in a container against a stand-in watcher (registration, icon pixmaps, tooltip,
+    layout, a menu pick, Activate, update, removal); no real panel tried.
+  - Windows (`Shell_NotifyIconW`, re-added on `TaskbarCreated`): compile-checked only.
 - [x] Deep links / URL schemes.
   - `[package.links]` schemes and hosts → Info.plist `CFBundleURLTypes`, iOS associated
     domains, Android intent filters (`autoVerify` for hosts), MSIX `windows.protocol`,

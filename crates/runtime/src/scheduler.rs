@@ -477,6 +477,11 @@ impl<D: FrameDriver, C: FrameClock> Loop<D, C> {
                 self.driver.on_menu_command(id);
                 self.reasons.add(RedrawReason::InputDirty);
             }
+            RawEvent::Tray(event) => {
+                // A click on the tray icon, handled like a menu pick.
+                self.driver.on_tray(event);
+                self.reasons.add(RedrawReason::InputDirty);
+            }
             RawEvent::WindowChromeGeom {
                 window,
                 buttons_rect,

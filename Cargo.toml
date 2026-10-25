@@ -38,6 +38,7 @@ members = [
     "examples/i18n",
     "examples/persist",
     "examples/links",
+    "examples/shell",
     "examples/images",
     "examples/video",
     "examples/10-custom-shader",

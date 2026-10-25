@@ -328,6 +328,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn straight_pixels_come_back_from_premultiplied_ones() {
+        let straight = [200u8, 100, 50, 128, 10, 20, 30, 255, 1, 2, 3, 0];
+        let image = RasterImage::from_straight_rgba8(3, 1, &straight).unwrap();
+        let back = image.to_straight_rgba8().unwrap();
+        assert_eq!(&back[4..8], &straight[4..8], "opaque is untouched");
+        assert_eq!(&back[8..], &[0; 4], "transparent is zero");
+        for (b, s) in back[..3].iter().zip(&straight[..3]) {
+            assert!(b.abs_diff(*s) <= 2, "{back:?} vs {straight:?}");
+        }
+        assert_eq!(back[3], 128);
+    }
+
+    #[test]
     fn the_format_is_read_from_the_bytes() {
         assert_eq!(
             AssetFormat::sniff(b"\x89PNG\r\n\x1a\n...."),

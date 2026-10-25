@@ -1,0 +1,11 @@
+[package]
+name = "viso-example-shell"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The app in the desktop shell beyond its window: an icon in the system tray
+# or menu bar with a menu.
+[dependencies]
+viso = { workspace = true }

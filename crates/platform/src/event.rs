@@ -819,6 +819,10 @@ pub enum RawEvent {
     /// [`MenuCommandId`](crate::menu::MenuCommandId). Standard actions (Quit,
     /// Close, …) route through the OS instead and never surface here.
     MenuCommand { id: MenuCommandId },
+    /// The user clicked the app's tray icon
+    /// ([`PlatformApp::set_tray`](crate::PlatformApp::set_tray)); picks of
+    /// its menu arrive as [`RawEvent::MenuCommand`].
+    Tray(crate::shell::TrayEvent),
     /// The native chrome affordances the backend keeps for a self-drawn-chrome
     /// window moved or resized — currently the bounding box of macOS's
     /// traffic-light buttons, in logical points, top-left origin, relative to the

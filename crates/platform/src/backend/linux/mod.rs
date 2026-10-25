@@ -24,6 +24,8 @@ mod kms;
 mod links;
 #[cfg(any(feature = "x11", feature = "wayland"))]
 mod portal;
+#[cfg(any(feature = "x11", feature = "wayland"))]
+mod shell;
 #[cfg(feature = "wayland")]
 mod wayland;
 #[cfg(feature = "x11")]
@@ -109,6 +111,12 @@ pub(crate) enum Wake {
     },
     /// A later start of the app handed it a URL to open.
     OpenUrl(String),
+    /// The tray icon was clicked.
+    #[cfg(any(feature = "x11", feature = "wayland"))]
+    Tray(crate::shell::TrayEvent),
+    /// An entry of the tray menu was picked.
+    #[cfg(any(feature = "x11", feature = "wayland"))]
+    Menu(MenuAction),
     /// A [`LoopWaker`](crate::LoopWaker) kick.
     Tasks,
 }
@@ -358,6 +366,15 @@ impl Pump {
                 }
             }
             Wake::OpenUrl(url) => self.push(RawEvent::OpenUrl { url }),
+            #[cfg(any(feature = "x11", feature = "wayland"))]
+            Wake::Tray(event) => self.push(RawEvent::Tray(event)),
+            #[cfg(any(feature = "x11", feature = "wayland"))]
+            Wake::Menu(action) => match action {
+                MenuAction::Command(id) => self.push(RawEvent::MenuCommand { id }),
+                MenuAction::System(SystemAction::Quit) => self.should_exit = true,
+                // The window-bound actions have no window from the tray.
+                MenuAction::System(_) => {}
+            },
             Wake::Tasks => self.push(RawEvent::Wakeup),
         }
     }

@@ -30,6 +30,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[path = "macos_shell.rs"]
+mod shell;
+
 use super::drive::Drive;
 use super::macos_access::{MacAccess, Sink, wake_pump};
 use super::macos_clipboard;
@@ -148,6 +151,8 @@ pub struct MacApp {
     /// Replaced wholesale on each `set_menu`, dropping the previous menu's
     /// targets once AppKit has swapped in the new bar.
     menu_targets: Vec<Retained<MenuTarget>>,
+    /// The tray icon in the menu bar, while the app shows one.
+    status_item: Option<shell::StatusItem>,
     /// The kernel's memory-pressure notifications, queued as `LowMemory`.
     _memory_pressure: Option<MemoryPressure>,
     /// The game controllers, read from the first poll.
@@ -244,6 +249,7 @@ impl MacApp {
             launched: false,
             _app_delegate: app_delegate,
             menu_targets: Vec::new(),
+            status_item: None,
             _memory_pressure: memory_pressure,
             gamepads: crate::gamepad::Gamepads::default(),
         })
@@ -847,6 +853,23 @@ impl PlatformApp for MacApp {
         }
         self.app.setMainMenu(Some(&bar));
         self.menu_targets = targets;
+    }
+
+    fn set_tray(&mut self, tray: Option<&crate::Tray>) {
+        match (tray, &mut self.status_item) {
+            (None, item) => *item = None,
+            (Some(tray), Some(item)) => {
+                item.update(self.mtm, tray, &self.shared, &self._app_delegate);
+            }
+            (Some(tray), item @ None) => {
+                *item = Some(shell::StatusItem::new(
+                    self.mtm,
+                    tray,
+                    &self.shared,
+                    &self._app_delegate,
+                ));
+            }
+        }
     }
 
     fn set_draggable_regions(&mut self, window: WindowId, regions: &[LogicalRect]) {

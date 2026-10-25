@@ -397,6 +397,9 @@ pub struct PlatformCaps {
     /// Locking the mouse's pointer for relative motion
     /// ([`PlatformApp::set_pointer_lock`](crate::PlatformApp::set_pointer_lock)).
     pub pointer_lock: bool,
+    /// An icon in the system tray or menu bar
+    /// ([`PlatformApp::set_tray`](crate::PlatformApp::set_tray)).
+    pub tray: bool,
 }
 
 impl PlatformCaps {
@@ -413,6 +416,7 @@ impl PlatformCaps {
         loupe: false,
         custom_cursors: true,
         pointer_lock: true,
+        tray: true,
     };
     /// A phone or tablet backend: one window, the system's clipboard and IME.
     pub const MOBILE: PlatformCaps = PlatformCaps {
@@ -427,6 +431,7 @@ impl PlatformCaps {
         loupe: true,
         custom_cursors: false,
         pointer_lock: false,
+        tray: false,
     };
     /// A display driven with no display server (KMS): one window, nothing
     /// from a desktop and no accessibility bridge.
@@ -442,5 +447,6 @@ impl PlatformCaps {
         loupe: false,
         custom_cursors: true,
         pointer_lock: true,
+        tray: false,
     };
 }

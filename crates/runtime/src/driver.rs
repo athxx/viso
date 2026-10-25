@@ -12,7 +12,7 @@ use viso_platform::Instant;
 
 use viso_platform::{
     AccessRequest, Appearance, DisplayFeature, GamepadEvent, LogicalInsets, LogicalRect,
-    MenuCommandId, WindowId,
+    MenuCommandId, TrayEvent, WindowId,
 };
 
 use crate::context::RuntimeCx;
@@ -70,6 +70,10 @@ pub trait FrameDriver {
     /// actions (Quit/Close/…) are performed by the OS and never reach here.
     /// Default no-op: a driver with no menu holds nothing to dispatch.
     fn on_menu_command(&mut self, _command: MenuCommandId) {}
+
+    /// The user clicked the app's tray icon. Default no-op: a driver that
+    /// shows no tray holds nothing to dispatch.
+    fn on_tray(&mut self, _event: TrayEvent) {}
 
     /// The native chrome geometry of a self-drawn-chrome window changed —
     /// `buttons_rect` is the traffic-light bounding box in logical points

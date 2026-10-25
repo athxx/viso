@@ -1,8 +1,9 @@
 //! The Linux backends' pure translation tables, shared by X11 and Wayland:
 //! evdev scancodes to [`KeyCode`], cursor icons to theme names and
 //! `cursor-shape-v1` shapes, wheel steps to logical points, monitor geometry
-//! to scale factors, the appearance portal's values, IME caret offsets, and
-//! the menu tree to an accelerator table. Nothing here calls the OS, so it is
+//! to scale factors, the appearance portal's values, IME caret offsets, the
+//! menu tree to an accelerator table, and the tray's menu and icon to what
+//! `com.canonical.dbusmenu` and `org.kde.StatusNotifierItem` carry. Nothing here calls the OS, so it is
 //! compiled and tested on every host.
 
 // Off Linux, or in a build with no Linux backend, the tests alone use these.
@@ -24,6 +25,7 @@ use std::time::Duration;
 
 use crate::event::{Appearance, ColorScheme, CursorIcon, KeyCode, Modifiers};
 use crate::menu::{Accel, Menu, MenuCommandId, SystemAction};
+use crate::shell::IconImage;
 
 /// Logical points one wheel line scrolls.
 pub(crate) const LINE: f64 = 16.0;
@@ -646,6 +648,161 @@ pub(crate) fn session_order(
     order
 }
 
+/// What a tray menu entry is, as `com.canonical.dbusmenu` types it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TrayNodeKind {
+    /// The menu itself, id 0.
+    Root,
+    Item,
+    Submenu,
+    Separator,
+}
+
+/// One entry of the tray menu, its id its index in [`TrayMenu::nodes`].
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct TrayNode {
+    pub(crate) kind: TrayNodeKind,
+    /// The label with `_` doubled: a lone one marks a mnemonic.
+    pub(crate) label: String,
+    pub(crate) enabled: bool,
+    pub(crate) action: Option<MenuAction>,
+    pub(crate) children: Vec<i32>,
+}
+
+/// The tray menu laid out as `com.canonical.dbusmenu` serves it: a tree of
+/// entries numbered from the root's 0, in the order they show.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct TrayMenu {
+    pub(crate) nodes: Vec<TrayNode>,
+}
+
+impl TrayMenu {
+    pub(crate) fn build(items: &[Menu]) -> TrayMenu {
+        let mut menu = TrayMenu {
+            nodes: vec![TrayNode {
+                kind: TrayNodeKind::Root,
+                label: String::new(),
+                enabled: true,
+                action: None,
+                children: Vec::new(),
+            }],
+        };
+        menu.nodes[0].children = menu.add_all(items);
+        menu
+    }
+
+    fn add_all(&mut self, items: &[Menu]) -> Vec<i32> {
+        items.iter().filter_map(|m| self.add(m)).collect()
+    }
+
+    fn add(&mut self, menu: &Menu) -> Option<i32> {
+        let (kind, label, enabled, action) = match menu {
+            Menu::Main { .. } => return None,
+            Menu::Sub { name, .. } => (TrayNodeKind::Submenu, name.as_str(), true, None),
+            Menu::Item {
+                name,
+                command,
+                enabled,
+                ..
+            } => (
+                TrayNodeKind::Item,
+                name.as_str(),
+                *enabled,
+                Some(MenuAction::Command(*command)),
+            ),
+            Menu::System { action, name } => (
+                TrayNodeKind::Item,
+                name.as_deref().unwrap_or(system_label(*action)),
+                true,
+                Some(MenuAction::System(*action)),
+            ),
+            Menu::Line => (TrayNodeKind::Separator, "", true, None),
+        };
+        let id = i32::try_from(self.nodes.len()).ok()?;
+        self.nodes.push(TrayNode {
+            kind,
+            label: label.replace('_', "__"),
+            enabled,
+            action,
+            children: Vec::new(),
+        });
+        if let Menu::Sub { items, .. } = menu {
+            let children = self.add_all(items);
+            self.nodes[id as usize].children = children;
+        }
+        Some(id)
+    }
+
+    pub(crate) fn node(&self, id: i32) -> Option<&TrayNode> {
+        self.nodes.get(usize::try_from(id).ok()?)
+    }
+
+    /// What picking entry `id` does; `None` for an entry that does nothing
+    /// or is disabled.
+    pub(crate) fn action(&self, id: i32) -> Option<MenuAction> {
+        self.node(id).filter(|n| n.enabled)?.action
+    }
+}
+
+/// A system action's title where the desktop has no standard one.
+fn system_label(action: SystemAction) -> &'static str {
+    match action {
+        SystemAction::Quit => "Quit",
+        SystemAction::CloseWindow => "Close",
+        SystemAction::Hide => "Hide",
+        SystemAction::Minimize => "Minimize",
+        SystemAction::Copy => "Copy",
+        SystemAction::Cut => "Cut",
+        SystemAction::Paste => "Paste",
+    }
+}
+
+/// The heights the tray icon is offered at besides its own, for the host to
+/// pick the one nearest the panel's.
+const TRAY_PIXMAP_HEIGHTS: [u32; 3] = [22, 32, 48];
+
+/// The longest side the icon is offered at.
+const TRAY_PIXMAP_MAX: u32 = 256;
+
+/// `icon` as the `(width, height, ARGB32 in network byte order)` pixmaps a
+/// StatusNotifierItem offers, smallest first: its own size (capped) and the
+/// smaller panel heights.
+pub(crate) fn tray_pixmaps(icon: &IconImage) -> Vec<(i32, i32, Vec<u8>)> {
+    let (w, h) = (icon.width(), icon.height());
+    let fit = |height: u32| {
+        let width = (u64::from(w) * u64::from(height) / u64::from(h)).max(1);
+        (u32::try_from(width).unwrap_or(u32::MAX), height)
+    };
+    let mut sizes: Vec<(u32, u32)> = TRAY_PIXMAP_HEIGHTS
+        .iter()
+        .filter(|&&t| t < h)
+        .map(|&t| fit(t))
+        .collect();
+    let longest = w.max(h);
+    let own = if longest > TRAY_PIXMAP_MAX {
+        fit((u64::from(h) * u64::from(TRAY_PIXMAP_MAX) / u64::from(longest)).max(1) as u32)
+    } else {
+        (w, h)
+    };
+    sizes.retain(|&(_, sh)| sh < own.1);
+    sizes.push(own);
+    sizes
+        .into_iter()
+        .map(|(sw, sh)| {
+            let image = if (sw, sh) == (w, h) {
+                icon.clone()
+            } else {
+                icon.resized(sw, sh)
+            };
+            let mut argb = Vec::with_capacity(image.rgba().len());
+            for [r, g, b, a] in image.rgba().as_chunks::<4>().0 {
+                argb.extend_from_slice(&[*a, *r, *g, *b]);
+            }
+            (sw as i32, sh as i32, argb)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -898,5 +1055,48 @@ mod tests {
             session_order(Some("wayland-1"), None, None),
             vec![Session::Wayland]
         );
+    }
+
+    #[test]
+    fn a_tray_menu_numbers_its_entries_from_the_root() {
+        let menu = TrayMenu::build(&[
+            Menu::item_plain("Say_hi", MenuCommandId(7)),
+            Menu::sub(
+                "More",
+                [Menu::Item {
+                    name: "Off".into(),
+                    command: MenuCommandId(8),
+                    accel: None,
+                    enabled: false,
+                }],
+            ),
+            Menu::Line,
+            Menu::system(SystemAction::Quit),
+        ]);
+        let root = menu.node(0).unwrap();
+        assert_eq!(root.kind, TrayNodeKind::Root);
+        assert_eq!(root.children, [1, 2, 4, 5]);
+        assert_eq!(menu.node(1).unwrap().label, "Say__hi");
+        assert_eq!(menu.action(1), Some(MenuAction::Command(MenuCommandId(7))));
+        assert_eq!(menu.node(2).unwrap().kind, TrayNodeKind::Submenu);
+        assert_eq!(menu.node(2).unwrap().children, [3]);
+        assert_eq!(menu.action(3), None, "a disabled entry does nothing");
+        assert_eq!(menu.node(4).unwrap().kind, TrayNodeKind::Separator);
+        assert_eq!(menu.node(5).unwrap().label, "Quit");
+        assert_eq!(menu.action(5), Some(MenuAction::System(SystemAction::Quit)));
+        assert_eq!(menu.action(9), None);
+        assert_eq!(menu.action(-1), None);
+    }
+
+    #[test]
+    fn tray_pixmaps_are_argb_in_network_order_smallest_first() {
+        let icon = IconImage::from_rgba(1, 1, vec![10, 20, 30, 40]).unwrap();
+        assert_eq!(tray_pixmaps(&icon), [(1, 1, vec![40, 10, 20, 30])]);
+        let big = IconImage::from_rgba(64, 32, vec![255; 64 * 32 * 4]).unwrap();
+        let sizes: Vec<_> = tray_pixmaps(&big).iter().map(|p| (p.0, p.1)).collect();
+        assert_eq!(sizes, [(44, 22), (64, 32)]);
+        let huge = IconImage::from_rgba(512, 512, vec![0; 512 * 512 * 4]).unwrap();
+        let sizes: Vec<_> = tray_pixmaps(&huge).iter().map(|p| (p.0, p.1)).collect();
+        assert_eq!(sizes, [(22, 22), (32, 32), (48, 48), (256, 256)]);
     }
 }
