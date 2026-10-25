@@ -44,12 +44,12 @@ use objc2_app_kit::{
     NSAllRomanInputSourcesLocaleIdentifier, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
     NSApplicationTerminateReply, NSBackingStoreType, NSColor, NSColorSpace, NSCursor,
-    NSDragOperation, NSDraggingContext, NSDraggingInfo, NSDraggingItem, NSDraggingSession,
-    NSDraggingSource, NSEvent, NSEventMask, NSEventModifierFlags, NSEventPhase, NSMenu, NSMenuItem,
-    NSPasteboard, NSPasteboardItem, NSPasteboardTypeFileURL, NSPasteboardTypeString,
-    NSPasteboardTypeURL, NSPreferredScrollerStyleDidChangeNotification, NSScreen, NSScroller,
-    NSScrollerStyle, NSSystemColorsDidChangeNotification, NSTextInputClient, NSTrackingArea,
-    NSTrackingAreaOptions, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
+    NSDragOperation, NSDraggingContext, NSDraggingDestination, NSDraggingInfo, NSDraggingItem,
+    NSDraggingSession, NSDraggingSource, NSEvent, NSEventMask, NSEventModifierFlags, NSEventPhase,
+    NSMenu, NSMenuItem, NSPasteboard, NSPasteboardItem, NSPasteboardTypeFileURL,
+    NSPasteboardTypeString, NSPasteboardTypeURL, NSPreferredScrollerStyleDidChangeNotification,
+    NSScreen, NSScroller, NSScrollerStyle, NSSystemColorsDidChangeNotification, NSTextInputClient,
+    NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
     NSWindowTitleVisibility, NSWorkspace,
     NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification,
 };
@@ -2281,7 +2281,9 @@ define_class!(
 
         #[unsafe(method(doCommandBySelector:))]
         unsafe fn do_command(&self, _selector: Sel) {}
+    }
 
+    unsafe impl NSDraggingDestination for VisoContentView {
         #[unsafe(method(draggingEntered:))]
         fn dragging_entered(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
             catch_unwind(AssertUnwindSafe(|| self.drag_over(sender, true)))
