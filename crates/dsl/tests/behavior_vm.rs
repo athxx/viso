@@ -640,6 +640,9 @@ static CUSTOM: NativeLibrary = NativeLibrary {
     functions: &[
         viso_behavior::native!(fn "scan" |_cx| -> i64 { Ok(1) }).on(ThreadDomain::Worker),
         viso_behavior::native!(fn "lease" |_cx| -> Obj<Lease> { Ok(Obj::new(Lease)) }),
+        viso_behavior::native!(fn "parse" |_cx, text: String| -> Result<i64, String> {
+            Ok(text.parse::<i64>().map_err(|e| format!("`{text}`: {e}")))
+        }),
     ],
     types: &[NativeType::new("Lease", &[]).borrowed()],
     traits: &[],
@@ -659,6 +662,59 @@ fn custom() -> Arc<Natives> {
     natives.extend(STANDARD).expect("standard");
     natives.register(&CUSTOM).expect("custom");
     Arc::new(natives)
+}
+
+#[test]
+fn a_native_result_is_matched_as_a_result() {
+    let source = r#"
+import app::device;
+
+component A {
+    state n = 0;
+    state why = "";
+
+    action read(text: String) {
+        match device::parse(text) {
+            Result::Ok(value) => { n = value; },
+            Result::Err(e) => { why = e; },
+        }
+    }
+
+    action add(text: String) -> Result<I64, String> {
+        let value = device::parse(text)?;
+        return Result::Ok(value + n);
+    }
+
+    view { Text { text: why; } }
+}
+"#;
+    let compiled = compile_file_in(source, &origin(), custom());
+    let errors: Vec<_> = compiled.errors().collect();
+    assert!(errors.is_empty(), "{errors:#?}");
+    let module = Rc::new(compiled.behavior.bytecode().expect("verified bytecode"));
+    let index = module.component("A").expect("component");
+    let mut vm = Vm::new(module, Budget::default());
+    let mut a = vm.instantiate(index, []).expect("instantiate");
+    vm.link(&custom(), &[]).expect("link");
+
+    call(&mut vm, &mut a, "read", &[Value::str("41")]).expect("read");
+    assert_eq!(a.states()[0], Value::Int(41));
+    call(&mut vm, &mut a, "read", &[Value::str("x")]).expect("read");
+    assert_eq!(
+        a.states()[1],
+        Value::str("`x`: invalid digit found in string")
+    );
+
+    let sum = call(&mut vm, &mut a, "add", &[Value::str("1")]).expect("add");
+    assert_eq!(
+        <Result<i64, String> as viso_behavior::native::NativeValue>::from_value(&sum),
+        Some(Ok(42))
+    );
+    let failed = call(&mut vm, &mut a, "add", &[Value::str("")]).expect("add");
+    assert!(matches!(
+        <Result<i64, String> as viso_behavior::native::NativeValue>::from_value(&failed),
+        Some(Err(_))
+    ));
 }
 
 #[test]

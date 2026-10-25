@@ -189,6 +189,9 @@ pub enum SchemaTy {
     List(&'static SchemaTy),
     /// `Option<T>`.
     Option(&'static SchemaTy),
+    /// `Result<T, E>`: `Ok` and `Err` are the variants 0 and 1 of an
+    /// aggregate holding the payload, as in `.vs`.
+    Result(&'static SchemaTy, &'static SchemaTy),
     /// The native handle type at this path.
     Handle(&'static str),
     /// The native value type at this path ([`NativeType::value`]).
@@ -222,6 +225,7 @@ impl fmt::Display for SchemaTy {
             SchemaTy::String => f.write_str("String"),
             SchemaTy::List(t) => write!(f, "List<{t}>"),
             SchemaTy::Option(t) => write!(f, "Option<{t}>"),
+            SchemaTy::Result(t, e) => write!(f, "Result<{t}, {e}>"),
             SchemaTy::Handle(path) | SchemaTy::Value(path) | SchemaTy::Enum(path) => {
                 f.write_str(path.rsplit("::").next().unwrap_or(path))
             }
@@ -603,6 +607,12 @@ impl Fnv {
                 self.write(path.as_bytes());
             }
             SchemaTy::Ticks => self.write(b"ticks"),
+            // A nested type's path counts as a parameter's does.
+            SchemaTy::List(t) | SchemaTy::Option(t) => self.ty(t),
+            SchemaTy::Result(t, e) => {
+                self.ty(t);
+                self.ty(e);
+            }
             _ => {}
         }
         self.write(b",");

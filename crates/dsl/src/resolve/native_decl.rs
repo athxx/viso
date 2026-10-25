@@ -461,6 +461,14 @@ impl ModuleCx<'_> {
             "Unit" => simple(SchemaTy::Unit),
             "List" => wrapped(self, SchemaTy::List),
             "Option" => wrapped(self, SchemaTy::Option),
+            "Result" => match &args[..] {
+                [ok, err] => {
+                    let ok = self.schema_ty(ok, owner)?;
+                    let err = self.schema_ty(err, owner)?;
+                    Some(SchemaTy::Result(intern_ty(ok), intern_ty(err)))
+                }
+                _ => None,
+            },
             _ if !args.is_empty() => None,
             _ => {
                 let local = |o: Option<String>| self.types.get(&(o, name.clone())).copied();

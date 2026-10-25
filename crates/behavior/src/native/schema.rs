@@ -188,6 +188,16 @@ fn ty(w: &mut JsonWriter, ty: &SchemaTy) {
             w.end_object();
             return;
         }
+        SchemaTy::Result(ok, err) => {
+            w.begin_object();
+            w.name("Result");
+            w.begin_array();
+            self::ty(w, ok);
+            self::ty(w, err);
+            w.end_array();
+            w.end_object();
+            return;
+        }
         SchemaTy::Handle(path) | SchemaTy::Value(path) | SchemaTy::Enum(path) => {
             w.begin_object();
             w.name(match ty {
@@ -414,6 +424,13 @@ fn schema_ty(json: &JsonValue) -> Result<SchemaTy, String> {
     Ok(match kind.as_str() {
         "List" => SchemaTy::List(Box::leak(Box::new(schema_ty(inner)?))),
         "Option" => SchemaTy::Option(Box::leak(Box::new(schema_ty(inner)?))),
+        "Result" => match inner.as_array() {
+            Some([ok, err]) => SchemaTy::Result(
+                Box::leak(Box::new(schema_ty(ok)?)),
+                Box::leak(Box::new(schema_ty(err)?)),
+            ),
+            _ => return Err("`Result` is not a pair of types".into()),
+        },
         "Handle" => SchemaTy::Handle(path()?),
         "Value" => SchemaTy::Value(path()?),
         "Enum" => SchemaTy::Enum(path()?),
@@ -512,6 +529,9 @@ mod tests {
                 Ok(text.lines().map(str::to_owned).collect())
             })
             .deterministic(),
+            crate::native!(fn "parse" |_cx, text: String| -> Result<Option<i64>, Obj<Thing>> {
+                Ok(Ok(text.parse().ok()))
+            }),
         ],
         types: &[
             NativeType::new("Thing", &RESPONSE_METHODS),
@@ -539,6 +559,7 @@ mod tests {
         for path in [
             "net::get",
             "net::lines",
+            "net::parse",
             "net::Thing::status",
             "net::Thing::header",
         ] {

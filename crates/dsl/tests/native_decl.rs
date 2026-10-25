@@ -234,11 +234,13 @@ fn a_declaration_is_written_in_schema_types() {
          native type Body;\n\
          native fn spawn(mass: F64, tags: List<String>) -> Body;\n\
          native fn mass(body: Body) -> Option<F64>;\n\
+         native fn weigh(body: Body) -> Result<F64, String>;\n\
          native fn watch(body: Body) -> Stopwatch;\n\
          native action reset();\n\
          component A {\n\
              state body = spawn(1.0, [\"a\"]);\n\
              computed m: Option<F64> = mass(body);\n\
+             computed w: F64 = match weigh(body) { Result::Ok(w) => w, Result::Err(_) => 0.0 };\n\
              view { Text {} }\n\
          }",
         Natives::standard(),

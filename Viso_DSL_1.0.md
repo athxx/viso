@@ -1898,6 +1898,7 @@ Native Schema 由 Rust 侧生成（ADR 0036）：一个 Native Library 是一条
 - 每个函数记录：名称、`fn`/`action`/`task` 分类、参数与返回的 Schema 类型、所需 Capability、线程域（`any`/`ui`/`worker`）、`deterministic`、`realtime_safe`、`@const`（编译期可求值，隐含 `deterministic`）与每次调用的预算成本；每个 Handle 类型记录方法、所有权（`shared`/`borrowed`）与线程域；
 - Schema Enum 是带 Variant 的 Native 类型，值为 Variant 序号而非 Handle：`import viso::game::Key;` 后写 `Key::Space`，未知 Variant 为 `E2001`（附最近候选）；
 - 每个函数声明可复现档位（`none`/`same_binary`/`cross_platform`）：`deterministic` 的函数默认 `cross_platform`，调用宿主超越函数的声明 `same_binary`，时钟、随机与 I/O 为 `none`；Presentation 函数（粒子、音效、相机抖动）与 Debug Draw 函数在 Schema 中标记；Schema Enum 与 Native 值类型（如 `Cooldown`，由 Native 构造与读取的纯数据，按内容比较）能进入 Snapshot，Handle 的对象位于解释器之外，不能进入；`Duration` 参数可声明为 Tick 时长：实参必须是编译期常量（Duration 字面量及其加减、与数字的乘除），编译器按 Package 的 Tick 频率向上取整换算为整数 Tick，非常量报 `E2501`，为负或超出 `I64` 报 `E2112`；Scheduler Hook 声明所属层（Simulation/Presentation）；
+- Schema 类型含 `Result<T, E>`：Native 返回的 `Result` 与 `.vs` 的同一类型，可 `match` 与 `?`；需要报告失败的领域 Native（如 `api::profile(id) -> Result<Profile, String>`）以它返回，不以 Fault 表达可预期的失败；
 - Property 是只有 Receiver 参数的方法，写 `frame.input`，不加括号；对 Property 加 `()` 报 `E2103`，读取未声明的 Property 报 `E2001`；
 - 调用经 Import 或完整路径解析：`import viso::text;` 后写 `text::upper(s)`，`import viso::math::{clamp};` 后写 `clamp(x, 0.0, 1.0)`，`import viso::time::Stopwatch;` 后写 `Stopwatch::start()`；Handle 方法写 `watch.elapsed_ms()`，Receiver 作为第一个参数。未注册的路径或方法为 `E2001`；
 - Effect 分类：`deterministic` 的 `fn` 为 Pure，其余 `fn` 为 Read，`action` 为 Action，`task` 为 Task；在 View/Computed 中调用 `action` 为 `E2502`；
@@ -1910,7 +1911,7 @@ Native Schema 由 Rust 侧生成（ADR 0036）：一个 Native Library 是一条
 ### 47.2 手写 Native 声明
 
 - 声明的路径是所在模块的路径：Package `app` 的模块 `util` 中 `native fn hash(..)` 声明 `app::util::hash`，写在 `component Board` 或 `system Board` 内则为 `app::util::Board::hash`，只在该 Component/System 的成员中可见；顶层声明在本模块可见，其他模块以完整 Native 路径 `import app::util::{hash};`；
-- 返回类型省略即 `()`；参数与返回类型必须是 Schema 类型：`Bool`、`I64`、`F32`、`F64`、`Duration`、`String`、`()`、`List<T>`、`Option<T>`、已注册的 Native 类型或同处声明的 `native type`；参数不带默认值；声明不带泛型参数、`where` 子句，`native type` 不带 Trait Bound（Native Schema 无泛型与 Trait 实现），违者 `E6101`；`requires { a::b }` 声明 Capability `a.b`；
+- 返回类型省略即 `()`；参数与返回类型必须是 Schema 类型：`Bool`、`I64`、`F32`、`F64`、`Duration`、`String`、`()`、`List<T>`、`Option<T>`、`Result<T, E>`、已注册的 Native 类型或同处声明的 `native type`；参数不带默认值；声明不带泛型参数、`where` 子句，`native type` 不带 Trait Bound（Native Schema 无泛型与 Trait 实现），违者 `E6101`；`requires { a::b }` 声明 Capability `a.b`；
 - 编译所用 Registry 已注册声明所在的 Library 时立即检查：路径未注册、`fn`/`action`/`task` 分类或签名哈希不同（参数名不计入签名）、`requires` 与 Schema 的 Capability 集合不同均为 `E6101`，调用使用已注册的 Schema；
 - 未注册该 Library 时，声明本身即其 Schema：调用按声明的类型、Effect 分类与 Capability 检查并 Lower 为该路径的 Native Import（`native fn` 为 Read，不确定、UI 线程）；运行前 `link` 到实现它的 Rust Library，路径缺失或签名不同为 `E6101`；
 - 同一作用域内重名（含与 `fn`/`action`/`task`/`const` 或成员重名）为 `E2002`。

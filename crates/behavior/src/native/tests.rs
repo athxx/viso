@@ -422,3 +422,25 @@ fn math_transcendentals_are_pinned_bit_for_bit() {
         );
     }
 }
+
+#[test]
+fn a_nested_path_counts_in_a_signature() {
+    fn of(ret: SchemaTy) -> u64 {
+        fn call(_: &mut NativeCx<'_>, _: &[Value]) -> Result<Value, NativeError> {
+            Ok(Value::Nil)
+        }
+        NativeFunction::new("f", NativeKind::Fn, &[], ret, call).signature()
+    }
+    static A: SchemaTy = SchemaTy::Value("a::Item");
+    static B: SchemaTy = SchemaTy::Value("b::Item");
+    let (a, b) = (&A, &B);
+    assert_ne!(of(SchemaTy::List(a)), of(SchemaTy::List(b)));
+    assert_ne!(
+        of(SchemaTy::Result(a, &SchemaTy::String)),
+        of(SchemaTy::Result(b, &SchemaTy::String))
+    );
+    assert_ne!(
+        of(SchemaTy::Result(&SchemaTy::I64, &SchemaTy::String)),
+        of(SchemaTy::Option(&SchemaTy::I64))
+    );
+}

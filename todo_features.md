@@ -463,7 +463,7 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
     - [x] `viso::native`: the public surface for writing native libraries (types,
       `native!`, handles) and checking a package's schema in its tests, so an app's
       natives crate depends on `viso` alone;
-    - [ ] `Result<T, E>` in native schemas: a native returns one and `.vs` matches
+    - [x] `Result<T, E>` in native schemas: a native returns one and `.vs` matches
       it;
     - [ ] data records in native schemas: `#[derive(NativeData)]` on a Rust struct is
       a native value type whose fields `.vs` reads, carried in the JSON schema;

@@ -12,7 +12,7 @@ use core::marker::PhantomData;
 use core::ops::Deref;
 
 use super::SchemaTy;
-use crate::value::Value;
+use crate::value::{Aggregate, Value};
 
 /// A Rust type a native parameter or return value may have: its schema type
 /// and its conversions to and from the value representation.
@@ -162,6 +162,34 @@ impl<T: NativeValue> NativeValue for Option<T> {
 
     fn into_value(self) -> Value {
         self.map_or(Value::Nil, T::into_value)
+    }
+}
+
+/// `Ok(x)` and `Err(e)` are the variants 0 and 1 of an aggregate holding the
+/// payload, the `Result` `.vs` matches.
+impl<T: NativeValue, E: NativeValue> NativeValue for Result<T, E> {
+    const TY: SchemaTy = SchemaTy::Result(&T::TY, &E::TY);
+
+    fn from_value(value: &Value) -> Option<Result<T, E>> {
+        let Value::Agg(agg) = value else {
+            return None;
+        };
+        match (agg.tag, &*agg.fields) {
+            (0, [x]) => T::from_value(x).map(Ok),
+            (1, [e]) => E::from_value(e).map(Err),
+            _ => None,
+        }
+    }
+
+    fn into_value(self) -> Value {
+        let (tag, payload) = match self {
+            Ok(x) => (0, x.into_value()),
+            Err(e) => (1, e.into_value()),
+        };
+        Value::Agg(Rc::new(Aggregate {
+            tag,
+            fields: Box::new([payload]),
+        }))
     }
 }
 

@@ -430,6 +430,10 @@ impl Ty {
             SchemaTy::String => Ty::String,
             SchemaTy::List(t) => Ty::List(Box::new(Ty::from_schema(t, package))),
             SchemaTy::Option(t) => Ty::Option(Box::new(Ty::from_schema(t, package))),
+            SchemaTy::Result(t, e) => Ty::Result(
+                Box::new(Ty::from_schema(t, package)),
+                Box::new(Ty::from_schema(e, package)),
+            ),
             SchemaTy::Handle(path) | SchemaTy::Value(path) | SchemaTy::Enum(path) => {
                 Ty::Native(NativeId::of(path))
             }
