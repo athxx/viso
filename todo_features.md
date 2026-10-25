@@ -419,7 +419,7 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
   - [x] Apple, URLSession with a delegate: the body streamed as it comes, the task
     suspended while the app reads slower (an untyped body's first 512 bytes held back,
     as URLSession sniffs its type);
-  - [ ] Android, `HttpURLConnection` through the crate's own dex;
+  - [x] Android, `HttpURLConnection` through the crate's own dex, a thread per request held while the app reads slower; a dev build's manifest allows plain HTTP, for a server on the developer's machine;
   - [ ] Linux and the BSDs, libcurl opened at run time;
   - [ ] Windows, WinHTTP;
   - [ ] Web, `fetch` with a `ReadableStream` body;

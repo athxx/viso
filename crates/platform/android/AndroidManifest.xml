@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- The manifest the packager fills in: the app's id, version, lowest API
      level, the permissions it asks for, its name, launcher icon and
-     orientation, and the library the shell loads. -->
+     orientation, plain HTTP in a dev build, and the library the shell
+     loads. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="{package}"
     android:versionCode="{version_code}"
@@ -15,6 +16,7 @@
     <application
         android:label="{label}"
         {icon}
+        {cleartext}
         android:hasCode="true"
         android:extractNativeLibs="false"
         android:theme="@android:style/Theme.DeviceDefault.NoActionBar">

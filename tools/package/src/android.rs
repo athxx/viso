@@ -189,7 +189,8 @@ pub struct Manifest {
     pub min_sdk: u32,
     /// What it asks the user for.
     pub access: Vec<Access>,
-    /// Whether it may use the network, as a dev build's channel does.
+    /// Whether it may use the network, as a dev build's channel does, and
+    /// plain HTTP, as a server on the developer's machine answers.
     pub internet: bool,
     pub orientations: Orientations,
     /// Whether it has a launcher icon.
@@ -713,6 +714,11 @@ fn fill_manifest(template: &str, manifest: &Manifest, bin: &str) -> String {
     } else {
         ""
     };
+    let cleartext = if manifest.internet {
+        r#"android:usesCleartextTraffic="true""#
+    } else {
+        ""
+    };
     let orientation = match manifest.orientations {
         Orientations::Any => "",
         Orientations::Portrait => r#"android:screenOrientation="sensorPortrait""#,
@@ -726,6 +732,7 @@ fn fill_manifest(template: &str, manifest: &Manifest, bin: &str) -> String {
         .replace("{permissions}", &permissions)
         .replace("{label}", &xml(&manifest.label))
         .replace("{icon}", icon)
+        .replace("{cleartext}", cleartext)
         .replace("{orientation}", orientation)
         .replace("{lib}", &library_name(bin))
 }
@@ -844,6 +851,8 @@ mod tests {
         assert!(!dev.contains('{'), "{dev}");
         let release = fill_manifest(&template, &Manifest::dev("b", Flavor::Release), "b");
         assert!(!release.contains("INTERNET"));
+        assert!(dev.contains("usesCleartextTraffic"));
+        assert!(!release.contains("usesCleartextTraffic"));
         // Asked for, the network is there in every build, named once.
         for flavor in [Flavor::Dev, Flavor::Release] {
             let mut online = Manifest::dev("b", flavor);
