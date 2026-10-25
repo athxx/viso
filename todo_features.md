@@ -366,7 +366,8 @@ Rules:
       capture not yet: this Mac's coreaudiod does not answer);
     - [x] Linux and the BSDs, PulseAudio / PipeWire through libpulse;
     - [x] Android, AAudio, the devices and permission through the crate's Java;
-    - [ ] Windows, WASAPI;
+    - [ ] Windows, WASAPI (built and linted for the target, not yet run: no Windows
+      machine);
     - [ ] Web, Web Audio.
   - [ ] playback of files and URLs through the platform players (WAV, Ogg Vorbis, MP3,
     FLAC, AAC), sound effects, recording;
