@@ -65,7 +65,7 @@ pub use standard::{Clipboard, STANDARD, Stopwatch};
 pub use timers::Timers;
 #[cfg(feature = "std")]
 pub use timers::sleep;
-pub use value::{NativeHandle, NativeObject, NativeValue, Obj, Ticks};
+pub use value::{NativeData, NativeHandle, NativeObject, NativeValue, Obj, Ticks};
 pub use vector::{VEC2_PATH, VEC3_PATH, Vec2, Vec3};
 pub use widget::{
     FlexAxis, MigratableState, NativeWidget, PropertyGroup, SlotCardinality, WidgetEvent,
@@ -435,6 +435,9 @@ pub struct NativeType {
     /// Whether its values are plain data, an aggregate of numbers the
     /// interpreter copies and a snapshot captures, rather than handles.
     pub value: bool,
+    /// A record's fields, in order: `.vs` reads `value.name` as a field of
+    /// the aggregate, not a call. Empty for any other type.
+    pub fields: &'static [Param],
     /// Its methods and associated functions.
     pub methods: &'static [NativeFunction],
 }
@@ -448,6 +451,7 @@ impl NativeType {
             ownership: Ownership::Shared,
             thread: ThreadDomain::Ui,
             value: false,
+            fields: &[],
             methods,
         }
     }
@@ -462,8 +466,32 @@ impl NativeType {
             ownership: Ownership::Shared,
             thread: ThreadDomain::Any,
             value: true,
+            fields: &[],
             methods,
         }
+    }
+
+    /// A record: a value type of `fields` its natives build and `.vs` reads,
+    /// as `#[derive(NativeData)]` declares one.
+    pub const fn record(
+        name: &'static str,
+        fields: &'static [Param],
+        methods: &'static [NativeFunction],
+    ) -> NativeType {
+        NativeType {
+            name,
+            variants: &[],
+            ownership: Ownership::Shared,
+            thread: ThreadDomain::Any,
+            value: true,
+            fields,
+            methods,
+        }
+    }
+
+    /// The index of its field `name`.
+    pub fn field(&self, name: &str) -> Option<usize> {
+        self.fields.iter().position(|f| f.name == name)
     }
 
     /// A schema enum of `variants`, a plain value any thread may hold.
@@ -474,6 +502,7 @@ impl NativeType {
             ownership: Ownership::Shared,
             thread: ThreadDomain::Any,
             value: false,
+            fields: &[],
             methods: &[],
         }
     }

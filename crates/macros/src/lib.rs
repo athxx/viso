@@ -4,6 +4,8 @@
 //! - [`macro@GpuPod`] — derive an explicit, validated GPU instance layout
 //!   for a `#[repr(C)]` struct: named per-field offsets instead of an
 //!   implicit trailing-memory convention.
+//! - [`macro@NativeData`] — derive a native record: a Rust struct whose
+//!   fields `.vs` reads, with its schema.
 //! - [`packaged_fonts!`] — scan `assets/fonts/` at build time and embed each
 //!   face with the metadata the font manifest keeps, subset to the
 //!   build's characters for an embedded target, its glyphs baked at the
@@ -24,6 +26,7 @@ use syn::{DeriveInput, parse_macro_input};
 mod font_bake;
 mod font_subset;
 mod gpu_instance;
+mod native_data;
 mod packaged_fonts;
 
 /// Derive [`viso_gpu::GpuPod`] for a `#[repr(C)]` struct of GPU
@@ -41,6 +44,28 @@ mod packaged_fonts;
 pub fn derive_gpu_pod(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     gpu_instance::derive(input).into()
+}
+
+/// Derive `viso::native::NativeData` and `NativeValue` for a struct of
+/// named fields, each a native value: a record `.vs` reads, named by its
+/// path in a native library.
+///
+/// ```ignore
+/// #[derive(NativeData)]
+/// #[native(path = "api::Profile")]
+/// pub struct Profile {
+///     pub name: String,
+///     pub followers: i64,
+/// }
+/// ```
+///
+/// `Profile::TYPE` enters the library's `types`; a native returns a
+/// `Profile` and `.vs` reads `profile.name`. `#[native(crate = path)]` names
+/// the module the output refers to, `::viso::native` by default.
+#[proc_macro_derive(NativeData, attributes(native))]
+pub fn derive_native_data(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    native_data::derive(input).into()
 }
 
 /// Package the application's `assets/fonts/` into the binary.

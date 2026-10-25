@@ -193,6 +193,20 @@ impl<T: NativeValue, E: NativeValue> NativeValue for Result<T, E> {
     }
 }
 
+/// A Rust struct `.vs` reads as a record: a native value type of named
+/// fields, each a [`NativeValue`], its values an aggregate of them in order.
+/// `#[derive(NativeData)]` implements it with [`NativeValue`]; the type
+/// enters its library's `types` as [`TYPE`](NativeData::TYPE), with methods
+/// as `NativeType { methods: &METHODS, ..Profile::TYPE }`.
+pub trait NativeData: NativeValue {
+    /// Its full path, such as `api::Profile`.
+    const PATH: &'static str;
+    /// Its fields, in order.
+    const FIELDS: &'static [super::Param];
+    /// Its type in its library.
+    const TYPE: super::NativeType;
+}
+
 /// A Rust type that native handles hold.
 pub trait NativeObject: Any {
     /// The full path of its [`NativeType`](super::NativeType), such as

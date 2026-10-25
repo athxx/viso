@@ -80,6 +80,8 @@ pub fn write(libraries: &[&NativeLibrary]) -> Result<String, String> {
             w.string(ty.thread.name());
             w.name("value");
             w.bool(ty.value);
+            w.name("fields");
+            params(&mut w, ty.fields);
             w.end_object();
             let ty_head = w.into_string();
             out.push_str(if j == 0 { "\n        " } else { ",\n        " });
@@ -123,16 +125,7 @@ fn function(f: &NativeFunction) -> String {
     w.name("kind");
     w.string(f.kind.keyword());
     w.name("params");
-    w.begin_array();
-    for p in f.params {
-        w.begin_object();
-        w.name("name");
-        w.string(p.name);
-        w.name("ty");
-        ty(&mut w, &p.ty);
-        w.end_object();
-    }
-    w.end_array();
+    params(&mut w, f.params);
     w.name("ret");
     ty(&mut w, &f.ret);
     w.name("capabilities");
@@ -161,6 +154,20 @@ fn function(f: &NativeFunction) -> String {
     w.bool(f.debug_draw);
     w.end_object();
     w.into_string()
+}
+
+/// Parameters or fields, each its name and type.
+fn params(w: &mut JsonWriter, params: &[Param]) {
+    w.begin_array();
+    for p in params {
+        w.begin_object();
+        w.name("name");
+        w.string(p.name);
+        w.name("ty");
+        ty(w, &p.ty);
+        w.end_object();
+    }
+    w.end_array();
 }
 
 fn ty(w: &mut JsonWriter, ty: &SchemaTy) {
@@ -329,15 +336,7 @@ fn native_function(json: &JsonValue) -> Result<NativeFunction, String> {
         "task" => NativeKind::Task,
         other => return Err(format!("`{other}` is not a native kind")),
     };
-    let params = array(json, "params")?
-        .iter()
-        .map(|p| {
-            Ok(Param {
-                name: leak(string(p, "name")?),
-                ty: schema_ty(field(p, "ty")?)?,
-            })
-        })
-        .collect::<Result<Vec<_>, String>>()?;
+    let params = read_params(json, "params")?;
     let capabilities = array(json, "capabilities")?
         .iter()
         .map(|c| c.as_str().map(leak).ok_or("a capability is not a string"))
@@ -351,7 +350,7 @@ fn native_function(json: &JsonValue) -> Result<NativeFunction, String> {
     Ok(NativeFunction {
         name: leak(name),
         kind,
-        params: Box::leak(params.into_boxed_slice()),
+        params,
         ret: schema_ty(field(json, "ret")?)?,
         capabilities: Box::leak(capabilities.into_boxed_slice()),
         thread: thread(string(json, "thread")?)?,
@@ -365,6 +364,19 @@ fn native_function(json: &JsonValue) -> Result<NativeFunction, String> {
         debug_draw: flag(json, "debug_draw")?,
         call: unlinked,
     })
+}
+
+fn read_params(json: &JsonValue, name: &str) -> Result<&'static [Param], String> {
+    let params = array(json, name)?
+        .iter()
+        .map(|p| {
+            Ok(Param {
+                name: leak(string(p, "name")?),
+                ty: schema_ty(field(p, "ty")?)?,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(Box::leak(params.into_boxed_slice()))
 }
 
 fn native_type(json: &JsonValue) -> Result<NativeType, String> {
@@ -387,6 +399,7 @@ fn native_type(json: &JsonValue) -> Result<NativeType, String> {
         ownership,
         thread: thread(string(json, "thread")?)?,
         value: flag(json, "value")?,
+        fields: read_params(json, "fields")?,
         methods: Box::leak(methods.into_boxed_slice()),
     })
 }

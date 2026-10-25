@@ -154,9 +154,9 @@ impl InferCx<'_> {
         }
     }
 
-    /// Types `receiver.name` on a native handle type `ty`: a property's
-    /// value, recording the call. Any other name is `E2001`, with the nearest
-    /// property names.
+    /// Types `receiver.name` on a native type `ty`: a record's field, or a
+    /// property's value, recording the call. Any other name is `E2001`, with
+    /// the nearest field and property names.
     pub(super) fn native_property(
         &mut self,
         ty: NativeId,
@@ -167,6 +167,10 @@ impl InferCx<'_> {
             return Ty::Unknown;
         };
         let text = name.text();
+        let record = natives.ty_by_id(ty).map(|t| t.ty);
+        if let Some(field) = record.and_then(|t| t.fields.iter().find(|f| f.name == text)) {
+            return Ty::from_schema(&field.ty, &self.env.package_types());
+        }
         let property = natives
             .method(ty, &text)
             .filter(|m| m.function.property && m.is_method(natives));
@@ -182,13 +186,14 @@ impl InferCx<'_> {
             name.text_range(),
             format!("`{short}` has no property `{text}`"),
         );
-        let properties = natives
-            .ty_by_id(ty)
+        let properties = record
             .into_iter()
-            .flat_map(|t| t.ty.methods.iter())
-            .filter(|m| m.property)
-            .map(|m| Candidate {
-                name: m.name,
+            .flat_map(|t| {
+                let fields = t.fields.iter().map(|f| f.name);
+                fields.chain(t.methods.iter().filter(|m| m.property).map(|m| m.name))
+            })
+            .map(|name| Candidate {
+                name,
                 declared_at: None,
             });
         let suggestions = nearest(&text, properties);

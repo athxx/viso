@@ -73,6 +73,22 @@ pub struct Closure {
 }
 
 impl Value {
+    /// A record of `fields`, in declaration order.
+    pub fn record(fields: impl Into<Box<[Value]>>) -> Value {
+        Value::Agg(Rc::new(Aggregate {
+            tag: 0,
+            fields: fields.into(),
+        }))
+    }
+
+    /// The fields of a record, tuple or payload variant.
+    pub fn fields(&self) -> Option<&[Value]> {
+        match self {
+            Value::Agg(agg) => Some(&agg.fields),
+            _ => None,
+        }
+    }
+
     /// A `Bool`.
     #[inline]
     pub fn bool(b: bool) -> Value {

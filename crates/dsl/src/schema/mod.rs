@@ -638,9 +638,20 @@ fn schema_of(symbol: Symbol<'_>, natives: &Natives) -> Schema {
                     Some(function(method, method.is_method(natives)))
                 })
                 .collect();
+            let fields = entry
+                .ty
+                .fields
+                .iter()
+                .map(|f| FieldSchema {
+                    name: f.name.to_owned(),
+                    ty: f.ty.to_string(),
+                    default: None,
+                })
+                .collect();
             Schema {
                 capabilities: union(methods.iter().map(|f| f.capabilities.as_slice())),
                 functions: methods,
+                fields,
                 handle: Some(HandleSchema {
                     ownership: entry.ty.ownership,
                     thread: entry.ty.thread,
@@ -771,7 +782,8 @@ impl Schema {
             w.name("thread");
             w.string(handle.thread.name());
         }
-        if self.kind == SchemaKind::Record {
+        // A native record's fields, as a `.vs` record's.
+        if self.kind == SchemaKind::Record || !self.fields.is_empty() {
             w.name("fields");
             w.begin_array();
             for field in &self.fields {

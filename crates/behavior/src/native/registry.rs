@@ -347,6 +347,7 @@ impl Natives {
                             old.ty.ownership == new.ty.ownership
                                 && old.ty.thread == new.ty.thread
                                 && old.ty.variants == new.ty.variants
+                                && old.ty.fields == new.ty.fields
                         })
                 }
                 Item::Trait(i) => {

@@ -44,13 +44,41 @@
 //!
 //! The app depends on the package, and its views import the library as
 //! they import the standard ones (`import api::double;`).
+//!
+//! A record a native returns or takes is a Rust struct deriving
+//! [`NativeData`](macro@NativeData), its type in the library's `types`;
+//! `.vs` reads its fields as a record's, and a failure a native reports is a
+//! `Result`, which `.vs` matches:
+//!
+//! ```ignore
+//! #[derive(NativeData)]
+//! #[native(path = "api::Profile")]
+//! pub struct Profile {
+//!     pub name: String,
+//! }
+//!
+//! static API: NativeLibrary = NativeLibrary {
+//!     path: "api",
+//!     version: 1,
+//!     functions: &[native!(task "profile" |cx, id: i64| -> Result<Profile, String> {
+//!         // `cx.suspend(..)` the request, its answer the task's result.
+//!     })
+//!     .requires(&["network.http"])],
+//!     types: &[Profile::TYPE],
+//!     traits: &[],
+//!     derives: &[],
+//!     widgets: &[],
+//! };
+//! ```
 
 pub use viso_behavior::Value;
 pub use viso_behavior::native::schema::check;
+pub use viso_macros::NativeData;
+
 pub use viso_behavior::native::{
-    Determinism, NativeCx, NativeError, NativeFunction, NativeFuture, NativeHandle, NativeKind,
-    NativeLibrary, NativeObject, NativeType, NativeValue, Obj, Ownership, Param, SchemaTy,
-    Services, ThreadDomain, Ticks,
+    Determinism, NativeCx, NativeData, NativeError, NativeFunction, NativeFuture, NativeHandle,
+    NativeKind, NativeLibrary, NativeObject, NativeType, NativeValue, Obj, Ownership, Param,
+    SchemaTy, Services, ThreadDomain, Ticks,
 };
 
 /// A [`NativeFunction`] from a Rust closure-like body, its parameter and

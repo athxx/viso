@@ -443,6 +443,16 @@ impl InferCx<'_> {
                     None
                 }
             },
+            Ty::Native(id) => {
+                let record = self.env.natives()?.ty_by_id(*id)?.ty;
+                if let Some(field) = record.fields.iter().find(|f| f.name == text) {
+                    return Some(Ty::from_schema(&field.ty, &self.env.package_types()));
+                }
+                let message = format!("no field `{text}` on `{}`", record.name);
+                self.diagnostics
+                    .push(Diagnostic::error("E2001", name.text_range(), message));
+                None
+            }
             _ => None,
         }
     }
