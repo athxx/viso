@@ -484,48 +484,9 @@ pub fn provide_cameras(provider: &'static dyn CameraProvider) -> bool {
     CAMERAS.set(provider).is_ok()
 }
 
-/// The provider installed, else the platform's own.
+/// The provider installed, if one is.
 fn camera_provider() -> Option<&'static dyn CameraProvider> {
-    Some(CAMERAS.get().copied().unwrap_or(&Builtin))
-}
-
-/// The cameras the platform players capture themselves.
-struct Builtin;
-
-impl CameraProvider for Builtin {
-    fn cameras(&self) -> Vec<CameraInfo> {
-        imp::cameras()
-    }
-
-    fn open(&self, request: &CameraRequest) -> Result<Box<dyn LiveSource>, VideoError> {
-        let player = imp::Player::open(&VideoSource::Camera(request.clone()))?;
-        Ok(Box::new(BuiltinCamera(player)))
-    }
-}
-
-/// A platform player capturing a camera.
-struct BuiltinCamera(imp::Player);
-
-impl LiveSource for BuiltinCamera {
-    fn poll(&mut self) -> Option<VideoEvent> {
-        self.0.poll()
-    }
-
-    fn frame(&mut self) -> Option<Frame<'_>> {
-        self.0.frame()
-    }
-
-    fn play(&mut self) {
-        self.0.play();
-    }
-
-    fn pause(&mut self) {
-        self.0.pause();
-    }
-
-    fn is_playing(&self) -> bool {
-        self.0.is_playing()
-    }
+    CAMERAS.get().copied()
 }
 
 /// A video played through the platform's player. Opened, polled and steered
@@ -778,6 +739,13 @@ fn extension(bytes: &[u8]) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn without_a_provider_there_are_no_cameras() {
+        assert!(cameras().is_empty());
+        let opened = VideoPlayer::open(&VideoSource::Camera(CameraRequest::default()));
+        assert!(matches!(opened, Err(VideoError::Unsupported)));
+    }
 
     #[cfg(all(unix, not(target_vendor = "apple")))]
     #[test]

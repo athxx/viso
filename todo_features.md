@@ -337,15 +337,16 @@ Rules:
   - [x] Cameras as an extension: the protocol stays in `viso-media` (`CameraRequest`,
     `CameraInfo`, `VideoSource::Camera`, `cameras()`, `CameraView`) and a
     `CameraProvider` an extension installs answers it; `Unsupported` without one.
-  - [ ] Live-picture hooks for extensions, handing pictures the way the platform players
+  - [x] Live-picture hooks for extensions, handing pictures the way the platform players
     do: a `LiveSource` (poll, frame, play, pause) a provider opens; Apple
     `Frame::pixel_buffer`, Android `ImageReader`, Windows `SharedCanvas` (the decoding
-    device and the shared texture slots), GStreamer `LivePipeline` over a source element,
-    web `MediaStream`.
+    device and the shared texture slots), GStreamer `gstreamer_live` over a source
+    element, web `MediaStreams` through `web_live`. Without a provider a camera is
+    `Unsupported` and none are listed.
   - [x] Android: the platform sets `ndk-context` (the VM, the activity), so `viso-ext`
     crates reach Java; extension Java hears activity results through
     `VisoActivity.Results`.
-  - [ ] `viso-ext/viso-camera`: the camera backends moved out of `viso-media`
+  - [x] `viso-ext/viso-camera`: the camera backends moved out of `viso-media`
     (AVCaptureSession, Media Foundation, Camera2, the GStreamer device monitor,
     `getUserMedia`) behind `install()`; the camera example moved into it
     (`viso-camera/example`), so the framework's workspace needs no extension.

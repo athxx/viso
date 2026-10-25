@@ -445,11 +445,6 @@ fn bgra_attributes() -> Retained<NSDictionary<NSString, AnyObject>> {
     NSDictionary::from_slices(&keys, &values)
 }
 
-/// The cameras the platform's players capture: none, an extension answers.
-pub(crate) fn cameras() -> Vec<super::CameraInfo> {
-    Vec::new()
-}
-
 impl<'a> Frame<'a> {
     /// The picture in `buffer`, a BGRA pixel buffer backed by an IOSurface
     /// (`kCVPixelBufferIOSurfacePropertiesKey`), shown at `time`: sampled in

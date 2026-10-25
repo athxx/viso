@@ -1102,11 +1102,6 @@ unsafe fn to_rgba(
     )
 }
 
-/// The cameras the platform's players capture: none, an extension answers.
-pub(crate) fn cameras() -> Vec<super::CameraInfo> {
-    Vec::new()
-}
-
 /// An `AImageReader` an extension's producer draws YUV pictures into — a
 /// camera's capture session, a virtual display — each lent to the GPU as
 /// its hardware buffer, sampled in place and turned upright in the same

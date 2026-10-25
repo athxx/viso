@@ -9,7 +9,8 @@
 //! [`mirror`](CameraView::mirror) says otherwise. A
 //! [`placeholder`](CameraView::placeholder) stands in until the first
 //! picture, and an [`error`](CameraView::error) view once the camera cannot
-//! be opened: there is none, or the user refused it.
+//! be opened: there is none, the user refused it, or no extension answers
+//! for the cameras (`viso_media::provide_cameras`).
 //!
 //! It is a [`Video`] of the camera: one leaf, steered by the same
 //! [`VideoHandle`], its [`on_progress`](CameraView::on_progress) reporting

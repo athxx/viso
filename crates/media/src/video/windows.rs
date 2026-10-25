@@ -1213,8 +1213,3 @@ fn file_url(path: &Path) -> String {
 fn nanos(time: Duration) -> u64 {
     u64::try_from(time.as_nanos()).unwrap_or(u64::MAX)
 }
-
-/// The cameras the platform's players capture: none, an extension answers.
-pub(crate) fn cameras() -> Vec<super::CameraInfo> {
-    Vec::new()
-}

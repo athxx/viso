@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use viso_handle::{ExternalHolds, ExternalImage, Nv12, YuvMatrix};
 
-use super::camera::{CameraFacing, CameraInfo};
+use super::camera::CameraFacing;
 use super::{
     Frame, PixelLayout, Spilled, VideoError, VideoEvent, VideoInfo, VideoSource, file_uri, yuv,
 };
@@ -1652,11 +1652,6 @@ unsafe fn make_sink(gst: &Gst) -> Option<*mut GstElement> {
     }
 }
 
-/// The cameras the platform's players capture: none, an extension answers.
-pub(crate) fn cameras() -> Vec<CameraInfo> {
-    Vec::new()
-}
-
 /// Linux and the BSDs: plays live what the GStreamer source element
 /// `source` captures — a camera's, a screen's — through the same sink path
 /// as a video (NV12 in a dma-buf or at hand, BGRA once rows are wanted),
@@ -1768,8 +1763,6 @@ mod tests {
             eprintln!("no GStreamer; skipped");
             return;
         };
-        // Listing cameras works where there are none.
-        let _ = cameras();
         // SAFETY: a source made here, handed to the player.
         let mut player = unsafe {
             let source = (gst.element_factory_make)(c"videotestsrc".as_ptr(), ptr::null());

@@ -23,7 +23,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::convert::IntoWasmAbi;
 use wasm_bindgen::prelude::*;
 
-use super::camera::{CameraFacing, CameraInfo};
+use super::camera::CameraFacing;
 use super::{Frame, PixelLayout, VideoError, VideoEvent, VideoInfo, VideoSource};
 
 #[wasm_bindgen]
@@ -690,9 +690,4 @@ fn stop(stream: &MediaStream) {
     for track in stream.get_tracks().iter() {
         track.unchecked_into::<MediaStreamTrack>().stop();
     }
-}
-
-/// The cameras the platform's players capture: none, an extension answers.
-pub(crate) fn cameras() -> Vec<CameraInfo> {
-    Vec::new()
 }
