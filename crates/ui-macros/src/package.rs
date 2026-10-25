@@ -105,6 +105,9 @@ fn identity(root: &Path) -> syn::Result<(String, Option<String>)> {
 pub struct Profile {
     pub target: TargetProfile,
     pub catalogs: Option<Catalogs>,
+    /// The `Viso.toml` it was read from, which an expansion makes a compile
+    /// dependency: a grant changed recompiles the forms checked against it.
+    pub manifest: Option<String>,
 }
 
 /// A package's message catalogs: its source locale, the directory holding
@@ -202,6 +205,10 @@ pub fn profile(root: &Path) -> syn::Result<Profile> {
             ..TargetProfile::default()
         },
         catalogs,
+        manifest: manifest
+            .as_ref()
+            .and_then(|(path, _)| path.to_str())
+            .map(str::to_owned),
     })
 }
 

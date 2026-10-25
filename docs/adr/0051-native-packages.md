@@ -61,8 +61,10 @@ A **native package** is a Cargo package that carries native libraries for `.vs` 
   project can call, so it discovers up front. A discovery that fails is a note on each
   `E2001` it leaves.
 - Capabilities stay as they are: a package's functions declare theirs
-  (`network.http`), the app's `Viso.toml` grants them (`[package] capabilities`), and an
-  ungranted call is a compile-time error and a runtime fault.
+  (`network.http`), the app's `Viso.toml` grants them (`[package] capabilities`), the
+  grant travels in the module, and a call outside it faults with `E6103`. The `view!`
+  and `component!` expansions make `Viso.toml` a compile dependency, so a changed grant
+  rebuilds them.
 
 Alternatives rejected:
 
@@ -82,3 +84,6 @@ Alternatives rejected:
   `.vs` imports a library the standard registry lacks.
 - A package whose Rust library and schema disagree links with `E6101` at startup, and
   fails its own tests before that.
+- The first such package is `viso-net`'s `net` library: `Http` builds a request, its
+  `send` task (`network.http`) answers a `Response` whatever came, a status the client
+  does not take or no answer at all included, so a request never faults the task.

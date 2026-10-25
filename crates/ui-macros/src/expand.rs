@@ -66,7 +66,7 @@ pub fn component(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         let root_dir = package::root()?;
         let origin = package::origin(&root_dir, package::invoking_file().as_deref())?;
         let profile = package::profile(&root_dir)?;
-        let catalogs = catalog_dependencies(profile.catalogs.as_ref());
+        let catalogs = profile_dependencies(&profile);
         let (compiled, packages) = compile_linked(&root_dir, &report, |natives| {
             frontend::compile_component_for(&source.text, &origin, natives, profile.target.clone())
         })?;
@@ -131,7 +131,7 @@ pub fn view(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             .ok_or_else(|| syn::Error::new(span, "the `.vs` path is not UTF-8"))?;
         let origin = package::origin(&canonical(&root_dir), Some(&path))?;
         let profile = package::profile(&root_dir)?;
-        let catalogs = catalog_dependencies(profile.catalogs.as_ref());
+        let catalogs = profile_dependencies(&profile);
         let catalog = match &profile.catalogs {
             Some(c) => {
                 let (source, dir) = (&c.source, &c.dir);
@@ -271,10 +271,12 @@ pub fn asset(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     finish(expansion, true)
 }
 
-/// Makes each catalog file a compile dependency of the expansion, so an edit
-/// to a message recompiles the forms that check against it.
-fn catalog_dependencies(catalogs: Option<&package::Catalogs>) -> TokenStream {
-    let files = catalogs.map_or(&[][..], |c| &c.files[..]);
+/// Makes the `Viso.toml` and each catalog file a compile dependency of the
+/// expansion, so a changed grant or message recompiles the forms that check
+/// against it.
+fn profile_dependencies(profile: &package::Profile) -> TokenStream {
+    let catalogs = profile.catalogs.as_ref().map_or(&[][..], |c| &c.files[..]);
+    let files = profile.manifest.iter().chain(catalogs);
     quote! { #(const _: &str = ::core::include_str!(#files);)* }
 }
 

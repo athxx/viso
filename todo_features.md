@@ -442,7 +442,7 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
     WinHTTP's (built and linted, not run), the browser's (`WebSocketStream` where there
     is one, held back; else `WebSocket`), and the crate's own protocol over Java's
     `SSLSocket` (the system's TLS and certificates) on Android;
-  - [ ] the DSL's `Http` native library behind `network::http`, as a native package:
+  - [x] the DSL's `Http` native library behind `network::http`, as a native package:
     - [x] native package format: a library's schema written to and read from JSON,
       lossless, read schemas interned as stubs; ADR 0051;
     - [x] discovery: the app's direct dependencies declaring
@@ -454,9 +454,11 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
       dev session's patches;
     - [x] `viso check`/`export`/`dev`/`schema` and the LSP compile against them (the
       LSP now also reports an import naming nothing);
-    - [ ] `viso-net` library `net`: `Http`, a request built and sent, its `Response`
-      read; `natives.json` checked against the Rust library by its tests; an app
-      calling it from `.vs`;
+    - [x] `viso-net` library `net`: `Http`, a request built and sent, its `Response`
+      read (a status or no answer a response too, never a fault); `natives.json`
+      checked against the Rust library by its tests; an app calling it from `.vs`
+      (macOS, a local server); `Viso.toml` a compile dependency of the forms, so a
+      changed grant rebuilds them;
   - [ ] ASUN rows decoded as they arrive, through an incremental decoder in `asun`.
 - [x] `open_url` service.
 - [ ] Network reachability: `viso-ext/viso-connectivity`, the app's own choice.
