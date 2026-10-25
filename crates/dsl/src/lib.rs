@@ -31,6 +31,7 @@ pub mod hotreload;
 pub mod i18n;
 pub mod inspect;
 pub mod ir;
+pub mod native_package;
 pub mod package;
 pub mod resolve;
 pub mod scenario;

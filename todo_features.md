@@ -442,7 +442,19 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
     WinHTTP's (built and linted, not run), the browser's (`WebSocketStream` where there
     is one, held back; else `WebSocket`), and the crate's own protocol over Java's
     `SSLSocket` (the system's TLS and certificates) on Android;
-  - [ ] the DSL's `Http` native library behind `network::http`;
+  - [ ] the DSL's `Http` native library behind `network::http`, as a native package:
+    - [x] native package format: a library's schema written to and read from JSON,
+      lossless, read schemas interned as stubs; ADR 0051;
+    - [x] discovery: the app's direct dependencies declaring
+      `[package.metadata.viso.natives]` (schema, Rust static, feature), through
+      `cargo metadata`, cached for the process;
+    - [ ] `view!`/`component!`/`ui!` resolve an import no standard library has against
+      the packages, and hand their libraries to the build, which links them, the dev
+      session's patches too;
+    - [ ] `viso check`/`export`/`dev`/`schema` and the LSP compile against them;
+    - [ ] `viso-net` library `net`: `Http`, a request built and sent, its `Response`
+      read; `natives.json` checked against the Rust library by its tests; an app
+      calling it from `.vs`;
   - [ ] ASUN rows decoded as they arrive, through an incremental decoder in `asun`.
 - [x] `open_url` service.
 - [ ] Network reachability: `viso-ext/viso-connectivity`, the app's own choice.
