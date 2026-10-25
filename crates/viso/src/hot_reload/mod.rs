@@ -3118,11 +3118,16 @@ mod tests {
         assert_eq!(ack.revision, Revision(2));
         install(&mut ws);
         assert_ne!(renderer(&ws).program_pipeline(painting(&ws)), pipeline);
-        // Metal draws the new program at the next frame: the tint at half.
+        // Metal draws the new program at the next frame: the tint at half,
+        // in linear light, which the sRGB target stores as 188.
         let after = draw(&mut ws);
         let blue = |picture: &[u8]| picture[((40 * 200 + 60) * 4) as usize];
-        assert!(blue(&before) >= 250, "{}", blue(&before));
-        assert!((120..=135).contains(&blue(&after)), "{}", blue(&after));
+        assert!(blue(&before) >= 250, "before: {}", blue(&before));
+        assert!(
+            (186..=190).contains(&blue(&after)),
+            "after: {}",
+            blue(&after)
+        );
     }
 
     /// `ws`'s card drawn by its renderer into a 200×100 target, read back as
