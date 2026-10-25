@@ -426,7 +426,9 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
   - [x] Linux and the BSDs, libcurl opened at run time: one thread on curl's multi
     interface, a held body's transfer paused, cookies, DNS and TLS sessions shared;
     redirects followed alike on every platform, credentials kept from another origin;
-  - [ ] Windows, WinHTTP;
+  - [x] Windows, WinHTTP, asynchronous: the next read asked for only while the app
+    keeps up, HTTP/2, gzip, the system's proxy (built and linted, not yet run on
+    Windows);
   - [ ] Web, `fetch` with a `ReadableStream` body;
   - [ ] uploads and downloads: multipart forms, a file streamed up or down, progress
     both ways;
