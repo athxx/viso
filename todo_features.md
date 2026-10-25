@@ -385,7 +385,12 @@ Rules:
       by estimate); AAC's priming and padding trimmed on Android; decoded whole first in
       the browser (a URL plays through `viso-media`'s player, which has no picture to
       show for it);
-    - [ ] recording what an input captures to a file;
+    - [x] recording what an input captures, to a file or to memory: WAV (16-bit,
+      dithered) by the crate, AAC in MPEG-4 through Audio Toolbox, the NDK's encoder and
+      muxer, Media Foundation's sink writer (built, not yet run), GStreamer where an AAC
+      encoder is installed, and the browser's recorder; encoded on a thread of its own,
+      paused without a gap, a level for a meter, and an input that moves to a device of
+      another format converted to the file's;
   - [ ] the audio session (iOS category, Android focus) owned by it alone.
 
 ## W11 — Networking
