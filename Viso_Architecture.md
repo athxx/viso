@@ -3866,6 +3866,15 @@ Tier-2 compatibility backend 可以存在，例如 Linux OpenGL、Android GLES �
 - **能力**：`PlatformApp::capabilities()` 返回 `PlatformCaps::FULLSCREEN`（单窗口、无菜单栏但 accelerator 仍生效、无 portal、应用内剪贴板、无 IME）；`framed_windows()` 为 false。
 - **未做**：视频 overlay plane（平台尚无视频 surface）；触摸板 pinch / swipe 手势（`RawEvent` 尚无手势事件）。
 
+### 48.1.2 手柄
+
+`viso_platform::gamepad`：每个 backend 以同一标准布局报告手柄——四个按位置命名的面键（`South` 为下方键）、十字键、两个肩键、两个模拟扳机（`0..=1`）、两根摇杆（各轴 `[-1, 1]`，`x` 向右、`y` 向上）与 select / start / home。摇杆过一个半径 0.1 的径向死区：区内读为正中，静止的手柄不产生事件；区外是设备原值、不缩放，游戏 `InputMap` 的死区因此保持原义。扳机越过 0.25 时其按钮位按下，回落到 0.15 以下时松开。
+
+- **轮询**：Runtime 在驱动 `wants_gamepads()` 时每帧帧首调用一次 `PlatformApp::poll_gamepads(&mut Vec<GamepadEvent>)`（Loop 复用同一缓冲，稳态零分配），只拿到变化：`Connected(GamepadInfo { id, name, rumble })`、`Changed(id, GamepadState)`（整份新状态）、`Disconnected(id)`。第一次调用才启动 backend 的手柄支持；两次调用之间发现的连接经 `LoopWaker` 唤醒 Loop，`Wakeup` 时也轮询一次。`GamepadId` 对一次连接唯一，进程内不复用。
+- **震动**：`PlatformApp::rumble_gamepad(id, Rumble { strong, weak, duration })`（`RuntimeCx` 同名），设备不支持时返回 `false`。
+- **交付**：facade 把连接数写进 `env.input.gamepad_available`；`Changed` 只交给持有输入焦点的窗口、且没有 UI 节点接走按键时的 Frame Client（`FrameClient::gamepad`），`Disconnected` 交给所有窗口。游戏会话把所有手柄合并为本地玩家（按钮按位或，每根摇杆取推得最远者），经 `Scheduler::pads(held)` 与 `Scheduler::stick` 进入 `InputLatch`。
+- **Headless**：`HeadlessGamepads` 由测试连接、设置状态与断开手柄，每步落在一次轮询上，经与真实设备相同的标准化；记录收到的震动。
+
 ### 48.2 Platform 不负责
 
 - Widget；

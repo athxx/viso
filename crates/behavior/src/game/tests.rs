@@ -155,6 +155,20 @@ fn an_action_is_held_while_any_of_its_inputs_is() {
 }
 
 #[test]
+fn a_set_of_held_pad_buttons_presses_and_releases_what_changed() {
+    let (mut latch, snapshot) = latch();
+    latch.pads(PadButton::South.bit() | PadButton::West.bit() | 1 << 31);
+    latch.deliver(&snapshot);
+    assert!(snapshot.pressed(JUMP) && snapshot.pressed(FIRE));
+    latch.pads(PadButton::South.bit());
+    latch.deliver(&snapshot);
+    assert!(snapshot.held(JUMP) && !snapshot.pressed(JUMP) && snapshot.released(FIRE));
+    latch.pads(PadButton::South.bit());
+    latch.deliver(&snapshot);
+    assert!(snapshot.held(JUMP) && !snapshot.released(FIRE));
+}
+
+#[test]
 fn the_move_vector_has_a_dead_zone_and_is_at_most_one_long() {
     let (mut latch, snapshot) = latch();
     latch.stick(PadStick::Left, 0.1, 0.1);

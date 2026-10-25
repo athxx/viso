@@ -4281,7 +4281,7 @@ gamepad_available
 
 `primary_pointer_precision` 的类型为 `PointerPrecision { fine; coarse; unavailable; }`，其余字段为 `Bool`。
 
-Runtime 从输入推断这些能力：窗口打开时，手机与平板目标假定 `coarse` 触摸、无 Hover 与硬件键盘，其他目标假定 `fine` 鼠标与键盘；此后最近一次使用的 Pointer 种类成为主 Pointer（鼠标为 `fine` 并带 Hover，触摸为 `coarse`，笔为 `fine`），用过的设备标记为可用，按下硬件键标记 `keyboard_available`。
+Runtime 从输入推断这些能力：窗口打开时，手机与平板目标假定 `coarse` 触摸、无 Hover 与硬件键盘，其他目标假定 `fine` 鼠标与键盘；此后最近一次使用的 Pointer 种类成为主 Pointer（鼠标为 `fine` 并带 Hover，触摸为 `coarse`，笔为 `fine`），用过的设备标记为可用，按下硬件键标记 `keyboard_available`；`gamepad_available` 跟随手柄连接：有手柄连接时为真，最后一个断开时为假。
 
 因此组件可以做能力适配：
 
@@ -6205,6 +6205,7 @@ export enum TickOverrun {
 - `held` 与 Axis 在同一渲染帧的多个 Tick 中取相同值；
 - 同一 Tick 内按下又释放时，`pressed` 与 `released` 都为真；
 - 文本输入、IME 和 UI 焦点中的按键不进入 Game 输入，除非 `GameViewport` 持有输入焦点；失去输入焦点时释放全部按键、按钮与摇杆，仍按下的动作在下一个 Tick 得到 `released`。
+- 手柄每帧在帧首轮询一次（只在状态变化时产生事件），交给持有输入焦点的窗口中的游戏，规则与按键相同；所有已连接的手柄合并为本地玩家 0：任一手柄按住即按住，每根摇杆取推得最远的手柄；扳机越过行程 0.25 时其 `PadButton` 按下、回落到 0.15 以下时松开；手柄断开时释放它按住的一切。
 
 ### 106.3 Typed 输入映射
 

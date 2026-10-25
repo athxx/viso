@@ -41,5 +41,6 @@ pub use scheduler::Scheduler;
 pub use task::{TaskId, TaskSet};
 pub use viso_platform::{
     Appearance, ColorScheme, CursorIcon, DisplayFeature, DisplayFeatureKind, EditLabels, EditMenu,
-    EditMenuAction, InputKind, Instant, LogicalInsets, LoopWaker, Loupe,
+    EditMenuAction, GamepadButton, GamepadEvent, GamepadId, GamepadInfo, GamepadState, InputKind,
+    Instant, LogicalInsets, LoopWaker, Loupe, Rumble,
 };

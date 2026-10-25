@@ -30,6 +30,7 @@ pub mod clipboard;
 pub mod control;
 pub mod drop;
 pub mod event;
+pub mod gamepad;
 pub mod handler;
 mod launch;
 mod locale;
@@ -73,6 +74,7 @@ pub use event::{
     PointerKind, PointerPhase, RawEvent, RawGesture, RawImePreedit, RawKey, RawPointer, RawScroll,
     RawText, ScrollPhase, clipboard_shortcut, primary_is_logo,
 };
+pub use gamepad::{GamepadButton, GamepadEvent, GamepadId, GamepadInfo, GamepadState, Rumble};
 pub use handler::AppHandler;
 pub use launch::launch_var;
 pub use menu::{Accel, Menu, MenuCommandId, SystemAction};
@@ -267,6 +269,21 @@ pub trait PlatformApp {
     /// [`RawEvent::Wakeup`]. Inert on a backend without a cross-thread wake.
     fn loop_waker(&self) -> LoopWaker {
         LoopWaker::inert()
+    }
+
+    /// Reads the gamepads, appending to `events` what changed since the
+    /// last call: connections, departures and new states. The runtime calls
+    /// it once per frame; the first call starts the backend's gamepad
+    /// support, and a connection noticed between calls wakes the loop. No
+    /// allocation while nothing connects. A no-op where there are none.
+    fn poll_gamepads(&mut self, events: &mut Vec<GamepadEvent>) {
+        let _ = events;
+    }
+
+    /// Shakes gamepad `id` with `rumble`; whether it can.
+    fn rumble_gamepad(&mut self, id: GamepadId, rumble: Rumble) -> bool {
+        let _ = (id, rumble);
+        false
     }
 }
 

@@ -1023,6 +1023,12 @@ impl Scheduler {
         self.input.pad(button, down);
     }
 
+    /// Reports the gamepad buttons held, one [`PadButton::bit`] each: the
+    /// buttons that changed go down or up at once.
+    pub fn pads(&mut self, held: u32) {
+        self.input.pads(held);
+    }
+
     /// Reports the position of gamepad stick `stick`, each axis in `[-1, 1]`
     /// with `y` up.
     pub fn stick(&mut self, stick: PadStick, x: f64, y: f64) {

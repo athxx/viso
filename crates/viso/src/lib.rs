@@ -642,6 +642,26 @@ pub mod __test_support {
         drive_host::<A>(script, step, true, None, Some(frames))
     }
 
+    /// [`drive_scripted_frames`] on a device whose gamepads are `pads`: each
+    /// step queued on them lands at one frame's poll.
+    pub fn drive_gamepad_frames<A: Application>(
+        script: Vec<viso_platform::RawEvent>,
+        pads: viso_platform::backend::headless::HeadlessGamepads,
+        step: Duration,
+        frames: u32,
+    ) -> DrivenApp<A> {
+        let mut app = Box::new(viso_platform::backend::headless::HeadlessApp::scripted(
+            script,
+        ));
+        app.set_framed_windows(true);
+        app.frame_budget(frames);
+        app.attach_gamepads(pads);
+        let driver = AppDriver::<A>::new(Some(crate::services::Services::unsupported()));
+        let clock = FixedStepClock::new(Instant::now(), step);
+        let driver = Scheduler::with_clock(app, driver, clock).run_returning();
+        DrivenApp { driver }
+    }
+
     /// [`drive_scripted`] with `services` lent to every handler in place of
     /// the headless fallback's unsupported registry.
     pub fn drive_scripted_with_services<A: Application>(
@@ -812,6 +832,8 @@ struct AppDriver<A: Application> {
     /// The tape a headless run replays.
     #[cfg(any(feature = "hot-reload", feature = "headless"))]
     player: Option<tape::TapePlayer>,
+    /// The gamepads connected.
+    gamepads: u32,
 }
 
 /// The fonts an app registered at init, installed into every window's shaper.
@@ -1229,6 +1251,7 @@ impl<A: Application> AppDriver<A> {
                 .map(|path| tape::TapeRecorder::new(Some(path.into()))),
             #[cfg(any(feature = "hot-reload", feature = "headless"))]
             player: None,
+            gamepads: 0,
         }
     }
 
@@ -1459,10 +1482,12 @@ impl WindowState {
     /// `WindowOpenRequest::build` for a later one). Requires a live scheduling
     /// context (`RuntimeCx`), so it is only reachable from `on_launch`/`run_phase`
     /// — the two phases the facade holds one.
+    #[allow(clippy::too_many_arguments)]
     fn open(
         cx: &mut RuntimeCx<'_>,
         window: WindowId,
         fonts: &SessionFonts,
+        gamepads: bool,
         services: Option<Rc<dyn Any>>,
         chrome: WindowChrome,
         initial_chrome_geom: Option<LogicalRect>,
@@ -1497,6 +1522,7 @@ impl WindowState {
         ws.dpi = cx.scale_factor(window).unwrap_or(1.0) as f32;
         ws.follow_scale_factor();
         ws.seed_environment(cx.appearance(), &cx.locale(), &cx.display_features(window));
+        environment::note_gamepads(&mut ws.states, gamepads);
 
         // Bring up the GPU for this window when it exposes a real windowing
         // handle: create the device, attach a surface to that handle, and build
@@ -2972,6 +2998,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 cx,
                 id,
                 &self.fonts,
+                self.gamepads > 0,
                 services,
                 ui_chrome,
                 chrome_geom,
@@ -2986,6 +3013,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
             cx,
             id,
             &self.fonts,
+            self.gamepads > 0,
             services,
             ui_chrome,
             chrome_geom,
@@ -3780,6 +3808,39 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         }
     }
 
+    fn wants_gamepads(&self) -> bool {
+        true
+    }
+
+    fn on_gamepad(&mut self, cx: &mut RuntimeCx<'_>, event: viso_runtime::GamepadEvent) {
+        use viso_runtime::GamepadEvent;
+        let connected = self.gamepads > 0;
+        match event {
+            GamepadEvent::Connected(_) => self.gamepads += 1,
+            GamepadEvent::Disconnected(_) => self.gamepads = self.gamepads.saturating_sub(1),
+            GamepadEvent::Changed(..) => {}
+        }
+        let available = self.gamepads > 0;
+        for ws in &mut self.windows {
+            if available != connected {
+                // `env.input.gamepad_available` follows the connections.
+                environment::note_gamepads(&mut ws.states, available);
+                cx.request_redraw(ws.window);
+            }
+            // A pad's input goes to the games of the window holding input
+            // focus, while no UI node takes the keys; every game forgets a
+            // pad that went away.
+            let reaches = match event {
+                GamepadEvent::Connected(_) => false,
+                GamepadEvent::Changed(..) => ws.active && ws.store.keys_reach_clients(),
+                GamepadEvent::Disconnected(_) => true,
+            };
+            if reaches && ws.store.has_frame_clients() {
+                ws.store.frame_clients_gamepad(&event);
+            }
+        }
+    }
+
     fn on_window_chrome_geom(
         &mut self,
         _cx: &mut RuntimeCx<'_>,
@@ -4298,6 +4359,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                             cx,
                             id,
                             &self.fonts,
+                            self.gamepads > 0,
                             self.services.clone(),
                             ui_chrome,
                             chrome_geom,

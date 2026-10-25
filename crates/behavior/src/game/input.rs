@@ -93,6 +93,13 @@ schema_enum! {
     }
 }
 
+impl PadButton {
+    /// Its bit in a set of held buttons.
+    pub const fn bit(self) -> u32 {
+        1 << self as u32
+    }
+}
+
 schema_enum! {
     /// A gamepad stick.
     PadStick = "viso::game::PadStick" { Left, Right }
@@ -392,6 +399,14 @@ impl InputLatch {
     pub(crate) fn pad(&mut self, button: PadButton, down: bool) {
         set_bit(&mut self.pads, button as u32, down);
         self.update();
+    }
+
+    pub(crate) fn pads(&mut self, held: u32) {
+        let held = held & ((1 << PadButton::VARIANTS.len()) - 1);
+        if held != self.pads {
+            self.pads = held;
+            self.update();
+        }
     }
 
     pub(crate) fn touch(&mut self, button: TouchButton, down: bool) {

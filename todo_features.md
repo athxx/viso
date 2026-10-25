@@ -498,6 +498,17 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
   turned off, the settings pages, and a mock; run on macOS, Android and the web.
 - [ ] Gamepad backend (GameController, XInput/GameInput, evdev, web Gamepad API) into the
   game input.
+  - [x] one standard gamepad model in `viso-platform`, polled once per frame head (events
+    only on change, no steady-state allocation), into the game input: every pad merged
+    into local player 0, `env.input.gamepad_available` following connections, a gone pad
+    releasing what it held; headless pads for tests (platform, runtime, facade and
+    `.vs` game tests).
+  - [ ] macOS / iOS: GameController.framework.
+  - [ ] Windows: XInput.
+  - [ ] Linux: evdev with inotify hotplug.
+  - [ ] Android: the activity's gamepad key and motion events.
+  - [ ] Web: the Gamepad API.
+  - [ ] Rumble from game systems.
 - [x] Rich clipboard: images and HTML. `ClipboardData { text, html, image }`, pastes name
   the `ClipboardKinds` they take and get the richest; `set_clipboard`, tokened
   `request_paste`, `PasteRequested` handshake for gestures; paste targets and

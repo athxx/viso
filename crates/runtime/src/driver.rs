@@ -11,7 +11,8 @@
 use viso_platform::Instant;
 
 use viso_platform::{
-    AccessRequest, Appearance, DisplayFeature, LogicalInsets, LogicalRect, MenuCommandId, WindowId,
+    AccessRequest, Appearance, DisplayFeature, GamepadEvent, LogicalInsets, LogicalRect,
+    MenuCommandId, WindowId,
 };
 
 use crate::context::RuntimeCx;
@@ -146,6 +147,19 @@ pub trait FrameDriver {
     /// through `cx` for each window with work due, since the kick names none.
     /// Default no-op.
     fn on_wakeup(&mut self, _cx: &mut RuntimeCx<'_>) {}
+
+    /// Whether the driver reads gamepads: while it does, the scheduler polls
+    /// them at the head of every frame and on every loop kick, handing what
+    /// changed to [`on_gamepad`](Self::on_gamepad). Default `false`: the
+    /// platform's gamepad support is never started.
+    fn wants_gamepads(&self) -> bool {
+        false
+    }
+
+    /// A gamepad connected, changed or went away. A frame's changes arrive
+    /// before its first phase; the driver requests a redraw through `cx`
+    /// for what a connection changes. Default no-op.
+    fn on_gamepad(&mut self, _cx: &mut RuntimeCx<'_>, _event: GamepadEvent) {}
 
     /// Whether the driver wants continuous animation frames right now. When
     /// true, the scheduler keeps requesting redraw beats even with no input.

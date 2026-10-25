@@ -197,6 +197,11 @@ pub(crate) fn note_pointer(states: &mut StateStore, kind: PointerKind) {
     });
 }
 
+/// Notes whether a gamepad is connected.
+pub(crate) fn note_gamepads(states: &mut StateStore, available: bool) {
+    update_input(states, |input| input.gamepad_available = available);
+}
+
 /// Notes that a hardware key was pressed.
 pub(crate) fn note_key(states: &mut StateStore) {
     update_input(states, |input| input.keyboard_available = true);

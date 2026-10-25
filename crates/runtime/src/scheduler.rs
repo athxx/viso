@@ -17,8 +17,8 @@ use std::time::Duration;
 use viso_platform::Instant;
 
 use viso_platform::{
-    AppHandler, ControlFlow, Modifiers as RawModifiers, PlatformApp, RawEvent, RawGesture,
-    RawPointer, RawScroll, WindowId,
+    AppHandler, ControlFlow, GamepadEvent, Modifiers as RawModifiers, PlatformApp, RawEvent,
+    RawGesture, RawPointer, RawScroll, WindowId,
 };
 
 use crate::clock::{FrameClock, WallClock};
@@ -58,6 +58,8 @@ struct Loop<D: FrameDriver, C: FrameClock> {
     /// When the previous frame ran, for the delta the next frame observes.
     /// `None` before the first frame, so that frame's delta is `ZERO`.
     last_frame: Option<Instant>,
+    /// What a gamepad poll reported, kept to reuse its storage.
+    gamepads: Vec<GamepadEvent>,
 }
 
 impl<D: FrameDriver> Scheduler<D, WallClock> {
@@ -82,6 +84,7 @@ impl<D: FrameDriver, C: FrameClock> Scheduler<D, C> {
                 suspended: false,
                 clock,
                 last_frame: None,
+                gamepads: Vec::new(),
             },
         }
     }
@@ -136,6 +139,8 @@ impl<D: FrameDriver, C: FrameClock> Loop<D, C> {
             return;
         }
         self.reasons.take();
+        // The gamepads as of the frame head, so the frame's games read them.
+        self.poll_gamepads(app);
         // Sample the clock at the frame head and diff against the previous
         // frame; the first frame has no predecessor, so its delta is ZERO.
         let now = self.clock.now();
@@ -161,6 +166,35 @@ impl<D: FrameDriver, C: FrameClock> Loop<D, C> {
             self.reasons.add(RedrawReason::StateDirty);
         }
         self.deliver(app, posted);
+    }
+
+    /// Reads the gamepads, if the driver wants them, and hands it what
+    /// changed; a connection or departure is input the next frame shows.
+    fn poll_gamepads(&mut self, app: &mut dyn PlatformApp) {
+        if !self.driver.wants_gamepads() {
+            return;
+        }
+        app.poll_gamepads(&mut self.gamepads);
+        if self.gamepads.is_empty() {
+            return;
+        }
+        let mut events = std::mem::take(&mut self.gamepads);
+        let mut connections = false;
+        let state_dirty = {
+            let mut cx = RuntimeCx::new(app, Duration::ZERO, self.clock.peek());
+            for event in events.drain(..) {
+                connections |= !matches!(event, GamepadEvent::Changed(..));
+                self.driver.on_gamepad(&mut cx, event);
+            }
+            cx.state_dirty_requested()
+        };
+        self.gamepads = events;
+        if connections {
+            self.reasons.add(RedrawReason::InputDirty);
+        }
+        if state_dirty {
+            self.reasons.add(RedrawReason::StateDirty);
+        }
     }
 
     /// Handles the events the driver posted, in order.
@@ -337,6 +371,8 @@ impl<D: FrameDriver, C: FrameClock> AppHandler for Loop<D, C> {
                 // frame runs to observe whatever it delivered, and let the
                 // driver name the windows that frame must cover.
                 self.reasons.add(RedrawReason::AsyncCompletion);
+                // A kick may be a gamepad connecting while no frame runs.
+                self.poll_gamepads(app);
                 self.wakeup(app);
             }
             RawEvent::Pointer(p) => {
@@ -831,6 +867,97 @@ mod tests {
         let driver = Scheduler::new(app, WakeDriver::default()).run_returning();
         assert_eq!(driver.wakeups, 1);
         assert_eq!(driver.frames, 2, "the first frame, then the wakeup's");
+    }
+
+    /// A driver that opens one window, reads gamepads when `wants` says,
+    /// records what they did and keeps asking for frames.
+    #[derive(Default)]
+    struct PadDriver {
+        wants: bool,
+        window: Option<WindowId>,
+        events: Vec<(u32, GamepadEvent)>,
+        frames: u32,
+    }
+
+    impl FrameDriver for PadDriver {
+        fn on_launch(&mut self, cx: &mut RuntimeCx<'_>) {
+            let window = cx
+                .create_window(viso_platform::WindowConfig::default())
+                .expect("headless window");
+            self.window = Some(window);
+        }
+        fn on_geometry(&mut self, _window: WindowId, _scale: f64, _width: u32, _height: u32) {}
+        fn on_input(&mut self, _sample: InputSample, _at: Instant) {}
+        fn run_phase(&mut self, phase: FramePhase, cx: &mut RuntimeCx<'_>) {
+            if phase == FramePhase::Submit {
+                self.frames += 1;
+                if let Some(window) = self.window {
+                    cx.request_redraw(window);
+                }
+            }
+        }
+        fn wants_animation(&self) -> bool {
+            true
+        }
+        fn wants_gamepads(&self) -> bool {
+            self.wants
+        }
+        fn on_gamepad(&mut self, cx: &mut RuntimeCx<'_>, event: GamepadEvent) {
+            if let GamepadEvent::Connected(info) = &event {
+                assert!(cx.rumble_gamepad(
+                    info.id,
+                    viso_platform::Rumble {
+                        strong: 1.0,
+                        weak: 0.5,
+                        duration: Duration::from_millis(80),
+                    }
+                ));
+            }
+            self.events.push((self.frames, event));
+        }
+    }
+
+    fn pad_run(
+        wants: bool,
+    ) -> (
+        PadDriver,
+        viso_platform::backend::headless::HeadlessGamepads,
+    ) {
+        let pads = viso_platform::backend::headless::HeadlessGamepads::default();
+        let pad = pads.connect("Pad");
+        let mut held = viso_platform::GamepadState::default();
+        held.set(viso_platform::GamepadButton::Start, true);
+        pads.set(pad, held);
+        pads.set(pad, held);
+        pads.disconnect(pad);
+        let mut app = HeadlessApp::scripted(vec![]);
+        app.frame_budget(6);
+        app.attach_gamepads(pads.clone());
+        let driver = PadDriver {
+            wants,
+            ..PadDriver::default()
+        };
+        let driver = Scheduler::new(Box::new(app), driver).run_returning();
+        (driver, pads)
+    }
+
+    #[test]
+    fn the_gamepads_are_polled_at_each_frame_head_only_when_the_driver_reads_them() {
+        let (driver, pads) = pad_run(true);
+        let at: Vec<_> = driver.events.iter().map(|(frame, _)| *frame).collect();
+        assert_eq!(
+            at,
+            [0, 1, 3],
+            "before each frame's phases; no change, no event"
+        );
+        assert!(matches!(driver.events[0].1, GamepadEvent::Connected(_)));
+        assert!(matches!(driver.events[1].1, GamepadEvent::Changed(..)));
+        assert!(matches!(driver.events[2].1, GamepadEvent::Disconnected(_)));
+        assert_eq!(pads.rumbles().len(), 1, "the connection rumbled it");
+
+        let (driver, pads) = pad_run(false);
+        assert!(driver.events.is_empty());
+        assert_eq!(pads.pending(), 4, "never polled");
     }
 
     /// A driver that records lifecycle events, frames and clipboard traffic,

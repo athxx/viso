@@ -24,6 +24,7 @@ use crate::control::{
     EditLabels, EditMenu, Loupe, PlatformCaps, PlatformError, TextEntry, WindowConfig, WindowId,
 };
 use crate::event::{Appearance, CursorIcon, DisplayFeature, RawEvent};
+use crate::gamepad::{GamepadEvent, GamepadId, GamepadState, Pads, Rumble};
 use crate::handler::AppHandler;
 use crate::{ControlFlow, LoopWaker, PlatformApp, Window};
 
@@ -68,6 +69,8 @@ pub struct HeadlessApp {
     surface: Option<((f64, f64), f64)>,
     /// Events handed in while the app runs ([`HeadlessApp::feed`]).
     feed: Option<HeadlessFeed>,
+    /// The gamepads a test plugs in ([`HeadlessApp::gamepads`]).
+    gamepads: Option<HeadlessGamepads>,
 }
 
 /// Where a driver hands a running [`HeadlessApp`] input, as the user's
@@ -112,6 +115,7 @@ impl HeadlessApp {
             frames_left: None,
             surface: None,
             feed: None,
+            gamepads: None,
         }
     }
 
@@ -143,6 +147,12 @@ impl HeadlessApp {
     /// The feed events reach this app through while it runs.
     pub fn feed(&mut self) -> HeadlessFeed {
         self.feed.get_or_insert_with(HeadlessFeed::default).clone()
+    }
+
+    /// Reads `pads` as the device's gamepads: what a test does to them
+    /// lands one step per poll.
+    pub fn attach_gamepads(&mut self, pads: HeadlessGamepads) {
+        self.gamepads = Some(pads);
     }
 
     /// Set the appearance [`PlatformApp::appearance`] reports. Scripts that
@@ -493,6 +503,111 @@ impl PlatformApp for HeadlessApp {
     fn loop_waker(&self) -> LoopWaker {
         let woken = self.woken.clone();
         LoopWaker::new(move || woken.store(true, Ordering::Release))
+    }
+
+    fn poll_gamepads(&mut self, events: &mut Vec<GamepadEvent>) {
+        if let Some(pads) = &self.gamepads {
+            pads.poll(events);
+        }
+    }
+
+    fn rumble_gamepad(&mut self, id: GamepadId, rumble: Rumble) -> bool {
+        self.gamepads
+            .as_ref()
+            .is_some_and(|pads| pads.rumble(id, rumble))
+    }
+}
+
+/// A test's gamepads: what it does to them is queued, one step per poll,
+/// and reported through the same standard reading as a device's.
+#[derive(Clone, Default)]
+pub struct HeadlessGamepads(Rc<RefCell<HeadlessPads>>);
+
+/// A gamepad a test plugged in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeadlessPad(u64);
+
+#[derive(Default)]
+struct HeadlessPads {
+    pads: Pads,
+    next: u64,
+    steps: VecDeque<PadStep>,
+    rumbles: Vec<(GamepadId, Rumble)>,
+}
+
+enum PadStep {
+    Connect(u64, String),
+    Set(u64, GamepadState),
+    Disconnect(u64),
+    Idle,
+}
+
+impl HeadlessGamepads {
+    /// Plugs in a pad named `name`.
+    pub fn connect(&self, name: &str) -> HeadlessPad {
+        let mut pads = self.0.borrow_mut();
+        pads.next += 1;
+        let key = pads.next;
+        pads.steps.push_back(PadStep::Connect(key, name.to_owned()));
+        HeadlessPad(key)
+    }
+
+    /// Has `pad` read `state`, as its device reports it.
+    pub fn set(&self, pad: HeadlessPad, state: GamepadState) {
+        self.0
+            .borrow_mut()
+            .steps
+            .push_back(PadStep::Set(pad.0, state));
+    }
+
+    /// Unplugs `pad`.
+    pub fn disconnect(&self, pad: HeadlessPad) {
+        self.0
+            .borrow_mut()
+            .steps
+            .push_back(PadStep::Disconnect(pad.0));
+    }
+
+    /// A poll at which nothing happens.
+    pub fn idle(&self) {
+        self.0.borrow_mut().steps.push_back(PadStep::Idle);
+    }
+
+    /// The steps not yet polled.
+    pub fn pending(&self) -> usize {
+        self.0.borrow().steps.len()
+    }
+
+    /// The id `pad` was given, once connected.
+    pub fn id(&self, pad: HeadlessPad) -> Option<GamepadId> {
+        self.0.borrow().pads.id(pad.0)
+    }
+
+    /// The rumbles asked for, in order.
+    pub fn rumbles(&self) -> Vec<(GamepadId, Rumble)> {
+        self.0.borrow().rumbles.clone()
+    }
+
+    fn poll(&self, events: &mut Vec<GamepadEvent>) {
+        let mut pads = self.0.borrow_mut();
+        let pads = &mut *pads;
+        match pads.steps.pop_front() {
+            Some(PadStep::Connect(key, name)) => {
+                pads.pads.connect(key, &name, true, events);
+            }
+            Some(PadStep::Set(key, state)) => pads.pads.update(key, &state, events),
+            Some(PadStep::Disconnect(key)) => pads.pads.disconnect(key, events),
+            Some(PadStep::Idle) | None => {}
+        }
+    }
+
+    fn rumble(&self, id: GamepadId, rumble: Rumble) -> bool {
+        let mut pads = self.0.borrow_mut();
+        if pads.pads.key(id).is_none() {
+            return false;
+        }
+        pads.rumbles.push((id, rumble.clamped()));
+        true
     }
 }
 

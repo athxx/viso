@@ -1,6 +1,7 @@
 //! What runs on its own clock inside a window: a client a mounted view
 //! starts — a game session — that the frame loop advances once per frame by
-//! the frame's wall delta and hands the keys no UI node takes.
+//! the frame's wall delta and hands the keys no UI node takes, and the
+//! gamepads of the window holding input focus.
 //!
 //! A client is owned by a node: it lives while that node does and is
 //! dropped at the first frame after the node is freed. While a node holds
@@ -12,6 +13,8 @@
 use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;
+
+use viso_runtime::GamepadEvent;
 
 use crate::component::NodeStore;
 use crate::content::Content;
@@ -32,6 +35,13 @@ pub trait FrameClient: Any {
     /// Releases every key and button it holds: the window lost focus, or a
     /// UI node took keyboard focus.
     fn release_input(&mut self);
+
+    /// A gamepad changed or went away while the client's window holds
+    /// input focus and no UI node takes the keys; a pad that went away is
+    /// reported whatever holds focus. Default: gamepads are ignored.
+    fn gamepad(&mut self, event: &GamepadEvent) {
+        let _ = event;
+    }
 
     /// Whether it needs the next frame, as a running clock does.
     fn wants_frame(&self) -> bool;
@@ -191,6 +201,18 @@ impl NodeStore {
         })
     }
 
+    /// Hands every client what a gamepad did. Called for a change only while
+    /// the keys reach the clients.
+    pub fn frame_clients_gamepad(&mut self, event: &GamepadEvent) {
+        let clients = self.frame_clients_mut();
+        clients.holding |= matches!(event, GamepadEvent::Changed(..));
+        for (_, client) in &clients.clients {
+            if let Ok(mut client) = client.try_borrow_mut() {
+                client.gamepad(event);
+            }
+        }
+    }
+
     /// Releases every client's input: the window lost focus.
     pub fn release_client_input(&mut self) {
         let clients = self.frame_clients_mut();
@@ -230,6 +252,7 @@ mod tests {
     struct Clock {
         elapsed: f64,
         keys: Vec<(Key, bool)>,
+        pads: Vec<GamepadEvent>,
         released: Cell<u32>,
     }
 
@@ -243,6 +266,9 @@ mod tests {
         }
         fn release_input(&mut self) {
             self.released.set(self.released.get() + 1);
+        }
+        fn gamepad(&mut self, event: &GamepadEvent) {
+            self.pads.push(event.clone());
         }
         fn wants_frame(&self) -> bool {
             true
@@ -268,6 +294,16 @@ mod tests {
         store.release_client_input();
         store.release_client_input();
         assert_eq!(clock.borrow().released.get(), 1, "released once per hold");
+        let pad = viso_runtime::GamepadId(1);
+        let moved = GamepadEvent::Changed(pad, viso_runtime::GamepadState::default());
+        store.frame_clients_gamepad(&moved);
+        store.frame_clients_gamepad(&GamepadEvent::Disconnected(pad));
+        assert_eq!(
+            clock.borrow().pads,
+            [moved, GamepadEvent::Disconnected(pad)]
+        );
+        store.release_client_input();
+        assert_eq!(clock.borrow().released.get(), 2, "a pad's state is held");
 
         let mut effects = crate::reactive::EffectStore::new();
         store.free_tree(owner, &mut effects, &mut Vec::new());

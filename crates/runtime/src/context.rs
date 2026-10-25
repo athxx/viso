@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use viso_platform::{Instant, LoopWaker};
+use viso_platform::{GamepadId, Instant, LoopWaker, Rumble};
 
 use viso_platform::{
     Appearance, CursorIcon, EditLabels, EditMenu, LogicalRect, Loupe, PlatformApp, PlatformCaps,
@@ -306,6 +306,12 @@ impl<'a> RuntimeCx<'a> {
     /// A handle that kicks this loop from any thread.
     pub fn loop_waker(&self) -> LoopWaker {
         self.app.loop_waker()
+    }
+
+    /// Shakes gamepad `id`; whether it can. See
+    /// [`PlatformApp::rumble_gamepad`](viso_platform::PlatformApp::rumble_gamepad).
+    pub fn rumble_gamepad(&mut self, id: GamepadId, rumble: Rumble) -> bool {
+        self.app.rumble_gamepad(id, rumble)
     }
 }
 

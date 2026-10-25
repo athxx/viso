@@ -3,8 +3,10 @@
 //! module, linked against the standard natives with the package's
 //! capabilities — which the window's frame loop advances as a
 //! [`FrameClient`]: every frame runs the ticks the clock owes and then every
-//! `FrameUpdate`, the keys no UI node takes reach the game, and the session
-//! ends with the root.
+//! `FrameUpdate`, the keys no UI node takes reach the game, as do the
+//! gamepads (merged into the one local player: a button is held while any
+//! pad holds it, each stick reads the pad pushing it furthest), and the
+//! session ends with the root.
 //!
 //! A reload swaps the session's build at a tick boundary
 //! ([`GameSession::reload`]), the World, entities and compatible states
@@ -26,14 +28,14 @@ use std::sync::Arc;
 
 use viso_behavior::aot::NativeCode;
 use viso_behavior::game::{
-    AudioLink, Committed, GameControl, GameError, InputTape, Key as GameKey, Persist, PreparedSwap,
-    Rebuild, Scheduler, SystemFault,
+    AudioLink, Committed, GameControl, GameError, InputTape, Key as GameKey, PadStick, Persist,
+    PreparedSwap, Rebuild, Scheduler, SystemFault,
 };
 use viso_behavior::native::Natives;
 use viso_behavior::{Budget, Module, Value, Vm};
 use viso_schema::view::GameQuery;
 use viso_ui::frame_client::SceneFill;
-use viso_ui::input::Key;
+use viso_ui::input::{GamepadEvent, GamepadId, GamepadState, Key};
 use viso_ui::{FrameClient, NodeId, NodeStore, StateId, StateStore, StateValue};
 
 /// The device a session's audio systems render on, provided by the host.
@@ -597,9 +599,65 @@ impl GameSession {
 }
 
 /// The frame client a mount registers: the shared session, so the dev
-/// runtime reaches it typed through its owner, and the last frame's wall
-/// delta its viewports' rigs ease by.
-struct GameClient(Rc<RefCell<GameSession>>, f32);
+/// runtime reaches it typed through its owner, the last frame's wall delta
+/// its viewports' rigs ease by, and the gamepads it reads.
+struct GameClient(Rc<RefCell<GameSession>>, f32, GamePads);
+
+/// The gamepads a game reads, merged into its one local player: a button is
+/// held while any pad holds it, and each stick reads the pad pushing it
+/// furthest.
+#[derive(Default)]
+struct GamePads {
+    pads: Vec<(GamepadId, GamepadState)>,
+    /// What the scheduler was last told.
+    held: u32,
+    sticks: [[f32; 2]; 2],
+}
+
+impl GamePads {
+    fn apply(&mut self, event: &GamepadEvent, scheduler: &mut Scheduler) {
+        match event {
+            GamepadEvent::Changed(id, state) => {
+                match self.pads.iter_mut().find(|(pad, _)| pad == id) {
+                    Some((_, held)) => *held = *state,
+                    None => self.pads.push((*id, *state)),
+                }
+            }
+            GamepadEvent::Disconnected(id) => self.pads.retain(|(pad, _)| pad != id),
+            GamepadEvent::Connected(_) => return,
+        }
+        let held = self.pads.iter().fold(0, |held, (_, s)| held | s.buttons);
+        if held != self.held {
+            self.held = held;
+            scheduler.pads(held);
+        }
+        let furthest = |stick: fn(&GamepadState) -> [f32; 2]| {
+            self.pads
+                .iter()
+                .map(|(_, s)| stick(s))
+                .max_by(|a, b| (a[0].hypot(a[1])).total_cmp(&b[0].hypot(b[1])))
+                .unwrap_or_default()
+        };
+        let sticks = [furthest(|s| s.left_stick), furthest(|s| s.right_stick)];
+        for (i, which) in [PadStick::Left, PadStick::Right].into_iter().enumerate() {
+            if sticks[i] != self.sticks[i] {
+                let [x, y] = sticks[i];
+                scheduler.stick(which, f64::from(x), f64::from(y));
+            }
+        }
+        self.sticks = sticks;
+    }
+
+    /// Forgets what the pads hold, as the scheduler releases it; a pad's
+    /// next change reports its whole state again.
+    fn release(&mut self) {
+        for (_, state) in &mut self.pads {
+            *state = GamepadState::default();
+        }
+        self.held = 0;
+        self.sticks = [[0.0; 2]; 2];
+    }
+}
 
 impl FrameClient for GameClient {
     fn frame(&mut self, dt: f64) {
@@ -635,6 +693,11 @@ impl FrameClient for GameClient {
 
     fn release_input(&mut self) {
         self.0.borrow_mut().scheduler.release_input();
+        self.2.release();
+    }
+
+    fn gamepad(&mut self, event: &GamepadEvent) {
+        self.2.apply(event, &mut self.0.borrow_mut().scheduler);
     }
 
     fn wants_frame(&self) -> bool {
@@ -847,6 +910,25 @@ pub fn mount_game(
     }
     let session = GameSession::start_in(Rc::clone(module), Arc::clone(natives), native)?;
     let session = Rc::new(RefCell::new(session));
-    store.add_frame_client(owner, Rc::new(RefCell::new(GameClient(session, 0.0))));
+    store.add_frame_client(
+        owner,
+        Rc::new(RefCell::new(GameClient(session, 0.0, GamePads::default()))),
+    );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use viso_behavior::game::PadButton;
+    use viso_ui::input::GamepadButton;
+
+    #[test]
+    fn a_gamepad_button_has_the_bit_of_the_pad_button_it_names() {
+        assert_eq!(GamepadButton::ALL.len(), PadButton::VARIANTS.len());
+        for (i, button) in GamepadButton::ALL.into_iter().enumerate() {
+            let pad = PadButton::from_index(i as i64).expect("a pad button");
+            assert_eq!(format!("{button:?}"), PadButton::VARIANTS[i]);
+            assert_eq!(button.bit(), pad.bit());
+        }
+    }
 }
