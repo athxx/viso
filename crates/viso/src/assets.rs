@@ -28,18 +28,97 @@
 //! did not embed: the app keeps the newest bytes of each, so a table offering
 //! older ones — a window or mount opened later — or none at all is served
 //! those.
+//!
+//! An image shown from a URL is fetched through the app's [`ImageLoader`]
+//! on the loop's thread — the future wakes the loop, which polls it — and its
+//! bytes decode as any other's. Without a loader it fails.
 
 use std::collections::HashMap;
+use std::fmt::Display;
+use std::future::Future;
 use std::path::Path;
+use std::pin::Pin;
+use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Weak};
+use std::task::{Context, Poll, Wake, Waker};
 use std::thread;
 
 use viso_gpu::{GpuBackend, SampledFormats, TextureDesc};
 use viso_platform::LoopWaker;
 use viso_render::Renderer;
 use viso_render::asset::{AssetError, RasterImage, ResourceId, ResourceRevision, VectorScene};
-use viso_ui::{AssetBytes, AssetPayload, NodeStore};
+use viso_ui::{AssetBytes, AssetOrigin, AssetPayload, NodeStore};
+
+/// Fetches the bytes of an image an app shows from a URL
+/// ([`Asset::url`](viso_ui::Asset::url), the DSL `Image`'s `url`), with
+/// whatever client the app uses:
+///
+/// ```ignore
+/// fn image_loader() -> Option<ImageLoader> {
+///     let client = viso_net::Client::new();
+///     Some(ImageLoader::new(move |url| {
+///         let response = client.get(url).send();
+///         async move { response.await?.bytes().await }
+///     }))
+/// }
+/// ```
+///
+/// The futures run on the loop's thread and need no runtime of their own:
+/// one wakes the loop when it is ready. A failed fetch shows the image's
+/// error view, and is not retried while a table keeps the resource.
+#[derive(Clone)]
+pub struct ImageLoader(Rc<dyn Fn(&str) -> Fetch>);
+
+/// One fetch in flight.
+type Fetch = Pin<Box<dyn Future<Output = Result<AssetBytes, String>>>>;
+
+impl ImageLoader {
+    /// A loader answering each URL with the bytes `fetch`'s future yields.
+    pub fn new<F, Fut, B, E>(fetch: F) -> ImageLoader
+    where
+        F: Fn(&str) -> Fut + 'static,
+        Fut: Future<Output = Result<B, E>> + 'static,
+        B: Into<Arc<[u8]>>,
+        E: Display,
+    {
+        ImageLoader(Rc::new(move |url| {
+            let fetched = fetch(url);
+            Box::pin(async move {
+                fetched
+                    .await
+                    .map(|bytes| AssetBytes::Shared(bytes.into()))
+                    .map_err(|error| error.to_string())
+            })
+        }))
+    }
+}
+
+impl std::fmt::Debug for ImageLoader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ImageLoader")
+    }
+}
+
+/// A fetch in flight, and the resource it is for.
+struct Fetching {
+    id: ResourceId,
+    revision: ResourceRevision,
+    fetch: Fetch,
+}
+
+/// Wakes the loop for a fetch that can make progress.
+struct FetchWaker(LoopWaker);
+
+impl Wake for FetchWaker {
+    fn wake(self: Arc<Self>) {
+        self.0.wake();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.wake();
+    }
+}
 
 /// What the app's assets cost, counted since it started.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -93,6 +172,8 @@ enum Input {
     Bytes(AssetBytes),
     /// The bytes of a file, read first.
     File(Arc<Path>),
+    /// The bytes at a URL, fetched first, on the loop's thread.
+    Url(Arc<str>),
 }
 
 /// The most of a file an asset reads: past it the file does not load.
@@ -105,6 +186,9 @@ impl Input {
         let bytes = match self {
             Input::Bytes(bytes) => bytes.clone(),
             Input::File(path) => read(path)?,
+            Input::Url(url) => {
+                return Err(AssetError::Decode(format!("`{url}` is not fetched yet")));
+            }
         };
         let payload = decode(&bytes, sampled)?;
         let animated = matches!(payload, AssetPayload::Raster(_)) && animates(&bytes);
@@ -268,9 +352,23 @@ pub(crate) struct Assets {
     /// The animated images, playing.
     pub(crate) playback: crate::playback::Playback,
     counters: AssetCounters,
+    /// What fetches the images shown from URLs.
+    loader: Option<ImageLoader>,
+    fetching: Vec<Fetching>,
+    /// Wakes the loop for the fetches in flight.
+    fetch_waker: Option<Waker>,
 }
 
 impl Assets {
+    /// The app's assets, the images shown from URLs fetched through
+    /// `loader`.
+    pub(crate) fn with_loader(loader: Option<ImageLoader>) -> Assets {
+        Assets {
+            loader,
+            ..Assets::default()
+        }
+    }
+
     pub(crate) fn counters(&self) -> AssetCounters {
         self.counters
     }
@@ -280,10 +378,12 @@ impl Assets {
         self.counters.evictions += n as u64;
     }
 
-    /// Takes the worker's results; `true` when any arrived, for the caller to
-    /// frame the windows.
+    /// Takes the worker's results, and decodes what the fetches in flight
+    /// fetched; `true` when any result arrived, for the caller to frame the
+    /// windows.
     pub(crate) fn receive(&mut self) -> bool {
         let before = self.arrived.len();
+        self.poll_fetches();
         while let Some(worker) = &self.worker {
             match worker.done.try_recv() {
                 Ok(done) => self.arrived.push(done),
@@ -320,6 +420,81 @@ impl Assets {
                     give(store, *id, *revision, payload.clone());
                 }
             }
+        }
+    }
+
+    /// Polls the fetches in flight, handing what each fetched to the worker,
+    /// or decoding it here where none runs.
+    fn poll_fetches(&mut self) {
+        let Some(waker) = self.fetch_waker.clone() else {
+            return;
+        };
+        let mut cx = Context::from_waker(&waker);
+        let sampled = self.sampled.unwrap_or(SampledFormats::all());
+        let mut i = 0;
+        while i < self.fetching.len() {
+            let Poll::Ready(fetched) = self.fetching[i].fetch.as_mut().poll(&mut cx) else {
+                i += 1;
+                continue;
+            };
+            let Fetching { id, revision, .. } = self.fetching.swap_remove(i);
+            let input = match fetched {
+                Ok(bytes) => Input::Bytes(bytes),
+                Err(error) => {
+                    self.arrived.push(Done {
+                        id,
+                        revision,
+                        result: Err(AssetError::Decode(error)),
+                    });
+                    continue;
+                }
+            };
+            let job = Job {
+                id,
+                revision,
+                input,
+                sampled,
+            };
+            let job = match &self.worker {
+                Some(worker) => match worker.jobs.send(job) {
+                    Ok(()) => continue,
+                    Err(mpsc::SendError(job)) => job,
+                },
+                None => job,
+            };
+            self.arrived.push(Done {
+                id,
+                revision,
+                result: job.input.decode(sampled),
+            });
+        }
+    }
+
+    /// Starts fetching resource `id` from `url` through the loader, or fails
+    /// it at once without one.
+    fn fetch(&mut self, id: ResourceId, revision: ResourceRevision, url: &str, waker: LoopWaker) {
+        self.decoding.insert(id, revision);
+        let Some(loader) = &self.loader else {
+            self.arrived.push(Done {
+                id,
+                revision,
+                result: Err(AssetError::Decode(format!(
+                    "`{url}`: the app has no image loader (Application::image_loader)"
+                ))),
+            });
+            return;
+        };
+        let fetch = (loader.0)(url);
+        self.fetch_waker
+            .get_or_insert_with(|| Waker::from(Arc::new(FetchWaker(waker))));
+        self.fetching.push(Fetching {
+            id,
+            revision,
+            fetch,
+        });
+        // A fetch that is ready at once is taken on the next wake.
+        if let Some(waker) = &self.fetch_waker {
+            waker.wake_by_ref();
         }
     }
 
@@ -427,11 +602,13 @@ impl Assets {
                 .undecoded()
                 .map(|(id, revision, bytes)| (id, revision, Input::Bytes(bytes.clone()))),
         );
-        todo.extend(
-            table
-                .unread()
-                .map(|(id, revision, path)| (id, revision, Input::File(Arc::clone(path)))),
-        );
+        todo.extend(table.unread().map(|(id, revision, origin)| {
+            let input = match origin {
+                AssetOrigin::File(path) => Input::File(Arc::clone(path)),
+                AssetOrigin::Url(url) => Input::Url(Arc::clone(url)),
+            };
+            (id, revision, input)
+        }));
         for (id, revision, input) in todo.drain(..) {
             if let Some((decoded, held)) = self.decoded.get(&id)
                 && *decoded >= revision
@@ -449,6 +626,10 @@ impl Assets {
                 continue;
             }
             if pending(self.decoding.get(&id)) {
+                continue;
+            }
+            if let Input::Url(url) = &input {
+                self.fetch(id, revision, url, waker());
                 continue;
             }
             if self.worker.is_none() && !self.inline {
@@ -879,5 +1060,82 @@ mod tests {
         assert_eq!(drawn(&later, leaf).0, AssetDraw::Failed);
         assert_eq!(assets.counters().decode_failures, 1);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Pending once, then ready: a fetch that answers on a later wake.
+    struct Later(bool);
+
+    impl Future for Later {
+        type Output = ();
+
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+            if std::mem::replace(&mut self.0, true) {
+                Poll::Ready(())
+            } else {
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+        }
+    }
+
+    /// A store showing each of `assets` in a leaf of its own.
+    fn showing(assets: &[&viso_ui::Asset]) -> (NodeStore, Vec<NodeId>) {
+        let mut store = NodeStore::new();
+        let mut nodes = Vec::new();
+        {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(Default::default(), |cx| {
+                for asset in assets {
+                    let leaf = cx.leaf(LeafStyle {
+                        size: Size::fixed(40.0, 40.0),
+                        style: BoxStyle::NONE,
+                    });
+                    cx.asset(leaf, asset, AssetFit::Contain, None);
+                    nodes.push(leaf.id());
+                }
+            });
+        }
+        (store, nodes)
+    }
+
+    #[test]
+    fn an_image_from_a_url_is_fetched_through_the_loader_once_and_decoded() {
+        let asked = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let seen = asked.clone();
+        let loader = ImageLoader::new(move |url| {
+            seen.borrow_mut().push(url.to_owned());
+            let found = url.ends_with(".svg?size=2");
+            async move {
+                Later(false).await;
+                if found { Ok(SVG) } else { Err("404") }
+            }
+        });
+        let picture = viso_ui::Asset::url("https://example.org/a.svg?size=2");
+        assert_eq!(picture.kind, viso_render::asset::AssetKind::Vector);
+        let missing = viso_ui::Asset::url("https://example.org/gone.png");
+        let (mut store, nodes) = showing(&[&picture, &missing, &picture]);
+        let (mut assets, mut gpu) = (Assets::with_loader(Some(loader)), Gpu::new());
+        serve(&mut assets, &mut store, &mut gpu);
+        let (draw, size) = drawn(&store, nodes[0]);
+        assert!(matches!(draw, AssetDraw::Vector(_)), "{draw:?}");
+        assert_eq!(size, [10.0, 20.0]);
+        assert_eq!(drawn(&store, nodes[1]).0, AssetDraw::Failed);
+        assert_eq!(
+            *asked.borrow(),
+            [
+                "https://example.org/a.svg?size=2",
+                "https://example.org/gone.png"
+            ],
+            "each URL fetched once"
+        );
+    }
+
+    #[test]
+    fn an_image_from_a_url_fails_without_a_loader() {
+        let picture = viso_ui::Asset::url("https://example.org/a.png");
+        let (mut store, nodes) = showing(&[&picture]);
+        let (mut assets, mut gpu) = (Assets::default(), Gpu::new());
+        serve(&mut assets, &mut store, &mut gpu);
+        assert_eq!(drawn(&store, nodes[0]).0, AssetDraw::Failed);
     }
 }

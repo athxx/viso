@@ -2369,3 +2369,27 @@ export component Clip {
     }
     assert!(static_only.is_err(), "a static page sets no volume");
 }
+
+#[test]
+fn an_image_exports_its_url_as_its_src() {
+    let source = r#"
+export component Photo {
+    state at = "https://example.org/b.png";
+    view {
+        Column {
+            Image { url: "https://example.org/a.png"; width: 32dp; height: 32dp; }
+            Image { url: at; width: 32dp; height: 32dp; on click { at = "https://example.org/c.png"; } }
+        }
+    }
+}
+"#;
+    let page = export(source, false).unwrap();
+    assert!(
+        page.index.contains("src=\"https://example.org/a.png\""),
+        "{}",
+        page.index
+    );
+    assert!(page.assets.is_empty());
+    let script = page.script.as_deref().unwrap();
+    assert!(script.contains("https://example.org/c.png"), "{script}");
+}

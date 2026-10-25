@@ -2322,13 +2322,23 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 }
             }
             ControlKind::Asset => {
-                if let Some(fixed) = self.bind(
-                    wires,
-                    control.value,
-                    Prop::Source { mask },
-                    "the source",
-                    at,
-                ) {
+                // An `Image`'s `url` shows in place of its source when set.
+                let url = self.bind(wires, control.url, Prop::Media("url"), "the URL", at);
+                let by_url = match &url {
+                    Some(fixed) => !fixed.text().is_empty(),
+                    None => control.url.is_some(),
+                };
+                if let Some(fixed) = url.filter(|_| by_url) {
+                    el.attr("src", &fixed.text());
+                } else if !by_url
+                    && let Some(fixed) = self.bind(
+                        wires,
+                        control.value,
+                        Prop::Source { mask },
+                        "the source",
+                        at,
+                    )
+                {
                     match fixed.resource() {
                         Some(id) => {
                             let url = self.asset(id);

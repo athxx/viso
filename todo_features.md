@@ -252,7 +252,9 @@ Rules:
 - [ ] AVIF on the web through the browser's decoder (`createImageBitmap`).
 - [x] Runtime image loading: file path, bytes; decode cache with memory budget (LRU of
   images no node shows), placeholder/error states, `on_load` (DSL `loaded`/`failed`).
-- [ ] Image loading from a URL, on the W11 HTTP client.
+- [x] Image loading from a URL: `Asset::url` and the DSL `Image`'s `url`, fetched through
+  the app's `Application::image_loader` (any client, e.g. `viso-net`) on the loop's
+  thread, then decoded as any image; none installed, it fails.
 - [x] Animated image playback in `Image` (frame timing, loop count, pause off-screen / still /
   reduced motion; `animate` in Rust and DSL), decoded off the frame path into the resident texture.
 - [x] Video playback (`Video` widget): AVFoundation, Media Foundation, GStreamer,
@@ -474,7 +476,8 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
   - [ ] ASUN rows decoded as they arrive, through an incremental decoder in `asun`
     (deferred: not wired in for now; picked up once `asun-rs`'s pending work lands).
 - [x] `open_url` service.
-- [ ] Network reachability: `viso-ext/viso-connectivity`, the app's own choice.
+- [x] Network reachability: `viso-ext/viso-connectivity`, the app's own choice (checked
+  and watched on macOS).
 - [ ] `viso-services` overlaps `viso-ext` (share, notifications, launcher, file dialogs,
   secure storage, haptics, permissions): none is UI, so each moves to `viso-ext` or
   goes; the core keeps `app_data_dir` and `LocalStorage` for persistence.

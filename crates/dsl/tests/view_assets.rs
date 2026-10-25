@@ -214,3 +214,43 @@ fn an_asset_that_cannot_be_read_fails_the_package() {
         "{errors:?}"
     );
 }
+
+#[test]
+fn an_image_shows_its_url_in_place_of_its_source() {
+    let source = r#"
+component Avatar {
+    state at = "https://example.org/a.png";
+    view {
+        Column {
+            Text { width: 20dp; height: 20dp; on click { at = "https://example.org/b.png"; } }
+            Image { url: at; width: 32dp; height: 32dp; }
+        }
+    }
+}
+"#;
+    let mut rt = Rt::mount(source);
+    let image = rt.descendants()[2];
+    let fetched = |rt: &Rt| {
+        let mut urls: Vec<_> = rt
+            .store
+            .assets()
+            .unread()
+            .map(|(id, _, origin)| (id, origin.clone()))
+            .collect();
+        urls.sort_by_key(|(id, _)| *id);
+        urls
+    };
+    let a = viso_ui::Asset::url("https://example.org/a.png");
+    assert_eq!(shown(&rt, image).0, a.id);
+    assert_eq!(
+        fetched(&rt),
+        [(
+            a.id,
+            viso_ui::AssetOrigin::Url("https://example.org/a.png".into())
+        )]
+    );
+    rt.click(0);
+    let b = viso_ui::Asset::url("https://example.org/b.png");
+    assert_eq!(shown(&rt, image).0, b.id);
+    assert_eq!(fetched(&rt).len(), 2);
+}

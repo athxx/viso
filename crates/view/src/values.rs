@@ -54,6 +54,7 @@ use viso_ui::{
     ProgressShape, Rgba, Role, SemanticState, Semantics, Shadow, SpanStyle, Spinner, SpinnerLook,
     Srgb, StateId, StructureCx, TextRequest, TextSpan, Timing, Vec2, focus_node, number_kind,
 };
+use viso_ui::{AssetOrigin, AssetSource};
 
 use crate::control::{
     Control, ControlInput, ControlKind, Holds, LayoutSlot, Switched, When, field,
@@ -1152,10 +1153,21 @@ impl Shown {
                     store.set_shader(self.node, program, params, &images);
                 }
             }
-            // An unbound source shows nothing.
+            // A `url` shows in place of the `source`; an unbound source
+            // shows nothing.
             ControlKind::Asset => {
-                if let Some(resource) = resource(value) {
+                let fetched = url.as_str().filter(|url| !url.is_empty()).map(|url| {
+                    let asset = viso_ui::Asset::url(url);
+                    if let AssetSource::Url(url) = asset.source {
+                        store.assets_mut().locate(asset.id, AssetOrigin::Url(url));
+                    }
+                    asset.id
+                });
+                if let Some(resource) = fetched.or_else(|| {
+                    let resource = resource(value)?;
                     offer(store, host, resource);
+                    Some(resource)
+                }) {
                     let tint = tint.as_int().map(|_| color(tint));
                     store.set_asset(self.node, resource, asset_fit(fit), tint);
                     store.set_asset_still(self.node, !truth(animate, true));

@@ -19,7 +19,9 @@ use crate::animation::{
     AnimationEnd, AnimationEndHandler, AnimationId, EndedAnimation, Keyframes, LookTransition,
     LookValue, NodeAnimation, Parts, ReducedMotion, Run, Timing, TrackRun, TranslateAnim,
 };
-use crate::asset::{Asset, AssetDraw, AssetFit, AssetPayload, AssetSource, AssetTable};
+use crate::asset::{
+    Asset, AssetDraw, AssetFit, AssetOrigin, AssetPayload, AssetSource, AssetTable,
+};
 use crate::binding::{BindingTable, Template};
 use crate::check_mark::CheckMark;
 use crate::content::{BrushImage, Content, TextRequest};
@@ -7805,7 +7807,14 @@ impl<'a> BuildCx<'a> {
                         .assets
                         .offer(asset.id, ResourceRevision::default(), bytes.clone());
                 }
-                AssetSource::File(path) => self.store.assets.locate(asset.id, Arc::clone(path)),
+                AssetSource::File(path) => {
+                    let origin = AssetOrigin::File(Arc::clone(path));
+                    self.store.assets.locate(asset.id, origin);
+                }
+                AssetSource::Url(url) => {
+                    let origin = AssetOrigin::Url(Arc::clone(url));
+                    self.store.assets.locate(asset.id, origin);
+                }
             }
         }
         self.store.set_asset(handle.id, asset.id, fit, tint);

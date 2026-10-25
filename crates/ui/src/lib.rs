@@ -184,7 +184,8 @@ pub use viso_runtime::{InputKind, Instant, primary_is_logo};
 // dependency, so this adds no new edge.
 pub use access::Access;
 pub use asset::{
-    Asset, AssetBytes, AssetDraw, AssetFit, AssetPayload, AssetSource, AssetState, AssetTable,
+    Asset, AssetBytes, AssetDraw, AssetFit, AssetOrigin, AssetPayload, AssetSource, AssetState,
+    AssetTable,
 };
 pub use cursor::CursorIcon;
 pub use field_input::{FieldEvent, FieldKey, field_input, field_key, number_input};

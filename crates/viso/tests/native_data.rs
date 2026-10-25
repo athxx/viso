@@ -111,7 +111,7 @@ fn a_native_record_round_trips_and_carries_its_fields_in_the_schema() {
     assert_eq!(Profile::from_value(&ada.clone().into_value()), Some(ada));
     assert_eq!(Profile::from_value(&Value::Int(1)), None);
     assert_eq!(Profile::TYPE.field("best"), Some(3));
-    assert!(Profile::TYPE.value);
+    const { assert!(Profile::TYPE.value) };
 
     let text = schema::write(&[&API]).unwrap();
     let back = schema::read(&text).unwrap();

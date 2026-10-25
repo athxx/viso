@@ -4772,7 +4772,7 @@ Text {
 
 | Widget | Property（类型 = 默认；失效） |
 | ------ | ----------------------------- |
-| `Image` | `source: ImageAsset`（未绑定时不绘制，固有尺寸为零；`MEASURE\|LAYOUT\|PAINT`）；`fit: ImageFit = ImageFit::contain`（`PAINT`）；`tint: Option<Color> = Option::None`（与像素逐通道相乘；`PAINT`）；`animate: Bool = true`（动画图片——GIF、APNG、动画 WebP、AVIF 序列——是否播放；不在屏幕上或系统减少动态时总是停在当前帧；`false` 停在首帧；`PAINT`） |
+| `Image` | `source: ImageAsset`（未绑定时不绘制，固有尺寸为零；`MEASURE\|LAYOUT\|PAINT`）；`url: String = ""`（非空时代替 `source`：图像由应用的 `Application::image_loader` 取回字节后同样解码，同一 URL 是同一资源；没有 loader 或取回失败即 `failed`；HTML 导出为 `<img src>`；`MEASURE\|LAYOUT\|PAINT`）；`fit: ImageFit = ImageFit::contain`（`PAINT`）；`tint: Option<Color> = Option::None`（与像素逐通道相乘；`PAINT`）；`animate: Bool = true`（动画图片——GIF、APNG、动画 WebP、AVIF 序列——是否播放；不在屏幕上或系统减少动态时总是停在当前帧；`false` 停在首帧；`PAINT`） |
 | `Svg`   | `source: SvgAsset`（同上）；`fit`、`tint` 同 `Image`（`tint` 与每条路径的填充、描边颜色相乘，白色保持原色，可为单色图标着色） |
 | `Video` | `source: Option<VideoAsset> = Option::None`（未绑定且无 `url` 时不绘制；`MEASURE\|LAYOUT\|PAINT`）；`url: String = ""`（非空时代替 `source` 播放：含 `://` 的由平台播放器自行拉取，含 HLS 播放列表，否则为文件路径）；`fit`、`tint` 同 `Image`；`playing: Bool = false`（双向：播放到末尾停下时写回 `false`）；`looping: Bool = false`；`muted: Bool = false`；`volume: F32 = 1.0`（0 到 1）；`rate: F32 = 1.0`（倍速）；`controls: Bool = false`（在画面上显示框架自带的控制条）；`fullscreen: Bool = false`（双向：全屏显示该节点；控制条、按键或窗口退出全屏时写回）；固有尺寸为视频画面的像素尺寸 |
 | `CameraView` | `facing: Option<CameraFacing> = Option::None`（`CameraFacing::front` / `back` / `external`：取第一个朝向如此的摄像头，没有则取平台默认）；`device: String = ""`（非空时按平台给的设备 ID 选摄像头，优先于 `facing`）；`fit: ImageFit = ImageFit::cover`；`tint` 同 `Image`；`playing: Bool = true`（双向；暂停时释放设备，画面停在最后一帧）；`mirror: Option<Bool> = Option::None`（未设时朝向用户的摄像头左右镜像显示）；固有尺寸为摄像头画面的像素尺寸 |

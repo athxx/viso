@@ -62,6 +62,7 @@ mod accessibility;
 pub mod alloc;
 mod app_menu;
 mod assets;
+pub use assets::ImageLoader;
 pub mod audio;
 mod edit_menu;
 mod environment;
@@ -298,6 +299,13 @@ pub trait Application: Sized + 'static {
     /// ([`MemoryBudget::of_build`]).
     fn memory_budget() -> MemoryBudget {
         MemoryBudget::of_build()
+    }
+
+    /// What fetches the images the app shows from URLs, read once before
+    /// the first window opens. The default is none: such an image fails and
+    /// shows its error view.
+    fn image_loader() -> Option<ImageLoader> {
+        None
     }
 }
 
@@ -1144,7 +1152,7 @@ impl<A: Application> AppDriver<A> {
             pending_closes: Vec::new(),
             fonts: SessionFonts::default(),
             services: services.map(|s| Rc::new(s) as Rc<dyn Any>),
-            assets: assets::Assets::default(),
+            assets: assets::Assets::with_loader(A::image_loader()),
             budget_watch: footprint::BudgetWatch::default(),
             accessibility: true,
             app_menu: None,

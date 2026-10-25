@@ -314,10 +314,12 @@ const SHADER_VIEW: &[WidgetProperty] = &[prop("shader", "Shader")];
 /// without one.
 const GAME_VIEWPORT: &[WidgetProperty] = &[prop("camera", "Option<viso::game::kit::CameraRig>")];
 
-/// An `Image`'s raster, from `asset("…")`, how it fills the box, and
-/// whether an animated one plays.
+/// An `Image`'s raster, from `asset("…")`, or the `url` the app's image
+/// loader fetches in its place, how it fills the box, and whether an
+/// animated one plays.
 const IMAGE: &[WidgetProperty] = &[
     prop("source", "ImageAsset"),
+    prop("url", "String"),
     look("fit", "ImageFit"),
     look("tint", "Option<Color>"),
     prop("animate", "Bool"),

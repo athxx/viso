@@ -183,6 +183,7 @@ impl From<crate::asset::Asset> for VideoSource {
         match asset.source {
             crate::asset::AssetSource::Bytes(bytes) => VideoSource::Bytes(bytes),
             crate::asset::AssetSource::File(path) => VideoSource::File(path),
+            crate::asset::AssetSource::Url(url) => VideoSource::Url(url),
         }
     }
 }

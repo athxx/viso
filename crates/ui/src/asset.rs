@@ -68,7 +68,8 @@ pub enum AssetFit {
 
 /// An asset a Rust view shows: its resource, how it draws and where its
 /// encoded bytes come from — embedded with `asset!("…")`, given at run time
-/// ([`Asset::bytes`]) or read from a file ([`Asset::file`]).
+/// ([`Asset::bytes`]), read from a file ([`Asset::file`]) or fetched from a
+/// URL ([`Asset::url`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Asset {
     pub id: ResourceId,
@@ -83,6 +84,16 @@ pub enum AssetSource {
     Bytes(AssetBytes),
     /// A file, read off the frame path when a node first shows it.
     File(Arc<Path>),
+    /// A URL, fetched through the app's image loader when a node first
+    /// shows it.
+    Url(Arc<str>),
+}
+
+/// Where the bytes of a resource no one offered are fetched from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AssetOrigin {
+    File(Arc<Path>),
+    Url(Arc<str>),
 }
 
 /// The resources [`Asset::bytes`] numbers, apart from any a path names.
@@ -108,22 +119,41 @@ impl Asset {
     /// shows what was read of it while any table keeps it.
     pub fn file(path: impl Into<PathBuf>) -> Asset {
         let path: PathBuf = path.into();
-        let is = |names: &[&str]| {
-            path.extension()
-                .is_some_and(|x| names.iter().any(|n| x.eq_ignore_ascii_case(n)))
-        };
-        let kind = if is(&["svg"]) {
-            AssetKind::Vector
-        } else if is(&["mp4", "m4v", "mov", "webm", "mkv"]) {
-            AssetKind::Video
-        } else {
-            AssetKind::Raster
-        };
         Asset {
             id: ResourceId::of(&format!("file:{}", path.display())),
-            kind,
+            kind: kind_by_extension(path.extension().and_then(|x| x.to_str())),
             source: AssetSource::File(path.into()),
         }
+    }
+
+    /// The image at `url`, fetched through the app's image loader and
+    /// decoded off the frame path when a node first shows it; without a
+    /// loader it fails. The URL is the resource: the same URL shows what was
+    /// fetched of it while any table keeps it.
+    pub fn url(url: impl Into<Arc<str>>) -> Asset {
+        let url: Arc<str> = url.into();
+        let path = url.split(['?', '#']).next().unwrap_or_default();
+        let name = path.rsplit('/').next().unwrap_or_default();
+        let extension = name.rsplit_once('.').map(|(_, x)| x);
+        Asset {
+            id: ResourceId::of(&format!("url:{url}")),
+            kind: kind_by_extension(extension),
+            source: AssetSource::Url(url),
+        }
+    }
+}
+
+/// The kind a file named with `extension` holds, a raster unless it names
+/// another.
+fn kind_by_extension(extension: Option<&str>) -> AssetKind {
+    let is =
+        |names: &[&str]| extension.is_some_and(|x| names.iter().any(|n| x.eq_ignore_ascii_case(n)));
+    if is(&["svg"]) {
+        AssetKind::Vector
+    } else if is(&["mp4", "m4v", "mov", "webm", "mkv"]) {
+        AssetKind::Video
+    } else {
+        AssetKind::Raster
     }
 }
 
@@ -168,8 +198,8 @@ pub(crate) struct AssetEntry {
     pub(crate) offered: ResourceRevision,
     /// Those bytes, until a payload of their revision is provided.
     pub(crate) bytes: Option<AssetBytes>,
-    /// The file its bytes are read from, when they are not at hand.
-    pub(crate) file: Option<Arc<Path>>,
+    /// Where its bytes are fetched from, when they are not at hand.
+    pub(crate) origin: Option<AssetOrigin>,
     /// The newest revision that could not be read or did not decode.
     pub(crate) failed: Option<ResourceRevision>,
     /// The newest payload provided, and its revision: a vector's for as long
@@ -204,7 +234,7 @@ impl AssetEntry {
         AssetEntry {
             offered,
             bytes: None,
-            file: None,
+            origin: None,
             failed: None,
             payload: None,
             texture: None,
@@ -294,31 +324,31 @@ impl AssetTable {
         }
     }
 
-    /// Records that a node shows `id`, read from the file at `path`.
-    pub fn locate(&mut self, id: ResourceId, path: Arc<Path>) {
+    /// Records that a node shows `id`, fetched from `origin`.
+    pub fn locate(&mut self, id: ResourceId, origin: AssetOrigin) {
         let entry = self
             .entries
             .entry(id)
             .or_insert_with(|| AssetEntry::new(ResourceRevision::default()));
-        if entry.file.is_none() {
-            entry.file = Some(path);
+        if entry.origin.is_none() {
+            entry.origin = Some(origin);
             self.revision += 1;
         }
     }
 
     /// Every resource a node shows that the table holds nothing of — no
-    /// bytes, no payload, no texture — nor knows a file of.
+    /// bytes, no payload, no texture — nor knows an origin of.
     pub fn wanted(&self) -> impl Iterator<Item = ResourceId> + '_ {
         self.entries.iter().filter_map(|(id, e)| {
-            (e.file.is_none() && e.hosted.is_none() && e.holds_nothing()).then_some(*id)
+            (e.origin.is_none() && e.hosted.is_none() && e.holds_nothing()).then_some(*id)
         })
     }
 
-    /// Every resource to read from its file: one the table holds nothing of
-    /// yet, with its revision and the file.
-    pub fn unread(&self) -> impl Iterator<Item = (ResourceId, ResourceRevision, &Arc<Path>)> {
-        self.entries.iter().filter_map(|(id, e)| match &e.file {
-            Some(path) if e.holds_nothing() => Some((*id, e.offered, path)),
+    /// Every resource to fetch from its origin: one the table holds nothing
+    /// of yet, with its revision and the origin.
+    pub fn unread(&self) -> impl Iterator<Item = (ResourceId, ResourceRevision, &AssetOrigin)> {
+        self.entries.iter().filter_map(|(id, e)| match &e.origin {
+            Some(origin) if e.holds_nothing() => Some((*id, e.offered, origin)),
             _ => None,
         })
     }

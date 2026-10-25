@@ -560,7 +560,7 @@ impl ControlKind {
             (ControlKind::Camera, "playing") => ControlInput::Playing,
             (ControlKind::Camera, "mirror") => ControlInput::Mirror,
             (ControlKind::Asset, "animate") => ControlInput::Animate,
-            (ControlKind::Video, "url") => ControlInput::Url,
+            (ControlKind::Video | ControlKind::Asset, "url") => ControlInput::Url,
             (ControlKind::Video, "playing") => ControlInput::Playing,
             (ControlKind::Video, "looping") => ControlInput::Looping,
             (ControlKind::Video, "muted") => ControlInput::Muted,
