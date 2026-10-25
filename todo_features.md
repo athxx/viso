@@ -436,11 +436,12 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
     (sent again from any point where a redirect asks), multipart forms, a body saved
     to a file on a thread of its own and moved in once whole, progress both ways;
     the web sends no file;
-  - [ ] WebSocket: text, binary, ping and close, opened through the client's base URL,
+  - [x] WebSocket: text, binary, ping and close, opened through the client's base URL,
     headers and interceptors, the reading held back while the app reads slower;
-    URLSessionWebSocketTask (done), WinHTTP's, libcurl's, the browser's, and the
-    crate's own framing over Java's `SSLSocket` (the system's TLS and certificates)
-    on Android;
+    URLSessionWebSocketTask, libcurl's (opened on a thread, then run by the worker),
+    WinHTTP's (built and linted, not run), the browser's (`WebSocketStream` where there
+    is one, held back; else `WebSocket`), and the crate's own protocol over Java's
+    `SSLSocket` (the system's TLS and certificates) on Android;
   - [ ] the DSL's `Http` native library behind `network::http`;
   - [ ] ASUN rows decoded as they arrive, through an incremental decoder in `asun`.
 - [x] `open_url` service.
