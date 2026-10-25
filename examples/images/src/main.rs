@@ -194,7 +194,10 @@ mod tests {
         let star = viso::asset!("icons/star.svg");
         assert_eq!(star.id, ResourceId::of("icons/star.svg"));
         assert_eq!(star.kind, AssetKind::Vector);
-        assert_eq!(&*star.bytes, include_bytes!("../assets/icons/star.svg"));
+        let viso::ui::AssetSource::Bytes(bytes) = &star.source else {
+            panic!("an embedded asset carries its bytes");
+        };
+        assert_eq!(&**bytes, include_bytes!("../assets/icons/star.svg"));
         let mut store = NodeStore::new();
         let mut cx = BuildCx::new(&mut store);
         viso::widgets::image_asset(star)
