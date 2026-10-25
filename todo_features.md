@@ -508,7 +508,12 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
     through the controller's CoreHaptics engine (macOS: framework, notifications and the
     element mapping verified with `controllerWithExtendedGamepad`, and in a running app
     with no pad attached; iOS: clippy only; rumble unverified without a pad).
-  - [ ] Windows: XInput.
+  - [x] Windows: XInput loaded at the first poll, connected slots read once a poll (skipped
+    while the packet number stands), empty slots probed one per 250 ms, the guide button
+    through `XInputGetStateEx`, rumble stopped at its deadline with the pump woken for it
+    (clippy for `x86_64-pc-windows-msvc` and the button/axis mapping unit-tested; not run
+    on Windows). GameInput is not used: it ships only with the GDK redistributable or
+    recent Windows 11 and has no stable ABI outside the GDK headers.
   - [ ] Linux: evdev with inotify hotplug.
   - [ ] Android: the activity's gamepad key and motion events.
   - [ ] Web: the Gamepad API.

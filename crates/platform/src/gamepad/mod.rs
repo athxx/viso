@@ -24,11 +24,15 @@ use std::time::Duration;
 
 #[cfg(target_vendor = "apple")]
 mod apple;
+#[cfg(any(target_os = "windows", test))]
+mod xinput;
 
 #[cfg(target_vendor = "apple")]
 use apple as imp;
+#[cfg(target_os = "windows")]
+use xinput as imp;
 
-#[cfg(target_vendor = "apple")]
+#[cfg(any(target_vendor = "apple", target_os = "windows"))]
 use crate::LoopWaker;
 
 /// A connected gamepad's id: unique to its connection, never reused while
@@ -273,11 +277,11 @@ impl Pads {
 }
 
 /// A native backend's gamepads, started at the first poll.
-#[cfg(target_vendor = "apple")]
+#[cfg(any(target_vendor = "apple", target_os = "windows"))]
 #[derive(Default)]
 pub(crate) struct Gamepads(Option<Option<imp::Source>>);
 
-#[cfg(target_vendor = "apple")]
+#[cfg(any(target_vendor = "apple", target_os = "windows"))]
 impl Gamepads {
     /// Whether the source was started (or found missing).
     pub(crate) fn started(&self) -> bool {
@@ -301,6 +305,16 @@ impl Gamepads {
         match &mut self.0 {
             Some(Some(source)) => source.rumble(id, rumble),
             _ => false,
+        }
+    }
+
+    /// When the earliest rumble playing is due to stop, on a backend whose
+    /// device does not stop it itself: the pump wakes for it.
+    #[cfg(target_os = "windows")]
+    pub(crate) fn deadline(&self) -> Option<crate::Instant> {
+        match &self.0 {
+            Some(Some(source)) => source.deadline(),
+            _ => None,
         }
     }
 }

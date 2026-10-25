@@ -395,6 +395,8 @@ pub struct WinApp {
     ui_thread: u32,
     /// The URLs the app was started with, opened once it launches.
     launch_urls: Vec<String>,
+    /// The game controllers, read from the first poll.
+    gamepads: crate::gamepad::Gamepads,
 }
 
 impl WinApp {
@@ -424,6 +426,7 @@ impl WinApp {
             class_registered: false,
             // SAFETY: reads the calling thread's id; no arguments.
             ui_thread: unsafe { GetCurrentThreadId() },
+            gamepads: crate::gamepad::Gamepads::default(),
         })
     }
 
@@ -677,8 +680,14 @@ impl PlatformApp for WinApp {
             // The window procedure may drive frames during the turn (a modal
             // size/move loop), reaching the app and handler through the drive
             // alone: the turn touches neither.
+            // A rumble playing wakes the pump when it is due to stop.
+            let wait = match (flow, self.gamepads.deadline()) {
+                (ControlFlow::Wait, Some(due)) => ControlFlow::WaitUntil(due),
+                (ControlFlow::WaitUntil(at), Some(due)) => ControlFlow::WaitUntil(at.min(due)),
+                (flow, _) => flow,
+            };
             queue.borrow_mut().drive = Some(Drive::new(self, handler));
-            let turn = os_turn(&queue, std::mem::take(&mut drew), flow);
+            let turn = os_turn(&queue, std::mem::take(&mut drew), wait);
             queue.borrow_mut().drive = None;
             match turn {
                 Turn::Done => {}
@@ -703,6 +712,18 @@ impl PlatformApp for WinApp {
 
     fn request_redraw(&mut self, window: WindowId) {
         self.shared.borrow_mut().push_redraw(window);
+    }
+
+    fn poll_gamepads(&mut self, events: &mut Vec<crate::GamepadEvent>) {
+        if !self.gamepads.started() {
+            let waker = self.loop_waker();
+            self.gamepads.start(waker);
+        }
+        self.gamepads.poll(events);
+    }
+
+    fn rumble_gamepad(&mut self, id: crate::GamepadId, rumble: crate::Rumble) -> bool {
+        self.gamepads.rumble(id, rumble)
     }
 
     fn loop_waker(&self) -> LoopWaker {
