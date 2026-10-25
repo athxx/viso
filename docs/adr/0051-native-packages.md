@@ -7,10 +7,10 @@
 
 `.vs` code calls Rust through native libraries (ADR 0036), but only the standard ones:
 the compiler, the `view!` family, the CLI, the LSP and the runtime all resolve and link
-against `Natives::standard()`. Capabilities an app needs and that are not UI — HTTP,
-above all — live in extension crates (`viso-ext`), not in the framework, so `.vs` code
-cannot reach them. The spec already writes `requires { network::http }` and calls
-`Http::…` from a task.
+against `Natives::standard()`. Capabilities an app needs and that are not UI live in
+extension crates (`viso-ext`) and in the app's own Rust, not in the framework, so `.vs`
+code cannot reach them. The spec already writes `requires { network::http }` and calls
+domain natives (`Api::profile(id)`) from a task.
 
 An extension's native library is Rust statics with function pointers. The runtime can
 link them, but the compiler cannot load them: a proc macro, the CLI and the LSP compile
@@ -44,7 +44,7 @@ A **native package** is a Cargo package that carries native libraries for `.vs` 
   no `cargo metadata`; `ui!` imports nothing. A compiled source records the registry it
   resolved against, and its behavior links against that at build time too. The
   expansion names the Rust libraries of the packages the module calls
-  (`::viso_net::NATIVES`) and hands them to the view's host, which links against the
+  (`::app_api::NATIVES`) and hands them to the view's host, which links against the
   standard libraries and these (`Natives::shared`, one registry per set of libraries for
   the process). The game a view starts links as its host does; a release package loads
   with the same libraries (`ViewLoad::libraries`). An app writes no registration code; a
@@ -84,6 +84,11 @@ Alternatives rejected:
   `.vs` imports a library the standard registry lacks.
 - A package whose Rust library and schema disagree links with `E6101` at startup, and
   fails its own tests before that.
-- The first such package is `viso-net`'s `net` library: `Http` builds a request, its
-  `send` task (`network.http`) answers a `Response` whatever came, a status the client
-  does not take or no answer at all included, so a request never faults the task.
+- An app's own natives live in a crate of their own in its workspace, a native package
+  like any other: the crate that compiles the views cannot generate the schema they
+  compile against.
+- The network is no DSL library. `.vs` calls the app's domain natives (`api::profile`);
+  URLs, auth, retries, decoding and error kinds stay in their Rust, which uses
+  `viso-net`. A raw HTTP surface would hand `.vs` untyped text, move transport concerns
+  into the view layer and widen what generated or third-party `.vs` can do, so
+  `viso-net` carries none.

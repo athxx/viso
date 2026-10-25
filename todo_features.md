@@ -442,7 +442,7 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
     WinHTTP's (built and linted, not run), the browser's (`WebSocketStream` where there
     is one, held back; else `WebSocket`), and the crate's own protocol over Java's
     `SSLSocket` (the system's TLS and certificates) on Android;
-  - [x] the DSL's `Http` native library behind `network::http`, as a native package:
+  - [x] native packages: an extension crate's native libraries reach `.vs` code:
     - [x] native package format: a library's schema written to and read from JSON,
       lossless, read schemas interned as stubs; ADR 0051;
     - [x] discovery: the app's direct dependencies declaring
@@ -454,12 +454,24 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
       dev session's patches;
     - [x] `viso check`/`export`/`dev`/`schema` and the LSP compile against them (the
       LSP now also reports an import naming nothing);
-    - [x] `viso-net` library `net`: `Http`, a request built and sent, its `Response`
-      read (a status or no answer a response too, never a fault); `natives.json`
-      checked against the Rust library by its tests; an app calling it from `.vs`
-      (macOS, a local server); `Viso.toml` a compile dependency of the forms, so a
-      changed grant rebuilds them;
-  - [ ] ASUN rows decoded as they arrive, through an incremental decoder in `asun`.
+    - [x] `Viso.toml` a compile dependency of the forms, so a changed grant rebuilds
+      them;
+  - [ ] `.vs` reaches the network through the app's own domain natives, not raw HTTP:
+    - [x] `viso-net` carries no DSL library (its `net` library goes); the spec's
+      examples call domain natives (`Api::profile(id)`), the Rust behind them using
+      `viso-net`;
+    - [ ] `viso::native`: the public surface for writing native libraries (types,
+      `native!`, handles) and checking a package's schema in its tests, so an app's
+      natives crate depends on `viso` alone;
+    - [ ] `Result<T, E>` in native schemas: a native returns one and `.vs` matches
+      it;
+    - [ ] data records in native schemas: `#[derive(NativeData)]` on a Rust struct is
+      a native value type whose fields `.vs` reads, carried in the JSON schema;
+    - [ ] an app whose natives crate (a sibling in its workspace) answers
+      `profile(id) -> Result<Profile, String>` through `viso-net`, called from `.vs`;
+      docs (DSL §47, ADR 0051, Architecture).
+  - [ ] ASUN rows decoded as they arrive, through an incremental decoder in `asun`
+    (deferred: not wired in for now; picked up once `asun-rs`'s pending work lands).
 - [x] `open_url` service.
 - [ ] Network reachability: `viso-ext/viso-connectivity`, the app's own choice.
 - [ ] `viso-services` overlaps `viso-ext` (share, notifications, launcher, file dialogs,

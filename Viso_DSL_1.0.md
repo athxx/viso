@@ -1242,7 +1242,7 @@ capability_path     = module_path ;
 ```viso
 task fetch_user(id: UserId) -> Result<User, NetError>
     requires { network::http } {
-    return await Http::get_json(format("/users/{}", id));
+    return await Api::user(id);
 }
 ```
 
@@ -1928,23 +1928,25 @@ feature = "dsl"           # 构建它们的 feature，可省略
 
 - Schema 文件是 `viso_dsl::native_package::write` 写出的 `viso-natives` JSON（版本 1）：除实现外的每个函数与类型字段；包自身的测试从 Rust Library 写出并比较，不一致即失败；Trait 与 Widget 暂不携带；
 - 只发现 App crate 的直接 normal 依赖（`cargo metadata`；声明了 `feature` 的须已启用），每个 manifest 与 lock 文件在进程内只发现一次；两个 Library 声明同一路径为 `E6101`；
-- `view!` 与 `component!` 先按标准 Registry 编译，出现 `E2001` 时才发现并按标准 Library 加上这些包的 Library 重新编译，不依赖 Native Package 的 App 不运行 `cargo metadata`；展开把模块调用到的包的 Rust Library（如 `::viso_net::NATIVES`）交给 View 的 Host 链接，View 启动的 Game 同样链接，Release View Package 以 `ViewLoad::libraries` 交入；
+- `view!` 与 `component!` 先按标准 Registry 编译，出现 `E2001` 时才发现并按标准 Library 加上这些包的 Library 重新编译，不依赖 Native Package 的 App 不运行 `cargo metadata`；展开把模块调用到的包的 Rust Library（如 `::app_api::NATIVES`）交给 View 的 Host 链接，View 启动的 Game 同样链接，Release View Package 以 `ViewLoad::libraries` 交入；
 - `viso check`、`viso export`、`viso run` 的 dev 编译与 LSP 用同一规则（源文件所属 crate 为 `Viso.toml` 旁或文件之上最近的 `Cargo.toml`）；`viso schema` 预先发现，列出项目可调用的全部 Native；发现失败时作为 note 附在每个保留的 `E2001` 上；
 - Dev Session 的 Patch 只能链接 Live View 的 Host 已链接的 Library：首次调用构建未链接的包需要重新构建；
 - Capability 照旧：函数声明自己的 Capability，`Viso.toml` 的 `[package] capabilities` 授予，授权随模块到达 Host，授权之外的调用为 `E6103` Fault；`view!` 与 `component!` 以 `Viso.toml` 为编译依赖，改动授权即重新编译。
 
-示例（`viso-net` 的 `net` Library，`Viso.toml` 授予 `network.http`）：
+- 应用自己的 Native 放在其 workspace 中单独的 crate（如 `app-api`），与扩展 crate 一样是 Native Package：编译 View 的 crate 无法为自己生成它所依赖的 Schema。
+
+网络不是 DSL Library：框架与扩展都不向 `.vs` 提供通用 HTTP。`.vs` 调用应用的领域 Native，URL、鉴权、重试、解码与错误分类在其 Rust 实现中（用 `viso-ext/viso-net`），函数声明 `network.http`，由 `Viso.toml` 授予：
 
 ```viso
-import net::Http;
+import api::{profile, Profile};
 
-task load_profile(id: I64, token: String) -> String {
-    let response = await Http::get(format("/users/{}", id)).bearer(token).send();
-    if response.ok { response.text } else { "" }
+task load_profile(id: I64) -> String {
+    return match await profile(id) {
+        Result::Ok(found) => found.name,
+        Result::Err(why) => why,
+    };
 }
 ```
-
-`Http::get`/`post`/`put`/`patch`/`delete`/`head` 开始一个请求，`header`/`query`/`bearer`/`text`/`json`/`timeout` 各返回新的请求，`send` 是需要 `network.http` 的 Task；`Response` 的 Property 为 `status`、`ok`（2xx 且无错误）、`error`（未得到响应或读不出 Body 时为 `Some`）、`text`、`url`，方法 `header(name)`。非 2xx 状态与网络失败都是 `Response`，不使 Task Fault；请求经 Host 服务中的 `viso_net::Client`，否则经 `viso_net::dsl::set_client` 设置的 Client，否则为默认 Client。
 
 ---
 
