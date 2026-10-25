@@ -379,8 +379,12 @@ Rules:
       decoders: Audio Toolbox, GStreamer, the NDK's media codecs, Media Foundation (built,
       not yet run: no Windows machine), `decodeAudioData`; Ogg Vorbis by `lewton` where the
       platform has no decoder for it;
-    - [ ] music streamed from a file through the same mixer (a URL plays through
-      `viso-media`'s player, which has no picture to show for it);
+    - [x] music streamed from a file through the same mixer: decoded on a thread of its
+      own a block ahead, paused, sought and looped without a gap, its place and length
+      read back; seeks land on the frame (MP3 on Android near it, its extractor seeking
+      by estimate); AAC's priming and padding trimmed on Android; decoded whole first in
+      the browser (a URL plays through `viso-media`'s player, which has no picture to
+      show for it);
     - [ ] recording what an input captures to a file;
   - [ ] the audio session (iOS category, Android focus) owned by it alone.
 
