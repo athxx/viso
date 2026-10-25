@@ -54,10 +54,16 @@ reaching into the renderer.
 - `viso-ext/viso-camera` implements cameras on every target behind
   `install()`. The camera example lives in that crate, so the framework's
   workspace builds without any extension.
-- Audio is also an extension (`viso-ext/viso-audio`). That extension owns the
-  device streams, sound playback, recording and the mobile audio session.
-  The framework adds no audio API. A video's sound stays with the platform
-  player (ADR 0049).
+- Audio is also an extension (`viso-ext/viso-audio`). That extension owns
+  device listing, output and input streams on any device, capture and its
+  permission, echo cancellation, sound playback, recording and the mobile
+  audio session. The framework keeps two things of its own:
+  - a video's sound, which stays with the platform player (ADR 0049);
+  - `viso_platform::audio::AudioOutput`, the default output device that the
+    DSL's game audio systems render to. It is output-only, has no device
+    choice, and asks for no permission.
+
+  Whether the game path should also go through a provider is open.
 
 ## Consequences
 

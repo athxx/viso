@@ -356,11 +356,18 @@ Rules:
       player now draws through too.
     - [x] Linux and the BSDs, through `gstreamer_live` over the extension's source element.
     - [x] Web, through `MediaStreams` and `web_live`.
-- [ ] Audio as an extension, `viso-ext/viso-audio`; the core adds no audio API (a
-  video's sound stays with the platform player):
+- [ ] Audio as an extension, `viso-ext/viso-audio`; the core keeps only a video's sound
+  (the platform player) and the default output the DSL's game audio systems render to
+  (`viso_platform::audio::AudioOutput`), whether that goes through a provider too is
+  open:
   - [ ] device streams: outputs and inputs listed and watched, a realtime callback
-    filling f32 buffers, echo cancellation where the OS has it (CoreAudio, WASAPI,
-    AAudio, PulseAudio/PipeWire, Web Audio);
+    filling f32 buffers, echo cancellation where the OS has it, the microphone permission:
+    - [ ] macOS and iOS, CoreAudio I/O units (built; devices verified, playback and
+      capture not yet: this Mac's coreaudiod does not answer);
+    - [x] Linux and the BSDs, PulseAudio / PipeWire through libpulse;
+    - [x] Android, AAudio, the devices and permission through the crate's Java;
+    - [ ] Windows, WASAPI;
+    - [ ] Web, Web Audio.
   - [ ] playback of files and URLs through the platform players (WAV, Ogg Vorbis, MP3,
     FLAC, AAC), sound effects, recording;
   - [ ] the audio session (iOS category, Android focus) owned by it alone.
