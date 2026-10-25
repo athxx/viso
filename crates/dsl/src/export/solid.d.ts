@@ -128,6 +128,8 @@ export declare const show: {
   radius(v: Value): string;
   stroke(v: Value): string;
   shadow(v: Value): string;
+  backdrop(v: Value): string;
+  frost(v: Value): string;
   offset(v: Value): string;
   scale(v: Value): string;
   rotate(v: Value): string;

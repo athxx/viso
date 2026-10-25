@@ -45,6 +45,7 @@ const LAYOUT: &[WidgetProperty] = &[
     look("background", "Option<Color>"),
     look("border", "Option<Border>"),
     look("shadow", "Option<Shadow>"),
+    look("backdrop", "Option<Backdrop>"),
     prop("styles", "List<StyleRef<T>>"),
 ];
 
@@ -622,6 +623,7 @@ pub const STANDARD: &[NativeWidget] = &[
         &[FLEX, LAYOUT, TRANSFORM, FOCUS],
     )
     .slots(CHILDREN),
+    layout("BlurView", COLUMN, &[FLEX, LAYOUT, TRANSFORM, FOCUS]).slots(CHILDREN),
     layout("Grid", WidgetNode::Grid, &[GRID, LAYOUT, TRANSFORM, FOCUS])
         .provides(&GRID_CHILD)
         .slots(CHILDREN),

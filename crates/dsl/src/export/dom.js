@@ -222,6 +222,10 @@ const shadow = (v) => {
   return (Number(inset ?? 0n) === 1 ? "inset " : "") + dp(x) + "px " + dp(y) + "px " +
     Math.max(dp(blur), 0) + "px " + dp(spread) + "px " + color(paint);
 };
+// An `Option<Backdrop>` as a `backdrop-filter`, and its tint as a colour.
+const backdrop = (v) =>
+  v === null ? "none" : "blur(" + Math.max(dp(v.f[0]), 0) + "px) saturate(" + Number(v.f[1] ?? 1) + ")";
+const frost = (v) => (v === null ? "transparent" : color(v.f[2]));
 const text = (v) => (v === null ? "" : typeof v === "string" ? v : String(v));
 const attr = (el, name, v) => (v === null ? el.removeAttribute(name) : el.setAttribute(name, text(v)));
 // Whether input does not reach `el`: it or an ancestor is disabled.
@@ -731,6 +735,10 @@ const P = {
   vradius: (el, v, name) => el.style.setProperty(name, radius(v)),
   vborder: (el, v, name) => el.style.setProperty(name, stroke(v)),
   vshadow: (el, v, name) => el.style.setProperty(name, shadow(v)),
+  vbackdrop(el, v, name) {
+    el.style.setProperty(name, backdrop(v));
+    el.style.setProperty(name + "-tint", frost(v));
+  },
   vtranslate: (el, v, name) => el.style.setProperty(name, offset(v)),
   vscale: (el, v, name) => el.style.setProperty(name, scaling(v)),
   vrotate: (el, v, name) => el.style.setProperty(name, turning(v)),

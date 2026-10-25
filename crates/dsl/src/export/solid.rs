@@ -764,6 +764,13 @@ impl Jsx<'_> {
                             style.push((name.clone(), format!("show.origin({v}, false)")));
                             style.push((format!("{name}-rtl"), format!("show.origin({v}, true)")));
                         }
+                        Prop::Var {
+                            name,
+                            token: VarToken::Backdrop,
+                        } => {
+                            style.push((name.clone(), format!("show.backdrop({v})")));
+                            style.push((format!("{name}-tint"), format!("show.frost({v})")));
+                        }
                         Prop::Var { name, token } => {
                             let value = match token {
                                 VarToken::Color => format!("show.color({v})"),
@@ -775,6 +782,7 @@ impl Jsx<'_> {
                                 VarToken::Scale => format!("show.scale({v})"),
                                 VarToken::Rotation => format!("show.rotate({v})"),
                                 VarToken::Origin => unreachable!("an origin sets two variables"),
+                                VarToken::Backdrop => unreachable!("a backdrop sets two variables"),
                                 VarToken::Transition(property) => {
                                     format!("show.move({v}, \"{property}\")")
                                 }

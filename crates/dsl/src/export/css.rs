@@ -169,6 +169,31 @@ pub(super) fn shadow(value: &Value) -> Option<String> {
     ))
 }
 
+/// The standard glass a `BlurView` shows: its `backdrop-filter` and tint.
+pub(super) const GLASS: (&str, &str) = ("blur(30px) saturate(1.8)", "#ffffff40");
+
+/// An `Option<Backdrop>` as a `backdrop-filter` and its tint.
+pub(super) fn backdrop(value: &Value) -> (String, String) {
+    let Value::Agg(agg) = value else {
+        return ("none".to_owned(), "transparent".to_owned());
+    };
+    let [blur, saturation, tint, _noise] = &agg.fields[..] else {
+        return ("none".to_owned(), "transparent".to_owned());
+    };
+    let tint = tint
+        .as_int()
+        .map_or("transparent".to_owned(), |c| color(c as u32));
+    let saturation = saturation.as_float().unwrap_or(1.0).max(0.0);
+    (
+        format!(
+            "blur({}) saturate({})",
+            px(dp(blur).max(0.0)),
+            number(saturation)
+        ),
+        tint,
+    )
+}
+
 /// A `Dp` value in dp, zero for none.
 pub(super) fn dp(value: &Value) -> f64 {
     match value {

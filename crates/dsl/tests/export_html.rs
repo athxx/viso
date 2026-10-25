@@ -166,6 +166,39 @@ fn a_box_s_corner_radius_border_and_shadow_export_as_rounded_corners_an_inner_st
     assert!(script.contains("P.vshadow("), "{script}");
 }
 
+const GLASS: &str = r##"
+export component Glass {
+    state deep = false;
+    view {
+        Column {
+            BlurView { width: 40dp; height: 20dp; }
+            Column { width: 40dp; height: 20dp; backdrop: Option::Some(Backdrop { blur: 8dp, saturation: 1.5, tint: #00000080 }); }
+            Column { width: 40dp; height: 20dp; backdrop: if deep { Option::Some(Backdrop {}) } else { Option::None }; }
+        }
+    }
+}
+"##;
+
+#[test]
+fn a_glass_box_exports_as_a_backdrop_filter_under_a_flat_tint() {
+    let page = export(GLASS, false).unwrap();
+    let css = &page.styles;
+    assert!(
+        css.contains(
+            "--vx-frost: #ffffff40; -webkit-backdrop-filter: blur(30px) saturate(1.8); \
+             backdrop-filter: blur(30px) saturate(1.8); \
+             background-image: linear-gradient(var(--vx-frost), var(--vx-frost));"
+        ),
+        "the standard glass: {css}"
+    );
+    assert!(
+        css.contains("--vx-frost: #00000080; -webkit-backdrop-filter: blur(8px) saturate(1.5);"),
+        "{css}"
+    );
+    let script = page.script.as_deref().unwrap();
+    assert!(script.contains("P.vbackdrop("), "{script}");
+}
+
 const MOVED: &str = r#"
 export component Moved {
     state on = false;

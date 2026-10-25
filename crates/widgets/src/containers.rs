@@ -1,4 +1,5 @@
-//! Layout containers — the [`View`] widget.
+//! Layout containers — the [`View`] widget, and [`blur_view`], a view whose
+//! box is glass.
 //!
 //! `View` is the base container: a box with a background, flex layout for its
 //! children, and an optional scroll viewport. It is the widget-layer face of the
@@ -14,8 +15,8 @@
 //! plain container is to an assistive technology.
 
 use viso_ui::{
-    Align, Axis, BoxStyle, BuildCx, Component, FlexStyle, Inset, Justify, Role, ScrollStyle,
-    Semantics, Size,
+    Align, Axis, Backdrop, BoxStyle, BuildCx, Component, FlexStyle, Inset, Justify, Role,
+    ScrollStyle, Semantics, Size,
 };
 
 /// The visual and layout parameters of a [`View`]. A small, flat description of
@@ -44,6 +45,9 @@ pub struct ViewStyle {
     /// scroll viewport lays out a single content child at its natural extent, so
     /// author one container child to hold the scrollable content.
     pub scroll_axis: Option<Axis>,
+    /// When `Some`, the container's box is glass: it blurs, saturates and
+    /// tints what lies behind it, under its background.
+    pub backdrop: Option<Backdrop>,
 }
 
 impl Default for ViewStyle {
@@ -56,6 +60,7 @@ impl Default for ViewStyle {
             size: Size::fill(),
             background: BoxStyle::NONE,
             scroll_axis: None,
+            backdrop: None,
         }
     }
 }
@@ -113,6 +118,16 @@ pub fn view(style: ViewStyle) -> View {
         children: None,
         label: None,
     }
+}
+
+/// Construct a [`View`] whose box is glass: the standard glass unless
+/// `style` names a backdrop of its own. Glass shows what lies behind it, so
+/// it suits a bar, a panel or a sheet floating over content.
+pub fn blur_view(style: ViewStyle) -> View {
+    view(ViewStyle {
+        backdrop: style.backdrop.or(Some(Backdrop::GLASS)),
+        ..style
+    })
 }
 
 impl Default for View {
@@ -176,6 +191,10 @@ impl Component for View {
             }
         };
 
+        if let Some(backdrop) = self.style.backdrop {
+            cx.backdrop(handle, backdrop);
+        }
+
         // A plain container is a `Group` to an assistive technology; carry the
         // label when one was authored.
         let mut semantics = Semantics::role(Role::Group);
@@ -231,6 +250,35 @@ mod tests {
         );
         // The container carries the requested background as its box style.
         assert_eq!(store.style(root), bg);
+    }
+
+    /// A blur view's box is the standard glass, or the backdrop its style
+    /// names; a plain view's box is not glass.
+    #[test]
+    fn a_blur_view_is_glass() {
+        let build = |container: View| {
+            let mut store = NodeStore::new();
+            let mut cx = BuildCx::new(&mut store);
+            container.build(&mut cx);
+            let root = cx.root().expect("a root node");
+            store.backdrop(root)
+        };
+        assert_eq!(
+            build(blur_view(ViewStyle::default())),
+            Some(Backdrop::GLASS)
+        );
+        let dim = Backdrop {
+            blur: 8.0,
+            ..Backdrop::GLASS
+        };
+        assert_eq!(
+            build(blur_view(ViewStyle {
+                backdrop: Some(dim),
+                ..Default::default()
+            })),
+            Some(dim)
+        );
+        assert_eq!(build(view(ViewStyle::default())), None);
     }
 
     /// A `View` with `scroll_axis` maps to a Scroll node instead of a Flex node,

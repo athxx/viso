@@ -31,6 +31,7 @@ use std::time::Duration;
 
 use viso_behavior::{Fault, FaultKind, Value};
 use viso_schema::view::route::EventRoute;
+use viso_ui::backdrop::Backdrop;
 use viso_ui::color_picker::{
     ColorPickerParts, ColorPickerStyle, DEFAULT_COLOR, PickSink, PickerSpec,
 };
@@ -250,6 +251,7 @@ pub(crate) fn control_cells(
         look.corner_radius,
         look.border,
         look.shadow,
+        look.backdrop,
         semantics.label,
         semantics.hint,
         semantics.value,
@@ -339,7 +341,7 @@ pub(crate) fn control_cells(
 /// are its `options` — a search field's `debounce`, an image's `animate`,
 /// a video's `playing`, `looping`, `muted`, `volume`, `rate`, `controls`
 /// and `fullscreen`, and a camera view's `mirror`.
-const SHOWN: usize = 77;
+const SHOWN: usize = 78;
 
 /// The input of each value a node shows, in order.
 const SHOWN_INPUTS: [ControlInput; SHOWN] = [
@@ -420,12 +422,16 @@ const SHOWN_INPUTS: [ControlInput; SHOWN] = [
     ControlInput::Controls,
     ControlInput::Fullscreen,
     ControlInput::Mirror,
+    ControlInput::Backdrop,
 ];
 
 /// Where a video's `controls` and `fullscreen` sit among the values a node
 /// shows.
-const CONTROLS: usize = SHOWN - 3;
-const FULLSCREEN: usize = SHOWN - 2;
+const CONTROLS: usize = SHOWN - 4;
+const FULLSCREEN: usize = SHOWN - 3;
+
+/// Where its `backdrop` sits among the values a node shows.
+const BACKDROP: usize = SHOWN - 1;
 
 /// Where its `translate` sits among the values a node shows.
 const TRANSLATE: usize = 35;
@@ -729,6 +735,7 @@ impl Shown {
             controls,
             fullscreen,
             mirror,
+            backdrop,
         ] = &shows;
         let access_key = access_key.as_str().and_then(|key| key.chars().next());
         let spanned = crate::text_style::spans(pieces);
@@ -1004,6 +1011,15 @@ impl Shown {
         if shown(SHADOW) && changed(SHADOW) {
             store.set_shadow(self.node, cast(shadow));
         }
+        // A `BlurView` without a backdrop of its own is the standard glass.
+        let glass = control.kind == ControlKind::Glass;
+        if (shown(BACKDROP) || glass) && (first || changed(BACKDROP)) {
+            let backdrop = match backdrop {
+                Value::Nil if glass => Some(Backdrop::GLASS),
+                given => frost(given),
+            };
+            store.set_backdrop(self.node, backdrop);
+        }
         for (at, entry, value) in [
             (
                 LOOK,
@@ -1070,6 +1086,7 @@ impl Shown {
         }
         match control.kind {
             ControlKind::Plain
+            | ControlKind::Glass
             | ControlKind::Dialog
             | ControlKind::Sheet
             | ControlKind::Toast
@@ -2223,6 +2240,22 @@ fn cast(value: &Value) -> Option<Shadow> {
             blur: dp(blur).max(0.0),
             spread: dp(spread),
             inset: truth(inset, false),
+        }),
+        _ => None,
+    }
+}
+
+/// A `Backdrop` value as the glass a box is, none for `None`.
+fn frost(value: &Value) -> Option<Backdrop> {
+    let Value::Agg(backdrop) = value else {
+        return None;
+    };
+    match &backdrop.fields[..] {
+        [blur, saturation, tint, noise] => Some(Backdrop {
+            blur: dp(blur).max(0.0),
+            saturation: float(saturation, 1.0),
+            tint: color(tint),
+            noise: float(noise, 0.0),
         }),
         _ => None,
     }

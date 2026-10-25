@@ -154,11 +154,15 @@ pub enum ControlKind {
     /// the start unless it says otherwise), a camera facing the user
     /// mirrored unless its `mirror` says otherwise.
     Camera = 35,
+    /// `BlurView`: a column whose box is glass, blurring and tinting what
+    /// lies behind it as its `backdrop` says, the standard glass without
+    /// one; it has no built-in response.
+    Glass = 36,
 }
 
 impl ControlKind {
     /// Every kind, by discriminant.
-    pub const ALL: [ControlKind; 36] = [
+    pub const ALL: [ControlKind; 37] = [
         ControlKind::Check,
         ControlKind::Slider,
         ControlKind::Select,
@@ -195,6 +199,7 @@ impl ControlKind {
         ControlKind::SearchField,
         ControlKind::Video,
         ControlKind::Camera,
+        ControlKind::Glass,
     ];
 
     /// The kind native widget `widget` is.
@@ -235,6 +240,7 @@ impl ControlKind {
             "SearchField" => ControlKind::SearchField,
             "Video" => ControlKind::Video,
             "CameraView" => ControlKind::Camera,
+            "BlurView" => ControlKind::Glass,
             _ => ControlKind::Plain,
         }
     }
@@ -263,6 +269,7 @@ impl ControlKind {
                 | ControlKind::Asset
                 | ControlKind::Video
                 | ControlKind::Camera
+                | ControlKind::Glass
                 | ControlKind::Shader
                 | ControlKind::Toast
                 | ControlKind::SwipeRow
@@ -305,6 +312,7 @@ impl ControlKind {
                     | ControlKind::ColorPicker
                     | ControlKind::ComboBox
                     | ControlKind::SearchField
+                    | ControlKind::Glass
             )
     }
 
@@ -350,6 +358,7 @@ impl ControlKind {
             (_, "corner_radius") => ControlInput::CornerRadius,
             (_, "border") => ControlInput::Border,
             (_, "shadow") => ControlInput::Shadow,
+            (_, "backdrop") => ControlInput::Backdrop,
             (_, "transition.background") => ControlInput::BackgroundTransition,
             (_, "transition.opacity") => ControlInput::OpacityTransition,
             (_, "translate") => ControlInput::Translate,
@@ -621,6 +630,7 @@ impl ControlKind {
             ControlKind::SearchField => "SearchField",
             ControlKind::Video => "Video",
             ControlKind::Camera => "Camera",
+            ControlKind::Glass => "Glass",
         }
     }
 
@@ -1163,6 +1173,8 @@ pub enum ControlInput {
     /// A camera view's `mirror`: whether its picture shows flipped left to
     /// right.
     Mirror,
+    /// The node's `backdrop`: how its box treats what lies behind it.
+    Backdrop,
 }
 
 /// A view-driven native node: its kind and the handler-table entries that
@@ -1431,7 +1443,7 @@ pub enum Switched {
 
 impl ControlInput {
     /// Every input, by wire tag.
-    pub const ALL: [ControlInput; 86] = [
+    pub const ALL: [ControlInput; 87] = [
         ControlInput::Value,
         ControlInput::Min,
         ControlInput::Max,
@@ -1518,6 +1530,7 @@ impl ControlInput {
         ControlInput::Controls,
         ControlInput::Fullscreen,
         ControlInput::Mirror,
+        ControlInput::Backdrop,
     ];
 
     /// Its wire tag: its place in [`ControlInput::ALL`].
@@ -1557,6 +1570,8 @@ pub struct Look {
     pub border: Option<u32>,
     /// Its `shadow`: a `Shadow`, or `None` for none.
     pub shadow: Option<u32>,
+    /// Its `backdrop`: a `Backdrop`, or `None` for an ordinary box.
+    pub backdrop: Option<u32>,
     /// Its `transition.background`: how a new background moves in.
     pub background_transition: Option<u32>,
     /// Its `transition.opacity`: how a new opacity moves in.
@@ -1661,6 +1676,7 @@ impl Control {
             ControlInput::CornerRadius => self.look.corner_radius,
             ControlInput::Border => self.look.border,
             ControlInput::Shadow => self.look.shadow,
+            ControlInput::Backdrop => self.look.backdrop,
             ControlInput::BackgroundTransition => self.look.background_transition,
             ControlInput::OpacityTransition => self.look.opacity_transition,
             ControlInput::Translate => self.look.translate,
@@ -1763,6 +1779,7 @@ impl Control {
             ControlInput::CornerRadius => &mut self.look.corner_radius,
             ControlInput::Border => &mut self.look.border,
             ControlInput::Shadow => &mut self.look.shadow,
+            ControlInput::Backdrop => &mut self.look.backdrop,
             ControlInput::BackgroundTransition => &mut self.look.background_transition,
             ControlInput::OpacityTransition => &mut self.look.opacity_transition,
             ControlInput::Translate => &mut self.look.translate,
@@ -1906,6 +1923,7 @@ impl Encode for Control {
             look.rotation_transition,
             look.transform_origin,
             look.shadow,
+            look.backdrop,
             semantics.label,
             semantics.hint,
             semantics.value,
@@ -2052,6 +2070,7 @@ impl Decode for Control {
                 rotation_transition: entry()?,
                 transform_origin: entry()?,
                 shadow: entry()?,
+                backdrop: entry()?,
             },
             arms: Box::new([]),
             semantics: SemanticEntries {
@@ -2362,6 +2381,7 @@ mod tests {
                 rotation_transition: None,
                 transform_origin: Some(25),
                 shadow: Some(26),
+                backdrop: None,
             },
             arms: Box::new([LookArm {
                 target: Switched::Input(ControlInput::Border),

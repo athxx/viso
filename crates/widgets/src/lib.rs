@@ -42,7 +42,7 @@ pub mod video;
 pub use avatar::{Avatar, avatar};
 pub use badge::{Badge, badge, dot_badge};
 pub use camera_view::{CameraView, camera_view};
-pub use containers::{View, ViewStyle, view};
+pub use containers::{View, ViewStyle, blur_view, view};
 pub use controls::{
     Button, ButtonStyle, CaptionBar, CaptionBarStyle, CheckBox, CheckBoxStyle, Dock, DockHandle,
     DockHandleSlot, DockNode, DockStyle, DockTree, DropPart, FileTree, FileTreeHandle,

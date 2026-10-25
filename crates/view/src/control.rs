@@ -86,6 +86,7 @@ impl Drive for Control {
                 None
             }
             ControlKind::Plain
+            | ControlKind::Glass
             | ControlKind::Asset
             | ControlKind::Video
             | ControlKind::Camera

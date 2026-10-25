@@ -802,6 +802,8 @@ pub struct NodeStore {
     pub(crate) wakes: Vec<(NodeId, u32)>,
     /// Cold: the nodes that cast shadows.
     pub(crate) shadows: crate::shadow::Shadows,
+    /// Cold: the nodes whose boxes are glass.
+    pub(crate) backdrops: crate::backdrop::Backdrops,
     /// Cold: the nodes' access keys and the window's menu bar.
     pub(crate) access: crate::access::AccessKeys,
     /// The viewports coasting after a flick, and how they coast.
@@ -976,6 +978,7 @@ impl NodeStore {
         self.anchors.clear();
         self.wakes.clear();
         self.shadows.clear();
+        self.backdrops.clear();
         self.ring.clear();
         self.access.clear();
         self.roving.clear();
@@ -5579,6 +5582,7 @@ impl NodeStore {
         self.layers.forget(i as u32);
         self.anchors.forget(i as u32);
         self.shadows.forget(i as u32);
+        self.backdrops.forget(i as u32);
         self.ring.forget(i as u32);
         self.access.forget(i as u32);
         self.roving.forget(i as u32);
@@ -7639,6 +7643,13 @@ impl<'a> BuildCx<'a> {
     /// Make an already-declared node cast `shadow` under its box.
     pub fn shadow(&mut self, handle: Handle, shadow: crate::shadow::Shadow) -> Handle {
         self.store.set_shadow(handle.id, Some(shadow));
+        handle
+    }
+
+    /// Make an already-declared node's box glass: it blurs, saturates and
+    /// tints what lies behind it as `backdrop` says.
+    pub fn backdrop(&mut self, handle: Handle, backdrop: crate::backdrop::Backdrop) -> Handle {
+        self.store.set_backdrop(handle.id, Some(backdrop));
         handle
     }
 

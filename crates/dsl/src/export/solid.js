@@ -325,6 +325,8 @@ export const show = {
   radius,
   stroke,
   shadow,
+  backdrop,
+  frost,
   offset,
   scale: scaling,
   rotate: turning,

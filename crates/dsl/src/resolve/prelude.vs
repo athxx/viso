@@ -241,6 +241,15 @@ export record Shadow {
     color: Color;
     inset: Bool = false;
 }
+// What a box does to the content behind it, as glass: blurs it by `blur`
+// (as CSS's blur radius), scales its saturation by `saturation`, lays
+// `tint` over it by the tint's alpha, and adds a grain of `noise` (0..1).
+export record Backdrop {
+    blur: Dp = 30dp;
+    saturation: F32 = 1.8;
+    tint: Color = #ffffff40;
+    noise: F32 = 0.0;
+}
 
 // The values of the standard widgets' enum properties.
 export enum Axis { row; column; }

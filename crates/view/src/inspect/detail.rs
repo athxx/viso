@@ -336,6 +336,19 @@ fn groups(store: &NodeStore, id: NodeId) -> Vec<PropertyGroup> {
             ),
         );
     }
+    if let Some(backdrop) = store.backdrop(id) {
+        add(
+            &mut style,
+            "backdrop",
+            format!(
+                "blur {} saturation {} tint {} noise {}",
+                number(backdrop.blur),
+                number(backdrop.saturation),
+                color(backdrop.tint),
+                number(backdrop.noise)
+            ),
+        );
+    }
     add(&mut style, "opacity", number(store.opacity(id)));
     if store.hidden(id) {
         add(&mut style, "hidden", "true".into());

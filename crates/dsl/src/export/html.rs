@@ -236,6 +236,9 @@ pub(super) enum VarToken {
     Border,
     /// An `Option<Shadow>`, as a `box-shadow` in `--vx-shadow`.
     Shadow,
+    /// An `Option<Backdrop>`, as the `backdrop-filter` in the variable named
+    /// and its tint in its `-tint` twin.
+    Backdrop,
     /// An `Offset`, as `translate`.
     Translate,
     /// An `F32`, as `scale`.
@@ -2379,7 +2382,10 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                     el.attr("alt", "");
                 }
             }
-            ControlKind::Plain | ControlKind::Shader | ControlKind::Viewport => {}
+            ControlKind::Plain
+            | ControlKind::Glass
+            | ControlKind::Shader
+            | ControlKind::Viewport => {}
         }
 
         if let Some(fixed) = self.bind(
@@ -2634,6 +2640,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             VarToken::Radius => "the corner radius",
             VarToken::Border => "the border",
             VarToken::Shadow => "the shadow",
+            VarToken::Backdrop => "the backdrop",
             VarToken::Translate => "the translate",
             VarToken::Scale => "the scale",
             VarToken::Rotation => "the rotation",
@@ -2659,6 +2666,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 VarToken::Radius => radius(&v),
                 VarToken::Border => stroke(&v),
                 VarToken::Shadow => cast(&v),
+                VarToken::Backdrop => css::backdrop(&v).0,
                 VarToken::Translate => offset(&v),
                 VarToken::Scale => css::number(v.as_float().unwrap_or(1.0)),
                 VarToken::Rotation => format!("{}deg", css::number(v.as_float().unwrap_or(0.0))),
@@ -2667,6 +2675,46 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             },
             Fixed::Theme(name) => format!("var({name})"),
         }
+    }
+
+    /// A glass box's backdrop: its blur and saturation as a
+    /// `backdrop-filter`, its tint a flat layer over its background colour;
+    /// a `BlurView` without one shows the standard glass.
+    fn glass(
+        &mut self,
+        control: &Control,
+        key: u32,
+        at: TextRange,
+        decls: &mut Vec<(&'static str, String)>,
+        wires: &mut Vec<Wire>,
+    ) {
+        let (filter, tint) = match control.look.backdrop {
+            Some(entry) => match self.fixed(entry, "the backdrop", at) {
+                Fixed::Value(v) => css::backdrop(&v),
+                Fixed::Changes | Fixed::Theme(_) => {
+                    let var = format!("--v{key}-backdrop");
+                    wires.push(Wire::Prop {
+                        entry,
+                        prop: Prop::Var {
+                            name: var.clone(),
+                            token: VarToken::Backdrop,
+                        },
+                    });
+                    (format!("var({var})"), format!("var({var}-tint)"))
+                }
+            },
+            None if control.kind == ControlKind::Glass => {
+                (css::GLASS.0.to_owned(), css::GLASS.1.to_owned())
+            }
+            None => return,
+        };
+        decls.push(("--vx-frost", tint));
+        decls.push(("-webkit-backdrop-filter", filter.clone()));
+        decls.push(("backdrop-filter", filter));
+        decls.push((
+            "background-image",
+            "linear-gradient(var(--vx-frost), var(--vx-frost))".to_owned(),
+        ));
     }
 
     /// The node's background, opacity, corner radius, border and shadow, each
@@ -2784,6 +2832,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 "var(--vx-shadow), var(--vx-border)".to_owned(),
             ));
         }
+        self.glass(control, key, at, decls, wires);
         // A text's color switches as its look does; the arms of a value with
         // no CSS rule of its own here do not export.
         let switched = |input| viso_schema::view::Switched::Input(input);

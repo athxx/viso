@@ -4568,6 +4568,7 @@ export enum Sizing { fixed(MixedLength); fill { weight: F32 = 1.0; }; fit; min_c
 | `corner_radius` | `MixedLength`         | `0dp`                | `PAINT`           | 自身 Border Box 较短边        |
 | `border`        | `Option<Border>`      | `Option::None`       | `PAINT`           | —                             |
 | `shadow`        | `Option<Shadow>`      | `Option::None`       | `PAINT`           | —                             |
+| `backdrop`      | `Option<Backdrop>`    | `Option::None`       | `PAINT`           | —                             |
 | `styles`        | `List<StyleRef<T>>`   | `[]`                 | `STYLE`           | —                             |
 
 ```viso
@@ -4581,12 +4582,19 @@ export record Shadow {
     color: Color;
     inset: Bool = false;
 }
+export record Backdrop {
+    blur: Dp = 30dp;
+    saturation: F32 = 1.8;
+    tint: Color = #ffffff40;
+    noise: F32 = 0.0;
+}
 ```
 
 - 构造函数：`EdgeInsets::zero()`、`EdgeInsets::all(v)`、`EdgeInsets::axes(inline: a, block: b)`（`a` 用于 `start`/`end`，`b` 用于 `top`/`bottom`）；
 - 按 U1.3，§19.5 的 `padding: 1em;` 提升为 `EdgeInsets::all(1em)`；
 - `margin` 不折叠；`border` 在 Border Box 内侧描边，不参与布局；
 - `shadow` 是盒按 `corner_radius` 取圆角、按 `spread` 扩张（负值收缩）、按 `x`/`y` 偏移并按 `blur`（CSS 模糊半径）淡出的投影，画在盒下方，不参与布局与命中；`inset: true` 时落在盒内、`border` 之内，画在背景之上；`theme.elevation.*` 即 `Shadow`，可直接绑定；
+- `backdrop` 使盒成为玻璃：盒背后已绘制的内容按 `blur`（CSS 模糊半径）模糊、按 `saturation` 调整饱和度、按 `tint` 的 alpha 叠上 `tint`，再加 `noise`（0..1）颗粒，按 `corner_radius` 取圆角，画在 `background` 之下；节点自身 `opacity` 小于 1 时玻璃按该 opacity 淡出而保持模糊（嵌套在其他半透明祖先之内的玻璃不模糊）。同一背景上同一模糊的多块玻璃共用一次背景捕获与模糊。`BlurView` 是纵向排列子节点的 Flex 容器（属性同 `Column`），未给 `backdrop` 时为标准玻璃 `Backdrop {}`。Web 导出为 `backdrop-filter: blur(..) saturate(..)` 加一层 `tint` 平涂；
 - `min` 大于 `max` 时以 `min` 为准，Debug Runtime 报告 `E3105`；
 - `start`/`end` 在布局时按 `env.layout_direction` 解析为物理边；
 - `padding` 只作用于容器（`Row`、`Column`、`Flex`、`Stack`、`Absolute`、`Grid`）的内容盒；`padding` 可为常量（长度、`EdgeInsets::zero/all/axes` 或各字段为常量的 `EdgeInsets { .. }`）或读取值（见 U3.4 的绑定布局值），每条边按 §19.8 取非负，含 `%` 分量的边在布局时读到父内容盒后取非负；非容器节点上的 `padding` 报 `E3711`，不会被静默丢弃。纯 `dp` 且 `start` 与 `end` 相等的 `padding` 在编译期折叠为物理内边距；含 `px`/`sp`/`em` 分量或 `start` 与 `end` 不等的，随 §19.6 环境与 `env.layout_direction` 在布局时折叠，只有折叠结果变化的节点被标脏；

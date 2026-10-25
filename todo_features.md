@@ -502,7 +502,11 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
 
 ## W13 — Effects widgets
 
-- [ ] `BlurView` / glass panel over the backdrop blur and material built-ins.
+- [x] `BlurView` / glass panel over the backdrop blur and material built-ins: a
+  `backdrop: Option<Backdrop>` (blur, saturation, tint, grain) on every node draws the
+  renderer's frosted material under the box's fill, outside its own fade; `BlurView` is a
+  column showing the standard glass, `blur_view` in Rust; the web export writes a
+  `backdrop-filter` under a flat tint (seen in a headless snapshot over coloured rows).
 - [ ] Ink/ripple press feedback as a standard primitive; haptics wired into controls.
 
 ## W14 — 3D extended (after W1)
