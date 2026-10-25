@@ -1029,7 +1029,8 @@ impl PlatformApp for KmsApp {
     fn run(&mut self, handler: &mut dyn AppHandler) {
         let display = self.display.clone();
         let wakes = self.wakes.clone();
-        super::run(self, &display, &wakes, handler);
+        let waker = self.waker.clone();
+        super::run(self, &display, waker, &wakes, handler);
     }
 
     fn window(&self, id: WindowId) -> Option<&dyn Window> {

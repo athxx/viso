@@ -504,6 +504,10 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
   - `[package.links]` schemes and hosts → Info.plist `CFBundleURLTypes`, iOS associated
     domains, Android intent filters (`autoVerify` for hosts), MSIX `windows.protocol`,
     `.desktop` `x-scheme-handler`; dev builds too; generated output unit-tested.
+  - `RawEvent::OpenUrl`, after launch, cold and warm: macOS `application:openURLs:`, iOS
+    scene URL contexts and universal-link activities, Android VIEW intent + `onNewIntent`,
+    Windows argv + `WM_COPYDATA` hand-over to the running instance (HKCU registration when
+    unpackaged), Linux argv + runtime-dir socket hand-over, web fragment + `hashchange`.
 - [ ] Custom cursors and pointer lock.
 - [x] Fullscreen change events on every OS (Android hides the system bars, iOS the status
   bar and home indicator).

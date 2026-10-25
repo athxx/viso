@@ -1345,6 +1345,20 @@ define_class!(
         fn application_did_unhide(&self, _notification: &NSNotification) {
             self.push(RawEvent::Resumed);
         }
+
+        /// A URL of a scheme the app declares, whether it launched the app
+        /// or arrived while it runs; the pump delivers it after launch.
+        #[unsafe(method(application:openURLs:))]
+        fn open_urls(&self, _app: &NSApplication, urls: &NSArray<NSURL>) {
+            for url in urls.iter() {
+                if let Some(text) = url.absoluteString() {
+                    self.push(RawEvent::OpenUrl {
+                        url: text.to_string(),
+                    });
+                }
+            }
+            wake_pump();
+        }
     }
 
     impl AppDelegate {

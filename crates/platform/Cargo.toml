@@ -160,6 +160,7 @@ web-sys = { version = "0.3", features = [
     "ImageData",
     "InputEvent",
     "KeyboardEvent",
+    "Location",
     "MediaQueryList",
     "MouseEvent",
     "Navigator",
@@ -208,6 +209,8 @@ windows = { version = "0.62", features = [
     "Win32_UI_Shell_Common",
     "Win32_System_Variant",
     "Win32_Security",
+    # Whether the app runs from an MSIX, which declares its URL schemes.
+    "Win32_Storage_Packaging_Appx",
 ] }
 
 # Linux and the BSDs: X11 through XCB (libxcb loaded at runtime, `x11`),

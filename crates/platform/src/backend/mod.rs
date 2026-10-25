@@ -36,6 +36,28 @@ mod main_queue;
 #[cfg(target_os = "windows")]
 pub mod windows;
 
+#[cfg(any(
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly",
+    test
+))]
+#[cfg_attr(
+    not(any(
+        target_os = "windows",
+        target_os = "linux",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    )),
+    allow(dead_code)
+)]
+mod links;
+
 #[cfg(target_os = "ios")]
 pub mod ios;
 

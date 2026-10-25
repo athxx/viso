@@ -107,7 +107,8 @@ impl PlatformApp for X11App {
     fn run(&mut self, handler: &mut dyn AppHandler) {
         let x11 = self.x11.clone();
         let wakes = self.wakes.clone();
-        super::run(self, &x11, &wakes, handler);
+        let waker = self.waker.clone();
+        super::run(self, &x11, waker, &wakes, handler);
     }
 
     fn window(&self, id: WindowId) -> Option<&dyn Window> {

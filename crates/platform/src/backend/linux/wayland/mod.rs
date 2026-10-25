@@ -127,7 +127,8 @@ impl PlatformApp for WaylandApp {
     fn run(&mut self, handler: &mut dyn AppHandler) {
         let wl = self.wl.clone();
         let wakes = self.wakes.clone();
-        super::run(self, &wl, &wakes, handler);
+        let waker = self.wl.borrow().state.waker.clone();
+        super::run(self, &wl, waker, &wakes, handler);
     }
 
     fn window(&self, id: WindowId) -> Option<&dyn Window> {

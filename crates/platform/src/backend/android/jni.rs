@@ -562,7 +562,7 @@ pub unsafe extern "system" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void
 /// `env` must be the calling thread's environment and `class` the
 /// `VisoActivity` class.
 unsafe fn register_natives(env: *mut JNIEnv, class: jclass) -> bool {
-    let natives: [(&CStr, &CStr, *mut c_void); 19] = [
+    let natives: [(&CStr, &CStr, *mut c_void); 20] = [
         (
             c"nativeStart",
             c"(Ldev/viso/VisoActivity;FIFLjava/lang/String;[Ljava/lang/String;)V",
@@ -612,6 +612,11 @@ unsafe fn register_natives(env: *mut JNIEnv, class: jclass) -> bool {
             native_commit as *mut c_void,
         ),
         (c"nativeEdit", c"(I)V", native_edit as *mut c_void),
+        (
+            c"nativeOpenUrl",
+            c"(Ljava/lang/String;)V",
+            native_open_url as *mut c_void,
+        ),
         (c"nativeDrag", c"(IFFIZ)I", native_drag as *mut c_void),
         (
             c"nativeDrop",
@@ -905,6 +910,13 @@ extern "system" fn native_commit(env: *mut JNIEnv, _class: jclass, text: jstring
 
 extern "system" fn native_edit(_env: *mut JNIEnv, _class: jclass, action: jint) {
     send(Msg::Edit(action));
+}
+
+extern "system" fn native_open_url(env: *mut JNIEnv, _class: jclass, url: jstring) {
+    // SAFETY: `url` is a live string or null.
+    if let Some(url) = unsafe { read_string(env, url) } {
+        send(Msg::OpenUrl(url));
+    }
 }
 
 extern "system" fn native_drag(

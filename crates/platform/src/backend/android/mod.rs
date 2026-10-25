@@ -148,6 +148,8 @@ pub(super) enum Msg {
     },
     /// An assistive technology's request.
     Access(AccessRequest),
+    /// The activity was started, or started again, to view this URL.
+    OpenUrl(String),
     /// The system recreated the activity: a new host view.
     Recreated,
     Destroy,
@@ -346,6 +348,8 @@ struct Loop {
     access: RefCell<Option<accesskit_android::InjectingAdapter>>,
     /// The app's answer to the drag from another app over the view.
     arrival: RefCell<Option<crate::DropReply>>,
+    /// The URLs to open that came before launch, delivered right after it.
+    early_urls: RefCell<Vec<String>>,
 }
 
 /// The app's last answer to a drag from another app, for the UI thread: 0
@@ -398,6 +402,7 @@ thread_local! {
         finishing: Cell::new(false),
         access: RefCell::new(None),
         arrival: RefCell::new(None),
+        early_urls: RefCell::new(Vec::new()),
     };
 }
 
@@ -624,6 +629,13 @@ fn apply(msg: Msg) {
                 push(RawEvent::LowMemory);
             }
         }
+        Msg::OpenUrl(url) => {
+            if LOOP.with(|l| l.launched.get()) {
+                push(RawEvent::OpenUrl { url });
+            } else {
+                LOOP.with(|l| l.early_urls.borrow_mut().push(url));
+            }
+        }
         Msg::Touch(touch) => apply_touch(&touch),
         Msg::Scroll { at, delta, meta } => {
             let d = LOOP.with(|l| l.density.get());
@@ -815,6 +827,9 @@ fn apply_surface(surface: Surface) {
         if !LOOP.with(|l| l.launched.replace(true)) {
             LOOP.with(|l| l.size.set(size));
             push(RawEvent::AppLaunched);
+            for url in LOOP.with(|l| l.early_urls.take()) {
+                push(RawEvent::OpenUrl { url });
+            }
             return;
         }
         push_to_window(RawEvent::SurfaceCreated { window: WINDOW });

@@ -268,6 +268,17 @@ fn kick() {
     }
 }
 
+/// Queue the opening of the page's URL when it links to a place in the app:
+/// a fragment, the route a link into a page served as files carries.
+fn open_page_link() {
+    let location = dom_window().location();
+    if location.hash().is_ok_and(|hash| hash.len() > 1)
+        && let Ok(url) = location.href()
+    {
+        push(RawEvent::OpenUrl { url });
+    }
+}
+
 fn kicked() {
     LOOP.with(|l| l.kicked.set(false));
     push(RawEvent::Wakeup);
@@ -770,6 +781,11 @@ impl WebApp {
             }),
             Listener::new(&window, "blur", |_| set_focused(false)),
             Listener::new(&window, "languagechange", |_| report_locale()),
+            // A link to another place in the page, followed while it runs.
+            Listener::new(&window, "hashchange", |_| {
+                open_page_link();
+                drive();
+            }),
         ];
         for query in [DARK, CONTRAST[0], CONTRAST[1], REDUCED_MOTION] {
             if let Some(list) = media(query) {
@@ -918,6 +934,7 @@ impl PlatformApp for WebApp {
         // use `drive` makes of them is within the borrows.
         LOOP.with(|l| l.drive.set(Some(Drive::new(self, handler))));
         push(RawEvent::AppLaunched);
+        open_page_link();
         drive();
     }
 

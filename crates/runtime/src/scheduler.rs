@@ -182,6 +182,22 @@ impl<D: FrameDriver, C: FrameClock> Loop<D, C> {
         }
     }
 
+    /// Hand a URL to open to the driver with a live context: what the app
+    /// does with it is like input, and the driver names the windows to
+    /// frame.
+    fn open_url(&mut self, app: &mut dyn PlatformApp, url: &str) {
+        let (state_dirty, posted) = {
+            let mut cx = RuntimeCx::new(app, Duration::ZERO, self.clock.now());
+            self.driver.on_open_url(&mut cx, url);
+            (cx.state_dirty_requested(), cx.take_posted())
+        };
+        self.reasons.add(RedrawReason::InputDirty);
+        if state_dirty {
+            self.reasons.add(RedrawReason::StateDirty);
+        }
+        self.deliver(app, posted);
+    }
+
     /// Hand a loop kick to the driver with a live context.
     fn wakeup(&mut self, app: &mut dyn PlatformApp) {
         let (state_dirty, posted) = {
@@ -449,6 +465,7 @@ impl<D: FrameDriver, C: FrameClock> AppHandler for Loop<D, C> {
                 self.driver.on_locale(&locale);
                 self.reasons.add(RedrawReason::InputDirty);
             }
+            RawEvent::OpenUrl { url } => self.open_url(app, &url),
             RawEvent::CopyRequested { window, cut, reply } => {
                 // The driver answers synchronously through `reply`; the backend
                 // reads it once this returns. A cut edits content, so redraw.
@@ -808,6 +825,7 @@ mod tests {
         pasted: Vec<String>,
         copies: Vec<bool>,
         surfaces: Vec<(WindowId, bool)>,
+        urls: Vec<String>,
     }
 
     impl FrameDriver for LifecycleDriver {
@@ -834,6 +852,9 @@ mod tests {
         fn on_surface(&mut self, _cx: &mut RuntimeCx<'_>, window: WindowId, available: bool) {
             self.surfaces.push((window, available));
         }
+        fn on_open_url(&mut self, _cx: &mut RuntimeCx<'_>, url: &str) {
+            self.urls.push(url.to_owned());
+        }
     }
 
     fn lifecycle_scheduler() -> Scheduler<LifecycleDriver> {
@@ -853,6 +874,16 @@ mod tests {
             RawModifiers::default(),
             viso_platform::PointerPhase::Down,
         ))
+    }
+
+    #[test]
+    fn a_url_to_open_reaches_the_driver_and_asks_for_a_frame() {
+        let mut sched = lifecycle_scheduler();
+        let flow = sched.handle(RawEvent::OpenUrl {
+            url: "notes://item/7".to_owned(),
+        });
+        assert_eq!(sched.state.driver.urls, ["notes://item/7"]);
+        assert_eq!(flow, ControlFlow::Poll, "what the app did with it is drawn");
     }
 
     #[test]

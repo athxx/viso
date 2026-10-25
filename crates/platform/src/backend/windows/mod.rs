@@ -13,6 +13,7 @@
 
 mod access;
 mod drop;
+mod links;
 mod menu;
 mod proc;
 mod system;
@@ -375,6 +376,8 @@ pub struct WinApp {
     class_registered: bool,
     /// The thread that created the app and runs its pump.
     ui_thread: u32,
+    /// The URLs the app was started with, opened once it launches.
+    launch_urls: Vec<String>,
 }
 
 impl WinApp {
@@ -394,8 +397,10 @@ impl WinApp {
             wheel: system::read_wheel_settings(),
             ..PumpQueue::default()
         }));
+        let launch_urls = links::claim(&shared, hinstance.into());
         Ok(Self {
             shared,
+            launch_urls,
             hinstance: hinstance.into(),
             next_window_id: 1,
             windows: Vec::new(),
@@ -613,6 +618,12 @@ impl PlatformApp for WinApp {
     fn run(&mut self, handler: &mut dyn AppHandler) {
         if handler.handle(self, RawEvent::AppLaunched) == ControlFlow::Exit {
             return;
+        }
+        for url in std::mem::take(&mut self.launch_urls) {
+            self.shared
+                .borrow_mut()
+                .events
+                .push_back(RawEvent::OpenUrl { url });
         }
         // Clears the drive on every exit path, including unwind out of an OS
         // turn.

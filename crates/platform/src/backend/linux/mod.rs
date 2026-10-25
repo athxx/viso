@@ -21,6 +21,7 @@
 mod access;
 #[cfg(feature = "kms")]
 mod kms;
+mod links;
 #[cfg(any(feature = "x11", feature = "wayland"))]
 mod portal;
 #[cfg(feature = "wayland")]
@@ -51,6 +52,7 @@ use translate::{AccelTable, MenuAction, Session};
 
 /// Connect to the session's windowing system.
 pub(crate) fn create() -> Result<Box<dyn PlatformApp>, PlatformError> {
+    links::claim();
     let wayland_display = std::env::var("WAYLAND_DISPLAY").ok();
     let display = std::env::var("DISPLAY").ok();
     let forced = std::env::var("VISO_SESSION").ok();
@@ -100,6 +102,8 @@ pub(crate) enum Wake {
         window: WindowId,
         request: AccessRequest,
     },
+    /// A later start of the app handed it a URL to open.
+    OpenUrl(String),
     /// A [`LoopWaker`](crate::LoopWaker) kick.
     Tasks,
 }
@@ -327,6 +331,7 @@ impl Pump {
                     self.push(RawEvent::Drop(step));
                 }
             }
+            Wake::OpenUrl(url) => self.push(RawEvent::OpenUrl { url }),
             Wake::Tasks => self.push(RawEvent::Wakeup),
         }
     }
@@ -445,11 +450,18 @@ pub(crate) trait Display {
 pub(crate) fn run<D: Display>(
     app: &mut dyn PlatformApp,
     display: &Rc<RefCell<D>>,
+    waker: Waker,
     wakes: &WakeReceiver,
     handler: &mut dyn AppHandler,
 ) {
+    let (urls, _socket) = links::serve(move |url| {
+        waker.send(Wake::OpenUrl(url));
+    });
     if handler.handle(app, RawEvent::AppLaunched) == ControlFlow::Exit {
         return;
+    }
+    for url in urls {
+        display.borrow_mut().pump().push(RawEvent::OpenUrl { url });
     }
     let mut flow = ControlFlow::Wait;
     loop {

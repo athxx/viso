@@ -27,14 +27,15 @@ use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, NSObject};
+use objc2::runtime::{AnyObject, NSObject, ProtocolObject};
 use objc2::{ClassType, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_foundation::{
-    NSCurrentLocaleDidChangeNotification, NSDictionary, NSLocale, NSNotification,
-    NSNotificationCenter, NSObjectProtocol, NSRunLoop, NSRunLoopCommonModes, NSString, NSTimer,
-    NSValue, ns_string,
+    NSArray, NSCurrentLocaleDidChangeNotification, NSDictionary, NSLocale, NSNotification,
+    NSNotificationCenter, NSObjectProtocol, NSRunLoop, NSRunLoopCommonModes, NSSet, NSString,
+    NSTimer, NSURL, NSUserActivity, NSUserActivityTypeBrowsingWeb, NSValue, ns_string,
 };
 use objc2_quartz_core::{CADisplayLink, CAFrameRateRange};
+use objc2_ui_kit::UIOpenURLContext;
 use objc2_ui_kit::{
     UIAccessibilityContrast, UIAccessibilityDarkerSystemColorsEnabled,
     UIAccessibilityDarkerSystemColorsStatusDidChangeNotification,
@@ -49,8 +50,8 @@ use objc2_ui_kit::{
     UIContentSizeCategoryExtraSmall, UIContentSizeCategoryMedium, UIContentSizeCategorySmall,
     UIKeyboardFrameEndUserInfoKey, UIKeyboardWillChangeFrameNotification, UIPasteboard,
     UIResponder, UIScene, UISceneConfiguration, UISceneConnectionOptions, UISceneDelegate,
-    UISceneSession, UIScreen, UITraitCollection, UITraitEnvironment, UIUserInterfaceStyle,
-    UIViewController, UIWindow, UIWindowScene, UIWindowSceneDelegate,
+    UISceneSession, UIScreen, UITraitCollection, UITraitEnvironment, UIUserActivityRestoring,
+    UIUserInterfaceStyle, UIViewController, UIWindow, UIWindowScene, UIWindowSceneDelegate,
 };
 
 use self::view::VisoView;
@@ -298,12 +299,45 @@ fn report_appearance(traits: &UITraitCollection) {
 }
 
 /// Report the launch once: from the scene connection, or from
-/// `didFinishLaunching` for an app without scenes.
+/// `didFinishLaunching` for an app without scenes. It goes ahead of
+/// anything queued before it.
 fn launch() {
     if !LOOP.with(|l| l.launched.replace(true)) {
-        LOOP.with(|l| l.focused.set(true));
-        push(RawEvent::AppLaunched);
+        LOOP.with(|l| {
+            l.focused.set(true);
+            l.events.borrow_mut().push_front(RawEvent::AppLaunched);
+        });
         drive();
+    }
+}
+
+/// Queue the opening of `url`.
+fn open_url(url: &NSURL) {
+    if let Some(text) = url.absoluteString() {
+        push(RawEvent::OpenUrl {
+            url: text.to_string(),
+        });
+    }
+}
+
+/// Queue the opening of each URL `contexts` carry.
+fn open_contexts(contexts: &NSSet<UIOpenURLContext>) {
+    for context in contexts.iter() {
+        open_url(&context.URL());
+    }
+}
+
+/// Queue the web link `activity` continues, if it browses one: a universal
+/// link to a host the app declares.
+fn open_activity(activity: &NSUserActivity) -> bool {
+    // SAFETY: an immutable string constant Foundation exports.
+    let browsing = unsafe { NSUserActivityTypeBrowsingWeb };
+    match activity.webpageURL() {
+        Some(url) if activity.activityType().isEqualToString(browsing) => {
+            open_url(&url);
+            true
+        }
+        _ => false,
     }
 }
 
@@ -794,6 +828,39 @@ define_class!(
                 drive();
             });
         }
+
+        /// A URL of a declared scheme, for an app without scenes.
+        #[unsafe(method(application:openURL:options:))]
+        fn application_open_url(
+            &self,
+            _app: &UIApplication,
+            url: &NSURL,
+            _options: &NSDictionary<NSString, AnyObject>,
+        ) -> bool {
+            guarded(|| {
+                open_url(url);
+                drive();
+            });
+            true
+        }
+
+        /// A universal link, for an app without scenes.
+        #[unsafe(method(application:continueUserActivity:restorationHandler:))]
+        fn continue_activity(
+            &self,
+            _app: &UIApplication,
+            activity: &NSUserActivity,
+            _restore: &block2::DynBlock<
+                dyn Fn(*mut NSArray<ProtocolObject<dyn UIUserActivityRestoring>>),
+            >,
+        ) -> bool {
+            let mut opened = false;
+            guarded(|| {
+                opened = open_activity(activity);
+                drive();
+            });
+            opened
+        }
     }
 );
 
@@ -813,7 +880,7 @@ define_class!(
             &self,
             scene: &UIScene,
             _session: &UISceneSession,
-            _options: &UISceneConnectionOptions,
+            options: &UISceneConnectionOptions,
         ) {
             guarded(|| {
                 let Some(scene) = scene.downcast_ref::<UIWindowScene>() else {
@@ -821,6 +888,29 @@ define_class!(
                 };
                 LOOP.with(|l| *l.scene.borrow_mut() = Some(scene.retain()));
                 launch();
+                // What the app was launched to open comes with the
+                // connection, not through the calls below.
+                open_contexts(&options.URLContexts());
+                for activity in options.userActivities().iter() {
+                    open_activity(&activity);
+                }
+                drive();
+            });
+        }
+
+        #[unsafe(method(scene:openURLContexts:))]
+        fn open_url_contexts(&self, _scene: &UIScene, contexts: &NSSet<UIOpenURLContext>) {
+            guarded(|| {
+                open_contexts(contexts);
+                drive();
+            });
+        }
+
+        #[unsafe(method(scene:continueUserActivity:))]
+        fn continue_activity(&self, _scene: &UIScene, activity: &NSUserActivity) {
+            guarded(|| {
+                open_activity(activity);
+                drive();
             });
         }
 

@@ -120,6 +120,11 @@ pub trait FrameDriver {
     /// The user's locale changed to `locale`, a BCP 47 tag. Default no-op.
     fn on_locale(&mut self, _locale: &str) {}
 
+    /// The app was asked to open `url`: a link of a scheme or host it
+    /// declares, at launch or while it runs. The driver hands it to the app
+    /// and asks through `cx` for the frames it needs. Default no-op.
+    fn on_open_url(&mut self, _cx: &mut RuntimeCx<'_>, _url: &str) {}
+
     /// An assistive technology started or stopped listening to `window`, or
     /// asked for an action on one of its nodes. Default no-op.
     fn on_accessibility(&mut self, _window: WindowId, _request: AccessRequest) {}

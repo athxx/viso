@@ -112,6 +112,32 @@ public class VisoActivity extends Activity implements SurfaceHolder.Callback2 {
         lastLocale = locale(config);
         nativeStart(this, lastDensity, lastAppearance, lastFontScale, lastLocale,
                 launchExtras());
+        // A recreated activity carries the intent it was first started with,
+        // whose link was opened then.
+        if (state == null) {
+            openLink(getIntent());
+        }
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        openLink(intent);
+    }
+
+    /**
+     * Hand the URL an intent asks the app to view to the native loop: a link
+     * of a scheme or host the manifest declares. A relaunch from the recent
+     * apps repeats the intent that once started the app, so it opens nothing.
+     */
+    private static void openLink(Intent intent) {
+        if (intent == null || !Intent.ACTION_VIEW.equals(intent.getAction())
+                || intent.getData() == null
+                || (intent.getFlags() & Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0) {
+            return;
+        }
+        nativeOpenUrl(intent.getData().toString());
     }
 
     /**
@@ -486,6 +512,8 @@ public class VisoActivity extends Activity implements SurfaceHolder.Callback2 {
     static native void nativeCommit(String text);
 
     static native void nativeEdit(int action);
+
+    static native void nativeOpenUrl(String url);
 
     /**
      * A step of a drag from another app: over the view at ({@code x}, {@code y}) in px, offering

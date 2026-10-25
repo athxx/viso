@@ -917,6 +917,11 @@ pub enum RawEvent {
         window: WindowId,
         features: Vec<DisplayFeature>,
     },
+    /// The app was asked to open `url`: a URL of a scheme it declares, or a
+    /// verified web link to a host it declares, whether it started for it or
+    /// was running. Delivered after [`RawEvent::AppLaunched`], in the order
+    /// the OS handed them over; one that came before launch waits for it.
+    OpenUrl { url: String },
     /// The user's locale changed, a BCP 47 tag such as `en-US` or
     /// `zh-Hans-CN`. The current one is also readable from
     /// [`PlatformApp::locale`](crate::PlatformApp::locale).
