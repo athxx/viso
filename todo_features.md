@@ -470,7 +470,7 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
     - [ ] an app whose natives crate (a sibling in its workspace) answers
       `profile(id) -> Result<Profile, String>` through `viso-net`, called from `.vs`;
       docs (DSL §47, ADR 0051, Architecture).
-  - [ ] `a ?? b`: parsed but neither typed nor lowered; `Option<T> ?? T` is `T`, `b` evaluated only on `None`;
+  - [x] `a ?? b`: parsed but neither typed nor lowered; `Option<T> ?? T` is `T`, `b` evaluated only on `None`;
   - [ ] ASUN rows decoded as they arrive, through an incremental decoder in `asun`
     (deferred: not wired in for now; picked up once `asun-rs`'s pending work lands).
 - [x] `open_url` service.

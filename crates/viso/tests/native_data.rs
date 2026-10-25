@@ -64,8 +64,7 @@ component Card {
                 let more = followed(found);
                 name = more.name;
                 followers = more.followers + more.tags.len();
-                let best: Option<String> = more.best?.name;
-                friend = match best { Option::Some(n) => n, Option::None => "" };
+                friend = more.best?.name ?? "";
             },
             Result::Err(e) => { why = e; },
         }

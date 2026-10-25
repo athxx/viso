@@ -1182,6 +1182,20 @@ impl Lowerer<'_, '_> {
             self.patch_here(&[done]);
             return Ok(dst);
         }
+        // `None` is `Nil` and `Some(x)` is `x`: the left side's value unless
+        // it is `Nil`, the right side evaluated only then.
+        if op == SyntaxKind::QuestionQuestion {
+            let dst = self.reg();
+            let l = self.expr(lhs)?;
+            self.emit(Inst::Move { dst, src: l });
+            let nil = self.reg();
+            self.emit(Inst::IsNil { dst: nil, src: dst });
+            let done = self.jump_if(nil, false);
+            let r = self.expr(rhs)?;
+            self.emit(Inst::Move { dst, src: r });
+            self.patch_here(&[done]);
+            return Ok(dst);
+        }
         let (lt, rt) = (self.ty(lhs)?, self.ty(rhs)?);
         let regs = self.operands(&operands)?;
         self.operate(op, regs[0], &lt, regs[1], &rt)

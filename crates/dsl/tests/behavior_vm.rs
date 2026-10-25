@@ -952,3 +952,66 @@ component Lengths {
         }))
     );
 }
+
+#[test]
+fn coalescing_takes_the_left_value_unless_none_and_only_then_the_right() {
+    let source = r#"
+record Friend { name: String; }
+record Card { best: Option<Friend>; }
+
+component C {
+    state zero = 0;
+    state out = "";
+    state n = 0;
+    computed named: String = Card { best: Option::None }.best?.name ?? "nobody";
+
+    action pick(card: Card) {
+        out = card.best?.name ?? "nobody";
+    }
+
+    action count(a: Option<I64>, b: Option<I64>) {
+        n = a ?? b ?? 1 / zero;
+    }
+
+    view { Text { text: out ?? ""; } }
+}
+"#;
+    let compiled = compile_file(source, &origin());
+    let errors: Vec<_> = compiled
+        .errors()
+        .map(|d| (d.code, d.message.clone()))
+        .collect();
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    // `out` is a `String`, not an `Option`.
+    assert_eq!(errors[0].0, "E2103", "{errors:#?}");
+
+    let source = source.replace("out ?? \"\"", "out");
+    let (mut vm, mut c) = instance(&source, "C");
+    let friend = |name: &str| {
+        Value::Agg(Rc::new(Aggregate {
+            tag: 0,
+            fields: Box::new([Value::str(name)]),
+        }))
+    };
+    let card = |best: Value| {
+        Value::Agg(Rc::new(Aggregate {
+            tag: 0,
+            fields: Box::new([best]),
+        }))
+    };
+    call(&mut vm, &mut c, "pick", &[card(friend("Ada"))]).expect("pick");
+    assert_eq!(c.states()[1], Value::str("Ada"));
+    call(&mut vm, &mut c, "pick", &[card(Value::Nil)]).expect("pick");
+    assert_eq!(c.states()[1], Value::str("nobody"));
+    assert_eq!(
+        call(&mut vm, &mut c, "named", &[]).expect("named"),
+        Value::str("nobody")
+    );
+
+    // The right side runs only on `None`: `1 / zero` would fault.
+    call(&mut vm, &mut c, "count", &[Value::Int(4), Value::Nil]).expect("count");
+    assert_eq!(c.states()[2], Value::Int(4));
+    call(&mut vm, &mut c, "count", &[Value::Nil, Value::Int(5)]).expect("count");
+    assert_eq!(c.states()[2], Value::Int(5));
+    assert!(call(&mut vm, &mut c, "count", &[Value::Nil, Value::Nil]).is_err());
+}

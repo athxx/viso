@@ -2781,7 +2781,7 @@ a == b && b == c;
 - `lhs` 为 `Some(v)` 时不求值 `rhs`；
 - `lhs` 为 `None` 时求值并返回 `rhs`。
 
-Viso 没有隐式 Nullable Reference，因此 `??` 只适用于实现标准 `Coalesce` Trait 的类型；MVP 只内建 `Option<T>`。
+Viso 没有隐式 Nullable Reference，因此 `??` 只适用于实现标准 `Coalesce` Trait 的类型；MVP 只内建 `Option<T>`。左侧为已知的非 `Option` 类型时报 `E2103`。
 
 ### 64.2 Head Expression 消歧
 

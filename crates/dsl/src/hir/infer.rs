@@ -1003,6 +1003,9 @@ impl<'a> InferCx<'a> {
         let rhs = operands.pop();
         let lhs = operands.pop();
         let op = binary_op_kind(node);
+        if op == Some(SyntaxKind::QuestionQuestion) {
+            return self.infer_coalesce(lhs.as_ref(), rhs.as_ref(), expected, node);
+        }
         let lhs_bare = lhs.as_ref().is_some_and(is_bare_number);
         let rhs_bare = rhs.as_ref().is_some_and(is_bare_number);
         let relational = matches!(
@@ -1085,6 +1088,34 @@ impl<'a> InferCx<'a> {
             }
         });
         self.check_against(result, expected, node)
+    }
+
+    /// Types `lhs ?? rhs`: `lhs` an `Option<T>`, `rhs` a `T`, the result a
+    /// `T`. A left side of a known type that is no `Option` is `E2103`.
+    fn infer_coalesce(
+        &mut self,
+        lhs: Option<&Expr>,
+        rhs: Option<&Expr>,
+        expected: Option<&Ty>,
+        node: &SyntaxNode,
+    ) -> Ty {
+        let want = expected.map(|t| Ty::Option(Box::new(t.clone())));
+        let lty = self.infer_operand(lhs, want.as_ref());
+        let inner = match lty {
+            Ty::Option(inner) => *inner,
+            Ty::Unknown | Ty::Never => return self.infer_operand(rhs, expected),
+            other => {
+                let actual = self.describe(&other);
+                let at = lhs.map_or(node.text_range(), |l| l.syntax().text_range());
+                let message = format!("`??` takes an `Option` on its left, not `{actual}`");
+                self.diagnostics
+                    .push(Diagnostic::error("E2103", at, message).expecting(["Option<T>"], actual));
+                let _ = self.infer_operand(rhs, None);
+                return Ty::Unknown;
+            }
+        };
+        let _ = self.infer_operand(rhs, Some(&inner));
+        self.check_against(inner, expected, node)
     }
 
     fn infer_operand(&mut self, expr: Option<&Expr>, expected: Option<&Ty>) -> Ty {
@@ -2046,6 +2077,7 @@ fn is_binary_op(k: SyntaxKind) -> bool {
             | SyntaxKind::Ge
             | SyntaxKind::AmpAmp
             | SyntaxKind::PipePipe
+            | SyntaxKind::QuestionQuestion
     )
 }
 
