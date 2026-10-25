@@ -34,6 +34,9 @@ pub enum Access {
     Contacts,
     Bluetooth,
     Notifications,
+    /// Reaching servers: asked of the package on Android and Windows, which
+    /// otherwise keep a release build offline.
+    Network,
 }
 
 /// The orientations a mobile app turns to.

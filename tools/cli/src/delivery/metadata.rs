@@ -216,6 +216,7 @@ fn access(permission: Permission) -> Access {
         Permission::Contacts => Access::Contacts,
         Permission::Bluetooth => Access::Bluetooth,
         Permission::Notifications => Access::Notifications,
+        Permission::Network => Access::Network,
     }
 }
 

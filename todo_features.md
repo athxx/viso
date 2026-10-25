@@ -402,16 +402,37 @@ Rules:
 
 ## W11 — Networking
 
-Scope to settle before starting: network and device services as `viso-ext` extensions,
-the core keeping only hooks (as W10's camera split does); and `viso-services` (files,
-share, notifications, launcher, secure storage, haptics) overlaps `viso-ext`.
+The core does UI only: networking is the app's business. The core keeps the hooks —
+tasks that await any future (`cx.spawn_then`), `native task` for the DSL, and the
+package's network permission — and `viso-ext/viso-net` wraps each platform's own stack
+behind one easy client, as Flutter's dio does, compiled for the target alone.
 
-- [ ] HTTP client service (platform-native: URLSession, WinHTTP, libcurl-free Rust adapter
-  on Linux/Android, `fetch` on web): request/response, streaming body, cancel, timeouts,
-  redirects.
-- [ ] WebSocket service (native and web).
+- [x] The package's `network` permission: Android `INTERNET` and `ACCESS_NETWORK_STATE`
+  in release builds too, the MSIX `internetClient` capability; Apple apps need none.
+- [ ] `viso-ext/viso-net`, an HTTP client and WebSocket on each platform's own stack
+  (its certificates, proxies, VPN and cookies), whose futures need no runtime:
+  - [ ] the client: a base URL, headers, query, timeouts, redirects, interceptors on
+    the request, the response and the error (auth, retry, logging), a cancel token and
+    a dropped future cancelling, bodies of bytes, text, JSON (`serde`, a feature) and
+    ASUN (`application/asun`, `application/asun+binary`, on by default), a client-wide
+    codec chosen by the response's type, a mock backend for tests;
+  - [ ] Apple, URLSession with a delegate: the body streamed as it comes;
+  - [ ] Android, `HttpURLConnection` through the crate's own dex;
+  - [ ] Linux and the BSDs, libcurl opened at run time;
+  - [ ] Windows, WinHTTP;
+  - [ ] Web, `fetch` with a `ReadableStream` body;
+  - [ ] uploads and downloads: multipart forms, a file streamed up or down, progress
+    both ways;
+  - [ ] WebSocket: text, binary, ping and close; URLSessionWebSocketTask, WinHTTP's,
+    libcurl's, the browser's, and the crate's own framing over rustls (the system's
+    certificates) on Android;
+  - [ ] the DSL's `Http` native library behind `network::http`;
+  - [ ] ASUN rows decoded as they arrive, through an incremental decoder in `asun`.
 - [x] `open_url` service.
-- [ ] Network reachability.
+- [ ] Network reachability: `viso-ext/viso-connectivity`, the app's own choice.
+- [ ] `viso-services` overlaps `viso-ext` (share, notifications, launcher, file dialogs,
+  secure storage, haptics, permissions): none is UI, so each moves to `viso-ext` or
+  goes; the core keeps `app_data_dir` and `LocalStorage` for persistence.
 
 ## W12 — Platform extras
 

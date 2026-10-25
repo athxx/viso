@@ -156,6 +156,8 @@ pub enum Permission {
     Bluetooth,
     /// Showing notifications.
     Notifications,
+    /// Reaching servers over the network.
+    Network,
 }
 
 impl Permission {
@@ -169,6 +171,7 @@ impl Permission {
             Permission::Contacts => "contacts",
             Permission::Bluetooth => "bluetooth",
             Permission::Notifications => "notifications",
+            Permission::Network => "network",
         }
     }
 
@@ -181,6 +184,7 @@ impl Permission {
         Permission::Contacts,
         Permission::Bluetooth,
         Permission::Notifications,
+        Permission::Network,
     ];
 }
 

@@ -138,6 +138,8 @@ fn usage_keys(access: Access, macos: bool) -> &'static [&'static str] {
         Access::Bluetooth => &["NSBluetoothAlwaysUsageDescription"],
         // Asked for at run time, with no reason in the plist.
         Access::Notifications => &[],
+        // Apple apps reach the network without asking.
+        Access::Network => &[],
     }
 }
 
@@ -149,7 +151,7 @@ fn entitlement(access: Access) -> Option<&'static str> {
         Access::Location => Some("com.apple.security.personal-information.location"),
         Access::Photos => Some("com.apple.security.personal-information.photos-library"),
         Access::Contacts => Some("com.apple.security.personal-information.addressbook"),
-        Access::Bluetooth | Access::Notifications => None,
+        Access::Bluetooth | Access::Notifications | Access::Network => None,
     }
 }
 

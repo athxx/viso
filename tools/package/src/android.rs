@@ -242,6 +242,12 @@ fn permissions(access: Access) -> &'static [&'static str] {
         Access::Notifications => {
             &[r#"<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />"#]
         }
+        // Both are granted as the app installs; the second tells whether the
+        // device is online.
+        Access::Network => &[
+            r#"<uses-permission android:name="android.permission.INTERNET" />"#,
+            r#"<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />"#,
+        ],
     }
 }
 
@@ -695,7 +701,7 @@ fn default_sdk(home: &Path) -> PathBuf {
 /// The manifest `template` filled in for the app `bin`.
 fn fill_manifest(template: &str, manifest: &Manifest, bin: &str) -> String {
     let mut lines: Vec<&str> = Vec::new();
-    if manifest.internet {
+    if manifest.internet && !manifest.access.contains(&Access::Network) {
         lines.push(r#"<uses-permission android:name="android.permission.INTERNET" />"#);
     }
     for access in &manifest.access {
@@ -838,6 +844,14 @@ mod tests {
         assert!(!dev.contains('{'), "{dev}");
         let release = fill_manifest(&template, &Manifest::dev("b", Flavor::Release), "b");
         assert!(!release.contains("INTERNET"));
+        // Asked for, the network is there in every build, named once.
+        for flavor in [Flavor::Dev, Flavor::Release] {
+            let mut online = Manifest::dev("b", flavor);
+            online.access.push(Access::Network);
+            let filled = fill_manifest(&template, &online, "b");
+            assert_eq!(filled.matches("android.permission.INTERNET").count(), 1);
+            assert!(filled.contains("android.permission.ACCESS_NETWORK_STATE"));
+        }
 
         let notes = Manifest {
             package: "com.example.notes".into(),

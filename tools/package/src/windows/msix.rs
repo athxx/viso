@@ -123,6 +123,11 @@ pub fn manifest(manifest: &Manifest<'_>) -> String {
     let [major, minor, build, revision] = manifest.version;
     let mut capabilities = String::new();
     let mut devices = String::new();
+    // The foundation's capability comes before the others, as the schema
+    // orders them.
+    if manifest.access.contains(&Access::Network) {
+        capabilities.push_str("    <Capability Name=\"internetClient\"/>\n");
+    }
     for access in manifest.access {
         match access {
             Access::Photos => {
@@ -134,7 +139,7 @@ pub fn manifest(manifest: &Manifest<'_>) -> String {
             Access::Location => devices.push_str("    <DeviceCapability Name=\"location\"/>\n"),
             Access::Bluetooth => devices.push_str("    <DeviceCapability Name=\"bluetooth\"/>\n"),
             // A desktop app shows notifications without asking.
-            Access::Notifications => {}
+            Access::Notifications | Access::Network => {}
         }
     }
     format!(
@@ -396,6 +401,13 @@ mod tests {
         let trust = text.find("runFullTrust").unwrap();
         let webcam = text.find("webcam").unwrap();
         assert!(pictures < trust && trust < webcam);
+        let networked = Manifest {
+            access: &[Access::Photos, Access::Network],
+            ..sample()
+        };
+        let text = manifest(&networked);
+        let internet = text.find("<Capability Name=\"internetClient\"/>").unwrap();
+        assert!(internet < text.find("picturesLibrary").unwrap());
     }
 
     #[test]
