@@ -20,6 +20,7 @@ import android.view.SurfaceHolder;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowInsets;
+import android.view.WindowInsetsController;
 import android.view.WindowManager;
 
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -65,6 +66,8 @@ public class VisoActivity extends Activity implements SurfaceHolder.Callback2 {
     private float lastFontScale = -1;
     private String lastLocale = "";
     private int[] lastCutouts = new int[0];
+    /** Whether the system bars are hidden; kept across a recreation. */
+    private static boolean fullscreen;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -89,6 +92,9 @@ public class VisoActivity extends Activity implements SurfaceHolder.Callback2 {
             window.setAttributes(attrs);
         }
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+        if (fullscreen) {
+            applyFullscreen();
+        }
 
         view = new VisoView(this);
         view.getHolder().addCallback(this);
@@ -361,6 +367,43 @@ public class VisoActivity extends Activity implements SurfaceHolder.Callback2 {
 
     void setLoupe(boolean show, float x, float y) {
         runOnUiThread(() -> view.setLoupe(show, x, y));
+    }
+
+    void setFullscreen(boolean on) {
+        runOnUiThread(() -> {
+            fullscreen = on;
+            applyFullscreen();
+        });
+    }
+
+    /**
+     * Hide the status and navigation bars, a swipe from an edge showing
+     * them for a moment, or show them again.
+     */
+    @SuppressWarnings("deprecation")
+    private void applyFullscreen() {
+        Window window = getWindow();
+        if (Build.VERSION.SDK_INT >= 30) {
+            WindowInsetsController bars = window.getInsetsController();
+            if (bars == null) {
+                return;
+            }
+            if (fullscreen) {
+                bars.setSystemBarsBehavior(
+                        WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                bars.hide(WindowInsets.Type.systemBars());
+            } else {
+                bars.show(WindowInsets.Type.systemBars());
+            }
+        } else {
+            int layout = View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                    | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                    | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION;
+            int hidden = View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                    | View.SYSTEM_UI_FLAG_FULLSCREEN
+                    | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION;
+            window.getDecorView().setSystemUiVisibility(fullscreen ? layout | hidden : layout);
+        }
     }
 
     void setPointerIcon(int type) {

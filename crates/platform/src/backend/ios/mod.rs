@@ -89,6 +89,8 @@ struct Loop {
     wake_timer: RefCell<Option<Retained<NSTimer>>>,
     target: RefCell<Option<Retained<LoopTarget>>>,
     access: RefCell<access::Access>,
+    /// The status bar and home indicator are hidden.
+    fullscreen: Cell<bool>,
 }
 
 thread_local! {
@@ -108,6 +110,7 @@ thread_local! {
         wake_timer: RefCell::new(None),
         target: RefCell::new(None),
         access: RefCell::new(access::Access::new()),
+        fullscreen: Cell::new(false),
     };
 }
 
@@ -422,7 +425,10 @@ impl PlatformApp for IosApp {
         }
         let screen = window.screen();
         let view = VisoView::new(mtm, WINDOW, window.bounds(), screen.nativeScale());
-        let controller = UIViewController::new(mtm);
+        // SAFETY: `init` is UIViewController's designated initializer with
+        // no arguments; the subclass adds no state.
+        let controller: Retained<VisoViewController> =
+            unsafe { msg_send![VisoViewController::alloc(mtm), init] };
         controller.setView(Some(&view));
         LOOP.with(|l| *l.view.borrow_mut() = Some(view.clone()));
 
@@ -454,7 +460,7 @@ impl PlatformApp for IosApp {
         self.window = Some(IosWindow {
             view,
             _window: window,
-            _controller: controller,
+            controller,
         });
         Ok(WINDOW)
     }
@@ -499,6 +505,17 @@ impl PlatformApp for IosApp {
     fn request_paste(&mut self, window: WindowId) {
         if let Some(text) = read_pasteboard() {
             push(RawEvent::Paste { window, text });
+        }
+    }
+
+    fn set_fullscreen(&mut self, window: WindowId, fullscreen: bool) {
+        let Some(shown) = self.window.as_ref().filter(|_| window == WINDOW) else {
+            return;
+        };
+        if LOOP.with(|l| l.fullscreen.replace(fullscreen)) != fullscreen {
+            shown.controller.setNeedsStatusBarAppearanceUpdate();
+            shown.controller.setNeedsUpdateOfHomeIndicatorAutoHidden();
+            push(RawEvent::FullscreenChanged { window, fullscreen });
         }
     }
 
@@ -556,7 +573,7 @@ impl PlatformApp for IosApp {
 pub struct IosWindow {
     view: Retained<VisoView>,
     _window: Retained<UIWindow>,
-    _controller: Retained<UIViewController>,
+    controller: Retained<VisoViewController>,
 }
 
 impl Window for IosWindow {
@@ -588,6 +605,29 @@ impl Window for IosWindow {
         }
     }
 }
+
+define_class!(
+    // SAFETY: UIViewController may be subclassed to answer how its screen
+    // shows; `VisoViewController` adds no state and has no `Drop` impl.
+    #[unsafe(super(UIViewController, UIResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "VisoViewController"]
+    struct VisoViewController;
+
+    unsafe impl NSObjectProtocol for VisoViewController {}
+
+    impl VisoViewController {
+        #[unsafe(method(prefersStatusBarHidden))]
+        fn prefers_status_bar_hidden(&self) -> bool {
+            LOOP.with(|l| l.fullscreen.get())
+        }
+
+        #[unsafe(method(prefersHomeIndicatorAutoHidden))]
+        fn prefers_home_indicator_auto_hidden(&self) -> bool {
+            LOOP.with(|l| l.fullscreen.get())
+        }
+    }
+);
 
 define_class!(
     // SAFETY: NSObject has no subclassing requirements; `LoopTarget` has no

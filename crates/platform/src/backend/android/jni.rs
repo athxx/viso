@@ -49,6 +49,7 @@ struct Methods {
     set_edit_menu: Global<jmethodID>,
     set_loupe: Global<jmethodID>,
     set_pointer_icon: Global<jmethodID>,
+    set_fullscreen: Global<jmethodID>,
     set_clipboard: Global<jmethodID>,
     get_clipboard: Global<jmethodID>,
     set_title_text: Global<jmethodID>,
@@ -338,6 +339,10 @@ pub(super) fn set_pointer_icon(icon: i32) {
     call_void(|m| m.set_pointer_icon, &[jvalue { i: icon }]);
 }
 
+pub(super) fn set_fullscreen(on: bool) {
+    call_void(|m| m.set_fullscreen, &[jvalue { z: on }]);
+}
+
 pub(super) fn set_title(title: &str) {
     with_string(title, |s| {
         call_void(|m| m.set_title_text, &[jvalue { l: s }])
@@ -530,6 +535,7 @@ pub unsafe extern "system" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void
             set_edit_menu: method(c"setEditMenu", c"(ZFFFFI)V"),
             set_loupe: method(c"setLoupe", c"(ZFF)V"),
             set_pointer_icon: method(c"setPointerIcon", c"(I)V"),
+            set_fullscreen: method(c"setFullscreen", c"(Z)V"),
             set_clipboard: method(c"setClipboard", c"(Ljava/lang/String;)V"),
             get_clipboard: method(c"getClipboard", c"()Ljava/lang/String;"),
             set_title_text: method(c"setTitleText", c"(Ljava/lang/String;)V"),

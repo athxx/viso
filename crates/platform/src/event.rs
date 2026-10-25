@@ -884,13 +884,15 @@ pub enum RawEvent {
         window: WindowId,
         buttons_rect: LogicalRect,
     },
-    /// The window entered or left fullscreen. On macOS the OS provides its own
-    /// auto-hiding menu/title bar in fullscreen and removes the traffic lights,
-    /// so a self-drawn caption must hide (`fullscreen: true`) and restore on
-    /// exit (`false`). Emitted at the *start* of the transition animation (the
-    /// platform's will-enter/will-exit hook), so the caption disappears as the
-    /// animation begins rather than after it settles. Only the macOS backend
-    /// emits it today; other backends never fullscreen-hide.
+    /// The window entered or left fullscreen, asked by the app or by the
+    /// user (the green button, F11, the browser's Escape). On macOS the OS
+    /// provides its own auto-hiding menu/title bar in fullscreen and removes
+    /// the traffic lights, so a self-drawn caption must hide
+    /// (`fullscreen: true`) and restore on exit (`false`); it is emitted at
+    /// the *start* of the transition animation (the platform's
+    /// will-enter/will-exit hook), so the caption disappears as the animation
+    /// begins rather than after it settles. On a phone, fullscreen hides the
+    /// system bars.
     FullscreenChanged { window: WindowId, fullscreen: bool },
     /// The window became (`true`) or stopped being (`false`) the target of
     /// keyboard input.

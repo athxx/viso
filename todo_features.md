@@ -493,7 +493,8 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
 - [ ] Tray / status-bar icon with menu.
 - [ ] Deep links / URL schemes.
 - [ ] Custom cursors and pointer lock.
-- [ ] Fullscreen change events on every OS.
+- [x] Fullscreen change events on every OS (Android hides the system bars, iOS the status
+  bar and home indicator).
 - [ ] Window state persistence.
 - [ ] Dock/taskbar badge.
 

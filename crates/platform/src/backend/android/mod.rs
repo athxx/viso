@@ -338,6 +338,8 @@ struct Loop {
     /// The mouse buttons last reported.
     mouse: Cell<PointerButtons>,
     cursor: Cell<i32>,
+    /// The system bars are hidden.
+    fullscreen: Cell<bool>,
     /// The activity is finishing: `run` returns once the queue drains.
     finishing: Cell<bool>,
     /// The accessibility adapter on the host view, while the window is open.
@@ -392,6 +394,7 @@ thread_local! {
         focused: Cell::new(true),
         mouse: Cell::new(PointerButtons::NONE),
         cursor: Cell::new(translate::pointer_icon(CursorIcon::Default)),
+        fullscreen: Cell::new(false),
         finishing: Cell::new(false),
         access: RefCell::new(None),
         arrival: RefCell::new(None),
@@ -1071,6 +1074,13 @@ impl PlatformApp for AndroidApp {
     fn request_paste(&mut self, window: WindowId) {
         if window == WINDOW {
             paste();
+        }
+    }
+
+    fn set_fullscreen(&mut self, window: WindowId, fullscreen: bool) {
+        if window == WINDOW && LOOP.with(|l| l.fullscreen.replace(fullscreen)) != fullscreen {
+            jni::set_fullscreen(fullscreen);
+            push(RawEvent::FullscreenChanged { window, fullscreen });
         }
     }
 
