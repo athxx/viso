@@ -456,7 +456,7 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
       LSP now also reports an import naming nothing);
     - [x] `Viso.toml` a compile dependency of the forms, so a changed grant rebuilds
       them;
-  - [ ] `.vs` reaches the network through the app's own domain natives, not raw HTTP:
+  - [x] `.vs` reaches the network through the app's own domain natives, not raw HTTP:
     - [x] `viso-net` carries no DSL library (its `net` library goes); the spec's
       examples call domain natives (`Api::profile(id)`), the Rust behind them using
       `viso-net`;
@@ -467,7 +467,7 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
       it;
     - [x] data records in native schemas: `#[derive(NativeData)]` on a Rust struct is
       a native value type whose fields `.vs` reads, carried in the JSON schema;
-    - [ ] an app whose natives crate (a sibling in its workspace) answers
+    - [x] an app whose natives crate (a sibling in its workspace) answers
       `profile(id) -> Result<Profile, String>` through `viso-net`, called from `.vs`;
       docs (DSL §47, ADR 0051, Architecture).
   - [x] `a ?? b`: parsed but neither typed nor lowered; `Option<T> ?? T` is `T`, `b` evaluated only on `None`;

@@ -1935,7 +1935,7 @@ feature = "dsl"           # 构建它们的 feature，可省略
 - Dev Session 的 Patch 只能链接 Live View 的 Host 已链接的 Library：首次调用构建未链接的包需要重新构建；
 - Capability 照旧：函数声明自己的 Capability，`Viso.toml` 的 `[package] capabilities` 授予，授权随模块到达 Host，授权之外的调用为 `E6103` Fault；`view!` 与 `component!` 以 `Viso.toml` 为编译依赖，改动授权即重新编译。
 
-- 应用自己的 Native 放在其 workspace 中单独的 crate（如 `app-api`），与扩展 crate 一样是 Native Package：编译 View 的 crate 无法为自己生成它所依赖的 Schema。它只依赖 `viso`：`viso::native` 提供 `native!`、`NativeLibrary` 等写 Library 所需的类型与 `check`；不带默认 feature 依赖 `viso`，以免替 App 选 feature，测试另以 dev-dependency 带默认 feature：
+- 应用自己的 Native 放在其 workspace 中单独的 crate（如 `app-api`），与扩展 crate 一样是 Native Package：编译 View 的 crate 无法为自己生成它所依赖的 Schema。它只依赖 `viso`：`viso::native` 提供 `native!`、`NativeLibrary` 等写 Library 所需的类型与 `check`；返回的记录是 `#[derive(NativeData)]` 的 struct，可预期的失败以 `Result` 返回，等待网络的函数写作 `native!(task "profile" async |cx, id: i64| -> Result<Profile, String> { .. })`：Body 从 `cx` 取所需服务并返回 Future，其值即调用的值，丢弃即取消；不带默认 feature 依赖 `viso`，以免替 App 选 feature，测试另以 dev-dependency 带默认 feature：
 
 ```toml
 [dependencies]

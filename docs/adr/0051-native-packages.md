@@ -89,7 +89,10 @@ Alternatives rejected:
   like any other: the crate that compiles the views cannot generate the schema they
   compile against. It depends on `viso` alone, whose `native` module is what writing a
   library takes; without its default features, so it picks none for the app, and with
-  them as a dev-dependency for its own tests.
+  them as a dev-dependency for its own tests. Its records derive `NativeData`, a failure the caller
+  should handle is a `Result`, and a native that waits is
+  `native!(task "profile" async |cx, id: i64| -> Result<Profile, String> { .. })`, its
+  body returning the work.
 - The network is no DSL library. `.vs` calls the app's domain natives (`api::profile`);
   URLs, auth, retries, decoding and error kinds stay in their Rust, which uses
   `viso-net`. A raw HTTP surface would hand `.vs` untyped text, move transport concerns

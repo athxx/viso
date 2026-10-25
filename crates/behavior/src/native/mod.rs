@@ -764,8 +764,59 @@ impl<'a> NativeCx<'a> {
 /// The kind is `fn`, `action` or `task`; the first closure parameter names the
 /// [`NativeCx`]; every other parameter's type implements [`NativeValue`], as
 /// does the return type; the body returns `Result<Ret, NativeError>`.
+///
+/// A task that waits is `async`: the body takes what it needs from the
+/// [`NativeCx`] and returns the work, whose value the call has once it
+/// finishes; dropping the work cancels it.
+///
+/// ```ignore
+/// native!(task "profile" async |cx, id: i64| -> Result<Profile, String> {
+///     let client = cx.service::<Client>()?.clone();
+///     Ok(async move { Ok(fetch(&client, id).await) })
+/// })
+/// ```
 #[macro_export]
 macro_rules! native {
+    (task $name:literal async |$cx:ident $(, $arg:ident : $ty:ty)* $(,)?| -> $ret:ty $body:block) => {{
+        fn thunk(
+            cx: &mut $crate::native::NativeCx<'_>,
+            args: &[$crate::Value],
+        ) -> ::core::result::Result<$crate::Value, $crate::native::NativeError> {
+            #[allow(unused_variables, unused_mut)]
+            let mut args = args.iter();
+            $(
+                let $arg = args
+                    .next()
+                    .and_then(<$ty as $crate::native::NativeValue>::from_value)
+                    .ok_or_else(|| $crate::native::NativeError::new(concat!(
+                        "argument `", stringify!($arg), "` does not match its schema type"
+                    )))?;
+            )*
+            #[allow(unused_variables)]
+            fn body(
+                $cx: &mut $crate::native::NativeCx<'_>,
+                $($arg: $ty),*
+            ) -> ::core::result::Result<
+                impl ::core::future::Future<
+                    Output = ::core::result::Result<$ret, $crate::native::NativeError>,
+                > + 'static,
+                $crate::native::NativeError,
+            > $body
+            let work = body(cx, $($arg),*)?;
+            cx.suspend(work);
+            ::core::result::Result::Ok($crate::Value::Nil)
+        }
+        $crate::native::NativeFunction::new(
+            $name,
+            $crate::native::NativeKind::Task,
+            &[$($crate::native::Param {
+                name: stringify!($arg),
+                ty: <$ty as $crate::native::NativeValue>::TY,
+            }),*],
+            <$ret as $crate::native::NativeValue>::TY,
+            thunk,
+        )
+    }};
     ($kind:tt $name:literal |$cx:ident $(, $arg:ident : $ty:ty)* $(,)?| -> $ret:ty $body:block) => {{
         fn thunk(
             cx: &mut $crate::native::NativeCx<'_>,

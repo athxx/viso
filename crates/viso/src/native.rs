@@ -60,8 +60,9 @@
 //! static API: NativeLibrary = NativeLibrary {
 //!     path: "api",
 //!     version: 1,
-//!     functions: &[native!(task "profile" |cx, id: i64| -> Result<Profile, String> {
-//!         // `cx.suspend(..)` the request, its answer the task's result.
+//!     functions: &[native!(task "profile" async |cx, id: i64| -> Result<Profile, String> {
+//!         let client = cx.service::<viso_net::Client>()?.clone();
+//!         Ok(async move { Ok(fetch(&client, id).await) })
 //!     })
 //!     .requires(&["network.http"])],
 //!     types: &[Profile::TYPE],

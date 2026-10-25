@@ -444,3 +444,29 @@ fn a_nested_path_counts_in_a_signature() {
         of(SchemaTy::Option(&SchemaTy::I64))
     );
 }
+
+#[test]
+fn an_async_task_native_hands_over_its_work_and_the_work_has_the_value() {
+    static ASK: NativeFunction = crate::native!(task "ask" async |cx, id: i64| -> Result<i64, String> {
+        let base = *cx.service::<i64>()?;
+        Ok(async move { Ok(if id > 0 { Ok(base + id) } else { Err(String::from("no")) }) })
+    });
+    assert_eq!(ASK.kind, NativeKind::Task);
+    assert_eq!(ASK.ret, SchemaTy::Result(&SchemaTy::I64, &SchemaTy::String));
+
+    let mut services = Services::default();
+    let mut cx = NativeCx::new(&mut services);
+    // Without the service it fails before handing over any work.
+    assert!((ASK.call)(&mut cx, &[Value::Int(1)]).is_err());
+    assert!(cx.take_pending().is_none());
+
+    services.insert(40_i64);
+    let mut cx = NativeCx::new(&mut services);
+    assert_eq!((ASK.call)(&mut cx, &[Value::Int(2)]), Ok(Value::Nil));
+    let mut work = cx.take_pending().expect("the work");
+    let mut poll = core::task::Context::from_waker(core::task::Waker::noop());
+    let core::task::Poll::Ready(Ok(value)) = work.as_mut().poll(&mut poll) else {
+        panic!("the work finishes at once");
+    };
+    assert_eq!(<Result<i64, String>>::from_value(&value), Some(Ok(42)));
+}

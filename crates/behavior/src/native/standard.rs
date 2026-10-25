@@ -177,14 +177,15 @@ fn elapsed_ms(_stopwatch: &Stopwatch) -> f64 {
 static TIME: NativeLibrary = NativeLibrary {
     path: "viso::time",
     version: 1,
-    functions: &[crate::native!(task "sleep" |cx, duration: Duration| -> () {
-        let wait = wait_for(cx, duration)?;
-        cx.suspend(async move {
-            wait.await;
-            Ok(())
-        });
-        Ok(())
-    })],
+    functions: &[
+        crate::native!(task "sleep" async |cx, duration: Duration| -> () {
+            let wait = wait_for(cx, duration)?;
+            Ok(async move {
+                wait.await;
+                Ok(())
+            })
+        }),
+    ],
     types: &[NativeType::new("Stopwatch", &STOPWATCH_METHODS)],
     traits: &[],
     derives: &[],
