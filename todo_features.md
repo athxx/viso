@@ -503,7 +503,11 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
     into local player 0, `env.input.gamepad_available` following connections, a gone pad
     releasing what it held; headless pads for tests (platform, runtime, facade and
     `.vs` game tests).
-  - [ ] macOS / iOS: GameController.framework.
+  - [x] macOS / iOS: GameController.framework, loaded at the first poll; elements cached at
+    connection, the list re-read only on its connect/disconnect notifications; rumble
+    through the controller's CoreHaptics engine (macOS: framework, notifications and the
+    element mapping verified with `controllerWithExtendedGamepad`, and in a running app
+    with no pad attached; iOS: clippy only; rumble unverified without a pad).
   - [ ] Windows: XInput.
   - [ ] Linux: evdev with inotify hotplug.
   - [ ] Android: the activity's gamepad key and motion events.

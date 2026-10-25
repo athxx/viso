@@ -395,6 +395,8 @@ fn guarded(f: impl FnOnce()) {
 pub struct IosApp {
     mtm: MainThreadMarker,
     window: Option<IosWindow>,
+    /// The game controllers, read from the first poll.
+    gamepads: crate::gamepad::Gamepads,
 }
 
 impl IosApp {
@@ -446,7 +448,11 @@ impl IosApp {
             *l.locale.borrow_mut() = current_locale();
             *l.target.borrow_mut() = Some(target);
         });
-        Ok(Self { mtm, window: None })
+        Ok(Self {
+            mtm,
+            window: None,
+            gamepads: crate::gamepad::Gamepads::default(),
+        })
     }
 }
 
@@ -617,6 +623,18 @@ impl PlatformApp for IosApp {
             drive();
         }
         crate::LoopWaker::new(|| super::main_queue::post_to_main(kick))
+    }
+
+    fn poll_gamepads(&mut self, events: &mut Vec<crate::GamepadEvent>) {
+        if !self.gamepads.started() {
+            let waker = self.loop_waker();
+            self.gamepads.start(waker);
+        }
+        self.gamepads.poll(events);
+    }
+
+    fn rumble_gamepad(&mut self, id: crate::GamepadId, rumble: crate::Rumble) -> bool {
+        self.gamepads.rumble(id, rumble)
     }
 }
 

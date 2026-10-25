@@ -22,6 +22,15 @@
 
 use std::time::Duration;
 
+#[cfg(target_vendor = "apple")]
+mod apple;
+
+#[cfg(target_vendor = "apple")]
+use apple as imp;
+
+#[cfg(target_vendor = "apple")]
+use crate::LoopWaker;
+
 /// A connected gamepad's id: unique to its connection, never reused while
 /// the process runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -260,6 +269,39 @@ impl Pads {
     /// The key of the pad `id`.
     pub(crate) fn key(&self, id: GamepadId) -> Option<u64> {
         self.pads.iter().find(|p| p.id == id).map(|p| p.key)
+    }
+}
+
+/// A native backend's gamepads, started at the first poll.
+#[cfg(target_vendor = "apple")]
+#[derive(Default)]
+pub(crate) struct Gamepads(Option<Option<imp::Source>>);
+
+#[cfg(target_vendor = "apple")]
+impl Gamepads {
+    /// Whether the source was started (or found missing).
+    pub(crate) fn started(&self) -> bool {
+        self.0.is_some()
+    }
+
+    /// Starts the source, its connections kicking `waker`.
+    pub(crate) fn start(&mut self, waker: LoopWaker) {
+        if self.0.is_none() {
+            self.0 = Some(imp::Source::new(waker));
+        }
+    }
+
+    pub(crate) fn poll(&mut self, events: &mut Vec<GamepadEvent>) {
+        if let Some(Some(source)) = &mut self.0 {
+            source.poll(events);
+        }
+    }
+
+    pub(crate) fn rumble(&mut self, id: GamepadId, rumble: Rumble) -> bool {
+        match &mut self.0 {
+            Some(Some(source)) => source.rumble(id, rumble),
+            _ => false,
+        }
     }
 }
 

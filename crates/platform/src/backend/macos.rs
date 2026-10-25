@@ -148,6 +148,8 @@ pub struct MacApp {
     menu_targets: Vec<Retained<MenuTarget>>,
     /// The kernel's memory-pressure notifications, queued as `LowMemory`.
     _memory_pressure: Option<MemoryPressure>,
+    /// The game controllers, read from the first poll.
+    gamepads: crate::gamepad::Gamepads,
 }
 
 impl MacApp {
@@ -241,6 +243,7 @@ impl MacApp {
             _app_delegate: app_delegate,
             menu_targets: Vec::new(),
             _memory_pressure: memory_pressure,
+            gamepads: crate::gamepad::Gamepads::default(),
         })
     }
 
@@ -795,6 +798,18 @@ impl PlatformApp for MacApp {
             woken.store(true, Ordering::Release);
             post_to_main(kick);
         })
+    }
+
+    fn poll_gamepads(&mut self, events: &mut Vec<crate::GamepadEvent>) {
+        if !self.gamepads.started() {
+            let waker = self.loop_waker();
+            self.gamepads.start(waker);
+        }
+        self.gamepads.poll(events);
+    }
+
+    fn rumble_gamepad(&mut self, id: crate::GamepadId, rumble: crate::Rumble) -> bool {
+        self.gamepads.rumble(id, rumble)
     }
 
     fn set_menu(&mut self, menu: &Menu) {
