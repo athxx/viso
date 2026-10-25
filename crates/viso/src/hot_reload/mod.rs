@@ -1276,6 +1276,13 @@ impl HotReloadSession {
         }
     }
 
+    /// Whether the scenario being played waits on frames to come.
+    pub(crate) fn wants_frames(&self) -> bool {
+        self.scenario
+            .as_ref()
+            .is_some_and(|(_, runner)| runner.wants_frames())
+    }
+
     /// After each frame: runs the steps of the scenario being played that
     /// are due against the first window, and sends their report.
     pub(crate) fn play(&mut self, windows: &[WindowState], cx: &mut RuntimeCx<'_>) {

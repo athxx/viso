@@ -4618,9 +4618,32 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // as its animations finish; once every window is idle this returns
         // false and the loop is free to idle — the counterpart to the per-window
         // `request_redraw` self-reschedule in `PostFrameCleanup`.
-        self.windows
-            .iter()
-            .any(|w| w.is_animating() || w.text_work_pending())
+        let scripted = {
+            #[cfg(feature = "headless")]
+            {
+                self.script
+                    .as_ref()
+                    .is_some_and(scenario::ScriptRunner::wants_frames)
+            }
+            #[cfg(not(feature = "headless"))]
+            {
+                false
+            }
+        } || {
+            #[cfg(feature = "hot-reload")]
+            {
+                self.hot_reload.wants_frames()
+            }
+            #[cfg(not(feature = "hot-reload"))]
+            {
+                false
+            }
+        };
+        scripted
+            || self
+                .windows
+                .iter()
+                .any(|w| w.is_animating() || w.text_work_pending())
     }
 
     fn next_timer_deadline(&self) -> Option<viso_runtime::Instant> {

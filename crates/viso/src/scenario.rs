@@ -52,6 +52,8 @@ pub(crate) struct ScriptRunner {
     since: u32,
     /// Frames a `wait` still lets run.
     waiting: u32,
+    /// Whether a `wait` counts frames down, or the frame after it is owed.
+    counting: bool,
     /// Frames run in all.
     frames: u64,
     finished: bool,
@@ -144,6 +146,7 @@ impl ScriptRunner {
             next: 0,
             since: 0,
             waiting: 0,
+            counting: false,
             frames: 0,
             finished: false,
             report,
@@ -177,6 +180,7 @@ impl ScriptRunner {
             next: 0,
             since: 0,
             waiting: 0,
+            counting: false,
             frames: 0,
             finished: false,
             report: Report::Lines(Vec::new()),
@@ -206,6 +210,13 @@ impl ScriptRunner {
         self.finished
     }
 
+    /// Whether it waits on frames to come, with nothing else asking for
+    /// them: a `wait` counting them down, and the frame after, which plays
+    /// the next step.
+    pub(crate) fn wants_frames(&self) -> bool {
+        !self.finished && self.counting
+    }
+
     /// After each frame of the first window `ws`, whose census `census`
     /// takes and whose detail `detail` does: run the steps due.
     pub(crate) fn after_frame(
@@ -231,6 +242,7 @@ impl ScriptRunner {
             cx.request_redraw(ws.window);
             return;
         }
+        self.counting = false;
         let busy = ws.is_animating() || ws.text_work_pending();
         if busy && self.since < self.script.settle {
             self.since += 1;
@@ -262,6 +274,7 @@ impl ScriptRunner {
                 },
                 Action::Wait(frames) => {
                     self.waiting = *frames - 1;
+                    self.counting = true;
                     self.write(Reported::Passed { line });
                     cx.request_redraw(ws.window);
                     return;

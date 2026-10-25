@@ -204,7 +204,8 @@ fn snapshots_are_captured_compared_and_updated() {
             ),
             (
                 "tests/ui/flip.tape",
-                b"surface 320x200@1\nexpect snapshot \"off\"\nclick \"Flip\"\nexpect snapshot \"on\"\n",
+                // A `wait` with the app idle still plays the step after it.
+                b"surface 320x200@1\nwait 2\nexpect snapshot \"off\"\nclick \"Flip\"\nexpect snapshot \"on\"\n",
             ),
         ],
     );
