@@ -432,8 +432,10 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
   - [x] Web, `fetch` with the body read from its stream only while the app keeps up,
     the page's clock and one `setTimeout` for the deadlines; the browser follows
     redirects itself, and tells an upload's progress only at its end;
-  - [ ] uploads and downloads: multipart forms, a file streamed up or down, progress
-    both ways;
+  - [x] uploads and downloads: a body of parts, bytes and files read only as they go
+    (sent again from any point where a redirect asks), multipart forms, a body saved
+    to a file on a thread of its own and moved in once whole, progress both ways;
+    the web sends no file;
   - [ ] WebSocket: text, binary, ping and close; URLSessionWebSocketTask, WinHTTP's,
     libcurl's, the browser's, and the crate's own framing over rustls (the system's
     certificates) on Android;
