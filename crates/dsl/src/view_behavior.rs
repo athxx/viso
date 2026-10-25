@@ -8,7 +8,6 @@
 
 use std::rc::Rc;
 
-use viso_behavior::native::Natives;
 use viso_behavior::{Budget, Module, Vm};
 pub use viso_schema::view::{Control, ControlInput, GameQuery, LookArm, Switched, When};
 use viso_schema::view::{ControlKind, EventRoute, LayoutSlot, Route, ViewRegions};
@@ -390,12 +389,12 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
             format!("the behavior does not mount: the behavior module has no component `{name}`"),
         )]);
     };
-    // The runtime links the module against the standard natives under the
-    // grant it asks for when it mounts the view; a conflict there is the
-    // compiler's to report.
+    // The runtime links the module against the libraries it was compiled
+    // against under the grant it asks for when it mounts the view; a conflict
+    // there is the compiler's to report.
     let grant: Vec<&str> = module.capabilities().iter().map(|c| &**c).collect();
     let mut vm = Vm::new(Rc::clone(&module), Budget::default());
-    if let Err(conflict) = vm.link(&Natives::standard(), &grant) {
+    if let Err(conflict) = vm.link(&compiled.natives, &grant) {
         return Err(vec![MountError::new(
             Some(component.source_origin),
             format!("the behavior does not mount: the behavior module does not link: {conflict}"),

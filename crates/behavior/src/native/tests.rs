@@ -1,5 +1,6 @@
 use alloc::borrow::ToOwned;
 use alloc::rc::Rc;
+use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefCell;
@@ -121,6 +122,29 @@ fn conflicting_schemas_are_rejected() {
     assert_eq!(
         natives.ty("test::Frame").unwrap().ty.ownership,
         Ownership::Borrowed
+    );
+}
+
+#[test]
+fn a_set_of_libraries_shares_one_registry() {
+    assert!(Arc::ptr_eq(
+        &Natives::shared(&[]).unwrap(),
+        &Natives::standard()
+    ));
+    let test = Natives::shared(&[&TEST]).expect("registry");
+    assert!(Arc::ptr_eq(&test, &Natives::shared(&[&TEST]).unwrap()));
+    assert!(test.function("viso::text::upper").is_some());
+    assert!(test.function("test::sum").is_some());
+    static EXTRA: NativeLibrary = NativeLibrary {
+        path: "extra",
+        ..TEST
+    };
+    let both = Natives::shared(&[&TEST, &EXTRA]).expect("registry");
+    assert!(both.function("extra::sum").is_some());
+    assert!(!Arc::ptr_eq(&test, &both));
+    assert_eq!(
+        Natives::shared(&[&TEST_V2, &TEST]).unwrap_err().code(),
+        "E6101"
     );
 }
 

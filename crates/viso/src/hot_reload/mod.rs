@@ -66,6 +66,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use viso_behavior::game::{DEFAULT_HISTORY_SECONDS, GameSnapshot, PreparedSwap};
+use viso_behavior::native::Natives;
 use viso_behavior::{Module, Vm};
 use viso_gpu::GpuBackend;
 use viso_platform::{Instant, LoopWaker, WindowId};
@@ -1016,7 +1017,17 @@ impl HotReloadSession {
                                 });
                             }
                         }
-                        let mut staged = stage(*bundle, &self.files, assets)?;
+                        let views = &self.views;
+                        let natives = |file: usize| {
+                            views
+                                .iter()
+                                .filter(|live| live.file == file)
+                                .find_map(|live| live.host.as_ref())
+                                .map_or_else(Natives::standard, |host| {
+                                    Arc::clone(host.borrow().natives())
+                                })
+                        };
+                        let mut staged = stage(*bundle, &self.files, assets, natives)?;
                         let work = shader_work(&staged, windows, &self.files).map_err(
                             |(nack, line)| {
                                 link.send(RuntimeMessage::Log {
@@ -1694,7 +1705,10 @@ impl HotReloadSession {
                 }
                 let vm = match game.vm.take() {
                     Some(vm) => Ok(vm),
-                    None => GameSession::stage(&game.module),
+                    None => {
+                        let natives = Arc::clone(session.borrow().natives());
+                        GameSession::stage(&game.module, &natives)
+                    }
                 };
                 let prepared = vm
                     .map_err(GameReloadError::Link)
@@ -1749,6 +1763,7 @@ fn stage(
     bundle: PatchBundle,
     files: &[ViewFile],
     loaded: Vec<LoadedAsset>,
+    natives: impl Fn(usize) -> Arc<Natives>,
 ) -> Result<StagedPatch, PatchNack> {
     let refuse_at = |stage, code: &str| PatchNack {
         base_revision: bundle.base_revision,
@@ -1816,8 +1831,10 @@ fn stage(
                         .filter(|_| !games.iter().any(|g: &StagedGame| g.file == file))
                         .cloned()
                         .ok_or_else(|| refuse(NACK_UNLOADABLE_SYSTEM))?;
-                    let vm =
-                        GameSession::stage(&module).map_err(|_| refuse(NACK_UNLOADABLE_SYSTEM))?;
+                    // Linked as the file's live view is: a patch cannot reach a
+                    // native package the build did not link.
+                    let vm = GameSession::stage(&module, &natives(file))
+                        .map_err(|_| refuse(NACK_UNLOADABLE_SYSTEM))?;
                     games.push(StagedGame {
                         file,
                         tier: game.tier,
@@ -5084,7 +5101,7 @@ mod tests {
 
             // The tape replays the run on a fresh game of the same build.
             let module = Rc::clone(game.borrow().module());
-            let vm = GameSession::stage(&module).expect("links");
+            let vm = GameSession::stage(&module, &Natives::standard()).expect("links");
             let mut replay =
                 viso_behavior::game::Scheduler::with_seed(vm, tape.seed).expect("starts");
             replay.play(tape).expect("fits");

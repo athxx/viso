@@ -39,13 +39,20 @@ A **native package** is a Cargo package that carries native libraries for `.vs` 
   `cargo metadata`, once per manifest and lock file for the process. `read` interns each
   schema as stubs; `registry` is the standard libraries and theirs, a path declared twice
   being `E6101`.
-- `view!`, `component!` and `ui!` compile against the standard libraries first and
-  discover only when an import resolves to nothing, so an app without native packages
-  runs no `cargo metadata`. The expansion names the Rust libraries of the packages the
-  module calls (`::viso_net::NATIVES`) and hands them to the build, which links the
-  module, and the dev session's patches, against the standard libraries and these. An app
-  writes no registration code; a native package it does not depend on directly is not
-  found, since its crate could not be named.
+- `view!` and `component!` compile against the standard libraries first and discover
+  only when a path resolves to nothing (`E2001`), so an app without native packages runs
+  no `cargo metadata`; `ui!` imports nothing. A compiled source records the registry it
+  resolved against, and its behavior links against that at build time too. The
+  expansion names the Rust libraries of the packages the module calls
+  (`::viso_net::NATIVES`) and hands them to the view's host, which links against the
+  standard libraries and these (`Natives::shared`, one registry per set of libraries for
+  the process). The game a view starts links as its host does; a release package loads
+  with the same libraries (`ViewLoad::libraries`). An app writes no registration code; a
+  native package it does not depend on directly is not found, since its crate could not
+  be named.
+- A dev session's patch links against the libraries the live view's host linked: an
+  edit cannot reach a package the build did not link, which needs a rebuild, as a new
+  Rust dependency does.
 - `viso check`, `export`, `dev` and `schema`, and the LSP, discover once per project and
   compile against the same registry.
 - Capabilities stay as they are: a package's functions declare theirs

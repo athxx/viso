@@ -310,13 +310,15 @@ fn commit_from(
 
     // Step 2 — the recompiled behavior's host is created first, so the
     // migration sets each carried state into it while the prior host still
-    // holds the old values. It keeps the prior host's grant: an edit cannot
-    // widen it.
+    // holds the old values. It keeps the prior host's grant and libraries: an
+    // edit cannot widen the grant, and a native package the build did not
+    // link needs a rebuild.
     let mut next = candidate.module.as_ref().map(|module| match &rt.view {
         Some(prior) => {
             let prior = prior.borrow();
             let grant: Vec<&str> = prior.capabilities().iter().map(|c| &**c).collect();
-            ViewHost::with_capabilities(Rc::clone(module), &package.component, &grant)
+            let natives = Arc::clone(prior.natives());
+            ViewHost::linked(Rc::clone(module), &package.component, natives, &grant, None)
         }
         None => ViewHost::new(Rc::clone(module), &package.component),
     });

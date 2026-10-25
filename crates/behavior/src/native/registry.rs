@@ -183,6 +183,47 @@ impl Natives {
         Ok(natives)
     }
 
+    /// [`Natives::with`] `libraries`, one registry per set of libraries shared
+    /// by every caller; the [`standard`](Natives::standard) one for none.
+    ///
+    /// # Errors
+    ///
+    /// As [`Natives::with`].
+    #[cfg(feature = "std")]
+    pub fn shared(libraries: &[&'static NativeLibrary]) -> Result<Arc<Natives>, SchemaConflict> {
+        type Shared = Vec<(Vec<*const NativeLibrary>, Arc<Natives>)>;
+        struct Registries(std::sync::Mutex<Shared>);
+        // SAFETY: the pointers are only compared, never dereferenced; they
+        // name `'static` libraries.
+        unsafe impl Sync for Registries {}
+        static SHARED: Registries = Registries(std::sync::Mutex::new(Vec::new()));
+        if libraries.is_empty() {
+            return Ok(Natives::standard());
+        }
+        let key: Vec<*const NativeLibrary> =
+            libraries.iter().map(|l| core::ptr::from_ref(*l)).collect();
+        let mut shared = SHARED.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((_, natives)) = shared.iter().find(|(k, _)| *k == key) {
+            return Ok(Arc::clone(natives));
+        }
+        let natives = Arc::new(Natives::with(libraries)?);
+        shared.push((key, Arc::clone(&natives)));
+        Ok(natives)
+    }
+
+    /// [`Natives::with`] `libraries`. Without `std` each call builds its own.
+    ///
+    /// # Errors
+    ///
+    /// As [`Natives::with`].
+    #[cfg(not(feature = "std"))]
+    pub fn shared(libraries: &[&'static NativeLibrary]) -> Result<Arc<Natives>, SchemaConflict> {
+        if libraries.is_empty() {
+            return Ok(Natives::standard());
+        }
+        Natives::with(libraries).map(Arc::new)
+    }
+
     /// Registers every library of `libraries`.
     ///
     /// # Errors

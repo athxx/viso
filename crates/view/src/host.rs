@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use viso_behavior::aot::{NativeCode, NativeCodeMismatch};
 use viso_behavior::game::{PERSIST_CAPABILITY, Persist, PersistReport, Persistence};
-use viso_behavior::native::{Natives, SchemaConflict, Services};
+use viso_behavior::native::{NativeLibrary, Natives, SchemaConflict, Services};
 use viso_behavior::{
     Budget, ChunkKind, ComponentEffect, Event, Fault, FaultKind, Instance, LoadError, Module,
     Start, Text, Value, Vm,
@@ -137,7 +137,7 @@ pub enum HostError {
     Load(LoadError),
     /// The module has no component of this name.
     NoComponent(String),
-    /// A native import did not link against the standard registry.
+    /// A native import did not link against the host's libraries.
     Link(SchemaConflict),
     /// A shader of the view is not a packed brush.
     Shader(DecodeError),
@@ -227,6 +227,8 @@ struct EnvLink {
 /// [`last_fault`](Self::last_fault), and never unwinds into the event router.
 pub struct ViewHost {
     pub(crate) vm: Vm,
+    /// The libraries the VM is linked against.
+    natives: Arc<Natives>,
     /// The module compiled to Rust the VM runs, when it runs one.
     native: Option<&'static NativeCode>,
     pub(crate) instance: Instance,
@@ -360,7 +362,7 @@ impl ViewHost {
         component: &str,
         capabilities: &[&str],
     ) -> Result<ViewHost, HostError> {
-        ViewHost::build(module, component, capabilities, None)
+        ViewHost::linked(module, component, Natives::standard(), capabilities, None)
     }
 
     /// A host for component `component` of `module` running `native`, the
@@ -377,12 +379,30 @@ impl ViewHost {
         native: &'static NativeCode,
     ) -> Result<ViewHost, HostError> {
         let grant: Vec<&str> = module.capabilities().iter().map(|c| &**c).collect();
-        ViewHost::build(Rc::clone(&module), component, &grant, Some(native))
+        ViewHost::linked(
+            Rc::clone(&module),
+            component,
+            Natives::standard(),
+            &grant,
+            Some(native),
+        )
     }
 
-    fn build(
+    /// A host for component `component` of `module` linked against
+    /// `natives` — the standard libraries and those of the native packages
+    /// the module calls ([`Natives::shared`]) — granted exactly
+    /// `capabilities`, running `native` in place of the interpreter when
+    /// given.
+    ///
+    /// # Errors
+    ///
+    /// [`HostError::Link`] when a native the module imports is not among
+    /// `natives` or was compiled against another schema, and as
+    /// [`with_native`](Self::with_native).
+    pub fn linked(
         module: Rc<Module>,
         component: &str,
+        natives: Arc<Natives>,
         capabilities: &[&str],
         native: Option<&'static NativeCode>,
     ) -> Result<ViewHost, HostError> {
@@ -393,8 +413,7 @@ impl ViewHost {
         let handlers = layout.handlers.clone();
         let states = layout.states.len();
         let mut vm = Vm::new(Rc::clone(&module), Budget::default());
-        vm.link(&Natives::standard(), capabilities)
-            .map_err(HostError::Link)?;
+        vm.link(&natives, capabilities).map_err(HostError::Link)?;
         if let Some(native) = native {
             vm.install_native(native).map_err(HostError::Native)?;
         }
@@ -404,6 +423,7 @@ impl ViewHost {
         };
         Ok(ViewHost {
             vm,
+            natives,
             native,
             instance,
             broken,
@@ -505,6 +525,11 @@ impl ViewHost {
         let module = self.vm.module();
         (0..module.chunks().len() as u32)
             .all(|c| !module.chunk(c).body.exists() || self.vm.is_native(c))
+    }
+
+    /// The libraries the host's natives are linked against.
+    pub fn natives(&self) -> &Arc<Natives> {
+        &self.natives
     }
 
     /// The capabilities the host's natives are linked with.
@@ -1532,9 +1557,10 @@ pub fn cell_value(value: &Value, witness: StateValue) -> Option<StateValue> {
 
 /// The host for an embedded, build-time-verified module, sharing one decoded
 /// module per thread across every mount of the same view, running `native`,
-/// the module compiled to Rust beside it, when the build carries it. The
-/// module borrows `bytes` ([`Module::decode_static`]): its names and string
-/// constants stay in the binary.
+/// the module compiled to Rust beside it, when the build carries it, and
+/// linked against the standard libraries and `libraries`, those of the native
+/// packages it calls. The module borrows `bytes` ([`Module::decode_static`]):
+/// its names and string constants stay in the binary.
 ///
 /// # Panics
 ///
@@ -1546,6 +1572,7 @@ pub fn __embedded(
     bytes: &'static [u8],
     component: &str,
     native: Option<&'static NativeCode>,
+    libraries: &[&'static [&'static NativeLibrary]],
 ) -> Rc<RefCell<ViewHost>> {
     thread_local! {
         static MODULES: RefCell<Vec<(usize, Rc<Module>)>> = const { RefCell::new(Vec::new()) };
@@ -1563,12 +1590,26 @@ pub fn __embedded(
         modules.push((key, Rc::clone(&module)));
         module
     });
-    let host = match native {
-        Some(native) => ViewHost::with_native(module, component, native),
-        None => ViewHost::new(module, component),
-    };
+    let grant: Vec<&str> = module.capabilities().iter().map(|c| &**c).collect();
+    let host = package_natives(libraries)
+        .map_err(HostError::Link)
+        .and_then(|natives| {
+            ViewHost::linked(Rc::clone(&module), component, natives, &grant, native)
+        });
     match host {
         Ok(host) => host.shared(),
         Err(error) => panic!("an embedded view does not mount: {error}"),
+    }
+}
+
+/// The standard libraries and `packages`, each the libraries of a native
+/// package, such as `viso_net::NATIVES`.
+pub(crate) fn package_natives(
+    packages: &[&'static [&'static NativeLibrary]],
+) -> Result<Arc<Natives>, SchemaConflict> {
+    match packages {
+        [] => Ok(Natives::standard()),
+        [one] => Natives::shared(one),
+        _ => Natives::shared(&packages.concat()),
     }
 }

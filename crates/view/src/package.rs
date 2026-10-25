@@ -14,6 +14,7 @@ use std::fmt;
 use std::rc::Rc;
 
 use viso_behavior::aot::NativeCode;
+use viso_behavior::native::NativeLibrary;
 use viso_behavior::{LoadError, Module};
 use viso_ende::DecodeError;
 use viso_ui::aot::instantiate_indexed;
@@ -24,7 +25,7 @@ use viso_ui::{
 use crate::attach::{Route, attach_node};
 use crate::control::Control;
 use crate::effects::mount_effects;
-use crate::host::{HostError, ViewHost};
+use crate::host::{HostError, ViewHost, package_natives};
 use crate::regions::mount_regions;
 use crate::scope::Scope;
 use crate::shaders::load_kept;
@@ -75,6 +76,9 @@ pub struct ViewLoad<'a> {
     /// The package's behavior compiled to Rust (`viso_dsl::aot::package_native_code`,
     /// built into the app), run in place of the interpreter.
     pub native: Option<&'static NativeCode>,
+    /// The native libraries of the packages the view calls, such as
+    /// `viso_net::NATIVES`, linked beside the standard ones.
+    pub libraries: &'a [&'static [&'static NativeLibrary]],
     /// Given the host before the view mounts, to install the services its
     /// natives and `@persist` states use.
     pub setup: Option<&'a mut dyn FnMut(&mut ViewHost)>,
@@ -84,6 +88,7 @@ impl fmt::Debug for ViewLoad<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ViewLoad")
             .field("native", &self.native.map(|code| code.build))
+            .field("libraries", &self.libraries.len())
             .field("setup", &self.setup.is_some())
             .finish()
     }
@@ -187,10 +192,16 @@ fn mount<'a>(
             (keep.module)(view.behavior)
                 .map_err(|error| ViewLoadError::Host(HostError::Load(error)))?,
         );
-        let mut host = match load.native {
-            Some(native) => ViewHost::with_native(module, view.component, native),
-            None => ViewHost::new(module, view.component),
-        }
+        let natives = package_natives(load.libraries)
+            .map_err(|conflict| ViewLoadError::Host(HostError::Link(conflict)))?;
+        let grant: Vec<&str> = module.capabilities().iter().map(|c| &**c).collect();
+        let mut host = ViewHost::linked(
+            Rc::clone(&module),
+            view.component,
+            natives,
+            &grant,
+            load.native,
+        )
         .map_err(ViewLoadError::Host)?;
         host.set_assets(view.assets().map(|(id, bytes)| (id, (keep.asset)(bytes))));
         let shaders = view.shaders().map(|bytes| load_kept(bytes, keep.asset));

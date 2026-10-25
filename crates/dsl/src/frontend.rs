@@ -263,6 +263,9 @@ pub struct Compiled {
     /// The package's other modules the source imports, directly or through
     /// another, in the order they were read: what a change to recompiles it.
     pub imported: Vec<Imported>,
+    /// The native libraries its native paths resolved against, which its
+    /// behavior links to.
+    pub natives: Arc<Natives>,
 }
 
 /// A module of the package a compiled source imports.
@@ -360,11 +363,22 @@ fn shift_back(range: TextRange, base: TextSize) -> TextRange {
 /// Compiles a `component!` body: optional imports, then exactly one component,
 /// its `component` keyword optional.
 pub fn compile_component(source: &str, origin: &Origin) -> Compiled {
-    compile_component_for(source, origin, TargetProfile::default())
+    compile_component_for(
+        source,
+        origin,
+        Natives::standard(),
+        TargetProfile::default(),
+    )
 }
 
-/// [`compile_component`] for the targets and build `profile` describes.
-pub fn compile_component_for(source: &str, origin: &Origin, profile: TargetProfile) -> Compiled {
+/// [`compile_component`] with native paths resolved against `natives`, for
+/// the targets and build `profile` describes.
+pub fn compile_component_for(
+    source: &str,
+    origin: &Origin,
+    natives: Arc<Natives>,
+    profile: TargetProfile,
+) -> Compiled {
     let parse = parse_entry(&tokenize(source), source, Entry::ComponentEntry);
     // The entry production only restricts what may appear; its tree has the shape
     // of a compilation unit, so the module frontend takes it as one.
@@ -375,7 +389,7 @@ pub fn compile_component_for(source: &str, origin: &Origin, profile: TargetProfi
         )),
         errors: parse.errors,
     };
-    compile_unit(source, unit, origin, Natives::standard(), profile, None)
+    compile_unit(source, unit, origin, natives, profile, None)
 }
 
 /// Compiles a `.vs` file for `view!`: the unit's exported component, or its only
@@ -508,7 +522,7 @@ fn compile_unit(
         let path = ModulePath::intern(&mut interner, &segments);
         units.push(SourceUnit::new(path, sibling.parse.clone()));
     }
-    let graph = ModuleGraph::build_with(&units, &interner, natives, &origin.package);
+    let graph = ModuleGraph::build_with(&units, &interner, Arc::clone(&natives), &origin.package);
     let Some(index) = graph.index_of(&path.display(&interner), &interner) else {
         diagnostics.extend(graph.errors().iter().cloned());
         let mut compiled = Compiled::empty(diagnostics, Program::default(), Vec::new());
@@ -718,6 +732,7 @@ fn compile_unit(
         assets,
         base: TextSize::ZERO,
         imported,
+        natives,
     }
 }
 
@@ -1110,6 +1125,7 @@ impl Compiled {
             assets: Vec::new(),
             base: TextSize::ZERO,
             imported: Vec::new(),
+            natives: Natives::standard(),
         }
     }
 }

@@ -282,7 +282,7 @@ system Synth implements AudioProcess {
 
         let swap = |session: &Rc<std::cell::RefCell<GameSession>>, synth| {
             let module = module(synth);
-            let vm = GameSession::stage(&module).expect("links");
+            let vm = GameSession::stage(&module, &Natives::standard()).expect("links");
             session
                 .borrow_mut()
                 .reload(module, vm, None)

@@ -448,9 +448,10 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
     - [x] discovery: the app's direct dependencies declaring
       `[package.metadata.viso.natives]` (schema, Rust static, feature), through
       `cargo metadata`, cached for the process;
-    - [ ] `view!`/`component!`/`ui!` resolve an import no standard library has against
-      the packages, and hand their libraries to the build, which links them, the dev
-      session's patches too;
+    - [x] `view!`/`component!` resolve a path no standard library has against the
+      packages and hand the libraries the module calls to its host, which links them
+      (one shared registry per set), as do its game, a loaded release package and the
+      dev session's patches;
     - [ ] `viso check`/`export`/`dev`/`schema` and the LSP compile against them;
     - [ ] `viso-net` library `net`: `Http`, a request built and sent, its `Response`
       read; `natives.json` checked against the Rust library by its tests; an app

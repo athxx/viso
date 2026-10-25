@@ -22,6 +22,7 @@
 use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use viso_behavior::aot::NativeCode;
 use viso_behavior::game::{
@@ -132,6 +133,8 @@ pub struct GameSession {
     scheduler: Scheduler,
     /// The module the running build was made from.
     module: Rc<Module>,
+    /// The libraries the game's builds link against.
+    natives: Arc<Natives>,
     /// The module compiled to Rust the running build runs: a release build's;
     /// a reloaded build is interpreted.
     native: Option<&'static NativeCode>,
@@ -175,14 +178,17 @@ impl std::fmt::Debug for GameSession {
     }
 }
 
-/// A VM over `module` linked against the standard natives with the
-/// package's capabilities and running `native` when given, persisting through
-/// the installed store.
-fn link(module: &Rc<Module>, native: Option<&'static NativeCode>) -> Result<Vm, String> {
+/// A VM over `module` linked against `natives` with the package's
+/// capabilities and running `native` when given, persisting through the
+/// installed store.
+fn link(
+    module: &Rc<Module>,
+    natives: &Natives,
+    native: Option<&'static NativeCode>,
+) -> Result<Vm, String> {
     let grant: Vec<&str> = module.capabilities().iter().map(|c| &**c).collect();
     let mut vm = Vm::new(Rc::clone(module), Budget::default());
-    vm.link(&Natives::standard(), &grant)
-        .map_err(|e| e.to_string())?;
+    vm.link(natives, &grant).map_err(|e| e.to_string())?;
     if let Some(native) = native {
         vm.install_native(native).map_err(|e| e.to_string())?;
     }
@@ -204,14 +210,32 @@ impl GameSession {
         module: Rc<Module>,
         native: Option<&'static NativeCode>,
     ) -> Result<GameSession, GameReloadError> {
-        let vm = link(&module, native).map_err(GameReloadError::Link)?;
+        GameSession::start_in(module, Natives::standard(), native)
+    }
+
+    /// [`start`](Self::start) linked against `natives`, the standard
+    /// libraries and those of the native packages the module calls.
+    ///
+    /// # Errors
+    ///
+    /// As [`start`](Self::start).
+    pub fn start_in(
+        module: Rc<Module>,
+        natives: Arc<Natives>,
+        native: Option<&'static NativeCode>,
+    ) -> Result<GameSession, GameReloadError> {
+        let vm = link(&module, &natives, native).map_err(GameReloadError::Link)?;
         let mut scheduler =
             Scheduler::new(vm).map_err(|fault| GameReloadError::Game(GameError::Fault(fault)))?;
         // A replayed tape's patches link as the game's own build did.
-        scheduler.set_linker(Rc::new(|module: Rc<Module>| link(&module, None)));
+        let linking = Arc::clone(&natives);
+        scheduler.set_linker(Rc::new(move |module: Rc<Module>| {
+            link(&module, &linking, None)
+        }));
         let mut session = GameSession {
             scheduler,
             module,
+            natives,
             native,
             audio: None,
             reported: None,
@@ -412,7 +436,7 @@ impl GameSession {
         let Some(start) = AUDIO.with(std::cell::Cell::get) else {
             return;
         };
-        match start(&self.module, &Natives::standard(), self.native) {
+        match start(&self.module, &self.natives, self.native) {
             Ok(Some((device, link))) => self.attach_audio(link, device),
             Ok(None) => {}
             Err(why) => queue_fault(format!("the game's audio did not start: {why}")),
@@ -471,14 +495,20 @@ impl GameSession {
         }
     }
 
-    /// Links `module` into a VM for [`reload`](Self::reload), touching
-    /// nothing live: what a reload stages when its patch arrives.
+    /// Links `module` against `natives` into a VM for
+    /// [`reload`](Self::reload), touching nothing live: what a reload stages
+    /// when its patch arrives.
     ///
     /// # Errors
     ///
     /// When the module does not link.
-    pub fn stage(module: &Rc<Module>) -> Result<Vm, String> {
-        link(module, None)
+    pub fn stage(module: &Rc<Module>, natives: &Natives) -> Result<Vm, String> {
+        link(module, natives, None)
+    }
+
+    /// The libraries the game's builds link against.
+    pub fn natives(&self) -> &Arc<Natives> {
+        &self.natives
     }
 
     /// Swaps in `vm`, staged from `module`, at the tick boundary the session
@@ -550,7 +580,7 @@ impl GameSession {
             // The new systems run; audio that does not build keeps the old
             // sound rather than failing the swap.
             Some(audio) => {
-                if let Err(why) = audio.reload(&self.module, &Natives::standard()) {
+                if let Err(why) = audio.reload(&self.module, &self.natives) {
                     queue_fault(format!("the new audio systems did not build: {why}"));
                 }
             }
@@ -736,10 +766,11 @@ pub fn take_game_faults() -> Vec<String> {
 pub(crate) fn mount_game_queued(
     store: &mut NodeStore,
     module: &Rc<Module>,
+    natives: &Arc<Natives>,
     native: Option<&'static NativeCode>,
     owner: NodeId,
 ) {
-    if let Err(error) = mount_game(store, module, native, owner) {
+    if let Err(error) = mount_game(store, module, natives, native, owner) {
         let why = match &error {
             GameReloadError::Game(GameError::Fault(fault)) => describe_fault(module, fault),
             error => error.to_string(),
@@ -759,7 +790,7 @@ pub fn mount_view_game(store: &mut NodeStore, host: &Rc<RefCell<crate::ViewHost>
     if !view.reads_game() {
         return;
     }
-    mount_game_queued(store, view.module(), view.native(), root);
+    mount_game_queued(store, view.module(), view.natives(), view.native(), root);
     if let Some(session) = game_session(store, root) {
         view.attach_game(&session);
     }
@@ -794,13 +825,14 @@ pub fn __link_game(
     });
 }
 
-/// Starts the game `module`'s systems make on `owner`, running `native` when
-/// given, unless `owner` runs one already, or stops the one it runs when
+/// Starts the game `module`'s systems make on `owner`, linked against
+/// `natives` and running `native` when given, unless `owner` runs one already, or stops the one it runs when
 /// `module` declares no system. A start that faults leaves `owner` without a
 /// game and returns why.
 pub fn mount_game(
     store: &mut NodeStore,
     module: &Rc<Module>,
+    natives: &Arc<Natives>,
     native: Option<&'static NativeCode>,
     owner: NodeId,
 ) -> Result<(), GameReloadError> {
@@ -813,7 +845,8 @@ pub fn mount_game(
     if store.frame_client(owner).is_some() {
         return Ok(());
     }
-    let session = Rc::new(RefCell::new(GameSession::start(Rc::clone(module), native)?));
+    let session = GameSession::start_in(Rc::clone(module), Arc::clone(natives), native)?;
+    let session = Rc::new(RefCell::new(session));
     store.add_frame_client(owner, Rc::new(RefCell::new(GameClient(session, 0.0))));
     Ok(())
 }

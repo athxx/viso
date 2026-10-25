@@ -18,6 +18,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use proc_macro2::{Literal, Span, TokenStream};
 use quote::{format_ident, quote};
@@ -29,6 +30,7 @@ use viso_dsl::assets::{
 };
 use viso_dsl::frontend::{self, Compiled, Origin, Source, SourceKind};
 use viso_dsl::hir::{ConstValue, HirComponent};
+use viso_dsl::native_package::{self, NativePackage};
 use viso_dsl::resolve::SymbolId;
 use viso_dsl::schema::Natives;
 use viso_dsl::syntax::{LineIndex, TextRange, TextSize};
@@ -46,7 +48,7 @@ pub fn ui(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         let report = Report::Inline(&source, compiled.base);
         let Mounted {
             allocations, root, ..
-        } = mount(&compiled, &report, None, None)?;
+        } = mount(&compiled, &report, None, None, &[])?;
         Ok(quote! {
             |cx: &mut ::viso::__private::viso_ui::BuildCx<'_>| -> ::viso::__private::viso_ui::Handle {
                 #allocations
@@ -65,15 +67,16 @@ pub fn component(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         let origin = package::origin(&root_dir, package::invoking_file().as_deref())?;
         let profile = package::profile(&root_dir)?;
         let catalogs = catalog_dependencies(profile.catalogs.as_ref());
-        let compiled =
-            frontend::compile_component_for(&source.text, &origin, profile.target.clone());
+        let (compiled, packages) = compile_linked(&root_dir, &report, |natives| {
+            frontend::compile_component_for(&source.text, &origin, natives, profile.target.clone())
+        })?;
         report.check(&compiled)?;
         let Mounted {
             component,
             states,
             allocations,
             root,
-        } = mount(&compiled, &report, None, asset_dir(&profile))?;
+        } = mount(&compiled, &report, None, asset_dir(&profile), &packages)?;
         let name = rust_ident(&component.schema.name)
             .map_err(|message| report.at(Some(component.source_origin), message))?;
         let imported = compiled
@@ -140,8 +143,14 @@ pub fn view(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         // build checked it against.
         let granted = profile.target.capabilities.iter();
         let hash = Literal::u64_suffixed(viso_dsl::hotreload::source_hash(&text));
-        let compiled =
-            frontend::compile_file_for(&text, &origin, Natives::standard(), profile.target.clone());
+        let report = Report::File {
+            path: &path,
+            index: LineIndex::new(&text),
+            span,
+        };
+        let (compiled, packages) = compile_linked(&root_dir, &report, |natives| {
+            frontend::compile_file_for(&text, &origin, natives, profile.target.clone())
+        })?;
         let statics = viso_dsl::aot::static_shape(&compiled.tree);
         // The asset directory the dev session compiles the file's edits
         // against, and what the build embedded, which a patch need not send.
@@ -167,11 +176,6 @@ pub fn view(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             source_hash: #hash,
             statics: &[#(#statics),*],
         };
-        let report = Report::File {
-            path: &path,
-            index: LineIndex::new(&text),
-            span,
-        };
         report.check(&compiled)?;
         let Mounted {
             allocations, root, ..
@@ -180,6 +184,7 @@ pub fn view(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             &report,
             Some((dependency, &origin, build)),
             asset_dir(&profile),
+            &packages,
         )?;
         // The modules the file imports are compile dependencies too: editing
         // one rebuilds every view that reads it.
@@ -343,12 +348,14 @@ struct Mounted<'a> {
 /// for a form that records no mount.
 ///
 /// `assets` is the package's asset directory, which the view's assets are
-/// embedded from.
+/// embedded from; `packages` the native packages it was compiled against,
+/// whose libraries its host links when it calls them.
 fn mount<'a>(
     compiled: &'a Compiled,
     report: &Report<'_>,
     record: Option<(&str, &Origin, TokenStream)>,
     assets: Option<&Path>,
+    packages: &[NativePackage],
 ) -> syn::Result<Mounted<'a>> {
     let Some(component) = &compiled.component else {
         return Err(report.at(None, "the frontend produced no component to mount"));
@@ -433,7 +440,11 @@ fn mount<'a>(
             embedded_shaders(behavior)
                 .map_err(|message| report.at(component.schema.view, message))?,
         );
-        allocations.extend(host_tokens(behavior, &idents, &tracked, embedded));
+        let libraries = package_libraries(behavior, packages)
+            .map_err(|message| report.at(component.schema.view, message))?;
+        allocations.extend(host_tokens(
+            behavior, &idents, &tracked, embedded, libraries,
+        ));
     }
     let record = record.map(|(file, origin, build)| {
         record_tokens(file, origin, build, &idents, behavior.is_some())
@@ -465,6 +476,7 @@ fn host_tokens(
     idents: &HashMap<SymbolId, Ident>,
     tracked: &BTreeSet<SymbolId>,
     assets: TokenStream,
+    libraries: TokenStream,
 ) -> TokenStream {
     let bytecode = aligned_bytes(&behavior.bytes);
     let compiled = aligned_bytes(&behavior.compiled_bytes());
@@ -495,6 +507,7 @@ fn host_tokens(
             __viso_module,
             #component,
             __viso_native,
+            #libraries,
         );
         {
             let mut __viso_view = __viso_host.borrow_mut();
@@ -503,6 +516,59 @@ fn host_tokens(
         }
         ::viso::__private::viso_view::__load_persisted(cx, &__viso_host);
     }
+}
+
+/// The form compiled by `compile` against the standard natives, or, when an
+/// import or a native path resolves to nothing there, against the native
+/// packages the crate depends on as well, with those packages: a crate whose
+/// forms import none never asks Cargo for its dependencies.
+fn compile_linked(
+    root: &Path,
+    report: &Report<'_>,
+    compile: impl Fn(Arc<Natives>) -> Compiled,
+) -> syn::Result<(Compiled, Arc<[NativePackage]>)> {
+    let compiled = compile(Natives::standard());
+    if !compiled.errors().any(|d| d.code == "E2001") {
+        return Ok((compiled, Arc::from([])));
+    }
+    let packages = match native_package::discover(&root.join("Cargo.toml")) {
+        Ok(packages) => packages,
+        Err(why) => {
+            let mut error = report.at(None, format!("the native packages are not known: {why}"));
+            if let Err(errors) = report.check(&compiled) {
+                error.combine(errors);
+            }
+            return Err(error);
+        }
+    };
+    if packages.is_empty() {
+        return Ok((compiled, packages));
+    }
+    let natives = native_package::registry(&packages)
+        .map_err(|conflict| report.at(None, format!("E6101: {conflict}")))?;
+    Ok((compile(natives), packages))
+}
+
+/// The libraries of each of `packages` the module calls, as the crate names
+/// them: `&[::viso_net::NATIVES]`.
+fn package_libraries(
+    behavior: &ViewBehavior,
+    packages: &[NativePackage],
+) -> Result<TokenStream, String> {
+    let natives = behavior.module.natives();
+    let mut libraries = Vec::new();
+    for package in packages {
+        if natives.iter().any(|import| package.holds(&import.path)) {
+            let path: TokenStream = package.library.parse().map_err(|_| {
+                format!(
+                    "the libraries of `{}` are not a Rust path: `{}`",
+                    package.name, package.library
+                )
+            })?;
+            libraries.push(path);
+        }
+    }
+    Ok(quote! { &[#(#libraries),*] })
 }
 
 /// The package's asset directory a form's profile indexes.
