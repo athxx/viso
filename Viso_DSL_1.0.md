@@ -1926,14 +1926,22 @@ library = "NATIVES"       # crate 中的 `&'static [&'static NativeLibrary]`
 feature = "dsl"           # 构建它们的 feature，可省略
 ```
 
-- Schema 文件是 `viso_dsl::native_package::write` 写出的 `viso-natives` JSON（版本 1）：除实现外的每个函数与类型字段；包自身的测试从 Rust Library 写出并比较，不一致即失败；Trait 与 Widget 暂不携带；
+- Schema 文件是 `viso-natives` JSON（版本 1）：除实现外的每个函数与类型字段；包自身的测试以 `viso::native::check(NATIVES, "natives.json")` 比较，不一致即失败，设 `VISO_WRITE_NATIVES` 时改为写出；Trait 与 Widget 暂不携带；
 - 只发现 App crate 的直接 normal 依赖（`cargo metadata`；声明了 `feature` 的须已启用），每个 manifest 与 lock 文件在进程内只发现一次；两个 Library 声明同一路径为 `E6101`；
 - `view!` 与 `component!` 先按标准 Registry 编译，出现 `E2001` 时才发现并按标准 Library 加上这些包的 Library 重新编译，不依赖 Native Package 的 App 不运行 `cargo metadata`；展开把模块调用到的包的 Rust Library（如 `::app_api::NATIVES`）交给 View 的 Host 链接，View 启动的 Game 同样链接，Release View Package 以 `ViewLoad::libraries` 交入；
 - `viso check`、`viso export`、`viso run` 的 dev 编译与 LSP 用同一规则（源文件所属 crate 为 `Viso.toml` 旁或文件之上最近的 `Cargo.toml`）；`viso schema` 预先发现，列出项目可调用的全部 Native；发现失败时作为 note 附在每个保留的 `E2001` 上；
 - Dev Session 的 Patch 只能链接 Live View 的 Host 已链接的 Library：首次调用构建未链接的包需要重新构建；
 - Capability 照旧：函数声明自己的 Capability，`Viso.toml` 的 `[package] capabilities` 授予，授权随模块到达 Host，授权之外的调用为 `E6103` Fault；`view!` 与 `component!` 以 `Viso.toml` 为编译依赖，改动授权即重新编译。
 
-- 应用自己的 Native 放在其 workspace 中单独的 crate（如 `app-api`），与扩展 crate 一样是 Native Package：编译 View 的 crate 无法为自己生成它所依赖的 Schema。
+- 应用自己的 Native 放在其 workspace 中单独的 crate（如 `app-api`），与扩展 crate 一样是 Native Package：编译 View 的 crate 无法为自己生成它所依赖的 Schema。它只依赖 `viso`：`viso::native` 提供 `native!`、`NativeLibrary` 等写 Library 所需的类型与 `check`；不带默认 feature 依赖 `viso`，以免替 App 选 feature，测试另以 dev-dependency 带默认 feature：
+
+```toml
+[dependencies]
+viso = { version = "1", default-features = false }
+
+[dev-dependencies]
+viso = "1"
+```
 
 网络不是 DSL Library：框架与扩展都不向 `.vs` 提供通用 HTTP。`.vs` 调用应用的领域 Native，URL、鉴权、重试、解码与错误分类在其 Rust 实现中（用 `viso-ext/viso-net`），函数声明 `network.http`，由 `Viso.toml` 授予：
 

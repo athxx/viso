@@ -30,10 +30,11 @@ A **native package** is a Cargo package that carries native libraries for `.vs` 
   feature = "dsl"           # the feature that builds them, where one does
   ```
 
-- The schema is the libraries in the `viso-natives` JSON format (version 1) that
-  `viso_dsl::native_package::write` writes: every field of every function and type but
-  the implementation. The package's own tests write it from its Rust libraries and fail
-  when it differs, so it never drifts from them. Traits and widgets are not carried yet.
+- The schema is the libraries in the `viso-natives` JSON format (version 1)
+  (`viso_behavior::native::schema`): every field of every function and type but the
+  implementation. The package's own test, `viso::native::check(NATIVES, "natives.json")`,
+  fails when it differs and writes it with `VISO_WRITE_NATIVES` set, so it never drifts
+  from them. Traits and widgets are not carried yet.
 - `viso_dsl::native_package::discover(manifest)` finds the native packages among the
   app crate's **direct normal dependencies**, their feature enabled, through
   `cargo metadata`, once per manifest and lock file for the process. `read` interns each
@@ -86,7 +87,9 @@ Alternatives rejected:
   fails its own tests before that.
 - An app's own natives live in a crate of their own in its workspace, a native package
   like any other: the crate that compiles the views cannot generate the schema they
-  compile against.
+  compile against. It depends on `viso` alone, whose `native` module is what writing a
+  library takes; without its default features, so it picks none for the app, and with
+  them as a dev-dependency for its own tests.
 - The network is no DSL library. `.vs` calls the app's domain natives (`api::profile`);
   URLs, auth, retries, decoding and error kinds stay in their Rust, which uses
   `viso-net`. A raw HTTP surface would hand `.vs` untyped text, move transport concerns

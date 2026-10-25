@@ -460,7 +460,7 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
     - [x] `viso-net` carries no DSL library (its `net` library goes); the spec's
       examples call domain natives (`Api::profile(id)`), the Rust behind them using
       `viso-net`;
-    - [ ] `viso::native`: the public surface for writing native libraries (types,
+    - [x] `viso::native`: the public surface for writing native libraries (types,
       `native!`, handles) and checking a package's schema in its tests, so an app's
       natives crate depends on `viso` alone;
     - [ ] `Result<T, E>` in native schemas: a native returns one and `.vs` matches

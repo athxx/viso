@@ -58,8 +58,9 @@ use crate::native::{
     NativeCx, NativeError, NativeFunction, NativeFuture, NativeKind, Natives, SchemaConflict,
     Services, ThreadDomain,
 };
+use crate::op::NodeAction;
 #[cfg(feature = "interpreter")]
-use crate::op::{DisplayKind, NodeAction, Op};
+use crate::op::{DisplayKind, Op};
 use crate::value::Value;
 #[cfg(feature = "interpreter")]
 use crate::value::{Aggregate, Closure};

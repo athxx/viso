@@ -10,12 +10,13 @@
 //! feature = "dsl"           # the feature that builds them, where one does
 //! ```
 //!
-//! The schema is the libraries as [`write`] writes them, lossless but for
-//! each function's implementation; the crate's own tests write it from the
-//! Rust libraries, so it never drifts from them. A tool that compiles the
-//! app's `.vs` without building its Rust reads it with [`read`]: the
-//! schemas enter the registry as stubs, and the host links the module to
-//! the Rust libraries, where another signature is `E6101` again.
+//! The schema is the libraries as [`schema::write`] writes them, lossless
+//! but for each function's implementation; the crate's own tests check it
+//! against the Rust libraries ([`schema::check`]), so it never drifts from
+//! them. A tool that compiles the app's `.vs` without building its Rust
+//! reads it with [`schema::read`]: the schemas enter the registry as stubs,
+//! and the host links the module to the Rust libraries, where another
+//! signature is `E6101` again.
 //!
 //! [`discover`] finds the packages among the app's direct dependencies
 //! through `cargo metadata`, once per manifest and lock file for the
@@ -27,19 +28,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::SystemTime;
 
-use viso_behavior::Value;
-use viso_behavior::native::{
-    Determinism, NativeCx, NativeError, NativeFunction, NativeKind, NativeLibrary, NativeType,
-    Natives, Ownership, Param, SchemaConflict, SchemaTy, ThreadDomain,
-};
-use viso_ende::{JsonValue, JsonWriter};
+use viso_behavior::native::schema;
+use viso_behavior::native::{NativeLibrary, Natives, SchemaConflict};
+use viso_ende::JsonValue;
 
 use crate::diag::{Diagnostic, Severity};
 use crate::frontend::Compiled;
-
-/// The schema format's name and version.
-const FORMAT: &str = "viso-natives";
-const VERSION: u32 = 1;
 
 /// A dependency's native libraries.
 #[derive(Debug, Clone)]
@@ -61,408 +55,6 @@ impl NativePackage {
                 .is_some_and(|rest| rest.starts_with("::"))
         })
     }
-}
-
-/// `libraries` as a native package's schema.
-///
-/// # Errors
-///
-/// A library declaring scheduler traits or widgets, which a native package
-/// does not carry.
-pub fn write(libraries: &[&NativeLibrary]) -> Result<String, String> {
-    let mut out =
-        format!("{{\n  \"format\": \"{FORMAT}\",\n  \"version\": {VERSION},\n  \"libraries\": [");
-    for (i, library) in libraries.iter().enumerate() {
-        if !library.traits.is_empty() || !library.widgets.is_empty() {
-            return Err(format!(
-                "`{}`: a native package carries functions and types, not traits or widgets",
-                library.path
-            ));
-        }
-        let mut head = JsonWriter::new();
-        head.begin_object();
-        head.name("path");
-        head.string(library.path);
-        head.name("version");
-        head.uint(library.version.into());
-        head.name("derives");
-        head.begin_array();
-        for derive in library.derives {
-            head.string(derive);
-        }
-        head.end_array();
-        head.end_object();
-        let head = head.into_string();
-        out.push_str(if i == 0 { "\n    " } else { ",\n    " });
-        // The head's members, then the functions and types a line each.
-        out.push_str(&head[..head.len() - 1]);
-        out.push_str(",\n      \"functions\": [");
-        lines(&mut out, library.functions.iter().map(function), "        ");
-        out.push_str("],\n      \"types\": [");
-        for (j, ty) in library.types.iter().enumerate() {
-            let mut w = JsonWriter::new();
-            w.begin_object();
-            w.name("name");
-            w.string(ty.name);
-            w.name("variants");
-            w.begin_array();
-            for variant in ty.variants {
-                w.string(variant);
-            }
-            w.end_array();
-            w.name("ownership");
-            w.string(ty.ownership.name());
-            w.name("thread");
-            w.string(ty.thread.name());
-            w.name("value");
-            w.bool(ty.value);
-            w.end_object();
-            let ty_head = w.into_string();
-            out.push_str(if j == 0 { "\n        " } else { ",\n        " });
-            out.push_str(&ty_head[..ty_head.len() - 1]);
-            out.push_str(", \"methods\": [");
-            lines(&mut out, ty.methods.iter().map(function), "          ");
-            out.push_str("]}");
-        }
-        if !library.types.is_empty() {
-            out.push_str("\n      ");
-        }
-        out.push_str("]\n    }");
-    }
-    if !libraries.is_empty() {
-        out.push_str("\n  ");
-    }
-    out.push_str("]\n}\n");
-    Ok(out)
-}
-
-/// `items` into `out` a line each, indented by `indent`.
-fn lines(out: &mut String, items: impl Iterator<Item = String>, indent: &str) {
-    let mut any = false;
-    for (i, item) in items.enumerate() {
-        out.push_str(if i == 0 { "\n" } else { ",\n" });
-        out.push_str(indent);
-        out.push_str(&item);
-        any = true;
-    }
-    if any {
-        out.push('\n');
-        out.push_str(&indent[..indent.len() - 2]);
-    }
-}
-
-fn function(f: &NativeFunction) -> String {
-    let mut w = JsonWriter::new();
-    w.begin_object();
-    w.name("name");
-    w.string(f.name);
-    w.name("kind");
-    w.string(f.kind.keyword());
-    w.name("params");
-    w.begin_array();
-    for p in f.params {
-        w.begin_object();
-        w.name("name");
-        w.string(p.name);
-        w.name("ty");
-        ty(&mut w, &p.ty);
-        w.end_object();
-    }
-    w.end_array();
-    w.name("ret");
-    ty(&mut w, &f.ret);
-    w.name("capabilities");
-    w.begin_array();
-    for c in f.capabilities {
-        w.string(c);
-    }
-    w.end_array();
-    w.name("thread");
-    w.string(f.thread.name());
-    w.name("deterministic");
-    w.bool(f.deterministic);
-    w.name("realtime_safe");
-    w.bool(f.realtime_safe);
-    w.name("cost");
-    w.uint(f.cost.into());
-    w.name("constant");
-    w.bool(f.constant);
-    w.name("property");
-    w.bool(f.property);
-    w.name("determinism");
-    w.string(f.determinism.name());
-    w.name("presentation");
-    w.bool(f.presentation);
-    w.name("debug_draw");
-    w.bool(f.debug_draw);
-    w.end_object();
-    w.into_string()
-}
-
-fn ty(w: &mut JsonWriter, ty: &SchemaTy) {
-    let leaf = match ty {
-        SchemaTy::Unit => "Unit",
-        SchemaTy::Bool => "Bool",
-        SchemaTy::I64 => "I64",
-        SchemaTy::F32 => "F32",
-        SchemaTy::F64 => "F64",
-        SchemaTy::Duration => "Duration",
-        SchemaTy::Ticks => "Ticks",
-        SchemaTy::String => "String",
-        SchemaTy::Action => "Action",
-        SchemaTy::Tag => "Tag",
-        SchemaTy::AudioCommand => "AudioCommand",
-        SchemaTy::AudioEvent => "AudioEvent",
-        SchemaTy::List(inner) | SchemaTy::Option(inner) => {
-            w.begin_object();
-            w.name(if matches!(ty, SchemaTy::List(_)) {
-                "List"
-            } else {
-                "Option"
-            });
-            self::ty(w, inner);
-            w.end_object();
-            return;
-        }
-        SchemaTy::Handle(path) | SchemaTy::Value(path) | SchemaTy::Enum(path) => {
-            w.begin_object();
-            w.name(match ty {
-                SchemaTy::Handle(_) => "Handle",
-                SchemaTy::Value(_) => "Value",
-                _ => "Enum",
-            });
-            w.string(path);
-            w.end_object();
-            return;
-        }
-    };
-    w.string(leaf);
-}
-
-/// The libraries a native package's schema holds, interned for the process:
-/// the same text gives the same libraries.
-///
-/// # Errors
-///
-/// Text that is not such a schema.
-pub fn read(text: &str) -> Result<Vec<&'static NativeLibrary>, String> {
-    static READ: OnceLock<Mutex<HashMap<String, Vec<&'static NativeLibrary>>>> = OnceLock::new();
-    let read = READ.get_or_init(Mutex::default);
-    if let Some(libraries) = read
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get(text)
-    {
-        return Ok(libraries.clone());
-    }
-    let libraries = parse(text)?;
-    // Read meanwhile on another thread, the first kept.
-    Ok(read
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .entry(text.to_owned())
-        .or_insert(libraries)
-        .clone())
-}
-
-fn parse(text: &str) -> Result<Vec<&'static NativeLibrary>, String> {
-    let json = JsonValue::parse(text).map_err(|e| format!("not JSON: {e}"))?;
-    if json.get("format").and_then(JsonValue::as_str) != Some(FORMAT) {
-        return Err(format!("not a `{FORMAT}` schema"));
-    }
-    let version = json.get("version").and_then(JsonValue::as_f64);
-    if version != Some(f64::from(VERSION)) {
-        return Err(format!(
-            "schema version {} is not {VERSION}, the one this compiler reads",
-            version.map_or("none".to_owned(), |v| v.to_string())
-        ));
-    }
-    array(&json, "libraries")?
-        .iter()
-        .map(|library| {
-            let path = leak(string(library, "path")?);
-            let functions = array(library, "functions")?
-                .iter()
-                .map(native_function)
-                .collect::<Result<Vec<_>, _>>()?;
-            let types = array(library, "types")?
-                .iter()
-                .map(native_type)
-                .collect::<Result<Vec<_>, _>>()?;
-            let derives = array(library, "derives")?
-                .iter()
-                .map(|d| d.as_str().map(leak).ok_or("a derive is not a string"))
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(&*Box::leak(Box::new(NativeLibrary {
-                path,
-                version: number(library, "version")?,
-                functions: Box::leak(functions.into_boxed_slice()),
-                types: Box::leak(types.into_boxed_slice()),
-                traits: &[],
-                derives: Box::leak(derives.into_boxed_slice()),
-                widgets: &[],
-            })))
-        })
-        .collect()
-}
-
-fn leak(text: &str) -> &'static str {
-    Box::leak(text.into())
-}
-
-fn field<'a>(json: &'a JsonValue, name: &str) -> Result<&'a JsonValue, String> {
-    json.get(name).ok_or_else(|| format!("`{name}` is missing"))
-}
-
-fn string<'a>(json: &'a JsonValue, name: &str) -> Result<&'a str, String> {
-    field(json, name)?
-        .as_str()
-        .ok_or_else(|| format!("`{name}` is not a string"))
-}
-
-fn array<'a>(json: &'a JsonValue, name: &str) -> Result<&'a [JsonValue], String> {
-    field(json, name)?
-        .as_array()
-        .ok_or_else(|| format!("`{name}` is not an array"))
-}
-
-fn flag(json: &JsonValue, name: &str) -> Result<bool, String> {
-    field(json, name)?
-        .as_bool()
-        .ok_or_else(|| format!("`{name}` is not a boolean"))
-}
-
-fn number(json: &JsonValue, name: &str) -> Result<u32, String> {
-    field(json, name)?
-        .as_f64()
-        .filter(|n| n.fract() == 0.0 && (0.0..=f64::from(u32::MAX)).contains(n))
-        .map(|n| n as u32)
-        .ok_or_else(|| format!("`{name}` is not a whole number"))
-}
-
-fn thread(name: &str) -> Result<ThreadDomain, String> {
-    [ThreadDomain::Any, ThreadDomain::Ui, ThreadDomain::Worker]
-        .into_iter()
-        .find(|t| t.name() == name)
-        .ok_or_else(|| format!("`{name}` is not a thread domain"))
-}
-
-fn native_function(json: &JsonValue) -> Result<NativeFunction, String> {
-    let name = string(json, "name")?;
-    let kind = match string(json, "kind")? {
-        "fn" => NativeKind::Fn,
-        "action" => NativeKind::Action,
-        "task" => NativeKind::Task,
-        other => return Err(format!("`{other}` is not a native kind")),
-    };
-    let params = array(json, "params")?
-        .iter()
-        .map(|p| {
-            Ok(Param {
-                name: leak(string(p, "name")?),
-                ty: schema_ty(field(p, "ty")?)?,
-            })
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    let capabilities = array(json, "capabilities")?
-        .iter()
-        .map(|c| c.as_str().map(leak).ok_or("a capability is not a string"))
-        .collect::<Result<Vec<_>, _>>()?;
-    let determinism = match string(json, "determinism")? {
-        "none" => Determinism::None,
-        "same_binary" => Determinism::SameBinary,
-        "cross_platform" => Determinism::CrossPlatform,
-        other => return Err(format!("`{other}` is not a determinism")),
-    };
-    Ok(NativeFunction {
-        name: leak(name),
-        kind,
-        params: Box::leak(params.into_boxed_slice()),
-        ret: schema_ty(field(json, "ret")?)?,
-        capabilities: Box::leak(capabilities.into_boxed_slice()),
-        thread: thread(string(json, "thread")?)?,
-        deterministic: flag(json, "deterministic")?,
-        realtime_safe: flag(json, "realtime_safe")?,
-        cost: number(json, "cost")?,
-        constant: flag(json, "constant")?,
-        property: flag(json, "property")?,
-        determinism,
-        presentation: flag(json, "presentation")?,
-        debug_draw: flag(json, "debug_draw")?,
-        call: unlinked,
-    })
-}
-
-fn native_type(json: &JsonValue) -> Result<NativeType, String> {
-    let variants = array(json, "variants")?
-        .iter()
-        .map(|v| v.as_str().map(leak).ok_or("a variant is not a string"))
-        .collect::<Result<Vec<_>, _>>()?;
-    let methods = array(json, "methods")?
-        .iter()
-        .map(native_function)
-        .collect::<Result<Vec<_>, _>>()?;
-    let ownership = match string(json, "ownership")? {
-        "shared" => Ownership::Shared,
-        "borrowed" => Ownership::Borrowed,
-        other => return Err(format!("`{other}` is not an ownership")),
-    };
-    Ok(NativeType {
-        name: leak(string(json, "name")?),
-        variants: Box::leak(variants.into_boxed_slice()),
-        ownership,
-        thread: thread(string(json, "thread")?)?,
-        value: flag(json, "value")?,
-        methods: Box::leak(methods.into_boxed_slice()),
-    })
-}
-
-fn schema_ty(json: &JsonValue) -> Result<SchemaTy, String> {
-    if let Some(leaf) = json.as_str() {
-        return Ok(match leaf {
-            "Unit" => SchemaTy::Unit,
-            "Bool" => SchemaTy::Bool,
-            "I64" => SchemaTy::I64,
-            "F32" => SchemaTy::F32,
-            "F64" => SchemaTy::F64,
-            "Duration" => SchemaTy::Duration,
-            "Ticks" => SchemaTy::Ticks,
-            "String" => SchemaTy::String,
-            "Action" => SchemaTy::Action,
-            "Tag" => SchemaTy::Tag,
-            "AudioCommand" => SchemaTy::AudioCommand,
-            "AudioEvent" => SchemaTy::AudioEvent,
-            other => return Err(format!("`{other}` is not a schema type")),
-        });
-    }
-    let Some(JsonValue::Object(members)) = Some(json) else {
-        return Err("a type is neither a name nor an object".into());
-    };
-    let [(kind, inner)] = members.as_slice() else {
-        return Err("a type object has one member".into());
-    };
-    let path = || {
-        inner
-            .as_str()
-            .map(leak)
-            .ok_or_else(|| format!("`{kind}` names no path"))
-    };
-    Ok(match kind.as_str() {
-        "List" => SchemaTy::List(Box::leak(Box::new(schema_ty(inner)?))),
-        "Option" => SchemaTy::Option(Box::leak(Box::new(schema_ty(inner)?))),
-        "Handle" => SchemaTy::Handle(path()?),
-        "Value" => SchemaTy::Value(path()?),
-        "Enum" => SchemaTy::Enum(path()?),
-        other => return Err(format!("`{other}` is not a schema type")),
-    })
-}
-
-/// A package native's implementation until the host links the Rust one; a
-/// linked module never calls it.
-fn unlinked(_: &mut NativeCx<'_>, _: &[Value]) -> Result<Value, NativeError> {
-    Err(NativeError::new(
-        "a native package's function runs only once its library is linked",
-    ))
 }
 
 /// What a manifest's discovery was made from, so a change to either file
@@ -712,10 +304,16 @@ fn packages(
             .and_then(JsonValue::as_str)
             .ok_or_else(|| format!("`{name}` has no manifest path"))?;
         let dir = Path::new(manifest).parent().unwrap_or(Path::new("."));
-        let schema = dir.join(string(declared, "schema").map_err(|e| format!("`{name}`: {e}"))?);
-        let library = string(declared, "library").map_err(|e| format!("`{name}`: {e}"))?;
+        let member = |member: &str| {
+            declared
+                .get(member)
+                .and_then(JsonValue::as_str)
+                .ok_or_else(|| format!("`{name}`: `{member}` is not a string"))
+        };
+        let file = dir.join(member("schema")?);
+        let library = member("library")?;
         let libraries =
-            read(&read_file(&schema)?).map_err(|e| format!("`{}`: {e}", schema.display()))?;
+            schema::read(&read_file(&file)?).map_err(|e| format!("`{}`: {e}", file.display()))?;
         found.push(NativePackage {
             name: name.to_owned(),
             library: format!("::{extern_name}::{library}"),
@@ -744,82 +342,22 @@ pub fn registry(packages: &[NativePackage]) -> Result<Arc<Natives>, SchemaConfli
 
 #[cfg(test)]
 mod tests {
+    use viso_behavior::native::schema::write;
+
     use super::*;
-
-    static RESPONSE_METHODS: [NativeFunction; 2] = [
-        viso_behavior::native!(fn "status" |_cx, r: viso_behavior::native::Obj<Thing>| -> i64 { Ok(r.0) })
-            .property(),
-        viso_behavior::native!(fn "header" |_cx, r: viso_behavior::native::Obj<Thing>, name: String| -> Option<String> {
-            Ok(Some(format!("{}{name}", r.0)))
-        }),
-    ];
-
-    #[derive(Debug)]
-    struct Thing(i64);
-
-    impl viso_behavior::native::NativeObject for Thing {
-        const PATH: &'static str = "net::Thing";
-    }
 
     static LIBRARY: NativeLibrary = NativeLibrary {
         path: "net",
-        version: 3,
+        version: 1,
         functions: &[
-            viso_behavior::native!(task "get" |_cx, url: String, tries: Option<i64>| -> viso_behavior::native::Obj<Thing> {
-                Ok(viso_behavior::native::Obj::new(Thing(url.len() as i64 + tries.unwrap_or(0))))
-            })
-            .requires(&["network.http"]),
-            viso_behavior::native!(fn "lines" |_cx, text: String| -> Vec<String> {
-                Ok(text.lines().map(str::to_owned).collect())
-            })
-            .deterministic(),
+            viso_behavior::native!(task "get" |_cx, url: String| -> i64 { Ok(url.len() as i64) })
+                .requires(&["network.http"]),
         ],
-        types: &[
-            NativeType::new("Thing", &RESPONSE_METHODS),
-            NativeType::enumeration("Method", &["get", "post"]),
-        ],
+        types: &[],
         traits: &[],
-        derives: &["Tagged"],
+        derives: &[],
         widgets: &[],
     };
-
-    #[test]
-    fn a_schema_reads_back_as_written() {
-        let text = write(&[&LIBRARY]).unwrap();
-        assert!(
-            text.contains("\n        {\"name\":\"get\",\"kind\":\"task\""),
-            "{text}"
-        );
-        let read = read(&text).unwrap();
-        assert_eq!(read.len(), 1);
-        assert_eq!(write(&read).unwrap(), text);
-        let (ours, theirs) = (
-            Natives::with(&[&LIBRARY]).unwrap(),
-            Natives::with(&read).unwrap(),
-        );
-        for path in [
-            "net::get",
-            "net::lines",
-            "net::Thing::status",
-            "net::Thing::header",
-        ] {
-            let (a, b) = (ours.function(path).unwrap(), theirs.function(path).unwrap());
-            assert_eq!(a.function.signature(), b.function.signature(), "{path}");
-            assert_eq!(a.function.capabilities, b.function.capabilities, "{path}");
-        }
-        assert!(
-            theirs
-                .function("net::Thing::status")
-                .unwrap()
-                .function
-                .property
-        );
-        // Read again, the same libraries.
-        assert!(std::ptr::eq(read[0], super::read(&text).unwrap()[0]));
-        assert!(
-            super::read("{\"format\":\"viso-natives\",\"version\":2,\"libraries\":[]}").is_err()
-        );
-    }
 
     #[test]
     fn the_packages_are_the_roots_direct_normal_dependencies_with_natives() {

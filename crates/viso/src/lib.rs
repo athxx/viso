@@ -71,6 +71,7 @@ mod game_sheet;
 mod headless;
 #[cfg(any(feature = "hot-reload", feature = "headless"))]
 mod inspect;
+pub mod native;
 mod persist;
 mod playback;
 mod profile;

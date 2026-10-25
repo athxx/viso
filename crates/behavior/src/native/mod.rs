@@ -36,6 +36,8 @@
 //! [`FaultKind::NativeFailure`](crate::FaultKind::NativeFailure) fault.
 
 mod registry;
+#[cfg(feature = "std")]
+pub mod schema;
 mod standard;
 mod timers;
 mod value;
