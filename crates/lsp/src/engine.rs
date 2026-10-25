@@ -174,7 +174,7 @@ mod tests {
 
     fn doc(src: &str) -> (SourceMap, crate::source_map::FileId) {
         let mut map = SourceMap::new();
-        let id = map.open(src.to_string(), &["m"]);
+        let id = map.open(src.to_string(), &["m"], None);
         (map, id)
     }
 

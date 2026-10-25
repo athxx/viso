@@ -452,7 +452,8 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
       packages and hand the libraries the module calls to its host, which links them
       (one shared registry per set), as do its game, a loaded release package and the
       dev session's patches;
-    - [ ] `viso check`/`export`/`dev`/`schema` and the LSP compile against them;
+    - [x] `viso check`/`export`/`dev`/`schema` and the LSP compile against them (the
+      LSP now also reports an import naming nothing);
     - [ ] `viso-net` library `net`: `Http`, a request built and sent, its `Response`
       read; `natives.json` checked against the Rust library by its tests; an app
       calling it from `.vs`;

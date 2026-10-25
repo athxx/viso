@@ -34,7 +34,8 @@ pub use migrate::{
 };
 pub use patch::{game_patch, reload_plan, view_patch};
 pub use plan::{
-    CandidatePlan, MigrateFn, plan, plan_mount_for, plan_view, plan_view_for, plan_view_parsed,
+    CandidatePlan, MigrateFn, plan, plan_compiled, plan_mount_for, plan_view, plan_view_for,
+    plan_view_parsed,
 };
 pub use viso_dev_protocol::wire::source_hash;
 

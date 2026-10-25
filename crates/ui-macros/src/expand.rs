@@ -518,35 +518,23 @@ fn host_tokens(
     }
 }
 
-/// The form compiled by `compile` against the standard natives, or, when an
-/// import or a native path resolves to nothing there, against the native
-/// packages the crate depends on as well, with those packages: a crate whose
-/// forms import none never asks Cargo for its dependencies.
+/// The form compiled by `compile` as [`native_package::compile_linked`]
+/// compiles it for the crate at `root`, with the native packages it was
+/// compiled against.
 fn compile_linked(
     root: &Path,
     report: &Report<'_>,
     compile: impl Fn(Arc<Natives>) -> Compiled,
 ) -> syn::Result<(Compiled, Arc<[NativePackage]>)> {
-    let compiled = compile(Natives::standard());
-    if !compiled.errors().any(|d| d.code == "E2001") {
-        return Ok((compiled, Arc::from([])));
-    }
-    let packages = match native_package::discover(&root.join("Cargo.toml")) {
-        Ok(packages) => packages,
-        Err(why) => {
-            let mut error = report.at(None, format!("the native packages are not known: {why}"));
-            if let Err(errors) = report.check(&compiled) {
-                error.combine(errors);
-            }
-            return Err(error);
+    let linked = native_package::compile_linked(Some(&root.join("Cargo.toml")), compile);
+    if let Some(why) = linked.unlinked {
+        let mut error = report.at(None, format!("the native packages are not known: {why}"));
+        if let Err(errors) = report.check(&linked.made) {
+            error.combine(errors);
         }
-    };
-    if packages.is_empty() {
-        return Ok((compiled, packages));
+        return Err(error);
     }
-    let natives = native_package::registry(&packages)
-        .map_err(|conflict| report.at(None, format!("E6101: {conflict}")))?;
-    Ok((compile(natives), packages))
+    Ok((linked.made, linked.packages))
 }
 
 /// The libraries of each of `packages` the module calls, as the crate names

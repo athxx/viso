@@ -200,7 +200,7 @@ impl View {
             ));
         }
 
-        let natives = viso_dsl::schema::Natives::standard();
+        let natives = checked.natives();
         let (path, text, compiled) = match component {
             Some(wanted) => {
                 let found = match component::find(&checked.package, wanted) {

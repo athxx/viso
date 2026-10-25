@@ -141,13 +141,13 @@ pub fn plan(source: &str) -> Result<CandidatePlan, Vec<Diagnostic>> {
             Diagnostic::error("E2001", at, format!("no widget is named `{name}`"))
         }),
     );
-    candidate(compiled)
+    plan_compiled(compiled)
 }
 
 /// Compile and validate a `.vs` file into a [`CandidatePlan`] for its component's
 /// view, handlers included, or return the fatal diagnostics. Pure, like [`plan`].
 pub fn plan_view(source: &str, origin: &Origin) -> Result<CandidatePlan, Vec<Diagnostic>> {
-    candidate(compile_file(source, origin))
+    plan_compiled(compile_file(source, origin))
 }
 
 /// [`plan_view`] checked against `profile`, the grants of the package it
@@ -157,7 +157,7 @@ pub fn plan_view_for(
     origin: &Origin,
     profile: TargetProfile,
 ) -> Result<CandidatePlan, Vec<Diagnostic>> {
-    candidate(compile_file_for(
+    plan_compiled(compile_file_for(
         source,
         origin,
         crate::schema::Natives::standard(),
@@ -173,7 +173,7 @@ pub fn plan_mount_for(
     profile: TargetProfile,
     component: &str,
 ) -> Result<CandidatePlan, Vec<Diagnostic>> {
-    candidate(crate::frontend::compile_mount_for(
+    plan_compiled(crate::frontend::compile_mount_for(
         source,
         origin,
         crate::schema::Natives::standard(),
@@ -190,7 +190,7 @@ pub fn plan_view_parsed(
     origin: &Origin,
     profile: TargetProfile,
 ) -> Result<CandidatePlan, Vec<Diagnostic>> {
-    candidate(crate::frontend::compile_parsed_for(
+    plan_compiled(crate::frontend::compile_parsed_for(
         source,
         parse,
         origin,
@@ -202,7 +202,7 @@ pub fn plan_view_parsed(
 /// The candidate for a compiled source: its fatal diagnostics, including every
 /// handler that does not mount and every identity two sources share, or its
 /// plan.
-fn candidate(compiled: Compiled) -> Result<CandidatePlan, Vec<Diagnostic>> {
+pub fn plan_compiled(compiled: Compiled) -> Result<CandidatePlan, Vec<Diagnostic>> {
     if compiled.has_errors() {
         return Err(compiled.errors().cloned().collect());
     }
@@ -343,7 +343,10 @@ mod tests {
         assert_eq!((error.code, error.severity), ("E5102", Severity::Error));
         assert!(error.message.contains("`b`") && error.message.contains("`a`"));
         assert_eq!(error.related.len(), 1);
-        assert!(candidate(compiled).is_err(), "the candidate is rejected");
+        assert!(
+            plan_compiled(compiled).is_err(),
+            "the candidate is rejected"
+        );
     }
 
     #[test]

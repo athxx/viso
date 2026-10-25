@@ -21,11 +21,14 @@ use std::time::{Duration, Instant};
 use viso_dev_protocol::inspect::SourceTable;
 use viso_dsl::aot::ShaderLang;
 use viso_dsl::frontend::Origin;
+use viso_dsl::frontend::compile_file_for;
 use viso_dsl::hir::{CapabilitySet, CollisionDelivery, Determinism, InputDevices, TargetProfile};
-use viso_dsl::hotreload::plan_view_for;
+use viso_dsl::hotreload::plan_compiled;
 use viso_dsl::i18n::{CatalogIssue, Messages};
 use viso_dsl::inspect::file_sources;
-use viso_dsl::package::{LoadedPackage, PackageManifest, load_package};
+use viso_dsl::native_package;
+use viso_dsl::package::{LoadedPackage, PackageManifest, load_package_in};
+use viso_dsl::schema::Natives;
 use viso_dsl::{Diagnostic, TextRange, TextSize};
 use viso_project::{
     ArtifactKind, DevRuntime, DeviceTarget, Footprint, GameDeterminism, Project, ResolvedConfig,
@@ -324,6 +327,12 @@ pub(super) struct Checked {
     pub profile: TargetProfile,
 }
 
+/// The manifest of the app's crate, beside `Viso.toml` at `root`, when it has
+/// one: whose dependencies the native packages its views call are among.
+pub(crate) fn cargo_manifest(root: &Path) -> Option<std::path::PathBuf> {
+    Some(root.join("Cargo.toml")).filter(|manifest| manifest.is_file())
+}
+
 impl Checked {
     /// The profile the app's views compile under: its grants, catalogs and
     /// assets.
@@ -334,6 +343,12 @@ impl Checked {
             assets: self.profile.assets.clone(),
             ..TargetProfile::default()
         }
+    }
+
+    /// The native libraries the package compiled against: the standard
+    /// ones, and its crate's native packages when it calls them.
+    pub fn natives(&self) -> Arc<Natives> {
+        Arc::clone(self.package.natives())
     }
 
     /// The language edition the package declares.
@@ -359,7 +374,9 @@ impl Checked {
                     language: self.language(),
                     siblings: self.package.siblings(),
                 };
-                let plan = plan_view_for(&file.source, &origin, profile.clone()).ok()?;
+                let compiled =
+                    compile_file_for(&file.source, &origin, self.natives(), profile.clone());
+                let plan = plan_compiled(compiled).ok()?;
                 let canonical = file
                     .path
                     .canonicalize()
@@ -482,19 +499,26 @@ pub(super) fn package_for(
     profile.messages = messages.map(Rc::new);
     profile.assets = Some(Rc::new(assets));
 
-    let package = load_package(
-        &project.root,
-        PackageManifest {
-            name: &name,
-            profile: profile.clone(),
-            language: project
-                .manifest
-                .package
-                .language
-                .as_ref()
-                .map(|language| (language.value.as_str(), text_range(language.span))),
+    let language = project
+        .manifest
+        .package
+        .language
+        .as_ref()
+        .map(|language| (language.value.as_str(), text_range(language.span)));
+    // Against the native packages of the app's crate, once a path needs them.
+    let package = native_package::link_with(
+        cargo_manifest(&project.root).as_deref(),
+        |natives| {
+            let manifest = PackageManifest {
+                name: &name,
+                profile: profile.clone(),
+                language,
+            };
+            load_package_in(&project.root, manifest, natives)
         },
-    );
+        |package, visit| package.each_diagnostic(visit),
+    )
+    .made;
     for diagnostic in &package.manifest_diagnostics {
         out.source(manifest.as_ref(), &[], diagnostic);
     }
@@ -560,7 +584,8 @@ impl Checked {
             language: self.language(),
             siblings: self.package.siblings(),
         };
-        let Ok(plan) = plan_view_for(&file.source, &origin, self.view_profile()) else {
+        let compiled = compile_file_for(&file.source, &origin, self.natives(), self.view_profile());
+        let Ok(plan) = plan_compiled(compiled) else {
             return Vec::new();
         };
         match viso_dsl::aot::package_shaders(&plan, &self.profile.shader_langs) {

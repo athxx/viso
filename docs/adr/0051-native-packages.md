@@ -53,8 +53,13 @@ A **native package** is a Cargo package that carries native libraries for `.vs` 
 - A dev session's patch links against the libraries the live view's host linked: an
   edit cannot reach a package the build did not link, which needs a rebuild, as a new
   Rust dependency does.
-- `viso check`, `export`, `dev` and `schema`, and the LSP, discover once per project and
-  compile against the same registry.
+- `viso check`, `export` and `dev`, and the LSP, compile as the macros do
+  (`native_package::link_with`): against the standard libraries until a path resolves to
+  nothing, then against the packages of the crate the source belongs to (the
+  `Cargo.toml` beside `Viso.toml`, or the nearest above the file), found once per
+  manifest and lock file and taken at once by later compiles. `viso schema` lists what a
+  project can call, so it discovers up front. A discovery that fails is a note on each
+  `E2001` it leaves.
 - Capabilities stay as they are: a package's functions declare theirs
   (`network.http`), the app's `Viso.toml` grants them (`[package] capabilities`), and an
   ungranted call is a compile-time error and a runtime fault.

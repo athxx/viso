@@ -16,6 +16,7 @@
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use viso_dsl::diag::{Diagnostic, Severity, codes};
 
@@ -187,6 +188,7 @@ impl Server {
         let id = self.docs.open(
             text,
             &module_path.iter().map(String::as_str).collect::<Vec<_>>(),
+            manifest_of(&uri).as_deref(),
         );
         self.uri_of.insert(id, uri.clone());
         self.id_of.insert(uri.clone(), id);
@@ -211,6 +213,7 @@ impl Server {
             id,
             text,
             &module_path.iter().map(String::as_str).collect::<Vec<_>>(),
+            manifest_of(&uri).as_deref(),
         );
         self.publish_for(&uri)
     }
@@ -255,7 +258,7 @@ impl Server {
         let doc = self.docs.get(id).expect("located doc is open");
         let mut sections: Vec<String> = Vec::new();
         let mut range: Option<viso_dsl::TextRange> = None;
-        for d in doc.parse.errors.iter().chain(doc.resolved.errors.iter()) {
+        for d in doc.diagnostics() {
             let primary = d.primary;
             if offset < primary.start() || offset > primary.end() {
                 continue;
@@ -503,7 +506,7 @@ impl Server {
             return Outbound::default();
         };
         let mut items = Vec::new();
-        for d in doc.parse.errors.iter().chain(doc.resolved.errors.iter()) {
+        for d in doc.diagnostics() {
             items.push(diagnostic_json(
                 position::to_lsp_range(&doc.line_index, d.primary),
                 d,
@@ -649,6 +652,37 @@ fn module_path_of(uri: &str) -> Vec<String> {
     } else {
         stem.to_string()
     }]
+}
+
+/// The manifest of the Cargo package the `file:` document `uri` belongs to.
+fn manifest_of(uri: &str) -> Option<PathBuf> {
+    let path = uri.strip_prefix("file://")?;
+    let bytes = path.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        let escaped = (bytes[at] == b'%')
+            .then(|| bytes.get(at + 1..at + 3))
+            .flatten()
+            .and_then(|hex| u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok());
+        match escaped {
+            Some(byte) => {
+                decoded.push(byte);
+                at += 3;
+            }
+            None => {
+                decoded.push(bytes[at]);
+                at += 1;
+            }
+        }
+    }
+    let path = String::from_utf8(decoded).ok()?;
+    // `file:///C:/…` on Windows names `C:/…`.
+    let path = match path.as_bytes() {
+        [b'/', drive, b':', ..] if drive.is_ascii_alphabetic() => &path[1..],
+        _ => &path,
+    };
+    viso_dsl::native_package::manifest_of(Path::new(path))
 }
 
 #[cfg(test)]

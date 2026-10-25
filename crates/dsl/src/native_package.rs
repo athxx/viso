@@ -19,7 +19,8 @@
 //!
 //! [`discover`] finds the packages among the app's direct dependencies
 //! through `cargo metadata`, once per manifest and lock file for the
-//! process; [`registry`] is the standard libraries and theirs.
+//! process; [`registry`] is the standard libraries and theirs, and
+//! [`compile_linked`] compiles against them once a source needs them.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -32,6 +33,9 @@ use viso_behavior::native::{
     Natives, Ownership, Param, SchemaConflict, SchemaTy, ThreadDomain,
 };
 use viso_ende::{JsonValue, JsonWriter};
+
+use crate::diag::{Diagnostic, Severity};
+use crate::frontend::Compiled;
 
 /// The schema format's name and version.
 const FORMAT: &str = "viso-natives";
@@ -476,22 +480,9 @@ type Found = HashMap<PathBuf, (Stamp, Arc<[NativePackage]>)>;
 ///
 /// Cargo not running or failing, or a package's schema missing or not one.
 pub fn discover(manifest: &Path) -> Result<Arc<[NativePackage]>, String> {
-    static FOUND: OnceLock<Mutex<Found>> = OnceLock::new();
-    let modified = |path: &Path| std::fs::metadata(path).and_then(|m| m.modified()).ok();
-    let lock = manifest
-        .ancestors()
-        .skip(1)
-        .map(|dir| dir.join("Cargo.lock"))
-        .find(|lock| lock.is_file());
-    let stamp = (modified(manifest), lock.as_deref().and_then(modified));
-    let found = FOUND.get_or_init(Mutex::default);
-    if let Some((was, packages)) = found
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get(manifest)
-        && *was == stamp
-    {
-        return Ok(packages.clone());
+    let stamp = stamp(manifest);
+    if let Some(packages) = known(manifest, stamp) {
+        return Ok(packages);
     }
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let output = std::process::Command::new(cargo)
@@ -511,11 +502,136 @@ pub fn discover(manifest: &Path) -> Result<Arc<[NativePackage]>, String> {
         std::fs::read_to_string(path).map_err(|e| format!("`{}`: {e}", path.display()))
     })?
     .into();
-    found
+    found()
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .insert(manifest.to_owned(), (stamp, packages.clone()));
     Ok(packages)
+}
+
+/// What [`discover`] found for each manifest, and when.
+fn found() -> &'static Mutex<Found> {
+    static FOUND: OnceLock<Mutex<Found>> = OnceLock::new();
+    FOUND.get_or_init(Mutex::default)
+}
+
+/// When `manifest` and the lock file beside it or above it last changed.
+fn stamp(manifest: &Path) -> Stamp {
+    let modified = |path: &Path| std::fs::metadata(path).and_then(|m| m.modified()).ok();
+    let lock = manifest
+        .ancestors()
+        .skip(1)
+        .map(|dir| dir.join("Cargo.lock"))
+        .find(|lock| lock.is_file());
+    (modified(manifest), lock.as_deref().and_then(modified))
+}
+
+/// What [`discover`] found for `manifest` as it is at `stamp`, if it looked.
+fn known(manifest: &Path, stamp: Stamp) -> Option<Arc<[NativePackage]>> {
+    let found = found().lock().unwrap_or_else(PoisonError::into_inner);
+    let (was, packages) = found.get(manifest)?;
+    (*was == stamp).then(|| packages.clone())
+}
+
+/// The manifest of the Cargo package `file` belongs to: the nearest
+/// `Cargo.toml` above it.
+pub fn manifest_of(file: &Path) -> Option<PathBuf> {
+    file.ancestors()
+        .skip(1)
+        .map(|dir| dir.join("Cargo.toml"))
+        .find(|manifest| manifest.is_file())
+}
+
+/// What was made of `.vs` code against the native packages of its Cargo
+/// package.
+pub struct Linked<T> {
+    /// A compile, a loaded package.
+    pub made: T,
+    /// The packages it was made against: none when the standard libraries
+    /// were enough.
+    pub packages: Arc<[NativePackage]>,
+    /// Why the packages could not be made against, when they were needed:
+    /// their discovery failed or two of them conflict.
+    pub unlinked: Option<String>,
+}
+
+/// What `compile` makes of `.vs` code of the Cargo package whose manifest
+/// is `manifest`, as [`link_with`] makes it.
+pub fn compile_linked(
+    manifest: Option<&Path>,
+    compile: impl Fn(Arc<Natives>) -> Compiled,
+) -> Linked<Compiled> {
+    link_with(manifest, compile, |compiled, visit| {
+        compiled.diagnostics.iter_mut().for_each(visit);
+    })
+}
+
+/// What `make` makes of `.vs` code of the Cargo package whose manifest is
+/// `manifest`: against the standard libraries, or, when a path resolves to
+/// nothing there (an `E2001` among the diagnostics `each` visits in what it
+/// made),
+/// against the package's native packages as well. Cargo runs only then,
+/// and once per manifest and lock file for the process: later calls make it
+/// against the packages found at once. Why they could not be found is a
+/// note on each `E2001` it keeps.
+pub fn link_with<T>(
+    manifest: Option<&Path>,
+    make: impl Fn(Arc<Natives>) -> T,
+    each: impl Fn(&mut T, &mut dyn FnMut(&mut Diagnostic)),
+) -> Linked<T> {
+    let none = || Arc::from([]);
+    let alone = |made| Linked {
+        made,
+        packages: none(),
+        unlinked: None,
+    };
+    let Some(manifest) = manifest else {
+        return alone(make(Natives::standard()));
+    };
+    let unresolved = |made: &mut T| {
+        let mut found = false;
+        each(made, &mut |d| {
+            found |= d.code == "E2001" && d.severity == Severity::Error
+        });
+        found
+    };
+    let unlinked = |mut made: T, why: String| {
+        let note = format!("the native packages are not known: {why}");
+        each(&mut made, &mut |d| {
+            if d.code == "E2001" {
+                d.notes.push(note.clone());
+            }
+        });
+        Linked {
+            made,
+            packages: none(),
+            unlinked: Some(why),
+        }
+    };
+    let packages = match known(manifest, stamp(manifest)) {
+        Some(packages) => packages,
+        None => {
+            let mut made = make(Natives::standard());
+            if !unresolved(&mut made) {
+                return alone(made);
+            }
+            match discover(manifest) {
+                Ok(packages) => packages,
+                Err(why) => return unlinked(made, why),
+            }
+        }
+    };
+    if packages.is_empty() {
+        return alone(make(Natives::standard()));
+    }
+    match registry(&packages) {
+        Ok(natives) => Linked {
+            made: make(natives),
+            packages,
+            unlinked: None,
+        },
+        Err(conflict) => unlinked(make(Natives::standard()), format!("E6101: {conflict}")),
+    }
 }
 
 /// The native packages `metadata` says the root package depends on
@@ -623,7 +739,7 @@ pub fn registry(packages: &[NativePackage]) -> Result<Arc<Natives>, SchemaConfli
         .iter()
         .flat_map(|p| p.libraries.iter().copied())
         .collect();
-    Natives::with(&libraries).map(Arc::new)
+    Natives::shared(&libraries)
 }
 
 #[cfg(test)]

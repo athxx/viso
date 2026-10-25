@@ -131,6 +131,21 @@ impl LoadedPackage {
             .clone()
     }
 
+    /// The native libraries its native paths resolved against.
+    pub fn natives(&self) -> &Arc<Natives> {
+        self.model.graph.natives()
+    }
+
+    /// Visits every diagnostic: the manifest's, the module graph's and each
+    /// file's.
+    pub fn each_diagnostic(&mut self, visit: &mut dyn FnMut(&mut Diagnostic)) {
+        self.manifest_diagnostics.iter_mut().for_each(&mut *visit);
+        self.graph_diagnostics.iter_mut().for_each(&mut *visit);
+        for file in &mut self.files {
+            file.diagnostics.iter_mut().for_each(&mut *visit);
+        }
+    }
+
     /// Whether any file, the manifest or the module graph raised an error, or a
     /// source could not be read.
     pub fn has_errors(&self) -> bool {

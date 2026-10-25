@@ -41,10 +41,12 @@ use viso_dev_protocol::inspect::FileSources;
 use viso_dev_protocol::wire::{FileId, MAX_LINE, MAX_LINES, MountEntry, content_hash, source_hash};
 use viso_dsl::assets::{AssetCatalog, AssetFormat, ResourceId, normalize_path};
 use viso_dsl::frontend::{Imported, Origin, Siblings, package_root};
+use viso_dsl::frontend::{compile_file_for, compile_parsed_for};
 use viso_dsl::hir::{CapabilitySet, TargetProfile};
-use viso_dsl::hotreload::{CandidatePlan, plan_view_for, plan_view_parsed};
+use viso_dsl::hotreload::{CandidatePlan, plan_compiled};
 use viso_dsl::i18n::{CatalogFile, CatalogIssue, Messages};
 use viso_dsl::inspect::file_sources;
+use viso_dsl::native_package;
 use viso_dsl::syntax::{Edit, Entry, IncrementalParse, TextRange, TextSize};
 use viso_dsl::{Diagnostic, LineIndex, Severity};
 use viso_text::font_format;
@@ -476,7 +478,11 @@ impl Sources {
             return Err("the version the app runs is not one the session read".into());
         };
         let profile = mount.profile(catalogs, &self.assets);
-        let plan = plan_view_for(text, &mount.origin, profile).map_err(|errors| {
+        let manifest = native_package::manifest_of(&view.path);
+        let compiled = native_package::compile_linked(manifest.as_deref(), |natives| {
+            compile_file_for(text, &mount.origin, natives, profile.clone())
+        });
+        let plan = plan_compiled(compiled.made).map_err(|errors| {
             let codes: Vec<&str> = errors.iter().map(|d| d.code).collect();
             format!(
                 "the version the app runs does not compile on the host ({})",
@@ -712,7 +718,14 @@ impl Sources {
             None => IncrementalParse::new(text, Entry::CompilationUnit),
         };
         let profile = mount.profile(catalogs, &self.assets);
-        let planned = plan_view_parsed(text, parse.parse().clone(), &mount.origin, profile);
+        // Against the native packages of the view's crate, once a path needs
+        // them.
+        let manifest = native_package::manifest_of(&view.path);
+        let compiled = native_package::compile_linked(manifest.as_deref(), |natives| {
+            let parse = parse.parse().clone();
+            compile_parsed_for(text, parse, &mount.origin, natives, profile.clone())
+        });
+        let planned = plan_compiled(compiled.made);
         mount.rejected = planned.is_err();
         memo.0.push((at, key, planned.clone()));
         view.parse = Some((text.to_owned(), parse));
@@ -874,6 +887,7 @@ pub(super) fn failure_lines(name: &str, text: &str, diagnostics: &[Diagnostic]) 
 #[cfg(test)]
 mod tests {
     use viso_dsl::aot::emit_view_package;
+    use viso_dsl::hotreload::{plan_view_for, plan_view_parsed};
     use viso_dsl::syntax::parse_entry;
     use viso_dsl::syntax::tokenize;
 

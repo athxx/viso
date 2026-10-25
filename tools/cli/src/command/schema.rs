@@ -4,16 +4,20 @@
 //! from `viso-dsl`; this command only finds the project and picks the form.
 
 use std::fmt::Write as _;
+use std::sync::Arc;
 
+use viso_dsl::Diagnostic;
 use viso_dsl::hir::TargetProfile;
-use viso_dsl::package::{PackageManifest, load_package};
+use viso_dsl::native_package;
+use viso_dsl::package::{PackageManifest, load_package_in};
 use viso_dsl::schema::{
     self, Catalog, FunctionSchema, ListKind, Natives, Schema, SchemaKind, SearchHit,
 };
 
 use crate::args::{SchemaArgs, SchemaGroup};
+use crate::command::check::cargo_manifest;
 use crate::context::{Context, in_its_file};
-use crate::error::{DIAGNOSTICS, SUCCESS};
+use crate::error::{DIAGNOSTICS, ENV_CARGO, SUCCESS};
 use crate::output::Output;
 
 pub fn run(ctx: &Context<'_>, args: &SchemaArgs, out: &mut Output) -> u8 {
@@ -54,21 +58,44 @@ pub fn run(ctx: &Context<'_>, args: &SchemaArgs, out: &mut Output) -> u8 {
 /// The framework's symbols, and the components, records and enums of the
 /// project the command runs in, if it runs in one.
 fn catalog(ctx: &Context<'_>, out: &mut Output) -> Result<Catalog, u8> {
-    let catalog = Catalog::framework(Natives::standard());
     let Some(project) = ctx.project_if_any(out)? else {
-        return Ok(catalog);
+        return Ok(Catalog::framework(Natives::standard()));
     };
     let name = project.name().map_err(|diagnostic| {
         in_its_file(out, &diagnostic);
         diagnostic.code.exit_code()
     })?;
-    let package = load_package(
+    // The natives a project's code can call: the standard libraries and its
+    // crate's native packages.
+    let natives = match cargo_manifest(&project.root).map(|m| native_package::discover(&m)) {
+        Some(Ok(packages)) => native_package::registry(&packages).map_err(|conflict| {
+            let at = viso_dsl::TextRange::empty(viso_dsl::TextSize::from(0));
+            out.source(
+                None,
+                &[],
+                &Diagnostic::error("E6101", at, conflict.to_string()),
+            );
+            DIAGNOSTICS
+        })?,
+        Some(Err(why)) => {
+            out.warning(
+                ENV_CARGO,
+                &format!("the native packages are not known: {why}"),
+                &["the schema holds the standard libraries alone".to_owned()],
+            );
+            Natives::standard()
+        }
+        None => Natives::standard(),
+    };
+    let catalog = Catalog::framework(Arc::clone(&natives));
+    let package = load_package_in(
         &project.root,
         PackageManifest {
             name,
             language: None,
             profile: TargetProfile::default(),
         },
+        natives,
     );
     let version = project
         .manifest

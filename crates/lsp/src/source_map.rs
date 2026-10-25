@@ -17,12 +17,17 @@
 //! incremental is a transparent optimization behind this same interface.
 
 use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Arc;
 
+use viso_dsl::Diagnostic;
 use viso_dsl::LineIndex;
 use viso_dsl::Parse;
+use viso_dsl::native_package;
 use viso_dsl::resolve::{
     ModuleGraph, ModulePath, NameInterner, ResolvedModule, SourceUnit, resolve,
 };
+use viso_dsl::schema::Natives;
 use viso_dsl::syntax::grammar::parse;
 use viso_dsl::tokenize;
 
@@ -56,18 +61,46 @@ pub struct OpenDoc {
     pub resolved: ResolvedModule,
     /// Reverse def→use index and declaration spans over `resolved`.
     pub index: ReferenceIndex,
+    /// The module graph's diagnostics: an import naming no module or
+    /// native library.
+    pub graph_errors: Vec<Diagnostic>,
 }
 
 impl OpenDoc {
+    /// Every diagnostic of the document: its parse's, its imports' and its
+    /// resolution's.
+    pub fn diagnostics(&self) -> impl Iterator<Item = &Diagnostic> {
+        self.parse
+            .errors
+            .iter()
+            .chain(&self.graph_errors)
+            .chain(&self.resolved.errors)
+    }
+
     /// Derives every artifact from source text, resolving it as a single-module
-    /// graph under `module_path`.
-    fn derive(source: String, module_path: &[&str]) -> OpenDoc {
+    /// graph under `module_path`, against the native packages of the Cargo
+    /// package whose manifest is `manifest` once a path needs them.
+    fn derive(source: String, module_path: &[&str], manifest: Option<&Path>) -> OpenDoc {
+        native_package::link_with(
+            manifest,
+            |natives| OpenDoc::derive_in(source.clone(), module_path, natives),
+            |doc, visit| {
+                doc.graph_errors.iter_mut().for_each(&mut *visit);
+                doc.resolved.errors.iter_mut().for_each(visit);
+            },
+        )
+        .made
+    }
+
+    /// [`derive`](Self::derive) against `natives`.
+    fn derive_in(source: String, module_path: &[&str], natives: Arc<Natives>) -> OpenDoc {
         let line_index = LineIndex::new(&source);
         let parse_result = parse(&tokenize(&source), &source);
         let mut interner = NameInterner::new();
         let path = ModulePath::intern(&mut interner, module_path);
         let mut units = vec![SourceUnit::new(path, parse_result.clone())];
-        let graph = ModuleGraph::build(&units, &interner);
+        let graph = ModuleGraph::build_with(&units, &interner, natives, "");
+        let graph_errors = graph.errors().to_vec();
         let mut resolved = resolve(&graph, &mut units, &mut interner, "");
         // A single-unit graph resolves to exactly one module.
         let resolved = resolved.pop().unwrap_or_else(|| ResolvedModule {
@@ -83,6 +116,7 @@ impl OpenDoc {
             parse: parse_result,
             resolved,
             index,
+            graph_errors,
         }
     }
 }
@@ -101,19 +135,34 @@ impl SourceMap {
     }
 
     /// Opens a document with the given text, deriving its artifacts, and returns its
-    /// fresh [`FileId`]. `module_path` names the module the document resolves as.
-    pub fn open(&mut self, source: String, module_path: &[&str]) -> FileId {
+    /// fresh [`FileId`]. `module_path` names the module the document resolves as,
+    /// `manifest` the Cargo package it belongs to, whose native packages it can
+    /// call.
+    pub fn open(
+        &mut self,
+        source: String,
+        module_path: &[&str],
+        manifest: Option<&Path>,
+    ) -> FileId {
         let id = FileId(self.next_id);
         self.next_id += 1;
-        self.docs.insert(id, OpenDoc::derive(source, module_path));
+        self.docs
+            .insert(id, OpenDoc::derive(source, module_path, manifest));
         id
     }
 
     /// Replaces an open document's full text and re-derives its artifacts. A no-op if
     /// `id` is not open.
-    pub fn update(&mut self, id: FileId, source: String, module_path: &[&str]) {
+    pub fn update(
+        &mut self,
+        id: FileId,
+        source: String,
+        module_path: &[&str],
+        manifest: Option<&Path>,
+    ) {
         if self.docs.contains_key(&id) {
-            self.docs.insert(id, OpenDoc::derive(source, module_path));
+            self.docs
+                .insert(id, OpenDoc::derive(source, module_path, manifest));
         }
     }
 
@@ -133,15 +182,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_import_naming_nothing_is_a_diagnostic() {
+        let mut map = SourceMap::new();
+        let id = map.open(
+            "import nothere;\ncomponent C {}\n".to_string(),
+            &["m"],
+            None,
+        );
+        let codes: Vec<&str> = map.get(id).unwrap().diagnostics().map(|d| d.code).collect();
+        assert_eq!(codes, ["E2001"]);
+    }
+
+    #[test]
     fn open_update_close_lifecycle() {
         let mut map = SourceMap::new();
-        let id = map.open("component C {\n  state count = 0;\n}\n".to_string(), &["m"]);
+        let id = map.open(
+            "component C {\n  state count = 0;\n}\n".to_string(),
+            &["m"],
+            None,
+        );
         assert!(map.get(id).is_some());
         // An edit re-derives: the new source has an extra member the index sees.
         map.update(
             id,
             "component C {\n  state count = 0;\n  computed d = count;\n}\n".to_string(),
             &["m"],
+            None,
         );
         let doc = map.get(id).expect("still open");
         assert!(
@@ -160,7 +226,7 @@ mod tests {
     #[test]
     fn update_of_unopened_file_is_noop() {
         let mut map = SourceMap::new();
-        map.update(FileId(999), "component C {}".to_string(), &["m"]);
+        map.update(FileId(999), "component C {}".to_string(), &["m"], None);
         assert!(map.get(FileId(999)).is_none());
     }
 }
