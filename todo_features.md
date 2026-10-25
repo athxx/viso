@@ -375,8 +375,10 @@ Rules:
     - [x] sounds in memory played as voices of a mixer on one output stream: volume, pan
       and speed gliding, looping, priority stealing, a limiter on the sum; WAV read by
       the crate;
-    - [ ] the compressed formats (MP3, AAC, FLAC, Ogg Vorbis) through the platform's
-      decoders;
+    - [x] the compressed formats (MP3, AAC, FLAC, Ogg Vorbis) through the platform's
+      decoders: Audio Toolbox, GStreamer, the NDK's media codecs, Media Foundation (built,
+      not yet run: no Windows machine), `decodeAudioData`; Ogg Vorbis by `lewton` where the
+      platform has no decoder for it;
     - [ ] music streamed from a file through the same mixer (a URL plays through
       `viso-media`'s player, which has no picture to show for it);
     - [ ] recording what an input captures to a file;
