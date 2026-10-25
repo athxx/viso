@@ -371,8 +371,15 @@ Rules:
     - [x] Web, Web Audio: one context a stream, blocks moved through an AudioWorklet
       to callbacks on the page's thread, waiting for the first touch (verified in
       headless Chrome with fake devices).
-  - [ ] playback of files and URLs through the platform players (WAV, Ogg Vorbis, MP3,
-    FLAC, AAC), sound effects, recording;
+  - [ ] playback and recording:
+    - [x] sounds in memory played as voices of a mixer on one output stream: volume, pan
+      and speed gliding, looping, priority stealing, a limiter on the sum; WAV read by
+      the crate;
+    - [ ] the compressed formats (MP3, AAC, FLAC, Ogg Vorbis) through the platform's
+      decoders;
+    - [ ] music streamed from a file through the same mixer (a URL plays through
+      `viso-media`'s player, which has no picture to show for it);
+    - [ ] recording what an input captures to a file;
   - [ ] the audio session (iOS category, Android focus) owned by it alone.
 
 ## W11 — Networking
