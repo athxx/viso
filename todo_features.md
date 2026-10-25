@@ -411,12 +411,14 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
   in release builds too, the MSIX `internetClient` capability; Apple apps need none.
 - [ ] `viso-ext/viso-net`, an HTTP client and WebSocket on each platform's own stack
   (its certificates, proxies, VPN and cookies), whose futures need no runtime:
-  - [ ] the client: a base URL, headers, query, timeouts, redirects, interceptors on
+  - [x] the client: a base URL, headers, query, timeouts, redirects, interceptors on
     the request, the response and the error (auth, retry, logging), a cancel token and
     a dropped future cancelling, bodies of bytes, text, JSON (`serde`, a feature) and
     ASUN (`application/asun`, `application/asun+binary`, on by default), a client-wide
     codec chosen by the response's type, a mock backend for tests;
-  - [ ] Apple, URLSession with a delegate: the body streamed as it comes;
+  - [x] Apple, URLSession with a delegate: the body streamed as it comes, the task
+    suspended while the app reads slower (an untyped body's first 512 bytes held back,
+    as URLSession sniffs its type);
   - [ ] Android, `HttpURLConnection` through the crate's own dex;
   - [ ] Linux and the BSDs, libcurl opened at run time;
   - [ ] Windows, WinHTTP;
