@@ -416,11 +416,16 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
     a dropped future cancelling, bodies of bytes, text, JSON (`serde`, a feature) and
     ASUN (`application/asun`, `application/asun+binary`, on by default), a client-wide
     codec chosen by the response's type, a mock backend for tests;
-  - [x] Apple, URLSession with a delegate: the body streamed as it comes, the task
-    suspended while the app reads slower (an untyped body's first 512 bytes held back,
-    as URLSession sniffs its type);
-  - [x] Android, `HttpURLConnection` through the crate's own dex, a thread per request held while the app reads slower; a dev build's manifest allows plain HTTP, for a server on the developer's machine;
-  - [ ] Linux and the BSDs, libcurl opened at run time;
+  - [x] Apple, URLSession with a delegate: the body streamed as it comes, held back by
+    the delegate waiting while the app reads slower (a suspended task reads on), so a
+    session runs one request at a time and is kept for the next to its origin; an
+    untyped body's first 512 bytes held back, as URLSession sniffs its type;
+  - [x] Android, `HttpURLConnection` through the crate's own dex, a thread per request
+    held while the app reads slower; a dev build's manifest allows plain HTTP, for a
+    server on the developer's machine;
+  - [x] Linux and the BSDs, libcurl opened at run time: one thread on curl's multi
+    interface, a held body's transfer paused, cookies, DNS and TLS sessions shared;
+    redirects followed alike on every platform, credentials kept from another origin;
   - [ ] Windows, WinHTTP;
   - [ ] Web, `fetch` with a `ReadableStream` body;
   - [ ] uploads and downloads: multipart forms, a file streamed up or down, progress
