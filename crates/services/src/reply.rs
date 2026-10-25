@@ -140,25 +140,6 @@ impl<T> Completer<T> {
     }
 }
 
-/// A completer shared with a callback the OS may call by reference, from
-/// any thread, and more than once: the first call completes it.
-#[cfg(any(target_vendor = "apple", target_os = "windows"))]
-pub(crate) struct OnceCompleter<T>(Mutex<Option<Completer<T>>>);
-
-#[cfg(any(target_vendor = "apple", target_os = "windows"))]
-impl<T> OnceCompleter<T> {
-    pub(crate) fn new(completer: Completer<T>) -> Self {
-        Self(Mutex::new(Some(completer)))
-    }
-
-    pub(crate) fn complete(&self, result: ServiceResult<T>) {
-        let completer = self.0.lock().unwrap_or_else(|e| e.into_inner()).take();
-        if let Some(completer) = completer {
-            completer.complete(result);
-        }
-    }
-}
-
 impl<T> Drop for Completer<T> {
     fn drop(&mut self) {
         self.fill(Err(ServiceError::Cancelled));

@@ -123,6 +123,17 @@ Until `cx.spawn` exists, apps hold a `Services` value and poll replies with `try
 during a frame, or await them in their own executor. Wiring the registry into the
 contexts (`cx.services()`, §49) is left as a follow-up.
 
+### 7. Amendment: the core keeps only UI-adjacent services
+
+The registry now holds two protocols, haptics and launcher, plus `app_data_dir` and
+`LocalStorage` for persistence. Haptics answer controls; the launcher opens the links
+text activates. File dialogs, share, notifications, secure storage and permissions are
+not UI. Each is a `viso-ext` crate (`viso-file-picker`, `viso-share`,
+`viso-local-notification`, `viso-secure-storage`). The crate carries its own OS code,
+its own permission request and its own mock, and shares `Reply` through `viso-common`.
+An app depends only on what it uses, and the core carries no Keychain, notification
+center, portal or Credential Manager bindings.
+
 ## Consequences
 
 - App code has no `cfg(target_os)` branch for these capabilities, and every call is

@@ -479,9 +479,11 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
 - [x] `open_url` service.
 - [x] Network reachability: `viso-ext/viso-connectivity`, the app's own choice (checked
   and watched on macOS).
-- [ ] `viso-services` overlaps `viso-ext` (share, notifications, launcher, file dialogs,
-  secure storage, haptics, permissions): none is UI, so each moves to `viso-ext` or
-  goes; the core keeps `app_data_dir` and `LocalStorage` for persistence.
+- [x] `viso-services` overlaps `viso-ext` (share, notifications, launcher, file dialogs,
+  secure storage, haptics, permissions): the core keeps haptics and the launcher (both
+  serve controls and links) plus `app_data_dir` / `LocalStorage`; file dialogs, share,
+  notifications and secure storage are `viso-file-picker`, `viso-share`,
+  `viso-local-notification` and `viso-secure-storage`, each with its own permission.
 
 ## W12 — Platform extras
 

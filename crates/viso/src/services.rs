@@ -1,15 +1,14 @@
-//! Platform services from a handler: file dialogs, share, notifications,
-//! permissions, secure storage and haptics.
+//! Platform services from a handler: opening URLs and haptic feedback. File
+//! dialogs, share, notifications and secure storage are viso-ext crates.
 //!
 //! A handler reaches the session's registry through [`ServicesExt::services`]
 //! and awaits the reply in a task:
 //!
 //! ```ignore
-//! Button::new("Open").on_click(move |cx| {
-//!     let picked = cx.services().files().open(OpenOptions::default());
-//!     cx.spawn_then(picked, move |cx, files| {
-//!         let n = files.map_or(0, |f| f.len() as i32);
-//!         cx.set(count, StateValue::Int(n));
+//! Button::new("Docs").on_click(move |cx| {
+//!     let opened = cx.services().launcher().open_url("https://viso.dev/");
+//!     cx.spawn_then(opened, move |cx, opened| {
+//!         cx.set(failed, StateValue::Bool(opened.is_err()));
 //!     });
 //! })
 //! ```

@@ -944,9 +944,9 @@ impl<'a> EventCx<'a> {
     /// `then` with an [`UpdateCx`] at the frame boundary after it finishes.
     ///
     /// ```ignore
-    /// let picked = cx.services().files().open(OpenOptions::default());
-    /// cx.spawn_then(picked, move |cx, files| {
-    ///     cx.set(count, StateValue::Int(files.map_or(0, |f| f.len() as i32)));
+    /// let opened = cx.services().launcher().open_url("https://viso.dev/");
+    /// cx.spawn_then(opened, move |cx, opened| {
+    ///     cx.set(failed, StateValue::Bool(opened.is_err()));
     /// });
     /// ```
     pub fn spawn_then<T: 'static>(

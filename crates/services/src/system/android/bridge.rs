@@ -15,12 +15,10 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use jni_sys::{
-    JNI_OK, JNIEnv, JNINativeMethod, jbyteArray, jclass, jint, jlong, jmethodID, jobject,
-    jobjectArray, jsize, jstring, jvalue,
+    JNI_OK, JNIEnv, JNINativeMethod, jclass, jint, jlong, jmethodID, jobject, jsize, jstring,
+    jvalue,
 };
 
-use crate::files::PickedFile;
-use crate::permissions::PermissionState;
 use crate::reply::{Completer, Reply, ServiceError, ServiceResult, reply};
 
 /// Call a `JNIEnv` function.
@@ -35,50 +33,12 @@ const CLASS: &CStr = c"dev.viso.services.VisoServices";
 /// The `VisoServices` static methods the native side calls.
 #[derive(Clone, Copy)]
 pub(super) enum Method {
-    OpenDocument,
-    CreateDocument,
-    Share,
-    Notify,
-    Withdraw,
-    PermissionStatus,
-    RequestPermission,
-    SecretGet,
-    SecretSet,
-    SecretRemove,
     Vibrate,
     OpenUrl,
 }
 
 /// Name and signature of each [`Method`], in declaration order.
-const METHODS: [(&CStr, &CStr); 12] = [
-    (
-        c"openDocument",
-        c"(Landroid/app/Activity;J[Ljava/lang/String;Z)V",
-    ),
-    (
-        c"createDocument",
-        c"(Landroid/app/Activity;JLjava/lang/String;Ljava/lang/String;[B)V",
-    ),
-    (c"share", c"(Landroid/app/Activity;JLjava/lang/String;)V"),
-    (
-        c"notify",
-        c"(Landroid/app/Activity;JLjava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
-    ),
-    (c"withdraw", c"(Landroid/app/Activity;Ljava/lang/String;)V"),
-    (c"permissionStatus", c"(Landroid/app/Activity;)I"),
-    (c"requestPermission", c"(Landroid/app/Activity;J)V"),
-    (
-        c"secretGet",
-        c"(Landroid/app/Activity;JLjava/lang/String;)V",
-    ),
-    (
-        c"secretSet",
-        c"(Landroid/app/Activity;JLjava/lang/String;[B)V",
-    ),
-    (
-        c"secretRemove",
-        c"(Landroid/app/Activity;JLjava/lang/String;)V",
-    ),
+const METHODS: [(&CStr, &CStr); 2] = [
     (c"vibrate", c"(Landroid/app/Activity;I)I"),
     (c"openUrl", c"(Landroid/app/Activity;JLjava/lang/String;)V"),
 ];
@@ -316,49 +276,6 @@ impl Java<'_> {
         self.made(s)
     }
 
-    pub(super) fn bytes(&self, bytes: &[u8]) -> ServiceResult<jvalue> {
-        let len = jsize::try_from(bytes.len()).map_err(|_| too_large())?;
-        // SAFETY: `env` is this thread's environment; the region written is
-        // the new array's whole length.
-        unsafe {
-            let array = env_call!(self.env, NewByteArray, len);
-            if !array.is_null() {
-                env_call!(
-                    self.env,
-                    SetByteArrayRegion,
-                    array,
-                    0,
-                    len,
-                    bytes.as_ptr().cast()
-                );
-            }
-            self.made(array)
-        }
-    }
-
-    pub(super) fn strings(&self, list: &[String]) -> ServiceResult<jvalue> {
-        let len = jsize::try_from(list.len()).map_err(|_| too_large())?;
-        // SAFETY: `env` is this thread's environment; `String` resolves
-        // from any class loader, and each element is set within the array's
-        // length before its local reference is deleted.
-        unsafe {
-            let string_class = env_call!(self.env, FindClass, c"java/lang/String".as_ptr());
-            if string_class.is_null() {
-                return Err(pending_exception(self.env));
-            }
-            let array = env_call!(self.env, NewObjectArray, len, string_class, ptr::null_mut());
-            if array.is_null() {
-                return Err(pending_exception(self.env));
-            }
-            for (i, text) in (0..len).zip(list) {
-                let element = self.string(text)?;
-                env_call!(self.env, SetObjectArrayElement, array, i, element.l);
-                env_call!(self.env, DeleteLocalRef, element.l);
-            }
-            self.made(array)
-        }
-    }
-
     fn made(&self, object: jobject) -> ServiceResult<jvalue> {
         if object.is_null() {
             // SAFETY: `env` is this thread's environment.
@@ -417,21 +334,13 @@ fn too_large() -> ServiceError {
 
 /// A reply Java answers later, by token.
 pub(super) enum Pending {
-    Files(Completer<Vec<PickedFile>>),
-    Saved(Completer<Option<PathBuf>>),
     Done(Completer<()>),
-    Bytes(Completer<Option<Vec<u8>>>),
-    State(Completer<PermissionState>),
 }
 
 impl Pending {
     fn fail(self, error: ServiceError) {
         match self {
-            Self::Files(c) => c.complete(Err(error)),
-            Self::Saved(c) => c.complete(Err(error)),
             Self::Done(c) => c.complete(Err(error)),
-            Self::Bytes(c) => c.complete(Err(error)),
-            Self::State(c) => c.complete(Err(error)),
         }
     }
 }
@@ -479,37 +388,15 @@ pub(super) fn outcome(status: jint, message: Option<String>) -> ServiceResult<()
     }
 }
 
-/// A Java permission state.
-pub(super) fn state(state: jint) -> PermissionState {
-    match state {
-        0 => PermissionState::Granted,
-        2 => PermissionState::Prompt,
-        _ => PermissionState::Denied,
-    }
-}
-
 /// # Safety
 /// `env` must be the calling thread's environment and `class` the
 /// `VisoServices` class.
 unsafe fn register_natives(env: *mut JNIEnv, class: jclass) -> bool {
-    let natives: [(&CStr, &CStr, *mut c_void); 4] = [
-        (
-            c"nativeFiles",
-            c"(JILjava/lang/String;[Ljava/lang/String;[[B)V",
-            native_files as *mut c_void,
-        ),
-        (
-            c"nativeBytes",
-            c"(JILjava/lang/String;[B)V",
-            native_bytes as *mut c_void,
-        ),
-        (
-            c"nativeDone",
-            c"(JILjava/lang/String;)V",
-            native_done as *mut c_void,
-        ),
-        (c"nativeState", c"(JII)V", native_state as *mut c_void),
-    ];
+    let natives: [(&CStr, &CStr, *mut c_void); 1] = [(
+        c"nativeDone",
+        c"(JILjava/lang/String;)V",
+        native_done as *mut c_void,
+    )];
     let methods = natives.map(|(name, signature, f)| JNINativeMethod {
         name: name.as_ptr().cast_mut(),
         signature: signature.as_ptr().cast_mut(),
@@ -548,103 +435,7 @@ unsafe fn read_string(env: *mut JNIEnv, s: jstring) -> Option<String> {
     }
 }
 
-/// The bytes of a Java `byte[]` (null is `None`).
-///
-/// # Safety
-/// `env` must be the calling thread's environment and `array` a live byte
-/// array or null.
-unsafe fn read_bytes(env: *mut JNIEnv, array: jbyteArray) -> Option<Vec<u8>> {
-    if array.is_null() {
-        return None;
-    }
-    // SAFETY: the caller's contract; the region read is the array's length.
-    unsafe {
-        let len = env_call!(env, GetArrayLength, array);
-        let mut bytes = vec![0u8; usize::try_from(len).unwrap_or(0)];
-        env_call!(
-            env,
-            GetByteArrayRegion,
-            array,
-            0,
-            len,
-            bytes.as_mut_ptr().cast()
-        );
-        Some(bytes)
-    }
-}
-
-/// The picked files, element by element.
-///
-/// # Safety
-/// `env` must be the calling thread's environment; `names` a `String[]`
-/// and `contents` a `byte[][]` of the same length.
-unsafe fn read_files(
-    env: *mut JNIEnv,
-    names: jobjectArray,
-    contents: jobjectArray,
-) -> Vec<PickedFile> {
-    if names.is_null() || contents.is_null() {
-        return Vec::new();
-    }
-    // SAFETY: the caller's contract; each element is read within both
-    // arrays' length and its local reference deleted after.
-    unsafe {
-        let len =
-            env_call!(env, GetArrayLength, names).min(env_call!(env, GetArrayLength, contents));
-        (0..len)
-            .map(|i| {
-                let name = env_call!(env, GetObjectArrayElement, names, i);
-                let bytes = env_call!(env, GetObjectArrayElement, contents, i);
-                let file = PickedFile {
-                    name: read_string(env, name).unwrap_or_default(),
-                    path: None,
-                    contents: read_bytes(env, bytes).unwrap_or_default(),
-                };
-                env_call!(env, DeleteLocalRef, name);
-                env_call!(env, DeleteLocalRef, bytes);
-                file
-            })
-            .collect()
-    }
-}
-
 // The callbacks. Each runs on a Java thread with a valid `env`.
-
-extern "system" fn native_files(
-    env: *mut JNIEnv,
-    _class: jclass,
-    token: jlong,
-    status: jint,
-    message: jstring,
-    names: jobjectArray,
-    contents: jobjectArray,
-) {
-    let Some(Pending::Files(completer)) = take(token) else {
-        return;
-    };
-    // SAFETY: the arguments are the live references Java passed.
-    let result = unsafe {
-        outcome(status, read_string(env, message)).map(|()| read_files(env, names, contents))
-    };
-    completer.complete(result);
-}
-
-extern "system" fn native_bytes(
-    env: *mut JNIEnv,
-    _class: jclass,
-    token: jlong,
-    status: jint,
-    message: jstring,
-    value: jbyteArray,
-) {
-    let Some(Pending::Bytes(completer)) = take(token) else {
-        return;
-    };
-    // SAFETY: the arguments are the live references Java passed.
-    let result =
-        unsafe { outcome(status, read_string(env, message)).map(|()| read_bytes(env, value)) };
-    completer.complete(result);
-}
 
 extern "system" fn native_done(
     env: *mut JNIEnv,
@@ -655,22 +446,7 @@ extern "system" fn native_done(
 ) {
     // SAFETY: `message` is a live string or null.
     let result = outcome(status, unsafe { read_string(env, message) });
-    match take(token) {
-        Some(Pending::Done(completer)) => completer.complete(result),
-        // A saved document has a content URI, not a path.
-        Some(Pending::Saved(completer)) => completer.complete(result.map(|()| None)),
-        _ => {}
-    }
-}
-
-extern "system" fn native_state(
-    _env: *mut JNIEnv,
-    _class: jclass,
-    token: jlong,
-    status: jint,
-    permission: jint,
-) {
-    if let Some(Pending::State(completer)) = take(token) {
-        completer.complete(outcome(status, None).map(|()| state(permission)));
+    if let Some(Pending::Done(completer)) = take(token) {
+        completer.complete(result);
     }
 }

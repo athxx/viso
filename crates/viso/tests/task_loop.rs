@@ -10,7 +10,6 @@
 //!   frame that runs the continuation is the one `on_wakeup` requested.
 
 use std::cell::Cell;
-use std::path::PathBuf;
 use std::time::Duration;
 
 use viso::__test_support::{drive_scripted, drive_scripted_with_services};
@@ -19,7 +18,7 @@ use viso::platform::{
     WindowId,
 };
 use viso::prelude::*;
-use viso::services::{Call, Mock, OpenOptions, PickedFile, reply};
+use viso::services::{Call, Mock, reply};
 use viso::ui::{BuildCx, FlexStyle, PointerPhase, Size, WindowConfig};
 
 const STEP: Duration = Duration::from_millis(16);
@@ -54,7 +53,7 @@ fn unframed() -> WindowConfig {
     }
 }
 
-/// Opens a file dialog and records how many files the reply carried.
+/// Opens a URL and records whether the reply carried success.
 struct OpenApp;
 
 impl Application for OpenApp {
@@ -68,10 +67,9 @@ impl Application for OpenApp {
 
     fn build(&mut self, cx: &mut BuildCx<'_>) {
         build_root(cx, |ev, picked| {
-            let files = ev.services().files().open(OpenOptions::default());
-            ev.spawn_then(files, move |cx, files| {
-                let n = files.map_or(0, |f| f.len() as i32);
-                cx.set(picked, StateValue::Int(n));
+            let opened = ev.services().launcher().open_url("https://viso.dev/");
+            ev.spawn_then(opened, move |cx, opened| {
+                cx.set(picked, StateValue::Int(if opened.is_ok() { 1 } else { -1 }));
             });
         });
     }
@@ -126,19 +124,13 @@ fn picked() -> StateId {
 #[test]
 fn a_service_reply_writes_back_through_the_continuation() {
     let mock = Mock::new();
-    let file = |name: &str| PickedFile {
-        name: name.to_owned(),
-        path: Some(PathBuf::from("/tmp").join(name)),
-        contents: Vec::new(),
-    };
-    mock.answer_open(Ok(vec![file("a.txt"), file("b.txt")]));
     let app = drive_scripted_with_services::<OpenApp>(
         vec![redraw(), press(), redraw()],
         STEP,
         mock.services(),
     );
-    assert!(matches!(mock.calls().as_slice(), [Call::Open(_)]));
-    assert_eq!(app.states().get(picked()), Some(StateValue::Int(2)));
+    assert_eq!(mock.calls(), [Call::OpenUrl("https://viso.dev/".into())]);
+    assert_eq!(app.states().get(picked()), Some(StateValue::Int(1)));
     assert_eq!(
         app.store().task_count(),
         0,

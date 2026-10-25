@@ -2,12 +2,8 @@
 
 #[cfg(target_os = "android")]
 mod android;
-#[cfg(target_vendor = "apple")]
-mod apple;
 #[cfg(target_os = "ios")]
 mod ios;
-#[cfg(target_vendor = "apple")]
-mod keychain;
 #[cfg(any(
     target_os = "linux",
     target_os = "freebsd",
@@ -18,8 +14,6 @@ mod keychain;
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
-#[cfg(target_vendor = "apple")]
-mod user_notifications;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod web;
 #[cfg(target_os = "windows")]
@@ -113,68 +107,4 @@ fn android_files_dir() -> Option<std::path::PathBuf> {
 #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
 fn android_files_dir() -> Option<std::path::PathBuf> {
     None
-}
-
-/// Read a picked file in full.
-#[cfg(any(
-    target_vendor = "apple",
-    target_os = "windows",
-    all(
-        any(
-            target_os = "linux",
-            target_os = "freebsd",
-            target_os = "openbsd",
-            target_os = "netbsd",
-            target_os = "dragonfly"
-        ),
-        feature = "desktop"
-    )
-))]
-fn read_picked(path: std::path::PathBuf) -> crate::reply::ServiceResult<crate::files::PickedFile> {
-    let contents =
-        std::fs::read(&path).map_err(|e| crate::reply::ServiceError::Failed(e.to_string()))?;
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    Ok(crate::files::PickedFile {
-        name,
-        path: Some(path),
-        contents,
-    })
-}
-
-/// Permissions for an OS that gates none of these capabilities.
-#[cfg(any(
-    target_os = "windows",
-    target_os = "linux",
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-    target_os = "dragonfly"
-))]
-struct Ungated;
-
-#[cfg(any(
-    target_os = "windows",
-    target_os = "linux",
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-    target_os = "dragonfly"
-))]
-impl crate::permissions::Permissions for Ungated {
-    fn status(
-        &self,
-        _: crate::permissions::Permission,
-    ) -> crate::reply::Reply<crate::permissions::PermissionState> {
-        crate::reply::Reply::ready(Ok(crate::permissions::PermissionState::Granted))
-    }
-
-    fn request(
-        &self,
-        _: crate::permissions::Permission,
-    ) -> crate::reply::Reply<crate::permissions::PermissionState> {
-        crate::reply::Reply::ready(Ok(crate::permissions::PermissionState::Granted))
-    }
 }

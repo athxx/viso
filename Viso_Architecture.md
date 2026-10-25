@@ -951,7 +951,7 @@ CLI 依赖 `viso-dsl`、`viso-dev-protocol`、`viso-schema`、`viso-image`、`vi
 
 ### `viso-services`
 
-统一 app service protocol。当前（ADR 0031）：files、share、notifications、permissions、secure_storage、haptics、launcher；`Reply<T>` 一次性应答，`Services` 注册表。目标：camera、location、media、networking adapter。
+核心 app service protocol。当前（ADR 0031 修订）：haptics、launcher，加 `app_data_dir` / `LocalStorage` 供持久化；`Reply<T>` 一次性应答，`Services` 注册表。非 UI 能力（文件对话框、分享、本地通知、安全存储、权限、定位、网络）是 `viso-ext` 插件 crate，各自携带 OS 实现与 mock，共用 `viso-common` 的 `Reply`。
 
 低频 service 可以使用 trait object，避免把所有 OS 逻辑塞回 platform/runtime。
 
@@ -3884,12 +3884,11 @@ Tier-2 compatibility backend 可以存在，例如 Linux OpenGL、Android GLES �
 业务能力统一通过 service protocol：
 
 ```rust
-cx.services().clipboard().set_text("hello")?;
-let file = cx.services().files().open(...).await?;
-cx.services().share().text("hello").await?;
+cx.services().haptics().play(Haptic::Light)?;
+cx.spawn(cx.services().launcher().open_url("https://viso.dev/"));
 ```
 
-当前协议见 §49.3（ADR 0031）；clipboard、camera、location、network、media 等为目标协议。上面 `clipboard()` 调用只示意形态，非当前 API。
+当前协议见 §49.3（ADR 0031）。文件对话框、分享、通知、安全存储等不进核心，由 `viso-ext` 插件提供（`viso-file-picker`、`viso-share`、`viso-local-notification`、`viso-secure-storage`），app 按需依赖。
 
 ### 49.1 为什么 service 可以用 dyn
 
@@ -3915,11 +3914,11 @@ Arc<dyn ClipboardService>
 
 ### 49.3 协议与实现（ADR 0031）
 
-`viso-services` 定义七个 object-safe 协议：files、share、notifications、permissions、secure_storage、haptics、launcher。`Launcher::open_url` 把绝对 URL 交给系统打开它的应用（macOS `NSWorkspace`、iOS `UIApplication`、Windows `ShellExecuteW`、Linux OpenURI portal 回退 `xdg-open`、Android `ACTION_VIEW`、Web `window.open`），拒绝 `file:`、`javascript:`、`data:`、`vbscript:`、`blob:`、`about:` 等在本机执行或读取的 scheme（`Denied`）。文字中被激活的链接若沿路由无处理器调用 `EventCx::prevent_default`，store 记下其目标，facade 每帧取出并交给 `open_url`。异步调用返回一次性的 `Reply<T>`：它是 `Future`，也可以不经 executor 用 `try_take` 轮询。配对的 `Completer` 是 `Send`，可以在 OS 回调所在的任意线程完成；被丢弃而未应答时，结果为 `Cancelled`。
+`viso-services` 定义两个 object-safe 协议：haptics、launcher。`Launcher::open_url` 把绝对 URL 交给系统打开它的应用（macOS `NSWorkspace`、iOS `UIApplication`、Windows `ShellExecuteW`、Linux OpenURI portal 回退 `xdg-open`、Android `ACTION_VIEW`、Web `window.open`），拒绝 `file:`、`javascript:`、`data:`、`vbscript:`、`blob:`、`about:` 等在本机执行或读取的 scheme（`Denied`）。文字中被激活的链接若沿路由无处理器调用 `EventCx::prevent_default`，store 记下其目标，facade 每帧取出并交给 `open_url`。异步调用返回一次性的 `Reply<T>`：它是 `Future`，也可以不经 executor 用 `try_take` 轮询。配对的 `Completer` 是 `Send`，可以在 OS 回调所在的任意线程完成；被丢弃而未应答时，结果为 `Cancelled`。
 
 `Services` 是注册表，每个协议占一个固定字段。`Services::system(app)` 按编译目标选择 OS 实现，`Services::unsupported()` 对所有调用返回 `Unsupported`，`Mock` 用于 headless 测试并记录调用。
 
-Android 通过 `viso-platform` 暴露的两个窄接口访问 activity：`with_activity` 和 `VisoActivity.addResults`。其余逻辑都在 services 内，包括随 APK 打包的 `dev.viso.services.VisoServices` Java 类。框架外的扩展 crate（`viso-ext`）经 `ndk-context` 拿到 Java VM 与当前 activity：platform 在每个 activity 启动时设置它（activity 重建时先 release 再设为新的全局引用），扩展自带的 Java 以 `InMemoryDexClassLoader` 载入，经 `VisoActivity.addResults` 收到授权与 activity 结果。
+Android 通过 `viso-platform` 暴露的两个窄接口访问 activity：`with_activity` 和 `VisoActivity.addResults`。其余逻辑都在 services 内，包括随 APK 打包的 `dev.viso.services.VisoServices` Java 类（触感与 `ACTION_VIEW`）。框架外的扩展 crate（`viso-ext`）经 `ndk-context` 拿到 Java VM 与当前 activity：platform 在每个 activity 启动时设置它（activity 重建时先 release 再设为新的全局引用），扩展自带的 Java 以 `InMemoryDexClassLoader` 载入，经 `VisoActivity.addResults` 收到授权与 activity 结果。
 
 handler 通过 `cx.services()` 取得会话注册表，并用 `cx.spawn_then` 等待 `Reply`（ADR 0032，§13.2）。
 
