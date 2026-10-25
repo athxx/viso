@@ -49,6 +49,8 @@ pub struct Manifest<'a> {
     pub executable: &'a str,
     /// What the app asks to use.
     pub access: &'a [Access],
+    /// The URL schemes that open the app.
+    pub schemes: &'a [String],
 }
 
 /// The processor architecture a package for Rust's `arch` names.
@@ -118,9 +120,23 @@ pub fn valid_name(name: &str) -> bool {
 }
 
 /// `AppxManifest.xml` for `manifest`: a full-trust desktop app whose tiles
-/// are the [`LOGOS`].
+/// are the [`LOGOS`], started with a URL of one of its schemes as its
+/// argument.
 pub fn manifest(manifest: &Manifest<'_>) -> String {
     let [major, minor, build, revision] = manifest.version;
+    let mut extensions = String::new();
+    if !manifest.schemes.is_empty() {
+        extensions.push_str("\n      <Extensions>");
+        for scheme in manifest.schemes {
+            extensions.push_str(&format!(
+                "\n        <uap3:Extension Category=\"windows.protocol\">\
+                 \n          <uap3:Protocol Name=\"{}\" Parameters=\"&quot;%1&quot;\"/>\
+                 \n        </uap3:Extension>",
+                xml(scheme)
+            ));
+        }
+        extensions.push_str("\n      </Extensions>");
+    }
     let mut capabilities = String::new();
     let mut devices = String::new();
     // The foundation's capability comes before the others, as the schema
@@ -146,8 +162,9 @@ pub fn manifest(manifest: &Manifest<'_>) -> String {
         r#"<?xml version="1.0" encoding="utf-8"?>
 <Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-  IgnorableNamespaces="uap rescap">
+  IgnorableNamespaces="uap uap3 rescap">
   <Identity Name="{name}" Publisher="{publisher}" Version="{major}.{minor}.{build}.{revision}" ProcessorArchitecture="{architecture}"/>
   <Properties>
     <DisplayName>{display}</DisplayName>
@@ -162,7 +179,7 @@ pub fn manifest(manifest: &Manifest<'_>) -> String {
   </Resources>
   <Applications>
     <Application Id="App" Executable="{executable}" EntryPoint="Windows.FullTrustApplication">
-      <uap:VisualElements DisplayName="{display}" Description="{display}" BackgroundColor="transparent" Square150x150Logo="{tile}" Square44x44Logo="{small}"/>
+      <uap:VisualElements DisplayName="{display}" Description="{display}" BackgroundColor="transparent" Square150x150Logo="{tile}" Square44x44Logo="{small}"/>{extensions}
     </Application>
   </Applications>
   <Capabilities>
@@ -382,6 +399,7 @@ mod tests {
             display_name: "My <App>",
             executable: "my-app.exe",
             access: &[Access::Camera, Access::Photos, Access::Notifications],
+            schemes: &[],
         }
     }
 
@@ -408,6 +426,26 @@ mod tests {
         let text = manifest(&networked);
         let internet = text.find("<Capability Name=\"internetClient\"/>").unwrap();
         assert!(internet < text.find("picturesLibrary").unwrap());
+        assert!(!text.contains("<Extensions>"));
+
+        let schemes = ["notes".to_owned(), "x-notes".to_owned()];
+        let linked = Manifest {
+            schemes: &schemes,
+            ..sample()
+        };
+        let text = manifest(&linked);
+        assert!(text.contains(
+            "Square44x44Logo=\"Assets\\Square44x44Logo.png\"/>
+      <Extensions>
+        <uap3:Extension Category=\"windows.protocol\">
+          <uap3:Protocol Name=\"notes\" Parameters=\"&quot;%1&quot;\"/>
+        </uap3:Extension>
+        <uap3:Extension Category=\"windows.protocol\">
+          <uap3:Protocol Name=\"x-notes\" Parameters=\"&quot;%1&quot;\"/>
+        </uap3:Extension>
+      </Extensions>
+    </Application>"
+        ));
     }
 
     #[test]

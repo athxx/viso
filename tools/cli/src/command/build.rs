@@ -279,6 +279,7 @@ pub(super) fn stage_loaded(
     {
         return Err(out.failure(ENV_BUILD_WRITE, &why, &[]));
     }
+    crate::delivery::metadata::add_schemes(&mut plan, &project);
     let image_target = delivery.as_ref().map_or(target, |delivery| delivery.target);
     match build::images::add_converted_images(
         &mut plan,
@@ -358,7 +359,7 @@ pub(super) fn stage_loaded(
         web: config.settings.web,
         dir: layout.build(identity),
         android,
-        usage: crate::delivery::metadata::usage(&project),
+        declared: crate::delivery::metadata::declared(&project),
         delivery,
     };
     let doing = if packaging { "packaging" } else { "building" };

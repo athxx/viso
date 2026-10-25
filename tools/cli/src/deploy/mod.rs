@@ -49,11 +49,12 @@ use viso_dev_protocol::wire::{
     DEV_TOKEN_ENV, DEV_WINDOW_ENV, WindowGeometry,
 };
 use viso_package::android::{self, Abi, Sdk, Shell};
-use viso_package::{Access, apple, web as bundle};
+use viso_package::{apple, web as bundle};
 use viso_project::{DeviceProfile, Profile, Target};
 
 use crate::build::cargo::Package;
 use crate::build::{RustPlan, rust_plan};
+use crate::delivery::metadata::Declared;
 use crate::dev::build::{Stamp, stamp};
 use crate::device::emulator::{self, Device};
 use crate::device::simulator;
@@ -367,9 +368,9 @@ fn signal(child: &Child) {
 
 impl Deploy {
     /// How the dev artifact is built for this deploy, declaring what the
-    /// app asks the user for, `usage`; a board's build is its device
-    /// target's.
-    pub(crate) fn plan(&self, usage: &[(Access, String)]) -> BuildPlan {
+    /// app asks the user for and the URLs that open it, `declared`; a
+    /// board's build is its device target's.
+    pub(crate) fn plan(&self, declared: &Declared) -> BuildPlan {
         match self {
             Deploy::Board(_) => BuildPlan {
                 rust: RustPlan::default(),
@@ -380,16 +381,18 @@ impl Deploy {
                 package: None,
             },
             Deploy::Simulator { .. } => {
-                let usage = usage.to_vec();
+                let declared = declared.clone();
                 BuildPlan {
                     rust: rust_plan(Target::Ios, None, Profile::Dev, None),
                     package: Some(once_per_executable(move |exe, bin, dir| {
                         let info = apple::Info {
-                            usage: usage.clone(),
+                            usage: declared.usage.clone(),
+                            links: declared.links.clone(),
                             ..apple::Info::dev(bin)
                         };
                         let app = apple::bundle(exe, dir, &info, true)?;
-                        apple::sign(&app.path, None, None, &dir.join("sign"))?;
+                        let hosts = &declared.links.hosts;
+                        apple::sign(&app.path, None, None, hosts, &dir.join("sign"))?;
                         Ok(app.path)
                     })),
                 }
@@ -397,7 +400,8 @@ impl Deploy {
             Deploy::Emulator { sdk, shell, .. } => {
                 let abi = Abi::host();
                 let (sdk, shell) = (sdk.clone(), shell.clone());
-                let access: Vec<Access> = usage.iter().map(|(a, _)| *a).collect();
+                let access = declared.access();
+                let links = declared.links.clone();
                 BuildPlan {
                     rust: rust_plan(Target::Android, None, Profile::Dev, Some(&sdk)),
                     package: Some(once_per_executable(move |exe, bin, dir| {
@@ -409,6 +413,7 @@ impl Deploy {
                             &shell,
                             android::Flavor::Dev,
                             &access,
+                            &links,
                         ))
                         .map(|apk| apk.path)
                     })),

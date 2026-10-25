@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- The manifest the packager fills in: the app's id, version, lowest API
      level, the permissions it asks for, its name, launcher icon and
-     orientation, plain HTTP in a dev build, and the library the shell
-     loads. -->
+     orientation, plain HTTP in a dev build, the links that open it, and the
+     library the shell loads. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="{package}"
     android:versionCode="{version_code}"
@@ -31,7 +31,7 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
+            </intent-filter>{links}
         </activity>
     </application>
 </manifest>

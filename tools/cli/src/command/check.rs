@@ -151,6 +151,7 @@ fn rust(ctx: &Context<'_>, project: &Project, config: &ResolvedConfig, out: &mut
     if let Err(why) = build::add_text_data(&mut plan, config.device.as_ref(), project, &layout) {
         return out.failure(ENV_BUILD_WRITE, &why, &[]);
     }
+    crate::delivery::metadata::add_schemes(&mut plan, project);
     super::build::warn_kept_defaults(plan.no_default_features, &manifest, ctx, out);
     let mut features = plan.features;
     if config.dev_runtime() == DevRuntime::Present && cargo::reloads(target) {

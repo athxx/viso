@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::archive::{self, Entry, Kind};
-use crate::{Access, Orientations, io, output, run};
+use crate::{Access, Links, Orientations, io, output, run};
 
 /// The Rust target of a device.
 pub const DEVICE_TRIPLE: &str = "aarch64-apple-ios";
@@ -69,6 +69,8 @@ pub struct Info {
     pub orientations: Orientations,
     /// What it asks the user for, with the reason shown when it asks.
     pub usage: Vec<(Access, String)>,
+    /// The URLs that open it.
+    pub links: Links,
 }
 
 impl Info {
@@ -84,6 +86,7 @@ impl Info {
             minimum_os: MIN_IOS.to_owned(),
             orientations: Orientations::Any,
             usage: Vec::new(),
+            links: Links::default(),
         }
     }
 
@@ -114,6 +117,22 @@ impl Info {
                 Value::Text(self.build.to_string().into()),
             ),
         ]
+    }
+
+    /// `CFBundleURLTypes`: the schemes that open it, under its bundle id.
+    fn url_types(&self) -> Option<(&'static str, Value<'_>)> {
+        if self.links.schemes.is_empty() {
+            return None;
+        }
+        let schemes = self.links.schemes.iter().map(|s| Value::text(s)).collect();
+        Some((
+            "CFBundleURLTypes",
+            Value::Array(vec![Value::Dict(vec![
+                ("CFBundleTypeRole", Value::text("Viewer")),
+                ("CFBundleURLName", Value::text(&self.id)),
+                ("CFBundleURLSchemes", Value::Array(schemes)),
+            ])]),
+        ))
     }
 
     /// The usage description keys of what it asks for.
@@ -286,6 +305,7 @@ pub fn info_plist(info: &Info, simulator: bool) -> String {
         ("UISupportedInterfaceOrientations", list(phone)),
         ("UISupportedInterfaceOrientations~ipad", list(pad)),
     ]);
+    dict.extend(info.url_types());
     dict.extend(info.usage(false));
     plist(dict)
 }
@@ -305,6 +325,7 @@ pub fn macos_info_plist(info: &Info, icon: bool) -> String {
         ("NSPrincipalClass", Value::text("NSApplication")),
         ("NSSupportsAutomaticGraphicsSwitching", Value::Bool(true)),
     ]);
+    dict.extend(info.url_types());
     dict.extend(info.usage(true));
     plist(dict)
 }
@@ -494,28 +515,75 @@ pub fn provisioning(profile: &Path, scratch: &Path) -> Result<Provisioning, Stri
     })
 }
 
+/// The entitlement that names the hosts whose links open an app.
+const ASSOCIATED_DOMAINS: &str = "com.apple.developer.associated-domains";
+
+/// The associated domains of `hosts`: each as a link host.
+pub fn associated_domains(hosts: &[String]) -> Vec<String> {
+    hosts
+        .iter()
+        .map(|host| format!("applinks:{host}"))
+        .collect()
+}
+
 /// Signs the iOS app `app`: ad-hoc without an `identity`; with a
 /// provisioning `profile`, embedding it and signing with its entitlements,
-/// decoded under `scratch`.
+/// decoded under `scratch`. The app is entitled to open the links of
+/// `hosts`, which a profile must allow.
 pub fn sign(
     app: &Path,
     identity: Option<&str>,
     profile: Option<&Path>,
+    hosts: &[String],
     scratch: &Path,
 ) -> Result<(), String> {
     let mut codesign = Command::new("codesign");
     codesign
         .args(["--force", "--timestamp=none", "--sign"])
         .arg(identity.unwrap_or("-"));
+    let domains = associated_domains(hosts);
     if let Some(profile) = profile {
         io(
             profile,
             std::fs::copy(profile, app.join("embedded.mobileprovision")),
         )?;
         let provisioning = provisioning(profile, scratch)?;
+        if !domains.is_empty() {
+            let key = format!(":{ASSOCIATED_DOMAINS}");
+            let buddy = |command: String| {
+                output(
+                    Command::new("/usr/libexec/PlistBuddy")
+                        .arg("-c")
+                        .arg(command)
+                        .arg(&provisioning.entitlements),
+                )
+            };
+            buddy(format!("Print {key}")).map_err(|_| {
+                format!(
+                    "the provisioning profile does not allow Associated Domains, which the hosts \
+                     of `[package.links]` need: enable it for `{}` and download the profile again",
+                    provisioning.app_id
+                )
+            })?;
+            buddy(format!("Delete {key}"))?;
+            buddy(format!("Add {key} array"))?;
+            for domain in &domains {
+                buddy(format!("Add {key}: string {domain}"))?;
+            }
+        }
         codesign
             .arg("--entitlements")
             .arg(&provisioning.entitlements);
+    } else if !domains.is_empty() {
+        // The simulator takes entitlements an ad-hoc signature carries.
+        io(scratch, std::fs::create_dir_all(scratch))?;
+        let file = scratch.join("app.entitlements");
+        let list = domains.iter().map(|d| Value::text(d)).collect();
+        io(
+            &file,
+            std::fs::write(&file, plist(vec![(ASSOCIATED_DOMAINS, Value::Array(list))])),
+        )?;
+        codesign.arg("--entitlements").arg(&file);
     }
     run(codesign.arg(app))
 }
@@ -639,6 +707,10 @@ mod tests {
                 (Access::Camera, "Scans receipts".into()),
                 (Access::Notifications, "Reminds you".into()),
             ],
+            links: Links {
+                schemes: vec!["notes".into(), "x-notes".into()],
+                hosts: vec!["notes.example.com".into()],
+            },
         }
     }
 
@@ -664,10 +736,28 @@ mod tests {
         assert!(!plist.contains("Landscape"));
         assert!(plist.contains("PortraitUpsideDown"));
 
+        let url_types = "<key>CFBundleURLTypes</key>\n\t<array>\n\t\t<dict>\n\
+                         \t\t\t<key>CFBundleTypeRole</key>\n\t\t\t<string>Viewer</string>\n\
+                         \t\t\t<key>CFBundleURLName</key>\n\t\t\t<string>com.example.notes</string>\n\
+                         \t\t\t<key>CFBundleURLSchemes</key>\n\t\t\t<array>\n\
+                         \t\t\t\t<string>notes</string>\n\t\t\t\t<string>x-notes</string>\n\
+                         \t\t\t</array>\n\t\t</dict>\n\t</array>\n";
+        assert!(plist.contains(url_types), "{plist}");
+        assert!(!dev.contains("CFBundleURLTypes"));
+
         let mac = macos_info_plist(&notes(), true);
+        assert!(mac.contains(url_types));
         assert!(mac.contains("<key>CFBundleIconFile</key>\n\t<string>AppIcon</string>"));
         assert!(mac.contains("NSHighResolutionCapable"));
         assert!(!mac.contains("UISupportedInterfaceOrientations"));
+    }
+
+    #[test]
+    fn link_hosts_are_associated_domains() {
+        assert_eq!(
+            associated_domains(&["notes.example.com".into(), "*.example.org".into()]),
+            ["applinks:notes.example.com", "applinks:*.example.org"]
+        );
     }
 
     #[test]

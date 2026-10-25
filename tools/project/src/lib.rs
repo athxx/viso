@@ -49,7 +49,7 @@ pub use fingerprint::{BuildId, FINGERPRINT_VERSION, Hash128, ProjectFingerprint,
 pub use format::format_manifest;
 pub use manifest::{
     ANDROID_ABIS, AndroidPackage, BudgetKey, CollisionDelivery, DeployAddress, DeviceDisplay,
-    DeviceTarget, GameDeterminism, GpuApi, ImageQuality, Images, IosPackage, MAX_BUILD,
+    DeviceTarget, GameDeterminism, GpuApi, ImageQuality, Images, IosPackage, Links, MAX_BUILD,
     MacosPackage, Manifest, Orientation, ParseOutcome, Permission, PixelFormat, RASTERIZER_FEATURE,
     Rotation, Spanned, SurfaceScale, SvgImages, TestSurface, WebProfileConfig, WindowsPackage,
     byte_size, charset_entry, device_target_name, locale_tag, nearest,

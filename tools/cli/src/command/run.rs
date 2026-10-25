@@ -759,7 +759,7 @@ pub(super) fn session(
                  passed",
             );
         }
-        let mut plan = deploy.plan(&crate::delivery::metadata::usage(&project));
+        let mut plan = deploy.plan(&crate::delivery::metadata::declared(&project));
         if let Some(device_plan) = device_plan {
             plan.rust = device_plan;
             let device = resolved.config.device.as_ref();
@@ -767,6 +767,7 @@ pub(super) fn session(
                 return out.failure(ENV_BUILD_WRITE, &why, &[]);
             }
         }
+        crate::delivery::metadata::add_schemes(&mut plan.rust, &project);
         super::build::warn_kept_defaults(plan.rust.no_default_features, &manifest, ctx, out);
         let mut features = plan.rust.features;
         features.push(cargo::HOT_RELOAD);

@@ -22,7 +22,7 @@ use std::process::Command;
 use std::time::SystemTime;
 
 use crate::archive::{self, Entry, Kind};
-use crate::{Access, Orientations, files_under, io, newest, run};
+use crate::{Access, Links, Orientations, files_under, io, newest, run};
 
 /// The ABI an app is built for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,8 +159,8 @@ pub struct Sdk {
 
 /// The Java shell: its sources' directories and the manifest template, with
 /// `{package}`, `{version_code}`, `{version_name}`, `{min_sdk}`,
-/// `{permissions}`, `{label}`, `{icon}`, `{orientation}` and `{lib}` to fill
-/// in.
+/// `{permissions}`, `{label}`, `{icon}`, `{orientation}`, `{links}` and
+/// `{lib}` to fill in.
 #[derive(Debug, Clone)]
 pub struct Shell {
     pub java: Vec<PathBuf>,
@@ -195,6 +195,8 @@ pub struct Manifest {
     pub orientations: Orientations,
     /// Whether it has a launcher icon.
     pub icon: bool,
+    /// The URLs that open it.
+    pub links: Links,
 }
 
 impl Manifest {
@@ -211,6 +213,7 @@ impl Manifest {
             internet: flavor == Flavor::Dev,
             orientations: Orientations::Any,
             icon: false,
+            links: Links::default(),
         }
     }
 }
@@ -286,7 +289,8 @@ pub struct Packing<'a> {
 
 impl<'a> Packing<'a> {
     /// A dev or `viso build` APK of `library`, for `abi`, asking for
-    /// `access` as well.
+    /// `access` as well and opened by `links`.
+    #[allow(clippy::too_many_arguments)]
     pub fn dev(
         library: &Path,
         abi: Abi,
@@ -295,8 +299,10 @@ impl<'a> Packing<'a> {
         shell: &'a Shell,
         flavor: Flavor,
         access: &[Access],
+        links: &Links,
     ) -> Packing<'a> {
         let mut manifest = Manifest::dev(bin, flavor);
+        manifest.links = links.clone();
         for access in access {
             if !manifest.access.contains(access) {
                 manifest.access.push(*access);
@@ -725,6 +731,7 @@ fn fill_manifest(template: &str, manifest: &Manifest, bin: &str) -> String {
         Orientations::Landscape => r#"android:screenOrientation="sensorLandscape""#,
     };
     template
+        .replace("{links}", &intent_filters(&manifest.links))
         .replace("{package}", &manifest.package)
         .replace("{version_code}", &manifest.version_code.to_string())
         .replace("{version_name}", &xml(&manifest.version_name))
@@ -735,6 +742,52 @@ fn fill_manifest(template: &str, manifest: &Manifest, bin: &str) -> String {
         .replace("{cleartext}", cleartext)
         .replace("{orientation}", orientation)
         .replace("{lib}", &library_name(bin))
+}
+
+/// The activity's intent filters for `links`: one taking every custom
+/// scheme, and one for the `https` links of the hosts, which Android checks
+/// against each host's `/.well-known/assetlinks.json` as the app installs.
+fn intent_filters(links: &Links) -> String {
+    const VIEW: &str = "<action android:name=\"android.intent.action.VIEW\" />\n                \
+        <category android:name=\"android.intent.category.DEFAULT\" />\n                \
+        <category android:name=\"android.intent.category.BROWSABLE\" />";
+    let mut out = String::new();
+    let mut filter = |verify: bool, data: Vec<String>| {
+        if data.is_empty() {
+            return;
+        }
+        let verify = if verify {
+            " android:autoVerify=\"true\""
+        } else {
+            ""
+        };
+        out.push_str(&format!(
+            "\n            <intent-filter{verify}>\n                {VIEW}"
+        ));
+        for line in data {
+            out.push_str(&format!("\n                <data {line} />"));
+        }
+        out.push_str("\n            </intent-filter>");
+    };
+    filter(
+        false,
+        links
+            .schemes
+            .iter()
+            .map(|s| format!("android:scheme=\"{}\"", xml(s)))
+            .collect(),
+    );
+    if !links.hosts.is_empty() {
+        let mut data = vec!["android:scheme=\"https\"".to_owned()];
+        data.extend(
+            links
+                .hosts
+                .iter()
+                .map(|h| format!("android:host=\"{}\"", xml(h))),
+        );
+        filter(true, data);
+    }
+    out
 }
 
 /// `text` as an XML attribute value.
@@ -827,11 +880,16 @@ mod tests {
             &shell,
             Flavor::Dev,
             &[Access::Camera, Access::Notifications],
+            &Links {
+                schemes: vec!["notes".into()],
+                hosts: Vec::new(),
+            },
         );
         assert_eq!(
             packing.manifest.access,
             [Access::Notifications, Access::Camera]
         );
+        assert_eq!(packing.manifest.links.schemes, ["notes"]);
     }
 
     #[test]
@@ -872,8 +930,30 @@ mod tests {
             internet: false,
             orientations: Orientations::Portrait,
             icon: true,
+            links: Links {
+                schemes: vec!["notes".into(), "x-notes".into()],
+                hosts: vec!["notes.example.com".into(), "*.example.org".into()],
+            },
         };
         let filled = fill_manifest(&template, &notes, "notes");
+        let filters = "\
+            <intent-filter>
+                <action android:name=\"android.intent.action.VIEW\" />
+                <category android:name=\"android.intent.category.DEFAULT\" />
+                <category android:name=\"android.intent.category.BROWSABLE\" />
+                <data android:scheme=\"notes\" />
+                <data android:scheme=\"x-notes\" />
+            </intent-filter>
+            <intent-filter android:autoVerify=\"true\">
+                <action android:name=\"android.intent.action.VIEW\" />
+                <category android:name=\"android.intent.category.DEFAULT\" />
+                <category android:name=\"android.intent.category.BROWSABLE\" />
+                <data android:scheme=\"https\" />
+                <data android:host=\"notes.example.com\" />
+                <data android:host=\"*.example.org\" />
+            </intent-filter>";
+        assert!(filled.contains(filters), "{filled}");
+        assert!(!dev.contains("android.intent.action.VIEW"));
         for expected in [
             "package=\"com.example.notes\"",
             "android:versionCode=\"42\"",

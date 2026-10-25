@@ -161,6 +161,7 @@ pub(crate) fn make(
                         .into_iter()
                         .map(|(a, _)| a)
                         .collect::<Vec<_>>(),
+                    schemes: &metadata.links.schemes,
                 });
                 files.push(executable);
                 msix::write(&files, &manifest, &packed).map_err(package)?;
@@ -182,7 +183,13 @@ pub(crate) fn make(
                 file(&top, built.exe, true)?,
                 Entry::file(
                     format!("{top}{name}.desktop"),
-                    linux::desktop_entry(&metadata.display_name, built.bin, icon_name).into_bytes(),
+                    linux::desktop_entry(
+                        &metadata.display_name,
+                        built.bin,
+                        icon_name,
+                        &metadata.links.schemes,
+                    )
+                    .into_bytes(),
                 ),
             ];
             if let Some(png) = png(512) {
@@ -204,6 +211,7 @@ pub(crate) fn make(
                     &app.path,
                     Some(identity),
                     Some(profile),
+                    &metadata.links.hosts,
                     &scratch.join("sign"),
                 )
                 .map_err(sign)?;

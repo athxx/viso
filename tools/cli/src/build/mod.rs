@@ -38,7 +38,7 @@ use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
 use viso_package::android::{self, Abi, Sdk, Shell};
-use viso_package::{Access, apple, web as bundle};
+use viso_package::{apple, web as bundle};
 use viso_project::{DeviceTarget, Layout, Profile, Target, Toolchain, WebSettings};
 
 use cargo::{BuildCommand, BuildFailure, Sink, is_cancelled};
@@ -244,9 +244,9 @@ pub(crate) struct Job {
     pub(crate) dir: PathBuf,
     /// The SDK and Java shell an Android build is packed with.
     pub(crate) android: Option<(Sdk, Shell)>,
-    /// What the app asks the user for, with the reason shown: declared by
-    /// a mobile build.
-    pub(crate) usage: Vec<(Access, String)>,
+    /// What the app asks the user for and the URLs that open it: declared
+    /// by a mobile build.
+    pub(crate) declared: crate::delivery::metadata::Declared,
     /// The package `viso package` makes of it, in place of the build's own
     /// output.
     pub(crate) delivery: Option<Plan>,
@@ -463,11 +463,13 @@ pub(crate) fn produce(
             }
             Target::Ios => {
                 let info = apple::Info {
-                    usage: job.usage.clone(),
+                    usage: job.declared.usage.clone(),
+                    links: job.declared.links.clone(),
                     ..apple::Info::dev(bin)
                 };
                 let app = apple::bundle(&exe, &out, &info, true).map_err(BuildFailure::Package)?;
-                apple::sign(&app.path, None, None, &job.dir.join("sign"))
+                let hosts = &job.declared.links.hosts;
+                apple::sign(&app.path, None, None, hosts, &job.dir.join("sign"))
                     .map_err(BuildFailure::Package)?;
                 (vec![("app-bundle", app.path)], "ad-hoc")
             }
@@ -489,7 +491,8 @@ pub(crate) fn produce(
                         bin,
                         shell,
                         flavor,
-                        &job.usage.iter().map(|(a, _)| *a).collect::<Vec<_>>(),
+                        &job.declared.access(),
+                        &job.declared.links,
                     ))
                     .map_err(BuildFailure::Package)?;
                 let path = out.join(format!("{bin}.apk"));

@@ -99,6 +99,8 @@ pub struct Package {
     /// `[package.permissions]`: each permission the app asks for, with the
     /// reason the system shows when it asks.
     pub permissions: Vec<(Spanned<Permission>, Spanned<String>)>,
+    /// `[package.links]`: the URLs that open the app.
+    pub links: Links,
     /// `[package.ios]`: delivery configuration, not a build property, so not
     /// under `[target.ios]`.
     pub ios: IosPackage,
@@ -186,6 +188,19 @@ impl Permission {
         Permission::Notifications,
         Permission::Network,
     ];
+}
+
+/// `[package.links]`: the URLs the system opens the app for, delivered to
+/// it at launch and while it runs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Links {
+    /// Custom schemes, such as `notes` for `notes://…`: lowercase, as every
+    /// platform matches them.
+    pub schemes: Vec<Spanned<String>>,
+    /// Hosts whose `https` links open the app once the site vouches for it:
+    /// iOS universal links and Android app links. A leading `*.` takes every
+    /// subdomain.
+    pub hosts: Vec<Spanned<String>>,
 }
 
 /// `[package.ios]`: how the iOS package is signed. The identity's key stays
@@ -1296,6 +1311,68 @@ fn team_id(id: &str) -> Result<(), &'static str> {
     }
 }
 
+/// A custom URL scheme: a letter, then letters, digits, `+`, `-` and `.`,
+/// all lowercase, 2 to 39 long (one letter is a Windows drive, and Windows
+/// names no longer protocol), and none the system or the web already owns.
+fn url_scheme(scheme: &str) -> Result<(), &'static str> {
+    const OWNED: &[&str] = &[
+        "http",
+        "https",
+        "file",
+        "ftp",
+        "data",
+        "blob",
+        "javascript",
+        "vbscript",
+        "about",
+        "content",
+        "intent",
+        "mailto",
+        "tel",
+        "sms",
+        "ws",
+        "wss",
+    ];
+    let mut chars = scheme.chars();
+    let well_formed = chars.next().is_some_and(|c| c.is_ascii_lowercase())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "+-.".contains(c))
+        && (2..=39).contains(&scheme.len());
+    if !well_formed {
+        Err(
+            "a lowercase scheme without `://`, such as `notes`: a letter, then letters, digits, \
+             `+`, `-` or `.`, 2 to 39 in all",
+        )
+    } else if OWNED.contains(&scheme) {
+        Err(
+            "a scheme of the app's own: the system or the browser handles this one; web links \
+             go under `hosts`",
+        )
+    } else {
+        Ok(())
+    }
+}
+
+/// A host whose `https` links open the app: a lowercase DNS name of two or
+/// more labels, optionally starting with `*.`, with no scheme, port or path.
+fn link_host(host: &str) -> Result<(), &'static str> {
+    let name = host.strip_prefix("*.").unwrap_or(host);
+    let label = |l: &str| {
+        (1..=63).contains(&l.len())
+            && !l.starts_with('-')
+            && !l.ends_with('-')
+            && l.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    };
+    if name.len() <= 253 && name.split('.').count() >= 2 && name.split('.').all(label) {
+        Ok(())
+    } else {
+        Err(
+            "a lowercase host such as `notes.example.com` or `*.example.com`, without `https://`, \
+             a port or a path",
+        )
+    }
+}
+
 /// The highest build number Android's `versionCode` allows.
 pub const MAX_BUILD: u32 = 2_100_000_000;
 
@@ -1453,6 +1530,7 @@ impl<'a> Reader<'a> {
                         "icons",
                         "orientation",
                         "permissions",
+                        "links",
                         "ios",
                         "android",
                         "macos",
@@ -1479,6 +1557,7 @@ impl<'a> Reader<'a> {
                     },
                     orientation: self.choice(t, "orientation", "package", &orientations),
                     permissions: self.permissions(t),
+                    links: self.links(t),
                     ios: match self.table(t, "ios") {
                         Some(ios) => {
                             self.deny_unknown(
@@ -2479,6 +2558,46 @@ impl<'a> Reader<'a> {
         out
     }
 
+    /// `[package.links]`: each scheme and host, checked, each once.
+    fn links(&mut self, t: &dyn TableLike) -> Links {
+        let Some(table) = self.table(t, "links") else {
+            return Links::default();
+        };
+        self.deny_unknown(table, &["schemes", "hosts"], "package.links");
+        let mut links = Links::default();
+        for (key, check, out) in [
+            (
+                "schemes",
+                url_scheme as fn(&str) -> Result<(), &'static str>,
+                &mut links.schemes,
+            ),
+            ("hosts", link_host, &mut links.hosts),
+        ] {
+            for value in self.string_array(table, key, "package.links") {
+                let problem = match check(&value.value) {
+                    Err(note) => Some((format!("cannot be `{}`", value.value), note)),
+                    Ok(()) if out.iter().any(|v| v.value == value.value) => {
+                        Some((format!("names `{}` twice", value.value), "each one once"))
+                    }
+                    Ok(()) => None,
+                };
+                match problem {
+                    Some((what, note)) => self.diags.push(
+                        ConfigDiagnostic::error(
+                            ConfigCode::InvalidValue,
+                            format!("`package.links.{key}` {what}"),
+                        )
+                        .at(self.path)
+                        .span(value.span)
+                        .note(note),
+                    ),
+                    None => out.push(value),
+                }
+            }
+        }
+        links
+    }
+
     /// `[package.android] abis`: each one Android names.
     fn abis(&mut self, t: &dyn TableLike) -> Vec<Spanned<String>> {
         let abis = self.string_array(t, "abis", "package.android");
@@ -3353,6 +3472,52 @@ publisher = "CN=Example Ltd, O=\"Example, Ltd\", C=US"
         let diags = errors("[package.permissions]\ncamra = \"Scans\"\n");
         assert_eq!(diags[0].code, ConfigCode::UnknownKey);
         assert_eq!(diags[0].notes, ["did you mean `camera`?"]);
+    }
+
+    #[test]
+    fn links_are_schemes_and_hosts_each_checked() {
+        let (m, warnings) = parse(
+            "[package.links]\nschemes = [\"notes\", \"x-notes.v2\"]\n\
+             hosts = [\"notes.example.com\", \"*.example.org\"]\n",
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let names = |v: &[Spanned<String>]| v.iter().map(|s| s.value.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&m.package.links.schemes), ["notes", "x-notes.v2"]);
+        assert_eq!(
+            names(&m.package.links.hosts),
+            ["notes.example.com", "*.example.org"]
+        );
+        assert_eq!(m.package.links.hosts[0].span.line, 3);
+
+        for text in [
+            "schemes = [\"Notes\"]",
+            "schemes = [\"notes://\"]",
+            "schemes = [\"n\"]",
+            "schemes = [\"a-scheme-name-longer-than-windows-allows\"]",
+            "schemes = [\"1notes\"]",
+            "schemes = [\"https\"]",
+            "schemes = [\"file\"]",
+            "schemes = [\"notes\", \"notes\"]",
+            "hosts = [\"https://example.com\"]",
+            "hosts = [\"example.com/path\"]",
+            "hosts = [\"example.com:443\"]",
+            "hosts = [\"localhost\"]",
+            "hosts = [\"Example.com\"]",
+            "hosts = [\"-a.example.com\"]",
+        ] {
+            let diags = errors(&format!("[package.links]\n{text}\n"));
+            assert_eq!(diags.len(), 1, "{text}: {diags:?}");
+            assert_eq!(diags[0].code, ConfigCode::InvalidValue, "{text}");
+            assert_eq!(diags[0].span.unwrap().line, 2, "{text}");
+            assert!(!diags[0].notes.is_empty(), "{text}");
+        }
+        assert_eq!(
+            errors("[package.links]\nschemes = \"notes\"\n")[0].code,
+            ConfigCode::WrongType
+        );
+        let diags = errors("[package.links]\nscheme = [\"notes\"]\n");
+        assert_eq!(diags[0].code, ConfigCode::UnknownKey);
+        assert_eq!(diags[0].notes, ["did you mean `schemes`?"]);
     }
 
     #[test]

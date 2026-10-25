@@ -39,6 +39,23 @@ pub enum Access {
     Network,
 }
 
+/// The URLs the system opens an app for.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Links {
+    /// Custom schemes, lowercase, without `://`.
+    pub schemes: Vec<String>,
+    /// Hosts whose `https` links open the app once the site vouches for it;
+    /// `*.` takes every subdomain.
+    pub hosts: Vec<String>,
+}
+
+impl Links {
+    /// Whether no URL opens the app.
+    pub fn is_empty(&self) -> bool {
+        self.schemes.is_empty() && self.hosts.is_empty()
+    }
+}
+
 /// The orientations a mobile app turns to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Orientations {

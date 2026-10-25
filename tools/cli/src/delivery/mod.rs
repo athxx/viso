@@ -290,6 +290,24 @@ impl Plan {
             let names: Vec<&str> = m.permissions.iter().map(|(p, _)| p.as_str()).collect();
             rows.push(("permissions", names.join(", ")));
         }
+        // Verified web links exist on the phones alone.
+        let hosts = matches!(self.platform, Platform::Ios | Platform::Android);
+        let links: Vec<String> = m
+            .links
+            .schemes
+            .iter()
+            .map(|s| format!("{s}://"))
+            .chain(
+                m.links
+                    .hosts
+                    .iter()
+                    .filter(|_| hosts)
+                    .map(|h| format!("https://{h}")),
+            )
+            .collect();
+        if !links.is_empty() {
+            rows.push(("links", links.join(", ")));
+        }
         rows.push(("signing", self.signing.signer.summary()));
         let mut text = format!("Package {name} ({profile})\n");
         for (key, value) in rows {

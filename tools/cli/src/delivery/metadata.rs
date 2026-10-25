@@ -9,7 +9,7 @@ use viso_image::snapshot::Image;
 use viso_package::android::{self, MIN_API};
 use viso_package::apple::{self, MIN_IOS};
 use viso_package::windows::msix;
-use viso_package::{Access, Orientations};
+use viso_package::{Access, Links, Orientations};
 use viso_project::{ConfigCode, ConfigDiagnostic, Orientation, Permission, Project};
 
 use super::{Platform, icon};
@@ -42,6 +42,8 @@ pub(crate) struct Metadata {
     pub(crate) min_sdk: u32,
     /// The publisher a Windows package names, when the project names one.
     pub(crate) publisher: Option<String>,
+    /// The URLs that open the app.
+    pub(crate) links: Links,
 }
 
 impl Metadata {
@@ -114,6 +116,7 @@ impl Metadata {
             minimum_os: self.minimum_os.clone(),
             orientations: self.orientations(),
             usage: self.access(),
+            links: self.links.clone(),
         }
     }
 
@@ -132,6 +135,7 @@ impl Metadata {
             internet: false,
             orientations: self.orientations(),
             icon: self.icon.is_some(),
+            links: self.links.clone(),
         }
     }
 
@@ -164,6 +168,20 @@ impl Metadata {
             w.string(permission.as_str());
         }
         w.end_array();
+        w.name("links");
+        w.begin_object();
+        for (key, values) in [
+            ("schemes", &self.links.schemes),
+            ("hosts", &self.links.hosts),
+        ] {
+            w.name(key);
+            w.begin_array();
+            for value in values {
+                w.string(value);
+            }
+            w.end_array();
+        }
+        w.end_object();
         w.end_object();
     }
 }
@@ -193,17 +211,59 @@ fn msix_name(name: &str) -> String {
         .collect()
 }
 
-/// What `project` asks the user for, with the reason shown, as the packager
-/// names it: what a dev build declares too, so it may ask as the shipped
-/// app does.
-pub(crate) fn usage(project: &Project) -> Vec<(Access, String)> {
-    project
-        .manifest
-        .package
-        .permissions
-        .iter()
-        .map(|(p, reason)| (access(p.value), reason.value.clone()))
-        .collect()
+/// What a build declares of the app beyond its executable: what a dev
+/// build declares too, so it asks and is opened as the shipped app is.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Declared {
+    /// What it asks the user for, with the reason shown.
+    pub(crate) usage: Vec<(Access, String)>,
+    /// The URLs that open it.
+    pub(crate) links: Links,
+}
+
+impl Declared {
+    /// What it asks the user for.
+    pub(crate) fn access(&self) -> Vec<Access> {
+        self.usage.iter().map(|(a, _)| *a).collect()
+    }
+}
+
+/// What `project` declares of the app, as the packager names it.
+pub(crate) fn declared(project: &Project) -> Declared {
+    let package = &project.manifest.package;
+    Declared {
+        usage: package
+            .permissions
+            .iter()
+            .map(|(p, reason)| (access(p.value), reason.value.clone()))
+            .collect(),
+        links: links(project),
+    }
+}
+
+/// The URLs that open the app `project` makes.
+fn links(project: &Project) -> Links {
+    let links = &project.manifest.package.links;
+    let values = |v: &[viso_project::Spanned<String>]| v.iter().map(|s| s.value.clone()).collect();
+    Links {
+        schemes: values(&links.schemes),
+        hosts: values(&links.hosts),
+    }
+}
+
+/// The variable a build names the app's URL schemes in, comma-separated,
+/// for the desktop platforms that hand a URL to the program as an argument.
+pub(crate) const SCHEMES_ENV: &str = "VISO_URL_SCHEMES";
+
+/// Names the URL schemes `project` declares to its build, in
+/// [`SCHEMES_ENV`]: the app takes such a URL from its arguments, and an
+/// unpackaged Windows app registers itself for them.
+pub(crate) fn add_schemes(plan: &mut crate::build::RustPlan, project: &Project) {
+    let schemes = links(project).schemes;
+    if !schemes.is_empty() {
+        plan.env
+            .push((SCHEMES_ENV.to_owned(), schemes.join(",").into()));
+    }
 }
 
 /// The packager's name for `permission`.
@@ -439,6 +499,7 @@ pub(crate) fn read(
             .as_ref()
             .map_or(MIN_API, |v| v.value.max(MIN_API)),
         publisher: package.windows.publisher.as_ref().map(|p| p.value.clone()),
+        links: links(project),
     };
     (Some(metadata), diagnostics)
 }
@@ -581,8 +642,13 @@ mod tests {
             &dir,
             "[package]\nname = \"a\"\nversion = \"1.0.0\"\nbundle_id = \"com.example.a\"\n\
              build = 7\norientation = \"landscape\"\n\n[package.icons]\nsource = \"icon.png\"\n\n\
-             [package.permissions]\ncamera = \"Scans\"\n",
+             [package.permissions]\ncamera = \"Scans\"\n\n\
+             [package.links]\nschemes = [\"notes\"]\nhosts = [\"notes.example.com\"]\n",
         );
+        let declared = declared(&p);
+        assert_eq!(declared.access(), [Access::Camera]);
+        assert_eq!(declared.links.schemes, ["notes"]);
+        assert_eq!(declared.links.hosts, ["notes.example.com"]);
         let (metadata, diagnostics) = read(&p, Platform::Ios);
         assert_eq!(diagnostics.len(), 1);
         assert!(diagnostics[0].message.contains("transparent"));
@@ -593,9 +659,17 @@ mod tests {
             (7, Orientations::Landscape)
         );
         assert_eq!(info.usage, [(Access::Camera, "Scans".to_owned())]);
+        assert_eq!(info.links, declared.links);
         let manifest = metadata.android("a");
         assert_eq!(manifest.package, "com.example.a");
         assert!(manifest.icon);
+        assert_eq!(manifest.links, declared.links);
+        let mut json = JsonWriter::new();
+        metadata.write(&mut json);
+        assert!(
+            json.as_str()
+                .contains(r#""links":{"schemes":["notes"],"hosts":["notes.example.com"]}"#)
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

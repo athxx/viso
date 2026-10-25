@@ -103,6 +103,32 @@ Permissions are `camera`, `microphone`, `location`, `photos`, `contacts`,
 usage strings and entitlements on Apple platforms, `<uses-permission>` on Android,
 capabilities in a Windows MSIX.
 
+### Links that open the app
+
+```toml
+[package.links]
+schemes = ["notes"]             # notes://… opens the app
+hosts = ["notes.example.com"]   # https://notes.example.com/… opens it on iOS and Android
+```
+
+A scheme is lowercase, without `://`, 2 to 39 characters, and not one the system or
+the browser owns (`http`, `https`, `file`, `mailto`, …). A host is a lowercase DNS
+name, `*.` taking every subdomain, with no scheme, port or path. Each becomes what the
+platform reads:
+
+| Platform | Schemes | Hosts |
+|---|---|---|
+| macOS, iOS | `CFBundleURLTypes` in Info.plist | iOS: the `com.apple.developer.associated-domains` entitlement (`applinks:<host>`), which the provisioning profile must allow; macOS: not declared (it needs a profile a Developer ID app does not carry) |
+| Android | a `VIEW`/`BROWSABLE` intent filter per scheme | an `autoVerify` intent filter for `https` and the hosts |
+| Windows | a `windows.protocol` extension in the MSIX, the URL passed as the argument | — |
+| Linux | `MimeType=x-scheme-handler/<scheme>;` in the `.desktop` entry, `Exec=… %u` | — |
+
+The site of each host must vouch for the app: `/.well-known/apple-app-site-association`
+for iOS, `/.well-known/assetlinks.json` for Android. Development builds (`viso run`,
+`viso build`) declare the same links, so a simulator or emulator opens them too, and
+every build names the schemes to the app (`VISO_URL_SCHEMES`), which takes a URL of
+one of them from its arguments on Windows and Linux.
+
 Every icon size is rendered from the one source, scaled in linear light. It is all
 checked before anything is built, each problem at its line in `Viso.toml`:
 
