@@ -24,6 +24,8 @@ mod access_mirror;
 pub mod accessibility;
 pub mod audio;
 pub mod backend;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub mod browser;
 pub mod control;
 pub mod drop;
 pub mod event;

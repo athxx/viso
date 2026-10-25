@@ -145,6 +145,20 @@ impl RasterImage {
         }
     }
 
+    /// `width × height` straight-alpha sRGB RGBA8 pixels, premultiplied in
+    /// linear light as every decoded image is.
+    ///
+    /// # Errors
+    ///
+    /// When `pixels` are not `width × height × 4` bytes.
+    pub fn from_straight_rgba8(
+        width: u32,
+        height: u32,
+        pixels: &[u8],
+    ) -> Result<RasterImage, AssetError> {
+        premultiplied(pixels, 4, width, height)
+    }
+
     /// Its natural size in pixels.
     pub fn size(&self) -> [f32; 2] {
         self.natural

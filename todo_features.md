@@ -249,7 +249,8 @@ Rules:
 - [x] Image decoders: GIF (animated), WebP (lossy/lossless/animated), APNG, BMP, ICO,
   QOI, AVIF (still, grid, sequence; HDR tone-mapped); streaming `Animation` frames;
   EXIF orientation; build-time conversion keeps animated images as written.
-- [ ] AVIF on the web through the browser's decoder (`createImageBitmap`).
+- [x] AVIF on the web through the browser's decoder (`createImageBitmap`, read back
+  through a canvas; a sequence shows its first frame; checked in Chrome).
 - [x] Runtime image loading: file path, bytes; decode cache with memory budget (LRU of
   images no node shows), placeholder/error states, `on_load` (DSL `loaded`/`failed`).
 - [x] Image loading from a URL: `Asset::url` and the DSL `Image`'s `url`, fetched through

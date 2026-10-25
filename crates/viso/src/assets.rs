@@ -31,7 +31,8 @@
 //!
 //! An image shown from a URL is fetched through the app's [`ImageLoader`]
 //! on the loop's thread — the future wakes the loop, which polls it — and its
-//! bytes decode as any other's. Without a loader it fails.
+//! bytes decode as any other's. Without a loader it fails. On the web, whose
+//! build links no AVIF decoder, the browser decodes an AVIF the same way.
 
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -100,11 +101,48 @@ impl std::fmt::Debug for ImageLoader {
     }
 }
 
-/// A fetch in flight, and the resource it is for.
+/// A fetch or browser decode in flight, and the resource it is for.
 struct Fetching {
     id: ResourceId,
     revision: ResourceRevision,
-    fetch: Fetch,
+    work: Pin<Box<dyn Future<Output = Result<Fetched, String>>>>,
+}
+
+/// What a fetch brought: the bytes to decode, or the browser's decode.
+enum Fetched {
+    Bytes(AssetBytes),
+    #[cfg_attr(
+        not(all(target_arch = "wasm32", target_os = "unknown")),
+        allow(dead_code)
+    )]
+    Decoded(Decoded),
+}
+
+/// Whether the browser decodes `bytes` rather than the build: an AVIF on
+/// the web, whose build links no AV1 decoder.
+fn browser_decodes(bytes: &[u8]) -> bool {
+    cfg!(all(target_arch = "wasm32", target_os = "unknown"))
+        && viso_render::asset::AssetFormat::sniff(bytes)
+            == Some(viso_render::asset::AssetFormat::Avif)
+}
+
+/// The browser's decode of `bytes`, the first frame of a sequence.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn browser_decode(bytes: AssetBytes) -> Pin<Box<dyn Future<Output = Result<Fetched, String>>>> {
+    Box::pin(async move {
+        let image = viso_platform::browser::decode_image(&bytes, "image/avif").await?;
+        let raster = RasterImage::from_straight_rgba8(image.width, image.height, &image.rgba)
+            .map_err(|error| error.to_string())?;
+        Ok(Fetched::Decoded((
+            AssetPayload::Raster(Arc::new(raster)),
+            None,
+        )))
+    })
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+fn browser_decode(_: AssetBytes) -> Pin<Box<dyn Future<Output = Result<Fetched, String>>>> {
+    Box::pin(async { Err("no browser decodes here".to_owned()) })
 }
 
 /// Wakes the loop for a fetch that can make progress.
@@ -433,13 +471,30 @@ impl Assets {
         let sampled = self.sampled.unwrap_or(SampledFormats::all());
         let mut i = 0;
         while i < self.fetching.len() {
-            let Poll::Ready(fetched) = self.fetching[i].fetch.as_mut().poll(&mut cx) else {
+            let Poll::Ready(fetched) = self.fetching[i].work.as_mut().poll(&mut cx) else {
                 i += 1;
                 continue;
             };
             let Fetching { id, revision, .. } = self.fetching.swap_remove(i);
             let input = match fetched {
-                Ok(bytes) => Input::Bytes(bytes),
+                Ok(Fetched::Bytes(bytes)) if browser_decodes(&bytes) => {
+                    self.fetching.push(Fetching {
+                        id,
+                        revision,
+                        work: browser_decode(bytes),
+                    });
+                    waker.wake_by_ref();
+                    continue;
+                }
+                Ok(Fetched::Bytes(bytes)) => Input::Bytes(bytes),
+                Ok(Fetched::Decoded(decoded)) => {
+                    self.arrived.push(Done {
+                        id,
+                        revision,
+                        result: Ok(decoded),
+                    });
+                    continue;
+                }
                 Err(error) => {
                     self.arrived.push(Done {
                         id,
@@ -473,8 +528,8 @@ impl Assets {
     /// Starts fetching resource `id` from `url` through the loader, or fails
     /// it at once without one.
     fn fetch(&mut self, id: ResourceId, revision: ResourceRevision, url: &str, waker: LoopWaker) {
-        self.decoding.insert(id, revision);
         let Some(loader) = &self.loader else {
+            self.decoding.insert(id, revision);
             self.arrived.push(Done {
                 id,
                 revision,
@@ -485,17 +540,25 @@ impl Assets {
             return;
         };
         let fetch = (loader.0)(url);
-        self.fetch_waker
+        let work = Box::pin(async move { fetch.await.map(Fetched::Bytes) });
+        self.start(id, revision, work, waker);
+    }
+
+    /// Runs `work` for resource `id` at `revision` on the loop's thread.
+    fn start(
+        &mut self,
+        id: ResourceId,
+        revision: ResourceRevision,
+        work: Pin<Box<dyn Future<Output = Result<Fetched, String>>>>,
+        waker: LoopWaker,
+    ) {
+        self.decoding.insert(id, revision);
+        let waker = self
+            .fetch_waker
             .get_or_insert_with(|| Waker::from(Arc::new(FetchWaker(waker))));
-        self.fetching.push(Fetching {
-            id,
-            revision,
-            fetch,
-        });
-        // A fetch that is ready at once is taken on the next wake.
-        if let Some(waker) = &self.fetch_waker {
-            waker.wake_by_ref();
-        }
+        // Work that is ready at once is taken on the next wake.
+        waker.wake_by_ref();
+        self.fetching.push(Fetching { id, revision, work });
     }
 
     /// Records a result: the payload to provide, or, reported, none.
@@ -628,9 +691,16 @@ impl Assets {
             if pending(self.decoding.get(&id)) {
                 continue;
             }
-            if let Input::Url(url) = &input {
-                self.fetch(id, revision, url, waker());
-                continue;
+            match &input {
+                Input::Url(url) => {
+                    self.fetch(id, revision, url, waker());
+                    continue;
+                }
+                Input::Bytes(bytes) if browser_decodes(bytes) => {
+                    self.start(id, revision, browser_decode(bytes.clone()), waker());
+                    continue;
+                }
+                _ => {}
             }
             if self.worker.is_none() && !self.inline {
                 self.worker = (crate::footprint::workers() > 0)
