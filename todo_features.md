@@ -514,7 +514,11 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
     (clippy for `x86_64-pc-windows-msvc` and the button/axis mapping unit-tested; not run
     on Windows). GameInput is not used: it ships only with the GDK redistributable or
     recent Windows 11 and has no stable ABI outside the GDK headers.
-  - [ ] Linux: evdev with inotify hotplug.
+  - [x] Linux: evdev read directly (no udev), pads by `BTN_SOUTH`, hotplug through inotify
+    on `/dev/input`, `SYN_DROPPED` resync, xpad's X/Y swapped to position, `FF_RUMBLE`
+    effects; KMS input leaves pads alone (verified in podman on a real kernel: a
+    uinput-made pad hotplugged, read, rumbled through an uploaded effect and unplugged;
+    decoder unit-tested over recorded events).
   - [ ] Android: the activity's gamepad key and motion events.
   - [ ] Web: the Gamepad API.
   - [ ] Rumble from game systems.

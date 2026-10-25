@@ -40,6 +40,7 @@ const BTN_LEFT: u16 = 0x110;
 const BTN_RIGHT: u16 = 0x111;
 const BTN_MIDDLE: u16 = 0x112;
 const BTN_JOYSTICK: u16 = 0x120;
+const BTN_GAMEPAD: u16 = 0x130;
 const BTN_TOOL_FINGER: u16 = 0x145;
 const BTN_TOUCH: u16 = 0x14a;
 const KEY_OK: u16 = 0x160;
@@ -172,9 +173,11 @@ impl Caps {
         let touchscreen = (multitouch || (single && touch)) && (direct || !finger);
         let touchpad = (multitouch || single) && finger && !direct;
         let absolute = single && left && !touchscreen && !touchpad;
-        // A joystick's buttons and axes are not a pointer or a keyboard.
+        // A joystick's buttons and axes are not a pointer or a keyboard, and
+        // a gamepad is read as one.
         let joystick = has_key && bit(key, BTN_JOYSTICK) && !keys && !mouse;
-        if joystick {
+        let gamepad = has_key && bit(key, BTN_GAMEPAD);
+        if joystick || gamepad {
             return Caps::default();
         }
         Caps {
@@ -755,6 +758,14 @@ mod tests {
             &[],
         );
         assert!(!stick.any());
+        let gamepad = caps(
+            &[EV_KEY, EV_ABS],
+            &[BTN_GAMEPAD, 0x220],
+            &[],
+            &[ABS_X, ABS_Y],
+            &[],
+        );
+        assert!(!gamepad.any(), "a gamepad is not a keyboard");
     }
 
     #[test]

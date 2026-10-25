@@ -60,6 +60,8 @@ pub(crate) struct X11App {
     waker: Waker,
     windows: Vec<X11Window>,
     next_id: u32,
+    /// The game controllers, read from the first poll.
+    gamepads: crate::gamepad::Gamepads,
 }
 
 impl X11App {
@@ -74,6 +76,7 @@ impl X11App {
             waker,
             windows: Vec::new(),
             next_id: 1,
+            gamepads: crate::gamepad::Gamepads::default(),
         })
     }
 
@@ -232,6 +235,17 @@ impl PlatformApp for X11App {
 
     fn loop_waker(&self) -> crate::LoopWaker {
         self.waker.loop_waker()
+    }
+
+    fn poll_gamepads(&mut self, events: &mut Vec<crate::GamepadEvent>) {
+        if !self.gamepads.started() {
+            self.gamepads.start(self.waker.loop_waker());
+        }
+        self.gamepads.poll(events);
+    }
+
+    fn rumble_gamepad(&mut self, id: crate::GamepadId, rumble: crate::Rumble) -> bool {
+        self.gamepads.rumble(id, rumble)
     }
 }
 

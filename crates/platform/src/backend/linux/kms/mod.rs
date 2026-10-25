@@ -990,6 +990,8 @@ pub(crate) struct KmsApp {
     wakes: Rc<WakeReceiver>,
     waker: Waker,
     window: Option<KmsWindow>,
+    /// The game controllers, read from the first poll.
+    gamepads: crate::gamepad::Gamepads,
 }
 
 impl KmsApp {
@@ -1001,6 +1003,7 @@ impl KmsApp {
             wakes: Rc::new(wakes),
             waker,
             window: None,
+            gamepads: crate::gamepad::Gamepads::default(),
         })
     }
 }
@@ -1095,6 +1098,17 @@ impl PlatformApp for KmsApp {
 
     fn loop_waker(&self) -> crate::LoopWaker {
         self.waker.loop_waker()
+    }
+
+    fn poll_gamepads(&mut self, events: &mut Vec<crate::GamepadEvent>) {
+        if !self.gamepads.started() {
+            self.gamepads.start(self.waker.loop_waker());
+        }
+        self.gamepads.poll(events);
+    }
+
+    fn rumble_gamepad(&mut self, id: crate::GamepadId, rumble: crate::Rumble) -> bool {
+        self.gamepads.rumble(id, rumble)
     }
 }
 

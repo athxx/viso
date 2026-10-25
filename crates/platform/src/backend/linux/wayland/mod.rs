@@ -67,6 +67,8 @@ pub(crate) struct WaylandApp {
     wakes: Rc<WakeReceiver>,
     windows: Vec<WaylandWindow>,
     next_id: u32,
+    /// The game controllers, read from the first poll.
+    gamepads: crate::gamepad::Gamepads,
 }
 
 impl WaylandApp {
@@ -83,6 +85,7 @@ impl WaylandApp {
             wakes: Rc::new(wakes),
             windows: Vec::new(),
             next_id: 1,
+            gamepads: crate::gamepad::Gamepads::default(),
         })
     }
 
@@ -241,6 +244,18 @@ impl PlatformApp for WaylandApp {
 
     fn loop_waker(&self) -> crate::LoopWaker {
         self.wl.borrow().state.waker.loop_waker()
+    }
+
+    fn poll_gamepads(&mut self, events: &mut Vec<crate::GamepadEvent>) {
+        if !self.gamepads.started() {
+            let waker = self.loop_waker();
+            self.gamepads.start(waker);
+        }
+        self.gamepads.poll(events);
+    }
+
+    fn rumble_gamepad(&mut self, id: crate::GamepadId, rumble: crate::Rumble) -> bool {
+        self.gamepads.rumble(id, rumble)
     }
 }
 

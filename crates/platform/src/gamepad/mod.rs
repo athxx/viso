@@ -24,15 +24,20 @@ use std::time::Duration;
 
 #[cfg(target_vendor = "apple")]
 mod apple;
+#[cfg(any(target_os = "linux", test))]
+mod evdev;
 #[cfg(any(target_os = "windows", test))]
 mod xinput;
 
 #[cfg(target_vendor = "apple")]
 use apple as imp;
+#[cfg(target_os = "linux")]
+use evdev as imp;
+#[cfg(not(any(target_vendor = "apple", target_os = "windows", target_os = "linux")))]
+use none as imp;
 #[cfg(target_os = "windows")]
 use xinput as imp;
 
-#[cfg(any(target_vendor = "apple", target_os = "windows"))]
 use crate::LoopWaker;
 
 /// A connected gamepad's id: unique to its connection, never reused while
@@ -277,11 +282,9 @@ impl Pads {
 }
 
 /// A native backend's gamepads, started at the first poll.
-#[cfg(any(target_vendor = "apple", target_os = "windows"))]
 #[derive(Default)]
 pub(crate) struct Gamepads(Option<Option<imp::Source>>);
 
-#[cfg(any(target_vendor = "apple", target_os = "windows"))]
 impl Gamepads {
     /// Whether the source was started (or found missing).
     pub(crate) fn started(&self) -> bool {
@@ -315,6 +318,27 @@ impl Gamepads {
         match &self.0 {
             Some(Some(source)) => source.deadline(),
             _ => None,
+        }
+    }
+}
+
+/// A target with no gamepad support.
+#[cfg(not(any(target_vendor = "apple", target_os = "windows", target_os = "linux")))]
+mod none {
+    use super::{GamepadEvent, GamepadId, Rumble};
+    use crate::LoopWaker;
+
+    pub(crate) struct Source;
+
+    impl Source {
+        pub(crate) fn new(_waker: LoopWaker) -> Option<Source> {
+            None
+        }
+
+        pub(crate) fn poll(&mut self, _events: &mut Vec<GamepadEvent>) {}
+
+        pub(crate) fn rumble(&mut self, _id: GamepadId, _rumble: Rumble) -> bool {
+            false
         }
     }
 }
