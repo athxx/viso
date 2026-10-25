@@ -354,7 +354,7 @@ Rules:
     - [x] Windows, through `SharedCanvas` / `SharedPictures`, which the media engine's
       player now draws through too.
     - [x] Linux and the BSDs, through `gstreamer_live` over the extension's source element.
-    - [ ] Web.
+    - [x] Web, through `MediaStreams` and `web_live`.
 - [ ] Audio as an extension, `viso-ext/viso-audio`; the core adds no audio API (a
   video's sound stays with the platform player):
   - [ ] device streams: outputs and inputs listed and watched, a realtime callback

@@ -33,6 +33,8 @@ pub use video::{
 };
 #[cfg(target_os = "android")]
 pub use video::{ImageReader, attach_android};
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub use video::{MediaStreams, web_live};
 #[cfg(target_os = "windows")]
 pub use video::{SharedCanvas, SharedPictures};
 pub use viso_handle::{Nv12, YuvMatrix};

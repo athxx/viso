@@ -49,6 +49,8 @@ mod no_picture;
 mod unsupported;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod web;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub use web::{MediaStreams, web_live};
 #[cfg(target_os = "windows")]
 mod windows;
 #[cfg(target_os = "windows")]
