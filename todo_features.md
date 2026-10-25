@@ -371,7 +371,7 @@ Rules:
     - [x] Web, Web Audio: one context a stream, blocks moved through an AudioWorklet
       to callbacks on the page's thread, waiting for the first touch (verified in
       headless Chrome with fake devices).
-  - [ ] playback and recording:
+  - [x] playback and recording:
     - [x] sounds in memory played as voices of a mixer on one output stream: volume, pan
       and speed gliding, looping, priority stealing, a limiter on the sum; WAV read by
       the crate;
@@ -391,7 +391,14 @@ Rules:
       encoder is installed, and the browser's recorder; encoded on a thread of its own,
       paused without a gap, a level for a meter, and an input that moves to a device of
       another format converted to the file's;
-  - [ ] the audio session (iOS category, Android focus) owned by it alone.
+  - [x] the audio session owned by it alone: the app says what its sound is (ambient,
+    playback, a prompt, a call) and the crate sets the platform up as the first stream
+    opens and gives it up as the last closes — the iOS category and mode, deactivated
+    after; Android's audio focus, the streams' usage, and a call's communication mode on
+    a headset else the speaker (`MODIFY_AUDIO_SETTINGS` declared with the microphone);
+    the PulseAudio role and the WASAPI category. An interruption holds every stream and
+    is told to a watch; they play again as it is given back, or as the app asks (verified
+    on the Android emulator through a ringing call; iOS built and linted, not yet run).
 
 ## W11 — Networking
 

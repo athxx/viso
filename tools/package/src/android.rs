@@ -218,9 +218,12 @@ impl Manifest {
 fn permissions(access: Access) -> &'static [&'static str] {
     match access {
         Access::Camera => &[r#"<uses-permission android:name="android.permission.CAMERA" />"#],
-        Access::Microphone => {
-            &[r#"<uses-permission android:name="android.permission.RECORD_AUDIO" />"#]
-        }
+        // Changing the audio mode, as a call does, needs the second; it is
+        // granted as the app installs.
+        Access::Microphone => &[
+            r#"<uses-permission android:name="android.permission.RECORD_AUDIO" />"#,
+            r#"<uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />"#,
+        ],
         Access::Location => &[
             r#"<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />"#,
             r#"<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />"#,
