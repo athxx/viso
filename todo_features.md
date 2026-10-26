@@ -689,7 +689,12 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
   `SceneProgram::SkinnedMesh` / `SkinnedDepth` skin on the GPU (casting skinned shadows
   too); `push_model` poses glTF skins, `SceneModel::bounds(&pose)`. Verified: CPU + Metal +
   translated WGSL draw the same skinned scene, GLSL ES / HLSL compile, lane test, CesiumMan / Fox.
-- [ ] SSAO and sky.
+- [x] SSAO and sky. — `SceneFrame::sky: Option<Sky>` draws a Preetham daylight sky (with
+  night / twilight fade and sun disc) behind opaque meshes, `Environment::from_sky` lights the
+  frame by it, `Lighting::sunlit(&sky)` gives the sun's direct light. `Lighting::occlusion:
+  AmbientOcclusion` adds half-res SSAO (view depth, 12-tap hemisphere, two bilateral blur
+  passes) that darkens only the environment's light. Verified: CPU + Metal + translated WGSL
+  draw the same sky and occlusion, GLSL ES / HLSL compile, lane tests, Khronos samples.
 
 ## W15 — Code editor widget (in `extras/`)
 

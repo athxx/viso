@@ -802,6 +802,280 @@ fn draw_sky<B: GpuBackend>(
     read(gpu, target)
 }
 
+/// The camera the occlusion passes look through: down onto a unit sphere
+/// resting on the ground.
+fn occlusion_frame() -> FrameUniforms {
+    let camera = Camera {
+        eye: vec3(0.0, 2.5, 4.0),
+        target: vec3(0.0, -0.4, 0.0),
+        ..Camera::default()
+    };
+    FrameUniforms {
+        view_proj: camera.view_proj(W as f32 / H as f32).v,
+        ..FrameUniforms::default()
+    }
+    .with_camera([0.0, 2.5, 4.0])
+}
+
+trait WithCamera {
+    fn with_camera(self, eye: [f32; 3]) -> Self;
+}
+
+impl WithCamera for FrameUniforms {
+    fn with_camera(mut self, eye: [f32; 3]) -> Self {
+        self.camera = [eye[0], eye[1], eye[2], 1.0];
+        self
+    }
+}
+
+/// The view depth of [`occlusion_frame`], packed as the depth program
+/// writes it: each texel's ray cast against the sphere and the ground at
+/// `y = -1`, `1 - z` of the nearest hit; nothing past the ground's edge.
+fn occlusion_depth(frame: &FrameUniforms) -> Vec<u8> {
+    let inv = Mat4 { v: frame.view_proj }.invert().v;
+    let eye = [frame.camera[0], frame.camera[1], frame.camera[2]];
+    let mut out = Vec::with_capacity((W * H * 4) as usize);
+    for y in 0..H {
+        for x in 0..W {
+            let ndc = [
+                (x as f32 + 0.5) / W as f32 * 2.0 - 1.0,
+                1.0 - (y as f32 + 0.5) / H as f32 * 2.0,
+            ];
+            let at = |z: f32| {
+                let p: [f32; 4] = core::array::from_fn(|i| {
+                    inv[i] * ndc[0] + inv[4 + i] * ndc[1] + inv[8 + i] * z + inv[12 + i]
+                });
+                [p[0] / p[3], p[1] / p[3], p[2] / p[3]]
+            };
+            let (a, b) = (at(1.0), at(0.5));
+            let d = scene::normalize([b[0] - a[0], b[1] - a[1], b[2] - a[2]]);
+            // The sphere, then the ground.
+            let oc = eye;
+            let bq = oc[0] * d[0] + oc[1] * d[1] + oc[2] * d[2];
+            let cq = oc[0] * oc[0] + oc[1] * oc[1] + oc[2] * oc[2] - 1.0;
+            let disc = bq * bq - cq;
+            let mut t = f32::MAX;
+            if disc >= 0.0 {
+                t = -bq - disc.sqrt();
+            }
+            if d[1] < 0.0 {
+                let tg = (-1.0 - eye[1]) / d[1];
+                let hit = [eye[0] + d[0] * tg, eye[2] + d[2] * tg];
+                if hit[0].abs() < 4.0 && hit[1].abs() < 4.0 {
+                    t = t.min(tg);
+                }
+            }
+            let texel = if t < f32::MAX {
+                let p = [eye[0] + d[0] * t, eye[1] + d[1] * t, eye[2] + d[2] * t];
+                let c = frame.clip(p);
+                scene::pack_depth(1.0 - c[2] / c[3])
+            } else {
+                [1.0; 4]
+            };
+            out.extend(texel.map(|v| (v * 255.0).round() as u8));
+        }
+    }
+    out
+}
+
+/// The occlusion program, or the blur's when `blur`, run by `gpu` with
+/// `code` over `input` (texture slot 6, RGBA8) as the bytes `read` reads
+/// back.
+fn draw_occlusion<B: GpuBackend>(
+    gpu: &mut B,
+    code: ShaderCode,
+    blur: bool,
+    input: &[u8],
+    read: impl Fn(&mut B, viso_gpu::TextureId) -> Vec<u8>,
+) -> Vec<u8> {
+    let frame = occlusion_frame();
+    let texture = |gpu: &mut B, format, target, label| {
+        gpu.create_texture(&TextureDesc {
+            width: W,
+            height: H,
+            format,
+            render_target: target,
+            label,
+        })
+    };
+    let target = texture(gpu, TextureFormat::Rgba8Data, true, "occlusion");
+    let depth = texture(gpu, TextureFormat::Depth32Float, true, "occlusion-depth");
+    let source = texture(gpu, TextureFormat::Rgba8Data, false, "occlusion-input");
+    gpu.write_texture(source, 0, 0, W, H, input);
+    let buffer = |gpu: &mut B, bytes: &[u8], usage| {
+        let b = gpu.create_buffer(&BufferDesc {
+            size: bytes.len(),
+            usage: usage | BufferUsage::CPU_WRITE,
+            label: "occlusion",
+        });
+        gpu.write_buffer(b, 0, bytes);
+        b
+    };
+    let mut frame_bytes = [0u8; FrameUniforms::SIZE];
+    frame.write_to(&mut frame_bytes);
+    let block = viso_gpu::scene::AoUniforms {
+        inv_view_proj: Mat4 { v: frame.view_proj }.invert().v,
+        params: [0.5, 0.02, 0.002, 0.0],
+        texel: [1.0 / W as f32, 1.0 / H as f32, W as f32, H as f32],
+        step: [1.0 / W as f32, 0.0, 0.0, 0.0],
+    };
+    let mut block_bytes = [0u8; viso_gpu::scene::AoUniforms::SIZE];
+    block.write_to(&mut block_bytes);
+    let corner = |x: f32, y: f32| SceneVertex {
+        position: [x, y, 0.0],
+        ..SceneVertex::default()
+    };
+    let screen = [corner(-1.0, -1.0), corner(3.0, -1.0), corner(-1.0, 3.0)];
+    let vertex_buffer = buffer(
+        gpu,
+        &bytes(&screen, SceneVertex::write_to, SceneVertex::SIZE),
+        BufferUsage::VERTEX,
+    );
+    let index_bytes: Vec<u8> = [0u16, 1, 2, 0]
+        .iter()
+        .flat_map(|i| i.to_le_bytes())
+        .collect();
+    let index_buffer = buffer(gpu, &index_bytes, BufferUsage::INDEX);
+    let instance_buffer = buffer(
+        gpu,
+        &bytes(
+            &[SceneInstance::default()],
+            SceneInstance::write_to,
+            SceneInstance::SIZE,
+        ),
+        BufferUsage::INSTANCE,
+    );
+    let frame_buffer = buffer(gpu, &frame_bytes, BufferUsage::UNIFORM);
+    let block_buffer = buffer(gpu, &block_bytes, BufferUsage::UNIFORM);
+    let white = gpu.create_texture(&TextureDesc {
+        width: 1,
+        height: 1,
+        format: TextureFormat::Rgba8Unorm,
+        render_target: false,
+        label: "white",
+    });
+    gpu.write_texture(white, 0, 0, 1, 1, &[255; 4]);
+    let linear = gpu.create_sampler(&SamplerDesc::LINEAR_CLAMP);
+    let point = gpu.create_sampler(&SamplerDesc {
+        filter: FilterMode::Nearest,
+        address: AddressMode::ClampToEdge,
+    });
+    let mut bindings = vec![
+        Binding::Uniform(frame_buffer),
+        Binding::Uniform(block_buffer),
+        Binding::Uniform(block_buffer),
+    ];
+    bindings.extend([Binding::Texture(white); 6]);
+    bindings.extend([
+        Binding::Texture(source),
+        Binding::Texture(white),
+        Binding::Sampler(linear),
+        Binding::Sampler(linear),
+        Binding::Sampler(point),
+    ]);
+    let group = gpu.create_bind_group(&BindGroupDesc {
+        label: "occlusion",
+        bindings,
+    });
+    let program = if blur {
+        SceneProgram::AoBlur
+    } else {
+        SceneProgram::Ao
+    };
+    let pipeline = gpu
+        .create_pipeline(
+            &PipelineDesc {
+                label: "occlusion",
+                builtin: BuiltinShader::Scene,
+                variant: program as u32,
+                code,
+                vertex_entry: "vertex_main",
+                fragment_entry: "fragment_main",
+                color_format: TextureFormat::Rgba8Data,
+                depth: Some(DepthState {
+                    format: TextureFormat::Depth32Float,
+                    compare: viso_gpu::CompareFunction::Always,
+                    write: false,
+                }),
+                cull: CullMode::None,
+                blend: BlendMode::Replace,
+                instance_schema: program.vertex_schema(),
+            },
+            &Vertex::LAYOUT,
+        )
+        .expect("the vertex layout matches");
+    let commands = [DrawCommand {
+        pipeline,
+        bind_group: Some(group),
+        geometry: Geometry::InstancedMesh {
+            vertex_buffer,
+            index_buffer,
+            index_format: IndexFormat::U16,
+            index_offset: 0,
+            index_count: 3,
+            count: 1,
+        },
+        instance_buffer,
+        instance_offset: 0,
+        uniforms: InlineUniforms::EMPTY,
+        scissor: None,
+    }];
+    gpu.encode(&DrawList {
+        commands: &commands,
+        passes: &[RenderPass {
+            target: RenderTarget::Texture(target),
+            load: LoadOp::Clear([1.0, 0.0, 0.0, 1.0]),
+            depth: Some(DepthAttachment {
+                texture: depth,
+                clear: 0.0,
+            }),
+            first_command: 0,
+            command_count: 1,
+        }],
+    });
+    read(gpu, target)
+}
+
+/// The CPU raster's occlusion of the sphere on the ground, and its blur,
+/// RGBA8.
+fn cpu_occlusion() -> (Vec<u8>, Vec<u8>) {
+    let depth = occlusion_depth(&occlusion_frame());
+    // The CPU raster reads every texture back as BGRA.
+    let read = |gpu: &mut CpuRaster, t| {
+        let mut px = gpu.read_texture(t);
+        for p in px.as_chunks_mut::<4>().0 {
+            p.swap(0, 2);
+        }
+        px
+    };
+    let raw = draw_occlusion(&mut CpuRaster::new(), ShaderCode::None, false, &depth, read);
+    let blurred = draw_occlusion(&mut CpuRaster::new(), ShaderCode::None, true, &raw, read);
+    (raw, blurred)
+}
+
+#[test]
+fn the_ground_is_occluded_where_the_sphere_meets_it() {
+    let (raw, blurred) = cpu_occlusion();
+    let ao = |img: &[u8], x: u32, y: u32| img[((y * W + x) * 4) as usize];
+    // The sphere's contact with the ground, below its centre, is the
+    // darkest; the open ground in the near corner is unoccluded; the empty
+    // background is untouched.
+    let column = W / 2;
+    let darkest = (H / 2..H).map(|y| ao(&blurred, column, y)).min().unwrap();
+    assert!(darkest < 200, "the contact is occluded: {darkest}");
+    assert!(ao(&blurred, 3, H - 3) > 240, "{}", ao(&blurred, 3, H - 3));
+    assert_eq!(ao(&raw, 0, 0), 255, "nothing is drawn at the top left");
+    // The blur keeps the distances and smooths the occlusion.
+    for (a, b) in raw
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(blurred.as_chunks::<4>().0)
+    {
+        assert_eq!((a[1], a[2]), (b[1], b[2]));
+    }
+}
+
 fn cpu_sky() -> Vec<u8> {
     let image = draw_sky(&mut CpuRaster::new(), ShaderCode::None, |gpu, t| {
         gpu.read_texture(t)
@@ -1120,6 +1394,39 @@ mod metal {
         };
         let (source, _) = msl::write_string(&module, &info, &options, &pipeline).unwrap();
         naga_pull::strip_pull_bounds(&source)
+    }
+
+    /// Within the noise of point-sampled taps on texels' edges.
+    #[test]
+    fn metal_and_the_translated_wgsl_occlude_as_the_cpu_raster_does() {
+        let (raw, blurred) = cpu_occlusion();
+        let depth = occlusion_depth(&occlusion_frame());
+        for wgsl in [false, true] {
+            let code = |program| {
+                if wgsl {
+                    ShaderCode::Msl(Box::leak(translated(program).into_boxed_str()))
+                } else {
+                    scene_program_code(program, ShaderLang::Msl)
+                }
+            };
+            let read = |gpu: &mut MetalBackend, t| gpu.read_texture(t);
+            let mut gpu = MetalBackend::new();
+            let gpu_raw = draw_occlusion(&mut gpu, code(SceneProgram::Ao), false, &depth, read);
+            // The blur of the CPU's occlusion, so each pass is held alone.
+            let gpu_blurred =
+                draw_occlusion(&mut gpu, code(SceneProgram::AoBlur), true, &raw, read);
+            for (what, a, b, tolerance) in [
+                ("occlusion", &raw, &gpu_raw, 24),
+                ("blur", &blurred, &gpu_blurred, 2),
+            ] {
+                let (off, worst) = compare(a, b, tolerance);
+                assert!(
+                    off < 0.02,
+                    "{what} (wgsl {wgsl}): {:.2}% of texels differ, worst by {worst}",
+                    off * 100.0
+                );
+            }
+        }
     }
 
     #[test]

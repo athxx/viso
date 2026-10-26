@@ -17,9 +17,10 @@ use crate::resource::{
     Binding, BlendMode, BuiltinShader, CullMode, DepthState, FilterMode, SamplerDesc,
 };
 use crate::scene::{
-    FrameUniforms, MaterialUniforms, MeshFragment, SAMPLER_SLOTS, SceneInstance, SceneProgram,
-    SceneTextures, SceneVertex, SkinnedVertex, SkyUniforms, TEXTURE_SAMPLERS, TEXTURE_SLOTS,
-    UNIFORM_SLOTS, normalize, shade_depth, shade_mesh, shade_sky, skin_vertex,
+    AoUniforms, FrameUniforms, MaterialUniforms, MeshFragment, SAMPLER_SLOTS, SceneInstance,
+    SceneProgram, SceneTextures, SceneVertex, SkinnedVertex, SkyUniforms, TEXTURE_SAMPLERS,
+    TEXTURE_SLOTS, UNIFORM_SLOTS, normalize, shade_ao, shade_ao_blur, shade_depth, shade_mesh,
+    shade_sky, skin_vertex,
 };
 
 /// The varyings a vertex carries to its fragments.
@@ -136,6 +137,12 @@ impl<'a> Bound<'a> {
         (bytes.len() >= SkyUniforms::SIZE).then(|| SkyUniforms::read_from(bytes))
     }
 
+    /// The occlusion passes' block, uniform slot 1 of their draws.
+    fn ao(&self) -> Option<AoUniforms> {
+        let bytes = self.uniforms[1]?;
+        (bytes.len() >= AoUniforms::SIZE).then(|| AoUniforms::read_from(bytes))
+    }
+
     /// The joint palette's rows, uniform slot 2.
     fn palette(&self) -> Vec<[f32; 4]> {
         let bytes = self.uniforms[2].unwrap_or(&[]);
@@ -224,11 +231,18 @@ pub(super) fn run<P: Px>(
         } else {
             SkyUniforms::default()
         };
+        let ao = if matches!(program, SceneProgram::Ao | SceneProgram::AoBlur) {
+            let Some(ao) = bound.ao() else { continue };
+            ao
+        } else {
+            AoUniforms::default()
+        };
         let draw = Draw {
             pipe,
             frame: &frame,
             material: &material,
             sky: &sky,
+            ao: &ao,
             bound: &bound,
             program,
             scissor: scissor(cmd, target.width, target.height),
@@ -300,6 +314,8 @@ struct Draw<'a> {
     material: &'a MaterialUniforms,
     /// The sky's block, for the sky program.
     sky: &'a SkyUniforms,
+    /// The occlusion passes' block, for theirs.
+    ao: &'a AoUniforms,
     bound: &'a Bound<'a>,
     program: SceneProgram,
     scissor: [u32; 4],
@@ -458,6 +474,7 @@ fn raster<P: Px>(target: &mut SceneTarget<'_, P>, draw: &Draw<'_>, color: [f32; 
             let Some(shaded) = shade(
                 draw,
                 color,
+                p,
                 &here,
                 &at([p[0] + 1.0, p[1]]),
                 &at([p[0], p[1] + 1.0]),
@@ -476,11 +493,13 @@ fn raster<P: Px>(target: &mut SceneTarget<'_, P>, draw: &Draw<'_>, color: [f32; 
     }
 }
 
-/// The program's color of the fragment with varyings `v`, its right and
-/// lower neighbours' `right` and `down`; `None` where it discards.
+/// The program's color of the fragment at `pixel` with varyings `v`, its
+/// right and lower neighbours' `right` and `down`; `None` where it
+/// discards.
 fn shade(
     draw: &Draw<'_>,
     color: [f32; 4],
+    pixel: [f32; 2],
     v: &Varyings,
     right: &Varyings,
     down: &Varyings,
@@ -498,9 +517,13 @@ fn shade(
         uv_dy: d2(v.uv, down.uv),
         normal_dx: d3(n, normalize(right.normal)),
         normal_dy: d3(n, normalize(down.normal)),
+        pixel,
     };
+    let ndc = [v.world[0], v.world[1]];
     match draw.program {
-        SceneProgram::Sky => Some(shade_sky(draw.frame, draw.sky, [v.world[0], v.world[1]])),
+        SceneProgram::Sky => Some(shade_sky(draw.frame, draw.sky, ndc)),
+        SceneProgram::Ao => Some(shade_ao(draw.frame, draw.ao, ndc, draw.bound)),
+        SceneProgram::AoBlur => Some(shade_ao_blur(draw.ao, ndc, draw.bound)),
         p if p.casts() => shade_depth(draw.frame, draw.material, &fragment, draw.bound),
         _ => shade_mesh(draw.frame, draw.material, &fragment, draw.bound),
     }

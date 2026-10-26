@@ -76,16 +76,27 @@ pub enum SceneProgram {
     /// fragments see [`sky_radiance`] along their view ray, exposed and tone
     /// mapped as a mesh is. Uniform slot 1 holds the [`SkyUniforms`].
     Sky = 4,
+    /// The ambient occlusion of every pixel of a view, a triangle over the
+    /// target ([`shade_ao`]): taps of a hemisphere about the surface the
+    /// view's depth (texture slot 6, [`pack_depth`]ed `1 - z`) holds there,
+    /// each occluded by what stands in front of it. Uniform slot 1 holds
+    /// the [`AoUniforms`].
+    Ao = 5,
+    /// One axis of the depth-aware blur of [`Ao`](Self::Ao)'s output
+    /// (texture slot 6), [`shade_ao_blur`].
+    AoBlur = 6,
 }
 
 impl SceneProgram {
     /// Every program, by its code.
-    pub const ALL: [SceneProgram; 5] = [
+    pub const ALL: [SceneProgram; 7] = [
         SceneProgram::Mesh,
         SceneProgram::Depth,
         SceneProgram::SkinnedMesh,
         SceneProgram::SkinnedDepth,
         SceneProgram::Sky,
+        SceneProgram::Ao,
+        SceneProgram::AoBlur,
     ];
 
     /// The vertex layout it reads.
@@ -100,7 +111,10 @@ impl SceneProgram {
     /// world: its vertices' positions are clip-space `x` and `y`, its
     /// instance unread.
     pub const fn screen(self) -> bool {
-        matches!(self, SceneProgram::Sky)
+        matches!(
+            self,
+            SceneProgram::Sky | SceneProgram::Ao | SceneProgram::AoBlur
+        )
     }
 
     /// Whether its vertices are [`SkinnedVertex`]es.
@@ -357,7 +371,7 @@ pub struct SceneInstance {
     pub color: [f32; 4],
 }
 
-/// The frame's uniform block, uniform slot 0 of every scene draw. 496 bytes.
+/// The frame's uniform block, uniform slot 0 of every scene draw. 512 bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 #[repr(C)]
 pub struct FrameUniforms {
@@ -390,6 +404,11 @@ pub struct FrameUniforms {
     /// How dark the shadow makes the direct light, `0.0` casting none; the
     /// size of one texel of a cascade's tile, `1 / resolution`.
     pub shadow_params: [f32; 4],
+    /// How much of the environment's light the ambient occlusion (texture
+    /// slot 7) takes away, `0.0` none; then one over the target's width
+    /// and height in pixels, which take a fragment's pixel to the
+    /// occlusion's coordinate.
+    pub occlusion: [f32; 4],
 }
 
 /// A material's uniform block, uniform slot 1 of a scene draw. 64 bytes.
@@ -442,6 +461,26 @@ pub struct SkyUniforms {
     /// How much of the day sky shows (`0.0` at night), and how much of the
     /// twilight's glow.
     pub blend: [f32; 4],
+}
+
+/// The ambient occlusion passes' uniform block, uniform slot 1 of an
+/// [`SceneProgram::Ao`] or [`SceneProgram::AoBlur`] draw, whose frame block
+/// is the view's. 112 bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[repr(C)]
+pub struct AoUniforms {
+    /// Clip to world space, column-major: the inverse of the frame's
+    /// `view_proj`, which a texel's depth is unprojected by.
+    pub inv_view_proj: [f32; 16],
+    /// The hemisphere's radius, in world units; how far in front of a tap
+    /// a surface must stand to occlude it at least, and how much farther
+    /// per unit of distance from the camera.
+    pub params: [f32; 4],
+    /// One texel of the passes' targets in their coordinates, then their
+    /// width and height in texels.
+    pub texel: [f32; 4],
+    /// The blur's step, one texel along its axis, in the coordinates.
+    pub step: [f32; 4],
 }
 
 /// How a material colors its fragments: [`MaterialUniforms::mode`]`[0]`.
@@ -533,9 +572,10 @@ macro_rules! as_bytes {
 
 as_bytes!(SceneVertex, 48);
 as_bytes!(SceneInstance, 64);
-as_bytes!(FrameUniforms, 496);
+as_bytes!(FrameUniforms, 512);
 as_bytes!(MaterialUniforms, 64);
 as_bytes!(SkyUniforms, 208);
+as_bytes!(AoUniforms, 112);
 
 impl SceneInstance {
     /// `p`, a point of the mesh, in the world.
@@ -628,7 +668,7 @@ impl MaterialUniforms {
 mod screen;
 mod shade;
 
-pub use screen::{shade_sky, sky_radiance};
+pub use screen::{shade_ao, shade_ao_blur, shade_sky, sky_radiance};
 
 pub use shade::{
     MeshFragment, SceneTextures, disc, env_atlas_uv, env_brdf, env_direction_uv, pack_depth,

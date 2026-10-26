@@ -10,7 +10,8 @@ use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle, SurfaceId};
 use viso_math::{LinearStraight, Mat4, Quat, Vec3, vec3};
 use viso_render::damage::Region;
 use viso_render::scene3d::{
-    Camera, MaterialId, SceneFrame, SceneSprite, Shadows, Shape, SkinnedVertex, Sky, instance,
+    AmbientOcclusion, Camera, MaterialId, SceneFrame, SceneSprite, Shadows, Shape, SkinnedVertex,
+    Sky, instance,
 };
 use viso_render::{Border, Primitive, Quad, Rect, Renderer, Rgba, SceneDraw, SceneSlot};
 
@@ -343,7 +344,9 @@ fn a_sprite_blends_over_what_is_behind_it_and_hides_behind_what_is_in_front() {
 }
 
 /// The scene lane draws the same picture on the Metal device as on the CPU
-/// raster.
+/// raster: exactly without ambient occlusion; with it, within the noise of
+/// its point-sampled taps, a tap on a texel's edge reading one texel on one
+/// and its neighbour on the other.
 #[cfg(target_vendor = "apple")]
 #[test]
 fn metal_draws_what_the_cpu_raster_draws() {
@@ -352,6 +355,7 @@ fn metal_draws_what_the_cpu_raster_draws() {
     fn image<B: GpuBackend>(
         gpu: &mut B,
         sky: Option<Sky>,
+        occlusion: AmbientOcclusion,
         read: impl Fn(&mut B, viso_gpu::TextureId) -> Vec<u8>,
     ) -> Vec<u8> {
         let mut r = Renderer::new(gpu, TextureFormat::Bgra8Unorm);
@@ -364,6 +368,7 @@ fn metal_draws_what_the_cpu_raster_draws() {
         };
         frame.background = LinearStraight::new(0.5, 0.6, 0.8, 1.0);
         frame.sky = sky;
+        frame.lighting.occlusion = occlusion;
         let one = vec3(1.0, 1.0, 1.0);
         let turn = Quat::from_axis_angle(vec3(0.0, 1.0, 0.0), 0.6);
         let color = |r, g, b| LinearStraight::new(r, g, b, 1.0);
@@ -428,15 +433,19 @@ fn metal_draws_what_the_cpu_raster_draws() {
         sun: vec3(-0.6, 0.12, -1.0),
         ..Sky::default()
     };
-    for sky in [None, Some(low_sun)] {
-        let cpu = image(&mut CpuRaster::new(), sky, |gpu, t| gpu.read_texture(t));
-        let metal = image(&mut MetalBackend::new(), sky, |gpu, t| gpu.read_texture(t));
+    let ao = AmbientOcclusion::default();
+    for (name, sky, occlusion, tolerance) in [
+        ("lane-shapes", None, AmbientOcclusion::NONE, 3),
+        ("lane-shapes-ao", None, ao, 16),
+        ("lane-sky", Some(low_sun), ao, 16),
+    ] {
+        let cpu = image(&mut CpuRaster::new(), sky, occlusion, |gpu, t| {
+            gpu.read_texture(t)
+        });
+        let metal = image(&mut MetalBackend::new(), sky, occlusion, |gpu, t| {
+            gpu.read_texture(t)
+        });
         if let Some(dir) = std::env::var_os("VISO_SCENE_SHOTS") {
-            let name = if sky.is_some() {
-                "lane-sky"
-            } else {
-                "lane-shapes"
-            };
             for (who, px) in [("cpu", &cpu), ("metal", &metal)] {
                 let png = viso_image::snapshot::Image::from_bgra8(W, H, px).to_png();
                 let path = std::path::Path::new(&dir).join(format!("{name}-{who}.png"));
@@ -448,12 +457,15 @@ fn metal_draws_what_the_cpu_raster_draws() {
             .0
             .iter()
             .zip(metal.as_chunks::<4>().0)
-            .filter(|(a, b)| a.iter().zip(b.iter()).any(|(x, y)| x.abs_diff(*y) > 3))
+            .filter(|(a, b)| {
+                a.iter()
+                    .zip(b.iter())
+                    .any(|(x, y)| x.abs_diff(*y) > tolerance)
+            })
             .count();
         assert!(
             off * 100 < (W * H) as usize,
-            "sky {}: {off} of {} pixels differ",
-            sky.is_some(),
+            "{name}: {off} of {} pixels differ",
             W * H
         );
     }
@@ -600,4 +612,86 @@ fn a_skinned_mesh_follows_its_joints() {
     away.present(&stream(full, 1));
     let stats = away.r.take_scene_stats();
     assert_eq!((stats.draws, stats.culled), (0, 1), "{stats:?}");
+}
+
+/// A cube resting on a ground slab, lit head on so no shadow falls,
+/// occluded by `occlusion`.
+fn resting_cube(k: &mut Kit, occlusion: AmbientOcclusion) {
+    let mut frame = SceneFrame::new();
+    frame.camera = Camera {
+        eye: vec3(0.0, 2.5, 5.0),
+        target: vec3(0.0, -0.5, 0.0),
+        ..Camera::default()
+    };
+    frame.background = LinearStraight::new(0.0, 0.0, 0.0, 1.0);
+    frame.lighting.direction = vec3(0.0, 0.0, 1.0);
+    frame.lighting.shadows = Shadows::NONE;
+    frame.lighting.occlusion = occlusion;
+    let white = LinearStraight::new(0.8, 0.8, 0.8, 1.0);
+    frame.push(
+        Shape::Cube,
+        instance(Vec3::ZERO, Quat::IDENTITY, vec3(0.7, 0.7, 0.7), white),
+    );
+    frame.push(
+        Shape::Cube,
+        instance(
+            vec3(0.0, -0.9, 0.0),
+            Quat::IDENTITY,
+            vec3(4.0, 0.2, 4.0),
+            white,
+        ),
+    );
+    k.r.swap_scene(SLOT, &mut frame);
+}
+
+#[test]
+fn ambient_occlusion_shades_where_the_cube_meets_the_ground() {
+    let full = rect(0.0, 0.0, W as f32, H as f32);
+    let mut open = Kit::new();
+    resting_cube(&mut open, AmbientOcclusion::NONE);
+    let open_px = open.present(&stream(full, 1));
+    assert_eq!(open.r.take_scene_stats().occlusion_passes, 0);
+    let mut occluded = Kit::new();
+    resting_cube(
+        &mut occluded,
+        AmbientOcclusion {
+            strength: 1.0,
+            ..AmbientOcclusion::default()
+        },
+    );
+    let occluded_px = occluded.present(&stream(full, 1));
+    if let Some(dir) = std::env::var_os("VISO_SCENE_SHOTS") {
+        let png = viso_image::snapshot::Image::from_bgra8(W, H, &occluded_px).to_png();
+        std::fs::write(std::path::Path::new(&dir).join("lane-occlusion.png"), png).unwrap();
+    }
+    let stats = occluded.r.take_scene_stats();
+    assert_eq!((stats.occlusion_passes, stats.passes), (1, 1));
+    // Occlusion only ever darkens, and darkens the ground along the cube's
+    // base most.
+    let mut darker = 0;
+    let mut most = 0;
+    for (a, b) in open_px
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(occluded_px.as_chunks::<4>().0)
+    {
+        assert!(b[1] <= a[1] + 1, "occlusion never brightens: {a:?} {b:?}");
+        let d = a[1].saturating_sub(b[1]);
+        most = most.max(d);
+        if d >= 3 {
+            darker += 1;
+        }
+    }
+    assert!(
+        darker > 20 && most >= 5,
+        "{darker} pixels occluded, at most by {most}"
+    );
+    let side = (at(&open_px, 32, 55), at(&occluded_px, 32, 55));
+    assert!(side.1[1] + 4 <= side.0[1], "beside the base: {side:?}");
+    let corner = (at(&open_px, 6, 88), at(&occluded_px, 6, 88));
+    assert!(
+        corner.1[1].abs_diff(corner.0[1]) <= 2,
+        "open ground: {corner:?}"
+    );
 }

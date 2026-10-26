@@ -29,6 +29,7 @@
 mod environment;
 mod lane;
 pub mod model;
+mod occlusion;
 mod resident;
 mod shadow;
 mod shapes;
@@ -40,6 +41,7 @@ pub use environment::Environment;
 pub(crate) use lane::SceneLane;
 pub use lane::SceneStats;
 pub use model::AlphaMode;
+pub use occlusion::AmbientOcclusion;
 pub use resident::SceneModel;
 pub use shadow::Shadows;
 pub use shapes::Shape;
@@ -226,6 +228,9 @@ pub struct Lighting {
     pub fog_density: f32,
     /// The shadows the light casts.
     pub shadows: Shadows,
+    /// How the scene's surfaces occlude the environment's light from each
+    /// other.
+    pub occlusion: AmbientOcclusion,
 }
 
 impl Default for Lighting {
@@ -242,6 +247,7 @@ impl Default for Lighting {
             fog: [0.62, 0.7, 0.8],
             fog_density: 0.0,
             shadows: Shadows::default(),
+            occlusion: AmbientOcclusion::default(),
         }
     }
 }

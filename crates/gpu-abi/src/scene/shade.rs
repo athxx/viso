@@ -32,6 +32,9 @@ pub struct MeshFragment {
     /// The unit normal's change one pixel right and one pixel down.
     pub normal_dx: [f32; 3],
     pub normal_dy: [f32; 3],
+    /// Where on the target it is, in pixels from the top left: a pixel's
+    /// centre is at `+ 0.5`.
+    pub pixel: [f32; 2],
 }
 
 /// The irradiance over π at unit normal `n` of an environment whose nine
@@ -299,7 +302,8 @@ pub fn shade_depth(
 /// - lit: Lambert diffuse and a GGX specular lobe (Smith height-correlated
 ///   visibility, Schlick Fresnel) from the light; the environment's
 ///   spherical-harmonic irradiance and prefiltered reflection, occluded by
-///   the occlusion map; emission; then exposure and tone mapping;
+///   the occlusion map and the view's ambient occlusion; emission; then
+///   exposure and tone mapping;
 /// - unlit: the color as is;
 /// - sprite: the color as is, covering a disc across `uv`;
 ///
@@ -370,7 +374,19 @@ pub fn shade_mesh(
             let mr = sample(1);
             let metallic = (params[0] * mr[2]).clamp(0.0, 1.0);
             let roughness = (params[1] * mr[1]).clamp(0.045, 1.0);
-            let occlusion = 1.0 + params[3] * (sample(3)[0] - 1.0);
+            // The occlusion map's, and the view's ambient occlusion where
+            // this pixel is.
+            let screen = tex.sample(
+                7,
+                [
+                    f.pixel[0] * frame.occlusion[1],
+                    f.pixel[1] * frame.occlusion[2],
+                ],
+                [0.0; 2],
+                [0.0; 2],
+            );
+            let ambient_occlusion = 1.0 - frame.occlusion[0] * (1.0 - screen[0]);
+            let occlusion = (1.0 + params[3] * (sample(3)[0] - 1.0)) * ambient_occlusion;
             let glow = sample(4);
             let emissive: [f32; 3] = core::array::from_fn(|i| glow[i] * material.emissive[i]);
 

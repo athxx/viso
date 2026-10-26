@@ -1104,6 +1104,7 @@ static SCENE_FRAME: &[IrField] = &[
     IrField::array("sh", IrType::F32X4, 9),
     IrField::array("shadow", IrType::F32X4, 12),
     IrField::new("shadow_params", IrType::F32X4),
+    IrField::new("occlusion", IrType::F32X4),
 ];
 
 /// A scene mesh's vertex: `viso_gpu_abi::scene::SceneVertex`.
@@ -1217,6 +1218,10 @@ static SCENE_MESH_BINDINGS: SceneBindings = SceneBindings {
             name: "shadow_tex",
             sampler: 2,
         },
+        IrTexture {
+            name: "ao_tex",
+            sampler: 1,
+        },
     ],
     samplers: &["material_samp", "linear_samp", "point_samp"],
 };
@@ -1284,6 +1289,47 @@ static SCENE_SKY_BINDINGS: SceneBindings = SceneBindings {
     blocks: &[SCENE_SKY],
     textures: &[],
     samplers: &[],
+};
+
+/// The ambient occlusion passes' uniform block, `ao`:
+/// `viso_gpu_abi::scene::AoUniforms`, its column-major inverse
+/// view-projection as four columns.
+const SCENE_AO: IrBlock = IrBlock {
+    name: "ao",
+    struct_name: "AoBlock",
+    fields: &[
+        IrField::new("inv_view_proj0", IrType::F32X4),
+        IrField::new("inv_view_proj1", IrType::F32X4),
+        IrField::new("inv_view_proj2", IrType::F32X4),
+        IrField::new("inv_view_proj3", IrType::F32X4),
+        IrField::new("params", IrType::F32X4),
+        IrField::new("texel", IrType::F32X4),
+        IrField::new("step", IrType::F32X4),
+    ],
+};
+
+/// A texture slot an occlusion pass binds but does not read.
+const fn unread(name: &'static str) -> IrTexture {
+    IrTexture { name, sampler: 0 }
+}
+
+/// The occlusion passes' resources past the frame's: their block, and
+/// what they read in texture slot 6 through the nearest sampler.
+static SCENE_AO_BINDINGS: SceneBindings = SceneBindings {
+    blocks: &[SCENE_AO],
+    textures: &[
+        unread("unread0"),
+        unread("unread1"),
+        unread("unread2"),
+        unread("unread3"),
+        unread("unread4"),
+        unread("unread5"),
+        IrTexture {
+            name: "depth_tex",
+            sampler: 2,
+        },
+    ],
+    samplers: &["unread_samp0", "unread_samp1", "point_samp"],
 };
 
 /// A scene program over vertices `attributes`.
@@ -1385,14 +1431,46 @@ pub fn scene_sky_ir() -> ShaderIr {
     )
 }
 
+/// The ambient occlusion of a view
+/// (`viso_gpu_abi::scene::SceneProgram::Ao`): a triangle over the
+/// occlusion target, each fragment the hemisphere taps about the surface
+/// the view's depth holds there, as `viso_gpu_abi::scene::shade_ao`
+/// computes them.
+pub fn scene_ao_ir() -> ShaderIr {
+    scene_program(
+        SCENE_ATTRS,
+        SCENE_SCREEN_VARYINGS,
+        &SCENE_AO_BINDINGS,
+        SCENE_SCREEN_VERTEX_BODY,
+        SCENE_AO_HELPERS,
+        SCENE_AO_FRAGMENT_BODY,
+    )
+}
+
+/// One axis of the depth-aware blur of the ambient occlusion
+/// (`viso_gpu_abi::scene::SceneProgram::AoBlur`), as
+/// `viso_gpu_abi::scene::shade_ao_blur` computes it.
+pub fn scene_ao_blur_ir() -> ShaderIr {
+    scene_program(
+        SCENE_ATTRS,
+        SCENE_SCREEN_VARYINGS,
+        &SCENE_AO_BINDINGS,
+        SCENE_SCREEN_VERTEX_BODY,
+        "",
+        SCENE_AO_BLUR_FRAGMENT_BODY,
+    )
+}
+
 /// The scene lane's programs past its mesh program (the [`PrimitiveKind::Scene`]
 /// built-in), in `viso_gpu_abi::scene::SceneProgram` order from code 1.
-pub fn scene_program_irs() -> [ShaderIr; 4] {
+pub fn scene_program_irs() -> [ShaderIr; 6] {
     [
         scene_depth_ir(),
         scene_skinned_ir(),
         scene_skinned_depth_ir(),
         scene_sky_ir(),
+        scene_ao_ir(),
+        scene_ao_blur_ir(),
     ]
 }
 
@@ -2839,6 +2917,167 @@ if (sun.w > 0.0 && facing > 0.0) {
 float3 m = tonemap(c * float4(u.camera).w);
 return float4(clamp(m, 0.0, 1.0), 1.0);";
 
+const SCENE_AO_HELPERS: &str = "\
+// The depth a packed texel holds: 24 bits, the most significant byte in red.
+static inline float unpack_depth(float4 t) {
+    float3 b = floor(t.xyz * 255.0 + 0.5);
+    return (b.x * 65536.0 + b.y * 256.0 + b.z) / 16777215.0;
+}
+
+// The world point at clip-space `ndc` and depth `z`, by the four columns of
+// the inverse view-projection.
+static inline float3 unproject(float4 i0, float4 i1, float4 i2, float4 i3, float2 ndc, float z) {
+    float4 p = i0 * ndc.x + i1 * ndc.y + i2 * z + i3;
+    return p.xyz / p.w;
+}
+
+// Smoothstep over [0, 1].
+static inline float ramp(float t) {
+    float c = clamp(t, 0.0, 1.0);
+    return c * c * (3.0 - 2.0 * c);
+}";
+
+const SCENE_AO_FRAGMENT_BODY: &str = "\
+float4 i0 = float4(ao.inv_view_proj0);
+float4 i1 = float4(ao.inv_view_proj1);
+float4 i2 = float4(ao.inv_view_proj2);
+float4 i3 = float4(ao.inv_view_proj3);
+float3 eye = float4(u.camera).xyz;
+float2 ndc = in.ndc;
+float2 uv = float2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+float z = 1.0 - unpack_depth(depth_tex.sample(point_samp, uv, gradient2d(float2(0.0), float2(0.0))));
+if (z <= 0.0) {
+    return float4(1.0, 0.0, 0.0, 1.0);
+}
+float3 p = unproject(i0, i1, i2, i3, ndc, z);
+float d = length(p - eye);
+
+// The neighbours' points, each axis's slope from the side nearer in depth.
+float4 texel = float4(ao.texel);
+float2 ul = uv + float2(-texel.x, 0.0);
+float2 ur = uv + float2(texel.x, 0.0);
+float2 uu = uv + float2(0.0, -texel.y);
+float2 ud = uv + float2(0.0, texel.y);
+float zl = 1.0 - unpack_depth(depth_tex.sample(point_samp, ul, gradient2d(float2(0.0), float2(0.0))));
+float zr = 1.0 - unpack_depth(depth_tex.sample(point_samp, ur, gradient2d(float2(0.0), float2(0.0))));
+float zu = 1.0 - unpack_depth(depth_tex.sample(point_samp, uu, gradient2d(float2(0.0), float2(0.0))));
+float zd = 1.0 - unpack_depth(depth_tex.sample(point_samp, ud, gradient2d(float2(0.0), float2(0.0))));
+float3 pl = float3(0.0);
+float3 pr = float3(0.0);
+float3 pu = float3(0.0);
+float3 pd = float3(0.0);
+float dl = 0.0;
+float dr = 0.0;
+float du = 0.0;
+float dd = 0.0;
+if (zl > 0.0) {
+    pl = unproject(i0, i1, i2, i3, float2(ul.x * 2.0 - 1.0, 1.0 - ul.y * 2.0), zl);
+    dl = length(pl - eye);
+}
+if (zr > 0.0) {
+    pr = unproject(i0, i1, i2, i3, float2(ur.x * 2.0 - 1.0, 1.0 - ur.y * 2.0), zr);
+    dr = length(pr - eye);
+}
+if (zu > 0.0) {
+    pu = unproject(i0, i1, i2, i3, float2(uu.x * 2.0 - 1.0, 1.0 - uu.y * 2.0), zu);
+    du = length(pu - eye);
+}
+if (zd > 0.0) {
+    pd = unproject(i0, i1, i2, i3, float2(ud.x * 2.0 - 1.0, 1.0 - ud.y * 2.0), zd);
+    dd = length(pd - eye);
+}
+float3 ddx = pr - p;
+if (dr <= 0.0 || (dl > 0.0 && abs(dl - d) < abs(dr - d))) {
+    ddx = p - pl;
+}
+float3 ddy = pd - p;
+if (dd <= 0.0 || (du > 0.0 && abs(du - d) < abs(dd - d))) {
+    ddy = p - pu;
+}
+float3 to_eye = eye - p;
+float3 n = cross(ddx, ddy);
+if (length(n) < 0.000000000001) {
+    n = to_eye;
+}
+n = normalize(n);
+if (dot(n, to_eye) < 0.0) {
+    n = -n;
+}
+float3 up = float3(0.0, 1.0, 0.0);
+if (abs(n.y) > 0.9) {
+    up = float3(1.0, 0.0, 0.0);
+}
+float3 t = normalize(cross(up, n));
+float3 b = cross(n, t);
+
+// Interleaved gradient noise of the texel turns the spiral.
+float px = floor(uv.x * texel.z);
+float py = floor(uv.y * texel.w);
+float inner = 0.06711056 * px + 0.00583715 * py;
+float outer = 52.9829189 * (inner - floor(inner));
+float rot = (outer - floor(outer)) * 6.2831853;
+float4 params = float4(ao.params);
+float radius = params.x;
+float bias = params.y + d * params.z;
+float occ = 0.0;
+for (int k = 0; k < 12; ++k) {
+    float kf = float(k);
+    float fi = (kf + 0.5) / 12.0;
+    float ang = kf * 2.3999632 + rot;
+    float zt = 0.18 + 0.74 * fi;
+    float r = sqrt(max(1.0 - zt * zt, 0.0));
+    float reach = (0.2 + 0.8 * fi * fi) * radius;
+    float3 s = p + (t * (cos(ang) * r) + b * (sin(ang) * r) + n * zt) * reach;
+    float4 c = float4(u.view_proj0) * s.x + float4(u.view_proj1) * s.y
+        + float4(u.view_proj2) * s.z + float4(u.view_proj3);
+    if (c.w > 0.0) {
+        float2 su = float2(c.x / c.w * 0.5 + 0.5, 0.5 - c.y / c.w * 0.5);
+        if (su.x > 0.0 && su.x < 1.0 && su.y > 0.0 && su.y < 1.0) {
+            float sz = 1.0 - unpack_depth(depth_tex.sample(point_samp, su, gradient2d(float2(0.0), float2(0.0))));
+            if (sz > 0.0) {
+                float3 q = unproject(i0, i1, i2, i3, float2(su.x * 2.0 - 1.0, 1.0 - su.y * 2.0), sz);
+                float sd = length(q - eye);
+                float ahead = length(s - eye) - sd;
+                float range = 1.0 - ramp((abs(d - sd) - radius) / (radius * 2.0 - radius));
+                occ = occ + ramp((ahead - bias) / (bias * 2.0 - bias)) * range;
+            }
+        }
+    }
+}
+
+// The occlusion, and the distance in sixteen bits for the blur.
+float a = clamp(1.0 - occ / 12.0, 0.0, 1.0);
+float e = clamp(log2(1.0 + d) / 16.0, 0.0, 1.0);
+float v = floor(e * 65535.0);
+float hi = floor(v / 256.0);
+float lo = v - hi * 256.0;
+return float4(a, hi / 255.0, lo / 255.0, 1.0);";
+
+const SCENE_AO_BLUR_FRAGMENT_BODY: &str = "\
+float2 ndc = in.ndc;
+float2 uv = float2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+float4 c = depth_tex.sample(point_samp, uv, gradient2d(float2(0.0), float2(0.0)));
+float d = exp2((floor(c.y * 255.0 + 0.5) * 256.0 + floor(c.z * 255.0 + 0.5)) / 65535.0 * 16.0) - 1.0;
+if (d <= 0.0) {
+    return float4(c.x, c.y, c.z, 1.0);
+}
+float sigma = 0.03 * d + 0.02;
+float4 st = float4(ao.step);
+float sum = 0.0;
+float weight = 0.0;
+for (int k = 0; k < 9; ++k) {
+    float kf = float(k) - 4.0;
+    float4 s = depth_tex.sample(point_samp, uv + st.xy * kf, gradient2d(float2(0.0), float2(0.0)));
+    float sd = exp2((floor(s.y * 255.0 + 0.5) * 256.0 + floor(s.z * 255.0 + 0.5)) / 65535.0 * 16.0) - 1.0;
+    float dz = (sd - d) / sigma;
+    if (sd > 0.0) {
+        float w = exp(-kf * kf * 0.1033) * exp(-dz * dz);
+        sum = sum + s.x * w;
+        weight = weight + w;
+    }
+}
+return float4(sum / max(weight, 0.0001), c.y, c.z, 1.0);";
+
 const SCENE_HELPERS: &str = "\
 // The GGX distribution of microfacet normals at `nh`, for roughness squared
 // squared `a2`.
@@ -2977,7 +3216,13 @@ if (mode.x > 1.5) {
     float4 mr = mr_tex.sample(material_samp, in.uv, gradient2d(uv_dx, uv_dy));
     float metallic = clamp(params.x * mr.z, 0.0, 1.0);
     float roughness = clamp(params.y * mr.y, 0.045, 1.0);
-    float occlusion = 1.0 + params.w * (occlusion_tex.sample(material_samp, in.uv, gradient2d(uv_dx, uv_dy)).x - 1.0);
+    // The occlusion map's, and the view's ambient occlusion where this
+    // pixel is.
+    float4 occ_params = float4(u.occlusion);
+    float screen_ao = ao_tex.sample(linear_samp, float2(in.position.x * occ_params.y, in.position.y * occ_params.z),
+        gradient2d(float2(0.0), float2(0.0))).x;
+    float occlusion = (1.0 + params.w * (occlusion_tex.sample(material_samp, in.uv, gradient2d(uv_dx, uv_dy)).x - 1.0))
+        * (1.0 - occ_params.x * (1.0 - screen_ao));
     float3 emissive = emissive_tex.sample(material_samp, in.uv, gradient2d(uv_dx, uv_dy)).xyz * float4(material.emissive).xyz;
 
     float3 f0 = float3(0.04) + (c - float3(0.04)) * metallic;

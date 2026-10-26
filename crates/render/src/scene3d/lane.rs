@@ -7,8 +7,9 @@ use std::sync::Arc;
 use viso_gpu::backend::{DepthAttachment, DrawCommand, Geometry, IndexFormat, InlineUniforms};
 use viso_gpu::backend::{RenderPass, RenderTarget};
 use viso_gpu::scene::{
-    Alpha, ENV_HEIGHT, ENV_WIDTH, FrameUniforms, MATERIAL_DOUBLE_SIDED, MATERIAL_NORMAL_MAP,
-    MAX_JOINTS, SHADOW_CASCADES, SceneProgram, Shading, SkinnedVertex, SkyUniforms,
+    Alpha, AoUniforms, ENV_HEIGHT, ENV_WIDTH, FrameUniforms, MATERIAL_DOUBLE_SIDED,
+    MATERIAL_NORMAL_MAP, MAX_JOINTS, SHADOW_CASCADES, SceneProgram, Shading, SkinnedVertex,
+    SkyUniforms,
 };
 use viso_gpu::{
     AddressMode, BindGroupDesc, BindGroupId, Binding, BlendMode, BufferDesc, BufferId, BufferUsage,
@@ -17,6 +18,7 @@ use viso_gpu::{
 };
 use viso_shader::scene_program_code;
 
+use super::occlusion::BIAS_PER_DISTANCE;
 use super::shadow::{self, Cascade};
 use super::{AlphaMode, Bounds, Environment, Frustum, Material, MaterialId, MaterialUniforms};
 use super::{MeshId, SceneFrame, SceneInstance, SceneVertex, Shape, fit_view};
@@ -84,6 +86,9 @@ pub struct SceneStats {
     pub shadow_passes: u32,
     /// Instanced draws of shadow casters, across all cascades.
     pub shadow_draws: u32,
+    /// Ambient occlusion rendered, one per filled scene with it: each its
+    /// depth, occlusion and two blur passes.
+    pub occlusion_passes: u32,
 }
 
 /// A mesh on the device.
@@ -187,6 +192,21 @@ struct ShadowDraw {
     skin: Option<u32>,
 }
 
+/// A slot's ambient occlusion targets, half its targets' size: the view's
+/// packed depth and the depth it is drawn against, the occlusion and the
+/// blur's intermediate, and the three passes' bind groups over them.
+#[derive(Debug, Clone, Copy)]
+struct OcclusionTargets {
+    view_depth: TextureId,
+    depth: TextureId,
+    /// The occlusion, blurred into it last: what the meshes sample.
+    occlusion: TextureId,
+    across: TextureId,
+    size: [u32; 2],
+    /// The occlusion pass's group, then the two blur passes'.
+    groups: [BindGroupId; 3],
+}
+
 /// A caster of a fill.
 #[derive(Debug, Clone, Copy)]
 struct Caster {
@@ -231,8 +251,9 @@ struct Slot {
     /// Each material's bind group, by [`MaterialId::index`], with the
     /// material's generation.
     groups: Vec<Option<(u32, BindGroupId)>>,
-    /// The environment atlas and the shadow atlas the groups bind.
-    bound: Option<[TextureId; 2]>,
+    /// The environment atlas, the shadow atlas and the ambient occlusion
+    /// the groups bind.
+    bound: Option<[TextureId; 3]>,
     draws: Vec<Draw>,
     shadow: Option<ShadowTargets>,
     /// Each cascade's frame uniform block, for its casters' draws.
@@ -256,6 +277,11 @@ struct Slot {
     opaque: usize,
     /// The sky's uniform block and bind group, while the frame has a sky.
     sky: Option<(BufferId, BindGroupId)>,
+    /// The ambient occlusion's targets, while the frame has it.
+    occlusion: Option<OcclusionTargets>,
+    /// The occlusion passes' uniform blocks: the occlusion and the blur
+    /// across, then the blur down.
+    occlusion_blocks: Option<[BufferId; 2]>,
     /// The frame has a sky.
     sky_drawn: bool,
 }
@@ -271,6 +297,8 @@ pub(crate) struct SceneLane {
     depth_pipelines: [Option<PipelineId>; 2],
     /// The sky program's pipeline.
     sky_pipeline: Option<PipelineId>,
+    /// The occlusion program's and the occlusion blur's pipelines.
+    ao_pipelines: [Option<PipelineId>; 2],
     meshes: Vec<Option<GpuMesh>>,
     /// Uploaded mesh ids free for reuse.
     free: Vec<u32>,
@@ -341,6 +369,12 @@ impl SceneLane {
         }
         if let Some((buffer, group)) = state.sky {
             backend.destroy_bind_group(group);
+            backend.destroy_buffer(buffer);
+        }
+        if let Some(targets) = state.occlusion {
+            release_occlusion(backend, targets);
+        }
+        for buffer in state.occlusion_blocks.into_iter().flatten() {
             backend.destroy_buffer(buffer);
         }
         for buffer in state
@@ -1192,16 +1226,6 @@ impl SceneLane {
             }
         };
         let shared = self.shared(backend);
-        let bound = [env_texture, shadow_texture.unwrap_or(shared.white)];
-        if slot.bound != Some(bound) {
-            for (_, group) in slot.groups.iter_mut().filter_map(Option::take) {
-                backend.destroy_bind_group(group);
-            }
-            for (_, _, group) in slot.skin_groups.iter_mut().filter_map(Option::take) {
-                backend.destroy_bind_group(group);
-            }
-            slot.bound = Some(bound);
-        }
         let new_frame = |backend: &mut B, label| {
             backend.create_buffer(&BufferDesc {
                 size: FrameUniforms::SIZE,
@@ -1213,6 +1237,105 @@ impl SceneLane {
             Some(buffer) => buffer,
             None => *slot.uniforms.insert(new_frame(backend, "scene-frame")),
         };
+        // The ambient occlusion: half the targets' size, made while an
+        // opaque lit mesh is drawn, let go of otherwise.
+        let occlusion = lighting.occlusion;
+        let occluding = occlusion.strength > 0.0
+            && draws[..opaque]
+                .iter()
+                .any(|d| self.material(d.material).1.lit);
+        let ao_size = size.map(|n| (n / 2).max(1));
+        if slot
+            .occlusion
+            .is_some_and(|t| !occluding || t.size != ao_size)
+        {
+            let old = slot.occlusion.take().expect("checked");
+            release_occlusion(backend, old);
+        }
+        if occluding {
+            let blocks = *slot.occlusion_blocks.get_or_insert_with(|| {
+                [0, 1].map(|_| {
+                    backend.create_buffer(&BufferDesc {
+                        size: AoUniforms::SIZE,
+                        usage: BufferUsage::UNIFORM | BufferUsage::CPU_WRITE,
+                        label: "scene-occlusion",
+                    })
+                })
+            });
+            if slot.occlusion.is_none() {
+                let texture = |backend: &mut B, format, label| {
+                    backend.create_texture(&TextureDesc {
+                        width: ao_size[0],
+                        height: ao_size[1],
+                        format,
+                        render_target: true,
+                        label,
+                    })
+                };
+                let view_depth = texture(backend, SHADOW_FORMAT, "scene-view-depth");
+                let depth = texture(
+                    backend,
+                    TextureFormat::Depth32Float,
+                    "scene-occlusion-depth",
+                );
+                let occlusion = texture(backend, SHADOW_FORMAT, "scene-occlusion");
+                let across = texture(backend, SHADOW_FORMAT, "scene-occlusion-across");
+                let group = |backend: &mut B, block: BufferId, read: TextureId| {
+                    let mut bindings = vec![
+                        Binding::Uniform(frame_buffer),
+                        Binding::Uniform(block),
+                        Binding::Uniform(shared.spare),
+                    ];
+                    bindings.extend([Binding::Texture(shared.white); 6]);
+                    bindings.extend([
+                        Binding::Texture(read),
+                        Binding::Texture(shared.white),
+                        Binding::Sampler(shared.linear),
+                        Binding::Sampler(shared.linear),
+                        Binding::Sampler(shared.point),
+                    ]);
+                    backend.create_bind_group(&BindGroupDesc {
+                        label: "scene-occlusion",
+                        bindings,
+                    })
+                };
+                let groups = [
+                    group(backend, blocks[0], view_depth),
+                    group(backend, blocks[0], occlusion),
+                    group(backend, blocks[1], across),
+                ];
+                slot.occlusion = Some(OcclusionTargets {
+                    view_depth,
+                    depth,
+                    occlusion,
+                    across,
+                    size: ao_size,
+                    groups,
+                });
+            }
+            for k in 0..2 {
+                self.ao_pipelines[k].get_or_insert_with(|| ao_pipeline(backend, k == 1));
+            }
+            for d in &draws[..opaque] {
+                let skinned = d.skin.is_some();
+                self.depth_pipelines[usize::from(skinned)]
+                    .get_or_insert_with(|| depth_pipeline(backend, skinned));
+            }
+        }
+        let bound = [
+            env_texture,
+            shadow_texture.unwrap_or(shared.white),
+            slot.occlusion.map_or(shared.white, |t| t.occlusion),
+        ];
+        if slot.bound != Some(bound) {
+            for (_, group) in slot.groups.iter_mut().filter_map(Option::take) {
+                backend.destroy_bind_group(group);
+            }
+            for (_, _, group) in slot.skin_groups.iter_mut().filter_map(Option::take) {
+                backend.destroy_bind_group(group);
+            }
+            slot.bound = Some(bound);
+        }
         let fitted = fit_view(&view_proj, used, size);
         let mut uniforms = slot.frame.uniforms(&fitted, &env.sh);
         let mut bytes = [0u8; FrameUniforms::SIZE];
@@ -1232,6 +1355,35 @@ impl SceneLane {
                 backend.write_buffer(buffer, 0, &bytes);
             }
             uniforms.shadow_params = [shadows.strength.min(1.0), 1.0 / *tile as f32, 0.0, 0.0];
+        }
+        if let (Some(targets), Some(blocks)) = (slot.occlusion, slot.occlusion_blocks) {
+            uniforms.occlusion = [
+                occlusion.strength.min(1.0),
+                1.0 / size[0] as f32,
+                1.0 / size[1] as f32,
+                0.0,
+            ];
+            let [w, h] = targets.size.map(|n| n as f32);
+            let mut block = AoUniforms {
+                inv_view_proj: fitted.invert().v,
+                // The bias grows with distance at least as fast as a texel's
+                // footprint, so a far surface seen at a grazing angle never
+                // occludes itself between texels.
+                params: [
+                    occlusion.radius.max(1e-6),
+                    occlusion.bias.max(1e-6),
+                    BIAS_PER_DISTANCE.max(slot.frame.camera.pixel_at(1.0, targets.size[1]) * 0.5),
+                    0.0,
+                ],
+                texel: [1.0 / w, 1.0 / h, w, h],
+                step: [1.0 / w, 0.0, 0.0, 0.0],
+            };
+            let mut ao_bytes = [0u8; AoUniforms::SIZE];
+            block.write_to(&mut ao_bytes);
+            backend.write_buffer(blocks[0], 0, &ao_bytes);
+            block.step = [0.0, 1.0 / h, 0.0, 0.0];
+            block.write_to(&mut ao_bytes);
+            backend.write_buffer(blocks[1], 0, &ao_bytes);
         }
         uniforms.write_to(&mut bytes);
         backend.write_buffer(frame_buffer, 0, &bytes);
@@ -1289,7 +1441,7 @@ impl SceneLane {
             bindings.extend([
                 Binding::Texture(bound[0]),
                 Binding::Texture(bound[1]),
-                Binding::Texture(shared.white),
+                Binding::Texture(bound[2]),
                 Binding::Sampler(gpu.sampler),
                 Binding::Sampler(shared.linear),
                 Binding::Sampler(shared.point),
@@ -1490,6 +1642,87 @@ impl SceneLane {
                 });
                 self.stats.shadow_passes += 1;
             }
+            // The ambient occlusion: the view's depth of the opaque draws,
+            // its occlusion, then the blur across and down.
+            if let (Some(ao), [Some(raw), Some(blur)], Some(shared)) =
+                (slot.occlusion, self.ao_pipelines, self.shared)
+            {
+                let scissor = Some((
+                    slot.used[0].div_ceil(2).min(ao.size[0]),
+                    slot.used[1].div_ceil(2).min(ao.size[1]),
+                ))
+                .map(|(w, h)| (0, 0, w, h));
+                let pass = |target, clear, first: u32, count: u32| RenderPass {
+                    target: RenderTarget::Texture(target),
+                    load: LoadOp::Clear(clear),
+                    depth: Some(DepthAttachment {
+                        texture: ao.depth,
+                        clear: 0.0,
+                    }),
+                    first_command: first,
+                    command_count: count,
+                };
+                let first_command = commands.len() as u32;
+                for draw in &slot.draws[..slot.opaque.min(slot.draws.len())] {
+                    let Some(Some(mesh)) = self.meshes.get(draw.mesh.index()) else {
+                        continue;
+                    };
+                    let group = match draw.skin {
+                        Some(k) => slot
+                            .skin_groups
+                            .get(k as usize)
+                            .copied()
+                            .flatten()
+                            .map(|(_, _, g)| g),
+                        None => slot
+                            .groups
+                            .get(draw.material.index())
+                            .copied()
+                            .flatten()
+                            .map(|(_, g)| g),
+                    };
+                    let (Some(group), Some(pipeline)) = (
+                        group,
+                        self.depth_pipelines[usize::from(draw.skin.is_some())],
+                    ) else {
+                        continue;
+                    };
+                    let (geometry, instance_offset) = instanced(mesh, draw.first, draw.count);
+                    commands.push(DrawCommand {
+                        pipeline,
+                        bind_group: Some(group),
+                        geometry,
+                        instance_buffer: instances,
+                        instance_offset,
+                        uniforms: InlineUniforms::EMPTY,
+                        scissor,
+                    });
+                }
+                passes.push(pass(
+                    ao.view_depth,
+                    [1.0; 4],
+                    first_command,
+                    commands.len() as u32 - first_command,
+                ));
+                let (geometry, instance_offset) = instanced(&shared.screen, 0, 1);
+                for (k, (pipeline, target)) in
+                    [(raw, ao.occlusion), (blur, ao.across), (blur, ao.occlusion)]
+                        .into_iter()
+                        .enumerate()
+                {
+                    passes.push(pass(target, [1.0, 0.0, 0.0, 1.0], commands.len() as u32, 1));
+                    commands.push(DrawCommand {
+                        pipeline,
+                        bind_group: Some(ao.groups[k]),
+                        geometry,
+                        instance_buffer: instances,
+                        instance_offset,
+                        uniforms: InlineUniforms::EMPTY,
+                        scissor,
+                    });
+                }
+                self.stats.occlusion_passes += 1;
+            }
             let first_command = commands.len() as u32;
             let sky = match (slot.sky, self.sky_pipeline, self.shared) {
                 (Some((_, group)), Some(pipeline), Some(shared)) if slot.sky_drawn => {
@@ -1602,6 +1835,55 @@ fn mesh_pipeline<B: GpuBackend>(
             depth: Some(depth),
             cull,
             blend,
+            instance_schema: program.vertex_schema(),
+        },
+    )
+}
+
+/// Destroy a slot's ambient occlusion targets and their groups.
+fn release_occlusion<B: GpuBackend>(backend: &mut B, targets: OcclusionTargets) {
+    for group in targets.groups {
+        backend.destroy_bind_group(group);
+    }
+    for texture in [
+        targets.view_depth,
+        targets.depth,
+        targets.occlusion,
+        targets.across,
+    ] {
+        backend.destroy_texture(texture);
+    }
+}
+
+/// The occlusion program's pipeline, or the occlusion blur's when `blur`:
+/// over the whole occlusion target, depth neither tested nor written.
+fn ao_pipeline<B: GpuBackend>(backend: &mut B, blur: bool) -> PipelineId {
+    let program = if blur {
+        SceneProgram::AoBlur
+    } else {
+        SceneProgram::Ao
+    };
+    scene_pipeline(
+        backend,
+        &PipelineDesc {
+            label: if blur {
+                "scene-occlusion-blur"
+            } else {
+                "scene-occlusion"
+            },
+            builtin: BuiltinShader::Scene,
+            variant: program as u32,
+            code: scene_program_code(program, B::SHADER_LANG),
+            vertex_entry: "vertex_main",
+            fragment_entry: "fragment_main",
+            color_format: SHADOW_FORMAT,
+            depth: Some(DepthState {
+                format: TextureFormat::Depth32Float,
+                compare: CompareFunction::Always,
+                write: false,
+            }),
+            cull: CullMode::None,
+            blend: BlendMode::Replace,
             instance_schema: program.vertex_schema(),
         },
     )

@@ -5,7 +5,9 @@
 use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle, SurfaceId};
 use viso_math::{LinearStraight, Mat4, Quat, Vec3, vec3};
 use viso_render::scene3d::model::{ModelAsset, Pose};
-use viso_render::scene3d::{Camera, SceneFrame, SceneModel, Shape, instance};
+use viso_render::scene3d::{
+    AmbientOcclusion, Camera, Lighting, SceneFrame, SceneModel, Shape, Sky, instance,
+};
 use viso_render::{Primitive, Rect, Renderer, SceneDraw, SceneSlot};
 
 const SLOT: SceneSlot = SceneSlot(0);
@@ -181,13 +183,30 @@ fn sample_models_draw() {
             ),
         );
         frame.lighting.direction = vec3(-0.6, 0.8, 0.35);
-        let px = kit.present(&mut frame, 1);
-        let image = viso_image::snapshot::Image::from_bgra8(640, 480, &px);
+        // Occlusion at the model's scale.
+        frame.lighting.occlusion = AmbientOcclusion {
+            radius: radius * 0.15,
+            bias: radius * 0.004,
+            ..AmbientOcclusion::default()
+        };
         let name = path.file_stem().unwrap().to_string_lossy().into_owned();
-        std::fs::write(
-            std::path::Path::new(&out).join(format!("{name}.png")),
-            image.to_png(),
-        )
-        .unwrap();
+        let shot = |kit: &mut Kit, frame: &mut SceneFrame, revision, file: String| {
+            let px = kit.present(frame, revision);
+            let image = viso_image::snapshot::Image::from_bgra8(640, 480, &px);
+            std::fs::write(std::path::Path::new(&out).join(file), image.to_png()).unwrap();
+        };
+        // And under an afternoon sun's sky, lit by the sun.
+        let sky = Sky {
+            sun: vec3(-0.6, 0.45, 0.35),
+            ..Sky::default()
+        };
+        let mut sky_frame = frame.clone();
+        sky_frame.lighting = Lighting {
+            occlusion: frame.lighting.occlusion,
+            ..Lighting::sunlit(&sky)
+        };
+        sky_frame.sky = Some(sky);
+        shot(&mut kit, &mut frame, 1, format!("{name}.png"));
+        shot(&mut kit, &mut sky_frame, 2, format!("{name}-sky.png"));
     }
 }
