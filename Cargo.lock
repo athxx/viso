@@ -3282,6 +3282,7 @@ dependencies = [
 name = "viso-map"
 version = "0.0.0"
 dependencies = [
+ "criterion",
  "miniz_oxide",
  "viso",
  "viso-ende",

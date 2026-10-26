@@ -723,10 +723,10 @@ impl Component for MapView {
             s.store.add_structure_hook(
                 [wake, cells.lon, cells.lat, cells.zoom, cells.bearing],
                 move |s, _| {
-                    let told = match hook_core.try_borrow_mut() {
+                    let told = probe::around(|| match hook_core.try_borrow_mut() {
                         Ok(mut core) => core.apply(s),
                         Err(_) => None,
-                    };
+                    });
                     if let (Some(Told::Settled(camera)), Some(f)) = (told, &on_viewport) {
                         f(s.states, &camera);
                     }
@@ -760,7 +760,7 @@ impl Component for MapView {
             if ev.phase() == DispatchPhase::Capture {
                 return;
             }
-            pointer(ev, &pc, &mut hand.borrow_mut(), &handlers);
+            probe::around(|| pointer(ev, &pc, &mut hand.borrow_mut(), &handlers));
         });
         let kc = Rc::clone(&core);
         cx.on_key(root, move |ev| {
@@ -768,6 +768,35 @@ impl Component for MapView {
                 ev.stop_propagation();
             }
         });
+    }
+}
+
+/// A test's view into the view's own per-frame work: a function told as
+/// the structure hook and the pointer handler start (`true`) and end
+/// (`false`), so a counting allocator can arm around just them.
+#[doc(hidden)]
+pub mod probe {
+    use std::cell::Cell;
+
+    thread_local! {
+        static AROUND: Cell<Option<fn(bool)>> = const { Cell::new(None) };
+    }
+
+    /// Calls `f` around the view's work from now on, or nothing with `None`.
+    pub fn set(f: Option<fn(bool)>) {
+        AROUND.with(|a| a.set(f));
+    }
+
+    pub(crate) fn around<R>(work: impl FnOnce() -> R) -> R {
+        match AROUND.with(Cell::get) {
+            Some(f) => {
+                f(true);
+                let r = work();
+                f(false);
+                r
+            }
+            None => work(),
+        }
     }
 }
 
