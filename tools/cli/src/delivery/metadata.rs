@@ -12,6 +12,7 @@ use viso_package::windows::msix;
 use viso_package::{Access, Links, Orientations};
 use viso_project::{ConfigCode, ConfigDiagnostic, Orientation, Permission, Project};
 
+use super::fragments::Fragments;
 use super::{Platform, icon};
 
 /// The icon a package is drawn from.
@@ -117,6 +118,7 @@ impl Metadata {
             orientations: self.orientations(),
             usage: self.access(),
             links: self.links.clone(),
+            fragments: Vec::new(),
         }
     }
 
@@ -219,6 +221,9 @@ pub(crate) struct Declared {
     pub(crate) usage: Vec<(Access, String)>,
     /// The URLs that open it.
     pub(crate) links: Links,
+    /// What the packages it links declare for its platform; none until
+    /// they are read.
+    pub(crate) fragments: Fragments,
 }
 
 impl Declared {
@@ -238,6 +243,7 @@ pub(crate) fn declared(project: &Project) -> Declared {
             .map(|(p, reason)| (access(p.value), reason.value.clone()))
             .collect(),
         links: links(project),
+        fragments: Fragments::default(),
     }
 }
 
@@ -276,6 +282,7 @@ fn access(permission: Permission) -> Access {
         Permission::Contacts => Access::Contacts,
         Permission::Bluetooth => Access::Bluetooth,
         Permission::Notifications => Access::Notifications,
+        Permission::Biometrics => Access::Biometrics,
         Permission::Network => Access::Network,
     }
 }

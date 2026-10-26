@@ -154,8 +154,9 @@ pub fn manifest(manifest: &Manifest<'_>) -> String {
             Access::Microphone => devices.push_str("    <DeviceCapability Name=\"microphone\"/>\n"),
             Access::Location => devices.push_str("    <DeviceCapability Name=\"location\"/>\n"),
             Access::Bluetooth => devices.push_str("    <DeviceCapability Name=\"bluetooth\"/>\n"),
-            // A desktop app shows notifications without asking.
-            Access::Notifications | Access::Network => {}
+            // A desktop app shows notifications and asks Windows Hello
+            // without a capability.
+            Access::Notifications | Access::Biometrics | Access::Network => {}
         }
     }
     format!(

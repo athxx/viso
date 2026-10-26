@@ -49,13 +49,14 @@ use viso_dev_protocol::wire::{
     DEV_TOKEN_ENV, DEV_WINDOW_ENV, WindowGeometry,
 };
 use viso_package::android::{self, Abi, Sdk, Shell};
-use viso_package::{apple, web as bundle};
+use viso_package::{Fragment, apple, web as bundle};
 use viso_project::{DeviceProfile, Profile, Target};
 
 use crate::build::cargo::Package;
 use crate::build::{RustPlan, rust_plan};
 use crate::delivery::metadata::Declared;
 use crate::dev::build::{Stamp, stamp};
+use crate::dev::cargo::Linked;
 use crate::device::emulator::{self, Device};
 use crate::device::simulator;
 use crate::process::Launch;
@@ -388,11 +389,15 @@ impl Deploy {
                         let info = apple::Info {
                             usage: declared.usage.clone(),
                             links: declared.links.clone(),
+                            fragments: declared.fragments.info.clone(),
                             ..apple::Info::dev(bin)
                         };
                         let app = apple::bundle(exe, dir, &info, true)?;
-                        let hosts = &declared.links.hosts;
-                        apple::sign(&app.path, None, None, hosts, &dir.join("sign"))?;
+                        let entitlements = apple::Entitlements {
+                            hosts: &declared.links.hosts,
+                            fragments: &declared.fragments.entitlements,
+                        };
+                        apple::sign(&app.path, None, None, &entitlements, &dir.join("sign"))?;
                         Ok(app.path)
                     })),
                 }
@@ -423,6 +428,7 @@ impl Deploy {
                 // Two bundles in turn: the one the open pages run stays whole
                 // while the next is written.
                 let turn = std::sync::atomic::AtomicBool::new(false);
+                let worker = viso_package::fragment::worker(&declared.fragments.worker);
                 BuildPlan {
                     rust: rust_plan(Target::WebGpu, None, Profile::Dev, None),
                     package: Some(once_per_executable(move |exe, bin, dir| {
@@ -433,7 +439,7 @@ impl Deploy {
                         };
                         let out = dir.join(slot).join(bin);
                         bundle::bindgen(exe, &out, bin)?;
-                        bundle::write_index(&out, bin)?;
+                        bundle::write_index(&out, bin, worker.as_deref())?;
                         Ok(out)
                     })),
                 }
@@ -642,20 +648,24 @@ fn once_per_executable(
 }
 
 /// The Java shell of an app that links the packages in `linked`: the Java
-/// under each one's `android/java`, and the manifest template one of them
-/// carries.
-pub(crate) fn android_shell(linked: &[PathBuf]) -> Result<Shell, String> {
+/// under each one's `android/java`, the manifest template one of them
+/// carries, and the manifest `fragments` they carry.
+pub(crate) fn android_shell(linked: &[Linked], fragments: &[Fragment]) -> Result<Shell, String> {
     let java: Vec<PathBuf> = linked
         .iter()
-        .map(|dir| dir.join("android/java"))
+        .map(|package| package.dir.join("android/java"))
         .filter(|dir| dir.is_dir())
         .collect();
     let manifest = linked
         .iter()
-        .map(|dir| dir.join("android/AndroidManifest.xml"))
+        .map(|package| package.dir.join("android/AndroidManifest.xml"))
         .find(|path| path.is_file())
         .ok_or("no package the app links carries the Android shell (it comes with `viso`)")?;
-    Ok(Shell { java, manifest })
+    Ok(Shell {
+        java,
+        manifest,
+        fragments: fragments.to_vec(),
+    })
 }
 
 #[cfg(test)]
@@ -722,13 +732,22 @@ mod tests {
         std::fs::create_dir_all(platform.join("android/java")).unwrap();
         std::fs::create_dir_all(services.join("android/java")).unwrap();
         std::fs::write(platform.join("android/AndroidManifest.xml"), "<manifest/>").unwrap();
-        let shell = android_shell(&[dir.join("app"), platform.clone(), services.clone()]).unwrap();
+        let linked = |dirs: &[&PathBuf]| -> Vec<Linked> {
+            dirs.iter()
+                .map(|dir| Linked {
+                    name: dir.file_name().unwrap().to_string_lossy().into_owned(),
+                    dir: (*dir).clone(),
+                })
+                .collect()
+        };
+        let app = dir.join("app");
+        let shell = android_shell(&linked(&[&app, &platform, &services]), &[]).unwrap();
         assert_eq!(
             shell.java,
             vec![platform.join("android/java"), services.join("android/java")]
         );
         assert_eq!(shell.manifest, platform.join("android/AndroidManifest.xml"));
-        assert!(android_shell(&[dir.join("app")]).is_err());
+        assert!(android_shell(&linked(&[&app]), &[]).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

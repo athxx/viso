@@ -26,9 +26,19 @@ pub(crate) struct RustScope {
     /// The files beside them Cargo reads: the workspace's lock file, and each
     /// configuration and toolchain pin it looks for, existing or not.
     pub(crate) files: Vec<PathBuf>,
-    /// The directory of every package the app links, a registry or git one
-    /// as well: where a platform shell the app is packaged with is found.
-    pub(crate) linked: Vec<PathBuf>,
+    /// Every package the app links, a registry or git one as well, the
+    /// app's first: where the platform shell and fragments the app is
+    /// packaged with are found.
+    pub(crate) linked: Vec<Linked>,
+}
+
+/// A package the app links.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Linked {
+    /// Its name, as its manifest gives it.
+    pub(crate) name: String,
+    /// Its directory.
+    pub(crate) dir: PathBuf,
 }
 
 impl RustScope {
@@ -129,7 +139,14 @@ impl RustScope {
                 scope.packages.push(dir.to_owned());
             }
             if let Some(dir) = manifest_of(package).and_then(|m| Path::new(m).parent()) {
-                scope.linked.push(dir.to_owned());
+                scope.linked.push(Linked {
+                    name: package
+                        .get("name")
+                        .and_then(JsonValue::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    dir: dir.to_owned(),
+                });
             }
         }
         for package in packages {
@@ -168,13 +185,13 @@ impl RustScope {
     /// Takes in `other`'s packages and files: the scope of the artifacts of
     /// both. A package one links and the other does not is linked.
     pub(crate) fn union(&mut self, other: &RustScope) {
-        let add = |into: &mut Vec<PathBuf>, from: &[PathBuf]| {
-            for path in from {
-                if !into.contains(path) {
-                    into.push(path.clone());
+        fn add<T: Clone + PartialEq>(into: &mut Vec<T>, from: &[T]) {
+            for item in from {
+                if !into.contains(item) {
+                    into.push(item.clone());
                 }
             }
-        };
+        }
         add(&mut self.packages, &other.packages);
         add(&mut self.unlinked, &other.unlinked);
         add(&mut self.files, &other.files);

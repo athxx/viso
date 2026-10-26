@@ -7,11 +7,14 @@
 //! runs under the hardened runtime, entitled to what it asks the user for,
 //! and is timestamped, as notarization requires.
 
-use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use sha2::Digest as _;
+
 use crate::archive::{self, Entry, Kind};
+use crate::fragment::{self, Fragment, Problem};
+use crate::plist::{self, Dict, Value};
 use crate::{Access, Links, Orientations, io, output, run};
 
 /// The Rust target of a device.
@@ -71,6 +74,8 @@ pub struct Info {
     pub usage: Vec<(Access, String)>,
     /// The URLs that open it.
     pub links: Links,
+    /// The Info.plist fragments of the packages it links, merged in.
+    pub fragments: Vec<Fragment>,
 }
 
 impl Info {
@@ -87,6 +92,7 @@ impl Info {
             orientations: Orientations::Any,
             usage: Vec::new(),
             links: Links::default(),
+            fragments: Vec::new(),
         }
     }
 
@@ -98,52 +104,58 @@ impl Info {
     }
 
     /// The keys every bundle has.
-    fn common(&self) -> Vec<(&'static str, Value<'_>)> {
+    fn common(&self) -> Dict {
         let name: String = self.display_name.chars().take(15).collect();
-        vec![
-            ("CFBundleDevelopmentRegion", Value::text("en")),
-            ("CFBundleDisplayName", Value::text(&self.display_name)),
-            ("CFBundleExecutable", Value::text(&self.executable)),
-            ("CFBundleIdentifier", Value::text(&self.id)),
-            ("CFBundleInfoDictionaryVersion", Value::text("6.0")),
-            ("CFBundleName", Value::Text(name.into())),
-            ("CFBundlePackageType", Value::text("APPL")),
+        Dict::of(vec![
+            ("CFBundleDevelopmentRegion", Value::string("en")),
+            ("CFBundleDisplayName", Value::string(&self.display_name)),
+            ("CFBundleExecutable", Value::string(&self.executable)),
+            ("CFBundleIdentifier", Value::string(&self.id)),
+            ("CFBundleInfoDictionaryVersion", Value::string("6.0")),
+            ("CFBundleName", Value::String(name)),
+            ("CFBundlePackageType", Value::string("APPL")),
             (
                 "CFBundleShortVersionString",
-                Value::text(self.short_version()),
+                Value::string(self.short_version()),
             ),
-            (
-                "CFBundleVersion",
-                Value::Text(self.build.to_string().into()),
-            ),
-        ]
+            ("CFBundleVersion", Value::String(self.build.to_string())),
+        ])
     }
 
     /// `CFBundleURLTypes`: the schemes that open it, under its bundle id.
-    fn url_types(&self) -> Option<(&'static str, Value<'_>)> {
+    fn url_types(&self) -> Option<(&'static str, Value)> {
         if self.links.schemes.is_empty() {
             return None;
         }
-        let schemes = self.links.schemes.iter().map(|s| Value::text(s)).collect();
+        let schemes = self.links.schemes.iter().map(Value::string).collect();
         Some((
             "CFBundleURLTypes",
-            Value::Array(vec![Value::Dict(vec![
-                ("CFBundleTypeRole", Value::text("Viewer")),
-                ("CFBundleURLName", Value::text(&self.id)),
+            Value::Array(vec![Value::Dict(Dict::of(vec![
+                ("CFBundleTypeRole", Value::string("Viewer")),
+                ("CFBundleURLName", Value::string(&self.id)),
                 ("CFBundleURLSchemes", Value::Array(schemes)),
-            ])]),
+            ]))]),
         ))
     }
 
     /// The usage description keys of what it asks for.
-    fn usage(&self, macos: bool) -> impl Iterator<Item = (&'static str, Value<'_>)> {
+    fn usage(&self, macos: bool) -> impl Iterator<Item = (&'static str, Value)> + '_ {
         self.usage.iter().flat_map(move |(access, reason)| {
             usage_keys(*access, macos)
                 .iter()
-                .map(move |key| (*key, Value::text(reason)))
+                .map(move |key| (*key, Value::string(reason)))
         })
     }
+
+    /// `dict` with the fragments merged in, as a property list file.
+    fn finish(&self, mut dict: Dict) -> Result<String, Problem> {
+        fragment::merge_plist(&mut dict, GENERATED, &self.fragments)?;
+        Ok(plist::write(&dict))
+    }
 }
+
+/// What the keys Viso writes itself are, as a message names them.
+const GENERATED: &str = "what Viso writes from `Viso.toml`";
 
 /// The Info.plist keys that give the reason for `access`.
 fn usage_keys(access: Access, macos: bool) -> &'static [&'static str] {
@@ -155,6 +167,9 @@ fn usage_keys(access: Access, macos: bool) -> &'static [&'static str] {
         Access::Photos => &["NSPhotoLibraryUsageDescription"],
         Access::Contacts => &["NSContactsUsageDescription"],
         Access::Bluetooth => &["NSBluetoothAlwaysUsageDescription"],
+        // Touch ID asks with no reason in the plist.
+        Access::Biometrics if macos => &[],
+        Access::Biometrics => &["NSFaceIDUsageDescription"],
         // Asked for at run time, with no reason in the plist.
         Access::Notifications => &[],
         // Apple apps reach the network without asking.
@@ -170,83 +185,13 @@ fn entitlement(access: Access) -> Option<&'static str> {
         Access::Location => Some("com.apple.security.personal-information.location"),
         Access::Photos => Some("com.apple.security.personal-information.photos-library"),
         Access::Contacts => Some("com.apple.security.personal-information.addressbook"),
-        Access::Bluetooth | Access::Notifications | Access::Network => None,
+        Access::Bluetooth | Access::Notifications | Access::Biometrics | Access::Network => None,
     }
-}
-
-/// A property list value.
-enum Value<'a> {
-    Text(std::borrow::Cow<'a, str>),
-    Bool(bool),
-    Integer(u32),
-    Array(Vec<Value<'a>>),
-    Dict(Vec<(&'static str, Value<'a>)>),
-}
-
-impl<'a> Value<'a> {
-    fn text(text: &'a str) -> Value<'a> {
-        Value::Text(text.into())
-    }
-
-    fn write(&self, out: &mut String, depth: usize) {
-        let pad = "\t".repeat(depth);
-        match self {
-            Value::Text(text) => {
-                let _ = writeln!(out, "{pad}<string>{}</string>", escape(text));
-            }
-            Value::Bool(true) => {
-                let _ = writeln!(out, "{pad}<true/>");
-            }
-            Value::Bool(false) => {
-                let _ = writeln!(out, "{pad}<false/>");
-            }
-            Value::Integer(n) => {
-                let _ = writeln!(out, "{pad}<integer>{n}</integer>");
-            }
-            Value::Array(items) => {
-                let _ = writeln!(out, "{pad}<array>");
-                for item in items {
-                    item.write(out, depth + 1);
-                }
-                let _ = writeln!(out, "{pad}</array>");
-            }
-            Value::Dict(entries) if entries.is_empty() => {
-                let _ = writeln!(out, "{pad}<dict/>");
-            }
-            Value::Dict(entries) => {
-                let _ = writeln!(out, "{pad}<dict>");
-                for (key, value) in entries {
-                    let _ = writeln!(out, "{pad}\t<key>{key}</key>");
-                    value.write(out, depth + 1);
-                }
-                let _ = writeln!(out, "{pad}</dict>");
-            }
-        }
-    }
-}
-
-/// `dict` as a property list file.
-fn plist(dict: Vec<(&'static str, Value<'_>)>) -> String {
-    let mut out = String::from(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
-         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \
-         \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
-         <plist version=\"1.0\">\n",
-    );
-    Value::Dict(dict).write(&mut out, 0);
-    out.push_str("</plist>\n");
-    out
-}
-
-fn escape(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }
 
 /// An iOS app's Info.plist: one full-screen scene in the orientations it
-/// turns to, on iPhone and iPad.
-pub fn info_plist(info: &Info, simulator: bool) -> String {
+/// turns to, on iPhone and iPad, with its fragments merged in.
+pub fn info_plist(info: &Info, simulator: bool) -> Result<String, Problem> {
     let platform = if simulator {
         "iPhoneSimulator"
     } else {
@@ -258,9 +203,8 @@ pub fn info_plist(info: &Info, simulator: bool) -> String {
         "UIInterfaceOrientationLandscapeLeft",
         "UIInterfaceOrientationLandscapeRight",
     ];
-    let list = |names: Vec<&'static str>| {
-        Value::Array(names.into_iter().map(|n| Value::Text(n.into())).collect())
-    };
+    let list =
+        |names: Vec<&'static str>| Value::Array(names.into_iter().map(Value::string).collect());
     let (phone, pad): (Vec<&str>, Vec<&str>) = match info.orientations {
         Orientations::Any => (
             portrait.iter().chain(&landscape).copied().collect(),
@@ -281,21 +225,21 @@ pub fn info_plist(info: &Info, simulator: bool) -> String {
     dict.extend([
         (
             "CFBundleSupportedPlatforms",
-            Value::Array(vec![Value::text(platform)]),
+            Value::Array(vec![Value::string(platform)]),
         ),
         ("LSRequiresIPhoneOS", Value::Bool(true)),
-        ("MinimumOSVersion", Value::text(&info.minimum_os)),
+        ("MinimumOSVersion", Value::string(&info.minimum_os)),
         (
             "UIDeviceFamily",
             Value::Array(vec![Value::Integer(1), Value::Integer(2)]),
         ),
-        ("UILaunchScreen", Value::Dict(Vec::new())),
+        ("UILaunchScreen", Value::Dict(Dict::default())),
         (
             "UIApplicationSceneManifest",
-            Value::Dict(vec![(
+            Value::Dict(Dict::of(vec![(
                 "UIApplicationSupportsMultipleScenes",
                 Value::Bool(false),
-            )]),
+            )])),
         ),
         // An app that does not turn every way fills the iPad's screen.
         (
@@ -307,27 +251,28 @@ pub fn info_plist(info: &Info, simulator: bool) -> String {
     ]);
     dict.extend(info.url_types());
     dict.extend(info.usage(false));
-    plist(dict)
+    info.finish(dict)
 }
 
-/// A macOS app's Info.plist, naming its icon `AppIcon` when it has one.
-pub fn macos_info_plist(info: &Info, icon: bool) -> String {
+/// A macOS app's Info.plist, naming its icon `AppIcon` when it has one,
+/// with its fragments merged in.
+pub fn macos_info_plist(info: &Info, icon: bool) -> Result<String, Problem> {
     let mut dict = info.common();
     if icon {
-        dict.push(("CFBundleIconFile", Value::text("AppIcon")));
+        dict.set("CFBundleIconFile", Value::string("AppIcon"));
     }
     dict.extend([
         (
             "LSApplicationCategoryType",
-            Value::text("public.app-category.productivity"),
+            Value::string("public.app-category.productivity"),
         ),
         ("NSHighResolutionCapable", Value::Bool(true)),
-        ("NSPrincipalClass", Value::text("NSApplication")),
+        ("NSPrincipalClass", Value::string("NSApplication")),
         ("NSSupportsAutomaticGraphicsSwitching", Value::Bool(true)),
     ]);
     dict.extend(info.url_types());
     dict.extend(info.usage(true));
-    plist(dict)
+    info.finish(dict)
 }
 
 /// Wraps the executable `binary` as the iOS app `<dir>/<executable>.app`,
@@ -340,7 +285,8 @@ pub fn bundle(binary: &Path, dir: &Path, info: &Info, simulator: bool) -> Result
     let exe = app.join(&info.executable);
     io(&exe, std::fs::copy(binary, &exe))?;
     let path = app.join("Info.plist");
-    io(&path, std::fs::write(&path, info_plist(info, simulator)))?;
+    let plist = info_plist(info, simulator).map_err(|problem| problem.to_string())?;
+    io(&path, std::fs::write(&path, plist))?;
     Ok(App {
         path: app,
         id: info.id.clone(),
@@ -370,10 +316,8 @@ pub fn macos_bundle(
         io(&path, std::fs::write(&path, icns))?;
     }
     let path = contents.join("Info.plist");
-    io(
-        &path,
-        std::fs::write(&path, macos_info_plist(info, icns.is_some())),
-    )?;
+    let plist = macos_info_plist(info, icns.is_some()).map_err(|problem| problem.to_string())?;
+    io(&path, std::fs::write(&path, plist))?;
     let path = contents.join("PkgInfo");
     io(&path, std::fs::write(&path, "APPL????"))?;
     Ok(App {
@@ -526,74 +470,186 @@ pub fn associated_domains(hosts: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// Signs the iOS app `app`: ad-hoc without an `identity`; with a
-/// provisioning `profile`, embedding it and signing with its entitlements,
-/// decoded under `scratch`. The app is entitled to open the links of
-/// `hosts`, which a profile must allow.
+/// What the entitlements Viso writes itself are, as a message names them.
+const GENERATED_ENTITLEMENTS: &str = "the entitlements of `[package.links]`";
+
+/// What an app is entitled to: to open the links of `hosts`, and what the
+/// entitlements fragments of the packages it links ask for.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Entitlements<'a> {
+    pub hosts: &'a [String],
+    pub fragments: &'a [Fragment],
+}
+
+impl Entitlements<'_> {
+    /// Those a simulator app has. The simulator runs it as a process of this
+    /// Mac, which refuses an ad-hoc signature carrying what only a
+    /// provisioning profile allows; so they are linked into the executable
+    /// (see [`simulated_entitlements`]), where the simulator reads them,
+    /// and the signature carries none.
+    pub fn simulated(&self) -> Result<Dict, Problem> {
+        let mut dict = Dict::default();
+        let domains = associated_domains(self.hosts);
+        if !domains.is_empty() {
+            dict.set(
+                ASSOCIATED_DOMAINS,
+                Value::Array(domains.into_iter().map(Value::String).collect()),
+            );
+        }
+        fragment::merge_plist(&mut dict, GENERATED_ENTITLEMENTS, self.fragments)?;
+        Ok(dict)
+    }
+
+    /// Those signed under a provisioning profile for `app_id` that allows
+    /// `allowed`: the profile's own, the link hosts in place of its
+    /// associated domains. Each key a fragment asks for must be one the
+    /// profile allows, and is signed with the profile's value, which says
+    /// what it is for (a push environment, a group).
+    fn provisioned(&self, mut allowed: Dict, app_id: &str) -> Result<Dict, String> {
+        let domains = associated_domains(self.hosts);
+        if !domains.is_empty() {
+            if allowed.get(ASSOCIATED_DOMAINS).is_none() {
+                return Err(format!(
+                    "the provisioning profile does not allow Associated Domains, which the hosts \
+                     of `[package.links]` need: enable it for `{app_id}` and download the profile \
+                     again"
+                ));
+            }
+            allowed.set(
+                ASSOCIATED_DOMAINS,
+                Value::Array(domains.into_iter().map(Value::String).collect()),
+            );
+        }
+        let mut asked = Dict::default();
+        fragment::merge_plist(&mut asked, GENERATED_ENTITLEMENTS, self.fragments)
+            .map_err(|problem| problem.to_string())?;
+        if let Some(entry) = asked.0.iter().find(|e| allowed.get(&e.key).is_none()) {
+            return Err(format!(
+                "the provisioning profile does not allow `{}`, which `{}` needs: enable its \
+                 capability for `{app_id}` and download the profile again",
+                entry.key,
+                self.fragments[entry.from - 1].package
+            ));
+        }
+        Ok(allowed)
+    }
+}
+
+/// Signs the iOS app `app`: ad-hoc without an `identity`, as a simulator
+/// app whose entitlements are linked in; with a provisioning `profile`,
+/// embedding it and signing with its entitlements, decoded under
+/// `scratch`, which must allow what `entitlements` asks for.
 pub fn sign(
     app: &Path,
     identity: Option<&str>,
     profile: Option<&Path>,
-    hosts: &[String],
+    entitlements: &Entitlements<'_>,
     scratch: &Path,
 ) -> Result<(), String> {
     let mut codesign = Command::new("codesign");
     codesign
         .args(["--force", "--timestamp=none", "--sign"])
         .arg(identity.unwrap_or("-"));
-    let domains = associated_domains(hosts);
-    if let Some(profile) = profile {
-        io(
-            profile,
-            std::fs::copy(profile, app.join("embedded.mobileprovision")),
-        )?;
-        let provisioning = provisioning(profile, scratch)?;
-        if !domains.is_empty() {
-            let key = format!(":{ASSOCIATED_DOMAINS}");
-            let buddy = |command: String| {
-                output(
-                    Command::new("/usr/libexec/PlistBuddy")
-                        .arg("-c")
-                        .arg(command)
-                        .arg(&provisioning.entitlements),
-                )
-            };
-            buddy(format!("Print {key}")).map_err(|_| {
+    let signed = match profile {
+        Some(profile) => {
+            io(
+                profile,
+                std::fs::copy(profile, app.join("embedded.mobileprovision")),
+            )?;
+            let provisioning = provisioning(profile, scratch)?;
+            let file = &provisioning.entitlements;
+            let text = io(file, std::fs::read_to_string(file))?;
+            let allowed = plist::read(&text, 0).map_err(|e| {
                 format!(
-                    "the provisioning profile does not allow Associated Domains, which the hosts \
-                     of `[package.links]` need: enable it for `{}` and download the profile again",
-                    provisioning.app_id
+                    "the provisioning profile's entitlements do not read: {}",
+                    e.message
                 )
             })?;
-            buddy(format!("Delete {key}"))?;
-            buddy(format!("Add {key} array"))?;
-            for domain in &domains {
-                buddy(format!("Add {key}: string {domain}"))?;
-            }
+            Some(entitlements.provisioned(allowed, &provisioning.app_id)?)
         }
-        codesign
-            .arg("--entitlements")
-            .arg(&provisioning.entitlements);
-    } else if !domains.is_empty() {
-        // The simulator takes entitlements an ad-hoc signature carries.
+        None => None,
+    };
+    if let Some(dict) = signed {
         io(scratch, std::fs::create_dir_all(scratch))?;
         let file = scratch.join("app.entitlements");
-        let list = domains.iter().map(|d| Value::text(d)).collect();
-        io(
-            &file,
-            std::fs::write(&file, plist(vec![(ASSOCIATED_DOMAINS, Value::Array(list))])),
-        )?;
+        io(&file, std::fs::write(&file, plist::write(&dict)))?;
         codesign.arg("--entitlements").arg(&file);
     }
     run(codesign.arg(app))
 }
 
+/// The `rustc` arguments that link `entitlements` into a simulator app's
+/// executable, as the simulator reads them: the property list in its
+/// `__TEXT,__entitlements` section and, DER-encoded, in `__TEXT,__ents_der`.
+/// Each is written in `dir` under a name its content gives, so a change
+/// links again. None for no entitlements.
+pub fn simulated_entitlements(entitlements: &Dict, dir: &Path) -> Result<Vec<String>, String> {
+    if entitlements.0.is_empty() {
+        return Ok(Vec::new());
+    }
+    io(dir, std::fs::create_dir_all(dir))?;
+    let xml = plist::write(entitlements).into_bytes();
+    let der = plist::der(entitlements);
+    let mut args = Vec::new();
+    for (section, bytes, extension) in [
+        ("__entitlements", &xml, "plist"),
+        ("__ents_der", &der, "der"),
+    ] {
+        let digest = sha2::Sha256::digest(bytes);
+        let name: String = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
+        let path = dir.join(format!("entitlements-{name}.{extension}"));
+        if !path.is_file() {
+            io(&path, std::fs::write(&path, bytes))?;
+        }
+        args.push(format!(
+            "-Clink-arg=-Wl,-sectcreate,__TEXT,{section},{}",
+            path.display()
+        ));
+    }
+    Ok(args)
+}
+
+/// Whether `key` is an entitlement only a provisioning profile allows.
+fn restricted(key: &str) -> bool {
+    key.starts_with("com.apple.developer.") || key == "aps-environment"
+}
+
+/// What a macOS app signed with an identity is entitled to under the
+/// hardened runtime: what `access` asks the user for, and what the
+/// entitlements `fragments` ask for but the keys only a provisioning
+/// profile allows, which a macOS package does not embed. Those are left
+/// out, each answered with the package that asks for it.
+pub fn macos_entitlements(
+    access: &[Access],
+    fragments: &[Fragment],
+) -> Result<(Dict, Vec<(String, String)>), Problem> {
+    let mut dict = Dict::default();
+    for key in access.iter().filter_map(|a| entitlement(*a)) {
+        dict.set(key, Value::Bool(true));
+    }
+    fragment::merge_plist(
+        &mut dict,
+        "the entitlements of `[package.permissions]`",
+        fragments,
+    )?;
+    let mut left_out = Vec::new();
+    dict.0.retain(|entry| {
+        let keep = !restricted(&entry.key);
+        if !keep {
+            left_out.push((entry.key.clone(), fragments[entry.from - 1].package.clone()));
+        }
+        keep
+    });
+    Ok((dict, left_out))
+}
+
 /// Signs `path`, a macOS app or disk image: with `identity` under the
-/// hardened runtime, entitled to `access`, and timestamped; ad-hoc without.
+/// hardened runtime, an app entitled to `entitlements`, and timestamped;
+/// ad-hoc without.
 pub fn sign_macos(
     path: &Path,
     identity: Option<&str>,
-    access: &[Access],
+    entitlements: &Dict,
     scratch: &Path,
 ) -> Result<(), String> {
     let mut codesign = Command::new("codesign");
@@ -603,15 +659,10 @@ pub fn sign_macos(
             codesign
                 .args(["--options", "runtime", "--timestamp", "--sign"])
                 .arg(identity);
-            let keys: Vec<(&'static str, Value<'_>)> = access
-                .iter()
-                .filter_map(|a| entitlement(*a))
-                .map(|key| (key, Value::Bool(true)))
-                .collect();
-            if !keys.is_empty() && path.extension().is_some_and(|x| x == "app") {
+            if !entitlements.0.is_empty() && path.extension().is_some_and(|x| x == "app") {
                 io(scratch, std::fs::create_dir_all(scratch))?;
                 let file = scratch.join("app.entitlements");
-                io(&file, std::fs::write(&file, plist(keys)))?;
+                io(&file, std::fs::write(&file, plist::write(entitlements)))?;
                 codesign.arg("--entitlements").arg(&file);
             }
         }
@@ -620,6 +671,24 @@ pub fn sign_macos(
         }
     }
     run(codesign.arg(path))
+}
+
+/// Whether the Info.plist and entitlements fragments of an app described
+/// by `info` merge with what Viso writes and with each other, for macOS or
+/// iOS.
+pub fn check(info: &Info, entitlements: &[Fragment], macos: bool) -> Result<(), Problem> {
+    if macos {
+        macos_info_plist(info, false)?;
+        macos_entitlements(&[], entitlements)?;
+    } else {
+        info_plist(info, true)?;
+        Entitlements {
+            hosts: &info.links.hosts,
+            fragments: entitlements,
+        }
+        .simulated()?;
+    }
+    Ok(())
 }
 
 /// The names of the valid code signing identities in the keychain.
@@ -711,18 +780,29 @@ mod tests {
                 schemes: vec!["notes".into(), "x-notes".into()],
                 hosts: vec!["notes.example.com".into()],
             },
+            fragments: Vec::new(),
+        }
+    }
+
+    fn fragment(package: &str, file: &str, body: &str) -> Fragment {
+        Fragment {
+            package: package.into(),
+            path: PathBuf::from(format!("/p/{package}/{file}")),
+            text: format!(
+                "<?xml version=\"1.0\"?>\n<plist version=\"1.0\">\n<dict>\n{body}</dict>\n</plist>\n"
+            ),
         }
     }
 
     #[test]
     fn the_plist_says_what_the_app_is() {
-        let dev = info_plist(&Info::dev("hello_world"), true);
+        let dev = info_plist(&Info::dev("hello_world"), true).unwrap();
         assert!(dev.contains("<string>hello_world</string>"));
         assert!(dev.contains("<string>dev.viso.hello-world</string>"));
         assert!(dev.contains("<string>iPhoneSimulator</string>"));
         assert!(dev.contains("<key>UIRequiresFullScreen</key>\n\t<false/>"));
 
-        let plist = info_plist(&notes(), false);
+        let plist = info_plist(&notes(), false).unwrap();
         assert!(plist.contains("<string>iPhoneOS</string>"));
         assert!(plist.contains("<string>Notes &amp; More</string>"));
         assert!(plist.contains("<key>CFBundleShortVersionString</key>\n\t<string>2.1.0</string>"));
@@ -745,11 +825,179 @@ mod tests {
         assert!(plist.contains(url_types), "{plist}");
         assert!(!dev.contains("CFBundleURLTypes"));
 
-        let mac = macos_info_plist(&notes(), true);
+        let mac = macos_info_plist(&notes(), true).unwrap();
         assert!(mac.contains(url_types));
         assert!(mac.contains("<key>CFBundleIconFile</key>\n\t<string>AppIcon</string>"));
         assert!(mac.contains("NSHighResolutionCapable"));
         assert!(!mac.contains("UISupportedInterfaceOrientations"));
+    }
+
+    #[test]
+    fn fragments_merge_into_the_plist() {
+        let mut info = notes();
+        info.usage
+            .push((Access::Biometrics, "Unlocks your notes".into()));
+        info.fragments = vec![
+            fragment(
+                "viso-background",
+                "ios/Info.plist",
+                "<key>UIBackgroundModes</key><array><string>fetch</string><string>processing</string></array>\n",
+            ),
+            fragment(
+                "viso-push",
+                "ios/Info.plist",
+                "<key>UIBackgroundModes</key><array><string>remote-notification</string></array>\n",
+            ),
+            fragment(
+                "notes",
+                "ios/Info.plist",
+                "<key>BGTaskSchedulerPermittedIdentifiers</key><array><string>com.example.notes.sync</string></array>\n\
+                 <key>CFBundleDevelopmentRegion</key><string>en</string>\n",
+            ),
+        ];
+        let plist = info_plist(&info, true).unwrap();
+        let dict = plist::read(&plist, 0).unwrap();
+        assert_eq!(
+            dict.get("UIBackgroundModes"),
+            Some(&Value::Array(
+                ["fetch", "processing", "remote-notification"]
+                    .map(Value::string)
+                    .to_vec()
+            ))
+        );
+        assert_eq!(
+            dict.get("BGTaskSchedulerPermittedIdentifiers"),
+            Some(&Value::Array(vec![Value::string("com.example.notes.sync")]))
+        );
+        assert_eq!(
+            dict.get("NSFaceIDUsageDescription"),
+            Some(&Value::string("Unlocks your notes"))
+        );
+        assert!(
+            !macos_info_plist(&info, false)
+                .unwrap()
+                .contains("NSFaceIDUsageDescription")
+        );
+
+        info.fragments.push(fragment(
+            "viso-odd",
+            "ios/Info.plist",
+            "<key>CFBundleIdentifier</key><string>com.example.other</string>\n",
+        ));
+        let problem = info_plist(&info, true).unwrap_err();
+        assert_eq!(problem.kind, fragment::Kind::Conflict);
+        assert_eq!(
+            problem.message,
+            "`CFBundleIdentifier` is \"com.example.other\" in `viso-odd`'s `ios/Info.plist` but \
+             \"com.example.notes\" in what Viso writes from `Viso.toml`"
+        );
+        let broken = Info {
+            fragments: vec![fragment("viso-bad", "ios/Info.plist", "<key>a</key>\n")],
+            ..notes()
+        };
+        let problem = check(&broken, &[], false).unwrap_err();
+        assert_eq!(problem.kind, fragment::Kind::Invalid);
+        assert_eq!(problem.message, "`a` has no value");
+    }
+
+    #[test]
+    fn entitlements_come_from_the_links_and_the_fragments() {
+        let push = [fragment(
+            "viso-push",
+            "ios/entitlements.plist",
+            "<key>aps-environment</key><string>development</string>\n",
+        )];
+        let hosts = ["notes.example.com".to_owned()];
+        let entitlements = Entitlements {
+            hosts: &hosts,
+            fragments: &push,
+        };
+        let simulated = entitlements.simulated().unwrap();
+        assert_eq!(
+            simulated.keys().collect::<Vec<_>>(),
+            [ASSOCIATED_DOMAINS, "aps-environment"]
+        );
+        assert_eq!(
+            Entitlements::default().simulated().unwrap(),
+            Dict::default()
+        );
+        let dir = std::env::temp_dir().join(format!("viso-simulated-{}", std::process::id()));
+        let args = simulated_entitlements(&simulated, &dir).unwrap();
+        assert_eq!(args.len(), 2);
+        assert!(args[0].starts_with("-Clink-arg=-Wl,-sectcreate,__TEXT,__entitlements,"));
+        assert!(args[1].contains(",__TEXT,__ents_der,") && args[1].ends_with(".der"));
+        assert_eq!(simulated_entitlements(&simulated, &dir).unwrap(), args);
+        assert!(
+            simulated_entitlements(&Dict::default(), &dir)
+                .unwrap()
+                .is_empty()
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        // A profile's value is the one signed; what it lacks is an error.
+        let profile = |entries: Vec<(&str, Value)>| Dict::of(entries);
+        let signed = entitlements
+            .provisioned(
+                profile(vec![
+                    ("aps-environment", Value::string("production")),
+                    (ASSOCIATED_DOMAINS, Value::string("*")),
+                ]),
+                "T.com.example.notes",
+            )
+            .unwrap();
+        assert_eq!(
+            signed.get("aps-environment"),
+            Some(&Value::string("production"))
+        );
+        assert_eq!(
+            signed.get(ASSOCIATED_DOMAINS),
+            Some(&Value::Array(vec![Value::string(
+                "applinks:notes.example.com"
+            )]))
+        );
+        let missing = Entitlements {
+            hosts: &[],
+            fragments: &push,
+        }
+        .provisioned(profile(vec![]), "T.com.example.notes")
+        .unwrap_err();
+        assert_eq!(
+            missing,
+            "the provisioning profile does not allow `aps-environment`, which `viso-push` needs: \
+             enable its capability for `T.com.example.notes` and download the profile again"
+        );
+        assert!(
+            entitlements
+                .provisioned(
+                    profile(vec![("aps-environment", Value::string("x"))]),
+                    "T.a"
+                )
+                .unwrap_err()
+                .contains("Associated Domains")
+        );
+
+        // A macOS package embeds no profile: what only one allows is left out.
+        let mac = [fragment(
+            "viso-push",
+            "macos/entitlements.plist",
+            "<key>com.apple.developer.aps-environment</key><string>development</string>\n\
+             <key>com.apple.security.network.client</key><true/>\n",
+        )];
+        let (dict, left_out) = macos_entitlements(&[Access::Camera], &mac).unwrap();
+        assert_eq!(
+            dict.keys().collect::<Vec<_>>(),
+            [
+                "com.apple.security.device.camera",
+                "com.apple.security.network.client"
+            ]
+        );
+        assert_eq!(
+            left_out,
+            [(
+                "com.apple.developer.aps-environment".to_owned(),
+                "viso-push".to_owned()
+            )]
+        );
     }
 
     #[test]

@@ -1394,7 +1394,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("viso-serve-page-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        web::write_page(&dir, "probe", "probe.0a.js", Some("probe_bg.1b.wasm")).unwrap();
+        web::write_page(&dir, "probe", "probe.0a.js", Some("probe_bg.1b.wasm"), None).unwrap();
         std::fs::write(dir.join("probe_bg.1b.wasm"), b"\0asm").unwrap();
         let expect = Expect {
             token: "token".into(),
@@ -1643,7 +1643,7 @@ mod tests {
         let (gpu, dom) = (root.join("gpu"), root.join("dom"));
         for (dir, title) in [(&gpu, "gpu"), (&dom, "dom")] {
             std::fs::create_dir_all(dir).unwrap();
-            web::write_page(dir, title, "app.js", Some("app_bg.wasm")).unwrap();
+            web::write_page(dir, title, "app.js", Some("app_bg.wasm"), None).unwrap();
         }
         std::fs::write(gpu.join("app_bg.wasm"), b"\0asm\x01\0\0\0").unwrap();
         // A module defining a shared memory: a threaded build.
@@ -1775,7 +1775,7 @@ mod tests {
             project: ProjectFingerprint(3),
             schema: SchemaFingerprint(4),
         };
-        web::write_index(&dir, "probe").unwrap();
+        web::write_index(&dir, "probe", None).unwrap();
         let chrome = headless_browser().expect("a Chromium browser");
         // The one lane at `/`, and one of two under its prefix.
         for prefix in [None, Some("web-dom")] {

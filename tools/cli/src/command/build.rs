@@ -25,6 +25,7 @@ use crate::args::{BuildArgs, BuildTarget};
 use crate::build::cargo::{self, BuildCommand, BuildFailure, CargoEvent, Sink};
 use crate::build::{self, Job, Staged, Written};
 use crate::context::{Context, Loaded, in_its_file};
+use crate::delivery::fragments::{self, Fragments};
 use crate::delivery::{Plan, Platform, package};
 use crate::deploy;
 use crate::dev::cargo::RustScope;
@@ -316,20 +317,56 @@ pub(super) fn stage_loaded(
         }
     }
     let packaging = delivery.is_some();
-    let android = match sdk {
-        Some(sdk) => {
-            let scope = match RustScope::read(&manifest, plan.target.as_deref(), &ctx.cargo_args())
-            {
-                Ok(scope) => scope,
-                Err(why) => return Err(out.failure(ENV_CARGO, &why, &[])),
-            };
-            match deploy::android_shell(&scope.linked) {
-                Ok(shell) => Some((sdk, shell)),
-                Err(why) => return Err(out.failure(ENV_DEVICE, &why, &[])),
+    // What the packages the app links declare for its platform is read, and
+    // checked, before anything is compiled.
+    let mut declared = crate::delivery::metadata::declared(&project);
+    let fragment_platform = fragments::platform(target, delivery.as_ref().map(|d| d.platform));
+    let linked = match fragment_platform {
+        Some(_) => match RustScope::read(&manifest, plan.target.as_deref(), &ctx.cargo_args()) {
+            Ok(scope) => scope.linked,
+            Err(why) => return Err(out.failure(ENV_CARGO, &why, &[])),
+        },
+        None => Vec::new(),
+    };
+    if let Some(platform) = fragment_platform {
+        declared.fragments = match Fragments::read(&linked, platform) {
+            Ok(fragments) => fragments,
+            Err(diagnostic) => {
+                fragments::report(out, &diagnostic);
+                return Err(diagnostic.code.exit_code());
             }
-        }
+        };
+    }
+    let android = match sdk {
+        Some(sdk) => match deploy::android_shell(&linked, &declared.fragments.android) {
+            Ok(shell) => Some((sdk, shell)),
+            Err(why) => return Err(out.failure(ENV_DEVICE, &why, &[])),
+        },
         None => None,
     };
+    if let Some(platform) = fragment_platform {
+        let name = project.name().unwrap_or("app");
+        let info = match &delivery {
+            Some(delivery) => delivery.metadata.apple(name),
+            None => viso_package::apple::Info {
+                usage: declared.usage.clone(),
+                links: declared.links.clone(),
+                ..viso_package::apple::Info::dev(name)
+            },
+        };
+        let shell = android.as_ref().map(|(_, shell)| shell);
+        if let Err(diagnostic) = declared.fragments.check(platform, shell, &info) {
+            fragments::report(out, &diagnostic);
+            return Err(diagnostic.code.exit_code());
+        }
+    }
+    // A simulator app's entitlements are linked into its executable.
+    if target == Target::Ios && delivery.is_none() {
+        match fragments::link_simulated(&declared, &layout.generated()) {
+            Ok(args) => plan.rustc_args.extend(args),
+            Err(why) => return Err(out.failure(ENV_BUILD_WRITE, &why, &[])),
+        }
+    }
     warn_kept_defaults(plan.no_default_features, &manifest, ctx, out);
     let mut features = plan.features;
     if config.dev_runtime() == viso_project::DevRuntime::Present && cargo::reloads(target) {
@@ -359,7 +396,7 @@ pub(super) fn stage_loaded(
         web: config.settings.web,
         dir: layout.build(identity),
         android,
-        declared: crate::delivery::metadata::declared(&project),
+        declared,
         delivery,
     };
     let doing = if packaging { "packaging" } else { "building" };

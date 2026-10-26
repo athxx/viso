@@ -133,6 +133,12 @@ pub enum ConfigCode {
     TargetUnavailable,
     /// A workspace member path that does not contain a manifest.
     MemberMissing,
+    /// A platform fragment a linked package carries does not read as what its
+    /// file is.
+    FragmentInvalid,
+    /// Two platform fragments, or a fragment and what `Viso.toml` declares,
+    /// declare one thing differently.
+    FragmentConflict,
 }
 
 impl ConfigCode {
@@ -151,6 +157,8 @@ impl ConfigCode {
             ConfigCode::EnvInvalid => "C0010",
             ConfigCode::TargetUnavailable => "C0011",
             ConfigCode::MemberMissing => "C0012",
+            ConfigCode::FragmentInvalid => "C0013",
+            ConfigCode::FragmentConflict => "C0014",
         }
     }
 
@@ -169,6 +177,8 @@ impl ConfigCode {
             ConfigCode::EnvInvalid => "VISO_* environment variable could not be parsed",
             ConfigCode::TargetUnavailable => "target is not available in this build",
             ConfigCode::MemberMissing => "workspace member has no Viso.toml",
+            ConfigCode::FragmentInvalid => "a package's platform fragment does not read",
+            ConfigCode::FragmentConflict => "platform fragments declare one thing differently",
         }
     }
 
@@ -211,6 +221,12 @@ impl ConfigCode {
             ConfigCode::MemberMissing => {
                 "A `[workspace] members` path has no `Viso.toml`, so the workspace does not describe the repository."
             }
+            ConfigCode::FragmentInvalid => {
+                "A package the app links (or the app itself) carries a platform fragment — `android/manifest.xml`, `ios/Info.plist`, `ios/entitlements.plist`, `macos/Info.plist` or `macos/entitlements.plist` — that is not well-formed XML, or not the shape its file takes: a `<manifest>` naming only its namespaces, whose `<application>` sets no attributes; a `<plist>` holding one `<dict>`."
+            }
+            ConfigCode::FragmentConflict => {
+                "Fragments merge: a declaration two of them make the same is made once, arrays and dictionaries unite, a permission is asked for at its widest. Two different declarations of one component, feature or plist value cannot both hold, nor can a fragment change a key Viso writes from `Viso.toml`."
+            }
         }
     }
 
@@ -239,6 +255,10 @@ impl ConfigCode {
                 "Pick an available target; `viso doctor` lists what this machine can build."
             }
             ConfigCode::MemberMissing => "Correct the member path, or remove it from the list.",
+            ConfigCode::FragmentInvalid => "Correct the fragment at the reported position.",
+            ConfigCode::FragmentConflict => {
+                "Declare the thing once, in the package that needs it; set what `Viso.toml` describes there."
+            }
         }
     }
 
@@ -268,6 +288,8 @@ impl ConfigCode {
         ConfigCode::EnvInvalid,
         ConfigCode::TargetUnavailable,
         ConfigCode::MemberMissing,
+        ConfigCode::FragmentInvalid,
+        ConfigCode::FragmentConflict,
     ];
 }
 
@@ -384,7 +406,7 @@ mod tests {
             printed,
             [
                 "C0001", "C0002", "C0003", "C0004", "C0005", "C0006", "C0007", "C0008", "C0009",
-                "C0010", "C0011", "C0012",
+                "C0010", "C0011", "C0012", "C0013", "C0014",
             ]
         );
 

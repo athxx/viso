@@ -53,6 +53,7 @@ use crate::build::{
     cargo::{self, BuildCommand, BuildFailure, CargoEvent},
 };
 use crate::context::{Context, Loaded, in_its_file};
+use crate::delivery::fragments::{self, Fragments};
 use crate::deploy::{self, App, Deploy, Ended, Lines, Vars, board::Board, web};
 use crate::dev::build::{Build, BuildEvent, RustBuild};
 use crate::dev::cargo::RustScope;
@@ -631,6 +632,19 @@ pub(super) fn session(
             )),
             _ => None,
         };
+        // What the packages the app links declare for its platform, checked
+        // before the build.
+        let mut declared = crate::delivery::metadata::declared(&project);
+        let fragment_platform = fragments::platform(target, None);
+        if let Some(platform) = fragment_platform {
+            declared.fragments = match Fragments::read(&rust.linked, platform) {
+                Ok(fragments) => fragments,
+                Err(diagnostic) => {
+                    fragments::report(out, &diagnostic);
+                    return diagnostic.code.exit_code();
+                }
+            };
+        }
         let deploy = match (&profile, sdk, board) {
             (_, _, Some(board)) => Deploy::Board(Box::new(board)),
             (None, _, None) if target.is_web() => {
@@ -693,20 +707,22 @@ pub(super) fn session(
             (Some(profile), _, None) if profile.platform == Platform::Ios => Deploy::Simulator {
                 profile: profile.clone(),
             },
-            (Some(_), Some(sdk), None) => match deploy::android_shell(&rust.linked) {
-                Ok(shell) => Deploy::Emulator {
-                    device: emulator::Device {
-                        adb: sdk.adb.clone(),
-                        serial: String::new(),
+            (Some(_), Some(sdk), None) => {
+                match deploy::android_shell(&rust.linked, &declared.fragments.android) {
+                    Ok(shell) => Deploy::Emulator {
+                        device: emulator::Device {
+                            adb: sdk.adb.clone(),
+                            serial: String::new(),
+                        },
+                        sdk: Box::new(sdk),
+                        shell,
+                        reversed: None,
                     },
-                    sdk: Box::new(sdk),
-                    shell,
-                    reversed: None,
-                },
-                Err(why) => {
-                    return out.failure(ENV_DEVICE, &why, &[]);
+                    Err(why) => {
+                        return out.failure(ENV_DEVICE, &why, &[]);
+                    }
                 }
-            },
+            }
             (Some(_), None, None) => unreachable!("an emulator profile has its SDK"),
         };
         // The board is reached before the build, so one that cannot be
@@ -759,7 +775,29 @@ pub(super) fn session(
                  passed",
             );
         }
-        let mut plan = deploy.plan(&crate::delivery::metadata::declared(&project));
+        if let Some(platform) = fragment_platform {
+            let shell = match &deploy {
+                Deploy::Emulator { shell, .. } => Some(shell),
+                _ => None,
+            };
+            let info = viso_package::apple::Info {
+                usage: declared.usage.clone(),
+                links: declared.links.clone(),
+                ..viso_package::apple::Info::dev(project.name().unwrap_or("app"))
+            };
+            if let Err(diagnostic) = declared.fragments.check(platform, shell, &info) {
+                fragments::report(out, &diagnostic);
+                return diagnostic.code.exit_code();
+            }
+        }
+        let mut plan = deploy.plan(&declared);
+        // A simulator app's entitlements are linked into its executable.
+        if let Deploy::Simulator { .. } = deploy {
+            match fragments::link_simulated(&declared, &layout.generated()) {
+                Ok(args) => plan.rust.rustc_args.extend(args),
+                Err(why) => return out.failure(ENV_BUILD_WRITE, &why, &[]),
+            }
+        }
         if let Some(device_plan) = device_plan {
             plan.rust = device_plan;
             let device = resolved.config.device.as_ref();

@@ -143,6 +143,7 @@ impl Fake {
             shell: android::Shell {
                 java: Vec::new(),
                 manifest: PathBuf::new(),
+                fragments: Vec::new(),
             },
             reversed: None,
         }

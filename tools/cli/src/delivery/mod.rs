@@ -4,12 +4,16 @@
 //!
 //! - [`metadata`]: the app's id, names, version, icon, orientation and
 //!   permissions from `Viso.toml`, checked for the platform.
+//! - [`fragments`]: what the packages the app links declare for its
+//!   platform — manifest entries, Info.plist keys, entitlements, service
+//!   worker code — read and checked before anything is built.
 //! - [`signing`]: the identity, keystore or certificate a package is signed
 //!   with under `--signing auto|required|off`; a secret never leaves the
 //!   keychain or the environment.
 //! - [`package`]: the built executables wrapped as the platform ships
 //!   them.
 
+pub(crate) mod fragments;
 pub(crate) mod icon;
 pub(crate) mod metadata;
 pub(crate) mod package;

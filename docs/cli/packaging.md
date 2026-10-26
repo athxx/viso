@@ -99,9 +99,95 @@ microphone = "Records voice notes"
 ```
 
 Permissions are `camera`, `microphone`, `location`, `photos`, `contacts`,
-`bluetooth` and `notifications`. Each becomes what the platform needs: Info.plist
-usage strings and entitlements on Apple platforms, `<uses-permission>` on Android,
-capabilities in a Windows MSIX.
+`bluetooth`, `notifications`, `biometrics` and `network`. Each becomes what the
+platform needs: Info.plist usage strings and entitlements on Apple platforms,
+`<uses-permission>` on Android, capabilities in a Windows MSIX. `biometrics` is Face
+ID's reason on iOS (`NSFaceIDUsageDescription`) and `USE_BIOMETRIC` on Android;
+Touch ID and Windows Hello ask without one.
+
+### What linked packages declare
+
+A package the app links — a plugin such as `viso-push`, or the app itself — can
+carry what it needs declared, beside its code. Linking it is then all the app does:
+
+```text
+viso-push/
+├── android/java/…            Java compiled into the APK
+├── android/manifest.xml      joins the Android manifest
+├── ios/Info.plist            merges into the iOS Info.plist
+├── ios/entitlements.plist    entitlements the iOS app is signed with
+├── macos/Info.plist          merges into the macOS Info.plist
+├── macos/entitlements.plist  entitlements the macOS app is signed with
+└── web/worker.js             runs in the app's service worker
+```
+
+`android/manifest.xml` is a `<manifest>` that names only its namespaces. Its
+elements (`<uses-permission>`, `<uses-feature>`, `<queries>`, …) join the app's,
+and the children of its `<application>` (services, receivers, providers, activities,
+`<meta-data>`) join the app's `<application>`; `{package}` reads as the app's id:
+
+```xml
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <application>
+        <service
+            android:name="dev.viso.background.VisoJobService"
+            android:permission="android.permission.BIND_JOB_SERVICE"
+            android:exported="false" />
+    </application>
+</manifest>
+```
+
+A plist fragment is a `<plist>` holding one `<dict>`, merged key by key: arrays are
+united (each item once), dictionaries merge, and any other value must agree with
+what is there. The app's own files come last, so it adds what only it knows — the
+ids of its background tasks:
+
+```xml
+<!-- the app's ios/Info.plist -->
+<plist version="1.0">
+<dict>
+    <key>BGTaskSchedulerPermittedIdentifiers</key>
+    <array>
+        <string>com.example.notes.sync</string>
+    </array>
+</dict>
+</plist>
+```
+
+What needs a reason the user reads comes from `[package.permissions]` instead.
+The same declaration made twice is made once; a permission asked for by two
+packages is asked for at its widest (`android:maxSdkVersion` dropped when one asks
+on every level). Two different declarations of one component, or a fragment changing
+a key Viso writes from `Viso.toml`, is an error naming both files:
+
+```text
+error[C0014]: `UIRequiresFullScreen` is true in `viso-x`'s `ios/Info.plist` but false in what Viso writes from `Viso.toml`
+  --> viso-x/ios/Info.plist:5:2
+ = note: arrays and dictionaries merge, other values must agree: give the key in one place
+```
+
+A fragment that does not read is `C0013`. Both are checked before anything is
+built, by `viso build`, `viso run` and `viso package`.
+
+Entitlements: a simulator app has them, and the associated domains of
+`[package.links]`, linked into its executable (`__TEXT,__entitlements` and
+`__TEXT,__ents_der`), where the simulator reads them; its ad-hoc signature carries
+none, since the Mac it runs on refuses to start one that claims what only a
+provisioning profile allows. A device app's provisioning profile must allow each key a fragment asks for — `viso package`
+fails naming the package and the capability to enable — and its own value is the one
+signed, so `aps-environment` is the profile's `development` or `production`. A macOS
+package embeds no provisioning profile, so the keys only one allows
+(`com.apple.developer.*`) are left out of its signature with a warning naming the
+package.
+
+When a package the app links carries `web/worker.js`, the web bundle has a service
+worker: `sw.js`, each package's script in turn, which the page registers before it
+loads the app. The worker keeps its name, so a browser updates it in place. Without
+one, a bundle has no worker.
+
+A change in any of these files, or in the Java of any package the app links, makes
+the next `viso build` package the app again.
 
 ### Links that open the app
 
@@ -179,8 +265,8 @@ error under `auto` too: Viso never quietly signs with something else.
 
 | Platform | Identity | `auto` without one |
 |---|---|---|
-| macOS | `[package.macos] identity`, else the keychain's first `Developer ID Application:`; hardened runtime, entitlements from the permissions, timestamped; the `.dmg` is signed too | ad hoc (runs on this Mac only) |
-| iOS | `[package.ios] identity` (else Apple Distribution, then Development, from the keychain) and `provisioning_profile` | not signed |
+| macOS | `[package.macos] identity`, else the keychain's first `Developer ID Application:`; hardened runtime, entitlements from the permissions and the linked packages' `macos/entitlements.plist`, timestamped; the `.dmg` is signed too | ad hoc (runs on this Mac only) |
+| iOS | `[package.ios] identity` (else Apple Distribution, then Development, from the keychain) and `provisioning_profile`, whose entitlements it is signed with | not signed |
 | Android | `[package.android] keystore` and `key_alias`; passwords from the environment | the debug keystore |
 | Windows | `[package.windows] identity`, a certificate in the system store, with `signtool` | not signed |
 | Linux, web | — | — |

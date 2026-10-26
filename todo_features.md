@@ -654,9 +654,27 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
   integer}` rounds half to even; the web export writes them through `Intl`. Checked in
   en-US, de-DE and ja-JP under the dev runtime, the release package and Node.
 - [ ] Printing (desktop) and PDF export of a view.
-- [ ] Biometric authentication service.
-- [ ] Push notification registration (APNs/FCM).
-- [ ] Background tasks service.
+- [x] Biometric authentication service: `viso-ext/viso-auth`: LocalAuthentication,
+  BiometricPrompt, Windows Hello, fprintd and WebAuthn behind `availability()` and
+  `authenticate(reason) -> Reply<()>`, with a mock; run on macOS, the Android emulator
+  and Chrome. `USE_BIOMETRIC` comes from the plugin's `android/manifest.xml` fragment,
+  Face ID's reason from `[package.permissions] biometrics`.
+- [x] Push notification registration (APNs/FCM): `viso-ext/viso-push`: APNs through a
+  delegate hook added at run time, FCM through Google Play services' IPC (no SDK), Web
+  Push with its service worker half; the token as `Reply<String>`, a `Messages` stream,
+  and a mock. Run on Android, the web and the iOS simulator, which answers a device
+  token now that its `aps-environment` is linked into the app; an FCM token awaits a
+  real Firebase project, a device APNs one real signing; Windows and Linux are
+  Unsupported. The receiver, permissions, `remote-notification` mode, entitlement and
+  worker come from the plugin's fragments (checked with `aapt dump xmltree`, `plutil`
+  and the simulator).
+- [x] Background tasks service: `viso-ext/viso-background`: BGTaskScheduler,
+  JobScheduler, NSBackgroundActivityScheduler and Background Sync, `tasks!` registering
+  before `main`, `Request { after, every, network, charging, processing }`, and a mock.
+  Run on Android (a cold start too), macOS, the web and in iOS registration; Windows and
+  Linux are Unsupported. The job service, permissions, background modes and worker come
+  from the plugin's fragments, the task ids from the app's own `ios/Info.plist`; an app
+  linking it beside viso-push ran its job on the emulator from the merged manifest.
 - [x] Focus-visible ring drawn by the framework on focused controls (keyboard focus
   only, platform style).
 - [x] Access keys on buttons, checks and labelled fields (`&` mnemonics, Alt+letter,
