@@ -20,13 +20,16 @@ use std::cell::RefCell;
 use viso_render::Rgba;
 use viso_ui::context::UpdateCx;
 use viso_ui::{
-    BuildCx, Continuation, NodeId, Semantics, Size, StateId, StateStore, StateValue, StateWriter,
-    StructureCx, TaskId, Turn, Vec2,
+    BuildCx, Continuation, DirtyClass, NodeId, Semantics, Size, StateId, StateStore, StateValue,
+    StateWriter, StructureCx, TaskId, Turn, Vec2,
 };
 
+use super::overlays::Overlays;
 use crate::camera::{Camera, Insets, Limits, Motion, TILE_SIZE, View};
 use crate::geo::LngLat;
-use crate::load::{Built, Input, build_off_loop};
+use crate::geojson::DataLayer;
+use crate::load::{Built, Data, Input, build_off_loop};
+use crate::mvt::VectorTile;
 use crate::pyramid::{BuildKey, Plan, Pyramid, Slot, covering};
 use crate::source::{TileId, TileSource};
 use crate::style::Style;
@@ -124,12 +127,25 @@ pub(crate) enum Told {
     Settled(Camera),
 }
 
+/// The nodes a view's parts go under.
+pub(crate) struct CoreNodes {
+    pub camera: NodeId,
+    pub tiles: NodeId,
+    pub shapes: NodeId,
+    pub accuracy: NodeId,
+    pub overlay: NodeId,
+}
+
 /// The live state of a built map view.
 pub(crate) struct Core {
     pub root: NodeId,
     pub camera_node: NodeId,
-    #[allow(dead_code)]
-    pub overlay: NodeId,
+    /// The tiles' parent, under the camera node.
+    tiles_node: NodeId,
+    pub overlays: Overlays,
+    /// The app's data layers, by name, and all of them for the builds.
+    data_layers: Vec<(String, Arc<DataLayer>)>,
+    data: Data,
     /// The cell the view's structure hook depends on: poked to run it.
     pub wake: StateId,
     pokes: i32,
@@ -178,8 +194,7 @@ impl Core {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         root: NodeId,
-        camera_node: NodeId,
-        overlay: NodeId,
+        nodes: CoreNodes,
         wake: StateId,
         cells: CameraCells,
         camera: Camera,
@@ -195,8 +210,11 @@ impl Core {
         Rc::new_cyclic(|me| {
             RefCell::new(Core {
                 root,
-                camera_node,
-                overlay,
+                camera_node: nodes.camera,
+                tiles_node: nodes.tiles,
+                overlays: Overlays::new(nodes.shapes, nodes.accuracy, nodes.overlay),
+                data_layers: Vec::new(),
+                data: Arc::new([]),
                 wake,
                 pokes: 0,
                 cells,
@@ -399,6 +417,24 @@ impl Core {
         self.dirty_tiles = true;
     }
 
+    /// Shows `data` as the tile layer `name`, or no longer with `None`;
+    /// the tiles are built again with it.
+    pub fn set_data(&mut self, name: &str, data: Option<&crate::geojson::GeoJson>) {
+        self.data_layers.retain(|(n, _)| n != name);
+        if let Some(data) = data {
+            self.data_layers
+                .push((name.to_owned(), Arc::new(DataLayer::new(name, data))));
+        }
+        self.data = self
+            .data_layers
+            .iter()
+            .map(|(_, d)| Arc::clone(d))
+            .collect();
+        self.pyramid.forget_missing();
+        self.style_rev += 1;
+        self.dirty_tiles = true;
+    }
+
     fn stop_request(&mut self, store: Option<&mut viso_ui::NodeStore>, tile: TileId) {
         if let Some(r) = self.requests.remove(&tile) {
             if let Some(stop) = r.stop {
@@ -432,12 +468,14 @@ impl Core {
     fn start(&mut self, store: &mut viso_ui::NodeStore, tile: TileId, key: BuildKey) {
         let rebuild = self.pyramid.ready(tile).map(|b| Arc::clone(&b.tile));
         let style = Arc::clone(&self.style);
+        let data = Arc::clone(&self.data);
         let me = self.me.clone();
         let wake = self.wake;
         let (future, stop): (std::pin::Pin<Box<dyn std::future::Future<Output = _>>>, _) =
             match rebuild {
                 Some(decoded) => {
-                    let (answer, stop) = build_off_loop(Input::Decoded(decoded), tile, style, key);
+                    let (answer, stop) =
+                        build_off_loop(Input::Decoded(decoded), tile, style, data, key);
                     (
                         Box::pin(async move { answer.await.map(Some).map_err(|_| ()) }),
                         Some(stop),
@@ -449,19 +487,22 @@ impl Core {
                     let stopped = Arc::clone(&stop);
                     (
                         Box::pin(async move {
-                            match fetch.await {
-                                Ok(Some(bytes)) => {
-                                    if stopped.load(Ordering::Relaxed) {
-                                        return Err(());
-                                    }
-                                    let (answer, flag) =
-                                        build_off_loop(Input::Bytes(bytes), tile, style, key);
-                                    let _keep = StopWith(stopped, flag);
-                                    answer.await.map(Some).map_err(|_| ())
+                            let input = match fetch.await {
+                                Ok(Some(bytes)) => Input::Bytes(bytes),
+                                // The app's data still draws where the
+                                // source has nothing.
+                                Ok(None) if !data.is_empty() => {
+                                    Input::Decoded(Arc::new(VectorTile::default()))
                                 }
-                                Ok(None) => Ok(None),
-                                Err(_) => Err(()),
+                                Ok(None) => return Ok(None),
+                                Err(_) => return Err(()),
+                            };
+                            if stopped.load(Ordering::Relaxed) {
+                                return Err(());
                             }
+                            let (answer, flag) = build_off_loop(input, tile, style, data, key);
+                            let _keep = StopWith(stopped, flag);
+                            answer.await.map(Some).map_err(|_| ())
                         }),
                         Some(stop),
                     )
@@ -598,6 +639,8 @@ impl Core {
             self.place_tiles(s, &plan.draw, band, rebase);
             self.plan = plan;
         }
+        self.overlays
+            .apply(s, &self.view, band, self.anchor, rebase, &self.me);
         let mut told = None;
         if self.moved {
             self.moved = false;
@@ -676,7 +719,7 @@ impl Core {
                                 s.store,
                                 s.states,
                                 s.bindings,
-                                self.camera_node,
+                                self.tiles_node,
                             );
                             let side = TILE_SIZE as f32;
                             cx.drawing(Size::fixed(side, side), drawing).id()
@@ -688,9 +731,13 @@ impl Core {
             for t in old {
                 s.store.free_tree(t.node, s.effects, &mut self.free_scratch);
             }
+            s.store.mark_dirty(
+                self.tiles_node,
+                DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
+            );
             // The order they paint in: ancestors beneath.
             let in_order = {
-                let mut children = s.store.arena().children(self.camera_node);
+                let mut children = s.store.arena().children(self.tiles_node);
                 kept.iter().all(|t| children.next() == Some(t.node))
             };
             if !in_order {
@@ -698,7 +745,7 @@ impl Core {
                     s.store.arena_detach(t.node);
                 }
                 for t in &kept {
-                    s.store.arena_insert_before(self.camera_node, t.node, None);
+                    s.store.arena_insert_before(self.tiles_node, t.node, None);
                 }
             }
             self.tiles = kept;

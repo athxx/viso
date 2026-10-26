@@ -172,6 +172,16 @@ pub fn build_vector(
     params: &BuildParams<'_>,
     builder: &mut MeshBuilder,
 ) -> TileMesh {
+    let layers: Vec<&mvt::Layer> = tile.layers.iter().collect();
+    build_layers(&layers, params, builder)
+}
+
+/// Build the mesh of a tile whose layers are `tile_layers` by `params`.
+pub fn build_layers(
+    tile_layers: &[&mvt::Layer],
+    params: &BuildParams<'_>,
+    builder: &mut MeshBuilder,
+) -> TileMesh {
     builder.clear();
     let square = Square {
         lo: 0.0,
@@ -184,7 +194,7 @@ pub fn build_vector(
     let units_per_point = EXTENT / params.tile_points.max(1.0);
     let zoom = params.zoom;
     let mut layers: Vec<Option<(HashMap<&str, u32>, Decoded)>> = Vec::new();
-    layers.resize_with(tile.layers.len(), || None);
+    layers.resize_with(tile_layers.len(), || None);
     for style_layer in &params.style.layers {
         if !style_layer.source.is_empty() || !style_layer.shows_at(zoom) {
             continue;
@@ -195,14 +205,13 @@ pub fn build_vector(
         ) {
             continue;
         }
-        let Some(li) = tile
-            .layers
+        let Some(li) = tile_layers
             .iter()
             .position(|l| l.name == style_layer.source_layer)
         else {
             continue;
         };
-        let layer = &tile.layers[li];
+        let layer = tile_layers[li];
         let (keys, decoded) =
             layers[li].get_or_insert_with(|| (key_index(layer), Decoded::new(layer)));
         for (fi, feature) in layer.features.iter().enumerate() {

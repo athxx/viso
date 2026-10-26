@@ -9,8 +9,10 @@
 pub mod build;
 pub mod camera;
 pub mod geo;
+pub mod geojson;
 pub mod load;
 pub mod mvt;
+pub mod overlay;
 pub mod pyramid;
 pub mod source;
 pub mod style;
@@ -19,11 +21,13 @@ pub mod view;
 
 pub use camera::{Camera, Insets, Limits, Motion, TILE_SIZE, View};
 pub use geo::{LngLat, LngLatBounds, WorldPoint};
+pub use geojson::{GeoFeature, GeoJson, GeoJsonError, Geometry};
+pub use overlay::{Circle, Polygon, Polyline, Puck, Shape, Stroke};
 pub use source::{
     Completer, MemorySource, Reply, ServiceError, ServiceResult, TileId, TileReply, TileSource,
     reply,
 };
 pub use view::{
-    CameraCells, MapHandle, MapHandleSlot, MapPoint, MapTiles, MapView, PlaceHandler,
-    ViewportHandler, map_view,
+    CameraCells, Cluster, ClusterContent, MapHandle, MapHandleSlot, MapPoint, MapTiles, MapView,
+    Marker, MarkerContent, MarkerHandler, PlaceHandler, ShapeId, ViewportHandler, map_view,
 };

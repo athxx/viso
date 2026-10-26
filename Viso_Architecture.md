@@ -971,7 +971,7 @@ CLI 依赖 `viso-dsl`、`viso-dev-protocol`、`viso-schema`、`viso-image`、`vi
 | `viso`（facade） | runtime, ui, ui-macros, widgets, dsl（dev）, view, behavior, services, render, image, media, dev-protocol, gpu, platform, handle, text, shader, macros, ende, math, schema, pdf | `behavior` 的解释器只在 `vm` feature 下编入（ADR 0041）；`pdf` 只在 `pdf` feature 下 |
 | `viso-widgets` | ui, math | — |
 | `viso-charts`（extras） | ui, widgets, math；测试另 dev-depend viso | — |
-| `viso-map`（extras） | ui, widgets, render, text, math, services；测试另 dev-depend viso | — |
+| `viso-map`（extras） | ui, widgets, render, text, math, services, ende（GeoJSON 读取）；测试另 dev-depend viso | — |
 | `viso-ui-macros` | dsl | — |
 | `viso-lsp` | dsl | — |
 | `viso-cli` | project, package, dsl, dev-protocol, schema, ende, image, svg, text | — |

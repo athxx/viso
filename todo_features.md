@@ -787,10 +787,19 @@ viso-ext.
   pass per camera change bounded in time.
 - [ ] Raster and terrain: raster XYZ layers (PNG, JPEG, WebP), hillshade from DEM
   tiles (Terrarium and Mapbox RGB encodings).
-- [ ] Overlays: markers that are ordinary components anchored at lon/lat, polylines
+- [x] Overlays: markers that are ordinary components anchored at lon/lat, polylines
   (route casing, traveled part dimmed), polygons, circles in meters, a GeoJSON source
   styled like tile data, clustering, the user's position puck with heading and
   accuracy.
+  `overlay.rs` builds `Polyline` (casing, traveled fraction in its own colors),
+  `Polygon` and `Circle` (meters) once into a mesh in a world frame placed like a tile,
+  so pans and zooms only move them; `Marker` is the app's component in a sizeless
+  wrapper moved to its place by its anchor; `Cluster` gathers markers per zoom level and
+  opens to fit them when tapped; `Puck` is a dot and heading wedge turned with the map
+  over an accuracy circle. GeoJSON (`GeoJson::parse`, or features in code) becomes a
+  layer of each tile it crosses, clipped on the worker, drawn by the style's layers and
+  drawn where the source has no tile. Headless pictures and pixel checks in
+  `tests/view.rs`; unit tests in `overlay` and `geojson`.
 - [ ] Queries and events: tap and long-press at lon/lat, rendered features at a point,
   viewport changed, marker tapped.
 - [ ] Tilt and 3D (after W14): pitch with perspective, extruded buildings, 3D terrain.

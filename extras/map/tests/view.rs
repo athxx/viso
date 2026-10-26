@@ -568,3 +568,223 @@ fn a_new_style_rebuilds_the_loaded_tiles_without_fetching_them_again() {
     let (_, _, dark) = picture(&app, "view-restyled-dark");
     assert_ne!(light, dark);
 }
+
+/// The color at view point `p` of a picture, as RGB.
+fn rgb_at(px: &(u32, u32, Vec<u8>), p: [f64; 2]) -> [u8; 3] {
+    let (w, _, px) = px;
+    let i = ((p[1].round() as u32 * w + p[0].round() as u32) * 4) as usize;
+    [px[i + 2], px[i + 1], px[i]]
+}
+
+fn reddish(c: [u8; 3]) -> bool {
+    c[0] > 200 && c[1] < 60 && c[2] < 60
+}
+
+fn red_box(cx: &mut BuildCx<'_>) {
+    cx.stack(
+        viso::ui::StackStyle {
+            size: viso::ui::Size::fixed(20.0, 30.0),
+            style: viso::ui::BoxStyle::solid(viso::render::Rgba::new(1.0, 0.0, 0.0, 1.0)),
+            ..Default::default()
+        },
+        |_| {},
+    );
+}
+
+#[test]
+fn shapes_markers_and_the_puck_draw_and_a_pan_moves_them_uploading_nothing() {
+    use viso_map::{Circle, Marker, Polygon, Polyline, Puck, Stroke, style::Color};
+    let frames: Rc<RefCell<Vec<bool>>> = Rc::default();
+    let log = Rc::clone(&frames);
+    let none = Modifiers::default();
+    let start = berlin(13.0, 20.0);
+    let view = viso_map::View::new(start, [W, H]);
+    let pinned = view.unproject([420.0, 300.0]);
+    let route: Vec<LngLat> = [
+        [120.0, 380.0],
+        [300.0, 330.0],
+        [380.0, 150.0],
+        [560.0, 120.0],
+    ]
+    .iter()
+    .map(|&p| view.unproject(p))
+    .collect();
+    let mut script = vec![mouse(320.0, 240.0, PointerPhase::Down, none)];
+    for i in 1..=10 {
+        script.push(mouse(
+            320.0 - 5.0 * f64::from(i),
+            240.0 + 3.0 * f64::from(i),
+            PointerPhase::Moved,
+            none,
+        ));
+        script.push(RawEvent::RedrawRequested { window: WIN });
+    }
+    script.push(mouse(270.0, 270.0, PointerPhase::Up, none));
+    probe_frames(Some(Box::new(move |_, uploaded| {
+        log.borrow_mut().push(uploaded);
+    })));
+    let r = route.clone();
+    let (app, handle) = run_with(start, false, script, move |m| {
+        m.shape(
+            Polygon::new(
+                vec![
+                    view.unproject([60.0, 60.0]),
+                    view.unproject([220.0, 60.0]),
+                    view.unproject([220.0, 180.0]),
+                    view.unproject([60.0, 180.0]),
+                ],
+                Color::rgb(0x2e, 0xa0, 0x43).alpha(0.6),
+            )
+            .outline(Stroke::new(2.0, Color::rgb(0x1b, 0x5e, 0x20))),
+        )
+        .shape(
+            Circle::new(
+                view.unproject([520.0, 380.0]),
+                600.0,
+                Color::rgb(0xff, 0x98, 0).alpha(0.5),
+            )
+            .outline(Stroke::new(1.5, Color::rgb(0xe6, 0x51, 0))),
+        )
+        .shape(Polyline::route(r.clone()).traveled(0.35))
+        .marker(Marker::new(1, pinned, red_box))
+        .puck(Puck::new(view.unproject([200.0, 300.0]), 120.0).heading(45.0))
+    });
+    probe_frames(None);
+    let px = picture(&app, "overlays-panned");
+    // The marker's box stands on its place, wherever the pan left it.
+    let at = handle.view().project(pinned);
+    assert!(
+        reddish(rgb_at(&px, [at[0], at[1] - 15.0])),
+        "{:?}",
+        rgb_at(&px, [at[0], at[1] - 15.0])
+    );
+    assert!(!reddish(rgb_at(&px, [at[0], at[1] + 6.0])));
+    // The route passes through its points.
+    let mid = handle.view().project(route[2]);
+    let c = rgb_at(&px, mid);
+    assert!(c[2] > 150 && c[0] < 120, "{c:?}");
+    let frames = frames.borrow();
+    let tail = &frames[frames.len().saturating_sub(8)..];
+    assert!(tail.iter().all(|&u| !u), "{frames:?}");
+}
+
+thread_local! {
+    static TAPPED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+#[test]
+fn a_tap_on_a_marker_tells_its_id_and_not_the_place() {
+    use viso_map::Marker;
+    TAPPED.with(|t| t.borrow_mut().clear());
+    let start = berlin(12.0, 0.0);
+    let view = viso_map::View::new(start, [W, H]);
+    let none = Modifiers::default();
+    let click = |x, y| {
+        vec![
+            mouse(x, y, PointerPhase::Down, none),
+            mouse(x, y, PointerPhase::Up, none),
+            RawEvent::RedrawRequested { window: WIN },
+        ]
+    };
+    let mut script = click(300.0, 185.0);
+    // Away from it, and past the double-click time.
+    script.extend(redraws(40));
+    script.extend(click(100.0, 400.0));
+    run_with(start, false, script, move |m| {
+        m.marker(Marker::new(7, view.unproject([300.0, 200.0]), red_box))
+            .on_marker_tap(|_, id| TAPPED.with(|t| t.borrow_mut().push(format!("marker {id}"))))
+            .on_tap(|_, _| TAPPED.with(|t| t.borrow_mut().push("map".into())))
+    });
+    assert_eq!(TAPPED.with(|t| t.borrow().clone()), ["marker 7", "map"]);
+}
+
+#[test]
+fn near_markers_gather_into_a_cluster_that_opens_when_tapped() {
+    use viso_map::{Cluster, Marker};
+    let start = berlin(10.0, 0.0);
+    let view = viso_map::View::new(start, [W, H]);
+    let none = Modifiers::default();
+    let script = vec![
+        mouse(320.0, 240.0, PointerPhase::Down, none),
+        mouse(320.0, 240.0, PointerPhase::Up, none),
+    ];
+    let (app, handle) = run_with(start, false, vec![], move |mut m| {
+        for i in 0..5u32 {
+            let p = view.unproject([310.0 + 5.0 * f64::from(i), 235.0 + 2.0 * f64::from(i)]);
+            m = m.marker(Marker::new(u64::from(i), p, red_box));
+        }
+        m.marker(Marker::new(9, view.unproject([100.0, 100.0]), red_box))
+            .cluster(Cluster::new(40.0, |cx, _| red_box(cx)))
+    });
+    picture(&app, "overlays-cluster");
+    let (alone, clusters) = handle.markers_shown();
+    assert_eq!(alone, [9]);
+    assert_eq!(clusters.len(), 1);
+    assert_eq!(clusters[0].0, 5);
+    let (_, handle) = run_with(
+        start,
+        false,
+        script.into_iter().chain(redraws(40)).collect(),
+        move |mut m| {
+            for i in 0..5u32 {
+                let p = view.unproject([310.0 + 5.0 * f64::from(i), 235.0 + 2.0 * f64::from(i)]);
+                m = m.marker(Marker::new(u64::from(i), p, red_box));
+            }
+            m.cluster(Cluster::new(40.0, |cx, _| red_box(cx)))
+        },
+    );
+    let c = handle.camera();
+    assert!(c.zoom >= 11.0, "{c:?}");
+    let (alone, clusters) = handle.markers_shown();
+    assert!(
+        alone.len() > 1 || clusters.iter().all(|c| c.0 < 5),
+        "{alone:?} {clusters:?}"
+    );
+}
+
+#[test]
+fn geojson_draws_through_the_style_even_where_the_source_has_nothing() {
+    use viso_map::style::{Color, Layer};
+    use viso_map::{GeoFeature, GeoJson, Geometry};
+    let start = berlin(12.0, 0.0);
+    let view = viso_map::View::new(start, [W, H]);
+    let ring: Vec<LngLat> = [
+        [200.0, 150.0],
+        [440.0, 150.0],
+        [440.0, 330.0],
+        [200.0, 330.0],
+    ]
+    .iter()
+    .map(|&p| view.unproject(p))
+    .collect();
+    let data = GeoJson::new(vec![
+        GeoFeature::new(Geometry::Polygons(vec![vec![ring]])).with("kind", "zone"),
+    ]);
+    let slot = MapHandleSlot::default();
+    let s = Rc::clone(&slot);
+    SETUP.with(|setup| {
+        let data = data.clone();
+        *setup.borrow_mut() = Some(Box::new(move |cx| {
+            let style = builtin::openmaptiles_light().with(Layer::fill(
+                "zones",
+                "zones",
+                Color::rgb(0xff, 0, 0),
+            ));
+            map_view(viso_map::MemorySource::new())
+                .camera(start)
+                .style(style)
+                .data("zones", data.clone())
+                .handle(&s)
+                .build(cx);
+        }))
+    });
+    let app = drive_scripted::<MapApp>(redraws(16), STEP);
+    let px = picture(&app, "overlays-geojson");
+    assert!(
+        reddish(rgb_at(&px, [320.0, 240.0])),
+        "{:?}",
+        rgb_at(&px, [320.0, 240.0])
+    );
+    assert!(!reddish(rgb_at(&px, [100.0, 100.0])));
+    assert!(slot.borrow().is_some());
+}

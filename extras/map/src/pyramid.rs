@@ -480,6 +480,12 @@ impl<T: Clone> Pyramid<T> {
         loading
     }
 
+    /// Forgets the tiles the source had none of, to ask for them again.
+    pub fn forget_missing(&mut self) {
+        self.entries
+            .retain(|_, e| !matches!(e.state, TileState::Missing));
+    }
+
     /// Every ready tile and what it carries.
     pub fn ready_tiles(&self) -> impl Iterator<Item = (TileId, &T)> {
         self.entries.iter().filter_map(|(t, e)| match &e.state {

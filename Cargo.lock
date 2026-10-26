@@ -3284,6 +3284,7 @@ version = "0.0.0"
 dependencies = [
  "miniz_oxide",
  "viso",
+ "viso-ende",
  "viso-math",
  "viso-render",
  "viso-services",

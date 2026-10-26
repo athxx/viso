@@ -16,6 +16,7 @@ viso-render = { workspace = true }
 viso-services = { workspace = true }
 viso-text = { workspace = true }
 viso-ui = { workspace = true }
+viso-ende = { workspace = true }
 viso-widgets = { workspace = true }
 miniz_oxide = { workspace = true }
 

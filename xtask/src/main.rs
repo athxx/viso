@@ -185,8 +185,9 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
         ),
         // The map view is an optional extra over the widgets: retained
         // drawings and transform roots of the UI, meshes of the renderer,
-        // labels shaped by the text runtime, and the services' replies for
-        // asynchronous tiles. Its tests drive the facade headless.
+        // labels shaped by the text runtime, the services' replies for
+        // asynchronous tiles and the JSON reader for GeoJSON. Its tests
+        // drive the facade headless.
         (
             "viso-map",
             Allowed {
@@ -198,6 +199,7 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
                     "viso-text",
                     "viso-math",
                     "viso-services",
+                    "viso-ende",
                 ],
                 dev: &["viso"],
             },
