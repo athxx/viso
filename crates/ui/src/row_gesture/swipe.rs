@@ -28,7 +28,7 @@ use crate::adaptive::LayoutDirection;
 use crate::component::NodeStore;
 use crate::drag::{DragPhase, DragSample, SWIPE_SPEED};
 use crate::input::{Key, KeyEvent, ScrollPhase};
-use crate::layout::{Alignment2D, Justify, Placement, Size, StackPlacement, Vec2};
+use crate::layout::{Alignment2D, Justify, Placement, Sizing, StackPlacement, Vec2};
 use crate::node::NodeId;
 use crate::row_gesture::RowGesture;
 use crate::scroll_motion::{MAX_STEP, SPRING, VelocityTracker};
@@ -248,7 +248,7 @@ impl NodeStore {
                     layer: -1,
                 }),
             );
-            self.set_fixed_size(id, Size::fill());
+            self.set_fixed_size(id, Sizing::fill());
             if let Some((axis, _, align)) = self.flex_arrangement(id) {
                 let justify = match edge {
                     SwipeEdge::Leading => Justify::End,
@@ -901,7 +901,7 @@ impl NodeStore {
 mod tests {
     use super::*;
     use crate::component::{BuildCx, FlexStyle, LeafStyle, StackStyle};
-    use crate::layout::{Alignment2D, Axis, Justify, Size};
+    use crate::layout::{Alignment2D, Axis, Justify, Sizing};
     use crate::style::BoxStyle;
     use viso_render::Rect;
 
@@ -914,7 +914,7 @@ mod tests {
         let mut parts = [None; 3];
         let leaf = |cx: &mut BuildCx<'_>, w: f32| {
             cx.leaf(LeafStyle {
-                size: Size::fixed(w, 50.0),
+                size: Sizing::fixed(w, 50.0),
                 style: BoxStyle::NONE,
             })
             .id()
@@ -924,7 +924,7 @@ mod tests {
             let root = cx.stack(
                 StackStyle {
                     align: Alignment2D::TopStart,
-                    size: Size::fixed(300.0, 50.0),
+                    size: Sizing::fixed(300.0, 50.0),
                     ..StackStyle::default()
                 },
                 |cx| {
@@ -934,7 +934,7 @@ mod tests {
                             FlexStyle {
                                 axis: Axis::Row,
                                 justify: if end { Justify::End } else { Justify::Start },
-                                size: Size::fill(),
+                                size: Sizing::fill(),
                                 ..FlexStyle::default()
                             },
                             |cx| {

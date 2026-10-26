@@ -54,12 +54,12 @@
 //! use std::rc::Rc;
 //! use viso_widgets::{ToastEdge, ToastHandleSlot, toast};
 //! use viso_ui::{SemanticProjector, BuildCx, BindingTable, Component, LeafStyle, NodeStore, StateStore, TextEdits, VirtualLists};
-//! use viso_ui::{BoxStyle, Size};
+//! use viso_ui::{BoxStyle, Sizing};
 //!
 //! let handle: ToastHandleSlot = Rc::new(RefCell::new(None));
 //! let control = toast()
 //!     .edge(ToastEdge::Bottom)
-//!     .content(|cx| { cx.leaf(LeafStyle { size: Size::fixed(240.0, 48.0), style: BoxStyle::NONE }); })
+//!     .content(|cx| { cx.leaf(LeafStyle { size: Sizing::fixed(240.0, 48.0), style: BoxStyle::NONE }); })
 //!     .on_dismiss(|_ev| { /* the toast was manually dismissed */ })
 //!     .handle(&handle);
 //!
@@ -81,7 +81,7 @@ use std::time::Duration;
 
 use viso_ui::{
     Align, Axis, BoxStyle, BuildCx, Component, DirtyClass, EventCx, FlexStyle, Inset, Justify,
-    Length, NodeId, Role, Semantics, Size, StateId, StateValue,
+    Length, NodeId, Role, Semantics, Sizing, StateId, StateValue,
 };
 
 /// A shared, mutable dismiss callback, fired when the toast is **manually**
@@ -371,7 +371,7 @@ impl Component for Toast {
                 // pins to (a bottom toast is centered horizontally).
                 align: Align::Center,
                 justify: Justify::Start,
-                size: Size::fill(),
+                size: Sizing::fill(),
                 style: BoxStyle::NONE,
             },
             |cx| {
@@ -382,7 +382,7 @@ impl Component for Toast {
                 // leftover main-axis space so the content sits against its edge.
                 if edge.needs_spacer() {
                     cx.leaf(viso_ui::LeafStyle {
-                        size: Size {
+                        size: Sizing {
                             width: Length::Fill { weight: 1.0 },
                             height: Length::Fill { weight: 1.0 },
                         },
@@ -403,7 +403,7 @@ impl Component for Toast {
                         padding: Inset::all(0.0),
                         align: Align::Center,
                         justify: Justify::Start,
-                        size: Size {
+                        size: Sizing {
                             width: Length::Fit,
                             height: Length::Fit,
                         },
@@ -563,7 +563,7 @@ mod tests {
             .duration(duration)
             .content(|cx| {
                 cx.leaf(LeafStyle {
-                    size: Size::fixed(100.0, 40.0),
+                    size: Sizing::fixed(100.0, 40.0),
                     style: BoxStyle::NONE,
                 });
             })
@@ -668,7 +668,7 @@ mod tests {
             .duration(dur)
             .content(|cx| {
                 cx.leaf(LeafStyle {
-                    size: Size::fixed(100.0, 40.0),
+                    size: Sizing::fixed(100.0, 40.0),
                     style: BoxStyle::NONE,
                 });
             })
@@ -751,7 +751,7 @@ mod tests {
         let control = toast()
             .content(|cx| {
                 cx.leaf(LeafStyle {
-                    size: Size::fixed(100.0, 40.0),
+                    size: Sizing::fixed(100.0, 40.0),
                     style: BoxStyle::NONE,
                 });
             })

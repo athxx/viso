@@ -1547,7 +1547,7 @@ mod tests {
     }
 
     use crate::component::{BuildCx, FlexStyle, ScrollBehavior, ScrollRequest, ScrollStyle};
-    use crate::layout::{Length, Size};
+    use crate::layout::{Length, Sizing};
     use crate::scroll_bar::ScrollBars;
     use viso_render::Rect;
 
@@ -1567,7 +1567,7 @@ mod tests {
             let mut cx = BuildCx::new(&mut store);
             cx.scroll(
                 ScrollStyle {
-                    size: Size::fixed(VIEW.w, VIEW.h),
+                    size: Sizing::fixed(VIEW.w, VIEW.h),
                     bars: ScrollBars::Hidden,
                     tail,
                     ..ScrollStyle::default()
@@ -1577,7 +1577,7 @@ mod tests {
                         cx.flex(
                             FlexStyle {
                                 axis: Axis::Column,
-                                size: Size {
+                                size: Sizing {
                                     width: Length::Fill { weight: 1.0 },
                                     height: Length::Fit,
                                 },
@@ -1601,7 +1601,7 @@ mod tests {
 
     fn row(cx: &mut BuildCx<'_>) -> NodeId {
         cx.leaf(crate::component::LeafStyle {
-            size: Size::fixed(100.0, 50.0),
+            size: Sizing::fixed(100.0, 50.0),
             ..Default::default()
         })
         .id()
@@ -1765,7 +1765,7 @@ mod tests {
             for _ in 0..n {
                 let leaf = store.alloc(
                     crate::layout::LayoutInput::Leaf {
-                        size: Size::fixed(100.0, 50.0),
+                        size: Sizing::fixed(100.0, 50.0),
                     },
                     crate::style::BoxStyle::NONE,
                 );

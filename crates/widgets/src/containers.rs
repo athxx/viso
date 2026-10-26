@@ -16,7 +16,7 @@
 
 use viso_ui::{
     Align, Axis, Backdrop, BoxStyle, BuildCx, Component, FlexStyle, Inset, Justify, Role,
-    ScrollStyle, Semantics, Size,
+    ScrollStyle, Semantics, Sizing,
 };
 
 /// The visual and layout parameters of a [`View`]. A small, flat description of
@@ -36,7 +36,7 @@ pub struct ViewStyle {
     /// Cross-axis alignment of children.
     pub align: Align,
     /// The container's own size request within its parent.
-    pub size: Size,
+    pub size: Sizing,
     /// The container's background/border/radius. [`BoxStyle::NONE`] is a pure,
     /// transparent layout box.
     pub background: BoxStyle,
@@ -57,7 +57,7 @@ impl Default for ViewStyle {
             gap: 0.0,
             padding: Inset::default(),
             align: Align::Start,
-            size: Size::fill(),
+            size: Sizing::fill(),
             background: BoxStyle::NONE,
             scroll_axis: None,
             backdrop: None,
@@ -287,7 +287,7 @@ mod tests {
     fn scroll_view_builds_a_scroll_node() {
         let container = view(ViewStyle {
             scroll_axis: Some(Axis::Column),
-            size: Size {
+            size: Sizing {
                 width: Length::Fixed(100.0),
                 height: Length::Fixed(100.0),
             },
@@ -295,7 +295,7 @@ mod tests {
         })
         .children(|cx| {
             cx.leaf(LeafStyle {
-                size: Size {
+                size: Sizing {
                     width: Length::Fixed(100.0),
                     height: Length::Fixed(1000.0),
                 },

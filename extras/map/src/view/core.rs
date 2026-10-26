@@ -20,7 +20,7 @@ use std::cell::RefCell;
 use viso_render::Rgba;
 use viso_ui::context::UpdateCx;
 use viso_ui::{
-    BuildCx, Continuation, DirtyClass, NodeId, Semantics, Size, StateId, StateStore, StateValue,
+    BuildCx, Continuation, DirtyClass, NodeId, Semantics, Sizing, StateId, StateStore, StateValue,
     StateWriter, StructureCx, TaskId, Turn, Vec2,
 };
 
@@ -28,7 +28,7 @@ use super::labels::Labels;
 use super::overlays::Overlays;
 use super::rasters::Rasters;
 use super::tilted::{Frame, Tilted};
-use crate::camera::{Camera, Insets, Limits, MAX_PITCH, Motion, TILE_SIZE, View};
+use crate::camera::{Camera, Limits, MAX_PITCH, Motion, Padding, TILE_SIZE, View};
 use crate::geo::LngLat;
 use crate::geojson::DataLayer;
 use crate::load::{Built, Data, Input, Recipe, build_off_loop};
@@ -251,7 +251,7 @@ impl Core {
         cells: CameraCells,
         camera: Camera,
         limits: Limits,
-        padding: Insets,
+        padding: Padding,
         source: Rc<dyn TileSource>,
         zooms: (u8, u8),
         style: Arc<Style>,
@@ -928,7 +928,7 @@ impl Core {
                                 let mut cx =
                                     BuildCx::with_parent(s.store, s.states, s.bindings, parents[p]);
                                 t.nodes[p] =
-                                    Some(cx.drawing(Size::fixed(side, side), drawing).id());
+                                    Some(cx.drawing(Sizing::fixed(side, side), drawing).id());
                             }
                             (None, None) => {}
                         }

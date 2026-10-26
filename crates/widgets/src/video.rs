@@ -33,7 +33,7 @@ use std::time::Duration;
 use viso_ui::video_controls::{VideoControls, VideoControlsStyle, VideoLabels};
 use viso_ui::{
     Alignment2D, AssetFit, BoxStyle, BuildCx, Component, EventCx, Handle, LeafStyle, Length,
-    NodeId, Notice, NoticeKinds, Playback, Rgba, Role, Semantics, Size, StackStyle, StateStore,
+    NodeId, Notice, NoticeKinds, Playback, Rgba, Role, Semantics, Sizing, StackStyle, StateStore,
     VideoSource, VideoStatus,
 };
 
@@ -58,7 +58,7 @@ pub struct Video {
     source: VideoSource,
     fit: AssetFit,
     tint: Option<Rgba>,
-    size: Size,
+    size: Sizing,
     playback: Playback,
     /// The text alternative; `None` for decoration.
     label: Option<String>,
@@ -146,7 +146,7 @@ pub fn video(source: impl Into<VideoSource>) -> Video {
         source: source.into(),
         fit: AssetFit::Contain,
         tint: None,
-        size: Size {
+        size: Sizing {
             width: Length::Fit,
             height: Length::Fit,
         },
@@ -178,7 +178,7 @@ impl Video {
 
     /// Set the video's own size request within its parent (defaults to
     /// fitting its natural size).
-    pub fn size(mut self, size: Size) -> Self {
+    pub fn size(mut self, size: Sizing) -> Self {
         self.size = size;
         self
     }
@@ -289,7 +289,7 @@ impl Video {
     }
 
     /// The leaf showing the pictures, sized `size`.
-    fn picture(&self, cx: &mut BuildCx<'_>, size: Size) -> Handle {
+    fn picture(&self, cx: &mut BuildCx<'_>, size: Sizing) -> Handle {
         let handle = cx.leaf(LeafStyle {
             size,
             style: BoxStyle::NONE,
@@ -366,7 +366,7 @@ impl Component for Video {
         let (mut picture, mut loading, mut failed) = (None, None, None);
         let layer = StackStyle {
             align: Alignment2D::Center,
-            size: Size::fill(),
+            size: Sizing::fill(),
             ..StackStyle::default()
         };
         let stack = cx.stack(
@@ -376,7 +376,7 @@ impl Component for Video {
                 ..StackStyle::default()
             },
             |cx| {
-                let shown = self.picture(cx, Size::fill());
+                let shown = self.picture(cx, Sizing::fill());
                 picture = Some(shown);
                 for (view, at) in [(&self.poster, &mut loading), (&self.error, &mut failed)] {
                     if let Some(view) = view {
@@ -545,7 +545,7 @@ mod tests {
         let (progress, ended, loaded) = (Rc::clone(&heard), Rc::clone(&heard), Rc::clone(&heard));
         let poster = video(VideoSource::file("never.mp4"));
         let widget = video(VideoSource::file("a.mp4"))
-            .size(Size::fixed(40.0, 30.0))
+            .size(Sizing::fixed(40.0, 30.0))
             .poster(poster)
             .on_progress(move |s, _| progress.borrow_mut().push(format!("at {:?}", s.position)))
             .on_ended(move |_| ended.borrow_mut().push("ended".into()))

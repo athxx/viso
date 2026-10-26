@@ -17,7 +17,7 @@ use viso_render::{LineCap, Path, PathCmd, Point, Primitive, Rect, Rgba, Stroke};
 use crate::component::{BuildCx, Handle, LeafStyle, NodeStore};
 use crate::content::Content;
 use crate::dirty::DirtyClass;
-use crate::layout::{Alignment2D, Size, Vec2};
+use crate::layout::{Alignment2D, Sizing, Vec2};
 use crate::node::NodeId;
 use crate::style::BoxStyle;
 use crate::timer::TimerRequest;
@@ -279,7 +279,7 @@ impl BuildCx<'_> {
     /// full; [`NodeStore::set_spinning`] spins it.
     pub fn spinner(&mut self, look: SpinnerLook, side: f32, color: Rgba) -> Handle {
         let handle = self.leaf(LeafStyle {
-            size: Size::fixed(side, side),
+            size: Sizing::fixed(side, side),
             style: BoxStyle::NONE,
         });
         let id = handle.id();

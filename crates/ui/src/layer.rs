@@ -352,7 +352,7 @@ mod tests {
     use viso_render::Rect;
 
     use crate::component::{BuildCx, FlexStyle, LeafStyle, NodeStore};
-    use crate::layout::{Axis, Size};
+    use crate::layout::{Axis, Sizing};
 
     const SURFACE: Rect = Rect {
         x: 0.0,
@@ -374,20 +374,20 @@ mod tests {
             cx.flex(column, |cx| {
                 let small = FlexStyle {
                     axis: Axis::Column,
-                    size: Size::fixed(100.0, 50.0),
+                    size: Sizing::fixed(100.0, 50.0),
                     ..FlexStyle::default()
                 };
                 panel = Some(
                     cx.flex(small, |cx| {
                         let cover = FlexStyle {
                             axis: Axis::Column,
-                            size: Size::fill(),
+                            size: Sizing::fill(),
                             ..FlexStyle::default()
                         };
                         layer = Some(
                             cx.flex(cover, |cx| {
                                 let leaf = LeafStyle {
-                                    size: Size::fixed(40.0, 30.0),
+                                    size: Sizing::fixed(40.0, 30.0),
                                     ..LeafStyle::default()
                                 };
                                 inner = Some(cx.leaf(leaf).id());
@@ -398,7 +398,7 @@ mod tests {
                     .id(),
                 );
                 let leaf = LeafStyle {
-                    size: Size::fixed(10.0, 20.0),
+                    size: Sizing::fixed(10.0, 20.0),
                     ..LeafStyle::default()
                 };
                 after = Some(cx.leaf(leaf).id());
@@ -415,7 +415,7 @@ mod tests {
 
         // A change inside the layer, and the layer's own, relayout alone.
         store.clear_dirty();
-        let bigger = Size::fixed(40.0, 60.0);
+        let bigger = Sizing::fixed(40.0, 60.0);
         store.set_fixed_size(inner, bigger);
         let (mut scratch, mut roots) = (Vec::new(), Vec::new());
         store.relayout_dirty(root, SURFACE, &mut scratch, &mut roots);

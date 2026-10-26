@@ -13,7 +13,7 @@ pub use viso::platform::{
     PointerPhase as RawPhase, RawEvent, RawImePreedit, RawKey, RawPointer, RawText, WindowId,
 };
 use viso::prelude::*;
-use viso::ui::{Axis, Component, FlexStyle, Size};
+use viso::ui::{Axis, Component, FlexStyle, Sizing};
 pub use viso_code_editor::{EditorHandle, EditorSlot, code_editor};
 
 pub const STEP: Duration = Duration::from_millis(16);
@@ -61,14 +61,14 @@ impl Application for EditorApp {
         let text = TEXT.with(|t| t.borrow().clone());
         cx.flex(
             FlexStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 axis: Axis::Column,
                 ..FlexStyle::default()
             },
             |cx| {
                 let mut editor = code_editor(text)
                     .family(viso::ui::FontFamily::Named("DejaVu Sans Mono".into()))
-                    .size(Size::fixed(600.0, 400.0))
+                    .size(Sizing::fixed(600.0, 400.0))
                     .handle(&slot);
                 if let Some(setup) = SETUP.with(|s| s.get()) {
                     editor = setup(editor);

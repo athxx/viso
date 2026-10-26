@@ -9,7 +9,7 @@ use viso_ui::adaptive::LayoutDirection;
 use viso_ui::{
     Axis, BindingTable, BuildCx, LeafStyle, Modifiers, NodeId, NodeStore, PointerButtons,
     PointerContact, PointerEvent, PointerId, PointerPhase, PointerRouter, Rect, ScrollBarStyle,
-    ScrollBars, ScrollEvent, ScrollPhase, ScrollStyle, Size, StateStore, Vec2, route_scroll,
+    ScrollBars, ScrollEvent, ScrollPhase, ScrollStyle, Sizing, StateStore, Vec2, route_scroll,
 };
 
 fn surface(w: f32, h: f32) -> Rect {
@@ -29,14 +29,14 @@ fn scene(store: &mut NodeStore, w: f32, h: f32) -> (NodeId, NodeId) {
         cx.scroll(
             ScrollStyle {
                 across: true,
-                size: Size::fixed(100.0, 100.0),
+                size: Sizing::fixed(100.0, 100.0),
                 bars: ScrollBars::Hidden,
                 ..Default::default()
             },
             |cx| {
                 content = Some(
                     cx.leaf(LeafStyle {
-                        size: Size::fixed(w, h),
+                        size: Sizing::fixed(w, h),
                         ..Default::default()
                     })
                     .id(),
@@ -113,7 +113,7 @@ fn a_wheel_moves_both_offsets_and_hands_on_what_it_cannot_take() {
         let mut cx = BuildCx::new(&mut store);
         cx.scroll(
             ScrollStyle {
-                size: Size::fixed(100.0, 100.0),
+                size: Sizing::fixed(100.0, 100.0),
                 bars: ScrollBars::Hidden,
                 ..Default::default()
             },
@@ -121,7 +121,7 @@ fn a_wheel_moves_both_offsets_and_hands_on_what_it_cannot_take() {
                 cx.flex(
                     viso_ui::FlexStyle {
                         axis: Axis::Column,
-                        size: Size::fixed(100.0, 300.0),
+                        size: Sizing::fixed(100.0, 300.0),
                         ..Default::default()
                     },
                     |cx| {
@@ -129,13 +129,13 @@ fn a_wheel_moves_both_offsets_and_hands_on_what_it_cannot_take() {
                             cx.scroll(
                                 ScrollStyle {
                                     across: true,
-                                    size: Size::fixed(100.0, 100.0),
+                                    size: Sizing::fixed(100.0, 100.0),
                                     bars: ScrollBars::Hidden,
                                     ..Default::default()
                                 },
                                 |cx| {
                                     cx.leaf(LeafStyle {
-                                        size: Size::fixed(300.0, 150.0),
+                                        size: Sizing::fixed(300.0, 150.0),
                                         ..Default::default()
                                     });
                                 },
@@ -187,13 +187,13 @@ fn classic_bars_keep_room_beside_and_under_and_stop_short_of_the_corner() {
         cx.scroll(
             ScrollStyle {
                 across: true,
-                size: Size::fixed(100.0, 100.0),
+                size: Sizing::fixed(100.0, 100.0),
                 ..Default::default()
             },
             |cx| {
                 content = Some(
                     cx.leaf(LeafStyle {
-                        size: Size::fixed(300.0, 400.0),
+                        size: Sizing::fixed(300.0, 400.0),
                         ..Default::default()
                     })
                     .id(),

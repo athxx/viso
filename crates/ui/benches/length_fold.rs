@@ -12,7 +12,7 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use viso_render::Rect;
 use viso_ui::{
     Axis, BuildCx, FlexStyle, LeafStyle, Length, LengthEnv, LengthTerms, NodeId, NodeLengths,
-    NodeStore, Size,
+    NodeStore, Sizing,
 };
 
 const ROWS: usize = 100;
@@ -42,7 +42,7 @@ fn build(bound: bool) -> (NodeStore, NodeId, Vec<NodeId>) {
                 for _ in 0..ROWS {
                     let row = cx.flex(
                         FlexStyle {
-                            size: Size {
+                            size: Sizing {
                                 width: Length::fill(),
                                 height: Length::Fit,
                             },
@@ -51,7 +51,7 @@ fn build(bound: bool) -> (NodeStore, NodeId, Vec<NodeId>) {
                         |cx| {
                             for leaf in 0..LEAVES {
                                 let handle = cx.leaf(LeafStyle {
-                                    size: Size::fixed(20.0, 10.0),
+                                    size: Sizing::fixed(20.0, 10.0),
                                     ..LeafStyle::default()
                                 });
                                 let width = match leaf % 4 {

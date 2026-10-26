@@ -232,7 +232,7 @@ pub fn hit_test(store: &NodeStore, root: NodeId, px: f32, py: f32) -> Option<Nod
 mod tests {
     use super::*;
     use crate::component::{BuildCx, FlexStyle, LeafStyle, NodeStore};
-    use crate::layout::{Align, Axis, Inset, Length, Size};
+    use crate::layout::{Align, Axis, Inset, Length, Sizing};
     use crate::style::BoxStyle;
     use viso_render::{Rect, Rgba};
 
@@ -260,16 +260,16 @@ mod tests {
                 FlexStyle {
                     axis: Axis::Row,
                     gap: 10.0,
-                    size: Size::fill(),
+                    size: Sizing::fill(),
                     ..Default::default()
                 },
                 |cx| {
                     ids.0 = Some(cx.leaf(LeafStyle {
-                        size: Size::fixed(40.0, 40.0),
+                        size: Sizing::fixed(40.0, 40.0),
                         style: BoxStyle::solid(SOLID),
                     }));
                     ids.1 = Some(cx.leaf(LeafStyle {
-                        size: Size::fixed(40.0, 40.0),
+                        size: Sizing::fixed(40.0, 40.0),
                         style: BoxStyle::solid(SOLID),
                     }));
                 },
@@ -306,13 +306,13 @@ mod tests {
                 FlexStyle {
                     axis: Axis::Row,
                     padding: Inset::all(20.0),
-                    size: Size::fixed(100.0, 100.0),
+                    size: Sizing::fixed(100.0, 100.0),
                     style: BoxStyle::solid(SOLID),
                     ..Default::default()
                 },
                 |cx| {
                     inner = Some(cx.leaf(LeafStyle {
-                        size: Size::fixed(40.0, 40.0),
+                        size: Sizing::fixed(40.0, 40.0),
                         style: BoxStyle::solid(SOLID),
                     }));
                 },
@@ -340,13 +340,13 @@ mod tests {
                     axis: Axis::Row,
                     padding: Inset::all(20.0),
                     align: Align::Center,
-                    size: Size::fixed(100.0, 100.0),
+                    size: Sizing::fixed(100.0, 100.0),
                     style: BoxStyle::solid(SOLID),
                     ..Default::default()
                 },
                 |cx| {
                     cx.leaf(LeafStyle {
-                        size: Size::fixed(20.0, 20.0),
+                        size: Sizing::fixed(20.0, 20.0),
                         style: BoxStyle::solid(SOLID),
                     });
                 },
@@ -376,13 +376,13 @@ mod tests {
             cx.flex(
                 FlexStyle {
                     axis: Axis::Row,
-                    size: Size::fill(),
+                    size: Sizing::fill(),
                     style: BoxStyle::solid(SOLID),
                     ..Default::default()
                 },
                 |cx| {
                     cx.leaf(LeafStyle {
-                        size: Size::fixed(20.0, 20.0),
+                        size: Sizing::fixed(20.0, 20.0),
                         style: BoxStyle::solid(SOLID),
                     });
                 },
@@ -410,7 +410,7 @@ mod tests {
                 FlexStyle {
                     axis: Axis::Row,
                     gap: 0.0,
-                    size: Size {
+                    size: Sizing {
                         width: Length::Fixed(80.0),
                         height: Length::Fixed(40.0),
                     },
@@ -418,11 +418,11 @@ mod tests {
                 },
                 |cx| {
                     ids.0 = Some(cx.leaf(LeafStyle {
-                        size: Size::fixed(40.0, 40.0),
+                        size: Sizing::fixed(40.0, 40.0),
                         style: BoxStyle::solid(SOLID),
                     }));
                     ids.1 = Some(cx.leaf(LeafStyle {
-                        size: Size::fixed(40.0, 40.0),
+                        size: Sizing::fixed(40.0, 40.0),
                         style: BoxStyle::solid(SOLID),
                     }));
                 },
@@ -451,13 +451,13 @@ mod tests {
             cx.scroll(
                 ScrollStyle {
                     axis: Axis::Column,
-                    size: Size::fixed(100.0, 100.0),
+                    size: Sizing::fixed(100.0, 100.0),
                     ..Default::default()
                 },
                 |cx| {
                     content = Some(
                         cx.leaf(LeafStyle {
-                            size: Size::fixed(100.0, 300.0),
+                            size: Sizing::fixed(100.0, 300.0),
                             style: BoxStyle::solid(SOLID),
                         })
                         .id(),
@@ -502,7 +502,7 @@ mod tests {
             cx.flex(
                 FlexStyle {
                     axis: Axis::Row,
-                    size: Size::fill(),
+                    size: Sizing::fill(),
                     ..Default::default()
                 },
                 |cx| {
@@ -510,16 +510,16 @@ mod tests {
                         cx.flex(
                             FlexStyle {
                                 axis: Axis::Column,
-                                size: Size::fixed(100.0, 40.0),
+                                size: Sizing::fixed(100.0, 40.0),
                                 ..Default::default()
                             },
                             |cx| {
                                 ids.1 = Some(cx.leaf(LeafStyle {
-                                    size: Size::fixed(100.0, 40.0),
+                                    size: Sizing::fixed(100.0, 40.0),
                                     style: BoxStyle::solid(SOLID),
                                 }));
                                 ids.2 = Some(cx.leaf(LeafStyle {
-                                    size: Size::fixed(100.0, 40.0),
+                                    size: Sizing::fixed(100.0, 40.0),
                                     style: BoxStyle::solid(SOLID),
                                 }));
                             },
@@ -527,7 +527,7 @@ mod tests {
                         .id(),
                     );
                     cx.leaf(LeafStyle {
-                        size: Size::fixed(40.0, 40.0),
+                        size: Sizing::fixed(40.0, 40.0),
                         style: BoxStyle::solid(SOLID),
                     });
                 },
@@ -557,7 +557,7 @@ mod tests {
     fn a_child_relaid_past_its_container_is_hit_there() {
         let mut store = NodeStore::new();
         let (root, card, top, _) = overflowing(&mut store);
-        store.set_fixed_size(top, Size::fixed(100.0, 120.0));
+        store.set_fixed_size(top, Sizing::fixed(100.0, 120.0));
         store.relayout_dirty(root, SURFACE, &mut Vec::new(), &mut Vec::new());
         assert_eq!(store.reach(card), Rect::new(0.0, 0.0, 100.0, 160.0));
         assert_eq!(hit_test(&store, root, 50.0, 100.0), Some(top));
@@ -638,19 +638,19 @@ mod tests {
             cx.flex(
                 FlexStyle {
                     axis: Axis::Column,
-                    size: Size::fill(),
+                    size: Sizing::fill(),
                     ..Default::default()
                 },
                 |cx| {
                     cx.flex(
                         FlexStyle {
                             axis: Axis::Column,
-                            size: Size::fixed(100.0, 40.0),
+                            size: Sizing::fixed(100.0, 40.0),
                             ..Default::default()
                         },
                         |cx| {
                             let menu = cx.leaf(LeafStyle {
-                                size: Size::fixed(100.0, 80.0),
+                                size: Sizing::fixed(100.0, 80.0),
                                 style: BoxStyle::solid(SOLID),
                             });
                             ids.0 = Some(cx.set_overlay(menu, true).id());
@@ -658,7 +658,7 @@ mod tests {
                     );
                     ids.1 = Some(
                         cx.leaf(LeafStyle {
-                            size: Size::fixed(100.0, 40.0),
+                            size: Sizing::fixed(100.0, 40.0),
                             style: BoxStyle::solid(SOLID),
                         })
                         .id(),
@@ -703,7 +703,7 @@ mod tests {
         let mut out = Vec::new();
         store.repaint(root, &mut out);
         store.clear_dirty();
-        store.set_fixed_size(top, Size::fixed(100.0, 120.0));
+        store.set_fixed_size(top, Sizing::fixed(100.0, 120.0));
         store.relayout_dirty(root, SURFACE, &mut Vec::new(), &mut Vec::new());
         store.repaint_dirty(root, &mut out);
         let clip = out.iter().find_map(|p| match p {

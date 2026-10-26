@@ -19,7 +19,7 @@ use std::rc::Rc;
 use viso::render::{Rect, Rgba};
 use viso::ui::{
     Axis, BindingTable, BoxStyle, BuildCx, DirtyClass, FlexStyle, ImeEvent, Key, KeyEvent,
-    KeyRouter, LeafStyle, Modifiers, NodeId, NodeStore, Size, StateId, StateStore, StateValue,
+    KeyRouter, LeafStyle, Modifiers, NodeId, NodeStore, Sizing, StateId, StateStore, StateValue,
     TextEdits, focus_next,
 };
 
@@ -57,14 +57,14 @@ fn two_focusable_leaves() -> (NodeStore, NodeId, [NodeId; 2]) {
         cx.flex(
             FlexStyle {
                 axis: Axis::Row,
-                size: Size::fixed(100.0, 100.0),
+                size: Sizing::fixed(100.0, 100.0),
                 style: BoxStyle::solid(SOLID),
                 ..Default::default()
             },
             |cx| {
                 for _ in 0..2 {
                     let l = cx.leaf(LeafStyle {
-                        size: Size::fixed(40.0, 40.0),
+                        size: Sizing::fixed(40.0, 40.0),
                         style: BoxStyle::solid(SOLID),
                     });
                     sink.borrow_mut().push(l.id());

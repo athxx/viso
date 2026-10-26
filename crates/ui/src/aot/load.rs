@@ -27,7 +27,7 @@ use crate::component::{
 };
 use crate::dirty::DirtyClass;
 use crate::grid::GridStyle;
-use crate::layout::{Axis, LayoutInput, Length, Size};
+use crate::layout::{Axis, LayoutInput, Length, Sizing};
 use crate::layout::{BoxRules, Inset};
 use crate::node::NodeId;
 use crate::state::{StateKey, StateStore, StateValue};
@@ -492,10 +492,10 @@ fn has_size(node: &AotRecord) -> bool {
             .is_some_and(|lengths| lengths.width.is_some() || lengths.height.is_some())
 }
 
-/// The runtime [`Size`] for a packaged style, mirroring the commit's `size_of`: an
+/// The runtime [`Sizing`] for a packaged style, mirroring the commit's `size_of`: an
 /// unset dimension lowers to `Fit`.
-fn size_of(style: &AotStyle) -> Size {
-    Size {
+fn size_of(style: &AotStyle) -> Sizing {
+    Sizing {
         width: length_of(style.width),
         height: length_of(style.height),
     }

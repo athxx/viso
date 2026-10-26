@@ -43,7 +43,7 @@ use std::time::Duration;
 
 use viso_ui::{
     Align, Axis, BuildCx, Component, FlexStyle, Justify, Keyframe, Keyframes, Length, LookValue,
-    NodeId, Rgba, Role, Semantics, Shimmer, ShimmerLook, Size, StateId, StateValue, StructureCx,
+    NodeId, Rgba, Role, Semantics, Shimmer, ShimmerLook, Sizing, StateId, StateValue, StructureCx,
 };
 
 /// How skeleton blocks look.
@@ -87,7 +87,7 @@ impl Default for SkeletonStyle {
 /// What a skeleton stands for.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Shape {
-    Rect(Size),
+    Rect(Sizing),
     Circle(f32),
     Text(u32),
 }
@@ -113,7 +113,7 @@ fn shape(shape: Shape) -> Skeleton {
 }
 
 /// A rectangle of `size`: a picture's, a card's, a button's place.
-pub fn skeleton_rect(size: Size) -> Skeleton {
+pub fn skeleton_rect(size: Sizing) -> Skeleton {
     shape(Shape::Rect(size))
 }
 
@@ -140,7 +140,7 @@ impl Skeleton {
         self
     }
 
-    fn block(&self, cx: &mut BuildCx<'_>, size: Size, radius: f32) {
+    fn block(&self, cx: &mut BuildCx<'_>, size: Sizing, radius: f32) {
         let s = &self.style;
         cx.shimmer(size, Shimmer::new(self.look, s.base, s.highlight, radius));
     }
@@ -151,7 +151,7 @@ impl Component for Skeleton {
         let s = self.style;
         match self.shape {
             Shape::Rect(size) => self.block(cx, size, s.radius),
-            Shape::Circle(d) => self.block(cx, Size::fixed(d, d), d * 0.5),
+            Shape::Circle(d) => self.block(cx, Sizing::fixed(d, d), d * 0.5),
             Shape::Text(lines) => {
                 cx.flex(
                     FlexStyle {
@@ -159,7 +159,7 @@ impl Component for Skeleton {
                         gap: s.line_gap,
                         align: Align::Start,
                         justify: Justify::Start,
-                        size: Size {
+                        size: Sizing {
                             width: Length::fill(),
                             height: Length::Fit,
                         },
@@ -172,7 +172,7 @@ impl Component for Skeleton {
                             } else {
                                 Length::fill()
                             };
-                            let size = Size {
+                            let size = Sizing {
                                 width,
                                 height: Length::Fixed(s.line_height),
                             };
@@ -242,7 +242,7 @@ impl Component for Placeholder {
                     axis: Axis::Column,
                     align: Align::Stretch,
                     justify: Justify::Start,
-                    size: Size {
+                    size: Sizing {
                         width: Length::fill(),
                         height: Length::Fit,
                     },
@@ -261,7 +261,7 @@ impl Component for Placeholder {
                 axis: Axis::Column,
                 align: Align::Stretch,
                 justify: Justify::Start,
-                size: Size {
+                size: Sizing {
                     width: Length::fill(),
                     height: Length::Fit,
                 },

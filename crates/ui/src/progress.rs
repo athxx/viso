@@ -16,7 +16,7 @@ use viso_render::{AnalyticCapsule, Border, LineCap, Path, Point, Primitive, Rect
 use crate::component::{BuildCx, Handle, LeafStyle, NodeStore};
 use crate::content::Content;
 use crate::dirty::DirtyClass;
-use crate::layout::{Size, Vec2};
+use crate::layout::{Sizing, Vec2};
 use crate::node::NodeId;
 use crate::spinner::{arc, chase, fast_out_slow_in};
 use crate::style::BoxStyle;
@@ -194,7 +194,7 @@ impl BuildCx<'_> {
     pub fn progress(
         &mut self,
         shape: ProgressShape,
-        size: Size,
+        size: Sizing,
         natural: Vec2,
         color: Rgba,
         value: Option<f32>,
@@ -397,7 +397,7 @@ mod tests {
         let mut cx = BuildCx::new(&mut store);
         let bar = cx
             .leaf(LeafStyle {
-                size: Size::fixed(100.0, 4.0),
+                size: Sizing::fixed(100.0, 4.0),
                 style: BoxStyle::NONE,
             })
             .id();
@@ -431,7 +431,7 @@ mod tests {
     fn one_out_of_sight_beats_no_frames_and_runs_on_as_it_shows() {
         let mut store = NodeStore::new();
         let mut cx = BuildCx::new(&mut store);
-        let size = Size::fixed(100.0, 4.0);
+        let size = Sizing::fixed(100.0, 4.0);
         let bar = cx.progress(ProgressShape::Bar, size, BAR, BLUE, None).id();
         assert!(store.is_progressing());
         store.set_hidden(bar, true);

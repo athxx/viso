@@ -13,7 +13,7 @@
 use viso::render::{Rect, Rgba};
 use viso::ui::{
     Axis, BindingTable, BoxStyle, BuildCx, DirtyClass, FlexStyle, LeafStyle, Modifiers, NodeStore,
-    PointerButtons, PointerEvent, PointerPhase, PointerRouter, Size, StateId, StateStore,
+    PointerButtons, PointerEvent, PointerPhase, PointerRouter, Sizing, StateId, StateStore,
     StateValue,
 };
 
@@ -56,13 +56,13 @@ fn click_bumps_bound_state_and_flush_dirties_only_the_bound_node() {
         cx.flex(
             FlexStyle {
                 axis: Axis::Row,
-                size: Size::fixed(100.0, 100.0),
+                size: Sizing::fixed(100.0, 100.0),
                 style: BoxStyle::solid(SOLID),
                 ..Default::default()
             },
             |cx| {
                 let l = cx.leaf(LeafStyle {
-                    size: Size::fixed(40.0, 40.0),
+                    size: Sizing::fixed(40.0, 40.0),
                     style: BoxStyle::solid(SOLID),
                 });
                 cx.on_pointer(l, move |ev| {
@@ -133,13 +133,13 @@ fn click_outside_the_tree_flips_nothing() {
         cx.flex(
             FlexStyle {
                 axis: Axis::Row,
-                size: Size::fixed(100.0, 100.0),
+                size: Sizing::fixed(100.0, 100.0),
                 style: BoxStyle::solid(SOLID),
                 ..Default::default()
             },
             |cx| {
                 let l = cx.leaf(LeafStyle {
-                    size: Size::fixed(40.0, 40.0),
+                    size: Sizing::fixed(40.0, 40.0),
                     style: BoxStyle::solid(SOLID),
                 });
                 cx.on_pointer(l, move |ev| {

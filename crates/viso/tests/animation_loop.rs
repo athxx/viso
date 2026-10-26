@@ -39,7 +39,7 @@ use viso::platform::{
 };
 use viso::prelude::*;
 use viso::ui::{
-    BuildCx, Easing, LeafStyle, PointerButtons, PointerPhase, Size, TranslateAnim, Vec2,
+    BuildCx, Easing, LeafStyle, PointerButtons, PointerPhase, Sizing, TranslateAnim, Vec2,
     WindowConfig,
 };
 
@@ -81,7 +81,7 @@ impl Application for SlideApp {
 
     fn build(&mut self, cx: &mut BuildCx<'_>) {
         let root = cx.leaf(LeafStyle {
-            size: Size::fill(),
+            size: Sizing::fill(),
             ..LeafStyle::default()
         });
         cx.focusable(root, true);

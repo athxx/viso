@@ -24,7 +24,7 @@ use std::hint::black_box;
 use criterion::{Criterion, criterion_group, criterion_main};
 use viso_ui::{
     Axis, BindingTable, BoxStyle, BuildCx, FlexStyle, LeafStyle, Modifiers, NodeId, NodeStore,
-    PointerButtons, PointerEvent, PointerPhase, PointerRouter, Rect, Size, StateStore,
+    PointerButtons, PointerEvent, PointerPhase, PointerRouter, Rect, Sizing, StateStore,
 };
 
 const SURFACE: Rect = Rect {
@@ -79,14 +79,14 @@ fn setup() -> Harness {
         cx.flex(
             FlexStyle {
                 axis: Axis::Row,
-                size: Size::fixed(200.0, 100.0),
+                size: Sizing::fixed(200.0, 100.0),
                 style: BoxStyle::default(),
                 ..Default::default()
             },
             |cx| {
                 for label in 0u32..2 {
                     let leaf = cx.leaf(LeafStyle {
-                        size: Size::fixed(100.0, 100.0),
+                        size: Sizing::fixed(100.0, 100.0),
                         style: BoxStyle::default(),
                     });
                     cx.on_pointer(leaf, move |_ev| {

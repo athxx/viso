@@ -36,7 +36,7 @@ use std::rc::Rc;
 
 pub use viso_ui::combo_box::ComboBoxStyle;
 use viso_ui::combo_box::{ComboOption, ComboParts, ComboSpec};
-use viso_ui::{BuildCx, Component, EventCx, Size};
+use viso_ui::{BuildCx, Component, EventCx, Sizing};
 
 use super::select::SelectOption;
 
@@ -125,7 +125,7 @@ impl ComboBox {
     }
 
     /// Set the field's size within its parent (default: its content's).
-    pub fn size(mut self, size: Size) -> Self {
+    pub fn size(mut self, size: Sizing) -> Self {
         self.spec.size = size;
         self
     }

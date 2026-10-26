@@ -101,7 +101,7 @@ fn a_fragment_s_list_lays_its_rows_in_columns() {
 
 #[test]
 fn a_lazy_grid_counts_its_lanes_by_its_width() {
-    use viso::ui::{Columns, LeafStyle, Length, Size};
+    use viso::ui::{Columns, LeafStyle, Length, Sizing};
     use viso::widgets::{LazyGridStyle, lazy_grid};
     let grid = lazy_grid(LazyGridStyle {
         columns: Columns::Adaptive { min: 60.0 },
@@ -110,7 +110,7 @@ fn a_lazy_grid_counts_its_lanes_by_its_width() {
     })
     .items(100, |_, cx| {
         cx.leaf(LeafStyle {
-            size: Size {
+            size: Sizing {
                 width: Length::fill(),
                 height: Length::Fixed(40.0),
             },

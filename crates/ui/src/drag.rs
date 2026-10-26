@@ -422,7 +422,7 @@ mod tests {
 
     use super::*;
     use crate::component::{BuildCx, LeafStyle};
-    use crate::layout::Size;
+    use crate::layout::Sizing;
     use crate::style::BoxStyle;
 
     /// A drag of pointer 1 on a fresh node from `(10, 10)` through `steps`,
@@ -432,7 +432,7 @@ mod tests {
         let node = {
             let mut cx = BuildCx::new(&mut store);
             cx.leaf(LeafStyle {
-                size: Size::fixed(100.0, 100.0),
+                size: Sizing::fixed(100.0, 100.0),
                 style: BoxStyle::NONE,
             })
             .id()

@@ -22,7 +22,7 @@ use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle};
 use viso_render::{GlyphInstanceData, Primitive, Rect, Renderer, Rgba, TextureId};
 use viso_ui::{
     Axis, BindingTable, BoxStyle, BuildCx, Content, DirtyClass, EffectStore, FlexStyle, LeafStyle,
-    Length, NodeId, NodeStore, Painted, SemanticProjector, Size, StateStore, TextEdits, Vec2,
+    Length, NodeId, NodeStore, Painted, SemanticProjector, Sizing, StateStore, TextEdits, Vec2,
     VirtualListStyle, VirtualLists, virtual_list,
 };
 
@@ -93,7 +93,7 @@ fn card(cx: &mut BuildCx<'_>, i: usize, cells: &mut Vec<NodeId>) {
         FlexStyle {
             axis: Axis::Row,
             gap: 4.0,
-            size: Size {
+            size: Sizing {
                 width: Length::fill(),
                 height: Length::Fixed(CARD_H),
             },
@@ -103,7 +103,7 @@ fn card(cx: &mut BuildCx<'_>, i: usize, cells: &mut Vec<NodeId>) {
         |cx| {
             for c in 0..3 {
                 let leaf = cx.leaf(LeafStyle {
-                    size: Size {
+                    size: Sizing {
                         width: Length::Fixed(60.0 + c as f32 * 20.0),
                         height: Length::Fixed(CARD_H - 6.0),
                     },
@@ -126,7 +126,7 @@ fn page(cards: usize) -> (Harness, NodeId) {
             FlexStyle {
                 axis: Axis::Column,
                 gap: 2.0,
-                size: Size {
+                size: Sizing {
                     width: Length::Fixed(W),
                     height: Length::Fixed(H),
                 },
@@ -196,7 +196,7 @@ fn notes(notes: usize) -> (Harness, NodeId) {
             FlexStyle {
                 axis: Axis::Column,
                 gap: 2.0,
-                size: Size {
+                size: Sizing {
                     width: Length::Fixed(W),
                     height: Length::Fixed(H),
                 },
@@ -209,7 +209,7 @@ fn notes(notes: usize) -> (Harness, NodeId) {
                         FlexStyle {
                             axis: Axis::Row,
                             gap: 4.0,
-                            size: Size {
+                            size: Sizing {
                                 width: Length::fill(),
                                 height: Length::Fixed(CARD_H),
                             },
@@ -218,7 +218,7 @@ fn notes(notes: usize) -> (Harness, NodeId) {
                         },
                         |cx| {
                             cx.leaf(LeafStyle {
-                                size: Size {
+                                size: Sizing {
                                     width: Length::Fixed(CARD_H - 6.0),
                                     height: Length::Fixed(CARD_H - 6.0),
                                 },
@@ -226,7 +226,7 @@ fn notes(notes: usize) -> (Harness, NodeId) {
                             });
                             labels.push(
                                 cx.leaf(LeafStyle {
-                                    size: Size {
+                                    size: Sizing {
                                         width: Length::Fit,
                                         height: Length::Fit,
                                     },
@@ -277,7 +277,7 @@ fn list(row_h: f32) -> Harness {
         cx.virtual_list(
             VirtualListStyle {
                 axis: Axis::Column,
-                size: Size {
+                size: Sizing {
                     width: Length::Fixed(W),
                     height: Length::Fixed(H),
                 },
@@ -293,7 +293,7 @@ fn list(row_h: f32) -> Harness {
                     FlexStyle {
                         axis: Axis::Row,
                         gap: 4.0,
-                        size: Size {
+                        size: Sizing {
                             width: Length::fill(),
                             height: Length::Fixed(row_h - 1.0),
                         },
@@ -303,7 +303,7 @@ fn list(row_h: f32) -> Harness {
                     |cx| {
                         for c in 0..3 {
                             cx.leaf(LeafStyle {
-                                size: Size {
+                                size: Sizing {
                                     width: Length::Fixed(60.0 + c as f32 * 20.0),
                                     height: Length::Fixed((row_h - 3.0).max(1.0)),
                                 },

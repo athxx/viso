@@ -119,7 +119,7 @@ mod tests {
 
     use super::*;
     use crate::component::{BuildCx, LeafStyle, ScrollStyle, StackStyle};
-    use crate::layout::Size;
+    use crate::layout::Sizing;
     use viso_render::Rect;
 
     fn wheel(x: f32, y: f32, dy: f32) -> ScrollEvent {
@@ -142,18 +142,18 @@ mod tests {
             let mut inner = None;
             let root = cx.scroll(
                 ScrollStyle {
-                    size: Size::fixed(200.0, 200.0),
+                    size: Sizing::fixed(200.0, 200.0),
                     ..ScrollStyle::default()
                 },
                 |cx| {
                     let map = cx.stack(
                         StackStyle {
-                            size: Size::fixed(200.0, 600.0),
+                            size: Sizing::fixed(200.0, 600.0),
                             ..StackStyle::default()
                         },
                         |cx| {
                             inner = Some(cx.leaf(LeafStyle {
-                                size: Size::fixed(50.0, 50.0),
+                                size: Sizing::fixed(50.0, 50.0),
                                 ..LeafStyle::default()
                             }));
                         },
@@ -206,18 +206,18 @@ mod tests {
             let mut cx = BuildCx::new(&mut store);
             let root = cx.stack(
                 StackStyle {
-                    size: Size::fixed(200.0, 200.0),
+                    size: Sizing::fixed(200.0, 200.0),
                     ..StackStyle::default()
                 },
                 |cx| {
                     cx.scroll(
                         ScrollStyle {
-                            size: Size::fixed(100.0, 100.0),
+                            size: Sizing::fixed(100.0, 100.0),
                             ..ScrollStyle::default()
                         },
                         |cx| {
                             cx.leaf(LeafStyle {
-                                size: Size::fixed(100.0, 400.0),
+                                size: Sizing::fixed(100.0, 400.0),
                                 ..LeafStyle::default()
                             });
                         },

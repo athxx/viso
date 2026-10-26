@@ -33,7 +33,7 @@ use std::rc::Rc;
 
 use viso_ui::{
     BuildCx, Component, EventCx, FieldLook, FontSize, LeafStyle, NumberFormat, Role, SemanticState,
-    Semantics, Size, StateValue, TextRequest, number_input, number_kind,
+    Semantics, Sizing, StateValue, TextRequest, number_input, number_kind,
 };
 
 use crate::TextInputStyle;
@@ -108,7 +108,7 @@ impl NumberField {
     }
 
     /// Set the field's size request within its parent.
-    pub fn size(mut self, size: Size) -> Self {
+    pub fn size(mut self, size: Sizing) -> Self {
         self.style.size = size;
         self
     }

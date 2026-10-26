@@ -124,7 +124,7 @@ impl NodeStore {
 mod tests {
     use super::*;
     use crate::component::BuildCx;
-    use crate::{FlexStyle, LeafStyle, Size};
+    use crate::{FlexStyle, LeafStyle, Sizing};
 
     #[test]
     fn the_nearest_named_cursor_wins_and_fields_show_the_beam() {
@@ -134,7 +134,7 @@ mod tests {
             let mut cx = BuildCx::new(&mut store);
             cx.flex(
                 FlexStyle {
-                    size: Size::fixed(100.0, 100.0),
+                    size: Sizing::fixed(100.0, 100.0),
                     ..Default::default()
                 },
                 |cx| {

@@ -515,7 +515,7 @@ mod tests {
     use std::rc::Rc;
     use viso_gpu::{CpuRaster, RawWindowHandle};
     use viso_media::VideoInfo;
-    use viso_ui::{AssetDraw, AssetFit, BoxStyle, BuildCx, Content, LeafStyle, Size};
+    use viso_ui::{AssetDraw, AssetFit, BoxStyle, BuildCx, Content, LeafStyle, Sizing};
 
     /// What a scripted player does: the events it reports and the pictures
     /// it hands over, in order, and what was asked of it.
@@ -662,7 +662,7 @@ mod tests {
             let leaf = {
                 let mut cx = BuildCx::new(&mut store);
                 let handle = cx.leaf(LeafStyle {
-                    size: Size::fixed(40.0, 30.0),
+                    size: Sizing::fixed(40.0, 30.0),
                     style: BoxStyle::NONE,
                 });
                 cx.video(handle, &source, AssetFit::Contain, None);
@@ -918,7 +918,7 @@ mod tests {
         let leaf = {
             let mut cx = BuildCx::new(&mut store);
             let handle = cx.leaf(LeafStyle {
-                size: Size::fixed(40.0, 30.0),
+                size: Sizing::fixed(40.0, 30.0),
                 style: BoxStyle::NONE,
             });
             cx.video(

@@ -21,7 +21,7 @@ use std::rc::Rc;
 
 use viso_ui::{
     BoxStyle, BuildCx, Component, EventCx, FieldLook, FontFamily, FontSize, FontSlant, FontWeight,
-    Handle, LeafStyle, Length, LengthTerms, Rgba, Role, Semantics, Size, SpanStyle, TextAlign,
+    Handle, LeafStyle, Length, LengthTerms, Rgba, Role, Semantics, Sizing, SpanStyle, TextAlign,
     TextOverflow, TextRequest, TextSpan, TextStyle, field_input,
 };
 
@@ -50,7 +50,7 @@ pub struct LabelStyle {
     pub color: Rgba,
     /// The label's own size request within its parent. Defaults to `Fit` on
     /// both axes.
-    pub size: Size,
+    pub size: Sizing,
     /// Whether the label soft-wraps its text to the assigned box width.
     /// Defaults to `false` (single line). Only bites once the width axis is
     /// `Fill`/`Fixed`: a `Fit` label sizes to the shaped run and is never
@@ -63,7 +63,7 @@ impl Default for LabelStyle {
         LabelStyle {
             font_size: DEFAULT_FONT_SIZE,
             color: DEFAULT_COLOR,
-            size: Size {
+            size: Sizing {
                 width: Length::Fit,
                 height: Length::Fit,
             },
@@ -192,7 +192,7 @@ impl Label {
     }
 
     /// Set the label's own size request within its parent (defaults to `Fit`).
-    pub fn size(mut self, size: Size) -> Self {
+    pub fn size(mut self, size: Sizing) -> Self {
         self.style.size = size;
         self
     }
@@ -431,9 +431,9 @@ mod tests {
         let widget = label("X")
             .font_size(24.0)
             .color(color)
-            .size(Size::fixed(120.0, 32.0));
+            .size(Sizing::fixed(120.0, 32.0));
         // The chained size lands in the style the leaf is built from.
-        assert_eq!(widget.style.size, Size::fixed(120.0, 32.0));
+        assert_eq!(widget.style.size, Sizing::fixed(120.0, 32.0));
 
         let mut store = NodeStore::new();
         let mut cx = BuildCx::new(&mut store);

@@ -21,7 +21,7 @@ use std::rc::Rc;
 
 use viso_ui::{
     Alignment2D, Asset, AssetFit, BoxStyle, BuildCx, Component, Handle, LeafStyle, Length, Notice,
-    NoticeKinds, Rect, Rgba, Role, Semantics, Size, StackStyle, StateStore, TextureId, Vec2,
+    NoticeKinds, Rect, Rgba, Role, Semantics, Sizing, StackStyle, StateStore, TextureId, Vec2,
 };
 
 /// A white (identity) tint: the texture is drawn unmodulated.
@@ -59,7 +59,7 @@ pub struct ImageStyle {
     pub tint: Rgba,
     /// The image's own size request within its parent. Defaults to `Fixed` at
     /// the texture's intrinsic pixel size.
-    pub size: Size,
+    pub size: Sizing,
 }
 
 /// A texture-backed image control: one leaf node that draws a resident texture.
@@ -132,7 +132,7 @@ pub fn image(texture: TextureId, width: f32, height: f32) -> Image {
         style: ImageStyle {
             uv: FULL_UV,
             tint: NO_TINT,
-            size: Size {
+            size: Sizing {
                 width: Length::Fixed(width),
                 height: Length::Fixed(height),
             },
@@ -173,7 +173,7 @@ pub fn image_asset(asset: Asset) -> Image {
         style: ImageStyle {
             uv: FULL_UV,
             tint: NO_TINT,
-            size: Size {
+            size: Sizing {
                 width: Length::Fit,
                 height: Length::Fit,
             },
@@ -249,7 +249,7 @@ impl Image {
 
     /// Set the image's own size request within its parent (defaults to `Fixed`
     /// at the intrinsic pixel size).
-    pub fn size(mut self, size: Size) -> Self {
+    pub fn size(mut self, size: Sizing) -> Self {
         self.style.size = size;
         self
     }
@@ -259,7 +259,7 @@ impl Image {
     /// The leaf drawing the picture, sized `size`: a transparent box (the
     /// picture is the content) whose payload's `natural` drives a `Fit`
     /// axis's measure.
-    fn picture(&self, cx: &mut BuildCx<'_>, size: Size) -> Handle {
+    fn picture(&self, cx: &mut BuildCx<'_>, size: Sizing) -> Handle {
         let handle = cx.leaf(LeafStyle {
             size,
             style: BoxStyle::NONE,
@@ -309,16 +309,16 @@ impl Component for Image {
         // axis that fits its content fits the picture, any other fills it.
         let inner = |l: Length| match l {
             Length::Fit => Length::Fit,
-            _ => Size::fill().width,
+            _ => Sizing::fill().width,
         };
-        let size = Size {
+        let size = Sizing {
             width: inner(self.style.size.width),
             height: inner(self.style.size.height),
         };
         let (mut picture, mut loading, mut failed) = (None, None, None);
         let layer = StackStyle {
             align: Alignment2D::Center,
-            size: Size::fill(),
+            size: Sizing::fill(),
             ..StackStyle::default()
         };
         let outer = cx.stack(
@@ -422,10 +422,10 @@ mod tests {
         let widget = image(TextureId::new(3), 32.0, 16.0)
             .uv(uv)
             .tint(tint)
-            .size(Size::fill());
+            .size(Sizing::fill());
         assert_eq!(widget.style.uv, uv);
         assert_eq!(widget.style.tint, tint);
-        assert_eq!(widget.style.size, Size::fill());
+        assert_eq!(widget.style.size, Sizing::fill());
 
         let mut store = NodeStore::new();
         let mut cx = BuildCx::new(&mut store);

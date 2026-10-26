@@ -15,7 +15,7 @@ use std::rc::Rc;
 use viso::render::Rect;
 use viso::ui::{
     Axis, BuildCx, DirtyClass, EventCx, FlexStyle, LeafStyle, NodeId, NodeStore, Role, Semantics,
-    Size, focus_next,
+    Sizing, focus_next,
 };
 
 const SURFACE: Rect = Rect {
@@ -38,19 +38,19 @@ fn demo_scene() -> (NodeStore, NodeId, NodeId, NodeId) {
         let h = cx.flex(
             FlexStyle {
                 axis: Axis::Row,
-                size: Size::fixed(100.0, 100.0),
+                size: Sizing::fixed(100.0, 100.0),
                 ..Default::default()
             },
             |cx| {
                 let a = cx.leaf(LeafStyle {
-                    size: Size::fixed(40.0, 40.0),
+                    size: Sizing::fixed(40.0, 40.0),
                     ..Default::default()
                 });
                 let a = cx.on_pointer(a, |_ev: &mut EventCx<'_>| {});
                 let a = cx.semantics(a, Semantics::role(Role::Button).with_label("Add"));
                 capture.borrow_mut().push(a.id());
                 let b = cx.leaf(LeafStyle {
-                    size: Size::fixed(40.0, 40.0),
+                    size: Sizing::fixed(40.0, 40.0),
                     ..Default::default()
                 });
                 capture.borrow_mut().push(b.id());

@@ -31,12 +31,12 @@
 //! use std::rc::Rc;
 //! use viso_widgets::{NavHandleSlot, navigation_stack};
 //! use viso_ui::{SemanticProjector, BuildCx, BindingTable, Component, LeafStyle, NodeStore, StateStore, TextEdits, VirtualLists};
-//! use viso_ui::{BoxStyle, Size};
+//! use viso_ui::{BoxStyle, Sizing};
 //!
 //! let handle: NavHandleSlot = Rc::new(RefCell::new(None));
 //! let control = navigation_stack()
-//!     .page(|cx| { cx.leaf(LeafStyle { size: Size::fill(), style: BoxStyle::NONE }); })
-//!     .page(|cx| { cx.leaf(LeafStyle { size: Size::fill(), style: BoxStyle::NONE }); })
+//!     .page(|cx| { cx.leaf(LeafStyle { size: Sizing::fill(), style: BoxStyle::NONE }); })
+//!     .page(|cx| { cx.leaf(LeafStyle { size: Sizing::fill(), style: BoxStyle::NONE }); })
 //!     .on_navigate(|_ev, depth| {
 //!         // handle the newly-visible page depth
 //!         let _ = depth;
@@ -60,7 +60,7 @@ use std::rc::Rc;
 
 use viso_ui::{
     Align, Axis, BoxStyle, BuildCx, Component, DirtyClass, EventCx, FlexStyle, Inset, Justify, Key,
-    Length, NodeId, PageTransition, Role, Semantics, Size, StackStyle, StateId, StateValue,
+    Length, NodeId, PageTransition, Role, Semantics, Sizing, StackStyle, StateId, StateValue,
 };
 
 /// A shared, mutable navigation callback carrying the new stack depth (the index
@@ -145,7 +145,7 @@ impl NavHandle {
 pub struct NavigationStackStyle {
     /// The control's own size request within its parent. Defaults to `Fill` on
     /// both axes.
-    pub size: Size,
+    pub size: Sizing,
     /// How its pages trade places: the platform's own way by default.
     pub transition: PageTransition,
 }
@@ -153,7 +153,7 @@ pub struct NavigationStackStyle {
 impl Default for NavigationStackStyle {
     fn default() -> Self {
         NavigationStackStyle {
-            size: Size {
+            size: Sizing {
                 width: Length::Fill { weight: 1.0 },
                 height: Length::Fill { weight: 1.0 },
             },
@@ -224,7 +224,7 @@ impl NavigationStack {
     }
 
     /// Set the control's own size request within its parent (defaults to `Fill`).
-    pub fn size(mut self, size: Size) -> Self {
+    pub fn size(mut self, size: Sizing) -> Self {
         self.style.size = size;
         self
     }
@@ -321,7 +321,7 @@ impl Component for NavigationStack {
                             padding: Inset::all(0.0),
                             align: Align::Stretch,
                             justify: Justify::Start,
-                            size: Size {
+                            size: Sizing {
                                 width: Length::Fill { weight: 1.0 },
                                 height: Length::Fill { weight: 1.0 },
                             },
@@ -510,7 +510,7 @@ mod tests {
     /// subtree rather than an empty node.
     fn leaf_page(cx: &mut BuildCx<'_>) {
         cx.leaf(LeafStyle {
-            size: Size::fixed(10.0, 10.0),
+            size: Sizing::fixed(10.0, 10.0),
             style: BoxStyle::NONE,
         });
     }
@@ -730,7 +730,7 @@ mod tests {
             navigation_stack()
                 .page(leaf_page)
                 .page(leaf_page)
-                .size(Size::fixed(300.0, 200.0))
+                .size(Sizing::fixed(300.0, 200.0))
                 .transition(PageTransition::Slide)
                 .handle(&slot),
         );

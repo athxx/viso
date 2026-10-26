@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use viso_ui::{
-    BuildCx, Component, Length, Plot, PlotGrid, PlotLayer, Point, Rgba, Role, Semantics, Size,
+    BuildCx, Component, Length, Plot, PlotGrid, PlotLayer, Point, Rgba, Role, Semantics, Sizing,
 };
 
 use crate::scale::format_value;
@@ -19,7 +19,7 @@ pub struct Sparkline {
     values: Vec<f64>,
     color: Option<Rgba>,
     area: bool,
-    size: Size,
+    size: Sizing,
     style: ChartStyle,
 }
 
@@ -30,7 +30,7 @@ pub fn sparkline(label: impl Into<String>, values: impl IntoIterator<Item = f64>
         values: values.into_iter().collect(),
         color: None,
         area: false,
-        size: Size {
+        size: Sizing {
             width: Length::Fixed(96.0),
             height: Length::Fixed(24.0),
         },
@@ -52,7 +52,7 @@ impl Sparkline {
     }
 
     /// Set its size within its parent.
-    pub fn size(mut self, size: Size) -> Self {
+    pub fn size(mut self, size: Sizing) -> Self {
         self.size = size;
         self
     }

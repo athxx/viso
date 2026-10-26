@@ -23,7 +23,7 @@
 use viso_ui::plate::{avatar_fill, initials};
 use viso_ui::{
     Asset, AssetFit, BoxStyle, BuildCx, CheckMark, CheckShape, Component, FontSize, FontWeight,
-    LeafStyle, Rgba, Role, Semantics, Size, TextRequest, TextStyle,
+    LeafStyle, Rgba, Role, Semantics, Sizing, TextRequest, TextStyle,
 };
 
 /// An avatar's side unless set.
@@ -86,7 +86,7 @@ impl Avatar {
 impl Component for Avatar {
     fn build(&self, cx: &mut BuildCx<'_>) {
         let handle = cx.leaf(LeafStyle {
-            size: Size::fixed(self.side, self.side),
+            size: Sizing::fixed(self.side, self.side),
             style: BoxStyle {
                 fill: self.fill.unwrap_or_else(|| avatar_fill(&self.name)),
                 radius_pct: 0.5,

@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use viso_ui::{
-    AnimationRegistry, BuildCx, Easing, LeafStyle, NodeId, NodeStore, Rect, Size, TranslateAnim,
+    AnimationRegistry, BuildCx, Easing, LeafStyle, NodeId, NodeStore, Rect, Sizing, TranslateAnim,
     Vec2,
 };
 
@@ -64,7 +64,7 @@ fn build_leaves(n: usize) -> (NodeStore, Vec<NodeId>) {
         let mut cx = BuildCx::new(&mut store);
         for _ in 0..n {
             let h = cx.leaf(LeafStyle {
-                size: Size::fixed(40.0, 40.0),
+                size: Sizing::fixed(40.0, 40.0),
                 ..Default::default()
             });
             ids.push(h.id());

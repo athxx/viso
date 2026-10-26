@@ -36,7 +36,7 @@ use viso::platform::{
     RawPointer, WindowId,
 };
 use viso::prelude::*;
-use viso::ui::{PointerButtons, PointerPhase, Size};
+use viso::ui::{PointerButtons, PointerPhase, Sizing};
 
 /// The launch window's logical surface (`WindowConfig::default`, scale 1.0), so a
 /// center-of-surface pointer sample lands on the launch window's root.
@@ -71,7 +71,7 @@ fn redraw() -> RawEvent {
 fn build_child(build: &mut viso::ui::BuildCx<'_>) -> Option<viso::ui::NodeId> {
     let r = build.flex(
         FlexStyle {
-            size: Size::fill(),
+            size: Sizing::fill(),
             ..FlexStyle::default()
         },
         |_cx| {},
@@ -101,7 +101,7 @@ impl Application for OpenCloseApp {
         let child = self.child.clone();
         let root = cx.flex(
             FlexStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 ..FlexStyle::default()
             },
             |_cx| {},
@@ -157,7 +157,7 @@ macro_rules! fan_out_app {
                 let opened = self.opened.clone();
                 let root = cx.flex(
                     FlexStyle {
-                        size: Size::fill(),
+                        size: Sizing::fill(),
                         ..FlexStyle::default()
                     },
                     |_cx| {},

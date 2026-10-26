@@ -31,7 +31,7 @@ use std::hint::black_box;
 use std::time::{Duration, Instant};
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use viso_ui::{BuildCx, LeafStyle, NodeId, NodeStore, Rect, Size, TimerRegistry};
+use viso_ui::{BuildCx, LeafStyle, NodeId, NodeStore, Rect, Sizing, TimerRegistry};
 
 /// The surface the anchor leaf lays out against — a timer must scope to a live
 /// node, and `fire_due` liveness-checks that node every pass.
@@ -55,7 +55,7 @@ fn one_leaf() -> (NodeStore, NodeId) {
     let root = {
         let mut cx = BuildCx::new(&mut store);
         let h = cx.leaf(LeafStyle {
-            size: Size::fixed(100.0, 100.0),
+            size: Sizing::fixed(100.0, 100.0),
             ..Default::default()
         });
         h.id()

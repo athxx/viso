@@ -15,7 +15,7 @@ use viso::platform::{
     PointerPhase as RawPhase, RawEvent, RawKey, RawPointer, RawScroll, ScrollPhase, WindowId,
 };
 use viso::prelude::*;
-use viso::ui::{Axis, BoxStyle, Component, FlexStyle, LeafStyle, NodeId, NodeStore, Role, Size};
+use viso::ui::{Axis, BoxStyle, Component, FlexStyle, LeafStyle, NodeId, NodeStore, Role, Sizing};
 use viso::widgets::tabs;
 
 const STEP: Duration = Duration::from_millis(16);
@@ -64,7 +64,7 @@ impl Application for TabsApp {
             cx.flex(
                 FlexStyle {
                     axis: Axis::Column,
-                    size: Size::fixed(300.0, 200.0),
+                    size: Sizing::fixed(300.0, 200.0),
                     ..FlexStyle::default()
                 },
                 control,
@@ -76,7 +76,7 @@ impl Application for TabsApp {
 fn control(cx: &mut BuildCx<'_>) {
     let panel = |cx: &mut BuildCx<'_>| {
         cx.leaf(LeafStyle {
-            size: Size::fill(),
+            size: Sizing::fill(),
             style: BoxStyle::NONE,
         });
     };

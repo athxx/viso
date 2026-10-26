@@ -291,7 +291,7 @@ mod tests {
     use crate::adaptive::{AnchorId, Avoid, EnvField, SizeClass};
     use crate::component::{BuildCx, FlexStyle, LeafStyle};
     use crate::dirty::DirtyClass;
-    use crate::layout::{Axis, Inset, Length, Size};
+    use crate::layout::{Axis, Inset, Length, Sizing};
     use crate::node::NodeId;
     use crate::state::StateValue;
     use viso_render::Rect;
@@ -477,16 +477,16 @@ mod tests {
                 let mut cx = BuildCx::new(&mut stores.store);
                 cx.flex(
                     FlexStyle {
-                        size: Size::fixed(1000.0, 100.0),
+                        size: Sizing::fixed(1000.0, 100.0),
                         ..Default::default()
                     },
                     |cx| {
-                        cx.flex(column(Size::fill()), |cx| {
+                        cx.flex(column(Sizing::fill()), |cx| {
                             scope = Some(
-                                cx.flex(column(Size::fill()), |cx| {
+                                cx.flex(column(Sizing::fill()), |cx| {
                                     inner = Some(
                                         cx.leaf(LeafStyle {
-                                            size: Size::fixed(10.0, 10.0),
+                                            size: Sizing::fixed(10.0, 10.0),
                                             ..Default::default()
                                         })
                                         .id(),
@@ -496,14 +496,14 @@ mod tests {
                             );
                         });
                         cx.flex(
-                            column(Size {
+                            column(Sizing {
                                 width: Length::Fit,
                                 height: Length::Fill { weight: 1.0 },
                             }),
                             |cx| {
                                 leaf = Some(
                                     cx.leaf(LeafStyle {
-                                        size: Size::fixed(start, 10.0),
+                                        size: Sizing::fixed(start, 10.0),
                                         ..Default::default()
                                     })
                                     .id(),
@@ -524,7 +524,7 @@ mod tests {
             stores.store.add_structure_hook([class], move |cx, _| {
                 let class = cx.states.env().size_class(anchor).unwrap();
                 cx.store
-                    .set_fixed_size(leaf, Size::fixed(width(class), 10.0));
+                    .set_fixed_size(leaf, Sizing::fixed(width(class), 10.0));
                 cx.store.mark_dirty(leaf, DirtyClass::MEASURE);
             });
             let surface = Rect {
@@ -615,7 +615,7 @@ mod tests {
         let mut stores = Stores::default();
         let fill = FlexStyle {
             axis: Axis::Column,
-            size: Size::fill(),
+            size: Sizing::fill(),
             ..Default::default()
         };
         let mut inner = None;
@@ -624,12 +624,12 @@ mod tests {
             let mut cx = BuildCx::new(&mut stores.store);
             cx.flex(
                 FlexStyle {
-                    size: Size::fixed(1000.0, 100.0),
+                    size: Sizing::fixed(1000.0, 100.0),
                     ..Default::default()
                 },
                 |cx| {
                     let boxed = FlexStyle {
-                        size: Size::fixed(1000.0, 100.0),
+                        size: Sizing::fixed(1000.0, 100.0),
                         ..fill
                     };
                     let handle = cx.avoiding(Avoid::SafeArea, boxed, |cx| {

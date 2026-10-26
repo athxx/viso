@@ -49,7 +49,7 @@ use viso_ui::calendar::{Date, NO_DATE, Weekday};
 use viso_ui::{
     Align, AnchorAlign, Anchoring, Axis, BoxStyle, BuildCx, Component, DispatchPhase, EventCx,
     FlexStyle, FontSize, Inset, InteractionStyle, Justify, Key, LeafStyle, Length, NodeId,
-    PointerButtons, PointerPhase, Rgba, Role, SemanticState, Semantics, Shadow, Side, Size,
+    PointerButtons, PointerPhase, Rgba, Role, SemanticState, Semantics, Shadow, Side, Sizing,
     StateId, StateValue, TextRequest, TextStyle,
 };
 
@@ -336,7 +336,7 @@ impl Component for DatePicker {
                     },
                     |cx| {
                         let leaf = cx.leaf(LeafStyle {
-                            size: Size {
+                            size: Sizing {
                                 width: Length::Fit,
                                 height: Length::Fit,
                             },

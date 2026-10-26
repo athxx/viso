@@ -991,7 +991,7 @@ mod tests {
     use crate::asset::AssetBytes;
     use crate::component::{BuildCx, FlexStyle, LeafStyle, NodeStore};
     use crate::dirty::DirtyClass;
-    use crate::layout::{Axis, Size};
+    use crate::layout::{Axis, Sizing};
     use crate::style::BoxStyle;
     use viso_render::{Rect, Rgba};
 
@@ -1011,7 +1011,7 @@ mod tests {
             cx.flex(FlexStyle::default(), |cx| {
                 leaf = Some(
                     cx.leaf(LeafStyle {
-                        size: Size::fixed(10.0, 10.0),
+                        size: Sizing::fixed(10.0, 10.0),
                         style: BoxStyle::solid(RED),
                     })
                     .id(),
@@ -1059,12 +1059,12 @@ mod tests {
                 },
                 |cx| {
                     cx.leaf(LeafStyle {
-                        size: Size::fixed(10.0, 10.0),
+                        size: Sizing::fixed(10.0, 10.0),
                         style: BoxStyle::solid(RED),
                     });
                     // A transparent leaf contributes nothing.
                     cx.leaf(LeafStyle {
-                        size: Size::fixed(10.0, 10.0),
+                        size: Sizing::fixed(10.0, 10.0),
                         style: BoxStyle::NONE,
                     });
                 },
@@ -1104,12 +1104,12 @@ mod tests {
                 },
                 |cx| {
                     let h = cx.leaf(LeafStyle {
-                        size: Size::fixed(10.0, 10.0),
+                        size: Sizing::fixed(10.0, 10.0),
                         style: BoxStyle::solid(RED),
                     });
                     first = Some(h.id());
                     cx.leaf(LeafStyle {
-                        size: Size::fixed(10.0, 10.0),
+                        size: Sizing::fixed(10.0, 10.0),
                         style: BoxStyle::solid(RED),
                     });
                 },
@@ -1144,7 +1144,7 @@ mod tests {
             cx.flex(
                 FlexStyle {
                     axis: Axis::Column,
-                    size: Size::fixed(100.0, 100.0),
+                    size: Sizing::fixed(100.0, 100.0),
                     style: BoxStyle {
                         radius: 8.0,
                         ..BoxStyle::solid(RED)
@@ -1154,7 +1154,7 @@ mod tests {
                 |cx| {
                     child = Some(
                         cx.leaf(LeafStyle {
-                            size: Size::fixed(100.0, 300.0),
+                            size: Sizing::fixed(100.0, 300.0),
                             style: BoxStyle::solid(RED),
                         })
                         .id(),
@@ -1198,7 +1198,7 @@ mod tests {
                 ScrollStyle {
                     axis: Axis::Column,
                     across: false,
-                    size: Size::fixed(100.0, 100.0),
+                    size: Sizing::fixed(100.0, 100.0),
                     // A solid viewport background so its quad paints before the clip.
                     style: BoxStyle::solid(RED),
                     bars: crate::scroll_bar::ScrollBars::Hidden,
@@ -1210,7 +1210,7 @@ mod tests {
                 |cx| {
                     content = Some(
                         cx.leaf(LeafStyle {
-                            size: Size::fixed(100.0, 300.0),
+                            size: Sizing::fixed(100.0, 300.0),
                             style: BoxStyle::solid(RED),
                         })
                         .id(),
@@ -1266,7 +1266,7 @@ mod tests {
         let root = {
             let mut cx = BuildCx::new(&mut store);
             cx.flex(FlexStyle::default(), |cx| {
-                let size = Size {
+                let size = Sizing {
                     width: Length::Fixed(50.0),
                     height: Length::Fixed(20.0),
                 };
@@ -1358,7 +1358,7 @@ mod tests {
         let root = {
             let mut cx = BuildCx::new(&mut store);
             cx.flex(FlexStyle::default(), |cx| {
-                let size = Size {
+                let size = Sizing {
                     width: Length::Fit,
                     height: Length::Fit,
                 };
@@ -1466,14 +1466,14 @@ mod tests {
             cx.flex(FlexStyle::default(), |cx| {
                 text_id = Some(
                     cx.leaf(LeafStyle {
-                        size: Size::fixed(30.0, 20.0),
+                        size: Sizing::fixed(30.0, 20.0),
                         style: BoxStyle::solid(RED),
                     })
                     .id(),
                 );
                 image_id = Some(
                     cx.leaf(LeafStyle {
-                        size: Size {
+                        size: Sizing {
                             width: Length::Fit,
                             height: Length::Fit,
                         },
@@ -1483,7 +1483,7 @@ mod tests {
                 );
                 path_id = Some(
                     cx.leaf(LeafStyle {
-                        size: Size::fixed(16.0, 16.0),
+                        size: Sizing::fixed(16.0, 16.0),
                         style: BoxStyle::NONE,
                     })
                     .id(),
@@ -1640,7 +1640,7 @@ mod tests {
             cx.flex(FlexStyle::default(), |cx| {
                 text_id = Some(
                     cx.leaf(LeafStyle {
-                        size: Size::fixed(40.0, 20.0),
+                        size: Sizing::fixed(40.0, 20.0),
                         style: BoxStyle::NONE,
                     })
                     .id(),
@@ -1760,7 +1760,7 @@ mod tests {
             cx.flex(FlexStyle::default(), |cx| {
                 text_id = Some(
                     cx.leaf(LeafStyle {
-                        size: Size::fixed(20.0, 20.0),
+                        size: Sizing::fixed(20.0, 20.0),
                         style: BoxStyle::NONE,
                     })
                     .id(),
@@ -1861,7 +1861,7 @@ mod tests {
                     for (i, color) in [RED, GREEN, BLUE].into_iter().enumerate() {
                         ids[i] = Some(
                             cx.leaf(LeafStyle {
-                                size: Size::fixed(10.0, 10.0),
+                                size: Sizing::fixed(10.0, 10.0),
                                 style: BoxStyle::solid(color),
                             })
                             .id(),
@@ -1985,7 +1985,7 @@ mod tests {
                 |cx| {
                     // A plain in-place leaf, painted in the main walk.
                     cx.leaf(LeafStyle {
-                        size: Size::fixed(10.0, 10.0),
+                        size: Sizing::fixed(10.0, 10.0),
                         style: BoxStyle::solid(RED),
                     });
                     // An overlay panel (GREEN) that itself holds an overlay child
@@ -1999,7 +1999,7 @@ mod tests {
                         |cx| {
                             inner = Some(
                                 cx.leaf(LeafStyle {
-                                    size: Size::fixed(10.0, 10.0),
+                                    size: Sizing::fixed(10.0, 10.0),
                                     style: BoxStyle::solid(BLUE),
                                 })
                                 .id(),
@@ -2068,7 +2068,7 @@ mod tests {
                 for slot in [&mut a, &mut b] {
                     *slot = Some(
                         cx.leaf(LeafStyle {
-                            size: Size::fixed(30.0, 20.0),
+                            size: Sizing::fixed(30.0, 20.0),
                             style: BoxStyle::NONE,
                         })
                         .id(),
@@ -2210,7 +2210,7 @@ mod tests {
                 for slot in [&mut a, &mut b, &mut c] {
                     *slot = Some(
                         cx.leaf(LeafStyle {
-                            size: Size::fixed(40.0, 40.0),
+                            size: Sizing::fixed(40.0, 40.0),
                             style: BoxStyle::NONE,
                         })
                         .id(),
@@ -2397,7 +2397,7 @@ mod tests {
                         ScrollStyle {
                             axis: Axis::Column,
                             across: false,
-                            size: Size::fixed(100.0, 100.0),
+                            size: Sizing::fixed(100.0, 100.0),
                             style: BoxStyle::solid(RED),
                             bars: crate::scroll_bar::ScrollBars::Hidden,
                             tail: false,
@@ -2409,14 +2409,14 @@ mod tests {
                             for _ in 0..n {
                                 let card = cx.flex(
                                     FlexStyle {
-                                        size: Size::fixed(100.0, 20.0),
+                                        size: Sizing::fixed(100.0, 20.0),
                                         style: BoxStyle::solid(RED),
                                         ..Default::default()
                                     },
                                     |cx| {
                                         leaves.push(
                                             cx.leaf(LeafStyle {
-                                                size: Size::fixed(10.0, 10.0),
+                                                size: Sizing::fixed(10.0, 10.0),
                                                 style: BoxStyle::solid(RED),
                                             })
                                             .id(),

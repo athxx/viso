@@ -21,7 +21,7 @@ use std::rc::Rc;
 
 use viso_ui::{
     Align, BoxStyle, BuildCx, DirtyClass, FlexStyle, Inset, Justify, LeafStyle, Length, NodeId,
-    Size, StateValue,
+    Sizing, StateValue,
 };
 
 use super::semantics;
@@ -162,7 +162,7 @@ impl BuildOut {
     /// any child with no row offset, so an empty canvas lays out to nothing).
     pub fn empty(cx: &mut BuildCx<'_>) -> Self {
         let hint = cx.leaf(LeafStyle {
-            size: Size::fill(),
+            size: Sizing::fill(),
             style: BoxStyle::solid(HINT_TINT),
         });
         cx.set_overlay(hint, true);
@@ -170,7 +170,7 @@ impl BuildOut {
         // The floating-panel overlay canvas: an absolute-rows canvas filling the
         // dock, over the docked tree. Empty until a panel floats; the float reconcile
         // step remounts a floated panel's node here and positions it by row offset.
-        let floats = cx.absolute_rows(viso_ui::Axis::Column, Size::fill(), |_cx| {});
+        let floats = cx.absolute_rows(viso_ui::Axis::Column, Sizing::fill(), |_cx| {});
         cx.set_overlay(floats, true);
         BuildOut {
             seams: Vec::new(),
@@ -268,7 +268,7 @@ fn build_split(
             padding: Inset::all(0.0),
             align: Align::Stretch,
             justify: Justify::Start,
-            size: Size::fill(),
+            size: Sizing::fill(),
             style: BoxStyle::NONE,
         },
         |cx| {
@@ -383,7 +383,7 @@ fn build_tabs(
             padding: Inset::all(0.0),
             align: Align::Stretch,
             justify: Justify::Start,
-            size: Size::fill(),
+            size: Sizing::fill(),
             style: BoxStyle::NONE,
         },
         |cx| {
@@ -399,7 +399,7 @@ fn build_tabs(
                         padding: Inset::all(0.0),
                         align: Align::Center,
                         justify: Justify::Start,
-                        size: Size {
+                        size: Sizing {
                             width: Length::fill(),
                             height: Length::Fit,
                         },
@@ -408,7 +408,7 @@ fn build_tabs(
                     |cx| {
                         for &key in keys {
                             let tab = cx.leaf(LeafStyle {
-                                size: Size {
+                                size: Sizing {
                                     width: Length::Fit,
                                     height: Length::Fit,
                                 },
@@ -431,7 +431,7 @@ fn build_tabs(
                     padding: Inset::all(0.0),
                     align: Align::Stretch,
                     justify: Justify::Start,
-                    size: Size::fill(),
+                    size: Sizing::fill(),
                     style: BoxStyle::NONE,
                 },
                 |cx| {
@@ -444,7 +444,7 @@ fn build_tabs(
                                 padding: Inset::all(0.0),
                                 align: Align::Stretch,
                                 justify: Justify::Start,
-                                size: Size::fill(),
+                                size: Sizing::fill(),
                                 style: BoxStyle::NONE,
                             },
                             |cx| {
@@ -492,16 +492,16 @@ fn build_tabs(
     container
 }
 
-/// A [`Size`] whose main-axis length is `main` and cross-axis length is `cross`
-/// for the given split `axis` (like the splitter's `size_on` helper: `Size`
+/// A [`Sizing`] whose main-axis length is `main` and cross-axis length is `cross`
+/// for the given split `axis` (like the splitter's `size_on` helper: `Sizing`
 /// stores width/height, not main/cross).
-fn size_on(axis: viso_ui::Axis, main: Length, cross: Length) -> Size {
+fn size_on(axis: viso_ui::Axis, main: Length, cross: Length) -> Sizing {
     match axis {
-        viso_ui::Axis::Row => Size {
+        viso_ui::Axis::Row => Sizing {
             width: main,
             height: cross,
         },
-        viso_ui::Axis::Column => Size {
+        viso_ui::Axis::Column => Sizing {
             width: cross,
             height: main,
         },
@@ -582,13 +582,13 @@ mod tests {
         )))
         .panel(left, |cx| {
             cx.leaf(LeafStyle {
-                size: Size::fixed(10.0, 10.0),
+                size: Sizing::fixed(10.0, 10.0),
                 style: BoxStyle::NONE,
             });
         })
         .panel(right, |cx| {
             cx.leaf(LeafStyle {
-                size: Size::fixed(10.0, 10.0),
+                size: Sizing::fixed(10.0, 10.0),
                 style: BoxStyle::NONE,
             });
         });
@@ -741,19 +741,19 @@ mod tests {
         }))
         .panel(a, |cx| {
             cx.leaf(LeafStyle {
-                size: Size::fixed(1.0, 1.0),
+                size: Sizing::fixed(1.0, 1.0),
                 style: BoxStyle::NONE,
             });
         })
         .panel(b, |cx| {
             cx.leaf(LeafStyle {
-                size: Size::fixed(1.0, 1.0),
+                size: Sizing::fixed(1.0, 1.0),
                 style: BoxStyle::NONE,
             });
         })
         .panel(c, |cx| {
             cx.leaf(LeafStyle {
-                size: Size::fixed(1.0, 1.0),
+                size: Sizing::fixed(1.0, 1.0),
                 style: BoxStyle::NONE,
             });
         });

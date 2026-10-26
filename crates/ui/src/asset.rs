@@ -862,7 +862,7 @@ mod tests {
     use crate::component::{BuildCx, NodeStore};
     use crate::content::Content;
     use crate::reactive::EffectStore;
-    use crate::{BoxStyle, LeafStyle, Size};
+    use crate::{BoxStyle, LeafStyle, Sizing};
 
     /// A 4 × 4 raster: 64 bytes resident.
     fn raster() -> AssetPayload {
@@ -879,7 +879,7 @@ mod tests {
             cx.flex(Default::default(), |cx| {
                 for _ in 0..n {
                     let leaf = LeafStyle {
-                        size: Size::fixed(4.0, 4.0),
+                        size: Sizing::fixed(4.0, 4.0),
                         style: BoxStyle::NONE,
                     };
                     leaves.push(cx.leaf(leaf).id());
@@ -950,7 +950,7 @@ mod tests {
         let leaf = {
             let mut cx = BuildCx::new(&mut store);
             let leaf = LeafStyle {
-                size: Size::fixed(4.0, 4.0),
+                size: Sizing::fixed(4.0, 4.0),
                 style: BoxStyle::NONE,
             };
             cx.leaf(leaf).id()
@@ -981,7 +981,7 @@ mod tests {
             cx.stack(Default::default(), |cx| {
                 let leaf = |cx: &mut BuildCx<'_>| {
                     cx.leaf(LeafStyle {
-                        size: Size::fixed(4.0, 4.0),
+                        size: Sizing::fixed(4.0, 4.0),
                         style: BoxStyle::NONE,
                     })
                 };

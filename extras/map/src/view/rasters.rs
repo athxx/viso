@@ -18,7 +18,7 @@ use viso_render::Rgba;
 use viso_render::asset::{RasterImage, ResourceId, ResourceRevision};
 use viso_ui::context::UpdateCx;
 use viso_ui::{
-    AssetFit, AssetPayload, BoxStyle, BuildCx, Continuation, DirtyClass, LeafStyle, NodeId, Size,
+    AssetFit, AssetPayload, BoxStyle, BuildCx, Continuation, DirtyClass, LeafStyle, NodeId, Sizing,
     StackStyle, StructureCx, TaskId,
 };
 
@@ -201,7 +201,7 @@ impl Rasters {
             let node = cx
                 .stack(
                     StackStyle {
-                        size: Size::fixed(0.0, 0.0),
+                        size: Sizing::fixed(0.0, 0.0),
                         align: viso_ui::Alignment2D::TopStart,
                         ..StackStyle::default()
                     },
@@ -557,7 +557,7 @@ impl Set {
             let mut cx = BuildCx::with_parent(s.store, s.states, s.bindings, self.node);
             let node = cx
                 .leaf(LeafStyle {
-                    size: Size::fixed(side, side),
+                    size: Sizing::fixed(side, side),
                     style: BoxStyle::NONE,
                 })
                 .id();

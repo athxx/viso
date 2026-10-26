@@ -596,7 +596,7 @@ fn reddish(c: [u8; 3]) -> bool {
 fn red_box(cx: &mut BuildCx<'_>) {
     cx.stack(
         viso::ui::StackStyle {
-            size: viso::ui::Size::fixed(20.0, 30.0),
+            size: viso::ui::Sizing::fixed(20.0, 30.0),
             style: viso::ui::BoxStyle::solid(viso::render::Rgba::new(1.0, 0.0, 0.0, 1.0)),
             ..Default::default()
         },

@@ -88,7 +88,7 @@ fn work() {
     }
 }
 
-/// Size the pool at `threads` worker threads, `0` running every job on the
+/// Sizing the pool at `threads` worker threads, `0` running every job on the
 /// loop thread. Only a call before the pool's first job counts; later calls
 /// change nothing.
 pub fn configure(threads: usize) {

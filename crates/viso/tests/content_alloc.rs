@@ -21,8 +21,8 @@ use viso::gpu::{CpuRaster, GpuBackend, RawWindowHandle, TextureDesc, TextureForm
 use viso::render::{FrameStats, GlyphInstanceData, Rect, Renderer, Rgba};
 use viso::render::{test_glyphs, test_texture};
 use viso::ui::{
-    Axis, BoxStyle, BuildCx, Content, FlexStyle, Inset, LeafStyle, Length, NodeId, NodeStore, Size,
-    Vec2, paint_tree,
+    Axis, BoxStyle, BuildCx, Content, FlexStyle, Inset, LeafStyle, Length, NodeId, NodeStore,
+    Sizing, Vec2, paint_tree,
 };
 
 /// A global allocator that counts heap allocations while `ARMED`, so a steady
@@ -143,14 +143,14 @@ fn build(store: &mut NodeStore) -> (NodeId, NodeId, NodeId) {
             axis: Axis::Row,
             gap: 12.0,
             padding: Inset::all(10.0),
-            size: Size::fill(),
+            size: Sizing::fill(),
             style: BoxStyle::solid(DARK),
             ..Default::default()
         },
         |cx| {
             text_id = Some(
                 cx.leaf(LeafStyle {
-                    size: Size {
+                    size: Sizing {
                         width: Length::Fit,
                         height: Length::Fit,
                     },
@@ -160,7 +160,7 @@ fn build(store: &mut NodeStore) -> (NodeId, NodeId, NodeId) {
             );
             image_id = Some(
                 cx.leaf(LeafStyle {
-                    size: Size::fixed(48.0, 48.0),
+                    size: Sizing::fixed(48.0, 48.0),
                     style: BoxStyle::NONE,
                 })
                 .id(),

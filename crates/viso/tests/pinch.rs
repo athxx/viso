@@ -11,7 +11,7 @@ use viso::platform::{
     GesturePhase, Modifiers, RawEvent, RawGesture, RawScroll, ScrollPhase, WindowId,
 };
 use viso::prelude::*;
-use viso::ui::{LeafStyle, PinchPhase, Size, WindowConfig};
+use viso::ui::{LeafStyle, PinchPhase, Sizing, WindowConfig};
 
 const STEP: Duration = Duration::from_millis(16);
 const WIN: WindowId = WindowId(1);
@@ -38,7 +38,7 @@ impl Application for Pinched {
 
     fn build(&mut self, cx: &mut BuildCx<'_>) {
         let root = cx.leaf(LeafStyle {
-            size: Size::fill(),
+            size: Sizing::fill(),
             ..LeafStyle::default()
         });
         cx.pinchable(root, true);

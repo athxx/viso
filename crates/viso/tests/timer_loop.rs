@@ -31,7 +31,7 @@ use viso::platform::{
     WindowId,
 };
 use viso::prelude::*;
-use viso::ui::{BuildCx, FlexStyle, LeafStyle, PointerButtons, PointerPhase, Size, WindowConfig};
+use viso::ui::{BuildCx, FlexStyle, LeafStyle, PointerButtons, PointerPhase, Sizing, WindowConfig};
 
 /// The launch surface (`WindowConfig::default` logical size, scale 1.0). A
 /// center sample lands on the fill root.
@@ -75,12 +75,12 @@ impl Application for TimerApp {
         let mut marker_id = None;
         let root = cx.flex(
             FlexStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 ..FlexStyle::default()
             },
             |c| {
                 let marker = c.leaf(LeafStyle {
-                    size: Size::fixed(10.0, 10.0),
+                    size: Sizing::fixed(10.0, 10.0),
                     ..LeafStyle::default()
                 });
                 marker_id = Some(marker.id());

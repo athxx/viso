@@ -14,7 +14,7 @@ use viso::platform::{
 use viso::prelude::*;
 use viso::ui::{
     Axis, BoxStyle, Component, DragAccept, DragData, DragKind, DropOperation, DropPhase, FlexStyle,
-    LeafStyle, Size, WindowConfig,
+    LeafStyle, Sizing, WindowConfig,
 };
 use viso::widgets::{DropZoneStyle, draggable, drop_zone};
 
@@ -58,14 +58,14 @@ impl Application for Board {
         cx.flex(
             FlexStyle {
                 axis: Axis::Column,
-                size: Size::fixed(300.0, 300.0),
+                size: Sizing::fixed(300.0, 300.0),
                 ..FlexStyle::default()
             },
             |cx| {
                 draggable(DragData::value(Card(7)).with(viso::ui::DragItem::Text("Card 7".into())))
                     .content(|cx| {
                         cx.leaf(LeafStyle {
-                            size: Size::fixed(100.0, 40.0),
+                            size: Sizing::fixed(100.0, 40.0),
                             style: BoxStyle::NONE,
                         });
                     })
@@ -78,7 +78,7 @@ impl Application for Board {
                 ] {
                     drop_zone([accept])
                         .style(DropZoneStyle {
-                            size: Size::fixed(300.0, 100.0),
+                            size: Sizing::fixed(300.0, 100.0),
                             ..DropZoneStyle::default()
                         })
                         .operation(DropOperation::Copy)

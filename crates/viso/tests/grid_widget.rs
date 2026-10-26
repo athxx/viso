@@ -34,7 +34,7 @@ use std::sync::atomic::Ordering;
 use viso::gpu::{CpuRaster, GpuBackend, RawWindowHandle};
 use viso::render::{FrameStats, Rect, Renderer, Rgba};
 use viso::ui::{
-    BoxStyle, BuildCx, Component, GridPlacement, LeafStyle, NodeId, NodeStore, Role, Size,
+    BoxStyle, BuildCx, Component, GridPlacement, LeafStyle, NodeId, NodeStore, Role, Sizing,
     TrackSizing, paint_tree,
 };
 use viso::widgets::{GridViewStyle, grid};
@@ -88,14 +88,14 @@ fn build_scene(store: &mut NodeStore) -> NodeId {
         rows: vec![TrackSizing::Fr(1.0), TrackSizing::Fr(1.0)],
         column_gap: 8.0,
         row_gap: 8.0,
-        size: Size::fixed(100.0, 100.0),
+        size: Sizing::fixed(100.0, 100.0),
         background: BoxStyle::solid(DARK),
         ..Default::default()
     })
     .children(|cx| {
         for color in CELLS {
             cx.leaf(LeafStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 style: BoxStyle::solid(color),
             });
         }
@@ -258,18 +258,18 @@ fn unplaced_cells_auto_flow_row_major_through_a_widget_grid() {
         GridViewStyle {
             columns: vec![TrackSizing::Fixed(50.0), TrackSizing::Fixed(50.0)],
             rows: vec![TrackSizing::Fixed(50.0)],
-            size: Size::fixed(100.0, 50.0),
+            size: Sizing::fixed(100.0, 50.0),
             ..Default::default()
         },
         100.0,
         50.0,
         |cx| {
             cx.leaf(LeafStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 style: BoxStyle::NONE,
             });
             cx.leaf(LeafStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 style: BoxStyle::NONE,
             });
         },
@@ -307,7 +307,7 @@ fn place_pins_a_cell_to_an_explicit_column_through_a_widget_grid() {
         GridViewStyle {
             columns: vec![TrackSizing::Fixed(50.0), TrackSizing::Fixed(50.0)],
             rows: vec![TrackSizing::Fixed(50.0)],
-            size: Size::fixed(100.0, 50.0),
+            size: Sizing::fixed(100.0, 50.0),
             ..Default::default()
         },
         100.0,
@@ -320,7 +320,7 @@ fn place_pins_a_cell_to_an_explicit_column_through_a_widget_grid() {
                 row_span: 1,
             });
             cx.leaf(LeafStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 style: BoxStyle::NONE,
             });
         },
@@ -348,7 +348,7 @@ fn a_column_span_widens_a_cell_over_two_tracks_and_the_gap() {
             columns: vec![TrackSizing::Fixed(50.0), TrackSizing::Fixed(50.0)],
             rows: vec![TrackSizing::Fixed(50.0)],
             column_gap: 10.0,
-            size: Size::fixed(110.0, 50.0),
+            size: Sizing::fixed(110.0, 50.0),
             ..Default::default()
         },
         110.0,
@@ -361,7 +361,7 @@ fn a_column_span_widens_a_cell_over_two_tracks_and_the_gap() {
                 row_span: 1,
             });
             cx.leaf(LeafStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 style: BoxStyle::NONE,
             });
         },

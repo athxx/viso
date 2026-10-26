@@ -383,7 +383,7 @@ mod tests {
     use crate::reactive::EffectStore;
     use crate::state::StateStore;
     use crate::virtual_list::VirtualLists;
-    use crate::{BoxStyle, DirtyClass, LeafStyle, Size};
+    use crate::{BoxStyle, DirtyClass, LeafStyle, Sizing};
     use std::cell::RefCell;
     use std::rc::Rc;
     use viso_render::TextureId;
@@ -397,7 +397,7 @@ mod tests {
             cx.flex(Default::default(), |cx| {
                 leaf = Some(
                     cx.leaf(LeafStyle {
-                        size: Size::fixed(40.0, 30.0),
+                        size: Sizing::fixed(40.0, 30.0),
                         style: BoxStyle::NONE,
                     })
                     .id(),

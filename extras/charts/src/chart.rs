@@ -9,7 +9,7 @@ use viso_ui::{
     AbsoluteInsets, AbsoluteStyle, Align, Axis, BoxStyle, BuildCx, Component, CursorIcon,
     DispatchPhase, EventCx, FlexStyle, FocusChange, FontWeight, Inset, Justify, Key, LeafStyle,
     Length, LiveRegion, NodeId, Placement, PlotMark, PointerButtons, PointerPhase, Rgba, Role,
-    SemanticState, Semantics, Shadow, Size, Span, StateId, StateValue, StructureCx, TextAlign,
+    SemanticState, Semantics, Shadow, Sizing, Span, StateId, StateValue, StructureCx, TextAlign,
 };
 use viso_widgets::label;
 
@@ -181,7 +181,7 @@ impl Chart {
     }
 
     /// Set the chart's own size within its parent.
-    pub fn size(mut self, size: Size) -> Self {
+    pub fn size(mut self, size: Sizing) -> Self {
         self.style.size = size;
         self
     }
@@ -371,7 +371,7 @@ impl ChartHandle {
     }
 }
 
-const FIT: Size = Size {
+const FIT: Sizing = Sizing {
     width: Length::Fit,
     height: Length::Fit,
 };
@@ -386,7 +386,7 @@ fn x_axis_height(style: &ChartStyle) -> f32 {
     line_height(style) + 6.0
 }
 
-fn flex(axis: Axis, size: Size) -> FlexStyle {
+fn flex(axis: Axis, size: Sizing) -> FlexStyle {
     FlexStyle {
         axis,
         size,
@@ -462,7 +462,7 @@ impl Component for Chart {
                 cx.flex(
                     FlexStyle {
                         gap: 8.0,
-                        ..flex(Axis::Row, Size::fill())
+                        ..flex(Axis::Row, Sizing::fill())
                     },
                     |cx| {
                         y_axis = Some(
@@ -475,7 +475,7 @@ impl Component for Chart {
                                     },
                                     ..flex(
                                         Axis::Column,
-                                        Size {
+                                        Sizing {
                                             width: Length::Fit,
                                             height: Length::fill(),
                                         },
@@ -485,7 +485,7 @@ impl Component for Chart {
                             )
                             .id(),
                         );
-                        cx.flex(flex(Axis::Column, Size::fill()), |cx| {
+                        cx.flex(flex(Axis::Column, Sizing::fill()), |cx| {
                             let built = cx.absolute(
                                 AbsoluteStyle {
                                     padding: Inset {
@@ -493,14 +493,14 @@ impl Component for Chart {
                                         bottom: lh / 2.0,
                                         ..Inset::default()
                                     },
-                                    size: Size::fill(),
+                                    size: Sizing::fill(),
                                     style: BoxStyle::NONE,
                                 },
                                 |cx| {
                                     let zero = Some(Span::ZERO);
                                     cx.place(pinned(zero, zero, zero, zero));
                                     let model = state.model.borrow();
-                                    plot = Some(cx.plot(Size::fill(), model.plot.clone()).id());
+                                    plot = Some(cx.plot(Sizing::fill(), model.plot.clone()).id());
                                     drop(model);
                                     cx.place(pinned(
                                         Some(Span::ZERO),
@@ -545,7 +545,7 @@ impl Component for Chart {
                             x_axis = Some(
                                 cx.absolute(
                                     AbsoluteStyle {
-                                        size: Size {
+                                        size: Sizing {
                                             width: Length::fill(),
                                             height: Length::Fixed(axis_h),
                                         },
@@ -616,7 +616,7 @@ fn build_y_labels(state: &State, cx: &mut BuildCx<'_>) {
         // the bottom, each on its tick.
         if k > 0 {
             cx.leaf(LeafStyle {
-                size: Size {
+                size: Sizing {
                     width: Length::Fixed(0.0),
                     height: Length::fill(),
                 },
@@ -624,7 +624,7 @@ fn build_y_labels(state: &State, cx: &mut BuildCx<'_>) {
             });
         }
         axis_label(&style, text.clone(), TextAlign::End)
-            .size(Size {
+            .size(Sizing {
                 width: Length::Fit,
                 height: Length::Fixed(line_height(&style)),
             })
@@ -647,7 +647,7 @@ fn build_x_labels(state: &State, cx: &mut BuildCx<'_>) {
             None,
         ));
         axis_label(&style, l.text.clone(), TextAlign::Center)
-            .size(Size {
+            .size(Sizing {
                 width: Length::Relative {
                     fixed: 0.0,
                     pct: l.width,
@@ -667,7 +667,7 @@ fn key_mark(state: &State, cx: &mut BuildCx<'_>, color: Rgba, line: bool) {
         _ => (10.0, 10.0, 2.0),
     };
     cx.leaf(LeafStyle {
-        size: Size::fixed(w, h),
+        size: Sizing::fixed(w, h),
         style: BoxStyle {
             radius: r,
             ..BoxStyle::solid(color)

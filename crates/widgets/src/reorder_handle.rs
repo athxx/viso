@@ -28,14 +28,14 @@
 
 use viso_ui::{
     Align, Axis, BoxStyle, BuildCx, Component, CursorIcon, FlexStyle, Inset, Justify, LeafStyle,
-    Rgba, Role, Semantics, Size,
+    Rgba, Role, Semantics, Sizing,
 };
 
 /// How a [`ReorderHandle`] looks.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ReorderHandleStyle {
     /// Its size: the room a finger presses.
-    pub size: Size,
+    pub size: Sizing,
     /// The grip's bars' color.
     pub color: Rgba,
     /// How long the bars are, and how thick.
@@ -47,7 +47,7 @@ pub struct ReorderHandleStyle {
 impl Default for ReorderHandleStyle {
     fn default() -> Self {
         ReorderHandleStyle {
-            size: Size::fixed(44.0, 44.0),
+            size: Sizing::fixed(44.0, 44.0),
             color: Rgba {
                 r: 0.56,
                 g: 0.56,
@@ -106,7 +106,7 @@ impl Component for ReorderHandle {
             |cx| {
                 for _ in 0..3 {
                     cx.leaf(LeafStyle {
-                        size: Size::fixed(s.bar.0, s.bar.1),
+                        size: Sizing::fixed(s.bar.0, s.bar.1),
                         style: BoxStyle::solid(s.color),
                     });
                 }

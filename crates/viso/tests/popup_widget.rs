@@ -49,7 +49,8 @@ use viso::render::{FrameStats, Rect, Renderer, Rgba};
 use viso::ui::{
     BindingTable, BoxStyle, BuildCx, Component, EventCx, Key, KeyEvent, KeyRouter, LeafStyle,
     Modifiers, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase, Role,
-    SemanticProjector, Size, StateId, StateStore, StateValue, TextEdits, VirtualLists, paint_tree,
+    SemanticProjector, Sizing, StateId, StateStore, StateValue, TextEdits, VirtualLists,
+    paint_tree,
 };
 use viso::widgets::{PopupHandle, PopupHandleSlot, popup};
 
@@ -90,7 +91,7 @@ fn surface_rect() -> Rect {
 fn fill(color: Rgba) -> impl Fn(&mut BuildCx<'_>) + 'static {
     move |cx| {
         cx.leaf(LeafStyle {
-            size: Size::fill(),
+            size: Sizing::fill(),
             style: BoxStyle::solid(color),
         });
     }
@@ -111,7 +112,7 @@ fn build_open_scene(store: &mut NodeStore) -> NodeId {
     let widget = popup()
         .anchor(fill(ANCHOR))
         .content(fill(CONTENT))
-        .size(Size::fill());
+        .size(Sizing::fill());
 
     let root = {
         let mut cx = BuildCx::with_reactive(
@@ -237,7 +238,7 @@ impl Interactive {
         let widget = popup()
             .anchor(fill(ANCHOR))
             .content(fill(CONTENT))
-            .size(Size::fill())
+            .size(Sizing::fill())
             .handle(&slot)
             .on_dismiss(move |_ev| {
                 counter.set(counter.get() + 1);

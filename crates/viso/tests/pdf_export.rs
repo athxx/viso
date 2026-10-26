@@ -11,7 +11,7 @@ use viso::pdf::{self, Margins, PageSize, Pdf};
 use viso::platform::{RawEvent, WindowId};
 use viso::prelude::*;
 use viso::services::{Reply, ServiceResult};
-use viso::ui::{BoxStyle, Component, Rgba, Shadow, Size};
+use viso::ui::{BoxStyle, Component, Rgba, Shadow, Sizing};
 
 const STEP: Duration = Duration::from_millis(16);
 const WIN: WindowId = WindowId(1);
@@ -23,7 +23,7 @@ thread_local! {
 
 fn report(cx: &mut BuildCx<'_>) {
     let card = cx.leaf(LeafStyle {
-        size: Size::fixed(200.0, 80.0),
+        size: Sizing::fixed(200.0, 80.0),
         style: BoxStyle::solid(Rgba::new(0.2, 0.4, 0.9, 1.0)).with_radius(12.0),
     });
     cx.shadow(card, Shadow::FLOATING);
@@ -53,7 +53,7 @@ impl Application for ExportApp {
 
     fn build(&mut self, cx: &mut BuildCx<'_>) {
         cx.leaf(LeafStyle {
-            size: Size::fill(),
+            size: Sizing::fill(),
             style: BoxStyle::NONE,
         });
         let reply = pdf::export(

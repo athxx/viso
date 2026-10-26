@@ -217,7 +217,8 @@ mod golden {
     use viso::render::{GlyphInstanceData, Rect, Renderer, Rgba, test_glyphs};
     use viso::ui::{
         Axis, BindingTable, BoxStyle, BuildCx, Component, Content, Inset, Length, NodeId,
-        NodeStore, SemanticProjector, Size, StateStore, TextEdits, Vec2, VirtualLists, paint_tree,
+        NodeStore, SemanticProjector, Sizing, StateStore, TextEdits, Vec2, VirtualLists,
+        paint_tree,
     };
     use viso::widgets::{ViewStyle, segmented_control, view};
 
@@ -244,12 +245,12 @@ mod golden {
             axis: Axis::Column,
             padding: Inset::all(8.0),
             gap: 8.0,
-            size: Size::fill(),
+            size: Sizing::fill(),
             background: BoxStyle::solid(Rgba::new(0.1, 0.1, 0.12, 1.0)),
             ..Default::default()
         })
         .children(|cx| {
-            let width = Size {
+            let width = Sizing {
                 width: Length::Fixed(240.0),
                 height: Length::Fit,
             };

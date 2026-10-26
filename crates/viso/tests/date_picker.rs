@@ -15,7 +15,7 @@ use viso::platform::{
 };
 use viso::prelude::*;
 use viso::ui::calendar::{Date, Weekday};
-use viso::ui::{Axis, Component, FlexStyle, Inset, NodeId, NodeStore, Role, Size};
+use viso::ui::{Axis, Component, FlexStyle, Inset, NodeId, NodeStore, Role, Sizing};
 use viso::widgets::date_picker;
 
 const STEP: Duration = Duration::from_millis(16);
@@ -52,7 +52,7 @@ impl Application for PickerApp {
     fn build(&mut self, cx: &mut BuildCx<'_>) {
         cx.flex(
             FlexStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 axis: Axis::Row,
                 padding: Inset::all(20.0),
                 gap: 300.0,

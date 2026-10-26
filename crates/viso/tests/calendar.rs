@@ -23,7 +23,7 @@ use viso::render::{Rect, Renderer, Rgba};
 use viso::ui::calendar::{Date, Weekday};
 use viso::ui::{
     Axis, BindingTable, BoxStyle, Component, FlexStyle, Inset, NodeId, NodeStore, Role,
-    SemanticProjector, Size, StateStore, TextEdits, VirtualLists, paint_tree,
+    SemanticProjector, Sizing, StateStore, TextEdits, VirtualLists, paint_tree,
 };
 use viso::widgets::{ViewStyle, calendar, view};
 
@@ -62,7 +62,7 @@ impl Application for CalendarApp {
     fn build(&mut self, cx: &mut BuildCx<'_>) {
         cx.flex(
             FlexStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 axis: Axis::Row,
                 padding: Inset::all(20.0),
                 gap: 20.0,
@@ -353,7 +353,7 @@ fn a_calendar_marks_its_picked_day_and_today_and_matches_golden() {
     let mut projectors = SemanticProjector::new();
     let scene = view(ViewStyle {
         padding: Inset::all(16.0),
-        size: Size::fill(),
+        size: Sizing::fill(),
         background: BoxStyle::solid(Rgba::new(0.97, 0.97, 0.98, 1.0)),
         ..Default::default()
     })

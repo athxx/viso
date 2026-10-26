@@ -44,7 +44,7 @@ use viso::render::{FrameStats, GlyphInstanceData, Rect, Renderer, Rgba, test_gly
 use viso::ui::{
     Axis, BindingTable, BoxStyle, BuildCx, Component, Content, Inset, Key, KeyEvent, KeyRouter,
     Modifiers, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase, PointerRouter, Role,
-    SemanticProjector, Size, StateStore, TextEdits, Vec2, VirtualLists, paint_tree,
+    SemanticProjector, Sizing, StateStore, TextEdits, Vec2, VirtualLists, paint_tree,
 };
 use viso::widgets::{ViewStyle, radio_group, view};
 
@@ -106,7 +106,7 @@ fn build_scene(store: &mut NodeStore) -> (NodeId, NodeId, Vec<NodeId>) {
     let container = view(ViewStyle {
         axis: Axis::Row,
         padding: Inset::all(10.0),
-        size: Size::fill(),
+        size: Sizing::fill(),
         background: BoxStyle::solid(DARK),
         ..Default::default()
     })
@@ -264,7 +264,7 @@ impl Interactive {
         let mut projectors = SemanticProjector::new();
 
         let widget = radio_group(OPTIONS)
-            .size(Size::fill())
+            .size(Sizing::fill())
             .on_change(move |_ev, index| {
                 last.set(Some(index));
                 counter.set(counter.get() + 1);

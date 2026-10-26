@@ -31,7 +31,7 @@ use crate::grid::{GridPlacement, GridStyle, GridTracks, TrackSizing};
 use crate::input::{PointerContacts, PointerId};
 use crate::layout::{
     self, AbsoluteInsets, Align, Alignment2D, Axis, BoxRules, Inset, Justify, LayoutInput,
-    LayoutTree, Length, Measured, Placement, Size, StackPlacement, Vec2,
+    LayoutTree, Length, Measured, Placement, Sizing, StackPlacement, Vec2,
 };
 use crate::node::{NodeArena, NodeId, NodeIndex};
 use crate::reactive::{ComputeCx, EffectStore, SemanticProjector};
@@ -95,7 +95,7 @@ pub struct FlexStyle {
     /// nothing to distribute).
     pub justify: Justify,
     /// The container's own size request within its parent.
-    pub size: Size,
+    pub size: Sizing,
     /// The container's own background/border (transparent = pure layout box).
     pub style: BoxStyle,
 }
@@ -108,7 +108,7 @@ impl Default for FlexStyle {
             padding: Inset::default(),
             align: Align::Start,
             justify: Justify::Start,
-            size: Size::fill(),
+            size: Sizing::fill(),
             style: BoxStyle::NONE,
         }
     }
@@ -122,7 +122,7 @@ pub struct StackStyle {
     /// Inner padding on all four edges.
     pub padding: Inset,
     /// The container's own size request within its parent.
-    pub size: Size,
+    pub size: Sizing,
     /// The container's own background/border.
     pub style: BoxStyle,
 }
@@ -132,7 +132,7 @@ impl Default for StackStyle {
         StackStyle {
             align: Alignment2D::TopStart,
             padding: Inset::default(),
-            size: Size {
+            size: Sizing {
                 width: Length::Fit,
                 height: Length::Fit,
             },
@@ -147,7 +147,7 @@ pub struct AbsoluteStyle {
     /// Inner padding on all four edges.
     pub padding: Inset,
     /// The container's own size request within its parent.
-    pub size: Size,
+    pub size: Sizing,
     /// The container's own background/border.
     pub style: BoxStyle,
 }
@@ -156,7 +156,7 @@ impl Default for AbsoluteStyle {
     fn default() -> Self {
         AbsoluteStyle {
             padding: Inset::default(),
-            size: Size::fill(),
+            size: Sizing::fill(),
             style: BoxStyle::NONE,
         }
     }
@@ -165,8 +165,8 @@ impl Default for AbsoluteStyle {
 /// Parameters for a leaf declared via [`BuildCx::leaf`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LeafStyle {
-    /// Size request within the parent.
-    pub size: Size,
+    /// Sizing request within the parent.
+    pub size: Sizing,
     /// Fill/border/radius.
     pub style: BoxStyle,
 }
@@ -174,7 +174,7 @@ pub struct LeafStyle {
 impl Default for LeafStyle {
     fn default() -> Self {
         LeafStyle {
-            size: Size::fixed(0.0, 0.0),
+            size: Sizing::fixed(0.0, 0.0),
             style: BoxStyle::NONE,
         }
     }
@@ -189,7 +189,7 @@ pub struct ScrollStyle {
     /// natural extent both ways, and it has a bar for each.
     pub across: bool,
     /// The viewport's own size request within its parent (its visible box).
-    pub size: Size,
+    pub size: Sizing,
     /// The viewport's own background/border (transparent = pure clip box).
     pub style: BoxStyle,
     /// Whether it shows scroll bars.
@@ -213,7 +213,7 @@ impl Default for ScrollStyle {
         ScrollStyle {
             axis: Axis::Column,
             across: false,
-            size: Size::fill(),
+            size: Sizing::fill(),
             style: BoxStyle::NONE,
             bars: crate::scroll_bar::ScrollBars::Auto,
             tail: false,
@@ -236,7 +236,7 @@ pub struct VirtualListStyle {
     /// [`NodeStore::set_list_across`] says (a table's columns).
     pub across: bool,
     /// The viewport's own size request within its parent (its visible box).
-    pub size: Size,
+    pub size: Sizing,
     /// Extra rows mounted on each side of the visible window, so a small scroll
     /// reveals an already-built row rather than stalling on a mount.
     pub overscan: u32,
@@ -270,7 +270,7 @@ impl Default for VirtualListStyle {
         VirtualListStyle {
             axis: Axis::Column,
             across: false,
-            size: Size::fill(),
+            size: Sizing::fill(),
             overscan: 4,
             estimated_row: crate::virtual_list::DEFAULT_ROW_HEIGHT,
             style: BoxStyle::NONE,
@@ -1885,12 +1885,12 @@ impl NodeStore {
     }
 
     /// Allocate a bare leaf node of a given size, unattached. A leaf measures to
-    /// its `Size` request against any content payload attached with
+    /// its `Sizing` request against any content payload attached with
     /// [`Self::set_content_payload`] (a `Fit` axis resolves to the content's
     /// natural extent). Used by the grid arm's cell-alignment tests, which seat a
     /// content-bearing leaf in a cell and read back its baseline.
     #[cfg(test)]
-    pub(crate) fn alloc_leaf(&mut self, size: Size) -> NodeId {
+    pub(crate) fn alloc_leaf(&mut self, size: Sizing) -> NodeId {
         self.alloc(LayoutInput::Leaf { size }, BoxStyle::NONE)
     }
 
@@ -2160,11 +2160,11 @@ impl NodeStore {
     /// which would measure to zero and collapse the row.
     pub fn alloc_row_host(&mut self, canvas: NodeId, axis: Axis) -> NodeId {
         let size = match axis {
-            Axis::Column => Size {
+            Axis::Column => Sizing {
                 width: Length::fill(),
                 height: Length::Fit,
             },
-            Axis::Row => Size {
+            Axis::Row => Sizing {
                 width: Length::Fit,
                 height: Length::fill(),
             },
@@ -2203,7 +2203,7 @@ impl NodeStore {
     /// exactly `size`, holds the true `w × h` rectangle at that origin. The panel keeps
     /// its identity across a redock; [`set_fixed_size`](Self::set_fixed_size) re-sizes
     /// the `mount` when the float rect changes.
-    pub fn alloc_fixed_host(&mut self, canvas: NodeId, size: Size) -> (NodeId, NodeId) {
+    pub fn alloc_fixed_host(&mut self, canvas: NodeId, size: Sizing) -> (NodeId, NodeId) {
         // The outer host fits its body on the AbsoluteRows main axis (so its measured
         // main extent is the float's main extent the canvas places) and pins the body
         // to the cross origin with Align::Start, since the canvas forces the cross.
@@ -2214,7 +2214,7 @@ impl NodeStore {
                 padding: Inset::default(),
                 align: Align::Start,
                 justify: Justify::Start,
-                size: Size {
+                size: Sizing {
                     width: Length::Fit,
                     height: Length::Fit,
                 },
@@ -2333,7 +2333,7 @@ impl NodeStore {
         }
     }
 
-    /// Rewrite a node's own [`Size`] in place, marking it `MEASURE | LAYOUT |
+    /// Rewrite a node's own [`Sizing`] in place, marking it `MEASURE | LAYOUT |
     /// PAINT`: the size it requests changed, so its parent re-lays it out at the
     /// new extent (MEASURE rises until an ancestor fixed on both axes). The same-class in-place `LayoutInput`
     /// size rewrite as [`set_flex_child_weight`](Self::set_flex_child_weight) and
@@ -2342,7 +2342,7 @@ impl NodeStore {
     /// this to size a host it owns (a floating dock panel's fixed-size host) to a
     /// runtime rectangle without rebuilding the subtree. A no-op for a stale handle
     /// or an unchanged size.
-    pub fn set_fixed_size(&mut self, id: NodeId, size: Size) {
+    pub fn set_fixed_size(&mut self, id: NodeId, size: Sizing) {
         if !self.arena.is_live(id) {
             return;
         }
@@ -2375,7 +2375,7 @@ impl NodeStore {
     }
 
     /// The size node `id` requests of its parent, or `None` for a stale handle.
-    pub fn size_request(&self, id: NodeId) -> Option<Size> {
+    pub fn size_request(&self, id: NodeId) -> Option<Sizing> {
         self.arena
             .is_live(id)
             .then(|| self.layout[id.index() as usize].size())
@@ -5739,7 +5739,7 @@ impl NodeStore {
             self.placed_at.push(NO_PLACEMENT);
             self.dirty.push(DirtyClass::EMPTY);
             self.layout.push(LayoutInput::Leaf {
-                size: Size {
+                size: Sizing {
                     width: Length::Fixed(0.0),
                     height: Length::Fixed(0.0),
                 },
@@ -7112,7 +7112,7 @@ impl<'a> BuildCx<'a> {
     /// Declare a grid container and its children. The `children` closure runs
     /// with this grid as the active parent; each child lands in a cell (auto-flow
     /// unless a preceding [`BuildCx::place`] pinned it). A child inside a cell
-    /// still honors its own `Size`: a fill child stretches to the cell, a fit or
+    /// still honors its own `Sizing`: a fill child stretches to the cell, a fit or
     /// fixed child hugs its content — so a nested `flex` composes inside a cell.
     pub fn grid(&mut self, style: GridStyle, children: impl FnOnce(&mut BuildCx<'_>)) -> Handle {
         let column_count = style.columns.len().max(1) as u16;
@@ -7173,7 +7173,7 @@ impl<'a> BuildCx<'a> {
     pub fn absolute_rows(
         &mut self,
         axis: Axis,
-        size: Size,
+        size: Sizing,
         children: impl FnOnce(&mut BuildCx<'_>),
     ) -> Handle {
         let id = self.push_node(
@@ -8347,28 +8347,28 @@ mod tests {
     }
 
     /// The sizes a row of the differential layout test requests.
-    const ROW_SIZES: [Size; 6] = [
-        Size {
+    const ROW_SIZES: [Sizing; 6] = [
+        Sizing {
             width: Length::Fixed(200.0),
             height: Length::Fixed(20.0),
         },
-        Size {
+        Sizing {
             width: Length::Fill { weight: 1.0 },
             height: Length::Fixed(20.0),
         },
-        Size {
+        Sizing {
             width: Length::Fit,
             height: Length::Fixed(20.0),
         },
-        Size {
+        Sizing {
             width: Length::Fill { weight: 1.0 },
             height: Length::Fit,
         },
-        Size {
+        Sizing {
             width: Length::Fixed(150.0),
             height: Length::Fill { weight: 1.0 },
         },
-        Size {
+        Sizing {
             width: Length::Fit,
             height: Length::Fill { weight: 2.0 },
         },
@@ -8378,7 +8378,7 @@ mod tests {
 
     /// A label hugging its text.
     const LABEL: LeafStyle = LeafStyle {
-        size: Size {
+        size: Sizing {
             width: Length::Fit,
             height: Length::Fit,
         },
@@ -8408,7 +8408,7 @@ mod tests {
                         axis: Axis::Column,
                         gap: 2.0,
                         align: ALIGNS[seed as usize % 4],
-                        size: Size::fixed(300.0, 600.0),
+                        size: Sizing::fixed(300.0, 600.0),
                         ..FlexStyle::default()
                     },
                     |cx| {
@@ -8425,7 +8425,7 @@ mod tests {
                                 |cx| {
                                     nodes.push(
                                         cx.leaf(LeafStyle {
-                                            size: Size::fixed(8.0, 8.0),
+                                            size: Sizing::fixed(8.0, 8.0),
                                             ..LeafStyle::default()
                                         })
                                         .id(),
@@ -8436,7 +8436,7 @@ mod tests {
                                             FlexStyle {
                                                 axis: Axis::Column,
                                                 align: ALIGNS[r as usize % 3],
-                                                size: Size::fixed(60.0, 18.0),
+                                                size: Sizing::fixed(60.0, 18.0),
                                                 ..FlexStyle::default()
                                             },
                                             |cx| labels.push(cx.leaf(LABEL).id()),
@@ -8508,7 +8508,7 @@ mod tests {
 
     fn leaf(w: f32, h: f32) -> LeafStyle {
         LeafStyle {
-            size: Size::fixed(w, h),
+            size: Sizing::fixed(w, h),
             ..LeafStyle::default()
         }
     }
@@ -8540,7 +8540,7 @@ mod tests {
                         ids.push(cx.leaf(leaf(20.0, 20.0)).id());
                         ids.push(
                             cx.leaf(LeafStyle {
-                                size: Size::fill(),
+                                size: Sizing::fill(),
                                 ..LeafStyle::default()
                             })
                             .id(),
@@ -8570,7 +8570,7 @@ mod tests {
             cx.flex(FlexStyle::default(), |cx| {
                 let pinned = cx.absolute(
                     AbsoluteStyle {
-                        size: Size::fixed(200.0, 100.0),
+                        size: Sizing::fixed(200.0, 100.0),
                         ..AbsoluteStyle::default()
                     },
                     |cx| {
@@ -8593,7 +8593,7 @@ mod tests {
                         });
                         ids.push(
                             cx.leaf(LeafStyle {
-                                size: Size {
+                                size: Sizing {
                                     width: Length::Fit,
                                     height: Length::Fixed(8.0),
                                 },
@@ -8608,7 +8608,7 @@ mod tests {
                 let fit = cx.absolute(
                     AbsoluteStyle {
                         padding: Inset::all(3.0),
-                        size: Size {
+                        size: Sizing {
                             width: Length::Fit,
                             height: Length::Fit,
                         },
@@ -8641,14 +8641,14 @@ mod tests {
         let mut store = NodeStore::new();
         let mut ids = Vec::new();
         let full = LeafStyle {
-            size: Size::fill(),
+            size: Sizing::fill(),
             ..LeafStyle::default()
         };
         let root = {
             let mut cx = BuildCx::new(&mut store);
             cx.stack(
                 StackStyle {
-                    size: Size::fixed(100.0, 100.0),
+                    size: Sizing::fixed(100.0, 100.0),
                     ..StackStyle::default()
                 },
                 |cx| {
@@ -8733,7 +8733,7 @@ mod tests {
                     cx.stack(
                         StackStyle {
                             align: Alignment2D::Center,
-                            size: Size::fixed(100.0, 100.0),
+                            size: Sizing::fixed(100.0, 100.0),
                             ..StackStyle::default()
                         },
                         |cx| ids.push(cx.leaf(leaf(10.0, 10.0)).id()),
@@ -8747,8 +8747,8 @@ mod tests {
         let mut roots = Vec::new();
         store.layout(root, screen, &mut scratch);
         store.clear_dirty();
-        store.set_fixed_size(ids[0], Size::fixed(30.0, 20.0));
-        store.set_fixed_size(ids[1], Size::fixed(40.0, 20.0));
+        store.set_fixed_size(ids[0], Sizing::fixed(30.0, 20.0));
+        store.set_fixed_size(ids[1], Sizing::fixed(40.0, 20.0));
         store.relayout_dirty(root, screen, &mut scratch, &mut roots);
         assert_eq!(roots, ids, "each redone alone");
         assert_eq!(at(store.bounds(ids[0])), (366.0, 0.0, 30.0, 20.0));
@@ -8781,15 +8781,15 @@ mod tests {
                 cx.flex(
                     FlexStyle {
                         axis: Axis::Column,
-                        size: Size::fixed(300.0, 600.0),
+                        size: Sizing::fixed(300.0, 600.0),
                         ..FlexStyle::default()
                     },
                     |cx| {
                         for r in 0..6u32 {
                             let size = if (r + seed) % 2 == 0 {
-                                Size::fixed(120.0, 60.0)
+                                Sizing::fixed(120.0, 60.0)
                             } else {
-                                Size {
+                                Sizing {
                                     width: Length::Fit,
                                     height: Length::Fit,
                                 }
@@ -8876,7 +8876,7 @@ mod tests {
                             ];
                             store.set_fixed_size(
                                 label,
-                                Size {
+                                Sizing {
                                     width: lengths[below(4) as usize],
                                     height: lengths[below(4) as usize],
                                 },
@@ -8974,7 +8974,7 @@ mod tests {
                 GridStyle {
                     columns: vec![TrackSizing::Fixed(50.0), TrackSizing::Fixed(50.0)],
                     rows: vec![TrackSizing::Fixed(50.0)],
-                    size: Size::fixed(100.0, 50.0),
+                    size: Sizing::fixed(100.0, 50.0),
                     ..Default::default()
                 },
                 |cx| {
@@ -8986,7 +8986,7 @@ mod tests {
                     });
                     child_id = Some(
                         cx.leaf(LeafStyle {
-                            size: Size::fill(),
+                            size: Sizing::fill(),
                             ..Default::default()
                         })
                         .id(),
@@ -9021,7 +9021,7 @@ mod tests {
                 GridStyle {
                     columns: vec![TrackSizing::Fixed(50.0), TrackSizing::Fixed(50.0)],
                     rows: vec![TrackSizing::Fixed(50.0)],
-                    size: Size::fixed(100.0, 50.0),
+                    size: Sizing::fixed(100.0, 50.0),
                     // Line 1 is the boundary before the second column.
                     column_line_names: vec![("content".into(), 1)],
                     row_line_names: vec![("top".into(), 0)],
@@ -9031,7 +9031,7 @@ mod tests {
                     cx.place_named(Some("content"), Some("top"), 1, 1);
                     child_id = Some(
                         cx.leaf(LeafStyle {
-                            size: Size::fill(),
+                            size: Sizing::fill(),
                             ..Default::default()
                         })
                         .id(),
@@ -9058,7 +9058,7 @@ mod tests {
                 GridStyle {
                     columns: vec![TrackSizing::Fixed(50.0), TrackSizing::Fixed(50.0)],
                     rows: vec![TrackSizing::Fixed(40.0), TrackSizing::Fixed(40.0)],
-                    size: Size::fixed(100.0, 80.0),
+                    size: Sizing::fixed(100.0, 80.0),
                     // "head" spans both columns on row 0; "main" is the bottom-right cell.
                     areas: Some(GridAreas::from_rows([["head", "head"], ["side", "main"]])),
                     ..Default::default()
@@ -9067,7 +9067,7 @@ mod tests {
                     cx.place_area("main");
                     child_id = Some(
                         cx.leaf(LeafStyle {
-                            size: Size::fill(),
+                            size: Sizing::fill(),
                             ..Default::default()
                         })
                         .id(),
@@ -9102,7 +9102,7 @@ mod tests {
                 GridStyle {
                     columns: vec![TrackSizing::Fixed(50.0), TrackSizing::Fixed(50.0)],
                     rows: vec![TrackSizing::Fixed(40.0), TrackSizing::Fixed(40.0)],
-                    size: Size::fixed(100.0, 80.0),
+                    size: Sizing::fixed(100.0, 80.0),
                     areas: Some(GridAreas::from_rows([["head", "head"], ["side", "main"]])),
                     ..Default::default()
                 },
@@ -9110,7 +9110,7 @@ mod tests {
                     cx.place_area("head");
                     child_id = Some(
                         cx.leaf(LeafStyle {
-                            size: Size::fill(),
+                            size: Sizing::fill(),
                             ..Default::default()
                         })
                         .id(),
@@ -9139,13 +9139,13 @@ mod tests {
         let mut store = NodeStore::new();
         let a = store.alloc(
             LayoutInput::Leaf {
-                size: Size::fixed(1.0, 1.0),
+                size: Sizing::fixed(1.0, 1.0),
             },
             BoxStyle::NONE,
         );
         let b = store.alloc(
             LayoutInput::Leaf {
-                size: Size::fixed(2.0, 2.0),
+                size: Sizing::fixed(2.0, 2.0),
             },
             BoxStyle::NONE,
         );
@@ -9609,11 +9609,11 @@ mod tests {
                 },
                 |cx| {
                     cx.leaf(LeafStyle {
-                        size: Size::fixed(10.0, 20.0),
+                        size: Sizing::fixed(10.0, 20.0),
                         style: BoxStyle::solid(RED),
                     });
                     cx.leaf(LeafStyle {
-                        size: Size::fixed(30.0, 12.0),
+                        size: Sizing::fixed(30.0, 12.0),
                         style: BoxStyle::solid(GREEN),
                     });
                 },
@@ -9643,18 +9643,18 @@ mod tests {
                 },
                 |cx| {
                     ids.0 = Some(cx.leaf(LeafStyle {
-                        size: Size::fixed(40.0, 10.0),
+                        size: Sizing::fixed(40.0, 10.0),
                         ..Default::default()
                     }));
                     ids.1 = Some(cx.leaf(LeafStyle {
-                        size: Size {
+                        size: Sizing {
                             width: crate::layout::Length::Fill { weight: 1.0 },
                             height: crate::layout::Length::Fixed(10.0),
                         },
                         ..Default::default()
                     }));
                     ids.2 = Some(cx.leaf(LeafStyle {
-                        size: Size {
+                        size: Sizing {
                             width: crate::layout::Length::Fill { weight: 3.0 },
                             height: crate::layout::Length::Fixed(10.0),
                         },
@@ -9694,7 +9694,7 @@ mod tests {
                 },
                 |cx| {
                     c = Some(cx.leaf(LeafStyle {
-                        size: Size::fixed(20.0, 40.0),
+                        size: Sizing::fixed(20.0, 40.0),
                         ..Default::default()
                     }));
                 },
@@ -9726,12 +9726,12 @@ mod tests {
                     let ih = cx.flex(
                         FlexStyle {
                             axis: Axis::Column,
-                            size: Size::fixed(50.0, 80.0),
+                            size: Sizing::fixed(50.0, 80.0),
                             ..Default::default()
                         },
                         |cx| {
                             leaf_h = Some(cx.leaf(LeafStyle {
-                                size: Size::fixed(30.0, 20.0),
+                                size: Sizing::fixed(30.0, 20.0),
                                 ..Default::default()
                             }));
                         },
@@ -9914,13 +9914,13 @@ mod tests {
             let mut cx = BuildCx::new(&mut store);
             let a = cx
                 .leaf(LeafStyle {
-                    size: Size::fixed(1.0, 1.0),
+                    size: Sizing::fixed(1.0, 1.0),
                     style: BoxStyle::solid(RED),
                 })
                 .id();
             let b = cx
                 .leaf(LeafStyle {
-                    size: Size::fixed(1.0, 1.0),
+                    size: Sizing::fixed(1.0, 1.0),
                     style: BoxStyle::solid(GREEN),
                 })
                 .id();
@@ -10014,13 +10014,13 @@ mod tests {
             let mut cx = BuildCx::new(&mut store);
             let a = cx
                 .leaf(LeafStyle {
-                    size: Size::fixed(1.0, 1.0),
+                    size: Sizing::fixed(1.0, 1.0),
                     style: BoxStyle::solid(RED),
                 })
                 .id();
             let b = cx
                 .leaf(LeafStyle {
-                    size: Size::fixed(1.0, 1.0),
+                    size: Sizing::fixed(1.0, 1.0),
                     style: BoxStyle::solid(GREEN),
                 })
                 .id();
@@ -10296,13 +10296,13 @@ mod tests {
             cx.scroll(
                 ScrollStyle {
                     axis: Axis::Column,
-                    size: Size::fixed(100.0, 100.0),
+                    size: Sizing::fixed(100.0, 100.0),
                     ..Default::default()
                 },
                 |cx| {
                     content_id = Some(
                         cx.leaf(LeafStyle {
-                            size: Size::fixed(100.0, 300.0),
+                            size: Sizing::fixed(100.0, 300.0),
                             ..Default::default()
                         })
                         .id(),
@@ -10326,13 +10326,13 @@ mod tests {
             cx.scroll(
                 ScrollStyle {
                     axis: Axis::Row,
-                    size: Size::fixed(100.0, 50.0),
+                    size: Sizing::fixed(100.0, 50.0),
                     ..Default::default()
                 },
                 |cx| {
                     content = Some(
                         cx.leaf(LeafStyle {
-                            size: Size::fixed(300.0, 50.0),
+                            size: Sizing::fixed(300.0, 50.0),
                             ..Default::default()
                         })
                         .id(),
@@ -10448,7 +10448,7 @@ mod tests {
         let root = {
             let mut cx = BuildCx::new(&mut store);
             cx.leaf(LeafStyle {
-                size: Size::fixed(100.0, 100.0),
+                size: Sizing::fixed(100.0, 100.0),
                 ..Default::default()
             });
             cx.root().unwrap()
@@ -10735,7 +10735,7 @@ mod tests {
             let c = cx.flex(
                 FlexStyle {
                     axis: Axis::Column,
-                    size: Size::fill(),
+                    size: Sizing::fill(),
                     // Stretch so a Fill-width child takes the column's cross
                     // extent (the surface width) rather than hugging its own
                     // natural run width — the realistic wrapped-paragraph setup.
@@ -10745,7 +10745,7 @@ mod tests {
                 |cx| {
                     leaf_id = Some(
                         cx.leaf(LeafStyle {
-                            size: Size {
+                            size: Sizing {
                                 width,
                                 height: Length::Fit,
                             },

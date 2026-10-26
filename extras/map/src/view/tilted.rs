@@ -25,7 +25,7 @@ use viso_render::scene3d::{
 use viso_ui::context::UpdateCx;
 use viso_ui::scenes::{SceneSlot, SceneSlots};
 use viso_ui::{
-    Asset, AssetBytes, AssetPayload, AssetSource, BuildCx, Continuation, LeafStyle, NodeId, Size,
+    Asset, AssetBytes, AssetPayload, AssetSource, BuildCx, Continuation, LeafStyle, NodeId, Sizing,
     StructureCx, TaskId, Vec2,
 };
 
@@ -582,7 +582,7 @@ impl Tilted {
         }
         let mut cx = BuildCx::with_parent(s.store, s.states, s.bindings, self.root);
         let leaf = cx.leaf(LeafStyle {
-            size: Size::fixed(1.0, 1.0),
+            size: Sizing::fixed(1.0, 1.0),
             style: viso_ui::BoxStyle::NONE,
         });
         let slot = cx.scene(leaf).expect("a live node");
@@ -611,7 +611,8 @@ impl Tilted {
         ];
         if size != self.size {
             self.size = size;
-            s.store.set_fixed_size(node, Size::fixed(size[0], size[1]));
+            s.store
+                .set_fixed_size(node, Sizing::fixed(size[0], size[1]));
         }
         s.store.set_translate(
             node,

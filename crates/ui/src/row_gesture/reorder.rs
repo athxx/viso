@@ -854,7 +854,7 @@ mod tests {
     use super::*;
     use crate::component::{BuildCx, FlexStyle, LeafStyle};
     use crate::input::Modifiers;
-    use crate::layout::Size;
+    use crate::layout::Sizing;
     use crate::style::BoxStyle;
     use viso_render::Rect;
 
@@ -871,7 +871,7 @@ mod tests {
             cx.flex(
                 FlexStyle {
                     axis: Axis::Column,
-                    size: Size::fixed(300.0, 160.0),
+                    size: Sizing::fixed(300.0, 160.0),
                     ..FlexStyle::default()
                 },
                 |cx| {
@@ -879,13 +879,13 @@ mod tests {
                         let row = cx.flex(
                             FlexStyle {
                                 axis: Axis::Row,
-                                size: Size::fixed(300.0, 40.0),
+                                size: Sizing::fixed(300.0, 40.0),
                                 ..FlexStyle::default()
                             },
                             |cx| {
                                 handles.push(
                                     cx.leaf(LeafStyle {
-                                        size: Size::fixed(40.0, 40.0),
+                                        size: Sizing::fixed(40.0, 40.0),
                                         style: BoxStyle::NONE,
                                     })
                                     .id(),

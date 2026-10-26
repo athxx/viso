@@ -8,7 +8,7 @@ use std::time::Duration;
 use viso::__test_support::{DrivenApp, drive_scripted};
 use viso::platform::{Appearance, Modifiers, RawEvent, RawScroll, ScrollPhase, WindowId};
 use viso::prelude::*;
-use viso::ui::{Axis, FlexStyle, NodeId, ScrollBarStyle, ScrollStyle, Size};
+use viso::ui::{Axis, FlexStyle, NodeId, ScrollBarStyle, ScrollStyle, Sizing};
 
 const STEP: Duration = Duration::from_millis(16);
 const WIN: WindowId = WindowId(1);
@@ -32,14 +32,14 @@ impl Application for ListApp {
         cx.scroll(
             ScrollStyle {
                 axis: Axis::Column,
-                size: Size::fill(),
+                size: Sizing::fill(),
                 ..Default::default()
             },
             |cx| {
                 cx.flex(
                     FlexStyle {
                         axis: Axis::Column,
-                        size: Size {
+                        size: Sizing {
                             width: viso::ui::Length::Fill { weight: 1.0 },
                             height: viso::ui::Length::Fixed(5000.0),
                         },

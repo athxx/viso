@@ -23,7 +23,7 @@ use std::sync::atomic::Ordering;
 use viso_ui::virtual_list::{ItemKey, absorb_measurements, reconcile};
 use viso_ui::{
     Axis, BindingTable, BoxStyle, BuildCx, DirtyClass, EffectStore, LeafStyle, Length, NodeId,
-    NodeStore, Rect, SemanticProjector, Size, StateStore, TextEdits, VirtualListStyle,
+    NodeStore, Rect, SemanticProjector, Sizing, StateStore, TextEdits, VirtualListStyle,
     VirtualLists,
 };
 
@@ -139,7 +139,7 @@ fn setup() -> Harness {
         cx.virtual_list_keyed(
             VirtualListStyle {
                 axis: Axis::Column,
-                size: Size {
+                size: Sizing {
                     width: Length::Fixed(100.0),
                     height: Length::Fixed(VIEWPORT_H),
                 },
@@ -152,7 +152,7 @@ fn setup() -> Harness {
             move |i| ItemKey(key_src.borrow()[i]),
             move |_i, cx| {
                 cx.leaf(LeafStyle {
-                    size: Size {
+                    size: Sizing {
                         width: Length::fill(),
                         height: Length::Fixed(ROW_H),
                     },

@@ -10,7 +10,7 @@ use viso::platform::{
 };
 use viso::prelude::*;
 use viso::render::{Primitive, Quad, Srgb};
-use viso::ui::{Axis, Component, FlexStyle, FocusRingStyle, Inset, NodeId, Size, paint_tree};
+use viso::ui::{Axis, Component, FlexStyle, FocusRingStyle, Inset, NodeId, Sizing, paint_tree};
 use viso::widgets::{ButtonStyle, button};
 
 const STEP: Duration = Duration::from_millis(16);
@@ -37,14 +37,14 @@ impl Application for Buttons {
                 axis: Axis::Column,
                 gap: 20.0,
                 padding: Inset::all(20.0),
-                size: Size::fill(),
+                size: Sizing::fill(),
                 ..FlexStyle::default()
             },
             |cx| {
                 for _ in 0..2 {
                     button("Go")
                         .style(ButtonStyle {
-                            size: Size::fixed(80.0, 30.0),
+                            size: Sizing::fixed(80.0, 30.0),
                             ..ButtonStyle::default()
                         })
                         .build(cx);

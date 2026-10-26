@@ -123,7 +123,7 @@ impl NodeStore {
 mod tests {
     use super::*;
     use crate::component::{BuildCx, LeafStyle};
-    use crate::layout::Size;
+    use crate::layout::Sizing;
     use crate::style::BoxStyle;
 
     #[test]
@@ -132,7 +132,7 @@ mod tests {
         let card = {
             let mut cx = BuildCx::new(&mut store);
             let card = cx.leaf(LeafStyle {
-                size: Size::fixed(100.0, 40.0),
+                size: Sizing::fixed(100.0, 40.0),
                 style: BoxStyle::solid(Rgba {
                     r: 1.0,
                     g: 1.0,
@@ -179,7 +179,7 @@ mod tests {
         let card = {
             let mut cx = BuildCx::new(&mut store);
             let card = cx.leaf(LeafStyle {
-                size: Size::fixed(100.0, 40.0),
+                size: Sizing::fixed(100.0, 40.0),
                 style: BoxStyle::solid(white).with_radius(8.0),
             });
             cx.shadow(card, Shadow::FLOATING.inside());

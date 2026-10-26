@@ -41,7 +41,7 @@ use crate::{
     Align, AnchorAlign, Anchoring, Axis, BoxRules, BoxStyle, BuildCx, DispatchPhase, EditIntent,
     EventCx, FieldLook, FieldSeed, FlexStyle, FocusChange, FontSize, FontWeight, Handle, Inset,
     InteractionStyle, Justify, Key, KeyEvent, LeafStyle, Length, NodeId, PointerButtons,
-    PointerPhase, Rgba, Role, ScrollStyle, SemanticState, Semantics, Shadow, Side, Size, Span,
+    PointerPhase, Rgba, Role, ScrollStyle, SemanticState, Semantics, Shadow, Side, Sizing, Span,
     SpanStyle, StateId, StateValue, TextRequest, TextSpan, TextStyle, field_input,
 };
 
@@ -85,7 +85,7 @@ pub struct ComboSpec {
     /// The field's name for assistive technology.
     pub label: Option<String>,
     /// Its size within its parent.
-    pub size: Size,
+    pub size: Sizing,
     pub style: ComboBoxStyle,
 }
 
@@ -189,7 +189,7 @@ impl Default for ComboBoxStyle {
     }
 }
 
-const FIT: Size = Size {
+const FIT: Sizing = Sizing {
     width: Length::Fit,
     height: Length::Fit,
 };
@@ -260,7 +260,7 @@ fn build(
                         - GLYPH;
                     let leaf = cx.text_input(
                         LeafStyle {
-                            size: Size {
+                            size: Sizing {
                                 width: Length::Fill { weight: 1.0 },
                                 height: Length::Fit,
                             },
@@ -516,7 +516,7 @@ fn row(cx: &mut BuildCx<'_>, option: &ComboOption, style: &ComboBoxStyle) -> (Ro
             padding: style.item_padding,
             align: Align::Center,
             justify: Justify::Start,
-            size: Size {
+            size: Sizing {
                 width: Length::Fill { weight: 1.0 },
                 height: Length::Fit,
             },

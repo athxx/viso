@@ -12,7 +12,7 @@ use viso::platform::{
     RawPointer, RawText, WindowId,
 };
 use viso::prelude::*;
-use viso::ui::{Component, FlexStyle, Size};
+use viso::ui::{Component, FlexStyle, Sizing};
 use viso::widgets::text_input;
 
 const STEP: Duration = Duration::from_millis(16);
@@ -40,13 +40,13 @@ impl Application for FieldApp {
     fn build(&mut self, cx: &mut BuildCx<'_>) {
         cx.flex(
             FlexStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 ..FlexStyle::default()
             },
             |cx| {
                 text_input("Name")
                     .value("")
-                    .size(Size::fixed(160.0, 30.0))
+                    .size(Sizing::fixed(160.0, 30.0))
                     .on_change(|_ev, text| CHANGES.with(|c| c.borrow_mut().push(text.to_owned())))
                     .build(cx);
             },

@@ -17,7 +17,7 @@ use crate::component::{BuildCx, Handle, LeafStyle, NodeStore, StackStyle};
 use crate::content::Content;
 use crate::dirty::DirtyClass;
 use crate::input::{Key, PointerButtons, PointerPhase};
-use crate::layout::{Alignment2D, Axis, Length, Size, Vec2};
+use crate::layout::{Alignment2D, Axis, Length, Sizing, Vec2};
 use crate::node::NodeId;
 use crate::semantics::{Role, SemanticState, Semantics};
 use crate::style::BoxStyle;
@@ -142,7 +142,7 @@ impl BuildCx<'_> {
                     Axis::Row => Alignment2D::Bottom,
                     Axis::Column => Alignment2D::End,
                 },
-                size: Size::fill(),
+                size: Sizing::fill(),
                 ..StackStyle::default()
             },
             |cx| {
@@ -159,7 +159,7 @@ impl BuildCx<'_> {
     /// or an assistive technology's step brings the viewport to its item.
     pub fn page_dots(&mut self, viewport: Handle, style: PageDotsStyle) -> Handle {
         let handle = self.leaf(LeafStyle {
-            size: Size {
+            size: Sizing {
                 width: Length::Fit,
                 height: Length::Fit,
             },

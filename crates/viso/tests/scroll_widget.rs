@@ -29,7 +29,7 @@ use viso::gpu::{CpuRaster, GpuBackend, RawWindowHandle};
 use viso::render::{FrameStats, Rect, Renderer, Rgba};
 use viso::ui::{
     Axis, BoxStyle, BuildCx, Component, DirtyClass, LeafStyle, Length, NodeId, NodeStore, Role,
-    ScrollEvent, ScrollRouter, Size, Vec2, paint_tree,
+    ScrollEvent, ScrollRouter, Sizing, Vec2, paint_tree,
 };
 use viso::widgets::{ScrollViewStyle, scroll};
 
@@ -59,13 +59,13 @@ const TEAL: Rgba = Rgba {
 fn build_scene(store: &mut NodeStore) -> NodeId {
     let region = scroll(ScrollViewStyle {
         axis: Axis::Column,
-        size: Size::fixed(100.0, 100.0),
+        size: Sizing::fixed(100.0, 100.0),
         background: BoxStyle::solid(DARK),
         ..Default::default()
     })
     .content(|cx| {
         cx.leaf(LeafStyle {
-            size: Size::fixed(100.0, 300.0),
+            size: Sizing::fixed(100.0, 300.0),
             style: BoxStyle::solid(TEAL),
         });
     });
@@ -193,12 +193,12 @@ fn scroll_scene() -> (NodeStore, NodeId) {
     let viewport = {
         let region = scroll(ScrollViewStyle {
             axis: Axis::Column,
-            size: Size::fixed(100.0, 100.0),
+            size: Sizing::fixed(100.0, 100.0),
             ..Default::default()
         })
         .content(|cx| {
             cx.leaf(LeafStyle {
-                size: Size {
+                size: Sizing {
                     width: Length::Fixed(100.0),
                     height: Length::Fixed(300.0),
                 },

@@ -14,7 +14,7 @@
 //! it is recorded as a [`PendingProperty`] for the Binding IR pass
 //! to turn into a `StateId -> (node, DirtyClass)` edge. The length/axis
 //! mirrors below carry just enough for the emitter to construct the runtime
-//! `Size`/`Axis`/style structs.
+//! `Sizing`/`Axis`/style structs.
 
 use crate::ir::dirty_map::{DirtyClass, property_dirty_class};
 use crate::resolve::SymbolId;

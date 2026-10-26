@@ -316,7 +316,7 @@ use std::collections::VecDeque;
 use crate::binding::{BindingTable, Template};
 use crate::component::{BuildCx, NodeStore};
 use crate::dirty::DirtyClass;
-use crate::layout::{Axis, LayoutInput, Length, Size};
+use crate::layout::{Axis, LayoutInput, Length, Sizing};
 use crate::node::NodeId;
 use crate::reactive::EffectStore;
 use crate::semantics::{Role, Semantics};
@@ -679,14 +679,14 @@ impl VirtualListState {
     }
 
     /// The size of a page's host.
-    fn page_size(&self) -> Size {
+    fn page_size(&self) -> Sizing {
         let main = Length::Fixed(self.page_extent);
         match self.axis {
-            Axis::Row => Size {
+            Axis::Row => Sizing {
                 width: main,
                 height: Length::fill(),
             },
-            Axis::Column => Size {
+            Axis::Column => Sizing {
                 width: Length::fill(),
                 height: main,
             },
@@ -1723,11 +1723,11 @@ pub fn attach_list(
 ) -> Option<Box<VirtualListState>> {
     let total = shape.estimated_row * item_count as f32;
     let size = match shape.axis {
-        Axis::Column => Size {
+        Axis::Column => Sizing {
             width: Length::Fixed(0.0),
             height: Length::Fixed(total),
         },
-        Axis::Row => Size {
+        Axis::Row => Sizing {
             width: Length::Fixed(total),
             height: Length::Fixed(0.0),
         },
@@ -2016,7 +2016,7 @@ mod tests {
     // ---- reconcile (headless: NodeStore + VirtualLists driven directly) ----
 
     use crate::component::{LeafStyle, VirtualListStyle};
-    use crate::layout::{Length, Size, Vec2};
+    use crate::layout::{Length, Sizing, Vec2};
     use crate::style::BoxStyle;
     use viso_render::Rect;
 
@@ -2096,7 +2096,7 @@ mod tests {
                 cx.virtual_list(
                     VirtualListStyle {
                         axis: Axis::Column,
-                        size: Size {
+                        size: Sizing {
                             width: Length::Fixed(100.0),
                             height: Length::Fixed(viewport_h),
                         },
@@ -2109,7 +2109,7 @@ mod tests {
                     item_count,
                     move |i, cx| {
                         cx.leaf(LeafStyle {
-                            size: Size {
+                            size: Sizing {
                                 width: Length::fill(),
                                 height: Length::Fixed(body_h(i)),
                             },
@@ -2257,7 +2257,7 @@ mod tests {
                 cx.virtual_list_keyed(
                     VirtualListStyle {
                         axis: Axis::Column,
-                        size: Size {
+                        size: Sizing {
                             width: Length::Fixed(100.0),
                             height: Length::Fixed(viewport_h),
                         },
@@ -2270,7 +2270,7 @@ mod tests {
                     keys.key_of(),
                     move |_i, cx| {
                         cx.leaf(LeafStyle {
-                            size: Size {
+                            size: Sizing {
                                 width: Length::fill(),
                                 height: Length::Fixed(row_h),
                             },
@@ -2697,7 +2697,7 @@ mod tests {
         )
         .virtual_list(
             VirtualListStyle {
-                size: Size::fixed(100.0, 300.0),
+                size: Sizing::fixed(100.0, 300.0),
                 overscan: 1,
                 estimated_row: 50.0,
                 pages: true,
@@ -2707,7 +2707,7 @@ mod tests {
             20,
             |_, cx| {
                 cx.leaf(LeafStyle {
-                    size: Size::fill(),
+                    size: Sizing::fill(),
                     ..Default::default()
                 });
             },
@@ -2740,7 +2740,7 @@ mod tests {
         .virtual_list(
             VirtualListStyle {
                 across: true,
-                size: Size::fixed(100.0, 100.0),
+                size: Sizing::fixed(100.0, 100.0),
                 estimated_row: 20.0,
                 bars: crate::scroll_bar::ScrollBars::Hidden,
                 ..Default::default()
@@ -2748,7 +2748,7 @@ mod tests {
             50,
             |_, cx| {
                 cx.leaf(LeafStyle {
-                    size: Size {
+                    size: Sizing {
                         width: Length::fill(),
                         height: Length::Fixed(20.0),
                     },
@@ -2814,7 +2814,7 @@ mod tests {
         assert_eq!(h.store.scroll(h.viewport).y, 600.0);
         // A shorter viewport keeps the page it shows.
         h.store
-            .set_fixed_size(h.viewport, Size::fixed(100.0, 200.0));
+            .set_fixed_size(h.viewport, Sizing::fixed(100.0, 200.0));
         h.surface.h = 200.0;
         h.frame();
         h.frame();
@@ -3164,7 +3164,7 @@ mod tests {
         h.state_mut().builder = Box::new(move |_i, cx| {
             let count = cx.state(crate::state::StateValue::Int(0));
             let leaf = cx.leaf(LeafStyle {
-                size: Size {
+                size: Sizing {
                     width: Length::fill(),
                     height: Length::Fixed(30.0),
                 },
@@ -3316,7 +3316,7 @@ mod tests {
         assert_eq!(h.state().lanes(), 2);
         h.store.set_fixed_size(
             h.viewport,
-            Size {
+            Sizing {
                 width: Length::Fixed(220.0),
                 height: Length::Fixed(200.0),
             },

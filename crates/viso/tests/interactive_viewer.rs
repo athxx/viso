@@ -11,7 +11,7 @@ use viso::platform::{
     RawScroll, ScrollPhase, WindowId,
 };
 use viso::prelude::*;
-use viso::ui::{BoxStyle, Component, LeafStyle, NodeId, Size, Vec2, WindowConfig};
+use viso::ui::{BoxStyle, Component, LeafStyle, NodeId, Sizing, Vec2, WindowConfig};
 use viso::widgets::{InteractiveViewerStyle, interactive_viewer};
 
 const STEP: Duration = Duration::from_millis(16);
@@ -37,7 +37,7 @@ impl Application for Photo {
             .label("Photo")
             .content(|cx| {
                 cx.leaf(LeafStyle {
-                    size: Size::fill(),
+                    size: Sizing::fill(),
                     style: BoxStyle::NONE,
                 });
             })

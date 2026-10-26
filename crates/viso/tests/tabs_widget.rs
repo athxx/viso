@@ -11,7 +11,7 @@ use viso::gpu::{CpuRaster, GpuBackend, RawWindowHandle, TextureDesc, TextureForm
 use viso::render::{FrameStats, GlyphInstanceData, Rect, Renderer, Rgba, test_glyphs};
 use viso::ui::{
     BindingTable, BoxStyle, BuildCx, Component, Content, LeafStyle, NodeId, NodeStore,
-    SemanticProjector, Size, StateStore, TextEdits, Vec2, VirtualLists, paint_tree,
+    SemanticProjector, Sizing, StateStore, TextEdits, Vec2, VirtualLists, paint_tree,
 };
 use viso::widgets::tabs;
 
@@ -59,7 +59,7 @@ fn surface_rect() -> Rect {
 fn panel_fill(color: Rgba) -> impl Fn(&mut BuildCx<'_>) + 'static {
     move |cx| {
         cx.leaf(LeafStyle {
-            size: Size::fill(),
+            size: Sizing::fill(),
             style: BoxStyle::solid(color),
         });
     }
@@ -80,7 +80,7 @@ fn build_scene(store: &mut NodeStore) -> NodeId {
         .tab("Details", panel_fill(PANEL_A))
         .tab("History", panel_fill(PANEL_B))
         .selected(0)
-        .size(Size::fill());
+        .size(Sizing::fill());
 
     let mut cx = BuildCx::with_reactive(
         store,

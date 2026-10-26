@@ -58,8 +58,8 @@ use viso::render::{FrameStats, Rect, Renderer, Rgba};
 use viso::ui::{
     BindingTable, BoxStyle, BuildCx, Component, EventCx, Key, KeyEvent, KeyRouter, LeafStyle,
     Modifiers, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase, Role,
-    SemanticProjector, Size, StateId, StateStore, StateValue, TextEdits, VirtualLists, focus_next,
-    paint_tree,
+    SemanticProjector, Sizing, StateId, StateStore, StateValue, TextEdits, VirtualLists,
+    focus_next, paint_tree,
 };
 use viso::widgets::{ModalHandle, ModalHandleSlot, modal};
 
@@ -101,7 +101,7 @@ fn surface_rect() -> Rect {
 fn fill(color: Rgba) -> impl Fn(&mut BuildCx<'_>) + 'static {
     move |cx| {
         cx.leaf(LeafStyle {
-            size: Size::fill(),
+            size: Sizing::fill(),
             style: BoxStyle::solid(color),
         });
     }
@@ -122,7 +122,7 @@ fn build_open_scene(store: &mut NodeStore) -> NodeId {
     let widget = modal()
         .scrim(SCRIM)
         .content(fill(CONTENT))
-        .size(Size::fill());
+        .size(Sizing::fill());
 
     let root = {
         let mut cx = BuildCx::with_reactive(
@@ -250,7 +250,7 @@ impl Interactive {
         let widget = modal()
             .scrim(SCRIM)
             .content(fill(CONTENT))
-            .size(Size::fill())
+            .size(Sizing::fill())
             .handle(&slot)
             .on_dismiss(move |_ev| {
                 counter.set(counter.get() + 1);
@@ -492,7 +492,7 @@ fn opening_traps_tab_inside_the_content_and_closing_releases_and_restores_focus(
     let outside = {
         let mut cx = BuildCx::with_parent(&mut ix.store, &mut ix.states, &mut ix.bindings, root);
         let leaf = cx.leaf(LeafStyle {
-            size: Size::fixed(10.0, 10.0),
+            size: Sizing::fixed(10.0, 10.0),
             style: BoxStyle::NONE,
         });
         cx.focusable(leaf, true);

@@ -11,15 +11,15 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use viso_render::Rect;
 use viso_ui::grid::{AdaptiveColumns, GridStyle, TrackMax, TrackSizing};
 use viso_ui::layout::{layout, measure};
-use viso_ui::{NodeStore, Size};
+use viso_ui::{NodeStore, Sizing};
 
 /// A track-less grid node used as a fill leaf stand-in: it measures to its own
-/// `Size` and is placed into its parent grid's cell like any sized child.
+/// `Sizing` and is placed into its parent grid's cell like any sized child.
 fn fill_cell(store: &mut NodeStore) -> viso_ui::NodeId {
     store.alloc_grid(GridStyle {
         columns: Vec::new(),
         rows: Vec::new(),
-        size: Size::fill(),
+        size: Sizing::fill(),
         ..Default::default()
     })
 }
@@ -36,7 +36,7 @@ fn build_grid_with(columns: Vec<TrackSizing>, rows: usize) -> (NodeStore, u32) {
     let grid = store.alloc_grid(GridStyle {
         columns,
         rows: vec![TrackSizing::Fr(1.0); rows],
-        size: Size::fixed(1200.0, 800.0),
+        size: Sizing::fixed(1200.0, 800.0),
         ..Default::default()
     });
     for _ in 0..cols * rows {
@@ -112,7 +112,7 @@ fn grid_relayout(c: &mut Criterion) {
         columns: Vec::new(),
         rows: vec![TrackSizing::Fr(1.0); 20],
         adaptive_columns: Some(AdaptiveColumns::auto_fill(100.0, TrackMax::Fr(1.0))),
-        size: Size::fixed(1200.0, 800.0),
+        size: Sizing::fixed(1200.0, 800.0),
         ..Default::default()
     });
     for _ in 0..12 * 20 {

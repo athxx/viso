@@ -23,7 +23,7 @@ use viso::gpu::{CpuRaster, GpuBackend, RawWindowHandle};
 use viso::render::{FrameStats, Rect, Renderer, Rgba};
 use viso::ui::{
     Axis, BoxStyle, BuildCx, Component, DirtyClass, LeafStyle, Length, NodeId, NodeStore, Role,
-    ScrollEvent, ScrollRouter, Size, Vec2, paint_tree,
+    ScrollEvent, ScrollRouter, Sizing, Vec2, paint_tree,
 };
 use viso::widgets::{ViewStyle, view};
 
@@ -60,17 +60,17 @@ fn build_scene(store: &mut NodeStore) -> NodeId {
         axis: Axis::Row,
         gap: 12.0,
         padding: viso::ui::Inset::all(10.0),
-        size: Size::fill(),
+        size: Sizing::fill(),
         background: BoxStyle::solid(DARK),
         ..Default::default()
     })
     .children(|cx| {
         cx.leaf(LeafStyle {
-            size: Size::fixed(48.0, 48.0),
+            size: Sizing::fixed(48.0, 48.0),
             style: BoxStyle::solid(TEAL),
         });
         cx.leaf(LeafStyle {
-            size: Size::fixed(48.0, 48.0),
+            size: Sizing::fixed(48.0, 48.0),
             style: BoxStyle::solid(RUST),
         });
     });
@@ -201,12 +201,12 @@ fn scrolling_view_moves_offset_non_scrolling_view_consumes_nothing() {
     let viewport = {
         let container = view(ViewStyle {
             scroll_axis: Some(Axis::Column),
-            size: Size::fixed(100.0, 100.0),
+            size: Sizing::fixed(100.0, 100.0),
             ..Default::default()
         })
         .children(|cx| {
             cx.leaf(LeafStyle {
-                size: Size {
+                size: Sizing {
                     width: Length::Fixed(100.0),
                     height: Length::Fixed(300.0),
                 },
@@ -241,12 +241,12 @@ fn scrolling_view_moves_offset_non_scrolling_view_consumes_nothing() {
     let mut store2 = NodeStore::new();
     let flexroot = {
         let container = view(ViewStyle {
-            size: Size::fixed(100.0, 100.0),
+            size: Sizing::fixed(100.0, 100.0),
             ..Default::default()
         })
         .children(|cx| {
             cx.leaf(LeafStyle {
-                size: Size::fixed(100.0, 300.0),
+                size: Sizing::fixed(100.0, 300.0),
                 style: BoxStyle::NONE,
             });
         });

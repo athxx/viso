@@ -67,7 +67,7 @@ use std::time::Duration;
 use viso_ui::part_writes::PartWrites;
 pub use viso_ui::search_field::SearchFieldStyle;
 use viso_ui::search_field::{SearchParts, SearchSpec};
-use viso_ui::{BuildCx, Component, EventCx, Size};
+use viso_ui::{BuildCx, Component, EventCx, Sizing};
 
 /// What runs with the query or a submitted search.
 type Report = Rc<RefCell<dyn FnMut(&mut EventCx<'_>, &str)>>;
@@ -144,7 +144,7 @@ impl SearchField {
     }
 
     /// Set the field's size within its parent (default: its content's).
-    pub fn size(mut self, size: Size) -> Self {
+    pub fn size(mut self, size: Sizing) -> Self {
         self.spec.size = size;
         self
     }

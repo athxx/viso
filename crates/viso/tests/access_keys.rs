@@ -11,7 +11,7 @@ use viso::platform::{KeyCode as Key, Modifiers as RawModifiers, RawEvent, RawKey
 use viso::prelude::*;
 use viso::render::Primitive;
 use viso::ui::{
-    Axis, Component, Content, FlexStyle, Inset, NodeId, NodeStore, Role, Size, paint_tree,
+    Axis, Component, Content, FlexStyle, Inset, NodeId, NodeStore, Role, Sizing, paint_tree,
 };
 use viso::widgets::{button, checkbox, labelled, radio_group, text_input};
 
@@ -53,7 +53,7 @@ impl Application for Form {
                 axis: Axis::Column,
                 gap: 10.0,
                 padding: Inset::all(10.0),
-                size: Size::fill(),
+                size: Sizing::fill(),
                 ..FlexStyle::default()
             },
             |cx| {

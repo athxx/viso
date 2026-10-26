@@ -15,8 +15,8 @@ use std::rc::Rc;
 use viso_ui::text_edit::EditIntent;
 use viso_ui::{
     Align, Axis, Border, BoxStyle, BuildCx, EventCx, FieldLook, FlexStyle, FontSize, Inset, Key,
-    LeafStyle, Length, LiveRegion, NodeId, PointerPhase, Rgba, Role, Semantics, Size, StructureCx,
-    TextRequest, TextStyle, field_input,
+    LeafStyle, Length, LiveRegion, NodeId, PointerPhase, Rgba, Role, Semantics, Sizing,
+    StructureCx, TextRequest, TextStyle, field_input,
 };
 
 use super::input::{changed, run};
@@ -160,7 +160,7 @@ pub(crate) fn build(shared: &Rc<Shared>, cx: &mut BuildCx<'_>) -> Bar {
         axis: Axis::Row,
         gap: 4.0,
         align: Align::Center,
-        size: Size {
+        size: Sizing {
             width: Length::fill(),
             height: Length::Fit,
         },
@@ -176,7 +176,7 @@ pub(crate) fn build(shared: &Rc<Shared>, cx: &mut BuildCx<'_>) -> Bar {
             axis: Axis::Column,
             gap: 4.0,
             padding: Inset::all(4.0),
-            size: Size {
+            size: Sizing {
                 width: Length::fill(),
                 height: Length::Fit,
             },
@@ -201,7 +201,7 @@ pub(crate) fn build(shared: &Rc<Shared>, cx: &mut BuildCx<'_>) -> Bar {
                     options.push((opt, node));
                 }
                 let leaf = cx.leaf(LeafStyle {
-                    size: Size {
+                    size: Sizing {
                         width: Length::MaxContent,
                         height: Length::Fixed(lh),
                     },
@@ -263,7 +263,7 @@ fn field(shared: &Rc<Shared>, cx: &mut BuildCx<'_>, label: &str, replacing: bool
     let theme = &shared.theme;
     let leaf = cx.text_input(
         LeafStyle {
-            size: Size {
+            size: Sizing {
                 width: Length::fill(),
                 height: Length::Fixed(m.line_height),
             },
@@ -430,7 +430,7 @@ fn button(
                 top: 0.0,
                 bottom: 0.0,
             },
-            size: Size {
+            size: Sizing {
                 width: Length::Fit,
                 height: Length::Fit,
             },
@@ -439,7 +439,7 @@ fn button(
         },
         |cx| {
             let leaf = cx.leaf(LeafStyle {
-                size: Size {
+                size: Sizing {
                     width: Length::MaxContent,
                     height: Length::Fixed(lh),
                 },

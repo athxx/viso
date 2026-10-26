@@ -814,7 +814,7 @@ mod tests {
 
     use super::*;
     use crate::component::{BuildCx, LeafStyle, NodeStore};
-    use crate::layout::Size;
+    use crate::layout::Sizing;
     use viso_render::Rect;
 
     /// A single 100x100 leaf laid out at the surface origin — the same shape the
@@ -824,7 +824,7 @@ mod tests {
         let root = {
             let mut cx = BuildCx::new(&mut store);
             cx.leaf(LeafStyle {
-                size: Size::fixed(100.0, 100.0),
+                size: Sizing::fixed(100.0, 100.0),
                 ..Default::default()
             });
             cx.root().unwrap()

@@ -4,7 +4,7 @@
 
 use viso::prelude::*;
 use viso::render::Rect;
-use viso::ui::{BuildCx, LeafStyle, NodeStore, Size};
+use viso::ui::{BuildCx, LeafStyle, NodeStore, Sizing};
 
 #[test]
 fn a_facade_built_grid_lays_children_into_a_two_by_two() {
@@ -16,14 +16,14 @@ fn a_facade_built_grid_lays_children_into_a_two_by_two() {
             GridStyle {
                 columns: vec![TrackSizing::Fr(1.0), TrackSizing::Fr(1.0)],
                 rows: vec![TrackSizing::Fr(1.0), TrackSizing::Fr(1.0)],
-                size: Size::fixed(200.0, 200.0),
+                size: Sizing::fixed(200.0, 200.0),
                 ..Default::default()
             },
             |cx| {
                 for _ in 0..4 {
                     ids.push(
                         cx.leaf(LeafStyle {
-                            size: Size::fill(),
+                            size: Sizing::fill(),
                             ..Default::default()
                         })
                         .id(),

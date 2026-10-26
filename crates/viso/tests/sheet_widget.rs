@@ -20,7 +20,7 @@ use viso::prelude::*;
 use viso::render::{Renderer, Rgba};
 use viso::ui::{
     Align, Axis, BoxStyle, BuildCx, Component, FlexStyle, LeafStyle, Length, NodeId, NodeStore,
-    PointerButtons, PointerPhase, Role, Size, WindowConfig, paint_tree,
+    PointerButtons, PointerPhase, Role, Sizing, WindowConfig, paint_tree,
 };
 use viso::widgets::{SheetDetent, SheetEdge, SheetHandleSlot, sheet};
 
@@ -93,12 +93,12 @@ impl Application for Sheeted {
             FlexStyle {
                 axis: Axis::Column,
                 align: Align::Stretch,
-                size: Size::fill(),
+                size: Sizing::fill(),
                 ..FlexStyle::default()
             },
             |cx| {
                 let trigger = cx.leaf(LeafStyle {
-                    size: Size {
+                    size: Sizing {
                         width: Length::fill(),
                         height: Length::Fixed(40.0),
                     },
@@ -123,7 +123,7 @@ impl Application for Sheeted {
                     .scrim(SCRIM)
                     .content(|cx| {
                         let body = cx.leaf(LeafStyle {
-                            size: Size::fill(),
+                            size: Sizing::fill(),
                             style: BoxStyle::solid(PANEL),
                         });
                         cx.focusable(body, true);

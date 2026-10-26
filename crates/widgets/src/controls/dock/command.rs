@@ -265,14 +265,14 @@ mod tests {
     use std::collections::HashMap;
     use viso_ui::{
         Axis, BindingTable, BoxStyle, BuildCx, LeafStyle, NodeId, NodeStore, SemanticProjector,
-        Size, StateStore, TextEdits, VirtualLists,
+        Sizing, StateStore, TextEdits, VirtualLists,
     };
 
     /// A fill-leaf content builder for a registered panel.
     fn fill_panel() -> PanelContent {
         Box::new(|cx: &mut BuildCx<'_>| {
             cx.leaf(LeafStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 style: BoxStyle::NONE,
             });
         })

@@ -64,7 +64,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use viso_ui::{
-    Anchoring, BoxStyle, BuildCx, Component, EventCx, Inset, Key, Modifiers, Rgba, Shadow, Size,
+    Anchoring, BoxStyle, BuildCx, Component, EventCx, Inset, Key, Modifiers, Rgba, Shadow, Sizing,
     primary_is_logo,
 };
 
@@ -477,7 +477,7 @@ impl Component for Menu {
 pub struct ContextMenu {
     entries: Vec<MenuEntry>,
     content: Option<Builder>,
-    size: Size,
+    size: Sizing,
     style: MenuStyle,
     on_close: Option<Close>,
     slot: Option<MenuHandleSlot>,
@@ -489,7 +489,7 @@ pub fn context_menu() -> ContextMenu {
     ContextMenu {
         entries: Vec::new(),
         content: None,
-        size: Size::fill(),
+        size: Sizing::fill(),
         style: MenuStyle::default(),
         on_close: None,
         slot: None,
@@ -522,7 +522,7 @@ impl ContextMenu {
     }
 
     /// Set the content's size within its parent (default: its room).
-    pub fn size(mut self, size: Size) -> Self {
+    pub fn size(mut self, size: Sizing) -> Self {
         self.size = size;
         self
     }

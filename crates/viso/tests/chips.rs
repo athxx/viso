@@ -200,7 +200,7 @@ mod golden {
     use viso::render::{GlyphInstanceData, Rect, Renderer, Rgba, test_glyphs};
     use viso::ui::{
         Axis, BindingTable, BoxStyle, BuildCx, Component, Content, Inset, NodeId, NodeStore,
-        SemanticProjector, Size, StateStore, TextEdits, Vec2, VirtualLists, paint_tree,
+        SemanticProjector, Sizing, StateStore, TextEdits, Vec2, VirtualLists, paint_tree,
     };
     use viso::widgets::{ViewStyle, chip, view};
 
@@ -234,7 +234,7 @@ mod golden {
             axis: Axis::Column,
             padding: Inset::all(4.0),
             gap: 4.0,
-            size: Size::fill(),
+            size: Sizing::fill(),
             background: BoxStyle::solid(DARK),
             ..Default::default()
         })

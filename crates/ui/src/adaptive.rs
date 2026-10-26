@@ -805,7 +805,7 @@ mod tests {
     }
 
     use crate::component::{BuildCx, FlexStyle, LeafStyle, ScrollStyle};
-    use crate::layout::Size;
+    use crate::layout::Sizing;
 
     fn revision(states: &StateStore, cell: StateId) -> i32 {
         match states.get(cell) {
@@ -908,12 +908,12 @@ mod tests {
         let mut nodes = NodeStore::new();
         let leaf = |cx: &mut BuildCx<'_>| {
             cx.leaf(LeafStyle {
-                size: Size::fixed(10.0, 10.0),
+                size: Sizing::fixed(10.0, 10.0),
                 ..Default::default()
             })
             .id()
         };
-        let column = |size: Size| FlexStyle {
+        let column = |size: Sizing| FlexStyle {
             axis: Axis::Column,
             size,
             ..Default::default()
@@ -933,22 +933,22 @@ mod tests {
                     ..Default::default()
                 },
                 |cx| {
-                    cx.flex(column(Size::fixed(300.0, 200.0)), |cx| {
+                    cx.flex(column(Sizing::fixed(300.0, 200.0)), |cx| {
                         scope = Some(
-                            cx.flex(column(Size::fill()), |cx| scoped = Some(leaf(cx)))
+                            cx.flex(column(Sizing::fill()), |cx| scoped = Some(leaf(cx)))
                                 .id(),
                         );
                     });
-                    cx.flex(column(Size::fill()), |cx| plain = Some(leaf(cx)));
+                    cx.flex(column(Sizing::fill()), |cx| plain = Some(leaf(cx)));
                     cx.scroll(
                         ScrollStyle {
                             axis: Axis::Row,
-                            size: Size::fixed(200.0, 200.0),
+                            size: Sizing::fixed(200.0, 200.0),
                             ..Default::default()
                         },
                         |cx| {
                             scroll_scope = Some(
-                                cx.flex(column(Size::fixed(900.0, 100.0)), |cx| {
+                                cx.flex(column(Sizing::fixed(900.0, 100.0)), |cx| {
                                     scrolled = Some(leaf(cx))
                                 })
                                 .id(),
@@ -1156,13 +1156,13 @@ mod tests {
                         cx.flex(
                             FlexStyle {
                                 axis: Axis::Column,
-                                size: Size::fill(),
+                                size: Sizing::fill(),
                                 ..Default::default()
                             },
                             |cx| {
                                 let style = FlexStyle {
                                     axis: Axis::Column,
-                                    size: Size {
+                                    size: Sizing {
                                         width: Length::Fill { weight: 1.0 },
                                         height: inner_height,
                                     },
@@ -1171,7 +1171,7 @@ mod tests {
                                 inner = Some(
                                     cx.flex(style, |cx| {
                                         cx.leaf(LeafStyle {
-                                            size: Size::fixed(10.0, 10.0),
+                                            size: Sizing::fixed(10.0, 10.0),
                                             ..Default::default()
                                         });
                                     })

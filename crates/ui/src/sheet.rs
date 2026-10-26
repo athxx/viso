@@ -595,7 +595,7 @@ impl NodeStore {
 mod tests {
     use super::*;
     use crate::component::{BuildCx, LeafStyle, StackStyle};
-    use crate::layout::{Alignment2D, Size};
+    use crate::layout::{Alignment2D, Sizing};
     use crate::style::BoxStyle;
     use viso_render::Rect;
 
@@ -611,13 +611,13 @@ mod tests {
             cx.stack(
                 StackStyle {
                     align: Alignment2D::Bottom,
-                    size: Size::fixed(400.0, 800.0),
+                    size: Sizing::fixed(400.0, 800.0),
                     ..StackStyle::default()
                 },
                 |cx| {
                     panel = Some(
                         cx.leaf(LeafStyle {
-                            size: Size::fixed(400.0, 600.0),
+                            size: Sizing::fixed(400.0, 600.0),
                             style: BoxStyle::NONE,
                         })
                         .id(),

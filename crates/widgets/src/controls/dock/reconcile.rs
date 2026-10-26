@@ -20,7 +20,7 @@
 
 use std::collections::HashMap;
 
-use viso_ui::{NodeId, NodeStore, Size, StateStore, StateValue, Vec2};
+use viso_ui::{NodeId, NodeStore, Sizing, StateStore, StateValue, Vec2};
 
 use super::build::{MIN_PANE, RedockIntents, SEAM_SIZE, SeamRec, SharedZones};
 use super::drag::RedockIntent;
@@ -214,8 +214,8 @@ pub(super) fn reconcile_floats(
                 }
             }
             None => {
-                let (host, mount) =
-                    store.alloc_fixed_host(floats_canvas, Size::fixed(float.rect.w, float.rect.h));
+                let (host, mount) = store
+                    .alloc_fixed_host(floats_canvas, Sizing::fixed(float.rect.w, float.rect.h));
                 store.arena_detach(panel_node);
                 store.arena_append_child(mount, panel_node);
                 store.set_semantics(host, semantics::floating(float.panel));
@@ -257,7 +257,7 @@ pub(super) fn reconcile_floats(
 /// resized to the rect's `w × h` (a no-op inside the store if unchanged). Records the
 /// applied rect so a later reconcile can skip an unchanged float.
 fn position_host(store: &mut NodeStore, rec: &mut FloatHost, rect: viso_ui::Rect) {
-    store.set_fixed_size(rec.mount, Size::fixed(rect.w, rect.h));
+    store.set_fixed_size(rec.mount, Sizing::fixed(rect.w, rect.h));
     store.set_row_offset(rec.host, rect.y);
     store.set_translate(rec.host, Vec2 { x: rect.x, y: 0.0 });
     rec.rect = rect;
@@ -274,7 +274,7 @@ mod tests {
     use std::rc::Rc;
     use viso_ui::{
         Axis, BindingTable, BoxStyle, BuildCx, Component, LeafStyle, NodeId, NodeStore, Rect,
-        SemanticProjector, Size, StateStore, StateValue, TextEdits, VirtualLists,
+        SemanticProjector, Sizing, StateStore, StateValue, TextEdits, VirtualLists,
     };
 
     /// A surface rect at the origin with the given size (physical-pixel `Rect` has
@@ -389,7 +389,7 @@ mod tests {
             a,
             Box::new(|cx: &mut BuildCx<'_>| {
                 cx.leaf(LeafStyle {
-                    size: Size::fill(),
+                    size: Sizing::fill(),
                     style: BoxStyle::NONE,
                 });
             }),
@@ -398,7 +398,7 @@ mod tests {
             b,
             Box::new(|cx: &mut BuildCx<'_>| {
                 cx.leaf(LeafStyle {
-                    size: Size::fill(),
+                    size: Sizing::fill(),
                     style: BoxStyle::NONE,
                 });
             }),

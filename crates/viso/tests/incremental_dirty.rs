@@ -9,7 +9,7 @@
 use viso::render::{Rect, Rgba};
 use viso::ui::{
     Align, Axis, BoxStyle, BuildCx, DirtyClass, FlexStyle, Inset, Justify, LeafStyle, NodeId,
-    NodeStore, Size,
+    NodeStore, Sizing,
 };
 
 const W: f32 = 200.0;
@@ -41,14 +41,14 @@ fn flex_style() -> FlexStyle {
         padding: Inset::all(12.0),
         align: Align::Center,
         justify: Justify::Start,
-        size: Size::fill(),
+        size: Sizing::fill(),
         style: BoxStyle::solid(FILL),
     }
 }
 
 fn leaf(w: f32, h: f32) -> LeafStyle {
     LeafStyle {
-        size: Size::fixed(w, h),
+        size: Sizing::fixed(w, h),
         style: BoxStyle::solid(FILL),
     }
 }
@@ -242,7 +242,7 @@ fn measure_dirt_stops_below_fixed_ancestor() {
         // A fixed-on-both-axes container.
         cx.flex(
             FlexStyle {
-                size: Size::fixed(80.0, 60.0),
+                size: Sizing::fixed(80.0, 60.0),
                 ..flex_style()
             },
             |cx| {

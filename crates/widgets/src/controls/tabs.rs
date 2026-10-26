@@ -35,11 +35,11 @@
 //! ```
 //! use viso_widgets::tabs;
 //! use viso_ui::{SemanticProjector, BuildCx, BindingTable, Component, LeafStyle, NodeStore, StateStore, TextEdits, VirtualLists};
-//! use viso_ui::{BoxStyle, Size};
+//! use viso_ui::{BoxStyle, Sizing};
 //!
 //! let control = tabs()
-//!     .tab("Details", |cx| { cx.leaf(LeafStyle { size: Size::fill(), style: BoxStyle::NONE }); })
-//!     .tab("History", |cx| { cx.leaf(LeafStyle { size: Size::fill(), style: BoxStyle::NONE }); })
+//!     .tab("Details", |cx| { cx.leaf(LeafStyle { size: Sizing::fill(), style: BoxStyle::NONE }); })
+//!     .tab("History", |cx| { cx.leaf(LeafStyle { size: Sizing::fill(), style: BoxStyle::NONE }); })
 //!     .closable(true)
 //!     .reorderable(true)
 //!     .on_change(|_ev, tab| {
@@ -62,7 +62,7 @@ use std::rc::Rc;
 use viso_ui::{
     Align, Axis, Border, BoxStyle, BuildCx, Component, DispatchPhase, EventCx, FlexStyle, Handle,
     Inset, InteractionStyle, Justify, Key, Length, NodeId, PointerButtons, PointerPhase, Rgba,
-    Role, ScrollBars, ScrollStyle, SemanticState, Semantics, Size, StateId, StateValue,
+    Role, ScrollBars, ScrollStyle, SemanticState, Semantics, Sizing, StateId, StateValue,
     StructureCx,
 };
 
@@ -86,7 +86,7 @@ const fn rgba(r: f32, g: f32, b: f32, a: f32) -> Rgba {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TabsStyle {
     /// The control's own size within its parent (default `Fill` both ways).
-    pub size: Size,
+    pub size: Sizing,
     /// The strip behind the tabs.
     pub strip: BoxStyle,
     /// A tab at rest, under the pointer, and selected.
@@ -108,7 +108,7 @@ pub struct TabsStyle {
 impl Default for TabsStyle {
     fn default() -> Self {
         TabsStyle {
-            size: Size::fill(),
+            size: Sizing::fill(),
             strip: BoxStyle::NONE,
             deselected: BoxStyle {
                 border: Border {
@@ -249,7 +249,7 @@ impl Tabs {
     }
 
     /// Set the control's own size within its parent (default `Fill`).
-    pub fn size(mut self, size: Size) -> Self {
+    pub fn size(mut self, size: Sizing) -> Self {
         self.style.size = size;
         self
     }
@@ -553,7 +553,7 @@ impl Component for Tabs {
                 viewport = Some(cx.scroll(
                     ScrollStyle {
                         axis: Axis::Row,
-                        size: Size {
+                        size: Sizing {
                             width: Length::fill(),
                             height: Length::Fit,
                         },
@@ -568,7 +568,7 @@ impl Component for Tabs {
                                 gap: style.gap,
                                 align: Align::Center,
                                 justify: Justify::Start,
-                                size: Size {
+                                size: Sizing {
                                     width: Length::Fit,
                                     height: Length::Fit,
                                 },
@@ -585,7 +585,7 @@ impl Component for Tabs {
                                             padding: style.padding,
                                             align: Align::Center,
                                             justify: Justify::Start,
-                                            size: Size {
+                                            size: Sizing {
                                                 width: Length::Fit,
                                                 height: Length::Fit,
                                             },
@@ -622,7 +622,7 @@ impl Component for Tabs {
                         axis: Axis::Column,
                         align: Align::Stretch,
                         justify: Justify::Start,
-                        size: Size::fill(),
+                        size: Sizing::fill(),
                         ..FlexStyle::default()
                     },
                     |cx| {
@@ -632,7 +632,7 @@ impl Component for Tabs {
                                     axis: Axis::Column,
                                     align: Align::Stretch,
                                     justify: Justify::Start,
-                                    size: Size::fill(),
+                                    size: Sizing::fill(),
                                     ..FlexStyle::default()
                                 },
                                 |cx| (tab.panel)(cx),

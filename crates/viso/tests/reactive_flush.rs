@@ -12,7 +12,7 @@
 use viso::render::{Rect, Rgba};
 use viso::ui::{
     Align, Axis, BindingTable, BoxStyle, BuildCx, DirtyClass, FlexStyle, Inset, Justify, LeafStyle,
-    NodeId, NodeStore, Size, StateStore, StateValue,
+    NodeId, NodeStore, Sizing, StateStore, StateValue,
 };
 
 const W: f32 = 200.0;
@@ -43,14 +43,14 @@ fn flex_style() -> FlexStyle {
         padding: Inset::all(12.0),
         align: Align::Center,
         justify: Justify::Start,
-        size: Size::fill(),
+        size: Sizing::fill(),
         style: BoxStyle::solid(FILL),
     }
 }
 
 fn leaf(w: f32, h: f32) -> LeafStyle {
     LeafStyle {
-        size: Size::fixed(w, h),
+        size: Sizing::fixed(w, h),
         style: BoxStyle::solid(FILL),
     }
 }

@@ -194,7 +194,7 @@ fn describe(element: &HtmlElement, node: &AccessNode) {
     }
 }
 
-/// Size and place an element in CSS pixels against its parent's bounds.
+/// Sizing and place an element in CSS pixels against its parent's bounds.
 fn place(element: &HtmlElement, bounds: SemanticsRect, origin: Option<SemanticsRect>, scale: f64) {
     let (x, y) = origin.map_or((0.0, 0.0), |o| (o.x, o.y));
     let style = element.style();

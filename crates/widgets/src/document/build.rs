@@ -7,7 +7,7 @@ use viso_ui::{
     Align, Axis, BoxStyle, BuildCx, CheckMark, CheckShape, Component, EventCx, FlexStyle,
     FontFamily, FontSize, FontWeight, GridStyle, Handle, Inset, Justify, Key, LeafStyle, Length,
     LengthTerms, NodeId, PointerButtons, PointerPhase, Rgba, Role, ScrollStyle, SemanticState,
-    Semantics, Size, SpanStyle, TextAlign, TextRequest, TextSpan, TextStyle, TrackSizing,
+    Semantics, Sizing, SpanStyle, TextAlign, TextRequest, TextSpan, TextStyle, TrackSizing,
 };
 
 use super::blocks::{Alert, Block, Column, Inline, Item, Picture, Task};
@@ -66,12 +66,12 @@ impl Alert {
     }
 }
 
-const FILL_FIT: Size = Size {
+const FILL_FIT: Sizing = Sizing {
     width: Length::Fill { weight: 1.0 },
     height: Length::Fit,
 };
 
-const FIT: Size = Size {
+const FIT: Sizing = Sizing {
     width: Length::Fit,
     height: Length::Fit,
 };
@@ -134,7 +134,7 @@ impl Env<'_> {
             } => self.table(cx, columns, head, rows),
             Block::Rule => cx
                 .leaf(LeafStyle {
-                    size: Size {
+                    size: Sizing {
                         width: Length::Fill { weight: 1.0 },
                         height: Length::Fixed(2.0),
                     },
@@ -198,7 +198,7 @@ impl Env<'_> {
         cx.flex(style, |cx| {
             build(cx, self);
             cx.leaf(LeafStyle {
-                size: Size {
+                size: Sizing {
                     width: Length::Fill { weight: 1.0 },
                     height: Length::Fixed(1.0),
                 },
@@ -227,7 +227,7 @@ impl Env<'_> {
         let ink = std::mem::replace(&mut self.color, quoted);
         let node = cx.flex(row, |cx| {
             cx.leaf(LeafStyle {
-                size: Size {
+                size: Sizing {
                     width: Length::Fixed(width),
                     height: Length::Fit,
                 },
@@ -320,7 +320,7 @@ impl Env<'_> {
                         .color(self.color)
                         .line_height(self.em(self.look.line_height))
                         .align(TextAlign::End)
-                        .size(Size {
+                        .size(Sizing {
                             width: Length::Fixed(marker),
                             height: Length::Fit,
                         })
@@ -467,7 +467,7 @@ impl Env<'_> {
                 axis: Axis::Row,
                 padding,
                 justify,
-                size: Size::fill(),
+                size: Sizing::fill(),
                 style: BoxStyle::solid(fill),
                 ..FlexStyle::default()
             };

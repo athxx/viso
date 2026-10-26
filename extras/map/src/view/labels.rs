@@ -27,7 +27,7 @@ use std::sync::Arc;
 use viso_render::Rgba;
 use viso_ui::{
     Alignment2D, BoxStyle, BuildCx, DirtyClass, FontSize, Inset, Instant, LeafStyle, Length,
-    NodeId, Size, StackStyle, StructureCx, TextRequest, TextStyle, Turn, Vec2,
+    NodeId, Sizing, StackStyle, StructureCx, TextRequest, TextStyle, Turn, Vec2,
 };
 
 use super::tilted::Lift;
@@ -429,7 +429,7 @@ fn rgba(c: [f32; 4]) -> Rgba {
 /// One run of `text` in `l`'s look, in `color`.
 fn text_leaf(cx: &mut BuildCx<'_>, l: &TileLabel, text: &str, color: [f32; 4]) -> NodeId {
     let leaf = cx.leaf(LeafStyle {
-        size: Size {
+        size: Sizing {
             width: Length::Fit,
             height: Length::Fit,
         },
@@ -488,7 +488,7 @@ fn inked(cx: &mut BuildCx<'_>, l: &TileLabel, text: &str) {
 /// A sizeless stack centering what it holds on its origin.
 fn sizeless() -> StackStyle {
     StackStyle {
-        size: Size::fixed(0.0, 0.0),
+        size: Sizing::fixed(0.0, 0.0),
         align: Alignment2D::Center,
         ..StackStyle::default()
     }
@@ -908,7 +908,7 @@ impl Labels {
         let mut cx = BuildCx::with_parent(s.store, s.states, s.bindings, self.parent);
         let wrapper = cx.stack(sizeless(), |cx| {
             if let Some((drawing, side)) = &icon {
-                cx.drawing(Size::fixed(*side, *side), drawing.clone());
+                cx.drawing(Sizing::fixed(*side, *side), drawing.clone());
             }
             let style = match l.shield {
                 Some(sh) => StackStyle {
@@ -955,7 +955,7 @@ impl Labels {
         let mut cx = BuildCx::with_parent(s.store, s.states, s.bindings, self.parent);
         let wrapper = cx.stack(
             StackStyle {
-                size: Size::fixed(0.0, 0.0),
+                size: Sizing::fixed(0.0, 0.0),
                 align: Alignment2D::TopStart,
                 ..StackStyle::default()
             },

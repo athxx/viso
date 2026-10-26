@@ -12,7 +12,9 @@ use viso::platform::{
     RawPointer, WindowId,
 };
 use viso::prelude::*;
-use viso::ui::{Axis, Component, FlexStyle, LeafStyle, NodeId, PointerButtons, PointerPhase, Size};
+use viso::ui::{
+    Axis, Component, FlexStyle, LeafStyle, NodeId, PointerButtons, PointerPhase, Sizing,
+};
 use viso::widgets::{DocumentText, html, markdown};
 
 const STEP: Duration = Duration::from_millis(16);
@@ -48,13 +50,13 @@ impl Application for DocApp {
     fn build(&mut self, cx: &mut BuildCx<'_>) {
         cx.flex(
             FlexStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 axis: Axis::Column,
                 ..FlexStyle::default()
             },
             |cx| {
                 let more = cx.leaf(LeafStyle {
-                    size: Size::fixed(20.0, 20.0),
+                    size: Sizing::fixed(20.0, 20.0),
                     ..LeafStyle::default()
                 });
                 cx.on_pointer(more, |ev| {

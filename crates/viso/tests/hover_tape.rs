@@ -17,7 +17,7 @@ use std::rc::Rc;
 use viso::render::{Rect, Rgba};
 use viso::ui::{
     Axis, BindingTable, BoxStyle, BuildCx, FlexStyle, LeafStyle, Modifiers, NodeId, NodeStore,
-    PointerButtons, PointerEvent, PointerPhase, PointerRouter, Size, StateStore,
+    PointerButtons, PointerEvent, PointerPhase, PointerRouter, Sizing, StateStore,
 };
 
 const SURFACE: Rect = Rect {
@@ -85,7 +85,7 @@ impl Scene {
             cx.flex(
                 FlexStyle {
                     axis: Axis::Row,
-                    size: Size::fixed(200.0, 100.0),
+                    size: Sizing::fixed(200.0, 100.0),
                     style: BoxStyle::solid(SOLID),
                     gap: 20.0,
                     ..Default::default()
@@ -93,7 +93,7 @@ impl Scene {
                 |cx| {
                     for label in 0u32..2 {
                         let leaf = cx.leaf(LeafStyle {
-                            size: Size::fixed(80.0, 100.0),
+                            size: Sizing::fixed(80.0, 100.0),
                             style: BoxStyle::solid(SOLID),
                         });
                         let log = log.clone();

@@ -28,7 +28,7 @@
 
 use std::cell::RefCell;
 
-use viso_ui::{Axis, BoxStyle, BuildCx, Component, Role, Semantics, Size, VirtualListStyle};
+use viso_ui::{Axis, BoxStyle, BuildCx, Component, Role, Semantics, Sizing, VirtualListStyle};
 
 /// A [`VirtualList`]'s per-row builder. Boxed `FnMut(usize, &mut BuildCx)`
 /// because a row is authored against the shared [`BuildCx`] given its logical
@@ -52,7 +52,7 @@ pub struct VirtualListViewStyle {
     /// The viewport's own visible size within its parent (the clip box). The
     /// logical collection's extent along `axis` spans the full scroll range;
     /// content is clipped to this box.
-    pub size: Size,
+    pub size: Sizing,
     /// Extra rows mounted on each side of the visible window, so a small scroll
     /// reveals an already-built row rather than stalling on a mount.
     pub overscan: u32,
@@ -104,18 +104,18 @@ impl Default for VirtualListViewStyle {
 /// use viso_widgets::{virtual_list, VirtualListViewStyle};
 /// use viso_ui::{
 ///     Axis, BindingTable, BuildCx, Component, LeafStyle, Length, NodeStore,
-///     SemanticProjector, Size, StateStore, TextEdits, VirtualLists,
+///     SemanticProjector, Sizing, StateStore, TextEdits, VirtualLists,
 /// };
 ///
 /// let list = virtual_list(VirtualListViewStyle {
 ///     axis: Axis::Column,
-///     size: Size::fixed(200.0, 300.0),
+///     size: Sizing::fixed(200.0, 300.0),
 ///     ..Default::default()
 /// })
 /// .items(100_000, |index, cx| {
 ///     // one row's body, built only when the row is mounted
 ///     cx.leaf(LeafStyle {
-///         size: Size {
+///         size: Sizing {
 ///             width: Length::fill(),
 ///             height: Length::Fixed(30.0),
 ///         },
@@ -363,7 +363,7 @@ mod tests {
 
     fn row(_index: usize, cx: &mut BuildCx<'_>) {
         cx.leaf(LeafStyle {
-            size: Size {
+            size: Sizing {
                 width: Length::fill(),
                 height: Length::Fixed(30.0),
             },
@@ -380,7 +380,7 @@ mod tests {
         let root = rx.build(
             virtual_list(VirtualListViewStyle {
                 axis: Axis::Column,
-                size: Size::fixed(200.0, 300.0),
+                size: Sizing::fixed(200.0, 300.0),
                 ..Default::default()
             })
             .items(100_000, row),
@@ -421,7 +421,7 @@ mod tests {
         let root = rx.build(
             virtual_list(VirtualListViewStyle {
                 axis: Axis::Column,
-                size: Size::fixed(200.0, 300.0),
+                size: Sizing::fixed(200.0, 300.0),
                 estimated_row: 30.0,
                 background: bg,
                 ..Default::default()

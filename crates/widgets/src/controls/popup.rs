@@ -39,12 +39,12 @@
 //! use std::rc::Rc;
 //! use viso_widgets::{PopupHandleSlot, popup};
 //! use viso_ui::{SemanticProjector, BuildCx, BindingTable, Component, LeafStyle, NodeStore, StateStore, TextEdits, VirtualLists};
-//! use viso_ui::{BoxStyle, Size};
+//! use viso_ui::{BoxStyle, Sizing};
 //!
 //! let handle: PopupHandleSlot = Rc::new(RefCell::new(None));
 //! let control = popup()
-//!     .anchor(|cx| { cx.leaf(LeafStyle { size: Size::fixed(80.0, 24.0), style: BoxStyle::NONE }); })
-//!     .content(|cx| { cx.leaf(LeafStyle { size: Size::fixed(120.0, 60.0), style: BoxStyle::NONE }); })
+//!     .anchor(|cx| { cx.leaf(LeafStyle { size: Sizing::fixed(80.0, 24.0), style: BoxStyle::NONE }); })
+//!     .content(|cx| { cx.leaf(LeafStyle { size: Sizing::fixed(120.0, 60.0), style: BoxStyle::NONE }); })
 //!     .on_dismiss(|_ev| { /* the popup was dismissed */ })
 //!     .handle(&handle);
 //!
@@ -68,7 +68,7 @@ use std::cell::Cell;
 use viso_ui::{
     AbsoluteStyle, Align, AnchorAlign, Anchoring, Axis, BoxStyle, BuildCx, Component, DirtyClass,
     EventCx, FlexStyle, Inset, Justify, Key, LeafStyle, Length, NodeId, Rgba, Role, Semantics,
-    Side, Size, StateId, StateValue,
+    Side, Sizing, StateId, StateValue,
 };
 
 /// A shared, mutable dismiss callback, fired when the popup closes (Escape, or a
@@ -163,7 +163,7 @@ pub struct PopupArrow {
 pub struct PopupStyle {
     /// The popup's own size request within its parent. Defaults to `Fit` on both
     /// axes (the popup sizes to its anchor).
-    pub size: Size,
+    pub size: Sizing,
     /// An optional dimming color painted over the popup's box while open, under the
     /// content and over the anchor. `None` (the default) paints no scrim.
     pub scrim: Option<Rgba>,
@@ -181,7 +181,7 @@ pub struct PopupStyle {
 impl Default for PopupStyle {
     fn default() -> Self {
         PopupStyle {
-            size: Size {
+            size: Sizing {
                 width: Length::Fit,
                 height: Length::Fit,
             },
@@ -314,7 +314,7 @@ impl Popup {
     }
 
     /// Set the popup's own size request within its parent (defaults to `Fit`).
-    pub fn size(mut self, size: Size) -> Self {
+    pub fn size(mut self, size: Sizing) -> Self {
         self.style.size = size;
         self
     }
@@ -416,7 +416,7 @@ impl Component for Popup {
                     FlexStyle {
                         axis: Axis::Column,
                         align: Align::Stretch,
-                        size: Size::fill(),
+                        size: Sizing::fill(),
                         ..FlexStyle::default()
                     },
                     |cx| {
@@ -432,7 +432,7 @@ impl Component for Popup {
                 // the content. It starts hidden with the content.
                 if let Some(color) = scrim_color {
                     let scrim = cx.leaf(viso_ui::LeafStyle {
-                        size: Size::fill(),
+                        size: Sizing::fill(),
                         style: BoxStyle::solid(color),
                     });
                     cx.set_overlay(scrim, true);
@@ -451,7 +451,7 @@ impl Component for Popup {
                         padding: style.padding,
                         align: Align::Stretch,
                         justify: Justify::Start,
-                        size: Size {
+                        size: Sizing {
                             width: Length::Fit,
                             height: Length::Fit,
                         },
@@ -463,12 +463,12 @@ impl Component for Popup {
                             // placed.
                             cx.absolute(
                                 AbsoluteStyle {
-                                    size: Size::fixed(0.0, 0.0),
+                                    size: Sizing::fixed(0.0, 0.0),
                                     ..AbsoluteStyle::default()
                                 },
                                 |cx| {
                                     arrow = Some(cx.leaf(LeafStyle {
-                                        size: Size::fixed(look.size, look.size),
+                                        size: Sizing::fixed(look.size, look.size),
                                         style: BoxStyle::solid(look.color),
                                     }));
                                 },
@@ -668,7 +668,7 @@ mod tests {
     /// empty node.
     fn leaf(cx: &mut BuildCx<'_>) {
         cx.leaf(LeafStyle {
-            size: Size::fixed(10.0, 10.0),
+            size: Sizing::fixed(10.0, 10.0),
             style: BoxStyle::NONE,
         });
     }

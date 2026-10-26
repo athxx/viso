@@ -603,7 +603,7 @@ impl NodeStore {
 mod tests {
     use super::*;
     use crate::component::{BuildCx, LeafStyle, StackStyle};
-    use crate::layout::Size;
+    use crate::layout::Sizing;
     use viso_render::Rect;
 
     /// A 400 × 300 stack of three filled pages, the first shown.
@@ -614,13 +614,13 @@ mod tests {
             let mut cx = BuildCx::new(&mut store);
             cx.stack(
                 StackStyle {
-                    size: Size::fixed(400.0, 300.0),
+                    size: Sizing::fixed(400.0, 300.0),
                     ..Default::default()
                 },
                 |cx| {
                     for _ in 0..3 {
                         let page = cx.leaf(LeafStyle {
-                            size: Size::fill(),
+                            size: Sizing::fill(),
                             ..Default::default()
                         });
                         pages.push(page.id());
@@ -784,7 +784,7 @@ mod tests {
             let mut cx = BuildCx::new(&mut store);
             cx.stack(
                 StackStyle {
-                    size: Size::fixed(400.0, 300.0),
+                    size: Sizing::fixed(400.0, 300.0),
                     ..Default::default()
                 },
                 |cx| {
@@ -795,12 +795,12 @@ mod tests {
                         let page = cx.stack(
                             StackStyle {
                                 align,
-                                size: Size::fill(),
+                                size: Sizing::fill(),
                                 ..Default::default()
                             },
                             |cx| {
                                 let card = cx.leaf(LeafStyle {
-                                    size: Size::fixed(side, side),
+                                    size: Sizing::fixed(side, side),
                                     ..Default::default()
                                 });
                                 cx.hero(card, "card");

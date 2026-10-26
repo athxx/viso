@@ -15,7 +15,7 @@ use viso::platform::{
 };
 use viso::prelude::*;
 use viso::ui::{
-    Axis, BoxStyle, Component, FlexStyle, Inset, LeafStyle, NodeId, NodeStore, Role, Size,
+    Axis, BoxStyle, Component, FlexStyle, Inset, LeafStyle, NodeId, NodeStore, Role, Sizing,
     StateValue,
 };
 use viso::widgets::{MenuHandleSlot, Shortcut, context_menu, menu, menu_item};
@@ -56,7 +56,7 @@ impl Application for MenuApp {
         let slot = SLOT.with(Rc::clone);
         cx.flex(
             FlexStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 axis: Axis::Column,
                 padding: Inset {
                     left: 100.0,
@@ -70,7 +70,7 @@ impl Application for MenuApp {
                 menu()
                     .anchor(|cx| {
                         cx.leaf(LeafStyle {
-                            size: Size::fixed(80.0, 30.0),
+                            size: Sizing::fixed(80.0, 30.0),
                             style: BoxStyle::NONE,
                         });
                     })
@@ -93,10 +93,10 @@ impl Application for MenuApp {
                     .handle(&slot)
                     .build(cx);
                 context_menu()
-                    .size(Size::fixed(400.0, 200.0))
+                    .size(Sizing::fixed(400.0, 200.0))
                     .content(|cx| {
                         cx.leaf(LeafStyle {
-                            size: Size::fill(),
+                            size: Sizing::fill(),
                             style: BoxStyle::NONE,
                         });
                     })

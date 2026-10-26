@@ -24,7 +24,7 @@ use viso_runtime::Key;
 use viso_ui::{
     AbsoluteStyle, Align, Axis, BindingTable, Border, BoxStyle, BuildCx, Component, FlexStyle,
     Inset, InteractionStyle, Justify, Length, NodeId, NodeStore, PointerButtons, PointerPhase,
-    Rect, Rgba, Role, Semantics, Size, StateId, StateStore, StateValue, Vec2,
+    Rect, Rgba, Role, Semantics, Sizing, StateId, StateStore, StateValue, Vec2,
 };
 use viso_widgets::label;
 
@@ -232,7 +232,7 @@ impl DrawnMenu {
             cx.absolute(
                 AbsoluteStyle {
                     padding: Inset::default(),
-                    size: Size::fixed(0.0, 0.0),
+                    size: Sizing::fixed(0.0, 0.0),
                     style: BoxStyle::NONE,
                 },
                 |_| {},
@@ -407,7 +407,7 @@ fn build_panel(
             Inset::all(4.0),
         ),
     };
-    let fit = Size {
+    let fit = Sizing {
         width: Length::Fit,
         height: Length::Fit,
     };
@@ -466,7 +466,7 @@ fn build_item(
             padding,
             align: Align::Center,
             justify: Justify::Start,
-            size: Size {
+            size: Sizing {
                 width: match look {
                     MenuLook::Bar => Length::Fit,
                     MenuLook::List => Length::Fill { weight: 1.0 },

@@ -11,7 +11,7 @@ use viso::cursor::{CursorImage, CustomCursor};
 use viso::prelude::*;
 use viso::render::Rgba;
 use viso::ui::{
-    Align, Axis, BoxStyle, Component, FontSize, Inset, Justify, LeafStyle, PointerPhase, Size,
+    Align, Axis, BoxStyle, Component, FontSize, Inset, Justify, LeafStyle, PointerPhase, Sizing,
     TextRequest, TextStyle,
 };
 
@@ -29,7 +29,7 @@ impl Application for Pointer {
                 axis: Axis::Row,
                 gap: 16.0,
                 padding: Inset::all(16.0),
-                size: Size::fill(),
+                size: Sizing::fill(),
                 style: BoxStyle::solid(rgb(0.12, 0.13, 0.16)),
                 ..Default::default()
             },
@@ -50,7 +50,7 @@ fn panel(cx: &mut BuildCx<'_>, title: &str, fill: Rgba) -> viso::ui::Handle {
         FlexStyle {
             align: Align::Center,
             justify: Justify::Center,
-            size: Size::fill(),
+            size: Sizing::fill(),
             style: BoxStyle::solid(fill).with_radius(12.0),
             ..Default::default()
         },
@@ -73,7 +73,7 @@ fn lock_panel(cx: &mut BuildCx<'_>) {
             gap: 8.0,
             align: Align::Center,
             justify: Justify::Center,
-            size: Size::fill(),
+            size: Sizing::fill(),
             style: BoxStyle::solid(rgb(0.36, 0.22, 0.30)).with_radius(12.0),
             ..Default::default()
         },
@@ -83,7 +83,7 @@ fn lock_panel(cx: &mut BuildCx<'_>) {
                 .color(rgb(0.93, 0.94, 0.97))
                 .build(cx);
             let line = cx.leaf(LeafStyle {
-                size: Size::fixed(260.0, 20.0),
+                size: Sizing::fixed(260.0, 20.0),
                 style: BoxStyle::NONE,
             });
             status = Some(

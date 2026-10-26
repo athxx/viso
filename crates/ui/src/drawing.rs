@@ -22,7 +22,7 @@ use viso_render::{ImageDraw, MeshPlace, Path, PathCmd, Point, Primitive, Quad, R
 use crate::component::{BuildCx, Handle, LeafStyle, NodeStore};
 use crate::content::Content;
 use crate::dirty::DirtyClass;
-use crate::layout::{Size, Vec2};
+use crate::layout::{Sizing, Vec2};
 use crate::node::NodeId;
 use crate::style::BoxStyle;
 
@@ -179,7 +179,7 @@ impl NodeStore {
 impl BuildCx<'_> {
     /// A drawing leaf asking `size` of its parent and drawing `drawing` into
     /// its box (see [`NodeStore::set_drawing`]).
-    pub fn drawing(&mut self, size: Size, drawing: Drawing) -> Handle {
+    pub fn drawing(&mut self, size: Sizing, drawing: Drawing) -> Handle {
         let handle = self.leaf(LeafStyle {
             size,
             style: BoxStyle::NONE,
@@ -255,7 +255,7 @@ mod tests {
         let mut store = NodeStore::new();
         let drawing = square();
         let id = BuildCx::new(&mut store)
-            .drawing(Size::fixed(4.0, 4.0), drawing.clone())
+            .drawing(Sizing::fixed(4.0, 4.0), drawing.clone())
             .id();
         store.clear_dirty();
         store.set_drawing(id, drawing.clone());

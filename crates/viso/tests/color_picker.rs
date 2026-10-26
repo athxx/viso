@@ -22,7 +22,7 @@ use viso::render::{Rect, Renderer, Rgba};
 use viso::ui::color_plane::{Hsv, PlanePart};
 use viso::ui::{
     Axis, BindingTable, BoxStyle, Component, FlexStyle, Inset, NodeId, NodeStore, Role,
-    SemanticProjector, Size, StateStore, TextEdits, VirtualLists, paint_tree,
+    SemanticProjector, Sizing, StateStore, TextEdits, VirtualLists, paint_tree,
 };
 use viso::widgets::{ViewStyle, color_picker, view};
 
@@ -60,7 +60,7 @@ impl Application for PickerApp {
     fn build(&mut self, cx: &mut BuildCx<'_>) {
         cx.flex(
             FlexStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 axis: Axis::Row,
                 padding: Inset::all(20.0),
                 gap: 20.0,
@@ -382,7 +382,7 @@ fn a_square_and_a_wheel_draw_their_tones_hues_and_swatch_and_match_golden() {
         axis: Axis::Row,
         padding: Inset::all(16.0),
         gap: 20.0,
-        size: Size::fill(),
+        size: Sizing::fill(),
         background: BoxStyle::solid(Rgba::new(0.97, 0.97, 0.98, 1.0)),
         ..Default::default()
     })

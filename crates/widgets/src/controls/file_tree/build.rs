@@ -30,7 +30,7 @@ use std::rc::Rc;
 use viso_ui::virtual_list::ItemKey;
 use viso_ui::{
     Axis, BoxStyle, BuildCx, CheckMark, CheckShape, Component, Inset, LeafStyle, Length, NodeId,
-    NodeStore, Size, VirtualListStyle,
+    NodeStore, Sizing, VirtualListStyle,
 };
 
 use crate::text::label;
@@ -120,7 +120,7 @@ fn build_row(
             padding: Inset::default(),
             align: viso_ui::Align::Center,
             justify: viso_ui::Justify::Start,
-            size: Size {
+            size: Sizing {
                 width: Length::fill(),
                 height: Length::Fixed(style.row_height),
             },
@@ -130,14 +130,14 @@ fn build_row(
             // Indent: a fixed-width spacer per depth level, so a child sits under
             // its parent's label. Zero-width at depth 0 (a root-forest node).
             cx.leaf(LeafStyle {
-                size: Size::fixed(indent, style.row_height),
+                size: Sizing::fixed(indent, style.row_height),
                 style: BoxStyle::NONE,
             });
             // Disclosure column: a fixed-width slot drawing the chevron of a
             // directory, blank for a file, so labels align across rows regardless
             // of whether a row can expand.
             let slot = label("")
-                .size(Size::fixed(style.arrow_width, style.row_height))
+                .size(Sizing::fixed(style.arrow_width, style.row_height))
                 .build_node(cx);
             if row.is_dir {
                 cx.check_mark(slot, chevron(row.expanded));

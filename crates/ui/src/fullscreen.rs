@@ -146,7 +146,7 @@ mod tests {
     use super::*;
     use crate::FlexStyle;
     use crate::component::{BuildCx, LeafStyle};
-    use crate::layout::Size;
+    use crate::layout::Sizing;
     use crate::style::BoxStyle;
     use viso_render::Rect;
 
@@ -165,12 +165,12 @@ mod tests {
             let mut cx = BuildCx::new(&mut store);
             cx.flex(FlexStyle::default(), |cx| {
                 cx.leaf(LeafStyle {
-                    size: Size::fixed(40.0, 100.0),
+                    size: Sizing::fixed(40.0, 100.0),
                     style: BoxStyle::NONE,
                 });
                 leaf = Some(
                     cx.leaf(LeafStyle {
-                        size: Size::fixed(40.0, 30.0),
+                        size: Sizing::fixed(40.0, 30.0),
                         style: BoxStyle::solid(Rgba::new(1.0, 0.0, 0.0, 1.0)),
                     })
                     .id(),

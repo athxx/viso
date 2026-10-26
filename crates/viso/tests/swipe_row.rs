@@ -9,7 +9,7 @@ use std::time::Duration;
 use viso::__test_support::{DrivenApp, drive_scripted};
 use viso::platform::{Modifiers, PointerButtons, PointerPhase, RawEvent, RawPointer, WindowId};
 use viso::prelude::*;
-use viso::ui::{Axis, BoxStyle, Component, FlexStyle, LeafStyle, NodeId, Size, WindowConfig};
+use viso::ui::{Axis, BoxStyle, Component, FlexStyle, LeafStyle, NodeId, Sizing, WindowConfig};
 use viso::widgets::{ScrollViewStyle, button, scroll, swipe_action, swipe_row};
 
 const STEP: Duration = Duration::from_millis(16);
@@ -52,14 +52,14 @@ impl Application for Inbox {
 /// The list, in a column so it keeps its own size.
 fn list(cx: &mut BuildCx<'_>) {
     scroll(ScrollViewStyle {
-        size: Size::fixed(300.0, 100.0),
+        size: Sizing::fixed(300.0, 100.0),
         ..ScrollViewStyle::default()
     })
     .content(|cx| {
         cx.flex(
             FlexStyle {
                 axis: Axis::Column,
-                size: Size {
+                size: Sizing {
                     width: viso::ui::Length::fill(),
                     height: viso::ui::Length::Fit,
                 },
@@ -70,12 +70,12 @@ fn list(cx: &mut BuildCx<'_>) {
                     swipe_row(move |cx| {
                         if row == 1 {
                             button("Open")
-                                .size(Size::fixed(300.0, 40.0))
+                                .size(Sizing::fixed(300.0, 40.0))
                                 .on_click(|_| heard("open"))
                                 .build(cx);
                         } else {
                             cx.leaf(LeafStyle {
-                                size: Size::fixed(300.0, 40.0),
+                                size: Sizing::fixed(300.0, 40.0),
                                 style: BoxStyle::NONE,
                             });
                         }

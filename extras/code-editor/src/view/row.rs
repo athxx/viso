@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use viso_ui::{
     AbsoluteStyle, BoxStyle, BuildCx, Content, DirtyClass, FontSlant, FontWeight, LeafStyle,
-    Length, NodeId, PathCmd, Point, Rgba, Size, SpanStyle, Stroke, StructureCx, TextAlign,
+    Length, NodeId, PathCmd, Point, Rgba, Sizing, SpanStyle, Stroke, StructureCx, TextAlign,
     TextSpan, Vec2,
 };
 
@@ -127,13 +127,13 @@ pub(super) fn build_row(shared: &Rc<Shared>, index: usize, cx: &mut BuildCx<'_>)
     let m = shared.metrics.get();
     let lh = m.line_height;
     let fill = AbsoluteStyle {
-        size: Size::fill(),
+        size: Sizing::fill(),
         ..AbsoluteStyle::default()
     };
     let (mut marks, mut text, mut over, mut gutter) = (None, None, None, None);
     let row = cx.absolute(
         AbsoluteStyle {
-            size: Size {
+            size: Sizing {
                 width: Length::fill(),
                 height: Length::Fixed(rows as f32 * lh),
             },
@@ -147,7 +147,7 @@ pub(super) fn build_row(shared: &Rc<Shared>, index: usize, cx: &mut BuildCx<'_>)
             gutter = Some(
                 cx.absolute(
                     AbsoluteStyle {
-                        size: Size::fixed(m.gutter, rows as f32 * lh),
+                        size: Sizing::fixed(m.gutter, rows as f32 * lh),
                         style: BoxStyle::solid(shared.theme.gutter),
                         ..AbsoluteStyle::default()
                     },
@@ -227,7 +227,7 @@ pub(super) fn draw_row(
         view.rows = rows.len();
         s.store.set_fixed_size(
             view.row,
-            Size {
+            Sizing {
                 width: Length::fill(),
                 height: Length::Fixed(rows.len() as f32 * lh),
             },
@@ -237,7 +237,7 @@ pub(super) fn draw_row(
     if view.gutter_w != m.gutter {
         view.gutter_w = m.gutter;
         s.store
-            .set_fixed_size(view.gutter, Size::fixed(m.gutter, rows.len() as f32 * lh));
+            .set_fixed_size(view.gutter, Sizing::fixed(m.gutter, rows.len() as f32 * lh));
     }
     draw_text(shared, session, s, view, line, text, &inl, &rows);
     draw_gutter(shared, session, s, view, line, rows.len());
@@ -587,7 +587,7 @@ fn set_fold_mark(
             view.fold = state.map(|folded| {
                 let mut cx = BuildCx::with_parent(s.store, s.states, s.bindings, view.gutter);
                 let leaf = cx.leaf(LeafStyle {
-                    size: Size::fixed(size, size),
+                    size: Sizing::fixed(size, size),
                     style: BoxStyle::NONE,
                 });
                 // A chevron: pointing right when folded, down when open.
@@ -920,7 +920,7 @@ fn sync_segs(
     want: Vec<Seg>,
 ) {
     let lh = shared.metrics.get().line_height;
-    let size = |seg: &Seg| Size {
+    let size = |seg: &Seg| Sizing {
         width: seg.cells_w.map_or(Length::MaxContent, Length::Fixed),
         height: Length::Fixed(lh),
     };
@@ -1002,7 +1002,7 @@ fn sync_marks(
     have: &mut Vec<(NodeId, Mark)>,
     want: Vec<Mark>,
 ) {
-    let size = |m: &Mark| Size {
+    let size = |m: &Mark| Sizing {
         width: m.w.map_or(Length::fill(), Length::Fixed),
         height: Length::Fixed(m.h),
     };

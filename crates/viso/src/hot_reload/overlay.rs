@@ -10,7 +10,7 @@
 
 use viso_ui::{
     Align, Axis, BoxStyle, BuildCx, FlexStyle, Inset, LeafStyle, Length, NodeId, NodeStore, Rect,
-    Rgba, Size, TextRequest, TextStyle,
+    Rgba, Sizing, TextRequest, TextStyle,
 };
 
 use crate::WindowState;
@@ -58,7 +58,7 @@ fn build(store: &mut NodeStore, lines: &[&str]) -> NodeId {
     let mut cx = BuildCx::new(store);
     let text = |cx: &mut BuildCx<'_>, text: String| {
         let leaf = cx.leaf(LeafStyle {
-            size: Size {
+            size: Sizing {
                 width: Length::Fit,
                 height: Length::Fit,
             },
@@ -92,7 +92,7 @@ fn build(store: &mut NodeStore, lines: &[&str]) -> NodeId {
                     gap: 4.0,
                     padding: Inset::all(10.0),
                     align: Align::Start,
-                    size: Size {
+                    size: Sizing {
                         width: Length::fill(),
                         height: Length::Fit,
                     },
@@ -146,7 +146,7 @@ fn hud(store: &mut NodeStore, line: &str) -> NodeId {
                 FlexStyle {
                     axis: Axis::Row,
                     padding: Inset::all(5.0),
-                    size: Size {
+                    size: Sizing {
                         width: Length::Fit,
                         height: Length::Fit,
                     },
@@ -155,7 +155,7 @@ fn hud(store: &mut NodeStore, line: &str) -> NodeId {
                 },
                 |cx| {
                     let leaf = cx.leaf(LeafStyle {
-                        size: Size {
+                        size: Sizing {
                             width: Length::Fit,
                             height: Length::Fit,
                         },

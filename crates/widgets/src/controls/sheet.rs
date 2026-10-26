@@ -26,14 +26,14 @@
 //! use std::rc::Rc;
 //! use viso_widgets::{SheetDetent, SheetEdge, SheetHandleSlot, sheet};
 //! use viso_ui::{SemanticProjector, BuildCx, BindingTable, Component, LeafStyle, NodeStore, StateStore, TextEdits, VirtualLists};
-//! use viso_ui::{BoxStyle, Size};
+//! use viso_ui::{BoxStyle, Sizing};
 //!
 //! let handle: SheetHandleSlot = Rc::new(RefCell::new(None));
 //! let control = sheet()
 //!     .edge(SheetEdge::Bottom)
 //!     .extent(640.0)
 //!     .detents([SheetDetent::Fraction(0.5), SheetDetent::Full])
-//!     .content(|cx| { cx.leaf(LeafStyle { size: Size::fill(), style: BoxStyle::NONE }); })
+//!     .content(|cx| { cx.leaf(LeafStyle { size: Sizing::fill(), style: BoxStyle::NONE }); })
 //!     .on_dismiss(|_ev| { /* the sheet was dismissed */ })
 //!     .handle(&handle);
 //!
@@ -55,7 +55,7 @@ use std::rc::Rc;
 use viso_ui::{
     Align, Alignment2D, Axis, BoxStyle, BuildCx, Component, DirtyClass, DispatchPhase, EventCx,
     FlexStyle, Inset, Justify, Key, LeafStyle, Length, NodeId, PointerPhase, Rgba, Role, Semantics,
-    Size, StackStyle, StateId, StateValue,
+    Sizing, StackStyle, StateId, StateValue,
 };
 pub use viso_ui::{SheetDetent, SheetEdge};
 
@@ -300,11 +300,11 @@ impl Component for Sheet {
             SheetEdge::Trailing => Alignment2D::End,
         };
         let panel_size = match axis {
-            Axis::Column => Size {
+            Axis::Column => Sizing {
                 width: Length::fill(),
                 height: Length::Fixed(s.extent),
             },
-            Axis::Row => Size {
+            Axis::Row => Sizing {
                 width: Length::Fixed(s.extent),
                 height: Length::fill(),
             },
@@ -314,7 +314,7 @@ impl Component for Sheet {
             StackStyle {
                 align,
                 padding: Inset::all(0.0),
-                size: Size::fill(),
+                size: Sizing::fill(),
                 style: BoxStyle::NONE,
             },
             |cx| {
@@ -337,7 +337,7 @@ impl Component for Sheet {
                                     padding: Inset::all(0.0),
                                     align: Align::Center,
                                     justify: Justify::Center,
-                                    size: Size {
+                                    size: Sizing {
                                         width: Length::fill(),
                                         height: Length::Fixed(GRABBER_ROOM),
                                     },
@@ -345,7 +345,7 @@ impl Component for Sheet {
                                 },
                                 |cx| {
                                     cx.leaf(LeafStyle {
-                                        size: Size::fixed(GRABBER.0, GRABBER.1),
+                                        size: Sizing::fixed(GRABBER.0, GRABBER.1),
                                         style: BoxStyle::solid(GRABBER_COLOR)
                                             .with_radius(GRABBER.1 / 2.0),
                                     });

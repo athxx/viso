@@ -32,11 +32,11 @@ use viso::render::Rgba;
 use viso::ui::context::UpdateCx;
 use viso::ui::{
     Alignment2D, Axis, BoxStyle, Component, Continuation, EventCx, FontSize, FontWeight,
-    FrameClient, Inset, Key, Length, Size, StackStyle, StateStore, StateWriter, TextStyle,
+    FrameClient, Inset, Key, Length, Sizing, StackStyle, StateStore, StateWriter, TextStyle,
 };
 use viso_map::style::builtin;
 use viso_map::{
-    Camera, Insets, LngLat, LngLatBounds, MapHandleSlot, Marker, MemorySource, Polyline, Puck,
+    Camera, LngLat, LngLatBounds, MapHandleSlot, Marker, MemorySource, Padding, Polyline, Puck,
     ShapeId, map_view,
 };
 use viso_map_nav::{
@@ -158,7 +158,7 @@ impl Nav {
             self.line = Some(map.add_shape(w, Polyline::route(points.clone())));
             if let Some(bounds) = LngLatBounds::around(points) {
                 // Clear of the banner above and the bar below.
-                let padding = Insets {
+                let padding = Padding {
                     top: 170.0,
                     bottom: 90.0,
                     left: 40.0,
@@ -203,9 +203,9 @@ impl Nav {
         if let Some(map) = self.map.borrow().as_ref() {
             map.set_padding(
                 w,
-                Insets {
+                Padding {
                     top: 220.0,
-                    ..Insets::all(0.0)
+                    ..Padding::all(0.0)
                 },
             );
         }
@@ -220,7 +220,7 @@ impl Nav {
         self.driving = false;
         self.session = None;
         if let Some(map) = self.map.borrow().as_ref() {
-            map.set_padding(w, Insets::all(0.0));
+            map.set_padding(w, Padding::all(0.0));
             let flat = map.camera().with_bearing(0.0).with_pitch(0.0);
             map.ease_to(w, flat, 0.4);
         }
@@ -326,7 +326,7 @@ impl Nav {
 /// The destination's pin.
 fn pin(cx: &mut BuildCx<'_>) {
     cx.leaf(LeafStyle {
-        size: Size::fixed(22.0, 22.0),
+        size: Sizing::fixed(22.0, 22.0),
         style: BoxStyle {
             border: viso::render::Border {
                 width: 3.0,
@@ -379,7 +379,7 @@ impl FrameClient for Driver {
 /// A run of text the words hook rewrites.
 fn words(cx: &mut BuildCx<'_>, size: f32, bold: bool, text: &str) -> NodeId {
     let leaf = cx.leaf(LeafStyle {
-        size: Size {
+        size: Sizing {
             width: Length::Fill { weight: 1.0 },
             height: Length::Fit,
         },
@@ -475,7 +475,7 @@ impl Application for Navigator {
         let mut texts = None;
         let root = cx.stack(
             StackStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 align: Alignment2D::TopStart,
                 ..StackStyle::default()
             },
@@ -486,7 +486,7 @@ impl Application for Navigator {
                     .style(style)
                     .languages(&["en", "fr", "de"])
                     .puck(Puck::new(START, 10.0))
-                    .size(Size::fill())
+                    .size(Sizing::fill())
                     .label("Map of Luxembourg")
                     .handle(&slot)
                     .on_long_press(move |ev, p| {
@@ -526,7 +526,7 @@ fn panels(cx: &mut BuildCx<'_>, nav: &Shared) -> [NodeId; 3] {
             axis: Axis::Column,
             gap: 10.0,
             padding: Inset::all(14.0),
-            size: Size::fill(),
+            size: Sizing::fill(),
             ..FlexStyle::default()
         },
         |cx| {
@@ -537,7 +537,7 @@ fn panels(cx: &mut BuildCx<'_>, nav: &Shared) -> [NodeId; 3] {
                 .placeholder("Search places in Luxembourg")
                 .label("Search places")
                 .max_suggestions(6)
-                .size(Size {
+                .size(Sizing {
                     width: Length::Fixed(380.0),
                     height: Length::Fit,
                 })
@@ -584,7 +584,7 @@ fn panels(cx: &mut BuildCx<'_>, nav: &Shared) -> [NodeId; 3] {
                     axis: Axis::Column,
                     gap: 4.0,
                     padding: Inset::all(12.0),
-                    size: Size {
+                    size: Sizing {
                         width: Length::Fixed(380.0),
                         height: Length::Fit,
                     },
@@ -601,7 +601,7 @@ fn panels(cx: &mut BuildCx<'_>, nav: &Shared) -> [NodeId; 3] {
                 Semantics::role(Role::Status).with_label("Directions"),
             );
             let spacer = cx.leaf(LeafStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 style: BoxStyle::NONE,
             });
             let spacer = spacer.id();
@@ -610,7 +610,7 @@ fn panels(cx: &mut BuildCx<'_>, nav: &Shared) -> [NodeId; 3] {
                     axis: Axis::Row,
                     gap: 8.0,
                     padding: Inset::all(10.0),
-                    size: Size {
+                    size: Sizing {
                         width: Length::Fill { weight: 1.0 },
                         height: Length::Fit,
                     },

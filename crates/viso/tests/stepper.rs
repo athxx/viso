@@ -200,7 +200,7 @@ fn keys_step_it_and_take_it_to_its_bounds() {
 fn a_stepper_draws_its_pill_halves_and_dims_a_spent_one_and_matches_golden() {
     use viso::gpu::{CpuRaster, GpuBackend, RawWindowHandle};
     use viso::render::{Renderer, Rgba};
-    use viso::ui::{Axis, BoxStyle, Component, Inset, Size, paint_tree};
+    use viso::ui::{Axis, BoxStyle, Component, Inset, Sizing, paint_tree};
     use viso::widgets::{ViewStyle, stepper, view};
 
     const W: u32 = 120;
@@ -228,7 +228,7 @@ fn a_stepper_draws_its_pill_halves_and_dims_a_spent_one_and_matches_golden() {
             axis: Axis::Column,
             padding: Inset::all(8.0),
             gap: 4.0,
-            size: Size::fill(),
+            size: Sizing::fill(),
             background: BoxStyle::solid(Rgba::new(0.1, 0.1, 0.12, 1.0)),
             ..Default::default()
         })

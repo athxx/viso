@@ -15,7 +15,7 @@
 use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use viso_ui::{Axis, BoxStyle, BuildCx, Component, LeafStyle, NodeStore, Rect, Size, paint_tree};
+use viso_ui::{Axis, BoxStyle, BuildCx, Component, LeafStyle, NodeStore, Rect, Sizing, paint_tree};
 use viso_widgets::{ScrollViewStyle, scroll};
 
 const W: f32 = 200.0;
@@ -27,12 +27,12 @@ const H: f32 = 300.0;
 fn build_scene() -> (NodeStore, viso_ui::NodeId) {
     let region = scroll(ScrollViewStyle {
         axis: Axis::Column,
-        size: Size::fixed(W, H),
+        size: Sizing::fixed(W, H),
         ..Default::default()
     })
     .content(|cx| {
         cx.leaf(LeafStyle {
-            size: Size::fixed(W, H * 4.0),
+            size: Sizing::fixed(W, H * 4.0),
             style: BoxStyle::NONE,
         });
     });
@@ -63,12 +63,12 @@ fn bench_scroll(c: &mut Criterion) {
             let mut cx = BuildCx::new(&mut store);
             scroll(ScrollViewStyle {
                 axis: Axis::Column,
-                size: Size::fixed(W, H),
+                size: Sizing::fixed(W, H),
                 ..Default::default()
             })
             .content(|cx| {
                 cx.leaf(LeafStyle {
-                    size: Size::fixed(W, H * 4.0),
+                    size: Sizing::fixed(W, H * 4.0),
                     style: BoxStyle::NONE,
                 });
             })

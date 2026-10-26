@@ -60,7 +60,7 @@ use std::rc::Rc;
 
 use viso_ui::{
     BuildCx, Component, EventCx, FieldEvent, FieldLook, FontSize, InputFilter, InputKind,
-    LeafStyle, Length, Rgba, Role, Semantics, Size, TextRequest, field_input,
+    LeafStyle, Length, Rgba, Role, Semantics, Sizing, TextRequest, field_input,
 };
 
 /// A shared, mutable change callback carrying the field's new text, fired from
@@ -97,7 +97,7 @@ const FONT_SIZE: f32 = 16.0;
 pub struct TextInputStyle {
     /// The field's own size request within its parent. Defaults to a fixed width
     /// and a `Fit` height (as tall as the text).
-    pub size: Size,
+    pub size: Sizing,
     /// The text's font size in pixels.
     pub font_size: f32,
     /// The text's fill color.
@@ -107,7 +107,7 @@ pub struct TextInputStyle {
 impl Default for TextInputStyle {
     fn default() -> Self {
         TextInputStyle {
-            size: Size {
+            size: Sizing {
                 width: Length::Fixed(FIELD_W),
                 height: Length::Fit,
             },
@@ -230,7 +230,7 @@ impl TextInput {
 
     /// Set the field's own size request within its parent (defaults to a fixed
     /// width and a `Fit` height).
-    pub fn size(mut self, size: Size) -> Self {
+    pub fn size(mut self, size: Sizing) -> Self {
         self.style.size = size;
         self
     }
@@ -531,11 +531,11 @@ mod tests {
             .value("Ada")
             .font_size(20.0)
             .color(red)
-            .size(Size::fill());
+            .size(Sizing::fill());
         assert_eq!(widget.value, "Ada");
         assert_eq!(widget.style.font_size, 20.0);
         assert_eq!(widget.style.color, red);
-        assert_eq!(widget.style.size, Size::fill());
+        assert_eq!(widget.style.size, Sizing::fill());
     }
 
     /// A primary press requests focus for the field so subsequent keystrokes route

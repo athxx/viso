@@ -5,7 +5,7 @@
 //! query itself over a real laid-out tree built through the facade path.
 
 use viso::render::{Rect, Rgba};
-use viso::ui::{Axis, BoxStyle, BuildCx, FlexStyle, Inset, LeafStyle, NodeStore, Size, hit_test};
+use viso::ui::{Axis, BoxStyle, BuildCx, FlexStyle, Inset, LeafStyle, NodeStore, Sizing, hit_test};
 
 const SURFACE: Rect = Rect {
     x: 0.0,
@@ -31,13 +31,13 @@ fn facade_hit_test_resolves_leaf_padding_and_miss() {
             FlexStyle {
                 axis: Axis::Row,
                 padding: Inset::all(20.0),
-                size: Size::fixed(100.0, 100.0),
+                size: Sizing::fixed(100.0, 100.0),
                 style: BoxStyle::solid(SOLID),
                 ..Default::default()
             },
             |cx| {
                 leaf = Some(cx.leaf(LeafStyle {
-                    size: Size::fixed(40.0, 40.0),
+                    size: Sizing::fixed(40.0, 40.0),
                     style: BoxStyle::solid(SOLID),
                 }));
             },

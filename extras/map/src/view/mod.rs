@@ -38,7 +38,8 @@ use std::sync::Arc;
 
 use viso_ui::{
     Alignment2D, BoxStyle, BuildCx, Component, DispatchPhase, EventCx, FrameClient, Key,
-    NoticeKinds, PinchPhase, PointerPhase, ScrollPhase, Size, StackStyle, StateValue, StateWriter,
+    NoticeKinds, PinchPhase, PointerPhase, ScrollPhase, Sizing, StackStyle, StateValue,
+    StateWriter,
 };
 
 pub use self::core::CameraCells;
@@ -46,7 +47,7 @@ use self::core::{Core, CoreNodes, Told, band_of};
 pub use self::labels::{BentLabel, PlacedGlyph};
 use self::overlays::Pressed;
 pub use self::overlays::{Cluster, ClusterContent, Marker, MarkerContent, ShapeId};
-use crate::camera::{Camera, Insets, Limits, View};
+use crate::camera::{Camera, Limits, Padding, View};
 use crate::geo::{LngLat, LngLatBounds};
 use crate::geojson::GeoJson;
 use crate::icons::IconSet;
@@ -171,7 +172,7 @@ impl MapHandle {
         &self,
         w: &mut dyn StateWriter,
         bounds: LngLatBounds,
-        padding: Insets,
+        padding: Padding,
         bearing: f64,
         max_zoom: f64,
     ) {
@@ -224,7 +225,7 @@ impl MapHandle {
 
     /// Keeps `padding` clear at the view's edges; the camera centers in
     /// what is left.
-    pub fn set_padding(&self, w: &mut dyn StateWriter, padding: Insets) {
+    pub fn set_padding(&self, w: &mut dyn StateWriter, padding: Padding) {
         self.with(w, |c| {
             c.view.padding = padding;
             c.moved = true;
@@ -384,9 +385,9 @@ pub struct MapView {
     zooms: (u8, u8),
     camera: Camera,
     limits: Limits,
-    padding: Insets,
+    padding: Padding,
     style: Arc<Style>,
-    size: Size,
+    size: Sizing,
     label: String,
     slot: Option<MapHandleSlot>,
     cells: Option<CameraCells>,
@@ -412,9 +413,9 @@ pub fn map_view(source: impl TileSource) -> MapView {
         zooms: (0, 14),
         camera: Camera::new(LngLat::default(), 1.0),
         limits: Limits::default(),
-        padding: Insets::default(),
+        padding: Padding::default(),
         style: Arc::new(builtin::openmaptiles_light()),
-        size: Size::fill(),
+        size: Sizing::fill(),
         label: "Map".to_owned(),
         slot: None,
         cells: None,
@@ -477,7 +478,7 @@ impl MapView {
     }
 
     /// Keeps `padding` clear at the edges.
-    pub fn padding(mut self, padding: Insets) -> Self {
+    pub fn padding(mut self, padding: Padding) -> Self {
         self.padding = padding;
         self
     }
@@ -490,7 +491,7 @@ impl MapView {
     }
 
     /// Its own size within its parent.
-    pub fn size(mut self, size: Size) -> Self {
+    pub fn size(mut self, size: Sizing) -> Self {
         self.size = size;
         self
     }
@@ -670,7 +671,7 @@ impl Component for MapView {
             },
             |cx| {
                 let sizeless = || StackStyle {
-                    size: Size::fixed(0.0, 0.0),
+                    size: Sizing::fixed(0.0, 0.0),
                     align: Alignment2D::TopStart,
                     ..StackStyle::default()
                 };
@@ -685,7 +686,7 @@ impl Component for MapView {
                 }));
                 overlay = Some(cx.stack(
                     StackStyle {
-                        size: Size::fill(),
+                        size: Sizing::fill(),
                         align: Alignment2D::TopStart,
                         ..StackStyle::default()
                     },
@@ -1049,7 +1050,7 @@ fn pointer(ev: &mut EventCx<'_>, core: &Rc<RefCell<Core>>, hand: &mut Hand, on: 
                     let places = c.overlays.cluster_members(index);
                     if let Some(bounds) = LngLatBounds::around(places) {
                         let mut view = c.view;
-                        view.padding = Insets::all(64.0);
+                        view.padding = Padding::all(64.0);
                         let fit = view.fit(bounds, view.camera.bearing, c.limits.max_zoom);
                         let zoom = fit.zoom.max(f64::from(band_of(view.camera.zoom)) + 1.0);
                         let to = fit.with_zoom(zoom.min(c.limits.max_zoom));

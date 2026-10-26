@@ -28,7 +28,7 @@ use std::rc::Rc;
 use criterion::{Criterion, criterion_group, criterion_main};
 use viso_ui::{
     BindingTable, BoxStyle, BuildCx, Component, LeafStyle, NodeId, NodeStore, Rect, Rgba,
-    SemanticProjector, Size, StateStore, TextEdits, VirtualLists, paint_tree,
+    SemanticProjector, Sizing, StateStore, TextEdits, VirtualLists, paint_tree,
 };
 use viso_widgets::{ModalHandleSlot, modal};
 
@@ -70,7 +70,7 @@ impl Reactive {
 /// subtree rather than an empty node.
 fn fill(cx: &mut BuildCx<'_>) {
     cx.leaf(LeafStyle {
-        size: Size::fill(),
+        size: Sizing::fill(),
         style: BoxStyle::NONE,
     });
 }
@@ -96,7 +96,7 @@ fn build_scene() -> (NodeStore, NodeId) {
         modal()
             .scrim(SCRIM)
             .content(fill)
-            .size(Size::fill())
+            .size(Sizing::fill())
             .handle(&slot)
             .build(&mut cx);
         cx.root().expect("modal declares a root")
@@ -147,7 +147,7 @@ fn bench_modal(c: &mut Criterion) {
             modal()
                 .scrim(SCRIM)
                 .content(fill)
-                .size(Size::fill())
+                .size(Sizing::fill())
                 .handle(&slot)
                 .build(&mut cx);
             black_box(&store);

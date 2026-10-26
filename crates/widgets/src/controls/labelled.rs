@@ -9,7 +9,7 @@
 
 use viso_ui::{
     Access, Align, Axis, BoxStyle, BuildCx, Component, FlexStyle, Inset, Justify, Length, Rgba,
-    Size,
+    Sizing,
 };
 
 use crate::controls::mnemonic::Mnemonic;
@@ -76,7 +76,7 @@ impl<F: Component> Component for Labelled<F> {
                     Align::Center
                 },
                 justify: Justify::Start,
-                size: Size {
+                size: Sizing {
                     width: Length::Fit,
                     height: Length::Fit,
                 },

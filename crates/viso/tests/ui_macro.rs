@@ -230,7 +230,7 @@ fn padding_pads_the_content_and_follows_the_environment() {
     );
 }
 
-/// Size bounds, a margin and a `%` padding read the parent's content box: the
+/// Sizing bounds, a margin and a `%` padding read the parent's content box: the
 /// constant ones as the node's box rules, a margin in `sp` as bound terms that
 /// follow the text scale.
 #[test]

@@ -30,7 +30,7 @@ use std::time::Duration;
 use criterion::{Criterion, criterion_group, criterion_main};
 use viso_ui::{
     BindingTable, BoxStyle, BuildCx, Component, LeafStyle, NodeId, NodeStore, Rect, Rgba,
-    SemanticProjector, Size, StateStore, TextEdits, VirtualLists, paint_tree,
+    SemanticProjector, Sizing, StateStore, TextEdits, VirtualLists, paint_tree,
 };
 use viso_widgets::{ToastEdge, ToastHandleSlot, toast};
 
@@ -80,7 +80,7 @@ impl Reactive {
 /// a realistic deterministic size rather than collapsing to zero.
 fn panel(cx: &mut BuildCx<'_>) {
     cx.leaf(LeafStyle {
-        size: Size::fixed(PANEL_W, PANEL_H),
+        size: Sizing::fixed(PANEL_W, PANEL_H),
         style: BoxStyle::solid(PANEL),
     });
 }

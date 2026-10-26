@@ -1904,12 +1904,12 @@ fn labels(list: &Value) -> Vec<String> {
 
 /// How wide the parts built inside node `node` are: as wide as they ask
 /// while it is unsized, else as wide as it is.
-fn parts_size(store: &NodeStore, node: NodeId) -> viso_ui::Size {
+fn parts_size(store: &NodeStore, node: NodeId) -> viso_ui::Sizing {
     let width = match store.layout_input(node).size().width {
         viso_ui::Length::Fit => viso_ui::Length::Fit,
         _ => viso_ui::Length::Fill { weight: 1.0 },
     };
-    viso_ui::Size {
+    viso_ui::Sizing {
         width,
         height: viso_ui::Length::Fit,
     }

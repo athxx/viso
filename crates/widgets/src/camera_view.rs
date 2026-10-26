@@ -16,7 +16,7 @@
 //! [`VideoHandle`], its [`on_progress`](CameraView::on_progress) reporting
 //! which way the camera faces once it is ready.
 
-use viso_ui::{AssetFit, BuildCx, Camera, Component, Rgba, Size, StateStore, VideoStatus};
+use viso_ui::{AssetFit, BuildCx, Camera, Component, Rgba, Sizing, StateStore, VideoStatus};
 
 use crate::image::ImageLoad;
 use crate::video::{Video, VideoHandleSlot, video};
@@ -63,7 +63,7 @@ impl CameraView {
 
     /// Set its own size request within its parent (defaults to fitting the
     /// picture's natural size).
-    pub fn size(mut self, size: Size) -> Self {
+    pub fn size(mut self, size: Sizing) -> Self {
         self.video = self.video.size(size);
         self
     }

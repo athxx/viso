@@ -17,7 +17,8 @@ use std::rc::Rc;
 
 use viso_ui::{
     Access, BoxStyle, BuildCx, CheckMark, CheckShape, EventCx, Haptic, Key, LeafStyle,
-    PointerButtons, PointerPhase, Rgba, Role, SemanticState, Semantics, Size, StateId, StateValue,
+    PointerButtons, PointerPhase, Rgba, Role, SemanticState, Semantics, Sizing, StateId,
+    StateValue,
 };
 
 use crate::controls::mnemonic::Mnemonic;
@@ -40,7 +41,7 @@ pub(crate) struct Check<'a> {
     pub shape: CheckShape,
     pub caption: &'a str,
     pub checked: bool,
-    pub size: Size,
+    pub size: Sizing,
     pub color: Rgba,
     pub on_change: &'a SharedChange,
 }

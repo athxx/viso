@@ -27,7 +27,7 @@
 use viso_ui::plate::{BADGE_FILL, BADGE_INK, badge_count};
 use viso_ui::{
     BoxStyle, BuildCx, CheckMark, CheckShape, Component, FontSize, FontWeight, LeafStyle, Length,
-    NodeId, NodeStore, Rgba, Role, Semantics, Size, StateId, StateValue, TextRequest, TextStyle,
+    NodeId, NodeStore, Rgba, Role, Semantics, Sizing, StateId, StateValue, TextRequest, TextStyle,
 };
 
 /// A badge's caption size.
@@ -148,7 +148,7 @@ impl Badge {
 impl Component for Badge {
     fn build(&self, cx: &mut BuildCx<'_>) {
         let handle = cx.leaf(LeafStyle {
-            size: Size {
+            size: Sizing {
                 width: Length::Fit,
                 height: Length::Fit,
             },

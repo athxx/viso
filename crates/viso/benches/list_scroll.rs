@@ -17,7 +17,7 @@ use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle};
 use viso_render::{Primitive, Rect, Renderer, Rgba, TransformUpdate};
 use viso_ui::{
     Axis, BindingTable, BoxStyle, BuildCx, DirtyClass, EffectStore, Length, NodeId, NodeStore,
-    SemanticProjector, Size, StateStore, TextEdits, Vec2, VirtualListStyle, VirtualLists,
+    SemanticProjector, Sizing, StateStore, TextEdits, Vec2, VirtualListStyle, VirtualLists,
     virtual_list,
 };
 
@@ -61,7 +61,7 @@ fn setup(row_h: f32) -> Harness {
         cx.virtual_list(
             VirtualListStyle {
                 axis: Axis::Column,
-                size: Size {
+                size: Sizing {
                     width: Length::Fixed(300.0),
                     height: Length::Fixed(VIEWPORT_H),
                 },
@@ -73,7 +73,7 @@ fn setup(row_h: f32) -> Harness {
             ITEM_COUNT,
             move |_i, cx| {
                 cx.leaf(viso_ui::LeafStyle {
-                    size: Size {
+                    size: Sizing {
                         width: Length::fill(),
                         height: Length::Fixed(row_h - 1.0),
                     },

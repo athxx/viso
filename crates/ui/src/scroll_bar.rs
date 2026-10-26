@@ -24,7 +24,7 @@ use viso_render::Rgba;
 use crate::animation::{Easing, LookValue, Timing};
 use crate::component::{AbsoluteStyle, BuildCx, LeafStyle, NodeStore};
 use crate::input::{PointerButtons, PointerPhase};
-use crate::layout::{AbsoluteInsets, Axis, Length, OnAxis, Placement, Size, Span, Vec2};
+use crate::layout::{AbsoluteInsets, Axis, Length, OnAxis, Placement, Sizing, Span, Vec2};
 use crate::node::NodeId;
 use crate::style::BoxStyle;
 use crate::timer::TimerRequest;
@@ -291,11 +291,11 @@ impl BuildCx<'_> {
     pub(crate) fn scroll_bar(&mut self, viewport: NodeId, axis: Axis) {
         let style = self.store.bars.style;
         let cross = match axis {
-            Axis::Row => Size {
+            Axis::Row => Sizing {
                 width: Length::Fill { weight: 1.0 },
                 height: Length::Fixed(style.track),
             },
-            Axis::Column => Size {
+            Axis::Column => Sizing {
                 width: Length::Fixed(style.track),
                 height: Length::Fill { weight: 1.0 },
             },
@@ -363,10 +363,10 @@ fn outer_edge(axis: Axis, inset: f32) -> AbsoluteInsets {
     }
 }
 
-fn thumb_size(axis: Axis, thick: f32, len: f32) -> Size {
+fn thumb_size(axis: Axis, thick: f32, len: f32) -> Sizing {
     match axis {
-        Axis::Column => Size::fixed(thick, len),
-        Axis::Row => Size::fixed(len, thick),
+        Axis::Column => Sizing::fixed(thick, len),
+        Axis::Row => Sizing::fixed(len, thick),
     }
 }
 
@@ -517,7 +517,7 @@ impl NodeStore {
         self.bars.bars.iter().any(|b| b.viewport == id && b.shown)
     }
 
-    /// Size and move every bar's thumb for its viewport as it now stands,
+    /// Sizing and move every bar's thumb for its viewport as it now stands,
     /// showing a bar whose offset moved. Returns whether a thumb's length
     /// changed, so the layout runs again for it.
     pub(crate) fn sync_scroll_bars(&mut self) -> bool {
@@ -838,14 +838,14 @@ mod tests {
             let mut cx = BuildCx::new(&mut store);
             cx.scroll(
                 ScrollStyle {
-                    size: Size::fixed(VIEW.w, VIEW.h),
+                    size: Sizing::fixed(VIEW.w, VIEW.h),
                     ..ScrollStyle::default()
                 },
                 |cx| {
                     content = Some(
                         cx.flex(
                             FlexStyle {
-                                size: Size {
+                                size: Sizing {
                                     width: Length::Fill { weight: 1.0 },
                                     height: Length::Fixed(long),
                                 },

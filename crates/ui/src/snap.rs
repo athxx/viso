@@ -711,7 +711,7 @@ mod tests {
     use super::*;
     use crate::component::{BuildCx, FlexStyle, LeafStyle, ScrollStyle};
     use crate::input::{ScrollEvent, ScrollPhase, ScrollRouter};
-    use crate::layout::{Length, Size};
+    use crate::layout::{Length, Sizing};
     use crate::scroll_motion::ScrollPhysics;
     use crate::style::BoxStyle;
     use viso_render::Rect;
@@ -736,7 +736,7 @@ mod tests {
         let viewport = cx.scroll(
             ScrollStyle {
                 axis: Axis::Row,
-                size: Size::fixed(100.0, 50.0),
+                size: Sizing::fixed(100.0, 50.0),
                 snap: Some(snap),
                 ..ScrollStyle::default()
             },
@@ -749,7 +749,7 @@ mod tests {
                     |cx| {
                         for _ in 0..5 {
                             let item = cx.leaf(LeafStyle {
-                                size: Size::fixed(100.0, 50.0),
+                                size: Sizing::fixed(100.0, 50.0),
                                 style: BoxStyle::NONE,
                             });
                             items.push(item.id());
@@ -888,7 +888,7 @@ mod tests {
         for &item in &items {
             store.set_fixed_size(
                 item,
-                Size {
+                Sizing {
                     width: Length::Fixed(150.0),
                     height: Length::Fixed(50.0),
                 },

@@ -3,7 +3,7 @@
 
 use crate::{
     Align, Axis, BoxStyle, BuildCx, FlexStyle, Handle, Justify, LeafStyle, LineCap, LineJoin,
-    PathCmd, Point, Rgba, Size, Stroke, Vec2,
+    PathCmd, Point, Rgba, Sizing, Stroke, Vec2,
 };
 
 /// The side of a glyph's box.
@@ -16,7 +16,7 @@ pub fn glyph_slot(cx: &mut BuildCx<'_>, inner: impl FnOnce(&mut BuildCx<'_>)) ->
             axis: Axis::Row,
             align: Align::Center,
             justify: Justify::Center,
-            size: Size::fixed(GLYPH, GLYPH),
+            size: Sizing::fixed(GLYPH, GLYPH),
             ..FlexStyle::default()
         },
         inner,
@@ -26,7 +26,7 @@ pub fn glyph_slot(cx: &mut BuildCx<'_>, inner: impl FnOnce(&mut BuildCx<'_>)) ->
 /// A stroked glyph of `cmds` in a box of the glyph's side.
 fn stroked(cx: &mut BuildCx<'_>, cmds: Vec<PathCmd>, ink: Rgba, width: f32) -> Handle {
     let leaf = cx.leaf(LeafStyle {
-        size: Size::fixed(GLYPH, GLYPH),
+        size: Sizing::fixed(GLYPH, GLYPH),
         style: BoxStyle::NONE,
     });
     let stroke = Stroke {
@@ -150,7 +150,7 @@ fn circle(x: f32, y: f32, r: f32) -> [PathCmd; 6] {
 /// A radio item's dot: a filled circle.
 pub fn dot(cx: &mut BuildCx<'_>, ink: Rgba) -> Handle {
     let leaf = cx.leaf(LeafStyle {
-        size: Size::fixed(GLYPH, GLYPH),
+        size: Sizing::fixed(GLYPH, GLYPH),
         style: BoxStyle::NONE,
     });
     let c = GLYPH * 0.5;
@@ -187,7 +187,7 @@ pub fn clear(cx: &mut BuildCx<'_>, disc: Rgba, ink: Rgba) -> Handle {
             axis: Axis::Row,
             align: Align::Center,
             justify: Justify::Center,
-            size: Size::fixed(GLYPH, GLYPH),
+            size: Sizing::fixed(GLYPH, GLYPH),
             style: BoxStyle::solid(disc).with_radius(GLYPH * 0.5),
             ..FlexStyle::default()
         },

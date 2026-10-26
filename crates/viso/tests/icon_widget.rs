@@ -27,7 +27,7 @@ use std::sync::atomic::Ordering;
 use viso::gpu::{CpuRaster, GpuBackend, RawWindowHandle};
 use viso::render::{FrameStats, Rect, Renderer, Rgba};
 use viso::ui::{
-    Axis, BoxStyle, BuildCx, Component, Inset, NodeId, NodeStore, PathCmd, Point, Role, Size,
+    Axis, BoxStyle, BuildCx, Component, Inset, NodeId, NodeStore, PathCmd, Point, Role, Sizing,
     paint_tree,
 };
 use viso::widgets::{ViewStyle, icon, view};
@@ -77,7 +77,7 @@ fn build_scene(store: &mut NodeStore) -> (NodeId, NodeId) {
     let container = view(ViewStyle {
         axis: Axis::Row,
         padding: Inset::all(10.0),
-        size: Size::fill(),
+        size: Sizing::fill(),
         background: BoxStyle::solid(DARK),
         ..Default::default()
     })

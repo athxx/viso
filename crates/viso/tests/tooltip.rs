@@ -12,7 +12,7 @@ use viso::platform::{
     PointerPhase as RawPhase, RawEvent, RawKey, RawPointer, WindowId,
 };
 use viso::prelude::*;
-use viso::ui::{Axis, BoxStyle, Component, FlexStyle, Inset, LeafStyle, NodeId, Role, Size};
+use viso::ui::{Axis, BoxStyle, Component, FlexStyle, Inset, LeafStyle, NodeId, Role, Sizing};
 use viso::widgets::tooltip;
 
 const STEP: Duration = Duration::from_millis(16);
@@ -38,7 +38,7 @@ impl Application for TipApp {
     fn build(&mut self, cx: &mut BuildCx<'_>) {
         cx.flex(
             FlexStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 axis: Axis::Row,
                 padding: Inset {
                     left: 100.0,
@@ -55,7 +55,7 @@ impl Application for TipApp {
                     tooltip(text)
                         .content(|cx| {
                             let button = cx.leaf(LeafStyle {
-                                size: Size::fixed(80.0, 30.0),
+                                size: Sizing::fixed(80.0, 30.0),
                                 style: BoxStyle::NONE,
                             });
                             cx.focusable(button, true);

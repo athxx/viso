@@ -49,7 +49,8 @@ use viso::render::{FrameStats, Rect, Renderer, Rgba};
 use viso::ui::{
     BindingTable, BoxStyle, BuildCx, Component, EventCx, Key, KeyEvent, KeyRouter, LeafStyle,
     Modifiers, NodeId, NodeStore, PageTransition, PointerButtons, PointerEvent, PointerPhase, Role,
-    SemanticProjector, Size, StateId, StateStore, StateValue, TextEdits, VirtualLists, paint_tree,
+    SemanticProjector, Sizing, StateId, StateStore, StateValue, TextEdits, VirtualLists,
+    paint_tree,
 };
 use viso::widgets::{NavHandle, NavHandleSlot, navigation_stack};
 
@@ -90,7 +91,7 @@ fn surface_rect() -> Rect {
 fn page_fill(color: Rgba) -> impl Fn(&mut BuildCx<'_>) + 'static {
     move |cx| {
         cx.leaf(LeafStyle {
-            size: Size::fill(),
+            size: Sizing::fill(),
             style: BoxStyle::solid(color),
         });
     }
@@ -110,7 +111,7 @@ fn build_scene(store: &mut NodeStore) -> NodeId {
     let widget = navigation_stack()
         .page(page_fill(PAGE_A))
         .page(page_fill(PAGE_B))
-        .size(Size::fill());
+        .size(Sizing::fill());
 
     let mut cx = BuildCx::with_reactive(
         store,
@@ -232,7 +233,7 @@ impl Interactive {
             .page(page_fill(PAGE_A))
             .page(page_fill(PAGE_B))
             .page(page_fill(PAGE_A))
-            .size(Size::fill())
+            .size(Sizing::fill())
             .transition(PageTransition::None)
             .handle(&slot)
             .on_navigate(move |_ev, depth| {

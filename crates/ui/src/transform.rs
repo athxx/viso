@@ -198,7 +198,7 @@ mod tests {
     use crate::component::{BuildCx, FlexStyle, LeafStyle};
     use crate::dirty::DirtyClass;
     use crate::hit_test::hit_test;
-    use crate::layout::{Alignment2D, Axis, Size};
+    use crate::layout::{Alignment2D, Axis, Sizing};
     use crate::style::BoxStyle;
     use viso_render::{Rect, Rgba};
 
@@ -214,12 +214,12 @@ mod tests {
             cx.flex(
                 FlexStyle {
                     axis: Axis::Row,
-                    size: Size::fixed(100.0, 100.0),
+                    size: Sizing::fixed(100.0, 100.0),
                     ..Default::default()
                 },
                 |cx| {
                     bar = Some(cx.leaf(LeafStyle {
-                        size: Size::fixed(20.0, 60.0),
+                        size: Sizing::fixed(20.0, 60.0),
                         style: BoxStyle::solid(Rgba::new(1.0, 0.0, 0.0, 1.0)),
                     }));
                 },
@@ -296,7 +296,7 @@ mod tests {
         store.clear_dirty();
         assert!(!store.transforms_pending());
 
-        store.set_fixed_size(bar, Size::fixed(20.0, 80.0));
+        store.set_fixed_size(bar, Sizing::fixed(20.0, 80.0));
         store.layout(root, Rect::new(0.0, 0.0, 100.0, 100.0), &mut Vec::new());
         assert!(store.transforms_pending(), "its pivot moved with its box");
     }

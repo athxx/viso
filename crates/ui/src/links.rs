@@ -320,7 +320,7 @@ mod tests {
     use crate::content::{LinkBox, TextInk, TextRequest};
     use crate::semantics::Role;
     use crate::text_style::{SpanStyle, TextSpan, WidthUse};
-    use crate::{FlexStyle, FontSize, LeafStyle, Size, Vec2, focus_next};
+    use crate::{FlexStyle, FontSize, LeafStyle, Sizing, Vec2, focus_next};
     use viso_render::{Rgba, TextureId};
 
     /// A text "see docs and site" whose "docs" and "site" are links drawn at
@@ -332,17 +332,17 @@ mod tests {
             let mut cx = BuildCx::new(&mut store);
             cx.flex(
                 FlexStyle {
-                    size: Size::fixed(200.0, 100.0),
+                    size: Sizing::fixed(200.0, 100.0),
                     ..Default::default()
                 },
                 |cx| {
                     let leaf = cx.leaf(LeafStyle {
-                        size: Size::fixed(200.0, 20.0),
+                        size: Sizing::fixed(200.0, 20.0),
                         ..Default::default()
                     });
                     text = Some(leaf.id());
                     let button = cx.leaf(LeafStyle {
-                        size: Size::fixed(50.0, 20.0),
+                        size: Sizing::fixed(50.0, 20.0),
                         ..Default::default()
                     });
                     cx.focusable(button, true);

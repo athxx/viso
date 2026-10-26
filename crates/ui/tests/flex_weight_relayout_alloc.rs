@@ -22,7 +22,7 @@ use std::sync::atomic::Ordering;
 
 use viso_ui::{
     Align, Axis, BindingTable, BoxStyle, BuildCx, FlexStyle, Inset, Justify, LeafStyle, Length,
-    NodeId, NodeStore, Rect, SemanticProjector, Size, StateStore, TextEdits, VirtualLists,
+    NodeId, NodeStore, Rect, SemanticProjector, Sizing, StateStore, TextEdits, VirtualLists,
 };
 
 /// Counts heap allocations while `ARMED`; off by default so setup allocations are
@@ -151,19 +151,19 @@ fn setup() -> Harness {
                 padding: Inset::all(0.0),
                 align: Align::Stretch,
                 justify: Justify::Start,
-                size: Size::fill(),
+                size: Sizing::fill(),
                 style: BoxStyle::NONE,
             },
             move |cx| {
                 let a = cx.leaf(LeafStyle {
-                    size: Size {
+                    size: Sizing {
                         width: Length::fill(),
                         height: Length::fill(),
                     },
                     style: BoxStyle::NONE,
                 });
                 let b = cx.leaf(LeafStyle {
-                    size: Size {
+                    size: Sizing {
                         width: Length::fill(),
                         height: Length::fill(),
                     },

@@ -15,7 +15,7 @@ use viso::platform::{
 use viso::prelude::*;
 use viso::ui::{
     Axis, BoxStyle, Component, FlexStyle, Inset, LeafStyle, NodeId, PointerButtons, PointerPhase,
-    Rect, Side, Size,
+    Rect, Side, Sizing,
 };
 use viso::widgets::{PopupHandleSlot, popover};
 
@@ -46,7 +46,7 @@ impl Application for PopApp {
         let slot = SLOT.with(Rc::clone);
         cx.flex(
             FlexStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 axis: Axis::Column,
                 padding: Inset {
                     left: 100.0,
@@ -60,7 +60,7 @@ impl Application for PopApp {
                 popover()
                     .anchor(move |cx| {
                         let button = cx.leaf(LeafStyle {
-                            size: Size::fixed(80.0, 30.0),
+                            size: Sizing::fixed(80.0, 30.0),
                             style: BoxStyle::NONE,
                         });
                         cx.focusable(button, true);
@@ -77,7 +77,7 @@ impl Application for PopApp {
                     })
                     .content(|cx| {
                         cx.leaf(LeafStyle {
-                            size: Size::fixed(120.0, 60.0),
+                            size: Sizing::fixed(120.0, 60.0),
                             style: BoxStyle::NONE,
                         });
                     })

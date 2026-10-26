@@ -93,14 +93,14 @@ impl Camera {
 /// Space kept clear at a view's edges, in points: the camera centers in
 /// what is left, and fitting keeps what it fits out of it.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct Insets {
+pub struct Padding {
     pub top: f64,
     pub right: f64,
     pub bottom: f64,
     pub left: f64,
 }
 
-impl Insets {
+impl Padding {
     /// The same inset on every edge.
     pub const fn all(v: f64) -> Self {
         Self {
@@ -124,7 +124,7 @@ pub fn wrap_bearing(degrees: f64) -> f64 {
 pub struct View {
     pub camera: Camera,
     pub size: [f64; 2],
-    pub padding: Insets,
+    pub padding: Padding,
 }
 
 impl View {
@@ -133,7 +133,7 @@ impl View {
         Self {
             camera,
             size,
-            padding: Insets::default(),
+            padding: Padding::default(),
         }
     }
 
@@ -673,9 +673,9 @@ mod tests {
     #[test]
     fn padding_moves_the_focus() {
         let mut v = view(Camera::new(LngLat::new(5.0, 5.0), 8.0));
-        v.padding = Insets {
+        v.padding = Padding {
             top: 100.0,
-            ..Insets::default()
+            ..Padding::default()
         };
         assert_eq!(v.focus(), [400.0, 350.0]);
         let p = v.project(v.camera.center);
@@ -705,7 +705,7 @@ mod tests {
     fn fitting_shows_the_bounds_whole() {
         let b = LngLatBounds::new(LngLat::new(13.0, 52.3), LngLat::new(13.8, 52.7));
         let mut v = view(Camera::default());
-        v.padding = Insets::all(20.0);
+        v.padding = Padding::all(20.0);
         for bearing in [0.0, 45.0] {
             let fitted = View {
                 camera: v.fit(b, bearing, 22.0),

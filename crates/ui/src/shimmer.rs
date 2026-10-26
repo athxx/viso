@@ -24,7 +24,7 @@ use viso_render::{
 use crate::component::{BuildCx, Handle, LeafStyle, NodeStore};
 use crate::content::Content;
 use crate::dirty::DirtyClass;
-use crate::layout::Size;
+use crate::layout::Sizing;
 use crate::node::NodeId;
 use crate::style::BoxStyle;
 
@@ -164,7 +164,7 @@ impl Shimmers {
 
 impl BuildCx<'_> {
     /// A shimmer leaf of `size` drawing `shimmer`.
-    pub fn shimmer(&mut self, size: Size, shimmer: Shimmer) -> Handle {
+    pub fn shimmer(&mut self, size: Sizing, shimmer: Shimmer) -> Handle {
         let handle = self.leaf(LeafStyle {
             size,
             style: BoxStyle::NONE,
@@ -305,7 +305,7 @@ mod tests {
         let id = {
             let mut cx = BuildCx::new(&mut store);
             let h = cx.shimmer(
-                Size::fixed(100.0, 12.0),
+                Sizing::fixed(100.0, 12.0),
                 Shimmer::new(ShimmerLook::Wave, BASE, LIGHT, 4.0),
             );
             h.id()

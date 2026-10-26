@@ -99,14 +99,14 @@ impl NodeStore {
 mod tests {
     use crate::component::{BuildCx, LeafStyle, NodeStore};
     use crate::input::focus_next;
-    use crate::layout::Size;
+    use crate::layout::Sizing;
     use crate::node::NodeId;
     use crate::semantics::SemanticState;
     use crate::style::BoxStyle;
 
     fn leaf(cx: &mut BuildCx<'_>) -> NodeId {
         cx.leaf(LeafStyle {
-            size: Size::fixed(10.0, 10.0),
+            size: Sizing::fixed(10.0, 10.0),
             style: BoxStyle::NONE,
         })
         .id()

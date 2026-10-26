@@ -11,7 +11,7 @@ use viso::platform::{
     RawPointer, RawText, WindowId,
 };
 use viso::prelude::*;
-use viso::ui::{Axis, Component, FlexStyle, Size};
+use viso::ui::{Axis, Component, FlexStyle, Sizing};
 use viso::widgets::text_input;
 
 const STEP: Duration = Duration::from_millis(16);
@@ -40,7 +40,7 @@ impl Application for VolumeApp {
     fn build(&mut self, cx: &mut BuildCx<'_>) {
         cx.flex(
             FlexStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 axis: Axis::Column,
                 ..FlexStyle::default()
             },
@@ -49,10 +49,12 @@ impl Application for VolumeApp {
                     .range(0.0, 10.0)
                     .step(0.5)
                     .value(2.0)
-                    .size(Size::fixed(160.0, 30.0))
+                    .size(Sizing::fixed(160.0, 30.0))
                     .on_change(|_ev, v| CHANGES.with(|c| c.borrow_mut().push(v)))
                     .build(cx);
-                text_input("Name").size(Size::fixed(160.0, 30.0)).build(cx);
+                text_input("Name")
+                    .size(Sizing::fixed(160.0, 30.0))
+                    .build(cx);
             },
         );
     }

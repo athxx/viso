@@ -4,7 +4,7 @@
 //! pure functions over plain slices so they test without a node store, and the
 //! layout pass drives them through the warm side-columns on the node store.
 
-use crate::layout::{AlignItems, Inset, Size};
+use crate::layout::{AlignItems, Inset, Sizing};
 use crate::style::BoxStyle;
 pub use viso_schema::layout::{AdaptiveColumns, AutoRepeat, GridPlacement, TrackMax, TrackSizing};
 
@@ -45,7 +45,7 @@ pub struct GridStyle {
     /// Inner padding on all four edges.
     pub padding: Inset,
     /// The grid box's own size request within its parent.
-    pub size: Size,
+    pub size: Sizing,
     /// Block-axis (vertical) alignment of each cell's content within its cell.
     /// `Stretch` (the default) makes a `Fill`-height child fill its cell; the
     /// other modes position a hugged child at the top/center/bottom, and
@@ -89,7 +89,7 @@ impl Default for GridStyle {
             column_gap: 0.0,
             row_gap: 0.0,
             padding: Inset::default(),
-            size: Size::fill(),
+            size: Sizing::fill(),
             align_items: AlignItems::Stretch,
             style: BoxStyle::NONE,
             column_line_names: Vec::new(),

@@ -36,17 +36,17 @@ impl OnAxis for Vec2 {
 
 /// A node's requested size on both axes.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Size {
+pub struct Sizing {
     /// Width request.
     pub width: Length,
     /// Height request.
     pub height: Length,
 }
 
-impl Size {
+impl Sizing {
     /// An exact dp box.
     pub const fn fixed(w: f32, h: f32) -> Self {
-        Size {
+        Sizing {
             width: Length::Fixed(w),
             height: Length::Fixed(h),
         }
@@ -54,7 +54,7 @@ impl Size {
 
     /// A unit-weight main-axis fill on both axes.
     pub const fn fill() -> Self {
-        Size {
+        Sizing {
             width: Length::Fill { weight: 1.0 },
             height: Length::Fill { weight: 1.0 },
         }
@@ -80,7 +80,7 @@ impl Size {
 }
 
 /// The warm-tier layout parameters for one node: either a Flex container or a
-/// leaf with a requested [`Size`]. A leaf carries its own size; a container
+/// leaf with a requested [`Sizing`]. A leaf carries its own size; a container
 /// carries its axis, child gap, padding, and cross-axis alignment.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LayoutInput {
@@ -97,7 +97,7 @@ pub enum LayoutInput {
         /// Main-axis placement of the packed child group.
         justify: Justify,
         /// The container's own size request within its parent.
-        size: Size,
+        size: Sizing,
     },
     /// A container that layers its children in its content box: each sits
     /// where its own [`StackPlacement::align`] or the stack's `align` puts it,
@@ -108,7 +108,7 @@ pub enum LayoutInput {
         /// Where a child without its own alignment sits.
         align: Alignment2D,
         /// The container's own size request within its parent.
-        size: Size,
+        size: Sizing,
     },
     /// A container that pins each child by its [`AbsoluteInsets`] to the
     /// edges of its content box. No child enters into its size.
@@ -116,15 +116,15 @@ pub enum LayoutInput {
         /// Inner padding on all four edges.
         padding: Inset,
         /// The container's own size request within its parent.
-        size: Size,
+        size: Sizing,
     },
-    /// A leaf that occupies its requested [`Size`]. Its children, if any,
+    /// A leaf that occupies its requested [`Sizing`]. Its children, if any,
     /// lie over its box as a stack's do and never size it.
     Leaf {
-        /// Size request within the parent.
-        size: Size,
+        /// Sizing request within the parent.
+        size: Sizing,
     },
-    /// A scroll viewport: a container whose box is its own requested [`Size`]
+    /// A scroll viewport: a container whose box is its own requested [`Sizing`]
     /// but whose single content child is laid out at the content's natural main
     /// extent (not clamped to the viewport), so content exceeding the viewport
     /// along `axis` becomes scrollable overflow.
@@ -135,7 +135,7 @@ pub enum LayoutInput {
         /// natural extent across as well, at least filling the viewport.
         across: bool,
         /// The viewport's own size request within its parent.
-        size: Size,
+        size: Sizing,
         /// The room kept for classic scroll bars: `x` beside a vertical bar,
         /// at the viewport's right (its left, read right to left), `y` under
         /// a horizontal bar, at its bottom. The content fills the rest.
@@ -151,7 +151,7 @@ pub enum LayoutInput {
         /// The axis along which rows are stacked (row offsets are on this axis).
         axis: Axis,
         /// The canvas's own size request — fixed on both axes.
-        size: Size,
+        size: Sizing,
         /// The lanes across it a row may sit on (see [`LayoutTree::row_lane`]):
         /// `1` for rows that fill it across.
         lanes: u16,
@@ -194,14 +194,14 @@ pub enum LayoutInput {
         /// the column axis is inherited by a subgrid.
         adaptive_columns: Option<AdaptiveColumns>,
         /// The grid box's own size request within its parent.
-        size: Size,
+        size: Sizing,
     },
 }
 
 impl LayoutInput {
     /// The node's own size request within its parent, regardless of kind.
     #[inline]
-    pub fn size(self) -> Size {
+    pub fn size(self) -> Sizing {
         match self {
             LayoutInput::Flex { size, .. }
             | LayoutInput::Stack { size, .. }
@@ -217,7 +217,7 @@ impl LayoutInput {
     /// rewrites a live node's length in place (see
     /// [`NodeStore::set_flex_child_weight`](crate::NodeStore::set_flex_child_weight)).
     #[inline]
-    pub fn size_mut(&mut self) -> &mut Size {
+    pub fn size_mut(&mut self) -> &mut Sizing {
         match self {
             LayoutInput::Flex { size, .. }
             | LayoutInput::Stack { size, .. }
@@ -249,7 +249,7 @@ impl Measured {
     /// own, `MinContent` the narrowest width and `MaxContent` the widest on
     /// both counts, any other the content's.
     #[inline]
-    fn sized(size: Size, content: Vec2, min: f32) -> Self {
+    fn sized(size: Sizing, content: Vec2, min: f32) -> Self {
         let (w, min_w) = match size.width {
             Length::Fixed(v) => (v, v),
             Length::MinContent => (min, min),
@@ -528,7 +528,7 @@ impl Basis {
     /// The basis a child of a stack or of an absolute container on this basis
     /// lays out its own children on, `pinned` saying on each axis whether the
     /// child is pinned to both edges, which stretches a fit one.
-    pub fn placed(self, size: Size, pinned: [bool; 2]) -> Self {
+    pub fn placed(self, size: Sizing, pinned: [bool; 2]) -> Self {
         let axis = |length: Length, definite: bool, pinned: bool| match length {
             Length::Fixed(_) => true,
             Length::Relative { fixed, .. } => definite || fixed != 0.0,
@@ -1900,7 +1900,7 @@ enum ChromeLie {
     Cover,
 }
 
-fn chrome_lie(size: Size) -> ChromeLie {
+fn chrome_lie(size: Sizing) -> ChromeLie {
     match (size.width, size.height) {
         (Length::Fixed(w), h) if !matches!(h, Length::Fixed(_)) => ChromeLie::Vertical(w),
         (w, Length::Fixed(h)) if !matches!(w, Length::Fixed(_)) => ChromeLie::Horizontal(h),
@@ -2204,7 +2204,7 @@ fn with_grid_scratch<T: LayoutTree, R>(
 
 /// Lay out a grid: place children into cells (auto-flow + explicit), solve the
 /// column and row track extents (Fixed/Percent/Auto/Fr), then lay each child
-/// into its cell rect honoring its own `Size`. The grid's inner content area is
+/// into its cell rect honoring its own `Sizing`. The grid's inner content area is
 /// its box minus padding; cell offsets are prefix sums of the resolved tracks
 /// with the gap between adjacent tracks. Auto tracks use the max natural main
 /// size of the single-track children on them.
@@ -2729,7 +2729,7 @@ mod tests {
         let grid = store.alloc_grid(GridStyle {
             columns: vec![TrackSizing::Fixed(50.0), TrackSizing::Fixed(50.0)],
             rows: vec![TrackSizing::Fixed(50.0), TrackSizing::Fixed(50.0)],
-            size: Size::fixed(100.0, 100.0),
+            size: Sizing::fixed(100.0, 100.0),
             ..Default::default()
         });
         let mut scratch = Vec::new();
@@ -2748,7 +2748,7 @@ mod tests {
         let grid = store.alloc_grid(GridStyle {
             columns: vec![TrackSizing::Fr(1.0), TrackSizing::Fr(1.0)],
             rows: vec![TrackSizing::Fr(1.0), TrackSizing::Fr(1.0)],
-            size: Size::fixed(200.0, 200.0),
+            size: Sizing::fixed(200.0, 200.0),
             ..Default::default()
         });
         // Four fill children auto-flow into the four cells. Each child is a
@@ -2759,7 +2759,7 @@ mod tests {
             let k = store.alloc_grid(GridStyle {
                 columns: Vec::new(),
                 rows: Vec::new(),
-                size: Size::fill(),
+                size: Sizing::fill(),
                 ..Default::default()
             });
             store.arena_append_child(grid, k);
@@ -2827,12 +2827,12 @@ mod tests {
         let grid = store.alloc_grid(GridStyle {
             columns: vec![TrackSizing::Minmax(40.0, 120.0), TrackSizing::Fr(1.0)],
             rows: vec![TrackSizing::Fixed(100.0)],
-            size: Size::fixed(400.0, 100.0),
+            size: Sizing::fixed(400.0, 100.0),
             ..Default::default()
         });
         let big = {
             let k = store.alloc_grid(GridStyle {
-                size: Size::fixed(300.0, 40.0),
+                size: Sizing::fixed(300.0, 40.0),
                 ..Default::default()
             });
             store.arena_append_child(grid, k);
@@ -2840,7 +2840,7 @@ mod tests {
         };
         let filler = {
             let k = store.alloc_grid(GridStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 ..Default::default()
             });
             store.arena_append_child(grid, k);
@@ -2886,12 +2886,12 @@ mod tests {
         let grid = store.alloc_grid(GridStyle {
             columns: vec![TrackSizing::Minmax(80.0, 200.0), TrackSizing::Fr(1.0)],
             rows: vec![TrackSizing::Fixed(100.0)],
-            size: Size::fixed(400.0, 100.0),
+            size: Sizing::fixed(400.0, 100.0),
             ..Default::default()
         });
         let _small = {
             let k = store.alloc_grid(GridStyle {
-                size: Size::fixed(30.0, 40.0),
+                size: Sizing::fixed(30.0, 40.0),
                 ..Default::default()
             });
             store.arena_append_child(grid, k);
@@ -2899,7 +2899,7 @@ mod tests {
         };
         let filler = {
             let k = store.alloc_grid(GridStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 ..Default::default()
             });
             store.arena_append_child(grid, k);
@@ -2942,12 +2942,12 @@ mod tests {
         let grid = store.alloc_grid(GridStyle {
             columns: vec![TrackSizing::Auto, TrackSizing::Auto, TrackSizing::Fr(1.0)],
             rows: vec![TrackSizing::Fixed(100.0)],
-            size: Size::fixed(500.0, 100.0),
+            size: Sizing::fixed(500.0, 100.0),
             ..Default::default()
         });
         let wide = {
             let k = store.alloc_grid(GridStyle {
-                size: Size::fixed(300.0, 40.0),
+                size: Sizing::fixed(300.0, 40.0),
                 ..Default::default()
             });
             store.set_grid_placement(
@@ -2964,7 +2964,7 @@ mod tests {
         };
         let filler = {
             let k = store.alloc_grid(GridStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 ..Default::default()
             });
             store.set_grid_placement(
@@ -3014,11 +3014,11 @@ mod tests {
     }
 
     /// Allocate a track-less grid node of a given size as a grid child. A grid
-    /// node with no tracks measures to its own `Size` request and is placed by
+    /// node with no tracks measures to its own `Sizing` request and is placed by
     /// its parent's grid arm exactly like a sized leaf: a `Fill` size stretches
     /// to the cell, a `Fixed` size hugs top-left. This is the same leaf-stand-in
     /// the sibling placement test relies on.
-    fn cell_child(store: &mut crate::component::NodeStore, size: Size) -> crate::NodeId {
+    fn cell_child(store: &mut crate::component::NodeStore, size: Sizing) -> crate::NodeId {
         use crate::grid::GridStyle;
         store.alloc_grid(GridStyle {
             columns: Vec::new(),
@@ -3042,11 +3042,11 @@ mod tests {
             rows: vec![TrackSizing::Fixed(50.0)],
             column_gap: 20.0,
             padding: Inset::all(10.0),
-            size: Size::fixed(250.0, 70.0),
+            size: Sizing::fixed(250.0, 70.0),
             ..Default::default()
         });
-        let a = cell_child(&mut store, Size::fill());
-        let b = cell_child(&mut store, Size::fill());
+        let a = cell_child(&mut store, Sizing::fill());
+        let b = cell_child(&mut store, Sizing::fill());
         store.arena_append_child(grid, a);
         store.arena_append_child(grid, b);
         let mut scratch = Vec::new();
@@ -3071,11 +3071,11 @@ mod tests {
         let grid = store.alloc_grid(GridStyle {
             columns: vec![TrackSizing::Fixed(100.0)],
             rows: vec![TrackSizing::Fixed(100.0)],
-            size: Size::fixed(100.0, 100.0),
+            size: Sizing::fixed(100.0, 100.0),
             ..Default::default()
         });
         // A fixed 30x40 child hugs top-left of the 100x100 cell.
-        let c = cell_child(&mut store, Size::fixed(30.0, 40.0));
+        let c = cell_child(&mut store, Sizing::fixed(30.0, 40.0));
         store.arena_append_child(grid, c);
         let mut scratch = Vec::new();
         crate::layout::measure(&mut store, grid.index(), &mut scratch);
@@ -3108,7 +3108,7 @@ mod tests {
     ) -> crate::NodeId {
         use crate::content::Content;
         use viso_render::{Rgba, TextureId};
-        let id = store.alloc_leaf(Size {
+        let id = store.alloc_leaf(Sizing {
             width: Length::Fit,
             height: Length::Fit,
         });
@@ -3150,7 +3150,7 @@ mod tests {
             columns: vec![TrackSizing::Fixed(50.0), TrackSizing::Fixed(50.0)],
             rows: vec![TrackSizing::Fixed(100.0)],
             align_items: AlignItems::Baseline,
-            size: Size::fixed(100.0, 100.0),
+            size: Sizing::fixed(100.0, 100.0),
             ..Default::default()
         });
         // Tall cell: 40px run, baseline 30 below its top.
@@ -3209,10 +3209,10 @@ mod tests {
                 columns: vec![TrackSizing::Fixed(50.0)],
                 rows: vec![TrackSizing::Fixed(100.0)],
                 align_items: align,
-                size: Size::fixed(50.0, 100.0),
+                size: Sizing::fixed(50.0, 100.0),
                 ..Default::default()
             });
-            let child = cell_child(&mut store, Size::fixed(30.0, 40.0));
+            let child = cell_child(&mut store, Sizing::fixed(30.0, 40.0));
             store.arena_append_child(grid, child);
             let mut scratch = Vec::new();
             crate::layout::measure(&mut store, grid.index(), &mut scratch);
@@ -3245,10 +3245,10 @@ mod tests {
                 columns: vec![TrackSizing::Fixed(50.0)],
                 rows: vec![TrackSizing::Fixed(100.0)],
                 align_items: align,
-                size: Size::fixed(50.0, 100.0),
+                size: Sizing::fixed(50.0, 100.0),
                 ..Default::default()
             });
-            let child = cell_child(&mut store, Size::fill());
+            let child = cell_child(&mut store, Sizing::fill());
             store.arena_append_child(grid, child);
             let mut scratch = Vec::new();
             crate::layout::measure(&mut store, grid.index(), &mut scratch);
@@ -3275,12 +3275,12 @@ mod tests {
             columns: vec![TrackSizing::Fixed(50.0), TrackSizing::Fixed(50.0)],
             rows: vec![],
             auto_rows: TrackSizing::Fixed(40.0),
-            size: Size::fixed(100.0, 120.0),
+            size: Sizing::fixed(100.0, 120.0),
             ..Default::default()
         });
         let mut kids = Vec::new();
         for _ in 0..5 {
-            let k = cell_child(&mut store, Size::fill());
+            let k = cell_child(&mut store, Sizing::fill());
             store.arena_append_child(grid, k);
             kids.push(k);
         }
@@ -3304,11 +3304,11 @@ mod tests {
         let grid = store.alloc_grid(GridStyle {
             columns: vec![TrackSizing::Fr(1.0), TrackSizing::Fr(1.0)],
             rows: vec![TrackSizing::Fr(1.0), TrackSizing::Fr(1.0)],
-            size: Size::fixed(200.0, 200.0),
+            size: Sizing::fixed(200.0, 200.0),
             ..Default::default()
         });
         for _ in 0..4 {
-            let k = cell_child(&mut store, Size::fill());
+            let k = cell_child(&mut store, Sizing::fill());
             store.arena_append_child(grid, k);
         }
         let mut scratch = Vec::new();
@@ -3354,7 +3354,7 @@ mod tests {
             ],
             rows: vec![TrackSizing::Fixed(100.0)],
             column_gap: 20.0,
-            size: Size::fixed(400.0, 100.0),
+            size: Sizing::fixed(400.0, 100.0),
             ..Default::default()
         });
         // The subgrid child itself spans the parent's 3 columns; on the column
@@ -3366,7 +3366,7 @@ mod tests {
             rows: vec![TrackSizing::Fixed(100.0)],
             column_gap: 5.0,
             subgrid_columns: true,
-            size: Size::fill(),
+            size: Sizing::fill(),
             ..Default::default()
         });
         store.set_grid_placement(
@@ -3380,7 +3380,7 @@ mod tests {
         );
         store.arena_append_child(parent, sub);
         // Two children of the subgrid: one on inherited column 0, one on column 2.
-        let a = cell_child(&mut store, Size::fill());
+        let a = cell_child(&mut store, Sizing::fill());
         store.set_grid_placement(
             a,
             GridPlacement {
@@ -3391,7 +3391,7 @@ mod tests {
             },
         );
         store.arena_append_child(sub, a);
-        let b = cell_child(&mut store, Size::fill());
+        let b = cell_child(&mut store, Sizing::fill());
         store.set_grid_placement(
             b,
             GridPlacement {
@@ -3456,13 +3456,13 @@ mod tests {
                 TrackSizing::Fr(1.0),
             ],
             rows: vec![TrackSizing::Fixed(100.0)],
-            size: Size::fixed(400.0, 100.0),
+            size: Sizing::fixed(400.0, 100.0),
             ..Default::default()
         });
         let sub = store.alloc_grid(GridStyle {
             rows: vec![TrackSizing::Fixed(100.0)],
             subgrid_columns: true,
-            size: Size::fill(),
+            size: Sizing::fill(),
             ..Default::default()
         });
         store.set_grid_placement(
@@ -3475,9 +3475,9 @@ mod tests {
             },
         );
         store.arena_append_child(parent, sub);
-        let a = cell_child(&mut store, Size::fill());
+        let a = cell_child(&mut store, Sizing::fill());
         store.arena_append_child(sub, a);
-        let b = cell_child(&mut store, Size::fill());
+        let b = cell_child(&mut store, Sizing::fill());
         store.arena_append_child(sub, b);
 
         let mut scratch = Vec::new();
@@ -3535,7 +3535,7 @@ mod tests {
         let parent = store.alloc_grid(GridStyle {
             columns: vec![TrackSizing::Fixed(100.0), TrackSizing::Fr(1.0)],
             rows: vec![TrackSizing::Fixed(40.0), TrackSizing::Fr(1.0)],
-            size: Size::fixed(300.0, 200.0),
+            size: Sizing::fixed(300.0, 200.0),
             ..Default::default()
         });
         let sub = store.alloc_grid(GridStyle {
@@ -3544,7 +3544,7 @@ mod tests {
             rows: vec![TrackSizing::Fr(1.0), TrackSizing::Fr(1.0)],
             subgrid_columns: true,
             subgrid_rows: true,
-            size: Size::fill(),
+            size: Sizing::fill(),
             ..Default::default()
         });
         store.set_grid_placement(
@@ -3560,7 +3560,7 @@ mod tests {
         // Four auto-flow children fill the subgrid's inherited 2x2 lattice.
         let mut kids = Vec::new();
         for _ in 0..4 {
-            let k = cell_child(&mut store, Size::fill());
+            let k = cell_child(&mut store, Sizing::fill());
             store.arena_append_child(sub, k);
             kids.push(k);
         }
@@ -3628,13 +3628,13 @@ mod tests {
         let parent = store.alloc_grid(GridStyle {
             columns: vec![TrackSizing::Fixed(100.0), TrackSizing::Fr(1.0)],
             rows: vec![TrackSizing::Fixed(200.0)],
-            size: Size::fixed(300.0, 200.0),
+            size: Sizing::fixed(300.0, 200.0),
             ..Default::default()
         });
         let sub = store.alloc_grid(GridStyle {
             rows: vec![TrackSizing::Fr(1.0), TrackSizing::Fr(1.0)],
             subgrid_columns: true,
-            size: Size::fill(),
+            size: Sizing::fill(),
             ..Default::default()
         });
         store.set_grid_placement(
@@ -3650,7 +3650,7 @@ mod tests {
         // Two children on the same inherited column 0 but different self-solved
         // rows (auto-flow wraps to the next row after column 1 is unused here:
         // pin them explicitly to rows 0 and 1 of column 0).
-        let top = cell_child(&mut store, Size::fill());
+        let top = cell_child(&mut store, Sizing::fill());
         store.set_grid_placement(
             top,
             GridPlacement {
@@ -3661,7 +3661,7 @@ mod tests {
             },
         );
         store.arena_append_child(sub, top);
-        let bottom = cell_child(&mut store, Size::fill());
+        let bottom = cell_child(&mut store, Sizing::fill());
         store.set_grid_placement(
             bottom,
             GridPlacement {
@@ -3721,11 +3721,11 @@ mod tests {
                 },
                 |cx| {
                     cx.leaf(LeafStyle {
-                        size: Size::fixed(40.0, 40.0),
+                        size: Sizing::fixed(40.0, 40.0),
                         style: BoxStyle::NONE,
                     });
                     let h = cx.leaf(LeafStyle {
-                        size: Size::fixed(40.0, 40.0),
+                        size: Sizing::fixed(40.0, 40.0),
                         style: BoxStyle::NONE,
                     });
                     hidden_leaf = Some(h.id());
@@ -3774,7 +3774,7 @@ mod tests {
                 },
                 |cx| {
                     let h = cx.leaf(LeafStyle {
-                        size: Size::fill(),
+                        size: Sizing::fill(),
                         style: BoxStyle::NONE,
                     });
                     fill_leaf = Some(h.id());
@@ -3815,7 +3815,7 @@ mod tests {
                     ..Default::default()
                 },
                 |cx| {
-                    for size in [Size::fill(), Size::fill(), Size::fixed(100.0, 20.0)] {
+                    for size in [Sizing::fill(), Sizing::fill(), Sizing::fixed(100.0, 20.0)] {
                         leaves.push(cx.leaf(LeafStyle {
                             size,
                             style: BoxStyle::NONE,
@@ -3860,12 +3860,12 @@ mod tests {
                         axis: Axis::Row,
                         align: Align::Center,
                         justify: Justify::Center,
-                        size: Size::fill(),
+                        size: Sizing::fill(),
                         ..Default::default()
                     },
                     |cx| {
                         let l = cx.leaf(LeafStyle {
-                            size: Size::fixed(child_w, child_h),
+                            size: Sizing::fixed(child_w, child_h),
                             style: BoxStyle::NONE,
                         });
                         leaf = Some(l.id());
@@ -3917,13 +3917,13 @@ mod tests {
                     FlexStyle {
                         axis: Axis::Column,
                         align,
-                        size: Size::fixed(200.0, 100.0),
+                        size: Sizing::fixed(200.0, 100.0),
                         ..Default::default()
                     },
                     |cx| {
                         leaf = Some(
                             cx.leaf(LeafStyle {
-                                size: Size {
+                                size: Sizing {
                                     width,
                                     height: Length::Fixed(40.0),
                                 },
@@ -3968,7 +3968,7 @@ mod tests {
 
     /// A `width`×`height` row (or column) of leaves, each with its size and
     /// rules, laid out on a surface of the same size: the leaves' boxes.
-    fn ruled(axis: Axis, width: f32, height: f32, leaves: &[(Size, BoxRules)]) -> Vec<Rect> {
+    fn ruled(axis: Axis, width: f32, height: f32, leaves: &[(Sizing, BoxRules)]) -> Vec<Rect> {
         use crate::component::{BuildCx, FlexStyle, LeafStyle, NodeStore};
         use crate::style::BoxStyle;
 
@@ -3979,7 +3979,7 @@ mod tests {
             cx.flex(
                 FlexStyle {
                     axis,
-                    size: Size::fixed(width, height),
+                    size: Sizing::fixed(width, height),
                     ..Default::default()
                 },
                 |cx| {
@@ -4016,7 +4016,7 @@ mod tests {
             100.0,
             &[
                 (
-                    Size::fixed(80.0, 40.0),
+                    Sizing::fixed(80.0, 40.0),
                     BoxRules {
                         max_width: Span::dp(50.0),
                         min_height: Span::dp(60.0),
@@ -4024,7 +4024,7 @@ mod tests {
                     },
                 ),
                 (
-                    Size {
+                    Sizing {
                         width: Length::Fit,
                         height: fill,
                     },
@@ -4035,7 +4035,7 @@ mod tests {
                     },
                 ),
                 (
-                    Size::fixed(10.0, 10.0),
+                    Sizing::fixed(10.0, 10.0),
                     BoxRules {
                         min_width: Span::dp(40.0),
                         max_width: Span::dp(20.0),
@@ -4051,7 +4051,7 @@ mod tests {
 
     #[test]
     fn bounded_fills_share_what_their_bounds_leave() {
-        let fill = Size {
+        let fill = Sizing {
             width: Length::Fill { weight: 1.0 },
             height: Length::Fixed(10.0),
         };
@@ -4089,7 +4089,7 @@ mod tests {
             100.0,
             &[
                 (
-                    Size {
+                    Sizing {
                         width: Length::Fixed(40.0),
                         height: Length::Fill { weight: 1.0 },
                     },
@@ -4103,9 +4103,9 @@ mod tests {
                         ..rules()
                     },
                 ),
-                (Size::fixed(30.0, 30.0), rules()),
+                (Sizing::fixed(30.0, 30.0), rules()),
                 (
-                    Size::fixed(30.0, 30.0),
+                    Sizing::fixed(30.0, 30.0),
                     BoxRules {
                         margin: SpanInset {
                             left: Span::dp(-5.0),
@@ -4136,7 +4136,7 @@ mod tests {
         let root = {
             let mut cx = BuildCx::new(&mut store);
             let mut leaf = |cx: &mut BuildCx<'_>, w: f32| {
-                let size = Size::fixed(w, 10.0);
+                let size = Sizing::fixed(w, 10.0);
                 leaves.push(
                     cx.leaf(LeafStyle {
                         size,
@@ -4145,11 +4145,11 @@ mod tests {
                     .id(),
                 );
             };
-            let size = Size::fixed(200.0, 30.0);
+            let size = Sizing::fixed(200.0, 30.0);
             cx.flex(
                 FlexStyle {
                     axis: Axis::Column,
-                    size: Size::fixed(200.0, 300.0),
+                    size: Sizing::fixed(200.0, 300.0),
                     ..Default::default()
                 },
                 |cx| {
@@ -4266,7 +4266,7 @@ mod tests {
             cx.flex(
                 FlexStyle {
                     axis: Axis::Column,
-                    size: Size::fixed(200.0, 100.0),
+                    size: Sizing::fixed(200.0, 100.0),
                     ..Default::default()
                 },
                 |cx| {
@@ -4274,13 +4274,13 @@ mod tests {
                         let row = cx.flex(
                             FlexStyle {
                                 axis: Axis::Row,
-                                size: Size::fixed(200.0, 20.0),
+                                size: Sizing::fixed(200.0, 20.0),
                                 ..Default::default()
                             },
                             |cx| {
                                 leaves.push(
                                     cx.leaf(LeafStyle {
-                                        size: Size::fixed(30.0, 10.0),
+                                        size: Sizing::fixed(30.0, 10.0),
                                         ..Default::default()
                                     })
                                     .id(),
@@ -4350,18 +4350,18 @@ mod tests {
             cx.flex(
                 FlexStyle {
                     axis: Axis::Column,
-                    size: Size::fixed(100.0, 100.0),
+                    size: Sizing::fixed(100.0, 100.0),
                     ..Default::default()
                 },
                 |cx| {
                     let fit = FlexStyle {
                         axis,
-                        size: Size::fill(),
+                        size: Sizing::fill(),
                         ..Default::default()
                     };
                     inner = Some(cx.flex(fit, |cx| {
                         for &(width, ..) in leaves {
-                            let size = Size {
+                            let size = Sizing {
                                 width,
                                 height: Length::Fit,
                             };
@@ -4467,13 +4467,13 @@ mod tests {
             cx.flex(
                 FlexStyle {
                     axis: Axis::Column,
-                    size: Size::fixed(100.0, 100.0),
+                    size: Sizing::fixed(100.0, 100.0),
                     ..Default::default()
                 },
                 |cx| {
                     let style = GridStyle {
                         columns: vec![TrackSizing::Auto, TrackSizing::Auto],
-                        size: Size {
+                        size: Sizing {
                             width: Length::Fill { weight: 1.0 },
                             height: Length::Fit,
                         },
@@ -4481,7 +4481,7 @@ mod tests {
                     };
                     grid = Some(cx.grid(style, |cx| {
                         for _ in 0..2 {
-                            let size = Size {
+                            let size = Sizing {
                                 width: Length::Fit,
                                 height: Length::Fit,
                             };
@@ -4544,7 +4544,7 @@ mod tests {
             cx.flex(
                 FlexStyle {
                     axis: Axis::Column,
-                    size: Size {
+                    size: Sizing {
                         width: Length::Fit,
                         height: Length::Fit,
                     },
@@ -4553,7 +4553,7 @@ mod tests {
                 |cx| {
                     leaf = Some(
                         cx.leaf(LeafStyle {
-                            size: Size::fixed(40.0, 20.0),
+                            size: Sizing::fixed(40.0, 20.0),
                             style: BoxStyle::NONE,
                         })
                         .id(),
@@ -4596,7 +4596,7 @@ mod tests {
             cx.flex(
                 FlexStyle {
                     axis: Axis::Column,
-                    size: Size::fill(),
+                    size: Sizing::fill(),
                     ..Default::default()
                 },
                 |cx| {
@@ -4604,13 +4604,13 @@ mod tests {
                         cx.flex(
                             FlexStyle {
                                 axis: Axis::Column,
-                                size: Size::fixed(100.0, 100.0),
+                                size: Sizing::fixed(100.0, 100.0),
                                 ..Default::default()
                             },
                             |cx| {
                                 leaf = Some(
                                     cx.leaf(LeafStyle {
-                                        size: Size::fixed(10.0, 10.0),
+                                        size: Sizing::fixed(10.0, 10.0),
                                         style: BoxStyle::NONE,
                                     })
                                     .id(),
@@ -4642,7 +4642,7 @@ mod tests {
         assert_eq!(store.bounds(leaf), Rect::new(40.0, 30.0, 10.0, 10.0));
 
         store.clear_dirty();
-        store.set_fixed_size(leaf, Size::fixed(20.0, 20.0));
+        store.set_fixed_size(leaf, Sizing::fixed(20.0, 20.0));
         store.relayout_dirty(root, surface, &mut Vec::new(), &mut Vec::new());
         assert_eq!(store.bounds(leaf), Rect::new(40.0, 30.0, 20.0, 20.0));
     }
@@ -4690,12 +4690,12 @@ mod tests {
                     axis: Axis::Row,
                     align: Align::Start,
                     padding: Inset::all(10.0),
-                    size: Size::fill(),
+                    size: Sizing::fill(),
                     ..Default::default()
                 },
                 |cx| {
                     let rel = cx.leaf(LeafStyle {
-                        size: Size {
+                        size: Sizing {
                             width: Length::pct(50.0),
                             height: Length::Relative {
                                 fixed: -20.0,
@@ -4705,7 +4705,7 @@ mod tests {
                         style: BoxStyle::NONE,
                     });
                     let fill = cx.leaf(LeafStyle {
-                        size: Size {
+                        size: Sizing {
                             width: Length::fill(),
                             height: Length::dp(5.0),
                         },
@@ -4774,7 +4774,7 @@ mod tests {
             rows: vec![TrackSizing::Fixed(50.0)],
             adaptive_columns: Some(adaptive),
             column_gap,
-            size: Size::fixed(w, h),
+            size: Sizing::fixed(w, h),
             ..Default::default()
         });
         let mut kids = Vec::new();
@@ -4782,7 +4782,7 @@ mod tests {
             let k = store.alloc_grid(GridStyle {
                 columns: Vec::new(),
                 rows: Vec::new(),
-                size: Size::fill(),
+                size: Sizing::fill(),
                 ..Default::default()
             });
             store.arena_append_child(grid, k);

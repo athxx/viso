@@ -46,7 +46,7 @@ use viso_ui::segments::Segments;
 use viso_ui::{
     Access, Align, Axis, BoxStyle, BuildCx, CheckMark, CheckShape, Component, Content, EventCx,
     FlexStyle, Haptic, Inset, Justify, Key, LeafStyle, Length, NodeId, PointerButtons,
-    PointerPhase, Rgba, Role, SemanticState, Semantics, Size, StateId, StateValue,
+    PointerPhase, Rgba, Role, SemanticState, Semantics, Sizing, StateId, StateValue,
 };
 
 use super::check::INK;
@@ -66,7 +66,7 @@ pub struct SegmentedStyle {
     /// Its own size request within its parent. Defaults to `Fit` on both
     /// axes: its segments side by side, each its caption with the room round
     /// it. Given a width, the segments share it evenly.
-    pub size: Size,
+    pub size: Sizing,
     /// The captions' color.
     pub color: Rgba,
     /// The track.
@@ -80,7 +80,7 @@ pub struct SegmentedStyle {
 impl Default for SegmentedStyle {
     fn default() -> Self {
         SegmentedStyle {
-            size: Size {
+            size: Sizing {
                 width: Length::Fit,
                 height: Length::Fit,
             },
@@ -153,7 +153,7 @@ impl SegmentedControl {
     }
 
     /// Set its own size request within its parent (defaults to `Fit`).
-    pub fn size(mut self, size: Size) -> Self {
+    pub fn size(mut self, size: Sizing) -> Self {
         self.style.size = size;
         self
     }
@@ -212,7 +212,7 @@ impl Component for SegmentedControl {
             |cx| {
                 for (index, caption) in captions.iter().enumerate() {
                     let segment = cx.leaf(LeafStyle {
-                        size: Size {
+                        size: Sizing {
                             width: Length::Fill { weight: 1.0 },
                             height: Length::Fit,
                         },

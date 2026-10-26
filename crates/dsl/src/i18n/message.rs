@@ -21,7 +21,10 @@ pub(crate) enum Part {
     /// `{name, date}`, `medium` unless it says.
     Date(String, DateLength),
     /// `{name, time}`: `medium`, to the second, unless it says `short`.
-    Time { name: String, seconds: bool },
+    Time {
+        name: String,
+        seconds: bool,
+    },
     /// `#`: the number of the plural case it is in.
     Pound,
     Plural {
@@ -213,19 +216,22 @@ impl Parser<'_> {
             "date" => {
                 let style = self.style();
                 self.expect('}')?;
-                match style.as_deref().map_or(Some(DateLength::Medium), DateLength::named) {
+                match style
+                    .as_deref()
+                    .map_or(Some(DateLength::Medium), DateLength::named)
+                {
                     Some(length) => Ok(Part::Date(name, length)),
-                    None => Err((
-                        at,
-                        "a date is `short`, `medium`, `long` or `full`".into(),
-                    )),
+                    None => Err((at, "a date is `short`, `medium`, `long` or `full`".into())),
                 }
             }
             "time" => {
                 let style = self.style();
                 self.expect('}')?;
                 match style.as_deref() {
-                    None | Some("medium") => Ok(Part::Time { name, seconds: true }),
+                    None | Some("medium") => Ok(Part::Time {
+                        name,
+                        seconds: true,
+                    }),
                     Some("short") => Ok(Part::Time {
                         name,
                         seconds: false,
@@ -430,7 +436,12 @@ mod tests {
                 .contains("not supported")
         );
         assert!(parse("{d, date, tiny}").unwrap_err().1.contains("`full`"));
-        assert!(parse("{t, time, full}").unwrap_err().1.contains("time zone"));
+        assert!(
+            parse("{t, time, full}")
+                .unwrap_err()
+                .1
+                .contains("time zone")
+        );
         assert!(
             parse("{n, number, percent}")
                 .unwrap_err()

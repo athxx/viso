@@ -39,7 +39,7 @@ use std::rc::Rc;
 
 use viso_ui::{
     BoxStyle, BuildCx, Component, CursorIcon, DragAccept, DragData, DragEnd, DropEvent,
-    DropOperation, DropPhase, DropTarget, EventCx, Inset, Rgba, Role, Semantics, Shadow, Size,
+    DropOperation, DropPhase, DropTarget, EventCx, Inset, Rgba, Role, Semantics, Shadow, Sizing,
     StackStyle, Vec2,
 };
 
@@ -54,7 +54,7 @@ type DropHandler = Rc<RefCell<Option<Box<dyn FnMut(&mut EventCx<'_>, &DropEvent)
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DraggableStyle {
     /// The size it asks of its parent.
-    pub size: Size,
+    pub size: Sizing,
     /// How opaque its preview is.
     pub preview_opacity: f32,
     /// The shadow its preview casts, lifted.
@@ -157,7 +157,7 @@ impl Component for Draggable {
                 // start corner.
                 let layer = cx.stack(
                     StackStyle {
-                        size: Size::fill(),
+                        size: Sizing::fill(),
                         padding: Inset::all(0.0),
                         ..StackStyle::default()
                     },
@@ -202,7 +202,7 @@ impl Component for Draggable {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DropZoneStyle {
     /// The size it asks of its parent.
-    pub size: Size,
+    pub size: Sizing,
     /// Its own box.
     pub background: BoxStyle,
 }

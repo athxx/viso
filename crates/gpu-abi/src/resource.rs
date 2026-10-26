@@ -491,7 +491,7 @@ bitflags::bitflags! {
 /// Descriptor for `GpuBackend::create_buffer`.
 #[derive(Debug, Clone, Copy)]
 pub struct BufferDesc {
-    /// Size in bytes.
+    /// Sizing in bytes.
     pub size: usize,
     /// Intended usage.
     pub usage: BufferUsage,

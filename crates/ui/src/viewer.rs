@@ -980,7 +980,7 @@ impl NodeStore {
 mod tests {
     use super::*;
     use crate::component::{BuildCx, LeafStyle, StackStyle};
-    use crate::layout::Size;
+    use crate::layout::Sizing;
     use crate::style::BoxStyle;
     use viso_render::Rect;
 
@@ -995,13 +995,13 @@ mod tests {
             let root = cx.stack(
                 StackStyle {
                     align: Alignment2D::Center,
-                    size: Size::fixed(200.0, 100.0),
+                    size: Sizing::fixed(200.0, 100.0),
                     ..StackStyle::default()
                 },
                 |cx| {
                     content = Some(
                         cx.leaf(LeafStyle {
-                            size: Size::fill(),
+                            size: Sizing::fill(),
                             style: BoxStyle::NONE,
                         })
                         .id(),
@@ -1338,7 +1338,7 @@ mod tests {
             cx.scroll(
                 ScrollStyle {
                     axis: Axis::Row,
-                    size: Size::fixed(200.0, 100.0),
+                    size: Sizing::fixed(200.0, 100.0),
                     ..ScrollStyle::default()
                 },
                 |cx| {
@@ -1346,12 +1346,12 @@ mod tests {
                         for _ in 0..2 {
                             let v = cx.stack(
                                 StackStyle {
-                                    size: Size::fixed(200.0, 100.0),
+                                    size: Sizing::fixed(200.0, 100.0),
                                     ..StackStyle::default()
                                 },
                                 |cx| {
                                     cx.leaf(LeafStyle {
-                                        size: Size::fill(),
+                                        size: Sizing::fill(),
                                         style: BoxStyle::NONE,
                                     });
                                 },

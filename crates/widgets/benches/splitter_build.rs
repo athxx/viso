@@ -22,7 +22,7 @@ use std::hint::black_box;
 use criterion::{Criterion, criterion_group, criterion_main};
 use viso_ui::{
     BindingTable, BoxStyle, BuildCx, Component, LeafStyle, NodeStore, Rect, SemanticProjector,
-    Size, StateStore, TextEdits, VirtualLists, paint_tree,
+    Sizing, StateStore, TextEdits, VirtualLists, paint_tree,
 };
 use viso_widgets::splitter;
 
@@ -55,7 +55,7 @@ impl Reactive {
 /// two-child subtree rather than two empty panes.
 fn pane(cx: &mut BuildCx<'_>) {
     cx.leaf(LeafStyle {
-        size: Size::fill(),
+        size: Sizing::fill(),
         style: BoxStyle::NONE,
     });
 }

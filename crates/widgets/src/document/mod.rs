@@ -48,7 +48,7 @@ use std::rc::Rc;
 
 use viso_ui::{
     Asset, BuildCx, CheckMark, CheckShape, Component, DirtyClass, EventCx, NodeId, NodeStore, Rgba,
-    SemanticState, Size, StateId, StateValue, StateWriter, StructureCx,
+    SemanticState, Sizing, StateId, StateValue, StateWriter, StructureCx,
 };
 
 use blocks::{Parsed, Task, Top};
@@ -79,7 +79,7 @@ pub struct DocumentStyle {
     pub table_cell: Rgba,
     /// The document's own size within its parent: the parent's width and its
     /// content's height by default.
-    pub size: Size,
+    pub size: Sizing,
 }
 
 impl Default for DocumentStyle {
@@ -131,7 +131,7 @@ impl Default for DocumentStyle {
                 b: 1.0,
                 a: 1.0,
             },
-            size: Size {
+            size: Sizing {
                 width: viso_ui::Length::Fill { weight: 1.0 },
                 height: viso_ui::Length::Fit,
             },
@@ -299,7 +299,7 @@ impl Document {
     }
 
     /// Set the document's own size within its parent.
-    pub fn size(mut self, size: Size) -> Self {
+    pub fn size(mut self, size: Sizing) -> Self {
         self.style.size = size;
         self
     }

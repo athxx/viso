@@ -15,7 +15,7 @@
 
 use viso::prelude::*;
 use viso::render::Rgba;
-use viso::ui::{Align, Component, Justify, Size};
+use viso::ui::{Align, Component, Justify, Sizing};
 
 struct Hello;
 
@@ -31,7 +31,7 @@ impl Application for Hello {
             FlexStyle {
                 align: Align::Center,
                 justify: Justify::Center,
-                size: Size::fill(),
+                size: Sizing::fill(),
                 ..Default::default()
             },
             |cx| {

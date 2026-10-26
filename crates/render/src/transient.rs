@@ -110,7 +110,7 @@ pub fn size_class(n: u32) -> u32 {
 ///
 /// Every dimension is load-bearing. Format and sample count change the texture's
 /// memory layout outright. Usage changes what the device is allowed to do with
-/// it. Size class is what turns "reuse" from an exact-extent coincidence into the
+/// it. Sizing class is what turns "reuse" from an exact-extent coincidence into the
 /// common case.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TargetKey {
@@ -519,7 +519,7 @@ mod tests {
     use super::*;
     use viso_gpu::{CpuRaster, SamplerDesc};
 
-    /// Size classes are a pure, monotonic rounding-up of the request with a
+    /// Sizing classes are a pure, monotonic rounding-up of the request with a
     /// bounded relative slack, so the class is a stable reuse key rather than a
     /// per-frame accident.
     #[test]

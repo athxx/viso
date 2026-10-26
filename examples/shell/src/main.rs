@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use viso::prelude::*;
 use viso::shell::{self, AppBadge, IconImage, Tray, TrayEvent};
-use viso::ui::{Axis, Component, Inset, Size};
+use viso::ui::{Axis, Component, Inset, Sizing};
 
 const HELLO: MenuCommandId = MenuCommandId(1);
 const HIDE: MenuCommandId = MenuCommandId(2);
@@ -54,7 +54,7 @@ impl Application for ShellDemo {
                 axis: Axis::Column,
                 gap: 10.0,
                 padding: Inset::all(16.0),
-                size: Size::fill(),
+                size: Sizing::fill(),
                 ..FlexStyle::default()
             },
             |cx| {

@@ -158,7 +158,7 @@ pub use inspect::{
 pub use interaction::Interaction;
 pub use layout::{
     AbsoluteInsets, Align, AlignItems, Alignment2D, Axis, Basis, BoxRules, Inset, Justify,
-    LayoutInput, Length, Placement, Size, Span, SpanInset, StackPlacement, Vec2,
+    LayoutInput, Length, Placement, Sizing, Span, SpanInset, StackPlacement, Vec2,
 };
 pub use layout_value::{BoundSize, LayoutValue};
 pub use length::{

@@ -425,7 +425,7 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
     use viso_render::Rect;
-    use viso_ui::{Axis, BuildCx, FlexStyle, LeafStyle, Semantics, Size};
+    use viso_ui::{Axis, BuildCx, FlexStyle, LeafStyle, Semantics, Sizing};
 
     /// A 100×20 row holding a named button and a slider, laid out at the
     /// origin. Returns (store, root, [button, slider]).
@@ -438,13 +438,13 @@ mod tests {
             cx.flex(
                 FlexStyle {
                     axis: Axis::Row,
-                    size: Size::fixed(100.0, 20.0),
+                    size: Sizing::fixed(100.0, 20.0),
                     ..Default::default()
                 },
                 |cx| {
                     for _ in 0..2 {
                         let leaf = cx.leaf(LeafStyle {
-                            size: Size::fixed(40.0, 20.0),
+                            size: Sizing::fixed(40.0, 20.0),
                             ..Default::default()
                         });
                         sink.borrow_mut().push(leaf.id());

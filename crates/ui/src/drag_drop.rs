@@ -1183,7 +1183,7 @@ mod tests {
     use super::*;
     use crate::component::{BuildCx, FlexStyle, LeafStyle, StackStyle};
     use crate::input::{Modifiers, PointerPhase};
-    use crate::layout::{Axis, Size};
+    use crate::layout::{Axis, Sizing};
     use crate::style::BoxStyle;
     use viso_render::Rect;
 
@@ -1201,20 +1201,20 @@ mod tests {
             cx.flex(
                 FlexStyle {
                     axis: Axis::Column,
-                    size: Size::fixed(300.0, 300.0),
+                    size: Sizing::fixed(300.0, 300.0),
                     ..FlexStyle::default()
                 },
                 |cx| {
                     for (w, h) in [(100.0, 50.0), (300.0, 100.0), (300.0, 100.0)] {
                         let leaf = cx.leaf(LeafStyle {
-                            size: Size::fixed(w, h),
+                            size: Sizing::fixed(w, h),
                             style: BoxStyle::NONE,
                         });
                         parts.push(leaf.id());
                     }
                     let preview = cx.stack(StackStyle::default(), |cx| {
                         cx.leaf(LeafStyle {
-                            size: Size::fixed(100.0, 50.0),
+                            size: Sizing::fixed(100.0, 50.0),
                             style: BoxStyle::NONE,
                         });
                     });

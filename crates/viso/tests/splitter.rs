@@ -14,7 +14,7 @@ use viso::platform::{
     PointerPhase as RawPhase, RawEvent, RawKey, RawPointer, WindowId,
 };
 use viso::prelude::*;
-use viso::ui::{Axis, BoxStyle, Component, LeafStyle, NodeId, Role, Size};
+use viso::ui::{Axis, BoxStyle, Component, LeafStyle, NodeId, Role, Sizing};
 use viso::widgets::{SplitAt, splitter};
 
 const STEP: Duration = Duration::from_millis(16);
@@ -50,7 +50,7 @@ impl Application for SplitApp {
     fn build(&mut self, cx: &mut BuildCx<'_>) {
         let pane = |cx: &mut BuildCx<'_>| {
             cx.leaf(LeafStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 style: BoxStyle::NONE,
             });
         };

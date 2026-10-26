@@ -44,7 +44,7 @@ use crate::content::Content;
 use crate::context::EventCx;
 use crate::dirty::DirtyClass;
 use crate::input::{Key, PointerButtons, PointerPhase};
-use crate::layout::{Axis, Size, Vec2};
+use crate::layout::{Axis, Sizing, Vec2};
 use crate::node::NodeId;
 use crate::spinner::arc;
 use crate::style::BoxStyle;
@@ -828,7 +828,7 @@ impl Sliders {
 impl BuildCx<'_> {
     /// A slider leaf asking `size` of its parent; see
     /// [`NodeStore::set_slider`].
-    pub fn slider_leaf(&mut self, size: Size, slider: Slider) -> Handle {
+    pub fn slider_leaf(&mut self, size: Sizing, slider: Slider) -> Handle {
         let handle = self.leaf(LeafStyle {
             size,
             style: BoxStyle::NONE,
@@ -1127,7 +1127,7 @@ mod tests {
     fn a_thumb_eases_unless_a_drag_carries_it() {
         let mut store = NodeStore::new();
         let root = BuildCx::new(&mut store)
-            .slider_leaf(Size::fixed(160.0, 24.0), bar(0.0))
+            .slider_leaf(Sizing::fixed(160.0, 24.0), bar(0.0))
             .id();
         store.show_slider(root, 0.0, 1.0);
         assert!(store.is_sliding());

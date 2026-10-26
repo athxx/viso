@@ -13,7 +13,7 @@ use viso::platform::{
     PointerPhase as RawPhase, RawEvent, RawKey, RawPointer, RawText, WindowId,
 };
 use viso::prelude::*;
-use viso::ui::{Axis, Component, FlexStyle, Inset, NodeId, NodeStore, Role, Size, StateValue};
+use viso::ui::{Axis, Component, FlexStyle, Inset, NodeId, NodeStore, Role, Sizing, StateValue};
 use viso::widgets::{SelectKind, SelectStyle, select, select_option};
 
 const STEP: Duration = Duration::from_millis(16);
@@ -49,7 +49,7 @@ impl Application for SelectApp {
     fn build(&mut self, cx: &mut BuildCx<'_>) {
         cx.flex(
             FlexStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 axis: Axis::Column,
                 padding: Inset {
                     left: 100.0,

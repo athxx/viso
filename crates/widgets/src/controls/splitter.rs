@@ -25,14 +25,14 @@
 //! ```
 //! use viso_widgets::{SplitAt, splitter};
 //! use viso_ui::{SemanticProjector, BuildCx, BindingTable, Component, LeafStyle, NodeStore, StateStore, TextEdits, VirtualLists};
-//! use viso_ui::{BoxStyle, Size};
+//! use viso_ui::{BoxStyle, Sizing};
 //!
 //! let split = splitter("Editor / Preview")
 //!     .at(SplitAt::Start(240.0))
 //!     .min(120.0, 160.0)
 //!     .panes(
-//!         |cx| { cx.leaf(LeafStyle { size: Size::fill(), style: BoxStyle::NONE }); },
-//!         |cx| { cx.leaf(LeafStyle { size: Size::fill(), style: BoxStyle::NONE }); },
+//!         |cx| { cx.leaf(LeafStyle { size: Sizing::fill(), style: BoxStyle::NONE }); },
+//!         |cx| { cx.leaf(LeafStyle { size: Sizing::fill(), style: BoxStyle::NONE }); },
 //!     )
 //!     .on_change(|_ev, at| {
 //!         // remember where the user left it
@@ -55,7 +55,7 @@ use std::rc::Rc;
 use viso_ui::{
     Align, Axis, BoxStyle, BuildCx, Component, CursorIcon, EventCx, FlexStyle, Handle,
     InteractionStyle, Justify, Key, LeafStyle, Length, NodeId, NodeStore, PointerButtons,
-    PointerPhase, Rect, Rgba, Role, SemanticState, Semantics, Size, StateId, StateValue,
+    PointerPhase, Rect, Rgba, Role, SemanticState, Semantics, Sizing, StateId, StateValue,
 };
 
 /// Where a splitter's bar stands.
@@ -158,7 +158,7 @@ pub struct SplitterStyle {
     /// them.
     pub axis: Axis,
     /// The splitter's own size within its parent; it fills it by default.
-    pub size: Size,
+    pub size: Sizing,
     /// The bar's thickness on the main axis.
     pub bar_size: f32,
     /// The bar at rest, under the pointer, and dragged.
@@ -175,7 +175,7 @@ impl Default for SplitterStyle {
     fn default() -> Self {
         SplitterStyle {
             axis: Axis::Row,
-            size: Size::fill(),
+            size: Sizing::fill(),
             bar_size: 6.0,
             bar: BoxStyle::solid(rgb(0.3, 0.31, 0.34)),
             hover: BoxStyle::solid(rgb(0.4, 0.42, 0.47)),
@@ -261,20 +261,20 @@ impl Splitter {
     }
 
     /// Set the splitter's own size within its parent (it fills it by default).
-    pub fn size(mut self, size: Size) -> Self {
+    pub fn size(mut self, size: Sizing) -> Self {
         self.style.size = size;
         self
     }
 }
 
 /// `main` along `axis`, `cross` across it.
-fn size_on(axis: Axis, main: Length, cross: Length) -> Size {
+fn size_on(axis: Axis, main: Length, cross: Length) -> Sizing {
     match axis {
-        Axis::Row => Size {
+        Axis::Row => Sizing {
             width: main,
             height: cross,
         },
-        Axis::Column => Size {
+        Axis::Column => Sizing {
             width: cross,
             height: main,
         },
@@ -464,7 +464,7 @@ impl Seam {
         self.place(ev, &room, lead, change);
     }
 
-    /// Size the panes, and report the bar's value, for where it stands.
+    /// Sizing the panes, and report the bar's value, for where it stands.
     fn show(&self, store: &mut NodeStore, value: f32) {
         let at = self.kind.at(value);
         let (lead, trail) = at.lengths();

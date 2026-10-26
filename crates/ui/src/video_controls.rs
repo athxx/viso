@@ -42,7 +42,7 @@ use crate::{
     Align, Alignment2D, Axis, BoxStyle, BuildCx, Content, DispatchPhase, Easing, EventCx,
     FlexStyle, FontSize, Handle, Inset, InteractionStyle, Justify, Key, LeafStyle, Length, LineCap,
     LineJoin, LookValue, NodeId, Notice, NoticeKinds, PathCmd, Point, PointerButtons, PointerPhase,
-    Rgba, Role, SemanticState, Semantics, Size, SpinnerLook, StackPlacement, StackStyle, StateId,
+    Rgba, Role, SemanticState, Semantics, Sizing, SpinnerLook, StackPlacement, StackStyle, StateId,
     StateStore, StateValue, Stroke, TextRequest, TextStyle, Timing, Vec2,
 };
 
@@ -233,7 +233,7 @@ impl VideoControls {
         let root = cx.stack(
             StackStyle {
                 align: Alignment2D::Center,
-                size: Size::fill(),
+                size: Sizing::fill(),
                 ..StackStyle::default()
             },
             |cx| build_parts(cx, &style, &mut b),
@@ -280,13 +280,13 @@ fn build_parts(cx: &mut BuildCx<'_>, style: &VideoControlsStyle, b: &mut Built) 
         FlexStyle {
             align: Align::Center,
             justify: Justify::Center,
-            size: Size::fixed(BADGE, BADGE),
+            size: Sizing::fixed(BADGE, BADGE),
             style: BoxStyle::solid(style.badge).with_radius(BADGE * 0.5),
             ..FlexStyle::default()
         },
         |cx| {
             let leaf = cx.leaf(LeafStyle {
-                size: Size::fixed(BADGE * 0.5, BADGE * 0.5),
+                size: Sizing::fixed(BADGE * 0.5, BADGE * 0.5),
                 style: BoxStyle::NONE,
             });
             cx.store
@@ -314,7 +314,7 @@ fn build_parts(cx: &mut BuildCx<'_>, style: &VideoControlsStyle, b: &mut Built) 
                 bottom: 4.0,
             },
             align: Align::Stretch,
-            size: Size {
+            size: Sizing {
                 width: Length::fill(),
                 height: Length::Fit,
             },
@@ -323,7 +323,7 @@ fn build_parts(cx: &mut BuildCx<'_>, style: &VideoControlsStyle, b: &mut Built) 
         },
         |cx| {
             b.scrub = Some(cx.slider_leaf(
-                Size {
+                Sizing {
                     width: Length::fill(),
                     height: Length::Fixed(16.0),
                 },
@@ -339,7 +339,7 @@ fn build_parts(cx: &mut BuildCx<'_>, style: &VideoControlsStyle, b: &mut Built) 
                 FlexStyle {
                     gap: 6.0,
                     align: Align::Center,
-                    size: Size {
+                    size: Sizing {
                         width: Length::fill(),
                         height: Length::Fit,
                     },
@@ -349,7 +349,7 @@ fn build_parts(cx: &mut BuildCx<'_>, style: &VideoControlsStyle, b: &mut Built) 
                     b.play = Some(button(cx, Glyph::Play, style, &mut b.hovers));
                     b.mute = Some(button(cx, Glyph::Volume, style, &mut b.hovers));
                     b.volume = Some(cx.slider_leaf(
-                        Size::fixed(64.0, 16.0),
+                        Sizing::fixed(64.0, 16.0),
                         Slider::new(
                             SliderShape::Bar(Axis::Row),
                             style.track,
@@ -359,7 +359,7 @@ fn build_parts(cx: &mut BuildCx<'_>, style: &VideoControlsStyle, b: &mut Built) 
                         ),
                     ));
                     let time = cx.leaf(LeafStyle {
-                        size: Size {
+                        size: Sizing {
                             width: Length::Fit,
                             height: Length::Fit,
                         },
@@ -370,7 +370,7 @@ fn build_parts(cx: &mut BuildCx<'_>, style: &VideoControlsStyle, b: &mut Built) 
                     b.time = Some(time);
                     // The room between the time and the full-screen button.
                     let gap = cx.leaf(LeafStyle {
-                        size: Size {
+                        size: Sizing {
                             width: Length::fill(),
                             height: Length::Fixed(1.0),
                         },
@@ -1086,12 +1086,12 @@ fn button(
         FlexStyle {
             align: Align::Center,
             justify: Justify::Center,
-            size: Size::fixed(BUTTON, BUTTON),
+            size: Sizing::fixed(BUTTON, BUTTON),
             ..FlexStyle::default()
         },
         |cx| {
             let leaf = cx.leaf(LeafStyle {
-                size: Size::fixed(GLYPH, GLYPH),
+                size: Sizing::fixed(GLYPH, GLYPH),
                 style: BoxStyle::NONE,
             });
             cx.store
@@ -1176,7 +1176,7 @@ mod tests {
             );
             cx.flex(FlexStyle::default(), |cx| {
                 let leaf = cx.leaf(LeafStyle {
-                    size: Size::fixed(320.0, 180.0),
+                    size: Sizing::fixed(320.0, 180.0),
                     style: BoxStyle::NONE,
                 });
                 cx.video(leaf, &VideoSource::file("a.mp4"), AssetFit::Contain, None);

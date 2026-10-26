@@ -7,7 +7,7 @@ use viso::gpu::{CpuRaster, GpuBackend, RawWindowHandle};
 use viso::render::{Rect, Renderer};
 use viso::ui::{
     BindingTable, BoxStyle, Component, Inset, NodeId, NodeStore, PlotMark, Point,
-    SemanticProjector, Size, StateStore, TextEdits, VirtualLists, paint_tree,
+    SemanticProjector, Sizing, StateStore, TextEdits, VirtualLists, paint_tree,
 };
 use viso::widgets::{ViewStyle, view};
 use viso_charts::{ChartStyle, area_chart, bar_chart, line_chart, series};
@@ -43,11 +43,11 @@ fn charts_match_golden() {
     let mut text_edits = TextEdits::new();
     let mut projectors = SemanticProjector::new();
     let style = ChartStyle::light();
-    let size = Size::fixed(448.0, 160.0);
+    let size = Sizing::fixed(448.0, 160.0);
     let scene = view(ViewStyle {
         padding: Inset::all(16.0),
         gap: 16.0,
-        size: Size::fill(),
+        size: Sizing::fill(),
         background: BoxStyle::solid(style.surface),
         ..Default::default()
     })

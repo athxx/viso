@@ -13,8 +13,8 @@ use viso::gpu::{CpuRaster, GpuBackend, RawWindowHandle};
 use viso::render::Rect;
 use viso::render::{Renderer, Rgba};
 use viso::ui::{
-    Align, Axis, BoxStyle, BuildCx, FlexStyle, Inset, Justify, LeafStyle, Length, NodeStore, Size,
-    paint_tree,
+    Align, Axis, BoxStyle, BuildCx, FlexStyle, Inset, Justify, LeafStyle, Length, NodeStore,
+    Sizing, paint_tree,
 };
 
 const W: u32 = 200;
@@ -58,23 +58,23 @@ fn build(store: &mut NodeStore) -> viso::ui::NodeId {
             padding: Inset::all(12.0),
             align: Align::Center,
             justify: Justify::Start,
-            size: Size::fill(),
+            size: Sizing::fill(),
             style: BoxStyle::solid(DARK),
         },
         |cx| {
             cx.leaf(LeafStyle {
-                size: Size::fixed(48.0, 40.0),
+                size: Sizing::fixed(48.0, 40.0),
                 style: BoxStyle::solid(RED).with_radius(8.0),
             });
             cx.leaf(LeafStyle {
-                size: Size {
+                size: Sizing {
                     width: Length::fill(),
                     height: Length::Fixed(56.0),
                 },
                 style: BoxStyle::solid(GREEN).with_radius(4.0),
             });
             cx.leaf(LeafStyle {
-                size: Size::fixed(64.0, 48.0),
+                size: Sizing::fixed(64.0, 48.0),
                 style: BoxStyle::solid(BLUE).with_radius(6.0),
             });
         },

@@ -25,7 +25,7 @@
 //!
 //! ```
 //! use viso_widgets::{dock, DockNode, DockTree, PanelKey};
-//! use viso_ui::{Axis, BoxStyle, LeafStyle, Size};
+//! use viso_ui::{Axis, BoxStyle, LeafStyle, Sizing};
 //!
 //! let editor = PanelKey(0);
 //! let sidebar = PanelKey(1);
@@ -36,10 +36,10 @@
 //!         DockNode::panel(editor),
 //!     )))
 //!     .panel(sidebar, |cx| {
-//!         cx.leaf(LeafStyle { size: Size::fill(), style: BoxStyle::NONE });
+//!         cx.leaf(LeafStyle { size: Sizing::fill(), style: BoxStyle::NONE });
 //!     })
 //!     .panel(editor, |cx| {
-//!         cx.leaf(LeafStyle { size: Size::fill(), style: BoxStyle::NONE });
+//!         cx.leaf(LeafStyle { size: Sizing::fill(), style: BoxStyle::NONE });
 //!     });
 //! let _ = control;
 //! ```
@@ -74,7 +74,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use viso_ui::{BoxStyle, BuildCx, Component, Rgba, Size};
+use viso_ui::{BoxStyle, BuildCx, Component, Rgba, Sizing};
 
 use build::{BuildOut, PanelNodes};
 
@@ -108,13 +108,13 @@ const TAB_FILL: Rgba = Rgba {
 /// The visual and layout parameters of a [`Dock`]: the seam bar's fill, a tab
 /// chip's fill, and the control's own size request within its parent.
 ///
-/// `size` defaults to [`Size::fill`] so the dock fills its parent region.
+/// `size` defaults to [`Sizing::fill`] so the dock fills its parent region.
 /// `seam` and `tab` default to neutral fills matching the standalone splitter and
 /// tab strip. All fields are `Copy`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DockStyle {
     /// The control's own size request within its parent. Defaults to `Fill`.
-    pub size: Size,
+    pub size: Sizing,
     /// The resize-seam bar's fill.
     pub seam: BoxStyle,
     /// A tab chip's fill in a dock region's tab strip.
@@ -124,7 +124,7 @@ pub struct DockStyle {
 impl Default for DockStyle {
     fn default() -> Self {
         DockStyle {
-            size: Size::fill(),
+            size: Sizing::fill(),
             seam: BoxStyle::solid(SEAM_FILL),
             tab: BoxStyle::solid(TAB_FILL).with_radius(4.0),
         }
@@ -180,7 +180,7 @@ impl Dock {
     }
 
     /// Set the control's own size request within its parent (defaults to `Fill`).
-    pub fn size(mut self, size: Size) -> Self {
+    pub fn size(mut self, size: Sizing) -> Self {
         self.style.size = size;
         self
     }

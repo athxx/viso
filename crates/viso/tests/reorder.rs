@@ -12,7 +12,7 @@ use viso::platform::{
     KeyCode, Modifiers, PointerButtons, PointerPhase, RawEvent, RawKey, RawPointer, WindowId,
 };
 use viso::prelude::*;
-use viso::ui::{Axis, BoxStyle, Component, FlexStyle, LeafStyle, Length, Size, WindowConfig};
+use viso::ui::{Axis, BoxStyle, Component, FlexStyle, LeafStyle, Length, Sizing, WindowConfig};
 use viso::widgets::{
     ReorderHandleStyle, ScrollViewStyle, VirtualListViewStyle, reorder_handle, scroll, virtual_list,
 };
@@ -51,7 +51,7 @@ impl Application for Groceries {
 
 fn list(cx: &mut BuildCx<'_>) {
     scroll(ScrollViewStyle {
-        size: Size::fixed(300.0, 100.0),
+        size: Sizing::fixed(300.0, 100.0),
         ..ScrollViewStyle::default()
     })
     .on_reorder(|_, _, from, to| HEARD.with(|h| h.borrow_mut().push((from, to))))
@@ -59,7 +59,7 @@ fn list(cx: &mut BuildCx<'_>) {
         cx.flex(
             FlexStyle {
                 axis: Axis::Column,
-                size: Size {
+                size: Sizing {
                     width: Length::fill(),
                     height: Length::Fit,
                 },
@@ -80,17 +80,17 @@ fn row(cx: &mut BuildCx<'_>) {
     cx.flex(
         FlexStyle {
             axis: Axis::Row,
-            size: Size::fixed(300.0, 40.0),
+            size: Sizing::fixed(300.0, 40.0),
             ..FlexStyle::default()
         },
         |cx| {
             cx.leaf(LeafStyle {
-                size: Size::fixed(260.0, 40.0),
+                size: Sizing::fixed(260.0, 40.0),
                 style: BoxStyle::NONE,
             });
             reorder_handle()
                 .style(ReorderHandleStyle {
-                    size: Size::fixed(40.0, 40.0),
+                    size: Sizing::fixed(40.0, 40.0),
                     ..Default::default()
                 })
                 .build(cx);
@@ -181,7 +181,7 @@ impl Application for Long {
     fn build(&mut self, cx: &mut BuildCx<'_>) {
         cx.flex(FlexStyle::default(), |cx| {
             virtual_list(VirtualListViewStyle {
-                size: Size::fixed(300.0, 100.0),
+                size: Sizing::fixed(300.0, 100.0),
                 estimated_row: 40.0,
                 ..VirtualListViewStyle::default()
             })

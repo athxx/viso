@@ -11,7 +11,7 @@ use viso::platform::{
     KeyCode, Modifiers, PointerButtons, PointerPhase, RawEvent, RawKey, RawPointer, WindowId,
 };
 use viso::prelude::*;
-use viso::ui::{Component, LeafStyle, NodeId, Size};
+use viso::ui::{Component, LeafStyle, NodeId, Sizing};
 use viso::widgets::{PagerStyle, pager};
 
 const STEP: Duration = Duration::from_millis(16);
@@ -41,7 +41,7 @@ impl Application for PagerApp {
         pager(PagerStyle::default())
             .pages(3, |_, cx| {
                 cx.leaf(LeafStyle {
-                    size: Size::fill(),
+                    size: Sizing::fill(),
                     ..Default::default()
                 });
             })

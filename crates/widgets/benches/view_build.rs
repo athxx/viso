@@ -16,7 +16,7 @@ use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use viso_ui::{
-    Axis, BoxStyle, BuildCx, Component, LeafStyle, NodeStore, Rect, Rgba, Size, paint_tree,
+    Axis, BoxStyle, BuildCx, Component, LeafStyle, NodeStore, Rect, Rgba, Sizing, paint_tree,
 };
 use viso_widgets::{ViewStyle, view};
 
@@ -42,17 +42,17 @@ fn build_scene() -> (NodeStore, viso_ui::NodeId) {
     let container = view(ViewStyle {
         axis: Axis::Row,
         gap: 12.0,
-        size: Size::fill(),
+        size: Sizing::fill(),
         background: BoxStyle::solid(DARK),
         ..Default::default()
     })
     .children(|cx| {
         cx.leaf(LeafStyle {
-            size: Size::fixed(48.0, 48.0),
+            size: Sizing::fixed(48.0, 48.0),
             style: BoxStyle::solid(TEAL),
         });
         cx.leaf(LeafStyle {
-            size: Size::fixed(48.0, 48.0),
+            size: Sizing::fixed(48.0, 48.0),
             style: BoxStyle::solid(TEAL),
         });
     });
@@ -87,11 +87,11 @@ fn bench_view(c: &mut Criterion) {
             })
             .children(|cx| {
                 cx.leaf(LeafStyle {
-                    size: Size::fixed(48.0, 48.0),
+                    size: Sizing::fixed(48.0, 48.0),
                     style: BoxStyle::solid(TEAL),
                 });
                 cx.leaf(LeafStyle {
-                    size: Size::fixed(48.0, 48.0),
+                    size: Sizing::fixed(48.0, 48.0),
                     style: BoxStyle::solid(TEAL),
                 });
             })

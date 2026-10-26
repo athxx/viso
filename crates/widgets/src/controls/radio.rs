@@ -56,7 +56,7 @@ use viso_ui::adaptive::LayoutDirection;
 use viso_ui::{
     Access, Align, Axis, BoxStyle, BuildCx, CheckMark, CheckShape, Component, EventCx, FlexStyle,
     Haptic, Inset, Justify, Key, LeafStyle, Length, NodeId, PointerButtons, PointerPhase, Rgba,
-    Role, SemanticState, Semantics, Size, StateId, StateValue,
+    Role, SemanticState, Semantics, Sizing, StateId, StateValue,
 };
 
 use super::check::INK;
@@ -77,7 +77,7 @@ const ROW_GAP: f32 = 8.0;
 pub struct RadioStyle {
     /// The group's own size request within its parent. Defaults to `Fit` on
     /// both axes (shrink to its options).
-    pub size: Size,
+    pub size: Sizing,
     /// The captions' color, which inks the circles and their dots too.
     pub color: Rgba,
 }
@@ -85,7 +85,7 @@ pub struct RadioStyle {
 impl Default for RadioStyle {
     fn default() -> Self {
         RadioStyle {
-            size: Size {
+            size: Sizing {
                 width: Length::Fit,
                 height: Length::Fit,
             },
@@ -159,7 +159,7 @@ impl RadioGroup {
     }
 
     /// Set the group's own size request within its parent (defaults to `Fit`).
-    pub fn size(mut self, size: Size) -> Self {
+    pub fn size(mut self, size: Sizing) -> Self {
         self.style.size = size;
         self
     }
@@ -232,7 +232,7 @@ impl Component for RadioGroup {
             |cx| {
                 for (index, caption) in captions.iter().enumerate() {
                     let option = cx.leaf(LeafStyle {
-                        size: Size {
+                        size: Sizing {
                             width: Length::Fit,
                             height: Length::Fit,
                         },

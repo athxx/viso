@@ -17,8 +17,8 @@
 //! stroked.
 
 use viso_ui::{
-    BoxStyle, BuildCx, Component, LeafStyle, Length, PathCmd, Rgba, Role, Semantics, Size, Stroke,
-    Vec2,
+    BoxStyle, BuildCx, Component, LeafStyle, Length, PathCmd, Rgba, Role, Semantics, Sizing,
+    Stroke, Vec2,
 };
 
 /// The default icon foreground: opaque near-black. Icons paint as a solid fill by
@@ -48,7 +48,7 @@ pub struct IconStyle {
     pub stroke: Option<Stroke>,
     /// The icon's own size request within its parent. Defaults to `Fixed` at the
     /// intrinsic size.
-    pub size: Size,
+    pub size: Sizing,
 }
 
 /// A vector icon control: one leaf node that draws a [`PathCmd`] outline.
@@ -102,7 +102,7 @@ pub fn icon(cmds: impl Into<Vec<PathCmd>>, width: f32, height: f32) -> Icon {
         style: IconStyle {
             fill: Some(FOREGROUND),
             stroke: None,
-            size: Size {
+            size: Sizing {
                 width: Length::Fixed(width),
                 height: Length::Fixed(height),
             },
@@ -125,7 +125,7 @@ impl Icon {
 
     /// Set the icon's own size request within its parent (defaults to `Fixed` at
     /// the intrinsic size).
-    pub fn size(mut self, size: Size) -> Self {
+    pub fn size(mut self, size: Sizing) -> Self {
         self.style.size = size;
         self
     }
@@ -243,10 +243,10 @@ mod tests {
         let widget = icon(square(), 32.0, 16.0)
             .fill(fill)
             .stroke(stroke)
-            .size(Size::fill());
+            .size(Sizing::fill());
         assert_eq!(widget.style.fill, Some(fill));
         assert_eq!(widget.style.stroke, Some(stroke));
-        assert_eq!(widget.style.size, Size::fill());
+        assert_eq!(widget.style.size, Sizing::fill());
 
         let mut store = NodeStore::new();
         let mut cx = BuildCx::new(&mut store);

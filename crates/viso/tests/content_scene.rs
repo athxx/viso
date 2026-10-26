@@ -22,8 +22,8 @@ use std::path::PathBuf;
 use viso::gpu::{CpuRaster, GpuBackend, RawWindowHandle, TextureDesc, TextureFormat};
 use viso::render::{GlyphInstanceData, Rect, Renderer, Rgba, test_glyphs, test_texture};
 use viso::ui::{
-    Axis, BoxStyle, BuildCx, Content, FlexStyle, Inset, LeafStyle, Length, NodeId, NodeStore, Size,
-    Vec2, paint_tree,
+    Axis, BoxStyle, BuildCx, Content, FlexStyle, Inset, LeafStyle, Length, NodeId, NodeStore,
+    Sizing, Vec2, paint_tree,
 };
 
 const W: u32 = 160;
@@ -155,7 +155,7 @@ fn build(store: &mut NodeStore) -> (NodeId, NodeId, NodeId) {
             axis: Axis::Row,
             gap: 12.0,
             padding: Inset::all(10.0),
-            size: Size::fill(),
+            size: Sizing::fill(),
             style: BoxStyle::solid(DARK),
             ..Default::default()
         },
@@ -163,7 +163,7 @@ fn build(store: &mut NodeStore) -> (NodeId, NodeId, NodeId) {
             // Text leaf sizes to the shaped run (Fit both axes).
             text_id = Some(
                 cx.leaf(LeafStyle {
-                    size: Size {
+                    size: Sizing {
                         width: Length::Fit,
                         height: Length::Fit,
                     },
@@ -174,7 +174,7 @@ fn build(store: &mut NodeStore) -> (NodeId, NodeId, NodeId) {
             // Image leaf is a fixed 48x48 box the checkerboard fills.
             image_id = Some(
                 cx.leaf(LeafStyle {
-                    size: Size::fixed(48.0, 48.0),
+                    size: Sizing::fixed(48.0, 48.0),
                     style: BoxStyle::NONE,
                 })
                 .id(),

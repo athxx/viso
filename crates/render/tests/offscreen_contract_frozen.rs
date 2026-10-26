@@ -419,7 +419,7 @@ fn assign(gpu: &mut CpuRaster, pool: &mut TransientTargets, timeline_len: u32) {
     pool.assign(gpu, sampler, timeline_len);
 }
 
-/// Size classes round *up*, are monotonic, and waste a bounded fraction. Exact
+/// Sizing classes round *up*, are monotonic, and waste a bounded fraction. Exact
 /// extents would make reuse an accident; unbounded rounding would make it
 /// expensive. Both halves are the contract.
 #[test]

@@ -42,7 +42,7 @@ use std::rc::Rc;
 use viso_ui::feedback::NATIVE_RIPPLE;
 use viso_ui::{
     Access, BoxStyle, BuildCx, CheckMark, CheckShape, Component, EventCx, Haptic, Key, LeafStyle,
-    Length, PointerButtons, PointerPhase, Rgba, Role, SemanticState, Semantics, Size, StateId,
+    Length, PointerButtons, PointerPhase, Rgba, Role, SemanticState, Semantics, Sizing, StateId,
     StateValue,
 };
 
@@ -58,7 +58,7 @@ type SharedSignal = Rc<RefCell<Option<Box<dyn FnMut(&mut EventCx<'_>)>>>>;
 pub struct ChipStyle {
     /// The chip's own size request within its parent. Defaults to `Fit` on
     /// both axes: its caption with the room round it.
-    pub size: Size,
+    pub size: Sizing,
     /// The caption's color, which inks the body, its tick and its cross too.
     pub color: Rgba,
     /// Whether a press spreads ink over the chip from where it lands.
@@ -69,7 +69,7 @@ pub struct ChipStyle {
 impl Default for ChipStyle {
     fn default() -> Self {
         ChipStyle {
-            size: Size {
+            size: Sizing {
                 width: Length::Fit,
                 height: Length::Fit,
             },
@@ -151,7 +151,7 @@ impl Chip {
     }
 
     /// Set the chip's own size request within its parent (defaults to `Fit`).
-    pub fn size(mut self, size: Size) -> Self {
+    pub fn size(mut self, size: Sizing) -> Self {
         self.style.size = size;
         self
     }

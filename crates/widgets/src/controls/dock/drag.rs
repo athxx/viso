@@ -283,7 +283,7 @@ mod tests {
     use super::*;
     use viso_ui::{
         BindingTable, BoxStyle, BuildCx, Key, KeyEvent, LeafStyle, Modifiers, NodeId, NodeStore,
-        PointerEvent, SemanticProjector, Size, StateStore, TextEdits, VirtualLists,
+        PointerEvent, SemanticProjector, Sizing, StateStore, TextEdits, VirtualLists,
     };
 
     /// The reactive stores a seam's handlers are wired into, held together so a test
@@ -334,7 +334,7 @@ mod tests {
             let down_pos = cx.state(StateValue::Float(0.0));
             let start_frac = cx.state(StateValue::Float(frac0));
             let bar = cx.leaf(LeafStyle {
-                size: Size::fixed(
+                size: Sizing::fixed(
                     super::super::build::SEAM_SIZE,
                     super::super::build::SEAM_SIZE,
                 ),
@@ -581,11 +581,11 @@ mod tests {
                     &mut self.projectors,
                 );
                 let hint = cx.leaf(LeafStyle {
-                    size: Size::fill(),
+                    size: Sizing::fill(),
                     style: BoxStyle::NONE,
                 });
                 let tab = cx.leaf(LeafStyle {
-                    size: Size::fixed(60.0, 24.0),
+                    size: Sizing::fixed(60.0, 24.0),
                     style: BoxStyle::NONE,
                 });
                 hint_id = hint.id();

@@ -27,7 +27,7 @@ use std::sync::atomic::Ordering;
 use viso_ui::grid::GridStyle;
 use viso_ui::{
     Align, Axis, BindingTable, BoxStyle, BuildCx, FlexStyle, Inset, Justify, LeafStyle, NodeId,
-    NodeStore, Rect, SemanticProjector, Size, StateStore, TextEdits, VirtualLists,
+    NodeStore, Rect, SemanticProjector, Sizing, StateStore, TextEdits, VirtualLists,
 };
 
 /// Counts heap allocations while `ARMED`; off by default so setup allocations
@@ -150,16 +150,16 @@ fn build_split_scene() -> (NodeStore, NodeId, NodeId, NodeId) {
                 padding: Inset::all(0.0),
                 align: Align::Stretch,
                 justify: Justify::Start,
-                size: Size::fill(),
+                size: Sizing::fill(),
                 style: BoxStyle::NONE,
             },
             |cx| {
                 let a = cx.leaf(LeafStyle {
-                    size: Size::fill(),
+                    size: Sizing::fill(),
                     style: BoxStyle::NONE,
                 });
                 let b = cx.leaf(LeafStyle {
-                    size: Size::fill(),
+                    size: Sizing::fill(),
                     style: BoxStyle::NONE,
                 });
                 *a_out = Some(a.id());
@@ -245,14 +245,14 @@ fn structural_redock_relayout_allocation_is_bounded() {
     ALLOCS.store(0, Ordering::Relaxed);
     ARMED.store(true, Ordering::Relaxed);
     // A track-less fill grid stands in for the redocked pane's region: it measures
-    // to its own fill `Size` and drops into the parent flex like any child. (The
+    // to its own fill `Sizing` and drops into the parent flex like any child. (The
     // leaf/flex constructors live on `BuildCx`; `alloc_grid` is the `NodeStore`
     // node constructor a store-mutating reconcile step has to hand — the same
     // stand-in `fill_cell` uses in the grid alloc pack.)
     let pane_c = store.alloc_grid(GridStyle {
         columns: Vec::new(),
         rows: Vec::new(),
-        size: Size::fill(),
+        size: Sizing::fill(),
         ..Default::default()
     });
     store.arena_append_child(root, pane_c);

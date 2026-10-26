@@ -28,7 +28,7 @@
 
 use viso_ui::{
     BuildCx, Component, Length, NodeId, NodeStore, ProgressShape, Rgba, Role, SemanticState,
-    Semantics, Size, SpinnerLook, StateId, StateValue, Vec2,
+    Semantics, Sizing, SpinnerLook, StateId, StateValue, Vec2,
 };
 
 /// The fill of an indicator given no tint.
@@ -59,7 +59,7 @@ pub struct ProgressIndicator {
     max: f32,
     tint: Rgba,
     label: Option<String>,
-    size: Size,
+    size: Sizing,
     cell: Option<StateId>,
 }
 
@@ -83,7 +83,7 @@ fn indicator(shape: ProgressShape) -> ProgressIndicator {
         max: 1.0,
         tint: ACCENT,
         label: None,
-        size: Size {
+        size: Sizing {
             width: Length::Fit,
             height: Length::Fit,
         },
@@ -119,7 +119,7 @@ impl ProgressIndicator {
     }
 
     /// Set its own size request within its parent.
-    pub fn size(mut self, size: Size) -> Self {
+    pub fn size(mut self, size: Sizing) -> Self {
         self.size = size;
         self
     }

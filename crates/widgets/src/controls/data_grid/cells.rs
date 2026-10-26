@@ -8,7 +8,7 @@ use viso_ui::virtual_list::set_item_count;
 use viso_ui::{
     AcrossView, Align, Axis, Border, BoxStyle, BuildCx, Component, CursorIcon, DirtyClass,
     FlexStyle, FontWeight, Handle, Inset, Justify, LeafStyle, Length, NodeId, NodeStore, Rgba,
-    Role, SemanticState, Semantics, Size, SortOrder, StructureCx, TableFacts, Vec2,
+    Role, SemanticState, Semantics, Sizing, SortOrder, StructureCx, TableFacts, Vec2,
 };
 
 use super::{Grid, GridSelect, Pending, RowCells, columns};
@@ -58,7 +58,7 @@ pub(super) fn build_row(grid: &Grid, logical: usize, cx: &mut BuildCx<'_>) {
             axis: Axis::Column,
             align: Align::Stretch,
             justify: Justify::Start,
-            size: Size {
+            size: Sizing {
                 width: Length::fill(),
                 height: Length::Fixed(h),
             },
@@ -71,7 +71,7 @@ pub(super) fn build_row(grid: &Grid, logical: usize, cx: &mut BuildCx<'_>) {
                     axis: Axis::Row,
                     align: Align::Stretch,
                     justify: Justify::Start,
-                    size: Size {
+                    size: Sizing {
                         width: Length::fill(),
                         height: Length::Fixed(h - LINE),
                     },
@@ -80,7 +80,7 @@ pub(super) fn build_row(grid: &Grid, logical: usize, cx: &mut BuildCx<'_>) {
                 |cx| {
                     spacer = Some(
                         cx.leaf(LeafStyle {
-                            size: Size::fixed(skip, 0.0),
+                            size: Sizing::fixed(skip, 0.0),
                             style: BoxStyle::NONE,
                         })
                         .id(),
@@ -94,7 +94,7 @@ pub(super) fn build_row(grid: &Grid, logical: usize, cx: &mut BuildCx<'_>) {
             );
             strip = Some(built.id());
             cx.leaf(LeafStyle {
-                size: Size {
+                size: Sizing {
                     width: Length::fill(),
                     height: Length::Fixed(LINE),
                 },
@@ -151,7 +151,7 @@ fn build_cell(grid: &Grid, cx: &mut BuildCx<'_>, logical: usize, place: usize) -
                 right: style.padding,
                 ..Inset::default()
             },
-            size: Size::fixed(width, height(grid, logical) - LINE),
+            size: Sizing::fixed(width, height(grid, logical) - LINE),
             style: BoxStyle {
                 fill: look.fill,
                 border: look.border,
@@ -168,7 +168,7 @@ fn build_cell(grid: &Grid, cx: &mut BuildCx<'_>, logical: usize, place: usize) -
                     .color(style.text)
                     .ellipsis()
                     .align(align)
-                    .size(Size {
+                    .size(Sizing {
                         width: Length::fill(),
                         height: Length::Fit,
                     })
@@ -222,7 +222,7 @@ fn header_cell(grid: &Grid, cx: &mut BuildCx<'_>, place: usize) -> NodeId {
                 left: style.padding,
                 ..Inset::default()
             },
-            size: Size::fixed(width, style.header_height - LINE),
+            size: Sizing::fixed(width, style.header_height - LINE),
             style: BoxStyle {
                 border: look.border,
                 ..BoxStyle::NONE
@@ -236,7 +236,7 @@ fn header_cell(grid: &Grid, cx: &mut BuildCx<'_>, place: usize) -> NodeId {
                 .weight(FontWeight(600))
                 .ellipsis()
                 .align(align)
-                .size(Size {
+                .size(Sizing {
                     width: Length::fill(),
                     height: Length::Fit,
                 })
@@ -254,7 +254,7 @@ fn header_cell(grid: &Grid, cx: &mut BuildCx<'_>, place: usize) -> NodeId {
                     axis: Axis::Row,
                     align: Align::Center,
                     justify: Justify::Center,
-                    size: Size {
+                    size: Sizing {
                         width: Length::Fixed(GRIP),
                         height: Length::fill(),
                     },
@@ -262,7 +262,7 @@ fn header_cell(grid: &Grid, cx: &mut BuildCx<'_>, place: usize) -> NodeId {
                 },
                 |cx| {
                     cx.leaf(LeafStyle {
-                        size: Size {
+                        size: Sizing {
                             width: Length::Fixed(LINE),
                             height: Length::Fixed((style.header_height * 0.5).round()),
                         },
@@ -443,7 +443,7 @@ fn shift_row(
         }
     }
     let skip = grid.starts.borrow().get(first).copied().unwrap_or(0.0);
-    s.store.set_fixed_size(rc.spacer, Size::fixed(skip, 0.0));
+    s.store.set_fixed_size(rc.spacer, Sizing::fixed(skip, 0.0));
     grid.built_rows.borrow_mut().insert(host, rc);
 }
 
@@ -548,7 +548,7 @@ fn resize_row(grid: &Grid, s: &mut StructureCx<'_>, host: NodeId, logical: usize
             continue;
         };
         s.store
-            .set_fixed_size(cell, Size::fixed(columns[model].width, h));
+            .set_fixed_size(cell, Sizing::fixed(columns[model].width, h));
     }
     s.store.mark_dirty(rc.strip, DirtyClass::LAYOUT);
 }

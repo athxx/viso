@@ -13,7 +13,7 @@ use viso::platform::{
     RawEvent, RawPointer, WindowId,
 };
 use viso::prelude::*;
-use viso::ui::{Component, FlexStyle, PointerPhase, Size, StackStyle};
+use viso::ui::{Component, FlexStyle, PointerPhase, Sizing, StackStyle};
 use viso::widgets::text_input;
 
 const STEP: Duration = Duration::from_millis(16);
@@ -45,12 +45,12 @@ impl Application for Board {
 
     fn build(&mut self, cx: &mut BuildCx<'_>) {
         let style = StackStyle {
-            size: Size::fixed(200.0, 40.0),
+            size: Sizing::fixed(200.0, 40.0),
             ..StackStyle::default()
         };
         cx.flex(
             FlexStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 axis: viso::ui::Axis::Column,
                 ..FlexStyle::default()
             },
@@ -93,7 +93,7 @@ impl Application for Board {
                 });
                 text_input("Name")
                     .value("")
-                    .size(Size::fixed(160.0, 30.0))
+                    .size(Sizing::fixed(160.0, 30.0))
                     .build(cx);
             },
         );

@@ -55,7 +55,7 @@ use viso_ui::calendar::{HourCycle, NO_TIME, Time, hour_cycle};
 use viso_ui::{
     Align, Axis, BoxStyle, BuildCx, Component, DispatchPhase, EventCx, FlexStyle, FocusChange,
     FontSize, FontWeight, Handle, ImeEvent, Inset, InteractionStyle, Justify, Key, LeafStyle,
-    Length, NodeId, PointerButtons, PointerPhase, Rgba, Role, SemanticState, Semantics, Size,
+    Length, NodeId, PointerButtons, PointerPhase, Rgba, Role, SemanticState, Semantics, Sizing,
     StateId, StateValue, StructureCx, TextAlign, TextRequest, TextStyle,
 };
 
@@ -606,7 +606,7 @@ impl Component for TimePicker {
                     if i > 0 {
                         let gap = if seg == Seg::Period { " " } else { ":" };
                         let sep = cx.leaf(LeafStyle {
-                            size: Size {
+                            size: Sizing {
                                 width: Length::Fit,
                                 height: Length::Fit,
                             },
@@ -619,7 +619,7 @@ impl Component for TimePicker {
                         _ => style.font_size * 1.6,
                     };
                     let leaf = cx.leaf(LeafStyle {
-                        size: Size {
+                        size: Sizing {
                             width: Length::Fixed(width),
                             height: Length::Fit,
                         },

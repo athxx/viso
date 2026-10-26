@@ -37,7 +37,7 @@ use viso_ui::{
     Align, AnchorAlign, Anchoring, Axis, BoxRules, BoxStyle, BuildCx, Component, DispatchPhase,
     EventCx, FlexStyle, FontSize, Handle, ImeEvent, Inset, InteractionStyle, Justify, Key,
     KeyEvent, LeafStyle, Length, NodeId, PointerButtons, PointerPhase, Rgba, Role, ScrollStyle,
-    SemanticState, Semantics, Shadow, Side, Size, Span, StateId, StateValue, TextOverflow,
+    SemanticState, Semantics, Shadow, Side, Sizing, Span, StateId, StateValue, TextOverflow,
     TextRequest, TextStyle, Vec2, primary_is_logo,
 };
 
@@ -218,7 +218,7 @@ pub struct Select {
     selected: Option<usize>,
     placeholder: Option<String>,
     label: Option<String>,
-    size: Size,
+    size: Sizing,
     style: SelectStyle,
     on_change: Option<Change>,
     slot: Option<SelectHandleSlot>,
@@ -262,7 +262,7 @@ impl Select {
     }
 
     /// Set the field's size within its parent (default: its content's).
-    pub fn size(mut self, size: Size) -> Self {
+    pub fn size(mut self, size: Sizing) -> Self {
         self.size = size;
         self
     }
@@ -295,7 +295,7 @@ impl Component for Select {
     }
 }
 
-const FIT: Size = Size {
+const FIT: Sizing = Sizing {
     width: Length::Fit,
     height: Length::Fit,
 };
@@ -367,7 +367,7 @@ fn build(cx: &mut BuildCx<'_>, select: &Select) -> Rc<SelectState> {
                         FlexStyle {
                             axis: Axis::Column,
                             align: Align::Start,
-                            size: Size {
+                            size: Sizing {
                                 width: Length::Fill { weight: 1.0 },
                                 height: Length::Fit,
                             },
@@ -380,7 +380,7 @@ fn build(cx: &mut BuildCx<'_>, select: &Select) -> Rc<SelectState> {
                                 - GAP
                                 - GLYPH;
                             cx.leaf(LeafStyle {
-                                size: Size::fixed(room.max(0.0), 0.0),
+                                size: Sizing::fixed(room.max(0.0), 0.0),
                                 style: BoxStyle::NONE,
                             });
                             let leaf = cx.leaf(LeafStyle {
@@ -399,7 +399,7 @@ fn build(cx: &mut BuildCx<'_>, select: &Select) -> Rc<SelectState> {
                             let labels = select.options.iter().map(|o| o.label.as_str());
                             for text in labels.chain(select.placeholder.as_deref()) {
                                 let sizer = cx.leaf(LeafStyle {
-                                    size: Size {
+                                    size: Sizing {
                                         width: Length::Fit,
                                         height: Length::Fixed(0.0),
                                     },
@@ -608,7 +608,7 @@ fn row(
             padding: style.item_padding,
             align: Align::Center,
             justify: Justify::Start,
-            size: Size {
+            size: Sizing {
                 width: Length::Fill { weight: 1.0 },
                 height: Length::Fit,
             },

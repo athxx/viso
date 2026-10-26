@@ -24,7 +24,9 @@
 //! into the next free cell with span 1. The default accessible role is
 //! [`Role::Group`] — a structural grouping with no interaction of its own.
 
-use viso_ui::{BoxStyle, BuildCx, Component, GridStyle, Inset, Role, Semantics, Size, TrackSizing};
+use viso_ui::{
+    BoxStyle, BuildCx, Component, GridStyle, Inset, Role, Semantics, Sizing, TrackSizing,
+};
 
 /// The visual and layout parameters of a [`Grid`]: its column and row track
 /// templates, the gaps between tracks, inner padding, the sizing of implicit
@@ -55,7 +57,7 @@ pub struct GridViewStyle {
     /// Inner padding on all four edges, inside the grid box, outside the tracks.
     pub padding: Inset,
     /// The grid's own size request within its parent.
-    pub size: Size,
+    pub size: Sizing,
     /// The grid's background/border/radius. [`BoxStyle::NONE`] is a pure,
     /// transparent layout box.
     pub background: BoxStyle,
@@ -70,7 +72,7 @@ impl Default for GridViewStyle {
             column_gap: 0.0,
             row_gap: 0.0,
             padding: Inset::default(),
-            size: Size::fill(),
+            size: Sizing::fill(),
             background: BoxStyle::NONE,
         }
     }
@@ -91,14 +93,14 @@ type ChildBuilder = Box<dyn Fn(&mut BuildCx<'_>)>;
 ///
 /// ```
 /// use viso_widgets::{grid, GridViewStyle};
-/// use viso_ui::{BuildCx, Component, GridPlacement, NodeStore, Size, TrackSizing};
+/// use viso_ui::{BuildCx, Component, GridPlacement, NodeStore, Sizing, TrackSizing};
 ///
 /// let dashboard = grid(GridViewStyle {
 ///     columns: vec![TrackSizing::Fr(1.0), TrackSizing::Fr(1.0)],
 ///     rows: vec![TrackSizing::Fixed(40.0)],
 ///     column_gap: 8.0,
 ///     row_gap: 8.0,
-///     size: Size::fixed(200.0, 80.0),
+///     size: Sizing::fixed(200.0, 80.0),
 ///     ..Default::default()
 /// })
 /// .children(|cx| {
@@ -260,16 +262,16 @@ mod tests {
         let g = grid(GridViewStyle {
             columns: vec![TrackSizing::Fixed(50.0), TrackSizing::Fixed(50.0)],
             rows: vec![TrackSizing::Fixed(50.0)],
-            size: Size::fixed(100.0, 50.0),
+            size: Sizing::fixed(100.0, 50.0),
             ..Default::default()
         })
         .children(|cx| {
             cx.leaf(LeafStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 ..Default::default()
             });
             cx.leaf(LeafStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 ..Default::default()
             });
         });
@@ -317,7 +319,7 @@ mod tests {
         let g = grid(GridViewStyle {
             columns: vec![TrackSizing::Fixed(50.0), TrackSizing::Fixed(50.0)],
             rows: vec![TrackSizing::Fixed(50.0)],
-            size: Size::fixed(100.0, 50.0),
+            size: Sizing::fixed(100.0, 50.0),
             ..Default::default()
         })
         .children(|cx| {
@@ -328,7 +330,7 @@ mod tests {
                 row_span: 1,
             });
             cx.leaf(LeafStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 ..Default::default()
             });
         });

@@ -15,7 +15,7 @@ use viso::platform::{
 };
 use viso::prelude::*;
 use viso::ui::{
-    Axis, BoxStyle, Component, Content, FlexStyle, LeafStyle, NodeId, NodeStore, Role, Size,
+    Axis, BoxStyle, Component, Content, FlexStyle, LeafStyle, NodeId, NodeStore, Role, Sizing,
     StateValue,
 };
 use viso::widgets::{menu_bar, menu_item};
@@ -57,7 +57,7 @@ impl Application for BarApp {
     fn build(&mut self, cx: &mut BuildCx<'_>) {
         cx.flex(
             FlexStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 axis: Axis::Column,
                 gap: 200.0,
                 align: viso::ui::Align::Stretch,
@@ -91,7 +91,7 @@ impl Application for BarApp {
                     .menu(menu_item("&Help").item(menu_item("&About").on_pick(picked("about"))))
                     .build(cx);
                 let field = cx.leaf(LeafStyle {
-                    size: Size::fixed(80.0, 30.0),
+                    size: Sizing::fixed(80.0, 30.0),
                     style: BoxStyle::NONE,
                 });
                 cx.focusable(field, true);
@@ -531,7 +531,7 @@ impl Application for AppMenuApp {
 
     fn build(&mut self, cx: &mut BuildCx<'_>) {
         cx.leaf(LeafStyle {
-            size: Size::fill(),
+            size: Sizing::fill(),
             style: BoxStyle::NONE,
         });
     }

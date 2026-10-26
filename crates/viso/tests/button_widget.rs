@@ -38,7 +38,7 @@ use viso::render::{FrameStats, GlyphInstanceData, Rect, Renderer, Rgba, test_gly
 use viso::ui::{
     Axis, BindingTable, BoxStyle, BuildCx, Component, Content, Inset, Key, KeyEvent, KeyRouter,
     Modifiers, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase, PointerRouter, Role,
-    SemanticProjector, Size, StateStore, TextEdits, Vec2, VirtualLists, paint_tree,
+    SemanticProjector, Sizing, StateStore, TextEdits, Vec2, VirtualLists, paint_tree,
 };
 use viso::widgets::{ButtonStyle, ViewStyle, button, view};
 
@@ -99,7 +99,7 @@ fn build_scene(store: &mut NodeStore) -> (NodeId, NodeId, NodeId) {
     let container = view(ViewStyle {
         axis: Axis::Row,
         padding: Inset::all(10.0),
-        size: Size::fill(),
+        size: Sizing::fill(),
         background: BoxStyle::solid(DARK),
         ..Default::default()
     })
@@ -291,7 +291,7 @@ impl Painted {
         let mut text_edits = TextEdits::new();
         let mut projectors = SemanticProjector::new();
 
-        let widget = button("OK").size(Size::fill()).style(ButtonStyle {
+        let widget = button("OK").size(Sizing::fill()).style(ButtonStyle {
             background: gray_box(0.1),
             hover: gray_box(0.5),
             pressed: gray_box(0.9),
@@ -441,7 +441,7 @@ impl Interactive {
         let mut projectors = SemanticProjector::new();
 
         let widget = button("OK")
-            .size(Size::fill())
+            .size(Sizing::fill())
             .on_click(move |_ev| counter.set(counter.get() + 1));
 
         let button = {

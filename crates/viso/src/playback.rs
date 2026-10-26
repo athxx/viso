@@ -450,7 +450,7 @@ mod tests {
     use crate::assets::Assets;
     use viso_gpu::{CpuRaster, RawWindowHandle};
     use viso_render::Renderer;
-    use viso_ui::{Asset, AssetFit, BoxStyle, BuildCx, LeafStyle, NodeId, Size};
+    use viso_ui::{Asset, AssetFit, BoxStyle, BuildCx, LeafStyle, NodeId, Sizing};
 
     const GIF: &[u8] = include_bytes!("../../image/tests/fixtures/anim.gif");
     const APNG: &[u8] = include_bytes!("../../image/tests/fixtures/anim.png");
@@ -523,7 +523,7 @@ mod tests {
             let leaf = {
                 let mut cx = BuildCx::new(&mut store);
                 let handle = cx.leaf(LeafStyle {
-                    size: Size::fixed(16.0, 16.0),
+                    size: Sizing::fixed(16.0, 16.0),
                     style: BoxStyle::NONE,
                 });
                 cx.asset(handle, &gif, AssetFit::Fill, None);

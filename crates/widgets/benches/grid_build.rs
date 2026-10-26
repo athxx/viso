@@ -17,7 +17,7 @@ use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use viso_ui::{
-    BoxStyle, BuildCx, Component, GridPlacement, LeafStyle, NodeStore, Rect, Size, TrackSizing,
+    BoxStyle, BuildCx, Component, GridPlacement, LeafStyle, NodeStore, Rect, Sizing, TrackSizing,
     paint_tree,
 };
 use viso_widgets::{GridViewStyle, grid};
@@ -37,7 +37,7 @@ fn grid_style() -> GridViewStyle {
         rows: vec![TrackSizing::Fixed(48.0); ROWS as usize],
         column_gap: 8.0,
         row_gap: 8.0,
-        size: Size::fixed(W, H),
+        size: Sizing::fixed(W, H),
         background: BoxStyle::NONE,
         ..Default::default()
     }
@@ -48,7 +48,7 @@ fn grid_style() -> GridViewStyle {
 fn cells(cx: &mut BuildCx<'_>) {
     for _ in 0..(COLS * ROWS) {
         cx.leaf(LeafStyle {
-            size: Size::fill(),
+            size: Sizing::fill(),
             style: BoxStyle::NONE,
         });
     }
@@ -105,7 +105,7 @@ fn bench_grid(c: &mut Criterion) {
                                 row_span: 1,
                             });
                             cx.leaf(LeafStyle {
-                                size: Size::fill(),
+                                size: Sizing::fill(),
                                 style: BoxStyle::NONE,
                             });
                         }

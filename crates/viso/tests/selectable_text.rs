@@ -12,7 +12,7 @@ use viso::platform::{
     PointerPhase as RawPhase, RawEvent, RawKey, RawPointer, RawText, WindowId,
 };
 use viso::prelude::*;
-use viso::ui::{Axis, Component, FlexStyle, Size};
+use viso::ui::{Axis, Component, FlexStyle, Sizing};
 use viso::widgets::text_input;
 
 const STEP: Duration = Duration::from_millis(16);
@@ -37,17 +37,19 @@ impl Application for NoteApp {
     fn build(&mut self, cx: &mut BuildCx<'_>) {
         cx.flex(
             FlexStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 axis: Axis::Column,
                 ..FlexStyle::default()
             },
             |cx| {
                 label("Hello world")
                     .font_size(20.0)
-                    .size(Size::fixed(200.0, 30.0))
+                    .size(Sizing::fixed(200.0, 30.0))
                     .selectable()
                     .build(cx);
-                text_input("Other").size(Size::fixed(160.0, 30.0)).build(cx);
+                text_input("Other")
+                    .size(Sizing::fixed(160.0, 30.0))
+                    .build(cx);
             },
         );
     }

@@ -22,7 +22,7 @@ use std::sync::atomic::Ordering;
 
 use viso_ui::grid::{AdaptiveColumns, GridStyle, TrackMax, TrackSizing};
 use viso_ui::layout::{layout, measure};
-use viso_ui::{NodeStore, Rect, Size};
+use viso_ui::{NodeStore, Rect, Sizing};
 
 /// Counts heap allocations while `ARMED`; off by default so setup allocations
 /// are never counted. Mirrors the other alloc packs.
@@ -97,13 +97,13 @@ const SURFACE: Rect = Rect {
 };
 
 /// A track-less grid node used as a fill-leaf stand-in — it measures to its own
-/// `Size` and is placed into its parent grid's cell like any sized child. Mirrors
+/// `Sizing` and is placed into its parent grid's cell like any sized child. Mirrors
 /// the `grid_layout` bench's `fill_cell`.
 fn fill_cell(store: &mut NodeStore) -> viso_ui::NodeId {
     store.alloc_grid(GridStyle {
         columns: Vec::new(),
         rows: Vec::new(),
-        size: Size::fill(),
+        size: Sizing::fill(),
         ..Default::default()
     })
 }
@@ -115,7 +115,7 @@ fn build_grid(cols: usize, rows: usize) -> (NodeStore, u32) {
     let grid = store.alloc_grid(GridStyle {
         columns: vec![TrackSizing::Fr(1.0); cols],
         rows: vec![TrackSizing::Fr(1.0); rows],
-        size: Size::fixed(1200.0, 800.0),
+        size: Sizing::fixed(1200.0, 800.0),
         ..Default::default()
     });
     for _ in 0..cols * rows {
@@ -138,7 +138,7 @@ fn build_adaptive_grid(child_count: usize) -> (NodeStore, u32) {
         columns: Vec::new(),
         rows: vec![TrackSizing::Fixed(60.0)],
         adaptive_columns: Some(AdaptiveColumns::auto_fill(120.0, TrackMax::Fr(1.0))),
-        size: Size::fixed(1200.0, 800.0),
+        size: Sizing::fixed(1200.0, 800.0),
         ..Default::default()
     });
     for _ in 0..child_count {

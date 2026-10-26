@@ -22,7 +22,7 @@ use viso_ui::anchored::{AnchorAlign, Anchoring, Side};
 use viso_ui::context::UpdateCx;
 use viso_ui::{
     Axis, Border, BoxStyle, BuildCx, Continuation, EventCx, FlexStyle, Handle, Inset, Key,
-    KeyEvent, LeafStyle, Length, NodeId, PointerPhase, Role, Semantics, Size, StateWriter,
+    KeyEvent, LeafStyle, Length, NodeId, PointerPhase, Role, Semantics, Sizing, StateWriter,
     StructureCx, TaskFuture, Vec2,
 };
 
@@ -185,13 +185,13 @@ pub(super) fn build_popups(shared: &Rc<Shared>, cx: &mut BuildCx<'_>, root: Hand
         },
         ..BoxStyle::NONE
     };
-    let fit = Size {
+    let fit = Sizing {
         width: Length::Fit,
         height: Length::Fit,
     };
     let text_leaf = |cx: &mut BuildCx<'_>, color| {
         let leaf = cx.leaf(LeafStyle {
-            size: Size {
+            size: Sizing {
                 width: Length::MaxContent,
                 height: Length::Fixed(lh),
             },
@@ -222,7 +222,7 @@ pub(super) fn build_popups(shared: &Rc<Shared>, cx: &mut BuildCx<'_>, root: Hand
                             top: 0.0,
                             bottom: 0.0,
                         },
-                        size: Size {
+                        size: Sizing {
                             width: Length::fill(),
                             height: Length::Fit,
                         },

@@ -60,8 +60,8 @@ use viso_ui::calendar::{Date, Days, NO_DATE, Weekday, first_weekday};
 use viso_ui::{
     Access, Align, Axis, BoxStyle, BuildCx, Component, DispatchPhase, EventCx, FlexStyle, FontSize,
     FontWeight, Handle, InteractionStyle, Justify, Key, LeafStyle, LengthTerms, NodeId,
-    PointerButtons, PointerPhase, Rgba, Role, SemanticState, Semantics, Size, StateId, StateValue,
-    StructureCx, TextAlign, TextRequest, TextStyle,
+    PointerButtons, PointerPhase, Rgba, Role, SemanticState, Semantics, Sizing, StateId,
+    StateValue, StructureCx, TextAlign, TextRequest, TextStyle,
 };
 
 use viso_ui::glyphs::{chevron_end, chevron_start};
@@ -714,7 +714,7 @@ fn nav_button(
             axis: Axis::Row,
             align: Align::Center,
             justify: Justify::Center,
-            size: Size::fixed(28.0, 28.0),
+            size: Sizing::fixed(28.0, 28.0),
             style: resting,
             ..FlexStyle::default()
         },
@@ -768,7 +768,7 @@ fn nav_button(
 }
 
 /// A text leaf `width` by `height`, empty until its hook fills it.
-fn text_leaf(cx: &mut BuildCx<'_>, size: Size) -> Handle {
+fn text_leaf(cx: &mut BuildCx<'_>, size: Sizing) -> Handle {
     let leaf = cx.leaf(LeafStyle {
         size,
         style: BoxStyle::NONE,
@@ -798,7 +798,7 @@ impl Calendar {
         let month = cx.state(StateValue::Int(shown.month_index()));
         let style = self.style;
         let cell = style.cell;
-        let side = Size::fixed(cell, cell);
+        let side = Sizing::fixed(cell, cell);
         // The buttons turn the month through the shared calendar, built
         // after them.
         let shared: Rc<RefCell<Option<Rc<Month>>>> = Rc::new(RefCell::new(None));
@@ -837,7 +837,7 @@ impl Calendar {
                         ));
                         header.1 = Some(text_leaf(
                             cx,
-                            Size {
+                            Sizing {
                                 width: viso_ui::Length::Fill { weight: 1.0 },
                                 height: viso_ui::Length::Fit,
                             },
@@ -870,12 +870,12 @@ impl Calendar {
                         let head_row = cx.flex(row, |cx| {
                             if self.week_numbers {
                                 cx.leaf(LeafStyle {
-                                    size: Size::fixed(cell, cell * 0.8),
+                                    size: Sizing::fixed(cell, cell * 0.8),
                                     style: BoxStyle::NONE,
                                 });
                             }
                             for _ in 0..DAYS {
-                                heads.push(text_leaf(cx, Size::fixed(cell, cell * 0.8)));
+                                heads.push(text_leaf(cx, Sizing::fixed(cell, cell * 0.8)));
                             }
                         });
                         cx.semantics(head_row, Semantics::role(Role::Row));

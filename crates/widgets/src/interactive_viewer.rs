@@ -20,15 +20,15 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use viso_ui::{
-    Alignment2D, BoxStyle, BuildCx, Component, EventCx, NodeId, Role, Semantics, Size, StackStyle,
-    Vec2, ViewerLimits, ViewerMove,
+    Alignment2D, BoxStyle, BuildCx, Component, EventCx, NodeId, Role, Semantics, Sizing,
+    StackStyle, Vec2, ViewerLimits, ViewerMove,
 };
 
 /// The look and limits of an [`InteractiveViewer`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct InteractiveViewerStyle {
     /// Its own size within its parent: the clip box.
-    pub size: Size,
+    pub size: Sizing,
     /// Its own background, border and radius.
     pub background: BoxStyle,
     /// How far the content may scale and move.
@@ -41,7 +41,7 @@ pub struct InteractiveViewerStyle {
 impl Default for InteractiveViewerStyle {
     fn default() -> Self {
         InteractiveViewerStyle {
-            size: Size::fill(),
+            size: Sizing::fill(),
             background: BoxStyle::NONE,
             limits: ViewerLimits::default(),
             double_tap: Some(2.5),
@@ -97,14 +97,14 @@ type ContentBuilder = Box<dyn Fn(&mut BuildCx<'_>)>;
 ///
 /// ```
 /// use viso_widgets::{InteractiveViewerStyle, interactive_viewer};
-/// use viso_ui::{BoxStyle, BuildCx, Component, LeafStyle, NodeStore, Size};
+/// use viso_ui::{BoxStyle, BuildCx, Component, LeafStyle, NodeStore, Sizing};
 ///
 /// let diagram = interactive_viewer(InteractiveViewerStyle::default())
 ///     .label("Diagram")
 ///     .content(|cx| {
 ///         // the one content child, larger than the viewer
 ///         cx.leaf(LeafStyle {
-///             size: Size::fixed(2000.0, 1500.0),
+///             size: Sizing::fixed(2000.0, 1500.0),
 ///             style: BoxStyle::NONE,
 ///         });
 ///     });
@@ -213,7 +213,7 @@ mod tests {
             .handle(&slot)
             .content(|cx| {
                 cx.leaf(LeafStyle {
-                    size: Size::fixed(400.0, 300.0),
+                    size: Sizing::fixed(400.0, 300.0),
                     style: BoxStyle::NONE,
                 });
             });

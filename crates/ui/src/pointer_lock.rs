@@ -122,7 +122,7 @@ mod tests {
     use super::*;
     use crate::FlexStyle;
     use crate::component::{BuildCx, LeafStyle};
-    use crate::layout::Size;
+    use crate::layout::Sizing;
     use crate::style::BoxStyle;
 
     fn two_leaves() -> (NodeStore, NodeId, NodeId) {
@@ -134,7 +134,7 @@ mod tests {
                 for _ in 0..2 {
                     leaves.push(
                         cx.leaf(LeafStyle {
-                            size: Size::fixed(10.0, 10.0),
+                            size: Sizing::fixed(10.0, 10.0),
                             style: BoxStyle::NONE,
                         })
                         .id(),

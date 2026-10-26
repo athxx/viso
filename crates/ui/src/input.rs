@@ -2598,7 +2598,7 @@ mod tests {
 
     use crate::component::{BuildCx, FlexStyle, LeafStyle, NodeStore};
     use crate::interaction::Interaction;
-    use crate::layout::{Axis, Size};
+    use crate::layout::{Axis, Sizing};
     use crate::state::{StateId, StateStore, StateValue};
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -2646,7 +2646,7 @@ mod tests {
         let root = {
             let mut cx = BuildCx::new(&mut store);
             let h = cx.leaf(LeafStyle {
-                size: Size::fixed(10.0, 10.0),
+                size: Sizing::fixed(10.0, 10.0),
                 ..Default::default()
             });
             let flag = hit.clone();
@@ -2688,7 +2688,7 @@ mod tests {
         let root = {
             let mut cx = BuildCx::new(&mut store);
             let h = cx.leaf(LeafStyle {
-                size: Size::fixed(10.0, 10.0),
+                size: Sizing::fixed(10.0, 10.0),
                 ..Default::default()
             });
             cx.on_pointer(h, log_handler(log.clone(), 0));
@@ -2732,12 +2732,12 @@ mod tests {
             let flex = cx.flex(
                 FlexStyle {
                     axis: Axis::Row,
-                    size: Size::fixed(100.0, 100.0),
+                    size: Sizing::fixed(100.0, 100.0),
                     ..Default::default()
                 },
                 |cx| {
                     let c = cx.leaf(LeafStyle {
-                        size: Size::fixed(40.0, 40.0),
+                        size: Sizing::fixed(40.0, 40.0),
                         ..Default::default()
                     });
                     cx.on_pointer(c, log_handler(log.clone(), 1));
@@ -2789,20 +2789,20 @@ mod tests {
             let flex = cx.flex(
                 FlexStyle {
                     axis: Axis::Column,
-                    size: Size::fixed(100.0, 100.0),
+                    size: Sizing::fixed(100.0, 100.0),
                     ..Default::default()
                 },
                 |cx| {
                     let row = cx.flex(
                         FlexStyle {
                             axis: Axis::Row,
-                            size: Size::fixed(100.0, 40.0),
+                            size: Sizing::fixed(100.0, 40.0),
                             ..Default::default()
                         },
                         |cx| {
                             for label in [2, 3] {
                                 let leaf = cx.leaf(LeafStyle {
-                                    size: Size::fixed(40.0, 40.0),
+                                    size: Sizing::fixed(40.0, 40.0),
                                     ..Default::default()
                                 });
                                 cx.on_pointer(leaf, log_handler(log2.clone(), label));
@@ -2814,7 +2814,7 @@ mod tests {
                     cx.on_pointer(row, log_handler(log2.clone(), 1));
                     ids2.borrow_mut().push(row.id());
                     let after = cx.leaf(LeafStyle {
-                        size: Size::fixed(40.0, 40.0),
+                        size: Sizing::fixed(40.0, 40.0),
                         ..Default::default()
                     });
                     cx.focusable(after, true);
@@ -2915,12 +2915,12 @@ mod tests {
             let flex = cx.flex(
                 FlexStyle {
                     axis: Axis::Row,
-                    size: Size::fixed(100.0, 100.0),
+                    size: Sizing::fixed(100.0, 100.0),
                     ..Default::default()
                 },
                 |cx| {
                     let c = cx.leaf(LeafStyle {
-                        size: Size::fixed(40.0, 40.0),
+                        size: Sizing::fixed(40.0, 40.0),
                         ..Default::default()
                     });
                     cx.on_pointer(c, consuming_log_handler(log.clone(), 1));
@@ -3000,7 +3000,7 @@ mod tests {
         let root = {
             let mut cx = BuildCx::new(&mut store);
             let h = cx.leaf(LeafStyle {
-                size: Size::fixed(10.0, 10.0),
+                size: Sizing::fixed(10.0, 10.0),
                 ..Default::default()
             });
             cx.on_pointer(h, phase_log_handler(log.clone(), 0));
@@ -3050,7 +3050,7 @@ mod tests {
             cx.flex(
                 FlexStyle {
                     axis: Axis::Column,
-                    size: Size::fixed(200.0, 100.0),
+                    size: Sizing::fixed(200.0, 100.0),
                     ..Default::default()
                 },
                 |cx| {
@@ -3058,12 +3058,12 @@ mod tests {
                         FlexStyle {
                             axis: Axis::Row,
                             padding: crate::layout::Inset::all(10.0),
-                            size: Size::fixed(100.0, 40.0),
+                            size: Sizing::fixed(100.0, 40.0),
                             ..Default::default()
                         },
                         |cx| {
                             let leaf = cx.leaf(LeafStyle {
-                                size: Size::fixed(20.0, 20.0),
+                                size: Sizing::fixed(20.0, 20.0),
                                 ..Default::default()
                             });
                             cx.on_pointer(leaf, phase_log_handler(log.clone(), 1));
@@ -3136,18 +3136,18 @@ mod tests {
             cx.flex(
                 FlexStyle {
                     axis: Axis::Row,
-                    size: Size::fixed(100.0, 40.0),
+                    size: Sizing::fixed(100.0, 40.0),
                     ..Default::default()
                 },
                 |cx| {
                     let ah = cx.leaf(LeafStyle {
-                        size: Size::fixed(40.0, 40.0),
+                        size: Sizing::fixed(40.0, 40.0),
                         ..Default::default()
                     });
                     cx.on_pointer(ah, phase_log_handler(log.clone(), 0));
                     a = Some(ah.id());
                     let bh = cx.leaf(LeafStyle {
-                        size: Size::fixed(40.0, 40.0),
+                        size: Sizing::fixed(40.0, 40.0),
                         ..Default::default()
                     });
                     cx.on_pointer(bh, phase_log_handler(log.clone(), 1));
@@ -3211,7 +3211,7 @@ mod tests {
         let root = {
             let mut cx = BuildCx::new(&mut store);
             let h = cx.leaf(LeafStyle {
-                size: Size::fixed(40.0, 40.0),
+                size: Sizing::fixed(40.0, 40.0),
                 ..Default::default()
             });
             cx.on_pointer(h, phase_log_handler(log.clone(), 0));
@@ -3262,7 +3262,7 @@ mod tests {
         let root = {
             let mut cx = BuildCx::new(&mut store);
             let h = cx.leaf(LeafStyle {
-                size: Size::fixed(40.0, 40.0),
+                size: Sizing::fixed(40.0, 40.0),
                 ..Default::default()
             });
             cx.on_pointer(h, phase_log_handler(log.clone(), 0));
@@ -3321,18 +3321,18 @@ mod tests {
             cx.flex(
                 FlexStyle {
                     axis: Axis::Row,
-                    size: Size::fixed(100.0, 40.0),
+                    size: Sizing::fixed(100.0, 40.0),
                     ..Default::default()
                 },
                 |cx| {
                     let ah = cx.leaf(LeafStyle {
-                        size: Size::fixed(40.0, 40.0),
+                        size: Sizing::fixed(40.0, 40.0),
                         ..Default::default()
                     });
                     cx.on_pointer(ah, phase_log_handler(log.clone(), 0));
                     a = Some(ah.id());
                     let bh = cx.leaf(LeafStyle {
-                        size: Size::fixed(40.0, 40.0),
+                        size: Sizing::fixed(40.0, 40.0),
                         ..Default::default()
                     });
                     cx.on_pointer(bh, phase_log_handler(log.clone(), 1));
@@ -3381,7 +3381,7 @@ mod tests {
         let root = {
             let mut cx = BuildCx::new(&mut store);
             let h = cx.leaf(LeafStyle {
-                size: Size::fixed(10.0, 10.0),
+                size: Sizing::fixed(10.0, 10.0),
                 ..Default::default()
             });
             cx.on_pointer(h, log_handler(Rc::new(RefCell::new(Vec::new())), 0));
@@ -3404,7 +3404,7 @@ mod tests {
         let root = {
             let mut cx = BuildCx::new(&mut store);
             let h = cx.leaf(LeafStyle {
-                size: Size::fixed(10.0, 10.0),
+                size: Sizing::fixed(10.0, 10.0),
                 ..Default::default()
             });
             cx.on_pointer(h, move |ev| {
@@ -3457,13 +3457,13 @@ mod tests {
             cx.flex(
                 FlexStyle {
                     axis: Axis::Row,
-                    size: Size::fixed(100.0, 100.0),
+                    size: Sizing::fixed(100.0, 100.0),
                     ..Default::default()
                 },
                 |cx| {
                     for _ in 0..3 {
                         let leaf = cx.leaf(LeafStyle {
-                            size: Size::fixed(10.0, 10.0),
+                            size: Sizing::fixed(10.0, 10.0),
                             ..Default::default()
                         });
                         kids2.borrow_mut().push(leaf.id());
@@ -3549,7 +3549,7 @@ mod tests {
         let root = {
             let mut cx = BuildCx::new(&mut store);
             cx.leaf(LeafStyle {
-                size: Size::fixed(10.0, 10.0),
+                size: Sizing::fixed(10.0, 10.0),
                 ..Default::default()
             });
             cx.root().unwrap()
@@ -3575,25 +3575,25 @@ mod tests {
             cx.flex(
                 FlexStyle {
                     axis: Axis::Row,
-                    size: Size::fixed(200.0, 100.0),
+                    size: Sizing::fixed(200.0, 100.0),
                     ..Default::default()
                 },
                 |cx| {
                     let o = cx.leaf(LeafStyle {
-                        size: Size::fixed(10.0, 10.0),
+                        size: Sizing::fixed(10.0, 10.0),
                         ..Default::default()
                     });
                     *outside2.borrow_mut() = Some(o.id());
                     let s = cx.flex(
                         FlexStyle {
                             axis: Axis::Row,
-                            size: Size::fixed(100.0, 100.0),
+                            size: Sizing::fixed(100.0, 100.0),
                             ..Default::default()
                         },
                         |cx| {
                             for _ in 0..2 {
                                 let leaf = cx.leaf(LeafStyle {
-                                    size: Size::fixed(10.0, 10.0),
+                                    size: Sizing::fixed(10.0, 10.0),
                                     ..Default::default()
                                 });
                                 inner2.borrow_mut().push(leaf.id());
@@ -3660,13 +3660,13 @@ mod tests {
             cx.flex(
                 FlexStyle {
                     axis: Axis::Row,
-                    size: Size::fixed(10.0, 10.0),
+                    size: Sizing::fixed(10.0, 10.0),
                     ..Default::default()
                 },
                 |cx| {
                     for _ in 0..64 {
                         let leaf = cx.leaf(LeafStyle {
-                            size: Size::fixed(1.0, 1.0),
+                            size: Sizing::fixed(1.0, 1.0),
                             ..Default::default()
                         });
                         stale = Some(leaf.id());
@@ -3759,12 +3759,12 @@ mod tests {
             let flex = cx.flex(
                 FlexStyle {
                     axis: Axis::Row,
-                    size: Size::fixed(100.0, 100.0),
+                    size: Sizing::fixed(100.0, 100.0),
                     ..Default::default()
                 },
                 |cx| {
                     let c = cx.leaf(LeafStyle {
-                        size: Size::fixed(40.0, 40.0),
+                        size: Sizing::fixed(40.0, 40.0),
                         ..Default::default()
                     });
                     *child2.borrow_mut() = Some(c.id());
@@ -3813,12 +3813,12 @@ mod tests {
             let flex = cx.flex(
                 FlexStyle {
                     axis: Axis::Row,
-                    size: Size::fixed(100.0, 100.0),
+                    size: Sizing::fixed(100.0, 100.0),
                     ..Default::default()
                 },
                 |cx| {
                     let c = cx.leaf(LeafStyle {
-                        size: Size::fixed(40.0, 40.0),
+                        size: Sizing::fixed(40.0, 40.0),
                         ..Default::default()
                     });
                     *child2.borrow_mut() = Some(c.id());
@@ -3868,12 +3868,12 @@ mod tests {
             let flex = cx.flex(
                 FlexStyle {
                     axis: Axis::Row,
-                    size: Size::fixed(100.0, 100.0),
+                    size: Sizing::fixed(100.0, 100.0),
                     ..Default::default()
                 },
                 |cx| {
                     let content = cx.leaf(LeafStyle {
-                        size: Size::fixed(40.0, 40.0),
+                        size: Sizing::fixed(40.0, 40.0),
                         ..Default::default()
                     });
                     *scope2.borrow_mut() = Some(content.id());
@@ -3943,7 +3943,7 @@ mod tests {
         let root = {
             let mut cx = BuildCx::new(&mut store);
             cx.leaf(LeafStyle {
-                size: Size::fixed(10.0, 10.0),
+                size: Sizing::fixed(10.0, 10.0),
                 ..Default::default()
             });
             cx.root().unwrap()
@@ -3978,7 +3978,7 @@ mod tests {
         let root = {
             let mut cx = BuildCx::new(&mut store);
             let h = cx.leaf(LeafStyle {
-                size: Size::fixed(10.0, 10.0),
+                size: Sizing::fixed(10.0, 10.0),
                 ..Default::default()
             });
             let pflag = pointer_ran.clone();
@@ -4043,7 +4043,7 @@ mod tests {
         let root = {
             let mut cx = BuildCx::new(&mut store);
             cx.leaf(LeafStyle {
-                size: Size::fixed(10.0, 10.0),
+                size: Sizing::fixed(10.0, 10.0),
                 ..Default::default()
             });
             cx.root().unwrap()
@@ -4174,7 +4174,7 @@ mod tests {
         let root = {
             let mut cx = BuildCx::new(&mut store);
             let h = cx.leaf(LeafStyle {
-                size: Size::fixed(10.0, 10.0),
+                size: Sizing::fixed(10.0, 10.0),
                 ..Default::default()
             });
             let id = h.id();
@@ -4227,11 +4227,11 @@ mod tests {
                 },
                 |cx| {
                     let strip = cx.leaf(LeafStyle {
-                        size: Size::fixed(10.0, 10.0),
+                        size: Sizing::fixed(10.0, 10.0),
                         ..Default::default()
                     });
                     let p = cx.leaf(LeafStyle {
-                        size: Size::fixed(10.0, 10.0),
+                        size: Sizing::fixed(10.0, 10.0),
                         ..Default::default()
                     });
                     let pid = p.id();
@@ -4323,12 +4323,12 @@ mod tests {
             cx.scroll(
                 ScrollStyle {
                     axis: Axis::Column,
-                    size: Size::fixed(100.0, 100.0),
+                    size: Sizing::fixed(100.0, 100.0),
                     ..Default::default()
                 },
                 |cx| {
                     let inner = cx.leaf(LeafStyle {
-                        size: Size::fixed(100.0, 300.0),
+                        size: Sizing::fixed(100.0, 300.0),
                         ..Default::default()
                     });
                     content_id = Some(inner.id());
@@ -4392,12 +4392,12 @@ mod tests {
             let strip = cx.scroll(
                 ScrollStyle {
                     axis: Axis::Row,
-                    size: Size::fixed(100.0, 100.0),
+                    size: Sizing::fixed(100.0, 100.0),
                     ..Default::default()
                 },
                 |cx| {
                     cx.leaf(LeafStyle {
-                        size: Size::fixed(300.0, 100.0),
+                        size: Sizing::fixed(300.0, 100.0),
                         ..Default::default()
                     });
                 },
@@ -4440,7 +4440,7 @@ mod tests {
             cx.scroll(
                 ScrollStyle {
                     axis: Axis::Row,
-                    size: Size::fixed(100.0, 100.0),
+                    size: Sizing::fixed(100.0, 100.0),
                     ..Default::default()
                 },
                 |cx| {
@@ -4449,12 +4449,12 @@ mod tests {
                     let inner = cx.scroll(
                         ScrollStyle {
                             axis: Axis::Column,
-                            size: Size::fixed(300.0, 100.0),
+                            size: Sizing::fixed(300.0, 100.0),
                             ..Default::default()
                         },
                         |cx| {
                             cx.leaf(LeafStyle {
-                                size: Size::fixed(300.0, 300.0),
+                                size: Sizing::fixed(300.0, 300.0),
                                 ..Default::default()
                             });
                         },
@@ -4491,7 +4491,7 @@ mod contact_tests {
     use super::*;
     use crate::component::{BuildCx, FlexStyle, LeafStyle, ScrollStyle};
     use crate::interaction::Interaction;
-    use crate::layout::Size;
+    use crate::layout::Sizing;
     use crate::scroll_motion::{OverscrollStyle, ScrollPhysics};
     use crate::state::StateValue;
     use std::cell::RefCell;
@@ -4541,31 +4541,31 @@ mod contact_tests {
             cx.scroll(
                 ScrollStyle {
                     axis: Axis::Column,
-                    size: Size::fixed(100.0, 100.0),
+                    size: Sizing::fixed(100.0, 100.0),
                     ..Default::default()
                 },
                 |cx| {
                     cx.flex(
                         FlexStyle {
                             axis: Axis::Column,
-                            size: Size::fixed(100.0, 300.0),
+                            size: Sizing::fixed(100.0, 300.0),
                             ..Default::default()
                         },
                         |cx| {
                             cx.flex(
                                 FlexStyle {
                                     axis: Axis::Row,
-                                    size: Size::fixed(100.0, 40.0),
+                                    size: Sizing::fixed(100.0, 40.0),
                                     ..Default::default()
                                 },
                                 |cx| {
                                     let ah = cx.leaf(LeafStyle {
-                                        size: Size::fixed(40.0, 40.0),
+                                        size: Sizing::fixed(40.0, 40.0),
                                         ..Default::default()
                                     });
                                     a = Some(ah.id());
                                     let bh = cx.leaf(LeafStyle {
-                                        size: Size::fixed(40.0, 40.0),
+                                        size: Sizing::fixed(40.0, 40.0),
                                         ..Default::default()
                                     });
                                     b = Some(bh.id());
@@ -4746,26 +4746,26 @@ mod contact_tests {
             cx.scroll(
                 ScrollStyle {
                     axis: Axis::Column,
-                    size: Size::fixed(100.0, 100.0),
+                    size: Sizing::fixed(100.0, 100.0),
                     ..Default::default()
                 },
                 |cx| {
                     cx.flex(
                         FlexStyle {
                             axis: Axis::Column,
-                            size: Size::fixed(100.0, 300.0),
+                            size: Sizing::fixed(100.0, 300.0),
                             ..Default::default()
                         },
                         |cx| {
                             let row = cx.scroll(
                                 ScrollStyle {
                                     axis: Axis::Row,
-                                    size: Size::fixed(100.0, 50.0),
+                                    size: Sizing::fixed(100.0, 50.0),
                                     ..Default::default()
                                 },
                                 |cx| {
                                     cx.leaf(LeafStyle {
-                                        size: Size::fixed(300.0, 50.0),
+                                        size: Sizing::fixed(300.0, 50.0),
                                         ..Default::default()
                                     });
                                 },
@@ -5448,7 +5448,7 @@ mod task_tests {
     use super::*;
     use crate::component::{BuildCx, FlexStyle, LeafStyle};
     use crate::context::UpdateCx;
-    use crate::layout::Size;
+    use crate::layout::Sizing;
     use crate::state::StateValue;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -5470,12 +5470,12 @@ mod task_tests {
             let mut cx = BuildCx::new(store);
             cx.flex(
                 FlexStyle {
-                    size: Size::fixed(10.0, 10.0),
+                    size: Sizing::fixed(10.0, 10.0),
                     ..Default::default()
                 },
                 |cx| {
                     let h = cx.leaf(LeafStyle {
-                        size: Size::fixed(10.0, 10.0),
+                        size: Sizing::fixed(10.0, 10.0),
                         ..Default::default()
                     });
                     cx.on_pointer(h, handler);

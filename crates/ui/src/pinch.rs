@@ -572,7 +572,7 @@ fn dispatch(
 mod tests {
     use super::*;
     use crate::component::{BuildCx, LeafStyle};
-    use crate::layout::Size;
+    use crate::layout::Sizing;
     use crate::style::BoxStyle;
     use viso_render::Rect;
 
@@ -581,7 +581,7 @@ mod tests {
         let node = {
             let mut cx = BuildCx::new(&mut store);
             cx.leaf(LeafStyle {
-                size: Size::fixed(200.0, 200.0),
+                size: Sizing::fixed(200.0, 200.0),
                 style: BoxStyle::NONE,
             })
             .id()

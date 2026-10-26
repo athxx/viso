@@ -10,7 +10,7 @@ use viso::platform::{
     Modifiers, PointerButtons, PointerId, PointerKind, PointerPhase, RawEvent, RawPointer, WindowId,
 };
 use viso::prelude::*;
-use viso::ui::{Axis, BoxStyle, FlexStyle, LeafStyle, NodeId, ScrollPhysics, ScrollStyle, Size};
+use viso::ui::{Axis, BoxStyle, FlexStyle, LeafStyle, NodeId, ScrollPhysics, ScrollStyle, Sizing};
 
 const STEP: Duration = Duration::from_millis(16);
 const WIN: WindowId = WindowId(1);
@@ -34,19 +34,19 @@ impl Application for ListApp {
         cx.scroll(
             ScrollStyle {
                 axis: Axis::Column,
-                size: Size::fill(),
+                size: Sizing::fill(),
                 ..Default::default()
             },
             |cx| {
                 cx.flex(
                     FlexStyle {
                         axis: Axis::Column,
-                        size: Size::fixed(200.0, 5000.0),
+                        size: Sizing::fixed(200.0, 5000.0),
                         ..FlexStyle::default()
                     },
                     |cx| {
                         cx.leaf(LeafStyle {
-                            size: Size::fixed(200.0, 40.0),
+                            size: Sizing::fixed(200.0, 40.0),
                             style: BoxStyle::NONE,
                         });
                     },

@@ -19,7 +19,7 @@ use viso::platform::{
 };
 use viso::prelude::*;
 use viso::services::{Call, Mock, reply};
-use viso::ui::{BuildCx, FlexStyle, PointerPhase, Size, WindowConfig};
+use viso::ui::{BuildCx, FlexStyle, PointerPhase, Sizing, WindowConfig};
 
 const STEP: Duration = Duration::from_millis(16);
 
@@ -34,7 +34,7 @@ fn build_root(cx: &mut BuildCx<'_>, on_press: fn(&mut viso::ui::EventCx<'_>, Sta
     PICKED.with(|cell| cell.set(Some(picked)));
     let root = cx.flex(
         FlexStyle {
-            size: Size::fill(),
+            size: Sizing::fill(),
             ..FlexStyle::default()
         },
         |_| {},

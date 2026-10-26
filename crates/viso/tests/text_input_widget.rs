@@ -42,7 +42,7 @@ use viso::render::{FrameStats, GlyphInstanceData, Rect, Renderer, Rgba, test_gly
 use viso::ui::{
     Axis, BindingTable, BoxStyle, BuildCx, Component, Content, ImeEvent, Inset, Key, KeyEvent,
     KeyRouter, Modifiers, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase,
-    PointerRouter, Role, SemanticProjector, Size, StateStore, TextEdits, Vec2, VirtualLists,
+    PointerRouter, Role, SemanticProjector, Sizing, StateStore, TextEdits, Vec2, VirtualLists,
     paint_tree, text_edit,
 };
 use viso::widgets::{ViewStyle, text_input, view};
@@ -99,7 +99,7 @@ fn build_scene(store: &mut NodeStore) -> (NodeId, NodeId) {
     let container = view(ViewStyle {
         axis: Axis::Row,
         padding: Inset::all(10.0),
-        size: Size::fill(),
+        size: Sizing::fill(),
         background: BoxStyle::solid(DARK),
         ..Default::default()
     })
@@ -255,7 +255,7 @@ impl Interactive {
         let mut text_edits = TextEdits::new();
         let mut projectors = SemanticProjector::new();
 
-        let widget = text_input("Name").value(seed).size(Size::fill());
+        let widget = text_input("Name").value(seed).size(Sizing::fill());
 
         let field = {
             let mut cx = BuildCx::with_reactive(

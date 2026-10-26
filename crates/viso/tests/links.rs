@@ -12,7 +12,7 @@ use viso::platform::{
     PointerPhase as RawPhase, RawEvent, RawKey, RawPointer, WindowId,
 };
 use viso::prelude::*;
-use viso::ui::{Axis, Component, Content, FlexStyle, Rect, Size};
+use viso::ui::{Axis, Component, Content, FlexStyle, Rect, Sizing};
 
 const STEP: Duration = Duration::from_millis(16);
 const WIN: WindowId = WindowId(1);
@@ -41,7 +41,7 @@ impl Application for LinksApp {
     fn build(&mut self, cx: &mut BuildCx<'_>) {
         cx.flex(
             FlexStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 axis: Axis::Column,
                 ..FlexStyle::default()
             },
@@ -195,7 +195,7 @@ impl Application for LabelApp {
     fn build(&mut self, cx: &mut BuildCx<'_>) {
         cx.flex(
             FlexStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 axis: Axis::Column,
                 ..FlexStyle::default()
             },

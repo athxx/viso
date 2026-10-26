@@ -1318,7 +1318,7 @@ mod tests {
     use super::super::paint_tree;
     use crate::component::{BuildCx, FlexStyle, LeafStyle, NodeStore, Painted, ScrollStyle};
     use crate::content::Content;
-    use crate::layout::{Axis, Size};
+    use crate::layout::{Axis, Sizing};
     use crate::node::NodeId;
     use crate::style::BoxStyle;
     use viso_render::{GlyphInstanceData, Primitive, Rect, Rgba, TextureId};
@@ -1375,13 +1375,13 @@ mod tests {
             cx.flex(
                 FlexStyle {
                     axis: Axis::Row,
-                    size: Size::fixed(200.0, 12.0 + (k % 3) as f32 * 4.0),
+                    size: Sizing::fixed(200.0, 12.0 + (k % 3) as f32 * 4.0),
                     style: BoxStyle::solid(color(k)),
                     ..FlexStyle::default()
                 },
                 |cx| {
                     cx.leaf(LeafStyle {
-                        size: Size::fixed(8.0, 8.0),
+                        size: Sizing::fixed(8.0, 8.0),
                         style: BoxStyle::solid(color(k + 1)),
                     });
                     label = Some(cx.leaf(LeafStyle::default()).id());
@@ -1404,7 +1404,7 @@ mod tests {
             cx.flex(
                 FlexStyle {
                     axis: Axis::Column,
-                    size: Size::fill(),
+                    size: Sizing::fill(),
                     ..FlexStyle::default()
                 },
                 |cx| {
@@ -1413,7 +1413,7 @@ mod tests {
                             ScrollStyle {
                                 axis: Axis::Column,
                                 across: false,
-                                size: Size::fixed(300.0, 600.0),
+                                size: Sizing::fixed(300.0, 600.0),
                                 style: BoxStyle::solid(color(2)),
                                 bars: crate::scroll_bar::ScrollBars::Hidden,
                                 tail: false,
@@ -1565,8 +1565,10 @@ mod tests {
                         let before = store.arena().children(parent).nth(rng.below(8) as usize);
                         store.arena_insert_before(parent, card, before);
                     }
-                    7 => store
-                        .set_fixed_size(card, Size::fixed(200.0, 10.0 + rng.below(4) as f32 * 3.0)),
+                    7 => store.set_fixed_size(
+                        card,
+                        Sizing::fixed(200.0, 10.0 + rng.below(4) as f32 * 3.0),
+                    ),
                     8 if rng.below(4) == 0 => store.set_clip(card, !store.clips(card)),
                     9 => {
                         let (radius, pct) =

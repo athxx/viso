@@ -31,7 +31,7 @@ use viso_render::Rgba;
 use crate::animation::{Easing, LookValue, Timing};
 use crate::component::{BuildCx, NodeStore, StackStyle};
 use crate::dirty::DirtyClass;
-use crate::layout::{Alignment2D, Axis, OnAxis, Size, Vec2};
+use crate::layout::{Alignment2D, Axis, OnAxis, Sizing, Vec2};
 use crate::node::NodeId;
 use crate::shadow::Shadow;
 use crate::spinner::SpinnerLook;
@@ -254,14 +254,14 @@ impl BuildCx<'_> {
         let layer = self.stack(
             StackStyle {
                 align: Alignment2D::Top,
-                size: Size::fill(),
+                size: Sizing::fill(),
                 ..StackStyle::default()
             },
             |cx| {
                 let p = cx.stack(
                     StackStyle {
                         align: Alignment2D::Center,
-                        size: Size::fixed(side, side),
+                        size: Sizing::fixed(side, side),
                         style: BoxStyle {
                             fill: style.puck_color,
                             radius_pct: 0.5,
@@ -340,8 +340,8 @@ impl NodeStore {
             if !self.arena().is_live(r.puck) {
                 continue;
             }
-            *self.layout_input_mut(r.puck).size_mut() = Size::fixed(side, side);
-            *self.layout_input_mut(r.spinner).size_mut() = Size::fixed(style.side, style.side);
+            *self.layout_input_mut(r.puck).size_mut() = Sizing::fixed(side, side);
+            *self.layout_input_mut(r.spinner).size_mut() = Sizing::fixed(style.side, style.side);
             self.mark_dirty(r.puck, DirtyClass::MEASURE | DirtyClass::LAYOUT);
             self.mark_dirty(r.spinner, DirtyClass::MEASURE | DirtyClass::LAYOUT);
             self.set_fill(r.puck, style.puck_color);
@@ -826,7 +826,7 @@ mod tests {
         let viewport = BuildCx::new(&mut store)
             .scroll(
                 ScrollStyle {
-                    size: Size::fixed(VIEW.w, VIEW.h),
+                    size: Sizing::fixed(VIEW.w, VIEW.h),
                     bars: ScrollBars::Hidden,
                     refresh: true,
                     ..ScrollStyle::default()
@@ -836,7 +836,7 @@ mod tests {
                         cx.flex(
                             FlexStyle {
                                 axis: Axis::Column,
-                                size: Size {
+                                size: Sizing {
                                     width: Length::Fill { weight: 1.0 },
                                     height: Length::Fit,
                                 },
@@ -845,7 +845,7 @@ mod tests {
                             |cx| {
                                 for _ in 0..rows {
                                     cx.leaf(LeafStyle {
-                                        size: Size::fixed(100.0, 50.0),
+                                        size: Sizing::fixed(100.0, 50.0),
                                         ..Default::default()
                                     });
                                 }

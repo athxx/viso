@@ -27,7 +27,7 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use viso_render::{FrameStats, InspectBatches, Primitive, Rect, Rgba};
 use viso_ui::{
     Align, Axis, BoxStyle, BuildCx, FlexStyle, Inset, Justify, LeafStyle, Length, NodeArena,
-    NodeId, NodeStore, Size, paint_ranges, paint_tree, snapshot_ui,
+    NodeId, NodeStore, Sizing, paint_ranges, paint_tree, snapshot_ui,
 };
 
 // ---------------------------------------------------------------------------
@@ -165,16 +165,16 @@ fn build(store: &mut NodeStore) -> NodeId {
             padding: Inset::all(12.0),
             align: Align::Center,
             justify: Justify::Start,
-            size: Size::fill(),
+            size: Sizing::fill(),
             style: BoxStyle::solid(DARK),
         },
         |cx| {
             cx.leaf(LeafStyle {
-                size: Size::fixed(48.0, 40.0),
+                size: Sizing::fixed(48.0, 40.0),
                 style: BoxStyle::solid(RED).with_radius(8.0),
             });
             cx.leaf(LeafStyle {
-                size: Size {
+                size: Sizing {
                     width: Length::fill(),
                     height: Length::Fixed(56.0),
                 },

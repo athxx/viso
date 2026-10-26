@@ -21,8 +21,8 @@ use viso::ui::slider::Thumb;
 use viso::ui::{
     Axis, BindingTable, BoxStyle, BuildCx, Component, EffectStore, Inset, Key, KeyEvent, KeyRouter,
     Length, Modifiers, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase,
-    PointerRouter, Role, SemanticProjector, Size, StateStore, TextEdits, VirtualLists, focus_node,
-    paint_tree, run_structure_hooks,
+    PointerRouter, Role, SemanticProjector, Sizing, StateStore, TextEdits, VirtualLists,
+    focus_node, paint_tree, run_structure_hooks,
 };
 use viso::widgets::{ViewStyle, knob, range_slider, slider, view};
 
@@ -44,7 +44,7 @@ fn build_scene(store: &mut NodeStore) -> NodeId {
     let mut lists = VirtualLists::new();
     let mut text_edits = TextEdits::new();
     let mut projectors = SemanticProjector::new();
-    let width = Size {
+    let width = Sizing {
         width: Length::Fixed(200.0),
         height: Length::Fit,
     };
@@ -52,7 +52,7 @@ fn build_scene(store: &mut NodeStore) -> NodeId {
         axis: Axis::Column,
         padding: Inset::all(10.0),
         gap: 6.0,
-        size: Size::fill(),
+        size: Sizing::fill(),
         background: BoxStyle::solid(Rgba::new(0.97, 0.97, 0.98, 1.0)),
         ..Default::default()
     })
@@ -73,7 +73,7 @@ fn build_scene(store: &mut NodeStore) -> NodeId {
         range_slider("Price")
             .range(0.0, 100.0)
             .values(20.0, 70.0)
-            .size(Size {
+            .size(Sizing {
                 width: Length::Fixed(200.0),
                 height: Length::Fixed(24.0),
             })
@@ -88,7 +88,7 @@ fn build_scene(store: &mut NodeStore) -> NodeId {
             slider("Level")
                 .vertical()
                 .value(0.3)
-                .size(Size {
+                .size(Sizing {
                     width: Length::Fit,
                     height: Length::Fixed(80.0),
                 })
@@ -182,7 +182,7 @@ impl Driven {
                 &mut projectors,
             );
             view(ViewStyle {
-                size: Size::fixed(220.0, 24.0),
+                size: Sizing::fixed(220.0, 24.0),
                 ..Default::default()
             })
             .children(move |cx| widget.build(cx))
@@ -286,7 +286,7 @@ fn volume(heard: &Rc<RefCell<Vec<f32>>>) -> Driven {
         slider("Volume")
             .range(0.0, 100.0)
             .value(50.0)
-            .size(Size::fill())
+            .size(Sizing::fill())
             .on_change(move |_, v| h.borrow_mut().push(v)),
     )
 }
@@ -363,7 +363,7 @@ fn a_range_keeps_its_thumbs_apart_each_a_slider_of_its_own() {
         range_slider("Price")
             .range(0.0, 100.0)
             .values(20.0, 70.0)
-            .size(Size::fill())
+            .size(Sizing::fill())
             .on_change(move |_, lo, hi| h.borrow_mut().push((lo, hi))),
     );
     assert_eq!(s.store.semantics(s.root).unwrap().role, Role::Group);

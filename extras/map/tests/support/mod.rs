@@ -188,7 +188,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use viso::ui::{Alignment2D, BuildCx, FrameClient, Key, Size, StackStyle};
+use viso::ui::{Alignment2D, BuildCx, FrameClient, Key, Sizing, StackStyle};
 use viso_map::MapHandleSlot;
 
 thread_local! {
@@ -247,7 +247,7 @@ pub fn patient(cx: &mut BuildCx<'_>, content: impl FnOnce(&mut BuildCx<'_>)) {
     WATCHED.with(|w| w.borrow_mut().retain(|s| Rc::strong_count(s) > 1));
     let root = cx.stack(
         StackStyle {
-            size: Size::fill(),
+            size: Sizing::fill(),
             align: Alignment2D::TopStart,
             ..StackStyle::default()
         },

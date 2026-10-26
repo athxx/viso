@@ -15,7 +15,7 @@ use viso::platform::{
     PointerPhase as RawPhase, RawEvent, RawKey, RawPointer, RawText, WindowId,
 };
 use viso::prelude::*;
-use viso::ui::{Axis, Component, FlexStyle, NodeId, NodeStore, Role, Size, Validity};
+use viso::ui::{Axis, Component, FlexStyle, NodeId, NodeStore, Role, Sizing, Validity};
 use viso::widgets::{Form, button, checkbox, field, fieldset, text_input};
 
 const STEP: Duration = Duration::from_millis(16);
@@ -52,7 +52,7 @@ impl Application for FormApp {
             FlexStyle {
                 axis: Axis::Column,
                 gap: 16.0,
-                size: Size::fixed(360.0, 400.0),
+                size: Sizing::fixed(360.0, 400.0),
                 ..FlexStyle::default()
             },
             move |cx| {

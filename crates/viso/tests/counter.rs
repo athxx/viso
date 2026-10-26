@@ -14,7 +14,7 @@ use viso::prelude::*;
 use viso::render::{Rect, Rgba};
 use viso::ui::{
     Axis, BindingTable, BoxStyle, Inset, NodeStore, PointerButtons, PointerEvent, PointerPhase,
-    PointerRouter, Size, StateStore,
+    PointerRouter, Sizing, StateStore,
 };
 
 const W: f32 = 200.0;
@@ -58,7 +58,7 @@ fn scene() -> Scene {
                 axis: Axis::Row,
                 gap: 12.0,
                 padding: Inset::all(16.0),
-                size: Size::fill(),
+                size: Sizing::fill(),
                 style: BoxStyle::solid(Rgba {
                     r: 0.12,
                     g: 0.13,
@@ -69,7 +69,7 @@ fn scene() -> Scene {
             },
             |cx| {
                 let b = cx.leaf(LeafStyle {
-                    size: Size::fixed(96.0, 48.0),
+                    size: Sizing::fixed(96.0, 48.0),
                     style: BoxStyle::solid(Rgba {
                         r: 0.20,
                         g: 0.45,
@@ -95,7 +95,7 @@ fn scene() -> Scene {
                 button = Some(b.id());
 
                 let bar_leaf = cx.leaf(LeafStyle {
-                    size: Size::fixed(160.0, 24.0),
+                    size: Sizing::fixed(160.0, 24.0),
                     style: BoxStyle::solid(Rgba {
                         r: 0.15,
                         g: 0.75,

@@ -67,7 +67,7 @@ use std::rc::Rc;
 use viso_ui::virtual_list::{set_sticky_of, watch_across};
 use viso_ui::{
     AcrossView, BoxStyle, BuildCx, Component, EventCx, Justify, NodeId, Rgba, Role, Semantics,
-    Size, SortOrder, StateId, StateValue, TextAlign, VirtualListStyle,
+    Sizing, SortOrder, StateId, StateValue, TextAlign, VirtualListStyle,
 };
 
 pub use selection::{GridRange, GridSelect, GridSelection};
@@ -158,7 +158,7 @@ impl GridColumn {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DataGridStyle {
     /// The grid's own size within its parent.
-    pub size: Size,
+    pub size: Sizing,
     /// A row's height and the headers'.
     pub row_height: f32,
     pub header_height: f32,
@@ -193,7 +193,7 @@ const fn rgba(r: f32, g: f32, b: f32, a: f32) -> Rgba {
 impl Default for DataGridStyle {
     fn default() -> Self {
         DataGridStyle {
-            size: Size::fill(),
+            size: Sizing::fill(),
             row_height: 28.0,
             header_height: 32.0,
             padding: 8.0,
@@ -344,7 +344,7 @@ impl DataGrid {
     }
 
     /// Set the grid's own size within its parent.
-    pub fn size(mut self, size: Size) -> Self {
+    pub fn size(mut self, size: Sizing) -> Self {
         self.style.size = size;
         self
     }

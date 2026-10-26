@@ -85,7 +85,7 @@ mod tests {
     use viso_render::Rect;
 
     use crate::component::{BuildCx, FlexStyle, LeafStyle, NodeStore};
-    use crate::layout::{Axis, Size};
+    use crate::layout::{Axis, Sizing};
 
     fn heights(
         store: &mut NodeStore,
@@ -115,7 +115,7 @@ mod tests {
             cx.flex(style, |cx| {
                 for _ in 0..3 {
                     let leaf = LeafStyle {
-                        size: Size::fixed(10.0, 20.0),
+                        size: Sizing::fixed(10.0, 20.0),
                         ..LeafStyle::default()
                     };
                     kids.push(cx.leaf(leaf).id());

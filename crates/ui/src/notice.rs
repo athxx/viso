@@ -383,7 +383,7 @@ mod tests {
 
     use super::*;
     use crate::component::{BuildCx, LeafStyle, ScrollStyle};
-    use crate::layout::{Length, Size};
+    use crate::layout::{Length, Sizing};
     use viso_render::Rect;
 
     #[test]
@@ -393,7 +393,7 @@ mod tests {
         let viewport = cx
             .scroll(
                 ScrollStyle {
-                    size: Size {
+                    size: Sizing {
                         width: Length::Fixed(100.0),
                         height: Length::Fixed(50.0),
                     },
@@ -401,7 +401,7 @@ mod tests {
                 },
                 |cx| {
                     cx.leaf(LeafStyle {
-                        size: Size {
+                        size: Sizing {
                             width: Length::Fixed(100.0),
                             height: Length::Fixed(400.0),
                         },
@@ -457,7 +457,7 @@ mod tests {
         let mut cx = BuildCx::new(&mut store);
         let node = cx
             .leaf(LeafStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 ..Default::default()
             })
             .id();

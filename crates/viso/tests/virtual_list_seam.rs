@@ -13,7 +13,7 @@
 use viso::prelude::*;
 use viso::render::Rect;
 use viso::ui::{
-    Axis, BindingTable, BoxStyle, EffectStore, Length, NodeStore, SemanticProjector, Size,
+    Axis, BindingTable, BoxStyle, EffectStore, Length, NodeStore, SemanticProjector, Sizing,
     StateStore, TextEdits, Vec2, VirtualListStyle, VirtualLists, virtual_list,
 };
 
@@ -59,7 +59,7 @@ impl Seam {
             cx.virtual_list(
                 VirtualListStyle {
                     axis: Axis::Column,
-                    size: Size {
+                    size: Sizing {
                         width: Length::Fixed(200.0),
                         height: Length::Fixed(VIEWPORT_H),
                     },
@@ -71,7 +71,7 @@ impl Seam {
                 ITEM_COUNT,
                 move |_i, cx| {
                     cx.leaf(LeafStyle {
-                        size: Size {
+                        size: Sizing {
                             width: Length::fill(),
                             height: Length::Fixed(ROW_H),
                         },

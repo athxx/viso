@@ -41,7 +41,7 @@ use std::rc::Rc;
 use viso_ui::{
     Align, Axis, BoxStyle, BuildCx, ChromeContext, Component, EventCx, FlexStyle, Inset,
     InteractionStyle, Justify, Key, LeafStyle, Length, PathCmd, Point, PointerButtons,
-    PointerPhase, Rgba, Role, Semantics, Size, StateValue, Stroke, Vec2, WindowChrome,
+    PointerPhase, Rgba, Role, Semantics, Sizing, StateValue, Stroke, Vec2, WindowChrome,
 };
 
 use crate::label;
@@ -377,7 +377,7 @@ fn window_button(cx: &mut BuildCx<'_>, kind: WindowButtonKind, height: f32, acti
             padding: Inset::default(),
             align: Align::Center,
             justify: Justify::Center,
-            size: Size {
+            size: Sizing {
                 width: Length::Fixed(BUTTON_WIDTH),
                 height: Length::Fixed(height),
             },
@@ -389,7 +389,7 @@ fn window_button(cx: &mut BuildCx<'_>, kind: WindowButtonKind, height: f32, acti
             // detour) so it lands as this button's single content child.
             let extent = 2.0 * GLYPH;
             let leaf = cx.leaf(LeafStyle {
-                size: Size::fixed(extent, extent),
+                size: Sizing::fixed(extent, extent),
                 style: BoxStyle::NONE,
             });
             cx.path(
@@ -516,7 +516,7 @@ impl CaptionBar {
                 },
                 align: Align::Center,
                 justify: Justify::Start,
-                size: Size {
+                size: Sizing {
                     width: Length::fill(),
                     height: Length::Fixed(height),
                 },
@@ -538,7 +538,7 @@ impl CaptionBar {
                         padding: Inset::default(),
                         align: Align::Center,
                         justify: Justify::Start,
-                        size: Size {
+                        size: Sizing {
                             width: Length::Fit,
                             height: Length::Fixed(height),
                         },
@@ -564,7 +564,7 @@ impl CaptionBar {
                         padding: Inset::default(),
                         align: Align::Center,
                         justify: Justify::Center,
-                        size: Size {
+                        size: Sizing {
                             width: Length::fill(),
                             height: Length::Fixed(height),
                         },
@@ -588,7 +588,7 @@ impl CaptionBar {
                         padding: Inset::default(),
                         align: Align::Center,
                         justify: Justify::End,
-                        size: Size {
+                        size: Sizing {
                             width: Length::Fit,
                             height: Length::Fixed(height),
                         },

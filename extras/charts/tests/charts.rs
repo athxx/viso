@@ -14,7 +14,7 @@ use viso::platform::{
 };
 use viso::prelude::*;
 use viso::ui::{
-    Axis, Component, EventCx, FlexStyle, Inset, NodeId, NodeStore, PlotLayer, Role, Size,
+    Axis, Component, EventCx, FlexStyle, Inset, NodeId, NodeStore, PlotLayer, Role, Sizing,
 };
 use viso_charts::{
     ChartHandleSlot, ChartKind, bar_chart, line_chart, scatter_chart, series, series_xy, sparkline,
@@ -57,7 +57,7 @@ impl Application for ChartApp {
         SLOT.with(|s| *s.borrow_mut() = Some(slot.clone()));
         cx.flex(
             FlexStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 axis: Axis::Column,
                 padding: Inset {
                     left: 20.0,
@@ -68,7 +68,7 @@ impl Application for ChartApp {
                 ..FlexStyle::default()
             },
             |cx| {
-                let size = Size::fixed(600.0, 300.0);
+                let size = Sizing::fixed(600.0, 300.0);
                 let handle = slot.clone();
                 let pick = move |ev: &mut EventCx<'_>, at: viso_charts::ChartPoint| {
                     HEARD.with(|h| h.borrow_mut().push(format!("{:?} {}", at.series, at.index)));

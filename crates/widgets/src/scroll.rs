@@ -27,7 +27,7 @@ use std::rc::Rc;
 
 use viso_ui::{
     Axis, BoxStyle, BuildCx, Component, EventCx, Handle, Role, ScrollBars, ScrollStyle, Semantics,
-    Size,
+    Sizing,
 };
 
 /// What a refreshable viewport runs when a pull asks it to refresh. Shared
@@ -95,7 +95,7 @@ pub struct ScrollViewStyle {
     pub across: bool,
     /// The viewport's own visible size within its parent (the clip box). Content
     /// larger than this along `axis` scrolls; content is clipped to this box.
-    pub size: Size,
+    pub size: Sizing,
     /// The viewport's own background/border/radius. [`BoxStyle::NONE`] is a pure,
     /// transparent clip box.
     pub background: BoxStyle,
@@ -116,7 +116,7 @@ impl Default for ScrollViewStyle {
         ScrollViewStyle {
             axis: Axis::Column,
             across: false,
-            size: Size::fill(),
+            size: Sizing::fill(),
             background: BoxStyle::NONE,
             bars: ScrollBars::Auto,
             tail: false,
@@ -139,11 +139,11 @@ type ContentBuilder = Box<dyn Fn(&mut BuildCx<'_>)>;
 ///
 /// ```
 /// use viso_widgets::{scroll, ScrollViewStyle, view, ViewStyle};
-/// use viso_ui::{Axis, BuildCx, Component, NodeStore, Size};
+/// use viso_ui::{Axis, BuildCx, Component, NodeStore, Sizing};
 ///
 /// let region = scroll(ScrollViewStyle {
 ///     axis: Axis::Column,
-///     size: Size::fixed(200.0, 300.0),
+///     size: Sizing::fixed(200.0, 300.0),
 ///     ..Default::default()
 /// })
 /// .content(|cx| {
@@ -308,12 +308,12 @@ mod tests {
     fn scroll_builds_a_scroll_node_with_content() {
         let region = scroll(ScrollViewStyle {
             axis: Axis::Column,
-            size: Size::fixed(100.0, 100.0),
+            size: Sizing::fixed(100.0, 100.0),
             ..Default::default()
         })
         .content(|cx| {
             cx.leaf(LeafStyle {
-                size: Size {
+                size: Sizing {
                     width: Length::Fixed(100.0),
                     height: Length::Fixed(1000.0),
                 },

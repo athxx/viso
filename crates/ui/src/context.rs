@@ -2001,7 +2001,7 @@ mod tests {
     use crate::binding::BindingTable;
     use crate::component::{BuildCx, LeafStyle, NodeStore};
     use crate::input::{ImeEvent, Key, KeyEvent, PointerButtons, PointerEvent, PointerPhase};
-    use crate::layout::Size;
+    use crate::layout::Sizing;
     use crate::state::{StateStore, StateValue};
 
     /// Mint a live `NodeId` (its fields are private, so a test can't build one
@@ -2011,7 +2011,7 @@ mod tests {
         let id = {
             let mut cx = BuildCx::new(&mut store);
             let h = cx.leaf(LeafStyle {
-                size: Size::fixed(1.0, 1.0),
+                size: Sizing::fixed(1.0, 1.0),
                 ..Default::default()
             });
             cx.root();
@@ -2192,7 +2192,7 @@ mod tests {
         let b = {
             let mut cx = BuildCx::new(&mut store);
             let h = cx.leaf(LeafStyle {
-                size: Size::fixed(1.0, 1.0),
+                size: Sizing::fixed(1.0, 1.0),
                 ..Default::default()
             });
             cx.root();

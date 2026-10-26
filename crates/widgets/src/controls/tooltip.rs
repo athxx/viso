@@ -28,7 +28,7 @@ use std::time::Duration;
 use viso_ui::{
     Align, AnchorAlign, Anchoring, Axis, BoxStyle, BuildCx, Component, DispatchPhase, EventCx,
     FlexStyle, FocusChange, Inset, Length, NodeId, NodeStore, PointerPhase, Rgba, Role, Semantics,
-    Shadow, Side, Size,
+    Shadow, Side, Sizing,
 };
 
 use crate::label;
@@ -192,7 +192,7 @@ fn build(cx: &mut BuildCx<'_>, tooltip: &Tooltip) {
         FlexStyle {
             axis: Axis::Column,
             align: Align::Stretch,
-            size: Size {
+            size: Sizing {
                 width: Length::Fit,
                 height: Length::Fit,
             },
@@ -207,7 +207,7 @@ fn build(cx: &mut BuildCx<'_>, tooltip: &Tooltip) {
                     axis: Axis::Column,
                     padding: style.padding,
                     align: Align::Start,
-                    size: Size {
+                    size: Sizing {
                         width: Length::Fit,
                         height: Length::Fit,
                     },

@@ -40,7 +40,7 @@ use viso_ui::virtual_list::{ItemKey, watch_across};
 use viso_ui::{
     AbsoluteStyle, Axis, BoxStyle, BuildCx, Component, EventCx, FlexStyle, FontFamily, FontSize,
     Handle, InputKind, LeafStyle, Length, LengthTerms, NodeId, Notice, NoticeKinds, Rect, Rgba,
-    Role, ScrollStyle, Semantics, Size, StateId, StateValue, StateWriter, StructureCx,
+    Role, ScrollStyle, Semantics, Sizing, StateId, StateValue, StateWriter, StructureCx,
     TextEntryRequest, TextRequest, TextSpan, TextStyle, Vec2, VirtualListStyle,
 };
 
@@ -76,7 +76,7 @@ pub fn code_editor(text: impl Into<String>) -> CodeEditor {
         font_size: 13.0,
         line_height: 1.5,
         family: FontFamily::Monospace,
-        size: Size::fill(),
+        size: Sizing::fill(),
         label: "Code editor".into(),
         gutter: true,
         line_numbers: true,
@@ -103,7 +103,7 @@ pub struct CodeEditor {
     font_size: f32,
     line_height: f32,
     family: FontFamily,
-    size: Size,
+    size: Sizing,
     label: String,
     gutter: bool,
     line_numbers: bool,
@@ -155,7 +155,7 @@ impl CodeEditor {
     }
 
     /// Its size within its parent.
-    pub fn size(mut self, size: Size) -> Self {
+    pub fn size(mut self, size: Sizing) -> Self {
         self.size = size;
         self
     }
@@ -635,7 +635,7 @@ impl Component for CodeEditor {
                 // scroll box no room is given.
                 cx.absolute(
                     AbsoluteStyle {
-                        size: Size::fixed(0.0, 0.0),
+                        size: Sizing::fixed(0.0, 0.0),
                         ..AbsoluteStyle::default()
                     },
                     |cx| {
@@ -654,7 +654,7 @@ impl Component for CodeEditor {
                     VirtualListStyle {
                         axis: Axis::Column,
                         across: true,
-                        size: Size::fill(),
+                        size: Sizing::fill(),
                         overscan: 6,
                         estimated_row: lh,
                         ..VirtualListStyle::default()
@@ -782,13 +782,13 @@ fn probe_box(shared: &Shared, cx: &mut BuildCx<'_>, text: &str) -> Handle {
     cx.scroll(
         ScrollStyle {
             axis: Axis::Row,
-            size: Size::fixed(1.0, 1.0),
+            size: Sizing::fixed(1.0, 1.0),
             bars: viso_ui::scroll_bar::ScrollBars::Hidden,
             ..ScrollStyle::default()
         },
         |cx| {
             let leaf = cx.leaf(LeafStyle {
-                size: Size {
+                size: Sizing {
                     width: Length::MaxContent,
                     height: Length::Fixed(lh),
                 },

@@ -27,7 +27,7 @@ use viso_render::Rect;
 use viso_ui::virtual_list::ItemKey;
 use viso_ui::{
     Axis, BindingTable, BoxStyle, BuildCx, DirtyClass, EffectStore, Length, NodeId, NodeStore,
-    SemanticProjector, Size, StateStore, TextEdits, Vec2, VirtualListStyle, VirtualLists,
+    SemanticProjector, Sizing, StateStore, TextEdits, Vec2, VirtualListStyle, VirtualLists,
     virtual_list,
 };
 
@@ -71,7 +71,7 @@ fn setup() -> Harness {
         cx.virtual_list(
             VirtualListStyle {
                 axis: Axis::Column,
-                size: Size {
+                size: Sizing {
                     width: Length::Fixed(300.0),
                     height: Length::Fixed(VIEWPORT_H),
                 },
@@ -83,7 +83,7 @@ fn setup() -> Harness {
             ITEM_COUNT,
             move |_i, cx| {
                 cx.leaf(viso_ui::LeafStyle {
-                    size: Size {
+                    size: Sizing {
                         width: Length::fill(),
                         height: Length::Fixed(ROW_H),
                     },
@@ -149,7 +149,7 @@ fn setup_keyed() -> KeyedHarness {
         cx.virtual_list_keyed(
             VirtualListStyle {
                 axis: Axis::Column,
-                size: Size {
+                size: Sizing {
                     width: Length::Fixed(300.0),
                     height: Length::Fixed(VIEWPORT_H),
                 },
@@ -162,7 +162,7 @@ fn setup_keyed() -> KeyedHarness {
             move |i| ItemKey(key_src.borrow()[i]),
             move |_i, cx| {
                 cx.leaf(viso_ui::LeafStyle {
-                    size: Size {
+                    size: Sizing {
                         width: Length::fill(),
                         height: Length::Fixed(ROW_H),
                     },

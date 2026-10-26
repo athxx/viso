@@ -15,7 +15,7 @@ use std::time::Duration;
 use viso::__test_support::drive_scripted;
 use viso::platform::{RawEvent, WindowId};
 use viso::prelude::*;
-use viso::ui::{NodeId, NodeStore, Role, Size, WindowChrome, WindowConfig};
+use viso::ui::{NodeId, NodeStore, Role, Sizing, WindowChrome, WindowConfig};
 
 const STEP: Duration = Duration::from_millis(16);
 
@@ -31,7 +31,7 @@ impl Application for BareApp {
     fn build(&mut self, cx: &mut BuildCx<'_>) {
         cx.flex(
             viso::ui::FlexStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 ..viso::ui::FlexStyle::default()
             },
             |_cx| {},
@@ -55,7 +55,7 @@ impl Application for NoCaptionApp {
     fn build(&mut self, cx: &mut BuildCx<'_>) {
         cx.flex(
             viso::ui::FlexStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 ..viso::ui::FlexStyle::default()
             },
             |_cx| {},
@@ -80,7 +80,7 @@ impl Application for TitledApp {
     fn build(&mut self, cx: &mut BuildCx<'_>) {
         cx.flex(
             viso::ui::FlexStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 ..viso::ui::FlexStyle::default()
             },
             |_cx| {},

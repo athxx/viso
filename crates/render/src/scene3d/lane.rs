@@ -984,7 +984,7 @@ impl SceneLane {
         env
     }
 
-    /// Size `draw`'s slot to its device pixels at `scale`, and fill it when
+    /// Sizing `draw`'s slot to its device pixels at `scale`, and fill it when
     /// its frame or size changed. Returns a color target the slot let go of,
     /// for the renderer to release with every binding it cached for it.
     pub(crate) fn place<B: GpuBackend>(

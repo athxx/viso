@@ -1330,12 +1330,12 @@ fn terms_tokens(terms: Option<TermsIr>) -> TokenStream {
     }
 }
 
-/// `::viso::__private::viso_ui::Size { width, height }` from a folded [`StyleIr`]. A missing axis
+/// `::viso::__private::viso_ui::Sizing { width, height }` from a folded [`StyleIr`]. A missing axis
 /// length defaults to `Length::Fit` (shrink to natural size), the neutral request.
 fn size_tokens(style: &StyleIr) -> TokenStream {
     let width = length_tokens(style.width);
     let height = length_tokens(style.height);
-    quote! { ::viso::__private::viso_ui::Size { width: #width, height: #height } }
+    quote! { ::viso::__private::viso_ui::Sizing { width: #width, height: #height } }
 }
 
 /// `::viso::__private::viso_ui::Length::…` from an optional folded [`LengthIr`]; `None` -> `Fit`.

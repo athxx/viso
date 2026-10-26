@@ -49,7 +49,7 @@ use viso_ui::{
     AnimationRegistry, Axis, BindingTable, BuildCx, ChromeContext, ComputedStore, Continuation,
     DirtyCause, DirtyClass, EffectStore, FlexStyle, FrameRecompute, ImeEvent, KeyEvent, KeyRouter,
     LinkPointer, Modifiers, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase,
-    PointerRouter, ScrollEvent, ScrollRouter, SemanticProjector, Size, StateId, StateStore,
+    PointerRouter, ScrollEvent, ScrollRouter, SemanticProjector, Sizing, StateId, StateStore,
     TextEdits, TextRequest, TimerRegistry, TimerRequest, TranslateAnim, VirtualLists,
     WindowOpenRequest, focus_next, text_edit, virtual_list,
 };
@@ -2945,7 +2945,7 @@ fn wrap_root_with_caption(
             // fill-width caption band and body span the whole window width — a
             // Start cross-align would let them collapse to content width.
             align: viso_ui::Align::Stretch,
-            size: Size::fill(),
+            size: Sizing::fill(),
             ..FlexStyle::default()
         },
         |cx| {
@@ -2963,7 +2963,7 @@ fn wrap_root_with_caption(
                 FlexStyle {
                     axis: Axis::Column,
                     align: viso_ui::Align::Stretch,
-                    size: Size::fill(),
+                    size: Sizing::fill(),
                     ..FlexStyle::default()
                 },
                 |cx| {
@@ -3002,7 +3002,7 @@ fn wrap_root_in_safe_area(
         FlexStyle {
             axis: Axis::Column,
             align: viso_ui::Align::Stretch,
-            size: Size::fill(),
+            size: Sizing::fill(),
             ..FlexStyle::default()
         },
         |cx| {
@@ -5449,7 +5449,7 @@ mod caret_area_tests {
 mod draggable_tests {
     use super::*;
     use viso_render::Rect;
-    use viso_ui::{BoxStyle, LeafStyle, Size};
+    use viso_ui::{BoxStyle, LeafStyle, Sizing};
 
     /// Build a `WindowState` whose store holds a single fixed-size leaf registered
     /// as the caption's draggable region, laid out at `logical` points under `dpi`.
@@ -5463,7 +5463,7 @@ mod draggable_tests {
         let root = {
             let mut cx = BuildCx::new(&mut ws.store);
             let leaf = cx.leaf(LeafStyle {
-                size: Size::fixed(logical.0, logical.1),
+                size: Sizing::fixed(logical.0, logical.1),
                 style: BoxStyle::NONE,
             });
             cx.register_draggable(leaf);
@@ -5525,7 +5525,7 @@ mod draggable_tests {
         assert!(ws.draggable_regions_changed());
 
         let root = ws.root.unwrap();
-        ws.store.set_fixed_size(root, Size::fixed(300.0, 80.0));
+        ws.store.set_fixed_size(root, Sizing::fixed(300.0, 80.0));
         let mut scratch = Vec::new();
         ws.store.layout(
             root,

@@ -102,7 +102,7 @@ impl NodeStore {
 mod tests {
     use super::*;
     use crate::component::{BuildCx, FlexStyle, LeafStyle};
-    use crate::layout::Size;
+    use crate::layout::Sizing;
     use crate::style::BoxStyle;
 
     fn entry(x: f32) -> TextEntryRequest {
@@ -125,7 +125,7 @@ mod tests {
         let mut leaf = None;
         let root = cx.flex(FlexStyle::default(), |cx| {
             leaf = Some(cx.leaf(LeafStyle {
-                size: Size::fixed(10.0, 10.0),
+                size: Sizing::fixed(10.0, 10.0),
                 style: BoxStyle::NONE,
             }));
         });
@@ -145,7 +145,7 @@ mod tests {
         let mut cx = BuildCx::new(&mut store);
         let root = cx
             .leaf(LeafStyle {
-                size: Size::fixed(10.0, 10.0),
+                size: Sizing::fixed(10.0, 10.0),
                 style: BoxStyle::NONE,
             })
             .id();
@@ -155,7 +155,7 @@ mod tests {
         let mut cx = BuildCx::new(&mut store);
         let again = cx
             .leaf(LeafStyle {
-                size: Size::fixed(10.0, 10.0),
+                size: Sizing::fixed(10.0, 10.0),
                 style: BoxStyle::NONE,
             })
             .id();

@@ -7,7 +7,7 @@ use std::time::Duration;
 use viso::__test_support::drive_scripted_full_screen;
 use viso::platform::{RawEvent, WindowId};
 use viso::prelude::*;
-use viso::ui::Size;
+use viso::ui::Sizing;
 
 const STEP: Duration = Duration::from_millis(16);
 const WINDOW: WindowId = WindowId(1);
@@ -21,7 +21,7 @@ impl Application for BareApp {
     fn build(&mut self, cx: &mut BuildCx<'_>) {
         cx.flex(
             viso::ui::FlexStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 ..viso::ui::FlexStyle::default()
             },
             |_cx| {},

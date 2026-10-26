@@ -5,7 +5,7 @@
 
 use viso::prelude::*;
 use viso::render::Rgba;
-use viso::ui::{BoxStyle, EventCx, Size};
+use viso::ui::{BoxStyle, EventCx, Sizing};
 
 struct Links {
     opened: Option<StateId>,
@@ -20,7 +20,7 @@ impl Application for Links {
         let opened = cx.state(StateValue::Int(0));
         self.opened = Some(opened);
         let page = cx.leaf(LeafStyle {
-            size: Size::fill(),
+            size: Sizing::fill(),
             style: BoxStyle::solid(Rgba {
                 r: 0.12,
                 g: 0.13,

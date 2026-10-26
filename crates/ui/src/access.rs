@@ -162,12 +162,12 @@ fn fold(key: char) -> char {
 mod tests {
     use super::*;
     use crate::component::{BuildCx, LeafStyle};
-    use crate::layout::Size;
+    use crate::layout::Sizing;
     use crate::style::BoxStyle;
 
     fn leaf(cx: &mut BuildCx<'_>) -> NodeId {
         cx.leaf(LeafStyle {
-            size: Size::fixed(10.0, 10.0),
+            size: Sizing::fixed(10.0, 10.0),
             style: BoxStyle::NONE,
         })
         .id()

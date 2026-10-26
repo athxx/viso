@@ -35,7 +35,7 @@ use std::rc::Rc;
 use viso_ui::stepper::{Stepper as Pill, can_step, stepper_input};
 use viso_ui::{
     BoxStyle, BuildCx, Component, Content, EventCx, Haptic, LeafStyle, Length, NodeId, NodeStore,
-    Rgba, Role, SemanticState, Semantics, Size, StateId, StateValue,
+    Rgba, Role, SemanticState, Semantics, Sizing, StateId, StateValue,
 };
 
 use super::check::INK;
@@ -49,7 +49,7 @@ type SharedNumber = Rc<RefCell<Option<Box<dyn FnMut(&mut EventCx<'_>, f32)>>>>;
 pub struct StepperStyle {
     /// Its own size request within its parent. Defaults to `Fit` on both
     /// axes: 96 by 32.
-    pub size: Size,
+    pub size: Sizing,
     /// The minus, the plus and the line between them.
     pub color: Rgba,
     /// The pill.
@@ -59,7 +59,7 @@ pub struct StepperStyle {
 impl Default for StepperStyle {
     fn default() -> Self {
         StepperStyle {
-            size: Size {
+            size: Sizing {
                 width: Length::Fit,
                 height: Length::Fit,
             },
@@ -190,7 +190,7 @@ impl Stepper {
     }
 
     /// Set its own size request within its parent (defaults to `Fit`).
-    pub fn size(mut self, size: Size) -> Self {
+    pub fn size(mut self, size: Sizing) -> Self {
         self.style.size = size;
         self
     }

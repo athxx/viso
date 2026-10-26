@@ -41,7 +41,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use viso_ui::{BuildCx, CheckShape, Component, EventCx, Length, Rgba, Size};
+use viso_ui::{BuildCx, CheckShape, Component, EventCx, Length, Rgba, Sizing};
 
 use super::check::{Check, INK, SharedChange};
 
@@ -50,7 +50,7 @@ use super::check::{Check, INK, SharedChange};
 pub struct CheckBoxStyle {
     /// The checkbox's own size request within its parent. Defaults to `Fit` on
     /// both axes (shrink to the box plus the caption).
-    pub size: Size,
+    pub size: Sizing,
     /// The caption's color, which inks the box and its tick too.
     pub color: Rgba,
 }
@@ -58,7 +58,7 @@ pub struct CheckBoxStyle {
 impl Default for CheckBoxStyle {
     fn default() -> Self {
         CheckBoxStyle {
-            size: Size {
+            size: Sizing {
                 width: Length::Fit,
                 height: Length::Fit,
             },
@@ -124,7 +124,7 @@ impl CheckBox {
     }
 
     /// Set the checkbox's own size request within its parent (defaults to `Fit`).
-    pub fn size(mut self, size: Size) -> Self {
+    pub fn size(mut self, size: Sizing) -> Self {
         self.style.size = size;
         self
     }
@@ -350,8 +350,8 @@ mod tests {
         assert_eq!(default.style.size.height, Length::Fit);
         assert!(!default.checked, "a checkbox starts unchecked");
 
-        let widget = checkbox("x").size(Size::fill()).checked(true);
-        assert_eq!(widget.style.size, Size::fill());
+        let widget = checkbox("x").size(Sizing::fill()).checked(true);
+        assert_eq!(widget.style.size, Sizing::fill());
         assert!(widget.checked, "checked(true) starts it checked");
     }
 

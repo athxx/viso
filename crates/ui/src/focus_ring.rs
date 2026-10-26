@@ -341,7 +341,7 @@ mod tests {
     #[test]
     fn the_keyboard_s_focus_wears_the_ring_round_the_box_and_a_press_s_does_not() {
         use crate::component::{BuildCx, FlexStyle, LeafStyle};
-        use crate::layout::Size;
+        use crate::layout::Sizing;
         use crate::paint::paint_tree;
         use crate::style::BoxStyle;
 
@@ -352,7 +352,7 @@ mod tests {
             cx.flex(FlexStyle::default(), |cx| {
                 leaf = Some(
                     cx.leaf(LeafStyle {
-                        size: Size::fixed(40.0, 20.0),
+                        size: Sizing::fixed(40.0, 20.0),
                         style: BoxStyle::NONE.with_radius(4.0),
                     })
                     .id(),

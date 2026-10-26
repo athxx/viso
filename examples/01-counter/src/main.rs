@@ -14,7 +14,7 @@
 
 use viso::prelude::*;
 use viso::render::Rgba;
-use viso::ui::{Axis, BoxStyle, Inset, PointerPhase, Size};
+use viso::ui::{Axis, BoxStyle, Inset, PointerPhase, Sizing};
 
 struct Counter {
     // Allocated in `build`, where the state store is reachable — not in `new`
@@ -65,7 +65,7 @@ fn row_style() -> FlexStyle {
         axis: Axis::Row,
         gap: 12.0,
         padding: Inset::all(16.0),
-        size: Size::fill(),
+        size: Sizing::fill(),
         style: BoxStyle::solid(Rgba {
             r: 0.12,
             g: 0.13,
@@ -79,7 +79,7 @@ fn row_style() -> FlexStyle {
 /// The button: a fixed, rounded, clickable box.
 fn button_style() -> LeafStyle {
     LeafStyle {
-        size: Size::fixed(96.0, 48.0),
+        size: Sizing::fixed(96.0, 48.0),
         style: BoxStyle::solid(Rgba {
             r: 0.20,
             g: 0.45,
@@ -93,7 +93,7 @@ fn button_style() -> LeafStyle {
 /// The count's visual proxy: a bar that repaints when the count changes.
 fn bar_style() -> LeafStyle {
     LeafStyle {
-        size: Size::fixed(160.0, 24.0),
+        size: Sizing::fixed(160.0, 24.0),
         style: BoxStyle::solid(Rgba {
             r: 0.15,
             g: 0.75,

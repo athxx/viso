@@ -171,7 +171,7 @@ fn drag_allocations(alt: bool, step: [f64; 2]) -> Vec<usize> {
                 .shape(Polyline::new(route.clone(), 6.0, Color::rgb(30, 90, 230)).traveled(0.4))
                 .marker(Marker::new(1, pinned, |cx: &mut BuildCx<'_>| {
                     cx.leaf(viso::ui::LeafStyle {
-                        size: viso::ui::Size::fixed(16.0, 16.0),
+                        size: viso::ui::Sizing::fixed(16.0, 16.0),
                         style: viso::ui::BoxStyle::solid(viso::render::Rgba::new(
                             1.0, 0.0, 0.0, 1.0,
                         )),

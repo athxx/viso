@@ -37,7 +37,7 @@ use viso::gpu::{CpuRaster, GpuBackend, RawWindowHandle};
 use viso::render::{FrameStats, Rect, Renderer, Rgba};
 use viso::ui::{
     Axis, BindingTable, BoxStyle, BuildCx, Component, DirtyClass, EffectStore, LeafStyle, Length,
-    NodeId, NodeStore, Role, SemanticProjector, Size, StateStore, TextEdits, Vec2, VirtualLists,
+    NodeId, NodeStore, Role, SemanticProjector, Sizing, StateStore, TextEdits, Vec2, VirtualLists,
     paint_tree, virtual_list as vl_driver,
 };
 use viso::widgets::{VirtualListViewStyle, virtual_list};
@@ -103,7 +103,7 @@ impl Seam {
             );
             virtual_list(VirtualListViewStyle {
                 axis: Axis::Column,
-                size: Size::fixed(VIEWPORT_W, VIEWPORT_H),
+                size: Sizing::fixed(VIEWPORT_W, VIEWPORT_H),
                 overscan: OVERSCAN,
                 estimated_row: ROW_H,
                 background,
@@ -111,7 +111,7 @@ impl Seam {
             })
             .items(item_count, |_index, cx| {
                 cx.leaf(LeafStyle {
-                    size: Size {
+                    size: Sizing {
                         width: Length::fill(),
                         height: Length::Fixed(ROW_H),
                     },

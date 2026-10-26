@@ -36,7 +36,7 @@ use std::rc::Rc;
 use viso_ui::{
     Access, Align, Alignment2D, Axis, BoxRules, BoxStyle, BuildCx, Component, EventCx, FlexStyle,
     Inset, Justify, Key, Length, NodeId, PointerButtons, PointerPhase, Rgba, Role, RowGesture,
-    Semantics, Size, Span, StackPlacement, StackStyle, SwipeEdge, SwipeParts,
+    Semantics, Sizing, Span, StackPlacement, StackStyle, SwipeEdge, SwipeParts,
 };
 
 /// What an action runs when tapped or swiped through.
@@ -117,7 +117,7 @@ impl SwipeAction {
 pub struct SwipeRowStyle {
     /// Its own size within its parent: across the list, as tall as its
     /// content by default.
-    pub size: Size,
+    pub size: Sizing,
     /// The content's own background, which slides with it.
     pub background: BoxStyle,
     /// The narrowest an action is.
@@ -133,7 +133,7 @@ pub struct SwipeRowStyle {
 impl Default for SwipeRowStyle {
     fn default() -> Self {
         SwipeRowStyle {
-            size: Size {
+            size: Sizing {
                 width: Length::fill(),
                 height: Length::Fit,
             },
@@ -260,7 +260,7 @@ impl SwipeRow {
                 padding: Inset::all(0.0),
                 align: Align::Stretch,
                 justify: if end { Justify::End } else { Justify::Start },
-                size: Size::fill(),
+                size: Sizing::fill(),
                 style: BoxStyle::solid(fill),
             },
             |cx| {
@@ -291,7 +291,7 @@ impl SwipeRow {
                 },
                 align: Align::Center,
                 justify: Justify::Center,
-                size: Size {
+                size: Sizing {
                     width: Length::Fit,
                     height: Length::fill(),
                 },
@@ -358,7 +358,7 @@ impl Component for SwipeRow {
                         StackStyle {
                             align: Alignment2D::TopStart,
                             padding: Inset::all(0.0),
-                            size: Size {
+                            size: Sizing {
                                 width: Length::fill(),
                                 height: Length::Fit,
                             },
@@ -421,7 +421,7 @@ mod tests {
     fn it_builds_a_clipping_swipe_row_with_its_actions_as_buttons() {
         let row = swipe_row(|cx| {
             cx.leaf(viso_ui::LeafStyle {
-                size: Size::fixed(320.0, 44.0),
+                size: Sizing::fixed(320.0, 44.0),
                 style: BoxStyle::NONE,
             });
         })

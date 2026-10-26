@@ -25,7 +25,7 @@ use std::rc::Rc;
 use criterion::{Criterion, criterion_group, criterion_main};
 use viso_ui::{
     BindingTable, BoxStyle, BuildCx, Component, LeafStyle, NodeId, NodeStore, Rect,
-    SemanticProjector, Size, StateStore, TextEdits, VirtualLists, paint_tree,
+    SemanticProjector, Sizing, StateStore, TextEdits, VirtualLists, paint_tree,
 };
 use viso_widgets::{PopupHandleSlot, popup};
 
@@ -58,7 +58,7 @@ impl Reactive {
 /// subtree rather than an empty node.
 fn fill(cx: &mut BuildCx<'_>) {
     cx.leaf(LeafStyle {
-        size: Size::fill(),
+        size: Sizing::fill(),
         style: BoxStyle::NONE,
     });
 }
@@ -83,7 +83,7 @@ fn build_scene() -> (NodeStore, NodeId) {
         popup()
             .anchor(fill)
             .content(fill)
-            .size(Size::fill())
+            .size(Sizing::fill())
             .handle(&slot)
             .build(&mut cx);
         cx.root().expect("popup declares a root")
@@ -131,7 +131,7 @@ fn bench_popup(c: &mut Criterion) {
             popup()
                 .anchor(fill)
                 .content(fill)
-                .size(Size::fill())
+                .size(Sizing::fill())
                 .handle(&slot)
                 .build(&mut cx);
             black_box(&store);

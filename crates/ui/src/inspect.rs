@@ -702,7 +702,7 @@ fn kind_of(content: Option<&Content>) -> InspectKind {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::Size;
+    use crate::layout::Sizing;
     use viso_render::Rgba;
 
     /// A leaf carrying a shaped (here empty) glyph run, so its kind resolves to
@@ -725,7 +725,7 @@ mod tests {
     }
 
     fn leaf(store: &mut NodeStore) -> NodeId {
-        store.alloc_leaf(Size::fixed(1.0, 1.0))
+        store.alloc_leaf(Sizing::fixed(1.0, 1.0))
     }
 
     #[test]

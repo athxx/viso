@@ -851,7 +851,7 @@ mod tests {
     use super::*;
     use std::time::Duration;
     use viso_gpu::{CpuRaster, RawWindowHandle};
-    use viso_ui::{AssetDraw, AssetFit, BoxStyle, BuildCx, Content, LeafStyle, NodeId, Size};
+    use viso_ui::{AssetDraw, AssetFit, BoxStyle, BuildCx, Content, LeafStyle, NodeId, Sizing};
 
     const JPEG: &[u8] = include_bytes!("../../image/src/fixtures/two_tone.jpg");
     const SVG: &[u8] =
@@ -882,7 +882,7 @@ mod tests {
                 for _ in shows {
                     nodes.push(
                         cx.leaf(LeafStyle {
-                            size: Size::fixed(40.0, 40.0),
+                            size: Sizing::fixed(40.0, 40.0),
                             style: BoxStyle::NONE,
                         })
                         .id(),
@@ -1136,7 +1136,7 @@ mod tests {
             cx.flex(Default::default(), |cx| {
                 for asset in [&photo, &given, &missing] {
                     let leaf = cx.leaf(LeafStyle {
-                        size: Size::fixed(40.0, 40.0),
+                        size: Sizing::fixed(40.0, 40.0),
                         style: BoxStyle::NONE,
                     });
                     cx.asset(leaf, asset, AssetFit::Contain, None);
@@ -1162,7 +1162,7 @@ mod tests {
         let leaf = {
             let mut cx = BuildCx::new(&mut later);
             let leaf = cx.leaf(LeafStyle {
-                size: Size::fixed(40.0, 40.0),
+                size: Sizing::fixed(40.0, 40.0),
                 style: BoxStyle::NONE,
             });
             cx.asset(leaf, &missing, AssetFit::Contain, None);
@@ -1196,7 +1196,7 @@ mod tests {
         let node = {
             let mut cx = BuildCx::new(&mut store);
             cx.leaf(LeafStyle {
-                size: Size::fixed(40.0, 40.0),
+                size: Sizing::fixed(40.0, 40.0),
                 style: BoxStyle::NONE,
             })
             .id()
@@ -1257,7 +1257,7 @@ mod tests {
             cx.flex(Default::default(), |cx| {
                 for asset in assets {
                     let leaf = cx.leaf(LeafStyle {
-                        size: Size::fixed(40.0, 40.0),
+                        size: Sizing::fixed(40.0, 40.0),
                         style: BoxStyle::NONE,
                     });
                     cx.asset(leaf, asset, AssetFit::Contain, None);

@@ -8,7 +8,7 @@ use std::time::Duration;
 use viso::render::Rect;
 use viso::ui::{
     Axis, BindingTable, BoxStyle, BuildCx, Component, EffectStore, FlexStyle, LeafStyle, NodeId,
-    NodeStore, Role, SemanticProjector, ShimmerLook, Size, StateId, StateStore, StateValue,
+    NodeStore, Role, SemanticProjector, ShimmerLook, Sizing, StateId, StateStore, StateValue,
     TextEdits, VirtualLists, run_structure_hooks,
 };
 use viso::widgets::{placeholder, skeleton_circle, skeleton_rect, skeleton_text};
@@ -49,7 +49,7 @@ impl Mounted {
             let root = cx.flex(
                 FlexStyle {
                     axis: Axis::Column,
-                    size: Size::fixed(300.0, 200.0),
+                    size: Sizing::fixed(300.0, 200.0),
                     ..FlexStyle::default()
                 },
                 |cx| {
@@ -67,13 +67,13 @@ impl Mounted {
                                     skeleton_text(3).build(cx);
                                 },
                             );
-                            skeleton_rect(Size::fixed(120.0, 60.0))
+                            skeleton_rect(Sizing::fixed(120.0, 60.0))
                                 .look(ShimmerLook::Pulse)
                                 .build(cx);
                         })
                         .content(|cx| {
                             cx.leaf(LeafStyle {
-                                size: Size::fixed(300.0, 80.0),
+                                size: Sizing::fixed(300.0, 80.0),
                                 style: BoxStyle::NONE,
                             });
                         })

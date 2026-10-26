@@ -16,7 +16,7 @@ use viso::platform::{
     PointerId, PointerKind, PointerPhase as RawPhase, RawEvent, RawKey, RawPointer, WindowId,
 };
 use viso::prelude::*;
-use viso::ui::{Component, FlexStyle, Rect, Size};
+use viso::ui::{Component, FlexStyle, Rect, Sizing};
 use viso::widgets::text_input;
 
 const STEP: Duration = Duration::from_millis(16);
@@ -54,13 +54,13 @@ impl Application for FieldApp {
     fn build(&mut self, cx: &mut BuildCx<'_>) {
         cx.flex(
             FlexStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 ..FlexStyle::default()
             },
             |cx| {
                 text_input("Note")
                     .value("hello wide world")
-                    .size(Size::fixed(300.0, 30.0))
+                    .size(Sizing::fixed(300.0, 30.0))
                     .build(cx);
             },
         );

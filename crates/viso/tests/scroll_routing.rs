@@ -13,8 +13,8 @@
 
 use viso::render::Rect;
 use viso::ui::{
-    Axis, BuildCx, DirtyClass, LeafStyle, NodeStore, ScrollEvent, ScrollRouter, ScrollStyle, Size,
-    Vec2,
+    Axis, BuildCx, DirtyClass, LeafStyle, NodeStore, ScrollEvent, ScrollRouter, ScrollStyle,
+    Sizing, Vec2,
 };
 
 const SURFACE: Rect = Rect {
@@ -44,13 +44,13 @@ fn scroll_scene() -> (NodeStore, viso::ui::NodeId, viso::ui::NodeId) {
         cx.scroll(
             ScrollStyle {
                 axis: Axis::Column,
-                size: Size::fixed(100.0, 100.0),
+                size: Sizing::fixed(100.0, 100.0),
                 ..Default::default()
             },
             |cx| {
                 content = Some(
                     cx.leaf(LeafStyle {
-                        size: Size::fixed(100.0, 300.0),
+                        size: Sizing::fixed(100.0, 300.0),
                         ..Default::default()
                     })
                     .id(),

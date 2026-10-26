@@ -12,7 +12,7 @@ use viso::platform::{
     Modifiers, PointerButtons, PointerId, PointerKind, PointerPhase, RawEvent, RawPointer, WindowId,
 };
 use viso::prelude::*;
-use viso::ui::{Axis, BoxStyle, Component, FlexStyle, LeafStyle, NodeId, Size};
+use viso::ui::{Axis, BoxStyle, Component, FlexStyle, LeafStyle, NodeId, Sizing};
 use viso::widgets::{ScrollViewStyle, scroll};
 
 const STEP: Duration = Duration::from_millis(16);
@@ -44,12 +44,12 @@ impl Application for FeedApp {
                 cx.flex(
                     FlexStyle {
                         axis: Axis::Column,
-                        size: Size::fixed(200.0, 3000.0),
+                        size: Sizing::fixed(200.0, 3000.0),
                         ..FlexStyle::default()
                     },
                     |cx| {
                         cx.leaf(LeafStyle {
-                            size: Size::fixed(200.0, 40.0),
+                            size: Sizing::fixed(200.0, 40.0),
                             style: BoxStyle::NONE,
                         });
                     },

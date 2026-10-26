@@ -8,7 +8,7 @@ use std::time::Duration;
 use viso::__test_support::drive_scripted;
 use viso::platform::{RawEvent, WindowId};
 use viso::prelude::*;
-use viso::ui::{Axis, Component, Content, FlexStyle, Rgba, Size};
+use viso::ui::{Axis, Component, Content, FlexStyle, Rgba, Sizing};
 
 const STEP: Duration = Duration::from_millis(16);
 const WIN: WindowId = WindowId(1);
@@ -38,7 +38,7 @@ impl Application for NoteApp {
     fn build(&mut self, cx: &mut BuildCx<'_>) {
         cx.flex(
             FlexStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 axis: Axis::Column,
                 ..FlexStyle::default()
             },

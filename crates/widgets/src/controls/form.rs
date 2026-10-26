@@ -60,7 +60,7 @@ use std::rc::{Rc, Weak};
 
 use viso_ui::{
     Align, Axis, Border, BoxStyle, BuildCx, Component, EventCx, FlexStyle, FocusChange, FontWeight,
-    Inset, Justify, Length, NodeId, NodeStore, Rgba, Role, Semantics, Size, StateId, StateValue,
+    Inset, Justify, Length, NodeId, NodeStore, Rgba, Role, Semantics, Sizing, StateId, StateValue,
     Validity,
 };
 
@@ -350,7 +350,7 @@ impl<C: FormControl> Field<C> {
             .font_size(self.style.note_size)
             .color(color)
             .wrap()
-            .size(Size {
+            .size(Sizing {
                 width: Length::fill(),
                 height: Length::Fit,
             })
@@ -369,7 +369,7 @@ impl<C: FormControl> Component for Field<C> {
                 gap: style.gap,
                 align: Align::Start,
                 justify: Justify::Start,
-                size: Size {
+                size: Sizing {
                     width: Length::fill(),
                     height: Length::Fit,
                 },
@@ -569,7 +569,7 @@ impl Component for Fieldset {
                 padding: Inset::all(style.padding),
                 align: Align::Stretch,
                 justify: Justify::Start,
-                size: Size {
+                size: Sizing {
                     width: Length::fill(),
                     height: Length::Fit,
                 },

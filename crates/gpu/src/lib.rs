@@ -281,6 +281,6 @@ raw_id!(
 /// with layout matching the declared instance schema. Hand-implementing this
 /// requires the same safety documentation and tests the derive generates.
 pub unsafe trait GpuPod: Copy + 'static {
-    /// Size in bytes of one instance, as seen by the GPU.
+    /// Sizing in bytes of one instance, as seen by the GPU.
     const STRIDE: usize;
 }

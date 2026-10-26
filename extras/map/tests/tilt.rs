@@ -18,7 +18,7 @@ use viso::prelude::*;
 use viso::ui::{BuildCx, Component, WindowConfig};
 use viso_map::style::{Color, DemEncoding, Terrain, builtin};
 use viso_map::{
-    Camera, Insets, LngLat, MapHandle, MapHandleSlot, MapView, MemorySource, Polyline,
+    Camera, LngLat, MapHandle, MapHandleSlot, MapView, MemorySource, Padding, Polyline,
     RasterSource, TileId, View, WorldPoint, map_view,
 };
 
@@ -203,9 +203,9 @@ fn the_far_ground_fades_into_a_haze_that_hides_its_edge() {
                             .with_bearing(bearing)
                             .with_pitch(60.0),
                     )
-                    .padding(Insets {
+                    .padding(Padding {
                         top: 280.0,
-                        ..Insets::default()
+                        ..Padding::default()
                     })
                     .style(if dark {
                         builtin::shortbread_dark()
@@ -520,7 +520,7 @@ fn a_translucent_fill_blends_over_the_tilted_ground_and_a_route_over_it() {
 fn red_box(cx: &mut BuildCx<'_>) {
     cx.stack(
         viso::ui::StackStyle {
-            size: viso::ui::Size::fixed(20.0, 30.0),
+            size: viso::ui::Sizing::fixed(20.0, 30.0),
             style: viso::ui::BoxStyle::solid(viso::render::Rgba::new(1.0, 0.0, 0.0, 1.0)),
             ..Default::default()
         },

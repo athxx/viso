@@ -122,14 +122,14 @@ impl NodeStore {
 mod tests {
     use super::*;
     use crate::component::{BuildCx, LeafStyle};
-    use crate::layout::Size;
+    use crate::layout::Sizing;
     use crate::style::BoxStyle;
     use viso_render::Primitive;
 
     fn panel(store: &mut NodeStore, opacity: f32) -> NodeId {
         let mut cx = BuildCx::new(store);
         let panel = cx.leaf(LeafStyle {
-            size: Size::fixed(200.0, 100.0),
+            size: Sizing::fixed(200.0, 100.0),
             style: BoxStyle::solid(Rgba {
                 r: 1.0,
                 g: 1.0,

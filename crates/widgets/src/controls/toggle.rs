@@ -38,7 +38,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use viso_ui::{BuildCx, CheckShape, Component, EventCx, Length, Rgba, Size};
+use viso_ui::{BuildCx, CheckShape, Component, EventCx, Length, Rgba, Sizing};
 
 use super::check::{Check, INK, SharedChange};
 
@@ -47,7 +47,7 @@ use super::check::{Check, INK, SharedChange};
 pub struct ToggleStyle {
     /// The toggle's own size request within its parent. Defaults to `Fit` on
     /// both axes (shrink to the track plus the caption).
-    pub size: Size,
+    pub size: Sizing,
     /// The caption's color, which inks the track and its knob too.
     pub color: Rgba,
 }
@@ -55,7 +55,7 @@ pub struct ToggleStyle {
 impl Default for ToggleStyle {
     fn default() -> Self {
         ToggleStyle {
-            size: Size {
+            size: Sizing {
                 width: Length::Fit,
                 height: Length::Fit,
             },
@@ -118,7 +118,7 @@ impl Toggle {
     }
 
     /// Set the toggle's own size request within its parent (defaults to `Fit`).
-    pub fn size(mut self, size: Size) -> Self {
+    pub fn size(mut self, size: Sizing) -> Self {
         self.style.size = size;
         self
     }
@@ -340,8 +340,8 @@ mod tests {
         assert_eq!(default.style.size.height, Length::Fit);
         assert!(!default.on, "a toggle starts off");
 
-        let widget = toggle("x").size(Size::fill()).on(true);
-        assert_eq!(widget.style.size, Size::fill());
+        let widget = toggle("x").size(Sizing::fill()).on(true);
+        assert_eq!(widget.style.size, Sizing::fill());
         assert!(widget.on, "on(true) starts it on");
     }
 

@@ -71,7 +71,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use viso_ui::{BoxStyle, BuildCx, Component, NodeId, Size, VirtualListStyle};
+use viso_ui::{BoxStyle, BuildCx, Component, NodeId, Sizing, VirtualListStyle};
 
 pub use command::{FileTreeHandle, FileTreeHandleSlot};
 pub use model::{NodeKey, SelectOp, TreeNode, VisibleRow};
@@ -125,12 +125,12 @@ const DEFAULT_GAP: f32 = 2.0;
 /// per-row height, the per-depth indent, the disclosure-arrow column width, the
 /// arrow/label gap, the overscan window, and the viewport's background.
 ///
-/// `size` defaults to [`Size::fill`] so the tree fills its parent region. The row
+/// `size` defaults to [`Sizing::fill`] so the tree fills its parent region. The row
 /// metrics default to a compact single-line row. All fields are `Copy`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FileTreeStyle {
     /// The control's own size request within its parent. Defaults to `Fill`.
-    pub size: Size,
+    pub size: Sizing,
     /// Each row's main-axis height in logical pixels.
     pub row_height: f32,
     /// The horizontal indent added per depth level, in logical pixels.
@@ -151,7 +151,7 @@ impl Default for FileTreeStyle {
     fn default() -> Self {
         let base = VirtualListStyle::default();
         FileTreeStyle {
-            size: Size::fill(),
+            size: Sizing::fill(),
             row_height: DEFAULT_ROW_HEIGHT,
             indent: DEFAULT_INDENT,
             arrow_width: DEFAULT_ARROW_WIDTH,
@@ -218,7 +218,7 @@ impl FileTree {
     }
 
     /// Set the control's own size request within its parent (defaults to `Fill`).
-    pub fn size(mut self, size: Size) -> Self {
+    pub fn size(mut self, size: Sizing) -> Self {
         self.style.size = size;
         self
     }

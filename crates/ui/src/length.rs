@@ -1061,7 +1061,7 @@ mod tests {
     }
 
     use crate::component::{BuildCx, FlexStyle, LeafStyle};
-    use crate::layout::{Align, Axis, Size};
+    use crate::layout::{Align, Axis, Sizing};
     use viso_render::Rect;
 
     fn surface() -> Rect {
@@ -1075,7 +1075,7 @@ mod tests {
 
     fn leaf(width: Length) -> LeafStyle {
         LeafStyle {
-            size: Size {
+            size: Sizing {
                 width,
                 height: Length::Fixed(10.0),
             },
@@ -1098,7 +1098,7 @@ mod tests {
                     FlexStyle {
                         axis: Axis::Column,
                         align: Align::Start,
-                        size: Size {
+                        size: Sizing {
                             width: Length::Fit,
                             height: Length::fill(),
                         },

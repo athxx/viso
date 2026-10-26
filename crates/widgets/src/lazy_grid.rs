@@ -14,7 +14,7 @@ use std::cell::RefCell;
 
 use viso_ui::{
     Axis, BoxStyle, BuildCx, Columns, Component, EventCx, Handle, ListGrid, Role, ScrollBars,
-    Semantics, Size, StickyOf, VirtualListStyle,
+    Semantics, Sizing, StickyOf, VirtualListStyle,
 };
 
 use crate::scroll::{SnapHandler, install_viewport_events};
@@ -28,7 +28,7 @@ pub struct LazyGridStyle {
     /// The axis it scrolls along; its lanes run across it.
     pub axis: Axis,
     /// Its size within its parent.
-    pub size: Size,
+    pub size: Sizing,
     /// Its lanes.
     pub columns: Columns,
     /// The room between two items along its axis.
@@ -53,7 +53,7 @@ impl Default for LazyGridStyle {
     fn default() -> Self {
         LazyGridStyle {
             axis: Axis::Column,
-            size: Size::fill(),
+            size: Sizing::fill(),
             columns: Columns::Adaptive { min: 120.0 },
             gap: 8.0,
             cross_gap: 8.0,
@@ -71,7 +71,7 @@ impl Default for LazyGridStyle {
 /// ```
 /// use viso_ui::{
 ///     BindingTable, BuildCx, Columns, Component, LeafStyle, Length, NodeStore,
-///     SemanticProjector, Size, StateStore, TextEdits, VirtualLists,
+///     SemanticProjector, Sizing, StateStore, TextEdits, VirtualLists,
 /// };
 /// use viso_widgets::{LazyGridStyle, lazy_grid};
 ///
@@ -81,7 +81,7 @@ impl Default for LazyGridStyle {
 /// })
 /// .items(10_000, |_index, cx| {
 ///     cx.leaf(LeafStyle {
-///         size: Size {
+///         size: Sizing {
 ///             width: Length::fill(),
 ///             height: Length::Fixed(96.0),
 ///         },
@@ -290,7 +290,7 @@ mod tests {
     fn tile(height: f32) -> impl Fn(&mut BuildCx<'_>) {
         move |cx| {
             cx.leaf(LeafStyle {
-                size: Size {
+                size: Sizing {
                     width: Length::fill(),
                     height: Length::Fixed(height),
                 },
@@ -304,7 +304,7 @@ mod tests {
         let mut r = Reactive::new();
         let root = r.build(
             &lazy_grid(LazyGridStyle {
-                size: Size::fixed(320.0, 480.0),
+                size: Sizing::fixed(320.0, 480.0),
                 columns: Columns::Adaptive { min: 100.0 },
                 ..Default::default()
             })
@@ -334,7 +334,7 @@ mod tests {
         let mut r = Reactive::new();
         let root = r.build(
             &lazy_grid(LazyGridStyle {
-                size: Size::fixed(320.0, 480.0),
+                size: Sizing::fixed(320.0, 480.0),
                 columns: Columns::Fixed(2),
                 masonry: true,
                 ..Default::default()

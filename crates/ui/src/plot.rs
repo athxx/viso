@@ -23,7 +23,7 @@ use viso_render::{
 use crate::component::{BuildCx, Handle, LeafStyle, NodeStore};
 use crate::content::Content;
 use crate::dirty::DirtyClass;
-use crate::layout::Size;
+use crate::layout::Sizing;
 use crate::node::NodeId;
 use crate::style::BoxStyle;
 
@@ -552,7 +552,7 @@ fn monotone_slopes(pts: &[Point]) -> Vec<f32> {
 impl BuildCx<'_> {
     /// A plot leaf asking `size` of its parent and drawing `plot` (see
     /// [`NodeStore::set_plot`]).
-    pub fn plot(&mut self, size: Size, plot: Plot) -> Handle {
+    pub fn plot(&mut self, size: Sizing, plot: Plot) -> Handle {
         let handle = self.leaf(LeafStyle {
             size,
             style: BoxStyle::NONE,

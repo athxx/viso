@@ -17,7 +17,7 @@ use std::sync::atomic::Ordering;
 
 use viso_ui::{
     Axis, BindingTable, BoxStyle, BuildCx, FlexStyle, LeafStyle, Modifiers, NodeId, NodeStore,
-    PointerButtons, PointerEvent, PointerPhase, PointerRouter, Rect, Size, StateStore,
+    PointerButtons, PointerEvent, PointerPhase, PointerRouter, Rect, Sizing, StateStore,
 };
 
 /// Counts heap allocations while `ARMED`; off by default so setup allocations
@@ -124,13 +124,13 @@ fn setup() -> Harness {
         cx.flex(
             FlexStyle {
                 axis: Axis::Row,
-                size: Size::fixed(200.0, 100.0),
+                size: Sizing::fixed(200.0, 100.0),
                 style: BoxStyle::default(),
                 ..Default::default()
             },
             |cx| {
                 let l = cx.leaf(LeafStyle {
-                    size: Size::fixed(200.0, 100.0),
+                    size: Sizing::fixed(200.0, 100.0),
                     style: BoxStyle::default(),
                 });
                 cx.on_pointer(l, move |_ev| {});

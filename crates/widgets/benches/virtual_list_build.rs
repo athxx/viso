@@ -21,7 +21,7 @@ use std::hint::black_box;
 use criterion::{Criterion, criterion_group, criterion_main};
 use viso_ui::{
     Axis, BindingTable, BuildCx, Component, LeafStyle, Length, NodeStore, Rect, SemanticProjector,
-    Size, StateStore, TextEdits, VirtualLists, paint_tree,
+    Sizing, StateStore, TextEdits, VirtualLists, paint_tree,
 };
 use viso_widgets::{VirtualListViewStyle, virtual_list};
 
@@ -57,7 +57,7 @@ impl Reactive {
 /// here (a fresh build mounts no rows).
 fn row(_index: usize, cx: &mut BuildCx<'_>) {
     cx.leaf(LeafStyle {
-        size: Size {
+        size: Sizing {
             width: Length::fill(),
             height: Length::Fixed(ROW_H),
         },
@@ -68,7 +68,7 @@ fn row(_index: usize, cx: &mut BuildCx<'_>) {
 fn list_style() -> VirtualListViewStyle {
     VirtualListViewStyle {
         axis: Axis::Column,
-        size: Size::fixed(W, H),
+        size: Sizing::fixed(W, H),
         estimated_row: ROW_H,
         ..Default::default()
     }

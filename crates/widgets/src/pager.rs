@@ -15,7 +15,7 @@ use std::rc::Rc;
 
 use viso_ui::{
     Axis, BoxStyle, BuildCx, Component, EventCx, FlexStyle, Handle, Inset, Length, PageDotsStyle,
-    Role, ScrollBars, ScrollSnap, ScrollStyle, Semantics, Size, SnapAlign, VirtualListStyle,
+    Role, ScrollBars, ScrollSnap, ScrollStyle, Semantics, Sizing, SnapAlign, VirtualListStyle,
 };
 
 use crate::scroll::{SnapHandler, install_viewport_events};
@@ -29,7 +29,7 @@ pub struct PagerStyle {
     /// The axis its pages turn along.
     pub axis: Axis,
     /// Its size within its parent; each page is as large.
-    pub size: Size,
+    pub size: Sizing,
     /// Its background.
     pub background: BoxStyle,
     /// The page dots under its pages, or none.
@@ -40,7 +40,7 @@ impl Default for PagerStyle {
     fn default() -> Self {
         PagerStyle {
             axis: Axis::Row,
-            size: Size::fill(),
+            size: Sizing::fill(),
             background: BoxStyle::NONE,
             dots: Some(PageDotsStyle::default()),
         }
@@ -51,18 +51,18 @@ impl Default for PagerStyle {
 ///
 /// ```
 /// use viso_ui::{
-///     BindingTable, BuildCx, Component, LeafStyle, NodeStore, SemanticProjector, Size,
+///     BindingTable, BuildCx, Component, LeafStyle, NodeStore, SemanticProjector, Sizing,
 ///     StateStore, TextEdits, VirtualLists,
 /// };
 /// use viso_widgets::{PagerStyle, pager};
 ///
 /// let onboarding = pager(PagerStyle {
-///     size: Size::fixed(320.0, 480.0),
+///     size: Sizing::fixed(320.0, 480.0),
 ///     ..Default::default()
 /// })
 /// .pages(3, |_page, cx| {
 ///     cx.leaf(LeafStyle {
-///         size: Size::fill(),
+///         size: Sizing::fill(),
 ///         ..Default::default()
 ///     });
 /// })
@@ -171,7 +171,7 @@ type ItemsBuilder = Box<dyn Fn(&mut BuildCx<'_>)>;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CarouselStyle {
     /// Its size within its parent.
-    pub size: Size,
+    pub size: Sizing,
     /// The room between two items.
     pub gap: f32,
     /// The room before the first item and after the last, kept clear of the
@@ -188,7 +188,7 @@ pub struct CarouselStyle {
 impl Default for CarouselStyle {
     fn default() -> Self {
         CarouselStyle {
-            size: Size {
+            size: Sizing {
                 width: Length::fill(),
                 height: Length::Fit,
             },
@@ -365,12 +365,12 @@ mod tests {
         let mut r = Reactive::new();
         let root = r.build(
             &pager(PagerStyle {
-                size: Size::fixed(320.0, 480.0),
+                size: Sizing::fixed(320.0, 480.0),
                 ..Default::default()
             })
             .pages(4, |_, cx| {
                 cx.leaf(LeafStyle {
-                    size: Size::fill(),
+                    size: Sizing::fill(),
                     ..Default::default()
                 });
             }),
@@ -397,13 +397,13 @@ mod tests {
         let mut r = Reactive::new();
         let root = r.build(
             &carousel(CarouselStyle {
-                size: Size::fixed(320.0, 100.0),
+                size: Sizing::fixed(320.0, 100.0),
                 ..Default::default()
             })
             .items(|cx| {
                 for _ in 0..6 {
                     cx.leaf(LeafStyle {
-                        size: Size::fixed(200.0, 100.0),
+                        size: Sizing::fixed(200.0, 100.0),
                         ..Default::default()
                     });
                 }

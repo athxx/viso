@@ -13,7 +13,7 @@ use std::rc::{Rc, Weak};
 use std::cell::RefCell;
 
 use viso_ui::{
-    Alignment2D, BuildCx, DirtyClass, DispatchPhase, NodeId, PointerPhase, Size, StackStyle,
+    Alignment2D, BuildCx, DirtyClass, DispatchPhase, NodeId, PointerPhase, Sizing, StackStyle,
     StructureCx, Turn, Vec2,
 };
 
@@ -211,7 +211,7 @@ fn framed_node(s: &mut StructureCx<'_>, parent: NodeId, mesh: &ShapeMesh) -> Nod
     let mut cx = BuildCx::with_parent(s.store, s.states, s.bindings, parent);
     let node = cx
         .drawing(
-            Size::fixed(mesh.size[0], mesh.size[1]),
+            Sizing::fixed(mesh.size[0], mesh.size[1]),
             mesh.drawing.clone(),
         )
         .id();
@@ -232,7 +232,7 @@ fn pinned(
     let mut cx = BuildCx::with_parent(s.store, s.states, s.bindings, parent);
     let h = cx.stack(
         StackStyle {
-            size: Size::fixed(0.0, 0.0),
+            size: Sizing::fixed(0.0, 0.0),
             align: anchor,
             ..StackStyle::default()
         },
@@ -573,7 +573,9 @@ impl Overlays {
                 if self.puck_node.is_none() {
                     let drawing = puck_drawing(heading, &mut self.builder);
                     let mut cx = BuildCx::with_parent(s.store, s.states, s.bindings, self.overlay);
-                    let node = cx.drawing(Size::fixed(PUCK_SIDE, PUCK_SIDE), drawing).id();
+                    let node = cx
+                        .drawing(Sizing::fixed(PUCK_SIDE, PUCK_SIDE), drawing)
+                        .id();
                     // Over the labels, beneath the markers.
                     s.store.arena_detach(node);
                     let next = s.store.arena().next_sibling(self.labels_node);

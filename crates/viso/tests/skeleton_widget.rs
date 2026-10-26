@@ -12,7 +12,7 @@ use viso::gpu::{CpuRaster, GpuBackend, RawWindowHandle};
 use viso::render::{Rect, Renderer};
 use viso::ui::{
     Axis, BindingTable, BuildCx, Component, FlexStyle, Inset, NodeId, NodeStore, SemanticProjector,
-    Size, StateStore, StateValue, TextEdits, VirtualLists, paint_tree,
+    Sizing, StateStore, StateValue, TextEdits, VirtualLists, paint_tree,
 };
 use viso::widgets::{placeholder, skeleton_circle, skeleton_rect, skeleton_text};
 
@@ -50,7 +50,7 @@ fn build_scene(store: &mut NodeStore) -> NodeId {
         FlexStyle {
             axis: Axis::Column,
             padding: Inset::all(12.0),
-            size: Size::fixed(W as f32, H as f32),
+            size: Sizing::fixed(W as f32, H as f32),
             ..FlexStyle::default()
         },
         |cx| {
@@ -70,12 +70,12 @@ fn build_scene(store: &mut NodeStore) -> NodeId {
                     cx.flex(
                         FlexStyle {
                             axis: Axis::Row,
-                            size: Size::fixed(216.0, 12.0),
+                            size: Sizing::fixed(216.0, 12.0),
                             ..FlexStyle::default()
                         },
                         |_| {},
                     );
-                    skeleton_rect(Size::fixed(216.0, 40.0)).build(cx);
+                    skeleton_rect(Sizing::fixed(216.0, 40.0)).build(cx);
                 })
                 .build(cx);
         },

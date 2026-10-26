@@ -41,7 +41,7 @@ use crate::content::Content;
 use crate::context::EventCx;
 use crate::dirty::DirtyClass;
 use crate::input::{Key, PointerButtons, PointerPhase};
-use crate::layout::{Size, Vec2};
+use crate::layout::{Sizing, Vec2};
 use crate::node::NodeId;
 use crate::style::BoxStyle;
 
@@ -784,7 +784,7 @@ pub fn plane_input(ev: &mut EventCx<'_>, node: NodeId, focus: PlanePart) -> Opti
 impl BuildCx<'_> {
     /// A colour plane leaf asking `size` of its parent; see
     /// [`NodeStore::set_color_plane`].
-    pub fn color_plane_leaf(&mut self, size: Size, plane: ColorPlane) -> Handle {
+    pub fn color_plane_leaf(&mut self, size: Sizing, plane: ColorPlane) -> Handle {
         let handle = self.leaf(LeafStyle {
             size,
             style: BoxStyle::NONE,

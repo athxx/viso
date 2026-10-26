@@ -268,14 +268,14 @@ fn ink(fill: Rgba) -> Rgba {
 mod tests {
     use super::*;
     use crate::component::{BuildCx, LeafStyle};
-    use crate::layout::Size;
+    use crate::layout::Sizing;
     use crate::style::BoxStyle;
 
     fn button(store: &mut NodeStore) -> NodeId {
         let id = {
             let mut cx = BuildCx::new(store);
             cx.leaf(LeafStyle {
-                size: Size::fixed(100.0, 40.0),
+                size: Sizing::fixed(100.0, 40.0),
                 style: BoxStyle::solid(Rgba::new(1.0, 1.0, 1.0, 1.0)).with_radius(8.0),
             })
             .id()

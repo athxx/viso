@@ -40,7 +40,7 @@ use viso::platform::{
     RawPointer, WindowId,
 };
 use viso::prelude::*;
-use viso::ui::{PointerButtons, PointerPhase, Size, WindowConfig};
+use viso::ui::{PointerButtons, PointerPhase, Sizing, WindowConfig};
 
 const SURFACE_W: f64 = 200.0;
 const SURFACE_H: f64 = 150.0;
@@ -87,7 +87,7 @@ impl Application for WindowSeamApp {
         let presses = self.presses.clone();
         let root = cx.flex(
             viso::ui::FlexStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 ..viso::ui::FlexStyle::default()
             },
             |_cx| {},
@@ -114,7 +114,7 @@ impl Application for WindowSeamApp {
                         |build| {
                             let r = build.flex(
                                 viso::ui::FlexStyle {
-                                    size: Size::fill(),
+                                    size: Sizing::fill(),
                                     ..viso::ui::FlexStyle::default()
                                 },
                                 |_cx| {},

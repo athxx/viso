@@ -19,7 +19,7 @@ use std::rc::Rc;
 use viso::render::Rgba;
 use viso::ui::{
     Axis, BindingTable, BoxStyle, BuildCx, DirtyClass, FlexStyle, LeafStyle, NodeId, NodeStore,
-    Size, StateStore, StateValue, StyleId, Theme, TokenInterner, TokenNamespace,
+    Sizing, StateStore, StateValue, StyleId, Theme, TokenInterner, TokenNamespace,
 };
 
 const RED: Rgba = Rgba {
@@ -124,7 +124,7 @@ fn theme_swap_reresolves_only_bound_nodes() {
         cx.flex(
             FlexStyle {
                 axis: Axis::Row,
-                size: Size::fixed(100.0, 100.0),
+                size: Sizing::fixed(100.0, 100.0),
                 ..Default::default()
             },
             |cx| {
@@ -136,7 +136,7 @@ fn theme_swap_reresolves_only_bound_nodes() {
                     .push(cx.leaf(LeafStyle::default()).id());
                 capture.borrow_mut().push(
                     cx.leaf(LeafStyle {
-                        size: Size::fixed(1.0, 1.0),
+                        size: Sizing::fixed(1.0, 1.0),
                         style: BoxStyle::solid(RED),
                     })
                     .id(),
@@ -186,7 +186,7 @@ fn unrelated_untokenized_node_untouched() {
         let a = cx.leaf(LeafStyle::default()).id();
         let b = cx
             .leaf(LeafStyle {
-                size: Size::fixed(1.0, 1.0),
+                size: Sizing::fixed(1.0, 1.0),
                 style: BoxStyle::solid(RED),
             })
             .id();

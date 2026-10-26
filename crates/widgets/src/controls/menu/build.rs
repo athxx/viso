@@ -6,7 +6,7 @@ use std::rc::Rc;
 use viso_ui::{
     Align, AnchorAlign, Anchoring, Axis, BoxStyle, BuildCx, Component, DispatchPhase, FlexStyle,
     Handle, Inset, InteractionStyle, Justify, Key, LeafStyle, Length, NodeId, PointerButtons,
-    PointerPhase, Role, SemanticState, Semantics, Side, Size, StateValue, Vec2,
+    PointerPhase, Role, SemanticState, Semantics, Side, Sizing, StateValue, Vec2,
 };
 
 use super::state::{Level, MarkCell, MenuHandle, MenuState, Row, Start};
@@ -119,7 +119,7 @@ pub(super) fn context_region(
     cx: &mut BuildCx<'_>,
     entries: &[MenuEntry],
     content: Option<&dyn Fn(&mut BuildCx<'_>)>,
-    size: Size,
+    size: Sizing,
     style: &MenuStyle,
     on_close: Option<Close>,
 ) -> MenuHandle {
@@ -144,7 +144,7 @@ pub(super) fn context_region(
                 FlexStyle {
                     axis: Axis::Column,
                     align: Align::Stretch,
-                    size: Size::fill(),
+                    size: Sizing::fill(),
                     ..FlexStyle::default()
                 },
                 |cx| {
@@ -207,7 +207,7 @@ fn finish(shared: Shared, levels: Vec<Level>, on_close: Option<Close>) -> MenuHa
     MenuHandle(state)
 }
 
-const FIT: Size = Size {
+const FIT: Sizing = Sizing {
     width: Length::Fit,
     height: Length::Fit,
 };
@@ -259,7 +259,7 @@ fn level(
         },
         |cx| {
             cx.leaf(LeafStyle {
-                size: Size::fixed((style.min_width - inner).max(0.0), 0.0),
+                size: Sizing::fixed((style.min_width - inner).max(0.0), 0.0),
                 style: BoxStyle::NONE,
             });
             let mut section = 0;
@@ -353,7 +353,7 @@ fn rule(cx: &mut BuildCx<'_>, style: &MenuStyle) {
                 bottom: 4.0,
             },
             align: Align::Stretch,
-            size: Size {
+            size: Sizing {
                 width: Length::Fill { weight: 1.0 },
                 height: Length::Fit,
             },
@@ -361,7 +361,7 @@ fn rule(cx: &mut BuildCx<'_>, style: &MenuStyle) {
         },
         |cx| {
             cx.leaf(LeafStyle {
-                size: Size {
+                size: Sizing {
                     width: Length::Fill { weight: 1.0 },
                     height: Length::Fixed(1.0),
                 },
@@ -391,7 +391,7 @@ fn row(
             padding: style.item_padding,
             align: Align::Center,
             justify: Justify::Start,
-            size: Size {
+            size: Sizing {
                 width: Length::Fill { weight: 1.0 },
                 height: Length::Fit,
             },
@@ -430,7 +430,7 @@ fn row(
             let text = label(mnemonic.text.clone())
                 .font_size(style.font_size)
                 .color(style.ink)
-                .size(Size {
+                .size(Sizing {
                     width: Length::Fill { weight: 1.0 },
                     height: Length::Fit,
                 });

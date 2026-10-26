@@ -20,7 +20,7 @@ use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use viso_ui::{
-    BindingTable, BoxStyle, BuildCx, DirtyClass, FlexStyle, LeafStyle, NodeStore, Size, StateId,
+    BindingTable, BoxStyle, BuildCx, DirtyClass, FlexStyle, LeafStyle, NodeStore, Sizing, StateId,
     StateStore, StateValue, StyleId, Theme, TokenInterner, TokenNamespace,
 };
 
@@ -72,7 +72,7 @@ fn setup() -> Harness {
                     for _ in 0..LEAVES {
                         let leaf = cx
                             .leaf(LeafStyle {
-                                size: Size::fixed(1.0, 1.0),
+                                size: Sizing::fixed(1.0, 1.0),
                                 style: BoxStyle::default(),
                             })
                             .id();

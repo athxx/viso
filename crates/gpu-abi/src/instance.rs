@@ -37,7 +37,7 @@ pub enum AttrFormat {
 }
 
 impl AttrFormat {
-    /// Size of this attribute in bytes.
+    /// Sizing of this attribute in bytes.
     pub const fn size(self) -> usize {
         match self {
             AttrFormat::Float1 | AttrFormat::Uint1 => 4,

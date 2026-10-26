@@ -8,7 +8,7 @@ use std::time::Duration;
 use viso::__test_support::drive_scripted;
 use viso::platform::{RawEvent, WindowId};
 use viso::prelude::*;
-use viso::ui::{BoxStyle, EventCx, Size};
+use viso::ui::{BoxStyle, EventCx, Sizing};
 
 const STEP: Duration = Duration::from_millis(16);
 const WIN: WindowId = WindowId(1);
@@ -32,7 +32,7 @@ impl Application for Notes {
         self.item = Some(item);
         ITEM.with(|i| i.set(Some(item)));
         let leaf = cx.leaf(LeafStyle {
-            size: Size::fill(),
+            size: Sizing::fill(),
             style: BoxStyle::NONE,
         });
         cx.bind(item, leaf, DirtyClass::PAINT);

@@ -15,7 +15,7 @@ use viso::platform::{
     PointerPhase as RawPhase, RawEvent, RawKey, RawPointer, RawText, WindowId,
 };
 use viso::prelude::*;
-use viso::ui::{Axis, Component, FlexStyle, Inset, NodeId, NodeStore, Role, Size, StateValue};
+use viso::ui::{Axis, Component, FlexStyle, Inset, NodeId, NodeStore, Role, Sizing, StateValue};
 use viso::widgets::{SearchFieldHandleSlot, search_field};
 
 const STEP: Duration = Duration::from_millis(16);
@@ -69,7 +69,7 @@ impl Application for SearchApp {
         let handle = Rc::clone(&slot);
         cx.flex(
             FlexStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 axis: Axis::Column,
                 padding: Inset {
                     left: 100.0,
@@ -360,7 +360,7 @@ mod golden {
     use viso::render::{Rect, Renderer, Rgba};
     use viso::ui::{
         Axis, BindingTable, BoxStyle, BuildCx, Component, Inset, Length, NodeId, NodeStore,
-        SemanticProjector, Size, StateStore, TextEdits, VirtualLists, paint_tree,
+        SemanticProjector, Sizing, StateStore, TextEdits, VirtualLists, paint_tree,
     };
     use viso::widgets::{ViewStyle, search_field, view};
 
@@ -380,12 +380,12 @@ mod golden {
             axis: Axis::Column,
             padding: Inset::all(10.0),
             gap: 10.0,
-            size: Size::fill(),
+            size: Sizing::fill(),
             background: BoxStyle::solid(Rgba::new(1.0, 1.0, 1.0, 1.0)),
             ..Default::default()
         })
         .children(|cx| {
-            let width = Size {
+            let width = Sizing {
                 width: Length::Fixed(240.0),
                 height: Length::Fit,
             };

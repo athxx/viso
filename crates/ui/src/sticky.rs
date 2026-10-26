@@ -219,7 +219,7 @@ mod tests {
     use super::*;
     use crate::component::{FlexStyle, LeafStyle, ScrollStyle};
     use crate::dirty::DirtyClass;
-    use crate::layout::{Length, Size};
+    use crate::layout::{Length, Sizing};
     use crate::style::BoxStyle;
     use viso_render::{Rect, Rgba};
 
@@ -233,7 +233,7 @@ mod tests {
             .scroll(
                 ScrollStyle {
                     axis: Axis::Column,
-                    size: Size::fixed(100.0, 100.0),
+                    size: Sizing::fixed(100.0, 100.0),
                     ..ScrollStyle::default()
                 },
                 |cx| {
@@ -247,7 +247,7 @@ mod tests {
                                 cx.flex(
                                     FlexStyle {
                                         axis: Axis::Column,
-                                        size: Size {
+                                        size: Sizing {
                                             width: Length::fill(),
                                             height: Length::Fixed(300.0),
                                         },
@@ -255,13 +255,13 @@ mod tests {
                                     },
                                     |cx| {
                                         let header = cx.leaf(LeafStyle {
-                                            size: Size::fixed(100.0, 20.0),
+                                            size: Sizing::fixed(100.0, 20.0),
                                             style: BoxStyle::solid(Rgba::new(1.0, 0.0, 0.0, 1.0)),
                                         });
                                         cx.sticky(header, true);
                                         headers.push(header.id());
                                         let row = cx.leaf(LeafStyle {
-                                            size: Size::fixed(100.0, 40.0),
+                                            size: Sizing::fixed(100.0, 40.0),
                                             style: BoxStyle::solid(Rgba::new(0.0, 0.0, 1.0, 1.0)),
                                         });
                                         rows.push(row.id());

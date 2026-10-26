@@ -12,7 +12,7 @@ use viso::platform::{
     RawPointer, WindowId,
 };
 use viso::prelude::*;
-use viso::ui::{Axis, BoxStyle, Component, FlexStyle, LeafStyle, Size};
+use viso::ui::{Axis, BoxStyle, Component, FlexStyle, LeafStyle, Sizing};
 use viso::widgets::text_input;
 
 const STEP: Duration = Duration::from_millis(16);
@@ -36,19 +36,21 @@ impl Application for PointedApp {
     fn build(&mut self, cx: &mut BuildCx<'_>) {
         cx.flex(
             FlexStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 axis: Axis::Column,
                 ..FlexStyle::default()
             },
             |cx| {
                 let leaf = cx.leaf(LeafStyle {
-                    size: Size::fixed(160.0, 30.0),
+                    size: Sizing::fixed(160.0, 30.0),
                     style: BoxStyle::NONE,
                 });
                 cx.cursor(leaf, CursorIcon::Pointer);
-                text_input("Name").size(Size::fixed(160.0, 30.0)).build(cx);
+                text_input("Name")
+                    .size(Sizing::fixed(160.0, 30.0))
+                    .build(cx);
                 let marked = cx.leaf(LeafStyle {
-                    size: Size::fixed(160.0, 30.0),
+                    size: Sizing::fixed(160.0, 30.0),
                     style: BoxStyle::NONE,
                 });
                 cx.cursor(marked, CursorIcon::Custom(target()));

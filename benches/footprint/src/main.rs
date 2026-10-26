@@ -13,7 +13,7 @@
 use std::io::BufRead;
 
 use viso::prelude::*;
-use viso::ui::{Axis, Component, Length, Size};
+use viso::ui::{Axis, Component, Length, Sizing};
 
 #[global_allocator]
 static ALLOCATOR: viso::alloc::Counting = viso::alloc::Counting::system();
@@ -78,7 +78,7 @@ impl Application for Footprint {
             FlexStyle {
                 axis: Axis::Column,
                 gap: 12.0,
-                size: Size::fill(),
+                size: Sizing::fill(),
                 ..Default::default()
             },
             move |cx| {
@@ -86,13 +86,13 @@ impl Application for Footprint {
                 if scene == Scene::List {
                     virtual_list(VirtualListViewStyle {
                         axis: Axis::Column,
-                        size: Size::fixed(420.0, LIST_HEIGHT),
+                        size: Sizing::fixed(420.0, LIST_HEIGHT),
                         estimated_row: ROW_HEIGHT,
                         ..Default::default()
                     })
                     .items(ROWS, |index, cx| {
                         label(format!("Row {index}"))
-                            .size(Size {
+                            .size(Sizing {
                                 width: Length::fill(),
                                 height: Length::Fixed(ROW_HEIGHT),
                             })

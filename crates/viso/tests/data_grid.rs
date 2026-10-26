@@ -16,7 +16,7 @@ use viso::platform::{
 };
 use viso::prelude::*;
 use viso::ui::adaptive::LayoutDirection;
-use viso::ui::{Axis, Component, FlexStyle, NodeId, NodeStore, Role, Size, SortOrder};
+use viso::ui::{Axis, Component, FlexStyle, NodeId, NodeStore, Role, Sizing, SortOrder};
 
 const STEP: Duration = Duration::from_millis(16);
 const WIN: WindowId = WindowId(1);
@@ -72,7 +72,7 @@ impl Application for GridApp {
             None,
             direction,
             FlexStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 axis: Axis::Column,
                 ..FlexStyle::default()
             },
@@ -80,7 +80,7 @@ impl Application for GridApp {
                 data_grid("Orders", 1000, columns)
                     .text(|row, column| format!("r{row}c{column}"))
                     .select(select)
-                    .size(Size::fixed(400.0, 300.0))
+                    .size(Sizing::fixed(400.0, 300.0))
                     .on_select(|_, s| hear(format!("select {:?}", s.rows())))
                     .on_sort(|_, column, order| hear(format!("sort {column} {order:?}")))
                     .on_activate(|_, row, column| hear(format!("activate {row} {column}")))

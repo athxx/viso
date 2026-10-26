@@ -59,7 +59,7 @@ use viso::prelude::*;
 use viso::render::{FrameStats, Rect, Renderer, Rgba};
 use viso::ui::{
     BoxStyle, BuildCx, FlexStyle, NodeId, NodeStore, PointerButtons, PointerPhase, Role, Semantics,
-    Size, paint_tree,
+    Sizing, paint_tree,
 };
 
 // The two windows use two distinct sizes so a per-window geometry assertion has
@@ -98,7 +98,7 @@ fn build_fill_scene(store: &mut NodeStore, fill: Rgba) -> NodeId {
     let mut cx = BuildCx::new(store);
     cx.flex(
         FlexStyle {
-            size: Size::fill(),
+            size: Sizing::fill(),
             style: BoxStyle::solid(fill),
             ..FlexStyle::default()
         },
@@ -245,7 +245,7 @@ impl Application for MultiWindowApp {
         let aux = self.aux.clone();
         let root = cx.flex(
             FlexStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 ..FlexStyle::default()
             },
             |_cx| {},
@@ -278,7 +278,7 @@ impl Application for MultiWindowApp {
                     .content(|build| {
                         let r = build.flex(
                             FlexStyle {
-                                size: Size::fill(),
+                                size: Sizing::fill(),
                                 ..FlexStyle::default()
                             },
                             |_cx| {},

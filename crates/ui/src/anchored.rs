@@ -632,14 +632,14 @@ mod tests {
     /// one 120 by 60 child.
     fn scene() -> (NodeStore, NodeId, NodeId, NodeId, NodeId) {
         use crate::component::BuildCx;
-        use crate::{FlexStyle, Inset, LeafStyle, Size};
+        use crate::{FlexStyle, Inset, LeafStyle, Sizing};
         let mut store = NodeStore::new();
         let (mut row, mut anchor, mut floater) = (None, None, None);
         let root = {
             let mut cx = BuildCx::new(&mut store);
             cx.flex(
                 FlexStyle {
-                    size: Size::fixed(400.0, 300.0),
+                    size: Sizing::fixed(400.0, 300.0),
                     padding: Inset {
                         left: 50.0,
                         top: 40.0,
@@ -652,7 +652,7 @@ mod tests {
                     row = Some(
                         cx.flex(
                             FlexStyle {
-                                size: Size {
+                                size: Sizing {
                                     width: Length::Fit,
                                     height: Length::Fit,
                                 },
@@ -661,7 +661,7 @@ mod tests {
                             |cx| {
                                 anchor = Some(
                                     cx.leaf(LeafStyle {
-                                        size: Size::fixed(80.0, 20.0),
+                                        size: Sizing::fixed(80.0, 20.0),
                                         ..LeafStyle::default()
                                     })
                                     .id(),
@@ -670,7 +670,7 @@ mod tests {
                         )
                         .id(),
                     );
-                    let fit = Size {
+                    let fit = Sizing {
                         width: Length::Fit,
                         height: Length::Fit,
                     };
@@ -682,7 +682,7 @@ mod tests {
                             },
                             |cx| {
                                 cx.leaf(LeafStyle {
-                                    size: Size::fixed(120.0, 60.0),
+                                    size: Sizing::fixed(120.0, 60.0),
                                     ..LeafStyle::default()
                                 });
                             },

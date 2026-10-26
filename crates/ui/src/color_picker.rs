@@ -48,7 +48,7 @@ use crate::slider::{
 use crate::{
     Align, Axis, BoxStyle, BuildCx, DirtyClass, DispatchPhase, EventCx, FieldEvent, FieldLook,
     FieldSeed, FlexStyle, FocusChange, FontSize, Handle, InputFilter, Inset, LeafStyle, Length,
-    NodeId, Rgba, Role, SemanticState, Semantics, Size, StackStyle, StateId, StateValue,
+    NodeId, Rgba, Role, SemanticState, Semantics, Sizing, StackStyle, StateId, StateValue,
     StructureCx, TextRequest, TextStyle, Vec2, field_input,
 };
 
@@ -482,7 +482,7 @@ fn color_bar(cx: &mut BuildCx<'_>, paint: TrackPaint, value: f32, label: &str) -
     )
     .with_paint(paint);
     let leaf = cx.slider_leaf(
-        Size {
+        Sizing {
             width: Length::Fill { weight: 1.0 },
             height: Length::Fixed(BAR),
         },
@@ -541,7 +541,7 @@ impl ColorPickerParts {
                 axis: Axis::Column,
                 gap: 10.0,
                 align: Align::Stretch,
-                size: Size {
+                size: Sizing {
                     width: if fill {
                         fill_width
                     } else {
@@ -555,7 +555,7 @@ impl ColorPickerParts {
                 let mut stops = (None, None);
                 let plane = cx.stack(
                     StackStyle {
-                        size: Size {
+                        size: Sizing {
                             width: fill_width,
                             height: Length::Fixed(plane_height(width, wheel)),
                         },
@@ -564,7 +564,7 @@ impl ColorPickerParts {
                     |cx| {
                         let stop = |cx: &mut BuildCx<'_>, label: &str| {
                             let leaf = cx.leaf(LeafStyle {
-                                size: Size::fill(),
+                                size: Sizing::fill(),
                                 style: BoxStyle::NONE,
                             });
                             cx.focusable(leaf, true);
@@ -593,7 +593,7 @@ impl ColorPickerParts {
                                 axis: Axis::Row,
                                 padding: style.field_padding,
                                 align: Align::Center,
-                                size: Size {
+                                size: Sizing {
                                     width: fill_width,
                                     height: Length::Fit,
                                 },
@@ -603,7 +603,7 @@ impl ColorPickerParts {
                             |cx| {
                                 row.0 = Some(cx.text_input(
                                     LeafStyle {
-                                        size: Size {
+                                        size: Sizing {
                                             width: fill_width,
                                             height: Length::Fit,
                                         },
@@ -615,7 +615,7 @@ impl ColorPickerParts {
                             },
                         );
                         row.1 = Some(cx.color_plane_leaf(
-                            Size::fixed(SWATCH_SIZE.x, SWATCH_SIZE.y),
+                            Sizing::fixed(SWATCH_SIZE.x, SWATCH_SIZE.y),
                             ColorPlane::new(PlaneShape::Swatch, tone.hsv, tone.alpha, style.accent),
                         ));
                     },

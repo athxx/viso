@@ -39,7 +39,7 @@ use crate::{
     Align, AnchorAlign, Anchoring, Axis, BoxRules, BoxStyle, BuildCx, DispatchPhase, EventCx,
     FieldLook, FieldSeed, FlexStyle, FocusChange, FontSize, FontWeight, Handle, Inset,
     InteractionStyle, Justify, Key, KeyEvent, LeafStyle, Length, NodeId, PointerButtons,
-    PointerPhase, Rgba, Role, SemanticState, Semantics, Shadow, Side, Size, Span, SpanStyle,
+    PointerPhase, Rgba, Role, SemanticState, Semantics, Shadow, Side, Sizing, Span, SpanStyle,
     StateId, StateValue, TextRequest, TextSpan, TextStyle, field_input,
 };
 
@@ -137,7 +137,7 @@ pub struct SearchSpec {
     /// The most suggestions the list shows.
     pub max_suggestions: usize,
     /// Its size within its parent.
-    pub size: Size,
+    pub size: Sizing,
     pub style: SearchFieldStyle,
 }
 
@@ -156,7 +156,7 @@ impl Default for SearchSpec {
     }
 }
 
-const FIT: Size = Size {
+const FIT: Sizing = Sizing {
     width: Length::Fit,
     height: Length::Fit,
 };
@@ -209,7 +209,7 @@ fn build(
                     padding: style.field_padding,
                     align: Align::Center,
                     justify: Justify::Start,
-                    size: Size {
+                    size: Sizing {
                         width: Length::Fill { weight: 1.0 },
                         height: Length::Fit,
                     },
@@ -225,7 +225,7 @@ fn build(
                         - GLYPH * 2.0;
                     let leaf = cx.text_input(
                         LeafStyle {
-                            size: Size {
+                            size: Sizing {
                                 width: Length::Fill { weight: 1.0 },
                                 height: Length::Fit,
                             },
@@ -376,7 +376,7 @@ fn panel(
                         padding: style.item_padding,
                         align: Align::Center,
                         justify: Justify::Start,
-                        size: Size {
+                        size: Sizing {
                             width: Length::Fill { weight: 1.0 },
                             height: Length::Fit,
                         },

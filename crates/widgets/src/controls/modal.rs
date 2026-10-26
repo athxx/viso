@@ -38,11 +38,11 @@
 //! use std::rc::Rc;
 //! use viso_widgets::{ModalHandleSlot, modal};
 //! use viso_ui::{SemanticProjector, BuildCx, BindingTable, Component, LeafStyle, NodeStore, StateStore, TextEdits, VirtualLists};
-//! use viso_ui::{BoxStyle, Size};
+//! use viso_ui::{BoxStyle, Sizing};
 //!
 //! let handle: ModalHandleSlot = Rc::new(RefCell::new(None));
 //! let control = modal()
-//!     .content(|cx| { cx.leaf(LeafStyle { size: Size::fixed(240.0, 160.0), style: BoxStyle::NONE }); })
+//!     .content(|cx| { cx.leaf(LeafStyle { size: Sizing::fixed(240.0, 160.0), style: BoxStyle::NONE }); })
 //!     .on_dismiss(|_ev| { /* the modal was dismissed */ })
 //!     .handle(&handle);
 //!
@@ -63,7 +63,7 @@ use std::rc::Rc;
 
 use viso_ui::{
     Align, Axis, BoxStyle, BuildCx, Component, DirtyClass, EventCx, FlexStyle, Inset, Justify, Key,
-    Length, NodeId, PointerPhase, Rgba, Role, Semantics, Size, StateId, StateValue,
+    Length, NodeId, PointerPhase, Rgba, Role, Semantics, Sizing, StateId, StateValue,
 };
 
 /// A shared, mutable dismiss callback, fired when the modal closes (Escape, or a
@@ -153,7 +153,7 @@ const DEFAULT_SCRIM: Rgba = Rgba {
 pub struct ModalStyle {
     /// The modal's own size request within its parent. Defaults to `Fill` on both
     /// axes (the dialog and its scrim cover the surface).
-    pub size: Size,
+    pub size: Sizing,
     /// The dimming color painted over the surface while open, under the content.
     /// Defaults to a translucent dark wash; `None` paints no scrim.
     pub scrim: Option<Rgba>,
@@ -173,7 +173,7 @@ pub struct ModalStyle {
 impl Default for ModalStyle {
     fn default() -> Self {
         ModalStyle {
-            size: Size::fill(),
+            size: Sizing::fill(),
             scrim: Some(DEFAULT_SCRIM),
             dismiss_on_scrim: true,
         }
@@ -256,7 +256,7 @@ impl Modal {
     }
 
     /// Set the modal's own size request within its parent (defaults to `Fill`).
-    pub fn size(mut self, size: Size) -> Self {
+    pub fn size(mut self, size: Sizing) -> Self {
         self.style.size = size;
         self
     }
@@ -364,7 +364,7 @@ impl Component for Modal {
                 // with it.
                 if let Some(color) = scrim_color {
                     let scrim = cx.leaf(viso_ui::LeafStyle {
-                        size: Size::fill(),
+                        size: Sizing::fill(),
                         style: BoxStyle::solid(color),
                     });
                     cx.set_overlay(scrim, true);
@@ -383,7 +383,7 @@ impl Component for Modal {
                         padding: Inset::all(0.0),
                         align: Align::Stretch,
                         justify: Justify::Start,
-                        size: Size {
+                        size: Sizing {
                             width: Length::Fit,
                             height: Length::Fit,
                         },
@@ -680,7 +680,7 @@ mod tests {
     /// empty node.
     fn leaf(cx: &mut BuildCx<'_>) {
         cx.leaf(LeafStyle {
-            size: Size::fixed(10.0, 10.0),
+            size: Sizing::fixed(10.0, 10.0),
             style: BoxStyle::NONE,
         });
     }
@@ -1055,7 +1055,7 @@ mod tests {
             modal()
                 .content(leaf)
                 .style(ModalStyle {
-                    size: Size::fill(),
+                    size: Sizing::fill(),
                     scrim: None,
                     dismiss_on_scrim: true,
                 })

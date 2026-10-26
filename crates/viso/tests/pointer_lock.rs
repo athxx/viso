@@ -13,7 +13,7 @@ use viso::platform::{
     PointerPhase as RawPhase, RawEvent, RawKey, RawPointer, WindowId,
 };
 use viso::prelude::*;
-use viso::ui::{Axis, BoxStyle, FlexStyle, LeafStyle, PointerPhase, Size};
+use viso::ui::{Axis, BoxStyle, FlexStyle, LeafStyle, PointerPhase, Sizing};
 
 const STEP: Duration = Duration::from_millis(16);
 const WIN: WindowId = WindowId(1);
@@ -53,13 +53,13 @@ impl Application for LockingApp {
     fn build(&mut self, cx: &mut BuildCx<'_>) {
         cx.flex(
             FlexStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 axis: Axis::Row,
                 ..FlexStyle::default()
             },
             |cx| {
                 let view = cx.leaf(LeafStyle {
-                    size: Size::fixed(100.0, 100.0),
+                    size: Sizing::fixed(100.0, 100.0),
                     style: BoxStyle::NONE,
                 });
                 let id = view.id();
@@ -80,7 +80,7 @@ impl Application for LockingApp {
                     HEARD.with(|h| h.borrow_mut().push(heard));
                 });
                 cx.leaf(LeafStyle {
-                    size: Size::fixed(100.0, 100.0),
+                    size: Sizing::fixed(100.0, 100.0),
                     style: BoxStyle::NONE,
                 });
             },

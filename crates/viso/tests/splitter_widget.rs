@@ -11,7 +11,7 @@ use viso::gpu::{CpuRaster, GpuBackend, RawWindowHandle};
 use viso::render::{FrameStats, Rect, Renderer, Rgba};
 use viso::ui::{
     BindingTable, BoxStyle, BuildCx, Component, LeafStyle, NodeId, NodeStore, SemanticProjector,
-    Size, StateStore, TextEdits, VirtualLists, paint_tree,
+    Sizing, StateStore, TextEdits, VirtualLists, paint_tree,
 };
 use viso::widgets::{SplitAt, splitter};
 
@@ -50,7 +50,7 @@ fn surface_rect() -> Rect {
 fn pane_fill(color: Rgba) -> impl Fn(&mut BuildCx<'_>) + 'static {
     move |cx| {
         cx.leaf(LeafStyle {
-            size: Size::fill(),
+            size: Sizing::fill(),
             style: BoxStyle::solid(color),
         });
     }
@@ -70,7 +70,7 @@ fn build_scene(store: &mut NodeStore) -> NodeId {
 
     let widget = splitter("Editor / Preview")
         .at(SplitAt::Fraction(0.4))
-        .size(Size::fill())
+        .size(Sizing::fill())
         .panes(pane_fill(PANE_A), pane_fill(PANE_B));
 
     let mut cx = BuildCx::with_reactive(

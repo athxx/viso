@@ -44,7 +44,7 @@ use viso_ui::feedback::NATIVE_RIPPLE;
 use viso_ui::{
     Access, Align, Axis, BoxStyle, BuildCx, Component, DispatchPhase, EventCx, FlexStyle, Inset,
     InteractionStyle, Justify, Key, Length, PointerButtons, PointerPhase, Rgba, Role, Semantics,
-    Size, StateValue,
+    Sizing, StateValue,
 };
 
 use crate::controls::mnemonic::Mnemonic;
@@ -106,7 +106,7 @@ const PADDING: f32 = 8.0;
 pub struct ButtonStyle {
     /// The button's own size request within its parent. Defaults to `Fit` on
     /// both axes (shrink to the caption plus padding).
-    pub size: Size,
+    pub size: Sizing,
     /// The resting background box (fill, radius, border).
     pub background: BoxStyle,
     /// The background box painted while the pointer hovers the button (and it
@@ -122,7 +122,7 @@ pub struct ButtonStyle {
 impl Default for ButtonStyle {
     fn default() -> Self {
         ButtonStyle {
-            size: Size {
+            size: Sizing {
                 width: Length::Fit,
                 height: Length::Fit,
             },
@@ -181,7 +181,7 @@ impl Button {
     }
 
     /// Set the button's own size request within its parent (defaults to `Fit`).
-    pub fn size(mut self, size: Size) -> Self {
+    pub fn size(mut self, size: Sizing) -> Self {
         self.style.size = size;
         self
     }
@@ -497,8 +497,8 @@ mod tests {
             b: 0.0,
             a: 1.0,
         });
-        let widget = button("x").size(Size::fill()).background(bg);
-        assert_eq!(widget.style.size, Size::fill());
+        let widget = button("x").size(Sizing::fill()).background(bg);
+        assert_eq!(widget.style.size, Sizing::fill());
         assert_eq!(widget.style.background, bg);
     }
 

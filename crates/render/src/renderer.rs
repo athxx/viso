@@ -3124,7 +3124,7 @@ impl Renderer {
                     if let Some(entry) = self.layer_stack.pop()
                         && let PassTarget::Offscreen(idx) = entry.target
                     {
-                        // Size the pass to its tight content ROI, claim the
+                        // Sizing the pass to its tight content ROI, claim the
                         // texture, and repatch its children's origin to the ROI
                         // top-left — all deferred to here because the content
                         // union isn't known until the subtree is walked.
@@ -4828,7 +4828,7 @@ impl Renderer {
         idx
     }
 
-    /// Size the offscreen pass at `idx` to its tight content ROI, declare the
+    /// Sizing the offscreen pass at `idx` to its tight content ROI, declare the
     /// transient target it writes, and repatch every recorded child of the pass to
     /// the ROI top-left origin. Called from `LayerEnd` before
     /// [`close_offscreen`](Self::close_offscreen).

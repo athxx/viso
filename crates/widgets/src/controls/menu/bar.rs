@@ -7,8 +7,8 @@ use viso_ui::adaptive::LayoutDirection;
 use viso_ui::{
     Access, Align, Anchoring, Axis, BoxStyle, BuildCx, Component, DispatchPhase, EventCx,
     FlexStyle, FocusChange, ImeEvent, Inset, InteractionStyle, Justify, Key, Length, NodeId,
-    PointerButtons, PointerPhase, Rgba, Role, SemanticState, Semantics, Size, StateId, StateValue,
-    TextRequest, Vec2,
+    PointerButtons, PointerPhase, Rgba, Role, SemanticState, Semantics, Sizing, StateId,
+    StateValue, TextRequest, Vec2,
 };
 
 use super::state::{MenuHandle, MenuState, Start};
@@ -197,7 +197,7 @@ fn with(shared: &Shared, f: impl FnOnce(&Rc<BarState>)) {
     }
 }
 
-const FIT: Size = Size {
+const FIT: Sizing = Sizing {
     width: Length::Fit,
     height: Length::Fit,
 };
@@ -213,7 +213,7 @@ fn build_bar(cx: &mut BuildCx<'_>, bar: &MenuBar) -> Rc<BarState> {
             padding: style.padding,
             align: Align::Center,
             justify: Justify::Start,
-            size: Size {
+            size: Sizing {
                 width: Length::Fill { weight: 1.0 },
                 height: Length::Fit,
             },

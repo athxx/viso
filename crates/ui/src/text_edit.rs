@@ -3499,7 +3499,7 @@ mod tests {
     fn live_node(store: &mut crate::component::NodeStore) -> NodeId {
         let mut cx = crate::component::BuildCx::new(store);
         let h = cx.leaf(crate::component::LeafStyle {
-            size: crate::layout::Size::fixed(1.0, 1.0),
+            size: crate::layout::Sizing::fixed(1.0, 1.0),
             ..Default::default()
         });
         cx.root();

@@ -1,7 +1,7 @@
 //! How a chart looks: its series colors, its ink and its marks.
 
 use viso_math::Srgb;
-use viso_ui::{Length, Rgba, Size};
+use viso_ui::{Length, Rgba, Sizing};
 
 fn hex(v: u32) -> Rgba {
     Srgb::from_rgba32((v << 8) | 0xff).into_linear_straight()
@@ -16,7 +16,7 @@ fn hex(v: u32) -> Rgba {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ChartStyle {
     /// The chart's own size within its parent.
-    pub size: Size,
+    pub size: Sizing,
     /// The series colors, in order.
     pub palette: [Rgba; 8],
     /// What the chart sits on; dots are ringed with it and touching bars
@@ -52,7 +52,7 @@ impl ChartStyle {
     /// On a light surface.
     pub fn light() -> Self {
         ChartStyle {
-            size: Size {
+            size: Sizing {
                 width: Length::fill(),
                 height: Length::Fixed(240.0),
             },

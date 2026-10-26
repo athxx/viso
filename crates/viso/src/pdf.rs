@@ -58,7 +58,7 @@ use viso_services::{Completer, Reply, ServiceError, reply};
 use viso_text::FontFaceId;
 use viso_ui::BoxStyle;
 use viso_ui::{
-    Align, Axis, BuildCx, Content, FlexStyle, Handle, Justify, LeafStyle, Length, NodeId, Size,
+    Align, Axis, BuildCx, Content, FlexStyle, Handle, Justify, LeafStyle, Length, NodeId, Sizing,
     TransformTable,
 };
 
@@ -246,7 +246,7 @@ pub fn export(pdf: Pdf) -> Reply<Vec<u8>> {
 /// Breaks the page before what `cx` declares next, in a [`Pdf`]'s view.
 pub fn page_break(cx: &mut BuildCx<'_>) {
     let mark = cx.leaf(LeafStyle {
-        size: Size::fixed(0.0, 0.0),
+        size: Sizing::fixed(0.0, 0.0),
         style: BoxStyle::NONE,
     });
     MARKS.with(|marks| marks.borrow_mut().breaks.push(mark.id()));
@@ -592,7 +592,7 @@ fn build(ws: &mut WindowState, width: f32, height: Option<f32>, view: View) -> L
                 } else {
                     Justify::Start
                 },
-                size: Size {
+                size: Sizing {
                     width: Length::Fixed(width),
                     height: height.map_or(Length::Fit, Length::Fixed),
                 },

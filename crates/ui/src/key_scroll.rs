@@ -195,7 +195,7 @@ mod tests {
     use super::*;
     use crate::component::{BuildCx, FlexStyle, LeafStyle, ScrollStyle};
     use crate::input::Modifiers;
-    use crate::layout::Size;
+    use crate::layout::Sizing;
     use crate::snap::ScrollSnap;
     use crate::style::BoxStyle;
     use std::time::Duration;
@@ -212,7 +212,7 @@ mod tests {
             .flex(FlexStyle::default(), |cx| {
                 let v = cx.scroll(
                     ScrollStyle {
-                        size: Size::fixed(100.0, 100.0),
+                        size: Sizing::fixed(100.0, 100.0),
                         snap,
                         ..ScrollStyle::default()
                     },
@@ -225,7 +225,7 @@ mod tests {
                             |cx| {
                                 for _ in 0..10 {
                                     let item = cx.leaf(LeafStyle {
-                                        size: Size::fixed(100.0, 100.0),
+                                        size: Sizing::fixed(100.0, 100.0),
                                         style: BoxStyle::NONE,
                                     });
                                     items.push(item.id());

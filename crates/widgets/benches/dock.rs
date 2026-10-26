@@ -29,7 +29,7 @@ use std::hint::black_box;
 use criterion::{Criterion, criterion_group, criterion_main};
 use viso_ui::{
     Align, Axis, BindingTable, BoxStyle, BuildCx, Component, FlexStyle, Inset, Justify, LeafStyle,
-    NodeId, NodeStore, Rect, SemanticProjector, Size, StateStore, TextEdits, VirtualLists,
+    NodeId, NodeStore, Rect, SemanticProjector, Sizing, StateStore, TextEdits, VirtualLists,
     paint_tree,
 };
 use viso_widgets::{Dock, DockNode, DockTree, PanelKey, dock};
@@ -85,7 +85,7 @@ fn dock_32() -> Dock {
     for k in 0..next {
         d = d.panel(PanelKey(k), |cx: &mut BuildCx<'_>| {
             cx.leaf(LeafStyle {
-                size: Size::fill(),
+                size: Sizing::fill(),
                 style: BoxStyle::NONE,
             });
         });
@@ -137,16 +137,16 @@ fn build_split_scene() -> (NodeStore, NodeId, NodeId, NodeId) {
                 padding: Inset::all(0.0),
                 align: Align::Stretch,
                 justify: Justify::Start,
-                size: Size::fill(),
+                size: Sizing::fill(),
                 style: BoxStyle::NONE,
             },
             |cx| {
                 let a = cx.leaf(LeafStyle {
-                    size: Size::fill(),
+                    size: Sizing::fill(),
                     style: BoxStyle::NONE,
                 });
                 let b = cx.leaf(LeafStyle {
-                    size: Size::fill(),
+                    size: Sizing::fill(),
                     style: BoxStyle::NONE,
                 });
                 *a_out = Some(a.id());

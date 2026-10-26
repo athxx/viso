@@ -26,7 +26,7 @@ pub mod tess;
 pub mod tilt;
 pub mod view;
 
-pub use camera::{Camera, Insets, Limits, MAX_PITCH, Motion, TILE_SIZE, View};
+pub use camera::{Camera, Limits, MAX_PITCH, Motion, Padding, TILE_SIZE, View};
 pub use geo::{LngLat, LngLatBounds, WorldPoint};
 pub use geojson::{GeoFeature, GeoJson, GeoJsonError, Geometry};
 pub use icons::IconSet;

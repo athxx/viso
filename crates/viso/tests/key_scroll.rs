@@ -10,7 +10,7 @@ use std::time::Duration;
 use viso::__test_support::{DrivenApp, drive_scripted};
 use viso::platform::{KeyCode, Modifiers, RawEvent, RawKey, WindowId};
 use viso::prelude::*;
-use viso::ui::{Axis, Component, FlexStyle, LeafStyle, Size};
+use viso::ui::{Axis, Component, FlexStyle, LeafStyle, Sizing};
 use viso::widgets::{ScrollViewStyle, button, scroll, slider, text_input};
 
 const STEP: Duration = Duration::from_millis(16);
@@ -52,7 +52,7 @@ impl Application for ListApp {
                         slider("Volume").range(0.0, 100.0).value(50.0).build(cx);
                         text_input("Name").build(cx);
                         cx.leaf(LeafStyle {
-                            size: Size::fixed(400.0, 3000.0),
+                            size: Sizing::fixed(400.0, 3000.0),
                             ..Default::default()
                         });
                     },

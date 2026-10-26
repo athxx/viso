@@ -142,7 +142,7 @@ impl Renderer {
         self.scene3d.take_stats()
     }
 
-    /// Size and fill the scene of every scene draw among `primitives`.
+    /// Sizing and fill the scene of every scene draw among `primitives`.
     pub(super) fn place_scenes<B: GpuBackend>(
         &mut self,
         backend: &mut B,

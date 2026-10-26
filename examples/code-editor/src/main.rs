@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use viso::prelude::*;
-use viso::ui::{Axis, Component, Key, Size};
+use viso::ui::{Axis, Component, Key, Sizing};
 use viso_code_editor::service::LanguageService;
 use viso_code_editor::{EditorSlot, code_editor};
 
@@ -91,7 +91,7 @@ impl Application for Editor {
         let file = file_of(self.path.as_deref());
         let mut editor = code_editor(self.text.clone())
             .language(viso_code_editor::lang::for_path(&file.to_string_lossy()))
-            .size(Size::fill())
+            .size(Sizing::fill())
             .label(file.to_string_lossy())
             .handle(&self.slot);
         if let Some(service) = &self.service {
@@ -100,7 +100,7 @@ impl Application for Editor {
         let root = cx.flex(
             FlexStyle {
                 axis: Axis::Column,
-                size: Size::fill(),
+                size: Sizing::fill(),
                 ..Default::default()
             },
             |cx| editor.build(cx),

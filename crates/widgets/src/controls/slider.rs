@@ -60,7 +60,8 @@ use viso_ui::slider::{
 };
 use viso_ui::{
     Axis, BoxStyle, BuildCx, Component, Content, DispatchPhase, EventCx, FocusChange, Haptic,
-    LeafStyle, Length, Rgba, Role, SemanticState, Semantics, Size, StackStyle, StateId, StateValue,
+    LeafStyle, Length, Rgba, Role, SemanticState, Semantics, Sizing, StackStyle, StateId,
+    StateValue,
 };
 
 /// What runs with a slider's new value.
@@ -74,7 +75,7 @@ type SharedRange = Rc<RefCell<Option<Box<dyn FnMut(&mut EventCx<'_>, f32, f32)>>
 pub struct SliderStyle {
     /// Its size within its parent. `Fit` takes the slider's own: 160 by 24
     /// along its axis, 40 square for a knob.
-    pub size: Size,
+    pub size: Sizing,
     /// The track, or a knob's ring.
     pub track: Rgba,
     /// The stretch filled, and a knob's pointer.
@@ -86,7 +87,7 @@ pub struct SliderStyle {
 impl Default for SliderStyle {
     fn default() -> Self {
         SliderStyle {
-            size: Size {
+            size: Sizing {
                 width: Length::Fit,
                 height: Length::Fit,
             },
@@ -208,7 +209,7 @@ impl Slider {
     }
 
     /// Set its size within its parent (default: its own).
-    pub fn size(mut self, size: Size) -> Self {
+    pub fn size(mut self, size: Sizing) -> Self {
         self.style.size = size;
         self
     }
@@ -243,7 +244,7 @@ fn mark(shape: SliderShape, style: &SliderStyle, value: f32) -> SliderMark {
 
 /// `size`, its `Fit` axes taking a range slider's own size: a range's
 /// thumbs size it no further.
-fn sized(size: Size, axis: Axis) -> Size {
+fn sized(size: Sizing, axis: Axis) -> Sizing {
     let own = match axis {
         Axis::Row => SLIDER_SIZE,
         Axis::Column => viso_ui::Vec2::new(SLIDER_SIZE.y, SLIDER_SIZE.x),
@@ -252,7 +253,7 @@ fn sized(size: Size, axis: Axis) -> Size {
         Length::Fit => Length::Fixed(v),
         l => l,
     };
-    Size {
+    Sizing {
         width: fit(size.width, own.x),
         height: fit(size.height, own.y),
     }
@@ -417,7 +418,7 @@ impl RangeSlider {
     }
 
     /// Set its size within its parent (default: 160 by 24 along its axis).
-    pub fn size(mut self, size: Size) -> Self {
+    pub fn size(mut self, size: Sizing) -> Self {
         self.style.size = size;
         self
     }
@@ -452,7 +453,7 @@ impl Component for RangeSlider {
             |cx| {
                 for (i, slot) in thumbs.iter_mut().enumerate() {
                     let leaf = cx.leaf(LeafStyle {
-                        size: Size::fill(),
+                        size: Sizing::fill(),
                         style: BoxStyle::NONE,
                     });
                     *slot = Some(leaf);

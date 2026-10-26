@@ -26,7 +26,7 @@ use std::rc::Rc;
 use criterion::{Criterion, criterion_group, criterion_main};
 use viso_ui::{
     BindingTable, BoxStyle, BuildCx, Component, LeafStyle, NodeStore, Rect, SemanticProjector,
-    Size, StateStore, TextEdits, VirtualLists, paint_tree,
+    Sizing, StateStore, TextEdits, VirtualLists, paint_tree,
 };
 use viso_widgets::{NavHandleSlot, navigation_stack};
 
@@ -59,7 +59,7 @@ impl Reactive {
 /// subtree rather than an empty node.
 fn page(cx: &mut BuildCx<'_>) {
     cx.leaf(LeafStyle {
-        size: Size::fill(),
+        size: Sizing::fill(),
         style: BoxStyle::NONE,
     });
 }
