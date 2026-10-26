@@ -305,7 +305,7 @@ fn load_uri(
         if !meta.ends_with(";base64") {
             return Ok(percent_decode(payload));
         }
-        return base64(payload.as_bytes())
+        return viso_ende::base64::decode(payload.as_bytes())
             .ok_or_else(|| ModelError("a data URI's base64 is malformed".into()));
     }
     let path = percent_decode(uri);
@@ -341,38 +341,6 @@ fn percent_decode(s: &str) -> Vec<u8> {
         i += 1;
     }
     out
-}
-
-/// Standard base64, padding optional, whitespace skipped.
-fn base64(input: &[u8]) -> Option<Vec<u8>> {
-    let value = |c: u8| -> Option<u32> {
-        Some(match c {
-            b'A'..=b'Z' => c - b'A',
-            b'a'..=b'z' => c - b'a' + 26,
-            b'0'..=b'9' => c - b'0' + 52,
-            b'+' | b'-' => 62,
-            b'/' | b'_' => 63,
-            _ => return None,
-        } as u32)
-    };
-    let mut out = Vec::with_capacity(input.len() / 4 * 3);
-    let (mut acc, mut bits) = (0u32, 0u32);
-    for &c in input {
-        if c == b'=' {
-            break;
-        }
-        if c.is_ascii_whitespace() {
-            continue;
-        }
-        acc = (acc << 6) | value(c)?;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((acc >> bits) as u8);
-            acc &= (1 << bits) - 1;
-        }
-    }
-    Some(out)
 }
 
 /// A buffer view: a range of a buffer, and the stride of its elements.

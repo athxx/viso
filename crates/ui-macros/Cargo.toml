@@ -23,3 +23,6 @@ quote = "1"
 syn = { version = "2", features = ["full"] }
 toml_edit = "0.25"
 viso-dsl = { workspace = true }
+
+[lints]
+workspace = true

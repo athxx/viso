@@ -18,3 +18,6 @@ viso-ende = { workspace = true }
 # `check-deps` parses the sources whose module-level imports it holds.
 syn = { version = "2", features = ["full", "visit"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
+
+[lints]
+workspace = true

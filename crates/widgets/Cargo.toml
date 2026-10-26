@@ -107,3 +107,6 @@ harness = false
 [[bench]]
 name = "file_tree"
 harness = false
+
+[lints]
+workspace = true

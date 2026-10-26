@@ -26,3 +26,6 @@ spirv = ["dep:naga"]
 # emitted WGSL module and produces the frozen SPIR-V artifacts the Vulkan
 # backend embeds. Test-only; never linked into a build.
 naga = { version = "30", features = ["wgsl-in", "spv-out"] }
+
+[lints]
+workspace = true

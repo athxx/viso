@@ -67,3 +67,6 @@ harness = false
 [[bench]]
 name = "behavior_native"
 harness = false
+
+[lints]
+workspace = true

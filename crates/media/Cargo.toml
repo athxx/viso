@@ -113,3 +113,6 @@ windows = { version = "0.62", features = [
 [[test]]
 name = "player"
 harness = false
+
+[lints]
+workspace = true

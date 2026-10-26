@@ -104,8 +104,8 @@ impl Output {
                 Ok(())
             }
         };
-        // SAFETY: `pcm` receives the handle; the name is NUL-terminated.
         check(
+            // SAFETY: `pcm` receives the handle; the name is NUL-terminated.
             unsafe { (alsa.open)(&mut pcm, c"default".as_ptr(), STREAM_PLAYBACK, 0) },
             "opening the default device",
         )?;
@@ -114,8 +114,8 @@ impl Output {
             period: 0,
             running: None,
         };
-        // SAFETY: the handle is open.
         check(
+            // SAFETY: the handle is open.
             unsafe {
                 (alsa.set_params)(
                     pcm,
@@ -130,8 +130,8 @@ impl Output {
             "configuring the device",
         )?;
         let (mut buffer, mut period): (c_ulong, c_ulong) = (0, 0);
-        // SAFETY: as above.
         check(
+            // SAFETY: as above.
             unsafe { (alsa.get_params)(pcm, &mut buffer, &mut period) },
             "reading the period",
         )?;

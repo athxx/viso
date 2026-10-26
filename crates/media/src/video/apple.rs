@@ -425,9 +425,9 @@ fn file_url(path: &std::path::Path) -> Result<Retained<NSURL>, VideoError> {
 
 /// Pixel buffers in BGRA, backed by IOSurfaces Metal can sample.
 fn bgra_attributes() -> Retained<NSDictionary<NSString, AnyObject>> {
-    // SAFETY: CoreVideo's attribute names are constant `CFString`s,
-    // toll-free bridged to `NSString`.
     let key = |name: &'static CFString| -> &'static NSString {
+        // SAFETY: CoreVideo's attribute names are constant `CFString`s,
+        // toll-free bridged to `NSString`.
         unsafe { &*(name as *const CFString).cast::<NSString>() }
     };
     let format = NSNumber::new_u32(kCVPixelFormatType_32BGRA);

@@ -12,3 +12,6 @@ rust-version.workspace = true
 # crates re-export them. Pure data and its codecs: no algorithms, no runtime.
 [dependencies]
 viso-ende = { workspace = true }
+
+[lints]
+workspace = true

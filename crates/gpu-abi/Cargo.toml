@@ -12,3 +12,6 @@ rust-version.workspace = true
 [dependencies]
 # Typed bitflags for resource-usage descriptors (BufferUsage).
 bitflags = "2"
+
+[lints]
+workspace = true

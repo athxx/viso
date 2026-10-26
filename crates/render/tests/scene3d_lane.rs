@@ -11,7 +11,7 @@ use viso_math::{LinearStraight, Mat4, Quat, Vec3, vec3};
 use viso_render::damage::Region;
 use viso_render::scene3d::{
     AmbientOcclusion, Camera, MaterialId, SceneFrame, SceneSprite, Shadows, Shape, SkinnedVertex,
-    Sky, instance,
+    instance,
 };
 use viso_render::{Border, Primitive, Quad, Rect, Renderer, Rgba, SceneDraw, SceneSlot};
 
@@ -351,6 +351,7 @@ fn a_sprite_blends_over_what_is_behind_it_and_hides_behind_what_is_in_front() {
 #[test]
 fn metal_draws_what_the_cpu_raster_draws() {
     use viso_gpu::{MetalBackend, TextureDesc, TextureFormat};
+    use viso_render::scene3d::Sky;
 
     fn image<B: GpuBackend>(
         gpu: &mut B,

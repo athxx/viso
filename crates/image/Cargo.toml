@@ -36,8 +36,12 @@ miniz_oxide = { workspace = true }
 avif = ["dep:zenavif-parse", "dep:rav1d"]
 
 # The AV1 decoder builds for every target but the web, whose browser decodes
-# AVIF itself. Its Rust paths alone: the published crate's assembly does not
+# AVIF itself, and 32-bit ARM, where the published crate needs a nightly
+# feature. Its Rust paths alone: the published crate's assembly does not
 # build.
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+[target.'cfg(not(any(target_arch = "wasm32", target_arch = "arm")))'.dependencies]
 zenavif-parse = { workspace = true, optional = true }
 rav1d = { workspace = true, optional = true }
+
+[lints]
+workspace = true

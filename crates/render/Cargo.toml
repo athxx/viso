@@ -62,3 +62,6 @@ harness = false
 [[bench]]
 name = "cpu_raster"
 harness = false
+
+[lints]
+workspace = true

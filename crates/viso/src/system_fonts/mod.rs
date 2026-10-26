@@ -27,7 +27,7 @@
 
 #[cfg(all(target_os = "android", not(viso_no_system_fonts)))]
 mod android;
-#[cfg(any(target_os = "android", test))]
+#[cfg(any(all(target_os = "android", not(viso_no_system_fonts)), test))]
 mod android_config;
 #[cfg(all(any(target_os = "macos", target_os = "ios"), not(viso_no_system_fonts)))]
 mod coretext;

@@ -12,3 +12,8 @@ rust-version.workspace = true
 # asset with this crate alone.
 [dependencies]
 viso-math = { workspace = true, features = ["std"] }
+# A data URL's base64 payload.
+viso-ende = { workspace = true }
+
+[lints]
+workspace = true

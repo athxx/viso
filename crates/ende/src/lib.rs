@@ -33,6 +33,7 @@ extern crate alloc;
 extern crate std;
 
 mod aligned;
+pub mod base64;
 mod decode;
 mod encode;
 mod json;

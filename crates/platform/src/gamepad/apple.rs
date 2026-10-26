@@ -353,8 +353,8 @@ impl Controller {
 
     fn stop(&mut self) {
         if let Some(haptics) = self.haptics.take() {
-            // SAFETY: `stopWithCompletionHandler:` takes an optional block.
             let none = None::<&block2::Block<dyn Fn(*mut AnyObject)>>;
+            // SAFETY: `stopWithCompletionHandler:` takes an optional block.
             let () = unsafe { msg_send![&*haptics.engine, stopWithCompletionHandler: none] };
         }
     }

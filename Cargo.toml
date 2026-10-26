@@ -68,6 +68,11 @@ repository = "https://github.com/visoui/viso"
 # architecture DAG (Viso_Architecture.md, architecture 10) by `cargo xtask
 # check-deps`. Do not add an edge without updating that check.
 # ---------------------------------------------------------------------------
+# Every member inherits these (`[lints] workspace = true`). An `unsafe` block
+# states the invariant it relies on in a `SAFETY:` comment.
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "warn"
+
 [workspace.dependencies]
 viso = { path = "crates/viso", version = "0.0.0" }
 viso-macros = { path = "crates/macros", version = "0.0.0" }

@@ -2,11 +2,11 @@
 //! steps on, faster the longer it is held, stopping at a bound; the keys
 //! step it; it reports its number to assistive technology as a spin button.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use viso::render::Rect;
 use viso::ui::{
-    BindingTable, BuildCx, EffectStore, Key, KeyEvent, KeyRouter, NodeId, NodeStore,
+    BindingTable, BuildCx, EffectStore, Instant, Key, KeyEvent, KeyRouter, NodeId, NodeStore,
     PointerButtons, PointerEvent, PointerPhase, PointerRouter, Role, SemanticProjector, StateStore,
     TextEdits, TimerRegistry, VirtualLists, focus_node, run_structure_hooks,
 };

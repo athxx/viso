@@ -31,3 +31,6 @@ hot-reload = ["inspect", "vm"]
 # Records every `view!` mount, for the development session or a headless run
 # to tell which view each node comes from. Off, a mount records nothing.
 inspect = ["viso-ui/inspect"]
+
+[lints]
+workspace = true

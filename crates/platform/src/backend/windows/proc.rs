@@ -149,8 +149,8 @@ fn handle(
         }
         WM_MOVE => {
             lock::clip(state);
-            // SAFETY: a plain state query of our own live window.
             if state.ready.get()
+                // SAFETY: a plain state query of our own live window.
                 && !unsafe { IsIconic(hwnd) }.as_bool()
                 && let Some((x, y)) = super::outer_position(hwnd)
             {

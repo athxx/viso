@@ -1416,6 +1416,8 @@ impl WindowDelegate {
             features: RefCell::new(Vec::new()),
             pixels: RefCell::new(None),
         });
+        // SAFETY: `this` is freshly allocated with its ivars set; `NSObject`'s
+        // `init` is its designated initializer.
         unsafe { msg_send![super(this), init] }
     }
 
@@ -1534,6 +1536,8 @@ define_class!(
 impl AppDelegate {
     fn new(mtm: MainThreadMarker, shared: Shared) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(AppDelegateIvars { shared });
+        // SAFETY: `this` is freshly allocated with its ivars set; `NSObject`'s
+        // `init` is its designated initializer.
         unsafe { msg_send![super(this), init] }
     }
 
@@ -1567,6 +1571,8 @@ fn install_main_menu(mtm: MainThreadMarker, app: &NSApplication, delegate: &AppD
             &NSString::from_str("q"),
         )
     };
+    // SAFETY: `delegate` outlives the menu: the application holds it for
+    // the run, and AppKit keeps the target weakly.
     unsafe {
         quit_item.setTarget(Some(delegate));
     }
@@ -1725,6 +1731,7 @@ fn traffic_lights_geom(window: &NSWindow) -> Option<LogicalRect> {
         // views. All operate on views owned by the live window.
         let superview = unsafe { btn.superview() }?;
         let frame = btn.frame();
+        // SAFETY: both views are live and in one window; the rect is a plain value.
         let r: NSRect = unsafe { msg_send![&*content, convertRect: frame, fromView: &*superview] };
         let top = r.origin.y;
         let left = r.origin.x;
@@ -1790,6 +1797,8 @@ define_class!(
 impl MenuTarget {
     fn new(mtm: MainThreadMarker, command: u32, shared: Shared) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(MenuTargetIvars { command, shared });
+        // SAFETY: `this` is freshly allocated with its ivars set; `NSObject`'s
+        // `init` is its designated initializer.
         unsafe { msg_send![super(this), init] }
     }
 }
@@ -1847,6 +1856,8 @@ fn build_menu_node(
             }
             item.setEnabled(*enabled);
             let target = MenuTarget::new(mtm, command.0, shared.clone());
+            // SAFETY: `target` outlives the item: it is kept in `targets` beside the
+            // menu, and AppKit keeps the target weakly.
             unsafe {
                 item.setTarget(Some(&target));
             }
@@ -1895,6 +1906,8 @@ fn build_system_item(
     // Quit targets our delegate explicitly (clean pump exit); the others take
     // nil target so the OS walks the responder chain to the key window / app.
     if matches!(action, SystemAction::Quit) {
+        // SAFETY: `delegate` outlives the menu: the application holds it for
+        // the run, and AppKit keeps the target weakly.
         unsafe {
             item.setTarget(Some(delegate));
         }
@@ -2057,6 +2070,8 @@ define_class!(
         // and `mouseExited` fire across the whole current bounds.
         #[unsafe(method(updateTrackingAreas))]
         fn update_tracking_areas(&self) {
+            // SAFETY: AppKit calls this on the main thread with `self` live; the
+            // tracking areas read and replaced are this view's own.
             let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
                 for old in self.trackingAreas().iter() {
                     self.removeTrackingArea(&old);
@@ -2540,6 +2555,8 @@ impl VisoContentView {
             last_mouse: RefCell::new(None),
             drag_out: Cell::new(None),
         });
+        // SAFETY: `this` is a freshly allocated view with its ivars set; `NSView`'s
+        // designated initializer takes the frame.
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
         // SAFETY: the pasteboard type names are immutable AppKit constants.
         let types = unsafe {

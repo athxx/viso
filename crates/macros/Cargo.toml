@@ -36,3 +36,6 @@ viso-glyph-a8 = { workspace = true, features = ["raster"] }
 # The GB 2312 table test decodes every GB 2312 code through GBK to check the
 # table the `gb2312` charset reads.
 encoding_rs = "0.8.41"
+
+[lints]
+workspace = true

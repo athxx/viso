@@ -12,3 +12,6 @@ viso-dsl = { workspace = true }
 [[bin]]
 name = "viso-lsp"
 path = "src/bin/viso-lsp.rs"
+
+[lints]
+workspace = true

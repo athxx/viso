@@ -23,7 +23,7 @@ pub(crate) fn decode(href: &str) -> Option<DataUrl> {
     let mime = parts.next().unwrap_or("").to_ascii_lowercase();
     let base64 = parts.any(|p| p.eq_ignore_ascii_case("base64"));
     let raw = percent_decode(payload);
-    let bytes = if base64 { base64_decode(&raw)? } else { raw };
+    let bytes = if base64 { viso_ende::base64::decode(&raw)? } else { raw };
     Some(DataUrl { mime, bytes })
 }
 
@@ -53,32 +53,6 @@ fn hex(c: u8) -> Option<u8> {
         b'A'..=b'F' => Some(c - b'A' + 10),
         _ => None,
     }
-}
-
-/// Standard and URL-safe alphabets; whitespace is skipped, padding optional.
-fn base64_decode(s: &[u8]) -> Option<Vec<u8>> {
-    let mut out = Vec::with_capacity(s.len() * 3 / 4);
-    let mut acc = 0u32;
-    let mut bits = 0u32;
-    for &c in s {
-        let v = match c {
-            b'A'..=b'Z' => c - b'A',
-            b'a'..=b'z' => c - b'a' + 26,
-            b'0'..=b'9' => c - b'0' + 52,
-            b'+' | b'-' => 62,
-            b'/' | b'_' => 63,
-            b'=' => break,
-            c if c.is_ascii_whitespace() => continue,
-            _ => return None,
-        };
-        acc = acc << 6 | v as u32;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((acc >> bits) as u8);
-        }
-    }
-    Some(out)
 }
 
 /// Identify a PNG/JPEG/GIF/WebP payload and read its pixel size.

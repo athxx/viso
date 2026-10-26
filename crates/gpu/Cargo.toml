@@ -28,17 +28,12 @@ viso-macros = { workspace = true }
 # link-time dependency. External crate, not a viso-* edge.
 libloading = { version = "0.8", optional = true }
 
-# Vulkan bindings (loader resolved at runtime, no link-time dependency), for
-# `native-vulkan` and `vulkan`. A feature cannot depend on a target, so
-# `native-vulkan` compiles them on every target, and links them only where
-# Vulkan is native; a build without either has none.
-ash = { version = "0.38", optional = true }
 
 [features]
 default = ["native-vulkan"]
 # Vulkan as the native backend on Linux and Android; elsewhere its bindings
-# compile and nothing links them. A CPU-drawn or GLES build leaves it off and
-# has no Vulkan code.
+# compile and nothing links them, and the web has none. A CPU-drawn or GLES
+# build leaves it off and has no Vulkan code.
 native-vulkan = ["dep:ash"]
 # The Vulkan backend on every target: beside the native one where another is
 # native (MoltenVK on macOS, the Vulkan runtime on Windows).
@@ -53,6 +48,13 @@ headless = []
 # platform gives it (a KMS scanout): the embedded-cpu profile (ADR 0044).
 cpu = []
 
+
+# Vulkan bindings (loader resolved at runtime, no link-time dependency), for
+# `native-vulkan` and `vulkan`, on every target with a Vulkan loader: the web
+# has none, so there the features enable nothing. A build without either
+# feature has no Vulkan code.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ash = { version = "0.38", optional = true }
 
 # Windows: the native Direct3D 12 backend (DXGI swapchains, FXC for HLSL).
 # External crate, not a viso-* edge.
@@ -141,3 +143,6 @@ objc2-io-surface = { version = "0.3", default-features = false, features = [
     "IOSurfaceRef",
     "IOSurfaceTypes",
 ] }
+
+[lints]
+workspace = true

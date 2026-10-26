@@ -59,7 +59,8 @@ fn quad_schema() -> InstanceSchema {
 }
 
 fn as_bytes(inst: &QuadInstance) -> &[u8] {
-    // Safe: `QuadInstance` is `#[repr(C)]` and `Copy` (GpuPod invariant).
+    // SAFETY: `QuadInstance` is `#[repr(C)]` plain data with no padding (a
+    // `GpuPod`), and the slice covers exactly the borrowed instance.
     unsafe {
         core::slice::from_raw_parts(
             (inst as *const QuadInstance) as *const u8,

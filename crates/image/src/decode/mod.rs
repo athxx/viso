@@ -13,7 +13,10 @@ mod gif;
 mod png;
 mod webp;
 
-#[cfg(all(feature = "avif", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "avif",
+    not(any(target_arch = "wasm32", target_arch = "arm"))
+))]
 pub(crate) mod avif;
 
 pub(crate) use gif::GifFrames;
@@ -55,13 +58,19 @@ pub(crate) fn still(bytes: &[u8]) -> Result<RasterImage, AssetError> {
     }
 }
 
-#[cfg(all(feature = "avif", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "avif",
+    not(any(target_arch = "wasm32", target_arch = "arm"))
+))]
 fn avif_still(bytes: &[u8]) -> Result<RasterImage, AssetError> {
     avif::still(bytes)
 }
 
 /// Without the AV1 decoder an AVIF is a format the build does not read.
-#[cfg(not(all(feature = "avif", not(target_arch = "wasm32"))))]
+#[cfg(not(all(
+    feature = "avif",
+    not(any(target_arch = "wasm32", target_arch = "arm"))
+)))]
 fn avif_still(_: &[u8]) -> Result<RasterImage, AssetError> {
     Err(AssetError::Decode(
         "AVIF decoding is not in this build (the `avif` feature)".to_owned(),
@@ -155,7 +164,10 @@ pub(crate) struct Orientation(u8);
 
 // Without AVIF only EXIF's numbers name an orientation.
 #[cfg_attr(
-    not(all(feature = "avif", not(target_arch = "wasm32"))),
+    not(all(
+        feature = "avif",
+        not(any(target_arch = "wasm32", target_arch = "arm"))
+    )),
     allow(dead_code)
 )]
 impl Orientation {

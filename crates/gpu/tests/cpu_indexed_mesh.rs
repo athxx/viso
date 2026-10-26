@@ -52,7 +52,8 @@ fn mesh_schema() -> InstanceSchema {
 }
 
 fn vertex_bytes(verts: &[MeshVertex]) -> &[u8] {
-    // Safe: `MeshVertex` is `#[repr(C)]` and `Copy`.
+    // SAFETY: `MeshVertex` is `#[repr(C)]` plain data with no padding (a
+    // `GpuPod`), and the slice covers exactly the borrowed `verts`.
     unsafe {
         core::slice::from_raw_parts(verts.as_ptr() as *const u8, core::mem::size_of_val(verts))
     }
@@ -166,6 +167,8 @@ fn draw_indexed(format: IndexFormat, index_bytes: &[u8]) -> ([f32; 4], [f32; 4])
 #[test]
 fn u32_indexed_mesh_fills_the_quad() {
     let indices: [u32; 6] = [0, 1, 2, 0, 2, 3];
+    // SAFETY: integers have no padding, and the slice covers exactly the
+    // borrowed `indices`.
     let bytes: &[u8] = unsafe {
         core::slice::from_raw_parts(
             indices.as_ptr() as *const u8,
@@ -186,6 +189,8 @@ fn u32_indexed_mesh_fills_the_quad() {
 #[test]
 fn u16_indexed_mesh_fills_the_quad() {
     let indices: [u16; 6] = [0, 1, 2, 0, 2, 3];
+    // SAFETY: integers have no padding, and the slice covers exactly the
+    // borrowed `indices`.
     let bytes: &[u8] = unsafe {
         core::slice::from_raw_parts(
             indices.as_ptr() as *const u8,

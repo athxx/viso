@@ -390,8 +390,8 @@ impl Canvas {
     /// Media Foundation.
     fn new() -> windows::core::Result<Canvas> {
         let (device, context) = device()?;
-        // SAFETY: a plain COM call on the live device.
         if let Ok(threads) = device.cast::<ID3D11Multithread>() {
+            // SAFETY: a plain COM call on the live device.
             let _ = unsafe { threads.SetMultithreadProtected(true) };
         }
         let sharing = sharing(&device, &context);

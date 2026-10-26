@@ -76,3 +76,6 @@ windows-core = "0.62"
 [[bin]]
 name = "viso"
 path = "src/main.rs"
+
+[lints]
+workspace = true

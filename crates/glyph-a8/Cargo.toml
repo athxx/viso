@@ -23,3 +23,6 @@ default = ["raster"]
 # Rasterize a glyph outline (`ttf-parser` outlines, `ab_glyph_rasterizer`
 # accumulation) and bake a face's glyphs into pages.
 raster = ["dep:ttf-parser", "dep:ab_glyph_rasterizer"]
+
+[lints]
+workspace = true

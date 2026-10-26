@@ -62,3 +62,6 @@ default = ["desktop"]
 # Off (an embedded build, which has no session bus), opening a URL reports
 # unsupported. No effect elsewhere.
 desktop = ["dep:zbus"]
+
+[lints]
+workspace = true

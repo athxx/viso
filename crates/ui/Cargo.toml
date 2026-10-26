@@ -80,3 +80,6 @@ harness = false
 [[bench]]
 name = "length_fold"
 harness = false
+
+[lints]
+workspace = true

@@ -164,8 +164,8 @@ impl Output {
             return Err(AudioError::Device("no output audio unit".into()));
         }
         let mut unit: AudioUnit = ptr::null_mut();
-        // SAFETY: `component` was just found and `unit` receives the instance.
         check(
+            // SAFETY: `component` was just found and `unit` receives the instance.
             unsafe { AudioComponentInstanceNew(component, &mut unit) },
             "creating the output unit",
         )?;
@@ -176,9 +176,9 @@ impl Output {
         };
         let mut hardware = AudioStreamBasicDescription::default();
         let mut size = size_of::<AudioStreamBasicDescription>() as u32;
-        // SAFETY: the unit is live and `hardware` is a stream description of
-        // `size` bytes.
         check(
+            // SAFETY: the unit is live and `hardware` is a stream description of
+            // `size` bytes.
             unsafe {
                 AudioUnitGetProperty(
                     unit,
@@ -207,8 +207,8 @@ impl Output {
             bits_per_channel: 32,
             reserved: 0,
         };
-        // SAFETY: as above; the unit copies the description.
         check(
+            // SAFETY: as above; the unit copies the description.
             unsafe {
                 AudioUnitSetProperty(
                     unit,
@@ -223,8 +223,8 @@ impl Output {
         )?;
         let mut max_frames: u32 = 0;
         let mut size = size_of::<u32>() as u32;
-        // SAFETY: as above, a `u32` property.
         check(
+            // SAFETY: as above, a `u32` property.
             unsafe {
                 AudioUnitGetProperty(
                     unit,

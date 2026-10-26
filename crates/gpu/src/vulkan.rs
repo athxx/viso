@@ -601,6 +601,8 @@ impl VulkanBackend {
         let ycbcr = device_1_1 && {
             let mut conversion = vk::PhysicalDeviceSamplerYcbcrConversionFeatures::default();
             let mut all = vk::PhysicalDeviceFeatures2::default().push_next(&mut conversion);
+            // SAFETY: `physical` is a device of the live `instance`, and `all`
+            // chains only the conversion features, which outlive the call.
             unsafe { instance.get_physical_device_features2(physical, &mut all) };
             conversion.sampler_ycbcr_conversion == vk::TRUE
         };

@@ -257,3 +257,6 @@ zbus = { version = "5", optional = true, default-features = false, features = ["
 accesskit = { version = "0.25", optional = true }
 accesskit_unix = { version = "0.23", optional = true }
 libc = "0.2"
+
+[lints]
+workspace = true

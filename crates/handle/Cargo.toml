@@ -14,3 +14,6 @@ rust-version.workspace = true
 # Viso's RHI is the sole consumer, so a small owned enum avoids coupling the
 # workspace to that crate's version cadence.
 [dependencies]
+
+[lints]
+workspace = true

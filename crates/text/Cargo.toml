@@ -53,3 +53,6 @@ harness = false
 [[bench]]
 name = "incremental_edit"
 harness = false
+
+[lints]
+workspace = true

@@ -77,12 +77,20 @@ Rules (as for `todo_features.md`):
   leaves the `Size` variants of `Notice`, `CursorError` and the others alone. `viso_map::Insets`
   became `Padding`. Verified: `check-deps` OK, the workspace and `examples/map` check with all
   targets, and the `viso-ui` lib tests pass (769).
-- [ ] `#![forbid(unsafe_code)]` on viso-ui, viso-widgets, viso-runtime, viso-schema, viso-dsl,
-  viso-view, viso-lexer and viso-lsp; clippy `undocumented_unsafe_blocks` in CI for the rest. Verify
-  that clippy passes once the ~12 blocks missing `SAFETY:` are documented, mostly in
-  `crates/platform/src/backend/macos.rs`.
-- [ ] Decide `libs/base64` and `libs/lz4`: make each a member with a user, move it to `vendor/`,
+- [x] Clippy `undocumented_unsafe_blocks` on every member (unsafe stays allowed everywhere; the lint
+  only asks each block for its `SAFETY:` invariant). Verify that clippy passes on every target once
+  the blocks missing `SAFETY:` are documented, mostly in `crates/platform/src/backend/macos.rs`.
+  — Built: `[workspace.lints.clippy]` in the root manifest, `[lints] workspace = true` in every
+  member, and `SAFETY:` on every block (the counting allocators of the tests and benches, the
+  Apple, iOS, Windows, ALSA, Vulkan and media backends). Fixed on the way: `ash` is no longer
+  built for the web, rav1d (nightly-only on 32-bit ARM) is left out of armv7 like the web, and
+  three test-only cfg slips. Verified: `check-targets` clean on all 8 targets, `check-profiles` OK.
+- [x] Decide `libs/base64` and `libs/lz4`: make each a member with a user, move it to `vendor/`,
   or delete it. Verify that the workspace member list and `check-deps` agree.
+  — Built: base64 is `viso_ende::base64` (either alphabet in, padding optional), replacing the
+  copies in `viso-svg` data URLs, glTF embedded buffers and the CLI's web deploy; `viso-package`
+  keeps its own by contract. Both non-member libs had no user and are deleted. Verified: the
+  ende, svg, glTF and CLI web tests pass, `check-deps` OK.
 
 ## N2 — Public API
 

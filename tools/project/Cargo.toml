@@ -22,3 +22,6 @@ repository.workspace = true
 # what `viso config show` reports. `default-features`
 # stays on for `parse`/`display`; no serde is pulled in.
 toml_edit = "0.25"
+
+[lints]
+workspace = true

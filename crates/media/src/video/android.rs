@@ -538,11 +538,11 @@ impl Images {
     /// Takes the reader's newest image, if it has one, shown until the next
     /// at `time`, turned `turns` quarter turns clockwise.
     fn take(&mut self, time: Duration, turns: u8) -> bool {
-        // SAFETY: each spent image was acquired from the reader and not yet
-        // deleted; one no GPU holds is deleted once.
         self.spent.retain(|t| {
             let held = t.holds.is_held();
             if !held {
+                // SAFETY: each spent image was acquired from the reader and
+                // not yet deleted; one no GPU holds is deleted once.
                 unsafe { AImage_delete(t.image) };
             }
             held

@@ -219,3 +219,6 @@ harness = false
 [[bench]]
 name = "paint_scale"
 harness = false
+
+[lints]
+workspace = true

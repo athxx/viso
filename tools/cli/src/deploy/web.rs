@@ -870,7 +870,7 @@ fn upgrade(mut stream: TcpStream, request: &Request) -> Option<TcpStream> {
         let _ = answer(&mut stream, "403 Forbidden", "text/plain", "", b"", false);
         return None;
     };
-    let accept = base64(&sha1(format!("{key}{WEBSOCKET_GUID}").as_bytes()));
+    let accept = viso_ende::base64::encode(&sha1(format!("{key}{WEBSOCKET_GUID}").as_bytes()));
     let switched = write!(
         stream,
         "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
@@ -1148,25 +1148,6 @@ fn sha1(data: &[u8]) -> [u8; 20] {
     out
 }
 
-/// Standard base64 with padding.
-fn base64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let n = (u32::from(chunk[0]) << 16)
-            | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
-            | u32::from(*chunk.get(2).unwrap_or(&0));
-        for i in 0..4 {
-            if i <= chunk.len() {
-                out.push(ALPHABET[((n >> (18 - 6 * i)) & 63) as usize] as char);
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
-}
-
 /// The variable that names the browser a headless run uses.
 pub(crate) const CHROME_ENV: &str = "VISO_CHROME";
 
@@ -1284,20 +1265,20 @@ mod tests {
     #[test]
     fn the_handshake_hashes_as_rfc_6455_says() {
         assert_eq!(
-            base64(&sha1(b"abc")),
-            base64(&[
+            viso_ende::base64::encode(&sha1(b"abc")),
+            viso_ende::base64::encode(&[
                 0xa9, 0x99, 0x3e, 0x36, 0x47, 0x06, 0x81, 0x6a, 0xba, 0x3e, 0x25, 0x71, 0x78, 0x50,
                 0xc2, 0x6c, 0x9c, 0xd0, 0xd8, 0x9d
             ])
         );
         let key = "dGhlIHNhbXBsZSBub25jZQ==";
         assert_eq!(
-            base64(&sha1(format!("{key}{WEBSOCKET_GUID}").as_bytes())),
+            viso_ende::base64::encode(&sha1(format!("{key}{WEBSOCKET_GUID}").as_bytes())),
             "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
         );
-        assert_eq!(base64(b"a"), "YQ==");
-        assert_eq!(base64(b"ab"), "YWI=");
-        assert_eq!(base64(b""), "");
+        assert_eq!(viso_ende::base64::encode(b"a"), "YQ==");
+        assert_eq!(viso_ende::base64::encode(b"ab"), "YWI=");
+        assert_eq!(viso_ende::base64::encode(b""), "");
     }
 
     #[test]

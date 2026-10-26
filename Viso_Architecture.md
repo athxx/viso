@@ -621,7 +621,7 @@ viso/
 │   ├── project/       viso-project（项目发现/配置/构建身份）
 │   ├── package/       viso-package（iOS .app、Android APK、web bundle、Windows MSIX、Linux desktop entry、归档与扩展的平台片段合并）
 │   └── cli/           viso-cli（`viso` 命令：参数、输出、exit code）
-├── libs/woff2/        viso-woff2（调用方侧 WOFF2 解压，ADR 0028；libs/base64、libs/lz4 存在但不是 workspace member）
+├── libs/woff2/        viso-woff2（调用方侧 WOFF2 解压，ADR 0028）
 ├── examples/          hello_world、01-counter、10-custom-shader、i18n、images、links、persist、pointer、shell、video、code-editor；
 │                      map 自成 workspace（依赖 `../viso-ext`，被根 workspace `exclude`）
 ├── benches/footprint/ viso-footprint（`cargo xtask footprint` 的参考 app 与 baseline）
@@ -1001,7 +1001,7 @@ CLI 依赖 `viso-project`、`viso-package`、`viso-dsl`、`viso-dev-protocol`、
 | `viso-ui` | render, runtime, ende, text, math, schema | — | |
 | `viso-render` | math, ende, schema, text, image, svg, shader, gpu | — | ende 用于 glTF JSON |
 | `viso-pdf` | render, math | — | |
-| `viso-svg` | math | — | |
+| `viso-svg` | math, ende | — | `ende` 只为 data URL 的 base64 |
 | `viso-image` | schema, gpu-abi, svg, math | — | |
 | `viso-media` | handle | — | 各 target 的媒体栈是外部依赖 |
 | `viso-text` | glyph-a8 | — | |
@@ -4672,7 +4672,7 @@ per-node 不设绝对上限，但 Embedded profile 有整机级预算（§50A.5�
 - mapped buffer；
 - generated GPU ABI bridge（`#[derive(GpuPod)]`、`viso-gpu-abi`）。
 
-普通 `widgets` / app API 不需要 unsafe：`viso-ui`、`viso-widgets`、`viso-runtime`、`viso-schema`、`viso-dsl`、`viso-view` 的源码没有 unsafe（测试中的计数 allocator 除外）。目标（尚未实现）：这些 crate 以 `#![forbid(unsafe_code)]` 固定下来（当前只有 `viso-pdf`、`viso-glyph-a8` 这样做）。
+普通 `widgets` / app API 不需要 unsafe：`viso-ui`、`viso-widgets`、`viso-runtime`、`viso-schema`、`viso-dsl`、`viso-view` 的源码没有 unsafe（测试中的计数 allocator 除外）。这是现状而非禁令：任何 crate 在有性能或 FFI 理由时都可以引入 unsafe，不以 `forbid(unsafe_code)` 封死；约束只有 §61.1 的 `SAFETY:` 注释，由 clippy `undocumented_unsafe_blocks`（workspace lint）在每个目标上检查。
 
 ### 61.1 Safety comment
 
@@ -5299,7 +5299,7 @@ rustybuzz fork
 map/ai/game 等高阶扩展
 ```
 
-全部重新塞进一个模糊 `libs/`。`libs/` 只放框架自有、可独立复用的小型算法 crate，不放第三方 fork：当前是 `viso-woff2`（workspace member，由调用方自行解压 WOFF2，ADR 0028），以及 `viso-base64`、`viso-lz4`（不是 workspace member，没有 crate 依赖它们）。
+全部重新塞进一个模糊 `libs/`。`libs/` 只放框架自有、可独立复用的小型算法 crate，不放第三方 fork：当前只有 `viso-woff2`（由调用方自行解压 WOFF2，ADR 0028）。Base64 是 `viso_ende::base64`（data URL、glTF 内嵌 buffer、CLI 的 WebSocket 握手共用一份）；`viso-package` 按合同不依赖任何内部 crate，留着自己的一份。
 
 ---
 

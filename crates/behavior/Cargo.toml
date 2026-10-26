@@ -43,3 +43,6 @@ interpreter = []
 # Dates and times in the reader's locale for messages' `date` and `time`
 # arguments. Without it they show as ISO 8601 (`2026-10-26`, `16:05`).
 dates = ["dep:icu_datetime", "dep:icu_calendar"]
+
+[lints]
+workspace = true

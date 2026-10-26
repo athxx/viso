@@ -813,8 +813,8 @@ impl VisoView {
         view.setContentScaleFactor(scale);
         view.setMultipleTouchEnabled(true);
 
-        // SAFETY (both recognizers): the view implements each action with
-        // the `(&self, &Recognizer)` signature recognizers call, and owns the
+        // SAFETY: the view implements each recognizer's action with the
+        // `(&self, &Recognizer)` signature recognizers call, and owns the
         // recognizers, so the target outlives them.
         let hover = unsafe {
             UIHoverGestureRecognizer::initWithTarget_action(
@@ -824,6 +824,7 @@ impl VisoView {
             )
         };
         view.addGestureRecognizer(&hover);
+        // SAFETY: as for `hover`.
         let scroll = unsafe {
             UIPanGestureRecognizer::initWithTarget_action(
                 UIPanGestureRecognizer::alloc(mtm),

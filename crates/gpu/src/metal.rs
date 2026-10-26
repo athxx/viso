@@ -1256,6 +1256,7 @@ impl MetalBackend {
         };
 
         let rpd = MTLRenderPassDescriptor::renderPassDescriptor();
+        // SAFETY: a render pass descriptor always has color attachment 0.
         let attach = unsafe { rpd.colorAttachments().objectAtIndexedSubscript(0) };
         attach.setTexture(Some(&color_tex));
         match pass.load {

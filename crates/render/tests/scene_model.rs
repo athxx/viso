@@ -424,6 +424,7 @@ fn front_views(asset: &ModelAsset, size: [u32; 2], radius: Option<f32>, name: &s
     let cpu = front_view(&mut CpuRaster::new(), asset, size, radius, |gpu, t| {
         gpu.read_texture(t)
     });
+    #[cfg_attr(not(target_vendor = "apple"), allow(unused_mut))]
     let mut shots = vec![("cpu", cpu.clone())];
     #[cfg(target_vendor = "apple")]
     {

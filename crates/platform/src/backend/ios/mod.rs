@@ -820,8 +820,9 @@ define_class!(
                 // `NSDictionary<NSString, id>`; the key is an immutable
                 // UIKit constant.
                 let info: &NSDictionary<NSString, AnyObject> = unsafe { info.cast_unchecked() };
-                let Some(value) = info.objectForKey(unsafe { UIKeyboardFrameEndUserInfoKey })
-                else {
+                // SAFETY: as above, an immutable UIKit constant.
+                let key = unsafe { UIKeyboardFrameEndUserInfoKey };
+                let Some(value) = info.objectForKey(key) else {
                     return;
                 };
                 let Some(value) = value.downcast_ref::<NSValue>() else {
@@ -1016,6 +1017,7 @@ define_class!(
                 if let Some(contexts) = contexts {
                     open_contexts(&contexts);
                 }
+                // SAFETY: as above.
                 let activities: Option<Retained<NSSet<NSUserActivity>>> =
                     unsafe { msg_send![options, userActivities] };
                 for activity in activities.iter().flat_map(|set| set.iter()) {

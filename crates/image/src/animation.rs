@@ -98,7 +98,10 @@ pub(crate) enum Frames {
     Gif(Box<GifFrames>),
     Png(Box<PngFrames>),
     WebP(Box<WebPFrames>),
-    #[cfg(all(feature = "avif", not(target_arch = "wasm32")))]
+    #[cfg(all(
+        feature = "avif",
+        not(any(target_arch = "wasm32", target_arch = "arm"))
+    ))]
     Avif(Box<crate::decode::avif::AvifFrames>),
 }
 
@@ -116,7 +119,10 @@ impl Frames {
             }
             Some(AssetFormat::WebP) => WebPFrames::open(bytes)?
                 .map(|(frames, header)| (Frames::WebP(Box::new(frames)), header)),
-            #[cfg(all(feature = "avif", not(target_arch = "wasm32")))]
+            #[cfg(all(
+                feature = "avif",
+                not(any(target_arch = "wasm32", target_arch = "arm"))
+            ))]
             Some(AssetFormat::Avif) => crate::decode::avif::AvifFrames::open(bytes)?
                 .map(|(frames, header)| (Frames::Avif(Box::new(frames)), header)),
             _ => None,
@@ -128,7 +134,10 @@ impl Frames {
             Frames::Gif(frames) => frames.next(),
             Frames::Png(frames) => frames.next(),
             Frames::WebP(frames) => frames.next(),
-            #[cfg(all(feature = "avif", not(target_arch = "wasm32")))]
+            #[cfg(all(
+                feature = "avif",
+                not(any(target_arch = "wasm32", target_arch = "arm"))
+            ))]
             Frames::Avif(frames) => frames.next(),
         }
     }

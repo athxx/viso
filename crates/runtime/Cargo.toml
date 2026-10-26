@@ -22,3 +22,6 @@ criterion = "0.7"
 [[bench]]
 name = "frame_loop"
 harness = false
+
+[lints]
+workspace = true

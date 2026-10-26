@@ -11,3 +11,6 @@ rust-version.workspace = true
 [dependencies]
 # XID_Start/XID_Continue for identifier lexing.
 icu_properties = { workspace = true }
+
+[lints]
+workspace = true

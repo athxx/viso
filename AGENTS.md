@@ -256,7 +256,7 @@ crates/
 
 extras/          charts/, code-editor/, map/ (optional, outside default widgets)
 tools/           project (project model), package (platform packaging), cli (`viso`); future studio/migrate
-libs/            woff2 (member); base64, lz4 (not members)
+libs/            woff2
 examples/
 benches/         footprint/
 tests/           characterization/

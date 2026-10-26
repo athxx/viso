@@ -33,15 +33,18 @@ unsafe impl GlobalAlloc for CountingAlloc {
         if ARMED.load(Ordering::Relaxed) {
             ALLOCS.fetch_add(1, Ordering::Relaxed);
         }
+        // SAFETY: `layout` is the caller's, valid for `alloc`; the system allocator gets it unchanged.
         unsafe { System.alloc(layout) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: `ptr` was allocated by `System` with `layout`, through this allocator.
         unsafe { System.dealloc(ptr, layout) }
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         if ARMED.load(Ordering::Relaxed) {
             ALLOCS.fetch_add(1, Ordering::Relaxed);
         }
+        // SAFETY: `ptr` was allocated by `System` with `layout`, and the caller upholds `realloc`'s contract.
         unsafe { System.realloc(ptr, layout, new_size) }
     }
 }
