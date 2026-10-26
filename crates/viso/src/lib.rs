@@ -2593,6 +2593,17 @@ impl WindowState {
                     multiline,
                 }
             });
+        // A control that edits its own document says where its caret is.
+        let entry = entry.or_else(|| {
+            let (id, own) = self.store.text_entry_from(self.store.focused()?)?;
+            let r = self.store.world(id);
+            Some(TextEntry {
+                caret: caret_area(r, Some(own.caret)),
+                secure: false,
+                kind: own.kind,
+                multiline: own.multiline,
+            })
+        });
         if self.text_entry == Some(entry) {
             return false;
         }
