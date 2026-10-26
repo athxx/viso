@@ -27,13 +27,15 @@
 //!
 //! # Mergeability
 //!
-//! Only primitives whose geometry lives in a *shared* family buffer can grow a
-//! run: quads (one quad pipeline, one instance buffer) and triangle meshes (one
-//! index stream). An image or a glyph run binds its own texture/atlas and is one
-//! instanced draw of its own; a composite samples one offscreen pass. Those are
-//! marked unmergeable — they neither extend the previous draw nor accept the
-//! next — so each is its own batch even when two adjacent ones would pack the
-//! same key. This mirrors the family split the lowering walk produces.
+//! Families that bind no per-draw resource — quads, the analytic shapes,
+//! shadows, meshes — grow a run on their key alone. Families that sample one
+//! texture — images, both glyph-run lanes, gradients — grow one too, because
+//! the texture's bind group is part of the key; a user program's boxes merge
+//! on the program. Only the composite families (color transform, advanced
+//! blend, material) are unmergeable: each carries per-draw state beyond its
+//! bind group, so it neither extends the previous draw nor accepts the next
+//! even when two adjacent ones would pack the same key
+//! ([`BatchFamily::mergeable`]).
 
 use crate::primitive::Rect;
 use crate::transform::Space;

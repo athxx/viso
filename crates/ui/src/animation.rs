@@ -6,9 +6,8 @@
 //! [`Easing`] curve. Each frame the driver calls [`AnimationRegistry::tick`]
 //! with the elapsed delta; the registry advances every live animation by
 //! writing the interpolated offset through [`NodeStore::set_translate`] — a
-//! `TRANSFORM | HIT_TEST | PAINT` write that never re-measures or re-lays out
-//! the node. This is the machinery a sheet drawer
-//! rides in on.
+//! `TRANSFORM` write (with one `PAINT` the first time it makes the node a
+//! transform root) that never re-measures or re-lays out the node.
 //!
 //! Steady-state cost: the registry is a single `Vec` (no per-node map), `tick`
 //! is a flat pass with no heap allocation, and it

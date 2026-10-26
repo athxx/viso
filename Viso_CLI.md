@@ -101,7 +101,7 @@ TEST / DEBUG
     viso snapshot
     viso inspect
     viso profile
-    viso studio
+    viso studio            （目标，尚未实现，§26）
 
 DELIVERY
     viso package
@@ -2186,6 +2186,8 @@ Ende trace（`viso_view::profile::Trace`）：protocol tag + `trace` + u16 版�
 ---
 
 ## 26. `viso studio`
+
+> **状态**：目标（尚未实现）。CLI 没有 `studio` 子命令（`tools/cli/src/args.rs`），仓库中也没有 Studio；Inspector 能力现由 `viso inspect` 与 `viso_view::inspect` 提供。本节是 Studio 落地时的合同。
 
 启动 Viso Studio。
 

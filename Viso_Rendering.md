@@ -185,25 +185,29 @@ Representation decision 挂在 retained primitive / paint chunk 上，不在每�
 
 ## 4.1 `viso-math`
 
-拥有 allocation-free 基础数学（ADR 0012；f32-primary，仅 `DVec2/DPoint/DRect` 为 f64）：
+拥有 allocation-free 基础数学与 F0 值类型（ADR 0012；叶子，`no_std`）。`f32` 是唯一精度：没有 f64 public 类型，热数据不携带 `f64`，同一布局可在单精度 FPU 上运行；`f64` 只在内部用于数值稳定（如 `Affine2` 求逆的行列式）。
 
 ```text
-Vec2 / Vec3 / Vec4, DVec2 / DPoint / DRect
+Vec2 / Vec3 / Vec4
 Mat2 / Mat3 / Mat4, Quat
 Affine2, Transform3
-Point / Size / Rect / Insets
+Point / Size / Rect / Insets                 2D 几何类型的唯一 owner（check-deps 拒绝重复定义）
 Aabb / Ray / Plane
+LinearPremul / LinearStraight / Srgb / LinearSrgb / DisplayP3 / ExtendedLinear,
+InterpolationSpace / ExtendMode              颜色值与色彩空间换算（§5.4）
+Coverage / composite                         coverage 与 premultiplied source-over（§5.5–§5.6）
+PixelSnap / Hairline / snap_*                像素对齐（§5.7–§5.8）
+GeometryLegality / classify_*                非法数值分类（§5.9）
+Easing / CubicBezier / Curve / Spring        动画曲线
 ```
 
-所有 public 类型 `#[repr(C)]` + `Copy`，不含 `usize`。Renderer 2D 热路径优先使用 `Affine2 / Vec2 / Rect`；普通 2D transform 禁止仅因为 API 统一而全部使用 `Mat4`。
+所有 public 类型 `Copy`，不含 `usize`；几何类型与线性颜色类型 `#[repr(C)]`。Renderer 2D 热路径优先使用 `Affine2 / Vec2 / Rect`；普通 2D transform 禁止仅因为 API 统一而全部使用 `Mat4`。
 
-`viso-math` 不拥有 Brush、Path、Clip、Primitive、GPU ABI、Shader layout（Math ABI ≠ GPU ABI）。
-
-> 注：Architecture `viso-math` 节称 math 不负责 Color 语义，但当前 F0 值类型（`color.rs`、`coverage.rs`、`snap.rs`、`legality.rs`）位于 `crates/math`。F0 合同与所在 crate 无关；归属待 ADR 裁决。
+`viso-math` 不拥有 Brush、Path、Clip、Primitive、GPU ABI、Shader layout（Math ABI ≠ GPU ABI），也不拥有输出编码与色彩管理策略（surface 编码归 render/gpu，ADR 0048）。颜色值类型、色彩空间换算与 composite 归 `viso-math`（Architecture §9 `viso-math`）：render、svg、image、ui 共享这些值类型，不需要另起 crate 或新增依赖边。
 
 ## 4.2 `viso-gpu`
 
-只拥有极薄 RHI：Device、Queue、Surface、Buffer、Texture、TextureView、Sampler、RenderPipeline、ComputePipeline、ResourceTable/BindGroup、CommandEncoder、RenderPass、ComputePass、Fence/Epoch、RetireQueue、generational SlotMap。
+只拥有极薄 RHI。当前形态：每个 target 一个静态 `GpuBackend`（`crates/gpu/src/backend.rs`），以 generation-safe 句柄（`SlotMap`）管理 Buffer、Texture、Sampler、Pipeline、BindGroup、Surface，帧路径是 `write_buffer` + `begin_frame` → `encode(DrawList)` → `present` / `present_with_damage`；能力由 `Caps` 报告；Fence/Epoch 与 `RetireQueue` 在各 backend 内部。没有 command encoder、compute pipeline/pass 与 barrier API（pass 顺序即同步）；格式与 ABI 类型在叶子 crate `viso-gpu-abi`。
 
 禁止 UI 或绘画概念（Primitive、Brush、Path、Clip、Effect）进入 `viso-gpu`。
 
@@ -398,7 +402,7 @@ GpuCommandEncoder  GpuRenderPass  GpuComputePass
 Fence / Epoch  RetireQueue
 ```
 
-命名可以在 Rust API 收敛，但职责不可混合。
+命名可以在 Rust API 收敛，但职责不可混合。当前收敛结果见 §4.2：Device/Queue 合进 backend 值，CommandEncoder/RenderPass 由声明式 `DrawList`（pass + draw command 区间）取代，Fence/Epoch/RetireQueue 是 backend 内部；Compute 对象尚未建立（A0）。
 
 ## 6.2 Buffer usage
 
@@ -475,26 +479,37 @@ discrete GPU                       mapped upload/staging -> transfer/copy -> dev
 
 ## 6.8 Backend 静态选择与 fast path
 
-Backend 由 cfg 在编译期静态选定（ADR 0029）：`viso_gpu::Backend` 是 type alias —— apple → Metal，Windows → D3D12，Linux/Android → Vulkan（`native-vulkan`，facade 默认开启），wasm32 → WebGpu，其余 → CpuRaster。Footprint profile 的 feature 改选（ADR 0044）：`gles` → `Gles3Backend`（Linux / Android，embedded-gpu），`cpu` 或 `headless` → `CpuRaster`（embedded-cpu、测试与 golden）；embedded build 关闭 facade 默认 feature，`embedded-cpu` 与 GLES 板卡不开 `native-vulkan`，不链接 Vulkan bindings（`ash`），Linux/Android 上 `gles` 与 `native-vulkan` 都没开时 Backend 是 CpuRaster。`vulkan` feature 在其他平台额外编译 Vulkan 模块（macOS 的 MoltenVK、Windows 的 Vulkan runtime），只用于交叉测试。Tier-2 backend 以 module + cfg 加入，能力差异通过 `Caps` 表达。
+Backend 由 cfg 在编译期静态选定（ADR 0029）：`viso_gpu::Backend` 是 type alias —— apple → Metal，Windows → D3D12，Linux/Android → Vulkan（`native-vulkan`，facade 默认开启），wasm32 → WebGpu，其余 → CpuRaster。Footprint profile 的 feature 改选（ADR 0044）：`gles` → `Gles3Backend`（Linux / Android，embedded-gpu），`cpu` 或 `headless` → `CpuRaster`（embedded-cpu、测试与 golden）；embedded build 关闭 facade 默认 feature，`embedded-cpu` 与 GLES 板卡不开 `native-vulkan`，不链接 Vulkan bindings（`ash`），Linux/Android 上 `gles` 与 `native-vulkan` 都没开时 Backend 是 CpuRaster。`vulkan` feature 在其他平台额外编译 Vulkan 模块（macOS 的 MoltenVK、Windows 的 Vulkan runtime），只用于交叉测试。D3D12 在没有 feature level 11.0 的硬件 adapter 时退回 WARP 软件 adapter（`d3d12.rs`）。Tier-2 backend 以 module + cfg 加入，能力差异通过 `Caps` 表达。
 
 ### 6.8.1 CpuRaster
 
 `viso_gpu::cpu` 是唯一的 CPU backend，同时承担 headless / golden 角色：
 - 64×64 tile binning，按提交顺序；只访问被触及的 tile，所以 damage 多大代价就多大；band 在常驻 worker pool 上并行，输出与 worker 数无关（worker 数取 footprint 的 `workers`，`0` 时只用调用线程）；
 - 格式：XRGB8888 / ARGB8888（`Bgra8Unorm`，整数 src-over）、RGB565（渐变 4×4 Bayer dither）、`f32` HDR、A8 atlas；sampled image 另有 RGB565 / RGBA4444 / RGBA5551（构建期转换，§6.3），从 `create_texture_static` 借用的 texel 原地采样（嵌入 binary / XIP flash，不复制、不计 texture 内存）；不接收块压缩格式（`Caps::sampled` 不含，fallback 为 RGBA8）；
-- analytic AA lane；填充 path 走 scanline coverage 的 mask lane；A8 glyph / mask cache 在系统内存；
+- 消费与 GPU 完全相同的 draw list，没有 shader 编译器：每个 built-in pipeline 由 `BuiltinShader` 标签选择其 shader IR 的 CPU 复述（`fill`），pipeline 的 blend state 照常生效；
+- analytic AA lane（RRect / Ellipse / Capsule / Line / Shadow 在像素中心求 SDF 覆盖）；后端声明 `Caps::coverage_paths`，所有实心填充 path 走 scanline coverage 的 mask lane，描边仍走三角形 lane；A8 glyph / mask cache 在系统内存；
 - NEON / SSE2 / SIMD128 kernel 与标量逐位一致；
-- 只用于合成的 offscreen pass 推迟到 tile 内求值，不分配 target，结果与整张 target 逐位一致；
-- `Blitter` capability seam：板卡的 2D 加速器可以接 clear / copy，拒绝的工作留在 CPU；
-- 每个 brush 都打包了 `ShaderLang::None` 程序（寄存器码解释器），custom shader 没有缺失 CPU 路径的可能；
+- 只被区域合成（Image / ColorTransform，clamp-to-edge）读取的 offscreen pass（opacity < 1 的 group、融合的色彩滤镜）推迟到 tile 内求值：合成它的每个 tile 把要读的 texel 区域求值到 worker 本地窗口，不分配 target，结果与整张 target 逐位一致；被 blur、advanced blend、backdrop 或用户 program 读取的 layer 照常整块绘制（`set_layer_deferral` 可关闭推迟，供对照）；
+- 无 alpha 的面板（RGB565）上，layer 要保存 coverage，中间目标为 `Bgra8Unorm`（按面板的编码选 sRGB 变体，`Renderer` 的 `intermediate_format`）；
+- `Blitter` capability seam（`viso_gpu::cpu::Blitter`，`CpuRaster::set_blitter`）：板卡的 2D 加速器（i.MX PXP、Allwinner G2D、STM32 DMA2D 类）只接 solid fill（pass clear），拒绝的工作留在 CPU，像素不变；
+- 每个 brush 都打包了 `ShaderLang::None` 程序（寄存器码解释器 `CpuShader`），custom shader 没有缺失 CPU 路径的可能；从 Shader IR 构建期生成 Rust 片元函数是后续性能目标；
+- 3D scene lane 的 CPU 光栅（`viso_gpu::cpu::scene`）：实例三角形经 place、投影、near/far 裁剪、按 winding 剔除，在像素中心光栅（top-left fill rule），深度按屏幕空间线性插值，varying 透视校正，片元按 `viso_gpu::scene` 中与 GPU program 相同的表达式着色（§21.5）；
+- 测量：`pixel_bytes()`（目标与 surface 像素）、`scratch_bytes()`（worker 窗口）、`deferred_layers()`；bench `cpu_raster_800x480_{full,damage_5pct}_{xrgb8888,xrgb8888_srgb,xrgb8888_4t,rgb565}`（`crates/render/benches/cpu_raster.rs`）；
 - 呈现到 `RawWindowHandle::Scanout`：KMS dumb buffer 双缓冲，或桌面窗口的 layer（embedded profile 仿真）。
+
+目标（尚未实现）：浏览器没有 WebGPU 时，web-gpu 构建经 CpuRaster 画进 canvas（`putImageData`）；当前 wasm 只有 WebGpuBackend，这种情况下窗口不画任何内容。
 
 ### 6.8.2 Gles3Backend
 
 `viso_gpu::gles` 面向 GLES 3.0+ 的嵌入式 GPU：
-- EGL / GLES 运行时加载；Wayland / XCB / Android / GBM（KMS）/ pbuffer surface；
-- 着色器是 `viso-shader` 生成的 GLSL ES 3.00，一个程序一份源码，顶点半部在 `VISO_VERTEX` 下；
-- uniform ring、texture unit + sampler object 承载 bind group，程序实例按 16 KB uniform chunk；shared context 上任意线程编译；
+- EGL 与 GLES 3.0 运行时加载（`libEGL` / `libGLESv2`，不链接）；display 与 context 在第一个 surface 上按其平台创建：Wayland、XCB、Android、KMS scanout 的 GBM surface，无窗口时 pbuffer；scanout 的每次 swap 连同该帧 damage 交给平台 page flip；
+- 着色器是 `viso-shader` 生成的 GLSL ES 3.00，一个程序一份源码含两个 stage，顶点半部在 `VISO_VERTEX` 下，backend 各加 `#version 300 es` prelude 编译两次；built-in 由 shader IR 打印，用户 program 由 program codegen 打印（`ShaderLang::Glsl`），两者在测试中都过 glslang 的 GLSL ES 3.00 检查；GLSL ES 不做隐式转换，整数字面量按上下文类型拼写；
+- uniform：built-in 读 `std140` 的 `ViewBlock`（block binding 0）；一个 draw list 所有 draw 的 inline uniform 打进一个 uniform buffer，按 `UNIFORM_BUFFER_OFFSET_ALIGNMENT` 对齐、按 range 绑定；
+- instance：built-in 用 divisor 1 的 vertex attribute（每个 draw 重设指针到其 offset）；用户 program 没有 storage buffer，instance 以 `uvec4` 字读自 block binding 1 的 uniform block，每块 `INSTANCE_CHUNK`（16 KB，GLES 3.0 保证的最小 block 大小），经 `glCopyBufferSubData` 拷进 uniform ring 中各自的槽，`viso_base_instance` 给出块首索引；
+- bind group：texture 依次绑到 texture unit `0..`，sampler 状态是绑到同一 unit 的 sampler object；
+- `Bgra8Unorm` 纹理存为 `RGBA8`（核心 GLES 无 BGRA 存储），上传时交换 R/B，渲染无需处理；sRGB 变体为 `SRGB8_ALPHA8`；8-bit 窗口经 `EGL_KHR_gl_colorspace` 建在 sRGB colorspace 中，报告 `Bgra8UnormSrgb`，default framebuffer 编码 pipeline 写出的值；
+- 方向：texture target 的 clip-space y 取反（`viso_target`），行仍自上而下存储，`v = 0` 采样顶行，与其它 backend 一致；fragment 位置由 `gl_FragCoord` 还原成左上原点；surface 保持 GL 自身方向；
+- 用户 program 在共享对象的第二个 context 上编译，编译器可在任意线程运行（`Gles3Compiler`），结束后恢复调用线程原有的 current context；vertex array 不共享，安装时在主 context 创建；
 - 能力表：无 compute、无 bindless、无 indirect；
 - partial update：`EGL_EXT_buffer_age` → `frame_age`，`EGL_KHR_partial_update` 区域来自 surface pass 的 scissor，`eglSwapBuffersWithDamage`；
 - 面板旋转而 plane 不能旋转时，顶点阶段按 `viso_target` 的四分之一圈数旋转绘制（`viso_place` / `viso_frag_position`），damage 与 scissor 同步旋转。
@@ -521,7 +536,9 @@ user .vs shaders:    build-time Parser / Type Checker
                          ↓
          Reflection + Layout Validation (§7.3)
                          ↓
-    Backend Codegen: MSL / HLSL / WGSL (+ backend artifact)
+    Backend Codegen: MSL / HLSL SM 5.1 / WGSL / GLSL ES 3.00
+                     SPIR-V（WGSL 经 naga 转换；built-in 冻结为提交的 spirv/*.spv）
+                     None（CpuRaster：built-in 按 BuiltinShader 分派，用户 program 带 CpuShader 寄存器码）
                          ↓
                   PipelineManifest
 ```
@@ -616,6 +633,8 @@ only dirty fields/ranges changed
 
 当前 producer 以稳定 pre-order 重新发出 primitive 流，scene ingest 按位置分配 slot 并 diff：未变化 primitive 不产生任何 mutation（`scene_diff.rs`）。流中每个 `Primitive` 只有最宽的 leaf 加 tag 那么宽（72 字节）：少见而大的几种——frosted material、path、shader、color effect——装在 `Box` 里，不让每个 quad 为它们付宽度。
 
+**Retained drawing（ADR 0053）**。`Content::Drawing`（`viso_ui::Drawing`，`crates/ui/src/drawing.rs`）是节点的一份共享 primitive（`Arc<[Primitive]>`），位于 `(0, 0)`–`extent` 的绘图空间，paint 时按轴拉伸映射到节点的盒子。它可以在 loop 线程之外（如 `viso_ui::work` 的 worker）一次建好；只映射几何类 primitive（quad、image、path、mesh，其余跳过），mesh 经 `MeshPlace` 放置而不复制顶点，extrude 不缩放。它没有固有尺寸，按身份比较，只标 `PAINT`：再次设置同一份 drawing、移动或改变节点大小都不复制、不重建；只随 transform root 移动（平移、缩放、旋转）的节点不重新 paint。
+
 ## 8.2 Typed IDs 与 revision planes
 
 所有 retained 身份是 fixed-width dense generational handle：`{index: u32, generation: u32}`，8 字节 `#[repr(C)]`，与 `viso_gpu::slots::RawId` 同形；每种 ID 是 `#[repr(transparent)]` newtype，不可互换。禁止把稳定身份建立在 pointer、`usize`、Rust object address、native handle 之上。
@@ -670,8 +689,11 @@ Public 层可以对象化；Render hot storage 使用 dense typed arrays / index
 Transform root 合同（ADR 0043）：
 - scroll 容器的 content 与被平移的节点是 transform root；paint 按前序把它们记进 `TransformTable`，并用 `Primitive::Transform` 括住其子树；
 - primitive 按绘制时的 world space 写入；segment 携带自己的 root 与移动 clip 链（`Space`），从不跨 root 合批；instance 里没有 per-instance transform 字节；
-- 只移动 root 的一帧把表交给 `Renderer::set_transforms`：每个 built-in 读 per-draw `shift` uniform，draw 与 clip 一起平移，不重写也不上传任何 instance；offscreen、backdrop、material、program 等被污染的 root 回答 `NeedsUpload`，走正常 paint；
-- 位移按设备像素取整（length-env scale factor）；屏幕上的 rect 由 `NodeStore::world` 推导，hit test 沿遍历携带位移。
+- 每个 root 有一个 place：把它绘制时的几何映射到当前位置的 `Affine2`——root 在原位时为恒等，滚动或滑动后为平移，root 被转动（`Turn`：缩放后绕 `transform_origin` 顺时针旋转）时为绕其原点的缩放/旋转，这是轴对齐 instance 无法烘焙的；
+- 只改 place 的一帧把表交给 `Renderer::set_transforms`：每个 built-in 读 32 B 的 per-draw view uniform（`viewport`、`shift`、`axis_x`、`axis_y`，即 viewport 加 place 的平移与两轴像，`renderer.rs` 的 `view_uniforms`），draw 按其 root 的 place 映射，root 内打开的 clip 随之移动；不重写也不上传任何 instance，代价按 draw 而非按 primitive；
+- scissor 只能跟随平移：转动 root 内打开的 clip 改经 offscreen layer 合成；scissor clip 将被转动的 root 需要重新 paint；
+- 像素不只是自身 instance 经 place 移动的内容——offscreen layer（ROI 已按 surface 与 clip 裁过）、backdrop 或 material（采样背后）、用户 program（自写 uniform）——污染最内层打开的 root；移动被污染的 root，或在捕获 backdrop 的帧里移动任何 root，`set_transforms` 回答 `TransformUpdate::NeedsUpload`，调用方按新 place 重新 paint 并上传；
+- 平移部分按设备像素取整（length-env scale factor），移动的文字不发虚；屏幕上的 rect 由 `NodeStore::world` 推导，hit test 按逆仿射把指针映射进每个节点的局部空间。
 
 ## 8.5 Bounds
 
@@ -747,7 +769,7 @@ HashMap 只允许在 cold path：resource interning、pipeline lookup on miss、
 合并规则：
 
 1. primitive 只能并入**紧邻前一个** draw，且 key 相等、clip 与 pass target 相同；
-2. 只有 geometry 位于共享 family buffer 的 family（quad、triangle mesh）可以扩展 run；image / glyph run / composite 各自绑定资源，是独立 batch；
+2. 不绑定 per-draw 资源的 family（quad、各 analytic shape、shadow、mesh）只按 key 合并；采样一张 texture 的 family（image、glyph run 两条 lane、gradient）同样合并，因为 texture 的 bind group 就在 key 里，key 相等即同一资源；用户 program 按 program 槽位合并。只有 ColorTransform、AdvancedBlend、Material 三个 composite family 各自独立成 batch：它们带 bind group 之外的 per-draw 状态（融合矩阵、destination snapshot、backdrop）（`BatchFamily::mergeable`）；
 3. **Reorder 条件**：draw B 可以越过中间 draw 集合 M 与更早的兼容 draw A 合并，当且仅当对 M 中每个 draw X，`B.paint_bounds` 与 `X.paint_bounds`（device space，clip 后，含 AA 带）按 §5.3 严格不相交，且 B 与 M 均无 destination/backdrop 依赖（§17.4 nonlocal）。不满足即为 order barrier；
 4. “opaque 可任意重排”**不成立**：重叠 opaque 仍依赖顺序；只有引入 depth-ordered opaque pass 后才能放宽，该优化属于 A0，须单独合同。
 
@@ -792,7 +814,7 @@ Chunk 记录：order range、bounds、primitive ranges、pipeline/material summa
 
 opacity 跨过 0 或 1（layer 出现、消失，或被跳过）仍然是形状变化，整 stream 上传。
 
-差分测试保证 patch 与整 stream 上传留下相同的 scratch、segment、pool shadow、entry key 与 surface draw；一帧 patch 之后 present 的像素与新 surface 上整帧绘制的相同，且只重绘改写的那一行。UI 一侧见 Architecture §11（`PaintIndex` / `Painted::Patched`）。`paint_scale` bench：2000 张卡片的页面 hover 一帧约 0.3 µs，与 100 张卡片相同；改之前约 0.7 ms，随卡片数线性增长。一张卡片在两个半透明 opacity 之间淡入淡出一帧约 0.5 µs，同样与卡片数无关。
+差分测试保证 patch 与整 stream 上传留下相同的 scratch、segment、pool shadow、entry key 与 surface draw；一帧 patch 之后 present 的像素与新 surface 上整帧绘制的相同，且只重绘改写的那一行。UI 一侧见 Architecture §19.2（`PaintIndex` / `Painted::Patched`）。`paint_scale` bench：2000 张卡片的页面 hover 一帧约 0.3 µs，与 100 张卡片相同；改之前约 0.7 ms，随卡片数线性增长。一张卡片在两个半透明 opacity 之间淡入淡出一帧约 0.5 µs，同样与卡片数无关。
 
 **Splice（已实现）**。形状改变的局部变动——虚拟列表挂载一行、卸载一行，文本编辑改变 glyph 个数，节点出现、消失、移动、改变大小——改写 stream 的若干段，其余部分只是整体平移。
 
@@ -998,6 +1020,13 @@ Path -> worker flatten/tessellate -> cached local-space geometry (GeometryId)
 - scale 只有超过 flatness/quality bucket 才重新生成，并使用 hysteresis 避免 zoom 临界值抖动；
 - 小 geometry 优先 16-bit index，超过范围使用 32-bit；
 - static device-local geometry 不与 frame upload ring 混在一起。
+
+**Extruded vertices 与共享 mesh buffer（ADR 0053）**：
+
+- `MeshVertex { pos, color, edge, extrude }`：`extrude: [f32; 2]` 跟在 `edge` 之后（stride 28 → 36，`instance_abi_frozen.rs` 冻结），是 draw 的 place 之后再加的屏幕点偏移。mesh 顶点阶段加上 `axis_x · e.x / |axis_x| + axis_y · e.y / |axis_y|`：place 转动偏移，但它的缩放从不拉伸偏移；CPU raster 做同样的计算。普通几何的 extrude 为零。一条线按中心线建、顶点按半宽 extrude，在它所随的 root 的任何缩放下都保持线宽；extrude 一点的 AA fringe 始终是一点。地图等缩放中的几何因此不必按 zoom 重新 tessellate。
+- `Mesh` 共享持有 buffer（`Arc<[MeshVertex]>`、`Arc<[u32]>`）与一个 `MeshPlace`（先按轴缩放、再平移，lower 时作用于位置，不作用于 extrude）。mesh store 保存共享 buffer 而非副本；同一组 buffer 在同一 place 视为未变，不逐顶点比较；新 place 是一次 geometry 变化。大 mesh 无论被 paint、移动或重新上传多少次，CPU 上只存一份。
+- Damage：mesh 经 place 之后的范围再外扩其最大 extrude（surface draw 记录的 `reach`），收缩中的 root 不会少报 damage（§24.2.1）。
+- 代价：每个 mesh 与 path 顶点多 8 字节；冻结的 `mesh.spv` 与 mesh MSL oracle 随顶点布局更新。
 
 AA 表示按 path 类型选择：
 
@@ -1438,7 +1467,7 @@ UI 侧 dirty class 只有 `STRUCTURE STYLE MEASURE LAYOUT TRANSFORM PAINT HIT_TE
 
 ### 24.2.1 Damage-driven present
 
-- damage 由每个 entry 的 content key（store entry + context + 采样的 pass / capture / material / clock）与上一次 present 的列表按序比较得出；transform root 的移动与 clip 在 submit 时放置（`viso_render::damage`、`renderer/present.rs`）；
+- damage 由每个 entry 的 content key（store entry + context + 采样的 pass / capture / material / clock）与上一次 present 的列表按序比较得出；transform root 的 place 与 clip 在 submit 时作用（`viso_render::damage`、`renderer/present.rs`）：draw 的 paint bounds 经 place 映射，再外扩 1 device px AA fringe 与 mesh 的最大 extrude（ADR 0053，§13.4）；
 - 合并成最多 4 个不相交 rect；超过 surface 60% 退回整帧；尺寸变化、clear 变化、`damage_all()` 强制整帧；
 - buffer-age 感知的局部重绘：`frame_age`（D3D12、Vulkan、GLES3、CpuRaster、headless；4 帧历史），`LoadOp::Load` + 每个 rect 的 clear quad + scissor 回放；空 damage 跳过整帧；与整帧逐像素一致（`crates/render/tests/damage.rs`）；
 - `present_with_damage`：D3D12 `Present1` dirty rects、Vulkan `VK_KHR_incremental_present`、GLES3 `eglSwapBuffersWithDamage`、KMS `FB_DAMAGE_CLIPS`；Metal / WebGPU 不知道 drawable 年龄，变化的帧整帧重绘；

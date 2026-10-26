@@ -705,7 +705,7 @@ Column {
 - 长度族值与 `MixedLength` 的 Transition 与 Animation 按五个系数逐项线性插值：对每个分量计算 `a + (b - a) × t`；
 - 因此 `50%` 到 `200dp` 的跨单位动画不需要在动画开始时解析为具体值；动画期间父尺寸、字号或 `scale_factor` 变化时，结果仍按当前基准正确解析；
 - `sp` 分量先插值系数，再经 `TextScaleCurve` 解析；
-- 插值不改变 Property 的失效类别：动画 `width` 每帧标记 `MEASURE|LAYOUT`；只需视觉缩放时使用 `scale` 变换，只走 `TRANSFORM|HIT_TEST|PAINT`（§U6.2）。
+- 插值不改变 Property 的失效类别：动画 `width` 每帧标记 `MEASURE|LAYOUT`；只需视觉缩放时使用 `scale` 变换，只走 `TRANSFORM`（§U6.2）。
 
 ### 19.10 像素对齐
 
@@ -3682,14 +3682,14 @@ Dirty Class 是封闭集合，与 Runtime 位集一一对应，不得扩展：
 text:      invalidates MEASURE | LAYOUT | PAINT | SEMANTICS
 color:     invalidates PAINT
 width:     invalidates MEASURE | LAYOUT
-transform: invalidates TRANSFORM | HIT_TEST | PAINT
+transform: invalidates TRANSFORM
 ```
 
 运行时规则：
 
 - 未声明 `invalidates` 的 Property 是 Schema 错误；
 - Paint-only 修改不得触发 `MEASURE`/`LAYOUT`，也不得使祖先失效；
-- Transform-only 修改只产生 `TRANSFORM | HIT_TEST | PAINT`，不得触发 `MEASURE`/`LAYOUT`；
+- Transform-only 修改只产生 `TRANSFORM`，不得触发 `MEASURE`/`LAYOUT`/`PAINT`/`HIT_TEST`（节点首次成为变换根时额外绘制一次以记录根）；
 - Semantics-only 修改不得重建 GPU Draw List；
 - `HIT_TEST` 修改必须在下一次 Pointer Dispatch 前生效；
 - Resource 变化不是 Dirty Class，而是 Resource Key Revision，经由读取它的 Binding 转换为上述类别；
@@ -4397,7 +4397,7 @@ mouse+keyboard vs touch input
 - Layout Pass 后位置或尺寸实际改变的节点由管线派生 `TRANSFORM|HIT_TEST|PAINT`，表中不重复列出；
 - `STRUCTURE`、`MEASURE`、`SEMANTICS` 沿祖先冒泡，其余类别保持局部（ADR 0005）；
 - 长度值含 `px`、`sp`、`em` 分量时追加 §19.6 依赖；
-- 任何 Schema 不得声明 `INTERACTION` 或 `affects(...)`；纯变换变化一律是 `TRANSFORM|HIT_TEST|PAINT`。
+- 任何 Schema 不得声明 `INTERACTION` 或 `affects(...)`；纯变换变化一律是 `TRANSFORM`。
 
 ### U1.3 Property 值提升
 
@@ -4685,7 +4685,7 @@ export record AdaptiveColumns { mode: AutoRepeat = AutoRepeat::fill; min: MixedL
 - 事件 `scroll_changed(ScrollChanged)`，字段为 `offset: Offset`、`viewport: SizeDp`、`content: SizeDp`（`SizeDp { width: Dp; height: Dp; }`）；
 - 事件 `refresh`（无载荷）：声明它的纵向视口支持下拉刷新——越过起点下拉到阈值（Apple 为按住时到达，Material 为松手时）或辅助技术的 Refresh 操作即开始刷新并在下一帧投递；`refreshing: Bool`（可绑定，失效 `TRANSFORM|PAINT`）由 Owner 决定刷新是否进行：下拉开始的刷新若在投递后的下一次布局前没有被 `refreshing` 变为 `true` 确认就结束，`refreshing` 变为 `false` 时结束（`on refresh { loading = true; reload(); }`，加载完成时 `loading = false`）；`VirtualList` 同样接受；
 - `snap: Snap`（`start; center; end; pages;`，取常量）：视口停靠在其项上——`Scroll` 的项是其内容节点的子节点，`VirtualList` 的项是行；松手、滚轮停转或触控板抬起后滑行到惯性停点最近的项，按 `start`/`center`/`end` 对齐，`pages` 一次轻扫至多移动一项；`snap_inset: MixedLength`（常量 `dp`）让项停在距视口两边该距离处（Carousel 的内边距）；`page_dots: Bool` 在视口横轴末端边居中覆盖一行页点，点亮所停项，点击或方向键移动到对应项；事件 `snap_changed(SelectionChanged)` 在所停、所趋向或最近的项变化时投递其序号 `value`（初始项不投递）；`VirtualList` 同样接受；
-- 子节点在滚动轴上的约束无界；滚动偏移变化只标记视口子树 `TRANSFORM|HIT_TEST|PAINT`，不触发布局（ADR 0007）；
+- 子节点在滚动轴上的约束无界；滚动偏移变化只标记视口子树 `TRANSFORM`，不触发布局（ADR 0007）；
 - 滚轮与触控板事件先送往最内层可在该轴滚动的视口，到达边界后沿祖先链传递；
 - 键盘：焦点路由上无处理器取走、焦点又不在可编辑文本框中的方向键、Page Up/Down、Space（Shift+Space）与 Home/End 滚动焦点（无焦点时为指针下节点）所在的最近可滚动视口——一行、一页（保留少量重叠）或到两端，平滑抵达，连按累加；吸附视口逐项移动；标准控件取走自己使用的按键（Slider 的方向键、Toggle 的 Space 等）；
 - 水平滚动的视口在 RTL 下以右边为起点：内容右边与视口右边对齐，偏移在 `[-range, 0]` 内取值（0 为起点，向左为负）；方向翻转时偏移保持到起点的距离；
@@ -4707,10 +4707,10 @@ export record AdaptiveColumns { mode: AutoRepeat = AutoRepeat::fill; min: MixedL
 
 | Property           | 类型          | 默认                  | 失效                         |
 | ------------------ | ------------- | --------------------- | ---------------------------- |
-| `translate`        | `Offset`      | `Offset::zero()`      | `TRANSFORM\|HIT_TEST\|PAINT` |
-| `scale`            | `F32`         | `1.0`                 | `TRANSFORM\|HIT_TEST\|PAINT` |
-| `rotation`         | `Angle`       | `0deg`                | `TRANSFORM\|HIT_TEST\|PAINT` |
-| `transform_origin` | `Alignment2D` | `Alignment2D::center` | `TRANSFORM\|HIT_TEST\|PAINT` |
+| `translate`        | `Offset`      | `Offset::zero()`      | `TRANSFORM`                  |
+| `scale`            | `F32`         | `1.0`                 | `TRANSFORM`                  |
+| `rotation`         | `Angle`       | `0deg`                | `TRANSFORM`                  |
+| `transform_origin` | `Alignment2D` | `Alignment2D::center` | `TRANSFORM`                  |
 | `opacity`          | `F32`         | `1.0`                 | `PAINT`                      |
 | `clip`             | `Bool`        | `false`               | `PAINT\|HIT_TEST`            |
 | `visible`          | `Bool`        | `true`                | `PAINT\|HIT_TEST\|SEMANTICS` |
@@ -4865,7 +4865,7 @@ Row {
 
 | Property                                          | 逐帧失效                     |
 | ------------------------------------------------- | ---------------------------- |
-| `translate`、`scale`、`rotation`                  | `TRANSFORM\|HIT_TEST\|PAINT` |
+| `translate`、`scale`、`rotation`                  | `TRANSFORM`                  |
 | `opacity`、`background`、`color`、`corner_radius` | `PAINT`                      |
 | `width`、`height`（仅 `fixed` 值之间）            | `MEASURE\|LAYOUT`            |
 
@@ -5081,7 +5081,7 @@ Named Node `n` 在同一 Component 的 Action 与 Handler 中以 `n: NodeRef<T>`
 | ----------------------------------------------- | ------------- | ------------------------------------------------- |
 | `n.focus()` / `n.blur()`                        | 可聚焦节点    | 程序化焦点移动，不激活 `focus_visible`            |
 | `n.scroll_into_view(smooth?)`                   | 任意          | 最近祖先视口以最小滚动使 `n` 可见                 |
-| `n.scroll_to(offset, smooth?)` / `n.scroll_by(delta, smooth?)` | `Scroll` | 只标记 `TRANSFORM\|HIT_TEST\|PAINT` |
+| `n.scroll_to(offset, smooth?)` / `n.scroll_by(delta, smooth?)` | `Scroll` | 只标记 `TRANSFORM` |
 | `n.scroll_to_key(key, smooth?)` / `n.scroll_to_index(i, smooth?)` | `VirtualList` | 见 U9.3                         |
 | `n.animate(target, spec)` / `n.play(track)`     | 任意          | 见 U6.3                                           |
 
@@ -5171,7 +5171,7 @@ Named Node `n` 在同一 Component 的 Action 与 Handler 中以 `n: NodeRef<T>`
 - **结构**：Scroll 视口内一张主轴范围固定的画布，行高由 Fenwick 树维护；未测量行使用 `estimated_extent`（可写 `em`，按列表节点的 Resolved Font Size 解析），测量后更新；
 - **身份**：`key` 值经 `StableKey` 映射为 `ItemKey`，作为行身份；重排时存活行保留宿主节点与局部状态并重新锚定；滚动锚点保持在锚定行上，插入与删除不引起视觉跳动；
 - **回收**：离开 Overscan 窗口的行宿主进入回收池按 Template 复用；复用即重新绑定新 Item，标记该行子树 `MEASURE|LAYOUT|PAINT`，**不**标记 `STRUCTURE`；行被回收时其局部 `state` 丢弃、行内 `start` 的 Task 取消，需要跨滚动保留的数据应放在列表外的 Model 中；
-- **滚动**：只标记 `TRANSFORM|HIT_TEST|PAINT`；进入视口的新行按上述规则挂载或复用；
+- **滚动**：只标记 `TRANSFORM`；进入视口的新行按上述规则挂载或复用；
 - **命令式滚动**：`n.scroll_to_key(key)` 与 `n.scroll_to_index(i)` 可滚动到尚未挂载的行；未知 `key` 是 No-op；
 - **语义**：列表 Role 为 `list`，每行为 `list_item`，语义树报告集合总数与行位置。
 - **分页**：`pages: true` 让每行恰为视口在 `axis` 上的长度（Pager 的页），未写 `snap` 时取 `Snap::pages`；视口尺寸变化时保持当前页；横向分页列表配 `page_dots: true` 与 `scroll_bars: false` 即为 Pager；
@@ -5224,6 +5224,8 @@ Text { text: tr("inbox.unread", count: unread); }
 ---
 
 ## U11. 导航
+
+> **状态**：目标（尚未实现）。代码中还没有 `Navigator<R>`、`RouterView` 与 Rust 侧注册 Route→Page 映射的 `routes!`。现有导航是 Rust 控件 `NavigationStack`（程序驱动经 `NavHandle`）与 `Application::on_open_url` 深链接（Architecture §6.1）。本节是 typed route 的设计合同。
 
 路由是 **Rust 中定义的类型化路由**（CLAUDE.md §32）。DSL 不声明路由表，只使用经 Native Schema 导入的 `Route` Enum 与宿主提供的句柄 `Navigator<R>`：
 
@@ -7028,7 +7030,7 @@ ReactiveBinding {
 - 只含 `dp` 与 `%` 分量的常量直接 Lower 为 Layout 的 Fixed 或 Relative 值，不进入 Binding 侧表；
 - 其余长度族值与 `MixedLength` Lower 为定长 `LengthTerms { dp, px, sp, em, pct: F32 }`，常量在编译期折叠，不产生表达式树或堆分配；
 - `LengthTerms` 与其依赖掩码存放在 Binding 侧表，不进入 Layout 热存储；环境分量在依赖变化时预折叠：`fixed = dp + px / scale_factor + text_scale_curve(sp) + em × resolved_font_size`；
-- Layout 热存储只保存 `ResolvedLength { fixed: F32, pct: F32 }`（8 字节），Layout 求解是一次 `fixed + pct × percent_basis`；纯 `Dp` 常量 `pct = 0`，与 Fixed 路径同成本；
+- Layout 热存储只保存折叠后的 `Length`（`viso_schema::Length`）：含 `%` 的值是 `Length::Relative { fixed: F32, pct: F32 }`（payload 8 字节），Layout 求解是一次 `fixed + pct × percent_basis`（结果不为负）；纯 `Dp` 常量是 `Length::Fixed`，走 Fixed 路径；
 - `font_size` 与 `line_height` 的 Percent 基准是字号，在 Typography 解析时折叠进 `fixed`，Layout 看到的 `pct` 为 `0`；
 - 环境值变化时只重新折叠依赖掩码命中的 Binding（§19.6），不重新求值整棵树；折叠结果未变的 Node 不标脏；
 - Percent Basis 是否确定由父布局沿 Layout 递归传入；重新布局的子树根自其祖先链求得；

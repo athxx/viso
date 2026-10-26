@@ -30,7 +30,7 @@
 //!
 //! [`run`] owns the platform event pump and frame scheduler. It opens a native
 //! window (headless when no native backend is available), handles resize,
-//! receives input, and drives the 12-phase frame. A real retained UI tree flows
+//! receives input, and drives the 17-phase frame. A real retained UI tree flows
 //! Component → Node → Flex layout → paint → renderer to the GPU, and each frame
 //! recomputes only the invalidated subtree rather than the whole tree.
 
@@ -262,7 +262,11 @@ pub use viso_macros::packaged_fonts;
 /// state; it is not forced to contain a Router or a global Store — those are
 /// opt-in.
 pub trait Application: Sized + 'static {
-    /// Construct the application. Windows and services are created via `cx`.
+    /// Construct the application. `cx` registers fonts (`load_font`,
+    /// `use_packaged_fonts`) and the dev state a warm restart keeps; the launch
+    /// window opens from [`window_config`](Self::window_config) and its scene is
+    /// authored in [`build`](Self::build). Further windows are opened from
+    /// handlers, and services are reached through a handler's context.
     fn new(cx: &mut AppCx) -> Self;
 
     /// Configure the launch window: its title, logical size, chrome, and whether
@@ -3786,7 +3790,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 // position and the delta are divided by the scale factor into
                 // logical points — the offset lives in the same logical space as
                 // layout. The router clamps per axis and marks only
-                // TRANSFORM/HIT_TEST/PAINT — a scroll never relayouts — so no
+                // TRANSFORM — a scroll never relayouts or repaints — so no
                 // state flush is involved.
                 let ev = ScrollEvent {
                     x: s.x / scale,
@@ -4400,13 +4404,13 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
             FramePhase::AdvanceAnimations => {
                 for ws in &mut self.windows {
                     // Start any animations a handler requested this frame — a
-                    // sheet sliding in queued a `TranslateAnim` through
-                    // `EventCx`, which the router handed to the store's queue;
-                    // drain it into the registry now. Then advance every live
-                    // animation by this frame's delta, writing each node's
-                    // interpolated translate through `set_translate` (a
-                    // TRANSFORM|HIT_TEST|PAINT write). This runs before the state
-                    // flush and the Layout phase, so the moved translate is
+                    // `TranslateAnim` queued through `EventCx`, which the router
+                    // handed to the store's queue; drain it into the registry
+                    // now. Then advance every live animation by this frame's
+                    // delta, writing each node's interpolated translate through
+                    // `set_translate` (a TRANSFORM write, plus one PAINT when it
+                    // first makes the node a transform root). This runs before
+                    // the state flush and the Layout phase, so the moved translate is
                     // resolved into `world` and painted this same frame. Both
                     // steps are no-ops when nothing is animating (the steady
                     // case) — the queue is empty and the registry has nothing to
@@ -5354,9 +5358,8 @@ pub mod prelude {
     pub use crate::ui;
     // 2D geometry, owned by `viso-math`.
     pub use viso_math::{Point, Rect, Vec2};
-    // Text, List, Computed, Event, Task, Route, Theme, Color, Constraints and the
-    // component!/view!/routes! macros join this as their subsystems land in later
-    // phases.
+    // `component!`, `view!` and `asset!` are exported from the crate root
+    // (`viso::component!`, …), not from here.
 }
 
 // -- Advanced escape hatches. Opt-in, clearly namespaced. --

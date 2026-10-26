@@ -15,7 +15,7 @@ use viso_ende::JsonWriter;
 /// - text content → MEASURE | LAYOUT | PAINT | SEMANTICS
 /// - text color   → PAINT
 /// - width        → MEASURE | LAYOUT
-/// - transform    → TRANSFORM | HIT_TEST | PAINT
+/// - transform    → TRANSFORM
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DirtyClass(u8);
 

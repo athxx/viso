@@ -162,7 +162,7 @@ text (pure CPU) / shader
 gpu → handle
 ```
 
-The compiler side is separate: `dsl -> schema / dev-protocol / behavior / shader / math`, with `lsp` and `ui-macros` on `dsl` (ADR 0042). `ui` and `view` re-export `schema`; `dev-protocol` is the CLI↔runtime dev link both sides depend on; `shader` sees GPU types only through `gpu-abi`. Leaf crates (`math`, `ende`, `handle`, `glyph-a8`, `schema`, `gpu-abi`) sit outside this chain, with `macros` on `glyph-a8` (the A8 glyph rasterizer and baked pages `text` also reads); `render` sits on `svg` (parser) and `image` (raster decode). The transitive closure of `dsl`/`lsp`/`ui-macros`/`cli` must not contain runtime, platform or gpu; `check-deps` enforces it. The exact allowed edges are the allowlist in `xtask/src/main.rs` (§3.6, Architecture §10).
+The compiler side is separate: `dsl -> lexer / schema / dev-protocol / behavior / shader / ende / math`, with `lsp` and `ui-macros` on `dsl` (ADR 0042). `ui` and `view` re-export `schema`; `dev-protocol` is the CLI↔runtime dev link both sides depend on; `behavior` (the VM) sits on `ende / math / schema`; `shader` sees GPU types only through `gpu-abi`. Leaf crates (`math`, `ende`, `handle`, `glyph-a8`, `gpu-abi`, `lexer`, and the tooling leaves `project`, `package`) sit outside this chain; `schema` is a pure-data contract on `ende` only; `macros` sits on `glyph-a8` (the A8 glyph rasterizer and baked pages `text` also reads); `render` sits on `svg` (parser) and `image` (raster decode); `pdf` on `render`; `media` on `handle`. The transitive closure of `dsl`/`lsp`/`ui-macros`/`cli` must not contain runtime, platform or gpu; `check-deps` enforces it. The exact allowed edges are the allowlist in `xtask/src/main.rs` (§3.6, Architecture §10).
 
 Exact low-level edges can differ where required by surface creation and runtime ownership, but the following are forbidden:
 
@@ -171,18 +171,22 @@ platform -> ui
 platform -> widgets
 platform -> dsl
 platform -> studio
-ui       -> widgets
+ui       -> widgets / dsl
+runtime / ui / widgets -> behavior
 render   -> widgets
 gpu      -> ui
 text     -> platform
-text     -> gpu
-gpu      -> runtime
+text     -> gpu / render
+gpu      -> runtime / platform
 shader   -> gpu
 svg      -> render
 dsl      -> ui / view
 cli      -> view
+schema / dev-protocol -> ui
 runtime  -> studio
 ```
+
+Every edge above except the `studio` ones is also in xtask's `NEVER` table: adding it to the allowlist fails `check-deps`.
 
 Studio and Inspector are clients of the framework, never dependencies of framework runtime crates.
 
@@ -207,7 +211,7 @@ Use the Ownership Ladder:
 
 **Viso owns integration but should prefer proven algorithms:** Unicode/BiDi/shaping primitives, font rasterization, media codecs, accessibility OS bridge, platform bindings.
 
-**Adapters/external by default:** async executors, HTTP/TLS, databases, telemetry, wgpu reference/experimental backend.
+**Adapters/external by default:** async executors, HTTP/TLS, databases, telemetry. These live as plugin crates in the sibling `viso-ext` repository, not in core; there is no wgpu backend (each target statically selects one Viso-owned backend, ADR 0029).
 
 Do not reimplement a standards-heavy subsystem merely for repository purity. Fork/replace only when capability, profiling, security, or maintenance evidence justifies it.
 
@@ -217,17 +221,18 @@ A target architecture contract may be Viso-owned while its first implementation 
 
 # 4. Repository Layout
 
-Top-level layout (`integrations/`, `extras/`, `vendor/` are target directories, created when first needed):
+Top-level layout (the workspace members in the root `Cargo.toml`; Architecture §8 is the annotated tree):
 
 ```text
 crates/
     viso/        facade
-    macros/      GpuPod derive, packaged_fonts!
+    macros/      GpuPod / NativeData derives, packaged_fonts!
     glyph-a8/    A8 glyph raster + baked glyph pages
     ui-macros/   ui! / component! / view!
     handle/
     math/
     ende/
+    lexer/       .vs tokenizer (compiler + code-editor highlighter)
     runtime/
     platform/
     gpu/
@@ -238,29 +243,34 @@ crates/
     image/
     media/
     render/
+    pdf/         primitive stream -> PDF
     ui/
     widgets/
     schema/
     dev-protocol/
+    behavior/    VM
+    view/        compiled-view runtime
     dsl/
     lsp/
     services/
 
-tools/           project (project model), cli (`viso`), future studio/migrate
-integrations/
-extras/
+extras/          charts/, code-editor/, map/ (optional, outside default widgets)
+tools/           project (project model), package (platform packaging), cli (`viso`); future studio/migrate
+libs/            woff2 (member); base64, lz4 (not members)
 examples/
-benches/
-tests/
+benches/         footprint/
+tests/           characterization/
+fuzz/            separate cargo-fuzz workspace
 docs/            adr/
 xtask/
-vendor/
 ```
+
+`vendor/` is a target directory, created when the first third-party fork lands. There is no `integrations/` directory: ecosystem adapters (tokio/serde/tracing, …) and non-UI services live as plugin crates in the sibling `viso-ext` repository.
 
 Rules:
 
 - Third-party forks belong in `vendor/`.
-- Optional large functionality belongs in `extras/` or `integrations/`, not default widgets.
+- Optional large functionality belongs in `extras/` (or a `viso-ext` plugin when it is not UI), not default widgets.
 - Apps/examples must not be imported by framework crates.
 - `tools/studio` must not gain privileged hidden runtime dependencies.
 
@@ -332,15 +342,22 @@ Correctness must not depend on users understanding hidden batching or draw order
 
 ## 6.3 Prefer typed handles
 
-Public component handles should be typed and cheap to copy.
+Public component handles should be typed and cheap to copy. They carry ids only, never a widget object.
 
-Preferred shape:
+Current form (Architecture §78):
+
+- `viso_ui::Handle`: returned by `BuildCx` builders; `Copy`, holds only a generational `NodeId`, no type parameter;
+- per-control handles (`ModalHandle`, `PopupHandle`, `NavHandle`, `SearchFieldHandle`, `DataGridHandle`, …): ids (`StateId`/`NodeId`) plus shared cells, `Clone`; methods take `&mut EventCx` and act through state writes and deferred requests (`modal.open(ev)`);
+- control ids are allocated inside `build`, so apps pre-create a `*HandleSlot` (`Rc<RefCell<Option<H>>>`) that `build` fills once. Build-time plumbing only, not a borrow of component state.
+
+Target (not yet implemented): the control builder's `build(cx)` returns a typed `Handle<T>`, replacing `*HandleSlot`:
 
 ```rust
-Handle<Button>
+let modal: Handle<Modal> = modal(content).build(cx); // Copy, ids only
+modal.open(ev);
 ```
 
-Internally this may contain a generational `NodeId`.
+New handle APIs MUST move toward this shape (`Copy`, ids only, generation-checked, methods on `&mut EventCx`), not add more slot types.
 
 Do not reintroduce `Rc<RefCell<Box<dyn Widget>>>` as the standard public ownership model.
 
@@ -348,19 +365,21 @@ Do not reintroduce `Rc<RefCell<Box<dyn Widget>>>` as the standard public ownersh
 
 Do not add more capabilities to a universal context just because it is convenient.
 
-Prefer purpose-specific contexts:
+Use the purpose-specific contexts (Architecture §11.3):
 
 ```text
-AppCx
-EventCx
-UpdateCx
-LayoutCx
-PaintCx
-RenderCx
-TaskCx
+RuntimeCx    runtime -> FrameDriver: windows, redraw, platform calls; knows no UI type
+AppCx        Application::new: fonts, dev-state registration (recorded, applied later)
+BuildCx      Component::build: declare nodes, state, bindings
+EventCx      handlers: read/write state (deferred to flush), spawn / spawn_then / cancel_task,
+             services(), focus / visibility / animation / timer requests; no NodeStore, no mark_dirty
+UpdateCx     continuations, timer callbacks: read/write state, cancel_task
+ComputeCx    computed evaluation: read-only get, records dependencies; no set
+EffectCx     effect runs: read/write state, spawn owned by the effect's node
+StructureCx  view control-flow structure hooks: cold-path in-place tree edits
 ```
 
-A layout function must not be able to accidentally launch a network request or submit arbitrary GPU work.
+Layout, paint and render are not user callbacks: `Component` has only `build`, and the framework lays out and paints from node data (ADR 0003), so those phases expose no user context. A new user-facing phase hook needs an ADR and its own narrow context. A layout step must not be able to launch a network request or submit arbitrary GPU work.
 
 ---
 
@@ -478,11 +497,11 @@ Do not put cold Strings in structures traversed for every node every frame.
 
 ## 8.5 Node hot storage is fixed-index hybrid SoA
 
-The target storage model is not open-ended:
+The storage model is not open-ended (Architecture §14.1, §16.0):
 
-- compact `NodeMeta[index]` AoS for hierarchy/type/flags;
-- layout/transform/paint/interaction hot stores indexed directly by the same `NodeIndex`;
-- cold/optional data in sparse side tables;
+- `NodeArena`: compact 20-byte `NodeLinks[index]` AoS for hierarchy (`NodeIndex` links, no generation) plus a separate `generation[index]` column;
+- `NodeStore` layout/transform/flags/dirty/paint hot columns indexed directly by the same slot index; packing the per-flag `Vec<bool>` columns into one `NodeFlags` bitset is a target;
+- cold/optional data in intern tables, `Option<Box<_>>` columns or sparse side tables (`Sparse<T>`);
 - no per-node HashMap lookup in steady-state traversal;
 - no archetype migration as the default UI-node lifecycle.
 
@@ -490,7 +509,7 @@ Changing this model requires an ADR plus benchmark evidence.
 
 ## 8.6 `Handle<T>` is identity/capability, not a state borrow
 
-Public `Handle<T>` MUST NOT expose long-lived `&T`/`&mut T` access to component internals. Reads/writes go through context-scoped query, generated property access, typed actions, or update APIs that preserve lifetime and invalidation accounting. Internal guards may exist but must not survive the frame/borrow scope.
+Public handles (`viso_ui::Handle`, per-control handles, and the target `Handle<T>`, §6.3) MUST NOT expose long-lived `&T`/`&mut T` access to component internals. Reads/writes go through context-scoped query, generated property access, typed actions, or update APIs that preserve lifetime and invalidation accounting. Internal guards may exist but must not survive the frame/borrow scope.
 
 ## 8.7 Transform invalidation is separate from layout invalidation
 
@@ -570,7 +589,7 @@ Maintain benchmarks for static, mixed, and fully dynamic dependency paths. New d
 
 ## 10.4 Transaction batching
 
-Multiple state writes during one input/action transaction should flush once.
+State writes from handlers are deferred and flushed once per frame (`FlushStateTransactions`), however many events wrote them; DSL actions additionally run in a VM transaction with an undo log.
 
 Avoid repeated immediate layout/paint work after each setter.
 
@@ -596,7 +615,7 @@ Do not launch effects from view rendering.
 
 # 11. Dirty Invalidation Rules
 
-Use exactly these dirty classes (`viso_ui::DirtyClass`, `crates/ui/src/dirty.rs`):
+Use exactly these dirty classes (`viso_schema::DirtyClass`, `crates/schema/src/dirty.rs`, re-exported as `viso_ui::DirtyClass`):
 
 ```text
 STRUCTURE
@@ -619,10 +638,12 @@ Examples:
 text content       -> MEASURE + LAYOUT + PAINT + SEMANTICS
 text color         -> PAINT
 background         -> PAINT
-width              -> MEASURE + LAYOUT
+width              -> MEASURE + LAYOUT (a node whose box moves is repainted by the pipeline)
 transform          -> TRANSFORM (transform-table entry; damage from subtree bounds)
 accessibility text -> SEMANTICS
 ```
+
+`HIT_TEST` is marked but has no consumer today: hit testing is a stateless query over `NodeStore`.
 
 Do not replace this with a single generic `dirty = true` unless the subsystem is intentionally coarse-grained and benchmarked.
 
@@ -660,9 +681,9 @@ A general constraint layout may exist as an optional specialized container.
 
 ## 12.3 Cache measurement
 
-Reuse measure results when constraints/content/style versions have not changed.
+Measure takes no constraints, so a node's stored `Measured` is valid exactly while it carries no `MEASURE` bit; relayout redoes only the shallowest dirty roots (Architecture §23). Do not key caches on frame history or add version stamps on top of the dirty bit.
 
-Do not repeatedly measure stable text/subtrees.
+Do not repeatedly measure stable text/subtrees (skipping clean children inside a redo root is a target).
 
 ## 12.4 Virtualize large collections
 
@@ -703,13 +724,7 @@ Focus, IME, pointer capture, keyboard navigation, and gesture arbitration are fr
 
 Do not use runtime strings as the normal property lookup mechanism.
 
-Source names compile to IDs such as:
-
-```text
-PropertyId
-TokenId
-StyleId
-```
+Source property names resolve at compile time to a widget input slot, layout slot or appearance entry (typed builder calls, `AotStyle` fields, `DirtyClass` edges); there is no runtime property-ID table. Theme reads are typed field reads of the `Theme` record in the `theme` env cell. Diffing happens in each setter: an unchanged value marks nothing.
 
 Theme should be semantic-token based:
 
@@ -732,7 +747,7 @@ Accessibility is mandatory architecture, not optional polish.
 
 Every interactive official widget must have appropriate semantics.
 
-Semantics updates are incremental.
+Semantics updates are incremental: only frames with `SEMANTICS`/`LAYOUT`/`TRANSFORM` dirt re-derive, and only changed nodes are published (deriving only dirty branches, instead of the whole tree, is a target).
 
 Do not add visual-only interactions that have no keyboard/accessibility equivalent unless the component is explicitly non-interactive decoration.
 
@@ -775,20 +790,15 @@ Prefer retained ranges/caches and targeted buffer updates where practical.
 
 ## 17.1 Keep the RHI small
 
-GPU API concepts should stay close to:
+The RHI is one static `GpuBackend` per target (`crates/gpu/src/backend.rs`) with generation-safe handles and a declarative draw list:
 
 ```text
-Device
-Queue
-Buffer
-Texture
-Sampler
-Pipeline
-BindGroup
-CommandEncoder
-Surface
-Fence
+Buffer / Texture / Sampler / Pipeline / BindGroup / Surface   (create / write / destroy)
+begin_frame -> encode(DrawList) -> present / present_with_damage
+Caps, device_lost
 ```
+
+There is no command encoder, fence, barrier or compute API; pass order is the synchronization. Formats and ABI types live in the leaf `viso-gpu-abi`. Add an RHI concept only with a measured need.
 
 Do not leak widgets/layout/state into `viso-gpu`.
 
@@ -816,10 +826,12 @@ Use persistent buffers, ring uploads, atlases, and caches.
 
 Host structs and GPU instance data are separate concerns.
 
-Preferred:
+Widgets never define instance structs: they emit `Primitive`s. Custom GPU data goes through a `.vs` shader brush (`Primitive::Shader`), whose instance layout the shader layout algorithm fixes.
+
+Renderer-side, preferred:
 
 ```rust
-struct Painter {
+struct QuadLane {
     cache: HostCache,
     pipeline: PipelineId,
 }
@@ -887,7 +899,7 @@ Text editing must be grapheme-aware and IME-aware.
 
 ## 21.1 Dependency direction
 
-`viso-dsl` depends on schemas/UI interfaces.
+`viso-dsl` depends on the pure-data schema contract (`viso-schema`), never on `viso-ui` or `viso-view` (ADR 0042).
 
 The UI runtime does not require the Viso DSL compiler or an optional dynamic VM to exist.
 
@@ -1091,6 +1103,8 @@ haptics
 network
 ```
 
+Core `viso-services` keeps only UI-adjacent protocols (launcher, haptics, app data, …) on a `!Send` registry of `Rc<dyn …>` services. Non-UI capabilities (file picking, share, notifications, push, secure storage, location, camera, background tasks, HTTP, print, auth) are `viso-ext` plugin crates, each with its own OS implementations and mock; do not add them to core (Architecture §49).
+
 Trait objects are acceptable here when they simplify portability/testing.
 
 Every service should be mockable for headless tests.
@@ -1199,17 +1213,19 @@ Strings are welcome in authoring/compiler/debug tooling.
 
 Strings are not the normal identity mechanism for runtime hot paths.
 
-Compile names into IDs:
+Compile names into IDs, closed enums or typed slots:
 
 ```text
-NodeId
-PropertyId
-TokenId
-ShaderId
-TextureId
-PipelineId
-ComponentTypeId
+NodeId / NodeIndex
+StateId / StateKey
+StableId / SymbolId          (artifact and stable identity)
+ResourceId
+ProgramSlot
+TextureId / PipelineId / …   (gpu-abi handles)
+ControlKind / EventRoute     (closed #[repr(u8)] enums)
 ```
+
+Properties compile to typed slots, not runtime IDs; components are inlined at mount (ADR 0039), so there is no runtime component-type table.
 
 A runtime HashMap may be appropriate for infrequent lookup/registry operations, but not for every node every frame.
 
@@ -1528,10 +1544,10 @@ app_main! / AppMain
     -> phase-specific contexts
 
 WidgetRef
-    -> NodeId / Handle<T>
+    -> NodeId / viso_ui::Handle / per-control handle (target: Handle<T>)
 
 Widget object owns everything
-    -> Component + Node + Painter
+    -> Component + Node + Primitive
 
 Walk / public Turtle knowledge
     -> declarative layout + internal specialized algorithm
@@ -1727,6 +1743,8 @@ Maintain a progression such as:
 10-custom-shader
 99-full-app
 ```
+
+Today only `01-counter` and `10-custom-shader` exist from this list, beside `hello_world` and named feature examples (`i18n`, `images`, `links`, `persist`, `pointer`, `shell`, `video`, `code-editor`, `map`); fill the numbered steps as they land.
 
 New examples should demonstrate the Viso 1.0 architecture, not Makepad compatibility patterns.
 
@@ -2032,7 +2050,7 @@ Windows   -> D3D12
 Linux     -> Vulkan
 Android   -> Vulkan
 Web       -> WebGPU
-Embedded Linux (GPU)    -> GLES 3.0+ / Vulkan 1.1   (embedded-gpu profile)
+Embedded Linux (GPU)    -> GLES 3.0+ on KMS/GBM/EGL (embedded-gpu profile)
 Embedded Linux (no GPU) -> CpuRaster                (embedded-cpu profile, Tier-2)
 ```
 
@@ -2068,7 +2086,7 @@ The repository MUST enforce architecture policy in CI. The baseline command is:
 cargo xtask check-deps
 ```
 
-`check-deps` enforces crate dependency edges. The repository should also enforce:
+`check-deps` enforces crate dependency edges. CI also runs `check-release-absence`, `mcu-smoke` and `check-frame-tax`; `check-profiles`, `check-targets` and `footprint --check` exist but are not yet wired into CI. The repository should also enforce:
 
 - formatting/lints;
 - unit/integration tests;
