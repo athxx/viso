@@ -264,16 +264,16 @@ pub(crate) fn css_px(value: &str) -> f64 {
 }
 
 /// A `WheelEvent`'s deltas in logical points, signed as on the other
-/// backends: positive scrolls content down and right (the DOM's positive
-/// deltas scroll the page the other way). `page` is the logical size one
-/// page-scroll covers.
+/// backends and as the DOM signs them: positive scrolls toward the content's
+/// end, down and right, as a wheel turned toward the user does. `page` is the
+/// logical size one page-scroll covers.
 pub(crate) fn wheel_delta(dx: f64, dy: f64, mode: u32, page: (f64, f64)) -> (f64, f64) {
     let (sx, sy) = match mode {
         DOM_DELTA_LINE => (LINE, LINE),
         DOM_DELTA_PAGE => page,
         _ => (1.0, 1.0),
     };
-    (-dx * sx, -dy * sy)
+    (dx * sx, dy * sy)
 }
 
 /// The CSS `cursor` value for an icon.
@@ -650,10 +650,10 @@ mod tests {
 
     #[test]
     fn wheel_deltas_become_logical_points() {
-        assert_eq!(wheel_delta(0.0, 120.0, 0, (0.0, 0.0)), (-0.0, -120.0));
-        assert_eq!(wheel_delta(1.0, 3.0, 1, (0.0, 0.0)), (-16.0, -48.0));
-        assert_eq!(wheel_delta(0.0, 1.0, 2, (800.0, 600.0)), (-0.0, -600.0));
-        assert_eq!(wheel_delta(-1.0, 0.0, 2, (800.0, 600.0)), (800.0, -0.0));
+        assert_eq!(wheel_delta(0.0, 120.0, 0, (0.0, 0.0)), (0.0, 120.0));
+        assert_eq!(wheel_delta(1.0, 3.0, 1, (0.0, 0.0)), (16.0, 48.0));
+        assert_eq!(wheel_delta(0.0, 1.0, 2, (800.0, 600.0)), (0.0, 600.0));
+        assert_eq!(wheel_delta(-1.0, 0.0, 2, (800.0, 600.0)), (-800.0, 0.0));
     }
 
     #[test]

@@ -228,7 +228,8 @@ pub struct RawScroll {
     pub window: WindowId,
     pub x: f64,
     pub y: f64,
-    /// Scroll delta in logical points (positive = content moves down/right).
+    /// Scroll delta in logical points: positive scrolls toward the content's
+    /// end, down and right, so the content itself moves up and left.
     pub delta_x: f64,
     pub delta_y: f64,
     pub modifiers: Modifiers,
