@@ -362,6 +362,8 @@ fn collect(res: &Resources, commands: &[DrawCommand], w: u32, h: u32, scratch: &
                         .instance(vertices, 0, i)
                         .expect("a mesh index past its vertices");
                     let p = place.apply(v.f2(0));
+                    let e = place.turn(v.f2(3));
+                    let p = [p[0] + e[0], p[1] + e[1]];
                     ([p[0] * scale, p[1] * scale], v.f4(1), v.f1(2))
                 };
                 for t in 0..index_count / 3 {

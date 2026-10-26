@@ -239,3 +239,61 @@ fn a_clip_inside_a_turned_root_turns_with_it() {
         TransformUpdate::NeedsUpload
     );
 }
+
+/// A red line from `(8, 16)` to `(24, 16)` built as its centerline, each
+/// vertex extruded half its 4-point width, in transform root 0.
+fn extruded_line() -> Vec<Primitive> {
+    let red = [1.0, 0.0, 0.0, 1.0];
+    let v = |x: f32, side: f32| viso_render::MeshVertex {
+        extrude: [0.0, 2.0 * side],
+        ..viso_render::MeshVertex::new([x, 16.0], red, 1.0)
+    };
+    vec![
+        Primitive::Transform(TransformSlot(0)),
+        Primitive::Mesh(viso_render::Mesh {
+            vertices: vec![v(8.0, -1.0), v(24.0, -1.0), v(24.0, 1.0), v(8.0, 1.0)],
+            indices: vec![0, 1, 2, 0, 2, 3],
+        }),
+        Primitive::TransformEnd,
+    ]
+}
+
+/// The red pixels of `frame` in column `x` and in row `y`.
+fn red_runs(frame: &[u8], x: usize, y: usize) -> (usize, usize) {
+    let red = |i: usize| frame[i * 4 + 2] > 128 && frame[i * 4 + 1] < 64;
+    let column = (0..H as usize).filter(|&r| red(r * W as usize + x)).count();
+    let row = (0..W as usize).filter(|&c| red(y * W as usize + c)).count();
+    (column, row)
+}
+
+#[test]
+fn an_extruded_line_keeps_its_width_as_its_root_zooms_and_turns() {
+    let (mut gpu, surface, mut r) = renderer();
+    r.upload_with_transforms(&mut gpu, &extruded_line(), &[Affine2::IDENTITY]);
+    let flat = draw(&mut gpu, surface, &mut r);
+    assert_eq!(red_runs(&flat, 16, 16), (4, 16), "4 points wide, 16 long");
+    // A flat line moved: its extent has no height, its extrusion does.
+    assert_eq!(
+        r.set_transforms(&[Affine2::translate(0.0, 10.0)]),
+        TransformUpdate::Moved
+    );
+    let frame = draw(&mut gpu, surface, &mut r);
+    assert_eq!(red_runs(&frame, 16, 26), (4, 16), "moved");
+
+    // Twice the size about the line's start: twice as long, as wide.
+    let zoomed = Affine2::translate(-8.0, -16.0)
+        .then(&Affine2::scale(2.0, 2.0))
+        .then(&Affine2::translate(8.0, 32.0));
+    assert_eq!(r.set_transforms(&[zoomed]), TransformUpdate::Moved);
+    let frame = draw(&mut gpu, surface, &mut r);
+    assert_eq!(red_runs(&frame, 24, 32), (4, 32));
+
+    // A quarter turn as well: the line runs down the view, still 4 wide.
+    let turned = Affine2::translate(-8.0, -16.0)
+        .then(&Affine2::scale(2.0, 2.0))
+        .then(&Affine2::from_rotation(std::f32::consts::FRAC_PI_2))
+        .then(&Affine2::translate(32.0, 8.0));
+    assert_eq!(r.set_transforms(&[turned]), TransformUpdate::Moved);
+    let frame = draw(&mut gpu, surface, &mut r);
+    assert_eq!(red_runs(&frame, 32, 24), (32, 4));
+}

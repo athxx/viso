@@ -3847,11 +3847,11 @@ impl Renderer {
                         stroke_col
                     };
                     col[3] *= opacity;
-                    self.mesh_vertex_scratch.push(MeshVertex {
-                        pos: [v.pos[0] * scale + ox, v.pos[1] * scale + oy],
-                        color: col,
-                        edge: v.edge,
-                    });
+                    self.mesh_vertex_scratch.push(MeshVertex::new(
+                        [v.pos[0] * scale + ox, v.pos[1] * scale + oy],
+                        col,
+                        v.edge,
+                    ));
                 }
                 self.mesh_index_scratch
                     .extend(geo.indices.iter_u32().map(|i| base + i));

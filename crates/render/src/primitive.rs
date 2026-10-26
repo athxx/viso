@@ -2478,7 +2478,13 @@ pub struct GlyphInstance {
 /// vertices, ramping to `0` at antialiased fringe vertices — interpolated across
 /// the triangle so the fragment shader gets smooth edge coverage. Unlike the
 /// quad/image instance structs this is *per-vertex* data drawn as an indexed
-/// triangle list, not a `vertex_id`-generated quad. `#[repr(C)]`, stride 28.
+/// triangle list, not a `vertex_id`-generated quad. `#[repr(C)]`, stride 36.
+///
+/// `extrude` is an offset in screen points added after the draw's place: the
+/// place's rotation turns it, its scale never stretches it. A line built as a
+/// centerline whose vertices extrude by its half-width keeps that width, and
+/// a fringe extruded by half a point stays one point wide, under any zoom of
+/// the transform root it moves with. Zero for ordinary geometry.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, GpuPod)]
 pub struct MeshVertex {
@@ -2488,6 +2494,21 @@ pub struct MeshVertex {
     pub color: [f32; 4],
     /// Coverage-AA weight (`1` interior, `0` fringe).
     pub edge: f32,
+    /// Screen offset in points, turned but never scaled by the draw's place.
+    pub extrude: [f32; 2],
+}
+
+impl MeshVertex {
+    /// A vertex at `pos` of straight linear `color` with coverage weight
+    /// `edge`, not extruded.
+    pub const fn new(pos: [f32; 2], color: [f32; 4], edge: f32) -> Self {
+        Self {
+            pos,
+            color,
+            edge,
+            extrude: [0.0, 0.0],
+        }
+    }
 }
 
 /// A colorless tessellated vertex: position + AA coverage weight, in the path's
@@ -2688,11 +2709,7 @@ impl Path {
             } else {
                 stroke_col
             };
-            verts.push(MeshVertex {
-                pos: v.pos,
-                color: col,
-                edge: v.edge,
-            });
+            verts.push(MeshVertex::new(v.pos, col, v.edge));
         }
         indices.extend(geo.indices.iter_u32().map(|i| base + i));
     }

@@ -672,11 +672,11 @@ impl MeshBuilder {
     }
 
     fn vertex(&mut self, p: Vec2, color: Rgba, edge: f32) -> u32 {
-        self.vertices.push(MeshVertex {
-            pos: [p.x, p.y],
-            color: [color.r, color.g, color.b, color.a],
+        self.vertices.push(MeshVertex::new(
+            [p.x, p.y],
+            [color.r, color.g, color.b, color.a],
             edge,
-        });
+        ));
         (self.vertices.len() - 1) as u32
     }
 

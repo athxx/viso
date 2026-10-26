@@ -435,6 +435,7 @@ struct VertexIn {
     packed_float2 pos;
     packed_float4 color;
     float edge;
+    packed_float2 extrude;
 };
 
 struct Uniforms {
@@ -457,7 +458,11 @@ vertex VOut vertex_main(uint vid [[vertex_id]],
 
     float2 pixel = float2(v.pos);
     float2 vp = float2(u.viewport);
-    float2 at = float2(u.axis_x) * pixel.x + float2(u.axis_y) * pixel.y + float2(u.shift);
+    float2 ax = float2(u.axis_x);
+    float2 ay = float2(u.axis_y);
+    float2 ex = float2(v.extrude);
+    float2 at = ax * pixel.x + ay * pixel.y + float2(u.shift)
+        + ax * (ex.x / max(length(ax), 0.000001)) + ay * (ex.y / max(length(ay), 0.000001));
     float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
                         1.0 - at.y / vp.y * 2.0);
 

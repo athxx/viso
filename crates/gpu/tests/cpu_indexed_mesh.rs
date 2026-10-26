@@ -16,8 +16,8 @@ use viso_gpu::{
 
 /// The mesh vertex layout the headless `fill_mesh` reads by name: straight
 /// linear `pos`/`color` and a coverage `edge` weight (1 in the interior).
-/// `#[derive(GpuPod)]` emits the validated `LAYOUT` (stride 28: pos@0, color@8,
-/// edge@24), matching the frozen `MeshVertex` ABI without depending on
+/// `#[derive(GpuPod)]` emits the validated `LAYOUT` (stride 36: pos@0, color@8,
+/// edge@24, extrude@28), matching the frozen `MeshVertex` ABI without depending on
 /// `viso-render`.
 #[repr(C)]
 #[derive(Clone, Copy, GpuPod)]
@@ -25,6 +25,7 @@ struct MeshVertex {
     pos: [f32; 2],
     color: [f32; 4],
     edge: f32,
+    extrude: [f32; 2],
 }
 
 fn mesh_schema() -> InstanceSchema {
@@ -41,6 +42,10 @@ fn mesh_schema() -> InstanceSchema {
             SchemaAttr {
                 name: "edge",
                 format: AttrFormat::Float1,
+            },
+            SchemaAttr {
+                name: "extrude",
+                format: AttrFormat::Float2,
             },
         ],
     }
@@ -68,21 +73,25 @@ fn draw_indexed(format: IndexFormat, index_bytes: &[u8]) -> ([f32; 4], [f32; 4])
             pos: [16.0, 12.0],
             color: green,
             edge: 1.0,
+            extrude: [0.0, 0.0],
         },
         MeshVertex {
             pos: [48.0, 12.0],
             color: green,
             edge: 1.0,
+            extrude: [0.0, 0.0],
         },
         MeshVertex {
             pos: [48.0, 36.0],
             color: green,
             edge: 1.0,
+            extrude: [0.0, 0.0],
         },
         MeshVertex {
             pos: [16.0, 36.0],
             color: green,
             edge: 1.0,
+            extrude: [0.0, 0.0],
         },
     ];
 

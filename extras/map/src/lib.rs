@@ -10,6 +10,7 @@ pub mod camera;
 pub mod geo;
 pub mod mvt;
 pub mod source;
+pub mod tess;
 
 pub use camera::{Camera, Insets, Limits, Motion, TILE_SIZE, View};
 pub use geo::{LngLat, LngLatBounds, WorldPoint};

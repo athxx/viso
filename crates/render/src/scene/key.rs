@@ -55,11 +55,13 @@ fn pod<T: viso_gpu::GpuPod>(key: Key, value: &T) -> Key {
 }
 
 impl Scene {
-    /// The damage key of the entry `store` names, and its world extent when
-    /// its recorded bounds do not hold one.
-    pub(crate) fn entry_key(&self, store: StoreRef) -> (u64, Option<Rect>) {
+    /// The damage key of the entry `store` names, its world extent when its
+    /// recorded bounds do not hold one, and how far past that extent its
+    /// vertices extrude in screen points, whatever place it goes to.
+    pub(crate) fn entry_key(&self, store: StoreRef) -> (u64, Option<Rect>, f32) {
         let key = Key::new(store_kind(store));
         let mut extent = None;
+        let mut reach = 0.0f32;
         let key = match store {
             StoreRef::Quad(id) => self.quads.get(id).map(|e| pod(key, &e.instance)),
             StoreRef::AnalyticRRect(id) => {
@@ -120,6 +122,12 @@ impl Scene {
                     .iter()
                     .map(|v| Rect::new(v.pos[0], v.pos[1], 0.0, 0.0))
                     .reduce(Rect::union);
+                reach = e
+                    .vertices
+                    .iter()
+                    .map(|v| v.extrude[0].abs().max(v.extrude[1].abs()))
+                    .fold(0.0, f32::max)
+                    * std::f32::consts::SQRT_2;
                 let key = key.bytes(pod_bytes(&e.vertices));
                 e.indices.iter().fold(key, |k, &i| k.word(u64::from(i)))
             }),
@@ -135,7 +143,7 @@ impl Scene {
                 Some(key.word(u64::from(capture)).word(u64::from(material)))
             }
         };
-        (key.map_or(0, Key::finish), extent)
+        (key.map_or(0, Key::finish), extent, reach)
     }
 }
 

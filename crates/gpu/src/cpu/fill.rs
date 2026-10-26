@@ -148,7 +148,9 @@ pub(super) fn schema(builtin: BuiltinShader) -> &'static [(&'static str, AttrFor
             ("color0", F4),
             ("color1", F4),
         ],
-        BuiltinShader::Path | BuiltinShader::Mesh => &[("pos", F2), ("color", F4), ("edge", F1)],
+        BuiltinShader::Path | BuiltinShader::Mesh => {
+            &[("pos", F2), ("color", F4), ("edge", F1), ("extrude", F2)]
+        }
         // The scene pass reads its vertices and instances whole (`scene`).
         BuiltinShader::Layer | BuiltinShader::Scene => &[],
     }
@@ -238,6 +240,15 @@ impl Place {
             self.a * x + self.c * y + self.e,
             self.b * x + self.d * y + self.f,
         ]
+    }
+
+    /// `v` turned by the place's axes, each normalized: a screen offset the
+    /// place rotates but does not scale.
+    #[inline]
+    pub(super) fn turn(&self, [x, y]: [f32; 2]) -> [f32; 2] {
+        let kx = x / self.a.hypot(self.b).max(1e-6);
+        let ky = y / self.c.hypot(self.d).max(1e-6);
+        [self.a * kx + self.c * ky, self.b * kx + self.d * ky]
     }
 
     /// Whether it only translates.

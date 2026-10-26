@@ -174,7 +174,7 @@ pub struct Scene {
     /// `content_stamps`: the entry it was computed from, its key, and its world
     /// extent where the bounds lack one. Recomputed only when the slot's entry
     /// changed.
-    keys: Vec<(StoreRef, u64, Option<Rect>)>,
+    keys: Vec<(StoreRef, u64, Option<Rect>, f32)>,
     /// Whether the primitive currently being recorded had any dirty plane. `None`
     /// means no plane report arrived for it — the case for a composite the
     /// renderer synthesizes, which is conservatively treated as dirty because its
@@ -272,10 +272,10 @@ impl Scene {
             }
         };
         match self.keys.get(index) {
-            Some(&(was, _, _)) if !dirty && was == store => {}
+            Some(&(was, ..)) if !dirty && was == store => {}
             _ => {
-                let (key, extent) = self.entry_key(store);
-                let entry = (store, key, extent);
+                let (key, extent, reach) = self.entry_key(store);
+                let entry = (store, key, extent, reach);
                 match self.keys.get_mut(index) {
                     Some(slot) => *slot = entry,
                     None => self.keys.push(entry),
@@ -291,7 +291,14 @@ impl Scene {
     pub(crate) fn key(&self, index: usize) -> (u64, Option<Rect>) {
         self.keys
             .get(index)
-            .map_or((0, None), |&(_, key, extent)| (key, extent))
+            .map_or((0, None), |&(_, key, extent, _)| (key, extent))
+    }
+
+    /// How far paint-order slot `index`'s vertices extrude past its extent,
+    /// in screen points.
+    #[inline]
+    pub(crate) fn reach(&self, index: usize) -> f32 {
+        self.keys.get(index).map_or(0.0, |&(.., reach)| reach)
     }
 
     /// The content stamp of paint-order slot `index`: the

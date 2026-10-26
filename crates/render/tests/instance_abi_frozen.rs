@@ -174,9 +174,10 @@ fn gradient_instance_layout_is_frozen() {
 
 #[test]
 fn mesh_vertex_layout_is_frozen() {
-    assert_eq!(size_of::<MeshVertex>(), 28, "MeshVertex stride");
+    assert_eq!(size_of::<MeshVertex>(), 36, "MeshVertex stride");
     assert_eq!(align_of::<MeshVertex>(), 4, "MeshVertex align");
     assert_eq!(offset_of!(MeshVertex, pos), 0);
     assert_eq!(offset_of!(MeshVertex, color), 8);
     assert_eq!(offset_of!(MeshVertex, edge), 24);
+    assert_eq!(offset_of!(MeshVertex, extrude), 28);
 }

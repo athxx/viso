@@ -52,6 +52,9 @@ pub(super) struct SurfaceDraw {
     /// Its clip as painted.
     clip: Option<Rect>,
     space: Space,
+    /// How far its vertices extrude past `paint` in screen points, wherever
+    /// its root goes.
+    reach: f32,
 }
 
 /// A texture the renderer rewrites in place, which the entries sampling it
@@ -288,6 +291,14 @@ fn place(transforms: &Transforms, d: &SurfaceDraw, surface: Rect) -> Option<Draw
     } else {
         d.paint.transform_bounds(&place)
     };
+    if d.reach > 0.0 {
+        rect = Rect::new(
+            rect.x - d.reach,
+            rect.y - d.reach,
+            rect.w + 2.0 * d.reach,
+            rect.h + 2.0 * d.reach,
+        );
+    }
     if let Some(clip) = transforms.clip(d.space, d.clip) {
         rect = rect.intersect(clip);
     }
@@ -488,6 +499,7 @@ impl Keying<'_> {
             paint,
             clip: entry.context.clip,
             space: entry.context.space,
+            reach: self.scene.reach(i),
         }
     }
 

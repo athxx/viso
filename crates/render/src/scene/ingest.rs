@@ -248,8 +248,8 @@ impl Scene {
         self.ingest_stats.dirty_primitives += 1;
         self.content_stamps[index] = self.revisions.content();
         let store = self.paint_order[index].store;
-        let (key, extent) = self.entry_key(store);
-        self.keys[index] = (store, key, extent);
+        let (key, extent, reach) = self.entry_key(store);
+        self.keys[index] = (store, key, extent, reach);
     }
 
     /// Stamp derived entry `index` — a composite, whose retained content no
@@ -257,8 +257,8 @@ impl Scene {
     pub(crate) fn restamp_derived(&mut self, index: usize) {
         self.content_stamps[index] = self.revisions.content();
         let store = self.paint_order[index].store;
-        let (key, extent) = self.entry_key(store);
-        self.keys[index] = (store, key, extent);
+        let (key, extent, reach) = self.entry_key(store);
+        self.keys[index] = (store, key, extent, reach);
     }
 
     /// Bump the revision planes `dirty` flags.

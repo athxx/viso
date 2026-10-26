@@ -880,7 +880,7 @@ mod tests {
             assert!(instance_schema(kind).is_some());
         }
         let ir_names: Vec<&str> = mesh_ir().attributes.iter().map(|f| f.name).collect();
-        assert_eq!(ir_names, ["pos", "color", "edge"]);
+        assert_eq!(ir_names, ["pos", "color", "edge", "extrude"]);
         assert_three_legs_agree(MESH_MSL(), &mesh_schema(), &ir_names);
     }
 

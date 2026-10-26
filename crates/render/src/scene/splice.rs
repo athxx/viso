@@ -195,12 +195,12 @@ impl Scene {
             .splice(range.clone(), std::iter::repeat_n(stamp, added_n));
         self.keys.splice(
             range,
-            std::iter::repeat_n((StoreRef::Quad(GeometryId::new(0)), 0, None), added_n),
+            std::iter::repeat_n((StoreRef::Quad(GeometryId::new(0)), 0, None, 0.0), added_n),
         );
         for i in start..start + added_n {
             let store = self.paint_order[i].store;
-            let (key, extent) = self.entry_key(store);
-            self.keys[i] = (store, key, extent);
+            let (key, extent, reach) = self.entry_key(store);
+            self.keys[i] = (store, key, extent, reach);
         }
 
         let mut delta = [0i64; LEAVES];

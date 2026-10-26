@@ -203,11 +203,7 @@ mod tests {
     const INK: Rgba = Rgba::new(0.0, 0.0, 0.0, 1.0);
 
     fn square() -> Drawing {
-        let v = |x: f32, y: f32| MeshVertex {
-            pos: [x, y],
-            color: [0.0, 0.0, 0.0, 1.0],
-            edge: 1.0,
-        };
+        let v = |x: f32, y: f32| MeshVertex::new([x, y], [0.0, 0.0, 0.0, 1.0], 1.0);
         Drawing::new(
             vec![
                 Primitive::Quad(Quad {
