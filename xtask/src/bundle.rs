@@ -198,7 +198,10 @@ fn ios(o: &Options, simulator: bool) -> Result<PathBuf, String> {
         &app.path,
         o.sign.as_deref(),
         profile,
-        &[],
+        &apple::Entitlements {
+            hosts: &[],
+            fragments: &[],
+        },
         &out.join(format!("{bin}.sign")),
     )?;
 
@@ -244,6 +247,7 @@ fn android(o: &Options) -> Result<PathBuf, String> {
             root.join("crates/media/android/java"),
         ],
         manifest: root.join("crates/platform/android/AndroidManifest.xml"),
+        fragments: Vec::new(),
     };
     let flavor = if o.release {
         android::Flavor::Release
@@ -275,7 +279,7 @@ fn web(o: &Options) -> Result<PathBuf, String> {
     let (built, target_dir) = cargo(o, &bin, web::TRIPLE, &[], &[])?;
     let out = target_dir.join("bundle/web").join(&bin);
     web::bindgen(&built, &out, &bin)?;
-    let index = web::write_index(&out, &bin)?;
+    let index = web::write_index(&out, &bin, None)?;
     if o.run {
         serve(&out)?;
     }
