@@ -103,6 +103,10 @@ pub use window::{WindowBuilder, WindowHandle, window};
 
 pub use viso_ui::context::AppCx;
 
+// Where the app stands in its OS lifecycle, as `Application::on_lifecycle`
+// is told.
+pub use viso_runtime::Lifecycle;
+
 // The introspection snapshot model, re-exported so a tool depending only on the
 // `viso` facade — Studio transport, the `viso inspect --json` CLI — names one
 // `viso::InspectSnapshot` and its `snapshot_ui` builder rather than reaching
@@ -320,6 +324,21 @@ pub trait Application: Sized + 'static {
     /// The default ignores every link.
     fn on_open_url(&mut self, cx: &mut viso_ui::EventCx<'_>, url: &str) {
         let _ = (cx, url);
+    }
+
+    /// Answer a change in where the app stands in its OS lifecycle. `cx` is
+    /// the launch window's, as [`on_open_url`](Self::on_open_url) gets.
+    ///
+    /// - [`Lifecycle::Suspended`]: called before the views' `@persist`
+    ///   states are made durable, so what it writes to one is kept.
+    /// - [`Lifecycle::Resumed`]: called once every window has asked for a
+    ///   fresh frame.
+    /// - [`Lifecycle::LowMemory`]: called once the framework has dropped
+    ///   its own rebuildable caches; drop the app's here.
+    ///
+    /// The default ignores every change.
+    fn on_lifecycle(&mut self, cx: &mut viso_ui::EventCx<'_>, event: Lifecycle) {
+        let _ = (cx, event);
     }
 
     /// Handle a click on the app's tray icon, shown through
@@ -1234,6 +1253,26 @@ impl<A: Application> Drop for AppDriver<A> {
     }
 }
 
+/// Run `f` with `ws`'s context placed at its root, as a handler there is
+/// run: what it asks of the tree is applied as a handler's requests are.
+fn at_root(ws: &mut WindowState, mut f: impl FnMut(&mut viso_ui::EventCx<'_>)) {
+    match ws.root {
+        Some(root) => {
+            KeyRouter::run_at(
+                &mut ws.store,
+                &mut ws.states,
+                &ws.bindings,
+                &mut ws.text_edits,
+                root,
+                f,
+            );
+        }
+        // A window that builds nothing has no tree to ask anything of: only
+        // its state is there.
+        None => f(&mut viso_ui::EventCx::__new(&mut ws.states, &ws.bindings)),
+    }
+}
+
 impl<A: Application> AppDriver<A> {
     /// Hand the app each link it was asked to open, in order, once it has a
     /// window: with the launch window's context placed at its root, applying
@@ -1244,24 +1283,16 @@ impl<A: Application> AppDriver<A> {
             return;
         };
         for url in std::mem::take(&mut self.pending_urls) {
-            let mut open = |ev: &mut viso_ui::EventCx<'_>| app.on_open_url(ev, &url);
-            match ws.root {
-                Some(root) => {
-                    KeyRouter::run_at(
-                        &mut ws.store,
-                        &mut ws.states,
-                        &ws.bindings,
-                        &mut ws.text_edits,
-                        root,
-                        open,
-                    );
-                }
-                // A window that builds nothing has no tree to ask anything
-                // of: only its state is there.
-                None => open(&mut viso_ui::EventCx::__new(&mut ws.states, &ws.bindings)),
-            }
+            at_root(ws, |ev| app.on_open_url(ev, &url));
         }
         cx.request_redraw(ws.window);
+    }
+
+    /// Tell the app of `event` on the launch window's context.
+    fn tell_lifecycle(&mut self, event: Lifecycle) {
+        if let (Some(app), Some(ws)) = (self.app.as_mut(), self.windows.first_mut()) {
+            at_root(ws, |ev| app.on_lifecycle(ev, event));
+        }
     }
 
     /// Do what the drawn menu bars' picks ask: a command reaches the app,
@@ -3871,27 +3902,31 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         }
     }
 
-    fn on_lifecycle(&mut self, cx: &mut RuntimeCx<'_>, event: viso_runtime::Lifecycle) {
+    fn on_lifecycle(&mut self, cx: &mut RuntimeCx<'_>, event: Lifecycle) {
         match event {
             // Frames were skipped while suspended and a surface may have been
             // recreated underneath, so every window paints once on return.
-            viso_runtime::Lifecycle::Resumed => {
+            Lifecycle::Resumed => {
                 for ws in &self.windows {
                     cx.request_redraw(ws.window);
                 }
+                self.tell_lifecycle(event);
             }
             // Give back the GPU memory the next frame can rebuild on demand,
             // and the preserved branches switched away: the next settle frees
             // them, and each mounts afresh when shown again.
-            viso_runtime::Lifecycle::LowMemory => {
+            Lifecycle::LowMemory => {
                 for ws in &mut self.windows {
                     ws.store.request_memory_trim(&mut ws.states);
                     ws.trim_memory();
                     cx.request_redraw(ws.window);
                 }
+                self.tell_lifecycle(event);
             }
-            // The app may not come back: make the persisted writes durable.
-            viso_runtime::Lifecycle::Suspended => {
+            // The app may not come back: what the app writes as it goes is
+            // made durable with the rest of the persisted writes.
+            Lifecycle::Suspended => {
+                self.tell_lifecycle(event);
                 self.places.flush();
                 for ws in &mut self.windows {
                     persist::suspend(&mut ws.store, &ws.states);

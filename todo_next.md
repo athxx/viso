@@ -117,7 +117,7 @@ Rules (as for `todo_features.md`):
     in the prelude. The counter, links and map examples use it. Architecture §18 updated.
   - Verified: typed_state unit and doc tests pass. Clippy is clean on viso-ui, viso and the
     examples. `examples/01-counter` has no `StateValue`.
-- [ ] `Application::on_lifecycle(&mut self, cx: &mut EventCx<'_>, Lifecycle)`, with `Lifecycle`
+- [x] `Application::on_lifecycle(&mut self, cx: &mut EventCx<'_>, Lifecycle)`, with `Lifecycle`
   re-exported. It is called on the launch window's context in this order:
   - on Suspended, before the persist flush;
   - on Resumed, after the redraw request;
@@ -125,6 +125,13 @@ Rules (as for `todo_features.md`):
 
   Verify with a headless test that scripts the three events, checks the order, and checks that a
   `@persist` state written in the Suspended hook is durable.
+  - Built: the hook with a default body, `viso::Lifecycle`, and `at_root`, which it shares with
+    `on_open_url` and which runs on the launch window's root context. Architecture §50 and §78
+    updated.
+  - Verified: `examples/persist/tests/lifecycle.rs` (the facade crate grants no
+    `storage.persist`) scripts Suspended/Resumed/LowMemory. It checks the order, that the store
+    already held the hook's write when the app resumed, and that a later launch loads it.
+    Moving the hook after the flush makes the test fail.
 - [ ] On Suspended, pause the playing videos and the game's audio output; on Resumed, resume only
   those the framework paused. Verify with the scripted player and a fake audio output.
 - [ ] Make game sessions' `@persist` states durable on Suspended, through a store suspend hook.

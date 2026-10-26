@@ -496,7 +496,7 @@ impl Application for App {
 - `new(&mut AppCx)` 构造应用；`AppCx` 在第一个窗口打开前登记字体（`load_font`、`use_packaged_fonts`）与 warm restart 要保留的状态（`dev_state`）；
 - `window_config()` 给出启动窗口的标题、逻辑尺寸与 chrome（默认自绘 caption）；
 - `build(&mut self, &mut BuildCx)` 在启动时构建一次启动窗口的 retained 场景：声明节点、分配 state、注册 handler、连接 binding；
-- 其余 hook 都有默认实现：`menu` / `on_menu_command`、`on_open_url`（`[package.links]` 深链接）、`on_tray`、`memory_budget`、`image_loader`。
+- 其余 hook 都有默认实现：`menu` / `on_menu_command`、`on_open_url`（`[package.links]` 深链接）、`on_lifecycle`（§50 的顺序）、`on_tray`、`memory_budget`、`image_loader`。
 
 窗口不是节点控件：更多窗口在 handler 中以 `window(config).content(|cx| ..).open(ev)` 打开，返回 `WindowHandle`。`run` 拥有 platform event pump 与 frame scheduler，无原生 backend 时回退 headless，直到最后一个窗口关闭（§77）。
 
@@ -3977,7 +3977,7 @@ handler 通过 `cx.services()`（`viso::services::ServicesExt`）取得会话注
 - Active/Inactive 是按窗口的输入焦点，不是应用级状态。
 - 移动 OS 结束挂起中的进程不发通知，iOS `applicationWillTerminate` 与 Android 的进程结束都不可靠，因此 **Suspended 是最后一个保证送达的保存点**。facade 在 Suspended、窗口关闭与 loop 结束三处同样把持久化写入做成 durable；app 要保存的数据在 Suspended 时写出。
 
-**Application 合同**（目标（尚未实现））：今天 `Application` 没有生命周期 hook，Rust app 无法在进入后台时保存自己的数据，也无法在恢复时刷新或在内存紧张时释放自己的缓存。增加一个 hook：
+**Application 合同**：Rust app 经一个 hook 在进入后台时保存自己的数据、恢复时刷新、内存紧张时释放自己的缓存：
 
 ```rust
 fn on_lifecycle(&mut self, cx: &mut EventCx<'_>, event: Lifecycle) {}
@@ -5332,6 +5332,7 @@ pub trait Application: Sized + 'static {
     fn menu(&self) -> Option<viso_platform::Menu> { None }
     fn on_menu_command(&mut self, command: viso_platform::MenuCommandId) {}
     fn on_open_url(&mut self, cx: &mut viso_ui::EventCx<'_>, url: &str) {}
+    fn on_lifecycle(&mut self, cx: &mut viso_ui::EventCx<'_>, event: Lifecycle) {}
     fn on_tray(&mut self, event: viso::shell::TrayEvent) {}
     fn memory_budget() -> MemoryBudget { MemoryBudget::of_build() }
     fn image_loader() -> Option<ImageLoader> { None }
@@ -5340,7 +5341,7 @@ pub trait Application: Sized + 'static {
 
 `run` 拥有 platform event pump 与 frame scheduler，无原生 backend 时回退 headless（`headless` feature 下直接走 headless），直到最后一个窗口关闭才返回（ADR 0006/0020）；web 上 scheduler 在 `run` 返回后继续运行。`memory_budget` 与 `image_loader` 在第一个窗口打开前读一次。
 
-Lifecycle 由框架处理，不经 `Application`：`Suspended` 时 scheduler 停止出帧，facade 刷写持久化 state；`Resumed` 时每个窗口重画一次；`LowMemory` 时释放可重建的 GPU 内存与被切走的保留分支。目标（尚未实现）：`Application` 级 `resumed` / `suspended` / `low_memory` hook（§50），供 app 暂停游戏、关闭连接。
+Lifecycle 由框架处理，再告诉 `Application::on_lifecycle`：`Suspended` 时 scheduler 停止出帧，facade 先调 hook，再刷写持久化 state；`Resumed` 时每个窗口重画一次，再调 hook；`LowMemory` 时释放可重建的 GPU 内存与被切走的保留分支，再调 hook（§50）。
 
 事件不由 `Application` 手工接收；UI runtime 自己 route。例外是打开应用的链接（`[package.links]`）：platform 以 `RawEvent::OpenUrl { url }` 交出（在 `AppLaunched` 之后，冷启动与运行中一致；macOS `application:openURLs:`，iOS scene `URLContexts`/`userActivities` 与 `openURLContexts`/`continueUserActivity`，Android 启动 intent 与 `onNewIntent`，Windows/Linux 参数加单实例转交，web 的 fragment 与 `hashchange`），runtime 经 `FrameDriver::on_open_url` 交给门面，门面排队到启动窗口建好，再以该窗口根上的 `EventCx`（`KeyRouter::run_at`，请求按处理器的方式生效）调用 `Application::on_open_url`。
 
