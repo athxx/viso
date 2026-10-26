@@ -817,6 +817,23 @@ fn report_fullscreen() {
 }
 
 /// The platform string that decides the primary modifier:
+/// `navigator.setAppBadge` and `navigator.clearAppBadge`, where the browser
+/// badges an app's icon.
+fn app_badging(navigator: &web_sys::Navigator) -> Option<(js_sys::Function, js_sys::Function)> {
+    let method = |name: &str| {
+        Reflect::get(navigator, &name.into())
+            .ok()?
+            .dyn_into::<js_sys::Function>()
+            .ok()
+    };
+    Some((method("setAppBadge")?, method("clearAppBadge")?))
+}
+
+thread_local! {
+    /// Swallows a promise's rejection.
+    static IGNORE_REJECTION: Closure<dyn FnMut(JsValue)> = Closure::new(|_: JsValue| {});
+}
+
 /// `navigator.userAgentData.platform` where the browser has it, else
 /// `navigator.platform`.
 fn platform_name() -> String {
@@ -1045,6 +1062,28 @@ impl PlatformApp for WebApp {
 
     fn set_menu(&mut self, _menu: &Menu) {}
 
+    fn set_badge(&mut self, badge: Option<&crate::AppBadge>) {
+        let navigator = dom_window().navigator();
+        let Some((set, clear)) = app_badging(&navigator) else {
+            return;
+        };
+        let asked = match badge.filter(|b| b.text(false).is_some()) {
+            Some(badge) => match badge.count() {
+                Some(count) => set.call1(&navigator, &f64::from(count).into()),
+                // A label that is no count shows as the plain mark.
+                None => set.call0(&navigator),
+            },
+            None => clear.call0(&navigator),
+        };
+        // A page the browser does not badge (not installed, say) rejects;
+        // there is nothing to report.
+        if let Ok(promise) = asked.and_then(|p| p.dyn_into::<js_sys::Promise>()) {
+            IGNORE_REJECTION.with(|ignore| {
+                let _ = promise.catch(ignore);
+            });
+        }
+    }
+
     fn update_accessibility(&mut self, window: WindowId, delta: SemanticsDelta) {
         let Some(w) = self.window.as_ref().filter(|_| window == WINDOW) else {
             return;
@@ -1210,6 +1249,7 @@ impl PlatformApp for WebApp {
             custom_cursors: true,
             pointer_lock: true,
             tray: false,
+            badge: app_badging(&dom_window().navigator()).is_some(),
         }
     }
 

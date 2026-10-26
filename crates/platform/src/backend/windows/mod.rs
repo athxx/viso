@@ -12,6 +12,7 @@
 //! Windows machine.
 
 mod access;
+mod badge;
 mod clipboard;
 mod drop;
 mod links;
@@ -103,6 +104,8 @@ struct PumpQueue {
     /// A drag the app carries out of a window, run by OLE once the handler
     /// that started it returns.
     drag_out: Option<(WindowId, crate::DragOut)>,
+    /// The badge on the windows' taskbar buttons.
+    badge: Rc<badge::Badge>,
 }
 
 type Shared = Rc<RefCell<PumpQueue>>;
@@ -629,6 +632,7 @@ impl PlatformApp for WinApp {
         state.size.set(state.client_size());
         let access = access::attach(hwnd);
         drop::register(&state);
+        badge::allow(hwnd);
         // No text field has focus yet: keys reach the window unconverted
         // until one asks for the IME.
         proc::set_text_entry(&state, None);
@@ -771,6 +775,15 @@ impl PlatformApp for WinApp {
                 self.tray = tray::TrayIcon::new(self.hinstance, &self.shared, tray);
             }
         }
+    }
+
+    fn set_badge(&mut self, badge: Option<&crate::AppBadge>) {
+        let (shown, windows) = {
+            let q = self.shared.borrow();
+            let windows: Vec<HWND> = q.windows.iter().map(|w| w.hwnd.get()).collect();
+            (q.badge.clone(), windows)
+        };
+        shown.set(badge.and_then(|b| b.text(true)).as_deref(), &windows);
     }
 
     fn update_accessibility(&mut self, window: WindowId, delta: crate::SemanticsDelta) {

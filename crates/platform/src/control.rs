@@ -400,6 +400,9 @@ pub struct PlatformCaps {
     /// An icon in the system tray or menu bar
     /// ([`PlatformApp::set_tray`](crate::PlatformApp::set_tray)).
     pub tray: bool,
+    /// A badge on the app's icon
+    /// ([`PlatformApp::set_badge`](crate::PlatformApp::set_badge)).
+    pub badge: bool,
 }
 
 impl PlatformCaps {
@@ -417,6 +420,7 @@ impl PlatformCaps {
         custom_cursors: true,
         pointer_lock: true,
         tray: true,
+        badge: true,
     };
     /// A phone or tablet backend: one window, the system's clipboard and IME.
     pub const MOBILE: PlatformCaps = PlatformCaps {
@@ -432,6 +436,7 @@ impl PlatformCaps {
         custom_cursors: false,
         pointer_lock: false,
         tray: false,
+        badge: false,
     };
     /// A display driven with no display server (KMS): one window, nothing
     /// from a desktop and no accessibility bridge.
@@ -448,5 +453,6 @@ impl PlatformCaps {
         custom_cursors: true,
         pointer_lock: true,
         tray: false,
+        badge: false,
     };
 }

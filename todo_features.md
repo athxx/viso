@@ -621,7 +621,18 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
 - [x] Fullscreen change events on every OS (Android hides the system bars, iOS the status
   bar and home indicator).
 - [ ] Window state persistence.
-- [ ] Dock/taskbar badge.
+- [x] Dock/taskbar badge.
+  - `viso::shell::set_badge(Option<AppBadge>)` (`Count` or `Label`), `badge_supported`;
+    `PlatformCaps::badge`; headless records it (facade tests).
+  - macOS (`NSDockTile` badge label): verified with the `shell` example through the Dock's
+    Accessibility tree: picks from the tray menu showed 1, then 2, and clearing removed it.
+  - Web (`navigator.setAppBadge` / `clearAppBadge`): verified in headless Chrome over CDP; the
+    example's buttons made the calls set(1), set(2), set() for a label, clear().
+  - Linux (Unity LauncherEntry `Update` signal and `Query`): verified over a real session bus
+    in a container; no real dock tried.
+  - Windows (overlay icon drawn with GDI, re-set on `TaskbarButtonCreated`) and iOS
+    (`setBadgeCount`, falling back to `applicationIconBadgeNumber`; needs notification
+    authorization with badges): compile-checked only. Android: unsupported.
 
 ## W13 — Effects widgets
 

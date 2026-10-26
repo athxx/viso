@@ -285,7 +285,7 @@ fn register_class(hinstance: HINSTANCE) -> Option<()> {
 }
 
 /// The tray icon's side in pixels at the system's scale.
-fn tray_icon_size() -> u32 {
+pub(super) fn tray_icon_size() -> u32 {
     // SAFETY: plain metric queries.
     let size = unsafe { GetSystemMetricsForDpi(SM_CXSMICON, GetDpiForSystem()) };
     u32::try_from(size).ok().filter(|&s| s > 0).unwrap_or(16)

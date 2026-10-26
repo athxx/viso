@@ -1,12 +1,15 @@
-//! The tray icon on the Linux desktop: an `org.kde.StatusNotifierItem` with
-//! its menu served as `com.canonical.dbusmenu`, both on the session bus.
+//! The app in the Linux desktop shell, over the session bus: the tray icon,
+//! an `org.kde.StatusNotifierItem` with its menu served as
+//! `com.canonical.dbusmenu`; and the badge on its launcher, the count a
+//! `com.canonical.Unity.LauncherEntry` reports to docks.
 //!
 //! A background thread owns the bus connection, started by the first tray
-//! the app shows, so the UI thread never waits on the bus: each change is a
-//! message to that thread, and each click or pick comes back as a wake of
-//! the event loop. The item registers with the `StatusNotifierWatcher`, and
-//! again whenever a watcher appears (the panel restarted, or started after
-//! the app). Where no desktop component hosts items, nothing shows.
+//! or badge the app shows, so the UI thread never waits on the bus: each
+//! change is a message to that thread, and each click or pick comes back as
+//! a wake of the event loop. The item registers with the
+//! `StatusNotifierWatcher`, and again whenever a watcher appears (the panel
+//! restarted, or started after the app). Where no desktop component hosts
+//! items or reads launcher counts, nothing shows.
 
 use std::collections::HashMap;
 use std::sync::mpsc;
@@ -15,9 +18,9 @@ use zbus::blocking::{Connection, Proxy};
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Str, Structure};
 
-use super::translate::{TrayMenu, TrayNode, TrayNodeKind, tray_pixmaps};
+use super::translate::{TrayMenu, TrayNode, TrayNodeKind, launcher_uri, tray_pixmaps};
 use super::{Wake, Waker};
-use crate::shell::{Tray, TrayEvent};
+use crate::shell::{AppBadge, Tray, TrayEvent};
 
 const ITEM_PATH: &str = "/StatusNotifierItem";
 const ITEM_INTERFACE: &str = "org.kde.StatusNotifierItem";
@@ -25,20 +28,26 @@ const MENU_PATH: &str = "/MenuBar";
 const MENU_INTERFACE: &str = "com.canonical.dbusmenu";
 const WATCHER: &str = "org.kde.StatusNotifierWatcher";
 const WATCHER_PATH: &str = "/StatusNotifierWatcher";
+const LAUNCHER_PATH: &str = "/com/canonical/unity/launcherentry/viso";
+const LAUNCHER_INTERFACE: &str = "com.canonical.Unity.LauncherEntry";
 
 /// The app's side of the bus thread.
 pub(crate) struct Shell {
     waker: Waker,
-    /// The bus thread's inbox, once a tray started it.
+    /// The bus thread's inbox, once a tray or badge started it.
     tx: Option<mpsc::Sender<Ask>>,
     /// Whether a tray is shown, so removing none sends nothing.
     shown: bool,
+    /// The launcher count shown.
+    count: Option<u32>,
 }
 
 /// Work for the bus thread.
 enum Ask {
     /// Show this tray, or remove the one shown.
     Tray(Option<Tray>),
+    /// Show this count on the launcher, or none.
+    Count(Option<u32>),
     /// A watcher appeared: register the item with it.
     Register,
 }
@@ -49,6 +58,7 @@ impl Shell {
             waker,
             tx: None,
             shown: false,
+            count: None,
         }
     }
 
@@ -57,16 +67,30 @@ impl Shell {
             return;
         }
         self.shown = tray.is_some();
+        self.send(Ask::Tray(tray.cloned()));
+    }
+
+    /// Docks show counts alone: a label that holds no number shows none.
+    pub(crate) fn set_badge(&mut self, badge: Option<&AppBadge>) {
+        let count = badge.and_then(AppBadge::count);
+        if count == self.count {
+            return;
+        }
+        self.count = count;
+        self.send(Ask::Count(count));
+    }
+
+    fn send(&mut self, ask: Ask) {
         let tx = self.tx.get_or_insert_with(|| {
             let (tx, rx) = mpsc::channel();
             let waker = self.waker.clone();
             let again = tx.clone();
             let _ = std::thread::Builder::new()
-                .name("viso-tray".into())
+                .name("viso-shell".into())
                 .spawn(move || serve(&rx, &again, &waker));
             tx
         });
-        let _ = tx.send(Ask::Tray(tray.cloned()));
+        let _ = tx.send(ask);
     }
 }
 
@@ -76,8 +100,9 @@ fn serve(rx: &mpsc::Receiver<Ask>, again: &mpsc::Sender<Ask>, waker: &Waker) {
         return;
     };
     let name = format!("{ITEM_INTERFACE}-{}-1", std::process::id());
-    follow_watcher(&conn, again.clone());
     let mut shown = false;
+    let mut watching = false;
+    let mut launcher = false;
     while let Ok(ask) = rx.recv() {
         match ask {
             Ask::Tray(Some(tray)) => {
@@ -85,6 +110,10 @@ fn serve(rx: &mpsc::Receiver<Ask>, again: &mpsc::Sender<Ask>, waker: &Waker) {
                     update(&conn, &tray);
                 } else if show(&conn, &name, &tray, waker) {
                     shown = true;
+                    if !watching {
+                        follow_watcher(&conn, again.clone());
+                        watching = true;
+                    }
                     register(&conn, &name);
                 }
             }
@@ -95,6 +124,23 @@ fn serve(rx: &mpsc::Receiver<Ask>, again: &mpsc::Sender<Ask>, waker: &Waker) {
                     let _ = server.remove::<Item, _>(ITEM_PATH);
                     let _ = server.remove::<DbusMenu, _>(MENU_PATH);
                     shown = false;
+                }
+            }
+            Ask::Count(count) => {
+                let server = conn.object_server();
+                if !launcher {
+                    let entry = LauncherEntry {
+                        uri: app_uri(),
+                        count,
+                    };
+                    launcher = server.at(LAUNCHER_PATH, entry).is_ok();
+                }
+                if let Ok(entry) = server.interface::<_, LauncherEntry>(LAUNCHER_PATH) {
+                    let mut entry = entry.get_mut();
+                    entry.count = count;
+                    let body = (entry.uri.clone(), launcher_props(count));
+                    drop(entry);
+                    emit(&conn, LAUNCHER_PATH, LAUNCHER_INTERFACE, "Update", &body);
                 }
             }
             Ask::Register => {
@@ -541,6 +587,48 @@ impl DbusMenu {
     ) -> zbus::Result<()>;
 }
 
+/// The `com.canonical.Unity.LauncherEntry` object: the count docks show
+/// on the app's launcher.
+struct LauncherEntry {
+    uri: String,
+    count: Option<u32>,
+}
+
+/// The launcher's properties for `count`: `a{sv}`.
+fn launcher_props(count: Option<u32>) -> Props {
+    let mut props = Props::new();
+    props.insert(
+        "count".into(),
+        OwnedValue::from(i64::from(count.unwrap_or(0))),
+    );
+    props.insert("count-visible".into(), OwnedValue::from(count.is_some()));
+    props
+}
+
+fn app_uri() -> String {
+    let launched = std::env::var("GIO_LAUNCHED_DESKTOP_FILE").ok();
+    let flatpak = std::env::var("FLATPAK_ID").ok();
+    let exe = std::env::current_exe().ok();
+    let stem = exe.as_ref().and_then(|e| e.file_stem()?.to_str());
+    launcher_uri(launched.as_deref(), flatpak.as_deref(), stem)
+}
+
+#[zbus::interface(name = "com.canonical.Unity.LauncherEntry")]
+impl LauncherEntry {
+    /// What a dock that starts after the app asks for.
+    #[zbus(out_args("app_uri", "properties"))]
+    fn query(&self) -> (String, Props) {
+        (self.uri.clone(), launcher_props(self.count))
+    }
+
+    #[zbus(signal)]
+    async fn update(
+        emitter: &SignalEmitter<'_>,
+        app_uri: &str,
+        properties: Props,
+    ) -> zbus::Result<()>;
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
@@ -550,9 +638,12 @@ mod tests {
     use zbus::zvariant::{OwnedValue, Structure};
 
     use super::super::{Wake, wake_channel};
-    use super::{ITEM_INTERFACE, ITEM_PATH, MENU_INTERFACE, MENU_PATH, Shell, WATCHER};
+    use super::{
+        ITEM_INTERFACE, ITEM_PATH, LAUNCHER_INTERFACE, LAUNCHER_PATH, MENU_INTERFACE, MENU_PATH,
+        Shell, WATCHER,
+    };
     use crate::menu::{Menu, MenuCommandId, SystemAction};
-    use crate::shell::{IconImage, Tray, TrayEvent};
+    use crate::shell::{AppBadge, IconImage, Tray, TrayEvent};
 
     /// A stand-in panel: records each item that registers.
     struct Watcher(Arc<Mutex<Vec<String>>>);
@@ -703,5 +794,66 @@ mod tests {
             !bus.name_has_owner(name.as_str().try_into().unwrap())
                 .unwrap()
         });
+    }
+
+    #[test]
+    #[ignore = "needs a D-Bus session bus (run under dbus-run-session)"]
+    fn the_badge_count_reaches_docks_on_the_session_bus() {
+        let dock = Connection::session().unwrap();
+        let rule = format!("type='signal',interface='{LAUNCHER_INTERFACE}',member='Update'");
+        let mut messages =
+            zbus::blocking::MessageIterator::for_match_rule(rule.as_str(), &dock, None).unwrap();
+
+        let (waker, _wakes) = wake_channel().unwrap();
+        let mut shell = Shell::new(waker);
+        shell.set_badge(Some(&AppBadge::Count(5)));
+        let mut next_update = || loop {
+            let message = messages.next().unwrap().unwrap();
+            let header = message.header();
+            if header.member().is_some_and(|m| m.as_str() == "Update") {
+                let (uri, props): (String, super::Props) = message.body().deserialize().unwrap();
+                let count: i64 = props["count"].try_clone().unwrap().try_into().unwrap();
+                let visible: bool = props["count-visible"]
+                    .try_clone()
+                    .unwrap()
+                    .try_into()
+                    .unwrap();
+                return (uri, count, visible);
+            }
+        };
+        let (uri, count, visible) = next_update();
+        assert!(
+            uri.starts_with("application://") && uri.ends_with(".desktop"),
+            "{uri}"
+        );
+        assert_eq!((count, visible), (5, true));
+        shell.set_badge(Some(&AppBadge::Label("new".into())));
+        assert!(!next_update().2, "a label that is no count shows none");
+
+        let owner = zbus::blocking::fdo::DBusProxy::new(&dock)
+            .unwrap()
+            .list_names()
+            .unwrap()
+            .into_iter()
+            .filter(|n| n.starts_with(':'))
+            .find_map(|n| {
+                let reply = dock
+                    .call_method(
+                        Some(n.as_str()),
+                        LAUNCHER_PATH,
+                        Some(LAUNCHER_INTERFACE),
+                        "Query",
+                        &(),
+                    )
+                    .ok()?;
+                Some(
+                    reply
+                        .body()
+                        .deserialize::<(String, super::Props)>()
+                        .unwrap(),
+                )
+            })
+            .expect("the launcher entry answers a query");
+        assert_eq!(owner.0, uri);
     }
 }

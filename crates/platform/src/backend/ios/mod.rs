@@ -23,6 +23,11 @@ mod clipboard;
 mod lock;
 mod view;
 
+// `UNUserNotificationCenter`, whose badge setter replaces the application's
+// from iOS 16.
+#[link(name = "UserNotifications", kind = "framework")]
+unsafe extern "C" {}
+
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::ffi::c_void;
@@ -646,8 +651,43 @@ impl PlatformApp for IosApp {
         });
         crate::PlatformCaps {
             pointer_lock: pad,
+            badge: true,
             ..crate::PlatformCaps::MOBILE
         }
+    }
+
+    /// The home-screen icon shows counts alone, and only once the user let
+    /// the app badge it: the app asks for notification authorization with
+    /// the badge option first (a notifications extension does). Without it
+    /// the system ignores the count.
+    fn set_badge(&mut self, badge: Option<&crate::AppBadge>) {
+        let count = badge.and_then(crate::AppBadge::count).unwrap_or(0);
+        let count = isize::try_from(count).unwrap_or(isize::MAX);
+        if let Some(class) = objc2::runtime::AnyClass::get(c"UNUserNotificationCenter") {
+            // SAFETY: `currentNotificationCenter` is a class method returning
+            // the shared center (or nil), retained by the caller here.
+            let center: Option<Retained<AnyObject>> =
+                unsafe { msg_send![class, currentNotificationCenter] };
+            if let Some(center) = center {
+                // SAFETY: `respondsToSelector:` on a live object.
+                let has: bool = unsafe {
+                    msg_send![&center, respondsToSelector: sel!(setBadgeCount:withCompletionHandler:)]
+                };
+                if has {
+                    let done: Option<&block2::DynBlock<dyn Fn(*mut objc2_foundation::NSError)>> =
+                        None;
+                    // SAFETY: the center answers the selector (iOS 16 and
+                    // later); the count is an `NSInteger` and the completion
+                    // handler may be nil.
+                    let () = unsafe {
+                        msg_send![&center, setBadgeCount: count, withCompletionHandler: done]
+                    };
+                    return;
+                }
+            }
+        }
+        #[allow(deprecated)]
+        UIApplication::sharedApplication(self.mtm).setApplicationIconBadgeNumber(count);
     }
 
     fn loop_waker(&self) -> crate::LoopWaker {

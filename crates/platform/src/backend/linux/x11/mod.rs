@@ -139,6 +139,10 @@ impl PlatformApp for X11App {
         self.shell.set_tray(tray);
     }
 
+    fn set_badge(&mut self, badge: Option<&crate::AppBadge>) {
+        self.shell.set_badge(badge);
+    }
+
     fn set_draggable_regions(&mut self, window: WindowId, regions: &[LogicalRect]) {
         self.with_window(window, |x11, i| {
             x11.windows[i].drag = regions.to_vec();

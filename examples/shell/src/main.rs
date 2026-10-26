@@ -1,23 +1,42 @@
 //! The app in the desktop shell beyond its window: an icon in the system tray
-//! (the menu bar on macOS) with a tooltip and a menu. Picks of the tray menu
-//! reach `on_menu_command`, as the application menu's do; clicks on the icon
-//! reach `on_tray`. The buttons show, change and remove the icon.
+//! (the menu bar on macOS) with a tooltip and a menu, and a badge on its icon
+//! in the dock or taskbar. Picks of the tray menu reach `on_menu_command`, as
+//! the application menu's do; clicks on the icon reach `on_tray`. The
+//! buttons and the tray menu change the icon and the badge.
 
 use std::cell::Cell;
 use std::rc::Rc;
 
 use viso::prelude::*;
-use viso::shell::{self, IconImage, Tray, TrayEvent};
+use viso::shell::{self, AppBadge, IconImage, Tray, TrayEvent};
 use viso::ui::{Axis, Component, Inset, Size};
 
 const HELLO: MenuCommandId = MenuCommandId(1);
 const HIDE: MenuCommandId = MenuCommandId(2);
+const BADGE_UP: MenuCommandId = MenuCommandId(3);
+const BADGE_CLEAR: MenuCommandId = MenuCommandId(4);
+
+/// Whether a primary click opens the tray menu at first: the macOS
+/// convention for menu-bar items, not the tray's elsewhere.
+const MENU_ON_CLICK: bool = cfg!(target_os = "macos");
+
+thread_local! {
+    /// The count the badge shows.
+    static COUNT: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Shows `count` on the app's icon; zero clears it.
+fn show_count(count: u32) {
+    COUNT.with(|c| c.set(count));
+    viso::println!("[shell] badge {count}");
+    shell::set_badge(Some(AppBadge::Count(count)));
+}
 
 struct ShellDemo;
 
 impl Application for ShellDemo {
     fn new(_cx: &mut AppCx) -> Self {
-        shell::set_tray(Some(tray(0, false)));
+        shell::set_tray(Some(tray(0, MENU_ON_CLICK)));
         ShellDemo
     }
 
@@ -45,7 +64,7 @@ impl Application for ShellDemo {
                     "This platform shows no tray icon."
                 })
                 .build(cx);
-                let look = Rc::new(Cell::new((0, false)));
+                let look = Rc::new(Cell::new((0, MENU_ON_CLICK)));
                 let shown = look.clone();
                 button("Change the icon")
                     .on_click(move |_| {
@@ -54,7 +73,7 @@ impl Application for ShellDemo {
                         shell::set_tray(Some(tray(hue + 1, on_click)));
                     })
                     .build(cx);
-                button("Open the menu on a click")
+                button("Toggle opening the menu on a click")
                     .on_click(move |_| {
                         let (hue, on_click) = look.get();
                         look.set((hue, !on_click));
@@ -64,14 +83,28 @@ impl Application for ShellDemo {
                 button("Remove the icon")
                     .on_click(|_| shell::set_tray(None))
                     .build(cx);
+                if shell::badge_supported() {
+                    button("Add one to the badge")
+                        .on_click(|_| show_count(COUNT.with(Cell::get) + 1))
+                        .build(cx);
+                    button("Badge “new”")
+                        .on_click(|_| shell::set_badge(Some(AppBadge::Label("new".into()))))
+                        .build(cx);
+                    button("Clear the badge")
+                        .on_click(|_| show_count(0))
+                        .build(cx);
+                }
             },
         );
     }
 
     fn on_menu_command(&mut self, command: MenuCommandId) {
         viso::println!("[shell] menu command {}", command.0);
-        if command == HIDE {
-            shell::set_tray(None);
+        match command {
+            HIDE => shell::set_tray(None),
+            BADGE_UP => show_count(COUNT.with(Cell::get) + 1),
+            BADGE_CLEAR => show_count(0),
+            _ => {}
         }
     }
 
@@ -91,7 +124,15 @@ fn tray(hue: u32, on_click: bool) -> Tray {
         tooltip: format!("Viso shell demo ({})", hue + 1),
         menu: vec![
             Menu::item_plain("Say hello", HELLO),
-            Menu::sub("More", [Menu::item_plain("Hide the icon", HIDE)]),
+            Menu::sub(
+                "More",
+                [
+                    Menu::item_plain("Add one to the badge", BADGE_UP),
+                    Menu::item_plain("Clear the badge", BADGE_CLEAR),
+                    Menu::Line,
+                    Menu::item_plain("Hide the icon", HIDE),
+                ],
+            ),
             Menu::Line,
             Menu::system(SystemAction::Quit),
         ],

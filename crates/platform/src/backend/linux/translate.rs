@@ -757,6 +757,30 @@ fn system_label(action: SystemAction) -> &'static str {
     }
 }
 
+/// The `application://` URI docks know the app's launcher by: its desktop
+/// entry's id — the entry it was launched from (`GIO_LAUNCHED_DESKTOP_FILE`),
+/// else its Flatpak id, else the executable's name — plus `.desktop`.
+pub(crate) fn launcher_uri(
+    launched_from: Option<&str>,
+    flatpak_id: Option<&str>,
+    exe_stem: Option<&str>,
+) -> String {
+    let non_empty = |s: &&str| !s.is_empty();
+    let id = launched_from
+        .filter(non_empty)
+        .and_then(|path| path.rsplit('/').next())
+        .filter(non_empty)
+        .map(str::to_owned)
+        .or_else(|| {
+            flatpak_id
+                .or(exe_stem)
+                .filter(non_empty)
+                .map(|id| format!("{id}.desktop"))
+        })
+        .unwrap_or_else(|| "viso.desktop".to_owned());
+    format!("application://{id}")
+}
+
 /// The heights the tray icon is offered at besides its own, for the host to
 /// pick the one nearest the panel's.
 const TRAY_PIXMAP_HEIGHTS: [u32; 3] = [22, 32, 48];
@@ -1098,5 +1122,26 @@ mod tests {
         let huge = IconImage::from_rgba(512, 512, vec![0; 512 * 512 * 4]).unwrap();
         let sizes: Vec<_> = tray_pixmaps(&huge).iter().map(|p| (p.0, p.1)).collect();
         assert_eq!(sizes, [(22, 22), (32, 32), (48, 48), (256, 256)]);
+    }
+
+    #[test]
+    fn the_launcher_is_named_by_its_desktop_entry() {
+        assert_eq!(
+            launcher_uri(
+                Some("/usr/share/applications/org.ex.App.desktop"),
+                None,
+                Some("app")
+            ),
+            "application://org.ex.App.desktop"
+        );
+        assert_eq!(
+            launcher_uri(None, Some("org.ex.App"), Some("app")),
+            "application://org.ex.App.desktop"
+        );
+        assert_eq!(
+            launcher_uri(Some(""), None, Some("app")),
+            "application://app.desktop"
+        );
+        assert_eq!(launcher_uri(None, None, None), "application://viso.desktop");
     }
 }

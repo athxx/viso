@@ -130,6 +130,11 @@ fn handle(
     lparam: LPARAM,
 ) -> Option<LRESULT> {
     let id = state.id;
+    if msg == super::badge::button_created() {
+        let badge = state.shared.borrow().badge.clone();
+        badge.button_made(hwnd);
+        return Some(LRESULT(0));
+    }
     match msg {
         WM_ERASEBKGND => Some(LRESULT(1)),
         WM_PAINT => {

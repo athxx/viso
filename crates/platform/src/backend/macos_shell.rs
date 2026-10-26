@@ -1,6 +1,6 @@
 //! The app's item in the macOS menu bar: an `NSStatusItem` whose button
 //! shows the tray icon and tooltip, delivers clicks, and pops up the tray
-//! menu.
+//! menu; and the badge on its icon in the Dock.
 
 use std::cell::RefCell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -17,7 +17,7 @@ use objc2_foundation::{MainThreadMarker, NSObject, NSObjectProtocol, NSSize, NSS
 
 use super::{AppDelegate, MenuTarget, Shared, build_menu_node};
 use crate::event::RawEvent;
-use crate::shell::{IconImage, Tray, TrayEvent};
+use crate::shell::{AppBadge, IconImage, Tray, TrayEvent};
 
 /// The height a menu-bar icon draws at, in points.
 const ICON_POINTS: f64 = 18.0;
@@ -144,6 +144,16 @@ impl Drop for StatusItem {
         self.target.ivars().item.replace(None);
         NSStatusBar::systemStatusBar().removeStatusItem(&self.item);
     }
+}
+
+/// Shows `badge` on the app's Dock icon, or clears it.
+pub(super) fn set_badge(mtm: MainThreadMarker, badge: Option<&AppBadge>) {
+    let label = badge
+        .and_then(|b| b.text(false))
+        .map(|text| NSString::from_str(&text));
+    NSApplication::sharedApplication(mtm)
+        .dockTile()
+        .setBadgeLabel(label.as_deref());
 }
 
 /// `icon` as an image `points` tall, keeping its aspect.

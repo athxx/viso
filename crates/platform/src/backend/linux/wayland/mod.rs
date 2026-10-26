@@ -158,6 +158,10 @@ impl PlatformApp for WaylandApp {
         self.shell.set_tray(tray);
     }
 
+    fn set_badge(&mut self, badge: Option<&crate::AppBadge>) {
+        self.shell.set_badge(badge);
+    }
+
     fn set_draggable_regions(&mut self, window: WindowId, regions: &[LogicalRect]) {
         self.with_state(|state| {
             if let Some(i) = state.index(window) {

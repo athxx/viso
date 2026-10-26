@@ -529,6 +529,11 @@ pub mod __test_support {
             self.driver.shell.tray.as_ref()
         }
 
+        /// The badge the session last handed to the platform.
+        pub fn badge(&self) -> Option<&crate::shell::AppBadge> {
+            self.driver.shell.badge.as_ref()
+        }
+
         /// The pointer cursor last pushed to the platform for the launch
         /// window.
         pub fn cursor(&self) -> viso_platform::CursorIcon {

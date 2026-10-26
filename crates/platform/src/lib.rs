@@ -81,7 +81,7 @@ pub use gamepad::{GamepadButton, GamepadEvent, GamepadId, GamepadInfo, GamepadSt
 pub use handler::AppHandler;
 pub use launch::launch_var;
 pub use menu::{Accel, Menu, MenuCommandId, SystemAction};
-pub use shell::{IconImage, Tray, TrayEvent};
+pub use shell::{AppBadge, IconImage, Tray, TrayEvent};
 pub use time::Instant;
 pub use wake::LoopWaker;
 // The native window handle lives in the `viso-handle` leaf crate so `viso-gpu`
@@ -138,6 +138,14 @@ pub trait PlatformApp {
     /// where [`PlatformCaps::tray`] is false.
     fn set_tray(&mut self, tray: Option<&Tray>) {
         let _ = tray;
+    }
+
+    /// Show `badge` over the app's icon in the dock or taskbar (on iOS, its
+    /// home-screen icon; on the web, an installed app's icon), or clear it
+    /// with `None`. Cold path: called when the app changes its badge. A
+    /// no-op where [`PlatformCaps::badge`] is false.
+    fn set_badge(&mut self, badge: Option<&AppBadge>) {
+        let _ = badge;
     }
 
     /// Declare which regions of `window`'s self-drawn caption are draggable, in

@@ -122,6 +122,7 @@ objc2-app-kit = { version = "0.3", features = [
     "NSBitmapImageRep",
     "NSImageRep",
     "NSGraphics",
+    "NSDockTile",
 ] }
 
 # iOS / iPadOS: UIKit via objc2 (default features: every class the backend

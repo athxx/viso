@@ -1,7 +1,7 @@
 //! The Win32 backend's pure translation tables: scancodes to [`KeyCode`],
 //! UTF-16 `WM_CHAR` units to text, cursor icons to system cursor ids, wheel
-//! notches to logical points, clipboard line endings, and the menu tree to a
-//! flat command/accelerator plan. Nothing here calls the OS, so it is compiled
+//! notches to logical points, clipboard line endings, the menu tree to a
+//! flat command/accelerator plan, and a taskbar badge's pixels. Nothing here calls the OS, so it is compiled
 //! and tested on every host.
 
 #![cfg_attr(not(target_os = "windows"), allow(dead_code))]
@@ -697,6 +697,34 @@ pub(crate) fn scale_of(dpi: u32) -> f64 {
     f64::from(dpi.max(1)) / 96.0
 }
 
+/// The taskbar badge's disc color, straight sRGB.
+const BADGE_RED: [u8; 3] = [214, 40, 40];
+
+/// A `size × size` badge as straight RGBA8, rows from the top: a red disc
+/// filling the square, edges antialiased, with white text wherever
+/// `text_coverage` (one byte a pixel, 255 fully covered) marks it.
+pub(crate) fn badge_pixels(size: u32, text_coverage: &[u8]) -> Vec<u8> {
+    let n = size as usize;
+    debug_assert_eq!(text_coverage.len(), n * n);
+    let radius = f64::from(size) / 2.0;
+    let mut out = Vec::with_capacity(n * n * 4);
+    for y in 0..n {
+        for x in 0..n {
+            let (dx, dy) = (x as f64 + 0.5 - radius, y as f64 + 0.5 - radius);
+            let disc = (radius - (dx * dx + dy * dy).sqrt() + 0.5).clamp(0.0, 1.0);
+            let ink = f64::from(text_coverage.get(y * n + x).copied().unwrap_or(0)) / 255.0;
+            let mix = |c: u8| (f64::from(c) + (255.0 - f64::from(c)) * ink).round() as u8;
+            out.extend_from_slice(&[
+                mix(BADGE_RED[0]),
+                mix(BADGE_RED[1]),
+                mix(BADGE_RED[2]),
+                (disc * 255.0).round() as u8,
+            ]);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -906,5 +934,20 @@ mod tests {
         assert_eq!(to_physical(100.0, 144), 150);
         assert_eq!(to_logical(150, 144), 100.0);
         assert_eq!(to_logical(10, 0), 960.0);
+    }
+
+    #[test]
+    fn a_badge_is_a_red_disc_under_white_text() {
+        let mut ink = vec![0u8; 16 * 16];
+        ink[8 * 16 + 8] = 255;
+        let px = badge_pixels(16, &ink);
+        let at = |x: usize, y: usize| &px[(y * 16 + x) * 4..][..4];
+        assert_eq!(at(0, 0)[3], 0, "the corner is outside the disc");
+        assert_eq!(at(4, 8), &[214, 40, 40, 255]);
+        assert_eq!(at(8, 8), &[255, 255, 255, 255]);
+        assert!(
+            at(0, 8)[3] > 0 && at(0, 8)[3] < 255,
+            "the edge is antialiased"
+        );
     }
 }

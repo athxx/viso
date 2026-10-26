@@ -73,6 +73,8 @@ pub struct HeadlessApp {
     gamepads: Option<HeadlessGamepads>,
     /// The tray icon shown, as last set.
     tray: Option<crate::Tray>,
+    /// The badge shown, as last set.
+    badge: Option<crate::AppBadge>,
 }
 
 /// Where a driver hands a running [`HeadlessApp`] input, as the user's
@@ -120,6 +122,7 @@ impl HeadlessApp {
             feed: None,
             gamepads: None,
             tray: None,
+            badge: None,
         }
     }
 
@@ -198,6 +201,11 @@ impl HeadlessApp {
     /// The tray icon shown, as the app last set it.
     pub fn tray(&self) -> Option<&crate::Tray> {
         self.tray.as_ref()
+    }
+
+    /// The badge shown, as the app last set it.
+    pub fn badge(&self) -> Option<&crate::AppBadge> {
+        self.badge.as_ref()
     }
 
     /// The drags the app carried out of its windows, in order.
@@ -415,6 +423,10 @@ impl PlatformApp for HeadlessApp {
 
     fn set_tray(&mut self, tray: Option<&crate::Tray>) {
         self.tray = tray.cloned();
+    }
+
+    fn set_badge(&mut self, badge: Option<&crate::AppBadge>) {
+        self.badge = badge.cloned();
     }
 
     fn close_window(&mut self, id: WindowId) {

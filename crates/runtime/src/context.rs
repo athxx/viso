@@ -147,6 +147,12 @@ impl<'a> RuntimeCx<'a> {
         self.app.set_tray(tray);
     }
 
+    /// Show or (with `None`) clear the badge on the app's icon; see
+    /// [`PlatformApp::set_badge`](viso_platform::PlatformApp::set_badge).
+    pub fn set_badge(&mut self, badge: Option<&viso_platform::AppBadge>) {
+        self.app.set_badge(badge);
+    }
+
     /// Declare `window`'s draggable self-drawn-caption regions (logical points,
     /// top-left origin). The platform starts a native window drag on a primary
     /// press inside one instead of routing a pointer event. A no-op on backends

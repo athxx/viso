@@ -872,6 +872,10 @@ impl PlatformApp for MacApp {
         }
     }
 
+    fn set_badge(&mut self, badge: Option<&crate::AppBadge>) {
+        shell::set_badge(self.mtm, badge);
+    }
+
     fn set_draggable_regions(&mut self, window: WindowId, regions: &[LogicalRect]) {
         // Replace the target window's cached caption drag regions. Cheap cold
         // path: called only when the app's caption layout changes, not per frame.

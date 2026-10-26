@@ -1,5 +1,7 @@
 //! The app in the desktop shell beyond its windows: its icon in the system
-//! tray (Windows, Linux) or menu bar (macOS), with a tooltip and a menu.
+//! tray (Windows, Linux) or menu bar (macOS), with a tooltip and a menu; and
+//! a badge on its icon in the dock or taskbar (or home screen, or installed
+//! web app).
 //!
 //! Callable from anywhere on the app's thread — `Application::new`, a
 //! handler, a task's continuation, `Application::on_menu_command`. Each call
@@ -33,11 +35,14 @@
 //!
 //! Picks of the tray menu reach `Application::on_menu_command`, as the
 //! application menu's do; clicks on the icon reach `Application::on_tray`.
+//!
+//! A badge is a count or a short label: `shell::set_badge(Some(AppBadge::Count(3)))`
+//! shows it, `None` clears it.
 
 use std::cell::RefCell;
 
 use viso_platform::LoopWaker;
-pub use viso_platform::{IconImage, Tray, TrayEvent};
+pub use viso_platform::{AppBadge, IconImage, Tray, TrayEvent};
 pub use viso_render::asset::AssetError;
 use viso_runtime::RuntimeCx;
 use viso_ui::{Asset, AssetSource};
@@ -48,7 +53,10 @@ use viso_ui::{Asset, AssetSource};
 struct Asked {
     /// A tray to show (`Some(Some)`), to remove (`Some(None)`), or no change.
     tray: Option<Option<Tray>>,
+    /// A badge to show or clear, or no change.
+    badge: Option<Option<AppBadge>>,
     tray_supported: bool,
+    badge_supported: bool,
     waker: Option<LoopWaker>,
 }
 
@@ -67,6 +75,38 @@ pub fn set_tray(tray: Option<Tray>) {
             waker.wake();
         }
     });
+}
+
+/// Shows `badge` over the app's icon in the dock or taskbar, replacing the
+/// one shown; `None` (or a zero count) clears it.
+///
+/// - macOS: the Dock tile's badge label.
+/// - Windows: an overlay icon on each window's taskbar button, the count
+///   capped at `99+`.
+/// - Linux: the launcher count docks read (`com.canonical.Unity.LauncherEntry`);
+///   counts only, so a label shows only when it holds a number.
+/// - iOS: the home-screen icon's count, numbers only. The system shows it
+///   only once the user allowed the app's notifications with badges: ask for
+///   notification authorization including the badge option first.
+/// - Web: an installed app's icon (`navigator.setAppBadge`); a label that is
+///   no number shows as a plain mark.
+/// - Android: none ([`badge_supported`] is false); its launchers badge from
+///   notifications.
+pub fn set_badge(badge: Option<AppBadge>) {
+    ASKED.with(|asked| {
+        let mut asked = asked.borrow_mut();
+        asked.badge = Some(badge);
+        if let Some(waker) = &asked.waker {
+            waker.wake();
+        }
+    });
+}
+
+/// Whether the platform shows a badge on the app's icon: on the desktop and
+/// iOS, yes; on the web, where the browser has the Badging API; on Android,
+/// no.
+pub fn badge_supported() -> bool {
+    ASKED.with(|asked| asked.borrow().badge_supported)
 }
 
 /// Whether the platform shows a tray icon: on the desktop, yes (on Linux,
@@ -106,6 +146,7 @@ pub fn icon(asset: &Asset) -> Result<IconImage, AssetError> {
 #[derive(Default)]
 pub(crate) struct Shown {
     pub(crate) tray: Option<Tray>,
+    pub(crate) badge: Option<AppBadge>,
 }
 
 /// Starts a session on this thread: forgets what an earlier one asked.
@@ -121,17 +162,28 @@ pub(crate) fn launch(cx: &RuntimeCx<'_>) {
     ASKED.with(|asked| {
         let mut asked = asked.borrow_mut();
         asked.tray_supported = caps.tray;
+        asked.badge_supported = caps.badge;
         asked.waker = Some(waker);
     });
 }
 
 /// Hands what the app asked down to the platform, recording it in `shown`.
 pub(crate) fn apply(cx: &mut RuntimeCx<'_>, shown: &mut Shown) {
-    let tray = ASKED.with(|asked| asked.borrow_mut().tray.take());
+    let (tray, badge) = ASKED.with(|asked| {
+        let mut asked = asked.borrow_mut();
+        (asked.tray.take(), asked.badge.take())
+    });
     if let Some(tray) = tray
         && tray != shown.tray
     {
         cx.set_tray(tray.as_ref());
         shown.tray = tray;
+    }
+    // A zero count and an empty label show nothing, as `None` does.
+    if let Some(badge) = badge.map(|b| b.filter(|b| b.text(false).is_some()))
+        && badge != shown.badge
+    {
+        cx.set_badge(badge.as_ref());
+        shown.badge = badge;
     }
 }

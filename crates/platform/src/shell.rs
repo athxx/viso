@@ -1,5 +1,6 @@
 //! The app's presence in the desktop shell beyond its windows: an icon in
-//! the system tray or menu bar with a menu.
+//! the system tray or menu bar with a menu, and a badge on its icon in the
+//! dock or taskbar.
 //!
 //! A cold path: the app hands a whole value down when it changes, and
 //! the backend compares it with what it shows to skip work it need not
@@ -166,9 +167,61 @@ pub enum TrayEvent {
     DoubleClick,
 }
 
+/// What the app's icon in the dock or taskbar shows over its corner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AppBadge {
+    /// A count, such as unread messages; zero shows nothing.
+    Count(u32),
+    /// A short label, a few characters. Where the shell shows counts alone
+    /// (Linux docks, iOS), a label holding a number shows as that count and
+    /// any other shows nothing; the web shows it as a plain mark.
+    Label(String),
+}
+
+impl AppBadge {
+    /// The count this badge shows where only counts can: its count, or the
+    /// number its label holds.
+    pub fn count(&self) -> Option<u32> {
+        match self {
+            AppBadge::Count(0) => None,
+            AppBadge::Count(n) => Some(*n),
+            AppBadge::Label(text) => text.trim().parse().ok().filter(|&n| n > 0),
+        }
+    }
+
+    /// The text this badge shows: its count (`99+` past ninety-nine where
+    /// `short`), or its label; `None` for nothing.
+    pub fn text(&self, short: bool) -> Option<String> {
+        match self {
+            AppBadge::Count(0) => None,
+            AppBadge::Count(n) if short && *n > 99 => Some("99+".to_owned()),
+            AppBadge::Count(n) => Some(n.to_string()),
+            AppBadge::Label(text) if text.trim().is_empty() => None,
+            AppBadge::Label(text) => Some(text.trim().to_owned()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_badge_shows_its_count_or_label() {
+        assert_eq!(AppBadge::Count(0).text(true), None);
+        assert_eq!(AppBadge::Count(7).text(true).as_deref(), Some("7"));
+        assert_eq!(AppBadge::Count(120).text(true).as_deref(), Some("99+"));
+        assert_eq!(AppBadge::Count(120).text(false).as_deref(), Some("120"));
+        assert_eq!(
+            AppBadge::Label(" new ".into()).text(true).as_deref(),
+            Some("new")
+        );
+        assert_eq!(AppBadge::Label(" ".into()).text(true), None);
+        assert_eq!(AppBadge::Count(3).count(), Some(3));
+        assert_eq!(AppBadge::Count(0).count(), None);
+        assert_eq!(AppBadge::Label("12".into()).count(), Some(12));
+        assert_eq!(AppBadge::Label("new".into()).count(), None);
+    }
 
     #[test]
     fn an_icon_takes_four_bytes_a_pixel() {
