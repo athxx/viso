@@ -796,8 +796,16 @@ viso-ext.
   road numbers sit on shields. Line labels are straight along their stretch, not bent glyph
   by glyph. Headless pictures (Latin, Greek, Cyrillic, Arabic, Japanese, Chinese; turned;
   icon) and unit tests.
-- [ ] Raster and terrain: raster XYZ layers (PNG, JPEG, WebP), hillshade from DEM
+- [x] Raster and terrain: raster XYZ layers (PNG, JPEG, WebP), hillshade from DEM
   tiles (Terrarium and Mapbox RGB encodings).
+  Each raster or hillshade style layer gets its own pyramid over a named
+  `RasterSource` (256 px tiles draw a level deeper); bytes are decoded, and DEMs shaded
+  (Horn gradient, slope by aspect against the light), on `viso_ui::work`, handed to the
+  asset table once and shown by leaves placed like vector tiles. A tile's vector layers
+  split at the first image layer into a part under and a part over the images.
+  Headless test: a half-opaque checker under the roads and a shaded ridge, with zero
+  upload while dragging. Open: DEM tiles shade without their neighbours' edge pixels,
+  so a faint seam can show at tile borders.
 - [x] Overlays: markers that are ordinary components anchored at lon/lat, polylines
   (route casing, traveled part dimmed), polygons, circles in meters, a GeoJSON source
   styled like tile data, clustering, the user's position puck with heading and

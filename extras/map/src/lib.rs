@@ -17,6 +17,7 @@ pub mod mvt;
 pub mod overlay;
 pub mod pyramid;
 pub mod query;
+pub mod raster;
 pub mod source;
 pub mod style;
 pub mod tess;
@@ -28,6 +29,7 @@ pub use geojson::{GeoFeature, GeoJson, GeoJsonError, Geometry};
 pub use icons::IconSet;
 pub use overlay::{Circle, Polygon, Polyline, Puck, Shape, Stroke};
 pub use query::QueriedFeature;
+pub use raster::{Dem, RasterSource, Shading};
 pub use source::{
     Completer, MemorySource, Reply, ServiceError, ServiceResult, TileId, TileReply, TileSource,
     reply,

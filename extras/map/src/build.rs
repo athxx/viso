@@ -182,6 +182,16 @@ pub fn build_layers(
     params: &BuildParams<'_>,
     builder: &mut MeshBuilder,
 ) -> TileMesh {
+    build_layers_in(tile_layers, params, 0..usize::MAX, builder)
+}
+
+/// [`build_layers`] of the style's layers in `range` alone.
+pub fn build_layers_in(
+    tile_layers: &[&mvt::Layer],
+    params: &BuildParams<'_>,
+    range: std::ops::Range<usize>,
+    builder: &mut MeshBuilder,
+) -> TileMesh {
     builder.clear();
     let square = Square {
         lo: 0.0,
@@ -195,8 +205,9 @@ pub fn build_layers(
     let zoom = params.zoom;
     let mut layers: Vec<Option<(HashMap<&str, u32>, Decoded)>> = Vec::new();
     layers.resize_with(tile_layers.len(), || None);
-    for style_layer in &params.style.layers {
-        if !style_layer.source.is_empty() || !style_layer.shows_at(zoom) {
+    for (index, style_layer) in params.style.layers.iter().enumerate() {
+        if !range.contains(&index) || !style_layer.source.is_empty() || !style_layer.shows_at(zoom)
+        {
             continue;
         }
         if !matches!(

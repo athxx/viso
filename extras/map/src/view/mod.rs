@@ -27,6 +27,7 @@
 mod core;
 mod labels;
 mod overlays;
+mod rasters;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -48,6 +49,7 @@ use crate::icons::IconSet;
 use crate::overlay::{Puck, Shape};
 use crate::pyramid::Slot;
 use crate::query::QueriedFeature;
+use crate::raster::RasterSource;
 use crate::source::TileSource;
 use crate::style::{Style, builtin};
 
@@ -216,8 +218,6 @@ impl MapHandle {
         self.with(w, |c| c.set_source(Rc::new(source), zooms));
     }
 
-    /// What the view holds now: the tiles it draws, in paint order, the
-    /// requests in flight and the builds it started.
     /// Names labels in the first of `languages` (BCP 47 tags, most wanted
     /// first) a feature has a name in, and in its local name otherwise.
     pub fn set_languages(&self, w: &mut dyn StateWriter, languages: &[&str]) {
@@ -307,11 +307,25 @@ impl MapHandle {
         self.with(w, |c| c.set_data(name, data));
     }
 
-    /// The tiles drawn and the work in flight.
+    /// Reads `source` for the style's raster and hillshade layers that name
+    /// `name`, or no source for them with `None`.
+    pub fn set_raster_source(
+        &self,
+        w: &mut dyn StateWriter,
+        name: &str,
+        source: Option<RasterSource>,
+    ) {
+        self.with(w, |c| c.rasters.set_source(name, source));
+    }
+
+    /// What the view holds now: the vector tiles it draws, in paint order,
+    /// the image tiles it draws, the requests in flight and the builds it
+    /// started.
     pub fn tiles(&self) -> MapTiles {
         let core = self.core.borrow();
         MapTiles {
-            drawn: core.drawn().map(|(slot, _)| slot).collect(),
+            drawn: core.drawn().collect(),
+            images: core.rasters.drawn(),
             in_flight: core.in_flight(),
             builds: core.builds,
             bytes: core.pyramid.bytes(),
@@ -323,6 +337,7 @@ impl MapHandle {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MapTiles {
     pub drawn: Vec<Slot>,
+    pub images: usize,
     pub in_flight: usize,
     pub builds: u32,
     pub bytes: usize,
@@ -360,6 +375,7 @@ pub struct MapView {
     data: Vec<(String, GeoJson)>,
     languages: Vec<String>,
     icons: Option<Rc<IconSet>>,
+    rasters: Vec<(String, RasterSource)>,
 }
 
 /// A map view of `source`, filling its parent, over the whole world in the
@@ -387,6 +403,7 @@ pub fn map_view(source: impl TileSource) -> MapView {
         data: Vec::new(),
         languages: Vec::new(),
         icons: None,
+        rasters: Vec::new(),
     }
 }
 
@@ -520,6 +537,13 @@ impl MapView {
         self
     }
 
+    /// Reads `source` for the style's raster and hillshade layers that name
+    /// `name`.
+    pub fn raster_source(mut self, name: &str, source: RasterSource) -> Self {
+        self.rasters.push((name.to_owned(), source));
+        self
+    }
+
     /// Shows labels' icons from `icons`.
     pub fn icons(mut self, icons: IconSet) -> Self {
         self.icons = Some(Rc::new(icons));
@@ -613,6 +637,8 @@ impl Component for MapView {
                         cx.stack(sizeless(), |_| {}).id(),
                         cx.stack(sizeless(), |_| {}).id(),
                         cx.stack(sizeless(), |_| {}).id(),
+                        cx.stack(sizeless(), |_| {}).id(),
+                        cx.stack(sizeless(), |_| {}).id(),
                     ]);
                 }));
                 overlay = Some(cx.stack(
@@ -633,8 +659,10 @@ impl Component for MapView {
             labels: labels_node.expect("built"),
             camera: camera_node.id(),
             tiles: parts[0],
-            shapes: parts[1],
-            accuracy: parts[2],
+            rasters: parts[1],
+            over: parts[2],
+            shapes: parts[3],
+            accuracy: parts[4],
             overlay: overlay.id(),
         };
         cx.clip(root, true);
@@ -677,6 +705,9 @@ impl Component for MapView {
             c.set_languages(&self.languages);
             if let Some(icons) = &self.icons {
                 c.labels.icons = Rc::clone(icons);
+            }
+            for (name, source) in &self.rasters {
+                c.rasters.set_source(name, Some(source.clone()));
             }
         }
         cx.semantics(root, core.borrow().semantics());

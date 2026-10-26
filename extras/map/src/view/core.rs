@@ -26,6 +26,7 @@ use viso_ui::{
 
 use super::labels::Labels;
 use super::overlays::Overlays;
+use super::rasters::Rasters;
 use crate::camera::{Camera, Insets, Limits, Motion, TILE_SIZE, View};
 use crate::geo::LngLat;
 use crate::geojson::DataLayer;
@@ -109,11 +110,37 @@ struct Request {
     stop: Option<Arc<AtomicBool>>,
 }
 
-/// One tile drawn: its slot, the build it shows and its node.
+/// One tile drawn: its slot, the build it shows and its nodes beneath and
+/// over the image layers.
 struct TileNode {
     slot: Slot,
     built: Ready,
+    nodes: [Option<NodeId>; 2],
+    fresh: bool,
+}
+
+/// Places a tile's node `node` of `slot` for level `band` about `anchor`.
+pub(crate) fn place_tile(
+    s: &mut StructureCx<'_>,
     node: NodeId,
+    slot: Slot,
+    band: u8,
+    anchor: [f64; 2],
+) {
+    let band_scale = TILE_SIZE * f64::from(band).exp2();
+    let (nw, _) = slot.square();
+    let tau = [nw.x * band_scale - anchor[0], nw.y * band_scale - anchor[1]];
+    let k = (f64::from(band) - f64::from(slot.tile.z)).exp2();
+    s.store
+        .set_translate(node, Vec2::new(tau[0] as f32, tau[1] as f32));
+    s.store.set_turn(
+        node,
+        Turn {
+            scale: k as f32,
+            rotation: 0.0,
+            origin: viso_ui::Alignment2D::TopStart,
+        },
+    );
 }
 
 /// A fling coasting on: its velocity in view points a second.
@@ -134,6 +161,8 @@ pub(crate) struct CoreNodes {
     pub labels: NodeId,
     pub camera: NodeId,
     pub tiles: NodeId,
+    pub rasters: NodeId,
+    pub over: NodeId,
     pub shapes: NodeId,
     pub accuracy: NodeId,
     pub overlay: NodeId,
@@ -143,10 +172,13 @@ pub(crate) struct CoreNodes {
 pub(crate) struct Core {
     pub root: NodeId,
     pub camera_node: NodeId,
-    /// The tiles' parent, under the camera node.
+    /// The tiles' parents under the camera node: beneath and over the
+    /// image layers.
     tiles_node: NodeId,
+    over_node: NodeId,
     pub overlays: Overlays,
     pub labels: Labels,
+    pub rasters: Rasters,
     /// The app's data layers, by name, and all of them for the builds.
     data_layers: Vec<(String, Arc<DataLayer>)>,
     data: Data,
@@ -221,8 +253,10 @@ impl Core {
                 root,
                 camera_node: nodes.camera,
                 tiles_node: nodes.tiles,
+                over_node: nodes.over,
                 overlays: Overlays::new(nodes.shapes, nodes.accuracy, nodes.overlay, nodes.labels),
                 labels: Labels::new(nodes.labels),
+                rasters: Rasters::new(nodes.rasters),
                 data_layers: Vec::new(),
                 data: Arc::new([]),
                 languages: Vec::new(),
@@ -262,6 +296,12 @@ impl Core {
                 builds: 0,
             })
         })
+    }
+
+    /// Asks for the hook to run, from a task's continuation.
+    pub fn wake_with(&mut self, cx: &mut UpdateCx<'_>) {
+        self.pokes = self.pokes.wrapping_add(1);
+        cx.set(self.wake, StateValue::Int(self.pokes));
     }
 
     /// Asks for the hook to run this frame.
@@ -423,6 +463,7 @@ impl Core {
 
     /// Uses `style` from now on, rebuilding the tiles from what they hold.
     pub fn set_style(&mut self, style: Arc<Style>) {
+        self.rasters.restyle(&self.style, &style);
         self.style = style;
         self.recipe = None;
         self.style_rev += 1;
@@ -685,6 +726,15 @@ impl Core {
             self.place_tiles(s, &plan.draw, band, rebase);
             self.plan = plan;
         }
+        self.rasters.apply(
+            s,
+            &self.style,
+            &self.view,
+            band,
+            self.anchor,
+            rebase,
+            &self.me,
+        );
         self.overlays
             .apply(s, &self.view, band, self.anchor, rebase, &self.me);
         let mut told = None;
@@ -760,7 +810,7 @@ impl Core {
             if self
                 .pyramid
                 .ready(slot.tile)
-                .is_some_and(|b| b.drawing.is_some())
+                .is_some_and(|b| b.drawing.is_some() || b.over.is_some())
             {
                 self.shown.push(slot);
             }
@@ -773,85 +823,86 @@ impl Core {
                         .ready(s.tile)
                         .is_some_and(|b| Rc::ptr_eq(b, &t.built))
             });
+        let parents = [self.tiles_node, self.over_node];
         if !same_set {
             // Free what is no longer drawn; keep and reorder the rest.
             let mut kept: Vec<TileNode> = Vec::with_capacity(self.shown.len());
             let mut old = std::mem::take(&mut self.tiles);
+            let side = TILE_SIZE as f32;
             for &slot in &self.shown {
                 let built = Rc::clone(self.pyramid.ready(slot.tile).expect("ready"));
-                let drawing = built.drawing.clone().expect("drawn");
-                match old.iter().position(|t| t.slot == slot) {
-                    Some(i) => {
-                        let mut t = old.swap_remove(i);
-                        if !Rc::ptr_eq(&t.built, &built) {
-                            s.store.set_drawing(t.node, drawing);
-                            t.built = built;
+                let parts = [built.drawing.clone(), built.over.clone()];
+                let mut t = match old.iter().position(|t| t.slot == slot) {
+                    Some(i) => old.swap_remove(i),
+                    None => TileNode {
+                        slot,
+                        built: Rc::clone(&built),
+                        nodes: [None, None],
+                        fresh: true,
+                    },
+                };
+                if t.fresh || !Rc::ptr_eq(&t.built, &built) {
+                    for (p, part) in parts.into_iter().enumerate() {
+                        match (t.nodes[p], part) {
+                            (Some(node), Some(drawing)) => s.store.set_drawing(node, drawing),
+                            (Some(node), None) => {
+                                s.store.free_tree(node, s.effects, &mut self.free_scratch);
+                                t.nodes[p] = None;
+                            }
+                            (None, Some(drawing)) => {
+                                let mut cx =
+                                    BuildCx::with_parent(s.store, s.states, s.bindings, parents[p]);
+                                t.nodes[p] =
+                                    Some(cx.drawing(Size::fixed(side, side), drawing).id());
+                            }
+                            (None, None) => {}
                         }
-                        kept.push(t);
                     }
-                    None => {
-                        let node = {
-                            let mut cx = BuildCx::with_parent(
-                                s.store,
-                                s.states,
-                                s.bindings,
-                                self.tiles_node,
-                            );
-                            let side = TILE_SIZE as f32;
-                            cx.drawing(Size::fixed(side, side), drawing).id()
-                        };
-                        kept.push(TileNode { slot, built, node });
-                    }
+                    t.built = built;
+                    t.fresh = false;
                 }
+                kept.push(t);
             }
             for t in old {
-                s.store.free_tree(t.node, s.effects, &mut self.free_scratch);
-            }
-            s.store.mark_dirty(
-                self.tiles_node,
-                DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
-            );
-            // The order they paint in: ancestors beneath.
-            let in_order = {
-                let mut children = s.store.arena().children(self.tiles_node);
-                kept.iter().all(|t| children.next() == Some(t.node))
-            };
-            if !in_order {
-                for t in &kept {
-                    s.store.arena_detach(t.node);
+                for node in t.nodes.into_iter().flatten() {
+                    s.store.free_tree(node, s.effects, &mut self.free_scratch);
                 }
-                for t in &kept {
-                    s.store.arena_insert_before(self.tiles_node, t.node, None);
+            }
+            for (p, &parent) in parents.iter().enumerate() {
+                s.store.mark_dirty(
+                    parent,
+                    DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
+                );
+                // The order they paint in: ancestors beneath.
+                let in_order = {
+                    let mut children = s.store.arena().children(parent);
+                    kept.iter()
+                        .filter_map(|t| t.nodes[p])
+                        .all(|n| children.next() == Some(n))
+                };
+                if !in_order {
+                    for n in kept.iter().filter_map(|t| t.nodes[p]) {
+                        s.store.arena_detach(n);
+                    }
+                    for n in kept.iter().filter_map(|t| t.nodes[p]) {
+                        s.store.arena_insert_before(parent, n, None);
+                    }
                 }
             }
             self.tiles = kept;
         } else if !rebase {
             return;
         }
-        let band_scale = TILE_SIZE * f64::from(band).exp2();
         for t in &self.tiles {
-            let (nw, _) = t.slot.square();
-            let tau = [
-                nw.x * band_scale - self.anchor[0],
-                nw.y * band_scale - self.anchor[1],
-            ];
-            let k = (f64::from(band) - f64::from(t.slot.tile.z)).exp2();
-            s.store
-                .set_translate(t.node, Vec2::new(tau[0] as f32, tau[1] as f32));
-            s.store.set_turn(
-                t.node,
-                Turn {
-                    scale: k as f32,
-                    rotation: 0.0,
-                    origin: viso_ui::Alignment2D::TopStart,
-                },
-            );
+            for node in t.nodes.into_iter().flatten() {
+                place_tile(s, node, t.slot, band, self.anchor);
+            }
         }
     }
 
-    /// The tiles drawn, in paint order, and their nodes.
-    pub fn drawn(&self) -> impl Iterator<Item = (Slot, NodeId)> + '_ {
-        self.tiles.iter().map(|t| (t.slot, t.node))
+    /// The tiles drawn, in paint order.
+    pub fn drawn(&self) -> impl Iterator<Item = Slot> + '_ {
+        self.tiles.iter().map(|t| t.slot)
     }
 
     /// The features drawn under view point `p`, within `radius` points,
@@ -890,13 +941,13 @@ impl Core {
 
     /// The requests in flight.
     pub fn in_flight(&self) -> usize {
-        self.requests.len()
+        self.requests.len() + self.rasters.loading()
     }
 }
 
 /// Raises the outer stop flag's state into the inner build's as the task
 /// is dropped or finishes, so a cancelled fetch also stops its build.
-struct StopWith(Arc<AtomicBool>, Arc<AtomicBool>);
+pub(crate) struct StopWith(pub Arc<AtomicBool>, pub Arc<AtomicBool>);
 
 impl Drop for StopWith {
     fn drop(&mut self) {

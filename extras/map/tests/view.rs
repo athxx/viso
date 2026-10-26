@@ -1028,3 +1028,133 @@ fn a_label_shows_its_svg_icon_over_its_text() {
         .count();
     assert!(ink > 10, "{ink}");
 }
+
+/// A raster tile of solid color: blue on even tiles, green on odd ones.
+fn checker(tile: TileId) -> Vec<u8> {
+    let bgra = if (tile.x + tile.y).is_multiple_of(2) {
+        [255, 0, 0, 255]
+    } else {
+        [0, 255, 0, 255]
+    };
+    support::png(256, 256, &bgra.repeat(256 * 256))
+}
+
+/// A terrain tile of a ridge running north and south through `ridge` (a
+/// world x), Terrarium-encoded: 1 km high, falling a meter a meter.
+fn ridge_tile(tile: TileId, ridge: f64) -> Vec<u8> {
+    let n = 256u32;
+    let span = f64::from(1u32 << tile.z);
+    let mut bgra = Vec::with_capacity((n * n * 4) as usize);
+    for _y in 0..n {
+        for x in 0..n {
+            let wx = (f64::from(tile.x) + (f64::from(x) + 0.5) / f64::from(n)) / span;
+            // A world unit is about 24 500 km at Berlin's latitude.
+            let meters = (1000.0 - (wx - ridge).abs() * 24_500_000.0).max(0.0);
+            let v = meters + 32768.0;
+            let r = (v / 256.0).floor();
+            let g = (v - r * 256.0).floor();
+            let b = ((v - r * 256.0 - g) * 256.0).round().min(255.0);
+            bgra.extend_from_slice(&[b as u8, g as u8, r as u8, 255]);
+        }
+    }
+    support::png(n, n, &bgra)
+}
+
+fn luma(c: [u8; 3]) -> u32 {
+    u32::from(c[0]) + u32::from(c[1]) + u32::from(c[2])
+}
+
+#[test]
+fn raster_and_hillshade_layers_draw_between_the_vector_layers() {
+    use viso_map::RasterSource;
+    use viso_map::style::{Color, DemEncoding, Layer};
+    // Images of half opacity laid over the water, under the roads.
+    let start = berlin(13.0, 0.0);
+    let frames: Rc<RefCell<Vec<bool>>> = Rc::default();
+    let log = Rc::clone(&frames);
+    probe_frames(Some(Box::new(move |_, uploaded| {
+        log.borrow_mut().push(uploaded);
+    })));
+    let none = Modifiers::default();
+    let mut script = vec![mouse(320.0, 240.0, PointerPhase::Down, none)];
+    for i in 1..=10 {
+        script.push(mouse(
+            320.0 + 2.0 * f64::from(i),
+            240.0 + f64::from(i),
+            PointerPhase::Moved,
+            none,
+        ));
+        script.push(RawEvent::RedrawRequested { window: WIN });
+    }
+    let (app, handle) = run_with(start, false, script, |m| {
+        let mut style = builtin::openmaptiles_light();
+        let at = style
+            .layers
+            .iter()
+            .position(|l| l.id.starts_with("road"))
+            .unwrap_or(style.layers.len());
+        style
+            .layers
+            .insert(at, Layer::raster("photo", "photo").opacity(0.5));
+        m.style(style).raster_source(
+            "photo",
+            RasterSource::new(
+                |tile: TileId| viso_map::Reply::ready(Ok(Some(checker(tile)))),
+                0,
+                18,
+            ),
+        )
+    });
+    probe_frames(None);
+    let px = picture(&app, "raster-photo");
+    // The images moved with a drag that brought no new tile into view,
+    // and nothing reached the renderer.
+    let frames = frames.borrow();
+    let tail = &frames[frames.len().saturating_sub(8)..];
+    assert!(tail.iter().all(|&uploaded| !uploaded), "{frames:?}");
+    let tiles = handle.tiles();
+    assert!(tiles.images >= 4, "{tiles:?}");
+    assert_eq!(tiles.in_flight, 0);
+    // Tinted blue or green everywhere, half way.
+    let c = rgb_at(&px, [320.0, 240.0]);
+    assert!(
+        (c[2] > c[0] + 40 && c[2] > c[1] + 40) || (c[1] > c[0] + 40 && c[1] > c[2] + 40),
+        "{c:?}"
+    );
+    assert!(c[0] > 40, "half of what is beneath shows: {c:?}");
+
+    // A ridge north and south through the middle, lit from the north-west.
+    let mid = start.center.to_world().x;
+    let slot = MapHandleSlot::default();
+    let s = Rc::clone(&slot);
+    SETUP.with(|setup| {
+        *setup.borrow_mut() = Some(Box::new(move |cx| {
+            let style = viso_map::style::Style::new("terrain", Color::rgb(200, 200, 200))
+                .with(Layer::hillshade("shade", "dem", DemEncoding::Terrarium));
+            map_view(viso_map::MemorySource::new())
+                .camera(start)
+                .style(style)
+                .raster_source(
+                    "dem",
+                    RasterSource::new(
+                        move |tile: TileId| viso_map::Reply::ready(Ok(Some(ridge_tile(tile, mid)))),
+                        0,
+                        12,
+                    ),
+                )
+                .handle(&s)
+                .build(cx);
+        }))
+    });
+    let app = drive_scripted::<MapApp>(redraws(16), STEP);
+    let px = picture(&app, "raster-hillshade");
+    let handle = slot.borrow().clone().expect("built");
+    assert!(handle.tiles().images >= 1);
+    let (west, east, far) = (
+        rgb_at(&px, [300.0, 240.0]),
+        rgb_at(&px, [340.0, 240.0]),
+        rgb_at(&px, [20.0, 240.0]),
+    );
+    assert!(luma(west) > luma(far) + 15, "{west:?} {far:?}");
+    assert!(luma(east) + 15 < luma(far), "{east:?} {far:?}");
+}

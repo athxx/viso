@@ -14,14 +14,14 @@ use viso_render::{Mesh, Primitive};
 use viso_services::{Reply, ServiceError, reply};
 use viso_ui::{Drawing, Vec2};
 
-use crate::build::{BuildParams, EXTENT, build_layers};
+use crate::build::{BuildParams, EXTENT, TileMesh, build_layers_in};
 use crate::camera::TILE_SIZE;
 use crate::geojson::DataLayer;
 use crate::label::{TileLabel, extract};
 use crate::mvt::{self, VectorTile};
 use crate::pyramid::BuildKey;
 use crate::source::TileId;
-use crate::style::Style;
+use crate::style::{Paint, Style};
 use crate::tess::MeshBuilder;
 
 /// A built tile: what it decoded to, kept to rebuild it and to answer
@@ -32,6 +32,8 @@ pub struct Built {
     /// The app's data layers' parts in the tile.
     pub data: Vec<mvt::Layer>,
     pub drawing: Option<Drawing>,
+    /// What it draws over the style's image layers.
+    pub over: Option<Drawing>,
     /// The labels it offers, in the order they place.
     pub labels: Vec<TileLabel>,
     /// What it holds: its mesh and, roughly, its decoded features.
@@ -107,7 +109,20 @@ pub fn build_now(
     };
     let data: Vec<mvt::Layer> = recipe.data.iter().filter_map(|d| d.slice(tile)).collect();
     let layers: Vec<&mvt::Layer> = decoded.layers.iter().chain(&data).collect();
-    let mesh = SCRATCH.with(|b| build_layers(&layers, &params, &mut b.borrow_mut()));
+    // The style's layers before its first image layer draw beneath the
+    // images, the rest over them.
+    let split = style
+        .layers
+        .iter()
+        .position(|l| matches!(l.paint, Paint::Raster { .. } | Paint::Hillshade { .. }))
+        .unwrap_or(style.layers.len());
+    let (mesh, over) = SCRATCH.with(|b| {
+        let b = &mut b.borrow_mut();
+        let under = build_layers_in(&layers, &params, 0..split, b);
+        let over = (split < style.layers.len())
+            .then(|| build_layers_in(&layers, &params, split..usize::MAX, b));
+        (under, over)
+    });
     let mut labels = Vec::new();
     extract(
         &layers,
@@ -118,17 +133,23 @@ pub fn build_now(
         &mut labels,
     );
     let bytes = mesh.bytes()
+        + over.as_ref().map_or(0, TileMesh::bytes)
         + decoded_bytes(&decoded).max(raw * 2)
         + data.iter().map(layer_bytes).sum::<usize>()
         + labels.len() * (std::mem::size_of::<TileLabel>() + 16);
-    let drawing = (!mesh.is_empty()).then(|| {
-        let mesh = Mesh::new(mesh.vertices, mesh.indices);
-        Drawing::new(vec![Primitive::Mesh(mesh)], Vec2::new(EXTENT, EXTENT))
-    });
+    let drawing_of = |mesh: TileMesh| {
+        (!mesh.is_empty()).then(|| {
+            let mesh = Mesh::new(mesh.vertices, mesh.indices);
+            Drawing::new(vec![Primitive::Mesh(mesh)], Vec2::new(EXTENT, EXTENT))
+        })
+    };
+    let drawing = drawing_of(mesh);
+    let over = over.and_then(drawing_of);
     Ok(Built {
         tile: decoded,
         data,
         drawing,
+        over,
         labels,
         bytes,
         key,
