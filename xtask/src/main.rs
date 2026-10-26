@@ -11,12 +11,15 @@
 //! the one crate it does not cover is silently skipped rather than checked.
 
 mod absence;
+mod bench_gate;
 mod bundle;
 mod footprint;
 mod frame_tax;
+mod imports;
 mod mcu;
 mod profiles;
 mod targets;
+mod worktree;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -58,26 +61,25 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
                     "viso-ui",
                     "viso-ui-macros",
                     "viso-widgets",
-                    "viso-dsl",
                     "viso-view",
                     "viso-behavior",
                     "viso-services",
                     "viso-render",
                     "viso-image",
                     "viso-media",
-                    "viso-dev-protocol",
                     "viso-gpu",
                     "viso-platform",
-                    "viso-handle",
                     "viso-text",
                     "viso-shader",
                     "viso-macros",
                     "viso-ende",
                     "viso-math",
-                    "viso-schema",
                     "viso-pdf",
                 ],
-                dev: &[],
+                // The DSL tests compile `.vs` sources themselves and reload
+                // them with the patch the dev link carries; an app links
+                // neither.
+                dev: &["viso-dsl", "viso-dev-protocol"],
             },
         ),
         // PDF documents of the renderer's primitives, the facade's `pdf`
@@ -295,7 +297,7 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
             "viso-services",
             Allowed {
                 dir: "crates/services",
-                deps: &["viso-runtime", "viso-platform"],
+                deps: &["viso-platform"],
                 dev: &[],
             },
         ),
@@ -528,12 +530,13 @@ fn main() -> ExitCode {
         "check-targets" => targets::check_targets(&args[1..]),
         "check-release-absence" => absence::check_release_absence(&args[1..]),
         "check-frame-tax" => frame_tax::check_frame_tax(&args[1..]),
+        "check-benches" => bench_gate::check_benches(&args[1..]),
         "check-profiles" => profiles::check_profiles(&args[1..]),
         "mcu-smoke" => mcu::mcu_smoke(&args[1..]),
         "footprint" => footprint::footprint(&args[1..]),
         other => {
             eprintln!(
-                "unknown xtask: {other:?}\nusage: cargo xtask check-deps | check-targets | check-release-absence | check-frame-tax | check-profiles | mcu-smoke | footprint | bundle"
+                "unknown xtask: {other:?}\nusage: cargo xtask check-deps | check-targets | check-release-absence | check-frame-tax | check-benches | check-profiles | mcu-smoke | footprint | bundle"
             );
             ExitCode::FAILURE
         }
@@ -612,10 +615,17 @@ fn check_deps() -> ExitCode {
     // fraction of the repository while continuing to report OK.
     violations.extend(unlisted_members(&root, &allowed));
     violations.extend(duplicate_geometry(&root, &allowed));
+    match imports::scan(&root, NEVER) {
+        Ok(found) => violations.extend(found.into_iter().map(|f| format!("FORBIDDEN IMPORT: {f}"))),
+        Err(why) => violations.push(format!("import scan: {why}")),
+    }
 
     if violations.is_empty() {
         println!(
-            "check-deps: OK — {checked} crates ({tools} tooling), all edges within the allowed DAG"
+            "check-deps: OK — {checked} crates ({tools} tooling), all edges within the allowed DAG, \
+             {} module rule(s) over {} crate(s)",
+            imports::RULES.len(),
+            imports::SCANNED.len()
         );
         ExitCode::SUCCESS
     } else {
@@ -663,7 +673,22 @@ fn runtime_in_closure(normal: &BTreeMap<&str, Vec<String>>) -> Vec<String> {
 /// crate defines a public type of the same name, so a rect is one type from
 /// layout to the GPU upload.
 const MATH_OWNED: &[&str] = &[
-    "Rect", "Point", "Vec2", "Vec3", "Vec4", "Affine2", "Mat2", "Mat3", "Mat4", "Quat",
+    "Rect",
+    "Point",
+    "Size",
+    "Insets",
+    "Vec2",
+    "Vec3",
+    "Vec4",
+    "Affine2",
+    "Mat2",
+    "Mat3",
+    "Mat4",
+    "Quat",
+    "Transform3",
+    "Aabb",
+    "Ray",
+    "Plane",
 ];
 
 /// Public geometry types declared outside `crates/math`.

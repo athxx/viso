@@ -87,6 +87,44 @@ jobs:
       - name: Release absence
         run: cargo xtask check-release-absence ${{ matrix.args }}
 
+  # Each footprint profile's release closure (no desktop stack or other
+  # platform's API on a board, no compiler, no behavior interpreter in any)
+  # and Clippy over every target an app builds for.
+  profiles-and-targets:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: aarch64-apple-ios, aarch64-apple-ios-sim, aarch64-linux-android, armv7-linux-androideabi, wasm32-unknown-unknown, x86_64-pc-windows-msvc, x86_64-unknown-linux-gnu
+      - name: Footprint profiles
+        run: cargo xtask check-profiles
+      - name: Every target
+        run: cargo xtask check-targets
+
+  # What a change costs, against the commit it builds on, measured on the
+  # same runner: the reference app's sizes, heap and frame times, and the
+  # hot-path benches' medians.
+  cost:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: The commit built on
+        run: |
+          base="${{ github.event.pull_request.base.sha || github.event.before }}"
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            base="$(git rev-parse HEAD~1)"
+          fi
+          echo "BASE=$base" >> "$GITHUB_ENV"
+      - name: Footprint
+        run: cargo xtask footprint --against "$BASE" --only viso/headless --only viso/embedded-cpu-headless
+      - name: Benches
+        run: cargo xtask check-benches --against "$BASE"
+
   # The MCU-ready crates (§50A.6) check for a Cortex-M target with no `std`.
   mcu-smoke:
     runs-on: ubuntu-latest

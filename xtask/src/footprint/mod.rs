@@ -2,7 +2,7 @@
 //! profile, beside Makepad's equivalent apps.
 //!
 //! ```text
-//! cargo xtask footprint [--check | --record] [--runs <n>]
+//! cargo xtask footprint [--check | --record | --against <rev>] [--runs <n>]
 //!     [--makepad <dir> | --no-makepad] [--only <subject>]...
 //! ```
 //!
@@ -32,7 +32,14 @@
 //! (`benches/footprint/baseline.json` and `baseline.md`); with `--only` it
 //! replaces just the rows it measured and keeps the rest; `--check` measures
 //! the Viso subjects and fails on a metric worse than the baseline by more
-//! than its tolerance ([`METRICS`]), for CI trend reporting.
+//! than its tolerance ([`METRICS`]), as a trend on another machine.
+//!
+//! `--against <rev>` is the gate CI runs: the Viso subjects of the commit
+//! `rev` are built from a worktree of it, under a target directory of their
+//! own, and measured on the same machine with the same toolchain; the work
+//! tree fails on a metric worse than `rev`'s by more than its paired
+//! tolerance, which holds sizes and the counted heap tighter than a baseline
+//! taken elsewhere can.
 
 mod baseline;
 mod build;
@@ -42,7 +49,7 @@ mod window;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-const USAGE: &str = "cargo xtask footprint [--check | --record] [--runs <n>] \
+const USAGE: &str = "cargo xtask footprint [--check | --record | --against <rev>] [--runs <n>] \
                      [--makepad <dir> | --no-makepad] [--only <subject>]...";
 
 /// What a metric counts, which decides how it is printed.
@@ -56,13 +63,16 @@ enum Unit {
 
 /// One measured quantity: its key in the baseline, its column title, and how
 /// much worse than the baseline `--check` lets it be: `tolerance` of the
-/// baseline value plus `floor`, in its unit.
+/// baseline value plus `floor`, in its unit; and `--against`, which measures
+/// both sides on one machine: `paired` (a tolerance and a floor) of the
+/// other commit's value.
 struct Metric {
     key: &'static str,
     title: &'static str,
     unit: Unit,
     tolerance: f64,
     floor: f64,
+    paired: (f64, f64),
 }
 
 const KIB: f64 = 1024.0;
@@ -81,18 +91,31 @@ const fn metric(
         unit,
         tolerance,
         floor,
+        paired: (tolerance, floor),
+    }
+}
+
+impl Metric {
+    /// The metric with `tolerance` and `floor` for a paired run: what one
+    /// toolchain on one machine holds steady.
+    const fn paired(self, tolerance: f64, floor: f64) -> Metric {
+        Metric {
+            paired: (tolerance, floor),
+            ..self
+        }
     }
 }
 
 /// Every metric, in the order the tables list them. Sizes are exact for a
-/// toolchain and so held tightly; times and memory vary from run to run, the
-/// memory footprint most (the system's share of it, around a third of a
-/// window app's, moves by tens of MiB between runs while the heap holds).
+/// toolchain and so held tightly, tighter when both sides share it; times
+/// and memory vary from run to run, the memory footprint most (the system's
+/// share of it, around a third of a window app's, moves by tens of MiB
+/// between runs while the heap holds).
 const METRICS: &[Metric] = &[
-    metric("binary_bytes", "binary", Unit::Bytes, 0.03, 16.0 * KIB),
-    metric("text_bytes", "__TEXT", Unit::Bytes, 0.03, 16.0 * KIB),
-    metric("data_bytes", "data", Unit::Bytes, 0.05, 4.0 * KIB),
-    metric("bss_bytes", "bss", Unit::Bytes, 0.05, 4.0 * KIB),
+    metric("binary_bytes", "binary", Unit::Bytes, 0.03, 16.0 * KIB).paired(0.01, 4.0 * KIB),
+    metric("text_bytes", "__TEXT", Unit::Bytes, 0.03, 16.0 * KIB).paired(0.01, 4.0 * KIB),
+    metric("data_bytes", "data", Unit::Bytes, 0.05, 4.0 * KIB).paired(0.02, KIB),
+    metric("bss_bytes", "bss", Unit::Bytes, 0.05, 4.0 * KIB).paired(0.02, KIB),
     metric("startup_ms", "first frame (ms)", Unit::Millis, 0.5, 20.0),
     metric("peak_rss_bytes", "peak RSS", Unit::Bytes, 0.2, 4.0 * MIB),
     metric("idle_rss_bytes", "idle RSS", Unit::Bytes, 0.2, 4.0 * MIB),
@@ -118,14 +141,16 @@ const METRICS: &[Metric] = &[
         Unit::Bytes,
         0.15,
         256.0 * KIB,
-    ),
+    )
+    .paired(0.05, 64.0 * KIB),
     metric(
         "heap_peak_bytes",
         "heap peak",
         Unit::Bytes,
         0.15,
         256.0 * KIB,
-    ),
+    )
+    .paired(0.05, 64.0 * KIB),
     metric(
         "idle_cpu_ms_per_s",
         "idle CPU (ms/s)",
@@ -332,6 +357,7 @@ fn makepad_subjects(dir: &Path) -> Vec<Subject> {
 struct Options {
     check: bool,
     record: bool,
+    against: Option<String>,
     runs: u32,
     makepad: Option<PathBuf>,
     only: Vec<String>,
@@ -342,6 +368,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut options = Options {
         check: false,
         record: false,
+        against: None,
         runs: 3,
         makepad: std::env::var_os("MAKEPAD_DIR")
             .map(PathBuf::from)
@@ -359,6 +386,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         match arg.as_str() {
             "--check" => options.check = true,
             "--record" => options.record = true,
+            "--against" => options.against = Some(value()?),
             "--runs" => {
                 options.runs =
                     value()?.parse().ok().filter(|n| *n >= 1).ok_or_else(|| {
@@ -374,13 +402,15 @@ fn parse(args: &[String]) -> Result<Options, String> {
             other => return Err(format!("unknown argument {other:?}\nusage: {USAGE}")),
         }
     }
-    if options.check && options.record {
+    let modes = [options.check, options.record, options.against.is_some()];
+    if modes.iter().filter(|&&on| on).count() > 1 {
         return Err(format!(
-            "--check and --record exclude each other\nusage: {USAGE}"
+            "--check, --record and --against exclude each other\nusage: {USAGE}"
         ));
     }
-    // A check is a trend gate on Viso: Makepad is measured when asked for.
-    if options.check && !explicit_makepad {
+    // A check is a trend gate on Viso: Makepad is measured when asked for,
+    // and never against another commit, whose Makepad is the same.
+    if (options.check && !explicit_makepad) || options.against.is_some() {
         options.makepad = None;
     }
     if let Some(dir) = &options.makepad
@@ -412,72 +442,28 @@ fn run(options: &Options) -> Result<(), String> {
     let root = crate::workspace_root();
     let target = build::target_dir();
     let scratch = std::env::temp_dir().join(format!("viso-footprint-{}", std::process::id()));
-    std::fs::create_dir_all(&scratch)
-        .map_err(|e| format!("cannot create {}: {e}", scratch.display()))?;
-    let mut subjects = viso_subjects();
     let makepad = options
         .makepad
         .as_deref()
         .map(|dir| dir.canonicalize().unwrap_or_else(|_| dir.to_owned()));
+    let mut subjects = viso_subjects();
     if let Some(dir) = &makepad {
         subjects.extend(makepad_subjects(dir));
     }
-    let wanted = |row: &str| {
-        options.only.is_empty()
-            || options
-                .only
-                .iter()
-                .any(|only| row.starts_with(only.as_str()))
+    let measured = match &options.against {
+        Some(rev) => against(rev, &subjects, options, &root, &target, &scratch)
+            .map(|(rows, base)| (rows, Some(base))),
+        None => measure(&subjects, options, &root, &target, &scratch.join("tree"))
+            .map(|rows| (rows, None)),
     };
-    let mut rows = Vec::new();
-    for subject in &subjects {
-        let ids: Vec<String> = Scene::ALL
-            .iter()
-            .map(|scene| format!("{}/{}/{}", subject.framework, subject.profile, scene.name()))
-            .collect();
-        if !ids.iter().any(|id| wanted(id)) {
-            continue;
-        }
-        if subject.mode == Mode::Window && !cfg!(target_os = "macos") {
-            eprintln!(
-                "footprint: {} {} opens a window, which is measured on macOS only",
-                subject.framework, subject.profile
-            );
-            continue;
-        }
-        eprintln!(
-            "footprint: building {} {}",
-            subject.framework, subject.profile
-        );
-        let built = build::build(&subject.build, &root, &target, &scratch)?;
-        for scene in Scene::ALL {
-            let mut row = Row::new(subject.framework, subject.profile, scene.name());
-            if !wanted(&row.id()) {
-                continue;
-            }
-            let Some(binary) = built.binary(scene) else {
-                continue;
-            };
-            build::sizes(binary, &mut row)?;
-            eprintln!("footprint: measuring {}", row.id());
-            match subject.mode {
-                Mode::Size => {}
-                Mode::Window => window::measure(binary, &built, scene, options.runs, &mut row)?,
-                Mode::Headless => {
-                    headless::measure(binary, scene, options.runs, &scratch, &mut row)?
-                }
-            }
-            rows.push(row);
-            if subject.mode == Mode::Size {
-                break;
-            }
-        }
-    }
     let _ = std::fs::remove_dir_all(&scratch);
+    let (rows, base) = measured?;
     let meta = baseline::Meta::collect(makepad.as_deref(), options.runs);
     println!("{}", baseline::markdown(&meta, &rows));
     let dir = root.join("benches/footprint");
-    if options.record {
+    if let (Some(rev), Some(base)) = (&options.against, base) {
+        baseline::check_paired(rev, &base, &rows)?;
+    } else if options.record {
         let (meta, rows) = if options.only.is_empty() {
             (meta, rows)
         } else {
@@ -496,8 +482,100 @@ fn run(options: &Options) -> Result<(), String> {
     Ok(())
 }
 
+/// The rows of the work tree, and of the commit `rev` beside them: its
+/// subjects built from a detached worktree of it, under a target directory
+/// of their own, then the work tree's, on this machine one after the other.
+fn against(
+    rev: &str,
+    subjects: &[Subject],
+    options: &Options,
+    root: &Path,
+    target: &Path,
+    scratch: &Path,
+) -> Result<(Vec<Row>, Vec<Row>), String> {
+    let dir = target.join("footprint-against");
+    let tree = crate::worktree::Worktree::add(root, &dir.join("tree"), rev)?;
+    eprintln!("footprint: measuring {rev}");
+    let base = measure(
+        subjects,
+        options,
+        tree.path(),
+        &dir.join("target"),
+        &scratch.join("base"),
+    )?;
+    drop(tree);
+    eprintln!("footprint: measuring the work tree");
+    let rows = measure(subjects, options, root, target, &scratch.join("tree"))?;
+    Ok((rows, base))
+}
+
+/// Builds the wanted `subjects` of the workspace at `root` under `target`
+/// and measures each of their scenes.
+fn measure(
+    subjects: &[Subject],
+    options: &Options,
+    root: &Path,
+    target: &Path,
+    scratch: &Path,
+) -> Result<Vec<Row>, String> {
+    std::fs::create_dir_all(scratch)
+        .map_err(|e| format!("cannot create {}: {e}", scratch.display()))?;
+    let wanted = |row: &str| {
+        options.only.is_empty()
+            || options
+                .only
+                .iter()
+                .any(|only| row.starts_with(only.as_str()))
+    };
+    let mut rows = Vec::new();
+    for subject in subjects {
+        let ids: Vec<String> = Scene::ALL
+            .iter()
+            .map(|scene| format!("{}/{}/{}", subject.framework, subject.profile, scene.name()))
+            .collect();
+        if !ids.iter().any(|id| wanted(id)) {
+            continue;
+        }
+        if subject.mode == Mode::Window && !cfg!(target_os = "macos") {
+            eprintln!(
+                "footprint: {} {} opens a window, which is measured on macOS only",
+                subject.framework, subject.profile
+            );
+            continue;
+        }
+        eprintln!(
+            "footprint: building {} {}",
+            subject.framework, subject.profile
+        );
+        let built = build::build(&subject.build, root, target, scratch)?;
+        for scene in Scene::ALL {
+            let mut row = Row::new(subject.framework, subject.profile, scene.name());
+            if !wanted(&row.id()) {
+                continue;
+            }
+            let Some(binary) = built.binary(scene) else {
+                continue;
+            };
+            build::sizes(binary, &mut row)?;
+            eprintln!("footprint: measuring {}", row.id());
+            match subject.mode {
+                Mode::Size => {}
+                Mode::Window => window::measure(binary, &built, scene, options.runs, &mut row)?,
+                Mode::Headless => {
+                    headless::measure(binary, scene, options.runs, scratch, &mut row)?
+                }
+            }
+            rows.push(row);
+            if subject.mode == Mode::Size {
+                break;
+            }
+        }
+    }
+    Ok(rows)
+}
+
 /// The median of `values`, `None` when there are none.
-fn median(values: &mut [f64]) -> Option<f64> {
+pub(crate) fn median(values: &mut [f64]) -> Option<f64> {
     if values.is_empty() {
         return None;
     }
@@ -550,6 +628,10 @@ mod tests {
             (5, &["viso/desktop".to_owned()][..])
         );
         assert!(args(&["--check", "--record"]).is_err());
+        assert!(args(&["--check", "--against", "HEAD"]).is_err());
+        let o = args(&["--against", "origin/nnn"]).unwrap();
+        assert_eq!(o.against.as_deref(), Some("origin/nnn"));
+        assert!(o.makepad.is_none());
         assert!(args(&["--runs", "0"]).is_err());
         assert!(args(&["--runs"]).is_err());
         assert!(args(&["--makepad", "/nonexistent/makepad"]).is_err());

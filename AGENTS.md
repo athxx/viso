@@ -201,7 +201,7 @@ xtask/src/main.rs   allowed_edges() — per-crate allowlist of internal dependen
 cargo xtask check-deps
 ```
 
-The checker enforces crate dependency edges (dev-dependencies listed separately): any internal edge not in the allowlist fails, every workspace member must have an entry, and the normal-dependency closure of the compiler/tooling crates must not reach runtime, platform or gpu. Module-level forbidden-import scanning is a target, not yet implemented. `cargo-modules` or similar tools may be used for visualization, but the repository-owned checker is the source of truth.
+The checker enforces crate dependency edges (dev-dependencies listed separately): any internal edge not in the allowlist fails, every workspace member must have an entry, and the normal-dependency closure of the compiler/tooling crates must not reach runtime, platform or gpu. It also parses the platform, ui, text, render, gpu and dsl sources and rejects module-level forbidden imports (`xtask/src/imports.rs`): paths into a `NEVER` crate, OS APIs in the MCU-ready modules, Ende on the frame's hot path, a compiler stage naming a later one, a backend-neutral GPU module naming a backend. `cargo-modules` or similar tools may be used for visualization, but the repository-owned checker is the source of truth.
 
 ## 3.7 Self-build vs dependency policy
 

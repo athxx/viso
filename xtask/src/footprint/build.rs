@@ -79,10 +79,12 @@ pub(super) fn target_dir() -> PathBuf {
         .unwrap_or_else(|| crate::workspace_root().join("target"))
 }
 
-fn cargo(dir: &Path) -> Command {
+/// `cargo build` of the package in `dir` with [`PROFILE`], under `target`.
+fn cargo(dir: &Path, target: &Path) -> Command {
     let mut command = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
     command
         .current_dir(dir)
+        .env("CARGO_TARGET_DIR", target)
         .arg("build")
         .arg("--profile")
         .arg(PROFILE);
@@ -119,7 +121,7 @@ pub(super) fn build(
             default_features,
             env,
         } => {
-            let mut command = cargo(root);
+            let mut command = cargo(root, target);
             command.args(["-p", "viso-footprint"]);
             if !default_features {
                 command.arg("--no-default-features");
@@ -149,7 +151,7 @@ pub(super) fn build(
         }
         Build::Makepad { checkout } => {
             let dir = makepad_crate(root, checkout, scratch)?;
-            status(cargo(&dir), "the Makepad apps")?;
+            status(cargo(&dir, target), "the Makepad apps")?;
             Ok(Built {
                 counter: out.join("makepad-footprint-counter"),
                 list: Some(out.join("makepad-footprint-list")),
@@ -159,7 +161,7 @@ pub(super) fn build(
             })
         }
         Build::MakepadExample { checkout, package } => {
-            let mut command = cargo(checkout);
+            let mut command = cargo(checkout, target);
             command.args(["-p", package]);
             status(command, package)?;
             Ok(Built {

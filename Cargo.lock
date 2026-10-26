@@ -4057,6 +4057,8 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 name = "xtask"
 version = "0.0.0"
 dependencies = [
+ "proc-macro2",
+ "syn 2.0.119",
  "viso-dev-protocol",
  "viso-ende",
  "viso-package",

@@ -136,7 +136,7 @@ fn frame_ns(target: &Path, baseline: &str, hot_reload: bool) -> Result<f64, Stri
 }
 
 /// The median's point estimate of criterion's `estimates.json`.
-fn median_ns(estimates: &str) -> Option<f64> {
+pub(crate) fn median_ns(estimates: &str) -> Option<f64> {
     let median = &estimates[estimates.find("\"median\"")?..];
     let point = &median[median.find("\"point_estimate\"")? + "\"point_estimate\"".len()..];
     let point = point.trim_start().strip_prefix(':')?.trim_start();

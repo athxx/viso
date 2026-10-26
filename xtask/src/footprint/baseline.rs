@@ -317,13 +317,20 @@ fn parse(text: &str) -> Result<Recorded, String> {
 }
 
 /// A metric of `row` worse than its baseline by more than its tolerance.
-fn regressions(recorded: &Row, row: &Row) -> Vec<String> {
+/// Each metric of `row` worse than `recorded`'s by more than its tolerance,
+/// or its paired tolerance when both were measured on this machine.
+fn regressions(recorded: &Row, row: &Row, paired: bool) -> Vec<String> {
     let mut out = Vec::new();
     for (at, metric) in METRICS.iter().enumerate() {
         let (Some(old), Some(new)) = (recorded.values[at], row.values[at]) else {
             continue;
         };
-        let limit = old * (1.0 + metric.tolerance) + metric.floor;
+        let (tolerance, floor) = if paired {
+            metric.paired
+        } else {
+            (metric.tolerance, metric.floor)
+        };
+        let limit = old * (1.0 + tolerance) + floor;
         if new > limit {
             out.push(format!(
                 "{} {}: {} against {} (at most {})",
@@ -349,7 +356,7 @@ pub(super) fn check(meta: &Meta, recorded: &Recorded, rows: &[Row]) -> Result<()
     let mut worse = Vec::new();
     for row in rows {
         match recorded.rows.iter().find(|r| r.id() == row.id()) {
-            Some(old) => worse.extend(regressions(old, row)),
+            Some(old) => worse.extend(regressions(old, row, false)),
             None => println!("footprint: {} has no baseline", row.id()),
         }
     }
@@ -359,6 +366,28 @@ pub(super) fn check(meta: &Meta, recorded: &Recorded, rows: &[Row]) -> Result<()
     } else {
         Err(format!(
             "{} metric(s) over the baseline:\n  {}",
+            worse.len(),
+            worse.join("\n  ")
+        ))
+    }
+}
+
+/// Holds `rows` to `base`, the same subjects of the commit `rev` measured on
+/// this machine: every metric within its paired tolerance.
+pub(super) fn check_paired(rev: &str, base: &[Row], rows: &[Row]) -> Result<(), String> {
+    let mut worse = Vec::new();
+    for row in rows {
+        match base.iter().find(|r| r.id() == row.id()) {
+            Some(old) => worse.extend(regressions(old, row, true)),
+            None => println!("footprint: {} is not in {rev}", row.id()),
+        }
+    }
+    if worse.is_empty() {
+        println!("footprint: within {rev} ({} subjects)", rows.len());
+        Ok(())
+    } else {
+        Err(format!(
+            "{} metric(s) worse than {rev}:\n  {}",
             worse.len(),
             worse.join("\n  ")
         ))
@@ -439,11 +468,20 @@ mod tests {
     #[test]
     fn a_metric_over_its_tolerance_is_a_regression() {
         let old = row("viso", 5_000_000.0, 60.0);
-        assert!(regressions(&old, &row("viso", 5_100_000.0, 100.0)).is_empty());
-        let worse = regressions(&old, &row("viso", 5_400_000.0, 200.0));
+        assert!(regressions(&old, &row("viso", 5_100_000.0, 100.0), false).is_empty());
+        let worse = regressions(&old, &row("viso", 5_400_000.0, 200.0), false);
         assert_eq!(worse.len(), 2, "{worse:?}");
         assert!(worse[0].contains("binary_bytes"));
-        assert!(regressions(&old, &row("viso", 1.0, 1.0)).is_empty());
+        assert!(regressions(&old, &row("viso", 1.0, 1.0), false).is_empty());
+        // Measured beside each other, 2% more code is a regression; the
+        // frame time keeps its tolerance.
+        let worse = regressions(&old, &row("viso", 5_100_000.0, 100.0), true);
+        assert_eq!(worse.len(), 1, "{worse:?}");
+        assert!(worse[0].contains("binary_bytes"));
+        let base = [old.clone()];
+        assert!(check_paired("HEAD", &base, &[row("viso", 5_040_000.0, 61.0)]).is_ok());
+        let failed = check_paired("HEAD", &base, &[row("viso", 5_100_000.0, 61.0)]);
+        assert!(failed.unwrap_err().contains("worse than HEAD"));
     }
 
     #[test]

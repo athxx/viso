@@ -21,9 +21,7 @@ viso-behavior = { workspace = true, features = ["std"] }
 # The aligned `static` the macros embed a module's and a view's bytes in.
 viso-ende = { workspace = true }
 viso-widgets = { workspace = true }
-# The view planner the development session turns the host's accepted `.vs`
-# sources into commits with; only a dev artifact (`hot-reload`) links it, so a
-# release app never does.
+# The low-frequency platform services a handler reaches (`cx.services()`).
 viso-services = { workspace = true }
 viso-pdf = { workspace = true, optional = true }
 # Glyph outlines a PDF embeds.

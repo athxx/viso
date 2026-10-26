@@ -34,20 +34,49 @@ Rules (as for `todo_features.md`):
   Vulkan rebuild it had been linked into every embedded closure. Verified: OK on aarch64 and
   armv7. With `viso/vm` forced on it reports `viso-behavior/interpreter <- viso-view feature "vm"
   <- viso feature "vm"`.
-- [ ] Run `check-profiles`, `check-targets` and `footprint --check` (against
+- [x] Run `check-profiles`, `check-targets` and `footprint --check` (against
   `benches/footprint/baseline.json`, with a tolerance) in CI. Verify that a seeded regression fails
   the job: `accesskit` added to the `kms` closure, or +10% heap or binary size.
-- [ ] Add a benchmark regression gate beyond `check-frame-tax`: medians of `frame_loop`,
+  — Built: CI jobs `profiles-and-targets` (macOS, every app target) and `cost`.
+  `cost` runs `footprint --against <base>`: the base commit is built from a detached worktree with
+  its own target directory and measured on the same runner, with tighter paired tolerances (sizes
+  1% + 4 KiB, heap 5% + 64 KiB). A baseline taken on another machine reads only as a trend.
+  Verified: paired against HEAD, the headless subjects were within tolerance; 320 KiB leaked at
+  startup (+10% heap) failed with 3.36 MiB against 3.05 MiB. The accesskit path is covered by the
+  `check-profiles` unit test. The workflow itself has not run on GitHub yet.
+- [x] Add a benchmark regression gate beyond `check-frame-tax`: medians of `frame_loop`,
   `list_scroll`, `paint_scale` and `reactive_binding` against a stored baseline. Verify that a 20%
   slowdown injected into layout fails it.
-- [ ] A first-party module-level forbidden-import scanner for platform, ui, render, gpu and dsl,
+  — Built: `cargo xtask check-benches --against <rev>`, in CI's `cost` job. A stored baseline does
+  not carry across machines, so `rev` is built in its own worktree and run beside the work tree.
+  Each bench target runs back to back on both sides, the first side alternating by round, and the
+  judgment is the median of per-round ratios (tolerance 15% + 20 ns). `grid_layout` and
+  `large_list` joined the set: the four named benches never relayout. Verified: identical code
+  stayed within ±8.2% over 4 rounds; a spin added to `layout_on` failed `grid_relayout_*` by +37%
+  to +62%.
+- [x] A first-party module-level forbidden-import scanner for platform, ui, render, gpu and dsl,
   run by `check-deps`. Verify that a planted `use viso_widgets` in `viso-ui` fails it.
-- [ ] Tighten the allowlist to the manifests: the facade's `viso-dsl` and `viso-dev-protocol` move
+  — Built: `xtask/src/imports.rs` parses the sources with `syn`, test items
+  aside, and resolves each path against its module. Rules: `NEVER` crates; OS APIs in ui
+  arena/reactive/layout and text shaping; Ende on the ui/render hot path; DSL stage order; GPU
+  backend-neutral modules. Resolution reads HIR types and the HIR walk lowers to IR in the same
+  pass, so `resolve` and `hir` are held only from the IR's consumers. Verified: `check-deps` OK. A
+  planted `use viso_widgets::Button` in `viso-ui` and a `std::time::Instant` in `layout` were both
+  reported.
+- [x] Tighten the allowlist to the manifests: the facade's `viso-dsl` and `viso-dev-protocol` move
   to `dev`; drop the facade's `viso-handle` and `viso-schema` and the services' `viso-runtime`.
   Verify that `check-deps` stays OK and that a normal `viso-dsl` dependency in the facade fails it.
-- [ ] Extend the duplicate-geometry names in `check-deps` (`Size`, `Insets`, `Aabb`, `Ray`,
+  — Built: facade `dsl`/`dev-protocol` became dev edges, facade `handle`/`schema`
+  and services' `runtime` were dropped, and a stale facade manifest comment was fixed. Verified:
+  `check-deps` OK, and a planted normal `viso-dsl` edge in the facade was refused.
+- [x] Extend the duplicate-geometry names in `check-deps` (`Size`, `Insets`, `Aabb`, `Ray`,
   `Plane`, `Transform3`), and rename `viso_ui::layout::Size` (a length request) and
   `viso_map::camera::Insets` (f64). Verify that `check-deps` passes with the longer list.
+  — Built: `Size`, `Insets`, `Transform3`, `Aabb`, `Ray` and `Plane` are
+  math-owned. `viso_ui::Size` became `Sizing` across about 300 files, by a token-aware rename that
+  leaves the `Size` variants of `Notice`, `CursorError` and the others alone. `viso_map::Insets`
+  became `Padding`. Verified: `check-deps` OK, the workspace and `examples/map` check with all
+  targets, and the `viso-ui` lib tests pass (769).
 - [ ] `#![forbid(unsafe_code)]` on viso-ui, viso-widgets, viso-runtime, viso-schema, viso-dsl,
   viso-view, viso-lexer and viso-lsp; clippy `undocumented_unsafe_blocks` in CI for the rest. Verify
   that clippy passes once the ~12 blocks missing `SAFETY:` are documented, mostly in
@@ -83,7 +112,7 @@ Rules (as for `todo_features.md`):
   Handle<Button>`). Verify with a trybuild test that a wrong-type use fails to compile.
 - [ ] `ui!` mounts any `viso::ui::Component`, so hand-written widgets and `component!` structs have
   one shape. Verify with a `ui!` case naming a hand-written `impl Component`.
-- [ ] Add `Component`, `Size`, `Align`, `Justify`, `Axis`, `Inset`, `BoxStyle` and `Rgba` to the
+- [ ] Add `Component`, `Sizing`, `Align`, `Justify`, `Axis`, `Inset`, `BoxStyle` and `Rgba` to the
   prelude, with `component!`/`view!` re-exported from it. Verify that the examples build with
   `use viso::prelude::*` as their only `viso` import.
 - [ ] Split `crates/viso/src/lib.rs` (5.6k lines: `AppDriver`, per-window state, frame phases,
