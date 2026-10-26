@@ -5,8 +5,8 @@ use core::f32::consts::PI;
 
 use super::{
     Alpha, ENV_HEIGHT, ENV_LEVELS, ENV_WIDTH, FrameUniforms, MATERIAL_DOUBLE_SIDED,
-    MATERIAL_NORMAL_MAP, MaterialUniforms, SHADOW_CASCADES, Shading, add, cross, dot, length,
-    normalize, scale, sub,
+    MATERIAL_NORMAL_MAP, MATERIAL_UV1, MaterialUniforms, SHADOW_CASCADES, Shading, add, cross, dot,
+    length, normalize, scale, sub,
 };
 
 /// The textures a fragment samples, by texture slot: each at a texture
@@ -17,24 +17,67 @@ pub trait SceneTextures {
 
 /// What a mesh fragment reads: its interpolated varyings and their screen
 /// derivatives.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MeshFragment {
     pub world: [f32; 3],
     /// The interpolated normal, not normalized.
     pub normal: [f32; 3],
     pub tangent: [f32; 4],
     pub uv: [f32; 2],
+    /// The second texture coordinate set; `uv` for a mesh without one.
+    pub uv1: [f32; 2],
+    /// The vertex color, linear and straight; white for a mesh without
+    /// one.
+    pub vertex_color: [f32; 4],
     /// The instance's tint, premultiplied.
     pub color: [f32; 4],
     /// `uv`'s change one pixel right and one pixel down.
     pub uv_dx: [f32; 2],
     pub uv_dy: [f32; 2],
+    /// `uv1`'s change one pixel right and one pixel down.
+    pub uv1_dx: [f32; 2],
+    pub uv1_dy: [f32; 2],
     /// The unit normal's change one pixel right and one pixel down.
     pub normal_dx: [f32; 3],
     pub normal_dy: [f32; 3],
     /// Where on the target it is, in pixels from the top left: a pixel's
     /// centre is at `+ 0.5`.
     pub pixel: [f32; 2],
+}
+
+impl Default for MeshFragment {
+    /// Everything zero but a white vertex color.
+    fn default() -> MeshFragment {
+        MeshFragment {
+            world: [0.0; 3],
+            normal: [0.0; 3],
+            tangent: [0.0; 4],
+            uv: [0.0; 2],
+            uv1: [0.0; 2],
+            vertex_color: [1.0; 4],
+            color: [0.0; 4],
+            uv_dx: [0.0; 2],
+            uv_dy: [0.0; 2],
+            uv1_dx: [0.0; 2],
+            uv1_dy: [0.0; 2],
+            normal_dx: [0.0; 3],
+            normal_dy: [0.0; 3],
+            pixel: [0.0; 2],
+        }
+    }
+}
+
+impl MeshFragment {
+    /// The texture coordinate map `k` of `material` reads (in texture slot
+    /// order), with its two derivatives.
+    #[inline]
+    fn uv_of(&self, material: &MaterialUniforms, k: usize) -> ([f32; 2], [f32; 2], [f32; 2]) {
+        if material.flags() & (MATERIAL_UV1 << k) != 0 {
+            (self.uv1, self.uv1_dx, self.uv1_dy)
+        } else {
+            (self.uv, self.uv_dx, self.uv_dy)
+        }
+    }
 }
 
 /// The irradiance over π at unit normal `n` of an environment whose nine
@@ -287,7 +330,8 @@ pub fn shade_depth(
         return None;
     }
     if material.alpha() == Alpha::Mask {
-        let a = tex.sample(0, f.uv, f.uv_dx, f.uv_dy)[3] * material.base_color[3] * tint_a;
+        let (uv, dx, dy) = f.uv_of(material, 0);
+        let a = tex.sample(0, uv, dx, dy)[3] * material.base_color[3] * f.vertex_color[3] * tint_a;
         if a < material.mode[2] {
             return None;
         }
@@ -307,7 +351,8 @@ pub fn shade_depth(
 /// - unlit: the color as is;
 /// - sprite: the color as is, covering a disc across `uv`;
 ///
-/// then fog.
+/// then fog. The base color is the material's times its map's times the
+/// vertex color.
 pub fn shade_mesh(
     frame: &FrameUniforms,
     material: &MaterialUniforms,
@@ -315,10 +360,13 @@ pub fn shade_mesh(
     tex: &dyn SceneTextures,
 ) -> Option<[f32; 4]> {
     let n_geom = normalize(f.normal);
-    let sample = |slot: usize| tex.sample(slot, f.uv, f.uv_dx, f.uv_dy);
+    let sample = |slot: usize| {
+        let (uv, dx, dy) = f.uv_of(material, slot);
+        tex.sample(slot, uv, dx, dy)
+    };
     let factor = material.base_color;
     let texel = sample(0);
-    let mut base: [f32; 4] = core::array::from_fn(|i| texel[i] * factor[i]);
+    let mut base: [f32; 4] = core::array::from_fn(|i| texel[i] * factor[i] * f.vertex_color[i]);
     let tint_a = f.color[3];
     if tint_a <= 0.0 {
         return None;
@@ -652,6 +700,34 @@ mod tests {
         assert!((at([0.5, 0.5]).unwrap()[3] - 1.0).abs() < 1e-6);
         assert!((at([0.75, 0.5]).unwrap()[3] - 0.5).abs() < 1e-6);
         assert_eq!(at([1.0, 0.5]), None);
+    }
+
+    /// A map whose texel is the coordinate it is sampled at.
+    struct Coordinates;
+
+    impl SceneTextures for Coordinates {
+        fn sample(&self, _: usize, uv: [f32; 2], _: [f32; 2], _: [f32; 2]) -> [f32; 4] {
+            [uv[0], uv[1], 1.0, 1.0]
+        }
+    }
+
+    #[test]
+    fn the_vertex_color_multiplies_the_base_color_and_a_map_reads_its_set() {
+        let mut m = material(Shading::Unlit);
+        m.base_color = [1.0; 4];
+        let mut f = fragment([0.0, 1.0, 0.0], [0.25, 0.5]);
+        f.uv1 = [0.75, 1.0];
+        f.vertex_color = [0.5, 1.0, 1.0, 1.0];
+        let first = shade_mesh(&frame(), &m, &f, &Coordinates).unwrap();
+        assert!((first[0] - 0.125).abs() < 1e-6 && (first[1] - 0.5).abs() < 1e-6);
+        m.mode[3] = MATERIAL_UV1 as f32;
+        let second = shade_mesh(&frame(), &m, &f, &Coordinates).unwrap();
+        assert!((second[0] - 0.375).abs() < 1e-6 && (second[1] - 1.0).abs() < 1e-6);
+        // A mask cuts by the vertex color's alpha too.
+        m.mode[1] = Alpha::Mask as u8 as f32;
+        f.vertex_color[3] = 0.25;
+        assert_eq!(shade_mesh(&frame(), &m, &f, &Coordinates), None);
+        assert_eq!(shade_depth(&frame(), &m, &f, &Coordinates), None);
     }
 
     #[test]

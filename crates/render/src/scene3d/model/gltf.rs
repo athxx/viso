@@ -109,15 +109,24 @@ pub(super) fn decode(
         image.mips = mips::chain(&image.rgba, image.width, image.height, image.kind);
     }
     let mut meshes = doc.meshes(materials.len())?;
-    // A normal map needs tangents: build them where the file has none.
+    // A normal map needs tangents: build them where the file has none,
+    // along the texture coordinates the map reads.
     for mesh in &mut meshes {
         for p in &mut mesh.primitives {
-            let mapped = p
+            let Some(normal) = p
                 .material
                 .and_then(|m| materials.get(m as usize))
-                .is_some_and(|m| m.normal_texture.is_some());
-            if mapped && p.tangents.is_empty() && !p.uvs.is_empty() {
-                p.tangents = geometry::tangents(&p.positions, &p.normals, &p.uvs, &p.indices);
+                .and_then(|m| m.normal_texture)
+            else {
+                continue;
+            };
+            let uvs = if normal.uv_set == 1 && !p.uvs1.is_empty() {
+                &p.uvs1
+            } else {
+                &p.uvs
+            };
+            if p.tangents.is_empty() && !uvs.is_empty() {
+                p.tangents = geometry::tangents(&p.positions, &p.normals, uvs, &p.indices);
             }
         }
     }
@@ -884,20 +893,22 @@ impl<'a> Doc<'a> {
             }
             None => Vec::new(),
         };
-        let uvs = match attr("TEXCOORD_0") {
-            Some(a) => {
-                let v: Vec<[f32; 2]> = self
-                    .floats(a, 2)?
-                    .as_chunks::<2>()
-                    .0
-                    .iter()
-                    .map(|c| [c[0], c[1]])
-                    .collect();
-                sized("TEXCOORD_0", v.len())?;
-                v
-            }
-            None => Vec::new(),
+        let texcoords = |name: &str| -> Result<Vec<[f32; 2]>, ModelError> {
+            let Some(a) = attr(name) else {
+                return Ok(Vec::new());
+            };
+            let v: Vec<[f32; 2]> = self
+                .floats(a, 2)?
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| [c[0], c[1]])
+                .collect();
+            sized(name, v.len())?;
+            Ok(v)
         };
+        let uvs = texcoords("TEXCOORD_0")?;
+        let uvs1 = texcoords("TEXCOORD_1")?;
         let mut tangents = match attr("TANGENT") {
             Some(a) => {
                 let v: Vec<[f32; 4]> = self
@@ -978,6 +989,7 @@ impl<'a> Doc<'a> {
         };
         let mut positions = positions;
         let mut uvs = uvs;
+        let mut uvs1 = uvs1;
         let mut colors = colors;
         if normals.is_empty() {
             // Flat shading, as the format asks of a mesh without normals: each
@@ -985,6 +997,7 @@ impl<'a> Doc<'a> {
             let flat = geometry::Flat::of(&indices);
             positions = flat.gather(&positions);
             uvs = flat.gather(&uvs);
+            uvs1 = flat.gather(&uvs1);
             colors = flat.gather(&colors);
             tangents = flat.gather(&tangents);
             joints = flat.gather(&joints);
@@ -1011,6 +1024,7 @@ impl<'a> Doc<'a> {
             positions,
             normals,
             uvs,
+            uvs1,
             tangents,
             colors,
             joints,

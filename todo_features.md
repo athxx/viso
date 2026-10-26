@@ -668,8 +668,13 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
   data/relative URIs, sparse/quantized accessors, generated flat normals and tangents,
   step/linear/cubic animation, pose solve, joint matrices); `AssetKind::Model` decoded on
   the asset worker and made resident per window (`NodeStore::scene_model`,
-  `SceneFrame::push_model`). Verified: unit tests incl. hostile inputs, the six Khronos
-  samples decode, a facade residency test, and models drawn on the CPU raster.
+  `SceneFrame::push_model`). `COLOR_0` multiplies the base color and `TEXCOORD_1` feeds
+  any map naming `texCoord: 1`, through a 16 B `VertexExtra` only meshes that need it
+  carry (`create_scene_mesh_extra`, the `Extra*` programs; plain meshes stay 48 B).
+  Verified: unit tests incl. hostile inputs, the six Khronos samples decode, a facade
+  residency test, models drawn on the CPU raster; VertexColorTest, BoxVertexColors,
+  MultiUVTest and synthetic color / second-set squares (skinned too) drawn alike on the CPU
+  raster and Metal.
 - [x] PBR metallic-roughness material with image-based ambient. — `Material` /
   `create_scene_material` / `SceneFrame::push_with`; glTF materials with all five maps
   (mip chains built on the asset worker, `create_texture_mipped`); GGX + Smith + Schlick

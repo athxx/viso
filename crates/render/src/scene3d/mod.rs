@@ -48,6 +48,7 @@ pub use shapes::Shape;
 pub use sky::Sky;
 pub use viso_gpu::scene::{
     FrameUniforms, MAX_JOINTS, MaterialUniforms, SceneInstance, SceneVertex, SkinnedVertex,
+    VertexExtra,
 };
 
 pub use viso_math::{LinearStraight, Mat4, Quat, Vec3, vec3};

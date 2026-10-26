@@ -24,7 +24,9 @@ use crate::ir::module::{
     ShaderIr, advanced_blend_ir, analytic_capsule_ir, analytic_ellipse_ir, analytic_line_ir,
     analytic_rrect_ir, analytic_shadow_ir, blur_ir, color_transform_ir, glyphrun_ir, gradient_ir,
     image_ir, material_ir, mesh_ir, mtsdf_ir, output_encode_ir, quad_ir, scene_ao_blur_ir,
-    scene_ao_ir, scene_depth_ir, scene_ir, scene_skinned_depth_ir, scene_skinned_ir, scene_sky_ir,
+    scene_ao_ir, scene_depth_ir, scene_extra_depth_ir, scene_extra_ir,
+    scene_extra_skinned_depth_ir, scene_extra_skinned_ir, scene_ir, scene_skinned_depth_ir,
+    scene_skinned_ir, scene_sky_ir,
 };
 use crate::msl::{PrimitiveKind, shader_source};
 
@@ -79,6 +81,10 @@ programs! {
     "scene_sky" => scene_sky_ir,
     "scene_ao" => scene_ao_ir,
     "scene_ao_blur" => scene_ao_blur_ir,
+    "scene_extra" => scene_extra_ir,
+    "scene_extra_depth" => scene_extra_depth_ir,
+    "scene_extra_skinned" => scene_extra_skinned_ir,
+    "scene_extra_skinned_depth" => scene_extra_skinned_depth_ir,
 }
 
 /// The index into [`PROGRAMS`] of `kind`'s program, if it is shaded.
