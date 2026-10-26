@@ -117,6 +117,21 @@ final class VisoView extends SurfaceView {
 
     @Override
     public boolean onGenericMotionEvent(MotionEvent event) {
+        if (VisoActivity.gamepads && event.isFromSource(InputDevice.SOURCE_CLASS_JOYSTICK)
+                && event.getActionMasked() == MotionEvent.ACTION_MOVE) {
+            VisoActivity.nativePadMotion(event.getDeviceId(),
+                    event.getAxisValue(MotionEvent.AXIS_X),
+                    event.getAxisValue(MotionEvent.AXIS_Y),
+                    event.getAxisValue(MotionEvent.AXIS_Z),
+                    event.getAxisValue(MotionEvent.AXIS_RZ),
+                    event.getAxisValue(MotionEvent.AXIS_HAT_X),
+                    event.getAxisValue(MotionEvent.AXIS_HAT_Y),
+                    event.getAxisValue(MotionEvent.AXIS_LTRIGGER),
+                    event.getAxisValue(MotionEvent.AXIS_RTRIGGER),
+                    event.getAxisValue(MotionEvent.AXIS_BRAKE),
+                    event.getAxisValue(MotionEvent.AXIS_GAS));
+            return true;
+        }
         if (!event.isFromSource(InputDevice.SOURCE_CLASS_POINTER)) {
             return super.onGenericMotionEvent(event);
         }
@@ -328,6 +343,12 @@ final class VisoView extends SurfaceView {
     }
 
     private boolean sendKey(int keyCode, KeyEvent event, boolean pressed) {
+        if (VisoActivity.gamepads && isGamepadKey(keyCode, event)) {
+            if (event.getRepeatCount() == 0) {
+                VisoActivity.nativePadKey(event.getDeviceId(), keyCode, pressed);
+            }
+            return true;
+        }
         int meta = event.getMetaState();
         String text = null;
         if (pressed) {
@@ -362,6 +383,12 @@ final class VisoView extends SurfaceView {
             default:
                 return true;
         }
+    }
+
+    /** Whether a key is a gamepad's: one of its buttons, or a key a gamepad sends. */
+    private static boolean isGamepadKey(int keyCode, KeyEvent event) {
+        return KeyEvent.isGamepadButton(keyCode)
+                || (event.getSource() & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD;
     }
 
     /** Send a key tap an input method spelled as an edit. */

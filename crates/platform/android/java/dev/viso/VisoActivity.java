@@ -13,10 +13,16 @@ import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.graphics.Color;
 import android.net.Uri;
+import android.hardware.input.InputManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.CombinedVibration;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
+import android.os.VibratorManager;
 import android.provider.Settings;
 import android.view.DisplayCutout;
+import android.view.InputDevice;
 import android.view.PointerIcon;
 import android.view.SurfaceHolder;
 import android.view.View;
@@ -42,7 +48,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * thread of its own once {@link #nativeStart} is called, and keeps running
  * across activity instances until the activity finishes.
  */
-public class VisoActivity extends Activity implements SurfaceHolder.Callback2 {
+public class VisoActivity extends Activity
+        implements SurfaceHolder.Callback2, InputManager.InputDeviceListener {
     private static final int APPEARANCE_DARK = 1;
     private static final int APPEARANCE_HIGH_CONTRAST = 2;
     private static final int APPEARANCE_REDUCE_MOTION = 4;
@@ -74,6 +81,8 @@ public class VisoActivity extends Activity implements SurfaceHolder.Callback2 {
     private int[] lastCutouts = new int[0];
     /** Whether the system bars are hidden; kept across a recreation. */
     private static boolean fullscreen;
+    /** Whether the native side reads gamepads; kept across a recreation. */
+    static volatile boolean gamepads;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -118,6 +127,9 @@ public class VisoActivity extends Activity implements SurfaceHolder.Callback2 {
         lastLocale = locale(config);
         nativeStart(this, lastDensity, lastAppearance, lastFontScale, lastLocale,
                 launchExtras());
+        if (gamepads) {
+            watchGamepads();
+        }
         // A recreated activity carries the intent it was first started with,
         // whose link was opened then.
         if (state == null) {
@@ -337,6 +349,9 @@ public class VisoActivity extends Activity implements SurfaceHolder.Callback2 {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        if (gamepads) {
+            getSystemService(InputManager.class).unregisterInputDeviceListener(this);
+        }
         if (isFinishing()) {
             // The app ends with its activity: stop the loop, then the process,
             // so the next launch starts `main` afresh.
@@ -399,6 +414,105 @@ public class VisoActivity extends Activity implements SurfaceHolder.Callback2 {
 
     void setLoupe(boolean show, float x, float y) {
         runOnUiThread(() -> view.setLoupe(show, x, y));
+    }
+
+    // Gamepads (native side).
+
+    /** Start reporting the gamepads: those connected now, then each change. */
+    void startGamepads() {
+        runOnUiThread(() -> {
+            if (!gamepads) {
+                gamepads = true;
+                watchGamepads();
+            }
+        });
+    }
+
+    private void watchGamepads() {
+        getSystemService(InputManager.class).registerInputDeviceListener(this, null);
+        for (int id : InputDevice.getDeviceIds()) {
+            onInputDeviceAdded(id);
+        }
+    }
+
+    /** Whether {@code device} is a gamepad or joystick. */
+    static boolean isGamepad(InputDevice device) {
+        int sources = device.getSources();
+        return !device.isVirtual()
+                && ((sources & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD
+                        || (sources & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK);
+    }
+
+    @Override
+    public void onInputDeviceAdded(int id) {
+        InputDevice device = InputDevice.getDevice(id);
+        if (device != null && isGamepad(device)) {
+            nativePadAdded(id, device.getName(), hasRumble(device));
+        }
+    }
+
+    @Override
+    public void onInputDeviceRemoved(int id) {
+        nativePadRemoved(id);
+    }
+
+    @Override
+    public void onInputDeviceChanged(int id) {
+        onInputDeviceAdded(id);
+    }
+
+    @SuppressWarnings("deprecation")
+    private static boolean hasRumble(InputDevice device) {
+        if (Build.VERSION.SDK_INT >= 31) {
+            return device.getVibratorManager().getVibratorIds().length > 0;
+        }
+        return device.getVibrator().hasVibrator();
+    }
+
+    /**
+     * Shake gamepad {@code id}: its strong and weak motors (0..1) for {@code ms}
+     * milliseconds, or stop it when both are zero; whether it has a motor.
+     */
+    @SuppressWarnings("deprecation")
+    boolean rumbleGamepad(int id, float strong, float weak, int ms) {
+        InputDevice device = InputDevice.getDevice(id);
+        if (device == null) {
+            return false;
+        }
+        boolean stop = (strong <= 0 && weak <= 0) || ms <= 0;
+        if (Build.VERSION.SDK_INT >= 31) {
+            VibratorManager manager = device.getVibratorManager();
+            int[] motors = manager.getVibratorIds();
+            if (motors.length == 0) {
+                return false;
+            }
+            if (stop) {
+                manager.cancel();
+                return true;
+            }
+            CombinedVibration.ParallelCombination all = CombinedVibration.startParallel();
+            for (int i = 0; i < motors.length; i++) {
+                float level = i == 0 ? strong : weak;
+                if (motors.length == 1) {
+                    level = Math.max(strong, weak);
+                }
+                int amplitude = Math.max(1, Math.min(255, Math.round(level * 255)));
+                all.addVibrator(motors[i], VibrationEffect.createOneShot(ms, amplitude));
+            }
+            manager.vibrate(all.combine());
+            return true;
+        }
+        Vibrator vibrator = device.getVibrator();
+        if (!vibrator.hasVibrator()) {
+            return false;
+        }
+        if (stop) {
+            vibrator.cancel();
+        } else {
+            int amplitude = Math.max(1, Math.min(255, Math.round(Math.max(strong, weak) * 255)));
+            vibrator.vibrate(VibrationEffect.createOneShot(ms, amplitude));
+        }
+        return true;
     }
 
     void setFullscreen(boolean on) {
@@ -596,6 +710,19 @@ public class VisoActivity extends Activity implements SurfaceHolder.Callback2 {
     static native void nativeScroll(float x, float y, float dx, float dy, int meta);
 
     static native void nativeKey(int keyCode, boolean pressed, boolean repeat, int meta, String text);
+
+    static native void nativePadAdded(int id, String name, boolean rumble);
+
+    static native void nativePadRemoved(int id);
+
+    static native void nativePadKey(int id, int keyCode, boolean pressed);
+
+    /**
+     * A gamepad's axes: the sticks (x, y, z, rz), the hat (x, y) and the
+     * triggers (left, right, brake, gas).
+     */
+    static native void nativePadMotion(int id, float x, float y, float z, float rz, float hatX,
+            float hatY, float left, float right, float brake, float gas);
 
     static native void nativePreedit(String text, int caret);
 

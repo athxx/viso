@@ -164,6 +164,22 @@ pub(super) enum Msg {
     Destroy,
     /// A [`LoopWaker`](crate::LoopWaker) kick.
     Wake,
+    /// Gamepad `id` (an input device id) connected or changed.
+    PadAdded {
+        id: i32,
+        name: String,
+        rumble: bool,
+    },
+    PadRemoved(i32),
+    PadKey {
+        id: i32,
+        code: i32,
+        pressed: bool,
+    },
+    PadMotion {
+        id: i32,
+        axes: crate::gamepad::android::Axes,
+    },
 }
 
 /// The loop thread's looper, set once it has one.
@@ -359,6 +375,9 @@ struct Loop {
     arrival: RefCell<Option<crate::DropReply>>,
     /// The URLs to open that came before launch, delivered right after it.
     early_urls: RefCell<Vec<String>>,
+    /// The gamepads the activity reports, once asked for.
+    pads: RefCell<crate::gamepad::android::Feed>,
+    pads_started: Cell<bool>,
 }
 
 /// The app's last answer to a drag from another app, for the UI thread: 0
@@ -412,6 +431,8 @@ thread_local! {
         access: RefCell::new(None),
         arrival: RefCell::new(None),
         early_urls: RefCell::new(Vec::new()),
+        pads: RefCell::new(crate::gamepad::android::Feed::default()),
+        pads_started: Cell::new(false),
     };
 }
 
@@ -630,6 +651,25 @@ fn apply(msg: Msg) {
             }
         }
         Msg::Wake => push(RawEvent::Wakeup),
+        // A pad's change wakes the runtime to poll for it.
+        Msg::PadAdded { id, name, rumble } => {
+            LOOP.with(|l| l.pads.borrow_mut().added(id, &name, rumble));
+            push(RawEvent::Wakeup);
+        }
+        Msg::PadRemoved(id) => {
+            LOOP.with(|l| l.pads.borrow_mut().removed(id));
+            push(RawEvent::Wakeup);
+        }
+        Msg::PadKey { id, code, pressed } => {
+            if LOOP.with(|l| l.pads.borrow_mut().key(id, code, pressed)) {
+                push(RawEvent::Wakeup);
+            }
+        }
+        Msg::PadMotion { id, axes } => {
+            if LOOP.with(|l| l.pads.borrow_mut().motion(id, axes)) {
+                push(RawEvent::Wakeup);
+            }
+        }
         Msg::LowMemory => {
             if LOOP.with(|l| l.launched.get()) {
                 push(RawEvent::LowMemory);
@@ -1217,6 +1257,24 @@ impl PlatformApp for AndroidApp {
 
     fn loop_waker(&self) -> crate::LoopWaker {
         crate::LoopWaker::new(|| send(Msg::Wake))
+    }
+
+    fn poll_gamepads(&mut self, events: &mut Vec<crate::GamepadEvent>) {
+        LOOP.with(|l| {
+            if !l.pads_started.replace(true) {
+                jni::start_gamepads();
+            }
+            l.pads.borrow_mut().poll(events);
+        });
+    }
+
+    fn rumble_gamepad(&mut self, id: crate::GamepadId, rumble: crate::Rumble) -> bool {
+        let Some(device) = LOOP.with(|l| l.pads.borrow().device(id)) else {
+            return false;
+        };
+        let rumble = rumble.clamped();
+        let ms = rumble.duration.as_millis().min(i32::MAX as u128) as i32;
+        jni::rumble_gamepad(device, rumble.strong, rumble.weak, ms)
     }
 }
 

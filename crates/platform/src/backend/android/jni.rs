@@ -56,6 +56,8 @@ struct Methods {
     set_title_text: Global<jmethodID>,
     finish: Global<jmethodID>,
     host_view: Global<jmethodID>,
+    start_gamepads: Global<jmethodID>,
+    rumble_gamepad: Global<jmethodID>,
 }
 
 struct Java {
@@ -431,6 +433,40 @@ pub(super) fn finish() {
     call_void(|m| m.finish, &[]);
 }
 
+/// Asks the activity to report the gamepads.
+pub(super) fn start_gamepads() {
+    call_void(|m| m.start_gamepads, &[]);
+}
+
+/// Shakes input device `id`; whether it has a motor.
+pub(super) fn rumble_gamepad(id: i32, strong: f32, weak: f32, ms: i32) -> bool {
+    let (Some(java), Some(env)) = (JAVA.get(), env()) else {
+        return false;
+    };
+    let activity = java.activity.lock().unwrap_or_else(|e| e.into_inner()).0;
+    if activity.is_null() {
+        return false;
+    }
+    let args = [
+        jvalue { i: id },
+        jvalue { f: strong },
+        jvalue { f: weak },
+        jvalue { i: ms },
+    ];
+    // SAFETY: as in `call_void`; `rumbleGamepad(int, float, float, int)`
+    // returns a boolean.
+    unsafe {
+        let shook = env_call!(
+            env,
+            CallBooleanMethodA,
+            activity,
+            java.methods.rumble_gamepad.0,
+            args.as_ptr()
+        );
+        check(env) && shook
+    }
+}
+
 /// Run `f` with `text` as a Java string local reference.
 fn with_string(text: &str, f: impl FnOnce(jobject)) {
     let Some(env) = env() else { return };
@@ -591,6 +627,8 @@ pub unsafe extern "system" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void
             set_title_text: method(c"setTitleText", c"(Ljava/lang/String;)V"),
             finish: method(c"finishFromNative", c"()V"),
             host_view: method(c"hostView", c"()Landroid/view/View;"),
+            start_gamepads: method(c"startGamepads", c"()V"),
+            rumble_gamepad: method(c"rumbleGamepad", c"(IFFI)Z"),
         };
         if !check(env) {
             return JNI_ERR;
@@ -612,7 +650,7 @@ pub unsafe extern "system" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void
 /// `env` must be the calling thread's environment and `class` the
 /// `VisoActivity` class.
 unsafe fn register_natives(env: *mut JNIEnv, class: jclass) -> bool {
-    let natives: [(&CStr, &CStr, *mut c_void); 21] = [
+    let natives: [(&CStr, &CStr, *mut c_void); 25] = [
         (
             c"nativeStart",
             c"(Ldev/viso/VisoActivity;FIFLjava/lang/String;[Ljava/lang/String;)V",
@@ -666,6 +704,22 @@ unsafe fn register_natives(env: *mut JNIEnv, class: jclass) -> bool {
             c"nativeOpenUrl",
             c"(Ljava/lang/String;)V",
             native_open_url as *mut c_void,
+        ),
+        (
+            c"nativePadAdded",
+            c"(ILjava/lang/String;Z)V",
+            native_pad_added as *mut c_void,
+        ),
+        (
+            c"nativePadRemoved",
+            c"(I)V",
+            native_pad_removed as *mut c_void,
+        ),
+        (c"nativePadKey", c"(IIZ)V", native_pad_key as *mut c_void),
+        (
+            c"nativePadMotion",
+            c"(IFFFFFFFFFF)V",
+            native_pad_motion as *mut c_void,
         ),
         (c"nativeDrag", c"(IFFIZ)I", native_drag as *mut c_void),
         (
@@ -944,6 +998,54 @@ extern "system" fn native_key(
         repeat,
         meta,
         text,
+    });
+}
+
+extern "system" fn native_pad_added(
+    env: *mut JNIEnv,
+    _class: jclass,
+    id: jint,
+    name: jstring,
+    rumble: jboolean,
+) {
+    // SAFETY: `name` is a live string or null.
+    let name = unsafe { read_string(env, name) }.unwrap_or_default();
+    send(Msg::PadAdded { id, name, rumble });
+}
+
+extern "system" fn native_pad_removed(_env: *mut JNIEnv, _class: jclass, id: jint) {
+    send(Msg::PadRemoved(id));
+}
+
+extern "system" fn native_pad_key(
+    _env: *mut JNIEnv,
+    _class: jclass,
+    id: jint,
+    code: jint,
+    pressed: jboolean,
+) {
+    send(Msg::PadKey { id, code, pressed });
+}
+
+#[allow(clippy::too_many_arguments)]
+extern "system" fn native_pad_motion(
+    _env: *mut JNIEnv,
+    _class: jclass,
+    id: jint,
+    x: jfloat,
+    y: jfloat,
+    z: jfloat,
+    rz: jfloat,
+    hat_x: jfloat,
+    hat_y: jfloat,
+    left: jfloat,
+    right: jfloat,
+    brake: jfloat,
+    gas: jfloat,
+) {
+    send(Msg::PadMotion {
+        id,
+        axes: [x, y, z, rz, hat_x, hat_y, left, right, brake, gas],
     });
 }
 

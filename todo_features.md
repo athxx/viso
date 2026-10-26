@@ -519,7 +519,12 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
     effects; KMS input leaves pads alone (verified in podman on a real kernel: a
     uinput-made pad hotplugged, read, rumbled through an uploaded effect and unplugged;
     decoder unit-tested over recorded events).
-  - [ ] Android: the activity's gamepad key and motion events.
+  - [x] Android: an `InputManager` device listener started at the first poll, the view's
+    gamepad keys and joystick motion routed to the loop thread (woken at the first change
+    since a poll), rumble through the device's `VibratorManager` / `Vibrator` (verified on
+    the API 36 emulator with a `uinput`-made pad: connection, buttons, stick, trigger, hat
+    and departure read in a running app, and its rumble reaching the device as `EV_FF`;
+    the key/axis mapping unit-tested).
   - [ ] Web: the Gamepad API.
   - [ ] Rumble from game systems.
 - [x] Rich clipboard: images and HTML. `ClipboardData { text, html, image }`, pastes name
