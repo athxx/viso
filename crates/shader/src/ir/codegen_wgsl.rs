@@ -76,6 +76,14 @@ pub fn emit_wgsl(ir: &ShaderIr, target: WgslTarget) -> Result<String, BodyError>
         push_field(&mut out, &names, f);
     }
     out.push_str("}\n\n");
+    let bindings = ir.bindings;
+    for block in bindings.map_or(&[][..], |b| b.blocks) {
+        let _ = writeln!(out, "struct {} {{", block.struct_name);
+        for f in block.fields {
+            push_field(&mut out, &names, f);
+        }
+        out.push_str("}\n\n");
+    }
 
     out.push_str("struct VOut {\n");
     let mut location = 0;
@@ -100,7 +108,53 @@ pub fn emit_wgsl(ir: &ShaderIr, target: WgslTarget) -> Result<String, BodyError>
         WgslTarget::Web => 1,
         WgslTarget::Native => 0,
     };
-    if ir.texture_count >= 1 {
+    if let Some(b) = bindings {
+        // A scene program's slots: on the web the blocks follow `u` in group
+        // 0 and the samplers the textures in group 1; natively each slot has
+        // its binding in the one set.
+        use viso_gpu_abi::scene::{
+            NATIVE_SAMPLER_BINDINGS, NATIVE_TEXTURE_BINDINGS, NATIVE_UNIFORM_BINDINGS,
+            TEXTURE_SLOTS,
+        };
+        let web = target == WgslTarget::Web;
+        for (i, block) in b.blocks.iter().enumerate() {
+            let (g, at) = if web {
+                (0, 1 + i as u32)
+            } else {
+                (0, NATIVE_UNIFORM_BINDINGS[1 + i])
+            };
+            let _ = writeln!(
+                out,
+                "@group({g}) @binding({at}) var<uniform> {}: {};",
+                names.ident(block.name),
+                block.struct_name
+            );
+        }
+        for (i, t) in b.textures.iter().enumerate() {
+            let at = if web {
+                i as u32
+            } else {
+                NATIVE_TEXTURE_BINDINGS[i]
+            };
+            let _ = writeln!(
+                out,
+                "@group({group}) @binding({at}) var {}: texture_2d<f32>;",
+                names.ident(t.name)
+            );
+        }
+        for (i, name) in b.samplers.iter().enumerate() {
+            let at = if web {
+                (TEXTURE_SLOTS + i) as u32
+            } else {
+                NATIVE_SAMPLER_BINDINGS[i]
+            };
+            let _ = writeln!(
+                out,
+                "@group({group}) @binding({at}) var {}: sampler;",
+                names.ident(name)
+            );
+        }
+    } else if ir.texture_count >= 1 {
         let _ = writeln!(out, "@group({group}) @binding(0) var tex: texture_2d<f32>;");
         if ir.texture_count >= 2 {
             let _ = writeln!(
@@ -158,7 +212,11 @@ fn wgsl_type(t: IrType) -> String {
 }
 
 fn push_field(out: &mut String, names: &Printer, f: &IrField) {
-    let _ = writeln!(out, "    {}: {},", names.ident(f.name), wgsl_type(f.ty));
+    let ty = match f.count {
+        0 => wgsl_type(f.ty),
+        n => format!("array<{}, {n}>", wgsl_type(f.ty)),
+    };
+    let _ = writeln!(out, "    {}: {ty},", names.ident(f.name));
 }
 
 /// One `VOut` member. `position` is the clip-space builtin; every other varying

@@ -88,7 +88,7 @@ fn framed(model: &SceneModel, pose: &Pose) -> SceneFrame {
     let radius = (hi - lo).length() * 0.5;
     let mut frame = SceneFrame::new();
     frame.camera = Camera {
-        eye: centre + vec3(0.35, 0.3, 1.0).normalize() * (radius * 2.6),
+        eye: centre + vec3(0.25, 0.2, 1.0).normalize() * (radius * 2.2),
         target: centre,
         near: radius * 0.05,
         ..Camera::default()
@@ -141,7 +141,8 @@ fn a_model_draws_its_mesh_where_its_nodes_place_it() {
     };
     // Lifted to the camera's height, the triangle covers the centre.
     let c = rgb(32, 34);
-    assert!(c[0] > 200 && c[0] > c[1] + 80 && c[0] > c[2] + 80, "{c:?}");
+    // A rough red metal (the glTF default metalness), lit.
+    assert!(c[0] > 120 && c[1] < 30 && c[2] < 30, "{c:?}");
     // Lowered by a pushed transform, it leaves the centre.
     let mut frame = SceneFrame::new();
     frame.camera = Camera {
@@ -179,7 +180,7 @@ fn sample_models_draw() {
         }
         let bytes = std::fs::read(&path).unwrap();
         let asset = ModelAsset::decode_embedded(&bytes).unwrap();
-        let mut kit = Kit::new(320, 240);
+        let mut kit = Kit::new(640, 480);
         let model = kit.r.create_scene_model(&mut kit.gpu, &asset);
         let mut pose = model.rig().rest_pose();
         if !model.rig().animations.is_empty() {
@@ -189,7 +190,7 @@ fn sample_models_draw() {
         }
         let mut frame = framed(&model, &pose);
         let px = kit.present(&mut frame, 1);
-        let image = viso_image::snapshot::Image::from_bgra8(320, 240, &px);
+        let image = viso_image::snapshot::Image::from_bgra8(640, 480, &px);
         let name = path.file_stem().unwrap().to_string_lossy().into_owned();
         std::fs::write(
             std::path::Path::new(&out).join(format!("{name}.png")),

@@ -24,12 +24,14 @@
 //! past its vertices, a node in a cycle, or a URI that leaves the asset's
 //! directory makes the asset fail to decode rather than read out of bounds.
 
-mod geometry;
+pub(crate) mod geometry;
 mod gltf;
+mod mips;
 
 use std::sync::Arc;
 
 pub use gltf::ModelError;
+pub use mips::ImageKind;
 use viso_math::{Mat4, Quat, Vec3, vec3};
 
 /// A decoded glTF asset: its geometry, materials, images and rig.
@@ -78,6 +80,7 @@ impl ModelAsset {
         }
         for image in &self.images {
             n += image.rgba.len() as u64;
+            n += image.mips.iter().map(|m| m.len() as u64).sum::<u64>();
         }
         n + self.rig.bytes()
     }
@@ -224,12 +227,18 @@ pub struct ModelTexture {
     pub nearest: bool,
 }
 
-/// An image, decoded: straight-alpha RGBA8, rows top first.
+/// An image, decoded: straight-alpha RGBA8, rows top first, with the mip
+/// chain below it built for what its materials sample it as.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelImage {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
+    /// What its texels hold: color when a material samples it as base color
+    /// or emission, a normal map, or data.
+    pub kind: ImageKind,
+    /// The levels below `rgba`, each half the previous, down to 1×1.
+    pub mips: Vec<Vec<u8>>,
 }
 
 /// A node's transform: translation, then rotation, then scale.

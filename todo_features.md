@@ -670,7 +670,13 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
   the asset worker and made resident per window (`NodeStore::scene_model`,
   `SceneFrame::push_model`). Verified: unit tests incl. hostile inputs, the six Khronos
   samples decode, a facade residency test, and models drawn on the CPU raster.
-- [ ] PBR metallic-roughness material with image-based ambient.
+- [x] PBR metallic-roughness material with image-based ambient. — `Material` /
+  `create_scene_material` / `SceneFrame::push_with`; glTF materials with all five maps
+  (mip chains built on the asset worker, `create_texture_mipped`); GGX + Smith + Schlick
+  with specular AA, `Environment` (prefiltered equirect atlas + SH9, from a radiance map
+  or the sky/ground gradient), PBR Neutral tonemap; blend sorted back to front. The CPU
+  raster runs the same expression (`viso_gpu::scene::shade_mesh`). Verified: CPU + Metal
+  drawn and compared, WGSL through naga, GLSL ES / HLSL through glslang, Khronos samples.
 - [ ] Shadow maps (cascaded for the directional light).
 - [ ] Skinned meshes.
 - [ ] SSAO and sky.

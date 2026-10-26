@@ -44,13 +44,54 @@ pub struct IrField {
     /// The field type — the single input to both the MSL spelling and the
     /// [`AttrFormat`](viso_gpu_abi::AttrFormat) projection.
     pub ty: IrType,
+    /// For a uniform-block member, the length of the array it is; `0` for a
+    /// single value. Attributes and varyings are never arrays.
+    pub count: u32,
 }
 
 impl IrField {
     /// Convenience constructor for a `const` field list.
     pub const fn new(name: &'static str, ty: IrType) -> Self {
-        IrField { name, ty }
+        IrField { name, ty, count: 0 }
     }
+
+    /// A uniform-block member that is an array of `count` values of `ty`,
+    /// indexed in the body as `block.name[i]`.
+    pub const fn array(name: &'static str, ty: IrType, count: u32) -> Self {
+        IrField { name, ty, count }
+    }
+}
+
+/// A uniform block beyond the program's `u`: a uniform buffer of its own,
+/// read by both stages as the global `name`, a value of struct `struct_name`.
+/// Every member is a `float4` or an array of them, so the block lays out the
+/// same in every language: 16 bytes a member element, in order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IrBlock {
+    pub name: &'static str,
+    pub struct_name: &'static str,
+    pub fields: &'static [IrField],
+}
+
+/// A texture a program samples, by its slot's name, and the sampler slot it
+/// is sampled through: a texture is only ever sampled through its own
+/// sampler (a GLSL ES texture unit carries one).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IrTexture {
+    pub name: &'static str,
+    pub sampler: u8,
+}
+
+/// The binding slots of a 3D scene program
+/// ([`VertexSource::PerVertexInstanced`]), beyond its `u` block at uniform
+/// slot 0: the blocks at uniform slots `1..`, the textures at texture slots
+/// `0..` and the samplers at sampler slots `0..`, each list in slot order.
+/// The fragment stage reads the textures; both stages read the blocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SceneBindings {
+    pub blocks: &'static [IrBlock],
+    pub textures: &'static [IrTexture],
+    pub samplers: &'static [&'static str],
 }
 
 /// Which per-vertex data source a primitive's vertex stage reads. Built-ins split
@@ -141,6 +182,9 @@ pub struct ShaderIr {
     /// The number of textures bound at `[[texture(0..)]]` (0 for Quad/Mesh, 1 for
     /// Image/GlyphRun). Samplers track textures 1:1.
     pub texture_count: u32,
+    /// A scene program's named blocks, textures and samplers; `None` for
+    /// every other program, whose textures `texture_count` counts.
+    pub bindings: Option<&'static SceneBindings>,
     /// The verbatim body of `vertex_main` — the statements between the opening
     /// `{` and the closing `}`, exactly as the hand-written built-in shipped.
     pub vertex_body: &'static str,
@@ -286,6 +330,7 @@ pub fn quad_ir() -> ShaderIr {
         uniforms: UNIFORMS,
         varyings: VARYINGS,
         texture_count: 0,
+        bindings: None,
         vertex_body: QUAD_VERTEX_BODY,
         helpers: QUAD_HELPERS,
         fragment_body: QUAD_FRAGMENT_BODY,
@@ -327,6 +372,7 @@ pub fn image_ir() -> ShaderIr {
         uniforms: UNIFORMS,
         varyings: VARYINGS,
         texture_count: 1,
+        bindings: None,
         vertex_body: IMAGE_VERTEX_BODY,
         helpers: IMAGE_HELPERS,
         fragment_body: IMAGE_FRAGMENT_BODY,
@@ -371,6 +417,7 @@ pub fn blur_ir() -> ShaderIr {
         uniforms: UNIFORMS,
         varyings: VARYINGS,
         texture_count: 1,
+        bindings: None,
         vertex_body: BLUR_VERTEX_BODY,
         helpers: "",
         fragment_body: BLUR_FRAGMENT_BODY,
@@ -419,6 +466,7 @@ pub fn color_transform_ir() -> ShaderIr {
         uniforms: UNIFORMS,
         varyings: VARYINGS,
         texture_count: 1,
+        bindings: None,
         vertex_body: COLOR_TRANSFORM_VERTEX_BODY,
         helpers: "",
         fragment_body: COLOR_TRANSFORM_FRAGMENT_BODY,
@@ -455,6 +503,7 @@ pub fn output_encode_ir() -> ShaderIr {
         uniforms: UNIFORMS,
         varyings: VARYINGS,
         texture_count: 1,
+        bindings: None,
         vertex_body: OUTPUT_ENCODE_VERTEX_BODY,
         helpers: OUTPUT_ENCODE_HELPERS,
         fragment_body: OUTPUT_ENCODE_FRAGMENT_BODY,
@@ -503,6 +552,7 @@ pub fn advanced_blend_ir() -> ShaderIr {
         uniforms: UNIFORMS,
         varyings: VARYINGS,
         texture_count: 2,
+        bindings: None,
         vertex_body: ADVANCED_BLEND_VERTEX_BODY,
         helpers: ADVANCED_BLEND_HELPERS,
         fragment_body: ADVANCED_BLEND_FRAGMENT_BODY,
@@ -571,6 +621,7 @@ pub fn material_ir() -> ShaderIr {
         uniforms: UNIFORMS,
         varyings: VARYINGS,
         texture_count: 1,
+        bindings: None,
         vertex_body: MATERIAL_VERTEX_BODY,
         helpers: MATERIAL_HELPERS,
         fragment_body: MATERIAL_FRAGMENT_BODY,
@@ -602,6 +653,7 @@ pub fn glyphrun_ir() -> ShaderIr {
         uniforms: UNIFORMS,
         varyings: VARYINGS,
         texture_count: 1,
+        bindings: None,
         vertex_body: GLYPHRUN_VERTEX_BODY,
         helpers: INK_HELPERS,
         fragment_body: GLYPHRUN_FRAGMENT_BODY,
@@ -644,6 +696,7 @@ pub fn mtsdf_ir() -> ShaderIr {
         uniforms: UNIFORMS,
         varyings: VARYINGS,
         texture_count: 1,
+        bindings: None,
         vertex_body: MTSDF_VERTEX_BODY,
         helpers: INK_HELPERS,
         fragment_body: MTSDF_FRAGMENT_BODY,
@@ -672,6 +725,7 @@ pub fn mesh_ir() -> ShaderIr {
         uniforms: UNIFORMS,
         varyings: VARYINGS,
         texture_count: 0,
+        bindings: None,
         vertex_body: MESH_VERTEX_BODY,
         helpers: "",
         fragment_body: MESH_FRAGMENT_BODY,
@@ -728,6 +782,7 @@ pub fn analytic_rrect_ir() -> ShaderIr {
         uniforms: UNIFORMS,
         varyings: VARYINGS,
         texture_count: 0,
+        bindings: None,
         vertex_body: ANALYTIC_RRECT_VERTEX_BODY,
         helpers: ANALYTIC_RRECT_HELPERS,
         fragment_body: ANALYTIC_RRECT_FRAGMENT_BODY,
@@ -810,6 +865,7 @@ pub fn analytic_shadow_ir() -> ShaderIr {
         uniforms: UNIFORMS,
         varyings: VARYINGS,
         texture_count: 0,
+        bindings: None,
         vertex_body: ANALYTIC_SHADOW_VERTEX_BODY,
         helpers: ANALYTIC_SHADOW_HELPERS,
         fragment_body: ANALYTIC_SHADOW_FRAGMENT_BODY,
@@ -856,6 +912,7 @@ pub fn analytic_ellipse_ir() -> ShaderIr {
         uniforms: UNIFORMS,
         varyings: VARYINGS,
         texture_count: 0,
+        bindings: None,
         vertex_body: ANALYTIC_ELLIPSE_VERTEX_BODY,
         helpers: ANALYTIC_ELLIPSE_HELPERS,
         fragment_body: ANALYTIC_ELLIPSE_FRAGMENT_BODY,
@@ -904,6 +961,7 @@ pub fn analytic_capsule_ir() -> ShaderIr {
         uniforms: UNIFORMS,
         varyings: VARYINGS,
         texture_count: 0,
+        bindings: None,
         vertex_body: ANALYTIC_CAPSULE_VERTEX_BODY,
         helpers: ANALYTIC_CAPSULE_HELPERS,
         fragment_body: ANALYTIC_CAPSULE_FRAGMENT_BODY,
@@ -956,6 +1014,7 @@ pub fn analytic_line_ir() -> ShaderIr {
         uniforms: UNIFORMS,
         varyings: VARYINGS,
         texture_count: 0,
+        bindings: None,
         vertex_body: ANALYTIC_LINE_VERTEX_BODY,
         helpers: ANALYTIC_LINE_HELPERS,
         fragment_body: ANALYTIC_LINE_FRAGMENT_BODY,
@@ -1022,59 +1081,120 @@ pub fn gradient_ir() -> ShaderIr {
         uniforms: UNIFORMS,
         varyings: VARYINGS,
         texture_count: 1,
+        bindings: None,
         vertex_body: GRADIENT_VERTEX_BODY,
         helpers: GRADIENT_HELPERS,
         fragment_body: GRADIENT_FRAGMENT_BODY,
     }
 }
 
-/// The 3D scene built-in: an indexed mesh drawn once per instance, lit in
-/// linear light by one directional light, a hemispheric ambient and
-/// exponential fog (`viso_gpu_abi::scene`). The vertex and instance layouts
-/// are `SceneVertex` and `SceneInstance`; the uniforms `SceneUniforms`, its
-/// column-major view-projection as four columns. The fragment computes
-/// `SceneUniforms::shade`, the expression the CPU raster runs.
+/// The frame's uniform block of every scene program, `u`:
+/// `viso_gpu_abi::scene::FrameUniforms`, its column-major view-projection as
+/// four columns.
+static SCENE_FRAME: &[IrField] = &[
+    IrField::new("view_proj0", IrType::F32X4),
+    IrField::new("view_proj1", IrType::F32X4),
+    IrField::new("view_proj2", IrType::F32X4),
+    IrField::new("view_proj3", IrType::F32X4),
+    IrField::new("camera", IrType::F32X4),
+    IrField::new("light_dir", IrType::F32X4),
+    IrField::new("light_color", IrType::F32X4),
+    IrField::new("fog", IrType::F32X4),
+    IrField::new("ambient", IrType::F32X4),
+    IrField::array("sh", IrType::F32X4, 9),
+];
+
+/// A scene draw's instance: `viso_gpu_abi::scene::SceneInstance`.
+static SCENE_INSTANCE: &[IrField] = &[
+    IrField::new("row0", IrType::F32X4),
+    IrField::new("row1", IrType::F32X4),
+    IrField::new("row2", IrType::F32X4),
+    IrField::new("color", IrType::F32X4),
+];
+
+/// A material's uniform block, `material`:
+/// `viso_gpu_abi::scene::MaterialUniforms`.
+const SCENE_MATERIAL: IrBlock = IrBlock {
+    name: "material",
+    struct_name: "MaterialBlock",
+    fields: &[
+        IrField::new("base_color", IrType::F32X4),
+        IrField::new("emissive", IrType::F32X4),
+        IrField::new("params", IrType::F32X4),
+        IrField::new("mode", IrType::F32X4),
+    ],
+};
+
+/// The material's maps, sampled through sampler slot 0.
+const SCENE_MATERIAL_TEXTURES: [IrTexture; 5] = [
+    IrTexture {
+        name: "base_tex",
+        sampler: 0,
+    },
+    IrTexture {
+        name: "mr_tex",
+        sampler: 0,
+    },
+    IrTexture {
+        name: "normal_tex",
+        sampler: 0,
+    },
+    IrTexture {
+        name: "occlusion_tex",
+        sampler: 0,
+    },
+    IrTexture {
+        name: "emissive_tex",
+        sampler: 0,
+    },
+];
+
+/// The 3D scene's mesh program (`viso_gpu_abi::scene::SceneProgram::Mesh`):
+/// an indexed mesh drawn once per instance in its material. The vertex and
+/// instance layouts are `SceneVertex` and `SceneInstance`; the fragment
+/// computes `viso_gpu_abi::scene::shade_mesh`, the expression the CPU raster
+/// runs.
 pub fn scene_ir() -> ShaderIr {
     static ATTRS: &[IrField] = &[
         IrField::new("position", IrType::F32X3),
         IrField::new("normal", IrType::F32X3),
         IrField::new("uv", IrType::F32X2),
-    ];
-    static INSTANCE: &[IrField] = &[
-        IrField::new("row0", IrType::F32X4),
-        IrField::new("row1", IrType::F32X4),
-        IrField::new("row2", IrType::F32X4),
-        IrField::new("color", IrType::F32X4),
-    ];
-    static UNIFORMS: &[IrField] = &[
-        IrField::new("view_proj0", IrType::F32X4),
-        IrField::new("view_proj1", IrType::F32X4),
-        IrField::new("view_proj2", IrType::F32X4),
-        IrField::new("view_proj3", IrType::F32X4),
-        IrField::new("camera", IrType::F32X4),
-        IrField::new("light_dir", IrType::F32X4),
-        IrField::new("light_color", IrType::F32X4),
-        IrField::new("sky", IrType::F32X4),
-        IrField::new("ground", IrType::F32X4),
-        IrField::new("fog", IrType::F32X4),
+        IrField::new("tangent", IrType::F32X4),
     ];
     static VARYINGS: &[Varying] = &[
         Varying::new("position", IrType::F32X4, " [[position]]", ""),
         Varying::new("world", IrType::F32X3, "", ""),
         Varying::new("normal", IrType::F32X3, "", ""),
+        Varying::new("tangent", IrType::F32X4, "", ""),
         Varying::new("uv", IrType::F32X2, "", ""),
         Varying::new("color", IrType::F32X4, " [[flat]]", ""),
     ];
+    static BINDINGS: SceneBindings = SceneBindings {
+        blocks: &[SCENE_MATERIAL],
+        textures: &[
+            SCENE_MATERIAL_TEXTURES[0],
+            SCENE_MATERIAL_TEXTURES[1],
+            SCENE_MATERIAL_TEXTURES[2],
+            SCENE_MATERIAL_TEXTURES[3],
+            SCENE_MATERIAL_TEXTURES[4],
+            IrTexture {
+                name: "env_tex",
+                sampler: 1,
+            },
+        ],
+        samplers: &["material_samp", "linear_samp"],
+    };
     ShaderIr {
         kind: PrimitiveKind::Scene,
         vertex_source: VertexSource::PerVertexInstanced,
         attributes: ATTRS,
-        instance_attributes: INSTANCE,
-        uniforms: UNIFORMS,
+        instance_attributes: SCENE_INSTANCE,
+        uniforms: SCENE_FRAME,
         varyings: VARYINGS,
         texture_count: 0,
+        bindings: Some(&BINDINGS),
         vertex_body: SCENE_VERTEX_BODY,
-        helpers: "",
+        helpers: SCENE_HELPERS,
         fragment_body: SCENE_FRAGMENT_BODY,
     }
 }
@@ -2344,65 +2464,199 @@ float3 p = float3(v.position);
 float3 world = float3(dot(r0.xyz, p) + r0.w, dot(r1.xyz, p) + r1.w, dot(r2.xyz, p) + r2.w);
 
 // The normal through the cofactor of the linear part, so a non-uniform scale
-// keeps it perpendicular to the surface.
+// keeps it perpendicular to the surface, and turned back out by a mirroring
+// instance, whose bitangents flip; the tangent through the linear part.
 float3 c0 = float3(r0.x, r1.x, r2.x);
 float3 c1 = float3(r0.y, r1.y, r2.y);
 float3 c2 = float3(r0.z, r1.z, r2.z);
 float3 n = float3(v.normal);
+float4 t = float4(v.tangent);
+float side = dot(c0, cross(c1, c2)) < 0.0 ? -1.0 : 1.0;
 
 VOut out;
 out.position = float4(u.view_proj0) * world.x + float4(u.view_proj1) * world.y
     + float4(u.view_proj2) * world.z + float4(u.view_proj3);
 out.world = world;
-out.normal = cross(c1, c2) * n.x + cross(c2, c0) * n.y + cross(c0, c1) * n.z;
+out.normal = (cross(c1, c2) * n.x + cross(c2, c0) * n.y + cross(c0, c1) * n.z) * side;
+out.tangent = float4(c0 * t.x + c1 * t.y + c2 * t.z, t.w * side);
 out.uv = float2(v.uv);
 out.color = float4(inst.color);
 return out;";
 
-const SCENE_FRAGMENT_BODY: &str = "\
-float a = in.color.a;
-if (a <= 0.0) {
-    return float4(0.0, 0.0, 0.0, 0.0);
+const SCENE_HELPERS: &str = "\
+// The GGX distribution of microfacet normals at `nh`, for roughness squared
+// squared `a2`.
+static inline float ggx(float nh, float a2) {
+    float d = nh * nh * (a2 - 1.0) + 1.0;
+    return a2 / (M_PI_F * d * d);
 }
+
+// The height-correlated Smith visibility of the microfacets.
+static inline float smith(float nv, float nl, float a2) {
+    float gv = nl * sqrt(nv * nv * (1.0 - a2) + a2);
+    float gl = nv * sqrt(nl * nl * (1.0 - a2) + a2);
+    return 0.5 / (gv + gl);
+}
+
+// The scale and bias of `f0` an environment's reflection is lit by: an
+// analytic fit of the split-sum integral.
+static inline float2 env_brdf(float roughness, float nv) {
+    float4 r = float4(-1.0, -0.0275, -0.572, 0.022) * roughness + float4(1.0, 0.0425, 1.04, -0.04);
+    float a = min(r.x * r.x, exp2(-9.28 * nv)) * r.x + r.y;
+    return float2(-1.04 * a + r.z, 1.04 * a + r.w);
+}
+
+// Where direction `d` falls on an equirectangular map.
+static inline float2 env_direction(float3 d) {
+    return float2(atan2(d.x, -d.z) * (0.5 / M_PI_F) + 0.5, acos(clamp(d.y, -1.0, 1.0)) / M_PI_F);
+}
+
+// The environment atlas coordinate of `uv` on roughness level `level`'s map,
+// half a texel inside it: level `k` is 256 >> k by 128 >> k texels at row
+// 256 - (256 >> k) of the 256-texel-square atlas.
+static inline float2 env_atlas(float2 uv, float level) {
+    float s = exp2(-level);
+    float w = 256.0 * s;
+    float h = 128.0 * s;
+    float x = clamp(uv.x * w, 0.5, w - 0.5);
+    float y = 256.0 - 256.0 * s + clamp(uv.y * h, 0.5, h - 0.5);
+    return float2(x, y) / 256.0;
+}
+
+// Linear light into [0, 1], hues kept: the Khronos PBR Neutral curve.
+static inline float3 tonemap(float3 c) {
+    float x = min(c.x, min(c.y, c.z));
+    float offset = x < 0.08 ? x - 6.25 * x * x : 0.04;
+    float3 d = c - offset;
+    float peak = max(d.x, max(d.y, d.z));
+    if (peak < 0.76) {
+        return d;
+    }
+    float e = 0.24;
+    float new_peak = 1.0 - e * e / (peak + e - 0.76);
+    d = d * (new_peak / peak);
+    float g = 1.0 - 1.0 / (0.15 * (peak - new_peak) + 1.0);
+    return d + (float3(new_peak) - d) * g;
+}";
+
+const SCENE_FRAGMENT_BODY: &str = "\
+// The derivatives every sample selects its detail by, taken before any
+// fragment of the quad leaves.
+float2 uv_dx = dfdx(in.uv);
+float2 uv_dy = dfdy(in.uv);
+float3 n_geom = normalize(in.normal);
+float3 n_dx = dfdx(n_geom);
+float3 n_dy = dfdy(n_geom);
+
+float4 mode = float4(material.mode);
+float4 base = base_tex.sample(material_samp, in.uv, gradient2d(uv_dx, uv_dy)) * float4(material.base_color);
+float tint_a = in.color.a;
+if (tint_a <= 0.0) {
+    discard_fragment();
+    return float4(0.0);
+}
+base = float4(base.xyz * (in.color.xyz / tint_a), base.w * tint_a);
+float a = tint_a;
+if (mode.y > 1.5) {
+    a = base.w;
+} else if (mode.y > 0.5) {
+    if (base.w < mode.z) {
+        discard_fragment();
+        return float4(0.0);
+    }
+}
+
 float4 camera = float4(u.camera);
-float4 fog_color = float4(u.fog);
 float3 to_eye = camera.xyz - in.world;
 float distance = length(to_eye);
-float fog = 1.0 - exp(-fog_color.w * distance);
-
-// The base color, straight.
-float3 base = max(in.color.rgb / a, float3(0.0, 0.0, 0.0));
-float3 c = base;
-if (camera.w > 1.5) {
+float3 c = base.xyz;
+if (mode.x > 1.5) {
     // A sprite: a disc across the quad, fading smoothly to its rim.
     float2 d = in.uv * 2.0 - 1.0;
     float t = clamp(1.0 - length(d), 0.0, 1.0);
     a = a * (t * t * (3.0 - 2.0 * t));
     if (a <= 0.0) {
-        return float4(0.0, 0.0, 0.0, 0.0);
+        discard_fragment();
+        return float4(0.0);
     }
-} else if (camera.w < 0.5) {
-    float4 light_dir = float4(u.light_dir);
-    float3 sky = float4(u.sky).rgb;
-    float3 ground = float4(u.ground).rgb;
-    float3 light = float4(u.light_color).rgb;
-    float3 n = normalize(in.normal);
-    float3 l = light_dir.xyz;
+} else if (mode.x < 0.5) {
     float3 v = to_eye / max(distance, 0.000001);
-    float up = n.y * 0.5 + 0.5;
-    float diffuse = max(dot(n, l), 0.0) * light_dir.w;
-    float specular = 0.0;
-    if (diffuse > 0.0) {
-        float3 half_way = l + v;
-        float hl = length(half_way);
-        if (hl > 0.0) {
-            specular = pow(max(dot(n, half_way / hl), 0.0), 32.0) * 0.25 * light_dir.w;
+    uint bits = uint(mode.w);
+    float side = 1.0;
+    if ((bits & 2u) != 0u && dot(n_geom, v) < 0.0) {
+        side = -1.0;
+    }
+    float3 n = n_geom * side;
+    float4 params = float4(material.params);
+    if ((bits & 1u) != 0u) {
+        float4 m = normal_tex.sample(material_samp, in.uv, gradient2d(uv_dx, uv_dy));
+        float3 tn = float3((m.x * 2.0 - 1.0) * params.z, (m.y * 2.0 - 1.0) * params.z, m.z * 2.0 - 1.0);
+        float3 t = in.tangent.xyz * side;
+        t = t - n * dot(n, t);
+        float tl = length(t);
+        if (tl > 0.000001) {
+            t = t / tl;
+            float3 b = cross(n, t) * (in.tangent.w * side);
+            n = normalize(t * tn.x + b * tn.y + n * tn.z);
         }
     }
-    float3 ambient = ground + (sky - ground) * up;
-    c = base * (ambient + diffuse * light) + specular * light;
+    float4 mr = mr_tex.sample(material_samp, in.uv, gradient2d(uv_dx, uv_dy));
+    float metallic = clamp(params.x * mr.z, 0.0, 1.0);
+    float roughness = clamp(params.y * mr.y, 0.045, 1.0);
+    float occlusion = 1.0 + params.w * (occlusion_tex.sample(material_samp, in.uv, gradient2d(uv_dx, uv_dy)).x - 1.0);
+    float3 emissive = emissive_tex.sample(material_samp, in.uv, gradient2d(uv_dx, uv_dy)).xyz * float4(material.emissive).xyz;
+
+    float3 f0 = float3(0.04) + (c - float3(0.04)) * metallic;
+    float3 albedo = c * (1.0 - metallic);
+    float alpha = roughness * roughness;
+    // Roughness widened by how fast the normal turns across the pixel, so a
+    // highlight never shrinks below what the pixel can hold.
+    float variance = 0.15 * (dot(n_dx, n_dx) + dot(n_dy, n_dy));
+    float a2 = clamp(alpha * alpha + min(2.0 * variance, 0.2), 0.0, 1.0);
+    float nv = max(dot(n, v), 0.0001);
+
+    // The light: diffuse and specular, scaled so a white diffuse surface
+    // facing a light of intensity 1 reflects its color.
+    float4 light_dir = float4(u.light_dir);
+    float3 l = light_dir.xyz;
+    float nl = max(dot(n, l), 0.0);
+    float3 color = float3(0.0);
+    if (nl > 0.0) {
+        float3 h = normalize(l + v);
+        float nh = max(dot(n, h), 0.0);
+        float vh = max(dot(v, h), 0.0);
+        float k = pow(1.0 - vh, 5.0);
+        float3 fresnel = f0 + (float3(1.0) - f0) * k;
+        float spec = ggx(nh, a2) * smith(nv, nl, a2);
+        float3 brdf = (float3(1.0) - fresnel) * albedo + fresnel * (spec * M_PI_F);
+        color = brdf * (float4(u.light_color).xyz * (light_dir.w * nl));
+    }
+
+    // The environment: its irradiance, and its radiance prefiltered for the
+    // roughness, both occluded.
+    float3 irradiance = float4(u.sh[0]).xyz + float4(u.sh[1]).xyz * n.y + float4(u.sh[2]).xyz * n.z
+        + float4(u.sh[3]).xyz * n.x + float4(u.sh[4]).xyz * (n.x * n.y)
+        + float4(u.sh[5]).xyz * (n.y * n.z) + float4(u.sh[6]).xyz * (3.0 * n.z * n.z - 1.0)
+        + float4(u.sh[7]).xyz * (n.x * n.z) + float4(u.sh[8]).xyz * (n.x * n.x - n.y * n.y);
+    irradiance = max(irradiance, float3(0.0));
+    float3 r = n * (2.0 * dot(n, v)) - v;
+    float lod = roughness * 5.0;
+    float2 dir = env_direction(r);
+    float k0 = floor(lod);
+    float k1 = min(k0 + 1.0, 5.0);
+    float3 e0 = env_tex.sample(linear_samp, env_atlas(dir, k0), gradient2d(float2(0.0), float2(0.0))).xyz;
+    float3 e1 = env_tex.sample(linear_samp, env_atlas(dir, k1), gradient2d(float2(0.0), float2(0.0))).xyz;
+    float3 prefiltered = e0 + (e1 - e0) * (lod - k0);
+    float2 ab = env_brdf(roughness, nv);
+    float spec_occ = clamp(pow(nv + occlusion, exp2(-16.0 * roughness - 1.0)) - 1.0 + occlusion, 0.0, 1.0);
+    float4 ambient = float4(u.ambient);
+    color = color + albedo * irradiance * (occlusion * ambient.x)
+        + prefiltered * (f0 * ab.x + ab.y) * (spec_occ * ambient.y) + emissive;
+    c = tonemap(color * camera.w);
 }
-c = c + (fog_color.rgb - c) * fog;
+float4 fog_color = float4(u.fog);
+float fog = 1.0 - exp(-fog_color.w * distance);
+c = c + (fog_color.xyz - c) * fog;
 
 // Premultiplied linear light: the target's sRGB format encodes it.
 return float4(clamp(c, 0.0, 1.0) * a, a);";

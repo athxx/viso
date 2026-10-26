@@ -366,6 +366,24 @@ pub trait GpuBackend {
         texture
     }
 
+    /// Create a sampled texture with a mip chain: `levels[0]` is the base,
+    /// `desc.width × desc.height`, and each next level half the previous one
+    /// in each dimension (rounded down, at least 1), each laid out as
+    /// [`write_texture`](Self::write_texture) takes it. Sample it through a
+    /// [`FilterMode::MipmapLinear`](crate::FilterMode::MipmapLinear) sampler,
+    /// which blends the two levels its footprint falls between. The format
+    /// is an uncompressed color one and never a render target; the texture
+    /// is never written again.
+    ///
+    /// The default keeps the base level only.
+    fn create_texture_mipped(&mut self, desc: &TextureDesc, levels: &[&[u8]]) -> TextureId {
+        let texture = self.create_texture(desc);
+        if let Some(base) = levels.first() {
+            self.write_texture(texture, 0, 0, desc.width, desc.height, base);
+        }
+        texture
+    }
+
     /// Create a texture sampling `image` where it lies, no texel copied: the
     /// backend adopts the memory another framework wrote it into, sampling
     /// its texels as sRGB-encoded color. `None` where the backend cannot

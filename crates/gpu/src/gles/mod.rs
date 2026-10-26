@@ -63,7 +63,7 @@ use crate::resource::{
     CompareFunction, CullMode, DepthState, FilterMode, PipelineDesc, SampledFormats, SamplerDesc,
     ShaderCode, ShaderLang, TextureDesc, TextureFormat,
 };
-use crate::scene::{self, SceneInstance, SceneUniforms};
+use crate::scene::{self, SceneInstance};
 use crate::slots::SlotMap;
 use crate::{BindGroupId, BufferId, PipelineId, SamplerId, SurfaceId, TextureId};
 
@@ -670,14 +670,33 @@ impl Gles3Backend {
                 _ => None,
             });
             let program = matches!(p.kind, Kind::Program { .. });
+            let scene = matches!(&p.kind, Kind::Builtin { instance, .. } if !instance.is_empty());
+            let mut scene_samplers = [None; scene::SAMPLER_SLOTS];
+            if scene {
+                for (slot, s) in scene_samplers
+                    .iter_mut()
+                    .zip(bindings.iter().filter_map(|b| match b {
+                        Binding::Sampler(s) => Some(self.samplers.get((*s).into()).copied()),
+                        _ => None,
+                    }))
+                {
+                    *slot = s;
+                }
+            }
             for b in bindings {
                 if let Binding::Texture(t) = b {
                     let name = self.textures.get((*t).into()).map_or(0, |t| t.name);
                     (gl.glActiveTexture)(GL_TEXTURE0 + unit);
                     (gl.glBindTexture)(GL_TEXTURE_2D, name);
-                    // A program pairs texture `i` with sampler `i`.
+                    // A program pairs texture `i` with sampler `i`; a scene
+                    // program each texture slot with its own sampler slot.
                     let s = if program {
                         samplers.next().or(sampler)
+                    } else if scene {
+                        scene::TEXTURE_SAMPLERS
+                            .get(unit as usize)
+                            .and_then(|&j| scene_samplers[j as usize])
+                            .or(sampler)
                     } else {
                         sampler
                     };
@@ -715,17 +734,19 @@ impl Gles3Backend {
                             instance,
                             SceneInstance::SIZE,
                         );
-                        if let Some(Binding::Uniform(u)) =
-                            bindings.iter().find(|b| matches!(b, Binding::Uniform(_)))
-                        {
-                            let u = self.buffer(*u);
-                            let size = SceneUniforms::SIZE.min(u.size);
+                        // Uniform buffer `k` of the group at binding `k`.
+                        let blocks = bindings.iter().filter_map(|b| match b {
+                            Binding::Uniform(u) => Some(*u),
+                            _ => None,
+                        });
+                        for (k, u) in blocks.take(scene::UNIFORM_SLOTS).enumerate() {
+                            let u = self.buffer(u);
                             (gl.glBindBufferRange)(
                                 GL_UNIFORM_BUFFER,
-                                0,
+                                k as GLuint,
                                 u.name,
                                 0,
-                                size as GLsizeiptr,
+                                u.size as GLsizeiptr,
                             );
                         }
                     }
@@ -1324,13 +1345,72 @@ impl GpuBackend for Gles3Backend {
             .into()
     }
 
+    fn create_texture_mipped(&mut self, desc: &TextureDesc, levels: &[&[u8]]) -> TextureId {
+        if desc.format.is_compressed() || desc.format.linear() == TextureFormat::Bgra8Unorm {
+            let texture = self.create_texture(desc);
+            if let Some(base) = levels.first() {
+                self.write_texture(texture, 0, 0, desc.width, desc.height, base);
+            }
+            return texture;
+        }
+        self.ctx();
+        let gl = self.gl();
+        let (internal, upload, ty) = texture_format(desc.format);
+        let (width, height) = (desc.width.max(1), desc.height.max(1));
+        let mut name = 0;
+        // SAFETY: the context is current; immutable storage of the chain's
+        // levels, each written whole from bytes that hold it.
+        unsafe {
+            (gl.glGenTextures)(1, &mut name);
+            (gl.glBindTexture)(GL_TEXTURE_2D, name);
+            (gl.glTexStorage2D)(
+                GL_TEXTURE_2D,
+                levels.len().max(1) as GLsizei,
+                internal,
+                width as GLsizei,
+                height as GLsizei,
+            );
+            let (mut w, mut h) = (width, height);
+            for (k, bytes) in levels.iter().enumerate() {
+                if k > 0 {
+                    (w, h) = ((w / 2).max(1), (h / 2).max(1));
+                }
+                if bytes.len() < desc.format.data_size(w, h) {
+                    break;
+                }
+                (gl.glTexSubImage2D)(
+                    GL_TEXTURE_2D,
+                    k as GLint,
+                    0,
+                    0,
+                    w as GLsizei,
+                    h as GLsizei,
+                    upload,
+                    ty,
+                    bytes.as_ptr().cast(),
+                );
+            }
+        }
+        self.textures
+            .insert(GlTexture {
+                name,
+                width: desc.width,
+                height: desc.height,
+                format: desc.format,
+                fbo: None,
+                depth_fbo: None,
+            })
+            .into()
+    }
+
     fn create_sampler(&mut self, desc: &SamplerDesc) -> SamplerId {
         self.ctx();
         let gl = self.gl();
         let (min, mag) = match desc.filter {
             FilterMode::Nearest => (GL_NEAREST, GL_NEAREST),
-            // Textures hold one level: trilinear reads it bilinearly.
-            FilterMode::Linear | FilterMode::MipmapLinear => (GL_LINEAR, GL_LINEAR),
+            FilterMode::Linear => (GL_LINEAR, GL_LINEAR),
+            // A texture of one immutable level is complete with it alone.
+            FilterMode::MipmapLinear => (GL_LINEAR_MIPMAP_LINEAR, GL_LINEAR),
         };
         let wrap = match desc.address {
             AddressMode::ClampToEdge => GL_CLAMP_TO_EDGE,
@@ -1364,7 +1444,18 @@ impl GpuBackend for Gles3Backend {
                 desc.label, desc.code
             );
         };
-        let program = build_program(gl, source, desc.label, &["ViewBlock"], &["tex", "dst_tex"])
+        // A scene program's blocks and textures take their slots' bindings
+        // and units.
+        const SCENE_BLOCKS: [&str; scene::UNIFORM_SLOTS] = ["ViewBlock", "viso_b1", "viso_b2"];
+        const SCENE_TEXTURES: [&str; scene::TEXTURE_SLOTS] = [
+            "viso_t0", "viso_t1", "viso_t2", "viso_t3", "viso_t4", "viso_t5", "viso_t6", "viso_t7",
+        ];
+        let (blocks, textures): (&[&str], &[&str]) = if desc.builtin == BuiltinShader::Scene {
+            (&SCENE_BLOCKS, &SCENE_TEXTURES)
+        } else {
+            (&["ViewBlock"], &["tex", "dst_tex"])
+        };
+        let program = build_program(gl, source, desc.label, blocks, textures)
             .unwrap_or_else(|e| panic!("a built-in shader does not build: {e}"));
         let divisor = u32::from(!per_vertex(desc.builtin));
         let attrs: Vec<Attr> = desc

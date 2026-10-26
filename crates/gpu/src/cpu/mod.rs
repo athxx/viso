@@ -77,6 +77,8 @@ struct Texture {
     height: u32,
     format: TextureFormat,
     pixels: Pixels,
+    /// The levels of its mip chain below the base, each half the previous.
+    mips: Vec<Pixels>,
 }
 
 impl Texture {
@@ -88,6 +90,25 @@ impl Texture {
         }
     }
 
+    /// Mip level `k` (0 the base), or the last level when the chain is
+    /// shorter.
+    fn level(&self, k: usize) -> CpuTexture<'_> {
+        if k == 0 || self.mips.is_empty() {
+            return self.view();
+        }
+        let k = k.min(self.mips.len());
+        CpuTexture {
+            width: (self.width >> k).max(1),
+            height: (self.height >> k).max(1),
+            texels: self.mips[k - 1].texels(self.format),
+        }
+    }
+
+    /// How many levels its chain holds, the base included.
+    fn levels(&self) -> usize {
+        1 + self.mips.len()
+    }
+
     fn len(&self) -> usize {
         self.width as usize * self.height as usize
     }
@@ -97,6 +118,8 @@ impl Texture {
 /// fields sit in an instance, or a user program.
 struct Pipeline {
     builtin: BuiltinShader,
+    /// The variant it was created for: a scene pipeline's program.
+    variant: u32,
     blend: BlendMode,
     stride: usize,
     offsets: [u16; MAX_FIELDS],
@@ -680,6 +703,7 @@ impl GpuBackend for CpuRaster {
                 height: desc.height,
                 format: desc.format,
                 pixels: Pixels::None,
+                mips: Vec::new(),
             })
             .into()
     }
@@ -704,8 +728,30 @@ impl GpuBackend for CpuRaster {
                 height: desc.height,
                 format: desc.format,
                 pixels: Pixels::Static(&texels[..len * desc.format.bytes_per_texel()]),
+                mips: Vec::new(),
             })
             .into()
+    }
+
+    fn create_texture_mipped(&mut self, desc: &TextureDesc, levels: &[&[u8]]) -> TextureId {
+        let texture = self.create_texture(desc);
+        let Some((base, below)) = levels.split_first() else {
+            return texture;
+        };
+        self.write_texture(texture, 0, 0, desc.width, desc.height, base);
+        let mut mips = Vec::with_capacity(below.len());
+        let (mut w, mut h) = (desc.width, desc.height);
+        for bytes in below {
+            (w, h) = ((w / 2).max(1), (h / 2).max(1));
+            let len = w as usize * h as usize;
+            let mut level = Pixels::None;
+            level.write(desc.format, len, w, (0, 0, w, h), bytes);
+            mips.push(level);
+        }
+        if let Some(t) = self.res.textures.get_mut(texture.into()) {
+            t.mips = mips;
+        }
+        texture
     }
 
     fn create_sampler(&mut self, desc: &SamplerDesc) -> SamplerId {
@@ -733,6 +779,7 @@ impl GpuBackend for CpuRaster {
             .pipelines
             .insert(Pipeline {
                 builtin: desc.builtin,
+                variant: desc.variant,
                 blend: desc.blend,
                 stride: layout.stride,
                 offsets,
@@ -755,6 +802,7 @@ impl GpuBackend for CpuRaster {
             .pipelines
             .insert(Pipeline {
                 builtin: BuiltinShader::Quad,
+                variant: 0,
                 blend: program.blend,
                 stride: program.abi.instance_stride as usize,
                 offsets: [0; MAX_FIELDS],

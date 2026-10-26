@@ -684,6 +684,63 @@ impl GpuBackend for MetalBackend {
             .into()
     }
 
+    fn create_texture_mipped(&mut self, desc: &TextureDesc, levels: &[&[u8]]) -> TextureId {
+        let td = MTLTextureDescriptor::new();
+        td.setTextureType(objc2_metal::MTLTextureType::Type2D);
+        td.setPixelFormat(pixel_format(desc.format));
+        td.setStorageMode(objc2_metal::MTLStorageMode::Shared);
+        td.setUsage(MTLTextureUsage::ShaderRead);
+        let count = levels.len().max(1);
+        // SAFETY: positive dimensions and a level count no larger than the
+        // chain's (the caller halves each level down from the base) on a
+        // freshly-created descriptor.
+        unsafe {
+            td.setWidth(desc.width.max(1) as usize);
+            td.setHeight(desc.height.max(1) as usize);
+            td.setMipmapLevelCount(count);
+        }
+        let texture = self
+            .device
+            .newTextureWithDescriptor(&td)
+            .expect("failed to create a Metal texture");
+        let (mut w, mut h) = (desc.width.max(1), desc.height.max(1));
+        for (k, bytes) in levels.iter().enumerate() {
+            if k > 0 {
+                (w, h) = ((w / 2).max(1), (h / 2).max(1));
+            }
+            if bytes.len() < desc.format.data_size(w, h) {
+                break;
+            }
+            let region = MTLRegion {
+                origin: MTLOrigin { x: 0, y: 0, z: 0 },
+                size: MTLSize {
+                    width: w as usize,
+                    height: h as usize,
+                    depth: 1,
+                },
+            };
+            let ptr = NonNull::new(bytes.as_ptr() as *mut c_void).unwrap();
+            // SAFETY: `ptr` points at a whole level's bytes (checked above);
+            // Metal copies them synchronously into level `k` of the
+            // shared-storage texture.
+            unsafe {
+                texture.replaceRegion_mipmapLevel_withBytes_bytesPerRow(
+                    region,
+                    k,
+                    ptr,
+                    desc.format.row_bytes(w),
+                );
+            }
+        }
+        self.textures
+            .insert(MetalTexture {
+                texture,
+                format: desc.format,
+                external: None,
+            })
+            .into()
+    }
+
     fn import_external(&mut self, image: &ExternalImage) -> Option<TextureId> {
         self.let_go_completed();
         let (surface, texture) = self.surface_texture(image)?;
@@ -1314,8 +1371,8 @@ impl MetalBackend {
             CullMode::Back => MTLCullMode::Back,
         });
         // An instanced mesh reads its vertices at 0 and its instances at 1,
-        // so its uniform block takes 2.
-        let uniform_index = match c.geometry {
+        // so its uniform blocks take 2 on, in order.
+        let mut uniform_index = match c.geometry {
             Geometry::InstancedMesh { .. } => 2,
             _ => 0,
         };
@@ -1369,6 +1426,7 @@ impl MetalBackend {
                                 uniform_index,
                             );
                         }
+                        uniform_index += 1;
                     }
                 }
             }

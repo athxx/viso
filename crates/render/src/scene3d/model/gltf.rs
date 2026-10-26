@@ -14,6 +14,7 @@ use viso_ende::JsonValue;
 use viso_math::{Mat4, Quat, Vec3, vec3};
 
 use super::geometry;
+use super::mips::{self, ImageKind};
 use super::{
     AlphaMode, Channel, ChannelPath, Interpolation, ModelAnimation, ModelAsset, ModelImage,
     ModelMaterial, ModelMesh, ModelNode, ModelPrimitive, ModelRig, ModelSkin, ModelTexture,
@@ -78,9 +79,35 @@ pub(super) fn decode(
         buffers,
         views: views(&root)?,
     };
-    let images = doc.images(resolve);
+    let mut images = doc.images(resolve);
     let textures = doc.textures(images.len());
     let materials = doc.materials(textures.len())?;
+    // Each image's chain, averaged as its first use reads it: color before a
+    // normal map before data.
+    let mut kinds: Vec<Option<ImageKind>> = vec![None; images.len()];
+    for m in &materials {
+        let uses = [
+            (m.base_color_texture, ImageKind::Color),
+            (m.emissive_texture, ImageKind::Color),
+            (m.normal_texture, ImageKind::Normal),
+            (m.metallic_roughness_texture, ImageKind::Data),
+            (m.occlusion_texture, ImageKind::Data),
+        ];
+        for (texture, kind) in uses {
+            let image = texture
+                .and_then(|t| textures.get(t.texture as usize))
+                .and_then(|t| t.image);
+            if let Some(slot) = image.and_then(|i| kinds.get_mut(i as usize))
+                && slot.is_none_or(|k| precedence(kind) < precedence(k))
+            {
+                *slot = Some(kind);
+            }
+        }
+    }
+    for (image, kind) in images.iter_mut().zip(kinds) {
+        image.kind = kind.unwrap_or_default();
+        image.mips = mips::chain(&image.rgba, image.width, image.height, image.kind);
+    }
     let mut meshes = doc.meshes(materials.len())?;
     // A normal map needs tangents: build them where the file has none.
     for mesh in &mut meshes {
@@ -127,6 +154,15 @@ pub(super) fn decode(
         textures,
         images,
     })
+}
+
+/// Which use of an image its mip chain is built for, lowest first.
+fn precedence(kind: ImageKind) -> u8 {
+    match kind {
+        ImageKind::Color => 0,
+        ImageKind::Normal => 1,
+        ImageKind::Data => 2,
+    }
 }
 
 /// The JSON text and the binary chunk of `bytes`.
@@ -660,6 +696,8 @@ impl<'a> Doc<'a> {
                     width: image.width,
                     height: image.height,
                     rgba: image.rgba,
+                    kind: ImageKind::Color,
+                    mips: Vec::new(),
                 })
         };
         array(self.root, "images")
@@ -683,6 +721,8 @@ impl<'a> Doc<'a> {
                     width: 0,
                     height: 0,
                     rgba: Vec::new(),
+                    kind: ImageKind::Color,
+                    mips: Vec::new(),
                 })
             })
             .collect()

@@ -100,7 +100,16 @@ impl Shape {
                 [0.0, 1.0, 0.0],
             ),
         }
-        (b.vertices, b.indices)
+        let mut vertices = b.vertices;
+        let positions: Vec<[f32; 3]> = vertices.iter().map(|v| v.position).collect();
+        let normals: Vec<[f32; 3]> = vertices.iter().map(|v| v.normal).collect();
+        let uvs: Vec<[f32; 2]> = vertices.iter().map(|v| v.uv).collect();
+        let indices: Vec<u32> = b.indices.iter().map(|&i| u32::from(i)).collect();
+        let tangents = super::model::geometry::tangents(&positions, &normals, &uvs, &indices);
+        for (v, t) in vertices.iter_mut().zip(tangents) {
+            v.tangent = t;
+        }
+        (vertices, b.indices)
     }
 }
 
@@ -146,6 +155,7 @@ impl Builder {
             position,
             normal: normalize(normal),
             uv,
+            tangent: [0.0; 4],
         });
         i
     }

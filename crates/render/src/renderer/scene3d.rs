@@ -7,8 +7,11 @@ use super::Renderer;
 use crate::primitive::{Primitive, SceneSlot};
 use crate::scene::bounds::Bounds;
 use crate::scene::ingest::Instance;
+use crate::scene3d::SceneLane;
 use crate::scene3d::model::ModelAsset;
-use crate::scene3d::{MeshId, SceneFrame, SceneModel, SceneStats, SceneVertex};
+use crate::scene3d::{
+    Material, MaterialId, MeshId, SceneFrame, SceneModel, SceneStats, SceneVertex,
+};
 
 /// The largest scene target edge, in pixels.
 const MAX_TARGET: u32 = 8192;
@@ -50,26 +53,43 @@ impl Renderer {
         self.scene3d.release_mesh(backend, mesh);
     }
 
-    /// Upload `asset`'s geometry for scenes to draw with
-    /// [`SceneFrame::push_model`]. The asset's geometry and images may be let
-    /// go of afterwards: the model keeps only its rig.
+    /// Make a material for scenes to draw instances in with
+    /// [`SceneFrame::push_with`].
+    pub fn create_scene_material<B: GpuBackend>(
+        &mut self,
+        backend: &mut B,
+        material: &Material,
+    ) -> MaterialId {
+        let uniforms = SceneLane::uniforms_of(material);
+        let sampler = viso_gpu::SamplerDesc::LINEAR_CLAMP;
+        self.scene3d
+            .create_material(backend, &uniforms, [None; 5], sampler)
+    }
+
+    /// Destroy a material [`create_scene_material`](Self::create_scene_material)
+    /// made. Its id may be handed out again; a frame that still names it
+    /// draws in whatever material holds the id then. A built-in material
+    /// stays.
+    pub fn release_scene_material<B: GpuBackend>(&mut self, backend: &mut B, material: MaterialId) {
+        self.scene3d.release_material(backend, material);
+    }
+
+    /// Upload `asset`'s geometry, materials and images for scenes to draw
+    /// with [`SceneFrame::push_model`]. The asset may be let go of
+    /// afterwards: the model keeps only its rig.
     pub fn create_scene_model<B: GpuBackend>(
         &mut self,
         backend: &mut B,
         asset: &ModelAsset,
     ) -> SceneModel {
-        SceneModel::upload(asset, |vertices, indices| {
-            self.scene3d.create_mesh(backend, vertices, indices)
-        })
+        SceneModel::upload(asset, &mut self.scene3d, backend)
     }
 
     /// Destroy what [`create_scene_model`](Self::create_scene_model)
     /// uploaded for `model`. A frame that still draws it draws whatever
-    /// takes its meshes' ids next.
+    /// takes its meshes' and materials' ids next.
     pub fn release_scene_model<B: GpuBackend>(&mut self, backend: &mut B, model: &SceneModel) {
-        for mesh in model.uploaded() {
-            self.scene3d.release_mesh(backend, mesh);
-        }
+        model.release(&mut self.scene3d, backend);
     }
 
     /// The scene lane's counters since they were last taken.

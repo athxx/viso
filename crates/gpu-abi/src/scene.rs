@@ -14,7 +14,68 @@
 
 use crate::instance::{AttrFormat, InstanceSchema, SchemaAttr};
 
-/// The vertex attributes of a scene draw, [`SceneVertex`]'s fields: the
+/// How many uniform buffers a scene draw's bind group holds: the frame's
+/// block, the material's and the skin's, in that order.
+pub const UNIFORM_SLOTS: usize = 3;
+
+/// How many textures a scene draw's bind group holds, after its uniform
+/// buffers: the material's base color, metallic-roughness, normal, occlusion
+/// and emission maps, then the environment, the shadow atlas and the ambient
+/// occlusion, in that order. A pass over the scene's own images binds them
+/// in the slots its program names.
+pub const TEXTURE_SLOTS: usize = 8;
+
+/// How many samplers a scene draw's bind group holds, after its textures:
+/// the material's, a linear clamp-to-edge and a nearest clamp-to-edge one.
+pub const SAMPLER_SLOTS: usize = 3;
+
+/// The sampler slot each texture slot is sampled through. A backend whose
+/// texture unit carries its sampler state (GLES) binds this one with each
+/// texture; the programs sample no texture through another.
+pub const TEXTURE_SAMPLERS: [u8; TEXTURE_SLOTS] = [0, 0, 0, 0, 0, 1, 2, 1];
+
+/// The bindings of the scene slots in the one descriptor set of a native
+/// (Vulkan) device, beside the 2D programs' `tex` (0), `dst_tex` (1),
+/// sampler (2) and uniform buffer (3), which slot 0 of each kind reuses.
+pub const NATIVE_TEXTURE_BINDINGS: [u32; TEXTURE_SLOTS] = [0, 1, 4, 5, 6, 7, 8, 9];
+pub const NATIVE_SAMPLER_BINDINGS: [u32; SAMPLER_SLOTS] = [2, 10, 11];
+pub const NATIVE_UNIFORM_BINDINGS: [u32; UNIFORM_SLOTS] = [3, 12, 13];
+
+/// A program of the scene lane. Every one is drawn as a
+/// [`Geometry::InstancedMesh`] whose vertices are the program's
+/// [`vertex_schema`](Self::vertex_schema) and whose instances are
+/// [`SceneInstance`]s, with a bind group of [`UNIFORM_SLOTS`] uniform
+/// buffers, [`TEXTURE_SLOTS`] textures and [`SAMPLER_SLOTS`] samplers in that
+/// order; a pipeline names its program in the low byte of its `variant`.
+///
+/// [`Geometry::InstancedMesh`]: https://docs.rs/viso-gpu
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[repr(u8)]
+pub enum SceneProgram {
+    /// A mesh in its material: metallic-roughness shading lit by the
+    /// directional light and the environment, or unlit, or a sprite's soft
+    /// disc; tone mapped and fogged.
+    Mesh = 0,
+}
+
+impl SceneProgram {
+    /// Every program, by its code.
+    pub const ALL: [SceneProgram; 1] = [SceneProgram::Mesh];
+
+    /// The vertex layout it reads.
+    pub const fn vertex_schema(self) -> InstanceSchema {
+        match self {
+            SceneProgram::Mesh => VERTEX_SCHEMA,
+        }
+    }
+
+    /// The program a pipeline's `variant` names.
+    pub fn of_variant(variant: u32) -> Option<SceneProgram> {
+        Self::ALL.get((variant & 0xff) as usize).copied()
+    }
+}
+
+/// The vertex attributes of a scene mesh, [`SceneVertex`]'s fields: the
 /// pipeline's `instance_schema` (its vertex-rate stream).
 pub const VERTEX_SCHEMA: InstanceSchema = InstanceSchema {
     attributes: &[
@@ -29,6 +90,10 @@ pub const VERTEX_SCHEMA: InstanceSchema = InstanceSchema {
         SchemaAttr {
             name: "uv",
             format: AttrFormat::Float2,
+        },
+        SchemaAttr {
+            name: "tangent",
+            format: AttrFormat::Float4,
         },
     ],
 };
@@ -57,23 +122,27 @@ pub const INSTANCE_SCHEMA: InstanceSchema = InstanceSchema {
     ],
 };
 
-/// One vertex of a scene mesh: position, normal and texture coordinate, in
-/// the mesh's own space. 32 bytes.
+/// One vertex of a scene mesh, in the mesh's own space: position, unit
+/// normal, texture coordinate, and the unit tangent along `+u` with the
+/// bitangent's handedness in `w` (`cross(normal, tangent) * w` points along
+/// `-v`, up the image). Only a normal-mapped material reads the tangent.
+/// 48 bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 #[repr(C)]
 pub struct SceneVertex {
     pub position: [f32; 3],
     pub normal: [f32; 3],
     pub uv: [f32; 2],
+    pub tangent: [f32; 4],
 }
 
 /// One instance of a scene mesh: the affine from the mesh's space to the
-/// world, as three rows `[m00 m01 m02 tx]`, and its color, premultiplied in
-/// the target's encoding. 64 bytes.
+/// world, as three rows `[m00 m01 m02 tx]`, and its tint, premultiplied
+/// linear light, which multiplies its material's color. 64 bytes.
 ///
-/// The normal is carried to the world through the cofactor of the affine's
+/// Normals are carried to the world through the cofactor of the affine's
 /// linear part, so a non-uniform scale (a box's half extents) keeps faces
-/// lit by their true orientation.
+/// lit by their true orientation; tangents by the linear part itself.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 #[repr(C)]
 pub struct SceneInstance {
@@ -81,59 +150,93 @@ pub struct SceneInstance {
     pub color: [f32; 4],
 }
 
-/// The uniform block of a scene draw. 160 bytes.
+/// The frame's uniform block, uniform slot 0 of every scene draw. 288 bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 #[repr(C)]
-pub struct SceneUniforms {
+pub struct FrameUniforms {
     /// World to clip space, column-major.
     pub view_proj: [f32; 16],
-    /// The camera's position; `w` the [`SceneMaterial`] of the draws.
+    /// The camera's position; `w` the exposure lit colors are scaled by
+    /// before tone mapping.
     pub camera: [f32; 4],
-    /// The unit direction toward the light; `w` its intensity.
+    /// The unit direction toward the light; `w` its intensity: a white
+    /// diffuse surface facing a light of intensity 1 reflects its color.
     pub light_dir: [f32; 4],
     /// The light's color, linear.
     pub light_color: [f32; 4],
-    /// The ambient light from above and from below, linear.
-    pub sky: [f32; 4],
-    pub ground: [f32; 4],
     /// The fog's color, linear, and in `w` its density per unit of distance
     /// (`0.0`: no fog).
     pub fog: [f32; 4],
+    /// How strongly the environment lights: `x` its diffuse light, `y` its
+    /// reflections.
+    pub ambient: [f32; 4],
+    /// The environment's diffuse irradiance over π as nine spherical
+    /// harmonic terms, each scaled so the irradiance at unit normal `n` is
+    /// [`sh_irradiance`]`(sh, n)`.
+    pub sh: [[f32; 4]; 9],
 }
 
-/// How a scene draw colors its fragments: what its uniforms' `camera.w`
-/// holds.
+/// A material's uniform block, uniform slot 1 of a scene draw. 64 bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[repr(C)]
+pub struct MaterialUniforms {
+    /// Linear RGBA, straight alpha; multiplies the base color texture.
+    pub base_color: [f32; 4],
+    /// Linear RGB emission; multiplies the emission texture.
+    pub emissive: [f32; 4],
+    /// Metalness, roughness, the normal map's scale and the occlusion
+    /// map's strength; the first two multiply the metallic-roughness
+    /// texture's blue and green.
+    pub params: [f32; 4],
+    /// The [`Shading`] code, the [`Alpha`] code, the alpha cutoff of a
+    /// masked material, and the [`MATERIAL_NORMAL_MAP`] and
+    /// [`MATERIAL_DOUBLE_SIDED`] flags.
+    pub mode: [f32; 4],
+}
+
+/// How a material colors its fragments: [`MaterialUniforms::mode`]`[0]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(u8)]
-pub enum SceneMaterial {
-    /// Lit by the scene's light and ambient, then fogged.
+pub enum Shading {
+    /// Metallic-roughness shading, lit by the light and the environment.
     Lit = 0,
     /// Its color as is, fogged: debug geometry and glowing surfaces.
     Unlit = 1,
     /// A soft disc across the mesh's texture coordinates, unlit and fogged:
-    /// a particle on a camera-facing quad, blended over what is behind it.
+    /// a particle on a camera-facing quad.
     Sprite = 2,
 }
 
-impl SceneMaterial {
-    /// The value of `camera.w` that selects it.
-    #[inline]
-    pub const fn code(self) -> f32 {
-        self as u8 as f32
-    }
-
-    /// The material `camera.w` selects.
-    #[inline]
-    pub fn of(code: f32) -> SceneMaterial {
-        if code > 1.5 {
-            SceneMaterial::Sprite
-        } else if code > 0.5 {
-            SceneMaterial::Unlit
-        } else {
-            SceneMaterial::Lit
-        }
-    }
+/// How a material's alpha covers what is behind it:
+/// [`MaterialUniforms::mode`]`[1]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[repr(u8)]
+pub enum Alpha {
+    /// Opaque; the instance's alpha is its coverage of the scene's target.
+    Opaque = 0,
+    /// Opaque where the base color's alpha reaches the cutoff, absent
+    /// elsewhere.
+    Mask = 1,
+    /// Blended over what is behind it by the base color's alpha.
+    Blend = 2,
 }
+
+/// [`MaterialUniforms::mode`]`[3]` flag: the material samples a normal map.
+pub const MATERIAL_NORMAL_MAP: u32 = 1;
+/// [`MaterialUniforms::mode`]`[3]` flag: a back face is lit by its flipped
+/// normal.
+pub const MATERIAL_DOUBLE_SIDED: u32 = 2;
+
+/// The width of the environment atlas, uniform texture slot 5: the
+/// prefiltered radiance of every direction, an equirectangular map per
+/// roughness level, the level `k` map `ENV_WIDTH >> k` by
+/// `ENV_WIDTH >> (k + 1)` texels at row `ENV_WIDTH - (ENV_WIDTH >> k)`.
+pub const ENV_WIDTH: u32 = 256;
+/// The atlas's height.
+pub const ENV_HEIGHT: u32 = 256;
+/// How many roughness levels the atlas holds: level `k` is the radiance
+/// seen by a surface of roughness `k / (ENV_LEVELS - 1)`.
+pub const ENV_LEVELS: u32 = 6;
 
 macro_rules! as_bytes {
     ($ty:ty, $size:expr) => {
@@ -172,9 +275,10 @@ macro_rules! as_bytes {
     };
 }
 
-as_bytes!(SceneVertex, 32);
+as_bytes!(SceneVertex, 48);
 as_bytes!(SceneInstance, 64);
-as_bytes!(SceneUniforms, 160);
+as_bytes!(FrameUniforms, 288);
+as_bytes!(MaterialUniforms, 64);
 
 impl SceneInstance {
     /// `p`, a point of the mesh, in the world.
@@ -184,125 +288,124 @@ impl SceneInstance {
         core::array::from_fn(|i| r[i][0] * p[0] + r[i][1] * p[1] + r[i][2] * p[2] + r[i][3])
     }
 
+    /// Whether the linear part mirrors: its determinant is negative.
+    #[inline]
+    pub fn mirrors(&self) -> bool {
+        let r = &self.rows;
+        let col = |j: usize| [r[0][j], r[1][j], r[2][j]];
+        dot(col(0), cross(col(1), col(2))) < 0.0
+    }
+
     /// `n`, a normal of the mesh, in the world, not normalized: the cofactor
-    /// of the linear part applied to it.
+    /// of the linear part applied to it, turned back out by a mirroring
+    /// instance.
     #[inline]
     pub fn turn_normal(&self, n: [f32; 3]) -> [f32; 3] {
         let r = &self.rows;
         let col = |j: usize| [r[0][j], r[1][j], r[2][j]];
         let (c0, c1, c2) = (col(0), col(1), col(2));
-        let cross = |a: [f32; 3], b: [f32; 3]| {
-            [
-                a[1] * b[2] - a[2] * b[1],
-                a[2] * b[0] - a[0] * b[2],
-                a[0] * b[1] - a[1] * b[0],
-            ]
-        };
         let (k0, k1, k2) = (cross(c1, c2), cross(c2, c0), cross(c0, c1));
-        core::array::from_fn(|i| k0[i] * n[0] + k1[i] * n[1] + k2[i] * n[2])
+        let side = if self.mirrors() { -1.0 } else { 1.0 };
+        core::array::from_fn(|i| (k0[i] * n[0] + k1[i] * n[1] + k2[i] * n[2]) * side)
+    }
+
+    /// `t`, a tangent of the mesh with its handedness in `w`, in the world:
+    /// the linear part applied to it, the handedness flipped by a mirroring
+    /// instance.
+    #[inline]
+    pub fn turn_tangent(&self, t: [f32; 4]) -> [f32; 4] {
+        let r = &self.rows;
+        let side = if self.mirrors() { -1.0 } else { 1.0 };
+        [
+            r[0][0] * t[0] + r[0][1] * t[1] + r[0][2] * t[2],
+            r[1][0] * t[0] + r[1][1] * t[1] + r[1][2] * t[2],
+            r[2][0] * t[0] + r[2][1] * t[1] + r[2][2] * t[2],
+            t[3] * side,
+        ]
     }
 }
 
-impl SceneUniforms {
+impl FrameUniforms {
     /// `p`, a world point, in clip space.
     #[inline]
     pub fn clip(&self, p: [f32; 3]) -> [f32; 4] {
         let m = &self.view_proj;
         core::array::from_fn(|i| m[i] * p[0] + m[4 + i] * p[1] + m[8 + i] * p[2] + m[12 + i])
     }
+}
 
-    /// The color of a surface point at `world` with the unit normal `normal`,
-    /// the texture coordinate `uv` and the instance color `color`
-    /// (premultiplied linear light), by the uniforms' material:
-    /// - lit: hemispheric ambient, Lambert diffuse and Blinn-Phong specular
-    ///   from the light;
-    /// - unlit: the color as is;
-    /// - sprite: the color as is, covering a disc across `uv` that fades
-    ///   smoothly to its rim;
-    ///
-    /// then fog, all in linear light, clamped to `[0, 1]` and premultiplied:
-    /// the target's sRGB format encodes it.
-    ///
-    /// The scene programs of every backend compute the same expression.
-    pub fn shade(
-        &self,
-        world: [f32; 3],
-        normal: [f32; 3],
-        uv: [f32; 2],
-        color: [f32; 4],
-    ) -> [f32; 4] {
-        let mut a = color[3];
-        if a <= 0.0 {
-            return [0.0; 4];
-        }
-        let base: [f32; 3] = core::array::from_fn(|i| (color[i] / a).max(0.0));
-        let to_eye = sub([self.camera[0], self.camera[1], self.camera[2]], world);
-        let distance = length(to_eye);
-        let fog = 1.0 - (-self.fog[3] * distance).exp();
-        let material = SceneMaterial::of(self.camera[3]);
-        let c: [f32; 3] = if material == SceneMaterial::Lit {
-            let l = [self.light_dir[0], self.light_dir[1], self.light_dir[2]];
-            let intensity = self.light_dir[3];
-            let v = scale(to_eye, 1.0 / distance.max(1e-6));
-            let n = normal;
-            let up = n[1] * 0.5 + 0.5;
-            let diffuse = dot(n, l).max(0.0) * intensity;
-            let h = normalize(add(l, v));
-            let specular = if diffuse > 0.0 {
-                dot(n, h).max(0.0).powf(32.0) * 0.25 * intensity
-            } else {
-                0.0
-            };
-            core::array::from_fn(|i| {
-                let ambient = self.ground[i] + (self.sky[i] - self.ground[i]) * up;
-                base[i] * (ambient + diffuse * self.light_color[i]) + specular * self.light_color[i]
-            })
+impl MaterialUniforms {
+    /// Its shading.
+    #[inline]
+    pub fn shading(&self) -> Shading {
+        let code = self.mode[0];
+        if code > 1.5 {
+            Shading::Sprite
+        } else if code > 0.5 {
+            Shading::Unlit
         } else {
-            if material == SceneMaterial::Sprite {
-                a *= disc(uv);
-                if a <= 0.0 {
-                    return [0.0; 4];
-                }
-            }
-            base
-        };
-        let lit: [f32; 3] =
-            core::array::from_fn(|i| (c[i] + (self.fog[i] - c[i]) * fog).clamp(0.0, 1.0));
-        [lit[0] * a, lit[1] * a, lit[2] * a, a]
+            Shading::Lit
+        }
+    }
+
+    /// Its alpha mode.
+    #[inline]
+    pub fn alpha(&self) -> Alpha {
+        let code = self.mode[1];
+        if code > 1.5 {
+            Alpha::Blend
+        } else if code > 0.5 {
+            Alpha::Mask
+        } else {
+            Alpha::Opaque
+        }
+    }
+
+    /// Its flags.
+    #[inline]
+    pub fn flags(&self) -> u32 {
+        self.mode[3] as u32
     }
 }
 
-/// How much of a sprite covers `uv`: 1 at the centre of the unit square,
-/// falling smoothly to 0 at the inscribed circle.
-#[inline]
-pub fn disc(uv: [f32; 2]) -> f32 {
-    let (x, y) = (uv[0] * 2.0 - 1.0, uv[1] * 2.0 - 1.0);
-    let t = (1.0 - (x * x + y * y).sqrt()).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
-}
+mod shade;
+
+pub use shade::{
+    MeshFragment, SceneTextures, disc, env_atlas_uv, env_brdf, env_direction_uv, sh_irradiance,
+    shade_mesh, tonemap,
+};
 
 #[inline]
-fn add(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+pub(crate) fn add(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
 #[inline]
-fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+pub(crate) fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
 #[inline]
-fn scale(a: [f32; 3], s: f32) -> [f32; 3] {
+pub(crate) fn scale(a: [f32; 3], s: f32) -> [f32; 3] {
     [a[0] * s, a[1] * s, a[2] * s]
 }
 
 #[inline]
-fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+pub(crate) fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 #[inline]
-fn length(a: [f32; 3]) -> f32 {
+pub(crate) fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+#[inline]
+pub(crate) fn length(a: [f32; 3]) -> f32 {
     dot(a, a).sqrt()
 }
 
@@ -331,6 +434,10 @@ mod tests {
         instance.write_to(&mut bytes);
         assert_eq!(SceneInstance::read_from(&bytes), instance);
         assert_eq!(&bytes[12..16], &4.0f32.to_le_bytes(), "row 0's translation");
+        let schema_bytes =
+            |s: InstanceSchema| s.attributes.iter().map(|a| a.format.size()).sum::<usize>();
+        assert_eq!(schema_bytes(VERTEX_SCHEMA), SceneVertex::SIZE);
+        assert_eq!(schema_bytes(INSTANCE_SCHEMA), SceneInstance::SIZE);
     }
 
     /// A box scaled flat keeps its top face's normal pointing up.
@@ -349,53 +456,23 @@ mod tests {
         assert!(tilted[1] > 0.99, "{tilted:?}");
     }
 
+    /// A mirrored instance keeps its normals pointing out of the surface
+    /// and flips its bitangents' handedness.
     #[test]
-    fn a_face_toward_the_light_is_brighter_than_one_away() {
-        let uniforms = SceneUniforms {
-            camera: [0.0, 0.0, 5.0, 0.0],
-            light_dir: [0.0, 1.0, 0.0, 1.0],
-            light_color: [1.0; 4],
-            sky: [0.2; 4],
-            ground: [0.05; 4],
-            ..SceneUniforms::default()
+    fn a_mirror_keeps_normals_outward() {
+        let mirror = SceneInstance {
+            rows: [
+                [-1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+            ],
+            color: [1.0; 4],
         };
-        let color = [0.5, 0.5, 0.5, 1.0];
-        let lit = uniforms.shade([0.0; 3], [0.0, 1.0, 0.0], [0.5; 2], color);
-        let unlit = uniforms.shade([0.0; 3], [0.0, -1.0, 0.0], [0.5; 2], color);
-        assert!(lit[0] > unlit[0] * 2.0, "{lit:?} {unlit:?}");
-        assert_eq!(lit[3], 1.0);
-    }
-
-    #[test]
-    fn unlit_keeps_its_color_and_a_sprite_fades_to_its_rim() {
-        let mut uniforms = SceneUniforms {
-            camera: [0.0, 0.0, 5.0, SceneMaterial::Unlit.code()],
-            light_dir: [0.0, 1.0, 0.0, 1.0],
-            ..SceneUniforms::default()
-        };
-        let color = [0.5, 0.25, 0.75, 1.0];
-        let shaded = |u: &SceneUniforms, normal, uv| u.shade([0.0; 3], normal, uv, color);
-        let up = shaded(&uniforms, [0.0, 1.0, 0.0], [0.5; 2]);
-        assert_eq!(up, shaded(&uniforms, [0.0, -1.0, 0.0], [0.5; 2]));
-        for (a, b) in up.iter().zip(color) {
-            assert!((a - b).abs() < 1e-5, "{up:?}");
-        }
-
-        uniforms.camera[3] = SceneMaterial::Sprite.code();
-        let centre = shaded(&uniforms, [0.0; 3], [0.5, 0.5]);
-        let halfway = shaded(&uniforms, [0.0; 3], [0.75, 0.5]);
-        let rim = shaded(&uniforms, [0.0; 3], [1.0, 0.5]);
-        assert!((centre[3] - 1.0).abs() < 1e-6);
-        assert!((halfway[3] - 0.5).abs() < 1e-6, "{halfway:?}");
-        assert_eq!(rim, [0.0; 4]);
+        assert!(mirror.mirrors());
+        assert_eq!(mirror.turn_normal([1.0, 0.0, 0.0]), [-1.0, 0.0, 0.0]);
         assert_eq!(
-            shaded(&uniforms, [0.0; 3], [0.0, 0.0]),
-            [0.0; 4],
-            "a corner"
-        );
-        assert!(
-            (halfway[0] / halfway[3] - color[0]).abs() < 1e-5,
-            "premultiplied"
+            mirror.turn_tangent([0.0, 0.0, 1.0, 1.0]),
+            [0.0, 0.0, 1.0, -1.0]
         );
     }
 }

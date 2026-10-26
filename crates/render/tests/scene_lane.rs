@@ -1,23 +1,29 @@
-//! The scene built-in draws the same lit, depth-tested image on every backend
-//! that runs here.
+//! The scene's mesh program draws the same lit, textured, depth-tested image
+//! on every backend that runs here.
 //!
 //! A ground slab, a tilted box in front of a second box and a squashed box
 //! are drawn as instanced meshes into a depth pass, nearest first so the depth
-//! test decides what shows. The CPU raster's image is the reference
-//! (`SceneUniforms::shade`, the expression every scene program computes). On
-//! an Apple device the native MSL draws it too, and so does the web WGSL
-//! translated to MSL by `naga`, which checks the WGSL lowering the Vulkan and
-//! WebGPU backends run.
+//! test decides what shows, in a metallic-roughness material with mipmapped
+//! base color and normal maps, lit by a light and a prefiltered environment.
+//! The CPU raster's image is the reference (`scene::shade_mesh`, the
+//! expression every scene program computes). On an Apple device the native
+//! MSL draws it too, and so does the web WGSL translated to MSL by `naga`,
+//! which checks the WGSL lowering the Vulkan and WebGPU backends run.
 
 use viso_gpu::backend::{
     DepthAttachment, DrawCommand, DrawList, Geometry, IndexFormat, InlineUniforms, RenderPass,
     RenderTarget,
 };
-use viso_gpu::scene::{self, SceneInstance, SceneUniforms, SceneVertex};
-use viso_gpu::{
-    BindGroupDesc, Binding, BlendMode, BufferDesc, BufferUsage, BuiltinShader, CpuRaster, CullMode,
-    DepthState, GpuBackend, GpuPod, LoadOp, PipelineDesc, ShaderCode, TextureDesc, TextureFormat,
+use viso_gpu::scene::{
+    self, ENV_HEIGHT, ENV_WIDTH, FrameUniforms, MATERIAL_NORMAL_MAP, MaterialUniforms,
+    SceneInstance, SceneVertex,
 };
+use viso_gpu::{
+    AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BufferUsage, BuiltinShader,
+    CpuRaster, CullMode, DepthState, FilterMode, GpuBackend, GpuPod, LoadOp, PipelineDesc,
+    SamplerDesc, ShaderCode, TextureDesc, TextureFormat,
+};
+use viso_render::scene3d::Environment;
 
 #[repr(C)]
 #[derive(Clone, Copy, GpuPod)]
@@ -25,6 +31,7 @@ struct Vertex {
     position: [f32; 3],
     normal: [f32; 3],
     uv: [f32; 2],
+    tangent: [f32; 4],
 }
 
 const W: u32 = 96;
@@ -50,7 +57,8 @@ fn cube() -> (Vec<SceneVertex>, Vec<u16>) {
             vertices.push(SceneVertex {
                 position: core::array::from_fn(|i| n[i] + su * u[i] + sv * v[i]),
                 normal: n,
-                uv: [su * 0.5 + 0.5, sv * 0.5 + 0.5],
+                uv: [su * 0.5 + 0.5, 0.5 - sv * 0.5],
+                tangent: [u[0], u[1], u[2], 1.0],
             });
         }
         indices.extend([0, 1, 2, 0, 2, 3].map(|k| base + k));
@@ -80,8 +88,8 @@ fn mul(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
 }
 
 /// A right-handed camera at `eye` looking at the origin, with a reversed-Z
-/// perspective projection.
-fn uniforms() -> SceneUniforms {
+/// perspective projection, lit by `env`.
+fn uniforms(env: &Environment) -> FrameUniforms {
     let eye = [3.5f32, 3.0, 5.5];
     let f = scene::normalize([-eye[0], -eye[1], -eye[2]]);
     let cross = |a: [f32; 3], b: [f32; 3]| {
@@ -134,14 +142,63 @@ fn uniforms() -> SceneUniforms {
         0.0,
     ];
     let light = scene::normalize([0.4, 0.8, 0.3]);
-    SceneUniforms {
+    FrameUniforms {
         view_proj: mul(&proj, &view),
-        camera: [eye[0], eye[1], eye[2], 0.0],
-        light_dir: [light[0], light[1], light[2], 1.0],
+        camera: [eye[0], eye[1], eye[2], 1.0],
+        light_dir: [light[0], light[1], light[2], 1.5],
         light_color: [1.0, 0.95, 0.9, 0.0],
-        sky: [0.3, 0.35, 0.45, 0.0],
-        ground: [0.08, 0.07, 0.06, 0.0],
         fog: [0.6, 0.7, 0.8, 0.03],
+        ambient: [1.0, 1.0, 0.0, 0.0],
+        sh: *env.harmonics(),
+    }
+}
+
+/// The environment: a bright sky over dark ground, a sun-like patch high
+/// toward `+x`.
+fn environment() -> Environment {
+    let (w, h) = (64usize, 32usize);
+    let radiance: Vec<[f32; 3]> = (0..w * h)
+        .map(|i| {
+            let (x, y) = (i % w, i / w);
+            let up = 1.0 - 2.0 * (y as f32 + 0.5) / h as f32;
+            if (40..44).contains(&x) && (8..11).contains(&y) {
+                [6.0, 5.5, 5.0]
+            } else if up > 0.0 {
+                [0.35 + 0.2 * up, 0.45 + 0.2 * up, 0.7 + 0.2 * up]
+            } else {
+                [0.08, 0.07, 0.06]
+            }
+        })
+        .collect();
+    Environment::from_equirect(w as u32, h as u32, &radiance)
+}
+
+/// A slowly varying 64×64 image and its chain: smooth enough that the level
+/// a pixel's footprint picks barely changes what it reads.
+fn image(texel: impl Fn(f32, f32) -> [u8; 4]) -> Vec<Vec<u8>> {
+    let mut levels = Vec::new();
+    let mut n = 64usize;
+    while n >= 1 {
+        let level: Vec<u8> = (0..n * n)
+            .flat_map(|i| {
+                let (x, y) = ((i % n) as f32 + 0.5, (i / n) as f32 + 0.5);
+                texel(x / n as f32, y / n as f32)
+            })
+            .collect();
+        levels.push(level);
+        n /= 2;
+    }
+    levels
+}
+
+/// The material: a half-rough, slightly metallic surface with a soft
+/// two-tone base color and gentle bumps.
+fn material() -> MaterialUniforms {
+    MaterialUniforms {
+        base_color: [1.0, 1.0, 1.0, 1.0],
+        emissive: [0.0; 4],
+        params: [0.3, 0.45, 1.0, 1.0],
+        mode: [0.0, 0.0, 0.5, MATERIAL_NORMAL_MAP as f32],
     }
 }
 
@@ -213,16 +270,106 @@ fn draw<B: GpuBackend>(
     let index_bytes: Vec<u8> = indices.iter().flat_map(|i| i.to_le_bytes()).collect();
     let instances = instances();
     let instance_bytes = bytes(&instances, SceneInstance::write_to, SceneInstance::SIZE);
-    let mut uniform_bytes = [0u8; SceneUniforms::SIZE];
-    uniforms().write_to(&mut uniform_bytes);
+    let env = environment();
+    let mut frame_bytes = [0u8; FrameUniforms::SIZE];
+    uniforms(&env).write_to(&mut frame_bytes);
+    let mut material_bytes = [0u8; MaterialUniforms::SIZE];
+    material().write_to(&mut material_bytes);
 
     let vertex_buffer = buffer(gpu, &vertex_bytes, BufferUsage::VERTEX);
     let index_buffer = buffer(gpu, &index_bytes, BufferUsage::INDEX);
     let instance_buffer = buffer(gpu, &instance_bytes, BufferUsage::INSTANCE);
-    let uniform = buffer(gpu, &uniform_bytes, BufferUsage::UNIFORM);
+    let frame = buffer(gpu, &frame_bytes, BufferUsage::UNIFORM);
+    let material = buffer(gpu, &material_bytes, BufferUsage::UNIFORM);
+    let mipped = |gpu: &mut B, levels: &[Vec<u8>], format| {
+        let refs: Vec<&[u8]> = levels.iter().map(Vec::as_slice).collect();
+        gpu.create_texture_mipped(
+            &TextureDesc {
+                width: 64,
+                height: 64,
+                format,
+                render_target: false,
+                label: "scene-map",
+            },
+            &refs,
+        )
+    };
+    let base = mipped(
+        gpu,
+        &image(|u, v| {
+            let t = (u * core::f32::consts::TAU).sin() * (v * core::f32::consts::TAU).cos();
+            let t = t * 0.5 + 0.5;
+            [
+                (200.0 + 55.0 * t) as u8,
+                (190.0 - 60.0 * t) as u8,
+                (150.0 - 50.0 * t) as u8,
+                255,
+            ]
+        }),
+        TextureFormat::Rgba8UnormSrgb,
+    );
+    let normal = mipped(
+        gpu,
+        &image(|u, v| {
+            let (dx, dy) = (
+                0.35 * (u * core::f32::consts::TAU * 2.0).cos(),
+                0.35 * (v * core::f32::consts::TAU * 2.0).sin(),
+            );
+            let len = (dx * dx + dy * dy + 1.0).sqrt();
+            let n = [-dx / len, -dy / len, 1.0 / len];
+            [
+                ((n[0] * 0.5 + 0.5) * 255.0) as u8,
+                ((n[1] * 0.5 + 0.5) * 255.0) as u8,
+                ((n[2] * 0.5 + 0.5) * 255.0) as u8,
+                255,
+            ]
+        }),
+        TextureFormat::Rgba8Data,
+    );
+    let white = gpu.create_texture(&TextureDesc {
+        width: 1,
+        height: 1,
+        format: TextureFormat::Rgba8Unorm,
+        render_target: false,
+        label: "white",
+    });
+    gpu.write_texture(white, 0, 0, 1, 1, &[255; 4]);
+    let atlas = gpu.create_texture(&TextureDesc {
+        width: ENV_WIDTH,
+        height: ENV_HEIGHT,
+        format: TextureFormat::Rgba16Float,
+        render_target: false,
+        label: "scene-environment",
+    });
+    let atlas_bytes: Vec<u8> = env.atlas().iter().flat_map(|t| t.to_le_bytes()).collect();
+    gpu.write_texture(atlas, 0, 0, ENV_WIDTH, ENV_HEIGHT, &atlas_bytes);
+    let material_sampler = gpu.create_sampler(&SamplerDesc {
+        filter: FilterMode::MipmapLinear,
+        address: AddressMode::Repeat,
+    });
+    let linear = gpu.create_sampler(&SamplerDesc::LINEAR_CLAMP);
+    let point = gpu.create_sampler(&SamplerDesc {
+        filter: FilterMode::Nearest,
+        address: AddressMode::ClampToEdge,
+    });
     let group = gpu.create_bind_group(&BindGroupDesc {
         label: "scene",
-        bindings: vec![Binding::Uniform(uniform)],
+        bindings: vec![
+            Binding::Uniform(frame),
+            Binding::Uniform(material),
+            Binding::Uniform(material),
+            Binding::Texture(base),
+            Binding::Texture(white),
+            Binding::Texture(normal),
+            Binding::Texture(white),
+            Binding::Texture(white),
+            Binding::Texture(atlas),
+            Binding::Texture(white),
+            Binding::Texture(white),
+            Binding::Sampler(material_sampler),
+            Binding::Sampler(linear),
+            Binding::Sampler(point),
+        ],
     });
     let pipeline = gpu
         .create_pipeline(
@@ -312,9 +459,20 @@ fn compare(a: &[u8], b: &[u8], tolerance: u8) -> (f32, u8) {
     (off as f32 / (a.len() / 4) as f32, worst)
 }
 
+/// Writes `image` as `name.png` under `VISO_SCENE_SHOTS`, when it is set.
+fn shot(name: &str, image: &[u8]) {
+    if let Some(dir) = std::env::var_os("VISO_SCENE_SHOTS") {
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = viso_image::snapshot::Image::from_bgra8(W, H, image).to_png();
+        std::fs::write(std::path::Path::new(&dir).join(format!("{name}.png")), png).unwrap();
+    }
+}
+
 fn cpu_image() -> Vec<u8> {
     let mut gpu = CpuRaster::new();
-    draw(&mut gpu, ShaderCode::None, |gpu, t| gpu.read_texture(t))
+    let image = draw(&mut gpu, ShaderCode::None, |gpu, t| gpu.read_texture(t));
+    shot("lane-cpu", &image);
+    image
 }
 
 #[test]
@@ -334,7 +492,7 @@ fn the_cpu_raster_draws_the_lit_scene() {
     // than its side.
     let shades: Vec<[u8; 3]> = (0..W * H)
         .map(|i| at(i % W, i / W))
-        .filter(|c| c[0] > 120 && c[1] < 110 && c[2] < 110)
+        .filter(|c| c[0] > 110 && c[1] < 100 && c[2] < 100)
         .collect();
     assert!(shades.len() > 40, "the red box shows");
     let brightest = shades.iter().map(|c| c[0]).max().unwrap();
@@ -362,6 +520,7 @@ mod metal {
         let mut gpu = MetalBackend::new();
         let code = shader_code(PrimitiveKind::Scene, ShaderLang::Msl).unwrap();
         let image = draw(&mut gpu, code, |gpu, t| gpu.read_texture(t));
+        shot("lane-metal", &image);
         let (off, worst) = compare(&reference, &image, 3);
         assert!(
             off < 0.01,
@@ -385,17 +544,45 @@ mod metal {
         )
         .validate(&module)
         .unwrap();
+        // The uniform blocks after the vertices and instances, the textures
+        // and samplers by slot, as the Metal backend binds them.
         let mut resources = BTreeMap::new();
-        resources.insert(
-            naga::ResourceBinding {
-                group: 0,
-                binding: 0,
-            },
-            msl::BindTarget {
-                buffer: Some(2),
-                ..Default::default()
-            },
-        );
+        for k in 0..scene::UNIFORM_SLOTS as u32 {
+            resources.insert(
+                naga::ResourceBinding {
+                    group: 0,
+                    binding: k,
+                },
+                msl::BindTarget {
+                    buffer: Some(2 + k as u8),
+                    ..Default::default()
+                },
+            );
+        }
+        for i in 0..scene::TEXTURE_SLOTS as u32 {
+            resources.insert(
+                naga::ResourceBinding {
+                    group: 1,
+                    binding: i,
+                },
+                msl::BindTarget {
+                    texture: Some(i as u8),
+                    ..Default::default()
+                },
+            );
+        }
+        for j in 0..scene::SAMPLER_SLOTS as u32 {
+            resources.insert(
+                naga::ResourceBinding {
+                    group: 1,
+                    binding: scene::TEXTURE_SLOTS as u32 + j,
+                },
+                msl::BindTarget {
+                    sampler: Some(msl::BindSamplerTarget::Resource(j as u8)),
+                    ..Default::default()
+                },
+            );
+        }
         let entry = msl::EntryPointResources {
             resources,
             immediates_buffer: None,
@@ -446,7 +633,10 @@ mod metal {
                     id: 1,
                     stride: SceneInstance::SIZE as u32,
                     step_mode: msl::VertexBufferStepMode::ByInstance,
-                    attributes: mapping(scene::INSTANCE_SCHEMA, 3),
+                    attributes: mapping(
+                        scene::INSTANCE_SCHEMA,
+                        scene::VERTEX_SCHEMA.attributes.len() as u32,
+                    ),
                 },
             ],
             ..Default::default()
