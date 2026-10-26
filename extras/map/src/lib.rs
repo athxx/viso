@@ -8,6 +8,7 @@
 
 pub mod camera;
 pub mod geo;
+pub mod mvt;
 pub mod source;
 
 pub use camera::{Camera, Insets, Limits, Motion, TILE_SIZE, View};
