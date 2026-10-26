@@ -365,6 +365,25 @@ impl Tilted {
         self.ground.as_ref().map_or(0, |g| g.revision)
     }
 
+    /// The raises and elevation loads under way.
+    pub fn working(&self) -> usize {
+        let raising = |stage: &Stage| matches!(stage, Stage::Raising { .. });
+        let models = self.models.values().filter(|m| raising(&m.stage)).count();
+        let pictures = self
+            .pictures
+            .values()
+            .flat_map(HashMap::values)
+            .filter(|p| raising(&p.stage))
+            .count();
+        let loading = self.ground.as_ref().map_or(0, |g| {
+            g.tiles
+                .values()
+                .filter(|e| matches!(e, Elevations::Loading { .. }))
+                .count()
+        });
+        models + pictures + loading
+    }
+
     /// The tiles raised and resident, for the counters a test reads.
     pub fn resident(&self) -> usize {
         self.models

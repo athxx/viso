@@ -17,7 +17,7 @@ use viso::platform::{
 use viso::prelude::*;
 use viso::ui::{BuildCx, Component, WindowConfig};
 use viso_map::style::builtin;
-use viso_map::{Camera, LngLat, MapHandle, MapHandleSlot, MapView, TileId, map_view};
+use viso_map::{Camera, LngLat, MapHandle, MapView, TileId, map_view};
 
 const STEP: Duration = Duration::from_millis(16);
 const WIN: WindowId = WindowId(1);
@@ -53,7 +53,9 @@ impl Application for MapApp {
     }
 
     fn build(&mut self, cx: &mut BuildCx<'_>) {
-        SETUP.with(|s| (s.borrow().as_ref().expect("a setup"))(cx));
+        support::patient(cx, |cx| {
+            SETUP.with(|s| (s.borrow().as_ref().expect("a setup"))(cx));
+        });
     }
 }
 
@@ -85,7 +87,7 @@ fn run_with(
     script: Vec<RawEvent>,
     configure: impl Fn(MapView) -> MapView + 'static,
 ) -> (DrivenApp<MapApp>, MapHandle) {
-    let slot = MapHandleSlot::default();
+    let slot = support::slot();
     let s = Rc::clone(&slot);
     SETUP.with(|setup| {
         *setup.borrow_mut() = Some(Box::new(move |cx| {
@@ -210,7 +212,7 @@ fn real_tiles_draw_through_the_view() {
         ("tokyo", 14, 14552, 6451, 14.4, 0.0, true),
     ] {
         let dir = dir.clone();
-        let slot = MapHandleSlot::default();
+        let slot = support::slot();
         let s = Rc::clone(&slot);
         SETUP.with(|setup| {
             *setup.borrow_mut() = Some(Box::new(move |cx| {
@@ -536,7 +538,7 @@ fn taps_long_presses_and_rests_reach_the_app() {
 #[test]
 fn a_new_style_rebuilds_the_loaded_tiles_without_fetching_them_again() {
     let fetched = Rc::new(std::cell::Cell::new(0u32));
-    let slot = MapHandleSlot::default();
+    let slot = support::slot();
     let (s, f, tap) = (Rc::clone(&slot), Rc::clone(&fetched), Rc::clone(&slot));
     SETUP.with(|setup| {
         *setup.borrow_mut() = Some(Box::new(move |cx| {
@@ -771,7 +773,7 @@ fn geojson_draws_through_the_style_even_where_the_source_has_nothing() {
     let data = GeoJson::new(vec![
         GeoFeature::new(Geometry::Polygons(vec![vec![ring]])).with("kind", "zone"),
     ]);
-    let slot = MapHandleSlot::default();
+    let slot = support::slot();
     let s = Rc::clone(&slot);
     SETUP.with(|setup| {
         let data = data.clone();
@@ -885,7 +887,7 @@ fn label_fonts() -> bool {
 fn labels_show_in_the_readers_language_without_overlapping_and_stay_upright() {
     let every_script = label_fonts();
     let start = berlin(13.0, 0.0);
-    let slot = MapHandleSlot::default();
+    let slot = support::slot();
     let s = Rc::clone(&slot);
     SETUP.with(|setup| {
         *setup.borrow_mut() = Some(Box::new(move |cx| {
@@ -993,7 +995,7 @@ fn a_label_shows_its_svg_icon_over_its_text() {
         viso_map::Reply::ready(Ok(Some(t.finish())))
     };
     let square = br##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="#000"/></svg>"##;
-    let slot = MapHandleSlot::default();
+    let slot = support::slot();
     let s = Rc::clone(&slot);
     SETUP.with(|setup| {
         *setup.borrow_mut() = Some(Box::new(move |cx| {
@@ -1125,7 +1127,7 @@ fn raster_and_hillshade_layers_draw_between_the_vector_layers() {
 
     // A ridge north and south through the middle, lit from the north-west.
     let mid = start.center.to_world().x;
-    let slot = MapHandleSlot::default();
+    let slot = support::slot();
     let s = Rc::clone(&slot);
     SETUP.with(|setup| {
         *setup.borrow_mut() = Some(Box::new(move |cx| {
@@ -1185,7 +1187,7 @@ fn a_hillshade_shows_no_seams_at_its_tiles_edges() {
     use viso_map::RasterSource;
     use viso_map::style::{Color, DemEncoding, Layer};
     let start = berlin(13.3, 0.0);
-    let slot = MapHandleSlot::default();
+    let slot = support::slot();
     let s = Rc::clone(&slot);
     SETUP.with(|setup| {
         *setup.borrow_mut() = Some(Box::new(move |cx| {
@@ -1258,7 +1260,7 @@ fn a_real_shortbread_tile_draws_light_and_dark_at_several_zooms_and_turns() {
     let n = f64::from(1u32 << 14);
     let at = viso_map::WorldPoint::new((8469.0 + 0.72) / n, (5582.0 + 0.78) / n).to_lng_lat();
     for (zoom, bearing, dark) in [(14.6, 0.0, false), (15.4, 35.0, true), (16.3, 200.0, false)] {
-        let slot = MapHandleSlot::default();
+        let slot = support::slot();
         let s = Rc::clone(&slot);
         SETUP.with(|setup| {
             *setup.borrow_mut() = Some(Box::new(move |cx| {

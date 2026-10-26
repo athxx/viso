@@ -1014,9 +1014,9 @@ impl Core {
         out
     }
 
-    /// The requests in flight.
+    /// The requests, raises and elevation loads in flight.
     pub fn in_flight(&self) -> usize {
-        self.requests.len() + self.rasters.loading()
+        self.requests.len() + self.rasters.loading() + self.tilted.working()
     }
 }
 

@@ -53,7 +53,9 @@ impl Application for MapApp {
     }
 
     fn build(&mut self, cx: &mut BuildCx<'_>) {
-        SETUP.with(|s| (s.borrow().as_ref().expect("a setup"))(cx));
+        support::patient(cx, |cx| {
+            SETUP.with(|s| (s.borrow().as_ref().expect("a setup"))(cx));
+        });
     }
 }
 
@@ -83,7 +85,7 @@ fn run(
     make: impl Fn(&MapHandleSlot) -> MapView + 'static,
     frames: usize,
 ) -> (DrivenApp<MapApp>, MapHandle) {
-    let slot = MapHandleSlot::default();
+    let slot = support::slot();
     let s = Rc::clone(&slot);
     SETUP.with(|setup| {
         *setup.borrow_mut() = Some(Box::new(move |cx| make(&s).build(cx)));
