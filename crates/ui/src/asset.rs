@@ -18,6 +18,11 @@
 //!    texture holds them now) and hands back the texture it replaced, for the
 //!    facade to release once no frame in flight draws it.
 //!
+//!    A model is resident the same way: the facade uploads its geometry into
+//!    the window's renderer and attaches the [`SceneModel`]
+//!    ([`NodeStore::attach_model`](crate::component::NodeStore::attach_model)),
+//!    which the fillers of the scenes holding it draw.
+//!
 //! A node's [`Content::Asset`](crate::content::Content::Asset) carries what it
 //! draws, so paint reads no table.
 //!
@@ -39,6 +44,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::node::NodeId;
 use viso_render::TextureId;
 use viso_render::asset::{AssetKind, RasterImage, ResourceId, ResourceRevision, VectorScene};
+use viso_render::scene3d::SceneModel;
+use viso_render::scene3d::model::ModelAsset;
 
 pub use viso_schema::resource::AssetBytes;
 use viso_schema::resource::AssetFormat;
@@ -152,6 +159,8 @@ fn kind_by_extension(extension: Option<&str>) -> AssetKind {
         AssetKind::Vector
     } else if is(&["mp4", "m4v", "mov", "webm", "mkv"]) {
         AssetKind::Video
+    } else if is(&["glb", "gltf"]) {
+        AssetKind::Model
     } else {
         AssetKind::Raster
     }
@@ -162,14 +171,17 @@ fn kind_by_extension(extension: Option<&str>) -> AssetKind {
 pub enum AssetPayload {
     Raster(Arc<RasterImage>),
     Vector(Arc<VectorScene>),
+    /// A 3D model, its geometry and images until it is resident.
+    Model(Arc<ModelAsset>),
 }
 
 impl AssetPayload {
-    /// Its natural size in pixels.
+    /// Its natural size in pixels; a model has none.
     pub fn size(&self) -> [f32; 2] {
         match self {
             AssetPayload::Raster(image) => image.size(),
             AssetPayload::Vector(scene) => scene.size,
+            AssetPayload::Model(_) => [0.0; 2],
         }
     }
 }
@@ -187,6 +199,8 @@ pub enum AssetState {
     Resident { size: [f32; 2] },
     /// A vector scene of `size`, drawn as paths.
     Vector { size: [f32; 2] },
+    /// A model decoded, `resident` once uploaded into this window.
+    Model { resident: bool },
     /// Its bytes could not be read or did not decode.
     Failed,
 }
@@ -208,6 +222,9 @@ pub(crate) struct AssetEntry {
     /// A raster's texture in this store's window; it draws until the newest
     /// payload's replaces it.
     pub(crate) texture: Option<Resident>,
+    /// A model uploaded into this store's window, and the revision it was
+    /// uploaded from.
+    pub(crate) model: Option<(ResourceRevision, Arc<SceneModel>)>,
     /// The nodes showing it, a node once for each time it shows it.
     pub(crate) users: Vec<NodeId>,
     /// When it was last shown, on the table's clock.
@@ -238,6 +255,7 @@ impl AssetEntry {
             failed: None,
             payload: None,
             texture: None,
+            model: None,
             users: Vec::new(),
             shown: 0,
             hosted: None,
@@ -245,20 +263,23 @@ impl AssetEntry {
     }
 
     /// The bytes it holds that a node showing it again draws from at once: its
-    /// texture's, or its vector scene's.
+    /// texture's, its model's, or its vector scene's.
     fn kept_bytes(&self) -> u64 {
-        match (&self.texture, &self.payload) {
-            (Some(t), _) => t.bytes,
-            (None, Some((_, AssetPayload::Vector(scene)))) => scene.bytes(),
+        match (&self.texture, &self.model, &self.payload) {
+            (Some(t), ..) => t.bytes,
+            (None, Some((_, model)), _) => model.bytes(),
+            (None, None, Some((_, AssetPayload::Vector(scene)))) => scene.bytes(),
             _ => 0,
         }
     }
 
-    /// Whether it holds no bytes, no payload and no texture, nor failed.
+    /// Whether it holds no bytes, no payload, no texture and no model, nor
+    /// failed.
     fn holds_nothing(&self) -> bool {
         self.bytes.is_none()
             && self.payload.is_none()
             && self.texture.is_none()
+            && self.model.is_none()
             && self.failed.is_none()
     }
 
@@ -266,6 +287,7 @@ impl AssetEntry {
     fn fails(&self) -> bool {
         self.failed.is_some_and(|f| f >= self.offered)
             && self.texture.is_none()
+            && self.model.is_none()
             && self.payload.is_none()
     }
 
@@ -273,7 +295,8 @@ impl AssetEntry {
     fn decoded(&self) -> Option<ResourceRevision> {
         let payload = self.payload.as_ref().map(|(r, _)| *r);
         let texture = self.texture.map(|t| t.revision);
-        payload.max(texture)
+        let model = self.model.as_ref().map(|(r, _)| *r);
+        payload.max(texture).max(model)
     }
 }
 
@@ -294,6 +317,9 @@ pub struct AssetTable {
     /// Reused by a sweep: the resources no node shows, least recently shown
     /// first, and what each keeps.
     idle: Vec<(u64, ResourceId, u64)>,
+    /// Models let go of, for the facade to release from the window's
+    /// renderer.
+    retired: Vec<Arc<SceneModel>>,
 }
 
 impl AssetTable {
@@ -376,6 +402,34 @@ impl AssetTable {
         })
     }
 
+    /// Every model with no geometry in this window yet: its id, revision and
+    /// decoded asset.
+    pub fn unresident_models(
+        &self,
+    ) -> impl Iterator<Item = (ResourceId, ResourceRevision, &Arc<ModelAsset>)> {
+        self.entries.iter().filter_map(|(id, e)| match &e.payload {
+            Some((revision, AssetPayload::Model(model)))
+                if e.model.as_ref().is_none_or(|(r, _)| r != revision) =>
+            {
+                Some((*id, *revision, model))
+            }
+            _ => None,
+        })
+    }
+
+    /// Model `id` resident in this window: the newest uploaded, until a newer
+    /// one is.
+    pub fn model(&self, id: ResourceId) -> Option<&Arc<SceneModel>> {
+        Some(&self.entries.get(&id)?.model.as_ref()?.1)
+    }
+
+    /// The models let go of since the last call — replaced, swept, or the
+    /// table cleared — for the caller to release from the window's renderer
+    /// once no frame in flight draws them.
+    pub fn take_retired_models(&mut self) -> std::vec::Drain<'_, Arc<SceneModel>> {
+        self.retired.drain(..)
+    }
+
     /// Every resource the table knows and how far along it is, ascending by
     /// id. Cold path, for an inspector.
     pub fn states(&self) -> Vec<(ResourceId, AssetState)> {
@@ -386,6 +440,10 @@ impl AssetTable {
                 let state = match (&e.texture, &e.payload, &e.bytes) {
                     _ if e.fails() => AssetState::Failed,
                     (Some(t), ..) => AssetState::Resident { size: t.size },
+                    _ if e.model.is_some() => AssetState::Model { resident: true },
+                    (None, Some((_, AssetPayload::Model(_))), _) => {
+                        AssetState::Model { resident: false }
+                    }
                     (None, Some((_, AssetPayload::Vector(scene))), _) => {
                         AssetState::Vector { size: scene.size }
                     }
@@ -512,6 +570,9 @@ impl AssetTable {
             let Some(entry) = self.entries.remove(&id) else {
                 continue;
             };
+            if let Some((_, model)) = entry.model {
+                self.retired.push(model);
+            }
             match entry.texture {
                 Some(t) => {
                     self.texture_bytes -= t.bytes;
@@ -673,6 +734,31 @@ impl AssetTable {
         Ok(old.map(|t| t.texture))
     }
 
+    /// Records `model`, uploaded from `id`'s model at `revision`, and lets go
+    /// of the geometry and images it was uploaded from; the model it
+    /// replaces is retired. `Err` gives `model` back when the table has moved
+    /// past `revision`.
+    pub(crate) fn attach_model(
+        &mut self,
+        id: ResourceId,
+        revision: ResourceRevision,
+        model: SceneModel,
+    ) -> Result<(), SceneModel> {
+        let Some(entry) = self.entries.get_mut(&id) else {
+            return Err(model);
+        };
+        if !matches!(&entry.payload, Some((r, AssetPayload::Model(_))) if *r == revision) {
+            return Err(model);
+        }
+        if let Some((_, old)) = entry.model.replace((revision, Arc::new(model))) {
+            self.retired.push(old);
+        }
+        self.unswept |= entry.users.is_empty();
+        entry.payload = None;
+        self.revision += 1;
+        Ok(())
+    }
+
     /// Records `id` as a resource the facade provides itself, of no size
     /// yet.
     pub(crate) fn host(&mut self, id: ResourceId) {
@@ -760,7 +846,11 @@ impl AssetTable {
         if !self.entries.is_empty() {
             self.revision += 1;
         }
-        self.entries.clear();
+        self.retired.extend(
+            self.entries
+                .drain()
+                .filter_map(|(_, e)| e.model.map(|(_, m)| m)),
+        );
         self.texture_bytes = 0;
         self.unswept = false;
     }

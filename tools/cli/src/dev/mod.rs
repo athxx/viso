@@ -2053,7 +2053,8 @@ pub(crate) fn random_hex() -> String {
 
 /// Whether `bytes` decode as the app decodes an asset: a raster image to
 /// texels, an SVG to a document; why not. A video's container is taken as
-/// sniffed: the platform's player decodes it, only when it plays.
+/// sniffed: the platform's player decodes it, only when it plays; a glTF
+/// model as sniffed too, the app decoding it when a scene draws it.
 fn check_asset(bytes: &[u8]) -> Result<(), String> {
     use viso_schema::resource::{AssetFormat, AssetKind};
     match AssetFormat::sniff(bytes).map(AssetFormat::kind) {
@@ -2063,7 +2064,7 @@ fn check_asset(bytes: &[u8]) -> Result<(), String> {
         Some(AssetKind::Vector) => viso_svg::parse(bytes)
             .map(drop)
             .map_err(|error| error.to_string()),
-        Some(AssetKind::Video) => Ok(()),
+        Some(AssetKind::Video | AssetKind::Model) => Ok(()),
         None => Err(viso_image::AssetError::Format.to_string()),
     }
 }

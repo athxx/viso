@@ -45,6 +45,7 @@ use crate::timer::TimerRequest;
 use crate::token::Theme;
 use crate::window::{ChromeContext, WindowOpenRequest};
 use viso_render::asset::{ResourceId, ResourceRevision};
+use viso_render::scene3d::SceneModel;
 use viso_render::{
     Affine2, Border, BrushProgram, PathCmd, Rect, Rgba, SceneSlot, Stroke, TextureId,
 };
@@ -3767,7 +3768,11 @@ impl NodeStore {
                     self.assets.release(image.resource, node);
                 }
             }
-            Some(Content::Scene { slot, .. }) => self.scenes.leave(*slot),
+            Some(Content::Scene { slot, .. }) => {
+                for model in self.scenes.leave(*slot) {
+                    self.assets.release(model, node);
+                }
+            }
             Some(Content::Asset { resource, .. }) => {
                 let resource = *resource;
                 self.assets.release(resource, node);
@@ -3803,6 +3808,69 @@ impl NodeStore {
             DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
         );
         Some(slot)
+    }
+
+    /// glTF model `asset` resident in this store's window, for the filler of
+    /// `slot` to draw with
+    /// [`SceneFrame::push_model`](viso_render::scene3d::SceneFrame::push_model).
+    /// The slot's node holds the asset while it shows the scene: the first
+    /// call offers its bytes to the [`assets`](Self::assets) table, which the
+    /// facade decodes off the frame path and uploads; `None` until then, and
+    /// for a stale slot or a model that does not decode. Once it is resident
+    /// the slot is [`reset`](crate::scenes::SceneSlots::reset), for its filler
+    /// to draw it afresh.
+    pub fn scene_model(&mut self, slot: SceneSlot, asset: &Asset) -> Option<Arc<SceneModel>> {
+        let (node, held) = self.scenes.hold_model(slot, asset.id)?;
+        if !held {
+            self.offer_asset(asset);
+            self.assets.hold(asset.id, node);
+        }
+        self.assets.model(asset.id).cloned()
+    }
+
+    /// Records `model`, uploaded from `resource`'s model at `revision`, and
+    /// resets the scenes holding it so their fillers draw it. The model it
+    /// replaces is retired for the facade to release
+    /// ([`AssetTable::take_retired_models`]); `model` comes back when the
+    /// table has moved past `revision`.
+    pub fn attach_model(
+        &mut self,
+        resource: ResourceId,
+        revision: ResourceRevision,
+        model: SceneModel,
+    ) -> Result<(), SceneModel> {
+        self.assets.attach_model(resource, revision, model)?;
+        for i in 0..self.assets.nodes(resource).len() {
+            let node = self.assets.nodes(resource)[i];
+            if let Some(Content::Scene { slot, .. }) = self.content_payload(node) {
+                let slot = *slot;
+                self.scenes.reset(slot);
+                self.mark_dirty(node, DirtyClass::PAINT);
+            }
+        }
+        Ok(())
+    }
+
+    /// Offers `asset`'s bytes to the asset table, or where to read them from,
+    /// unless the table knows it already.
+    pub(crate) fn offer_asset(&mut self, asset: &Asset) {
+        if self.assets.knows(asset.id) {
+            return;
+        }
+        match &asset.source {
+            AssetSource::Bytes(bytes) => {
+                self.assets
+                    .offer(asset.id, ResourceRevision::default(), bytes.clone());
+            }
+            AssetSource::File(path) => {
+                let origin = AssetOrigin::File(Arc::clone(path));
+                self.assets.locate(asset.id, origin);
+            }
+            AssetSource::Url(url) => {
+                let origin = AssetOrigin::Url(Arc::clone(url));
+                self.assets.locate(asset.id, origin);
+            }
+        }
     }
 
     /// The 3D scenes this store's nodes show, by slot.
@@ -7841,23 +7909,7 @@ impl<'a> BuildCx<'a> {
         fit: AssetFit,
         tint: Option<Rgba>,
     ) -> Handle {
-        if !self.store.assets.knows(asset.id) {
-            match &asset.source {
-                AssetSource::Bytes(bytes) => {
-                    self.store
-                        .assets
-                        .offer(asset.id, ResourceRevision::default(), bytes.clone());
-                }
-                AssetSource::File(path) => {
-                    let origin = AssetOrigin::File(Arc::clone(path));
-                    self.store.assets.locate(asset.id, origin);
-                }
-                AssetSource::Url(url) => {
-                    let origin = AssetOrigin::Url(Arc::clone(url));
-                    self.store.assets.locate(asset.id, origin);
-                }
-            }
-        }
+        self.store.offer_asset(asset);
         self.store.set_asset(handle.id, asset.id, fit, tint);
         handle
     }

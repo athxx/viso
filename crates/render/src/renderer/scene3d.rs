@@ -7,7 +7,8 @@ use super::Renderer;
 use crate::primitive::{Primitive, SceneSlot};
 use crate::scene::bounds::Bounds;
 use crate::scene::ingest::Instance;
-use crate::scene3d::{MeshId, SceneFrame, SceneStats, SceneVertex};
+use crate::scene3d::model::ModelAsset;
+use crate::scene3d::{MeshId, SceneFrame, SceneModel, SceneStats, SceneVertex};
 
 /// The largest scene target edge, in pixels.
 const MAX_TARGET: u32 = 8192;
@@ -47,6 +48,28 @@ impl Renderer {
     /// draws whatever mesh holds the id then.
     pub fn release_scene_mesh<B: GpuBackend>(&mut self, backend: &mut B, mesh: MeshId) {
         self.scene3d.release_mesh(backend, mesh);
+    }
+
+    /// Upload `asset`'s geometry for scenes to draw with
+    /// [`SceneFrame::push_model`]. The asset's geometry and images may be let
+    /// go of afterwards: the model keeps only its rig.
+    pub fn create_scene_model<B: GpuBackend>(
+        &mut self,
+        backend: &mut B,
+        asset: &ModelAsset,
+    ) -> SceneModel {
+        SceneModel::upload(asset, |vertices, indices| {
+            self.scene3d.create_mesh(backend, vertices, indices)
+        })
+    }
+
+    /// Destroy what [`create_scene_model`](Self::create_scene_model)
+    /// uploaded for `model`. A frame that still draws it draws whatever
+    /// takes its meshes' ids next.
+    pub fn release_scene_model<B: GpuBackend>(&mut self, backend: &mut B, model: &SceneModel) {
+        for mesh in model.uploaded() {
+            self.scene3d.release_mesh(backend, mesh);
+        }
     }
 
     /// The scene lane's counters since they were last taken.

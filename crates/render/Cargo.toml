@@ -26,6 +26,8 @@ ab_glyph_rasterizer = { workspace = true }
 # pixel is allocated, and the SVG parser whose tree `svg` lowers.
 viso-image = { workspace = true }
 viso-svg = { workspace = true }
+# The JSON reader a glTF model's document is parsed with.
+viso-ende = { workspace = true }
 
 # Benches only. criterion is a dev-dependency: it never ships in the renderer and
 # is not an architecture DAG edge (external crate, ignored by `xtask check-deps`).

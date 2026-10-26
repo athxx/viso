@@ -502,7 +502,7 @@ fn load_assets(patch: &PatchBundle, blobs: &mut Blobs) -> Vec<LoadedAsset> {
                 }
                 Some(bytes) => {
                     let bytes = AssetBytes::Shared(bytes);
-                    crate::assets::decode(&bytes, viso_gpu::SampledFormats::all())
+                    crate::assets::decode(&bytes, viso_gpu::SampledFormats::all(), None)
                         .map(|payload| Loaded::Image(bytes, payload))
                         .map_err(|error| format!("does not decode: {error}"))
                 }

@@ -3375,6 +3375,7 @@ dependencies = [
  "criterion",
  "naga",
  "naga-types",
+ "viso-ende",
  "viso-gpu",
  "viso-image",
  "viso-math",

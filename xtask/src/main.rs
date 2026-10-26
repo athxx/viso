@@ -283,6 +283,7 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
                 dir: "crates/render",
                 deps: &[
                     "viso-math",
+                    "viso-ende",
                     "viso-schema",
                     "viso-text",
                     "viso-image",

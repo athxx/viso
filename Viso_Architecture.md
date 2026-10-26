@@ -4173,6 +4173,7 @@ Build scanner 按 target profile 做资源转换，runtime 不再做格式转换
 - 设备不采样该格式（`Caps::samples` / `SampledFormats`）时，asset worker 用同一软件解码器解为 RGBA8 再上传——转换永远不让图像不可显示；
 - 全部转换后 facade 不链接对应解码器：board 上 `VISO_IMAGES_CONVERTED=raster`（`cfg(viso_converted_rasters)`，无 raster 解码；有动图原样嵌入时不设），`svg = "raster"` 时 `svg`（`cfg(viso_converted_svg)`，无 SVG 解析/lower）；
 - SVG 默认在构建期解析，运行时 lower 为 primitive 流（`viso-svg`）；
+- glTF 2.0 模型（`.glb` / `.gltf`，`AssetFormat::Gltf`、`AssetKind::Model`）按原文件嵌入，不做构建期转换；asset worker 解码为 `AssetPayload::Model(Arc<ModelAsset>)`（从文件读取的 `.gltf` 在同目录读取它引用的 buffer/图像，嵌入的需自包含），每个窗口把几何上传进自己的 renderer 并 `NodeStore::attach_model`，随后表放掉解码出的几何与图像。scene filler 用 `NodeStore::scene_model(slot, &asset)` 取驻留的 `Arc<SceneModel>`：slot 的节点在显示 scene 期间持有该 asset，驻留时 slot 被 reset 以便 filler 重画；被替换、被 sweep、或表清空的模型经 `AssetTable::take_retired_models` 交回 facade 从 renderer 释放。DSL 的 `asset("…")` 不接受模型（视图不显示模型，E3713）；
 - 字体子集与 baked atlas 见 §37.8；
 - 转换结果进入 AOT package，可以 XIP 读取（§50A.6）。
 

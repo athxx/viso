@@ -1353,6 +1353,13 @@ Public/stable IDs 和 GPU ABI 禁止 `usize`；使用 `u16 / u32 / u64`、`f32`�
 
 2D Renderer 与 3D Scene 共用 GPU Device、Resource Manager、Shader compiler、RenderGraph、Frame scheduler、Profiler；但 2D primitive pipeline 不因为 3D 存在就引入 per-node depth object、material graph overhead、scene graph traversal。3D 作为独立 pass/lane（Mesh/3D Lane）接入。
 
+## 21.5 3D Scene Lane 与 glTF 模型
+
+- **Lane**：`Content::Scene` 节点占一个 `SceneSlot`；filler 填 `SceneFrame`（camera、`Lighting`、背景、按 mesh 分批的 `SceneInstance`）后 commit，facade 用 `Renderer::swap_scene` 交换进 renderer；`Primitive::Scene` 把 slot 的离屏 target（`Bgra8UnormSrgb` color + transient `Depth32Float`，reversed-Z）合成进 2D 流。
+- **模型（`viso_render::scene3d::model`）**：自带的 glTF 2.0 读取器（`.glb` 与 `.gltf`，JSON 由 `viso-ende` 解析，图像经 `viso_image::decode_straight` 解为 straight RGBA8），不引第三方 glTF crate。`ModelAsset` = meshes（`ModelPrimitive`：索引三角形、法线（缺失时生成平面法线）、UV、切线（有 normal map 而文件无切线时按 UV 梯度生成）、顶点色、joints/weights）+ metallic-roughness `ModelMaterial` + textures/images + 共享的 `Arc<ModelRig>`（默认 scene 的节点层级、skins、animations）。支持 `KHR_materials_unlit`、`KHR_materials_emissive_strength`、`KHR_mesh_quantization`、`EXT_texture_webp`；其它 *required* 扩展拒绝。读取全部做越界/一致性检查（accessor 越出 view、索引越出顶点、节点成环、URI 跳出目录、元素数超过 2^24 皆拒绝而不越界读）。
+- **姿态**：`Pose` = 每节点 local TRS + 解出的 world 矩阵；`ModelRig::animate` 采样 step / linear（旋转 slerp）/ cubic-spline 关键帧并可按权重混合，`Pose::solve` 沿层级合成，`joint_matrices` 给出 skin 的 joint 矩阵。
+- **驻留**：`Renderer::create_scene_model(asset) -> SceneModel` 把几何上传为 lane 的 mesh，之后 `SceneModel` 只保留 rig；`SceneFrame::push_model(&model, &pose, &transform, tint)` 逐节点按材质推实例。`release_scene_model` 释放。
+
 ---
 
 # 22. `unsafe` 性能策略

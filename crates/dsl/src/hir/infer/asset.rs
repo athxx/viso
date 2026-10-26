@@ -28,12 +28,14 @@ pub(crate) fn asset_resource(arg: &Expr) -> Option<ResourceId> {
     Some(ResourceId::of(&normalize_path(&asset_path(arg)?)?))
 }
 
-/// The prelude record of an asset of `format`.
-pub(crate) fn asset_record(format: AssetFormat) -> crate::resolve::SymbolId {
+/// The prelude record of an asset of `format`; `None` for a model, which a
+/// view does not show.
+pub(crate) fn asset_record(format: AssetFormat) -> Option<crate::resolve::SymbolId> {
     match format.kind() {
-        AssetKind::Raster => image_record(),
-        AssetKind::Vector => svg_record(),
-        AssetKind::Video => video_record(),
+        AssetKind::Raster => Some(image_record()),
+        AssetKind::Vector => Some(svg_record()),
+        AssetKind::Video => Some(video_record()),
+        AssetKind::Model => None,
     }
 }
 
@@ -72,13 +74,25 @@ impl InferCx<'_> {
             return Ty::Unknown;
         };
         match catalog.lookup(&path) {
+            Ok((_, _, format)) if asset_record(format).is_none() => {
+                self.diagnostics.push(Diagnostic::error(
+                    ASSET,
+                    at,
+                    format!(
+                        "`assets/{path}` is a {} model: a view shows images, SVGs and \
+                         videos, and a scene draws a model from Rust",
+                        format.name()
+                    ),
+                ));
+                Ty::Unknown
+            }
             Ok((normal, id, format)) => {
                 self.env.record_asset(AssetUse {
                     id,
                     path: normal,
                     format,
                 });
-                Ty::named(asset_record(format))
+                asset_record(format).map_or(Ty::Unknown, Ty::named)
             }
             Err(issue) => {
                 let mut diagnostic = Diagnostic::error(

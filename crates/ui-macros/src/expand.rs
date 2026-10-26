@@ -242,7 +242,7 @@ pub fn asset(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         }
         let format = AssetFormat::sniff(&head).ok_or_else(|| {
             fail(format!(
-                "`assets/{path}` is not an image, SVG or video file"
+                "`assets/{path}` is not an image, SVG, video or glTF file"
             ))
         })?;
         let (file, kind) = viso_dsl::assets::embedded_asset(&dir, &path, format);
@@ -256,6 +256,7 @@ pub fn asset(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             AssetKind::Raster => quote! { Raster },
             AssetKind::Vector => quote! { Vector },
             AssetKind::Video => quote! { Video },
+            AssetKind::Model => quote! { Model },
         };
         Ok(quote! {{
             #overlay

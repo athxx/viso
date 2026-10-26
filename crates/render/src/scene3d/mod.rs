@@ -21,10 +21,13 @@
 //! [`Primitive::Scene`]: crate::Primitive::Scene
 
 mod lane;
+pub mod model;
+mod resident;
 mod shapes;
 
 pub(crate) use lane::SceneLane;
 pub use lane::SceneStats;
+pub use resident::SceneModel;
 pub use shapes::Shape;
 pub use viso_gpu::scene::{SceneInstance, SceneMaterial, SceneUniforms, SceneVertex};
 

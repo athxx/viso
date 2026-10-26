@@ -69,16 +69,71 @@ fn avif_still(_: &[u8]) -> Result<RasterImage, AssetError> {
 }
 
 fn jpeg(bytes: &[u8]) -> Result<RasterImage, AssetError> {
+    let (raw, orientation) = jpeg_raw(bytes)?;
+    Ok(Orientation::of(orientation).apply(premultiplied(&raw.pixels, 3, raw.width, raw.height)?))
+}
+
+/// A decoder's pixels as it gave them: `channels` (gray, gray-alpha, RGB or
+/// RGBA) eight-bit channels a pixel, rows top first, as stored.
+pub(crate) struct Raw {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) channels: usize,
+    pub(crate) pixels: Vec<u8>,
+}
+
+fn jpeg_raw(bytes: &[u8]) -> Result<(Raw, Option<u16>), AssetError> {
     let options = options().jpeg_set_out_colorspace(zune_core::colorspace::ColorSpace::RGB);
     let mut decoder = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(bytes), options);
     decoder.decode_headers().map_err(|e| error(&e))?;
     let (w, h) = decoder
         .dimensions()
         .ok_or_else(|| AssetError::Decode("the JPEG has no header".to_owned()))?;
-    let (w, h) = check_size(w, h)?;
+    let (width, height) = check_size(w, h)?;
     let pixels = decoder.decode().map_err(|e| error(&e))?;
     let orientation = decoder.exif().and_then(|e| exif::orientation(e));
-    Ok(Orientation::of(orientation).apply(premultiplied(&pixels, 3, w, h)?))
+    let raw = Raw {
+        width,
+        height,
+        channels: 3,
+        pixels,
+    };
+    Ok((raw, orientation))
+}
+
+/// Decodes a PNG, JPEG or WebP to straight-alpha RGBA8 as stored: no
+/// premultiplication and no turn upright, the texels a material's data
+/// texture (a normal map, roughness) is sampled from unchanged.
+pub(crate) fn straight(bytes: &[u8]) -> Result<Raw, AssetError> {
+    let raw = match AssetFormat::sniff(bytes) {
+        Some(AssetFormat::Png) => png::raw(bytes)?,
+        Some(AssetFormat::Jpeg) => jpeg_raw(bytes)?.0,
+        Some(AssetFormat::WebP) => webp::raw(bytes)?,
+        Some(format) => return Err(AssetError::Kind(format)),
+        None => return Err(AssetError::Format),
+    };
+    let count = raw.width as usize * raw.height as usize;
+    if raw.channels == 0 || raw.pixels.len() != count * raw.channels {
+        return Err(AssetError::Decode(
+            "the decoder gave pixels of an unexpected shape".to_owned(),
+        ));
+    }
+    if raw.channels == 4 {
+        return Ok(raw);
+    }
+    let mut rgba = Vec::with_capacity(count * 4);
+    for p in raw.pixels.chunks_exact(raw.channels) {
+        rgba.extend_from_slice(&match raw.channels {
+            3 => [p[0], p[1], p[2], 255],
+            2 => [p[0], p[0], p[0], p[1]],
+            _ => [p[0], p[0], p[0], 255],
+        });
+    }
+    Ok(Raw {
+        channels: 4,
+        pixels: rgba,
+        ..raw
+    })
 }
 
 fn qoi(bytes: &[u8]) -> Result<RasterImage, AssetError> {

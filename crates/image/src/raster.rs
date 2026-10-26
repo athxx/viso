@@ -202,6 +202,33 @@ impl RasterImage {
     }
 }
 
+/// An image's texels as stored: straight-alpha RGBA8, rows top first,
+/// neither premultiplied nor turned upright.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StraightImage {
+    pub width: u32,
+    pub height: u32,
+    /// `width × height × 4` bytes.
+    pub rgba: Vec<u8>,
+}
+
+/// Decodes a PNG, JPEG or WebP to its texels as stored, for a texture that
+/// holds data rather than a picture — a normal or roughness map — or color a
+/// shader reads with its alpha straight. Bounded like [`decode_raster`].
+///
+/// # Errors
+///
+/// Bytes in none of those formats, a decoder error, or an image past the
+/// limits.
+pub fn decode_straight(bytes: &[u8]) -> Result<StraightImage, AssetError> {
+    let raw = crate::decode::straight(bytes)?;
+    Ok(StraightImage {
+        width: raw.width,
+        height: raw.height,
+        rgba: raw.pixels,
+    })
+}
+
 /// `width × height` as a raster's size, refused when it has no pixels or is
 /// past [`MAX_DIMENSION`] or [`MAX_PIXELS`].
 pub(crate) fn check_size(width: usize, height: usize) -> Result<(u32, u32), AssetError> {

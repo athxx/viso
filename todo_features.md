@@ -663,8 +663,13 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
 
 ## W14 — 3D extended (after W1)
 
-- [ ] glTF 2.0 loader (meshes, materials, textures, node hierarchy, animation) as an
-  asset.
+- [x] glTF 2.0 loader (meshes, materials, textures, node hierarchy, animation) as an
+  asset. — Own bounds-checked reader in `viso_render::scene3d::model` (`.glb`/`.gltf`,
+  data/relative URIs, sparse/quantized accessors, generated flat normals and tangents,
+  step/linear/cubic animation, pose solve, joint matrices); `AssetKind::Model` decoded on
+  the asset worker and made resident per window (`NodeStore::scene_model`,
+  `SceneFrame::push_model`). Verified: unit tests incl. hostile inputs, the six Khronos
+  samples decode, a facade residency test, and models drawn on the CPU raster.
 - [ ] PBR metallic-roughness material with image-based ambient.
 - [ ] Shadow maps (cascaded for the directional light).
 - [ ] Skinned meshes.

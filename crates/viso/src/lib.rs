@@ -2218,6 +2218,9 @@ impl WindowState {
                 gpu.renderer.release_scene(&mut gpu.backend, slot)
             }
         });
+        for model in self.store.assets_mut().take_retired_models() {
+            gpu.renderer.release_scene_model(&mut gpu.backend, &model);
+        }
         let whole = match std::mem::replace(&mut self.painted, viso_ui::Painted::Nothing) {
             viso_ui::Painted::Nothing | viso_ui::Painted::Patched(0) => false,
             viso_ui::Painted::Whole(_) => true,
