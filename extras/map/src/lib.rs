@@ -9,14 +9,21 @@
 pub mod build;
 pub mod camera;
 pub mod geo;
+pub mod load;
 pub mod mvt;
+pub mod pyramid;
 pub mod source;
 pub mod style;
 pub mod tess;
+pub mod view;
 
 pub use camera::{Camera, Insets, Limits, Motion, TILE_SIZE, View};
 pub use geo::{LngLat, LngLatBounds, WorldPoint};
 pub use source::{
     Completer, MemorySource, Reply, ServiceError, ServiceResult, TileId, TileReply, TileSource,
     reply,
+};
+pub use view::{
+    CameraCells, MapHandle, MapHandleSlot, MapPoint, MapTiles, MapView, PlaceHandler,
+    ViewportHandler, map_view,
 };

@@ -739,25 +739,48 @@ viso-ext.
   a resident worker pool the facade sizes from the footprint and drains inline where no
   thread runs; `TileSource` (`request -> Reply<Option<Vec<u8>>>`, `cancel`) with every
   `Fn(TileId) -> Reply<..>` a source and a `MemorySource`. Unit tests in ui and map.
-- [ ] Geo math and camera: Web Mercator, lon/lat ↔ world ↔ view, fractional zoom,
+- [x] Geo math and camera: Web Mercator, lon/lat ↔ world ↔ view, fractional zoom,
   bearing, bounds and padding, `fit_bounds`, min/max zoom and a bounded region,
   `fly_to` (smooth zoom-out-pan-in) and `ease_to`, camera state as typed props and
   events (`.vs` bindable).
-- [ ] Gestures and input: drag pan with fling, pinch zoom about the focal point,
+  `viso_map::camera` (Web Mercator, `View` project/unproject with padding, `Bounds`,
+  `Limits` with min/max zoom and a bounded region) and `MapHandle::{jump_to, ease_to,
+  fly_to, fit_bounds, pan_by, zoom_by, rotate_to}`; `CameraCells` are four typed `Float`
+  cells the view writes and follows (bindable), `on_viewport` fires when the camera
+  rests. Unit tests in camera and headless tapes in `tests/view.rs`.
+- [x] Gestures and input: drag pan with fling, pinch zoom about the focal point,
   two-finger rotate (snapping to north), wheel/trackpad zoom and pan, double-tap zoom
   in, two-finger tap zoom out, keyboard (arrows, +/-, rotate), focus and semantics
   (role, label, center and zoom as value, keyboard equivalents for every gesture).
-- [ ] Tile pyramid: the covering set for the rotated view, parent fallback while
+  Drag with fling (Alt-drag turns), touch pinch about the fingers' middle with a turn
+  threshold and a north snap, trackpad scroll pans and its pinch zooms, wheel notches
+  zoom about the pointer (`viso_ui::route_wheel`, a wheel taker seam), double tap in, two
+  finger tap out, arrows/Shift-arrows/`+`/`-`/`N` on the focused map, `Role::Image` with a
+  label, a hint naming the keys and "lat, lon, zoom" as the value. `drive_scripted` tapes
+  in `tests/view.rs`.
+- [x] Tile pyramid: the covering set for the rotated view, parent fallback while
   children load, overzoom past the source's max zoom, prefetch ring, stale requests
   cancelled, a byte-bounded LRU cache, cross-fade on arrival, one node per tile.
-- [ ] Vector tiles: MVT decode (protobuf, geometry commands, properties, gzip),
+  `pyramid.rs`: the covering set for the rotated, padded view (nearest the focus first),
+  drawn ancestors while children load, overzoom past the source's max, a prefetch ring, a
+  request budget, stale requests cancelled (flag, task and source), a byte-bounded LRU,
+  one drawing node per tile under a camera node. Cross-fade on arrival is not done: an
+  opacity layer inside a turned transform root draws nothing in the renderer today.
+- [x] Vector tiles: MVT decode (protobuf, geometry commands, properties, gzip),
   features filtered by the style before tessellation, on worker threads.
-- [ ] Tessellation: polygons with holes (AA fringe, clipped to the tile square), lines
+  Decoded and built per tile on `viso_ui::work` (`load.rs`); a job whose tile was dropped
+  before it started does nothing; rebuilds start from the decoded tile.
+- [x] Tessellation: polygons with holes (AA fringe, clipped to the tile square), lines
   with joins, caps and dashes held at a constant screen width across fractional zoom,
   points; meshes per style layer in tile-local units; no main-thread geometry.
-- [ ] Style: a typed style (background, fill, line, symbol, circle, raster, hillshade)
+  `tess` + `build.rs`: one mesh per tile, extruded on the GPU by screen points so line
+  widths hold across fractional zoom; built only on workers.
+- [x] Style: a typed style (background, fill, line, symbol, circle, raster, hillshade)
   with filters, zoom stops and data-driven values; light and dark built-in styles for
   the OpenMapTiles and Shortbread schemas; theme switching without refetching.
+  `style` (typed props with zoom stops and data values, filters) and `builtin`
+  (OpenMapTiles and Shortbread, light and dark). `MapHandle::set_style` rebuilds the shown
+  tiles from what they decoded without fetching again (tested).
 - [ ] Labels and symbols: point and line-following labels shaped by `viso-text`
   (scripts, CJK, `name:xx` fallback to the reader's locale), collision with priority,
   kept upright under rotation, fade in and out, SVG icons and road shields, a label

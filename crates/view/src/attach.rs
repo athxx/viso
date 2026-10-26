@@ -423,7 +423,9 @@ fn notices(
         let Ok(mut host) = host.try_borrow_mut() else {
             return;
         };
-        let (event, payload) = crate::route::notice_payload(notice);
+        let Some((event, payload)) = crate::route::notice_payload(notice) else {
+            return;
+        };
         for route in routes.iter().filter(|route| route.event == event) {
             host.dispatch(route.handler, payload.clone(), &scope, states);
         }

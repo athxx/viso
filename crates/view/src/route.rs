@@ -235,9 +235,10 @@ fn pinch_event(route: EventRoute, cx: &EventCx<'_>) -> Option<Value> {
     ]))
 }
 
-/// The route a notice runs, and its payload.
-pub fn notice_payload(notice: &Notice) -> (EventRoute, Value) {
-    match *notice {
+/// The route a notice runs, and its payload; `None` for a notice no view
+/// event names.
+pub fn notice_payload(notice: &Notice) -> Option<(EventRoute, Value)> {
+    Some(match *notice {
         Notice::Scroll {
             offset,
             viewport,
@@ -276,7 +277,8 @@ pub fn notice_payload(notice: &Notice) -> (EventRoute, Value) {
             (EventRoute::PlayingChanged, Value::Int(i64::from(playing)))
         }
         Notice::Fullscreen(on) => (EventRoute::FullscreenChanged, Value::Int(i64::from(on))),
-    }
+        Notice::Size(_) => return None,
+    })
 }
 
 /// The `Animate` an animation moved toward `target`.

@@ -776,6 +776,8 @@ pub struct NodeStore {
     pub(crate) holds: crate::long_press::Holds,
     /// The nodes that take pinches and the pinches under way.
     pub(crate) pinches: crate::pinch::Pinches,
+    /// Cold: the nodes that hear the wheel over them.
+    pub(crate) wheels: crate::wheel::Wheels,
     /// Cold: the viewers and how each one's content shows.
     pub(crate) viewers: crate::viewer::Viewers,
     /// Cold: the swipe rows, and what their gestures settled.
@@ -970,6 +972,7 @@ impl NodeStore {
         self.drags.clear();
         self.holds.clear();
         self.pinches.clear();
+        self.wheels.clear();
         self.viewers.clear();
         self.row_gestures.clear();
         self.sheets.clear();
@@ -7436,6 +7439,13 @@ impl<'a> BuildCx<'a> {
     /// left to a viewport above.
     pub fn drag_axis(&mut self, handle: Handle, axis: Option<crate::layout::Axis>) -> Handle {
         self.store.set_drag_axis(handle.id, axis);
+        handle
+    }
+
+    /// Make an already-declared node hear the wheel over it before any
+    /// viewport above (see [`NodeStore::set_takes_wheel`]).
+    pub fn takes_wheel(&mut self, handle: Handle, takes: bool) -> Handle {
+        self.store.set_takes_wheel(handle.id, takes);
         handle
     }
 

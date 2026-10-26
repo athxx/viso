@@ -65,3 +65,121 @@ pub fn save(name: &str, w: u32, h: u32, bgra: &[u8]) {
         std::fs::write(dir.join(format!("{name}.png")), png(w, h, bgra)).unwrap();
     }
 }
+
+use viso_map::TileId;
+use viso_map::mvt::{GeomType, TileEncoder};
+
+/// A made-up tile of `tile`, the same everywhere it overlaps another: a
+/// world of lakes, parks and a grid of roads laid out in world units, so
+/// tiles of every zoom meet without a seam and a picture shows how the view
+/// placed them. Each kind of feature appears only from the zoom where it is
+/// a few points across.
+pub fn synthetic(tile: TileId) -> Vec<u8> {
+    let z = i32::from(tile.z);
+    let mut t = TileEncoder::new();
+    let to_tile = |gx: f64, grid: i32| -> i32 {
+        // Grid line `gx` of a grid of 2^grid cells in tile units.
+        let k = f64::from(2i32.pow((z - grid).max(0) as u32))
+            / f64::from(2i32.pow((grid - z).max(0) as u32));
+        ((gx * k - f64::from(tile.x)) * 4096.0).round() as i32
+    };
+    let to_tile_y = |gy: f64, grid: i32| -> i32 {
+        let k = f64::from(2i32.pow((z - grid).max(0) as u32))
+            / f64::from(2i32.pow((grid - z).max(0) as u32));
+        ((gy * k - f64::from(tile.y)) * 4096.0).round() as i32
+    };
+    // The cells of a grid of 2^grid that touch the tile, one either side.
+    let cells = |grid: i32| -> (std::ops::Range<i64>, std::ops::Range<i64>) {
+        let (x, y) = (i64::from(tile.x), i64::from(tile.y));
+        if grid >= z {
+            let n = 1i64 << (grid - z);
+            (
+                (x * n - 1)..((x + 1) * n + 1),
+                (y * n - 1)..((y + 1) * n + 1),
+            )
+        } else {
+            let d = z - grid;
+            ((x >> d) - 1..(x >> d) + 2, (y >> d) - 1..(y >> d) + 2)
+        }
+    };
+    let rect = |grid: i32, i: i64, j: i64, inset: f64| -> Vec<[i32; 2]> {
+        let (a, b) = (i as f64 + inset, i as f64 + 1.0 - inset);
+        let (c, d) = (j as f64 + inset, j as f64 + 1.0 - inset);
+        vec![
+            [to_tile(a, grid), to_tile_y(c, grid)],
+            [to_tile(b, grid), to_tile_y(c, grid)],
+            [to_tile(b, grid), to_tile_y(d, grid)],
+            [to_tile(a, grid), to_tile_y(d, grid)],
+        ]
+    };
+    if z >= 5 {
+        let mut water = t.layer("water", 4096);
+        let (xs, ys) = cells(10);
+        for i in xs {
+            for j in ys.clone() {
+                if (i * 3 + j * 5).rem_euclid(11) == 0 {
+                    let ring = rect(10, i, j, 0.12);
+                    water.feature(
+                        None,
+                        GeomType::Polygon,
+                        &[&ring],
+                        &[("class", "lake".into())],
+                    );
+                }
+            }
+        }
+        water.finish();
+    }
+    if z >= 8 {
+        let mut park = t.layer("park", 4096);
+        let (xs, ys) = cells(12);
+        for i in xs {
+            for j in ys.clone() {
+                if (i + 2 * j).rem_euclid(5) == 0 {
+                    let ring = rect(12, i, j, 0.25);
+                    park.feature(
+                        None,
+                        GeomType::Polygon,
+                        &[&ring],
+                        &[("class", "park".into())],
+                    );
+                }
+            }
+        }
+        park.finish();
+    }
+    if z >= 7 {
+        let mut roads = t.layer("transportation", 4096);
+        let (lo, hi) = (-256, 4096 + 256);
+        for (grid, class, from) in [(11, "primary", 7), (13, "minor", 12)] {
+            if z < from {
+                continue;
+            }
+            let (xs, ys) = cells(grid);
+            for i in xs {
+                let x = to_tile(i as f64, grid);
+                if (lo..hi).contains(&x) {
+                    roads.feature(
+                        None,
+                        GeomType::Line,
+                        &[&[[x, lo], [x, hi]]],
+                        &[("class", class.into())],
+                    );
+                }
+            }
+            for j in ys {
+                let y = to_tile_y(j as f64, grid);
+                if (lo..hi).contains(&y) {
+                    roads.feature(
+                        None,
+                        GeomType::Line,
+                        &[&[[lo, y], [hi, y]]],
+                        &[("class", class.into())],
+                    );
+                }
+            }
+        }
+        roads.finish();
+    }
+    t.finish()
+}

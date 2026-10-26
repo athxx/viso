@@ -1572,6 +1572,11 @@ impl<'a> EventCx<'a> {
         self.place?.store.drag_sample(self.pointer_id)
     }
 
+    /// The wheel sample this dispatch carries, `None` for any other.
+    pub fn wheel(&self) -> Option<crate::wheel::WheelSample> {
+        self.place?.store.wheel_sample()
+    }
+
     /// The pinch sample this dispatch carries, `None` for one no pinch sees.
     pub fn pinch(&self) -> Option<crate::pinch::PinchSample> {
         self.place?.store.pinch_sample(self.pointer_id)

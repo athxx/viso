@@ -103,6 +103,7 @@ pub mod video_controls;
 pub mod viewer;
 pub mod virtual_grid;
 pub mod virtual_list;
+pub mod wheel;
 pub mod window;
 pub mod work;
 
@@ -183,6 +184,7 @@ pub use video::{
     VideoTable,
 };
 pub use viso_runtime::{InputKind, Instant, primary_is_logo};
+pub use wheel::{WheelSample, route_wheel};
 // Render primitive data types that already appear in this crate's public API —
 // `Content`'s payload fields (content.rs), `TextRequest::color`, and
 // `BoxStyle::fill` (style.rs) are all typed with them. Re-export the exact set

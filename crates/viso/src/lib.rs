@@ -551,6 +551,16 @@ pub mod __test_support {
 
         /// How much each layer recomputed on the first window's most recent
         /// frame. A pure TRANSFORM animation frame has `laid_out == 0` yet
+        /// The launch window's last frame as the software raster drew it:
+        /// its size in device pixels and its BGRA bytes; `None` without a
+        /// surface.
+        pub fn pixels(&self) -> Option<(u32, u32, Vec<u8>)> {
+            let gpu = self.driver.windows[0].gpu.as_ref()?;
+            let surface = gpu.surface?;
+            let (w, h) = gpu.size;
+            Some((w, h, gpu.backend.read_pixels_bgra8(surface)))
+        }
+
         /// `painted > 0` — the observable proof that world moved without a
         /// relayout.
         pub fn recompute(&self) -> super::FrameRecompute {
@@ -788,6 +798,22 @@ pub mod __test_support {
     pub use crate::text_harness::{
         LineShape, TextDraw, TextHarness, TextStats, text_commit_budget,
     };
+
+    /// What a frame probe is shown: a window's renderer counters as of its
+    /// last upload, and whether the frame about to be submitted uploaded —
+    /// a frame that did not leaves the counters as they were.
+    pub type FrameProbe = Box<dyn FnMut(&viso_render::FrameStats, bool)>;
+
+    thread_local! {
+        pub(crate) static FRAME_PROBE: std::cell::RefCell<Option<FrameProbe>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    /// Shows `probe` each frame this thread's drives submit, before the
+    /// submit, or stops with `None`.
+    pub fn probe_frames(probe: Option<FrameProbe>) {
+        FRAME_PROBE.with(|p| *p.borrow_mut() = probe);
+    }
 }
 
 /// Bridges the UI-agnostic runtime [`viso_runtime::FrameDriver`] to the user's
@@ -1102,6 +1128,8 @@ struct WindowState {
     recompute: FrameRecompute,
     /// What this frame's paint did to `primitives`, for its upload.
     painted: viso_ui::Painted,
+    /// Whether this frame's upload phase wrote primitives to the renderer.
+    uploaded: bool,
     /// The measure/layout counts of the frame in progress, folded into
     /// `recompute` when its paint phase runs.
     laid: (u32, u32),
@@ -1561,6 +1589,7 @@ impl WindowState {
             dev_hud: None,
             recompute: FrameRecompute::default(),
             painted: viso_ui::Painted::Nothing,
+            uploaded: false,
             laid: (0, 0),
             style_seen: 0,
             awaiting_first_frame: true,
@@ -2225,7 +2254,12 @@ impl WindowState {
                 gpu.renderer.release_scene(&mut gpu.backend, slot)
             }
         });
-        let whole = match std::mem::replace(&mut self.painted, viso_ui::Painted::Nothing) {
+        let painted = std::mem::replace(&mut self.painted, viso_ui::Painted::Nothing);
+        self.uploaded = !matches!(
+            painted,
+            viso_ui::Painted::Nothing | viso_ui::Painted::Patched(0)
+        );
+        let whole = match painted {
             viso_ui::Painted::Nothing | viso_ui::Painted::Patched(0) => false,
             viso_ui::Painted::Whole(_) => true,
             viso_ui::Painted::Patched(_) => {
@@ -2248,6 +2282,7 @@ impl WindowState {
             .renderer
             .set_transforms(self.store.transforms().places());
         if update == viso_render::TransformUpdate::NeedsUpload {
+            self.uploaded = true;
             self.paint(true);
             self.painted = viso_ui::Painted::Nothing;
             if let Some(gpu) = &mut self.gpu {
@@ -3758,7 +3793,17 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         &mut ws.route_chain,
                     )
                     .is_some();
-                if !zoomed {
+                // A node that takes the wheel hears it before the viewports.
+                let taken = !zoomed
+                    && viso_ui::route_wheel(
+                        &mut ws.store,
+                        &mut ws.states,
+                        &ws.bindings,
+                        root,
+                        ev,
+                        &mut ws.route_chain,
+                    );
+                if !zoomed && !taken {
                     ScrollRouter::route(&mut ws.store, root, ev);
                     // A focused slider under the wheel steps.
                     if ws.store.wakes_due() {
@@ -4776,7 +4821,12 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // report it — a viewport's scroll, a list's visible rows;
                     // their handlers' writes are the next frame's, as the
                     // effects' are.
-                    viso_ui::deliver_notices(&mut ws.store, &ws.virtual_lists, &mut ws.states);
+                    if viso_ui::deliver_notices(&mut ws.store, &ws.virtual_lists, &mut ws.states)
+                        > 0
+                        && ws.states.has_pending()
+                    {
+                        cx.request_state_flush(ws.window);
+                    }
                     let done = viso_ui::run_effects(&mut ws.store, &mut ws.states, &mut ws.effects);
                     if let Some(cycle) = done.cycle {
                         eprintln!("[viso] {cycle}");
@@ -4920,6 +4970,14 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                                 self.profiler.count(count, value);
                             }
                         }
+                        #[cfg(feature = "headless")]
+                        __test_support::FRAME_PROBE.with(|probe| {
+                            if let Ok(mut probe) = probe.try_borrow_mut()
+                                && let Some(probe) = probe.as_mut()
+                            {
+                                probe(&gpu.renderer.frame_stats(), ws.uploaded);
+                            }
+                        });
                         if let Some(surface) = gpu.surface {
                             #[cfg(any(feature = "hot-reload", feature = "headless"))]
                             let before = gpu.renderer.damage_stats();

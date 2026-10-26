@@ -60,6 +60,9 @@ pub enum Notice {
     /// The node — or a node holding it — went full screen, or came back,
     /// since the watcher last heard ([`NodeStore::set_fullscreen`]).
     Fullscreen(bool),
+    /// The node's laid-out size: at its first layout, and whenever it
+    /// changes.
+    Size(Vec2),
 }
 
 /// Which notices a watched node reports.
@@ -73,6 +76,7 @@ impl NoticeKinds {
     pub const ASSET: Self = Self(8);
     pub const VIDEO: Self = Self(16);
     pub const FULLSCREEN: Self = Self(32);
+    pub const SIZE: Self = Self(64);
 
     pub fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
@@ -111,6 +115,8 @@ struct Watch {
     video: Option<VideoStatus>,
     /// Whether the subject was full screen when last looked at.
     fullscreen: Option<bool>,
+    /// The size last delivered.
+    size: Option<Vec2>,
     /// Taken out while it runs.
     handler: Option<NoticeHandler>,
 }
@@ -160,6 +166,7 @@ impl NodeStore {
             asset: None,
             video: None,
             fullscreen: None,
+            size: None,
             handler: Some(handler),
         });
     }
@@ -215,7 +222,7 @@ pub fn deliver_notices(
             store.notices_mut().watches.swap_remove(at);
             continue;
         }
-        let mut due: [Option<Notice>; 7] = [None; 7];
+        let mut due: [Option<Notice>; 8] = [None; 8];
         // The subject's state, as the node's own is read for a watch of it.
         let node = subject;
         if kinds.contains(NoticeKinds::SCROLL) && store.is_scroll(node) {
@@ -296,6 +303,14 @@ pub fn deliver_notices(
                 due[6] = Some(Notice::Fullscreen(now));
             }
             watch.fullscreen = Some(now);
+        }
+        if kinds.contains(NoticeKinds::SIZE) {
+            let now = store.bounds_size(node);
+            let watch = &mut store.notices_mut().watches[at];
+            if watch.size != Some(now) {
+                due[7] = Some(Notice::Size(now));
+                watch.size = Some(now);
+            }
         }
         let node = store.notices().watches[at].node;
         if due.iter().any(Option::is_some)
@@ -434,5 +449,40 @@ mod tests {
         store.unwatch(viewport);
         store.scroll_by(viewport, Vec2 { x: 0.0, y: 10.0 });
         assert_eq!(frame(&mut store), 0);
+    }
+
+    #[test]
+    fn a_size_is_noticed_at_first_layout_and_when_it_changes() {
+        let mut store = NodeStore::new();
+        let mut cx = BuildCx::new(&mut store);
+        let node = cx
+            .leaf(LeafStyle {
+                size: Size::fill(),
+                ..Default::default()
+            })
+            .id();
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let log = Rc::clone(&seen);
+        store.watch(
+            node,
+            NoticeKinds::SIZE,
+            Box::new(move |notice, _| log.borrow_mut().push(*notice)),
+        );
+        let mut states = StateStore::new();
+        let lists = VirtualLists::new();
+        let mut frame = |store: &mut NodeStore, w: f32| {
+            store.layout(node, Rect::new(0.0, 0.0, w, 50.0), &mut Vec::new());
+            deliver_notices(store, &lists, &mut states)
+        };
+        assert_eq!(frame(&mut store, 100.0), 1);
+        assert_eq!(frame(&mut store, 100.0), 0);
+        assert_eq!(frame(&mut store, 80.0), 1);
+        assert_eq!(
+            seen.borrow().as_slice(),
+            [
+                Notice::Size(Vec2::new(100.0, 50.0)),
+                Notice::Size(Vec2::new(80.0, 50.0))
+            ]
+        );
     }
 }

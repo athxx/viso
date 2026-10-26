@@ -39,6 +39,13 @@ format, and drawn by one node without being copied each time the node moves.
   reports through whatever it captures — usually a completer whose waker wakes the task
   awaiting it.
 
+- `viso-ui` gains wheel takers (`NodeStore::set_takes_wheel`, `EventCx::wheel`): a node that
+  takes the wheel hears every wheel and trackpad scroll over it — notches, the fingers'
+  scroll and the system's coast — as a sample on its own chain, before any viewport above
+  it; a viewport between the pointer and the taker keeps its own. And a `Size` notice
+  (`NoticeKinds::SIZE`): a watched node hears its laid-out size at its first layout and
+  whenever it changes, and the frame its handler writes in is scheduled.
+
 ## Consequences
 
 - Every mesh and path vertex is 8 bytes larger; path geometry is small, so the cost is in
