@@ -1,0 +1,26 @@
+[package]
+name = "viso-example-map"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# An offline navigator over data viso-map-build makes from OpenStreetMap:
+# the map view of extras/map, the archive reader of viso-ext's viso-tiles and
+# the search, routing and navigation of its viso-map-nav. viso-ext is a
+# separate repository beside this one, so the example is a workspace of its
+# own: the main workspace builds without viso-ext checked out.
+[workspace]
+
+[dependencies]
+viso = { path = "../../crates/viso" }
+viso-map = { path = "../../extras/map" }
+viso-tiles = { path = "../../../viso-ext/viso-tiles" }
+viso-map-nav = { path = "../../../viso-ext/viso-map-nav" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+viso-net = { path = "../../../viso-ext/viso-net", default-features = false }
+
+[dev-dependencies]
+viso = { path = "../../crates/viso", features = ["headless"] }
+miniz_oxide = "0.9"

@@ -8,11 +8,14 @@
 //! square, a region outside an extract): the view draws the background and
 //! never asks again. An error is retried on a later camera change.
 //!
-//! Any closure from a [`TileId`] to a [`Reply`] is a source, so a reader of
+//! Any closure from a [`TileId`] to a future of the bytes (a [`Reply`], an
+//! `async` block, another crate's reply type) is a source, so a reader of
 //! PMTiles, MBTiles or HTTP plugs in with one line; [`MemorySource`] serves
 //! tiles held in memory, for tests and bundled data.
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -78,7 +81,8 @@ impl std::fmt::Display for TileId {
 }
 
 /// A tile's encoded bytes, or `None` where the pyramid has no tile.
-pub type TileReply = Reply<Option<Vec<u8>>>;
+/// Dropping it drops the request.
+pub type TileReply = Pin<Box<dyn Future<Output = ServiceResult<Option<Vec<u8>>>>>>;
 
 /// Something that answers tile requests: a file reader, a network client, a
 /// generator, a table in memory.
@@ -98,12 +102,13 @@ pub trait TileSource: 'static {
     }
 }
 
-impl<F> TileSource for F
+impl<F, R> TileSource for F
 where
-    F: Fn(TileId) -> TileReply + 'static,
+    F: Fn(TileId) -> R + 'static,
+    R: Future<Output = ServiceResult<Option<Vec<u8>>>> + 'static,
 {
     fn request(&self, tile: TileId) -> TileReply {
-        self(tile)
+        Box::pin(self(tile))
     }
 }
 
@@ -153,7 +158,10 @@ impl MemorySource {
 
 impl TileSource for MemorySource {
     fn request(&self, tile: TileId) -> TileReply {
-        Reply::ready(Ok(self.tiles.get(&tile).map(|bytes| bytes.to_vec())))
+        Box::pin(Reply::ready(Ok(self
+            .tiles
+            .get(&tile)
+            .map(|bytes| bytes.to_vec()))))
     }
 }
 
@@ -174,22 +182,27 @@ mod tests {
         assert_eq!(t.to_string(), "3/5/2");
     }
 
+    /// The answer, if it is there at once.
+    fn now(mut reply: TileReply) -> Option<ServiceResult<Option<Vec<u8>>>> {
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        match reply.as_mut().poll(&mut cx) {
+            std::task::Poll::Ready(r) => Some(r),
+            std::task::Poll::Pending => None,
+        }
+    }
+
     #[test]
     fn closures_and_memory_answer_requests() {
         let tile = TileId::new(1, 1, 0);
         let memory = MemorySource::new().with(tile, vec![1u8, 2, 3]);
-        assert_eq!(
-            memory.request(tile).try_take(),
-            Some(Ok(Some(vec![1, 2, 3])))
-        );
-        assert_eq!(
-            memory.request(TileId::new(0, 0, 0)).try_take(),
-            Some(Ok(None))
-        );
+        assert_eq!(now(memory.request(tile)), Some(Ok(Some(vec![1, 2, 3]))));
+        assert_eq!(now(memory.request(TileId::new(0, 0, 0))), Some(Ok(None)));
 
         let closure = |t: TileId| Reply::ready(Ok((t.z == 1).then(|| vec![t.x as u8])));
         let source: Rc<dyn TileSource> = Rc::new(closure);
-        assert_eq!(source.request(tile).try_take(), Some(Ok(Some(vec![1]))));
+        assert_eq!(now(source.request(tile)), Some(Ok(Some(vec![1]))));
         source.cancel(tile);
+        let later = |_: TileId| async { Ok(None) };
+        assert_eq!(now(later.request(tile)), Some(Ok(None)));
     }
 }

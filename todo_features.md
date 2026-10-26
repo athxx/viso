@@ -861,5 +861,17 @@ viso-ext.
   `viso-map-build` reads PBF with its own parallel streaming reader and writes Shortbread
   MVT (PMTiles or MBTiles), a search index and a road graph, with ocean polygons,
   multipolygons, and per-zoom simplification and merging; Luxembourg takes 3–5 s.
-- [ ] Example: an offline navigator (search, long-press to route, simulated drive with
+- [x] Example: an offline navigator (search, long-press to route, simulated drive with
   turn banners) run on desktop, mobile and the web.
+  `examples/map` runs on the Luxembourg extract built by `viso-map-build` (PMTiles base
+  map, search index, road graph), through `viso-tiles` and `viso-map-nav` by path
+  `../viso-ext/...`; it is a workspace of its own, excluded from the main one, so the
+  main workspace still builds without viso-ext. Search as you type near the camera,
+  long-press to drop a pin, Car/Bike/Walk, routing on the worker pool (to the nearest
+  reachable point where the place itself is not), Drive simulates the trip at four
+  times its pace through `NavSession`, the camera following heading-up and the banner
+  showing the next maneuver's arrow, distance and words. Headless test over the real
+  data (`VISO_MAP_DATA`): search to a route, long-press to a second, a drive with its
+  banner, pictures read. Desktop runs; iOS, Android, the web, Windows and Linux pass
+  clippy, not run on devices. Data loads by file on native targets and by URL on the
+  web. A real tile of the extract is a committed fixture with its ODbL attribution.

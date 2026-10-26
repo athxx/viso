@@ -49,7 +49,9 @@ members = [
 ]
 
 # viso-ext/ is a user-maintained plugin library and is intentionally NOT a
-# workspace member — Phase 0 ignores it.
+# workspace member — Phase 0 ignores it. The map example depends on its
+# crates through `../viso-ext`, so it is a workspace of its own.
+exclude = ["examples/map"]
 
 [workspace.package]
 version = "0.0.0"

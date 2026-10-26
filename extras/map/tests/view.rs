@@ -1158,3 +1158,54 @@ fn raster_and_hillshade_layers_draw_between_the_vector_layers() {
     assert!(luma(west) > luma(far) + 15, "{west:?} {far:?}");
     assert!(luma(east) + 15 < luma(far), "{east:?} {far:?}");
 }
+
+/// A real Shortbread tile of Luxembourg City (see `fixtures/ATTRIBUTION`).
+const LUXEMBOURG: &[u8] = include_bytes!("fixtures/luxembourg-14-8469-5582.mvt.gz");
+
+#[test]
+fn a_real_shortbread_tile_draws_light_and_dark_at_several_zooms_and_turns() {
+    label_fonts();
+    let tile = TileId::new(14, 8469, 5582);
+    // Rollingergrund, in the tile's south-east, where its streets and
+    // buildings are.
+    let n = f64::from(1u32 << 14);
+    let at = viso_map::WorldPoint::new((8469.0 + 0.72) / n, (5582.0 + 0.78) / n).to_lng_lat();
+    for (zoom, bearing, dark) in [(14.6, 0.0, false), (15.4, 35.0, true), (16.3, 200.0, false)] {
+        let slot = MapHandleSlot::default();
+        let s = Rc::clone(&slot);
+        SETUP.with(|setup| {
+            *setup.borrow_mut() = Some(Box::new(move |cx| {
+                let style = if dark {
+                    builtin::shortbread_dark()
+                } else {
+                    builtin::shortbread_light()
+                };
+                map_view(viso_map::MemorySource::new().with(tile, LUXEMBOURG))
+                    .camera(Camera::new(at, zoom).with_bearing(bearing))
+                    .style(style)
+                    .languages(&["en"])
+                    .handle(&s)
+                    .build(cx);
+            }))
+        });
+        let app = drive_scripted::<MapApp>(redraws(30), STEP);
+        let name = format!(
+            "luxembourg-z{zoom}-b{bearing}-{}",
+            if dark { "dark" } else { "light" }
+        );
+        let px = picture(&app, &name);
+        let handle = slot.borrow().clone().expect("built");
+        let tiles = handle.tiles();
+        assert!(tiles.drawn.iter().any(|d| d.tile == tile), "{tiles:?}");
+        // Streets, buildings and land: many colors, not one background.
+        let mut seen = std::collections::HashSet::new();
+        for y in (0..H as usize).step_by(8) {
+            for x in (0..W as usize).step_by(8) {
+                let c = rgb_at(&px, [x as f64, y as f64]);
+                seen.insert([c[0] / 16, c[1] / 16, c[2] / 16]);
+            }
+        }
+        assert!(seen.len() > 12, "{name}: {} colors", seen.len());
+        assert!(!handle.labels().is_empty(), "{name}: no labels");
+    }
+}
