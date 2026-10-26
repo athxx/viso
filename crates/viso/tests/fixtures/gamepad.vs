@@ -8,6 +8,7 @@ system Pad implements FixedUpdate {
     action fixed_update(frame: FixedFrame) {
         if frame.input.pressed(InputAction::jump) {
             jumps += 1;
+            frame.kit.rumble(1.0, 0.5, 0.2);
         }
         if frame.input.released(InputAction::jump) {
             landings += 1;

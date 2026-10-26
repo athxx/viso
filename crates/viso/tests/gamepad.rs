@@ -1,7 +1,8 @@
 //! The device's gamepads reach a running game through the frame loop: each
 //! frame polls them, a pad's buttons and stick drive the game's actions and
-//! move vector, a pad that goes away releases what it held, and
-//! `env.input.gamepad_available` follows the connections.
+//! move vector, a pad that goes away releases what it held,
+//! `env.input.gamepad_available` follows the connections, and a system's
+//! `kit.rumble` plays on every pad connected.
 
 use std::cell::Cell;
 use std::time::Duration;
@@ -10,7 +11,7 @@ use viso::prelude::*;
 use viso::ui::NodeId;
 use viso_behavior::Value;
 use viso_platform::backend::headless::HeadlessGamepads;
-use viso_platform::{GamepadButton, GamepadState};
+use viso_platform::{GamepadButton, GamepadState, Rumble};
 use viso_view::game_session;
 
 thread_local! {
@@ -84,6 +85,16 @@ fn a_pad_presses_the_games_actions_and_moves_it() {
         "the stick held right for three ticks, then rested"
     );
     assert!(app.states().env().environment().input.gamepad_available);
+    let rumble = Rumble {
+        strong: 1.0,
+        weak: 0.5,
+        duration: Duration::from_secs_f32(0.2),
+    };
+    assert_eq!(
+        pads.rumbles(),
+        [(pads.id(pad).expect("connected"), rumble)],
+        "the jump's rumble, once"
+    );
 }
 
 #[test]
@@ -108,4 +119,7 @@ fn a_pad_that_goes_away_releases_what_it_held_and_is_no_longer_available() {
         "released only when the last pad holding it went"
     );
     assert!(!app.states().env().environment().input.gamepad_available);
+    let rumbled: Vec<_> = pads.rumbles().into_iter().map(|(id, _)| id).collect();
+    assert_eq!(rumbled.len(), 2, "the jump rumbles both pads: {rumbled:?}");
+    assert_ne!(rumbled[0], rumbled[1]);
 }

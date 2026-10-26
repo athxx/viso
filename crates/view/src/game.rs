@@ -35,7 +35,7 @@ use viso_behavior::native::Natives;
 use viso_behavior::{Budget, Module, Value, Vm};
 use viso_schema::view::GameQuery;
 use viso_ui::frame_client::SceneFill;
-use viso_ui::input::{GamepadEvent, GamepadId, GamepadState, Key};
+use viso_ui::input::{GamepadEvent, GamepadId, GamepadState, Key, Rumble};
 use viso_ui::{FrameClient, NodeId, NodeStore, StateId, StateStore, StateValue};
 
 /// The device a session's audio systems render on, provided by the host.
@@ -698,6 +698,15 @@ impl FrameClient for GameClient {
 
     fn gamepad(&mut self, event: &GamepadEvent) {
         self.2.apply(event, &mut self.0.borrow_mut().scheduler);
+    }
+
+    fn take_rumble(&mut self) -> Option<Rumble> {
+        let cue = self.0.borrow_mut().scheduler.stage_mut().take_rumble()?;
+        Some(Rumble {
+            strong: cue.strong,
+            weak: cue.weak,
+            duration: std::time::Duration::from_secs_f32(cue.seconds.min(60.0)),
+        })
     }
 
     fn wants_frame(&self) -> bool {

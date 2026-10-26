@@ -6,7 +6,7 @@
 use std::rc::Rc;
 
 use std::sync::Arc;
-use viso_behavior::game::kit::{Model, Sfx, Sound, Synth};
+use viso_behavior::game::kit::{Model, RumbleCue, Sfx, Sound, Synth};
 use viso_behavior::game::{BodyKind, Extracted, Scheduler};
 
 use viso_behavior::native::{NativeLibrary, NativeObject, NativeType, Natives, Obj, STANDARD};
@@ -93,6 +93,7 @@ export system Arena implements QuickGame {
             frame.kit.burst(Particle::confetti, Vec3F32::new(0.0f32, 1.0f32, 0.0f32), 40);
             frame.kit.sound_at(Sfx::coin, Vec3F32::new(4.0f32, 1.0f32, 0.0f32));
             frame.kit.shake(0.3, 0.5);
+            frame.kit.rumble(0.8, 0.4, 0.25);
         }
         frame.kit.debug_line(Vec3F32::new(0.0f32, 0.0f32, 0.0f32), Vec3F32::new(0.0f32, 2.0f32, 0.0f32));
     }
@@ -186,6 +187,14 @@ fn presentation_commands_land_on_the_stage_once() {
     );
     assert!(stage.particles() > 0 && stage.particles() <= 40);
     assert_eq!(stage.debug_shapes().count(), 1, "the last tick's line");
+    assert_eq!(
+        stage.rumble_cue(),
+        Some(RumbleCue {
+            strong: 0.8,
+            weak: 0.4,
+            seconds: 0.25
+        })
+    );
     let view = stage.view();
     let hero = by_model(&game, Model::Hero).position;
     assert!(view.eye.z > hero.z + 5.0, "behind the hero: {view:?}");
@@ -194,10 +203,12 @@ fn presentation_commands_land_on_the_stage_once() {
     // A replayed tick issues nothing twice.
     let saved = game.snapshot();
     game.stage_mut().drain_cues().for_each(drop);
+    assert!(game.stage_mut().take_rumble().is_some());
     game.step(3);
     game.restore(&saved);
     game.step(3);
     assert!(game.stage().cues().is_empty());
+    assert_eq!(game.stage().rumble_cue(), None);
     assert!(game.replayed_commands() > 0);
 
     let mut synth = Synth::new(48000.0);

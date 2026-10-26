@@ -487,6 +487,8 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
 
 ## W12 — Platform extras
 
+- [ ] Permissions: camera, microphone, location, photos.
+- [ ] Location service.
 - [x] Permissions: camera, microphone, location, photos: each plugin's own `permission()` /
   `request_permission() -> Reply<PermissionState>` (`viso-common`'s `Granted | Denied |
   Prompt`): `viso-camera`, `viso-audio`, `viso-geolocator`, `viso-local-notification`;
@@ -496,7 +498,7 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
 - [x] Location service: `viso-ext/viso-geolocator`: a one-off and the last known position,
   a watch with accuracy and distance filter that ends on denial and reports the service
   turned off, the settings pages, and a mock; run on macOS, Android and the web.
-- [ ] Gamepad backend (GameController, XInput/GameInput, evdev, web Gamepad API) into the
+- [x] Gamepad backend (GameController, XInput/GameInput, evdev, web Gamepad API) into the
   game input.
   - [x] one standard gamepad model in `viso-platform`, polled once per frame head (events
     only on change, no steady-state allocation), into the game input: every pad merged
@@ -532,7 +534,11 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
     stick, trigger and departure, a frame-rate poll only while connected, the unchanged
     timestamp skipped, the rumble effect played, and `env.input.gamepad_available`
     switching the view in the accessibility DOM; the mapping unit-tested).
-  - [ ] Rumble from game systems.
+  - [x] Rumble from game systems: `kit.rumble(strong, weak, seconds)`, a Presentation command
+    the stage keeps (the last one a frame asks for), handed by the game's frame client to
+    the facade and played on every pad connected while its window holds input focus
+    (the DSL kit test and the facade's headless gamepad tests: one pad and two pads
+    rumbled by a jump).
 - [x] Rich clipboard: images and HTML. `ClipboardData { text, html, image }`, pastes name
   the `ClipboardKinds` they take and get the richest; `set_clipboard`, tokened
   `request_paste`, `PasteRequested` handshake for gestures; paste targets and

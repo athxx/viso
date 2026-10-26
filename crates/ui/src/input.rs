@@ -261,7 +261,9 @@ impl PointerContacts {
 
 /// The physical key identity: the one vocabulary shared from the OS event up
 /// to the widget, named by US-layout position.
-pub use viso_runtime::{GamepadButton, GamepadEvent, GamepadId, GamepadState, Key, ScrollPhase};
+pub use viso_runtime::{
+    GamepadButton, GamepadEvent, GamepadId, GamepadState, Key, Rumble, ScrollPhase,
+};
 
 /// A normalized key event (UI tier). Coordinate-free: routed to the focused
 /// node, not by hit testing.

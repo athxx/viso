@@ -6110,6 +6110,7 @@ Schema（标准实现）：每个 Hook Context（`GameStart`、`FixedFrame`、`R
 | `camera(CameraRig)`、`shake(strength, seconds)` | Presentation | 相机 Rig 与抖动 |
 | `burst(Particle, at, count)`、`emit(id, Particle)`、`stop_emit(id)` | Presentation | 粒子 |
 | `sound(Sfx)`、`sound_at(Sfx, at)`、`beep(Wave, from_hz, to_hz, seconds)` | Presentation | 合成音效；`sound_at` 按相机定位衰减与声像 |
+| `rumble(strong, weak, seconds)` | Presentation | 本地玩家手柄的震动：强（低频）与弱（高频）马达各 `0..=1`（超出钳到 1），持续 `seconds`；两者为 0 或时长为 0 时停止；一帧内后一次替换前一次，帧末交给窗口持有输入焦点时所有已连接的手柄，设备不能震动时无效果 |
 | `debug_line(from, to)`、`debug_box(at, size)` | Debug Draw | Release 中移除 |
 
 - 行为与载具 Lower 为普通 World 命令：调用按发出它的 System 记入 Command Buffer（§108），提交时生效；每次 Physics Step 在任何 Body 移动前，按分配顺序从已提交位置算出每个受控 Character 的转向，作为 `walk` 加到其 System 提交的 `walk` 上，接近目标时减速落点；移动后行走者面向其水平速度方向，载具保留速度在朝向上的分量（撞墙即停）。`teleport` 使载具静止，`remove` 撤销其控制；
@@ -6205,7 +6206,7 @@ export enum TickOverrun {
 - `held` 与 Axis 在同一渲染帧的多个 Tick 中取相同值；
 - 同一 Tick 内按下又释放时，`pressed` 与 `released` 都为真；
 - 文本输入、IME 和 UI 焦点中的按键不进入 Game 输入，除非 `GameViewport` 持有输入焦点；失去输入焦点时释放全部按键、按钮与摇杆，仍按下的动作在下一个 Tick 得到 `released`。
-- 手柄每帧在帧首轮询一次（只在状态变化时产生事件），交给持有输入焦点的窗口中的游戏，规则与按键相同；所有已连接的手柄合并为本地玩家 0：任一手柄按住即按住，每根摇杆取推得最远的手柄；扳机越过行程 0.25 时其 `PadButton` 按下、回落到 0.15 以下时松开；手柄断开时释放它按住的一切。
+- 手柄每帧在帧首轮询一次（只在状态变化时产生事件），交给持有输入焦点的窗口中的游戏，规则与按键相同；所有已连接的手柄合并为本地玩家 0：任一手柄按住即按住，每根摇杆取推得最远的手柄；扳机越过行程 0.25 时其 `PadButton` 按下、回落到 0.15 以下时松开；手柄断开时释放它按住的一切。System 经 `kit.rumble` 让这些手柄震动（§105.2）。
 
 ### 106.3 Typed 输入映射
 

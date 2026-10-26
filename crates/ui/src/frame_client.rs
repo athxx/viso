@@ -14,7 +14,7 @@ use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use viso_runtime::GamepadEvent;
+use viso_runtime::{GamepadEvent, Rumble};
 
 use crate::component::NodeStore;
 use crate::content::Content;
@@ -41,6 +41,12 @@ pub trait FrameClient: Any {
     /// reported whatever holds focus. Default: gamepads are ignored.
     fn gamepad(&mut self, event: &GamepadEvent) {
         let _ = event;
+    }
+
+    /// The rumble its frame asked the window's gamepads to play, taken
+    /// once. Default: none.
+    fn take_rumble(&mut self) -> Option<Rumble> {
+        None
     }
 
     /// Whether it needs the next frame, as a running clock does.
@@ -213,6 +219,20 @@ impl NodeStore {
         }
     }
 
+    /// Takes the rumble the clients' frames asked for: the last client's
+    /// that asked.
+    pub fn take_frame_client_rumble(&mut self) -> Option<Rumble> {
+        let mut rumble = None;
+        for (_, client) in &self.frame_clients().clients {
+            if let Ok(mut client) = client.try_borrow_mut()
+                && let Some(asked) = client.take_rumble()
+            {
+                rumble = Some(asked);
+            }
+        }
+        rumble
+    }
+
     /// Releases every client's input: the window lost focus.
     pub fn release_client_input(&mut self) {
         let clients = self.frame_clients_mut();
@@ -254,6 +274,7 @@ mod tests {
         keys: Vec<(Key, bool)>,
         pads: Vec<GamepadEvent>,
         released: Cell<u32>,
+        rumble: Option<Rumble>,
     }
 
     impl FrameClient for Clock {
@@ -269,6 +290,9 @@ mod tests {
         }
         fn gamepad(&mut self, event: &GamepadEvent) {
             self.pads.push(event.clone());
+        }
+        fn take_rumble(&mut self) -> Option<Rumble> {
+            self.rumble.take()
         }
         fn wants_frame(&self) -> bool {
             true
@@ -304,6 +328,14 @@ mod tests {
         );
         store.release_client_input();
         assert_eq!(clock.borrow().released.get(), 2, "a pad's state is held");
+        let rumble = Rumble {
+            strong: 1.0,
+            weak: 0.5,
+            duration: std::time::Duration::from_millis(100),
+        };
+        clock.borrow_mut().rumble = Some(rumble);
+        assert_eq!(store.take_frame_client_rumble(), Some(rumble));
+        assert_eq!(store.take_frame_client_rumble(), None, "taken once");
 
         let mut effects = crate::reactive::EffectStore::new();
         store.free_tree(owner, &mut effects, &mut Vec::new());

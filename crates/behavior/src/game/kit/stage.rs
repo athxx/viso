@@ -1,6 +1,7 @@
 //! The stage: everything the Kit's Presentation commands produce, as the
 //! frame reads it. The camera's view, the particles' sprites, the sound cues
-//! waiting for the audio thread, and the debug shapes.
+//! waiting for the audio thread, the gamepad rumble waiting for the host,
+//! and the debug shapes.
 //!
 //! A tick's commands reach the stage when the tick's commands are delivered;
 //! a `FrameUpdate`'s as it calls them. The scheduler advances the stage once
@@ -27,6 +28,16 @@ const HEARING: f32 = 8.0;
 /// How far a positioned sound pans at most.
 const PAN: f32 = 0.8;
 
+/// A rumble of the local player's gamepads: its strong (low-frequency) and
+/// weak (high-frequency) motors in `0..=1`, for `seconds`; both at zero, or
+/// no time, stops the one playing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RumbleCue {
+    pub strong: f32,
+    pub weak: f32,
+    pub seconds: f32,
+}
+
 /// A debug shape: removed from release builds with the calls that draw it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DebugShape {
@@ -40,6 +51,7 @@ pub struct Stage {
     camera: Camera,
     particles: Particles,
     cues: Vec<Cue>,
+    rumble: Option<RumbleCue>,
     tick_shapes: Vec<DebugShape>,
     frame_shapes: Vec<DebugShape>,
     in_frame: bool,
@@ -75,6 +87,16 @@ impl Stage {
     /// [`Synth`](super::Synth).
     pub fn drain_cues(&mut self) -> alloc::vec::Drain<'_, Cue> {
         self.cues.drain(..)
+    }
+
+    /// The rumble last asked for since the host took one.
+    pub fn rumble_cue(&self) -> Option<RumbleCue> {
+        self.rumble
+    }
+
+    /// Takes the rumble last asked for, for the host to play.
+    pub fn take_rumble(&mut self) -> Option<RumbleCue> {
+        self.rumble.take()
     }
 
     /// The debug shapes to draw this frame.
@@ -126,6 +148,11 @@ impl Stage {
         });
     }
 
+    /// Asks for a rumble, replacing one not yet taken.
+    pub(super) fn rumble(&mut self, cue: RumbleCue) {
+        self.rumble = Some(cue);
+    }
+
     pub(super) fn debug(&mut self, shape: DebugShape) {
         if self.in_frame {
             self.frame_shapes.push(shape);
@@ -153,12 +180,13 @@ impl Stage {
         self.particles.advance(dt, world, alpha);
     }
 
-    /// Starts over, as a rebuilt world does: no rig, particle, cue or
-    /// shape.
+    /// Starts over, as a rebuilt world does: no rig, particle, cue, rumble
+    /// or shape.
     pub(crate) fn reset(&mut self) {
         self.camera.reset();
         self.particles.clear();
         self.cues.clear();
+        self.rumble = None;
         self.tick_shapes.clear();
         self.frame_shapes.clear();
     }

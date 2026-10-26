@@ -12,7 +12,8 @@
 //!   discarded like hand-written ones; `facing` reads the committed world.
 //!   All reproduce on every target.
 //! - Presentation: `camera`, `shake`, `burst`, `emit`, `stop_emit`, `sound`,
-//!   `sound_at`, `beep`, and the debug draws `debug_line` and `debug_box`.
+//!   `sound_at`, `beep`, `rumble`, and the debug draws `debug_line` and
+//!   `debug_box`.
 //!   Called from the Simulation they are deferred commands delivered after
 //!   their tick; from a `FrameUpdate` they run at once. They land on the
 //!   game's [`Stage`].
@@ -42,7 +43,7 @@ use crate::value::Value;
 
 pub use camera::{Camera, CameraRig, CameraView, RigKind};
 pub use particles::{MAX_EMITTERS, MAX_PARTICLES, Sprite};
-pub use stage::{DebugShape, MAX_CUES, Stage};
+pub use stage::{DebugShape, MAX_CUES, RumbleCue, Stage};
 pub use synth::{Cue, MAX_VOICES, Sound, Synth};
 pub use terrain::Terrain;
 
@@ -176,7 +177,7 @@ const fn simulation(f: NativeFunction) -> NativeFunction {
     f.reproducible(Determinism::CrossPlatform)
 }
 
-static KIT_METHODS: [NativeFunction; 17] = [
+static KIT_METHODS: [NativeFunction; 18] = [
     simulation(
         crate::native!(action "terrain" |_cx, this: Obj<Kit>, terrain: Terrain| -> Vec<EntityId> {
             terrain
@@ -281,6 +282,16 @@ static KIT_METHODS: [NativeFunction; 17] = [
     .presentation(),
     crate::native!(action "beep" |_cx, this: Obj<Kit>, wave: Wave, from_hz: f64, to_hz: f64, seconds: f64| -> () {
         this.stage().tone(wave, from_hz as f32, to_hz as f32, seconds as f32);
+        Ok(())
+    })
+    .presentation(),
+    crate::native!(action "rumble" |_cx, this: Obj<Kit>, strong: f64, weak: f64, seconds: f64| -> () {
+        let cue = RumbleCue {
+            strong: amount("rumble strength", strong)?.min(1.0),
+            weak: amount("rumble strength", weak)?.min(1.0),
+            seconds: amount("rumble length", seconds)?,
+        };
+        this.stage().rumble(cue);
         Ok(())
     })
     .presentation(),

@@ -950,7 +950,7 @@ impl Scheduler {
         self.stage.borrow()
     }
 
-    /// The stage, to drain its sound cues.
+    /// The stage, to drain its sound cues and take its rumble.
     pub fn stage_mut(&mut self) -> RefMut<'_, Stage> {
         self.stage.borrow_mut()
     }

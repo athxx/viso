@@ -832,8 +832,8 @@ struct AppDriver<A: Application> {
     /// The tape a headless run replays.
     #[cfg(any(feature = "hot-reload", feature = "headless"))]
     player: Option<tape::TapePlayer>,
-    /// The gamepads connected.
-    gamepads: u32,
+    /// The gamepads connected, in connection order.
+    gamepads: Vec<viso_runtime::GamepadId>,
 }
 
 /// The fonts an app registered at init, installed into every window's shaper.
@@ -1251,7 +1251,7 @@ impl<A: Application> AppDriver<A> {
                 .map(|path| tape::TapeRecorder::new(Some(path.into()))),
             #[cfg(any(feature = "hot-reload", feature = "headless"))]
             player: None,
-            gamepads: 0,
+            gamepads: Vec::new(),
         }
     }
 
@@ -2998,7 +2998,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 cx,
                 id,
                 &self.fonts,
-                self.gamepads > 0,
+                !self.gamepads.is_empty(),
                 services,
                 ui_chrome,
                 chrome_geom,
@@ -3013,7 +3013,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
             cx,
             id,
             &self.fonts,
-            self.gamepads > 0,
+            !self.gamepads.is_empty(),
             services,
             ui_chrome,
             chrome_geom,
@@ -3814,13 +3814,13 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
 
     fn on_gamepad(&mut self, cx: &mut RuntimeCx<'_>, event: viso_runtime::GamepadEvent) {
         use viso_runtime::GamepadEvent;
-        let connected = self.gamepads > 0;
-        match event {
-            GamepadEvent::Connected(_) => self.gamepads += 1,
-            GamepadEvent::Disconnected(_) => self.gamepads = self.gamepads.saturating_sub(1),
+        let connected = !self.gamepads.is_empty();
+        match &event {
+            GamepadEvent::Connected(info) => self.gamepads.push(info.id),
+            GamepadEvent::Disconnected(id) => self.gamepads.retain(|pad| pad != id),
             GamepadEvent::Changed(..) => {}
         }
-        let available = self.gamepads > 0;
+        let available = !self.gamepads.is_empty();
         for ws in &mut self.windows {
             if available != connected {
                 // `env.input.gamepad_available` follows the connections.
@@ -4194,6 +4194,15 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // patches committed, so a patch staged during the last
                     // frame's ticks runs from the next tick on.
                     ws.store.run_frame_clients(cx.frame_delta().as_secs_f64());
+                    // A game's rumble plays on every pad of its local
+                    // player, while its window holds input focus.
+                    if let Some(rumble) = ws.store.take_frame_client_rumble()
+                        && ws.active
+                    {
+                        for pad in &self.gamepads {
+                            cx.rumble_gamepad(*pad, rumble);
+                        }
+                    }
                 }
             }
             FramePhase::FlushStateTransactions => {
@@ -4359,7 +4368,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                             cx,
                             id,
                             &self.fonts,
-                            self.gamepads > 0,
+                            !self.gamepads.is_empty(),
                             self.services.clone(),
                             ui_chrome,
                             chrome_geom,
