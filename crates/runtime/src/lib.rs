@@ -9,7 +9,7 @@
 //! implementation, layout, and paint live above it and are not visible here.
 //!
 //! The [`Scheduler`] implements [`viso_platform::AppHandler`] and drives
-//! 12-phase frames against a real platform window, staying UI-agnostic via the
+//! 17-phase frames against a real platform window, staying UI-agnostic via the
 //! [`FrameDriver`] inversion.
 
 #![forbid(unsafe_op_in_unsafe_fn)]

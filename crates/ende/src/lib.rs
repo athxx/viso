@@ -21,8 +21,9 @@
 //! It is intentionally low-level and framework-agnostic: it depends on no other
 //! viso crate and takes no third-party dependency. It does not implement RON, it
 //! does not carry image/audio/video media codecs, and it is not the frame's
-//! internal data model. Serde compatibility, when needed, lives in
-//! `integrations/serde`, not here. It is not on the frame data-flow main chain.
+//! internal data model. Serde compatibility, when needed, is an optional
+//! feature of the extension crates outside this repository (`viso-ext`), not
+//! here. It is not on the frame data-flow main chain.
 
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]

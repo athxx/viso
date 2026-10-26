@@ -66,9 +66,9 @@ default = ["vm", "desktop", "native-vulkan", "rasterizer", "complex-line-break",
 # Kept small and stable on purpose — no giant feature cartesian product
 # (§5). Backends resolve from the target, not from user feature combos.
 # The desktop display backends on Linux and the BSDs (Wayland and X11, with
-# the desktop portal and AT-SPI) and the session-bus services (file chooser,
-# notifications, Secret Service); no effect elsewhere. An embedded build turns
-# defaults off and keeps `kms` alone.
+# the desktop portal and AT-SPI) and the session-bus launcher (the portal's
+# OpenURI opens URLs); no effect elsewhere. An embedded build turns defaults
+# off and keeps `kms` alone.
 desktop = ["viso-platform/x11", "viso-platform/wayland", "viso-services/desktop"]
 # Vulkan as the native backend on Linux and Android; no effect elsewhere. An
 # embedded-cpu build, and an embedded-gpu one on GLES, leaves it off and links

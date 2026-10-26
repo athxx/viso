@@ -1707,6 +1707,8 @@ enum GlyphImageKind {
 
 这些是 `viso-text` / `viso-render` 内部合同，不是 DSL 关键字，也不要求普通 App 手工选择。普通作者只看到正确、稳定的文字结果；Runtime 根据 retained metadata、transform history、device scale、glyph source capability 与资源预算做选择。
 
+> **状态**：representation 状态机（promotion / settle / hysteresis）、MTSDF 生成、quality window 与 bucket、retained OutlineVector、各 residency pool 都已实现并有测试（§29.1），但运行时尚未驱动 promotion：facade 不把 run 的 transform 采样喂给 `RepresentationState`，绘制只走 `MaskA8` 与 `ColorRgba8`（`GlyphLane::Mtsdf` 不被发出，MTSDF pool 没有真实 page）。缩放或旋转中的文字目前以 A8 coverage 绘制。§13.3–§13.6 描述的是目标行为（尚未实现）。
+
 ## 13.1 稳定文字优先精确 A8 Coverage
 
 普通 App 绝大多数文字在一段稳定时间内具有确定的字号、device scale 和 transform。对这类文字，针对最终 device-pixel bucket 直接 raster 出 Coverage 仍是默认最优路径：
@@ -1782,6 +1784,8 @@ rotation-heavy transformed text
 ## 13.3 Temporal Promotion：动画时 MTSDF，稳定后回到精确 Coverage
 
 这是 Viso 字体渲染与“永久 distance-field-first”方案最重要的区别。
+
+> 目标（尚未实现）：下面的流程在 `viso-text` 中可由测试驱动，但运行时还没有接线，见 §13 开头的状态说明。
 
 ```text
 Stable state
@@ -3156,12 +3160,12 @@ Viso Text/Font Runtime 只有同时满足下面条件才算达到 1.0 合同：
 没有证据的项不勾选，并在第二张表写明原因。
 
 `bench:` 前缀是 `harness = false` 的 benchmark gate，本地运行，不在 CI `cargo test --workspace` 内。
-标注 macOS 的行依赖 CoreText adapter，其他平台 adapter 尚不存在。
+系统字体 adapter 都已实现（`crates/viso/src/system_fonts/`）：macOS / iOS CoreText，Windows DirectWrite，Linux / BSD fontconfig（运行时加载），Android `AFontMatcher`（否则读 `fonts.xml`）；WASM、headless 与 embedded 构建只用应用自带字体。标注 macOS 的行只在 macOS 上取证：`color_glyph_readback_has_opaque_pixels` 测的是 CoreText 彩色光栅，只有 Apple 由平台光栅彩色 glyph，其余平台以 `raster_color` 画 `COLR` / `CBDT` / `sbix`。
 
 | 项 | 证据 |
 |---|---|
 | 不打包字体使用系统 UI/CJK/Emoji | `multilingual_sample_rasterizes_cjk_devanagari_emoji`（无 app 字体），`color_glyph_readback_has_opaque_pixels`（macOS） |
-| startup 不全量扫描 | bench: `native_no_packaged_fonts_startup`（Latin 首帧 `system_queries == 1`），`enumeration_is_metadata_only_and_holds_no_faces_resident`（macOS） |
+| startup 不全量扫描 | bench: `native_no_packaged_fonts_startup`（Latin 首帧 `system_queries == 1`），`enumeration_is_metadata_only_and_holds_no_faces_resident`（合成 catalog，与平台无关） |
 | 3000 fonts 无线性 parse | `three_thousand_discovered_faces_parse_nothing_at_startup`（计 parse 次数，不计绝对时间） |
 | WASM 无隐式字体 | `wasm_runtime_has_no_implicit_system_or_framework_font`（host 上建模，未构建 wasm32） |
 | CJK fallback 按 run/cluster + locale | `same_han_run_selects_a_different_face_per_locale`，`locale_is_part_of_the_plan_key`，`partly_covered_cluster_maps_as_uncovered`，`mapped_len_stops_on_a_cluster_boundary` |

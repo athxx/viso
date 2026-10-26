@@ -5,7 +5,7 @@
 //! Animation ticks are a hot path that must carry no hidden allocation, and the
 //! contract is fixed: a tick advances each live
 //! animation by writing an interpolated world-space offset through
-//! `NodeStore::set_translate` — a `TRANSFORM | HIT_TEST | PAINT` write that never
+//! `NodeStore::set_translate` — a `TRANSFORM`-only write that never
 //! re-measures or re-lays out. This bench measures that steady per-frame cost at
 //! one and at many concurrent animations, so a regression (an allocation, a map
 //! insert, a per-node lookup) is measurable rather than assumed.
