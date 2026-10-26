@@ -267,7 +267,12 @@ impl SkinnedVertex {
             .map(|f| f.to_bits())
             .chain(self.joints)
             .chain(self.weights);
-        for (chunk, w) in out[..Self::SIZE].chunks_exact_mut(4).zip(words) {
+        for (chunk, w) in out[..Self::SIZE]
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(words)
+        {
             chunk.copy_from_slice(&w.to_le_bytes());
         }
     }

@@ -349,7 +349,7 @@ impl SceneLane {
         let mut bytes = vec![0u8; vertices.len() * SceneVertex::SIZE];
         for (v, out) in vertices
             .iter()
-            .zip(bytes.chunks_exact_mut(SceneVertex::SIZE))
+            .zip(bytes.as_chunks_mut::<{ SceneVertex::SIZE }>().0)
         {
             v.write_to(out);
         }
@@ -368,7 +368,7 @@ impl SceneLane {
         let mut bytes = vec![0u8; vertices.len() * SkinnedVertex::SIZE];
         for (v, out) in vertices
             .iter()
-            .zip(bytes.chunks_exact_mut(SkinnedVertex::SIZE))
+            .zip(bytes.as_chunks_mut::<{ SkinnedVertex::SIZE }>().0)
         {
             v.write_to(out);
         }
@@ -649,7 +649,7 @@ impl SceneLane {
         let mut vertex_bytes = vec![0u8; vertices.len() * SceneVertex::SIZE];
         for (v, out) in vertices
             .iter()
-            .zip(vertex_bytes.chunks_exact_mut(SceneVertex::SIZE))
+            .zip(vertex_bytes.as_chunks_mut::<{ SceneVertex::SIZE }>().0)
         {
             v.write_to(out);
         }
