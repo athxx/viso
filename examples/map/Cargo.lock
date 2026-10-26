@@ -2684,6 +2684,7 @@ dependencies = [
  "viso-map-nav",
  "viso-net",
  "viso-tiles",
+ "web-sys",
 ]
 
 [[package]]

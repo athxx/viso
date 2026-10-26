@@ -20,6 +20,7 @@ viso-map-nav = { path = "../../../viso-ext/viso-map-nav" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 viso-net = { path = "../../../viso-ext/viso-net", default-features = false }
+web-sys = { version = "0.3", features = ["Location", "Window"] }
 
 [dev-dependencies]
 viso = { path = "../../crates/viso", features = ["headless"] }
