@@ -8,6 +8,7 @@ mod atoms;
 mod dnd;
 mod ime;
 mod input;
+mod lock;
 mod selection;
 
 use std::cell::RefCell;
@@ -194,6 +195,12 @@ impl PlatformApp for X11App {
         });
     }
 
+    fn set_pointer_lock(&mut self, window: WindowId, lock: bool) {
+        let mut x11 = self.x11.borrow_mut();
+        x11.set_pointer_lock(window, lock);
+        let _ = x11.conn.flush();
+    }
+
     fn set_text_entry(&mut self, window: WindowId, entry: Option<TextEntry>) {
         // A secure or number field's keys bypass the input method: it
         // composes nothing and offers no candidates.
@@ -227,12 +234,10 @@ impl PlatformApp for X11App {
 
     fn capabilities(&self) -> crate::PlatformCaps {
         // No toolkit to draw a context menu or a menu bar: the app draws
-        // its own, and a menu's accelerators still work. The pointer is not
-        // locked here yet.
+        // its own, and a menu's accelerators still work.
         crate::PlatformCaps {
             context_menu: false,
             menus: false,
-            pointer_lock: false,
             ..crate::PlatformCaps::DESKTOP
         }
     }
@@ -419,6 +424,10 @@ pub(crate) struct X11 {
     gestures: bool,
     /// The scale the touchpad's pinch reached by its last update.
     pinch_scale: f64,
+    /// The window with the keyboard's focus.
+    focus: Option<WindowId>,
+    /// The pointer lock held.
+    lock: Option<lock::Lock>,
 }
 
 /// XInput 2.4's touchpad pinch, which the bindings' mask does not name.
@@ -512,6 +521,8 @@ impl X11 {
             last_time: x11rb::CURRENT_TIME,
             gestures: version >= (2, 4),
             pinch_scale: 1.0,
+            focus: None,
+            lock: None,
         };
         x11.load_resources();
         x11.refresh_monitors();
@@ -853,6 +864,12 @@ impl X11 {
     }
 
     fn close(&mut self, id: WindowId) {
+        if self.lock.as_ref().is_some_and(|l| l.window == id) {
+            self.end_lock();
+        }
+        if self.focus == Some(id) {
+            self.focus = None;
+        }
         let Some(i) = self.index(id) else { return };
         let win = self.windows.remove(i);
         if let Some(ime) = &mut self.ime {
@@ -1175,6 +1192,10 @@ impl X11 {
             }
             Event::XinputLeave(e) => {
                 self.last_time = e.time;
+                // A locked pointer stays in its window.
+                if self.locked_to(e.event) {
+                    return;
+                }
                 if let Some(i) = self.index_xid(e.event) {
                     let win = &mut self.windows[i];
                     win.edge = None;
@@ -1197,6 +1218,7 @@ impl X11 {
             Event::XinputButtonPress(e) => self.on_button(&e, true),
             Event::XinputButtonRelease(e) => self.on_button(&e, false),
             Event::XinputMotion(e) => self.on_motion(&e),
+            Event::XinputRawMotion(e) => self.on_raw_motion(&e),
             Event::XinputTouchBegin(e) => self.on_touch(&e, PointerPhase::Down),
             Event::XinputTouchUpdate(e) => self.on_touch(&e, PointerPhase::Moved),
             Event::XinputTouchEnd(e) => self.on_touch(&e, PointerPhase::Up),
@@ -1337,6 +1359,11 @@ impl X11 {
         }
         let Some(i) = self.index_xid(xid) else { return };
         let id = self.windows[i].id;
+        if focused {
+            self.focus = Some(id);
+        } else if self.focus == Some(id) {
+            self.focus = None;
+        }
         if !focused {
             let modifiers = self.modifiers(0);
             for key in self.windows[i].delivered.take_all() {
@@ -1360,6 +1387,10 @@ impl X11 {
             window: id,
             focused,
         });
+        // The pointer goes back to the user with the focus.
+        if !focused && self.lock.as_ref().is_some_and(|l| l.window == id) {
+            self.end_lock();
+        }
     }
 
     fn on_property(&mut self, e: &xproto::PropertyNotifyEvent) {
@@ -1747,6 +1778,8 @@ impl X11 {
             .devices
             .motion(e.sourceid, &e.valuator_mask, &e.axisvalues);
         let kind = self.devices.kind(e.sourceid);
+        // A locked pointer's own moves are the pins back to its middle.
+        let locked = self.locked_to(e.event);
         let win = &mut self.windows[i];
         let (x, y) = (
             input::fp1616(e.event_x) / win.scale,
@@ -1763,6 +1796,9 @@ impl X11 {
                 modifiers,
                 phase: crate::ScrollPhase::None,
             }));
+        }
+        if locked {
+            return;
         }
         if let Some(p) = motion.pressure {
             win.pen_pressure = p;

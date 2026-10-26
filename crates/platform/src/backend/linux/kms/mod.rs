@@ -277,6 +277,8 @@ pub(crate) struct KmsDisplay {
     cursor: CursorIcon,
     /// The mouse moved since the last touch: the cursor is up.
     cursor_on: bool,
+    /// The mouse's pointer is locked: hidden and still, its motion reported.
+    locked: bool,
     clipboard: crate::ClipboardData,
     tags: Vec<u64>,
     inputs_scratch: Vec<Input>,
@@ -336,6 +338,7 @@ impl KmsDisplay {
             buttons: PointerButtons::NONE,
             cursor: CursorIcon::Default,
             cursor_on: false,
+            locked: false,
             clipboard: crate::ClipboardData::default(),
             tags: Vec::new(),
             inputs_scratch: Vec::new(),
@@ -619,11 +622,29 @@ impl KmsDisplay {
         }
     }
 
-    /// Lifts every key, button and contact: the session paused.
+    /// Locks the mouse's pointer, or lets it go, reporting the change.
+    fn set_pointer_lock(&mut self, lock: bool) {
+        let Some(window) = self.window else {
+            return;
+        };
+        if self.locked == lock {
+            return;
+        }
+        self.locked = lock;
+        self.refresh_cursor();
+        self.pump.push(RawEvent::PointerLockChanged {
+            window,
+            locked: lock,
+        });
+    }
+
+    /// Lifts every key, button and contact, and the pointer lock: the
+    /// session paused.
     fn release_all(&mut self) {
         let Some(window) = self.window else {
             return;
         };
+        self.set_pointer_lock(false);
         let modifiers = self.modifiers();
         for code in std::mem::take(&mut self.pressed) {
             let kc = u32::from(code) + translate::XKB_EVDEV_OFFSET;
@@ -679,6 +700,14 @@ impl KmsDisplay {
                     PointerPhase::Up
                 });
             }
+            Input::Motion { dx, dy } if self.locked => {
+                if let Some(window) = self.window {
+                    let s = self.scale;
+                    self.pump.motion(window, dx / s, dy / s);
+                }
+            }
+            // A locked pointer stays where it is.
+            Input::Position { .. } if self.locked => {}
             Input::Motion { dx, dy } => {
                 let (w, h) = self.output.logical_size();
                 self.mouse = (
@@ -874,7 +903,8 @@ impl KmsDisplay {
     }
 
     fn refresh_cursor(&mut self) {
-        let icon = (self.cursor_on && self.cursor != CursorIcon::Hidden).then_some(self.cursor);
+        let icon = (self.cursor_on && !self.locked && self.cursor != CursorIcon::Hidden)
+            .then_some(self.cursor);
         self.output.set_cursor(icon, self.scale);
         self.move_cursor();
     }
@@ -1066,6 +1096,18 @@ impl PlatformApp for KmsApp {
         self.display.borrow_mut().paste(window, kinds, Some(token));
     }
 
+    fn set_pointer_lock(&mut self, window: WindowId, lock: bool) {
+        let mut d = self.display.borrow_mut();
+        if d.window == Some(window) && !d.paused {
+            d.set_pointer_lock(lock);
+        } else if lock {
+            d.pump.push(RawEvent::PointerLockChanged {
+                window,
+                locked: false,
+            });
+        }
+    }
+
     fn set_cursor(&mut self, _window: WindowId, icon: CursorIcon) {
         let mut d = self.display.borrow_mut();
         if d.cursor != icon {
@@ -1093,11 +1135,7 @@ impl PlatformApp for KmsApp {
     }
 
     fn capabilities(&self) -> PlatformCaps {
-        // The pointer is not locked here yet.
-        PlatformCaps {
-            pointer_lock: false,
-            ..PlatformCaps::FULLSCREEN
-        }
+        PlatformCaps::FULLSCREEN
     }
 
     fn loop_waker(&self) -> crate::LoopWaker {

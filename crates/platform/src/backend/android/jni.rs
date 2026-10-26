@@ -51,6 +51,7 @@ struct Methods {
     set_loupe: Global<jmethodID>,
     set_pointer_icon: Global<jmethodID>,
     set_pointer_image: Global<jmethodID>,
+    set_pointer_capture: Global<jmethodID>,
     set_fullscreen: Global<jmethodID>,
     set_clipboard: Global<jmethodID>,
     request_clipboard: Global<jmethodID>,
@@ -341,6 +342,11 @@ pub(super) fn set_loupe(at: Option<[f32; 2]>) {
 
 pub(super) fn set_pointer_icon(icon: i32) {
     call_void(|m| m.set_pointer_icon, &[jvalue { i: icon }]);
+}
+
+/// Capture the mouse for relative motion, or let it go.
+pub(super) fn set_pointer_capture(capture: bool) {
+    call_void(|m| m.set_pointer_capture, &[jvalue { z: capture }]);
 }
 
 /// Show image cursor `id`, making its icon first from `image` — straight
@@ -660,6 +666,7 @@ pub unsafe extern "system" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void
             set_loupe: method(c"setLoupe", c"(ZFF)V"),
             set_pointer_icon: method(c"setPointerIcon", c"(I)V"),
             set_pointer_image: method(c"setPointerImage", c"(I[IIIFF)V"),
+            set_pointer_capture: method(c"setPointerCapture", c"(Z)V"),
             set_fullscreen: method(c"setFullscreen", c"(Z)V"),
             set_clipboard: method(
                 c"setClipboard",
@@ -692,7 +699,7 @@ pub unsafe extern "system" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void
 /// `env` must be the calling thread's environment and `class` the
 /// `VisoActivity` class.
 unsafe fn register_natives(env: *mut JNIEnv, class: jclass) -> bool {
-    let natives: [(&CStr, &CStr, *mut c_void); 25] = [
+    let natives: [(&CStr, &CStr, *mut c_void); 27] = [
         (
             c"nativeStart",
             c"(Ldev/viso/VisoActivity;FIFLjava/lang/String;[Ljava/lang/String;)V",
@@ -726,6 +733,12 @@ unsafe fn register_natives(env: *mut JNIEnv, class: jclass) -> bool {
             native_touch as *mut c_void,
         ),
         (c"nativeScroll", c"(FFFFI)V", native_scroll as *mut c_void),
+        (c"nativeMotion", c"(FF)V", native_motion as *mut c_void),
+        (
+            c"nativePointerCapture",
+            c"(Z)V",
+            native_pointer_capture as *mut c_void,
+        ),
         (
             c"nativeKey",
             c"(IZZILjava/lang/String;)V",
@@ -1021,6 +1034,14 @@ extern "system" fn native_scroll(
         delta: [dx, dy],
         meta,
     });
+}
+
+extern "system" fn native_motion(_env: *mut JNIEnv, _class: jclass, dx: jfloat, dy: jfloat) {
+    send(Msg::Motion([dx, dy]));
+}
+
+extern "system" fn native_pointer_capture(_env: *mut JNIEnv, _class: jclass, captured: jboolean) {
+    send(Msg::PointerCapture(captured));
 }
 
 extern "system" fn native_key(

@@ -15,6 +15,7 @@ mod access;
 mod clipboard;
 mod drop;
 mod links;
+mod lock;
 mod menu;
 mod proc;
 mod system;
@@ -162,6 +163,8 @@ struct WindowState {
     /// The touch and pen contacts currently down, for capture-loss cancels.
     contacts: RefCell<Vec<(u32, PointerKind)>>,
     cursor: Cell<CursorIcon>,
+    /// The mouse's pointer is locked to the window.
+    locked: Cell<bool>,
     /// The last mouse position in logical points, for leave and cancel.
     last_mouse: Cell<(f64, f64)>,
     surrogates: RefCell<translate::Utf16Assembler>,
@@ -193,6 +196,7 @@ impl WindowState {
             tracking_leave: Cell::new(false),
             contacts: RefCell::new(Vec::new()),
             cursor: Cell::new(CursorIcon::Default),
+            locked: Cell::new(false),
             last_mouse: Cell::new((0.0, 0.0)),
             surrogates: RefCell::new(translate::Utf16Assembler::default()),
             ime_caret: Cell::new(None),
@@ -726,14 +730,6 @@ impl PlatformApp for WinApp {
         self.gamepads.rumble(id, rumble)
     }
 
-    fn capabilities(&self) -> crate::PlatformCaps {
-        // The pointer is not locked here yet.
-        crate::PlatformCaps {
-            pointer_lock: false,
-            ..crate::PlatformCaps::DESKTOP
-        }
-    }
-
     fn loop_waker(&self) -> LoopWaker {
         let woken = self.shared.borrow().woken.clone();
         let thread = self.ui_thread;
@@ -818,6 +814,12 @@ impl PlatformApp for WinApp {
     fn set_cursor(&mut self, window: WindowId, icon: CursorIcon) {
         if let Some(state) = self.state(window) {
             system::set_cursor(state, icon);
+        }
+    }
+
+    fn set_pointer_lock(&mut self, window: WindowId, lock: bool) {
+        if let Some(state) = self.state(window) {
+            lock::set(state, lock);
         }
     }
 

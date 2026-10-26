@@ -267,6 +267,13 @@ impl Pump {
         self.events.push_back(event);
     }
 
+    /// Queues the locked pointer's motion over `window`, summed into a
+    /// motion still at the back of the queue.
+    #[cfg(any(feature = "x11", feature = "wayland", feature = "kms"))]
+    pub(crate) fn motion(&mut self, window: WindowId, dx: f64, dy: f64) {
+        crate::event::queue_motion(&mut self.events, window, dx, dy);
+    }
+
     /// Give `window` an accessibility adapter whose requests arrive through
     /// `waker`.
     #[cfg(any(feature = "x11", feature = "wayland"))]

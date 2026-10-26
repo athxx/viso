@@ -20,6 +20,7 @@
 
 mod access;
 mod clipboard;
+mod lock;
 mod view;
 
 use std::cell::{Cell, RefCell};
@@ -49,10 +50,11 @@ use objc2_ui_kit::{
     UIContentSizeCategoryAccessibilityMedium, UIContentSizeCategoryExtraExtraExtraLarge,
     UIContentSizeCategoryExtraExtraLarge, UIContentSizeCategoryExtraLarge,
     UIContentSizeCategoryExtraSmall, UIContentSizeCategoryMedium, UIContentSizeCategorySmall,
-    UIKeyboardFrameEndUserInfoKey, UIKeyboardWillChangeFrameNotification, UIResponder, UIScene,
-    UISceneConfiguration, UISceneConnectionOptions, UISceneDelegate, UISceneSession, UIScreen,
-    UITraitCollection, UITraitEnvironment, UIUserActivityRestoring, UIUserInterfaceStyle,
-    UIViewController, UIWindow, UIWindowScene, UIWindowSceneDelegate,
+    UIKeyboardFrameEndUserInfoKey, UIKeyboardWillChangeFrameNotification,
+    UIPointerLockStateDidChangeNotification, UIResponder, UIScene, UISceneConfiguration,
+    UISceneConnectionOptions, UISceneDelegate, UISceneSession, UIScreen, UITraitCollection,
+    UITraitEnvironment, UIUserActivityRestoring, UIUserInterfaceStyle, UIViewController, UIWindow,
+    UIWindowScene, UIWindowSceneDelegate,
 };
 
 use self::view::VisoView;
@@ -93,6 +95,11 @@ struct Loop {
     access: RefCell<access::Access>,
     /// The status bar and home indicator are hidden.
     fullscreen: Cell<bool>,
+    /// The app asked for the pointer locked.
+    lock_wanted: Cell<bool>,
+    /// The scene's pointer is locked, as the system last said.
+    pointer_locked: Cell<bool>,
+    controller: RefCell<Option<Retained<VisoViewController>>>,
 }
 
 thread_local! {
@@ -113,6 +120,9 @@ thread_local! {
         target: RefCell::new(None),
         access: RefCell::new(access::Access::new()),
         fullscreen: Cell::new(false),
+        lock_wanted: Cell::new(false),
+        pointer_locked: Cell::new(false),
+        controller: RefCell::new(None),
     };
 }
 
@@ -369,6 +379,10 @@ fn set_suspended(suspended: bool) {
 }
 
 fn set_focused(focused: bool) {
+    // The pointer goes back to the user with the focus.
+    if !focused && let Some(controller) = LOOP.with(|l| l.controller.borrow().clone()) {
+        lock::set(&controller, false);
+    }
     if LOOP.with(|l| l.focused.replace(focused)) != focused {
         if LOOP.with(|l| l.view.borrow().is_some()) {
             push(RawEvent::WindowFocused {
@@ -435,6 +449,10 @@ impl IosApp {
                     UIAccessibilitySwitchControlStatusDidChangeNotification,
                 ),
                 (sel!(localeChanged:), NSCurrentLocaleDidChangeNotification),
+                (
+                    sel!(pointerLockChanged:),
+                    UIPointerLockStateDidChangeNotification,
+                ),
             ] {
                 center.addObserver_selector_name_object(&target, selector, Some(name), None);
             }
@@ -485,6 +503,7 @@ impl PlatformApp for IosApp {
             unsafe { msg_send![VisoViewController::alloc(mtm), init] };
         controller.setView(Some(&view));
         LOOP.with(|l| *l.view.borrow_mut() = Some(view.clone()));
+        LOOP.with(|l| *l.controller.borrow_mut() = Some(controller.clone()));
 
         let target = LOOP.with(|l| l.target.borrow().clone());
         if let Some(target) = target {
@@ -577,6 +596,12 @@ impl PlatformApp for IosApp {
 
     fn set_cursor(&mut self, _window: WindowId, _icon: CursorIcon) {}
 
+    fn set_pointer_lock(&mut self, window: WindowId, lock: bool) {
+        if let Some(shown) = self.window.as_ref().filter(|_| window == WINDOW) {
+            lock::set(&shown.controller, lock);
+        }
+    }
+
     fn set_text_entry(&mut self, window: WindowId, entry: Option<TextEntry>) {
         if let Some(w) = self.window.as_ref().filter(|_| window == WINDOW) {
             w.view.set_text_entry(entry);
@@ -614,7 +639,15 @@ impl PlatformApp for IosApp {
     }
 
     fn capabilities(&self) -> crate::PlatformCaps {
-        crate::PlatformCaps::MOBILE
+        // An iPad's pointer locks while the app fills the screen (iPadOS 14).
+        let pad = MainThreadMarker::new().is_some_and(|mtm| {
+            objc2_ui_kit::UIDevice::currentDevice(mtm).userInterfaceIdiom()
+                == objc2_ui_kit::UIUserInterfaceIdiom::Pad
+        });
+        crate::PlatformCaps {
+            pointer_lock: pad,
+            ..crate::PlatformCaps::MOBILE
+        }
     }
 
     fn loop_waker(&self) -> crate::LoopWaker {
@@ -694,6 +727,11 @@ define_class!(
         fn prefers_home_indicator_auto_hidden(&self) -> bool {
             LOOP.with(|l| l.fullscreen.get())
         }
+
+        #[unsafe(method(prefersPointerLocked))]
+        fn prefers_pointer_locked(&self) -> bool {
+            lock::wanted()
+        }
     }
 );
 
@@ -772,6 +810,11 @@ define_class!(
                 report_locale();
                 drive();
             });
+        }
+
+        #[unsafe(method(pointerLockChanged:))]
+        fn pointer_lock_changed(&self, _note: &NSNotification) {
+            guarded(lock::changed);
         }
 
         #[unsafe(method(assistiveTechnologyChanged:))]

@@ -20,8 +20,15 @@ use wayland_cursor::CursorTheme;
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::{
     self, WpCursorShapeDeviceV1,
 };
+use wayland_protocols::wp::pointer_constraints::zv1::client::{
+    zwp_locked_pointer_v1::{self, ZwpLockedPointerV1},
+    zwp_pointer_constraints_v1,
+};
 use wayland_protocols::wp::pointer_gestures::zv1::client::zwp_pointer_gesture_pinch_v1::{
     self, ZwpPointerGesturePinchV1,
+};
+use wayland_protocols::wp::relative_pointer::zv1::client::zwp_relative_pointer_v1::{
+    self, ZwpRelativePointerV1,
 };
 
 use super::text_input::TextInput;
@@ -70,6 +77,24 @@ pub(super) struct Seat {
     delivered: Vec<u32>,
     repeat: Repeat,
     touches: Vec<Touch>,
+    /// The pointer lock asked for or held.
+    lock: Option<Lock>,
+}
+
+/// A pointer lock on one window: asked of the compositor, engaged once it
+/// says so.
+struct Lock {
+    window: WindowId,
+    locked: ZwpLockedPointerV1,
+    relative: ZwpRelativePointerV1,
+    engaged: bool,
+}
+
+impl Lock {
+    fn destroy(self) {
+        self.locked.destroy();
+        self.relative.destroy();
+    }
 }
 
 struct Pointer {
@@ -172,11 +197,13 @@ impl Seat {
                 next: None,
             },
             touches: Vec::new(),
+            lock: None,
         }
     }
 
     /// The seat went away: drop its devices.
     pub(super) fn release(mut self, state: &mut State) {
+        self.end_lock(state, None);
         if let Some(window) = self.key_focus.take() {
             self.leave_keyboard(state, window);
         }
@@ -193,6 +220,9 @@ impl Seat {
     }
 
     pub(super) fn forget_window(&mut self, window: WindowId) {
+        if let Some(lock) = self.lock.take_if(|l| l.window == window) {
+            lock.destroy();
+        }
         if self.key_focus == Some(window) {
             self.key_focus = None;
             self.delivered.clear();
@@ -304,6 +334,10 @@ impl Seat {
         let win = &state.windows[i];
         let mut icon = win.edge.map_or(win.cursor, Edge::cursor);
         let serial = p.enter_serial;
+        if self.lock.as_ref().is_some_and(|l| l.engaged) {
+            p.pointer.set_cursor(serial, None, 0, 0);
+            return;
+        }
         if let CursorIcon::Custom(custom) = icon {
             let scale = (win.scale.ceil() as i32).max(1);
             let at = match p
@@ -370,6 +404,95 @@ impl Seat {
             hot_x as i32 / scale,
             hot_y as i32 / scale,
         );
+    }
+
+    // ---- pointer lock --------------------------------------------------
+
+    /// Asks the compositor to lock the pointer to `window`, or lets it go.
+    /// A lock is refused unless the pointer is over the window and the
+    /// keyboard's focus in it; the compositor ends it when either leaves.
+    pub(super) fn set_pointer_lock(&mut self, state: &mut State, window: WindowId, lock: bool) {
+        if !lock {
+            self.end_lock(state, Some(window));
+            return;
+        }
+        if self.lock.as_ref().is_some_and(|l| l.window == window) {
+            return;
+        }
+        self.end_lock(state, None);
+        let asked = match (
+            &self.pointer,
+            &state.globals.constraints,
+            &state.globals.relative,
+            state.index(window),
+        ) {
+            (Some(p), Some(constraints), Some(relative), Some(i))
+                if p.focus == Some(window) && self.key_focus == Some(window) =>
+            {
+                let locked = constraints.lock_pointer(
+                    &state.windows[i].surface,
+                    &p.pointer,
+                    None,
+                    zwp_pointer_constraints_v1::Lifetime::Oneshot,
+                    &state.qh,
+                    window,
+                );
+                let relative = relative.get_relative_pointer(&p.pointer, &state.qh, window);
+                Some(Lock {
+                    window,
+                    locked,
+                    relative,
+                    engaged: false,
+                })
+            }
+            _ => None,
+        };
+        match asked {
+            Some(lock) => self.lock = Some(lock),
+            None => state.pump.push(RawEvent::PointerLockChanged {
+                window,
+                locked: false,
+            }),
+        }
+    }
+
+    /// Ends the lock (only `window`'s, when given), reporting it and showing
+    /// the cursor again.
+    fn end_lock(&mut self, state: &mut State, window: Option<WindowId>) {
+        let Some(lock) = self.lock.take_if(|l| window.is_none_or(|w| w == l.window)) else {
+            return;
+        };
+        let window = lock.window;
+        lock.destroy();
+        state.pump.push(RawEvent::PointerLockChanged {
+            window,
+            locked: false,
+        });
+        self.apply_cursor(state);
+    }
+
+    fn on_locked(&mut self, state: &mut State, event: zwp_locked_pointer_v1::Event) {
+        match event {
+            zwp_locked_pointer_v1::Event::Locked => {
+                let Some(lock) = &mut self.lock else { return };
+                lock.engaged = true;
+                state.pump.push(RawEvent::PointerLockChanged {
+                    window: lock.window,
+                    locked: true,
+                });
+                self.apply_cursor(state);
+            }
+            zwp_locked_pointer_v1::Event::Unlocked => self.end_lock(state, None),
+            _ => {}
+        }
+    }
+
+    fn on_relative(&mut self, state: &mut State, event: zwp_relative_pointer_v1::Event) {
+        if let zwp_relative_pointer_v1::Event::RelativeMotion { dx, dy, .. } = event
+            && let Some(lock) = self.lock.as_ref().filter(|l| l.engaged)
+        {
+            state.pump.motion(lock.window, dx, dy);
+        }
     }
 
     // ---- pointer -------------------------------------------------------
@@ -689,6 +812,8 @@ impl Seat {
                 self.last_serial = serial;
                 if let Some(window) = self.key_focus.take() {
                     self.leave_keyboard(state, window);
+                    // The pointer goes back to the user with the focus.
+                    self.end_lock(state, Some(window));
                 }
             }
             wl_keyboard::Event::Key {
@@ -1088,6 +1213,9 @@ impl Dispatch<WlSeat, ()> for State {
             wayland_client::WEnum::Unknown(bits) => wl_seat::Capability::from_bits_truncate(bits),
         };
         state.with_seat(|seat, state| {
+            if !caps.contains(wl_seat::Capability::Pointer) {
+                seat.end_lock(state, None);
+            }
             seat.set_pointer(caps.contains(wl_seat::Capability::Pointer), state);
             let keyboard = caps.contains(wl_seat::Capability::Keyboard);
             if keyboard && seat.keyboard.is_none() {
@@ -1113,6 +1241,32 @@ impl Dispatch<WlPointer, ()> for State {
         _: &QueueHandle<Self>,
     ) {
         state.with_seat(|seat, state| seat.on_pointer(state, event));
+    }
+}
+
+impl Dispatch<ZwpLockedPointerV1, WindowId> for State {
+    fn event(
+        state: &mut Self,
+        _: &ZwpLockedPointerV1,
+        event: zwp_locked_pointer_v1::Event,
+        _: &WindowId,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        state.with_seat(|seat, state| seat.on_locked(state, event));
+    }
+}
+
+impl Dispatch<ZwpRelativePointerV1, WindowId> for State {
+    fn event(
+        state: &mut Self,
+        _: &ZwpRelativePointerV1,
+        event: zwp_relative_pointer_v1::Event,
+        _: &WindowId,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        state.with_seat(|seat, state| seat.on_relative(state, event));
     }
 }
 

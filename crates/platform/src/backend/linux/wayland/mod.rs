@@ -29,7 +29,9 @@ use wayland_protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
     wp_fractional_scale_v1::{self, WpFractionalScaleV1},
 };
+use wayland_protocols::wp::pointer_constraints::zv1::client::zwp_pointer_constraints_v1::ZwpPointerConstraintsV1;
 use wayland_protocols::wp::pointer_gestures::zv1::client::zwp_pointer_gestures_v1::ZwpPointerGesturesV1;
+use wayland_protocols::wp::relative_pointer::zv1::client::zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1;
 use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_manager_v3::ZwpTextInputManagerV3;
 use wayland_protocols::wp::viewporter::client::{
     wp_viewport::WpViewport, wp_viewporter::WpViewporter,
@@ -206,6 +208,12 @@ impl PlatformApp for WaylandApp {
         });
     }
 
+    fn set_pointer_lock(&mut self, window: WindowId, lock: bool) {
+        self.with_state(|state| {
+            state.with_seat(|seat, state| seat.set_pointer_lock(state, window, lock))
+        });
+    }
+
     fn set_text_entry(&mut self, window: WindowId, entry: Option<TextEntry>) {
         self.with_state(|state| {
             if let Some(i) = state.index(window) {
@@ -234,12 +242,13 @@ impl PlatformApp for WaylandApp {
 
     fn capabilities(&self) -> crate::PlatformCaps {
         // No toolkit to draw a context menu or a menu bar: the app draws
-        // its own, and a menu's accelerators still work. The pointer is not
-        // locked here yet.
+        // its own, and a menu's accelerators still work. The pointer locks
+        // where the compositor offers both constraints and relative motion.
+        let globals = &self.wl.borrow().state.globals;
         crate::PlatformCaps {
             context_menu: false,
             menus: false,
-            pointer_lock: false,
+            pointer_lock: globals.constraints.is_some() && globals.relative.is_some(),
             ..crate::PlatformCaps::DESKTOP
         }
     }
@@ -320,6 +329,10 @@ struct Globals {
     cursor_shape: Option<WpCursorShapeManagerV1>,
     text_input: Option<ZwpTextInputManagerV3>,
     gestures: Option<ZwpPointerGesturesV1>,
+    /// Locking the pointer to a surface, and reading the mouse's motion
+    /// while it is: pointer lock needs both.
+    constraints: Option<ZwpPointerConstraintsV1>,
+    relative: Option<ZwpRelativePointerManagerV1>,
 }
 
 struct Output {
@@ -423,6 +436,8 @@ impl State {
             cursor_shape: globals.bind(&qh, 1..=1, ()).ok(),
             text_input: globals.bind(&qh, 1..=1, ()).ok(),
             gestures: globals.bind(&qh, 1..=3, ()).ok(),
+            constraints: globals.bind(&qh, 1..=1, ()).ok(),
+            relative: globals.bind(&qh, 1..=1, ()).ok(),
         };
         let mut state = Self {
             conn,
@@ -1083,6 +1098,8 @@ delegate_noop!(State: ZxdgDecorationManagerV1);
 delegate_noop!(State: WpCursorShapeManagerV1);
 delegate_noop!(State: ZwpTextInputManagerV3);
 delegate_noop!(State: ZwpPointerGesturesV1);
+delegate_noop!(State: ZwpPointerConstraintsV1);
+delegate_noop!(State: ZwpRelativePointerManagerV1);
 
 /// The xdg-shell resize edge for `edge`.
 fn resize_edge(edge: translate::Edge) -> xdg_toplevel::ResizeEdge {

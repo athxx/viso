@@ -566,7 +566,7 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
   - Ran: macOS packaged app cold and warm through LaunchServices; Android emulator cold,
     warm and from the background; Linux X11 (Xvfb) cold plus two hand-overs. Not run:
     iOS, Windows, web, Wayland, universal/app links.
-- [ ] Custom cursors and pointer lock.
+- [x] Custom cursors and pointer lock.
   - [x] Image cursors: `CustomCursor::new(CursorImage)` registers straight RGBA, a hotspot
     and a scale once and names it `CursorIcon::Custom(id)`; `viso::cursor::decode` reads an
     encoded image. Each backend builds its OS cursor on first show and caches it (macOS
@@ -579,7 +579,7 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
     tests (registry, resampling, cache, KMS drawing); web in headless Chrome over CDP (the
     canvas's computed cursor is the `image-set` of the PNG data URL over the image panel,
     `crosshair` over the other); Windows, Linux, Android, iOS compile and pass clippy only.
-  - [ ] Pointer lock with relative motion: `EventCx::lock_pointer(id)` /
+  - [x] Pointer lock with relative motion: `EventCx::lock_pointer(id)` /
     `unlock_pointer`, `PlatformApp::set_pointer_lock`, `PlatformCaps::pointer_lock`,
     `RawEvent::PointerMotion` (logical-point deltas) and `PointerLockChanged`; the locked
     node gets every mouse sample, its motion through `EventCx::pointer_motion` and each
@@ -591,11 +591,22 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
     - [x] macOS: freeze and hide the cursor at the view's centre, `deltaX/deltaY`, release
       on focus loss and window close. Verified live with the `pointer` example: a press
       locks (logged `pointer lock true`), ten posted relative moves of (5, 3) arrive as ten
-      (5, 3) motions, Escape releases (`pointer lock false`).
+      (5, 3) motions, Escape releases (`pointer lock false`). The first hardware delta after
+      the warp to the centre carried the warp's distance (-268 for a -260 warp), so the lock
+      now takes the warp back out of the next delta; that correction was not re-run live.
     - [x] Web: `requestPointerLock`, `pointerlockchange`/`pointerlockerror`, `movementX/Y`.
       Verified in headless Chrome over CDP: a click locks the canvas, two pointer moves
       arrive as motions (5, 3) and (-2, 7), `exitPointerLock` reports the lock ended.
-    - [ ] Windows, Wayland, X11, KMS, Android, iOS: report `pointer_lock: false` so far.
+    - [x] X11: `XIGrabDevice` with no cursor, raw `XI_RawMotion` deltas, the pointer pinned
+      back to the window's middle, release on focus loss. Verified under Xvfb in podman with a
+      platform-level test app driven by xdotool: a press locks (`PointerLockChanged` true),
+      relative moves (5, 3) ×3 and (-7, 0) arrive as exactly those motions while the pointer
+      stays at its pin and no moves are reported, Escape releases, a later lock ends on focus
+      loss.
+    - [x] Windows (`ClipCursor` + `WM_INPUT` raw input), Wayland (pointer constraints +
+      relative pointer), KMS (libinput relative motion), Android (`requestPointerCapture`,
+      API 26), iPadOS (`prefersPointerLocked` + `GCMouse` motion): compile and pass clippy
+      (Java against android-36), not run.
     - Game input has no mouse delta to feed (its input schema covers keys, pad buttons,
       sticks and touch buttons only).
 - [x] Fullscreen change events on every OS (Android hides the system bars, iOS the status

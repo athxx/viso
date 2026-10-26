@@ -114,6 +114,10 @@ pub(super) enum Msg {
     Cutouts(Vec<[i32; 4]>),
     LowMemory,
     Touch(Touch),
+    /// A captured mouse's motion, in pixels.
+    Motion([f32; 2]),
+    /// The mouse was captured for relative motion, or let go.
+    PointerCapture(bool),
     /// Mouse wheel / touchpad scroll at `at`, in pixels.
     Scroll {
         at: [f32; 2],
@@ -688,6 +692,21 @@ fn apply(msg: Msg) {
             }
         }
         Msg::Touch(touch) => apply_touch(&touch),
+        Msg::Motion([dx, dy]) => LOOP.with(|l| {
+            if l.window_open.get() {
+                let d = l.density.get();
+                crate::event::queue_motion(
+                    &mut l.events.borrow_mut(),
+                    WINDOW,
+                    f64::from(dx) / d,
+                    f64::from(dy) / d,
+                );
+            }
+        }),
+        Msg::PointerCapture(locked) => push_to_window(RawEvent::PointerLockChanged {
+            window: WINDOW,
+            locked,
+        }),
         Msg::Scroll { at, delta, meta } => {
             let d = LOOP.with(|l| l.density.get());
             push_to_window(RawEvent::Scroll(RawScroll {
@@ -1167,6 +1186,12 @@ impl PlatformApp for AndroidApp {
         }
     }
 
+    fn set_pointer_lock(&mut self, window: WindowId, lock: bool) {
+        if window == WINDOW {
+            jni::set_pointer_capture(lock);
+        }
+    }
+
     fn set_cursor(&mut self, window: WindowId, icon: CursorIcon) {
         let key = match icon {
             CursorIcon::Custom(custom) => !(custom.index() as i32),
@@ -1292,9 +1317,11 @@ impl PlatformApp for AndroidApp {
     }
 
     fn capabilities(&self) -> crate::PlatformCaps {
-        // A mouse's pointer takes image icons (API 24).
+        // A mouse's pointer takes image icons (API 24) and is captured for
+        // relative motion (API 26).
         crate::PlatformCaps {
             custom_cursors: true,
+            pointer_lock: true,
             ..crate::PlatformCaps::MOBILE
         }
     }

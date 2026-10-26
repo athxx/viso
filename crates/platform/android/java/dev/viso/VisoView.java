@@ -51,6 +51,9 @@ final class VisoView extends SurfaceView {
     private int kind;
     /** The focused field holds lines. */
     private boolean multiline;
+    /** Where the mouse last was, in pixels: where a captured mouse's presses land. */
+    private float mouseX;
+    private float mouseY;
 
     static final int KIND_TEXT = 0;
     static final int KIND_DIGITS = 1;
@@ -146,6 +149,51 @@ final class VisoView extends SurfaceView {
         return true;
     }
 
+    // A captured mouse: its motion is relative, its presses land where the
+    // pointer was when the capture began.
+
+    @Override
+    public boolean onCapturedPointerEvent(MotionEvent event) {
+        int action = event.getActionMasked();
+        if (action == MotionEvent.ACTION_SCROLL) {
+            VisoActivity.nativeScroll(mouseX, mouseY,
+                    -event.getAxisValue(MotionEvent.AXIS_HSCROLL) * scrollFactorX,
+                    event.getAxisValue(MotionEvent.AXIS_VSCROLL) * scrollFactorY,
+                    event.getMetaState());
+            return true;
+        }
+        if (event.isFromSource(InputDevice.SOURCE_MOUSE_RELATIVE)) {
+            float dx = event.getX();
+            float dy = event.getY();
+            for (int h = 0; h < event.getHistorySize(); h++) {
+                dx += event.getHistoricalX(h);
+                dy += event.getHistoricalY(h);
+            }
+            if (dx != 0 || dy != 0) {
+                VisoActivity.nativeMotion(dx, dy);
+            }
+        }
+        switch (action) {
+            case MotionEvent.ACTION_DOWN:
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_BUTTON_PRESS:
+            case MotionEvent.ACTION_BUTTON_RELEASE:
+                VisoActivity.nativeTouch(action, 0, new int[] {0},
+                        new float[] {mouseX, mouseY, event.getPressure()},
+                        new int[] {MotionEvent.TOOL_TYPE_MOUSE},
+                        event.getButtonState(), event.getMetaState());
+                break;
+            default:
+                break;
+        }
+        return true;
+    }
+
+    @Override
+    public void onPointerCaptureChange(boolean hasCapture) {
+        VisoActivity.nativePointerCapture(hasCapture);
+    }
+
     private void sendMotion(MotionEvent event) {
         int count = event.getPointerCount();
         int[] ids = new int[count];
@@ -154,6 +202,10 @@ final class VisoView extends SurfaceView {
         for (int i = 0; i < count; i++) {
             ids[i] = event.getPointerId(i);
             tools[i] = event.getToolType(i);
+            if (tools[i] == MotionEvent.TOOL_TYPE_MOUSE) {
+                mouseX = event.getX(i);
+                mouseY = event.getY(i);
+            }
         }
         int action = event.getActionMasked();
         // Coalesced moves: replay the batched history first, oldest first, so

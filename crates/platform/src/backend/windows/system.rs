@@ -115,7 +115,7 @@ pub(super) fn set_cursor(state: &WindowState, icon: CursorIcon) {
     state.cursor.set(icon);
     // Over the client area the change shows at once; elsewhere the next
     // `WM_SETCURSOR` applies it.
-    if state.tracking_leave.get() {
+    if state.tracking_leave.get() && !state.locked.get() {
         apply_cursor(icon, state.dpi.get());
     }
 }

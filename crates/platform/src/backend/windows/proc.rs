@@ -25,16 +25,16 @@ use ::windows::Win32::UI::WindowsAndMessaging::{
     SetWindowPos, ShowWindow, WM_CAPTURECHANGED, WM_CHAR, WM_CLOSE, WM_COMMAND, WM_DESTROY,
     WM_DESTROYCLIPBOARD, WM_DPICHANGED, WM_ENTERSIZEMOVE, WM_ERASEBKGND, WM_EXITSIZEMOVE,
     WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_SETCONTEXT, WM_IME_STARTCOMPOSITION,
-    WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
-    WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY, WM_PAINT,
-    WM_POINTERCAPTURECHANGED, WM_POINTERDOWN, WM_POINTERLEAVE, WM_POINTERUP, WM_POINTERUPDATE,
-    WM_RBUTTONDOWN, WM_RBUTTONUP, WM_RENDERALLFORMATS, WM_RENDERFORMAT, WM_SETCURSOR, WM_SETFOCUS,
-    WM_SETTINGCHANGE, WM_SIZE, WM_SYSCOLORCHANGE, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_THEMECHANGED,
-    WM_TIMER, WM_UNICHAR, WM_XBUTTONDOWN, WM_XBUTTONUP,
+    WM_INPUT, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
+    WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_MOVE, WM_NCCREATE, WM_NCDESTROY,
+    WM_PAINT, WM_POINTERCAPTURECHANGED, WM_POINTERDOWN, WM_POINTERLEAVE, WM_POINTERUP,
+    WM_POINTERUPDATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_RENDERALLFORMATS, WM_RENDERFORMAT,
+    WM_SETCURSOR, WM_SETFOCUS, WM_SETTINGCHANGE, WM_SIZE, WM_SYSCOLORCHANGE, WM_SYSKEYDOWN,
+    WM_SYSKEYUP, WM_THEMECHANGED, WM_TIMER, WM_UNICHAR, WM_XBUTTONDOWN, WM_XBUTTONUP,
 };
 
 use super::translate::{self, MenuAction};
-use super::{WindowState, access, drive, system};
+use super::{WindowState, access, drive, lock, system};
 use crate::clipboard::{ClipboardReply, PasteReply};
 use crate::control::ControlFlow;
 use crate::event::{
@@ -152,6 +152,7 @@ fn handle(
                 return Some(LRESULT(0));
             }
             state.size.set(size);
+            lock::clip(state);
             state.push(RawEvent::Resized {
                 window: id,
                 width: size.0,
@@ -232,7 +233,16 @@ fn handle(
             });
             Some(LRESULT(0))
         }
+        WM_MOVE => {
+            lock::clip(state);
+            None
+        }
+        WM_INPUT => {
+            lock::raw_input(state, lparam);
+            None
+        }
         WM_DESTROY => {
+            lock::release(state);
             state.alive.set(false);
             super::drop::revoke(hwnd);
             {
@@ -261,12 +271,25 @@ fn handle(
                 window: id,
                 focused: msg == WM_SETFOCUS,
             });
+            // The pointer goes back to the user with the focus.
+            if msg == WM_KILLFOCUS {
+                lock::release(state);
+            }
             None
         }
         WM_SETCURSOR if u32::from(loword(lparam.0 as usize)) == HTCLIENT => {
-            system::apply_cursor(state.cursor.get(), state.dpi.get());
+            if state.locked.get() {
+                // SAFETY: clearing the cursor shape over our own window.
+                unsafe {
+                    ::windows::Win32::UI::WindowsAndMessaging::SetCursor(None);
+                }
+            } else {
+                system::apply_cursor(state.cursor.get(), state.dpi.get());
+            }
             Some(LRESULT(1))
         }
+        // A locked pointer stays put: its motion comes as raw input.
+        WM_MOUSEMOVE | WM_MOUSELEAVE if state.locked.get() => Some(LRESULT(0)),
         WM_MOUSEMOVE => {
             track_leave(state, hwnd);
             let (x, y) = point_of(lparam);

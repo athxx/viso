@@ -560,6 +560,29 @@ public class VisoActivity extends Activity
                         : PointerIcon.getSystemIcon(this, type)));
     }
 
+    /**
+     * Capture the mouse for relative motion, or let it go. The view reports
+     * each change; a capture the system cannot give (no window focus, before
+     * API 26) is reported refused at once.
+     */
+    void setPointerCapture(boolean capture) {
+        runOnUiThread(() -> {
+            if (Build.VERSION.SDK_INT < 26) {
+                if (capture) {
+                    nativePointerCapture(false);
+                }
+                return;
+            }
+            if (!capture) {
+                view.releasePointerCapture();
+            } else if (!view.hasWindowFocus()) {
+                nativePointerCapture(false);
+            } else if (!view.hasPointerCapture()) {
+                view.requestPointerCapture();
+            }
+        });
+    }
+
     /** The pointer icons made from the app's cursor images, by index. */
     private final SparseArray<PointerIcon> imageIcons = new SparseArray<>();
 
@@ -727,6 +750,10 @@ public class VisoActivity extends Activity
             int[] tools, int buttons, int meta);
 
     static native void nativeScroll(float x, float y, float dx, float dy, int meta);
+
+    static native void nativeMotion(float dx, float dy);
+
+    static native void nativePointerCapture(boolean captured);
 
     static native void nativeKey(int keyCode, boolean pressed, boolean repeat, int meta, String text);
 
