@@ -800,8 +800,13 @@ viso-ext.
   layer of each tile it crosses, clipped on the worker, drawn by the style's layers and
   drawn where the source has no tile. Headless pictures and pixel checks in
   `tests/view.rs`; unit tests in `overlay` and `geojson`.
-- [ ] Queries and events: tap and long-press at lon/lat, rendered features at a point,
+- [x] Queries and events: tap and long-press at lon/lat, rendered features at a point,
   viewport changed, marker tapped.
+  `on_tap`/`on_long_press` give a `MapPoint` (lon/lat and view point), `on_viewport`
+  the camera at rest, `on_marker_tap` the marker's id; `MapHandle::features_at(point,
+  radius)` tests the style's layers top down against the deepest drawn tile's features
+  and the app's data (fill by area with holes, line by width, circle by radius), each
+  feature once. Unit tests in `query`, headless in `tests/view.rs`.
 - [ ] Tilt and 3D (after W14): pitch with perspective, extruded buildings, 3D terrain.
 - [ ] Performance: a pan or rotate frame uploads nothing and allocates nothing; tile
   build and label budgets; memory caps; benches beside makepad's map example.

@@ -14,6 +14,7 @@ pub mod load;
 pub mod mvt;
 pub mod overlay;
 pub mod pyramid;
+pub mod query;
 pub mod source;
 pub mod style;
 pub mod tess;
@@ -23,6 +24,7 @@ pub use camera::{Camera, Insets, Limits, Motion, TILE_SIZE, View};
 pub use geo::{LngLat, LngLatBounds, WorldPoint};
 pub use geojson::{GeoFeature, GeoJson, GeoJsonError, Geometry};
 pub use overlay::{Circle, Polygon, Polyline, Puck, Shape, Stroke};
+pub use query::QueriedFeature;
 pub use source::{
     Completer, MemorySource, Reply, ServiceError, ServiceResult, TileId, TileReply, TileSource,
     reply,

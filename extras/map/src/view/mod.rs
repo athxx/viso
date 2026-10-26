@@ -44,6 +44,7 @@ use crate::geo::{LngLat, LngLatBounds};
 use crate::geojson::GeoJson;
 use crate::overlay::{Puck, Shape};
 use crate::pyramid::Slot;
+use crate::query::QueriedFeature;
 use crate::source::TileSource;
 use crate::style::{Style, builtin};
 
@@ -214,6 +215,12 @@ impl MapHandle {
 
     /// What the view holds now: the tiles it draws, in paint order, the
     /// requests in flight and the builds it started.
+    /// The features drawn under view point `point`, within `radius` points
+    /// of it, topmost first: what a tap landed on.
+    pub fn features_at(&self, point: [f64; 2], radius: f64) -> Vec<QueriedFeature> {
+        self.core.borrow().features_at(point, radius)
+    }
+
     /// Draws `shape` over the tiles and the shapes added before it.
     pub fn add_shape(&self, w: &mut dyn StateWriter, shape: impl Into<Shape>) -> ShapeId {
         self.with(w, |c| c.overlays.add_shape(shape.into()))

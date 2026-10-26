@@ -31,6 +31,7 @@ use crate::geojson::DataLayer;
 use crate::load::{Built, Data, Input, build_off_loop};
 use crate::mvt::VectorTile;
 use crate::pyramid::{BuildKey, Plan, Pyramid, Slot, covering};
+use crate::query::{QueriedFeature, query_tile};
 use crate::source::{TileId, TileSource};
 use crate::style::Style;
 
@@ -776,6 +777,40 @@ impl Core {
     /// The tiles drawn, in paint order, and their nodes.
     pub fn drawn(&self) -> impl Iterator<Item = (Slot, NodeId)> + '_ {
         self.tiles.iter().map(|t| (t.slot, t.node))
+    }
+
+    /// The features drawn under view point `p`, within `radius` points,
+    /// topmost first.
+    pub fn features_at(&self, p: [f64; 2], radius: f64) -> Vec<QueriedFeature> {
+        let w = self.view.to_world(p);
+        let mut out = Vec::new();
+        // The deepest tile drawn there answers: children paint last.
+        let Some(t) = self.tiles.iter().rev().find(|t| {
+            let (nw, side) = t.slot.square();
+            w.x >= nw.x && w.x < nw.x + side && w.y >= nw.y && w.y < nw.y + side
+        }) else {
+            return out;
+        };
+        let (nw, side) = t.slot.square();
+        let extent = f64::from(crate::build::EXTENT);
+        let at = [(w.x - nw.x) / side * extent, (w.y - nw.y) / side * extent];
+        let zoom = self.view.camera.zoom;
+        let tile_points = TILE_SIZE * (zoom - f64::from(t.slot.tile.z)).exp2();
+        let units_per_point = extent / tile_points;
+        let layers: Vec<&crate::mvt::Layer> =
+            t.built.tile.layers.iter().chain(&t.built.data).collect();
+        // The style's values are those the tile was built at.
+        let (built_zoom, _) = crate::load::params_for(t.slot.tile, t.built.key);
+        query_tile(
+            &layers,
+            &self.style,
+            built_zoom,
+            at,
+            radius * units_per_point,
+            units_per_point,
+            &mut out,
+        );
+        out
     }
 
     /// The requests in flight.

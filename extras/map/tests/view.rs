@@ -786,5 +786,15 @@ fn geojson_draws_through_the_style_even_where_the_source_has_nothing() {
         rgb_at(&px, [320.0, 240.0])
     );
     assert!(!reddish(rgb_at(&px, [100.0, 100.0])));
-    assert!(slot.borrow().is_some());
+    // What a tap there lands on.
+    let handle = slot.borrow().clone().expect("built");
+    let found = handle.features_at([320.0, 240.0], 4.0);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].layer, "zones");
+    assert_eq!(
+        found[0].properties,
+        [("kind".to_owned(), viso_map::mvt::Value::from("zone"))]
+    );
+    assert!(handle.features_at([100.0, 100.0], 4.0).is_empty());
+    assert_eq!(handle.features_at([196.0, 240.0], 6.0).len(), 1);
 }
