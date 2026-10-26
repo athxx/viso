@@ -296,6 +296,8 @@ pub struct DrawnRow {
     pub row: NodeId,
     /// Each text node, where it is and what it says.
     pub text: Vec<(NodeId, f32, f32, String)>,
+    /// Each text node's color, a byte at a time.
+    pub colors: Vec<Vec<Rgba>>,
     /// Each background: where, how wide (`-1` across), its color.
     pub marks: Vec<(NodeId, f32, f32, f32, Rgba)>,
     /// Each caret or underline.
@@ -355,6 +357,21 @@ impl EditorHandle {
                     .iter()
                     .map(|(n, s)| (*n, s.x, s.y, s.text.clone()))
                     .collect(),
+                colors: r
+                    .segs
+                    .iter()
+                    .map(|(_, s)| {
+                        let mut colors = vec![s.color; s.text.len()];
+                        for span in &s.spans {
+                            if let Some(c) = span.style.color {
+                                for b in &mut colors[span.range.clone()] {
+                                    *b = c;
+                                }
+                            }
+                        }
+                        colors
+                    })
+                    .collect(),
                 marks: r
                     .mark_nodes
                     .iter()
@@ -369,6 +386,11 @@ impl EditorHandle {
             .collect();
         out.sort_by_key(|r| r.line);
         out
+    }
+
+    /// Where a row's text starts, in dp from the row's left edge.
+    pub fn text_x(&self) -> f32 {
+        self.0.metrics.get().text_x()
     }
 
     /// The width of a cell and the height of a line, in dp.

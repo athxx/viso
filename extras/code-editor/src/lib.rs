@@ -7,6 +7,7 @@ pub mod fold;
 pub mod highlight;
 pub mod history;
 pub mod keymap;
+pub mod lang;
 pub mod layout;
 pub mod motion;
 pub mod rope;

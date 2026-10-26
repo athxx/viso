@@ -25,8 +25,9 @@ viso-behavior = { workspace = true, features = ["std", "interpreter"] }
 # A `shader` declaration lowers into the shader program IR, and a package
 # carries its code in the target backend's language, SPIR-V included.
 viso-shader = { workspace = true, features = ["spirv"] }
-# XID_Start/XID_Continue for identifier lexing and NFC for symbol-table entry.
-icu_properties = { workspace = true }
+# The tokenizer, shared with the code editor's highlighter.
+viso-lexer = { workspace = true }
+# NFC for symbol-table entry.
 icu_normalizer = { workspace = true }
 # Message catalogs: `i18n/<locale>.toml` files, their BCP 47 locale tags and
 # the CLDR fallback chain a translation leaves untranslated messages to.

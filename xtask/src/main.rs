@@ -189,7 +189,7 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
             "viso-code-editor",
             Allowed {
                 dir: "extras/code-editor",
-                deps: &["viso-ui", "viso-widgets"],
+                deps: &["viso-ui", "viso-widgets", "viso-lexer"],
                 dev: &["viso"],
             },
         ),
@@ -199,11 +199,22 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
         // `viso-ende`, lowers behavior to `viso-behavior` and shaders to
         // `viso-shader`, and samples `viso-math`'s easing curves for export. Its integration tests mount what it compiles, so they
         // link the runtime as dev-dependencies.
+        // The `.vs` tokenizer: a leaf the compiler and the code editor's
+        // highlighter share.
+        (
+            "viso-lexer",
+            Allowed {
+                dir: "crates/lexer",
+                deps: &[],
+                dev: &[],
+            },
+        ),
         (
             "viso-dsl",
             Allowed {
                 dir: "crates/dsl",
                 deps: &[
+                    "viso-lexer",
                     "viso-schema",
                     "viso-dev-protocol",
                     "viso-ende",

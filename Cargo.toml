@@ -25,6 +25,7 @@ members = [
     "crates/behavior",
     "crates/view",
     "crates/dsl",
+    "crates/lexer",
     "crates/lsp",
     "crates/services",
     "crates/pdf",
@@ -90,6 +91,7 @@ viso-code-editor = { path = "extras/code-editor", version = "0.0.0" }
 viso-behavior = { path = "crates/behavior", version = "0.0.0", default-features = false }
 viso-view = { path = "crates/view", version = "0.0.0", default-features = false }
 viso-dsl = { path = "crates/dsl", version = "0.0.0" }
+viso-lexer = { path = "crates/lexer", version = "0.0.0" }
 viso-lsp = { path = "crates/lsp", version = "0.0.0" }
 viso-services = { path = "crates/services", version = "0.0.0", default-features = false }
 viso-pdf = { path = "crates/pdf", version = "0.0.0" }

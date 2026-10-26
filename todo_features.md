@@ -681,7 +681,14 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
     keyed by line ids; headless facade tests type, compose, delete, break and indent lines,
     click, drag, double-click, add cursors with Alt-click and Alt-Cmd-Down, cut once per
     shortcut and paste a whole line, then undo and redo it all;
-  - [ ] syntax highlighting through the `.vs` lexer and a TextMate-free token API;
+  - [x] syntax highlighting through the `.vs` lexer and a TextMate-free token API: the
+    tokenizer is its own leaf crate, `viso-lexer` (the compiler re-exports it at the same
+    paths), which `.vs` highlighting runs a line at a time, carrying across lines only an
+    open block comment's depth or a raw string's hashes; a `Language` is a line lexer over
+    `u32` states, and the editor keeps each line's end state, re-lexing from an edited line
+    only until the states agree again and past the screen only when asked; tests check the
+    line-at-a-time classes against the whole-file tokenizer over the prelude and samples,
+    and through the facade a typed `/*` recolors the lines below and `*/` restores them;
   - [ ] line numbers, folding, wrapping, inlays and decorations, search/replace;
   - [ ] LSP client hookup.
 

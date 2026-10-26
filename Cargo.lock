@@ -3089,6 +3089,7 @@ dependencies = [
  "regex",
  "unicode-segmentation",
  "viso",
+ "viso-lexer",
  "viso-ui",
  "viso-widgets",
 ]
@@ -3111,11 +3112,11 @@ dependencies = [
  "icu_locale_core",
  "icu_locale_fallback",
  "icu_normalizer",
- "icu_properties",
  "toml_edit",
  "viso-behavior",
  "viso-dev-protocol",
  "viso-ende",
+ "viso-lexer",
  "viso-math",
  "viso-schema",
  "viso-shader",
@@ -3268,6 +3269,13 @@ dependencies = [
  "zune-jpeg",
  "zune-png",
  "zune-qoi",
+]
+
+[[package]]
+name = "viso-lexer"
+version = "0.0.0"
+dependencies = [
+ "icu_properties",
 ]
 
 [[package]]

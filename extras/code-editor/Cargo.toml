@@ -20,5 +20,13 @@ icu_properties = { workspace = true }
 # Find and replace with regular expressions.
 regex = { workspace = true }
 
+# The `.vs` tokenizer the compiler uses, for `.vs` highlighting.
+viso-lexer = { workspace = true, optional = true }
+
+[features]
+default = ["vs"]
+# `.vs` highlighted by the compiler's own tokenizer.
+vs = ["dep:viso-lexer"]
+
 [dev-dependencies]
 viso = { workspace = true, features = ["headless"] }
