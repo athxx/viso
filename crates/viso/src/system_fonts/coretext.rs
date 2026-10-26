@@ -668,7 +668,9 @@ mod imp {
             return Some(base);
         }
         let traits = style_traits(query.weight, query.width);
-        let attributes = dictionary(&[(unsafe { kCTFontTraitsAttribute }, &*traits)]);
+        // SAFETY: reading an immutable CoreText key constant.
+        let traits_key = unsafe { kCTFontTraitsAttribute };
+        let attributes = dictionary(&[(traits_key, &*traits)]);
         // SAFETY: CoreText FFI. The descriptor is built from a dictionary of
         // CoreText attribute keys; both outlive the calls, which return retained
         // objects.

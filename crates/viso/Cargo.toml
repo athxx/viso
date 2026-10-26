@@ -220,5 +220,10 @@ harness = false
 name = "paint_scale"
 harness = false
 
+# Reloads the todo app through the dev link, which only `hot-reload` builds.
+[[test]]
+name = "dsl_todo_app"
+required-features = ["hot-reload"]
+
 [lints]
 workspace = true
