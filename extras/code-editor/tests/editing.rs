@@ -13,7 +13,7 @@ fn typing_with_many_cursors_and_undoing_it() {
         "alpha\nbeta\ngamma",
         &[
             // Focus and a caret at the start; then type at it.
-            click((2.0, 8.0)),
+            focus(),
             typed("X"),
             // Two more cursors below, at the same column.
             key_with(Key::Down, down),
@@ -47,7 +47,7 @@ fn undo_takes_back_a_step_for_every_cursor_and_redo_puts_it_again() {
     let _app = run(
         "one\ntwo",
         &[
-            click((2.0, 8.0)),
+            focus(),
             key_with(Key::Down, down),
             typed("a"),
             typed("b"),
@@ -62,7 +62,7 @@ fn undo_takes_back_a_step_for_every_cursor_and_redo_puts_it_again() {
     let _app = run(
         "one\ntwo",
         &[
-            click((2.0, 8.0)),
+            focus(),
             key_with(Key::Down, down),
             typed("a"),
             typed("b"),
@@ -76,7 +76,7 @@ fn undo_takes_back_a_step_for_every_cursor_and_redo_puts_it_again() {
     let _app = run(
         "one\ntwo",
         &[
-            click((2.0, 8.0)),
+            focus(),
             key_with(Key::Down, down),
             typed("ab"),
             key_with(Key::Z, undo),
@@ -91,7 +91,7 @@ fn keys_move_break_and_indent() {
     let _app = run(
         "    a\nb",
         &[
-            click((2.0, 8.0)),
+            focus(),
             // A new line keeps the indentation of the one it breaks.
             key(Key::End),
             key(Key::Enter),
@@ -113,7 +113,7 @@ fn a_composition_shows_inline_and_commits_once() {
     let _app = run(
         "ab",
         &[
-            click((2.0, 8.0)),
+            focus(),
             key(Key::End),
             preedit("ni", 2),
             // The composition takes the keys it is typed with.
@@ -131,12 +131,7 @@ fn a_composition_shows_inline_and_commits_once() {
     assert_eq!(texts, ["ab", "ni"]);
     let _app = run(
         "ab",
-        &[
-            click((2.0, 8.0)),
-            key(Key::End),
-            preedit("ni", 2),
-            typed("你"),
-        ],
+        &[focus(), key(Key::End), preedit("ni", 2), typed("你")],
     );
     let h = handle();
     assert_eq!(h.text(), "ab你");
@@ -147,10 +142,7 @@ fn a_composition_shows_inline_and_commits_once() {
 #[test]
 fn the_pointer_places_selects_and_adds_cursors() {
     // A click places the caret at the cell under it.
-    let _app = run(
-        "hello world\nsecond",
-        &[click((2.0, 8.0)), click(at(0, 6.0))],
-    );
+    let _app = run("hello world\nsecond", &[focus(), click(at(0, 6.0))]);
     let h = handle();
     assert_eq!(carets(&h), [6]);
     // A double click selects the word; Alt-click adds a caret.
@@ -162,7 +154,7 @@ fn the_pointer_places_selects_and_adds_cursors() {
     let _app = run(
         "hello world\nsecond",
         &[
-            click((2.0, 8.0)),
+            focus(),
             vec![
                 mouse(
                     p.0,
@@ -200,7 +192,7 @@ fn the_pointer_places_selects_and_adds_cursors() {
     assert_eq!(h.with(|s| s.selections().primary().range()), 6..11);
     let _app = run(
         "hello world\nsecond",
-        &[click((2.0, 8.0)), click_with(at(1, 3.0), alt), typed("_")],
+        &[focus(), click_with(at(1, 3.0), alt), typed("_")],
     );
     let h = handle();
     assert_eq!(h.text(), "_hello world\nsec_ond");
@@ -209,7 +201,8 @@ fn the_pointer_places_selects_and_adds_cursors() {
     let _app = run(
         "hello world\nsecond",
         &[
-            click((2.0, 8.0)),
+            // Away from the press after it, which would count as a second.
+            click(at(1, 5.0)),
             vec![
                 mouse(
                     a.0,
@@ -251,7 +244,7 @@ fn copy_cut_and_paste_through_the_clipboard() {
     let _app = run(
         "one\ntwo\nthree",
         &[
-            click((2.0, 8.0)),
+            focus(),
             key_with(Key::Down, RawModifiers::default()),
             // A caret's cut takes its line; the shortcut's echo cuts nothing.
             key_with(Key::X, copy),

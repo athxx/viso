@@ -196,3 +196,8 @@ pub fn at(line: usize, col: f32) -> (f32, f32) {
     let (cell, lh, x) = metrics();
     (x + col * cell + cell * 0.25, line as f32 * lh + lh * 0.5)
 }
+
+/// A click on the first line's start: the editor takes the focus.
+pub fn focus() -> Vec<RawEvent> {
+    click(at(0, 0.0))
+}

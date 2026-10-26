@@ -149,8 +149,6 @@ pub struct Session {
     pub(crate) inlays: Vec<Inlay>,
     pub(crate) preedit: Option<Preedit>,
     pub(crate) search: Option<Search>,
-    /// The match of the search the cursors were last put on.
-    pub(crate) current_match: Option<usize>,
     /// The rows the view shows: what a page up or down moves.
     pub(crate) page_rows: usize,
     pub(crate) pending: Pending,
@@ -187,7 +185,6 @@ impl Session {
             inlays: Vec::new(),
             preedit: None,
             search: None,
-            current_match: None,
             page_rows: 30,
             pending: Pending::all(),
             closers: Vec::new(),
@@ -811,11 +808,6 @@ impl Session {
     /// The search, if one is open.
     pub fn search(&self) -> Option<&Search> {
         self.search.as_ref()
-    }
-
-    /// The match the cursors were last put on.
-    pub fn current_match(&self) -> Option<usize> {
-        self.current_match
     }
 
     // ----- decorations -----

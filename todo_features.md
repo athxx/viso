@@ -689,7 +689,19 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
     only until the states agree again and past the screen only when asked; tests check the
     line-at-a-time classes against the whole-file tokenizer over the prelude and samples,
     and through the facade a typed `/*` recolors the lines below and `*/` restores them;
-  - [ ] line numbers, folding, wrapping, inlays and decorations, search/replace;
+  - [x] line numbers, folding, wrapping, inlays and decorations, search/replace: each row
+    carries its piece of the gutter (number, fold chevron, worst diagnostic), moved by the
+    list's sideways scroll in the pass that scrolls, so it stays put with no frame of lag;
+    folds by indentation hide lines from the list (rows map through hidden counts), wrapped
+    lines are listed with exact row extents, inlays and a fold's placeholder take cells on
+    the grid, decorations draw backgrounds, lines and squiggles in named sets that follow
+    edits, and a find bar searches as it is typed (literal across chunks, or a regex a line
+    at a time; only edited lines are searched again), steps, replaces one or all as one undo
+    step, and matches the bracket at the caret outside strings and comments; headless
+    facade tests check the numbers and the pinned gutter under a scroll, a fold clicked
+    from its chevron and stepped over, a wrapped line moved through a row at a time, an
+    inlay shifting the text and a diagnostic's squiggle and gutter mark, and the bar's
+    find, step, retype, replace and replace-all, and Escape back to the text;
   - [ ] LSP client hookup.
 
 ## W16 — Missing in both

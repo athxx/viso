@@ -61,7 +61,7 @@ fn opening_a_comment_recolors_the_lines_below_and_closing_it_restores_them() {
     let comment = theme.token(TokenKind::Comment).color;
     let keyword = theme.token(TokenKind::Keyword).color;
     // `/*` typed at the start of the first line.
-    let _app = run(text, &[click((2.0, 8.0)), typed("/"), typed("*")]);
+    let _app = run(text, &[focus(), typed("/"), typed("*")]);
     let h = handle();
     assert_eq!(h.text(), "/*let a = 1;\nlet b = 2;\nlet c = 3;\nlet d = 4;");
     for line in 0..4 {
@@ -75,7 +75,7 @@ fn opening_a_comment_recolors_the_lines_below_and_closing_it_restores_them() {
     let _app = run(
         text,
         &[
-            click((2.0, 8.0)),
+            focus(),
             typed("/"),
             typed("*"),
             key(Key::Down),
