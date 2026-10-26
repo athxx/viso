@@ -967,8 +967,18 @@ define_class!(
                 launch();
                 // What the app was launched to open comes with the
                 // connection, not through the calls below.
-                open_contexts(&options.URLContexts());
-                for activity in options.userActivities().iter() {
+                // Both sets are nil on a plain launch, though the headers
+                // declare them non-null: read them as optional.
+                // SAFETY: both getters take no arguments and answer a set
+                // of the element type named, or nil.
+                let contexts: Option<Retained<NSSet<UIOpenURLContext>>> =
+                    unsafe { msg_send![options, URLContexts] };
+                if let Some(contexts) = contexts {
+                    open_contexts(&contexts);
+                }
+                let activities: Option<Retained<NSSet<NSUserActivity>>> =
+                    unsafe { msg_send![options, userActivities] };
+                for activity in activities.iter().flat_map(|set| set.iter()) {
                     open_activity(&activity);
                 }
                 drive();
