@@ -36,7 +36,7 @@ use crate::geo::WorldPoint;
 use crate::load::{Built, off_loop};
 use crate::overlay::ShapeMesh;
 use crate::pyramid::Slot;
-use crate::raster::{Dem, RasterSource, dem_off_loop};
+use crate::raster::{Around, Dem, RasterSource, dem_off_loop};
 use crate::source::TileId;
 use crate::style::{Paint, Style, Terrain};
 use crate::tilt::{
@@ -129,6 +129,42 @@ enum Elevations {
     Missing,
 }
 
+/// The elevations under a tile: its terrain tile's, and those of the
+/// terrain tile's neighbours across the edges the tile reaches.
+#[derive(Clone)]
+struct Under {
+    tile: TileId,
+    dem: Arc<Dem>,
+    neighbours: [[Option<Arc<Dem>>; 3]; 3],
+}
+
+/// The neighbours of terrain tile `under` across the edges `tile` within it
+/// reaches: by column from the west and row from the north, and which tile.
+fn reached(under: TileId, tile: TileId) -> impl Iterator<Item = (usize, usize, TileId)> {
+    let inside = under.contains(tile);
+    let d = tile.z.saturating_sub(under.z).min(31);
+    let n = 1u32 << d;
+    let (lx, ly) = (
+        tile.x.wrapping_sub(under.x << d),
+        tile.y.wrapping_sub(under.y << d),
+    );
+    let cols = [lx == 0, true, lx == n - 1];
+    let rows = [ly == 0, true, ly == n - 1];
+    let span = i64::from(TileId::span(under.z));
+    (0..3)
+        .flat_map(|j| (0..3).map(move |i| (i, j)))
+        .filter_map(move |(i, j)| {
+            if !inside || (i, j) == (1, 1) || !cols[i] || !rows[j] {
+                return None;
+            }
+            let x = (i64::from(under.x) + i as i64 - 1).rem_euclid(span);
+            let y = i64::from(under.y) + j as i64 - 1;
+            (0..span)
+                .contains(&y)
+                .then(|| (i, j, TileId::new(under.z, x as u32, y as u32)))
+        })
+}
+
 /// The terrain of the style, as far as it is loaded.
 struct Ground {
     terrain: Terrain,
@@ -145,17 +181,30 @@ impl Ground {
         (z <= tile.z).then(|| tile.ancestor(tile.z - z))
     }
 
-    /// The elevations under `tile`, `None` while they load, `Some(None)`
-    /// where there are none.
-    fn relief(&self, tile: TileId) -> Option<Option<(TileId, Arc<Dem>)>> {
+    /// The elevations under `tile`, `None` while they or those across
+    /// the edges it reaches load, `Some(None)` where there are none.
+    fn relief(&self, tile: TileId) -> Option<Option<Under>> {
         let Some(under) = self.under(tile) else {
             return Some(None);
         };
-        match self.tiles.get(&under) {
-            Some(Elevations::Ready(dem)) => Some(Some((under, Arc::clone(dem)))),
-            Some(Elevations::Missing) => Some(None),
-            _ => None,
+        let dem = match self.tiles.get(&under) {
+            Some(Elevations::Ready(dem)) => Arc::clone(dem),
+            Some(Elevations::Missing) => return Some(None),
+            _ => return None,
+        };
+        let mut neighbours: [[Option<Arc<Dem>>; 3]; 3] = Default::default();
+        for (i, j, across) in reached(under, tile) {
+            match self.tiles.get(&across) {
+                Some(Elevations::Ready(d)) => neighbours[j][i] = Some(Arc::clone(d)),
+                Some(Elevations::Loading { .. }) => return None,
+                _ => {}
+            }
         }
+        Some(Some(Under {
+            tile: under,
+            dem,
+            neighbours,
+        }))
     }
 
     /// The elevation in meters at world point `w`, from the deepest terrain
@@ -584,10 +633,15 @@ impl Tilted {
         }
         let generation = self.generation;
         let ground = self.ground.as_mut().expect("set");
-        let mut under: Vec<TileId> = drawn
-            .iter()
-            .filter_map(|(slot, _)| ground.under(slot.tile))
-            .collect();
+        // The terrain tiles under the tiles drawn, and those across the
+        // edges they reach.
+        let mut under: Vec<TileId> = Vec::new();
+        for (slot, _) in drawn {
+            if let Some(u) = ground.under(slot.tile) {
+                under.push(u);
+                under.extend(reached(u, slot.tile).map(|(_, _, t)| t));
+            }
+        }
         let center = f.view.camera.center.to_world().tile(f.tile_zoom);
         under.extend(ground.under(center));
         under.sort_unstable_by_key(|t| (t.z, t.x, t.y));
@@ -740,14 +794,12 @@ impl Tilted {
         band: u8,
         key: (usize, TileId),
         image: &Ready,
-        relief: Option<(TileId, Arc<Dem>)>,
+        relief: Option<Under>,
     ) -> Stage {
         let pixels = Arc::clone(image.pixels());
         let exaggeration = self.ground.as_ref().map_or(1.0, |g| g.terrain.exaggeration);
         let (answer, stop) = off_loop(move || {
-            let relief = relief
-                .as_ref()
-                .map(|(under, dem)| relief_of(tile, *under, dem, exaggeration));
+            let relief = relief.as_ref().map(|u| relief_of(tile, u, exaggeration));
             let Some(rgba) = pixels.to_straight_rgba8() else {
                 return Ok(None);
             };
@@ -786,7 +838,7 @@ impl Tilted {
         f: &Frame<'_>,
         tile: TileId,
         built: &Rc<Built>,
-        relief: Option<(TileId, Arc<Dem>)>,
+        relief: Option<Under>,
     ) -> Stage {
         let meshes_of = |d: &Option<viso_ui::Drawing>| -> Vec<viso_render::Mesh> {
             d.iter()
@@ -811,9 +863,7 @@ impl Tilted {
         let exaggeration = self.ground.as_ref().map_or(1.0, |g| g.terrain.exaggeration);
         let (answer, stop) = off_loop(move || {
             let layers: Vec<&crate::mvt::Layer> = decoded.layers.iter().collect();
-            let relief = relief
-                .as_ref()
-                .map(|(under, dem)| relief_of(tile, *under, dem, exaggeration));
+            let relief = relief.as_ref().map(|u| relief_of(tile, u, exaggeration));
             let rough = relief.as_ref().map_or(0.0, relief_error);
             let model = raise(&Raise {
                 tile,
@@ -1126,9 +1176,15 @@ fn meets(a: TileId, b: TileId) -> bool {
     d < 32 && fine.x >> d == coarse.x && fine.y >> d == coarse.y
 }
 
-/// The elevations under `tile` from terrain tile `under`'s `dem`, raised by
-/// `exaggeration`.
-fn relief_of(tile: TileId, under: TileId, dem: &Dem, exaggeration: f32) -> Relief<'_> {
+/// The elevations `under` `tile`, raised by `exaggeration`.
+fn relief_of(tile: TileId, under: &Under, exaggeration: f32) -> Relief<'_> {
+    let dem = Around {
+        dem: &under.dem,
+        neighbours: core::array::from_fn(|j| {
+            core::array::from_fn(|i| under.neighbours[j][i].as_deref())
+        }),
+    };
+    let under = under.tile;
     let span = f64::from(under.z as i32 - tile.z as i32).exp2();
     Relief {
         dem,

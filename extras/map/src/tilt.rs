@@ -25,7 +25,7 @@ use crate::build::{EXTENT, FeatureRef, key_index, polygons};
 use crate::camera::TILE_SIZE;
 use crate::geo::tile_square;
 use crate::mvt::{self, GeomType};
-use crate::raster::Dem;
+use crate::raster::Around;
 use crate::source::TileId;
 use crate::style::{Paint, Properties, Style};
 use crate::tess::clip::{Square, clip_ring};
@@ -54,7 +54,8 @@ const LIGHT: [f32; 3] = [-0.5, std::f32::consts::FRAC_1_SQRT_2, -0.5];
 /// Elevations under a tile: the part of a terrain tile that covers it.
 #[derive(Debug, Clone, Copy)]
 pub struct Relief<'a> {
-    pub dem: &'a Dem,
+    /// The terrain tile, and what of its neighbours is known.
+    pub dem: Around<'a>,
     /// Where the tile starts in the terrain tile, `0..1` across and down,
     /// and how much of it the tile spans.
     pub origin: [f64; 2],
@@ -68,7 +69,7 @@ impl Relief<'_> {
     pub fn height(&self, p: [f32; 2]) -> f32 {
         let u = self.origin[0] + self.span * f64::from(p[0] / SIDE);
         let v = self.origin[1] + self.span * f64::from(p[1] / SIDE);
-        self.dem.sample(u.clamp(0.0, 1.0), v.clamp(0.0, 1.0)) * self.scale
+        self.dem.sample(u.clamp(-1.0, 2.0), v.clamp(-1.0, 2.0)) * self.scale
     }
 }
 
@@ -251,21 +252,30 @@ impl Lattice {
     fn new(relief: &Relief<'_>) -> Self {
         let n = CELLS + 1;
         let cell = SIDE / CELLS as f32;
+        // The corners and a ring of them past the tile's edges, so that
+        // corners on the edge slope as their neighbours across it do.
+        let m = n + 2;
+        let mut ring = Vec::with_capacity(m * m);
+        for j in 0..m {
+            for i in 0..m {
+                let p = [(i as f32 - 1.0) * cell, (j as f32 - 1.0) * cell];
+                ring.push(relief.height(p));
+            }
+        }
+        let at = |i: usize, j: usize| ring[(j + 1) * m + i + 1];
         let mut heights = Vec::with_capacity(n * n);
         for j in 0..n {
             for i in 0..n {
-                heights.push(relief.height([i as f32 * cell, j as f32 * cell]));
+                heights.push(at(i, j));
             }
         }
-        let at = |i: usize, j: usize| heights[j.min(CELLS) * n + i.min(CELLS)];
+        let at = |i: isize, j: isize| ring[(j + 1) as usize * m + (i + 1) as usize];
         let mut shades = Vec::with_capacity(n * n);
         let flat = LIGHT[1];
-        for j in 0..n {
-            for i in 0..n {
-                let (i0, i1) = (i.saturating_sub(1), (i + 1).min(CELLS));
-                let (j0, j1) = (j.saturating_sub(1), (j + 1).min(CELLS));
-                let dx = (at(i1, j) - at(i0, j)) / ((i1 - i0) as f32 * cell);
-                let dz = (at(i, j1) - at(i, j0)) / ((j1 - j0) as f32 * cell);
+        for j in 0..n as isize {
+            for i in 0..n as isize {
+                let dx = (at(i + 1, j) - at(i - 1, j)) / (2.0 * cell);
+                let dz = (at(i, j + 1) - at(i, j - 1)) / (2.0 * cell);
                 let len = (dx * dx + dz * dz + 1.0).sqrt();
                 let facing = (-dx * LIGHT[0] + LIGHT[1] - dz * LIGHT[2]) / len;
                 // Lit as flat ground or better: the color as it is; turned
@@ -1032,6 +1042,7 @@ pub fn raise_shape(
 mod tests {
     use super::*;
     use crate::mvt::TileEncoder;
+    use crate::raster::Dem;
     use crate::style::{Color, Layer};
 
     fn features() -> mvt::VectorTile {
@@ -1205,17 +1216,53 @@ mod tests {
             meters: (0..256 * 4).map(|i| f((i % 256) as f32)).collect(),
         };
         let relief = |dem| Relief {
-            dem,
+            dem: Around::alone(dem),
             origin: [0.0, 0.0],
             span: 1.0,
             scale: 0.1,
         };
         let ramp = dem_of(&|x| x * 4.0);
-        assert!(relief_error(&relief(&ramp)) < 0.5);
+        assert!(relief_error(&relief(&ramp)) < 1e-2);
         // A crest between the lattice's corners: the lattice cuts it off.
         let crest = dem_of(&|x| 1000.0 - (x - 132.0).abs() * 8.0);
         let e = relief_error(&relief(&crest));
         assert!(e > 1.0 && e < 100.0, "{e}");
+    }
+
+    #[test]
+    fn neighbouring_tiles_over_two_terrain_tiles_meet_in_height_and_light() {
+        // One surface, a hill across the seam, split between two terrain
+        // tiles; a tile a level finer on either side of it.
+        let surface = |x: i64, y: i64| {
+            let (dx, dy) = ((x - 60) as f32, (y - 20) as f32);
+            800.0 - (dx * dx + dy * dy) * 0.6
+        };
+        let piece = |x0: i64| Dem {
+            width: 64,
+            height: 64,
+            meters: (0..64 * 64).map(|i| surface(x0 + i % 64, i / 64)).collect(),
+        };
+        let (a, b) = (piece(0), piece(64));
+        let mut west = Around::alone(&a);
+        west.neighbours[1][2] = Some(&b);
+        let mut east = Around::alone(&b);
+        east.neighbours[1][0] = Some(&a);
+        let relief = |dem, x| Relief {
+            dem,
+            origin: [x, 0.0],
+            span: 0.5,
+            scale: 0.1,
+        };
+        let (lw, le) = (
+            Lattice::new(&relief(west, 0.5)),
+            Lattice::new(&relief(east, 0.0)),
+        );
+        let n = CELLS + 1;
+        for j in 0..n {
+            let (w, e) = (j * n + CELLS, j * n);
+            assert!((lw.heights[w] - le.heights[e]).abs() < 1e-3, "{j}");
+            assert!((lw.shades[w] - le.shades[e]).abs() < 1e-3, "{j}");
+        }
     }
 
     #[test]
@@ -1229,7 +1276,7 @@ mod tests {
                 .collect(),
         };
         let relief = Relief {
-            dem: &dem,
+            dem: Around::alone(&dem),
             origin: [0.0, 0.0],
             span: 1.0,
             scale: 0.1,

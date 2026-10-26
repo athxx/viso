@@ -89,11 +89,48 @@ pub fn image_off_loop(
         done.complete(match kind {
             ImageKind::Image => decode_image(tile, &bytes),
             ImageKind::Shade(shading) => decode_dem(tile, &bytes, shading.encoding)
-                .and_then(|dem| hillshade(tile, &dem, &shading))
+                .and_then(|dem| hillshade(tile, Around::alone(&dem), &shading))
                 .map(Arc::new),
         });
     });
     (answer, stop)
+}
+
+/// Terrain tile `tile`'s `dem` shaded by `shading` on the worker pool, read
+/// across its edges from the `neighbours` known (by row from the north and
+/// column from the west), and the flag that stops it if raised before it
+/// starts.
+pub fn shade_off_loop(
+    tile: TileId,
+    dem: Arc<Dem>,
+    neighbours: [[Option<Arc<Dem>>; 3]; 3],
+    shading: Shading,
+) -> (Reply<Arc<RasterImage>>, Arc<AtomicBool>) {
+    crate::load::off_loop(move || {
+        let around = Around {
+            dem: &dem,
+            neighbours: core::array::from_fn(|j| {
+                core::array::from_fn(|i| neighbours[j][i].as_deref())
+            }),
+        };
+        hillshade(tile, around, &shading).map(Arc::new)
+    })
+}
+
+/// The tiles beside `tile` at its zoom, by column from the west and row
+/// from the north, round the world east and west.
+pub fn neighbours(tile: TileId) -> impl Iterator<Item = (usize, usize, TileId)> {
+    let span = i64::from(TileId::span(tile.z));
+    (0..3)
+        .flat_map(|j| (0..3).map(move |i| (i, j)))
+        .filter(|&ij| ij != (1, 1))
+        .filter_map(move |(i, j)| {
+            let x = (i64::from(tile.x) + i as i64 - 1).rem_euclid(span);
+            let y = i64::from(tile.y) + j as i64 - 1;
+            (0..span)
+                .contains(&y)
+                .then(|| (i, j, TileId::new(tile.z, x as u32, y as u32)))
+        })
 }
 
 /// The elevations in `bytes` of terrain tile `tile`, decoded by `encoding`
@@ -128,19 +165,72 @@ pub struct Dem {
 }
 
 impl Dem {
-    /// The elevation at pixel `(x, y)`, clamped to the tile.
+    /// The elevation at pixel `(x, y)`; past the tile's edge, carried on
+    /// along the slope at the edge, so that a slope shades as steeply
+    /// there as within.
     #[inline]
     pub fn at(&self, x: i64, y: i64) -> f32 {
-        let x = x.clamp(0, i64::from(self.width) - 1) as usize;
-        let y = y.clamp(0, i64::from(self.height) - 1) as usize;
-        self.meters[y * self.width as usize + x]
+        let (w, h) = (i64::from(self.width), i64::from(self.height));
+        let (cx, cy) = (x.clamp(0, w - 1), y.clamp(0, h - 1));
+        let get = |x: i64, y: i64| self.meters[y as usize * self.width as usize + x as usize];
+        let e = get(cx, cy);
+        // The slope at the edge, per pixel outward, and how far past it.
+        let toward = |d: i64, c: i64, n: i64, step: &dyn Fn(i64) -> f32| {
+            if d == 0 || n < 2 {
+                0.0
+            } else {
+                (e - step(c - d.signum())) * d.abs() as f32
+            }
+        };
+        let (dx, dy) = (x - cx, y - cy);
+        e + toward(dx, cx, w, &|i| get(i, cy)) + toward(dy, cy, h, &|j| get(cx, j))
     }
 
     /// The elevation at `(u, v)`, `0..1` across and down the tile, between
     /// its pixels.
     pub fn sample(&self, u: f64, v: f64) -> f32 {
-        let x = (u * f64::from(self.width) - 0.5).max(0.0);
-        let y = (v * f64::from(self.height) - 0.5).max(0.0);
+        Around::alone(self).sample(u, v)
+    }
+}
+
+/// A terrain tile's elevations read across its edges: from its neighbours
+/// where they are known, else carried on from its own edge a pixel out.
+#[derive(Debug, Clone, Copy)]
+pub struct Around<'a> {
+    pub dem: &'a Dem,
+    /// Its neighbours by row from the north and column from the west; the
+    /// middle is the tile itself and unread.
+    pub neighbours: [[Option<&'a Dem>; 3]; 3],
+}
+
+impl<'a> Around<'a> {
+    /// `dem` with no neighbours known.
+    pub fn alone(dem: &'a Dem) -> Self {
+        Self {
+            dem,
+            neighbours: [[None; 3]; 3],
+        }
+    }
+
+    /// The elevation at pixel `(x, y)` of the tile, which may lie in a
+    /// neighbour.
+    pub fn at(&self, x: i64, y: i64) -> f32 {
+        let (w, h) = (i64::from(self.dem.width), i64::from(self.dem.height));
+        let (i, j) = (x.div_euclid(w).clamp(-1, 1), y.div_euclid(h).clamp(-1, 1));
+        if (i, j) != (0, 0)
+            && let Some(n) = self.neighbours[(j + 1) as usize][(i + 1) as usize]
+            && (n.width, n.height) == (self.dem.width, self.dem.height)
+        {
+            return n.at(x - i * w, y - j * h);
+        }
+        self.dem.at(x.clamp(-1, w), y.clamp(-1, h))
+    }
+
+    /// The elevation at `(u, v)`, `0..1` across and down the tile, between
+    /// pixels, those over its edges included.
+    pub fn sample(&self, u: f64, v: f64) -> f32 {
+        let x = u * f64::from(self.dem.width) - 0.5;
+        let y = v * f64::from(self.dem.height) - 0.5;
         let (x0, y0) = (x.floor() as i64, y.floor() as i64);
         let (fx, fy) = ((x - x0 as f64) as f32, (y - y0 as f64) as f32);
         let a = self.at(x0, y0) * (1.0 - fx) + self.at(x0 + 1, y0) * fx;
@@ -186,8 +276,14 @@ pub fn decode_dem(tile: TileId, bytes: &[u8], encoding: DemEncoding) -> Result<D
 }
 
 /// `dem` of `tile` shaded by `shading`: shadow on the slopes facing away
-/// from the light, highlight on those facing it, clear on the flat.
-pub fn hillshade(tile: TileId, dem: &Dem, shading: &Shading) -> Result<RasterImage, ServiceError> {
+/// from the light, highlight on those facing it, clear on the flat. Its
+/// edge pixels' slopes read across into the neighbours it knows.
+pub fn hillshade(
+    tile: TileId,
+    around: Around<'_>,
+    shading: &Shading,
+) -> Result<RasterImage, ServiceError> {
+    let dem = around.dem;
     let (nw, side) = tile_square(tile);
     let mid = crate::geo::WorldPoint::new(nw.x + side / 2.0, nw.y + side / 2.0).to_lng_lat();
     let tile_meters = side * 2.0 * std::f64::consts::PI * EARTH_RADIUS * mid.lat.to_radians().cos();
@@ -204,7 +300,7 @@ pub fn hillshade(tile: TileId, dem: &Dem, shading: &Shading) -> Result<RasterIma
     let to8 = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
     for y in 0..i64::from(dem.height) {
         for x in 0..i64::from(dem.width) {
-            let e = |dx: i64, dy: i64| dem.at(x + dx, y + dy);
+            let e = |dx: i64, dy: i64| around.at(x + dx, y + dy);
             let dzdx = ((e(1, -1) + 2.0 * e(1, 0) + e(1, 1))
                 - (e(-1, -1) + 2.0 * e(-1, 0) + e(-1, 1)))
                 / (8.0 * px);
@@ -306,6 +402,65 @@ pub(crate) mod tests {
         assert!(decode_dem(tile, b"nope", DemEncoding::Terrarium).is_err());
     }
 
+    /// `f` over pixel columns `x0..x0 + 8` and 8 rows: one of a row of tiles
+    /// of a single surface.
+    fn piece(x0: i64, f: impl Fn(i64, i64) -> f32) -> Dem {
+        Dem {
+            width: 8,
+            height: 8,
+            meters: (0..64).map(|i| f(x0 + i % 8, i / 8)).collect(),
+        }
+    }
+
+    #[test]
+    fn a_dem_reads_across_its_edges_from_its_neighbours_or_on_along_its_slope() {
+        let surface = |x: i64, y: i64| (x * x) as f32 + 3.0 * y as f32;
+        let (west, mid, east) = (piece(-8, surface), piece(0, surface), piece(8, surface));
+        // Alone, a pixel past the edge carries the edge's slope on.
+        assert_eq!(
+            mid.at(-1, 2),
+            surface(0, 2) - (surface(1, 2) - surface(0, 2))
+        );
+        assert_eq!(
+            mid.at(8, -1),
+            surface(7, 0) + (surface(7, 0) - surface(6, 0)) - 3.0
+        );
+        // With its neighbours, their pixels.
+        let mut around = Around::alone(&mid);
+        around.neighbours[1][0] = Some(&west);
+        around.neighbours[1][2] = Some(&east);
+        assert_eq!(around.at(-1, 2), surface(-1, 2));
+        assert_eq!(around.at(9, 5), surface(9, 5));
+        // Their shared edge reads the same from either side.
+        let mut from_east = Around::alone(&east);
+        from_east.neighbours[1][0] = Some(&mid);
+        for v in [0.1, 0.5, 0.93] {
+            assert!((around.sample(1.0, v) - from_east.sample(0.0, v)).abs() < 1e-4);
+        }
+    }
+
+    #[test]
+    fn an_even_slope_shades_evenly_to_its_tile_edges() {
+        let tile = TileId::new(12, 2200, 1343);
+        let dem = piece(0, |x, _| x as f32 * 30.0);
+        let shading = Shading {
+            encoding: DemEncoding::Terrarium,
+            exaggeration: 0.5,
+            shadow: Color::rgba(0, 0, 0, 0.5),
+            highlight: Color::rgba(255, 255, 255, 0.5),
+            illumination: 270.0,
+        };
+        let px = hillshade(tile, Around::alone(&dem), &shading)
+            .unwrap()
+            .to_straight_rgba8()
+            .unwrap();
+        // Edge columns and rows as the middle: no lighter band at the seam.
+        let middle = &px[(4 * 8 + 4) * 4..][..4];
+        for (x, y) in [(0, 4), (7, 4), (4, 0), (4, 7), (0, 0), (7, 7)] {
+            assert_eq!(&px[(y * 8 + x) * 4..][..4], middle, "{x},{y}");
+        }
+    }
+
     #[test]
     fn a_slope_facing_the_light_brightens_and_one_facing_away_darkens() {
         let tile = TileId::new(12, 2200, 1343);
@@ -334,7 +489,7 @@ pub(crate) mod tests {
             // Light from the west.
             illumination: 270.0,
         };
-        let img = hillshade(tile, &dem, &shading).unwrap();
+        let img = hillshade(tile, Around::alone(&dem), &shading).unwrap();
         let px = img.to_straight_rgba8().unwrap();
         let at = |x: usize, y: usize| &px[(y * n as usize + x) * 4..][..4];
         // Rising east, the west half faces the western light; falling east,

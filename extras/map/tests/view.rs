@@ -1146,7 +1146,7 @@ fn raster_and_hillshade_layers_draw_between_the_vector_layers() {
                 .build(cx);
         }))
     });
-    let app = drive_scripted::<MapApp>(redraws(16), STEP);
+    let app = drive_scripted::<MapApp>(redraws(40), STEP);
     let px = picture(&app, "raster-hillshade");
     let handle = slot.borrow().clone().expect("built");
     assert!(handle.tiles().images >= 1);
@@ -1157,6 +1157,93 @@ fn raster_and_hillshade_layers_draw_between_the_vector_layers() {
     );
     assert!(luma(west) > luma(far) + 15, "{west:?} {far:?}");
     assert!(luma(east) + 15 < luma(far), "{east:?} {far:?}");
+}
+
+/// A terrain tile of rolling hills, Terrarium-encoded, smooth across the
+/// tiles' edges.
+fn hills_tile(tile: TileId) -> Vec<u8> {
+    let n = 256u32;
+    let span = f64::from(1u32 << tile.z);
+    let mut bgra = Vec::with_capacity((n * n * 4) as usize);
+    for y in 0..n {
+        for x in 0..n {
+            let wx = (f64::from(tile.x) + (f64::from(x) + 0.5) / f64::from(n)) / span;
+            let wy = (f64::from(tile.y) + (f64::from(y) + 0.5) / f64::from(n)) / span;
+            let meters = 300.0 + 250.0 * (wx * 61_000.0).sin() * (wy * 47_000.0).cos();
+            let v = meters + 32768.0;
+            let r = (v / 256.0).floor();
+            let g = (v - r * 256.0).floor();
+            let b = ((v - r * 256.0 - g) * 256.0).round().min(255.0);
+            bgra.extend_from_slice(&[b as u8, g as u8, r as u8, 255]);
+        }
+    }
+    support::png(n, n, &bgra)
+}
+
+#[test]
+fn a_hillshade_shows_no_seams_at_its_tiles_edges() {
+    use viso_map::RasterSource;
+    use viso_map::style::{Color, DemEncoding, Layer};
+    let start = berlin(13.3, 0.0);
+    let slot = MapHandleSlot::default();
+    let s = Rc::clone(&slot);
+    SETUP.with(|setup| {
+        *setup.borrow_mut() = Some(Box::new(move |cx| {
+            let style = viso_map::style::Style::new("terrain", Color::rgb(200, 200, 200))
+                .with(Layer::hillshade("shade", "dem", DemEncoding::Terrarium));
+            map_view(viso_map::MemorySource::new())
+                .camera(start)
+                .style(style)
+                .raster_source(
+                    "dem",
+                    RasterSource::new(
+                        |tile: TileId| viso_map::Reply::ready(Ok(Some(hills_tile(tile)))),
+                        0,
+                        13,
+                    ),
+                )
+                .handle(&s)
+                .build(cx);
+        }))
+    });
+    let app = drive_scripted::<MapApp>(redraws(60), STEP);
+    let px = picture(&app, "raster-hillshade-hills");
+    let handle = slot.borrow().clone().expect("built");
+    assert!(handle.tiles().images >= 2, "{:?}", handle.tiles());
+    // Down every column and along every row the shade bends smoothly: no
+    // line of other light where tiles meet. Each column's and row's mean
+    // bend, against the most of them.
+    let luma = |x: usize, y: usize| i32::try_from(luma(rgb_at(&px, [x as f64, y as f64]))).unwrap();
+    let bend = |a: i32, b: i32, c: i32| (a - 2 * b + c).abs();
+    let columns: Vec<i32> = (4..W as usize - 4)
+        .map(|x| {
+            (4..H as usize - 4)
+                .map(|y| bend(luma(x - 1, y), luma(x, y), luma(x + 1, y)))
+                .sum::<i32>()
+                * 10
+                / (H as i32 - 8)
+        })
+        .collect();
+    let rows: Vec<i32> = (4..H as usize - 4)
+        .map(|y| {
+            (4..W as usize - 4)
+                .map(|x| bend(luma(x, y - 1), luma(x, y), luma(x, y + 1)))
+                .sum::<i32>()
+                * 10
+                / (W as i32 - 8)
+        })
+        .collect();
+    for (name, lines) in [("columns", columns), ("rows", rows)] {
+        let mut sorted = lines.clone();
+        sorted.sort_unstable();
+        let typical = sorted[sorted.len() * 9 / 10];
+        let worst = *sorted.last().unwrap();
+        let at = lines.iter().position(|&l| l == worst);
+        assert!(
+            worst <= typical + 5,
+            "{name}: {worst} against {typical} at {at:?}"
+        );
+    }
 }
 
 /// A real Shortbread tile of Luxembourg City (see `fixtures/ATTRIBUTION`).

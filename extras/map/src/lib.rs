@@ -32,7 +32,7 @@ pub use geojson::{GeoFeature, GeoJson, GeoJsonError, Geometry};
 pub use icons::IconSet;
 pub use overlay::{Circle, Polygon, Polyline, Puck, Shape, Stroke};
 pub use query::QueriedFeature;
-pub use raster::{Dem, RasterSource, Shading};
+pub use raster::{Around, Dem, RasterSource, Shading};
 pub use source::{
     Completer, MemorySource, Reply, ServiceError, ServiceResult, TileId, TileReply, TileSource,
     reply,

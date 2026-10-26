@@ -887,8 +887,11 @@ viso-ext.
   asset table once and shown by leaves placed like vector tiles. A tile's vector layers
   split at the first image layer into a part under and a part over the images.
   Headless test: a half-opaque checker under the roads and a shaded ridge, with zero
-  upload while dragging. Open: DEM tiles shade without their neighbours' edge pixels,
-  so a faint seam can show at tile borders.
+  upload while dragging. A DEM tile reads across its edges (`raster::Around`): a
+  hillshade tile is shaded with its neighbours' elevations, and shaded again when a
+  neighbour it lacked arrives; the tilted terrain's lattice waits for the terrain
+  tiles across the edges a tile reaches, so heights and light meet at the seams;
+  past an unknown edge the slope carries on (`a_hillshade_shows_no_seams_at_its_tiles_edges`).
 - [x] Overlays: markers that are ordinary components anchored at lon/lat, polylines
   (route casing, traveled part dimmed), polygons, circles in meters, a GeoJSON source
   styled like tile data, clustering, the user's position puck with heading and

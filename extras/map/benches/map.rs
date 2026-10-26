@@ -90,7 +90,7 @@ fn tile_raise(c: &mut Criterion) {
         (
             "tile_raise/luxembourg_z16_relief",
             Some(Relief {
-                dem: &dem,
+                dem: viso_map::raster::Around::alone(&dem),
                 origin: [0.0, 0.0],
                 span: 1.0,
                 scale: units_per_meter(tile),
