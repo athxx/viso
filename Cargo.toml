@@ -46,6 +46,7 @@ members = [
     "examples/video",
     "examples/10-custom-shader",
     "examples/pointer",
+    "examples/code-editor",
     "benches/footprint",
 ]
 

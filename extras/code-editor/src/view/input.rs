@@ -8,7 +8,7 @@ use viso_ui::{
     ScrollRequest, Vec2,
 };
 
-use super::{BLINK, Drag, Shared, bar};
+use super::{BLINK, Drag, Shared, assist, bar};
 use crate::keymap::{Command, command_for};
 use crate::search::Query;
 use crate::selection::Selection;
@@ -28,6 +28,8 @@ pub(super) fn on_key(shared: &Rc<Shared>, ev: &mut EventCx<'_>) {
         shared.blink_on.set(true);
         if gained {
             arm_blink(shared, ev);
+        } else {
+            assist::close_popups(shared);
         }
         {
             let mut s = shared.session.borrow_mut();
@@ -37,6 +39,10 @@ pub(super) fn on_key(shared: &Rc<Shared>, ev: &mut EventCx<'_>) {
         return;
     }
     if let Some(token) = ev.woken() {
+        if token & assist::HOVER_WAKE != 0 {
+            assist::hover_woken(shared, ev, token);
+            return;
+        }
         if token == shared.blink_token.get() && shared.focused.get() {
             shared.blink_on.set(!shared.blink_on.get());
             shared.session.borrow_mut().pending_cursors();
@@ -50,6 +56,7 @@ pub(super) fn on_key(shared: &Rc<Shared>, ev: &mut EventCx<'_>) {
     }
     if let Some(ime) = ev.ime() {
         let ime = ime.clone();
+        let mut typed = None;
         {
             let mut s = shared.session.borrow_mut();
             match ime {
@@ -59,13 +66,21 @@ pub(super) fn on_key(shared: &Rc<Shared>, ev: &mut EventCx<'_>) {
                     // Keys that are commands come as keys.
                     if !text.chars().all(char::is_control) {
                         s.type_text(&text);
+                        let mut chars = text.chars();
+                        typed = chars.next().filter(|_| chars.next().is_none());
                     }
                 }
                 ImeEvent::Paste { text } => s.paste(&text),
             }
         }
         ev.stop_propagation();
+        assist::close_hover(shared);
         changed(shared, ev);
+        // A word typed on, or a character the service asks on, asks for
+        // completions.
+        if let Some(c) = typed {
+            assist::complete(shared, ev, Some(c));
+        }
         return;
     }
     if let Some(data) = ev.pasted() {
@@ -86,6 +101,14 @@ pub(super) fn on_key(shared: &Rc<Shared>, ev: &mut EventCx<'_>) {
         ev.stop_propagation();
         return;
     }
+    // An open completion list takes the keys that move in it.
+    if shared.assist.completing() && assist::completion_key(shared, ev, &key) {
+        ev.stop_propagation();
+        return;
+    }
+    if assist::close_hover(shared) {
+        shared.bump(ev);
+    }
     let Some(command) = command_for(&key, viso_ui::primary_is_logo()) else {
         return;
     };
@@ -101,11 +124,28 @@ pub(super) fn run(shared: &Rc<Shared>, ev: &mut EventCx<'_>, command: Command) -
             bar::open(shared, ev, replace);
             return true;
         }
+        Command::Escape if assist::close_popups(shared) => {
+            shared.bump(ev);
+            return true;
+        }
         Command::Escape
             if shared.session.borrow().selections().len() == 1
                 && shared.session.borrow().selections().primary().is_empty() =>
         {
             return bar::close(shared, ev);
+        }
+        Command::Complete => {
+            assist::complete(shared, ev, None);
+            return true;
+        }
+        Command::Hover => {
+            assist::hover_at_caret(shared, ev);
+            return true;
+        }
+        Command::GoToDefinition => {
+            let at = shared.session.borrow().selections().primary().head;
+            assist::go_to_definition(shared, ev, at);
+            return true;
         }
         _ => {}
     }
@@ -225,8 +265,9 @@ pub(super) fn run(shared: &Rc<Shared>, ev: &mut EventCx<'_>, command: Command) -
             }
             s.find_next(back)
         }
-        Command::Find { .. } => false,
-        Command::Complete | Command::GoToDefinition | Command::Hover => false,
+        Command::Find { .. } | Command::Complete | Command::GoToDefinition | Command::Hover => {
+            false
+        }
     };
     drop(s);
     if taken {
@@ -312,6 +353,9 @@ pub(super) fn on_pointer(shared: &Rc<Shared>, ev: &mut EventCx<'_>) {
             }
             ev.request_focus(nodes.root);
             ev.capture_pointer(nodes.root);
+            if assist::close_popups(shared) {
+                shared.bump(ev);
+            }
             let Some((line, row, cells)) = hit(shared, ev, p.x, p.y) else {
                 return;
             };
@@ -323,6 +367,15 @@ pub(super) fn on_pointer(shared: &Rc<Shared>, ev: &mut EventCx<'_>) {
             }
             let clicks = ev.clicks();
             let m = p.modifiers;
+            // The primary modifier's click goes to where the name is declared.
+            let primary = if apple { m.logo } else { m.control };
+            if primary && !m.alt && !m.shift {
+                let at = shared.session.borrow().position_at(line, row, cells);
+                shared.session.borrow_mut().click(at, false);
+                changed(shared, ev);
+                assist::go_to_definition(shared, ev, at);
+                return;
+            }
             let add = m.alt && !m.shift && (apple || !m.control);
             let boxed = m.alt && m.shift;
             let mut s = shared.session.borrow_mut();
@@ -420,6 +473,23 @@ pub(super) fn on_pointer(shared: &Rc<Shared>, ev: &mut EventCx<'_>) {
         PointerPhase::Up => {
             *shared.drag.borrow_mut() = None;
             ev.release_pointer();
+        }
+        PointerPhase::Move if p.buttons.is_empty() => {
+            // Resting over the text shows what is said of it.
+            let over = ev
+                .rect_of(nodes.list)
+                .filter(|list| {
+                    contains(*list, p.x, p.y) && p.x - list.x >= shared.metrics.get().gutter
+                })
+                .and_then(|_| hit(shared, ev, p.x, p.y))
+                .and_then(|(line, row, cells)| {
+                    let s = shared.session.borrow();
+                    // Past a line's end is over nothing.
+                    let at = s.position_at(line, row, cells);
+                    let (_, _, col) = s.point_of(at);
+                    (cells >= 0.0 && (col as f32) + 0.5 >= cells).then_some(at)
+                });
+            assist::pointer_moved(shared, ev, over, Vec2 { x: p.x, y: p.y });
         }
         _ => {}
     }

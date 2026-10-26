@@ -58,6 +58,41 @@ fn the_gutter_numbers_the_lines_and_stays_put_as_the_text_scrolls() {
     assert!((handle().gutter_width() - narrow - cell).abs() < 1.0);
 }
 
+/// The boxes of the tree filled with `color`, where they were laid out.
+fn filled(app: &DrivenApp<EditorApp>, color: viso::ui::Rgba) -> Vec<viso::ui::Rect> {
+    let store = app.store();
+    let mut out = Vec::new();
+    let mut stack: Vec<_> = app.root().into_iter().collect();
+    while let Some(id) = stack.pop() {
+        if store.style(id).fill == color {
+            out.push(store.world(id));
+        }
+        stack.extend(store.arena().children(id));
+    }
+    out
+}
+
+#[test]
+fn the_marks_a_frame_adds_are_laid_out_where_they_go() {
+    setup(None);
+    let theme = Theme::default();
+    let (cell, lh, x) = metrics();
+    // The caret a key moves and the line it lands on, each a new box.
+    let app = run("ab\ncd\n", &[focus(), key(Key::Down), key(Key::Right)]);
+    let carets = filled(&app, theme.caret);
+    assert_eq!(carets.len(), 1, "{carets:?}");
+    let c = carets[0];
+    assert!(c.w > 0.0 && c.h > 0.0, "{c:?}");
+    assert!((c.x - (x + cell)).abs() < 2.0, "{c:?}");
+    assert!(c.y >= lh - 0.5 && c.y < 2.0 * lh, "{c:?}");
+    let current = filled(&app, theme.current_line);
+    assert_eq!(current.len(), 1, "{current:?}");
+    assert!(
+        (current[0].y - lh).abs() < 0.5 && current[0].w > 0.0,
+        "{current:?}"
+    );
+}
+
 #[test]
 fn a_click_on_the_fold_marker_folds_and_the_caret_steps_over_the_fold() {
     setup(None);

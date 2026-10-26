@@ -5,8 +5,8 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use viso_ui::{
-    AbsoluteStyle, BoxStyle, BuildCx, Content, FontSlant, FontWeight, LeafStyle, Length, NodeId,
-    PathCmd, Point, Rgba, Size, SpanStyle, Stroke, StructureCx, TextSpan, Vec2,
+    AbsoluteStyle, BoxStyle, BuildCx, Content, DirtyClass, FontSlant, FontWeight, LeafStyle,
+    Length, NodeId, PathCmd, Point, Rgba, Size, SpanStyle, Stroke, StructureCx, TextSpan, Vec2,
 };
 
 use super::{Metrics, Shared, text_request};
@@ -554,6 +554,8 @@ fn set_fold_mark(
                 );
                 FoldMark { node, folded, x }
             });
+            // A node a hook adds is laid out once its parent is.
+            s.store.mark_dirty(view.gutter, DirtyClass::LAYOUT);
         }
     }
 }
@@ -850,6 +852,7 @@ fn sync_segs(
     want: Vec<Seg>,
 ) {
     let lh = shared.metrics.get().line_height;
+    let mut added = false;
     let mut i = 0;
     for seg in want {
         if i < have.len() {
@@ -881,8 +884,12 @@ fn sync_segs(
             s.store.set_hittable(node, false);
             s.store.set_translate(node, Vec2 { x: seg.x, y: seg.y });
             have.push((node, seg));
+            added = true;
         }
         i += 1;
+    }
+    if added {
+        s.store.mark_dirty(parent, DirtyClass::LAYOUT);
     }
     let mut freed = Vec::new();
     for (node, _) in have.drain(i..) {
@@ -923,6 +930,7 @@ fn sync_marks(
         height: Length::Fixed(m.h),
     };
     let mut freed = Vec::new();
+    let mut added = false;
     let mut i = 0;
     for mark in want {
         if i < have.len() && have[i].1.squiggle == mark.squiggle {
@@ -982,8 +990,13 @@ fn sync_marks(
             } else {
                 have.push((node, mark));
             }
+            added = true;
         }
         i += 1;
+    }
+    if added {
+        // A node a hook adds is laid out once its parent is.
+        s.store.mark_dirty(parent, DirtyClass::LAYOUT);
     }
     for (node, _) in have.drain(i..) {
         s.store.free_tree(node, s.effects, &mut freed);

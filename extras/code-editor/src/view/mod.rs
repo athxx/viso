@@ -25,6 +25,7 @@
 //! sideways scroll in the pass that scrolls, so the gutter stays put while
 //! the text scrolls under it.
 
+mod assist;
 mod bar;
 mod input;
 mod row;
@@ -44,9 +45,12 @@ use viso_ui::{
 
 use crate::highlight::Language;
 use crate::keymap::Command;
+use crate::service::{Definition, LanguageService};
 use crate::session::{Config, Session};
 use crate::theme::Theme;
 
+use assist::Assist;
+pub use assist::OnDefinition;
 use bar::Bar;
 use row::{RowView, build_row, draw_row};
 
@@ -73,6 +77,8 @@ pub fn code_editor(text: impl Into<String>) -> CodeEditor {
         slot: None,
         on_change: None,
         setup: None,
+        service: None,
+        on_definition: None,
     }
 }
 
@@ -98,6 +104,8 @@ pub struct CodeEditor {
     slot: Option<EditorSlot>,
     on_change: Option<RefCell<Option<OnChange>>>,
     setup: Option<RefCell<Option<Setup>>>,
+    service: Option<Rc<dyn LanguageService>>,
+    on_definition: Option<RefCell<Option<OnDefinition>>>,
 }
 
 /// What sets a session up before it is first drawn.
@@ -168,6 +176,23 @@ impl CodeEditor {
     /// Put its handle in `slot` when built.
     pub fn handle(mut self, slot: &EditorSlot) -> Self {
         self.slot = Some(Rc::clone(slot));
+        self
+    }
+
+    /// Ask `service` for completions, hovers, definitions, inlay hints and
+    /// diagnostics, and tell it every edit.
+    pub fn service(mut self, service: Rc<dyn LanguageService>) -> Self {
+        self.service = Some(service);
+        self
+    }
+
+    /// Call `f` when a name the service is asked about is declared in
+    /// another document.
+    pub fn on_definition(
+        mut self,
+        f: impl FnMut(&mut dyn StateWriter, &Definition) + 'static,
+    ) -> Self {
+        self.on_definition = Some(RefCell::new(Some(Box::new(f))));
         self
     }
 
@@ -288,6 +313,10 @@ pub(crate) struct Shared {
     brackets: RefCell<Option<(Range<usize>, Range<usize>)>>,
     /// The find bar.
     bar: RefCell<Option<Bar>>,
+    /// Completions, hovers and what else a language service adds.
+    assist: Assist,
+    /// The primary caret's line box's top left, in the window.
+    caret_window: Cell<Option<Vec2>>,
 }
 
 impl Shared {
@@ -462,6 +491,17 @@ impl EditorHandle {
             .map(|b| (b.find, b.replace, b.count))
     }
 
+    /// The completion list's labels, best first, and the chosen one's
+    /// index, while it shows.
+    pub fn completions(&self) -> Option<(Vec<String>, usize)> {
+        self.0.assist.completion_labels()
+    }
+
+    /// What the hover box says, while it shows.
+    pub fn hover_text(&self) -> Option<String> {
+        self.0.assist.hover_text()
+    }
+
     /// What the find bar's count says.
     pub fn find_count(&self) -> String {
         self.0
@@ -481,6 +521,22 @@ impl Component for CodeEditor {
         }
         if let Some(setup) = self.setup.as_ref().and_then(|s| s.borrow_mut().take()) {
             setup(&mut session);
+        }
+        let assist = Assist::new(
+            self.service.clone(),
+            self.on_definition
+                .as_ref()
+                .and_then(|f| f.borrow_mut().take()),
+        );
+        if let Some(service) = &self.service {
+            // The service and the edit log hear every edit, in order.
+            let service = Rc::clone(service);
+            let log = Rc::clone(&assist.log);
+            session.listen(Box::new(move |event| {
+                service.changed(event);
+                log.borrow_mut()
+                    .record(event.after.version(), event.changes);
+            }));
         }
         let lh = (self.font_size * self.line_height).round();
         let mut metrics = Metrics {
@@ -519,6 +575,8 @@ impl Component for CodeEditor {
             line_numbers: self.line_numbers,
             brackets: RefCell::new(None),
             bar: RefCell::new(None),
+            assist,
+            caret_window: Cell::new(None),
         });
         let revision = cx.state(StateValue::Int(0));
         let mut list = None;
@@ -590,6 +648,9 @@ impl Component for CodeEditor {
                     },
                     move |i, cx| build_row(&rows, i, cx),
                 ));
+                if let Some(list) = list {
+                    assist::build_popups(&shared, cx, list);
+                }
             },
         );
         let (Some(list_handle), Some(probe)) = (list, probe) else {
@@ -781,6 +842,12 @@ fn update(shared: &Rc<Shared>, s: &mut StructureCx<'_>) {
     }
     // Where the input method's window goes, and what a reader reads.
     let caret = caret_rect(shared, &session, s.store, nodes);
+    let root = s.store.world(nodes.root);
+    shared.caret_window.set(Some(Vec2 {
+        x: root.x + caret.x,
+        y: root.y + caret.y,
+    }));
+    assist::update(shared, &mut session, s, nodes);
     s.store.set_text_entry(
         nodes.root,
         (!session.config().read_only).then_some(TextEntryRequest {

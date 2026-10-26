@@ -6,7 +6,8 @@
 use std::cell::RefCell;
 use std::time::Duration;
 
-use viso::__test_support::{DrivenApp, drive_scripted};
+pub use viso::__test_support::DrivenApp;
+use viso::__test_support::drive_scripted;
 pub use viso::platform::{
     KeyCode as Key, Modifiers as RawModifiers, PointerButtons as RawButtons,
     PointerPhase as RawPhase, RawEvent, RawImePreedit, RawKey, RawPointer, RawText, WindowId,

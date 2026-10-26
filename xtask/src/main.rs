@@ -189,8 +189,8 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
             "viso-code-editor",
             Allowed {
                 dir: "extras/code-editor",
-                deps: &["viso-ui", "viso-widgets", "viso-lexer"],
-                dev: &["viso"],
+                deps: &["viso-ui", "viso-lexer", "viso-ende"],
+                dev: &["viso", "viso-lsp"],
             },
         ),
         // dsl works against a schema/registry, NOT concrete widgets or the

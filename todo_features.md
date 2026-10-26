@@ -672,7 +672,7 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
 
 ## W15 — Code editor widget (in `extras/`)
 
-- [ ] `CodeEditor`:
+- [x] `CodeEditor`:
   - [x] rope document, multi-cursor, undo: a B-tree rope with line counts (random edits
     checked against a `String`), edits as change sets of one change a cursor with line
     splices that every line array follows, sorted merged cursors keeping a column goal, and
@@ -702,7 +702,20 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
     from its chevron and stepped over, a wrapped line moved through a row at a time, an
     inlay shifting the text and a diagnostic's squiggle and gutter mark, and the bar's
     find, step, retype, replace and replace-all, and Escape back to the text;
-  - [ ] LSP client hookup.
+  - [x] LSP client hookup: a `LanguageService` trait the widget asks for diagnostics,
+    completions, hovers, inlay hints and definitions, each answer a future over a snapshot
+    of the text that the edits since are mapped through; the `lsp` feature (desktop only)
+    adds an `LspClient` speaking JSON-RPC to a server over its pipes, negotiating UTF-8
+    columns, sending full or incremental changes from a writer thread and answering the
+    server's own requests; the widget shows a fuzzy-filtered completion list, squiggles,
+    a hover box on a resting pointer and jumps to definitions; tests drive a fake service
+    through the facade, `viso-lsp` over in-process pipes (diagnostics, hover, definition,
+    an edit clearing an error, and squiggles in the widget) and rust-analyzer when
+    installed (UTF-8, hover, inlay hint, completions and a definition after incremental
+    edits); `examples/code-editor` edits a `.vs` file with `viso-lsp`, checked in a
+    headless run's snapshots (highlighting, gutter, find matches, a caret and a squiggle
+    from the server); on 100k lines in release a facade run opens in about 6 ms, takes
+    about 1 ms a keystroke to its frame and 13 MiB resident.
 
 ## W16 — Missing in both
 

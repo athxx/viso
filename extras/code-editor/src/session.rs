@@ -630,12 +630,41 @@ impl Session {
         if inlays == self.inlays {
             return;
         }
+        // Only the lines whose inlays came or went are measured again.
+        let mut lines: Vec<usize> = self
+            .inlays
+            .iter()
+            .chain(&inlays)
+            .map(|i| self.doc.line_of(i.at))
+            .collect();
+        lines.sort_unstable();
+        lines.dedup();
         self.inlays = inlays;
-        self.measure_all();
         self.pending.text = true;
         self.pending.cursors = true;
-        if self.config.wrap {
-            self.rewrap();
+        if lines.len() > self.doc.line_count() / 8 {
+            self.measure_all();
+            if self.config.wrap {
+                self.rewrap();
+            }
+            return;
+        }
+        let rules = self.rules();
+        for &l in &lines {
+            let spans = line_inlays(&self.doc, &self.inlays, l, None, rules.tab).spans;
+            let text = self.doc.line(l);
+            if let Some(w) = self.widths.get_mut(l) {
+                *w = line_width(&text, &spans, rules.tab);
+            }
+            if self.config.wrap
+                && let Some(n) = self.wraps.get_mut(l)
+            {
+                let rows = layout::row_count(&text, &spans, rules).min(u16::MAX as usize) as u16;
+                if *n != rows {
+                    *n = rows;
+                    self.pending.rows = true;
+                }
+            }
         }
     }
 

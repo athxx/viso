@@ -3089,9 +3089,10 @@ dependencies = [
  "regex",
  "unicode-segmentation",
  "viso",
+ "viso-ende",
  "viso-lexer",
+ "viso-lsp",
  "viso-ui",
- "viso-widgets",
 ]
 
 [[package]]
@@ -3140,6 +3141,14 @@ name = "viso-example-10-custom-shader"
 version = "0.0.0"
 dependencies = [
  "viso",
+]
+
+[[package]]
+name = "viso-example-code-editor"
+version = "0.0.0"
+dependencies = [
+ "viso",
+ "viso-code-editor",
 ]
 
 [[package]]
