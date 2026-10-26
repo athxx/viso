@@ -212,3 +212,80 @@ fn going_to_a_definition_selects_it() {
     assert_eq!(handle().with(|s| s.selections().primary().range()), 3..7);
     setup(None);
 }
+
+/// A service whose diagnostics come when the test sends them.
+#[derive(Default)]
+struct Held {
+    waits: RefCell<Vec<Responder<Diagnostics>>>,
+}
+
+impl LanguageService for Held {
+    fn changed(&self, _: &EditEvent<'_>) {}
+
+    fn diagnostics(&self) -> Reply<Diagnostics> {
+        let (tx, rx) = channel();
+        self.waits.borrow_mut().push(tx);
+        rx
+    }
+}
+
+thread_local! {
+    static HELD: RefCell<Option<Rc<Held>>> = const { RefCell::new(None) };
+}
+
+fn held(e: CodeEditor) -> CodeEditor {
+    let service = HELD.with(|h| h.borrow().clone()).expect("a service");
+    e.service(service)
+}
+
+#[test]
+fn a_view_built_again_keeps_the_session_and_what_its_service_reports() {
+    let service = Rc::new(Held::default());
+    HELD.with(|h| *h.borrow_mut() = Some(Rc::clone(&service)));
+    setup(Some(held));
+    // An edit before `bad`, and the service asked once, not yet answered.
+    let first = run(TEXT, &[focus(), click(at(1, 0.0)), typed("q"), wait(50)]);
+    assert_eq!(service.waits.borrow().len(), 1);
+    drop(first);
+    // The answer comes, about the text before the edit, while no view
+    // shows the session; the view built again from the text it was built
+    // from shows the edited session and the answer carried over the edit.
+    let tx = service.waits.borrow_mut().pop().expect("a wait");
+    tx.send(Some(Diagnostics {
+        version: 0,
+        list: vec![Decoration::diagnostic(
+            14..17,
+            Severity::Error,
+            "no such name `bad`",
+        )],
+    }));
+    let _app = run_again(&[wait(50)]);
+    let h = handle();
+    let marked = h.with(|s| {
+        assert!(
+            s.text().starts_with("fn main() {\nq  bad;"),
+            "the edit stays"
+        );
+        s.decorations()
+            .get(viso_code_editor::decoration::DIAGNOSTICS)
+            .iter()
+            .map(|d| s.slice(d.range.clone()))
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(marked, ["bad"]);
+    assert_eq!(
+        service.waits.borrow().len(),
+        1,
+        "asked again only after the answer"
+    );
+    // Built again on another service, the session drops the old one's report.
+    HELD.with(|h| *h.borrow_mut() = Some(Rc::new(Held::default())));
+    let _app = run_again(&[wait(50)]);
+    assert!(handle().with(|s| {
+        s.decorations()
+            .get(viso_code_editor::decoration::DIAGNOSTICS)
+            .is_empty()
+    }));
+    setup(None);
+    HELD.with(|h| *h.borrow_mut() = None);
+}

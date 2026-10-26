@@ -3,8 +3,8 @@
 //! rect, renders again only when the frame or the size changed, culls what the
 //! camera cannot see, grows its target in 64-pixel steps, draws unlit meshes
 //! in their own color, blends sprites over the meshes they are in front
-//! of, moves a skinned mesh's vertices by its joints, and culls a mirrored
-//! instance's far side.
+//! of, moves a skinned mesh's vertices by its joints, and culls the far side
+//! of a mirrored instance and of a mesh its joints mirror.
 
 use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle, SurfaceId};
 use viso_math::{LinearStraight, Mat4, Quat, Vec3, vec3};
@@ -694,4 +694,149 @@ fn ambient_occlusion_shades_where_the_cube_meets_the_ground() {
         corner.1[1].abs_diff(corner.0[1]) <= 2,
         "open ground: {corner:?}"
     );
+}
+
+/// Two cubes in one skinned mesh, the left following joint 0 and the right
+/// joint 1 with a square before it that faces away from the camera, in a
+/// one-sided lit material, posed by `joints` and placed by `placement`
+/// (turned so three faces of each cube show), drawn by `gpu` into a BGRA8
+/// texture read back by `read`.
+fn two_skinned_cubes<B: GpuBackend>(
+    gpu: &mut B,
+    joints: [Mat4; 2],
+    placement: Mat4,
+    read: impl Fn(&mut B, viso_gpu::TextureId) -> Vec<u8>,
+) -> Vec<u8> {
+    use viso_gpu::{TextureDesc, TextureFormat};
+    let mut r = Renderer::new(gpu, TextureFormat::Bgra8Unorm);
+    r.set_surface_size([W as f32, H as f32], 1.0);
+    let (vertices, indices) = Shape::Cube.geometry();
+    let mut skinned = Vec::new();
+    let mut all = Vec::new();
+    for (joint, x) in [(0u16, -1.5f32), (1, 1.5)] {
+        let base = skinned.len() as u32;
+        skinned.extend(vertices.iter().map(|&v| {
+            let mut v = v;
+            v.position[0] += x;
+            SkinnedVertex::new(v, [joint, 0, 0, 0], [1.0, 0.0, 0.0, 0.0])
+        }));
+        all.extend(indices.iter().map(|&i| base + u32::from(i)));
+    }
+    // The square's outside faces away from the camera: only its back shows.
+    let base = skinned.len() as u32;
+    for (x, y) in [(0.5, -1.0), (2.5, -1.0), (2.5, 1.0), (0.5, 1.0)] {
+        let v = viso_render::scene3d::SceneVertex {
+            position: [x, y, 2.2],
+            normal: [0.0, 0.0, -1.0],
+            ..Default::default()
+        };
+        skinned.push(SkinnedVertex::new(v, [1, 0, 0, 0], [1.0, 0.0, 0.0, 0.0]));
+    }
+    all.extend([0, 2, 1, 0, 3, 2].map(|i| base + i));
+    let mesh = r.create_scene_skinned_mesh(gpu, &skinned, &all);
+    let mut frame = facing_frame();
+    frame.camera.eye = vec3(0.0, 0.0, 9.0);
+    frame.lighting.direction = vec3(0.5, 0.6, 1.0);
+    frame.lighting.occlusion = AmbientOcclusion::NONE;
+    // Unshadowed, so where the square casts does not tell.
+    frame.lighting.shadows = Shadows::NONE;
+    let v = &placement.v;
+    let rows = core::array::from_fn(|i| [v[i], v[4 + i], v[8 + i], v[12 + i]]);
+    let color = LinearStraight::new(0.8, 0.5, 0.3, 1.0);
+    frame.push_skinned(
+        mesh,
+        MaterialId::LIT,
+        viso_render::scene3d::SceneInstance {
+            rows,
+            color: [color.r, color.g, color.b, color.a],
+        },
+        &joints,
+        ([-3.0, -1.0, -1.0], [3.0, 1.0, 2.5]),
+    );
+    r.swap_scene(SLOT, &mut frame);
+    r.upload(gpu, &stream(rect(0.0, 0.0, W as f32, H as f32), 1));
+    let target = gpu.create_texture(&TextureDesc {
+        width: W,
+        height: H,
+        format: TextureFormat::Bgra8Unorm,
+        render_target: true,
+        label: "out",
+    });
+    r.render_to_texture(gpu, target, CLEAR, [W as f32, H as f32]);
+    read(gpu, target)
+}
+
+/// How many pixels of `a` and `b` differ by more than `tolerance` in a
+/// channel.
+fn differing(a: &[u8], b: &[u8], tolerance: u8) -> usize {
+    a.as_chunks::<4>()
+        .0
+        .iter()
+        .zip(b.as_chunks::<4>().0)
+        .filter(|(p, q)| {
+            p.iter()
+                .zip(q.iter())
+                .any(|(x, y)| x.abs_diff(*y) > tolerance)
+        })
+        .count()
+}
+
+#[test]
+fn a_mirroring_joint_palette_shows_the_outside_of_its_triangles() {
+    // Each cube is its own mirror image about its centre, and so is the
+    // square about the right cube's: whichever joints mirror them, and
+    // whether the placement mirrors too, the same faces show, lit the same,
+    // and the square's back never does.
+    let turn = Quat::from_axis_angle(vec3(0.3, 1.0, 0.1).normalize(), 0.7).to_mat4();
+    let flip = Mat4::from_scale(vec3(-1.0, 1.0, 1.0));
+    let mirror_at = |x: f32| {
+        Mat4::from_translation(vec3(x, 0.0, 0.0))
+            .mul(&flip)
+            .mul(&Mat4::from_translation(vec3(-x, 0.0, 0.0)))
+    };
+    let draw = |joints, placement| {
+        two_skinned_cubes(&mut CpuRaster::new(), joints, placement, |gpu, t| {
+            gpu.read_texture(t)
+        })
+    };
+    let rest = draw([Mat4::IDENTITY; 2], turn);
+    let lit = rest.as_chunks::<4>().0.iter().filter(|p| p[2] > 40).count();
+    assert!(lit > (W * H / 8) as usize, "the cubes show");
+    let mirrored = [mirror_at(-1.5), mirror_at(1.5)];
+    let mixed = [Mat4::IDENTITY, mirror_at(1.5)];
+    for (name, joints, placement) in [
+        ("every joint mirrors", mirrored, turn),
+        ("one joint mirrors", mixed, turn),
+        (
+            "the placement and every joint mirror",
+            mirrored,
+            turn.mul(&flip),
+        ),
+        ("the placement and one joint mirror", mixed, turn.mul(&flip)),
+    ] {
+        let px = draw(joints, placement);
+        if let Some(dir) = std::env::var_os("VISO_SCENE_SHOTS") {
+            let png = viso_image::snapshot::Image::from_bgra8(W, H, &px).to_png();
+            let file = format!("lane-mirrored-skin-{}.png", name.replace(' ', "-"));
+            std::fs::write(std::path::Path::new(&dir).join(file), png).unwrap();
+        }
+        let off = differing(&rest, &px, 2);
+        assert!(
+            off <= 4,
+            "{name}: {off} pixels differ from the cubes at rest"
+        );
+    }
+    // The device culls the same faces.
+    #[cfg(target_vendor = "apple")]
+    for joints in [mirrored, mixed] {
+        let cpu = draw(joints, turn);
+        let metal = two_skinned_cubes(
+            &mut viso_gpu::MetalBackend::new(),
+            joints,
+            turn,
+            |gpu, t| gpu.read_texture(t),
+        );
+        let off = differing(&cpu, &metal, 3);
+        assert!(off * 100 < (W * H) as usize, "{off} pixels differ on Metal");
+    }
 }

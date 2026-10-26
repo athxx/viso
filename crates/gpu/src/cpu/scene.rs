@@ -19,26 +19,38 @@ use crate::resource::{
 use crate::scene::{
     AoUniforms, FrameUniforms, MaterialUniforms, MeshFragment, SAMPLER_SLOTS, SceneInstance,
     SceneProgram, SceneTextures, SceneVertex, SkinnedVertex, SkyUniforms, TEXTURE_SAMPLERS,
-    TEXTURE_SLOTS, UNIFORM_SLOTS, normalize, shade_ao, shade_ao_blur, shade_depth, shade_mesh,
-    shade_sky, skin_vertex,
+    TEXTURE_SLOTS, UNIFORM_SLOTS, VertexExtra, normalize, shade_ao, shade_ao_blur, shade_depth,
+    shade_mesh, shade_sky, skin_vertex,
 };
 
-/// The varyings a vertex carries to its fragments.
+/// The varyings a vertex carries to its fragments: of a vertex without an
+/// extra, its first texture coordinate in the second's place and a white
+/// color.
 #[derive(Debug, Clone, Copy, Default)]
 struct Varyings {
     world: [f32; 3],
     normal: [f32; 3],
     tangent: [f32; 4],
     uv: [f32; 2],
+    uv1: [f32; 2],
+    color: [f32; 4],
 }
 
 impl Varyings {
-    const LANES: usize = 12;
+    const LANES: usize = 18;
 
     fn lanes(&self) -> [f32; Self::LANES] {
-        let (w, n, t, uv) = (self.world, self.normal, self.tangent, self.uv);
+        let (w, n, t, uv, uv1, c) = (
+            self.world,
+            self.normal,
+            self.tangent,
+            self.uv,
+            self.uv1,
+            self.color,
+        );
         [
-            w[0], w[1], w[2], n[0], n[1], n[2], t[0], t[1], t[2], t[3], uv[0], uv[1],
+            w[0], w[1], w[2], n[0], n[1], n[2], t[0], t[1], t[2], t[3], uv[0], uv[1], uv1[0],
+            uv1[1], c[0], c[1], c[2], c[3],
         ]
     }
 
@@ -48,6 +60,8 @@ impl Varyings {
             normal: [l[3], l[4], l[5]],
             tangent: [l[6], l[7], l[8], l[9]],
             uv: [l[10], l[11]],
+            uv1: [l[12], l[13]],
+            color: [l[14], l[15], l[16], l[17]],
         }
     }
 }
@@ -253,17 +267,27 @@ pub(super) fn run<P: Px>(
         } else {
             Vec::new()
         };
+        let stride = program.vertex_size();
+        // Vertex `i` moved by its joints, with its second texture
+        // coordinate and its color.
         let fetch = |i: usize| {
-            if program.skinned() {
-                let at = i * SkinnedVertex::SIZE;
+            let at = i * stride;
+            let v = if program.skinned() {
                 skin_vertex(
                     &SkinnedVertex::read_from(&vertices[at..at + SkinnedVertex::SIZE]),
                     &palette,
                 )
             } else {
-                let at = i * SceneVertex::SIZE;
                 SceneVertex::read_from(&vertices[at..at + SceneVertex::SIZE])
-            }
+            };
+            let (uv1, color) = if program.extra() {
+                let at = at + stride - VertexExtra::SIZE;
+                let extra = VertexExtra::read_from(&vertices[at..at + VertexExtra::SIZE]);
+                (extra.uv1, extra.rgba())
+            } else {
+                (v.uv, [1.0; 4])
+            };
+            (v, uv1, color)
         };
         let indices = &res.buffer(index_buffer)[..];
         let instances = &res.buffer(cmd.instance_buffer)[..];
@@ -276,7 +300,7 @@ pub(super) fn run<P: Px>(
             for t in 0..index_count / 3 {
                 let corner = |k: u32| {
                     let i = read_index(indices, index_format, index_offset + t * 3 + k) as usize;
-                    let v = fetch(i);
+                    let (v, uv1, color) = fetch(i);
                     if program.screen() {
                         // Its position is clip-space x and y, at the far
                         // plane.
@@ -297,6 +321,8 @@ pub(super) fn run<P: Px>(
                             normal: instance.turn_normal(v.normal),
                             tangent: instance.turn_tangent(v.tangent),
                             uv: v.uv,
+                            uv1,
+                            color,
                         },
                     }
                 };
@@ -512,12 +538,19 @@ fn shade(
         normal: v.normal,
         tangent: v.tangent,
         uv: v.uv,
+        uv1: v.uv1,
+        vertex_color: v.color,
         color,
         uv_dx: d2(v.uv, right.uv),
         uv_dy: d2(v.uv, down.uv),
+        uv1_dx: d2(v.uv1, right.uv1),
+        uv1_dy: d2(v.uv1, down.uv1),
         normal_dx: d3(n, normalize(right.normal)),
         normal_dy: d3(n, normalize(down.normal)),
+        world_dx: d3(v.world, right.world),
+        world_dy: d3(v.world, down.world),
         pixel,
+        face_test: draw.program.skinned() && !draw.program.casts(),
     };
     let ndc = [v.world[0], v.world[1]];
     match draw.program {

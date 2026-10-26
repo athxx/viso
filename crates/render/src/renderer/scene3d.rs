@@ -11,6 +11,7 @@ use crate::scene3d::SceneLane;
 use crate::scene3d::model::ModelAsset;
 use crate::scene3d::{
     Material, MaterialId, MeshId, SceneFrame, SceneModel, SceneStats, SceneVertex, SkinnedVertex,
+    VertexExtra,
 };
 
 /// The largest scene target edge, in pixels.
@@ -57,6 +58,37 @@ impl Renderer {
         indices: &[u32],
     ) -> MeshId {
         self.scene3d.create_skinned_mesh(backend, vertices, indices)
+    }
+
+    /// [`create_scene_mesh`](Self::create_scene_mesh) of vertices that each
+    /// carry their extra in `extras`, by index (the default past its end): a
+    /// second texture coordinate set the material's maps may read and a
+    /// color multiplying its base color. Each vertex takes 64 bytes rather
+    /// than 48, and only such a mesh's draws read them.
+    pub fn create_scene_mesh_extra<B: GpuBackend>(
+        &mut self,
+        backend: &mut B,
+        vertices: &[SceneVertex],
+        extras: &[VertexExtra],
+        indices: &[u32],
+    ) -> MeshId {
+        self.scene3d
+            .create_mesh_extra(backend, vertices, extras, indices)
+    }
+
+    /// [`create_scene_skinned_mesh`](Self::create_scene_skinned_mesh) of
+    /// vertices that each carry their extra in `extras`, as
+    /// [`create_scene_mesh_extra`](Self::create_scene_mesh_extra)'s do: 80
+    /// bytes a vertex rather than 64.
+    pub fn create_scene_skinned_mesh_extra<B: GpuBackend>(
+        &mut self,
+        backend: &mut B,
+        vertices: &[SkinnedVertex],
+        extras: &[VertexExtra],
+        indices: &[u32],
+    ) -> MeshId {
+        self.scene3d
+            .create_skinned_mesh_extra(backend, vertices, extras, indices)
     }
 
     /// Destroy a mesh [`create_scene_mesh`](Self::create_scene_mesh)

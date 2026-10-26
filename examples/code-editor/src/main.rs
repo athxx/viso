@@ -27,6 +27,9 @@ struct Editor {
     path: Option<PathBuf>,
     text: String,
     slot: EditorSlot,
+    /// The document's language server, started once: every build of the
+    /// view is served by it.
+    service: Option<Rc<dyn LanguageService>>,
 }
 
 impl Application for Editor {
@@ -56,10 +59,18 @@ impl Application for Editor {
             }),
             (None, None) => SAMPLE.to_owned(),
         };
+        let path = if lines.is_some() { None } else { path };
+        let file = file_of(path.as_deref());
+        let service = file
+            .extension()
+            .is_some_and(|e| e == "vs")
+            .then(|| language_server(&file, &text))
+            .flatten();
         Editor {
-            path: if lines.is_some() { None } else { path },
+            path,
             text,
             slot: EditorSlot::default(),
+            service,
         }
     }
 
@@ -77,19 +88,14 @@ impl Application for Editor {
     }
 
     fn build(&mut self, cx: &mut BuildCx<'_>) {
-        let file = self
-            .path
-            .clone()
-            .unwrap_or_else(|| PathBuf::from("colony.vs"));
+        let file = file_of(self.path.as_deref());
         let mut editor = code_editor(self.text.clone())
             .language(viso_code_editor::lang::for_path(&file.to_string_lossy()))
             .size(Size::fill())
             .label(file.to_string_lossy())
             .handle(&self.slot);
-        if file.extension().is_some_and(|e| e == "vs")
-            && let Some(service) = language_server(&file, &self.text)
-        {
-            editor = editor.service(service);
+        if let Some(service) = &self.service {
+            editor = editor.service(Rc::clone(service));
         }
         let root = cx.flex(
             FlexStyle {
@@ -122,6 +128,11 @@ impl Application for Editor {
             }
         });
     }
+}
+
+/// The file the editor shows, named for the sample when none is open.
+fn file_of(path: Option<&Path>) -> PathBuf {
+    path.map_or_else(|| PathBuf::from("colony.vs"), Path::to_path_buf)
 }
 
 /// `viso-lsp` serving `file`, if one is found.

@@ -67,7 +67,9 @@ pub enum SceneProgram {
     /// the cascade's tile of the shadow atlas, with reversed depth.
     Depth = 1,
     /// [`Mesh`](Self::Mesh), its vertices [`SkinnedVertex`]es moved by
-    /// their joints first ([`skin_vertex`]).
+    /// their joints first ([`skin_vertex`]). Its joints may mirror some
+    /// triangles and not others, so it discards a one-sided material's
+    /// fragments that [`faces_away`] itself; a pipeline may cull too.
     SkinnedMesh = 2,
     /// [`Depth`](Self::Depth) of a skinned mesh.
     SkinnedDepth = 3,
@@ -85,11 +87,23 @@ pub enum SceneProgram {
     /// One axis of the depth-aware blur of [`Ao`](Self::Ao)'s output
     /// (texture slot 6), [`shade_ao_blur`].
     AoBlur = 6,
+    /// [`Mesh`](Self::Mesh) of a mesh whose vertices each carry a
+    /// [`VertexExtra`]: a second texture coordinate set and a color.
+    ExtraMesh = 7,
+    /// [`Depth`](Self::Depth) of a mesh whose vertices carry
+    /// [`VertexExtra`]s.
+    ExtraDepth = 8,
+    /// [`SkinnedMesh`](Self::SkinnedMesh) of a skinned mesh whose vertices
+    /// carry [`VertexExtra`]s.
+    ExtraSkinnedMesh = 9,
+    /// [`SkinnedDepth`](Self::SkinnedDepth) of a skinned mesh whose
+    /// vertices carry [`VertexExtra`]s.
+    ExtraSkinnedDepth = 10,
 }
 
 impl SceneProgram {
     /// Every program, by its code.
-    pub const ALL: [SceneProgram; 7] = [
+    pub const ALL: [SceneProgram; 11] = [
         SceneProgram::Mesh,
         SceneProgram::Depth,
         SceneProgram::SkinnedMesh,
@@ -97,13 +111,58 @@ impl SceneProgram {
         SceneProgram::Sky,
         SceneProgram::Ao,
         SceneProgram::AoBlur,
+        SceneProgram::ExtraMesh,
+        SceneProgram::ExtraDepth,
+        SceneProgram::ExtraSkinnedMesh,
+        SceneProgram::ExtraSkinnedDepth,
     ];
 
     /// The vertex layout it reads.
     pub const fn vertex_schema(self) -> InstanceSchema {
         match self {
             SceneProgram::SkinnedMesh | SceneProgram::SkinnedDepth => SKINNED_VERTEX_SCHEMA,
+            SceneProgram::ExtraMesh | SceneProgram::ExtraDepth => EXTRA_VERTEX_SCHEMA,
+            SceneProgram::ExtraSkinnedMesh | SceneProgram::ExtraSkinnedDepth => {
+                EXTRA_SKINNED_VERTEX_SCHEMA
+            }
             _ => VERTEX_SCHEMA,
+        }
+    }
+
+    /// The bytes of one of its vertices.
+    pub const fn vertex_size(self) -> usize {
+        let base = if self.skinned() {
+            SkinnedVertex::SIZE
+        } else {
+            SceneVertex::SIZE
+        };
+        if self.extra() {
+            base + VertexExtra::SIZE
+        } else {
+            base
+        }
+    }
+
+    /// Whether each of its vertices carries a [`VertexExtra`] after it.
+    pub const fn extra(self) -> bool {
+        matches!(
+            self,
+            SceneProgram::ExtraMesh
+                | SceneProgram::ExtraDepth
+                | SceneProgram::ExtraSkinnedMesh
+                | SceneProgram::ExtraSkinnedDepth
+        )
+    }
+
+    /// The program that draws what it draws from vertices that each carry a
+    /// [`VertexExtra`]; a screen program is its own.
+    pub const fn with_extra(self) -> SceneProgram {
+        match self {
+            SceneProgram::Mesh => SceneProgram::ExtraMesh,
+            SceneProgram::Depth => SceneProgram::ExtraDepth,
+            SceneProgram::SkinnedMesh => SceneProgram::ExtraSkinnedMesh,
+            SceneProgram::SkinnedDepth => SceneProgram::ExtraSkinnedDepth,
+            other => other,
         }
     }
 
@@ -119,12 +178,24 @@ impl SceneProgram {
 
     /// Whether its vertices are [`SkinnedVertex`]es.
     pub const fn skinned(self) -> bool {
-        matches!(self, SceneProgram::SkinnedMesh | SceneProgram::SkinnedDepth)
+        matches!(
+            self,
+            SceneProgram::SkinnedMesh
+                | SceneProgram::SkinnedDepth
+                | SceneProgram::ExtraSkinnedMesh
+                | SceneProgram::ExtraSkinnedDepth
+        )
     }
 
     /// Whether it draws shadow casters, writing [`pack_depth`]ed depth.
     pub const fn casts(self) -> bool {
-        matches!(self, SceneProgram::Depth | SceneProgram::SkinnedDepth)
+        matches!(
+            self,
+            SceneProgram::Depth
+                | SceneProgram::SkinnedDepth
+                | SceneProgram::ExtraDepth
+                | SceneProgram::ExtraSkinnedDepth
+        )
     }
 
     /// The program a pipeline's `variant` names.
@@ -184,6 +255,46 @@ pub const SKINNED_VERTEX_SCHEMA: InstanceSchema = InstanceSchema {
             name: "weights",
             format: AttrFormat::Uint2,
         },
+    ],
+};
+
+/// The two attributes of a [`VertexExtra`], after a vertex's own.
+const EXTRA_ATTRS: [SchemaAttr; 2] = [
+    SchemaAttr {
+        name: "uv1",
+        format: AttrFormat::Float2,
+    },
+    SchemaAttr {
+        name: "color",
+        format: AttrFormat::Uint2,
+    },
+];
+
+/// The vertex attributes of a scene mesh whose vertices carry
+/// [`VertexExtra`]s: [`VERTEX_SCHEMA`]'s, then the extra's.
+pub const EXTRA_VERTEX_SCHEMA: InstanceSchema = InstanceSchema {
+    attributes: &[
+        VERTEX_SCHEMA.attributes[0],
+        VERTEX_SCHEMA.attributes[1],
+        VERTEX_SCHEMA.attributes[2],
+        VERTEX_SCHEMA.attributes[3],
+        EXTRA_ATTRS[0],
+        EXTRA_ATTRS[1],
+    ],
+};
+
+/// The vertex attributes of a skinned scene mesh whose vertices carry
+/// [`VertexExtra`]s: [`SKINNED_VERTEX_SCHEMA`]'s, then the extra's.
+pub const EXTRA_SKINNED_VERTEX_SCHEMA: InstanceSchema = InstanceSchema {
+    attributes: &[
+        SKINNED_VERTEX_SCHEMA.attributes[0],
+        SKINNED_VERTEX_SCHEMA.attributes[1],
+        SKINNED_VERTEX_SCHEMA.attributes[2],
+        SKINNED_VERTEX_SCHEMA.attributes[3],
+        SKINNED_VERTEX_SCHEMA.attributes[4],
+        SKINNED_VERTEX_SCHEMA.attributes[5],
+        EXTRA_ATTRS[0],
+        EXTRA_ATTRS[1],
     ],
 };
 
@@ -322,6 +433,76 @@ impl SkinnedVertex {
     }
 }
 
+/// What a vertex of a mesh that has them carries past its [`SceneVertex`]
+/// or [`SkinnedVertex`]: a second texture coordinate set, which a
+/// material's map may read in place of the first, and a linear, straight
+/// RGBA color multiplying the material's base color. `color` holds four
+/// 16-bit fractions of `65535`, two to a word, the first in the low half.
+/// The [`SceneProgram::extra`] programs read it right after the vertex it
+/// belongs to. 16 bytes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[repr(C)]
+pub struct VertexExtra {
+    pub uv1: [f32; 2],
+    pub color: [u32; 2],
+}
+
+impl Default for VertexExtra {
+    /// The first texture coordinate, white.
+    fn default() -> VertexExtra {
+        VertexExtra::new([0.0; 2], [1.0; 4])
+    }
+}
+
+impl VertexExtra {
+    /// Its size in bytes, as the programs read it.
+    pub const SIZE: usize = 16;
+
+    /// Second texture coordinate `uv1` and color `color` (each channel
+    /// clamped to `[0, 1]`), packed.
+    pub fn new(uv1: [f32; 2], color: [f32; 4]) -> VertexExtra {
+        let unit = |c: f32| (c.clamp(0.0, 1.0) * 65535.0 + 0.5) as u32;
+        let pair = |a: f32, b: f32| unit(a) | unit(b) << 16;
+        VertexExtra {
+            uv1,
+            color: [pair(color[0], color[1]), pair(color[2], color[3])],
+        }
+    }
+
+    /// Its color.
+    pub fn rgba(&self) -> [f32; 4] {
+        let [a, b] = self.color;
+        [a & 0xffff, a >> 16, b & 0xffff, b >> 16].map(|c| c as f32 / 65535.0)
+    }
+
+    /// Its bytes, little-endian, in field order.
+    pub fn write_to(&self, out: &mut [u8]) {
+        let words = [self.uv1[0].to_bits(), self.uv1[1].to_bits()]
+            .into_iter()
+            .chain(self.color);
+        for (chunk, w) in out[..Self::SIZE]
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(words)
+        {
+            chunk.copy_from_slice(&w.to_le_bytes());
+        }
+    }
+
+    /// It, read back from `bytes` as [`write_to`](Self::write_to) wrote it.
+    pub fn read_from(bytes: &[u8]) -> VertexExtra {
+        let word = |i: usize| {
+            let c = &bytes[i * 4..i * 4 + 4];
+            u32::from_le_bytes([c[0], c[1], c[2], c[3]])
+        };
+        VertexExtra {
+            uv1: [f32::from_bits(word(0)), f32::from_bits(word(1))],
+            color: [word(2), word(3)],
+        }
+    }
+}
+
 /// `v` moved by its joints: the weighted sum of the palette's affines
 /// (`palette[3 j + r]` row `r` of joint `j`'s), applied to its position,
 /// its normal through the sum's cofactor (turned back out where the sum
@@ -424,8 +605,8 @@ pub struct MaterialUniforms {
     /// texture's blue and green.
     pub params: [f32; 4],
     /// The [`Shading`] code, the [`Alpha`] code, the alpha cutoff of a
-    /// masked material, and the [`MATERIAL_NORMAL_MAP`] and
-    /// [`MATERIAL_DOUBLE_SIDED`] flags.
+    /// masked material, and the [`MATERIAL_NORMAL_MAP`],
+    /// [`MATERIAL_DOUBLE_SIDED`] and [`MATERIAL_UV1`] flags.
     pub mode: [f32; 4],
 }
 
@@ -515,6 +696,11 @@ pub const MATERIAL_NORMAL_MAP: u32 = 1;
 /// [`MaterialUniforms::mode`]`[3]` flag: a back face is lit by its flipped
 /// normal.
 pub const MATERIAL_DOUBLE_SIDED: u32 = 2;
+/// [`MaterialUniforms::mode`]`[3]` flags: map `k` (base color,
+/// metallic-roughness, normal, occlusion, emission, in texture slot order)
+/// reads the second texture coordinate set where `MATERIAL_UV1 << k` is
+/// set. A mesh without one reads the first in its place.
+pub const MATERIAL_UV1: u32 = 4;
 
 /// The width of the environment atlas, uniform texture slot 5: the
 /// prefiltered radiance of every direction, an equirectangular map per
@@ -671,8 +857,8 @@ mod shade;
 pub use screen::{shade_ao, shade_ao_blur, shade_sky, sky_radiance};
 
 pub use shade::{
-    MeshFragment, SceneTextures, disc, env_atlas_uv, env_brdf, env_direction_uv, pack_depth,
-    sh_irradiance, shade_depth, shade_mesh, shadow_visibility, tonemap, unpack_depth,
+    MeshFragment, SceneTextures, disc, env_atlas_uv, env_brdf, env_direction_uv, faces_away,
+    pack_depth, sh_irradiance, shade_depth, shade_mesh, shadow_visibility, tonemap, unpack_depth,
 };
 
 #[inline]
@@ -772,6 +958,25 @@ mod tests {
             |s: InstanceSchema| s.attributes.iter().map(|a| a.format.size()).sum::<usize>();
         assert_eq!(schema_bytes(VERTEX_SCHEMA), SceneVertex::SIZE);
         assert_eq!(schema_bytes(INSTANCE_SCHEMA), SceneInstance::SIZE);
+        for program in SceneProgram::ALL {
+            assert_eq!(
+                schema_bytes(program.vertex_schema()),
+                program.vertex_size(),
+                "{program:?}"
+            );
+            assert_eq!(SceneProgram::of_variant(program as u32), Some(program));
+            assert_eq!(program.with_extra().skinned(), program.skinned());
+            assert_eq!(program.with_extra().casts(), program.casts());
+        }
+        let extra = VertexExtra::new([0.25, -2.0], [1.0, 0.5, 0.0, 2.0]);
+        let mut bytes = [0u8; VertexExtra::SIZE];
+        extra.write_to(&mut bytes);
+        let back = VertexExtra::read_from(&bytes);
+        assert_eq!(back, extra);
+        assert_eq!(back.uv1, [0.25, -2.0]);
+        let c = back.rgba();
+        assert!(c[0] == 1.0 && (c[1] - 0.5).abs() < 1e-4 && c[2] == 0.0 && c[3] == 1.0);
+        assert_eq!(VertexExtra::default().rgba(), [1.0; 4]);
     }
 
     /// A box scaled flat keeps its top face's normal pointing up.

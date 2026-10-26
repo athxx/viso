@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use viso_gpu::TextureId;
 use viso_gpu::scene::{
-    Alpha, MATERIAL_DOUBLE_SIDED, MATERIAL_NORMAL_MAP, MaterialUniforms, Shading,
+    Alpha, MATERIAL_DOUBLE_SIDED, MATERIAL_NORMAL_MAP, MATERIAL_UV1, MaterialUniforms, Shading,
 };
 use viso_gpu::{AddressMode, FilterMode, GpuBackend, SamplerDesc, TextureDesc, TextureFormat};
 use viso_math::Mat4;
@@ -15,7 +15,7 @@ use super::model::{
     AlphaMode, ModelAsset, ModelMaterial, ModelRig, ModelSkin, ModelTexture, Pose, TextureRef, Wrap,
 };
 use super::{LinearStraight, MaterialId, MeshId, SceneFrame, SceneInstance, SceneLane};
-use super::{MAX_JOINTS, SceneVertex, SkinnedVertex, premultiplied};
+use super::{MAX_JOINTS, SceneVertex, SkinnedVertex, VertexExtra, premultiplied};
 
 /// A model uploaded with [`Renderer::create_scene_model`]: what
 /// [`SceneFrame::push_model`] draws. Release it with
@@ -140,6 +140,7 @@ impl SceneModel {
         let mut primitives = Vec::new();
         let mut vertices = Vec::new();
         let mut skinned = Vec::new();
+        let mut extras = Vec::new();
         for mesh in &asset.meshes {
             let start = primitives.len() as u32;
             for p in &mesh.primitives {
@@ -159,6 +160,27 @@ impl SceneModel {
                     .material
                     .and_then(|m| materials.get(m as usize).copied())
                     .unwrap_or(default_material);
+                // The extras only where they change what is drawn: a color
+                // other than white, or a second set a map reads.
+                let reads_uv1 = !p.uvs1.is_empty()
+                    && p.material
+                        .and_then(|m| asset.materials.get(m as usize))
+                        .is_some_and(|m| {
+                            maps(m)
+                                .iter()
+                                .any(|(t, _)| t.is_some_and(|t| t.uv_set == 1))
+                        });
+                let colored = p.colors.iter().any(|&c| c != [1.0; 4]);
+                extras.clear();
+                if reads_uv1 || colored {
+                    extras.extend((0..p.positions.len()).map(|i| {
+                        VertexExtra::new(
+                            p.uvs1.get(i).or(p.uvs.get(i)).copied().unwrap_or([0.0; 2]),
+                            p.colors.get(i).copied().unwrap_or([1.0; 4]),
+                        )
+                    }));
+                }
+                let extra_bytes = extras.len() * VertexExtra::SIZE;
                 let mesh = if p.skinned() {
                     skinned.clear();
                     skinned.extend(
@@ -167,11 +189,23 @@ impl SceneModel {
                             .zip(p.joints.iter().zip(&p.weights))
                             .map(|(&v, (&j, &w))| SkinnedVertex::new(v, j, w)),
                     );
-                    bytes += (skinned.len() * SkinnedVertex::SIZE + p.indices.len() * 4) as u64;
-                    lane.create_skinned_mesh(backend, &skinned, &p.indices)
+                    bytes += (skinned.len() * SkinnedVertex::SIZE
+                        + extra_bytes
+                        + p.indices.len() * 4) as u64;
+                    if extras.is_empty() {
+                        lane.create_skinned_mesh(backend, &skinned, &p.indices)
+                    } else {
+                        lane.create_skinned_mesh_extra(backend, &skinned, &extras, &p.indices)
+                    }
                 } else {
-                    bytes += (vertices.len() * SceneVertex::SIZE + p.indices.len() * 4) as u64;
-                    lane.create_mesh(backend, &vertices, &p.indices)
+                    bytes += (vertices.len() * SceneVertex::SIZE
+                        + extra_bytes
+                        + p.indices.len() * 4) as u64;
+                    if extras.is_empty() {
+                        lane.create_mesh(backend, &vertices, &p.indices)
+                    } else {
+                        lane.create_mesh_extra(backend, &vertices, &extras, &p.indices)
+                    }
                 };
                 primitives.push(Primitive {
                     mesh,
@@ -278,6 +312,11 @@ fn uniforms(m: &ModelMaterial, normal_map: bool) -> MaterialUniforms {
     }
     if m.double_sided {
         flags |= MATERIAL_DOUBLE_SIDED;
+    }
+    for (k, (texture, _)) in maps(m).into_iter().enumerate() {
+        if texture.is_some_and(|t| t.uv_set == 1) {
+            flags |= MATERIAL_UV1 << k;
+        }
     }
     MaterialUniforms {
         base_color: m.base_color,

@@ -4,9 +4,9 @@
 //! images are embedded or fetched through a resolver, into:
 //!
 //! - its meshes, each a list of [`ModelPrimitive`]s: indexed triangles with
-//!   positions, normals (flat ones generated when the file has none), texture
-//!   coordinates, tangents, vertex colors, and the joints and weights of a
-//!   skinned one;
+//!   positions, normals (flat ones generated when the file has none), two
+//!   texture coordinate sets, tangents, vertex colors, and the joints and
+//!   weights of a skinned one;
 //! - its metallic-roughness [`ModelMaterial`]s and the textures and images
 //!   they sample, the images decoded to straight RGBA8;
 //! - its [`ModelRig`]: the node hierarchy of its default scene, its skins and
@@ -103,6 +103,9 @@ pub struct ModelPrimitive {
     pub normals: Vec<[f32; 3]>,
     /// The first texture coordinate set, `TEXCOORD_0`.
     pub uvs: Vec<[f32; 2]>,
+    /// The second, `TEXCOORD_1`: what a map whose [`TextureRef::uv_set`] is
+    /// 1 reads.
+    pub uvs1: Vec<[f32; 2]>,
     /// Unit tangents along `+u` with the bitangent's sign in `w`.
     pub tangents: Vec<[f32; 4]>,
     /// Linear RGBA vertex colors, `COLOR_0`.
@@ -129,6 +132,7 @@ impl ModelPrimitive {
         (self.positions.len() * 12
             + self.normals.len() * 12
             + self.uvs.len() * 8
+            + self.uvs1.len() * 8
             + self.tangents.len() * 16
             + self.colors.len() * 16
             + self.joints.len() * 8
@@ -153,6 +157,7 @@ pub enum AlphaMode {
 pub struct TextureRef {
     /// Into [`ModelAsset::textures`].
     pub texture: u32,
+    /// `TEXCOORD_0` or `TEXCOORD_1`; a later set reads the first.
     pub uv_set: u32,
 }
 

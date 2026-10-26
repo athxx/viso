@@ -1138,6 +1138,44 @@ static SCENE_SKINNED_ATTRS: &[IrField] = &[
     ),
 ];
 
+/// The attributes of a `viso_gpu_abi::scene::VertexExtra`, after a
+/// vertex's own: its second texture coordinate set and its color, four
+/// 16-bit fractions two to a word.
+macro_rules! scene_extra_attrs {
+    () => {
+        [
+            IrField::new("uv1", IrType::F32X2),
+            IrField::new(
+                "color",
+                IrType::Vector {
+                    scalar: ScalarType::U32,
+                    lanes: 2,
+                },
+            ),
+        ]
+    };
+}
+
+/// A scene mesh's vertex with its extra.
+static SCENE_EXTRA_ATTRS: &[IrField] = &{
+    let [uv1, color] = scene_extra_attrs!();
+    [
+        SCENE_ATTRS[0],
+        SCENE_ATTRS[1],
+        SCENE_ATTRS[2],
+        SCENE_ATTRS[3],
+        uv1,
+        color,
+    ]
+};
+
+/// A skinned scene mesh's vertex with its extra.
+static SCENE_EXTRA_SKINNED_ATTRS: &[IrField] = &{
+    let [uv1, color] = scene_extra_attrs!();
+    let a = SCENE_SKINNED_ATTRS;
+    [a[0], a[1], a[2], a[3], a[4], a[5], uv1, color]
+};
+
 /// A skinned draw's joint palette, `skin`: three rows of each joint's
 /// affine, `viso_gpu_abi::scene::MAX_JOINTS` joints.
 const SCENE_SKIN: IrBlock = IrBlock {
@@ -1201,6 +1239,19 @@ static SCENE_MESH_VARYINGS: &[Varying] = &[
     Varying::new("color", IrType::F32X4, " [[flat]]", ""),
 ];
 
+/// The mesh program's varyings over vertices with extras: the second
+/// texture coordinate set and the vertex color too.
+static SCENE_EXTRA_MESH_VARYINGS: &[Varying] = &[
+    Varying::new("position", IrType::F32X4, " [[position]]", ""),
+    Varying::new("world", IrType::F32X3, "", ""),
+    Varying::new("normal", IrType::F32X3, "", ""),
+    Varying::new("tangent", IrType::F32X4, "", ""),
+    Varying::new("uv", IrType::F32X2, "", ""),
+    Varying::new("color", IrType::F32X4, " [[flat]]", ""),
+    Varying::new("uv1", IrType::F32X2, "", ""),
+    Varying::new("vertex_color", IrType::F32X4, "", ""),
+];
+
 /// The mesh program's resources past the frame's: the material's block, its
 /// maps, the environment and the shadow atlas.
 static SCENE_MESH_BINDINGS: SceneBindings = SceneBindings {
@@ -1240,6 +1291,17 @@ static SCENE_DEPTH_VARYINGS: &[Varying] = &[
     Varying::new("uv", IrType::F32X2, "", ""),
     Varying::new("light_depth", IrType::F32, "", ""),
     Varying::new("tint_alpha", IrType::F32, " [[flat]]", ""),
+];
+
+/// The depth program's varyings over vertices with extras: the second
+/// texture coordinate set and the vertex color's alpha too.
+static SCENE_EXTRA_DEPTH_VARYINGS: &[Varying] = &[
+    Varying::new("position", IrType::F32X4, " [[position]]", ""),
+    Varying::new("uv", IrType::F32X2, "", ""),
+    Varying::new("light_depth", IrType::F32, "", ""),
+    Varying::new("tint_alpha", IrType::F32, " [[flat]]", ""),
+    Varying::new("uv1", IrType::F32X2, "", ""),
+    Varying::new("vertex_alpha", IrType::F32, "", ""),
 ];
 
 /// The depth program's resources past the frame's: the material's block
@@ -1400,7 +1462,7 @@ pub fn scene_skinned_ir() -> ShaderIr {
         &SCENE_SKINNED_MESH_BINDINGS,
         SCENE_SKINNED_VERTEX_BODY,
         SCENE_HELPERS,
-        SCENE_FRAGMENT_BODY,
+        SCENE_SKINNED_FRAGMENT_BODY,
     )
 }
 
@@ -1462,9 +1524,64 @@ pub fn scene_ao_blur_ir() -> ShaderIr {
     )
 }
 
+/// The mesh program over vertices that each carry a
+/// `viso_gpu_abi::scene::VertexExtra`
+/// (`viso_gpu_abi::scene::SceneProgram::ExtraMesh`): a second texture
+/// coordinate set the material's maps may read, and a color multiplying
+/// the base color.
+pub fn scene_extra_ir() -> ShaderIr {
+    scene_program(
+        SCENE_EXTRA_ATTRS,
+        SCENE_EXTRA_MESH_VARYINGS,
+        &SCENE_MESH_BINDINGS,
+        SCENE_EXTRA_VERTEX_BODY,
+        SCENE_HELPERS,
+        SCENE_EXTRA_FRAGMENT_BODY,
+    )
+}
+
+/// The depth program over vertices with extras
+/// (`viso_gpu_abi::scene::SceneProgram::ExtraDepth`).
+pub fn scene_extra_depth_ir() -> ShaderIr {
+    scene_program(
+        SCENE_EXTRA_ATTRS,
+        SCENE_EXTRA_DEPTH_VARYINGS,
+        &SCENE_DEPTH_BINDINGS,
+        SCENE_EXTRA_DEPTH_VERTEX_BODY,
+        "",
+        SCENE_EXTRA_DEPTH_FRAGMENT_BODY,
+    )
+}
+
+/// The skinned mesh program over vertices with extras
+/// (`viso_gpu_abi::scene::SceneProgram::ExtraSkinnedMesh`).
+pub fn scene_extra_skinned_ir() -> ShaderIr {
+    scene_program(
+        SCENE_EXTRA_SKINNED_ATTRS,
+        SCENE_EXTRA_MESH_VARYINGS,
+        &SCENE_SKINNED_MESH_BINDINGS,
+        SCENE_EXTRA_SKINNED_VERTEX_BODY,
+        SCENE_HELPERS,
+        SCENE_EXTRA_SKINNED_FRAGMENT_BODY,
+    )
+}
+
+/// The skinned depth program over vertices with extras
+/// (`viso_gpu_abi::scene::SceneProgram::ExtraSkinnedDepth`).
+pub fn scene_extra_skinned_depth_ir() -> ShaderIr {
+    scene_program(
+        SCENE_EXTRA_SKINNED_ATTRS,
+        SCENE_EXTRA_DEPTH_VARYINGS,
+        &SCENE_SKINNED_DEPTH_BINDINGS,
+        SCENE_EXTRA_SKINNED_DEPTH_VERTEX_BODY,
+        "",
+        SCENE_EXTRA_DEPTH_FRAGMENT_BODY,
+    )
+}
+
 /// The scene lane's programs past its mesh program (the [`PrimitiveKind::Scene`]
 /// built-in), in `viso_gpu_abi::scene::SceneProgram` order from code 1.
-pub fn scene_program_irs() -> [ShaderIr; 6] {
+pub fn scene_program_irs() -> [ShaderIr; 10] {
     [
         scene_depth_ir(),
         scene_skinned_ir(),
@@ -1472,6 +1589,10 @@ pub fn scene_program_irs() -> [ShaderIr; 6] {
         scene_sky_ir(),
         scene_ao_ir(),
         scene_ao_blur_ir(),
+        scene_extra_ir(),
+        scene_extra_depth_ir(),
+        scene_extra_skinned_ir(),
+        scene_extra_skinned_depth_ir(),
     ]
 }
 
@@ -2821,7 +2942,7 @@ out.normal = (cross(c1, c2) * n.x + cross(c2, c0) * n.y + cross(c0, c1) * n.z) *
 out.tangent = float4(c0 * t.x + c1 * t.y + c2 * t.z, t.w * side);
 out.uv = float2(v.uv);
 out.color = float4(inst.color);
-return out;"
+"
     };
 }
 
@@ -2842,14 +2963,65 @@ out.uv = float2(v.uv);
 // Reversed depth: the clip depth falls away from the light.
 out.light_depth = 1.0 - clip.z / clip.w;
 out.tint_alpha = float4(inst.color).w;
-return out;"
+"
     };
 }
 
-const SCENE_VERTEX_BODY: &str = concat!(scene_vertex_head!(), scene_mesh_tail!());
-const SCENE_SKINNED_VERTEX_BODY: &str = concat!(scene_skinned_head!(), scene_mesh_tail!());
-const SCENE_DEPTH_VERTEX_BODY: &str = concat!(scene_vertex_head!(), scene_depth_tail!());
-const SCENE_SKINNED_DEPTH_VERTEX_BODY: &str = concat!(scene_skinned_head!(), scene_depth_tail!());
+/// The mesh program's varyings of a vertex's extra: its second texture
+/// coordinate set and its color, unpacked.
+macro_rules! scene_mesh_extra {
+    () => {
+        "\
+out.uv1 = float2(v.uv1);
+uint2 cp = v.color;
+out.vertex_color = float4(float(cp.x & 65535u), float(cp.x >> 16u), float(cp.y & 65535u),
+    float(cp.y >> 16u)) / 65535.0;
+"
+    };
+}
+
+/// The depth program's varyings of a vertex's extra: its second texture
+/// coordinate set and its color's alpha.
+macro_rules! scene_depth_extra {
+    () => {
+        "\
+out.uv1 = float2(v.uv1);
+out.vertex_alpha = float(v.color.y >> 16u) / 65535.0;
+"
+    };
+}
+
+const SCENE_VERTEX_BODY: &str = concat!(scene_vertex_head!(), scene_mesh_tail!(), "return out;");
+const SCENE_SKINNED_VERTEX_BODY: &str =
+    concat!(scene_skinned_head!(), scene_mesh_tail!(), "return out;");
+const SCENE_DEPTH_VERTEX_BODY: &str =
+    concat!(scene_vertex_head!(), scene_depth_tail!(), "return out;");
+const SCENE_SKINNED_DEPTH_VERTEX_BODY: &str =
+    concat!(scene_skinned_head!(), scene_depth_tail!(), "return out;");
+const SCENE_EXTRA_VERTEX_BODY: &str = concat!(
+    scene_vertex_head!(),
+    scene_mesh_tail!(),
+    scene_mesh_extra!(),
+    "return out;"
+);
+const SCENE_EXTRA_SKINNED_VERTEX_BODY: &str = concat!(
+    scene_skinned_head!(),
+    scene_mesh_tail!(),
+    scene_mesh_extra!(),
+    "return out;"
+);
+const SCENE_EXTRA_DEPTH_VERTEX_BODY: &str = concat!(
+    scene_vertex_head!(),
+    scene_depth_tail!(),
+    scene_depth_extra!(),
+    "return out;"
+);
+const SCENE_EXTRA_SKINNED_DEPTH_VERTEX_BODY: &str = concat!(
+    scene_skinned_head!(),
+    scene_depth_tail!(),
+    scene_depth_extra!(),
+    "return out;"
+);
 
 /// A screen program's vertex body: the vertex's position is its clip-space
 /// `x` and `y`, at the far plane; its instance is unread.
@@ -3084,6 +3256,12 @@ for (int k = 0; k < 9; ++k) {
 return float4(sum / max(weight, 0.0001), c.y, c.z, 1.0);";
 
 const SCENE_HELPERS: &str = "\
+// The first texture coordinate set, or the second where the material's
+// `bits` set `flag`.
+static inline float2 uv_set(uint bits, uint flag, float2 first, float2 second) {
+    return (bits & flag) != 0u ? second : first;
+}
+
 // The GGX distribution of microfacet normals at `nh`, for roughness squared
 // squared `a2`.
 static inline float ggx(float nh, float a2) {
@@ -3157,17 +3335,78 @@ static inline float3 tonemap(float3 c) {
     return d + (float3(new_peak) - d) * g;
 }";
 
-const SCENE_FRAGMENT_BODY: &str = "\
+/// The mesh program's fragment over vertices without extras: the first
+/// texture coordinate set in the second's place, a white vertex color.
+macro_rules! scene_fragment_plain {
+    () => {
+        "\
+float2 uv1 = in.uv;
+float4 vertex_color = float4(1.0);
+"
+    };
+}
+
+/// The mesh program's fragment over vertices with extras.
+macro_rules! scene_fragment_extra {
+    () => {
+        "\
+float2 uv1 = in.uv1;
+float4 vertex_color = in.vertex_color;
+"
+    };
+}
+
+/// The derivatives every sample selects its detail by, taken before any
+/// fragment of the quad leaves, and the material's mode.
+macro_rules! scene_fragment_head {
+    () => {
+        "\
 // The derivatives every sample selects its detail by, taken before any
 // fragment of the quad leaves.
 float2 uv_dx = dfdx(in.uv);
 float2 uv_dy = dfdy(in.uv);
+float2 uv1_dx = dfdx(uv1);
+float2 uv1_dy = dfdy(uv1);
 float3 n_geom = normalize(in.normal);
 float3 n_dx = dfdx(n_geom);
 float3 n_dy = dfdy(n_geom);
 
 float4 mode = float4(material.mode);
-float4 base = base_tex.sample(material_samp, in.uv, gradient2d(uv_dx, uv_dy)) * float4(material.base_color);
+uint bits = uint(mode.w);
+"
+    };
+}
+
+/// A skinned fragment of a one-sided material on the back of its triangle
+/// discarded: its outward normal points away from the side of the
+/// triangle's plane the camera is on. Its joints may mirror some triangles
+/// and not others, so no pipeline culls them by their winding.
+macro_rules! scene_fragment_face_test {
+    () => {
+        "\
+float3 world_dx = dfdx(in.world);
+float3 world_dy = dfdy(in.world);
+if ((bits & 2u) == 0u) {
+    float3 face = cross(world_dx, world_dy);
+    if (dot(face, float4(u.camera).xyz - in.world) < 0.0) {
+        face = -face;
+    }
+    if (dot(in.normal, face) < 0.0) {
+        discard_fragment();
+        return float4(0.0);
+    }
+}
+"
+    };
+}
+
+/// The rest of the mesh program's fragment.
+macro_rules! scene_fragment_rest {
+    () => {
+        "\
+float4 base = base_tex.sample(material_samp, uv_set(bits, 4u, in.uv, uv1),
+    gradient2d(uv_set(bits, 4u, uv_dx, uv1_dx), uv_set(bits, 4u, uv_dy, uv1_dy)))
+    * float4(material.base_color) * vertex_color;
 float tint_a = in.color.a;
 if (tint_a <= 0.0) {
     discard_fragment();
@@ -3199,7 +3438,6 @@ if (mode.x > 1.5) {
     }
 } else if (mode.x < 0.5) {
     float3 v = to_eye / max(distance, 0.000001);
-    uint bits = uint(mode.w);
     float side = 1.0;
     if ((bits & 2u) != 0u && dot(n_geom, v) < 0.0) {
         side = -1.0;
@@ -3207,7 +3445,8 @@ if (mode.x > 1.5) {
     float3 n = n_geom * side;
     float4 params = float4(material.params);
     if ((bits & 1u) != 0u) {
-        float4 m = normal_tex.sample(material_samp, in.uv, gradient2d(uv_dx, uv_dy));
+        float4 m = normal_tex.sample(material_samp, uv_set(bits, 16u, in.uv, uv1),
+            gradient2d(uv_set(bits, 16u, uv_dx, uv1_dx), uv_set(bits, 16u, uv_dy, uv1_dy)));
         float3 tn = float3((m.x * 2.0 - 1.0) * params.z, (m.y * 2.0 - 1.0) * params.z, m.z * 2.0 - 1.0);
         float3 t = in.tangent.xyz * side;
         t = t - n * dot(n, t);
@@ -3218,7 +3457,8 @@ if (mode.x > 1.5) {
             n = normalize(t * tn.x + b * tn.y + n * tn.z);
         }
     }
-    float4 mr = mr_tex.sample(material_samp, in.uv, gradient2d(uv_dx, uv_dy));
+    float4 mr = mr_tex.sample(material_samp, uv_set(bits, 8u, in.uv, uv1),
+        gradient2d(uv_set(bits, 8u, uv_dx, uv1_dx), uv_set(bits, 8u, uv_dy, uv1_dy)));
     float metallic = clamp(params.x * mr.z, 0.0, 1.0);
     float roughness = clamp(params.y * mr.y, 0.045, 1.0);
     // The occlusion map's, and the view's ambient occlusion where this
@@ -3226,9 +3466,12 @@ if (mode.x > 1.5) {
     float4 occ_params = float4(u.occlusion);
     float screen_ao = ao_tex.sample(linear_samp, float2(in.position.x * occ_params.y, in.position.y * occ_params.z),
         gradient2d(float2(0.0), float2(0.0))).x;
-    float occlusion = (1.0 + params.w * (occlusion_tex.sample(material_samp, in.uv, gradient2d(uv_dx, uv_dy)).x - 1.0))
+    float occlusion = (1.0 + params.w * (occlusion_tex.sample(material_samp, uv_set(bits, 32u, in.uv, uv1),
+        gradient2d(uv_set(bits, 32u, uv_dx, uv1_dx), uv_set(bits, 32u, uv_dy, uv1_dy))).x - 1.0))
         * (1.0 - occ_params.x * (1.0 - screen_ao));
-    float3 emissive = emissive_tex.sample(material_samp, in.uv, gradient2d(uv_dx, uv_dy)).xyz * float4(material.emissive).xyz;
+    float3 emissive = emissive_tex.sample(material_samp, uv_set(bits, 64u, in.uv, uv1),
+        gradient2d(uv_set(bits, 64u, uv_dx, uv1_dx), uv_set(bits, 64u, uv_dy, uv1_dy))).xyz
+        * float4(material.emissive).xyz;
 
     float3 f0 = float3(0.04) + (c - float3(0.04)) * metallic;
     float3 albedo = c * (1.0 - metallic);
@@ -3347,19 +3590,47 @@ float fog = 1.0 - exp(-fog_color.w * max(distance - float4(u.ambient).z, 0.0));
 c = c + (fog_color.xyz - c) * fog;
 
 // Premultiplied linear light: the target's sRGB format encodes it.
-return float4(clamp(c, 0.0, 1.0) * a, a);";
+return float4(clamp(c, 0.0, 1.0) * a, a);"
+    };
+}
 
-const SCENE_DEPTH_FRAGMENT_BODY: &str = "\
-float2 uv_dx = dfdx(in.uv);
-float2 uv_dy = dfdy(in.uv);
-float4 mode = float4(material.mode);
+const SCENE_FRAGMENT_BODY: &str = concat!(
+    scene_fragment_plain!(),
+    scene_fragment_head!(),
+    scene_fragment_rest!()
+);
+const SCENE_SKINNED_FRAGMENT_BODY: &str = concat!(
+    scene_fragment_plain!(),
+    scene_fragment_head!(),
+    scene_fragment_face_test!(),
+    scene_fragment_rest!()
+);
+const SCENE_EXTRA_FRAGMENT_BODY: &str = concat!(
+    scene_fragment_extra!(),
+    scene_fragment_head!(),
+    scene_fragment_rest!()
+);
+const SCENE_EXTRA_SKINNED_FRAGMENT_BODY: &str = concat!(
+    scene_fragment_extra!(),
+    scene_fragment_head!(),
+    scene_fragment_face_test!(),
+    scene_fragment_rest!()
+);
+
+/// The depth program's fragment, from the base color map's texture
+/// coordinate `uv_b` and the vertex color's alpha `vertex_alpha`.
+macro_rules! scene_depth_fragment {
+    () => {
+        "\
+float2 uv_dx = dfdx(uv_b);
+float2 uv_dy = dfdy(uv_b);
 if (in.tint_alpha <= 0.0) {
     discard_fragment();
     return float4(0.0);
 }
 if (mode.y > 0.5 && mode.y < 1.5) {
-    float a = base_tex.sample(material_samp, in.uv, gradient2d(uv_dx, uv_dy)).w
-        * float4(material.base_color).w * in.tint_alpha;
+    float a = base_tex.sample(material_samp, uv_b, gradient2d(uv_dx, uv_dy)).w
+        * float4(material.base_color).w * vertex_alpha * in.tint_alpha;
     if (a < mode.z) {
         discard_fragment();
         return float4(0.0);
@@ -3372,7 +3643,26 @@ float hi = floor(d * (1.0 / 65536.0));
 float rest = d - hi * 65536.0;
 float mid = floor(rest * (1.0 / 256.0));
 float lo = rest - mid * 256.0;
-return float4(hi, mid, lo, 255.0) / 255.0;";
+return float4(hi, mid, lo, 255.0) / 255.0;"
+    };
+}
+
+const SCENE_DEPTH_FRAGMENT_BODY: &str = concat!(
+    "\
+float4 mode = float4(material.mode);
+float2 uv_b = in.uv;
+float vertex_alpha = 1.0;
+",
+    scene_depth_fragment!()
+);
+const SCENE_EXTRA_DEPTH_FRAGMENT_BODY: &str = concat!(
+    "\
+float4 mode = float4(material.mode);
+float2 uv_b = (uint(mode.w) & 4u) != 0u ? in.uv1 : in.uv;
+float vertex_alpha = in.vertex_alpha;
+",
+    scene_depth_fragment!()
+);
 
 const GRADIENT_VERTEX_BODY: &str = "\
 InstanceIn inst = instances[iid];

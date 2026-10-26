@@ -668,8 +668,13 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
   data/relative URIs, sparse/quantized accessors, generated flat normals and tangents,
   step/linear/cubic animation, pose solve, joint matrices); `AssetKind::Model` decoded on
   the asset worker and made resident per window (`NodeStore::scene_model`,
-  `SceneFrame::push_model`). Verified: unit tests incl. hostile inputs, the six Khronos
-  samples decode, a facade residency test, and models drawn on the CPU raster.
+  `SceneFrame::push_model`). `COLOR_0` multiplies the base color and `TEXCOORD_1` feeds
+  any map naming `texCoord: 1`, through a 16 B `VertexExtra` only meshes that need it
+  carry (`create_scene_mesh_extra`, the `Extra*` programs; plain meshes stay 48 B).
+  Verified: unit tests incl. hostile inputs, the six Khronos samples decode, a facade
+  residency test, models drawn on the CPU raster; VertexColorTest, BoxVertexColors,
+  MultiUVTest and synthetic color / second-set squares (skinned too) drawn alike on the CPU
+  raster and Metal.
 - [x] PBR metallic-roughness material with image-based ambient. — `Material` /
   `create_scene_material` / `SceneFrame::push_with`; glTF materials with all five maps
   (mip chains built on the asset worker, `create_texture_mipped`); GGX + Smith + Schlick
@@ -687,8 +692,11 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
   `Renderer::create_scene_skinned_mesh` + `SceneFrame::push_skinned(mesh, material,
   instance, &joints, bounds)`, palette of up to 256 joints in the third uniform block,
   `SceneProgram::SkinnedMesh` / `SkinnedDepth` skin on the GPU (casting skinned shadows
-  too); `push_model` poses glTF skins, `SceneModel::bounds(&pose)`. Verified: CPU + Metal +
-  translated WGSL draw the same skinned scene, GLSL ES / HLSL compile, lane test, CesiumMan / Fox.
+  too); `push_model` poses glTF skins, `SceneModel::bounds(&pose)`. A palette whose joints
+  mirror culls front faces for the draw; joints mirroring some triangles and not others
+  draw unculled while the skinned programs discard back-facing fragments. Verified: CPU +
+  Metal + translated WGSL draw the same skinned scene, GLSL ES / HLSL compile, lane tests
+  (mirrored and mixed palettes, CPU and Metal), CesiumMan / Fox.
 - [x] SSAO and sky. — `SceneFrame::sky: Option<Sky>` draws a Preetham daylight sky (with
   night / twilight fade and sun disc) behind opaque meshes, `Environment::from_sky` lights the
   frame by it, `Lighting::sunlit(&sky)` gives the sun's direct light. `Lighting::occlusion:
@@ -734,9 +742,13 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
     adds an `LspClient` speaking JSON-RPC to a server over its pipes, negotiating UTF-8
     columns, sending full or incremental changes from a writer thread and answering the
     server's own requests; the widget shows a fuzzy-filtered completion list, squiggles,
-    a hover box on a resting pointer and jumps to definitions; tests drive a fake service
+    a hover box on a resting pointer and jumps to definitions; the session keeps the
+    service, its edit log and its diagnostics wait, so a view built again into the same
+    slot shows the same session with what the server reported, a report on its way
+    included; tests drive a fake service
     through the facade, `viso-lsp` over in-process pipes (diagnostics, hover, definition,
-    an edit clearing an error, and squiggles in the widget) and rust-analyzer when
+    an edit clearing an error, and squiggles in the widget kept across rebuilds on one
+    shared client) and rust-analyzer when
     installed (UTF-8, hover, inlay hint, completions and a definition after incremental
     edits); `examples/code-editor` edits a `.vs` file with `viso-lsp`, checked in a
     headless run's snapshots (highlighting, gutter, find matches, a caret and a squiggle
