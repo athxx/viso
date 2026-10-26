@@ -549,11 +549,10 @@ pub mod __test_support {
             self.driver.windows[0].text_entry
         }
 
-        /// How much each layer recomputed on the first window's most recent
-        /// frame. A pure TRANSFORM animation frame has `laid_out == 0` yet
         /// The launch window's last frame as the software raster drew it:
         /// its size in device pixels and its BGRA bytes; `None` without a
         /// surface.
+        #[cfg(feature = "headless")]
         pub fn pixels(&self) -> Option<(u32, u32, Vec<u8>)> {
             let gpu = self.driver.windows[0].gpu.as_ref()?;
             let surface = gpu.surface?;
@@ -561,6 +560,8 @@ pub mod __test_support {
             Some((w, h, gpu.backend.read_pixels_bgra8(surface)))
         }
 
+        /// How much each layer recomputed on the first window's most recent
+        /// frame. A pure TRANSFORM animation frame has `laid_out == 0` yet
         /// `painted > 0` — the observable proof that world moved without a
         /// relayout.
         pub fn recompute(&self) -> super::FrameRecompute {
