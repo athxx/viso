@@ -29,19 +29,17 @@
 //! ```
 //! use std::cell::RefCell;
 //! use std::rc::Rc;
-//! use viso_widgets::{NavHandleSlot, navigation_stack};
+//! use viso_widgets::navigation_stack;
 //! use viso_ui::{SemanticProjector, BuildCx, BindingTable, Component, LeafStyle, NodeStore, StateStore, TextEdits, VirtualLists};
 //! use viso_ui::{BoxStyle, Sizing};
 //!
-//! let handle: NavHandleSlot = Rc::new(RefCell::new(None));
 //! let control = navigation_stack()
 //!     .page(|cx| { cx.leaf(LeafStyle { size: Sizing::fill(), style: BoxStyle::NONE }); })
 //!     .page(|cx| { cx.leaf(LeafStyle { size: Sizing::fill(), style: BoxStyle::NONE }); })
 //!     .on_navigate(|_ev, depth| {
 //!         // handle the newly-visible page depth
 //!         let _ = depth;
-//!     })
-//!     .handle(&handle);
+//!     });
 //!
 //! // NavigationStack authors reactive state, so it builds through a reactive cx.
 //! let mut store = NodeStore::new();
@@ -51,16 +49,17 @@
 //! let mut text_edits = TextEdits::new();
 //! let mut projectors = SemanticProjector::new();
 //! let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists, &mut text_edits, &mut projectors);
-//! control.build(&mut cx);
-//! // `handle` is now filled; the app can `handle.borrow().clone().unwrap().push(ev)` from a page.
+//! let handle = control.build(&mut cx);
+//! // A handler calls the handle's methods; `handle` is `Copy`.
 //! ```
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use viso_ui::{
-    Align, Axis, BoxStyle, BuildCx, Component, DirtyClass, EventCx, FlexStyle, Inset, Justify, Key,
-    Length, NodeId, PageTransition, Role, Semantics, Sizing, StackStyle, StateId, StateValue,
+    Align, Axis, BoxStyle, BuildCx, Component, Controls, DirtyClass, EventCx, FlexStyle, Inset,
+    Justify, Key, Length, NodeId, PageTransition, Role, Semantics, Sizing, StackStyle, StateId,
+    StateValue,
 };
 
 /// A shared, mutable navigation callback carrying the new stack depth (the index
@@ -75,22 +74,42 @@ type SharedNavigate = Rc<RefCell<Option<Box<dyn FnMut(&mut EventCx<'_>, usize)>>
 /// stack; boxed so a `NavigationStack` can hold a heterogeneous list of closures.
 type PageBuilder = Box<dyn Fn(&mut BuildCx<'_>)>;
 
-/// A shared slot an application creates, passes to
-/// [`NavigationStack::handle`], and reads after `build` to obtain the control's
-/// [`NavHandle`]. The `depth` cell and the stack's id are minted inside `build`,
-/// so the handle cannot be returned by the builder chain; the app supplies this
-/// slot up front and `build` fills it once the ids exist. Written once during
-/// build, read once after.
-pub type NavHandleSlot = Rc<RefCell<Option<NavHandle>>>;
+viso_ui::control_handle! {
+    /// A handle an application captures to drive a built [`NavigationStack`]
+    /// programmatically. Call [`NavHandle::push`] to reveal the next page and [`NavHandle::pop`] to return to
+    /// the previous one — both from within an [`EventCx`] (an event handler), since a
+    /// navigation defers a turn the router applies. A push past the last page
+    /// or a pop below the first is a clamped no-op.
+    ///
+    /// `Copy`, an id alone: `build` returns it, or mint one first with
+    /// [`BuildCx::handle`](viso_ui::BuildCx::handle) for closures declared
+    /// before the control. Once the control is gone, every call is a no-op.
+    pub struct NavHandle;
+}
 
-/// A handle an application captures to drive a built [`NavigationStack`]
-/// programmatically. Cheap to clone (it holds only ids and shared cells). Call
-/// [`NavHandle::push`] to reveal the next page and [`NavHandle::pop`] to return to
-/// the previous one — both from within an [`EventCx`] (an event handler), since a
-/// navigation defers a turn the router applies. A push past the last page
-/// or a pop below the first is a clamped no-op.
+impl NavHandle {
+    /// Push to the next page: reveal page `depth + 1`, hide the current top, and
+    /// fire `on_navigate` with the new depth. A push past the last page is a
+    /// clamped no-op. Call from within an event handler.
+    pub fn push(self, ev: &mut EventCx<'_>) {
+        if let Some(parts) = ev.control::<NavParts>(self.0) {
+            parts.push(ev);
+        }
+    }
+
+    /// Pop to the previous page: reveal page `depth - 1`, hide the current top, and
+    /// fire `on_navigate` with the new depth. A pop below the first page is a
+    /// clamped no-op. Call from within an event handler.
+    pub fn pop(self, ev: &mut EventCx<'_>) {
+        if let Some(parts) = ev.control::<NavParts>(self.0) {
+            parts.pop(ev);
+        }
+    }
+}
+
+/// What a built control's handlers and its [`NavHandle`] share.
 #[derive(Clone)]
-pub struct NavHandle {
+struct NavParts {
     /// The reactive cell holding the current top-page index.
     depth: StateId,
     /// The paged stack.
@@ -103,7 +122,7 @@ pub struct NavHandle {
     transition: PageTransition,
 }
 
-impl NavHandle {
+impl NavParts {
     /// Push to the next page: reveal page `depth + 1`, hide the current top, and
     /// fire `on_navigate` with the new depth. A push past the last page is a
     /// clamped no-op. Call from within an event handler.
@@ -183,9 +202,8 @@ pub struct NavigationStack {
     /// [`NavigationStack::on_navigate`] is called; a control with no handler still
     /// navigates, just without notifying anyone.
     on_navigate: SharedNavigate,
-    /// The app-supplied slot `build` fills with the control's [`NavHandle`], or an
-    /// unshared throwaway slot when the app did not ask for one.
-    handle_slot: NavHandleSlot,
+    /// The handle `build` binds, when the app minted one up front.
+    handle: Option<NavHandle>,
 }
 
 /// Construct an empty [`NavigationStack`] with no pages and no handler yet. Chain
@@ -197,7 +215,7 @@ pub fn navigation_stack() -> NavigationStack {
         pages: Vec::new(),
         style: NavigationStackStyle::default(),
         on_navigate: Rc::new(RefCell::new(None)),
-        handle_slot: Rc::new(RefCell::new(None)),
+        handle: None,
     }
 }
 
@@ -235,15 +253,18 @@ impl NavigationStack {
         self
     }
 
-    /// Register an app-supplied [`NavHandleSlot`] for programmatic push/pop. During
-    /// [`build`](Component::build) the control fills the slot with a [`NavHandle`]
-    /// bound to the just-minted `depth` cell and page ids; the app reads the slot
-    /// after building and clones the handle into a page's controls. Storing the
-    /// destination this way (rather than returning it) lets `build` fill it once
-    /// the ids exist.
-    pub fn handle(mut self, slot: &NavHandleSlot) -> Self {
-        self.handle_slot = slot.clone();
+    /// Bind `handle`, minted with [`BuildCx::handle`](viso_ui::BuildCx::handle)
+    /// before the control is built, so closures declared earlier can drive it.
+    pub fn handle(mut self, handle: NavHandle) -> Self {
+        self.handle = Some(handle);
         self
+    }
+
+    /// Build the control into `cx` and return its handle.
+    pub fn build(mut self, cx: &mut BuildCx<'_>) -> NavHandle {
+        let handle = *self.handle.get_or_insert_with(|| cx.handle());
+        Component::build(&self, cx);
+        handle
     }
 }
 
@@ -366,15 +387,20 @@ impl Component for NavigationStack {
         cx.bind(depth, root, DirtyClass::PAINT);
         cx.semantics(root, Semantics::role(Role::Navigation));
 
-        // Fill the app-supplied handle slot (if any) with a handle bound to the
-        // just-minted cell and stack, so the app can push/pop programmatically.
-        *self.handle_slot.borrow_mut() = Some(NavHandle {
-            depth,
-            stack,
-            pages,
-            on_navigate: self.on_navigate.clone(),
-            transition,
-        });
+        // Bind the app's handle, if any, to the parts; the root keeps them.
+        if let Some(handle) = self.handle {
+            cx.bind_control(
+                handle.0,
+                root.id(),
+                Rc::new(NavParts {
+                    depth,
+                    stack,
+                    pages,
+                    on_navigate: self.on_navigate.clone(),
+                    transition,
+                }),
+            );
+        }
     }
 }
 
@@ -517,7 +543,7 @@ mod tests {
 
     /// A three-page stack with an app-captured handle, for the common test
     /// shape: its pages trade places at once.
-    fn three_pages(slot: &NavHandleSlot) -> NavigationStack {
+    fn three_pages(slot: NavHandle) -> NavigationStack {
         navigation_stack()
             .page(leaf_page)
             .page(leaf_page)
@@ -530,9 +556,9 @@ mod tests {
     /// rest folded out by the paged stack.
     #[test]
     fn all_pages_build_and_only_the_root_is_shown() {
-        let slot: NavHandleSlot = Rc::new(RefCell::new(None));
         let mut rx = Reactive::new();
-        let root = rx.build(three_pages(&slot));
+        let slot: NavHandle = rx.states.handle();
+        let root = rx.build(three_pages(slot));
 
         let pages = children(&rx.store, root);
         assert_eq!(pages.len(), 3, "every page builds once");
@@ -545,9 +571,9 @@ mod tests {
     /// `Group`.
     #[test]
     fn stack_root_is_focusable_navigation_over_group_pages() {
-        let slot: NavHandleSlot = Rc::new(RefCell::new(None));
         let mut rx = Reactive::new();
-        let root = rx.build(three_pages(&slot));
+        let slot: NavHandle = rx.states.handle();
+        let root = rx.build(three_pages(slot));
 
         assert_eq!(
             rx.store.semantics(root).expect("root has semantics").role,
@@ -578,14 +604,14 @@ mod tests {
         let last = Rc::new(Cell::new(None::<usize>));
         let (c, l) = (count.clone(), last.clone());
 
-        let slot: NavHandleSlot = Rc::new(RefCell::new(None));
         let mut rx = Reactive::new();
+        let slot: NavHandle = rx.states.handle();
         let root = rx.build(
             navigation_stack()
                 .page(leaf_page)
                 .page(leaf_page)
                 .transition(PageTransition::None)
-                .handle(&slot)
+                .handle(slot)
                 .on_navigate(move |_ev, depth| {
                     l.set(Some(depth));
                     c.set(c.get() + 1);
@@ -593,10 +619,10 @@ mod tests {
         );
         let cell = depth_cell();
         let pages = children(&rx.store, root);
-        let nav = slot.borrow().clone().expect("build fills the handle slot");
+        let nav = slot;
 
         // Push from the root reveals page 1.
-        let n = nav.clone();
+        let n = nav;
         rx.drive(|ev| n.push(ev));
         assert_eq!(rx.depth(cell), Some(1), "push moves the depth cell to 1");
         assert_eq!(count.get(), 1, "push fires on_navigate once");
@@ -605,7 +631,7 @@ mod tests {
         assert!(!rx.store.hidden(pages[1]), "the new top is now shown");
 
         // A push past the last page is a clamped no-op.
-        let n = nav.clone();
+        let n = nav;
         rx.drive(|ev| n.push(ev));
         assert_eq!(rx.depth(cell), Some(1), "push past the top is a no-op");
         assert_eq!(count.get(), 1, "and does not fire again");
@@ -615,33 +641,33 @@ mod tests {
     /// clamped no-op.
     #[test]
     fn handle_pop_returns_and_clamps_at_the_root() {
-        let slot: NavHandleSlot = Rc::new(RefCell::new(None));
         let mut rx = Reactive::new();
-        let root = rx.build(three_pages(&slot));
+        let slot: NavHandle = rx.states.handle();
+        let root = rx.build(three_pages(slot));
         let cell = depth_cell();
         let pages = children(&rx.store, root);
-        let nav = slot.borrow().clone().expect("build fills the handle slot");
+        let nav = slot;
 
         // Push twice to the top of the three-page stack.
-        let n = nav.clone();
+        let n = nav;
         rx.drive(|ev| n.push(ev));
-        let n = nav.clone();
+        let n = nav;
         rx.drive(|ev| n.push(ev));
         assert_eq!(rx.depth(cell), Some(2), "two pushes reach the top page");
         assert!(!rx.store.hidden(pages[2]), "the top page is shown");
 
         // Pop returns to page 1.
-        let n = nav.clone();
+        let n = nav;
         rx.drive(|ev| n.pop(ev));
         assert_eq!(rx.depth(cell), Some(1), "pop returns to page 1");
         assert!(rx.store.hidden(pages[2]), "the popped page is hidden");
         assert!(!rx.store.hidden(pages[1]), "the revealed page is shown");
 
         // Pop again to the root, then a pop below the root is a clamped no-op.
-        let n = nav.clone();
+        let n = nav;
         rx.drive(|ev| n.pop(ev));
         assert_eq!(rx.depth(cell), Some(0), "pop returns to the root");
-        let n = nav.clone();
+        let n = nav;
         rx.drive(|ev| n.pop(ev));
         assert_eq!(rx.depth(cell), Some(0), "pop below the root is a no-op");
     }
@@ -653,17 +679,17 @@ mod tests {
         let count = Rc::new(Cell::new(0u32));
         let c = count.clone();
 
-        let slot: NavHandleSlot = Rc::new(RefCell::new(None));
         let mut rx = Reactive::new();
-        let root = rx.build(three_pages(&slot).on_navigate(move |_ev, _depth| {
+        let slot: NavHandle = rx.states.handle();
+        let root = rx.build(three_pages(slot).on_navigate(move |_ev, _depth| {
             c.set(c.get() + 1);
         }));
         let cell = depth_cell();
         let pages = children(&rx.store, root);
-        let nav = slot.borrow().clone().expect("build fills the handle slot");
+        let nav = slot;
 
         // Push to page 2, then Escape pops to page 1.
-        let n = nav.clone();
+        let n = nav;
         rx.drive(|ev| n.push(ev));
         let before = count.get();
         rx.key(root, key_ev(Key::Escape, true, false));
@@ -676,7 +702,7 @@ mod tests {
         assert!(!rx.store.hidden(pages[0]), "the root page is shown again");
 
         // Auto-repeat and key-up do not pop.
-        let n = nav.clone();
+        let n = nav;
         rx.drive(|ev| n.push(ev)); // back to page 1
         let before = count.get();
         rx.key(root, key_ev(Key::Escape, true, true)); // repeat: ignored
@@ -703,14 +729,14 @@ mod tests {
     /// not panic and the back gesture is a no-op on the callback.
     #[test]
     fn handlerless_stack_still_navigates() {
-        let slot: NavHandleSlot = Rc::new(RefCell::new(None));
         let mut rx = Reactive::new();
-        let root = rx.build(three_pages(&slot));
+        let slot: NavHandle = rx.states.handle();
+        let root = rx.build(three_pages(slot));
         let cell = depth_cell();
         let pages = children(&rx.store, root);
-        let nav = slot.borrow().clone().expect("build fills the handle slot");
+        let nav = slot;
 
-        let n = nav.clone();
+        let n = nav;
         rx.drive(|ev| n.push(ev));
         assert_eq!(
             rx.depth(cell),
@@ -724,15 +750,15 @@ mod tests {
     /// the stack clips them and the leaving page takes no pointer.
     #[test]
     fn a_push_slides_the_page_in_and_hides_the_one_it_covers() {
-        let slot: NavHandleSlot = Rc::new(RefCell::new(None));
         let mut rx = Reactive::new();
+        let slot: NavHandle = rx.states.handle();
         let root = rx.build(
             navigation_stack()
                 .page(leaf_page)
                 .page(leaf_page)
                 .size(Sizing::fixed(300.0, 200.0))
                 .transition(PageTransition::Slide)
-                .handle(&slot),
+                .handle(slot),
         );
         let surface = viso_ui::Rect {
             x: 0.0,
@@ -743,7 +769,7 @@ mod tests {
         rx.store.layout(root, surface, &mut Vec::new());
         assert!(rx.store.clips_children(root));
         let pages = children(&rx.store, root);
-        let nav = slot.borrow().clone().unwrap();
+        let nav = slot;
         rx.drive(|ev| nav.push(ev));
         assert_eq!(rx.store.translate(pages[1]).x, 300.0);
         assert!(

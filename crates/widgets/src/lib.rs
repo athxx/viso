@@ -45,41 +45,36 @@ pub use camera_view::{CameraView, camera_view};
 pub use containers::{View, ViewStyle, blur_view, view};
 pub use controls::{
     Button, ButtonStyle, CaptionBar, CaptionBarStyle, CheckBox, CheckBoxStyle, Dock, DockHandle,
-    DockHandleSlot, DockNode, DockStyle, DockTree, DropPart, FileTree, FileTreeHandle,
-    FileTreeHandleSlot, FileTreeStyle, Floating, Labelled, Modal, ModalHandle, ModalHandleSlot,
-    ModalStyle, NavHandle, NavHandleSlot, NavigationStack, NavigationStackStyle, NodeKey,
-    NumberField, PanelContent, PanelKey, Popup, PopupArrow, PopupHandle, PopupHandleSlot,
-    PopupStyle, RadioGroup, RadioStyle, RangeSlider, SelectMode, SelectOp, Sheet, SheetDetent,
-    SheetEdge, SheetHandle, SheetHandleSlot, SheetStyle, Slider, SliderStyle, SplitAt, Splitter,
-    SplitterStyle, Tabs, TabsStyle, TextInput, TextInputStyle, Toast, ToastEdge, ToastHandle,
-    ToastHandleSlot, ToastStyle, Toggle, ToggleStyle, TreeNode, VisibleRow, button, caption_bar,
-    checkbox, dock, file_tree, knob, labelled, modal, navigation_stack, number_field, popover,
-    popup, radio_group, range_slider, sheet, slider, splitter, tabs, text_input, toast, toggle,
+    DockNode, DockStyle, DockTree, DropPart, FileTree, FileTreeHandle, FileTreeStyle, Floating,
+    Labelled, Modal, ModalHandle, ModalStyle, NavHandle, NavigationStack, NavigationStackStyle,
+    NodeKey, NumberField, PanelContent, PanelKey, Popup, PopupArrow, PopupHandle, PopupStyle,
+    RadioGroup, RadioStyle, RangeSlider, SelectMode, SelectOp, Sheet, SheetDetent, SheetEdge,
+    SheetHandle, SheetStyle, Slider, SliderStyle, SplitAt, Splitter, SplitterStyle, Tabs,
+    TabsStyle, TextInput, TextInputStyle, Toast, ToastEdge, ToastHandle, ToastStyle, Toggle,
+    ToggleStyle, TreeNode, VisibleRow, button, caption_bar, checkbox, dock, file_tree, knob,
+    labelled, modal, navigation_stack, number_field, popover, popup, radio_group, range_slider,
+    sheet, slider, splitter, tabs, text_input, toast, toggle,
 };
 pub use controls::{Calendar, CalendarStyle, DateNames, calendar};
 pub use controls::{
-    CellBuilder, CellText, DataGrid, DataGridHandle, DataGridHandleSlot, DataGridStyle, GridColumn,
-    GridRange, GridSelect, GridSelection, data_grid, grid_column,
+    CellBuilder, CellText, DataGrid, DataGridHandle, DataGridStyle, GridColumn, GridRange,
+    GridSelect, GridSelection, data_grid, grid_column,
 };
 pub use controls::{Chip, ChipStyle, chip};
 pub use controls::{ColorPicker, ColorPickerLabels, ColorPickerStyle, color_picker};
-pub use controls::{ComboBox, ComboBoxHandle, ComboBoxHandleSlot, ComboBoxStyle, combo_box};
+pub use controls::{ComboBox, ComboBoxHandle, ComboBoxStyle, combo_box};
 pub use controls::{
-    ContextMenu, Menu, MenuBar, MenuBarHandle, MenuBarHandleSlot, MenuBarStyle, MenuEntry,
-    MenuHandle, MenuHandleSlot, MenuItem, MenuStyle, Shortcut, context_menu, menu, menu_bar,
-    menu_item, separator,
+    ContextMenu, Menu, MenuBar, MenuBarHandle, MenuBarStyle, MenuEntry, MenuHandle, MenuItem,
+    MenuStyle, Shortcut, context_menu, menu, menu_bar, menu_item, separator,
 };
 pub use controls::{DatePicker, DatePickerStyle, date_picker};
 pub use controls::{
     Field, FieldValue, Fieldset, Form, FormControl, FormStyle, OnSubmit, OnValue, field, fieldset,
 };
-pub use controls::{
-    SearchField, SearchFieldHandle, SearchFieldHandleSlot, SearchFieldStyle, search_field,
-};
+pub use controls::{SearchField, SearchFieldHandle, SearchFieldStyle, search_field};
 pub use controls::{SegmentedControl, SegmentedStyle, segmented_control};
 pub use controls::{
-    Select, SelectHandle, SelectHandleSlot, SelectKind, SelectOption, SelectStyle, select,
-    select_option,
+    Select, SelectHandle, SelectKind, SelectOption, SelectStyle, select, select_option,
 };
 pub use controls::{Stepper, StepperStyle, stepper};
 pub use controls::{TOOLTIP_GRACE, TOOLTIP_LINGER, TOOLTIP_TOUCH, Tooltip, TooltipStyle, tooltip};
@@ -90,7 +85,7 @@ pub use grid::{Grid, GridViewStyle, grid};
 pub use icon::{Icon, IconStyle, icon};
 pub use image::{Image, ImageStyle, image, image_asset};
 pub use interactive_viewer::{
-    InteractiveViewer, InteractiveViewerStyle, ViewerHandle, ViewerHandleSlot, interactive_viewer,
+    InteractiveViewer, InteractiveViewerStyle, ViewerHandle, interactive_viewer,
 };
 pub use lazy_grid::{LazyGrid, LazyGridStyle, lazy_grid};
 pub use list::{VirtualList, VirtualListViewStyle, virtual_list};
@@ -103,8 +98,7 @@ pub use skeleton::{
     skeleton_text,
 };
 pub use swipe_row::{
-    SwipeAction, SwipeRow, SwipeRowHandle, SwipeRowHandleSlot, SwipeRowStyle, swipe_action,
-    swipe_row,
+    SwipeAction, SwipeRow, SwipeRowHandle, SwipeRowStyle, swipe_action, swipe_row,
 };
 pub use text::{Label, LabelStyle, label, link_label, rich_text};
-pub use video::{Video, VideoHandle, VideoHandleSlot, video};
+pub use video::{Video, VideoHandle, video};

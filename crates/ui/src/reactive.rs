@@ -188,6 +188,18 @@ pub struct EffectCx<'a> {
     written: &'a mut Vec<u32>,
 }
 
+impl crate::Controls for EffectCx<'_> {
+    fn control<P: 'static>(&self, id: crate::ControlId) -> Option<std::rc::Rc<P>> {
+        self.states.controls.get(id)
+    }
+}
+
+impl EffectCx<'_> {
+    pub(crate) fn controls(&self) -> &crate::ControlTable {
+        &self.states.controls
+    }
+}
+
 impl EffectCx<'_> {
     /// Read a state value, recording it as a dependency of the run of an
     /// effect without declared dependencies.

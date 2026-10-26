@@ -13,7 +13,7 @@ use viso::platform::{
     PointerPhase as RawPhase, RawEvent, RawKey, RawPointer, RawText, WindowId,
 };
 use viso::prelude::*;
-use viso::ui::{Axis, Component, FlexStyle, Inset, NodeId, NodeStore, Role, Sizing, StateValue};
+use viso::ui::{Axis, FlexStyle, Inset, NodeId, NodeStore, Role, Sizing, StateValue};
 use viso::widgets::{SelectKind, SelectStyle, select, select_option};
 
 const STEP: Duration = Duration::from_millis(16);

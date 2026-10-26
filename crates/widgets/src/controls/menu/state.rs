@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use viso_ui::adaptive::LayoutDirection;
 use viso_ui::{
-    DispatchPhase, EventCx, ImeEvent, Key, NodeId, PointerButtons, PointerPhase, StateId,
+    Controls, DispatchPhase, EventCx, ImeEvent, Key, NodeId, PointerButtons, PointerPhase, StateId,
     StateValue, TextRequest, Vec2,
 };
 
@@ -734,29 +734,39 @@ fn inside(p: Vec2, a: Vec2, b: Vec2, c: Vec2) -> bool {
     !(neg && pos)
 }
 
-/// A handle an application captures to open and close a built menu from
-/// its own handlers. Cheap to clone.
-#[derive(Clone)]
-pub struct MenuHandle(pub(super) Rc<MenuState>);
+viso_ui::control_handle! {
+    /// A handle an application captures to open and close a built menu from
+    /// its own handlers: `Copy`, an id alone. `build` returns it, or mint one
+    /// first with [`BuildCx::handle`](viso_ui::BuildCx::handle) for closures
+    /// declared before the menu. Once the menu is gone, every call is a no-op.
+    pub struct MenuHandle;
+}
 
 impl MenuHandle {
     /// Open the menu against its anchor.
-    pub fn open(&self, ev: &mut EventCx<'_>) {
-        self.0.open(ev, None, None, None);
+    pub fn open(self, ev: &mut EventCx<'_>) {
+        if let Some(menu) = ev.control::<MenuState>(self.0) {
+            menu.open(ev, None, None, None);
+        }
     }
 
     /// Open the menu at window point `at` of its anchor, as a context menu.
-    pub fn open_at(&self, ev: &mut EventCx<'_>, at: Vec2) {
-        self.0.open(ev, Some(at), None, None);
+    pub fn open_at(self, ev: &mut EventCx<'_>, at: Vec2) {
+        if let Some(menu) = ev.control::<MenuState>(self.0) {
+            menu.open(ev, Some(at), None, None);
+        }
     }
 
     /// Close the menu and its submenus.
-    pub fn close(&self, ev: &mut EventCx<'_>) {
-        self.0.close(ev);
+    pub fn close(self, ev: &mut EventCx<'_>) {
+        if let Some(menu) = ev.control::<MenuState>(self.0) {
+            menu.close(ev);
+        }
     }
 
     /// Whether the menu shows.
-    pub fn is_open(&self) -> bool {
-        self.0.is_open()
+    pub fn is_open(self, cx: &impl Controls) -> bool {
+        cx.control::<MenuState>(self.0)
+            .is_some_and(|menu| menu.is_open())
     }
 }

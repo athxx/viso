@@ -16,12 +16,10 @@ use std::time::Duration;
 use viso::__test_support::{DrivenApp, drive_scripted};
 use viso::platform::{RawEvent, WindowId};
 use viso::prelude::*;
-use viso::ui::{BuildCx, Component, WindowConfig};
+use viso::ui::{BuildCx, WindowConfig};
 use viso_map::mvt::{GeomType, TileEncoder};
 use viso_map::style::builtin;
-use viso_map::{
-    Camera, LngLat, MapHandle, MapHandleSlot, MapView, TileId, View, WorldPoint, map_view,
-};
+use viso_map::{Camera, LngLat, MapHandle, MapView, TileId, View, WorldPoint, map_view};
 
 const STEP: Duration = Duration::from_millis(16);
 const WIN: WindowId = WindowId(1);
@@ -82,16 +80,19 @@ fn redraws(n: usize) -> Vec<RawEvent> {
 }
 
 fn run(
-    make: impl Fn(&MapHandleSlot) -> MapView + 'static,
+    make: impl Fn(MapHandle) -> MapView + 'static,
     frames: usize,
 ) -> (DrivenApp<MapApp>, MapHandle) {
     let slot = support::slot();
     let s = Rc::clone(&slot);
     SETUP.with(|setup| {
-        *setup.borrow_mut() = Some(Box::new(move |cx| make(&s).build(cx)));
+        *setup.borrow_mut() = Some(Box::new(move |cx| {
+            let handle = support::bind(cx, &s);
+            make(handle).build(cx);
+        }));
     });
     let app = drive_scripted::<MapApp>(redraws(frames), STEP);
-    let handle = slot.borrow().clone().expect("built");
+    let handle = slot.get().expect("built");
     (app, handle)
 }
 
@@ -210,10 +211,10 @@ fn a_line_label_bends_with_its_line_at_every_turn_and_tilt() {
         );
         let name = format!("labels-curved-b{bearing}-p{pitch}");
         picture(&app, &name);
-        let view: View = handle.view();
+        let view: View = handle.view(app.states()).expect("the map");
         let (arc, _) = roads();
         let line: Vec<[f64; 2]> = arc.iter().map(|&w| view.to_view(w)).collect();
-        let bent = handle.label_glyphs();
+        let bent = handle.label_glyphs(app.states());
         let curved: Vec<_> = bent.iter().filter(|b| b.text == "Curved Avenue").collect();
         assert!(!curved.is_empty(), "{name}: {bent:?}");
         // The sharp zigzag holds no label.
@@ -324,7 +325,7 @@ fn bent_labels_repeat_along_a_long_line_and_keep_clear_of_each_other() {
         60,
     );
     picture(&app, "labels-curved-repeat");
-    let bent = handle.label_glyphs();
+    let bent = handle.label_glyphs(app.states());
     let waves = bent.iter().filter(|b| b.text == "Long Wavy Road").count();
     assert!(waves >= 2, "repeats along the line: {bent:?}");
     // No two glyphs of different labels overlap.
@@ -409,7 +410,7 @@ fn tilted_over_relief_a_bent_label_stands_on_it() {
                 "labels-curved-flat-p50"
             },
         );
-        let bent = handle.label_glyphs();
+        let bent = handle.label_glyphs(app.states());
         let label = bent
             .into_iter()
             .find(|b| b.text == "Curved Avenue")
@@ -467,7 +468,7 @@ fn real_streets_bend_their_names() {
             &format!("labels-luxembourg-z{zoom}-b{bearing}-p{pitch}"),
         );
         assert!(
-            !handle.label_glyphs().is_empty(),
+            !handle.label_glyphs(app.states()).is_empty(),
             "z{zoom} b{bearing} p{pitch}"
         );
     }

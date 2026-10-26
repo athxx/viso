@@ -3,8 +3,6 @@
 //! a press outside closes it and Escape does too, giving the focus back.
 #![cfg(feature = "headless")]
 
-use std::cell::RefCell;
-use std::rc::Rc;
 use std::time::Duration;
 
 use viso::__test_support::{DrivenApp, drive_scripted};
@@ -14,17 +12,13 @@ use viso::platform::{
 };
 use viso::prelude::*;
 use viso::ui::{
-    Axis, BoxStyle, Component, FlexStyle, Inset, LeafStyle, NodeId, PointerButtons, PointerPhase,
-    Rect, Side, Sizing,
+    Axis, BoxStyle, FlexStyle, Inset, LeafStyle, NodeId, PointerButtons, PointerPhase, Rect, Side,
+    Sizing,
 };
-use viso::widgets::{PopupHandleSlot, popover};
+use viso::widgets::{PopupHandle, popover};
 
 const STEP: Duration = Duration::from_millis(16);
 const WIN: WindowId = WindowId(1);
-
-thread_local! {
-    static SLOT: PopupHandleSlot = Rc::new(RefCell::new(None));
-}
 
 /// An 80 by 30 anchor at 100, 100 opening a popover of a 120 by 60 box.
 struct PopApp;
@@ -43,7 +37,7 @@ impl Application for PopApp {
     }
 
     fn build(&mut self, cx: &mut BuildCx<'_>) {
-        let slot = SLOT.with(Rc::clone);
+        let popup: PopupHandle = cx.handle();
         cx.flex(
             FlexStyle {
                 size: Sizing::fill(),
@@ -56,7 +50,6 @@ impl Application for PopApp {
                 ..FlexStyle::default()
             },
             |cx| {
-                let handle = Rc::clone(&slot);
                 popover()
                     .anchor(move |cx| {
                         let button = cx.leaf(LeafStyle {
@@ -64,14 +57,13 @@ impl Application for PopApp {
                             style: BoxStyle::NONE,
                         });
                         cx.focusable(button, true);
-                        let handle = Rc::clone(&handle);
                         cx.on_pointer(button, move |ev| {
                             let up = ev.pointer().is_some_and(|p| {
                                 p.phase == PointerPhase::Up
                                     && p.buttons.contains(PointerButtons::PRIMARY)
                             });
-                            if up && let Some(h) = handle.borrow().clone() {
-                                h.toggle(ev);
+                            if up {
+                                popup.toggle(ev);
                             }
                         });
                     })
@@ -81,7 +73,7 @@ impl Application for PopApp {
                             style: BoxStyle::NONE,
                         });
                     })
-                    .handle(&slot)
+                    .handle(popup)
                     .build(cx);
             },
         );

@@ -47,7 +47,7 @@
 //! frame loop `viso::run` takes.
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
@@ -63,11 +63,11 @@ use viso::platform::{
 use viso::prelude::*;
 use viso::render::{FrameStats, Rect, Renderer, Rgba};
 use viso::ui::{
-    BindingTable, BoxStyle, BuildCx, Component, EventCx, LeafStyle, Modifiers, NodeId, NodeStore,
+    BindingTable, BoxStyle, BuildCx, EventCx, LeafStyle, Modifiers, NodeId, NodeStore,
     PointerButtons, PointerEvent, PointerPhase, Role, SemanticProjector, Sizing, StateStore,
     TextEdits, TimerRegistry, VirtualLists, WindowConfig, paint_tree,
 };
-use viso::widgets::{ToastEdge, ToastHandle, ToastHandleSlot, toast};
+use viso::widgets::{ToastEdge, ToastHandle, toast};
 
 const W: u32 = 240;
 const H: u32 = 120;
@@ -248,16 +248,11 @@ const STEP: Duration = Duration::from_millis(16);
 /// which arms the one-shot auto-dismiss timer — the same `EventCx::request_timer` seam the
 /// Toast uses internally. Unlike the sheet's slide, the toast never `wants_animation`: the
 /// armed timer blocks until its deadline rather than spinning frames.
-struct ToastApp {
-    /// Filled during `build` with the mounted toast's handle so the trigger can show it.
-    slot: ToastHandleSlot,
-}
+struct ToastApp;
 
 impl Application for ToastApp {
     fn new(_cx: &mut AppCx) -> Self {
-        ToastApp {
-            slot: Rc::new(RefCell::new(None)),
-        }
+        ToastApp
     }
 
     /// Opt out of the default caption wrap: this pack samples a center pointer
@@ -272,7 +267,7 @@ impl Application for ToastApp {
     }
 
     fn build(&mut self, cx: &mut BuildCx<'_>) {
-        let slot = self.slot.clone();
+        let slot: ToastHandle = cx.handle();
         let root = cx.flex(
             viso::ui::FlexStyle {
                 size: Sizing::fill(),
@@ -283,21 +278,16 @@ impl Application for ToastApp {
                     .edge(ToastEdge::Top)
                     .duration(DURATION)
                     .content(panel(PANEL))
-                    .handle(&slot)
+                    .handle(slot)
                     .build(cx);
             },
         );
         cx.focusable(root, true);
-        // Show the toast on a primary pointer-down: read the handle the toast filled in
-        // during build and drive its show (which arms the auto-dismiss timer).
-        let trigger = slot.clone();
+        // Show the toast on a primary pointer-down, which arms its auto-dismiss timer.
         cx.on_pointer(root, move |ev| {
             let Some(p) = ev.pointer() else { return };
-            if p.phase == PointerPhase::Down
-                && p.buttons.contains(PointerButtons::PRIMARY)
-                && let Some(handle) = trigger.borrow().clone()
-            {
-                handle.show(ev);
+            if p.phase == PointerPhase::Down && p.buttons.contains(PointerButtons::PRIMARY) {
+                slot.show(ev);
             }
         });
     }
@@ -438,12 +428,12 @@ impl Interactive {
         let mut text_edits = TextEdits::new();
         let mut projectors = SemanticProjector::new();
 
-        let slot: ToastHandleSlot = Rc::new(RefCell::new(None));
+        let slot: ToastHandle = states.handle();
         let widget = toast()
             .edge(ToastEdge::Top)
             .duration(DURATION)
             .content(panel(PANEL))
-            .handle(&slot)
+            .handle(slot)
             .on_dismiss(move |_ev| {
                 counter.set(counter.get() + 1);
             });
@@ -460,7 +450,7 @@ impl Interactive {
             widget.build(&mut cx);
             cx.root().expect("toast declares a root")
         };
-        let handle = slot.borrow().clone().expect("build fills the handle slot");
+        let handle = slot;
         let content = content_of(&store, root);
 
         let mut scratch = Vec::new();
@@ -483,7 +473,7 @@ impl Interactive {
     /// the local registry against the current `now`.
     fn drive(&mut self, act: impl FnOnce(&ToastHandle, &mut EventCx<'_>)) {
         let ev = read_pointer();
-        let handle = self.handle.clone();
+        let handle = self.handle;
         let (hidden, timers) = {
             let mut cx = EventCx::__new_pointer(&mut self.states, &self.bindings, &ev);
             cx.__set_focused(self.store.focused());
@@ -716,12 +706,12 @@ fn setup_alloc() -> Harness {
     let mut text_edits = TextEdits::new();
     let mut projectors = SemanticProjector::new();
 
-    let slot: ToastHandleSlot = Rc::new(RefCell::new(None));
+    let slot: ToastHandle = states.handle();
     let widget = toast()
         .edge(ToastEdge::Top)
         .duration(DURATION)
         .content(panel(PANEL))
-        .handle(&slot);
+        .handle(slot);
 
     let root = {
         let mut cx = BuildCx::with_reactive(
@@ -735,7 +725,7 @@ fn setup_alloc() -> Harness {
         widget.build(&mut cx);
         cx.root().expect("toast declares a root")
     };
-    let handle = slot.borrow().clone().expect("build fills the handle slot");
+    let handle = slot;
     let content = content_of(&store, root);
 
     let mut scratch = Vec::new();

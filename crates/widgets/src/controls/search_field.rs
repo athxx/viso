@@ -31,23 +31,8 @@
 //! [`viso_ui::search_field`]'s, shared with the view's `SearchField` node.
 //!
 //! ```
-//! use viso_widgets::{SearchFieldHandleSlot, search_field};
-//! use viso_ui::{SemanticProjector, BuildCx, BindingTable, Component, NodeStore, StateStore, TextEdits, VirtualLists};
-//!
-//! let slot = SearchFieldHandleSlot::default();
-//! let handle = slot.clone();
-//! let search = search_field()
-//!     .placeholder("Search cities")
-//!     .on_change(move |ev, query| {
-//!         let found = ["Auckland", "Wellington"].into_iter().filter(|c| c.to_lowercase().contains(&query.to_lowercase()));
-//!         if let Some(h) = handle.borrow().as_ref() {
-//!             h.set_suggestions(ev, found);
-//!         }
-//!     })
-//!     .on_submit(|_ev, query| {
-//!         let _ = query;
-//!     })
-//!     .handle(&slot);
+//! use viso_widgets::{SearchFieldHandle, search_field};
+//! use viso_ui::{SemanticProjector, BuildCx, BindingTable, NodeStore, StateStore, TextEdits, VirtualLists};
 //!
 //! let mut store = NodeStore::new();
 //! let mut states = StateStore::new();
@@ -56,8 +41,21 @@
 //! let mut text_edits = TextEdits::new();
 //! let mut projectors = SemanticProjector::new();
 //! let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists, &mut text_edits, &mut projectors);
-//! search.build(&mut cx);
-//! assert!(slot.borrow().is_some());
+//!
+//! // The field's own handler suggests through its handle, minted first.
+//! let handle: SearchFieldHandle = cx.handle();
+//! search_field()
+//!     .placeholder("Search cities")
+//!     .on_change(move |ev, query| {
+//!         let found = ["Auckland", "Wellington"].into_iter().filter(|c| c.to_lowercase().contains(&query.to_lowercase()));
+//!         handle.set_suggestions(ev, found);
+//!     })
+//!     .on_submit(|_ev, query| {
+//!         let _ = query;
+//!     })
+//!     .handle(handle)
+//!     .build(&mut cx);
+//! assert!(handle.suggestions(&cx).is_empty());
 //! ```
 
 use std::cell::RefCell;
@@ -67,7 +65,7 @@ use std::time::Duration;
 use viso_ui::part_writes::PartWrites;
 pub use viso_ui::search_field::SearchFieldStyle;
 use viso_ui::search_field::{SearchParts, SearchSpec};
-use viso_ui::{BuildCx, Component, EventCx, Sizing};
+use viso_ui::{BuildCx, Component, Controls, EventCx, Sizing};
 
 /// What runs with the query or a submitted search.
 type Report = Rc<RefCell<dyn FnMut(&mut EventCx<'_>, &str)>>;
@@ -80,17 +78,14 @@ fn relay(report: &Option<Report>) -> Option<viso_ui::search_field::Report> {
     }))
 }
 
-/// A shared, mutable slot an application passes to a search field's
-/// `handle` and reads after `build` for its [`SearchFieldHandle`].
-pub type SearchFieldHandleSlot = Rc<RefCell<Option<SearchFieldHandle>>>;
-
 /// A text field that searches as the user types, suggesting below it.
 /// Construct one with [`search_field`].
 pub struct SearchField {
     spec: SearchSpec,
     on_change: Option<Report>,
     on_submit: Option<Report>,
-    slot: Option<SearchFieldHandleSlot>,
+    /// The handle `build` binds, when the app minted one up front.
+    handle: Option<SearchFieldHandle>,
 }
 
 /// An empty search field saying "Search", reporting each edit at once.
@@ -99,7 +94,7 @@ pub fn search_field() -> SearchField {
         spec: SearchSpec::default(),
         on_change: None,
         on_submit: None,
-        slot: None,
+        handle: None,
     }
 }
 
@@ -168,10 +163,18 @@ impl SearchField {
         self
     }
 
-    /// Fill `slot` with the field's [`SearchFieldHandle`] when it builds.
-    pub fn handle(mut self, slot: &SearchFieldHandleSlot) -> Self {
-        self.slot = Some(Rc::clone(slot));
+    /// Bind `handle`, minted with [`BuildCx::handle`](viso_ui::BuildCx::handle)
+    /// before the control is built, so closures declared earlier can drive it.
+    pub fn handle(mut self, handle: SearchFieldHandle) -> Self {
+        self.handle = Some(handle);
         self
+    }
+
+    /// Build the control into `cx` and return its handle.
+    pub fn build(mut self, cx: &mut BuildCx<'_>) -> SearchFieldHandle {
+        let handle = *self.handle.get_or_insert_with(|| cx.handle());
+        Component::build(&self, cx);
+        handle
     }
 }
 
@@ -183,18 +186,79 @@ impl Component for SearchField {
             relay(&self.on_change),
             relay(&self.on_submit),
         );
-        if let Some(slot) = &self.slot {
-            *slot.borrow_mut() = Some(SearchFieldHandle(parts));
+        if let Some(bound) = self.handle {
+            cx.bind_control(bound.0, parts.root().id(), Rc::new(SearchFieldParts(parts)));
         }
     }
 }
 
-/// A handle an application captures to read a built search field's text,
-/// set it and give it suggestions from its own handlers. Cheap to clone.
-#[derive(Clone)]
-pub struct SearchFieldHandle(SearchParts);
+viso_ui::control_handle! {
+    /// A handle an application captures to read a built search field's text,
+    /// set it and give it suggestions from its own handlers.
+    ///
+    /// `Copy`, an id alone: `build` returns it, or mint one first with
+    /// [`BuildCx::handle`](viso_ui::BuildCx::handle) for closures declared
+    /// before the control. Once the control is gone, every call is a no-op.
+    pub struct SearchFieldHandle;
+}
 
 impl SearchFieldHandle {
+    /// What the field holds.
+    pub fn text(self, cx: &impl Controls) -> String {
+        match cx.control::<SearchFieldParts>(self.0) {
+            Some(parts) => parts.text(),
+            None => Default::default(),
+        }
+    }
+
+    /// Put `text` in the field, without telling `on_change`.
+    pub fn set_text(self, ev: &mut EventCx<'_>, text: &str) {
+        if let Some(parts) = ev.control::<SearchFieldParts>(self.0) {
+            parts.set_text(ev, text);
+        }
+    }
+
+    /// Suggest `suggestions` for the query, in order, as many as the field
+    /// shows; none closes the list.
+    pub fn set_suggestions<I>(self, ev: &mut EventCx<'_>, suggestions: I)
+    where
+        I: IntoIterator,
+        I::Item: Into<String>,
+    {
+        if let Some(parts) = ev.control::<SearchFieldParts>(self.0) {
+            parts.set_suggestions(ev, suggestions);
+        }
+    }
+
+    /// The suggestions the list shows.
+    pub fn suggestions(self, cx: &impl Controls) -> Vec<String> {
+        match cx.control::<SearchFieldParts>(self.0) {
+            Some(parts) => parts.suggestions(),
+            None => Default::default(),
+        }
+    }
+
+    /// Whether the list of suggestions shows.
+    pub fn is_open(self, cx: &impl Controls) -> bool {
+        match cx.control::<SearchFieldParts>(self.0) {
+            Some(parts) => parts.is_open(),
+            None => false,
+        }
+    }
+
+    /// Empty the field, telling `on_change`.
+    pub fn clear(self, ev: &mut EventCx<'_>) {
+        if let Some(parts) = ev.control::<SearchFieldParts>(self.0) {
+            parts.clear(ev);
+        }
+    }
+}
+
+/// What a built control's handlers and its [`SearchFieldHandle`] share.
+#[derive(Clone)]
+struct SearchFieldParts(SearchParts);
+
+impl SearchFieldParts {
     /// What the field holds.
     pub fn text(&self) -> String {
         self.0.text()

@@ -36,7 +36,7 @@ use viso::ui::{
 };
 use viso_map::style::builtin;
 use viso_map::{
-    Camera, LngLat, LngLatBounds, MapHandleSlot, Marker, MemorySource, Padding, Polyline, Puck,
+    Camera, LngLat, LngLatBounds, MapHandle, Marker, MemorySource, Padding, Polyline, Puck,
     ShapeId, map_view,
 };
 use viso_map_nav::{
@@ -63,7 +63,7 @@ fn lonlat(p: LngLat) -> LonLat {
 
 /// What the navigator knows and shows.
 struct Nav {
-    map: MapHandleSlot,
+    map: MapHandle,
     search: Option<Arc<SearchIndex>>,
     graph: Option<Arc<RouteGraph>>,
     here: LngLat,
@@ -113,12 +113,11 @@ impl Nav {
         n.route = None;
         n.summary.clear();
         let line = n.line.take();
-        if let Some(map) = n.map.borrow().as_ref() {
-            if let Some(id) = line {
-                map.remove_shape(ev, id);
-            }
-            map.set_marker(ev, Marker::new(DESTINATION, to, pin).unclustered());
+        if let Some(id) = line {
+            n.map.remove_shape(ev, id);
         }
+        n.map
+            .set_marker(ev, Marker::new(DESTINATION, to, pin).unclustered());
         let Some(graph) = n.graph.clone() else {
             n.say(ev, &name, "The road network is still loading…");
             return;
@@ -152,20 +151,17 @@ impl Nav {
                 return;
             }
         };
-        let map = self.map.borrow().clone();
-        if let Some(map) = &map {
-            let points: Vec<LngLat> = route.points.iter().copied().map(ll).collect();
-            self.line = Some(map.add_shape(w, Polyline::route(points.clone())));
-            if let Some(bounds) = LngLatBounds::around(points) {
-                // Clear of the banner above and the bar below.
-                let padding = Padding {
-                    top: 170.0,
-                    bottom: 90.0,
-                    left: 40.0,
-                    right: 40.0,
-                };
-                map.fit_bounds(w, bounds, padding, 0.0, 17.0);
-            }
+        let points: Vec<LngLat> = route.points.iter().copied().map(ll).collect();
+        self.line = self.map.add_shape(w, Polyline::route(points.clone()));
+        if let Some(bounds) = LngLatBounds::around(points) {
+            // Clear of the banner above and the bar below.
+            let padding = Padding {
+                top: 170.0,
+                bottom: 90.0,
+                left: 40.0,
+                right: 40.0,
+            };
+            self.map.fit_bounds(w, bounds, padding, 0.0, 17.0);
         }
         self.traveled = 0.0;
         self.summary = format!(
@@ -200,15 +196,13 @@ impl Nav {
         self.session = Some(NavSession::new(route));
         self.clock = 0.0;
         self.driving = true;
-        if let Some(map) = self.map.borrow().as_ref() {
-            map.set_padding(
-                w,
-                Padding {
-                    top: 220.0,
-                    ..Padding::all(0.0)
-                },
-            );
-        }
+        self.map.set_padding(
+            w,
+            Padding {
+                top: 220.0,
+                ..Padding::all(0.0)
+            },
+        );
         self.step(w);
     }
 
@@ -219,10 +213,10 @@ impl Nav {
         }
         self.driving = false;
         self.session = None;
-        if let Some(map) = self.map.borrow().as_ref() {
-            map.set_padding(w, Padding::all(0.0));
-            let flat = map.camera().with_bearing(0.0).with_pitch(0.0);
-            map.ease_to(w, flat, 0.4);
+        self.map.set_padding(w, Padding::all(0.0));
+        if let Some(camera) = self.map.camera(&*w) {
+            self.map
+                .ease_to(w, camera.with_bearing(0.0).with_pitch(0.0), 0.4);
         }
     }
 
@@ -231,12 +225,10 @@ impl Nav {
         self.stop(w);
         self.route = None;
         self.destination = None;
-        if let Some(map) = self.map.borrow().as_ref() {
-            if let Some(id) = self.line.take() {
-                map.remove_shape(w, id);
-            }
-            map.remove_marker(w, DESTINATION);
+        if let Some(id) = self.line.take() {
+            self.map.remove_shape(w, id);
         }
+        self.map.remove_marker(w, DESTINATION);
         self.summary.clear();
         self.say(
             w,
@@ -265,23 +257,22 @@ impl Nav {
         };
         let update = session.update(fix);
         self.here = ll(update.matched);
-        let map = self.map.borrow().clone();
-        if let Some(map) = &map {
-            map.set_puck(w, Some(Puck::new(self.here, 5.0).heading(update.bearing)));
-            map.jump_to(
-                w,
-                Camera::new(self.here, 16.5)
-                    .with_bearing(update.bearing)
-                    .with_pitch(DRIVE_PITCH),
-            );
-            let traveled = update.along / total;
-            if (traveled - self.traveled).abs() > 0.002
-                && let (Some(id), Some(route)) = (self.line, self.route.as_ref())
-            {
-                self.traveled = traveled;
-                let points: Vec<LngLat> = route.points.iter().copied().map(ll).collect();
-                map.set_shape(w, id, Polyline::route(points).traveled(traveled));
-            }
+        self.map
+            .set_puck(w, Some(Puck::new(self.here, 5.0).heading(update.bearing)));
+        self.map.jump_to(
+            w,
+            Camera::new(self.here, 16.5)
+                .with_bearing(update.bearing)
+                .with_pitch(DRIVE_PITCH),
+        );
+        let traveled = update.along / total;
+        if (traveled - self.traveled).abs() > 0.002
+            && let (Some(id), Some(route)) = (self.line, self.route.as_ref())
+        {
+            self.traveled = traveled;
+            let points: Vec<LngLat> = route.points.iter().copied().map(ll).collect();
+            self.map
+                .set_shape(w, id, Polyline::route(points).traveled(traveled));
         }
         let route = self.route.as_ref().expect("a route");
         match update.state {
@@ -444,9 +435,9 @@ impl Application for Navigator {
 
     fn build(&mut self, cx: &mut BuildCx<'_>) {
         let words_cell = cx.state(StateValue::Int(0));
-        let slot = MapHandleSlot::default();
+        let map: MapHandle = cx.handle();
         let nav: Shared = Rc::new(RefCell::new(Nav {
-            map: Rc::clone(&slot),
+            map,
             search: None,
             graph: None,
             here: START,
@@ -488,7 +479,7 @@ impl Application for Navigator {
                     .puck(Puck::new(START, 10.0))
                     .size(Sizing::fill())
                     .label("Map of Luxembourg")
-                    .handle(&slot)
+                    .handle(map)
                     .on_long_press(move |ev, p| {
                         Nav::plan(&long, ev, p.place, "Dropped pin".to_owned());
                     })
@@ -530,9 +521,8 @@ fn panels(cx: &mut BuildCx<'_>, nav: &Shared) -> [NodeId; 3] {
             ..FlexStyle::default()
         },
         |cx| {
-            let search_slot = SearchFieldHandleSlot::default();
+            let search: SearchFieldHandle = cx.handle();
             let (change_nav, submit_nav) = (Rc::clone(nav), Rc::clone(nav));
-            let (suggest, submitted) = (Rc::clone(&search_slot), Rc::clone(&search_slot));
             search_field()
                 .placeholder("Search places in Luxembourg")
                 .label("Search places")
@@ -546,7 +536,7 @@ fn panels(cx: &mut BuildCx<'_>, nav: &Shared) -> [NodeId; 3] {
                     let Some(index) = n.search.clone() else {
                         return;
                     };
-                    let near = n.map.borrow().as_ref().map(|m| lonlat(m.camera().center));
+                    let near = n.map.camera(ev).map(|c| lonlat(c.center));
                     n.hits = index.search(
                         query,
                         &SearchOptions {
@@ -557,9 +547,7 @@ fn panels(cx: &mut BuildCx<'_>, nav: &Shared) -> [NodeId; 3] {
                     );
                     let shown: Vec<String> = n.hits.iter().map(hit_text).collect();
                     drop(n);
-                    if let Some(h) = suggest.borrow().as_ref() {
-                        h.set_suggestions(ev, shown);
-                    }
+                    search.set_suggestions(ev, shown);
                 })
                 .on_submit(move |ev, text| {
                     let n = submit_nav.borrow();
@@ -570,14 +558,12 @@ fn panels(cx: &mut BuildCx<'_>, nav: &Shared) -> [NodeId; 3] {
                         .or(n.hits.first())
                         .cloned();
                     drop(n);
-                    if let Some(h) = submitted.borrow().as_ref() {
-                        h.set_suggestions(ev, Vec::<String>::new());
-                    }
+                    search.set_suggestions(ev, Vec::<String>::new());
                     if let Some(hit) = hit {
                         Nav::plan(&submit_nav, ev, ll(hit.position), hit.name);
                     }
                 })
-                .handle(&search_slot)
+                .handle(search)
                 .build(cx);
             let banner = cx.flex(
                 FlexStyle {
@@ -676,9 +662,7 @@ fn load(store: &mut viso::ui::NodeStore, owner: NodeId, nav: &Shared) {
                     Ok(archive) => {
                         let info = viso_tiles::TileSource::info(&*archive);
                         let zooms = (info.min_zoom, info.max_zoom);
-                        if let Some(map) = n.map.borrow().as_ref() {
-                            map.set_source(cx, data::source(archive), zooms);
-                        }
+                        n.map.set_source(cx, data::source(archive), zooms);
                         n.say(
                             cx,
                             "Where to?",

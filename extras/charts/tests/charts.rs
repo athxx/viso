@@ -17,7 +17,7 @@ use viso::ui::{
     Axis, Component, EventCx, FlexStyle, Inset, NodeId, NodeStore, PlotLayer, Role, Sizing,
 };
 use viso_charts::{
-    ChartHandleSlot, ChartKind, bar_chart, line_chart, scatter_chart, series, series_xy, sparkline,
+    ChartHandle, ChartKind, bar_chart, line_chart, scatter_chart, series, series_xy, sparkline,
 };
 
 const STEP: Duration = Duration::from_millis(16);
@@ -26,7 +26,7 @@ const WIN: WindowId = WindowId(1);
 thread_local! {
     static KIND: Cell<ChartKind> = const { Cell::new(ChartKind::Line) };
     static HEARD: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
-    static SLOT: RefCell<Option<ChartHandleSlot>> = const { RefCell::new(None) };
+    static SLOT: Cell<Option<ChartHandle>> = const { Cell::new(None) };
     static SWAP: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -53,8 +53,8 @@ impl Application for ChartApp {
     }
 
     fn build(&mut self, cx: &mut BuildCx<'_>) {
-        let slot = ChartHandleSlot::default();
-        SLOT.with(|s| *s.borrow_mut() = Some(slot.clone()));
+        let chart: ChartHandle = cx.handle();
+        SLOT.with(|s| s.set(Some(chart)));
         cx.flex(
             FlexStyle {
                 size: Sizing::fill(),
@@ -69,14 +69,11 @@ impl Application for ChartApp {
             },
             |cx| {
                 let size = Sizing::fixed(600.0, 300.0);
-                let handle = slot.clone();
                 let pick = move |ev: &mut EventCx<'_>, at: viso_charts::ChartPoint| {
                     HEARD.with(|h| h.borrow_mut().push(format!("{:?} {}", at.series, at.index)));
                     // Selecting gives the chart new data.
-                    if SWAP.with(Cell::get)
-                        && let Some(handle) = handle.borrow().clone()
-                    {
-                        handle.set_series(ev, vec![series("Only", [100.0, 300.0, 200.0, 400.0])]);
+                    if SWAP.with(Cell::get) {
+                        chart.set_series(ev, vec![series("Only", [100.0, 300.0, 200.0, 400.0])]);
                     }
                 };
                 match KIND.with(Cell::get) {
@@ -90,7 +87,7 @@ impl Application for ChartApp {
                     .categories(["Q1", "Q2", "Q3", "Q4"])
                     .size(size)
                     .on_select(pick)
-                    .handle(&slot)
+                    .handle(chart)
                     .build(cx),
                     ChartKind::Bar => bar_chart(
                         "Signups",
@@ -110,7 +107,7 @@ impl Application for ChartApp {
                     .size(size)
                     .on_select(pick)
                     .build(cx),
-                }
+                };
                 sparkline("Latency", [41.0, 38.0, 44.0, 52.0, 47.0]).build(cx);
             },
         );
@@ -371,11 +368,6 @@ fn new_data_through_the_handle_redraws_the_plot() {
         1,
         "the legend names the new series"
     );
-    let handle = SLOT
-        .with(|s| s.borrow().clone())
-        .unwrap()
-        .borrow()
-        .clone()
-        .unwrap();
-    assert_eq!(handle.hovered(), None);
+    let chart = SLOT.with(Cell::get).unwrap();
+    assert_eq!(chart.hovered(app.states()), None);
 }

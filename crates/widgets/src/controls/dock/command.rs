@@ -34,7 +34,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use viso_ui::{EventCx, NodeId, NodeStore, StateStore};
+use viso_ui::{Controls, EventCx, NodeId, NodeStore, StateStore};
 
 use super::build::{PanelNodes, RedockIntents, SeamRec, SharedZones};
 use super::tree::{DockTree, DropPart, PanelKey};
@@ -83,24 +83,102 @@ pub(super) struct DragChannel {
 /// A shared handle to the dock's warm state.
 pub(super) type DockStateCell = Rc<RefCell<DockState>>;
 
-/// A shared slot an application creates, passes to [`Dock::handle`](super::Dock::handle),
-/// and reads after `build` to obtain the control's [`DockHandle`]. The tree, seams,
-/// and panel-node map are minted inside `build`, so the handle cannot be returned by
-/// the builder chain; the app supplies this slot up front and `build` fills it once
-/// they exist — the same deferred-fill idiom as the navigation stack's handle slot.
-/// Written once during build, read once after.
-pub type DockHandleSlot = Rc<RefCell<Option<DockHandle>>>;
+viso_ui::control_handle! {
+    /// A handle an application captures to drive a built [`Dock`](super::Dock)
+    /// programmatically. Call
+    /// [`select_tab`](DockHandle::select_tab) to show a tab, and
+    /// [`dock`](DockHandle::dock)/[`undock`](DockHandle::undock)/[`float`](DockHandle::float)/[`close`](DockHandle::close)
+    /// to edit the arrangement — all from within an [`EventCx`](viso_ui::EventCx) (an
+    /// event handler), since a selection defers `hidden` flips and a structural edit is
+    /// applied by the reconcile step. A command naming an absent panel/target is a
+    /// no-op.
+    ///
+    /// `Copy`, an id alone: `build` returns it, or mint one first with
+    /// [`BuildCx::handle`](viso_ui::BuildCx::handle) for closures declared
+    /// before the control. Once the control is gone, every call is a no-op.
+    pub struct DockHandle;
+}
 
-/// A handle an application captures to drive a built [`Dock`](super::Dock)
-/// programmatically. Cheap to clone (it holds only shared cells). Call
-/// [`select_tab`](DockHandle::select_tab) to show a tab, and
-/// [`dock`](DockHandle::dock)/[`undock`](DockHandle::undock)/[`float`](DockHandle::float)/[`close`](DockHandle::close)
-/// to edit the arrangement — all from within an [`EventCx`](viso_ui::EventCx) (an
-/// event handler), since a selection defers `hidden` flips and a structural edit is
-/// applied by the reconcile step. A command naming an absent panel/target is a
-/// no-op.
+impl DockHandle {
+    /// Show the tab `key` in its tab group and hide its siblings. Edits the group's
+    /// `selected` and defers a `set_hidden` flip per sibling panel node (hide every
+    /// sibling, show `key`) that the router applies after the handler returns. A
+    /// no-op if `key` is not in any tab group. Call from within an event handler.
+    pub fn select_tab(self, ev: &mut EventCx<'_>, key: PanelKey) {
+        if let Some(parts) = ev.control::<DockParts>(self.0) {
+            parts.select_tab(ev, key);
+        }
+    }
+
+    /// Redock `key` relative to `target` per `part` (an edge splits, a center/tab
+    /// joins a tab group). Pushes a redock intent onto the same queue a drag-to-redock
+    /// drop writes into, so the [`reconcile`](DockHandle::reconcile) step applies the
+    /// tree edit *and* remounts `key`'s built-once node through one path — a command
+    /// and a drag redock share the reconcile remount, never diverging. A no-op (once
+    /// reconciled) if `target` is absent or `key == target`. Call from within an event
+    /// handler.
+    pub fn dock(self, _ev: &mut EventCx<'_>, key: PanelKey, target: PanelKey, part: DropPart) {
+        if let Some(parts) = _ev.control::<DockParts>(self.0) {
+            parts.dock(_ev, key, target, part);
+        }
+    }
+
+    /// Detach `key` into a floating panel at `rect`, removing it from its current
+    /// home. Edits the tree; the reconcile step remounts the node into the overlay.
+    /// A no-op if `key` is absent.
+    pub fn float(self, _ev: &mut EventCx<'_>, key: PanelKey, rect: viso_ui::Rect) {
+        if let Some(parts) = _ev.control::<DockParts>(self.0) {
+            parts.float(_ev, key, rect);
+        }
+    }
+
+    /// Remove `key` from the docked tree, collapsing an emptied split into its
+    /// surviving sibling, and hide its panel node so it leaves layout at once. This
+    /// is both "undock" (the panel leaves the arrangement) and "close" — the caller
+    /// decides whether to re-dock or drop the panel afterward. A no-op if `key` is
+    /// absent. Call from within an event handler.
+    pub fn close(self, ev: &mut EventCx<'_>, key: PanelKey) {
+        if let Some(parts) = ev.control::<DockParts>(self.0) {
+            parts.close(ev, key);
+        }
+    }
+
+    /// Undock `key`: alias for [`close`](DockHandle::close) — the panel leaves the
+    /// docked tree and its node folds out of layout. Distinguished by name so an app
+    /// reads "undock this panel" at the call site.
+    pub fn undock(self, ev: &mut EventCx<'_>, key: PanelKey) {
+        if let Some(parts) = ev.control::<DockParts>(self.0) {
+            parts.undock(ev, key);
+        }
+    }
+
+    /// The reconcile intent-drain: apply every committed drag intent against the
+    /// store, then rewrite every seam's pane weights from its committed fraction. A
+    /// host calls this after an input transaction with `&mut NodeStore` and the state
+    /// store the drag handlers wrote into — the handler-writes-intent /
+    /// reconcile-mutates-store split.
+    ///
+    /// Two effects, in order:
+    ///
+    /// - **Redock drain** ([`reconcile_redock`](super::reconcile::reconcile_redock)):
+    ///   drain each [`RedockIntent`](super::drag::RedockIntent) a drop pushed, apply
+    ///   the pure tree edit ([`DockTree::dock`]), remount the moved panel's built-once
+    ///   node under its new region (an arena detach + re-append, never a rebuild), hide
+    ///   the drop hint, and refresh the zone rects from resolved bounds. A structural
+    ///   change, so it runs before the geometry pass.
+    /// - **Seam weights** ([`reconcile_seams`](super::reconcile::reconcile_seams)):
+    ///   rewrite every seam's pane weights from its committed fraction against the
+    ///   store's resolved extents — the live seam-drag path.
+    pub fn reconcile(self, store: &mut NodeStore, states: &StateStore) {
+        if let Some(parts) = states.control::<DockParts>(self.0) {
+            parts.reconcile(store, states);
+        }
+    }
+}
+
+/// What a built control's handlers and its [`DockHandle`] share.
 #[derive(Clone)]
-pub struct DockHandle {
+pub(super) struct DockParts {
     /// The dock's warm state: the layout tree and the seam records.
     state: DockStateCell,
     /// The keyed panel-node map, filled by the build walk. A command resolves a
@@ -113,7 +191,7 @@ pub struct DockHandle {
     drag: DragChannel,
 }
 
-impl DockHandle {
+impl DockParts {
     /// Show the tab `key` in its tab group and hide its siblings. Edits the group's
     /// `selected` and defers a `set_hidden` flip per sibling panel node (hide every
     /// sibling, show `key`) that the router applies after the handler returns. A
@@ -222,7 +300,7 @@ impl DockHandle {
 /// overlay) the drag handlers close over. Called once at the end of `build`, when
 /// the ids exist.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn make_handle(
+pub(super) fn make_parts(
     tree: DockTree,
     seams: Vec<SeamRec>,
     floats: NodeId,
@@ -230,8 +308,8 @@ pub(super) fn make_handle(
     zones: SharedZones,
     hint: NodeId,
     intents: RedockIntents,
-) -> DockHandle {
-    DockHandle {
+) -> DockParts {
+    DockParts {
         state: Rc::new(RefCell::new(DockState {
             tree,
             seams,
@@ -250,7 +328,7 @@ pub(super) fn make_handle(
 /// A test-only view of a panel node's resolved id in the keyed map — lets a handle
 /// test assert which node a command targeted without reaching into the private map.
 #[cfg(test)]
-impl DockHandle {
+impl DockParts {
     fn node_of(&self, key: PanelKey) -> Option<viso_ui::NodeId> {
         self.panels.borrow().get(&key).copied()
     }
@@ -292,7 +370,7 @@ mod tests {
         text_edits: TextEdits,
         #[allow(dead_code)]
         projectors: SemanticProjector,
-        handle: DockHandle,
+        handle: DockParts,
     }
 
     impl Reactive {
@@ -331,7 +409,7 @@ mod tests {
                 hint = out.hint;
                 intents = out.intents;
             }
-            let handle = make_handle(tree, seams, floats, panels, zones_shared, hint, intents);
+            let handle = make_parts(tree, seams, floats, panels, zones_shared, hint, intents);
             Reactive {
                 store,
                 states,
@@ -346,10 +424,7 @@ mod tests {
         /// Run a command closure against a throwaway `EventCx`, apply the deferred
         /// `set_hidden` flips it recorded to the store (the router's job), and return
         /// them — the navigation stack's `drive` idiom.
-        fn drive(
-            &mut self,
-            act: impl FnOnce(&DockHandle, &mut EventCx<'_>),
-        ) -> Vec<(NodeId, bool)> {
+        fn drive(&mut self, act: impl FnOnce(&DockParts, &mut EventCx<'_>)) -> Vec<(NodeId, bool)> {
             let ev = still_pointer();
             let flips = {
                 let mut cx = EventCx::__new_pointer(&mut self.states, &self.bindings, &ev);

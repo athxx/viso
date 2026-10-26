@@ -48,7 +48,7 @@
 //! seam, and the focus-scope trap an open/close needs.
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
@@ -56,12 +56,11 @@ use std::sync::atomic::Ordering;
 use viso::gpu::{CpuRaster, GpuBackend, RawWindowHandle};
 use viso::render::{FrameStats, Rect, Renderer, Rgba};
 use viso::ui::{
-    BindingTable, BoxStyle, BuildCx, Component, EventCx, Key, KeyEvent, KeyRouter, LeafStyle,
-    Modifiers, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase, Role,
-    SemanticProjector, Sizing, StateId, StateStore, StateValue, TextEdits, VirtualLists,
-    focus_next, paint_tree,
+    BindingTable, BoxStyle, BuildCx, EventCx, Key, KeyEvent, KeyRouter, LeafStyle, Modifiers,
+    NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase, Role, SemanticProjector, Sizing,
+    StateId, StateStore, StateValue, TextEdits, VirtualLists, focus_next, paint_tree,
 };
-use viso::widgets::{ModalHandle, ModalHandleSlot, modal};
+use viso::widgets::{ModalHandle, modal};
 
 const W: u32 = 240;
 const H: u32 = 120;
@@ -246,12 +245,12 @@ impl Interactive {
         let mut text_edits = TextEdits::new();
         let mut projectors = SemanticProjector::new();
 
-        let slot: ModalHandleSlot = Rc::new(RefCell::new(None));
+        let slot: ModalHandle = states.handle();
         let widget = modal()
             .scrim(SCRIM)
             .content(fill(CONTENT))
             .size(Sizing::fill())
-            .handle(&slot)
+            .handle(slot)
             .on_dismiss(move |_ev| {
                 counter.set(counter.get() + 1);
             });
@@ -268,7 +267,7 @@ impl Interactive {
             widget.build(&mut cx);
             cx.root().expect("modal declares a root")
         };
-        let handle = slot.borrow().clone().expect("build fills the handle slot");
+        let handle = slot;
         let open = StateStore::new().alloc(StateValue::Bool(false));
 
         let mut scratch = Vec::new();
@@ -320,7 +319,7 @@ impl Interactive {
     /// the deferred `hidden`/focus/focus-scope requests, and apply them to the store.
     fn drive(&mut self, act: impl FnOnce(&ModalHandle, &mut EventCx<'_>)) {
         let ev = read_pointer();
-        let handle = self.handle.clone();
+        let handle = self.handle;
         let (hidden, focus, scope) = {
             let mut cx = EventCx::__new_pointer(&mut self.states, &self.bindings, &ev);
             cx.__set_focused(self.store.focused());

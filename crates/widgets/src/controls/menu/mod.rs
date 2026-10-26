@@ -64,13 +64,13 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use viso_ui::{
-    Anchoring, BoxStyle, BuildCx, Component, EventCx, Inset, Key, Modifiers, Rgba, Shadow, Sizing,
-    primary_is_logo,
+    Anchoring, BoxStyle, BuildCx, Component, ControlHandle, EventCx, Inset, Key, Modifiers, Rgba,
+    Shadow, Sizing, primary_is_logo,
 };
 
 use crate::Icon;
 
-pub use bar::{MenuBar, MenuBarHandle, MenuBarHandleSlot, MenuBarStyle, menu_bar};
+pub use bar::{MenuBar, MenuBarHandle, MenuBarStyle, menu_bar};
 pub use state::MenuHandle;
 
 /// How long the pointer rests on an item before its submenu opens.
@@ -384,17 +384,14 @@ impl Default for MenuStyle {
     }
 }
 
-/// A shared, mutable slot an application passes to a menu's `handle` and
-/// reads after `build` for its [`MenuHandle`].
-pub type MenuHandleSlot = Rc<RefCell<Option<MenuHandle>>>;
-
 /// A menu that opens from its anchor — a button, a toolbar item.
 pub struct Menu {
     entries: Vec<MenuEntry>,
     anchor: Option<Builder>,
     style: MenuStyle,
     on_close: Option<Close>,
-    slot: Option<MenuHandleSlot>,
+    /// The handle `build` binds, when the app minted one up front.
+    handle: Option<MenuHandle>,
 }
 
 /// A menu with no anchor and no items yet.
@@ -404,7 +401,7 @@ pub fn menu() -> Menu {
         anchor: None,
         style: MenuStyle::default(),
         on_close: None,
-        slot: None,
+        handle: None,
     }
 }
 
@@ -451,24 +448,33 @@ impl Menu {
         self
     }
 
-    /// Fill `slot` with the menu's [`MenuHandle`] when it builds.
-    pub fn handle(mut self, slot: &MenuHandleSlot) -> Self {
-        self.slot = Some(Rc::clone(slot));
+    /// Bind `handle`, minted with [`BuildCx::handle`] before the menu is
+    /// built, so closures declared earlier can drive it.
+    pub fn handle(mut self, handle: MenuHandle) -> Self {
+        self.handle = Some(handle);
         self
+    }
+
+    /// Build the menu into `cx` and return its handle.
+    pub fn build(mut self, cx: &mut BuildCx<'_>) -> MenuHandle {
+        let handle = *self.handle.get_or_insert_with(|| cx.handle());
+        Component::build(&self, cx);
+        handle
     }
 }
 
 impl Component for Menu {
     fn build(&self, cx: &mut BuildCx<'_>) {
-        let handle = build::menu_button(
+        let menu = build::menu_button(
             cx,
             &self.entries,
             self.anchor.as_deref(),
             &self.style,
             self.on_close.clone(),
         );
-        if let Some(slot) = &self.slot {
-            *slot.borrow_mut() = Some(handle);
+        if let Some(bound) = self.handle {
+            let panel = menu.levels[0].panel;
+            cx.bind_control(bound.id(), panel, menu);
         }
     }
 }
@@ -480,7 +486,8 @@ pub struct ContextMenu {
     size: Sizing,
     style: MenuStyle,
     on_close: Option<Close>,
-    slot: Option<MenuHandleSlot>,
+    /// The handle `build` binds, when the app minted one up front.
+    handle: Option<MenuHandle>,
 }
 
 /// A context menu with no content and no items yet; it fills its parent's
@@ -492,7 +499,7 @@ pub fn context_menu() -> ContextMenu {
         size: Sizing::fill(),
         style: MenuStyle::default(),
         on_close: None,
-        slot: None,
+        handle: None,
     }
 }
 
@@ -539,16 +546,24 @@ impl ContextMenu {
         self
     }
 
-    /// Fill `slot` with the menu's [`MenuHandle`] when it builds.
-    pub fn handle(mut self, slot: &MenuHandleSlot) -> Self {
-        self.slot = Some(Rc::clone(slot));
+    /// Bind `handle`, minted with [`BuildCx::handle`] before the menu is
+    /// built, so closures declared earlier can drive it.
+    pub fn handle(mut self, handle: MenuHandle) -> Self {
+        self.handle = Some(handle);
         self
+    }
+
+    /// Build the menu into `cx` and return its handle.
+    pub fn build(mut self, cx: &mut BuildCx<'_>) -> MenuHandle {
+        let handle = *self.handle.get_or_insert_with(|| cx.handle());
+        Component::build(&self, cx);
+        handle
     }
 }
 
 impl Component for ContextMenu {
     fn build(&self, cx: &mut BuildCx<'_>) {
-        let handle = build::context_region(
+        let menu = build::context_region(
             cx,
             &self.entries,
             self.content.as_deref(),
@@ -556,8 +571,9 @@ impl Component for ContextMenu {
             &self.style,
             self.on_close.clone(),
         );
-        if let Some(slot) = &self.slot {
-            *slot.borrow_mut() = Some(handle);
+        if let Some(bound) = self.handle {
+            let panel = menu.levels[0].panel;
+            cx.bind_control(bound.id(), panel, menu);
         }
     }
 }

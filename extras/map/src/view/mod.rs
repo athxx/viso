@@ -37,7 +37,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use viso_ui::{
-    Alignment2D, BoxStyle, BuildCx, Component, DispatchPhase, EventCx, FrameClient, Key,
+    Alignment2D, BoxStyle, BuildCx, Component, Controls, DispatchPhase, EventCx, FrameClient, Key,
     NoticeKinds, PinchPhase, PointerPhase, ScrollPhase, Sizing, StackStyle, StateValue,
     StateWriter,
 };
@@ -96,24 +96,294 @@ pub type MarkerHandler = Rc<dyn Fn(&mut EventCx<'_>, u64)>;
 /// What the camera coming to rest tells the app.
 pub type ViewportHandler = Rc<dyn Fn(&mut dyn StateWriter, &Camera)>;
 
-/// A slot an app passes to [`MapView::handle`] and reads after building for
-/// the view's [`MapHandle`].
-pub type MapHandleSlot = Rc<RefCell<Option<MapHandle>>>;
-
-/// Moves a built map view's camera and reads it, from a handler or a task.
-/// Cheap to clone.
-#[derive(Clone)]
-pub struct MapHandle {
-    core: Rc<RefCell<Core>>,
-}
-
-impl std::fmt::Debug for MapHandle {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MapHandle").finish_non_exhaustive()
-    }
+viso_ui::control_handle! {
+    /// Moves a built map view's camera and reads it, from a handler or a task.
+    ///
+    ///
+    /// `Copy`, an id alone: `build` returns it, or mint one first with
+    /// [`BuildCx::handle`](viso_ui::BuildCx::handle) for closures declared
+    /// before the control. Once the control is gone, every call is a no-op.
+    pub struct MapHandle;
 }
 
 impl MapHandle {
+    /// The camera as it is now.
+    pub fn camera(self, cx: &(impl Controls + ?Sized)) -> Option<Camera> {
+        Some(cx.control::<MapParts>(self.0)?.camera())
+    }
+
+    /// The camera in its view: the math between places and view points.
+    pub fn view(self, cx: &(impl Controls + ?Sized)) -> Option<View> {
+        Some(cx.control::<MapParts>(self.0)?.view())
+    }
+
+    /// The view point of `place`, from the view's top-left corner.
+    pub fn project(self, cx: &(impl Controls + ?Sized), place: LngLat) -> Option<[f64; 2]> {
+        Some(cx.control::<MapParts>(self.0)?.project(place))
+    }
+
+    /// The place under view point `point`.
+    pub fn unproject(self, cx: &(impl Controls + ?Sized), point: [f64; 2]) -> Option<LngLat> {
+        Some(cx.control::<MapParts>(self.0)?.unproject(point))
+    }
+
+    /// The cells the view writes its camera into.
+    pub fn cells(self, cx: &(impl Controls + ?Sized)) -> Option<CameraCells> {
+        Some(cx.control::<MapParts>(self.0)?.cells())
+    }
+
+    /// Moves the camera to `camera` at once.
+    pub fn jump_to(self, w: &mut dyn StateWriter, camera: Camera) {
+        if let Some(parts) = w.control::<MapParts>(self.0) {
+            parts.jump_to(w, camera);
+        }
+    }
+
+    /// Moves the camera to `camera` over `duration` seconds, easing.
+    pub fn ease_to(self, w: &mut dyn StateWriter, camera: Camera, duration: f64) {
+        if let Some(parts) = w.control::<MapParts>(self.0) {
+            parts.ease_to(w, camera, duration);
+        }
+    }
+
+    /// Flies the camera to `camera`: out, across and back in, over
+    /// `duration` seconds or as long as the distance asks.
+    pub fn fly_to(self, w: &mut dyn StateWriter, camera: Camera, duration: Option<f64>) {
+        if let Some(parts) = w.control::<MapParts>(self.0) {
+            parts.fly_to(w, camera, duration);
+        }
+    }
+
+    /// Pans the view by `by` points, as a drag by it would.
+    pub fn pan_by(self, w: &mut dyn StateWriter, by: [f64; 2]) {
+        if let Some(parts) = w.control::<MapParts>(self.0) {
+            parts.pan_by(w, by);
+        }
+    }
+
+    /// Zooms by `delta` levels about view point `about`, the focus for
+    /// `None`.
+    pub fn zoom_by(self, w: &mut dyn StateWriter, delta: f64, about: Option<[f64; 2]>) {
+        if let Some(parts) = w.control::<MapParts>(self.0) {
+            parts.zoom_by(w, delta, about);
+        }
+    }
+
+    /// Turns the map to face `bearing`.
+    pub fn rotate_to(self, w: &mut dyn StateWriter, bearing: f64) {
+        if let Some(parts) = w.control::<MapParts>(self.0) {
+            parts.rotate_to(w, bearing);
+        }
+    }
+
+    /// Tilts the map to `pitch` degrees, `0` looking straight down.
+    pub fn tilt_to(self, w: &mut dyn StateWriter, pitch: f64) {
+        if let Some(parts) = w.control::<MapParts>(self.0) {
+            parts.tilt_to(w, pitch);
+        }
+    }
+
+    /// Draws the map with `style` from now on, rebuilding its tiles from
+    /// what they hold rather than fetching them again.
+    pub fn set_style(self, w: &mut dyn StateWriter, style: Style) {
+        if let Some(parts) = w.control::<MapParts>(self.0) {
+            parts.set_style(w, style);
+        }
+    }
+
+    /// Keeps `padding` clear at the view's edges; the camera centers in
+    /// what is left.
+    pub fn set_padding(self, w: &mut dyn StateWriter, padding: Padding) {
+        if let Some(parts) = w.control::<MapParts>(self.0) {
+            parts.set_padding(w, padding);
+        }
+    }
+
+    /// Names labels in the first of `languages` (BCP 47 tags, most wanted
+    /// first) a feature has a name in, and in its local name otherwise.
+    pub fn set_languages(self, w: &mut dyn StateWriter, languages: &[&str]) {
+        if let Some(parts) = w.control::<MapParts>(self.0) {
+            parts.set_languages(w, languages);
+        }
+    }
+
+    /// The labels showing: their texts and places.
+    pub fn labels(self, cx: &(impl Controls + ?Sized)) -> Vec<(String, LngLat)> {
+        match cx.control::<MapParts>(self.0) {
+            Some(parts) => parts.labels(),
+            None => Default::default(),
+        }
+    }
+
+    /// The labels bending along their lines, glyph by glyph, as shown.
+    pub fn label_glyphs(self, cx: &(impl Controls + ?Sized)) -> Vec<BentLabel> {
+        match cx.control::<MapParts>(self.0) {
+            Some(parts) => parts.label_glyphs(),
+            None => Default::default(),
+        }
+    }
+
+    /// The features drawn under view point `point`, within `radius` points
+    /// of it, topmost first: what a tap landed on.
+    pub fn features_at(
+        self,
+        cx: &(impl Controls + ?Sized),
+        point: [f64; 2],
+        radius: f64,
+    ) -> Vec<QueriedFeature> {
+        match cx.control::<MapParts>(self.0) {
+            Some(parts) => parts.features_at(point, radius),
+            None => Default::default(),
+        }
+    }
+
+    /// Draws `shape` over the tiles and the shapes added before it.
+    pub fn add_shape(self, w: &mut dyn StateWriter, shape: impl Into<Shape>) -> Option<ShapeId> {
+        Some(w.control::<MapParts>(self.0)?.add_shape(w, shape))
+    }
+
+    /// Replaces shape `id`; whether it was there.
+    pub fn set_shape(self, w: &mut dyn StateWriter, id: ShapeId, shape: impl Into<Shape>) -> bool {
+        match w.control::<MapParts>(self.0) {
+            Some(parts) => parts.set_shape(w, id, shape),
+            None => false,
+        }
+    }
+
+    /// Takes shape `id` away; whether it was there.
+    pub fn remove_shape(self, w: &mut dyn StateWriter, id: ShapeId) -> bool {
+        match w.control::<MapParts>(self.0) {
+            Some(parts) => parts.remove_shape(w, id),
+            None => false,
+        }
+    }
+
+    /// Shape `id` as it is.
+    pub fn shape(self, cx: &(impl Controls + ?Sized), id: ShapeId) -> Option<Shape> {
+        match cx.control::<MapParts>(self.0) {
+            Some(parts) => parts.shape(id),
+            None => None,
+        }
+    }
+
+    /// Pins `marker`, or replaces the one of its id.
+    pub fn set_marker(self, w: &mut dyn StateWriter, marker: Marker) {
+        if let Some(parts) = w.control::<MapParts>(self.0) {
+            parts.set_marker(w, marker);
+        }
+    }
+
+    /// Moves marker `id` to `at`; whether it was there.
+    pub fn move_marker(self, w: &mut dyn StateWriter, id: u64, at: LngLat) -> bool {
+        match w.control::<MapParts>(self.0) {
+            Some(parts) => parts.move_marker(w, id, at),
+            None => false,
+        }
+    }
+
+    /// Takes marker `id` away; whether it was there.
+    pub fn remove_marker(self, w: &mut dyn StateWriter, id: u64) -> bool {
+        match w.control::<MapParts>(self.0) {
+            Some(parts) => parts.remove_marker(w, id),
+            None => false,
+        }
+    }
+
+    /// The markers pinned, by id, where they are.
+    pub fn markers(self, cx: &(impl Controls + ?Sized)) -> Vec<(u64, LngLat)> {
+        match cx.control::<MapParts>(self.0) {
+            Some(parts) => parts.markers(),
+            None => Default::default(),
+        }
+    }
+
+    /// The user's position as shown.
+    pub fn puck(self, cx: &(impl Controls + ?Sized)) -> Option<Puck> {
+        match cx.control::<MapParts>(self.0) {
+            Some(parts) => parts.puck(),
+            None => None,
+        }
+    }
+
+    /// The markers shown on their own, and each cluster's size and place.
+    pub fn markers_shown(self, cx: &(impl Controls + ?Sized)) -> (Vec<u64>, Vec<(usize, LngLat)>) {
+        cx.control::<MapParts>(self.0)
+            .map(|parts| parts.markers_shown())
+            .unwrap_or_default()
+    }
+
+    /// Gathers nearby markers by `cluster`, or no longer with `None`.
+    pub fn set_cluster(self, w: &mut dyn StateWriter, cluster: Option<Cluster>) {
+        if let Some(parts) = w.control::<MapParts>(self.0) {
+            parts.set_cluster(w, cluster);
+        }
+    }
+
+    /// Shows the user's position, or no longer with `None`.
+    pub fn set_puck(self, w: &mut dyn StateWriter, puck: Option<Puck>) {
+        if let Some(parts) = w.control::<MapParts>(self.0) {
+            parts.set_puck(w, puck);
+        }
+    }
+
+    /// Shows `data` as the tile layer `name` the style's layers draw, or no
+    /// longer with `None`.
+    pub fn set_data(self, w: &mut dyn StateWriter, name: &str, data: Option<&GeoJson>) {
+        if let Some(parts) = w.control::<MapParts>(self.0) {
+            parts.set_data(w, name, data);
+        }
+    }
+
+    /// What the view holds now: the vector tiles it draws, in paint order,
+    /// the image tiles it draws, the requests in flight and the builds it
+    /// started.
+    pub fn tiles(self, cx: &(impl Controls + ?Sized)) -> Option<MapTiles> {
+        Some(cx.control::<MapParts>(self.0)?.tiles())
+    }
+
+    /// Eases to show `bounds` whole inside the view kept `padding` clear,
+    /// facing `bearing`, no closer than `max_zoom`.
+    pub fn fit_bounds(
+        self,
+        w: &mut dyn StateWriter,
+        bounds: LngLatBounds,
+        padding: Padding,
+        bearing: f64,
+        max_zoom: f64,
+    ) {
+        if let Some(parts) = w.control::<MapParts>(self.0) {
+            parts.fit_bounds(w, bounds, padding, bearing, max_zoom);
+        }
+    }
+
+    /// Shows `source`'s tiles from now on, over zooms `zooms`.
+    pub fn set_source(self, w: &mut dyn StateWriter, source: impl TileSource, zooms: (u8, u8)) {
+        if let Some(parts) = w.control::<MapParts>(self.0) {
+            parts.set_source(w, source, zooms);
+        }
+    }
+
+    /// Reads `source` for the style's raster and hillshade layers that name
+    /// `name`, or no source for them with `None`.
+    pub fn set_raster_source(
+        self,
+        w: &mut dyn StateWriter,
+        name: &str,
+        source: Option<RasterSource>,
+    ) {
+        if let Some(parts) = w.control::<MapParts>(self.0) {
+            parts.set_raster_source(w, name, source);
+        }
+    }
+}
+
+/// What a built control's handlers and its [`MapHandle`] share.
+#[derive(Clone)]
+struct MapParts {
+    core: Rc<RefCell<Core>>,
+}
+
+impl MapParts {
     fn with<R>(&self, w: &mut dyn StateWriter, f: impl FnOnce(&mut Core) -> R) -> R {
         let mut core = self.core.borrow_mut();
         let out = f(&mut core);
@@ -389,7 +659,8 @@ pub struct MapView {
     style: Arc<Style>,
     size: Sizing,
     label: String,
-    slot: Option<MapHandleSlot>,
+    /// The handle `build` binds, when the app minted one up front.
+    handle: Option<MapHandle>,
     cells: Option<CameraCells>,
     on_tap: Option<PlaceHandler>,
     on_long_press: Option<PlaceHandler>,
@@ -417,7 +688,7 @@ pub fn map_view(source: impl TileSource) -> MapView {
         style: Arc::new(builtin::openmaptiles_light()),
         size: Sizing::fill(),
         label: "Map".to_owned(),
-        slot: None,
+        handle: None,
         cells: None,
         on_tap: None,
         on_long_press: None,
@@ -502,10 +773,18 @@ impl MapView {
         self
     }
 
-    /// Fills `slot` with its [`MapHandle`] as it builds.
-    pub fn handle(mut self, slot: &MapHandleSlot) -> Self {
-        self.slot = Some(Rc::clone(slot));
+    /// Bind `handle`, minted with [`BuildCx::handle`](viso_ui::BuildCx::handle)
+    /// before the control is built, so closures declared earlier can drive it.
+    pub fn handle(mut self, handle: MapHandle) -> Self {
+        self.handle = Some(handle);
         self
+    }
+
+    /// Build the control into `cx` and return its handle.
+    pub fn build(mut self, cx: &mut BuildCx<'_>) -> MapHandle {
+        let handle = *self.handle.get_or_insert_with(|| cx.handle());
+        Component::build(&self, cx);
+        handle
     }
 
     /// Writes its camera into `cells`, and moves to what is written there.
@@ -754,10 +1033,14 @@ impl Component for MapView {
             }
         }
         cx.semantics(root, core.borrow().semantics());
-        if let Some(slot) = &self.slot {
-            *slot.borrow_mut() = Some(MapHandle {
-                core: Rc::clone(&core),
-            });
+        if let Some(bound) = self.handle {
+            cx.bind_control(
+                bound.0,
+                root.id(),
+                Rc::new(MapParts {
+                    core: Rc::clone(&core),
+                }),
+            );
         }
         let on_viewport = self.on_viewport.clone();
         let hook_core = Rc::clone(&core);

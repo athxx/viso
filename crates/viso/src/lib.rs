@@ -5320,14 +5320,13 @@ pub mod prelude {
     pub use viso_widgets::{
         Avatar, Badge, Button, ButtonStyle, Calendar, CheckBox, CheckBoxStyle, Chip, ChipStyle,
         ColorPicker, DatePicker, Grid, GridViewStyle, Icon, IconStyle, Image, ImageStyle, Label,
-        LabelStyle, Modal, ModalHandle, ModalHandleSlot, ModalStyle, NavHandle, NavHandleSlot,
-        NavigationStack, NavigationStackStyle, NumberField, Popup, PopupHandle, PopupHandleSlot,
-        PopupStyle, ProgressIndicator, RadioGroup, RadioStyle, RangeSlider, Scroll,
-        ScrollViewStyle, SearchField, SearchFieldHandle, SearchFieldHandleSlot, SegmentedControl,
-        SegmentedStyle, Sheet, SheetDetent, SheetEdge, SheetHandle, SheetHandleSlot, SheetStyle,
-        Slider, SliderStyle, Spinner, SplitAt, Splitter, SplitterStyle, Stepper, StepperStyle,
-        Tabs, TabsStyle, TextInput, TextInputStyle, TimePicker, Toast, ToastEdge, ToastHandle,
-        ToastHandleSlot, ToastStyle, Toggle, ToggleStyle, View, ViewStyle, VirtualList,
+        LabelStyle, Modal, ModalHandle, ModalStyle, NavHandle, NavigationStack,
+        NavigationStackStyle, NumberField, Popup, PopupHandle, PopupStyle, ProgressIndicator,
+        RadioGroup, RadioStyle, RangeSlider, Scroll, ScrollViewStyle, SearchField,
+        SearchFieldHandle, SegmentedControl, SegmentedStyle, Sheet, SheetDetent, SheetEdge,
+        SheetHandle, SheetStyle, Slider, SliderStyle, Spinner, SplitAt, Splitter, SplitterStyle,
+        Stepper, StepperStyle, Tabs, TabsStyle, TextInput, TextInputStyle, TimePicker, Toast,
+        ToastEdge, ToastHandle, ToastStyle, Toggle, ToggleStyle, View, ViewStyle, VirtualList,
         VirtualListViewStyle, avatar, badge, button, calendar, checkbox, chip, color_picker,
         date_picker, dot_badge, grid, icon, image, knob, label, link_label, modal,
         navigation_stack, number_field, popup, progress_bar, progress_ring, radio_group,
@@ -5338,8 +5337,7 @@ pub mod prelude {
     pub use viso_widgets::{Field, FieldValue, Fieldset, Form, field, fieldset};
     // The data grid: a table that scrolls both ways, with its handle.
     pub use viso_widgets::{
-        DataGrid, DataGridHandle, DataGridHandleSlot, GridSelect, GridSelection, data_grid,
-        grid_column,
+        DataGrid, DataGridHandle, GridSelect, GridSelection, data_grid, grid_column,
     };
     // The top-level Window control (public application lifecycle): a window
     // is not a node control — it does not enter the UI tree — so it appears as an

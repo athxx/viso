@@ -347,17 +347,14 @@ Public component handles should be typed and cheap to copy. They carry ids only,
 Current form (Architecture §78):
 
 - `viso_ui::Handle`: returned by `BuildCx` builders; `Copy`, holds only a generational `NodeId`, no type parameter;
-- per-control handles (`ModalHandle`, `PopupHandle`, `NavHandle`, `SearchFieldHandle`, `DataGridHandle`, …): ids (`StateId`/`NodeId`) plus shared cells, `Clone`; methods take `&mut EventCx` and act through state writes and deferred requests (`modal.open(ev)`);
-- control ids are allocated inside `build`, so apps pre-create a `*HandleSlot` (`Rc<RefCell<Option<H>>>`) that `build` fills once. Build-time plumbing only, not a borrow of component state.
-
-Target (not yet implemented): the control builder's `build(cx)` returns a typed `Handle<T>`, replacing `*HandleSlot`:
+- per-control handles (`ModalHandle`, `PopupHandle`, `NavHandle`, `SearchFieldHandle`, `DataGridHandle`, `MapHandle`, …): `Copy`, a generational `ControlId` alone (`viso_ui::control_handle!`). The control's builder `build(cx)` returns it; for a closure declared before the control (its own handlers included), mint it first with `cx.handle()` and pass it to `.handle(h)`. Methods act through a context: writes take `&mut EventCx` (or `&mut dyn StateWriter`), reads take any `&impl Controls` (`EventCx`, `UpdateCx`, `EffectCx`, `BuildCx`, `StateStore`). A handle whose control is gone finds nothing: writes do nothing, reads answer `None` or empty.
 
 ```rust
-let modal: Handle<Modal> = modal(content).build(cx); // Copy, ids only
+let modal = modal().content(content).build(cx); // ModalHandle: Copy, an id
 modal.open(ev);
 ```
 
-New handle APIs MUST move toward this shape (`Copy`, ids only, generation-checked, methods on `&mut EventCx`), not add more slot types.
+Each control names its own handle type: Rust's orphan rule forbids `impl viso_ui::Handle<Modal>` in `viso-widgets`, so one generic `Handle<T>` cannot carry per-control methods. The control's shared parts live in the `ControlTable` of the `StateStore`, held weakly; the control's root node owns them, so they go when it is freed. New handle APIs MUST keep this shape; do not add slot types.
 
 Do not reintroduce `Rc<RefCell<Box<dyn Widget>>>` as the standard public ownership model.
 
@@ -509,7 +506,7 @@ Changing this model requires an ADR plus benchmark evidence.
 
 ## 8.6 `Handle<T>` is identity/capability, not a state borrow
 
-Public handles (`viso_ui::Handle`, per-control handles, and the target `Handle<T>`, §6.3) MUST NOT expose long-lived `&T`/`&mut T` access to component internals. Reads/writes go through context-scoped query, generated property access, typed actions, or update APIs that preserve lifetime and invalidation accounting. Internal guards may exist but must not survive the frame/borrow scope.
+Public handles (`viso_ui::Handle` and the per-control handles, §6.3) MUST NOT expose long-lived `&T`/`&mut T` access to component internals. Reads/writes go through context-scoped query, generated property access, typed actions, or update APIs that preserve lifetime and invalidation accounting. Internal guards may exist but must not survive the frame/borrow scope.
 
 ## 8.7 Transform invalidation is separate from layout invalidation
 
@@ -1544,7 +1541,7 @@ app_main! / AppMain
     -> phase-specific contexts
 
 WidgetRef
-    -> NodeId / viso_ui::Handle / per-control handle (target: Handle<T>)
+    -> NodeId / viso_ui::Handle / per-control Copy handle (ControlId)
 
 Widget object owns everything
     -> Component + Node + Primitive

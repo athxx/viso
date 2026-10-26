@@ -94,10 +94,20 @@ Rules (as for `todo_features.md`):
 
 ## N2 — Public API
 
-- [ ] Control builders return their typed handle: `build(cx) -> Handle<T>` (`Copy`, id only),
+- [x] Control builders return their typed handle: `build(cx) -> Handle<T>` (`Copy`, id only),
   replacing the `*HandleSlot` (`Rc<RefCell<Option<H>>>`) idiom, about 50 uses. Verify that every
   widget test that used a slot compiles against the returned handle, and that the
   `ModalHandle`-style methods still act through `EventCx`.
+  - Built: `viso_ui::control` (`ControlId`, `ControlTable` in the `StateStore`, `Controls`,
+    `control_handle!`). Each control has its own `Copy` handle (a generic `Handle<T>` cannot
+    carry widget-crate methods under the orphan rule). `build(cx)` returns it, and
+    `cx.handle()` + `.handle(h)` cover forward references. The root node owns the parts and
+    the table holds them weakly. `free_node` now also drops handlers. ADR 0054 (Proposed).
+    All `*HandleSlot` aliases are gone from widgets, charts, map, the facade tests, benches
+    and `examples/map`.
+  - Verified: viso-ui lib (772), viso-widgets lib/tests/doctests, viso-charts and viso-map
+    tests, and the facade widget tests (headless and default) pass. Clippy `--all-targets` is
+    clean on all of them and on `examples/map`.
 - [ ] A typed Rust state handle `State<T>` over `StateId` for the `StateValue` kinds
   (`cx.state_of(0i32)`, typed `get`/`set`). Verify that `examples/01-counter` has no `StateValue`
   match.

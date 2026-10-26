@@ -32,9 +32,9 @@ use std::time::Duration;
 
 use viso_ui::video_controls::{VideoControls, VideoControlsStyle, VideoLabels};
 use viso_ui::{
-    Alignment2D, AssetFit, BoxStyle, BuildCx, Component, EventCx, Handle, LeafStyle, Length,
-    NodeId, Notice, NoticeKinds, Playback, Rgba, Role, Semantics, Sizing, StackStyle, StateStore,
-    VideoSource, VideoStatus,
+    Alignment2D, AssetFit, BoxStyle, BuildCx, Component, Controls, EventCx, Handle, LeafStyle,
+    Length, NodeId, Notice, NoticeKinds, Playback, Rgba, Role, Semantics, Sizing, StackStyle,
+    StateStore, VideoSource, VideoStatus,
 };
 
 use crate::image::ImageLoad;
@@ -69,7 +69,8 @@ pub struct Video {
     on_load: Option<OnLoad>,
     on_progress: Option<OnProgress>,
     on_ended: Option<OnEnded>,
-    slot: Option<VideoHandleSlot>,
+    /// The handle `build` binds, when the app minted one up front.
+    handle: Option<VideoHandle>,
     /// Whether the picture shows mirrored; `None` mirrors a camera facing
     /// the user.
     mirror: Option<bool>,
@@ -86,55 +87,77 @@ type OnProgress = Rc<RefCell<dyn FnMut(VideoStatus, &mut StateStore)>>;
 /// A [`Video::on_ended`] handler.
 type OnEnded = Rc<RefCell<dyn FnMut(&mut StateStore)>>;
 
-/// Where a built [`Video`] leaves its [`VideoHandle`].
-pub type VideoHandleSlot = Rc<RefCell<Option<VideoHandle>>>;
+viso_ui::control_handle! {
+    /// A handle an application captures to steer a built video from its own
+    /// handlers and read where it is: `Copy`, an id alone. [`Video::build`]
+    /// returns it, or mint one first with [`BuildCx::handle`] for closures
+    /// declared before the video. Once the video is gone, every call is a
+    /// no-op.
+    pub struct VideoHandle;
+}
 
-/// A handle an application captures to steer a built video from its own
-/// handlers and read where it is. Cheap to copy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct VideoHandle(NodeId);
+/// What a built video's handle reaches: its leaf.
+struct VideoNode(NodeId);
 
 impl VideoHandle {
-    /// The video's node.
-    pub fn node(self) -> NodeId {
-        self.0
+    /// The video's node, while it lives.
+    pub fn node(self, cx: &impl Controls) -> Option<NodeId> {
+        Some(cx.control::<VideoNode>(self.0)?.0)
     }
 
     /// Play from where it is; from the start once it ended.
     pub fn play(self, ev: &mut EventCx<'_>) {
-        ev.play_video(self.0, true);
+        let Some(node) = self.node(ev) else {
+            return;
+        };
+        ev.play_video(node, true);
     }
 
     /// Hold it where it is.
     pub fn pause(self, ev: &mut EventCx<'_>) {
-        ev.play_video(self.0, false);
+        let Some(node) = self.node(ev) else {
+            return;
+        };
+        ev.play_video(node, false);
     }
 
     /// Play it if paused, pause it if playing.
     pub fn toggle(self, ev: &mut EventCx<'_>) {
-        let playing = ev.playback(self.0).is_some_and(|p| p.playing);
-        ev.play_video(self.0, !playing);
+        let Some(node) = self.node(ev) else {
+            return;
+        };
+        let playing = ev.playback(node).is_some_and(|p| p.playing);
+        ev.play_video(node, !playing);
     }
 
     /// Move it to `time`; the picture there shows even while it is paused.
     pub fn seek(self, ev: &mut EventCx<'_>, time: Duration) {
-        ev.seek_video(self.0, time);
+        let Some(node) = self.node(ev) else {
+            return;
+        };
+        ev.seek_video(node, time);
     }
 
     /// Show it full screen, or bring it back.
     pub fn set_fullscreen(self, ev: &mut EventCx<'_>, on: bool) {
-        ev.set_fullscreen(self.0, on);
+        let Some(node) = self.node(ev) else {
+            return;
+        };
+        ev.set_fullscreen(node, on);
     }
 
     /// Ask it to play as `playback` says.
     pub fn set_playback(self, ev: &mut EventCx<'_>, playback: Playback) {
-        ev.set_playback(self.0, playback);
+        let Some(node) = self.node(ev) else {
+            return;
+        };
+        ev.set_playback(node, playback);
     }
 
     /// What its player reports; `None` where the handler cannot see the
     /// tree.
     pub fn status(self, ev: &EventCx<'_>) -> Option<VideoStatus> {
-        ev.video_status(self.0)
+        ev.video_status(self.node(ev)?)
     }
 }
 
@@ -157,7 +180,7 @@ pub fn video(source: impl Into<VideoSource>) -> Video {
         on_load: None,
         on_progress: None,
         on_ended: None,
-        slot: None,
+        handle: None,
         mirror: None,
         controls: None,
     }
@@ -282,10 +305,23 @@ impl Video {
         self
     }
 
-    /// Leave the built video's [`VideoHandle`] in `slot`.
-    pub fn handle(mut self, slot: &VideoHandleSlot) -> Self {
-        self.slot = Some(Rc::clone(slot));
+    /// Bind `handle`, minted with [`BuildCx::handle`] before the video is
+    /// built, so closures declared earlier can drive it.
+    pub fn handle(mut self, handle: VideoHandle) -> Self {
+        self.handle = Some(handle);
         self
+    }
+
+    /// Build the video into `cx` and return its handle.
+    pub fn build(mut self, cx: &mut BuildCx<'_>) -> VideoHandle {
+        let handle = self.bound_handle(cx);
+        Component::build(&self, cx);
+        handle
+    }
+
+    /// The handle `build` binds: the app's, or one minted now.
+    pub(crate) fn bound_handle(&mut self, cx: &mut BuildCx<'_>) -> VideoHandle {
+        *self.handle.get_or_insert_with(|| cx.handle())
     }
 
     /// The leaf showing the pictures, sized `size`.
@@ -333,8 +369,8 @@ impl Video {
             };
             cx.watch(handle, kinds, Box::new(report));
         }
-        if let Some(slot) = &self.slot {
-            *slot.borrow_mut() = Some(VideoHandle(handle.id()));
+        if let Some(bound) = self.handle {
+            cx.bind_control(bound.0, handle.id(), Rc::new(VideoNode(handle.id())));
         }
         handle
     }
@@ -412,14 +448,12 @@ mod tests {
 
     #[test]
     fn a_video_is_one_leaf_showing_its_source_as_it_is_asked_to_play() {
-        let slot = VideoHandleSlot::default();
         let widget = video(VideoSource::url("https://x/a.m3u8"))
             .playing(true)
             .muted(true)
             .volume(3.0)
             .fit(AssetFit::Cover)
-            .label("Intro")
-            .handle(&slot);
+            .label("Intro");
         let (store, root) = built(widget);
         assert_eq!(store.arena().children(root).count(), 0);
         let entry = store.videos().get(root).unwrap();
@@ -441,27 +475,25 @@ mod tests {
             })
         ));
         assert_eq!(store.semantics(root).unwrap().role, Role::Image);
-        assert_eq!(slot.borrow().unwrap().node(), root);
     }
 
     #[test]
     fn a_build_asking_the_same_again_leaves_a_pause_from_a_handler_alone() {
         let source = VideoSource::file("a.mp4");
-        let slot = VideoHandleSlot::default();
         let mut store = NodeStore::new();
-        let build = |store: &mut NodeStore, playing: bool| {
-            let mut cx = BuildCx::new(store);
+        let (mut states, bindings) = (StateStore::new(), BindingTable::new());
+        let handle: VideoHandle = states.handle();
+        let build = |store: &mut NodeStore, states: &mut StateStore, playing: bool| {
+            let mut cx = BuildCx::new(store).with_states(states);
             video(source.clone())
                 .playing(playing)
-                .handle(&slot)
+                .handle(handle)
                 .build(&mut cx);
         };
-        build(&mut store, true);
-        let handle = slot.borrow().unwrap();
-        let node = handle.node();
+        build(&mut store, &mut states, true);
+        let node = handle.node(&states).expect("the video lives");
 
         // A handler pauses it.
-        let (mut states, bindings) = (StateStore::new(), BindingTable::new());
         let mut ev = EventCx::__new(&mut states, &bindings);
         handle.pause(&mut ev);
         handle.seek(&mut ev, Duration::from_secs(2));

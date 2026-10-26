@@ -184,43 +184,47 @@ pub fn synthetic(tile: TileId) -> Vec<u8> {
     t.finish()
 }
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
 use viso::ui::{Alignment2D, BuildCx, FrameClient, Key, Sizing, StackStyle};
-use viso_map::MapHandleSlot;
+use viso_map::MapHandle;
+
+/// Where a test's setup leaves the handle of the map it builds.
+pub type Slot = Rc<Cell<Option<MapHandle>>>;
 
 thread_local! {
-    static WATCHED: RefCell<Vec<MapHandleSlot>> = const { RefCell::new(Vec::new()) };
+    static WATCHED: RefCell<Vec<Slot>> = const { RefCell::new(Vec::new()) };
 }
 
 /// A slot for a map's handle whose map [`patient`] waits on.
-pub fn slot() -> MapHandleSlot {
-    let slot = MapHandleSlot::default();
+pub fn slot() -> Slot {
+    let slot = Slot::default();
     WATCHED.with(|w| w.borrow_mut().push(Rc::clone(&slot)));
     slot
+}
+
+/// Mints the handle of the map `cx` builds next and leaves it in `slot`.
+pub fn bind(cx: &mut BuildCx<'_>, slot: &Slot) -> MapHandle {
+    let handle = cx.handle();
+    slot.set(Some(handle));
+    handle
 }
 
 /// How long a frame waits while a watched map has work in flight.
 const PATIENCE: Duration = Duration::from_millis(3);
 
 /// Gives the maps' work off the loop the time a display's frame would:
-/// each frame waits a little while a watched map has fetches, builds or
-/// raises in flight, so a scripted run's frames do not outrun its workers.
-/// It asks for no frame of its own.
+/// each frame waits a little while a watched map is built, so a scripted
+/// run's frames do not outrun its workers. A frame client reads no state, so
+/// it cannot ask a map what it has in flight; it waits on every frame. It
+/// asks for no frame of its own.
 struct Patience;
 
 impl FrameClient for Patience {
     fn frame(&mut self, _dt: f64) {
-        let busy = WATCHED.with(|w| {
-            w.borrow().iter().any(|s| {
-                s.try_borrow()
-                    .ok()
-                    .and_then(|h| h.as_ref().map(|h| h.tiles().in_flight > 0))
-                    .unwrap_or(false)
-            })
-        });
+        let busy = WATCHED.with(|w| w.borrow().iter().any(|s| s.get().is_some()));
         if busy {
             std::thread::sleep(PATIENCE);
         }

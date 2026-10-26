@@ -24,18 +24,16 @@
 //! ```
 //! use std::cell::RefCell;
 //! use std::rc::Rc;
-//! use viso_widgets::{SheetDetent, SheetEdge, SheetHandleSlot, sheet};
+//! use viso_widgets::{SheetDetent, SheetEdge, sheet};
 //! use viso_ui::{SemanticProjector, BuildCx, BindingTable, Component, LeafStyle, NodeStore, StateStore, TextEdits, VirtualLists};
 //! use viso_ui::{BoxStyle, Sizing};
 //!
-//! let handle: SheetHandleSlot = Rc::new(RefCell::new(None));
 //! let control = sheet()
 //!     .edge(SheetEdge::Bottom)
 //!     .extent(640.0)
 //!     .detents([SheetDetent::Fraction(0.5), SheetDetent::Full])
 //!     .content(|cx| { cx.leaf(LeafStyle { size: Sizing::fill(), style: BoxStyle::NONE }); })
-//!     .on_dismiss(|_ev| { /* the sheet was dismissed */ })
-//!     .handle(&handle);
+//!     .on_dismiss(|_ev| { /* the sheet was dismissed */ });
 //!
 //! // Sheet authors reactive state, so it builds through a reactive cx.
 //! let mut store = NodeStore::new();
@@ -45,17 +43,17 @@
 //! let mut text_edits = TextEdits::new();
 //! let mut projectors = SemanticProjector::new();
 //! let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists, &mut text_edits, &mut projectors);
-//! control.build(&mut cx);
-//! // `handle` is now filled; the app can `handle.borrow().clone().unwrap().open(ev)` from its trigger.
+//! let handle = control.build(&mut cx);
+//! // A handler calls the handle's methods; `handle` is `Copy`.
 //! ```
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use viso_ui::{
-    Align, Alignment2D, Axis, BoxStyle, BuildCx, Component, DirtyClass, DispatchPhase, EventCx,
-    FlexStyle, Inset, Justify, Key, LeafStyle, Length, NodeId, PointerPhase, Rgba, Role, Semantics,
-    Sizing, StackStyle, StateId, StateValue,
+    Align, Alignment2D, Axis, BoxStyle, BuildCx, Component, Controls, DirtyClass, DispatchPhase,
+    EventCx, FlexStyle, Inset, Justify, Key, LeafStyle, Length, NodeId, PointerPhase, Rgba, Role,
+    Semantics, Sizing, StackStyle, StateId, StateValue,
 };
 pub use viso_ui::{SheetDetent, SheetEdge};
 
@@ -69,16 +67,56 @@ type DetentHandler = Rc<RefCell<Option<Box<dyn FnMut(&mut EventCx<'_>, usize)>>>
 /// A build-time content builder: the panel's body.
 type ContentBuilder = Box<dyn Fn(&mut BuildCx<'_>)>;
 
-/// A shared slot an application creates, passes to [`Sheet::handle`], and reads
-/// after `build` to obtain the control's [`SheetHandle`]; `build` fills it once
-/// the ids exist — the same deferred-fill idiom as [`Modal`](crate::Modal).
-pub type SheetHandleSlot = Rc<RefCell<Option<SheetHandle>>>;
+viso_ui::control_handle! {
+    /// Opens, closes or moves a built [`Sheet`] from an event handler. An open
+    /// when already open, or a close when already closed, is a no-op.
+    ///
+    /// `Copy`, an id alone: `build` returns it, or mint one first with
+    /// [`BuildCx::handle`](viso_ui::BuildCx::handle) for closures declared
+    /// before the control. Once the control is gone, every call is a no-op.
+    pub struct SheetHandle;
+}
 
-/// Opens, closes or moves a built [`Sheet`] from an event handler. Cheap to
-/// clone. An open when already open, or a close when already closed, is a
-/// no-op.
+impl SheetHandle {
+    /// Open the sheet: it shows, takes the focus and springs in.
+    pub fn open(self, ev: &mut EventCx<'_>) {
+        if let Some(parts) = ev.control::<SheetParts>(self.0) {
+            parts.open(ev);
+        }
+    }
+
+    /// Close the sheet: it springs out, then hides and gives the focus
+    /// back. Fires `on_dismiss`.
+    pub fn close(self, ev: &mut EventCx<'_>) {
+        if let Some(parts) = ev.control::<SheetParts>(self.0) {
+            parts.close(ev);
+        }
+    }
+
+    /// Close it if open, open it if closed.
+    pub fn toggle(self, ev: &mut EventCx<'_>) {
+        if let Some(parts) = ev.control::<SheetParts>(self.0) {
+            parts.toggle(ev);
+        }
+    }
+
+    /// Bring it to rest at detent `detent`, by its place among its detents
+    /// least first.
+    pub fn set_detent(self, ev: &mut EventCx<'_>, detent: usize) {
+        if let Some(parts) = ev.control::<SheetParts>(self.0) {
+            parts.set_detent(ev, detent);
+        }
+    }
+
+    /// The sheet's node: the layer whose child is the panel.
+    pub fn node(self, cx: &impl Controls) -> Option<NodeId> {
+        Some(cx.control::<SheetParts>(self.0)?.node())
+    }
+}
+
+/// What a built control's handlers and its [`SheetHandle`] share.
 #[derive(Clone)]
-pub struct SheetHandle {
+struct SheetParts {
     /// The reactive cell holding whether it is open.
     open: StateId,
     /// The sheet: the layer whose child is the panel.
@@ -86,7 +124,7 @@ pub struct SheetHandle {
     on_dismiss: SharedDismiss,
 }
 
-impl SheetHandle {
+impl SheetParts {
     /// Open the sheet: it shows, takes the focus and springs in.
     pub fn open(&self, ev: &mut EventCx<'_>) {
         set_open(self, ev, true);
@@ -180,7 +218,8 @@ pub struct Sheet {
     detent: usize,
     on_dismiss: SharedDismiss,
     on_detent: DetentHandler,
-    handle_slot: SheetHandleSlot,
+    /// The handle `build` binds, when the app minted one up front.
+    handle: Option<SheetHandle>,
 }
 
 /// An empty [`Sheet`] against the bottom edge, all of its panel showing when
@@ -193,7 +232,7 @@ pub fn sheet() -> Sheet {
         detent: 0,
         on_dismiss: Rc::new(RefCell::new(None)),
         on_detent: Rc::new(RefCell::new(None)),
-        handle_slot: Rc::new(RefCell::new(None)),
+        handle: None,
     }
 }
 
@@ -267,16 +306,24 @@ impl Sheet {
         self
     }
 
-    /// Fill `slot` with its [`SheetHandle`] as it builds.
-    pub fn handle(mut self, slot: &SheetHandleSlot) -> Self {
-        self.handle_slot = slot.clone();
+    /// Bind `handle`, minted with [`BuildCx::handle`](viso_ui::BuildCx::handle)
+    /// before the control is built, so closures declared earlier can drive it.
+    pub fn handle(mut self, handle: SheetHandle) -> Self {
+        self.handle = Some(handle);
         self
+    }
+
+    /// Build the control into `cx` and return its handle.
+    pub fn build(mut self, cx: &mut BuildCx<'_>) -> SheetHandle {
+        let handle = *self.handle.get_or_insert_with(|| cx.handle());
+        Component::build(&self, cx);
+        handle
     }
 }
 
 /// Opens or closes the sheet `h` names, if that changes it; a close fires
 /// `on_dismiss`.
-fn set_open(h: &SheetHandle, ev: &mut EventCx<'_>, next: bool) {
+fn set_open(h: &SheetParts, ev: &mut EventCx<'_>, next: bool) {
     let cur = matches!(ev.get(h.open), Some(StateValue::Bool(true)));
     if cur == next {
         return;
@@ -380,7 +427,7 @@ impl Component for Sheet {
         cx.bind(open, root, DirtyClass::PAINT);
         cx.semantics(root, Semantics::role(Role::Group));
 
-        let handle = SheetHandle {
+        let handle = SheetParts {
             open,
             sheet: root.id(),
             on_dismiss: self.on_dismiss.clone(),
@@ -418,7 +465,9 @@ impl Component for Sheet {
                 set_open(&presses, ev, false);
             }
         });
-        *self.handle_slot.borrow_mut() = Some(handle);
+        if let Some(bound) = self.handle {
+            cx.bind_control(bound.0, root.id(), Rc::new(handle));
+        }
     }
 }
 

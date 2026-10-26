@@ -19,16 +19,14 @@
 //! Run release (`CARGO_TARGET_DIR=/tmp/rust_tmp cargo bench -p viso-widgets`);
 //! criterion defaults to a release profile. Debug timing is not a perf result.
 
-use std::cell::RefCell;
 use std::hint::black_box;
-use std::rc::Rc;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use viso_ui::{
-    BindingTable, BoxStyle, BuildCx, Component, LeafStyle, NodeStore, Rect, SemanticProjector,
-    Sizing, StateStore, TextEdits, VirtualLists, paint_tree,
+    BindingTable, BoxStyle, BuildCx, LeafStyle, NodeStore, Rect, SemanticProjector, Sizing,
+    StateStore, TextEdits, VirtualLists, paint_tree,
 };
-use viso_widgets::{NavHandleSlot, navigation_stack};
+use viso_widgets::{NavHandle, navigation_stack};
 
 const W: f32 = 400.0;
 const H: f32 = 240.0;
@@ -70,7 +68,7 @@ fn page(cx: &mut BuildCx<'_>) {
 fn build_scene() -> (NodeStore, viso_ui::NodeId) {
     let mut store = NodeStore::new();
     let mut r = Reactive::new();
-    let slot: NavHandleSlot = Rc::new(RefCell::new(None));
+    let slot: NavHandle = r.states.handle();
     let root = {
         let mut cx = BuildCx::with_reactive(
             &mut store,
@@ -84,7 +82,7 @@ fn build_scene() -> (NodeStore, viso_ui::NodeId) {
             .page(page)
             .page(page)
             .page(page)
-            .handle(&slot)
+            .handle(slot)
             .on_navigate(|_, _| {})
             .build(&mut cx);
         cx.root().expect("navigation stack declares a root")
@@ -107,7 +105,7 @@ fn bench_navigation_stack(c: &mut Criterion) {
         b.iter(|| {
             let mut store = NodeStore::new();
             let mut r = Reactive::new();
-            let slot: NavHandleSlot = Rc::new(RefCell::new(None));
+            let slot: NavHandle = r.states.handle();
             let mut cx = BuildCx::with_reactive(
                 &mut store,
                 &mut r.states,
@@ -120,7 +118,7 @@ fn bench_navigation_stack(c: &mut Criterion) {
                 .page(page)
                 .page(page)
                 .page(page)
-                .handle(&slot)
+                .handle(slot)
                 .on_navigate(|_, _| {})
                 .build(&mut cx);
             black_box(&store);

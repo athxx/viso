@@ -33,10 +33,9 @@ use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use viso_ui::{
-    BindingTable, BuildCx, Component, NodeStore, SemanticProjector, StateStore, TextEdits,
-    VirtualLists,
+    BindingTable, BuildCx, NodeStore, SemanticProjector, StateStore, TextEdits, VirtualLists,
 };
-use viso_widgets::{FileTree, FileTreeHandle, FileTreeHandleSlot, NodeKey, TreeNode, file_tree};
+use viso_widgets::{FileTree, FileTreeHandle, NodeKey, TreeNode, file_tree};
 
 /// The number of children under the single root in the wide fixtures — a realistic
 /// large directory listing.
@@ -76,10 +75,8 @@ fn wide_roots() -> Vec<TreeNode> {
 /// A `FileTree` over the wide fixture with a handle slot wired, so a bench can drive
 /// the public reconcile. The tree starts open so a toggle collapses the whole
 /// listing (the reflatten shrinks from `WIDE + 1` rows to one).
-fn wide_tree(slot: &FileTreeHandleSlot) -> FileTree {
-    file_tree(wide_roots())
-        .open(NodeKey(0))
-        .handle(FileTreeHandleSlot::clone(slot))
+fn wide_tree(slot: FileTreeHandle) -> FileTree {
+    file_tree(wide_roots()).open(NodeKey(0)).handle(slot)
 }
 
 /// Build a `FileTree` into a fresh store, returning the store, the reactive stores
@@ -87,7 +84,7 @@ fn wide_tree(slot: &FileTreeHandleSlot) -> FileTree {
 fn build_tree_scene() -> (NodeStore, Reactive, FileTreeHandle) {
     let mut store = NodeStore::new();
     let mut r = Reactive::new();
-    let slot: FileTreeHandleSlot = FileTreeHandleSlot::default();
+    let slot: FileTreeHandle = r.states.handle();
     {
         let mut cx = BuildCx::with_reactive(
             &mut store,
@@ -97,9 +94,9 @@ fn build_tree_scene() -> (NodeStore, Reactive, FileTreeHandle) {
             &mut r.text_edits,
             &mut r.projectors,
         );
-        wide_tree(&slot).build(&mut cx);
+        wide_tree(slot).build(&mut cx);
     }
-    let handle = slot.borrow().clone().expect("build filled the handle slot");
+    let handle = slot;
     (store, r, handle)
 }
 
@@ -111,7 +108,7 @@ fn bench_file_tree(c: &mut Criterion) {
         b.iter(|| {
             let mut store = NodeStore::new();
             let mut r = Reactive::new();
-            let slot: FileTreeHandleSlot = FileTreeHandleSlot::default();
+            let slot: FileTreeHandle = r.states.handle();
             let mut cx = BuildCx::with_reactive(
                 &mut store,
                 &mut r.states,
@@ -120,9 +117,7 @@ fn bench_file_tree(c: &mut Criterion) {
                 &mut r.text_edits,
                 &mut r.projectors,
             );
-            file_tree(wide_roots())
-                .handle(FileTreeHandleSlot::clone(&slot))
-                .build(&mut cx);
+            file_tree(wide_roots()).handle(slot).build(&mut cx);
             black_box(&store);
         });
     });
@@ -143,7 +138,7 @@ fn bench_file_tree(c: &mut Criterion) {
                 let mut cx = viso_ui::EventCx::__new_pointer(&mut r.states, &r.bindings, &ev);
                 handle.toggle(&mut cx, NodeKey(0));
             }
-            handle.reconcile(&mut store, &mut r.lists);
+            handle.reconcile(&r.states, &mut store, &mut r.lists);
             black_box(&store);
         });
     });
@@ -161,7 +156,7 @@ fn bench_file_tree(c: &mut Criterion) {
                 let mut cx = viso_ui::EventCx::__new_key(&mut r.states, &r.bindings, &key);
                 handle.on_key(&mut cx, &key);
             }
-            handle.reconcile(&mut store, &mut r.lists);
+            handle.reconcile(&r.states, &mut store, &mut r.lists);
             black_box(&store);
         });
     });

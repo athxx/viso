@@ -15,7 +15,7 @@ use viso::platform::{
     RawPointer, RawScroll, ScrollPhase, WindowId,
 };
 use viso::prelude::*;
-use viso::ui::{BuildCx, Component, WindowConfig};
+use viso::ui::{BuildCx, WindowConfig};
 use viso_map::style::builtin;
 use viso_map::{Camera, LngLat, MapHandle, MapView, TileId, map_view};
 
@@ -100,7 +100,7 @@ fn run_with(
                 map_view(|tile: TileId| viso_map::Reply::ready(Ok(Some(support::synthetic(tile)))))
                     .camera(camera)
                     .style(style)
-                    .handle(&s);
+                    .handle(support::bind(cx, &s));
             configure(view).build(cx);
         }))
     });
@@ -108,7 +108,7 @@ fn run_with(
     all.extend(script);
     all.extend(redraws(4));
     let app = drive_scripted::<MapApp>(all, STEP);
-    let handle = slot.borrow().clone().expect("built");
+    let handle = slot.get().expect("built");
     (app, handle)
 }
 
@@ -132,7 +132,7 @@ fn tiles_load_off_the_loop_and_draw_at_several_zooms_and_turns() {
         (14.0, 0.0, true),
     ] {
         let (app, handle) = run(berlin(zoom, bearing), dark, vec![]);
-        let tiles = handle.tiles();
+        let tiles = handle.tiles(app.states()).expect("the map");
         assert!(!tiles.drawn.is_empty(), "z{zoom}: {tiles:?}");
         let band = (zoom + 0.5).floor() as u8;
         assert!(
@@ -175,9 +175,9 @@ fn a_drag_pans_the_camera_by_what_it_moved_and_uploads_nothing() {
     let start = berlin(13.0, 0.0);
     let (app, handle) = run(start, false, script);
     probe_frames(None);
-    let moved = handle.camera();
+    let moved = handle.camera(app.states()).expect("the map");
     // A 60-point drag right moves the camera 60 points west.
-    let before = handle.view();
+    let before = handle.view(app.states()).expect("the map");
     let mut v = before;
     v.camera = start;
     let p = v.project(moved.center);
@@ -229,14 +229,20 @@ fn real_tiles_draw_through_the_view() {
                 .camera(Camera::new(middle(z, x, y), zoom).with_bearing(bearing))
                 .style(style)
                 .languages(&["en"])
-                .handle(&s)
+                .handle(support::bind(cx, &s))
                 .build(cx);
             }))
         });
         let app = drive_scripted::<MapApp>(redraws(40), STEP);
-        let handle = slot.borrow().clone().expect("built");
-        assert!(!handle.tiles().drawn.is_empty());
-        assert!(!handle.labels().is_empty(), "{name} z{zoom}");
+        let handle = slot.get().expect("built");
+        assert!(
+            !handle
+                .tiles(app.states())
+                .expect("the map")
+                .drawn
+                .is_empty()
+        );
+        assert!(!handle.labels(app.states()).is_empty(), "{name} z{zoom}");
         picture(
             &app,
             &format!(
@@ -282,8 +288,8 @@ fn key(code: KeyCode, m: Modifiers) -> Vec<RawEvent> {
 }
 
 /// Where `place` showed in `view` before the gestures moved it.
-fn shown(handle: &MapHandle, place: LngLat) -> [f64; 2] {
-    handle.view().project(place)
+fn shown(app: &DrivenApp<MapApp>, handle: MapHandle, place: LngLat) -> [f64; 2] {
+    handle.view(app.states()).expect("the map").project(place)
 }
 
 fn near(a: [f64; 2], b: [f64; 2], tol: f64) -> bool {
@@ -306,10 +312,10 @@ fn two_fingers_zoom_about_their_middle_and_turn_with_it() {
         script.push(touch(2, 320.0 + r, 240.0, PointerPhase::Moved));
         script.push(RawEvent::RedrawRequested { window: WIN });
     }
-    let (_, handle) = run(start, false, script.clone());
-    let c = handle.camera();
+    let (app, handle) = run(start, false, script.clone());
+    let c = handle.camera(app.states()).expect("the map");
     assert!((c.zoom - 13.0).abs() < 0.05, "{c:?}");
-    assert!(near(shown(&handle, held), [320.0, 240.0], 1.0));
+    assert!(near(shown(&app, handle, held), [320.0, 240.0], 1.0));
     // Turned 40 degrees clockwise as well, the map turns with them.
     for i in 1..=8 {
         let a = (5.0 * f64::from(i)).to_radians();
@@ -331,9 +337,9 @@ fn two_fingers_zoom_about_their_middle_and_turn_with_it() {
     script.push(touch(1, 320.0 - 76.6, 240.0 - 64.3, PointerPhase::Up));
     script.push(touch(2, 320.0 + 76.6, 240.0 + 64.3, PointerPhase::Up));
     let (app, handle) = run(start, false, script);
-    let c = handle.camera();
+    let c = handle.camera(app.states()).expect("the map");
     assert!((c.bearing + 40.0).abs() < 1.5, "{c:?}");
-    assert!(near(shown(&handle, held), [320.0, 240.0], 1.5));
+    assert!(near(shown(&app, handle, held), [320.0, 240.0], 1.5));
     picture(&app, "gesture-pinch-turn");
 }
 
@@ -363,8 +369,8 @@ fn a_turn_let_go_near_north_settles_north() {
     }
     script.push(touch(1, 220.0, 240.0, PointerPhase::Up));
     script.push(touch(2, 420.0, 240.0, PointerPhase::Up));
-    let (_, handle) = run(start, false, script);
-    assert_eq!(handle.camera().bearing, 0.0);
+    let (app, handle) = run(start, false, script);
+    assert_eq!(handle.camera(app.states()).expect("the map").bearing, 0.0);
 }
 
 #[test]
@@ -381,10 +387,10 @@ fn a_wheel_notch_zooms_about_the_pointer() {
         modifiers: Modifiers::default(),
         phase: ScrollPhase::None,
     });
-    let (_, handle) = run(start, false, vec![wheel]);
-    let c = handle.camera();
+    let (app, handle) = run(start, false, vec![wheel]);
+    let c = handle.camera(app.states()).expect("the map");
     assert!((c.zoom - 13.0).abs() < 1e-6, "{c:?}");
-    assert!(near(shown(&handle, held), at, 0.5));
+    assert!(near(shown(&app, handle, held), at, 0.5));
 }
 
 #[test]
@@ -406,10 +412,10 @@ fn a_trackpad_scroll_pans_and_its_pinch_zooms() {
         scroll(20.0, ScrollPhase::Changed),
         scroll(0.0, ScrollPhase::Ended),
     ];
-    let (_, handle) = run(start, false, script);
+    let (app, handle) = run(start, false, script);
     // Scrolling 30 points right reveals what lay 30 points to the right.
     let was = viso_map::View::new(start, [W, H]).unproject([350.0, 240.0]);
-    assert!(near(shown(&handle, was), [320.0, 240.0], 0.5));
+    assert!(near(shown(&app, handle, was), [320.0, 240.0], 0.5));
     let gesture = |scale: f64, phase| {
         RawEvent::Gesture(RawGesture {
             window: WIN,
@@ -426,8 +432,8 @@ fn a_trackpad_scroll_pans_and_its_pinch_zooms() {
         gesture(2.0, GesturePhase::Changed),
         gesture(1.0, GesturePhase::Ended),
     ];
-    let (_, handle) = run(start, false, script);
-    assert!((handle.camera().zoom - 13.0).abs() < 1e-3);
+    let (app, handle) = run(start, false, script);
+    assert!((handle.camera(app.states()).expect("the map").zoom - 13.0).abs() < 1e-3);
 }
 
 #[test]
@@ -443,17 +449,17 @@ fn a_double_tap_zooms_in_and_a_two_finger_tap_zooms_out() {
         click(PointerPhase::Down),
         click(PointerPhase::Up),
     ];
-    let (_, handle) = run(start, false, script);
-    assert!((handle.camera().zoom - 13.0).abs() < 1e-6);
-    assert!(near(shown(&handle, held), at, 0.5));
+    let (app, handle) = run(start, false, script);
+    assert!((handle.camera(app.states()).expect("the map").zoom - 13.0).abs() < 1e-6);
+    assert!(near(shown(&app, handle, held), at, 0.5));
     let script = vec![
         touch(1, 300.0, 240.0, PointerPhase::Down),
         touch(2, 340.0, 240.0, PointerPhase::Down),
         touch(1, 300.0, 240.0, PointerPhase::Up),
         touch(2, 340.0, 240.0, PointerPhase::Up),
     ];
-    let (_, handle) = run(start, false, script);
-    assert!((handle.camera().zoom - 11.0).abs() < 1e-6);
+    let (app, handle) = run(start, false, script);
+    assert!((handle.camera(app.states()).expect("the map").zoom - 11.0).abs() < 1e-6);
 }
 
 #[test]
@@ -471,25 +477,25 @@ fn keys_pan_zoom_and_turn_the_focused_map() {
     let mut script = focus.clone();
     script.extend(key(KeyCode::Equal, none));
     script.extend(redraws(30));
-    let (_, handle) = run(start, false, script);
-    assert!((handle.camera().zoom - 13.0).abs() < 1e-6);
+    let (app, handle) = run(start, false, script);
+    assert!((handle.camera(app.states()).expect("the map").zoom - 13.0).abs() < 1e-6);
     let mut script = focus.clone();
     script.extend(key(KeyCode::Right, none));
     script.extend(redraws(30));
-    let (_, handle) = run(start, false, script);
+    let (app, handle) = run(start, false, script);
     let was = viso_map::View::new(start, [W, H]).unproject([420.0, 240.0]);
-    assert!(near(shown(&handle, was), [320.0, 240.0], 0.5));
+    assert!(near(shown(&app, handle, was), [320.0, 240.0], 0.5));
     let mut script = focus;
     script.extend(key(KeyCode::Right, shift));
     script.extend(redraws(30));
     script.extend(key(KeyCode::Right, shift));
     script.extend(redraws(30));
-    let (_, handle) = run(start, false, script.clone());
-    assert!((handle.camera().bearing - 30.0).abs() < 1e-6);
+    let (app, handle) = run(start, false, script.clone());
+    assert!((handle.camera(app.states()).expect("the map").bearing - 30.0).abs() < 1e-6);
     script.extend(key(KeyCode::N, none));
     script.extend(redraws(30));
-    let (_, handle) = run(start, false, script);
-    assert_eq!(handle.camera().bearing, 0.0);
+    let (app, handle) = run(start, false, script);
+    assert_eq!(handle.camera(app.states()).expect("the map").bearing, 0.0);
 }
 
 thread_local! {
@@ -518,7 +524,7 @@ fn taps_long_presses_and_rests_reach_the_app() {
     script.push(mouse(360.0, 240.0, PointerPhase::Moved, none));
     script.push(mouse(360.0, 240.0, PointerPhase::Up, none));
     script.extend(redraws(30));
-    let (_, handle) = run_with(start, false, script, |m| {
+    let (app, handle) = run_with(start, false, script, |m| {
         m.on_tap(|_, p| HEARD.with(|h| h.borrow_mut().push(("tap", p.place))))
             .on_long_press(|_, p| HEARD.with(|h| h.borrow_mut().push(("long", p.place))))
             .on_viewport(|_, c| HEARD.with(|h| h.borrow_mut().push(("rest", c.center))))
@@ -532,7 +538,10 @@ fn taps_long_presses_and_rests_reach_the_app() {
             "{kind}"
         );
     }
-    assert_eq!(heard[2].1, handle.camera().center);
+    assert_eq!(
+        heard[2].1,
+        handle.camera(app.states()).expect("the map").center
+    );
 }
 
 #[test]
@@ -549,9 +558,9 @@ fn a_new_style_rebuilds_the_loaded_tiles_without_fetching_them_again() {
                 viso_map::Reply::ready(Ok(Some(support::synthetic(tile))))
             })
             .camera(berlin(12.0, 0.0))
-            .handle(&s)
+            .handle(support::bind(cx, &s))
             .on_tap(move |cx, _| {
-                let h = tap.borrow().clone().expect("built");
+                let h = tap.get().expect("built");
                 h.set_style(cx, builtin::openmaptiles_dark());
             })
             .build(cx);
@@ -559,7 +568,11 @@ fn a_new_style_rebuilds_the_loaded_tiles_without_fetching_them_again() {
     });
     let none = Modifiers::default();
     let light = drive_scripted::<MapApp>(redraws(12), STEP);
-    let before = slot.borrow().clone().expect("built").tiles();
+    let before = slot
+        .get()
+        .expect("built")
+        .tiles(light.states())
+        .expect("the map");
     let (_, _, light) = light.pixels().expect("pixels");
     let first = fetched.get();
     fetched.set(0);
@@ -568,7 +581,11 @@ fn a_new_style_rebuilds_the_loaded_tiles_without_fetching_them_again() {
     script.push(mouse(320.0, 240.0, PointerPhase::Up, none));
     script.extend(redraws(12));
     let app = drive_scripted::<MapApp>(script, STEP);
-    let after = slot.borrow().clone().expect("built").tiles();
+    let after = slot
+        .get()
+        .expect("built")
+        .tiles(app.states())
+        .expect("the map");
     assert_eq!(fetched.get(), first, "each tile fetched once: {after:?}");
     assert_eq!(after.drawn, before.drawn);
     // The tiles shown are built again; those only fetched ahead wait until
@@ -665,7 +682,7 @@ fn shapes_markers_and_the_puck_draw_and_a_pan_moves_them_uploading_nothing() {
     probe_frames(None);
     let px = picture(&app, "overlays-panned");
     // The marker's box stands on its place, wherever the pan left it.
-    let at = handle.view().project(pinned);
+    let at = handle.view(app.states()).expect("the map").project(pinned);
     assert!(
         reddish(rgb_at(&px, [at[0], at[1] - 15.0])),
         "{:?}",
@@ -673,7 +690,10 @@ fn shapes_markers_and_the_puck_draw_and_a_pan_moves_them_uploading_nothing() {
     );
     assert!(!reddish(rgb_at(&px, [at[0], at[1] + 6.0])));
     // The route passes through its points.
-    let mid = handle.view().project(route[2]);
+    let mid = handle
+        .view(app.states())
+        .expect("the map")
+        .project(route[2]);
     let c = rgb_at(&px, mid);
     assert!(c[2] > 150 && c[0] < 120, "{c:?}");
     let frames = frames.borrow();
@@ -730,11 +750,11 @@ fn near_markers_gather_into_a_cluster_that_opens_when_tapped() {
             .cluster(Cluster::new(40.0, |cx, _| red_box(cx)))
     });
     picture(&app, "overlays-cluster");
-    let (alone, clusters) = handle.markers_shown();
+    let (alone, clusters) = handle.markers_shown(app.states());
     assert_eq!(alone, [9]);
     assert_eq!(clusters.len(), 1);
     assert_eq!(clusters[0].0, 5);
-    let (_, handle) = run_with(
+    let (app, handle) = run_with(
         start,
         false,
         script.into_iter().chain(redraws(40)).collect(),
@@ -746,9 +766,9 @@ fn near_markers_gather_into_a_cluster_that_opens_when_tapped() {
             m.cluster(Cluster::new(40.0, |cx, _| red_box(cx)))
         },
     );
-    let c = handle.camera();
+    let c = handle.camera(app.states()).expect("the map");
     assert!(c.zoom >= 11.0, "{c:?}");
-    let (alone, clusters) = handle.markers_shown();
+    let (alone, clusters) = handle.markers_shown(app.states());
     assert!(
         alone.len() > 1 || clusters.iter().all(|c| c.0 < 5),
         "{alone:?} {clusters:?}"
@@ -787,7 +807,7 @@ fn geojson_draws_through_the_style_even_where_the_source_has_nothing() {
                 .camera(start)
                 .style(style)
                 .data("zones", data.clone())
-                .handle(&s)
+                .handle(support::bind(cx, &s))
                 .build(cx);
         }))
     });
@@ -800,16 +820,23 @@ fn geojson_draws_through_the_style_even_where_the_source_has_nothing() {
     );
     assert!(!reddish(rgb_at(&px, [100.0, 100.0])));
     // What a tap there lands on.
-    let handle = slot.borrow().clone().expect("built");
-    let found = handle.features_at([320.0, 240.0], 4.0);
+    let handle = slot.get().expect("built");
+    let found = handle.features_at(app.states(), [320.0, 240.0], 4.0);
     assert_eq!(found.len(), 1, "{found:?}");
     assert_eq!(found[0].layer, "zones");
     assert_eq!(
         found[0].properties,
         [("kind".to_owned(), viso_map::mvt::Value::from("zone"))]
     );
-    assert!(handle.features_at([100.0, 100.0], 4.0).is_empty());
-    assert_eq!(handle.features_at([196.0, 240.0], 6.0).len(), 1);
+    assert!(
+        handle
+            .features_at(app.states(), [100.0, 100.0], 4.0)
+            .is_empty()
+    );
+    assert_eq!(
+        handle.features_at(app.states(), [196.0, 240.0], 6.0).len(),
+        1
+    );
 }
 
 /// Places with names in several scripts, two of them almost on top of each
@@ -894,14 +921,18 @@ fn labels_show_in_the_readers_language_without_overlapping_and_stay_upright() {
             map_view(|tile: TileId| viso_map::Reply::ready(Ok(Some(named(tile)))))
                 .camera(start)
                 .languages(&["ja-JP"])
-                .handle(&s)
+                .handle(support::bind(cx, &s))
                 .build(cx);
         }))
     });
     let app = drive_scripted::<MapApp>(redraws(30), STEP);
     picture(&app, "labels-z13");
-    let handle = slot.borrow().clone().expect("built");
-    let mut texts: Vec<String> = handle.labels().into_iter().map(|l| l.0).collect();
+    let handle = slot.get().expect("built");
+    let mut texts: Vec<String> = handle
+        .labels(app.states())
+        .into_iter()
+        .map(|l| l.0)
+        .collect();
     texts.sort();
     texts.dedup();
     assert_eq!(
@@ -943,19 +974,24 @@ fn labels_show_in_the_readers_language_without_overlapping_and_stay_upright() {
         ],
     );
     let app = drive_scripted::<MapApp>(script, STEP);
-    let handle = slot.borrow().clone().expect("built");
+    let handle = slot.get().expect("built");
     assert!(
-        (handle.camera().bearing - 135.0).abs() < 1e-6,
+        (handle.camera(app.states()).expect("the map").bearing - 135.0).abs() < 1e-6,
         "{:?}",
-        handle.camera()
+        handle.camera(app.states()).expect("the map")
     );
     FONTS.with(|f| f.borrow_mut().clear());
     let px = picture(&app, "labels-z13-b135");
-    assert!(handle.labels().iter().any(|l| l.0 == "Unter den Linden"));
+    assert!(
+        handle
+            .labels(app.states())
+            .iter()
+            .any(|l| l.0 == "Unter den Linden")
+    );
     // Every label drew: dark text where each sits.
     if every_script {
-        for (text, place) in handle.labels() {
-            let p = handle.view().project(place);
+        for (text, place) in handle.labels(app.states()) {
+            let p = handle.view(app.states()).expect("the map").project(place);
             if p[0] < 10.0 || p[1] < 10.0 || p[0] > W - 10.0 || p[1] > H - 10.0 {
                 continue;
             }
@@ -1009,15 +1045,15 @@ fn a_label_shows_its_svg_icon_over_its_text() {
                 .camera(start)
                 .style(Style::new("icons", Color::WHITE).with(Layer::symbol("poi", "poi", poi)))
                 .icons(IconSet::new().svg("cafe", square, true).unwrap())
-                .handle(&s)
+                .handle(support::bind(cx, &s))
                 .build(cx);
         }))
     });
     let app = drive_scripted::<MapApp>(redraws(30), STEP);
     FONTS.with(|f| f.borrow_mut().clear());
     let px = picture(&app, "labels-icon");
-    let handle = slot.borrow().clone().expect("built");
-    assert_eq!(handle.labels().len(), 1);
+    let handle = slot.get().expect("built");
+    assert_eq!(handle.labels(app.states()).len(), 1);
     // The icon is red on its place, the text dark under it.
     assert!(
         reddish(rgb_at(&px, [320.0, 240.0])),
@@ -1114,7 +1150,7 @@ fn raster_and_hillshade_layers_draw_between_the_vector_layers() {
     let frames = frames.borrow();
     let tail = &frames[frames.len().saturating_sub(8)..];
     assert!(tail.iter().all(|&uploaded| !uploaded), "{frames:?}");
-    let tiles = handle.tiles();
+    let tiles = handle.tiles(app.states()).expect("the map");
     assert!(tiles.images >= 4, "{tiles:?}");
     assert_eq!(tiles.in_flight, 0);
     // Tinted blue or green everywhere, half way.
@@ -1144,14 +1180,14 @@ fn raster_and_hillshade_layers_draw_between_the_vector_layers() {
                         12,
                     ),
                 )
-                .handle(&s)
+                .handle(support::bind(cx, &s))
                 .build(cx);
         }))
     });
     let app = drive_scripted::<MapApp>(redraws(40), STEP);
     let px = picture(&app, "raster-hillshade");
-    let handle = slot.borrow().clone().expect("built");
-    assert!(handle.tiles().images >= 1);
+    let handle = slot.get().expect("built");
+    assert!(handle.tiles(app.states()).expect("the map").images >= 1);
     let (west, east, far) = (
         rgb_at(&px, [300.0, 240.0]),
         rgb_at(&px, [340.0, 240.0]),
@@ -1204,14 +1240,18 @@ fn a_hillshade_shows_no_seams_at_its_tiles_edges() {
                         13,
                     ),
                 )
-                .handle(&s)
+                .handle(support::bind(cx, &s))
                 .build(cx);
         }))
     });
     let app = drive_scripted::<MapApp>(redraws(60), STEP);
     let px = picture(&app, "raster-hillshade-hills");
-    let handle = slot.borrow().clone().expect("built");
-    assert!(handle.tiles().images >= 2, "{:?}", handle.tiles());
+    let handle = slot.get().expect("built");
+    assert!(
+        handle.tiles(app.states()).expect("the map").images >= 2,
+        "{:?}",
+        handle.tiles(app.states()).expect("the map")
+    );
     // Down every column and along every row the shade bends smoothly: no
     // line of other light where tiles meet. Each column's and row's mean
     // bend, against the most of them.
@@ -1273,7 +1313,7 @@ fn a_real_shortbread_tile_draws_light_and_dark_at_several_zooms_and_turns() {
                     .camera(Camera::new(at, zoom).with_bearing(bearing))
                     .style(style)
                     .languages(&["en"])
-                    .handle(&s)
+                    .handle(support::bind(cx, &s))
                     .build(cx);
             }))
         });
@@ -1283,8 +1323,8 @@ fn a_real_shortbread_tile_draws_light_and_dark_at_several_zooms_and_turns() {
             if dark { "dark" } else { "light" }
         );
         let px = picture(&app, &name);
-        let handle = slot.borrow().clone().expect("built");
-        let tiles = handle.tiles();
+        let handle = slot.get().expect("built");
+        let tiles = handle.tiles(app.states()).expect("the map");
         assert!(tiles.drawn.iter().any(|d| d.tile == tile), "{tiles:?}");
         // Streets, buildings and land: many colors, not one background.
         let mut seen = std::collections::HashSet::new();
@@ -1295,6 +1335,6 @@ fn a_real_shortbread_tile_draws_light_and_dark_at_several_zooms_and_turns() {
             }
         }
         assert!(seen.len() > 12, "{name}: {} colors", seen.len());
-        assert!(!handle.labels().is_empty(), "{name}: no labels");
+        assert!(!handle.labels(app.states()).is_empty(), "{name}: no labels");
     }
 }

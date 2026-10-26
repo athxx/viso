@@ -52,16 +52,14 @@
 //! ```
 //! use std::cell::RefCell;
 //! use std::rc::Rc;
-//! use viso_widgets::{ToastEdge, ToastHandleSlot, toast};
+//! use viso_widgets::{ToastEdge, toast};
 //! use viso_ui::{SemanticProjector, BuildCx, BindingTable, Component, LeafStyle, NodeStore, StateStore, TextEdits, VirtualLists};
 //! use viso_ui::{BoxStyle, Sizing};
 //!
-//! let handle: ToastHandleSlot = Rc::new(RefCell::new(None));
 //! let control = toast()
 //!     .edge(ToastEdge::Bottom)
 //!     .content(|cx| { cx.leaf(LeafStyle { size: Sizing::fixed(240.0, 48.0), style: BoxStyle::NONE }); })
-//!     .on_dismiss(|_ev| { /* the toast was manually dismissed */ })
-//!     .handle(&handle);
+//!     .on_dismiss(|_ev| { /* the toast was manually dismissed */ });
 //!
 //! // Toast authors reactive state, so it builds through a reactive cx.
 //! let mut store = NodeStore::new();
@@ -71,8 +69,8 @@
 //! let mut text_edits = TextEdits::new();
 //! let mut projectors = SemanticProjector::new();
 //! let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists, &mut text_edits, &mut projectors);
-//! control.build(&mut cx);
-//! // `handle` is now filled; the app can `handle.borrow().clone().unwrap().show(ev)` from anywhere.
+//! let handle = control.build(&mut cx);
+//! // A handler calls the handle's methods; `handle` is `Copy`.
 //! ```
 
 use std::cell::{Cell, RefCell};
@@ -80,8 +78,8 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use viso_ui::{
-    Align, Axis, BoxStyle, BuildCx, Component, DirtyClass, EventCx, FlexStyle, Inset, Justify,
-    Length, NodeId, Role, Semantics, Sizing, StateId, StateValue,
+    Align, Axis, BoxStyle, BuildCx, Component, Controls, DirtyClass, EventCx, FlexStyle, Inset,
+    Justify, Length, NodeId, Role, Semantics, Sizing, StateId, StateValue,
 };
 
 /// A shared, mutable dismiss callback, fired when the toast is **manually**
@@ -104,14 +102,6 @@ type ContentBuilder = Box<dyn Fn(&mut BuildCx<'_>)>;
 /// [`ToastHandle`] (which bumps it) and each armed timer (which reads it),
 /// `Copy`-cheap and allocation-free to check.
 type Epoch = Rc<Cell<u64>>;
-
-/// A shared slot an application creates, passes to [`Toast::handle`], and reads
-/// after `build` to obtain the control's [`ToastHandle`]. The `open` cell and
-/// the content node id are minted inside `build`, so the handle cannot be
-/// returned by the builder chain; the app supplies this slot up front and
-/// `build` fills it once the ids exist — the same deferred-fill idiom as
-/// [`Modal`](crate::Modal).
-pub type ToastHandleSlot = Rc<RefCell<Option<ToastHandle>>>;
 
 /// The edge a [`Toast`] anchors to.
 ///
@@ -156,13 +146,44 @@ impl ToastEdge {
     }
 }
 
-/// A handle an application captures to drive a built [`Toast`] programmatically.
-/// Cheap to clone (it holds only ids, the duration, and shared cells). Call
-/// [`ToastHandle::show`] to reveal the toast and arm its auto-dismiss, and
-/// [`ToastHandle::dismiss`] to hide it early — both from within an [`EventCx`],
-/// since each defers a `hidden` flip (and `show` a timer arm) the router applies.
+viso_ui::control_handle! {
+    /// A handle an application captures to drive a built [`Toast`] programmatically.
+    /// Call [`ToastHandle::show`] to reveal the toast and arm its auto-dismiss, and
+    /// [`ToastHandle::dismiss`] to hide it early — both from within an [`EventCx`],
+    /// since each defers a `hidden` flip (and `show` a timer arm) the router applies.
+    ///
+    /// `Copy`, an id alone: `build` returns it, or mint one first with
+    /// [`BuildCx::handle`](viso_ui::BuildCx::handle) for closures declared
+    /// before the control. Once the control is gone, every call is a no-op.
+    pub struct ToastHandle;
+}
+
+impl ToastHandle {
+    /// Show the toast: reveal the content and arm the auto-dismiss timer. Showing
+    /// again while already shown resets the timer (the fresh show bumps the epoch,
+    /// so the earlier timer's fire is ignored, and arms a new one). Call from
+    /// within an event handler.
+    pub fn show(self, ev: &mut EventCx<'_>) {
+        if let Some(parts) = ev.control::<ToastParts>(self.0) {
+            parts.show(ev);
+        }
+    }
+
+    /// Dismiss the toast early: hide the content now and fire `on_dismiss`. Bumps
+    /// the epoch so a still-pending auto-dismiss timer's fire is ignored. A
+    /// dismiss when already hidden still fires `on_dismiss` only if it was shown
+    /// (a no-op dismiss of a hidden toast does nothing). Call from within an event
+    /// handler.
+    pub fn dismiss(self, ev: &mut EventCx<'_>) {
+        if let Some(parts) = ev.control::<ToastParts>(self.0) {
+            parts.dismiss(ev);
+        }
+    }
+}
+
+/// What a built control's handlers and its [`ToastHandle`] share.
 #[derive(Clone)]
-pub struct ToastHandle {
+struct ToastParts {
     /// The reactive cell holding the current shown state.
     open: StateId,
     /// The notification content node, shown/hidden to reveal/dismiss.
@@ -176,7 +197,7 @@ pub struct ToastHandle {
     on_dismiss: SharedDismiss,
 }
 
-impl ToastHandle {
+impl ToastParts {
     /// Show the toast: reveal the content and arm the auto-dismiss timer. Showing
     /// again while already shown resets the timer (the fresh show bumps the epoch,
     /// so the earlier timer's fire is ignored, and arms a new one). Call from
@@ -273,9 +294,8 @@ pub struct Toast {
     /// The shared dismiss callback (see [`SharedDismiss`]). `None` until
     /// [`Toast::on_dismiss`] is called; a toast with no callback still dismisses.
     on_dismiss: SharedDismiss,
-    /// The app-supplied slot `build` fills with the control's [`ToastHandle`], or
-    /// an unshared throwaway slot when the app did not ask for one.
-    handle_slot: ToastHandleSlot,
+    /// The handle `build` binds, when the app minted one up front.
+    handle: Option<ToastHandle>,
 }
 
 /// Construct an empty [`Toast`] with no content yet, a bottom edge, the default
@@ -288,7 +308,7 @@ pub fn toast() -> Toast {
         content: None,
         style: ToastStyle::default(),
         on_dismiss: Rc::new(RefCell::new(None)),
-        handle_slot: Rc::new(RefCell::new(None)),
+        handle: None,
     }
 }
 
@@ -326,14 +346,18 @@ impl Toast {
         self
     }
 
-    /// Register an app-supplied [`ToastHandleSlot`] for programmatic
-    /// show/dismiss. During [`build`](Component::build) the control fills the slot
-    /// with a [`ToastHandle`] bound to the just-minted `open` cell, content id,
-    /// and epoch; the app reads the slot after building and clones the handle into
-    /// wherever it triggers notifications.
-    pub fn handle(mut self, slot: &ToastHandleSlot) -> Self {
-        self.handle_slot = slot.clone();
+    /// Bind `handle`, minted with [`BuildCx::handle`](viso_ui::BuildCx::handle)
+    /// before the control is built, so closures declared earlier can drive it.
+    pub fn handle(mut self, handle: ToastHandle) -> Self {
+        self.handle = Some(handle);
         self
+    }
+
+    /// Build the control into `cx` and return its handle.
+    pub fn build(mut self, cx: &mut BuildCx<'_>) -> ToastHandle {
+        let handle = *self.handle.get_or_insert_with(|| cx.handle());
+        Component::build(&self, cx);
+        handle
     }
 }
 
@@ -427,16 +451,20 @@ impl Component for Toast {
         cx.bind(open, root, DirtyClass::PAINT);
         cx.semantics(root, Semantics::role(Role::Group));
 
-        // Fill the app-supplied handle slot (if any) with a handle bound to the
-        // just-minted cell, content id, duration, and epoch, so the app can
-        // show/dismiss programmatically.
-        *self.handle_slot.borrow_mut() = Some(ToastHandle {
-            open,
-            content,
-            duration: self.style.duration,
-            epoch,
-            on_dismiss: self.on_dismiss.clone(),
-        });
+        // Bind the app's handle, if any, to the parts; the root keeps them.
+        if let Some(handle) = self.handle {
+            cx.bind_control(
+                handle.0,
+                root.id(),
+                Rc::new(ToastParts {
+                    open,
+                    content,
+                    duration: self.style.duration,
+                    epoch,
+                    on_dismiss: self.on_dismiss.clone(),
+                }),
+            );
+        }
     }
 }
 
@@ -555,10 +583,15 @@ mod tests {
         }
     }
 
+    /// The parts of the live toast `h`.
+    fn parts(r: &Reactive, h: ToastHandle) -> Rc<ToastParts> {
+        r.states.control(h.0).expect("a live toast")
+    }
+
     /// A toast with a fixed 100x40 content leaf and a captured handle, built into
     /// `r`. Returns the handle and the content node id.
     fn built_toast(r: &mut Reactive, duration: Duration) -> (ToastHandle, NodeId) {
-        let slot: ToastHandleSlot = Rc::new(RefCell::new(None));
+        let slot: ToastHandle = r.states.handle();
         let control = toast()
             .duration(duration)
             .content(|cx| {
@@ -567,10 +600,10 @@ mod tests {
                     style: BoxStyle::NONE,
                 });
             })
-            .handle(&slot);
+            .handle(slot);
         r.build(control);
-        let handle = slot.borrow().clone().expect("build filled the handle slot");
-        let content = handle.content;
+        let handle = slot;
+        let content = parts(r, handle).content;
         (handle, content)
     }
 
@@ -582,7 +615,11 @@ mod tests {
         // The content is authored once and starts hidden (a toast shows nothing
         // until `show`), and it starts closed.
         assert!(r.store.hidden(content), "the content starts hidden");
-        assert_eq!(r.is_open(handle.open), Some(false), "a toast starts closed");
+        assert_eq!(
+            r.is_open(parts(&r, handle).open),
+            Some(false),
+            "a toast starts closed"
+        );
 
         // The content is a Status (a polite live region), not a Dialog: a toast
         // announces without taking focus.
@@ -616,12 +653,16 @@ mod tests {
         let (handle, content) = built_toast(&mut r, dur);
 
         let t0 = viso_ui::Instant::now();
-        let h = handle.clone();
+        let h = handle;
         r.drive(t0, move |ev| h.show(ev));
 
         // Showing reveals the content, marks it open, and armed exactly one timer.
         assert!(!r.store.hidden(content), "show reveals the content");
-        assert_eq!(r.is_open(handle.open), Some(true), "show marks it open");
+        assert_eq!(
+            r.is_open(parts(&r, handle).open),
+            Some(true),
+            "show marks it open"
+        );
         assert_eq!(r.timers.len(), 1, "show armed one auto-dismiss timer");
         assert_eq!(
             r.timers.earliest(),
@@ -637,7 +678,7 @@ mod tests {
         let (handle, content) = built_toast(&mut r, dur);
 
         let t0 = viso_ui::Instant::now();
-        let h = handle.clone();
+        let h = handle;
         r.drive(t0, move |ev| h.show(ev));
         assert!(!r.store.hidden(content), "shown before the deadline");
 
@@ -662,7 +703,7 @@ mod tests {
         let dur = Duration::from_millis(4000);
         let dismissed = Rc::new(Cell::new(0u32));
 
-        let slot: ToastHandleSlot = Rc::new(RefCell::new(None));
+        let slot: ToastHandle = r.states.handle();
         let tally = Rc::clone(&dismissed);
         let control = toast()
             .duration(dur)
@@ -673,22 +714,22 @@ mod tests {
                 });
             })
             .on_dismiss(move |_ev| tally.set(tally.get() + 1))
-            .handle(&slot);
+            .handle(slot);
         r.build(control);
-        let handle = slot.borrow().clone().expect("build filled the handle slot");
-        let content = handle.content;
+        let handle = slot;
+        let content = parts(&r, handle).content;
 
         let t0 = viso_ui::Instant::now();
-        let h = handle.clone();
+        let h = handle;
         r.drive(t0, move |ev| h.show(ev));
         assert!(!r.store.hidden(content), "shown");
 
         // Dismiss early — well before the 4s deadline.
-        let h = handle.clone();
+        let h = handle;
         r.drive(t0 + Duration::from_millis(500), move |ev| h.dismiss(ev));
         assert!(r.store.hidden(content), "manual dismiss hides the content");
         assert_eq!(
-            r.is_open(handle.open),
+            r.is_open(parts(&r, handle).open),
             Some(false),
             "dismiss marks it closed"
         );
@@ -716,13 +757,13 @@ mod tests {
         let (handle, content) = built_toast(&mut r, dur);
 
         let t0 = viso_ui::Instant::now();
-        let h = handle.clone();
+        let h = handle;
         r.drive(t0, move |ev| h.show(ev));
 
         // Re-show at t0 + 3s (still before the first deadline at t0 + 4s). The
         // second show bumps the epoch and arms a fresh timer at (t0 + 3s) + 4s.
         let t1 = t0 + Duration::from_millis(3000);
-        let h = handle.clone();
+        let h = handle;
         r.drive(t1, move |ev| h.show(ev));
         assert_eq!(r.timers.len(), 2, "two timers are now armed (old + new)");
 
@@ -746,7 +787,7 @@ mod tests {
         let mut r = Reactive::new();
         let dismissed = Rc::new(Cell::new(0u32));
 
-        let slot: ToastHandleSlot = Rc::new(RefCell::new(None));
+        let slot: ToastHandle = r.states.handle();
         let tally = Rc::clone(&dismissed);
         let control = toast()
             .content(|cx| {
@@ -756,15 +797,19 @@ mod tests {
                 });
             })
             .on_dismiss(move |_ev| tally.set(tally.get() + 1))
-            .handle(&slot);
+            .handle(slot);
         r.build(control);
-        let handle = slot.borrow().clone().expect("build filled the handle slot");
+        let handle = slot;
 
         // Dismissing a never-shown toast does nothing and fires no callback.
         let t0 = viso_ui::Instant::now();
-        let h = handle.clone();
+        let h = handle;
         r.drive(t0, move |ev| h.dismiss(ev));
-        assert_eq!(r.is_open(handle.open), Some(false), "still closed");
+        assert_eq!(
+            r.is_open(parts(&r, handle).open),
+            Some(false),
+            "still closed"
+        );
         assert_eq!(dismissed.get(), 0, "no callback for a no-op dismiss");
     }
 

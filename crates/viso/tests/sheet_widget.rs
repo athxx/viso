@@ -7,7 +7,6 @@
 
 use std::cell::RefCell;
 use std::path::PathBuf;
-use std::rc::Rc;
 use std::time::Duration;
 
 use viso::__test_support::{DrivenApp, drive_scripted};
@@ -19,10 +18,10 @@ use viso::platform::{
 use viso::prelude::*;
 use viso::render::{Renderer, Rgba};
 use viso::ui::{
-    Align, Axis, BoxStyle, BuildCx, Component, FlexStyle, LeafStyle, Length, NodeId, NodeStore,
+    Align, Axis, BoxStyle, BuildCx, FlexStyle, LeafStyle, Length, NodeId, NodeStore,
     PointerButtons, PointerPhase, Role, Sizing, WindowConfig, paint_tree,
 };
-use viso::widgets::{SheetDetent, SheetEdge, SheetHandleSlot, sheet};
+use viso::widgets::{SheetDetent, SheetEdge, SheetHandle, sheet};
 
 const W: u32 = 240;
 const H: u32 = 120;
@@ -68,15 +67,11 @@ fn take_heard() -> Vec<Option<usize>> {
 /// A 240×120 window: a 240×40 trigger at the top that a press opens the sheet
 /// with, and the sheet — a 64-high bottom panel resting at all of it or half,
 /// holding a focusable fill.
-struct Sheeted {
-    slot: SheetHandleSlot,
-}
+struct Sheeted;
 
 impl Application for Sheeted {
     fn new(_cx: &mut AppCx) -> Self {
-        Sheeted {
-            slot: Rc::new(RefCell::new(None)),
-        }
+        Sheeted
     }
 
     fn window_config(&self) -> WindowConfig {
@@ -88,7 +83,7 @@ impl Application for Sheeted {
     }
 
     fn build(&mut self, cx: &mut BuildCx<'_>) {
-        let slot = self.slot.clone();
+        let sheet_handle: SheetHandle = cx.handle();
         cx.flex(
             FlexStyle {
                 axis: Axis::Column,
@@ -105,14 +100,11 @@ impl Application for Sheeted {
                     style: BoxStyle::solid(TRIGGER),
                 });
                 cx.focusable(trigger, true);
-                let opens = slot.clone();
                 cx.on_pointer(trigger, move |ev| {
                     let Some(p) = ev.pointer() else { return };
-                    if p.phase == PointerPhase::Down
-                        && p.buttons.contains(PointerButtons::PRIMARY)
-                        && let Some(handle) = opens.borrow().clone()
+                    if p.phase == PointerPhase::Down && p.buttons.contains(PointerButtons::PRIMARY)
                     {
-                        handle.open(ev);
+                        sheet_handle.open(ev);
                     }
                 });
                 sheet()
@@ -130,7 +122,7 @@ impl Application for Sheeted {
                     })
                     .on_dismiss(|_| HEARD.with(|h| h.borrow_mut().push(None)))
                     .on_detent(|_, k| HEARD.with(|h| h.borrow_mut().push(Some(k))))
-                    .handle(&slot)
+                    .handle(sheet_handle)
                     .build(cx);
             },
         );

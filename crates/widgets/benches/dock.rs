@@ -28,9 +28,8 @@ use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use viso_ui::{
-    Align, Axis, BindingTable, BoxStyle, BuildCx, Component, FlexStyle, Inset, Justify, LeafStyle,
-    NodeId, NodeStore, Rect, SemanticProjector, Sizing, StateStore, TextEdits, VirtualLists,
-    paint_tree,
+    Align, Axis, BindingTable, BoxStyle, BuildCx, FlexStyle, Inset, Justify, LeafStyle, NodeId,
+    NodeStore, Rect, SemanticProjector, Sizing, StateStore, TextEdits, VirtualLists, paint_tree,
 };
 use viso_widgets::{Dock, DockNode, DockTree, PanelKey, dock};
 

@@ -15,11 +15,11 @@ use viso::platform::{
     KeyCode, Modifiers, PointerButtons, PointerPhase, RawEvent, RawKey, RawPointer, WindowId,
 };
 use viso::prelude::*;
-use viso::ui::{BuildCx, Component, WindowConfig};
+use viso::ui::{BuildCx, WindowConfig};
 use viso_map::style::{Color, DemEncoding, Terrain, builtin};
 use viso_map::{
-    Camera, LngLat, MapHandle, MapHandleSlot, MapView, MemorySource, Padding, Polyline,
-    RasterSource, TileId, View, WorldPoint, map_view,
+    Camera, LngLat, MapHandle, MapView, MemorySource, Padding, Polyline, RasterSource, TileId,
+    View, WorldPoint, map_view,
 };
 
 const STEP: Duration = Duration::from_millis(16);
@@ -85,16 +85,19 @@ fn key(code: KeyCode, m: Modifiers) -> Vec<RawEvent> {
 /// Runs a view `make` builds through `script`, returning the app and the
 /// view's handle.
 fn run(
-    make: impl Fn(&MapHandleSlot) -> MapView + 'static,
+    make: impl Fn(MapHandle) -> MapView + 'static,
     script: Vec<RawEvent>,
 ) -> (DrivenApp<MapApp>, MapHandle) {
-    let slot = MapHandleSlot::default();
+    let slot = support::Slot::default();
     let s = Rc::clone(&slot);
     SETUP.with(|setup| {
-        *setup.borrow_mut() = Some(Box::new(move |cx| make(&s).build(cx)));
+        *setup.borrow_mut() = Some(Box::new(move |cx| {
+            let handle = support::bind(cx, &s);
+            make(handle).build(cx);
+        }));
     });
     let app = drive_scripted::<MapApp>(script, STEP);
-    let handle = slot.borrow().clone().expect("built");
+    let handle = slot.get().expect("built");
     (app, handle)
 }
 
@@ -169,8 +172,8 @@ fn a_tilted_view_raises_its_buildings_and_draws_its_shapes_where_the_projection_
             if dark { "dark" } else { "light" }
         );
         let px = picture(&app, &name);
-        let tiles = handle.tiles();
-        let view = handle.view();
+        let tiles = handle.tiles(app.states()).expect("the map");
+        let view = handle.view(app.states()).expect("the map");
         if pitch == 0.0 {
             assert_eq!(tiles.raised, 0, "flat draws its tiles flat");
             continue;
@@ -221,8 +224,11 @@ fn the_far_ground_fades_into_a_haze_that_hides_its_edge() {
             if dark { "dark" } else { "light" }
         );
         let px = picture(&app, &name);
-        assert!(handle.tiles().raised >= 1, "{name}");
-        let view = handle.view();
+        assert!(
+            handle.tiles(app.states()).expect("the map").raised >= 1,
+            "{name}"
+        );
+        let view = handle.view(app.states()).expect("the map");
         let focus = view.focus();
         // Down each column from the top: one haze past the reach, then the
         // ground coming out of it with no edge between.
@@ -310,7 +316,11 @@ fn buildings_stand_up_as_the_view_tilts() {
             },
             redraws(40),
         );
-        assert!(handle.tiles().raised >= 1, "{:?}", handle.tiles());
+        assert!(
+            handle.tiles(app.states()).expect("the map").raised >= 1,
+            "{:?}",
+            handle.tiles(app.states()).expect("the map")
+        );
         shots.push(picture(
             &app,
             if raised {
@@ -434,7 +444,7 @@ fn image_layers_lie_on_the_tilted_ground_beneath_the_roads() {
             (true, true) => "tilt-hillshade-ridge",
         };
         let px = picture(&app, name);
-        let tiles = handle.tiles();
+        let tiles = handle.tiles(app.states()).expect("the map");
         assert!(tiles.raised >= 4, "{name}: {tiles:?}");
         assert!(!image || tiles.images >= 1, "{name}: {tiles:?}");
         if relief {
@@ -502,7 +512,7 @@ fn a_translucent_fill_blends_over_the_tilted_ground_and_a_route_over_it() {
         redraws(40),
     );
     let px = picture(&app, "tilt-translucent-fill");
-    let view = handle.view();
+    let view = handle.view(app.states()).expect("the map");
     // Inside the circle, off the route: the fill and the ground beneath,
     // half each.
     let inside = view.project(tilted.unproject([320.0, 222.0]));
@@ -575,7 +585,7 @@ fn a_marker_stands_on_the_relief_under_it() {
         };
         let px = picture(&app, name);
         // The lowest red row in the marker's column.
-        let at = handle.view().project(crest);
+        let at = handle.view(app.states()).expect("the map").project(crest);
         let bottom = (0..H as usize)
             .rev()
             .find(|&y| {
@@ -665,8 +675,8 @@ fn a_coarser_tile_beneath_finer_ones_does_not_show_through_their_relief() {
             "tilt-fine-only"
         };
         shots.push(picture(&app, name));
-        let tiles = handle.tiles();
-        assert!(handle.view().camera.zoom > 13.0);
+        let tiles = handle.tiles(app.states()).expect("the map");
+        assert!(handle.view(app.states()).expect("the map").camera.zoom > 13.0);
         assert_eq!(
             tiles.drawn.iter().any(|d| d.tile.z == 13),
             held,
@@ -742,7 +752,11 @@ fn the_ground_drapes_over_the_terrain_and_shades_its_slopes() {
             "tilt-terrain-flat"
         };
         shots.push(picture(&app, name));
-        assert!(handle.tiles().raised >= 4, "{name}: {:?}", handle.tiles());
+        assert!(
+            handle.tiles(app.states()).expect("the map").raised >= 4,
+            "{name}: {:?}",
+            handle.tiles(app.states()).expect("the map")
+        );
     }
     // The relief moves the ground and shades its slopes: much of the
     // picture changes, and the slope turned from the light darkens.
@@ -790,7 +804,7 @@ fn an_alt_drag_and_the_keys_tilt_and_n_looks_straight_down_again() {
         shift: true,
         ..Modifiers::default()
     };
-    let make = |slot: &MapHandleSlot| {
+    let make = |slot: MapHandle| {
         map_view(|tile: TileId| viso_map::Reply::ready(Ok(Some(support::synthetic(tile)))))
             .camera(Camera::new(LngLat::new(13.40, 52.52), 13.0))
             .handle(slot)
@@ -809,10 +823,10 @@ fn an_alt_drag_and_the_keys_tilt_and_n_looks_straight_down_again() {
     }
     script.push(mouse(320.0, 180.0, PointerPhase::Up, alt));
     script.extend(redraws(30));
-    let (_, handle) = run(make, script);
-    let pitch = handle.camera().pitch;
+    let (app, handle) = run(make, script);
+    let pitch = handle.camera(app.states()).expect("the map").pitch;
     assert!(pitch > 20.0 && pitch <= viso_map::MAX_PITCH, "{pitch}");
-    assert!(handle.tiles().raised > 0);
+    assert!(handle.tiles(app.states()).expect("the map").raised > 0);
     // Shift with Up tilts a step, N faces north and looks down again.
     let mut script = redraws(10);
     script.push(mouse(320.0, 240.0, PointerPhase::Down, none));
@@ -821,15 +835,15 @@ fn an_alt_drag_and_the_keys_tilt_and_n_looks_straight_down_again() {
     script.extend(redraws(30));
     script.extend(key(KeyCode::Up, shift));
     script.extend(redraws(30));
-    let (_, handle) = run(make, script.clone());
+    let (app, handle) = run(make, script.clone());
     assert!(
-        (handle.camera().pitch - 20.0).abs() < 1e-6,
+        (handle.camera(app.states()).expect("the map").pitch - 20.0).abs() < 1e-6,
         "{}",
-        handle.camera().pitch
+        handle.camera(app.states()).expect("the map").pitch
     );
     script.extend(key(KeyCode::N, none));
     script.extend(redraws(30));
-    let (_, handle) = run(make, script);
-    assert_eq!(handle.camera().pitch, 0.0);
-    assert_eq!(handle.tiles().raised, 0);
+    let (app, handle) = run(make, script);
+    assert_eq!(handle.camera(app.states()).expect("the map").pitch, 0.0);
+    assert_eq!(handle.tiles(app.states()).expect("the map").raised, 0);
 }

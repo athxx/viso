@@ -146,12 +146,20 @@ pub struct StateStore {
     pub(crate) env: AdaptiveEnv,
     /// Rises with every change to what a [`get`](Self::get) returns.
     epoch: u64,
+    /// The built controls' parts, which their handles read.
+    pub(crate) controls: crate::control::ControlTable,
 }
 
 impl StateStore {
     /// A fresh, empty store.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Mints the handle of a control built later against this store; see
+    /// [`BuildCx::handle`](crate::BuildCx::handle).
+    pub fn handle<H: crate::ControlHandle>(&mut self) -> H {
+        H::from_id(self.controls.reserve())
     }
 
     /// Allocate a state cell holding `initial`, reusing a free slot when

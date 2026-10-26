@@ -31,20 +31,16 @@
 //! `clear_focus_scope` on the [`EventCx`], and the router applies them to the node
 //! store after the handler returns. The pre-open focus target is read from
 //! [`EventCx::focused`] (a `Copy` snapshot the router lends in) and kept in the
-//! handle's `restore_focus` cell until the close.
+//! modal's parts until the close.
 //!
 //! ```
-//! use std::cell::RefCell;
-//! use std::rc::Rc;
-//! use viso_widgets::{ModalHandleSlot, modal};
-//! use viso_ui::{SemanticProjector, BuildCx, BindingTable, Component, LeafStyle, NodeStore, StateStore, TextEdits, VirtualLists};
+//! use viso_widgets::modal;
+//! use viso_ui::{SemanticProjector, BuildCx, BindingTable, LeafStyle, NodeStore, StateStore, TextEdits, VirtualLists};
 //! use viso_ui::{BoxStyle, Sizing};
 //!
-//! let handle: ModalHandleSlot = Rc::new(RefCell::new(None));
 //! let control = modal()
 //!     .content(|cx| { cx.leaf(LeafStyle { size: Sizing::fixed(240.0, 160.0), style: BoxStyle::NONE }); })
-//!     .on_dismiss(|_ev| { /* the modal was dismissed */ })
-//!     .handle(&handle);
+//!     .on_dismiss(|_ev| { /* the modal was dismissed */ });
 //!
 //! // Modal authors reactive state, so it builds through a reactive cx.
 //! let mut store = NodeStore::new();
@@ -54,16 +50,16 @@
 //! let mut text_edits = TextEdits::new();
 //! let mut projectors = SemanticProjector::new();
 //! let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists, &mut text_edits, &mut projectors);
-//! control.build(&mut cx);
-//! // `handle` is now filled; the app can `handle.borrow().clone().unwrap().open(ev)` from its trigger.
+//! let handle = control.build(&mut cx);
+//! // A trigger's handler calls `handle.open(ev)`; `handle` is `Copy`.
 //! ```
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use viso_ui::{
-    Align, Axis, BoxStyle, BuildCx, Component, DirtyClass, EventCx, FlexStyle, Inset, Justify, Key,
-    Length, NodeId, PointerPhase, Rgba, Role, Semantics, Sizing, StateId, StateValue,
+    Align, Axis, BoxStyle, BuildCx, Component, Controls, DirtyClass, EventCx, FlexStyle, Inset,
+    Justify, Key, Length, NodeId, PointerPhase, Rgba, Role, Semantics, Sizing, StateId, StateValue,
 };
 
 /// A shared, mutable dismiss callback, fired when the modal closes (Escape, or a
@@ -78,57 +74,55 @@ type SharedDismiss = Rc<RefCell<Option<Box<dyn FnMut(&mut EventCx<'_>)>>>>;
 /// modal; boxed so a `Modal` can hold the closure.
 type ContentBuilder = Box<dyn Fn(&mut BuildCx<'_>)>;
 
-/// The node focus should return to when the modal closes, snapshotted from
-/// [`EventCx::focused`] on open. Shared between the [`ModalHandle`] and the
-/// content's Escape key handler so a programmatic close and a keyboard close
-/// restore the same target. Written on open, taken on close.
-type RestoreFocus = Rc<Cell<Option<NodeId>>>;
-
-/// A shared slot an application creates, passes to [`Modal::handle`], and reads
-/// after `build` to obtain the control's [`ModalHandle`]. The `open` cell and the
-/// content node id are minted inside `build`, so the handle cannot be returned by
-/// the builder chain; the app supplies this slot up front and `build` fills it once
-/// the ids exist — the same deferred-fill idiom as [`Popup`](crate::Popup). Written
-/// once during build, read once after.
-pub type ModalHandleSlot = Rc<RefCell<Option<ModalHandle>>>;
-
-/// A handle an application captures to drive a built [`Modal`] programmatically.
-/// Cheap to clone (it holds only ids and shared cells). Call [`ModalHandle::open`]
-/// to show the dialog, [`ModalHandle::close`] to hide it, and [`ModalHandle::toggle`]
-/// to flip — all from within an [`EventCx`] (an event handler), since opening/closing
-/// defers a `hidden` flip, a focus move, and a focus-scope change the router applies.
-/// An open when already open, or a close when already closed, is a no-op.
-#[derive(Clone)]
-pub struct ModalHandle {
+/// What a built modal's handlers and its [`ModalHandle`] share.
+struct ModalParts {
     /// The reactive cell holding the current open state.
     open: StateId,
     /// The dialog content node, shown/hidden to open/close and the focus scope's root.
     content: NodeId,
-    /// Where focus returns on close: written from `EventCx::focused` on open.
-    restore_focus: RestoreFocus,
+    /// Where focus returns on close: snapshotted from [`EventCx::focused`] on
+    /// open, taken on close, so a programmatic and a keyboard close restore the
+    /// same target.
+    restore_focus: Cell<Option<NodeId>>,
     /// The shared `on_dismiss` callback, fired on a close.
     on_dismiss: SharedDismiss,
 }
 
+viso_ui::control_handle! {
+    /// Drives a built [`Modal`]: `Copy`, an id alone. [`build`](Modal::build)
+    /// returns it, or mint one first with [`BuildCx::handle`] and give it to
+    /// [`Modal::handle`] for closures declared before the modal. Call
+    /// [`open`](Self::open), [`close`](Self::close) and [`toggle`](Self::toggle)
+    /// from an event handler: each defers a `hidden` flip, a focus move and a
+    /// focus-scope change the router applies. An open when already open, or a
+    /// close when already closed, is a no-op, as is any call once the modal is
+    /// gone.
+    pub struct ModalHandle;
+}
+
 impl ModalHandle {
     /// Open the modal: show the content, trap focus inside it, and move focus into
-    /// it. An open when already open is a no-op. Call from within an event handler.
-    pub fn open(&self, ev: &mut EventCx<'_>) {
-        set_open(self, ev, true);
+    /// it.
+    pub fn open(self, ev: &mut EventCx<'_>) {
+        if let Some(parts) = ev.control::<ModalParts>(self.0) {
+            set_open(&parts, ev, true);
+        }
     }
 
     /// Close the modal: hide the content, release the focus trap, send focus back to
-    /// where it was, and fire `on_dismiss`. A close when already closed is a no-op.
-    /// Call from within an event handler.
-    pub fn close(&self, ev: &mut EventCx<'_>) {
-        set_open(self, ev, false);
+    /// where it was, and fire `on_dismiss`.
+    pub fn close(self, ev: &mut EventCx<'_>) {
+        if let Some(parts) = ev.control::<ModalParts>(self.0) {
+            set_open(&parts, ev, false);
+        }
     }
 
-    /// Toggle the modal: close it if open, open it if closed. Call from within an
-    /// event handler.
-    pub fn toggle(&self, ev: &mut EventCx<'_>) {
-        let next = !matches!(ev.get(self.open), Some(StateValue::Bool(true)));
-        set_open(self, ev, next);
+    /// Toggle the modal: close it if open, open it if closed.
+    pub fn toggle(self, ev: &mut EventCx<'_>) {
+        if let Some(parts) = ev.control::<ModalParts>(self.0) {
+            let next = !matches!(ev.get(parts.open), Some(StateValue::Bool(true)));
+            set_open(&parts, ev, next);
+        }
     }
 }
 
@@ -199,9 +193,8 @@ pub struct Modal {
     /// The shared dismiss callback (see [`SharedDismiss`]). `None` until
     /// [`Modal::on_dismiss`] is called; a modal with no callback still closes.
     on_dismiss: SharedDismiss,
-    /// The app-supplied slot `build` fills with the control's [`ModalHandle`], or an
-    /// unshared throwaway slot when the app did not ask for one.
-    handle_slot: ModalHandleSlot,
+    /// The handle `build` binds, when the app minted one up front.
+    handle: Option<ModalHandle>,
 }
 
 /// Construct an empty [`Modal`] with no content yet, the default dark scrim, and no
@@ -214,7 +207,7 @@ pub fn modal() -> Modal {
         content: None,
         style: ModalStyle::default(),
         on_dismiss: Rc::new(RefCell::new(None)),
-        handle_slot: Rc::new(RefCell::new(None)),
+        handle: None,
     }
 }
 
@@ -261,15 +254,18 @@ impl Modal {
         self
     }
 
-    /// Register an app-supplied [`ModalHandleSlot`] for programmatic open/close.
-    /// During [`build`](Component::build) the control fills the slot with a
-    /// [`ModalHandle`] bound to the just-minted `open` cell and content id; the app
-    /// reads the slot after building and clones the handle into its trigger control.
-    /// Storing the destination this way (rather than returning it) lets `build` fill
-    /// it once the ids exist.
-    pub fn handle(mut self, slot: &ModalHandleSlot) -> Self {
-        self.handle_slot = slot.clone();
+    /// Bind `handle`, minted with [`BuildCx::handle`] before the modal is built,
+    /// so closures declared earlier can drive it.
+    pub fn handle(mut self, handle: ModalHandle) -> Self {
+        self.handle = Some(handle);
         self
+    }
+
+    /// Build the modal into `cx` and return its handle.
+    pub fn build(mut self, cx: &mut BuildCx<'_>) -> ModalHandle {
+        let handle = *self.handle.get_or_insert_with(|| cx.handle());
+        Component::build(&self, cx);
+        handle
     }
 }
 
@@ -303,7 +299,7 @@ fn fire_dismiss(cb: &SharedDismiss, ev: &mut EventCx<'_>) {
 /// All of the store-touching effects (`set_hidden`, `request_focus`/`clear_focus`,
 /// `set_focus_scope`/`clear_focus_scope`) are deferred — an `EventCx` holds no node
 /// store; the router applies them after the handler returns.
-fn set_open(h: &ModalHandle, ev: &mut EventCx<'_>, next: bool) {
+fn set_open(h: &ModalParts, ev: &mut EventCx<'_>, next: bool) {
     let cur = matches!(ev.get(h.open), Some(StateValue::Bool(true)));
     if cur == next {
         return;
@@ -344,9 +340,7 @@ impl Component for Modal {
         // content after (over).
         let scrim_color = self.style.scrim;
         let dismiss_on_scrim = self.style.dismiss_on_scrim;
-        let dismiss_cb = self.on_dismiss.clone();
-        let restore_focus: RestoreFocus = Rc::new(Cell::new(None));
-        let mut content_id = None;
+        let mut parts = None;
         let mut scrim_handle = None;
         let root = cx.flex(
             FlexStyle {
@@ -402,30 +396,28 @@ impl Component for Modal {
 
                 // Escape closes the modal from the keyboard, driving the same
                 // close path (scope release + focus restore + dismiss) as the handle.
-                let key_cb = dismiss_cb.clone();
-                let key_restore = restore_focus.clone();
-                let content_node = content.id();
+                let shared = Rc::new(ModalParts {
+                    open,
+                    content: content.id(),
+                    restore_focus: Cell::new(None),
+                    on_dismiss: self.on_dismiss.clone(),
+                });
+                let key = shared.clone();
                 cx.on_key(content, move |ev| {
                     let Some(k) = ev.key() else { return };
                     if !k.pressed || k.repeat {
                         return;
                     }
                     if matches!(k.key, Key::Escape) {
-                        let h = ModalHandle {
-                            open,
-                            content: content_node,
-                            restore_focus: key_restore.clone(),
-                            on_dismiss: key_cb.clone(),
-                        };
-                        set_open(&h, ev, false);
+                        set_open(&key, ev, false);
                     }
                 });
 
-                content_id = Some(content.id());
+                parts = Some(shared);
             },
         );
 
-        let content = content_id.expect("modal authors its content node");
+        let parts = parts.expect("modal authors its content node");
         cx.bind(open, root, DirtyClass::PAINT);
         cx.semantics(root, Semantics::role(Role::Group));
 
@@ -437,11 +429,10 @@ impl Component for Modal {
         // (default on, the standard modal interaction; a forced dialog turns it
         // off): when set, a Down on the scrim drives the same close path as Escape
         // and the handle (scope release + focus restore + on_dismiss). Attached
-        // here rather than at scrim-authoring time because the close handle needs
-        // the content node id, which is only minted after the content is built.
+        // here rather than at scrim-authoring time because the parts it closes
+        // through name the content node, minted after the scrim.
         if let Some(scrim) = scrim_handle {
-            let scrim_cb = dismiss_cb.clone();
-            let scrim_restore = restore_focus.clone();
+            let scrim_parts = parts.clone();
             cx.on_pointer(scrim, move |ev| {
                 ev.stop_propagation();
                 if !dismiss_on_scrim {
@@ -449,26 +440,14 @@ impl Component for Modal {
                 }
                 let Some(p) = ev.pointer() else { return };
                 if matches!(p.phase, PointerPhase::Down) {
-                    let h = ModalHandle {
-                        open,
-                        content,
-                        restore_focus: scrim_restore.clone(),
-                        on_dismiss: scrim_cb.clone(),
-                    };
-                    set_open(&h, ev, false);
+                    set_open(&scrim_parts, ev, false);
                 }
             });
         }
 
-        // Fill the app-supplied handle slot (if any) with a handle bound to the
-        // just-minted cell, content id, and restore-focus cell, so the app can
-        // open/close programmatically.
-        *self.handle_slot.borrow_mut() = Some(ModalHandle {
-            open,
-            content,
-            restore_focus,
-            on_dismiss: self.on_dismiss.clone(),
-        });
+        if let Some(handle) = self.handle {
+            cx.bind_control(handle.0, root.id(), parts);
+        }
     }
 }
 
@@ -687,7 +666,7 @@ mod tests {
 
     /// A basic content modal with an app-captured handle, the common shape (the
     /// default dark scrim is on).
-    fn basic(slot: &ModalHandleSlot) -> Modal {
+    fn basic(slot: ModalHandle) -> Modal {
         modal().content(leaf).handle(slot)
     }
 
@@ -696,9 +675,9 @@ mod tests {
     /// is no anchor.
     #[test]
     fn scrim_and_content_are_hidden_overlays_and_scrim_is_under_content() {
-        let slot: ModalHandleSlot = Rc::new(RefCell::new(None));
         let mut rx = Reactive::new();
-        let root = rx.build(basic(&slot));
+        let slot: ModalHandle = rx.states.handle();
+        let root = rx.build(basic(slot));
 
         let kids = children(&rx.store, root);
         assert_eq!(kids.len(), 2, "a scrim and a content node, no anchor");
@@ -731,9 +710,9 @@ mod tests {
     /// key handler for Escape-to-close.
     #[test]
     fn modal_root_is_group_and_content_is_a_focusable_dialog() {
-        let slot: ModalHandleSlot = Rc::new(RefCell::new(None));
         let mut rx = Reactive::new();
-        let root = rx.build(basic(&slot));
+        let slot: ModalHandle = rx.states.handle();
+        let root = rx.build(basic(slot));
 
         assert_eq!(
             rx.store.semantics(root).expect("root has semantics").role,
@@ -758,14 +737,14 @@ mod tests {
     /// is a no-op.
     #[test]
     fn handle_open_shows_content_traps_and_moves_focus_and_is_idempotent() {
-        let slot: ModalHandleSlot = Rc::new(RefCell::new(None));
         let mut rx = Reactive::new();
-        let root = rx.build(basic(&slot));
+        let slot: ModalHandle = rx.states.handle();
+        let root = rx.build(basic(slot));
         let cell = open_cell();
         let content = children(&rx.store, root)[1];
-        let h = slot.borrow().clone().expect("build fills the handle slot");
+        let h = slot;
 
-        let n = h.clone();
+        let n = h;
         rx.drive(|ev| n.open(ev));
         assert_eq!(rx.is_open(cell), Some(true), "open moves the open cell");
         assert!(!rx.store.hidden(content), "the content is now shown");
@@ -781,7 +760,7 @@ mod tests {
         );
 
         // A second open is a no-op.
-        let n = h.clone();
+        let n = h;
         rx.drive(|ev| n.open(ev));
         assert_eq!(rx.is_open(cell), Some(true), "a second open is a no-op");
         assert!(!rx.store.hidden(content), "the content stays shown");
@@ -795,25 +774,25 @@ mod tests {
         let count = Rc::new(Cell::new(0u32));
         let c = count.clone();
 
-        let slot: ModalHandleSlot = Rc::new(RefCell::new(None));
         let mut rx = Reactive::new();
-        let root = rx.build(basic(&slot).on_dismiss(move |_ev| {
+        let slot: ModalHandle = rx.states.handle();
+        let root = rx.build(basic(slot).on_dismiss(move |_ev| {
             c.set(c.get() + 1);
         }));
         let cell = open_cell();
         let content = children(&rx.store, root)[1];
-        let h = slot.borrow().clone().expect("build fills the handle slot");
+        let h = slot;
 
         // Something else holds focus before the modal opens — the restore target.
         let trigger = children(&rx.store, content)[0];
         rx.store.set_focusable(trigger, true);
         rx.store.set_focused(Some(trigger));
 
-        let n = h.clone();
+        let n = h;
         rx.drive(|ev| n.open(ev));
         assert_eq!(rx.store.focused(), Some(content), "open focuses the dialog");
 
-        let n = h.clone();
+        let n = h;
         rx.drive(|ev| n.close(ev));
         assert_eq!(rx.is_open(cell), Some(false), "close moves the open cell");
         assert!(rx.store.hidden(content), "the content is now hidden");
@@ -830,7 +809,7 @@ mod tests {
         assert_eq!(count.get(), 1, "close fires on_dismiss once");
 
         // A second close is a no-op.
-        let n = h.clone();
+        let n = h;
         rx.drive(|ev| n.close(ev));
         assert_eq!(rx.is_open(cell), Some(false), "a second close is a no-op");
         assert_eq!(count.get(), 1, "and does not fire again");
@@ -843,16 +822,16 @@ mod tests {
         let count = Rc::new(Cell::new(0u32));
         let c = count.clone();
 
-        let slot: ModalHandleSlot = Rc::new(RefCell::new(None));
         let mut rx = Reactive::new();
-        let root = rx.build(basic(&slot).on_dismiss(move |_ev| {
+        let slot: ModalHandle = rx.states.handle();
+        let root = rx.build(basic(slot).on_dismiss(move |_ev| {
             c.set(c.get() + 1);
         }));
         let cell = open_cell();
         let content = children(&rx.store, root)[1];
-        let h = slot.borrow().clone().expect("build fills the handle slot");
+        let h = slot;
 
-        let n = h.clone();
+        let n = h;
         rx.drive(|ev| n.toggle(ev));
         assert_eq!(rx.is_open(cell), Some(true), "toggle opens a closed modal");
         assert!(!rx.store.hidden(content), "the content is shown");
@@ -863,7 +842,7 @@ mod tests {
         );
         assert_eq!(count.get(), 0, "opening does not fire on_dismiss");
 
-        let n = h.clone();
+        let n = h;
         rx.drive(|ev| n.toggle(ev));
         assert_eq!(rx.is_open(cell), Some(false), "toggle closes an open modal");
         assert!(rx.store.hidden(content), "the content is hidden");
@@ -883,14 +862,14 @@ mod tests {
         let count = Rc::new(Cell::new(0u32));
         let c = count.clone();
 
-        let slot: ModalHandleSlot = Rc::new(RefCell::new(None));
         let mut rx = Reactive::new();
-        let root = rx.build(basic(&slot).on_dismiss(move |_ev| {
+        let slot: ModalHandle = rx.states.handle();
+        let root = rx.build(basic(slot).on_dismiss(move |_ev| {
             c.set(c.get() + 1);
         }));
         let cell = open_cell();
         let content = children(&rx.store, root)[1];
-        let h = slot.borrow().clone().expect("build fills the handle slot");
+        let h = slot;
 
         // A pre-open focus target, so Escape's close can restore it.
         let trigger = children(&rx.store, content)[0];
@@ -898,7 +877,7 @@ mod tests {
         rx.store.set_focused(Some(trigger));
 
         // Open (focuses the dialog), then Escape on the content closes.
-        let n = h.clone();
+        let n = h;
         rx.drive(|ev| n.open(ev));
         rx.key(content, key_ev(Key::Escape, true, false));
         assert_eq!(rx.is_open(cell), Some(false), "Escape closes the modal");
@@ -912,7 +891,7 @@ mod tests {
         assert_eq!(count.get(), 1, "the Escape dismiss fires on_dismiss");
 
         // Reopen; auto-repeat and key-up do not close.
-        let n = h.clone();
+        let n = h;
         rx.drive(|ev| n.open(ev));
         let before = count.get();
         rx.key(content, key_ev(Key::Escape, true, true)); // repeat: ignored
@@ -921,7 +900,7 @@ mod tests {
         assert_eq!(count.get(), before, "and do not fire on_dismiss");
 
         // Close, then Escape on a closed modal is a no-op.
-        let n = h.clone();
+        let n = h;
         rx.drive(|ev| n.close(ev));
         let before = count.get();
         rx.key(content, key_ev(Key::Escape, true, false));
@@ -942,15 +921,15 @@ mod tests {
         let count = Rc::new(Cell::new(0u32));
         let c = count.clone();
 
-        let slot: ModalHandleSlot = Rc::new(RefCell::new(None));
         let mut rx = Reactive::new();
-        let root = rx.build(basic(&slot).on_dismiss(move |_ev| {
+        let slot: ModalHandle = rx.states.handle();
+        let root = rx.build(basic(slot).on_dismiss(move |_ev| {
             c.set(c.get() + 1);
         }));
         let cell = open_cell();
         let kids = children(&rx.store, root);
         let (scrim, content) = (kids[0], kids[1]);
-        let h = slot.borrow().clone().expect("build fills the handle slot");
+        let h = slot;
 
         // A pre-open focus target, so the scrim close can restore it.
         let trigger = children(&rx.store, content)[0];
@@ -958,7 +937,7 @@ mod tests {
         rx.store.set_focused(Some(trigger));
 
         // Open, then a Down on the scrim: it swallows the press and closes.
-        let n = h.clone();
+        let n = h;
         rx.drive(|ev| n.open(ev));
         let stopped = rx.pointer(scrim, down_on_scrim());
         assert!(stopped, "the scrim swallows the backdrop press");
@@ -974,7 +953,7 @@ mod tests {
 
         // Reopen; a Move/Up on the scrim is swallowed but does not close (only Down
         // closes, so a click's release does not re-close a modal it just opened over).
-        let n = h.clone();
+        let n = h;
         rx.drive(|ev| n.open(ev));
         let before = count.get();
         assert!(
@@ -997,17 +976,17 @@ mod tests {
         let count = Rc::new(Cell::new(0u32));
         let c = count.clone();
 
-        let slot: ModalHandleSlot = Rc::new(RefCell::new(None));
         let mut rx = Reactive::new();
-        let root = rx.build(basic(&slot).dismiss_on_scrim(false).on_dismiss(move |_ev| {
+        let slot: ModalHandle = rx.states.handle();
+        let root = rx.build(basic(slot).dismiss_on_scrim(false).on_dismiss(move |_ev| {
             c.set(c.get() + 1);
         }));
         let cell = open_cell();
         let kids = children(&rx.store, root);
         let (scrim, content) = (kids[0], kids[1]);
-        let h = slot.borrow().clone().expect("build fills the handle slot");
+        let h = slot;
 
-        let n = h.clone();
+        let n = h;
         rx.drive(|ev| n.open(ev));
         let stopped = rx.pointer(scrim, down_on_scrim());
         assert!(stopped, "the scrim still swallows the press");
@@ -1024,18 +1003,18 @@ mod tests {
     /// focus rather than restoring a stale node.
     #[test]
     fn close_with_no_prior_focus_clears_focus() {
-        let slot: ModalHandleSlot = Rc::new(RefCell::new(None));
         let mut rx = Reactive::new();
-        let root = rx.build(basic(&slot));
+        let slot: ModalHandle = rx.states.handle();
+        let root = rx.build(basic(slot));
         let content = children(&rx.store, root)[1];
-        let h = slot.borrow().clone().expect("build fills the handle slot");
+        let h = slot;
         assert_eq!(rx.store.focused(), None, "nothing is focused before open");
 
-        let n = h.clone();
+        let n = h;
         rx.drive(|ev| n.open(ev));
         assert_eq!(rx.store.focused(), Some(content), "open focuses the dialog");
 
-        let n = h.clone();
+        let n = h;
         rx.drive(|ev| n.close(ev));
         assert_eq!(
             rx.store.focused(),
@@ -1049,8 +1028,8 @@ mod tests {
     /// content node.
     #[test]
     fn a_scrimless_modal_has_only_a_content_node() {
-        let slot: ModalHandleSlot = Rc::new(RefCell::new(None));
         let mut rx = Reactive::new();
+        let slot: ModalHandle = rx.states.handle();
         let root = rx.build(
             modal()
                 .content(leaf)
@@ -1059,7 +1038,7 @@ mod tests {
                     scrim: None,
                     dismiss_on_scrim: true,
                 })
-                .handle(&slot),
+                .handle(slot),
         );
 
         let kids = children(&rx.store, root);
@@ -1071,14 +1050,14 @@ mod tests {
     /// not panic and a close with no callback is a no-op on the callback.
     #[test]
     fn handleless_modal_still_opens_and_closes() {
-        let slot: ModalHandleSlot = Rc::new(RefCell::new(None));
         let mut rx = Reactive::new();
-        let root = rx.build(basic(&slot));
+        let slot: ModalHandle = rx.states.handle();
+        let root = rx.build(basic(slot));
         let cell = open_cell();
         let content = children(&rx.store, root)[1];
-        let h = slot.borrow().clone().expect("build fills the handle slot");
+        let h = slot;
 
-        let n = h.clone();
+        let n = h;
         rx.drive(|ev| n.open(ev));
         assert_eq!(
             rx.is_open(cell),
@@ -1087,7 +1066,7 @@ mod tests {
         );
         assert!(!rx.store.hidden(content), "and shows the content");
 
-        let n = h.clone();
+        let n = h;
         rx.drive(|ev| n.close(ev));
         assert_eq!(
             rx.is_open(cell),

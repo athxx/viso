@@ -27,6 +27,7 @@ pub mod combo_box;
 pub mod component;
 pub mod content;
 pub mod context;
+pub mod control;
 pub mod cursor;
 pub mod dirty;
 pub mod drag;
@@ -127,6 +128,7 @@ pub use component::{
 };
 pub use content::{BrushImage, Content, InkRun, LinkBox, TextInk, TextMark, TextRequest};
 pub use context::{EventCx, FocusChange, StateWriter};
+pub use control::{ControlHandle, ControlId, ControlTable, Controls};
 pub use dirty::{DirtyCause, DirtyClass, DirtyLists, DirtyMark};
 pub use drag::{DragPhase, DragSample, MOUSE_SLOP, SWIPE_SPEED, SwipeDirection};
 pub use drag_drop::{

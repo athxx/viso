@@ -3,11 +3,11 @@
 
 use viso_ui::virtual_list;
 use viso_ui::{
-    BindingTable, BuildCx, CheckMark, CheckShape, Component, EffectStore, Modifiers, NodeId,
-    NodeStore, PointerButtons, PointerEvent, PointerPhase, Rect, SemanticProjector, StateStore,
-    TextEdits, VirtualLists,
+    BindingTable, BuildCx, CheckMark, CheckShape, EffectStore, Modifiers, NodeId, NodeStore,
+    PointerButtons, PointerEvent, PointerPhase, Rect, SemanticProjector, StateStore, TextEdits,
+    VirtualLists,
 };
-use viso_widgets::{FileTreeHandleSlot, NodeKey, TreeNode, file_tree};
+use viso_widgets::{FileTreeHandle, NodeKey, TreeNode, file_tree};
 
 /// The marks drawn under `node`, in tree order.
 fn marks(store: &NodeStore, node: NodeId, out: &mut Vec<CheckMark>) {
@@ -26,7 +26,7 @@ fn a_directory_row_s_chevron_turns_as_it_expands() {
     let mut text_edits = TextEdits::new();
     let mut projectors = SemanticProjector::new();
     let mut effects = EffectStore::new();
-    let slot = FileTreeHandleSlot::default();
+    let slot: FileTreeHandle = states.handle();
     let a = NodeKey(1);
     let roots = vec![TreeNode::dir(
         NodeKey(0),
@@ -47,18 +47,18 @@ fn a_directory_row_s_chevron_turns_as_it_expands() {
         );
         file_tree(roots)
             .open(NodeKey(0))
-            .handle(FileTreeHandleSlot::clone(&slot))
+            .handle(slot)
             .build(&mut cx);
         cx.root().expect("a root")
     };
-    let handle = slot.borrow().clone().expect("the handle");
+    let handle = slot;
     let surface = Rect::new(0.0, 0.0, 300.0, 400.0);
     let frame = |store: &mut NodeStore,
                  lists: &mut VirtualLists,
                  states: &mut StateStore,
                  bindings: &mut BindingTable,
                  effects: &mut EffectStore| {
-        handle.reconcile(store, lists);
+        handle.reconcile(states, store, lists);
         store.layout(root, surface, &mut Vec::new());
         virtual_list::reconcile(store, lists, states, bindings, effects);
         store.layout(root, surface, &mut Vec::new());
@@ -87,7 +87,7 @@ fn a_directory_row_s_chevron_turns_as_it_expands() {
     };
     {
         let mut cx = viso_ui::EventCx::__new_pointer(&mut states, &bindings, &still);
-        let handle = slot.borrow().clone().expect("the handle");
+        let handle = slot;
         handle.toggle(&mut cx, a);
     }
     frame(

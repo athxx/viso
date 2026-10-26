@@ -34,9 +34,9 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use viso_ui::{
-    Access, Align, Alignment2D, Axis, BoxRules, BoxStyle, BuildCx, Component, EventCx, FlexStyle,
-    Inset, Justify, Key, Length, NodeId, PointerButtons, PointerPhase, Rgba, Role, RowGesture,
-    Semantics, Sizing, Span, StackPlacement, StackStyle, SwipeEdge, SwipeParts,
+    Access, Align, Alignment2D, Axis, BoxRules, BoxStyle, BuildCx, Component, Controls, EventCx,
+    FlexStyle, Inset, Justify, Key, Length, NodeId, PointerButtons, PointerPhase, Rgba, Role,
+    RowGesture, Semantics, Sizing, Span, StackPlacement, StackStyle, SwipeEdge, SwipeParts,
 };
 
 /// What an action runs when tapped or swiped through.
@@ -145,17 +145,43 @@ impl Default for SwipeRowStyle {
     }
 }
 
-/// A slot an app passes to [`SwipeRow::handle`] and reads after building for
-/// the row's [`SwipeRowHandle`].
-pub type SwipeRowHandleSlot = Rc<RefCell<Option<SwipeRowHandle>>>;
-
-/// Opens or shuts a built [`SwipeRow`] from an event handler. Cheap to copy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SwipeRowHandle {
-    node: NodeId,
+viso_ui::control_handle! {
+    /// Opens or shuts a built [`SwipeRow`] from an event handler. Cheap to copy.
+    ///
+    /// `Copy`, an id alone: `build` returns it, or mint one first with
+    /// [`BuildCx::handle`](viso_ui::BuildCx::handle) for closures declared
+    /// before the control. Once the control is gone, every call is a no-op.
+    pub struct SwipeRowHandle;
 }
 
 impl SwipeRowHandle {
+    /// The row's node.
+    pub fn node(self, cx: &impl Controls) -> Option<NodeId> {
+        Some(cx.control::<SwipeRowParts>(self.0)?.node())
+    }
+
+    /// Open it on `edge`'s actions.
+    pub fn open(self, ev: &mut EventCx<'_>, edge: SwipeEdge) {
+        if let Some(parts) = ev.control::<SwipeRowParts>(self.0) {
+            parts.open(ev, edge);
+        }
+    }
+
+    /// Shut it.
+    pub fn close(self, ev: &mut EventCx<'_>) {
+        if let Some(parts) = ev.control::<SwipeRowParts>(self.0) {
+            parts.close(ev);
+        }
+    }
+}
+
+/// What a built control's handlers and its [`SwipeRowHandle`] share.
+#[derive(Clone)]
+struct SwipeRowParts {
+    node: NodeId,
+}
+
+impl SwipeRowParts {
     /// The row's node.
     pub fn node(&self) -> NodeId {
         self.node
@@ -182,7 +208,8 @@ pub struct SwipeRow {
     content: ContentBuilder,
     leading: Vec<SwipeAction>,
     trailing: Vec<SwipeAction>,
-    slot: Option<SwipeRowHandleSlot>,
+    /// The handle `build` binds, when the app minted one up front.
+    handle: Option<SwipeRowHandle>,
 }
 
 /// A [`SwipeRow`] over the content `content` declares, with no actions yet.
@@ -192,7 +219,7 @@ pub fn swipe_row(content: impl Fn(&mut BuildCx<'_>) + 'static) -> SwipeRow {
         content: Box::new(content),
         leading: Vec::new(),
         trailing: Vec::new(),
-        slot: None,
+        handle: None,
     }
 }
 
@@ -217,10 +244,18 @@ impl SwipeRow {
         self
     }
 
-    /// Fill `slot` with its [`SwipeRowHandle`] as it builds.
-    pub fn handle(mut self, slot: &SwipeRowHandleSlot) -> Self {
-        self.slot = Some(Rc::clone(slot));
+    /// Bind `handle`, minted with [`BuildCx::handle`](viso_ui::BuildCx::handle)
+    /// before the control is built, so closures declared earlier can drive it.
+    pub fn handle(mut self, handle: SwipeRowHandle) -> Self {
+        self.handle = Some(handle);
         self
+    }
+
+    /// Build the control into `cx` and return its handle.
+    pub fn build(mut self, cx: &mut BuildCx<'_>) -> SwipeRowHandle {
+        let handle = *self.handle.get_or_insert_with(|| cx.handle());
+        Component::build(&self, cx);
+        handle
     }
 }
 
@@ -395,8 +430,12 @@ impl Component for SwipeRow {
                 (tap.borrow_mut())(ev);
             }
         });
-        if let Some(slot) = &self.slot {
-            *slot.borrow_mut() = Some(SwipeRowHandle { node: root.id() });
+        if let Some(bound) = self.handle {
+            cx.bind_control(
+                bound.0,
+                root.id(),
+                Rc::new(SwipeRowParts { node: root.id() }),
+            );
         }
     }
 }

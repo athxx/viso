@@ -36,7 +36,7 @@ use std::rc::Rc;
 
 pub use viso_ui::combo_box::ComboBoxStyle;
 use viso_ui::combo_box::{ComboOption, ComboParts, ComboSpec};
-use viso_ui::{BuildCx, Component, EventCx, Sizing};
+use viso_ui::{BuildCx, Component, Controls, EventCx, Sizing};
 
 use super::select::SelectOption;
 
@@ -46,17 +46,14 @@ type Pick = Rc<RefCell<dyn FnMut(&mut EventCx<'_>, usize)>>;
 /// What runs when a free-text combo box takes its text.
 type Commit = Rc<RefCell<dyn FnMut(&mut EventCx<'_>, &str)>>;
 
-/// A shared, mutable slot an application passes to a combo box's `handle`
-/// and reads after `build` for its [`ComboBoxHandle`].
-pub type ComboBoxHandleSlot = Rc<RefCell<Option<ComboBoxHandle>>>;
-
 /// A text field choosing from a list it filters. Construct one with
 /// [`combo_box`].
 pub struct ComboBox {
     spec: ComboSpec,
     on_pick: Option<Pick>,
     on_text: Option<Commit>,
-    slot: Option<ComboBoxHandleSlot>,
+    /// The handle `build` binds, when the app minted one up front.
+    handle: Option<ComboBoxHandle>,
 }
 
 /// A combo box over `options`, choosing among them, none chosen yet.
@@ -82,7 +79,7 @@ where
         },
         on_pick: None,
         on_text: None,
-        slot: None,
+        handle: None,
     }
 }
 
@@ -149,10 +146,18 @@ impl ComboBox {
         self
     }
 
-    /// Fill `slot` with the combo box's [`ComboBoxHandle`] when it builds.
-    pub fn handle(mut self, slot: &ComboBoxHandleSlot) -> Self {
-        self.slot = Some(Rc::clone(slot));
+    /// Bind `handle`, minted with [`BuildCx::handle`](viso_ui::BuildCx::handle)
+    /// before the control is built, so closures declared earlier can drive it.
+    pub fn handle(mut self, handle: ComboBoxHandle) -> Self {
+        self.handle = Some(handle);
         self
+    }
+
+    /// Build the control into `cx` and return its handle.
+    pub fn build(mut self, cx: &mut BuildCx<'_>) -> ComboBoxHandle {
+        let handle = *self.handle.get_or_insert_with(|| cx.handle());
+        Component::build(&self, cx);
+        handle
     }
 }
 
@@ -167,18 +172,81 @@ impl Component for ComboBox {
                 as viso_ui::combo_box::Commit
         });
         let parts = ComboParts::build(cx, &self.spec, pick, commit);
-        if let Some(slot) = &self.slot {
-            *slot.borrow_mut() = Some(ComboBoxHandle(parts));
+        if let Some(bound) = self.handle {
+            cx.bind_control(bound.0, parts.root().id(), Rc::new(ComboBoxParts(parts)));
         }
     }
 }
 
-/// A handle an application captures to read and set a built combo box's
-/// value and open its list from its own handlers. Cheap to clone.
-#[derive(Clone)]
-pub struct ComboBoxHandle(ComboParts);
+viso_ui::control_handle! {
+    /// A handle an application captures to read and set a built combo box's
+    /// value and open its list from its own handlers.
+    ///
+    /// `Copy`, an id alone: `build` returns it, or mint one first with
+    /// [`BuildCx::handle`](viso_ui::BuildCx::handle) for closures declared
+    /// before the control. Once the control is gone, every call is a no-op.
+    pub struct ComboBoxHandle;
+}
 
 impl ComboBoxHandle {
+    /// The chosen option's index: for free text, the option the text spells.
+    pub fn selected(self, cx: &impl Controls) -> Option<usize> {
+        match cx.control::<ComboBoxParts>(self.0) {
+            Some(parts) => parts.selected(),
+            None => None,
+        }
+    }
+
+    /// The value: the chosen option's label, or a free-text box's text.
+    pub fn text(self, cx: &impl Controls) -> String {
+        match cx.control::<ComboBoxParts>(self.0) {
+            Some(parts) => parts.text(),
+            None => Default::default(),
+        }
+    }
+
+    /// Choose option `index`, or none, without telling `on_pick`.
+    pub fn select(self, ev: &mut EventCx<'_>, index: Option<usize>) {
+        if let Some(parts) = ev.control::<ComboBoxParts>(self.0) {
+            parts.select(ev, index);
+        }
+    }
+
+    /// Set a free-text box's text, without telling `on_text`.
+    pub fn set_text(self, ev: &mut EventCx<'_>, text: &str) {
+        if let Some(parts) = ev.control::<ComboBoxParts>(self.0) {
+            parts.set_text(ev, text);
+        }
+    }
+
+    /// Open the whole list.
+    pub fn open(self, ev: &mut EventCx<'_>) {
+        if let Some(parts) = ev.control::<ComboBoxParts>(self.0) {
+            parts.open(ev);
+        }
+    }
+
+    /// Close the list, putting the value back in the field.
+    pub fn close(self, ev: &mut EventCx<'_>) {
+        if let Some(parts) = ev.control::<ComboBoxParts>(self.0) {
+            parts.close(ev);
+        }
+    }
+
+    /// Whether the list shows.
+    pub fn is_open(self, cx: &impl Controls) -> bool {
+        match cx.control::<ComboBoxParts>(self.0) {
+            Some(parts) => parts.is_open(),
+            None => false,
+        }
+    }
+}
+
+/// What a built control's handlers and its [`ComboBoxHandle`] share.
+#[derive(Clone)]
+struct ComboBoxParts(ComboParts);
+
+impl ComboBoxParts {
     /// The chosen option's index: for free text, the option the text spells.
     pub fn selected(&self) -> Option<usize> {
         self.0.selected()

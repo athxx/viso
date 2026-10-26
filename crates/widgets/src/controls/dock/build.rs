@@ -514,8 +514,7 @@ mod tests {
     use crate::controls::dock::tree::{DockNode, DockTree};
     use crate::controls::dock::{Dock, dock};
     use viso_ui::{
-        Axis, BindingTable, Component, NodeStore, Role, SemanticProjector, StateStore, TextEdits,
-        VirtualLists,
+        Axis, BindingTable, NodeStore, Role, SemanticProjector, StateStore, TextEdits, VirtualLists,
     };
 
     /// The reactive stores a dock build writes into, kept together so a test can

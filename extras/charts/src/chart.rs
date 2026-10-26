@@ -6,7 +6,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use viso_ui::{
-    AbsoluteInsets, AbsoluteStyle, Align, Axis, BoxStyle, BuildCx, Component, CursorIcon,
+    AbsoluteInsets, AbsoluteStyle, Align, Axis, BoxStyle, BuildCx, Component, Controls, CursorIcon,
     DispatchPhase, EventCx, FlexStyle, FocusChange, FontWeight, Inset, Justify, Key, LeafStyle,
     Length, LiveRegion, NodeId, Placement, PlotMark, PointerButtons, PointerPhase, Rgba, Role,
     SemanticState, Semantics, Shadow, Sizing, Span, StateId, StateValue, StructureCx, TextAlign,
@@ -60,7 +60,8 @@ pub struct Chart {
     y_format: TickFormat,
     value_format: XFormat,
     on_select: RefCell<Option<OnSelect>>,
-    slot: Option<ChartHandleSlot>,
+    /// The handle `build` binds, when the app minted one up front.
+    handle: Option<ChartHandle>,
 }
 
 fn chart(kind: ChartKind, label: impl Into<String>, series: Vec<Series>) -> Chart {
@@ -79,7 +80,7 @@ fn chart(kind: ChartKind, label: impl Into<String>, series: Vec<Series>) -> Char
         y_format: Rc::new(format_tick),
         value_format: Rc::new(format_value),
         on_select: RefCell::new(None),
-        slot: None,
+        handle: None,
     }
 }
 
@@ -186,10 +187,18 @@ impl Chart {
         self
     }
 
-    /// Fill `slot` with the chart's handle once it is built.
-    pub fn handle(mut self, slot: &ChartHandleSlot) -> Self {
-        self.slot = Some(Rc::clone(slot));
+    /// Bind `handle`, minted with [`BuildCx::handle`](viso_ui::BuildCx::handle)
+    /// before the control is built, so closures declared earlier can drive it.
+    pub fn handle(mut self, handle: ChartHandle) -> Self {
+        self.handle = Some(handle);
         self
+    }
+
+    /// Build the control into `cx` and return its handle.
+    pub fn build(mut self, cx: &mut BuildCx<'_>) -> ChartHandle {
+        let handle = *self.handle.get_or_insert_with(|| cx.handle());
+        Component::build(&self, cx);
+        handle
     }
 }
 
@@ -330,15 +339,53 @@ impl State {
     }
 }
 
-/// A built [`Chart`], to give it new data. Cheap to clone: every clone is
-/// the same chart.
-#[derive(Clone)]
-pub struct ChartHandle(Rc<State>);
-
-/// Where a [`Chart`] puts its handle once built.
-pub type ChartHandleSlot = Rc<RefCell<Option<ChartHandle>>>;
+viso_ui::control_handle! {
+    /// A built [`Chart`], to give it new data.
+    ///
+    /// `Copy`, an id alone: `build` returns it, or mint one first with
+    /// [`BuildCx::handle`](viso_ui::BuildCx::handle) for closures declared
+    /// before the control. Once the control is gone, every call is a no-op.
+    pub struct ChartHandle;
+}
 
 impl ChartHandle {
+    /// Draw `series` in place of what it draws. Series keep their colors by
+    /// their place; a hidden series stays hidden.
+    pub fn set_series(self, ev: &mut EventCx<'_>, series: Vec<Series>) {
+        if let Some(parts) = ev.control::<ChartParts>(self.0) {
+            parts.set_series(ev, series);
+        }
+    }
+
+    /// Name the places along `x` anew, or none.
+    pub fn set_categories(self, ev: &mut EventCx<'_>, categories: Option<Vec<String>>) {
+        if let Some(parts) = ev.control::<ChartParts>(self.0) {
+            parts.set_categories(ev, categories);
+        }
+    }
+
+    /// What the readout reads, if it shows.
+    pub fn hovered(self, cx: &impl Controls) -> Option<ChartPoint> {
+        match cx.control::<ChartParts>(self.0) {
+            Some(parts) => parts.hovered(),
+            None => None,
+        }
+    }
+
+    /// Whether series `index` is hidden from the legend.
+    pub fn is_hidden(self, cx: &impl Controls, index: usize) -> bool {
+        match cx.control::<ChartParts>(self.0) {
+            Some(parts) => parts.is_hidden(index),
+            None => false,
+        }
+    }
+}
+
+/// What a built control's handlers and its [`ChartHandle`] share.
+#[derive(Clone)]
+struct ChartParts(Rc<State>);
+
+impl ChartParts {
     /// Draw `series` in place of what it draws. Series keep their colors by
     /// their place; a hidden series stays hidden.
     pub fn set_series(&self, ev: &mut EventCx<'_>, series: Vec<Series>) {
@@ -592,8 +639,8 @@ impl Component for Chart {
                 }
             });
         });
-        if let Some(slot) = &self.slot {
-            *slot.borrow_mut() = Some(ChartHandle(Rc::clone(&state)));
+        if let Some(bound) = self.handle {
+            cx.bind_control(bound.0, root.id(), Rc::new(ChartParts(Rc::clone(&state))));
         }
     }
 }

@@ -1,17 +1,17 @@
 //! The menu bar: a row of titles, each opening its menu below it.
 
-use std::cell::{Cell, OnceCell, RefCell};
+use std::cell::{Cell, OnceCell};
 use std::rc::Rc;
 
 use viso_ui::adaptive::LayoutDirection;
 use viso_ui::{
-    Access, Align, Anchoring, Axis, BoxStyle, BuildCx, Component, DispatchPhase, EventCx,
+    Access, Align, Anchoring, Axis, BoxStyle, BuildCx, Component, Controls, DispatchPhase, EventCx,
     FlexStyle, FocusChange, ImeEvent, Inset, InteractionStyle, Justify, Key, Length, NodeId,
     PointerButtons, PointerPhase, Rgba, Role, SemanticState, Semantics, Sizing, StateId,
     StateValue, TextRequest, Vec2,
 };
 
-use super::state::{MenuHandle, MenuState, Start};
+use super::state::{MenuState, Start};
 use super::{MenuItem, MenuStyle, build};
 use crate::controls::mnemonic::Mnemonic;
 use crate::label;
@@ -73,15 +73,12 @@ impl Default for MenuBarStyle {
     }
 }
 
-/// A shared, mutable slot an application passes to a menu bar's `handle`
-/// and reads after `build` for its [`MenuBarHandle`].
-pub type MenuBarHandleSlot = Rc<RefCell<Option<MenuBarHandle>>>;
-
 /// A row of menus, each under its title. Construct one with [`menu_bar`].
 pub struct MenuBar {
     menus: Vec<MenuItem>,
     style: MenuBarStyle,
-    slot: Option<MenuBarHandleSlot>,
+    /// The handle `build` binds, when the app minted one up front.
+    handle: Option<MenuBarHandle>,
 }
 
 /// A menu bar with no menus yet.
@@ -89,7 +86,7 @@ pub fn menu_bar() -> MenuBar {
     MenuBar {
         menus: Vec::new(),
         style: MenuBarStyle::default(),
-        slot: None,
+        handle: None,
     }
 }
 
@@ -112,28 +109,77 @@ impl MenuBar {
         self
     }
 
-    /// Fill `slot` with the bar's [`MenuBarHandle`] when it builds.
-    pub fn handle(mut self, slot: &MenuBarHandleSlot) -> Self {
-        self.slot = Some(Rc::clone(slot));
+    /// Bind `handle`, minted with [`BuildCx::handle`](viso_ui::BuildCx::handle)
+    /// before the control is built, so closures declared earlier can drive it.
+    pub fn handle(mut self, handle: MenuBarHandle) -> Self {
+        self.handle = Some(handle);
         self
+    }
+
+    /// Build the control into `cx` and return its handle.
+    pub fn build(mut self, cx: &mut BuildCx<'_>) -> MenuBarHandle {
+        let handle = *self.handle.get_or_insert_with(|| cx.handle());
+        Component::build(&self, cx);
+        handle
     }
 }
 
 impl Component for MenuBar {
     fn build(&self, cx: &mut BuildCx<'_>) {
         let state = build_bar(cx, self);
-        if let Some(slot) = &self.slot {
-            *slot.borrow_mut() = Some(MenuBarHandle(state));
+        if let Some(bound) = self.handle {
+            let row = state.row;
+            cx.bind_control(bound.0, row, Rc::new(MenuBarParts(state)));
         }
     }
 }
 
-/// A handle an application captures to work a built menu bar from its own
-/// handlers. Cheap to clone.
-#[derive(Clone)]
-pub struct MenuBarHandle(Rc<BarState>);
+viso_ui::control_handle! {
+    /// A handle an application captures to work a built menu bar from its own
+    /// handlers.
+    ///
+    /// `Copy`, an id alone: `build` returns it, or mint one first with
+    /// [`BuildCx::handle`](viso_ui::BuildCx::handle) for closures declared
+    /// before the control. Once the control is gone, every call is a no-op.
+    pub struct MenuBarHandle;
+}
 
 impl MenuBarHandle {
+    /// Open menu `index`, its first item highlighted, as the keyboard does.
+    pub fn open(self, ev: &mut EventCx<'_>, index: usize) {
+        if let Some(parts) = ev.control::<MenuBarParts>(self.0) {
+            parts.open(ev, index);
+        }
+    }
+
+    /// Take the keyboard to the bar, as Alt alone or F10 does.
+    pub fn focus(self, ev: &mut EventCx<'_>) {
+        if let Some(parts) = ev.control::<MenuBarParts>(self.0) {
+            parts.focus(ev);
+        }
+    }
+
+    /// Close its menu and give the focus back.
+    pub fn close(self, ev: &mut EventCx<'_>) {
+        if let Some(parts) = ev.control::<MenuBarParts>(self.0) {
+            parts.close(ev);
+        }
+    }
+
+    /// The menu that shows.
+    pub fn open_menu(self, cx: &impl Controls) -> Option<usize> {
+        match cx.control::<MenuBarParts>(self.0) {
+            Some(parts) => parts.open_menu(),
+            None => None,
+        }
+    }
+}
+
+/// What a built control's handlers and its [`MenuBarHandle`] share.
+#[derive(Clone)]
+struct MenuBarParts(Rc<BarState>);
+
+impl MenuBarParts {
     /// Open menu `index`, its first item highlighted, as the keyboard does.
     pub fn open(&self, ev: &mut EventCx<'_>, index: usize) {
         if index < self.0.titles.len() {
@@ -306,7 +352,6 @@ fn title(
         &style.menu,
         None,
     );
-    let MenuHandle(menu) = menu;
     let open = menu.levels[0].open;
     cx.bind_semantic_state(node, move |cx| SemanticState {
         expanded: Some(matches!(cx.get(open), Some(StateValue::Bool(true)))),

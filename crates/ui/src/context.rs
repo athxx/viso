@@ -207,12 +207,25 @@ pub trait StateWriter {
     /// Write a state value; returns whether the write landed (the handle was
     /// live).
     fn set(&mut self, id: StateId, value: StateValue) -> bool;
+
+    /// The built controls, which a control's handle reads its parts from.
+    fn controls(&self) -> &crate::ControlTable;
+}
+
+impl crate::Controls for dyn StateWriter + '_ {
+    fn control<P: 'static>(&self, id: crate::ControlId) -> Option<std::rc::Rc<P>> {
+        self.controls().get(id)
+    }
 }
 
 impl StateWriter for StateStore {
     #[inline]
     fn set(&mut self, id: StateId, value: StateValue) -> bool {
         StateStore::set(self, id, value)
+    }
+
+    fn controls(&self) -> &crate::ControlTable {
+        &self.controls
     }
 }
 
@@ -221,6 +234,10 @@ impl StateWriter for UpdateCx<'_> {
     fn set(&mut self, id: StateId, value: StateValue) -> bool {
         UpdateCx::set(self, id, value)
     }
+
+    fn controls(&self) -> &crate::ControlTable {
+        &self.states.controls
+    }
 }
 
 impl StateWriter for EventCx<'_> {
@@ -228,12 +245,20 @@ impl StateWriter for EventCx<'_> {
     fn set(&mut self, id: StateId, value: StateValue) -> bool {
         EventCx::set(self, id, value)
     }
+
+    fn controls(&self) -> &crate::ControlTable {
+        &self.states.controls
+    }
 }
 
 impl StateWriter for crate::reactive::EffectCx<'_> {
     #[inline]
     fn set(&mut self, id: StateId, value: StateValue) -> bool {
         crate::reactive::EffectCx::set(self, id, value)
+    }
+
+    fn controls(&self) -> &crate::ControlTable {
+        crate::reactive::EffectCx::controls(self)
     }
 }
 
@@ -255,6 +280,12 @@ pub struct UpdateCx<'a> {
     states: &'a mut StateStore,
     bindings: &'a BindingTable,
     nodes: &'a mut NodeStore,
+}
+
+impl crate::Controls for UpdateCx<'_> {
+    fn control<P: 'static>(&self, id: crate::ControlId) -> Option<std::rc::Rc<P>> {
+        self.states.controls.get(id)
+    }
 }
 
 impl<'a> UpdateCx<'a> {
@@ -481,6 +512,12 @@ pub struct EventCx<'a> {
     /// Where the dispatching node sits in the tree, lent by the router; `None`
     /// on the state-only paths.
     place: Option<Place<'a>>,
+}
+
+impl crate::Controls for EventCx<'_> {
+    fn control<P: 'static>(&self, id: crate::ControlId) -> Option<std::rc::Rc<P>> {
+        self.states.controls.get(id)
+    }
 }
 
 /// How the focus moved for the node a key-handler dispatch tells

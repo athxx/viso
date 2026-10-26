@@ -9,7 +9,7 @@ use viso_ui::{
     PointerPhase, Role, SemanticState, Semantics, Side, Sizing, StateValue, Vec2,
 };
 
-use super::state::{Level, MarkCell, MenuHandle, MenuState, Row, Start};
+use super::state::{Level, MarkCell, MenuState, Row, Start};
 use super::{Close, Mark, MenuEntry, MenuItem, MenuStyle};
 use crate::controls::mnemonic::Mnemonic;
 use crate::label;
@@ -33,7 +33,7 @@ pub(super) fn menu_button(
     anchor: Option<&dyn Fn(&mut BuildCx<'_>)>,
     style: &MenuStyle,
     on_close: Option<Close>,
-) -> MenuHandle {
+) -> Rc<MenuState> {
     let shared: Shared = Rc::new(OnceCell::new());
     let mut levels = Vec::new();
     let mut button = None;
@@ -122,7 +122,7 @@ pub(super) fn context_region(
     size: Sizing,
     style: &MenuStyle,
     on_close: Option<Close>,
-) -> MenuHandle {
+) -> Rc<MenuState> {
     let shared: Shared = Rc::new(OnceCell::new());
     let mut levels = Vec::new();
     let how = Anchoring {
@@ -193,7 +193,7 @@ pub(super) fn bar_menu(
     how: Anchoring,
     style: &MenuStyle,
     on_close: Option<Close>,
-) -> MenuHandle {
+) -> Rc<MenuState> {
     let shared: Shared = Rc::new(OnceCell::new());
     let mut levels = Vec::new();
     level(cx, entries, None, title, how, style, &shared, &mut levels);
@@ -201,10 +201,10 @@ pub(super) fn bar_menu(
     finish(shared, levels, on_close)
 }
 
-fn finish(shared: Shared, levels: Vec<Level>, on_close: Option<Close>) -> MenuHandle {
+fn finish(shared: Shared, levels: Vec<Level>, on_close: Option<Close>) -> Rc<MenuState> {
     let state = Rc::new(MenuState::new(levels, on_close));
     let _ = shared.set(Rc::clone(&state));
-    MenuHandle(state)
+    state
 }
 
 const FIT: Sizing = Sizing {

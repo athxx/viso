@@ -273,7 +273,7 @@ mod tests {
     use std::collections::HashMap;
     use std::rc::Rc;
     use viso_ui::{
-        Axis, BindingTable, BoxStyle, BuildCx, Component, LeafStyle, NodeId, NodeStore, Rect,
+        Axis, BindingTable, BoxStyle, BuildCx, LeafStyle, NodeId, NodeStore, Rect,
         SemanticProjector, Sizing, StateStore, StateValue, TextEdits, VirtualLists,
     };
 

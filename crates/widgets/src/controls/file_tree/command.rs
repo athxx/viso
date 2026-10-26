@@ -24,7 +24,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use viso_ui::{EventCx, Key, NodeId, NodeStore, VirtualLists};
+use viso_ui::{Controls, EventCx, Key, NodeId, NodeStore, VirtualLists};
 
 use super::model::{self, Nav, NodeKey, SelectOp, TreeNode};
 use super::{RowNodes, SelectMode, VisibleRows};
@@ -92,24 +92,127 @@ pub(super) struct FileTreeState {
 /// A shared handle to the file tree's warm state.
 pub(super) type FileTreeStateCell = Rc<RefCell<FileTreeState>>;
 
-/// A shared slot an application creates, passes to
-/// [`FileTree::handle`](super::FileTree::handle), and reads after `build` to obtain
-/// the control's [`FileTreeHandle`]. The warm state, the visible cell, and the keyed
-/// row-node map are minted inside `build`, so the handle cannot be returned by the
-/// builder chain; the app supplies this slot up front and `build` fills it once they
-/// exist — the same deferred-fill idiom as the dock's `DockHandleSlot`. Written once
-/// during build, read once after.
-pub type FileTreeHandleSlot = Rc<RefCell<Option<FileTreeHandle>>>;
+viso_ui::control_handle! {
+    /// A handle an application captures to drive a built [`FileTree`](super::FileTree)
+    /// programmatically. Call
+    /// [`toggle`](FileTreeHandle::toggle)/[`expand`](FileTreeHandle::expand)/[`collapse`](FileTreeHandle::collapse)
+    /// from within an [`EventCx`](viso_ui::EventCx) (an event handler) to record an
+    /// expand/collapse, then call [`reconcile`](FileTreeHandle::reconcile) after the input
+    /// transaction with `&mut NodeStore`/`&mut VirtualLists` to apply it. A command naming
+    /// an absent or non-directory key is a no-op (a file never discloses).
+    ///
+    /// `Copy`, an id alone: `build` returns it, or mint one first with
+    /// [`BuildCx::handle`](viso_ui::BuildCx::handle) for closures declared
+    /// before the control. Once the control is gone, every call is a no-op.
+    pub struct FileTreeHandle;
+}
 
-/// A handle an application captures to drive a built [`FileTree`](super::FileTree)
-/// programmatically. Cheap to clone (it holds only shared cells). Call
-/// [`toggle`](FileTreeHandle::toggle)/[`expand`](FileTreeHandle::expand)/[`collapse`](FileTreeHandle::collapse)
-/// from within an [`EventCx`](viso_ui::EventCx) (an event handler) to record an
-/// expand/collapse, then call [`reconcile`](FileTreeHandle::reconcile) after the input
-/// transaction with `&mut NodeStore`/`&mut VirtualLists` to apply it. A command naming
-/// an absent or non-directory key is a no-op (a file never discloses).
+impl FileTreeHandle {
+    /// Flip the open state of the folder `key`: open it if collapsed, collapse it if
+    /// open. Pushes a [`Toggle`](Intent::Toggle) intent the
+    /// [`reconcile`](FileTreeHandle::reconcile) step applies. A no-op (once reconciled)
+    /// if `key` names a file or is absent. Call from within an event handler.
+    pub fn toggle(self, _ev: &mut EventCx<'_>, key: NodeKey) {
+        if let Some(parts) = _ev.control::<FileTreeParts>(self.0) {
+            parts.toggle(_ev, key);
+        }
+    }
+
+    /// Open the folder `key`, revealing its children on the next reconcile. Pushes an
+    /// [`Expand`](Intent::Expand) intent; a no-op (once reconciled) if the folder is
+    /// already open, names a file, or is absent. Call from within an event handler.
+    pub fn expand(self, _ev: &mut EventCx<'_>, key: NodeKey) {
+        if let Some(parts) = _ev.control::<FileTreeParts>(self.0) {
+            parts.expand(_ev, key);
+        }
+    }
+
+    /// Close the folder `key`, hiding its descendants on the next reconcile. Pushes a
+    /// [`Collapse`](Intent::Collapse) intent; a no-op (once reconciled) if the folder
+    /// is already closed or absent. The folder keeps its descendants' open state — a
+    /// stable [`NodeKey`] set survives the collapse, so reopening restores the prior
+    /// expansion (module docs). Call from within an event handler.
+    pub fn collapse(self, _ev: &mut EventCx<'_>, key: NodeKey) {
+        if let Some(parts) = _ev.control::<FileTreeParts>(self.0) {
+            parts.collapse(_ev, key);
+        }
+    }
+
+    /// Interpret a keyboard event against the tree, pushing the resulting intents —
+    /// the keyboard half of navigation and selection. Call it with the tree's
+    /// [`KeyEvent`](viso_ui::KeyEvent) when the tree holds focus; it reads the current
+    /// focus cursor and visible rows from the warm state (a borrow, no store) to
+    /// decide the step, then records intents the [`reconcile`](FileTreeHandle::reconcile)
+    /// step applies. Does nothing for a key release or a key the tree doesn't bind.
+    ///
+    /// The bindings (every one with a mouse equivalent):
+    /// - `Up`/`Down` move the focus cursor one visible row (skipping collapsed
+    ///   subtrees, since a hidden row isn't visible);
+    /// - `Right` discloses a collapsed folder, or steps into an open folder's first
+    ///   child; `Left` collapses an open folder, or steps out to the parent;
+    /// - `Home`/`End` focus the first/last visible row;
+    /// - `Space` toggles the focused row's selection (in `Single` mode, replaces it);
+    /// - holding `Shift` with an arrow/Home/End moves focus **and** range-selects from
+    ///   the anchor to the new focus (only in `Multi` mode; a plain move otherwise).
+    pub fn on_key(self, _ev: &mut EventCx<'_>, key_event: &viso_ui::KeyEvent) {
+        if let Some(parts) = _ev.control::<FileTreeParts>(self.0) {
+            parts.on_key(_ev, key_event);
+        }
+    }
+
+    /// Move the focus cursor to `key` without changing the selection. The programmatic
+    /// / mouse-hover equivalent of an arrow key that only moves focus. Pushes a
+    /// [`SetFocus`](Intent::SetFocus) intent; a no-op (once reconciled) if `key` is not
+    /// currently visible.
+    pub fn focus(self, _ev: &mut EventCx<'_>, key: NodeKey) {
+        if let Some(parts) = _ev.control::<FileTreeParts>(self.0) {
+            parts.focus(_ev, key);
+        }
+    }
+
+    /// Edit the selection for `key` with an explicit [`SelectOp`] — the general
+    /// selection command every mouse/keyboard selection gesture funnels through.
+    /// Pushes a [`Select`](Intent::Select) intent, which also moves the focus cursor to
+    /// the row. Call from within an event handler.
+    pub fn select(self, _ev: &mut EventCx<'_>, key: NodeKey, op: SelectOp) {
+        if let Some(parts) = _ev.control::<FileTreeParts>(self.0) {
+            parts.select(_ev, key, op);
+        }
+    }
+
+    /// Handle a mouse click on the row `key` with the event's modifiers — the mouse
+    /// equivalent of the keyboard selection gestures. Chooses the
+    /// [`SelectOp`] the way a file browser does: `Shift` extends a range; a platform
+    /// multi-select modifier (`Ctrl`/`Cmd`) toggles the one row; a plain click replaces
+    /// the selection. In `Single` mode every click replaces (only `Replace` is
+    /// allowed). Pushes the corresponding [`Select`](Intent::Select) intent.
+    pub fn click(self, ev: &mut EventCx<'_>, key: NodeKey) {
+        if let Some(parts) = ev.control::<FileTreeParts>(self.0) {
+            parts.click(ev, key);
+        }
+    }
+
+    /// The reconcile intent-drain: apply every committed expand/collapse intent
+    /// against the warm open set, reflatten the visible rows into the shared cell, and
+    /// drive the keyed virtual list's item count so the substrate diffs by
+    /// [`NodeKey`] on its next pass. A host calls this after an input transaction with
+    /// `&mut NodeStore`/`&mut VirtualLists` — the handler-writes-intent /
+    /// reconcile-mutates-store split.
+    ///
+    /// Delegates to [`reconcile_open`](super::reconcile::reconcile_open): a structural
+    /// change that runs before the frame's
+    /// [`virtual_list::reconcile`](viso_ui::virtual_list::reconcile) geometry pass, the
+    /// same phase relationship the dock's reconcile uses.
+    pub fn reconcile(self, cx: &impl Controls, store: &mut NodeStore, lists: &mut VirtualLists) {
+        if let Some(parts) = cx.control::<FileTreeParts>(self.0) {
+            parts.reconcile(store, lists);
+        }
+    }
+}
+
+/// What a built control's handlers and its [`FileTreeHandle`] share.
 #[derive(Clone)]
-pub struct FileTreeHandle {
+pub(super) struct FileTreeParts {
     /// The file tree's warm state: the forest, the open set, and the shared cells.
     state: FileTreeStateCell,
     /// The shared expand/collapse intent queue a command pushes onto; the reconcile
@@ -117,7 +220,7 @@ pub struct FileTreeHandle {
     intents: Rc<RefCell<Vec<Intent>>>,
 }
 
-impl FileTreeHandle {
+impl FileTreeParts {
     /// Flip the open state of the folder `key`: open it if collapsed, collapse it if
     /// open. Pushes a [`Toggle`](Intent::Toggle) intent the
     /// [`reconcile`](FileTreeHandle::reconcile) step applies. A no-op (once reconciled)
@@ -273,15 +376,15 @@ impl FileTreeHandle {
 /// the viewport id exists. The argument order mirrors the `build` call site: the warm
 /// data first (roots, open, select mode), then the built substrate (viewport, visible,
 /// row nodes).
-pub(super) fn make_handle(
+pub(super) fn make_parts(
     roots: Vec<TreeNode>,
     open: std::collections::HashSet<NodeKey>,
     select_mode: SelectMode,
     viewport: NodeId,
     visible: VisibleRows,
     row_nodes: RowNodes,
-) -> FileTreeHandle {
-    FileTreeHandle {
+) -> FileTreeParts {
+    FileTreeParts {
         state: Rc::new(RefCell::new(FileTreeState {
             roots,
             open,
@@ -348,7 +451,7 @@ mod tests {
         viewport: NodeId,
         row_nodes: RowNodes,
         visible: VisibleRows,
-        handle: FileTreeHandle,
+        handle: FileTreeParts,
         scratch: Vec<u32>,
         redo: Vec<NodeId>,
     }
@@ -387,7 +490,7 @@ mod tests {
                 viewport = build_tree(&mut cx, &visible, &labels, &style, &row_nodes);
                 let _ = cx.root();
             }
-            let handle = make_handle(
+            let handle = make_parts(
                 roots.to_vec(),
                 open.clone(),
                 mode,
@@ -434,7 +537,7 @@ mod tests {
 
         /// Run one command against a throwaway `EventCx`, then drain the intents into
         /// the open set and re-drive the list — the widget's own reconcile step.
-        fn drive(&mut self, act: impl FnOnce(&FileTreeHandle, &mut EventCx<'_>)) {
+        fn drive(&mut self, act: impl FnOnce(&FileTreeParts, &mut EventCx<'_>)) {
             let ev = still_pointer();
             {
                 let mut cx = EventCx::__new_pointer(&mut self.states, &self.bindings, &ev);

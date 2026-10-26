@@ -35,18 +35,14 @@
 //! the anchor.
 //!
 //! ```
-//! use std::cell::RefCell;
-//! use std::rc::Rc;
-//! use viso_widgets::{PopupHandleSlot, popup};
-//! use viso_ui::{SemanticProjector, BuildCx, BindingTable, Component, LeafStyle, NodeStore, StateStore, TextEdits, VirtualLists};
+//! use viso_widgets::popup;
+//! use viso_ui::{SemanticProjector, BuildCx, BindingTable, LeafStyle, NodeStore, StateStore, TextEdits, VirtualLists};
 //! use viso_ui::{BoxStyle, Sizing};
 //!
-//! let handle: PopupHandleSlot = Rc::new(RefCell::new(None));
 //! let control = popup()
 //!     .anchor(|cx| { cx.leaf(LeafStyle { size: Sizing::fixed(80.0, 24.0), style: BoxStyle::NONE }); })
 //!     .content(|cx| { cx.leaf(LeafStyle { size: Sizing::fixed(120.0, 60.0), style: BoxStyle::NONE }); })
-//!     .on_dismiss(|_ev| { /* the popup was dismissed */ })
-//!     .handle(&handle);
+//!     .on_dismiss(|_ev| { /* the popup was dismissed */ });
 //!
 //! // Popup authors reactive state, so it builds through a reactive cx.
 //! let mut store = NodeStore::new();
@@ -56,8 +52,8 @@
 //! let mut text_edits = TextEdits::new();
 //! let mut projectors = SemanticProjector::new();
 //! let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists, &mut text_edits, &mut projectors);
-//! control.build(&mut cx);
-//! // `handle` is now filled; the app can `handle.borrow().clone().unwrap().open(ev)` from the anchor.
+//! let handle = control.build(&mut cx);
+//! // The anchor's handler calls `handle.open(ev)`; `handle` is `Copy`.
 //! ```
 
 use std::cell::RefCell;
@@ -66,9 +62,9 @@ use std::rc::Rc;
 use std::cell::Cell;
 
 use viso_ui::{
-    AbsoluteStyle, Align, AnchorAlign, Anchoring, Axis, BoxStyle, BuildCx, Component, DirtyClass,
-    EventCx, FlexStyle, Inset, Justify, Key, LeafStyle, Length, NodeId, Rgba, Role, Semantics,
-    Side, Sizing, StateId, StateValue,
+    AbsoluteStyle, Align, AnchorAlign, Anchoring, Axis, BoxStyle, BuildCx, Component, Controls,
+    DirtyClass, EventCx, FlexStyle, Inset, Justify, Key, LeafStyle, Length, NodeId, Rgba, Role,
+    Semantics, Side, Sizing, StateId, StateValue,
 };
 
 /// A shared, mutable dismiss callback, fired when the popup closes (Escape, or a
@@ -83,24 +79,48 @@ type SharedDismiss = Rc<RefCell<Option<Box<dyn FnMut(&mut EventCx<'_>)>>>>;
 /// content) into the popup; boxed so a `Popup` can hold the two closures.
 type ContentBuilder = Box<dyn Fn(&mut BuildCx<'_>)>;
 
-/// A shared slot an application creates, passes to [`Popup::handle`], and reads
-/// after `build` to obtain the control's [`PopupHandle`]. The `open` cell and the
-/// content node id are minted inside `build`, so the handle cannot be returned by
-/// the builder chain; the app supplies this slot up front and `build` fills it once
-/// the ids exist — the same deferred-fill idiom as [`NavigationStack`]. Written once
-/// during build, read once after.
-///
-/// [`NavigationStack`]: crate::NavigationStack
-pub type PopupHandleSlot = Rc<RefCell<Option<PopupHandle>>>;
+viso_ui::control_handle! {
+    /// A handle an application captures to drive a built [`Popup`] programmatically.
+    /// Call [`PopupHandle::open`] to show the content, [`PopupHandle::close`] to hide it, and
+    /// [`PopupHandle::toggle`] to flip — all from within an [`EventCx`] (an event
+    /// handler), since opening/closing defers a `hidden` flip the router applies. An
+    /// open when already open, or a close when already closed, is a no-op.
+    ///
+    /// `Copy`, an id alone: `build` returns it, or mint one first with
+    /// [`BuildCx::handle`](viso_ui::BuildCx::handle) for closures declared
+    /// before the control. Once the control is gone, every call is a no-op.
+    pub struct PopupHandle;
+}
 
-/// A handle an application captures to drive a built [`Popup`] programmatically.
-/// Cheap to clone (it holds only an id, a state id, and shared cells). Call
-/// [`PopupHandle::open`] to show the content, [`PopupHandle::close`] to hide it, and
-/// [`PopupHandle::toggle`] to flip — all from within an [`EventCx`] (an event
-/// handler), since opening/closing defers a `hidden` flip the router applies. An
-/// open when already open, or a close when already closed, is a no-op.
+impl PopupHandle {
+    /// Open the popup: show the content. An open when already open is a no-op.
+    /// Call from within an event handler.
+    pub fn open(self, ev: &mut EventCx<'_>) {
+        if let Some(parts) = ev.control::<PopupParts>(self.0) {
+            parts.open(ev);
+        }
+    }
+
+    /// Close the popup: hide the content and fire `on_dismiss`. A close when
+    /// already closed is a no-op. Call from within an event handler.
+    pub fn close(self, ev: &mut EventCx<'_>) {
+        if let Some(parts) = ev.control::<PopupParts>(self.0) {
+            parts.close(ev);
+        }
+    }
+
+    /// Toggle the popup: close it if open, open it if closed. Call from within an
+    /// event handler.
+    pub fn toggle(self, ev: &mut EventCx<'_>) {
+        if let Some(parts) = ev.control::<PopupParts>(self.0) {
+            parts.toggle(ev);
+        }
+    }
+}
+
+/// What a built control's handlers and its [`PopupHandle`] share.
 #[derive(Clone)]
-pub struct PopupHandle {
+struct PopupParts {
     /// The reactive cell holding the current open state.
     open: StateId,
     /// The floating content node, shown/hidden to open/close.
@@ -111,7 +131,7 @@ pub struct PopupHandle {
     returns: Rc<Cell<Option<NodeId>>>,
 }
 
-impl PopupHandle {
+impl PopupParts {
     /// Open the popup: show the content. An open when already open is a no-op.
     /// Call from within an event handler.
     pub fn open(&self, ev: &mut EventCx<'_>) {
@@ -217,9 +237,8 @@ pub struct Popup {
     /// The shared dismiss callback (see [`SharedDismiss`]). `None` until
     /// [`Popup::on_dismiss`] is called; a popup with no callback still closes.
     on_dismiss: SharedDismiss,
-    /// The app-supplied slot `build` fills with the control's [`PopupHandle`], or an
-    /// unshared throwaway slot when the app did not ask for one.
-    handle_slot: PopupHandleSlot,
+    /// The handle `build` binds, when the app minted one up front.
+    handle: Option<PopupHandle>,
 }
 
 /// Construct an empty [`Popup`] with no anchor, no content, no scrim, and no
@@ -233,7 +252,7 @@ pub fn popup() -> Popup {
         content: None,
         style: PopupStyle::default(),
         on_dismiss: Rc::new(RefCell::new(None)),
-        handle_slot: Rc::new(RefCell::new(None)),
+        handle: None,
     }
 }
 
@@ -319,15 +338,18 @@ impl Popup {
         self
     }
 
-    /// Register an app-supplied [`PopupHandleSlot`] for programmatic open/close.
-    /// During [`build`](Component::build) the control fills the slot with a
-    /// [`PopupHandle`] bound to the just-minted `open` cell and content id; the app
-    /// reads the slot after building and clones the handle into the anchor's
-    /// controls. Storing the destination this way (rather than returning it) lets
-    /// `build` fill it once the ids exist.
-    pub fn handle(mut self, slot: &PopupHandleSlot) -> Self {
-        self.handle_slot = slot.clone();
+    /// Bind `handle`, minted with [`BuildCx::handle`](viso_ui::BuildCx::handle)
+    /// before the control is built, so closures declared earlier can drive it.
+    pub fn handle(mut self, handle: PopupHandle) -> Self {
+        self.handle = Some(handle);
         self
+    }
+
+    /// Build the control into `cx` and return its handle.
+    pub fn build(mut self, cx: &mut BuildCx<'_>) -> PopupHandle {
+        let handle = *self.handle.get_or_insert_with(|| cx.handle());
+        Component::build(&self, cx);
+        handle
     }
 }
 
@@ -525,14 +547,19 @@ impl Component for Popup {
         cx.bind(open, root, DirtyClass::PAINT);
         cx.semantics(root, Semantics::role(Role::Group));
 
-        // Fill the app-supplied handle slot (if any) with a handle bound to the
-        // just-minted cell and content id, so the app can open/close programmatically.
-        *self.handle_slot.borrow_mut() = Some(PopupHandle {
-            open,
-            content,
-            on_dismiss: self.on_dismiss.clone(),
-            returns,
-        });
+        // Bind the app's handle, if any, to the parts; the root keeps them.
+        if let Some(handle) = self.handle {
+            cx.bind_control(
+                handle.0,
+                root.id(),
+                Rc::new(PopupParts {
+                    open,
+                    content,
+                    on_dismiss: self.on_dismiss.clone(),
+                    returns,
+                }),
+            );
+        }
     }
 }
 
@@ -674,7 +701,7 @@ mod tests {
     }
 
     /// A basic anchor+content popup with an app-captured handle, the common shape.
-    fn basic(slot: &PopupHandleSlot) -> Popup {
+    fn basic(slot: PopupHandle) -> Popup {
         popup().anchor(leaf).content(leaf).handle(slot)
     }
 
@@ -682,9 +709,9 @@ mod tests {
     /// hidden (a closed popup shows nothing for it).
     #[test]
     fn anchor_is_in_place_and_content_is_a_hidden_overlay() {
-        let slot: PopupHandleSlot = Rc::new(RefCell::new(None));
         let mut rx = Reactive::new();
-        let root = rx.build(basic(&slot));
+        let slot: PopupHandle = rx.states.handle();
+        let root = rx.build(basic(slot));
 
         let kids = children(&rx.store, root);
         assert_eq!(kids.len(), 2, "an anchor and a content node");
@@ -705,9 +732,9 @@ mod tests {
     /// key handler for Escape-to-close.
     #[test]
     fn popup_root_and_content_are_groups_and_content_is_focusable() {
-        let slot: PopupHandleSlot = Rc::new(RefCell::new(None));
         let mut rx = Reactive::new();
-        let root = rx.build(basic(&slot));
+        let slot: PopupHandle = rx.states.handle();
+        let root = rx.build(basic(slot));
 
         assert_eq!(
             rx.store.semantics(root).expect("root has semantics").role,
@@ -731,20 +758,20 @@ mod tests {
     /// already open is a no-op.
     #[test]
     fn handle_open_shows_content_and_is_idempotent() {
-        let slot: PopupHandleSlot = Rc::new(RefCell::new(None));
         let mut rx = Reactive::new();
-        let root = rx.build(basic(&slot));
+        let slot: PopupHandle = rx.states.handle();
+        let root = rx.build(basic(slot));
         let cell = open_cell();
         let content = children(&rx.store, root)[1];
-        let h = slot.borrow().clone().expect("build fills the handle slot");
+        let h = slot;
 
-        let n = h.clone();
+        let n = h;
         rx.drive(|ev| n.open(ev));
         assert_eq!(rx.is_open(cell), Some(true), "open moves the open cell");
         assert!(!rx.store.hidden(content), "the content is now shown");
 
         // A second open is a no-op — the cell and the flag stay.
-        let n = h.clone();
+        let n = h;
         rx.drive(|ev| n.open(ev));
         assert_eq!(rx.is_open(cell), Some(true), "a second open is a no-op");
         assert!(!rx.store.hidden(content), "the content stays shown");
@@ -757,26 +784,26 @@ mod tests {
         let count = Rc::new(Cell::new(0u32));
         let c = count.clone();
 
-        let slot: PopupHandleSlot = Rc::new(RefCell::new(None));
         let mut rx = Reactive::new();
-        let root = rx.build(basic(&slot).on_dismiss(move |_ev| {
+        let slot: PopupHandle = rx.states.handle();
+        let root = rx.build(basic(slot).on_dismiss(move |_ev| {
             c.set(c.get() + 1);
         }));
         let cell = open_cell();
         let content = children(&rx.store, root)[1];
-        let h = slot.borrow().clone().expect("build fills the handle slot");
+        let h = slot;
 
         // Open, then close.
-        let n = h.clone();
+        let n = h;
         rx.drive(|ev| n.open(ev));
-        let n = h.clone();
+        let n = h;
         rx.drive(|ev| n.close(ev));
         assert_eq!(rx.is_open(cell), Some(false), "close moves the open cell");
         assert!(rx.store.hidden(content), "the content is now hidden");
         assert_eq!(count.get(), 1, "close fires on_dismiss once");
 
         // A second close is a no-op — no cell write, no extra dismiss.
-        let n = h.clone();
+        let n = h;
         rx.drive(|ev| n.close(ev));
         assert_eq!(rx.is_open(cell), Some(false), "a second close is a no-op");
         assert_eq!(count.get(), 1, "and does not fire again");
@@ -788,24 +815,24 @@ mod tests {
         let count = Rc::new(Cell::new(0u32));
         let c = count.clone();
 
-        let slot: PopupHandleSlot = Rc::new(RefCell::new(None));
         let mut rx = Reactive::new();
-        let root = rx.build(basic(&slot).on_dismiss(move |_ev| {
+        let slot: PopupHandle = rx.states.handle();
+        let root = rx.build(basic(slot).on_dismiss(move |_ev| {
             c.set(c.get() + 1);
         }));
         let cell = open_cell();
         let content = children(&rx.store, root)[1];
-        let h = slot.borrow().clone().expect("build fills the handle slot");
+        let h = slot;
 
         // Toggle open.
-        let n = h.clone();
+        let n = h;
         rx.drive(|ev| n.toggle(ev));
         assert_eq!(rx.is_open(cell), Some(true), "toggle opens a closed popup");
         assert!(!rx.store.hidden(content), "the content is shown");
         assert_eq!(count.get(), 0, "opening does not fire on_dismiss");
 
         // Toggle closed.
-        let n = h.clone();
+        let n = h;
         rx.drive(|ev| n.toggle(ev));
         assert_eq!(rx.is_open(cell), Some(false), "toggle closes an open popup");
         assert!(rx.store.hidden(content), "the content is hidden");
@@ -820,17 +847,17 @@ mod tests {
         let count = Rc::new(Cell::new(0u32));
         let c = count.clone();
 
-        let slot: PopupHandleSlot = Rc::new(RefCell::new(None));
         let mut rx = Reactive::new();
-        let root = rx.build(basic(&slot).on_dismiss(move |_ev| {
+        let slot: PopupHandle = rx.states.handle();
+        let root = rx.build(basic(slot).on_dismiss(move |_ev| {
             c.set(c.get() + 1);
         }));
         let cell = open_cell();
         let content = children(&rx.store, root)[1];
-        let h = slot.borrow().clone().expect("build fills the handle slot");
+        let h = slot;
 
         // Open, then Escape closes.
-        let n = h.clone();
+        let n = h;
         rx.drive(|ev| n.open(ev));
         rx.key(content, key_ev(Key::Escape, true, false));
         assert_eq!(rx.is_open(cell), Some(false), "Escape closes the popup");
@@ -838,7 +865,7 @@ mod tests {
         assert_eq!(count.get(), 1, "the Escape dismiss fires on_dismiss");
 
         // Reopen; auto-repeat and key-up do not close.
-        let n = h.clone();
+        let n = h;
         rx.drive(|ev| n.open(ev));
         let before = count.get();
         rx.key(content, key_ev(Key::Escape, true, true)); // repeat: ignored
@@ -847,7 +874,7 @@ mod tests {
         assert_eq!(count.get(), before, "and do not fire on_dismiss");
 
         // Close, then Escape on a closed popup is a no-op.
-        let n = h.clone();
+        let n = h;
         rx.drive(|ev| n.close(ev));
         let before = count.get();
         rx.key(content, key_ev(Key::Escape, true, false));
@@ -869,15 +896,9 @@ mod tests {
             b: 0.0,
             a: 0.5,
         };
-        let slot: PopupHandleSlot = Rc::new(RefCell::new(None));
         let mut rx = Reactive::new();
-        let root = rx.build(
-            popup()
-                .anchor(leaf)
-                .content(leaf)
-                .scrim(scrim)
-                .handle(&slot),
-        );
+        let slot: PopupHandle = rx.states.handle();
+        let root = rx.build(popup().anchor(leaf).content(leaf).scrim(scrim).handle(slot));
 
         let kids = children(&rx.store, root);
         assert_eq!(kids.len(), 3, "an anchor, a scrim, and a content node");
@@ -910,14 +931,14 @@ mod tests {
     /// not panic and a close with no callback is a no-op on the callback.
     #[test]
     fn handleless_popup_still_opens_and_closes() {
-        let slot: PopupHandleSlot = Rc::new(RefCell::new(None));
         let mut rx = Reactive::new();
-        let root = rx.build(basic(&slot));
+        let slot: PopupHandle = rx.states.handle();
+        let root = rx.build(basic(slot));
         let cell = open_cell();
         let content = children(&rx.store, root)[1];
-        let h = slot.borrow().clone().expect("build fills the handle slot");
+        let h = slot;
 
-        let n = h.clone();
+        let n = h;
         rx.drive(|ev| n.open(ev));
         assert_eq!(
             rx.is_open(cell),
@@ -926,7 +947,7 @@ mod tests {
         );
         assert!(!rx.store.hidden(content), "and shows the content");
 
-        let n = h.clone();
+        let n = h;
         rx.drive(|ev| n.close(ev));
         assert_eq!(
             rx.is_open(cell),

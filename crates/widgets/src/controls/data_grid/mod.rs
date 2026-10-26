@@ -29,7 +29,7 @@
 //! active descendant.
 //!
 //! ```
-//! use viso_widgets::{DataGridHandleSlot, data_grid, grid_column};
+//! use viso_widgets::{data_grid, grid_column};
 //! use viso_ui::{BindingTable, BuildCx, Component, NodeStore, SemanticProjector, StateStore, TextEdits, VirtualLists};
 //!
 //! let mut store = NodeStore::new();
@@ -39,8 +39,7 @@
 //! let mut text_edits = TextEdits::new();
 //! let mut projectors = SemanticProjector::new();
 //! let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists, &mut text_edits, &mut projectors);
-//! let slot = DataGridHandleSlot::default();
-//! data_grid(
+//! let grid = data_grid(
 //!     "Orders",
 //!     10_000,
 //!     vec![
@@ -51,8 +50,8 @@
 //! )
 //! .text(|row, column| format!("{row}:{column}"))
 //! .on_sort(|_ev, column, order| { /* sort the data */ })
-//! .handle(&slot)
 //! .build(&mut cx);
+//! assert_eq!(grid.rows(&cx), 10_000);
 //! ```
 
 mod cells;
@@ -66,8 +65,8 @@ use std::rc::Rc;
 
 use viso_ui::virtual_list::{set_sticky_of, watch_across};
 use viso_ui::{
-    AcrossView, BoxStyle, BuildCx, Component, EventCx, Justify, NodeId, Rgba, Role, Semantics,
-    Sizing, SortOrder, StateId, StateValue, TextAlign, VirtualListStyle,
+    AcrossView, BoxStyle, BuildCx, Component, Controls, EventCx, Justify, NodeId, Rgba, Role,
+    Semantics, Sizing, SortOrder, StateId, StateValue, TextAlign, VirtualListStyle,
 };
 
 pub use selection::{GridRange, GridSelect, GridSelection};
@@ -247,7 +246,8 @@ pub struct DataGrid {
     on_activate: RefCell<Option<OnCell>>,
     on_resize: RefCell<Option<OnResize>>,
     on_reorder: RefCell<Option<OnReorder>>,
-    slot: Option<DataGridHandleSlot>,
+    /// The handle `build` binds, when the app minted one up front.
+    handle: Option<DataGridHandle>,
 }
 
 /// A grid named `label` of `rows` data rows under `columns`.
@@ -265,7 +265,7 @@ pub fn data_grid(label: impl Into<String>, rows: usize, columns: Vec<GridColumn>
         on_activate: RefCell::new(None),
         on_resize: RefCell::new(None),
         on_reorder: RefCell::new(None),
-        slot: None,
+        handle: None,
     }
 }
 
@@ -349,10 +349,18 @@ impl DataGrid {
         self
     }
 
-    /// Fill `slot` with the grid's handle once it is built.
-    pub fn handle(mut self, slot: &DataGridHandleSlot) -> Self {
-        self.slot = Some(Rc::clone(slot));
+    /// Bind `handle`, minted with [`BuildCx::handle`](viso_ui::BuildCx::handle)
+    /// before the control is built, so closures declared earlier can drive it.
+    pub fn handle(mut self, handle: DataGridHandle) -> Self {
+        self.handle = Some(handle);
         self
+    }
+
+    /// Build the control into `cx` and return its handle.
+    pub fn build(mut self, cx: &mut BuildCx<'_>) -> DataGridHandle {
+        let handle = *self.handle.get_or_insert_with(|| cx.handle());
+        Component::build(&self, cx);
+        handle
     }
 }
 
@@ -528,15 +536,87 @@ fn restore<T>(slot: &RefCell<Option<T>>, handler: T) {
     }
 }
 
-/// A built [`DataGrid`], to change its data and read what it shows. Cheap
-/// to clone: every clone is the same grid.
-#[derive(Clone)]
-pub struct DataGridHandle(Rc<Grid>);
-
-/// Where a [`DataGrid`] puts its handle once built.
-pub type DataGridHandleSlot = Rc<RefCell<Option<DataGridHandle>>>;
+viso_ui::control_handle! {
+    /// A built [`DataGrid`], to change its data and read what it shows. Cheap
+    /// to clone: every clone is the same grid.
+    ///
+    /// `Copy`, an id alone: `build` returns it, or mint one first with
+    /// [`BuildCx::handle`](viso_ui::BuildCx::handle) for closures declared
+    /// before the control. Once the control is gone, every call is a no-op.
+    pub struct DataGridHandle;
+}
 
 impl DataGridHandle {
+    /// The data rows it has.
+    pub fn rows(self, cx: &impl Controls) -> usize {
+        match cx.control::<DataGridParts>(self.0) {
+            Some(parts) => parts.rows(),
+            None => Default::default(),
+        }
+    }
+
+    /// Give it `rows` data rows, rebuilding the cells built: the data
+    /// changed. A selection past the last row is dropped.
+    pub fn set_rows(self, ev: &mut EventCx<'_>, rows: usize) {
+        if let Some(parts) = ev.control::<DataGridParts>(self.0) {
+            parts.set_rows(ev, rows);
+        }
+    }
+
+    /// Rebuild the cells built: the data they show changed.
+    pub fn refresh(self, ev: &mut EventCx<'_>) {
+        if let Some(parts) = ev.control::<DataGridParts>(self.0) {
+            parts.refresh(ev);
+        }
+    }
+
+    /// What it has selected.
+    pub fn selection(self, cx: &impl Controls) -> Option<GridSelection> {
+        Some(cx.control::<DataGridParts>(self.0)?.selection())
+    }
+
+    /// Select nothing.
+    pub fn clear_selection(self, ev: &mut EventCx<'_>) {
+        if let Some(parts) = ev.control::<DataGridParts>(self.0) {
+            parts.clear_selection(ev);
+        }
+    }
+
+    /// Show the grid sorted by `column` (as declared) in `order`, or by no
+    /// column: after sorting the data some other way.
+    pub fn show_sort(self, ev: &mut EventCx<'_>, sort: Option<(usize, SortOrder)>) {
+        if let Some(parts) = ev.control::<DataGridParts>(self.0) {
+            parts.show_sort(ev, sort);
+        }
+    }
+
+    /// The cursor's data row (`None` on the headers) and column as declared.
+    pub fn cursor(self, cx: &impl Controls) -> Option<(Option<usize>, usize)> {
+        Some(cx.control::<DataGridParts>(self.0)?.cursor())
+    }
+
+    /// The columns (as declared) in their order on screen.
+    pub fn order(self, cx: &impl Controls) -> Vec<usize> {
+        match cx.control::<DataGridParts>(self.0) {
+            Some(parts) => parts.order(),
+            None => Default::default(),
+        }
+    }
+
+    /// Column `column`'s (as declared) width.
+    pub fn width(self, cx: &impl Controls, column: usize) -> Option<f32> {
+        match cx.control::<DataGridParts>(self.0) {
+            Some(parts) => parts.width(column),
+            None => None,
+        }
+    }
+}
+
+/// What a built control's handlers and its [`DataGridHandle`] share.
+#[derive(Clone)]
+struct DataGridParts(Rc<Grid>);
+
+impl DataGridParts {
     /// The data rows it has.
     pub fn rows(&self) -> usize {
         self.0.rows.get()
@@ -679,8 +759,8 @@ impl Component for DataGrid {
                 }
             });
         });
-        if let Some(slot) = &self.slot {
-            *slot.borrow_mut() = Some(DataGridHandle(Rc::clone(&grid)));
+        if let Some(bound) = self.handle {
+            cx.bind_control(bound.0, viewport, Rc::new(DataGridParts(Rc::clone(&grid))));
         }
     }
 }

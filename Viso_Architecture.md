@@ -409,7 +409,7 @@ facade 的 feature 少而稳定，普通应用不手工设置任何 feature：�
               FlexStyle, LeafStyle, GridStyle, GridPlacement, TrackSizing, TrackMax,
               AdaptiveColumns, VirtualListStyle, SpanStyle, TextRequest,
               Semantics, Role, CursorIcon, InputKind
-控件          每个官方控件的 builder 函数、类型、Style 与 Handle/HandleSlot
+控件          每个官方控件的 builder 函数、类型、Style 与 Handle
               （label, button, image, scroll, virtual_list, grid, tabs, modal,
               sheet, popup, toast, navigation_stack, text_input, form, data_grid …）
 窗口与菜单    window, WindowBuilder, WindowHandle, WindowConfig, WindowChrome,
@@ -5357,22 +5357,22 @@ let state: &mut T = handle.borrow_mut(cx); // no mutation bypassing invalidation
 当前形态：
 
 - `viso_ui::Handle`：`BuildCx` 的 builder 返回它，`Copy`，只含 `NodeId`，不带类型参数；
-- 控件 handle：需要被程序驱动的控件各有一个 handle 类型（`ModalHandle`、`PopupHandle`、`SheetHandle`、`ToastHandle`、`NavHandle`、`SearchFieldHandle`、`DataGridHandle` 等），只含 id（`StateId`、`NodeId`）与共享 cell，`Clone`，方法以 `&mut EventCx` 为参数，经 state 写入与延迟请求生效，例如 `modal.open(ev)`、`search.set_text(ev, "…")`；
-- 控件的 id 在 `build` 内才分配，builder 链返回不了 handle，所以 app 预先创建 `*HandleSlot`（`Rc<RefCell<Option<H>>>`），`build` 填入一次、之后读取一次。slot 只在 build 时用，不是组件状态的借用。
-
-目标（尚未实现）：控件 builder 的 `build(cx)` 直接返回该控件的 typed handle，取代 `*HandleSlot`：
+- 控件 handle：需要被程序驱动的控件各有一个 handle 类型（`ModalHandle`、`PopupHandle`、`SheetHandle`、`ToastHandle`、`NavHandle`、`SearchFieldHandle`、`DataGridHandle`、`MapHandle` 等），由 `viso_ui::control_handle!` 声明：`Copy`，只含一个带 generation 的 `ControlId`，不拥有 widget heap object，不需要 `Rc<RefCell<_>>`。
 
 ```rust
-let modal: Handle<Modal> = modal(content).build(cx); // Copy，只含 id
+let modal = modal().content(content).build(cx); // ModalHandle：Copy，只含 id
 modal.open(ev);
+
+// 在控件之前声明的闭包（包括控件自己的 handler）要用它：先铸造，再交给 builder
+let search: SearchFieldHandle = cx.handle();
+search_field().on_change(move |ev, q| search.set_suggestions(ev, find(q))).handle(search).build(cx);
 ```
 
-它：
-
-- `Copy`，只含 id（`NodeId` / `StateId`），不拥有 widget heap object，不需要 `Rc<RefCell<_>>`；
-- 访问时校验 generation；
-- 方法以 `&mut EventCx` 为参数，经 state 写入与延迟请求生效（现有 `ModalHandle` 等的语义不变，类型统一为 `Handle<T>`）；
-- 控件的 id 改为在 builder 链结束时（`build` 返回前）分配，因此可以直接返回。
+- 控件 builder 的 `build(cx)` 返回 handle；`cx.handle()` 预先铸造一个，`.handle(h)` 交给 builder，`build` 绑定它；
+- 控件的共享 parts 存在 `StateStore` 的 `ControlTable` 里，表只持 `Weak`；控件根节点持强引用，节点释放时 parts 一起释放，handle 随之失效；
+- 方法经 context 访问：写入取 `&mut EventCx`（或 `&mut dyn StateWriter`，task 里也能用），读取取任意 `&impl Controls`（`EventCx`、`UpdateCx`、`EffectCx`、`BuildCx`、`StateStore`）；控件已不在时写入什么也不做，读取答 `None` 或空；
+- 没有 state store 的 build（只做布局的 `BuildCx::new`）铸出的是 detached handle，所有调用都不生效；
+- 每个控件一个 handle 类型而非一个泛型 `Handle<T>`：Rust 孤儿规则不允许 `viso-widgets` 给 `viso_ui::Handle<Modal>` 写固有方法。
 
 内部转为 state 写入与延迟请求，而非 borrow 组件。
 
@@ -5555,7 +5555,9 @@ per-node 每帧回调式 `Painter` trait 与可直接录制 backend 命令的 `C
 
 ### AD-12：`Handle<T>` 不直接暴露组件内部 state 借用
 
-**决定**：Handle 表达 identity/capability；状态读写通过 context-scoped query、typed property/action/update API（当前形态见 §78）。
+*对应 ADR 0054（控件 handle）。*
+
+**决定**：Handle 表达 identity/capability；状态读写通过 context-scoped query、typed property/action/update API（当前形态见 §78）。控件 handle 是 `Copy` 的 `ControlId`，parts 由控件根节点持有、`ControlTable` 弱引用，控件不在时调用不生效。
 
 **理由**：保持 lifetime、reactive tracking、hot reload state preservation 与 invalidation 的可验证性。
 

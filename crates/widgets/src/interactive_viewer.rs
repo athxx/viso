@@ -16,11 +16,10 @@
 //! fixed size larger than the viewer shows in part (a diagram). A
 //! [`ViewerHandle`] moves it from the app's own handlers.
 
-use std::cell::RefCell;
 use std::rc::Rc;
 
 use viso_ui::{
-    Alignment2D, BoxStyle, BuildCx, Component, EventCx, NodeId, Role, Semantics, Sizing,
+    Alignment2D, BoxStyle, BuildCx, Component, Controls, EventCx, NodeId, Role, Semantics, Sizing,
     StackStyle, Vec2, ViewerLimits, ViewerMove,
 };
 
@@ -49,18 +48,59 @@ impl Default for InteractiveViewerStyle {
     }
 }
 
-/// A slot an app passes to [`InteractiveViewer::handle`] and reads after
-/// building for the viewer's [`ViewerHandle`].
-pub type ViewerHandleSlot = Rc<RefCell<Option<ViewerHandle>>>;
-
-/// Moves a built [`InteractiveViewer`]'s content from an event handler, gliding
-/// there. Cheap to copy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ViewerHandle {
-    node: NodeId,
+viso_ui::control_handle! {
+    /// Moves a built [`InteractiveViewer`]'s content from an event handler, gliding
+    /// there. Cheap to copy.
+    ///
+    /// `Copy`, an id alone: `build` returns it, or mint one first with
+    /// [`BuildCx::handle`](viso_ui::BuildCx::handle) for closures declared
+    /// before the control. Once the control is gone, every call is a no-op.
+    pub struct ViewerHandle;
 }
 
 impl ViewerHandle {
+    /// The viewer's node.
+    pub fn node(self, cx: &impl Controls) -> Option<NodeId> {
+        Some(cx.control::<ViewerParts>(self.0)?.node())
+    }
+
+    /// Back as laid out.
+    pub fn reset(self, ev: &mut EventCx<'_>) {
+        if let Some(parts) = ev.control::<ViewerParts>(self.0) {
+            parts.reset(ev);
+        }
+    }
+
+    /// To `scale`, keeping what shows at window point `at` there; the
+    /// viewer's middle for `None`.
+    pub fn zoom_to(self, ev: &mut EventCx<'_>, scale: f32, at: Option<Vec2>) {
+        if let Some(parts) = ev.control::<ViewerParts>(self.0) {
+            parts.zoom_to(ev, scale, at);
+        }
+    }
+
+    /// By `factor`, about `at` as [`zoom_to`](Self::zoom_to).
+    pub fn zoom_by(self, ev: &mut EventCx<'_>, factor: f32, at: Option<Vec2>) {
+        if let Some(parts) = ev.control::<ViewerParts>(self.0) {
+            parts.zoom_by(ev, factor, at);
+        }
+    }
+
+    /// The content moved by `by`.
+    pub fn pan_by(self, ev: &mut EventCx<'_>, by: Vec2) {
+        if let Some(parts) = ev.control::<ViewerParts>(self.0) {
+            parts.pan_by(ev, by);
+        }
+    }
+}
+
+/// What a built control's handlers and its [`ViewerHandle`] share.
+#[derive(Clone)]
+struct ViewerParts {
+    node: NodeId,
+}
+
+impl ViewerParts {
     /// The viewer's node.
     pub fn node(&self) -> NodeId {
         self.node
@@ -117,7 +157,8 @@ pub struct InteractiveViewer {
     style: InteractiveViewerStyle,
     content: Option<ContentBuilder>,
     label: Option<String>,
-    slot: Option<ViewerHandleSlot>,
+    /// The handle `build` binds, when the app minted one up front.
+    handle: Option<ViewerHandle>,
 }
 
 /// An [`InteractiveViewer`] of the given style, with no content yet.
@@ -126,7 +167,7 @@ pub fn interactive_viewer(style: InteractiveViewerStyle) -> InteractiveViewer {
         style,
         content: None,
         label: None,
-        slot: None,
+        handle: None,
     }
 }
 
@@ -143,10 +184,18 @@ impl InteractiveViewer {
         self
     }
 
-    /// Fill `slot` with its [`ViewerHandle`] as it builds.
-    pub fn handle(mut self, slot: &ViewerHandleSlot) -> Self {
-        self.slot = Some(Rc::clone(slot));
+    /// Bind `handle`, minted with [`BuildCx::handle`](viso_ui::BuildCx::handle)
+    /// before the control is built, so closures declared earlier can drive it.
+    pub fn handle(mut self, handle: ViewerHandle) -> Self {
+        self.handle = Some(handle);
         self
+    }
+
+    /// Build the control into `cx` and return its handle.
+    pub fn build(mut self, cx: &mut BuildCx<'_>) -> ViewerHandle {
+        let handle = *self.handle.get_or_insert_with(|| cx.handle());
+        Component::build(&self, cx);
+        handle
     }
 }
 
@@ -194,8 +243,8 @@ impl Component for InteractiveViewer {
             semantics = semantics.with_label(label.clone());
         }
         cx.semantics(handle, semantics);
-        if let Some(slot) = &self.slot {
-            *slot.borrow_mut() = Some(ViewerHandle { node });
+        if let Some(bound) = self.handle {
+            cx.bind_control(bound.0, node, Rc::new(ViewerParts { node }));
         }
     }
 }
@@ -204,34 +253,30 @@ impl Component for InteractiveViewer {
 mod tests {
     use super::*;
     use viso_ui::context::StoreRequest;
-    use viso_ui::{LeafStyle, NodeStore, Rect};
+    use viso_ui::{LeafStyle, NodeStore, Rect, StateStore};
 
-    fn built(style: InteractiveViewerStyle) -> (NodeStore, NodeId, ViewerHandle) {
-        let slot = ViewerHandleSlot::default();
-        let viewer = interactive_viewer(style)
-            .label("Map")
-            .handle(&slot)
-            .content(|cx| {
-                cx.leaf(LeafStyle {
-                    size: Sizing::fixed(400.0, 300.0),
-                    style: BoxStyle::NONE,
-                });
+    fn built(style: InteractiveViewerStyle) -> (NodeStore, StateStore, NodeId, ViewerHandle) {
+        let viewer = interactive_viewer(style).label("Map").content(|cx| {
+            cx.leaf(LeafStyle {
+                size: Sizing::fixed(400.0, 300.0),
+                style: BoxStyle::NONE,
             });
+        });
         let mut store = NodeStore::new();
-        let root = {
-            let mut cx = BuildCx::new(&mut store);
-            viewer.build(&mut cx);
-            cx.root().unwrap()
+        let mut states = StateStore::new();
+        let (root, handle) = {
+            let mut cx = BuildCx::new(&mut store).with_states(&mut states);
+            let handle = viewer.build(&mut cx);
+            (cx.root().unwrap(), handle)
         };
         store.layout(root, Rect::new(0.0, 0.0, 200.0, 100.0), &mut Vec::new());
-        let handle = slot.borrow().expect("filled as it builds");
-        (store, root, handle)
+        (store, states, root, handle)
     }
 
     #[test]
     fn it_builds_a_focusable_clipping_viewer_named_to_assistive_technology() {
-        let (store, root, handle) = built(InteractiveViewerStyle::default());
-        assert_eq!(handle.node(), root);
+        let (store, states, root, handle) = built(InteractiveViewerStyle::default());
+        assert_eq!(handle.node(&states), Some(root));
         assert!(store.is_viewer(root));
         assert!(store.clips(root) && store.focusable(root));
         assert!(store.has_handler(root), "it hears double taps");
@@ -249,7 +294,7 @@ mod tests {
 
     #[test]
     fn no_double_tap_leaves_it_no_handler() {
-        let (store, root, _) = built(InteractiveViewerStyle {
+        let (store, _, root, _) = built(InteractiveViewerStyle {
             double_tap: None,
             ..InteractiveViewerStyle::default()
         });
@@ -258,9 +303,8 @@ mod tests {
 
     #[test]
     fn the_handle_moves_the_content_from_a_handler() {
-        let (mut store, root, handle) = built(InteractiveViewerStyle::default());
+        let (mut store, mut states, root, handle) = built(InteractiveViewerStyle::default());
         store.set_reduced_motion(true);
-        let mut states = viso_ui::StateStore::new();
         let bindings = viso_ui::BindingTable::new();
         let mut ev = EventCx::__new(&mut states, &bindings);
         handle.zoom_to(&mut ev, 2.0, None);

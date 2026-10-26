@@ -6,7 +6,6 @@
 #![cfg(feature = "headless")]
 
 use std::cell::RefCell;
-use std::rc::Rc;
 use std::time::Duration;
 
 use viso::__test_support::{DrivenApp, drive_scripted};
@@ -15,8 +14,8 @@ use viso::platform::{
     PointerPhase as RawPhase, RawEvent, RawKey, RawPointer, RawText, WindowId,
 };
 use viso::prelude::*;
-use viso::ui::{Axis, Component, FlexStyle, Inset, NodeId, NodeStore, Role, Sizing, StateValue};
-use viso::widgets::{SearchFieldHandleSlot, search_field};
+use viso::ui::{Axis, FlexStyle, Inset, NodeId, NodeStore, Role, Sizing, StateValue};
+use viso::widgets::{SearchFieldHandle, search_field};
 
 const STEP: Duration = Duration::from_millis(16);
 const WIN: WindowId = WindowId(1);
@@ -65,8 +64,7 @@ impl Application for SearchApp {
     }
 
     fn build(&mut self, cx: &mut BuildCx<'_>) {
-        let slot = SearchFieldHandleSlot::default();
-        let handle = Rc::clone(&slot);
+        let field: SearchFieldHandle = cx.handle();
         cx.flex(
             FlexStyle {
                 size: Sizing::fill(),
@@ -84,12 +82,10 @@ impl Application for SearchApp {
                     .label("City")
                     .on_change(move |ev, q| {
                         hear(format!("change {q}"));
-                        if let Some(h) = handle.borrow().as_ref() {
-                            h.set_suggestions(ev, found(q));
-                        }
+                        field.set_suggestions(ev, found(q));
                     })
                     .on_submit(|_, q| hear(format!("submit {q}")))
-                    .handle(&slot)
+                    .handle(field)
                     .build(cx);
                 search_field()
                     .debounce(Duration::from_millis(100))

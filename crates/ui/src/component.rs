@@ -845,6 +845,9 @@ pub struct NodeStore {
     validities: crate::semantics::Sparse<crate::semantics::Validity>,
     /// Cold: the tables, rows and cells that say where they stand.
     tables: crate::semantics::Sparse<crate::semantics::TableFacts>,
+    /// Cold: the parts of the controls each node roots, by slot, which the
+    /// node owns: they go when it is freed, and their handles go stale.
+    control_parts: Vec<(u32, Rc<dyn Any>)>,
     /// Where the focus was before it last moved, until the move is told.
     focus_from: Option<Option<NodeId>>,
     /// Cold: the nodes whose lengths read the environment (`px`, `sp`, `em`),
@@ -1010,6 +1013,7 @@ impl NodeStore {
         self.actives.clear();
         self.validities.clear();
         self.tables.clear();
+        self.control_parts.clear();
         self.focus_scope = None;
         self.draggable_regions.clear();
         self.tasks.clear();
@@ -3940,9 +3944,9 @@ impl NodeStore {
         (&self.arena, &mut self.scenes, &self.frame_clients)
     }
 
-    /// Frees node `node`'s slot, letting go of the program it paints with. A
-    /// node an instance built is reported to the binding table, and a slot of
-    /// an instance's block stays with the block.
+    /// Frees node `node`'s slot, letting go of the program it paints with, its
+    /// event handlers and the parts of the controls it roots. A node an instance built is reported to the
+    /// binding table, and a slot of an instance's block stays with the block.
     fn free_node(&mut self, node: NodeId) -> bool {
         if !self.arena.is_live(node) {
             return false;
@@ -3950,6 +3954,14 @@ impl NodeStore {
         let index = node.index() as usize;
         self.leave_content(node);
         self.content_payload[index] = None;
+        // The handlers and the controls' parts go with the node: a handle to a
+        // control it rooted goes stale now.
+        self.handlers[index] = None;
+        self.key_handlers[index] = None;
+        if !self.control_parts.is_empty() {
+            self.control_parts
+                .retain(|(slot, _)| *slot as usize != index);
+        }
         let owner = self.owner[index];
         if owner == NO_OWNER {
             return self.arena.free(node);
@@ -3960,6 +3972,14 @@ impl NodeStore {
         }
         self.owner[index] = NO_OWNER;
         self.arena.free(node)
+    }
+
+    /// Gives node `owner` the parts of a control it roots, kept until it is
+    /// freed. A live-guarded write.
+    pub(crate) fn own_control_parts(&mut self, owner: NodeId, parts: Rc<dyn Any>) {
+        if self.arena.is_live(owner) {
+            self.control_parts.push((owner.index(), parts));
+        }
     }
 
     /// Write back a run reshaped at a layout-assigned width, marking
@@ -6871,6 +6891,12 @@ pub struct BuildCx<'a> {
     root: Option<NodeId>,
 }
 
+impl crate::Controls for BuildCx<'_> {
+    fn control<P: 'static>(&self, id: crate::ControlId) -> Option<Rc<P>> {
+        self.states.as_deref()?.controls.get(id)
+    }
+}
+
 /// The creation-time name tables of one grid, cloned out of its [`GridStyle`] so
 /// `place_named`/`place_area` can resolve names while the grid closure runs. Cold:
 /// only grids with named lines or template areas allocate one.
@@ -6958,6 +6984,14 @@ impl<'a> BuildCx<'a> {
             chrome: ChromeContext::default(),
             root: None,
         }
+    }
+
+    /// Lends the cx a state store alone: enough for the controls it builds to
+    /// bind their handles, without the reactive tables.
+    #[inline]
+    pub fn with_states(mut self, states: &'a mut StateStore) -> Self {
+        self.states = Some(states);
+        self
     }
 
     /// Lends the cx the virtual-list registry, so a list it declares — one in a
@@ -8015,6 +8049,28 @@ impl<'a> BuildCx<'a> {
             },
         );
         handle
+    }
+
+    /// Mints the handle of a control built later in this build, so closures
+    /// declared before it (its own included) can capture it. Give it to the
+    /// control's builder (`.handle(h)`); its `build` binds it. A build without
+    /// a state store (a layout-only build) mints a detached handle, whose calls
+    /// do nothing.
+    pub fn handle<H: crate::ControlHandle>(&mut self) -> H {
+        H::from_id(match self.states.as_deref_mut() {
+            Some(states) => states.controls.reserve(),
+            None => crate::ControlId::DETACHED,
+        })
+    }
+
+    /// Binds control `id` to `parts`, which node `owner` (the control's root)
+    /// keeps: the handle reaches them until the node is freed. A stale `owner`
+    /// keeps nothing, so the handle finds nothing.
+    pub fn bind_control<P: 'static>(&mut self, id: crate::ControlId, owner: NodeId, parts: Rc<P>) {
+        if let Some(states) = self.states.as_deref_mut() {
+            states.controls.bind(id, &parts);
+        }
+        self.store.own_control_parts(owner, parts);
     }
 
     /// Allocate a reactive state cell with an initial value, returning its id.

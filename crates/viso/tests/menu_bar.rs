@@ -15,8 +15,7 @@ use viso::platform::{
 };
 use viso::prelude::*;
 use viso::ui::{
-    Axis, BoxStyle, Component, Content, FlexStyle, LeafStyle, NodeId, NodeStore, Role, Sizing,
-    StateValue,
+    Axis, BoxStyle, Content, FlexStyle, LeafStyle, NodeId, NodeStore, Role, Sizing, StateValue,
 };
 use viso::widgets::{menu_bar, menu_item};
 

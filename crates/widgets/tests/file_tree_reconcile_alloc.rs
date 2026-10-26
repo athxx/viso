@@ -29,10 +29,10 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::Ordering;
 
 use viso_ui::{
-    BindingTable, BuildCx, Component, NodeStore, PointerButtons, PointerEvent, PointerPhase,
+    BindingTable, BuildCx, NodeStore, PointerButtons, PointerEvent, PointerPhase,
     SemanticProjector, StateStore, TextEdits, VirtualLists,
 };
-use viso_widgets::{FileTreeHandle, FileTreeHandleSlot, NodeKey, TreeNode, file_tree};
+use viso_widgets::{FileTreeHandle, NodeKey, TreeNode, file_tree};
 
 /// Counts heap allocations while `ARMED`; off by default so setup allocations are
 /// never counted. Mirrors the other alloc packs (dock_reconcile_alloc.rs).
@@ -136,7 +136,7 @@ fn roots(n: u64) -> Vec<TreeNode> {
 fn build_scene(n: u64) -> (NodeStore, Reactive, FileTreeHandle) {
     let mut store = NodeStore::new();
     let mut r = Reactive::new();
-    let slot: FileTreeHandleSlot = FileTreeHandleSlot::default();
+    let slot: FileTreeHandle = r.states.handle();
     {
         let mut cx = BuildCx::with_reactive(
             &mut store,
@@ -148,10 +148,10 @@ fn build_scene(n: u64) -> (NodeStore, Reactive, FileTreeHandle) {
         );
         file_tree(roots(n))
             .open(NodeKey(0))
-            .handle(FileTreeHandleSlot::clone(&slot))
+            .handle(slot)
             .build(&mut cx);
     }
-    let handle = slot.borrow().clone().expect("build filled the handle slot");
+    let handle = slot;
     (store, r, handle)
 }
 
@@ -184,9 +184,9 @@ fn steady_reconcile_frame_without_toggle_is_allocation_free() {
     // visible cell and the list's height cache, and reconciling back leaves them at
     // capacity. After this the open set is back to just the root (open).
     toggle(&mut r, &handle, NodeKey(0));
-    handle.reconcile(&mut store, &mut r.lists);
+    handle.reconcile(&r.states, &mut store, &mut r.lists);
     toggle(&mut r, &handle, NodeKey(0));
-    handle.reconcile(&mut store, &mut r.lists);
+    handle.reconcile(&r.states, &mut store, &mut r.lists);
 
     // Two armed reconcile frames with an empty intent queue: each hits the early
     // return and does nothing — no reflatten, no set_item_count, no heap.
@@ -194,7 +194,7 @@ fn steady_reconcile_frame_without_toggle_is_allocation_free() {
     for slot in frame_allocs.iter_mut() {
         ALLOCS.store(0, Ordering::Relaxed);
         ARMED.store(true, Ordering::Relaxed);
-        handle.reconcile(&mut store, &mut r.lists);
+        handle.reconcile(&r.states, &mut store, &mut r.lists);
         ARMED.store(false, Ordering::Relaxed);
         *slot = ALLOCS.load(Ordering::Relaxed);
     }
@@ -222,9 +222,9 @@ fn toggle_reconcile_allocation_is_bounded() {
     // toggle below reflattens into buffers that are already at capacity — the armed
     // count is the toggle's own irreducible structural allocation, not warm-up.
     toggle(&mut r, &handle, NodeKey(0));
-    handle.reconcile(&mut store, &mut r.lists);
+    handle.reconcile(&r.states, &mut store, &mut r.lists);
     toggle(&mut r, &handle, NodeKey(0));
-    handle.reconcile(&mut store, &mut r.lists);
+    handle.reconcile(&r.states, &mut store, &mut r.lists);
 
     // One armed toggle + reconcile: collapse the root (9 rows -> 1). The reconcile
     // drains the intent, reflattens the forest into the shared cell, and drives the
@@ -232,7 +232,7 @@ fn toggle_reconcile_allocation_is_bounded() {
     toggle(&mut r, &handle, NodeKey(0));
     ALLOCS.store(0, Ordering::Relaxed);
     ARMED.store(true, Ordering::Relaxed);
-    handle.reconcile(&mut store, &mut r.lists);
+    handle.reconcile(&r.states, &mut store, &mut r.lists);
     ARMED.store(false, Ordering::Relaxed);
     let structural_allocs = ALLOCS.load(Ordering::Relaxed);
 

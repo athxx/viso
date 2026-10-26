@@ -39,7 +39,7 @@
 //! push/pop needs.
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
@@ -47,12 +47,12 @@ use std::sync::atomic::Ordering;
 use viso::gpu::{CpuRaster, GpuBackend, RawWindowHandle};
 use viso::render::{FrameStats, Rect, Renderer, Rgba};
 use viso::ui::{
-    BindingTable, BoxStyle, BuildCx, Component, EventCx, Key, KeyEvent, KeyRouter, LeafStyle,
-    Modifiers, NodeId, NodeStore, PageTransition, PointerButtons, PointerEvent, PointerPhase, Role,
+    BindingTable, BoxStyle, BuildCx, EventCx, Key, KeyEvent, KeyRouter, LeafStyle, Modifiers,
+    NodeId, NodeStore, PageTransition, PointerButtons, PointerEvent, PointerPhase, Role,
     SemanticProjector, Sizing, StateId, StateStore, StateValue, TextEdits, VirtualLists,
     paint_tree,
 };
-use viso::widgets::{NavHandle, NavHandleSlot, navigation_stack};
+use viso::widgets::{NavHandle, navigation_stack};
 
 const W: u32 = 240;
 const H: u32 = 120;
@@ -228,14 +228,14 @@ impl Interactive {
         let mut text_edits = TextEdits::new();
         let mut projectors = SemanticProjector::new();
 
-        let slot: NavHandleSlot = Rc::new(RefCell::new(None));
+        let slot: NavHandle = states.handle();
         let widget = navigation_stack()
             .page(page_fill(PAGE_A))
             .page(page_fill(PAGE_B))
             .page(page_fill(PAGE_A))
             .size(Sizing::fill())
             .transition(PageTransition::None)
-            .handle(&slot)
+            .handle(slot)
             .on_navigate(move |_ev, depth| {
                 last.set(Some(depth));
                 counter.set(counter.get() + 1);
@@ -253,7 +253,7 @@ impl Interactive {
             widget.build(&mut cx);
             cx.root().expect("navigation stack declares a root")
         };
-        let handle = slot.borrow().clone().expect("build fills the handle slot");
+        let handle = slot;
         let depth = StateStore::new().alloc(StateValue::Int(0));
 
         let mut scratch = Vec::new();
@@ -293,7 +293,7 @@ impl Interactive {
     /// throwaway `EventCx`, take the deferred navigation, and apply it.
     fn drive(&mut self, act: impl FnOnce(&NavHandle, &mut EventCx<'_>)) {
         let ev = read_pointer();
-        let handle = self.handle.clone();
+        let handle = self.handle;
         let asks = {
             let mut cx = EventCx::__new_pointer(&mut self.states, &self.bindings, &ev);
             act(&handle, &mut cx);

@@ -71,9 +71,9 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use viso_ui::{BoxStyle, BuildCx, Component, NodeId, Sizing, VirtualListStyle};
+use viso_ui::{BoxStyle, BuildCx, Component, ControlHandle, NodeId, Sizing, VirtualListStyle};
 
-pub use command::{FileTreeHandle, FileTreeHandleSlot};
+pub use command::FileTreeHandle;
 pub use model::{NodeKey, SelectOp, TreeNode, VisibleRow};
 
 use model::flatten;
@@ -176,10 +176,8 @@ pub struct FileTree {
     /// Whether the tree allows single or multiple selection.
     select_mode: SelectMode,
     style: FileTreeStyle,
-    /// An optional slot the build fills with the control's [`FileTreeHandle`], so
-    /// an application can drive expand/collapse programmatically. `None` when the
-    /// app never asked for a handle (a display-only tree).
-    handle: Option<FileTreeHandleSlot>,
+    /// The handle `build` binds, when the app minted one up front.
+    handle: Option<FileTreeHandle>,
 }
 
 /// Construct a [`FileTree`] over a [`TreeNode`] forest, with every folder
@@ -223,16 +221,18 @@ impl FileTree {
         self
     }
 
-    /// Ask the build to fill `slot` with this control's [`FileTreeHandle`], so an
-    /// application can drive expand/collapse programmatically. Create the slot with
-    /// [`FileTreeHandleSlot::default`], pass it here, then read it after `build`.
-    /// The handle is minted inside `build` (it owns the warm state the walk
-    /// produces), so it cannot be returned by the builder chain — the app supplies
-    /// this slot up front and `build` fills it once, the same deferred-fill idiom
-    /// the dock's `DockHandleSlot` uses.
-    pub fn handle(mut self, slot: FileTreeHandleSlot) -> Self {
-        self.handle = Some(slot);
+    /// Bind `handle`, minted with [`BuildCx::handle`] before the tree is
+    /// built, so closures declared earlier can drive it.
+    pub fn handle(mut self, handle: FileTreeHandle) -> Self {
+        self.handle = Some(handle);
         self
+    }
+
+    /// Build the tree into `cx` and return its handle.
+    pub fn build(mut self, cx: &mut BuildCx<'_>) -> FileTreeHandle {
+        let handle = *self.handle.get_or_insert_with(|| cx.handle());
+        Component::build(&self, cx);
+        handle
     }
 }
 
@@ -252,12 +252,11 @@ impl Component for FileTree {
 
         let viewport = build::build_tree(cx, &visible, &labels, &self.style, &row_nodes);
 
-        // Mint the handle over the warm state the walk produced, and fill the app's
-        // slot if it asked for one. `select_mode` rides on the warm state so the
-        // keyboard/selection section can read it; this version wires expand/collapse
-        // only.
-        if let Some(slot) = &self.handle {
-            let handle = command::make_handle(
+        // Bind the app's handle, if it minted one, to the warm state the walk
+        // produced; the viewport keeps it. `select_mode` rides on the warm state so
+        // the keyboard/selection section can read it.
+        if let Some(bound) = self.handle {
+            let parts = command::make_parts(
                 self.roots.clone(),
                 self.open.clone(),
                 self.select_mode,
@@ -265,7 +264,7 @@ impl Component for FileTree {
                 visible,
                 row_nodes,
             );
-            *slot.borrow_mut() = Some(handle);
+            cx.bind_control(bound.id(), viewport, Rc::new(parts));
         }
     }
 }

@@ -15,11 +15,11 @@ use std::time::Duration;
 use viso::__test_support::{drive_scripted, probe_frames};
 use viso::platform::{Modifiers, PointerButtons, PointerPhase, RawEvent, RawPointer, WindowId};
 use viso::prelude::*;
-use viso::ui::{BuildCx, Component, WindowConfig};
+use viso::ui::{BuildCx, WindowConfig};
 use viso_map::style::{Color, Layer, builtin};
 use viso_map::{
-    Camera, GeoFeature, GeoJson, Geometry, LngLat, MapHandleSlot, Marker, Polyline, Puck,
-    RasterSource, TileId, View, map_view,
+    Camera, GeoFeature, GeoJson, Geometry, LngLat, Marker, Polyline, Puck, RasterSource, TileId,
+    View, map_view,
 };
 
 thread_local! {
@@ -143,7 +143,7 @@ fn drag_allocations(alt: bool, step: [f64; 2]) -> Vec<usize> {
     ]);
     let here = view.unproject([300.0, 260.0]);
     let bent = Rc::new(RefCell::new(0usize));
-    let handle = MapHandleSlot::default();
+    let handle = support::Slot::default();
     SETUP.with(|setup| {
         let route = route.clone();
         let handle = Rc::clone(&handle);
@@ -179,7 +179,7 @@ fn drag_allocations(alt: bool, step: [f64; 2]) -> Vec<usize> {
                 }))
                 .puck(Puck::new(here, 80.0).heading(40.0))
                 .data("transportation_name", names.clone())
-                .handle(&handle)
+                .handle(support::bind(cx, &handle))
                 .build(cx);
         }))
     });
@@ -203,11 +203,10 @@ fn drag_allocations(alt: bool, step: [f64; 2]) -> Vec<usize> {
         ));
         script.push(RawEvent::RedrawRequested { window: WIN });
     }
-    drive_scripted::<MapApp>(script, STEP);
+    let app = drive_scripted::<MapApp>(script, STEP);
     *bent.borrow_mut() = handle
-        .borrow()
-        .as_ref()
-        .map_or(0, |h| h.label_glyphs().len());
+        .get()
+        .map_or(0, |h| h.label_glyphs(app.states()).len());
     viso_map::view::probe::set(None);
     probe_frames(None);
     ARMED.with(|a| a.set(false));

@@ -59,10 +59,7 @@ mod series;
 mod sparkline;
 mod style;
 
-pub use chart::{
-    Chart, ChartHandle, ChartHandleSlot, ChartPoint, area_chart, bar_chart, line_chart,
-    scatter_chart,
-};
+pub use chart::{Chart, ChartHandle, ChartPoint, area_chart, bar_chart, line_chart, scatter_chart};
 pub use model::ChartKind;
 pub use scale::{format_tick, format_value};
 pub use series::{Series, series, series_xy};

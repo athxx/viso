@@ -5,7 +5,6 @@
 #![cfg(feature = "headless")]
 
 use std::cell::RefCell;
-use std::rc::Rc;
 use std::time::Duration;
 
 use viso::__test_support::{DrivenApp, drive_scripted};
@@ -15,17 +14,15 @@ use viso::platform::{
 };
 use viso::prelude::*;
 use viso::ui::{
-    Axis, BoxStyle, Component, FlexStyle, Inset, LeafStyle, NodeId, NodeStore, Role, Sizing,
-    StateValue,
+    Axis, BoxStyle, FlexStyle, Inset, LeafStyle, NodeId, NodeStore, Role, Sizing, StateValue,
 };
-use viso::widgets::{MenuHandleSlot, Shortcut, context_menu, menu, menu_item};
+use viso::widgets::{MenuHandle, Shortcut, context_menu, menu, menu_item};
 
 const STEP: Duration = Duration::from_millis(16);
 const WIN: WindowId = WindowId(1);
 
 thread_local! {
     static PICKS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
-    static SLOT: MenuHandleSlot = Rc::new(RefCell::new(None));
 }
 
 fn picked(name: &'static str) -> impl FnMut(&mut viso::ui::EventCx<'_>) {
@@ -53,7 +50,7 @@ impl Application for MenuApp {
     }
 
     fn build(&mut self, cx: &mut BuildCx<'_>) {
-        let slot = SLOT.with(Rc::clone);
+        let slot: MenuHandle = cx.handle();
         cx.flex(
             FlexStyle {
                 size: Sizing::fill(),
@@ -90,7 +87,7 @@ impl Application for MenuApp {
                             .item(menu_item("Messages").on_pick(picked("messages"))),
                     )
                     .item(menu_item("Delete").enabled(false).on_pick(picked("delete")))
-                    .handle(&slot)
+                    .handle(slot)
                     .build(cx);
                 context_menu()
                     .size(Sizing::fixed(400.0, 200.0))

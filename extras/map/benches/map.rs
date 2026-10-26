@@ -18,7 +18,7 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use viso::__test_support::{drive_scripted, probe_frames};
 use viso::platform::{Modifiers, PointerButtons, PointerPhase, RawEvent, RawPointer, WindowId};
 use viso::prelude::*;
-use viso::ui::{BuildCx, Component, WindowConfig};
+use viso::ui::{BuildCx, WindowConfig};
 use viso_map::load::{Input, Recipe, build_now};
 use viso_map::pyramid::BuildKey;
 use viso_map::style::builtin;

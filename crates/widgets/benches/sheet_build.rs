@@ -19,16 +19,14 @@
 //! Run release (`CARGO_TARGET_DIR=/tmp/rust_tmp cargo bench -p viso-widgets`);
 //! criterion defaults to a release profile. Debug timing is not a perf result.
 
-use std::cell::RefCell;
 use std::hint::black_box;
-use std::rc::Rc;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use viso_ui::{
-    BindingTable, BoxStyle, BuildCx, Component, LeafStyle, NodeId, NodeStore, Rect, Rgba,
-    SemanticProjector, Sizing, StateStore, TextEdits, VirtualLists, paint_tree,
+    BindingTable, BoxStyle, BuildCx, LeafStyle, NodeId, NodeStore, Rect, Rgba, SemanticProjector,
+    Sizing, StateStore, TextEdits, VirtualLists, paint_tree,
 };
-use viso_widgets::{SheetEdge, SheetHandleSlot, sheet};
+use viso_widgets::{SheetEdge, SheetHandle, sheet};
 
 const W: f32 = 400.0;
 const H: f32 = 240.0;
@@ -82,7 +80,7 @@ fn fill(cx: &mut BuildCx<'_>) {
 fn build_scene() -> (NodeStore, NodeId) {
     let mut store = NodeStore::new();
     let mut r = Reactive::new();
-    let slot: SheetHandleSlot = Rc::new(RefCell::new(None));
+    let slot: SheetHandle = r.states.handle();
     let root = {
         let mut cx = BuildCx::with_reactive(
             &mut store,
@@ -97,7 +95,7 @@ fn build_scene() -> (NodeStore, NodeId) {
             .extent(EXTENT)
             .scrim(SCRIM)
             .content(fill)
-            .handle(&slot)
+            .handle(slot)
             .build(&mut cx);
         cx.root().expect("sheet declares a root")
     };
@@ -120,7 +118,7 @@ fn bench_sheet(c: &mut Criterion) {
         b.iter(|| {
             let mut store = NodeStore::new();
             let mut r = Reactive::new();
-            let slot: SheetHandleSlot = Rc::new(RefCell::new(None));
+            let slot: SheetHandle = r.states.handle();
             let mut cx = BuildCx::with_reactive(
                 &mut store,
                 &mut r.states,
@@ -134,7 +132,7 @@ fn bench_sheet(c: &mut Criterion) {
                 .extent(EXTENT)
                 .scrim(SCRIM)
                 .content(fill)
-                .handle(&slot)
+                .handle(slot)
                 .build(&mut cx);
             black_box(&store);
         });

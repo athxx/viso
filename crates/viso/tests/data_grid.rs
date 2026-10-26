@@ -16,7 +16,7 @@ use viso::platform::{
 };
 use viso::prelude::*;
 use viso::ui::adaptive::LayoutDirection;
-use viso::ui::{Axis, Component, FlexStyle, NodeId, NodeStore, Role, Sizing, SortOrder};
+use viso::ui::{Axis, FlexStyle, NodeId, NodeStore, Role, Sizing, SortOrder};
 
 const STEP: Duration = Duration::from_millis(16);
 const WIN: WindowId = WindowId(1);

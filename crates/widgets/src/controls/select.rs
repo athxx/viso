@@ -34,11 +34,11 @@ use std::num::NonZeroU32;
 use std::rc::Rc;
 
 use viso_ui::{
-    Align, AnchorAlign, Anchoring, Axis, BoxRules, BoxStyle, BuildCx, Component, DispatchPhase,
-    EventCx, FlexStyle, FontSize, Handle, ImeEvent, Inset, InteractionStyle, Justify, Key,
-    KeyEvent, LeafStyle, Length, NodeId, PointerButtons, PointerPhase, Rgba, Role, ScrollStyle,
-    SemanticState, Semantics, Shadow, Side, Sizing, Span, StateId, StateValue, TextOverflow,
-    TextRequest, TextStyle, Vec2, primary_is_logo,
+    Align, AnchorAlign, Anchoring, Axis, BoxRules, BoxStyle, BuildCx, Component, Controls,
+    DispatchPhase, EventCx, FlexStyle, FontSize, Handle, ImeEvent, Inset, InteractionStyle,
+    Justify, Key, KeyEvent, LeafStyle, Length, NodeId, PointerButtons, PointerPhase, Rgba, Role,
+    ScrollStyle, SemanticState, Semantics, Shadow, Side, Sizing, Span, StateId, StateValue,
+    TextOverflow, TextRequest, TextStyle, Vec2, primary_is_logo,
 };
 
 use super::menu::TYPE_AHEAD;
@@ -208,10 +208,6 @@ impl Default for SelectStyle {
     }
 }
 
-/// A shared, mutable slot an application passes to a select's `handle` and
-/// reads after `build` for its [`SelectHandle`].
-pub type SelectHandleSlot = Rc<RefCell<Option<SelectHandle>>>;
-
 /// A field choosing one of a list of options. Construct one with [`select`].
 pub struct Select {
     options: Vec<SelectOption>,
@@ -221,7 +217,8 @@ pub struct Select {
     size: Sizing,
     style: SelectStyle,
     on_change: Option<Change>,
-    slot: Option<SelectHandleSlot>,
+    /// The handle `build` binds, when the app minted one up front.
+    handle: Option<SelectHandle>,
 }
 
 /// A select of `options`, none chosen yet.
@@ -238,7 +235,7 @@ where
         size: FIT,
         style: SelectStyle::default(),
         on_change: None,
-        slot: None,
+        handle: None,
     }
 }
 
@@ -279,18 +276,26 @@ impl Select {
         self
     }
 
-    /// Fill `slot` with the select's [`SelectHandle`] when it builds.
-    pub fn handle(mut self, slot: &SelectHandleSlot) -> Self {
-        self.slot = Some(Rc::clone(slot));
+    /// Bind `handle`, minted with [`BuildCx::handle`](viso_ui::BuildCx::handle)
+    /// before the control is built, so closures declared earlier can drive it.
+    pub fn handle(mut self, handle: SelectHandle) -> Self {
+        self.handle = Some(handle);
         self
+    }
+
+    /// Build the control into `cx` and return its handle.
+    pub fn build(mut self, cx: &mut BuildCx<'_>) -> SelectHandle {
+        let handle = *self.handle.get_or_insert_with(|| cx.handle());
+        Component::build(&self, cx);
+        handle
     }
 }
 
 impl Component for Select {
     fn build(&self, cx: &mut BuildCx<'_>) {
-        let handle = SelectHandle(build(cx, self));
-        if let Some(slot) = &self.slot {
-            *slot.borrow_mut() = Some(handle);
+        let handle = SelectParts(build(cx, self));
+        if let Some(bound) = self.handle {
+            cx.bind_control(bound.0, handle.0.wrapper, Rc::new(handle));
         }
     }
 }
@@ -1057,12 +1062,60 @@ impl SelectState {
     }
 }
 
-/// A handle an application captures to read and set a built select's choice
-/// and open its list from its own handlers. Cheap to clone.
-#[derive(Clone)]
-pub struct SelectHandle(Rc<SelectState>);
+viso_ui::control_handle! {
+    /// A handle an application captures to read and set a built select's choice
+    /// and open its list from its own handlers.
+    ///
+    /// `Copy`, an id alone: `build` returns it, or mint one first with
+    /// [`BuildCx::handle`](viso_ui::BuildCx::handle) for closures declared
+    /// before the control. Once the control is gone, every call is a no-op.
+    pub struct SelectHandle;
+}
 
 impl SelectHandle {
+    /// The chosen option's index.
+    pub fn selected(self, cx: &impl Controls) -> Option<usize> {
+        match cx.control::<SelectParts>(self.0) {
+            Some(parts) => parts.selected(),
+            None => None,
+        }
+    }
+
+    /// Choose option `index`, or none, without telling `on_change`.
+    pub fn select(self, ev: &mut EventCx<'_>, index: Option<usize>) {
+        if let Some(parts) = ev.control::<SelectParts>(self.0) {
+            parts.select(ev, index);
+        }
+    }
+
+    /// Open the list.
+    pub fn open(self, ev: &mut EventCx<'_>) {
+        if let Some(parts) = ev.control::<SelectParts>(self.0) {
+            parts.open(ev);
+        }
+    }
+
+    /// Close the list unchanged.
+    pub fn close(self, ev: &mut EventCx<'_>) {
+        if let Some(parts) = ev.control::<SelectParts>(self.0) {
+            parts.close(ev);
+        }
+    }
+
+    /// Whether the list shows.
+    pub fn is_open(self, cx: &impl Controls) -> bool {
+        match cx.control::<SelectParts>(self.0) {
+            Some(parts) => parts.is_open(),
+            None => false,
+        }
+    }
+}
+
+/// What a built control's handlers and its [`SelectHandle`] share.
+#[derive(Clone)]
+struct SelectParts(Rc<SelectState>);
+
+impl SelectParts {
     /// The chosen option's index.
     pub fn selected(&self) -> Option<usize> {
         self.0.chosen.get()

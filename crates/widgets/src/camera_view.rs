@@ -19,7 +19,7 @@
 use viso_ui::{AssetFit, BuildCx, Camera, Component, Rgba, Sizing, StateStore, VideoStatus};
 
 use crate::image::ImageLoad;
-use crate::video::{Video, VideoHandleSlot, video};
+use crate::video::{Video, VideoHandle, video};
 
 /// A camera's live picture. Construct one with [`camera_view`].
 ///
@@ -118,17 +118,24 @@ impl CameraView {
         self
     }
 
-    /// Leave the built view's [`VideoHandle`](crate::video::VideoHandle) in
-    /// `slot`.
-    pub fn handle(mut self, slot: &VideoHandleSlot) -> Self {
-        self.video = self.video.handle(slot);
+    /// Bind `handle`, minted with [`BuildCx::handle`] before the view is
+    /// built, so closures declared earlier can drive it.
+    pub fn handle(mut self, handle: VideoHandle) -> Self {
+        self.video = self.video.handle(handle);
         self
+    }
+
+    /// Build the view into `cx` and return the handle of its video.
+    pub fn build(mut self, cx: &mut BuildCx<'_>) -> VideoHandle {
+        let handle = self.video.bound_handle(cx);
+        Component::build(&self, cx);
+        handle
     }
 }
 
 impl Component for CameraView {
     fn build(&self, cx: &mut BuildCx<'_>) {
-        self.video.build(cx);
+        Component::build(&self.video, cx);
     }
 }
 
