@@ -43,6 +43,7 @@ use viso_ui::{
 
 pub use self::core::CameraCells;
 use self::core::{Core, CoreNodes, Told, band_of};
+pub use self::labels::{BentLabel, PlacedGlyph};
 use self::overlays::Pressed;
 pub use self::overlays::{Cluster, ClusterContent, Marker, MarkerContent, ShapeId};
 use crate::camera::{Camera, Insets, Limits, View};
@@ -250,6 +251,11 @@ impl MapHandle {
             .showing()
             .map(|(t, w)| (t.to_owned(), w.to_lng_lat()))
             .collect()
+    }
+
+    /// The labels bending along their lines, glyph by glyph, as shown.
+    pub fn label_glyphs(&self) -> Vec<BentLabel> {
+        self.core.borrow().labels.bent()
     }
 
     /// The features drawn under view point `point`, within `radius` points

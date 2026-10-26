@@ -38,6 +38,7 @@ pub use source::{
     reply,
 };
 pub use view::{
-    CameraCells, Cluster, ClusterContent, MapHandle, MapHandleSlot, MapPoint, MapTiles, MapView,
-    Marker, MarkerContent, MarkerHandler, PlaceHandler, ShapeId, ViewportHandler, map_view,
+    BentLabel, CameraCells, Cluster, ClusterContent, MapHandle, MapHandleSlot, MapPoint, MapTiles,
+    MapView, Marker, MarkerContent, MarkerHandler, PlaceHandler, PlacedGlyph, ShapeId,
+    ViewportHandler, map_view,
 };

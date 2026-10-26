@@ -858,8 +858,14 @@ viso-ext.
   within 4 ms, then moves them with the camera; line labels turn with the map and are kept
   upright, labels fade in and out (at once under reduced motion). Text is `viso-text` runs
   over four offset halo copies; `IconSet` takes SVG icons (tinted or not) and a built-in dot;
-  road numbers sit on shields. Line labels are straight along their stretch, not bent glyph
-  by glyph. Headless pictures (Latin, Greek, Cyrillic, Arabic, Japanese, Chinese; turned;
+  road numbers sit on shields. Line labels bend with their line glyph by glyph: the
+  worker cuts the text into clusters (marks, joiners and joined scripts kept whole) and
+  keeps the line's stretch around each anchor; the view measures each cluster's advance
+  once, sets the glyphs along the line as it shows at any turn and tilt, reading upright,
+  leaves a run out where the line turns more than 45° between neighbouring glyphs, and
+  takes each glyph's turned box against the others; tilted, labels and their stretches
+  sit on the relief under them (`tests/labels.rs`: arcs at six turns and tilts, repeats
+  along a long line, real Luxembourg streets). Headless pictures (Latin, Greek, Cyrillic, Arabic, Japanese, Chinese; turned;
   icon) and unit tests.
 - [x] Raster and terrain: raster XYZ layers (PNG, JPEG, WebP), hillshade from DEM
   tiles (Terrarium and Mapbox RGB encodings).

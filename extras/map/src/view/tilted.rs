@@ -148,6 +148,34 @@ impl Ground {
     }
 }
 
+/// Where a tilted view over relief raises its places: the ground's height
+/// under them, and at the focus, whose plane the view's projection lies in.
+pub(crate) struct Lift<'a> {
+    ground: &'a Ground,
+    zoom: u8,
+    focus: f64,
+}
+
+impl Lift<'_> {
+    /// The ground's height under `w`, in meters raised by the terrain's
+    /// exaggeration; sea level where no elevations are loaded.
+    pub fn meters(&self, w: WorldPoint) -> f64 {
+        let m = self.ground.meters(w, self.zoom).unwrap_or(0.0);
+        f64::from(m * self.ground.terrain.exaggeration)
+    }
+
+    /// The ground's height at the focus, in meters raised.
+    pub fn focus(&self) -> f64 {
+        self.focus
+    }
+
+    /// How far over the plane `view` projects onto ground `meters` high at
+    /// `w` lies, in points of its zoom.
+    pub fn points(&self, view: &View, w: WorldPoint, meters: f64) -> f64 {
+        (meters - self.focus) * view.camera.scale() / w.meters_per_unit().max(1e-9)
+    }
+}
+
 /// A shape raised, as the asset table holds it (no id where it draws
 /// nothing), and where its frame lies.
 struct ShapeModel {
@@ -229,6 +257,24 @@ impl Tilted {
     /// Whether the scene is showing.
     pub fn shown(&self) -> bool {
         self.shown
+    }
+
+    /// Where the view raises its places over the relief it shows, when
+    /// tilted over one; the tiles drawn being of zoom `tile_zoom`.
+    pub fn lift(&self, view: &View, tile_zoom: u8) -> Option<Lift<'_>> {
+        let ground = self.ground.as_ref().filter(|_| self.shown)?;
+        let mut lift = Lift {
+            ground,
+            zoom: tile_zoom,
+            focus: 0.0,
+        };
+        lift.focus = lift.meters(view.camera.center.to_world());
+        Some(lift)
+    }
+
+    /// Bumped as elevations arrive.
+    pub fn relief_revision(&self) -> u64 {
+        self.ground.as_ref().map_or(0, |g| g.revision)
     }
 
     /// The tiles raised and resident, for the counters a test reads.
@@ -716,9 +762,8 @@ impl Tilted {
             c.x * band_scale - f.anchor[0],
             c.y * band_scale - f.anchor[1],
         ];
-        let elevation = self.ground.as_ref().map_or(0.0, |g| {
-            let meters = g.meters(c, f.tile_zoom).unwrap_or(0.0) * g.terrain.exaggeration;
-            f64::from(meters) * band_scale / c.meters_per_unit().max(1e-9)
+        let elevation = self.lift(view, f.tile_zoom).map_or(0.0, |g| {
+            g.focus() * band_scale / c.meters_per_unit().max(1e-9)
         });
         let scale = (view.camera.zoom - f64::from(f.band)).exp2();
         let d = view.eye_distance() / scale;
