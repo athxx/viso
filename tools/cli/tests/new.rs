@@ -79,7 +79,7 @@ fn an_app_has_its_files_and_says_what_to_run_next() {
         "{cargo}"
     );
     assert!(
-        cargo.contains("default = [\"viso/vm\", \"viso/desktop\", \"viso/native-vulkan\", \"viso/rasterizer\", \"viso/complex-line-break\"]"),
+        cargo.contains("default = [\"viso/desktop\", \"viso/native-vulkan\", \"viso/rasterizer\", \"viso/complex-line-break\"]"),
         "the app turns the facade's defaults on through its own: {cargo}"
     );
     let manifest = fs::read_to_string(root.join("Viso.toml")).unwrap();

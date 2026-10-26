@@ -98,7 +98,7 @@ fn an_option_the_target_does_not_take_is_a_usage_error() {
 /// The app's `Cargo.toml` as `viso new` writes it: the facade's defaults
 /// through the app's own.
 const CARGO: &str = "[package]\nname = \"probe\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\
-                     [features]\ndefault = [\"viso/vm\", \"viso/desktop\", \"viso/native-vulkan\", \"viso/rasterizer\", \"viso/complex-line-break\"]\n\
+                     [features]\ndefault = [\"viso/desktop\", \"viso/native-vulkan\", \"viso/rasterizer\", \"viso/complex-line-break\"]\n\
                      [dependencies]\nviso = { path = \"viso\", default-features = false }\n[workspace]\n";
 
 /// What the app logged, in order.

@@ -71,10 +71,26 @@ pub(crate) fn rust_plan(
     profile: Profile,
     sdk: Option<&Sdk>,
 ) -> RustPlan {
+    with_profile(target_plan(target, device, profile, sdk), profile)
+}
+
+/// `plan` for `profile`: a dev build runs behavior on the interpreter, which
+/// no release or shipping build links.
+fn with_profile(mut plan: RustPlan, profile: Profile) -> RustPlan {
+    if profile == Profile::Dev {
+        plan.features.push(cargo::VM);
+    }
+    plan
+}
+
+fn target_plan(
+    target: Target,
+    device: Option<&DeviceTarget>,
+    profile: Profile,
+    sdk: Option<&Sdk>,
+) -> RustPlan {
     match target {
-        Target::Device(_) => {
-            device.map_or_else(RustPlan::default, |device| device_plan(device, profile))
-        }
+        Target::Device(_) => device.map_or_else(RustPlan::default, device_plan),
         Target::Host => RustPlan::default(),
         Target::Headless => RustPlan {
             target: host_triple(),
@@ -129,16 +145,12 @@ pub(crate) fn add_text_data(
 /// How the app is compiled for the board `device` describes with `profile`:
 /// for its triple, the host's when it names none, so its output lies apart
 /// from the host build's; with its footprint profile's features, and for an
-/// embedded one with those alone (the behavior interpreter again in a debug
-/// build); and with the variables the facade's build script and the KMS
-/// backend read its profile, budget, workers and display from.
-fn device_plan(device: &DeviceTarget, profile: Profile) -> RustPlan {
-    let footprint = device.profile.value;
-    let mut features = device.features();
-    let no_default_features = !footprint.keeps_default_features();
-    if no_default_features && profile == Profile::Dev {
-        features.push(cargo::VM);
-    }
+/// embedded one with those alone; and with the variables the facade's build
+/// script and the KMS backend read its profile, budget, workers and display
+/// from.
+fn device_plan(device: &DeviceTarget) -> RustPlan {
+    let features = device.features();
+    let no_default_features = !device.profile.value.keeps_default_features();
     RustPlan {
         target: device
             .triple
@@ -182,15 +194,18 @@ fn android_plan(abi: Abi, profile: Profile, sdk: Option<&Sdk>) -> RustPlan {
 /// on iOS, for the first of its ABIs on Android.
 pub(crate) fn package_plan(plan: &Plan, profile: Profile, sdk: Option<&Sdk>) -> RustPlan {
     match plan.platform {
-        Platform::Ios => RustPlan {
-            target: Some(apple::DEVICE_TRIPLE.to_owned()),
-            env: vec![(
-                "IPHONEOS_DEPLOYMENT_TARGET".to_owned(),
-                plan.metadata.minimum_os.clone().into(),
-            )],
-            ..RustPlan::default()
-        },
-        Platform::Android => android_plan(plan.abis[0], profile, sdk),
+        Platform::Ios => with_profile(
+            RustPlan {
+                target: Some(apple::DEVICE_TRIPLE.to_owned()),
+                env: vec![(
+                    "IPHONEOS_DEPLOYMENT_TARGET".to_owned(),
+                    plan.metadata.minimum_os.clone().into(),
+                )],
+                ..RustPlan::default()
+            },
+            profile,
+        ),
+        Platform::Android => with_profile(android_plan(plan.abis[0], profile, sdk), profile),
         _ => rust_plan(plan.target, None, profile, sdk),
     }
 }
@@ -867,7 +882,7 @@ mod tests {
         let headless = rust_plan(Target::Headless, None, Profile::Dev, None);
         let host = headless.target.expect("rustc names its host");
         assert!(host.contains(std::env::consts::ARCH), "{host}");
-        assert_eq!(headless.features, [cargo::HEADLESS]);
+        assert_eq!(headless.features, [cargo::HEADLESS, cargo::VM]);
         let web = rust_plan(Target::WebGpu, None, Profile::Dev, None);
         assert_eq!(web.target.as_deref(), Some("wasm32-unknown-unknown"));
         let ios = rust_plan(Target::Ios, None, Profile::Dev, None);
@@ -933,7 +948,14 @@ mod tests {
             ["viso/cpu", "viso/kms", "viso/rasterizer", "viso/vm"]
         );
         assert!(plan.no_default_features);
-        assert!(!rust_plan(Target::Host, None, Profile::Dev, None).no_default_features);
+        let host = rust_plan(Target::Host, None, Profile::Dev, None);
+        assert!(!host.no_default_features);
+        // Only a dev build links the interpreter.
+        assert_eq!(host.features, [cargo::VM]);
+        for profile in [Profile::Release, Profile::Shipping] {
+            let plan = rust_plan(Target::Host, None, profile, None);
+            assert!(!plan.features.contains(&cargo::VM), "{profile:?}");
+        }
     }
 
     #[test]

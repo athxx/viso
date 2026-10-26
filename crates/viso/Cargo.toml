@@ -62,7 +62,7 @@ windows-core = "0.62"
 libc = "0.2"
 
 [features]
-default = ["vm", "desktop", "native-vulkan", "rasterizer", "complex-line-break", "avif", "dates", "pdf"]
+default = ["desktop", "native-vulkan", "rasterizer", "complex-line-break", "avif", "dates", "pdf"]
 # Kept small and stable on purpose — no giant feature cartesian product
 # (§5). Backends resolve from the target, not from user feature combos.
 # The desktop display backends on Linux and the BSDs (Wayland and X11, with
@@ -82,9 +82,10 @@ dates = ["viso-behavior/dates"]
 # PDF documents of views (`viso::pdf`): laid out on pages, drawn as vectors,
 # text as embedded outlines.
 pdf = ["dep:viso-pdf", "dep:ttf-parser"]
-# The behavior interpreter a debug build runs `view!` behavior on. Off, every
-# view runs the Rust its behavior compiles to, in every build, and no
-# interpreter links.
+# The behavior interpreter a debug build runs `view!` behavior on, which
+# `viso build` and `viso run` turn on for a dev build only. Off, every view
+# runs the Rust its behavior compiles to and no interpreter links: a release
+# artifact carries it only when the app asks for it, to load views as bytes.
 vm = ["viso-view/vm"]
 # The development session: every `view!` mount is recorded and reported to
 # `viso run`, and each edit the host accepts commits as one hot reload

@@ -256,7 +256,7 @@ fn a_device_target_builds_for_its_board() {
     // The app turns the facade's defaults on through its own, as `viso new`
     // writes it.
     let cargo = "[package]\nname = \"probe\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\
-                 [features]\ndefault = [\"viso/vm\", \"viso/desktop\", \"viso/native-vulkan\", \"viso/rasterizer\", \"viso/complex-line-break\"]\n\
+                 [features]\ndefault = [\"viso/desktop\", \"viso/native-vulkan\", \"viso/rasterizer\", \"viso/complex-line-break\"]\n\
                  [dependencies]\nviso = { path = \"viso\", default-features = false }\n[workspace]\n";
     fs::write(root.join("Cargo.toml"), cargo).unwrap();
     fs::write(
@@ -429,7 +429,7 @@ fn a_web_build_is_a_bundle_shaped_by_its_profile() {
         root.join("viso/Cargo.toml"),
         format!(
             "[package]\nname = \"viso\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\
-             [features]\nhot-reload = []\n[dependencies]\nwasm-bindgen = \"={version}\"\n"
+             [features]\nhot-reload = []\nvm = []\n[dependencies]\nwasm-bindgen = \"={version}\"\n"
         ),
     )
     .unwrap();

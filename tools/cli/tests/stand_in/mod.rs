@@ -56,7 +56,7 @@ pub fn project(label: &str) -> PathBuf {
     fs::write(
         dir.join("viso/Cargo.toml"),
         "[package]\nname = \"viso\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\
-         [features]\ndefault = [\"vm\", \"desktop\", \"native-vulkan\", \"rasterizer\", \
+         [features]\ndefault = [\"desktop\", \"native-vulkan\", \"rasterizer\", \
          \"complex-line-break\"]\nvm = []\ndesktop = []\nnative-vulkan = []\nemulate = []\n\
          rasterizer = []\ncomplex-line-break = []\n\
          hot-reload = []\nheadless = []\ngles = []\ncpu = []\nkms = []\n",

@@ -17,13 +17,23 @@ Rules (as for `todo_features.md`):
 
 ## N1 — Release, footprint and boundary gates
 
-- [ ] Keep the behavior interpreter out of desktop, mobile and web release artifacts (release and
+- [x] Keep the behavior interpreter out of desktop, mobile and web release artifacts (release and
   shipping builds drop `viso/vm`, as embedded ones already do). Add an interpreter-only marker to
   `check-release-absence`. Verify that the scan fails when `viso/vm` is forced on and that the
   `binary` row of `cargo xtask footprint` shrinks.
-- [ ] Make `check-profiles` resolve the release feature set (no `vm`) and reject
+  — Built: `vm` left the facade's defaults and the `viso new` template; the CLI adds `viso/vm` to
+  every target's dev build. The interpreter loop's text is a release-absence marker. Verified:
+  `check-release-absence` OK (15 markers in dev, none in release), and the vm-on release build
+  carried the marker. `viso-example-i18n` release went from 8 208 816 to 8 175 328 B. The footprint
+  bench mounts no `view!`, so its row does not move.
+- [x] Make `check-profiles` resolve the release feature set (no `vm`) and reject
   `viso-behavior/interpreter` through `cargo tree -e features`. Verify that a profile with `viso/vm`
   added reports the path.
+  — Built: embedded profiles without `vm`, a desktop profile on the defaults, and a feature check
+  that names the chain turning the feature on. `ash` is optional on every target again; since the
+  Vulkan rebuild it had been linked into every embedded closure. Verified: OK on aarch64 and
+  armv7. With `viso/vm` forced on it reports `viso-behavior/interpreter <- viso-view feature "vm"
+  <- viso feature "vm"`.
 - [ ] Run `check-profiles`, `check-targets` and `footprint --check` (against
   `benches/footprint/baseline.json`, with a tolerance) in CI. Verify that a seeded regression fails
   the job: `accesskit` added to the `kms` closure, or +10% heap or binary size.
@@ -230,6 +240,8 @@ Rules (as for `todo_features.md`):
 - [ ] CI emulator and simulator jobs: boot, install, hot reload, and the examples rendering on the
   iOS simulator, the Android emulator and Chromium (open lines in `todo_hotreload.md` and
   `todo_platform.md`).
+- [ ] The map on Android (emulator with an API 36 image, or a device) and touch gestures on iOS:
+  pan, pinch, rotate and tilt against the desktop behavior.
 - [ ] High-refresh frame pacing (120, 144, 240 Hz) on presenting devices. Verify with GPU-time and
   cadence traces.
 - [ ] ASUN rows decoded as they arrive in `viso-net`, once `asun-rs`'s incremental decoder lands.

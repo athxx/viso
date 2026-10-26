@@ -7,7 +7,7 @@ edition = "{edition}"
 # which keeps the facade's `kms` and its profile's backend, and adds back the
 # glyph rasterizer and the Thai/Lao/Khmer/Myanmar line breaking it needs.
 [features]
-default = ["viso/vm", "viso/desktop", "viso/native-vulkan", "viso/rasterizer", "viso/complex-line-break"]
+default = ["viso/desktop", "viso/native-vulkan", "viso/rasterizer", "viso/complex-line-break"]
 
 [dependencies]
 viso = {viso}

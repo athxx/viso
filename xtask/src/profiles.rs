@@ -1,16 +1,19 @@
-//! `cargo xtask check-profiles [--target <triple>]...`: hold each embedded
-//! footprint profile's dependency closure to what the profile must not link.
+//! `cargo xtask check-profiles [--target <triple>]...`: hold each footprint
+//! profile's release closure to what the profile must not link.
 //!
-//! The facade is resolved by `cargo tree` as `viso build` builds a device
-//! target of that profile: its default features off (`desktop`, the Linux
-//! desktop stack, among them), the profile's on, and `rasterizer` and `vm`,
-//! which a build that rasterizes glyphs and a dev build add back; for each Linux board triple (`aarch64-unknown-linux-gnu` and
-//! `armv7-unknown-linux-gnueabihf` when none is named). Only normal edges
-//! count, and no proc-macro's subtree: the closure is what the app links, not
-//! what compiles it.
+//! The facade is resolved by `cargo tree` as `viso build --release` builds a
+//! target of that profile: an embedded device target with its default
+//! features off (`desktop`, the Linux desktop stack, among them), the
+//! profile's on and `rasterizer`, which a build that rasterizes glyphs adds
+//! back; a desktop one with the defaults alone. For each Linux triple
+//! (`aarch64-unknown-linux-gnu` and `armv7-unknown-linux-gnueabihf` when none
+//! is named). Only normal edges count, and no proc-macro's subtree: the
+//! closure is what the app links, not what compiles it.
 //!
-//! A forbidden crate is reported with the path the closure reaches it by,
-//! and every profile and triple is tried even after one fails, so one run
+//! No release closure turns on the behavior interpreter, which only a dev
+//! build adds (`viso/vm`). A forbidden crate is reported with the path the
+//! closure reaches it by, a forbidden feature with the features that turn it
+//! on, and every profile and triple is tried even after one fails, so one run
 //! reports the whole matrix.
 
 use std::process::{Command, ExitCode};
@@ -27,21 +30,29 @@ const COMPILER: &[&str] = &["viso-dsl", "viso-lsp", "notify*", "kqueue*", "inoti
 /// D-Bus portal and the AT-SPI accessibility bridge.
 const DESKTOP: &[&str] = &["x11rb*", "wayland-*", "zbus*", "accesskit*"];
 
-/// One profile: its name, the facade features it turns on, and the crates
-/// its closure must not hold (`name*` is every crate whose name starts so).
+/// The crate features no release closure turns on: the behavior
+/// interpreter, which a release build replaces with the Rust each view's
+/// behavior compiles to.
+const RELEASE_FEATURES: &[(&str, &str)] = &[("viso-behavior", "interpreter")];
+
+/// One profile: its name, the facade features it turns on, whether it keeps
+/// the facade's defaults, and the crates its closure must not hold (`name*`
+/// is every crate whose name starts so).
 struct FootprintCheck {
     name: &'static str,
     features: &'static str,
+    defaults: bool,
     forbidden: &'static [&'static [&'static str]],
 }
 
-/// The embedded profiles.
+/// The profiles: the desktop's and the embedded ones.
 const PROFILES: &[FootprintCheck] = &[
     // GLES 3 on a KMS display: no other platform's graphics or system API,
     // and no Vulkan.
     FootprintCheck {
         name: "embedded-gpu",
-        features: "viso/gles,viso/kms,viso/rasterizer,viso/vm",
+        features: "viso/gles,viso/kms,viso/rasterizer",
+        defaults: false,
         forbidden: &[
             &["windows*", "objc2*", "metal", "wgpu*", "ash"],
             DESKTOP,
@@ -51,7 +62,8 @@ const PROFILES: &[FootprintCheck] = &[
     // Vulkan on a KMS display: the same, GLES aside.
     FootprintCheck {
         name: "embedded-gpu (vulkan)",
-        features: "viso/native-vulkan,viso/kms,viso/rasterizer,viso/vm",
+        features: "viso/native-vulkan,viso/kms,viso/rasterizer",
+        defaults: false,
         forbidden: &[
             &[
                 "windows*",
@@ -68,7 +80,8 @@ const PROFILES: &[FootprintCheck] = &[
     // The software raster on a KMS display: no GPU API at all.
     FootprintCheck {
         name: "embedded-cpu",
-        features: "viso/cpu,viso/kms,viso/rasterizer,viso/vm",
+        features: "viso/cpu,viso/kms,viso/rasterizer",
+        defaults: false,
         forbidden: &[
             &[
                 "ash",
@@ -84,6 +97,14 @@ const PROFILES: &[FootprintCheck] = &[
             COMPILER,
         ],
     },
+    // A desktop app on the facade's defaults: the desktop stack, and still
+    // no compiler.
+    FootprintCheck {
+        name: "desktop",
+        features: "",
+        defaults: true,
+        forbidden: &[COMPILER],
+    },
 ];
 
 pub fn check_profiles(args: &[String]) -> ExitCode {
@@ -97,10 +118,11 @@ pub fn check_profiles(args: &[String]) -> ExitCode {
     let mut violations = Vec::new();
     for profile in PROFILES {
         for target in &targets {
-            match closure(profile.features, target) {
+            match closure(profile, target) {
                 Ok(tree) => {
                     let found = forbidden(profile, &tree);
-                    if found.is_empty() {
+                    let features = forbidden_features(&tree);
+                    if found.is_empty() && features.is_empty() {
                         println!(
                             "check-profiles: {} on {target}: clean ({} crates)",
                             profile.name,
@@ -114,6 +136,15 @@ pub fn check_profiles(args: &[String]) -> ExitCode {
                             path.join(" -> ")
                         )
                     }));
+                    for (krate, feature) in features {
+                        let by = enabled_by(profile, target, krate, feature)
+                            .unwrap_or_else(|why| vec![why]);
+                        violations.push(format!(
+                            "{} on {target} turns on `{krate}/{feature}` ({})",
+                            profile.name,
+                            by.join(" <- ")
+                        ));
+                    }
                 }
                 Err(why) => violations.push(format!("{} on {target}: {why}", profile.name)),
             }
@@ -157,21 +188,28 @@ fn selected(args: &[String]) -> Result<Vec<String>, String> {
     Ok(targets)
 }
 
-/// One crate of a closure: its depth below the facade and its name.
+/// One crate of a closure: its depth below the facade, its name and the
+/// features it is built with.
 struct Node {
     depth: usize,
     name: String,
+    features: Vec<String>,
 }
 
-/// The facade's normal closure with `features` alone for `target`, in
-/// `cargo tree` order, each crate at its depth.
-fn closure(features: &str, target: &str) -> Result<Vec<Node>, String> {
+/// `cargo tree` over the facade's normal edges, built as `profile` builds it
+/// for `target`, with `extra` arguments.
+fn tree(profile: &FootprintCheck, target: &str, extra: &[&str]) -> Result<String, String> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let output = Command::new(cargo)
-        .args(["tree", "-p", "viso", "-e", "normal,no-proc-macro"])
-        .arg("--no-default-features")
-        .args(["--features", features, "--target", target])
-        .args(["--prefix", "depth", "--format", "{p}"])
+    let mut command = Command::new(cargo);
+    command.args(["tree", "-p", "viso"]).args(extra);
+    if !profile.defaults {
+        command.arg("--no-default-features");
+    }
+    if !profile.features.is_empty() {
+        command.args(["--features", profile.features]);
+    }
+    let output = command
+        .args(["--target", target, "--prefix", "depth"])
         .output()
         .map_err(|error| format!("cannot run `cargo tree`: {error}"))?;
     if !output.status.success() {
@@ -180,20 +218,99 @@ fn closure(features: &str, target: &str) -> Result<Vec<Node>, String> {
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
-    Ok(parse_tree(&String::from_utf8_lossy(&output.stdout)))
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// `cargo tree --prefix depth` lines: the depth, then the crate's name and
-/// version.
+/// The facade's normal closure as `profile` builds it for `target`, in
+/// `cargo tree` order, each crate at its depth.
+fn closure(profile: &FootprintCheck, target: &str) -> Result<Vec<Node>, String> {
+    let args = ["-e", "normal,no-proc-macro", "--format", "{p} [{f}]"];
+    Ok(parse_tree(&tree(profile, target, &args)?))
+}
+
+/// `cargo tree --prefix depth --format "{p} [{f}]"` lines: the depth, then
+/// the crate's name and version and its features in brackets.
 fn parse_tree(text: &str) -> Vec<Node> {
     text.lines()
         .filter_map(|line| {
             let digits = line.find(|c: char| !c.is_ascii_digit())?;
             let depth = line[..digits].parse().ok()?;
             let name = line[digits..].split_whitespace().next()?.to_owned();
-            Some(Node { depth, name })
+            let features = line
+                .rfind('[')
+                .and_then(|open| {
+                    let list = &line[open + 1..];
+                    Some(&list[..list.find(']')?])
+                })
+                .map(|list| {
+                    list.split(',')
+                        .filter(|f| !f.is_empty())
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default();
+            Some(Node {
+                depth,
+                name,
+                features,
+            })
         })
         .collect()
+}
+
+/// Every [`RELEASE_FEATURES`] entry `tree` turns on.
+fn forbidden_features(tree: &[Node]) -> Vec<(&'static str, &'static str)> {
+    RELEASE_FEATURES
+        .iter()
+        .copied()
+        .filter(|&(krate, feature)| {
+            tree.iter()
+                .any(|node| node.name == krate && node.features.iter().any(|f| f == feature))
+        })
+        .collect()
+}
+
+/// The features that turn on `krate`'s `feature` as `profile` builds the
+/// facade for `target`: the first chain of the inverted feature tree, from
+/// the feature down to the one the build names.
+fn enabled_by(
+    profile: &FootprintCheck,
+    target: &str,
+    krate: &str,
+    feature: &str,
+) -> Result<Vec<String>, String> {
+    let args = ["-e", "features,normal,no-proc-macro", "-i", krate];
+    Ok(feature_chain(
+        &tree(profile, target, &args)?,
+        krate,
+        feature,
+    ))
+}
+
+/// In an inverted `cargo tree -e features --prefix depth` listing, the chain
+/// from `krate feature "feature"` down its first dependents.
+fn feature_chain(text: &str, krate: &str, feature: &str) -> Vec<String> {
+    let head = format!("{krate} feature \"{feature}\"");
+    let mut chain = Vec::new();
+    let mut depth = None;
+    for line in text.lines() {
+        let digits = line.find(|c: char| !c.is_ascii_digit()).unwrap_or(0);
+        let Ok(at) = line[..digits].parse::<usize>() else {
+            continue;
+        };
+        let entry = line[digits..].trim_end_matches(" (*)");
+        match depth {
+            None if entry == head => depth = Some(at),
+            Some(d) if at == d + 1 => {
+                chain.push(entry.to_owned());
+                depth = Some(at);
+            }
+            Some(d) if at <= d => break,
+            _ => {}
+        }
+    }
+    chain.insert(0, format!("{krate}/{feature}"));
+    chain
 }
 
 /// Every crate of `tree` that `profile` forbids, once, with the path from the
@@ -231,14 +348,14 @@ mod tests {
     #[test]
     fn a_forbidden_crate_is_named_with_the_path_that_reaches_it() {
         let tree = parse_tree(
-            "0viso v0.1.0 (/w/crates/viso)\n\
-             1viso-gpu v0.1.0 (/w/crates/gpu)\n\
-             2ash v0.38.0\n\
-             2libc v0.2.0\n\
-             1viso-platform v0.1.0 (/w/crates/platform)\n\
-             2accesskit_unix v0.17.0\n\
-             3accesskit v0.21.0\n\
-             1viso-gpu v0.1.0 (/w/crates/gpu) (*)\n",
+            "0viso v0.1.0 (/w/crates/viso) [cpu,kms]\n\
+             1viso-gpu v0.1.0 (/w/crates/gpu) []\n\
+             2ash v0.38.0 [default]\n\
+             2libc v0.2.0 []\n\
+             1viso-platform v0.1.0 (/w/crates/platform) []\n\
+             2accesskit_unix v0.17.0 []\n\
+             3accesskit v0.21.0 []\n\
+             1viso-gpu v0.1.0 (/w/crates/gpu) [] (*)\n",
         );
         assert_eq!(tree.len(), 8);
         let cpu = &PROFILES[2];
@@ -258,6 +375,36 @@ mod tests {
         let vulkan = forbidden(&PROFILES[1], &tree);
         let names: Vec<&str> = vulkan.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(names, ["accesskit_unix", "accesskit"]);
+    }
+
+    #[test]
+    fn the_interpreter_is_reported_with_the_features_that_turn_it_on() {
+        let tree = parse_tree(
+            "0viso v0.1.0 (/w/crates/viso) [cpu,vm]\n\
+             1viso-behavior v0.1.0 (/w/crates/behavior) [interpreter,std]\n\
+             1viso-view v0.1.0 (/w/crates/view) [vm]\n\
+             2viso-behavior v0.1.0 (/w/crates/behavior) [interpreter,std] (*)\n",
+        );
+        assert_eq!(tree[1].features, ["interpreter", "std"]);
+        assert_eq!(
+            forbidden_features(&tree),
+            [("viso-behavior", "interpreter")]
+        );
+        assert!(forbidden_features(&parse_tree("0viso-behavior v0.1.0 [std]\n")).is_empty());
+        let inverted = "0viso-behavior v0.0.0 (/w/crates/behavior)\n\
+                        1viso-behavior feature \"interpreter\"\n\
+                        2viso-view feature \"vm\"\n\
+                        3viso feature \"vm\" (command-line)\n\
+                        1viso-behavior feature \"std\"\n\
+                        2viso v0.0.0 (/w/crates/viso)\n";
+        assert_eq!(
+            feature_chain(inverted, "viso-behavior", "interpreter"),
+            [
+                "viso-behavior/interpreter",
+                "viso-view feature \"vm\"",
+                "viso feature \"vm\" (command-line)"
+            ]
+        );
     }
 
     #[test]

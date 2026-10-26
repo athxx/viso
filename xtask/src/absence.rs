@@ -9,10 +9,10 @@
 //! The package (default `viso-example-i18n`, an app that mounts a `view!`) is
 //! built for the target (default the host) three ways, each checked against
 //! the same marker list — the dev layer's env names, its thread name, its
-//! patch checks and the failure overlay's text; on the web, where the dev
-//! link runs on the loop's thread, connects to the page's own origin and the
-//! module keeps no symbols, there is no link thread, type or address
-//! variable to name:
+//! patch checks, the failure overlay's text and the behavior interpreter's;
+//! on the web, where the dev link runs on the loop's thread, connects to the
+//! page's own origin and the module keeps no symbols, there is no link
+//! thread, type or address variable to name:
 //!
 //! 1. a dev artifact (`--release --features viso/hot-reload`, `VISO_PROFILE=dev`)
 //!    must contain every marker, so a marker that stopped matching fails here
@@ -74,6 +74,9 @@ const MARKERS: &[&str] = &[
     "VISO_DEV_PREWARM",
     "NACK_UNRESTORABLE_SNAPSHOT",
     "no restore arrived in time",
+    // The behavior interpreter's loop, which a release build replaces with
+    // the Rust each view's behavior compiles to.
+    "a node key that is no key",
 ];
 
 /// The `.vs` compiler, which no artifact links: `view!` expands at build

@@ -446,7 +446,7 @@ pub(crate) fn warn_kept_defaults(
             "tool",
             "the app's `viso` dependency keeps its default features, so this embedded \
              build links the desktop stack; depend on it with `default-features = false` \
-             and give the app `default = [\"viso/vm\", \"viso/desktop\", \"viso/native-vulkan\", \"viso/rasterizer\", \"viso/complex-line-break\"]`",
+             and give the app `default = [\"viso/desktop\", \"viso/native-vulkan\", \"viso/rasterizer\", \"viso/complex-line-break\"]`",
         );
     }
 }

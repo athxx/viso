@@ -103,7 +103,7 @@ Viso 1.0 将以下地基问题定义为正式架构决策：
 10. **Viso 自研 Ende。** `viso-ende` 负责内部 Binary/JSON Encode/Decode、wire schema、协议版本、cache/snapshot/tool transport；RON 不属于 Viso；Serde 只作为生态 integration。
 11. **Hot Reload 是 Dev-only build capability。** Dev Runtime、patch transport、DevSnapshot endpoint 与 hot-reload-only metadata 只编入 Dev artifact（facade feature `viso/hot-reload`）；Release/Shipping 完全不编入这些路径（facade 的 build script 拒绝带 `hot-reload` 的 release/shipping build，`cargo xtask check-release-absence` 扫描产物），不能靠运行时配置重新开启，release frame hot path 不承担热更税（`cargo xtask check-frame-tax`）。
 12. **`viso run` 的 desktop host 是隐式且唯一的。** macOS/Windows/Linux 开发统一使用无参数 `viso run`；`viso run ios/android` 只面向 Simulator/Emulator；`viso run web-gpu|web-dom|web-hybrid` 面向浏览器；Android/iOS 开发环境分别由 `viso android` / `viso ios` 管理，不把手机 physical-device debugging 作为 Viso 1.0 开发闭环的一部分。Embedded class 的开发闭环是：经 SSH 的板卡 Dev session（`viso run <target>`，target 写 `deploy`），以及在 macOS 上仿真 `embedded-cpu` 板卡（`viso run <target> --emulate`）（`Viso_CLI.md` §13.11，§50A.7）。
-13. **Release 不解释执行 UI 行为。** `ui!` / `component!` / `view!` 都是构建期入口；Release 中模块的每个 chunk（handler、region entry、显示值、computed、effect、state 初始化、函数、闭包、task）都 lower 为生成的 Rust 函数（按 chunk 索引的静态函数表），task 是可恢复状态机。Behavior bytecode 解释器是 facade 的 `vm` feature：开启时 debug build 运行 bytecode（Dev 热更新 patch 替换它）；release build 与任何不开 `vm` 的 build 只运行生成的 Rust（`viso::__behavior!`）。显式 dynamic capability 包与 sandbox/AI preview 使用解释器是目标（尚未实现，§44）（§41，ADR 0041）。
+13. **Release 不解释执行 UI 行为。** `ui!` / `component!` / `view!` 都是构建期入口；Release 中模块的每个 chunk（handler、region entry、显示值、computed、effect、state 初始化、函数、闭包、task）都 lower 为生成的 Rust 函数（按 chunk 索引的静态函数表），task 是可恢复状态机。Behavior bytecode 解释器是 facade 的 `vm` feature，不在默认集内，由 `viso build` / `viso run` 只为 Dev build 打开：开启时 debug build 运行 bytecode（Dev 热更新 patch 替换它）；release build 与任何不开 `vm` 的 build 只运行生成的 Rust（`viso::__behavior!`）。显式 dynamic capability 包与 sandbox/AI preview 使用解释器是目标（尚未实现，§44）（§41，ADR 0041）。
 14. **编译器不依赖运行时栈。** `viso-dsl` frontend 只依赖纯数据与无 runtime 的 crate：`viso-lexer`、`viso-schema`、`viso-ende`、`viso-behavior`、`viso-shader`、`viso-dev-protocol`、`viso-math`；LSP、`viso check` 与 CI 分析不链接 GPU/platform/runtime。`gpu` 不依赖 `runtime`，`text` 不依赖 `gpu`（§10，ADR 0042）。
 15. **资源占用是一等合同。** 每个 Device Class 都有 Footprint Profile，在编译期裁剪能力；`cargo xtask footprint` 度量二进制体积（含 data/bss）、首帧时间、峰值/空闲 RSS、counted heap、GPU 内存与空闲 CPU，基线记录在 `benches/footprint/baseline.md`，`--check` 按容差比较；接入 CI 是目标（尚未实现）。Embedded-GPU（嵌入式 Linux + GLES3/Vulkan）属于 1.0 目标；Embedded-CPU（无 GPU，CPU 光栅 + damage 局部刷新）是 1.0 Tier-2；MCU 不在 1.0 交付，但 core crates 必须保持 MCU-ready（CI 的 `cargo xtask mcu-smoke`）（§50A，ADR 0044）。
 
@@ -393,11 +393,11 @@ Accessibility 的 canonical model 是 Viso 自有 semantics tree；平台 adapte
 viso = "1"
 ```
 
-facade 的 feature 少而稳定，普通应用不手工设置任何 feature：默认集（`vm`、`desktop`、`native-vulkan`、`rasterizer`、`complex-line-break`、`avif`、`dates`、`pdf`）覆盖桌面、移动与 Web；`hot-reload` 由 `viso run` 的 Dev build 加入，release/shipping build 带它会被拒绝；`headless` 由 `viso build headless` / `viso test` 加入；`inspector` 是工具用的可选项。
+facade 的 feature 少而稳定，普通应用不手工设置任何 feature：默认集（`desktop`、`native-vulkan`、`rasterizer`、`complex-line-break`、`avif`、`dates`、`pdf`）覆盖桌面、移动与 Web；`vm`（behavior 解释器）由 CLI 为每个 target 的 Dev build 加入，release/shipping build 不带；`hot-reload`（隐含 `vm`）由 `viso run` 的 Dev build 加入，release/shipping build 带它会被拒绝；`headless` 由 `viso build headless` / `viso test` 加入；`inspector` 是工具用的可选项。
 
 不推荐暴露一个巨大的 feature 笛卡尔积。底层 executor、平台 backend、GPU backend 由 target 自动解析（ADR 0029），而不是让普通用户手工组合。
 
-能力裁剪通过 **Footprint Profile**（`desktop` / `mobile` / `web` / `embedded-gpu` / `embedded-cpu`，§50A）完成。内建 target 隐含 profile（desktop host 为 `desktop`，`ios`/`android` 为 `mobile`，web target 为 `web`）；板卡在 `Viso.toml` 的 `[target.<name>]` 中声明 profile。CLI 把 profile 解析成一组固定的 feature 集合传给 Cargo（embedded profile 关闭默认 feature，只开 `gles`/`cpu` + `kms`，Dev build 再加 `vm`），并以 `VISO_FOOTPRINT` 告知 facade 的 build script。用户只选 target，不手工组合 feature；`cargo xtask check-profiles` 只验证这几组固定组合的依赖闭包（接入 CI 是目标，尚未实现）。
+能力裁剪通过 **Footprint Profile**（`desktop` / `mobile` / `web` / `embedded-gpu` / `embedded-cpu`，§50A）完成。内建 target 隐含 profile（desktop host 为 `desktop`，`ios`/`android` 为 `mobile`，web target 为 `web`）；板卡在 `Viso.toml` 的 `[target.<name>]` 中声明 profile。CLI 把 profile 解析成一组固定的 feature 集合传给 Cargo（embedded profile 关闭默认 feature，只开 `gles`/`cpu` + `kms`；任何 profile 的 Dev build 再加 `vm`），并以 `VISO_FOOTPRINT` 告知 facade 的 build script。用户只选 target，不手工组合 feature；`cargo xtask check-profiles` 只验证这几组固定组合的依赖闭包（接入 CI 是目标，尚未实现）。
 
 ### 5.1 `viso::prelude::*`
 
@@ -1048,7 +1048,7 @@ ADR 0042 的调整（已完成）及其理由：
 - `viso-dsl` / `viso-lsp` / `viso-ui-macros` / `viso-cli` 的传递依赖包含 `runtime` / `platform` / `gpu`：禁止（`check-deps` 的传递闭包检查执行）；
 - `shader -> gpu`、`svg -> render`、`dsl -> ui / view`、`cli -> view` ★：禁止（ADR 0042）；
 - 同一几何概念在 `viso-math` 之外重复定义 public 类型：禁止（`check-deps` 扫描 `pub struct` 名，见 §10.2）；
-- Release artifact 链接 `viso-behavior` 的解释器（`interpreter` feature）：禁止（显式 dynamic 能力、sandbox/AI preview 除外，ADR 0041）。`viso-behavior` 本身是 VM 运行时外壳，release 与 embedded 构建都需要。目前只有 embedded release 构建满足（`viso build` 为 device target 关闭默认 feature，仅 Dev 加回 `viso/vm`）；桌面 release 仍随 facade 默认的 `vm` 链接解释器，且尚无检查——目标（尚未实现）。
+- Release artifact 链接 `viso-behavior` 的解释器（`interpreter` feature）：禁止（app 显式打开 `viso/vm` 以加载 bytecode view 时除外，ADR 0041）。`viso-behavior` 本身是 VM 运行时外壳，release 与 embedded 构建都需要。`vm` 不在 facade 默认集内，CLI 只为 Dev build 加它；`check-profiles` 拒绝任何 release 闭包打开 `viso-behavior/interpreter`（报告打开它的 feature 链），`check-release-absence` 要求 dev artifact 含解释器循环的字符串、release artifact 不含。
 
 ### 10.2 边界必须由 CI 机器化验证
 
@@ -1065,10 +1065,10 @@ AGENTS.md 里的 dependency 规则不是“建议”。`cargo xtask check-deps`�
 
 | 命令 | 检查 | CI |
 |---|---|---|
-| `check-release-absence` | release artifact 不含 dev 层（dev 环境变量、patch 检查、dev link 线程/类型、失败 overlay、snapshot 端点）：dev 构建必须含全部 marker 且不含 `viso_dsl` 符号，`VISO_PROFILE=shipping` + `hot-reload` 必须被 facade build script 拒绝，release 构建一个 marker 都不能有；host 上还启动两者，dev 必须连上、release 必须不连；可选 `--target ios-sim/android/web` | 是（macOS、Linux、iOS sim、web、Android） |
+| `check-release-absence` | release artifact 不含 dev 层（dev 环境变量、patch 检查、dev link 线程/类型、失败 overlay、snapshot 端点、behavior 解释器循环）：dev 构建必须含全部 marker 且不含 `viso_dsl` 符号，`VISO_PROFILE=shipping` + `hot-reload` 必须被 facade build script 拒绝，release 构建一个 marker 都不能有；host 上还启动两者，dev 必须连上、release 必须不连；可选 `--target ios-sim/android/web` | 是（macOS、Linux、iOS sim、web、Android） |
 | `mcu-smoke` | `thumbv7em-none-eabihf` 上 `--no-default-features` 检查 `viso-math`、`viso-ende`、`viso-schema`、`viso-behavior`（另含 `interpreter`）、`viso-glyph-a8`（§50A.6） | 是 |
 | `check-frame-tax` | `frame_loop` bench 在 release 下有无 `hot-reload` 交替运行（默认 5 轮），dev 帧最多比普通帧贵 10% + 250 ns | 是 |
-| `check-profiles` | 以 `viso build` 为 embedded 板卡解析的 feature 集（facade 默认 feature 关闭，加 profile 的 feature 与 `rasterizer`、`vm`；`embedded-gpu` 分 GLES 与 Vulkan 两种板卡）为 aarch64 与 armv7 Linux 解析 facade 的 normal 依赖闭包（不含 proc-macro 子树），检查禁止项：Linux 桌面栈（`x11rb*`、`wayland-*`、`zbus*`、`accesskit*`）、DSL 编译器与 hot reload watcher（`viso-dsl`、`viso-lsp`、`notify*`、`kqueue*`、`inotify*`）、其他平台的图形与系统 API（`windows*`、`objc2*`、`metal`、`wgpu*`）；GLES 板卡另禁 `ash`，Vulkan 板卡另禁 `glow`、`khronos-egl`，`embedded-cpu` 禁一切 GPU API（另加 `ash`、`d3d12`、`glow`、`khronos-egl`）。命中的 crate 连同依赖路径一起报告。`viso-behavior` 是 `no_std` 的必需依赖，不在禁止项内；fontconfig 不是 crate 依赖（运行时 dlopen，embedded 构建经 `cfg(viso_no_system_fonts)` 编译掉，§50A.4） | 否 |
+| `check-profiles` | 以 `viso build --release` 解析的 feature 集（embedded 板卡：facade 默认 feature 关闭，加 profile 的 feature 与 `rasterizer`，`embedded-gpu` 分 GLES 与 Vulkan 两种板卡；desktop：facade 默认集）为 aarch64 与 armv7 Linux 解析 facade 的 normal 依赖闭包（不含 proc-macro 子树），检查禁止项：Linux 桌面栈（`x11rb*`、`wayland-*`、`zbus*`、`accesskit*`）、DSL 编译器与 hot reload watcher（`viso-dsl`、`viso-lsp`、`notify*`、`kqueue*`、`inotify*`）、其他平台的图形与系统 API（`windows*`、`objc2*`、`metal`、`wgpu*`）；GLES 板卡另禁 `ash`，Vulkan 板卡另禁 `glow`、`khronos-egl`，`embedded-cpu` 禁一切 GPU API（另加 `ash`、`d3d12`、`glow`、`khronos-egl`）。desktop 只禁 DSL 编译器与 watcher。任何 profile 都不得打开 `viso-behavior/interpreter`。命中的 crate 连同依赖路径、命中的 feature 连同打开它的 feature 链一起报告。`viso-behavior` 是 `no_std` 的必需依赖，不在禁止项内；fontconfig 不是 crate 依赖（运行时 dlopen，embedded 构建经 `cfg(viso_no_system_fonts)` 编译掉，§50A.4） | 否 |
 | `check-targets` | 对 8 个 app target（macOS、iOS、iOS sim、Android arm64/armv7、wasm32、Windows、Linux）跑 `clippy -D warnings`；cross target 排除只在开发机运行的 xtask/project/cli/lsp，wasm 不含 bench | 否 |
 | `footprint` | 参考 app 在各 footprint profile 下的启动、内存、idle 唤醒、帧时间与 GPU 内存，与 Makepad 对照；`--check` 对 `benches/footprint/baseline.json` 超出容差即失败 | 否 |
 
