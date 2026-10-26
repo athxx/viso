@@ -28,6 +28,8 @@ pub(crate) mod android;
 mod apple;
 #[cfg(any(target_os = "linux", test))]
 mod evdev;
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+mod web;
 #[cfg(any(target_os = "windows", test))]
 mod xinput;
 
@@ -43,10 +45,15 @@ use evdev as imp;
     target_family = "wasm"
 )))]
 use none as imp;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use web as imp;
 #[cfg(target_os = "windows")]
 use xinput as imp;
 
-#[cfg(not(any(target_os = "android", target_family = "wasm")))]
+#[cfg(not(any(
+    target_os = "android",
+    all(target_family = "wasm", not(target_os = "unknown"))
+)))]
 use crate::LoopWaker;
 
 /// A connected gamepad's id: unique to its connection, never reused while
@@ -290,13 +297,19 @@ impl Pads {
     }
 }
 
-/// A native backend's gamepads, started at the first poll. Android and the
-/// web feed theirs from the events their hosts deliver.
-#[cfg(not(any(target_os = "android", target_family = "wasm")))]
+/// A backend's gamepads, started at the first poll. Android feeds its own
+/// from the events its activity delivers.
+#[cfg(not(any(
+    target_os = "android",
+    all(target_family = "wasm", not(target_os = "unknown"))
+)))]
 #[derive(Default)]
 pub(crate) struct Gamepads(Option<Option<imp::Source>>);
 
-#[cfg(not(any(target_os = "android", target_family = "wasm")))]
+#[cfg(not(any(
+    target_os = "android",
+    all(target_family = "wasm", not(target_os = "unknown"))
+)))]
 impl Gamepads {
     /// Whether the source was started (or found missing).
     pub(crate) fn started(&self) -> bool {

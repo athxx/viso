@@ -525,7 +525,13 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
     the API 36 emulator with a `uinput`-made pad: connection, buttons, stick, trigger, hat
     and departure read in a running app, and its rumble reaching the device as `EV_FF`;
     the key/axis mapping unit-tested).
-  - [ ] Web: the Gamepad API.
+  - [x] Web: the Gamepad API, `gamepadconnected`/`gamepaddisconnected` waking the loop,
+    `getGamepads()` called once a frame only while a pad is connected, a pad read only when
+    its `timestamp` moved, rumble as a `dual-rumble` effect (verified in headless Chrome
+    over CDP with a fake `navigator.getGamepads` in a running game: connection, buttons,
+    stick, trigger and departure, a frame-rate poll only while connected, the unchanged
+    timestamp skipped, the rumble effect played, and `env.input.gamepad_available`
+    switching the view in the accessibility DOM; the mapping unit-tested).
   - [ ] Rumble from game systems.
 - [x] Rich clipboard: images and HTML. `ClipboardData { text, html, image }`, pastes name
   the `ClipboardKinds` they take and get the richest; `set_clipboard`, tokened

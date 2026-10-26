@@ -752,6 +752,7 @@ fn platform_name() -> String {
 pub struct WebApp {
     window: Option<WebWindow>,
     listeners: Vec<Listener>,
+    gamepads: crate::gamepad::Gamepads,
 }
 
 impl WebApp {
@@ -816,6 +817,7 @@ impl WebApp {
         Ok(Self {
             window: None,
             listeners,
+            gamepads: crate::gamepad::Gamepads::default(),
         })
     }
 }
@@ -1087,6 +1089,18 @@ impl PlatformApp for WebApp {
 
     fn loop_waker(&self) -> crate::LoopWaker {
         crate::LoopWaker::new(kick)
+    }
+
+    fn poll_gamepads(&mut self, events: &mut Vec<crate::GamepadEvent>) {
+        if !self.gamepads.started() {
+            let waker = self.loop_waker();
+            self.gamepads.start(waker);
+        }
+        self.gamepads.poll(events);
+    }
+
+    fn rumble_gamepad(&mut self, id: crate::GamepadId, rumble: crate::Rumble) -> bool {
+        self.gamepads.rumble(id, rumble)
     }
 }
 
