@@ -81,7 +81,7 @@ struct Nav {
     detail: String,
     summary: String,
     /// The cell the text hook reads, bumped when the words change.
-    words: StateId,
+    words: State<i32>,
     rev: i32,
     /// Bumped by each plan, so a route that comes back after a newer plan
     /// is dropped.
@@ -94,7 +94,7 @@ impl Nav {
     /// Asks the text hook to show the words again.
     fn show(&mut self, w: &mut dyn StateWriter) {
         self.rev += 1;
-        w.set(self.words, StateValue::Int(self.rev));
+        self.words.set(w, self.rev);
     }
 
     fn say(&mut self, w: &mut dyn StateWriter, banner: &str, detail: &str) {
@@ -434,7 +434,7 @@ impl Application for Navigator {
     }
 
     fn build(&mut self, cx: &mut BuildCx<'_>) {
-        let words_cell = cx.state(StateValue::Int(0));
+        let words_cell = cx.state_of(0);
         let map: MapHandle = cx.handle();
         let nav: Shared = Rc::new(RefCell::new(Nav {
             map,
@@ -495,7 +495,7 @@ impl Application for Navigator {
             due: false,
         }));
         cx.structure(move |s| {
-            s.store.add_structure_hook([words_cell], move |s, _| {
+            s.store.add_structure_hook([words_cell.id()], move |s, _| {
                 let n = hook_nav.borrow();
                 s.store.set_text(banner, text_of(20.0, true, &n.banner));
                 s.store.set_text(detail, text_of(14.0, false, &n.detail));

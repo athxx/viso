@@ -203,7 +203,7 @@ phase_cx!(/// Async task context.
 /// What writes state cells: an event handler's context, an update's, an
 /// effect's, or the store itself. A handle that owns a cell — a document a
 /// widget shows, say — takes one, so whichever context holds it can write.
-pub trait StateWriter {
+pub trait StateWriter: crate::StateRead {
     /// Write a state value; returns whether the write landed (the handle was
     /// live).
     fn set(&mut self, id: StateId, value: StateValue) -> bool;

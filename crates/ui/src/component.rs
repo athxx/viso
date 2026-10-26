@@ -8098,6 +8098,14 @@ impl<'a> BuildCx<'a> {
         id
     }
 
+    /// Allocate a typed state cell holding `initial`: a [`State<T>`](crate::State)
+    /// whose reads and writes take and give a `T`. Otherwise as [`BuildCx::state`],
+    /// warm-restart carry included.
+    #[cfg_attr(feature = "hot-reload", track_caller)]
+    pub fn state_of<T: crate::StateKind>(&mut self, initial: T) -> crate::State<T> {
+        crate::State::from_id(self.state(initial.into_value()))
+    }
+
     /// A cell a `component!` or `view!` expansion allocates: one of the
     /// component's states under its symbol's `key`, which carries across a
     /// Rust warm restart, or, with `None`, a cell only the expansion reads.
@@ -8117,15 +8125,16 @@ impl<'a> BuildCx<'a> {
         id
     }
 
-    /// Wire a state cell to a node: when the cell changes, the frame's flush
-    /// marks `class` on `node`. This is the compiled static binding edge — the
-    /// same one the transaction flush reads. Returns the handle so wiring chains
-    /// inline. Requires a [`BuildCx::with_reactive`] cx (see [`BuildCx::state`]).
-    pub fn bind(&mut self, state: StateId, node: Handle, class: DirtyClass) -> Handle {
+    /// Wire a state cell (a [`StateId`] or a typed [`State`](crate::State))
+    /// to a node: when the cell changes, the frame's flush marks `class` on
+    /// `node`. This is the compiled static binding edge — the same one the
+    /// transaction flush reads. Returns the handle so wiring chains inline.
+    /// Requires a [`BuildCx::with_reactive`] cx (see [`BuildCx::state`]).
+    pub fn bind(&mut self, state: impl Into<StateId>, node: Handle, class: DirtyClass) -> Handle {
         self.bindings
             .as_mut()
             .expect("bind() requires a with_reactive BuildCx")
-            .bind(state, node.id, class);
+            .bind(state.into(), node.id, class);
         node
     }
 

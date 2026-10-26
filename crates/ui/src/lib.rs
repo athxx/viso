@@ -100,6 +100,7 @@ pub mod text_style;
 pub mod timer;
 pub mod token;
 pub mod transform;
+pub mod typed_state;
 pub mod video;
 pub mod video_controls;
 pub mod viewer;
@@ -240,6 +241,7 @@ pub use text_edit::{
 pub use text_entry::TextEntryRequest;
 pub use timer::{TimerId, TimerRegistry, TimerRequest};
 pub use token::{Theme, TokenId, TokenInterner, TokenNamespace};
+pub use typed_state::{State, StateKind, StateRead};
 pub use viewer::{ViewerLimits, ViewerMove};
 pub use virtual_grid::{Columns, ListGrid};
 pub use virtual_list::{

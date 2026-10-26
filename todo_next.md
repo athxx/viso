@@ -108,9 +108,15 @@ Rules (as for `todo_features.md`):
   - Verified: viso-ui lib (772), viso-widgets lib/tests/doctests, viso-charts and viso-map
     tests, and the facade widget tests (headless and default) pass. Clippy `--all-targets` is
     clean on all of them and on `examples/map`.
-- [ ] A typed Rust state handle `State<T>` over `StateId` for the `StateValue` kinds
+- [x] A typed Rust state handle `State<T>` over `StateId` for the `StateValue` kinds
   (`cx.state_of(0i32)`, typed `get`/`set`). Verify that `examples/01-counter` has no `StateValue`
   match.
+  - Built: `viso_ui::typed_state`: `State<T>` (`Copy`, `get`/`set`/`update`), `StateKind` for
+    i32/f32/bool/Rgba, `StateRead` (StateWriter's new supertrait; the effect and compute contexts
+    record the read), `BuildCx::state_of`, and `bind` taking `impl Into<StateId>`. `State` is
+    in the prelude. The counter, links and map examples use it. Architecture §18 updated.
+  - Verified: typed_state unit and doc tests pass. Clippy is clean on viso-ui, viso and the
+    examples. `examples/01-counter` has no `StateValue`.
 - [ ] `Application::on_lifecycle(&mut self, cx: &mut EventCx<'_>, Lifecycle)`, with `Lifecycle`
   re-exported. It is called on the launch window's context in this order:
   - on Suspended, before the persist flush;

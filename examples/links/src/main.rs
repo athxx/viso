@@ -8,7 +8,7 @@ use viso::render::Rgba;
 use viso::ui::{BoxStyle, EventCx, Sizing};
 
 struct Links {
-    opened: Option<StateId>,
+    opened: Option<State<i32>>,
 }
 
 impl Application for Links {
@@ -17,7 +17,7 @@ impl Application for Links {
     }
 
     fn build(&mut self, cx: &mut BuildCx<'_>) {
-        let opened = cx.state(StateValue::Int(0));
+        let opened = cx.state_of(0);
         self.opened = Some(opened);
         let page = cx.leaf(LeafStyle {
             size: Sizing::fill(),
@@ -35,11 +35,8 @@ impl Application for Links {
         let Some(opened) = self.opened else {
             return;
         };
-        let count = match cx.get(opened) {
-            Some(StateValue::Int(n)) => n + 1,
-            _ => 1,
-        };
-        cx.set(opened, StateValue::Int(count));
+        let count = opened.get(cx).unwrap_or(0) + 1;
+        opened.set(cx, count);
         viso::println!("opened link {count}: {url}");
     }
 }

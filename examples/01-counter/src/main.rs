@@ -19,8 +19,8 @@ use viso::ui::{Axis, BoxStyle, Inset, PointerPhase, Sizing};
 struct Counter {
     // Allocated in `build`, where the state store is reachable — not in `new`
     // (the `AppCx` marker cannot borrow the store). `None` until `build` runs;
-    // the handlers below capture the `StateId` directly, so they never read this.
-    count: Option<StateId>,
+    // the handlers below capture the cell directly, so they never read this.
+    count: Option<State<i32>>,
 }
 
 impl Application for Counter {
@@ -29,7 +29,7 @@ impl Application for Counter {
     }
 
     fn build(&mut self, cx: &mut BuildCx<'_>) {
-        let count = cx.state(StateValue::Int(0));
+        let count = cx.state_of(0);
         self.count = Some(count);
 
         cx.flex(row_style(), |cx| {
@@ -41,11 +41,7 @@ impl Application for Counter {
                 if ev.pointer().map(|p| p.phase) != Some(PointerPhase::Up) {
                     return;
                 }
-                let now = match ev.get(count) {
-                    Some(StateValue::Int(n)) => n,
-                    _ => 0,
-                };
-                ev.set(count, StateValue::Int(now + 1));
+                count.update(ev, |n| n + 1);
             });
             // The button carries the count as an accessible label; bound
             // SEMANTICS so a change re-derives just this node's semantics.

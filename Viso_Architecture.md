@@ -2626,6 +2626,19 @@ state 与 binding 分开存：slot 不记录 binding 区间，边集由 binding 
 
 `StateId` 只负责 dependency indexing，不要求把所有 Rust 值 erase 成动态 `Value`。
 
+Rust 代码用 typed cell `State<T>`（`viso_ui::typed_state`），不 match `StateValue`：
+
+```rust
+let count: State<i32> = cx.state_of(0);   // T: StateKind = i32 / f32 / bool / Rgba
+cx.bind(count, label, DirtyClass::PAINT);  // bind 收 StateId 或 State<T>
+count.update(ev, |n| n + 1);               // 写：任意 StateWriter
+let n = count.get(ev);                     // 读：任意 StateRead，Option<T>
+```
+
+- `Copy`，只含 `StateId`；`get` 返回 `Option<T>`：cell 已释放（或类型不符）时为 `None`，`update` 在 cell 已释放时不写；
+- 读经 `StateRead`（`StateStore`、`EventCx`、`UpdateCx`、`StructureCx`，以及会记录依赖的 `EffectCx`、`ComputeCx`），写经 `StateWriter`（`StateRead` 的子 trait），与 `StateValue` 写入一样 pending；
+- `cx.state_of` 与 `cx.state` 一样参与 warm restart 的 cell 保留。
+
 ### 18.1 Binding table
 
 编译/宏可生成：
@@ -5951,7 +5964,7 @@ on click { count += 1; }
 ```
 
 ```rust
-ev.set(count, StateValue::Int(n + 1));
+count.update(ev, |n| n + 1); // count: State<i32>
 ```
 
 编译期 metadata：
