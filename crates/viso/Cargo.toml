@@ -59,7 +59,7 @@ windows-core = "0.62"
 libc = "0.2"
 
 [features]
-default = ["vm", "desktop", "native-vulkan", "rasterizer", "complex-line-break", "avif"]
+default = ["vm", "desktop", "native-vulkan", "rasterizer", "complex-line-break", "avif", "dates"]
 # Kept small and stable on purpose — no giant feature cartesian product
 # (§5). Backends resolve from the target, not from user feature combos.
 # The desktop display backends on Linux and the BSDs (Wayland and X11, with
@@ -72,6 +72,10 @@ desktop = ["viso-platform/x11", "viso-platform/wayland", "viso-services/desktop"
 # no Vulkan bindings.
 native-vulkan = ["viso-gpu/native-vulkan"]
 mobile = []
+# Dates and times in the reader's locale where a message writes them
+# (`{d, date}`, `{t, time}`): CLDR's Gregorian patterns and names, under 500 KB
+# of a release binary. Off, they show as ISO 8601.
+dates = ["viso-behavior/dates"]
 # The behavior interpreter a debug build runs `view!` behavior on. Off, every
 # view runs the Rust its behavior compiles to, in every build, and no
 # interpreter links.

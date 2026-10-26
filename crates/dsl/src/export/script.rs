@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use viso_behavior::Value;
-use viso_behavior::i18n::{CaseKey, Catalog, Category, PatternOp, Table};
+use viso_behavior::i18n::{CaseKey, Catalog, Category, DateLength, PatternOp, Table};
 use viso_schema::view::ControlKind;
 
 use super::eval::{Deps, Eval};
@@ -693,7 +693,8 @@ fn slice(table: &Table, start: u32, len: u32) -> &str {
 /// A run of pattern ops as the array `$.tr` formats: text as a string,
 /// `[0, a]` an argument, `[1, a]` a number, `[2]` the plural's number,
 /// `[3, a, ordinal, offset, [[n, body]], {category: body}, other]` a plural,
-/// `[4, a, [[text, body]], other]` a select.
+/// `[4, a, [[text, body]], other]` a select, `[5, a, style]` a date,
+/// `[6, a, seconds]` a time and `[7, a]` a whole number.
 fn pattern(table: &Table, ops: &[PatternOp]) -> String {
     let mut parts = Vec::new();
     let mut i = 0;
@@ -703,6 +704,19 @@ fn pattern(table: &Table, ops: &[PatternOp]) -> String {
             PatternOp::Arg(a) => parts.push(format!("[0, {a}]")),
             PatternOp::Number(a) => parts.push(format!("[1, {a}]")),
             PatternOp::Pound => parts.push("[2]".to_owned()),
+            PatternOp::Integer(a) => parts.push(format!("[7, {a}]")),
+            PatternOp::Date { arg, length } => parts.push(format!(
+                "[5, {arg}, \"{}\"]",
+                match length {
+                    DateLength::Short => "short",
+                    DateLength::Medium => "medium",
+                    DateLength::Long => "long",
+                    DateLength::Full => "full",
+                }
+            )),
+            PatternOp::Time { arg, seconds } => {
+                parts.push(format!("[6, {arg}, {}]", u8::from(seconds)));
+            }
             PatternOp::Plural {
                 arg,
                 ordinal,

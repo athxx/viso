@@ -1380,6 +1380,73 @@ fn a_page_ships_every_locale_and_speaks_its_readers() {
     }
 }
 
+#[test]
+fn a_page_writes_dates_and_times_as_its_reader_does() {
+    use viso_dsl::i18n::{CatalogFile, Messages};
+    let messages = Messages::compile(
+        "en",
+        &[CatalogFile {
+            locale: "en".into(),
+            path: "i18n/en.toml".into(),
+            text: "when = \"{at, date, full}, {at, time, short}; {d, date, short}; {n, number, integer}\"\n".into(),
+        }],
+    );
+    let profile = TargetProfile {
+        messages: Some(Rc::new(messages)),
+        ..TargetProfile::default()
+    };
+    let source = "import viso::i18n::{tr};\nexport component Agenda {\n    state day = Date { year: 2026, month: 10, day: 26 };\n    view { Text { text: tr(\"when\", at: DateTime { date: day, time: Time { hour: 16, minute: 5 } }, d: day, n: 2.5); } }\n}\n";
+    let compiled = compile_file_for(source, &origin(), Natives::standard(), profile);
+    let errors: Vec<_> = compiled.errors().collect();
+    assert!(errors.is_empty(), "{errors:#?}");
+    let script = html(&compiled, &options(false))
+        .unwrap()
+        .script
+        .expect("a script");
+    assert!(script.contains("[5, 0, \"full\"]"), "{script}");
+    let Ok(node) = which("node") else {
+        eprintln!("no `node` on PATH: the formats are not run");
+        return;
+    };
+    let messages = script
+        .lines()
+        .find(|line| line.starts_with("const T = "))
+        .expect("the messages");
+    for (languages, said) in [
+        (
+            "[\"en-US\"]",
+            "Monday, October 26, 2026, 4:05\u{202f}PM; 10/26/26; 2",
+        ),
+        (
+            "[\"de-DE\"]",
+            "Montag, 26. Oktober 2026, 16:05; 26.10.26; 2",
+        ),
+    ] {
+        let program = format!(
+            "{}\n{messages}\nglobalThis.navigator = {{ languages: {languages} }};\nsettle(T);\n\
+             const d = {{ t: 0, f: [2026n, 10n, 26n] }};\n\
+             console.log(translate(T, \"when\", [{{ t: 0, f: [d, {{ t: 0, f: [16n, 5n, 0n] }}] }}, d, 2.5]));\n",
+            include_str!("../src/export/values.js")
+        );
+        let out = std::process::Command::new(&node)
+            .args(["-e", &program])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        // Browsers' ICU differs in the space before a day period.
+        let spaced = |t: &str| t.replace(['\u{202f}', '\u{a0}'], " ");
+        assert_eq!(
+            spaced(String::from_utf8_lossy(&out.stdout).trim()),
+            spaced(said),
+            "{languages}"
+        );
+    }
+}
+
 fn which(program: &str) -> Result<std::path::PathBuf, ()> {
     std::env::var_os("PATH")
         .and_then(|paths| {

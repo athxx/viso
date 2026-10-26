@@ -1,7 +1,9 @@
 //! Formatting a message for a reader: the locale tag a reader reads resolves
 //! once to the catalog locale it falls back to and the number formatter of
 //! its own locale; a locale's table decodes on first use, with the plural
-//! rules of its language; a message of plain text is one shared string.
+//! rules of its language; a message of plain text is one shared string. A
+//! reader's date and time formatters are made the first time a message it
+//! reads writes a date or a time at that length.
 
 use alloc::format;
 use alloc::rc::Rc;
@@ -10,13 +12,13 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt::Write as _;
 
-use fixed_decimal::{Decimal, FloatPrecision};
+use fixed_decimal::{Decimal, FloatPrecision, SignedRoundingMode, UnsignedRoundingMode};
 use icu_decimal::DecimalFormatter;
 use icu_locale_core::Locale;
 use icu_locale_fallback::LocaleFallbacker;
 use icu_plurals::{PluralCategory, PluralRules};
 
-use super::{CaseKey, Catalog, Category, PatternOp, Table};
+use super::{CaseKey, Catalog, Category, DateLength, PatternOp, Table};
 use crate::Value;
 use crate::value::Text;
 
@@ -56,9 +58,11 @@ struct Decoded {
 
 struct Reader {
     tag: Rc<Text>,
+    locale: Locale,
     /// The catalog locale it reads.
     table: usize,
     numbers: DecimalFormatter,
+    dates: Dates,
 }
 
 impl Translator {
@@ -129,9 +133,12 @@ impl Translator {
             decoded.plain[id] = Some(value.clone());
             return Ok(value);
         }
+        let reader = &mut self.readers[reader];
+        reader.dates.prepare(&reader.locale, ops);
         let cx = Cx {
             text: &decoded.table.text,
-            numbers: &self.readers[reader].numbers,
+            numbers: &reader.numbers,
+            dates: &reader.dates,
             cardinal: &decoded.cardinal,
             ordinal: &decoded.ordinal,
         };
@@ -167,8 +174,10 @@ impl Translator {
         }
         self.readers.push(Reader {
             tag,
+            locale: parsed,
             table,
             numbers,
+            dates: Dates::default(),
         });
         self.readers.len() - 1
     }
@@ -232,6 +241,7 @@ fn resolve(catalog: &Catalog, locale: &Locale) -> usize {
 struct Cx<'a> {
     text: &'a str,
     numbers: &'a DecimalFormatter,
+    dates: &'a Dates,
     cardinal: &'a PluralRules,
     ordinal: &'a PluralRules,
 }
@@ -255,6 +265,24 @@ impl Cx<'_> {
                     other => self.number(out, &decimal(other)?),
                 },
                 PatternOp::Number(a) => self.number(out, &decimal(&args[usize::from(a)])?),
+                PatternOp::Integer(a) => {
+                    let mut n = decimal(&args[usize::from(a)])?;
+                    n.round_with_mode(
+                        0,
+                        SignedRoundingMode::Unsigned(UnsignedRoundingMode::HalfEven),
+                    );
+                    self.number(out, &n);
+                }
+                PatternOp::Date { arg, length } => {
+                    let [year, month, day] = civil(&args[usize::from(arg)], false)
+                        .ok_or("a `date` argument is a `Date` or a `DateTime`")?;
+                    self.dates.date(out, length, year, month, day)?;
+                }
+                PatternOp::Time { arg, seconds } => {
+                    let [hour, minute, second] = civil(&args[usize::from(arg)], true)
+                        .ok_or("a `time` argument is a `Time` or a `DateTime`")?;
+                    self.dates.time(out, seconds, hour, minute, second)?;
+                }
                 PatternOp::Pound => match pound {
                     Some(n) => self.number(out, n),
                     None => out.push('#'),
@@ -352,6 +380,161 @@ fn category(c: PluralCategory) -> Option<Category> {
         PluralCategory::Few => Some(Category::Few),
         PluralCategory::Many => Some(Category::Many),
         PluralCategory::Other => None,
+    }
+}
+
+/// The three fields of a `Date` or a `Time` record, or of a `DateTime`'s
+/// date or, for `time`, its time.
+fn civil(value: &Value, time: bool) -> Option<[i64; 3]> {
+    let Value::Agg(agg) = value else {
+        return None;
+    };
+    match &agg.fields[..] {
+        [Value::Int(a), Value::Int(b), Value::Int(c)] => Some([*a, *b, *c]),
+        [date @ Value::Agg(_), at @ Value::Agg(_)] => civil(if time { at } else { date }, time),
+        _ => None,
+    }
+}
+
+/// A reader's date and time formatters, each made the first time a message
+/// asks for it.
+#[derive(Default)]
+struct Dates {
+    #[cfg(feature = "dates")]
+    dates: [Option<dates::DateFormatter>; 3],
+    #[cfg(feature = "dates")]
+    full: Option<dates::FullFormatter>,
+    #[cfg(feature = "dates")]
+    times: [Option<dates::TimeFormatter>; 2],
+}
+
+#[cfg(feature = "dates")]
+mod dates {
+    use icu_calendar::Gregorian;
+    use icu_datetime::fieldsets::{T, YMD, YMDE};
+    use icu_datetime::{FixedCalendarDateTimeFormatter, NoCalendarFormatter};
+
+    pub(super) type DateFormatter = FixedCalendarDateTimeFormatter<Gregorian, YMD>;
+    pub(super) type FullFormatter = FixedCalendarDateTimeFormatter<Gregorian, YMDE>;
+    pub(super) type TimeFormatter = NoCalendarFormatter<T>;
+}
+
+impl Dates {
+    /// Makes the formatters the pattern `ops` writes with that are not made.
+    #[cfg(feature = "dates")]
+    fn prepare(&mut self, locale: &Locale, ops: &[PatternOp]) {
+        use icu_datetime::fieldsets::{T, YMD, YMDE};
+        for op in ops {
+            match *op {
+                PatternOp::Date {
+                    length: DateLength::Full,
+                    ..
+                } if self.full.is_none() => {
+                    self.full = dates::FullFormatter::try_new(locale.into(), YMDE::long())
+                        .or_else(|_| {
+                            dates::FullFormatter::try_new(Default::default(), YMDE::long())
+                        })
+                        .ok();
+                }
+                PatternOp::Date { length, .. } if length != DateLength::Full => {
+                    let at = length as usize;
+                    if self.dates[at].is_none() {
+                        let set = match length {
+                            DateLength::Short => YMD::short(),
+                            DateLength::Medium => YMD::medium(),
+                            _ => YMD::long(),
+                        };
+                        self.dates[at] = dates::DateFormatter::try_new(locale.into(), set)
+                            .or_else(|_| dates::DateFormatter::try_new(Default::default(), set))
+                            .ok();
+                    }
+                }
+                PatternOp::Time { seconds, .. } if self.times[usize::from(seconds)].is_none() => {
+                    let set = if seconds { T::hms() } else { T::hm() };
+                    self.times[usize::from(seconds)] =
+                        dates::TimeFormatter::try_new(locale.into(), set)
+                            .or_else(|_| dates::TimeFormatter::try_new(Default::default(), set))
+                            .ok();
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[cfg(not(feature = "dates"))]
+    fn prepare(&mut self, _locale: &Locale, _ops: &[PatternOp]) {}
+
+    fn date(
+        &self,
+        out: &mut String,
+        length: DateLength,
+        year: i64,
+        month: i64,
+        day: i64,
+    ) -> Result<(), String> {
+        let wrong = || format!("{year}-{month}-{day} is no date");
+        let year = i32::try_from(year).map_err(|_| wrong())?;
+        let (month, day) = (u8::try_from(month), u8::try_from(day));
+        let (Ok(month), Ok(day)) = (month, day) else {
+            return Err(wrong());
+        };
+        #[cfg(feature = "dates")]
+        {
+            let date = icu_datetime::input::Date::try_new_gregorian(year, month, day)
+                .map_err(|_| wrong())?;
+            let shown = match length {
+                DateLength::Full => self
+                    .full
+                    .as_ref()
+                    .map(|f| write!(out, "{}", f.format(&date))),
+                _ => self.dates[length as usize]
+                    .as_ref()
+                    .map(|f| write!(out, "{}", f.format(&date))),
+            };
+            if shown.is_some() {
+                return Ok(());
+            }
+        }
+        if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+            return Err(wrong());
+        }
+        let _ = length;
+        let _ = write!(out, "{year:04}-{month:02}-{day:02}");
+        Ok(())
+    }
+
+    fn time(
+        &self,
+        out: &mut String,
+        seconds: bool,
+        hour: i64,
+        minute: i64,
+        second: i64,
+    ) -> Result<(), String> {
+        let wrong = || format!("{hour}:{minute}:{second} is no time of day");
+        let fields = (
+            u8::try_from(hour),
+            u8::try_from(minute),
+            u8::try_from(second),
+        );
+        let (Ok(hour), Ok(minute), Ok(second)) = fields else {
+            return Err(wrong());
+        };
+        if hour > 23 || minute > 59 || second > 59 {
+            return Err(wrong());
+        }
+        #[cfg(feature = "dates")]
+        if let Some(f) = &self.times[usize::from(seconds)] {
+            let time =
+                icu_datetime::input::Time::try_new(hour, minute, second, 0).map_err(|_| wrong())?;
+            let _ = write!(out, "{}", f.format(&time));
+            return Ok(());
+        }
+        let _ = write!(out, "{hour:02}:{minute:02}");
+        if seconds {
+            let _ = write!(out, ":{second:02}");
+        }
+        Ok(())
     }
 }
 

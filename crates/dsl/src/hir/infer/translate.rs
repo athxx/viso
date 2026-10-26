@@ -293,6 +293,15 @@ impl InferCx<'_> {
                 Some(ArgPass::Variant(*id))
             }
             (_, ArgKind::Text) if displayable(self.env, &ty) => Some(ArgPass::Shown(ty.clone())),
+            (Ty::Named(id, ..), ArgKind::Date | ArgKind::Time | ArgKind::DateTime) => {
+                let is = |name| self.env.standard_type(name) == Some(*id);
+                let fits = match kind {
+                    ArgKind::Date => is("Date") || is("DateTime"),
+                    ArgKind::Time => is("Time") || is("DateTime"),
+                    _ => is("DateTime"),
+                };
+                fits.then_some(ArgPass::Raw)
+            }
             _ => None,
         };
         if pass.is_none() {
@@ -300,6 +309,9 @@ impl InferCx<'_> {
                 ArgKind::Text => "text or a value with `Display`",
                 ArgKind::Number => "a number",
                 ArgKind::Select => "a `String` or an enum without payloads",
+                ArgKind::Date => "a `Date` or a `DateTime`",
+                ArgKind::Time => "a `Time` or a `DateTime`",
+                ArgKind::DateTime => "a `DateTime`",
             };
             let found = self.describe(&ty);
             self.diagnostics.push(

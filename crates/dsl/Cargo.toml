@@ -38,6 +38,7 @@ icu_locale_fallback = { workspace = true }
 # The runtime the integration tests mount, reload and drive compiled views in.
 viso-ui = { workspace = true }
 viso-view = { workspace = true, features = ["hot-reload", "vm"] }
+viso-behavior = { workspace = true, features = ["dates"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion = "0.7"

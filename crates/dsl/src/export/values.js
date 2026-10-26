@@ -152,6 +152,24 @@ const number = (T, v) => {
   T.numbers ??= new Intl.NumberFormat(T.R || T.L || undefined, { maximumFractionDigits: 20 });
   return T.numbers.format(typeof v === "bigint" ? v : $.f64(v));
 };
+// The three fields of a `Date` or a `Time`, or of a `DateTime`'s date or,
+// for `time`, its time, as numbers.
+const civil = (v, time) => {
+  if (!v || !v.f) return null;
+  if (v.f.length === 2 && v.f[0] && v.f[0].f) return civil(v.f[time ? 1 : 0], time);
+  return v.f.length === 3 ? v.f.map(Number) : null;
+};
+// A date or time of day in the reader's language: a calendar instant at
+// UTC formatted at UTC, so no time zone moves it.
+const civilFormat = (T, key, options, at) => {
+  T.dates ??= new Map();
+  let format = T.dates.get(key);
+  if (!format) {
+    format = new Intl.DateTimeFormat(T.R || T.L || undefined, { ...options, timeZone: "UTC" });
+    T.dates.set(key, format);
+  }
+  return format.format(at);
+};
 // Formats the pattern `ops` with the arguments `a`, its plurals by the
 // rules of the language `lang` it is written in.
 const pattern = (T, ops, a, pound, out, lang) => {
@@ -186,6 +204,32 @@ const pattern = (T, ops, a, pound, out, lang) => {
           body = op[5][rules.select(Number(shown))] || op[6];
         }
         pattern(T, body, a, shown, out, lang);
+        break;
+      }
+      case 5: {
+        const d = civil(a[op[1]], false);
+        if (!d) throw fault("a `date` argument is a `Date` or a `DateTime`");
+        const at = new Date(Date.UTC(2000, d[1] - 1, d[2]));
+        at.setUTCFullYear(d[0]);
+        if (Number.isNaN(at.getTime()) || at.getUTCMonth() !== d[1] - 1) throw fault(d.join("-") + " is no date");
+        out.push(civilFormat(T, "d" + op[2], { dateStyle: op[2] }, at));
+        break;
+      }
+      case 6: {
+        const t = civil(a[op[1]], true);
+        if (!t || t[0] > 23 || t[1] > 59 || t[2] > 59 || t.some((x) => x < 0)) throw fault("a `time` argument is a time of day");
+        const at = Date.UTC(1970, 0, 1, t[0], t[1], t[2]);
+        out.push(civilFormat(T, "t" + op[2], { timeStyle: op[2] ? "medium" : "short" }, at));
+        break;
+      }
+      case 7: {
+        const v = a[op[1]];
+        if (typeof v === "bigint") out.push(number(T, v));
+        else {
+          // Half to even, as ICU's `integer` style rounds.
+          const f = Math.floor(v), r = v - f;
+          out.push(number(T, r > 0.5 || (r === 0.5 && f % 2 !== 0) ? f + 1 : f));
+        }
         break;
       }
       default: {

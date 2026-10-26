@@ -564,7 +564,12 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
 
 ## W16 — Missing in both
 
-- [ ] Localization: ICU-style message formatting (plural/select), number/date formats.
+- [x] Localization: ICU-style message formatting (plural/select), number/date formats:
+  `{d, date}` (`short` to `full`) and `{t, time}` (`short`, `medium`) write the prelude's
+  `Date`, `Time` and `DateTime` through CLDR's Gregorian patterns in the reader's locale
+  and hour cycle (the `dates` feature, under 500 KB; ISO 8601 without it), `{n, number,
+  integer}` rounds half to even; the web export writes them through `Intl`. Checked in
+  en-US, de-DE and ja-JP under the dev runtime, the release package and Node.
 - [ ] Printing (desktop) and PDF export of a view.
 - [ ] Biometric authentication service.
 - [ ] Push notification registration (APNs/FCM).

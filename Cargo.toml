@@ -136,6 +136,11 @@ icu_locale_core = "2.4"
 icu_plurals = "2.4"
 icu_decimal = "2.4"
 icu_locale_fallback = "2.4"
+# Messages' `date` and `time` arguments: CLDR's Gregorian date and time
+# patterns and names for every locale, under 500 KB of a release binary
+# (measured on aarch64-apple-darwin), linked only with `viso`'s `dates`.
+icu_datetime = { version = "2.4", default-features = false, features = ["compiled_data"] }
+icu_calendar = { version = "2.4", default-features = false }
 fixed_decimal = { version = "0.7", features = ["ryu"] }
 # `cross_platform` game math (`viso::math` transcendentals, input lengths): the
 # musl/FreeBSD algorithms ported to Rust, built from IEEE basic operations and

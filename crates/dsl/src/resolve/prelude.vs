@@ -197,6 +197,11 @@ export record InputCapabilities {
 }
 export enum LayoutDirection { ltr; rtl; }
 export record Locale { tag: String; }
+// A day of the Gregorian calendar, a time of day, and the two together: what
+// a message's `{d, date}` and `{t, time}` write in the reader's locale.
+export record Date { year: I32; month: U32; day: U32; }
+export record Time { hour: U32 = 0; minute: U32 = 0; second: U32 = 0; }
+export record DateTime { date: Date; time: Time; }
 
 // Assets: only `asset("…")` makes an `ImageAsset` (a raster), which an `Image`
 // shows, an `SvgAsset`, which an `Svg` shows, or a `VideoAsset` (MP4,

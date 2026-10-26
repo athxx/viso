@@ -35,6 +35,13 @@ greet = "Hello, {name}!"
 mood = "{mood, select, happy {Glad} other {Meh}}"
 other = "Other"
 size = "{bytes} bytes, {ratio}"
+
+[when]
+due = "Due {day, date}"
+full = "{at, date, full} at {at, time, short}"
+short = "{day, date, short}, {day, date, long}"
+alarm = "{at, time}"
+whole = "{n, number, integer} of {m, number, integer}"
 "#;
 
 const AR: &str = r#"
@@ -49,6 +56,34 @@ unread = "{count, plural, one {# ungelesene Nachricht} other {# ungelesene Nachr
 
 const ZH_HANT: &str = r#"
 inbox = { title = "收件匣" }
+"#;
+
+const DATES: &str = r#"
+import viso::i18n::tr;
+
+export component Agenda {
+    state day = Date { year: 2026, month: 10, day: 26 };
+    view {
+        Column {
+            width: 400dp;
+            height: 300dp;
+            Text {
+                width: 20dp;
+                height: 20dp;
+                text: tr("when.due", day: day);
+                on click { day = Date { year: 2027, month: 1, day: 5 }; }
+            }
+            Text {
+                width: 20dp;
+                height: 20dp;
+                text: tr("when.full", at: DateTime { date: day, time: Time { hour: 16, minute: 5 } });
+            }
+            Text { width: 20dp; height: 20dp; text: tr("when.short", day: day); }
+            Text { width: 20dp; height: 20dp; text: tr("when.alarm", at: Time { hour: 7, minute: 30, second: 15 }); }
+            Text { width: 20dp; height: 20dp; text: tr("when.whole", n: 2.5, m: 3.5); }
+        }
+    }
+}
 "#;
 
 fn file(locale: &str, text: &str) -> CatalogFile {
@@ -565,6 +600,76 @@ fn messages_show_in_the_readers_locale_under_every_target() {
         assert_eq!(de[1], "Other", "de leaves it to the source");
         assert_eq!(de[5], "1.234.567 bytes, 0,5", "German grouping");
     }
+}
+
+#[test]
+fn dates_and_times_show_in_the_readers_locale_under_every_target() {
+    for mut rt in [Rt::reloaded(DATES), Rt::packaged(DATES)] {
+        rt.locale("en-US");
+        assert_eq!(
+            rt.labels(),
+            [
+                "Due Oct 26, 2026",
+                "Monday, October 26, 2026 at 4:05\u{202f}PM",
+                "10/26/26, October 26, 2026",
+                "7:30:15\u{202f}AM",
+                "2 of 4",
+            ]
+        );
+        rt.click(5.0, 5.0);
+        assert_eq!(rt.texts()[0], "Due Jan 5, 2027", "a new day re-shows");
+
+        rt.locale("de-DE");
+        let de = rt.labels();
+        assert_eq!(
+            de[0], "Due 05.01.2027",
+            "German order in the source's words"
+        );
+        assert_eq!(
+            de[1], "Dienstag, 5. Januar 2027 at 16:05",
+            "a 24-hour clock"
+        );
+        assert_eq!(de[3], "07:30:15");
+        rt.locale("ja-JP-u-hc-h12");
+        let ja = rt.labels();
+        assert_eq!(ja[2], "2027/01/05, 2027年1月5日", "{ja:?}");
+        assert_eq!(ja[3], "午前7:30:15", "the tag's hour cycle wins");
+    }
+}
+
+#[test]
+fn a_date_argument_takes_a_date_and_a_time_one_a_time() {
+    let codes = |view: &str| view_codes(view);
+    let wrong = codes("Text { text: tr(\"when.due\", day: Time { hour: 1 }); }");
+    assert!(
+        wrong
+            .iter()
+            .any(|(c, m)| c == "E3706" && m.contains("a `Date` or a `DateTime`")),
+        "{wrong:?}"
+    );
+    let wrong = codes("Text { text: tr(\"when.full\", at: Date { year: 1, month: 1, day: 1 }); }");
+    assert!(
+        wrong
+            .iter()
+            .any(|(c, m)| c == "E3706" && m.contains("a `DateTime`")),
+        "a date and a time both take a `DateTime`: {wrong:?}"
+    );
+    assert_eq!(
+        codes(
+            "Text { text: tr(\"when.due\", day: DateTime { date: Date { year: 1, month: 1, day: 1 }, time: Time {} }); }"
+        ),
+        [],
+        "a `DateTime` serves a date"
+    );
+    let issues: Vec<String> = Messages::compile("en", &[file("en", "a = \"{d, date} {d}\"")])
+        .issues()
+        .iter()
+        .map(|i| i.message.clone())
+        .collect();
+    assert!(
+        issues[0].contains("both as a date and as text"),
+        "{issues:?}"
+    );
 }
 
 #[test]

@@ -23,6 +23,8 @@ icu_decimal = { workspace = true }
 icu_locale_core = { workspace = true }
 icu_locale_fallback = { workspace = true }
 fixed_decimal = { workspace = true }
+icu_datetime = { workspace = true, optional = true }
+icu_calendar = { workspace = true, optional = true }
 libm = { workspace = true }
 
 [features]
@@ -38,3 +40,6 @@ std = ["viso-math/std"]
 # installed as compiled code (`aot::lower_module`, ADR 0041): the release
 # and embedded builds of an app whose behavior is all compiled.
 interpreter = []
+# Dates and times in the reader's locale for messages' `date` and `time`
+# arguments. Without it they show as ISO 8601 (`2026-10-26`, `16:05`).
+dates = ["dep:icu_datetime", "dep:icu_calendar"]

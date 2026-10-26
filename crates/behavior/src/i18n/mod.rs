@@ -92,6 +92,15 @@ pub enum PatternOp {
     Arg(u16),
     /// Argument `arg`, a number, in the reader's locale.
     Number(u16),
+    /// Argument `arg`, a number, rounded to a whole one in the reader's
+    /// locale.
+    Integer(u16),
+    /// Argument `arg`, a `Date` or a `DateTime`'s date, as the reader's
+    /// locale writes a date at `length`.
+    Date { arg: u16, length: DateLength },
+    /// Argument `arg`, a `Time` or a `DateTime`'s time, as the reader's
+    /// locale writes a time of day: to the minute, or to the second.
+    Time { arg: u16, seconds: bool },
     /// The number the enclosing `plural` chose by, less its offset.
     Pound,
     /// A choice by the plural category of argument `arg` less `offset`:
@@ -119,6 +128,41 @@ pub enum CaseKey {
     Text { start: u32, len: u32 },
     /// `other`, which every choice has.
     Other,
+}
+
+/// How much of a date a `date` argument writes, as ICU's styles: `short`
+/// (`10/26/26`), `medium` (`Oct 26, 2026`), `long` (`October 26, 2026`) and
+/// `full`, with the weekday (`Monday, October 26, 2026`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DateLength {
+    Short,
+    Medium,
+    Long,
+    Full,
+}
+
+impl DateLength {
+    /// The length spelled `name` in a message.
+    pub fn named(name: &str) -> Option<DateLength> {
+        Some(match name {
+            "short" => DateLength::Short,
+            "medium" => DateLength::Medium,
+            "long" => DateLength::Long,
+            "full" => DateLength::Full,
+            _ => return None,
+        })
+    }
+
+    fn from_tag(tag: u8) -> Option<DateLength> {
+        [
+            DateLength::Short,
+            DateLength::Medium,
+            DateLength::Long,
+            DateLength::Full,
+        ]
+        .get(usize::from(tag))
+        .copied()
+    }
 }
 
 /// A CLDR plural category.
@@ -376,10 +420,20 @@ fn check_pattern(
                 return Err("text outside its text");
             }
             PatternOp::Text { .. } | PatternOp::Pound => {}
-            PatternOp::Arg(a) | PatternOp::Number(a) if a >= args => {
+            PatternOp::Arg(a)
+            | PatternOp::Number(a)
+            | PatternOp::Integer(a)
+            | PatternOp::Date { arg: a, .. }
+            | PatternOp::Time { arg: a, .. }
+                if a >= args =>
+            {
                 return Err("an argument the message does not take");
             }
-            PatternOp::Arg(_) | PatternOp::Number(_) => {}
+            PatternOp::Arg(_)
+            | PatternOp::Number(_)
+            | PatternOp::Integer(_)
+            | PatternOp::Date { .. }
+            | PatternOp::Time { .. } => {}
             PatternOp::Plural { arg, cases, .. } | PatternOp::Select { arg, cases } => {
                 if arg >= args {
                     return Err("a choice of an argument the message does not take");
@@ -469,6 +523,20 @@ fn write_table(enc: &mut Encoder, table: &Table) {
             }
             enc.write_varint(u64::from(len));
         }
+        PatternOp::Integer(a) => {
+            enc.write_u8(7);
+            enc.write_u16(a);
+        }
+        PatternOp::Date { arg, length } => {
+            enc.write_u8(8);
+            enc.write_u16(arg);
+            enc.write_u8(length as u8);
+        }
+        PatternOp::Time { arg, seconds } => {
+            enc.write_u8(9);
+            enc.write_u16(arg);
+            enc.write_bool(seconds);
+        }
     });
     write_list(enc, &table.entries, |enc, e| {
         enc.write_u16(e.origin);
@@ -521,6 +589,15 @@ fn read_table(dec: &mut Decoder<'_>) -> Result<Table, DecodeError> {
                     len: read_u32(dec)?,
                 }
             }
+            7 => PatternOp::Integer(dec.read_u16()?),
+            8 => PatternOp::Date {
+                arg: dec.read_u16()?,
+                length: DateLength::from_tag(dec.read_u8()?).ok_or_else(|| malformed(dec))?,
+            },
+            9 => PatternOp::Time {
+                arg: dec.read_u16()?,
+                seconds: dec.read_bool()?,
+            },
             _ => return Err(malformed(dec)),
         })
     })?;
@@ -692,6 +769,83 @@ mod tests {
             t.translate(&catalog, &Value::Int(7), &locale("en"), &[])
                 .is_err()
         );
+    }
+
+    #[test]
+    fn dates_times_and_whole_numbers_format_for_their_reader() {
+        let table = Table {
+            text: " · ".into(),
+            ops: vec![
+                PatternOp::Date {
+                    arg: 0,
+                    length: DateLength::Full,
+                },
+                PatternOp::Text { start: 0, len: 4 },
+                PatternOp::Time {
+                    arg: 0,
+                    seconds: false,
+                },
+                PatternOp::Text { start: 0, len: 4 },
+                PatternOp::Integer(1),
+            ],
+            entries: vec![Entry {
+                origin: 0,
+                start: 0,
+                len: 5,
+            }],
+        };
+        let mut enc = Encoder::new();
+        write_table(&mut enc, &table);
+        let bytes = enc.into_bytes();
+        assert_eq!(
+            read_table(&mut Decoder::new(&bytes)).expect("decodes"),
+            table
+        );
+        let catalog =
+            Catalog::new(vec![info("c", 2)], vec![("en".into(), table)]).expect("well formed");
+        let agg = |fields: Vec<Value>| {
+            Value::Agg(Rc::new(crate::Aggregate {
+                tag: 0,
+                fields: fields.into_boxed_slice(),
+            }))
+        };
+        let at = agg(vec![
+            agg(vec![Value::Int(2026), Value::Int(10), Value::Int(26)]),
+            agg(vec![Value::Int(16), Value::Int(5), Value::Int(0)]),
+        ]);
+        let mut t = Translator::default();
+        let show = |t: &mut Translator, tag: &str, args: &[Value]| {
+            t.translate(&catalog, &Value::Int(0), &locale(tag), args)
+                .map(|v| match v {
+                    Value::Str(text) => text.to_string(),
+                    other => panic!("{other:?}"),
+                })
+        };
+        let en = show(&mut t, "en-US", &[at.clone(), Value::Float(2.5)]).expect("formats");
+        let de = show(&mut t, "de-DE", &[at.clone(), Value::Float(3.5)]).expect("formats");
+        if cfg!(feature = "dates") {
+            assert_eq!(
+                en, "Monday, October 26, 2026 · 4:05\u{202f}PM · 2",
+                "half to even"
+            );
+            assert_eq!(de, "Montag, 26. Oktober 2026 · 16:05 · 4");
+        } else {
+            assert_eq!(en, "2026-10-26 · 16:05 · 2");
+            assert_eq!(de, "2026-10-26 · 16:05 · 4");
+        }
+        let feb30 = agg(vec![
+            agg(vec![Value::Int(2026), Value::Int(2), Value::Int(30)]),
+            agg(vec![Value::Int(1), Value::Int(0), Value::Int(0)]),
+        ]);
+        let bad_time = agg(vec![
+            agg(vec![Value::Int(2026), Value::Int(2), Value::Int(3)]),
+            agg(vec![Value::Int(24), Value::Int(0), Value::Int(0)]),
+        ]);
+        if cfg!(feature = "dates") {
+            assert!(show(&mut t, "en", &[feb30, Value::Int(1)]).is_err());
+        }
+        assert!(show(&mut t, "en", &[bad_time, Value::Int(1)]).is_err());
+        assert!(show(&mut t, "en", &[Value::Int(3), Value::Int(1)]).is_err());
     }
 
     #[test]

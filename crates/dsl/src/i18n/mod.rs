@@ -6,7 +6,8 @@
 //! The source locale (`Viso.toml [i18n] source`) declares every message and
 //! its arguments: `{name}` takes text or a number, `{name, number}`,
 //! `plural` and `selectordinal` a number, `select` a `String` or a unit-only
-//! enum. A translation may leave a message out (it falls back along the
+//! enum, `date` a `Date` and `time` a `Time` (one used as both a
+//! `DateTime`). A translation may leave a message out (it falls back along the
 //! CLDR chain to the source) and uses only the arguments the source
 //! declares, in kinds the source's satisfy (`E3706`).
 //!
@@ -50,12 +51,38 @@ pub enum ArgKind {
     Number,
     /// `select`: a `String` or a unit-only enum, by variant name.
     Select,
+    /// `date`: a `Date`, or a `DateTime`.
+    Date,
+    /// `time`: a `Time`, or a `DateTime`.
+    Time,
+    /// Both `date` and `time`: a `DateTime`.
+    DateTime,
 }
 
 impl ArgKind {
-    /// Whether a value passed for `self` serves a use as `other`.
+    /// Whether a value passed for `self` serves a use as `other`: a number
+    /// or a `select` value as text, a `DateTime` as a date or a time.
     fn serves(self, other: ArgKind) -> bool {
-        self == other || other == ArgKind::Text
+        self == other
+            || (other == ArgKind::Text && matches!(self, ArgKind::Number | ArgKind::Select))
+            || (self == ArgKind::DateTime && matches!(other, ArgKind::Date | ArgKind::Time))
+    }
+
+    /// The kind an argument used as `self` and as `other` takes, `None`
+    /// where no value serves both.
+    fn join(self, other: ArgKind) -> Option<ArgKind> {
+        if self.serves(other) {
+            Some(self)
+        } else if other.serves(self) {
+            Some(other)
+        } else if matches!(
+            (self, other),
+            (ArgKind::Date, ArgKind::Time) | (ArgKind::Time, ArgKind::Date)
+        ) {
+            Some(ArgKind::DateTime)
+        } else {
+            None
+        }
     }
 
     fn name(self) -> &'static str {
@@ -63,6 +90,9 @@ impl ArgKind {
             ArgKind::Text => "text",
             ArgKind::Number => "a number",
             ArgKind::Select => "a `select` value",
+            ArgKind::Date => "a date",
+            ArgKind::Time => "a time",
+            ArgKind::DateTime => "a date and time",
         }
     }
 }
@@ -549,13 +579,15 @@ fn read_table(
         };
         let mut args = BTreeMap::new();
         let mut fits = fits;
-        if let Err(name) = collect_args(&parts, &mut args) {
+        if let Err((name, a, b)) = collect_args(&parts, &mut args) {
             issues.push(CatalogIssue {
                 file,
                 range: range.clone(),
                 error: true,
                 message: format!(
-                    "the message `{key}` uses `{name}` both as a number and as a `select` value"
+                    "the message `{key}` uses `{name}` both as {} and as {}",
+                    a.name(),
+                    b.name()
                 ),
             });
             fits = false;
@@ -573,26 +605,29 @@ fn read_table(
 }
 
 /// Gathers the arguments `parts` use and as what; a number serves text, and
-/// a `select` value text. Fails with an argument used both as a number and
-/// as a `select` value.
-fn collect_args(parts: &[Part], args: &mut BTreeMap<String, ArgKind>) -> Result<(), String> {
+/// a `select` value text, and an argument both a date and a time is a
+/// `DateTime`. Fails with an argument used in two ways no value serves.
+fn collect_args(
+    parts: &[Part],
+    args: &mut BTreeMap<String, ArgKind>,
+) -> Result<(), (String, ArgKind, ArgKind)> {
     let put = |name: &String, kind: ArgKind, args: &mut BTreeMap<String, ArgKind>| {
         let now = args.entry(name.clone()).or_insert(kind);
-        match (*now, kind) {
-            (a, b) if a == b => Ok(()),
-            (ArgKind::Text, k) => {
+        match now.join(kind) {
+            Some(k) => {
                 *now = k;
                 Ok(())
             }
-            (_, ArgKind::Text) => Ok(()),
-            _ => Err(name.clone()),
+            None => Err((name.clone(), *now, kind)),
         }
     };
     for part in parts {
         match part {
             Part::Text(_) | Part::Pound => {}
             Part::Arg(name) => put(name, ArgKind::Text, args)?,
-            Part::Number(name) => put(name, ArgKind::Number, args)?,
+            Part::Number(name) | Part::Integer(name) => put(name, ArgKind::Number, args)?,
+            Part::Date(name, _) => put(name, ArgKind::Date, args)?,
+            Part::Time { name, .. } => put(name, ArgKind::Time, args)?,
             Part::Plural { name, cases, .. } => {
                 put(name, ArgKind::Number, args)?;
                 for (_, body) in cases {
@@ -630,6 +665,15 @@ fn lower(parts: &[Part], order: &[(String, ArgKind)], table: &mut Table) {
             }
             Part::Arg(name) => table.ops.push(PatternOp::Arg(arg(name))),
             Part::Number(name) => table.ops.push(PatternOp::Number(arg(name))),
+            Part::Integer(name) => table.ops.push(PatternOp::Integer(arg(name))),
+            Part::Date(name, length) => table.ops.push(PatternOp::Date {
+                arg: arg(name),
+                length: *length,
+            }),
+            Part::Time { name, seconds } => table.ops.push(PatternOp::Time {
+                arg: arg(name),
+                seconds: *seconds,
+            }),
             Part::Pound => table.ops.push(PatternOp::Pound),
             Part::Plural {
                 name,

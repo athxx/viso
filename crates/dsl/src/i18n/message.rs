@@ -1,10 +1,12 @@
 //! ICU MessageFormat, the syntax of a catalog's messages: literal text,
-//! `{name}`, `{name, number}`, `{name, plural, ..}`, `{name, selectordinal,
-//! ..}` and `{name, select, ..}`, with `#` inside a plural case and
+//! `{name}`, `{name, number}` (and `integer`), `{name, date}` (`short`,
+//! `medium`, `long` or `full`), `{name, time}` (`short` or `medium`),
+//! `{name, plural, ..}`, `{name, selectordinal, ..}` and `{name, select,
+//! ..}`, with `#` inside a plural case and
 //! apostrophe quoting (`''` is an apostrophe; `'` before `{`, `}`, `#` or `|`
 //! starts quoted text up to the next lone apostrophe).
 
-use viso_behavior::i18n::Category;
+use viso_behavior::i18n::{Category, DateLength};
 
 /// One piece of a message.
 #[derive(Debug, Clone, PartialEq)]
@@ -14,6 +16,12 @@ pub(crate) enum Part {
     Arg(String),
     /// `{name, number}`.
     Number(String),
+    /// `{name, number, integer}`.
+    Integer(String),
+    /// `{name, date}`, `medium` unless it says.
+    Date(String, DateLength),
+    /// `{name, time}`: `medium`, to the second, unless it says `short`.
+    Time { name: String, seconds: bool },
     /// `#`: the number of the plural case it is in.
     Pound,
     Plural {
@@ -188,20 +196,48 @@ impl Parser<'_> {
         let kind = self.word();
         match kind.as_str() {
             "number" => {
-                if self.peek() == Some(',') {
-                    self.bump();
-                    let style = self.word();
-                    if style != "integer" {
-                        return Err((
-                            at,
-                            format!(
-                                "the number style `{style}` is not supported; use `{{{name}, number}}`"
-                            ),
-                        ));
-                    }
-                }
+                let style = self.style();
                 self.expect('}')?;
-                Ok(Part::Number(name))
+                match style.as_deref() {
+                    None => Ok(Part::Number(name)),
+                    Some("integer") => Ok(Part::Integer(name)),
+                    Some(style) => Err((
+                        at,
+                        format!(
+                            "the number style `{style}` is not supported: use `{{{name}, number}}` \
+                             or `{{{name}, number, integer}}`"
+                        ),
+                    )),
+                }
+            }
+            "date" => {
+                let style = self.style();
+                self.expect('}')?;
+                match style.as_deref().map_or(Some(DateLength::Medium), DateLength::named) {
+                    Some(length) => Ok(Part::Date(name, length)),
+                    None => Err((
+                        at,
+                        "a date is `short`, `medium`, `long` or `full`".into(),
+                    )),
+                }
+            }
+            "time" => {
+                let style = self.style();
+                self.expect('}')?;
+                match style.as_deref() {
+                    None | Some("medium") => Ok(Part::Time { name, seconds: true }),
+                    Some("short") => Ok(Part::Time {
+                        name,
+                        seconds: false,
+                    }),
+                    Some("long" | "full") => Err((
+                        at,
+                        "a `long` or `full` time names a time zone, which a `Time` has none of: \
+                         use `short` or `medium`"
+                            .into(),
+                    )),
+                    Some(_) => Err((at, "a time is `short` or `medium`".into())),
+                }
             }
             "plural" | "selectordinal" => {
                 self.expect(',')?;
@@ -215,11 +251,21 @@ impl Parser<'_> {
             other => Err((
                 at,
                 format!(
-                    "the argument type `{other}` is not supported: use `number`, `plural`, \
-                     `selectordinal` or `select`"
+                    "the argument type `{other}` is not supported: use `number`, `date`, \
+                     `time`, `plural`, `selectordinal` or `select`"
                 ),
             )),
         }
+    }
+
+    /// The style after an argument's type, `None` where it gives none.
+    fn style(&mut self) -> Option<String> {
+        self.skip_space();
+        if self.peek() != Some(',') {
+            return None;
+        }
+        self.bump();
+        Some(self.word())
     }
 
     fn case_body(&mut self, in_plural: bool, depth: u32) -> Result<Vec<Part>, (usize, String)> {
@@ -338,6 +384,21 @@ mod tests {
             ]
         );
         assert_eq!(parse("{n, number}").unwrap(), [Part::Number("n".into())]);
+        assert_eq!(
+            parse("{n, number, integer} {d, date} {d, date, full} {t, time, short}").unwrap(),
+            [
+                Part::Integer("n".into()),
+                Part::Text(" ".into()),
+                Part::Date("d".into(), DateLength::Medium),
+                Part::Text(" ".into()),
+                Part::Date("d".into(), DateLength::Full),
+                Part::Text(" ".into()),
+                Part::Time {
+                    name: "t".into(),
+                    seconds: false
+                },
+            ]
+        );
     }
 
     #[test]
@@ -363,7 +424,15 @@ mod tests {
                 .contains("other")
         );
         assert!(
-            parse("{count, date}")
+            parse("{count, duration}")
+                .unwrap_err()
+                .1
+                .contains("not supported")
+        );
+        assert!(parse("{d, date, tiny}").unwrap_err().1.contains("`full`"));
+        assert!(parse("{t, time, full}").unwrap_err().1.contains("time zone"));
+        assert!(
+            parse("{n, number, percent}")
                 .unwrap_err()
                 .1
                 .contains("not supported")
