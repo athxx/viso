@@ -293,6 +293,20 @@ pub trait Application: Sized + 'static {
         let _ = command;
     }
 
+    /// Open `url`, a link the app was opened with: a URL of a scheme
+    /// `[package.links]` declares in `Viso.toml`, or an `https` link to one
+    /// of its hosts (an iOS universal link, an Android app link). Called for
+    /// the link that started the app and for each one that arrives while it
+    /// runs, in order, once the app has built its window: a link that comes
+    /// earlier waits for it. On Windows and Linux a second start of the app
+    /// hands its link to the one running and ends; on the web, a page URL
+    /// with a fragment is such a link. `cx` is the launch window's, as a
+    /// handler at its root gets: write state, spawn a task, open a window.
+    /// The default ignores every link.
+    fn on_open_url(&mut self, cx: &mut viso_ui::EventCx<'_>, url: &str) {
+        let _ = (cx, url);
+    }
+
     /// The memory budget the app's caches share, read once before the first
     /// window opens. The default is the build's: its footprint profile's
     /// figures with the target's `budget` overrides
@@ -771,6 +785,8 @@ struct AppDriver<A: Application> {
     app_menu: Option<viso_platform::Menu>,
     /// The picks of the windows' drawn menu bars, until a frame takes them.
     menu_picks: app_menu::Picks,
+    /// The links the app was asked to open that it has no window for yet.
+    pending_urls: Vec<String>,
     /// The development session: the mounted views, their watched files and
     /// the reloads staged for the next frame.
     #[cfg(feature = "hot-reload")]
@@ -1108,6 +1124,35 @@ impl<A: Application> Drop for AppDriver<A> {
 }
 
 impl<A: Application> AppDriver<A> {
+    /// Hand the app each link it was asked to open, in order, once it has a
+    /// window: with the launch window's context placed at its root, applying
+    /// what the app asked of the tree as a handler's requests are, and
+    /// framing the window.
+    fn open_pending_urls(&mut self, cx: &mut RuntimeCx<'_>) {
+        let (Some(app), Some(ws)) = (self.app.as_mut(), self.windows.first_mut()) else {
+            return;
+        };
+        for url in std::mem::take(&mut self.pending_urls) {
+            let mut open = |ev: &mut viso_ui::EventCx<'_>| app.on_open_url(ev, &url);
+            match ws.root {
+                Some(root) => {
+                    KeyRouter::run_at(
+                        &mut ws.store,
+                        &mut ws.states,
+                        &ws.bindings,
+                        &mut ws.text_edits,
+                        root,
+                        open,
+                    );
+                }
+                // A window that builds nothing has no tree to ask anything
+                // of: only its state is there.
+                None => open(&mut viso_ui::EventCx::__new(&mut ws.states, &ws.bindings)),
+            }
+        }
+        cx.request_redraw(ws.window);
+    }
+
     /// Do what the drawn menu bars' picks ask: a command reaches the app,
     /// a standard action is done as the system's menu would.
     fn take_menu_picks(&mut self, cx: &mut RuntimeCx<'_>) {
@@ -1157,6 +1202,7 @@ impl<A: Application> AppDriver<A> {
             accessibility: true,
             app_menu: None,
             menu_picks: Default::default(),
+            pending_urls: Vec::new(),
             #[cfg(feature = "hot-reload")]
             hot_reload: hot_reload::HotReloadSession::default(),
             #[cfg(feature = "headless")]
@@ -2922,6 +2968,8 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         self.harness.adopt(&mut ws);
         self.adopt_tape(&ws);
         self.windows.push(ws);
+        // A link that came before the window opens now.
+        self.open_pending_urls(cx);
     }
 
     fn on_geometry(&mut self, window: WindowId, scale: f64, width: u32, height: u32) {
@@ -3621,6 +3669,11 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         if let Some(app) = self.app.as_mut() {
             app.on_menu_command(command);
         }
+    }
+
+    fn on_open_url(&mut self, cx: &mut RuntimeCx<'_>, url: &str) {
+        self.pending_urls.push(url.to_owned());
+        self.open_pending_urls(cx);
     }
 
     fn on_window_focus(&mut self, window: WindowId, focused: bool) {

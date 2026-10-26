@@ -75,20 +75,27 @@ pub(crate) fn serve(open: impl Fn(String) + Send + 'static) -> (Vec<String>, Opt
     let spawned = std::thread::Builder::new()
         .name("viso-links".into())
         .spawn(move || {
-            for stream in listener.incoming() {
-                let Ok(mut stream) = stream else {
-                    continue;
-                };
-                let reader = BufReader::new(std::io::Read::take(&stream, MAX_HANDED));
-                for line in reader.lines().map_while(Result::ok) {
-                    if is_link(&line, declared_schemes()) {
-                        open(line);
-                    }
-                }
-                let _ = stream.write_all(b"1");
+            for mut stream in listener.incoming().flatten() {
+                take_handed(&mut stream, declared_schemes(), &open);
             }
         });
     (urls, spawned.ok().map(|_| Unlink(path)))
+}
+
+/// Reads the URLs a start hands over on `stream`, passes each of `schemes`
+/// to `open`, and tells the start they were taken.
+fn take_handed<'a>(
+    stream: &mut UnixStream,
+    schemes: impl Iterator<Item = &'a str> + Clone,
+    open: &impl Fn(String),
+) {
+    let reader = BufReader::new(std::io::Read::take(&*stream, MAX_HANDED));
+    for line in reader.lines().map_while(Result::ok) {
+        if is_link(&line, schemes.clone()) {
+            open(line);
+        }
+    }
+    let _ = stream.write_all(b"1");
 }
 
 /// Removes the instance's socket when the app ends.
@@ -106,4 +113,38 @@ impl Drop for Unlink {
 fn socket_path() -> Option<PathBuf> {
     let dir = std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty())?;
     Some(PathBuf::from(dir).join(format!("{}.sock", instance_name())))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+
+    use super::*;
+
+    #[test]
+    fn a_second_start_hands_its_urls_to_the_running_one() {
+        let path =
+            std::env::temp_dir().join(format!("viso-links-test-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).unwrap();
+        let _unlink = Unlink(path.clone());
+        let (sent, received) = mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            take_handed(&mut stream, ["notes"].into_iter(), &|url| {
+                sent.send(url).unwrap();
+            });
+        });
+        let mut stream = UnixStream::connect(&path).unwrap();
+        let urls = [
+            "notes://a".to_owned(),
+            "https://b".to_owned(),
+            "notes:c".to_owned(),
+        ];
+        assert!(hand_over(&mut stream, &urls));
+        assert_eq!(
+            received.iter().collect::<Vec<_>>(),
+            ["notes://a", "notes:c"]
+        );
+    }
 }

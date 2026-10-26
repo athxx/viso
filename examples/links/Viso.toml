@@ -1,0 +1,8 @@
+[package]
+name = "links"
+display_name = "Links"
+bundle_id = "dev.viso.links"
+version = "1.0.0"
+
+[package.links]
+schemes = ["visolinks"]

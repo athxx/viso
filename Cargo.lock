@@ -3050,6 +3050,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "viso-example-links"
+version = "0.0.0"
+dependencies = [
+ "viso",
+]
+
+[[package]]
 name = "viso-example-persist"
 version = "0.0.0"
 dependencies = [

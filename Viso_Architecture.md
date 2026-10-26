@@ -5277,10 +5277,11 @@ pub trait Application: Sized + 'static {
     fn build(&mut self, cx: &mut BuildCx<'_>) {}
     fn menu(&self) -> Option<viso_platform::Menu> { None }
     fn on_menu_command(&mut self, command: viso_platform::MenuCommandId) {}
+    fn on_open_url(&mut self, cx: &mut viso_ui::EventCx<'_>, url: &str) {}
 }
 ```
 
-`run` 拥有 platform event pump 与 frame scheduler，无原生 backend 时回退 headless，直到最后一个窗口关闭才返回（ADR 0006/0020）。`resumed`/`suspended`/`low_memory` 等 lifecycle hook 为目标（§50）。事件不由 `Application` 手工接收；UI runtime 自己 route。
+`run` 拥有 platform event pump 与 frame scheduler，无原生 backend 时回退 headless，直到最后一个窗口关闭才返回（ADR 0006/0020）。`resumed`/`suspended`/`low_memory` 等 lifecycle hook 为目标（§50）。事件不由 `Application` 手工接收；UI runtime 自己 route。例外是打开应用的链接（`[package.links]`）：platform 以 `RawEvent::OpenUrl { url }` 交出（在 `AppLaunched` 之后，冷启动与运行中一致；macOS `application:openURLs:`，iOS scene `URLContexts`/`userActivities` 与 `openURLContexts`/`continueUserActivity`，Android 启动 intent 与 `onNewIntent`，Windows/Linux 参数加单实例转交，web 的 fragment 与 `hashchange`），runtime 经 `FrameDriver::on_open_url` 交给门面，门面排队到启动窗口建好，再以该窗口根上的 `EventCx`（`KeyRouter::run_at`，请求按处理器的方式生效）调用 `Application::on_open_url`。
 
 ---
 

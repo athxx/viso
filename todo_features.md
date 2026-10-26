@@ -500,7 +500,7 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
   game input.
 - [ ] Rich clipboard: images and HTML.
 - [ ] Tray / status-bar icon with menu.
-- [ ] Deep links / URL schemes.
+- [x] Deep links / URL schemes.
   - `[package.links]` schemes and hosts → Info.plist `CFBundleURLTypes`, iOS associated
     domains, Android intent filters (`autoVerify` for hosts), MSIX `windows.protocol`,
     `.desktop` `x-scheme-handler`; dev builds too; generated output unit-tested.
@@ -508,6 +508,12 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
     scene URL contexts and universal-link activities, Android VIEW intent + `onNewIntent`,
     Windows argv + `WM_COPYDATA` hand-over to the running instance (HKCU registration when
     unpackaged), Linux argv + runtime-dir socket hand-over, web fragment + `hashchange`.
+  - `Application::on_open_url(cx: &mut EventCx, url)` with the launch window's root context;
+    links arriving before the window is built wait for it; `examples/links`. The DSL has
+    no app lifecycle, so it takes no part.
+  - Ran: macOS packaged app cold and warm through LaunchServices; Android emulator cold,
+    warm and from the background; Linux X11 (Xvfb) cold plus two hand-overs. Not run:
+    iOS, Windows, web, Wayland, universal/app links.
 - [ ] Custom cursors and pointer lock.
 - [x] Fullscreen change events on every OS (Android hides the system bars, iOS the status
   bar and home indicator).

@@ -1,0 +1,11 @@
+[package]
+name = "viso-example-links"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# An app the links of `[package.links]` in `Viso.toml` open: `viso run`, or
+# `viso package` and install, then open `visolinks://hello`.
+[dependencies]
+viso = { workspace = true }

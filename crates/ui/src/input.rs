@@ -2172,6 +2172,25 @@ impl KeyRouter {
         }
         ran
     }
+
+    /// Run `f` with an event context placed at `node`, as if it were the
+    /// node's handler, and apply what it asked of the tree: for what reaches
+    /// the app rather than a node, such as a URL it was asked to open. A
+    /// node gone runs nothing; returns whether `f` ran.
+    pub fn run_at(
+        store: &mut NodeStore,
+        states: &mut StateStore,
+        bindings: &BindingTable,
+        edits: &mut TextEdits,
+        node: NodeId,
+        f: impl FnOnce(&mut EventCx<'_>),
+    ) -> bool {
+        if !store.arena().is_live(node) {
+            return false;
+        }
+        let asked = call_at(store, states, bindings, node, None, f);
+        apply_asked(store, edits, node, asked).ran
+    }
 }
 
 /// Call one node's *key* handler with the key event, moving it out of the store/// Call one node's *key* handler with the key event, moving it out of the store
@@ -2305,89 +2324,116 @@ fn key_handler_dispatch(
     let Some(mut handler) = store.take_key_handler(node) else {
         return Dispatched::default();
     };
-    let (
-        request,
-        stop,
-        prevented,
-        recorded,
-        hidden,
-        scope,
-        anims,
-        timers,
-        opens,
-        closes,
-        tasks,
-        asks,
-    ) = {
-        let mut cx = match payload {
-            KeyPayload::Ime(ev) => EventCx::__new_ime(states, bindings, ev),
-            KeyPayload::TextChange(text) => EventCx::__new_text_change(states, bindings, text),
-            KeyPayload::Link(target) => EventCx::__new_link(states, bindings, target),
-            KeyPayload::Dismiss => EventCx::__new_dismiss(states, bindings),
-            KeyPayload::Wake(token) => EventCx::__new_wake(states, bindings, token),
-            KeyPayload::Focus(change) => EventCx::__new_focus(states, bindings, change),
-            KeyPayload::Access(access) => EventCx::__new_access(states, bindings, access),
-            KeyPayload::Refresh => EventCx::__new_refresh(states, bindings),
-            KeyPayload::Snap(index) => EventCx::__new_snap(states, bindings, index),
-            KeyPayload::Row(gesture) => EventCx::__new_row_gesture(states, bindings, gesture),
-            KeyPayload::Detent(detent) => EventCx::__new_sheet_detent(states, bindings, detent),
-            KeyPayload::Drop(event) => EventCx::__new_drop(states, bindings, event),
-            KeyPayload::DragEnd(end) => EventCx::__new_drag_end(states, bindings, end),
-        };
-        cx.__set_focused(store.focused());
-        cx.__set_services(store.__services());
-        cx.__set_place(store, node, DispatchPhase::Target, None);
-        handler(&mut cx);
-        (
-            cx.__take_focus_request(),
-            cx.__stop_requested(),
-            cx.__default_prevented(),
-            cx.__take_edits(),
-            cx.__take_hidden_requests(),
-            cx.__take_focus_scope_request(),
-            cx.__take_animation_requests(),
-            cx.__take_timer_requests(),
-            cx.__take_window_opens(),
-            cx.__take_window_closes(),
-            cx.__take_tasks(),
-            cx.__take_store_requests(),
-        )
-    };
+    let asked = call_at(store, states, bindings, node, Some(payload), |cx| {
+        handler(cx)
+    });
     store.restore_key_handler(node, handler);
-    store.apply_task_ops(node, tasks);
-    queue_edits(edits, node, recorded);
-    if let Some(target) = request {
+    apply_asked(store, edits, node, asked)
+}
+
+/// What a handler asked of the tree in one dispatch, taken off its context.
+struct Asked {
+    focus: Option<Option<NodeId>>,
+    stop: bool,
+    prevented: bool,
+    edits: Vec<crate::text_edit::EditIntent>,
+    hidden: Vec<(NodeId, bool)>,
+    scope: Option<Option<NodeId>>,
+    animations: Vec<crate::animation::TranslateAnim>,
+    timers: Vec<crate::timer::TimerRequest>,
+    opens: Vec<crate::window::WindowOpenRequest>,
+    closes: Vec<u32>,
+    tasks: crate::task::TaskOps,
+    store: Vec<crate::context::StoreRequest>,
+}
+
+/// Run `f` with an event context placed at `node` — carrying `payload`, or
+/// nothing — and take what it asked.
+fn call_at(
+    store: &mut NodeStore,
+    states: &mut StateStore,
+    bindings: &BindingTable,
+    node: NodeId,
+    payload: Option<KeyPayload<'_>>,
+    f: impl FnOnce(&mut EventCx<'_>),
+) -> Asked {
+    let mut cx = match payload {
+        None => EventCx::__new(states, bindings),
+        Some(KeyPayload::Ime(ev)) => EventCx::__new_ime(states, bindings, ev),
+        Some(KeyPayload::TextChange(text)) => EventCx::__new_text_change(states, bindings, text),
+        Some(KeyPayload::Link(target)) => EventCx::__new_link(states, bindings, target),
+        Some(KeyPayload::Dismiss) => EventCx::__new_dismiss(states, bindings),
+        Some(KeyPayload::Wake(token)) => EventCx::__new_wake(states, bindings, token),
+        Some(KeyPayload::Focus(change)) => EventCx::__new_focus(states, bindings, change),
+        Some(KeyPayload::Access(access)) => EventCx::__new_access(states, bindings, access),
+        Some(KeyPayload::Refresh) => EventCx::__new_refresh(states, bindings),
+        Some(KeyPayload::Snap(index)) => EventCx::__new_snap(states, bindings, index),
+        Some(KeyPayload::Row(gesture)) => EventCx::__new_row_gesture(states, bindings, gesture),
+        Some(KeyPayload::Detent(detent)) => EventCx::__new_sheet_detent(states, bindings, detent),
+        Some(KeyPayload::Drop(event)) => EventCx::__new_drop(states, bindings, event),
+        Some(KeyPayload::DragEnd(end)) => EventCx::__new_drag_end(states, bindings, end),
+    };
+    cx.__set_focused(store.focused());
+    cx.__set_services(store.__services());
+    cx.__set_place(store, node, DispatchPhase::Target, None);
+    f(&mut cx);
+    Asked {
+        focus: cx.__take_focus_request(),
+        stop: cx.__stop_requested(),
+        prevented: cx.__default_prevented(),
+        edits: cx.__take_edits(),
+        hidden: cx.__take_hidden_requests(),
+        scope: cx.__take_focus_scope_request(),
+        animations: cx.__take_animation_requests(),
+        timers: cx.__take_timer_requests(),
+        opens: cx.__take_window_opens(),
+        closes: cx.__take_window_closes(),
+        tasks: cx.__take_tasks(),
+        store: cx.__take_store_requests(),
+    }
+}
+
+/// Apply what a handler at `node` asked of the tree.
+fn apply_asked(
+    store: &mut NodeStore,
+    edits: &mut TextEdits,
+    node: NodeId,
+    asked: Asked,
+) -> Dispatched {
+    store.apply_task_ops(node, asked.tasks);
+    queue_edits(edits, node, asked.edits);
+    if let Some(target) = asked.focus {
         apply_focus(store, store.focused(), target, true);
     }
-    if let Some(scope_req) = scope {
+    if let Some(scope_req) = asked.scope {
         store.set_focus_scope(scope_req);
     }
-    for ask in asks {
+    for ask in asked.store {
         ask.apply(store);
     }
-    for (id, h) in hidden {
+    for (id, h) in asked.hidden {
         store.set_hidden(id, h);
     }
-    for anim in anims {
+    for anim in asked.animations {
         store.queue_animation(anim);
     }
     // One-shot timers a handler armed (a toast's auto-dismiss): queued the same
     // deferred way, drained by the driver into its timer registry next frame and
     // resolved against that frame's `now`. The router holds no registry and no
     // frame clock, so it only forwards the request.
-    for req in timers {
+    for req in asked.timers {
         store.queue_timer(req);
     }
-    for req in opens {
+    for req in asked.opens {
         store.queue_window_open(req);
     }
-    for id in closes {
+    for id in asked.closes {
         store.queue_window_close(id);
     }
     Dispatched {
         ran: true,
-        stop,
-        prevented,
+        stop: asked.stop,
+        prevented: asked.prevented,
     }
 }
 

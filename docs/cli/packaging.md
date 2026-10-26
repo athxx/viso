@@ -129,6 +129,26 @@ for iOS, `/.well-known/assetlinks.json` for Android. Development builds (`viso r
 every build names the schemes to the app (`VISO_URL_SCHEMES`), which takes a URL of
 one of them from its arguments on Windows and Linux.
 
+The app receives each link in `Application::on_open_url`, with the launch window's
+handler context:
+
+```rust
+fn on_open_url(&mut self, cx: &mut viso::ui::EventCx<'_>, url: &str) {
+    if let Some(id) = url.strip_prefix("notes://open/") {
+        // write state, spawn a task, open a window
+    }
+}
+```
+
+It is called for the link that started the app and for every one that arrives while
+it runs, in order; one that arrives before the window is built waits for it. On
+Windows and Linux the OS starts the program again for each link, so a start with a
+link first hands it to the instance already running (a message-only window on
+Windows, a socket in `$XDG_RUNTIME_DIR` on Linux) and ends. A Windows build not
+installed from an MSIX registers itself under `HKCU\Software\Classes\<scheme>` when
+it starts, so it opens its links too. On the web the page URL is the link when it
+has a fragment, at start and on each `hashchange`.
+
 Every icon size is rendered from the one source, scaled in linear light. It is all
 checked before anything is built, each problem at its line in `Viso.toml`:
 
