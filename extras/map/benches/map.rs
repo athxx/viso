@@ -101,6 +101,8 @@ fn tile_raise(c: &mut Criterion) {
             tile,
             band: 16,
             meshes: &meshes,
+            over: &[],
+            images: 0,
             layers: &layers,
             style: &style,
             background: [1.0; 4],

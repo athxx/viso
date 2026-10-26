@@ -38,7 +38,17 @@ pub(crate) struct Image {
     pixels: Arc<RasterImage>,
 }
 
-type Ready = Rc<Image>;
+pub(crate) type Ready = Rc<Image>;
+
+impl Image {
+    /// Its pixels.
+    pub fn pixels(&self) -> &Arc<RasterImage> {
+        &self.pixels
+    }
+}
+
+/// An image layer's tiles drawn, in paint order: slot, image and node.
+pub(crate) type Drawn = [(Slot, Ready, NodeId)];
 
 fn next_id() -> ResourceId {
     use std::sync::atomic::AtomicU64;
@@ -129,6 +139,12 @@ impl Rasters {
     /// The image tiles asked for and not yet arrived.
     pub fn loading(&self) -> usize {
         self.sets.iter().map(|s| s.requests.len()).sum()
+    }
+
+    /// Each image layer's tiles drawn, in paint order, and the opacity it
+    /// draws them at.
+    pub fn layers(&self) -> impl Iterator<Item = (f32, &Drawn)> + '_ {
+        self.sets.iter().map(|s| (s.tint, &*s.tiles))
     }
 
     /// The image tiles drawn.

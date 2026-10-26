@@ -777,6 +777,7 @@ impl Core {
                 anchor: self.anchor,
                 style: &self.style,
                 sources: self.rasters.sources(),
+                rasters: &self.rasters,
                 me: &self.me,
             };
             let revision = self.overlays.revision;

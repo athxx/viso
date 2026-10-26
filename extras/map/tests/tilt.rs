@@ -359,6 +359,123 @@ fn ridge_tile(tile: TileId, ridge: f64, top: f64, run: f64) -> Vec<u8> {
     support::png(n, n, &bgra)
 }
 
+/// A raster tile of solid color: blue on even tiles, green on odd ones.
+fn checker(tile: TileId) -> Vec<u8> {
+    let bgra = if (tile.x + tile.y).is_multiple_of(2) {
+        [255, 0, 0, 255]
+    } else {
+        [0, 255, 0, 255]
+    };
+    support::png(256, 256, &bgra.repeat(256 * 256))
+}
+
+#[test]
+fn image_layers_lie_on_the_tilted_ground_beneath_the_roads() {
+    use viso_map::style::Layer;
+    let start = Camera::new(LngLat::new(13.40, 52.52), 12.5)
+        .with_bearing(-30.0)
+        .with_pitch(55.0);
+    let ridge = start.center.to_world().x + 150.0 / (512.0 * 12.5f64.exp2());
+    // Half-opaque photos under the roads on flat ground; a ridge, then a
+    // hillshade over it.
+    let mut slopes = Vec::new();
+    for (relief, image) in [(false, true), (true, false), (true, true)] {
+        let (app, handle) = run(
+            move |slot| {
+                let mut style = builtin::openmaptiles_light();
+                let road = style
+                    .layers
+                    .iter()
+                    .position(|l| l.id.starts_with("road"))
+                    .unwrap_or(style.layers.len());
+                if image {
+                    let layer = if relief {
+                        Layer::hillshade("shade", "dem", DemEncoding::Terrarium)
+                    } else {
+                        Layer::raster("photo", "photo").opacity(0.5)
+                    };
+                    style.layers.insert(road, layer);
+                }
+                if relief {
+                    style = style.with_terrain(
+                        Terrain::new("dem", DemEncoding::Terrarium).exaggeration(2.0),
+                    );
+                }
+                map_view(|tile: TileId| viso_map::Reply::ready(Ok(Some(support::synthetic(tile)))))
+                    .camera(start)
+                    .style(style)
+                    .raster_source(
+                        "photo",
+                        RasterSource::new(
+                            |tile: TileId| viso_map::Reply::ready(Ok(Some(checker(tile)))),
+                            0,
+                            18,
+                        ),
+                    )
+                    .raster_source(
+                        "dem",
+                        RasterSource::new(
+                            move |tile: TileId| {
+                                viso_map::Reply::ready(Ok(Some(ridge_tile(
+                                    tile, ridge, 600.0, 6.0,
+                                ))))
+                            },
+                            0,
+                            12,
+                        ),
+                    )
+                    .handle(slot)
+            },
+            redraws(50),
+        );
+        let name = match (relief, image) {
+            (false, _) => "tilt-raster-photo",
+            (true, false) => "tilt-ridge-unshaded",
+            (true, true) => "tilt-hillshade-ridge",
+        };
+        let px = picture(&app, name);
+        let tiles = handle.tiles();
+        assert!(tiles.raised >= 4, "{name}: {tiles:?}");
+        assert!(!image || tiles.images >= 1, "{name}: {tiles:?}");
+        if relief {
+            // The slope beyond the ridge, turned from the light.
+            let mut sum = 0u32;
+            for y in (380..480).step_by(4) {
+                for x in (560..640).step_by(4) {
+                    sum += rgb_at(&px, [x as f64, y as f64])
+                        .iter()
+                        .map(|&c| u32::from(c))
+                        .sum::<u32>();
+                }
+            }
+            slopes.push(sum / (25 * 20));
+            continue;
+        }
+        // Tinted blue or green over the ground, half way...
+        let (mut tinted, mut all) = (0, 0);
+        for y in (H as usize / 2..H as usize).step_by(6) {
+            for x in (0..W as usize).step_by(6) {
+                let c = rgb_at(&px, [x as f64, y as f64]).map(i32::from);
+                all += 1;
+                if (c[2] > c[0] + 30 && c[2] > c[1] + 30) || (c[1] > c[0] + 30 && c[1] > c[2] + 30)
+                {
+                    assert!(c[0] > 40, "{name}: half of what is beneath shows: {c:?}");
+                    tinted += 1;
+                }
+            }
+        }
+        assert!(tinted * 2 > all, "{name}: {tinted} of {all}");
+        // ...and the roads over the photos keep their own colors.
+        let lines = (0..H as usize)
+            .flat_map(|y| (0..W as usize).map(move |x| [x as f64, y as f64]))
+            .filter(|&p| rgb_at(&px, p).iter().all(|&v| v > 225))
+            .count();
+        assert!(lines > 200, "{name}: {lines}");
+    }
+    // The hillshade darkens the slope turned from its light.
+    assert!(slopes[1] + 8 < slopes[0], "{slopes:?}");
+}
+
 #[test]
 fn the_ground_drapes_over_the_terrain_and_shades_its_slopes() {
     let start = Camera::new(LngLat::new(13.40, 52.52), 12.5)

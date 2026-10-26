@@ -943,7 +943,14 @@ viso-ext.
   with the focus pushed low by padding (`Lighting::fog_start` lets the scene's fog
   begin at a distance). At most 60° of pitch the horizon stays above the view, so the
   haze is the sky it shows.
-  Open: image layers (raster, hillshade) are not drawn while tilted; translucent shape fills are cut to
+  Image layers (raster, hillshade) lie on the tilted ground: each image tile over a
+  tile drawn is laid on the worker as a model in that tile's units (a quad, or the
+  lattice's own cells over relief, the image cut to the part over the tile, with mips),
+  drawn with the layer's opacity; a tile's drawing splits into the part beneath the
+  images and the part over them, and every flat part's box spans the tile's square,
+  risen a step per order, so the scene's back-to-front blending draws them in the
+  style's order, finer images over coarser.
+  Open: translucent shape fills are cut to
   their outline; markers and labels are placed on the plane at the focus's height,
   not on the relief under each.
 - [x] Performance: a pan or rotate frame uploads nothing and allocates nothing; tile

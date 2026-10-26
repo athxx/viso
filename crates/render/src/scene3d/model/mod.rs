@@ -246,6 +246,21 @@ pub struct ModelImage {
     pub mips: Vec<Vec<u8>>,
 }
 
+impl ModelImage {
+    /// A `width × height` image of `kind` with its mip chain built: what a
+    /// texture seen from afar or at a slant needs to sample smoothly.
+    pub fn mipped(width: u32, height: u32, rgba: Vec<u8>, kind: ImageKind) -> ModelImage {
+        let mips = mips::chain(&rgba, width, height, kind);
+        ModelImage {
+            width,
+            height,
+            rgba,
+            kind,
+            mips,
+        }
+    }
+}
+
 /// A node's transform: translation, then rotation, then scale.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Trs {

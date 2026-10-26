@@ -77,8 +77,12 @@ pub struct Raise<'a> {
     pub tile: TileId,
     /// The zoom level its drawing was built for.
     pub band: u8,
-    /// Its drawing's meshes, in paint order, in tile units of [`EXTENT`].
+    /// Its drawing's meshes, in paint order, in tile units of [`EXTENT`]:
+    /// those beneath the style's image layers, and those over them.
     pub meshes: &'a [Mesh],
+    pub over: &'a [Mesh],
+    /// How many image layers the style draws between the two.
+    pub images: usize,
     /// Its decoded layers, for the extrusion layers.
     pub layers: &'a [&'a mvt::Layer],
     pub style: &'a Style,
@@ -721,6 +725,43 @@ fn assemble(
     })
 }
 
+/// How far apart the boxes of a tile's flat parts rise, in model units.
+/// The scene blends its parts from the farthest box middle to the nearest;
+/// every flat part of a tile spans the tile's square, so the one whose box
+/// rises higher draws over the others.
+const ORDER: f32 = 0.25;
+
+/// The order among a tile's flat parts of image layer `layer`'s tiles of
+/// zoom `zoom`: over the drawing beneath the image layers, finer tiles over
+/// coarser ones, each layer over the one before.
+pub fn image_order(layer: usize, zoom: u8) -> u32 {
+    1 + layer as u32 * 32 + u32::from(zoom.min(31))
+}
+
+/// The order of a tile's drawing over its style's `images` image layers.
+fn over_order(images: usize) -> u32 {
+    1 + images as u32 * 32
+}
+
+/// The heights a tile's flat parts lie between, in model units: its ground
+/// and the lift over it.
+fn ground_span(lattice: Option<&Lattice>, lift: f32) -> (f32, f32) {
+    match lattice {
+        None => (0.0, lift),
+        Some(l) => l.heights.iter().fold((f32::MAX, f32::MIN), |(lo, hi), &h| {
+            (lo.min(h), hi.max(h + lift))
+        }),
+    }
+}
+
+/// The two corners of a flat part's box, the tile's square over `span`
+/// risen for `order`: vertices no triangle uses, so the part sorts by the
+/// tile's middle.
+fn box_corners(span: (f32, f32), order: u32) -> [[f32; 3]; 2] {
+    let rise = order as f32 * ORDER * 2.0;
+    [[0.0, span.0, 0.0], [SIDE, span.1 + rise, SIDE]]
+}
+
 /// A tile's model, `None` when it draws nothing.
 pub fn raise(r: &Raise<'_>) -> Option<ModelAsset> {
     let k = (f32::from(r.band) - f32::from(r.tile.z)).exp2();
@@ -728,26 +769,201 @@ pub fn raise(r: &Raise<'_>) -> Option<ModelAsset> {
     let mut palette = Palette::default();
     let background = palette.id(r.background);
     let (mut floor, mut ground, mut solids) = (Part::default(), Part::default(), Part::default());
+    let mut over = Part::default();
     base(lattice.as_ref(), background, &mut floor);
+    let units = SIDE / EXTENT;
+    let lift = LIFT / k;
     lay(
         r.meshes,
-        SIDE / EXTENT,
+        units,
         k,
-        LIFT / k,
+        lift,
         lattice.as_ref(),
         &mut palette,
         &mut ground,
     );
+    // Without image layers the whole drawing is one part; with them, the
+    // part over the images is a second, ordered over them.
+    let split = if r.images == 0 {
+        &mut ground
+    } else {
+        &mut over
+    };
+    lay(
+        r.over,
+        units,
+        k,
+        lift,
+        lattice.as_ref(),
+        &mut palette,
+        split,
+    );
+    if r.images > 0 {
+        let span = ground_span(lattice.as_ref(), lift);
+        for (part, order) in [(&mut ground, 0), (&mut over, over_order(r.images))] {
+            if !part.indices.is_empty() {
+                for p in box_corners(span, order) {
+                    part.push(p, UP, (background, 0.0, 1.0));
+                }
+            }
+        }
+    }
     extrude(r, lattice.as_ref(), &mut palette, &mut solids);
     assemble(
-        vec![floor, ground, solids],
+        vec![floor, ground, over, solids],
         vec![
             material(true, AlphaMode::Opaque),
+            material(true, AlphaMode::Blend),
             material(true, AlphaMode::Blend),
             material(false, AlphaMode::Opaque),
         ],
         &palette,
     )
+}
+
+/// An image layer's tile laid on a tile: what [`raise_image`] builds from.
+pub struct Imagery<'a> {
+    /// The tile it lies on, and the zoom level that tile's drawing was
+    /// built for.
+    pub tile: TileId,
+    pub band: u8,
+    /// The image's tile and its straight sRGB RGBA8 pixels.
+    pub image_tile: TileId,
+    pub width: u32,
+    pub height: u32,
+    pub rgba: &'a [u8],
+    /// Its order among the tile's flat parts: [`image_order`].
+    pub order: u32,
+    pub relief: Option<Relief<'a>>,
+}
+
+/// The part of an image tile over `tile`, as a model in `tile`'s units:
+/// laid over its ground as its drawing is, the image cut to the part it
+/// covers. `None` when the two do not meet.
+pub fn raise_image(r: &Imagery<'_>) -> Option<ModelAsset> {
+    let (w, h) = (r.width as usize, r.height as usize);
+    if w == 0 || h == 0 || r.rgba.len() < w * h * 4 {
+        return None;
+    }
+    let (t, it) = (r.tile, r.image_tile);
+    // Where it lies on the tile, in model units, and the part of the image
+    // that lies there, in its pixels.
+    let (rect, crop) = if it.z >= t.z {
+        let d = it.z - t.z;
+        if d > 24 || it.x >> d != t.x || it.y >> d != t.y {
+            return None;
+        }
+        let side = SIDE / (1u32 << d) as f32;
+        let x0 = (it.x - (t.x << d)) as f32 * side;
+        let y0 = (it.y - (t.y << d)) as f32 * side;
+        ([x0, y0, side], [0.0, 0.0, w as f64, h as f64])
+    } else {
+        let d = t.z - it.z;
+        if d > 24 || t.x >> d != it.x || t.y >> d != it.y {
+            return None;
+        }
+        let s = f64::from(1u32 << d);
+        let u = f64::from(t.x - (it.x << d)) / s;
+        let v = f64::from(t.y - (it.y << d)) / s;
+        (
+            [0.0, 0.0, SIDE],
+            [u * w as f64, v * h as f64, w as f64 / s, h as f64 / s],
+        )
+    };
+    // The texels it reads, whole, and where the part lies among them.
+    let (x0, y0) = (crop[0].floor() as usize, crop[1].floor() as usize);
+    let x1 = ((crop[0] + crop[2]).ceil() as usize).clamp(x0 + 1, w);
+    let y1 = ((crop[1] + crop[3]).ceil() as usize).clamp(y0 + 1, h);
+    let (cw, ch) = (x1 - x0, y1 - y0);
+    let mut rgba = Vec::with_capacity(cw * ch * 4);
+    for row in y0..y1 {
+        rgba.extend_from_slice(&r.rgba[(row * w + x0) * 4..(row * w + x1) * 4]);
+    }
+    let uv0 = [
+        ((crop[0] - x0 as f64) / cw as f64) as f32,
+        ((crop[1] - y0 as f64) / ch as f64) as f32,
+    ];
+    let uv1 = [
+        ((crop[0] + crop[2] - x0 as f64) / cw as f64) as f32,
+        ((crop[1] + crop[3] - y0 as f64) / ch as f64) as f32,
+    ];
+    let k = (f32::from(r.band) - f32::from(t.z)).exp2();
+    let lift = LIFT / k;
+    let lattice = r.relief.as_ref().map(Lattice::new);
+    // Over relief, a lattice of the ground's own cells; flat, one quad.
+    let n = lattice
+        .as_ref()
+        .map_or(1, |l| ((rect[2] / l.cell).round() as usize).max(1));
+    let step = rect[2] / n as f32;
+    let mut prim = ModelPrimitive::default();
+    for j in 0..=n {
+        for i in 0..=n {
+            let p = [rect[0] + i as f32 * step, rect[1] + j as f32 * step];
+            let y = lattice.as_ref().map_or(0.0, |l| l.height(p)) + lift;
+            let (fu, fv) = (i as f32 / n as f32, j as f32 / n as f32);
+            prim.positions.push([p[0], y, p[1]]);
+            prim.normals.push(UP);
+            prim.uvs.push([
+                uv0[0] + (uv1[0] - uv0[0]) * fu,
+                uv0[1] + (uv1[1] - uv0[1]) * fv,
+            ]);
+        }
+    }
+    let at = |i: usize, j: usize| (j * (n + 1) + i) as u32;
+    for j in 0..n {
+        for i in 0..n {
+            prim.indices.extend([at(i, j), at(i + 1, j), at(i, j + 1)]);
+            prim.indices
+                .extend([at(i + 1, j + 1), at(i, j + 1), at(i + 1, j)]);
+        }
+    }
+    for p in box_corners(ground_span(lattice.as_ref(), lift), r.order) {
+        prim.positions.push(p);
+        prim.normals.push(UP);
+        prim.uvs.push(uv0);
+    }
+    let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+    for p in &prim.positions {
+        for k in 0..3 {
+            lo[k] = lo[k].min(p[k]);
+            hi[k] = hi[k].max(p[k]);
+        }
+    }
+    prim.bounds = (lo, hi);
+    prim.material = Some(0);
+    let rig = ModelRig {
+        nodes: vec![ModelNode {
+            name: String::new(),
+            parent: None,
+            children: Vec::new(),
+            rest: Trs::default(),
+            mesh: Some(0),
+            skin: None,
+        }],
+        roots: vec![0],
+        order: vec![0],
+        mesh_bounds: vec![(lo, hi)],
+        ..ModelRig::default()
+    };
+    Some(ModelAsset {
+        rig: std::sync::Arc::new(rig),
+        meshes: vec![ModelMesh {
+            name: String::new(),
+            primitives: vec![prim],
+        }],
+        materials: vec![material(true, AlphaMode::Blend)],
+        textures: vec![ModelTexture {
+            image: Some(0),
+            wrap: Wrap::Clamp,
+            nearest: false,
+        }],
+        images: vec![ModelImage::mipped(
+            cw as u32,
+            ch as u32,
+            rgba,
+            ImageKind::Color,
+        )],
+    })
 }
 
 /// A shape's drawing as a model: `meshes` in the points of its frame,
@@ -834,6 +1050,8 @@ mod tests {
             tile,
             band: 14,
             meshes: &[quad([0.2, 0.4, 0.8, 1.0])],
+            over: &[],
+            images: 0,
             layers: &layers,
             style: &style,
             background: [1.0; 4],
@@ -870,10 +1088,86 @@ mod tests {
             west,
             [125.0; 4].into_iter().chain([375.0; 4]).collect::<Vec<_>>()
         );
-        assert!(!m.materials[2].unlit && m.materials[1].alpha == AlphaMode::Blend);
+        assert!(!m.materials[3].unlit && m.materials[1].alpha == AlphaMode::Blend);
         let image = &m.images[0];
         assert_eq!(image.width, 2);
         assert_eq!(image.height, 2 * 3);
+    }
+
+    /// The middle of a primitive's box, its two unused corners included,
+    /// as the scene sorts it.
+    fn middle(p: &ModelPrimitive) -> [f32; 3] {
+        let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+        for q in &p.positions {
+            for k in 0..3 {
+                lo[k] = lo[k].min(q[k]);
+                hi[k] = hi[k].max(q[k]);
+            }
+        }
+        core::array::from_fn(|k| (lo[k] + hi[k]) / 2.0)
+    }
+
+    #[test]
+    fn images_sort_between_the_drawing_beneath_them_and_the_one_over() {
+        let tile = TileId::new(14, 8469, 5582);
+        let decoded = features();
+        let layers: Vec<&mvt::Layer> = decoded.layers.iter().collect();
+        let style = style();
+        let m = raise(&Raise {
+            tile,
+            band: 14,
+            meshes: &[quad([0.2, 0.4, 0.8, 1.0])],
+            over: &[quad([0.9, 0.1, 0.1, 1.0])],
+            images: 1,
+            layers: &layers,
+            style: &style,
+            background: [1.0; 4],
+            relief: None,
+        })
+        .expect("draws");
+        let prims = &m.meshes[0].primitives;
+        assert_eq!(prims.len(), 4);
+        let (under, over) = (middle(&prims[1]), middle(&prims[2]));
+        // Both span the tile, the drawing over the images higher.
+        assert_eq!([under[0], under[2]], [SIDE / 2.0; 2]);
+        assert_eq!([over[0], over[2]], [SIDE / 2.0; 2]);
+        // An image a level finer, in the tile's north-east quarter.
+        let rgba: Vec<u8> = (0..256 * 256).flat_map(|i| [i as u8, 0, 0, 255]).collect();
+        let image = |image_tile: TileId, order: u32| {
+            raise_image(&Imagery {
+                tile,
+                band: 14,
+                image_tile,
+                width: 256,
+                height: 256,
+                rgba: &rgba,
+                order,
+                relief: None,
+            })
+        };
+        let fine = TileId::new(15, 8469 * 2 + 1, 5582 * 2);
+        let im = image(fine, image_order(0, 15)).expect("meets");
+        let p = &im.meshes[0].primitives[0];
+        let laid: Vec<[f32; 3]> = p.positions[..4].to_vec();
+        assert_eq!(laid[0], [SIDE / 2.0, LIFT, 0.0]);
+        assert_eq!(laid[3], [SIDE, LIFT, SIDE / 2.0]);
+        assert_eq!((p.uvs[0], p.uvs[3]), ([0.0, 0.0], [1.0, 1.0]));
+        assert_eq!(im.images[0].width, 256);
+        assert!(!im.images[0].mips.is_empty());
+        let mid = middle(p);
+        assert_eq!([mid[0], mid[2]], [SIDE / 2.0; 2]);
+        assert!(
+            under[1] < mid[1] && mid[1] < over[1],
+            "{under:?} {mid:?} {over:?}"
+        );
+        // A coarser one covers the tile with the quarter over it.
+        let coarse = TileId::new(13, 8469 / 2, 5582 / 2);
+        let im = image(coarse, image_order(0, 13)).expect("meets");
+        assert_eq!((im.images[0].width, im.images[0].height), (128, 128));
+        let coarse_mid = middle(&im.meshes[0].primitives[0]);
+        assert!(coarse_mid[1] < mid[1]);
+        // Elsewhere, nothing.
+        assert!(image(TileId::new(15, 0, 0), 1).is_none());
     }
 
     #[test]
