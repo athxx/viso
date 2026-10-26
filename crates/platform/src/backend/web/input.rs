@@ -44,6 +44,12 @@ extern "C" {
 
     #[wasm_bindgen(method, getter, js_name = clientY)]
     fn client_y(this: &FractionalMouse) -> f64;
+
+    #[wasm_bindgen(method, getter, js_name = movementX)]
+    fn movement_x(this: &FractionalMouse) -> f64;
+
+    #[wasm_bindgen(method, getter, js_name = movementY)]
+    fn movement_y(this: &FractionalMouse) -> f64;
 }
 
 /// Register the canvas and input element listeners.
@@ -111,6 +117,27 @@ fn on_pointer(page: &Page, e: &Event) {
     let e: &PointerEvent = e.unchecked_ref();
     let kind = pointer_kind(&e.pointer_type());
     let id = e.pointer_id();
+    // A locked mouse stays where it was: its moves are motion, and it
+    // never leaves the canvas.
+    if page.locked.get() && kind == PointerKind::Mouse {
+        match e.type_().as_str() {
+            "pointermove" if buttons(e.buttons()) == buttons_of(page, id) => {
+                let at: &FractionalMouse = e.unchecked_ref();
+                let (dx, dy) = (at.movement_x(), at.movement_y());
+                if dx != 0.0 || dy != 0.0 {
+                    push(RawEvent::PointerMotion {
+                        window: WINDOW,
+                        dx,
+                        dy,
+                    });
+                    drive();
+                }
+                return;
+            }
+            "pointerleave" => return,
+            _ => {}
+        }
+    }
     let now = buttons(e.buttons());
     let before = buttons_of(page, id);
     let Some(phase) = pointer_phase(&e.type_(), kind, e.button(), before, now) else {

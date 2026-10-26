@@ -1093,7 +1093,11 @@ impl PlatformApp for KmsApp {
     }
 
     fn capabilities(&self) -> PlatformCaps {
-        PlatformCaps::FULLSCREEN
+        // The pointer is not locked here yet.
+        PlatformCaps {
+            pointer_lock: false,
+            ..PlatformCaps::FULLSCREEN
+        }
     }
 
     fn loop_waker(&self) -> crate::LoopWaker {

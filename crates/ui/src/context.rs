@@ -379,6 +379,10 @@ pub struct EventCx<'a> {
     pasted: Option<&'a crate::clipboard::ClipboardData>,
     /// The token of the wake this dispatch delivers.
     woken: Option<u32>,
+    /// The locked pointer's motion this dispatch delivers, in logical points.
+    motion: Option<Vec2>,
+    /// Whether the pointer lock engaged or ended, if this dispatch tells it.
+    lock_change: Option<bool>,
     /// Whether the focus came to or left the node this dispatch tells.
     focus_change: Option<FocusChange>,
     /// What this dispatch tells of the access keys.
@@ -552,6 +556,8 @@ pub enum StoreRequest {
     Seek(NodeId, std::time::Duration),
     /// Show a node full screen, or bring it back.
     Fullscreen(NodeId, bool),
+    /// Lock the mouse's pointer to a node, or let it go.
+    PointerLock(NodeId, bool),
 }
 
 impl StoreRequest {
@@ -594,6 +600,7 @@ impl StoreRequest {
             StoreRequest::Play(id, playing) => store.set_video_playing(id, playing),
             StoreRequest::Seek(id, time) => store.seek_video(id, time),
             StoreRequest::Fullscreen(id, on) => store.set_fullscreen(id, on),
+            StoreRequest::PointerLock(id, lock) => store.lock_pointer(id, lock),
         }
     }
 }
@@ -648,6 +655,8 @@ impl<'a> EventCx<'a> {
             drag_end: None,
             pasted: None,
             woken: None,
+            motion: None,
+            lock_change: None,
             focus_change: None,
             access: None,
             store_requests: Vec::new(),
@@ -696,6 +705,8 @@ impl<'a> EventCx<'a> {
             drag_end: None,
             pasted: None,
             woken: None,
+            motion: None,
+            lock_change: None,
             focus_change: None,
             access: None,
             store_requests: Vec::new(),
@@ -743,6 +754,8 @@ impl<'a> EventCx<'a> {
             drag_end: None,
             pasted: None,
             woken: None,
+            motion: None,
+            lock_change: None,
             focus_change: None,
             access: None,
             store_requests: Vec::new(),
@@ -790,6 +803,8 @@ impl<'a> EventCx<'a> {
             drag_end: None,
             pasted: None,
             woken: None,
+            motion: None,
+            lock_change: None,
             focus_change: None,
             access: None,
             store_requests: Vec::new(),
@@ -927,6 +942,33 @@ impl<'a> EventCx<'a> {
     pub fn __new_wake(states: &'a mut StateStore, bindings: &'a BindingTable, token: u32) -> Self {
         let mut cx = Self::__new(states, bindings);
         cx.woken = Some(token);
+        cx
+    }
+
+    /// Assemble the event context that delivers the locked pointer's motion:
+    /// the handler reads it via [`EventCx::pointer_motion`].
+    #[doc(hidden)]
+    pub fn __new_motion(
+        states: &'a mut StateStore,
+        bindings: &'a BindingTable,
+        delta: Vec2,
+    ) -> Self {
+        let mut cx = Self::__new(states, bindings);
+        cx.motion = Some(delta);
+        cx
+    }
+
+    /// Assemble the event context that tells the pointer lock's node the lock
+    /// engaged or ended: the handler reads it via
+    /// [`EventCx::pointer_lock_change`].
+    #[doc(hidden)]
+    pub fn __new_pointer_lock(
+        states: &'a mut StateStore,
+        bindings: &'a BindingTable,
+        locked: bool,
+    ) -> Self {
+        let mut cx = Self::__new(states, bindings);
+        cx.lock_change = Some(locked);
         cx
     }
 
@@ -1334,6 +1376,39 @@ impl<'a> EventCx<'a> {
     /// delivers, `None` for any other dispatch.
     pub fn woken(&self) -> Option<u32> {
         self.woken
+    }
+
+    /// How far the mouse moved, in logical points with right and down
+    /// positive, while its pointer is locked to this node
+    /// ([`lock_pointer`](Self::lock_pointer)); `None` for any other dispatch.
+    /// Motion keeps coming at a screen's edge.
+    pub fn pointer_motion(&self) -> Option<Vec2> {
+        self.motion
+    }
+
+    /// Whether the pointer lock this node asked for engaged (`Some(true)`) or
+    /// ended (`Some(false)`: released, the window lost focus, Escape, or the
+    /// platform refused it), if this dispatch tells it.
+    pub fn pointer_lock_change(&self) -> Option<bool> {
+        self.lock_change
+    }
+
+    /// Lock the mouse's pointer to node `id` for relative motion
+    /// ([`crate::pointer_lock`]): the cursor hides and stays put, the mouse's
+    /// motion reaches `id`'s key handler as
+    /// [`pointer_motion`](Self::pointer_motion), and its buttons go to `id`
+    /// wherever it was, until [`unlock_pointer`](Self::unlock_pointer), the
+    /// window losing focus, or Escape. Best asked from a press, which a
+    /// browser requires.
+    pub fn lock_pointer(&mut self, id: NodeId) {
+        self.store_requests
+            .push(StoreRequest::PointerLock(id, true));
+    }
+
+    /// Let go of the pointer lock node `id` holds or asked for.
+    pub fn unlock_pointer(&mut self, id: NodeId) {
+        self.store_requests
+            .push(StoreRequest::PointerLock(id, false));
     }
 
     /// Whether node `id` is `ancestor` or lies inside it.

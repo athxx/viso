@@ -1399,6 +1399,25 @@ impl WindowState {
         }
     }
 
+    /// Hands the platform the pointer lock a node asked for, or its release;
+    /// a platform without pointer lock answers the ask with the lock ended.
+    fn push_pointer_lock(&mut self, cx: &mut RuntimeCx<'_>) {
+        let Some(lock) = self.store.take_pointer_lock_ask() else {
+            return;
+        };
+        if cx.capabilities().pointer_lock {
+            cx.set_pointer_lock(self.window, lock);
+        } else if lock {
+            KeyRouter::route_pointer_lock(
+                &mut self.store,
+                &mut self.states,
+                &self.bindings,
+                &mut self.text_edits,
+                false,
+            );
+        }
+    }
+
     /// A freshly-opened window's state: empty stores/registries and no GPU yet
     /// (the driver brings the surface up once it has the window's native handle).
     /// Mirrors the session-scope initialisation the single-window driver did on
@@ -3244,6 +3263,19 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 // ancestry so a control can react to it.
                 let modifiers = lower_modifiers(k.modifiers);
                 environment::note_key(&mut ws.states);
+                // Escape ends a pointer lock, as a browser's does, then goes
+                // on to the focused node like any key.
+                if k.pressed
+                    && k.key == viso_runtime::Key::Escape
+                    && ws.store.pointer_lock().is_some()
+                {
+                    KeyRouter::route_pointer_lock_end(
+                        &mut ws.store,
+                        &mut ws.states,
+                        &ws.bindings,
+                        &mut ws.text_edits,
+                    );
+                }
                 // Off Apple systems Alt shows the access keys' cues while it is
                 // held, and let go alone asks for the menu bar.
                 let access = alt_access() && ws.store.has_access_keys();
@@ -3547,6 +3579,15 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     viso_ui::DropOperation::Link => viso_runtime::DropAction::Link,
                 }));
             }
+            viso_runtime::InputSample::Motion { dx, dy, .. } => {
+                KeyRouter::route_motion(
+                    &mut ws.store,
+                    &mut ws.states,
+                    &ws.bindings,
+                    &mut ws.text_edits,
+                    viso_ui::Vec2::new(dx / scale, dy / scale),
+                );
+            }
             viso_runtime::InputSample::DragEnded { action, .. } => {
                 // The drag the OS took ended: its source hears how.
                 ws.store.drag_out_ended(action.map(|a| match a {
@@ -3799,8 +3840,23 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
             return;
         };
         // The cursor follows the mouse as it moves, not at the next frame,
-        // which a move that changes nothing else never asks for.
+        // which a move that changes nothing else never asks for; a pointer
+        // lock is asked while the press that asked for it is still the
+        // event being handled, as a browser requires.
+        ws.push_pointer_lock(cx);
         ws.push_cursor(cx);
+    }
+
+    fn on_pointer_lock(&mut self, window: WindowId, locked: bool) {
+        if let Some(ws) = self.window_mut(window) {
+            KeyRouter::route_pointer_lock(
+                &mut ws.store,
+                &mut ws.states,
+                &ws.bindings,
+                &mut ws.text_edits,
+                locked,
+            );
+        }
     }
 
     fn on_window_focus(&mut self, window: WindowId, focused: bool) {
@@ -3813,6 +3869,13 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         if let Some(ws) = self.windows.iter_mut().find(|w| w.window == window) {
             if !focused {
                 ws.store.release_client_input();
+                // A pointer lock ends with the focus.
+                KeyRouter::route_pointer_lock_end(
+                    &mut ws.store,
+                    &mut ws.states,
+                    &ws.bindings,
+                    &mut ws.text_edits,
+                );
                 // Nor Alt's: the access keys' cues go.
                 ws.alt_alone = false;
                 KeyRouter::route_cues(
@@ -4337,6 +4400,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     if let Some(on) = ws.store.take_fullscreen_ask() {
                         cx.set_fullscreen(ws.window, on);
                     }
+                    ws.push_pointer_lock(cx);
                     ws.store.take_window_opens(&mut ws.scratch_opens);
                     self.pending_opens.append(&mut ws.scratch_opens);
                     ws.store.take_window_closes(&mut ws.scratch_closes);

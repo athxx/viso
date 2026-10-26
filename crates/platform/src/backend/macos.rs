@@ -694,6 +694,16 @@ impl PlatformApp for MacApp {
                 {
                     win.access.set_focused(focused);
                     win.content_view.set_key(focused);
+                    // The pointer goes back to the user with the focus.
+                    if !focused && win.content_view.release_pointer_lock() {
+                        self.shared
+                            .borrow_mut()
+                            .events
+                            .push_front(RawEvent::PointerLockChanged {
+                                window,
+                                locked: false,
+                            });
+                    }
                 }
                 drew = matches!(event, RawEvent::RedrawRequested { .. });
                 let shared = self.shared.clone();
@@ -893,6 +903,7 @@ impl PlatformApp for MacApp {
         };
         let closed = self.windows.remove(pos);
         closed.content_view.set_cursor_icon(CursorIcon::Default);
+        closed.content_view.release_pointer_lock();
         closed.window.close();
         self.shared
             .borrow_mut()
@@ -916,6 +927,12 @@ impl PlatformApp for MacApp {
     fn set_cursor(&mut self, window: WindowId, icon: CursorIcon) {
         if let Some(win) = self.windows.iter().find(|w| w.id == window) {
             win.content_view.set_cursor_icon(icon);
+        }
+    }
+
+    fn set_pointer_lock(&mut self, window: WindowId, lock: bool) {
+        if let Some(win) = self.windows.iter().find(|w| w.id == window) {
+            win.content_view.set_pointer_lock(lock);
         }
     }
 
@@ -1857,6 +1874,12 @@ struct ViewIvars {
     /// Whether this view currently holds one `[NSCursor hide]` (the count is
     /// global, so each view balances its own).
     cursor_hidden: Cell<bool>,
+    /// Where the mouse's pointer is pinned while it is locked to this view,
+    /// in Cocoa desktop points; `None` while it is free.
+    lock_pin: Cell<Option<NSPoint>>,
+    /// How far the last warp moved the cursor, in desktop points, which the
+    /// next mouse event's delta counts as motion and the lock takes back out.
+    warp_debt: Cell<(f64, f64)>,
     /// A text field has focus: key events go through the input context.
     ime_enabled: Cell<bool>,
     /// The focused field's caret, logical points in this view.
@@ -2110,29 +2133,33 @@ define_class!(
 
         #[unsafe(method(mouseMoved:))]
         fn mouse_moved(&self, event: &NSEvent) {
-            self.pointer(event, PointerPhase::Moved, PointerButtons::NONE, false);
+            self.moved(event);
         }
 
         #[unsafe(method(mouseDragged:))]
         fn mouse_dragged(&self, event: &NSEvent) {
             self.note_mouse(event);
-            self.pointer(event, PointerPhase::Moved, PointerButtons::NONE, false);
+            self.moved(event);
         }
 
         #[unsafe(method(rightMouseDragged:))]
         fn right_mouse_dragged(&self, event: &NSEvent) {
             self.note_mouse(event);
-            self.pointer(event, PointerPhase::Moved, PointerButtons::NONE, false);
+            self.moved(event);
         }
 
         #[unsafe(method(otherMouseDragged:))]
         fn other_mouse_dragged(&self, event: &NSEvent) {
             self.note_mouse(event);
-            self.pointer(event, PointerPhase::Moved, PointerButtons::NONE, false);
+            self.moved(event);
         }
 
         #[unsafe(method(mouseExited:))]
         fn mouse_exited(&self, event: &NSEvent) {
+            // A locked pointer stays where it is, inside.
+            if self.ivars().lock_pin.get().is_some() {
+                return;
+            }
             let _ = catch_unwind(AssertUnwindSafe(|| self.sync_cursor_hidden(false)));
             self.pointer(event, PointerPhase::Left, PointerButtons::NONE, false);
         }
@@ -2419,6 +2446,8 @@ impl VisoContentView {
             draggable_regions: RefCell::new(Vec::new()),
             cursor: Cell::new(CursorIcon::Default),
             cursor_hidden: Cell::new(false),
+            lock_pin: Cell::new(None),
+            warp_debt: Cell::new((0.0, 0.0)),
             ime_enabled: Cell::new(true),
             ime_caret: Cell::new(None),
             secure_field: Cell::new(false),
@@ -2691,6 +2720,137 @@ impl VisoContentView {
 
     /// Enqueue a pointer sample, folding the button transition into the tracked
     /// mask so every sample reports the full chord currently held.
+    /// A mouse move: a sample of where the pointer went, or while the
+    /// pointer is locked how far the mouse moved.
+    fn moved(&self, event: &NSEvent) {
+        if self.ivars().lock_pin.get().is_none() {
+            self.pointer(event, PointerPhase::Moved, PointerButtons::NONE, false);
+            return;
+        }
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let ivars = self.ivars();
+            let k = ivars.logical.get();
+            let (wx, wy) = ivars.warp_debt.take();
+            let (dx, dy) = ((event.deltaX() - wx) * k, (event.deltaY() - wy) * k);
+            if dx != 0.0 || dy != 0.0 {
+                let window = ivars.window;
+                crate::event::queue_motion(&mut ivars.shared.borrow_mut().events, window, dx, dy);
+            }
+            self.hold_pin();
+        }));
+    }
+
+    /// Locks the mouse's pointer to this view, or lets it go, reporting the
+    /// change. A lock is refused while the app is not active or the window
+    /// is not key: the pointer belongs to whatever has the focus.
+    fn set_pointer_lock(&self, lock: bool) {
+        let ivars = self.ivars();
+        if lock == ivars.lock_pin.get().is_some() {
+            return;
+        }
+        let window = ivars.window;
+        if !lock {
+            self.release_pointer_lock();
+        } else {
+            let mtm = self.mtm();
+            let focused = NSApplication::sharedApplication(mtm).isActive()
+                && self.window().is_some_and(|w| w.isKeyWindow());
+            let Some(pin) = focused.then(|| self.lock_point()).flatten() else {
+                self.push(RawEvent::PointerLockChanged {
+                    window,
+                    locked: false,
+                });
+                return;
+            };
+            ivars.lock_pin.set(Some(pin));
+            NSCursor::hide();
+            // SAFETY: plain CoreGraphics calls taking values. A warp holds
+            // back the hardware's own mouse events for a quarter second by
+            // default, which would swallow the first motion and clicks.
+            unsafe {
+                CGSetLocalEventsSuppressionInterval(0.0);
+            }
+            self.warp_to_pin(pin);
+            // SAFETY: as above; freezing the cursor where it is pinned keeps
+            // the mouse's motion coming as deltas.
+            unsafe {
+                CGAssociateMouseAndMouseCursorPosition(0);
+            }
+        }
+        self.push(RawEvent::PointerLockChanged {
+            window,
+            locked: lock,
+        });
+    }
+
+    /// Lets the locked pointer go where it was pinned. Returns whether it
+    /// was locked.
+    fn release_pointer_lock(&self) -> bool {
+        if self.ivars().lock_pin.take().is_none() {
+            return false;
+        }
+        self.ivars().warp_debt.set((0.0, 0.0));
+        // SAFETY: a plain CoreGraphics call taking a value.
+        unsafe {
+            CGAssociateMouseAndMouseCursorPosition(1);
+        }
+        NSCursor::unhide();
+        true
+    }
+
+    /// Where to pin a locked pointer: the middle of the part of this view
+    /// on its screen's visible area, so neither a screen edge nor the Dock
+    /// takes its clicks.
+    fn lock_point(&self) -> Option<NSPoint> {
+        let window = self.window()?;
+        let bounds = self.bounds();
+        let in_window = self.convertRect_toView(bounds, None);
+        let rect = window.convertRectToScreen(in_window);
+        let visible = window.screen().map_or(rect, |screen| screen.visibleFrame());
+        let lo_x = rect.origin.x.max(visible.origin.x);
+        let hi_x = (rect.origin.x + rect.size.width).min(visible.origin.x + visible.size.width);
+        let lo_y = rect.origin.y.max(visible.origin.y);
+        let hi_y = (rect.origin.y + rect.size.height).min(visible.origin.y + visible.size.height);
+        let mid = |lo: f64, hi: f64, at: f64, len: f64| {
+            if lo < hi {
+                (lo + hi) * 0.5
+            } else {
+                at + len * 0.5
+            }
+        };
+        Some(NSPoint::new(
+            mid(lo_x, hi_x, rect.origin.x, rect.size.width),
+            mid(lo_y, hi_y, rect.origin.y, rect.size.height),
+        ))
+    }
+
+    /// Puts a locked pointer back on its pin when it drifted, as it does
+    /// when the system brings the cursor's association back on its own.
+    fn hold_pin(&self) {
+        let Some(pin) = self.ivars().lock_pin.get() else {
+            return;
+        };
+        let at = NSEvent::mouseLocation();
+        if (at.x - pin.x).abs() + (at.y - pin.y).abs() > 2.0 {
+            self.warp_to_pin(pin);
+            // SAFETY: a plain CoreGraphics call taking a value.
+            unsafe {
+                CGAssociateMouseAndMouseCursorPosition(0);
+            }
+        }
+    }
+
+    /// Moves the cursor onto the lock's pin, owing the move back to the
+    /// next delta. Cocoa's y grows up, a delta's down.
+    fn warp_to_pin(&self, pin: NSPoint) {
+        let at = NSEvent::mouseLocation();
+        let (wx, wy) = self.ivars().warp_debt.get();
+        self.ivars()
+            .warp_debt
+            .set((wx + pin.x - at.x, wy + at.y - pin.y));
+        warp_to(self.mtm(), pin);
+    }
+
     fn pointer(&self, event: &NSEvent, phase: PointerPhase, button: PointerButtons, pressed: bool) {
         let _ = catch_unwind(AssertUnwindSafe(|| {
             let ivars = self.ivars();
@@ -2912,6 +3072,23 @@ impl VisoContentView {
     /// Push one raw event onto the shared queue.
     fn push(&self, event: RawEvent) {
         self.ivars().shared.borrow_mut().events.push_back(event);
+    }
+}
+
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGWarpMouseCursorPosition(point: NSPoint) -> i32;
+    fn CGAssociateMouseAndMouseCursorPosition(connected: u32) -> i32;
+    fn CGSetLocalEventsSuppressionInterval(seconds: f64) -> i32;
+}
+
+/// Moves the cursor to Cocoa desktop point `point`.
+fn warp_to(mtm: MainThreadMarker, point: NSPoint) {
+    let top = primary_screen_height(mtm).unwrap_or(0.0);
+    // SAFETY: a plain CoreGraphics call taking a value; it measures from the
+    // primary screen's top left, Cocoa from its bottom left.
+    unsafe {
+        CGWarpMouseCursorPosition(NSPoint::new(point.x, top - point.y));
     }
 }
 

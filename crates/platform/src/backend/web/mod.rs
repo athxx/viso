@@ -423,6 +423,8 @@ struct Page {
     /// The input element's `enterkeyhint`.
     enter: Cell<&'static str>,
     cursor: Cell<CursorIcon>,
+    /// The mouse's pointer is locked to the canvas.
+    locked: Cell<bool>,
     listeners: RefCell<Vec<Listener>>,
     observer: RefCell<Option<Observer>>,
     /// Fires when the device pixel ratio leaves its current value.
@@ -774,6 +776,36 @@ fn set_focused(focused: bool) {
     }
 }
 
+/// Reports the pointer lock engaging on the canvas or ending, whoever
+/// ended it: the app, Escape, the tab losing focus.
+fn report_pointer_lock() {
+    let Some(page) = current_page() else {
+        return;
+    };
+    let locked = document()
+        .pointer_lock_element()
+        .is_some_and(|e| e.is_same_node(Some(&page.canvas)));
+    if page.locked.replace(locked) != locked {
+        push(RawEvent::PointerLockChanged {
+            window: WINDOW,
+            locked,
+        });
+        drive();
+    }
+}
+
+/// Reports a lock the browser refused: no user gesture, a lock let go too
+/// recently, a page not allowed one.
+fn refuse_pointer_lock() {
+    if current_page().is_some_and(|page| !page.locked.get()) {
+        push(RawEvent::PointerLockChanged {
+            window: WINDOW,
+            locked: false,
+        });
+        drive();
+    }
+}
+
 fn report_fullscreen() {
     if current_page().is_some() {
         push(RawEvent::FullscreenChanged {
@@ -829,6 +861,8 @@ impl WebApp {
                 set_suspended(document().hidden())
             }),
             Listener::new(&doc, "fullscreenchange", |_| report_fullscreen()),
+            Listener::new(&doc, "pointerlockchange", |_| report_pointer_lock()),
+            Listener::new(&doc, "pointerlockerror", |_| refuse_pointer_lock()),
             Listener::new(&window, "focus", |_| {
                 // The default font size has no change event; a return from
                 // the browser's settings is when it changes.
@@ -957,6 +991,7 @@ impl PlatformApp for WebApp {
             keys: Cell::new("text"),
             enter: Cell::new(""),
             cursor: Cell::new(CursorIcon::Default),
+            locked: Cell::new(false),
             listeners: RefCell::new(Vec::new()),
             observer: RefCell::new(None),
             scale_watch: RefCell::new(None),
@@ -1077,6 +1112,33 @@ impl PlatformApp for WebApp {
         clipboard::request(window, kinds, token);
     }
 
+    fn set_pointer_lock(&mut self, window: WindowId, lock: bool) {
+        let Some(w) = self.window.as_ref().filter(|_| window == WINDOW) else {
+            return;
+        };
+        if lock == w.page.locked.get() {
+            return;
+        }
+        if !lock {
+            document().exit_pointer_lock();
+            return;
+        }
+        // Newer browsers answer with a promise, and also fire
+        // `pointerlockerror` on a refusal: the rejection is only caught.
+        let request = Reflect::get(&w.page.canvas, &"requestPointerLock".into())
+            .ok()
+            .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
+            .and_then(|f| f.call0(&w.page.canvas).ok());
+        if let Some(promise) = request.and_then(|r| r.dyn_into::<js_sys::Promise>().ok()) {
+            thread_local! {
+                static CAUGHT: Closure<dyn FnMut(JsValue)> = Closure::new(|_: JsValue| {});
+            }
+            CAUGHT.with(|caught| {
+                let _ = promise.catch(caught);
+            });
+        }
+    }
+
     fn set_cursor(&mut self, window: WindowId, icon: CursorIcon) {
         if let Some(w) = self.window.as_ref().filter(|_| window == WINDOW)
             && w.page.cursor.replace(icon) != icon
@@ -1146,6 +1208,7 @@ impl PlatformApp for WebApp {
             context_menu: false,
             loupe: false,
             custom_cursors: true,
+            pointer_lock: true,
         }
     }
 

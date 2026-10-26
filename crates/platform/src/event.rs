@@ -793,6 +793,18 @@ pub enum RawEvent {
     Wakeup,
     /// A pointer sample.
     Pointer(RawPointer),
+    /// The mouse moved by `dx`, `dy` logical points (right and down are
+    /// positive) while its pointer is locked to `window`
+    /// ([`PlatformApp::set_pointer_lock`](crate::PlatformApp::set_pointer_lock)):
+    /// its motion, as the pointer would have moved, where a locked pointer
+    /// moves no more and reports no [`RawEvent::Pointer`] moves. Motion keeps
+    /// coming at a screen's edge. Several reported between two looks at the
+    /// queue may arrive summed as one.
+    PointerMotion { window: WindowId, dx: f64, dy: f64 },
+    /// The pointer lock on `window` engaged (`true`) or ended (`false`): the
+    /// app released it, the window lost focus, the OS took it back (the
+    /// browser's Escape), or the OS refused it.
+    PointerLockChanged { window: WindowId, locked: bool },
     /// A scroll sample.
     Scroll(RawScroll),
     /// A trackpad's pinch or turn.
@@ -924,9 +936,62 @@ pub enum RawEvent {
     },
 }
 
+/// Queues the motion of a locked pointer, adding it to a motion of the same
+/// window still at the back of `queue` so a fast mouse queues one event.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn queue_motion(
+    queue: &mut std::collections::VecDeque<RawEvent>,
+    window: WindowId,
+    dx: f64,
+    dy: f64,
+) {
+    if let Some(RawEvent::PointerMotion {
+        window: w,
+        dx: x,
+        dy: y,
+    }) = queue.back_mut()
+        && *w == window
+    {
+        *x += dx;
+        *y += dy;
+        return;
+    }
+    queue.push_back(RawEvent::PointerMotion { window, dx, dy });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn motions_queued_back_to_back_sum() {
+        let mut queue = std::collections::VecDeque::new();
+        let (a, b) = (WindowId(1), WindowId(2));
+        queue_motion(&mut queue, a, 1.0, 2.0);
+        queue_motion(&mut queue, a, 0.5, -1.0);
+        queue_motion(&mut queue, b, 3.0, 0.0);
+        queue_motion(&mut queue, a, 1.0, 1.0);
+        assert_eq!(
+            Vec::from(queue),
+            vec![
+                RawEvent::PointerMotion {
+                    window: a,
+                    dx: 1.5,
+                    dy: 1.0
+                },
+                RawEvent::PointerMotion {
+                    window: b,
+                    dx: 3.0,
+                    dy: 0.0
+                },
+                RawEvent::PointerMotion {
+                    window: a,
+                    dx: 1.0,
+                    dy: 1.0
+                },
+            ]
+        );
+    }
 
     #[test]
     fn ime_preedit_round_trips_through_the_raw_event() {

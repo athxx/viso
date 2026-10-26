@@ -726,6 +726,14 @@ impl PlatformApp for WinApp {
         self.gamepads.rumble(id, rumble)
     }
 
+    fn capabilities(&self) -> crate::PlatformCaps {
+        // The pointer is not locked here yet.
+        crate::PlatformCaps {
+            pointer_lock: false,
+            ..crate::PlatformCaps::DESKTOP
+        }
+    }
+
     fn loop_waker(&self) -> LoopWaker {
         let woken = self.shared.borrow().woken.clone();
         let thread = self.ui_thread;

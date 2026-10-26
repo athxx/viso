@@ -315,6 +315,9 @@ fn input_window(event: &RawEvent) -> Option<WindowId> {
         | RawEvent::DragEnded { window, .. }
         | RawEvent::EditMenu { window, .. } => *window,
         RawEvent::Drop(d) => d.window,
+        RawEvent::PointerMotion { window, .. } | RawEvent::PointerLockChanged { window, .. } => {
+            *window
+        }
         _ => return None,
     })
 }
@@ -610,6 +613,22 @@ impl<D: FrameDriver, C: FrameClock> Loop<D, C> {
                     InputSample::EditMenu(EditMenuSample { window, action }),
                     self.clock.peek(),
                 );
+                self.reasons.add(RedrawReason::InputDirty);
+            }
+            RawEvent::PointerMotion { window, dx, dy } => {
+                let scale = app.window(window).map(|w| w.scale_factor()).unwrap_or(1.0);
+                self.driver.on_input(
+                    InputSample::Motion {
+                        window,
+                        dx: (dx * scale) as f32,
+                        dy: (dy * scale) as f32,
+                    },
+                    self.clock.peek(),
+                );
+                self.reasons.add(RedrawReason::InputDirty);
+            }
+            RawEvent::PointerLockChanged { window, locked } => {
+                self.driver.on_pointer_lock(window, locked);
                 self.reasons.add(RedrawReason::InputDirty);
             }
             RawEvent::Suspended => {

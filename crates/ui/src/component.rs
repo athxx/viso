@@ -797,6 +797,9 @@ pub struct NodeStore {
     pub(crate) layers: crate::layer::Layers,
     /// Cold: the node shown full screen, and the window's own state.
     pub(crate) fullscreen: crate::fullscreen::Fullscreen,
+    /// Cold: the node the mouse's pointer is locked to, and the platform's
+    /// own lock state.
+    pub(crate) pointer_lock: crate::pointer_lock::PointerLock,
     /// The anchored layers (cold): each one's anchor and where it went.
     pub(crate) anchors: crate::anchored::Anchors,
     /// The wakes whose time came, waiting to reach their nodes.
@@ -979,6 +982,7 @@ impl NodeStore {
         self.links.clear();
         self.layers.clear();
         self.fullscreen.clear();
+        self.pointer_lock.clear();
         self.anchors.clear();
         self.wakes.clear();
         self.shadows.clear();

@@ -109,6 +109,7 @@ impl HeadlessApp {
             caps: PlatformCaps {
                 edit_menu: true,
                 loupe: true,
+                pointer_lock: true,
                 ..PlatformCaps::DESKTOP
             },
             woken: Arc::new(AtomicBool::new(false)),
@@ -202,6 +203,14 @@ impl HeadlessApp {
             .iter()
             .find(|w| w.id == window)
             .map(|w| w.cursor)
+    }
+
+    /// Whether the mouse's pointer is locked to `window`.
+    pub fn is_pointer_locked(&self, window: WindowId) -> Option<bool> {
+        self.windows
+            .iter()
+            .find(|w| w.id == window)
+            .map(|w| w.pointer_locked)
     }
 
     /// Whether `window` is fullscreen.
@@ -312,6 +321,7 @@ impl PlatformApp for HeadlessApp {
             loupe: None,
             soft_keyboard: false,
             fullscreen: false,
+            pointer_locked: false,
         });
         Ok(id)
     }
@@ -424,6 +434,23 @@ impl PlatformApp for HeadlessApp {
             w.fullscreen = fullscreen;
             self.script
                 .push_front(RawEvent::FullscreenChanged { window, fullscreen });
+        }
+    }
+
+    fn set_pointer_lock(&mut self, window: WindowId, lock: bool) {
+        // Reported next, and only when the lock changes, where the host has
+        // pointer lock at all.
+        if !self.caps.pointer_lock {
+            return;
+        }
+        if let Some(w) = self.window_mut(window)
+            && w.pointer_locked != lock
+        {
+            w.pointer_locked = lock;
+            self.script.push_front(RawEvent::PointerLockChanged {
+                window,
+                locked: lock,
+            });
         }
     }
 
@@ -624,6 +651,7 @@ pub struct HeadlessWindow {
     loupe: Option<Loupe>,
     soft_keyboard: bool,
     fullscreen: bool,
+    pointer_locked: bool,
 }
 
 impl Window for HeadlessWindow {

@@ -64,6 +64,7 @@ pub mod part_writes;
 pub mod pinch;
 pub mod plate;
 pub mod plot;
+pub mod pointer_lock;
 pub mod progress;
 pub mod reactive;
 pub mod refresh;

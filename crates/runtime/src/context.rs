@@ -250,6 +250,13 @@ impl<'a> RuntimeCx<'a> {
         self.app.set_cursor(window, icon);
     }
 
+    /// Lock the mouse's pointer to `window` for relative motion, or release
+    /// it; the platform reports each change through the driver's
+    /// [`on_pointer_lock`](crate::FrameDriver::on_pointer_lock).
+    pub fn set_pointer_lock(&mut self, window: WindowId, lock: bool) {
+        self.app.set_pointer_lock(window, lock);
+    }
+
     /// Tell the input method about `window`'s focused text field (its caret,
     /// whether it takes a secret); `None` disables the IME for `window`.
     pub fn set_text_entry(&mut self, window: WindowId, entry: Option<TextEntry>) {

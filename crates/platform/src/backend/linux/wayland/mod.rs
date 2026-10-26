@@ -234,10 +234,12 @@ impl PlatformApp for WaylandApp {
 
     fn capabilities(&self) -> crate::PlatformCaps {
         // No toolkit to draw a context menu or a menu bar: the app draws
-        // its own, and a menu's accelerators still work.
+        // its own, and a menu's accelerators still work. The pointer is not
+        // locked here yet.
         crate::PlatformCaps {
             context_menu: false,
             menus: false,
+            pointer_lock: false,
             ..crate::PlatformCaps::DESKTOP
         }
     }

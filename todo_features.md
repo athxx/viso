@@ -576,8 +576,28 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
     (`FrameDriver::after_input`), not at the next frame. Verified: macOS live (the
     `pointer` example's 64 px @2x ring reads back from the window server as a 32 pt cursor,
     hotspot 16,16; the system crosshair over the other panel), headless facade tests, unit
-    tests (registry, resampling, cache, KMS drawing); Windows, Linux, web, Android, iOS
-    compile and pass clippy only.
+    tests (registry, resampling, cache, KMS drawing); web in headless Chrome over CDP (the
+    canvas's computed cursor is the `image-set` of the PNG data URL over the image panel,
+    `crosshair` over the other); Windows, Linux, Android, iOS compile and pass clippy only.
+  - [ ] Pointer lock with relative motion: `EventCx::lock_pointer(id)` /
+    `unlock_pointer`, `PlatformApp::set_pointer_lock`, `PlatformCaps::pointer_lock`,
+    `RawEvent::PointerMotion` (logical-point deltas) and `PointerLockChanged`; the locked
+    node gets every mouse sample, its motion through `EventCx::pointer_motion` and each
+    change through `EventCx::pointer_lock_change`; Escape, focus loss and the node's freeing
+    end it; a host without it answers the ask with the lock ended.
+    - [x] Core, UI routing, facade, headless host. Verified: headless facade tests (lock on
+      press, motion deltas, presses routed to the locked node, Escape, focus loss, refusal
+      without the capability), unit tests (lock state, motion coalescing).
+    - [x] macOS: freeze and hide the cursor at the view's centre, `deltaX/deltaY`, release
+      on focus loss and window close. Verified live with the `pointer` example: a press
+      locks (logged `pointer lock true`), ten posted relative moves of (5, 3) arrive as ten
+      (5, 3) motions, Escape releases (`pointer lock false`).
+    - [x] Web: `requestPointerLock`, `pointerlockchange`/`pointerlockerror`, `movementX/Y`.
+      Verified in headless Chrome over CDP: a click locks the canvas, two pointer moves
+      arrive as motions (5, 3) and (-2, 7), `exitPointerLock` reports the lock ended.
+    - [ ] Windows, Wayland, X11, KMS, Android, iOS: report `pointer_lock: false` so far.
+    - Game input has no mouse delta to feed (its input schema covers keys, pad buttons,
+      sticks and touch buttons only).
 - [x] Fullscreen change events on every OS (Android hides the system bars, iOS the status
   bar and home indicator).
 - [ ] Window state persistence.

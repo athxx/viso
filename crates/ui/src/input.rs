@@ -580,6 +580,15 @@ fn route_sample(
     chain: &mut Vec<NodeId>,
 ) -> bool {
     let pointer = contact.id;
+    // The mouse's pointer locked to a node routes there whole, wherever it
+    // was: hover, hit testing and capture wait until the lock ends.
+    if !contact.direct
+        && let Some(owner) = store.pointer_lock()
+    {
+        return dispatch_chain(store, root, owner, chain, |s, n, hop| {
+            pointer_dispatch(s, states, bindings, n, hop, pointer, Some(ev))
+        });
+    }
     // A captured pointer routes straight to the capturing node's chain,
     // bypassing hit testing — a drag or slider grab keeps receiving samples even
     // when the pointer leaves the node's box. On pointer-up the capture is
@@ -2172,6 +2181,77 @@ impl KeyRouter {
             .ran
     }
 
+    /// Deliver the locked pointer's motion, `delta` logical points, to the
+    /// key handler of the node it is locked to ([`crate::pointer_lock`]).
+    /// Returns whether a handler ran; none does while no node holds the lock.
+    pub fn route_motion(
+        store: &mut NodeStore,
+        states: &mut StateStore,
+        bindings: &BindingTable,
+        edits: &mut TextEdits,
+        delta: Vec2,
+    ) -> bool {
+        let Some(node) = store.pointer_lock() else {
+            return false;
+        };
+        key_handler_dispatch(
+            store,
+            states,
+            bindings,
+            edits,
+            node,
+            KeyPayload::Motion(delta),
+        )
+        .ran
+    }
+
+    /// The platform locked the mouse's pointer, or let it go: tell the node
+    /// that asked for it ([`NodeStore::pointer_lock_changed`]) through its key
+    /// handler. Returns whether a handler ran.
+    pub fn route_pointer_lock(
+        store: &mut NodeStore,
+        states: &mut StateStore,
+        bindings: &BindingTable,
+        edits: &mut TextEdits,
+        locked: bool,
+    ) -> bool {
+        let Some((node, locked)) = store.pointer_lock_changed(locked) else {
+            return false;
+        };
+        key_handler_dispatch(
+            store,
+            states,
+            bindings,
+            edits,
+            node,
+            KeyPayload::PointerLock(locked),
+        )
+        .ran
+    }
+
+    /// End the pointer lock for the node that holds it, as Escape or the
+    /// window losing focus does ([`NodeStore::end_pointer_lock`]), telling it
+    /// through its key handler. Returns whether a handler ran.
+    pub fn route_pointer_lock_end(
+        store: &mut NodeStore,
+        states: &mut StateStore,
+        bindings: &BindingTable,
+        edits: &mut TextEdits,
+    ) -> bool {
+        let Some(node) = store.end_pointer_lock() else {
+            return false;
+        };
+        key_handler_dispatch(
+            store,
+            states,
+            bindings,
+            edits,
+            node,
+            KeyPayload::PointerLock(false),
+        )
+        .ran
+    }
+
     /// Deliver every wake whose time came ([`EventCx::wake_after`]) to its
     /// node's key handler, in the order they fired; a node gone drops its
     /// wake. Returns whether a handler ran.
@@ -2335,6 +2415,8 @@ enum KeyPayload<'e> {
     Drop(&'e crate::drag_drop::DropEvent),
     DragEnd(crate::drag_drop::DragEnd),
     Paste(&'e crate::clipboard::ClipboardData),
+    Motion(Vec2),
+    PointerLock(bool),
 }
 
 /// Call one node's key handler with `payload`, then apply everything the
@@ -2399,6 +2481,10 @@ fn call_at(
         Some(KeyPayload::Drop(event)) => EventCx::__new_drop(states, bindings, event),
         Some(KeyPayload::DragEnd(end)) => EventCx::__new_drag_end(states, bindings, end),
         Some(KeyPayload::Paste(data)) => EventCx::__new_paste(states, bindings, data),
+        Some(KeyPayload::Motion(delta)) => EventCx::__new_motion(states, bindings, delta),
+        Some(KeyPayload::PointerLock(locked)) => {
+            EventCx::__new_pointer_lock(states, bindings, locked)
+        }
     };
     cx.__set_focused(store.focused());
     cx.__set_services(store.__services());

@@ -195,6 +195,19 @@ pub trait PlatformApp {
     /// as the default arrow.
     fn set_cursor(&mut self, window: WindowId, icon: CursorIcon);
 
+    /// Lock the mouse's pointer to `window`, or (`lock` false) release it.
+    /// Locked, the cursor hides and stays where it was, and the mouse's
+    /// motion arrives as [`RawEvent::PointerMotion`] instead of moves; its
+    /// buttons and wheel still arrive, at that place. The lock ends when the
+    /// app releases it, when the window loses focus, or when the OS takes it
+    /// back; each change arrives as [`RawEvent::PointerLockChanged`], and a
+    /// lock the OS refuses (the window is not focused, the browser saw no
+    /// user gesture) as one with `locked: false`. Nothing happens where
+    /// [`PlatformCaps::pointer_lock`] is false.
+    fn set_pointer_lock(&mut self, window: WindowId, lock: bool) {
+        let _ = (window, lock);
+    }
+
     /// Tell the input method about the focused text field: where its caret
     /// is and whether it takes a secret. `None` means no text field has
     /// focus: the IME is disabled for the window.

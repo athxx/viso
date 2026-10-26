@@ -166,6 +166,9 @@ impl TapeRecorder {
             InputSample::Copy(c) => TapeInput::Copy { cut: c.cut },
             // A drag the OS ran is the OS's: a replay starts none to end.
             InputSample::DragEnded { .. } => return,
+            // Locked-pointer motion needs the platform's lock, which a replay
+            // never holds: it would reach no node.
+            InputSample::Motion { .. } => return,
             InputSample::EditMenu(e) => match e.action {
                 EditMenuAction::SelectAll => TapeInput::SelectAll,
                 EditMenuAction::Closed => TapeInput::EditMenuClosed,

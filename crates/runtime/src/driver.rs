@@ -105,6 +105,10 @@ pub trait FrameDriver {
     /// Default no-op.
     fn after_input(&mut self, _cx: &mut RuntimeCx<'_>, _window: WindowId) {}
 
+    /// The pointer lock on `window` engaged (`true`) or ended (`false`), by
+    /// the app's asking or the platform's doing. Default no-op.
+    fn on_pointer_lock(&mut self, _window: WindowId, _locked: bool) {}
+
     /// `window` became (`true`) or stopped being (`false`) the keyboard target.
     /// Default no-op.
     fn on_window_focus(&mut self, _window: WindowId, _focused: bool) {}

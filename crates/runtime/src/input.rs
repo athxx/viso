@@ -219,6 +219,9 @@ pub enum InputSample {
         window: WindowId,
         action: Option<DropAction>,
     },
+    /// The locked pointer's motion in physical pixels, right and down
+    /// positive: the pointer itself stays put while locked.
+    Motion { window: WindowId, dx: f32, dy: f32 },
 }
 
 impl InputSample {
@@ -239,7 +242,7 @@ impl InputSample {
             InputSample::Copy(c) => c.window,
             InputSample::EditMenu(e) => e.window,
             InputSample::Drop(d) => d.window,
-            InputSample::DragEnded { window, .. } => *window,
+            InputSample::DragEnded { window, .. } | InputSample::Motion { window, .. } => *window,
         }
     }
 }
