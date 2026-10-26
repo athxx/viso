@@ -8,7 +8,13 @@
 //! at a time — highlight states, folds, wrap counts — takes its line
 //! splices, so nothing is rebuilt for the lines it did not touch. What the
 //! view must redo is left in [`Pending`] for it to take.
+//!
+//! A session's language service is its own too: the service hears every
+//! edit from the session, and what it reported — the diagnostics among the
+//! decorations, the edits its answers are carried over, the wait for its
+//! next diagnostics — stays with the session, whichever view shows it.
 
+use std::cell::RefCell;
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -20,6 +26,7 @@ use crate::layout::{self, InlaySpan, LayoutRules, RowSpan};
 use crate::rope::Rope;
 use crate::search::Search;
 use crate::selection::{Selection, Selections};
+use crate::service::{Diagnostics, EditLog, LanguageService, Reply};
 
 /// How a session edits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,7 +109,7 @@ pub struct Pending {
 }
 
 impl Pending {
-    fn all() -> Pending {
+    pub(crate) fn all() -> Pending {
         Pending {
             rows: true,
             text: true,
@@ -133,6 +140,18 @@ pub struct EditEvent<'a> {
 /// Told every edit.
 pub type EditListener = Box<dyn FnMut(&EditEvent<'_>)>;
 
+/// A session's language service and what the session keeps of it.
+pub(crate) struct ServiceLink {
+    pub service: Rc<dyn LanguageService>,
+    /// The edits since, to carry an answer about an older text to the text
+    /// now; shared with the view that asks.
+    pub log: Rc<RefCell<EditLog>>,
+    /// The wait for the service's next diagnostics, polled by whichever
+    /// view shows the session: a view built again picks it up rather than
+    /// asking anew, so a report already on its way is not lost.
+    pub diagnostics: Rc<RefCell<Option<Reply<Diagnostics>>>>,
+}
+
 /// An editing session.
 pub struct Session {
     pub(crate) doc: Document,
@@ -160,6 +179,8 @@ pub struct Session {
     /// request for one shortcut is not another cut.
     pub(crate) cut_guard: bool,
     pub(crate) listeners: Vec<EditListener>,
+    /// The language service, told every edit after the listeners.
+    pub(crate) service: Option<ServiceLink>,
     /// Lexed tokens of a line, reused.
     pub(crate) scratch: Vec<Token>,
     pub(crate) decorations: crate::decoration::Decorations,
@@ -191,6 +212,7 @@ impl Session {
             line_clip: None,
             cut_guard: false,
             listeners: Vec::new(),
+            service: None,
             scratch: Vec::new(),
             decorations: Default::default(),
             widths: Vec::new(),
@@ -299,6 +321,33 @@ impl Session {
     /// Asks the view to bring the primary caret into view.
     pub fn reveal(&mut self) {
         self.pending.reveal = true;
+    }
+
+    /// Keeps `service` in step with the session from now on, or none. A
+    /// service other than the one it had starts afresh: the diagnostics the
+    /// old one reported go.
+    pub(crate) fn set_service(&mut self, service: Option<Rc<dyn LanguageService>>) {
+        let same = match (&self.service, &service) {
+            (Some(link), Some(s)) => Rc::ptr_eq(&link.service, s),
+            (None, None) => true,
+            _ => false,
+        };
+        if same {
+            return;
+        }
+        if self.service.is_some() {
+            self.decorations_mut().clear(crate::decoration::DIAGNOSTICS);
+        }
+        self.service = service.map(|service| ServiceLink {
+            service,
+            log: Rc::default(),
+            diagnostics: Rc::default(),
+        });
+    }
+
+    /// The language service and what the session keeps of it.
+    pub(crate) fn service(&self) -> Option<&ServiceLink> {
+        self.service.as_ref()
     }
 
     /// Calls `listener` with every edit from now on.
@@ -454,7 +503,7 @@ impl Session {
         self.pending.text = true;
         self.pending.cursors = true;
         self.pending.reveal = true;
-        if !self.listeners.is_empty() {
+        if !self.listeners.is_empty() || self.service.is_some() {
             let event = EditEvent {
                 before,
                 changes,
@@ -462,6 +511,11 @@ impl Session {
             };
             for l in &mut self.listeners {
                 l(&event);
+            }
+            // The service and the edit log hear every edit, in order.
+            if let Some(link) = &self.service {
+                link.service.changed(&event);
+                link.log.borrow_mut().record(self.doc.version(), changes);
             }
         }
     }

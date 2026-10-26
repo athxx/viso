@@ -47,7 +47,7 @@ use viso_ui::{
 use crate::highlight::Language;
 use crate::keymap::Command;
 use crate::service::{Definition, LanguageService};
-use crate::session::{Config, Session};
+use crate::session::{Config, Pending, Session};
 use crate::theme::Theme;
 
 use assist::Assist;
@@ -179,14 +179,19 @@ impl CodeEditor {
         self
     }
 
-    /// Put its handle in `slot` when built.
+    /// Put its handle in `slot` when built. Built again into a slot whose
+    /// editor shows the text this one starts from, or was built from the
+    /// same text, it shows that editor's session: its edits, undo history,
+    /// cursors and what its service reported stay, and `setup` is not run
+    /// again.
     pub fn handle(mut self, slot: &EditorSlot) -> Self {
         self.slot = Some(Rc::clone(slot));
         self
     }
 
     /// Ask `service` for completions, hovers, definitions, inlay hints and
-    /// diagnostics, and tell it every edit.
+    /// diagnostics, and tell it every edit. The session keeps the service:
+    /// a view built again on the same service picks up what it reported.
     pub fn service(mut self, service: Rc<dyn LanguageService>) -> Self {
         self.service = Some(service);
         self
@@ -315,6 +320,8 @@ pub(crate) struct Shared {
     on_change: RefCell<Option<OnChange>>,
     /// The document version the owner was last told of.
     told: Cell<u64>,
+    /// A key of the text the session was opened with.
+    opened: u64,
     /// The line count when the rows were last drawn.
     drawn_lines: Cell<usize>,
     /// The editor's accessible name.
@@ -528,30 +535,48 @@ impl EditorHandle {
 
 impl Component for CodeEditor {
     fn build(&self, cx: &mut BuildCx<'_>) {
-        let mut session = Session::new(&self.text);
+        let opened = text_key(&self.text);
+        // A view built again into the slot of one showing the same document
+        // shows that document's session: its edits, history and what its
+        // service reported stay.
+        let kept = self.slot.as_ref().and_then(|slot| {
+            let prev = slot.borrow().clone()?;
+            let same = prev.0.opened == opened
+                || same_text(prev.0.session.borrow().doc().text(), &self.text);
+            same.then(|| {
+                (
+                    std::mem::replace(&mut *prev.0.session.borrow_mut(), Session::new("")),
+                    prev.0.opened,
+                )
+            })
+        });
+        let fresh = kept.is_none();
+        let (mut session, opened) = match kept {
+            Some((mut session, opened)) => {
+                session.pending = Pending::all();
+                (session, opened)
+            }
+            None => (Session::new(&self.text), opened),
+        };
         session.set_config(self.config);
-        if let Some(language) = &self.language {
+        if let Some(language) = &self.language
+            && !Rc::ptr_eq(language, session.language())
+        {
             session.set_language(Rc::clone(language));
         }
-        if let Some(setup) = self.setup.as_ref().and_then(|s| s.borrow_mut().take()) {
+        if let Some(setup) = self.setup.as_ref().and_then(|s| s.borrow_mut().take())
+            && fresh
+        {
             setup(&mut session);
         }
+        session.set_service(self.service.clone());
         let assist = Assist::new(
-            self.service.clone(),
+            session.service(),
             self.on_definition
                 .as_ref()
                 .and_then(|f| f.borrow_mut().take()),
         );
-        if let Some(service) = &self.service {
-            // The service and the edit log hear every edit, in order.
-            let service = Rc::clone(service);
-            let log = Rc::clone(&assist.log);
-            session.listen(Box::new(move |event| {
-                service.changed(event);
-                log.borrow_mut()
-                    .record(event.after.version(), event.changes);
-            }));
-        }
+        let told = session.doc().version();
         let lh = (self.font_size * self.line_height).round();
         let mut metrics = Metrics {
             font_size: self.font_size,
@@ -583,7 +608,8 @@ impl Component for CodeEditor {
             blink_token: Cell::new(0),
             drag: RefCell::new(None),
             on_change: RefCell::new(self.on_change.as_ref().and_then(|c| c.borrow_mut().take())),
-            told: Cell::new(0),
+            told: Cell::new(told),
+            opened,
             drawn_lines: Cell::new(0),
             label: self.label.clone(),
             revision: Cell::new(0),
@@ -725,6 +751,28 @@ impl Component for CodeEditor {
             *slot.borrow_mut() = Some(EditorHandle(Rc::clone(&shared)));
         }
     }
+}
+
+/// A key of `text`, to tell whether a view is built from the text it was
+/// built from before.
+fn text_key(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::hash::DefaultHasher::new();
+    text.hash(&mut h);
+    h.finish()
+}
+
+/// Whether `rope` holds `text`.
+fn same_text(rope: &crate::rope::Rope, text: &str) -> bool {
+    if rope.len() != text.len() {
+        return false;
+    }
+    let mut at = 0;
+    rope.chunks(0..rope.len()).all(|chunk| {
+        let same = text.as_bytes()[at..at + chunk.len()] == *chunk.as_bytes();
+        at += chunk.len();
+        same
+    })
 }
 
 /// A run of `text` in the editor's face, in a scroll box whose extent is

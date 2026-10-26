@@ -742,9 +742,13 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
     adds an `LspClient` speaking JSON-RPC to a server over its pipes, negotiating UTF-8
     columns, sending full or incremental changes from a writer thread and answering the
     server's own requests; the widget shows a fuzzy-filtered completion list, squiggles,
-    a hover box on a resting pointer and jumps to definitions; tests drive a fake service
+    a hover box on a resting pointer and jumps to definitions; the session keeps the
+    service, its edit log and its diagnostics wait, so a view built again into the same
+    slot shows the same session with what the server reported, a report on its way
+    included; tests drive a fake service
     through the facade, `viso-lsp` over in-process pipes (diagnostics, hover, definition,
-    an edit clearing an error, and squiggles in the widget) and rust-analyzer when
+    an edit clearing an error, and squiggles in the widget kept across rebuilds on one
+    shared client) and rust-analyzer when
     installed (UTF-8, hover, inlay hint, completions and a definition after incremental
     edits); `examples/code-editor` edits a `.vs` file with `viso-lsp`, checked in a
     headless run's snapshots (highlighting, gutter, find matches, a caret and a squiggle

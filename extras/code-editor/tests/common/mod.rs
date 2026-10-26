@@ -52,8 +52,12 @@ impl Application for EditorApp {
     }
 
     fn build(&mut self, cx: &mut BuildCx<'_>) {
-        let slot = EditorSlot::default();
-        SLOT.with(|s| *s.borrow_mut() = Some(slot.clone()));
+        // One slot a run: a view built again shows the session it showed.
+        let slot = SLOT.with(|s| {
+            s.borrow_mut()
+                .get_or_insert_with(EditorSlot::default)
+                .clone()
+        });
         let text = TEXT.with(|t| t.borrow().clone());
         cx.flex(
             FlexStyle {
@@ -162,6 +166,14 @@ pub fn click(at: (f32, f32)) -> Vec<RawEvent> {
 
 pub fn run(text: &str, steps: &[Vec<RawEvent>]) -> DrivenApp<EditorApp> {
     TEXT.with(|t| *t.borrow_mut() = text.to_owned());
+    SLOT.with(|s| *s.borrow_mut() = None);
+    run_again(steps)
+}
+
+/// Drives the app again from the text the last run started from, as a
+/// window opened again builds its view anew into the slot the last run
+/// filled.
+pub fn run_again(steps: &[Vec<RawEvent>]) -> DrivenApp<EditorApp> {
     let mut script = vec![redraw(), redraw(), redraw()];
     for step in steps {
         script.extend(step.iter().cloned());
@@ -185,7 +197,10 @@ pub fn metrics() -> (f32, f32, f32) {
     if let Some(m) = CELL.with(|c| c.get()) {
         return m;
     }
+    // A plain editor: the test's setup is left to its own runs.
+    let setup = SETUP.with(|s| s.take());
     let _app = run("", &[]);
+    SETUP.with(|s| s.set(setup));
     let h = handle();
     let (cell, lh) = h.cell_size();
     let m = (cell, lh, h.text_x());

@@ -6,7 +6,9 @@
 //! loop; an answer comes back as a task's continuation, is carried over the
 //! edits made since it was asked through the edit log, and is drawn on the
 //! next pass. One inlay request and one diagnostics wait are in flight at a
-//! time, so a fast typist never queues up answers to text long gone.
+//! time, so a fast typist never queues up answers to text long gone. The
+//! diagnostics wait and the edit log are the session's, so a view built
+//! again on the session polls the wait the last one left.
 //!
 //! The hover box needs no service: a pointer resting on a diagnostic shows
 //! its message, with what the service says of the text there below it.
@@ -29,8 +31,10 @@ use super::{Nodes, Shared, text_request};
 use crate::decoration::DIAGNOSTICS;
 use crate::history::EditKind;
 use crate::selection::{Selection, Selections};
-use crate::service::{Completion, Definition, EditLog, Hover, LanguageService, Reply, Snapshot};
-use crate::session::Session;
+use crate::service::{
+    Completion, Definition, Diagnostics, EditLog, Hover, LanguageService, Reply, Snapshot,
+};
+use crate::session::{ServiceLink, Session};
 use crate::text::{CharClass, char_class};
 
 /// The rows the completion list shows at once.
@@ -52,7 +56,9 @@ pub type OnDefinition = Box<dyn FnMut(&mut dyn StateWriter, &Definition)>;
 pub(crate) struct Assist {
     pub service: Option<Rc<dyn LanguageService>>,
     pub log: Rc<RefCell<EditLog>>,
-    /// Whether a wait for diagnostics is in flight.
+    /// The session's wait for the service's next diagnostics.
+    diagnostics: Rc<RefCell<Option<Reply<Diagnostics>>>>,
+    /// Whether this view polls the wait for diagnostics.
     listening: Cell<bool>,
     /// Whether an inlay request is in flight, and what the last asked for:
     /// the version and the lines.
@@ -68,13 +74,13 @@ pub(crate) struct Assist {
 }
 
 impl Assist {
-    pub fn new(
-        service: Option<Rc<dyn LanguageService>>,
-        on_definition: Option<OnDefinition>,
-    ) -> Self {
+    /// What the editor keeps of the session's `link`: its service, its
+    /// edit log and its wait for diagnostics are the session's.
+    pub fn new(link: Option<&ServiceLink>, on_definition: Option<OnDefinition>) -> Self {
         Assist {
-            service,
-            log: Rc::new(RefCell::new(EditLog::default())),
+            service: link.map(|l| Rc::clone(&l.service)),
+            log: link.map_or_else(Rc::default, |l| Rc::clone(&l.log)),
+            diagnostics: link.map_or_else(Rc::default, |l| Rc::clone(&l.diagnostics)),
             listening: Cell::new(false),
             hints_busy: Cell::new(false),
             hints_asked: Cell::new(None),
@@ -339,8 +345,22 @@ pub(super) fn update(
     if let Some(service) = assist.service.clone() {
         if !assist.listening.get() {
             assist.listening.set(true);
+            // The wait is the session's: one a view built before started
+            // is polled on, not asked again.
+            let wait = Rc::clone(&assist.diagnostics);
+            wait.borrow_mut()
+                .get_or_insert_with(|| service.diagnostics());
+            let reply: Reply<Diagnostics> = Box::pin(std::future::poll_fn(move |cx| {
+                let mut wait = wait.borrow_mut();
+                let Some(reply) = wait.as_mut() else {
+                    return std::task::Poll::Ready(None);
+                };
+                let got = std::task::ready!(reply.as_mut().poll(cx));
+                *wait = None;
+                std::task::Poll::Ready(got)
+            }));
             let sh = Rc::clone(shared);
-            spawn(s, nodes, service.diagnostics(), move |cx, got| {
+            spawn(s, nodes, reply, move |cx, got| {
                 sh.assist.listening.set(false);
                 if let Some(d) = got {
                     let now = sh.session.borrow().doc().version();

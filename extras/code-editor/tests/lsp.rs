@@ -146,11 +146,15 @@ fn viso_lsp_reports_diagnostics_hovers_and_definitions_and_follows_edits() {
     });
 }
 
-/// The editor served by a `viso-lsp` of its own, as each build of it starts
-/// one: an app may build its view again, and a server's first report goes
-/// to the editor that asked for it.
+thread_local! {
+    static CLIENT: std::cell::RefCell<Option<Rc<LspClient>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The editor served by the test's one `viso-lsp`, whichever build of the
+/// view asks.
 fn served(e: CodeEditor) -> CodeEditor {
-    e.service(Rc::new(viso_lsp("file:///work/e.vs", SOURCE)))
+    let client = CLIENT.with(|c| c.borrow().clone()).expect("a client");
+    e.service(client)
 }
 
 fn wait(ms: u64) -> Vec<RawEvent> {
@@ -161,8 +165,30 @@ fn wait(ms: u64) -> Vec<RawEvent> {
 
 #[test]
 fn the_editor_shows_what_viso_lsp_says() {
+    let client = Rc::new(viso_lsp("file:///work/e.vs", SOURCE));
+    CLIENT.with(|c| *c.borrow_mut() = Some(client));
     setup(Some(served));
     let _app = run(SOURCE, &[focus(), wait(200)]);
+    shows_the_report();
+    // A view built again shows the session the last one showed, with what
+    // the server reported to it: the server does not report again.
+    drop(_app);
+    let _app = run_again(&[wait(50)]);
+    shows_the_report();
+    // Built again before the server answers, the view takes up the wait
+    // the session has in flight.
+    let client = Rc::new(viso_lsp("file:///work/e.vs", SOURCE));
+    CLIENT.with(|c| *c.borrow_mut() = Some(client));
+    let first = run(SOURCE, &[]);
+    drop(first);
+    let _app = run_again(&[wait(200)]);
+    shows_the_report();
+    setup(None);
+    CLIENT.with(|c| *c.borrow_mut() = None);
+}
+
+/// Whether the editor shows `viso-lsp`'s error at `missing`, squiggled.
+fn shows_the_report() {
     let h = handle();
     let errors = h.with(|s| {
         s.decorations()
@@ -183,7 +209,6 @@ fn the_editor_shows_what_viso_lsp_says() {
         drawn[3].over.iter().any(|o| o.3 < 0.0),
         "a squiggle on line 4"
     );
-    setup(None);
 }
 
 /// rust-analyzer, from `VISO_RUST_ANALYZER` or the editors that ship it.
