@@ -17,6 +17,7 @@ use viso_ui::{Drawing, Vec2};
 use crate::build::{BuildParams, EXTENT, build_layers};
 use crate::camera::TILE_SIZE;
 use crate::geojson::DataLayer;
+use crate::label::{TileLabel, extract};
 use crate::mvt::{self, VectorTile};
 use crate::pyramid::BuildKey;
 use crate::source::TileId;
@@ -31,6 +32,8 @@ pub struct Built {
     /// The app's data layers' parts in the tile.
     pub data: Vec<mvt::Layer>,
     pub drawing: Option<Drawing>,
+    /// The labels it offers, in the order they place.
+    pub labels: Vec<TileLabel>,
     /// What it holds: its mesh and, roughly, its decoded features.
     pub bytes: usize,
     pub key: BuildKey,
@@ -58,14 +61,35 @@ pub fn params_for(tile: TileId, key: BuildKey) -> (f32, f32) {
 /// The app's data layers a build cuts its tile's part of.
 pub type Data = Arc<[Arc<DataLayer>]>;
 
-/// Builds `input` of `tile` with `style` and `data` for `key` here and now.
+/// What a tile is built with besides its own features.
+#[derive(Debug)]
+pub struct Recipe {
+    pub style: Arc<Style>,
+    pub data: Data,
+    /// The languages names are picked in, each followed by its primary
+    /// subtag.
+    pub languages: Vec<String>,
+}
+
+impl Recipe {
+    /// Builds by `style` alone.
+    pub fn of(style: Style) -> Self {
+        Self {
+            style: Arc::new(style),
+            data: Arc::new([]),
+            languages: Vec::new(),
+        }
+    }
+}
+
+/// Builds `input` of `tile` by `recipe` for `key` here and now.
 pub fn build_now(
     input: Input,
     tile: TileId,
-    style: &Style,
-    data: &[Arc<DataLayer>],
+    recipe: &Recipe,
     key: BuildKey,
 ) -> Result<Built, ServiceError> {
+    let style = &*recipe.style;
     let (decoded, raw) = match input {
         Input::Bytes(bytes) => {
             let raw = bytes.len();
@@ -81,12 +105,22 @@ pub fn build_now(
         zoom,
         tile_points,
     };
-    let data: Vec<mvt::Layer> = data.iter().filter_map(|d| d.slice(tile)).collect();
+    let data: Vec<mvt::Layer> = recipe.data.iter().filter_map(|d| d.slice(tile)).collect();
     let layers: Vec<&mvt::Layer> = decoded.layers.iter().chain(&data).collect();
     let mesh = SCRATCH.with(|b| build_layers(&layers, &params, &mut b.borrow_mut()));
+    let mut labels = Vec::new();
+    extract(
+        &layers,
+        style,
+        zoom,
+        tile_points,
+        &recipe.languages,
+        &mut labels,
+    );
     let bytes = mesh.bytes()
         + decoded_bytes(&decoded).max(raw * 2)
-        + data.iter().map(layer_bytes).sum::<usize>();
+        + data.iter().map(layer_bytes).sum::<usize>()
+        + labels.len() * (std::mem::size_of::<TileLabel>() + 16);
     let drawing = (!mesh.is_empty()).then(|| {
         let mesh = Mesh::new(mesh.vertices, mesh.indices);
         Drawing::new(vec![Primitive::Mesh(mesh)], Vec2::new(EXTENT, EXTENT))
@@ -95,6 +129,7 @@ pub fn build_now(
         tile: decoded,
         data,
         drawing,
+        labels,
         bytes,
         key,
     })
@@ -119,8 +154,7 @@ fn layer_bytes(l: &mvt::Layer) -> usize {
 pub fn build_off_loop(
     input: Input,
     tile: TileId,
-    style: Arc<Style>,
-    data: Data,
+    recipe: Arc<Recipe>,
     key: BuildKey,
 ) -> (Reply<Built>, Arc<AtomicBool>) {
     let (done, answer) = reply();
@@ -131,7 +165,7 @@ pub fn build_off_loop(
             done.complete(Err(ServiceError::Cancelled));
             return;
         }
-        done.complete(build_now(input, tile, &style, &data, key));
+        done.complete(build_now(input, tile, &recipe, key));
     });
     (answer, stop)
 }
@@ -153,24 +187,25 @@ mod tests {
 
     #[test]
     fn a_tile_builds_into_one_placed_mesh_and_rebuilds_from_what_it_decoded() {
-        let style = Style::new("t", Color::WHITE).with(Layer::fill("w", "water", Color::BLACK));
+        let style =
+            Recipe::of(Style::new("t", Color::WHITE).with(Layer::fill("w", "water", Color::BLACK)));
         let tile = TileId::new(3, 1, 1);
         let key = BuildKey { style: 1, band: 3 };
-        let built = build_now(Input::Bytes(bytes()), tile, &style, &[], key).unwrap();
+        let built = build_now(Input::Bytes(bytes()), tile, &style, key).unwrap();
         let drawing = built.drawing.as_ref().unwrap();
         assert_eq!(drawing.primitives().len(), 1);
         assert_eq!(drawing.extent(), Vec2::new(EXTENT, EXTENT));
         assert!(built.bytes > 0);
-        let again = build_now(Input::Decoded(built.tile.clone()), tile, &style, &[], key).unwrap();
+        let again = build_now(Input::Decoded(built.tile.clone()), tile, &style, key).unwrap();
         assert!(Arc::ptr_eq(&again.tile, &built.tile));
-        let empty = Style::new("t", Color::WHITE);
+        let empty = Recipe::of(Style::new("t", Color::WHITE));
         assert!(
-            build_now(Input::Decoded(built.tile), tile, &empty, &[], key)
+            build_now(Input::Decoded(built.tile), tile, &empty, key)
                 .unwrap()
                 .drawing
                 .is_none()
         );
-        assert!(build_now(Input::Bytes(vec![0xff, 3]), tile, &style, &[], key).is_err());
+        assert!(build_now(Input::Bytes(vec![0xff, 3]), tile, &style, key).is_err());
     }
 
     #[test]
@@ -188,17 +223,14 @@ mod tests {
 
     #[test]
     fn a_job_runs_on_the_pool_or_inline_and_answers() {
-        let style =
-            Arc::new(Style::new("t", Color::WHITE).with(Layer::fill("w", "water", Color::BLACK)));
+        let style = Arc::new(Recipe::of(Style::new("t", Color::WHITE).with(Layer::fill(
+            "w",
+            "water",
+            Color::BLACK,
+        ))));
         let key = BuildKey { style: 1, band: 3 };
         let tile = TileId::new(3, 0, 0);
-        let (mut answer, _) = build_off_loop(
-            Input::Bytes(bytes()),
-            tile,
-            style.clone(),
-            Arc::new([]),
-            key,
-        );
+        let (mut answer, _) = build_off_loop(Input::Bytes(bytes()), tile, style.clone(), key);
         let result = loop {
             viso_ui::work::run_inline(std::time::Duration::MAX);
             if let Some(result) = answer.try_take() {
@@ -208,8 +240,7 @@ mod tests {
         };
         assert!(result.unwrap().drawing.is_some());
         if viso_ui::work::threads() == 0 {
-            let (mut answer, stop) =
-                build_off_loop(Input::Bytes(bytes()), tile, style, Arc::new([]), key);
+            let (mut answer, stop) = build_off_loop(Input::Bytes(bytes()), tile, style, key);
             stop.store(true, Ordering::Relaxed);
             viso_ui::work::run_inline(std::time::Duration::MAX);
             assert!(matches!(

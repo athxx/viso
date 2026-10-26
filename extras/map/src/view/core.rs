@@ -24,11 +24,12 @@ use viso_ui::{
     StateWriter, StructureCx, TaskId, Turn, Vec2,
 };
 
+use super::labels::Labels;
 use super::overlays::Overlays;
 use crate::camera::{Camera, Insets, Limits, Motion, TILE_SIZE, View};
 use crate::geo::LngLat;
 use crate::geojson::DataLayer;
-use crate::load::{Built, Data, Input, build_off_loop};
+use crate::load::{Built, Data, Input, Recipe, build_off_loop};
 use crate::mvt::VectorTile;
 use crate::pyramid::{BuildKey, Plan, Pyramid, Slot, covering};
 use crate::query::{QueriedFeature, query_tile};
@@ -130,6 +131,7 @@ pub(crate) enum Told {
 
 /// The nodes a view's parts go under.
 pub(crate) struct CoreNodes {
+    pub labels: NodeId,
     pub camera: NodeId,
     pub tiles: NodeId,
     pub shapes: NodeId,
@@ -144,9 +146,13 @@ pub(crate) struct Core {
     /// The tiles' parent, under the camera node.
     tiles_node: NodeId,
     pub overlays: Overlays,
+    pub labels: Labels,
     /// The app's data layers, by name, and all of them for the builds.
     data_layers: Vec<(String, Arc<DataLayer>)>,
     data: Data,
+    /// The languages labels are named in, expanded.
+    languages: Vec<String>,
+    recipe: Option<Arc<Recipe>>,
     /// The cell the view's structure hook depends on: poked to run it.
     pub wake: StateId,
     pokes: i32,
@@ -166,6 +172,8 @@ pub(crate) struct Core {
     shown: Vec<Slot>,
     scratch: Vec<(f64, Slot)>,
     tiles: Vec<TileNode>,
+    /// The drawn tiles' slots that offer labels.
+    labeled: Vec<(Slot, Ready)>,
     free_scratch: Vec<NodeId>,
 
     /// The zoom level and anchor (band points) the tiles are placed for.
@@ -213,9 +221,12 @@ impl Core {
                 root,
                 camera_node: nodes.camera,
                 tiles_node: nodes.tiles,
-                overlays: Overlays::new(nodes.shapes, nodes.accuracy, nodes.overlay),
+                overlays: Overlays::new(nodes.shapes, nodes.accuracy, nodes.overlay, nodes.labels),
+                labels: Labels::new(nodes.labels),
                 data_layers: Vec::new(),
                 data: Arc::new([]),
+                languages: Vec::new(),
+                recipe: None,
                 wake,
                 pokes: 0,
                 cells,
@@ -233,6 +244,7 @@ impl Core {
                 shown: Vec::new(),
                 scratch: Vec::new(),
                 tiles: Vec::new(),
+                labeled: Vec::new(),
                 free_scratch: Vec::new(),
 
                 band: None,
@@ -360,6 +372,11 @@ impl Core {
 
     /// Whether the frame clock should keep running.
     pub fn animating(&self) -> bool {
+        self.moving() || self.labels.fading()
+    }
+
+    /// Whether the camera moves on its own.
+    pub fn moving(&self) -> bool {
         self.motion.is_some() || self.fling.is_some()
     }
 
@@ -397,12 +414,17 @@ impl Core {
             }
         }
         self.moved |= moved;
+        if self.labels.fading() {
+            self.labels.fade_dt += dt;
+            return true;
+        }
         moved
     }
 
     /// Uses `style` from now on, rebuilding the tiles from what they hold.
     pub fn set_style(&mut self, style: Arc<Style>) {
         self.style = style;
+        self.recipe = None;
         self.style_rev += 1;
         self.dirty_tiles = true;
     }
@@ -432,8 +454,31 @@ impl Core {
             .map(|(_, d)| Arc::clone(d))
             .collect();
         self.pyramid.forget_missing();
+        self.recipe = None;
         self.style_rev += 1;
         self.dirty_tiles = true;
+    }
+
+    /// Names labels in the first of `languages` a feature has a name in.
+    pub fn set_languages(&mut self, languages: &[String]) {
+        let expanded = crate::label::expand_languages(languages);
+        if expanded != self.languages {
+            self.languages = expanded;
+            self.recipe = None;
+            self.style_rev += 1;
+            self.dirty_tiles = true;
+        }
+    }
+
+    /// What tiles build with now.
+    fn recipe(&mut self) -> Arc<Recipe> {
+        Arc::clone(self.recipe.get_or_insert_with(|| {
+            Arc::new(Recipe {
+                style: Arc::clone(&self.style),
+                data: Arc::clone(&self.data),
+                languages: self.languages.clone(),
+            })
+        }))
     }
 
     fn stop_request(&mut self, store: Option<&mut viso_ui::NodeStore>, tile: TileId) {
@@ -468,15 +513,14 @@ impl Core {
     /// holds.
     fn start(&mut self, store: &mut viso_ui::NodeStore, tile: TileId, key: BuildKey) {
         let rebuild = self.pyramid.ready(tile).map(|b| Arc::clone(&b.tile));
-        let style = Arc::clone(&self.style);
-        let data = Arc::clone(&self.data);
+        let recipe = self.recipe();
+        let has_data = !recipe.data.is_empty();
         let me = self.me.clone();
         let wake = self.wake;
         let (future, stop): (std::pin::Pin<Box<dyn std::future::Future<Output = _>>>, _) =
             match rebuild {
                 Some(decoded) => {
-                    let (answer, stop) =
-                        build_off_loop(Input::Decoded(decoded), tile, style, data, key);
+                    let (answer, stop) = build_off_loop(Input::Decoded(decoded), tile, recipe, key);
                     (
                         Box::pin(async move { answer.await.map(Some).map_err(|_| ()) }),
                         Some(stop),
@@ -492,7 +536,7 @@ impl Core {
                                 Ok(Some(bytes)) => Input::Bytes(bytes),
                                 // The app's data still draws where the
                                 // source has nothing.
-                                Ok(None) if !data.is_empty() => {
+                                Ok(None) if has_data => {
                                     Input::Decoded(Arc::new(VectorTile::default()))
                                 }
                                 Ok(None) => return Ok(None),
@@ -501,7 +545,7 @@ impl Core {
                             if stopped.load(Ordering::Relaxed) {
                                 return Err(());
                             }
-                            let (answer, flag) = build_off_loop(input, tile, style, data, key);
+                            let (answer, flag) = build_off_loop(input, tile, recipe, key);
                             let _keep = StopWith(stopped, flag);
                             answer.await.map(Some).map_err(|_| ())
                         }),
@@ -555,6 +599,7 @@ impl Core {
         let size = [f64::from(b.w), f64::from(b.h)];
         if size != self.view.size {
             self.view.size = size;
+            self.labels.due = true;
             self.constrain();
             self.moved = true;
             self.dirty_tiles = true;
@@ -648,7 +693,21 @@ impl Core {
             self.written = camera_values(&self.view.camera);
             self.cells.write(s.states, self.written);
         }
-        if self.settle_due && !self.held && !self.animating() {
+        // Labels: faded on, placed again once the camera rests, and moved
+        // with it.
+        self.labels.reduced_motion = self.reduced_motion;
+        if self.labels.fade_dt > 0.0 {
+            let dt = std::mem::take(&mut self.labels.fade_dt);
+            self.labels.fade(s, dt);
+        }
+        if self.labels.due && !self.held && !self.moving() {
+            let tiles: Vec<(Slot, &Built)> =
+                self.labeled.iter().map(|(slot, b)| (*slot, &**b)).collect();
+            self.labels.pass(s, &self.view, &tiles);
+        }
+        self.labels.follow(s, &self.view);
+        if self.settle_due && !self.held && !self.moving() {
+            self.labels.due = true;
             self.settle_due = false;
             let c = self.view.camera;
             s.store.set_semantics(self.root, self.semantics());
@@ -680,6 +739,22 @@ impl Core {
     /// Brings the camera node's children to `draw`, in order, each placed
     /// for zoom level `band`.
     fn place_tiles(&mut self, s: &mut StructureCx<'_>, draw: &[Slot], band: u8, rebase: bool) {
+        // The tiles whose labels count, drawing or not.
+        let labeled = draw.iter().filter_map(|&slot| {
+            self.pyramid
+                .ready(slot.tile)
+                .filter(|b| !b.labels.is_empty())
+                .map(|b| (slot, b))
+        });
+        let same_labels = labeled.clone().count() == self.labeled.len()
+            && labeled
+                .clone()
+                .zip(&self.labeled)
+                .all(|((s, b), (t, c))| s == *t && Rc::ptr_eq(b, c));
+        if !same_labels {
+            self.labeled = labeled.map(|(s, b)| (s, Rc::clone(b))).collect();
+            self.labels.due = true;
+        }
         self.shown.clear();
         for &slot in draw {
             if self

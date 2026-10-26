@@ -350,6 +350,34 @@ pub struct Symbol {
     pub rank: Option<String>,
     /// The space kept clear around the label, in points.
     pub padding: f32,
+    /// A plate the text sits on, such as a road's number shield.
+    pub shield: Option<Shield>,
+}
+
+/// The plate a label's text sits on.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Shield {
+    pub fill: Color,
+    pub border: Color,
+    /// The border's width, in points.
+    pub border_width: f32,
+    /// The corners' radius, in points.
+    pub radius: f32,
+    /// The space between the text and the plate's edge, in points.
+    pub padding: f32,
+}
+
+impl Shield {
+    /// A plate of `fill` edged with `border`.
+    pub const fn new(fill: Color, border: Color) -> Self {
+        Self {
+            fill,
+            border,
+            border_width: 1.0,
+            radius: 3.0,
+            padding: 2.5,
+        }
+    }
 }
 
 impl Default for Symbol {
@@ -371,6 +399,7 @@ impl Default for Symbol {
             icon_size: 14.0,
             rank: None,
             padding: 2.0,
+            shield: None,
         }
     }
 }

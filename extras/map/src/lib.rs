@@ -10,6 +10,8 @@ pub mod build;
 pub mod camera;
 pub mod geo;
 pub mod geojson;
+pub mod icons;
+pub mod label;
 pub mod load;
 pub mod mvt;
 pub mod overlay;
@@ -23,6 +25,7 @@ pub mod view;
 pub use camera::{Camera, Insets, Limits, Motion, TILE_SIZE, View};
 pub use geo::{LngLat, LngLatBounds, WorldPoint};
 pub use geojson::{GeoFeature, GeoJson, GeoJsonError, Geometry};
+pub use icons::IconSet;
 pub use overlay::{Circle, Polygon, Polyline, Puck, Shape, Stroke};
 pub use query::QueriedFeature;
 pub use source::{

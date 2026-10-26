@@ -4,6 +4,7 @@
 //!
 //! ```no_run
 //! use viso_map::{MemorySource, map_view, style::builtin};
+//! use viso_ui::Component;
 //! # fn build(cx: &mut viso_ui::BuildCx<'_>) {
 //! map_view(MemorySource::new())
 //!     .center(13.40, 52.52)
@@ -24,6 +25,7 @@
 //! turns and `N` faces north again.
 
 mod core;
+mod labels;
 mod overlays;
 
 use std::cell::RefCell;
@@ -42,6 +44,7 @@ pub use self::overlays::{Cluster, ClusterContent, Marker, MarkerContent, ShapeId
 use crate::camera::{Camera, Insets, Limits, View};
 use crate::geo::{LngLat, LngLatBounds};
 use crate::geojson::GeoJson;
+use crate::icons::IconSet;
 use crate::overlay::{Puck, Shape};
 use crate::pyramid::Slot;
 use crate::query::QueriedFeature;
@@ -215,6 +218,23 @@ impl MapHandle {
 
     /// What the view holds now: the tiles it draws, in paint order, the
     /// requests in flight and the builds it started.
+    /// Names labels in the first of `languages` (BCP 47 tags, most wanted
+    /// first) a feature has a name in, and in its local name otherwise.
+    pub fn set_languages(&self, w: &mut dyn StateWriter, languages: &[&str]) {
+        let languages: Vec<String> = languages.iter().map(|s| (*s).to_owned()).collect();
+        self.with(w, |c| c.set_languages(&languages));
+    }
+
+    /// The labels showing: their texts and places.
+    pub fn labels(&self) -> Vec<(String, LngLat)> {
+        self.core
+            .borrow()
+            .labels
+            .showing()
+            .map(|(t, w)| (t.to_owned(), w.to_lng_lat()))
+            .collect()
+    }
+
     /// The features drawn under view point `point`, within `radius` points
     /// of it, topmost first: what a tap landed on.
     pub fn features_at(&self, point: [f64; 2], radius: f64) -> Vec<QueriedFeature> {
@@ -338,6 +358,8 @@ pub struct MapView {
     cluster: Option<Cluster>,
     puck: Option<Puck>,
     data: Vec<(String, GeoJson)>,
+    languages: Vec<String>,
+    icons: Option<Rc<IconSet>>,
 }
 
 /// A map view of `source`, filling its parent, over the whole world in the
@@ -363,6 +385,8 @@ pub fn map_view(source: impl TileSource) -> MapView {
         cluster: None,
         puck: None,
         data: Vec::new(),
+        languages: Vec::new(),
+        icons: None,
     }
 }
 
@@ -489,6 +513,19 @@ impl MapView {
         self
     }
 
+    /// Names labels in the first of `languages` (BCP 47 tags, most wanted
+    /// first) a feature has a name in, and in its local name otherwise.
+    pub fn languages(mut self, languages: &[&str]) -> Self {
+        self.languages = languages.iter().map(|s| (*s).to_owned()).collect();
+        self
+    }
+
+    /// Shows labels' icons from `icons`.
+    pub fn icons(mut self, icons: IconSet) -> Self {
+        self.icons = Some(Rc::new(icons));
+        self
+    }
+
     /// Calls `f` with the camera each time it comes to rest.
     pub fn on_viewport(mut self, f: impl Fn(&mut dyn StateWriter, &Camera) + 'static) -> Self {
         self.on_viewport = Some(Rc::new(f));
@@ -557,6 +594,7 @@ impl Component for MapView {
         let mut camera_node = None;
         let mut overlay = None;
         let mut parts = None;
+        let mut labels_node = None;
         let root = cx.stack(
             StackStyle {
                 align: Alignment2D::Center,
@@ -583,13 +621,16 @@ impl Component for MapView {
                         align: Alignment2D::TopStart,
                         ..StackStyle::default()
                     },
-                    |_| {},
+                    |cx| {
+                        labels_node = Some(cx.stack(sizeless(), |_| {}).id());
+                    },
                 ));
             },
         );
         let (camera_node, overlay) = (camera_node.unwrap(), overlay.unwrap());
         let parts = parts.expect("built");
         let nodes = CoreNodes {
+            labels: labels_node.expect("built"),
             camera: camera_node.id(),
             tiles: parts[0],
             shapes: parts[1],
@@ -632,6 +673,10 @@ impl Component for MapView {
             c.overlays.set_puck(self.puck);
             for (name, data) in &self.data {
                 c.set_data(name, Some(data));
+            }
+            c.set_languages(&self.languages);
+            if let Some(icons) = &self.icons {
+                c.labels.icons = Rc::clone(icons);
             }
         }
         cx.semantics(root, core.borrow().semantics());

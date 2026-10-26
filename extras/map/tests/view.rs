@@ -28,12 +28,19 @@ type Setup = Box<dyn Fn(&mut BuildCx<'_>)>;
 
 thread_local! {
     static SETUP: RefCell<Option<Setup>> = const { RefCell::new(None) };
+    /// The faces the next app loads.
+    static FONTS: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };
 }
 
 struct MapApp;
 
 impl Application for MapApp {
-    fn new(_cx: &mut AppCx) -> Self {
+    fn new(cx: &mut AppCx) -> Self {
+        FONTS.with(|f| {
+            for face in f.borrow().iter() {
+                cx.load_font(&face[..]);
+            }
+        });
         MapApp
     }
 
@@ -194,6 +201,7 @@ fn real_tiles_draw_through_the_view() {
     let Some(dir) = support::tiles_dir() else {
         return;
     };
+    label_fonts();
     for (name, z, x, y, zoom, bearing, dark) in [
         ("berlin", 14, 8800, 5373, 14.0, 0.0, false),
         ("berlin", 12, 2200, 1343, 12.4, 25.0, true),
@@ -218,13 +226,15 @@ fn real_tiles_draw_through_the_view() {
                 })
                 .camera(Camera::new(middle(z, x, y), zoom).with_bearing(bearing))
                 .style(style)
+                .languages(&["en"])
                 .handle(&s)
                 .build(cx);
             }))
         });
-        let app = drive_scripted::<MapApp>(redraws(16), STEP);
+        let app = drive_scripted::<MapApp>(redraws(40), STEP);
         let handle = slot.borrow().clone().expect("built");
         assert!(!handle.tiles().drawn.is_empty());
+        assert!(!handle.labels().is_empty(), "{name} z{zoom}");
         picture(
             &app,
             &format!(
@@ -233,6 +243,7 @@ fn real_tiles_draw_through_the_view() {
             ),
         );
     }
+    FONTS.with(|f| f.borrow_mut().clear());
 }
 
 fn touch(id: u64, x: f64, y: f64, phase: PointerPhase) -> RawEvent {
@@ -797,4 +808,223 @@ fn geojson_draws_through_the_style_even_where_the_source_has_nothing() {
     );
     assert!(handle.features_at([100.0, 100.0], 4.0).is_empty());
     assert_eq!(handle.features_at([196.0, 240.0], 6.0).len(), 1);
+}
+
+/// Places with names in several scripts, two of them almost on top of each
+/// other, and a named road, as OpenMapTiles tiles.
+fn named(tile: TileId) -> Vec<u8> {
+    use viso_map::mvt::{GeomType, TileEncoder};
+    let n = f64::from(1u32 << tile.z);
+    let local = |p: LngLat| {
+        let w = p.to_world();
+        [
+            ((w.x * n - f64::from(tile.x)) * 4096.0).round() as i32,
+            ((w.y * n - f64::from(tile.y)) * 4096.0).round() as i32,
+        ]
+    };
+    let places: [(f64, f64, &str, &str, &str, f64); 6] = [
+        (13.400, 52.520, "city", "Berlin", "ベルリン", 1.0),
+        (13.4005, 52.5201, "town", "Shadowed", "", 9.0),
+        (13.380, 52.530, "town", "Αθήνα", "", 2.0),
+        (13.420, 52.530, "town", "القاهرة", "", 3.0),
+        (13.380, 52.508, "town", "Москва", "", 4.0),
+        (13.420, 52.508, "town", "北京", "", 5.0),
+    ];
+    let mut t = TileEncoder::new();
+    let mut l = t.layer("place", 4096);
+    for (lon, lat, class, name, ja, rank) in places {
+        let p = local(LngLat::new(lon, lat));
+        if !(0..4096).contains(&p[0]) || !(0..4096).contains(&p[1]) {
+            continue;
+        }
+        let mut props = vec![
+            ("class", class.into()),
+            ("name", name.into()),
+            ("rank", rank.into()),
+        ];
+        if !ja.is_empty() {
+            props.push(("name:ja", ja.into()));
+        }
+        l.feature(None, GeomType::Point, &[&[p]], &props);
+    }
+    l.finish();
+    let mut l = t.layer("transportation_name", 4096);
+    let a = local(LngLat::new(13.385, 52.514));
+    let b = local(LngLat::new(13.415, 52.514));
+    l.feature(
+        None,
+        GeomType::Line,
+        &[&[a, b]],
+        &[("name", "Unter den Linden".into())],
+    );
+    l.finish();
+    t.finish()
+}
+
+/// A face for the scripts the labels are in: a system one with them all
+/// where there is one, else one for Latin, Greek and Cyrillic.
+fn label_fonts() -> bool {
+    let wide = [
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "/Library/Fonts/Arial Unicode.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+    ]
+    .iter()
+    .find_map(|p| std::fs::read(p).ok());
+    let all = wide.is_some();
+    FONTS.with(|f| {
+        *f.borrow_mut() = wide.into_iter().collect();
+        f.borrow_mut().push(
+            include_bytes!("../../../crates/text/tests/fixtures/DejaVuSans-subset.ttf").to_vec(),
+        );
+    });
+    all
+}
+
+#[test]
+fn labels_show_in_the_readers_language_without_overlapping_and_stay_upright() {
+    let every_script = label_fonts();
+    let start = berlin(13.0, 0.0);
+    let slot = MapHandleSlot::default();
+    let s = Rc::clone(&slot);
+    SETUP.with(|setup| {
+        *setup.borrow_mut() = Some(Box::new(move |cx| {
+            map_view(|tile: TileId| viso_map::Reply::ready(Ok(Some(named(tile)))))
+                .camera(start)
+                .languages(&["ja-JP"])
+                .handle(&s)
+                .build(cx);
+        }))
+    });
+    let app = drive_scripted::<MapApp>(redraws(30), STEP);
+    picture(&app, "labels-z13");
+    let handle = slot.borrow().clone().expect("built");
+    let mut texts: Vec<String> = handle.labels().into_iter().map(|l| l.0).collect();
+    texts.sort();
+    texts.dedup();
+    assert_eq!(
+        texts,
+        [
+            "Unter den Linden",
+            "Αθήνα",
+            "Москва",
+            "القاهرة",
+            "ベルリン",
+            "北京"
+        ],
+        "the shadowed town loses to the city over it"
+    );
+    // Turned past a quarter, the road's name turns back to read upright.
+    let mut script = redraws(30);
+    script.extend(key(
+        KeyCode::Right,
+        Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        },
+    ));
+    for _ in 0..8 {
+        script.extend(key(
+            KeyCode::Right,
+            Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            },
+        ));
+        script.extend(redraws(20));
+    }
+    script.splice(
+        0..0,
+        [
+            mouse(320.0, 240.0, PointerPhase::Down, Modifiers::default()),
+            mouse(320.0, 240.0, PointerPhase::Up, Modifiers::default()),
+        ],
+    );
+    let app = drive_scripted::<MapApp>(script, STEP);
+    let handle = slot.borrow().clone().expect("built");
+    assert!(
+        (handle.camera().bearing - 135.0).abs() < 1e-6,
+        "{:?}",
+        handle.camera()
+    );
+    FONTS.with(|f| f.borrow_mut().clear());
+    let px = picture(&app, "labels-z13-b135");
+    assert!(handle.labels().iter().any(|l| l.0 == "Unter den Linden"));
+    // Every label drew: dark text where each sits.
+    if every_script {
+        for (text, place) in handle.labels() {
+            let p = handle.view().project(place);
+            if p[0] < 10.0 || p[1] < 10.0 || p[0] > W - 10.0 || p[1] > H - 10.0 {
+                continue;
+            }
+            let ink = (-6..=6)
+                .flat_map(|dx| (-4..=4).map(move |dy| (dx, dy)))
+                .filter(|&(dx, dy)| {
+                    let c = rgb_at(&px, [p[0] + f64::from(dx), p[1] + f64::from(dy)]);
+                    c.iter().all(|&v| v < 140)
+                })
+                .count();
+            assert!(ink > 0, "{text} drew nothing at {p:?}");
+        }
+    }
+}
+
+#[test]
+fn a_label_shows_its_svg_icon_over_its_text() {
+    use viso_map::IconSet;
+    use viso_map::mvt::{GeomType, TileEncoder};
+    use viso_map::style::{Color, Layer, Prop, Style, Symbol};
+    label_fonts();
+    let start = berlin(16.0, 0.0);
+    let cafe = start.center;
+    let source = move |tile: TileId| {
+        let n = f64::from(1u32 << tile.z);
+        let w = cafe.to_world();
+        let p = [
+            ((w.x * n - f64::from(tile.x)) * 4096.0).round() as i32,
+            ((w.y * n - f64::from(tile.y)) * 4096.0).round() as i32,
+        ];
+        let mut t = TileEncoder::new();
+        let mut l = t.layer("poi", 4096);
+        if (0..4096).contains(&p[0]) && (0..4096).contains(&p[1]) {
+            l.feature(None, GeomType::Point, &[&[p]], &[("name", "Café".into())]);
+        }
+        l.finish();
+        viso_map::Reply::ready(Ok(Some(t.finish())))
+    };
+    let square = br##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="#000"/></svg>"##;
+    let slot = MapHandleSlot::default();
+    let s = Rc::clone(&slot);
+    SETUP.with(|setup| {
+        *setup.borrow_mut() = Some(Box::new(move |cx| {
+            let poi = Symbol {
+                icon: Some(Prop::Const("cafe".to_owned())),
+                icon_color: Prop::Const(Color::rgb(0xff, 0, 0)),
+                icon_size: 16.0,
+                ..Symbol::default()
+            };
+            map_view(source)
+                .camera(start)
+                .style(Style::new("icons", Color::WHITE).with(Layer::symbol("poi", "poi", poi)))
+                .icons(IconSet::new().svg("cafe", square, true).unwrap())
+                .handle(&s)
+                .build(cx);
+        }))
+    });
+    let app = drive_scripted::<MapApp>(redraws(30), STEP);
+    FONTS.with(|f| f.borrow_mut().clear());
+    let px = picture(&app, "labels-icon");
+    let handle = slot.borrow().clone().expect("built");
+    assert_eq!(handle.labels().len(), 1);
+    // The icon is red on its place, the text dark under it.
+    assert!(
+        reddish(rgb_at(&px, [320.0, 240.0])),
+        "{:?}",
+        rgb_at(&px, [320.0, 240.0])
+    );
+    let ink = (248..270)
+        .flat_map(|y| (300..340).map(move |x| [f64::from(x), f64::from(y)]))
+        .filter(|&p| rgb_at(&px, p).iter().all(|&v| v < 120))
+        .count();
+    assert!(ink > 10, "{ink}");
 }

@@ -13,7 +13,7 @@ use crate::mvt::{GeomType, Value};
 #[cfg(test)]
 use super::Paint;
 use super::{
-    Cap, Cmp, Color, Filter, FontWeight, Layer, Placement, Prop, Style, Symbol, TextField,
+    Cap, Cmp, Color, Filter, FontWeight, Layer, Placement, Prop, Shield, Style, Symbol, TextField,
 };
 
 /// The colors a built-in style draws with.
@@ -661,6 +661,35 @@ fn build(name: &str, s: &Schema, p: &Palette) -> Style {
             .layers
             .push(Layer::symbol("waterway-name", "water_lines_labels", water));
     }
+    // Road numbers on shields, along the main roads.
+    let shield = Symbol {
+        text: Some(TextField::Key("ref".into())),
+        size: Prop::Const(10.0),
+        color: Prop::Const(if p.dark {
+            Color::hex(0xe8e8e8)
+        } else {
+            Color::hex(0x333333)
+        }),
+        halo_width: Prop::Const(0.0),
+        weight: FontWeight::Bold,
+        placement: Placement::Line,
+        spacing: 640.0,
+        padding: 4.0,
+        shield: Some(Shield::new(
+            if p.dark {
+                Color::hex(0x3a3d42)
+            } else {
+                Color::WHITE
+            },
+            p.major_casing,
+        )),
+        ..Symbol::default()
+    };
+    style.layers.push(
+        Layer::symbol("road-shield", s.road_names, shield)
+            .zooms(10.0, 24.0)
+            .filter(Filter::Has("ref".into())),
+    );
     let mut road = text(
         s,
         Prop::exp(1.2, [(13.0, 10.0), (18.0, 14.0)]),

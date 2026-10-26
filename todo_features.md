@@ -781,10 +781,21 @@ viso-ext.
   `style` (typed props with zoom stops and data values, filters) and `builtin`
   (OpenMapTiles and Shortbread, light and dark). `MapHandle::set_style` rebuilds the shown
   tiles from what they decoded without fetching again (tested).
-- [ ] Labels and symbols: point and line-following labels shaped by `viso-text`
+- [x] Labels and symbols: point and line-following labels shaped by `viso-text`
   (scripts, CJK, `name:xx` fallback to the reader's locale), collision with priority,
   kept upright under rotation, fade in and out, SVG icons and road shields, a label
   pass per camera change bounded in time.
+  `label.rs` picks each symbol layer's text on the worker (`name:xx` by the reader's
+  `languages`, each tag then its primary subtag, then `name`; the chosen language sets the
+  text's locale) and where it sits: points, polygon centroids, the middle of a line, or
+  along a line every `spacing` where it runs straight. `view/labels.rs` places them when the
+  camera rests, later layers and lower ranks first, against a grid of the boxes taken and
+  within 4 ms, then moves them with the camera; line labels turn with the map and are kept
+  upright, labels fade in and out (at once under reduced motion). Text is `viso-text` runs
+  over four offset halo copies; `IconSet` takes SVG icons (tinted or not) and a built-in dot;
+  road numbers sit on shields. Line labels are straight along their stretch, not bent glyph
+  by glyph. Headless pictures (Latin, Greek, Cyrillic, Arabic, Japanese, Chinese; turned;
+  icon) and unit tests.
 - [ ] Raster and terrain: raster XYZ layers (PNG, JPEG, WebP), hillshade from DEM
   tiles (Terrarium and Mapbox RGB encodings).
 - [x] Overlays: markers that are ordinary components anchored at lon/lat, polylines
@@ -810,14 +821,26 @@ viso-ext.
 - [ ] Tilt and 3D (after W14): pitch with perspective, extruded buildings, 3D terrain.
 - [ ] Performance: a pan or rotate frame uploads nothing and allocates nothing; tile
   build and label budgets; memory caps; benches beside makepad's map example.
-- [ ] `viso-ext/viso-tiles`: PMTiles v3 (local file and HTTP range reads), MBTiles
+- [x] `viso-ext/viso-tiles`: PMTiles v3 (local file and HTTP range reads), MBTiles
   (read-only SQLite), XYZ over HTTP through `viso-net` with a disk cache, offline region
   downloads with progress.
-- [ ] `viso-ext/viso-map-nav`: place and address search with prefix completion and
+  PMTiles v3 (file, bytes, HTTP range; a byte-capped LRU of leaf directories), MBTiles
+  through its own SQLite format reader and writer (no C, passes sqlite3 integrity_check), XYZ
+  over `viso-net` with an ETag/max-age disk cache, TileJSON, resumable offline downloads;
+  PMTiles lookups take 0.4–1 µs.
+- [x] `viso-ext/viso-map-nav`: place and address search with prefix completion and
   categories, a routing graph built from OSM (car, bike, foot, turn restrictions), A*
   routes, turn-by-turn maneuvers, a navigation session (map matching, progress,
   off-route and reroute), elevation profiles from DEM tiles.
-- [ ] Map data tooling in viso-ext: OSM PBF of a region → a PMTiles base map, a search
+  Prefix search with typo tolerance (category words in seven languages, 0.6–1.5 ms), an
+  OSM road graph (per mode, one-ways, barriers, turn restrictions), A* with ALT (1–2 ms
+  across Luxembourg, within 1–10% of OSRM; contraction hierarchies were measured and not
+  taken, having no turn costs), turn-by-turn maneuvers, `NavSession` (map matching, ETA,
+  off-route, reroute), elevation profiles from SRTM and terrain-RGB.
+- [x] Map data tooling in viso-ext: OSM PBF of a region → a PMTiles base map, a search
   index and a routing graph.
+  `viso-map-build` reads PBF with its own parallel streaming reader and writes Shortbread
+  MVT (PMTiles or MBTiles), a search index and a road graph, with ocean polygons,
+  multipolygons, and per-zoom simplification and merging; Luxembourg takes 3–5 s.
 - [ ] Example: an offline navigator (search, long-press to route, simulated drive with
   turn banners) run on desktop, mobile and the web.

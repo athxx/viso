@@ -148,6 +148,8 @@ struct ClusterEntry {
 
 /// A view's overlays.
 pub(crate) struct Overlays {
+    /// The labels' parent, first in the overlay: the puck goes after it.
+    labels_node: NodeId,
     shapes_node: NodeId,
     accuracy_node: NodeId,
     overlay: NodeId,
@@ -259,8 +261,14 @@ fn pin(s: &mut StructureCx<'_>, node: NodeId, p: [f64; 2], shown: &mut Option<[f
 }
 
 impl Overlays {
-    pub fn new(shapes_node: NodeId, accuracy_node: NodeId, overlay: NodeId) -> Self {
+    pub fn new(
+        shapes_node: NodeId,
+        accuracy_node: NodeId,
+        overlay: NodeId,
+        labels_node: NodeId,
+    ) -> Self {
         Self {
+            labels_node,
             shapes_node,
             accuracy_node,
             overlay,
@@ -540,10 +548,10 @@ impl Overlays {
                     let drawing = puck_drawing(heading, &mut self.builder);
                     let mut cx = BuildCx::with_parent(s.store, s.states, s.bindings, self.overlay);
                     let node = cx.drawing(Size::fixed(PUCK_SIDE, PUCK_SIDE), drawing).id();
-                    // Beneath the markers.
+                    // Over the labels, beneath the markers.
                     s.store.arena_detach(node);
-                    let first = s.store.arena().children(self.overlay).next();
-                    s.store.arena_insert_before(self.overlay, node, first);
+                    let next = s.store.arena().next_sibling(self.labels_node);
+                    s.store.arena_insert_before(self.overlay, node, next);
                     self.puck_node = Some((node, heading));
                 }
                 if p.accuracy > 0.0
