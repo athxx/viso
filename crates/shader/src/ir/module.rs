@@ -1251,6 +1251,41 @@ static SCENE_SKINNED_DEPTH_BINDINGS: SceneBindings = SceneBindings {
     samplers: SCENE_DEPTH_BINDINGS.samplers,
 };
 
+/// The sky's uniform block, `sky`: `viso_gpu_abi::scene::SkyUniforms`,
+/// its column-major inverse view-projection as four columns.
+const SCENE_SKY: IrBlock = IrBlock {
+    name: "sky",
+    struct_name: "SkyBlock",
+    fields: &[
+        IrField::new("inv_view_proj0", IrType::F32X4),
+        IrField::new("inv_view_proj1", IrType::F32X4),
+        IrField::new("inv_view_proj2", IrType::F32X4),
+        IrField::new("inv_view_proj3", IrType::F32X4),
+        IrField::new("perez_y", IrType::F32X4),
+        IrField::new("perez_x", IrType::F32X4),
+        IrField::new("perez_yc", IrType::F32X4),
+        IrField::new("perez_e", IrType::F32X4),
+        IrField::new("zenith", IrType::F32X4),
+        IrField::new("sun_model", IrType::F32X4),
+        IrField::new("sun", IrType::F32X4),
+        IrField::new("sun_radiance", IrType::F32X4),
+        IrField::new("blend", IrType::F32X4),
+    ],
+};
+
+/// A screen program's varyings: its clip-space position over the target.
+static SCENE_SCREEN_VARYINGS: &[Varying] = &[
+    Varying::new("position", IrType::F32X4, " [[position]]", ""),
+    Varying::new("ndc", IrType::F32X2, "", ""),
+];
+
+/// The sky program's resources past the frame's: its block.
+static SCENE_SKY_BINDINGS: SceneBindings = SceneBindings {
+    blocks: &[SCENE_SKY],
+    textures: &[],
+    samplers: &[],
+};
+
 /// A scene program over vertices `attributes`.
 fn scene_program(
     attributes: &'static [IrField],
@@ -1335,13 +1370,29 @@ pub fn scene_skinned_depth_ir() -> ShaderIr {
     )
 }
 
+/// The sky behind a scene's meshes
+/// (`viso_gpu_abi::scene::SceneProgram::Sky`): a triangle over the target
+/// at the far plane, each fragment the Preetham sky along its view ray, as
+/// `viso_gpu_abi::scene::shade_sky` computes it.
+pub fn scene_sky_ir() -> ShaderIr {
+    scene_program(
+        SCENE_ATTRS,
+        SCENE_SCREEN_VARYINGS,
+        &SCENE_SKY_BINDINGS,
+        SCENE_SCREEN_VERTEX_BODY,
+        SCENE_HELPERS,
+        SCENE_SKY_FRAGMENT_BODY,
+    )
+}
+
 /// The scene lane's programs past its mesh program (the [`PrimitiveKind::Scene`]
 /// built-in), in `viso_gpu_abi::scene::SceneProgram` order from code 1.
-pub fn scene_program_irs() -> [ShaderIr; 3] {
+pub fn scene_program_irs() -> [ShaderIr; 4] {
     [
         scene_depth_ir(),
         scene_skinned_ir(),
         scene_skinned_depth_ir(),
+        scene_sky_ir(),
     ]
 }
 
@@ -2716,6 +2767,77 @@ const SCENE_VERTEX_BODY: &str = concat!(scene_vertex_head!(), scene_mesh_tail!()
 const SCENE_SKINNED_VERTEX_BODY: &str = concat!(scene_skinned_head!(), scene_mesh_tail!());
 const SCENE_DEPTH_VERTEX_BODY: &str = concat!(scene_vertex_head!(), scene_depth_tail!());
 const SCENE_SKINNED_DEPTH_VERTEX_BODY: &str = concat!(scene_skinned_head!(), scene_depth_tail!());
+
+/// A screen program's vertex body: the vertex's position is its clip-space
+/// `x` and `y`, at the far plane; its instance is unread.
+const SCENE_SCREEN_VERTEX_BODY: &str = "\
+VertexIn v = verts[vid];
+InstanceIn inst = instances[iid];
+float3 p = float3(v.position);
+VOut out;
+out.position = float4(p.x, p.y, 0.0, 1.0);
+out.ndc = float2(p.x, p.y);
+return out;";
+
+const SCENE_SKY_FRAGMENT_BODY: &str = "\
+// The view ray: from the near plane toward twice as far in depth.
+float2 ndc = in.ndc;
+float4 i0 = float4(sky.inv_view_proj0);
+float4 i1 = float4(sky.inv_view_proj1);
+float4 i2 = float4(sky.inv_view_proj2);
+float4 i3 = float4(sky.inv_view_proj3);
+float4 pn = i0 * ndc.x + i1 * ndc.y + i2 * 1.0 + i3;
+float4 pf = i0 * ndc.x + i1 * ndc.y + i2 * 0.5 + i3;
+float3 d = normalize(pf.xyz / pf.w - pn.xyz / pn.w);
+
+// The Perez functions of the luminance and the two chromaticities.
+float altitude = d.y;
+float cos_theta = max(altitude, 0.01);
+float cos_gamma = clamp(dot(d, float4(sky.sun_model).xyz), -1.0, 1.0);
+float gamma = acos(cos_gamma);
+float4 py = float4(sky.perez_y);
+float4 px = float4(sky.perez_x);
+float4 pc = float4(sky.perez_yc);
+float4 pe = float4(sky.perez_e);
+float4 zen = float4(sky.zenith);
+float big_y = zen.x * ((1.0 + py.x * exp(py.y / cos_theta))
+    * (1.0 + py.z * exp(py.w * gamma) + pe.x * cos_gamma * cos_gamma)) * pe.w;
+float cx = zen.y * ((1.0 + px.x * exp(px.y / cos_theta))
+    * (1.0 + px.z * exp(px.w * gamma) + pe.y * cos_gamma * cos_gamma));
+float cy = max(zen.z * ((1.0 + pc.x * exp(pc.y / cos_theta))
+    * (1.0 + pc.z * exp(pc.w * gamma) + pe.z * cos_gamma * cos_gamma)), 0.0001);
+float below = clamp(-altitude * 3.0, 0.0, 1.0);
+
+// xyY to XYZ to linear sRGB.
+float big_x = cx * (big_y / cy);
+float big_z = (1.0 - cx - cy) * (big_y / cy);
+float4 blend = float4(sky.blend);
+float day_weight = (1.0 - below * zen.w) * blend.x;
+float3 day = float3(max(3.2406 * big_x - 1.5372 * big_y - 0.4986 * big_z, 0.0),
+    max(-0.9689 * big_x + 1.8758 * big_y + 0.0415 * big_z, 0.0),
+    max(0.0557 * big_x - 0.204 * big_y + 1.057 * big_z, 0.0)) * day_weight;
+
+// The night dome as the day fades, and the twilight's glow.
+float height = sqrt(max(altitude, 0.0));
+float night_weight = (1.0 - blend.x) * (1.0 - 0.55 * below);
+float4 sun = float4(sky.sun);
+float facing = dot(d, sun.xyz);
+float sun_gamma = acos(clamp(facing, -1.0, 1.0));
+float glow = exp(-abs(altitude) * 7.0) * exp(-sun_gamma * 3.5);
+float3 night = float3(0.0035, 0.0055, 0.011)
+    + (float3(0.001, 0.0018, 0.0045) - float3(0.0035, 0.0055, 0.011)) * height;
+float3 dusk = (float3(0.01, 0.018, 0.045) * (0.35 + 0.65 * height)
+    + float3(0.1, 0.032, 0.006) * glow) * blend.y;
+float3 c = day + night * night_weight + dusk;
+
+// The sun's disc, its rim smoothed, by the angle from its centre.
+if (sun.w > 0.0 && facing > 0.0) {
+    float angle = length(cross(d, sun.xyz));
+    float t = clamp((angle - sun.w * 0.85) / (sun.w * 1.15 - sun.w * 0.85), 0.0, 1.0);
+    c = c + float4(sky.sun_radiance).xyz * (1.0 - t * t * (3.0 - 2.0 * t));
+}
+float3 m = tonemap(c * float4(u.camera).w);
+return float4(clamp(m, 0.0, 1.0), 1.0);";
 
 const SCENE_HELPERS: &str = "\
 // The GGX distribution of microfacet normals at `nh`, for roughness squared

@@ -28,7 +28,7 @@ use viso_gpu::{
     CpuRaster, CullMode, DepthState, FilterMode, GpuBackend, GpuPod, LoadOp, PipelineDesc,
     SamplerDesc, ShaderCode, TextureDesc, TextureFormat,
 };
-use viso_render::scene3d::Environment;
+use viso_render::scene3d::{Camera, Environment, Mat4, Sky, vec3};
 
 #[repr(C)]
 #[derive(Clone, Copy, GpuPod)]
@@ -658,6 +658,187 @@ fn draw<B: GpuBackend>(
     together
 }
 
+/// The sky of a low sun ahead of the camera, its disc in view, drawn by
+/// `gpu` with the sky program `code` over the target as BGRA8 bytes read
+/// back by `read`.
+fn draw_sky<B: GpuBackend>(
+    gpu: &mut B,
+    code: ShaderCode,
+    read: impl Fn(&mut B, viso_gpu::TextureId) -> Vec<u8>,
+) -> Vec<u8> {
+    let texture = |gpu: &mut B, format, label| {
+        gpu.create_texture(&TextureDesc {
+            width: W,
+            height: H,
+            format,
+            render_target: true,
+            label,
+        })
+    };
+    let target = texture(gpu, TextureFormat::Bgra8Unorm, "sky");
+    let depth = texture(gpu, TextureFormat::Depth32Float, "sky-depth");
+    let buffer = |gpu: &mut B, bytes: &[u8], usage| {
+        let b = gpu.create_buffer(&BufferDesc {
+            size: bytes.len(),
+            usage: usage | BufferUsage::CPU_WRITE,
+            label: "sky",
+        });
+        gpu.write_buffer(b, 0, bytes);
+        b
+    };
+    let env = environment();
+    // A camera looking out a little above the horizon, toward the low sun.
+    let camera = Camera {
+        eye: vec3(0.0, 1.0, 0.0),
+        target: vec3(-0.45, 1.25, -1.0),
+        ..Camera::default()
+    };
+    let frame = FrameUniforms {
+        view_proj: camera.view_proj(W as f32 / H as f32).v,
+        ..uniforms(&env)
+    };
+    let mut frame_bytes = [0u8; FrameUniforms::SIZE];
+    frame.write_to(&mut frame_bytes);
+    let sky = Sky {
+        sun: vec3(-0.3, 0.12, -1.0),
+        ..Sky::default()
+    };
+    let mut block = sky.uniforms(&Mat4 { v: frame.view_proj }.invert().v);
+    // A disc a few pixels across at this size.
+    block.sun[3] = 0.03;
+    let mut sky_bytes = [0u8; viso_gpu::scene::SkyUniforms::SIZE];
+    block.write_to(&mut sky_bytes);
+    let corner = |x: f32, y: f32| SceneVertex {
+        position: [x, y, 0.0],
+        ..SceneVertex::default()
+    };
+    let screen = [corner(-1.0, -1.0), corner(3.0, -1.0), corner(-1.0, 3.0)];
+    let vertex_bytes = bytes(&screen, SceneVertex::write_to, SceneVertex::SIZE);
+    let index_bytes: Vec<u8> = [0u16, 1, 2, 0]
+        .iter()
+        .flat_map(|i| i.to_le_bytes())
+        .collect();
+    let instance_bytes = bytes(
+        &[SceneInstance::default()],
+        SceneInstance::write_to,
+        SceneInstance::SIZE,
+    );
+    let vertex_buffer = buffer(gpu, &vertex_bytes, BufferUsage::VERTEX);
+    let index_buffer = buffer(gpu, &index_bytes, BufferUsage::INDEX);
+    let instance_buffer = buffer(gpu, &instance_bytes, BufferUsage::INSTANCE);
+    let frame_buffer = buffer(gpu, &frame_bytes, BufferUsage::UNIFORM);
+    let sky_buffer = buffer(gpu, &sky_bytes, BufferUsage::UNIFORM);
+    let white = gpu.create_texture(&TextureDesc {
+        width: 1,
+        height: 1,
+        format: TextureFormat::Rgba8Unorm,
+        render_target: false,
+        label: "white",
+    });
+    gpu.write_texture(white, 0, 0, 1, 1, &[255; 4]);
+    let linear = gpu.create_sampler(&SamplerDesc::LINEAR_CLAMP);
+    let mut bindings = vec![
+        Binding::Uniform(frame_buffer),
+        Binding::Uniform(sky_buffer),
+        Binding::Uniform(sky_buffer),
+    ];
+    bindings.extend([Binding::Texture(white); scene::TEXTURE_SLOTS]);
+    bindings.extend([Binding::Sampler(linear); scene::SAMPLER_SLOTS]);
+    let group = gpu.create_bind_group(&BindGroupDesc {
+        label: "sky",
+        bindings,
+    });
+    let pipeline = gpu
+        .create_pipeline(
+            &PipelineDesc {
+                label: "sky",
+                builtin: BuiltinShader::Scene,
+                variant: SceneProgram::Sky as u32,
+                code,
+                vertex_entry: "vertex_main",
+                fragment_entry: "fragment_main",
+                color_format: TextureFormat::Bgra8Unorm,
+                depth: Some(DepthState {
+                    format: TextureFormat::Depth32Float,
+                    compare: viso_gpu::CompareFunction::GreaterEqual,
+                    write: false,
+                }),
+                cull: CullMode::None,
+                blend: BlendMode::Replace,
+                instance_schema: SceneProgram::Sky.vertex_schema(),
+            },
+            &Vertex::LAYOUT,
+        )
+        .expect("the vertex layout matches");
+    let commands = [DrawCommand {
+        pipeline,
+        bind_group: Some(group),
+        geometry: Geometry::InstancedMesh {
+            vertex_buffer,
+            index_buffer,
+            index_format: IndexFormat::U16,
+            index_offset: 0,
+            index_count: 3,
+            count: 1,
+        },
+        instance_buffer,
+        instance_offset: 0,
+        uniforms: InlineUniforms::EMPTY,
+        scissor: None,
+    }];
+    gpu.encode(&DrawList {
+        commands: &commands,
+        passes: &[RenderPass {
+            target: RenderTarget::Texture(target),
+            load: LoadOp::Clear([0.0, 0.0, 0.0, 1.0]),
+            depth: Some(DepthAttachment {
+                texture: depth,
+                clear: 0.0,
+            }),
+            first_command: 0,
+            command_count: 1,
+        }],
+    });
+    read(gpu, target)
+}
+
+fn cpu_sky() -> Vec<u8> {
+    let image = draw_sky(&mut CpuRaster::new(), ShaderCode::None, |gpu, t| {
+        gpu.read_texture(t)
+    });
+    shot("lane-sky-cpu", &image);
+    image
+}
+
+#[test]
+fn the_sky_is_bright_toward_the_sun_and_blue_overhead() {
+    let image = cpu_sky();
+    let at = |x: u32, y: u32| {
+        let i = ((y * W + x) * 4) as usize;
+        [image[i + 2], image[i + 1], image[i]]
+    };
+    // Every pixel is sky; the brightest near the sun, warm.
+    let lum = |c: [u8; 3]| u32::from(c[0]) + u32::from(c[1]) + u32::from(c[2]);
+    let (mut best, mut at_best) = (0, (0, 0));
+    for y in 0..H {
+        for x in 0..W {
+            if lum(at(x, y)) > best {
+                (best, at_best) = (lum(at(x, y)), (x, y));
+            }
+        }
+    }
+    let sun = at(at_best.0, at_best.1);
+    assert!(
+        sun[0] >= 250 && sun[1] > 200,
+        "the sun's disc: {sun:?} at {at_best:?}"
+    );
+    let top = at(W - 4, 1);
+    assert!(
+        top[2] > top[0],
+        "the sky away from the sun leans blue: {top:?}"
+    );
+}
+
 /// How far two BGRA8 images are apart: the share of pixels with a channel
 /// more than `tolerance` off, and the worst channel difference.
 fn compare(a: &[u8], b: &[u8], tolerance: u8) -> (f32, u8) {
@@ -939,6 +1120,24 @@ mod metal {
         };
         let (source, _) = msl::write_string(&module, &info, &options, &pipeline).unwrap();
         naga_pull::strip_pull_bounds(&source)
+    }
+
+    #[test]
+    fn metal_and_the_translated_wgsl_draw_the_cpu_raster_s_sky() {
+        let reference = cpu_sky();
+        let msl = scene_program_code(SceneProgram::Sky, ShaderLang::Msl);
+        let wgsl = Box::leak(translated(SceneProgram::Sky).into_boxed_str());
+        for (what, code) in [("msl", msl), ("translated wgsl", ShaderCode::Msl(wgsl))] {
+            let mut gpu = MetalBackend::new();
+            let image = draw_sky(&mut gpu, code, |gpu, t| gpu.read_texture(t));
+            shot(&format!("lane-sky-{}", what.replace(' ', "-")), &image);
+            let (off, worst) = compare(&reference, &image, 3);
+            assert!(
+                off < 0.01,
+                "{what}: {:.2}% of pixels differ, worst by {worst}",
+                off * 100.0
+            );
+        }
     }
 
     #[test]

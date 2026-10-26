@@ -18,8 +18,8 @@ use crate::resource::{
 };
 use crate::scene::{
     FrameUniforms, MaterialUniforms, MeshFragment, SAMPLER_SLOTS, SceneInstance, SceneProgram,
-    SceneTextures, SceneVertex, SkinnedVertex, TEXTURE_SAMPLERS, TEXTURE_SLOTS, UNIFORM_SLOTS,
-    normalize, shade_depth, shade_mesh, skin_vertex,
+    SceneTextures, SceneVertex, SkinnedVertex, SkyUniforms, TEXTURE_SAMPLERS, TEXTURE_SLOTS,
+    UNIFORM_SLOTS, normalize, shade_depth, shade_mesh, shade_sky, skin_vertex,
 };
 
 /// The varyings a vertex carries to its fragments.
@@ -130,6 +130,12 @@ impl<'a> Bound<'a> {
         (bytes.len() >= MaterialUniforms::SIZE).then(|| MaterialUniforms::read_from(bytes))
     }
 
+    /// The sky's block, uniform slot 1 of a sky draw.
+    fn sky(&self) -> Option<SkyUniforms> {
+        let bytes = self.uniforms[1]?;
+        (bytes.len() >= SkyUniforms::SIZE).then(|| SkyUniforms::read_from(bytes))
+    }
+
     /// The joint palette's rows, uniform slot 2.
     fn palette(&self) -> Vec<[f32; 4]> {
         let bytes = self.uniforms[2].unwrap_or(&[]);
@@ -212,10 +218,17 @@ pub(super) fn run<P: Px>(
         let (Some(frame), Some(material)) = (bound.frame(), bound.material()) else {
             continue;
         };
+        let sky = if program == SceneProgram::Sky {
+            let Some(sky) = bound.sky() else { continue };
+            sky
+        } else {
+            SkyUniforms::default()
+        };
         let draw = Draw {
             pipe,
             frame: &frame,
             material: &material,
+            sky: &sky,
             bound: &bound,
             program,
             scissor: scissor(cmd, target.width, target.height),
@@ -250,6 +263,18 @@ pub(super) fn run<P: Px>(
                 let corner = |k: u32| {
                     let i = read_index(indices, index_format, index_offset + t * 3 + k) as usize;
                     let v = fetch(i);
+                    if program.screen() {
+                        // Its position is clip-space x and y, at the far
+                        // plane.
+                        let p = v.position;
+                        return Clip {
+                            pos: [p[0], p[1], 0.0, 1.0],
+                            vary: Varyings {
+                                world: [p[0], p[1], 0.0],
+                                ..Varyings::default()
+                            },
+                        };
+                    }
                     let world = instance.place(v.position);
                     Clip {
                         pos: frame.clip(world),
@@ -273,6 +298,8 @@ struct Draw<'a> {
     pipe: &'a Pipeline,
     frame: &'a FrameUniforms,
     material: &'a MaterialUniforms,
+    /// The sky's block, for the sky program.
+    sky: &'a SkyUniforms,
     bound: &'a Bound<'a>,
     program: SceneProgram,
     scissor: [u32; 4],
@@ -472,9 +499,9 @@ fn shade(
         normal_dx: d3(n, normalize(right.normal)),
         normal_dy: d3(n, normalize(down.normal)),
     };
-    if draw.program.casts() {
-        shade_depth(draw.frame, draw.material, &fragment, draw.bound)
-    } else {
-        shade_mesh(draw.frame, draw.material, &fragment, draw.bound)
+    match draw.program {
+        SceneProgram::Sky => Some(shade_sky(draw.frame, draw.sky, [v.world[0], v.world[1]])),
+        p if p.casts() => shade_depth(draw.frame, draw.material, &fragment, draw.bound),
+        _ => shade_mesh(draw.frame, draw.material, &fragment, draw.bound),
     }
 }

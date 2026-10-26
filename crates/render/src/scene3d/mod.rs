@@ -32,6 +32,7 @@ pub mod model;
 mod resident;
 mod shadow;
 mod shapes;
+mod sky;
 
 use std::sync::Arc;
 
@@ -42,6 +43,7 @@ pub use model::AlphaMode;
 pub use resident::SceneModel;
 pub use shadow::Shadows;
 pub use shapes::Shape;
+pub use sky::Sky;
 pub use viso_gpu::scene::{
     FrameUniforms, MAX_JOINTS, MaterialUniforms, SceneInstance, SceneVertex, SkinnedVertex,
 };
@@ -266,11 +268,17 @@ impl Lighting {
 pub struct SceneFrame {
     pub camera: Camera,
     pub lighting: Lighting,
-    /// The environment lighting the scene; `None` for its lighting's
+    /// The environment lighting the scene; `None` for its sky's
+    /// ([`Environment::from_sky`]), or without one its lighting's
     /// [`sky_environment`](Lighting::sky_environment).
     pub environment: Option<Arc<Environment>>,
-    /// What shows where nothing is drawn, straight linear RGBA. A transparent
-    /// background lets the 2D content behind the scene show through.
+    /// The sky drawn where no opaque mesh is, behind the blended ones and
+    /// the sprites, exposed and tone mapped as the meshes are; `None` shows
+    /// the background.
+    pub sky: Option<Sky>,
+    /// What shows where nothing is drawn and there is no sky, straight
+    /// linear RGBA. A transparent background lets the 2D content behind the
+    /// scene show through.
     pub background: LinearStraight,
     batches: Batches,
     sprites: Vec<SceneSprite>,

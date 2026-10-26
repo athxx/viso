@@ -71,23 +71,36 @@ pub enum SceneProgram {
     SkinnedMesh = 2,
     /// [`Depth`](Self::Depth) of a skinned mesh.
     SkinnedDepth = 3,
+    /// The sky where no mesh is drawn: a triangle over the whole target,
+    /// its vertices' positions in clip space at the far plane, whose
+    /// fragments see [`sky_radiance`] along their view ray, exposed and tone
+    /// mapped as a mesh is. Uniform slot 1 holds the [`SkyUniforms`].
+    Sky = 4,
 }
 
 impl SceneProgram {
     /// Every program, by its code.
-    pub const ALL: [SceneProgram; 4] = [
+    pub const ALL: [SceneProgram; 5] = [
         SceneProgram::Mesh,
         SceneProgram::Depth,
         SceneProgram::SkinnedMesh,
         SceneProgram::SkinnedDepth,
+        SceneProgram::Sky,
     ];
 
     /// The vertex layout it reads.
     pub const fn vertex_schema(self) -> InstanceSchema {
         match self {
-            SceneProgram::Mesh | SceneProgram::Depth => VERTEX_SCHEMA,
             SceneProgram::SkinnedMesh | SceneProgram::SkinnedDepth => SKINNED_VERTEX_SCHEMA,
+            _ => VERTEX_SCHEMA,
         }
+    }
+
+    /// Whether it covers the target rather than drawing a mesh in the
+    /// world: its vertices' positions are clip-space `x` and `y`, its
+    /// instance unread.
+    pub const fn screen(self) -> bool {
+        matches!(self, SceneProgram::Sky)
     }
 
     /// Whether its vertices are [`SkinnedVertex`]es.
@@ -397,6 +410,40 @@ pub struct MaterialUniforms {
     pub mode: [f32; 4],
 }
 
+/// The sky's uniform block, uniform slot 1 of a [`SceneProgram::Sky`]
+/// draw: the Preetham daylight model for one sun, as [`sky_radiance`]
+/// evaluates it. 208 bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[repr(C)]
+pub struct SkyUniforms {
+    /// Clip to world space, column-major: the inverse of the frame's
+    /// `view_proj`, which a fragment's view ray is unprojected by.
+    pub inv_view_proj: [f32; 16],
+    /// The Perez coefficients `A`, `B`, `C` and `D` of the sky's
+    /// luminance `Y` and its chromaticities `x` and `y`.
+    pub perez_y: [f32; 4],
+    pub perez_x: [f32; 4],
+    pub perez_yc: [f32; 4],
+    /// Their `E`s, then what the luminance is scaled by into the scene's
+    /// linear light.
+    pub perez_e: [f32; 4],
+    /// The zenith's `Y`, `x` and `y` over the Perez function toward the
+    /// zenith, so a channel is this times its Perez function; then how much
+    /// below the horizon is dimmed.
+    pub zenith: [f32; 4],
+    /// The unit direction toward the sun the model is evaluated for, never
+    /// lower than the model holds for.
+    pub sun_model: [f32; 4],
+    /// The unit direction toward the sun, and the angular radius of its
+    /// disc (`0.0` when it shows none).
+    pub sun: [f32; 4],
+    /// The disc's radiance, linear RGB.
+    pub sun_radiance: [f32; 4],
+    /// How much of the day sky shows (`0.0` at night), and how much of the
+    /// twilight's glow.
+    pub blend: [f32; 4],
+}
+
 /// How a material colors its fragments: [`MaterialUniforms::mode`]`[0]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(u8)]
@@ -488,6 +535,7 @@ as_bytes!(SceneVertex, 48);
 as_bytes!(SceneInstance, 64);
 as_bytes!(FrameUniforms, 496);
 as_bytes!(MaterialUniforms, 64);
+as_bytes!(SkyUniforms, 208);
 
 impl SceneInstance {
     /// `p`, a point of the mesh, in the world.
@@ -577,7 +625,10 @@ impl MaterialUniforms {
     }
 }
 
+mod screen;
 mod shade;
+
+pub use screen::{shade_sky, sky_radiance};
 
 pub use shade::{
     MeshFragment, SceneTextures, disc, env_atlas_uv, env_brdf, env_direction_uv, pack_depth,

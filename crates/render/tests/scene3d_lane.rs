@@ -10,7 +10,7 @@ use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle, SurfaceId};
 use viso_math::{LinearStraight, Mat4, Quat, Vec3, vec3};
 use viso_render::damage::Region;
 use viso_render::scene3d::{
-    Camera, MaterialId, SceneFrame, SceneSprite, Shadows, Shape, SkinnedVertex, instance,
+    Camera, MaterialId, SceneFrame, SceneSprite, Shadows, Shape, SkinnedVertex, Sky, instance,
 };
 use viso_render::{Border, Primitive, Quad, Rect, Renderer, Rgba, SceneDraw, SceneSlot};
 
@@ -351,6 +351,7 @@ fn metal_draws_what_the_cpu_raster_draws() {
 
     fn image<B: GpuBackend>(
         gpu: &mut B,
+        sky: Option<Sky>,
         read: impl Fn(&mut B, viso_gpu::TextureId) -> Vec<u8>,
     ) -> Vec<u8> {
         let mut r = Renderer::new(gpu, TextureFormat::Bgra8Unorm);
@@ -362,6 +363,7 @@ fn metal_draws_what_the_cpu_raster_draws() {
             ..Camera::default()
         };
         frame.background = LinearStraight::new(0.5, 0.6, 0.8, 1.0);
+        frame.sky = sky;
         let one = vec3(1.0, 1.0, 1.0);
         let turn = Quat::from_axis_angle(vec3(0.0, 1.0, 0.0), 0.6);
         let color = |r, g, b| LinearStraight::new(r, g, b, 1.0);
@@ -421,20 +423,40 @@ fn metal_draws_what_the_cpu_raster_draws() {
         read(gpu, target)
     }
 
-    let cpu = image(&mut CpuRaster::new(), |gpu, t| gpu.read_texture(t));
-    let metal = image(&mut MetalBackend::new(), |gpu, t| gpu.read_texture(t));
-    let off = cpu
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .zip(metal.as_chunks::<4>().0)
-        .filter(|(a, b)| a.iter().zip(b.iter()).any(|(x, y)| x.abs_diff(*y) > 3))
-        .count();
-    assert!(
-        off * 100 < (W * H) as usize,
-        "{off} of {} pixels differ",
-        W * H
-    );
+    // The second under a low sun's sky, its disc in view behind the scene.
+    let low_sun = Sky {
+        sun: vec3(-0.6, 0.12, -1.0),
+        ..Sky::default()
+    };
+    for sky in [None, Some(low_sun)] {
+        let cpu = image(&mut CpuRaster::new(), sky, |gpu, t| gpu.read_texture(t));
+        let metal = image(&mut MetalBackend::new(), sky, |gpu, t| gpu.read_texture(t));
+        if let Some(dir) = std::env::var_os("VISO_SCENE_SHOTS") {
+            let name = if sky.is_some() {
+                "lane-sky"
+            } else {
+                "lane-shapes"
+            };
+            for (who, px) in [("cpu", &cpu), ("metal", &metal)] {
+                let png = viso_image::snapshot::Image::from_bgra8(W, H, px).to_png();
+                let path = std::path::Path::new(&dir).join(format!("{name}-{who}.png"));
+                std::fs::write(path, png).unwrap();
+            }
+        }
+        let off = cpu
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(metal.as_chunks::<4>().0)
+            .filter(|(a, b)| a.iter().zip(b.iter()).any(|(x, y)| x.abs_diff(*y) > 3))
+            .count();
+        assert!(
+            off * 100 < (W * H) as usize,
+            "sky {}: {off} of {} pixels differ",
+            sky.is_some(),
+            W * H
+        );
+    }
 }
 
 /// A cube over a ground slab, lit from up and to the left, seen from the

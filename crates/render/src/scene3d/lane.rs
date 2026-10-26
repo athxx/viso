@@ -8,12 +8,12 @@ use viso_gpu::backend::{DepthAttachment, DrawCommand, Geometry, IndexFormat, Inl
 use viso_gpu::backend::{RenderPass, RenderTarget};
 use viso_gpu::scene::{
     Alpha, ENV_HEIGHT, ENV_WIDTH, FrameUniforms, MATERIAL_DOUBLE_SIDED, MATERIAL_NORMAL_MAP,
-    MAX_JOINTS, SHADOW_CASCADES, SceneProgram, Shading, SkinnedVertex,
+    MAX_JOINTS, SHADOW_CASCADES, SceneProgram, Shading, SkinnedVertex, SkyUniforms,
 };
 use viso_gpu::{
     AddressMode, BindGroupDesc, BindGroupId, Binding, BlendMode, BufferDesc, BufferId, BufferUsage,
-    BuiltinShader, CullMode, DepthState, FilterMode, GpuBackend, GpuPod, LoadOp, PipelineDesc,
-    PipelineId, SamplerDesc, SamplerId, TextureDesc, TextureFormat, TextureId,
+    BuiltinShader, CompareFunction, CullMode, DepthState, FilterMode, GpuBackend, GpuPod, LoadOp,
+    PipelineDesc, PipelineId, SamplerDesc, SamplerId, TextureDesc, TextureFormat, TextureId,
 };
 use viso_shader::scene_program_code;
 
@@ -138,6 +138,9 @@ struct Shared {
     spare: BufferId,
     linear: SamplerId,
     point: SamplerId,
+    /// One triangle over the whole target, in clip space: what a screen
+    /// program draws.
+    screen: GpuMesh,
 }
 
 /// A slot's color and depth targets.
@@ -248,6 +251,13 @@ struct Slot {
     skin_shadow_groups: Vec<Option<(MaterialId, u32, [BindGroupId; SHADOW_CASCADES])>>,
     used: [u32; 2],
     clear: [f32; 4],
+    /// How many of `draws` are opaque: the sky is drawn after them, before
+    /// the blended ones.
+    opaque: usize,
+    /// The sky's uniform block and bind group, while the frame has a sky.
+    sky: Option<(BufferId, BindGroupId)>,
+    /// The frame has a sky.
+    sky_drawn: bool,
 }
 
 #[derive(Debug, Default)]
@@ -259,6 +269,8 @@ pub(crate) struct SceneLane {
     /// The depth program's pipelines, drawing shadow casters: over meshes
     /// and over skinned meshes.
     depth_pipelines: [Option<PipelineId>; 2],
+    /// The sky program's pipeline.
+    sky_pipeline: Option<PipelineId>,
     meshes: Vec<Option<GpuMesh>>,
     /// Uploaded mesh ids free for reuse.
     free: Vec<u32>,
@@ -269,8 +281,9 @@ pub(crate) struct SceneLane {
     shared: Option<Shared>,
     /// Every sampler a material samples through, made once each.
     samplers: Vec<(SamplerDesc, SamplerId)>,
-    /// The sky environments of the latest lightings that named none.
-    skies: Vec<([u32; 6], Arc<Environment>)>,
+    /// The environments of the latest skies and lightings of frames that
+    /// named none.
+    skies: Vec<([u32; 7], Arc<Environment>)>,
     slots: Vec<Option<Slot>>,
     /// The bytes of a fill's surviving instances.
     scratch: Vec<u8>,
@@ -324,6 +337,10 @@ impl SceneLane {
             }
         }
         for buffer in state.palettes {
+            backend.destroy_buffer(buffer);
+        }
+        if let Some((buffer, group)) = state.sky {
+            backend.destroy_bind_group(group);
             backend.destroy_buffer(buffer);
         }
         for buffer in state
@@ -457,11 +474,29 @@ impl SceneLane {
             filter: FilterMode::Nearest,
             address: AddressMode::ClampToEdge,
         });
+        let corner = |x: f32, y: f32| SceneVertex {
+            position: [x, y, 0.0],
+            ..SceneVertex::default()
+        };
+        let mut vertex_bytes = [0u8; SceneVertex::SIZE * 3];
+        for (v, out) in [corner(-1.0, -1.0), corner(3.0, -1.0), corner(-1.0, 3.0)]
+            .iter()
+            .zip(vertex_bytes.as_chunks_mut::<{ SceneVertex::SIZE }>().0)
+        {
+            v.write_to(out);
+        }
+        // Padded to whole words, as every device writes buffers.
+        let index_bytes: Vec<u8> = [0u16, 1, 2, 0]
+            .iter()
+            .flat_map(|i| i.to_le_bytes())
+            .collect();
+        let screen = upload(backend, &vertex_bytes, &index_bytes, IndexFormat::U16, 3);
         let shared = Shared {
             white,
             spare,
             linear,
             point,
+            screen,
         };
         self.shared = Some(shared);
         shared
@@ -693,28 +728,38 @@ impl SceneLane {
         })
     }
 
-    /// The sky environment of `frame`'s lighting, built once for the latest
-    /// few lightings.
+    /// The environment of `frame`'s sky, or else of its lighting's sky and
+    /// ground colors, built once for the latest few.
     fn environment(&mut self, frame: &SceneFrame) -> Arc<Environment> {
         if let Some(env) = &frame.environment {
             return Arc::clone(env);
         }
         let l = &frame.lighting;
-        let key = [
-            l.sky[0].to_bits(),
-            l.sky[1].to_bits(),
-            l.sky[2].to_bits(),
-            l.ground[0].to_bits(),
-            l.ground[1].to_bits(),
-            l.ground[2].to_bits(),
-        ];
+        let key = match &frame.sky {
+            Some(sky) => {
+                let k = sky.key();
+                [1, k[0], k[1], k[2], k[3], k[4], k[5]]
+            }
+            None => [
+                0,
+                l.sky[0].to_bits(),
+                l.sky[1].to_bits(),
+                l.sky[2].to_bits(),
+                l.ground[0].to_bits(),
+                l.ground[1].to_bits(),
+                l.ground[2].to_bits(),
+            ],
+        };
         if let Some(i) = self.skies.iter().position(|(k, _)| *k == key) {
             let entry = self.skies.remove(i);
             let env = Arc::clone(&entry.1);
             self.skies.push(entry);
             return env;
         }
-        let env = Arc::new(l.sky_environment());
+        let env = Arc::new(match &frame.sky {
+            Some(sky) => Environment::from_sky(sky),
+            None => l.sky_environment(),
+        });
         if self.skies.len() >= KEPT_SKIES {
             self.skies.remove(0);
         }
@@ -955,6 +1000,12 @@ impl SceneLane {
             );
             skins += 1;
         }
+        let opaque = draws.len();
+        // A sky draws over an instance buffer too, when nothing else does.
+        if slot.frame.sky.is_some() && scratch.is_empty() && blended.is_empty() {
+            push(&mut scratch, &SceneInstance::default());
+            total += 1;
+        }
         let camera = slot.frame.camera;
         for sprite in slot.frame.sprites() {
             if !frustum.sees(sprite.position.to_array(), [sprite.radius; 3]) {
@@ -1184,6 +1235,45 @@ impl SceneLane {
         }
         uniforms.write_to(&mut bytes);
         backend.write_buffer(frame_buffer, 0, &bytes);
+        // The sky's block, and its group over it and the frame's.
+        if let Some(sky) = &slot.frame.sky {
+            self.sky_pipeline
+                .get_or_insert_with(|| sky_pipeline(backend));
+            let mut block = sky.uniforms(&fitted.invert().v);
+            // The sun's disc at least a pixel and a half across, so a small
+            // view still shows it.
+            if block.sun[3] > 0.0 {
+                let pixel = slot.frame.camera.pixel_at(1.0, used[1]);
+                block.sun[3] = block.sun[3].max(pixel * 0.75);
+            }
+            let mut sky_bytes = [0u8; SkyUniforms::SIZE];
+            block.write_to(&mut sky_bytes);
+            let (buffer, _) = *slot.sky.get_or_insert_with(|| {
+                let buffer = backend.create_buffer(&BufferDesc {
+                    size: SkyUniforms::SIZE,
+                    usage: BufferUsage::UNIFORM | BufferUsage::CPU_WRITE,
+                    label: "scene-sky",
+                });
+                let mut bindings = vec![
+                    Binding::Uniform(frame_buffer),
+                    Binding::Uniform(buffer),
+                    Binding::Uniform(shared.spare),
+                ];
+                bindings.extend([Binding::Texture(shared.white); 8]);
+                bindings.extend([
+                    Binding::Sampler(shared.linear),
+                    Binding::Sampler(shared.linear),
+                    Binding::Sampler(shared.point),
+                ]);
+                let group = backend.create_bind_group(&BindGroupDesc {
+                    label: "scene-sky",
+                    bindings,
+                });
+                (buffer, group)
+            });
+            backend.write_buffer(buffer, 0, &sky_bytes);
+        }
+        slot.sky_drawn = slot.frame.sky.is_some();
         // Every drawn material's bind group, and the pipelines they need: a
         // skinned draw's with its palette.
         let group_of = |backend: &mut B, gpu: &GpuMaterial, palette: BufferId| {
@@ -1314,6 +1404,7 @@ impl SceneLane {
             }
         }
         slot.draws = draws;
+        slot.opaque = opaque;
         slot.shadow_draws = shadow_draws;
         slot.clear = slot.frame.clear_color();
         self.slots[i] = Some(slot);
@@ -1400,7 +1491,27 @@ impl SceneLane {
                 self.stats.shadow_passes += 1;
             }
             let first_command = commands.len() as u32;
-            for draw in &slot.draws {
+            let sky = match (slot.sky, self.sky_pipeline, self.shared) {
+                (Some((_, group)), Some(pipeline), Some(shared)) if slot.sky_drawn => {
+                    let (geometry, instance_offset) = instanced(&shared.screen, 0, 1);
+                    Some(DrawCommand {
+                        pipeline,
+                        bind_group: Some(group),
+                        geometry,
+                        instance_buffer: instances,
+                        instance_offset,
+                        uniforms: InlineUniforms::EMPTY,
+                        scissor: Some((0, 0, slot.used[0], slot.used[1])),
+                    })
+                }
+                _ => None,
+            };
+            for (k, draw) in slot.draws.iter().enumerate() {
+                if k == slot.opaque
+                    && let Some(sky) = sky
+                {
+                    commands.push(sky);
+                }
                 let Some(Some(mesh)) = self.meshes.get(draw.mesh.index()) else {
                     continue;
                 };
@@ -1433,6 +1544,11 @@ impl SceneLane {
                 });
                 self.stats.draws += 1;
                 self.stats.instances += draw.count;
+            }
+            if slot.opaque >= slot.draws.len()
+                && let Some(sky) = sky
+            {
+                commands.push(sky);
             }
             passes.push(RenderPass {
                 target: RenderTarget::Texture(targets.color),
@@ -1487,6 +1603,31 @@ fn mesh_pipeline<B: GpuBackend>(
             cull,
             blend,
             instance_schema: program.vertex_schema(),
+        },
+    )
+}
+
+/// The sky program's pipeline: drawn where the depth is still clear, never
+/// writing it.
+fn sky_pipeline<B: GpuBackend>(backend: &mut B) -> PipelineId {
+    scene_pipeline(
+        backend,
+        &PipelineDesc {
+            label: "scene-sky",
+            builtin: BuiltinShader::Scene,
+            variant: SceneProgram::Sky as u32,
+            code: scene_program_code(SceneProgram::Sky, B::SHADER_LANG),
+            vertex_entry: "vertex_main",
+            fragment_entry: "fragment_main",
+            color_format: COLOR_FORMAT,
+            depth: Some(DepthState {
+                format: TextureFormat::Depth32Float,
+                compare: CompareFunction::GreaterEqual,
+                write: false,
+            }),
+            cull: CullMode::None,
+            blend: BlendMode::Replace,
+            instance_schema: SceneProgram::Sky.vertex_schema(),
         },
     )
 }
