@@ -365,8 +365,9 @@ Rules:
   open:
   - [ ] device streams: outputs and inputs listed and watched, a realtime callback
     filling f32 buffers, echo cancellation where the OS has it, the microphone permission:
-    - [ ] macOS and iOS, CoreAudio I/O units (built; devices verified, playback and
-      capture not yet: this Mac's coreaudiod does not answer);
+    - [x] macOS and iOS, CoreAudio I/O units: playback, pause and resume, capture with
+      and without echo cancellation (the voice-processing unit at its own rate, its
+      output on and silent) run on a MacBook Air and in the iOS simulator;
     - [x] Linux and the BSDs, PulseAudio / PipeWire through libpulse;
     - [x] Android, AAudio, the devices and permission through the crate's Java;
     - [ ] Windows, WASAPI (built and linted for the target, not yet run: no Windows
@@ -487,8 +488,6 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
 
 ## W12 — Platform extras
 
-- [ ] Permissions: camera, microphone, location, photos.
-- [ ] Location service.
 - [x] Permissions: camera, microphone, location, photos: each plugin's own `permission()` /
   `request_permission() -> Reply<PermissionState>` (`viso-common`'s `Granted | Denied |
   Prompt`): `viso-camera`, `viso-audio`, `viso-geolocator`, `viso-local-notification`;
