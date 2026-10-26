@@ -106,6 +106,7 @@ fn the_list_has_every_producer() {
         "E1001 ",
         "E3002 ",
         "C0012 ",
+        "C0014 ",
         "CLI_USAGE ",
         "EXPLAIN_UNKNOWN ",
     ] {

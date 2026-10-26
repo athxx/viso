@@ -76,14 +76,19 @@ The bundle in `dist/web/` is a static site:
 
 ```text
 index.html
+sw.js                        with a linked package's web/worker.js
 <app>.<hash>.js
 <app>_bg.<hash>.wasm
 <app>_bg.<hash>.wasm.br      shipping: Brotli and gzip copies
 <app>_bg.<hash>.wasm.gz
 ```
 
+When a package the app links carries `web/worker.js` (as `viso-push` and
+`viso-background` do), the bundle also holds `sw.js`, the app's service worker, which
+the page registers; see [What linked packages declare](packaging.md#what-linked-packages-declare).
+
 The module and its glue are named by their content, so a server can cache them
-forever and revalidate only `index.html`. Serve `.wasm` as `application/wasm`, and
+forever and revalidate only `index.html` and `sw.js`. Serve `.wasm` as `application/wasm`, and
 the `.br`/`.gz` copies when the client accepts them.
 
 How each profile builds for the web (all keys under `[profile.<name>.web]`):

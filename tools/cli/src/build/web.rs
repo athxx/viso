@@ -56,13 +56,16 @@ fn kind(path: &Path) -> Option<&'static str> {
 }
 
 /// Writes the bundle of the module `wasm`, the app `bin`, into `dir`, which
-/// is empty; each file it wrote with its kind, by name.
+/// is empty, with the service worker `worker` when it has one; each file it
+/// wrote with its kind, by name.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn bundle(
     wasm: &Path,
     dir: &Path,
     bin: &str,
     profile: Profile,
     web: &WebSettings,
+    worker: Option<&str>,
     cancelled: &mpsc::Receiver<()>,
     sink: &Sink,
 ) -> Result<Vec<(&'static str, PathBuf)>, BuildFailure> {
@@ -109,7 +112,7 @@ pub(crate) fn bundle(
         }
     }
 
-    fingerprint(dir, bin)?;
+    fingerprint(dir, bin, worker)?;
 
     let mut files = listed(dir)?;
     let compress: Vec<(&str, bool)> = vec![("br", web.brotli.value), ("gz", web.gzip.value)];
@@ -127,8 +130,9 @@ pub(crate) fn bundle(
 const FINGERPRINT: usize = 16;
 
 /// Renames the module and the glue in `dir` by their content and writes the
-/// page loading them under those names.
-fn fingerprint(dir: &Path, bin: &str) -> Result<(), BuildFailure> {
+/// page loading them under those names, and the service worker `worker`,
+/// which keeps its name, as a browser updates a worker at its URL.
+fn fingerprint(dir: &Path, bin: &str, worker: Option<&str>) -> Result<(), BuildFailure> {
     let rename = |stem: &str, extension: &str| -> Result<String, BuildFailure> {
         let from = dir.join(format!("{stem}.{extension}"));
         let (_, sum) = super::file_hash(&from).map_err(|error| {
@@ -143,7 +147,7 @@ fn fingerprint(dir: &Path, bin: &str) -> Result<(), BuildFailure> {
     };
     let module = rename(&format!("{bin}_bg"), "wasm")?;
     let glue = rename(bin, "js")?;
-    bundle::write_page(dir, bin, &glue, Some(&module)).map_err(BuildFailure::Package)?;
+    bundle::write_page(dir, bin, &glue, Some(&module), worker).map_err(BuildFailure::Package)?;
     Ok(())
 }
 
@@ -314,7 +318,7 @@ mod tests {
         let write = |wasm: &str| {
             std::fs::write(dir.join("app_bg.wasm"), wasm).unwrap();
             std::fs::write(dir.join("app.js"), "export default function init() {}").unwrap();
-            fingerprint(&dir, "app").unwrap();
+            fingerprint(&dir, "app", None).unwrap();
             let mut names: Vec<String> = std::fs::read_dir(&dir)
                 .unwrap()
                 .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())

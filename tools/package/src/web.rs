@@ -35,32 +35,54 @@ pub fn bindgen_command(wasm: &Path, dir: &Path, bin: &str) -> Command {
     command
 }
 
-/// Writes the page that loads `<bin>.js` as `<dir>/index.html`.
-pub fn write_index(dir: &Path, bin: &str) -> Result<PathBuf, String> {
-    write_page(dir, bin, &format!("{bin}.js"), None)
+/// The service worker's file, beside the page.
+pub const WORKER: &str = "sw.js";
+
+/// Writes the page that loads `<bin>.js` as `<dir>/index.html`, with the
+/// service worker `worker` beside it when there is one.
+pub fn write_index(dir: &Path, bin: &str, worker: Option<&str>) -> Result<PathBuf, String> {
+    write_page(dir, bin, &format!("{bin}.js"), None, worker)
 }
 
 /// Writes the page titled `title` as `<dir>/index.html`, loading the glue
 /// `glue` and, when named, the module `module` beside it rather than the
-/// one the glue names.
+/// one the glue names; with a service worker, writes it as [`WORKER`]
+/// beside the page, which registers it.
 pub fn write_page(
     dir: &Path,
     title: &str,
     glue: &str,
     module: Option<&str>,
+    worker: Option<&str>,
 ) -> Result<PathBuf, String> {
+    if let Some(worker) = worker {
+        let path = dir.join(WORKER);
+        io(&path, std::fs::write(&path, worker))?;
+    }
     let index = dir.join("index.html");
-    io(&index, std::fs::write(&index, page(title, glue, module)))?;
+    io(
+        &index,
+        std::fs::write(&index, page(title, glue, module, worker.is_some())),
+    )?;
     Ok(index)
 }
 
-/// The page that loads the app. The canvas fills it edge to edge (the
-/// backend keeps content inside the safe area) and nothing scrolls; a dev
-/// server adds what runs before the app ahead of its `</head>`.
-fn page(title: &str, glue: &str, module: Option<&str>) -> String {
+/// The page that loads the app, registering its service worker first when
+/// it has one. The canvas fills it edge to edge (the backend keeps content
+/// inside the safe area) and nothing scrolls; a dev server adds what runs
+/// before the app ahead of its `</head>`.
+fn page(title: &str, glue: &str, module: Option<&str>, worker: bool) -> String {
     let init = match module {
         Some(module) => format!(r#"init({{ module_or_path: "./{module}" }})"#),
         None => "init()".to_owned(),
+    };
+    // Outside a secure context there is no service worker to register.
+    let worker = if worker {
+        format!(
+            "<script>navigator.serviceWorker?.register(\"./{WORKER}\").catch((e) => console.warn(\"the service worker did not register:\", e));</script>\n"
+        )
+    } else {
+        String::new()
     };
     format!(
         r#"<!doctype html>
@@ -72,7 +94,7 @@ fn page(title: &str, glue: &str, module: Option<&str>) -> String {
 <style>html, body {{ height: 100%; margin: 0; overflow: hidden; overscroll-behavior: none; }}</style>
 </head>
 <body>
-<script type="module">import init from "./{glue}"; {init};</script>
+{worker}<script type="module">import init from "./{glue}"; {init};</script>
 </body>
 </html>
 "#
@@ -258,14 +280,32 @@ mod tests {
 
     #[test]
     fn the_page_loads_the_generated_module() {
-        let html = page("demo", "demo.js", None);
+        let html = page("demo", "demo.js", None, false);
         assert!(html.contains(r#"import init from "./demo.js"; init();"#));
         assert!(html.contains("viewport-fit=cover"));
-        let html = page("demo", "demo.0a1b.js", Some("demo_bg.2c3d.wasm"));
+        assert!(!html.contains("serviceWorker"));
+        let html = page("demo", "demo.0a1b.js", Some("demo_bg.2c3d.wasm"), false);
         assert!(html.contains(
             r#"import init from "./demo.0a1b.js"; init({ module_or_path: "./demo_bg.2c3d.wasm" });"#
         ));
         assert!(html.contains("<title>demo</title>"));
+    }
+
+    #[test]
+    fn a_worker_is_written_beside_the_page_that_registers_it() {
+        let dir = std::env::temp_dir().join(format!("viso-web-worker-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let index = write_index(&dir, "demo", Some("self.x = 1;\n")).unwrap();
+        let html = std::fs::read_to_string(&index).unwrap();
+        let register = html
+            .find("navigator.serviceWorker?.register(\"./sw.js\")")
+            .unwrap();
+        assert!(register < html.find("import init").unwrap(), "{html}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join(WORKER)).unwrap(),
+            "self.x = 1;\n"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

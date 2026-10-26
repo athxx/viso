@@ -22,6 +22,7 @@ use std::process::Command;
 use std::time::SystemTime;
 
 use crate::archive::{self, Entry, Kind};
+use crate::fragment::{self, Fragment, Problem};
 use crate::{Access, Links, Orientations, files_under, io, newest, run};
 
 /// The ABI an app is built for.
@@ -157,14 +158,41 @@ pub struct Sdk {
     pub emulator: PathBuf,
 }
 
-/// The Java shell: its sources' directories and the manifest template, with
+/// The Java shell: its sources' directories, the manifest template, with
 /// `{package}`, `{version_code}`, `{version_name}`, `{min_sdk}`,
 /// `{permissions}`, `{label}`, `{icon}`, `{orientation}`, `{links}` and
-/// `{lib}` to fill in.
+/// `{lib}` to fill in, and the manifest fragments of the packages the app
+/// links, merged into it (see [`crate::fragment`]).
 #[derive(Debug, Clone)]
 pub struct Shell {
     pub java: Vec<PathBuf>,
     pub manifest: PathBuf,
+    pub fragments: Vec<Fragment>,
+}
+
+impl Shell {
+    /// What tells this shell's files apart from another time's: each Java
+    /// source and the template, by path, length and modification time.
+    pub fn stamp(&self) -> Result<String, String> {
+        let mut inputs = Vec::new();
+        for java in &self.java {
+            files_under(java, "java", &mut inputs)?;
+        }
+        inputs.push(self.manifest.clone());
+        Ok(stamp(&inputs, ""))
+    }
+
+    /// Whether the fragments merge with the template `template` and with
+    /// each other.
+    pub fn check(template: &str, fragments: &[Fragment]) -> Result<(), Problem> {
+        fill_manifest(
+            template,
+            &Manifest::dev("app", Flavor::Release),
+            "app",
+            fragments,
+        )
+        .map(drop)
+    }
 }
 
 /// What kind of APK to make.
@@ -245,6 +273,10 @@ fn permissions(access: Access) -> &'static [&'static str] {
         ],
         Access::Notifications => {
             &[r#"<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />"#]
+        }
+        // Granted as the app installs.
+        Access::Biometrics => {
+            &[r#"<uses-permission android:name="android.permission.USE_BIOMETRIC" />"#]
         }
         // Both are granted as the app installs; the second tells whether the
         // device is online.
@@ -568,7 +600,13 @@ impl Sdk {
             &packing.shell.manifest,
             std::fs::read_to_string(&packing.shell.manifest),
         )?;
-        let manifest = fill_manifest(&template, &packing.manifest, packing.bin);
+        let manifest = fill_manifest(
+            &template,
+            &packing.manifest,
+            packing.bin,
+            &packing.shell.fragments,
+        )
+        .map_err(|problem| problem.to_string())?;
         let mut hasher = DefaultHasher::new();
         (&manifest, &packing.icons, proto).hash(&mut hasher);
         let stamp = format!("{:016x}", hasher.finish());
@@ -705,8 +743,14 @@ fn default_sdk(home: &Path) -> PathBuf {
     }
 }
 
-/// The manifest `template` filled in for the app `bin`.
-fn fill_manifest(template: &str, manifest: &Manifest, bin: &str) -> String {
+/// The manifest `template` filled in for the app `bin`, the `fragments`
+/// merged in.
+fn fill_manifest(
+    template: &str,
+    manifest: &Manifest,
+    bin: &str,
+    fragments: &[Fragment],
+) -> Result<String, Problem> {
     let mut lines: Vec<&str> = Vec::new();
     if manifest.internet && !manifest.access.contains(&Access::Network) {
         lines.push(r#"<uses-permission android:name="android.permission.INTERNET" />"#);
@@ -714,7 +758,6 @@ fn fill_manifest(template: &str, manifest: &Manifest, bin: &str) -> String {
     for access in &manifest.access {
         lines.extend(permissions(*access));
     }
-    let permissions = lines.join("\n    ");
     let icon = if manifest.icon {
         r#"android:icon="@mipmap/ic_launcher""#
     } else {
@@ -730,18 +773,24 @@ fn fill_manifest(template: &str, manifest: &Manifest, bin: &str) -> String {
         Orientations::Portrait => r#"android:screenOrientation="sensorPortrait""#,
         Orientations::Landscape => r#"android:screenOrientation="sensorLandscape""#,
     };
-    template
+    let filled = template
         .replace("{links}", &intent_filters(&manifest.links))
         .replace("{package}", &manifest.package)
         .replace("{version_code}", &manifest.version_code.to_string())
         .replace("{version_name}", &xml(&manifest.version_name))
         .replace("{min_sdk}", &manifest.min_sdk.to_string())
-        .replace("{permissions}", &permissions)
         .replace("{label}", &xml(&manifest.label))
         .replace("{icon}", icon)
         .replace("{cleartext}", cleartext)
         .replace("{orientation}", orientation)
-        .replace("{lib}", &library_name(bin))
+        .replace("{lib}", &library_name(bin));
+    fragment::merge_manifest(
+        &filled,
+        "{permissions}",
+        &lines,
+        fragments,
+        &manifest.package,
+    )
 }
 
 /// The activity's intent filters for `links`: one taking every custom
@@ -870,6 +919,7 @@ mod tests {
         let shell = Shell {
             java: Vec::new(),
             manifest: PathBuf::new(),
+            fragments: Vec::new(),
         };
         let dir = Path::new("/out");
         let packing = Packing::dev(
@@ -899,7 +949,7 @@ mod tests {
             "/../../crates/platform/android/AndroidManifest.xml"
         ))
         .unwrap();
-        let dev = fill_manifest(&template, &Manifest::dev("a-b", Flavor::Dev), "a-b");
+        let dev = fill_manifest(&template, &Manifest::dev("a-b", Flavor::Dev), "a-b", &[]).unwrap();
         assert!(dev.contains("package=\"dev.viso.a_b\""));
         assert!(dev.contains("android:label=\"a-b\""));
         assert!(dev.contains("android:value=\"a_b\""));
@@ -907,7 +957,8 @@ mod tests {
         assert!(dev.contains("android.permission.POST_NOTIFICATIONS"));
         assert!(!dev.contains("android:icon"));
         assert!(!dev.contains('{'), "{dev}");
-        let release = fill_manifest(&template, &Manifest::dev("b", Flavor::Release), "b");
+        let release =
+            fill_manifest(&template, &Manifest::dev("b", Flavor::Release), "b", &[]).unwrap();
         assert!(!release.contains("INTERNET"));
         assert!(dev.contains("usesCleartextTraffic"));
         assert!(!release.contains("usesCleartextTraffic"));
@@ -915,7 +966,7 @@ mod tests {
         for flavor in [Flavor::Dev, Flavor::Release] {
             let mut online = Manifest::dev("b", flavor);
             online.access.push(Access::Network);
-            let filled = fill_manifest(&template, &online, "b");
+            let filled = fill_manifest(&template, &online, "b", &[]).unwrap();
             assert_eq!(filled.matches("android.permission.INTERNET").count(), 1);
             assert!(filled.contains("android.permission.ACCESS_NETWORK_STATE"));
         }
@@ -935,7 +986,7 @@ mod tests {
                 hosts: vec!["notes.example.com".into(), "*.example.org".into()],
             },
         };
-        let filled = fill_manifest(&template, &notes, "notes");
+        let filled = fill_manifest(&template, &notes, "notes", &[]).unwrap();
         let filters = "\
             <intent-filter>
                 <action android:name=\"android.intent.action.VIEW\" />
@@ -968,6 +1019,57 @@ mod tests {
             assert!(filled.contains(expected), "{expected} in {filled}");
         }
         assert!(!filled.contains("POST_NOTIFICATIONS"));
+    }
+
+    #[test]
+    fn fragments_join_the_shell_template() {
+        let template = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../crates/platform/android/AndroidManifest.xml"
+        ))
+        .unwrap();
+        let push = Fragment {
+            package: "viso-push".into(),
+            path: PathBuf::from("/p/viso-push/android/manifest.xml"),
+            text: "<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\">\n\
+                   <uses-permission android:name=\"android.permission.POST_NOTIFICATIONS\" />\n\
+                   <uses-permission android:name=\"com.google.android.c2dm.permission.RECEIVE\" />\n\
+                   <application><receiver android:name=\"dev.viso.push.VisoPushReceiver\" \
+                   android:exported=\"true\" /></application>\n</manifest>\n"
+                .into(),
+        };
+        let filled = fill_manifest(
+            &template,
+            &Manifest::dev("a", Flavor::Dev),
+            "a",
+            std::slice::from_ref(&push),
+        )
+        .unwrap();
+        assert_eq!(filled.matches("POST_NOTIFICATIONS").count(), 1);
+        assert!(filled.contains(
+            "<uses-permission android:name=\"android.permission.POST_NOTIFICATIONS\" />\n    \
+             <uses-permission android:name=\"com.google.android.c2dm.permission.RECEIVE\" />"
+        ));
+        assert!(filled.contains(
+            "android:grantUriPermissions=\"true\" />\n        \
+             <receiver android:name=\"dev.viso.push.VisoPushReceiver\" android:exported=\"true\" />\n    \
+             </application>"
+        ), "{filled}");
+        assert!(Shell::check(&template, &[push]).is_ok());
+        let clash = Fragment {
+            package: "viso-clip".into(),
+            path: PathBuf::from("/p/viso-clip/android/manifest.xml"),
+            text: "<manifest><application><provider android:name=\"dev.viso.VisoClipProvider\" \
+                   android:authorities=\"{package}.clip\" /></application></manifest>"
+                .into(),
+        };
+        let problem = Shell::check(&template, &[clash]).unwrap_err();
+        assert_eq!(problem.kind, crate::fragment::Kind::Conflict);
+        assert!(
+            problem
+                .message
+                .contains("`dev.viso.VisoClipProvider` other than the Android shell")
+        );
     }
 
     #[test]

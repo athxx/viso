@@ -287,8 +287,10 @@ const STAGED_KINDS: &[&str] = &[
 ];
 
 /// What staging `job` from the executable `exe` depends on: the executable
-/// as Cargo left it, how it is packaged, the SDK packing it, and the CLI
-/// and tools doing so. The same key stages the same `out/`.
+/// as Cargo left it, how it is packaged, what the app and the packages it
+/// links declare, the SDK and the Java shell (each source of every linked
+/// package) packing it, and the CLI and tools doing so. The same key stages
+/// the same `out/`.
 fn staging_key(job: &Job, exe: &Path) -> String {
     use std::fmt::Write as _;
     let stamp = |path: &Path| {
@@ -304,13 +306,17 @@ fn staging_key(job: &Job, exe: &Path) -> String {
     let mut key = String::new();
     let _ = write!(
         key,
-        "{exe:?} {:?}\n{:?} {:?}\n{:?}\n{:?}\n",
+        "{exe:?} {:?}\n{:?} {:?}\n{:?}\n{:?}\n{:?}\n",
         stamp(exe),
         job.target,
         job.profile,
         job.web,
+        job.declared,
         job.android
     );
+    if let Some((_, shell)) = &job.android {
+        let _ = writeln!(key, "{:?}", shell.stamp());
+    }
     if let Ok(cli) = std::env::current_exe() {
         let _ = writeln!(key, "{cli:?} {:?}", stamp(&cli));
     }
@@ -444,6 +450,7 @@ pub(crate) fn produce(
                 profile: job.profile,
                 web: &job.web,
                 android: job.android.as_ref(),
+                fragments: &job.declared.fragments,
             };
             let artifacts = delivery::package::make(plan, &built, &out, cancelled, sink)?;
             stages.push(("package", started.elapsed()));
@@ -462,14 +469,19 @@ pub(crate) fn produce(
                 (vec![("binary", path)], "none")
             }
             Target::Ios => {
+                let declared = &job.declared;
                 let info = apple::Info {
-                    usage: job.declared.usage.clone(),
-                    links: job.declared.links.clone(),
+                    usage: declared.usage.clone(),
+                    links: declared.links.clone(),
+                    fragments: declared.fragments.info.clone(),
                     ..apple::Info::dev(bin)
                 };
                 let app = apple::bundle(&exe, &out, &info, true).map_err(BuildFailure::Package)?;
-                let hosts = &job.declared.links.hosts;
-                apple::sign(&app.path, None, None, hosts, &job.dir.join("sign"))
+                let entitlements = apple::Entitlements {
+                    hosts: &declared.links.hosts,
+                    fragments: &declared.fragments.entitlements,
+                };
+                apple::sign(&app.path, None, None, &entitlements, &job.dir.join("sign"))
                     .map_err(BuildFailure::Package)?;
                 (vec![("app-bundle", app.path)], "ad-hoc")
             }
@@ -500,7 +512,17 @@ pub(crate) fn produce(
                 (vec![("apk", path)], "debug-keystore")
             }
             Target::WebGpu | Target::WebDom | Target::WebHybrid => {
-                let files = web::bundle(&exe, &out, bin, job.profile, &job.web, cancelled, sink)?;
+                let worker = viso_package::fragment::worker(&job.declared.fragments.worker);
+                let files = web::bundle(
+                    &exe,
+                    &out,
+                    bin,
+                    job.profile,
+                    &job.web,
+                    worker.as_deref(),
+                    cancelled,
+                    sink,
+                )?;
                 (files, "none")
             }
         },

@@ -11,6 +11,10 @@
 //! - [`linux`]: the desktop entry that launches the app.
 //! - [`archive`]: the zip and tar a package ships in, the same bytes for the
 //!   same files.
+//! - [`fragment`]: what the packages an app links carry for its platform —
+//!   manifest entries, Info.plist keys, entitlements, service worker code —
+//!   merged into the app's own; [`plist`] reads, merges and writes property
+//!   lists.
 //!
 //! Each step runs the platform's own tool through the [`Runner`] the caller
 //! installs, the CLI's showing and ending it as every program it starts; a
@@ -19,9 +23,14 @@
 pub mod android;
 pub mod apple;
 pub mod archive;
+pub mod fragment;
 pub mod linux;
+pub mod plist;
 pub mod web;
 pub mod windows;
+mod xml;
+
+pub use fragment::Fragment;
 
 /// What an app asks the system to let it use; each platform names it its
 /// own way.
@@ -34,6 +43,8 @@ pub enum Access {
     Contacts,
     Bluetooth,
     Notifications,
+    /// Verifying the user by face or fingerprint.
+    Biometrics,
     /// Reaching servers: asked of the package on Android and Windows, which
     /// otherwise keep a release build offline.
     Network,

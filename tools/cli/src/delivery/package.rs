@@ -20,8 +20,9 @@ use viso_package::windows::{msix, resources};
 use viso_package::{apple, linux, windows};
 use viso_project::{Profile, WebSettings};
 
+use super::fragments::Fragments;
 use super::{Plan, Platform, Signer, icon};
-use crate::build::cargo::{BuildFailure, Sink};
+use crate::build::cargo::{BuildFailure, CargoEvent, Sink};
 
 /// What a package is made from.
 pub(crate) struct Built<'a> {
@@ -36,6 +37,8 @@ pub(crate) struct Built<'a> {
     pub(crate) profile: Profile,
     pub(crate) web: &'a WebSettings,
     pub(crate) android: Option<&'a (Sdk, Shell)>,
+    /// What the packages the app links declare for the platform.
+    pub(crate) fragments: &'a Fragments,
 }
 
 /// Makes `plan`'s package of `built` in `out`, returning each artifact's
@@ -79,7 +82,10 @@ pub(crate) fn make(
                     .collect();
                 apple::icns(&images)
             });
-            let info = metadata.apple(built.bin);
+            let info = apple::Info {
+                fragments: built.fragments.info.clone(),
+                ..metadata.apple(built.bin)
+            };
             let app = apple::macos_bundle(
                 built.exe,
                 out,
@@ -93,13 +99,28 @@ pub(crate) fn make(
                 Signer::Apple { identity } => Some(identity.as_str()),
                 _ => None,
             };
+            let (entitlements, left_out) =
+                apple::macos_entitlements(&access, &built.fragments.entitlements)
+                    .map_err(|problem| package(problem.to_string()))?;
+            if identity.is_some() {
+                for (key, by) in left_out {
+                    sink(CargoEvent::Log {
+                        level: "warn",
+                        line: format!(
+                            "`{by}` asks for the entitlement `{key}`, which only a provisioning \
+                             profile allows and a macOS package does not embed: the app is \
+                             signed without it"
+                        ),
+                    });
+                }
+            }
             if plan.signing.signer != Signer::None {
-                apple::sign_macos(&app.path, identity, &access, &scratch).map_err(sign)?;
+                apple::sign_macos(&app.path, identity, &entitlements, &scratch).map_err(sign)?;
             }
             let dmg = path("dmg");
             apple::dmg(&app.path, &dmg, &metadata.display_name, &scratch).map_err(package)?;
             if identity.is_some() {
-                apple::sign_macos(&dmg, identity, &[], &scratch).map_err(sign)?;
+                apple::sign_macos(&dmg, identity, &Default::default(), &scratch).map_err(sign)?;
             }
             Ok(vec![("app-bundle", app.path), ("dmg", dmg)])
         }
@@ -199,7 +220,10 @@ pub(crate) fn make(
             Ok(vec![("archive", tar)])
         }
         Platform::Ios => {
-            let info = metadata.apple(built.bin);
+            let info = apple::Info {
+                fragments: built.fragments.info.clone(),
+                ..metadata.apple(built.bin)
+            };
             let app = apple::bundle(built.exe, &scratch, &info, false).map_err(package)?;
             if let Some(icon) = &metadata.icon {
                 let opaque = icon::opaque(&icon::scaled(&icon.image, icon::MIN_SIZE));
@@ -207,11 +231,15 @@ pub(crate) fn make(
                     .map_err(package)?;
             }
             if let Signer::Provisioned { identity, profile } = &plan.signing.signer {
+                let entitlements = apple::Entitlements {
+                    hosts: &metadata.links.hosts,
+                    fragments: &built.fragments.entitlements,
+                };
                 apple::sign(
                     &app.path,
                     Some(identity),
                     Some(profile),
-                    &metadata.links.hosts,
+                    &entitlements,
                     &scratch.join("sign"),
                 )
                 .map_err(sign)?;
@@ -261,12 +289,14 @@ pub(crate) fn make(
         }
         Platform::Web => {
             let site = path("site");
+            let worker = viso_package::fragment::worker(&built.fragments.worker);
             crate::build::web::bundle(
                 built.exe,
                 &site,
                 built.bin,
                 built.profile,
                 built.web,
+                worker.as_deref(),
                 cancelled,
                 sink,
             )?;
@@ -477,6 +507,7 @@ mod tests {
             profile: Profile::Release,
             web: &web,
             android: None,
+            fragments: &Fragments::default(),
         };
         let out = dir.join("dist");
         std::fs::create_dir_all(&out).unwrap();

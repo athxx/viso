@@ -158,6 +158,8 @@ pub enum Permission {
     Bluetooth,
     /// Showing notifications.
     Notifications,
+    /// Verifying the user by face or fingerprint.
+    Biometrics,
     /// Reaching servers over the network.
     Network,
 }
@@ -173,6 +175,7 @@ impl Permission {
             Permission::Contacts => "contacts",
             Permission::Bluetooth => "bluetooth",
             Permission::Notifications => "notifications",
+            Permission::Biometrics => "biometrics",
             Permission::Network => "network",
         }
     }
@@ -186,6 +189,7 @@ impl Permission {
         Permission::Contacts,
         Permission::Bluetooth,
         Permission::Notifications,
+        Permission::Biometrics,
         Permission::Network,
     ];
 }
