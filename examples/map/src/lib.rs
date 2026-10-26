@@ -127,7 +127,8 @@ impl Nav {
         n.say(ev, &name, "Finding a route…");
         drop(n);
         let routed = data::off_loop(move || {
-            reachable(&graph, lonlat(from), lonlat(to), mode)
+            graph
+                .route(lonlat(from), lonlat(to), mode)
                 .ok_or_else(|| "No route there".to_owned())
         });
         let nav = Rc::clone(nav);
@@ -322,24 +323,6 @@ impl Nav {
     }
 }
 
-/// The route from `from` to `to`, or else to the nearest place around `to`
-/// the mode can reach: a square closed to cars, say, is driven to its edge.
-fn reachable(graph: &RouteGraph, from: LonLat, to: LonLat, mode: Mode) -> Option<Route> {
-    let mut router = graph.router();
-    if let Some(r) = router.route(from, to, mode) {
-        return Some(r);
-    }
-    for meters in [60.0, 120.0, 240.0, 480.0] {
-        for i in 0..8 {
-            let around = ll(to).offset(f64::from(i) * 45.0, meters);
-            if let Some(r) = router.route(from, lonlat(around), mode) {
-                return Some(r);
-            }
-        }
-    }
-    None
-}
-
 /// The destination's pin.
 fn pin(cx: &mut BuildCx<'_>) {
     cx.leaf(LeafStyle {
@@ -433,9 +416,10 @@ fn card() -> BoxStyle {
 
 /// What a search hit reads as in the suggestions.
 fn hit_text(hit: &SearchHit) -> String {
-    match &hit.address {
-        Some(a) => format!("{} · {a}", hit.name),
-        None => hit.name.clone(),
+    if hit.address.is_empty() {
+        hit.name.clone()
+    } else {
+        format!("{} · {}", hit.name, hit.address)
     }
 }
 
