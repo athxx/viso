@@ -3918,6 +3918,7 @@ unsafe fn graphics_pipeline(
         .cull_mode(match cull {
             CullMode::None => vk::CullModeFlags::NONE,
             CullMode::Back => vk::CullModeFlags::BACK,
+            CullMode::Front => vk::CullModeFlags::FRONT,
         })
         // The vertex stage flips y for Vulkan's downward framebuffer, so a
         // face counter-clockwise in clip space is counter-clockwise on screen.

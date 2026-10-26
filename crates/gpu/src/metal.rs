@@ -1369,6 +1369,7 @@ impl MetalBackend {
         encoder.setCullMode(match pipeline.cull {
             CullMode::None => MTLCullMode::None,
             CullMode::Back => MTLCullMode::Back,
+            CullMode::Front => MTLCullMode::Front,
         });
         // An instanced mesh reads its vertices at 0 and its instances at 1,
         // so its uniform blocks take 2 on, in order.

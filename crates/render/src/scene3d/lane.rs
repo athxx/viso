@@ -116,11 +116,16 @@ struct GpuMaterial {
 
 impl GpuMaterial {
     /// The index in [`SceneLane::pipelines`] of its pipeline over a mesh
-    /// that is `skinned` or not.
-    fn pipeline(&self, skinned: bool) -> usize {
-        usize::from(skinned) * 4
-            + usize::from(self.alpha == Alpha::Blend) * 2
-            + usize::from(self.double_sided)
+    /// that is `skinned` or not, placed by an instance that `mirrors` or
+    /// not: a mirrored instance's faces wind the other way, so a one-sided
+    /// material culls its front faces instead.
+    fn pipeline(&self, skinned: bool, mirrors: bool) -> usize {
+        let cull = if self.double_sided {
+            1
+        } else {
+            usize::from(mirrors) * 2
+        };
+        usize::from(skinned) * 6 + usize::from(self.alpha == Alpha::Blend) * 3 + cull
     }
 }
 
@@ -248,8 +253,9 @@ struct Slot {
 #[derive(Debug, Default)]
 pub(crate) struct SceneLane {
     /// The mesh program's pipelines, over meshes then skinned meshes:
-    /// opaque or blended, each culling back faces or drawing both.
-    pipelines: [Option<PipelineId>; 8],
+    /// opaque or blended, each culling back faces, drawing both or culling
+    /// front faces.
+    pipelines: [Option<PipelineId>; 12],
     /// The depth program's pipelines, drawing shadow casters: over meshes
     /// and over skinned meshes.
     depth_pipelines: [Option<PipelineId>; 2],
@@ -682,7 +688,8 @@ impl SceneLane {
 
     fn pipeline<B: GpuBackend>(&mut self, backend: &mut B, index: usize) -> PipelineId {
         *self.pipelines[index].get_or_insert_with(|| {
-            mesh_pipeline(backend, index >= 4, index % 4 >= 2, index % 2 == 1)
+            let cull = [CullMode::Back, CullMode::None, CullMode::Front][index % 3];
+            mesh_pipeline(backend, index >= 6, index % 6 >= 3, cull)
         })
     }
 
@@ -871,10 +878,12 @@ impl SceneLane {
                 return;
             }
             push(scratch, instance);
+            let pipeline = gpu.pipeline(mesh.skinned, instance.mirrors());
             match draws.last_mut() {
                 Some(d)
                     if skin.is_none()
                         && d.skin.is_none()
+                        && d.pipeline == pipeline
                         && d.material == material
                         && d.mesh == mesh_id
                         && d.first + d.count == total =>
@@ -886,7 +895,7 @@ impl SceneLane {
                     mesh: mesh_id,
                     first: total,
                     count: 1,
-                    pipeline: gpu.pipeline(mesh.skinned),
+                    pipeline,
                     skin,
                 }),
             }
@@ -969,27 +978,27 @@ impl SceneLane {
             blended.sort_by(|a, b| b.depth.total_cmp(&a.depth));
             for b in &blended {
                 push(&mut scratch, &b.instance);
+                let (_, gpu) = self.material(b.material);
+                let pipeline = gpu.pipeline(b.skin.is_some(), b.instance.mirrors());
                 match draws.last_mut() {
                     Some(d)
                         if b.skin.is_none()
                             && d.skin.is_none()
+                            && d.pipeline == pipeline
                             && d.material == b.material
                             && d.mesh == b.mesh
                             && d.first + d.count == total =>
                     {
                         d.count += 1;
                     }
-                    _ => {
-                        let (_, gpu) = self.material(b.material);
-                        draws.push(Draw {
-                            material: b.material,
-                            mesh: b.mesh,
-                            first: total,
-                            count: 1,
-                            pipeline: gpu.pipeline(b.skin.is_some()),
-                            skin: b.skin,
-                        });
-                    }
+                    _ => draws.push(Draw {
+                        material: b.material,
+                        mesh: b.mesh,
+                        first: total,
+                        count: 1,
+                        pipeline,
+                        skin: b.skin,
+                    }),
                 }
                 total += 1;
             }
@@ -1447,12 +1456,12 @@ impl SceneLane {
 
 /// The mesh program's pipeline, over a `skinned` mesh or not: opaque, or
 /// `blended` (premultiplied over, depth-tested but never written); culling
-/// back faces, or drawing `both`.
+/// faces by `cull`.
 fn mesh_pipeline<B: GpuBackend>(
     backend: &mut B,
     skinned: bool,
     blended: bool,
-    both: bool,
+    cull: CullMode,
 ) -> PipelineId {
     let program = if skinned {
         SceneProgram::SkinnedMesh
@@ -1464,13 +1473,12 @@ fn mesh_pipeline<B: GpuBackend>(
     } else {
         (DepthState::REVERSED, BlendMode::Replace)
     };
-    let cull = if both { CullMode::None } else { CullMode::Back };
     scene_pipeline(
         backend,
         &PipelineDesc {
             label: if blended { "scene-blended" } else { "scene" },
             builtin: BuiltinShader::Scene,
-            variant: program as u32 | u32::from(blended) << 8 | u32::from(both) << 9,
+            variant: program as u32 | u32::from(blended) << 8 | (cull as u32) << 9,
             code: scene_program_code(program, B::SHADER_LANG),
             vertex_entry: "vertex_main",
             fragment_entry: "fragment_main",

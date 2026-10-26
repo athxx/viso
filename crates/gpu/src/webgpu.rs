@@ -1404,6 +1404,7 @@ impl WebGpuBackend {
                         match cull {
                             CullMode::None => "none",
                             CullMode::Back => "back",
+                            CullMode::Front => "front",
                         }
                         .into(),
                     ),

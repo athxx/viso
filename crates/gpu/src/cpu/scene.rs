@@ -359,8 +359,10 @@ fn raster<P: Px>(target: &mut SceneTarget<'_, P>, draw: &Draw<'_>, color: [f32; 
     }
     // Counter-clockwise in clip space (y up) is clockwise on screen (y
     // down), where its area is negative: a back face's is positive.
-    if draw.pipe.cull == CullMode::Back && area > 0.0 {
-        return;
+    match draw.pipe.cull {
+        CullMode::Back if area > 0.0 => return,
+        CullMode::Front if area < 0.0 => return,
+        _ => {}
     }
     let scissor = draw.scissor;
     let min_x = screen.iter().map(|s| s[0]).fold(f32::MAX, f32::min);

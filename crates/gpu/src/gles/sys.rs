@@ -86,6 +86,7 @@ pub const GL_COLOR_BUFFER_BIT: GLbitfield = 0x4000;
 pub const GL_DEPTH_BUFFER_BIT: GLbitfield = 0x0100;
 pub const GL_DEPTH_ATTACHMENT: GLenum = 0x8D00;
 pub const GL_BACK: GLenum = 0x0405;
+pub const GL_FRONT: GLenum = 0x0404;
 pub const GL_CW: GLenum = 0x0900;
 pub const GL_CCW: GLenum = 0x0901;
 pub const GL_ALWAYS: GLenum = 0x0207;

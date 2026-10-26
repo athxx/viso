@@ -3,7 +3,8 @@
 //! rect, renders again only when the frame or the size changed, culls what the
 //! camera cannot see, grows its target in 64-pixel steps, draws unlit meshes
 //! in their own color, blends sprites over the meshes they are in front
-//! of, and moves a skinned mesh's vertices by its joints.
+//! of, moves a skinned mesh's vertices by its joints, and culls a mirrored
+//! instance's far side.
 
 use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle, SurfaceId};
 use viso_math::{LinearStraight, Mat4, Quat, Vec3, vec3};
@@ -245,6 +246,38 @@ fn facing_frame() -> SceneFrame {
 }
 
 #[test]
+fn a_mirrored_instance_shows_its_outside() {
+    // A cube is its own mirror image: mirrored or not, the same faces show,
+    // lit the same.
+    let draw = |x_scale: f32| {
+        let mut k = Kit::new();
+        let mut frame = facing_frame();
+        frame.lighting.direction = vec3(0.5, 0.6, 1.0);
+        frame.push(
+            Shape::Cube,
+            instance(
+                Vec3::ZERO,
+                Quat::from_axis_angle(vec3(0.3, 1.0, 0.1).normalize(), 0.7),
+                vec3(x_scale, 1.0, 1.0),
+                LinearStraight::new(0.8, 0.5, 0.3, 1.0),
+            ),
+        );
+        k.r.swap_scene(SLOT, &mut frame);
+        k.present(&stream(rect(0.0, 0.0, W as f32, H as f32), 1))
+    };
+    let plain = draw(1.0);
+    let mirrored = draw(-1.0);
+    let lit = plain
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|p| p[2] > 40)
+        .count();
+    assert!(lit > (W * H / 10) as usize, "the cube shows");
+    same(&plain, &mirrored, "a mirrored cube");
+}
+
+#[test]
 fn an_unlit_mesh_shows_its_own_color() {
     let mut k = Kit::new();
     let mut frame = facing_frame();
@@ -340,9 +373,15 @@ fn metal_draws_what_the_cpu_raster_draws() {
             Shape::Sphere,
             instance(vec3(1.2, 0.0, 0.0), turn, one, color(0.1, 0.6, 0.9)),
         );
+        // Mirrored, so its far side is culled by the other winding.
         frame.push(
             Shape::Cone,
-            instance(vec3(0.0, 0.0, -2.0), turn, one, color(0.9, 0.8, 0.2)),
+            instance(
+                vec3(0.0, 0.0, -2.0),
+                turn,
+                vec3(-1.0, 1.0, 1.0),
+                color(0.9, 0.8, 0.2),
+            ),
         );
         frame.push(
             Shape::Plane,

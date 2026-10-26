@@ -649,9 +649,13 @@ impl Gles3Backend {
                 }
                 match p.cull {
                     CullMode::None => (gl.glDisable)(GL_CULL_FACE),
-                    CullMode::Back => {
+                    CullMode::Back | CullMode::Front => {
                         (gl.glEnable)(GL_CULL_FACE);
-                        (gl.glCullFace)(GL_BACK);
+                        (gl.glCullFace)(if p.cull == CullMode::Back {
+                            GL_BACK
+                        } else {
+                            GL_FRONT
+                        });
                         // A texture target is drawn flipped, which turns
                         // clip space's counter-clockwise front faces around.
                         (gl.glFrontFace)(if flip > 0.0 { GL_CCW } else { GL_CW });

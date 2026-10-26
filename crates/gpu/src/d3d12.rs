@@ -3077,6 +3077,7 @@ fn create_pso(
             CullMode: match cull {
                 CullMode::None => D3D12_CULL_MODE_NONE,
                 CullMode::Back => D3D12_CULL_MODE_BACK,
+                CullMode::Front => D3D12_CULL_MODE_FRONT,
             },
             // A face counter-clockwise in clip space is counter-clockwise on
             // the target, whose y the viewport flips.
