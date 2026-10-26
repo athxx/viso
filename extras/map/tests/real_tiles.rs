@@ -108,3 +108,59 @@ fn real_polygons_triangulate_to_their_area() {
     );
     assert!(off * 1000 <= polygons, "{off} of {polygons}");
 }
+
+/// Prints each layer's `class` values, when `VISO_MAP_SURVEY` is set.
+#[test]
+fn survey_classes() {
+    let (Ok(dir), Ok(_)) = (
+        std::env::var("VISO_MAP_TILES"),
+        std::env::var("VISO_MAP_SURVEY"),
+    ) else {
+        return;
+    };
+    let mut seen: std::collections::BTreeMap<String, std::collections::BTreeMap<String, usize>> =
+        Default::default();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|e| e != "pbf") {
+            continue;
+        }
+        let tile = mvt::decode(&std::fs::read(&path).unwrap()).unwrap();
+        for layer in &tile.layers {
+            for f in &layer.features {
+                for key in ["class", "subclass", "brunnel", "admin_level"] {
+                    if let Some(v) = layer.value(f, key) {
+                        let v = match v {
+                            mvt::Value::String(s) => s.clone(),
+                            mvt::Value::Number(n) => n.to_string(),
+                            mvt::Value::Bool(b) => b.to_string(),
+                        };
+                        if key == "subclass" && layer.name != "transportation" {
+                            continue;
+                        }
+                        *seen
+                            .entry(format!("{}.{key}", layer.name))
+                            .or_default()
+                            .entry(v)
+                            .or_default() += 1;
+                    }
+                }
+                seen.entry(format!("{}.*", layer.name))
+                    .or_default()
+                    .entry(format!("{:?}", f.kind))
+                    .and_modify(|n| *n += 1)
+                    .or_insert(1);
+            }
+        }
+    }
+    for (k, vs) in seen {
+        let mut vs: Vec<_> = vs.into_iter().collect();
+        vs.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+        let top: Vec<String> = vs
+            .iter()
+            .take(30)
+            .map(|(v, n)| format!("{v}:{n}"))
+            .collect();
+        eprintln!("{k}: {}", top.join(" "));
+    }
+}

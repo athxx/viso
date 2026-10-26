@@ -6,10 +6,12 @@
 //! rotating only move the transform root the tiles sit in, so a steady pan
 //! repaints, uploads and allocates nothing.
 
+pub mod build;
 pub mod camera;
 pub mod geo;
 pub mod mvt;
 pub mod source;
+pub mod style;
 pub mod tess;
 
 pub use camera::{Camera, Insets, Limits, Motion, TILE_SIZE, View};

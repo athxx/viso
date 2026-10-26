@@ -262,12 +262,7 @@ impl MeshBuilder {
             return;
         }
         let mut pts = std::mem::take(&mut self.line);
-        pts.clear();
-        for &p in line {
-            if pts.last() != Some(&p) {
-                pts.push(p);
-            }
-        }
+        simplify(line, SIMPLIFY * style.units_per_point, &mut pts);
         let mut scratch = std::mem::take(&mut self.scratch);
         let mut runs: Vec<Vec<[f32; 2]>> = Vec::new();
         clip::clip_line(&pts, square, &mut scratch, |run| runs.push(run.to_vec()));
@@ -338,6 +333,11 @@ impl MeshBuilder {
     ) -> [u32; 4] {
         let (core, outer) = half;
         let lo = self.push(vertex(p, color, 0.0, scale(n, outer * k)));
+        if core <= 0.0 {
+            let c = self.push(vertex(p, color, 1.0, [0.0, 0.0]));
+            let ro = self.push(vertex(p, color, 0.0, scale(n, -outer * k)));
+            return [lo, c, c, ro];
+        }
         let lc = self.push(vertex(p, color, 1.0, scale(n, core * k)));
         let rc = self.push(vertex(p, color, 1.0, scale(n, -core * k)));
         let ro = self.push(vertex(p, color, 0.0, scale(n, -outer * k)));
@@ -346,7 +346,9 @@ impl MeshBuilder {
 
     fn join_strip(&mut self, a: [u32; 4], b: [u32; 4]) {
         self.quad(a[0], a[1], b[0], b[1]);
-        self.quad(a[1], a[2], b[1], b[2]);
+        if a[1] != a[2] || b[1] != b[2] {
+            self.quad(a[1], a[2], b[1], b[2]);
+        }
         self.quad(a[2], a[3], b[2], b[3]);
     }
 
@@ -435,8 +437,13 @@ impl MeshBuilder {
         // A hairline thinner than the fringe draws one fringe wide, fainter.
         let mut color = style.color;
         let half_width = style.width / 2.0;
-        let half = if style.width >= AA {
+        // Under two points a line is one ridge of coverage from its center
+        // out to its width each side, which holds the same ink as the
+        // width; under one, a one-point ridge, fainter.
+        let half = if style.width >= 2.0 * AA {
             (half_width - AA / 2.0, half_width + AA / 2.0)
+        } else if style.width >= AA {
+            (0.0, style.width)
         } else {
             color[3] *= style.width / AA;
             (0.0, AA)
@@ -453,8 +460,11 @@ impl MeshBuilder {
         let mut s = self.station(pts[0], n0, 1.0, half, color);
         let d0 = dirs[0];
         self.cap(pts[0], [-d0[0], -d0[1]], n0, s, start_cap, half, color);
+        // Under four points wide a round join is indistinguishable from a
+        // miter, which shares one station between the segments.
         let miter_limit = match style.join {
             Join::Miter => style.miter_limit.max(1.0),
+            Join::Round if style.width < 4.0 => 2.0,
             Join::Bevel | Join::Round => 1.05,
         };
         for i in 1..pts.len() - 1 {
@@ -552,6 +562,63 @@ impl MeshBuilder {
                 }
                 prev = Some(ring);
             }
+        }
+    }
+}
+
+/// How far a line may stray when its points are thinned, in points.
+const SIMPLIFY: f32 = 0.2;
+
+/// `line` without repeated points and without the points that keep it no
+/// further than `tolerance` from where it was (Douglas–Peucker), into
+/// `out`.
+pub fn simplify(line: &[[f32; 2]], tolerance: f32, out: &mut Vec<[f32; 2]>) {
+    out.clear();
+    let n = line.len();
+    if n <= 2 || tolerance <= 0.0 {
+        for &p in line {
+            if out.last() != Some(&p) {
+                out.push(p);
+            }
+        }
+        return;
+    }
+    let mut keep = vec![false; n];
+    keep[0] = true;
+    keep[n - 1] = true;
+    let t2 = tolerance * tolerance;
+    let mut stack = vec![(0usize, n - 1)];
+    while let Some((a, b)) = stack.pop() {
+        if b <= a + 1 {
+            continue;
+        }
+        let (pa, pb) = (line[a], line[b]);
+        let (dx, dy) = (pb[0] - pa[0], pb[1] - pa[1]);
+        let len2 = dx * dx + dy * dy;
+        let (mut worst, mut at) = (0.0f32, a);
+        for (i, p) in line.iter().enumerate().take(b).skip(a + 1) {
+            let (px, py) = (p[0] - pa[0], p[1] - pa[1]);
+            let d2 = if len2 <= 0.0 {
+                px * px + py * py
+            } else {
+                let t = ((px * dx + py * dy) / len2).clamp(0.0, 1.0);
+                let (ex, ey) = (px - t * dx, py - t * dy);
+                ex * ex + ey * ey
+            };
+            if d2 > worst {
+                worst = d2;
+                at = i;
+            }
+        }
+        if worst > t2 {
+            keep[at] = true;
+            stack.push((a, at));
+            stack.push((at, b));
+        }
+    }
+    for (i, &p) in line.iter().enumerate() {
+        if keep[i] && out.last() != Some(&p) {
+            out.push(p);
         }
     }
 }
@@ -733,6 +800,23 @@ mod tests {
         m.line(&[[100.0, 10.0], [200.0, 10.0]], SQ, &style(0.5));
         valid(&m);
         assert!(m.vertices.iter().all(|v| v.color[3] == 0.5));
+    }
+
+    #[test]
+    fn simplifying_keeps_the_shape() {
+        let mut out = Vec::new();
+        let line = [
+            [0.0, 0.0],
+            [1.0, 0.05],
+            [2.0, 0.0],
+            [2.0, 0.0],
+            [3.0, 5.0],
+            [4.0, 0.0],
+        ];
+        simplify(&line, 0.1, &mut out);
+        assert_eq!(out, vec![[0.0, 0.0], [2.0, 0.0], [3.0, 5.0], [4.0, 0.0]]);
+        simplify(&line, 0.0, &mut out);
+        assert_eq!(out.len(), 5, "only the repeat goes");
     }
 
     #[test]
