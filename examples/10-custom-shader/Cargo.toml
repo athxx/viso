@@ -10,3 +10,6 @@ publish = false
 # through a state. The build packs the shader for the target's backend.
 [dependencies]
 viso = { workspace = true }
+
+[lints]
+workspace = true

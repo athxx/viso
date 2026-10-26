@@ -9,3 +9,6 @@ publish = false
 # or menu bar with a menu.
 [dependencies]
 viso = { workspace = true }
+
+[lints]
+workspace = true

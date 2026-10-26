@@ -11,3 +11,6 @@ publish = false
 # crate imports, no runtime shims.
 [dependencies]
 viso = { workspace = true }
+
+[lints]
+workspace = true

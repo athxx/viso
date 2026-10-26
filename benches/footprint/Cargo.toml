@@ -14,3 +14,6 @@ default = ["viso/default"]
 
 [dependencies]
 viso = { path = "../../crates/viso", default-features = false }
+
+[lints]
+workspace = true

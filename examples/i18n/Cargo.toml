@@ -9,3 +9,6 @@ publish = false
 # checked against them at compile time and shown in the reader's locale.
 [dependencies]
 viso = { workspace = true }
+
+[lints]
+workspace = true

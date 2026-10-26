@@ -9,3 +9,6 @@ publish = false
 # runs the canonical entry point without referencing any makepad runtime type.
 [dependencies]
 viso = { workspace = true }
+
+[lints]
+workspace = true

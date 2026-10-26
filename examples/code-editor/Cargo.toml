@@ -10,3 +10,6 @@ publish = false
 [dependencies]
 viso = { workspace = true }
 viso-code-editor = { workspace = true, features = ["lsp"] }
+
+[lints]
+workspace = true

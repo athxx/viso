@@ -9,3 +9,6 @@ publish = false
 # `viso package` and install, then open `visolinks://hello`.
 [dependencies]
 viso = { workspace = true }
+
+[lints]
+workspace = true

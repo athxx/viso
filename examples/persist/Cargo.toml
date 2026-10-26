@@ -13,3 +13,6 @@ viso = { workspace = true }
 # The tests swap the store the facade keeps the values in for one in memory.
 [dev-dependencies]
 viso-view = { workspace = true }
+
+[lints]
+workspace = true

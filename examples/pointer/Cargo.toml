@@ -9,3 +9,6 @@ publish = false
 # panel. Built on the public facade alone.
 [dependencies]
 viso = { workspace = true }
+
+[lints]
+workspace = true

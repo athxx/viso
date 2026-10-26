@@ -14,3 +14,6 @@ viso-widgets = { workspace = true }
 
 [dev-dependencies]
 viso = { workspace = true, features = ["headless"] }
+
+[lints]
+workspace = true

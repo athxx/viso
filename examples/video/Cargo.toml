@@ -10,3 +10,6 @@ publish = false
 # controls.
 [dependencies]
 viso = { workspace = true }
+
+[lints]
+workspace = true

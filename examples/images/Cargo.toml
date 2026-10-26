@@ -9,3 +9,6 @@ publish = false
 # when the crate compiles and embedded in the binary.
 [dependencies]
 viso = { workspace = true }
+
+[lints]
+workspace = true

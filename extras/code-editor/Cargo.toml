@@ -35,3 +35,6 @@ lsp = ["dep:viso-ende"]
 [dev-dependencies]
 viso = { workspace = true, features = ["headless"] }
 viso-lsp = { workspace = true }
+
+[lints]
+workspace = true
