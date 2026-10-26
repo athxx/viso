@@ -477,6 +477,47 @@ fn image_layers_lie_on_the_tilted_ground_beneath_the_roads() {
 }
 
 #[test]
+fn a_translucent_fill_blends_over_the_tilted_ground_and_a_route_over_it() {
+    use viso_map::Circle;
+    let at = LngLat::new(13.40, 52.52);
+    let start = Camera::new(at, 14.0).with_bearing(20.0).with_pitch(50.0);
+    let tilted = View::new(start, [W, H]);
+    let route: Vec<LngLat> = [[200.0, 262.0], [440.0, 262.0]]
+        .iter()
+        .map(|&p| tilted.unproject(p))
+        .collect();
+    let (app, handle) = run(
+        move |slot| {
+            map_view(|tile: TileId| viso_map::Reply::ready(Ok(Some(support::synthetic(tile)))))
+                .camera(start)
+                .style(builtin::openmaptiles_light())
+                .shape(Circle::new(
+                    at,
+                    400.0,
+                    Color::rgb(0xff, 0x40, 0x00).alpha(0.5),
+                ))
+                .shape(Polyline::new(route.clone(), 8.0, Color::rgb(20, 40, 230)))
+                .handle(slot)
+        },
+        redraws(40),
+    );
+    let px = picture(&app, "tilt-translucent-fill");
+    let view = handle.view();
+    // Inside the circle, off the route: the fill and the ground beneath,
+    // half each.
+    let inside = view.project(tilted.unproject([320.0, 222.0]));
+    let c = rgb_at(&px, inside);
+    assert!(c[0] > 200 && c[2] > 60 && c[2] < 180, "{c:?} at {inside:?}");
+    // The route draws over the fill, whole.
+    let on = view.project(tilted.unproject([320.0, 262.0]));
+    let c = rgb_at(&px, on);
+    assert!(c[2] > 180 && c[0] < 90, "{c:?} at {on:?}");
+    // Beyond the circle, the ground as it is.
+    let c = rgb_at(&px, [20.0, 460.0]);
+    assert!(c[0].abs_diff(c[2]) < 40, "{c:?}");
+}
+
+#[test]
 fn the_ground_drapes_over_the_terrain_and_shades_its_slopes() {
     let start = Camera::new(LngLat::new(13.40, 52.52), 12.5)
         .with_bearing(-30.0)

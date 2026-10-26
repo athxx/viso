@@ -969,15 +969,17 @@ pub fn raise_image(r: &Imagery<'_>) -> Option<ModelAsset> {
 /// A shape's drawing as a model: `meshes` in the points of its frame,
 /// extruded at `k` frame points per point, laid `lift` frame points over
 /// the ground, which `ground` gives the height of at a frame point when the
-/// map has relief. Its edges are cut rather than blended, so that it draws
-/// with the solids, over every tile's drawing; each color in the order it
-/// first appears lies `step` higher than the one before, so a line draws
-/// over its casing.
+/// map has relief; each color in the order it first appears lies `step`
+/// higher than the one before. It blends in its own colors, translucent
+/// fills too, its triangles in their order, so a line draws over its
+/// casing; its box rises `above` frame points, far over the eye, so the
+/// scene blends it after every tile's flat parts.
 pub fn raise_shape(
     meshes: &[Mesh],
     k: f32,
     lift: f32,
     step: f32,
+    above: f32,
     ground: Option<&dyn Fn([f32; 2]) -> f32>,
 ) -> Option<ModelAsset> {
     let mut palette = Palette::default();
@@ -987,18 +989,16 @@ pub fn raise_shape(
         for v in mesh.vertices.iter() {
             let p = [v.pos[0] + v.extrude[0] / k, v.pos[1] + v.extrude[1] / k];
             let h = ground.map_or(0.0, |g| g(p));
-            let color = palette.id([v.color[0], v.color[1], v.color[2], 1.0]);
-            let edge = v.edge * v.color[3];
+            let color = palette.id(v.color);
             let y = h + lift + step * color as f32;
-            part.push([p[0], y, p[1]], UP, (color, edge, 1.0));
+            part.push([p[0], y, p[1]], UP, (color, v.edge, 1.0));
         }
         part.indices.extend(mesh.indices.iter().map(|&i| base + i));
     }
-    assemble(
-        vec![part],
-        vec![material(true, AlphaMode::Mask(0.5))],
-        &palette,
-    )
+    if let Some(&[x, _, z]) = part.positions.first() {
+        part.push([x, above, z], UP, (0, 0.0, 1.0));
+    }
+    assemble(vec![part], vec![material(true, AlphaMode::Blend)], &palette)
 }
 
 #[cfg(test)]

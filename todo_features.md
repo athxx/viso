@@ -928,9 +928,10 @@ viso-ext.
   then its base becomes a 32×32 lattice with skirts, the drawing is cut along the
   lattice so each piece lies on one of its planes, slopes turned from the light shade,
   buildings stand on the lowest ground under them and the camera looks at the
-  ground's height. Shapes (route, casing, accuracy outline) are raised on the loop,
-  cut at half coverage, each color a step over the one before, the old ones drawn
-  until the new are resident. Alt-drag up/down and two fingers sliding together
+  ground's height. Shapes (route, casing, accuracy circle and outline) are raised on
+  the loop, each color a step over the one before, the old ones drawn until the new
+  are resident; they blend, translucent fills too, their boxes risen far over the
+  eye so the scene blends them after every tile's ground. Alt-drag up/down and two fingers sliding together
   tilt, Shift with Up/Down tilts by keys, `N` resets; `MapHandle::tilt_to`,
   `.pitch()`, the pitch camera cell. The navigator drives tilted 50°. Headless
   pictures and pixel checks in `tests/tilt.rs` (fixture tile raised light and dark
@@ -950,8 +951,7 @@ viso-ext.
   images and the part over them, and every flat part's box spans the tile's square,
   risen a step per order, so the scene's back-to-front blending draws them in the
   style's order, finer images over coarser.
-  Open: translucent shape fills are cut to
-  their outline; markers and labels are placed on the plane at the focus's height,
+  Open: markers and labels are placed on the plane at the focus's height,
   not on the relief under each.
 - [x] Performance: a pan or rotate frame uploads nothing and allocates nothing; tile
   build and label budgets; memory caps; benches beside makepad's map example.

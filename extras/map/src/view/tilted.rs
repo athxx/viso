@@ -54,6 +54,11 @@ const SHAPE_LIFT: f32 = 0.5;
 const SHAPE_LIFT_RELIEF: f32 = 2.0;
 /// How far each of a shape's colors lies over the one drawn before it.
 const SHAPE_STEP: f32 = 0.1;
+/// How high the boxes of shapes rise, in points of the level drawn: far over
+/// the eye, so the scene blends them after every tile's ground; each shape
+/// a step higher than the one before, so a later one draws over it.
+const SHAPES_ABOVE: f32 = 1.0e6;
+const SHAPE_ORDER: f32 = 1.0e5;
 
 /// The terrain tiles kept beyond those under the tiles drawn.
 const KEEP_ELEVATIONS: usize = 64;
@@ -856,7 +861,7 @@ impl Tilted {
             release_shapes(s, slot, &mut self.shapes);
         }
         let ground = self.ground.as_ref();
-        for &(mesh, _) in framed {
+        for (order, &(mesh, _)) in framed.iter().enumerate() {
             let k = (f64::from(f.band) - mesh.zoom).exp2() as f32;
             let meshes: Vec<viso_render::Mesh> = mesh
                 .drawing
@@ -892,6 +897,7 @@ impl Tilted {
                 k,
                 lift,
                 SHAPE_STEP / k,
+                (SHAPES_ABOVE + order as f32 * SHAPE_ORDER) / k,
                 height.as_ref().map(|h| h as &dyn Fn([f32; 2]) -> f32),
             );
             if let Some(model) = model {
