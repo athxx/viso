@@ -19,6 +19,9 @@ use crate::primitive::{Path, PathCmd, Point, Rect, Rgba};
 pub use viso_image::raster::{
     AssetError, MAX_DIMENSION, MAX_PIXELS, RasterImage, Texels, decode_raster, decode_raster_asset,
 };
+/// A converted image's bytes: an image the build converted, or one made at
+/// run time that needs no decode to show.
+pub use viso_image::texture;
 pub use viso_schema::resource::{
     AssetBytes, AssetFormat, AssetKind, ResourceId, ResourceRevision, normalize_path,
 };

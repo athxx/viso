@@ -233,6 +233,12 @@ extern crate self as viso;
 // `SvgScene`/`SvgError` are not part of the default mental model.
 pub use viso_render::svg;
 
+// The clipboard as an app reaches it: the content a handler copies
+// (`cx.copy`), the kinds a paste takes, and the image a paste brings, shown
+// as an asset or decoded. Out of the prelude: an app names it when it copies
+// more than text.
+pub use viso_ui::clipboard;
+
 /// Fonts packaged into the binary from the crate's `assets/fonts/`:
 /// `cx.use_packaged_fonts(viso::packaged_fonts!())` in `Application::new`.
 pub mod fonts {
@@ -1094,6 +1100,13 @@ struct WindowState {
     /// Reusable buffer the flush polls this window's woken tasks into: one
     /// entry per task that finished, its continuation if it writes back.
     continuations: Vec<Option<Continuation>>,
+    /// The pastes asked of the platform and not yet answered, by token: the
+    /// node each goes to, or the focused text field (`None`).
+    pastes: Vec<(u32, Option<NodeId>)>,
+    /// The token the next paste request carries.
+    next_paste: u32,
+    /// Reusable buffer the flush drains this window's paste asks into.
+    scratch_pastes: Vec<(NodeId, viso_ui::ClipboardKinds)>,
 }
 
 /// The facade-owned GPU state: the concrete backend, the renderer, and the
@@ -1430,6 +1443,9 @@ impl WindowState {
             scratch_opens: Vec::new(),
             scratch_closes: Vec::new(),
             continuations: Vec::new(),
+            pastes: Vec::new(),
+            next_paste: 0,
+            scratch_pastes: Vec::new(),
         }
     }
 
@@ -2129,6 +2145,34 @@ impl WindowState {
     /// sweep, and a window with no caption registers nothing and returns instantly.
     /// The focused node's nearest text-edit control: the focused node itself or
     /// the closest ancestor that registered a buffer.
+    /// A fresh token for a paste that goes to `to`, or to the focused text
+    /// field with `None`, kept until its answer arrives.
+    fn paste_token(&mut self, to: Option<NodeId>) -> u32 {
+        let token = self.next_paste;
+        self.next_paste = self.next_paste.wrapping_add(1);
+        // A request the platform never answered is dropped, not kept.
+        if self.pastes.len() >= 64 {
+            self.pastes.remove(0);
+        }
+        self.pastes.push((token, to));
+        token
+    }
+
+    /// Where a paste gesture goes and what it takes: the focused text field
+    /// takes plain text; otherwise the nearest paste target from the focus
+    /// (from the root with nothing focused) takes its kinds; with none, the
+    /// focused node hears plain text.
+    fn paste_route(&self, root: NodeId) -> (Option<NodeId>, viso_ui::ClipboardKinds) {
+        if self.focused_text_node().is_some() {
+            return (None, viso_ui::ClipboardKinds::TEXT);
+        }
+        let from = self.store.focused().unwrap_or(root);
+        match self.store.paste_target_from(from) {
+            Some((node, kinds)) => (Some(node), kinds),
+            None => (None, viso_ui::ClipboardKinds::TEXT),
+        }
+    }
+
     fn focused_text_node(&self) -> Option<NodeId> {
         let mut node = self.store.focused();
         while let Some(id) = node {
@@ -2273,11 +2317,12 @@ impl WindowState {
                 let Some(text) = selected else {
                     return;
                 };
-                cx.set_clipboard_text(&text);
+                cx.set_clipboard(viso_ui::ClipboardData::text(text));
                 (edit == edit_menu::Edit::Cut).then_some(text_edit::EditIntent::Cut)
             }
             edit_menu::Edit::Paste => {
-                cx.request_paste(self.window);
+                let token = self.paste_token(None);
+                cx.request_paste(self.window, viso_ui::ClipboardKinds::TEXT, token);
                 None
             }
             edit_menu::Edit::SelectAll if bar => Some(text_edit::EditIntent::Touch(
@@ -3341,19 +3386,52 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     &mut ws.route_chain,
                 );
             }
-            viso_runtime::InputSample::Paste(t) => {
-                // Pasted text routes to the focused control, which replaces
-                // its selection with it as one edit. A single-line buffer
-                // folds any line breaks in it.
-                KeyRouter::route_ime(
-                    &mut ws.store,
-                    &mut ws.states,
-                    &ws.bindings,
-                    &mut ws.text_edits,
-                    root,
-                    ImeEvent::Paste { text: t.text },
-                    &mut ws.route_chain,
-                );
+            viso_runtime::InputSample::PasteRequest(r) => {
+                // A paste gesture: the focus says what it takes, read by the
+                // backend once this returns.
+                r.reply.set(ws.paste_route(root).1);
+            }
+            viso_runtime::InputSample::Paste(p) => {
+                // An answer goes where its request said; a gesture's to the
+                // paste target the focus is in, if any.
+                let to = match p.token {
+                    Some(token) => ws
+                        .pastes
+                        .iter()
+                        .position(|(t, _)| *t == token)
+                        .map(|at| ws.pastes.remove(at).1),
+                    None => Some(ws.paste_route(root).0),
+                };
+                match to {
+                    // An answer to no request still pending.
+                    None => {}
+                    Some(Some(node)) => {
+                        KeyRouter::route_paste(
+                            &mut ws.store,
+                            &mut ws.states,
+                            &ws.bindings,
+                            &mut ws.text_edits,
+                            node,
+                            &p.data,
+                        );
+                    }
+                    // Pasted text routes to the focused control, which
+                    // replaces its selection with it as one edit. A
+                    // single-line buffer folds any line breaks in it.
+                    Some(None) => {
+                        if let Some(text) = p.data.text {
+                            KeyRouter::route_ime(
+                                &mut ws.store,
+                                &mut ws.states,
+                                &ws.bindings,
+                                &mut ws.text_edits,
+                                root,
+                                ImeEvent::Paste { text },
+                                &mut ws.route_chain,
+                            );
+                        }
+                    }
+                }
             }
             viso_runtime::InputSample::Copy(c) => {
                 // The platform asks for the selection while its copy/cut handler
@@ -3393,8 +3471,8 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                             &mut ws.route_chain,
                         );
                     }
-                    if let Some(text) = ws.store.take_copied() {
-                        c.reply.set(text);
+                    if let Some(data) = ws.store.take_copied() {
+                        c.reply.set(data);
                     }
                     return;
                 };
@@ -3405,7 +3483,8 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 if start == end || buffer.look.secure || (c.cut && buffer.look.read_only) {
                     return;
                 }
-                c.reply.set(buffer.text[start.0..end.0].to_owned());
+                c.reply
+                    .set(viso_ui::ClipboardData::text(&buffer.text[start.0..end.0]));
                 if c.cut {
                     buffer.queue(text_edit::EditIntent::Cut);
                     ws.settle_text_edits();
@@ -4156,8 +4235,14 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 self.pending_opens.clear();
                 self.pending_closes.clear();
                 for ws in &mut self.windows {
-                    if let Some(text) = ws.store.take_copied() {
-                        cx.set_clipboard_text(&text);
+                    if let Some(data) = ws.store.take_copied() {
+                        cx.set_clipboard(data);
+                    }
+                    ws.store.take_paste_asks(&mut ws.scratch_pastes);
+                    for i in 0..ws.scratch_pastes.len() {
+                        let (node, kinds) = ws.scratch_pastes[i];
+                        let token = ws.paste_token(Some(node));
+                        cx.request_paste(ws.window, kinds, token);
                     }
                     if let Some(on) = ws.store.take_fullscreen_ask() {
                         cx.set_fullscreen(ws.window, on);

@@ -27,7 +27,8 @@ use crate::driver::{FrameDriver, Lifecycle};
 use crate::frame::run_frame;
 use crate::input::{
     CopySample, DropSample, EditMenuSample, GestureSample, ImePreeditSample, InputSample,
-    KeySample, Modifiers, PointerPhase, PointerSample, ScrollSample, TextSample,
+    KeySample, Modifiers, PasteRequestSample, PasteSample, PointerPhase, PointerSample,
+    ScrollSample, TextSample,
 };
 use crate::schedule::{RedrawReason, RedrawReasons};
 
@@ -477,9 +478,25 @@ impl<D: FrameDriver, C: FrameClock> AppHandler for Loop<D, C> {
                     self.reasons.add(RedrawReason::InputDirty);
                 }
             }
-            RawEvent::Paste { window, text } => {
+            RawEvent::PasteRequested { window, reply } => {
+                // The driver answers synchronously through `reply`; the
+                // backend reads the clipboard once this returns.
                 self.driver.on_input(
-                    InputSample::Paste(TextSample { window, text }),
+                    InputSample::PasteRequest(PasteRequestSample { window, reply }),
+                    self.clock.peek(),
+                );
+            }
+            RawEvent::Paste {
+                window,
+                data,
+                token,
+            } => {
+                self.driver.on_input(
+                    InputSample::Paste(PasteSample {
+                        window,
+                        data,
+                        token,
+                    }),
                     self.clock.peek(),
                 );
                 self.reasons.add(RedrawReason::InputDirty);
@@ -833,10 +850,10 @@ mod tests {
         fn on_geometry(&mut self, _window: WindowId, _scale: f64, _width: u32, _height: u32) {}
         fn on_input(&mut self, sample: InputSample, _at: Instant) {
             match sample {
-                InputSample::Paste(t) => self.pasted.push(t.text),
+                InputSample::Paste(p) => self.pasted.push(p.data.text.unwrap_or_default()),
                 InputSample::Copy(c) => {
                     self.copies.push(c.cut);
-                    c.reply.set("sel".to_owned());
+                    c.reply.set(viso_platform::ClipboardData::text("sel"));
                 }
                 _ => {}
             }
@@ -954,7 +971,10 @@ mod tests {
             reply: reply.clone(),
         });
         assert_eq!(flow, ControlFlow::Wait, "a copy changes nothing on screen");
-        assert_eq!(reply.take().as_deref(), Some("sel"));
+        assert_eq!(
+            reply.take(),
+            Some(viso_platform::ClipboardData::text("sel"))
+        );
 
         let reply = viso_platform::ClipboardReply::new();
         let flow = sched.handle(RawEvent::CopyRequested {
@@ -963,7 +983,10 @@ mod tests {
             reply: reply.clone(),
         });
         assert_eq!(flow, ControlFlow::Poll, "a cut removes the selection");
-        assert_eq!(reply.take().as_deref(), Some("sel"));
+        assert_eq!(
+            reply.take(),
+            Some(viso_platform::ClipboardData::text("sel"))
+        );
         assert_eq!(sched.state.driver.copies, vec![false, true]);
     }
 
@@ -972,7 +995,8 @@ mod tests {
         let mut sched = lifecycle_scheduler();
         let flow = sched.handle(RawEvent::Paste {
             window: WindowId(1),
-            text: "clip".to_owned(),
+            data: viso_platform::ClipboardData::text("clip"),
+            token: None,
         });
         assert_eq!(flow, ControlFlow::Poll);
         assert_eq!(sched.state.driver.pasted, vec!["clip".to_owned()]);

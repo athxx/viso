@@ -152,7 +152,7 @@ fn copy_answers_with_the_selection_and_leaves_the_text() {
         redraw(),
     ]);
     let app = drive_scripted::<FieldApp>(script, STEP);
-    assert_eq!(reply.take().as_deref(), Some("hello"));
+    assert_eq!(reply.take().and_then(|d| d.text).as_deref(), Some("hello"));
     assert_eq!(app.focused_text(), Some("hello"));
 }
 
@@ -190,7 +190,7 @@ fn cut_answers_with_the_selection_and_removes_it() {
     ]);
     CHANGES.with(|c| c.borrow_mut().clear());
     let app = drive_scripted::<FieldApp>(script, STEP);
-    assert_eq!(reply.take().as_deref(), Some("hello"));
+    assert_eq!(reply.take().and_then(|d| d.text).as_deref(), Some("hello"));
     assert_eq!(app.focused_text(), Some(""));
     assert_eq!(CHANGES.with(|c| c.borrow().clone()), [String::new()]);
 }
@@ -224,7 +224,8 @@ fn paste_replaces_the_selection_on_one_line() {
         select_all(),
         RawEvent::Paste {
             window: WIN,
-            text: "two\r\nlines".to_owned(),
+            data: viso::platform::ClipboardData::text("two\r\nlines"),
+            token: None,
         },
         redraw(),
     ]);

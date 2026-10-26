@@ -1,21 +1,14 @@
-//! System services the window procedure and the app share: the clipboard,
-//! cursors, appearance and wheel settings, the dark title bar, fullscreen.
+//! System services the window procedure and the app share: cursors,
+//! appearance and wheel settings, the dark title bar, fullscreen.
 
 use std::ffi::c_void;
 use std::time::Duration;
 
-use ::windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND};
+use ::windows::Win32::Foundation::HWND;
 use ::windows::Win32::Globalization::GetUserDefaultLocaleName;
 use ::windows::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
 use ::windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
-};
-use ::windows::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
-    SetClipboardData,
-};
-use ::windows::Win32::System::Memory::{
-    GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock,
 };
 use ::windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
 use ::windows::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
@@ -33,81 +26,6 @@ use super::translate;
 use super::{Restore, Shared, WindowState, menu};
 use crate::event::{Appearance, ColorScheme, CursorIcon, RawEvent};
 use crate::locale;
-
-const CF_UNICODETEXT: u32 = 13;
-
-/// The clipboard, open for the life of the value. Another process may hold
-/// it briefly, so opening retries for a few milliseconds.
-struct ClipboardSession;
-
-impl ClipboardSession {
-    fn open(owner: Option<HWND>) -> Option<Self> {
-        for _ in 0..10 {
-            // SAFETY: opening the clipboard for this thread; closed on drop.
-            if unsafe { OpenClipboard(owner) }.is_ok() {
-                return Some(Self);
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        None
-    }
-}
-
-impl Drop for ClipboardSession {
-    fn drop(&mut self) {
-        // SAFETY: this thread opened the clipboard in `open`.
-        let _ = unsafe { CloseClipboard() };
-    }
-}
-
-pub(super) fn write_clipboard(owner: Option<HWND>, text: &str) {
-    let units = translate::clipboard_units(text);
-    let Some(_session) = ClipboardSession::open(owner) else {
-        return;
-    };
-    // SAFETY: the clipboard is open on this thread. The block is sized for
-    // `units`, filled while locked, and handed to the clipboard, which owns
-    // it once `SetClipboardData` succeeds; on any failure it is freed here.
-    unsafe {
-        if EmptyClipboard().is_err() {
-            return;
-        }
-        let Ok(block) = GlobalAlloc(GMEM_MOVEABLE, units.len() * 2) else {
-            return;
-        };
-        let dst = GlobalLock(block).cast::<u16>();
-        if dst.is_null() {
-            let _ = GlobalFree(Some(block));
-            return;
-        }
-        std::ptr::copy_nonoverlapping(units.as_ptr(), dst, units.len());
-        let _ = GlobalUnlock(block);
-        if SetClipboardData(CF_UNICODETEXT, Some(HANDLE(block.0))).is_err() {
-            let _ = GlobalFree(Some(block));
-        }
-    }
-}
-
-pub(super) fn read_clipboard(owner: Option<HWND>) -> Option<String> {
-    // SAFETY: a format query with no pointers.
-    unsafe { IsClipboardFormatAvailable(CF_UNICODETEXT) }.ok()?;
-    let _session = ClipboardSession::open(owner)?;
-    // SAFETY: the clipboard is open on this thread, so its data handle stays
-    // valid until the session closes. The locked block holds `GlobalSize`
-    // bytes; the slice stays within them and ends before the unlock.
-    unsafe {
-        let data = GetClipboardData(CF_UNICODETEXT).ok()?;
-        let block = HGLOBAL(data.0);
-        let src = GlobalLock(block).cast::<u16>().cast_const();
-        if src.is_null() {
-            return None;
-        }
-        let units = std::slice::from_raw_parts(src, GlobalSize(block) / 2);
-        let text = translate::clipboard_text(units);
-        let _ = GlobalUnlock(block);
-        Some(text)
-    }
-}
 
 /// Show `icon` now. `WM_SETCURSOR` calls this again whenever the pointer
 /// moves over the client area.

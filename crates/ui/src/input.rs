@@ -2147,6 +2147,29 @@ impl KeyRouter {
         ran
     }
 
+    /// Tell paste target `node` what a paste brought, driving its key
+    /// handler with it (read via `cx.pasted()`). Targets `node` alone.
+    /// Returns whether a handler ran.
+    pub fn route_paste(
+        store: &mut NodeStore,
+        states: &mut StateStore,
+        bindings: &BindingTable,
+        edits: &mut TextEdits,
+        node: NodeId,
+        data: &crate::clipboard::ClipboardData,
+    ) -> bool {
+        store.arena().is_live(node)
+            && key_handler_dispatch(
+                store,
+                states,
+                bindings,
+                edits,
+                node,
+                KeyPayload::Paste(data),
+            )
+            .ran
+    }
+
     /// Deliver every wake whose time came ([`EventCx::wake_after`]) to its
     /// node's key handler, in the order they fired; a node gone drops its
     /// wake. Returns whether a handler ran.
@@ -2309,6 +2332,7 @@ enum KeyPayload<'e> {
     Detent(usize),
     Drop(&'e crate::drag_drop::DropEvent),
     DragEnd(crate::drag_drop::DragEnd),
+    Paste(&'e crate::clipboard::ClipboardData),
 }
 
 /// Call one node's key handler with `payload`, then apply everything the
@@ -2372,6 +2396,7 @@ fn call_at(
         Some(KeyPayload::Detent(detent)) => EventCx::__new_sheet_detent(states, bindings, detent),
         Some(KeyPayload::Drop(event)) => EventCx::__new_drop(states, bindings, event),
         Some(KeyPayload::DragEnd(end)) => EventCx::__new_drag_end(states, bindings, end),
+        Some(KeyPayload::Paste(data)) => EventCx::__new_paste(states, bindings, data),
     };
     cx.__set_focused(store.focused());
     cx.__set_services(store.__services());

@@ -12,6 +12,7 @@
 //! Windows machine.
 
 mod access;
+mod clipboard;
 mod drop;
 mod links;
 mod menu;
@@ -290,10 +291,12 @@ fn deliver(
 ) -> ControlFlow {
     enum After {
         Copy(crate::ClipboardReply, WindowId),
+        Paste(crate::PasteReply, WindowId),
         Close(crate::AcceptCell, WindowId),
     }
     let after = match &event {
         RawEvent::CopyRequested { reply, window, .. } => Some(After::Copy(reply.clone(), *window)),
+        RawEvent::PasteRequested { reply, window } => Some(After::Paste(reply.clone(), *window)),
         RawEvent::CloseRequested { accept, window } => Some(After::Close(accept.clone(), *window)),
         _ => None,
     };
@@ -321,9 +324,23 @@ fn deliver(
     }
     match after {
         Some(After::Copy(reply, window)) => {
-            if let Some(text) = reply.take() {
+            if let Some(data) = reply.take() {
                 let owner = shared.borrow().hwnd_of(window);
-                system::write_clipboard(owner, &text);
+                clipboard::write(owner, data);
+            }
+        }
+        Some(After::Paste(reply, window)) => {
+            let kinds = reply.get();
+            if kinds.any() {
+                let owner = shared.borrow().hwnd_of(window);
+                let data = clipboard::read(owner, kinds);
+                if !data.is_empty() {
+                    shared.borrow_mut().events.push_back(RawEvent::Paste {
+                        window,
+                        data,
+                        token: None,
+                    });
+                }
             }
         }
         Some(After::Close(accept, window)) if accept.is_accepted() => {
@@ -740,18 +757,21 @@ impl PlatformApp for WinApp {
         }
     }
 
-    fn set_clipboard_text(&mut self, text: &str) {
+    fn set_clipboard(&mut self, data: crate::ClipboardData) {
         let owner = self.windows.first().map(|w| w.state.hwnd.get());
-        system::write_clipboard(owner, text);
+        clipboard::write(owner, data);
     }
 
-    fn request_paste(&mut self, window: WindowId) {
+    fn request_paste(&mut self, window: WindowId, kinds: crate::ClipboardKinds, token: u32) {
         let Some(state) = self.state(window) else {
             return;
         };
-        if let Some(text) = system::read_clipboard(Some(state.hwnd.get())) {
-            state.push(RawEvent::Paste { window, text });
-        }
+        let data = clipboard::read(Some(state.hwnd.get()), kinds);
+        state.push(RawEvent::Paste {
+            window,
+            data,
+            token: Some(token),
+        });
     }
 
     fn start_drag(&mut self, window: WindowId, drag: crate::DragOut) -> bool {

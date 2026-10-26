@@ -176,12 +176,18 @@ impl PlatformApp for WaylandApp {
         self.with_state(|state| state.close(window));
     }
 
-    fn set_clipboard_text(&mut self, text: &str) {
-        self.with_state(|state| state.copy(text));
+    fn set_clipboard(&mut self, data: crate::ClipboardData) {
+        self.with_state(|state| state.copy(data));
     }
 
-    fn request_paste(&mut self, window: WindowId) {
-        self.with_state(|state| state.chore(Chore::Paste(window)));
+    fn request_paste(&mut self, window: WindowId, kinds: crate::ClipboardKinds, token: u32) {
+        self.with_state(|state| {
+            state.chore(Chore::Paste {
+                window,
+                kinds,
+                token: Some(token),
+            })
+        });
     }
 
     fn start_drag(&mut self, window: WindowId, drag: crate::DragOut) -> bool {
@@ -601,9 +607,9 @@ impl State {
         self.pump.push(RawEvent::DragEnded { window, action });
     }
 
-    fn copy(&mut self, text: &str) {
+    fn copy(&mut self, data: crate::ClipboardData) {
         let serial = self.seat.as_ref().map_or(0, |s| s.last_serial);
-        self.clipboard.set(&self.qh, text, serial);
+        self.clipboard.set(&self.qh, data, serial);
     }
 
     fn answer_drop(&mut self, window: WindowId, phase: crate::DropPhase, reply: &crate::DropReply) {
@@ -612,9 +618,17 @@ impl State {
 
     fn chore(&mut self, chore: Chore) {
         match chore {
-            Chore::Paste(window) => {
-                if let Some(text) = self.clipboard.paste(window, &self.waker) {
-                    self.pump.push(RawEvent::Paste { window, text });
+            Chore::Paste {
+                window,
+                kinds,
+                token,
+            } => {
+                if let Some(data) = self.clipboard.paste(window, kinds, token, &self.waker) {
+                    self.pump.push(RawEvent::Paste {
+                        window,
+                        data,
+                        token,
+                    });
                 }
             }
             Chore::Minimize(window) => {
@@ -804,7 +818,12 @@ impl Display for Wl {
     fn finish(&mut self, after: After) {
         let state = &mut self.state;
         match after {
-            After::Copy(text) => state.copy(&text),
+            After::Copy(data) => state.copy(data),
+            After::Paste(window, kinds) => state.chore(Chore::Paste {
+                window,
+                kinds,
+                token: None,
+            }),
             After::Close(window) => state.close(window),
             After::Redrawn(window) => {
                 // A frame the app declined to draw still has to carry the

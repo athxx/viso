@@ -41,6 +41,8 @@ x11rb::atom_manager! {
         XdndActionMove,
         XdndActionLink,
         TEXT_URI_LIST: b"text/uri-list",
+        TEXT_HTML: b"text/html",
+        IMAGE_PNG: b"image/png",
         ABS_PRESSURE: b"Abs Pressure",
     }
 }

@@ -503,7 +503,7 @@ pub(crate) fn input_name(
             format!("pinch {} {}", g.scale, g.rotation),
             Some([g.x / scale, g.y / scale]),
         ),
-        InputSample::Copy(_) => return None,
+        InputSample::Copy(_) | InputSample::PasteRequest(_) => return None,
         InputSample::DragEnded { action, .. } => (format!("drag_ended {action:?}"), None),
         InputSample::EditMenu(e) => (format!("edit_menu {:?}", e.action), None),
         InputSample::Drop(d) => {

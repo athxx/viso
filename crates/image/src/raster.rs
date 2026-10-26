@@ -181,6 +181,18 @@ impl RasterImage {
         })
     }
 
+    /// Its pixels as straight-alpha sRGB RGBA8 (`width × height × 4`
+    /// bytes, rows top first), the premultiplication in linear light
+    /// undone; `None` as [`to_rgba8`](Self::to_rgba8) says.
+    pub fn to_straight_rgba8(&self) -> Option<Vec<u8>> {
+        let texels = crate::codec::decode(self.format, self.width, self.height, &self.texels)?;
+        let mut pixels = texels.into_flattened();
+        for p in pixels.as_chunks_mut::<4>().0 {
+            *p = unpremultiply(*p);
+        }
+        Some(pixels)
+    }
+
     /// Its texels as premultiplied RGBA8 texels; `None` as [`to_rgba8`]
     /// says.
     ///
@@ -250,6 +262,21 @@ pub(crate) fn premultiply([r, g, b, a]: [u8; 4]) -> [u8; 4] {
             let a1 = f32::from(a) / 255.0;
             let premul = |v: u8| srgb::encode(srgb::decode(v) * a1);
             [premul(r), premul(g), premul(b), a]
+        }
+    }
+}
+
+/// A pixel premultiplied in linear light, its alpha straightened: the
+/// inverse of [`premultiply`], as near as eight bits keep it.
+#[inline]
+pub(crate) fn unpremultiply([r, g, b, a]: [u8; 4]) -> [u8; 4] {
+    match a {
+        255 => [r, g, b, 255],
+        0 => [0; 4],
+        a => {
+            let a1 = f32::from(a) / 255.0;
+            let straight = |v: u8| srgb::encode((srgb::decode(v) / a1).min(1.0));
+            [straight(r), straight(g), straight(b), a]
         }
     }
 }

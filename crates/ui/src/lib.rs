@@ -20,6 +20,7 @@ pub mod binding;
 pub mod calendar;
 pub mod check_mark;
 pub mod clicks;
+pub mod clipboard;
 pub mod color_picker;
 pub mod color_plane;
 pub mod combo_box;
@@ -113,6 +114,7 @@ pub use binding::{
     Binding, BindingFootprint, BindingTable, InstanceBase, StateRef, Template, TemplateBinding,
 };
 pub use check_mark::{CheckMark, CheckShape};
+pub use clipboard::{ClipboardData, ClipboardImage, ClipboardKinds};
 pub use component::{
     AbsoluteStyle, BuildCx, Component, FlexStyle, FrameRecompute, Handle, LeafStyle, NodeStore,
     Painted, PointerHandler, ScrollBehavior, ScrollRequest, ScrollStyle, StackStyle,

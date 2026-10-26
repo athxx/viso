@@ -23,6 +23,7 @@
 //! is finished for it.
 
 mod access;
+mod clipboard;
 mod jni;
 mod ndk;
 
@@ -39,14 +40,15 @@ use std::time::Duration;
 use super::android_translate as translate;
 use super::utf16::byte_offset;
 use crate::accessibility::AccessRequest;
+use crate::clipboard::{ClipboardReply, PasteReply};
 use crate::control::{
     ControlFlow, EditMenuAction, InputKind, LogicalRect, PlatformError, TextEntry, WindowConfig,
     WindowId,
 };
 use crate::event::{
-    AcceptCell, Appearance, ClipboardReply, ClipboardShortcut, ColorScheme, CursorIcon,
-    DisplayFeature, DisplayFeatureKind, LogicalInsets, PointerButtons, PointerKind, RawEvent,
-    RawImePreedit, RawKey, RawPointer, RawScroll, RawText, clipboard_shortcut,
+    AcceptCell, Appearance, ClipboardShortcut, ColorScheme, CursorIcon, DisplayFeature,
+    DisplayFeatureKind, LogicalInsets, PointerButtons, PointerKind, RawEvent, RawImePreedit,
+    RawKey, RawPointer, RawScroll, RawText, clipboard_shortcut,
 };
 use crate::handler::AppHandler;
 use crate::locale;
@@ -145,6 +147,13 @@ pub(super) enum Msg {
         text: Option<String>,
         link: Option<String>,
         files: Vec<std::path::PathBuf>,
+    },
+    /// The shell read the clipboard for paste `id`: the app's own copy
+    /// (`own`), or `data`.
+    Paste {
+        id: i64,
+        own: bool,
+        data: crate::ClipboardData,
     },
     /// An assistive technology's request.
     Access(AccessRequest),
@@ -522,15 +531,12 @@ fn copy(cut: bool) {
     });
 }
 
+/// Queue the paste handshake for the window.
 fn paste() {
-    if LOOP.with(|l| l.window_open.get())
-        && let Some(text) = jni::clipboard()
-    {
-        push(RawEvent::Paste {
-            window: WINDOW,
-            text,
-        });
-    }
+    push_to_window(RawEvent::PasteRequested {
+        window: WINDOW,
+        reply: PasteReply::new(),
+    });
 }
 
 /// Turn one message into raw events.
@@ -775,6 +781,7 @@ fn apply(msg: Msg) {
             window: WINDOW,
             request,
         }),
+        Msg::Paste { id, own, data } => clipboard::answered(id, own, data),
         Msg::Recreated => {
             if LOOP.with(|l| l.window_open.get()) {
                 attach_access();
@@ -889,19 +896,37 @@ fn apply_touch(touch: &Touch) {
     }
 }
 
-/// Hand one event to the handler, completing the copy handshake.
+/// Hand one event to the handler, completing the clipboard handshakes:
+/// what a `CopyRequested` reply holds is copied, and a `PasteRequested`
+/// reads the kinds its reply names.
 fn deliver(
     app: &mut dyn PlatformApp,
     handler: &mut dyn AppHandler,
     event: RawEvent,
 ) -> ControlFlow {
-    let reply = match &event {
-        RawEvent::CopyRequested { reply, .. } => Some(reply.clone()),
+    enum After {
+        Copy(ClipboardReply),
+        Paste(WindowId, PasteReply),
+    }
+    let after = match &event {
+        RawEvent::CopyRequested { reply, .. } => Some(After::Copy(reply.clone())),
+        RawEvent::PasteRequested { window, reply } => Some(After::Paste(*window, reply.clone())),
         _ => None,
     };
     let flow = handler.handle(app, event);
-    if let Some(text) = reply.and_then(|r| r.take()) {
-        jni::set_clipboard(&text);
+    match after {
+        Some(After::Copy(reply)) => {
+            if let Some(data) = reply.take() {
+                clipboard::write(data);
+            }
+        }
+        Some(After::Paste(window, reply)) => {
+            let kinds = reply.get();
+            if kinds.any() {
+                clipboard::request(window, kinds, None);
+            }
+        }
+        None => {}
     }
     flow
 }
@@ -1082,14 +1107,12 @@ impl PlatformApp for AndroidApp {
         push(RawEvent::WindowClosed { window });
     }
 
-    fn set_clipboard_text(&mut self, text: &str) {
-        jni::set_clipboard(text);
+    fn set_clipboard(&mut self, data: crate::ClipboardData) {
+        clipboard::write(data);
     }
 
-    fn request_paste(&mut self, window: WindowId) {
-        if window == WINDOW {
-            paste();
-        }
+    fn request_paste(&mut self, window: WindowId, kinds: crate::ClipboardKinds, token: u32) {
+        clipboard::request(window, kinds, Some(token));
     }
 
     fn set_fullscreen(&mut self, window: WindowId, fullscreen: bool) {

@@ -458,7 +458,7 @@ fn a_copy_answers_with_the_selection_as_tab_separated_text() {
         redraw(),
     ]);
     run(&script);
-    let text = reply.take().expect("the grid copied");
+    let text = reply.take().and_then(|d| d.text).expect("the grid copied");
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(lines.len(), 2);
     assert!(lines[0].starts_with("r1c0\tr1c1\t"));
@@ -480,7 +480,10 @@ fn in_cell_mode_a_drag_selects_a_rectangle() {
     ]);
     let app = run(&script);
     CELLS.with(|c| c.set(false));
-    assert_eq!(reply.take().as_deref(), Some("r1c1\tr1c2\nr2c1\tr2c2"));
+    assert_eq!(
+        reply.take().and_then(|d| d.text).as_deref(),
+        Some("r1c1\tr1c2\nr2c1\tr2c2")
+    );
     let store = app.store();
     let selected = |at| {
         store

@@ -157,9 +157,9 @@ impl PlatformApp for X11App {
         let _ = x11.conn.flush();
     }
 
-    fn set_clipboard_text(&mut self, text: &str) {
+    fn set_clipboard(&mut self, data: crate::ClipboardData) {
         let mut x11 = self.x11.borrow_mut();
-        x11.copy(text);
+        x11.copy(data);
         let _ = x11.conn.flush();
     }
 
@@ -170,9 +170,13 @@ impl PlatformApp for X11App {
         started
     }
 
-    fn request_paste(&mut self, window: WindowId) {
+    fn request_paste(&mut self, window: WindowId, kinds: crate::ClipboardKinds, token: u32) {
         let mut x11 = self.x11.borrow_mut();
-        x11.chore(Chore::Paste(window));
+        x11.chore(Chore::Paste {
+            window,
+            kinds,
+            token: Some(token),
+        });
         let _ = x11.conn.flush();
     }
 
@@ -870,20 +874,44 @@ impl X11 {
         }
     }
 
-    fn copy(&mut self, text: &str) {
+    fn copy(&mut self, data: crate::ClipboardData) {
         let _ = self
             .clipboard
-            .set(&self.conn, &self.atoms, text, self.last_time);
+            .set(&self.conn, &self.atoms, data, self.last_time);
+    }
+
+    fn pasted(&mut self, (window, data, token): selection::Pasted) {
+        self.pump.push(RawEvent::Paste {
+            window,
+            data,
+            token,
+        });
     }
 
     fn chore(&mut self, chore: Chore) {
         match chore {
-            Chore::Paste(window) => {
-                if let Ok(Some(text)) =
-                    self.clipboard
-                        .request(&self.conn, &self.atoms, window, self.last_time)
-                {
-                    self.pump.push(RawEvent::Paste { window, text });
+            Chore::Paste {
+                window,
+                kinds,
+                token,
+            } => {
+                let read = self.clipboard.request(
+                    &self.conn,
+                    &self.atoms,
+                    window,
+                    kinds,
+                    token,
+                    self.last_time,
+                );
+                match read {
+                    Ok(Some(data)) => self.pasted((window, data, token)),
+                    Ok(None) => {}
+                    // The server is gone; a request is answered empty.
+                    Err(_) => {
+                        if token.is_some() {
+                            self.pasted((window, crate::ClipboardData::default(), token));
+                        }
+                    }
                 }
             }
             Chore::Minimize(window) => {
@@ -983,10 +1011,10 @@ impl X11 {
                     if let Ok(Some(drop)) = dropped {
                         self.pump.push(RawEvent::Drop(drop));
                     }
-                } else if let Ok(Some((window, text))) =
+                } else if let Ok(Some(pasted)) =
                     self.clipboard.on_notify(&self.conn, &self.atoms, &e)
                 {
-                    self.pump.push(RawEvent::Paste { window, text });
+                    self.pasted(pasted);
                 }
             }
             Event::SelectionRequest(e) => {
@@ -1245,8 +1273,8 @@ impl X11 {
             }
             return;
         }
-        if let Ok(Some((window, text))) = self.clipboard.on_property(&self.conn, &self.atoms, e) {
-            self.pump.push(RawEvent::Paste { window, text });
+        if let Ok(Some(pasted)) = self.clipboard.on_property(&self.conn, &self.atoms, e) {
+            self.pasted(pasted);
         }
     }
 
@@ -1729,7 +1757,12 @@ impl Display for X11 {
 
     fn finish(&mut self, after: After) {
         match after {
-            After::Copy(text) => self.copy(&text),
+            After::Copy(data) => self.copy(data),
+            After::Paste(window, kinds) => self.chore(Chore::Paste {
+                window,
+                kinds,
+                token: None,
+            }),
             After::Close(window) => self.close(window),
             After::Redrawn(_) => {}
             After::Dropped(window, phase, reply) => {

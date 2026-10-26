@@ -49,7 +49,7 @@ use self::scanout::{Change, Output, Rotation};
 use self::seat::Seat;
 use self::uevent::{Hotplug, Uevents};
 use super::xkb::{KeyText, Keyboard};
-use super::{After, Chore, Display, Pump, WakeReceiver, Waker, translate, wake_channel};
+use super::{After, Display, Pump, WakeReceiver, Waker, translate, wake_channel};
 use crate::control::{PlatformCaps, PlatformError, WindowConfig, WindowId};
 use crate::event::{
     Appearance, CursorIcon, KeyCode, Modifiers, PointerButtons, PointerId, PointerKind,
@@ -277,7 +277,7 @@ pub(crate) struct KmsDisplay {
     cursor: CursorIcon,
     /// The mouse moved since the last touch: the cursor is up.
     cursor_on: bool,
-    clipboard: String,
+    clipboard: crate::ClipboardData,
     tags: Vec<u64>,
     inputs_scratch: Vec<Input>,
     libinput_scratch: Vec<(u32, Input)>,
@@ -336,7 +336,7 @@ impl KmsDisplay {
             buttons: PointerButtons::NONE,
             cursor: CursorIcon::Default,
             cursor_on: false,
-            clipboard: String::new(),
+            clipboard: crate::ClipboardData::default(),
             tags: Vec::new(),
             inputs_scratch: Vec::new(),
             libinput_scratch: Vec::new(),
@@ -813,9 +813,6 @@ impl KmsDisplay {
             pressed,
             repeat,
         );
-        if let Some(Chore::Paste(window)) = route.chore {
-            self.paste(window);
-        }
         if pressed && !route.consumed && !(modifiers.control || modifiers.alt || modifiers.logo) {
             let text = match &mut self.keyboard {
                 Some(k) if k.has_keymap() => match k.press_text(kc) {
@@ -854,11 +851,15 @@ impl KmsDisplay {
         }
     }
 
-    fn paste(&mut self, window: WindowId) {
-        if !self.clipboard.is_empty() {
+    /// What the in-app clipboard holds of `kinds`, for a request (`token`)
+    /// always, for a gesture only when it holds some.
+    fn paste(&mut self, window: WindowId, kinds: crate::ClipboardKinds, token: Option<u32>) {
+        let data = self.clipboard.taken(kinds);
+        if token.is_some() || !data.is_empty() {
             self.pump.push(RawEvent::Paste {
                 window,
-                text: self.clipboard.clone(),
+                data,
+                token,
             });
         }
     }
@@ -928,7 +929,8 @@ impl Display for KmsDisplay {
 
     fn finish(&mut self, after: After) {
         match after {
-            After::Copy(text) => self.clipboard = text,
+            After::Copy(data) => self.clipboard = data,
+            After::Paste(window, kinds) => self.paste(window, kinds, None),
             After::Close(window) => {
                 if self.window == Some(window) {
                     self.window = None;
@@ -1053,12 +1055,12 @@ impl PlatformApp for KmsApp {
         self.display.borrow_mut().finish(After::Close(window));
     }
 
-    fn set_clipboard_text(&mut self, text: &str) {
-        self.display.borrow_mut().clipboard = text.to_owned();
+    fn set_clipboard(&mut self, data: crate::ClipboardData) {
+        self.display.borrow_mut().clipboard = data;
     }
 
-    fn request_paste(&mut self, window: WindowId) {
-        self.display.borrow_mut().paste(window);
+    fn request_paste(&mut self, window: WindowId, kinds: crate::ClipboardKinds, token: u32) {
+        self.display.borrow_mut().paste(window, kinds, Some(token));
     }
 
     fn set_cursor(&mut self, _window: WindowId, icon: CursorIcon) {

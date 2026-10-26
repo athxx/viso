@@ -16,8 +16,9 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use jni_sys::{
-    JNI_ERR, JNI_OK, JNI_VERSION_1_6, JNIEnv, JNINativeMethod, JavaVM, jboolean, jclass, jfloat,
-    jfloatArray, jint, jintArray, jmethodID, jobject, jobjectArray, jstring, jvalue,
+    JNI_ERR, JNI_OK, JNI_VERSION_1_6, JNIEnv, JNINativeMethod, JavaVM, jboolean, jbyteArray,
+    jclass, jfloat, jfloatArray, jint, jintArray, jlong, jmethodID, jobject, jobjectArray, jstring,
+    jvalue,
 };
 
 use super::ndk;
@@ -51,7 +52,7 @@ struct Methods {
     set_pointer_icon: Global<jmethodID>,
     set_fullscreen: Global<jmethodID>,
     set_clipboard: Global<jmethodID>,
-    get_clipboard: Global<jmethodID>,
+    request_clipboard: Global<jmethodID>,
     set_title_text: Global<jmethodID>,
     finish: Global<jmethodID>,
     host_view: Global<jmethodID>,
@@ -349,8 +350,81 @@ pub(super) fn set_title(title: &str) {
     });
 }
 
-pub(super) fn set_clipboard(text: &str) {
-    with_string(text, |s| call_void(|m| m.set_clipboard, &[jvalue { l: s }]));
+/// Put one item of `text`, `html` and a `png` file, each optional, on the
+/// clipboard under `label`, from any attached thread. The shell stores the
+/// file on the calling thread.
+pub(super) fn set_clipboard(
+    text: Option<&str>,
+    html: Option<&str>,
+    png: Option<&[u8]>,
+    label: &str,
+) {
+    let Some(env) = env() else { return };
+    // SAFETY: `env` is this thread's environment. Each local reference is
+    // made here, null where there is no part, and deleted after the call;
+    // the byte array is sized for `png` before its region is filled.
+    unsafe {
+        let string = |text: Option<&str>| text.map_or(ptr::null_mut(), |t| new_string(env, t));
+        let (text, html, label) = (string(text), string(html), new_string(env, label));
+        let png = match png.and_then(|b| Some((b, jint::try_from(b.len()).ok()?))) {
+            Some((bytes, len)) => {
+                let array = env_call!(env, NewByteArray, len);
+                if !array.is_null() {
+                    env_call!(
+                        env,
+                        SetByteArrayRegion,
+                        array,
+                        0,
+                        len,
+                        bytes.as_ptr().cast()
+                    );
+                }
+                array
+            }
+            None => ptr::null_mut(),
+        };
+        if check(env) && !label.is_null() {
+            call_void(
+                |m| m.set_clipboard,
+                &[
+                    jvalue { l: text },
+                    jvalue { l: html },
+                    jvalue { l: png },
+                    jvalue { l: label },
+                ],
+            );
+        }
+        for local in [text, html, png, label] {
+            if !local.is_null() {
+                env_call!(env, DeleteLocalRef, local);
+            }
+        }
+    }
+}
+
+/// Ask the shell to read the clipboard, image file and all if `image`, and
+/// answer paste `id` through `nativePaste`; `false` if it could not be
+/// asked.
+pub(super) fn request_clipboard(image: bool, id: i64) -> bool {
+    let (Some(java), Some(env)) = (JAVA.get(), env()) else {
+        return false;
+    };
+    let activity = java.activity.lock().unwrap_or_else(|e| e.into_inner()).0;
+    if activity.is_null() {
+        return false;
+    }
+    // SAFETY: as in `call_void`; `requestClipboard(boolean, long)` takes
+    // these two arguments.
+    unsafe {
+        env_call!(
+            env,
+            CallVoidMethodA,
+            activity,
+            java.methods.request_clipboard.0,
+            [jvalue { z: image }, jvalue { j: id }].as_ptr()
+        );
+        check(env)
+    }
 }
 
 pub(super) fn finish() {
@@ -369,33 +443,6 @@ fn with_string(text: &str, f: impl FnOnce(jobject)) {
         }
         f(s);
         env_call!(env, DeleteLocalRef, s);
-    }
-}
-
-pub(super) fn clipboard() -> Option<String> {
-    let (java, env) = (JAVA.get()?, env()?);
-    let activity = java.activity.lock().unwrap_or_else(|e| e.into_inner()).0;
-    if activity.is_null() {
-        return None;
-    }
-    // SAFETY: as in `call_void`; `getClipboard()` takes no arguments and
-    // returns a String (or null), whose local reference is deleted here.
-    unsafe {
-        let s = env_call!(
-            env,
-            CallObjectMethodA,
-            activity,
-            java.methods.get_clipboard.0,
-            ptr::null()
-        );
-        if !check(env) {
-            return None;
-        }
-        let text = read_string(env, s);
-        if !s.is_null() {
-            env_call!(env, DeleteLocalRef, s);
-        }
-        text
     }
 }
 
@@ -423,8 +470,8 @@ pub(super) fn attach_current_thread(name: &CStr) -> bool {
 pub(super) fn detach_current_thread() {
     if let Some(java) = JAVA.get() {
         let vm = java.vm.0;
-        // SAFETY: called once by the loop thread as it ends, after its last
-        // JNI call.
+        // SAFETY: called by a thread this module attached, as it ends, after
+        // its last JNI call.
         unsafe { ((**vm).v1_4.DetachCurrentThread)(vm) };
     }
 }
@@ -536,8 +583,11 @@ pub unsafe extern "system" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void
             set_loupe: method(c"setLoupe", c"(ZFF)V"),
             set_pointer_icon: method(c"setPointerIcon", c"(I)V"),
             set_fullscreen: method(c"setFullscreen", c"(Z)V"),
-            set_clipboard: method(c"setClipboard", c"(Ljava/lang/String;)V"),
-            get_clipboard: method(c"getClipboard", c"()Ljava/lang/String;"),
+            set_clipboard: method(
+                c"setClipboard",
+                c"(Ljava/lang/String;Ljava/lang/String;[BLjava/lang/String;)V",
+            ),
+            request_clipboard: method(c"requestClipboard", c"(ZJ)V"),
             set_title_text: method(c"setTitleText", c"(Ljava/lang/String;)V"),
             finish: method(c"finishFromNative", c"()V"),
             host_view: method(c"hostView", c"()Landroid/view/View;"),
@@ -562,7 +612,7 @@ pub unsafe extern "system" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void
 /// `env` must be the calling thread's environment and `class` the
 /// `VisoActivity` class.
 unsafe fn register_natives(env: *mut JNIEnv, class: jclass) -> bool {
-    let natives: [(&CStr, &CStr, *mut c_void); 20] = [
+    let natives: [(&CStr, &CStr, *mut c_void); 21] = [
         (
             c"nativeStart",
             c"(Ldev/viso/VisoActivity;FIFLjava/lang/String;[Ljava/lang/String;)V",
@@ -622,6 +672,11 @@ unsafe fn register_natives(env: *mut JNIEnv, class: jclass) -> bool {
             c"nativeDrop",
             c"(FFLjava/lang/String;Ljava/lang/String;[Ljava/lang/String;)V",
             native_drop as *mut c_void,
+        ),
+        (
+            c"nativePaste",
+            c"(JZLjava/lang/String;Ljava/lang/String;[B)V",
+            native_paste as *mut c_void,
         ),
     ];
     let methods: Vec<JNINativeMethod> = natives
@@ -964,4 +1019,59 @@ extern "system" fn native_drop(
         link,
         files: files.into_iter().map(Into::into).collect(),
     });
+}
+
+/// The shell read the clipboard for paste `id`, on a thread of its own.
+extern "system" fn native_paste(
+    env: *mut JNIEnv,
+    _class: jclass,
+    id: jlong,
+    own: jboolean,
+    text: jstring,
+    html: jstring,
+    image: jbyteArray,
+) {
+    // SAFETY: each is a live string, a live `byte[]`, or null.
+    let (text, html, image) = unsafe {
+        (
+            read_string(env, text),
+            read_string(env, html),
+            read_bytes(env, image),
+        )
+    };
+    send(Msg::Paste {
+        id,
+        own,
+        data: crate::ClipboardData {
+            text,
+            html,
+            image: image.map(crate::ClipboardImage::encoded),
+        },
+    });
+}
+
+/// The bytes of the `byte[]` `array`; `None` for null.
+///
+/// # Safety
+///
+/// `env` is the calling thread's `JNIEnv` and `array` a live `byte[]` or
+/// null.
+unsafe fn read_bytes(env: *mut JNIEnv, array: jbyteArray) -> Option<Vec<u8>> {
+    if array.is_null() {
+        return None;
+    }
+    // SAFETY: the caller's contract; the region read is the array's length.
+    unsafe {
+        let len = env_call!(env, GetArrayLength, array);
+        let mut bytes = vec![0u8; len.max(0) as usize];
+        env_call!(
+            env,
+            GetByteArrayRegion,
+            array,
+            0,
+            len,
+            bytes.as_mut_ptr().cast()
+        );
+        check(env).then_some(bytes)
+    }
 }

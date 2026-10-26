@@ -32,6 +32,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::drive::Drive;
 use super::macos_access::{MacAccess, Sink, wake_pump};
+use super::macos_clipboard;
 use super::macos_panel::{LayerScanout, emulation};
 use super::main_queue::post_to_main;
 use super::memory_pressure::MemoryPressure;
@@ -61,15 +62,16 @@ use objc2_foundation::{
 };
 
 use crate::RawWindowHandle;
+use crate::clipboard::{ClipboardData, ClipboardKinds, ClipboardReply, PasteReply};
 use crate::control::{
     ControlFlow, EditLabels, EditMenu, EditMenuAction, LogicalRect, PlatformError, TextEntry,
     WindowChrome, WindowConfig, WindowId,
 };
 use crate::drop::{DropAction, DropActions, DropKinds, DropOffer, DropPhase, DropReply, RawDrop};
 use crate::event::{
-    AcceptCell, Appearance, ClipboardReply, ClipboardShortcut, ColorScheme, CursorIcon,
-    DisplayFeature, DisplayFeatureKind, KeyCode, Modifiers, PointerButtons, PointerPhase, RawEvent,
-    RawImePreedit, RawKey, RawPointer, RawScroll, RawText, clipboard_shortcut,
+    AcceptCell, Appearance, ClipboardShortcut, ColorScheme, CursorIcon, DisplayFeature,
+    DisplayFeatureKind, KeyCode, Modifiers, PointerButtons, PointerPhase, RawEvent, RawImePreedit,
+    RawKey, RawPointer, RawScroll, RawText, clipboard_shortcut,
 };
 use crate::handler::AppHandler;
 use crate::locale;
@@ -106,6 +108,8 @@ struct PumpQueue {
     /// Set by a [`LoopWaker`] kick from any thread; drained as one
     /// `RawEvent::Wakeup`.
     woken: Arc<AtomicBool>,
+    /// The app's last copy, while the pasteboard may still hold it.
+    clipboard: Option<macos_clipboard::Owned>,
 }
 
 impl PumpQueue {
@@ -147,6 +151,13 @@ pub struct MacApp {
 }
 
 impl MacApp {
+    /// Write a copy's promised image now: it dies with the app otherwise.
+    fn settle_clipboard(&self) {
+        if let Some(owned) = &self.shared.borrow().clipboard {
+            macos_clipboard::settle(&NSPasteboard::generalPasteboard(), owned);
+        }
+    }
+
     /// Acquire the shared application on the main thread.
     pub fn new() -> Result<Self, PlatformError> {
         let Some(mtm) = MainThreadMarker::new() else {
@@ -279,46 +290,64 @@ unsafe fn drain_and_drive(drive: Drive, shared: &Shared) {
         let Some(event) = event else { break };
         // SAFETY: per the function contract.
         let (app, handler) = unsafe { drive.get() };
-        deliver(app, handler, event);
+        deliver(app, handler, shared, event);
     }
 }
 
-/// Hand one event to the handler, completing the copy handshake: a
+/// Hand one event to the handler, completing the clipboard handshakes: a
 /// `CopyRequested` reply the handler filled is written to the pasteboard once
-/// the handler returns.
+/// the handler returns, and a `PasteRequested` reads the kinds it took.
 fn deliver(
     app: &mut dyn PlatformApp,
     handler: &mut dyn AppHandler,
+    shared: &Shared,
     event: RawEvent,
 ) -> ControlFlow {
-    let reply = match &event {
-        RawEvent::CopyRequested { reply, .. } => Some(reply.clone()),
+    enum After {
+        Copy(ClipboardReply),
+        Paste(WindowId, PasteReply),
+    }
+    let after = match &event {
+        RawEvent::CopyRequested { reply, .. } => Some(After::Copy(reply.clone())),
+        RawEvent::PasteRequested { window, reply } => Some(After::Paste(*window, reply.clone())),
         _ => None,
     };
     let flow = handler.handle(app, event);
-    if let Some(text) = reply.and_then(|r| r.take()) {
-        write_pasteboard(&text);
+    match after {
+        Some(After::Copy(reply)) => {
+            if let Some(data) = reply.take() {
+                write_clipboard(shared, data);
+            }
+        }
+        Some(After::Paste(window, reply)) => {
+            let kinds = reply.get();
+            if kinds.any() {
+                let data = read_clipboard(shared, kinds);
+                if !data.is_empty() {
+                    shared.borrow_mut().events.push_back(RawEvent::Paste {
+                        window,
+                        data,
+                        token: None,
+                    });
+                }
+            }
+        }
+        None => {}
     }
     flow
 }
 
-/// Replace the general pasteboard's contents with plain text.
-fn write_pasteboard(text: &str) {
-    let pasteboard = NSPasteboard::generalPasteboard();
-    pasteboard.clearContents();
-    // SAFETY: `NSPasteboardTypeString` is an immutable AppKit constant,
-    // initialized before any Rust code runs.
-    let kind = unsafe { NSPasteboardTypeString };
-    pasteboard.setString_forType(&NSString::from_str(text), kind);
+/// Replace what the general pasteboard holds with `data`.
+fn write_clipboard(shared: &Shared, data: ClipboardData) {
+    let owned = macos_clipboard::write(&NSPasteboard::generalPasteboard(), data);
+    shared.borrow_mut().clipboard = Some(owned);
 }
 
-/// The general pasteboard's plain text, if it holds any.
-fn read_pasteboard() -> Option<String> {
-    // SAFETY: as in `write_pasteboard`.
-    let kind = unsafe { NSPasteboardTypeString };
-    NSPasteboard::generalPasteboard()
-        .stringForType(kind)
-        .map(|s| s.to_string())
+/// What the general pasteboard holds of `kinds`.
+fn read_clipboard(shared: &Shared, kinds: ClipboardKinds) -> ClipboardData {
+    let pasteboard = NSPasteboard::generalPasteboard();
+    let queue = shared.borrow();
+    macos_clipboard::read(&pasteboard, kinds, queue.clipboard.as_ref())
 }
 
 /// What a drag's pasteboard offers: its files, its first link that is no
@@ -633,6 +662,7 @@ impl PlatformApp for MacApp {
         }
 
         if handler.handle(self, RawEvent::AppLaunched) == ControlFlow::Exit {
+            self.settle_clipboard();
             return;
         }
 
@@ -661,7 +691,8 @@ impl PlatformApp for MacApp {
                     win.content_view.set_key(focused);
                 }
                 drew = matches!(event, RawEvent::RedrawRequested { .. });
-                flow = deliver(self, handler, event);
+                let shared = self.shared.clone();
+                flow = deliver(self, handler, &shared, event);
                 if flow == ControlFlow::Exit {
                     break;
                 }
@@ -739,6 +770,7 @@ impl PlatformApp for MacApp {
                 }
             }
         }
+        self.settle_clipboard();
     }
 
     fn window(&self, id: WindowId) -> Option<&dyn Window> {
@@ -851,17 +883,17 @@ impl PlatformApp for MacApp {
             .push_back(RawEvent::WindowClosed { window });
     }
 
-    fn set_clipboard_text(&mut self, text: &str) {
-        write_pasteboard(text);
+    fn set_clipboard(&mut self, data: ClipboardData) {
+        write_clipboard(&self.shared, data);
     }
 
-    fn request_paste(&mut self, window: WindowId) {
-        if let Some(text) = read_pasteboard() {
-            self.shared
-                .borrow_mut()
-                .events
-                .push_back(RawEvent::Paste { window, text });
-        }
+    fn request_paste(&mut self, window: WindowId, kinds: ClipboardKinds, token: u32) {
+        let data = read_clipboard(&self.shared, kinds);
+        self.shared.borrow_mut().events.push_back(RawEvent::Paste {
+            window,
+            data,
+            token: Some(token),
+        });
     }
 
     fn set_cursor(&mut self, window: WindowId, icon: CursorIcon) {
@@ -2744,7 +2776,8 @@ impl VisoContentView {
     }
 
     /// Answer a clipboard gesture: copy and cut ask the app for its selection
-    /// (written back by `deliver`), paste hands it the pasteboard's text.
+    /// (written back by `deliver`), paste asks it what it takes (read by
+    /// `deliver`).
     fn clipboard(&self, shortcut: ClipboardShortcut) {
         let window = self.ivars().window;
         let event = match shortcut {
@@ -2753,9 +2786,9 @@ impl VisoContentView {
                 cut: shortcut == ClipboardShortcut::Cut,
                 reply: ClipboardReply::new(),
             },
-            ClipboardShortcut::Paste => match read_pasteboard() {
-                Some(text) => RawEvent::Paste { window, text },
-                None => return,
+            ClipboardShortcut::Paste => RawEvent::PasteRequested {
+                window,
+                reply: PasteReply::new(),
             },
         };
         self.push(event);
@@ -3372,8 +3405,8 @@ mod tests {
                 if let RawEvent::CopyRequested { reply, .. } = &event {
                     // Answer then take it back, so the test leaves the real
                     // pasteboard untouched while exercising the reply slot.
-                    reply.set("x".into());
-                    assert_eq!(reply.take().as_deref(), Some("x"));
+                    reply.set(ClipboardData::text("x"));
+                    assert_eq!(reply.take(), Some(ClipboardData::text("x")));
                 }
                 ControlFlow::Wait
             }
@@ -3382,6 +3415,7 @@ mod tests {
         let flow = deliver(
             &mut HeadlessApp::new(),
             &mut Answer,
+            &Shared::default(),
             RawEvent::CopyRequested {
                 window: WindowId(1),
                 cut: false,

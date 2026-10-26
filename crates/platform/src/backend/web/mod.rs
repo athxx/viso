@@ -19,6 +19,7 @@
 //! password input while a secure field has focus.
 
 mod access;
+mod clipboard;
 mod input;
 
 use std::cell::{Cell, RefCell};
@@ -96,7 +97,9 @@ struct Loop {
     on_kick: Closure<dyn FnMut()>,
     /// The last `CopyRequested` answer (`Some(None)`: nothing to copy), kept
     /// for the `copy`/`cut` event that follows the shortcut's key press.
-    copied: RefCell<Option<Option<String>>>,
+    copied: RefCell<Option<Option<crate::ClipboardData>>>,
+    /// What the `paste` event in progress carried, for its `PasteRequested`.
+    pasting: RefCell<Option<clipboard::Pasting>>,
     page: RefCell<Option<Rc<Page>>>,
 }
 
@@ -117,6 +120,7 @@ thread_local! {
         kicked: Cell::new(false),
         on_kick: Closure::new(kicked),
         copied: RefCell::new(None),
+        pasting: RefCell::new(None),
         page: RefCell::new(None),
     };
 }
@@ -172,20 +176,33 @@ fn drive() {
     }
 }
 
-/// Hand one event to the handler, completing the copy handshake: the
-/// answer to a `CopyRequested` is kept for the clipboard event in progress.
+/// Hand one event to the handler, completing the clipboard handshakes: the
+/// answer to a `CopyRequested` is kept for the clipboard event in progress,
+/// and a `PasteRequested` delivers what its `paste` event carried of the
+/// kinds the handler named.
 fn deliver(
     app: &mut dyn PlatformApp,
     handler: &mut dyn AppHandler,
     event: RawEvent,
 ) -> ControlFlow {
-    let reply = match &event {
-        RawEvent::CopyRequested { reply, .. } => Some(reply.clone()),
+    enum After {
+        Copy(crate::ClipboardReply),
+        Paste(crate::PasteReply),
+    }
+    let after = match &event {
+        RawEvent::CopyRequested { reply, .. } => Some(After::Copy(reply.clone())),
+        RawEvent::PasteRequested { reply, .. } => Some(After::Paste(reply.clone())),
         _ => None,
     };
     let flow = handler.handle(app, event);
-    if let Some(reply) = reply {
-        LOOP.with(|l| *l.copied.borrow_mut() = Some(reply.take()));
+    match after {
+        Some(After::Copy(reply)) => LOOP.with(|l| *l.copied.borrow_mut() = Some(reply.take())),
+        Some(After::Paste(reply)) => {
+            if let Some(pasting) = LOOP.with(|l| l.pasting.borrow_mut().take()) {
+                pasting.finish(reply.get());
+            }
+        }
+        None => {}
     }
     flow
 }
@@ -731,18 +748,6 @@ fn platform_name() -> String {
         .unwrap_or_else(|| navigator.platform().unwrap_or_default())
 }
 
-/// Write `text` to the system clipboard through the async clipboard API,
-/// where the page may use it.
-fn write_clipboard(text: String) {
-    let clipboard = dom_window().navigator().clipboard();
-    if clipboard.is_undefined() {
-        return;
-    }
-    wasm_bindgen_futures::spawn_local(async move {
-        let _ = wasm_bindgen_futures::JsFuture::from(clipboard.write_text(&text)).await;
-    });
-}
-
 /// The native web application.
 pub struct WebApp {
     window: Option<WebWindow>,
@@ -1012,22 +1017,12 @@ impl PlatformApp for WebApp {
         drive();
     }
 
-    fn set_clipboard_text(&mut self, text: &str) {
-        write_clipboard(text.to_owned());
+    fn set_clipboard(&mut self, data: crate::ClipboardData) {
+        clipboard::write(data);
     }
 
-    fn request_paste(&mut self, window: WindowId) {
-        let clipboard = dom_window().navigator().clipboard();
-        if clipboard.is_undefined() {
-            return;
-        }
-        wasm_bindgen_futures::spawn_local(async move {
-            let read = wasm_bindgen_futures::JsFuture::from(clipboard.read_text()).await;
-            if let Some(text) = read.ok().and_then(|t| t.as_string()) {
-                push(RawEvent::Paste { window, text });
-                drive();
-            }
-        });
+    fn request_paste(&mut self, window: WindowId, kinds: crate::ClipboardKinds, token: u32) {
+        clipboard::request(window, kinds, token);
     }
 
     fn set_cursor(&mut self, window: WindowId, icon: CursorIcon) {

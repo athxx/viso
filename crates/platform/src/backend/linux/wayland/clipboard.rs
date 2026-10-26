@@ -1,14 +1,17 @@
 //! The clipboard and drops over `wl_data_device`: copies offer a data source
-//! the compositor asks to write out, pastes read the current selection's
-//! offer through a pipe on a background thread. A drag from another client
+//! the compositor asks to write out — text, `text/html` and `image/png`, the
+//! PNG of an image of pixels encoded on the writing thread when first asked
+//! for — and pastes read the kinds they take of the current selection's offer
+//! through pipes on a background thread, while the app's own selection
+//! answers at once, shared. A drag from another client
 //! over a window reaches the app at each move, its offer accepted or not as
 //! the app answers, and dropped, its data is read the same way before the app
 //! takes it. A drag the app carries out of a window is a data source the
 //! compositor runs from the button's grab, written out to whoever takes it.
 
 use std::fs::File;
-use std::io::{Read, Write};
-use std::os::fd::{AsFd, FromRawFd, OwnedFd};
+use std::io::{ErrorKind, Read, Write};
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::sync::Mutex;
 
 use wayland_client::protocol::{
@@ -35,6 +38,15 @@ const TEXT_MIMES: [&str; 5] = [
     "text/plain",
     "TEXT",
     "STRING",
+];
+
+/// The image types a paste reads, the first the offer has.
+const IMAGE_MIMES: [&str; 5] = [
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/gif",
+    "image/bmp",
 ];
 
 /// What an offer advertised, filled by its events.
@@ -75,8 +87,8 @@ pub(super) struct Clipboard {
     drag: Option<Drag>,
     /// A drag let go, its data being read, then taken by the app.
     dropped: Option<WlDataOffer>,
-    /// Our own selection and its text, while the compositor holds it.
-    own: Option<(WlDataSource, String)>,
+    /// Our own selection and what it holds, while the compositor holds it.
+    own: Option<(WlDataSource, crate::ClipboardData)>,
     /// The drag the app carries out, while the compositor runs it.
     out: Option<Carried>,
 }
@@ -177,49 +189,97 @@ impl Clipboard {
         true
     }
 
-    /// Put `text` on the clipboard, quoting the input `serial` that asked.
-    pub(super) fn set(&mut self, qh: &QueueHandle<State>, text: &str, serial: u32) {
+    /// Put `data` on the clipboard, quoting the input `serial` that asked.
+    pub(super) fn set(&mut self, qh: &QueueHandle<State>, data: crate::ClipboardData, serial: u32) {
         let (Some(manager), Some(device)) = (&self.manager, &self.device) else {
             return;
         };
         let source = manager.create_data_source(qh, ());
-        for mime in TEXT_MIMES {
+        for mime in source_mimes(&data) {
             source.offer(mime.to_owned());
         }
         device.set_selection(Some(&source), serial);
-        if let Some((old, _)) = self.own.replace((source, text.to_owned())) {
+        if let Some((old, _)) = self.own.replace((source, data)) {
             old.destroy();
         }
     }
 
-    /// Start reading the clipboard for `window`. Our own selection is
-    /// answered at once; another client's arrives later as a
-    /// [`Wake::Paste`].
-    pub(super) fn paste(&mut self, window: WindowId, waker: &Waker) -> Option<String> {
-        if let Some((_, text)) = &self.own {
-            return Some(text.clone());
+    /// Start reading what the clipboard holds of `kinds` for `window`. Our
+    /// own selection is answered at once; another client's arrives later as
+    /// a [`Wake::Paste`] — for a request (`token`) always, for a gesture
+    /// only when it holds some.
+    pub(super) fn paste(
+        &mut self,
+        window: WindowId,
+        kinds: crate::ClipboardKinds,
+        token: Option<u32>,
+        waker: &Waker,
+    ) -> Option<crate::ClipboardData> {
+        if let Some((_, data)) = &self.own {
+            let data = data.taken(kinds);
+            return (token.is_some() || !data.is_empty()).then_some(data);
         }
-        let offer = self.selection.as_ref()?;
-        let mime = offer
+        let empty = || token.is_some().then(crate::ClipboardData::default);
+        let Some(offer) = self.selection.as_ref() else {
+            return empty();
+        };
+        let mimes = offer
             .data::<OfferMimes>()
-            .and_then(|m| pick_mime(&m.lock().ok()?.mimes))?;
-        let (read, write) = pipe().ok()?;
-        offer.receive(mime.to_owned(), write.as_fd());
-        // Our copy of the write end closes now, so the read below ends
-        // when the owner closes theirs.
-        drop(write);
+            .and_then(|m| m.lock().ok().map(|m| m.mimes.clone()))
+            .unwrap_or_default();
+        let (text, html, image) = (
+            pick_mime(&mimes),
+            mimes
+                .iter()
+                .any(|m| m == "text/html")
+                .then_some("text/html"),
+            IMAGE_MIMES
+                .into_iter()
+                .find(|i| mimes.iter().any(|m| m == i)),
+        );
+        let pick = kinds.pick(crate::ClipboardKinds {
+            text: text.is_some(),
+            html: html.is_some(),
+            image: image.is_some(),
+        });
+        let mut reads = Vec::new();
+        for (wanted, mime, kind) in [
+            (pick.text, text, Part::Text),
+            (pick.html, html, Part::Html),
+            (pick.image, image, Part::Image),
+        ] {
+            let Some(mime) = mime.filter(|_| wanted) else {
+                continue;
+            };
+            let Ok((read, write)) = pipe() else {
+                continue;
+            };
+            offer.receive(mime.to_owned(), write.as_fd());
+            // Our copy of the write end closes now, so the read ends when
+            // the owner closes theirs.
+            drop(write);
+            reads.push((kind, read));
+        }
+        if reads.is_empty() {
+            return empty();
+        }
         let waker = waker.clone();
         let spawned = std::thread::Builder::new()
             .name("viso-paste".into())
             .spawn(move || {
-                let mut bytes = Vec::new();
-                if File::from(read).read_to_end(&mut bytes).is_ok() && !bytes.is_empty() {
-                    let text = String::from_utf8_lossy(&bytes).into_owned();
-                    waker.send(Wake::Paste { window, text });
+                let data = read_parts(reads);
+                if token.is_some() || !data.is_empty() {
+                    waker.send(Wake::Paste {
+                        window,
+                        data,
+                        token,
+                    });
                 }
             });
-        drop(spawned);
-        None
+        match spawned {
+            Ok(_) => None,
+            Err(_) => empty(),
+        }
     }
 }
 
@@ -336,6 +396,107 @@ fn kinds_of(mimes: &[String]) -> DropKinds {
         uri: list,
         files: list,
     }
+}
+
+/// What a paste reads through one pipe.
+#[derive(Clone, Copy)]
+enum Part {
+    Text,
+    Html,
+    Image,
+}
+
+/// Read every pipe to its end at once — an owner may write them in any
+/// order — into what they hold.
+fn read_parts(reads: Vec<(Part, OwnedFd)>) -> crate::ClipboardData {
+    let mut bytes: Vec<Vec<u8>> = vec![Vec::new(); reads.len()];
+    let mut open: Vec<bool> = vec![true; reads.len()];
+    let mut chunk = vec![0u8; 64 * 1024];
+    while open.iter().any(|&o| o) {
+        let mut polls: Vec<libc::pollfd> = reads
+            .iter()
+            .zip(&open)
+            .map(|((_, fd), &o)| libc::pollfd {
+                fd: if o { fd.as_raw_fd() } else { -1 },
+                events: libc::POLLIN,
+                revents: 0,
+            })
+            .collect();
+        // SAFETY: `polls` is a live array of initialized `pollfd`s; a
+        // negative descriptor is skipped. A paste that stalls for ten
+        // seconds is given up.
+        let n = unsafe { libc::poll(polls.as_mut_ptr(), polls.len() as libc::nfds_t, 10_000) };
+        if n <= 0 {
+            break;
+        }
+        for (i, p) in polls.iter().enumerate() {
+            if !open[i] || p.revents == 0 {
+                continue;
+            }
+            // SAFETY: reading into `chunk`, writable for its length, from a
+            // descriptor `reads` owns.
+            let got = unsafe { libc::read(p.fd, chunk.as_mut_ptr().cast(), chunk.len()) };
+            match got {
+                n if n > 0 => bytes[i].extend_from_slice(&chunk[..n as usize]),
+                n if n < 0 && std::io::Error::last_os_error().kind() == ErrorKind::Interrupted => {}
+                _ => open[i] = false,
+            }
+        }
+    }
+    let mut data = crate::ClipboardData::default();
+    for ((part, _), bytes) in reads.iter().zip(bytes) {
+        if bytes.is_empty() {
+            continue;
+        }
+        match part {
+            Part::Text => data.text = Some(String::from_utf8_lossy(&bytes).into_owned()),
+            Part::Html => data.html = Some(crate::clipboard::html_text(&bytes)),
+            Part::Image => data.image = Some(crate::ClipboardImage::encoded(bytes)),
+        }
+    }
+    data
+}
+
+/// The types a selection holding `data` offers: its image as a PNG, its
+/// HTML, and its text in every text type.
+fn source_mimes(data: &crate::ClipboardData) -> Vec<&'static str> {
+    let mut mimes = Vec::new();
+    if data
+        .image
+        .as_ref()
+        .is_some_and(|i| i.png().is_some() || i.rgba_pixels().is_some())
+    {
+        mimes.push("image/png");
+    }
+    if data.html.is_some() {
+        mimes.push("text/html");
+    }
+    if data.text.is_some() {
+        mimes.extend(TEXT_MIMES);
+    }
+    mimes
+}
+
+/// What our selection `data` writes for `mime`; `None` for a type it
+/// does not offer. An image is encoded on the writing thread.
+fn source_bytes(data: &crate::ClipboardData, mime: &str) -> Option<SourceBytes> {
+    match mime {
+        "image/png" => data.image.clone().map(SourceBytes::Image),
+        "text/html" => data
+            .html
+            .clone()
+            .map(|h| SourceBytes::Bytes(h.into_bytes())),
+        _ if TEXT_MIMES.contains(&mime) => data
+            .text
+            .clone()
+            .map(|t| SourceBytes::Bytes(t.into_bytes())),
+        _ => None,
+    }
+}
+
+enum SourceBytes {
+    Bytes(Vec<u8>),
+    Image(crate::ClipboardImage),
 }
 
 /// The preferred text type among `offered`.
@@ -474,16 +635,27 @@ impl Dispatch<WlDataSource, ()> for State {
     ) {
         let own = &mut state.clipboard.own;
         match event {
-            wl_data_source::Event::Send { fd, .. } => {
-                let Some((_, text)) = own.as_ref().filter(|(s, _)| s == source) else {
+            wl_data_source::Event::Send { mime_type, fd } => {
+                let Some(bytes) = own
+                    .as_ref()
+                    .filter(|(s, _)| s == source)
+                    .and_then(|(_, data)| source_bytes(data, &mime_type))
+                else {
                     return;
                 };
-                let bytes = text.clone().into_bytes();
-                // A slow reader must not stall the event loop.
+                // A slow reader, or encoding the image, must not stall the
+                // event loop.
                 let _ = std::thread::Builder::new()
                     .name("viso-copy".into())
                     .spawn(move || {
-                        let _ = File::from(fd).write_all(&bytes);
+                        let mut file = File::from(fd);
+                        let _ = match bytes {
+                            SourceBytes::Bytes(bytes) => file.write_all(&bytes),
+                            SourceBytes::Image(image) => match image.png() {
+                                Some(png) => file.write_all(&png),
+                                None => Ok(()),
+                            },
+                        };
                     });
             }
             wl_data_source::Event::Cancelled => {
@@ -563,6 +735,35 @@ mod tests {
             Some("UTF8_STRING")
         );
         assert_eq!(pick_mime(&offered(&["image/png"])), None);
+    }
+
+    #[test]
+    fn a_selection_offers_what_it_holds_and_pastes_read_every_pipe() {
+        let image = crate::ClipboardImage::rgba(1, 1, vec![1, 2, 3, 4]).unwrap();
+        let data = crate::ClipboardData {
+            image: Some(image.clone()),
+            ..crate::ClipboardData::html("<b>x</b>", "x")
+        };
+        let mimes = source_mimes(&data);
+        assert_eq!(&mimes[..2], &["image/png", "text/html"]);
+        assert!(mimes.contains(&"UTF8_STRING"));
+        let Some(SourceBytes::Image(sent)) = source_bytes(&data, "image/png") else {
+            panic!("the image goes as itself, encoded on the writing thread");
+        };
+        assert!(sent.same(&image));
+        assert!(source_bytes(&data, "image/jpeg").is_none());
+
+        let (a_read, a_write) = pipe().unwrap();
+        let (b_read, b_write) = pipe().unwrap();
+        let writer = std::thread::spawn(move || {
+            // The second pipe first, and more than a pipe holds.
+            File::from(b_write).write_all(&vec![7u8; 200_000]).unwrap();
+            File::from(a_write).write_all(b"plain").unwrap();
+        });
+        let read = read_parts(vec![(Part::Text, a_read), (Part::Image, b_read)]);
+        writer.join().unwrap();
+        assert_eq!(read.text.as_deref(), Some("plain"));
+        assert_eq!(read.image.unwrap().encoded_bytes().unwrap().len(), 200_000);
     }
 
     #[test]

@@ -156,7 +156,13 @@ impl TapeRecorder {
                 text: p.text.clone(),
                 caret: u32::try_from(p.caret).unwrap_or(u32::MAX),
             },
-            InputSample::Paste(t) => TapeInput::Paste(t.text.clone()),
+            // A paste's text replays as a gesture's; what the clipboard
+            // held beyond it, and the asking, are the OS's.
+            InputSample::Paste(p) => match &p.data.text {
+                Some(text) if p.token.is_none() => TapeInput::Paste(text.clone()),
+                _ => return,
+            },
+            InputSample::PasteRequest(_) => return,
             InputSample::Copy(c) => TapeInput::Copy { cut: c.cut },
             // A drag the OS ran is the OS's: a replay starts none to end.
             InputSample::DragEnded { .. } => return,
@@ -568,7 +574,8 @@ fn raw(window: WindowId, input: &TapeInput) -> Vec<viso_platform::RawEvent> {
         }),
         TapeInput::Paste(text) => RawEvent::Paste {
             window,
-            text: text.clone(),
+            data: viso_platform::ClipboardData::text(text.clone()),
+            token: None,
         },
         TapeInput::Copy { cut } => RawEvent::CopyRequested {
             window,

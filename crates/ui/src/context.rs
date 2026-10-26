@@ -375,6 +375,8 @@ pub struct EventCx<'a> {
     drop_event: Option<&'a crate::drag_drop::DropEvent>,
     /// How the source's drag ended, if this dispatch tells it.
     drag_end: Option<crate::drag_drop::DragEnd>,
+    /// What a paste brought, if this dispatch tells it.
+    pasted: Option<&'a crate::clipboard::ClipboardData>,
     /// The token of the wake this dispatch delivers.
     woken: Option<u32>,
     /// Whether the focus came to or left the node this dispatch tells.
@@ -538,8 +540,10 @@ pub enum StoreRequest {
     HoverDay(NodeId, Option<u8>),
     /// Play a haptic once the frame is done.
     Haptic(crate::feedback::Haptic),
-    /// Put text on the clipboard.
-    Copy(String),
+    /// Put content on the clipboard.
+    Copy(crate::clipboard::ClipboardData),
+    /// Ask for a paste for a node.
+    Paste(NodeId, crate::clipboard::ClipboardKinds),
     /// Ask a video to play as a playback says.
     Playback(NodeId, crate::video::Playback),
     /// Ask a video to play, or to pause.
@@ -584,7 +588,8 @@ impl StoreRequest {
             StoreRequest::Plane(id, change) => store.change_plane(id, change),
             StoreRequest::HoverDay(id, day) => store.hover_day(id, day),
             StoreRequest::Haptic(haptic) => store.request_haptic(haptic),
-            StoreRequest::Copy(text) => store.copy_text(text),
+            StoreRequest::Copy(data) => store.copy(data),
+            StoreRequest::Paste(to, kinds) => store.ask_paste(to, kinds),
             StoreRequest::Playback(id, playback) => store.set_playback(id, playback),
             StoreRequest::Play(id, playing) => store.set_video_playing(id, playing),
             StoreRequest::Seek(id, time) => store.seek_video(id, time),
@@ -641,6 +646,7 @@ impl<'a> EventCx<'a> {
             sheet_detent: None,
             drop_event: None,
             drag_end: None,
+            pasted: None,
             woken: None,
             focus_change: None,
             access: None,
@@ -688,6 +694,7 @@ impl<'a> EventCx<'a> {
             sheet_detent: None,
             drop_event: None,
             drag_end: None,
+            pasted: None,
             woken: None,
             focus_change: None,
             access: None,
@@ -734,6 +741,7 @@ impl<'a> EventCx<'a> {
             sheet_detent: None,
             drop_event: None,
             drag_end: None,
+            pasted: None,
             woken: None,
             focus_change: None,
             access: None,
@@ -780,6 +788,7 @@ impl<'a> EventCx<'a> {
             sheet_detent: None,
             drop_event: None,
             drag_end: None,
+            pasted: None,
             woken: None,
             focus_change: None,
             access: None,
@@ -883,6 +892,19 @@ impl<'a> EventCx<'a> {
     ) -> Self {
         let mut cx = Self::__new(states, bindings);
         cx.drop_event = Some(event);
+        cx
+    }
+
+    /// Assemble the event context that tells a paste target what a paste
+    /// brought: the handler reads it via [`EventCx::pasted`].
+    #[doc(hidden)]
+    pub fn __new_paste(
+        states: &'a mut StateStore,
+        bindings: &'a BindingTable,
+        data: &'a crate::clipboard::ClipboardData,
+    ) -> Self {
+        let mut cx = Self::__new(states, bindings);
+        cx.pasted = Some(data);
         cx
     }
 
@@ -1096,6 +1118,15 @@ impl<'a> EventCx<'a> {
         self.drag_end
     }
 
+    /// What a paste brought this node — a gesture's into the paste target
+    /// ([`NodeStore::set_paste_target`]), or one
+    /// [`request_paste`](Self::request_paste) asked for it — if this
+    /// dispatch tells it: the richest of the kinds it takes, and the text.
+    /// Empty when the clipboard held none of them.
+    pub fn pasted(&self) -> Option<&crate::clipboard::ClipboardData> {
+        self.pasted
+    }
+
     /// Present sheet `id`, or put it away ([`NodeStore::present_sheet`]).
     pub fn present_sheet(&mut self, id: NodeId, open: bool) {
         self.store_requests.push(StoreRequest::Sheet(id, open));
@@ -1255,7 +1286,21 @@ impl<'a> EventCx<'a> {
     /// Put `text` on the system clipboard once the handler returns: a
     /// control's own copy (a grid's selected cells).
     pub fn copy_text(&mut self, text: impl Into<String>) {
-        self.store_requests.push(StoreRequest::Copy(text.into()));
+        self.copy(crate::clipboard::ClipboardData::text(text));
+    }
+
+    /// Put `data` — text, HTML with its text, an image — on the system
+    /// clipboard once the handler returns, replacing what it holds.
+    pub fn copy(&mut self, data: crate::clipboard::ClipboardData) {
+        self.store_requests.push(StoreRequest::Copy(data));
+    }
+
+    /// Ask for what the system clipboard holds of `kinds`, delivered to node
+    /// `to`'s key handler ([`pasted`](Self::pasted)) once read — the next
+    /// frame, or once the user allows it where a browser asks. Nothing waits
+    /// on it.
+    pub fn request_paste(&mut self, to: NodeId, kinds: crate::clipboard::ClipboardKinds) {
+        self.store_requests.push(StoreRequest::Paste(to, kinds));
     }
 
     /// Hold half `half` of stepper `id` down, or let go of its hold

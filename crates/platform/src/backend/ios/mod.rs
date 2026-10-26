@@ -19,6 +19,7 @@
 //! `UITextInput` composition all arrive there.
 
 mod access;
+mod clipboard;
 mod view;
 
 use std::cell::{Cell, RefCell};
@@ -48,10 +49,10 @@ use objc2_ui_kit::{
     UIContentSizeCategoryAccessibilityMedium, UIContentSizeCategoryExtraExtraExtraLarge,
     UIContentSizeCategoryExtraExtraLarge, UIContentSizeCategoryExtraLarge,
     UIContentSizeCategoryExtraSmall, UIContentSizeCategoryMedium, UIContentSizeCategorySmall,
-    UIKeyboardFrameEndUserInfoKey, UIKeyboardWillChangeFrameNotification, UIPasteboard,
-    UIResponder, UIScene, UISceneConfiguration, UISceneConnectionOptions, UISceneDelegate,
-    UISceneSession, UIScreen, UITraitCollection, UITraitEnvironment, UIUserActivityRestoring,
-    UIUserInterfaceStyle, UIViewController, UIWindow, UIWindowScene, UIWindowSceneDelegate,
+    UIKeyboardFrameEndUserInfoKey, UIKeyboardWillChangeFrameNotification, UIResponder, UIScene,
+    UISceneConfiguration, UISceneConnectionOptions, UISceneDelegate, UISceneSession, UIScreen,
+    UITraitCollection, UITraitEnvironment, UIUserActivityRestoring, UIUserInterfaceStyle,
+    UIViewController, UIWindow, UIWindowScene, UIWindowSceneDelegate,
 };
 
 use self::view::VisoView;
@@ -159,21 +160,45 @@ fn drive() {
     }
 }
 
-/// Hand one event to the handler, completing the copy handshake: a
+/// Hand one event to the handler, completing the clipboard handshakes: a
 /// `CopyRequested` reply the handler filled is written to the pasteboard once
-/// the handler returns.
+/// the handler returns, and a `PasteRequested` reads the kinds it named and
+/// delivers them when there are some.
 fn deliver(
     app: &mut dyn PlatformApp,
     handler: &mut dyn AppHandler,
     event: RawEvent,
 ) -> ControlFlow {
-    let reply = match &event {
-        RawEvent::CopyRequested { reply, .. } => Some(reply.clone()),
+    enum After {
+        Copy(crate::ClipboardReply),
+        Paste(WindowId, crate::PasteReply),
+    }
+    let after = match &event {
+        RawEvent::CopyRequested { reply, .. } => Some(After::Copy(reply.clone())),
+        RawEvent::PasteRequested { window, reply } => Some(After::Paste(*window, reply.clone())),
         _ => None,
     };
     let flow = handler.handle(app, event);
-    if let Some(text) = reply.and_then(|r| r.take()) {
-        write_pasteboard(&text);
+    match after {
+        Some(After::Copy(reply)) => {
+            if let Some(data) = reply.take() {
+                clipboard::write(data);
+            }
+        }
+        Some(After::Paste(window, reply)) => {
+            let kinds = reply.get();
+            if kinds.any() {
+                let data = clipboard::read(kinds);
+                if !data.is_empty() {
+                    push(RawEvent::Paste {
+                        window,
+                        data,
+                        token: None,
+                    });
+                }
+            }
+        }
+        None => {}
     }
     flow
 }
@@ -213,17 +238,6 @@ fn request_frame() {
             link.setPaused(false);
         }
     });
-}
-
-fn write_pasteboard(text: &str) {
-    // SAFETY: `setString:` copies the string; the general pasteboard is
-    // process-wide and valid for the app's life.
-    unsafe { UIPasteboard::generalPasteboard().setString(Some(&NSString::from_str(text))) };
-}
-
-fn read_pasteboard() -> Option<String> {
-    // SAFETY: as in `write_pasteboard`.
-    unsafe { UIPasteboard::generalPasteboard().string() }.map(|s| s.to_string())
 }
 
 /// The appearance `traits` describe, with the accessibility settings that
@@ -532,14 +546,16 @@ impl PlatformApp for IosApp {
 
     fn close_window(&mut self, _window: WindowId) {}
 
-    fn set_clipboard_text(&mut self, text: &str) {
-        write_pasteboard(text);
+    fn set_clipboard(&mut self, data: crate::ClipboardData) {
+        clipboard::write(data);
     }
 
-    fn request_paste(&mut self, window: WindowId) {
-        if let Some(text) = read_pasteboard() {
-            push(RawEvent::Paste { window, text });
-        }
+    fn request_paste(&mut self, window: WindowId, kinds: crate::ClipboardKinds, token: u32) {
+        push(RawEvent::Paste {
+            window,
+            data: clipboard::read(kinds),
+            token: Some(token),
+        });
     }
 
     fn set_fullscreen(&mut self, window: WindowId, fullscreen: bool) {

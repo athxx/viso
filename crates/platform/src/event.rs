@@ -16,10 +16,11 @@
 //! - Close/quit is a *veto handshake*: the event carries an [`AcceptCell`] the
 //!   handler may clear to keep the window open.
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::rc::Rc;
 
 use crate::accessibility::AccessRequest;
+use crate::clipboard::{ClipboardData, ClipboardReply, PasteReply};
 use crate::control::{LogicalRect, WindowId};
 use crate::menu::MenuCommandId;
 
@@ -635,7 +636,7 @@ impl KeyCode {
 /// The platform-standard clipboard gesture a key press spells, if any.
 ///
 /// Backends call this on every key-down so Copy/Cut/Paste reach the app as
-/// [`RawEvent::CopyRequested`] / [`RawEvent::Paste`] however the OS spells them:
+/// [`RawEvent::CopyRequested`] / [`RawEvent::PasteRequested`] however the OS spells them:
 /// `primary+C/X/V` everywhere, plus `Ctrl+Insert`, `Shift+Delete` and
 /// `Shift+Insert` off Apple platforms.
 pub fn clipboard_shortcut(code: KeyCode, m: Modifiers) -> Option<ClipboardShortcut> {
@@ -658,36 +659,6 @@ pub enum ClipboardShortcut {
     Copy,
     Cut,
     Paste,
-}
-
-/// The reply slot of a [`RawEvent::CopyRequested`] handshake.
-///
-/// The handler puts the selected text in it; after the handler returns the
-/// backend writes whatever it holds to the system clipboard. Left empty, the
-/// clipboard is untouched.
-#[derive(Debug, Clone, Default)]
-pub struct ClipboardReply(Rc<RefCell<Option<String>>>);
-
-impl PartialEq for ClipboardReply {
-    fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.0, &other.0)
-    }
-}
-
-impl ClipboardReply {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Answer the request with `text`.
-    pub fn set(&self, text: String) {
-        *self.0.borrow_mut() = Some(text);
-    }
-
-    /// Take the answer, leaving the slot empty.
-    pub fn take(&self) -> Option<String> {
-        self.0.borrow_mut().take()
-    }
 }
 
 /// The light/dark scheme the OS asks apps to render in.
@@ -934,9 +905,21 @@ pub enum RawEvent {
         cut: bool,
         reply: ClipboardReply,
     },
-    /// Clipboard text for the focused content: a native paste gesture, or the
-    /// answer to [`PlatformApp::request_paste`](crate::PlatformApp::request_paste).
-    Paste { window: WindowId, text: String },
+    /// The user asked to paste into the focused content (a shortcut, an edit
+    /// menu). The handler says through `reply` which kinds it takes; the
+    /// backend then reads them and delivers what the clipboard holds of them
+    /// as a [`RawEvent::Paste`], with no `token` — none when it holds none.
+    PasteRequested { window: WindowId, reply: PasteReply },
+    /// What the clipboard holds of the kinds a paste takes: the answer to a
+    /// [`RawEvent::PasteRequested`], or to
+    /// [`PlatformApp::request_paste`](crate::PlatformApp::request_paste),
+    /// whose `token` it carries — always, empty when the clipboard holds
+    /// none of them or reading it was refused.
+    Paste {
+        window: WindowId,
+        data: ClipboardData,
+        token: Option<u32>,
+    },
     /// A step of a drag from outside the app over a window; the handler
     /// answers through its [`DropReply`](crate::DropReply).
     Drop(crate::drop::RawDrop),

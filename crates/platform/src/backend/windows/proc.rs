@@ -23,21 +23,23 @@ use ::windows::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, DefWindowProcW, GWLP_USERDATA, GetWindowLongPtrW, HTCLIENT, KillTimer, PT_PEN,
     PT_TOUCH, PostMessageW, SW_MINIMIZE, SWP_NOACTIVATE, SWP_NOZORDER, SetTimer, SetWindowLongPtrW,
     SetWindowPos, ShowWindow, WM_CAPTURECHANGED, WM_CHAR, WM_CLOSE, WM_COMMAND, WM_DESTROY,
-    WM_DPICHANGED, WM_ENTERSIZEMOVE, WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_IME_COMPOSITION,
-    WM_IME_ENDCOMPOSITION, WM_IME_SETCONTEXT, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KEYUP,
-    WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
-    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_POINTERCAPTURECHANGED,
-    WM_POINTERDOWN, WM_POINTERLEAVE, WM_POINTERUP, WM_POINTERUPDATE, WM_RBUTTONDOWN, WM_RBUTTONUP,
-    WM_SETCURSOR, WM_SETFOCUS, WM_SETTINGCHANGE, WM_SIZE, WM_SYSCOLORCHANGE, WM_SYSKEYDOWN,
-    WM_SYSKEYUP, WM_THEMECHANGED, WM_TIMER, WM_UNICHAR, WM_XBUTTONDOWN, WM_XBUTTONUP,
+    WM_DESTROYCLIPBOARD, WM_DPICHANGED, WM_ENTERSIZEMOVE, WM_ERASEBKGND, WM_EXITSIZEMOVE,
+    WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_SETCONTEXT, WM_IME_STARTCOMPOSITION,
+    WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
+    WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY, WM_PAINT,
+    WM_POINTERCAPTURECHANGED, WM_POINTERDOWN, WM_POINTERLEAVE, WM_POINTERUP, WM_POINTERUPDATE,
+    WM_RBUTTONDOWN, WM_RBUTTONUP, WM_RENDERALLFORMATS, WM_RENDERFORMAT, WM_SETCURSOR, WM_SETFOCUS,
+    WM_SETTINGCHANGE, WM_SIZE, WM_SYSCOLORCHANGE, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_THEMECHANGED,
+    WM_TIMER, WM_UNICHAR, WM_XBUTTONDOWN, WM_XBUTTONUP,
 };
 
 use super::translate::{self, MenuAction};
 use super::{WindowState, access, drive, system};
+use crate::clipboard::{ClipboardReply, PasteReply};
 use crate::control::ControlFlow;
 use crate::event::{
-    AcceptCell, ClipboardReply, ClipboardShortcut, KeyCode, Modifiers, PointerButtons, PointerId,
-    PointerKind, PointerPhase, RawEvent, RawImePreedit, RawKey, RawPointer, RawScroll, RawText,
+    AcceptCell, ClipboardShortcut, KeyCode, Modifiers, PointerButtons, PointerId, PointerKind,
+    PointerPhase, RawEvent, RawImePreedit, RawKey, RawPointer, RawScroll, RawText,
     clipboard_shortcut,
 };
 use crate::menu::SystemAction;
@@ -211,6 +213,18 @@ fn handle(
             modal_tick(state);
             Some(LRESULT(0))
         }
+        WM_RENDERFORMAT => {
+            super::clipboard::render_format(hwnd, wparam.0 as u32);
+            Some(LRESULT(0))
+        }
+        WM_RENDERALLFORMATS => {
+            super::clipboard::render_all(hwnd);
+            Some(LRESULT(0))
+        }
+        WM_DESTROYCLIPBOARD => {
+            super::clipboard::forget(hwnd);
+            Some(LRESULT(0))
+        }
         WM_CLOSE => {
             state.push(RawEvent::CloseRequested {
                 window: id,
@@ -358,7 +372,7 @@ fn handle(
                     modifiers: mods,
                 }));
                 if pressed && let Some(shortcut) = clipboard_shortcut(code, mods) {
-                    clipboard(state, hwnd, shortcut);
+                    clipboard(state, shortcut);
                 }
             }
             // System keys keep their default meaning: Alt and F10 open the
@@ -610,7 +624,7 @@ fn cancel_contact(state: &WindowState, win32_id: u32, pointer: PointerId) {
     }));
 }
 
-fn clipboard(state: &WindowState, hwnd: HWND, shortcut: ClipboardShortcut) {
+fn clipboard(state: &WindowState, shortcut: ClipboardShortcut) {
     let window = state.id;
     match shortcut {
         ClipboardShortcut::Copy | ClipboardShortcut::Cut => {
@@ -620,11 +634,10 @@ fn clipboard(state: &WindowState, hwnd: HWND, shortcut: ClipboardShortcut) {
                 reply: ClipboardReply::new(),
             });
         }
-        ClipboardShortcut::Paste => {
-            if let Some(text) = system::read_clipboard(Some(hwnd)) {
-                state.push(RawEvent::Paste { window, text });
-            }
-        }
+        ClipboardShortcut::Paste => state.push(RawEvent::PasteRequested {
+            window,
+            reply: PasteReply::new(),
+        }),
     }
 }
 
@@ -651,9 +664,9 @@ fn pop_context_menu(state: &WindowState, hwnd: HWND) {
         let _ = unsafe { ReleaseCapture() };
     }
     match picked {
-        super::menu::CUT => clipboard(state, hwnd, ClipboardShortcut::Cut),
-        super::menu::COPY => clipboard(state, hwnd, ClipboardShortcut::Copy),
-        super::menu::PASTE => clipboard(state, hwnd, ClipboardShortcut::Paste),
+        super::menu::CUT => clipboard(state, ClipboardShortcut::Cut),
+        super::menu::COPY => clipboard(state, ClipboardShortcut::Copy),
+        super::menu::PASTE => clipboard(state, ClipboardShortcut::Paste),
         super::menu::SELECT_ALL => state.push(RawEvent::EditMenu {
             window: state.id,
             action: crate::EditMenuAction::SelectAll,
@@ -679,10 +692,10 @@ fn menu_action(state: &WindowState, hwnd: HWND, action: MenuAction) {
             // SAFETY: minimizing our own live window.
             let _ = unsafe { ShowWindow(hwnd, SW_MINIMIZE) };
         }
-        MenuAction::System(SystemAction::Copy) => clipboard(state, hwnd, ClipboardShortcut::Copy),
-        MenuAction::System(SystemAction::Cut) => clipboard(state, hwnd, ClipboardShortcut::Cut),
+        MenuAction::System(SystemAction::Copy) => clipboard(state, ClipboardShortcut::Copy),
+        MenuAction::System(SystemAction::Cut) => clipboard(state, ClipboardShortcut::Cut),
         MenuAction::System(SystemAction::Paste) => {
-            clipboard(state, hwnd, ClipboardShortcut::Paste);
+            clipboard(state, ClipboardShortcut::Paste);
         }
     }
 }

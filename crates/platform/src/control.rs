@@ -143,7 +143,7 @@ impl EditLabels {
 
 /// What the user did with the [`EditMenu`] besides cutting, copying and
 /// pasting, which arrive as [`RawEvent::CopyRequested`](crate::RawEvent::CopyRequested)
-/// and [`RawEvent::Paste`](crate::RawEvent::Paste).
+/// and [`RawEvent::PasteRequested`](crate::RawEvent::PasteRequested).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditMenuAction {
     /// Select the whole text.

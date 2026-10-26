@@ -498,7 +498,18 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
   turned off, the settings pages, and a mock; run on macOS, Android and the web.
 - [ ] Gamepad backend (GameController, XInput/GameInput, evdev, web Gamepad API) into the
   game input.
-- [ ] Rich clipboard: images and HTML.
+- [x] Rich clipboard: images and HTML. `ClipboardData { text, html, image }`, pastes name
+  the `ClipboardKinds` they take and get the richest; `set_clipboard`, tokened
+  `request_paste`, `PasteRequested` handshake for gestures; paste targets and
+  `EventCx::pasted` in the UI, text fields keep plain text.
+  - Verified: headless facade test (copy, gesture, asked paste, text field); macOS run
+    (copy read back by `osascript`/JXA as `public.png` 256×128 + HTML + text, the promised
+    PNG settled on exit; browser HTML and a TIFF-only image pasted); headless Chrome over
+    CDP (copy read back as `ClipboardItem` text/html/png with the right pixels, asked
+    paste and `paste` gesture of a foreign item); X11 in podman with `xclip` (targets,
+    HTML, text and PNG out; HTML, text and PNG in; a 3 MB PNG both ways over INCR).
+  - Not run: Windows, iOS and Android (clippy only; the Android Java shell compiles with
+    `javac`), Wayland under a compositor (unit tests only: no seat in headless weston).
 - [ ] Tray / status-bar icon with menu.
 - [x] Deep links / URL schemes.
   - `[package.links]` schemes and hosts → Info.plist `CFBundleURLTypes`, iOS associated

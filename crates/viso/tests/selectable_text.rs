@@ -122,7 +122,7 @@ fn a_double_click_selects_a_word_that_copy_answers_with_and_nothing_edits_it() {
     });
     script.push(redraw());
     let app = drive_scripted::<NoteApp>(script, STEP);
-    assert_eq!(copied.take().as_deref(), Some("Hello"));
+    assert_eq!(copied.take().and_then(|d| d.text).as_deref(), Some("Hello"));
     assert_eq!(cut.take(), None, "a read-only text cuts nothing");
     assert_eq!(app.focused_text(), Some("Hello world"), "nor takes typing");
     assert_eq!(app.focused_selection(), Some((0, 5)));

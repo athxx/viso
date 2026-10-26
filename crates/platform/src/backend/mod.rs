@@ -25,6 +25,9 @@ pub mod macos;
 mod macos_access;
 
 #[cfg(target_os = "macos")]
+mod macos_clipboard;
+
+#[cfg(target_os = "macos")]
 mod macos_panel;
 
 #[cfg(target_os = "macos")]

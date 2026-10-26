@@ -19,12 +19,19 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::RawWindowHandle;
+use crate::clipboard::{ClipboardData, ClipboardKinds, ClipboardReply, PasteReply};
 use crate::control::{
     EditLabels, EditMenu, Loupe, PlatformCaps, PlatformError, TextEntry, WindowConfig, WindowId,
 };
 use crate::event::{Appearance, CursorIcon, DisplayFeature, RawEvent};
 use crate::handler::AppHandler;
 use crate::{ControlFlow, LoopWaker, PlatformApp, Window};
+
+/// A handshake left for the backend to finish once the handler returns.
+enum After {
+    Copy(ClipboardReply),
+    Paste(WindowId, PasteReply),
+}
 
 /// A scriptable, headless [`PlatformApp`].
 pub struct HeadlessApp {
@@ -34,9 +41,13 @@ pub struct HeadlessApp {
     script: VecDeque<RawEvent>,
     /// Redraw requests raised during handling, delivered as beats.
     pending_redraws: VecDeque<WindowId>,
-    /// The in-process clipboard: what `set_clipboard_text` stored and
-    /// `request_paste` hands back.
-    clipboard: Option<String>,
+    /// The in-process clipboard: what `set_clipboard` or an answered copy
+    /// stored, and a paste hands back.
+    clipboard: ClipboardData,
+    /// What the clipboard answered, in the order it was asked, delivered
+    /// ahead of everything else: the answer to a request made while
+    /// handling the event before.
+    pastes: VecDeque<RawEvent>,
     /// The drags the app carried out, by window; the script ends each with
     /// a [`RawEvent::DragEnded`].
     drags: Vec<(WindowId, crate::DragOut)>,
@@ -83,7 +94,8 @@ impl HeadlessApp {
             windows: Vec::new(),
             script: VecDeque::new(),
             pending_redraws: VecDeque::new(),
-            clipboard: None,
+            clipboard: ClipboardData::default(),
+            pastes: VecDeque::new(),
             drags: Vec::new(),
             appearance: Appearance::default(),
             locale: "und".to_owned(),
@@ -164,9 +176,9 @@ impl HeadlessApp {
         self.caps = caps;
     }
 
-    /// The clipboard's current text.
-    pub fn clipboard(&self) -> Option<&str> {
-        self.clipboard.as_deref()
+    /// What the clipboard holds.
+    pub fn clipboard(&self) -> &ClipboardData {
+        &self.clipboard
     }
 
     /// The drags the app carried out of its windows, in order.
@@ -236,6 +248,9 @@ impl HeadlessApp {
     }
 
     fn next_event(&mut self) -> Option<RawEvent> {
+        if let Some(event) = self.pastes.pop_front() {
+            return Some(event);
+        }
         if let Some(event) = self.feed.as_ref().and_then(HeadlessFeed::pop) {
             return Some(event);
         }
@@ -306,8 +321,37 @@ impl PlatformApp for HeadlessApp {
             {
                 w.context_menu = None;
             }
+            // The handshakes a real backend finishes once the handler
+            // returns: an answered copy goes on the clipboard, a paste
+            // gesture reads the kinds the handler took.
+            let after = match &event {
+                RawEvent::CopyRequested { reply, .. } => Some(After::Copy(reply.clone())),
+                RawEvent::PasteRequested { window, reply } => {
+                    Some(After::Paste(*window, reply.clone()))
+                }
+                _ => None,
+            };
             if handler.handle(self, event) == ControlFlow::Exit {
                 break;
+            }
+            match after {
+                // Left in the slot, for a test to read what was answered.
+                Some(After::Copy(reply)) => {
+                    if let Some(data) = reply.get() {
+                        self.clipboard = data;
+                    }
+                }
+                Some(After::Paste(window, reply)) => {
+                    let data = self.clipboard.taken(reply.get());
+                    if !data.is_empty() {
+                        self.pastes.push_back(RawEvent::Paste {
+                            window,
+                            data,
+                            token: None,
+                        });
+                    }
+                }
+                None => {}
             }
             // Poll/Wait/WaitUntil all continue draining: there is no OS to
             // block on. `request_redraw` refills the queue via pending_redraws.
@@ -357,8 +401,8 @@ impl PlatformApp for HeadlessApp {
         }
     }
 
-    fn set_clipboard_text(&mut self, text: &str) {
-        self.clipboard = Some(text.to_string());
+    fn set_clipboard(&mut self, data: ClipboardData) {
+        self.clipboard = data;
     }
 
     fn set_fullscreen(&mut self, window: WindowId, fullscreen: bool) {
@@ -373,12 +417,12 @@ impl PlatformApp for HeadlessApp {
         }
     }
 
-    fn request_paste(&mut self, window: WindowId) {
-        // Delivered next, ahead of the rest of the script: the answer to a
-        // request made while handling the current event.
-        if let Some(text) = self.clipboard.clone() {
-            self.script.push_front(RawEvent::Paste { window, text });
-        }
+    fn request_paste(&mut self, window: WindowId, kinds: ClipboardKinds, token: u32) {
+        self.pastes.push_back(RawEvent::Paste {
+            window,
+            data: self.clipboard.taken(kinds),
+            token: Some(token),
+        });
     }
 
     fn start_drag(&mut self, window: WindowId, drag: crate::DragOut) -> bool {
@@ -587,18 +631,7 @@ mod tests {
     fn clipboard_round_trips_through_request_paste() {
         let mut app = HeadlessApp::new();
         let id = app.create_window(WindowConfig::default()).unwrap();
-        app.request_paste(id);
-        let mut rec = Recorder(Vec::new());
-        app.run(&mut rec);
-        assert_eq!(
-            rec.0,
-            vec![RawEvent::AppLaunched],
-            "empty clipboard answers nothing"
-        );
-
-        app.set_clipboard_text("héllo");
-        assert_eq!(app.clipboard(), Some("héllo"));
-        app.request_paste(id);
+        app.request_paste(id, ClipboardKinds::ALL, 1);
         let mut rec = Recorder(Vec::new());
         app.run(&mut rec);
         assert_eq!(
@@ -607,10 +640,94 @@ mod tests {
                 RawEvent::AppLaunched,
                 RawEvent::Paste {
                     window: id,
-                    text: "héllo".into()
+                    data: ClipboardData::default(),
+                    token: Some(1)
                 }
+            ],
+            "a request is always answered, an empty clipboard with nothing"
+        );
+
+        let image = crate::ClipboardImage::rgba(1, 1, vec![9, 8, 7, 255]).unwrap();
+        app.set_clipboard(ClipboardData {
+            image: Some(image.clone()),
+            ..ClipboardData::html("<b>héllo</b>", "héllo")
+        });
+        assert_eq!(app.clipboard().text.as_deref(), Some("héllo"));
+        app.request_paste(id, ClipboardKinds::TEXT, 2);
+        app.request_paste(id, ClipboardKinds::ALL, 3);
+        let mut rec = Recorder(Vec::new());
+        app.run(&mut rec);
+        assert_eq!(
+            rec.0,
+            vec![
+                RawEvent::AppLaunched,
+                RawEvent::Paste {
+                    window: id,
+                    data: ClipboardData::text("héllo"),
+                    token: Some(2)
+                },
+                RawEvent::Paste {
+                    window: id,
+                    data: ClipboardData {
+                        image: Some(image),
+                        ..ClipboardData::text("héllo")
+                    },
+                    token: Some(3)
+                },
             ]
         );
+    }
+
+    /// Answers each copy request with its text and each paste gesture with
+    /// the kinds `kinds`.
+    struct Answering(Vec<RawEvent>, ClipboardKinds);
+
+    impl AppHandler for Answering {
+        fn handle(&mut self, _app: &mut dyn PlatformApp, event: RawEvent) -> ControlFlow {
+            match &event {
+                RawEvent::CopyRequested { reply, .. } => {
+                    reply.set(ClipboardData::html("<i>x</i>", "x"))
+                }
+                RawEvent::PasteRequested { reply, .. } => reply.set(self.1),
+                _ => {}
+            }
+            self.0.push(event);
+            ControlFlow::Wait
+        }
+    }
+
+    #[test]
+    fn copy_and_paste_gestures_finish_their_handshakes() {
+        let window = WindowId(0);
+        let mut app = HeadlessApp::scripted([
+            RawEvent::CopyRequested {
+                window,
+                cut: false,
+                reply: ClipboardReply::new(),
+            },
+            RawEvent::PasteRequested {
+                window,
+                reply: PasteReply::new(),
+            },
+        ]);
+        let mut rec = Answering(Vec::new(), ClipboardKinds::ALL);
+        app.run(&mut rec);
+        assert_eq!(app.clipboard(), &ClipboardData::html("<i>x</i>", "x"));
+        assert_eq!(
+            rec.0.last(),
+            Some(&RawEvent::Paste {
+                window,
+                data: ClipboardData::html("<i>x</i>", "x"),
+                token: None
+            })
+        );
+        let mut app = HeadlessApp::scripted([RawEvent::PasteRequested {
+            window,
+            reply: PasteReply::new(),
+        }]);
+        let mut rec = Answering(Vec::new(), ClipboardKinds::NONE);
+        app.run(&mut rec);
+        assert_eq!(rec.0.len(), 2, "a paste that takes nothing reads nothing");
     }
 
     #[test]

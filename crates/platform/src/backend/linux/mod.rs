@@ -40,10 +40,11 @@ use std::sync::{Arc, mpsc};
 use super::linux_translate as translate;
 #[cfg(any(feature = "x11", feature = "wayland"))]
 use crate::accessibility::AccessRequest;
+use crate::clipboard::{ClipboardReply, PasteReply};
 use crate::control::{ControlFlow, PlatformError, WindowId};
 use crate::event::{
-    AcceptCell, Appearance, ClipboardReply, ClipboardShortcut, KeyCode, Modifiers, RawEvent,
-    RawKey, clipboard_shortcut,
+    AcceptCell, Appearance, ClipboardShortcut, KeyCode, Modifiers, RawEvent, RawKey,
+    clipboard_shortcut,
 };
 use crate::handler::AppHandler;
 use crate::menu::SystemAction;
@@ -92,7 +93,11 @@ pub(crate) enum Wake {
     Appearance(Appearance),
     /// A clipboard read finished.
     #[cfg_attr(not(feature = "wayland"), allow(dead_code))]
-    Paste { window: WindowId, text: String },
+    Paste {
+        window: WindowId,
+        data: crate::ClipboardData,
+        token: Option<u32>,
+    },
     /// A drop's data was read: the `text`, a `text/uri-list` when `list`.
     #[cfg(feature = "wayland")]
     Dropped { text: String, list: bool },
@@ -216,8 +221,14 @@ pub(crate) fn poll_readable<const N: usize>(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Chore {
     Minimize(WindowId),
-    /// Read the clipboard and deliver it as a `Paste` to the window.
-    Paste(WindowId),
+    /// Read what the clipboard holds of `kinds` and deliver it as a `Paste`
+    /// to the window, carrying `token`: always for a request, only when it
+    /// holds some for a gesture (no token).
+    Paste {
+        window: WindowId,
+        kinds: crate::ClipboardKinds,
+        token: Option<u32>,
+    },
 }
 
 /// How the loop routed a key press.
@@ -306,7 +317,15 @@ impl Pump {
         match wake {
             #[cfg(any(feature = "x11", feature = "wayland"))]
             Wake::Appearance(appearance) => self.set_appearance(appearance),
-            Wake::Paste { window, text } => self.push(RawEvent::Paste { window, text }),
+            Wake::Paste {
+                window,
+                data,
+                token,
+            } => self.push(RawEvent::Paste {
+                window,
+                data,
+                token,
+            }),
             #[cfg(any(feature = "x11", feature = "wayland"))]
             Wake::Access { window, request } => {
                 self.push(RawEvent::Accessibility { window, request });
@@ -372,13 +391,23 @@ impl Pump {
         let chore = match clipboard_shortcut(code, modifiers).filter(|_| pressed) {
             Some(ClipboardShortcut::Copy) => self.copy(window, false),
             Some(ClipboardShortcut::Cut) => self.copy(window, true),
-            Some(ClipboardShortcut::Paste) => Some(Chore::Paste(window)),
+            Some(ClipboardShortcut::Paste) => self.paste(window),
             None => None,
         };
         KeyRoute {
             consumed: false,
             chore,
         }
+    }
+
+    /// A paste gesture: the handler says what it takes, read once it
+    /// returns.
+    fn paste(&mut self, window: WindowId) -> Option<Chore> {
+        self.push(RawEvent::PasteRequested {
+            window,
+            reply: PasteReply::new(),
+        });
+        None
     }
 
     fn copy(&mut self, window: WindowId, cut: bool) -> Option<Chore> {
@@ -411,7 +440,7 @@ impl Pump {
                 SystemAction::Hide | SystemAction::Minimize => Some(Chore::Minimize(window)),
                 SystemAction::Copy => self.copy(window, false),
                 SystemAction::Cut => self.copy(window, true),
-                SystemAction::Paste => Some(Chore::Paste(window)),
+                SystemAction::Paste => self.paste(window),
             },
         }
     }
@@ -421,7 +450,9 @@ impl Pump {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum After {
     /// Put the handler's answer to a `CopyRequested` on the clipboard.
-    Copy(String),
+    Copy(crate::ClipboardData),
+    /// Read the kinds the handler took for a paste gesture into the window.
+    Paste(WindowId, crate::ClipboardKinds),
     /// The handler accepted a `CloseRequested`: destroy the window.
     Close(WindowId),
     /// The handler drew (or declined to draw) a requested frame.
@@ -523,6 +554,7 @@ fn deliver<D: Display>(
 ) -> ControlFlow {
     enum Pending {
         Copy(ClipboardReply),
+        Paste(WindowId, PasteReply),
         Close(AcceptCell, WindowId),
         Redrawn(WindowId),
         Dropped(WindowId, crate::DropPhase, crate::DropReply),
@@ -530,6 +562,7 @@ fn deliver<D: Display>(
     let pending = match &event {
         RawEvent::Drop(d) => Some(Pending::Dropped(d.window, d.phase, d.reply.clone())),
         RawEvent::CopyRequested { reply, .. } => Some(Pending::Copy(reply.clone())),
+        RawEvent::PasteRequested { window, reply } => Some(Pending::Paste(*window, reply.clone())),
         RawEvent::CloseRequested { accept, window } => {
             Some(Pending::Close(accept.clone(), *window))
         }
@@ -539,6 +572,9 @@ fn deliver<D: Display>(
     let flow = handler.handle(app, event);
     let after = match pending {
         Some(Pending::Copy(reply)) => reply.take().map(After::Copy),
+        Some(Pending::Paste(window, reply)) => Some(reply.get())
+            .filter(|k| k.any())
+            .map(|k| After::Paste(window, k)),
         Some(Pending::Close(accept, window)) => {
             accept.is_accepted().then_some(After::Close(window))
         }

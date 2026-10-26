@@ -15,8 +15,9 @@
 //! the widget.
 
 pub use viso_platform::{
-    ClipboardReply, DropAction, DropOffer, DropPhase, DropReply, GesturePhase, KeyCode as Key,
-    PointerId, PointerKind, ScrollPhase, primary_is_logo,
+    ClipboardData, ClipboardImage, ClipboardKinds, ClipboardReply, DropAction, DropOffer,
+    DropPhase, DropReply, GesturePhase, KeyCode as Key, PasteReply, PointerId, PointerKind,
+    ScrollPhase, primary_is_logo,
 };
 use viso_platform::{EditMenuAction, WindowId};
 
@@ -152,6 +153,27 @@ pub struct CopySample {
     pub reply: ClipboardReply,
 }
 
+/// The user asked to paste into the focused content (a native paste gesture).
+/// The driver says through `reply` which kinds the content takes; the
+/// backend reads them once the event returns and delivers an
+/// [`InputSample::Paste`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct PasteRequestSample {
+    pub window: WindowId,
+    pub reply: PasteReply,
+}
+
+/// What the clipboard holds of the kinds a paste takes: the answer to a
+/// paste gesture (`token` `None`), or to
+/// [`RuntimeCx::request_paste`](crate::RuntimeCx::request_paste), whose token
+/// it carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PasteSample {
+    pub window: WindowId,
+    pub data: ClipboardData,
+    pub token: Option<u32>,
+}
+
 /// The user picked an edit-menu item other than cut, copy and paste, or the
 /// menu closed on its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,8 +203,10 @@ pub enum InputSample {
     Text(TextSample),
     /// An in-progress IME composition update (preedit).
     ImePreedit(ImePreeditSample),
-    /// Clipboard text to insert at the focused content.
-    Paste(TextSample),
+    /// A paste gesture asking which kinds the focused content takes.
+    PasteRequest(PasteRequestSample),
+    /// What the clipboard holds for a paste.
+    Paste(PasteSample),
     /// A copy/cut request for the focused content's selection.
     Copy(CopySample),
     /// What the user did with the focused field's edit menu.
@@ -210,7 +234,8 @@ impl InputSample {
             InputSample::Key(k) => k.window,
             InputSample::Text(t) => t.window,
             InputSample::ImePreedit(p) => p.window,
-            InputSample::Paste(t) => t.window,
+            InputSample::PasteRequest(p) => p.window,
+            InputSample::Paste(p) => p.window,
             InputSample::Copy(c) => c.window,
             InputSample::EditMenu(e) => e.window,
             InputSample::Drop(d) => d.window,

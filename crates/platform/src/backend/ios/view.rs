@@ -38,7 +38,7 @@ use objc2_ui_kit::{
     UIEditMenuConfiguration, UIEditMenuInteraction, UIEditMenuInteractionAnimating,
     UIEditMenuInteractionDelegate, UIEvent, UIEventButtonMask, UIGestureRecognizer,
     UIGestureRecognizerState, UIHoverGestureRecognizer, UIKeyInput, UIKeyboardType,
-    UIPanGestureRecognizer, UIPasteboard, UIPress, UIPressesEvent, UIResponder, UIReturnKeyType,
+    UIPanGestureRecognizer, UIPress, UIPressesEvent, UIResponder, UIReturnKeyType,
     UIScrollTypeMask, UITextAutocapitalizationType, UITextAutocorrectionType, UITextInput,
     UITextInputDelegate, UITextInputStringTokenizer, UITextInputTokenizer, UITextInputTraits,
     UITextPosition, UITextRange, UITextSelectionRect, UITextSmartDashesType,
@@ -46,19 +46,20 @@ use objc2_ui_kit::{
     UITouchPhase, UITouchType, UITraitCollection, UITraitEnvironment, UIView,
 };
 
-use super::{drive, push, read_pasteboard, report_appearance};
+use super::{clipboard, drive, push, report_appearance};
 use crate::backend::ios_composition::{Composition, Edit};
 use crate::backend::ios_translate::{
     REPEAT_DELAY_SECS, REPEAT_INTERVAL_SECS, TouchIds, is_command_key, key_code, keyboard_overlap,
     modifiers, pressure, repeats,
 };
+use crate::clipboard::{ClipboardReply, PasteReply};
 use crate::control::{
     EditMenu, EditMenuAction, InputKind, LogicalRect, Loupe, TextEntry, WindowId,
 };
 use crate::event::{
-    ClipboardReply, ClipboardShortcut, KeyCode, LogicalInsets, Modifiers, PointerButtons,
-    PointerId, PointerKind, PointerPhase, RawEvent, RawImePreedit, RawKey, RawPointer, RawScroll,
-    RawText, clipboard_shortcut,
+    ClipboardShortcut, KeyCode, LogicalInsets, Modifiers, PointerButtons, PointerId, PointerKind,
+    PointerPhase, RawEvent, RawImePreedit, RawKey, RawPointer, RawScroll, RawText,
+    clipboard_shortcut,
 };
 
 /// `UITextLayoutDirection` values toward the document's start.
@@ -329,8 +330,7 @@ define_class!(
             } else if action == sel!(cut:) {
                 menu.is_none_or(|m| m.cut)
             } else if action == sel!(paste:) {
-                // SAFETY: a plain property read on the general pasteboard.
-                menu.is_none_or(|m| m.paste && unsafe { UIPasteboard::generalPasteboard().hasStrings() })
+                menu.is_none_or(|m| m.paste && clipboard::has_content())
             } else if action == sel!(selectAll:) {
                 menu.is_some_and(|m| m.select_all)
             } else {
@@ -1273,11 +1273,10 @@ impl VisoView {
                 cut: shortcut == ClipboardShortcut::Cut,
                 reply: ClipboardReply::new(),
             }),
-            ClipboardShortcut::Paste => {
-                if let Some(text) = read_pasteboard() {
-                    push(RawEvent::Paste { window, text });
-                }
-            }
+            ClipboardShortcut::Paste => push(RawEvent::PasteRequested {
+                window,
+                reply: PasteReply::new(),
+            }),
         }
         drive();
     }

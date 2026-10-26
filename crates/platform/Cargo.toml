@@ -52,6 +52,8 @@ kms = []
 # `Window::raw_handle`, consumed by viso-gpu — kept in its own crate so gpu
 # needn't depend on platform (§10 DAG).
 viso-handle = { workspace = true }
+# The PNG file an image the app copies goes on the clipboard as is deflated.
+miniz_oxide = { workspace = true }
 
 # The tree vocabulary of the AccessKit adapters (ADR 0030, ADR 0042): data
 # types only, which the bridge converts each `SemanticsDelta` to on the
@@ -78,6 +80,8 @@ objc2-foundation = { version = "0.3", features = [
     "NSValue",
     "NSThread",
     "NSLocale",
+    "NSData",
+    "NSDictionary",
 ] }
 objc2-app-kit = { version = "0.3", features = [
     "NSApplication",
@@ -98,6 +102,8 @@ objc2-app-kit = { version = "0.3", features = [
     "NSDraggingItem",
     "NSDraggingSession",
     "NSImage",
+    "NSImageRep",
+    "NSBitmapImageRep",
     "NSCursor",
     "NSAppearance",
     "NSWorkspace",
@@ -140,6 +146,7 @@ web-sys = { version = "0.3", features = [
     "CanvasRenderingContext2d",
     "Clipboard",
     "ClipboardEvent",
+    "ClipboardItem",
     "CompositionEvent",
     "CssStyleDeclaration",
     "DataTransfer",

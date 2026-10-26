@@ -221,15 +221,21 @@ impl<'a> RuntimeCx<'a> {
         self.app.window(window).and_then(|w| w.chrome_geom())
     }
 
-    /// Put `text` on the system clipboard.
-    pub fn set_clipboard_text(&mut self, text: &str) {
-        self.app.set_clipboard_text(text);
+    /// Replace what the system clipboard holds with `data`.
+    pub fn set_clipboard(&mut self, data: viso_platform::ClipboardData) {
+        self.app.set_clipboard(data);
     }
 
-    /// Ask for the clipboard's text; it arrives as an
-    /// [`InputSample::Paste`](crate::InputSample::Paste) for `window`.
-    pub fn request_paste(&mut self, window: WindowId) {
-        self.app.request_paste(window);
+    /// Ask for what the clipboard holds of `kinds`; it arrives as one
+    /// [`InputSample::Paste`](crate::InputSample::Paste) for `window`
+    /// carrying `token`, empty when it holds none of them.
+    pub fn request_paste(
+        &mut self,
+        window: WindowId,
+        kinds: viso_platform::ClipboardKinds,
+        token: u32,
+    ) {
+        self.app.request_paste(window, kinds, token);
     }
 
     /// Carry `drag` on from `window` as a drag the OS runs; whether it

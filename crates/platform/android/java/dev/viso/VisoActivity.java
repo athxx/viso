@@ -4,6 +4,7 @@ import android.animation.ValueAnimator;
 import android.app.Activity;
 import android.app.UiModeManager;
 import android.content.ClipData;
+import android.content.ClipDescription;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
@@ -11,6 +12,7 @@ import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.graphics.Color;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
@@ -23,6 +25,10 @@ import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.ArrayList;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
@@ -438,26 +444,110 @@ public class VisoActivity extends Activity implements SurfaceHolder.Callback2 {
                         : PointerIcon.getSystemIcon(this, type)));
     }
 
-    void setClipboard(String text) {
+    /** The label of the clip the app last set, to know its own copy. */
+    private static volatile String ownClip;
+
+    /**
+     * Put one item of {@code text}, {@code html} and a {@code png} image,
+     * each optional, on the clipboard under {@code label}. The image is
+     * stored here, on the calling thread, and served by
+     * {@link VisoClipProvider}.
+     */
+    void setClipboard(String text, String html, byte[] png, String label) {
+        Uri uri = png == null ? null : VisoClipProvider.store(this, png);
         runOnUiThread(() -> {
             ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-            if (clipboard != null) {
-                clipboard.setPrimaryClip(ClipData.newPlainText("text", text));
+            if (clipboard == null) {
+                return;
+            }
+            ArrayList<String> types = new ArrayList<>(3);
+            if (text != null || html != null) {
+                types.add(ClipDescription.MIMETYPE_TEXT_PLAIN);
+            }
+            if (html != null) {
+                types.add(ClipDescription.MIMETYPE_TEXT_HTML);
+            }
+            if (uri != null) {
+                types.add("image/png");
+            }
+            ClipDescription description = new ClipDescription(label, types.toArray(new String[0]));
+            ClipData clip = new ClipData(description, new ClipData.Item(text, html, null, uri));
+            ownClip = label;
+            try {
+                clipboard.setPrimaryClip(clip);
+            } catch (RuntimeException e) {
+                // A clip too large for the binder: nothing is copied.
             }
         });
     }
 
-    String getClipboard() {
+    /**
+     * Read the clipboard on a thread of its own and answer with
+     * {@link #nativePaste}: the item's text and HTML, and its image file's
+     * bytes when {@code image} is asked for; {@code own} alone while the
+     * clipboard holds the app's last copy.
+     */
+    void requestClipboard(boolean image, long token) {
+        Thread reader = new Thread(() -> readClipboard(image, token), "viso-paste");
+        reader.setDaemon(true);
+        reader.start();
+    }
+
+    private void readClipboard(boolean wantImage, long token) {
         ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-        if (clipboard == null || !clipboard.hasPrimaryClip()) {
-            return null;
+        ClipData clip = null;
+        try {
+            clip = clipboard == null ? null : clipboard.getPrimaryClip();
+        } catch (RuntimeException e) {
+            // Refused (the app is not in focus): nothing to paste.
         }
-        ClipData clip = clipboard.getPrimaryClip();
         if (clip == null || clip.getItemCount() == 0) {
+            nativePaste(token, false, null, null, null);
+            return;
+        }
+        CharSequence label = clip.getDescription().getLabel();
+        String own = ownClip;
+        if (own != null && label != null && own.contentEquals(label)) {
+            nativePaste(token, true, null, null, null);
+            return;
+        }
+        ClipData.Item item = clip.getItemAt(0);
+        Uri uri = item.getUri();
+        String type = null;
+        if (uri != null) {
+            try {
+                type = getContentResolver().getType(uri);
+            } catch (RuntimeException e) {
+                type = null;
+            }
+        }
+        boolean isImage = type != null && type.startsWith("image/");
+        CharSequence text = item.getText();
+        if (text == null && !isImage) {
+            text = item.coerceToText(this);
+        }
+        byte[] bytes = wantImage && isImage ? readAll(uri) : null;
+        nativePaste(token, false, text == null ? null : text.toString(), item.getHtmlText(), bytes);
+    }
+
+    /** The bytes behind {@code uri}, up to 256 MiB; {@code null} on failure. */
+    private byte[] readAll(Uri uri) {
+        try (InputStream in = getContentResolver().openInputStream(uri)) {
+            if (in == null) {
+                return null;
+            }
+            ByteArrayOutputStream out = new ByteArrayOutputStream(1 << 16);
+            byte[] chunk = new byte[1 << 16];
+            for (int n; (n = in.read(chunk)) > 0; ) {
+                out.write(chunk, 0, n);
+                if (out.size() > (256 << 20)) {
+                    return null;
+                }
+            }
+            return out.toByteArray();
+        } catch (IOException | RuntimeException e) {
             return null;
         }
-        CharSequence text = clip.getItemAt(0).coerceToText(this);
-        return text == null ? null : text.toString();
     }
 
     void setTitleText(String title) {
@@ -524,4 +614,10 @@ public class VisoActivity extends Activity implements SurfaceHolder.Callback2 {
 
     /** The drag was let go at ({@code x}, {@code y}) in px, holding these. */
     static native void nativeDrop(float x, float y, String text, String link, String[] files);
+
+    /**
+     * The clipboard read for {@code token} ({@code -1}: a paste gesture):
+     * the app's own copy, or what it holds, any part {@code null}.
+     */
+    static native void nativePaste(long token, boolean own, String text, String html, byte[] image);
 }

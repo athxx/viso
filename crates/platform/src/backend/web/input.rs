@@ -16,18 +16,18 @@ use web_sys::{
     PointerEvent, WheelEvent,
 };
 
-use super::{LOOP, Listener, Page, WINDOW, current_page, drive, push, write_clipboard};
+use super::{LOOP, Listener, Page, WINDOW, clipboard, current_page, drive, push};
 use crate::backend::utf16::byte_offset;
 use crate::backend::web_translate::{
     buttons, drop_actions, drop_effect, drop_kinds, key_code, modifiers, page_claims, pointer_id,
     pointer_kind, pointer_phase, track_buttons, wheel_delta,
 };
+use crate::clipboard::{ClipboardReply, PasteReply};
 use crate::control::{InputKind, TextEntry};
 use crate::drop::{DropOffer, DropPhase, DropReply, RawDrop};
 use crate::event::{
-    ClipboardReply, ClipboardShortcut, KeyCode, Modifiers, PointerButtons, PointerKind,
-    PointerPhase, RawEvent, RawImePreedit, RawKey, RawPointer, RawScroll, RawText,
-    clipboard_shortcut,
+    ClipboardShortcut, KeyCode, Modifiers, PointerButtons, PointerKind, PointerPhase, RawEvent,
+    RawImePreedit, RawKey, RawPointer, RawScroll, RawText, clipboard_shortcut,
 };
 
 /// The key code browsers report for a key an IME or soft keyboard consumed.
@@ -364,9 +364,9 @@ fn on_key_down(page: &Page, e: &Event) {
     if copy {
         // Written here as well as in the `copy` event that follows: some
         // browsers skip that event when the input element has no selection.
-        let text = LOOP.with(|l| l.copied.borrow().clone().flatten());
-        if let Some(text) = text {
-            write_clipboard(text);
+        let data = LOOP.with(|l| l.copied.borrow().clone().flatten());
+        if let Some(data) = data {
+            clipboard::write(data);
         }
     }
 }
@@ -460,7 +460,8 @@ fn on_composition_end(page: &Page, e: &Event) {
 fn on_copy(_page: &Page, e: &Event) {
     let e: &ClipboardEvent = e.unchecked_ref();
     let mut answer = LOOP.with(|l| l.copied.borrow_mut().take());
-    if answer.is_none() {
+    let menu = answer.is_none();
+    if menu {
         // A copy from the browser's menu: no key press asked first.
         push(RawEvent::CopyRequested {
             window: WINDOW,
@@ -470,26 +471,37 @@ fn on_copy(_page: &Page, e: &Event) {
         drive();
         answer = LOOP.with(|l| l.copied.borrow_mut().take());
     }
-    if let (Some(text), Some(data)) = (answer.flatten(), e.clipboard_data()) {
-        let _ = data.set_data("text/plain", &text);
+    let Some(copied) = answer.flatten() else {
+        return;
+    };
+    if let Some(data) = e.clipboard_data() {
+        if let Some(text) = &copied.text {
+            let _ = data.set_data("text/plain", text);
+        }
+        if let Some(html) = &copied.html {
+            let _ = data.set_data("text/html", html);
+        }
         e.prevent_default();
+    }
+    // An image goes only through the clipboard API, which the key press
+    // already wrote to.
+    if menu && copied.image.is_some() {
+        clipboard::write(copied);
     }
 }
 
 fn on_paste(_page: &Page, e: &Event) {
     let e: &ClipboardEvent = e.unchecked_ref();
     e.prevent_default();
-    let text = e
-        .clipboard_data()
-        .and_then(|data| data.get_data("text/plain").ok())
-        .filter(|t| !t.is_empty());
-    if let Some(text) = text {
-        push(RawEvent::Paste {
-            window: WINDOW,
-            text,
-        });
-        drive();
-    }
+    let Some(pasting) = e.clipboard_data().as_ref().and_then(clipboard::Pasting::of) else {
+        return;
+    };
+    LOOP.with(|l| *l.pasting.borrow_mut() = Some(pasting));
+    push(RawEvent::PasteRequested {
+        window: WINDOW,
+        reply: PasteReply::new(),
+    });
+    drive();
 }
 
 /// Place the input element over the caret, so the IME's candidate window

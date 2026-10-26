@@ -26,6 +26,7 @@ pub mod audio;
 pub mod backend;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod browser;
+pub mod clipboard;
 pub mod control;
 pub mod drop;
 pub mod event;
@@ -56,6 +57,7 @@ pub use accessibility::{
     AccessAction, AccessActions, AccessNode, AccessRequest, SemanticsDelta, SemanticsId,
     SemanticsLive, SemanticsRect, SemanticsRole, SemanticsSort, SemanticsState,
 };
+pub use clipboard::{ClipboardData, ClipboardImage, ClipboardKinds, ClipboardReply, PasteReply};
 pub use control::{
     ControlFlow, DEFAULT_FRAME_BUDGET, EditLabels, EditMenu, EditMenuAction, InputKind,
     LogicalRect, Loupe, PlatformCaps, PlatformError, TextEntry, WindowChrome, WindowConfig,
@@ -66,10 +68,10 @@ pub use drop::{
     file_path, file_uri, uri_list,
 };
 pub use event::{
-    AcceptCell, Appearance, ClipboardReply, ClipboardShortcut, ColorScheme, CursorIcon,
-    DisplayFeature, DisplayFeatureKind, GesturePhase, KeyCode, LogicalInsets, Modifiers,
-    PointerButtons, PointerId, PointerKind, PointerPhase, RawEvent, RawGesture, RawImePreedit,
-    RawKey, RawPointer, RawScroll, RawText, ScrollPhase, clipboard_shortcut, primary_is_logo,
+    AcceptCell, Appearance, ClipboardShortcut, ColorScheme, CursorIcon, DisplayFeature,
+    DisplayFeatureKind, GesturePhase, KeyCode, LogicalInsets, Modifiers, PointerButtons, PointerId,
+    PointerKind, PointerPhase, RawEvent, RawGesture, RawImePreedit, RawKey, RawPointer, RawScroll,
+    RawText, ScrollPhase, clipboard_shortcut, primary_is_logo,
 };
 pub use handler::AppHandler;
 pub use launch::launch_var;
@@ -166,17 +168,22 @@ pub trait PlatformApp {
     /// the close. Closing an id that does not exist is a no-op.
     fn close_window(&mut self, window: WindowId);
 
-    /// Put `text` on the system clipboard (plain UTF-8 text).
+    /// Replace what the system clipboard holds with `data`: its text, its
+    /// HTML and its image, each in the forms other apps read. An image of
+    /// pixels is encoded as a PNG file where the OS keeps one, when someone
+    /// first asks for it where the OS lets the copy wait.
     ///
     /// For copies the app starts itself ("Copy link"); copies the OS starts
     /// arrive as [`RawEvent::CopyRequested`] instead.
-    fn set_clipboard_text(&mut self, text: &str);
+    fn set_clipboard(&mut self, data: ClipboardData);
 
-    /// Ask for the clipboard's text. It arrives as a [`RawEvent::Paste`] for
-    /// `window` — immediately on systems with a synchronous clipboard, after the
-    /// permission prompt on the web. Nothing arrives when the clipboard holds no
-    /// text or access is refused.
-    fn request_paste(&mut self, window: WindowId);
+    /// Ask for what the clipboard holds of `kinds` — the richest of them, and
+    /// its text ([`ClipboardKinds::pick`]). It arrives as one
+    /// [`RawEvent::Paste`] for `window` carrying `token`, empty when it holds
+    /// none or access is refused: on the next turn of the loop where the
+    /// clipboard reads at once, once read where it reads in the background or
+    /// after a permission prompt (the web). The loop never waits on it.
+    fn request_paste(&mut self, window: WindowId, kinds: ClipboardKinds, token: u32);
 
     /// Show `icon` while the mouse is over `window`'s content.
     fn set_cursor(&mut self, window: WindowId, icon: CursorIcon);
@@ -192,7 +199,7 @@ pub trait PlatformApp {
     /// Show the system edit menu for the focused text field's selection, or
     /// move it to `menu`'s place and items while it shows; `None` closes it.
     /// What the user picks arrives as [`RawEvent::CopyRequested`],
-    /// [`RawEvent::Paste`] or [`RawEvent::EditMenu`]. A no-op where
+    /// [`RawEvent::PasteRequested`] or [`RawEvent::EditMenu`]. A no-op where
     /// [`PlatformCaps::edit_menu`] is false.
     fn set_edit_menu(&mut self, window: WindowId, menu: Option<EditMenu>) {
         let _ = (window, menu);
@@ -201,8 +208,8 @@ pub trait PlatformApp {
     /// Pop up the system context menu of the focused text field at the
     /// origin of `menu.at`, titled by `labels`. It closes on a pick or a
     /// click elsewhere, never while the app is mid-frame; what the user
-    /// picks arrives as [`RawEvent::CopyRequested`], [`RawEvent::Paste`] or
-    /// [`RawEvent::EditMenu`], and then its closing as
+    /// picks arrives as [`RawEvent::CopyRequested`],
+    /// [`RawEvent::PasteRequested`] or [`RawEvent::EditMenu`], and then its closing as
     /// [`EditMenuAction::Closed`]. A no-op where
     /// [`PlatformCaps::context_menu`] is false.
     fn show_context_menu(&mut self, window: WindowId, menu: EditMenu, labels: EditLabels) {

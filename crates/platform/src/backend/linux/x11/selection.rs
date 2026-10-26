@@ -1,8 +1,12 @@
-//! The CLIPBOARD selection: owning it for the app's copies, converting it
-//! for pastes, with INCR transfers both ways for text larger than one
-//! request. A hidden utility window is the owner and the requestor. It owns
-//! `XdndSelection` too while the app carries a drag out, and answers for the
-//! dragged text and `text/uri-list` the same way.
+//! The CLIPBOARD selection: owning it for the app's copies — text,
+//! `text/html` and `image/png`, the PNG of an image of pixels encoded when
+//! first asked for — and converting it for pastes: its `TARGETS` first, then
+//! the richest kind the paste takes and the text, one after another, with
+//! INCR transfers both ways for data larger than one request. Pastes asked
+//! for while one is converting wait their turn. A hidden utility window is
+//! the owner and the requestor. It owns `XdndSelection` too while the app
+//! carries a drag out, and answers for the dragged text and `text/uri-list`
+//! the same way.
 
 use x11rb::connection::{Connection, RequestConnection};
 use x11rb::errors::{ConnectionError, ReplyError, ReplyOrIdError};
@@ -14,7 +18,10 @@ use x11rb::protocol::xproto::{
 use x11rb::wrapper::ConnectionExt as _;
 use x11rb::xcb_ffi::XCBConnection;
 
+use std::collections::VecDeque;
+
 use super::atoms::Atoms;
+use crate::clipboard::{ClipboardData, ClipboardImage, ClipboardKinds};
 use crate::control::WindowId;
 
 pub(super) struct Clipboard {
@@ -27,14 +34,37 @@ pub(super) struct Clipboard {
     /// INCR transfers to other clients, advanced as they delete each chunk.
     outgoing: Vec<Outgoing>,
     incoming: Option<Incoming>,
+    /// Pastes asked for while another converts.
+    waiting: VecDeque<Paste>,
 }
 
 struct Owned {
-    text: String,
+    data: ClipboardData,
     /// A `text/uri-list`; empty for none.
     uris: String,
     time: Timestamp,
 }
+
+/// A paste asked for: of `kinds` into `window`, answering `token`.
+#[derive(Clone, Copy)]
+struct Paste {
+    window: WindowId,
+    kinds: ClipboardKinds,
+    token: Option<u32>,
+    time: Timestamp,
+}
+
+/// What a paste is converting the selection to.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Step {
+    Targets,
+    Text,
+    Html,
+    Image,
+}
+
+/// A finished paste: into `window`, what it read, answering `token`.
+pub(super) type Pasted = (WindowId, ClipboardData, Option<u32>);
 
 struct Outgoing {
     requestor: Window,
@@ -46,9 +76,13 @@ struct Outgoing {
 
 /// A paste in progress.
 struct Incoming {
-    window: WindowId,
+    paste: Paste,
+    step: Step,
     target: Atom,
-    /// The owner sends the text in chunks; they accumulate here.
+    /// The steps left after this one.
+    next: Vec<(Step, Atom)>,
+    data: ClipboardData,
+    /// The owner sends the data in chunks; they accumulate here.
     incr: Option<Vec<u8>>,
 }
 
@@ -74,21 +108,22 @@ impl Clipboard {
             dragged: None,
             outgoing: Vec::new(),
             incoming: None,
+            waiting: VecDeque::new(),
         })
     }
 
-    /// Take ownership of CLIPBOARD with `text`.
+    /// Take ownership of CLIPBOARD with `data`.
     pub(super) fn set(
         &mut self,
         conn: &XCBConnection,
         atoms: &Atoms,
-        text: &str,
+        data: ClipboardData,
         time: Timestamp,
     ) -> Result<(), ReplyError> {
         conn.set_selection_owner(self.window, atoms.CLIPBOARD, time)?;
         let owner = conn.get_selection_owner(atoms.CLIPBOARD)?.reply()?.owner;
         self.owned = (owner == self.window).then(|| Owned {
-            text: text.to_owned(),
+            data,
             uris: String::new(),
             time,
         });
@@ -115,7 +150,11 @@ impl Clipboard {
             .get_selection_owner(atoms.XdndSelection)?
             .reply()?
             .owner;
-        self.dragged = (owner == self.window).then_some(Owned { text, uris, time });
+        self.dragged = (owner == self.window).then(|| Owned {
+            data: ClipboardData::text(text),
+            uris,
+            time,
+        });
         Ok(self.dragged.is_some())
     }
 
@@ -125,53 +164,177 @@ impl Clipboard {
             return Vec::new();
         };
         let list = (!dragged.uris.is_empty()).then_some(atoms.TEXT_URI_LIST);
-        let text = (!dragged.text.is_empty()).then_some([
-            atoms.UTF8_STRING,
-            atoms.TEXT_PLAIN_UTF8,
-            atoms.TEXT_PLAIN,
-            Atom::from(AtomEnum::STRING),
-        ]);
+        let text = dragged
+            .data
+            .text
+            .as_ref()
+            .filter(|t| !t.is_empty())
+            .map(|_| {
+                [
+                    atoms.UTF8_STRING,
+                    atoms.TEXT_PLAIN_UTF8,
+                    atoms.TEXT_PLAIN,
+                    Atom::from(AtomEnum::STRING),
+                ]
+            });
         list.into_iter().chain(text.into_iter().flatten()).collect()
     }
 
-    /// Start reading CLIPBOARD for `window`. The app's own copy answers at
-    /// once; another owner's text arrives through [`on_notify`](Self::on_notify).
+    /// Start reading what CLIPBOARD holds of `kinds` for `window`. The
+    /// app's own copy answers at once; another owner's arrives through
+    /// [`on_notify`](Self::on_notify) and [`on_property`](Self::on_property)
+    /// — for a request (`token`) always, for a gesture only when it holds
+    /// some.
     pub(super) fn request(
         &mut self,
         conn: &XCBConnection,
         atoms: &Atoms,
         window: WindowId,
+        kinds: ClipboardKinds,
+        token: Option<u32>,
         time: Timestamp,
-    ) -> Result<Option<String>, ConnectionError> {
+    ) -> Result<Option<ClipboardData>, ConnectionError> {
         if let Some(owned) = &self.owned {
-            return Ok(Some(owned.text.clone()));
+            let data = owned.data.taken(kinds);
+            return Ok((token.is_some() || !data.is_empty()).then_some(data));
         }
-        self.convert(conn, atoms, window, atoms.UTF8_STRING, time)?;
+        let paste = Paste {
+            window,
+            kinds,
+            token,
+            time,
+        };
+        if self.incoming.is_some() {
+            self.waiting.push_back(paste);
+            return Ok(None);
+        }
+        self.start(conn, atoms, paste)?;
         Ok(None)
+    }
+
+    /// Begin `paste` by asking the owner for its targets.
+    fn start(
+        &mut self,
+        conn: &XCBConnection,
+        atoms: &Atoms,
+        paste: Paste,
+    ) -> Result<(), ConnectionError> {
+        self.convert(
+            conn,
+            atoms,
+            Incoming {
+                paste,
+                step: Step::Targets,
+                target: atoms.TARGETS,
+                next: Vec::new(),
+                data: ClipboardData::default(),
+                incr: None,
+            },
+        )
     }
 
     fn convert(
         &mut self,
         conn: &XCBConnection,
         atoms: &Atoms,
-        window: WindowId,
-        target: Atom,
-        time: Timestamp,
+        incoming: Incoming,
     ) -> Result<(), ConnectionError> {
         conn.delete_property(self.window, atoms.VISO_SELECTION)?;
         conn.convert_selection(
             self.window,
             atoms.CLIPBOARD,
-            target,
+            incoming.target,
             atoms.VISO_SELECTION,
-            time,
+            incoming.paste.time,
         )?;
-        self.incoming = Some(Incoming {
-            window,
-            target,
-            incr: None,
-        });
+        self.incoming = Some(incoming);
         Ok(())
+    }
+
+    /// The step of `incoming` read `value` of type `kind` (`None`: the owner
+    /// refused it): keep it and go on to the next step, or finish.
+    fn stepped(
+        &mut self,
+        conn: &XCBConnection,
+        atoms: &Atoms,
+        mut incoming: Incoming,
+        read: Option<(Atom, &[u8])>,
+    ) -> Result<Option<Pasted>, ConnectionError> {
+        match (incoming.step, read) {
+            (Step::Targets, read) => {
+                let targets: Vec<Atom> = read
+                    .map(|(_, v)| {
+                        v.as_chunks::<4>()
+                            .0
+                            .iter()
+                            .map(|c| u32::from_ne_bytes(*c))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let listed = |a: Atom| targets.contains(&a);
+                let string = Atom::from(AtomEnum::STRING);
+                // An owner that lists no targets is asked for text alone.
+                let text = if targets.is_empty() || listed(atoms.UTF8_STRING) {
+                    Some(atoms.UTF8_STRING)
+                } else if listed(atoms.TEXT_PLAIN_UTF8) {
+                    Some(atoms.TEXT_PLAIN_UTF8)
+                } else if listed(string) || listed(atoms.TEXT) || listed(atoms.TEXT_PLAIN) {
+                    Some(string)
+                } else {
+                    None
+                };
+                let held = ClipboardKinds {
+                    text: text.is_some(),
+                    html: listed(atoms.TEXT_HTML),
+                    image: listed(atoms.IMAGE_PNG),
+                };
+                let pick = incoming.paste.kinds.pick(held);
+                if pick.image {
+                    incoming.next.push((Step::Image, atoms.IMAGE_PNG));
+                }
+                if pick.html {
+                    incoming.next.push((Step::Html, atoms.TEXT_HTML));
+                }
+                if let Some(target) = text.filter(|_| pick.text) {
+                    incoming.next.push((Step::Text, target));
+                }
+                incoming.next.reverse();
+            }
+            (Step::Text, None) if incoming.target == atoms.UTF8_STRING => {
+                // No UTF-8 form: ask once more for Latin-1.
+                incoming.next.push((Step::Text, AtomEnum::STRING.into()));
+            }
+            // Some owners answer every target with what they hold: only
+            // data of the type asked for is taken.
+            (Step::Text, Some((kind, value))) if is_text(atoms, kind) => {
+                incoming.data.text = Some(decode(kind, value));
+            }
+            (Step::Html, Some((kind, value))) if kind == atoms.TEXT_HTML => {
+                incoming.data.html = Some(crate::clipboard::html_text(value));
+            }
+            (Step::Image, Some((kind, value))) if kind == atoms.IMAGE_PNG && !value.is_empty() => {
+                incoming.data.image = Some(ClipboardImage::encoded(value));
+            }
+            _ => {}
+        }
+        if let Some((step, target)) = incoming.next.pop() {
+            incoming.step = step;
+            incoming.target = target;
+            incoming.incr = None;
+            self.convert(conn, atoms, incoming)?;
+            return Ok(None);
+        }
+        let Incoming { paste, data, .. } = incoming;
+        if let Some(next) = self.waiting.pop_front() {
+            self.start(conn, atoms, next)?;
+        }
+        Ok(
+            (paste.token.is_some() || !data.is_empty()).then_some((
+                paste.window,
+                data,
+                paste.token,
+            )),
+        )
     }
 
     /// The owner answered a conversion.
@@ -180,7 +343,7 @@ impl Clipboard {
         conn: &XCBConnection,
         atoms: &Atoms,
         e: &SelectionNotifyEvent,
-    ) -> Result<Option<(WindowId, String)>, ReplyError> {
+    ) -> Result<Option<Pasted>, ReplyError> {
         if e.requestor != self.window || e.selection != atoms.CLIPBOARD {
             return Ok(None);
         }
@@ -188,17 +351,7 @@ impl Clipboard {
             return Ok(None);
         };
         if e.property == x11rb::NONE {
-            // No UTF-8 form: ask once more for Latin-1.
-            if incoming.target == atoms.UTF8_STRING {
-                self.convert(
-                    conn,
-                    atoms,
-                    incoming.window,
-                    AtomEnum::STRING.into(),
-                    e.time,
-                )?;
-            }
-            return Ok(None);
+            return Ok(self.stepped(conn, atoms, incoming, None)?);
         }
         let reply = conn
             .get_property(
@@ -218,7 +371,7 @@ impl Clipboard {
             });
             return Ok(None);
         }
-        Ok(Some((incoming.window, decode(reply.type_, &reply.value))))
+        Ok(self.stepped(conn, atoms, incoming, Some((reply.type_, &reply.value)))?)
     }
 
     /// A property changed on a window the clipboard is transferring with.
@@ -227,7 +380,7 @@ impl Clipboard {
         conn: &XCBConnection,
         atoms: &Atoms,
         e: &PropertyNotifyEvent,
-    ) -> Result<Option<(WindowId, String)>, ReplyError> {
+    ) -> Result<Option<Pasted>, ReplyError> {
         if e.state == Property::DELETE {
             self.advance_outgoing(conn, e.window, e.atom)?;
             return Ok(None);
@@ -255,9 +408,9 @@ impl Clipboard {
             buf.extend_from_slice(&reply.value);
             return Ok(None);
         }
-        let done = self.incoming.take().expect("checked above");
-        let data = done.incr.unwrap_or_default();
-        Ok(Some((done.window, decode(reply.type_, &data))))
+        let mut done = self.incoming.take().expect("checked above");
+        let data = done.incr.take().unwrap_or_default();
+        Ok(self.stepped(conn, atoms, done, Some((reply.type_, &data)))?)
     }
 
     fn advance_outgoing(
@@ -312,7 +465,7 @@ impl Clipboard {
         } else {
             None
         };
-        let answered = match which.map(|o| (o.text.clone(), o.uris.clone(), o.time)) {
+        let answered = match which.map(|o| (o.data.clone(), o.uris.clone(), o.time)) {
             Some(owned) => self.answer(conn, atoms, e.requestor, property, e.target, owned)?,
             None => false,
         };
@@ -340,19 +493,30 @@ impl Clipboard {
         requestor: Window,
         property: Atom,
         target: Atom,
-        (text, uris, time): (String, String, Timestamp),
+        (data, uris, time): (ClipboardData, String, Timestamp),
     ) -> Result<bool, ConnectionError> {
         let string = Atom::from(AtomEnum::STRING);
+        let image = data
+            .image
+            .as_ref()
+            .filter(|i| i.rgba_pixels().is_some() || i.png().is_some());
         if target == atoms.TARGETS {
-            let mut targets = vec![
-                atoms.TARGETS,
-                atoms.TIMESTAMP,
-                atoms.UTF8_STRING,
-                atoms.TEXT_PLAIN_UTF8,
-                atoms.TEXT,
-                string,
-                atoms.TEXT_PLAIN,
-            ];
+            let mut targets = vec![atoms.TARGETS, atoms.TIMESTAMP];
+            if image.is_some() {
+                targets.push(atoms.IMAGE_PNG);
+            }
+            if data.html.is_some() {
+                targets.push(atoms.TEXT_HTML);
+            }
+            if data.text.is_some() {
+                targets.extend([
+                    atoms.UTF8_STRING,
+                    atoms.TEXT_PLAIN_UTF8,
+                    atoms.TEXT,
+                    string,
+                    atoms.TEXT_PLAIN,
+                ]);
+            }
             if !uris.is_empty() {
                 targets.push(atoms.TEXT_URI_LIST);
             }
@@ -375,15 +539,27 @@ impl Clipboard {
             )?;
             return Ok(true);
         }
+        let text = data.text.as_deref();
         let (kind, data) = if target == atoms.TEXT_URI_LIST && !uris.is_empty() {
             (atoms.TEXT_URI_LIST, uris.into_bytes())
-        } else if target == atoms.UTF8_STRING
-            || target == atoms.TEXT_PLAIN_UTF8
-            || target == atoms.TEXT
+        } else if target == atoms.IMAGE_PNG
+            && let Some(png) = image.and_then(ClipboardImage::png)
         {
-            (atoms.UTF8_STRING, text.into_bytes())
-        } else if target == string || target == atoms.TEXT_PLAIN {
-            (string, latin1(&text))
+            (atoms.IMAGE_PNG, png.to_vec())
+        } else if target == atoms.TEXT_HTML
+            && let Some(html) = data.html
+        {
+            (atoms.TEXT_HTML, html.into_bytes())
+        } else if let Some(text) = text
+            && (target == atoms.UTF8_STRING
+                || target == atoms.TEXT_PLAIN_UTF8
+                || target == atoms.TEXT)
+        {
+            (atoms.UTF8_STRING, text.as_bytes().to_vec())
+        } else if let Some(text) = text
+            && (target == string || target == atoms.TEXT_PLAIN)
+        {
+            (string, latin1(text))
         } else {
             return Ok(false);
         };
@@ -426,6 +602,18 @@ fn chunk_len(conn: &XCBConnection) -> usize {
     conn.maximum_request_bytes()
         .saturating_sub(256)
         .min(1 << 20)
+}
+
+/// Whether a converted selection of type `kind` is text.
+fn is_text(atoms: &Atoms, kind: Atom) -> bool {
+    [
+        atoms.UTF8_STRING,
+        AtomEnum::STRING.into(),
+        atoms.TEXT,
+        atoms.TEXT_PLAIN_UTF8,
+        atoms.TEXT_PLAIN,
+    ]
+    .contains(&kind)
 }
 
 fn decode(kind: Atom, data: &[u8]) -> String {

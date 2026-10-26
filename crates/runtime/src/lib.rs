@@ -29,9 +29,10 @@ pub use context::RuntimeCx;
 pub use driver::{FrameDriver, Lifecycle};
 pub use frame::run_frame;
 pub use input::{
-    ClipboardReply, CopySample, DropAction, DropOffer, DropPhase, DropReply, DropSample,
-    EditMenuSample, GesturePhase, GestureSample, ImePreeditSample, InputSample, Key, KeySample,
-    Modifiers, PointerId, PointerKind, PointerPhase, PointerSample, ScrollPhase, ScrollSample,
+    ClipboardData, ClipboardImage, ClipboardKinds, ClipboardReply, CopySample, DropAction,
+    DropOffer, DropPhase, DropReply, DropSample, EditMenuSample, GesturePhase, GestureSample,
+    ImePreeditSample, InputSample, Key, KeySample, Modifiers, PasteReply, PasteRequestSample,
+    PasteSample, PointerId, PointerKind, PointerPhase, PointerSample, ScrollPhase, ScrollSample,
     TextSample, primary_is_logo,
 };
 pub use phase::FramePhase;

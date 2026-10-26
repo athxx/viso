@@ -711,9 +711,10 @@ pub struct NodeStore {
     /// and asks the platform to close each). Empty and allocation-free in the
     /// overwhelmingly common frame that closes no window.
     window_closes: Vec<u32>,
-    /// Cold, transient handoff: the text a handler put on the clipboard this
-    /// frame, until the facade hands it to the platform.
-    copied: Option<String>,
+    /// Cold, transient handoffs and side tables of the clipboard: what a
+    /// handler copied and the pastes it asked for this frame, until the
+    /// facade hands them to the platform, and the nodes that take pastes.
+    pub(crate) clipboard: crate::clipboard::Clipboard,
     /// Cold, transient handoff buffer (not index-aligned): text leaves the
     /// layout pass assigned a width their run was not shaped/wrapped at, sitting
     /// here between layout (which records `(id, width)` via
@@ -950,7 +951,7 @@ impl NodeStore {
         self.timer_requests.clear();
         self.window_opens.clear();
         self.window_closes.clear();
-        self.copied = None;
+        self.clipboard.clear();
         self.text_reflows.clear();
         self.edit_requests.clear();
         self.text_seeds.clear();
@@ -4200,17 +4201,6 @@ impl NodeStore {
     pub fn take_window_closes(&mut self, out: &mut Vec<u32>) {
         out.clear();
         out.append(&mut self.window_closes);
-    }
-
-    /// Put `text` on the clipboard: the facade hands it to the platform after
-    /// the frame's input. The last of a frame wins.
-    pub fn copy_text(&mut self, text: String) {
-        self.copied = Some(text);
-    }
-
-    /// The text put on the clipboard since this was last asked, if any.
-    pub fn take_copied(&mut self) -> Option<String> {
-        self.copied.take()
     }
 
     /// A node's current pending invalidation set.
@@ -7539,6 +7529,18 @@ impl<'a> BuildCx<'a> {
     /// [`NodeStore::set_drop_target`]).
     pub fn drop_target(&mut self, handle: Handle, target: crate::drag_drop::DropTarget) -> Handle {
         self.store.set_drop_target(handle.id, Some(target));
+        handle
+    }
+
+    /// Make an already-declared node take pastes of `kinds` (see
+    /// [`NodeStore::set_paste_target`]); its key handler hears them
+    /// ([`EventCx::pasted`](crate::EventCx::pasted)).
+    pub fn paste_target(
+        &mut self,
+        handle: Handle,
+        kinds: crate::clipboard::ClipboardKinds,
+    ) -> Handle {
+        self.store.set_paste_target(handle.id, Some(kinds));
         handle
     }
 
