@@ -47,6 +47,7 @@ use crate::event::{
 };
 use crate::handler::AppHandler;
 use crate::menu::Menu;
+use crate::placement::{DeskRect, fit_on_screens};
 use crate::{Instant, LogicalRect, PlatformApp, RawWindowHandle, TextEntry, Window};
 
 /// The `_NET_WM_MOVERESIZE` direction that moves the window.
@@ -302,36 +303,23 @@ impl Window for X11Window {
     }
 
     fn outer_position(&self) -> Option<(f64, f64)> {
+        self.x11.borrow().outer_origin(self.xid)
+    }
+
+    fn mode(&self) -> crate::WindowMode {
         let x11 = self.x11.borrow();
-        let origin = self
-            .conn
-            .translate_coordinates(self.xid, x11.root, 0, 0)
-            .ok()?
-            .reply()
-            .ok()?;
-        // The frame the window manager drew around the window, which a
-        // position given at creation places.
-        let (left, top) = self
-            .conn
-            .get_property(
-                false,
-                self.xid,
-                x11.atoms._NET_FRAME_EXTENTS,
-                AtomEnum::CARDINAL,
-                0,
-                4,
-            )
-            .ok()
-            .and_then(|cookie| cookie.reply().ok())
-            .and_then(|reply| {
-                let extents: Vec<u32> = reply.value32()?.collect();
-                Some((extents.first().copied()?, extents.get(2).copied()?))
-            })
-            .unwrap_or((0, 0));
-        Some((
-            f64::from(origin.dst_x) - f64::from(left),
-            f64::from(origin.dst_y) - f64::from(top),
-        ))
+        x11.index(self.id).map_or(crate::WindowMode::Normal, |i| {
+            let win = &x11.windows[i];
+            if win.hidden {
+                crate::WindowMode::Minimized
+            } else if win.fullscreen {
+                crate::WindowMode::Fullscreen
+            } else if win.maximized {
+                crate::WindowMode::Maximized
+            } else {
+                crate::WindowMode::Normal
+            }
+        })
     }
 
     fn raw_handle(&self) -> RawWindowHandle {
@@ -379,6 +367,11 @@ struct WinState {
     origin: (i32, i32),
     fullscreen: bool,
     maximized: bool,
+    /// Minimized (`_NET_WM_STATE_HIDDEN`).
+    hidden: bool,
+    /// The last `ConfigureNotify`'s position and whether the window manager
+    /// sent it, to tell a move from a resize.
+    configured: (i16, i16, bool),
     drag: Vec<LogicalRect>,
     /// The cursor the app asked for.
     cursor: CursorIcon,
@@ -644,6 +637,40 @@ impl X11 {
     }
 
     /// The scale for content whose centre is at `centre` on the root window.
+    /// `xid`'s outer top-left corner (its window manager frame's) on the
+    /// root window.
+    fn outer_origin(&self, xid: xproto::Window) -> Option<(f64, f64)> {
+        let origin = self
+            .conn
+            .translate_coordinates(xid, self.root, 0, 0)
+            .ok()?
+            .reply()
+            .ok()?;
+        // The frame the window manager drew around the window, which a
+        // position given at creation places.
+        let (left, top) = self
+            .conn
+            .get_property(
+                false,
+                xid,
+                self.atoms._NET_FRAME_EXTENTS,
+                AtomEnum::CARDINAL,
+                0,
+                4,
+            )
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .and_then(|reply| {
+                let extents: Vec<u32> = reply.value32()?.collect();
+                Some((extents.first().copied()?, extents.get(2).copied()?))
+            })
+            .unwrap_or((0, 0));
+        Some((
+            f64::from(origin.dst_x) - f64::from(left),
+            f64::from(origin.dst_y) - f64::from(top),
+        ))
+    }
+
     fn scale_at(&self, centre: (i32, i32)) -> f64 {
         if let Some(scale) = self.xft_scale {
             return scale;
@@ -673,21 +700,50 @@ impl X11 {
     ) -> Result<xproto::Window, PlatformError> {
         let conn = self.conn.clone();
         let screen = &conn.setup().roots[self.screen];
-        // A position on the root window puts the frame's top-left there.
+        // A position on the root window puts the frame's top-left there,
+        // kept on the monitors.
         let position = config
             .position
-            .map(|(x, y)| (x.round() as i32, y.round() as i32))
-            .filter(|&(x, y)| {
-                (0..i32::from(screen.width_in_pixels)).contains(&x)
-                    && (0..i32::from(screen.height_in_pixels)).contains(&y)
-            });
+            .map(|(x, y)| (x.round() as i32, y.round() as i32));
         let scale = self.scale_at(position.unwrap_or((
             i32::from(screen.width_in_pixels) / 2,
             i32::from(screen.height_in_pixels) / 2,
         )));
+        let mut width = physical(config.logical_size.0, scale);
+        let mut height = physical(config.logical_size.1, scale);
+        let position = position.map(|(x, y)| {
+            let areas: Vec<DeskRect> = if self.monitors.is_empty() {
+                vec![DeskRect::new(
+                    0.0,
+                    0.0,
+                    f64::from(screen.width_in_pixels),
+                    f64::from(screen.height_in_pixels),
+                )]
+            } else {
+                self.monitors
+                    .iter()
+                    .map(|m| {
+                        DeskRect::new(
+                            f64::from(m.x),
+                            f64::from(m.y),
+                            f64::from(m.width),
+                            f64::from(m.height),
+                        )
+                    })
+                    .collect()
+            };
+            let wanted = DeskRect::new(
+                f64::from(x),
+                f64::from(y),
+                f64::from(width),
+                f64::from(height),
+            );
+            let fitted = fit_on_screens(wanted, &areas);
+            width = fitted.width.round().clamp(1.0, f64::from(u16::MAX)) as u16;
+            height = fitted.height.round().clamp(1.0, f64::from(u16::MAX)) as u16;
+            (fitted.x.round() as i32, fitted.y.round() as i32)
+        });
         let (x, y) = position.unwrap_or((0, 0));
-        let width = physical(config.logical_size.0, scale);
-        let height = physical(config.logical_size.1, scale);
         let create = || -> Result<xproto::Window, Box<dyn std::error::Error>> {
             let xid = conn.generate_id()?;
             conn.create_window(
@@ -763,6 +819,19 @@ impl X11 {
                 AtomEnum::ATOM,
                 &[atoms._NET_WM_WINDOW_TYPE_NORMAL],
             )?;
+            if config.maximized {
+                // Set before mapping, the window manager maps it maximized.
+                conn.change_property32(
+                    PropMode::REPLACE,
+                    xid,
+                    atoms._NET_WM_STATE,
+                    AtomEnum::ATOM,
+                    &[
+                        atoms._NET_WM_STATE_MAXIMIZED_VERT,
+                        atoms._NET_WM_STATE_MAXIMIZED_HORZ,
+                    ],
+                )?;
+            }
             let mut hints = WmHints::new();
             hints.input = Some(true);
             hints.initial_state = Some(WmHintsState::Normal);
@@ -816,7 +885,9 @@ impl X11 {
             size: (u32::from(width), u32::from(height)),
             origin: (0, 0),
             fullscreen: false,
-            maximized: false,
+            maximized: config.maximized,
+            hidden: false,
+            configured: (x as i16, y as i16, false),
             drag: Vec::new(),
             cursor: CursorIcon::Default,
             shown: None,
@@ -1140,7 +1211,7 @@ impl X11 {
                     self.pump.push_redraw(self.windows[i].id);
                 }
             }
-            Event::ConfigureNotify(e) => self.on_configure(e.window, e.width, e.height),
+            Event::ConfigureNotify(e) => self.on_configure(&e),
             Event::ClientMessage(e) => self.on_client_message(&e),
             Event::FocusIn(e) => self.on_focus(e.event, e.detail, true),
             Event::FocusOut(e) => self.on_focus(e.event, e.detail, false),
@@ -1258,9 +1329,20 @@ impl X11 {
         unsafe { kb.set_keymap_x11(self.conn.get_raw_xcb_connection(), device) };
     }
 
-    fn on_configure(&mut self, xid: xproto::Window, width: u16, height: u16) {
+    fn on_configure(&mut self, e: &xproto::ConfigureNotifyEvent) {
+        let xid = e.window;
         let Some(i) = self.index_xid(xid) else { return };
-        let size = (u32::from(width), u32::from(height));
+        // A move: the window manager reports one (a synthetic event, in root
+        // coordinates), or the position inside its frame changed.
+        let configured = (e.x, e.y, e.response_type & 0x80 != 0);
+        if configured != self.windows[i].configured {
+            self.windows[i].configured = configured;
+            if let Some((x, y)) = self.outer_origin(xid) {
+                let window = self.windows[i].id;
+                self.pump.push(RawEvent::Moved { window, x, y });
+            }
+        }
+        let size = (u32::from(e.width), u32::from(e.height));
         if self.windows[i].size != size {
             self.windows[i].size = size;
             let id = self.windows[i].id;
@@ -1447,8 +1529,10 @@ impl X11 {
         let fullscreen = states.contains(&atoms._NET_WM_STATE_FULLSCREEN);
         let maximized = states.contains(&atoms._NET_WM_STATE_MAXIMIZED_VERT)
             && states.contains(&atoms._NET_WM_STATE_MAXIMIZED_HORZ);
+        let hidden = states.contains(&atoms._NET_WM_STATE_HIDDEN);
         let win = &mut self.windows[i];
         win.maximized = maximized;
+        win.hidden = hidden;
         if win.fullscreen != fullscreen {
             win.fullscreen = fullscreen;
             self.pump.push(RawEvent::FullscreenChanged {

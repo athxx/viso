@@ -64,6 +64,13 @@ pub trait FrameDriver {
     /// a single-window driver holds no per-window state to release.
     fn on_window_closed(&mut self, _window: WindowId) {}
 
+    /// `window` moved, resized, or entered or left fullscreen; where it is
+    /// and how it shows are read through `cx`
+    /// ([`RuntimeCx::window_position`](crate::RuntimeCx::window_position),
+    /// [`RuntimeCx::window_mode`](crate::RuntimeCx::window_mode)). Default
+    /// no-op.
+    fn on_window_placed(&mut self, _cx: &mut RuntimeCx<'_>, _window: WindowId) {}
+
     /// The user picked a custom application-menu item. `command` is the
     /// app-assigned [`MenuCommandId`] carried by the menu tree, so the driver
     /// matches on the small integer it chose when building the menu. Standard

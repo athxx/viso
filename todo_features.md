@@ -620,7 +620,21 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
       sticks and touch buttons only).
 - [x] Fullscreen change events on every OS (Android hides the system bars, iOS the status
   bar and home indicator).
-- [ ] Window state persistence.
+- [x] Window state persistence.
+  - `WindowConfig::persist` (default `Some("main")`, `None` opts out) keeps size, position and
+    maximized/fullscreen under `window/<name>` in the facade store; stored after the frame
+    rests 400 ms and at close / background / exit; restored at creation, off-screen frames
+    moved and shrunk onto a screen. Platform: `RawEvent::Moved`, `Window::mode`,
+    `WindowConfig::maximized`. Facade tests on the headless backend (move/resize, fullscreen,
+    opt-out).
+  - macOS: verified by relaunching the `shell` example after Accessibility-driven changes: a
+    moved and resized frame, fullscreen, and zoom all reopened as left (unzoom and leaving
+    fullscreen return to the stored frame); a stored frame far off-screen opened on the
+    screen. Fixed the macOS loop dropping the control flow (and timer deadlines) returned
+    while it delivered queued events.
+  - Windows (`WM_MOVE`, `IsZoomed`, `rcWork`), X11 (`ConfigureNotify`, `_NET_WM_STATE`,
+    RandR monitors) and Wayland (size and maximize only; the compositor places): compile-
+    and clippy-checked only.
 - [x] Dock/taskbar badge.
   - `viso::shell::set_badge(Option<AppBadge>)` (`Count` or `Label`), `badge_supported`;
     `PlatformCaps::badge`; headless records it (facade tests).

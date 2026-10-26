@@ -43,9 +43,9 @@ pub type WindowIdSlot = Rc<Cell<Option<u32>>>;
 /// handler describes the window it wants with this small value and
 /// the facade translates it into the platform config when it opens the window.
 ///
-/// Kept deliberately minimal — title, logical size, chrome, caption — matching
-/// the platform config's current surface. Future window attributes (min/max
-/// size, resizable) extend both in step.
+/// Kept deliberately minimal — title, logical size, chrome, caption, the name
+/// its place is kept under — matching the platform config's current surface.
+/// Future window attributes (min/max size, resizable) extend both in step.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowConfig {
     /// The window title. Flows into the default caption bar (when `caption` is
@@ -65,6 +65,15 @@ pub struct WindowConfig {
     /// bar). Orthogonal to `chrome`: `chrome` decides who draws the buttons,
     /// `caption` decides whether the title band is wrapped at all.
     pub caption: bool,
+    /// The name the window's size, position and maximized or fullscreen
+    /// state are kept under across launches: a window opened under a name
+    /// starts where the last one under it was, kept on the screens there are
+    /// now. `None` keeps nothing. The default, `"main"`, suits an app's one
+    /// main window; give each other window that should reopen in place its
+    /// own name. While a window holds a name, another opened under it keeps
+    /// nothing. Ignored where windows have no frame of their own (mobile,
+    /// the browser).
+    pub persist: Option<String>,
 }
 
 impl Default for WindowConfig {
@@ -79,6 +88,7 @@ impl Default for WindowConfig {
             // window-centered title.
             chrome: WindowChrome::SelfDrawn,
             caption: true,
+            persist: Some("main".to_owned()),
         }
     }
 }

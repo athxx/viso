@@ -243,8 +243,14 @@ pub struct WindowConfig {
     /// coordinates [`Window::outer_position`](crate::Window::outer_position)
     /// reports; `None` lets the platform place it. A point on no screen is
     /// ignored, and so is any point where the platform places windows itself
-    /// (Wayland, mobile, the browser).
+    /// (Wayland, mobile, the browser). A window that would open partly off the
+    /// screens (a monitor was unplugged, or the work area shrank) is moved, and
+    /// shrunk if it must be, onto the screen it overlaps most.
     pub position: Option<(f64, f64)>,
+    /// Open maximized, filling the screen's work area; leaving that returns
+    /// it to `logical_size` at `position`. Ignored where windows have no such
+    /// state (mobile, the browser).
+    pub maximized: bool,
     /// The app draws its frames on the CPU and hands each one over as pixels:
     /// the window's [`raw_handle`](crate::Window::raw_handle) is a
     /// [`Scanout`](crate::RawWindowHandle::Scanout) that shows them, where the
@@ -260,9 +266,25 @@ impl Default for WindowConfig {
             logical_size: (800.0, 600.0),
             chrome: WindowChrome::Native,
             position: None,
+            maximized: false,
             cpu_frames: false,
         }
     }
+}
+
+/// How a window shows on the desktop, as [`Window::mode`](crate::Window::mode)
+/// reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WindowMode {
+    /// At its own size and place.
+    #[default]
+    Normal,
+    /// Filling the screen's work area.
+    Maximized,
+    /// Down in the dock or taskbar.
+    Minimized,
+    /// Covering the whole screen.
+    Fullscreen,
 }
 
 /// Who owns the window's title bar / caption region.

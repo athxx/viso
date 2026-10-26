@@ -259,6 +259,13 @@ impl<D: FrameDriver, C: FrameClock> Loop<D, C> {
         }
     }
 
+    /// `window` moved, resized or changed mode: the driver reads where it is
+    /// now through `cx`.
+    fn placed(&mut self, app: &mut dyn PlatformApp, window: WindowId) {
+        let mut cx = RuntimeCx::new(app, Duration::ZERO, self.clock.now());
+        self.driver.on_window_placed(&mut cx, window);
+    }
+
     /// After handling an event, decide how the pump should proceed.
     fn resolve_control_flow(&mut self) -> ControlFlow {
         if self.launched && self.open_windows == 0 {
@@ -387,6 +394,7 @@ impl<D: FrameDriver, C: FrameClock> Loop<D, C> {
                 self.driver.on_geometry(window, scale, width, height);
                 self.reasons.add(RedrawReason::WindowResize);
                 app.request_redraw(window);
+                self.placed(app, window);
             }
             RawEvent::ScaleFactorChanged {
                 window,
@@ -397,7 +405,9 @@ impl<D: FrameDriver, C: FrameClock> Loop<D, C> {
                 self.driver.on_geometry(window, scale, width, height);
                 self.reasons.add(RedrawReason::WindowResize);
                 app.request_redraw(window);
+                self.placed(app, window);
             }
+            RawEvent::Moved { window, .. } => self.placed(app, window),
             RawEvent::CloseRequested { window, accept } => {
                 // Every close is accepted (there is no unsaved-state veto); the
                 // handshake plumbing is in place for a handler to deny.
@@ -504,6 +514,7 @@ impl<D: FrameDriver, C: FrameClock> Loop<D, C> {
                 // like the chrome-geom event (which only refreshes a drag cache).
                 self.driver.on_fullscreen_changed(window, fullscreen);
                 self.reasons.add(RedrawReason::InputDirty);
+                self.placed(app, window);
             }
             RawEvent::Scroll(s) => {
                 // Resolve the window scale here (the scheduler owns the window)

@@ -75,6 +75,7 @@ mod headless;
 mod inspect;
 pub mod native;
 mod persist;
+mod places;
 mod playback;
 mod profile;
 #[cfg(any(feature = "headless", feature = "hot-reload"))]
@@ -635,6 +636,18 @@ pub mod __test_support {
         ALT_ACCESS.with(|a| a.set(on));
     }
 
+    /// The in-memory store [`keep_window_places`] keeps windows' places in.
+    pub type WindowPlaces = viso_view::persist::MemoryStore;
+
+    /// Keeps the places of the windows this thread's drives open in a fresh
+    /// in-memory store, returned so a test reads what was stored, and drives
+    /// again on it as a later launch would.
+    pub fn keep_window_places() -> WindowPlaces {
+        let memory = viso_view::persist::MemoryStore::default();
+        crate::places::install(Some(viso_view::persist::SharedStore::new(memory.clone())));
+        memory
+    }
+
     /// [`drive_scripted`] on a host offering `caps`.
     pub fn drive_scripted_with_caps<A: Application>(
         script: Vec<viso_platform::RawEvent>,
@@ -835,6 +848,8 @@ struct AppDriver<A: Application> {
     pending_urls: Vec<String>,
     /// What the session shows in the desktop shell.
     shell: shell::Shown,
+    /// The windows whose size and place are kept across launches.
+    places: places::Places,
     /// The development session: the mounted views, their watched files and
     /// the reloads staged for the next frame.
     #[cfg(feature = "hot-reload")]
@@ -1174,6 +1189,7 @@ struct GpuState {
 /// their stores go.
 impl<A: Application> Drop for AppDriver<A> {
     fn drop(&mut self) {
+        self.places.flush();
         for ws in &mut self.windows {
             persist::suspend(&mut ws.store, &ws.states);
         }
@@ -1262,6 +1278,7 @@ impl<A: Application> AppDriver<A> {
             menu_picks: Default::default(),
             pending_urls: Vec::new(),
             shell: shell::Shown::default(),
+            places: places::Places::default(),
             #[cfg(feature = "hot-reload")]
             hot_reload: hot_reload::HotReloadSession::default(),
             #[cfg(feature = "headless")]
@@ -2791,6 +2808,7 @@ fn to_platform_config(cfg: &WindowConfig) -> viso_platform::WindowConfig {
             WindowChrome::SelfDrawn => viso_platform::WindowChrome::SelfDrawn,
         },
         position: None,
+        maximized: false,
         cpu_frames: !cfg!(feature = "headless")
             && <viso_gpu::Backend as viso_gpu::GpuBackend>::SHADER_LANG
                 == viso_gpu::ShaderLang::None,
@@ -3019,12 +3037,18 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
             .as_ref()
             .map(Application::window_config)
             .unwrap_or_default();
-        let config = to_platform_config(&cfg);
+        let mut config = to_platform_config(&cfg);
+        let opening = self
+            .places
+            .open(cfg.persist.as_deref(), cx.framed_windows(), &mut config);
         #[cfg(feature = "hot-reload")]
         let config = hot_reload::launch_window(config);
         let Ok(id) = cx.create_window(config) else {
             return;
         };
+        if let Some(opening) = opening {
+            self.places.opened(cx, id, opening);
+        }
         // Open the launch window through the shared bring-up path, authoring its
         // tree with the application's own `build`, wrapped by default in a
         // self-drawn caption band (window-centered title, no authoring). A window
@@ -3762,6 +3786,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
             }
             // The app may not come back: make the persisted writes durable.
             viso_runtime::Lifecycle::Suspended => {
+                self.places.flush();
                 for ws in &mut self.windows {
                     persist::suspend(&mut ws.store, &ws.states);
                 }
@@ -3769,8 +3794,14 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         }
     }
 
+    fn on_window_placed(&mut self, cx: &mut RuntimeCx<'_>, window: WindowId) {
+        self.places.placed(cx, window);
+        self.places.store_due(cx.frame_now());
+    }
+
     fn on_wakeup(&mut self, cx: &mut RuntimeCx<'_>) {
         shell::apply(cx, &mut self.shell);
+        self.places.store_due(cx.frame_now());
         // A loop kick: a task woke (or was spawned), or a timer deadline
         // elapsed. Frame the windows with work, so the frame polls the tasks
         // and fires the timers.
@@ -4053,6 +4084,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
     }
 
     fn on_fullscreen_changed(&mut self, window: WindowId, fullscreen: bool) {
+        self.places.fullscreen_changed(window, fullscreen);
         // Hide the self-drawn caption while fullscreen and restore it on exit by
         // toggling its root's visibility in place — on macOS the OS draws its own
         // auto-hiding title bar in fullscreen and removes the traffic lights, so
@@ -4111,6 +4143,8 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 for line in faults {
                     eprintln!("[viso] {line}");
                 }
+                // The window places that settled.
+                self.places.store_due(cx.frame_now());
                 for ws in &mut self.windows {
                     // Arm any one-shot timers a handler requested this frame (a
                     // toast's auto-dismiss), then fire every timer whose deadline
@@ -4451,7 +4485,12 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // same value translated into the platform config, kept as the
                     // UI enum so `WindowState::open` seeds `BuildCx::chrome`.
                     let ui_chrome = req.config.chrome;
-                    let config = to_platform_config(&req.config);
+                    let mut config = to_platform_config(&req.config);
+                    let opening = self.places.open(
+                        req.config.persist.as_deref(),
+                        cx.framed_windows(),
+                        &mut config,
+                    );
                     // Values the build closure moves in to wrap the deferred tree
                     // in the default caption band, exactly as the launch path does.
                     let title = req.config.title.clone();
@@ -4460,6 +4499,9 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     let build = req.build;
                     let id_slot = req.id_slot;
                     if let Ok(id) = cx.create_window(config) {
+                        if let Some(opening) = opening {
+                            self.places.opened(cx, id, opening);
+                        }
                         // Back-fill the tracking handle's slot with the raw id
                         // so a `WindowHandle` can observe and later close this
                         // window. `create_window` is the one place the id is
@@ -4942,6 +4984,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // `WindowState`: its store/gpu/timers/animations destruct in turn, and
         // `GpuState`'s drop releases the surface/device. A hook for an unknown
         // window (already gone) finds nothing to retain and is a no-op.
+        self.places.closed(window);
         if let Some(ws) = self.window_mut(window) {
             persist::suspend(&mut ws.store, &ws.states);
             ws.effects.cancel_all();
@@ -5009,6 +5052,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     .chain(w.animation_due)
                     .chain(w.video_step.due)
             })
+            .chain(self.places.deadline())
             .min()
     }
 }

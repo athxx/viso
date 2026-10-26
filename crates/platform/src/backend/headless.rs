@@ -338,6 +338,8 @@ impl PlatformApp for HeadlessApp {
             soft_keyboard: false,
             fullscreen: false,
             pointer_locked: false,
+            position: config.position,
+            maximized: config.maximized,
         });
         Ok(id)
     }
@@ -367,6 +369,29 @@ impl PlatformApp for HeadlessApp {
                 }
                 _ => None,
             };
+            // A scripted move, resize or fullscreen change is the window's own.
+            match event {
+                RawEvent::Moved { window, x, y } => {
+                    if let Some(w) = self.window_mut(window) {
+                        w.position = Some((x, y));
+                    }
+                }
+                RawEvent::Resized {
+                    window,
+                    width,
+                    height,
+                } => {
+                    if let Some(w) = self.window_mut(window) {
+                        w.physical_size = (width, height);
+                    }
+                }
+                RawEvent::FullscreenChanged { window, fullscreen } => {
+                    if let Some(w) = self.window_mut(window) {
+                        w.fullscreen = fullscreen;
+                    }
+                }
+                _ => {}
+            }
             if handler.handle(self, event) == ControlFlow::Exit {
                 break;
             }
@@ -676,6 +701,9 @@ pub struct HeadlessWindow {
     soft_keyboard: bool,
     fullscreen: bool,
     pointer_locked: bool,
+    /// The outer top-left the window opened at or was last moved to.
+    position: Option<(f64, f64)>,
+    maximized: bool,
 }
 
 impl Window for HeadlessWindow {
@@ -699,6 +727,20 @@ impl Window for HeadlessWindow {
 
     fn inner_size(&self) -> (u32, u32) {
         self.physical_size
+    }
+
+    fn outer_position(&self) -> Option<(f64, f64)> {
+        self.position
+    }
+
+    fn mode(&self) -> crate::WindowMode {
+        if self.fullscreen {
+            crate::WindowMode::Fullscreen
+        } else if self.maximized {
+            crate::WindowMode::Maximized
+        } else {
+            crate::WindowMode::Normal
+        }
     }
 
     fn raw_handle(&self) -> RawWindowHandle {

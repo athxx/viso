@@ -318,6 +318,23 @@ impl Window for WaylandWindow {
             .map_or((0, 0), |i| wl.state.windows[i].physical_size())
     }
 
+    /// Minimized is not something a Wayland client is told.
+    fn mode(&self) -> crate::WindowMode {
+        let wl = self.wl.borrow();
+        wl.state
+            .index(self.id)
+            .map_or(crate::WindowMode::Normal, |i| {
+                let win = &wl.state.windows[i];
+                if win.fullscreen {
+                    crate::WindowMode::Fullscreen
+                } else if win.maximized {
+                    crate::WindowMode::Maximized
+                } else {
+                    crate::WindowMode::Normal
+                }
+            })
+    }
+
     fn raw_handle(&self) -> RawWindowHandle {
         self.handle
     }
@@ -555,6 +572,9 @@ impl State {
         );
         if let Some(v) = &viewport {
             v.set_destination(logical.0, logical.1);
+        }
+        if config.maximized {
+            toplevel.set_maximized();
         }
         // The initial commit, with no buffer, asks for the first configure.
         surface.commit();

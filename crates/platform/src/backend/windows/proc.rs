@@ -20,17 +20,18 @@ use ::windows::Win32::UI::Input::Pointer::{
     POINTER_TOUCH_INFO,
 };
 use ::windows::Win32::UI::WindowsAndMessaging::{
-    CREATESTRUCTW, DefWindowProcW, GWLP_USERDATA, GetWindowLongPtrW, HTCLIENT, KillTimer, PT_PEN,
-    PT_TOUCH, PostMessageW, SW_MINIMIZE, SWP_NOACTIVATE, SWP_NOZORDER, SetTimer, SetWindowLongPtrW,
-    SetWindowPos, ShowWindow, WM_CAPTURECHANGED, WM_CHAR, WM_CLOSE, WM_COMMAND, WM_DESTROY,
-    WM_DESTROYCLIPBOARD, WM_DPICHANGED, WM_ENTERSIZEMOVE, WM_ERASEBKGND, WM_EXITSIZEMOVE,
-    WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_SETCONTEXT, WM_IME_STARTCOMPOSITION,
-    WM_INPUT, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
-    WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_MOVE, WM_NCCREATE, WM_NCDESTROY,
-    WM_PAINT, WM_POINTERCAPTURECHANGED, WM_POINTERDOWN, WM_POINTERLEAVE, WM_POINTERUP,
-    WM_POINTERUPDATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_RENDERALLFORMATS, WM_RENDERFORMAT,
-    WM_SETCURSOR, WM_SETFOCUS, WM_SETTINGCHANGE, WM_SIZE, WM_SYSCOLORCHANGE, WM_SYSKEYDOWN,
-    WM_SYSKEYUP, WM_THEMECHANGED, WM_TIMER, WM_UNICHAR, WM_XBUTTONDOWN, WM_XBUTTONUP,
+    CREATESTRUCTW, DefWindowProcW, GWLP_USERDATA, GetWindowLongPtrW, HTCLIENT, IsIconic, KillTimer,
+    PT_PEN, PT_TOUCH, PostMessageW, SW_MINIMIZE, SWP_NOACTIVATE, SWP_NOZORDER, SetTimer,
+    SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_CAPTURECHANGED, WM_CHAR, WM_CLOSE, WM_COMMAND,
+    WM_DESTROY, WM_DESTROYCLIPBOARD, WM_DPICHANGED, WM_ENTERSIZEMOVE, WM_ERASEBKGND,
+    WM_EXITSIZEMOVE, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_SETCONTEXT,
+    WM_IME_STARTCOMPOSITION, WM_INPUT, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN,
+    WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL,
+    WM_MOVE, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_POINTERCAPTURECHANGED, WM_POINTERDOWN,
+    WM_POINTERLEAVE, WM_POINTERUP, WM_POINTERUPDATE, WM_RBUTTONDOWN, WM_RBUTTONUP,
+    WM_RENDERALLFORMATS, WM_RENDERFORMAT, WM_SETCURSOR, WM_SETFOCUS, WM_SETTINGCHANGE, WM_SIZE,
+    WM_SYSCOLORCHANGE, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_THEMECHANGED, WM_TIMER, WM_UNICHAR,
+    WM_XBUTTONDOWN, WM_XBUTTONUP,
 };
 
 use super::translate::{self, MenuAction};
@@ -146,6 +147,17 @@ fn handle(
             }
             Some(LRESULT(0))
         }
+        WM_MOVE => {
+            lock::clip(state);
+            // SAFETY: a plain state query of our own live window.
+            if state.ready.get()
+                && !unsafe { IsIconic(hwnd) }.as_bool()
+                && let Some((x, y)) = super::outer_position(hwnd)
+            {
+                state.push(RawEvent::Moved { window: id, x, y });
+            }
+            None
+        }
         WM_SIZE => {
             if wparam.0 == SIZE_MINIMIZED {
                 return Some(LRESULT(0));
@@ -237,10 +249,6 @@ fn handle(
                 accept: AcceptCell::new(),
             });
             Some(LRESULT(0))
-        }
-        WM_MOVE => {
-            lock::clip(state);
-            None
         }
         WM_INPUT => {
             lock::raw_input(state, lparam);

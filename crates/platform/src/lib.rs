@@ -51,6 +51,22 @@ pub mod menu;
     test
 ))]
 mod panel;
+#[cfg(any(
+    target_os = "macos",
+    target_os = "windows",
+    all(
+        feature = "x11",
+        any(
+            target_os = "linux",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        )
+    ),
+    test
+))]
+mod placement;
 pub mod shell;
 pub mod stdio;
 pub mod time;
@@ -64,7 +80,7 @@ pub use clipboard::{ClipboardData, ClipboardImage, ClipboardKinds, ClipboardRepl
 pub use control::{
     ControlFlow, DEFAULT_FRAME_BUDGET, EditLabels, EditMenu, EditMenuAction, InputKind,
     LogicalRect, Loupe, PlatformCaps, PlatformError, TextEntry, WindowChrome, WindowConfig,
-    WindowId,
+    WindowId, WindowMode,
 };
 pub use cursor::{CursorError, CursorImage, CustomCursor, MAX_CURSOR_SIDE, ScaledCursor};
 pub use drop::{
@@ -348,6 +364,13 @@ pub trait Window {
     /// headless, mobile, the browser).
     fn outer_position(&self) -> Option<(f64, f64)> {
         None
+    }
+
+    /// Whether the window is at its own size, maximized, minimized or
+    /// fullscreen. [`Normal`](WindowMode::Normal) where the platform has no
+    /// such states.
+    fn mode(&self) -> WindowMode {
+        WindowMode::Normal
     }
 
     /// The OS-native handle for GPU surface creation (a native handle).

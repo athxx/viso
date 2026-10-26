@@ -29,7 +29,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use ::windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, POINT, RECT, WPARAM};
-use ::windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONULL, MonitorFromPoint};
 use ::windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use ::windows::Win32::System::Threading::GetCurrentThreadId;
 use ::windows::Win32::UI::HiDpi::{
@@ -38,11 +37,11 @@ use ::windows::Win32::UI::HiDpi::{
 };
 use ::windows::Win32::UI::WindowsAndMessaging::{
     CW_USEDEFAULT, CreateWindowExW, DestroyWindow, DispatchMessageW, GWL_EXSTYLE, GWL_STYLE,
-    GetClientRect, GetMenu, GetMessageW, GetWindowLongPtrW, GetWindowRect, MSG,
+    GetClientRect, GetMenu, GetMessageW, GetWindowLongPtrW, GetWindowRect, IsIconic, IsZoomed, MSG,
     MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, PostThreadMessageW,
-    QS_ALLINPUT, RegisterClassExW, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SetWindowPos,
-    SetWindowTextW, ShowWindow, TranslateAcceleratorW, TranslateMessage, WINDOW_EX_STYLE,
-    WINDOW_STYLE, WM_QUIT, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
+    QS_ALLINPUT, RegisterClassExW, SW_SHOW, SW_SHOWMAXIMIZED, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOZORDER, SetWindowPos, SetWindowTextW, ShowWindow, TranslateAcceleratorW,
+    TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_QUIT, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
 };
 use ::windows::core::{PCWSTR, w};
 
@@ -52,6 +51,7 @@ use crate::control::{ControlFlow, PlatformError, WindowConfig, WindowId};
 use crate::event::{Appearance, CursorIcon, PointerButtons, PointerKind, RawEvent};
 use crate::handler::AppHandler;
 use crate::menu::Menu;
+use crate::placement::{DeskRect, fit_on_screens};
 use crate::{
     EditLabels, EditMenu, Instant, LogicalRect, LoopWaker, PlatformApp, RawWindowHandle, TextEntry,
     Window,
@@ -366,6 +366,45 @@ fn deliver(
 
 /// Resize `hwnd`'s frame so its client area is `width`×`height` pixels at its
 /// current DPI, keeping its position.
+/// `hwnd`'s outer top-left corner in physical desktop pixels.
+fn outer_position(hwnd: HWND) -> Option<(f64, f64)> {
+    let mut rect = RECT::default();
+    // SAFETY: `rect` is a valid out-parameter and the window is live.
+    unsafe { GetWindowRect(hwnd, &mut rect) }.ok()?;
+    Some((f64::from(rect.left), f64::from(rect.top)))
+}
+
+/// Moves, and shrinks if it must, `hwnd`'s frame onto the monitors' work
+/// areas when it is not wholly on them.
+fn keep_on_monitors(hwnd: HWND) {
+    let mut rect = RECT::default();
+    // SAFETY: `rect` is a valid out-parameter and the window is live.
+    if unsafe { GetWindowRect(hwnd, &mut rect) }.is_err() {
+        return;
+    }
+    let frame = DeskRect::new(
+        f64::from(rect.left),
+        f64::from(rect.top),
+        f64::from(rect.right - rect.left),
+        f64::from(rect.bottom - rect.top),
+    );
+    let fitted = fit_on_screens(frame, &system::work_areas());
+    if fitted != frame {
+        // SAFETY: a move and resize of a live window we own.
+        let _ = unsafe {
+            SetWindowPos(
+                hwnd,
+                None,
+                fitted.x.round() as i32,
+                fitted.y.round() as i32,
+                fitted.width.round() as i32,
+                fitted.height.round() as i32,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            )
+        };
+    }
+}
+
 fn fit_client(hwnd: HWND, width: i32, height: i32, dpi: u32) {
     // SAFETY: plain queries and a resize of a live window we own.
     unsafe {
@@ -570,19 +609,14 @@ impl PlatformApp for WinApp {
         // The procedure adopts this count at `WM_NCCREATE` and releases it at
         // `WM_NCDESTROY`.
         let param = Rc::into_raw(state.clone());
-        // A position on a monitor puts the outer top-left there; the size is
-        // fitted to the client area once the window knows its DPI.
+        // A position puts the outer top-left there; the size is fitted to the
+        // client area once the window knows its DPI, and the frame is then
+        // kept on the monitors.
         let (x, y) = config
             .position
-            .map(|(x, y)| POINT {
-                x: x.round() as i32,
-                y: y.round() as i32,
-            })
-            // SAFETY: a plain query of a point.
-            .filter(|&point| {
-                !unsafe { MonitorFromPoint(point, MONITOR_DEFAULTTONULL) }.is_invalid()
-            })
-            .map_or((CW_USEDEFAULT, CW_USEDEFAULT), |point| (point.x, point.y));
+            .map_or((CW_USEDEFAULT, CW_USEDEFAULT), |(x, y)| {
+                (x.round() as i32, y.round() as i32)
+            });
         // SAFETY: the class is registered; `title` outlives the call; `param`
         // is a leaked `Rc<WindowState>` the procedure takes ownership of.
         let created = unsafe {
@@ -627,6 +661,9 @@ impl PlatformApp for WinApp {
             translate::to_physical(h, dpi),
             dpi,
         );
+        if config.position.is_some() {
+            keep_on_monitors(hwnd);
+        }
         let dark = self.shared.borrow().appearance.color_scheme == crate::ColorScheme::Dark;
         system::set_dark_title(hwnd, dark);
         state.size.set(state.client_size());
@@ -639,7 +676,14 @@ impl PlatformApp for WinApp {
         self.shared.borrow_mut().windows.push(state.clone());
         // SAFETY: showing the live window.
         unsafe {
-            let _ = ShowWindow(hwnd, SW_SHOW);
+            let _ = ShowWindow(
+                hwnd,
+                if config.maximized {
+                    SW_SHOWMAXIMIZED
+                } else {
+                    SW_SHOW
+                },
+            );
         }
         state.ready.set(true);
         self.shared.borrow_mut().push_redraw(id);
@@ -918,10 +962,22 @@ impl Window for WinWindow {
     }
 
     fn outer_position(&self) -> Option<(f64, f64)> {
-        let mut rect = RECT::default();
-        // SAFETY: `rect` is a valid out-parameter and the window is live.
-        unsafe { GetWindowRect(self.state.hwnd.get(), &mut rect) }.ok()?;
-        Some((f64::from(rect.left), f64::from(rect.top)))
+        outer_position(self.state.hwnd.get())
+    }
+
+    fn mode(&self) -> crate::WindowMode {
+        let hwnd = self.state.hwnd.get();
+        // SAFETY: plain state queries of a live window.
+        let (iconic, zoomed) = unsafe { (IsIconic(hwnd).as_bool(), IsZoomed(hwnd).as_bool()) };
+        if iconic {
+            crate::WindowMode::Minimized
+        } else if self.state.fullscreen.borrow().is_some() {
+            crate::WindowMode::Fullscreen
+        } else if zoomed {
+            crate::WindowMode::Maximized
+        } else {
+            crate::WindowMode::Normal
+        }
     }
 
     fn raw_handle(&self) -> RawWindowHandle {

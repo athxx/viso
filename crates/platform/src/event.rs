@@ -774,6 +774,11 @@ pub enum RawEvent {
         width: u32,
         height: u32,
     },
+    /// The window moved: its outer top-left corner is at `(x, y)`, in the
+    /// coordinates [`Window::outer_position`](crate::Window::outer_position)
+    /// reports. Not sent where the platform places windows itself (Wayland,
+    /// mobile, the browser).
+    Moved { window: WindowId, x: f64, y: f64 },
     /// The window's scale factor and/or size changed — the single geometry
     /// event. `width`/`height` are the new *physical* pixel size.
     ScaleFactorChanged {

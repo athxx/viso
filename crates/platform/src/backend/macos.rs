@@ -39,6 +39,7 @@ use super::macos_clipboard;
 use super::macos_panel::{LayerScanout, emulation};
 use super::main_queue::post_to_main;
 use super::memory_pressure::MemoryPressure;
+use crate::placement::{DeskRect, fit_on_screens};
 use viso_handle::{Scanout, ScanoutFormat};
 
 use objc2::rc::{Retained, autoreleasepool};
@@ -103,6 +104,10 @@ struct PumpQueue {
     /// it on unwind too), so the pointers are the only live path to either
     /// while they are set. See `MacApp::run` and `drain_and_drive`.
     drive: Option<Drive>,
+    /// The flow the handler last asked for from inside an AppKit callback's
+    /// drive, which the pump takes up after the turn: a timer armed there
+    /// (a frame during a live resize, say) still wakes the loop.
+    driven: Option<ControlFlow>,
     /// The appearance last reported, so the several AppKit sources that signal
     /// a change (every view's `viewDidChangeEffectiveAppearance`, the workspace
     /// accessibility notification) emit one `AppearanceChanged` per real change.
@@ -301,7 +306,8 @@ unsafe fn drain_and_drive(drive: Drive, shared: &Shared) {
         let Some(event) = event else { break };
         // SAFETY: per the function contract.
         let (app, handler) = unsafe { drive.get() };
-        deliver(app, handler, shared, event);
+        let flow = deliver(app, handler, shared, event);
+        shared.borrow_mut().driven = Some(flow);
     }
 }
 
@@ -592,17 +598,24 @@ impl PlatformApp for MacApp {
             defang_titlebar_container(&window);
         }
 
-        // A position on a screen puts the frame's top-left there; otherwise
-        // the window is centred.
-        match config
-            .position
-            .map(|(x, y)| top_left_to_cocoa(self.mtm, x, y))
-            .filter(|&point| on_a_screen(self.mtm, point))
-        {
-            Some(point) => {
-                window.setFrameTopLeftPoint(point);
+        // A position puts the frame's top-left there, kept on the screens;
+        // otherwise the window is centred.
+        match config.position {
+            Some((x, y)) => {
+                let size = window.frame().size;
+                let wanted = DeskRect::new(x, y, size.width, size.height);
+                let fitted = fit_on_screens(wanted, &screen_areas(self.mtm));
+                let top = primary_screen_height(self.mtm).unwrap_or(0.0);
+                let frame = NSRect::new(
+                    NSPoint::new(fitted.x, top - (fitted.y + fitted.height)),
+                    NSSize::new(fitted.width, fitted.height),
+                );
+                window.setFrame_display(frame, false);
             }
             None => window.center(),
+        }
+        if config.maximized && emulated.is_none() {
+            window.zoom(None);
         }
 
         let delegate = WindowDelegate::new(self.mtm, id, self.shared.clone(), config.chrome);
@@ -772,6 +785,14 @@ impl PlatformApp for MacApp {
                 }
             });
             queue.borrow_mut().drive = None;
+            let driven = queue.borrow_mut().driven.take();
+            if let Some(driven) = driven {
+                flow = driven;
+                if flow == ControlFlow::Exit {
+                    break;
+                }
+                continue;
+            }
             if !got_event && !yielding {
                 match flow {
                     // A `WaitUntil` that returned no OS event means the timer
@@ -1059,22 +1080,29 @@ fn primary_screen_height(mtm: MainThreadMarker) -> Option<f64> {
         .map(|screen| screen.frame().size.height)
 }
 
-/// The Cocoa point (bottom-left origin) of the top-left desktop point
-/// `(x, y)`.
-fn top_left_to_cocoa(mtm: MainThreadMarker, x: f64, y: f64) -> NSPoint {
-    let top = primary_screen_height(mtm).unwrap_or(0.0);
-    NSPoint::new(x, top - y)
+/// `window`'s outer top-left corner in top-left desktop points.
+fn top_left_of(window: &NSWindow) -> Option<(f64, f64)> {
+    let frame = window.frame();
+    let top = primary_screen_height(window.mtm())?;
+    Some((frame.origin.x, top - (frame.origin.y + frame.size.height)))
 }
 
-/// Whether `point` is on a screen.
-fn on_a_screen(mtm: MainThreadMarker, point: NSPoint) -> bool {
-    NSScreen::screens(mtm).iter().any(|screen| {
-        let frame = screen.frame();
-        point.x >= frame.origin.x
-            && point.x < frame.origin.x + frame.size.width
-            && point.y > frame.origin.y
-            && point.y <= frame.origin.y + frame.size.height
-    })
+/// Each screen's area outside the menu bar and the Dock, in top-left
+/// desktop points.
+fn screen_areas(mtm: MainThreadMarker) -> Vec<DeskRect> {
+    let top = primary_screen_height(mtm).unwrap_or(0.0);
+    NSScreen::screens(mtm)
+        .iter()
+        .map(|screen| {
+            let f = screen.visibleFrame();
+            DeskRect::new(
+                f.origin.x,
+                top - (f.origin.y + f.size.height),
+                f.size.width,
+                f.size.height,
+            )
+        })
+        .collect()
 }
 
 impl Window for MacWindow {
@@ -1111,9 +1139,23 @@ impl Window for MacWindow {
     }
 
     fn outer_position(&self) -> Option<(f64, f64)> {
-        let frame = self.window.frame();
-        let top = primary_screen_height(self.window.mtm())?;
-        Some((frame.origin.x, top - (frame.origin.y + frame.size.height)))
+        top_left_of(&self.window)
+    }
+
+    fn mode(&self) -> crate::WindowMode {
+        if self.window.isMiniaturized() {
+            crate::WindowMode::Minimized
+        } else if self
+            .window
+            .styleMask()
+            .contains(NSWindowStyleMask::FullScreen)
+        {
+            crate::WindowMode::Fullscreen
+        } else if self.window.isZoomed() {
+            crate::WindowMode::Maximized
+        } else {
+            crate::WindowMode::Normal
+        }
     }
 
     fn raw_handle(&self) -> RawWindowHandle {
@@ -1261,6 +1303,14 @@ define_class!(
                     .and_then(|o| o.downcast::<NSWindow>().ok())
                 {
                     self.report_features(&nswin);
+                    if let Some((x, y)) = top_left_of(&nswin) {
+                        let ivars = self.ivars();
+                        ivars.shared.borrow_mut().events.push_back(RawEvent::Moved {
+                            window: ivars.window,
+                            x,
+                            y,
+                        });
+                    }
                 }
             }));
         }

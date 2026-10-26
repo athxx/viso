@@ -1,5 +1,5 @@
-//! The store the app's views persist their `@persist` states through,
-//! installed at launch: a directory store in `persist/` under the app's data
+//! The store the app's views persist their `@persist` states, and its
+//! windows their places, through, installed at launch: a directory store in `persist/` under the app's data
 //! directory, opened the first time a state is persisted, or the page
 //! origin's `localStorage` on the web. Each view stores every committed
 //! change; a suspend — the app going to the background, a window closing,
@@ -13,7 +13,9 @@ use viso_view::persist::{DirStore, LazyStore};
 /// Installs the store of the app named `app`; nothing persists where the OS
 /// names no place for it.
 pub(crate) fn install(app: &str) {
-    viso_view::install_persistence(store(app));
+    let store = store(app);
+    crate::places::install(store.clone());
+    viso_view::install_persistence(store);
 }
 
 #[cfg(not(target_arch = "wasm32"))]

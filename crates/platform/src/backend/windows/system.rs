@@ -5,12 +5,12 @@ use std::cell::RefCell;
 use std::ffi::c_void;
 use std::time::Duration;
 
-use ::windows::Win32::Foundation::HWND;
+use ::windows::Win32::Foundation::{HWND, LPARAM, RECT};
 use ::windows::Win32::Globalization::GetUserDefaultLocaleName;
 use ::windows::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
 use ::windows::Win32::Graphics::Gdi::{
-    CreateBitmap, DeleteObject, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO,
-    MonitorFromWindow,
+    CreateBitmap, DeleteObject, EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR,
+    MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
 };
 use ::windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
 use ::windows::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
@@ -30,6 +30,7 @@ use super::{Restore, Shared, WindowState, menu};
 use crate::cursor::{CursorImage, CustomCursor};
 use crate::event::{Appearance, ColorScheme, CursorIcon, RawEvent};
 use crate::locale;
+use crate::placement::DeskRect;
 
 /// Show `icon` now, an image cursor at `dpi`. `WM_SETCURSOR` calls this
 /// again whenever the pointer moves over the client area.
@@ -279,6 +280,41 @@ pub(super) fn refresh_settings(shared: &Shared) {
 
 /// Borderless over the window's monitor, the menu bar hidden; leaving
 /// restores the saved frame, style and bar.
+/// Each monitor's work area (outside the taskbar), in physical desktop
+/// pixels.
+pub(super) fn work_areas() -> Vec<DeskRect> {
+    unsafe extern "system" fn each(
+        monitor: HMONITOR,
+        _dc: HDC,
+        _bounds: *mut RECT,
+        areas: LPARAM,
+    ) -> BOOL {
+        let mut info = MONITORINFO {
+            cbSize: size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: `areas` is the `Vec` `work_areas` lent for the enumeration,
+        // which runs synchronously inside it; `info` is sized.
+        unsafe {
+            if GetMonitorInfoW(monitor, &mut info).as_bool() {
+                let r = info.rcWork;
+                (*(areas.0 as *mut Vec<DeskRect>)).push(DeskRect::new(
+                    f64::from(r.left),
+                    f64::from(r.top),
+                    f64::from(r.right - r.left),
+                    f64::from(r.bottom - r.top),
+                ));
+            }
+        }
+        true.into()
+    }
+    let mut areas: Vec<DeskRect> = Vec::new();
+    // SAFETY: the callback only pushes into `areas`, which outlives the
+    // synchronous enumeration.
+    let _ = unsafe { EnumDisplayMonitors(None, None, Some(each), LPARAM(&raw mut areas as isize)) };
+    areas
+}
+
 pub(super) fn set_fullscreen(state: &WindowState, fullscreen: bool) {
     let hwnd = state.hwnd.get();
     if state.fullscreen.borrow().is_some() == fullscreen {

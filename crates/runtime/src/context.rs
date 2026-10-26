@@ -215,6 +215,12 @@ impl<'a> RuntimeCx<'a> {
         self.app.window(window).and_then(|w| w.outer_position())
     }
 
+    /// Whether `window` is at its own size, maximized, minimized or
+    /// fullscreen; `None` for an unknown window.
+    pub fn window_mode(&self, window: WindowId) -> Option<viso_platform::WindowMode> {
+        self.app.window(window).map(|w| w.mode())
+    }
+
     /// The OS-native handle for `window` (for GPU surface creation), if it
     /// exists. The facade passes this to [`viso_gpu::GpuBackend::create_surface`]
     /// on launch. The handle borrows the window; use it immediately.
