@@ -183,3 +183,78 @@ pub fn synthetic(tile: TileId) -> Vec<u8> {
     }
     t.finish()
 }
+
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::time::Duration;
+
+use viso::ui::{Alignment2D, BuildCx, FrameClient, Key, Size, StackStyle};
+use viso_map::MapHandleSlot;
+
+thread_local! {
+    static WATCHED: RefCell<Vec<MapHandleSlot>> = const { RefCell::new(Vec::new()) };
+}
+
+/// A slot for a map's handle whose map [`patient`] waits on.
+pub fn slot() -> MapHandleSlot {
+    let slot = MapHandleSlot::default();
+    WATCHED.with(|w| w.borrow_mut().push(Rc::clone(&slot)));
+    slot
+}
+
+/// How long a frame waits while a watched map has work in flight.
+const PATIENCE: Duration = Duration::from_millis(3);
+
+/// Gives the maps' work off the loop the time a display's frame would:
+/// each frame waits a little while a watched map has fetches, builds or
+/// raises in flight, so a scripted run's frames do not outrun its workers.
+/// It asks for no frame of its own.
+struct Patience;
+
+impl FrameClient for Patience {
+    fn frame(&mut self, _dt: f64) {
+        let busy = WATCHED.with(|w| {
+            w.borrow().iter().any(|s| {
+                s.try_borrow()
+                    .ok()
+                    .and_then(|h| h.as_ref().map(|h| h.tiles().in_flight > 0))
+                    .unwrap_or(false)
+            })
+        });
+        if busy {
+            std::thread::sleep(PATIENCE);
+        }
+    }
+
+    fn key(&mut self, _key: Key, _pressed: bool) -> bool {
+        false
+    }
+
+    fn release_input(&mut self) {}
+
+    fn wants_frame(&self) -> bool {
+        false
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
+/// Builds `content` filling the window, and has each frame wait on the
+/// maps of the slots [`slot`] made since the last call.
+pub fn patient(cx: &mut BuildCx<'_>, content: impl FnOnce(&mut BuildCx<'_>)) {
+    WATCHED.with(|w| w.borrow_mut().retain(|s| Rc::strong_count(s) > 1));
+    let root = cx.stack(
+        StackStyle {
+            size: Size::fill(),
+            align: Alignment2D::TopStart,
+            ..StackStyle::default()
+        },
+        content,
+    );
+    cx.structure(move |s| {
+        s.store
+            .add_frame_client(root.id(), Rc::new(RefCell::new(Patience)));
+    });
+}

@@ -25,7 +25,9 @@ use viso_ui::{
 use super::core::{Core, place_tile};
 use crate::camera::{TILE_SIZE, View};
 use crate::pyramid::{Budget, BuildKey, Plan, Pyramid, Slot, covering};
-use crate::raster::{ImageKind, RasterSource, Shading, image_off_loop};
+use crate::raster::{
+    Dem, ImageKind, RasterSource, Shading, dem_off_loop, image_off_loop, neighbours, shade_off_loop,
+};
 use crate::source::TileId;
 use crate::style::{Paint, Prop, Style};
 
@@ -38,7 +40,17 @@ pub(crate) struct Image {
     pixels: Arc<RasterImage>,
 }
 
-type Ready = Rc<Image>;
+pub(crate) type Ready = Rc<Image>;
+
+impl Image {
+    /// Its pixels.
+    pub fn pixels(&self) -> &Arc<RasterImage> {
+        &self.pixels
+    }
+}
+
+/// An image layer's tiles drawn, in paint order: slot, image and node.
+pub(crate) type Drawn = [(Slot, Ready, NodeId)];
 
 fn next_id() -> ResourceId {
     use std::sync::atomic::AtomicU64;
@@ -68,6 +80,12 @@ struct Set {
     scratch: Vec<(f64, Slot)>,
     /// The tiles drawn, in paint order: slot, image and node.
     tiles: Vec<(Slot, Ready, NodeId)>,
+    /// A hillshade's elevations by tile, kept while its tile is, and which
+    /// of its neighbours its shading read (bit `row * 3 + column`), `None`
+    /// before it is shaded.
+    dems: HashMap<TileId, (Arc<Dem>, Option<u16>)>,
+    /// Elevations arrived and waiting to be shaded.
+    to_shade: Vec<TileId>,
     dirty: bool,
     /// The opacity its nodes are tinted with.
     tint: f32,
@@ -129,6 +147,12 @@ impl Rasters {
     /// The image tiles asked for and not yet arrived.
     pub fn loading(&self) -> usize {
         self.sets.iter().map(|s| s.requests.len()).sum()
+    }
+
+    /// Each image layer's tiles drawn, in paint order, and the opacity it
+    /// draws them at.
+    pub fn layers(&self) -> impl Iterator<Item = (f32, &Drawn)> + '_ {
+        self.sets.iter().map(|s| (s.tint, &*s.tiles))
     }
 
     /// The image tiles drawn.
@@ -202,6 +226,8 @@ impl Rasters {
                 prefetch: Vec::new(),
                 scratch: Vec::new(),
                 tiles: Vec::new(),
+                dems: HashMap::new(),
+                to_shade: Vec::new(),
                 dirty: true,
                 tint: f32::NAN,
             });
@@ -244,6 +270,33 @@ impl Rasters {
         set.dirty = true;
     }
 
+    /// A hillshade's elevations of `tile` arrived for `generation`: shaded
+    /// with its neighbours once the layers are next brought up to date.
+    pub fn arrive_dem(
+        &mut self,
+        generation: u64,
+        set: usize,
+        tile: TileId,
+        result: Result<Option<Arc<Dem>>, ()>,
+    ) {
+        if generation != self.built {
+            return;
+        }
+        match result {
+            Ok(Some(dem)) => {
+                if let Some(s) = self.sets.get_mut(set)
+                    && s.requests.contains_key(&tile)
+                {
+                    s.dems.insert(tile, (dem, None));
+                    s.to_shade.push(tile);
+                    s.dirty = true;
+                }
+            }
+            Ok(None) => self.arrive(generation, set, tile, Ok(None)),
+            Err(()) => self.arrive(generation, set, tile, Err(())),
+        }
+    }
+
     /// Brings the layers' nodes to what `view` shows, placed for level
     /// `band` about `anchor`; `rebase` places every node anew.
     #[allow(clippy::too_many_arguments)]
@@ -263,6 +316,7 @@ impl Rasters {
         let zoom = view.camera.zoom as f32;
         let generation = self.built;
         for (index, set) in self.sets.iter_mut().enumerate() {
+            set.shade_arrived(s, index, generation, me);
             let z = set
                 .pyramid
                 .tile_zoom(band.saturating_add(set.source.depth()));
@@ -303,6 +357,8 @@ impl Rasters {
                     set.start(s, tile, index, generation, me);
                 }
                 set.place(s, &plan.draw, &mut self.free_scratch);
+                let pyramid = &set.pyramid;
+                set.dems.retain(|t, _| pyramid.state(*t).is_some());
                 set.plan = plan;
                 set.put(s, band, anchor);
             } else if rebase {
@@ -323,6 +379,85 @@ impl Rasters {
 }
 
 impl Set {
+    /// Shades the elevations arrived, and shades again the tiles beside
+    /// them that were shaded without them.
+    fn shade_arrived(
+        &mut self,
+        s: &mut StructureCx<'_>,
+        index: usize,
+        generation: u64,
+        me: &Weak<RefCell<Core>>,
+    ) {
+        if self.to_shade.is_empty() {
+            return;
+        }
+        let arrived = std::mem::take(&mut self.to_shade);
+        let mut again = Vec::new();
+        for &tile in &arrived {
+            for (i, j, n) in neighbours(tile) {
+                // `tile` as `n`'s neighbour.
+                let bit = 1u16 << ((2 - j) * 3 + (2 - i));
+                if let Some((_, Some(read))) = self.dems.get(&n)
+                    && read & bit == 0
+                    && !arrived.contains(&n)
+                {
+                    again.push(n);
+                }
+            }
+        }
+        again.sort_unstable_by_key(|t| (t.x, t.y));
+        again.dedup();
+        for tile in arrived.into_iter().chain(again) {
+            self.shade(s, tile, index, generation, me);
+        }
+    }
+
+    /// Shades `tile`'s elevations with those of its neighbours known.
+    fn shade(
+        &mut self,
+        s: &mut StructureCx<'_>,
+        tile: TileId,
+        index: usize,
+        generation: u64,
+        me: &Weak<RefCell<Core>>,
+    ) {
+        let ImageKind::Shade(shading) = self.kind else {
+            return;
+        };
+        let mut around: [[Option<Arc<Dem>>; 3]; 3] = Default::default();
+        let mut read = 0u16;
+        for (i, j, n) in neighbours(tile) {
+            if let Some((d, _)) = self.dems.get(&n) {
+                around[j][i] = Some(Arc::clone(d));
+                read |= 1 << (j * 3 + i);
+            }
+        }
+        let Some((dem, shaded)) = self.dems.get_mut(&tile) else {
+            return;
+        };
+        *shaded = Some(read);
+        let (answer, stop) = shade_off_loop(tile, Arc::clone(dem), around, shading);
+        let me = me.clone();
+        let task = Box::pin(async move {
+            let result = answer.await.map(Some).map_err(|_| ());
+            Some(Box::new(move |cx: &mut UpdateCx<'_>| {
+                if let Some(core) = me.upgrade()
+                    && let Ok(mut core) = core.try_borrow_mut()
+                {
+                    core.rasters.arrive(generation, index, tile, result);
+                    core.wake_with(cx);
+                }
+            }) as Continuation)
+        });
+        let task = s.store.spawn_task(self.node, task);
+        if let Some(old) = self.requests.insert(tile, Request { task, stop }) {
+            old.stop.store(true, Ordering::Relaxed);
+            if let Some(task) = old.task {
+                s.store.cancel_task(task);
+            }
+        }
+    }
+
     fn start(
         &mut self,
         s: &mut StructureCx<'_>,
@@ -336,6 +471,32 @@ impl Set {
         let stopped = Arc::clone(&stop);
         let kind = self.kind;
         let me = me.clone();
+        if let ImageKind::Shade(shading) = kind {
+            // Elevations first: shaded on the loop's next pass with what
+            // is known of their neighbours.
+            let task = Box::pin(async move {
+                let result = match fetch.await {
+                    Ok(Some(bytes)) if !stopped.load(Ordering::Relaxed) => {
+                        let (answer, flag) = dem_off_loop(bytes, tile, shading.encoding);
+                        let _keep = super::core::StopWith(stopped, flag);
+                        answer.await.map(Some).map_err(|_| ())
+                    }
+                    Ok(None) => Ok(None),
+                    _ => Err(()),
+                };
+                Some(Box::new(move |cx: &mut UpdateCx<'_>| {
+                    if let Some(core) = me.upgrade()
+                        && let Ok(mut core) = core.try_borrow_mut()
+                    {
+                        core.rasters.arrive_dem(generation, index, tile, result);
+                        core.wake_with(cx);
+                    }
+                }) as Continuation)
+            });
+            let task = s.store.spawn_task(self.node, task);
+            self.requests.insert(tile, Request { task, stop });
+            return;
+        }
         let task = Box::pin(async move {
             let result = match fetch.await {
                 Ok(Some(bytes)) if !stopped.load(Ordering::Relaxed) => {

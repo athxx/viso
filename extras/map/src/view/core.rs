@@ -238,6 +238,8 @@ pub(crate) struct Core {
     pub label: String,
     /// Tile builds started, for the counters a test reads.
     pub builds: u32,
+    /// The revision of the relief the labels were placed over.
+    relief: Option<u64>,
 }
 
 impl Core {
@@ -304,6 +306,7 @@ impl Core {
                 me: me.clone(),
                 label,
                 builds: 0,
+                relief: None,
             })
         })
     }
@@ -429,7 +432,7 @@ impl Core {
 
     /// Whether the frame clock should keep running.
     pub fn animating(&self) -> bool {
-        self.moving() || self.labels.fading()
+        self.moving() || self.labels.fading() || self.labels.measuring()
     }
 
     /// Whether the camera moves on its own.
@@ -473,6 +476,9 @@ impl Core {
         self.moved |= moved;
         if self.labels.fading() {
             self.labels.fade_dt += dt;
+            return true;
+        }
+        if self.labels.measuring() {
             return true;
         }
         moved
@@ -755,8 +761,16 @@ impl Core {
             rebase,
             &self.me,
         );
-        self.overlays
-            .apply(s, &self.view, band, self.anchor, rebase, &self.me);
+        let lift = self.tilted.lift(&self.view, tz);
+        self.overlays.apply(
+            s,
+            &self.view,
+            band,
+            self.anchor,
+            rebase,
+            &self.me,
+            lift.as_ref(),
+        );
         if self.view.tilt().is_some() {
             s.store.set_hidden(self.camera_node, true);
             let drawn: Vec<(Slot, Ready)> = self
@@ -771,6 +785,7 @@ impl Core {
                 anchor: self.anchor,
                 style: &self.style,
                 sources: self.rasters.sources(),
+                rasters: &self.rasters,
                 me: &self.me,
             };
             let revision = self.overlays.revision;
@@ -793,12 +808,19 @@ impl Core {
             let dt = std::mem::take(&mut self.labels.fade_dt);
             self.labels.fade(s, dt);
         }
+        self.labels.measure(s);
+        let lift = self.tilted.lift(&self.view, tz);
+        let relief = lift.as_ref().map(|_| self.tilted.relief_revision());
+        if relief != self.relief {
+            self.relief = relief;
+            self.labels.due = true;
+        }
         if self.labels.due && !self.held && !self.moving() {
             let tiles: Vec<(Slot, &Built)> =
                 self.labeled.iter().map(|(slot, b)| (*slot, &**b)).collect();
-            self.labels.pass(s, &self.view, &tiles);
+            self.labels.pass(s, &self.view, &tiles, lift.as_ref());
         }
-        self.labels.follow(s, &self.view);
+        self.labels.follow(s, &self.view, lift.as_ref());
         if self.settle_due && !self.held && !self.moving() {
             self.labels.due = true;
             self.settle_due = false;
@@ -992,9 +1014,9 @@ impl Core {
         out
     }
 
-    /// The requests in flight.
+    /// The requests, raises and elevation loads in flight.
     pub fn in_flight(&self) -> usize {
-        self.requests.len() + self.rasters.loading()
+        self.requests.len() + self.rasters.loading() + self.tilted.working()
     }
 }
 

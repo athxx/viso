@@ -167,6 +167,21 @@ impl View {
     /// lands a world's width away. Tilted, a point behind the eye lands far
     /// below the view and one past the horizon at it.
     pub fn to_view(&self, w: WorldPoint) -> [f64; 2] {
+        self.projected(w, 0.0).0
+    }
+
+    /// The view point of world point `w` raised `height` points of the
+    /// camera's zoom over the ground the camera looks at: where a tilted
+    /// view shows a place on relief. Looking straight down, heights do not
+    /// move it.
+    pub fn to_view_at(&self, w: WorldPoint, height: f64) -> [f64; 2] {
+        self.projected(w, height).0
+    }
+
+    /// The view point of `w` raised `height` points, and how large things
+    /// there show against things at the focus: `1` looking straight down,
+    /// less beyond the focus of a tilted view, more before it.
+    pub(crate) fn projected(&self, w: WorldPoint, height: f64) -> ([f64; 2], f64) {
         let c = self.camera.center.to_world();
         let s = self.camera.scale();
         let (dx, dy) = ((w.x - c.x) * s, (w.y - c.y) * s);
@@ -174,11 +189,12 @@ impl View {
         let f = self.focus();
         let g = [dx * cos - dy * sin, dx * sin + dy * cos];
         match self.tilt() {
-            None => [f[0] + g[0], f[1] + g[1]],
+            None => ([f[0] + g[0], f[1] + g[1]], 1.0),
             Some((pc, ps)) => {
                 let d = self.eye_distance();
-                let depth = (d - g[1] * ps).max(d * NEAREST);
-                [f[0] + g[0] * d / depth, f[1] + g[1] * pc * d / depth]
+                let depth = (d - g[1] * ps - height * pc).max(d * NEAREST);
+                let k = d / depth;
+                ([f[0] + g[0] * k, f[1] + (g[1] * pc - height * ps) * k], k)
             }
         }
     }
@@ -614,6 +630,31 @@ mod tests {
         };
         let b = panned.to_world([300.0, 400.0]);
         assert!(close(under.x, b.x, 1e-12) && close(under.y, b.y, 1e-12));
+    }
+
+    #[test]
+    fn a_raised_point_shows_higher_and_nearer() {
+        let mut v = view(
+            Camera::new(LngLat::new(8.0, 47.0), 14.0)
+                .with_bearing(30.0)
+                .with_pitch(50.0),
+        );
+        let w = v.to_world([300.0, 200.0]);
+        let ground = v.to_view(w);
+        assert_eq!(v.to_view_at(w, 0.0), ground);
+        let up = v.to_view_at(w, 40.0);
+        assert!(up[1] < ground[1] - 10.0, "{up:?} {ground:?}");
+        // The focus raised stays above the focus, by its height foreshortened.
+        let c = v.camera.center.to_world();
+        let f = v.focus();
+        let raised = v.to_view_at(c, 40.0);
+        assert!((raised[0] - f[0]).abs() < 1e-9);
+        let (_, k) = v.projected(c, 40.0);
+        let ps = 50f64.to_radians().sin();
+        assert!((f[1] - raised[1] - 40.0 * ps * k).abs() < 1e-9 && k > 1.0);
+        // Looking straight down a height moves nothing.
+        v.camera.pitch = 0.0;
+        assert_eq!(v.to_view_at(w, 40.0), v.to_view(w));
     }
 
     #[test]

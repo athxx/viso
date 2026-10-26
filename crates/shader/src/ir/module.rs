@@ -3586,7 +3586,7 @@ if (mode.x > 1.5) {
     c = tonemap(color * camera.w);
 }
 float4 fog_color = float4(u.fog);
-float fog = 1.0 - exp(-fog_color.w * distance);
+float fog = 1.0 - exp(-fog_color.w * max(distance - float4(u.ambient).z, 0.0));
 c = c + (fog_color.xyz - c) * fog;
 
 // Premultiplied linear light: the target's sRGB format encodes it.

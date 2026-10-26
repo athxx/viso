@@ -1,5 +1,6 @@
 //! The allocation profile of a moving map: once its tiles, image tiles,
-//! shapes, markers and puck are loaded and placed, a frame of a drag that
+//! shapes, markers, puck and labels — one bending along its road — are
+//! loaded and placed, a frame of a drag that
 //! pans or turns it allocates nothing in the view's own work (its pointer
 //! handler and its structure hook). A counting allocator arms around just
 //! that work.
@@ -16,7 +17,10 @@ use viso::platform::{Modifiers, PointerButtons, PointerPhase, RawEvent, RawPoint
 use viso::prelude::*;
 use viso::ui::{BuildCx, Component, WindowConfig};
 use viso_map::style::{Color, Layer, builtin};
-use viso_map::{Camera, LngLat, Marker, Polyline, Puck, RasterSource, TileId, View, map_view};
+use viso_map::{
+    Camera, GeoFeature, GeoJson, Geometry, LngLat, MapHandleSlot, Marker, Polyline, Puck,
+    RasterSource, TileId, View, map_view,
+};
 
 thread_local! {
     static ALLOCS: Cell<usize> = const { Cell::new(0) };
@@ -72,7 +76,10 @@ thread_local! {
 struct MapApp;
 
 impl Application for MapApp {
-    fn new(_: &mut AppCx) -> Self {
+    fn new(cx: &mut AppCx) -> Self {
+        cx.load_font(
+            &include_bytes!("../../../crates/text/tests/fixtures/DejaVuSans-subset.ttf")[..],
+        );
         MapApp
     }
 
@@ -121,9 +128,25 @@ fn drag_allocations(alt: bool, step: [f64; 2]) -> Vec<usize> {
         .map(|&p| view.unproject(p))
         .collect();
     let pinned = view.unproject([400.0, 200.0]);
+    // A road bending across the middle, named.
+    let road: Vec<LngLat> = (0..=24)
+        .map(|i| {
+            let t = f64::from(i) / 24.0;
+            view.unproject([
+                140.0 + 360.0 * t,
+                300.0 - 120.0 * (t * std::f64::consts::PI).sin(),
+            ])
+        })
+        .collect();
+    let names = GeoJson::new(vec![
+        GeoFeature::new(Geometry::Lines(vec![road])).with("name", "Bending Road"),
+    ]);
     let here = view.unproject([300.0, 260.0]);
+    let bent = Rc::new(RefCell::new(0usize));
+    let handle = MapHandleSlot::default();
     SETUP.with(|setup| {
         let route = route.clone();
+        let handle = Rc::clone(&handle);
         *setup.borrow_mut() = Some(Box::new(move |cx| {
             let mut style = builtin::openmaptiles_light();
             let at = style
@@ -155,6 +178,8 @@ fn drag_allocations(alt: bool, step: [f64; 2]) -> Vec<usize> {
                     });
                 }))
                 .puck(Puck::new(here, 80.0).heading(40.0))
+                .data("transportation_name", names.clone())
+                .handle(&handle)
                 .build(cx);
         }))
     });
@@ -164,7 +189,7 @@ fn drag_allocations(alt: bool, step: [f64; 2]) -> Vec<usize> {
         log.borrow_mut().push(ALLOCS.with(|n| n.replace(0)));
     })));
     viso_map::view::probe::set(Some(|on| ARMED.with(|a| a.set(on))));
-    let mut script: Vec<RawEvent> = (0..12)
+    let mut script: Vec<RawEvent> = (0..24)
         .map(|_| RawEvent::RedrawRequested { window: WIN })
         .collect();
     script.push(mouse(320.0, 240.0, PointerPhase::Down, alt));
@@ -179,9 +204,14 @@ fn drag_allocations(alt: bool, step: [f64; 2]) -> Vec<usize> {
         script.push(RawEvent::RedrawRequested { window: WIN });
     }
     drive_scripted::<MapApp>(script, STEP);
+    *bent.borrow_mut() = handle
+        .borrow()
+        .as_ref()
+        .map_or(0, |h| h.label_glyphs().len());
     viso_map::view::probe::set(None);
     probe_frames(None);
     ARMED.with(|a| a.set(false));
+    assert_eq!(*bent.borrow(), 1, "the road's name bends along it");
     per_frame.take()
 }
 

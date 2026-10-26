@@ -870,8 +870,14 @@ viso-ext.
   within 4 ms, then moves them with the camera; line labels turn with the map and are kept
   upright, labels fade in and out (at once under reduced motion). Text is `viso-text` runs
   over four offset halo copies; `IconSet` takes SVG icons (tinted or not) and a built-in dot;
-  road numbers sit on shields. Line labels are straight along their stretch, not bent glyph
-  by glyph. Headless pictures (Latin, Greek, Cyrillic, Arabic, Japanese, Chinese; turned;
+  road numbers sit on shields. Line labels bend with their line glyph by glyph: the
+  worker cuts the text into clusters (marks, joiners and joined scripts kept whole) and
+  keeps the line's stretch around each anchor; the view measures each cluster's advance
+  once, sets the glyphs along the line as it shows at any turn and tilt, reading upright,
+  leaves a run out where the line turns more than 45° between neighbouring glyphs, and
+  takes each glyph's turned box against the others; tilted, labels and their stretches
+  sit on the relief under them (`tests/labels.rs`: arcs at six turns and tilts, repeats
+  along a long line, real Luxembourg streets). Headless pictures (Latin, Greek, Cyrillic, Arabic, Japanese, Chinese; turned;
   icon) and unit tests.
 - [x] Raster and terrain: raster XYZ layers (PNG, JPEG, WebP), hillshade from DEM
   tiles (Terrarium and Mapbox RGB encodings).
@@ -881,8 +887,11 @@ viso-ext.
   asset table once and shown by leaves placed like vector tiles. A tile's vector layers
   split at the first image layer into a part under and a part over the images.
   Headless test: a half-opaque checker under the roads and a shaded ridge, with zero
-  upload while dragging. Open: DEM tiles shade without their neighbours' edge pixels,
-  so a faint seam can show at tile borders.
+  upload while dragging. A DEM tile reads across its edges (`raster::Around`): a
+  hillshade tile is shaded with its neighbours' elevations, and shaded again when a
+  neighbour it lacked arrives; the tilted terrain's lattice waits for the terrain
+  tiles across the edges a tile reaches, so heights and light meet at the seams;
+  past an unknown edge the slope carries on (`a_hillshade_shows_no_seams_at_its_tiles_edges`).
 - [x] Overlays: markers that are ordinary components anchored at lon/lat, polylines
   (route casing, traveled part dimmed), polygons, circles in meters, a GeoJSON source
   styled like tile data, clustering, the user's position puck with heading and
@@ -922,19 +931,34 @@ viso-ext.
   then its base becomes a 32×32 lattice with skirts, the drawing is cut along the
   lattice so each piece lies on one of its planes, slopes turned from the light shade,
   buildings stand on the lowest ground under them and the camera looks at the
-  ground's height. Shapes (route, casing, accuracy outline) are raised on the loop,
-  cut at half coverage, each color a step over the one before, the old ones drawn
-  until the new are resident. Alt-drag up/down and two fingers sliding together
+  ground's height. Shapes (route, casing, accuracy circle and outline) are raised on
+  the loop, each color a step over the one before, the old ones drawn until the new
+  are resident; they blend, translucent fills too, their boxes risen far over the
+  eye so the scene blends them after every tile's ground. Alt-drag up/down and two fingers sliding together
   tilt, Shift with Up/Down tilts by keys, `N` resets; `MapHandle::tilt_to`,
   `.pitch()`, the pitch camera cell. The navigator drives tilted 50°. Headless
   pictures and pixel checks in `tests/tilt.rs` (fixture tile raised light and dark
   with a route where the projection puts it; buildings flat vs raised; a ridge DEM
   draping and shading the ground; gestures and keys); unit tests in `camera` and
   `tilt`; benches `tile_raise` (Luxembourg z16: 0.32 ms flat, 5.8 ms over relief).
-  Open: beyond the reach the root's background shows (no sky or fog); image layers
-  (raster, hillshade) are not drawn while tilted; translucent shape fills are cut to
-  their outline; markers and labels are placed on the plane at the focus's height,
-  not on the relief under each.
+  The ground fades into a haze of the style's background toward the sky (pale blue on
+  a light map, deep blue on a dark one): clear to near the top of an unpadded view,
+  all haze at the reach and past it, so the ground's ragged far edge never shows, also
+  with the focus pushed low by padding (`Lighting::fog_start` lets the scene's fog
+  begin at a distance). At most 60° of pitch the horizon stays above the view, so the
+  haze is the sky it shows.
+  Image layers (raster, hillshade) lie on the tilted ground: each image tile over a
+  tile drawn is laid on the worker as a model in that tile's units (a quad, or the
+  lattice's own cells over relief, the image cut to the part over the tile, with mips),
+  drawn with the layer's opacity; a tile's drawing splits into the part beneath the
+  images and the part over them, and every flat part's box spans the tile's square,
+  risen a step per order, so the scene's back-to-front blending draws them in the
+  style's order, finer images over coarser.
+  A coarser tile drawn under finer ones while they load sits a step beneath them,
+  and over relief sinks further by how far its lattice strays from the elevations
+  (`tilt::relief_error`), so its ground never shows through theirs.
+  Over relief, labels, markers and the puck stand on the ground under each
+  (`View::to_view_at` projects a point raised over the focus's plane).
 - [x] Performance: a pan or rotate frame uploads nothing and allocates nothing; tile
   build and label budgets; memory caps; benches beside makepad's map example.
   `tests/alloc.rs` arms a counting allocator around the view's own work (its pointer

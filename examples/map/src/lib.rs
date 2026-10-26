@@ -427,7 +427,10 @@ fn hit_text(hit: &SearchHit) -> String {
 pub struct Navigator;
 
 impl Application for Navigator {
-    fn new(_cx: &mut AppCx) -> Self {
+    fn new(cx: &mut AppCx) -> Self {
+        // A face of its own, so its text and the map's labels draw where the
+        // system offers none, as on the web.
+        cx.use_packaged_fonts(viso::packaged_fonts!());
         Navigator
     }
 

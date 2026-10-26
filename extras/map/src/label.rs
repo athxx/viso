@@ -38,6 +38,9 @@ pub struct TileLabel {
     /// Which way it runs along a line, in radians in the tile; `None` for a
     /// label that stays level.
     pub angle: Option<f32>,
+    /// The stretch of its line it bends along glyph by glyph; `None` for a
+    /// label set as one straight run.
+    pub curve: Option<Curve>,
     /// The text's size, in points.
     pub size: f32,
     /// Straight linear RGBA.
@@ -52,6 +55,130 @@ pub struct TileLabel {
     pub padding: f32,
     /// Its layer and text, the same in every tile that offers it.
     pub key: u64,
+}
+
+/// The stretch of a line a label bends along, and its text cut into the
+/// clusters set one by one along it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Curve {
+    /// The stretch's points, in tile units; the label centers on point `at`.
+    pub points: Arc<[[f32; 2]]>,
+    pub at: u16,
+    pub clusters: Arc<[Cluster]>,
+}
+
+/// A character of a label's text and the marks riding on it: the byte range
+/// set as one glyph along a curve.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cluster {
+    pub start: u16,
+    pub end: u16,
+}
+
+impl Cluster {
+    /// Its text in `text`.
+    pub fn of<'a>(&self, text: &'a str) -> &'a str {
+        &text[usize::from(self.start)..usize::from(self.end)]
+    }
+}
+
+/// The most clusters a label bends along its line in; a longer one is set
+/// straight.
+pub const MAX_CLUSTERS: usize = 64;
+
+/// Whether `c` rides on the character before it.
+fn rides(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x0300..=0x036f
+            | 0x0483..=0x0489
+            | 0x1ab0..=0x1aff
+            | 0x1dc0..=0x1dff
+            | 0x200c..=0x200d
+            | 0x20d0..=0x20ff
+            | 0x3099..=0x309a
+            | 0xfe00..=0xfe0f
+            | 0xfe20..=0xfe2f
+            | 0x1f3fb..=0x1f3ff
+            | 0xe0020..=0xe007f
+            | 0xe0100..=0xe01ef
+    )
+}
+
+/// Whether `c` is of a script whose letters take their shape from their
+/// neighbours or run right to left: one set glyph by glyph would read
+/// wrong.
+fn joined_script(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x0590..=0x08ff
+            | 0x0900..=0x0dff
+            | 0x0e00..=0x0fff
+            | 0x1000..=0x109f
+            | 0x1100..=0x11ff
+            | 0x1700..=0x18af
+            | 0x1900..=0x1cff
+            | 0xa800..=0xa9ff
+            | 0xaa00..=0xabff
+            | 0xd7b0..=0xd7ff
+            | 0xfb1d..=0xfdff
+            | 0xfe70..=0xfeff
+            | 0x10800..=0x10fff
+            | 0x11000..=0x11fff
+            | 0x1e800..=0x1efff
+    )
+}
+
+/// `text` cut into clusters, or `None` when it cannot bend glyph by glyph:
+/// empty, too long, or in a script set as a whole.
+pub fn clusters(text: &str) -> Option<Arc<[Cluster]>> {
+    if text.len() > usize::from(u16::MAX) {
+        return None;
+    }
+    let mut out: Vec<Cluster> = Vec::new();
+    let mut joiner = false;
+    for (i, c) in text.char_indices() {
+        if joined_script(c) {
+            return None;
+        }
+        let end = (i + c.len_utf8()) as u16;
+        match out.last_mut() {
+            Some(last) if rides(c) || joiner => last.end = end,
+            _ => out.push(Cluster {
+                start: i as u16,
+                end,
+            }),
+        }
+        joiner = c == '\u{200d}';
+    }
+    (!out.is_empty() && out.len() <= MAX_CLUSTERS).then(|| out.into())
+}
+
+/// The stretch of `line` from `from` to `to` along it, with the point `at`
+/// along it among its points, and that point's index.
+fn stretch(line: &[[f32; 2]], from: f32, at: f32, to: f32) -> (Vec<[f32; 2]>, u16) {
+    let mut out = vec![along(line, from)];
+    let mut index = None;
+    let push = |out: &mut Vec<[f32; 2]>, p: [f32; 2]| {
+        if out.last() != Some(&p) {
+            out.push(p);
+        }
+        (out.len() - 1) as u16
+    };
+    let mut d = 0.0;
+    for w in line.windows(2) {
+        let next = d + (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]);
+        if index.is_none() && at < next {
+            index = Some(push(&mut out, along(line, at)));
+        }
+        if next > from && next < to {
+            push(&mut out, w[1]);
+        }
+        d = next;
+    }
+    let index = index.unwrap_or_else(|| push(&mut out, along(line, at)));
+    push(&mut out, along(line, to));
+    (out, index)
 }
 
 /// About how wide `text` is at `size` points: a full em for wide
@@ -183,6 +310,10 @@ fn centroid(ring: &[[f32; 2]]) -> [f32; 2] {
     [(cx / (3.0 * a)) as f32, (cy / (3.0 * a)) as f32]
 }
 
+/// The most a line may turn under a label that bends with it, in radians:
+/// sharper turns are left to the next repeat.
+const BEND: f32 = 1.6;
+
 fn inside_tile(p: [f32; 2]) -> bool {
     p[0] >= 0.0 && p[0] < EXTENT && p[1] >= 0.0 && p[1] < EXTENT
 }
@@ -261,13 +392,14 @@ pub fn extract(
             let mut key = DefaultHasher::new();
             li.hash(&mut key);
             text.hash(&mut key);
-            let label = |at: [f32; 2], angle: Option<f32>| TileLabel {
+            let label = |at: [f32; 2], angle: Option<f32>, curve: Option<Curve>| TileLabel {
                 layer: li as u16,
                 rank,
                 text: Arc::clone(&text),
                 lang: lang.map(Arc::from),
                 at,
                 angle,
+                curve,
                 size,
                 color: sym.color.eval(zoom, &props).linear(1.0),
                 halo: sym.halo.eval(zoom, &props).linear(1.0),
@@ -282,7 +414,7 @@ pub fn extract(
                 (GeomType::Point, _) => {
                     for p in parts.iter().flatten() {
                         if inside_tile(*p) {
-                            out.push(label(*p, None));
+                            out.push(label(*p, None, None));
                         }
                     }
                 }
@@ -290,7 +422,7 @@ pub fn extract(
                     if let Some(ring) = parts.first().filter(|r| r.len() >= 3) {
                         let c = centroid(ring);
                         if inside_tile(c) {
-                            out.push(label(c, None));
+                            out.push(label(c, None, None));
                         }
                     }
                 }
@@ -300,13 +432,16 @@ pub fn extract(
                     {
                         let m = along(line, length(line) / 2.0);
                         if inside_tile(m) {
-                            out.push(label(m, None));
+                            out.push(label(m, None, None));
                         }
                     }
                 }
                 (GeomType::Line, Placement::Line) => {
                     let width = (estimate_width(&text, size) + 2.0 * sym.padding) * upp;
                     let spacing = sym.spacing.max(1.0) * upp;
+                    // A shield stays level where it repeats; other text bends
+                    // with its line where its script allows.
+                    let bends = sym.shield.is_none().then(|| clusters(&text)).flatten();
                     for line in parts.iter().filter(|l| l.len() >= 2) {
                         let len = length(line);
                         if len < width {
@@ -317,7 +452,8 @@ pub fn extract(
                         for i in 0..count as u32 {
                             let d = step * (i as f32 + 0.5);
                             let (from, to) = (d - width / 2.0, d + width / 2.0);
-                            if from < 0.0 || to > len || !straight(line, from, to, 0.6) {
+                            let limit = if bends.is_some() { BEND } else { 0.6 };
+                            if from < 0.0 || to > len || !straight(line, from, to, limit) {
                                 continue;
                             }
                             let m = along(line, d);
@@ -325,12 +461,22 @@ pub fn extract(
                                 continue;
                             }
                             let (a, b) = (along(line, from), along(line, to));
-                            // A shield stays level where it repeats.
                             let angle = sym
                                 .shield
                                 .is_none()
                                 .then(|| (b[1] - a[1]).atan2(b[0] - a[0]));
-                            out.push(label(m, angle));
+                            // Room either side for its true width and the
+                            // zoom it is shown at.
+                            let curve = bends.as_ref().map(|c| {
+                                let (points, at) =
+                                    stretch(line, (d - width).max(0.0), d, (d + width).min(len));
+                                Curve {
+                                    points: points.into(),
+                                    at,
+                                    clusters: Arc::clone(c),
+                                }
+                            });
+                            out.push(label(m, angle, curve));
                         }
                     }
                 }
@@ -439,6 +585,58 @@ mod tests {
         assert!(road.iter().all(|l| l.angle == Some(0.0)));
         assert!(road.iter().all(|l| (l.at[1] - 3000.0).abs() < 0.5));
         assert_eq!(road[0].key, road[1].key);
+        // Each bends along a stretch of its road holding its middle.
+        for l in &road {
+            let c = l.curve.as_ref().expect("a curve");
+            assert_eq!(c.points[usize::from(c.at)], l.at);
+            assert_eq!(c.clusters.len(), "Unter den Linden".chars().count());
+            assert!(
+                c.points.first().unwrap()[0] < l.at[0] && c.points.last().unwrap()[0] > l.at[0]
+            );
+        }
+    }
+
+    #[test]
+    fn text_cuts_into_clusters_its_marks_riding_on_their_letters() {
+        let cut = |t: &str| -> Option<Vec<String>> {
+            clusters(t).map(|c| c.iter().map(|c| c.of(t).to_owned()).collect())
+        };
+        assert_eq!(cut("Rue 1").unwrap(), ["R", "u", "e", " ", "1"]);
+        // A combining acute stays on its e; an emoji's skin tone on it.
+        assert_eq!(cut("Cafe\u{301}").unwrap(), ["C", "a", "f", "e\u{301}"]);
+        assert_eq!(
+            cut("a\u{1f44d}\u{1f3fd}").unwrap(),
+            ["a", "\u{1f44d}\u{1f3fd}"]
+        );
+        // Joined by a zero-width joiner: one cluster.
+        assert_eq!(cut("\u{1f469}\u{200d}\u{1f52c}").unwrap().len(), 1);
+        assert_eq!(cut("東京駅").unwrap().len(), 3);
+        // Arabic joins its letters, Hebrew runs right to left: set whole.
+        assert_eq!(cut("القاهرة"), None);
+        assert_eq!(cut("תל אביב"), None);
+        assert_eq!(cut(""), None);
+        assert_eq!(cut(&"x".repeat(MAX_CLUSTERS + 1)), None);
+    }
+
+    #[test]
+    fn a_stretch_holds_its_middle_among_its_points() {
+        let line = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [20.0, 10.0]];
+        let (pts, at) = stretch(&line, 5.0, 12.0, 25.0);
+        assert_eq!(
+            pts,
+            [
+                [5.0, 0.0],
+                [10.0, 0.0],
+                [10.0, 2.0],
+                [10.0, 10.0],
+                [15.0, 10.0]
+            ]
+        );
+        assert_eq!(at, 2);
+        // A middle on a vertex is that vertex, once.
+        let (pts, at) = stretch(&line, 0.0, 10.0, 30.0);
+        assert_eq!(pts, [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [20.0, 10.0]]);
+        assert_eq!(at, 1);
     }
 
     #[test]

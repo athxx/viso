@@ -515,7 +515,7 @@ pub fn shade_mesh(
             c = tonemap(scale(color, frame.camera[3]));
         }
     }
-    let fog = 1.0 - (-frame.fog[3] * distance).exp();
+    let fog = 1.0 - (-frame.fog[3] * (distance - frame.ambient[2]).max(0.0)).exp();
     let lit: [f32; 3] =
         core::array::from_fn(|i| (c[i] + (frame.fog[i] - c[i]) * fog).clamp(0.0, 1.0));
     Some([lit[0] * a, lit[1] * a, lit[2] * a, a])
@@ -586,6 +586,26 @@ mod tests {
         let c = shade_mesh(&fr, &m, &f, &Plain).unwrap();
         // Diffuse 0.48, a little specular, through the neutral curve.
         assert!((c[0] - 0.5).abs() < 0.06, "{c:?}");
+    }
+
+    #[test]
+    fn fog_begins_at_its_start_and_thickens_past_it() {
+        let m = material(Shading::Unlit);
+        let mut fr = frame();
+        fr.fog = [1.0, 0.0, 0.0, 0.5];
+        fr.ambient[2] = 6.0;
+        let at = |z: f32| {
+            let mut f = fragment([0.0, 1.0, 0.0], [0.5; 2]);
+            f.world = [0.0, 0.0, 5.0 - z];
+            shade_mesh(&fr, &m, &f, &Plain).unwrap()
+        };
+        // Five from the eye: clear. Eight: two past the start, fogged by
+        // 1 - e^-1.
+        let clear = at(5.0);
+        assert!((clear[1] - 0.25).abs() < 1e-5, "{clear:?}");
+        let fogged = at(8.0);
+        let k = 1.0 - (-1.0f32).exp();
+        assert!((fogged[1] - 0.25 * (1.0 - k)).abs() < 1e-5, "{fogged:?}");
     }
 
     #[test]

@@ -17,7 +17,7 @@ use viso::platform::{
 use viso::prelude::*;
 use viso::ui::{BuildCx, Component, WindowConfig};
 use viso_map::style::builtin;
-use viso_map::{Camera, LngLat, MapHandle, MapHandleSlot, MapView, TileId, map_view};
+use viso_map::{Camera, LngLat, MapHandle, MapView, TileId, map_view};
 
 const STEP: Duration = Duration::from_millis(16);
 const WIN: WindowId = WindowId(1);
@@ -53,7 +53,9 @@ impl Application for MapApp {
     }
 
     fn build(&mut self, cx: &mut BuildCx<'_>) {
-        SETUP.with(|s| (s.borrow().as_ref().expect("a setup"))(cx));
+        support::patient(cx, |cx| {
+            SETUP.with(|s| (s.borrow().as_ref().expect("a setup"))(cx));
+        });
     }
 }
 
@@ -85,7 +87,7 @@ fn run_with(
     script: Vec<RawEvent>,
     configure: impl Fn(MapView) -> MapView + 'static,
 ) -> (DrivenApp<MapApp>, MapHandle) {
-    let slot = MapHandleSlot::default();
+    let slot = support::slot();
     let s = Rc::clone(&slot);
     SETUP.with(|setup| {
         *setup.borrow_mut() = Some(Box::new(move |cx| {
@@ -210,7 +212,7 @@ fn real_tiles_draw_through_the_view() {
         ("tokyo", 14, 14552, 6451, 14.4, 0.0, true),
     ] {
         let dir = dir.clone();
-        let slot = MapHandleSlot::default();
+        let slot = support::slot();
         let s = Rc::clone(&slot);
         SETUP.with(|setup| {
             *setup.borrow_mut() = Some(Box::new(move |cx| {
@@ -536,7 +538,7 @@ fn taps_long_presses_and_rests_reach_the_app() {
 #[test]
 fn a_new_style_rebuilds_the_loaded_tiles_without_fetching_them_again() {
     let fetched = Rc::new(std::cell::Cell::new(0u32));
-    let slot = MapHandleSlot::default();
+    let slot = support::slot();
     let (s, f, tap) = (Rc::clone(&slot), Rc::clone(&fetched), Rc::clone(&slot));
     SETUP.with(|setup| {
         *setup.borrow_mut() = Some(Box::new(move |cx| {
@@ -771,7 +773,7 @@ fn geojson_draws_through_the_style_even_where_the_source_has_nothing() {
     let data = GeoJson::new(vec![
         GeoFeature::new(Geometry::Polygons(vec![vec![ring]])).with("kind", "zone"),
     ]);
-    let slot = MapHandleSlot::default();
+    let slot = support::slot();
     let s = Rc::clone(&slot);
     SETUP.with(|setup| {
         let data = data.clone();
@@ -885,7 +887,7 @@ fn label_fonts() -> bool {
 fn labels_show_in_the_readers_language_without_overlapping_and_stay_upright() {
     let every_script = label_fonts();
     let start = berlin(13.0, 0.0);
-    let slot = MapHandleSlot::default();
+    let slot = support::slot();
     let s = Rc::clone(&slot);
     SETUP.with(|setup| {
         *setup.borrow_mut() = Some(Box::new(move |cx| {
@@ -993,7 +995,7 @@ fn a_label_shows_its_svg_icon_over_its_text() {
         viso_map::Reply::ready(Ok(Some(t.finish())))
     };
     let square = br##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="#000"/></svg>"##;
-    let slot = MapHandleSlot::default();
+    let slot = support::slot();
     let s = Rc::clone(&slot);
     SETUP.with(|setup| {
         *setup.borrow_mut() = Some(Box::new(move |cx| {
@@ -1125,7 +1127,7 @@ fn raster_and_hillshade_layers_draw_between_the_vector_layers() {
 
     // A ridge north and south through the middle, lit from the north-west.
     let mid = start.center.to_world().x;
-    let slot = MapHandleSlot::default();
+    let slot = support::slot();
     let s = Rc::clone(&slot);
     SETUP.with(|setup| {
         *setup.borrow_mut() = Some(Box::new(move |cx| {
@@ -1146,7 +1148,7 @@ fn raster_and_hillshade_layers_draw_between_the_vector_layers() {
                 .build(cx);
         }))
     });
-    let app = drive_scripted::<MapApp>(redraws(16), STEP);
+    let app = drive_scripted::<MapApp>(redraws(40), STEP);
     let px = picture(&app, "raster-hillshade");
     let handle = slot.borrow().clone().expect("built");
     assert!(handle.tiles().images >= 1);
@@ -1157,6 +1159,93 @@ fn raster_and_hillshade_layers_draw_between_the_vector_layers() {
     );
     assert!(luma(west) > luma(far) + 15, "{west:?} {far:?}");
     assert!(luma(east) + 15 < luma(far), "{east:?} {far:?}");
+}
+
+/// A terrain tile of rolling hills, Terrarium-encoded, smooth across the
+/// tiles' edges.
+fn hills_tile(tile: TileId) -> Vec<u8> {
+    let n = 256u32;
+    let span = f64::from(1u32 << tile.z);
+    let mut bgra = Vec::with_capacity((n * n * 4) as usize);
+    for y in 0..n {
+        for x in 0..n {
+            let wx = (f64::from(tile.x) + (f64::from(x) + 0.5) / f64::from(n)) / span;
+            let wy = (f64::from(tile.y) + (f64::from(y) + 0.5) / f64::from(n)) / span;
+            let meters = 300.0 + 250.0 * (wx * 61_000.0).sin() * (wy * 47_000.0).cos();
+            let v = meters + 32768.0;
+            let r = (v / 256.0).floor();
+            let g = (v - r * 256.0).floor();
+            let b = ((v - r * 256.0 - g) * 256.0).round().min(255.0);
+            bgra.extend_from_slice(&[b as u8, g as u8, r as u8, 255]);
+        }
+    }
+    support::png(n, n, &bgra)
+}
+
+#[test]
+fn a_hillshade_shows_no_seams_at_its_tiles_edges() {
+    use viso_map::RasterSource;
+    use viso_map::style::{Color, DemEncoding, Layer};
+    let start = berlin(13.3, 0.0);
+    let slot = support::slot();
+    let s = Rc::clone(&slot);
+    SETUP.with(|setup| {
+        *setup.borrow_mut() = Some(Box::new(move |cx| {
+            let style = viso_map::style::Style::new("terrain", Color::rgb(200, 200, 200))
+                .with(Layer::hillshade("shade", "dem", DemEncoding::Terrarium));
+            map_view(viso_map::MemorySource::new())
+                .camera(start)
+                .style(style)
+                .raster_source(
+                    "dem",
+                    RasterSource::new(
+                        |tile: TileId| viso_map::Reply::ready(Ok(Some(hills_tile(tile)))),
+                        0,
+                        13,
+                    ),
+                )
+                .handle(&s)
+                .build(cx);
+        }))
+    });
+    let app = drive_scripted::<MapApp>(redraws(60), STEP);
+    let px = picture(&app, "raster-hillshade-hills");
+    let handle = slot.borrow().clone().expect("built");
+    assert!(handle.tiles().images >= 2, "{:?}", handle.tiles());
+    // Down every column and along every row the shade bends smoothly: no
+    // line of other light where tiles meet. Each column's and row's mean
+    // bend, against the most of them.
+    let luma = |x: usize, y: usize| i32::try_from(luma(rgb_at(&px, [x as f64, y as f64]))).unwrap();
+    let bend = |a: i32, b: i32, c: i32| (a - 2 * b + c).abs();
+    let columns: Vec<i32> = (4..W as usize - 4)
+        .map(|x| {
+            (4..H as usize - 4)
+                .map(|y| bend(luma(x - 1, y), luma(x, y), luma(x + 1, y)))
+                .sum::<i32>()
+                * 10
+                / (H as i32 - 8)
+        })
+        .collect();
+    let rows: Vec<i32> = (4..H as usize - 4)
+        .map(|y| {
+            (4..W as usize - 4)
+                .map(|x| bend(luma(x, y - 1), luma(x, y), luma(x, y + 1)))
+                .sum::<i32>()
+                * 10
+                / (W as i32 - 8)
+        })
+        .collect();
+    for (name, lines) in [("columns", columns), ("rows", rows)] {
+        let mut sorted = lines.clone();
+        sorted.sort_unstable();
+        let typical = sorted[sorted.len() * 9 / 10];
+        let worst = *sorted.last().unwrap();
+        let at = lines.iter().position(|&l| l == worst);
+        assert!(
+            worst <= typical + 5,
+            "{name}: {worst} against {typical} at {at:?}"
+        );
+    }
 }
 
 /// A real Shortbread tile of Luxembourg City (see `fixtures/ATTRIBUTION`).
@@ -1171,7 +1260,7 @@ fn a_real_shortbread_tile_draws_light_and_dark_at_several_zooms_and_turns() {
     let n = f64::from(1u32 << 14);
     let at = viso_map::WorldPoint::new((8469.0 + 0.72) / n, (5582.0 + 0.78) / n).to_lng_lat();
     for (zoom, bearing, dark) in [(14.6, 0.0, false), (15.4, 35.0, true), (16.3, 200.0, false)] {
-        let slot = MapHandleSlot::default();
+        let slot = support::slot();
         let s = Rc::clone(&slot);
         SETUP.with(|setup| {
             *setup.borrow_mut() = Some(Box::new(move |cx| {

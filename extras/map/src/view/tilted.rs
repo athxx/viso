@@ -30,20 +30,28 @@ use viso_ui::{
 };
 
 use super::core::Core;
-use crate::camera::{TILE_SIZE, View};
+use super::rasters::{Rasters, Ready};
+use crate::camera::{REACH, TILE_SIZE, View};
 use crate::geo::WorldPoint;
 use crate::load::{Built, off_loop};
 use crate::overlay::ShapeMesh;
 use crate::pyramid::Slot;
-use crate::raster::{Dem, RasterSource, dem_off_loop};
+use crate::raster::{Around, Dem, RasterSource, dem_off_loop};
 use crate::source::TileId;
-use crate::style::{Style, Terrain};
-use crate::tilt::{Raise, Relief, raise, raise_shape, units_per_meter};
+use crate::style::{Paint, Style, Terrain};
+use crate::tilt::{
+    Imagery, Raise, Relief, image_order, raise, raise_image, raise_shape, relief_error,
+    units_per_meter,
+};
 
 /// How far a tile drawn for another zoom sits beneath (an ancestor) or over
 /// (a descendant) the tiles of the zoom drawn, per level, in points of the
 /// level drawn: a finer tile's drawing covers a coarser one beneath it.
 const LEVEL_STEP: f32 = 0.6;
+
+/// How far a tile's ground sinks under finer tiles drawn over it, in its
+/// lattice's largest stray from the relief: its own, and theirs, smaller.
+const SINK: f32 = 1.5;
 
 /// How far shapes lie over the ground, in points of the level drawn; and
 /// further over relief, which they follow only at their own points.
@@ -51,6 +59,11 @@ const SHAPE_LIFT: f32 = 0.5;
 const SHAPE_LIFT_RELIEF: f32 = 2.0;
 /// How far each of a shape's colors lies over the one drawn before it.
 const SHAPE_STEP: f32 = 0.1;
+/// How high the boxes of shapes rise, in points of the level drawn: far over
+/// the eye, so the scene blends them after every tile's ground; each shape
+/// a step higher than the one before, so a later one draws over it.
+const SHAPES_ABOVE: f32 = 1.0e6;
+const SHAPE_ORDER: f32 = 1.0e5;
 
 /// The terrain tiles kept beyond those under the tiles drawn.
 const KEEP_ELEVATIONS: usize = 64;
@@ -88,6 +101,22 @@ struct TileModel {
     /// The build it raises.
     built: Rc<Built>,
     stage: Stage,
+    /// How far its ground strays from the relief under it, in its model's
+    /// units.
+    rough: f32,
+    used: bool,
+}
+
+/// An image layer's tile laid over a tile drawn: by the image layer and
+/// the image's tile.
+type Pictures = HashMap<(usize, TileId), Picture>;
+
+struct Picture {
+    /// The image it lays.
+    image: Ready,
+    stage: Stage,
+    /// The opacity its layer draws at.
+    tint: f32,
     used: bool,
 }
 
@@ -98,6 +127,42 @@ enum Elevations {
     },
     Ready(Arc<Dem>),
     Missing,
+}
+
+/// The elevations under a tile: its terrain tile's, and those of the
+/// terrain tile's neighbours across the edges the tile reaches.
+#[derive(Clone)]
+struct Under {
+    tile: TileId,
+    dem: Arc<Dem>,
+    neighbours: [[Option<Arc<Dem>>; 3]; 3],
+}
+
+/// The neighbours of terrain tile `under` across the edges `tile` within it
+/// reaches: by column from the west and row from the north, and which tile.
+fn reached(under: TileId, tile: TileId) -> impl Iterator<Item = (usize, usize, TileId)> {
+    let inside = under.contains(tile);
+    let d = tile.z.saturating_sub(under.z).min(31);
+    let n = 1u32 << d;
+    let (lx, ly) = (
+        tile.x.wrapping_sub(under.x << d),
+        tile.y.wrapping_sub(under.y << d),
+    );
+    let cols = [lx == 0, true, lx == n - 1];
+    let rows = [ly == 0, true, ly == n - 1];
+    let span = i64::from(TileId::span(under.z));
+    (0..3)
+        .flat_map(|j| (0..3).map(move |i| (i, j)))
+        .filter_map(move |(i, j)| {
+            if !inside || (i, j) == (1, 1) || !cols[i] || !rows[j] {
+                return None;
+            }
+            let x = (i64::from(under.x) + i as i64 - 1).rem_euclid(span);
+            let y = i64::from(under.y) + j as i64 - 1;
+            (0..span)
+                .contains(&y)
+                .then(|| (i, j, TileId::new(under.z, x as u32, y as u32)))
+        })
 }
 
 /// The terrain of the style, as far as it is loaded.
@@ -116,17 +181,30 @@ impl Ground {
         (z <= tile.z).then(|| tile.ancestor(tile.z - z))
     }
 
-    /// The elevations under `tile`, `None` while they load, `Some(None)`
-    /// where there are none.
-    fn relief(&self, tile: TileId) -> Option<Option<(TileId, Arc<Dem>)>> {
+    /// The elevations under `tile`, `None` while they or those across
+    /// the edges it reaches load, `Some(None)` where there are none.
+    fn relief(&self, tile: TileId) -> Option<Option<Under>> {
         let Some(under) = self.under(tile) else {
             return Some(None);
         };
-        match self.tiles.get(&under) {
-            Some(Elevations::Ready(dem)) => Some(Some((under, Arc::clone(dem)))),
-            Some(Elevations::Missing) => Some(None),
-            _ => None,
+        let dem = match self.tiles.get(&under) {
+            Some(Elevations::Ready(dem)) => Arc::clone(dem),
+            Some(Elevations::Missing) => return Some(None),
+            _ => return None,
+        };
+        let mut neighbours: [[Option<Arc<Dem>>; 3]; 3] = Default::default();
+        for (i, j, across) in reached(under, tile) {
+            match self.tiles.get(&across) {
+                Some(Elevations::Ready(d)) => neighbours[j][i] = Some(Arc::clone(d)),
+                Some(Elevations::Loading { .. }) => return None,
+                _ => {}
+            }
         }
+        Some(Some(Under {
+            tile: under,
+            dem,
+            neighbours,
+        }))
     }
 
     /// The elevation in meters at world point `w`, from the deepest terrain
@@ -145,6 +223,39 @@ impl Ground {
             }
             tile = tile.parent()?;
         }
+    }
+}
+
+/// Where a tilted view over relief raises its places: the ground's height
+/// under them, and at the focus, whose plane the view's projection lies in.
+pub(crate) struct Lift<'a> {
+    ground: &'a Ground,
+    zoom: u8,
+    focus: f64,
+}
+
+impl Lift<'_> {
+    /// The ground's height under `w`, in meters raised by the terrain's
+    /// exaggeration; sea level where no elevations are loaded.
+    pub fn meters(&self, w: WorldPoint) -> f64 {
+        let m = self.ground.meters(w, self.zoom).unwrap_or(0.0);
+        f64::from(m * self.ground.terrain.exaggeration)
+    }
+
+    /// The ground's height at the focus, in meters raised.
+    pub fn focus(&self) -> f64 {
+        self.focus
+    }
+
+    /// Where `view` shows world point `w` on the relief under it.
+    pub fn to_view(&self, view: &View, w: WorldPoint) -> [f64; 2] {
+        view.to_view_at(w, self.points(view, w, self.meters(w)))
+    }
+
+    /// How far over the plane `view` projects onto ground `meters` high at
+    /// `w` lies, in points of its zoom.
+    pub fn points(&self, view: &View, w: WorldPoint, meters: f64) -> f64 {
+        (meters - self.focus) * view.camera.scale() / w.meters_per_unit().max(1e-9)
     }
 }
 
@@ -182,6 +293,8 @@ pub(crate) struct Tilted {
     size: [f32; 2],
     shown: bool,
     models: HashMap<TileId, TileModel>,
+    /// The image layers' tiles over each tile drawn.
+    pictures: HashMap<TileId, Pictures>,
     shapes: Vec<ShapeModel>,
     /// The shapes as they were, drawn until those raised since are
     /// resident.
@@ -205,6 +318,8 @@ pub(crate) struct Frame<'a> {
     pub anchor: [f64; 2],
     pub style: &'a Arc<Style>,
     pub sources: &'a HashMap<String, RasterSource>,
+    /// The image layers, whose tiles lie over the tiles drawn.
+    pub rasters: &'a Rasters,
     pub me: &'a Weak<RefCell<Core>>,
 }
 
@@ -217,6 +332,7 @@ impl Tilted {
             size: [0.0; 2],
             shown: false,
             models: HashMap::new(),
+            pictures: HashMap::new(),
             shapes: Vec::new(),
             retiring: Vec::new(),
             shapes_key: None,
@@ -229,6 +345,43 @@ impl Tilted {
     /// Whether the scene is showing.
     pub fn shown(&self) -> bool {
         self.shown
+    }
+
+    /// Where the view raises its places over the relief it shows, when
+    /// tilted over one; the tiles drawn being of zoom `tile_zoom`.
+    pub fn lift(&self, view: &View, tile_zoom: u8) -> Option<Lift<'_>> {
+        let ground = self.ground.as_ref().filter(|_| self.shown)?;
+        let mut lift = Lift {
+            ground,
+            zoom: tile_zoom,
+            focus: 0.0,
+        };
+        lift.focus = lift.meters(view.camera.center.to_world());
+        Some(lift)
+    }
+
+    /// Bumped as elevations arrive.
+    pub fn relief_revision(&self) -> u64 {
+        self.ground.as_ref().map_or(0, |g| g.revision)
+    }
+
+    /// The raises and elevation loads under way.
+    pub fn working(&self) -> usize {
+        let raising = |stage: &Stage| matches!(stage, Stage::Raising { .. });
+        let models = self.models.values().filter(|m| raising(&m.stage)).count();
+        let pictures = self
+            .pictures
+            .values()
+            .flat_map(HashMap::values)
+            .filter(|p| raising(&p.stage))
+            .count();
+        let loading = self.ground.as_ref().map_or(0, |g| {
+            g.tiles
+                .values()
+                .filter(|e| matches!(e, Elevations::Loading { .. }))
+                .count()
+        });
+        models + pictures + loading
     }
 
     /// The tiles raised and resident, for the counters a test reads.
@@ -255,6 +408,7 @@ impl Tilted {
         for (_, m) in self.models.drain() {
             release(s, slot, m.stage);
         }
+        self.release_pictures(s, slot);
         release_shapes(s, slot, &mut self.shapes);
         release_shapes(s, slot, &mut self.retiring);
         self.shapes_key = None;
@@ -267,14 +421,36 @@ impl Tilted {
     }
 
     /// A tile's model arrived from the worker pool.
-    fn arrive(&mut self, generation: u64, tile: TileId, model: Option<ModelAsset>) {
+    fn arrive(&mut self, generation: u64, tile: TileId, model: Option<ModelAsset>, rough: f32) {
         if generation != self.generation {
             return;
         }
         if let Some(m) = self.models.get_mut(&tile)
             && matches!(m.stage, Stage::Raising { .. })
         {
+            m.rough = rough;
             m.stage = match model {
+                Some(model) => Stage::Raised(Arc::new(model)),
+                None => Stage::Nothing,
+            };
+        }
+    }
+
+    /// An image laid over a tile arrived from the worker pool.
+    fn arrive_picture(
+        &mut self,
+        generation: u64,
+        tile: TileId,
+        key: (usize, TileId),
+        model: Option<ModelAsset>,
+    ) {
+        if generation != self.generation {
+            return;
+        }
+        if let Some(p) = self.pictures.get_mut(&tile).and_then(|p| p.get_mut(&key))
+            && matches!(p.stage, Stage::Raising { .. })
+        {
+            p.stage = match model {
                 Some(model) => Stage::Raised(Arc::new(model)),
                 None => Stage::Nothing,
             };
@@ -348,6 +524,7 @@ impl Tilted {
                     TileModel {
                         built: Rc::clone(built),
                         stage,
+                        rough: 0.0,
                         used: true,
                     },
                 );
@@ -366,19 +543,25 @@ impl Tilted {
                 release(s, slot, m.stage);
             }
         }
+        self.pictures_for(s, slot, f, drawn);
         // Hand what arrived to the asset table, and ask for what it holds.
         self.waiting = false;
-        for m in self.models.values_mut() {
-            if let Stage::Raised(model) = &m.stage {
+        let stages = self.models.values_mut().map(|m| &mut m.stage).chain(
+            self.pictures
+                .values_mut()
+                .flat_map(|p| p.values_mut().map(|p| &mut p.stage)),
+        );
+        for stage in stages {
+            if let Stage::Raised(model) = stage {
                 let id = next_id();
                 s.store.provide_asset(
                     id,
                     ResourceRevision::default(),
                     AssetPayload::Model(Arc::clone(model)),
                 );
-                m.stage = Stage::Held(id, None);
+                *stage = Stage::Held(id, None);
             }
-            if let Stage::Held(id, resident @ None) = &mut m.stage {
+            if let Stage::Held(id, resident @ None) = stage {
                 *resident = s.store.scene_model(slot, &model_asset(*id));
                 // Waiting for it, or drawing it for the first time: one
                 // frame more either way.
@@ -469,10 +652,15 @@ impl Tilted {
         }
         let generation = self.generation;
         let ground = self.ground.as_mut().expect("set");
-        let mut under: Vec<TileId> = drawn
-            .iter()
-            .filter_map(|(slot, _)| ground.under(slot.tile))
-            .collect();
+        // The terrain tiles under the tiles drawn, and those across the
+        // edges they reach.
+        let mut under: Vec<TileId> = Vec::new();
+        for (slot, _) in drawn {
+            if let Some(u) = ground.under(slot.tile) {
+                under.push(u);
+                under.extend(reached(u, slot.tile).map(|(_, _, t)| t));
+            }
+        }
         let center = f.view.camera.center.to_world().tile(f.tile_zoom);
         under.extend(ground.under(center));
         under.sort_unstable_by_key(|t| (t.z, t.x, t.y));
@@ -532,55 +720,116 @@ impl Tilted {
         for (_, m) in self.models.drain() {
             release(s, slot, m.stage);
         }
+        self.release_pictures(s, slot);
         release_shapes(s, slot, &mut self.shapes);
         release_shapes(s, slot, &mut self.retiring);
         self.shapes_key = None;
     }
 
-    /// Starts raising `tile`'s build `built`, over `relief`.
-    fn start(
+    fn release_pictures(&mut self, s: &mut StructureCx<'_>, slot: SceneSlot) {
+        for (_, pictures) in self.pictures.drain() {
+            for (_, p) in pictures {
+                release(s, slot, p.stage);
+            }
+        }
+    }
+
+    /// Brings the image layers' tiles laid over the tiles `drawn` to those
+    /// the layers draw: each laid once per image, let go of as it leaves.
+    fn pictures_for(
         &mut self,
+        s: &mut StructureCx<'_>,
+        slot: SceneSlot,
+        f: &Frame<'_>,
+        drawn: &[(Slot, Rc<Built>)],
+    ) {
+        for pictures in self.pictures.values_mut() {
+            for p in pictures.values_mut() {
+                p.used = false;
+            }
+        }
+        for (layer, (tint, images)) in f.rasters.layers().enumerate() {
+            if tint.is_nan() || tint <= 0.0 {
+                continue;
+            }
+            for (slot_drawn, built) in drawn {
+                let tile = slot_drawn.tile;
+                let relief = match &self.ground {
+                    Some(g) => match g.relief(tile) {
+                        Some(r) => r,
+                        None => continue,
+                    },
+                    None => None,
+                };
+                for (slot_image, image, _) in images {
+                    if slot_image.wrap != slot_drawn.wrap || !meets(tile, slot_image.tile) {
+                        continue;
+                    }
+                    let key = (layer, slot_image.tile);
+                    let pictures = self.pictures.entry(tile).or_default();
+                    if let Some(p) = pictures.get_mut(&key)
+                        && Rc::ptr_eq(&p.image, image)
+                    {
+                        p.used = true;
+                        p.tint = tint;
+                        continue;
+                    }
+                    if let Some(old) = pictures.remove(&key) {
+                        release(s, slot, old.stage);
+                    }
+                    let stage =
+                        self.lay_image(s, f, tile, built.key.band, key, image, relief.clone());
+                    self.pictures.entry(tile).or_default().insert(
+                        key,
+                        Picture {
+                            image: Rc::clone(image),
+                            stage,
+                            tint,
+                            used: true,
+                        },
+                    );
+                }
+            }
+        }
+        for pictures in self.pictures.values_mut() {
+            pictures.retain(|_, p| {
+                if !p.used {
+                    release(s, slot, std::mem::replace(&mut p.stage, Stage::Nothing));
+                }
+                p.used
+            });
+        }
+        self.pictures.retain(|_, p| !p.is_empty());
+    }
+
+    /// Starts laying layer `key.0`'s image of tile `key.1` over `tile`,
+    /// drawn for level `band`, over `relief`.
+    #[allow(clippy::too_many_arguments)]
+    fn lay_image(
+        &self,
         s: &mut StructureCx<'_>,
         f: &Frame<'_>,
         tile: TileId,
-        built: &Rc<Built>,
-        relief: Option<(TileId, Arc<Dem>)>,
+        band: u8,
+        key: (usize, TileId),
+        image: &Ready,
+        relief: Option<Under>,
     ) -> Stage {
-        let meshes: Vec<viso_render::Mesh> = [&built.drawing, &built.over]
-            .into_iter()
-            .flatten()
-            .flat_map(|d| d.primitives().iter())
-            .filter_map(|p| match p {
-                viso_render::Primitive::Mesh(m) => Some(m.clone()),
-                _ => None,
-            })
-            .collect();
-        let decoded = Arc::clone(&built.tile);
-        let style = Arc::clone(f.style);
-        let band = built.key.band;
-        let background = style.background.at(f32::from(band)).linear(1.0);
+        let pixels = Arc::clone(image.pixels());
         let exaggeration = self.ground.as_ref().map_or(1.0, |g| g.terrain.exaggeration);
         let (answer, stop) = off_loop(move || {
-            let layers: Vec<&crate::mvt::Layer> = decoded.layers.iter().collect();
-            let relief = relief.as_ref().map(|(under, dem)| {
-                let span = f64::from(under.z as i32 - tile.z as i32).exp2();
-                Relief {
-                    dem,
-                    origin: [
-                        f64::from(tile.x) * span - f64::from(under.x),
-                        f64::from(tile.y) * span - f64::from(under.y),
-                    ],
-                    span,
-                    scale: units_per_meter(tile) * exaggeration,
-                }
-            });
-            Ok(raise(&Raise {
+            let relief = relief.as_ref().map(|u| relief_of(tile, u, exaggeration));
+            let Some(rgba) = pixels.to_straight_rgba8() else {
+                return Ok(None);
+            };
+            Ok(raise_image(&Imagery {
                 tile,
                 band,
-                meshes: &meshes,
-                layers: &layers,
-                style: &style,
-                background,
+                image_tile: key.1,
+                width: pixels.width,
+                height: pixels.height,
+                rgba: &rgba,
+                order: image_order(key.0, key.1.z),
                 relief,
             }))
         });
@@ -592,7 +841,71 @@ impl Tilted {
                 if let Some(core) = me.upgrade()
                     && let Ok(mut core) = core.try_borrow_mut()
                 {
-                    core.tilted.arrive(generation, tile, model);
+                    core.tilted.arrive_picture(generation, tile, key, model);
+                    core.wake_with(cx);
+                }
+            }) as Continuation)
+        });
+        let task = s.store.spawn_task(self.root, task);
+        Stage::Raising { task, stop }
+    }
+
+    /// Starts raising `tile`'s build `built`, over `relief`.
+    fn start(
+        &mut self,
+        s: &mut StructureCx<'_>,
+        f: &Frame<'_>,
+        tile: TileId,
+        built: &Rc<Built>,
+        relief: Option<Under>,
+    ) -> Stage {
+        let meshes_of = |d: &Option<viso_ui::Drawing>| -> Vec<viso_render::Mesh> {
+            d.iter()
+                .flat_map(|d| d.primitives().iter())
+                .filter_map(|p| match p {
+                    viso_render::Primitive::Mesh(m) => Some(m.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let (meshes, over) = (meshes_of(&built.drawing), meshes_of(&built.over));
+        let images = f
+            .style
+            .layers
+            .iter()
+            .filter(|l| matches!(l.paint, Paint::Raster { .. } | Paint::Hillshade { .. }))
+            .count();
+        let decoded = Arc::clone(&built.tile);
+        let style = Arc::clone(f.style);
+        let band = built.key.band;
+        let background = style.background.at(f32::from(band)).linear(1.0);
+        let exaggeration = self.ground.as_ref().map_or(1.0, |g| g.terrain.exaggeration);
+        let (answer, stop) = off_loop(move || {
+            let layers: Vec<&crate::mvt::Layer> = decoded.layers.iter().collect();
+            let relief = relief.as_ref().map(|u| relief_of(tile, u, exaggeration));
+            let rough = relief.as_ref().map_or(0.0, relief_error);
+            let model = raise(&Raise {
+                tile,
+                band,
+                meshes: &meshes,
+                over: &over,
+                images,
+                layers: &layers,
+                style: &style,
+                background,
+                relief,
+            });
+            Ok((model, rough))
+        });
+        let generation = self.generation;
+        let me = f.me.clone();
+        let task = Box::pin(async move {
+            let (model, rough) = answer.await.ok().unwrap_or((None, 0.0));
+            Some(Box::new(move |cx: &mut UpdateCx<'_>| {
+                if let Some(core) = me.upgrade()
+                    && let Ok(mut core) = core.try_borrow_mut()
+                {
+                    core.tilted.arrive(generation, tile, model, rough);
                     core.wake_with(cx);
                 }
             }) as Continuation)
@@ -634,7 +947,7 @@ impl Tilted {
             release_shapes(s, slot, &mut self.shapes);
         }
         let ground = self.ground.as_ref();
-        for &(mesh, _) in framed {
+        for (order, &(mesh, _)) in framed.iter().enumerate() {
             let k = (f64::from(f.band) - mesh.zoom).exp2() as f32;
             let meshes: Vec<viso_render::Mesh> = mesh
                 .drawing
@@ -670,6 +983,7 @@ impl Tilted {
                 k,
                 lift,
                 SHAPE_STEP / k,
+                (SHAPES_ABOVE + order as f32 * SHAPE_ORDER) / k,
                 height.as_ref().map(|h| h as &dyn Fn([f32; 2]) -> f32),
             );
             if let Some(model) = model {
@@ -716,9 +1030,8 @@ impl Tilted {
             c.x * band_scale - f.anchor[0],
             c.y * band_scale - f.anchor[1],
         ];
-        let elevation = self.ground.as_ref().map_or(0.0, |g| {
-            let meters = g.meters(c, f.tile_zoom).unwrap_or(0.0) * g.terrain.exaggeration;
-            f64::from(meters) * band_scale / c.meters_per_unit().max(1e-9)
+        let elevation = self.lift(view, f.tile_zoom).map_or(0.0, |g| {
+            g.focus() * band_scale / c.meters_per_unit().max(1e-9)
         });
         let scale = (view.camera.zoom - f64::from(f.band)).exp2();
         let d = view.eye_distance() / scale;
@@ -751,6 +1064,7 @@ impl Tilted {
             near: (d * 0.02) as f32,
             far: f32::INFINITY,
         };
+        let air = Haze::of(bg, d, ps);
         frame.lighting = Lighting {
             direction: vec3(-0.45, 0.8, 0.4),
             intensity: 1.1,
@@ -760,11 +1074,14 @@ impl Tilted {
             reflections: 0.0,
             shadows: Shadows::NONE,
             occlusion: AmbientOcclusion::NONE,
+            fog: air.color,
+            fog_density: air.density as f32,
+            fog_start: air.start as f32,
             ..Lighting::default()
         };
         frame.sky = None;
         frame.environment = None;
-        frame.background = LinearStraight::new(bg[0], bg[1], bg[2], 0.0);
+        frame.background = LinearStraight::new(air.color[0], air.color[1], air.color[2], 1.0);
         let white = LinearStraight::new(1.0, 1.0, 1.0, 1.0);
         for (slot_drawn, _) in drawn {
             let Some(m) = self.models.get(&slot_drawn.tile) else {
@@ -776,13 +1093,33 @@ impl Tilted {
             let (nw, _) = slot_drawn.square();
             let z = slot_drawn.tile.z;
             let k = (f64::from(f.band) - f64::from(z)).exp2() as f32;
-            let lift = (f32::from(z) - f32::from(f.tile_zoom)) * LEVEL_STEP;
+            let mut lift = (f32::from(z) - f32::from(f.tile_zoom)) * LEVEL_STEP;
+            // Under finer tiles, its coarser ground sinks by how far it may
+            // stray over theirs, and theirs from it.
+            let covered = drawn.iter().any(|(d, _)| {
+                d.tile.z > z && d.wrap == slot_drawn.wrap && slot_drawn.tile.contains(d.tile)
+            });
+            if covered {
+                lift -= SINK * m.rough * k;
+            }
             let at = [
                 (nw.x * band_scale - f.anchor[0]) as f32,
                 lift,
                 (nw.y * band_scale - f.anchor[1]) as f32,
             ];
-            frame.push_model(model, &model.rig().rest_pose(), &placed(at, k), white);
+            let at = placed(at, k);
+            frame.push_model(model, &model.rig().rest_pose(), &at, white);
+            for p in self
+                .pictures
+                .get(&slot_drawn.tile)
+                .into_iter()
+                .flat_map(|p| p.values())
+            {
+                if let Stage::Held(_, Some(model)) = &p.stage {
+                    let tint = LinearStraight::new(1.0, 1.0, 1.0, p.tint);
+                    frame.push_model(model, &model.rig().rest_pose(), &at, tint);
+                }
+            }
         }
         let shapes = if self.shapes.iter().all(ShapeModel::ready) {
             &self.shapes
@@ -804,6 +1141,78 @@ impl Tilted {
             frame.push_model(model, &model.rig().rest_pose(), &placed(at, k), white);
         }
         s.store.commit_scene(slot);
+    }
+}
+
+/// How much of the clear air a tilted view keeps before its ground fades,
+/// in eye distances short of the reach.
+const HAZE_DEPTH: f64 = 1.7;
+
+/// The air of a tilted view: the ground fades into a haze of the style's
+/// background toward the sky, from clear near the eye to all haze at the
+/// reach, so the ground's far edge never shows; past it, haze.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Haze {
+    /// Linear RGB.
+    color: [f32; 3],
+    /// Distances from the eye, in the scene's units.
+    start: f64,
+    density: f64,
+}
+
+impl Haze {
+    /// The haze over `background` (straight linear RGBA) seen by an eye `d`
+    /// from the focus, tilted to pitch sine `ps`.
+    fn of(background: [f32; 4], d: f64, ps: f64) -> Haze {
+        let [r, g, b, _] = background;
+        let light = 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.25;
+        // A pale blue on a light map, a deep one on a dark map.
+        let sky = if light {
+            [0.62, 0.71, 0.84]
+        } else {
+            [0.035, 0.045, 0.075]
+        };
+        let color = core::array::from_fn(|i| background[i] * 0.55 + sky[i] * 0.45);
+        // From the eye to the ground at the reach: across the focus's
+        // distance and the reach, down the eye's height.
+        let pc = (1.0 - ps * ps).max(0.0).sqrt();
+        let reach = d * (REACH + ps).hypot(pc);
+        let start = (reach - HAZE_DEPTH * d).max(d);
+        // All but a hundredth hazed at the reach.
+        let density = 100f64.ln() / (reach - start).max(1e-9);
+        Haze {
+            color,
+            start,
+            density,
+        }
+    }
+}
+
+/// Whether tiles `a` and `b` overlap: one holds the other.
+fn meets(a: TileId, b: TileId) -> bool {
+    let (fine, coarse) = if a.z >= b.z { (a, b) } else { (b, a) };
+    let d = fine.z - coarse.z;
+    d < 32 && fine.x >> d == coarse.x && fine.y >> d == coarse.y
+}
+
+/// The elevations `under` `tile`, raised by `exaggeration`.
+fn relief_of(tile: TileId, under: &Under, exaggeration: f32) -> Relief<'_> {
+    let dem = Around {
+        dem: &under.dem,
+        neighbours: core::array::from_fn(|j| {
+            core::array::from_fn(|i| under.neighbours[j][i].as_deref())
+        }),
+    };
+    let under = under.tile;
+    let span = f64::from(under.z as i32 - tile.z as i32).exp2();
+    Relief {
+        dem,
+        origin: [
+            f64::from(tile.x) * span - f64::from(under.x),
+            f64::from(tile.y) * span - f64::from(under.y),
+        ],
+        span,
+        scale: units_per_meter(tile) * exaggeration,
     }
 }
 

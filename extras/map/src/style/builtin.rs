@@ -665,6 +665,20 @@ fn build(name: &str, s: &Schema, p: &Palette) -> Style {
             .layers
             .push(Layer::symbol("waterway-name", "water_lines_labels", water));
     }
+    // Points of interest, giving way to the streets' names.
+    let mut poi = text(s, Prop::Const(11.0), p.poi, p);
+    poi.icon = Some(Prop::Match {
+        key: if omt { "class" } else { "amenity" }.into(),
+        cases: Vec::new(),
+        default: Box::new(Prop::Const(String::from("dot"))),
+    });
+    poi.icon_color = Prop::Const(p.poi);
+    poi.icon_size = 12.0;
+    poi.rank = Some("rank".into());
+    poi.max_width = 7.0;
+    style
+        .layers
+        .push(Layer::symbol("poi", s.pois, poi).zooms(15.0, 24.0));
     // Road numbers on shields, along the main roads.
     let shield = Symbol {
         text: Some(TextField::Key("ref".into())),
@@ -705,19 +719,6 @@ fn build(name: &str, s: &Schema, p: &Palette) -> Style {
     style
         .layers
         .push(Layer::symbol("road-name", s.road_names, road).zooms(13.0, 24.0));
-    let mut poi = text(s, Prop::Const(11.0), p.poi, p);
-    poi.icon = Some(Prop::Match {
-        key: if omt { "class" } else { "amenity" }.into(),
-        cases: Vec::new(),
-        default: Box::new(Prop::Const(String::from("dot"))),
-    });
-    poi.icon_color = Prop::Const(p.poi);
-    poi.icon_size = 12.0;
-    poi.rank = Some("rank".into());
-    poi.max_width = 7.0;
-    style
-        .layers
-        .push(Layer::symbol("poi", s.pois, poi).zooms(15.0, 24.0));
     let place_kind = |values: &[&str]| kinds(s, values);
     let mut small = text(
         s,
