@@ -677,7 +677,12 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
   or the sky/ground gradient), PBR Neutral tonemap; blend sorted back to front. The CPU
   raster runs the same expression (`viso_gpu::scene::shade_mesh`). Verified: CPU + Metal
   drawn and compared, WGSL through naga, GLSL ES / HLSL through glslang, Khronos samples.
-- [ ] Shadow maps (cascaded for the directional light).
+- [x] Shadow maps (cascaded for the directional light). — `Lighting::shadows: Shadows`;
+  three cascades fitted to the receivers' depth range (slice spheres, texel-snapped, depth
+  reaching every caster), a per-slot `3r × r` RGBA8 atlas of 24-bit packed depth drawn
+  by `SceneProgram::Depth` (no sampleable depth or float target needed), normal offset +
+  slope bias, 4×4 tent PCF with cascade cross-fade. Verified: CPU + Metal + translated
+  WGSL draw the same shadowed scene, GLSL ES / HLSL compile, lane test, Khronos samples.
 - [ ] Skinned meshes.
 - [ ] SSAO and sky.
 

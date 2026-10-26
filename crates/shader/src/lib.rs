@@ -26,7 +26,7 @@ pub mod msl;
 pub mod program;
 pub mod reload;
 
-pub use code::shader_code;
+pub use code::{scene_program_code, shader_code};
 pub use diag::{Diagnostic, Severity};
 pub use manifest::{
     ColorTargetClass, PipelineEntry, PipelineFamily, PipelineManifest, VariantKey,

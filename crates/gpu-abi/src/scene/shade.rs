@@ -5,7 +5,8 @@ use core::f32::consts::PI;
 
 use super::{
     Alpha, ENV_HEIGHT, ENV_LEVELS, ENV_WIDTH, FrameUniforms, MATERIAL_DOUBLE_SIDED,
-    MATERIAL_NORMAL_MAP, MaterialUniforms, Shading, add, cross, dot, length, normalize, scale, sub,
+    MATERIAL_NORMAL_MAP, MaterialUniforms, SHADOW_CASCADES, Shading, add, cross, dot, length,
+    normalize, scale, sub,
 };
 
 /// The textures a fragment samples, by texture slot: each at a texture
@@ -141,6 +142,157 @@ fn mix3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
     core::array::from_fn(|i| a[i] + (b[i] - a[i]) * t)
 }
 
+/// The largest depth [`pack_depth`] stores, `2^24 - 1`.
+const DEPTH_STEPS: f32 = 16_777_215.0;
+
+/// Depth `z` in `[0, 1]` as the RGBA8 texel the shadow atlas stores: 24
+/// bits, most significant byte in red, alpha one. Every channel is a whole
+/// multiple of `1 / 255`, so an 8-bit target stores it exactly.
+#[inline]
+pub fn pack_depth(z: f32) -> [f32; 4] {
+    let v = (z.clamp(0.0, 1.0) * DEPTH_STEPS).floor();
+    let hi = (v * (1.0 / 65536.0)).floor();
+    let rest = v - hi * 65536.0;
+    let mid = (rest * (1.0 / 256.0)).floor();
+    let lo = rest - mid * 256.0;
+    [hi / 255.0, mid / 255.0, lo / 255.0, 1.0]
+}
+
+/// The depth a texel [`pack_depth`] made holds.
+#[inline]
+pub fn unpack_depth(t: [f32; 4]) -> f32 {
+    let b = |c: f32| (c * 255.0 + 0.5).floor();
+    (b(t[0]) * 65536.0 + b(t[1]) * 256.0 + b(t[2])) / DEPTH_STEPS
+}
+
+/// `p` in cascade `c`'s space: its x and y in `[-1, 1]` over the tile and
+/// its depth from the light.
+#[inline]
+fn cascade_point(frame: &FrameUniforms, c: usize, p: [f32; 3]) -> [f32; 3] {
+    let row = |k: usize| {
+        let r = frame.shadow[c * 4 + k];
+        r[0] * p[0] + r[1] * p[1] + r[2] * p[2] + r[3]
+    };
+    [row(0), row(1), row(2)]
+}
+
+/// Whether cascade point `q` lies inside its cascade.
+#[inline]
+fn in_cascade(q: [f32; 3]) -> bool {
+    q[0].abs().max(q[1].abs()) < 1.0 && q[2] >= 0.0 && q[2] <= 1.0
+}
+
+/// The share of light reaching depth `reference` around tile coordinate
+/// `uv` of cascade `c`: a 4×4 tent of depth comparisons, the 3×3 box
+/// filter of the nearest texels interpolated across them so the penumbra
+/// is continuous.
+fn shadow_pcf(
+    frame: &FrameUniforms,
+    c: usize,
+    uv: [f32; 2],
+    reference: f32,
+    tex: &dyn SceneTextures,
+) -> f32 {
+    let e = frame.shadow_params[1];
+    let (tu, tv) = (uv[0] / e - 0.5, uv[1] / e - 0.5);
+    let (fu, fv) = (tu - tu.floor(), tv - tv.floor());
+    let (bu, bv) = ((tu.floor() + 0.5) * e, (tv.floor() + 0.5) * e);
+    let weight = |i: usize, f: f32| match i {
+        0 => 1.0 - f,
+        3 => f,
+        _ => 1.0,
+    };
+    let mut sum = 0.0;
+    for j in 0..4 {
+        let v = (bv + (j as f32 - 1.0) * e).clamp(0.5 * e, 1.0 - 0.5 * e);
+        for i in 0..4 {
+            let u = (bu + (i as f32 - 1.0) * e).clamp(0.5 * e, 1.0 - 0.5 * e);
+            let at = [(u + c as f32) / SHADOW_CASCADES as f32, v];
+            let depth = unpack_depth(tex.sample(6, at, [0.0; 2], [0.0; 2]));
+            if reference <= depth {
+                sum += weight(i, fu) * weight(j, fv);
+            }
+        }
+    }
+    (sum / 9.0).min(1.0)
+}
+
+/// How much of the directional light reaches world point `p` of a surface
+/// whose unit geometric normal, turned toward the viewer, is `n`: `1.0`
+/// lit, down to `1 - strength` in full shadow.
+///
+/// The point is looked up in the nearest cascade that holds it, nudged
+/// along its normal and compared with a bias, both growing as the light
+/// grazes the surface; within the outer tenth of a cascade it cross-fades
+/// into the next, and past the last into full light.
+pub fn shadow_visibility(
+    frame: &FrameUniforms,
+    p: [f32; 3],
+    n: [f32; 3],
+    tex: &dyn SceneTextures,
+) -> f32 {
+    let strength = frame.shadow_params[0];
+    if strength <= 0.0 {
+        return 1.0;
+    }
+    let l = [frame.light_dir[0], frame.light_dir[1], frame.light_dir[2]];
+    let slope = 1.0 - dot(n, l).clamp(0.0, 1.0);
+    let Some(first) = (0..SHADOW_CASCADES).find(|&c| in_cascade(cascade_point(frame, c, p))) else {
+        return 1.0;
+    };
+    let mut visible = 0.0;
+    let mut left = 1.0;
+    for c in first..SHADOW_CASCADES {
+        let extra = frame.shadow[c * 4 + 3];
+        let q = cascade_point(frame, c, add(p, scale(n, extra[1] * 1.5 * slope)));
+        if !in_cascade(q) {
+            visible += left;
+            break;
+        }
+        let reference = q[2] - extra[0] * (1.0 + 2.0 * slope);
+        let lit = shadow_pcf(
+            frame,
+            c,
+            [q[0] * 0.5 + 0.5, 0.5 - q[1] * 0.5],
+            reference,
+            tex,
+        );
+        let handed = ((q[0].abs().max(q[1].abs()) - 0.9) * 10.0).clamp(0.0, 1.0);
+        visible += left * (1.0 - handed) * lit;
+        left *= handed;
+        if left <= 0.0 {
+            break;
+        }
+        if c == SHADOW_CASCADES - 1 {
+            visible += left;
+        }
+    }
+    1.0 - strength * (1.0 - visible)
+}
+
+/// The shadow atlas texel of depth fragment `f` in `material` under
+/// `frame` (its cascade's): the [`pack_depth`]ed depth from the light, or
+/// `None` where a masked material, or an invisible instance, discards it.
+pub fn shade_depth(
+    frame: &FrameUniforms,
+    material: &MaterialUniforms,
+    f: &MeshFragment,
+    tex: &dyn SceneTextures,
+) -> Option<[f32; 4]> {
+    let tint_a = f.color[3];
+    if tint_a <= 0.0 {
+        return None;
+    }
+    if material.alpha() == Alpha::Mask {
+        let a = tex.sample(0, f.uv, f.uv_dx, f.uv_dy)[3] * material.base_color[3] * tint_a;
+        if a < material.mode[2] {
+            return None;
+        }
+    }
+    let clip = frame.clip(f.world);
+    Some(pack_depth(1.0 - clip[2] / clip[3]))
+}
+
 /// The color of mesh fragment `f` in `material` under `frame`, premultiplied
 /// linear light in `[0, 1]`, or `None` where the fragment is discarded:
 ///
@@ -233,12 +385,13 @@ pub fn shade_mesh(
             let nl = dot(n, l).max(0.0);
             let mut color = [0.0f32; 3];
             if nl > 0.0 {
+                let shadow = shadow_visibility(frame, f.world, scale(n_geom, side), tex);
                 let h = normalize(add(l, v));
                 let nh = dot(n, h).max(0.0);
                 let vh = dot(v, h).max(0.0);
                 let k = (1.0 - vh).powf(5.0);
                 let spec = ggx(nh, a2) * smith(nv, nl, a2);
-                let e = frame.light_dir[3] * nl;
+                let e = frame.light_dir[3] * nl * shadow;
                 for i in 0..3 {
                     let fresnel = f0[i] + (1.0 - f0[i]) * k;
                     let brdf = (1.0 - fresnel) * albedo[i] + fresnel * (spec * PI);
@@ -340,6 +493,102 @@ mod tests {
         let c = shade_mesh(&fr, &m, &f, &Plain).unwrap();
         // Diffuse 0.48, a little specular, through the neutral curve.
         assert!((c[0] - 0.5).abs() < 0.06, "{c:?}");
+    }
+
+    #[test]
+    fn a_packed_depth_survives_an_8_bit_target() {
+        for z in [0.0, 1.0, 0.5, 0.123_456_7, 0.999_999, 1.0e-7] {
+            let texel = pack_depth(z).map(|c| (c * 255.0).round() / 255.0);
+            assert!((unpack_depth(texel) - z).abs() < 1.0e-7, "{z}");
+        }
+        // The cleared atlas reads as farthest.
+        assert_eq!(unpack_depth([1.0; 4]), 1.0);
+    }
+
+    /// One cascade over x and z in [-1, 1], looking down from depth 0 at
+    /// y = 1 to depth 1 at y = -1, its atlas every texel at `occluder`
+    /// depth.
+    struct Atlas(f32);
+
+    impl SceneTextures for Atlas {
+        fn sample(&self, slot: usize, _: [f32; 2], _: [f32; 2], _: [f32; 2]) -> [f32; 4] {
+            if slot == 6 {
+                pack_depth(self.0)
+            } else {
+                [1.0; 4]
+            }
+        }
+    }
+
+    fn shadowed_frame() -> FrameUniforms {
+        let mut f = frame();
+        f.shadow_params = [1.0, 1.0 / 64.0, 0.0, 0.0];
+        for c in 0..SHADOW_CASCADES {
+            let k = (1 << c) as f32;
+            f.shadow[c * 4] = [1.0 / k, 0.0, 0.0, 0.0];
+            f.shadow[c * 4 + 1] = [0.0, 0.0, -1.0 / k, 0.0];
+            f.shadow[c * 4 + 2] = [0.0, -0.5, 0.0, 0.5];
+            f.shadow[c * 4 + 3] = [0.001, 2.0 * k / 64.0, 0.0, 0.0];
+        }
+        f
+    }
+
+    #[test]
+    fn a_point_behind_an_occluder_is_in_shadow_and_one_before_it_is_lit() {
+        let f = shadowed_frame();
+        let up = [0.0, 1.0, 0.0];
+        // An occluder at y = 0 (depth 0.5): the ground below is shadowed.
+        assert_eq!(
+            shadow_visibility(&f, [0.1, -0.5, 0.2], up, &Atlas(0.5)),
+            0.0
+        );
+        assert_eq!(shadow_visibility(&f, [0.1, 0.5, 0.2], up, &Atlas(0.5)), 1.0);
+        // The occluder itself does not shadow its own surface.
+        assert_eq!(shadow_visibility(&f, [0.1, 0.0, 0.2], up, &Atlas(0.5)), 1.0);
+        // Half the strength, half the darkness; past every cascade, lit.
+        let mut half = f;
+        half.shadow_params[0] = 0.5;
+        assert_eq!(
+            shadow_visibility(&half, [0.1, -0.5, 0.2], up, &Atlas(0.5)),
+            0.5
+        );
+        assert_eq!(
+            shadow_visibility(&f, [9.0, -0.5, 0.2], up, &Atlas(0.5)),
+            1.0
+        );
+        // Near a cascade's rim the next one takes over, still shadowed.
+        assert_eq!(
+            shadow_visibility(&f, [0.97, -0.5, 0.2], up, &Atlas(0.5)),
+            0.0
+        );
+    }
+
+    #[test]
+    fn a_shadow_darkens_only_the_direct_light() {
+        let mut fr = shadowed_frame();
+        fr.camera = [0.0, 5.0, 0.0, 1.0];
+        let m = material(Shading::Lit);
+        let mut f = fragment([0.0, 1.0, 0.0], [0.5; 2]);
+        f.world = [0.1, -0.5, 0.2];
+        let shadowed = shade_mesh(&fr, &m, &f, &Atlas(0.5)).unwrap();
+        let lit = shade_mesh(&fr, &m, &f, &Atlas(1.0)).unwrap();
+        assert!(shadowed[0] < lit[0] * 0.2, "{shadowed:?} {lit:?}");
+    }
+
+    #[test]
+    fn a_depth_fragment_stores_its_distance_from_the_light_and_a_mask_cuts_it() {
+        let mut fr = frame();
+        // Clip z 0.75 at the origin: depth from the light 0.25.
+        fr.view_proj = [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.75, 1.0,
+        ];
+        let mut m = material(Shading::Lit);
+        let f = fragment([0.0, 1.0, 0.0], [0.5; 2]);
+        let t = shade_depth(&fr, &m, &f, &Plain).unwrap();
+        assert!((unpack_depth(t) - 0.25).abs() < 1.0e-6);
+        m.mode[1] = Alpha::Mask as u8 as f32;
+        m.base_color[3] = 0.25;
+        assert!(shade_depth(&fr, &m, &f, &Plain).is_none());
     }
 
     #[test]

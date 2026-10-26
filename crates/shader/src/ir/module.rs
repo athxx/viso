@@ -1102,6 +1102,16 @@ static SCENE_FRAME: &[IrField] = &[
     IrField::new("fog", IrType::F32X4),
     IrField::new("ambient", IrType::F32X4),
     IrField::array("sh", IrType::F32X4, 9),
+    IrField::array("shadow", IrType::F32X4, 12),
+    IrField::new("shadow_params", IrType::F32X4),
+];
+
+/// A scene mesh's vertex: `viso_gpu_abi::scene::SceneVertex`.
+static SCENE_ATTRS: &[IrField] = &[
+    IrField::new("position", IrType::F32X3),
+    IrField::new("normal", IrType::F32X3),
+    IrField::new("uv", IrType::F32X2),
+    IrField::new("tangent", IrType::F32X4),
 ];
 
 /// A scene draw's instance: `viso_gpu_abi::scene::SceneInstance`.
@@ -1155,12 +1165,6 @@ const SCENE_MATERIAL_TEXTURES: [IrTexture; 5] = [
 /// computes `viso_gpu_abi::scene::shade_mesh`, the expression the CPU raster
 /// runs.
 pub fn scene_ir() -> ShaderIr {
-    static ATTRS: &[IrField] = &[
-        IrField::new("position", IrType::F32X3),
-        IrField::new("normal", IrType::F32X3),
-        IrField::new("uv", IrType::F32X2),
-        IrField::new("tangent", IrType::F32X4),
-    ];
     static VARYINGS: &[Varying] = &[
         Varying::new("position", IrType::F32X4, " [[position]]", ""),
         Varying::new("world", IrType::F32X3, "", ""),
@@ -1181,13 +1185,17 @@ pub fn scene_ir() -> ShaderIr {
                 name: "env_tex",
                 sampler: 1,
             },
+            IrTexture {
+                name: "shadow_tex",
+                sampler: 2,
+            },
         ],
-        samplers: &["material_samp", "linear_samp"],
+        samplers: &["material_samp", "linear_samp", "point_samp"],
     };
     ShaderIr {
         kind: PrimitiveKind::Scene,
         vertex_source: VertexSource::PerVertexInstanced,
-        attributes: ATTRS,
+        attributes: SCENE_ATTRS,
         instance_attributes: SCENE_INSTANCE,
         uniforms: SCENE_FRAME,
         varyings: VARYINGS,
@@ -1199,8 +1207,54 @@ pub fn scene_ir() -> ShaderIr {
     }
 }
 
-/// Every built-in's IR, in [`PrimitiveKind`] declaration order — the set the
-/// portable codegens and their oracles cover.
+/// The 3D scene's shadow caster program
+/// (`viso_gpu_abi::scene::SceneProgram::Depth`): a mesh's depth from the
+/// light, packed into an RGBA8 texel of the shadow atlas, as
+/// `viso_gpu_abi::scene::shade_depth` computes it. The layouts and the
+/// bind group are the mesh program's.
+pub fn scene_depth_ir() -> ShaderIr {
+    static VARYINGS: &[Varying] = &[
+        Varying::new("position", IrType::F32X4, " [[position]]", ""),
+        Varying::new("uv", IrType::F32X2, "", ""),
+        Varying::new("light_depth", IrType::F32, "", ""),
+        Varying::new("tint_alpha", IrType::F32, " [[flat]]", ""),
+    ];
+    static BINDINGS: SceneBindings = SceneBindings {
+        blocks: &[SCENE_MATERIAL],
+        textures: &[SCENE_MATERIAL_TEXTURES[0]],
+        samplers: &["material_samp"],
+    };
+    ShaderIr {
+        kind: PrimitiveKind::Scene,
+        vertex_source: VertexSource::PerVertexInstanced,
+        attributes: SCENE_ATTRS,
+        instance_attributes: SCENE_INSTANCE,
+        uniforms: SCENE_FRAME,
+        varyings: VARYINGS,
+        texture_count: 0,
+        bindings: Some(&BINDINGS),
+        vertex_body: SCENE_DEPTH_VERTEX_BODY,
+        helpers: "",
+        fragment_body: SCENE_DEPTH_FRAGMENT_BODY,
+    }
+}
+
+/// The scene lane's programs past its mesh program (the [`PrimitiveKind::Scene`]
+/// built-in), in `viso_gpu_abi::scene::SceneProgram` order from code 1.
+pub fn scene_program_irs() -> [ShaderIr; 1] {
+    [scene_depth_ir()]
+}
+
+/// Every program's IR: the built-ins, then the scene lane's other programs —
+/// the set the portable codegens and their oracles cover.
+pub fn every_ir() -> Vec<ShaderIr> {
+    builtin_irs()
+        .into_iter()
+        .chain(scene_program_irs())
+        .collect()
+}
+
+/// Every built-in's IR, in [`PrimitiveKind`] declaration order.
 pub fn builtin_irs() -> [ShaderIr; 17] {
     [
         quad_ir(),
@@ -2523,6 +2577,24 @@ static inline float2 env_atlas(float2 uv, float level) {
     return float2(x, y) / 256.0;
 }
 
+// The depth a shadow atlas texel holds: 24 bits, the most significant byte
+// in red.
+static inline float unpack_depth(float4 t) {
+    float3 b = floor(t.xyz * 255.0 + 0.5);
+    return (b.x * 65536.0 + b.y * 256.0 + b.z) / 16777215.0;
+}
+
+// `p` in a cascade's space, by its three rows: x and y over its tile in
+// [-1, 1], and the depth from the light.
+static inline float3 cascade_point(float4 rx, float4 ry, float4 rz, float3 p) {
+    return float3(dot(rx.xyz, p) + rx.w, dot(ry.xyz, p) + ry.w, dot(rz.xyz, p) + rz.w);
+}
+
+// Whether cascade point `q` lies inside its cascade.
+static inline bool in_cascade(float3 q) {
+    return max(abs(q.x), abs(q.y)) < 1.0 && q.z >= 0.0 && q.z <= 1.0;
+}
+
 // Linear light into [0, 1], hues kept: the Khronos PBR Neutral curve.
 static inline float3 tonemap(float3 c) {
     float x = min(c.x, min(c.y, c.z));
@@ -2622,6 +2694,70 @@ if (mode.x > 1.5) {
     float nl = max(dot(n, l), 0.0);
     float3 color = float3(0.0);
     if (nl > 0.0) {
+        // The share of the light the shadow lets through: the nearest
+        // cascade that holds the point, nudged along its normal and biased
+        // as the light grazes it, a 4x4 tent of depth comparisons, handed
+        // over to the next cascade across a cascade's outer tenth.
+        float shadow = 1.0;
+        float4 sp = float4(u.shadow_params);
+        if (sp.x > 0.0) {
+            float3 ns = n_geom * side;
+            float slope = 1.0 - clamp(dot(ns, l), 0.0, 1.0);
+            int first = 3;
+            for (int ca = 0; ca < 3; ++ca) {
+                int kc = 2 - ca;
+                float3 qa = cascade_point(float4(u.shadow[kc * 4]), float4(u.shadow[kc * 4 + 1]),
+                    float4(u.shadow[kc * 4 + 2]), in.world);
+                if (in_cascade(qa)) {
+                    first = kc;
+                }
+            }
+            if (first < 3) {
+                float visible = 0.0;
+                float left = 1.0;
+                float e = sp.y;
+                for (int cb = 0; cb < 3; ++cb) {
+                    float4 extra = float4(u.shadow[cb * 4 + 3]);
+                    float3 q = cascade_point(float4(u.shadow[cb * 4]), float4(u.shadow[cb * 4 + 1]),
+                        float4(u.shadow[cb * 4 + 2]), in.world + ns * (extra.y * 1.5 * slope));
+                    if (cb >= first && left > 0.0 && !in_cascade(q)) {
+                        visible = visible + left;
+                        left = 0.0;
+                    }
+                    if (cb >= first && left > 0.0) {
+                        float reference = q.z - extra.x * (1.0 + 2.0 * slope);
+                        float tu = (q.x * 0.5 + 0.5) / e - 0.5;
+                        float tv = (0.5 - q.y * 0.5) / e - 0.5;
+                        float fu = tu - floor(tu);
+                        float fv = tv - floor(tv);
+                        float bu = (floor(tu) + 0.5) * e;
+                        float bv = (floor(tv) + 0.5) * e;
+                        float sum = 0.0;
+                        for (int j = 0; j < 4; ++j) {
+                            float sv = clamp(bv + (float(j) - 1.0) * e, 0.5 * e, 1.0 - 0.5 * e);
+                            float wv = j == 0 ? 1.0 - fv : (j == 3 ? fv : 1.0);
+                            for (int i = 0; i < 4; ++i) {
+                                float su = clamp(bu + (float(i) - 1.0) * e, 0.5 * e, 1.0 - 0.5 * e);
+                                float wu = i == 0 ? 1.0 - fu : (i == 3 ? fu : 1.0);
+                                float4 st = shadow_tex.sample(point_samp, float2((su + float(cb)) / 3.0, sv),
+                                    gradient2d(float2(0.0), float2(0.0)));
+                                if (reference <= unpack_depth(st)) {
+                                    sum = sum + wu * wv;
+                                }
+                            }
+                        }
+                        float lit = min(sum / 9.0, 1.0);
+                        float handed = clamp((max(abs(q.x), abs(q.y)) - 0.9) * 10.0, 0.0, 1.0);
+                        visible = visible + left * (1.0 - handed) * lit;
+                        left = left * handed;
+                        if (cb == 2) {
+                            visible = visible + left;
+                        }
+                    }
+                }
+                shadow = 1.0 - sp.x * (1.0 - visible);
+            }
+        }
         float3 h = normalize(l + v);
         float nh = max(dot(n, h), 0.0);
         float vh = max(dot(v, h), 0.0);
@@ -2629,7 +2765,7 @@ if (mode.x > 1.5) {
         float3 fresnel = f0 + (float3(1.0) - f0) * k;
         float spec = ggx(nh, a2) * smith(nv, nl, a2);
         float3 brdf = (float3(1.0) - fresnel) * albedo + fresnel * (spec * M_PI_F);
-        color = brdf * (float4(u.light_color).xyz * (light_dir.w * nl));
+        color = brdf * (float4(u.light_color).xyz * (light_dir.w * nl * shadow));
     }
 
     // The environment: its irradiance, and its radiance prefiltered for the
@@ -2660,6 +2796,51 @@ c = c + (fog_color.xyz - c) * fog;
 
 // Premultiplied linear light: the target's sRGB format encodes it.
 return float4(clamp(c, 0.0, 1.0) * a, a);";
+
+const SCENE_DEPTH_VERTEX_BODY: &str = "\
+VertexIn v = verts[vid];
+InstanceIn inst = instances[iid];
+
+float4 r0 = float4(inst.row0);
+float4 r1 = float4(inst.row1);
+float4 r2 = float4(inst.row2);
+float3 p = float3(v.position);
+float3 world = float3(dot(r0.xyz, p) + r0.w, dot(r1.xyz, p) + r1.w, dot(r2.xyz, p) + r2.w);
+float4 clip = float4(u.view_proj0) * world.x + float4(u.view_proj1) * world.y
+    + float4(u.view_proj2) * world.z + float4(u.view_proj3);
+
+VOut out;
+out.position = clip;
+out.uv = float2(v.uv);
+// Reversed depth: the clip depth falls away from the light.
+out.light_depth = 1.0 - clip.z / clip.w;
+out.tint_alpha = float4(inst.color).w;
+return out;";
+
+const SCENE_DEPTH_FRAGMENT_BODY: &str = "\
+float2 uv_dx = dfdx(in.uv);
+float2 uv_dy = dfdy(in.uv);
+float4 mode = float4(material.mode);
+if (in.tint_alpha <= 0.0) {
+    discard_fragment();
+    return float4(0.0);
+}
+if (mode.y > 0.5 && mode.y < 1.5) {
+    float a = base_tex.sample(material_samp, in.uv, gradient2d(uv_dx, uv_dy)).w
+        * float4(material.base_color).w * in.tint_alpha;
+    if (a < mode.z) {
+        discard_fragment();
+        return float4(0.0);
+    }
+}
+
+// 24 bits of depth, a byte to each of red, green and blue.
+float d = floor(clamp(in.light_depth, 0.0, 1.0) * 16777215.0);
+float hi = floor(d * (1.0 / 65536.0));
+float rest = d - hi * 65536.0;
+float mid = floor(rest * (1.0 / 256.0));
+float lo = rest - mid * 256.0;
+return float4(hi, mid, lo, 255.0) / 255.0;";
 
 const GRADIENT_VERTEX_BODY: &str = "\
 InstanceIn inst = instances[iid];

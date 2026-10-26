@@ -295,7 +295,7 @@ fn is_float(t: IrType) -> bool {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::ir::module::builtin_irs;
+    use crate::ir::module::{builtin_irs, every_ir};
     use std::path::PathBuf;
     use std::process::Command;
 
@@ -316,7 +316,7 @@ pub(crate) mod tests {
 
     #[test]
     fn every_builtin_compiles_as_glsl_es_300() {
-        for ir in builtin_irs() {
+        for ir in every_ir() {
             let src = emit_glsl(&ir).unwrap();
             let tag = format!("{:?}", ir.kind);
             for vertex in [true, false] {

@@ -19,7 +19,7 @@ use crate::resource::{
 use crate::scene::{
     FrameUniforms, MaterialUniforms, MeshFragment, SAMPLER_SLOTS, SceneInstance, SceneProgram,
     SceneTextures, SceneVertex, TEXTURE_SAMPLERS, TEXTURE_SLOTS, UNIFORM_SLOTS, normalize,
-    shade_mesh,
+    shade_depth, shade_mesh,
 };
 
 /// The varyings a vertex carries to its fragments.
@@ -426,21 +426,20 @@ fn shade(
 ) -> Option<[f32; 4]> {
     let d2 = |a: [f32; 2], b: [f32; 2]| [b[0] - a[0], b[1] - a[1]];
     let d3 = |a: [f32; 3], b: [f32; 3]| [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let n = normalize(v.normal);
+    let fragment = MeshFragment {
+        world: v.world,
+        normal: v.normal,
+        tangent: v.tangent,
+        uv: v.uv,
+        color,
+        uv_dx: d2(v.uv, right.uv),
+        uv_dy: d2(v.uv, down.uv),
+        normal_dx: d3(n, normalize(right.normal)),
+        normal_dy: d3(n, normalize(down.normal)),
+    };
     match draw.program {
-        SceneProgram::Mesh => {
-            let n = normalize(v.normal);
-            let fragment = MeshFragment {
-                world: v.world,
-                normal: v.normal,
-                tangent: v.tangent,
-                uv: v.uv,
-                color,
-                uv_dx: d2(v.uv, right.uv),
-                uv_dy: d2(v.uv, down.uv),
-                normal_dx: d3(n, normalize(right.normal)),
-                normal_dy: d3(n, normalize(down.normal)),
-            };
-            shade_mesh(draw.frame, draw.material, &fragment, draw.bound)
-        }
+        SceneProgram::Mesh => shade_mesh(draw.frame, draw.material, &fragment, draw.bound),
+        SceneProgram::Depth => shade_depth(draw.frame, draw.material, &fragment, draw.bound),
     }
 }

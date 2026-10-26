@@ -30,6 +30,7 @@ mod environment;
 mod lane;
 pub mod model;
 mod resident;
+mod shadow;
 mod shapes;
 
 use std::sync::Arc;
@@ -39,6 +40,7 @@ pub(crate) use lane::SceneLane;
 pub use lane::SceneStats;
 pub use model::AlphaMode;
 pub use resident::SceneModel;
+pub use shadow::Shadows;
 pub use shapes::Shape;
 pub use viso_gpu::scene::{FrameUniforms, MaterialUniforms, SceneInstance, SceneVertex};
 
@@ -218,6 +220,8 @@ pub struct Lighting {
     pub fog: [f32; 3],
     /// The fog's density per unit of distance; `0.0` for none.
     pub fog_density: f32,
+    /// The shadows the light casts.
+    pub shadows: Shadows,
 }
 
 impl Default for Lighting {
@@ -233,6 +237,7 @@ impl Default for Lighting {
             exposure: 1.0,
             fog: [0.62, 0.7, 0.8],
             fog_density: 0.0,
+            shadows: Shadows::default(),
         }
     }
 }
@@ -456,6 +461,7 @@ impl SceneFrame {
             fog: [l.fog[0], l.fog[1], l.fog[2], l.fog_density],
             ambient: [l.ambient, l.reflections, 0.0, 0.0],
             sh: *sh,
+            ..FrameUniforms::default()
         }
     }
 

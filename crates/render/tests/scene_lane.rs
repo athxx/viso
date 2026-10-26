@@ -5,10 +5,13 @@
 //! are drawn as instanced meshes into a depth pass, nearest first so the depth
 //! test decides what shows, in a metallic-roughness material with mipmapped
 //! base color and normal maps, lit by a light and a prefiltered environment.
-//! The CPU raster's image is the reference (`scene::shade_mesh`, the
-//! expression every scene program computes). On an Apple device the native
-//! MSL draws it too, and so does the web WGSL translated to MSL by `naga`,
-//! which checks the WGSL lowering the Vulkan and WebGPU backends run.
+//! The boxes cast shadows: the depth program first draws them into a
+//! three-cascade shadow atlas from the light, which the mesh program then
+//! looks up. The CPU raster's image is the reference (`scene::shade_depth`
+//! and `scene::shade_mesh`, the expressions every scene program computes).
+//! On an Apple device the native MSL draws it too, and so does the web WGSL
+//! translated to MSL by `naga`, which checks the WGSL lowering the Vulkan
+//! and WebGPU backends run.
 
 use viso_gpu::backend::{
     DepthAttachment, DrawCommand, DrawList, Geometry, IndexFormat, InlineUniforms, RenderPass,
@@ -16,7 +19,7 @@ use viso_gpu::backend::{
 };
 use viso_gpu::scene::{
     self, ENV_HEIGHT, ENV_WIDTH, FrameUniforms, MATERIAL_NORMAL_MAP, MaterialUniforms,
-    SceneInstance, SceneVertex,
+    SHADOW_CASCADES, SceneInstance, SceneProgram, SceneVertex,
 };
 use viso_gpu::{
     AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BufferUsage, BuiltinShader,
@@ -141,7 +144,7 @@ fn uniforms(env: &Environment) -> FrameUniforms {
         near * far / (far - near),
         0.0,
     ];
-    let light = scene::normalize([0.4, 0.8, 0.3]);
+    let light = scene::normalize(LIGHT);
     FrameUniforms {
         view_proj: mul(&proj, &view),
         camera: [eye[0], eye[1], eye[2], 1.0],
@@ -150,6 +153,68 @@ fn uniforms(env: &Environment) -> FrameUniforms {
         fog: [0.6, 0.7, 0.8, 0.03],
         ambient: [1.0, 1.0, 0.0, 0.0],
         sh: *env.harmonics(),
+        ..FrameUniforms::default()
+    }
+}
+
+/// Toward the light: from the left, so the boxes' shadows fall into view.
+const LIGHT: [f32; 3] = [-0.7, 0.6, 0.25];
+
+/// A shadow atlas tile's edge in texels.
+const TILE: u32 = 64;
+
+/// The cascades' rows, nested around the origin across the light, each
+/// reaching 8 units toward and away from it: world to tile x, y and depth.
+fn cascades() -> [[[f32; 4]; 3]; SHADOW_CASCADES] {
+    let l = scene::normalize(LIGHT);
+    let fwd = [-l[0], -l[1], -l[2]];
+    let right = scene::normalize([fwd[2], 0.0, -fwd[0]]);
+    let up = [
+        fwd[1] * right[2] - fwd[2] * right[1],
+        fwd[2] * right[0] - fwd[0] * right[2],
+        fwd[0] * right[1] - fwd[1] * right[0],
+    ];
+    core::array::from_fn(|c| {
+        let extent = [2.5, 4.0, 6.0][c];
+        [
+            [right[0] / extent, right[1] / extent, right[2] / extent, 0.0],
+            [up[0] / extent, up[1] / extent, up[2] / extent, 0.0],
+            [fwd[0] / 16.0, fwd[1] / 16.0, fwd[2] / 16.0, 0.5],
+        ]
+    })
+}
+
+/// The frame's uniforms with the light's shadow looked up in the atlas.
+fn shadowed(env: &Environment) -> FrameUniforms {
+    let mut u = uniforms(env);
+    for (c, rows) in cascades().iter().enumerate() {
+        let texel = 2.0 * [2.5, 4.0, 6.0][c] / TILE as f32;
+        u.shadow[c * 4..c * 4 + 3].copy_from_slice(rows);
+        u.shadow[c * 4 + 3] = [texel / 16.0, texel, 0.0, 0.0];
+    }
+    u.shadow_params = [1.0, 1.0 / TILE as f32, 0.0, 0.0];
+    u
+}
+
+/// Cascade `c`'s caster pass uniforms: the world into its tile of the
+/// atlas, reversed depth.
+fn caster_uniforms(c: usize) -> FrameUniforms {
+    let [rx, ry, rz] = cascades()[c];
+    let n = SHADOW_CASCADES as f32;
+    let rows = [
+        [
+            rx[0] / n,
+            rx[1] / n,
+            rx[2] / n,
+            rx[3] / n + (2.0 * c as f32 + 1.0) / n - 1.0,
+        ],
+        ry,
+        [-rz[0], -rz[1], -rz[2], 1.0 - rz[3]],
+        [0.0, 0.0, 0.0, 1.0],
+    ];
+    FrameUniforms {
+        view_proj: core::array::from_fn(|i| rows[i % 4][i / 4]),
+        ..FrameUniforms::default()
     }
 }
 
@@ -235,11 +300,14 @@ fn bytes<T>(items: &[T], write: impl Fn(&T, &mut [u8]), size: usize) -> Vec<u8> 
     out
 }
 
-/// The scene drawn by `gpu` with the scene program `code`, as BGRA8 bytes
-/// read back by `read`.
+/// The scene drawn by `gpu` with the mesh program `code` — its shadow
+/// first drawn with the depth program `depth_code` when `shadows` — as
+/// BGRA8 bytes read back by `read`.
 fn draw<B: GpuBackend>(
     gpu: &mut B,
     code: ShaderCode,
+    depth_code: ShaderCode,
+    shadows: bool,
     read: impl Fn(&mut B, viso_gpu::TextureId) -> Vec<u8>,
 ) -> Vec<u8> {
     let target = gpu.create_texture(&TextureDesc {
@@ -272,7 +340,11 @@ fn draw<B: GpuBackend>(
     let instance_bytes = bytes(&instances, SceneInstance::write_to, SceneInstance::SIZE);
     let env = environment();
     let mut frame_bytes = [0u8; FrameUniforms::SIZE];
-    uniforms(&env).write_to(&mut frame_bytes);
+    if shadows {
+        shadowed(&env).write_to(&mut frame_bytes);
+    } else {
+        uniforms(&env).write_to(&mut frame_bytes);
+    }
     let mut material_bytes = [0u8; MaterialUniforms::SIZE];
     material().write_to(&mut material_bytes);
 
@@ -352,25 +424,99 @@ fn draw<B: GpuBackend>(
         filter: FilterMode::Nearest,
         address: AddressMode::ClampToEdge,
     });
-    let group = gpu.create_bind_group(&BindGroupDesc {
-        label: "scene",
-        bindings: vec![
-            Binding::Uniform(frame),
-            Binding::Uniform(material),
-            Binding::Uniform(material),
-            Binding::Texture(base),
-            Binding::Texture(white),
-            Binding::Texture(normal),
-            Binding::Texture(white),
-            Binding::Texture(white),
-            Binding::Texture(atlas),
-            Binding::Texture(white),
-            Binding::Texture(white),
-            Binding::Sampler(material_sampler),
-            Binding::Sampler(linear),
-            Binding::Sampler(point),
-        ],
+    // The shadow atlas, its cascades drawn side by side from the light.
+    let shadow_atlas = gpu.create_texture(&TextureDesc {
+        width: TILE * SHADOW_CASCADES as u32,
+        height: TILE,
+        format: TextureFormat::Rgba8Data,
+        render_target: true,
+        label: "scene-shadow",
     });
+    let shadow_depth = gpu.create_texture(&TextureDesc {
+        width: TILE * SHADOW_CASCADES as u32,
+        height: TILE,
+        format: TextureFormat::Depth32Float,
+        render_target: true,
+        label: "scene-shadow-depth",
+    });
+    let group_of = |gpu: &mut B, frame, base, normal, atlas, shadow| {
+        gpu.create_bind_group(&BindGroupDesc {
+            label: "scene",
+            bindings: vec![
+                Binding::Uniform(frame),
+                Binding::Uniform(material),
+                Binding::Uniform(material),
+                Binding::Texture(base),
+                Binding::Texture(white),
+                Binding::Texture(normal),
+                Binding::Texture(white),
+                Binding::Texture(white),
+                Binding::Texture(atlas),
+                Binding::Texture(shadow),
+                Binding::Texture(white),
+                Binding::Sampler(material_sampler),
+                Binding::Sampler(linear),
+                Binding::Sampler(point),
+            ],
+        })
+    };
+    let group = group_of(gpu, frame, base, normal, atlas, shadow_atlas);
+    if shadows {
+        let pipeline = gpu
+            .create_pipeline(
+                &PipelineDesc {
+                    label: "scene-shadow",
+                    builtin: BuiltinShader::Scene,
+                    variant: SceneProgram::Depth as u32,
+                    code: depth_code,
+                    vertex_entry: "vertex_main",
+                    fragment_entry: "fragment_main",
+                    color_format: TextureFormat::Rgba8Data,
+                    depth: Some(DepthState::REVERSED),
+                    cull: CullMode::None,
+                    blend: BlendMode::Replace,
+                    instance_schema: scene::VERTEX_SCHEMA,
+                },
+                &Vertex::LAYOUT,
+            )
+            .expect("the vertex layout matches");
+        let commands: Vec<DrawCommand> = (0..SHADOW_CASCADES)
+            .map(|c| {
+                let mut bytes = [0u8; FrameUniforms::SIZE];
+                caster_uniforms(c).write_to(&mut bytes);
+                let frame = buffer(gpu, &bytes, BufferUsage::UNIFORM);
+                DrawCommand {
+                    pipeline,
+                    bind_group: Some(group_of(gpu, frame, white, white, white, white)),
+                    geometry: Geometry::InstancedMesh {
+                        vertex_buffer,
+                        index_buffer,
+                        index_format: IndexFormat::U16,
+                        index_offset: 0,
+                        index_count: indices.len() as u32,
+                        count: instances.len() as u32,
+                    },
+                    instance_buffer,
+                    instance_offset: 0,
+                    uniforms: InlineUniforms::EMPTY,
+                    scissor: Some((c as u32 * TILE, 0, TILE, TILE)),
+                }
+            })
+            .collect();
+        gpu.encode(&DrawList {
+            commands: &commands,
+            passes: &[RenderPass {
+                target: RenderTarget::Texture(shadow_atlas),
+                load: LoadOp::Clear([1.0; 4]),
+                depth: Some(DepthAttachment {
+                    texture: shadow_depth,
+                    clear: 0.0,
+                }),
+                first_command: 0,
+                command_count: commands.len() as u32,
+            }],
+        });
+    }
     let pipeline = gpu
         .create_pipeline(
             &PipelineDesc {
@@ -470,9 +616,45 @@ fn shot(name: &str, image: &[u8]) {
 
 fn cpu_image() -> Vec<u8> {
     let mut gpu = CpuRaster::new();
-    let image = draw(&mut gpu, ShaderCode::None, |gpu, t| gpu.read_texture(t));
+    let image = draw(
+        &mut gpu,
+        ShaderCode::None,
+        ShaderCode::None,
+        true,
+        |gpu, t| gpu.read_texture(t),
+    );
     shot("lane-cpu", &image);
     image
+}
+
+#[test]
+fn the_boxes_shadow_the_ground() {
+    let lit = {
+        let mut gpu = CpuRaster::new();
+        draw(
+            &mut gpu,
+            ShaderCode::None,
+            ShaderCode::None,
+            false,
+            |gpu, t| gpu.read_texture(t),
+        )
+    };
+    let shadowed = cpu_image();
+    // Pixels the shadow darkens a lot; none it brightens.
+    let mut darker = 0;
+    for (a, b) in lit
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(shadowed.as_chunks::<4>().0)
+    {
+        let (la, lb) = (u32::from(a[1]), u32::from(b[1]));
+        assert!(lb <= la + 1, "a shadow never brightens: {a:?} {b:?}");
+        if lb + 20 < la {
+            darker += 1;
+        }
+    }
+    assert!(darker > (W * H / 40) as usize, "{darker} pixels in shadow");
 }
 
 #[test]
@@ -512,14 +694,15 @@ mod metal {
 
     use naga::back::msl;
     use viso_gpu::{MetalBackend, ShaderLang};
-    use viso_shader::{PrimitiveKind, shader_code};
+    use viso_shader::{PrimitiveKind, scene_program_code, shader_code};
 
     #[test]
     fn metal_draws_what_the_cpu_raster_draws() {
         let reference = cpu_image();
         let mut gpu = MetalBackend::new();
         let code = shader_code(PrimitiveKind::Scene, ShaderLang::Msl).unwrap();
-        let image = draw(&mut gpu, code, |gpu, t| gpu.read_texture(t));
+        let depth = scene_program_code(SceneProgram::Depth, ShaderLang::Msl);
+        let image = draw(&mut gpu, code, depth, true, |gpu, t| gpu.read_texture(t));
         shot("lane-metal", &image);
         let (off, worst) = compare(&reference, &image, 3);
         assert!(
@@ -529,12 +712,11 @@ mod metal {
         );
     }
 
-    /// The web WGSL, translated to MSL with vertex pulling over the Metal
-    /// backend's argument table: vertices at buffer 0, instances at 1, the
-    /// uniform buffer at 2.
-    fn translated() -> String {
-        let ShaderCode::Wgsl(wgsl) = shader_code(PrimitiveKind::Scene, ShaderLang::Wgsl).unwrap()
-        else {
+    /// Scene program `program`'s web WGSL, translated to MSL with vertex
+    /// pulling over the Metal backend's argument table: vertices at buffer
+    /// 0, instances at 1, the uniform buffers from 2.
+    fn translated(program: SceneProgram) -> String {
+        let ShaderCode::Wgsl(wgsl) = scene_program_code(program, ShaderLang::Wgsl) else {
             unreachable!("a WGSL request yields WGSL");
         };
         let module = naga::front::wgsl::parse_str(wgsl).unwrap();
@@ -648,9 +830,16 @@ mod metal {
     #[test]
     fn the_translated_wgsl_draws_what_the_msl_draws() {
         let reference = cpu_image();
-        let msl = Box::leak(translated().into_boxed_str());
+        let msl = Box::leak(translated(SceneProgram::Mesh).into_boxed_str());
+        let depth = Box::leak(translated(SceneProgram::Depth).into_boxed_str());
         let mut gpu = MetalBackend::new();
-        let image = draw(&mut gpu, ShaderCode::Msl(msl), |gpu, t| gpu.read_texture(t));
+        let image = draw(
+            &mut gpu,
+            ShaderCode::Msl(msl),
+            ShaderCode::Msl(depth),
+            true,
+            |gpu, t| gpu.read_texture(t),
+        );
         let (off, worst) = compare(&reference, &image, 3);
         assert!(
             off < 0.01,

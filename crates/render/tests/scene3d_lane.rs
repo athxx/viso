@@ -8,7 +8,7 @@
 use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle, SurfaceId};
 use viso_math::{LinearStraight, Quat, Vec3, vec3};
 use viso_render::damage::Region;
-use viso_render::scene3d::{Camera, SceneFrame, SceneSprite, Shape, instance};
+use viso_render::scene3d::{Camera, SceneFrame, SceneSprite, Shadows, Shape, instance};
 use viso_render::{Border, Primitive, Quad, Rect, Renderer, Rgba, SceneDraw, SceneSlot};
 
 const W: u32 = 96;
@@ -394,4 +394,74 @@ fn metal_draws_what_the_cpu_raster_draws() {
         "{off} of {} pixels differ",
         W * H
     );
+}
+
+/// A cube over a ground slab, lit from up and to the left, seen from the
+/// front and above, casting with `shadows`.
+fn shadowed_frame(k: &mut Kit, shadows: Shadows) {
+    let mut frame = SceneFrame::new();
+    frame.camera = Camera {
+        eye: vec3(0.0, 4.0, 6.0),
+        target: Vec3::ZERO,
+        ..Camera::default()
+    };
+    frame.background = LinearStraight::new(0.0, 0.0, 1.0, 1.0);
+    frame.lighting.direction = vec3(-1.0, 1.2, 0.0);
+    frame.lighting.shadows = shadows;
+    let white = LinearStraight::new(0.8, 0.8, 0.8, 1.0);
+    frame.push(
+        Shape::Cube,
+        instance(
+            vec3(0.0, 0.0, 0.0),
+            Quat::IDENTITY,
+            vec3(0.6, 0.6, 0.6),
+            white,
+        ),
+    );
+    frame.push(
+        Shape::Cube,
+        instance(
+            vec3(0.0, -0.8, 0.0),
+            Quat::IDENTITY,
+            vec3(4.0, 0.2, 4.0),
+            white,
+        ),
+    );
+    k.r.swap_scene(SLOT, &mut frame);
+}
+
+#[test]
+fn a_cube_shadows_the_ground_beside_it() {
+    let full = rect(0.0, 0.0, W as f32, H as f32);
+    let mut lit = Kit::new();
+    shadowed_frame(&mut lit, Shadows::NONE);
+    let lit_px = lit.present(&stream(full, 1));
+    let stats = lit.r.take_scene_stats();
+    assert_eq!((stats.shadow_passes, stats.shadow_draws), (0, 0));
+
+    let mut shadowed = Kit::new();
+    shadowed_frame(&mut shadowed, Shadows::default());
+    let shadowed_px = shadowed.present(&stream(full, 1));
+    if let Some(dir) = std::env::var_os("VISO_SCENE_SHOTS") {
+        let png = viso_image::snapshot::Image::from_bgra8(W, H, &shadowed_px).to_png();
+        std::fs::write(std::path::Path::new(&dir).join("lane-shadow.png"), png).unwrap();
+    }
+    let stats = shadowed.r.take_scene_stats();
+    // One caster pass; both meshes are one cube mesh in one material, so one
+    // draw per cascade that they reach.
+    assert_eq!(stats.shadow_passes, 1);
+    assert!((1..=3).contains(&stats.shadow_draws), "{stats:?}");
+    assert_eq!(stats.passes, 1);
+
+    // The ground to the cube's right, away from the light, is darker; the
+    // ground to its left is not.
+    let right = (at(&lit_px, 66, 60), at(&shadowed_px, 66, 60));
+    let left = (at(&lit_px, 26, 60), at(&shadowed_px, 26, 60));
+    assert!(right.1[0] + 20 < right.0[0], "shadowed: {right:?}");
+    assert!(left.1[0].abs_diff(left.0[0]) <= 1, "lit: {left:?}");
+
+    // The same frame again renders nothing, shadows included.
+    shadowed.present(&stream(full, 1));
+    let stats = shadowed.r.take_scene_stats();
+    assert_eq!((stats.passes, stats.shadow_passes), (0, 0));
 }

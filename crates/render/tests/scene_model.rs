@@ -3,9 +3,9 @@
 //! hierarchy places them.
 
 use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle, SurfaceId};
-use viso_math::{LinearStraight, Mat4, Vec3, vec3};
+use viso_math::{LinearStraight, Mat4, Quat, Vec3, vec3};
 use viso_render::scene3d::model::{ModelAsset, Pose};
-use viso_render::scene3d::{Camera, SceneFrame, SceneModel};
+use viso_render::scene3d::{Camera, SceneFrame, SceneModel, Shape, instance};
 use viso_render::{Primitive, Rect, Renderer, SceneDraw, SceneSlot};
 
 const SLOT: SceneSlot = SceneSlot(0);
@@ -189,6 +189,20 @@ fn sample_models_draw() {
             pose.solve(model.rig());
         }
         let mut frame = framed(&model, &pose);
+        // A ground under it, lit from the left so its shadow falls in view.
+        let (lo, hi) = bounds(&model, &pose);
+        let (centre, radius) = ((lo + hi) * 0.5, (hi - lo).length() * 0.5);
+        let thick = radius * 0.02;
+        frame.push(
+            Shape::Cube,
+            instance(
+                vec3(centre.x, lo.y - thick, centre.z),
+                Quat::IDENTITY,
+                vec3(radius * 3.0, thick, radius * 3.0),
+                LinearStraight::new(0.7, 0.7, 0.7, 1.0),
+            ),
+        );
+        frame.lighting.direction = vec3(-0.6, 0.8, 0.35);
         let px = kit.present(&mut frame, 1);
         let image = viso_image::snapshot::Image::from_bgra8(640, 480, &px);
         let name = path.file_stem().unwrap().to_string_lossy().into_owned();

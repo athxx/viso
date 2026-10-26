@@ -56,16 +56,21 @@ pub enum SceneProgram {
     /// directional light and the environment, or unlit, or a sprite's soft
     /// disc; tone mapped and fogged.
     Mesh = 0,
+    /// A mesh's distance from the light, packed by [`pack_depth`] into an
+    /// RGBA8 target: the shadow caster pass. A masked material discards
+    /// what its mask cuts away; the frame's `view_proj` maps the world into
+    /// the cascade's tile of the shadow atlas, with reversed depth.
+    Depth = 1,
 }
 
 impl SceneProgram {
     /// Every program, by its code.
-    pub const ALL: [SceneProgram; 1] = [SceneProgram::Mesh];
+    pub const ALL: [SceneProgram; 2] = [SceneProgram::Mesh, SceneProgram::Depth];
 
     /// The vertex layout it reads.
     pub const fn vertex_schema(self) -> InstanceSchema {
         match self {
-            SceneProgram::Mesh => VERTEX_SCHEMA,
+            SceneProgram::Mesh | SceneProgram::Depth => VERTEX_SCHEMA,
         }
     }
 
@@ -150,7 +155,7 @@ pub struct SceneInstance {
     pub color: [f32; 4],
 }
 
-/// The frame's uniform block, uniform slot 0 of every scene draw. 288 bytes.
+/// The frame's uniform block, uniform slot 0 of every scene draw. 496 bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 #[repr(C)]
 pub struct FrameUniforms {
@@ -174,6 +179,15 @@ pub struct FrameUniforms {
     /// harmonic terms, each scaled so the irradiance at unit normal `n` is
     /// [`sh_irradiance`]`(sh, n)`.
     pub sh: [[f32; 4]; 9],
+    /// Each of the [`SHADOW_CASCADES`] cascades, four rows apiece: three that
+    /// take a world point `p` to `dot(row.xyz, p) + row.w` — the cascade's
+    /// x and y in `[-1, 1]` (y up) and its depth from the light in `[0, 1]`
+    /// — then its depth bias, in `x`, and the world size of one of its
+    /// texels, in `y`.
+    pub shadow: [[f32; 4]; SHADOW_CASCADES * 4],
+    /// How dark the shadow makes the direct light, `0.0` casting none; the
+    /// size of one texel of a cascade's tile, `1 / resolution`.
+    pub shadow_params: [f32; 4],
 }
 
 /// A material's uniform block, uniform slot 1 of a scene draw. 64 bytes.
@@ -238,6 +252,12 @@ pub const ENV_HEIGHT: u32 = 256;
 /// seen by a surface of roughness `k / (ENV_LEVELS - 1)`.
 pub const ENV_LEVELS: u32 = 6;
 
+/// How many cascades the directional light's shadow is split into. The
+/// shadow atlas, texture slot 6, holds them as square tiles side by side,
+/// nearest first, each texel a [`pack_depth`]ed depth from the light; it
+/// is sampled through the nearest sampler.
+pub const SHADOW_CASCADES: usize = 3;
+
 macro_rules! as_bytes {
     ($ty:ty, $size:expr) => {
         impl $ty {
@@ -277,7 +297,7 @@ macro_rules! as_bytes {
 
 as_bytes!(SceneVertex, 48);
 as_bytes!(SceneInstance, 64);
-as_bytes!(FrameUniforms, 288);
+as_bytes!(FrameUniforms, 496);
 as_bytes!(MaterialUniforms, 64);
 
 impl SceneInstance {
@@ -371,8 +391,8 @@ impl MaterialUniforms {
 mod shade;
 
 pub use shade::{
-    MeshFragment, SceneTextures, disc, env_atlas_uv, env_brdf, env_direction_uv, sh_irradiance,
-    shade_mesh, tonemap,
+    MeshFragment, SceneTextures, disc, env_atlas_uv, env_brdf, env_direction_uv, pack_depth,
+    sh_irradiance, shade_depth, shade_mesh, shadow_visibility, tonemap, unpack_depth,
 };
 
 #[inline]

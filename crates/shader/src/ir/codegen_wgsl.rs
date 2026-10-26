@@ -248,7 +248,7 @@ fn is_float(t: IrType) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::module::{builtin_irs, quad_ir};
+    use crate::ir::module::{every_ir, quad_ir};
 
     fn validate(src: &str, caps: naga::valid::Capabilities) -> naga::Module {
         let module = match naga::front::wgsl::parse_str(src) {
@@ -264,7 +264,7 @@ mod tests {
 
     #[test]
     fn every_builtin_is_valid_web_wgsl() {
-        for ir in builtin_irs() {
+        for ir in every_ir() {
             let src = emit_wgsl(&ir, WgslTarget::Web).unwrap();
             validate(&src, naga::valid::Capabilities::empty());
         }
@@ -272,7 +272,7 @@ mod tests {
 
     #[test]
     fn every_builtin_is_valid_native_wgsl() {
-        for ir in builtin_irs() {
+        for ir in every_ir() {
             let src = emit_wgsl(&ir, WgslTarget::Native).unwrap();
             validate(&src, naga::valid::Capabilities::IMMEDIATES);
         }
