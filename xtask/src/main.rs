@@ -75,7 +75,18 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
                     "viso-ende",
                     "viso-math",
                     "viso-schema",
+                    "viso-pdf",
                 ],
+                dev: &[],
+            },
+        ),
+        // PDF documents of the renderer's primitives, the facade's `pdf`
+        // feature: it reads the primitive types and nothing of the runtime.
+        (
+            "viso-pdf",
+            Allowed {
+                dir: "crates/pdf",
+                deps: &["viso-render", "viso-math"],
                 dev: &[],
             },
         ),

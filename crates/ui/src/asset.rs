@@ -541,6 +541,18 @@ impl AssetTable {
         self.revision
     }
 
+    /// Whether a resource a node shows is still on its way: its bytes being
+    /// fetched or decoded, or its raster not yet uploaded.
+    pub fn is_loading(&self) -> bool {
+        self.entries.values().any(|e| {
+            !e.users.is_empty()
+                && e.hosted.is_none()
+                && e.texture.is_none()
+                && e.payload.is_none()
+                && e.failed.is_none_or(|failed| failed < e.offered)
+        })
+    }
+
     /// How many resources the table knows.
     pub fn len(&self) -> usize {
         self.entries.len()

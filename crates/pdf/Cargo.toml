@@ -1,0 +1,14 @@
+[package]
+name = "viso-pdf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# PDF documents drawn from the renderer's primitives: vector shapes, text as
+# embedded outlines, and rasters of what has no vector form. Linked by the
+# facade's `pdf` feature only.
+[dependencies]
+viso-math = { workspace = true, features = ["std"] }
+viso-render = { workspace = true }
+miniz_oxide = { workspace = true }

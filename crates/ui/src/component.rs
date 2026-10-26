@@ -3979,6 +3979,18 @@ impl NodeStore {
         out.append(&mut self.text_reflows);
     }
 
+    /// Whether a layout queued a text reflow not yet taken.
+    #[inline]
+    pub fn has_text_reflows(&self) -> bool {
+        !self.text_reflows.is_empty()
+    }
+
+    /// Whether a node declared text not yet shaped. Scans the column: for
+    /// the cold paths that wait on text, never a frame.
+    pub fn has_text_requests(&self) -> bool {
+        self.text_request.iter().any(Option::is_some)
+    }
+
     /// Enqueue an edit intent a pointer handler recorded for `node`. It waits
     /// here until [`reconcile`](crate::text_edit::reconcile) moves it onto the
     /// node's edit buffer.

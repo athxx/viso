@@ -221,6 +221,51 @@ struct PositionedGlyph {
     origin: [f32; 2],
 }
 
+/// A glyph as a document draws it: its face at its exact size, and the
+/// text it shows.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(not(feature = "pdf"), allow(dead_code))]
+pub(crate) struct PrintGlyph {
+    pub(crate) face: FontFaceId,
+    pub(crate) glyph: u16,
+    pub(crate) size: f32,
+    /// The color its span paints it, `None` for the text's own.
+    pub(crate) color: Option<Rgba>,
+    pub(crate) emoji: bool,
+    pub(crate) origin: [f32; 2],
+    /// The bytes of the text it shows: its cluster's for the first glyph
+    /// of each, empty for the rest and for an ellipsis.
+    pub(crate) text: std::ops::Range<usize>,
+}
+
+/// A placed glyph's cluster before [`claim_clusters`]: none, for a glyph
+/// standing for no text of its own.
+const NO_CLUSTER: usize = usize::MAX;
+
+/// Gives each cluster of one run's `glyphs` (each holding its cluster's
+/// start, or [`NO_CLUSTER`]) to its first glyph, reaching to the next
+/// cluster's start or `end`, and leaves the rest of its glyphs none.
+fn claim_clusters(glyphs: &mut [PrintGlyph], end: usize) {
+    let mut starts: Vec<usize> = glyphs
+        .iter()
+        .map(|g| g.text.start)
+        .filter(|&start| start != NO_CLUSTER)
+        .collect();
+    starts.sort_unstable();
+    starts.dedup();
+    let mut claimed = Vec::with_capacity(starts.len());
+    for glyph in glyphs {
+        let start = glyph.text.start;
+        if start == NO_CLUSTER || claimed.contains(&start) {
+            glyph.text = 0..0;
+            continue;
+        }
+        claimed.push(start);
+        let next = starts.partition_point(|&s| s <= start);
+        glyph.text = start..starts.get(next).copied().unwrap_or(end).max(start);
+    }
+}
+
 /// A paragraph's lines placed in logical pixels as a [`Placing`] asks.
 #[derive(Debug, Clone, Default)]
 struct PreparedLayout {
@@ -756,6 +801,52 @@ impl TextShaper {
         Some((entry.shape_calls, &drawn.lines))
     }
 
+    /// `slot`'s text and its drawn glyphs as a document draws them, in
+    /// node-local logical pixels; `None` until it draws a layout.
+    #[cfg(feature = "pdf")]
+    pub(crate) fn print_glyphs(&self, slot: ParagraphSlot) -> Option<(Arc<str>, Vec<PrintGlyph>)> {
+        let drawn = self.slots.get(&slot)?.drawn.as_ref()?;
+        let mut glyphs = Vec::new();
+        self.place(
+            &drawn.target,
+            &drawn.lines,
+            drawn.content_em,
+            &drawn.placing,
+            Some(&mut glyphs),
+        );
+        Some((drawn.target.text.clone(), glyphs))
+    }
+
+    /// The top of each of `slot`'s lines and, after the last, the bottom of
+    /// its text, in node-local logical pixels.
+    #[cfg(feature = "pdf")]
+    pub(crate) fn line_rows(&self, slot: ParagraphSlot) -> Option<&[f32]> {
+        let drawn = self.slots.get(&slot)?.drawn.as_ref()?;
+        Some(&drawn.placed.rows)
+    }
+
+    /// The bytes, index and instance of a face a layout draws with.
+    #[cfg(feature = "pdf")]
+    pub(crate) fn face_data(&self, face: FontFaceId) -> Option<viso_text::FaceData> {
+        self.resolver
+            .face_data(face)
+            .or_else(|| self.fallback.face_data(face))
+    }
+
+    /// Glyph `glyph` of `face` as grayscale coverage at `pixels_per_em`,
+    /// through the platform, for an outline the parser cannot read.
+    #[cfg(feature = "pdf")]
+    pub(crate) fn platform_mask(
+        &self,
+        face: FontFaceId,
+        glyph: u16,
+        pixels_per_em: u16,
+    ) -> Option<viso_text::CoverageBitmap> {
+        self.color_raster
+            .rasterize_coverage_glyph(face, glyph, pixels_per_em)
+            .filter(|bitmap| !bitmap.is_empty())
+    }
+
     /// Why each fallback chose its face, why each cache missed, and where each
     /// resident glyph lives. Everything is empty without the inspector.
     pub(crate) fn inspect(&self) -> TextInspection {
@@ -1079,6 +1170,7 @@ impl TextShaper {
         lines: &[LineLayout],
         content_em: ContentWidths,
         placing: &Placing,
+        mut print: Option<&mut Vec<PrintGlyph>>,
     ) -> PreparedLayout {
         let size = placing.font_size;
         let rich = target.rich.as_deref();
@@ -1157,6 +1249,7 @@ impl TextShaper {
                 let mut pen = run.visual_inline_range.0;
                 let (from, to) = run.logical_range;
                 let own_text = from < to;
+                let printed = print.as_deref().map_or(0, Vec::len);
                 for glyph in &run.glyphs {
                     let cluster = from.0 + glyph.cluster as usize;
                     // An ellipsis paints like the text it follows.
@@ -1165,7 +1258,7 @@ impl TextShaper {
                     } else {
                         from.0.saturating_sub(1)
                     };
-                    glyphs.push(PositionedGlyph {
+                    let placed = PositionedGlyph {
                         face: run.face,
                         glyph: glyph.glyph_id,
                         bucket: look.bucket,
@@ -1175,8 +1268,29 @@ impl TextShaper {
                             offset + (pen + glyph.x_offset) * size,
                             ground - glyph.y_offset * size,
                         ],
-                    });
+                    };
+                    if let Some(print) = print.as_deref_mut() {
+                        print.push(PrintGlyph {
+                            face: placed.face,
+                            glyph: placed.glyph,
+                            size: look.size,
+                            color: paint
+                                .get(usize::from(placed.paint))
+                                .and_then(|span| span.color),
+                            emoji: placed.emoji,
+                            origin: placed.origin,
+                            text: if own_text {
+                                cluster..cluster
+                            } else {
+                                NO_CLUSTER..NO_CLUSTER
+                            },
+                        });
+                    }
+                    glyphs.push(placed);
                     pen += glyph.x_advance;
+                }
+                if let Some(print) = print.as_deref_mut() {
+                    claim_clusters(&mut print[printed..], to.0);
                 }
                 if !own_text {
                     continue;
@@ -1486,6 +1600,7 @@ impl TextShaper {
                     &committed.lines,
                     committed.content_em,
                     &entry.placing,
+                    None,
                 );
                 committed.placing = entry.placing.clone();
             }
@@ -2092,7 +2207,7 @@ impl TextShaper {
         for &face in &faces {
             self.faces.pin(face);
         }
-        let placed = self.place(&target, &lines, content_em, &placing);
+        let placed = self.place(&target, &lines, content_em, &placing, None);
         Committed {
             target,
             lines,

@@ -25,6 +25,9 @@ viso-widgets = { workspace = true }
 # sources into commits with; only a dev artifact (`hot-reload`) links it, so a
 # release app never does.
 viso-services = { workspace = true }
+viso-pdf = { workspace = true, optional = true }
+# Glyph outlines a PDF embeds.
+ttf-parser = { workspace = true, optional = true }
 viso-render = { workspace = true }
 # A headless snapshot step captures and writes its image.
 viso-image = { workspace = true }
@@ -59,7 +62,7 @@ windows-core = "0.62"
 libc = "0.2"
 
 [features]
-default = ["vm", "desktop", "native-vulkan", "rasterizer", "complex-line-break", "avif", "dates"]
+default = ["vm", "desktop", "native-vulkan", "rasterizer", "complex-line-break", "avif", "dates", "pdf"]
 # Kept small and stable on purpose — no giant feature cartesian product
 # (§5). Backends resolve from the target, not from user feature combos.
 # The desktop display backends on Linux and the BSDs (Wayland and X11, with
@@ -76,6 +79,9 @@ mobile = []
 # (`{d, date}`, `{t, time}`): CLDR's Gregorian patterns and names, under 500 KB
 # of a release binary. Off, they show as ISO 8601.
 dates = ["viso-behavior/dates"]
+# PDF documents of views (`viso::pdf`): laid out on pages, drawn as vectors,
+# text as embedded outlines.
+pdf = ["dep:viso-pdf", "dep:ttf-parser"]
 # The behavior interpreter a debug build runs `view!` behavior on. Off, every
 # view runs the Rust its behavior compiles to, in every build, and no
 # interpreter links.

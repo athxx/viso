@@ -638,7 +638,7 @@ viso/
 └── xtask/           cargo xtask check-deps 等
 ```
 
-目标（尚未建立）：`crates/schema/`（viso-schema，ADR 0042）、`integrations/`（tokio/tracing/serde/accesskit 等 adapter）、`extras/` 的其余部分（code-editor/markdown/pdf/browser/map/xr）、`tools/inspector`、`tools/studio`、`tools/packager`、`vendor/`。新增目录或 crate 时必须同步 §9、§10 与 xtask allowlist。
+目标（尚未建立）：`crates/schema/`（viso-schema，ADR 0042）、`integrations/`（tokio/tracing/serde/accesskit 等 adapter）、`extras/` 的其余部分（code-editor/markdown/pdf viewer/browser/map/xr）、`tools/inspector`、`tools/studio`、`tools/packager`、`vendor/`。新增目录或 crate 时必须同步 §9、§10 与 xtask allowlist。
 
 ### 8.1 为什么不是几十个 crate
 
@@ -864,6 +864,10 @@ GPU ABI 描述（ADR 0042），叶子 crate：instance layout 与 shader 声明�
 
 SVG 输入通道：bytes 一次性解析为规范化 vector 文档（`tree::Tree`），只依赖 `viso-math`，不依赖 renderer；不是逐帧 renderer。lower 为 retained `viso_render::Primitive` 流的一步在 `viso_render::svg`，因此 tooling 校验 SVG asset 不链接 render/gpu。
 
+### `viso-pdf`
+
+PDF 1.7 输出：页面是 `viso_render::Primitive` 流加按字形定位的文本 run，写成矢量路径、shading、Type 3 字体（带 ToUnicode，可选中复制）、透明组与 SMask；没有矢量形式的（图像、阴影、shader、scene）由调用方的 `Source` 栅格化后嵌入。不依赖 ui/gpu；facade 的 `viso::pdf` 在窗口的 store 里排版一棵分离子树、分页并提供字形与栅格。系统打印对话框不在核心，是 viso-ext 的 `viso-print`。
+
 ### `viso-image`
 
 CPU 上的 raster 图像：PNG/APNG、JPEG、GIF、WebP（有损/无损/动画）、AVIF（静图、grid、序列；8/10/12-bit，按 nclx 或 AV1 序列头的 CICP 换算，PQ/HLG 色调映射到 SDR，`clap`/`irot`/`imir`；`avif` feature，纯 Rust AV1 解码，wasm 交给浏览器）、BMP、ICO、QOI asset 解码为 premultiplied RGBA8（header 先行检查尺寸上限，按 EXIF orientation 摆正）；动画（`Animation`）流式逐帧合成到一张画布（region + blend/dispose，或解码器自行合成的整帧），内存只有画布与当前帧，循环次数与帧时长按文件，≤10 ms 的帧按 100 ms 显示；构建期把图像转换为 target 采样的 texel 格式（`convert`：16-bit packed、BC1/BC3/BC7、ETC2、ASTC 4×4/6×6/8×8 的 Viso 自有纯 Rust 编解码器 `codec`，Mitchell 重采样 `resample`，SVG 构建期光栅化 `vector`）与其容器 `texture`（`VTX1`）——解码器同时是不支持该格式的设备的 fallback；headless snapshot 的 straight-alpha 图像及其 PNG 写出与感知比较。renderer 与 CLI 共用；格式词汇来自 leaf `viso-gpu-abi`，不链接任何 backend。
@@ -963,7 +967,7 @@ CLI 依赖 `viso-dsl`、`viso-dev-protocol`、`viso-schema`、`viso-image`、`vi
 
 | crate | allowlist（ADR 0042 之后） | 仍待调整 |
 |---|---|---|
-| `viso`（facade） | runtime, ui, ui-macros, widgets, dsl（dev）, view, behavior, services, render, image, media, dev-protocol, gpu, platform, handle, text, shader, macros, ende, math, schema | `behavior` 的解释器只在 `vm` feature 下编入（ADR 0041） |
+| `viso`（facade） | runtime, ui, ui-macros, widgets, dsl（dev）, view, behavior, services, render, image, media, dev-protocol, gpu, platform, handle, text, shader, macros, ende, math, schema, pdf | `behavior` 的解释器只在 `vm` feature 下编入（ADR 0041）；`pdf` 只在 `pdf` feature 下 |
 | `viso-widgets` | ui, math | — |
 | `viso-charts`（extras） | ui, widgets, math；测试另 dev-depend viso | — |
 | `viso-ui-macros` | dsl | — |
@@ -976,6 +980,7 @@ CLI 依赖 `viso-dsl`、`viso-dev-protocol`、`viso-schema`、`viso-image`、`vi
 | `viso-ui` | render, runtime, ende, text, math, schema | — |
 | `viso-render` | math, schema, text, image, svg, shader, gpu | — |
 | `viso-svg` | math | — |
+| `viso-pdf` | render, math | — |
 | `viso-image` | schema, gpu-abi, svg, math | — |
 | `viso-media` | handle（各 target 的媒体栈） | — |
 | `viso-text` | glyph-a8 | — |

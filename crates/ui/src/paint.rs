@@ -77,6 +77,28 @@ pub fn paint_with_transforms(
     paint_walk(store, root, out, table, &mut ());
 }
 
+/// [`paint_with_transforms`], recording into `owned` each node painted and
+/// the stream range of its own drawables — its box and its content, not its
+/// descendants' — in paint order.
+pub fn paint_owned(
+    store: &NodeStore,
+    root: NodeId,
+    out: &mut Vec<Primitive>,
+    table: &mut TransformTable,
+    owned: &mut Vec<(NodeId, core::ops::Range<usize>)>,
+) {
+    struct Owned<'a>(&'a mut Vec<(NodeId, core::ops::Range<usize>)>);
+    impl PaintSpans for Owned<'_> {
+        fn open(&mut self, _: NodeId, _: usize) -> usize {
+            0
+        }
+        fn close(&mut self, _: usize, node: NodeId, span: Span) {
+            self.0.push((node, span.own..span.own_end));
+        }
+    }
+    paint_walk(store, root, out, table, &mut Owned(owned));
+}
+
 mod splice;
 
 pub(crate) use splice::PaintIndex;

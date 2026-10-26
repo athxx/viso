@@ -304,6 +304,14 @@ impl GradientLutAtlas {
     }
 }
 
+impl LutKey {
+    /// The ramp's color at `t`, folded by its extend mode as a baked row
+    /// holds it, unquantized.
+    pub fn sample(&self, t: f32) -> LinearStraight {
+        eval_stops(&self.stops, fold_extend(t, self.extend), self.interp)
+    }
+}
+
 /// Fold a gradient parameter `t` into `[0, 1]` per the extend mode. This is
 /// baked into the LUT (not applied at sample time), so a repeated/mirrored
 /// gradient still samples a clamped texture.

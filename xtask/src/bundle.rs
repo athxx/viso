@@ -198,6 +198,7 @@ fn ios(o: &Options, simulator: bool) -> Result<PathBuf, String> {
         &app.path,
         o.sign.as_deref(),
         profile,
+        &[],
         &out.join(format!("{bin}.sign")),
     )?;
 
@@ -257,6 +258,7 @@ fn android(o: &Options) -> Result<PathBuf, String> {
         &shell,
         flavor,
         &[],
+        &Default::default(),
     ))?;
 
     if o.run {

@@ -74,6 +74,8 @@ mod headless;
 #[cfg(any(feature = "hot-reload", feature = "headless"))]
 mod inspect;
 pub mod native;
+#[cfg(feature = "pdf")]
+pub mod pdf;
 mod persist;
 mod places;
 mod playback;
@@ -848,6 +850,9 @@ struct AppDriver<A: Application> {
     pending_urls: Vec<String>,
     /// What the session shows in the desktop shell.
     shell: shell::Shown,
+    /// The PDF documents being written, each in the window it is built in.
+    #[cfg(feature = "pdf")]
+    pdf_jobs: Vec<(WindowId, pdf::Running)>,
     /// The windows whose size and place are kept across launches.
     places: places::Places,
     /// The development session: the mounted views, their watched files and
@@ -1278,6 +1283,8 @@ impl<A: Application> AppDriver<A> {
             menu_picks: Default::default(),
             pending_urls: Vec::new(),
             shell: shell::Shown::default(),
+            #[cfg(feature = "pdf")]
+            pdf_jobs: Vec::new(),
             places: places::Places::default(),
             #[cfg(feature = "hot-reload")]
             hot_reload: hot_reload::HotReloadSession::default(),
@@ -1311,6 +1318,32 @@ impl<A: Application> AppDriver<A> {
         if let Some(player) = &mut self.player {
             player.adopt(ws.window);
         }
+    }
+
+    /// Moves each PDF document being written on by a frame, taking those
+    /// asked for since the last; each is built in the first window.
+    #[cfg(feature = "pdf")]
+    fn drive_pdfs(&mut self, cx: &mut RuntimeCx<'_>) {
+        for (pdf, done) in pdf::take_asked() {
+            let job = pdf::Running::new(pdf, done);
+            match self.windows.first() {
+                Some(ws) => self.pdf_jobs.push((ws.window, job)),
+                None => job.fail(services::ServiceError::Unsupported),
+            }
+        }
+        let windows = &mut self.windows;
+        self.pdf_jobs.retain_mut(|(window, job)| {
+            match windows.iter_mut().find(|ws| ws.window == *window) {
+                Some(ws) => {
+                    let finished = job.step(ws);
+                    if !finished {
+                        cx.request_redraw(ws.window);
+                    }
+                    !finished
+                }
+                None => false,
+            }
+        });
     }
 
     /// Checks the frame against the session's hard limits: over one, every
@@ -2993,6 +3026,8 @@ fn outside_data(offer: &viso_runtime::DropOffer) -> viso_ui::DragData {
 impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
     fn on_launch(&mut self, cx: &mut RuntimeCx<'_>) {
         shell::launch(cx);
+        #[cfg(feature = "pdf")]
+        pdf::launch(cx.loop_waker());
         // Construct the user application now that the pump is live, then take the
         // faces it registered through `AppCx::load_font` so every window opened
         // this session loads them ahead of the system fallbacks.
@@ -4949,6 +4984,8 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     }
                 }
                 self.watch_budget(cx);
+                #[cfg(feature = "pdf")]
+                self.drive_pdfs(cx);
                 #[cfg(feature = "headless")]
                 if let (Some(script), Some(ws)) = (&mut self.script, self.windows.first()) {
                     let mounts = self.harness.mounts();
@@ -5026,7 +5063,13 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 false
             }
         };
+        // A PDF document being written lays out and settles over frames.
+        #[cfg(feature = "pdf")]
+        let writing = !self.pdf_jobs.is_empty();
+        #[cfg(not(feature = "pdf"))]
+        let writing = false;
         scripted
+            || writing
             || self
                 .windows
                 .iter()

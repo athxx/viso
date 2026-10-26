@@ -163,7 +163,7 @@ pub use length::{
 pub use long_press::{LONG_PRESS, LongPressSample, deliver_long_presses};
 pub use node::{ArenaFull, ChildIds, Children, NodeArena, NodeId, NodeIndex, NodeLinks, TreeLinks};
 pub use notice::{Notice, NoticeHandler, NoticeKinds, deliver_notices};
-pub use paint::{paint_tree, paint_with_transforms};
+pub use paint::{paint_owned, paint_tree, paint_with_transforms};
 pub use pinch::{
     PinchPhase, PinchSample, TrackpadPinch, WHEEL_PINCH_REST, deliver_pinch_ends,
     route_trackpad_pinch, route_wheel_zoom,
