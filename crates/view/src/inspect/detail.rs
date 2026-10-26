@@ -430,6 +430,20 @@ fn groups(store: &NodeStore, id: NodeId) -> Vec<PropertyGroup> {
             add(&mut content, "layers", plot.layers.len().to_string());
             add(&mut content, "marked", plot.mark.is_some().to_string());
         }
+        Some(Content::Drawing(drawing)) => {
+            add(&mut content, "kind", "drawing".into());
+            add(
+                &mut content,
+                "primitives",
+                drawing.primitives().len().to_string(),
+            );
+            let extent = drawing.extent();
+            add(
+                &mut content,
+                "extent",
+                format!("{}x{}", number(extent.x), number(extent.y)),
+            );
+        }
         Some(Content::PageDots(dots)) => {
             add(&mut content, "kind", "page_dots".into());
             add(&mut content, "count", dots.count.to_string());

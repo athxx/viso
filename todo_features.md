@@ -720,3 +720,67 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
   only, platform style).
 - [x] Access keys on buttons, checks and labelled fields (`&` mnemonics, Alt+letter,
   cues while Alt is held) beyond the menu bar.
+
+## W17 — Maps (`extras/map`, data and navigation in viso-ext)
+
+A vector map view an app embeds like any control, offline-first, drawn through the
+retained renderer: tiles are nodes whose meshes are built once off the main thread, and
+panning, zooming between levels and rotating only move transform roots, so a steady pan
+uploads nothing. Format readers, network sources and routing are not UI and live in
+viso-ext.
+
+- [x] Placement and seams: `extras/map` (`viso-map`) on ui, widgets, render, text and
+  math (check-deps allowlist, Architecture §10); a general retained-drawing node content
+  in `viso-ui` (primitives in node-local space, no map knowledge); a `TileSource` trait
+  (`request(tile) -> Reply<Option<TileData>>`, cancel) so any reader plugs in.
+  Built `extras/map` on ui, widgets, render, text, math and services (allowlist,
+  Architecture §8/§10); `Content::Drawing` (`viso_ui::Drawing`: shared primitives in a
+  drawing space mapped onto the box, compared by identity, PAINT only); `viso_ui::work`,
+  a resident worker pool the facade sizes from the footprint and drains inline where no
+  thread runs; `TileSource` (`request -> Reply<Option<Vec<u8>>>`, `cancel`) with every
+  `Fn(TileId) -> Reply<..>` a source and a `MemorySource`. Unit tests in ui and map.
+- [ ] Geo math and camera: Web Mercator, lon/lat ↔ world ↔ view, fractional zoom,
+  bearing, bounds and padding, `fit_bounds`, min/max zoom and a bounded region,
+  `fly_to` (smooth zoom-out-pan-in) and `ease_to`, camera state as typed props and
+  events (`.vs` bindable).
+- [ ] Gestures and input: drag pan with fling, pinch zoom about the focal point,
+  two-finger rotate (snapping to north), wheel/trackpad zoom and pan, double-tap zoom
+  in, two-finger tap zoom out, keyboard (arrows, +/-, rotate), focus and semantics
+  (role, label, center and zoom as value, keyboard equivalents for every gesture).
+- [ ] Tile pyramid: the covering set for the rotated view, parent fallback while
+  children load, overzoom past the source's max zoom, prefetch ring, stale requests
+  cancelled, a byte-bounded LRU cache, cross-fade on arrival, one node per tile.
+- [ ] Vector tiles: MVT decode (protobuf, geometry commands, properties, gzip),
+  features filtered by the style before tessellation, on worker threads.
+- [ ] Tessellation: polygons with holes (AA fringe, clipped to the tile square), lines
+  with joins, caps and dashes held at a constant screen width across fractional zoom,
+  points; meshes per style layer in tile-local units; no main-thread geometry.
+- [ ] Style: a typed style (background, fill, line, symbol, circle, raster, hillshade)
+  with filters, zoom stops and data-driven values; light and dark built-in styles for
+  the OpenMapTiles and Shortbread schemas; theme switching without refetching.
+- [ ] Labels and symbols: point and line-following labels shaped by `viso-text`
+  (scripts, CJK, `name:xx` fallback to the reader's locale), collision with priority,
+  kept upright under rotation, fade in and out, SVG icons and road shields, a label
+  pass per camera change bounded in time.
+- [ ] Raster and terrain: raster XYZ layers (PNG, JPEG, WebP), hillshade from DEM
+  tiles (Terrarium and Mapbox RGB encodings).
+- [ ] Overlays: markers that are ordinary components anchored at lon/lat, polylines
+  (route casing, traveled part dimmed), polygons, circles in meters, a GeoJSON source
+  styled like tile data, clustering, the user's position puck with heading and
+  accuracy.
+- [ ] Queries and events: tap and long-press at lon/lat, rendered features at a point,
+  viewport changed, marker tapped.
+- [ ] Tilt and 3D (after W14): pitch with perspective, extruded buildings, 3D terrain.
+- [ ] Performance: a pan or rotate frame uploads nothing and allocates nothing; tile
+  build and label budgets; memory caps; benches beside makepad's map example.
+- [ ] `viso-ext/viso-tiles`: PMTiles v3 (local file and HTTP range reads), MBTiles
+  (read-only SQLite), XYZ over HTTP through `viso-net` with a disk cache, offline region
+  downloads with progress.
+- [ ] `viso-ext/viso-map-nav`: place and address search with prefix completion and
+  categories, a routing graph built from OSM (car, bike, foot, turn restrictions), A*
+  routes, turn-by-turn maneuvers, a navigation session (map matching, progress,
+  off-route and reroute), elevation profiles from DEM tiles.
+- [ ] Map data tooling in viso-ext: OSM PBF of a region → a PMTiles base map, a search
+  index and a routing graph.
+- [ ] Example: an offline navigator (search, long-press to route, simulated drive with
+  turn banners) run on desktop, mobile and the web.

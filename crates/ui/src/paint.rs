@@ -878,6 +878,7 @@ pub(crate) fn paint_content(
         Content::ColorPlane(plane) => plane.paint(world, out),
         Content::Shimmer(shimmer) => shimmer.paint(world, out),
         Content::Plot(plot) => plot.paint(world, false, out),
+        Content::Drawing(drawing) => drawing.paint(world, out),
         // Segments read their container's children, which only a node's own
         // paint reaches.
         Content::Segments(_) | Content::Days(_) => {}

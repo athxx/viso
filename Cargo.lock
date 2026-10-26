@@ -3279,6 +3279,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "viso-map"
+version = "0.0.0"
+dependencies = [
+ "miniz_oxide",
+ "viso",
+ "viso-math",
+ "viso-render",
+ "viso-services",
+ "viso-text",
+ "viso-ui",
+ "viso-widgets",
+]
+
+[[package]]
 name = "viso-math"
 version = "0.0.0"
 dependencies = [

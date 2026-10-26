@@ -1267,6 +1267,13 @@ impl<A: Application> AppDriver<A> {
 
     fn new(services: Option<services::Services>) -> Self {
         footprint::install(A::memory_budget());
+        // A headless build runs off-loop jobs inline, to completion each
+        // frame, so what a run shows never depends on the machine's speed.
+        viso_ui::work::configure(if cfg!(feature = "headless") {
+            0
+        } else {
+            footprint::workers()
+        });
         shell::begin();
         Self {
             app: None,
@@ -4279,6 +4286,13 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // run each finished one's continuation; what it writes joins
                     // this frame's transaction. No woken task (the steady case)
                     // takes no lock and polls nothing.
+                    // Off-loop jobs a build without worker threads runs here:
+                    // all of them headless, else an idle slice.
+                    viso_ui::work::run_inline(if cfg!(feature = "headless") {
+                        std::time::Duration::MAX
+                    } else {
+                        std::time::Duration::from_millis(4)
+                    });
                     if ws.store.tasks_woken() {
                         ws.store.poll_tasks(&mut ws.continuations);
                         for then in ws.continuations.drain(..).flatten() {
@@ -4979,7 +4993,10 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // falls idle, holding the zero-CPU-when-idle contract.
                     // Text the worker still owes is committed by a later frame,
                     // so keep beating until it lands.
-                    if ws.is_animating() || ws.text_work_pending() {
+                    if ws.is_animating()
+                        || ws.text_work_pending()
+                        || viso_ui::work::inline_pending()
+                    {
                         cx.request_redraw(ws.window);
                     }
                 }
@@ -5070,10 +5087,9 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         let writing = false;
         scripted
             || writing
-            || self
-                .windows
-                .iter()
-                .any(|w| w.is_animating() || w.text_work_pending())
+            || self.windows.iter().any(|w| {
+                w.is_animating() || w.text_work_pending() || viso_ui::work::inline_pending()
+            })
     }
 
     fn next_timer_deadline(&self) -> Option<viso_runtime::Instant> {

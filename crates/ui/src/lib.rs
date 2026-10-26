@@ -31,6 +31,7 @@ pub mod cursor;
 pub mod dirty;
 pub mod drag;
 pub mod drag_drop;
+pub mod drawing;
 mod edit_history;
 pub mod feedback;
 pub mod field_input;
@@ -103,6 +104,7 @@ pub mod viewer;
 pub mod virtual_grid;
 pub mod virtual_list;
 pub mod window;
+pub mod work;
 
 pub use animation::{
     AnimationEnd, AnimationEndHandler, AnimationId, AnimationRegistry, CubicBezier, Curve, Easing,
@@ -129,6 +131,7 @@ pub use drag_drop::{
     ArrivalPhase, DragAccept, DragData, DragEnd, DragItem, DragKind, DropEvent, DropOperation,
     DropPhase, DropTarget,
 };
+pub use drawing::Drawing;
 pub use flush::{
     ADAPTIVE_ROUNDS, AdaptiveCycle, EffectsRan, ReactiveCycle, SETTLE_ROUNDS, Unsettled,
     run_effects, settle_adaptive, settle_states,

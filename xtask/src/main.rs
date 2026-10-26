@@ -183,6 +183,25 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
                 dev: &["viso"],
             },
         ),
+        // The map view is an optional extra over the widgets: retained
+        // drawings and transform roots of the UI, meshes of the renderer,
+        // labels shaped by the text runtime, and the services' replies for
+        // asynchronous tiles. Its tests drive the facade headless.
+        (
+            "viso-map",
+            Allowed {
+                dir: "extras/map",
+                deps: &[
+                    "viso-ui",
+                    "viso-widgets",
+                    "viso-render",
+                    "viso-text",
+                    "viso-math",
+                    "viso-services",
+                ],
+                dev: &["viso"],
+            },
+        ),
         // dsl works against a schema/registry, NOT concrete widgets or the
         // runtime: it emits schema data (`viso-schema`)
         // and dev-link patches (`viso-dev-protocol`), encodes them with

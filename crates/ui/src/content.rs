@@ -175,6 +175,9 @@ pub enum Content {
     /// and the one under the pointer. A container's content, sizing it no
     /// further.
     Days(crate::calendar::Days),
+    /// A retained drawing: shared primitives mapped into the node's box. Its
+    /// leaf sizes it.
+    Drawing(Box<crate::drawing::Drawing>),
 }
 
 /// An image a brush node samples: the resource its texture parameter names,
@@ -215,6 +218,7 @@ impl Content {
             | Content::Scene { .. }
             | Content::Shimmer(_)
             | Content::Plot(_)
+            | Content::Drawing(_)
             | Content::Segments(_)
             | Content::Days(_) => Vec2::ZERO,
         }
@@ -239,6 +243,7 @@ impl Content {
             | Content::Scene { .. }
             | Content::Shimmer(_)
             | Content::Plot(_)
+            | Content::Drawing(_)
             | Content::Segments(_)
             | Content::Days(_) => 0.0,
         }
@@ -265,6 +270,7 @@ impl Content {
             | Content::ColorPlane(_)
             | Content::Shimmer(_)
             | Content::Segments(_)
+            | Content::Drawing(_)
             | Content::Days(_) => None,
         }
     }

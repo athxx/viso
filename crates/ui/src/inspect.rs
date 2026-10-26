@@ -691,7 +691,8 @@ fn kind_of(content: Option<&Content>) -> InspectKind {
             | Content::Slider(_)
             | Content::ColorPlane(_)
             | Content::Shimmer(_)
-            | Content::Plot(_),
+            | Content::Plot(_)
+            | Content::Drawing(_),
         ) => InspectKind::Path,
         Some(Content::Shader { .. }) => InspectKind::Shader,
         Some(Content::Asset { .. }) => InspectKind::Asset,

@@ -1,0 +1,23 @@
+[package]
+name = "viso-map"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# A vector map view: tiles of any source decoded and tessellated off the
+# loop thread into retained drawings, a camera that moves transform roots
+# only, labels shaped by the text runtime, and markers that are ordinary
+# components. Optional, outside the default widget set; the tile readers,
+# network sources and routing live in viso-ext.
+[dependencies]
+viso-math = { workspace = true, features = ["std"] }
+viso-render = { workspace = true }
+viso-services = { workspace = true }
+viso-text = { workspace = true }
+viso-ui = { workspace = true }
+viso-widgets = { workspace = true }
+miniz_oxide = { workspace = true }
+
+[dev-dependencies]
+viso = { workspace = true, features = ["headless"] }

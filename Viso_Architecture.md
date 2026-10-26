@@ -629,6 +629,7 @@ viso/
 │   ├── behavior/  view/   viso-behavior（VM）/ viso-view（compiled view 运行时）
 │   └── services/
 ├── extras/charts/   viso-charts（折线/面积/柱状/散点图与 sparkline，选装）
+├── extras/map/      viso-map（矢量地图视图：瓦片金字塔、相机、标注、覆盖物，选装）
 ├── tools/project/   viso-project（项目发现/配置/构建身份）
 ├── tools/package/   viso-package（打包/图标/资源转换）
 ├── tools/cli/       viso-cli（`viso` 命令：参数、输出、exit code）
@@ -638,7 +639,7 @@ viso/
 └── xtask/           cargo xtask check-deps 等
 ```
 
-目标（尚未建立）：`crates/schema/`（viso-schema，ADR 0042）、`integrations/`（tokio/tracing/serde/accesskit 等 adapter）、`extras/` 的其余部分（code-editor/markdown/pdf viewer/browser/map/xr）、`tools/inspector`、`tools/studio`、`tools/packager`、`vendor/`。新增目录或 crate 时必须同步 §9、§10 与 xtask allowlist。
+目标（尚未建立）：`crates/schema/`（viso-schema，ADR 0042）、`integrations/`（tokio/tracing/serde/accesskit 等 adapter）、`extras/` 的其余部分（code-editor/markdown/pdf viewer/browser/xr）、`tools/inspector`、`tools/studio`、`tools/packager`、`vendor/`。新增目录或 crate 时必须同步 §9、§10 与 xtask allowlist。
 
 ### 8.1 为什么不是几十个 crate
 
@@ -970,6 +971,7 @@ CLI 依赖 `viso-dsl`、`viso-dev-protocol`、`viso-schema`、`viso-image`、`vi
 | `viso`（facade） | runtime, ui, ui-macros, widgets, dsl（dev）, view, behavior, services, render, image, media, dev-protocol, gpu, platform, handle, text, shader, macros, ende, math, schema, pdf | `behavior` 的解释器只在 `vm` feature 下编入（ADR 0041）；`pdf` 只在 `pdf` feature 下 |
 | `viso-widgets` | ui, math | — |
 | `viso-charts`（extras） | ui, widgets, math；测试另 dev-depend viso | — |
+| `viso-map`（extras） | ui, widgets, render, text, math, services；测试另 dev-depend viso | — |
 | `viso-ui-macros` | dsl | — |
 | `viso-lsp` | dsl | — |
 | `viso-cli` | project, package, dsl, dev-protocol, schema, ende, image, svg, text | — |
