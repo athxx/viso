@@ -22,9 +22,14 @@ format, and drawn by one node without being copied each time the node moves.
   fringe extruded one point stays one point, at any scale of the root it moves with. Damage
   placement grows a mesh's placed extent by its largest extrusion after the place, so a
   shrinking root never under-damages.
+- `Mesh` holds its buffers shared (`Arc<[MeshVertex]>`, `Arc<[u32]>`) and a `MeshPlace` (a scale
+  per axis, then a shift) applied to positions when lowered. The mesh store keeps the shared
+  buffers instead of a copy and treats the same buffers at the same place as unchanged
+  without looking at a vertex; a new place is a geometry change. A large mesh is held once on
+  the CPU however often it is painted, moved or re-uploaded.
 - `viso-ui` gains `Content::Drawing` (`viso_ui::Drawing`): shared primitives (`Arc<[Primitive]>`)
   in a drawing space of a given extent, mapped onto the node's box at paint (quads, images,
-  paths, meshes; extrusions unscaled). It has no intrinsic size, is compared by identity
+  paths; meshes by their place, so no vertex is copied; extrusions unscaled). It has no intrinsic size, is compared by identity
   and marks PAINT only, so moving or resizing its node copies and rebuilds nothing, and a
   node that only moves with a transform root does not repaint.
 - `viso-ui` gains `viso_ui::work`: one resident pool of worker threads for off-loop jobs,

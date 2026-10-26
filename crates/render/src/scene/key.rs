@@ -50,6 +50,13 @@ pub(crate) fn pod_bytes<T: viso_gpu::GpuPod>(values: &[T]) -> &[u8] {
     unsafe { core::slice::from_raw_parts(values.as_ptr().cast::<u8>(), size_of_val(values)) }
 }
 
+/// The bytes of an index list.
+fn index_bytes(indices: &[u32]) -> &[u8] {
+    // SAFETY: `u32` has no padding and every bit pattern is valid; the view
+    // reads initialized memory only and lives as long as the borrow.
+    unsafe { core::slice::from_raw_parts(indices.as_ptr().cast::<u8>(), size_of_val(indices)) }
+}
+
 fn pod<T: viso_gpu::GpuPod>(key: Key, value: &T) -> Key {
     key.bytes(pod_bytes(std::slice::from_ref(value)))
 }
@@ -120,7 +127,10 @@ impl Scene {
                 extent = e
                     .vertices
                     .iter()
-                    .map(|v| Rect::new(v.pos[0], v.pos[1], 0.0, 0.0))
+                    .map(|v| {
+                        let p = e.place.apply(v.pos);
+                        Rect::new(p[0], p[1], 0.0, 0.0)
+                    })
                     .reduce(Rect::union);
                 reach = e
                     .vertices
@@ -128,8 +138,14 @@ impl Scene {
                     .map(|v| v.extrude[0].abs().max(v.extrude[1].abs()))
                     .fold(0.0, f32::max)
                     * std::f32::consts::SQRT_2;
-                let key = key.bytes(pod_bytes(&e.vertices));
-                e.indices.iter().fold(key, |k, &i| k.word(u64::from(i)))
+                key.bytes(pod_bytes(&e.vertices))
+                    .bytes(index_bytes(&e.indices))
+                    .f32s(&[
+                        e.place.scale[0],
+                        e.place.scale[1],
+                        e.place.offset[0],
+                        e.place.offset[1],
+                    ])
             }),
             StoreRef::Composite { pass, slot } => self
                 .composites

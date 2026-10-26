@@ -31,8 +31,8 @@ use viso_gpu::TextureId;
 
 use crate::primitive::{
     AnalyticCapsuleInstance, AnalyticEllipseInstance, AnalyticLineInstance, AnalyticRRectInstance,
-    GlyphInstance, GradientInstance, ImageDraw, ImageInstance, MeshVertex, Path, QuadInstance,
-    Rect, ShaderDraw, ShadowInstance,
+    GlyphInstance, GradientInstance, ImageDraw, ImageInstance, Path, QuadInstance, Rect,
+    ShaderDraw, ShadowInstance,
 };
 
 use super::bounds::Bounds;
@@ -479,12 +479,11 @@ impl Scene {
     /// planes, record its slot.
     pub fn ingest_mesh(
         &mut self,
-        vertices: &[MeshVertex],
-        indices: &[u32],
+        mesh: &crate::primitive::Mesh,
         context: EmitContext,
         bounds: Bounds,
     ) -> PrimitiveId {
-        let (slot, dirty) = self.meshes.ingest(vertices, indices);
+        let (slot, dirty) = self.meshes.ingest(mesh);
         self.apply_planes(dirty);
         self.record(StoreRef::Mesh(slot), context, bounds)
     }

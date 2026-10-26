@@ -91,13 +91,14 @@ pub use primitive::{
     AnalyticRRectInstance, AnalyticShadow, Border, ColorTransformInstance, Corners, DashPattern,
     Fit, FrostedMaterial, GlyphInstance, GlyphInstanceData, GlyphLane, GlyphRunDraw, Gradient,
     GradientInstance, GradientKind, GradientStop, ImageDraw, ImageInstance, ImageRect, LayerClip,
-    LineCap, LineJoin, MaterialLane, MaterialLaneNeeds, Mesh, MeshVertex, NativeMaterialRegion,
-    NineSlice, Path, PathCmd, PathShadow, Point, Primitive, ProgramSlot, ProgramTextures, Quad,
-    QuadInstance, Rect, ResourcePolicy, ResourceRoute, ResourceRouteError, Rgba, RoundMask,
-    SceneDraw, SceneSlot, ShaderDraw, ShadowInstance, ShadowShape, SpriteRegion, Stroke,
-    StrokeAlign, TiledImage, TransformSlot, analytic_capsule_schema, analytic_ellipse_schema,
-    analytic_line_schema, analytic_rrect_schema, analytic_shadow_schema, color_transform_schema,
-    glyphrun_schema, gradient_schema, image_schema, mesh_schema, quad_schema,
+    LineCap, LineJoin, MaterialLane, MaterialLaneNeeds, Mesh, MeshPlace, MeshVertex,
+    NativeMaterialRegion, NineSlice, Path, PathCmd, PathShadow, Point, Primitive, ProgramSlot,
+    ProgramTextures, Quad, QuadInstance, Rect, ResourcePolicy, ResourceRoute, ResourceRouteError,
+    Rgba, RoundMask, SceneDraw, SceneSlot, ShaderDraw, ShadowInstance, ShadowShape, SpriteRegion,
+    Stroke, StrokeAlign, TiledImage, TransformSlot, analytic_capsule_schema,
+    analytic_ellipse_schema, analytic_line_schema, analytic_rrect_schema, analytic_shadow_schema,
+    color_transform_schema, glyphrun_schema, gradient_schema, image_schema, mesh_schema,
+    quad_schema,
 };
 pub use program::{BrushProgram, IDLE_PIPELINES, ProgramError};
 // The brush profile a `ShaderDraw`'s parameters are encoded by, named in this
@@ -443,8 +444,8 @@ pub fn test_scene(texture: TextureId, glyphs: GlyphRunDraw) -> Vec<Primitive> {
         // higher-level primitives don't cover): a single opaque teal triangle in
         // the top-right, interior `edge = 1` so it fills solid. It shares the
         // exact buffers/pipeline that `Path` lowers into.
-        Primitive::Mesh(Mesh {
-            vertices: vec![
+        Primitive::Mesh(Mesh::new(
+            vec![
                 MeshVertex {
                     pos: [104.0, 8.0],
                     color: [0.0, 0.7, 0.7, 1.0],
@@ -464,8 +465,8 @@ pub fn test_scene(texture: TextureId, glyphs: GlyphRunDraw) -> Vec<Primitive> {
                     extrude: [0.0, 0.0],
                 },
             ],
-            indices: vec![0, 1, 2],
-        }),
+            vec![0, 1, 2],
+        )),
         // An analytic rounded rect with four *different* corner radii and a
         // border, tucked against the left edge. Its per-corner SDF and the
         // inner/outer border AA are captured by the golden the same way the

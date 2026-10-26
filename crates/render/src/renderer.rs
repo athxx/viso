@@ -2791,12 +2791,8 @@ impl Renderer {
                     self.scene.ingest_shader(draw, ctx, bounds);
                 }
                 Primitive::Mesh(mesh) => {
-                    self.scene.ingest_mesh(
-                        &mesh.vertices,
-                        &mesh.indices,
-                        ctx,
-                        crate::scene::bounds::Bounds::default(),
-                    );
+                    self.scene
+                        .ingest_mesh(mesh, ctx, crate::scene::bounds::Bounds::default());
                 }
                 Primitive::GlyphRun(run) => {
                     if run.glyphs.is_empty() {
@@ -3863,7 +3859,16 @@ impl Renderer {
                 let e = self.scene.meshes.get(id).expect("mesh slot");
                 let index_start = self.mesh_index_scratch.len() as u32;
                 let base = self.mesh_vertex_scratch.len() as u32;
-                self.mesh_vertex_scratch.extend_from_slice(&e.vertices);
+                if e.place.is_identity() {
+                    self.mesh_vertex_scratch.extend_from_slice(&e.vertices);
+                } else {
+                    let place = e.place;
+                    self.mesh_vertex_scratch
+                        .extend(e.vertices.iter().map(|v| MeshVertex {
+                            pos: place.apply(v.pos),
+                            ..*v
+                        }));
+                }
                 self.mesh_index_scratch
                     .extend(e.indices.iter().map(|&i| base + i));
                 self.translate_vertices(base as usize, origin);

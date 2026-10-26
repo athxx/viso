@@ -250,10 +250,10 @@ fn extruded_line() -> Vec<Primitive> {
     };
     vec![
         Primitive::Transform(TransformSlot(0)),
-        Primitive::Mesh(viso_render::Mesh {
-            vertices: vec![v(8.0, -1.0), v(24.0, -1.0), v(24.0, 1.0), v(8.0, 1.0)],
-            indices: vec![0, 1, 2, 0, 2, 3],
-        }),
+        Primitive::Mesh(viso_render::Mesh::new(
+            vec![v(8.0, -1.0), v(24.0, -1.0), v(24.0, 1.0), v(8.0, 1.0)],
+            vec![0, 1, 2, 0, 2, 3],
+        )),
         Primitive::TransformEnd,
     ]
 }

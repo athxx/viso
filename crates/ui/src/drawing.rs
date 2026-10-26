@@ -8,15 +8,16 @@
 //! transform root (a pan, a zoom, a spin) does not even repaint. The drawing
 //! space runs from `(0, 0)` to its `extent`, which maps onto the node's box —
 //! stretched to fill it on each axis — so the same primitives draw at any
-//! size. Mesh vertices keep their screen extrusion, unscaled, so a line
-//! built that way keeps its width at every size.
+//! size. A mesh is placed, not copied: its shared buffers go to the
+//! renderer as they are, and its vertices keep their screen extrusion,
+//! unscaled, so a line built that way keeps its width at every size.
 //!
 //! The primitives a drawing maps are the geometric ones: quads, images,
 //! paths and meshes. Anything else it holds is skipped.
 
 use std::sync::Arc;
 
-use viso_render::{ImageDraw, Mesh, Path, PathCmd, Point, Primitive, Quad, Rect};
+use viso_render::{ImageDraw, MeshPlace, Path, PathCmd, Point, Primitive, Quad, Rect};
 
 use crate::component::{BuildCx, Handle, LeafStyle, NodeStore};
 use crate::content::Content;
@@ -135,18 +136,11 @@ impl Map {
                 cmds: path.cmds.iter().map(|&c| self.cmd(c)).collect(),
                 ..(**path).clone()
             })),
-            Primitive::Mesh(mesh) => Primitive::Mesh(Mesh {
-                vertices: mesh
-                    .vertices
-                    .iter()
-                    .map(|v| {
-                        let mut v = *v;
-                        v.pos = [self.x(v.pos[0]), self.y(v.pos[1])];
-                        v
-                    })
-                    .collect(),
-                indices: mesh.indices.clone(),
-            }),
+            // The shared buffers, placed: no vertex is copied.
+            Primitive::Mesh(mesh) => Primitive::Mesh(mesh.clone().placed(MeshPlace {
+                scale: [self.sx, self.sy],
+                offset: [self.ox, self.oy],
+            })),
             _ => return None,
         })
     }
@@ -217,10 +211,10 @@ mod tests {
                     radius: 0.0,
                     border: Border::NONE,
                 }),
-                Primitive::Mesh(Mesh {
-                    vertices: vec![v(0.0, 0.0), v(4.0, 0.0), v(4.0, 4.0)],
-                    indices: vec![0, 1, 2],
-                }),
+                Primitive::Mesh(viso_render::Mesh::new(
+                    vec![v(0.0, 0.0), v(4.0, 0.0), v(4.0, 4.0)],
+                    vec![0, 1, 2],
+                )),
                 Primitive::LayerEnd,
             ],
             Vec2 { x: 4.0, y: 4.0 },
@@ -253,7 +247,7 @@ mod tests {
         let Primitive::Mesh(m) = &out[1] else {
             panic!("a mesh")
         };
-        assert_eq!(m.vertices[2].pos, [50.0, 28.0]);
+        assert_eq!(m.place.apply(m.vertices[2].pos), [50.0, 28.0]);
     }
 
     #[test]

@@ -1790,12 +1790,73 @@ pub struct PathShadow {
 /// straight linear color, and an AA `edge` weight (`1` interior, `0` fringe),
 /// exactly matching [`MeshVertex`]. This is the escape hatch for geometry Viso's
 /// higher-level primitives don't cover; [`Path`] lowers into the same buffers.
+///
+/// The buffers are shared: a mesh drawn again, or drawn somewhere else
+/// through its `place`, is neither copied nor diffed vertex by vertex.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Mesh {
     /// The mesh vertices.
-    pub vertices: Vec<MeshVertex>,
+    pub vertices: Arc<[MeshVertex]>,
     /// Triangle-list indices into `vertices` (3 per triangle).
-    pub indices: Vec<u32>,
+    pub indices: Arc<[u32]>,
+    /// Where the vertices' positions go when drawn.
+    pub place: MeshPlace,
+}
+
+impl Mesh {
+    /// A mesh of `vertices` and triangle-list `indices`, drawn where its
+    /// positions say.
+    pub fn new(vertices: impl Into<Arc<[MeshVertex]>>, indices: impl Into<Arc<[u32]>>) -> Self {
+        Self {
+            vertices: vertices.into(),
+            indices: indices.into(),
+            place: MeshPlace::IDENTITY,
+        }
+    }
+
+    /// The mesh drawn with its positions mapped by `place` after its own.
+    pub fn placed(mut self, place: MeshPlace) -> Self {
+        self.place = self.place.then(place);
+        self
+    }
+}
+
+/// A mesh's positions mapped into place: scaled on each axis, then shifted.
+/// Extrusions are screen offsets and are left alone.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MeshPlace {
+    pub scale: [f32; 2],
+    pub offset: [f32; 2],
+}
+
+impl MeshPlace {
+    /// Positions as they are.
+    pub const IDENTITY: MeshPlace = MeshPlace {
+        scale: [1.0, 1.0],
+        offset: [0.0, 0.0],
+    };
+
+    /// `p` mapped.
+    #[inline]
+    pub fn apply(self, p: [f32; 2]) -> [f32; 2] {
+        [
+            p[0] * self.scale[0] + self.offset[0],
+            p[1] * self.scale[1] + self.offset[1],
+        ]
+    }
+
+    /// This mapping, then `next`.
+    pub fn then(self, next: MeshPlace) -> MeshPlace {
+        MeshPlace {
+            scale: [self.scale[0] * next.scale[0], self.scale[1] * next.scale[1]],
+            offset: next.apply(self.offset),
+        }
+    }
+
+    /// Whether it maps nothing.
+    pub fn is_identity(self) -> bool {
+        self == MeshPlace::IDENTITY
+    }
 }
 
 /// A 3D scene's slot in a [`Renderer`](crate::Renderer): where

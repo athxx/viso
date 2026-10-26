@@ -666,10 +666,23 @@ impl<'a> Painter<'a> {
     }
 
     fn mesh(&mut self, mesh: &Mesh) {
-        let vertices = &mesh.vertices;
-        if vertices.is_empty() || mesh.indices.len() < 3 {
+        if mesh.vertices.is_empty() || mesh.indices.len() < 3 {
             return;
         }
+        // Positions in place, each pushed by its screen extrusion: a page
+        // draws at one scale.
+        let vertices: Vec<viso_render::MeshVertex> = mesh
+            .vertices
+            .iter()
+            .map(|v| {
+                let p = mesh.place.apply(v.pos);
+                viso_render::MeshVertex {
+                    pos: [p[0] + v.extrude[0], p[1] + v.extrude[1]],
+                    ..*v
+                }
+            })
+            .collect();
+        let vertices = &vertices;
         let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
         for v in vertices {
             b[0] = b[0].min(v.pos[0]);

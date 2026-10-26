@@ -689,10 +689,7 @@ impl MeshBuilder {
     }
 
     fn finish(self) -> Mesh {
-        Mesh {
-            vertices: self.vertices,
-            indices: self.indices,
-        }
+        Mesh::new(self.vertices, self.indices)
     }
 }
 
@@ -955,7 +952,7 @@ mod tests {
                 .iter()
                 .all(|&i| (i as usize) < mesh.vertices.len())
         );
-        for v in &mesh.vertices {
+        for v in mesh.vertices.iter() {
             let [x, y] = v.pos;
             assert!(x >= rect.x - FRINGE - 1e-3 && x <= rect.x + rect.w + FRINGE + 1e-3);
             assert!(y >= rect.y - FRINGE - 1e-3 && y <= rect.y + rect.h + FRINGE + 1e-3);

@@ -209,8 +209,8 @@ fn every_shape_has_its_own_primitive() {
             lane: GlyphLane::CoverageA8,
         }),
         // Mesh.
-        Primitive::Mesh(Mesh {
-            vertices: vec![
+        Primitive::Mesh(Mesh::new(
+            vec![
                 MeshVertex {
                     pos: [160.0, 180.0],
                     color: [1.0, 0.0, 0.0, 1.0],
@@ -230,8 +230,8 @@ fn every_shape_has_its_own_primitive() {
                     extrude: [0.0, 0.0],
                 },
             ],
-            indices: vec![0, 1, 2],
-        }),
+            vec![0, 1, 2],
+        )),
     ];
 
     let mut r = Renderer::new(&mut gpu, format);

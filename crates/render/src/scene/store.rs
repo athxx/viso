@@ -1561,14 +1561,16 @@ pub fn quality_bucket(device_scale: f32, prev: u16) -> u16 {
     bucket as u16
 }
 
-/// A caller-supplied triangle mesh, stored as its vertices/indices (no
-/// tessellation — a mesh is already triangulated).
+/// A caller-supplied triangle mesh, stored as its shared vertices/indices
+/// (no tessellation — a mesh is already triangulated) and where they go.
 #[derive(Debug, Clone)]
 pub struct MeshEntry {
     /// The mesh vertices, in the mesh's own space (base-zero indices).
-    pub vertices: Vec<MeshVertex>,
+    pub vertices: Arc<[MeshVertex]>,
     /// Triangle-list indices into `vertices` (base-zero).
-    pub indices: Vec<u32>,
+    pub indices: Arc<[u32]>,
+    /// Where the vertices' positions go.
+    pub place: crate::primitive::MeshPlace,
 }
 
 /// Dense store of caller-supplied meshes. Entries persist across frames.
@@ -1594,17 +1596,23 @@ impl MeshStore {
         }
     }
 
-    /// Diff a mesh against the retained entry at the cursor. Index or vertex
-    /// position/edge change → geometry; a pure vertex-color change → paint;
-    /// equal → no-op. Cold growth appends.
-    pub fn ingest(&mut self, vertices: &[MeshVertex], indices: &[u32]) -> (MeshId, DirtyPlanes) {
+    /// Diff a mesh against the retained entry at the cursor. The same shared
+    /// buffers at the same place → no-op, without a look at a vertex. Index
+    /// or vertex position/edge change, or a new place → geometry; a pure
+    /// vertex-color change → paint; equal → no-op. The entry keeps the shared
+    /// buffers, never a copy. Cold growth appends.
+    pub fn ingest(&mut self, mesh: &crate::primitive::Mesh) -> (MeshId, DirtyPlanes) {
+        let (vertices, indices) = (&mesh.vertices[..], &mesh.indices[..]);
         let index = self.cursor;
         let dirty = if index < self.entries.len() {
             let prev = &self.entries[index];
-            let structural = prev.indices != indices || prev.vertices.len() != vertices.len();
-            let mut geometry = structural;
+            let same = Arc::ptr_eq(&prev.vertices, &mesh.vertices)
+                && Arc::ptr_eq(&prev.indices, &mesh.indices);
+            let structural =
+                !same && (prev.indices[..] != *indices || prev.vertices.len() != vertices.len());
+            let mut geometry = structural || prev.place != mesh.place;
             let mut paint = false;
-            if !structural {
+            if !structural && !same {
                 for (a, b) in prev.vertices.iter().zip(vertices) {
                     if a.pos != b.pos || a.edge != b.edge {
                         geometry = true;
@@ -1614,10 +1622,11 @@ impl MeshStore {
                     }
                 }
             }
-            if geometry || paint {
+            if geometry || paint || !same {
                 self.entries[index] = MeshEntry {
-                    vertices: vertices.to_vec(),
-                    indices: indices.to_vec(),
+                    vertices: Arc::clone(&mesh.vertices),
+                    indices: Arc::clone(&mesh.indices),
+                    place: mesh.place,
                 };
             }
             DirtyPlanes {
@@ -1629,8 +1638,9 @@ impl MeshStore {
             }
         } else {
             self.entries.push(MeshEntry {
-                vertices: vertices.to_vec(),
-                indices: indices.to_vec(),
+                vertices: Arc::clone(&mesh.vertices),
+                indices: Arc::clone(&mesh.indices),
+                place: mesh.place,
             });
             DirtyPlanes::APPENDED
         };
@@ -2211,6 +2221,45 @@ mod tests {
             stroke: None,
             shadow: None,
         }
+    }
+
+    #[test]
+    fn a_shared_mesh_again_is_unchanged_and_moved_is_geometry() {
+        use crate::primitive::{Mesh, MeshPlace, MeshVertex};
+        let v = |x: f32| MeshVertex::new([x, 0.0], [1.0, 0.0, 0.0, 1.0], 1.0);
+        let mesh = Mesh::new(vec![v(0.0), v(1.0), v(2.0)], vec![0, 1, 2]);
+        let mut store = MeshStore::default();
+        store.begin_frame();
+        assert!(store.ingest(&mesh).1.appended);
+        store.begin_frame();
+        let (id, dirty) = store.ingest(&mesh.clone());
+        assert!(!dirty.any(), "the same buffers are not looked at");
+        let moved = mesh.clone().placed(MeshPlace {
+            scale: [2.0, 2.0],
+            offset: [5.0, 0.0],
+        });
+        store.begin_frame();
+        let (_, dirty) = store.ingest(&moved);
+        assert!(dirty.geometry && !dirty.paint);
+        let entry = store.get(id).unwrap();
+        assert!(
+            std::sync::Arc::ptr_eq(&entry.vertices, &mesh.vertices),
+            "kept, not copied"
+        );
+        assert_eq!(entry.place.apply([1.0, 0.0]), [7.0, 0.0]);
+        // Equal content in fresh buffers diffs as before.
+        store.begin_frame();
+        let recolored = Mesh::new(
+            vec![
+                v(0.0),
+                v(1.0),
+                MeshVertex::new([2.0, 0.0], [0.0, 1.0, 0.0, 1.0], 1.0),
+            ],
+            vec![0, 1, 2],
+        )
+        .placed(moved.place);
+        let (_, dirty) = store.ingest(&recolored);
+        assert!(dirty.paint && !dirty.geometry);
     }
 
     #[test]
