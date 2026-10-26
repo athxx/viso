@@ -93,6 +93,7 @@ pub mod style;
 pub mod suspend;
 pub mod task;
 pub mod text_edit;
+pub mod text_entry;
 pub mod text_style;
 pub mod timer;
 pub mod token;
@@ -229,13 +230,15 @@ pub use text_edit::{
     Buffer, CARET_WIDTH, EditGeometry, EditIntent, EditLayout, FieldLook, FieldSeed, MarkState,
     Motion, Reach, SelectionEnd, TextEdits, TouchEdit, TouchState,
 };
+pub use text_entry::TextEntryRequest;
 pub use timer::{TimerId, TimerRegistry, TimerRequest};
 pub use token::{Theme, TokenId, TokenInterner, TokenNamespace};
 pub use viewer::{ViewerLimits, ViewerMove};
 pub use virtual_grid::{Columns, ListGrid};
 pub use virtual_list::{
     AcrossView, AcrossWatch, HeightCache, HeightTree, ItemBuilder, StickyOf, VirtualListState,
-    VirtualLists, absorb_measurements, reconcile, set_item_count, set_sticky_of, watch_across,
+    VirtualLists, absorb_measurements, reconcile, set_item_count, set_sticky_of, splice_items,
+    watch_across,
 };
 /// The renderer's asset vocabulary — resource identity, formats, decoded
 /// payloads — which the compiler names resources by and the facade decodes

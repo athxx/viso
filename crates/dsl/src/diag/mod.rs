@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn a_lex_error_picks_its_severity_from_is_warning() {
-        use crate::syntax::LexError;
+        use crate::syntax::{LexDiagnostic, LexError};
         // A confusable identifier is a warning; a bad number is an error.
         let warn = LexError::ConfusableIdent.to_diagnostic(span());
         assert_eq!(warn.severity, Severity::Warning);

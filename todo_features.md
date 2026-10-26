@@ -698,11 +698,50 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
 
 ## W15 — Code editor widget (in `extras/`)
 
-- [ ] `CodeEditor`:
-  - [ ] rope document, multi-cursor, undo;
-  - [ ] syntax highlighting through the `.vs` lexer and a TextMate-free token API;
-  - [ ] line numbers, folding, wrapping, inlays and decorations, search/replace;
-  - [ ] LSP client hookup.
+- [x] `CodeEditor`:
+  - [x] rope document, multi-cursor, undo: a B-tree rope with line counts (random edits
+    checked against a `String`), edits as change sets of one change a cursor with line
+    splices that every line array follows, sorted merged cursors keeping a column goal, and
+    a bounded history that folds a typing run at every cursor into one change each, broken
+    a word at a time; the widget draws only the lines on screen, as rows of a virtual list
+    keyed by line ids; headless facade tests type, compose, delete, break and indent lines,
+    click, drag, double-click, add cursors with Alt-click and Alt-Cmd-Down, cut once per
+    shortcut and paste a whole line, then undo and redo it all;
+  - [x] syntax highlighting through the `.vs` lexer and a TextMate-free token API: the
+    tokenizer is its own leaf crate, `viso-lexer` (the compiler re-exports it at the same
+    paths), which `.vs` highlighting runs a line at a time, carrying across lines only an
+    open block comment's depth or a raw string's hashes; a `Language` is a line lexer over
+    `u32` states, and the editor keeps each line's end state, re-lexing from an edited line
+    only until the states agree again and past the screen only when asked; tests check the
+    line-at-a-time classes against the whole-file tokenizer over the prelude and samples,
+    and through the facade a typed `/*` recolors the lines below and `*/` restores them;
+  - [x] line numbers, folding, wrapping, inlays and decorations, search/replace: each row
+    carries its piece of the gutter (number, fold chevron, worst diagnostic), moved by the
+    list's sideways scroll in the pass that scrolls, so it stays put with no frame of lag;
+    folds by indentation hide lines from the list (rows map through hidden counts), wrapped
+    lines are listed with exact row extents, inlays and a fold's placeholder take cells on
+    the grid, decorations draw backgrounds, lines and squiggles in named sets that follow
+    edits, and a find bar searches as it is typed (literal across chunks, or a regex a line
+    at a time; only edited lines are searched again), steps, replaces one or all as one undo
+    step, and matches the bracket at the caret outside strings and comments; headless
+    facade tests check the numbers and the pinned gutter under a scroll, a fold clicked
+    from its chevron and stepped over, a wrapped line moved through a row at a time, an
+    inlay shifting the text and a diagnostic's squiggle and gutter mark, and the bar's
+    find, step, retype, replace and replace-all, and Escape back to the text;
+  - [x] LSP client hookup: a `LanguageService` trait the widget asks for diagnostics,
+    completions, hovers, inlay hints and definitions, each answer a future over a snapshot
+    of the text that the edits since are mapped through; the `lsp` feature (desktop only)
+    adds an `LspClient` speaking JSON-RPC to a server over its pipes, negotiating UTF-8
+    columns, sending full or incremental changes from a writer thread and answering the
+    server's own requests; the widget shows a fuzzy-filtered completion list, squiggles,
+    a hover box on a resting pointer and jumps to definitions; tests drive a fake service
+    through the facade, `viso-lsp` over in-process pipes (diagnostics, hover, definition,
+    an edit clearing an error, and squiggles in the widget) and rust-analyzer when
+    installed (UTF-8, hover, inlay hint, completions and a definition after incremental
+    edits); `examples/code-editor` edits a `.vs` file with `viso-lsp`, checked in a
+    headless run's snapshots (highlighting, gutter, find matches, a caret and a squiggle
+    from the server); on 100k lines in release a facade run opens in about 6 ms, takes
+    about 1 ms a keystroke to its frame and 13 MiB resident.
 
 ## W16 — Missing in both
 

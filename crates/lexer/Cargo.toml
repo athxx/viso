@@ -1,0 +1,13 @@
+[package]
+name = "viso-lexer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# The `.vs` tokenizer and the token kinds, spans and lexical errors it
+# produces: the compiler parses from it and an editor highlights with it,
+# neither pulling in the other.
+[dependencies]
+# XID_Start/XID_Continue for identifier lexing.
+icu_properties = { workspace = true }

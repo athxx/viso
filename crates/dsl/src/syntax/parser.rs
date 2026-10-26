@@ -24,7 +24,7 @@ use crate::diag::Diagnostic;
 use super::cst::{GreenBuilder, GreenNode};
 use super::kind::SyntaxKind;
 use super::span::{TextRange, TextSize};
-use super::token::Token;
+use super::token::{LexDiagnostic, Token};
 
 /// The kind of a structural parse error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
