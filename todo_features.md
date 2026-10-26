@@ -951,6 +951,9 @@ viso-ext.
   images and the part over them, and every flat part's box spans the tile's square,
   risen a step per order, so the scene's back-to-front blending draws them in the
   style's order, finer images over coarser.
+  A coarser tile drawn under finer ones while they load sits a step beneath them,
+  and over relief sinks further by how far its lattice strays from the elevations
+  (`tilt::relief_error`), so its ground never shows through theirs.
   Over relief, labels, markers and the puck stand on the ground under each
   (`View::to_view_at` projects a point raised over the focus's plane).
 - [x] Performance: a pan or rotate frame uploads nothing and allocates nothing; tile

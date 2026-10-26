@@ -591,6 +591,115 @@ fn a_marker_stands_on_the_relief_under_it() {
     assert!(raised + 15.0 < flat, "{bottoms:?}");
 }
 
+thread_local! {
+    /// Answers never given: tiles that stay loading.
+    static HELD: RefCell<Vec<viso_map::Completer<Option<Vec<u8>>>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// A tile of zoom 13 all water; of zoom 14 all grass, but one in four
+/// either never arriving (`held`) or all water too.
+fn water_then_land(tile: TileId, held: bool) -> viso_map::Reply<Option<Vec<u8>>> {
+    use viso_map::mvt::{GeomType, TileEncoder};
+    let odd = tile.z >= 14 && tile.x % 2 == 1 && tile.y % 2 == 1;
+    if odd && held {
+        let (done, answer) = viso_map::reply();
+        HELD.with(|h| h.borrow_mut().push(done));
+        return answer;
+    }
+    let mut t = TileEncoder::new();
+    let sq: &[[i32; 2]] = &[[-64, -64], [4160, -64], [4160, 4160], [-64, 4160]];
+    let (layer, class) = if tile.z < 14 || odd {
+        ("water", "lake")
+    } else {
+        ("landcover", "grass")
+    };
+    let mut l = t.layer(layer, 4096);
+    l.feature(None, GeomType::Polygon, &[sq], &[("class", class.into())]);
+    l.finish();
+    viso_map::Reply::ready(Ok(Some(t.finish())))
+}
+
+#[test]
+fn a_coarser_tile_beneath_finer_ones_does_not_show_through_their_relief() {
+    let at = LngLat::new(13.40, 52.52);
+    let start = Camera::new(at, 12.6).with_bearing(-30.0).with_pitch(55.0);
+    let ridge = start.center.to_world().x + 120.0 / (512.0 * 13.6f64.exp2());
+    // Zoomed in a level once the coarse tiles are drawn: the finer ones
+    // that arrive cover them, the others leave them showing. Beside it,
+    // the same with every finer tile there, the missing ones all water.
+    let mut shots = Vec::new();
+    for held in [true, false] {
+        let none = Modifiers::default();
+        let mut script = redraws(30);
+        script.push(mouse(320.0, 240.0, PointerPhase::Down, none));
+        script.push(mouse(320.0, 240.0, PointerPhase::Up, none));
+        script.extend(key(KeyCode::Equal, none));
+        script.extend(redraws(60));
+        let (app, handle) = run(
+            move |slot| {
+                let style = builtin::openmaptiles_light()
+                    .with_terrain(Terrain::new("dem", DemEncoding::Terrarium).exaggeration(2.0));
+                map_view(move |tile: TileId| water_then_land(tile, held))
+                    .camera(start)
+                    .style(style)
+                    .raster_source(
+                        "dem",
+                        RasterSource::new(
+                            move |tile: TileId| {
+                                viso_map::Reply::ready(Ok(Some(ridge_tile(
+                                    tile, ridge, 500.0, 3.0,
+                                ))))
+                            },
+                            0,
+                            12,
+                        ),
+                    )
+                    .handle(slot)
+            },
+            script,
+        );
+        HELD.with(|h| h.borrow_mut().clear());
+        let name = if held {
+            "tilt-coarse-under-fine"
+        } else {
+            "tilt-fine-only"
+        };
+        shots.push(picture(&app, name));
+        let tiles = handle.tiles();
+        assert!(handle.view().camera.zoom > 13.0);
+        assert_eq!(
+            tiles.drawn.iter().any(|d| d.tile.z == 13),
+            held,
+            "{name}: {tiles:?}"
+        );
+    }
+    let blue = |px: &(u32, u32, Vec<u8>), x: i64, y: i64| {
+        let p = [
+            x.clamp(0, W as i64 - 1) as f64,
+            y.clamp(0, H as i64 - 1) as f64,
+        ];
+        let c = rgb_at(px, p);
+        u16::from(c[2]) > u16::from(c[0]) + 25
+    };
+    // Water shows only where the finer tiles that never came would lie:
+    // nowhere the full set draws land, a few points off its water's edges.
+    let (mut water, mut peeks) = (0, 0);
+    for y in (100..H as i64).step_by(3) {
+        for x in (0..W as i64).step_by(3) {
+            if !blue(&shots[0], x, y) {
+                continue;
+            }
+            water += 1;
+            let near = (-4..=4).any(|dy| (-4..=4).any(|dx| blue(&shots[1], x + dx, y + dy)));
+            if !near {
+                peeks += 1;
+            }
+        }
+    }
+    assert!(water > 100, "{water}");
+    assert_eq!(peeks, 0, "{peeks} of {water}");
+}
+
 #[test]
 fn the_ground_drapes_over_the_terrain_and_shades_its_slopes() {
     let start = Camera::new(LngLat::new(13.40, 52.52), 12.5)

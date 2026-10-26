@@ -320,6 +320,33 @@ impl Lattice {
     }
 }
 
+/// How far the lattice over `relief` strays from it at most, in model
+/// units: what a coarser tile's ground may stand over a finer one's.
+pub fn relief_error(relief: &Relief<'_>) -> f32 {
+    let lattice = Lattice::new(relief);
+    let c = lattice.cell;
+    let mut worst = 0.0f32;
+    for j in 0..CELLS {
+        for i in 0..CELLS {
+            let (x, z) = (i as f32 * c, j as f32 * c);
+            // Each cell's middle, and its edges' and diagonal's quarters.
+            for [u, v] in [
+                [0.5, 0.5],
+                [0.5, 0.0],
+                [0.0, 0.5],
+                [0.25, 0.25],
+                [0.75, 0.75],
+                [0.25, 0.75],
+                [0.75, 0.25],
+            ] {
+                let p = [x + u * c, z + v * c];
+                worst = worst.max((relief.height(p) - lattice.height(p)).abs());
+            }
+        }
+    }
+    worst
+}
+
 /// Splits convex polygon `poly` at the line where `f` reaches `at`.
 fn split(poly: &[Flat], f: &dyn Fn([f32; 2]) -> f32, at: f32) -> (Vec<Flat>, Vec<Flat>) {
     let (mut below, mut above) = (Vec::new(), Vec::new());
@@ -1168,6 +1195,27 @@ mod tests {
         assert!(coarse_mid[1] < mid[1]);
         // Elsewhere, nothing.
         assert!(image(TileId::new(15, 0, 0), 1).is_none());
+    }
+
+    #[test]
+    fn a_lattice_strays_from_a_sharp_crest_and_not_from_a_ramp() {
+        let dem_of = |f: &dyn Fn(f32) -> f32| Dem {
+            width: 256,
+            height: 4,
+            meters: (0..256 * 4).map(|i| f((i % 256) as f32)).collect(),
+        };
+        let relief = |dem| Relief {
+            dem,
+            origin: [0.0, 0.0],
+            span: 1.0,
+            scale: 0.1,
+        };
+        let ramp = dem_of(&|x| x * 4.0);
+        assert!(relief_error(&relief(&ramp)) < 0.5);
+        // A crest between the lattice's corners: the lattice cuts it off.
+        let crest = dem_of(&|x| 1000.0 - (x - 132.0).abs() * 8.0);
+        let e = relief_error(&relief(&crest));
+        assert!(e > 1.0 && e < 100.0, "{e}");
     }
 
     #[test]

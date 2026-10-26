@@ -40,13 +40,18 @@ use crate::raster::{Dem, RasterSource, dem_off_loop};
 use crate::source::TileId;
 use crate::style::{Paint, Style, Terrain};
 use crate::tilt::{
-    Imagery, Raise, Relief, image_order, raise, raise_image, raise_shape, units_per_meter,
+    Imagery, Raise, Relief, image_order, raise, raise_image, raise_shape, relief_error,
+    units_per_meter,
 };
 
 /// How far a tile drawn for another zoom sits beneath (an ancestor) or over
 /// (a descendant) the tiles of the zoom drawn, per level, in points of the
 /// level drawn: a finer tile's drawing covers a coarser one beneath it.
 const LEVEL_STEP: f32 = 0.6;
+
+/// How far a tile's ground sinks under finer tiles drawn over it, in its
+/// lattice's largest stray from the relief: its own, and theirs, smaller.
+const SINK: f32 = 1.5;
 
 /// How far shapes lie over the ground, in points of the level drawn; and
 /// further over relief, which they follow only at their own points.
@@ -96,6 +101,9 @@ struct TileModel {
     /// The build it raises.
     built: Rc<Built>,
     stage: Stage,
+    /// How far its ground strays from the relief under it, in its model's
+    /// units.
+    rough: f32,
     used: bool,
 }
 
@@ -345,13 +353,14 @@ impl Tilted {
     }
 
     /// A tile's model arrived from the worker pool.
-    fn arrive(&mut self, generation: u64, tile: TileId, model: Option<ModelAsset>) {
+    fn arrive(&mut self, generation: u64, tile: TileId, model: Option<ModelAsset>, rough: f32) {
         if generation != self.generation {
             return;
         }
         if let Some(m) = self.models.get_mut(&tile)
             && matches!(m.stage, Stage::Raising { .. })
         {
+            m.rough = rough;
             m.stage = match model {
                 Some(model) => Stage::Raised(Arc::new(model)),
                 None => Stage::Nothing,
@@ -447,6 +456,7 @@ impl Tilted {
                     TileModel {
                         built: Rc::clone(built),
                         stage,
+                        rough: 0.0,
                         used: true,
                     },
                 );
@@ -804,7 +814,8 @@ impl Tilted {
             let relief = relief
                 .as_ref()
                 .map(|(under, dem)| relief_of(tile, *under, dem, exaggeration));
-            Ok(raise(&Raise {
+            let rough = relief.as_ref().map_or(0.0, relief_error);
+            let model = raise(&Raise {
                 tile,
                 band,
                 meshes: &meshes,
@@ -814,17 +825,18 @@ impl Tilted {
                 style: &style,
                 background,
                 relief,
-            }))
+            });
+            Ok((model, rough))
         });
         let generation = self.generation;
         let me = f.me.clone();
         let task = Box::pin(async move {
-            let model = answer.await.ok().flatten();
+            let (model, rough) = answer.await.ok().unwrap_or((None, 0.0));
             Some(Box::new(move |cx: &mut UpdateCx<'_>| {
                 if let Some(core) = me.upgrade()
                     && let Ok(mut core) = core.try_borrow_mut()
                 {
-                    core.tilted.arrive(generation, tile, model);
+                    core.tilted.arrive(generation, tile, model, rough);
                     core.wake_with(cx);
                 }
             }) as Continuation)
@@ -1012,7 +1024,15 @@ impl Tilted {
             let (nw, _) = slot_drawn.square();
             let z = slot_drawn.tile.z;
             let k = (f64::from(f.band) - f64::from(z)).exp2() as f32;
-            let lift = (f32::from(z) - f32::from(f.tile_zoom)) * LEVEL_STEP;
+            let mut lift = (f32::from(z) - f32::from(f.tile_zoom)) * LEVEL_STEP;
+            // Under finer tiles, its coarser ground sinks by how far it may
+            // stray over theirs, and theirs from it.
+            let covered = drawn.iter().any(|(d, _)| {
+                d.tile.z > z && d.wrap == slot_drawn.wrap && slot_drawn.tile.contains(d.tile)
+            });
+            if covered {
+                lift -= SINK * m.rough * k;
+            }
             let at = [
                 (nw.x * band_scale - f.anchor[0]) as f32,
                 lift,
