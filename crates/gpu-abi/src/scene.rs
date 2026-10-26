@@ -389,7 +389,7 @@ pub struct FrameUniforms {
     /// (`0.0`: no fog).
     pub fog: [f32; 4],
     /// How strongly the environment lights: `x` its diffuse light, `y` its
-    /// reflections.
+    /// reflections; `z` how far from the eye the fog begins.
     pub ambient: [f32; 4],
     /// The environment's diffuse irradiance over π as nine spherical
     /// harmonic terms, each scaled so the irradiance at unit normal `n` is

@@ -226,6 +226,8 @@ pub struct Lighting {
     pub fog: [f32; 3],
     /// The fog's density per unit of distance; `0.0` for none.
     pub fog_density: f32,
+    /// How far from the eye the fog begins: nearer, the air is clear.
+    pub fog_start: f32,
     /// The shadows the light casts.
     pub shadows: Shadows,
     /// How the scene's surfaces occlude the environment's light from each
@@ -246,6 +248,7 @@ impl Default for Lighting {
             exposure: 1.0,
             fog: [0.62, 0.7, 0.8],
             fog_density: 0.0,
+            fog_start: 0.0,
             shadows: Shadows::default(),
             occlusion: AmbientOcclusion::default(),
         }
@@ -550,7 +553,7 @@ impl SceneFrame {
             light_dir: [d[0], d[1], d[2], l.intensity],
             light_color: [l.color[0], l.color[1], l.color[2], 0.0],
             fog: [l.fog[0], l.fog[1], l.fog[2], l.fog_density],
-            ambient: [l.ambient, l.reflections, 0.0, 0.0],
+            ambient: [l.ambient, l.reflections, l.fog_start, 0.0],
             sh: *sh,
             ..FrameUniforms::default()
         }

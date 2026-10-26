@@ -30,7 +30,7 @@ use viso_ui::{
 };
 
 use super::core::Core;
-use crate::camera::{TILE_SIZE, View};
+use crate::camera::{REACH, TILE_SIZE, View};
 use crate::geo::WorldPoint;
 use crate::load::{Built, off_loop};
 use crate::overlay::ShapeMesh;
@@ -796,6 +796,7 @@ impl Tilted {
             near: (d * 0.02) as f32,
             far: f32::INFINITY,
         };
+        let air = Haze::of(bg, d, ps);
         frame.lighting = Lighting {
             direction: vec3(-0.45, 0.8, 0.4),
             intensity: 1.1,
@@ -805,11 +806,14 @@ impl Tilted {
             reflections: 0.0,
             shadows: Shadows::NONE,
             occlusion: AmbientOcclusion::NONE,
+            fog: air.color,
+            fog_density: air.density as f32,
+            fog_start: air.start as f32,
             ..Lighting::default()
         };
         frame.sky = None;
         frame.environment = None;
-        frame.background = LinearStraight::new(bg[0], bg[1], bg[2], 0.0);
+        frame.background = LinearStraight::new(air.color[0], air.color[1], air.color[2], 1.0);
         let white = LinearStraight::new(1.0, 1.0, 1.0, 1.0);
         for (slot_drawn, _) in drawn {
             let Some(m) = self.models.get(&slot_drawn.tile) else {
@@ -849,6 +853,50 @@ impl Tilted {
             frame.push_model(model, &model.rig().rest_pose(), &placed(at, k), white);
         }
         s.store.commit_scene(slot);
+    }
+}
+
+/// How much of the clear air a tilted view keeps before its ground fades,
+/// in eye distances short of the reach.
+const HAZE_DEPTH: f64 = 1.7;
+
+/// The air of a tilted view: the ground fades into a haze of the style's
+/// background toward the sky, from clear near the eye to all haze at the
+/// reach, so the ground's far edge never shows; past it, haze.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Haze {
+    /// Linear RGB.
+    color: [f32; 3],
+    /// Distances from the eye, in the scene's units.
+    start: f64,
+    density: f64,
+}
+
+impl Haze {
+    /// The haze over `background` (straight linear RGBA) seen by an eye `d`
+    /// from the focus, tilted to pitch sine `ps`.
+    fn of(background: [f32; 4], d: f64, ps: f64) -> Haze {
+        let [r, g, b, _] = background;
+        let light = 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.25;
+        // A pale blue on a light map, a deep one on a dark map.
+        let sky = if light {
+            [0.62, 0.71, 0.84]
+        } else {
+            [0.035, 0.045, 0.075]
+        };
+        let color = core::array::from_fn(|i| background[i] * 0.55 + sky[i] * 0.45);
+        // From the eye to the ground at the reach: across the focus's
+        // distance and the reach, down the eye's height.
+        let pc = (1.0 - ps * ps).max(0.0).sqrt();
+        let reach = d * (REACH + ps).hypot(pc);
+        let start = (reach - HAZE_DEPTH * d).max(d);
+        // All but a hundredth hazed at the reach.
+        let density = 100f64.ln() / (reach - start).max(1e-9);
+        Haze {
+            color,
+            start,
+            density,
+        }
     }
 }
 

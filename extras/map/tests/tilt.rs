@@ -18,8 +18,8 @@ use viso::prelude::*;
 use viso::ui::{BuildCx, Component, WindowConfig};
 use viso_map::style::{Color, DemEncoding, Terrain, builtin};
 use viso_map::{
-    Camera, LngLat, MapHandle, MapHandleSlot, MapView, MemorySource, Polyline, RasterSource,
-    TileId, View, WorldPoint, map_view,
+    Camera, Insets, LngLat, MapHandle, MapHandleSlot, MapView, MemorySource, Polyline,
+    RasterSource, TileId, View, WorldPoint, map_view,
 };
 
 const STEP: Duration = Duration::from_millis(16);
@@ -187,6 +187,70 @@ fn a_tilted_view_raises_its_buildings_and_draws_its_shapes_where_the_projection_
         // Its far end has shrunk toward the horizon, its near end grown.
         let ends = [view.project(route[0]), view.project(route[2])];
         assert!(ends.iter().all(|p| p[1].is_finite()));
+    }
+}
+
+#[test]
+fn the_far_ground_fades_into_a_haze_that_hides_its_edge() {
+    // The fixture's streets on every tile, so ground lies everywhere; the
+    // focus pushed low so the view sees out to the reach and past it.
+    for (bearing, dark) in [(30.0, false), (250.0, true)] {
+        let (app, handle) = run(
+            move |slot| {
+                map_view(|_: TileId| viso_map::Reply::ready(Ok(Some(LUXEMBOURG.to_vec()))))
+                    .camera(
+                        Camera::new(rollingergrund(), 16.0)
+                            .with_bearing(bearing)
+                            .with_pitch(60.0),
+                    )
+                    .padding(Insets {
+                        top: 280.0,
+                        ..Insets::default()
+                    })
+                    .style(if dark {
+                        builtin::shortbread_dark()
+                    } else {
+                        builtin::shortbread_light()
+                    })
+                    .handle(slot)
+            },
+            redraws(60),
+        );
+        let name = format!(
+            "tilt-haze-b{bearing}-{}",
+            if dark { "dark" } else { "light" }
+        );
+        let px = picture(&app, &name);
+        assert!(handle.tiles().raised >= 1, "{name}");
+        let view = handle.view();
+        let focus = view.focus();
+        // Down each column from the top: one haze past the reach, then the
+        // ground coming out of it with no edge between.
+        let haze = rgb_at(&px, [W / 2.0, 2.0]);
+        for x in (8..W as usize).step_by(40) {
+            let mut last = rgb_at(&px, [x as f64, 0.0]);
+            assert!(
+                last.iter().zip(haze).all(|(a, b)| a.abs_diff(b) <= 2),
+                "{name}: {last:?} at the top of {x} beside {haze:?}"
+            );
+            for y in 1..(focus[1] - 120.0) as usize {
+                let c = rgb_at(&px, [x as f64, y as f64]);
+                let jump = c.iter().zip(last).map(|(a, b)| a.abs_diff(b)).max();
+                // Only the clearer ground's own drawing may change sharply.
+                if y < (focus[1] * 0.3) as usize {
+                    assert!(
+                        jump <= Some(10),
+                        "{name}: an edge at {x},{y}: {last:?} {c:?}"
+                    );
+                }
+                last = c;
+            }
+        }
+        // Near the focus the air is clear: the ground keeps its colors.
+        assert!(
+            colors(&px, (focus[1] as usize - 60)..H as usize) > 6,
+            "{name}"
+        );
     }
 }
 

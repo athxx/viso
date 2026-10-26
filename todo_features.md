@@ -925,8 +925,13 @@ viso-ext.
   with a route where the projection puts it; buildings flat vs raised; a ridge DEM
   draping and shading the ground; gestures and keys); unit tests in `camera` and
   `tilt`; benches `tile_raise` (Luxembourg z16: 0.32 ms flat, 5.8 ms over relief).
-  Open: beyond the reach the root's background shows (no sky or fog); image layers
-  (raster, hillshade) are not drawn while tilted; translucent shape fills are cut to
+  The ground fades into a haze of the style's background toward the sky (pale blue on
+  a light map, deep blue on a dark one): clear to near the top of an unpadded view,
+  all haze at the reach and past it, so the ground's ragged far edge never shows, also
+  with the focus pushed low by padding (`Lighting::fog_start` lets the scene's fog
+  begin at a distance). At most 60° of pitch the horizon stays above the view, so the
+  haze is the sky it shows.
+  Open: image layers (raster, hillshade) are not drawn while tilted; translucent shape fills are cut to
   their outline; markers and labels are placed on the plane at the focus's height,
   not on the relief under each.
 - [x] Performance: a pan or rotate frame uploads nothing and allocates nothing; tile
