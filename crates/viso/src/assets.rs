@@ -29,6 +29,11 @@
 //! older ones — a window or mount opened later — or none at all is served
 //! those.
 //!
+//! A glTF model decodes on the worker the same way — a `.gltf` read from a
+//! file reads the buffers and images it names beside it — and each window
+//! uploads its geometry into its own renderer; the table lets go of the
+//! decoded geometry and images once the model is resident.
+//!
 //! An image shown from a URL is fetched through the app's [`ImageLoader`]
 //! on the loop's thread — the future wakes the loop, which polls it — and its
 //! bytes decode as any other's. Without a loader it fails. On the web, whose
@@ -49,6 +54,7 @@ use viso_gpu::{GpuBackend, SampledFormats, TextureDesc};
 use viso_platform::LoopWaker;
 use viso_render::Renderer;
 use viso_render::asset::{AssetError, RasterImage, ResourceId, ResourceRevision, VectorScene};
+use viso_render::scene3d::model::ModelAsset;
 use viso_ui::{AssetBytes, AssetOrigin, AssetPayload, NodeStore};
 
 /// Fetches the bytes of an image an app shows from a URL
@@ -177,6 +183,7 @@ pub(crate) struct AssetCounters {
 enum Held {
     Raster(Weak<RasterImage>),
     Vector(Weak<VectorScene>),
+    Model(Weak<ModelAsset>),
 }
 
 impl Held {
@@ -184,6 +191,7 @@ impl Held {
         match payload {
             AssetPayload::Raster(image) => Held::Raster(Arc::downgrade(image)),
             AssetPayload::Vector(scene) => Held::Vector(Arc::downgrade(scene)),
+            AssetPayload::Model(model) => Held::Model(Arc::downgrade(model)),
         }
     }
 
@@ -191,6 +199,7 @@ impl Held {
         match self {
             Held::Raster(image) => image.upgrade().map(AssetPayload::Raster),
             Held::Vector(scene) => scene.upgrade().map(AssetPayload::Vector),
+            Held::Model(model) => model.upgrade().map(AssetPayload::Model),
         }
     }
 }
@@ -221,14 +230,14 @@ impl Input {
     /// Its payload — an animation's first frame, with the bytes the rest
     /// play from — or why it has none.
     fn decode(&self, sampled: SampledFormats) -> Result<Decoded, AssetError> {
-        let bytes = match self {
-            Input::Bytes(bytes) => bytes.clone(),
-            Input::File(path) => read(path)?,
+        let (bytes, dir) = match self {
+            Input::Bytes(bytes) => (bytes.clone(), None),
+            Input::File(path) => (read(path)?, path.parent()),
             Input::Url(url) => {
                 return Err(AssetError::Decode(format!("`{url}` is not fetched yet")));
             }
         };
-        let payload = decode(&bytes, sampled)?;
+        let payload = decode(&bytes, sampled, dir)?;
         let animated = matches!(payload, AssetPayload::Raster(_)) && animates(&bytes);
         Ok((payload, animated.then_some(bytes)))
     }
@@ -329,9 +338,12 @@ fn give(
 /// A build whose images were all converted links no decoder for what it
 /// never ships: no raster decoder (`viso_converted_rasters`), no SVG
 /// parser (`viso_converted_svg`); such a file is reported as not decoding.
+/// A model reads the files it names by relative URI from `dir`: those of a
+/// model with no directory must be embedded in it.
 pub(crate) fn decode(
     bytes: &AssetBytes,
     sampled: SampledFormats,
+    dir: Option<&Path>,
 ) -> Result<AssetPayload, AssetError> {
     use viso_render::asset::{AssetFormat, AssetKind};
     let raster = |image| Ok(AssetPayload::Raster(Arc::new(sampleable(image, sampled)?)));
@@ -347,12 +359,25 @@ pub(crate) fn decode(
         Some((_, AssetKind::Vector)) => viso_render::svg::parse_svg(bytes)
             .map(|scene| AssetPayload::Vector(Arc::new(scene.into_vector())))
             .map_err(|error| AssetError::Decode(error.to_string())),
+        Some((_, AssetKind::Model)) => decode_model(bytes, dir).map(AssetPayload::Model),
         #[cfg(any(viso_converted_rasters, viso_converted_svg))]
         Some(_) => Err(AssetError::Decode(
             "the build converted every image of this kind, and this one is not".to_owned(),
         )),
         None => Err(AssetError::Format),
     }
+}
+
+/// The glTF model in `bytes`, the buffers and images it names by relative
+/// URI read from `dir` (each at most [`MAX_FILE`] bytes).
+fn decode_model(bytes: &[u8], dir: Option<&Path>) -> Result<Arc<ModelAsset>, AssetError> {
+    let mut resolve = |uri: &str| -> Option<Vec<u8>> {
+        let bytes = read(&dir?.join(uri)).ok()?;
+        Some(bytes.to_vec())
+    };
+    ModelAsset::decode(bytes, &mut resolve)
+        .map(Arc::new)
+        .map_err(|error| AssetError::Decode(error.to_string()))
 }
 
 /// `image`, or its texels decoded to RGBA8 when `sampled` lacks its format.
@@ -384,6 +409,7 @@ pub(crate) struct Assets {
     /// Reused per window: the resources to serve.
     scratch: Vec<(ResourceId, ResourceRevision, Input)>,
     rasters: Vec<(ResourceId, ResourceRevision, Arc<RasterImage>)>,
+    models: Vec<(ResourceId, ResourceRevision, Arc<ModelAsset>)>,
     /// The formats every device served so far samples; every format until
     /// one is.
     sampled: Option<SampledFormats>,
@@ -802,6 +828,21 @@ impl Assets {
                 renderer.release_texture(backend, released);
             }
         }
+        self.models.clear();
+        self.models.extend(
+            store
+                .assets()
+                .unresident_models()
+                .map(|(id, revision, model)| (id, revision, Arc::clone(model))),
+        );
+        for (id, revision, asset) in self.models.drain(..) {
+            let model = renderer.create_scene_model(backend, &asset);
+            self.counters.uploads += 1;
+            self.counters.upload_bytes += model.bytes();
+            if let Err(unused) = store.attach_model(id, revision, model) {
+                renderer.release_scene_model(backend, &unused);
+            }
+        }
     }
 }
 
@@ -1007,7 +1048,7 @@ mod tests {
     #[test]
     fn a_converted_image_borrows_its_texels_and_a_device_lacking_its_format_gets_rgba8() {
         let bytes = AssetBytes::Static(converted());
-        let Ok(AssetPayload::Raster(image)) = decode(&bytes, SampledFormats::all()) else {
+        let Ok(AssetPayload::Raster(image)) = decode(&bytes, SampledFormats::all(), None) else {
             panic!("a raster");
         };
         assert_eq!(image.format, viso_gpu::TextureFormat::Rgb565Unorm);
@@ -1015,7 +1056,8 @@ mod tests {
         let texels = image.texels.as_static().expect("borrowed");
         assert_eq!(texels.as_ptr(), converted()[32..].as_ptr());
 
-        let Ok(AssetPayload::Raster(fallback)) = decode(&bytes, SampledFormats::empty()) else {
+        let Ok(AssetPayload::Raster(fallback)) = decode(&bytes, SampledFormats::empty(), None)
+        else {
             panic!("a raster");
         };
         assert_eq!(fallback.format, viso_gpu::TextureFormat::Rgba8Unorm);
@@ -1129,6 +1171,64 @@ mod tests {
         serve(&mut assets, &mut later, &mut gpu);
         assert_eq!(drawn(&later, leaf).0, AssetDraw::Failed);
         assert_eq!(assets.counters().decode_failures, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_model_a_scene_asks_for_decodes_with_its_buffer_and_is_resident_until_let_go_of() {
+        let dir = std::env::temp_dir().join(format!("viso-assets-model-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // One triangle whose positions lie in a buffer beside the document.
+        let positions: Vec<u8> = [-1.0f32, -1.0, 0.0, 1.0, -1.0, 0.0, 0.0, 1.0, 0.0]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        std::fs::write(dir.join("tri.bin"), &positions).unwrap();
+        let gltf = br#"{"asset":{"version":"2.0"},"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],
+"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
+"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],
+"bufferViews":[{"buffer":0,"byteLength":36}],"buffers":[{"byteLength":36,"uri":"tri.bin"}]}"#;
+        std::fs::write(dir.join("tri.gltf"), gltf).unwrap();
+        let asset = viso_ui::Asset::file(dir.join("tri.gltf"));
+        assert_eq!(asset.kind, viso_render::asset::AssetKind::Model);
+
+        let mut store = NodeStore::new();
+        let node = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.leaf(LeafStyle {
+                size: Size::fixed(40.0, 40.0),
+                style: BoxStyle::NONE,
+            })
+            .id()
+        };
+        let slot = store.set_scene(node).unwrap();
+        assert!(store.scene_model(slot, &asset).is_none(), "not read yet");
+        assert_eq!(store.assets().users(asset.id), 1);
+        assert!(store.scene_model(slot, &asset).is_none());
+        assert_eq!(store.assets().users(asset.id), 1, "held once");
+
+        let (mut assets, mut gpu) = (Assets::default(), Gpu::new());
+        serve(&mut assets, &mut store, &mut gpu);
+        let model = store.scene_model(slot, &asset).expect("resident");
+        assert_eq!(model.rig().order, [0]);
+        assert_eq!(model.bytes(), 3 * 32 + 3 * 4);
+        assert!(
+            store.assets().payload(asset.id).is_none(),
+            "the decoded geometry is let go of"
+        );
+        assert!(store.scenes_mut().frame_mut(slot).is_some());
+
+        // The node leaving the scene lets go of the model, which a sweep then
+        // retires for the renderer to release.
+        store.set_asset(node, ResourceId::of("other.png"), AssetFit::Contain, None);
+        assert_eq!(store.assets().users(asset.id), 0);
+        store.assets_mut().evict_unshown(|_| {});
+        let retired: Vec<_> = store.assets_mut().take_retired_models().collect();
+        assert_eq!(retired.len(), 1);
+        assert!(Arc::ptr_eq(&retired[0], &model));
+        for model in &retired {
+            gpu.renderer.release_scene_model(&mut gpu.backend, model);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

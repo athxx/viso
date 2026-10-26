@@ -13,6 +13,12 @@
 //!
 //! A node taking other content, or freed, lets go of its slot; the facade
 //! releases the renderer's side of it.
+//!
+//! A slot's filler draws glTF models with
+//! [`NodeStore::scene_model`](crate::component::NodeStore::scene_model): the
+//! slot's node holds each model it asks for in the store's asset table, which
+//! the facade decodes and uploads into the window's renderer, for as long as
+//! the node shows the scene.
 
 use std::any::Any;
 
@@ -21,6 +27,7 @@ pub use viso_render::scene3d::SceneFrame;
 
 use crate::NodeId;
 use crate::node::NodeArena;
+use viso_render::asset::ResourceId;
 
 struct Entry {
     node: NodeId,
@@ -31,6 +38,8 @@ struct Entry {
     /// Not filled since the slot was taken or reset.
     fresh: bool,
     state: Option<Box<dyn Any>>,
+    /// The models its node holds in the asset table.
+    models: Vec<ResourceId>,
 }
 
 /// The scenes of one node store, by slot.
@@ -78,6 +87,7 @@ impl SceneSlots {
             unsent: false,
             fresh: true,
             state: None,
+            models: Vec::new(),
         };
         let at = match self.entries.iter().position(Option::is_none) {
             Some(at) => at,
@@ -90,13 +100,26 @@ impl SceneSlots {
         SceneSlot(at as u32)
     }
 
-    /// Empties `slot`.
-    pub(crate) fn leave(&mut self, slot: SceneSlot) {
-        if let Some(entry) = self.entries.get_mut(slot.0 as usize)
-            && entry.take().is_some()
-        {
-            self.released.push(slot);
+    /// Empties `slot`, returning the models its node held.
+    pub(crate) fn leave(&mut self, slot: SceneSlot) -> Vec<ResourceId> {
+        match self.entries.get_mut(slot.0 as usize).and_then(Option::take) {
+            Some(entry) => {
+                self.released.push(slot);
+                entry.models
+            }
+            None => Vec::new(),
         }
+    }
+
+    /// The node of `slot`, and whether it held model `id` already, recording
+    /// that it does.
+    pub(crate) fn hold_model(&mut self, slot: SceneSlot, id: ResourceId) -> Option<(NodeId, bool)> {
+        let entry = self.entry_mut(slot)?;
+        let held = entry.models.contains(&id);
+        if !held {
+            entry.models.push(id);
+        }
+        Some((entry.node, held))
     }
 
     /// The frame `slot` shows.

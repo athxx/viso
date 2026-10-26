@@ -9,7 +9,7 @@ use std::time::Duration;
 use image_webp::{DecodingError, LoopCount, WebPDecoder};
 use viso_schema::resource::AssetBytes;
 
-use super::{Orientation, exif};
+use super::{Orientation, Raw, exif};
 use crate::animation::{Header, Loops, Piece};
 use crate::raster::{AssetError, MAX_PIXELS, RasterImage, check_size, premultiplied};
 
@@ -26,6 +26,25 @@ fn decoder<R: std::io::BufRead + std::io::Seek>(
     let (w, h) = decoder.dimensions();
     let (w, h) = check_size(w as usize, h as usize)?;
     Ok((decoder, w as usize, h as usize))
+}
+
+/// The WebP's pixels as stored (its first frame), eight bits a channel.
+pub(crate) fn raw(bytes: &[u8]) -> Result<Raw, AssetError> {
+    let (mut decoder, w, h) = decoder(Cursor::new(bytes))?;
+    let len = decoder
+        .output_buffer_size()
+        .ok_or_else(|| AssetError::Decode("the WebP is too large".to_owned()))?;
+    let mut pixels = vec![0; len];
+    if decoder.is_animated() {
+        decoder.set_background_color([0; 4]).map_err(error)?;
+    }
+    decoder.read_image(&mut pixels).map_err(error)?;
+    Ok(Raw {
+        width: w as u32,
+        height: h as u32,
+        channels: if decoder.has_alpha() { 4 } else { 3 },
+        pixels,
+    })
 }
 
 pub(crate) fn still(bytes: &[u8]) -> Result<RasterImage, AssetError> {

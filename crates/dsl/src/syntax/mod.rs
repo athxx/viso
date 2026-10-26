@@ -36,4 +36,4 @@ pub use parser::{Parse, ParseErrorKind, parse};
 pub use red::{Ancestors, SyntaxElement, SyntaxNode, SyntaxToken};
 pub use reparse::{Edit, reparse_tokens};
 pub use span::{LineCol, LineIndex, TextRange, TextSize};
-pub use token::{LexError, Token};
+pub use token::{LexDiagnostic, LexError, Token};

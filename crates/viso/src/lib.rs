@@ -2255,6 +2255,9 @@ impl WindowState {
                 gpu.renderer.release_scene(&mut gpu.backend, slot)
             }
         });
+        for model in self.store.assets_mut().take_retired_models() {
+            gpu.renderer.release_scene_model(&mut gpu.backend, &model);
+        }
         let painted = std::mem::replace(&mut self.painted, viso_ui::Painted::Nothing);
         self.uploaded = !matches!(
             painted,
@@ -2636,6 +2639,17 @@ impl WindowState {
                     multiline,
                 }
             });
+        // A control that edits its own document says where its caret is.
+        let entry = entry.or_else(|| {
+            let (id, own) = self.store.text_entry_from(self.store.focused()?)?;
+            let r = self.store.world(id);
+            Some(TextEntry {
+                caret: caret_area(r, Some(own.caret)),
+                secure: false,
+                kind: own.kind,
+                multiline: own.multiline,
+            })
+        });
         if self.text_entry == Some(entry) {
             return false;
         }

@@ -196,6 +196,13 @@ fn convert_catalog(
     let mut converted = Converted::default();
     let mut written = BTreeSet::new();
     for (path, format) in catalog.files() {
+        // A video or a model embeds as written.
+        if !matches!(
+            format.kind(),
+            viso_schema::resource::AssetKind::Raster | viso_schema::resource::AssetKind::Vector
+        ) {
+            continue;
+        }
         if format == AssetFormat::Svg && svg.is_none() {
             continue;
         }

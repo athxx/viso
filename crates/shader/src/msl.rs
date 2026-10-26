@@ -373,9 +373,10 @@ fn cached_msl(cell: &'static OnceLock<String>, ir: impl FnOnce() -> String) -> &
 /// [`scene_ir`].
 ///
 /// Contract (guaranteed by the shared IR): an indexed mesh's vertices at
-/// buffer index 0, its instances at 1 and the `SceneUniforms` buffer at 2,
-/// read by both stages; the fragment returns premultiplied color in the
-/// target's encoding.
+/// buffer index 0, its instances at 1 and its uniform blocks (the frame's,
+/// the material's) from 2 on, read by both stages; the material's textures
+/// and samplers at their slots; the fragment returns premultiplied color in
+/// the target's encoding.
 #[allow(non_snake_case)]
 pub fn SCENE_MSL() -> &'static str {
     static CELL: OnceLock<String> = OnceLock::new();

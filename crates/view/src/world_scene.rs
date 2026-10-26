@@ -600,7 +600,7 @@ mod tests {
         let (material, mesh, edges) = batches[0];
         assert_eq!(
             (material, mesh),
-            (viso_ui::scene3d::SceneMaterial::Unlit, Shape::Cube.into())
+            (viso_ui::scene3d::MaterialId::UNLIT, Shape::Cube.into())
         );
         assert_eq!(edges.len(), 12);
         let mut lengths: Vec<f32> = edges

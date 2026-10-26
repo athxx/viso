@@ -71,6 +71,8 @@ pub enum AssetFormat {
     WebM,
     /// Matroska video.
     Mkv,
+    /// A glTF 2.0 model: a binary `.glb`, or a `.gltf` document.
+    Gltf,
 }
 
 /// How an asset draws.
@@ -82,12 +84,16 @@ pub enum AssetKind {
     Vector,
     /// Pictures the platform's player decodes as it plays.
     Video,
+    /// A 3D model a scene draws: meshes, materials, a node hierarchy and its
+    /// animations.
+    Model,
 }
 
 impl AssetFormat {
     /// The format `bytes` are in, read from their signature: each raster
     /// format's magic number — an AVIF's `ftyp` brand, a BMP's header size, an
-    /// icon's directory — or an SVG root element within the document's head.
+    /// icon's directory — a binary glTF's magic, or an SVG root element or a
+    /// glTF document's top-level keys within the document's head.
     pub fn sniff(bytes: &[u8]) -> Option<AssetFormat> {
         if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
             return Some(AssetFormat::Png);
@@ -110,6 +116,9 @@ impl AssetFormat {
         if bytes.starts_with(b"qoif") {
             return Some(AssetFormat::Qoi);
         }
+        if bytes.len() >= 12 && bytes.starts_with(b"glTF") {
+            return Some(AssetFormat::Gltf);
+        }
         // A BMP's info header is one of the sizes the versions use.
         if bytes.len() >= 18 && bytes.starts_with(b"BM") {
             let header = u32::from_le_bytes([bytes[14], bytes[15], bytes[16], bytes[17]]);
@@ -131,7 +140,15 @@ impl AssetFormat {
             Err(_) => return None,
         };
         let text = text.trim_start_matches('\u{feff}').trim_start();
-        (text.starts_with('<') && text.contains("<svg")).then_some(AssetFormat::Svg)
+        if text.starts_with('<') && text.contains("<svg") {
+            return Some(AssetFormat::Svg);
+        }
+        // A glTF document is a JSON object holding its `asset` record, most
+        // often first; the arrays every model has stand in for one written
+        // later.
+        let gltf = ["\"asset\"", "\"accessors\"", "\"bufferViews\""];
+        (text.starts_with('{') && gltf.iter().any(|key| text.contains(key)))
+            .then_some(AssetFormat::Gltf)
     }
 
     pub const fn kind(self) -> AssetKind {
@@ -140,6 +157,7 @@ impl AssetFormat {
             AssetFormat::Mp4 | AssetFormat::Mov | AssetFormat::WebM | AssetFormat::Mkv => {
                 AssetKind::Video
             }
+            AssetFormat::Gltf => AssetKind::Model,
             _ => AssetKind::Raster,
         }
     }
@@ -160,6 +178,7 @@ impl AssetFormat {
             AssetFormat::Mov => "QuickTime",
             AssetFormat::WebM => "WebM",
             AssetFormat::Mkv => "Matroska",
+            AssetFormat::Gltf => "glTF",
         }
     }
 }
@@ -308,5 +327,22 @@ mod tests {
         assert_eq!(sniff(b"\0\0\0\x18ftypmsf1\0\0\0\0msf1hevc"), None);
         assert_eq!(sniff(b"\0\0\0\x0cftyp"), None, "no brand");
         assert_eq!(AssetFormat::WebM.kind(), AssetKind::Video);
+    }
+
+    #[test]
+    fn a_gltf_model_is_known_by_its_magic_or_its_keys() {
+        let sniff = AssetFormat::sniff;
+        assert_eq!(sniff(b"glTF\x02\0\0\0\x20\0\0\0"), Some(AssetFormat::Gltf));
+        assert_eq!(sniff(b"glTF"), None, "no header");
+        assert_eq!(
+            sniff(b"\xef\xbb\xbf {\"asset\":{\"version\":\"2.0\"}}"),
+            Some(AssetFormat::Gltf)
+        );
+        assert_eq!(
+            sniff(b"{\"scene\":0,\"accessors\":[]}"),
+            Some(AssetFormat::Gltf)
+        );
+        assert_eq!(sniff(b"{\"name\":\"not a model\"}"), None);
+        assert_eq!(AssetFormat::Gltf.kind(), AssetKind::Model);
     }
 }

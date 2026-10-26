@@ -96,6 +96,13 @@ pub enum Builtin {
     Pow,
     Atan2,
     Cross,
+    Acos,
+    Exp2,
+    Log2,
+    Tan,
+    Reflect,
+    /// `gradient2d(dx, dy)`: a sample's texture-coordinate derivatives.
+    Gradient2d,
 }
 
 impl Builtin {
@@ -128,6 +135,12 @@ impl Builtin {
             "pow" => Builtin::Pow,
             "atan2" => Builtin::Atan2,
             "cross" => Builtin::Cross,
+            "acos" => Builtin::Acos,
+            "exp2" => Builtin::Exp2,
+            "log2" => Builtin::Log2,
+            "tan" => Builtin::Tan,
+            "reflect" => Builtin::Reflect,
+            "gradient2d" => Builtin::Gradient2d,
             _ => return None,
         })
     }
@@ -169,6 +182,16 @@ fn ir_ty(t: IrType) -> Ty {
     }
 }
 
+/// The type a uniform member reads as: its value, or an array of them.
+fn field_ty(f: &crate::ir::module::IrField) -> Ty {
+    match (f.count, ir_ty(f.ty)) {
+        (0, t) => t,
+        (_, Ty::Scalar(s)) => Ty::Array(s, 1),
+        (_, Ty::Vector(s, n)) => Ty::Array(s, n),
+        (_, t) => t,
+    }
+}
+
 fn show(t: Ty) -> String {
     let s = |s: Scalar| match s {
         Scalar::Bool => "bool",
@@ -184,6 +207,9 @@ fn show(t: Ty) -> String {
         Ty::Struct(st) => format!("{st:?}"),
         Ty::Texture => "texture2d".into(),
         Ty::Sampler => "sampler".into(),
+        Ty::Array(sc, 1) => format!("{}[]", s(sc)),
+        Ty::Array(sc, n) => format!("{}{n}[]", s(sc)),
+        Ty::Gradient => "gradient2d".into(),
         Ty::AttrBuffer => "attribute buffer".into(),
         Ty::Void => "void".into(),
     }
@@ -487,7 +513,24 @@ impl Cx<'_> {
             (Stage::Fragment, "tex") if tc >= 1 => Some((Global::Tex, Ty::Texture)),
             (Stage::Fragment, "dst_tex") if tc >= 2 => Some((Global::DstTex, Ty::Texture)),
             (Stage::Fragment, "samp") if tc >= 1 => Some((Global::Samp, Ty::Sampler)),
-            _ => None,
+            (stage, name) => {
+                let b = self.ir.bindings?;
+                if let Some(i) = b.blocks.iter().position(|k| k.name == name) {
+                    let block = &b.blocks[i];
+                    return Some((
+                        Global::Block(i as u8, block.name),
+                        Ty::Struct(StructName::Block(i as u8)),
+                    ));
+                }
+                if stage != Stage::Fragment {
+                    return None;
+                }
+                if let Some(i) = b.textures.iter().position(|t| t.name == name) {
+                    return Some((Global::Texture(i as u8, b.textures[i].name), Ty::Texture));
+                }
+                let i = b.samplers.iter().position(|&n| n == name)?;
+                Some((Global::Sampler(i as u8, b.samplers[i]), Ty::Sampler))
+            }
         }
     }
 
@@ -567,6 +610,12 @@ impl Cx<'_> {
         let span = s.span;
         match &mut s.kind {
             StmtKind::Comment(_) | StmtKind::Break => Ok(()),
+            StmtKind::Discard if self.stage == Some(Stage::Fragment) => Ok(()),
+            StmtKind::Discard => Err(err(
+                "S0337",
+                span,
+                "only the fragment body discards its fragment",
+            )),
             StmtKind::Decl {
                 ty, local, init, ..
             } => {
@@ -592,8 +641,8 @@ impl Cx<'_> {
                             "`VOut` is declared once, uninitialized, in the vertex body",
                         ));
                     }
-                    TypeName::Struct(StructName::Uniforms) => {
-                        return Err(err("S0341", span, "`Uniforms` cannot be declared"));
+                    TypeName::Struct(StructName::Uniforms | StructName::Block(_)) => {
+                        return Err(err("S0341", span, "a uniform block cannot be declared"));
                     }
                     _ => {}
                 }
@@ -835,7 +884,16 @@ impl Cx<'_> {
                     .uniforms
                     .iter()
                     .find(|f| f.name == name)
-                    .map(|f| ir_ty(f.ty)),
+                    .map(field_ty),
+                StructName::Block(i) => self
+                    .ir
+                    .bindings?
+                    .blocks
+                    .get(i as usize)?
+                    .fields
+                    .iter()
+                    .find(|f| f.name == name)
+                    .map(field_ty),
             }
         };
         let found = match base {
@@ -852,6 +910,43 @@ impl Cx<'_> {
                 format!("`{}` has no member `{name}`", show(base)),
             )
         })
+    }
+
+    /// A scene texture is sampled only through the sampler its slot names.
+    fn check_pairing(&self, base: &Expr, args: &[Expr], span: Span) -> Result<(), BodyError> {
+        let (
+            ExprKind::Var {
+                res: Res::Global(Global::Texture(t, name)),
+                ..
+            },
+            Some(Expr {
+                kind:
+                    ExprKind::Var {
+                        res: Res::Global(Global::Sampler(s, _)),
+                        ..
+                    },
+                ..
+            }),
+        ) = (&base.kind, args.first())
+        else {
+            return Ok(());
+        };
+        let want = self
+            .ir
+            .bindings
+            .and_then(|b| b.textures.get(*t as usize))
+            .map(|t| t.sampler);
+        if want == Some(*s) {
+            return Ok(());
+        }
+        let sampler = want
+            .and_then(|w| self.ir.bindings?.samplers.get(w as usize).copied())
+            .unwrap_or("?");
+        Err(err(
+            "S0313",
+            span,
+            format!("`{name}` is sampled through `{sampler}`, its slot's sampler"),
+        ))
     }
 
     fn expr(&mut self, e: &mut Expr) -> Result<Ty, BodyError> {
@@ -921,10 +1016,14 @@ impl Cx<'_> {
                 for a in args.iter_mut() {
                     ats.push(self.expr(a)?);
                 }
+                self.check_pairing(base, args, span)?;
                 match (bt, method.as_str(), ats.as_slice()) {
-                    (Ty::Texture, "sample", [Ty::Sampler, Ty::Vector(Scalar::F32, 2)]) => {
-                        Ty::Vector(Scalar::F32, 4)
-                    }
+                    (Ty::Texture, "sample", [Ty::Sampler, Ty::Vector(Scalar::F32, 2)])
+                    | (
+                        Ty::Texture,
+                        "sample",
+                        [Ty::Sampler, Ty::Vector(Scalar::F32, 2), Ty::Gradient],
+                    ) => Ty::Vector(Scalar::F32, 4),
                     (Ty::Texture, "get_width" | "get_height", []) => Ty::Scalar(Scalar::U32),
                     _ => {
                         return Err(err(
@@ -938,12 +1037,26 @@ impl Cx<'_> {
                     }
                 }
             }
-            ExprKind::Index { .. } => {
-                return Err(err(
-                    "S0311",
-                    span,
-                    "indexing is only the vertex body's opening attribute fetch",
-                ));
+            ExprKind::Index { base, index } => {
+                let bt = self.expr(base)?;
+                let it = self.expr(index)?;
+                let integer = it == Ty::AbsInt || matches!(it, Ty::Scalar(s) if is_int(s));
+                match bt {
+                    Ty::Array(s, n) if integer => {
+                        if it == Ty::AbsInt {
+                            index.ty = Ty::Scalar(Scalar::I32);
+                        }
+                        make_ty(Some(s), n)
+                    }
+                    _ => {
+                        return Err(err(
+                            "S0311",
+                            span,
+                            "indexing is the vertex body's opening attribute fetch, or a \
+                             uniform array by an integer",
+                        ));
+                    }
+                }
             }
             ExprKind::Construct { ty, args } => {
                 let ty = *ty;
@@ -1125,9 +1238,19 @@ impl Cx<'_> {
                 | Builtin::Cos
                 | Builtin::Dfdx
                 | Builtin::Dfdy
-                | Builtin::Saturate,
+                | Builtin::Saturate
+                | Builtin::Acos
+                | Builtin::Exp2
+                | Builtin::Log2
+                | Builtin::Tan,
                 [a],
             ) => float(*a),
+            (Builtin::Reflect, [a @ Ty::Vector(Scalar::F32, _), b]) if a == b => Some(*a),
+            (Builtin::Gradient2d, [a, b])
+                if *a == Ty::Vector(Scalar::F32, 2) && *b == Ty::Vector(Scalar::F32, 2) =>
+            {
+                Some(Ty::Gradient)
+            }
             (Builtin::Abs | Builtin::Sign, [a]) => match a.scalar() {
                 Some(Scalar::F32 | Scalar::I32) => Some(*a),
                 _ if *a == Ty::AbsInt => Some(Ty::AbsInt),

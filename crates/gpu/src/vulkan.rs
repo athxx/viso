@@ -77,12 +77,8 @@ const PRESENT_RECTS: usize = 8;
 const STAGING_CHUNK: u64 = 4 << 20;
 /// Descriptor sets per descriptor pool; a full pool is followed by a new one.
 const SETS_PER_POOL: u32 = 256;
-/// Descriptor bindings of set 0.
-const BINDING_TEX: u32 = 0;
-const BINDING_DST_TEX: u32 = 1;
-const BINDING_SAMPLER: u32 = 2;
-/// A scene draw's uniform block.
-const BINDING_UNIFORM: u32 = 3;
+/// The binding of a 2D program's second texture, `dst_tex`, in set 0.
+const BINDING_DST_TEX: u32 = scene::NATIVE_TEXTURE_BINDINGS[1];
 /// Where a Vulkan loader lives on macOS when it is not on the default search
 /// path; empty elsewhere.
 const MACOS_LOADERS: &[&str] = if cfg!(target_os = "macos") {
@@ -850,7 +846,72 @@ impl VulkanBackend {
 
     /// A texture as `desc` describes; `mutable` lets it be viewed in the
     /// other encoding of its format too (an sRGB texture as UNORM).
+    /// Copy `bytes`, the tightly packed region `(x, y, w, h)`, into mip level
+    /// `level` of texture `id`.
+    fn write_level(
+        &mut self,
+        id: TextureId,
+        level: u32,
+        (x, y, w, h): (u32, u32, u32, u32),
+        bytes: &[u8],
+    ) {
+        let t = self.texture(id);
+        let (image, aspect) = (t.image, aspect_of(t.format));
+        self.ensure_recording();
+        let (buffer, offset) = self.stage(bytes);
+        let cmd = self.slots[self.slot].upload;
+        let region = vk::BufferImageCopy::default()
+            .buffer_offset(offset)
+            .image_subresource(vk::ImageSubresourceLayers {
+                mip_level: level,
+                ..subresource_layers(aspect)
+            })
+            .image_offset(vk::Offset3D {
+                x: x as i32,
+                y: y as i32,
+                z: 0,
+            })
+            .image_extent(vk::Extent3D {
+                width: w,
+                height: h,
+                depth: 1,
+            });
+        // SAFETY: `cmd` is recording; the texture rests in
+        // SHADER_READ_ONLY_OPTIMAL and returns to it; the staged bytes cover the
+        // tightly packed `w`×`h` region.
+        unsafe {
+            transition(
+                &self.device,
+                cmd,
+                image,
+                aspect,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            );
+            self.device.cmd_copy_buffer_to_image(
+                cmd,
+                buffer,
+                image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[region],
+            );
+            transition(
+                &self.device,
+                cmd,
+                image,
+                aspect,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            );
+        }
+    }
+
     fn new_texture(&mut self, desc: &TextureDesc, mutable: bool) -> TextureId {
+        self.new_texture_levels(desc, mutable, 1)
+    }
+
+    /// A texture of `levels` mip levels, every one cleared.
+    fn new_texture_levels(&mut self, desc: &TextureDesc, mutable: bool, levels: u32) -> TextureId {
         let format = vk_format(desc.format);
 
         let aspect = aspect_of(desc.format);
@@ -878,15 +939,16 @@ impl VulkanBackend {
                 height: desc.height.max(1),
                 depth: 1,
             })
-            .mip_levels(1)
+            .mip_levels(levels.max(1))
             .array_layers(1)
             .samples(vk::SampleCountFlags::TYPE_1)
             .tiling(vk::ImageTiling::OPTIMAL)
             .usage(usage)
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .initial_layout(vk::ImageLayout::UNDEFINED);
-        // SAFETY: `info` describes a single-mip 2D image with a positive extent;
-        // its memory comes from a type its requirements allow and is bound once.
+        // SAFETY: `info` describes a 2D image with a positive extent and no more
+        // levels than its chain; its memory comes from a type its requirements
+        // allow and is bound once.
         let (image, memory) = unsafe {
             let image = self
                 .device
@@ -1988,18 +2050,19 @@ impl VulkanBackend {
                 return (sets[0], pool);
             }
         }
+        // Every set of the shared layout holds each of its slots.
         let sizes = [
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::SAMPLED_IMAGE,
-                descriptor_count: SETS_PER_POOL * 2,
+                descriptor_count: SETS_PER_POOL * scene::TEXTURE_SLOTS as u32,
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::SAMPLER,
-                descriptor_count: SETS_PER_POOL,
+                descriptor_count: SETS_PER_POOL * scene::SAMPLER_SLOTS as u32,
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::UNIFORM_BUFFER,
-                descriptor_count: SETS_PER_POOL,
+                descriptor_count: SETS_PER_POOL * scene::UNIFORM_SLOTS as u32,
             },
         ];
         let info = vk::DescriptorPoolCreateInfo::default()
@@ -2366,7 +2429,8 @@ impl VulkanBackend {
             .view_type(vk::ImageViewType::TYPE_2D)
             .format(format)
             .subresource_range(subresource_range(aspect));
-        // SAFETY: `image` is a live single-mip, single-layer 2D image of `format`.
+        // SAFETY: `image` is a live single-layer 2D image of `format`; the view
+        // spans its every level.
         unsafe { self.device.create_image_view(&info, None) }
             .expect("failed to create a Vulkan image view")
     }
@@ -2798,6 +2862,22 @@ impl GpuBackend for VulkanBackend {
         self.new_texture(desc, false)
     }
 
+    fn create_texture_mipped(&mut self, desc: &TextureDesc, levels: &[&[u8]]) -> TextureId {
+        let id = self.new_texture_levels(desc, false, levels.len().max(1) as u32);
+        let (mut w, mut h) = (desc.width.max(1), desc.height.max(1));
+        for (k, bytes) in levels.iter().enumerate() {
+            if k > 0 {
+                (w, h) = ((w / 2).max(1), (h / 2).max(1));
+            }
+            let len = desc.format.data_size(w, h);
+            if bytes.len() < len {
+                break;
+            }
+            self.write_level(id, k as u32, (0, 0, w, h), &bytes[..len]);
+        }
+        id
+    }
+
     fn import_external(&mut self, image: &ExternalImage) -> Option<TextureId> {
         #[cfg(unix)]
         if let ExternalImage::DmaBuf { .. } = image {
@@ -2965,77 +3045,72 @@ impl GpuBackend for VulkanBackend {
 
     fn create_bind_group(&mut self, desc: &BindGroupDesc) -> BindGroupId {
         let (set, pool) = self.allocate_set();
-        let mut views = [vk::ImageView::null(); 2];
-        let mut texture_count = 0;
-        let mut sampler = None;
-        let mut uniform = None;
+        // The k-th binding of each kind takes that kind's k-th slot of the
+        // shared layout: a 2D program's `tex`, `dst_tex`, sampler and uniform
+        // block are each kind's first slots.
+        let mut images: Vec<(u32, [vk::DescriptorImageInfo; 1])> = Vec::with_capacity(4);
+        let mut samplers: Vec<(u32, [vk::DescriptorImageInfo; 1])> = Vec::with_capacity(1);
+        let mut uniforms: Vec<(u32, [vk::DescriptorBufferInfo; 1])> = Vec::with_capacity(1);
         for binding in &desc.bindings {
             match *binding {
                 Binding::Texture(id) => {
-                    if texture_count < views.len() {
-                        views[texture_count] = self.texture(id).view;
-                        texture_count += 1;
+                    if let Some(&at) = scene::NATIVE_TEXTURE_BINDINGS.get(images.len()) {
+                        let info = vk::DescriptorImageInfo::default()
+                            .image_view(self.texture(id).view)
+                            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+                        images.push((at, [info]));
                     }
                 }
                 Binding::Sampler(id) => {
-                    sampler = Some(
-                        *self
-                            .samplers
-                            .get(id.into())
-                            .expect("sampler handle does not resolve"),
-                    );
+                    let sampler = *self
+                        .samplers
+                        .get(id.into())
+                        .expect("sampler handle does not resolve");
+                    if let Some(&at) = scene::NATIVE_SAMPLER_BINDINGS.get(samplers.len()) {
+                        samplers.push((at, [vk::DescriptorImageInfo::default().sampler(sampler)]));
+                    }
                 }
-                Binding::Uniform(id) => uniform = Some(self.buffer(id).buffer),
+                Binding::Uniform(id) => {
+                    if let Some(&at) = scene::NATIVE_UNIFORM_BINDINGS.get(uniforms.len()) {
+                        let info = vk::DescriptorBufferInfo::default()
+                            .buffer(self.buffer(id).buffer)
+                            .offset(0)
+                            .range(vk::WHOLE_SIZE);
+                        uniforms.push((at, [info]));
+                    }
+                }
             }
         }
         // A single-texture program leaves `dst_tex` unread; fill it anyway so the
         // set is complete for any program it is bound with.
-        if texture_count == 1 {
-            views[1] = views[0];
+        if images.len() == 1 {
+            let info = images[0].1;
+            images.push((BINDING_DST_TEX, info));
         }
-        let image_infos: Vec<[vk::DescriptorImageInfo; 1]> = if texture_count == 0 {
-            Vec::new()
-        } else {
-            views
-                .iter()
-                .map(|&view| {
-                    [vk::DescriptorImageInfo::default()
-                        .image_view(view)
-                        .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)]
-                })
-                .collect()
-        };
-        let sampler_info = sampler.map(|s| [vk::DescriptorImageInfo::default().sampler(s)]);
-        let uniform_info = uniform.map(|b| {
-            [vk::DescriptorBufferInfo::default()
-                .buffer(b)
-                .offset(0)
-                .range(vk::WHOLE_SIZE)]
-        });
-        let mut writes = Vec::with_capacity(4);
-        for (i, info) in image_infos.iter().enumerate() {
+        let mut writes = Vec::with_capacity(images.len() + samplers.len() + uniforms.len());
+        for (at, info) in &images {
             writes.push(
                 vk::WriteDescriptorSet::default()
                     .dst_set(set)
-                    .dst_binding(if i == 0 { BINDING_TEX } else { BINDING_DST_TEX })
+                    .dst_binding(*at)
                     .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
                     .image_info(info),
             );
         }
-        if let Some(info) = &sampler_info {
+        for (at, info) in &samplers {
             writes.push(
                 vk::WriteDescriptorSet::default()
                     .dst_set(set)
-                    .dst_binding(BINDING_SAMPLER)
+                    .dst_binding(*at)
                     .descriptor_type(vk::DescriptorType::SAMPLER)
                     .image_info(info),
             );
         }
-        if let Some(info) = &uniform_info {
+        for (at, info) in &uniforms {
             writes.push(
                 vk::WriteDescriptorSet::default()
                     .dst_set(set)
-                    .dst_binding(BINDING_UNIFORM)
+                    .dst_binding(*at)
                     .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                     .buffer_info(info),
             );
@@ -3118,51 +3193,7 @@ impl GpuBackend for VulkanBackend {
         if len == 0 {
             return;
         }
-        let (image, aspect) = (t.image, aspect_of(t.format));
-        self.ensure_recording();
-        let (buffer, offset) = self.stage(&bytes[..len]);
-        let cmd = self.slots[self.slot].upload;
-        let region = vk::BufferImageCopy::default()
-            .buffer_offset(offset)
-            .image_subresource(subresource_layers(aspect))
-            .image_offset(vk::Offset3D {
-                x: x as i32,
-                y: y as i32,
-                z: 0,
-            })
-            .image_extent(vk::Extent3D {
-                width: w,
-                height: h,
-                depth: 1,
-            });
-        // SAFETY: `cmd` is recording; the texture rests in
-        // SHADER_READ_ONLY_OPTIMAL and returns to it; the staged bytes cover the
-        // tightly packed `w`×`h` region.
-        unsafe {
-            transition(
-                &self.device,
-                cmd,
-                image,
-                aspect,
-                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            );
-            self.device.cmd_copy_buffer_to_image(
-                cmd,
-                buffer,
-                image,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                &[region],
-            );
-            transition(
-                &self.device,
-                cmd,
-                image,
-                aspect,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            );
-        }
+        self.write_level(id, 0, (x, y, w, h), &bytes[..len]);
     }
 
     fn create_surface(&mut self, raw: RawWindowHandle, width: u32, height: u32) -> SurfaceId {
@@ -3680,28 +3711,29 @@ fn create_layouts(
     vk::PipelineCache,
 ) {
     let stages = vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT;
-    let bindings = [
+    // The 2D programs' `tex`, `dst_tex`, sampler and uniform block are the
+    // first slots of each kind; a scene program's further slots follow.
+    let slot = |at: u32, ty| {
         vk::DescriptorSetLayoutBinding::default()
-            .binding(BINDING_TEX)
-            .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+            .binding(at)
+            .descriptor_type(ty)
             .descriptor_count(1)
-            .stage_flags(stages),
-        vk::DescriptorSetLayoutBinding::default()
-            .binding(BINDING_DST_TEX)
-            .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
-            .descriptor_count(1)
-            .stage_flags(stages),
-        vk::DescriptorSetLayoutBinding::default()
-            .binding(BINDING_SAMPLER)
-            .descriptor_type(vk::DescriptorType::SAMPLER)
-            .descriptor_count(1)
-            .stage_flags(stages),
-        vk::DescriptorSetLayoutBinding::default()
-            .binding(BINDING_UNIFORM)
-            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-            .descriptor_count(1)
-            .stage_flags(stages),
-    ];
+            .stage_flags(stages)
+    };
+    let bindings: Vec<vk::DescriptorSetLayoutBinding> = scene::NATIVE_TEXTURE_BINDINGS
+        .iter()
+        .map(|&at| slot(at, vk::DescriptorType::SAMPLED_IMAGE))
+        .chain(
+            scene::NATIVE_SAMPLER_BINDINGS
+                .iter()
+                .map(|&at| slot(at, vk::DescriptorType::SAMPLER)),
+        )
+        .chain(
+            scene::NATIVE_UNIFORM_BINDINGS
+                .iter()
+                .map(|&at| slot(at, vk::DescriptorType::UNIFORM_BUFFER)),
+        )
+        .collect();
     let push = [vk::PushConstantRange {
         stage_flags: stages,
         offset: 0,
@@ -3886,6 +3918,7 @@ unsafe fn graphics_pipeline(
         .cull_mode(match cull {
             CullMode::None => vk::CullModeFlags::NONE,
             CullMode::Back => vk::CullModeFlags::BACK,
+            CullMode::Front => vk::CullModeFlags::FRONT,
         })
         // The vertex stage flips y for Vulkan's downward framebuffer, so a
         // face counter-clockwise in clip space is counter-clockwise on screen.
@@ -4238,7 +4271,7 @@ fn subresource_range(aspect: vk::ImageAspectFlags) -> vk::ImageSubresourceRange 
     vk::ImageSubresourceRange {
         aspect_mask: aspect,
         base_mip_level: 0,
-        level_count: 1,
+        level_count: vk::REMAINING_MIP_LEVELS,
         base_array_layer: 0,
         layer_count: 1,
     }

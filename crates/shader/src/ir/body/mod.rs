@@ -175,7 +175,7 @@ mod tests {
     use super::*;
     use crate::ir::body::lex::{TokenKind, lex};
     use crate::ir::body::print::{Lang, Printer};
-    use crate::ir::module::builtin_irs;
+    use crate::ir::module::{builtin_irs, every_ir};
 
     fn token_shape(src: &str) -> Vec<(TokenKind, bool)> {
         lex(src)
@@ -187,7 +187,7 @@ mod tests {
 
     #[test]
     fn every_builtin_parses_and_checks() {
-        for ir in builtin_irs() {
+        for ir in every_ir() {
             if let Err(e) = parse_ir(&ir) {
                 panic!("{:?}: {e}", ir.kind);
             }
@@ -196,7 +196,7 @@ mod tests {
 
     #[test]
     fn msl_printer_round_trips_every_builtin() {
-        for ir in builtin_irs() {
+        for ir in every_ir() {
             let parsed = parse_ir(&ir).unwrap();
             let mut p = Printer::new(Lang::Msl);
             p.entry_body(&parsed.vertex);

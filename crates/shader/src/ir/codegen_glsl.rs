@@ -27,7 +27,9 @@
 
 use std::fmt::Write as _;
 
-use crate::ir::body::print::{ATTRS_PARAM, INSTANCE_PARAM, Lang, Printer};
+use crate::ir::body::print::{
+    ATTRS_PARAM, INSTANCE_PARAM, Lang, Printer, glsl_block, glsl_texture,
+};
 use crate::ir::body::{BodyError, parse_ir};
 use crate::ir::module::{ShaderIr, VertexSource};
 use crate::ir::types::{IrType, ScalarType};
@@ -101,14 +103,40 @@ pub fn emit_glsl(ir: &ShaderIr) -> Result<String, BodyError> {
         out.push_str("};\n\n");
     }
 
+    let field = |out: &mut String, f: &crate::ir::module::IrField| {
+        let array = if f.count > 0 {
+            format!("[{}]", f.count)
+        } else {
+            String::new()
+        };
+        let _ = writeln!(
+            out,
+            "    {} {}{array};",
+            glsl_type(f.ty),
+            names.ident(f.name)
+        );
+    };
     out.push_str("struct Uniforms {\n");
     for f in ir.uniforms {
-        let _ = writeln!(out, "    {} {};", glsl_type(f.ty), names.ident(f.name));
+        field(&mut out, f);
     }
     let _ = writeln!(
         out,
         "}};\n\nlayout(std140) uniform {UNIFORM_BLOCK} {{\n    Uniforms uniforms;\n}};\n"
     );
+    for (i, block) in ir.bindings.map_or(&[][..], |b| b.blocks).iter().enumerate() {
+        let _ = writeln!(out, "struct {} {{", block.struct_name);
+        for f in block.fields {
+            field(&mut out, f);
+        }
+        let _ = writeln!(
+            out,
+            "}};\n\nlayout(std140) uniform {} {{\n    {} {};\n}};\n",
+            glsl_block(1 + i as u8),
+            block.struct_name,
+            names.ident(block.name)
+        );
+    }
 
     out.push_str("struct VOut {\n");
     for v in ir.varyings {
@@ -117,6 +145,9 @@ pub fn emit_glsl(ir: &ShaderIr) -> Result<String, BodyError> {
     out.push_str("};\n\n");
 
     out.push_str(TARGET_GLSL);
+    for i in 0..ir.bindings.map_or(0, |b| b.textures.len()) {
+        let _ = writeln!(out, "uniform highp sampler2D {};", glsl_texture(i as u8));
+    }
     if ir.texture_count >= 1 {
         out.push_str("uniform highp sampler2D tex;\n");
         if ir.texture_count >= 2 {
@@ -264,7 +295,7 @@ fn is_float(t: IrType) -> bool {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::ir::module::builtin_irs;
+    use crate::ir::module::{builtin_irs, every_ir};
     use std::path::PathBuf;
     use std::process::Command;
 
@@ -285,7 +316,7 @@ pub(crate) mod tests {
 
     #[test]
     fn every_builtin_compiles_as_glsl_es_300() {
-        for ir in builtin_irs() {
+        for ir in every_ir() {
             let src = emit_glsl(&ir).unwrap();
             let tag = format!("{:?}", ir.kind);
             for vertex in [true, false] {

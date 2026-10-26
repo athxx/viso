@@ -72,7 +72,7 @@ use crate::resource::{
     ShaderCode, ShaderLang, TextureDesc, TextureFormat,
 };
 use crate::retire::{Epoch, Fence, ResourceKind, RetireQueue, Retired};
-use crate::scene::{self, SceneInstance, SceneUniforms};
+use crate::scene::{self, SAMPLER_SLOTS, SceneInstance, TEXTURE_SLOTS, UNIFORM_SLOTS};
 use crate::slots::SlotMap;
 use crate::{BindGroupId, BufferId, PipelineId, SamplerId, SurfaceId, TextureId};
 
@@ -482,8 +482,11 @@ struct WebGpuBindGroup {
     /// The program texture layout's view, built on first use.
     program: Option<GpuBindGroup>,
     uniform: Option<BufferId>,
-    /// The scene's group 0 over `uniform`, built on first use.
-    scene: Option<GpuBindGroup>,
+    /// Every uniform buffer, in order: a scene draw's blocks.
+    uniforms: Vec<BufferId>,
+    /// A scene draw's groups 0 (its uniform blocks) and 1 (its textures and
+    /// samplers), built on first use.
+    scene: Option<(GpuBindGroup, GpuBindGroup)>,
 }
 
 /// A user program's group 0 for one instance range and uniform source.
@@ -797,8 +800,10 @@ pub struct WebGpuBackend {
     preferred: TextureFormat,
     float32_filterable: bool,
     uniform_layout: GpuBindGroupLayout,
-    /// Group 0 of the scene built-in: a whole uniform buffer.
+    /// Group 0 of the scene programs: their uniform buffers, whole.
     scene_uniform_layout: GpuBindGroupLayout,
+    /// Group 1 of the scene programs: their textures, then their samplers.
+    scene_texture_layout: GpuBindGroupLayout,
     scene_pipeline_layout: GpuPipelineLayout,
     texture_layout: GpuBindGroupLayout,
     /// Group 1 of every user program.
@@ -970,26 +975,34 @@ impl WebGpuBackend {
             "bindGroupLayouts",
             arr(&[uniform_layout.clone(), texture_layout.clone()]).into(),
         )]));
-        let scene_uniform_layout = device.create_bind_group_layout(&obj(&[(
-            "entries",
-            arr(&[obj(&[
-                ("binding", 0.into()),
-                ("visibility", visibility.into()),
-                (
-                    "buffer",
-                    obj(&[
-                        ("type", "uniform".into()),
-                        ("minBindingSize", (SceneUniforms::SIZE as u32).into()),
-                    ])
-                    .into(),
-                ),
-            ])
-            .into()])
-            .into(),
-        )]));
+        let scene_uniform_layout = {
+            let entries = Array::new();
+            for i in 0..UNIFORM_SLOTS as u32 {
+                entries.push(&obj(&[
+                    ("binding", i.into()),
+                    ("visibility", visibility.into()),
+                    ("buffer", obj(&[("type", "uniform".into())]).into()),
+                ]));
+            }
+            device.create_bind_group_layout(&obj(&[("entries", entries.into())]))
+        };
+        let scene_texture_layout = {
+            let entries = Array::new();
+            for i in 0..TEXTURE_SLOTS as u32 {
+                entries.push(&texture_entry(i));
+            }
+            for i in 0..SAMPLER_SLOTS as u32 {
+                entries.push(&obj(&[
+                    ("binding", (TEXTURE_SLOTS as u32 + i).into()),
+                    ("visibility", visibility.into()),
+                    ("sampler", obj(&[("type", "filtering".into())]).into()),
+                ]));
+            }
+            device.create_bind_group_layout(&obj(&[("entries", entries.into())]))
+        };
         let scene_pipeline_layout = device.create_pipeline_layout(&obj(&[(
             "bindGroupLayouts",
-            arr(&[scene_uniform_layout.clone(), texture_layout.clone()]).into(),
+            arr(&[scene_uniform_layout.clone(), scene_texture_layout.clone()]).into(),
         )]));
 
         let default_texture = device.create_texture(&obj(&[
@@ -1041,6 +1054,7 @@ impl WebGpuBackend {
             float32_filterable,
             uniform_layout,
             scene_uniform_layout,
+            scene_texture_layout,
             scene_pipeline_layout,
             texture_layout,
             program_texture_layout,
@@ -1390,6 +1404,7 @@ impl WebGpuBackend {
                         match cull {
                             CullMode::None => "none",
                             CullMode::Back => "back",
+                            CullMode::Front => "front",
                         }
                         .into(),
                     ),
@@ -1473,37 +1488,51 @@ impl WebGpuBackend {
         self.submit_list.set(0, JsValue::UNDEFINED);
     }
 
-    /// The scene group 0 of bind group `bg`: its uniform buffer, whole.
-    fn scene_group(&mut self, bg: BindGroupId) -> GpuBindGroup {
+    /// The scene groups 0 and 1 of bind group `bg`: its uniform buffers
+    /// whole, and its textures and samplers by slot.
+    fn scene_groups(&mut self, bg: BindGroupId) -> (GpuBindGroup, GpuBindGroup) {
         let g = self
             .bind_groups
             .get(bg.into())
             .expect("bind group handle does not resolve");
-        if let Some(group) = &g.scene {
-            return JsValue::clone(group).unchecked_into();
+        if let Some((zero, one)) = &g.scene {
+            return (
+                JsValue::clone(zero).unchecked_into(),
+                JsValue::clone(one).unchecked_into(),
+            );
         }
-        let buffer = g
-            .uniform
-            .expect("a scene draw's bind group holds a uniform buffer");
-        let group = self.device.create_bind_group(&obj(&[
+        let entry = |binding: u32, resource: JsValue| {
+            obj(&[("binding", binding.into()), ("resource", resource)])
+        };
+        let uniforms = Array::new();
+        for (i, &buffer) in g.uniforms.iter().take(UNIFORM_SLOTS).enumerate() {
+            let resource = obj(&[("buffer", self.buffer(buffer).buffer.clone())]);
+            uniforms.push(&entry(i as u32, resource.into()));
+        }
+        let zero = self.device.create_bind_group(&obj(&[
             ("layout", self.scene_uniform_layout.clone()),
-            (
-                "entries",
-                arr(&[obj(&[
-                    ("binding", 0.into()),
-                    (
-                        "resource",
-                        obj(&[("buffer", self.buffer(buffer).buffer.clone())]).into(),
-                    ),
-                ])
-                .into()])
-                .into(),
-            ),
+            ("entries", uniforms.into()),
+        ]));
+        let textures = Array::new();
+        for i in 0..TEXTURE_SLOTS {
+            let view = g.views.get(i).unwrap_or(&self.default_view);
+            textures.push(&entry(i as u32, view.into()));
+        }
+        for i in 0..SAMPLER_SLOTS {
+            let sampler = g.samplers.get(i).unwrap_or(&self.default_sampler);
+            textures.push(&entry((TEXTURE_SLOTS + i) as u32, sampler.into()));
+        }
+        let one = self.device.create_bind_group(&obj(&[
+            ("layout", self.scene_texture_layout.clone()),
+            ("entries", textures.into()),
         ]));
         if let Some(g) = self.bind_groups.get_mut(bg.into()) {
-            g.scene = Some(JsValue::clone(&group).unchecked_into());
+            g.scene = Some((
+                JsValue::clone(&zero).unchecked_into(),
+                JsValue::clone(&one).unchecked_into(),
+            ));
         }
-        group
+        (zero, one)
     }
 
     fn record_pass(
@@ -1578,6 +1607,8 @@ impl WebGpuBackend {
             let program_view = program.is_some();
             let mut uniform_buffer = None;
             match c.bind_group {
+                // A scene draw binds both its groups below.
+                _ if scene => {}
                 Some(bg) => {
                     if program_view {
                         self.build_program_view(bg);
@@ -1614,11 +1645,16 @@ impl WebGpuBackend {
             }
             let uniforms = c.uniforms.as_bytes();
             if scene {
-                let bg = c.bind_group.expect("a scene draw binds its uniform buffer");
+                let bg = c
+                    .bind_group
+                    .expect("a scene draw binds its uniform buffers");
                 if bound_scene != Some(bg) {
-                    rp.set_bind_group(0, &self.scene_group(bg));
+                    let (zero, one) = self.scene_groups(bg);
+                    rp.set_bind_group(0, &zero);
+                    rp.set_bind_group(1, &one);
                     bound_scene = Some(bg);
                     bound_zero = None;
+                    bound_group = None;
                 }
             }
             match program {
@@ -1980,6 +2016,52 @@ impl GpuBackend for WebGpuBackend {
             .into()
     }
 
+    fn create_texture_mipped(&mut self, desc: &TextureDesc, levels: &[&[u8]]) -> TextureId {
+        let (width, height) = (desc.width.max(1), desc.height.max(1));
+        let count = levels.len().max(1) as u32;
+        let texture = self.device.create_texture(&obj(&[
+            ("size", extent(width, height).into()),
+            ("format", gpu_format(desc.format).into()),
+            ("usage", (TEXTURE_BINDING | TEXTURE_COPY_DST).into()),
+            ("mipLevelCount", count.into()),
+            ("label", desc.label.into()),
+        ]));
+        let (mut w, mut h) = (width, height);
+        for (k, bytes) in levels.iter().enumerate() {
+            if k > 0 {
+                (w, h) = ((w / 2).max(1), (h / 2).max(1));
+            }
+            let len = desc.format.data_size(w, h);
+            if bytes.len() < len {
+                break;
+            }
+            self.queue.write_texture(
+                &obj(&[
+                    ("texture", texture.clone()),
+                    ("mipLevel", (k as u32).into()),
+                ]),
+                &bytes[..len],
+                &obj(&[
+                    ("bytesPerRow", (desc.format.row_bytes(w) as u32).into()),
+                    ("rowsPerImage", desc.format.block_rows(h).into()),
+                ]),
+                &extent(w, h),
+            );
+        }
+        let view = texture.create_view();
+        self.textures
+            .insert(WebGpuTexture {
+                texture,
+                view,
+                format: desc.format,
+                width,
+                height,
+                render_target: false,
+                external: false,
+            })
+            .into()
+    }
+
     fn import_external(&mut self, image: &ExternalImage) -> Option<TextureId> {
         let ExternalImage::WebVideo { width, height, .. } = *image else {
             return None;
@@ -2129,16 +2211,18 @@ impl GpuBackend for WebGpuBackend {
     fn create_bind_group(&mut self, desc: &BindGroupDesc) -> BindGroupId {
         let mut views: Vec<GpuTextureView> = Vec::new();
         let mut samplers: Vec<GpuSampler> = Vec::new();
-        let mut uniform = None;
+        let mut uniforms = Vec::new();
+        let most_views = TEXTURE_SLOTS.max(PROGRAM_TEXTURES as usize);
+        let most_samplers = SAMPLER_SLOTS.max(PROGRAM_SAMPLERS as usize);
         for binding in &desc.bindings {
             match *binding {
                 Binding::Texture(id) => {
-                    if views.len() < PROGRAM_TEXTURES as usize {
+                    if views.len() < most_views {
                         views.push(self.texture(id).view.clone().unchecked_into());
                     }
                 }
                 Binding::Sampler(id) => {
-                    if samplers.len() < PROGRAM_SAMPLERS as usize {
+                    if samplers.len() < most_samplers {
                         let s = self
                             .samplers
                             .get(id.into())
@@ -2147,10 +2231,12 @@ impl GpuBackend for WebGpuBackend {
                     }
                 }
                 // The built-ins' uniforms live in the shared uniform ring; a
-                // user program with a large block reads this buffer.
-                Binding::Uniform(id) => uniform = Some(id),
+                // user program with a large block, or a scene draw, reads
+                // these buffers.
+                Binding::Uniform(id) => uniforms.push(id),
             }
         }
+        let uniform = uniforms.first().copied();
         // The layout is complete for every built-in: a single-texture one
         // leaves `dst_tex` unread, so it repeats `tex`.
         let tex = views.first().unwrap_or(&self.default_view);
@@ -2169,6 +2255,7 @@ impl GpuBackend for WebGpuBackend {
                 samplers,
                 program: None,
                 uniform,
+                uniforms,
                 scene: None,
             })
             .into()

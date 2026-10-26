@@ -781,6 +781,10 @@ impl Printer {
                 None => self.line("return;"),
             },
             StmtKind::Break => self.line("break;"),
+            StmtKind::Discard => match self.lang {
+                Lang::Msl => self.line("discard_fragment();"),
+                _ => self.line("discard;"),
+            },
             StmtKind::If { .. } => {
                 self.indent();
                 self.if_chain(s, l);
@@ -994,8 +998,8 @@ impl Printer {
         }
     }
 
-    fn global(&self, g: Global) -> &'static str {
-        match (self.lang, g) {
+    fn global(&self, g: Global) -> Cow<'static, str> {
+        Cow::Borrowed(match (self.lang, g) {
             (_, Global::Vid) => "vid",
             (_, Global::Iid) => "iid",
             (_, Global::Instances) => "instances",
@@ -1009,7 +1013,13 @@ impl Printer {
             (_, Global::Uniforms) => "uniforms",
             (_, Global::In) => "vin",
             (_, Global::Pi) => PI,
-        }
+            // A GLSL ES texture is its combined sampler, named by its slot.
+            (Lang::Glsl, Global::Texture(i, _)) => return Cow::Owned(glsl_texture(i)),
+            (Lang::Msl, Global::Texture(_, n) | Global::Sampler(_, n) | Global::Block(_, n)) => n,
+            (_, Global::Texture(_, n) | Global::Sampler(_, n) | Global::Block(_, n)) => {
+                return Cow::Owned(self.ident(n).into_owned());
+            }
+        })
     }
 
     /// `text` of type `from`, widened to the vector `to` when the target needs
@@ -1099,6 +1109,24 @@ impl Printer {
             }
             ExprKind::Method { base, method, args } => {
                 let b = self.expr(base, l);
+                // A sample at explicit derivatives: `gradient2d(dx, dy)`.
+                if let [s, uv, grad] = args.as_slice()
+                    && self.lang != Lang::Msl
+                    && let ExprKind::Call { args: d, .. } = &grad.kind
+                    && let [dx, dy] = d.as_slice()
+                {
+                    let (s, uv, dx, dy) = (
+                        self.expr(s, l),
+                        self.expr(uv, l),
+                        self.expr(dx, l),
+                        self.expr(dy, l),
+                    );
+                    return match self.lang {
+                        Lang::Wgsl => format!("textureSampleGrad({b}, {s}, {uv}, {dx}, {dy})"),
+                        Lang::Hlsl => format!("{b}.SampleGrad({s}, {uv}, {dx}, {dy})"),
+                        _ => format!("textureGrad({b}, {uv}, {dx}, {dy})"),
+                    };
+                }
                 let a = self.args(args, l);
                 match (self.lang, method.as_str()) {
                     (Lang::Msl, _) => format!("{b}.{method}({a})"),
@@ -1118,6 +1146,9 @@ impl Printer {
             }
             ExprKind::Index { base, index } => match (self.lang, &base.kind) {
                 (Lang::Msl, _) => format!("{}[{}]", self.expr(base, l), self.expr(index, l)),
+                _ if matches!(base.ty, Ty::Array(..)) => {
+                    format!("{}[{}]", self.expr(base, l), self.expr(index, l))
+                }
                 (
                     _,
                     ExprKind::Var {
@@ -1248,7 +1279,19 @@ fn struct_name(s: StructName) -> &'static str {
         StructName::InstanceIn => "InstanceIn",
         StructName::VertexIn => "VertexIn",
         StructName::Uniforms => "Uniforms",
+        StructName::Block(_) => "Block",
     }
+}
+
+/// The GLSL ES name of the combined sampler of texture slot `i`.
+pub fn glsl_texture(i: u8) -> String {
+    format!("viso_t{i}")
+}
+
+/// The GLSL ES name of the uniform block at uniform slot `i` (`1..`; slot 0
+/// is the `ViewBlock` every program reads).
+pub fn glsl_block(i: u8) -> String {
+    format!("viso_b{i}")
 }
 
 fn op_text(op: UnOp) -> &'static str {

@@ -61,11 +61,31 @@ pub fn emit_hlsl(ir: &ShaderIr) -> Result<String, BodyError> {
         out.push_str("};\n\n");
     }
 
+    let field = |out: &mut String, f: &crate::ir::module::IrField| {
+        let array = if f.count > 0 {
+            format!("[{}]", f.count)
+        } else {
+            String::new()
+        };
+        let _ = writeln!(
+            out,
+            "    {} {}{array};",
+            hlsl_type(f.ty),
+            names.ident(f.name)
+        );
+    };
     out.push_str("struct Uniforms {\n");
     for f in ir.uniforms {
-        let _ = writeln!(out, "    {} {};", hlsl_type(f.ty), names.ident(f.name));
+        field(&mut out, f);
     }
     out.push_str("};\n\n");
+    for block in ir.bindings.map_or(&[][..], |b| b.blocks) {
+        let _ = writeln!(out, "struct {} {{", block.struct_name);
+        for f in block.fields {
+            field(&mut out, f);
+        }
+        out.push_str("};\n\n");
+    }
 
     out.push_str("struct VOut {\n");
     let mut location = 0;
@@ -84,20 +104,37 @@ pub fn emit_hlsl(ir: &ShaderIr) -> Result<String, BodyError> {
     out.push_str("};\n\n");
 
     out.push_str("ConstantBuffer<Uniforms> uniforms : register(b0);\n");
-    if ir.texture_count >= 1 {
+    if let Some(b) = ir.bindings {
+        for (i, block) in b.blocks.iter().enumerate() {
+            let _ = writeln!(
+                out,
+                "ConstantBuffer<{}> {} : register(b{});",
+                block.struct_name,
+                names.ident(block.name),
+                1 + i
+            );
+        }
+        for (i, t) in b.textures.iter().enumerate() {
+            let _ = writeln!(
+                out,
+                "Texture2D<float4> {} : register(t{i});",
+                names.ident(t.name)
+            );
+        }
+        for (i, name) in b.samplers.iter().enumerate() {
+            let _ = writeln!(out, "SamplerState {} : register(s{i});", names.ident(name));
+        }
+        if !b.textures.is_empty() {
+            out.push('\n');
+            push_size_helpers(&mut out);
+        }
+    } else if ir.texture_count >= 1 {
         out.push_str("Texture2D<float4> tex : register(t0);\n");
         if ir.texture_count >= 2 {
             out.push_str("Texture2D<float4> dst_tex : register(t1);\n");
         }
         out.push_str("SamplerState samp : register(s0);\n\n");
-        out.push_str(
-            "uint viso_width(Texture2D<float4> t) {\n    uint w;\n    uint h;\n    \
-             t.GetDimensions(w, h);\n    return w;\n}\n\n",
-        );
-        out.push_str(
-            "uint viso_height(Texture2D<float4> t) {\n    uint w;\n    uint h;\n    \
-             t.GetDimensions(w, h);\n    return h;\n}\n",
-        );
+        push_size_helpers(&mut out);
     }
     out.push('\n');
 
@@ -134,6 +171,19 @@ pub fn emit_hlsl(ir: &ShaderIr) -> Result<String, BodyError> {
     Ok(out)
 }
 
+/// `viso_width` / `viso_height`: a texture's size, as `get_width()` and
+/// `get_height()` lower.
+fn push_size_helpers(out: &mut String) {
+    out.push_str(
+        "uint viso_width(Texture2D<float4> t) {\n    uint w;\n    uint h;\n    \
+         t.GetDimensions(w, h);\n    return w;\n}\n\n",
+    );
+    out.push_str(
+        "uint viso_height(Texture2D<float4> t) {\n    uint w;\n    uint h;\n    \
+         t.GetDimensions(w, h);\n    return h;\n}\n",
+    );
+}
+
 /// The HLSL spelling of an interface type.
 fn hlsl_type(t: IrType) -> String {
     let scalar = |s: ScalarType| match s {
@@ -160,7 +210,7 @@ fn is_float(t: IrType) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::module::builtin_irs;
+    use crate::ir::module::{builtin_irs, every_ir};
     use std::path::PathBuf;
     use std::process::Command;
 
@@ -199,7 +249,7 @@ mod tests {
 
     #[test]
     fn every_builtin_compiles_as_hlsl() {
-        for ir in builtin_irs() {
+        for ir in every_ir() {
             let src = emit_hlsl(&ir).unwrap();
             let tag = format!("{:?}", ir.kind);
             for (stage, entry) in [("vert", "vertex_main"), ("frag", "fragment_main")] {

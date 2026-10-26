@@ -202,6 +202,20 @@ impl HeightTree {
         self.rebuild();
     }
 
+    /// Replace the `removed` items at `at` with items of `extents`, each taken
+    /// as measured, shifting the items after them: a text's lines splitting
+    /// and joining. Rebuilds the BIT (O(n)); a data change, not a per-frame
+    /// path. `at` and `removed` are clamped to the items there are.
+    pub fn splice(&mut self, at: usize, removed: usize, extents: &[f32]) {
+        let at = at.min(self.count);
+        let end = (at + removed).min(self.count);
+        self.heights.splice(at..end, extents.iter().copied());
+        self.measured
+            .splice(at..end, std::iter::repeat_n(true, extents.len()));
+        self.count = self.heights.len();
+        self.rebuild();
+    }
+
     /// Re-apply a new estimate to every *unmeasured* row (measured rows keep their
     /// real heights). Used when the running average drifts far enough from the
     /// current estimate to be worth correcting the not-yet-seen rows. Returns
@@ -1762,6 +1776,34 @@ pub fn set_item_count(lists: &mut VirtualLists, viewport: NodeId, item_count: us
     }
 }
 
+/// Replace the `removed` rows of the list at `viewport` from row `at` with
+/// rows `extents` long, each as known as a measured one, and shift the rows
+/// after them, so a list whose rows split and join — a text's lines — keeps
+/// the extents it knows where they belong. Marks the list data-dirty: the
+/// next reconcile re-anchors its rows and rewrites the canvas extent. A grid
+/// takes the new count and measures its items anew.
+pub fn splice_items(
+    lists: &mut VirtualLists,
+    viewport: NodeId,
+    at: usize,
+    removed: usize,
+    extents: &[f32],
+) {
+    let Some(state) = lists.get_mut(viewport) else {
+        return;
+    };
+    let at = at.min(state.item_count);
+    let removed = removed.min(state.item_count - at);
+    let count = state.item_count - removed + extents.len();
+    match &mut state.flow {
+        crate::virtual_grid::Flow::List(tree) => tree.splice(at, removed, extents),
+        flow => flow.resize(count),
+    }
+    state.item_count = count;
+    state.dirty_data = true;
+    state.headers_stale = state.sticky_of.is_some() || state.full_of.is_some();
+}
+
 /// Tell `watch` what the list at `viewport` shows across as it changes: see
 /// [`AcrossWatch`].
 pub fn watch_across(lists: &mut VirtualLists, viewport: NodeId, watch: AcrossWatch) {
@@ -1843,6 +1885,25 @@ mod tests {
         assert_eq!(tree.prefix_sum(2), 20.0);
         assert_eq!(tree.prefix_sum(3), 60.0);
         assert_eq!(tree.total(), 80.0);
+    }
+
+    #[test]
+    fn a_splice_keeps_the_extents_after_it_with_their_items() {
+        let mut tree = HeightTree::from_heights(vec![10.0, 20.0, 30.0, 40.0]);
+        // Row 1 splits in two, the tail keeps its extents.
+        tree.splice(1, 1, &[5.0, 25.0]);
+        assert_eq!(tree.count(), 5);
+        let rows: Vec<f32> = (0..5).map(|i| tree.point_query(i)).collect();
+        assert_eq!(rows, [10.0, 5.0, 25.0, 30.0, 40.0]);
+        assert_eq!(tree.prefix_sum(3), 40.0);
+        assert!(tree.is_measured(2));
+        // Rows 2 to 4 join into one; past the end clamps.
+        tree.splice(2, 3, &[70.0]);
+        assert_eq!(tree.count(), 3);
+        assert_eq!(tree.total(), 85.0);
+        tree.splice(9, 9, &[1.0]);
+        assert_eq!(tree.count(), 4);
+        assert_eq!(tree.point_query(3), 1.0);
     }
 
     #[test]

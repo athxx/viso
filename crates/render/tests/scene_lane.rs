@@ -1,23 +1,34 @@
-//! The scene built-in draws the same lit, depth-tested image on every backend
-//! that runs here.
+//! The scene's mesh program draws the same lit, textured, depth-tested image
+//! on every backend that runs here.
 //!
 //! A ground slab, a tilted box in front of a second box and a squashed box
 //! are drawn as instanced meshes into a depth pass, nearest first so the depth
-//! test decides what shows. The CPU raster's image is the reference
-//! (`SceneUniforms::shade`, the expression every scene program computes). On
-//! an Apple device the native MSL draws it too, and so does the web WGSL
-//! translated to MSL by `naga`, which checks the WGSL lowering the Vulkan and
-//! WebGPU backends run.
+//! test decides what shows, in a metallic-roughness material with mipmapped
+//! base color and normal maps, lit by a light and a prefiltered environment.
+//! The boxes cast shadows: the depth program first draws them into a
+//! three-cascade shadow atlas from the light, which the mesh program then
+//! looks up. The scene is drawn once more with its boxes skinned, posed by
+//! a joint palette. The CPU raster's image is the reference
+//! (`scene::skin_vertex`, `scene::shade_depth` and `scene::shade_mesh`, the
+//! expressions every scene program computes).
+//! On an Apple device the native MSL draws it too, and so does the web WGSL
+//! translated to MSL by `naga`, which checks the WGSL lowering the Vulkan
+//! and WebGPU backends run.
 
 use viso_gpu::backend::{
     DepthAttachment, DrawCommand, DrawList, Geometry, IndexFormat, InlineUniforms, RenderPass,
     RenderTarget,
 };
-use viso_gpu::scene::{self, SceneInstance, SceneUniforms, SceneVertex};
-use viso_gpu::{
-    BindGroupDesc, Binding, BlendMode, BufferDesc, BufferUsage, BuiltinShader, CpuRaster, CullMode,
-    DepthState, GpuBackend, GpuPod, LoadOp, PipelineDesc, ShaderCode, TextureDesc, TextureFormat,
+use viso_gpu::scene::{
+    self, ENV_HEIGHT, ENV_WIDTH, FrameUniforms, MATERIAL_NORMAL_MAP, MAX_JOINTS, MaterialUniforms,
+    SHADOW_CASCADES, SceneInstance, SceneProgram, SceneVertex, SkinnedVertex,
 };
+use viso_gpu::{
+    AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BufferUsage, BuiltinShader,
+    CpuRaster, CullMode, DepthState, FilterMode, GpuBackend, GpuPod, LoadOp, PipelineDesc,
+    SamplerDesc, ShaderCode, TextureDesc, TextureFormat,
+};
+use viso_render::scene3d::{Camera, Environment, Mat4, Sky, vec3};
 
 #[repr(C)]
 #[derive(Clone, Copy, GpuPod)]
@@ -25,6 +36,18 @@ struct Vertex {
     position: [f32; 3],
     normal: [f32; 3],
     uv: [f32; 2],
+    tangent: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, GpuPod)]
+struct SkinnedLayout {
+    position: [f32; 3],
+    normal: [f32; 3],
+    uv: [f32; 2],
+    tangent: [f32; 4],
+    joints: [u32; 2],
+    weights: [u32; 2],
 }
 
 const W: u32 = 96;
@@ -50,7 +73,8 @@ fn cube() -> (Vec<SceneVertex>, Vec<u16>) {
             vertices.push(SceneVertex {
                 position: core::array::from_fn(|i| n[i] + su * u[i] + sv * v[i]),
                 normal: n,
-                uv: [su * 0.5 + 0.5, sv * 0.5 + 0.5],
+                uv: [su * 0.5 + 0.5, 0.5 - sv * 0.5],
+                tangent: [u[0], u[1], u[2], 1.0],
             });
         }
         indices.extend([0, 1, 2, 0, 2, 3].map(|k| base + k));
@@ -80,8 +104,8 @@ fn mul(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
 }
 
 /// A right-handed camera at `eye` looking at the origin, with a reversed-Z
-/// perspective projection.
-fn uniforms() -> SceneUniforms {
+/// perspective projection, lit by `env`.
+fn uniforms(env: &Environment) -> FrameUniforms {
     let eye = [3.5f32, 3.0, 5.5];
     let f = scene::normalize([-eye[0], -eye[1], -eye[2]]);
     let cross = |a: [f32; 3], b: [f32; 3]| {
@@ -133,15 +157,126 @@ fn uniforms() -> SceneUniforms {
         near * far / (far - near),
         0.0,
     ];
-    let light = scene::normalize([0.4, 0.8, 0.3]);
-    SceneUniforms {
+    let light = scene::normalize(LIGHT);
+    FrameUniforms {
         view_proj: mul(&proj, &view),
-        camera: [eye[0], eye[1], eye[2], 0.0],
-        light_dir: [light[0], light[1], light[2], 1.0],
+        camera: [eye[0], eye[1], eye[2], 1.0],
+        light_dir: [light[0], light[1], light[2], 1.5],
         light_color: [1.0, 0.95, 0.9, 0.0],
-        sky: [0.3, 0.35, 0.45, 0.0],
-        ground: [0.08, 0.07, 0.06, 0.0],
         fog: [0.6, 0.7, 0.8, 0.03],
+        ambient: [1.0, 1.0, 0.0, 0.0],
+        sh: *env.harmonics(),
+        ..FrameUniforms::default()
+    }
+}
+
+/// Toward the light: from the left, so the boxes' shadows fall into view.
+const LIGHT: [f32; 3] = [-0.7, 0.6, 0.25];
+
+/// A shadow atlas tile's edge in texels.
+const TILE: u32 = 64;
+
+/// The cascades' rows, nested around the origin across the light, each
+/// reaching 8 units toward and away from it: world to tile x, y and depth.
+fn cascades() -> [[[f32; 4]; 3]; SHADOW_CASCADES] {
+    let l = scene::normalize(LIGHT);
+    let fwd = [-l[0], -l[1], -l[2]];
+    let right = scene::normalize([fwd[2], 0.0, -fwd[0]]);
+    let up = [
+        fwd[1] * right[2] - fwd[2] * right[1],
+        fwd[2] * right[0] - fwd[0] * right[2],
+        fwd[0] * right[1] - fwd[1] * right[0],
+    ];
+    core::array::from_fn(|c| {
+        let extent = [2.5, 4.0, 6.0][c];
+        [
+            [right[0] / extent, right[1] / extent, right[2] / extent, 0.0],
+            [up[0] / extent, up[1] / extent, up[2] / extent, 0.0],
+            [fwd[0] / 16.0, fwd[1] / 16.0, fwd[2] / 16.0, 0.5],
+        ]
+    })
+}
+
+/// The frame's uniforms with the light's shadow looked up in the atlas.
+fn shadowed(env: &Environment) -> FrameUniforms {
+    let mut u = uniforms(env);
+    for (c, rows) in cascades().iter().enumerate() {
+        let texel = 2.0 * [2.5, 4.0, 6.0][c] / TILE as f32;
+        u.shadow[c * 4..c * 4 + 3].copy_from_slice(rows);
+        u.shadow[c * 4 + 3] = [texel / 16.0, texel, 0.0, 0.0];
+    }
+    u.shadow_params = [1.0, 1.0 / TILE as f32, 0.0, 0.0];
+    u
+}
+
+/// Cascade `c`'s caster pass uniforms: the world into its tile of the
+/// atlas, reversed depth.
+fn caster_uniforms(c: usize) -> FrameUniforms {
+    let [rx, ry, rz] = cascades()[c];
+    let n = SHADOW_CASCADES as f32;
+    let rows = [
+        [
+            rx[0] / n,
+            rx[1] / n,
+            rx[2] / n,
+            rx[3] / n + (2.0 * c as f32 + 1.0) / n - 1.0,
+        ],
+        ry,
+        [-rz[0], -rz[1], -rz[2], 1.0 - rz[3]],
+        [0.0, 0.0, 0.0, 1.0],
+    ];
+    FrameUniforms {
+        view_proj: core::array::from_fn(|i| rows[i % 4][i / 4]),
+        ..FrameUniforms::default()
+    }
+}
+
+/// The environment: a bright sky over dark ground, a sun-like patch high
+/// toward `+x`.
+fn environment() -> Environment {
+    let (w, h) = (64usize, 32usize);
+    let radiance: Vec<[f32; 3]> = (0..w * h)
+        .map(|i| {
+            let (x, y) = (i % w, i / w);
+            let up = 1.0 - 2.0 * (y as f32 + 0.5) / h as f32;
+            if (40..44).contains(&x) && (8..11).contains(&y) {
+                [6.0, 5.5, 5.0]
+            } else if up > 0.0 {
+                [0.35 + 0.2 * up, 0.45 + 0.2 * up, 0.7 + 0.2 * up]
+            } else {
+                [0.08, 0.07, 0.06]
+            }
+        })
+        .collect();
+    Environment::from_equirect(w as u32, h as u32, &radiance)
+}
+
+/// A slowly varying 64×64 image and its chain: smooth enough that the level
+/// a pixel's footprint picks barely changes what it reads.
+fn image(texel: impl Fn(f32, f32) -> [u8; 4]) -> Vec<Vec<u8>> {
+    let mut levels = Vec::new();
+    let mut n = 64usize;
+    while n >= 1 {
+        let level: Vec<u8> = (0..n * n)
+            .flat_map(|i| {
+                let (x, y) = ((i % n) as f32 + 0.5, (i / n) as f32 + 0.5);
+                texel(x / n as f32, y / n as f32)
+            })
+            .collect();
+        levels.push(level);
+        n /= 2;
+    }
+    levels
+}
+
+/// The material: a half-rough, slightly metallic surface with a soft
+/// two-tone base color and gentle bumps.
+fn material() -> MaterialUniforms {
+    MaterialUniforms {
+        base_color: [1.0, 1.0, 1.0, 1.0],
+        emissive: [0.0; 4],
+        params: [0.3, 0.45, 1.0, 1.0],
+        mode: [0.0, 0.0, 0.5, MATERIAL_NORMAL_MAP as f32],
     }
 }
 
@@ -178,11 +313,47 @@ fn bytes<T>(items: &[T], write: impl Fn(&T, &mut [u8]), size: usize) -> Vec<u8> 
     out
 }
 
-/// The scene drawn by `gpu` with the scene program `code`, as BGRA8 bytes
-/// read back by `read`.
+/// The cube's vertices skinned: its top follows a joint that twists and
+/// lifts it, its bottom a blend of the rest pose and a joint that widens it.
+fn skinned_cube(vertices: &[SceneVertex]) -> Vec<SkinnedVertex> {
+    vertices
+        .iter()
+        .map(|&v| {
+            if v.position[1] > 0.0 {
+                SkinnedVertex::new(v, [5, 0, 0, 0], [0.7, 0.3, 0.0, 0.0])
+            } else {
+                SkinnedVertex::new(v, [0, 0, 0, 2], [0.5, 0.0, 0.0, 0.5])
+            }
+        })
+        .collect()
+}
+
+/// The joint palette the skinned cube is posed by: joint 5 turned about
+/// `y` and lifted, joint 2 wider along `x`, every other one at rest.
+fn palette() -> Vec<[f32; 4]> {
+    let mut rows = Vec::with_capacity(MAX_JOINTS * 3);
+    for _ in 0..MAX_JOINTS {
+        rows.extend([
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+        ]);
+    }
+    let (s, c) = 0.6f32.sin_cos();
+    rows[15..18].copy_from_slice(&[[c, 0.0, s, 0.1], [0.0, 1.0, 0.0, 0.3], [-s, 0.0, c, 0.0]]);
+    rows[6] = [1.3, 0.0, 0.0, 0.0];
+    rows
+}
+
+/// The scene drawn by `gpu` with the mesh program `code` — its shadow
+/// first drawn with the depth program `depth_code` when `shadows`, its
+/// boxes skinned when `skinned` — as BGRA8 bytes read back by `read`.
 fn draw<B: GpuBackend>(
     gpu: &mut B,
     code: ShaderCode,
+    depth_code: ShaderCode,
+    shadows: bool,
+    skinned: bool,
     read: impl Fn(&mut B, viso_gpu::TextureId) -> Vec<u8>,
 ) -> Vec<u8> {
     let target = gpu.create_texture(&TextureDesc {
@@ -209,27 +380,223 @@ fn draw<B: GpuBackend>(
         b
     };
     let (vertices, indices) = cube();
-    let vertex_bytes = bytes(&vertices, SceneVertex::write_to, SceneVertex::SIZE);
+    let vertex_bytes = if skinned {
+        bytes(
+            &skinned_cube(&vertices),
+            SkinnedVertex::write_to,
+            SkinnedVertex::SIZE,
+        )
+    } else {
+        bytes(&vertices, SceneVertex::write_to, SceneVertex::SIZE)
+    };
+    let palette_bytes: Vec<u8> = palette()
+        .iter()
+        .flatten()
+        .flat_map(|f| f.to_le_bytes())
+        .collect();
+    let (mesh_program, depth_program) = if skinned {
+        (SceneProgram::SkinnedMesh, SceneProgram::SkinnedDepth)
+    } else {
+        (SceneProgram::Mesh, SceneProgram::Depth)
+    };
+    let layout = if skinned {
+        &SkinnedLayout::LAYOUT
+    } else {
+        &Vertex::LAYOUT
+    };
     let index_bytes: Vec<u8> = indices.iter().flat_map(|i| i.to_le_bytes()).collect();
     let instances = instances();
     let instance_bytes = bytes(&instances, SceneInstance::write_to, SceneInstance::SIZE);
-    let mut uniform_bytes = [0u8; SceneUniforms::SIZE];
-    uniforms().write_to(&mut uniform_bytes);
+    let env = environment();
+    let mut frame_bytes = [0u8; FrameUniforms::SIZE];
+    if shadows {
+        shadowed(&env).write_to(&mut frame_bytes);
+    } else {
+        uniforms(&env).write_to(&mut frame_bytes);
+    }
+    let mut material_bytes = [0u8; MaterialUniforms::SIZE];
+    material().write_to(&mut material_bytes);
 
     let vertex_buffer = buffer(gpu, &vertex_bytes, BufferUsage::VERTEX);
     let index_buffer = buffer(gpu, &index_bytes, BufferUsage::INDEX);
     let instance_buffer = buffer(gpu, &instance_bytes, BufferUsage::INSTANCE);
-    let uniform = buffer(gpu, &uniform_bytes, BufferUsage::UNIFORM);
-    let group = gpu.create_bind_group(&BindGroupDesc {
-        label: "scene",
-        bindings: vec![Binding::Uniform(uniform)],
+    let frame = buffer(gpu, &frame_bytes, BufferUsage::UNIFORM);
+    let material = buffer(gpu, &material_bytes, BufferUsage::UNIFORM);
+    let skin = if skinned {
+        buffer(gpu, &palette_bytes, BufferUsage::UNIFORM)
+    } else {
+        material
+    };
+    let mipped = |gpu: &mut B, levels: &[Vec<u8>], format| {
+        let refs: Vec<&[u8]> = levels.iter().map(Vec::as_slice).collect();
+        gpu.create_texture_mipped(
+            &TextureDesc {
+                width: 64,
+                height: 64,
+                format,
+                render_target: false,
+                label: "scene-map",
+            },
+            &refs,
+        )
+    };
+    let base = mipped(
+        gpu,
+        &image(|u, v| {
+            let t = (u * core::f32::consts::TAU).sin() * (v * core::f32::consts::TAU).cos();
+            let t = t * 0.5 + 0.5;
+            [
+                (200.0 + 55.0 * t) as u8,
+                (190.0 - 60.0 * t) as u8,
+                (150.0 - 50.0 * t) as u8,
+                255,
+            ]
+        }),
+        TextureFormat::Rgba8UnormSrgb,
+    );
+    let normal = mipped(
+        gpu,
+        &image(|u, v| {
+            let (dx, dy) = (
+                0.35 * (u * core::f32::consts::TAU * 2.0).cos(),
+                0.35 * (v * core::f32::consts::TAU * 2.0).sin(),
+            );
+            let len = (dx * dx + dy * dy + 1.0).sqrt();
+            let n = [-dx / len, -dy / len, 1.0 / len];
+            [
+                ((n[0] * 0.5 + 0.5) * 255.0) as u8,
+                ((n[1] * 0.5 + 0.5) * 255.0) as u8,
+                ((n[2] * 0.5 + 0.5) * 255.0) as u8,
+                255,
+            ]
+        }),
+        TextureFormat::Rgba8Data,
+    );
+    let white = gpu.create_texture(&TextureDesc {
+        width: 1,
+        height: 1,
+        format: TextureFormat::Rgba8Unorm,
+        render_target: false,
+        label: "white",
     });
+    gpu.write_texture(white, 0, 0, 1, 1, &[255; 4]);
+    let atlas = gpu.create_texture(&TextureDesc {
+        width: ENV_WIDTH,
+        height: ENV_HEIGHT,
+        format: TextureFormat::Rgba16Float,
+        render_target: false,
+        label: "scene-environment",
+    });
+    let atlas_bytes: Vec<u8> = env.atlas().iter().flat_map(|t| t.to_le_bytes()).collect();
+    gpu.write_texture(atlas, 0, 0, ENV_WIDTH, ENV_HEIGHT, &atlas_bytes);
+    let material_sampler = gpu.create_sampler(&SamplerDesc {
+        filter: FilterMode::MipmapLinear,
+        address: AddressMode::Repeat,
+    });
+    let linear = gpu.create_sampler(&SamplerDesc::LINEAR_CLAMP);
+    let point = gpu.create_sampler(&SamplerDesc {
+        filter: FilterMode::Nearest,
+        address: AddressMode::ClampToEdge,
+    });
+    // The shadow atlas, its cascades drawn side by side from the light.
+    let shadow_atlas = gpu.create_texture(&TextureDesc {
+        width: TILE * SHADOW_CASCADES as u32,
+        height: TILE,
+        format: TextureFormat::Rgba8Data,
+        render_target: true,
+        label: "scene-shadow",
+    });
+    let shadow_depth = gpu.create_texture(&TextureDesc {
+        width: TILE * SHADOW_CASCADES as u32,
+        height: TILE,
+        format: TextureFormat::Depth32Float,
+        render_target: true,
+        label: "scene-shadow-depth",
+    });
+    let group_of = |gpu: &mut B, frame, base, normal, atlas, shadow| {
+        gpu.create_bind_group(&BindGroupDesc {
+            label: "scene",
+            bindings: vec![
+                Binding::Uniform(frame),
+                Binding::Uniform(material),
+                Binding::Uniform(skin),
+                Binding::Texture(base),
+                Binding::Texture(white),
+                Binding::Texture(normal),
+                Binding::Texture(white),
+                Binding::Texture(white),
+                Binding::Texture(atlas),
+                Binding::Texture(shadow),
+                Binding::Texture(white),
+                Binding::Sampler(material_sampler),
+                Binding::Sampler(linear),
+                Binding::Sampler(point),
+            ],
+        })
+    };
+    let group = group_of(gpu, frame, base, normal, atlas, shadow_atlas);
+    if shadows {
+        let pipeline = gpu
+            .create_pipeline(
+                &PipelineDesc {
+                    label: "scene-shadow",
+                    builtin: BuiltinShader::Scene,
+                    variant: depth_program as u32,
+                    code: depth_code,
+                    vertex_entry: "vertex_main",
+                    fragment_entry: "fragment_main",
+                    color_format: TextureFormat::Rgba8Data,
+                    depth: Some(DepthState::REVERSED),
+                    cull: CullMode::None,
+                    blend: BlendMode::Replace,
+                    instance_schema: depth_program.vertex_schema(),
+                },
+                layout,
+            )
+            .expect("the vertex layout matches");
+        let commands: Vec<DrawCommand> = (0..SHADOW_CASCADES)
+            .map(|c| {
+                let mut bytes = [0u8; FrameUniforms::SIZE];
+                caster_uniforms(c).write_to(&mut bytes);
+                let frame = buffer(gpu, &bytes, BufferUsage::UNIFORM);
+                DrawCommand {
+                    pipeline,
+                    bind_group: Some(group_of(gpu, frame, white, white, white, white)),
+                    geometry: Geometry::InstancedMesh {
+                        vertex_buffer,
+                        index_buffer,
+                        index_format: IndexFormat::U16,
+                        index_offset: 0,
+                        index_count: indices.len() as u32,
+                        count: instances.len() as u32,
+                    },
+                    instance_buffer,
+                    instance_offset: 0,
+                    uniforms: InlineUniforms::EMPTY,
+                    scissor: Some((c as u32 * TILE, 0, TILE, TILE)),
+                }
+            })
+            .collect();
+        gpu.encode(&DrawList {
+            commands: &commands,
+            passes: &[RenderPass {
+                target: RenderTarget::Texture(shadow_atlas),
+                load: LoadOp::Clear([1.0; 4]),
+                depth: Some(DepthAttachment {
+                    texture: shadow_depth,
+                    clear: 0.0,
+                }),
+                first_command: 0,
+                command_count: commands.len() as u32,
+            }],
+        });
+    }
     let pipeline = gpu
         .create_pipeline(
             &PipelineDesc {
                 label: "scene",
                 builtin: BuiltinShader::Scene,
-                variant: 0,
+                variant: mesh_program as u32,
                 code,
                 vertex_entry: "vertex_main",
                 fragment_entry: "fragment_main",
@@ -237,9 +604,9 @@ fn draw<B: GpuBackend>(
                 depth: Some(DepthState::REVERSED),
                 cull: CullMode::Back,
                 blend: BlendMode::Replace,
-                instance_schema: scene::VERTEX_SCHEMA,
+                instance_schema: mesh_program.vertex_schema(),
             },
-            &Vertex::LAYOUT,
+            layout,
         )
         .expect("the vertex layout matches");
     // One draw per instance, nearest first: the depth test hides what is
@@ -291,6 +658,461 @@ fn draw<B: GpuBackend>(
     together
 }
 
+/// The sky of a low sun ahead of the camera, its disc in view, drawn by
+/// `gpu` with the sky program `code` over the target as BGRA8 bytes read
+/// back by `read`.
+fn draw_sky<B: GpuBackend>(
+    gpu: &mut B,
+    code: ShaderCode,
+    read: impl Fn(&mut B, viso_gpu::TextureId) -> Vec<u8>,
+) -> Vec<u8> {
+    let texture = |gpu: &mut B, format, label| {
+        gpu.create_texture(&TextureDesc {
+            width: W,
+            height: H,
+            format,
+            render_target: true,
+            label,
+        })
+    };
+    let target = texture(gpu, TextureFormat::Bgra8Unorm, "sky");
+    let depth = texture(gpu, TextureFormat::Depth32Float, "sky-depth");
+    let buffer = |gpu: &mut B, bytes: &[u8], usage| {
+        let b = gpu.create_buffer(&BufferDesc {
+            size: bytes.len(),
+            usage: usage | BufferUsage::CPU_WRITE,
+            label: "sky",
+        });
+        gpu.write_buffer(b, 0, bytes);
+        b
+    };
+    let env = environment();
+    // A camera looking out a little above the horizon, toward the low sun.
+    let camera = Camera {
+        eye: vec3(0.0, 1.0, 0.0),
+        target: vec3(-0.45, 1.25, -1.0),
+        ..Camera::default()
+    };
+    let frame = FrameUniforms {
+        view_proj: camera.view_proj(W as f32 / H as f32).v,
+        ..uniforms(&env)
+    };
+    let mut frame_bytes = [0u8; FrameUniforms::SIZE];
+    frame.write_to(&mut frame_bytes);
+    let sky = Sky {
+        sun: vec3(-0.3, 0.12, -1.0),
+        ..Sky::default()
+    };
+    let mut block = sky.uniforms(&Mat4 { v: frame.view_proj }.invert().v);
+    // A disc a few pixels across at this size.
+    block.sun[3] = 0.03;
+    let mut sky_bytes = [0u8; viso_gpu::scene::SkyUniforms::SIZE];
+    block.write_to(&mut sky_bytes);
+    let corner = |x: f32, y: f32| SceneVertex {
+        position: [x, y, 0.0],
+        ..SceneVertex::default()
+    };
+    let screen = [corner(-1.0, -1.0), corner(3.0, -1.0), corner(-1.0, 3.0)];
+    let vertex_bytes = bytes(&screen, SceneVertex::write_to, SceneVertex::SIZE);
+    let index_bytes: Vec<u8> = [0u16, 1, 2, 0]
+        .iter()
+        .flat_map(|i| i.to_le_bytes())
+        .collect();
+    let instance_bytes = bytes(
+        &[SceneInstance::default()],
+        SceneInstance::write_to,
+        SceneInstance::SIZE,
+    );
+    let vertex_buffer = buffer(gpu, &vertex_bytes, BufferUsage::VERTEX);
+    let index_buffer = buffer(gpu, &index_bytes, BufferUsage::INDEX);
+    let instance_buffer = buffer(gpu, &instance_bytes, BufferUsage::INSTANCE);
+    let frame_buffer = buffer(gpu, &frame_bytes, BufferUsage::UNIFORM);
+    let sky_buffer = buffer(gpu, &sky_bytes, BufferUsage::UNIFORM);
+    let white = gpu.create_texture(&TextureDesc {
+        width: 1,
+        height: 1,
+        format: TextureFormat::Rgba8Unorm,
+        render_target: false,
+        label: "white",
+    });
+    gpu.write_texture(white, 0, 0, 1, 1, &[255; 4]);
+    let linear = gpu.create_sampler(&SamplerDesc::LINEAR_CLAMP);
+    let mut bindings = vec![
+        Binding::Uniform(frame_buffer),
+        Binding::Uniform(sky_buffer),
+        Binding::Uniform(sky_buffer),
+    ];
+    bindings.extend([Binding::Texture(white); scene::TEXTURE_SLOTS]);
+    bindings.extend([Binding::Sampler(linear); scene::SAMPLER_SLOTS]);
+    let group = gpu.create_bind_group(&BindGroupDesc {
+        label: "sky",
+        bindings,
+    });
+    let pipeline = gpu
+        .create_pipeline(
+            &PipelineDesc {
+                label: "sky",
+                builtin: BuiltinShader::Scene,
+                variant: SceneProgram::Sky as u32,
+                code,
+                vertex_entry: "vertex_main",
+                fragment_entry: "fragment_main",
+                color_format: TextureFormat::Bgra8Unorm,
+                depth: Some(DepthState {
+                    format: TextureFormat::Depth32Float,
+                    compare: viso_gpu::CompareFunction::GreaterEqual,
+                    write: false,
+                }),
+                cull: CullMode::None,
+                blend: BlendMode::Replace,
+                instance_schema: SceneProgram::Sky.vertex_schema(),
+            },
+            &Vertex::LAYOUT,
+        )
+        .expect("the vertex layout matches");
+    let commands = [DrawCommand {
+        pipeline,
+        bind_group: Some(group),
+        geometry: Geometry::InstancedMesh {
+            vertex_buffer,
+            index_buffer,
+            index_format: IndexFormat::U16,
+            index_offset: 0,
+            index_count: 3,
+            count: 1,
+        },
+        instance_buffer,
+        instance_offset: 0,
+        uniforms: InlineUniforms::EMPTY,
+        scissor: None,
+    }];
+    gpu.encode(&DrawList {
+        commands: &commands,
+        passes: &[RenderPass {
+            target: RenderTarget::Texture(target),
+            load: LoadOp::Clear([0.0, 0.0, 0.0, 1.0]),
+            depth: Some(DepthAttachment {
+                texture: depth,
+                clear: 0.0,
+            }),
+            first_command: 0,
+            command_count: 1,
+        }],
+    });
+    read(gpu, target)
+}
+
+/// The camera the occlusion passes look through: down onto a unit sphere
+/// resting on the ground.
+fn occlusion_frame() -> FrameUniforms {
+    let camera = Camera {
+        eye: vec3(0.0, 2.5, 4.0),
+        target: vec3(0.0, -0.4, 0.0),
+        ..Camera::default()
+    };
+    FrameUniforms {
+        view_proj: camera.view_proj(W as f32 / H as f32).v,
+        ..FrameUniforms::default()
+    }
+    .with_camera([0.0, 2.5, 4.0])
+}
+
+trait WithCamera {
+    fn with_camera(self, eye: [f32; 3]) -> Self;
+}
+
+impl WithCamera for FrameUniforms {
+    fn with_camera(mut self, eye: [f32; 3]) -> Self {
+        self.camera = [eye[0], eye[1], eye[2], 1.0];
+        self
+    }
+}
+
+/// The view depth of [`occlusion_frame`], packed as the depth program
+/// writes it: each texel's ray cast against the sphere and the ground at
+/// `y = -1`, `1 - z` of the nearest hit; nothing past the ground's edge.
+fn occlusion_depth(frame: &FrameUniforms) -> Vec<u8> {
+    let inv = Mat4 { v: frame.view_proj }.invert().v;
+    let eye = [frame.camera[0], frame.camera[1], frame.camera[2]];
+    let mut out = Vec::with_capacity((W * H * 4) as usize);
+    for y in 0..H {
+        for x in 0..W {
+            let ndc = [
+                (x as f32 + 0.5) / W as f32 * 2.0 - 1.0,
+                1.0 - (y as f32 + 0.5) / H as f32 * 2.0,
+            ];
+            let at = |z: f32| {
+                let p: [f32; 4] = core::array::from_fn(|i| {
+                    inv[i] * ndc[0] + inv[4 + i] * ndc[1] + inv[8 + i] * z + inv[12 + i]
+                });
+                [p[0] / p[3], p[1] / p[3], p[2] / p[3]]
+            };
+            let (a, b) = (at(1.0), at(0.5));
+            let d = scene::normalize([b[0] - a[0], b[1] - a[1], b[2] - a[2]]);
+            // The sphere, then the ground.
+            let oc = eye;
+            let bq = oc[0] * d[0] + oc[1] * d[1] + oc[2] * d[2];
+            let cq = oc[0] * oc[0] + oc[1] * oc[1] + oc[2] * oc[2] - 1.0;
+            let disc = bq * bq - cq;
+            let mut t = f32::MAX;
+            if disc >= 0.0 {
+                t = -bq - disc.sqrt();
+            }
+            if d[1] < 0.0 {
+                let tg = (-1.0 - eye[1]) / d[1];
+                let hit = [eye[0] + d[0] * tg, eye[2] + d[2] * tg];
+                if hit[0].abs() < 4.0 && hit[1].abs() < 4.0 {
+                    t = t.min(tg);
+                }
+            }
+            let texel = if t < f32::MAX {
+                let p = [eye[0] + d[0] * t, eye[1] + d[1] * t, eye[2] + d[2] * t];
+                let c = frame.clip(p);
+                scene::pack_depth(1.0 - c[2] / c[3])
+            } else {
+                [1.0; 4]
+            };
+            out.extend(texel.map(|v| (v * 255.0).round() as u8));
+        }
+    }
+    out
+}
+
+/// The occlusion program, or the blur's when `blur`, run by `gpu` with
+/// `code` over `input` (texture slot 6, RGBA8) as the bytes `read` reads
+/// back.
+fn draw_occlusion<B: GpuBackend>(
+    gpu: &mut B,
+    code: ShaderCode,
+    blur: bool,
+    input: &[u8],
+    read: impl Fn(&mut B, viso_gpu::TextureId) -> Vec<u8>,
+) -> Vec<u8> {
+    let frame = occlusion_frame();
+    let texture = |gpu: &mut B, format, target, label| {
+        gpu.create_texture(&TextureDesc {
+            width: W,
+            height: H,
+            format,
+            render_target: target,
+            label,
+        })
+    };
+    let target = texture(gpu, TextureFormat::Rgba8Data, true, "occlusion");
+    let depth = texture(gpu, TextureFormat::Depth32Float, true, "occlusion-depth");
+    let source = texture(gpu, TextureFormat::Rgba8Data, false, "occlusion-input");
+    gpu.write_texture(source, 0, 0, W, H, input);
+    let buffer = |gpu: &mut B, bytes: &[u8], usage| {
+        let b = gpu.create_buffer(&BufferDesc {
+            size: bytes.len(),
+            usage: usage | BufferUsage::CPU_WRITE,
+            label: "occlusion",
+        });
+        gpu.write_buffer(b, 0, bytes);
+        b
+    };
+    let mut frame_bytes = [0u8; FrameUniforms::SIZE];
+    frame.write_to(&mut frame_bytes);
+    let block = viso_gpu::scene::AoUniforms {
+        inv_view_proj: Mat4 { v: frame.view_proj }.invert().v,
+        params: [0.5, 0.02, 0.002, 0.0],
+        texel: [1.0 / W as f32, 1.0 / H as f32, W as f32, H as f32],
+        step: [1.0 / W as f32, 0.0, 0.0, 0.0],
+    };
+    let mut block_bytes = [0u8; viso_gpu::scene::AoUniforms::SIZE];
+    block.write_to(&mut block_bytes);
+    let corner = |x: f32, y: f32| SceneVertex {
+        position: [x, y, 0.0],
+        ..SceneVertex::default()
+    };
+    let screen = [corner(-1.0, -1.0), corner(3.0, -1.0), corner(-1.0, 3.0)];
+    let vertex_buffer = buffer(
+        gpu,
+        &bytes(&screen, SceneVertex::write_to, SceneVertex::SIZE),
+        BufferUsage::VERTEX,
+    );
+    let index_bytes: Vec<u8> = [0u16, 1, 2, 0]
+        .iter()
+        .flat_map(|i| i.to_le_bytes())
+        .collect();
+    let index_buffer = buffer(gpu, &index_bytes, BufferUsage::INDEX);
+    let instance_buffer = buffer(
+        gpu,
+        &bytes(
+            &[SceneInstance::default()],
+            SceneInstance::write_to,
+            SceneInstance::SIZE,
+        ),
+        BufferUsage::INSTANCE,
+    );
+    let frame_buffer = buffer(gpu, &frame_bytes, BufferUsage::UNIFORM);
+    let block_buffer = buffer(gpu, &block_bytes, BufferUsage::UNIFORM);
+    let white = gpu.create_texture(&TextureDesc {
+        width: 1,
+        height: 1,
+        format: TextureFormat::Rgba8Unorm,
+        render_target: false,
+        label: "white",
+    });
+    gpu.write_texture(white, 0, 0, 1, 1, &[255; 4]);
+    let linear = gpu.create_sampler(&SamplerDesc::LINEAR_CLAMP);
+    let point = gpu.create_sampler(&SamplerDesc {
+        filter: FilterMode::Nearest,
+        address: AddressMode::ClampToEdge,
+    });
+    let mut bindings = vec![
+        Binding::Uniform(frame_buffer),
+        Binding::Uniform(block_buffer),
+        Binding::Uniform(block_buffer),
+    ];
+    bindings.extend([Binding::Texture(white); 6]);
+    bindings.extend([
+        Binding::Texture(source),
+        Binding::Texture(white),
+        Binding::Sampler(linear),
+        Binding::Sampler(linear),
+        Binding::Sampler(point),
+    ]);
+    let group = gpu.create_bind_group(&BindGroupDesc {
+        label: "occlusion",
+        bindings,
+    });
+    let program = if blur {
+        SceneProgram::AoBlur
+    } else {
+        SceneProgram::Ao
+    };
+    let pipeline = gpu
+        .create_pipeline(
+            &PipelineDesc {
+                label: "occlusion",
+                builtin: BuiltinShader::Scene,
+                variant: program as u32,
+                code,
+                vertex_entry: "vertex_main",
+                fragment_entry: "fragment_main",
+                color_format: TextureFormat::Rgba8Data,
+                depth: Some(DepthState {
+                    format: TextureFormat::Depth32Float,
+                    compare: viso_gpu::CompareFunction::Always,
+                    write: false,
+                }),
+                cull: CullMode::None,
+                blend: BlendMode::Replace,
+                instance_schema: program.vertex_schema(),
+            },
+            &Vertex::LAYOUT,
+        )
+        .expect("the vertex layout matches");
+    let commands = [DrawCommand {
+        pipeline,
+        bind_group: Some(group),
+        geometry: Geometry::InstancedMesh {
+            vertex_buffer,
+            index_buffer,
+            index_format: IndexFormat::U16,
+            index_offset: 0,
+            index_count: 3,
+            count: 1,
+        },
+        instance_buffer,
+        instance_offset: 0,
+        uniforms: InlineUniforms::EMPTY,
+        scissor: None,
+    }];
+    gpu.encode(&DrawList {
+        commands: &commands,
+        passes: &[RenderPass {
+            target: RenderTarget::Texture(target),
+            load: LoadOp::Clear([1.0, 0.0, 0.0, 1.0]),
+            depth: Some(DepthAttachment {
+                texture: depth,
+                clear: 0.0,
+            }),
+            first_command: 0,
+            command_count: 1,
+        }],
+    });
+    read(gpu, target)
+}
+
+/// The CPU raster's occlusion of the sphere on the ground, and its blur,
+/// RGBA8.
+fn cpu_occlusion() -> (Vec<u8>, Vec<u8>) {
+    let depth = occlusion_depth(&occlusion_frame());
+    // The CPU raster reads every texture back as BGRA.
+    let read = |gpu: &mut CpuRaster, t| {
+        let mut px = gpu.read_texture(t);
+        for p in px.as_chunks_mut::<4>().0 {
+            p.swap(0, 2);
+        }
+        px
+    };
+    let raw = draw_occlusion(&mut CpuRaster::new(), ShaderCode::None, false, &depth, read);
+    let blurred = draw_occlusion(&mut CpuRaster::new(), ShaderCode::None, true, &raw, read);
+    (raw, blurred)
+}
+
+#[test]
+fn the_ground_is_occluded_where_the_sphere_meets_it() {
+    let (raw, blurred) = cpu_occlusion();
+    let ao = |img: &[u8], x: u32, y: u32| img[((y * W + x) * 4) as usize];
+    // The sphere's contact with the ground, below its centre, is the
+    // darkest; the open ground in the near corner is unoccluded; the empty
+    // background is untouched.
+    let column = W / 2;
+    let darkest = (H / 2..H).map(|y| ao(&blurred, column, y)).min().unwrap();
+    assert!(darkest < 200, "the contact is occluded: {darkest}");
+    assert!(ao(&blurred, 3, H - 3) > 240, "{}", ao(&blurred, 3, H - 3));
+    assert_eq!(ao(&raw, 0, 0), 255, "nothing is drawn at the top left");
+    // The blur keeps the distances and smooths the occlusion.
+    for (a, b) in raw
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(blurred.as_chunks::<4>().0)
+    {
+        assert_eq!((a[1], a[2]), (b[1], b[2]));
+    }
+}
+
+fn cpu_sky() -> Vec<u8> {
+    let image = draw_sky(&mut CpuRaster::new(), ShaderCode::None, |gpu, t| {
+        gpu.read_texture(t)
+    });
+    shot("lane-sky-cpu", &image);
+    image
+}
+
+#[test]
+fn the_sky_is_bright_toward_the_sun_and_blue_overhead() {
+    let image = cpu_sky();
+    let at = |x: u32, y: u32| {
+        let i = ((y * W + x) * 4) as usize;
+        [image[i + 2], image[i + 1], image[i]]
+    };
+    // Every pixel is sky; the brightest near the sun, warm.
+    let lum = |c: [u8; 3]| u32::from(c[0]) + u32::from(c[1]) + u32::from(c[2]);
+    let (mut best, mut at_best) = (0, (0, 0));
+    for y in 0..H {
+        for x in 0..W {
+            if lum(at(x, y)) > best {
+                (best, at_best) = (lum(at(x, y)), (x, y));
+            }
+        }
+    }
+    let sun = at(at_best.0, at_best.1);
+    assert!(
+        sun[0] >= 250 && sun[1] > 200,
+        "the sun's disc: {sun:?} at {at_best:?}"
+    );
+    let top = at(W - 4, 1);
+    assert!(
+        top[2] > top[0],
+        "the sky away from the sun leans blue: {top:?}"
+    );
+}
+
 /// How far two BGRA8 images are apart: the share of pixels with a channel
 /// more than `tolerance` off, and the worst channel difference.
 fn compare(a: &[u8], b: &[u8], tolerance: u8) -> (f32, u8) {
@@ -312,14 +1134,78 @@ fn compare(a: &[u8], b: &[u8], tolerance: u8) -> (f32, u8) {
     (off as f32 / (a.len() / 4) as f32, worst)
 }
 
-fn cpu_image() -> Vec<u8> {
+/// Writes `image` as `name.png` under `VISO_SCENE_SHOTS`, when it is set.
+fn shot(name: &str, image: &[u8]) {
+    if let Some(dir) = std::env::var_os("VISO_SCENE_SHOTS") {
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = viso_image::snapshot::Image::from_bgra8(W, H, image).to_png();
+        std::fs::write(std::path::Path::new(&dir).join(format!("{name}.png")), png).unwrap();
+    }
+}
+
+fn cpu_image(skinned: bool) -> Vec<u8> {
     let mut gpu = CpuRaster::new();
-    draw(&mut gpu, ShaderCode::None, |gpu, t| gpu.read_texture(t))
+    let image = draw(
+        &mut gpu,
+        ShaderCode::None,
+        ShaderCode::None,
+        true,
+        skinned,
+        |gpu, t| gpu.read_texture(t),
+    );
+    shot(
+        if skinned {
+            "lane-cpu-skinned"
+        } else {
+            "lane-cpu"
+        },
+        &image,
+    );
+    image
+}
+
+#[test]
+fn the_boxes_shadow_the_ground() {
+    let lit = {
+        let mut gpu = CpuRaster::new();
+        draw(
+            &mut gpu,
+            ShaderCode::None,
+            ShaderCode::None,
+            false,
+            false,
+            |gpu, t| gpu.read_texture(t),
+        )
+    };
+    let shadowed = cpu_image(false);
+    // Pixels the shadow darkens a lot; none it brightens.
+    let mut darker = 0;
+    for (a, b) in lit
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(shadowed.as_chunks::<4>().0)
+    {
+        let (la, lb) = (u32::from(a[1]), u32::from(b[1]));
+        assert!(lb <= la + 1, "a shadow never brightens: {a:?} {b:?}");
+        if lb + 20 < la {
+            darker += 1;
+        }
+    }
+    assert!(darker > (W * H / 40) as usize, "{darker} pixels in shadow");
+}
+
+#[test]
+fn the_joints_move_a_skinned_mesh() {
+    let rest = cpu_image(false);
+    let posed = cpu_image(true);
+    let (off, _) = compare(&rest, &posed, 8);
+    assert!(off > 0.1, "{:.2}% of pixels moved", off * 100.0);
 }
 
 #[test]
 fn the_cpu_raster_draws_the_lit_scene() {
-    let image = cpu_image();
+    let image = cpu_image(false);
     let at = |x: u32, y: u32| {
         let i = ((y * W + x) * 4) as usize;
         [image[i + 2], image[i + 1], image[i]]
@@ -334,7 +1220,7 @@ fn the_cpu_raster_draws_the_lit_scene() {
     // than its side.
     let shades: Vec<[u8; 3]> = (0..W * H)
         .map(|i| at(i % W, i / W))
-        .filter(|c| c[0] > 120 && c[1] < 110 && c[2] < 110)
+        .filter(|c| c[0] > 110 && c[1] < 100 && c[2] < 100)
         .collect();
     assert!(shades.len() > 40, "the red box shows");
     let brightest = shades.iter().map(|c| c[0]).max().unwrap();
@@ -354,28 +1240,49 @@ mod metal {
 
     use naga::back::msl;
     use viso_gpu::{MetalBackend, ShaderLang};
-    use viso_shader::{PrimitiveKind, shader_code};
+    use viso_shader::{PrimitiveKind, scene_program_code, shader_code};
 
     #[test]
     fn metal_draws_what_the_cpu_raster_draws() {
-        let reference = cpu_image();
-        let mut gpu = MetalBackend::new();
-        let code = shader_code(PrimitiveKind::Scene, ShaderLang::Msl).unwrap();
-        let image = draw(&mut gpu, code, |gpu, t| gpu.read_texture(t));
-        let (off, worst) = compare(&reference, &image, 3);
-        assert!(
-            off < 0.01,
-            "{:.2}% of pixels differ, worst by {worst}",
-            off * 100.0
-        );
+        for skinned in [false, true] {
+            let reference = cpu_image(skinned);
+            let mut gpu = MetalBackend::new();
+            let (code, depth) = if skinned {
+                (
+                    scene_program_code(SceneProgram::SkinnedMesh, ShaderLang::Msl),
+                    scene_program_code(SceneProgram::SkinnedDepth, ShaderLang::Msl),
+                )
+            } else {
+                (
+                    shader_code(PrimitiveKind::Scene, ShaderLang::Msl).unwrap(),
+                    scene_program_code(SceneProgram::Depth, ShaderLang::Msl),
+                )
+            };
+            let image = draw(&mut gpu, code, depth, true, skinned, |gpu, t| {
+                gpu.read_texture(t)
+            });
+            shot(
+                if skinned {
+                    "lane-metal-skinned"
+                } else {
+                    "lane-metal"
+                },
+                &image,
+            );
+            let (off, worst) = compare(&reference, &image, 3);
+            assert!(
+                off < 0.01,
+                "skinned {skinned}: {:.2}% of pixels differ, worst by {worst}",
+                off * 100.0
+            );
+        }
     }
 
-    /// The web WGSL, translated to MSL with vertex pulling over the Metal
-    /// backend's argument table: vertices at buffer 0, instances at 1, the
-    /// uniform buffer at 2.
-    fn translated() -> String {
-        let ShaderCode::Wgsl(wgsl) = shader_code(PrimitiveKind::Scene, ShaderLang::Wgsl).unwrap()
-        else {
+    /// Scene program `program`'s web WGSL, translated to MSL with vertex
+    /// pulling over the Metal backend's argument table: vertices at buffer
+    /// 0, instances at 1, the uniform buffers from 2.
+    fn translated(program: SceneProgram) -> String {
+        let ShaderCode::Wgsl(wgsl) = scene_program_code(program, ShaderLang::Wgsl) else {
             unreachable!("a WGSL request yields WGSL");
         };
         let module = naga::front::wgsl::parse_str(wgsl).unwrap();
@@ -385,17 +1292,45 @@ mod metal {
         )
         .validate(&module)
         .unwrap();
+        // The uniform blocks after the vertices and instances, the textures
+        // and samplers by slot, as the Metal backend binds them.
         let mut resources = BTreeMap::new();
-        resources.insert(
-            naga::ResourceBinding {
-                group: 0,
-                binding: 0,
-            },
-            msl::BindTarget {
-                buffer: Some(2),
-                ..Default::default()
-            },
-        );
+        for k in 0..scene::UNIFORM_SLOTS as u32 {
+            resources.insert(
+                naga::ResourceBinding {
+                    group: 0,
+                    binding: k,
+                },
+                msl::BindTarget {
+                    buffer: Some(2 + k as u8),
+                    ..Default::default()
+                },
+            );
+        }
+        for i in 0..scene::TEXTURE_SLOTS as u32 {
+            resources.insert(
+                naga::ResourceBinding {
+                    group: 1,
+                    binding: i,
+                },
+                msl::BindTarget {
+                    texture: Some(i as u8),
+                    ..Default::default()
+                },
+            );
+        }
+        for j in 0..scene::SAMPLER_SLOTS as u32 {
+            resources.insert(
+                naga::ResourceBinding {
+                    group: 1,
+                    binding: scene::TEXTURE_SLOTS as u32 + j,
+                },
+                msl::BindTarget {
+                    sampler: Some(msl::BindSamplerTarget::Resource(j as u8)),
+                    ..Default::default()
+                },
+            );
+        }
         let entry = msl::EntryPointResources {
             resources,
             immediates_buffer: None,
@@ -411,6 +1346,7 @@ mod metal {
             fake_missing_bindings: false,
             ..Default::default()
         };
+        let vertices = program.vertex_schema();
         let mapping = |schema: viso_gpu::InstanceSchema, first: u32| {
             let mut offset = 0;
             schema
@@ -418,9 +1354,10 @@ mod metal {
                 .iter()
                 .enumerate()
                 .map(|(i, a)| {
-                    let format = match a.format.size() {
-                        8 => naga_types::VertexFormat::Float32x2,
-                        12 => naga_types::VertexFormat::Float32x3,
+                    let format = match a.format {
+                        viso_gpu::AttrFormat::Float2 => naga_types::VertexFormat::Float32x2,
+                        viso_gpu::AttrFormat::Float3 => naga_types::VertexFormat::Float32x3,
+                        viso_gpu::AttrFormat::Uint2 => naga_types::VertexFormat::Uint32x2,
                         _ => naga_types::VertexFormat::Float32x4,
                     };
                     let m = msl::AttributeMapping {
@@ -438,15 +1375,19 @@ mod metal {
             vertex_buffer_mappings: vec![
                 msl::VertexBufferMapping {
                     id: 0,
-                    stride: SceneVertex::SIZE as u32,
+                    stride: if program.skinned() {
+                        SkinnedVertex::SIZE
+                    } else {
+                        SceneVertex::SIZE
+                    } as u32,
                     step_mode: msl::VertexBufferStepMode::ByVertex,
-                    attributes: mapping(scene::VERTEX_SCHEMA, 0),
+                    attributes: mapping(vertices, 0),
                 },
                 msl::VertexBufferMapping {
                     id: 1,
                     stride: SceneInstance::SIZE as u32,
                     step_mode: msl::VertexBufferStepMode::ByInstance,
-                    attributes: mapping(scene::INSTANCE_SCHEMA, 3),
+                    attributes: mapping(scene::INSTANCE_SCHEMA, vertices.attributes.len() as u32),
                 },
             ],
             ..Default::default()
@@ -455,17 +1396,81 @@ mod metal {
         naga_pull::strip_pull_bounds(&source)
     }
 
+    /// Within the noise of point-sampled taps on texels' edges.
+    #[test]
+    fn metal_and_the_translated_wgsl_occlude_as_the_cpu_raster_does() {
+        let (raw, blurred) = cpu_occlusion();
+        let depth = occlusion_depth(&occlusion_frame());
+        for wgsl in [false, true] {
+            let code = |program| {
+                if wgsl {
+                    ShaderCode::Msl(Box::leak(translated(program).into_boxed_str()))
+                } else {
+                    scene_program_code(program, ShaderLang::Msl)
+                }
+            };
+            let read = |gpu: &mut MetalBackend, t| gpu.read_texture(t);
+            let mut gpu = MetalBackend::new();
+            let gpu_raw = draw_occlusion(&mut gpu, code(SceneProgram::Ao), false, &depth, read);
+            // The blur of the CPU's occlusion, so each pass is held alone.
+            let gpu_blurred =
+                draw_occlusion(&mut gpu, code(SceneProgram::AoBlur), true, &raw, read);
+            for (what, a, b, tolerance) in [
+                ("occlusion", &raw, &gpu_raw, 24),
+                ("blur", &blurred, &gpu_blurred, 2),
+            ] {
+                let (off, worst) = compare(a, b, tolerance);
+                assert!(
+                    off < 0.02,
+                    "{what} (wgsl {wgsl}): {:.2}% of texels differ, worst by {worst}",
+                    off * 100.0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn metal_and_the_translated_wgsl_draw_the_cpu_raster_s_sky() {
+        let reference = cpu_sky();
+        let msl = scene_program_code(SceneProgram::Sky, ShaderLang::Msl);
+        let wgsl = Box::leak(translated(SceneProgram::Sky).into_boxed_str());
+        for (what, code) in [("msl", msl), ("translated wgsl", ShaderCode::Msl(wgsl))] {
+            let mut gpu = MetalBackend::new();
+            let image = draw_sky(&mut gpu, code, |gpu, t| gpu.read_texture(t));
+            shot(&format!("lane-sky-{}", what.replace(' ', "-")), &image);
+            let (off, worst) = compare(&reference, &image, 3);
+            assert!(
+                off < 0.01,
+                "{what}: {:.2}% of pixels differ, worst by {worst}",
+                off * 100.0
+            );
+        }
+    }
+
     #[test]
     fn the_translated_wgsl_draws_what_the_msl_draws() {
-        let reference = cpu_image();
-        let msl = Box::leak(translated().into_boxed_str());
-        let mut gpu = MetalBackend::new();
-        let image = draw(&mut gpu, ShaderCode::Msl(msl), |gpu, t| gpu.read_texture(t));
-        let (off, worst) = compare(&reference, &image, 3);
-        assert!(
-            off < 0.01,
-            "{:.2}% of pixels differ, worst by {worst}",
-            off * 100.0
-        );
+        for (skinned, mesh, depth) in [
+            (false, SceneProgram::Mesh, SceneProgram::Depth),
+            (true, SceneProgram::SkinnedMesh, SceneProgram::SkinnedDepth),
+        ] {
+            let reference = cpu_image(skinned);
+            let msl = Box::leak(translated(mesh).into_boxed_str());
+            let depth = Box::leak(translated(depth).into_boxed_str());
+            let mut gpu = MetalBackend::new();
+            let image = draw(
+                &mut gpu,
+                ShaderCode::Msl(msl),
+                ShaderCode::Msl(depth),
+                true,
+                skinned,
+                |gpu, t| gpu.read_texture(t),
+            );
+            let (off, worst) = compare(&reference, &image, 3);
+            assert!(
+                off < 0.01,
+                "skinned {skinned}: {:.2}% of pixels differ, worst by {worst}",
+                off * 100.0
+            );
+        }
     }
 }

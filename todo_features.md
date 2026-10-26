@@ -663,20 +663,85 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
 
 ## W14 — 3D extended (after W1)
 
-- [ ] glTF 2.0 loader (meshes, materials, textures, node hierarchy, animation) as an
-  asset.
-- [ ] PBR metallic-roughness material with image-based ambient.
-- [ ] Shadow maps (cascaded for the directional light).
-- [ ] Skinned meshes.
-- [ ] SSAO and sky.
+- [x] glTF 2.0 loader (meshes, materials, textures, node hierarchy, animation) as an
+  asset. — Own bounds-checked reader in `viso_render::scene3d::model` (`.glb`/`.gltf`,
+  data/relative URIs, sparse/quantized accessors, generated flat normals and tangents,
+  step/linear/cubic animation, pose solve, joint matrices); `AssetKind::Model` decoded on
+  the asset worker and made resident per window (`NodeStore::scene_model`,
+  `SceneFrame::push_model`). Verified: unit tests incl. hostile inputs, the six Khronos
+  samples decode, a facade residency test, and models drawn on the CPU raster.
+- [x] PBR metallic-roughness material with image-based ambient. — `Material` /
+  `create_scene_material` / `SceneFrame::push_with`; glTF materials with all five maps
+  (mip chains built on the asset worker, `create_texture_mipped`); GGX + Smith + Schlick
+  with specular AA, `Environment` (prefiltered equirect atlas + SH9, from a radiance map
+  or the sky/ground gradient), PBR Neutral tonemap; blend sorted back to front. The CPU
+  raster runs the same expression (`viso_gpu::scene::shade_mesh`). Verified: CPU + Metal
+  drawn and compared, WGSL through naga, GLSL ES / HLSL through glslang, Khronos samples.
+- [x] Shadow maps (cascaded for the directional light). — `Lighting::shadows: Shadows`;
+  three cascades fitted to the receivers' depth range (slice spheres, texel-snapped, depth
+  reaching every caster), a per-slot `3r × r` RGBA8 atlas of 24-bit packed depth drawn
+  by `SceneProgram::Depth` (no sampleable depth or float target needed), normal offset +
+  slope bias, 4×4 tent PCF with cascade cross-fade. Verified: CPU + Metal + translated
+  WGSL draw the same shadowed scene, GLSL ES / HLSL compile, lane test, Khronos samples.
+- [x] Skinned meshes. — `SkinnedVertex` (4 joints / 4 weights as packed u16),
+  `Renderer::create_scene_skinned_mesh` + `SceneFrame::push_skinned(mesh, material,
+  instance, &joints, bounds)`, palette of up to 256 joints in the third uniform block,
+  `SceneProgram::SkinnedMesh` / `SkinnedDepth` skin on the GPU (casting skinned shadows
+  too); `push_model` poses glTF skins, `SceneModel::bounds(&pose)`. Verified: CPU + Metal +
+  translated WGSL draw the same skinned scene, GLSL ES / HLSL compile, lane test, CesiumMan / Fox.
+- [x] SSAO and sky. — `SceneFrame::sky: Option<Sky>` draws a Preetham daylight sky (with
+  night / twilight fade and sun disc) behind opaque meshes, `Environment::from_sky` lights the
+  frame by it, `Lighting::sunlit(&sky)` gives the sun's direct light. `Lighting::occlusion:
+  AmbientOcclusion` adds half-res SSAO (view depth, 12-tap hemisphere, two bilateral blur
+  passes) that darkens only the environment's light. Verified: CPU + Metal + translated WGSL
+  draw the same sky and occlusion, GLSL ES / HLSL compile, lane tests, Khronos samples.
 
 ## W15 — Code editor widget (in `extras/`)
 
-- [ ] `CodeEditor`:
-  - [ ] rope document, multi-cursor, undo;
-  - [ ] syntax highlighting through the `.vs` lexer and a TextMate-free token API;
-  - [ ] line numbers, folding, wrapping, inlays and decorations, search/replace;
-  - [ ] LSP client hookup.
+- [x] `CodeEditor`:
+  - [x] rope document, multi-cursor, undo: a B-tree rope with line counts (random edits
+    checked against a `String`), edits as change sets of one change a cursor with line
+    splices that every line array follows, sorted merged cursors keeping a column goal, and
+    a bounded history that folds a typing run at every cursor into one change each, broken
+    a word at a time; the widget draws only the lines on screen, as rows of a virtual list
+    keyed by line ids; headless facade tests type, compose, delete, break and indent lines,
+    click, drag, double-click, add cursors with Alt-click and Alt-Cmd-Down, cut once per
+    shortcut and paste a whole line, then undo and redo it all;
+  - [x] syntax highlighting through the `.vs` lexer and a TextMate-free token API: the
+    tokenizer is its own leaf crate, `viso-lexer` (the compiler re-exports it at the same
+    paths), which `.vs` highlighting runs a line at a time, carrying across lines only an
+    open block comment's depth or a raw string's hashes; a `Language` is a line lexer over
+    `u32` states, and the editor keeps each line's end state, re-lexing from an edited line
+    only until the states agree again and past the screen only when asked; tests check the
+    line-at-a-time classes against the whole-file tokenizer over the prelude and samples,
+    and through the facade a typed `/*` recolors the lines below and `*/` restores them;
+  - [x] line numbers, folding, wrapping, inlays and decorations, search/replace: each row
+    carries its piece of the gutter (number, fold chevron, worst diagnostic), moved by the
+    list's sideways scroll in the pass that scrolls, so it stays put with no frame of lag;
+    folds by indentation hide lines from the list (rows map through hidden counts), wrapped
+    lines are listed with exact row extents, inlays and a fold's placeholder take cells on
+    the grid, decorations draw backgrounds, lines and squiggles in named sets that follow
+    edits, and a find bar searches as it is typed (literal across chunks, or a regex a line
+    at a time; only edited lines are searched again), steps, replaces one or all as one undo
+    step, and matches the bracket at the caret outside strings and comments; headless
+    facade tests check the numbers and the pinned gutter under a scroll, a fold clicked
+    from its chevron and stepped over, a wrapped line moved through a row at a time, an
+    inlay shifting the text and a diagnostic's squiggle and gutter mark, and the bar's
+    find, step, retype, replace and replace-all, and Escape back to the text;
+  - [x] LSP client hookup: a `LanguageService` trait the widget asks for diagnostics,
+    completions, hovers, inlay hints and definitions, each answer a future over a snapshot
+    of the text that the edits since are mapped through; the `lsp` feature (desktop only)
+    adds an `LspClient` speaking JSON-RPC to a server over its pipes, negotiating UTF-8
+    columns, sending full or incremental changes from a writer thread and answering the
+    server's own requests; the widget shows a fuzzy-filtered completion list, squiggles,
+    a hover box on a resting pointer and jumps to definitions; tests drive a fake service
+    through the facade, `viso-lsp` over in-process pipes (diagnostics, hover, definition,
+    an edit clearing an error, and squiggles in the widget) and rust-analyzer when
+    installed (UTF-8, hover, inlay hint, completions and a definition after incremental
+    edits); `examples/code-editor` edits a `.vs` file with `viso-lsp`, checked in a
+    headless run's snapshots (highlighting, gutter, find matches, a caret and a squiggle
+    from the server); on 100k lines in release a facade run opens in about 6 ms, takes
+    about 1 ms a keystroke to its frame and 13 MiB resident.
 
 ## W16 — Missing in both
 

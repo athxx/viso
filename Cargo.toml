@@ -25,11 +25,13 @@ members = [
     "crates/behavior",
     "crates/view",
     "crates/dsl",
+    "crates/lexer",
     "crates/lsp",
     "crates/services",
     "crates/pdf",
     "extras/charts",
     "extras/map",
+    "extras/code-editor",
     "tools/project",
     "tools/package",
     "tools/cli",
@@ -45,6 +47,7 @@ members = [
     "examples/video",
     "examples/10-custom-shader",
     "examples/pointer",
+    "examples/code-editor",
     "benches/footprint",
 ]
 
@@ -89,9 +92,11 @@ viso-ui-macros = { path = "crates/ui-macros", version = "0.0.0" }
 viso-widgets = { path = "crates/widgets", version = "0.0.0" }
 viso-charts = { path = "extras/charts", version = "0.0.0" }
 viso-map = { path = "extras/map", version = "0.0.0" }
+viso-code-editor = { path = "extras/code-editor", version = "0.0.0" }
 viso-behavior = { path = "crates/behavior", version = "0.0.0", default-features = false }
 viso-view = { path = "crates/view", version = "0.0.0", default-features = false }
 viso-dsl = { path = "crates/dsl", version = "0.0.0" }
+viso-lexer = { path = "crates/lexer", version = "0.0.0" }
 viso-lsp = { path = "crates/lsp", version = "0.0.0" }
 viso-services = { path = "crates/services", version = "0.0.0", default-features = false }
 viso-pdf = { path = "crates/pdf", version = "0.0.0" }
@@ -161,6 +166,9 @@ toml_edit = "0.25"
 # NFC for DSL identifiers: two spellings that normalize alike are one name in the
 # symbol table, and a distinct raw spelling of a declared name is reported.
 icu_normalizer = "2.4"
+# The code editor's find and replace: regular expressions, a whole word and
+# a case-blind literal compiled to one automaton. Already in the lock file.
+regex = "1.13"
 # Pure-Rust PNG decoder for color-bitmap emoji strikes (sbix/CBDT PNG data that
 # ttf-parser hands back as raw bytes). Same decoder family makepad's color-emoji
 # path uses; decoded RGBA is premultiplied into the color glyph atlas.

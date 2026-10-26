@@ -94,13 +94,21 @@ fn emit_attr_struct(out: &mut String, ir: &ShaderIr) {
     }
 }
 
-/// `struct Uniforms { ... };` — the inline uniform block (viewport, etc.).
+/// `struct Uniforms { ... };` — the inline uniform block (viewport, etc.),
+/// then a scene program's further blocks.
 fn emit_uniforms(out: &mut String, ir: &ShaderIr) {
     out.push_str("struct Uniforms {\n");
     for f in ir.uniforms {
         push_field(out, f);
     }
     out.push_str("};\n");
+    for block in ir.bindings.map_or(&[][..], |b| b.blocks) {
+        let _ = writeln!(out, "\nstruct {} {{", block.struct_name);
+        for f in block.fields {
+            push_field(out, f);
+        }
+        out.push_str("};\n");
+    }
 }
 
 /// `struct VOut { ... };` — the varyings. `position` carries its `[[position]]`
@@ -138,6 +146,9 @@ fn push_field(out: &mut String, f: &IrField) {
     out.push_str(&f.ty.msl_field_type());
     out.push(' ');
     out.push_str(f.name);
+    if f.count > 0 {
+        let _ = write!(out, "[{}]", f.count);
+    }
     out.push_str(";\n");
 }
 
@@ -190,7 +201,17 @@ fn emit_vertex_entry(out: &mut String, ir: &ShaderIr) {
             out.push_str(
                 "                        const device InstanceIn* instances [[buffer(1)]],\n",
             );
-            out.push_str("                        constant Uniforms& u [[buffer(2)]]) {\n");
+            out.push_str("                        constant Uniforms& u [[buffer(2)]]");
+            for (i, block) in ir.bindings.map_or(&[][..], |b| b.blocks).iter().enumerate() {
+                let _ = write!(
+                    out,
+                    ",\n                        constant {}& {} [[buffer({})]]",
+                    block.struct_name,
+                    block.name,
+                    3 + i
+                );
+            }
+            out.push_str(") {\n");
         }
     }
     push_body(out, ir.vertex_body);
@@ -206,7 +227,33 @@ fn emit_vertex_entry(out: &mut String, ir: &ShaderIr) {
 /// sampler serves every slot — Viso's textured built-ins all sample
 /// clamp-to-edge with the same filter.
 fn emit_fragment_entry(out: &mut String, ir: &ShaderIr) {
-    if ir.texture_count >= 1 {
+    if let Some(bindings) = ir.bindings {
+        // A scene program: its blocks after `u`, its textures and samplers
+        // by slot.
+        const PAD: &str = "                              ";
+        out.push_str("fragment float4 fragment_main(VOut in [[stage_in]],\n");
+        let _ = write!(
+            out,
+            "{PAD}constant Uniforms& u [[buffer({})]]",
+            ir.vertex_source.uniform_buffer_index()
+        );
+        for (i, block) in bindings.blocks.iter().enumerate() {
+            let _ = write!(
+                out,
+                ",\n{PAD}constant {}& {} [[buffer({})]]",
+                block.struct_name,
+                block.name,
+                ir.vertex_source.uniform_buffer_index() + 1 + i as u32
+            );
+        }
+        for (i, t) in bindings.textures.iter().enumerate() {
+            let _ = write!(out, ",\n{PAD}texture2d<float> {} [[texture({i})]]", t.name);
+        }
+        for (i, name) in bindings.samplers.iter().enumerate() {
+            let _ = write!(out, ",\n{PAD}sampler {name} [[sampler({i})]]");
+        }
+        out.push_str(") {\n");
+    } else if ir.texture_count >= 1 {
         out.push_str("fragment float4 fragment_main(VOut in [[stage_in]],\n");
         out.push_str("                              texture2d<float> tex [[texture(0)]],\n");
         if ir.texture_count >= 2 {

@@ -31,6 +31,9 @@ pub enum StructName {
     VertexIn,
     /// The inline uniform block.
     Uniforms,
+    /// A scene program's uniform block at this index of its
+    /// [`SceneBindings::blocks`](crate::ir::module::SceneBindings::blocks).
+    Block(u8),
 }
 
 /// A type as written in source: a declaration, parameter, return, or
@@ -99,6 +102,12 @@ pub enum Ty {
     Texture,
     /// A sampler.
     Sampler,
+    /// A uniform-block member array of scalars or vectors (`lanes` 1 for a
+    /// scalar), only ever indexed.
+    Array(Scalar, u8),
+    /// A `gradient2d(dx, dy)` sample argument: the texture-coordinate
+    /// derivatives a sample selects its mip level by.
+    Gradient,
     /// The attribute buffer, only ever indexed.
     AttrBuffer,
     /// No value (a helper called as a statement).
@@ -150,6 +159,12 @@ pub enum Global {
     DstTex,
     /// `samp` — the shared sampler.
     Samp,
+    /// A scene program's texture at this slot, by its name.
+    Texture(u8, &'static str),
+    /// A scene program's sampler at this slot, by its name.
+    Sampler(u8, &'static str),
+    /// A scene program's uniform block at this index beyond `u`, by its name.
+    Block(u8, &'static str),
     /// `M_PI_F`.
     Pi,
 }
@@ -449,6 +464,9 @@ pub enum StmtKind {
     Return(Option<Expr>),
     /// `break;`.
     Break,
+    /// `discard_fragment();` — the fragment writes nothing. Execution goes
+    /// on (a derivative stays defined), so a return still follows.
+    Discard,
 }
 
 /// The `else` arm of an `if`.

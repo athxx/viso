@@ -690,6 +690,9 @@ pub enum CullMode {
     None,
     /// Discard the triangles facing away: a closed mesh's far side.
     Back,
+    /// Discard the triangles facing the camera: a mirrored instance's far
+    /// side, its winding turned around.
+    Front,
 }
 
 /// When a fragment passes the depth test: its depth compared with the one

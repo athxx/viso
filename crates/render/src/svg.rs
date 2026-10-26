@@ -119,7 +119,7 @@ pub fn decode_asset(bytes: &AssetBytes) -> Result<DecodedAsset, AssetError> {
         AssetKind::Vector => parse_svg(bytes)
             .map(|scene| DecodedAsset::Vector(scene.into_vector()))
             .map_err(|error| AssetError::Decode(error.to_string())),
-        AssetKind::Video => Err(AssetError::Kind(format)),
+        AssetKind::Video | AssetKind::Model => Err(AssetError::Kind(format)),
     }
 }
 

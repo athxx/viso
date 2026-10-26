@@ -13,15 +13,18 @@
 
 use std::sync::OnceLock;
 
+use viso_gpu_abi::scene::SceneProgram;
 use viso_gpu_abi::{ShaderCode, ShaderLang};
 
 use crate::ir::codegen_glsl::emit_glsl;
 use crate::ir::codegen_hlsl::emit_hlsl;
+use crate::ir::codegen_msl::emit_msl;
 use crate::ir::codegen_wgsl::{WgslTarget, emit_wgsl};
 use crate::ir::module::{
     ShaderIr, advanced_blend_ir, analytic_capsule_ir, analytic_ellipse_ir, analytic_line_ir,
     analytic_rrect_ir, analytic_shadow_ir, blur_ir, color_transform_ir, glyphrun_ir, gradient_ir,
-    image_ir, material_ir, mesh_ir, mtsdf_ir, output_encode_ir, quad_ir, scene_ir,
+    image_ir, material_ir, mesh_ir, mtsdf_ir, output_encode_ir, quad_ir, scene_ao_blur_ir,
+    scene_ao_ir, scene_depth_ir, scene_ir, scene_skinned_depth_ir, scene_skinned_ir, scene_sky_ir,
 };
 use crate::msl::{PrimitiveKind, shader_source};
 
@@ -37,8 +40,8 @@ pub(crate) struct Program {
 }
 
 macro_rules! programs {
-    ($($name:literal => $ir:ident),* $(,)?) => {
-        pub(crate) const PROGRAMS: &[Program] = &[$(Program {
+    ($table:ident: $($name:literal => $ir:ident),* $(,)?) => {
+        pub(crate) const $table: &[Program] = &[$(Program {
             #[cfg(test)]
             name: $name,
             ir: $ir,
@@ -48,6 +51,7 @@ macro_rules! programs {
 }
 
 programs! {
+    PROGRAMS:
     "quad" => quad_ir,
     "image" => image_ir,
     "blur" => blur_ir,
@@ -65,6 +69,16 @@ programs! {
     "gradient" => gradient_ir,
     "scene" => scene_ir,
     "output_encode" => output_encode_ir,
+}
+
+programs! {
+    SCENE_PROGRAMS:
+    "scene_depth" => scene_depth_ir,
+    "scene_skinned" => scene_skinned_ir,
+    "scene_skinned_depth" => scene_skinned_depth_ir,
+    "scene_sky" => scene_sky_ir,
+    "scene_ao" => scene_ao_ir,
+    "scene_ao_blur" => scene_ao_blur_ir,
 }
 
 /// The index into [`PROGRAMS`] of `kind`'s program, if it is shaded.
@@ -99,22 +113,64 @@ pub fn shader_code(kind: PrimitiveKind, lang: ShaderLang) -> Option<ShaderCode> 
     static GLSL: [OnceLock<String>; 17] = [const { OnceLock::new() }; 17];
 
     let i = program_index(kind)?;
-    let program = &PROGRAMS[i];
-    Some(match lang {
+    if lang == ShaderLang::Msl {
+        return Some(ShaderCode::Msl(shader_source(kind)?));
+    }
+    Some(code(
+        &PROGRAMS[i],
+        lang,
+        [&WGSL[i], &HLSL[i], &GLSL[i]],
+        None,
+    ))
+}
+
+/// Scene lane program `program` in `lang`: the [`PrimitiveKind::Scene`]
+/// built-in for the mesh program, every other one from its own table.
+pub fn scene_program_code(program: SceneProgram, lang: ShaderLang) -> ShaderCode {
+    const N: usize = SCENE_PROGRAMS.len();
+    static MSL: [OnceLock<String>; N] = [const { OnceLock::new() }; N];
+    static WGSL: [OnceLock<String>; N] = [const { OnceLock::new() }; N];
+    static HLSL: [OnceLock<String>; N] = [const { OnceLock::new() }; N];
+    static GLSL: [OnceLock<String>; N] = [const { OnceLock::new() }; N];
+
+    let Some(i) = (program as usize).checked_sub(1) else {
+        return shader_code(PrimitiveKind::Scene, lang).expect("the scene built-in is shaded");
+    };
+    code(
+        &SCENE_PROGRAMS[i],
+        lang,
+        [&WGSL[i], &HLSL[i], &GLSL[i]],
+        Some(&MSL[i]),
+    )
+}
+
+/// `program` in `lang`, printed into its cell of `text` (WGSL, HLSL and
+/// GLSL) or of `msl` on first request.
+fn code(
+    program: &Program,
+    lang: ShaderLang,
+    text: [&'static OnceLock<String>; 3],
+    msl: Option<&'static OnceLock<String>>,
+) -> ShaderCode {
+    let [wgsl, hlsl, glsl] = text;
+    match lang {
         ShaderLang::None => ShaderCode::None,
-        ShaderLang::Msl => ShaderCode::Msl(shader_source(kind)?),
-        ShaderLang::Wgsl => ShaderCode::Wgsl(WGSL[i].get_or_init(|| {
+        ShaderLang::Msl => ShaderCode::Msl(
+            msl.expect("a built-in's MSL is printed by `shader_source`")
+                .get_or_init(|| emit_msl(&(program.ir)())),
+        ),
+        ShaderLang::Wgsl => ShaderCode::Wgsl(wgsl.get_or_init(|| {
             emit_wgsl(&(program.ir)(), WgslTarget::Web)
                 .expect("every built-in body passes the checker (tested)")
         })),
-        ShaderLang::Hlsl => ShaderCode::Hlsl(HLSL[i].get_or_init(|| {
+        ShaderLang::Hlsl => ShaderCode::Hlsl(hlsl.get_or_init(|| {
             emit_hlsl(&(program.ir)()).expect("every built-in body passes the checker (tested)")
         })),
         ShaderLang::SpirV => ShaderCode::SpirV(program.spirv),
-        ShaderLang::Glsl => ShaderCode::Glsl(GLSL[i].get_or_init(|| {
+        ShaderLang::Glsl => ShaderCode::Glsl(glsl.get_or_init(|| {
             emit_glsl(&(program.ir)()).expect("every built-in body passes the checker (tested)")
         })),
-    })
+    }
 }
 
 #[cfg(test)]
@@ -166,7 +222,7 @@ mod tests {
     #[test]
     fn frozen_spirv_matches_the_ir() {
         let bless = std::env::var_os("VISO_BLESS_SPIRV").is_some();
-        for p in PROGRAMS {
+        for p in PROGRAMS.iter().chain(SCENE_PROGRAMS) {
             let fresh = compile_spirv(&(p.ir)());
             if bless {
                 std::fs::create_dir_all(spirv_dir()).unwrap();
@@ -183,7 +239,7 @@ mod tests {
 
     #[test]
     fn frozen_spirv_passes_the_khronos_validator() {
-        for p in PROGRAMS {
+        for p in PROGRAMS.iter().chain(SCENE_PROGRAMS) {
             assert_eq!(p.spirv.len() % 4, 0, "{}", p.name);
             assert_eq!(&p.spirv[..4], &0x0723_0203u32.to_le_bytes(), "{}", p.name);
             let path = spirv_dir().join(format!("{}.spv", p.name));

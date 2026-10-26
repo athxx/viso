@@ -9,7 +9,7 @@ use viso_schema::resource::AssetBytes;
 use zune_core::bytestream::ZCursor;
 use zune_png::{BlendOp, DisposeOp, PngDecoder};
 
-use super::{Orientation, error, exif, options};
+use super::{Orientation, Raw, error, exif, options};
 use crate::animation::{Blend, Dispose, Header, Loops, Piece};
 use crate::raster::{AssetError, RasterImage, check_size, premultiplied};
 
@@ -21,19 +21,36 @@ fn png_options() -> zune_core::options::DecoderOptions {
 }
 
 pub(crate) fn still(bytes: &[u8]) -> Result<RasterImage, AssetError> {
+    let (raw, orientation) = decode(bytes)?;
+    let image = premultiplied(&raw.pixels, raw.channels, raw.width, raw.height)?;
+    Ok(Orientation::of(orientation).apply(image))
+}
+
+/// The PNG's pixels as stored, eight bits a channel.
+pub(crate) fn raw(bytes: &[u8]) -> Result<Raw, AssetError> {
+    Ok(decode(bytes)?.0)
+}
+
+fn decode(bytes: &[u8]) -> Result<(Raw, Option<u16>), AssetError> {
     let mut decoder = PngDecoder::new_with_options(ZCursor::new(bytes), png_options());
     decoder.decode_headers().map_err(|e| error(&e))?;
     let (w, h) = decoder
         .dimensions()
         .ok_or_else(|| AssetError::Decode("the PNG has no header".to_owned()))?;
-    let (w, h) = check_size(w, h)?;
+    let (width, height) = check_size(w, h)?;
     let pixels = decoder.decode_raw().map_err(|e| error(&e))?;
-    let channels = pixels.len() / (w as usize * h as usize);
+    let channels = pixels.len() / (width as usize * height as usize);
     let orientation = decoder
         .info()
         .and_then(|info| info.exif.as_deref())
         .and_then(exif::orientation);
-    Ok(Orientation::of(orientation).apply(premultiplied(&pixels, channels, w, h)?))
+    let raw = Raw {
+        width,
+        height,
+        channels,
+        pixels,
+    };
+    Ok((raw, orientation))
 }
 
 /// The frame count and plays an APNG's `acTL` declares, read from the

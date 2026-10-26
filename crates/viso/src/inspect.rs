@@ -279,6 +279,14 @@ pub(crate) fn frame(ws: &WindowState, window: u32, assets: &Assets) -> FrameDeta
             AssetState::Decoded { size } => (sized("decoded", size), Some(pixels(size))),
             AssetState::Resident { size } => (sized("resident", size), Some(pixels(size))),
             AssetState::Vector { size } => (sized("vector", size), None),
+            AssetState::Model { resident } => {
+                let note = if resident {
+                    "model resident"
+                } else {
+                    "model decoded"
+                };
+                (note.to_owned(), None)
+            }
             AssetState::Failed => ("failed".to_owned(), None),
         };
         resources.push(ResourceDetail {

@@ -109,6 +109,12 @@ const ROOT_UNIFORMS: u32 = 0;
 const ROOT_TEXTURES: u32 = 1;
 const ROOT_SAMPLER: u32 = 2;
 const ROOT_INSTANCES: u32 = 3;
+/// The scene programs' root parameters: a constant-buffer view per uniform
+/// slot, then the texture and the sampler tables.
+const SCENE_ROOT_TEXTURES: u32 = scene::UNIFORM_SLOTS as u32;
+const SCENE_ROOT_SAMPLERS: u32 = SCENE_ROOT_TEXTURES + 1;
+/// SRV units a scene bind group's textures span.
+const SCENE_SRV_UNITS: u32 = (scene::TEXTURE_SLOTS as u32).div_ceil(SRV_UNIT);
 /// Textures and samplers the built-ins' tables read.
 const BUILTIN_TEXTURES: u32 = 2;
 const BUILTIN_SAMPLERS: u32 = 1;
@@ -214,6 +220,25 @@ struct D3D12BindGroup {
     sampler_pair: Option<([SamplerId; 2], u32)>,
     /// The uniform buffer a user program with a large uniform block reads.
     uniform: Option<BufferId>,
+    /// A scene draw's slots.
+    scene: Option<SceneGroup>,
+}
+
+/// A scene bind group's slots: its uniform buffers, the first of the SRV
+/// units its textures span, and its samplers side by side.
+#[derive(Clone, Copy)]
+struct SceneGroup {
+    uniforms: [Option<BufferId>; scene::UNIFORM_SLOTS],
+    srv_unit: u32,
+    samplers: ([SamplerId; scene::SAMPLER_SLOTS], u32),
+}
+
+/// A scene bind group's samplers written side by side, shared by every
+/// group naming the same ones.
+struct SamplerRun {
+    samplers: [SamplerId; scene::SAMPLER_SLOTS],
+    slot: u32,
+    refs: u32,
 }
 
 /// A window surface and its swapchain.
@@ -422,6 +447,10 @@ pub struct D3D12Backend {
     sampler_pairs: Vec<SamplerPair>,
     /// Freed pair slots (the first of two adjacent slots).
     sampler_pair_free: Vec<u32>,
+    sampler_runs: Vec<SamplerRun>,
+    sampler_run_free: Vec<u32>,
+    /// Freed spans of [`SCENE_SRV_UNITS`] units.
+    srv_span_free: Vec<u32>,
     bind_groups: SlotMap<D3D12BindGroup>,
     pipelines: SlotMap<D3D12Pipeline>,
     surfaces: SlotMap<D3D12Surface>,
@@ -514,10 +543,9 @@ impl D3D12Backend {
             (queue, fence, event)
         };
         let root_signature = create_root_signature(&device);
-        let scene_root_signature =
-            serialize_root_signature(&device, None, true).unwrap_or_else(|e| {
-                panic!("failed to create the Direct3D 12 scene root signature: {e}")
-            });
+        let scene_root_signature = serialize_scene_root_signature(&device).unwrap_or_else(|e| {
+            panic!("failed to create the Direct3D 12 scene root signature: {e}")
+        });
         let srv_heap = create_gpu_heap(
             &device,
             D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
@@ -586,6 +614,9 @@ impl D3D12Backend {
             samplers: SlotMap::new(),
             sampler_pairs: Vec::new(),
             sampler_pair_free: Vec::new(),
+            sampler_runs: Vec::new(),
+            sampler_run_free: Vec::new(),
+            srv_span_free: Vec::new(),
             bind_groups: SlotMap::new(),
             pipelines: SlotMap::new(),
             surfaces: SlotMap::new(),
@@ -1127,6 +1158,10 @@ impl D3D12Backend {
                         if let Some((pair, _)) = g.sampler_pair {
                             self.release_sampler_pair(pair);
                         }
+                        if let Some(scene) = g.scene {
+                            self.srv_span_free.push(scene.srv_unit);
+                            self.release_sampler_run(scene.samplers.0);
+                        }
                     }
                 }
             }
@@ -1210,6 +1245,134 @@ impl D3D12Backend {
         );
         self.srv_next += 1;
         self.srv_next - 1
+    }
+
+    /// A scene draw's bind group: its uniform buffers, its textures' views in
+    /// a span of SRV units and its samplers side by side, each by slot.
+    fn create_scene_group(&mut self, desc: &BindGroupDesc) -> BindGroupId {
+        let mut uniforms = [None; scene::UNIFORM_SLOTS];
+        let mut textures: Vec<(ID3D12Resource, TextureFormat)> = Vec::new();
+        let mut samplers = Vec::new();
+        for binding in &desc.bindings {
+            match *binding {
+                Binding::Uniform(id) => {
+                    if let Some(slot) = uniforms.iter_mut().find(|u| u.is_none()) {
+                        *slot = Some(id);
+                    }
+                }
+                Binding::Texture(id) => {
+                    if textures.len() < scene::TEXTURE_SLOTS {
+                        let t = self.texture(id);
+                        textures.push((t.resource.clone(), t.format));
+                    }
+                }
+                Binding::Sampler(id) => {
+                    if samplers.len() < scene::SAMPLER_SLOTS {
+                        samplers.push(id);
+                    }
+                }
+            }
+        }
+        let srv_unit = self.allocate_srv_span();
+        for i in 0..(SCENE_SRV_UNITS * SRV_UNIT) as usize {
+            let at = self.srv_heap.cpu(srv_unit * SRV_UNIT + i as u32);
+            match textures.get(i).or(textures.last()) {
+                Some((t, f)) => {
+                    let srv = srv_desc(dxgi_format(*f));
+                    // SAFETY: the view describes a live 2D texture and is
+                    // written into the group's own span.
+                    unsafe {
+                        self.device
+                            .CreateShaderResourceView(Some(t), Some(&srv), at)
+                    };
+                }
+                None => {
+                    let srv = null_srv_desc();
+                    // SAFETY: a null view in the group's own span.
+                    unsafe { self.device.CreateShaderResourceView(None, Some(&srv), at) };
+                }
+            }
+        }
+        let first = *samplers
+            .first()
+            .expect("a scene bind group binds its samplers");
+        let run: [SamplerId; scene::SAMPLER_SLOTS] =
+            core::array::from_fn(|i| samplers.get(i).copied().unwrap_or(first));
+        let slot = self.acquire_sampler_run(run);
+        self.bind_groups
+            .insert(D3D12BindGroup {
+                srv_unit: 0,
+                owns_unit: false,
+                sampler_slot: 0,
+                sampler_pair: None,
+                uniform: uniforms[0],
+                scene: Some(SceneGroup {
+                    uniforms,
+                    srv_unit,
+                    samplers: (run, slot),
+                }),
+            })
+            .into()
+    }
+
+    /// The first of [`SCENE_SRV_UNITS`] consecutive SRV units.
+    fn allocate_srv_span(&mut self) -> u32 {
+        if let Some(unit) = self.srv_span_free.pop() {
+            return unit;
+        }
+        assert!(
+            self.srv_next + SCENE_SRV_UNITS <= SRV_UNITS,
+            "more than {} live textured bind groups",
+            SRV_UNITS - 1
+        );
+        self.srv_next += SCENE_SRV_UNITS;
+        self.srv_next - SCENE_SRV_UNITS
+    }
+
+    /// The heap slots holding `run` side by side, written on first use.
+    fn acquire_sampler_run(&mut self, run: [SamplerId; scene::SAMPLER_SLOTS]) -> u32 {
+        if let Some(r) = self.sampler_runs.iter_mut().find(|r| r.samplers == run) {
+            r.refs += 1;
+            return r.slot;
+        }
+        let n = run.len() as u32;
+        let slot = self.sampler_run_free.pop().unwrap_or_else(|| {
+            assert!(
+                self.sampler_next + n <= SAMPLER_SLOTS,
+                "more than {SAMPLER_SLOTS} live sampler slots"
+            );
+            self.sampler_next += n;
+            self.sampler_next - n
+        });
+        for (i, id) in run.iter().enumerate() {
+            let desc = self
+                .samplers
+                .get((*id).into())
+                .expect("sampler handle does not resolve")
+                .desc;
+            // SAFETY: `slot + i` lies in the run's free slots.
+            unsafe {
+                self.device
+                    .CreateSampler(&desc, self.sampler_heap.cpu(slot + i as u32));
+            }
+        }
+        self.sampler_runs.push(SamplerRun {
+            samplers: run,
+            slot,
+            refs: 1,
+        });
+        slot
+    }
+
+    fn release_sampler_run(&mut self, run: [SamplerId; scene::SAMPLER_SLOTS]) {
+        if let Some(i) = self.sampler_runs.iter().position(|r| r.samplers == run) {
+            let r = &mut self.sampler_runs[i];
+            r.refs -= 1;
+            if r.refs == 0 {
+                self.sampler_run_free.push(r.slot);
+                self.sampler_runs.swap_remove(i);
+            }
+        }
     }
 
     fn allocate_sampler_slot(&mut self) -> u32 {
@@ -1506,8 +1669,11 @@ impl D3D12Backend {
                             0,
                         );
                     }
-                    cmd.SetGraphicsRootDescriptorTable(ROOT_TEXTURES, self.srv_heap.gpu(0));
-                    cmd.SetGraphicsRootDescriptorTable(ROOT_SAMPLER, self.sampler_heap.gpu(0));
+                    // A scene draw always binds its own tables.
+                    if root != Root::Scene {
+                        cmd.SetGraphicsRootDescriptorTable(ROOT_TEXTURES, self.srv_heap.gpu(0));
+                        cmd.SetGraphicsRootDescriptorTable(ROOT_SAMPLER, self.sampler_heap.gpu(0));
+                    }
                 }
                 bound.root = root;
                 bound.group = None;
@@ -1529,7 +1695,28 @@ impl D3D12Backend {
         unsafe {
             cmd.RSSetScissorRects(&[scissor]);
             let pair = p.program.as_ref().is_some_and(|r| r.samplers > 1);
-            if let (Some(bg), Some(g)) = (c.bind_group, group)
+            if p.scene {
+                let g = group
+                    .and_then(|g| g.scene)
+                    .expect("a scene draw binds a scene group");
+                for (k, u) in g.uniforms.iter().enumerate() {
+                    if let Some(u) = u {
+                        cmd.SetGraphicsRootConstantBufferView(k as u32, self.buffer(*u).gpu_va);
+                    }
+                }
+                let bg = c.bind_group.expect("checked above");
+                if bound.group != Some((bg, pair)) {
+                    cmd.SetGraphicsRootDescriptorTable(
+                        SCENE_ROOT_TEXTURES,
+                        self.srv_heap.gpu(g.srv_unit * SRV_UNIT),
+                    );
+                    cmd.SetGraphicsRootDescriptorTable(
+                        SCENE_ROOT_SAMPLERS,
+                        self.sampler_heap.gpu(g.samplers.1),
+                    );
+                    bound.group = Some((bg, pair));
+                }
+            } else if let (Some(bg), Some(g)) = (c.bind_group, group)
                 && bound.group != Some((bg, pair))
             {
                 let sampler = if pair {
@@ -1547,7 +1734,9 @@ impl D3D12Backend {
                 bound.group = Some((bg, pair));
             }
             let uniforms = c.uniforms.as_bytes();
-            if p.scene || p.program.as_ref().is_some_and(|r| r.uniform_buffer) {
+            if p.scene {
+                // Bound with the group above.
+            } else if p.program.as_ref().is_some_and(|r| r.uniform_buffer) {
                 let buffer = group
                     .and_then(|g| g.uniform)
                     .expect("a uniform-buffer pipeline draws with a group binding one");
@@ -1827,6 +2016,103 @@ impl GpuBackend for D3D12Backend {
             .into()
     }
 
+    fn create_texture_mipped(&mut self, desc: &TextureDesc, levels: &[&[u8]]) -> TextureId {
+        let (width, height) = (desc.width.max(1), desc.height.max(1));
+        let format = dxgi_format(desc.format);
+        let props = D3D12_HEAP_PROPERTIES {
+            Type: D3D12_HEAP_TYPE_DEFAULT,
+            ..Default::default()
+        };
+        let rdesc = D3D12_RESOURCE_DESC {
+            Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+            Width: width as u64,
+            Height: height,
+            DepthOrArraySize: 1,
+            MipLevels: levels.len().max(1) as u16,
+            Format: format,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
+            Flags: D3D12_RESOURCE_FLAG_NONE,
+            ..Default::default()
+        };
+        let mut resource: Option<ID3D12Resource> = None;
+        // SAFETY: the descriptions borrow locals for the call.
+        unsafe {
+            self.device
+                .CreateCommittedResource(
+                    &props,
+                    D3D12_HEAP_FLAG_NONE,
+                    &rdesc,
+                    TEXTURE_REST,
+                    None,
+                    &mut resource,
+                )
+                .expect("failed to create a Direct3D 12 texture");
+        }
+        let resource = resource.expect("CreateCommittedResource returned no resource");
+        self.ensure_recording();
+        let (mut w, mut h) = (width, height);
+        for (k, bytes) in levels.iter().enumerate() {
+            if k > 0 {
+                (w, h) = ((w / 2).max(1), (h / 2).max(1));
+            }
+            let len = desc.format.data_size(w, h);
+            if bytes.len() < len {
+                break;
+            }
+            let row = desc.format.row_bytes(w) as u32;
+            let (chunk, offset, pitch) =
+                self.stage_rows(&bytes[..len], row, desc.format.block_rows(h));
+            let footprint = D3D12_PLACED_SUBRESOURCE_FOOTPRINT {
+                Offset: offset,
+                Footprint: D3D12_SUBRESOURCE_FOOTPRINT {
+                    Format: format,
+                    Width: w,
+                    Height: h,
+                    Depth: 1,
+                    RowPitch: pitch,
+                },
+            };
+            let cmd = &self.slots[self.slot].upload;
+            // SAFETY: `cmd` is recording; the texture rests in `TEXTURE_REST`
+            // and returns to it; the staged footprint covers level `k` whole.
+            unsafe {
+                cmd.ResourceBarrier(&[transition(
+                    &resource,
+                    TEXTURE_REST,
+                    D3D12_RESOURCE_STATE_COPY_DEST,
+                )]);
+                cmd.CopyTextureRegion(
+                    &level_location(&resource, k as u32),
+                    0,
+                    0,
+                    0,
+                    &placed_location(&chunk, footprint),
+                    None,
+                );
+                cmd.ResourceBarrier(&[transition(
+                    &resource,
+                    D3D12_RESOURCE_STATE_COPY_DEST,
+                    TEXTURE_REST,
+                )]);
+            }
+        }
+        self.textures
+            .insert(D3D12Texture {
+                resource,
+                format: desc.format,
+                width,
+                height,
+                rtv: None,
+                dsv: None,
+                external: false,
+            })
+            .into()
+    }
+
     fn import_external(&mut self, image: &ExternalImage) -> Option<TextureId> {
         let ExternalImage::DxgiShared { width, height, .. } = *image else {
             return None;
@@ -1935,6 +2221,14 @@ impl GpuBackend for D3D12Backend {
     }
 
     fn create_bind_group(&mut self, desc: &BindGroupDesc) -> BindGroupId {
+        let uniform_count = desc
+            .bindings
+            .iter()
+            .filter(|b| matches!(b, Binding::Uniform(_)))
+            .count();
+        if uniform_count > 1 {
+            return self.create_scene_group(desc);
+        }
         let mut textures: [Option<ID3D12Resource>; SRV_UNIT as usize] = Default::default();
         let mut formats = [TextureFormat::Rgba8Unorm; SRV_UNIT as usize];
         let mut texture_count = 0;
@@ -2003,6 +2297,7 @@ impl GpuBackend for D3D12Backend {
                 sampler_slot,
                 sampler_pair,
                 uniform,
+                scene: None,
             })
             .into()
     }
@@ -2595,6 +2890,78 @@ fn serialize_root_signature(
     }
 }
 
+/// The scene programs' root signature: a constant-buffer view per uniform
+/// slot (`b0..`), a table of the texture slots (`t0..`) and one of the
+/// sampler slots (`s0..`).
+fn serialize_scene_root_signature(device: &ID3D12Device) -> Result<ID3D12RootSignature, String> {
+    let range = |ty, n| {
+        [D3D12_DESCRIPTOR_RANGE {
+            RangeType: ty,
+            NumDescriptors: n,
+            BaseShaderRegister: 0,
+            RegisterSpace: 0,
+            OffsetInDescriptorsFromTableStart: 0,
+        }]
+    };
+    let srv_range = range(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, scene::TEXTURE_SLOTS as u32);
+    let sampler_range = range(
+        D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER,
+        scene::SAMPLER_SLOTS as u32,
+    );
+    let table = |ranges: &[D3D12_DESCRIPTOR_RANGE]| D3D12_ROOT_PARAMETER {
+        ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+        Anonymous: D3D12_ROOT_PARAMETER_0 {
+            DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
+                NumDescriptorRanges: ranges.len() as u32,
+                pDescriptorRanges: ranges.as_ptr(),
+            },
+        },
+        ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+    };
+    let cbv = |register: u32| D3D12_ROOT_PARAMETER {
+        ParameterType: D3D12_ROOT_PARAMETER_TYPE_CBV,
+        Anonymous: D3D12_ROOT_PARAMETER_0 {
+            Descriptor: D3D12_ROOT_DESCRIPTOR {
+                ShaderRegister: register,
+                RegisterSpace: 0,
+            },
+        },
+        ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+    };
+    let mut params: Vec<D3D12_ROOT_PARAMETER> = (0..scene::UNIFORM_SLOTS as u32).map(cbv).collect();
+    params.push(table(&srv_range));
+    params.push(table(&sampler_range));
+    let desc = D3D12_ROOT_SIGNATURE_DESC {
+        NumParameters: params.len() as u32,
+        pParameters: params.as_ptr(),
+        NumStaticSamplers: 0,
+        pStaticSamplers: core::ptr::null(),
+        Flags: D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
+    };
+    let mut blob: Option<ID3DBlob> = None;
+    let mut errors: Option<ID3DBlob> = None;
+    // SAFETY: the description and the ranges it points at are live locals; the
+    // serialized blob is read within its own size.
+    unsafe {
+        if let Err(e) = D3D12SerializeRootSignature(
+            &desc,
+            D3D_ROOT_SIGNATURE_VERSION_1,
+            &mut blob,
+            Some(&mut errors),
+        ) {
+            let log = errors.map(|b| blob_bytes(&b).to_vec()).unwrap_or_default();
+            return Err(format!(
+                "root signature serialization failed: {e}\n{}",
+                String::from_utf8_lossy(&log)
+            ));
+        }
+        let blob = blob.ok_or("root signature serialization returned no blob")?;
+        device
+            .CreateRootSignature(0, blob_bytes(&blob))
+            .map_err(|e| e.to_string())
+    }
+}
+
 /// `source`'s `entry` compiled for the vertex or the `pixel` stage, or the
 /// compiler's log.
 fn compile_stage(source: &str, entry: &str, pixel: bool) -> Result<ID3DBlob, String> {
@@ -2710,6 +3077,7 @@ fn create_pso(
             CullMode: match cull {
                 CullMode::None => D3D12_CULL_MODE_NONE,
                 CullMode::Back => D3D12_CULL_MODE_BACK,
+                CullMode::Front => D3D12_CULL_MODE_FRONT,
             },
             // A face counter-clockwise in clip space is counter-clockwise on
             // the target, whose y the viewport flips.
@@ -2895,12 +3263,17 @@ fn transition(
 }
 
 fn subresource_location(resource: &ID3D12Resource) -> D3D12_TEXTURE_COPY_LOCATION {
+    level_location(resource, 0)
+}
+
+/// Mip level `level` of `resource` as a copy's destination.
+fn level_location(resource: &ID3D12Resource, level: u32) -> D3D12_TEXTURE_COPY_LOCATION {
     D3D12_TEXTURE_COPY_LOCATION {
         // SAFETY: a borrowed, never-released copy of a live resource pointer.
         pResource: unsafe { core::mem::transmute_copy(resource) },
         Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
         Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
-            SubresourceIndex: 0,
+            SubresourceIndex: level,
         },
     }
 }
@@ -2920,6 +3293,11 @@ fn placed_location(
 }
 
 fn srv_desc(format: DXGI_FORMAT) -> D3D12_SHADER_RESOURCE_VIEW_DESC {
+    levels_srv_desc(format, u32::MAX)
+}
+
+/// A view of `levels` mip levels from the base; `u32::MAX` for every one.
+fn levels_srv_desc(format: DXGI_FORMAT, levels: u32) -> D3D12_SHADER_RESOURCE_VIEW_DESC {
     D3D12_SHADER_RESOURCE_VIEW_DESC {
         Format: format,
         ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
@@ -2927,7 +3305,7 @@ fn srv_desc(format: DXGI_FORMAT) -> D3D12_SHADER_RESOURCE_VIEW_DESC {
         Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
             Texture2D: D3D12_TEX2D_SRV {
                 MostDetailedMip: 0,
-                MipLevels: 1,
+                MipLevels: levels,
                 PlaneSlice: 0,
                 ResourceMinLODClamp: 0.0,
             },
@@ -2937,7 +3315,7 @@ fn srv_desc(format: DXGI_FORMAT) -> D3D12_SHADER_RESOURCE_VIEW_DESC {
 
 /// The view written for an unbound texture slot: it reads zero.
 fn null_srv_desc() -> D3D12_SHADER_RESOURCE_VIEW_DESC {
-    srv_desc(DXGI_FORMAT_R8G8B8A8_UNORM)
+    levels_srv_desc(DXGI_FORMAT_R8G8B8A8_UNORM, 1)
 }
 
 fn sampler_desc(desc: &SamplerDesc) -> D3D12_SAMPLER_DESC {

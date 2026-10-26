@@ -271,6 +271,15 @@ fn every_misuse_of_an_asset_is_reported() {
         code == "E3713" && message.contains("not an image, SVG or video"),
         "{message}"
     );
+    // A model, which a scene draws from Rust, not a view.
+    std::fs::write(dir.join("fox.glb"), b"glTF\x02\0\0\0\x0c\0\0\0").unwrap();
+    let scanned = AssetCatalog::scan(&dir).unwrap();
+    assert_eq!(scanned.files().count(), 1);
+    let (code, message, _) = misuse("asset(\"fox.glb\")", scanned);
+    assert!(
+        code == "E3713" && message.contains("is a glTF model"),
+        "{message}"
+    );
     std::fs::remove_dir_all(&dir).unwrap();
 
     // Only `asset` makes an asset value.

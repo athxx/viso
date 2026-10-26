@@ -1,0 +1,12 @@
+[package]
+name = "viso-example-code-editor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The code editor on a `.vs` file: highlighted by the compiler's tokenizer,
+# with `viso-lsp` as its language server when one is built.
+[dependencies]
+viso = { workspace = true }
+viso-code-editor = { workspace = true, features = ["lsp"] }

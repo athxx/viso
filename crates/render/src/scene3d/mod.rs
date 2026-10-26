@@ -13,27 +13,109 @@
 //! since it last rendered. The 2D pass composites the target as an image, so
 //! clip, transform, opacity and z-order are the 2D scene's.
 //!
-//! Meshes are the built-in [`Shape`]s, generated once on first use, or ones
-//! uploaded with [`Renderer::create_scene_mesh`].
+//! Meshes are the built-in [`Shape`]s, generated once on first use, ones
+//! uploaded with [`Renderer::create_scene_mesh`], or a glTF
+//! [`SceneModel`]'s. Each instance is drawn in a [`Material`]: the built-in
+//! [`MaterialId::LIT`] and [`MaterialId::UNLIT`], one made with
+//! [`Renderer::create_scene_material`], or a model's own. Lit surfaces are
+//! shaded metallic-roughness by the frame's light and its [`Environment`],
+//! then tone mapped.
 //!
 //! [`Renderer::swap_scene`]: crate::Renderer::swap_scene
 //! [`Renderer::create_scene_mesh`]: crate::Renderer::create_scene_mesh
+//! [`Renderer::create_scene_material`]: crate::Renderer::create_scene_material
 //! [`Primitive::Scene`]: crate::Primitive::Scene
 
+mod environment;
 mod lane;
+pub mod model;
+mod occlusion;
+mod resident;
+mod shadow;
 mod shapes;
+mod sky;
 
+use std::sync::Arc;
+
+pub use environment::Environment;
 pub(crate) use lane::SceneLane;
 pub use lane::SceneStats;
+pub use model::AlphaMode;
+pub use occlusion::AmbientOcclusion;
+pub use resident::SceneModel;
+pub use shadow::Shadows;
 pub use shapes::Shape;
-pub use viso_gpu::scene::{SceneInstance, SceneMaterial, SceneUniforms, SceneVertex};
+pub use sky::Sky;
+pub use viso_gpu::scene::{
+    FrameUniforms, MAX_JOINTS, MaterialUniforms, SceneInstance, SceneVertex, SkinnedVertex,
+};
 
 pub use viso_math::{LinearStraight, Mat4, Quat, Vec3, vec3};
 
 use viso_gpu::scene::normalize;
 
-/// A mesh the scene lane draws: a built-in [`Shape`] or an uploaded mesh.
+/// A material a scene draws instances in: one of the built-ins, one made
+/// with [`Renderer::create_scene_material`](crate::Renderer::create_scene_material),
+/// or a [`SceneModel`]'s.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct MaterialId(pub(crate) u32);
+
+impl MaterialId {
+    /// A white, rough dielectric lit by the scene's light: the material of
+    /// [`SceneFrame::push`], its color the instance's.
+    pub const LIT: MaterialId = MaterialId(0);
+    /// The instance's color as is, fogged: debug geometry and glowing
+    /// surfaces, [`SceneFrame::push_unlit`]'s.
+    pub const UNLIT: MaterialId = MaterialId(1);
+    /// A sprite's soft disc, blended.
+    pub(crate) const SPRITE: MaterialId = MaterialId(2);
+    /// How many ids the built-ins take.
+    pub(crate) const BUILT_IN: u32 = 3;
+
+    /// The id's dense index.
+    #[inline]
+    pub const fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+/// A metallic-roughness material, its colors linear: what
+/// [`Renderer::create_scene_material`](crate::Renderer::create_scene_material)
+/// makes. An instance's color multiplies its base color.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Material {
+    /// Straight alpha; how it covers what is behind it is `alpha`'s.
+    pub base_color: LinearStraight,
+    /// 0 for a dielectric, 1 for a metal.
+    pub metallic: f32,
+    /// 0 mirror-smooth, 1 fully rough.
+    pub roughness: f32,
+    /// The light it emits, linear RGB.
+    pub emissive: [f32; 3],
+    pub alpha: AlphaMode,
+    /// Its back faces are drawn too, lit by the flipped normal.
+    pub double_sided: bool,
+    /// Its base color as is, unlit.
+    pub unlit: bool,
+}
+
+impl Default for Material {
+    /// [`MaterialId::LIT`]'s: white, dielectric, half rough.
+    fn default() -> Material {
+        Material {
+            base_color: LinearStraight::new(1.0, 1.0, 1.0, 1.0),
+            metallic: 0.0,
+            roughness: 0.5,
+            emissive: [0.0; 3],
+            alpha: AlphaMode::Opaque,
+            double_sided: false,
+            unlit: false,
+        }
+    }
+}
+
+/// A mesh the scene lane draws: a built-in [`Shape`] or an uploaded mesh.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct MeshId(u32);
 
 impl MeshId {
@@ -119,20 +201,36 @@ impl Camera {
     }
 }
 
-/// How a scene is lit: one directional light, a hemispheric ambient, and
-/// exponential fog. Colors are linear RGB.
+/// How a scene is lit: one directional light, the environment around it,
+/// and exponential fog. Colors are linear RGB.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Lighting {
     /// The direction toward the light.
     pub direction: Vec3,
     pub color: [f32; 3],
+    /// A white diffuse surface facing a light of intensity 1 reflects its
+    /// color.
     pub intensity: f32,
-    /// The ambient light from above and from below.
+    /// The environment's light from above and from below, when the frame
+    /// names no [`Environment`] of its own: a sky that brightens from their
+    /// mean at the horizon.
     pub sky: [f32; 3],
     pub ground: [f32; 3],
+    /// How strongly the environment lights diffusely, and how strongly it is
+    /// reflected.
+    pub ambient: f32,
+    pub reflections: f32,
+    /// What lit colors are scaled by before they are tone mapped into the
+    /// target's range.
+    pub exposure: f32,
     pub fog: [f32; 3],
     /// The fog's density per unit of distance; `0.0` for none.
     pub fog_density: f32,
+    /// The shadows the light casts.
+    pub shadows: Shadows,
+    /// How the scene's surfaces occlude the environment's light from each
+    /// other.
+    pub occlusion: AmbientOcclusion,
 }
 
 impl Default for Lighting {
@@ -143,63 +241,135 @@ impl Default for Lighting {
             intensity: 1.0,
             sky: [0.32, 0.36, 0.45],
             ground: [0.1, 0.09, 0.08],
+            ambient: 1.0,
+            reflections: 1.0,
+            exposure: 1.0,
             fog: [0.62, 0.7, 0.8],
             fog_density: 0.0,
+            shadows: Shadows::default(),
+            occlusion: AmbientOcclusion::default(),
         }
+    }
+}
+
+impl Lighting {
+    /// The environment of a frame that names none: [`Environment::gradient`]
+    /// of its sky and ground.
+    pub fn sky_environment(&self) -> Environment {
+        let horizon = core::array::from_fn(|i| (self.sky[i] + self.ground[i]) * 0.5);
+        Environment::gradient(self.sky, horizon, self.ground)
     }
 }
 
 /// One frame of a scene: what [`Renderer::swap_scene`] hands the renderer.
 ///
 /// Its instances are grouped by material and mesh, one batch each, so the
-/// lane draws each in one instanced draw: the lit meshes, then the unlit
-/// ones, then the sprites, blended back to front over them. Filling reuses
-/// the batches' storage, so a steady scene refills without allocating.
+/// lane draws each in one instanced draw: the opaque batches first, then
+/// the blended materials' instances and the sprites, sorted back to front
+/// over them. Filling reuses the batches' storage, so a steady scene
+/// refills without allocating.
 ///
 /// [`Renderer::swap_scene`]: crate::Renderer::swap_scene
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SceneFrame {
     pub camera: Camera,
     pub lighting: Lighting,
-    /// What shows where nothing is drawn, straight linear RGBA. A transparent
-    /// background lets the 2D content behind the scene show through.
+    /// The environment lighting the scene; `None` for its sky's
+    /// ([`Environment::from_sky`]), or without one its lighting's
+    /// [`sky_environment`](Lighting::sky_environment).
+    pub environment: Option<Arc<Environment>>,
+    /// The sky drawn where no opaque mesh is, behind the blended ones and
+    /// the sprites, exposed and tone mapped as the meshes are; `None` shows
+    /// the background.
+    pub sky: Option<Sky>,
+    /// What shows where nothing is drawn and there is no sky, straight
+    /// linear RGBA. A transparent background lets the 2D content behind the
+    /// scene show through.
     pub background: LinearStraight,
-    lit: Batches,
-    unlit: Batches,
+    batches: Batches,
     sprites: Vec<SceneSprite>,
+    skinned: Vec<SkinnedDraw>,
+    /// The skinned draws' palettes: three rows of each joint's affine.
+    joints: Vec<[f32; 4]>,
 }
 
-/// One material's instances, by mesh.
+/// One instance of a skinned mesh, posed by its own palette.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SkinnedDraw {
+    pub mesh: MeshId,
+    pub material: MaterialId,
+    pub instance: SceneInstance,
+    /// Its palette's rows in [`SceneFrame::joints`].
+    pub joints: core::ops::Range<u32>,
+    /// The posed mesh's box in its own space.
+    pub bounds: Bounds,
+}
+
+/// The instances of one mesh in one material.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Batch {
+    material: MaterialId,
+    mesh: MeshId,
+    instances: Vec<SceneInstance>,
+}
+
+impl Default for MaterialId {
+    fn default() -> MaterialId {
+        MaterialId::LIT
+    }
+}
+
+/// A frame's batches, in the order they were first pushed; the storage of
+/// the ones a clear let go of is kept for the next fill.
 #[derive(Debug, Clone, Default, PartialEq)]
 struct Batches {
-    /// Each mesh's instances, by [`MeshId::index`].
-    by_mesh: Vec<Vec<SceneInstance>>,
-    /// The meshes with instances, in the order they were first pushed.
-    meshes: Vec<MeshId>,
+    /// Each mesh's live batches, by [`MeshId::index`]: indices into
+    /// `batches`.
+    by_mesh: Vec<Vec<u32>>,
+    batches: Vec<Batch>,
+    /// How many of `batches` are live.
+    live: usize,
 }
 
 impl Batches {
     fn clear(&mut self) {
-        for mesh in self.meshes.drain(..) {
-            self.by_mesh[mesh.index()].clear();
+        for b in &mut self.batches[..self.live] {
+            self.by_mesh[b.mesh.index()].clear();
+            b.instances.clear();
         }
+        self.live = 0;
     }
 
-    fn push(&mut self, mesh: MeshId, instance: SceneInstance) {
+    fn push(&mut self, mesh: MeshId, material: MaterialId, instance: SceneInstance) {
         if self.by_mesh.len() <= mesh.index() {
             self.by_mesh.resize_with(mesh.index() + 1, Vec::new);
         }
-        let batch = &mut self.by_mesh[mesh.index()];
-        if batch.is_empty() {
-            self.meshes.push(mesh);
-        }
-        batch.push(instance);
+        let found = self.by_mesh[mesh.index()]
+            .iter()
+            .copied()
+            .find(|&b| self.batches[b as usize].material == material);
+        let b = match found {
+            Some(b) => b as usize,
+            None => {
+                if self.live == self.batches.len() {
+                    self.batches.push(Batch::default());
+                }
+                let b = self.live;
+                self.live += 1;
+                let batch = &mut self.batches[b];
+                batch.material = material;
+                batch.mesh = mesh;
+                self.by_mesh[mesh.index()].push(b as u32);
+                b
+            }
+        };
+        self.batches[b].instances.push(instance);
     }
 
-    fn iter(&self) -> impl Iterator<Item = (MeshId, &[SceneInstance])> {
-        self.meshes
+    fn iter(&self) -> impl Iterator<Item = (MaterialId, MeshId, &[SceneInstance])> {
+        self.batches[..self.live]
             .iter()
-            .map(|&mesh| (mesh, self.by_mesh[mesh.index()].as_slice()))
+            .map(|b| (b.material, b.mesh, b.instances.as_slice()))
     }
 }
 
@@ -260,20 +430,88 @@ impl SceneFrame {
 
     /// Drop every instance and sprite, keeping the storage.
     pub fn clear_instances(&mut self) {
-        self.lit.clear();
-        self.unlit.clear();
+        self.batches.clear();
         self.sprites.clear();
+        self.skinned.clear();
+        self.joints.clear();
     }
 
-    /// Add `instance` of `mesh`, lit by the scene's light.
+    /// Add `instance` of `mesh` in [`MaterialId::LIT`], lit by the scene's
+    /// light.
     pub fn push(&mut self, mesh: impl Into<MeshId>, instance: SceneInstance) {
-        self.lit.push(mesh.into(), instance);
+        self.batches.push(mesh.into(), MaterialId::LIT, instance);
     }
 
-    /// Add `instance` of `mesh` in its color as is: debug geometry, or a
-    /// surface that glows.
+    /// Add `instance` of `mesh` in [`MaterialId::UNLIT`], its color as is:
+    /// debug geometry, or a surface that glows.
     pub fn push_unlit(&mut self, mesh: impl Into<MeshId>, instance: SceneInstance) {
-        self.unlit.push(mesh.into(), instance);
+        self.batches.push(mesh.into(), MaterialId::UNLIT, instance);
+    }
+
+    /// Add `instance` of `mesh` in `material`.
+    pub fn push_with(
+        &mut self,
+        mesh: impl Into<MeshId>,
+        material: MaterialId,
+        instance: SceneInstance,
+    ) {
+        self.batches.push(mesh.into(), material, instance);
+    }
+
+    /// Add `instance` of skinned mesh `mesh` (one
+    /// [`Renderer::create_scene_skinned_mesh`] made) in `material`, each of
+    /// its vertices moved by `joints` — every joint's affine from the mesh's
+    /// bind pose to its pose, in the mesh's space; the first
+    /// [`MAX_JOINTS`] — which keep it inside the box `bounds` (its least and
+    /// greatest corners, in the mesh's space). Each skinned instance is a
+    /// draw of its own.
+    ///
+    /// [`Renderer::create_scene_skinned_mesh`]: crate::Renderer::create_scene_skinned_mesh
+    pub fn push_skinned(
+        &mut self,
+        mesh: MeshId,
+        material: MaterialId,
+        instance: SceneInstance,
+        joints: &[Mat4],
+        bounds: ([f32; 3], [f32; 3]),
+    ) {
+        self.push_posed_joints(mesh, material, instance, joints.iter().copied(), bounds);
+    }
+
+    /// [`push_skinned`](Self::push_skinned) of the joints `joints` yields.
+    pub(crate) fn push_posed_joints(
+        &mut self,
+        mesh: MeshId,
+        material: MaterialId,
+        instance: SceneInstance,
+        joints: impl Iterator<Item = Mat4>,
+        bounds: ([f32; 3], [f32; 3]),
+    ) {
+        let start = self.joints.len() as u32;
+        for m in joints.take(MAX_JOINTS) {
+            let v = &m.v;
+            self.joints
+                .extend((0..3).map(|r| [v[r], v[4 + r], v[8 + r], v[12 + r]]));
+        }
+        let (lo, hi) = bounds;
+        self.skinned.push(SkinnedDraw {
+            mesh,
+            material,
+            instance,
+            joints: start..self.joints.len() as u32,
+            bounds: Bounds {
+                centre: core::array::from_fn(|i| (lo[i] + hi[i]) * 0.5),
+                half: core::array::from_fn(|i| ((hi[i] - lo[i]) * 0.5).max(0.0)),
+            },
+        });
+    }
+
+    /// The skinned draws, each with its palette's rows.
+    pub(crate) fn skinned(&self) -> impl Iterator<Item = (&SkinnedDraw, &[[f32; 4]])> {
+        self.skinned.iter().map(|d| {
+            let rows = &self.joints[d.joints.start as usize..d.joints.end as usize];
+            (d, rows)
+        })
     }
 
     /// Add `sprite`, drawn over the meshes; the lane sorts the sprites back
@@ -282,12 +520,10 @@ impl SceneFrame {
         self.sprites.push(sprite);
     }
 
-    /// The meshes with instances, each with its material and instances: the
-    /// lit ones, then the unlit.
-    pub fn batches(&self) -> impl Iterator<Item = (SceneMaterial, MeshId, &[SceneInstance])> {
-        let lit = self.lit.iter().map(|(m, b)| (SceneMaterial::Lit, m, b));
-        let unlit = self.unlit.iter().map(|(m, b)| (SceneMaterial::Unlit, m, b));
-        lit.chain(unlit)
+    /// Each material and mesh with instances, with its instances, in the
+    /// order they were first pushed.
+    pub fn batches(&self) -> impl Iterator<Item = (MaterialId, MeshId, &[SceneInstance])> {
+        self.batches.iter()
     }
 
     /// The sprites, in the order they were pushed.
@@ -297,23 +533,26 @@ impl SceneFrame {
 
     /// How many instances and sprites the frame holds.
     pub fn instance_count(&self) -> usize {
-        self.batches().map(|(_, _, b)| b.len()).sum::<usize>() + self.sprites.len()
+        self.batches().map(|(_, _, b)| b.len()).sum::<usize>()
+            + self.sprites.len()
+            + self.skinned.len()
     }
 
-    /// The uniform block of the frame projected by `view_proj`, drawing
-    /// `material`.
-    pub(crate) fn uniforms(&self, view_proj: &Mat4, material: SceneMaterial) -> SceneUniforms {
+    /// The frame's uniform block, projected by `view_proj`, lit by an
+    /// environment of irradiance `sh`.
+    pub(crate) fn uniforms(&self, view_proj: &Mat4, sh: &[[f32; 4]; 9]) -> FrameUniforms {
         let l = &self.lighting;
         let d = normalize([l.direction.x, l.direction.y, l.direction.z]);
         let c = &self.camera.eye;
-        SceneUniforms {
+        FrameUniforms {
             view_proj: view_proj.v,
-            camera: [c.x, c.y, c.z, material.code()],
+            camera: [c.x, c.y, c.z, l.exposure],
             light_dir: [d[0], d[1], d[2], l.intensity],
             light_color: [l.color[0], l.color[1], l.color[2], 0.0],
-            sky: [l.sky[0], l.sky[1], l.sky[2], 0.0],
-            ground: [l.ground[0], l.ground[1], l.ground[2], 0.0],
             fog: [l.fog[0], l.fog[1], l.fog[2], l.fog_density],
+            ambient: [l.ambient, l.reflections, 0.0, 0.0],
+            sh: *sh,
+            ..FrameUniforms::default()
         }
     }
 
@@ -453,16 +692,19 @@ impl Bounds {
         half: [1.0; 3],
     };
 
-    pub(crate) fn of(vertices: &[SceneVertex]) -> Bounds {
+    /// The box around `positions`; an empty one at the origin for none.
+    pub(crate) fn around(positions: impl Iterator<Item = [f32; 3]>) -> Bounds {
         let mut lo = [f32::MAX; 3];
         let mut hi = [f32::MIN; 3];
-        for v in vertices {
+        let mut any = false;
+        for p in positions {
+            any = true;
             for i in 0..3 {
-                lo[i] = lo[i].min(v.position[i]);
-                hi[i] = hi[i].max(v.position[i]);
+                lo[i] = lo[i].min(p[i]);
+                hi[i] = hi[i].max(p[i]);
             }
         }
-        if vertices.is_empty() {
+        if !any {
             return Bounds {
                 centre: [0.0; 3],
                 half: [0.0; 3],
@@ -554,17 +796,20 @@ mod tests {
         frame.push(Shape::Sphere, one);
         frame.push(Shape::Cube, one);
         frame.push(Shape::Sphere, one);
-        let order: Vec<_> = frame.batches().map(|(_, m, b)| (m, b.len())).collect();
+        frame.push_unlit(Shape::Sphere, one);
+        let order: Vec<_> = frame.batches().map(|(t, m, b)| (t, m, b.len())).collect();
         assert_eq!(
             order,
             [
-                (MeshId::from(Shape::Sphere), 2),
-                (MeshId::from(Shape::Cube), 1)
+                (MaterialId::LIT, MeshId::from(Shape::Sphere), 2),
+                (MaterialId::LIT, MeshId::from(Shape::Cube), 1),
+                (MaterialId::UNLIT, MeshId::from(Shape::Sphere), 1),
             ]
         );
         frame.clear_instances();
         assert_eq!(frame.instance_count(), 0);
         frame.push(Shape::Cube, one);
         assert_eq!(frame.batches().count(), 1);
+        assert_eq!(frame.batches.batches.len(), 3, "the storage is kept");
     }
 }

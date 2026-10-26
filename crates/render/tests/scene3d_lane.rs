@@ -2,13 +2,17 @@
 //! renders its slot's frame into the slot's target and composites it into its
 //! rect, renders again only when the frame or the size changed, culls what the
 //! camera cannot see, grows its target in 64-pixel steps, draws unlit meshes
-//! in their own color, and blends sprites over the meshes they are in front
-//! of.
+//! in their own color, blends sprites over the meshes they are in front
+//! of, moves a skinned mesh's vertices by its joints, and culls a mirrored
+//! instance's far side.
 
 use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle, SurfaceId};
-use viso_math::{LinearStraight, Quat, Vec3, vec3};
+use viso_math::{LinearStraight, Mat4, Quat, Vec3, vec3};
 use viso_render::damage::Region;
-use viso_render::scene3d::{Camera, SceneFrame, SceneSprite, Shape, instance};
+use viso_render::scene3d::{
+    AmbientOcclusion, Camera, MaterialId, SceneFrame, SceneSprite, Shadows, Shape, SkinnedVertex,
+    Sky, instance,
+};
 use viso_render::{Border, Primitive, Quad, Rect, Renderer, Rgba, SceneDraw, SceneSlot};
 
 const W: u32 = 96;
@@ -243,6 +247,38 @@ fn facing_frame() -> SceneFrame {
 }
 
 #[test]
+fn a_mirrored_instance_shows_its_outside() {
+    // A cube is its own mirror image: mirrored or not, the same faces show,
+    // lit the same.
+    let draw = |x_scale: f32| {
+        let mut k = Kit::new();
+        let mut frame = facing_frame();
+        frame.lighting.direction = vec3(0.5, 0.6, 1.0);
+        frame.push(
+            Shape::Cube,
+            instance(
+                Vec3::ZERO,
+                Quat::from_axis_angle(vec3(0.3, 1.0, 0.1).normalize(), 0.7),
+                vec3(x_scale, 1.0, 1.0),
+                LinearStraight::new(0.8, 0.5, 0.3, 1.0),
+            ),
+        );
+        k.r.swap_scene(SLOT, &mut frame);
+        k.present(&stream(rect(0.0, 0.0, W as f32, H as f32), 1))
+    };
+    let plain = draw(1.0);
+    let mirrored = draw(-1.0);
+    let lit = plain
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|p| p[2] > 40)
+        .count();
+    assert!(lit > (W * H / 10) as usize, "the cube shows");
+    same(&plain, &mirrored, "a mirrored cube");
+}
+
+#[test]
 fn an_unlit_mesh_shows_its_own_color() {
     let mut k = Kit::new();
     let mut frame = facing_frame();
@@ -308,7 +344,9 @@ fn a_sprite_blends_over_what_is_behind_it_and_hides_behind_what_is_in_front() {
 }
 
 /// The scene lane draws the same picture on the Metal device as on the CPU
-/// raster.
+/// raster: exactly without ambient occlusion; with it, within the noise of
+/// its point-sampled taps, a tap on a texel's edge reading one texel on one
+/// and its neighbour on the other.
 #[cfg(target_vendor = "apple")]
 #[test]
 fn metal_draws_what_the_cpu_raster_draws() {
@@ -316,6 +354,8 @@ fn metal_draws_what_the_cpu_raster_draws() {
 
     fn image<B: GpuBackend>(
         gpu: &mut B,
+        sky: Option<Sky>,
+        occlusion: AmbientOcclusion,
         read: impl Fn(&mut B, viso_gpu::TextureId) -> Vec<u8>,
     ) -> Vec<u8> {
         let mut r = Renderer::new(gpu, TextureFormat::Bgra8Unorm);
@@ -327,6 +367,8 @@ fn metal_draws_what_the_cpu_raster_draws() {
             ..Camera::default()
         };
         frame.background = LinearStraight::new(0.5, 0.6, 0.8, 1.0);
+        frame.sky = sky;
+        frame.lighting.occlusion = occlusion;
         let one = vec3(1.0, 1.0, 1.0);
         let turn = Quat::from_axis_angle(vec3(0.0, 1.0, 0.0), 0.6);
         let color = |r, g, b| LinearStraight::new(r, g, b, 1.0);
@@ -338,9 +380,15 @@ fn metal_draws_what_the_cpu_raster_draws() {
             Shape::Sphere,
             instance(vec3(1.2, 0.0, 0.0), turn, one, color(0.1, 0.6, 0.9)),
         );
+        // Mirrored, so its far side is culled by the other winding.
         frame.push(
             Shape::Cone,
-            instance(vec3(0.0, 0.0, -2.0), turn, one, color(0.9, 0.8, 0.2)),
+            instance(
+                vec3(0.0, 0.0, -2.0),
+                turn,
+                vec3(-1.0, 1.0, 1.0),
+                color(0.9, 0.8, 0.2),
+            ),
         );
         frame.push(
             Shape::Plane,
@@ -380,18 +428,270 @@ fn metal_draws_what_the_cpu_raster_draws() {
         read(gpu, target)
     }
 
-    let cpu = image(&mut CpuRaster::new(), |gpu, t| gpu.read_texture(t));
-    let metal = image(&mut MetalBackend::new(), |gpu, t| gpu.read_texture(t));
-    let off = cpu
+    // The second under a low sun's sky, its disc in view behind the scene.
+    let low_sun = Sky {
+        sun: vec3(-0.6, 0.12, -1.0),
+        ..Sky::default()
+    };
+    let ao = AmbientOcclusion::default();
+    for (name, sky, occlusion, tolerance) in [
+        ("lane-shapes", None, AmbientOcclusion::NONE, 3),
+        ("lane-shapes-ao", None, ao, 16),
+        ("lane-sky", Some(low_sun), ao, 16),
+    ] {
+        let cpu = image(&mut CpuRaster::new(), sky, occlusion, |gpu, t| {
+            gpu.read_texture(t)
+        });
+        let metal = image(&mut MetalBackend::new(), sky, occlusion, |gpu, t| {
+            gpu.read_texture(t)
+        });
+        if let Some(dir) = std::env::var_os("VISO_SCENE_SHOTS") {
+            for (who, px) in [("cpu", &cpu), ("metal", &metal)] {
+                let png = viso_image::snapshot::Image::from_bgra8(W, H, px).to_png();
+                let path = std::path::Path::new(&dir).join(format!("{name}-{who}.png"));
+                std::fs::write(path, png).unwrap();
+            }
+        }
+        let off = cpu
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(metal.as_chunks::<4>().0)
+            .filter(|(a, b)| {
+                a.iter()
+                    .zip(b.iter())
+                    .any(|(x, y)| x.abs_diff(*y) > tolerance)
+            })
+            .count();
+        assert!(
+            off * 100 < (W * H) as usize,
+            "{name}: {off} of {} pixels differ",
+            W * H
+        );
+    }
+}
+
+/// A cube over a ground slab, lit from up and to the left, seen from the
+/// front and above, casting with `shadows`.
+fn shadowed_frame(k: &mut Kit, shadows: Shadows) {
+    let mut frame = SceneFrame::new();
+    frame.camera = Camera {
+        eye: vec3(0.0, 4.0, 6.0),
+        target: Vec3::ZERO,
+        ..Camera::default()
+    };
+    frame.background = LinearStraight::new(0.0, 0.0, 1.0, 1.0);
+    frame.lighting.direction = vec3(-1.0, 1.2, 0.0);
+    frame.lighting.shadows = shadows;
+    let white = LinearStraight::new(0.8, 0.8, 0.8, 1.0);
+    frame.push(
+        Shape::Cube,
+        instance(
+            vec3(0.0, 0.0, 0.0),
+            Quat::IDENTITY,
+            vec3(0.6, 0.6, 0.6),
+            white,
+        ),
+    );
+    frame.push(
+        Shape::Cube,
+        instance(
+            vec3(0.0, -0.8, 0.0),
+            Quat::IDENTITY,
+            vec3(4.0, 0.2, 4.0),
+            white,
+        ),
+    );
+    k.r.swap_scene(SLOT, &mut frame);
+}
+
+#[test]
+fn a_cube_shadows_the_ground_beside_it() {
+    let full = rect(0.0, 0.0, W as f32, H as f32);
+    let mut lit = Kit::new();
+    shadowed_frame(&mut lit, Shadows::NONE);
+    let lit_px = lit.present(&stream(full, 1));
+    let stats = lit.r.take_scene_stats();
+    assert_eq!((stats.shadow_passes, stats.shadow_draws), (0, 0));
+
+    let mut shadowed = Kit::new();
+    shadowed_frame(&mut shadowed, Shadows::default());
+    let shadowed_px = shadowed.present(&stream(full, 1));
+    if let Some(dir) = std::env::var_os("VISO_SCENE_SHOTS") {
+        let png = viso_image::snapshot::Image::from_bgra8(W, H, &shadowed_px).to_png();
+        std::fs::write(std::path::Path::new(&dir).join("lane-shadow.png"), png).unwrap();
+    }
+    let stats = shadowed.r.take_scene_stats();
+    // One caster pass; both meshes are one cube mesh in one material, so one
+    // draw per cascade that they reach.
+    assert_eq!(stats.shadow_passes, 1);
+    assert!((1..=3).contains(&stats.shadow_draws), "{stats:?}");
+    assert_eq!(stats.passes, 1);
+
+    // The ground to the cube's right, away from the light, is darker; the
+    // ground to its left is not.
+    let right = (at(&lit_px, 66, 60), at(&shadowed_px, 66, 60));
+    let left = (at(&lit_px, 26, 60), at(&shadowed_px, 26, 60));
+    assert!(right.1[0] + 20 < right.0[0], "shadowed: {right:?}");
+    assert!(left.1[0].abs_diff(left.0[0]) <= 1, "lit: {left:?}");
+
+    // The same frame again renders nothing, shadows included.
+    shadowed.present(&stream(full, 1));
+    let stats = shadowed.r.take_scene_stats();
+    assert_eq!((stats.passes, stats.shadow_passes), (0, 0));
+}
+
+/// A red cube whose top follows joint 1, `lift` along `x`, seen from the
+/// front: its skinned mesh, drawn by `push_skinned` in the lit material.
+fn skinned_frame(k: &mut Kit, lift: f32, bounds: ([f32; 3], [f32; 3])) {
+    let (vertices, indices) = Shape::Cube.geometry();
+    let skinned: Vec<SkinnedVertex> = vertices
+        .iter()
+        .map(|&v| {
+            let top = v.position[1] > 0.0;
+            SkinnedVertex::new(v, [u16::from(top), 0, 0, 0], [1.0, 0.0, 0.0, 0.0])
+        })
+        .collect();
+    let indices: Vec<u32> = indices.iter().map(|&i| u32::from(i)).collect();
+    let mesh =
+        k.r.create_scene_skinned_mesh(&mut k.gpu, &skinned, &indices);
+    let mut frame = SceneFrame::new();
+    frame.camera = Camera {
+        eye: vec3(0.0, 0.0, 6.0),
+        target: Vec3::ZERO,
+        ..Camera::default()
+    };
+    frame.background = LinearStraight::new(0.0, 0.0, 1.0, 1.0);
+    frame.lighting.direction = vec3(0.0, 0.0, 1.0);
+    let joints = [Mat4::IDENTITY, Mat4::from_translation(vec3(lift, 0.0, 0.0))];
+    frame.push_skinned(
+        mesh,
+        MaterialId::LIT,
+        instance(
+            Vec3::ZERO,
+            Quat::IDENTITY,
+            vec3(1.0, 1.0, 1.0),
+            LinearStraight::new(1.0, 0.0, 0.0, 1.0),
+        ),
+        &joints,
+        bounds,
+    );
+    k.r.swap_scene(SLOT, &mut frame);
+}
+
+#[test]
+fn a_skinned_mesh_follows_its_joints() {
+    let full = rect(0.0, 0.0, W as f32, H as f32);
+    let posed_bounds = ([-1.0, -1.0, -1.0], [2.5, 1.0, 1.0]);
+    let mut rest = Kit::new();
+    skinned_frame(&mut rest, 0.0, posed_bounds);
+    let rest_px = rest.present(&stream(full, 1));
+    let mut posed = Kit::new();
+    skinned_frame(&mut posed, 1.5, posed_bounds);
+    let posed_px = posed.present(&stream(full, 1));
+    if let Some(dir) = std::env::var_os("VISO_SCENE_SHOTS") {
+        let png = viso_image::snapshot::Image::from_bgra8(W, H, &posed_px).to_png();
+        std::fs::write(std::path::Path::new(&dir).join("lane-skinned.png"), png).unwrap();
+    }
+    let stats = posed.r.take_scene_stats();
+    assert_eq!((stats.draws, stats.instances, stats.culled), (1, 1, 0));
+    // The cube's top right of its rest place is red only once its top
+    // joint moved it there; its bottom stays where it was.
+    let red = |px: &[u8], x, y| {
+        let c = at(px, x, y);
+        u32::from(c[0]) > u32::from(c[2]) + 60
+    };
+    let (top_right, bottom) = ((70, 34), (48, 60));
+    assert!(!red(&rest_px, top_right.0, top_right.1));
+    assert!(red(&posed_px, top_right.0, top_right.1));
+    assert!(red(&rest_px, bottom.0, bottom.1) && red(&posed_px, bottom.0, bottom.1));
+
+    // Bounds out of view cull it.
+    let mut away = Kit::new();
+    skinned_frame(&mut away, 0.0, ([40.0, 0.0, 0.0], [41.0, 1.0, 1.0]));
+    away.present(&stream(full, 1));
+    let stats = away.r.take_scene_stats();
+    assert_eq!((stats.draws, stats.culled), (0, 1), "{stats:?}");
+}
+
+/// A cube resting on a ground slab, lit head on so no shadow falls,
+/// occluded by `occlusion`.
+fn resting_cube(k: &mut Kit, occlusion: AmbientOcclusion) {
+    let mut frame = SceneFrame::new();
+    frame.camera = Camera {
+        eye: vec3(0.0, 2.5, 5.0),
+        target: vec3(0.0, -0.5, 0.0),
+        ..Camera::default()
+    };
+    frame.background = LinearStraight::new(0.0, 0.0, 0.0, 1.0);
+    frame.lighting.direction = vec3(0.0, 0.0, 1.0);
+    frame.lighting.shadows = Shadows::NONE;
+    frame.lighting.occlusion = occlusion;
+    let white = LinearStraight::new(0.8, 0.8, 0.8, 1.0);
+    frame.push(
+        Shape::Cube,
+        instance(Vec3::ZERO, Quat::IDENTITY, vec3(0.7, 0.7, 0.7), white),
+    );
+    frame.push(
+        Shape::Cube,
+        instance(
+            vec3(0.0, -0.9, 0.0),
+            Quat::IDENTITY,
+            vec3(4.0, 0.2, 4.0),
+            white,
+        ),
+    );
+    k.r.swap_scene(SLOT, &mut frame);
+}
+
+#[test]
+fn ambient_occlusion_shades_where_the_cube_meets_the_ground() {
+    let full = rect(0.0, 0.0, W as f32, H as f32);
+    let mut open = Kit::new();
+    resting_cube(&mut open, AmbientOcclusion::NONE);
+    let open_px = open.present(&stream(full, 1));
+    assert_eq!(open.r.take_scene_stats().occlusion_passes, 0);
+    let mut occluded = Kit::new();
+    resting_cube(
+        &mut occluded,
+        AmbientOcclusion {
+            strength: 1.0,
+            ..AmbientOcclusion::default()
+        },
+    );
+    let occluded_px = occluded.present(&stream(full, 1));
+    if let Some(dir) = std::env::var_os("VISO_SCENE_SHOTS") {
+        let png = viso_image::snapshot::Image::from_bgra8(W, H, &occluded_px).to_png();
+        std::fs::write(std::path::Path::new(&dir).join("lane-occlusion.png"), png).unwrap();
+    }
+    let stats = occluded.r.take_scene_stats();
+    assert_eq!((stats.occlusion_passes, stats.passes), (1, 1));
+    // Occlusion only ever darkens, and darkens the ground along the cube's
+    // base most.
+    let mut darker = 0;
+    let mut most = 0;
+    for (a, b) in open_px
         .as_chunks::<4>()
         .0
         .iter()
-        .zip(metal.as_chunks::<4>().0)
-        .filter(|(a, b)| a.iter().zip(b.iter()).any(|(x, y)| x.abs_diff(*y) > 3))
-        .count();
+        .zip(occluded_px.as_chunks::<4>().0)
+    {
+        assert!(b[1] <= a[1] + 1, "occlusion never brightens: {a:?} {b:?}");
+        let d = a[1].saturating_sub(b[1]);
+        most = most.max(d);
+        if d >= 3 {
+            darker += 1;
+        }
+    }
     assert!(
-        off * 100 < (W * H) as usize,
-        "{off} of {} pixels differ",
-        W * H
+        darker > 20 && most >= 5,
+        "{darker} pixels occluded, at most by {most}"
+    );
+    let side = (at(&open_px, 32, 55), at(&occluded_px, 32, 55));
+    assert!(side.1[1] + 4 <= side.0[1], "beside the base: {side:?}");
+    let corner = (at(&open_px, 6, 88), at(&occluded_px, 6, 88));
+    assert!(
+        corner.1[1].abs_diff(corner.0[1]) <= 2,
+        "open ground: {corner:?}"
     );
 }

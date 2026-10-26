@@ -324,6 +324,15 @@ impl Parser {
                 self.expect_punct(";")?;
                 StmtKind::Break
             }
+            TokenKind::Ident(w)
+                if w == "discard_fragment" && *self.peek_at(1) == TokenKind::Punct("(") =>
+            {
+                self.bump();
+                self.expect_punct("(")?;
+                self.expect_punct(")")?;
+                self.expect_punct(";")?;
+                StmtKind::Discard
+            }
             _ => {
                 let s = self.simple_or_decl()?;
                 self.expect_punct(";")?;
