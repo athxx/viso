@@ -21,13 +21,16 @@
 //! pinch does the same, a wheel's notch zooms about the pointer and a
 //! trackpad's two-finger scroll pans. A double tap zooms in about where it
 //! lands, a two-finger tap zooms out, and a drag with Alt held turns the
-//! map. Focused, arrow keys pan, `+` and `-` zoom, Shift with Left and Right
-//! turns and `N` faces north again.
+//! map across and tilts it up and down; two fingers sliding up or down
+//! together tilt it too. Focused, arrow keys pan, `+` and `-` zoom, Shift
+//! with Left and Right turns, Shift with Up and Down tilts and `N` faces
+//! north and looks straight down again.
 
 mod core;
 mod labels;
 mod overlays;
 mod rasters;
+mod tilted;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -69,6 +72,12 @@ const TURN_START: f32 = 0.17;
 const NORTH_SNAP: f64 = 7.0;
 /// Degrees an Alt-drag turns per point across.
 const DRAG_TURN: f64 = 0.4;
+/// Degrees an Alt-drag or a two-finger slide tilts per point up.
+const DRAG_TILT: f64 = 0.3;
+/// How far (pt) two fingers slide together, up or down, before they tilt.
+const TILT_START: f64 = 12.0;
+/// How far one key press tilts, in degrees.
+const KEY_TILT: f64 = 10.0;
 
 /// A point of the map an input landed on: the place and the view point.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -194,6 +203,14 @@ impl MapHandle {
     pub fn rotate_to(&self, w: &mut dyn StateWriter, bearing: f64) {
         self.with(w, |c| {
             let to = c.aim().with_bearing(bearing);
+            c.ease_to(to, STEP_EASE * 1.5);
+        });
+    }
+
+    /// Tilts the map to `pitch` degrees, `0` looking straight down.
+    pub fn tilt_to(&self, w: &mut dyn StateWriter, pitch: f64) {
+        self.with(w, |c| {
+            let to = c.aim().with_pitch(pitch);
             c.ease_to(to, STEP_EASE * 1.5);
         });
     }
@@ -329,6 +346,7 @@ impl MapHandle {
             in_flight: core.in_flight(),
             builds: core.builds,
             bytes: core.pyramid.bytes(),
+            raised: core.tilted.resident(),
         }
     }
 }
@@ -341,6 +359,8 @@ pub struct MapTiles {
     pub in_flight: usize,
     pub builds: u32,
     pub bytes: usize,
+    /// The tiles raised into 3D models and resident, while tilted.
+    pub raised: usize,
 }
 
 fn zoom_eased(c: &mut Core, delta: f64, about: Option<[f64; 2]>, duration: f64) {
@@ -423,6 +443,12 @@ impl MapView {
     /// Opens facing `bearing`, degrees clockwise from north.
     pub fn bearing(mut self, bearing: f64) -> Self {
         self.camera.bearing = bearing;
+        self
+    }
+
+    /// Opens tilted `pitch` degrees.
+    pub fn pitch(mut self, pitch: f64) -> Self {
+        self.camera.pitch = pitch;
         self
     }
 
@@ -565,10 +591,12 @@ struct Clock {
 
 impl FrameClient for Clock {
     fn frame(&mut self, dt: f64) {
-        if let Ok(mut core) = self.core.try_borrow_mut()
-            && core.animating()
-        {
-            self.due |= core.tick(dt);
+        if let Ok(mut core) = self.core.try_borrow_mut() {
+            if core.animating() {
+                self.due |= core.tick(dt);
+            }
+            // Models handed to the asset table: look again once uploaded.
+            self.due |= core.tilted.waiting;
         }
     }
 
@@ -579,7 +607,11 @@ impl FrameClient for Clock {
     fn release_input(&mut self) {}
 
     fn wants_frame(&self) -> bool {
-        self.due || self.core.try_borrow().is_ok_and(|c| c.animating())
+        self.due
+            || self
+                .core
+                .try_borrow()
+                .is_ok_and(|c| c.animating() || c.tilted.waiting)
     }
 
     fn settle(&mut self, states: &mut viso_ui::StateStore) {
@@ -605,6 +637,10 @@ struct Hand {
     two: bool,
     pinching: bool,
     turning: bool,
+    /// Two fingers sliding up or down together tilt the map, and how far
+    /// they slid before they did.
+    tilting: bool,
+    slid: [f64; 2],
     /// A drag turning the map, not panning it.
     alt_drag: bool,
     /// The pan's velocity as the drag ended, to coast on with.
@@ -721,7 +757,14 @@ impl Component for MapView {
         let watch_core = Rc::clone(&core);
         cx.structure(|s| {
             s.store.add_structure_hook(
-                [wake, cells.lon, cells.lat, cells.zoom, cells.bearing],
+                [
+                    wake,
+                    cells.lon,
+                    cells.lat,
+                    cells.zoom,
+                    cells.bearing,
+                    cells.pitch,
+                ],
                 move |s, _| {
                     let told = probe::around(|| match hook_core.try_borrow_mut() {
                         Ok(mut core) => core.apply(s),
@@ -851,12 +894,31 @@ fn pointer(ev: &mut EventCx<'_>, core: &Rc<RefCell<Core>>, hand: &mut Hand, on: 
             c.held = true;
             hand.pinching = true;
             hand.turning = false;
+            hand.tilting = false;
+            hand.slid = [0.0, 0.0];
             hand.two = false;
             hand.used = true;
         }
         // What the fingers did since they landed, or since the last sample.
         if matches!(p.phase, PinchPhase::Start | PinchPhase::Move) {
-            let from = [at[0] - f64::from(p.pan.x), at[1] - f64::from(p.pan.y)];
+            let pan = [f64::from(p.pan.x), f64::from(p.pan.y)];
+            if !hand.tilting && !hand.turning {
+                hand.slid = [hand.slid[0] + pan[0], hand.slid[1] + pan[1]];
+                let spread = (f64::from(p.scale) - 1.0).abs();
+                if hand.slid[1].abs() > TILT_START
+                    && hand.slid[1].abs() > 2.0 * hand.slid[0].abs()
+                    && spread < 0.06
+                {
+                    hand.tilting = true;
+                }
+            }
+            if hand.tilting {
+                c.tilt_by(-pan[1] * DRAG_TILT);
+                c.poke(ev);
+                ev.stop_propagation();
+                return;
+            }
+            let from = [at[0] - pan[0], at[1] - pan[1]];
             c.pan(from, at);
             if p.scale_delta > 0.0 {
                 c.zoom_about(f64::from(p.scale_delta).log2(), at);
@@ -919,6 +981,7 @@ fn pointer(ev: &mut EventCx<'_>, core: &Rc<RefCell<Core>>, hand: &mut Hand, on: 
         if hand.alt_drag {
             let f = c.view.focus();
             c.turn_about(-(at[0] - from[0]) * DRAG_TURN, f);
+            c.tilt_by(-(at[1] - from[1]) * DRAG_TILT);
         } else if !hand.pinching {
             c.pan(from, at);
         }
@@ -1024,6 +1087,16 @@ fn key(ev: &mut EventCx<'_>, c: &mut Core) -> bool {
     match k.key {
         Key::Left if m.shift => turn(c, -KEY_TURN),
         Key::Right if m.shift => turn(c, KEY_TURN),
+        Key::Up if m.shift => {
+            let to = c.aim();
+            let p = to.pitch + KEY_TILT;
+            c.ease_to(to.with_pitch(p), STEP_EASE);
+        }
+        Key::Down if m.shift => {
+            let to = c.aim();
+            let p = to.pitch - KEY_TILT;
+            c.ease_to(to.with_pitch(p), STEP_EASE);
+        }
         Key::Left => pan(c, [-KEY_PAN, 0.0]),
         Key::Right => pan(c, [KEY_PAN, 0.0]),
         Key::Up => pan(c, [0.0, -KEY_PAN]),
@@ -1031,7 +1104,7 @@ fn key(ev: &mut EventCx<'_>, c: &mut Core) -> bool {
         Key::Equal | Key::NumpadAdd => zoom_eased(c, 1.0, None, STEP_EASE),
         Key::Minus | Key::NumpadSubtract => zoom_eased(c, -1.0, None, STEP_EASE),
         Key::N => {
-            let to = c.aim().with_bearing(0.0);
+            let to = c.aim().with_bearing(0.0).with_pitch(0.0);
             c.ease_to(to, STEP_EASE * 1.5);
         }
         _ => return false,

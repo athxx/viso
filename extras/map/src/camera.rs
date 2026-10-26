@@ -4,6 +4,9 @@
 //! At zoom `z` the world square is `TILE_SIZE · 2^z` points across. The
 //! camera's center sits at the middle of the view's padded area; the
 //! bearing turns the map so that the compass direction it names points up.
+//! A pitch tilts the ground away about that point: the eye then looks at it
+//! from above and behind, through a perspective whose field of view spans
+//! the view's height, and the point keeps the scale its zoom gives it.
 
 use crate::geo::{LngLat, LngLatBounds, WorldPoint};
 
@@ -13,14 +16,31 @@ pub const TILE_SIZE: f64 = 512.0;
 /// The deepest zoom a camera reaches.
 pub const MAX_ZOOM: f64 = 24.0;
 
-/// Where the map looks: its center, zoom and bearing (degrees clockwise
-/// from north that point up).
+/// The steepest a camera tilts, in degrees from looking straight down.
+pub const MAX_PITCH: f64 = 60.0;
+
+/// The vertical field of view of a tilted camera, in radians: the view's
+/// height seen from three halves of it away.
+pub const FIELD_OF_VIEW: f64 = 0.643_501_108_793_284_4;
+
+/// How far past its focus a tilted view reaches over the ground at most, in
+/// eye distances: the ground beyond fades into the sky.
+pub const REACH: f64 = 3.0;
+
+/// The nearest a ground point comes to the eye in perspective, in eye
+/// distances; nearer ones are pushed off the view.
+const NEAREST: f64 = 0.05;
+
+/// Where the map looks: its center, zoom, bearing (degrees clockwise from
+/// north that point up) and pitch (degrees the ground tilts away from
+/// looking straight down, `0` to [`MAX_PITCH`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub struct Camera {
     pub center: LngLat,
     pub zoom: f64,
     pub bearing: f64,
+    pub pitch: f64,
 }
 
 impl Default for Camera {
@@ -36,7 +56,14 @@ impl Camera {
             center,
             zoom,
             bearing: 0.0,
+            pitch: 0.0,
         }
+    }
+
+    /// The camera tilted to `pitch` degrees.
+    pub const fn with_pitch(mut self, pitch: f64) -> Self {
+        self.pitch = pitch;
+        self
     }
 
     /// The camera turned to `bearing`.
@@ -125,21 +152,53 @@ impl View {
         (r.cos(), r.sin())
     }
 
+    /// How far the eye of a tilted camera is from the focus, in view points.
+    pub fn eye_distance(&self) -> f64 {
+        self.size[1].max(1.0) / 2.0 / (FIELD_OF_VIEW / 2.0).tan()
+    }
+
+    /// The cosine and sine of the pitch, when the camera is tilted.
+    pub fn tilt(&self) -> Option<(f64, f64)> {
+        let p = self.camera.pitch.clamp(0.0, MAX_PITCH);
+        (p > 0.0).then(|| (p.to_radians().cos(), p.to_radians().sin()))
+    }
+
     /// The view point of world point `w`, unwrapped: a point a world away
-    /// lands a world's width away.
+    /// lands a world's width away. Tilted, a point behind the eye lands far
+    /// below the view and one past the horizon at it.
     pub fn to_view(&self, w: WorldPoint) -> [f64; 2] {
         let c = self.camera.center.to_world();
         let s = self.camera.scale();
         let (dx, dy) = ((w.x - c.x) * s, (w.y - c.y) * s);
         let (cos, sin) = self.turn();
         let f = self.focus();
-        [f[0] + dx * cos - dy * sin, f[1] + dx * sin + dy * cos]
+        let g = [dx * cos - dy * sin, dx * sin + dy * cos];
+        match self.tilt() {
+            None => [f[0] + g[0], f[1] + g[1]],
+            Some((pc, ps)) => {
+                let d = self.eye_distance();
+                let depth = (d - g[1] * ps).max(d * NEAREST);
+                [f[0] + g[0] * d / depth, f[1] + g[1] * pc * d / depth]
+            }
+        }
     }
 
-    /// The world point under view point `p`.
+    /// The world point under view point `p`. Tilted, a point at or above
+    /// the horizon finds the ground [`REACH`] eye distances away.
     pub fn to_world(&self, p: [f64; 2]) -> WorldPoint {
         let f = self.focus();
-        let (dx, dy) = (p[0] - f[0], p[1] - f[1]);
+        let (mut dx, mut dy) = (p[0] - f[0], p[1] - f[1]);
+        if let Some((pc, ps)) = self.tilt() {
+            let d = self.eye_distance();
+            let below = pc * d + dy * ps;
+            let gy = if below > 0.0 {
+                (dy * d / below).max(-REACH * d)
+            } else {
+                -REACH * d
+            };
+            dx *= (d - gy * ps) / d;
+            dy = gy;
+        }
         let (cos, sin) = self.turn();
         let s = self.camera.scale();
         let c = self.camera.center.to_world();
@@ -241,7 +300,9 @@ impl View {
         let scale = (room[0] / span[0]).min(room[1] / span[1]);
         let zoom = (scale / TILE_SIZE).log2().min(max_zoom);
         let center = WorldPoint::new((nw.x + se.x) / 2.0, (nw.y + se.y) / 2.0);
-        Camera::new(center.to_lng_lat().wrapped(), zoom).with_bearing(wrap_bearing(bearing))
+        Camera::new(center.to_lng_lat().wrapped(), zoom)
+            .with_bearing(wrap_bearing(bearing))
+            .with_pitch(self.camera.pitch)
     }
 }
 
@@ -275,6 +336,11 @@ impl Limits {
             .zoom
             .clamp(self.min_zoom.max(0.0), self.max_zoom.min(MAX_ZOOM));
         camera.bearing = wrap_bearing(camera.bearing);
+        camera.pitch = if camera.pitch.is_finite() {
+            camera.pitch.clamp(0.0, MAX_PITCH)
+        } else {
+            0.0
+        };
         if !camera.center.lon.is_finite() || !camera.center.lat.is_finite() {
             camera.center = LngLat::default();
         }
@@ -448,6 +514,7 @@ impl Motion {
         let k = ease_in_out((t / self.duration).clamp(0.0, 1.0));
         let turn = wrap_bearing(self.to.bearing - self.from.bearing);
         let bearing = wrap_bearing(self.from.bearing + turn * k);
+        let pitch = self.from.pitch + (self.to.pitch - self.from.pitch) * k;
         let (zoom, along) = match self.kind {
             Path::Ease => (self.from.zoom + (self.to.zoom - self.from.zoom) * k, k),
             Path::Fly {
@@ -470,7 +537,9 @@ impl Motion {
             }
         };
         let c = self.a + (self.b - self.a) * along;
-        Camera::new(c.to_lng_lat().wrapped(), zoom).with_bearing(bearing)
+        Camera::new(c.to_lng_lat().wrapped(), zoom)
+            .with_bearing(bearing)
+            .with_pitch(pitch)
     }
 }
 
@@ -496,6 +565,55 @@ mod tests {
             let center = v.project(v.camera.center);
             assert!(close(center[0], 400.0, 1e-6) && close(center[1], 300.0, 1e-6));
         }
+    }
+
+    #[test]
+    fn a_tilted_view_keeps_its_focus_and_round_trips_below_the_horizon() {
+        for (bearing, pitch) in [(0.0, 30.0), (-60.0, 45.0), (135.0, 60.0)] {
+            let c = Camera::new(LngLat::new(13.4, 52.5), 14.0)
+                .with_bearing(bearing)
+                .with_pitch(pitch);
+            let v = view(c);
+            let center = v.project(c.center);
+            assert!(close(center[0], 400.0, 1e-6) && close(center[1], 300.0, 1e-6));
+            for p in [[123.0, 456.0], [700.0, 80.0], [400.0, 599.0]] {
+                let back = v.to_view(v.to_world(p));
+                assert!(
+                    close(back[0], p[0], 1e-6) && close(back[1], p[1], 1e-6),
+                    "{p:?} {back:?}"
+                );
+            }
+            // The focus keeps its scale: a step across it is as long as flat.
+            let flat = view(c.with_pitch(0.0));
+            let a = v.to_world([401.0, 300.0]);
+            let b = flat.to_world([401.0, 300.0]);
+            assert!(close(a.x, b.x, 1e-12) && close(a.y, b.y, 1e-12));
+            // The top of the view spans more ground than its bottom.
+            let top = v.to_world([0.0, 0.0]);
+            let top_r = v.to_world([800.0, 0.0]);
+            let bottom = v.to_world([0.0, 600.0]);
+            let bottom_r = v.to_world([800.0, 600.0]);
+            let span = |a: WorldPoint, b: WorldPoint| (a.x - b.x).hypot(a.y - b.y);
+            assert!(span(top, top_r) > span(bottom, bottom_r));
+        }
+        // Past the horizon the ground stops at the reach.
+        let v = view(Camera::new(LngLat::new(0.0, 0.0), 10.0).with_pitch(60.0));
+        let sky = v.to_world([400.0, -2000.0]);
+        let reach = REACH * v.eye_distance() / v.camera.scale();
+        assert!(close(-sky.y + v.camera.center.to_world().y, reach, 1e-9));
+        // Panning, zooming and turning hold the anchor tilted too.
+        let anchor = [150.0, 120.0];
+        let under = v.to_world(anchor);
+        for camera in [v.zoomed_about(1.3, anchor), v.turned_about(30.0, anchor)] {
+            let now = View { camera, ..v }.to_world(anchor);
+            assert!(close(now.x, under.x, 1e-12) && close(now.y, under.y, 1e-12));
+        }
+        let panned = View {
+            camera: v.panned([150.0, 120.0], [300.0, 400.0]),
+            ..v
+        };
+        let b = panned.to_world([300.0, 400.0]);
+        assert!(close(under.x, b.x, 1e-12) && close(under.y, b.y, 1e-12));
     }
 
     #[test]
@@ -602,6 +720,8 @@ mod tests {
         assert_eq!(ease.at(1.0), to);
         let mid = ease.at(0.25);
         assert!(mid.zoom > 12.0 && mid.zoom < 13.0 && mid.bearing < 0.0 && mid.bearing > -30.0);
+        let tilt = Motion::ease(from, to.with_pitch(50.0), 0.5).at(0.25);
+        assert!(tilt.pitch > 0.0 && tilt.pitch < 50.0, "{}", tilt.pitch);
 
         let fly = Motion::fly(from, to, [800.0, 600.0], None);
         assert!(fly.duration() > 1.0, "{}", fly.duration());

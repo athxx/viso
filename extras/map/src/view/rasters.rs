@@ -121,6 +121,11 @@ impl Rasters {
         }
     }
 
+    /// The raster sources by name.
+    pub fn sources(&self) -> &HashMap<String, RasterSource> {
+        &self.sources
+    }
+
     /// The image tiles asked for and not yet arrived.
     pub fn loading(&self) -> usize {
         self.sets.iter().map(|s| s.requests.len()).sum()

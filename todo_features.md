@@ -891,7 +891,38 @@ viso-ext.
   radius)` tests the style's layers top down against the deepest drawn tile's features
   and the app's data (fill by area with holes, line by width, circle by radius), each
   feature once. Unit tests in `query`, headless in `tests/view.rs`.
-- [ ] Tilt and 3D (after W14): pitch with perspective, extruded buildings, 3D terrain.
+- [x] Tilt and 3D (after W14): pitch with perspective, extruded buildings, 3D terrain.
+  Drawn through the scene3d lane rather than a perspective path of its own: it
+  brings the depth buffer, lit materials and every backend including the CPU raster
+  the headless pictures use, with no renderer change. `Camera::pitch` (0 to 60°) tilts
+  about the focus; `View::to_view`/`to_world` project through the same perspective
+  (field of view 2·atan(1/3) over the view's height, ground reached up to three eye
+  distances), so gestures, queries, labels, markers and the puck follow it, and the
+  covering asks for the tiles the tilted view sees. Flat, nothing changes: the 2D
+  tiles, zero upload and zero alloc. Tilted, each drawn tile is raised on
+  `viso_ui::work` (`tilt::raise`) into one `ModelAsset` handed to the asset table and
+  held by one scene node beneath the overlay (`NodeStore::release_scene_model` lets
+  go of tiles that leave): an opaque base, the tile's own drawing lifted over it and
+  blended in its order (colors and edge coverage from a small palette texture), and
+  `Paint::Extrusion` layers raised into lit solids (`height`/`render_height`, else
+  levels × 3 m, else the layer's height; the built-in styles raise their buildings
+  10 m). `Style::terrain` names a DEM raster source: a tile waits for its elevations,
+  then its base becomes a 32×32 lattice with skirts, the drawing is cut along the
+  lattice so each piece lies on one of its planes, slopes turned from the light shade,
+  buildings stand on the lowest ground under them and the camera looks at the
+  ground's height. Shapes (route, casing, accuracy outline) are raised on the loop,
+  cut at half coverage, each color a step over the one before, the old ones drawn
+  until the new are resident. Alt-drag up/down and two fingers sliding together
+  tilt, Shift with Up/Down tilts by keys, `N` resets; `MapHandle::tilt_to`,
+  `.pitch()`, the pitch camera cell. The navigator drives tilted 50°. Headless
+  pictures and pixel checks in `tests/tilt.rs` (fixture tile raised light and dark
+  with a route where the projection puts it; buildings flat vs raised; a ridge DEM
+  draping and shading the ground; gestures and keys); unit tests in `camera` and
+  `tilt`; benches `tile_raise` (Luxembourg z16: 0.32 ms flat, 5.8 ms over relief).
+  Open: beyond the reach the root's background shows (no sky or fog); image layers
+  (raster, hillshade) are not drawn while tilted; translucent shape fills are cut to
+  their outline; markers and labels are placed on the plane at the focus's height,
+  not on the relief under each.
 - [x] Performance: a pan or rotate frame uploads nothing and allocates nothing; tile
   build and label budgets; memory caps; benches beside makepad's map example.
   `tests/alloc.rs` arms a counting allocator around the view's own work (its pointer

@@ -3834,6 +3834,17 @@ impl NodeStore {
         self.assets.model(asset.id).cloned()
     }
 
+    /// Lets the node of `slot` stop holding model `id`, which
+    /// [`scene_model`](Self::scene_model) had it hold: the asset table may
+    /// sweep the model once no node holds it. A filler drawing a changing
+    /// set of models — tiles coming into view and leaving it — lets go of
+    /// each it no longer draws.
+    pub fn release_scene_model(&mut self, slot: SceneSlot, id: ResourceId) {
+        if let Some(node) = self.scenes.release_model(slot, id) {
+            self.assets.release(id, node);
+        }
+    }
+
     /// Records `model`, uploaded from `resource`'s model at `revision`, and
     /// resets the scenes holding it so their fillers draw it. The model it
     /// replaces is retired for the facade to release

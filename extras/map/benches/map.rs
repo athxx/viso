@@ -1,6 +1,7 @@
 //! What the map costs: a tile's build off the loop (decode, tessellate,
-//! extract labels), and the view's own work in a frame of a drag (its
-//! pointer handler and structure hook, the frame's layout and paint aside).
+//! extract labels), its raise into a 3D model for a tilted camera (flat and
+//! over relief), and the view's own work in a frame of a drag (its pointer
+//! handler and structure hook, the frame's layout and paint aside).
 //!
 //! Run release: `cargo bench -p viso-map`. A real OpenMapTiles tile is
 //! built too when `VISO_MAP_TILES` names a directory of `z-x-y.pbf` tiles.
@@ -52,6 +53,60 @@ fn tile_build(c: &mut Criterion) {
                 b.iter(|| black_box(build_now(Input::Bytes(bytes.clone()), real, &recipe, key)));
             });
         }
+    }
+}
+
+/// A real Shortbread tile of Luxembourg City (see `fixtures/ATTRIBUTION`).
+const LUXEMBOURG: &[u8] = include_bytes!("../tests/fixtures/luxembourg-14-8469-5582.mvt.gz");
+
+fn tile_raise(c: &mut Criterion) {
+    use viso_map::tilt::{Raise, Relief, raise, units_per_meter};
+    let style = builtin::shortbread_light();
+    let recipe = Recipe::of(style.clone());
+    let tile = TileId::new(14, 8469, 5582);
+    let key = BuildKey { style: 1, band: 16 };
+    let built = build_now(Input::Bytes(LUXEMBOURG.to_vec()), tile, &recipe, key).expect("builds");
+    let meshes: Vec<viso::render::Mesh> = [&built.drawing, &built.over]
+        .into_iter()
+        .flatten()
+        .flat_map(|d| d.primitives().iter())
+        .filter_map(|p| match p {
+            viso::render::Primitive::Mesh(m) => Some(m.clone()),
+            _ => None,
+        })
+        .collect();
+    let layers: Vec<&viso_map::mvt::Layer> = built.tile.layers.iter().collect();
+    let dem = viso_map::Dem {
+        width: 256,
+        height: 256,
+        meters: (0..256 * 256)
+            .map(|i| {
+                300.0 + 80.0 * ((i % 256) as f32 / 40.0).sin() * ((i / 256) as f32 / 55.0).cos()
+            })
+            .collect(),
+    };
+    for (name, relief) in [
+        ("tile_raise/luxembourg_z16", None),
+        (
+            "tile_raise/luxembourg_z16_relief",
+            Some(Relief {
+                dem: &dem,
+                origin: [0.0, 0.0],
+                span: 1.0,
+                scale: units_per_meter(tile),
+            }),
+        ),
+    ] {
+        let r = Raise {
+            tile,
+            band: 16,
+            meshes: &meshes,
+            layers: &layers,
+            style: &style,
+            background: [1.0; 4],
+            relief,
+        };
+        c.bench_function(name, |b| b.iter(|| black_box(raise(&r))));
     }
 }
 
@@ -152,5 +207,5 @@ fn pan_frame(c: &mut Criterion) {
     g.finish();
 }
 
-criterion_group!(benches, tile_build, pan_frame);
+criterion_group!(benches, tile_build, tile_raise, pan_frame);
 criterion_main!(benches);

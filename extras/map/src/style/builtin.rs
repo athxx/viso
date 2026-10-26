@@ -16,6 +16,9 @@ use super::{
     Cap, Cmp, Color, Filter, FontWeight, Layer, Placement, Prop, Shield, Style, Symbol, TextField,
 };
 
+/// The height, in meters, of a building whose data gives none.
+const BUILDING_HEIGHT: f32 = 10.0;
+
 /// The colors a built-in style draws with.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Palette {
@@ -596,10 +599,11 @@ fn build(name: &str, s: &Schema, p: &Palette) -> Style {
         );
     }
     style.layers.push(
-        Layer::fill(
+        Layer::extrusion(
             "building",
             s.building,
             Prop::linear([(13.0, p.land), (15.5, p.building)]),
+            BUILDING_HEIGHT,
         )
         .zooms(13.0, 24.0),
     );

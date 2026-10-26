@@ -85,7 +85,11 @@ pub fn query_tile(
                 continue;
             }
             let reach = match &style_layer.paint {
-                Paint::Fill { .. } if feature.kind == GeomType::Polygon => Some(0.0),
+                Paint::Fill { .. } | Paint::Extrusion { .. }
+                    if feature.kind == GeomType::Polygon =>
+                {
+                    Some(0.0)
+                }
                 Paint::Line { width, .. } if feature.kind != GeomType::Point => {
                     Some(f64::from(width.eval(zoom, &props)) / 2.0 * units_per_point)
                 }
@@ -125,7 +129,9 @@ pub fn query_tile(
                 })
             };
             let hit = match (&style_layer.paint, feature.kind) {
-                (Paint::Fill { .. }, _) => inside(at, &parts) || near(true),
+                (Paint::Fill { .. } | Paint::Extrusion { .. }, _) => {
+                    inside(at, &parts) || near(true)
+                }
                 (Paint::Line { .. }, GeomType::Polygon) => near(true),
                 _ => near(false),
             };

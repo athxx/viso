@@ -168,6 +168,8 @@ pub(crate) struct Overlays {
     pub pressed: Option<Pressed>,
     builder: MeshBuilder,
     free: Vec<NodeId>,
+    /// Bumped as the shapes or the accuracy circle are built anew.
+    pub revision: u64,
 }
 
 /// The whole worlds to shift `w` east by to lie nearest `cam`.
@@ -287,7 +289,18 @@ impl Overlays {
             pressed: None,
             builder: MeshBuilder::new(),
             free: Vec::new(),
+            revision: 0,
         }
+    }
+
+    /// The world-framed drawings, in paint order: the shapes, then the
+    /// accuracy circle; each with the whole worlds east it is drawn at.
+    pub fn framed(&self) -> impl Iterator<Item = (&ShapeMesh, f64)> {
+        self.shapes
+            .iter()
+            .filter_map(|e| e.built.as_ref())
+            .chain(self.accuracy.as_ref())
+            .map(|f| (&f.mesh, f.wrap))
     }
 
     /// Adds `shape` over the others.
@@ -472,6 +485,7 @@ impl Overlays {
         placed: bool,
     ) {
         if std::mem::take(&mut self.shapes_dirty) {
+            self.revision += 1;
             let mut order_changed = false;
             let mut scratch = Vec::new();
             self.shapes.retain_mut(|e| {
@@ -533,6 +547,7 @@ impl Overlays {
     ) {
         let mut scratch = Vec::new();
         if std::mem::take(&mut self.puck_dirty) {
+            self.revision += 1;
             let heading = self.puck.and_then(|p| p.heading).is_some();
             if let Some((node, had)) = self.puck_node
                 && (self.puck.is_none() || had != heading)

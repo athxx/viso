@@ -149,7 +149,11 @@ fn area(ring: &[[f32; 2]]) -> f32 {
 
 /// The polygons of a polygon geometry: each exterior ring with the holes
 /// after it.
-fn polygons<'g>(points: &'g [[f32; 2]], ends: &'g [u32], mut each: impl FnMut(&[&'g [[f32; 2]]])) {
+pub(crate) fn polygons<'g>(
+    points: &'g [[f32; 2]],
+    ends: &'g [u32],
+    mut each: impl FnMut(&[&'g [[f32; 2]]]),
+) {
     let mut rings: Vec<&[[f32; 2]]> = Vec::new();
     for ring in parts(points, ends) {
         if ring.len() < 3 {
@@ -212,7 +216,10 @@ pub fn build_layers_in(
         }
         if !matches!(
             style_layer.paint,
-            Paint::Fill { .. } | Paint::Line { .. } | Paint::Circle { .. }
+            Paint::Fill { .. }
+                | Paint::Extrusion { .. }
+                | Paint::Line { .. }
+                | Paint::Circle { .. }
         ) {
             continue;
         }
@@ -231,7 +238,7 @@ pub fn build_layers_in(
                 continue;
             }
             match &style_layer.paint {
-                Paint::Fill { color, opacity } => {
+                Paint::Fill { color, opacity } | Paint::Extrusion { color, opacity, .. } => {
                     if feature.kind != GeomType::Polygon {
                         continue;
                     }

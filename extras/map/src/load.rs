@@ -170,14 +170,11 @@ fn layer_bytes(l: &mvt::Layer) -> usize {
         + l.values.len() * 32
 }
 
-/// A build of `input` queued on the worker pool, and the flag that stops it
-/// if raised before it starts.
-pub fn build_off_loop(
-    input: Input,
-    tile: TileId,
-    recipe: Arc<Recipe>,
-    key: BuildKey,
-) -> (Reply<Built>, Arc<AtomicBool>) {
+/// `job` queued on the worker pool, and the flag that stops it if raised
+/// before it starts.
+pub fn off_loop<T: Send + 'static>(
+    job: impl FnOnce() -> Result<T, ServiceError> + Send + 'static,
+) -> (Reply<T>, Arc<AtomicBool>) {
     let (done, answer) = reply();
     let stop = Arc::new(AtomicBool::new(false));
     let stopped = Arc::clone(&stop);
@@ -186,9 +183,20 @@ pub fn build_off_loop(
             done.complete(Err(ServiceError::Cancelled));
             return;
         }
-        done.complete(build_now(input, tile, &recipe, key));
+        done.complete(job());
     });
     (answer, stop)
+}
+
+/// A build of `input` queued on the worker pool, and the flag that stops it
+/// if raised before it starts.
+pub fn build_off_loop(
+    input: Input,
+    tile: TileId,
+    recipe: Arc<Recipe>,
+    key: BuildKey,
+) -> (Reply<Built>, Arc<AtomicBool>) {
+    off_loop(move || build_now(input, tile, &recipe, key))
 }
 
 #[cfg(test)]

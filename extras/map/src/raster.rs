@@ -96,6 +96,17 @@ pub fn image_off_loop(
     (answer, stop)
 }
 
+/// The elevations in `bytes` of terrain tile `tile`, decoded by `encoding`
+/// on the worker pool, and the flag that stops it if raised before it
+/// starts.
+pub fn dem_off_loop(
+    bytes: Vec<u8>,
+    tile: TileId,
+    encoding: DemEncoding,
+) -> (Reply<Arc<Dem>>, Arc<AtomicBool>) {
+    crate::load::off_loop(move || decode_dem(tile, &bytes, encoding).map(Arc::new))
+}
+
 /// How a hillshade shades.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Shading {

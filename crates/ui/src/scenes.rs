@@ -122,6 +122,14 @@ impl SceneSlots {
         Some((entry.node, held))
     }
 
+    /// The node of `slot`, if it held model `id`, no longer holding it.
+    pub(crate) fn release_model(&mut self, slot: SceneSlot, id: ResourceId) -> Option<NodeId> {
+        let entry = self.entry_mut(slot)?;
+        let at = entry.models.iter().position(|&m| m == id)?;
+        entry.models.swap_remove(at);
+        Some(entry.node)
+    }
+
     /// The frame `slot` shows.
     pub fn frame(&self, slot: SceneSlot) -> Option<&SceneFrame> {
         Some(&self.entry(slot)?.frame)

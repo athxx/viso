@@ -27,7 +27,8 @@ use viso_ui::{
 use super::labels::Labels;
 use super::overlays::Overlays;
 use super::rasters::Rasters;
-use crate::camera::{Camera, Insets, Limits, Motion, TILE_SIZE, View};
+use super::tilted::{Frame, Tilted};
+use crate::camera::{Camera, Insets, Limits, MAX_PITCH, Motion, TILE_SIZE, View};
 use crate::geo::LngLat;
 use crate::geojson::DataLayer;
 use crate::load::{Built, Data, Input, Recipe, build_off_loop};
@@ -62,6 +63,7 @@ pub struct CameraCells {
     pub lat: StateId,
     pub zoom: StateId,
     pub bearing: StateId,
+    pub pitch: StateId,
 }
 
 impl CameraCells {
@@ -72,31 +74,37 @@ impl CameraCells {
             lat: cx.state(StateValue::Float(camera.center.lat as f32)),
             zoom: cx.state(StateValue::Float(camera.zoom as f32)),
             bearing: cx.state(StateValue::Float(camera.bearing as f32)),
+            pitch: cx.state(StateValue::Float(camera.pitch as f32)),
         }
     }
 
-    fn read(&self, states: &StateStore) -> [f32; 4] {
+    /// Every cell, for a hook to depend on.
+    pub fn ids(&self) -> [StateId; 5] {
+        [self.lon, self.lat, self.zoom, self.bearing, self.pitch]
+    }
+
+    fn read(&self, states: &StateStore) -> [f32; 5] {
         let f = |id| match states.get(id) {
             Some(StateValue::Float(v)) => v,
             _ => f32::NAN,
         };
-        [f(self.lon), f(self.lat), f(self.zoom), f(self.bearing)]
+        self.ids().map(f)
     }
 
-    fn write(&self, states: &mut StateStore, v: [f32; 4]) {
-        states.set(self.lon, StateValue::Float(v[0]));
-        states.set(self.lat, StateValue::Float(v[1]));
-        states.set(self.zoom, StateValue::Float(v[2]));
-        states.set(self.bearing, StateValue::Float(v[3]));
+    fn write(&self, states: &mut StateStore, v: [f32; 5]) {
+        for (id, v) in self.ids().into_iter().zip(v) {
+            states.set(id, StateValue::Float(v));
+        }
     }
 }
 
-fn camera_values(c: &Camera) -> [f32; 4] {
+fn camera_values(c: &Camera) -> [f32; 5] {
     [
         c.center.lon as f32,
         c.center.lat as f32,
         c.zoom as f32,
         c.bearing as f32,
+        c.pitch as f32,
     ]
 }
 
@@ -179,6 +187,7 @@ pub(crate) struct Core {
     pub overlays: Overlays,
     pub labels: Labels,
     pub rasters: Rasters,
+    pub tilted: Tilted,
     /// The app's data layers, by name, and all of them for the builds.
     data_layers: Vec<(String, Arc<DataLayer>)>,
     data: Data,
@@ -190,7 +199,7 @@ pub(crate) struct Core {
     pokes: i32,
     pub cells: CameraCells,
     /// What the cells held after the last write, to tell an outside write.
-    written: [f32; 4],
+    written: [f32; 5],
     pub view: View,
     pub limits: Limits,
     pub source: Rc<dyn TileSource>,
@@ -257,6 +266,7 @@ impl Core {
                 overlays: Overlays::new(nodes.shapes, nodes.accuracy, nodes.overlay, nodes.labels),
                 labels: Labels::new(nodes.labels),
                 rasters: Rasters::new(nodes.rasters),
+                tilted: Tilted::new(root, nodes.overlay),
                 data_layers: Vec::new(),
                 data: Arc::new([]),
                 languages: Vec::new(),
@@ -407,6 +417,13 @@ impl Core {
     pub fn turn_about(&mut self, degrees: f64, at: [f64; 2]) {
         self.view.camera = self.view.turned_about(degrees, at);
         self.constrain();
+        self.moved = true;
+    }
+
+    /// Tilts by `degrees` about the focus, within `0` and [`MAX_PITCH`].
+    pub fn tilt_by(&mut self, degrees: f64) {
+        let c = &mut self.view.camera;
+        c.pitch = (c.pitch + degrees).clamp(0.0, MAX_PITCH);
         self.moved = true;
     }
 
@@ -632,6 +649,9 @@ impl Core {
             if outside[3] != self.written[3] {
                 next.bearing = f64::from(outside[3]);
             }
+            if outside[4] != self.written[4] {
+                next.pitch = f64::from(outside[4]);
+            }
             self.halt();
             self.jump(next);
             self.settle_due = true;
@@ -737,6 +757,29 @@ impl Core {
         );
         self.overlays
             .apply(s, &self.view, band, self.anchor, rebase, &self.me);
+        if self.view.tilt().is_some() {
+            s.store.set_hidden(self.camera_node, true);
+            let drawn: Vec<(Slot, Ready)> = self
+                .tiles
+                .iter()
+                .map(|t| (t.slot, Rc::clone(&t.built)))
+                .collect();
+            let frame = Frame {
+                view: &self.view,
+                band,
+                tile_zoom: tz,
+                anchor: self.anchor,
+                style: &self.style,
+                sources: self.rasters.sources(),
+                me: &self.me,
+            };
+            let revision = self.overlays.revision;
+            self.tilted
+                .apply(s, &frame, &drawn, self.overlays.framed(), revision);
+        } else if self.tilted.shown() {
+            s.store.set_hidden(self.camera_node, false);
+            self.tilted.hide(s);
+        }
         let mut told = None;
         if self.moved {
             self.moved = false;
@@ -776,14 +819,24 @@ impl Core {
         Semantics::role(viso_ui::Role::Image)
             .with_label(self.label.clone())
             .with_hint(
-                "Arrow keys pan, plus and minus zoom, Shift with Left and Right turns, N faces north",
+                "Arrow keys pan, plus and minus zoom, Shift with Left and Right turns, Shift with Up and Down tilts, N faces north",
             )
-            .with_value(format!(
-                "{:.4}° {ns}, {:.4}° {ew}, zoom {:.1}",
-                c.center.lat.abs(),
-                c.center.lon.abs(),
-                c.zoom
-            ))
+            .with_value(if c.pitch > 0.0 {
+                format!(
+                    "{:.4}° {ns}, {:.4}° {ew}, zoom {:.1}, tilted {:.0}°",
+                    c.center.lat.abs(),
+                    c.center.lon.abs(),
+                    c.zoom,
+                    c.pitch
+                )
+            } else {
+                format!(
+                    "{:.4}° {ns}, {:.4}° {ew}, zoom {:.1}",
+                    c.center.lat.abs(),
+                    c.center.lon.abs(),
+                    c.zoom
+                )
+            })
     }
 
     /// Brings the camera node's children to `draw`, in order, each placed

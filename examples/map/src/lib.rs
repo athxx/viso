@@ -12,9 +12,10 @@
 //! Search for a place and pick it, or long-press anywhere on the map, to
 //! plan a route there from the blue puck; Car, Bike and Walk plan it again
 //! for that mode. Drive simulates the trip along the route at four times
-//! its planned pace, the camera following the car and the banner showing
-//! the next turn and the distance to it, as `NavSession` matches each
-//! position onto the route.
+//! its planned pace, the camera following the car tilted toward the road
+//! ahead, its buildings standing, and the banner showing the next turn and
+//! the distance to it, as `NavSession` matches each position onto the
+//! route.
 //!
 //! Map data © OpenStreetMap contributors, available under the Open
 //! Database Licence.
@@ -47,6 +48,8 @@ use viso_map_nav::{
 const START: LngLat = LngLat::new(6.1335, 49.6000);
 /// How much faster than planned the simulated car drives.
 const SPEEDUP: f64 = 4.0;
+/// How far the camera tilts toward the road ahead while driving, degrees.
+const DRIVE_PITCH: f64 = 50.0;
 /// The destination marker's id.
 const DESTINATION: u64 = 1;
 
@@ -217,7 +220,8 @@ impl Nav {
         self.session = None;
         if let Some(map) = self.map.borrow().as_ref() {
             map.set_padding(w, Insets::all(0.0));
-            map.rotate_to(w, 0.0);
+            let flat = map.camera().with_bearing(0.0).with_pitch(0.0);
+            map.ease_to(w, flat, 0.4);
         }
     }
 
@@ -263,7 +267,12 @@ impl Nav {
         let map = self.map.borrow().clone();
         if let Some(map) = &map {
             map.set_puck(w, Some(Puck::new(self.here, 5.0).heading(update.bearing)));
-            map.jump_to(w, Camera::new(self.here, 16.5).with_bearing(update.bearing));
+            map.jump_to(
+                w,
+                Camera::new(self.here, 16.5)
+                    .with_bearing(update.bearing)
+                    .with_pitch(DRIVE_PITCH),
+            );
             let traveled = update.along / total;
             if (traveled - self.traveled).abs() > 0.002
                 && let (Some(id), Some(route)) = (self.line, self.route.as_ref())

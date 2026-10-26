@@ -438,6 +438,17 @@ pub enum Paint {
         stroke_color: Prop<Color>,
     },
     Symbol(Box<Symbol>),
+    /// Polygons raised into solids when the camera tilts, drawn as fills
+    /// when it looks straight down. A feature's own `height` or
+    /// `render_height` (meters), or else its `building:levels` or `levels`
+    /// (three meters each), sets its height; `height` is the height of the
+    /// rest. A `min_height` or `render_min_height` lifts its base.
+    Extrusion {
+        color: Prop<Color>,
+        opacity: Prop<f32>,
+        /// Meters.
+        height: Prop<f32>,
+    },
     /// Images from a raster source.
     Raster {
         opacity: Prop<f32>,
@@ -533,6 +544,25 @@ impl Layer {
         )
     }
 
+    /// Solids raised from `source_layer`'s polygons, `height` meters tall
+    /// unless a feature says otherwise.
+    pub fn extrusion(
+        id: &str,
+        source_layer: &str,
+        color: impl Into<Prop<Color>>,
+        height: impl Into<Prop<f32>>,
+    ) -> Self {
+        Self::new(
+            id,
+            source_layer,
+            Paint::Extrusion {
+                color: color.into(),
+                opacity: Prop::Const(1.0),
+                height: height.into(),
+            },
+        )
+    }
+
     /// Labels of `source_layer`'s features.
     pub fn symbol(id: &str, source_layer: &str, symbol: Symbol) -> Self {
         Self::new(id, source_layer, Paint::Symbol(Box::new(symbol)))
@@ -610,6 +640,7 @@ impl Layer {
         match &mut self.paint {
             Paint::Fill { opacity: o, .. }
             | Paint::Line { opacity: o, .. }
+            | Paint::Extrusion { opacity: o, .. }
             | Paint::Raster { opacity: o } => *o = opacity.into(),
             _ => {}
         }
@@ -622,6 +653,33 @@ impl Layer {
     }
 }
 
+/// The ground's relief under a tilted camera: elevations from a terrain
+/// source, raised `exaggeration` times.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Terrain {
+    /// The raster source the elevations come from, by name.
+    pub source: String,
+    pub encoding: DemEncoding,
+    pub exaggeration: f32,
+}
+
+impl Terrain {
+    /// Relief from terrain source `source`, true to scale.
+    pub fn new(source: &str, encoding: DemEncoding) -> Self {
+        Self {
+            source: source.to_owned(),
+            encoding,
+            exaggeration: 1.0,
+        }
+    }
+
+    /// The relief raised `exaggeration` times.
+    pub fn exaggeration(mut self, exaggeration: f32) -> Self {
+        self.exaggeration = exaggeration;
+        self
+    }
+}
+
 /// A map style: a background and layers drawn in order.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Style {
@@ -631,6 +689,8 @@ pub struct Style {
     /// Whether the style is dark: markers, the puck and controls pick
     /// contrasting colors by it.
     pub dark: bool,
+    /// The relief a tilted camera shows; flat ground without.
+    pub terrain: Option<Terrain>,
 }
 
 impl Style {
@@ -641,7 +701,14 @@ impl Style {
             background: background.into(),
             layers: Vec::new(),
             dark: false,
+            terrain: None,
         }
+    }
+
+    /// The style showing `terrain` when tilted.
+    pub fn with_terrain(mut self, terrain: Terrain) -> Self {
+        self.terrain = Some(terrain);
+        self
     }
 
     /// The style with `layer` drawn over the rest.

@@ -4,7 +4,9 @@
 //! Each tile is decoded and tessellated once, off the loop thread, into a
 //! retained drawing on one node; panning, zooming between whole levels and
 //! rotating only move the transform root the tiles sit in, so a steady pan
-//! repaints, uploads and allocates nothing.
+//! repaints, uploads and allocates nothing. Tilted, the tiles are raised
+//! into 3D models — their drawings on the ground or over its relief, their
+//! buildings as solids — drawn through the scene lane in perspective.
 
 pub mod build;
 pub mod camera;
@@ -21,9 +23,10 @@ pub mod raster;
 pub mod source;
 pub mod style;
 pub mod tess;
+pub mod tilt;
 pub mod view;
 
-pub use camera::{Camera, Insets, Limits, Motion, TILE_SIZE, View};
+pub use camera::{Camera, Insets, Limits, MAX_PITCH, Motion, TILE_SIZE, View};
 pub use geo::{LngLat, LngLatBounds, WorldPoint};
 pub use geojson::{GeoFeature, GeoJson, GeoJsonError, Geometry};
 pub use icons::IconSet;

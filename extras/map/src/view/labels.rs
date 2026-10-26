@@ -443,7 +443,21 @@ impl Labels {
                 s.store.set_translate(sh.node, Vec2::new(p[0], p[1]));
             }
             if let Some(a) = sh.angle {
-                let a = upright(a, view.camera.bearing);
+                let a = match view.tilt() {
+                    None => upright(a, view.camera.bearing),
+                    // Tilted, the line runs on screen as its places do.
+                    Some(_) => {
+                        let step = 1.0 / view.camera.scale();
+                        let ahead = WorldPoint::new(
+                            w.x + f64::from(a.cos()) * step,
+                            w.y + f64::from(a.sin()) * step,
+                        );
+                        let q = view.to_view(ahead);
+                        let on = ((q[1] - f64::from(p[1])) as f32)
+                            .atan2((q[0] - f64::from(p[0])) as f32);
+                        upright(on, 0.0)
+                    }
+                };
                 if sh.turned != Some(a) {
                     sh.turned = Some(a);
                     s.store.set_turn(
