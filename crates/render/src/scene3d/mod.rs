@@ -42,7 +42,9 @@ pub use model::AlphaMode;
 pub use resident::SceneModel;
 pub use shadow::Shadows;
 pub use shapes::Shape;
-pub use viso_gpu::scene::{FrameUniforms, MaterialUniforms, SceneInstance, SceneVertex};
+pub use viso_gpu::scene::{
+    FrameUniforms, MAX_JOINTS, MaterialUniforms, SceneInstance, SceneVertex, SkinnedVertex,
+};
 
 pub use viso_math::{LinearStraight, Mat4, Quat, Vec3, vec3};
 
@@ -272,6 +274,21 @@ pub struct SceneFrame {
     pub background: LinearStraight,
     batches: Batches,
     sprites: Vec<SceneSprite>,
+    skinned: Vec<SkinnedDraw>,
+    /// The skinned draws' palettes: three rows of each joint's affine.
+    joints: Vec<[f32; 4]>,
+}
+
+/// One instance of a skinned mesh, posed by its own palette.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SkinnedDraw {
+    pub mesh: MeshId,
+    pub material: MaterialId,
+    pub instance: SceneInstance,
+    /// Its palette's rows in [`SceneFrame::joints`].
+    pub joints: core::ops::Range<u32>,
+    /// The posed mesh's box in its own space.
+    pub bounds: Bounds,
 }
 
 /// The instances of one mesh in one material.
@@ -401,6 +418,8 @@ impl SceneFrame {
     pub fn clear_instances(&mut self) {
         self.batches.clear();
         self.sprites.clear();
+        self.skinned.clear();
+        self.joints.clear();
     }
 
     /// Add `instance` of `mesh` in [`MaterialId::LIT`], lit by the scene's
@@ -425,6 +444,62 @@ impl SceneFrame {
         self.batches.push(mesh.into(), material, instance);
     }
 
+    /// Add `instance` of skinned mesh `mesh` (one
+    /// [`Renderer::create_scene_skinned_mesh`] made) in `material`, each of
+    /// its vertices moved by `joints` — every joint's affine from the mesh's
+    /// bind pose to its pose, in the mesh's space; the first
+    /// [`MAX_JOINTS`] — which keep it inside the box `bounds` (its least and
+    /// greatest corners, in the mesh's space). Each skinned instance is a
+    /// draw of its own.
+    ///
+    /// [`Renderer::create_scene_skinned_mesh`]: crate::Renderer::create_scene_skinned_mesh
+    pub fn push_skinned(
+        &mut self,
+        mesh: MeshId,
+        material: MaterialId,
+        instance: SceneInstance,
+        joints: &[Mat4],
+        bounds: ([f32; 3], [f32; 3]),
+    ) {
+        self.push_posed_joints(mesh, material, instance, joints.iter().copied(), bounds);
+    }
+
+    /// [`push_skinned`](Self::push_skinned) of the joints `joints` yields.
+    pub(crate) fn push_posed_joints(
+        &mut self,
+        mesh: MeshId,
+        material: MaterialId,
+        instance: SceneInstance,
+        joints: impl Iterator<Item = Mat4>,
+        bounds: ([f32; 3], [f32; 3]),
+    ) {
+        let start = self.joints.len() as u32;
+        for m in joints.take(MAX_JOINTS) {
+            let v = &m.v;
+            self.joints
+                .extend((0..3).map(|r| [v[r], v[4 + r], v[8 + r], v[12 + r]]));
+        }
+        let (lo, hi) = bounds;
+        self.skinned.push(SkinnedDraw {
+            mesh,
+            material,
+            instance,
+            joints: start..self.joints.len() as u32,
+            bounds: Bounds {
+                centre: core::array::from_fn(|i| (lo[i] + hi[i]) * 0.5),
+                half: core::array::from_fn(|i| ((hi[i] - lo[i]) * 0.5).max(0.0)),
+            },
+        });
+    }
+
+    /// The skinned draws, each with its palette's rows.
+    pub(crate) fn skinned(&self) -> impl Iterator<Item = (&SkinnedDraw, &[[f32; 4]])> {
+        self.skinned.iter().map(|d| {
+            let rows = &self.joints[d.joints.start as usize..d.joints.end as usize];
+            (d, rows)
+        })
+    }
+
     /// Add `sprite`, drawn over the meshes; the lane sorts the sprites back
     /// to front.
     pub fn push_sprite(&mut self, sprite: SceneSprite) {
@@ -444,7 +519,9 @@ impl SceneFrame {
 
     /// How many instances and sprites the frame holds.
     pub fn instance_count(&self) -> usize {
-        self.batches().map(|(_, _, b)| b.len()).sum::<usize>() + self.sprites.len()
+        self.batches().map(|(_, _, b)| b.len()).sum::<usize>()
+            + self.sprites.len()
+            + self.skinned.len()
     }
 
     /// The frame's uniform block, projected by `view_proj`, lit by an
@@ -601,16 +678,19 @@ impl Bounds {
         half: [1.0; 3],
     };
 
-    pub(crate) fn of(vertices: &[SceneVertex]) -> Bounds {
+    /// The box around `positions`; an empty one at the origin for none.
+    pub(crate) fn around(positions: impl Iterator<Item = [f32; 3]>) -> Bounds {
         let mut lo = [f32::MAX; 3];
         let mut hi = [f32::MIN; 3];
-        for v in vertices {
+        let mut any = false;
+        for p in positions {
+            any = true;
             for i in 0..3 {
-                lo[i] = lo[i].min(v.position[i]);
-                hi[i] = hi[i].max(v.position[i]);
+                lo[i] = lo[i].min(p[i]);
+                hi[i] = hi[i].max(p[i]);
             }
         }
-        if vertices.is_empty() {
+        if !any {
             return Bounds {
                 centre: [0.0; 3],
                 half: [0.0; 3],

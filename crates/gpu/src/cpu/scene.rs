@@ -18,8 +18,8 @@ use crate::resource::{
 };
 use crate::scene::{
     FrameUniforms, MaterialUniforms, MeshFragment, SAMPLER_SLOTS, SceneInstance, SceneProgram,
-    SceneTextures, SceneVertex, TEXTURE_SAMPLERS, TEXTURE_SLOTS, UNIFORM_SLOTS, normalize,
-    shade_depth, shade_mesh,
+    SceneTextures, SceneVertex, SkinnedVertex, TEXTURE_SAMPLERS, TEXTURE_SLOTS, UNIFORM_SLOTS,
+    normalize, shade_depth, shade_mesh, skin_vertex,
 };
 
 /// The varyings a vertex carries to its fragments.
@@ -129,6 +129,22 @@ impl<'a> Bound<'a> {
         let bytes = self.uniforms[1]?;
         (bytes.len() >= MaterialUniforms::SIZE).then(|| MaterialUniforms::read_from(bytes))
     }
+
+    /// The joint palette's rows, uniform slot 2.
+    fn palette(&self) -> Vec<[f32; 4]> {
+        let bytes = self.uniforms[2].unwrap_or(&[]);
+        bytes
+            .as_chunks::<16>()
+            .0
+            .iter()
+            .map(|row| {
+                core::array::from_fn(|k| {
+                    let c = &row[k * 4..k * 4 + 4];
+                    f32::from_le_bytes([c[0], c[1], c[2], c[3]])
+                })
+            })
+            .collect()
+    }
 }
 
 impl SceneTextures for Bound<'_> {
@@ -205,6 +221,23 @@ pub(super) fn run<P: Px>(
             scissor: scissor(cmd, target.width, target.height),
         };
         let vertices = &res.buffer(vertex_buffer)[..];
+        let palette = if program.skinned() {
+            bound.palette()
+        } else {
+            Vec::new()
+        };
+        let fetch = |i: usize| {
+            if program.skinned() {
+                let at = i * SkinnedVertex::SIZE;
+                skin_vertex(
+                    &SkinnedVertex::read_from(&vertices[at..at + SkinnedVertex::SIZE]),
+                    &palette,
+                )
+            } else {
+                let at = i * SceneVertex::SIZE;
+                SceneVertex::read_from(&vertices[at..at + SceneVertex::SIZE])
+            }
+        };
         let indices = &res.buffer(index_buffer)[..];
         let instances = &res.buffer(cmd.instance_buffer)[..];
         for n in 0..count as usize {
@@ -216,8 +249,7 @@ pub(super) fn run<P: Px>(
             for t in 0..index_count / 3 {
                 let corner = |k: u32| {
                     let i = read_index(indices, index_format, index_offset + t * 3 + k) as usize;
-                    let at = i * SceneVertex::SIZE;
-                    let v = SceneVertex::read_from(&vertices[at..at + SceneVertex::SIZE]);
+                    let v = fetch(i);
                     let world = instance.place(v.position);
                     Clip {
                         pos: frame.clip(world),
@@ -438,8 +470,9 @@ fn shade(
         normal_dx: d3(n, normalize(right.normal)),
         normal_dy: d3(n, normalize(down.normal)),
     };
-    match draw.program {
-        SceneProgram::Mesh => shade_mesh(draw.frame, draw.material, &fragment, draw.bound),
-        SceneProgram::Depth => shade_depth(draw.frame, draw.material, &fragment, draw.bound),
+    if draw.program.casts() {
+        shade_depth(draw.frame, draw.material, &fragment, draw.bound)
+    } else {
+        shade_mesh(draw.frame, draw.material, &fragment, draw.bound)
     }
 }

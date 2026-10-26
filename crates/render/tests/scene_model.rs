@@ -55,30 +55,8 @@ impl Kit {
 
 /// The box around `model`'s meshes in `pose`.
 fn bounds(model: &SceneModel, pose: &Pose) -> (Vec3, Vec3) {
-    let rig = model.rig();
-    let mut lo = vec3(f32::MAX, f32::MAX, f32::MAX);
-    let mut hi = vec3(f32::MIN, f32::MIN, f32::MIN);
-    for &n in &rig.order {
-        let node = &rig.nodes[n as usize];
-        let Some(mesh) = node.mesh else { continue };
-        let (a, b) = rig.mesh_bounds[mesh as usize];
-        let world = if node.skin.is_some() {
-            Mat4::IDENTITY
-        } else {
-            pose.world[n as usize]
-        };
-        for i in 0..8 {
-            let p = vec3(
-                if i & 1 == 0 { a[0] } else { b[0] },
-                if i & 2 == 0 { a[1] } else { b[1] },
-                if i & 4 == 0 { a[2] } else { b[2] },
-            );
-            let q = world.transform_point(p);
-            lo = vec3(lo.x.min(q.x), lo.y.min(q.y), lo.z.min(q.z));
-            hi = vec3(hi.x.max(q.x), hi.y.max(q.y), hi.z.max(q.z));
-        }
-    }
-    (lo, hi)
+    let (lo, hi) = model.bounds(pose).expect("the model draws something");
+    (Vec3::from_array(lo), Vec3::from_array(hi))
 }
 
 /// A frame looking at `model` from its front and a little above.

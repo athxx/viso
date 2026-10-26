@@ -31,7 +31,7 @@
 use viso_gpu_abi::SchemaAttr;
 
 use crate::PrimitiveKind;
-use crate::ir::types::IrType;
+use crate::ir::types::{IrType, ScalarType};
 
 /// One typed field of a shader interface `struct` (an instance/vertex attribute,
 /// a uniform member, or a varying). The `name` and `ty` are the whole contract;
@@ -1114,6 +1114,36 @@ static SCENE_ATTRS: &[IrField] = &[
     IrField::new("tangent", IrType::F32X4),
 ];
 
+/// A skinned scene mesh's vertex: `viso_gpu_abi::scene::SkinnedVertex`.
+static SCENE_SKINNED_ATTRS: &[IrField] = &[
+    IrField::new("position", IrType::F32X3),
+    IrField::new("normal", IrType::F32X3),
+    IrField::new("uv", IrType::F32X2),
+    IrField::new("tangent", IrType::F32X4),
+    IrField::new(
+        "joints",
+        IrType::Vector {
+            scalar: ScalarType::U32,
+            lanes: 2,
+        },
+    ),
+    IrField::new(
+        "weights",
+        IrType::Vector {
+            scalar: ScalarType::U32,
+            lanes: 2,
+        },
+    ),
+];
+
+/// A skinned draw's joint palette, `skin`: three rows of each joint's
+/// affine, `viso_gpu_abi::scene::MAX_JOINTS` joints.
+const SCENE_SKIN: IrBlock = IrBlock {
+    name: "skin",
+    struct_name: "SkinBlock",
+    fields: &[IrField::array("joints", IrType::F32X4, 768)],
+};
+
 /// A scene draw's instance: `viso_gpu_abi::scene::SceneInstance`.
 static SCENE_INSTANCE: &[IrField] = &[
     IrField::new("row0", IrType::F32X4),
@@ -1159,52 +1189,106 @@ const SCENE_MATERIAL_TEXTURES: [IrTexture; 5] = [
     },
 ];
 
+/// The mesh program's varyings.
+static SCENE_MESH_VARYINGS: &[Varying] = &[
+    Varying::new("position", IrType::F32X4, " [[position]]", ""),
+    Varying::new("world", IrType::F32X3, "", ""),
+    Varying::new("normal", IrType::F32X3, "", ""),
+    Varying::new("tangent", IrType::F32X4, "", ""),
+    Varying::new("uv", IrType::F32X2, "", ""),
+    Varying::new("color", IrType::F32X4, " [[flat]]", ""),
+];
+
+/// The mesh program's resources past the frame's: the material's block, its
+/// maps, the environment and the shadow atlas.
+static SCENE_MESH_BINDINGS: SceneBindings = SceneBindings {
+    blocks: &[SCENE_MATERIAL],
+    textures: &[
+        SCENE_MATERIAL_TEXTURES[0],
+        SCENE_MATERIAL_TEXTURES[1],
+        SCENE_MATERIAL_TEXTURES[2],
+        SCENE_MATERIAL_TEXTURES[3],
+        SCENE_MATERIAL_TEXTURES[4],
+        IrTexture {
+            name: "env_tex",
+            sampler: 1,
+        },
+        IrTexture {
+            name: "shadow_tex",
+            sampler: 2,
+        },
+    ],
+    samplers: &["material_samp", "linear_samp", "point_samp"],
+};
+
+/// [`SCENE_MESH_BINDINGS`] with the joint palette.
+static SCENE_SKINNED_MESH_BINDINGS: SceneBindings = SceneBindings {
+    blocks: &[SCENE_MATERIAL, SCENE_SKIN],
+    textures: SCENE_MESH_BINDINGS.textures,
+    samplers: SCENE_MESH_BINDINGS.samplers,
+};
+
+/// The depth program's varyings.
+static SCENE_DEPTH_VARYINGS: &[Varying] = &[
+    Varying::new("position", IrType::F32X4, " [[position]]", ""),
+    Varying::new("uv", IrType::F32X2, "", ""),
+    Varying::new("light_depth", IrType::F32, "", ""),
+    Varying::new("tint_alpha", IrType::F32, " [[flat]]", ""),
+];
+
+/// The depth program's resources past the frame's: the material's block
+/// and its base color, for a mask.
+static SCENE_DEPTH_BINDINGS: SceneBindings = SceneBindings {
+    blocks: &[SCENE_MATERIAL],
+    textures: &[SCENE_MATERIAL_TEXTURES[0]],
+    samplers: &["material_samp"],
+};
+
+/// [`SCENE_DEPTH_BINDINGS`] with the joint palette.
+static SCENE_SKINNED_DEPTH_BINDINGS: SceneBindings = SceneBindings {
+    blocks: &[SCENE_MATERIAL, SCENE_SKIN],
+    textures: SCENE_DEPTH_BINDINGS.textures,
+    samplers: SCENE_DEPTH_BINDINGS.samplers,
+};
+
+/// A scene program over vertices `attributes`.
+fn scene_program(
+    attributes: &'static [IrField],
+    varyings: &'static [Varying],
+    bindings: &'static SceneBindings,
+    vertex_body: &'static str,
+    helpers: &'static str,
+    fragment_body: &'static str,
+) -> ShaderIr {
+    ShaderIr {
+        kind: PrimitiveKind::Scene,
+        vertex_source: VertexSource::PerVertexInstanced,
+        attributes,
+        instance_attributes: SCENE_INSTANCE,
+        uniforms: SCENE_FRAME,
+        varyings,
+        texture_count: 0,
+        bindings: Some(bindings),
+        vertex_body,
+        helpers,
+        fragment_body,
+    }
+}
+
 /// The 3D scene's mesh program (`viso_gpu_abi::scene::SceneProgram::Mesh`):
 /// an indexed mesh drawn once per instance in its material. The vertex and
 /// instance layouts are `SceneVertex` and `SceneInstance`; the fragment
 /// computes `viso_gpu_abi::scene::shade_mesh`, the expression the CPU raster
 /// runs.
 pub fn scene_ir() -> ShaderIr {
-    static VARYINGS: &[Varying] = &[
-        Varying::new("position", IrType::F32X4, " [[position]]", ""),
-        Varying::new("world", IrType::F32X3, "", ""),
-        Varying::new("normal", IrType::F32X3, "", ""),
-        Varying::new("tangent", IrType::F32X4, "", ""),
-        Varying::new("uv", IrType::F32X2, "", ""),
-        Varying::new("color", IrType::F32X4, " [[flat]]", ""),
-    ];
-    static BINDINGS: SceneBindings = SceneBindings {
-        blocks: &[SCENE_MATERIAL],
-        textures: &[
-            SCENE_MATERIAL_TEXTURES[0],
-            SCENE_MATERIAL_TEXTURES[1],
-            SCENE_MATERIAL_TEXTURES[2],
-            SCENE_MATERIAL_TEXTURES[3],
-            SCENE_MATERIAL_TEXTURES[4],
-            IrTexture {
-                name: "env_tex",
-                sampler: 1,
-            },
-            IrTexture {
-                name: "shadow_tex",
-                sampler: 2,
-            },
-        ],
-        samplers: &["material_samp", "linear_samp", "point_samp"],
-    };
-    ShaderIr {
-        kind: PrimitiveKind::Scene,
-        vertex_source: VertexSource::PerVertexInstanced,
-        attributes: SCENE_ATTRS,
-        instance_attributes: SCENE_INSTANCE,
-        uniforms: SCENE_FRAME,
-        varyings: VARYINGS,
-        texture_count: 0,
-        bindings: Some(&BINDINGS),
-        vertex_body: SCENE_VERTEX_BODY,
-        helpers: SCENE_HELPERS,
-        fragment_body: SCENE_FRAGMENT_BODY,
-    }
+    scene_program(
+        SCENE_ATTRS,
+        SCENE_MESH_VARYINGS,
+        &SCENE_MESH_BINDINGS,
+        SCENE_VERTEX_BODY,
+        SCENE_HELPERS,
+        SCENE_FRAGMENT_BODY,
+    )
 }
 
 /// The 3D scene's shadow caster program
@@ -1213,36 +1297,52 @@ pub fn scene_ir() -> ShaderIr {
 /// `viso_gpu_abi::scene::shade_depth` computes it. The layouts and the
 /// bind group are the mesh program's.
 pub fn scene_depth_ir() -> ShaderIr {
-    static VARYINGS: &[Varying] = &[
-        Varying::new("position", IrType::F32X4, " [[position]]", ""),
-        Varying::new("uv", IrType::F32X2, "", ""),
-        Varying::new("light_depth", IrType::F32, "", ""),
-        Varying::new("tint_alpha", IrType::F32, " [[flat]]", ""),
-    ];
-    static BINDINGS: SceneBindings = SceneBindings {
-        blocks: &[SCENE_MATERIAL],
-        textures: &[SCENE_MATERIAL_TEXTURES[0]],
-        samplers: &["material_samp"],
-    };
-    ShaderIr {
-        kind: PrimitiveKind::Scene,
-        vertex_source: VertexSource::PerVertexInstanced,
-        attributes: SCENE_ATTRS,
-        instance_attributes: SCENE_INSTANCE,
-        uniforms: SCENE_FRAME,
-        varyings: VARYINGS,
-        texture_count: 0,
-        bindings: Some(&BINDINGS),
-        vertex_body: SCENE_DEPTH_VERTEX_BODY,
-        helpers: "",
-        fragment_body: SCENE_DEPTH_FRAGMENT_BODY,
-    }
+    scene_program(
+        SCENE_ATTRS,
+        SCENE_DEPTH_VARYINGS,
+        &SCENE_DEPTH_BINDINGS,
+        SCENE_DEPTH_VERTEX_BODY,
+        "",
+        SCENE_DEPTH_FRAGMENT_BODY,
+    )
+}
+
+/// The mesh program over a skinned mesh
+/// (`viso_gpu_abi::scene::SceneProgram::SkinnedMesh`): each
+/// `SkinnedVertex` moved by its joints' palette in uniform slot 2 first, as
+/// `viso_gpu_abi::scene::skin_vertex` moves it.
+pub fn scene_skinned_ir() -> ShaderIr {
+    scene_program(
+        SCENE_SKINNED_ATTRS,
+        SCENE_MESH_VARYINGS,
+        &SCENE_SKINNED_MESH_BINDINGS,
+        SCENE_SKINNED_VERTEX_BODY,
+        SCENE_HELPERS,
+        SCENE_FRAGMENT_BODY,
+    )
+}
+
+/// The depth program over a skinned mesh
+/// (`viso_gpu_abi::scene::SceneProgram::SkinnedDepth`).
+pub fn scene_skinned_depth_ir() -> ShaderIr {
+    scene_program(
+        SCENE_SKINNED_ATTRS,
+        SCENE_DEPTH_VARYINGS,
+        &SCENE_SKINNED_DEPTH_BINDINGS,
+        SCENE_SKINNED_DEPTH_VERTEX_BODY,
+        "",
+        SCENE_DEPTH_FRAGMENT_BODY,
+    )
 }
 
 /// The scene lane's programs past its mesh program (the [`PrimitiveKind::Scene`]
 /// built-in), in `viso_gpu_abi::scene::SceneProgram` order from code 1.
-pub fn scene_program_irs() -> [ShaderIr; 1] {
-    [scene_depth_ir()]
+pub fn scene_program_irs() -> [ShaderIr; 3] {
+    [
+        scene_depth_ir(),
+        scene_skinned_ir(),
+        scene_skinned_depth_ir(),
+    ]
 }
 
 /// Every program's IR: the built-ins, then the scene lane's other programs —
@@ -2506,15 +2606,69 @@ float cov = clamp(in.edge, 0.0, 1.0);
 float a = in.color.a * cov;
 return float4(in.color.rgb * a, a);";
 
-const SCENE_VERTEX_BODY: &str = "\
+/// The opening of a mesh's vertex body: its vertex and instance, and the
+/// vertex's position, normal and tangent in the mesh's space.
+macro_rules! scene_vertex_head {
+    () => {
+        "\
 VertexIn v = verts[vid];
 InstanceIn inst = instances[iid];
+float3 p = float3(v.position);
+float3 n = float3(v.normal);
+float4 t = float4(v.tangent);
+"
+    };
+}
 
+/// The opening of a skinned mesh's vertex body: the vertex moved by its
+/// joints, the weighted sum of their affines (three rows each), its normal
+/// through the sum's cofactor, turned back out where the sum mirrors.
+macro_rules! scene_skinned_head {
+    () => {
+        concat!(
+            scene_vertex_head!(),
+            "\
+uint2 jp = v.joints;
+uint2 wp = v.weights;
+float4 w = float4(float(wp.x & 65535u), float(wp.x >> 16u), float(wp.y & 65535u),
+    float(wp.y >> 16u)) / 65535.0;
+float wsum = w.x + w.y + w.z + w.w;
+if (wsum > 0.0) {
+    w = w / wsum;
+} else {
+    w = float4(1.0, 0.0, 0.0, 0.0);
+}
+int j0 = int(min(jp.x & 65535u, 255u)) * 3;
+int j1 = int(min(jp.x >> 16u, 255u)) * 3;
+int j2 = int(min(jp.y & 65535u, 255u)) * 3;
+int j3 = int(min(jp.y >> 16u, 255u)) * 3;
+float4 s0 = float4(skin.joints[j0]) * w.x + float4(skin.joints[j1]) * w.y
+    + float4(skin.joints[j2]) * w.z + float4(skin.joints[j3]) * w.w;
+float4 s1 = float4(skin.joints[j0 + 1]) * w.x + float4(skin.joints[j1 + 1]) * w.y
+    + float4(skin.joints[j2 + 1]) * w.z + float4(skin.joints[j3 + 1]) * w.w;
+float4 s2 = float4(skin.joints[j0 + 2]) * w.x + float4(skin.joints[j1 + 2]) * w.y
+    + float4(skin.joints[j2 + 2]) * w.z + float4(skin.joints[j3 + 2]) * w.w;
+float3 a0 = float3(s0.x, s1.x, s2.x);
+float3 a1 = float3(s0.y, s1.y, s2.y);
+float3 a2 = float3(s0.z, s1.z, s2.z);
+float sk = dot(a0, cross(a1, a2)) < 0.0 ? -1.0 : 1.0;
+p = float3(dot(s0.xyz, p) + s0.w, dot(s1.xyz, p) + s1.w, dot(s2.xyz, p) + s2.w);
+n = (cross(a1, a2) * n.x + cross(a2, a0) * n.y + cross(a0, a1) * n.z) * sk;
+t = float4(a0 * t.x + a1 * t.y + a2 * t.z, t.w * sk);
+"
+        )
+    };
+}
+
+/// The rest of the mesh program's vertex body, from the vertex's `p`, `n`
+/// and `t`.
+macro_rules! scene_mesh_tail {
+    () => {
+        "\
 // The vertex in the world: the instance's affine, as three rows.
 float4 r0 = float4(inst.row0);
 float4 r1 = float4(inst.row1);
 float4 r2 = float4(inst.row2);
-float3 p = float3(v.position);
 float3 world = float3(dot(r0.xyz, p) + r0.w, dot(r1.xyz, p) + r1.w, dot(r2.xyz, p) + r2.w);
 
 // The normal through the cofactor of the linear part, so a non-uniform scale
@@ -2523,8 +2677,6 @@ float3 world = float3(dot(r0.xyz, p) + r0.w, dot(r1.xyz, p) + r1.w, dot(r2.xyz, 
 float3 c0 = float3(r0.x, r1.x, r2.x);
 float3 c1 = float3(r0.y, r1.y, r2.y);
 float3 c2 = float3(r0.z, r1.z, r2.z);
-float3 n = float3(v.normal);
-float4 t = float4(v.tangent);
 float side = dot(c0, cross(c1, c2)) < 0.0 ? -1.0 : 1.0;
 
 VOut out;
@@ -2535,7 +2687,35 @@ out.normal = (cross(c1, c2) * n.x + cross(c2, c0) * n.y + cross(c0, c1) * n.z) *
 out.tangent = float4(c0 * t.x + c1 * t.y + c2 * t.z, t.w * side);
 out.uv = float2(v.uv);
 out.color = float4(inst.color);
-return out;";
+return out;"
+    };
+}
+
+/// The rest of the depth program's vertex body, from the vertex's `p`.
+macro_rules! scene_depth_tail {
+    () => {
+        "\
+float4 r0 = float4(inst.row0);
+float4 r1 = float4(inst.row1);
+float4 r2 = float4(inst.row2);
+float3 world = float3(dot(r0.xyz, p) + r0.w, dot(r1.xyz, p) + r1.w, dot(r2.xyz, p) + r2.w);
+float4 clip = float4(u.view_proj0) * world.x + float4(u.view_proj1) * world.y
+    + float4(u.view_proj2) * world.z + float4(u.view_proj3);
+
+VOut out;
+out.position = clip;
+out.uv = float2(v.uv);
+// Reversed depth: the clip depth falls away from the light.
+out.light_depth = 1.0 - clip.z / clip.w;
+out.tint_alpha = float4(inst.color).w;
+return out;"
+    };
+}
+
+const SCENE_VERTEX_BODY: &str = concat!(scene_vertex_head!(), scene_mesh_tail!());
+const SCENE_SKINNED_VERTEX_BODY: &str = concat!(scene_skinned_head!(), scene_mesh_tail!());
+const SCENE_DEPTH_VERTEX_BODY: &str = concat!(scene_vertex_head!(), scene_depth_tail!());
+const SCENE_SKINNED_DEPTH_VERTEX_BODY: &str = concat!(scene_skinned_head!(), scene_depth_tail!());
 
 const SCENE_HELPERS: &str = "\
 // The GGX distribution of microfacet normals at `nh`, for roughness squared
@@ -2796,26 +2976,6 @@ c = c + (fog_color.xyz - c) * fog;
 
 // Premultiplied linear light: the target's sRGB format encodes it.
 return float4(clamp(c, 0.0, 1.0) * a, a);";
-
-const SCENE_DEPTH_VERTEX_BODY: &str = "\
-VertexIn v = verts[vid];
-InstanceIn inst = instances[iid];
-
-float4 r0 = float4(inst.row0);
-float4 r1 = float4(inst.row1);
-float4 r2 = float4(inst.row2);
-float3 p = float3(v.position);
-float3 world = float3(dot(r0.xyz, p) + r0.w, dot(r1.xyz, p) + r1.w, dot(r2.xyz, p) + r2.w);
-float4 clip = float4(u.view_proj0) * world.x + float4(u.view_proj1) * world.y
-    + float4(u.view_proj2) * world.z + float4(u.view_proj3);
-
-VOut out;
-out.position = clip;
-out.uv = float2(v.uv);
-// Reversed depth: the clip depth falls away from the light.
-out.light_depth = 1.0 - clip.z / clip.w;
-out.tint_alpha = float4(inst.color).w;
-return out;";
 
 const SCENE_DEPTH_FRAGMENT_BODY: &str = "\
 float2 uv_dx = dfdx(in.uv);

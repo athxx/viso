@@ -683,7 +683,12 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
   by `SceneProgram::Depth` (no sampleable depth or float target needed), normal offset +
   slope bias, 4×4 tent PCF with cascade cross-fade. Verified: CPU + Metal + translated
   WGSL draw the same shadowed scene, GLSL ES / HLSL compile, lane test, Khronos samples.
-- [ ] Skinned meshes.
+- [x] Skinned meshes. — `SkinnedVertex` (4 joints / 4 weights as packed u16),
+  `Renderer::create_scene_skinned_mesh` + `SceneFrame::push_skinned(mesh, material,
+  instance, &joints, bounds)`, palette of up to 256 joints in the third uniform block,
+  `SceneProgram::SkinnedMesh` / `SkinnedDepth` skin on the GPU (casting skinned shadows
+  too); `push_model` poses glTF skins, `SceneModel::bounds(&pose)`. Verified: CPU + Metal +
+  translated WGSL draw the same skinned scene, GLSL ES compiles, lane test, CesiumMan / Fox.
 - [ ] SSAO and sky.
 
 ## W15 — Code editor widget (in `extras/`)

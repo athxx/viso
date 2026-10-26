@@ -15,8 +15,13 @@
 use crate::instance::{AttrFormat, InstanceSchema, SchemaAttr};
 
 /// How many uniform buffers a scene draw's bind group holds: the frame's
-/// block, the material's and the skin's, in that order.
+/// block, the material's and the skin's joint palette, in that order.
 pub const UNIFORM_SLOTS: usize = 3;
+
+/// How many joints a skinned mesh's palette holds at most: uniform slot 2
+/// of a skinned program's draw, three rows of a joint's affine each,
+/// `[m00 m01 m02 tx]`, `MAX_JOINTS * 48` bytes.
+pub const MAX_JOINTS: usize = 256;
 
 /// How many textures a scene draw's bind group holds, after its uniform
 /// buffers: the material's base color, metallic-roughness, normal, occlusion
@@ -61,17 +66,38 @@ pub enum SceneProgram {
     /// what its mask cuts away; the frame's `view_proj` maps the world into
     /// the cascade's tile of the shadow atlas, with reversed depth.
     Depth = 1,
+    /// [`Mesh`](Self::Mesh), its vertices [`SkinnedVertex`]es moved by
+    /// their joints first ([`skin_vertex`]).
+    SkinnedMesh = 2,
+    /// [`Depth`](Self::Depth) of a skinned mesh.
+    SkinnedDepth = 3,
 }
 
 impl SceneProgram {
     /// Every program, by its code.
-    pub const ALL: [SceneProgram; 2] = [SceneProgram::Mesh, SceneProgram::Depth];
+    pub const ALL: [SceneProgram; 4] = [
+        SceneProgram::Mesh,
+        SceneProgram::Depth,
+        SceneProgram::SkinnedMesh,
+        SceneProgram::SkinnedDepth,
+    ];
 
     /// The vertex layout it reads.
     pub const fn vertex_schema(self) -> InstanceSchema {
         match self {
             SceneProgram::Mesh | SceneProgram::Depth => VERTEX_SCHEMA,
+            SceneProgram::SkinnedMesh | SceneProgram::SkinnedDepth => SKINNED_VERTEX_SCHEMA,
         }
+    }
+
+    /// Whether its vertices are [`SkinnedVertex`]es.
+    pub const fn skinned(self) -> bool {
+        matches!(self, SceneProgram::SkinnedMesh | SceneProgram::SkinnedDepth)
+    }
+
+    /// Whether it draws shadow casters, writing [`pack_depth`]ed depth.
+    pub const fn casts(self) -> bool {
+        matches!(self, SceneProgram::Depth | SceneProgram::SkinnedDepth)
     }
 
     /// The program a pipeline's `variant` names.
@@ -99,6 +125,37 @@ pub const VERTEX_SCHEMA: InstanceSchema = InstanceSchema {
         SchemaAttr {
             name: "tangent",
             format: AttrFormat::Float4,
+        },
+    ],
+};
+
+/// The vertex attributes of a skinned scene mesh, [`SkinnedVertex`]'s
+/// fields.
+pub const SKINNED_VERTEX_SCHEMA: InstanceSchema = InstanceSchema {
+    attributes: &[
+        SchemaAttr {
+            name: "position",
+            format: AttrFormat::Float3,
+        },
+        SchemaAttr {
+            name: "normal",
+            format: AttrFormat::Float3,
+        },
+        SchemaAttr {
+            name: "uv",
+            format: AttrFormat::Float2,
+        },
+        SchemaAttr {
+            name: "tangent",
+            format: AttrFormat::Float4,
+        },
+        SchemaAttr {
+            name: "joints",
+            format: AttrFormat::Uint2,
+        },
+        SchemaAttr {
+            name: "weights",
+            format: AttrFormat::Uint2,
         },
     ],
 };
@@ -139,6 +196,133 @@ pub struct SceneVertex {
     pub normal: [f32; 3],
     pub uv: [f32; 2],
     pub tangent: [f32; 4],
+}
+
+/// One vertex of a skinned scene mesh: a [`SceneVertex`] in its bind pose,
+/// and the four joints that move it with how much each does. `joints` holds
+/// four 16-bit indices into the palette, two to a word, the first in the low
+/// half; `weights` four 16-bit fractions of `65535` the same way. 64 bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[repr(C)]
+pub struct SkinnedVertex {
+    pub position: [f32; 3],
+    pub normal: [f32; 3],
+    pub uv: [f32; 2],
+    pub tangent: [f32; 4],
+    pub joints: [u32; 2],
+    pub weights: [u32; 2],
+}
+
+impl SkinnedVertex {
+    /// Its size in bytes, as the programs read it.
+    pub const SIZE: usize = 64;
+
+    /// `vertex`, moved by `joints` (indices into the palette) by `weights`
+    /// (each in `[0, 1]`, summing to one), packed.
+    pub fn new(vertex: SceneVertex, joints: [u16; 4], weights: [f32; 4]) -> SkinnedVertex {
+        let unit = |w: f32| (w.clamp(0.0, 1.0) * 65535.0 + 0.5) as u32;
+        let pair = |a: u32, b: u32| a | b << 16;
+        SkinnedVertex {
+            position: vertex.position,
+            normal: vertex.normal,
+            uv: vertex.uv,
+            tangent: vertex.tangent,
+            joints: [
+                pair(joints[0].into(), joints[1].into()),
+                pair(joints[2].into(), joints[3].into()),
+            ],
+            weights: [
+                pair(unit(weights[0]), unit(weights[1])),
+                pair(unit(weights[2]), unit(weights[3])),
+            ],
+        }
+    }
+
+    /// Its four joints.
+    pub fn joint_indices(&self) -> [usize; 4] {
+        let [a, b] = self.joints;
+        [a & 0xffff, a >> 16, b & 0xffff, b >> 16].map(|j| j as usize)
+    }
+
+    /// Its four weights, normalized to sum to one.
+    pub fn joint_weights(&self) -> [f32; 4] {
+        let [a, b] = self.weights;
+        let w = [a & 0xffff, a >> 16, b & 0xffff, b >> 16].map(|w| w as f32 / 65535.0);
+        let sum = w[0] + w[1] + w[2] + w[3];
+        if sum > 0.0 {
+            w.map(|x| x / sum)
+        } else {
+            [1.0, 0.0, 0.0, 0.0]
+        }
+    }
+
+    /// Its bytes, little-endian, in field order.
+    pub fn write_to(&self, out: &mut [u8]) {
+        let words = self
+            .position
+            .iter()
+            .chain(&self.normal)
+            .chain(&self.uv)
+            .chain(&self.tangent)
+            .map(|f| f.to_bits())
+            .chain(self.joints)
+            .chain(self.weights);
+        for (chunk, w) in out[..Self::SIZE].chunks_exact_mut(4).zip(words) {
+            chunk.copy_from_slice(&w.to_le_bytes());
+        }
+    }
+
+    /// It, read back from `bytes` as [`write_to`](Self::write_to) wrote it.
+    pub fn read_from(bytes: &[u8]) -> SkinnedVertex {
+        let word = |i: usize| {
+            let c = &bytes[i * 4..i * 4 + 4];
+            u32::from_le_bytes([c[0], c[1], c[2], c[3]])
+        };
+        let f = |i: usize| f32::from_bits(word(i));
+        SkinnedVertex {
+            position: [f(0), f(1), f(2)],
+            normal: [f(3), f(4), f(5)],
+            uv: [f(6), f(7)],
+            tangent: [f(8), f(9), f(10), f(11)],
+            joints: [word(12), word(13)],
+            weights: [word(14), word(15)],
+        }
+    }
+}
+
+/// `v` moved by its joints: the weighted sum of the palette's affines
+/// (`palette[3 j + r]` row `r` of joint `j`'s), applied to its position,
+/// its normal through the sum's cofactor (turned back out where the sum
+/// mirrors) and its tangent through the sum. A joint index past
+/// [`MAX_JOINTS`] reads the last joint; one past the palette given stays in
+/// place.
+pub fn skin_vertex(v: &SkinnedVertex, palette: &[[f32; 4]]) -> SceneVertex {
+    let w = v.joint_weights();
+    let identity = [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+    ];
+    let mut rows = [[0.0f32; 4]; 3];
+    for (j, w) in v.joint_indices().into_iter().zip(w) {
+        let j = j.min(MAX_JOINTS - 1);
+        for (r, row) in rows.iter_mut().enumerate() {
+            let m = palette.get(j * 3 + r).copied().unwrap_or(identity[r]);
+            for k in 0..4 {
+                row[k] += m[k] * w;
+            }
+        }
+    }
+    let skin = SceneInstance {
+        rows,
+        color: [0.0; 4],
+    };
+    SceneVertex {
+        position: skin.place(v.position),
+        normal: skin.turn_normal(v.normal),
+        uv: v.uv,
+        tangent: skin.turn_tangent(v.tangent),
+    }
 }
 
 /// One instance of a scene mesh: the affine from the mesh's space to the
@@ -439,6 +623,40 @@ pub fn normalize(a: [f32; 3]) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_skinned_vertex_packs_and_blends_its_joints() {
+        let base = SceneVertex {
+            position: [1.0, 0.0, 0.0],
+            normal: [0.0, 1.0, 0.0],
+            uv: [0.25, 0.75],
+            tangent: [1.0, 0.0, 0.0, 1.0],
+        };
+        let v = SkinnedVertex::new(base, [3, 1, 0, 0], [0.75, 0.25, 0.0, 0.0]);
+        let mut bytes = [0u8; SkinnedVertex::SIZE];
+        v.write_to(&mut bytes);
+        let v = SkinnedVertex::read_from(&bytes);
+        assert_eq!(v.joint_indices(), [3, 1, 0, 0]);
+        let w = v.joint_weights();
+        assert!((w[0] - 0.75).abs() < 1e-4 && (w[1] - 0.25).abs() < 1e-4);
+        // Joint 3 lifts by 4, joint 1 turns a quarter about z.
+        let mut palette = vec![[0.0f32; 4]; MAX_JOINTS * 3];
+        for j in 0..MAX_JOINTS {
+            palette[j * 3] = [1.0, 0.0, 0.0, 0.0];
+            palette[j * 3 + 1] = [0.0, 1.0, 0.0, 0.0];
+            palette[j * 3 + 2] = [0.0, 0.0, 1.0, 0.0];
+        }
+        palette[3 * 3 + 1][3] = 4.0;
+        palette[3] = [0.0, -1.0, 0.0, 0.0];
+        palette[4] = [1.0, 0.0, 0.0, 0.0];
+        let moved = skin_vertex(&v, &palette);
+        let p = moved.position;
+        assert!(
+            (p[0] - 0.75).abs() < 1e-4 && (p[1] - 3.25).abs() < 1e-4,
+            "{p:?}"
+        );
+        assert_eq!(moved.uv, [0.25, 0.75]);
+    }
 
     #[test]
     fn the_layouts_round_trip_through_their_bytes() {

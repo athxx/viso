@@ -8,14 +8,14 @@ use viso_gpu::backend::{DepthAttachment, DrawCommand, Geometry, IndexFormat, Inl
 use viso_gpu::backend::{RenderPass, RenderTarget};
 use viso_gpu::scene::{
     Alpha, ENV_HEIGHT, ENV_WIDTH, FrameUniforms, MATERIAL_DOUBLE_SIDED, MATERIAL_NORMAL_MAP,
-    SHADOW_CASCADES, SceneProgram, Shading,
+    MAX_JOINTS, SHADOW_CASCADES, SceneProgram, Shading, SkinnedVertex,
 };
 use viso_gpu::{
     AddressMode, BindGroupDesc, BindGroupId, Binding, BlendMode, BufferDesc, BufferId, BufferUsage,
     BuiltinShader, CullMode, DepthState, FilterMode, GpuBackend, GpuPod, LoadOp, PipelineDesc,
     PipelineId, SamplerDesc, SamplerId, TextureDesc, TextureFormat, TextureId,
 };
-use viso_shader::{PrimitiveKind, scene_program_code, shader_code};
+use viso_shader::scene_program_code;
 
 use super::shadow::{self, Cascade};
 use super::{AlphaMode, Bounds, Environment, Frustum, Material, MaterialId, MaterialUniforms};
@@ -48,6 +48,21 @@ struct VertexLayout {
     tangent: [f32; 4],
 }
 
+/// The skinned scene vertex as the pipeline's vertex layout reads it.
+#[repr(C)]
+#[derive(Clone, Copy, GpuPod)]
+struct SkinnedLayout {
+    position: [f32; 3],
+    normal: [f32; 3],
+    uv: [f32; 2],
+    tangent: [f32; 4],
+    joints: [u32; 2],
+    weights: [u32; 2],
+}
+
+/// The bytes of a joint palette's uniform block.
+const PALETTE_SIZE: usize = MAX_JOINTS * 48;
+
 /// What the scene lane did in the frames since the counters were last
 /// taken.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -79,6 +94,8 @@ struct GpuMesh {
     format: IndexFormat,
     count: u32,
     bounds: Bounds,
+    /// Its vertices are [`SkinnedVertex`]es.
+    skinned: bool,
 }
 
 /// A material on the device: its uniform block, maps and sampler.
@@ -98,9 +115,12 @@ struct GpuMaterial {
 }
 
 impl GpuMaterial {
-    /// The index of its pipeline in [`SceneLane::pipelines`].
-    fn pipeline(&self) -> usize {
-        usize::from(self.alpha == Alpha::Blend) * 2 + usize::from(self.double_sided)
+    /// The index in [`SceneLane::pipelines`] of its pipeline over a mesh
+    /// that is `skinned` or not.
+    fn pipeline(&self, skinned: bool) -> usize {
+        usize::from(skinned) * 4
+            + usize::from(self.alpha == Alpha::Blend) * 2
+            + usize::from(self.double_sided)
     }
 }
 
@@ -124,7 +144,8 @@ struct Targets {
 }
 
 /// One instanced draw of a rendered scene: `count` instances of `mesh` in
-/// `material` from instance `first`, through pipeline `pipeline`.
+/// `material` from instance `first`, through pipeline `pipeline`, posed by
+/// the slot's palette `skin` for a skinned mesh.
 #[derive(Debug, Clone, Copy)]
 struct Draw {
     material: MaterialId,
@@ -132,6 +153,7 @@ struct Draw {
     first: u32,
     count: u32,
     pipeline: usize,
+    skin: Option<u32>,
 }
 
 /// A slot's shadow atlas, its cascades' tiles side by side, and the depth
@@ -154,11 +176,33 @@ struct ShadowDraw {
     mesh: MeshId,
     first: u32,
     count: u32,
+    skin: Option<u32>,
 }
 
-/// A caster of a fill: as what material it casts, its mesh, its instance
-/// and its world box.
-type Caster = (MaterialId, MeshId, SceneInstance, [f32; 3], [f32; 3]);
+/// A caster of a fill.
+#[derive(Debug, Clone, Copy)]
+struct Caster {
+    /// The material it casts as: its own when it masks, else the built-in
+    /// lit one.
+    material: MaterialId,
+    mesh: MeshId,
+    /// The slot's palette posing it, for a skinned mesh.
+    skin: Option<u32>,
+    instance: SceneInstance,
+    /// Its world box.
+    centre: [f32; 3],
+    half: [f32; 3],
+}
+
+/// A visible blended instance of a fill, by its distance along the view.
+#[derive(Debug, Clone, Copy)]
+struct Blended {
+    depth: f32,
+    material: MaterialId,
+    mesh: MeshId,
+    skin: Option<u32>,
+    instance: SceneInstance,
+}
 
 /// What the renderer holds for one scene slot.
 #[derive(Debug, Default)]
@@ -189,17 +233,26 @@ struct Slot {
     /// [`MaterialId::index`], with the material's generation.
     shadow_groups: Vec<Option<(u32, [BindGroupId; SHADOW_CASCADES])>>,
     shadow_draws: Vec<ShadowDraw>,
+    /// Each skinned draw's joint palette, by its place among the frame's
+    /// skinned draws.
+    palettes: Vec<BufferId>,
+    /// Each palette's bind group, with the material and its generation it
+    /// was made for.
+    skin_groups: Vec<Option<(MaterialId, u32, BindGroupId)>>,
+    /// Each palette's caster groups, one per cascade, likewise.
+    skin_shadow_groups: Vec<Option<(MaterialId, u32, [BindGroupId; SHADOW_CASCADES])>>,
     used: [u32; 2],
     clear: [f32; 4],
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct SceneLane {
-    /// The mesh program's pipelines: opaque or blended, each culling back
-    /// faces or drawing both.
-    pipelines: [Option<PipelineId>; 4],
-    /// The depth program's pipeline, drawing shadow casters.
-    depth_pipeline: Option<PipelineId>,
+    /// The mesh program's pipelines, over meshes then skinned meshes:
+    /// opaque or blended, each culling back faces or drawing both.
+    pipelines: [Option<PipelineId>; 8],
+    /// The depth program's pipelines, drawing shadow casters: over meshes
+    /// and over skinned meshes.
+    depth_pipelines: [Option<PipelineId>; 2],
     meshes: Vec<Option<GpuMesh>>,
     /// Uploaded mesh ids free for reuse.
     free: Vec<u32>,
@@ -216,9 +269,11 @@ pub(crate) struct SceneLane {
     /// The bytes of a fill's surviving instances.
     scratch: Vec<u8>,
     /// A fill's visible blended instances, by their distance along the view.
-    blended: Vec<(f32, MaterialId, MeshId, SceneInstance)>,
+    blended: Vec<Blended>,
     /// A fill's shadow casters.
     casters: Vec<Caster>,
+    /// The bytes of a palette being written.
+    palette_bytes: Vec<u8>,
     pub(crate) stats: SceneStats,
 }
 
@@ -254,6 +309,17 @@ impl SceneLane {
                 backend.destroy_bind_group(group);
             }
         }
+        for (_, _, group) in state.skin_groups.into_iter().flatten() {
+            backend.destroy_bind_group(group);
+        }
+        for (_, _, groups) in state.skin_shadow_groups.into_iter().flatten() {
+            for group in groups {
+                backend.destroy_bind_group(group);
+            }
+        }
+        for buffer in state.palettes {
+            backend.destroy_buffer(buffer);
+        }
         for buffer in state
             .uniforms
             .into_iter()
@@ -280,7 +346,47 @@ impl SceneLane {
         vertices: &[SceneVertex],
         indices: &[u32],
     ) -> MeshId {
-        let narrow = vertices.len() <= usize::from(u16::MAX) + 1;
+        let mut bytes = vec![0u8; vertices.len() * SceneVertex::SIZE];
+        for (v, out) in vertices
+            .iter()
+            .zip(bytes.chunks_exact_mut(SceneVertex::SIZE))
+        {
+            v.write_to(out);
+        }
+        let bounds = Bounds::around(vertices.iter().map(|v| v.position));
+        self.add_mesh(backend, &bytes, vertices.len(), bounds, indices, false)
+    }
+
+    /// Upload a skinned mesh of `vertices` in their bind pose and triangle
+    /// `indices`.
+    pub(crate) fn create_skinned_mesh<B: GpuBackend>(
+        &mut self,
+        backend: &mut B,
+        vertices: &[SkinnedVertex],
+        indices: &[u32],
+    ) -> MeshId {
+        let mut bytes = vec![0u8; vertices.len() * SkinnedVertex::SIZE];
+        for (v, out) in vertices
+            .iter()
+            .zip(bytes.chunks_exact_mut(SkinnedVertex::SIZE))
+        {
+            v.write_to(out);
+        }
+        let bounds = Bounds::around(vertices.iter().map(|v| v.position));
+        self.add_mesh(backend, &bytes, vertices.len(), bounds, indices, true)
+    }
+
+    /// Upload a mesh of `count` vertices `vertex_bytes` inside `bounds`.
+    fn add_mesh<B: GpuBackend>(
+        &mut self,
+        backend: &mut B,
+        vertex_bytes: &[u8],
+        count: usize,
+        bounds: Bounds,
+        indices: &[u32],
+        skinned: bool,
+    ) -> MeshId {
+        let narrow = count <= usize::from(u16::MAX) + 1;
         let index_bytes: Vec<u8> = if narrow {
             indices
                 .iter()
@@ -294,7 +400,9 @@ impl SceneLane {
         } else {
             IndexFormat::U32
         };
-        let mesh = upload(backend, vertices, &index_bytes, format, indices.len());
+        let mut mesh = upload(backend, vertex_bytes, &index_bytes, format, indices.len());
+        mesh.bounds = bounds;
+        mesh.skinned = skinned;
         let id = match self.free.pop() {
             Some(id) => id,
             None => {
@@ -507,6 +615,24 @@ impl SceneLane {
                     backend.destroy_bind_group(group);
                 }
             }
+            for entry in &mut slot.skin_groups {
+                if let Some((m, _, group)) = *entry
+                    && m == id
+                {
+                    backend.destroy_bind_group(group);
+                    *entry = None;
+                }
+            }
+            for entry in &mut slot.skin_shadow_groups {
+                if let Some((m, _, groups)) = *entry
+                    && m == id
+                {
+                    for group in groups {
+                        backend.destroy_bind_group(group);
+                    }
+                    *entry = None;
+                }
+            }
         }
         self.free_materials.push(id.0);
     }
@@ -520,7 +646,20 @@ impl SceneLane {
         let shape = *Shape::ALL.get(id.index())?;
         let (vertices, indices) = shape.geometry();
         let bytes: Vec<u8> = indices.iter().flat_map(|i| i.to_le_bytes()).collect();
-        let mut mesh = upload(backend, &vertices, &bytes, IndexFormat::U16, indices.len());
+        let mut vertex_bytes = vec![0u8; vertices.len() * SceneVertex::SIZE];
+        for (v, out) in vertices
+            .iter()
+            .zip(vertex_bytes.chunks_exact_mut(SceneVertex::SIZE))
+        {
+            v.write_to(out);
+        }
+        let mut mesh = upload(
+            backend,
+            &vertex_bytes,
+            &bytes,
+            IndexFormat::U16,
+            indices.len(),
+        );
         mesh.bounds = Bounds::UNIT;
         if self.meshes.len() <= id.index() {
             self.meshes.resize(id.index() + 1, None);
@@ -542,8 +681,9 @@ impl SceneLane {
     }
 
     fn pipeline<B: GpuBackend>(&mut self, backend: &mut B, index: usize) -> PipelineId {
-        *self.pipelines[index]
-            .get_or_insert_with(|| mesh_pipeline(backend, index >= 2, index % 2 == 1))
+        *self.pipelines[index].get_or_insert_with(|| {
+            mesh_pipeline(backend, index >= 4, index % 4 >= 2, index % 2 == 1)
+        })
     }
 
     /// The sky environment of `frame`'s lighting, built once for the latest
@@ -646,9 +786,9 @@ impl SceneLane {
         Some(image)
     }
 
-    /// Cull slot `i`'s frame into its instance buffer, write its uniforms
-    /// and environment, fit its shadow, and record its draws, for a target
-    /// `size` pixels large on a device whose textures are at most
+    /// Cull slot `i`'s frame into its instance buffer, write its uniforms,
+    /// palettes and environment, fit its shadow, and record its draws, for a
+    /// target `size` pixels large on a device whose textures are at most
     /// `max_size` texels wide.
     fn fill<B: GpuBackend>(&mut self, backend: &mut B, i: usize, size: [u32; 2], max_size: u32) {
         let mut scratch = core::mem::take(&mut self.scratch);
@@ -678,55 +818,133 @@ impl SceneLane {
             scratch.resize(at + SceneInstance::SIZE, 0);
             instance.write_to(&mut scratch[at..]);
         };
+        // One instance of a mesh in a material, posed by palette `skin`:
+        // kept as a caster, culled, then drawn now or with the blended.
+        let mut place = |scratch: &mut Vec<u8>,
+                         draws: &mut Vec<Draw>,
+                         stats: &mut SceneStats,
+                         (material, gpu): (MaterialId, &GpuMaterial),
+                         (mesh_id, mesh): (MeshId, &GpuMesh),
+                         bounds: &Bounds,
+                         skin: Option<u32>,
+                         instance: &SceneInstance| {
+            let (centre, half) = bounds.placed(instance);
+            if casting && gpu.alpha != Alpha::Blend && instance.color[3] > 0.0 {
+                let cast_as = if gpu.alpha == Alpha::Mask {
+                    material
+                } else {
+                    MaterialId::LIT
+                };
+                casters.push(Caster {
+                    material: cast_as,
+                    mesh: mesh_id,
+                    skin,
+                    instance: *instance,
+                    centre,
+                    half,
+                });
+                for k in 0..3 {
+                    caster_box.0[k] = caster_box.0[k].min(centre[k] - half[k]);
+                    caster_box.1[k] = caster_box.1[k].max(centre[k] + half[k]);
+                }
+            }
+            if !frustum.sees(centre, half) {
+                stats.culled += 1;
+                return;
+            }
+            let depth = (super::vec3(centre[0], centre[1], centre[2]) - eye).dot(forward);
+            if gpu.lit {
+                let reach = super::vec3(half[0], half[1], half[2]).length();
+                receivers = (
+                    receivers.0.min(depth - reach),
+                    receivers.1.max(depth + reach),
+                );
+            }
+            if gpu.alpha == Alpha::Blend {
+                blended.push(Blended {
+                    depth,
+                    material,
+                    mesh: mesh_id,
+                    skin,
+                    instance: *instance,
+                });
+                return;
+            }
+            push(scratch, instance);
+            match draws.last_mut() {
+                Some(d)
+                    if skin.is_none()
+                        && d.skin.is_none()
+                        && d.material == material
+                        && d.mesh == mesh_id
+                        && d.first + d.count == total =>
+                {
+                    d.count += 1;
+                }
+                _ => draws.push(Draw {
+                    material,
+                    mesh: mesh_id,
+                    first: total,
+                    count: 1,
+                    pipeline: gpu.pipeline(mesh.skinned),
+                    skin,
+                }),
+            }
+            total += 1;
+        };
         for (material, mesh_id, batch) in slot.frame.batches() {
-            let Some(mesh) = self.mesh(backend, mesh_id) else {
+            let Some(mesh) = self.mesh(backend, mesh_id).filter(|m| !m.skinned) else {
                 continue;
             };
             let (material, gpu) = self.material(material);
-            let casts = casting && gpu.alpha != Alpha::Blend;
-            let cast_as = if gpu.alpha == Alpha::Mask {
-                material
-            } else {
-                MaterialId::LIT
-            };
-            let first = total;
             for instance in batch {
-                let (centre, half) = mesh.bounds.placed(instance);
-                if casts && instance.color[3] > 0.0 {
-                    casters.push((cast_as, mesh_id, *instance, centre, half));
-                    for k in 0..3 {
-                        caster_box.0[k] = caster_box.0[k].min(centre[k] - half[k]);
-                        caster_box.1[k] = caster_box.1[k].max(centre[k] + half[k]);
-                    }
-                }
-                if !frustum.sees(centre, half) {
-                    self.stats.culled += 1;
-                    continue;
-                }
-                let depth = (super::vec3(centre[0], centre[1], centre[2]) - eye).dot(forward);
-                if gpu.lit {
-                    let reach = super::vec3(half[0], half[1], half[2]).length();
-                    receivers = (
-                        receivers.0.min(depth - reach),
-                        receivers.1.max(depth + reach),
-                    );
-                }
-                if gpu.alpha == Alpha::Blend {
-                    blended.push((depth, material, mesh_id, *instance));
-                    continue;
-                }
-                push(&mut scratch, instance);
-                total += 1;
+                place(
+                    &mut scratch,
+                    &mut draws,
+                    &mut self.stats,
+                    (material, &gpu),
+                    (mesh_id, &mesh),
+                    &mesh.bounds,
+                    None,
+                    instance,
+                );
             }
-            if total > first {
-                draws.push(Draw {
-                    material,
-                    mesh: mesh_id,
-                    first,
-                    count: total - first,
-                    pipeline: gpu.pipeline(),
-                });
+        }
+        // Each skinned draw with its palette, written to the slot's buffer
+        // of its place.
+        let mut skins = 0u32;
+        for (d, rows) in slot.frame.skinned() {
+            let Some(mesh) = self.mesh(backend, d.mesh).filter(|m| m.skinned) else {
+                continue;
+            };
+            let (material, gpu) = self.material(d.material);
+            let k = skins as usize;
+            if slot.palettes.len() <= k {
+                slot.palettes.push(backend.create_buffer(&BufferDesc {
+                    size: PALETTE_SIZE,
+                    usage: BufferUsage::UNIFORM | BufferUsage::CPU_WRITE,
+                    label: "scene-palette",
+                }));
             }
+            let bytes = &mut self.palette_bytes;
+            bytes.clear();
+            for row in rows {
+                for v in row {
+                    bytes.extend_from_slice(&v.to_le_bytes());
+                }
+            }
+            backend.write_buffer(slot.palettes[k], 0, bytes);
+            place(
+                &mut scratch,
+                &mut draws,
+                &mut self.stats,
+                (material, &gpu),
+                (d.mesh, &mesh),
+                &d.bounds,
+                Some(skins),
+                &d.instance,
+            );
+            skins += 1;
         }
         let camera = slot.frame.camera;
         for sprite in slot.frame.sprites() {
@@ -736,32 +954,40 @@ impl SceneLane {
             }
             let depth = (sprite.position - eye).dot(forward);
             let least = MIN_SPRITE_PIXELS * camera.pixel_at(depth, used[1]);
-            let instance = sprite.facing((right, up, forward), least);
-            blended.push((depth, MaterialId::SPRITE, Shape::Plane.into(), instance));
+            blended.push(Blended {
+                depth,
+                material: MaterialId::SPRITE,
+                mesh: Shape::Plane.into(),
+                skin: None,
+                instance: sprite.facing((right, up, forward), least),
+            });
         }
         if !blended.is_empty() {
             self.mesh(backend, Shape::Plane.into());
             // Back to front, so each blends over what is behind it; a run of
             // one mesh in one material is one draw.
-            blended.sort_by(|a, b| b.0.total_cmp(&a.0));
-            for &(_, material, mesh, instance) in &blended {
-                push(&mut scratch, &instance);
+            blended.sort_by(|a, b| b.depth.total_cmp(&a.depth));
+            for b in &blended {
+                push(&mut scratch, &b.instance);
                 match draws.last_mut() {
                     Some(d)
-                        if d.material == material
-                            && d.mesh == mesh
+                        if b.skin.is_none()
+                            && d.skin.is_none()
+                            && d.material == b.material
+                            && d.mesh == b.mesh
                             && d.first + d.count == total =>
                     {
                         d.count += 1;
                     }
                     _ => {
-                        let (_, gpu) = self.material(material);
+                        let (_, gpu) = self.material(b.material);
                         draws.push(Draw {
-                            material,
-                            mesh,
+                            material: b.material,
+                            mesh: b.mesh,
                             first: total,
                             count: 1,
-                            pipeline: gpu.pipeline(),
+                            pipeline: gpu.pipeline(b.skin.is_some()),
+                            skin: b.skin,
                         });
                     }
                 }
@@ -792,28 +1018,31 @@ impl SceneLane {
                 caster_box,
                 tile,
             );
-            casters.sort_unstable_by_key(|c| (c.0.index(), c.1));
+            casters.sort_unstable_by_key(|c| (c.skin, c.material.index(), c.mesh));
             for (cascade, fit) in cascades.iter().enumerate() {
-                for &(material, mesh, instance, centre, half) in &casters {
-                    if !fit.reaches(centre, half) {
+                for c in &casters {
+                    if !fit.reaches(c.centre, c.half) {
                         continue;
                     }
-                    push(&mut scratch, &instance);
+                    push(&mut scratch, &c.instance);
                     match shadow_draws.last_mut() {
                         Some(d)
-                            if d.cascade == cascade
-                                && d.material == material
-                                && d.mesh == mesh
+                            if c.skin.is_none()
+                                && d.skin.is_none()
+                                && d.cascade == cascade
+                                && d.material == c.material
+                                && d.mesh == c.mesh
                                 && d.first + d.count == total =>
                         {
                             d.count += 1;
                         }
                         _ => shadow_draws.push(ShadowDraw {
                             cascade,
-                            material,
-                            mesh,
+                            material: c.material,
+                            mesh: c.mesh,
                             first: total,
                             count: 1,
+                            skin: c.skin,
                         }),
                     }
                     total += 1;
@@ -908,6 +1137,9 @@ impl SceneLane {
             for (_, group) in slot.groups.iter_mut().filter_map(Option::take) {
                 backend.destroy_bind_group(group);
             }
+            for (_, _, group) in slot.skin_groups.iter_mut().filter_map(Option::take) {
+                backend.destroy_bind_group(group);
+            }
             slot.bound = Some(bound);
         }
         let new_frame = |backend: &mut B, label| {
@@ -943,81 +1175,134 @@ impl SceneLane {
         }
         uniforms.write_to(&mut bytes);
         backend.write_buffer(frame_buffer, 0, &bytes);
-        // Every drawn material's bind group, and the pipelines they need.
-        let tail = |gpu: &GpuMaterial, env: TextureId, shadow: TextureId| {
-            [
-                Binding::Texture(env),
-                Binding::Texture(shadow),
-                Binding::Texture(shared.white),
-                Binding::Sampler(gpu.sampler),
-                Binding::Sampler(shared.linear),
-                Binding::Sampler(shared.point),
-            ]
-        };
-        for d in &draws {
-            self.pipeline(backend, d.pipeline);
-            let (_, gpu) = self.material(d.material);
-            let index = d.material.index();
-            if slot.groups.len() <= index {
-                slot.groups.resize(index + 1, None);
-            }
-            match slot.groups[index] {
-                Some((generation, _)) if generation == gpu.generation => continue,
-                Some((_, stale)) => backend.destroy_bind_group(stale),
-                None => {}
-            }
+        // Every drawn material's bind group, and the pipelines they need: a
+        // skinned draw's with its palette.
+        let group_of = |backend: &mut B, gpu: &GpuMaterial, palette: BufferId| {
             let mut bindings = vec![
                 Binding::Uniform(frame_buffer),
                 Binding::Uniform(gpu.buffer),
-                Binding::Uniform(shared.spare),
+                Binding::Uniform(palette),
             ];
             bindings.extend(
                 gpu.maps
                     .map(|m| Binding::Texture(m.unwrap_or(shared.white))),
             );
-            bindings.extend(tail(&gpu, bound[0], bound[1]));
-            let group = backend.create_bind_group(&BindGroupDesc {
+            bindings.extend([
+                Binding::Texture(bound[0]),
+                Binding::Texture(bound[1]),
+                Binding::Texture(shared.white),
+                Binding::Sampler(gpu.sampler),
+                Binding::Sampler(shared.linear),
+                Binding::Sampler(shared.point),
+            ]);
+            backend.create_bind_group(&BindGroupDesc {
                 label: "scene",
                 bindings,
-            });
-            slot.groups[index] = Some((gpu.generation, group));
+            })
+        };
+        for d in &draws {
+            self.pipeline(backend, d.pipeline);
+            let (material, gpu) = self.material(d.material);
+            match d.skin {
+                Some(k) => {
+                    let k = k as usize;
+                    if slot.skin_groups.len() <= k {
+                        slot.skin_groups.resize(k + 1, None);
+                    }
+                    match slot.skin_groups[k] {
+                        Some((m, generation, _))
+                            if m == material && generation == gpu.generation =>
+                        {
+                            continue;
+                        }
+                        Some((_, _, stale)) => backend.destroy_bind_group(stale),
+                        None => {}
+                    }
+                    let group = group_of(backend, &gpu, slot.palettes[k]);
+                    slot.skin_groups[k] = Some((material, gpu.generation, group));
+                }
+                None => {
+                    let index = material.index();
+                    if slot.groups.len() <= index {
+                        slot.groups.resize(index + 1, None);
+                    }
+                    match slot.groups[index] {
+                        Some((generation, _)) if generation == gpu.generation => continue,
+                        Some((_, stale)) => backend.destroy_bind_group(stale),
+                        None => {}
+                    }
+                    let group = group_of(backend, &gpu, shared.spare);
+                    slot.groups[index] = Some((gpu.generation, group));
+                }
+            }
         }
         // Every casting material's groups, one per cascade.
-        if !shadow_draws.is_empty() {
-            self.depth_pipeline
-                .get_or_insert_with(|| depth_pipeline(backend));
-        }
-        for d in &shadow_draws {
-            let (_, gpu) = self.material(d.material);
-            let index = d.material.index();
-            if slot.shadow_groups.len() <= index {
-                slot.shadow_groups.resize(index + 1, None);
-            }
-            match slot.shadow_groups[index] {
-                Some((generation, _)) if generation == gpu.generation => continue,
-                Some((_, stale)) => {
-                    for group in stale {
-                        backend.destroy_bind_group(group);
-                    }
-                }
-                None => {}
-            }
-            let groups = core::array::from_fn(|c| {
+        let shadow_groups_of = |backend: &mut B, gpu: &GpuMaterial, palette: BufferId| {
+            core::array::from_fn(|c| {
                 let frame = slot.shadow_frames[c].expect("every cascade's frame is written");
                 let mut bindings = vec![
                     Binding::Uniform(frame),
                     Binding::Uniform(gpu.buffer),
-                    Binding::Uniform(shared.spare),
+                    Binding::Uniform(palette),
                     Binding::Texture(gpu.maps[0].unwrap_or(shared.white)),
                 ];
-                bindings.extend([Binding::Texture(shared.white); 4]);
-                bindings.extend(tail(&gpu, shared.white, shared.white));
+                bindings.extend([Binding::Texture(shared.white); 7]);
+                bindings.extend([
+                    Binding::Sampler(gpu.sampler),
+                    Binding::Sampler(shared.linear),
+                    Binding::Sampler(shared.point),
+                ]);
                 backend.create_bind_group(&BindGroupDesc {
                     label: "scene-shadow",
                     bindings,
                 })
-            });
-            slot.shadow_groups[index] = Some((gpu.generation, groups));
+            })
+        };
+        for d in &shadow_draws {
+            let skinned = d.skin.is_some();
+            self.depth_pipelines[usize::from(skinned)]
+                .get_or_insert_with(|| depth_pipeline(backend, skinned));
+            let (material, gpu) = self.material(d.material);
+            match d.skin {
+                Some(k) => {
+                    let k = k as usize;
+                    if slot.skin_shadow_groups.len() <= k {
+                        slot.skin_shadow_groups.resize(k + 1, None);
+                    }
+                    match slot.skin_shadow_groups[k] {
+                        Some((m, generation, _))
+                            if m == material && generation == gpu.generation =>
+                        {
+                            continue;
+                        }
+                        Some((_, _, stale)) => {
+                            for group in stale {
+                                backend.destroy_bind_group(group);
+                            }
+                        }
+                        None => {}
+                    }
+                    let groups = shadow_groups_of(backend, &gpu, slot.palettes[k]);
+                    slot.skin_shadow_groups[k] = Some((material, gpu.generation, groups));
+                }
+                None => {
+                    let index = material.index();
+                    if slot.shadow_groups.len() <= index {
+                        slot.shadow_groups.resize(index + 1, None);
+                    }
+                    match slot.shadow_groups[index] {
+                        Some((generation, _)) if generation == gpu.generation => continue,
+                        Some((_, stale)) => {
+                            for group in stale {
+                                backend.destroy_bind_group(group);
+                            }
+                        }
+                        None => {}
+                    }
+                    let groups = shadow_groups_of(backend, &gpu, shared.spare);
+                    slot.shadow_groups[index] = Some((gpu.generation, groups));
+                }
+            }
         }
         slot.draws = draws;
         slot.shadow_draws = shadow_draws;
@@ -1052,7 +1337,7 @@ impl SceneLane {
                     first as usize * SceneInstance::SIZE,
                 )
             };
-            if let (Some(shadow), Some(pipeline)) = (slot.shadow, self.depth_pipeline)
+            if let Some(shadow) = slot.shadow
                 && !slot.shadow_draws.is_empty()
             {
                 let first_command = commands.len() as u32;
@@ -1060,11 +1345,28 @@ impl SceneLane {
                     let Some(Some(mesh)) = self.meshes.get(draw.mesh.index()) else {
                         continue;
                     };
-                    let Some(Some((_, groups))) = slot.shadow_groups.get(draw.material.index())
-                    else {
+                    let groups = match draw.skin {
+                        Some(k) => slot
+                            .skin_shadow_groups
+                            .get(k as usize)
+                            .copied()
+                            .flatten()
+                            .map(|(_, _, g)| g),
+                        None => slot
+                            .shadow_groups
+                            .get(draw.material.index())
+                            .copied()
+                            .flatten()
+                            .map(|(_, g)| g),
+                    };
+                    let (Some(groups), Some(pipeline)) = (
+                        groups,
+                        self.depth_pipelines[usize::from(draw.skin.is_some())],
+                    ) else {
                         continue;
                     };
                     let (geometry, instance_offset) = instanced(mesh, draw.first, draw.count);
+                    let tile = shadow.tile;
                     commands.push(DrawCommand {
                         pipeline,
                         bind_group: Some(groups[draw.cascade]),
@@ -1072,12 +1374,7 @@ impl SceneLane {
                         instance_buffer: instances,
                         instance_offset,
                         uniforms: InlineUniforms::EMPTY,
-                        scissor: Some((
-                            draw.cascade as u32 * shadow.tile,
-                            0,
-                            shadow.tile,
-                            shadow.tile,
-                        )),
+                        scissor: Some((draw.cascade as u32 * tile, 0, tile, tile)),
                     });
                     self.stats.shadow_draws += 1;
                 }
@@ -1098,16 +1395,27 @@ impl SceneLane {
                 let Some(Some(mesh)) = self.meshes.get(draw.mesh.index()) else {
                     continue;
                 };
-                let Some(Some((_, group))) = slot.groups.get(draw.material.index()) else {
-                    continue;
+                let group = match draw.skin {
+                    Some(k) => slot
+                        .skin_groups
+                        .get(k as usize)
+                        .copied()
+                        .flatten()
+                        .map(|(_, _, g)| g),
+                    None => slot
+                        .groups
+                        .get(draw.material.index())
+                        .copied()
+                        .flatten()
+                        .map(|(_, g)| g),
                 };
-                let Some(pipeline) = self.pipelines[draw.pipeline] else {
+                let (Some(group), Some(pipeline)) = (group, self.pipelines[draw.pipeline]) else {
                     continue;
                 };
                 let (geometry, instance_offset) = instanced(mesh, draw.first, draw.count);
                 commands.push(DrawCommand {
                     pipeline,
-                    bind_group: Some(*group),
+                    bind_group: Some(group),
                     geometry,
                     instance_buffer: instances,
                     instance_offset,
@@ -1137,77 +1445,91 @@ impl SceneLane {
     }
 }
 
-/// The mesh program's pipeline: opaque, or `blended` (premultiplied over,
-/// depth-tested but never written); culling back faces, or drawing `both`.
-fn mesh_pipeline<B: GpuBackend>(backend: &mut B, blended: bool, both: bool) -> PipelineId {
-    let code = shader_code(PrimitiveKind::Scene, B::SHADER_LANG)
-        .expect("every backend language prints the scene programs");
+/// The mesh program's pipeline, over a `skinned` mesh or not: opaque, or
+/// `blended` (premultiplied over, depth-tested but never written); culling
+/// back faces, or drawing `both`.
+fn mesh_pipeline<B: GpuBackend>(
+    backend: &mut B,
+    skinned: bool,
+    blended: bool,
+    both: bool,
+) -> PipelineId {
+    let program = if skinned {
+        SceneProgram::SkinnedMesh
+    } else {
+        SceneProgram::Mesh
+    };
     let (depth, blend) = if blended {
         (DepthState::REVERSED_TEST_ONLY, BlendMode::PremultipliedOver)
     } else {
         (DepthState::REVERSED, BlendMode::Replace)
     };
     let cull = if both { CullMode::None } else { CullMode::Back };
-    let program = SceneProgram::Mesh;
-    backend
-        .create_pipeline(
-            &PipelineDesc {
-                label: if blended { "scene-blended" } else { "scene" },
-                builtin: BuiltinShader::Scene,
-                variant: program as u32 | u32::from(blended) << 8 | u32::from(both) << 9,
-                code,
-                vertex_entry: "vertex_main",
-                fragment_entry: "fragment_main",
-                color_format: COLOR_FORMAT,
-                depth: Some(depth),
-                cull,
-                blend,
-                instance_schema: program.vertex_schema(),
-            },
-            &VertexLayout::LAYOUT,
-        )
-        .expect("the scene vertex matches the mesh program's schema")
+    scene_pipeline(
+        backend,
+        &PipelineDesc {
+            label: if blended { "scene-blended" } else { "scene" },
+            builtin: BuiltinShader::Scene,
+            variant: program as u32 | u32::from(blended) << 8 | u32::from(both) << 9,
+            code: scene_program_code(program, B::SHADER_LANG),
+            vertex_entry: "vertex_main",
+            fragment_entry: "fragment_main",
+            color_format: COLOR_FORMAT,
+            depth: Some(depth),
+            cull,
+            blend,
+            instance_schema: program.vertex_schema(),
+        },
+    )
 }
 
-/// The depth program's pipeline: shadow casters into an atlas, drawing
-/// both faces so open meshes cast too.
-fn depth_pipeline<B: GpuBackend>(backend: &mut B) -> PipelineId {
-    let program = SceneProgram::Depth;
-    backend
-        .create_pipeline(
-            &PipelineDesc {
-                label: "scene-shadow",
-                builtin: BuiltinShader::Scene,
-                variant: program as u32,
-                code: scene_program_code(program, B::SHADER_LANG),
-                vertex_entry: "vertex_main",
-                fragment_entry: "fragment_main",
-                color_format: SHADOW_FORMAT,
-                depth: Some(DepthState::REVERSED),
-                cull: CullMode::None,
-                blend: BlendMode::Replace,
-                instance_schema: program.vertex_schema(),
-            },
-            &VertexLayout::LAYOUT,
-        )
-        .expect("the scene vertex matches the depth program's schema")
+/// The depth program's pipeline over a `skinned` mesh or not: shadow
+/// casters into an atlas, drawing both faces so open meshes cast too.
+fn depth_pipeline<B: GpuBackend>(backend: &mut B, skinned: bool) -> PipelineId {
+    let program = if skinned {
+        SceneProgram::SkinnedDepth
+    } else {
+        SceneProgram::Depth
+    };
+    scene_pipeline(
+        backend,
+        &PipelineDesc {
+            label: "scene-shadow",
+            builtin: BuiltinShader::Scene,
+            variant: program as u32,
+            code: scene_program_code(program, B::SHADER_LANG),
+            vertex_entry: "vertex_main",
+            fragment_entry: "fragment_main",
+            color_format: SHADOW_FORMAT,
+            depth: Some(DepthState::REVERSED),
+            cull: CullMode::None,
+            blend: BlendMode::Replace,
+            instance_schema: program.vertex_schema(),
+        },
+    )
 }
 
-/// A mesh's buffers on the device.
+/// The pipeline `desc` describes, over its program's vertex layout.
+fn scene_pipeline<B: GpuBackend>(backend: &mut B, desc: &PipelineDesc) -> PipelineId {
+    let layout = if desc.instance_schema.attributes.len() > VertexLayout::LAYOUT.fields.len() {
+        &SkinnedLayout::LAYOUT
+    } else {
+        &VertexLayout::LAYOUT
+    };
+    backend
+        .create_pipeline(desc, layout)
+        .expect("the scene vertex layouts match their programs' schemas")
+}
+
+/// A mesh's buffers on the device: `vertex_bytes`, and `count` indices
+/// `index_bytes` of `format`.
 fn upload<B: GpuBackend>(
     backend: &mut B,
-    vertices: &[SceneVertex],
+    vertex_bytes: &[u8],
     index_bytes: &[u8],
     format: IndexFormat,
     count: usize,
 ) -> GpuMesh {
-    let mut bytes = vec![0u8; vertices.len() * SceneVertex::SIZE];
-    for (v, out) in vertices
-        .iter()
-        .zip(bytes.as_chunks_mut::<{ SceneVertex::SIZE }>().0)
-    {
-        v.write_to(out);
-    }
     let buffer = |backend: &mut B, bytes: &[u8], usage, label| {
         let b = backend.create_buffer(&BufferDesc {
             size: bytes.len().max(4),
@@ -1218,7 +1540,7 @@ fn upload<B: GpuBackend>(
         b
     };
     GpuMesh {
-        vertices: buffer(backend, &bytes, BufferUsage::VERTEX, "scene-mesh"),
+        vertices: buffer(backend, vertex_bytes, BufferUsage::VERTEX, "scene-mesh"),
         indices: buffer(
             backend,
             index_bytes,
@@ -1227,6 +1549,7 @@ fn upload<B: GpuBackend>(
         ),
         format,
         count: count as u32,
-        bounds: Bounds::of(vertices),
+        bounds: Bounds::UNIT,
+        skinned: false,
     }
 }

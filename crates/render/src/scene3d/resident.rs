@@ -12,10 +12,10 @@ use viso_gpu::{AddressMode, FilterMode, GpuBackend, SamplerDesc, TextureDesc, Te
 use viso_math::Mat4;
 
 use super::model::{
-    AlphaMode, ModelAsset, ModelMaterial, ModelRig, ModelTexture, Pose, TextureRef, Wrap,
+    AlphaMode, ModelAsset, ModelMaterial, ModelRig, ModelSkin, ModelTexture, Pose, TextureRef, Wrap,
 };
 use super::{LinearStraight, MaterialId, MeshId, SceneFrame, SceneInstance, SceneLane};
-use super::{SceneVertex, premultiplied};
+use super::{MAX_JOINTS, SceneVertex, SkinnedVertex, premultiplied};
 
 /// A model uploaded with [`Renderer::create_scene_model`]: what
 /// [`SceneFrame::push_model`] draws. Release it with
@@ -40,6 +40,8 @@ pub struct SceneModel {
 struct Primitive {
     mesh: MeshId,
     material: MaterialId,
+    /// Its mesh is skinned: its joints pose it.
+    skinned: bool,
 }
 
 /// A material's maps in the order its program samples them, each with
@@ -137,6 +139,7 @@ impl SceneModel {
         let mut meshes = Vec::with_capacity(asset.meshes.len());
         let mut primitives = Vec::new();
         let mut vertices = Vec::new();
+        let mut skinned = Vec::new();
         for mesh in &asset.meshes {
             let start = primitives.len() as u32;
             for p in &mesh.primitives {
@@ -152,14 +155,28 @@ impl SceneModel {
                             tangent: p.tangents.get(i).copied().unwrap_or([0.0; 4]),
                         }),
                 );
-                bytes += (vertices.len() * size_of::<SceneVertex>() + p.indices.len() * 4) as u64;
                 let material = p
                     .material
                     .and_then(|m| materials.get(m as usize).copied())
                     .unwrap_or(default_material);
+                let mesh = if p.skinned() {
+                    skinned.clear();
+                    skinned.extend(
+                        vertices
+                            .iter()
+                            .zip(p.joints.iter().zip(&p.weights))
+                            .map(|(&v, (&j, &w))| SkinnedVertex::new(v, j, w)),
+                    );
+                    bytes += (skinned.len() * SkinnedVertex::SIZE + p.indices.len() * 4) as u64;
+                    lane.create_skinned_mesh(backend, &skinned, &p.indices)
+                } else {
+                    bytes += (vertices.len() * SceneVertex::SIZE + p.indices.len() * 4) as u64;
+                    lane.create_mesh(backend, &vertices, &p.indices)
+                };
                 primitives.push(Primitive {
-                    mesh: lane.create_mesh(backend, &vertices, &p.indices),
+                    mesh,
                     material,
+                    skinned: p.skinned(),
                 });
             }
             meshes.push(start..primitives.len() as u32);
@@ -190,6 +207,49 @@ impl SceneModel {
     /// The bytes its buffers and textures take on the device.
     pub fn bytes(&self) -> u64 {
         self.bytes
+    }
+
+    /// The box, in the model's space, its meshes stay inside in `pose`
+    /// (solved): its least and greatest corners, or `None` when it draws
+    /// nothing. Frame a camera on it, or place the model by it.
+    pub fn bounds(&self, pose: &Pose) -> Option<([f32; 3], [f32; 3])> {
+        let rig = &self.rig;
+        let mut lo = [f32::MAX; 3];
+        let mut hi = [f32::MIN; 3];
+        let mut grow = |a: [f32; 3], b: [f32; 3]| {
+            for k in 0..3 {
+                lo[k] = lo[k].min(a[k]);
+                hi[k] = hi[k].max(b[k]);
+            }
+        };
+        for &n in &rig.order {
+            let node = &rig.nodes[n as usize];
+            let Some(mesh) = node.mesh else { continue };
+            if let Some(skin) = node.skin.and_then(|s| rig.skins.get(s as usize)) {
+                if let Some((a, b)) = posed_skin_bounds(skin, pose) {
+                    grow(a, b);
+                }
+                continue;
+            }
+            let Some(&(a, b)) = rig.mesh_bounds.get(mesh as usize) else {
+                continue;
+            };
+            let world = pose
+                .world
+                .get(n as usize)
+                .copied()
+                .unwrap_or(Mat4::IDENTITY);
+            for i in 0..8 {
+                let corner = super::vec3(
+                    if i & 1 == 0 { a[0] } else { b[0] },
+                    if i & 2 == 0 { a[1] } else { b[1] },
+                    if i & 4 == 0 { a[2] } else { b[2] },
+                );
+                let p = world.transform_point(corner).to_array();
+                grow(p, p);
+            }
+        }
+        (lo[0] <= hi[0]).then_some((lo, hi))
     }
 
     /// Its hierarchy, skins and animations: what a [`Pose`] of it is posed
@@ -250,7 +310,8 @@ fn placed(m: &Mat4, color: [f32; 4]) -> SceneInstance {
 impl SceneFrame {
     /// Draws `model` in `pose` (solved against its rig), placed in the world
     /// by `transform` and tinted by `tint`: every node of the model's scene
-    /// that holds a mesh, each primitive in its material.
+    /// that holds a mesh, each primitive in its material; a skinned one
+    /// moved by its skin's joints as `pose` places them.
     pub fn push_model(
         &mut self,
         model: &SceneModel,
@@ -265,15 +326,87 @@ impl SceneFrame {
             let Some(range) = node.mesh.and_then(|m| model.meshes.get(m as usize)) else {
                 continue;
             };
+            let skin = node.skin.and_then(|s| rig.skins.get(s as usize));
             let world = match pose.world.get(n as usize) {
                 // A skinned mesh is placed by its joints, not its node.
-                Some(_) if node.skin.is_some() => *transform,
+                Some(_) if skin.is_some() => *transform,
                 Some(at) => transform.mul(at),
                 None => *transform,
             };
+            let instance = placed(&world, color);
             for p in &model.primitives[range.start as usize..range.end as usize] {
-                self.push_with(p.mesh, p.material, placed(&world, color));
+                match skin {
+                    Some(skin) if p.skinned => {
+                        self.push_posed(p.mesh, p.material, instance, skin, pose);
+                    }
+                    // A skinned mesh no skin moves is drawn in its bind pose.
+                    _ if p.skinned => {
+                        let bounds = node
+                            .mesh
+                            .and_then(|m| rig.mesh_bounds.get(m as usize))
+                            .copied()
+                            .unwrap_or(([0.0; 3], [0.0; 3]));
+                        let still = [Mat4::IDENTITY; MAX_JOINTS];
+                        self.push_skinned(p.mesh, p.material, instance, &still, bounds);
+                    }
+                    _ => self.push_with(p.mesh, p.material, instance),
+                }
             }
         }
     }
+
+    /// Adds `instance` of skinned mesh `mesh` in `material`, its joints
+    /// those of `skin` in `pose`, within the box their reach spheres span.
+    fn push_posed(
+        &mut self,
+        mesh: MeshId,
+        material: MaterialId,
+        instance: SceneInstance,
+        skin: &ModelSkin,
+        pose: &Pose,
+    ) {
+        let joint = |j: usize| -> Mat4 {
+            let at = skin.joints[j] as usize;
+            pose.world.get(at).copied().unwrap_or(Mat4::IDENTITY)
+        };
+        let Some((lo, hi)) = posed_skin_bounds(skin, pose) else {
+            return;
+        };
+        let palette = (0..skin.joints.len()).map(|j| {
+            let ibm = skin.inverse_bind.get(j).copied().unwrap_or(Mat4::IDENTITY);
+            joint(j).mul(&ibm)
+        });
+        self.push_posed_joints(mesh, material, instance, palette, (lo, hi));
+    }
+}
+
+/// The box, in the model's space, that `skin`'s vertices stay inside in
+/// `pose`: around each joint's reach sphere where the pose puts it. `None`
+/// when no joint moves a vertex.
+fn posed_skin_bounds(skin: &ModelSkin, pose: &Pose) -> Option<([f32; 3], [f32; 3])> {
+    let mut lo = [f32::MAX; 3];
+    let mut hi = [f32::MIN; 3];
+    for (j, &(centre, radius)) in skin.reach.iter().enumerate().take(skin.joints.len()) {
+        if radius <= 0.0 {
+            continue;
+        }
+        let m = pose
+            .world
+            .get(skin.joints[j] as usize)
+            .copied()
+            .unwrap_or(Mat4::IDENTITY);
+        let c = m.transform_point(super::vec3(centre[0], centre[1], centre[2]));
+        let v = &m.v;
+        let scale = (0..3)
+            .map(|col| {
+                (v[col * 4].powi(2) + v[col * 4 + 1].powi(2) + v[col * 4 + 2].powi(2)).sqrt()
+            })
+            .fold(0.0f32, f32::max);
+        let r = radius * scale;
+        for (k, c) in [c.x, c.y, c.z].into_iter().enumerate() {
+            lo[k] = lo[k].min(c - r);
+            hi[k] = hi[k].max(c + r);
+        }
+    }
+    (lo[0] <= hi[0]).then_some((lo, hi))
 }

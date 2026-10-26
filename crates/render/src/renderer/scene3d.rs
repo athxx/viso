@@ -10,7 +10,7 @@ use crate::scene::ingest::Instance;
 use crate::scene3d::SceneLane;
 use crate::scene3d::model::ModelAsset;
 use crate::scene3d::{
-    Material, MaterialId, MeshId, SceneFrame, SceneModel, SceneStats, SceneVertex,
+    Material, MaterialId, MeshId, SceneFrame, SceneModel, SceneStats, SceneVertex, SkinnedVertex,
 };
 
 /// The largest scene target edge, in pixels.
@@ -44,6 +44,19 @@ impl Renderer {
         indices: &[u32],
     ) -> MeshId {
         self.scene3d.create_mesh(backend, vertices, indices)
+    }
+
+    /// Upload a skinned mesh of `vertices` in their bind pose and
+    /// counter-clockwise triangle `indices`, for scenes to draw by the
+    /// returned id with [`SceneFrame::push_skinned`]. Released like any
+    /// mesh, with [`release_scene_mesh`](Self::release_scene_mesh).
+    pub fn create_scene_skinned_mesh<B: GpuBackend>(
+        &mut self,
+        backend: &mut B,
+        vertices: &[SkinnedVertex],
+        indices: &[u32],
+    ) -> MeshId {
+        self.scene3d.create_skinned_mesh(backend, vertices, indices)
     }
 
     /// Destroy a mesh [`create_scene_mesh`](Self::create_scene_mesh)

@@ -7,8 +7,10 @@
 //! base color and normal maps, lit by a light and a prefiltered environment.
 //! The boxes cast shadows: the depth program first draws them into a
 //! three-cascade shadow atlas from the light, which the mesh program then
-//! looks up. The CPU raster's image is the reference (`scene::shade_depth`
-//! and `scene::shade_mesh`, the expressions every scene program computes).
+//! looks up. The scene is drawn once more with its boxes skinned, posed by
+//! a joint palette. The CPU raster's image is the reference
+//! (`scene::skin_vertex`, `scene::shade_depth` and `scene::shade_mesh`, the
+//! expressions every scene program computes).
 //! On an Apple device the native MSL draws it too, and so does the web WGSL
 //! translated to MSL by `naga`, which checks the WGSL lowering the Vulkan
 //! and WebGPU backends run.
@@ -18,8 +20,8 @@ use viso_gpu::backend::{
     RenderTarget,
 };
 use viso_gpu::scene::{
-    self, ENV_HEIGHT, ENV_WIDTH, FrameUniforms, MATERIAL_NORMAL_MAP, MaterialUniforms,
-    SHADOW_CASCADES, SceneInstance, SceneProgram, SceneVertex,
+    self, ENV_HEIGHT, ENV_WIDTH, FrameUniforms, MATERIAL_NORMAL_MAP, MAX_JOINTS, MaterialUniforms,
+    SHADOW_CASCADES, SceneInstance, SceneProgram, SceneVertex, SkinnedVertex,
 };
 use viso_gpu::{
     AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BufferUsage, BuiltinShader,
@@ -35,6 +37,17 @@ struct Vertex {
     normal: [f32; 3],
     uv: [f32; 2],
     tangent: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, GpuPod)]
+struct SkinnedLayout {
+    position: [f32; 3],
+    normal: [f32; 3],
+    uv: [f32; 2],
+    tangent: [f32; 4],
+    joints: [u32; 2],
+    weights: [u32; 2],
 }
 
 const W: u32 = 96;
@@ -300,14 +313,47 @@ fn bytes<T>(items: &[T], write: impl Fn(&T, &mut [u8]), size: usize) -> Vec<u8> 
     out
 }
 
+/// The cube's vertices skinned: its top follows a joint that twists and
+/// lifts it, its bottom a blend of the rest pose and a joint that widens it.
+fn skinned_cube(vertices: &[SceneVertex]) -> Vec<SkinnedVertex> {
+    vertices
+        .iter()
+        .map(|&v| {
+            if v.position[1] > 0.0 {
+                SkinnedVertex::new(v, [5, 0, 0, 0], [0.7, 0.3, 0.0, 0.0])
+            } else {
+                SkinnedVertex::new(v, [0, 0, 0, 2], [0.5, 0.0, 0.0, 0.5])
+            }
+        })
+        .collect()
+}
+
+/// The joint palette the skinned cube is posed by: joint 5 turned about
+/// `y` and lifted, joint 2 wider along `x`, every other one at rest.
+fn palette() -> Vec<[f32; 4]> {
+    let mut rows = Vec::with_capacity(MAX_JOINTS * 3);
+    for _ in 0..MAX_JOINTS {
+        rows.extend([
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+        ]);
+    }
+    let (s, c) = 0.6f32.sin_cos();
+    rows[15..18].copy_from_slice(&[[c, 0.0, s, 0.1], [0.0, 1.0, 0.0, 0.3], [-s, 0.0, c, 0.0]]);
+    rows[6] = [1.3, 0.0, 0.0, 0.0];
+    rows
+}
+
 /// The scene drawn by `gpu` with the mesh program `code` — its shadow
-/// first drawn with the depth program `depth_code` when `shadows` — as
-/// BGRA8 bytes read back by `read`.
+/// first drawn with the depth program `depth_code` when `shadows`, its
+/// boxes skinned when `skinned` — as BGRA8 bytes read back by `read`.
 fn draw<B: GpuBackend>(
     gpu: &mut B,
     code: ShaderCode,
     depth_code: ShaderCode,
     shadows: bool,
+    skinned: bool,
     read: impl Fn(&mut B, viso_gpu::TextureId) -> Vec<u8>,
 ) -> Vec<u8> {
     let target = gpu.create_texture(&TextureDesc {
@@ -334,7 +380,30 @@ fn draw<B: GpuBackend>(
         b
     };
     let (vertices, indices) = cube();
-    let vertex_bytes = bytes(&vertices, SceneVertex::write_to, SceneVertex::SIZE);
+    let vertex_bytes = if skinned {
+        bytes(
+            &skinned_cube(&vertices),
+            SkinnedVertex::write_to,
+            SkinnedVertex::SIZE,
+        )
+    } else {
+        bytes(&vertices, SceneVertex::write_to, SceneVertex::SIZE)
+    };
+    let palette_bytes: Vec<u8> = palette()
+        .iter()
+        .flatten()
+        .flat_map(|f| f.to_le_bytes())
+        .collect();
+    let (mesh_program, depth_program) = if skinned {
+        (SceneProgram::SkinnedMesh, SceneProgram::SkinnedDepth)
+    } else {
+        (SceneProgram::Mesh, SceneProgram::Depth)
+    };
+    let layout = if skinned {
+        &SkinnedLayout::LAYOUT
+    } else {
+        &Vertex::LAYOUT
+    };
     let index_bytes: Vec<u8> = indices.iter().flat_map(|i| i.to_le_bytes()).collect();
     let instances = instances();
     let instance_bytes = bytes(&instances, SceneInstance::write_to, SceneInstance::SIZE);
@@ -353,6 +422,11 @@ fn draw<B: GpuBackend>(
     let instance_buffer = buffer(gpu, &instance_bytes, BufferUsage::INSTANCE);
     let frame = buffer(gpu, &frame_bytes, BufferUsage::UNIFORM);
     let material = buffer(gpu, &material_bytes, BufferUsage::UNIFORM);
+    let skin = if skinned {
+        buffer(gpu, &palette_bytes, BufferUsage::UNIFORM)
+    } else {
+        material
+    };
     let mipped = |gpu: &mut B, levels: &[Vec<u8>], format| {
         let refs: Vec<&[u8]> = levels.iter().map(Vec::as_slice).collect();
         gpu.create_texture_mipped(
@@ -445,7 +519,7 @@ fn draw<B: GpuBackend>(
             bindings: vec![
                 Binding::Uniform(frame),
                 Binding::Uniform(material),
-                Binding::Uniform(material),
+                Binding::Uniform(skin),
                 Binding::Texture(base),
                 Binding::Texture(white),
                 Binding::Texture(normal),
@@ -467,7 +541,7 @@ fn draw<B: GpuBackend>(
                 &PipelineDesc {
                     label: "scene-shadow",
                     builtin: BuiltinShader::Scene,
-                    variant: SceneProgram::Depth as u32,
+                    variant: depth_program as u32,
                     code: depth_code,
                     vertex_entry: "vertex_main",
                     fragment_entry: "fragment_main",
@@ -475,9 +549,9 @@ fn draw<B: GpuBackend>(
                     depth: Some(DepthState::REVERSED),
                     cull: CullMode::None,
                     blend: BlendMode::Replace,
-                    instance_schema: scene::VERTEX_SCHEMA,
+                    instance_schema: depth_program.vertex_schema(),
                 },
-                &Vertex::LAYOUT,
+                layout,
             )
             .expect("the vertex layout matches");
         let commands: Vec<DrawCommand> = (0..SHADOW_CASCADES)
@@ -522,7 +596,7 @@ fn draw<B: GpuBackend>(
             &PipelineDesc {
                 label: "scene",
                 builtin: BuiltinShader::Scene,
-                variant: 0,
+                variant: mesh_program as u32,
                 code,
                 vertex_entry: "vertex_main",
                 fragment_entry: "fragment_main",
@@ -530,9 +604,9 @@ fn draw<B: GpuBackend>(
                 depth: Some(DepthState::REVERSED),
                 cull: CullMode::Back,
                 blend: BlendMode::Replace,
-                instance_schema: scene::VERTEX_SCHEMA,
+                instance_schema: mesh_program.vertex_schema(),
             },
-            &Vertex::LAYOUT,
+            layout,
         )
         .expect("the vertex layout matches");
     // One draw per instance, nearest first: the depth test hides what is
@@ -614,16 +688,24 @@ fn shot(name: &str, image: &[u8]) {
     }
 }
 
-fn cpu_image() -> Vec<u8> {
+fn cpu_image(skinned: bool) -> Vec<u8> {
     let mut gpu = CpuRaster::new();
     let image = draw(
         &mut gpu,
         ShaderCode::None,
         ShaderCode::None,
         true,
+        skinned,
         |gpu, t| gpu.read_texture(t),
     );
-    shot("lane-cpu", &image);
+    shot(
+        if skinned {
+            "lane-cpu-skinned"
+        } else {
+            "lane-cpu"
+        },
+        &image,
+    );
     image
 }
 
@@ -636,10 +718,11 @@ fn the_boxes_shadow_the_ground() {
             ShaderCode::None,
             ShaderCode::None,
             false,
+            false,
             |gpu, t| gpu.read_texture(t),
         )
     };
-    let shadowed = cpu_image();
+    let shadowed = cpu_image(false);
     // Pixels the shadow darkens a lot; none it brightens.
     let mut darker = 0;
     for (a, b) in lit
@@ -658,8 +741,16 @@ fn the_boxes_shadow_the_ground() {
 }
 
 #[test]
+fn the_joints_move_a_skinned_mesh() {
+    let rest = cpu_image(false);
+    let posed = cpu_image(true);
+    let (off, _) = compare(&rest, &posed, 8);
+    assert!(off > 0.1, "{:.2}% of pixels moved", off * 100.0);
+}
+
+#[test]
 fn the_cpu_raster_draws_the_lit_scene() {
-    let image = cpu_image();
+    let image = cpu_image(false);
     let at = |x: u32, y: u32| {
         let i = ((y * W + x) * 4) as usize;
         [image[i + 2], image[i + 1], image[i]]
@@ -698,18 +789,38 @@ mod metal {
 
     #[test]
     fn metal_draws_what_the_cpu_raster_draws() {
-        let reference = cpu_image();
-        let mut gpu = MetalBackend::new();
-        let code = shader_code(PrimitiveKind::Scene, ShaderLang::Msl).unwrap();
-        let depth = scene_program_code(SceneProgram::Depth, ShaderLang::Msl);
-        let image = draw(&mut gpu, code, depth, true, |gpu, t| gpu.read_texture(t));
-        shot("lane-metal", &image);
-        let (off, worst) = compare(&reference, &image, 3);
-        assert!(
-            off < 0.01,
-            "{:.2}% of pixels differ, worst by {worst}",
-            off * 100.0
-        );
+        for skinned in [false, true] {
+            let reference = cpu_image(skinned);
+            let mut gpu = MetalBackend::new();
+            let (code, depth) = if skinned {
+                (
+                    scene_program_code(SceneProgram::SkinnedMesh, ShaderLang::Msl),
+                    scene_program_code(SceneProgram::SkinnedDepth, ShaderLang::Msl),
+                )
+            } else {
+                (
+                    shader_code(PrimitiveKind::Scene, ShaderLang::Msl).unwrap(),
+                    scene_program_code(SceneProgram::Depth, ShaderLang::Msl),
+                )
+            };
+            let image = draw(&mut gpu, code, depth, true, skinned, |gpu, t| {
+                gpu.read_texture(t)
+            });
+            shot(
+                if skinned {
+                    "lane-metal-skinned"
+                } else {
+                    "lane-metal"
+                },
+                &image,
+            );
+            let (off, worst) = compare(&reference, &image, 3);
+            assert!(
+                off < 0.01,
+                "skinned {skinned}: {:.2}% of pixels differ, worst by {worst}",
+                off * 100.0
+            );
+        }
     }
 
     /// Scene program `program`'s web WGSL, translated to MSL with vertex
@@ -780,6 +891,7 @@ mod metal {
             fake_missing_bindings: false,
             ..Default::default()
         };
+        let vertices = program.vertex_schema();
         let mapping = |schema: viso_gpu::InstanceSchema, first: u32| {
             let mut offset = 0;
             schema
@@ -787,9 +899,10 @@ mod metal {
                 .iter()
                 .enumerate()
                 .map(|(i, a)| {
-                    let format = match a.format.size() {
-                        8 => naga_types::VertexFormat::Float32x2,
-                        12 => naga_types::VertexFormat::Float32x3,
+                    let format = match a.format {
+                        viso_gpu::AttrFormat::Float2 => naga_types::VertexFormat::Float32x2,
+                        viso_gpu::AttrFormat::Float3 => naga_types::VertexFormat::Float32x3,
+                        viso_gpu::AttrFormat::Uint2 => naga_types::VertexFormat::Uint32x2,
                         _ => naga_types::VertexFormat::Float32x4,
                     };
                     let m = msl::AttributeMapping {
@@ -807,18 +920,19 @@ mod metal {
             vertex_buffer_mappings: vec![
                 msl::VertexBufferMapping {
                     id: 0,
-                    stride: SceneVertex::SIZE as u32,
+                    stride: if program.skinned() {
+                        SkinnedVertex::SIZE
+                    } else {
+                        SceneVertex::SIZE
+                    } as u32,
                     step_mode: msl::VertexBufferStepMode::ByVertex,
-                    attributes: mapping(scene::VERTEX_SCHEMA, 0),
+                    attributes: mapping(vertices, 0),
                 },
                 msl::VertexBufferMapping {
                     id: 1,
                     stride: SceneInstance::SIZE as u32,
                     step_mode: msl::VertexBufferStepMode::ByInstance,
-                    attributes: mapping(
-                        scene::INSTANCE_SCHEMA,
-                        scene::VERTEX_SCHEMA.attributes.len() as u32,
-                    ),
+                    attributes: mapping(scene::INSTANCE_SCHEMA, vertices.attributes.len() as u32),
                 },
             ],
             ..Default::default()
@@ -829,22 +943,28 @@ mod metal {
 
     #[test]
     fn the_translated_wgsl_draws_what_the_msl_draws() {
-        let reference = cpu_image();
-        let msl = Box::leak(translated(SceneProgram::Mesh).into_boxed_str());
-        let depth = Box::leak(translated(SceneProgram::Depth).into_boxed_str());
-        let mut gpu = MetalBackend::new();
-        let image = draw(
-            &mut gpu,
-            ShaderCode::Msl(msl),
-            ShaderCode::Msl(depth),
-            true,
-            |gpu, t| gpu.read_texture(t),
-        );
-        let (off, worst) = compare(&reference, &image, 3);
-        assert!(
-            off < 0.01,
-            "{:.2}% of pixels differ, worst by {worst}",
-            off * 100.0
-        );
+        for (skinned, mesh, depth) in [
+            (false, SceneProgram::Mesh, SceneProgram::Depth),
+            (true, SceneProgram::SkinnedMesh, SceneProgram::SkinnedDepth),
+        ] {
+            let reference = cpu_image(skinned);
+            let msl = Box::leak(translated(mesh).into_boxed_str());
+            let depth = Box::leak(translated(depth).into_boxed_str());
+            let mut gpu = MetalBackend::new();
+            let image = draw(
+                &mut gpu,
+                ShaderCode::Msl(msl),
+                ShaderCode::Msl(depth),
+                true,
+                skinned,
+                |gpu, t| gpu.read_texture(t),
+            );
+            let (off, worst) = compare(&reference, &image, 3);
+            assert!(
+                off < 0.01,
+                "skinned {skinned}: {:.2}% of pixels differ, worst by {worst}",
+                off * 100.0
+            );
+        }
     }
 }

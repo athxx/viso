@@ -2,13 +2,15 @@
 //! renders its slot's frame into the slot's target and composites it into its
 //! rect, renders again only when the frame or the size changed, culls what the
 //! camera cannot see, grows its target in 64-pixel steps, draws unlit meshes
-//! in their own color, and blends sprites over the meshes they are in front
-//! of.
+//! in their own color, blends sprites over the meshes they are in front
+//! of, and moves a skinned mesh's vertices by its joints.
 
 use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle, SurfaceId};
-use viso_math::{LinearStraight, Quat, Vec3, vec3};
+use viso_math::{LinearStraight, Mat4, Quat, Vec3, vec3};
 use viso_render::damage::Region;
-use viso_render::scene3d::{Camera, SceneFrame, SceneSprite, Shadows, Shape, instance};
+use viso_render::scene3d::{
+    Camera, MaterialId, SceneFrame, SceneSprite, Shadows, Shape, SkinnedVertex, instance,
+};
 use viso_render::{Border, Primitive, Quad, Rect, Renderer, Rgba, SceneDraw, SceneSlot};
 
 const W: u32 = 96;
@@ -464,4 +466,77 @@ fn a_cube_shadows_the_ground_beside_it() {
     shadowed.present(&stream(full, 1));
     let stats = shadowed.r.take_scene_stats();
     assert_eq!((stats.passes, stats.shadow_passes), (0, 0));
+}
+
+/// A red cube whose top follows joint 1, `lift` along `x`, seen from the
+/// front: its skinned mesh, drawn by `push_skinned` in the lit material.
+fn skinned_frame(k: &mut Kit, lift: f32, bounds: ([f32; 3], [f32; 3])) {
+    let (vertices, indices) = Shape::Cube.geometry();
+    let skinned: Vec<SkinnedVertex> = vertices
+        .iter()
+        .map(|&v| {
+            let top = v.position[1] > 0.0;
+            SkinnedVertex::new(v, [u16::from(top), 0, 0, 0], [1.0, 0.0, 0.0, 0.0])
+        })
+        .collect();
+    let indices: Vec<u32> = indices.iter().map(|&i| u32::from(i)).collect();
+    let mesh =
+        k.r.create_scene_skinned_mesh(&mut k.gpu, &skinned, &indices);
+    let mut frame = SceneFrame::new();
+    frame.camera = Camera {
+        eye: vec3(0.0, 0.0, 6.0),
+        target: Vec3::ZERO,
+        ..Camera::default()
+    };
+    frame.background = LinearStraight::new(0.0, 0.0, 1.0, 1.0);
+    frame.lighting.direction = vec3(0.0, 0.0, 1.0);
+    let joints = [Mat4::IDENTITY, Mat4::from_translation(vec3(lift, 0.0, 0.0))];
+    frame.push_skinned(
+        mesh,
+        MaterialId::LIT,
+        instance(
+            Vec3::ZERO,
+            Quat::IDENTITY,
+            vec3(1.0, 1.0, 1.0),
+            LinearStraight::new(1.0, 0.0, 0.0, 1.0),
+        ),
+        &joints,
+        bounds,
+    );
+    k.r.swap_scene(SLOT, &mut frame);
+}
+
+#[test]
+fn a_skinned_mesh_follows_its_joints() {
+    let full = rect(0.0, 0.0, W as f32, H as f32);
+    let posed_bounds = ([-1.0, -1.0, -1.0], [2.5, 1.0, 1.0]);
+    let mut rest = Kit::new();
+    skinned_frame(&mut rest, 0.0, posed_bounds);
+    let rest_px = rest.present(&stream(full, 1));
+    let mut posed = Kit::new();
+    skinned_frame(&mut posed, 1.5, posed_bounds);
+    let posed_px = posed.present(&stream(full, 1));
+    if let Some(dir) = std::env::var_os("VISO_SCENE_SHOTS") {
+        let png = viso_image::snapshot::Image::from_bgra8(W, H, &posed_px).to_png();
+        std::fs::write(std::path::Path::new(&dir).join("lane-skinned.png"), png).unwrap();
+    }
+    let stats = posed.r.take_scene_stats();
+    assert_eq!((stats.draws, stats.instances, stats.culled), (1, 1, 0));
+    // The cube's top right of its rest place is red only once its top
+    // joint moved it there; its bottom stays where it was.
+    let red = |px: &[u8], x, y| {
+        let c = at(px, x, y);
+        u32::from(c[0]) > u32::from(c[2]) + 60
+    };
+    let (top_right, bottom) = ((70, 34), (48, 60));
+    assert!(!red(&rest_px, top_right.0, top_right.1));
+    assert!(red(&posed_px, top_right.0, top_right.1));
+    assert!(red(&rest_px, bottom.0, bottom.1) && red(&posed_px, bottom.0, bottom.1));
+
+    // Bounds out of view cull it.
+    let mut away = Kit::new();
+    skinned_frame(&mut away, 0.0, ([40.0, 0.0, 0.0], [41.0, 1.0, 1.0]));
+    away.present(&stream(full, 1));
+    let stats = away.r.take_scene_stats();
+    assert_eq!((stats.draws, stats.culled), (0, 1), "{stats:?}");
 }
