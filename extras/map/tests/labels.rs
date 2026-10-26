@@ -340,6 +340,90 @@ fn bent_labels_repeat_along_a_long_line_and_keep_clear_of_each_other() {
     }
 }
 
+/// A terrain tile of a bowl about `low` (a world point), Terrarium-encoded:
+/// rising a meter in `run` across, to `top` meters.
+fn bowl_tile(tile: TileId, low: WorldPoint, top: f64, run: f64) -> Vec<u8> {
+    let n = 256u32;
+    let span = f64::from(1u32 << tile.z);
+    let mut bgra = Vec::with_capacity((n * n * 4) as usize);
+    for y in 0..n {
+        for x in 0..n {
+            let wx = (f64::from(tile.x) + (f64::from(x) + 0.5) / f64::from(n)) / span;
+            let wy = (f64::from(tile.y) + (f64::from(y) + 0.5) / f64::from(n)) / span;
+            // A world unit is about 24 500 km at Berlin's latitude.
+            let d = (wx - low.x).hypot(wy - low.y) * 24_500_000.0;
+            let meters = (d / run).min(top);
+            let v = meters + 32768.0;
+            let r = (v / 256.0).floor();
+            let g = (v - r * 256.0).floor();
+            let b = ((v - r * 256.0 - g) * 256.0).round().min(255.0);
+            bgra.extend_from_slice(&[b as u8, g as u8, r as u8, 255]);
+        }
+    }
+    support::png(n, n, &bgra)
+}
+
+#[test]
+fn tilted_over_relief_a_bent_label_stands_on_it() {
+    use viso_map::RasterSource;
+    use viso_map::style::{DemEncoding, Terrain};
+    let camera = Camera::new(MIDDLE, 15.0)
+        .with_bearing(20.0)
+        .with_pitch(50.0);
+    // The ground rising all round the view's middle, so the label away
+    // from it stands high.
+    let low = MIDDLE.to_world();
+    let mut runs = Vec::new();
+    for relief in [false, true] {
+        let (app, handle) = run(
+            move |slot| {
+                let mut style = builtin::openmaptiles_light();
+                if relief {
+                    style = style.with_terrain(Terrain::new("dem", DemEncoding::Terrarium));
+                }
+                map_view(|tile: TileId| viso_map::Reply::ready(Ok(Some(tile_of(tile)))))
+                    .camera(camera)
+                    .style(style)
+                    .raster_source(
+                        "dem",
+                        RasterSource::new(
+                            move |tile: TileId| {
+                                viso_map::Reply::ready(Ok(Some(bowl_tile(tile, low, 600.0, 3.0))))
+                            },
+                            0,
+                            14,
+                        ),
+                    )
+                    .languages(&["en"])
+                    .handle(slot)
+            },
+            90,
+        );
+        picture(
+            &app,
+            if relief {
+                "labels-curved-on-relief"
+            } else {
+                "labels-curved-flat-p50"
+            },
+        );
+        let bent = handle.label_glyphs();
+        let label = bent
+            .into_iter()
+            .find(|b| b.text == "Curved Avenue")
+            .unwrap_or_else(|| panic!("relief {relief}: no bent label"));
+        let n = label.glyphs.len() as f32;
+        let mid = label
+            .glyphs
+            .iter()
+            .fold([0.0, 0.0], |m, g| [m[0] + g.at[0] / n, m[1] + g.at[1] / n]);
+        runs.push(mid);
+    }
+    // Raised on the rising ground, it shows higher in the view than on the
+    // plane.
+    assert!(runs[1][1] + 10.0 < runs[0][1], "{runs:?}");
+}
+
 /// Real streets of Luxembourg at several zooms, turns and tilts, when
 /// `VISO_MAP_LUXEMBOURG` names a directory of their tiles.
 #[test]
