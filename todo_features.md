@@ -951,8 +951,8 @@ viso-ext.
   images and the part over them, and every flat part's box spans the tile's square,
   risen a step per order, so the scene's back-to-front blending draws them in the
   style's order, finer images over coarser.
-  Open: markers and labels are placed on the plane at the focus's height,
-  not on the relief under each.
+  Over relief, labels, markers and the puck stand on the ground under each
+  (`View::to_view_at` projects a point raised over the focus's plane).
 - [x] Performance: a pan or rotate frame uploads nothing and allocates nothing; tile
   build and label budgets; memory caps; benches beside makepad's map example.
   `tests/alloc.rs` arms a counting allocator around the view's own work (its pointer

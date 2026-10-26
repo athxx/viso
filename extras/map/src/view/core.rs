@@ -761,8 +761,16 @@ impl Core {
             rebase,
             &self.me,
         );
-        self.overlays
-            .apply(s, &self.view, band, self.anchor, rebase, &self.me);
+        let lift = self.tilted.lift(&self.view, tz);
+        self.overlays.apply(
+            s,
+            &self.view,
+            band,
+            self.anchor,
+            rebase,
+            &self.me,
+            lift.as_ref(),
+        );
         if self.view.tilt().is_some() {
             s.store.set_hidden(self.camera_node, true);
             let drawn: Vec<(Slot, Ready)> = self

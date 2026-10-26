@@ -517,6 +517,80 @@ fn a_translucent_fill_blends_over_the_tilted_ground_and_a_route_over_it() {
     assert!(c[0].abs_diff(c[2]) < 40, "{c:?}");
 }
 
+fn red_box(cx: &mut BuildCx<'_>) {
+    cx.stack(
+        viso::ui::StackStyle {
+            size: viso::ui::Size::fixed(20.0, 30.0),
+            style: viso::ui::BoxStyle::solid(viso::render::Rgba::new(1.0, 0.0, 0.0, 1.0)),
+            ..Default::default()
+        },
+        |_| {},
+    );
+}
+
+#[test]
+fn a_marker_stands_on_the_relief_under_it() {
+    use viso_map::Marker;
+    let start = Camera::new(LngLat::new(13.40, 52.52), 12.5)
+        .with_bearing(-30.0)
+        .with_pitch(55.0);
+    let c = start.center.to_world();
+    let ridge = c.x + 150.0 / (512.0 * 12.5f64.exp2());
+    // On the ridge's crest, far over the ground at the focus.
+    let crest = WorldPoint::new(ridge, c.y).to_lng_lat();
+    let mut bottoms = Vec::new();
+    for relief in [false, true] {
+        let (app, handle) = run(
+            move |slot| {
+                let mut style = builtin::openmaptiles_light();
+                if relief {
+                    style = style.with_terrain(
+                        Terrain::new("dem", DemEncoding::Terrarium).exaggeration(2.0),
+                    );
+                }
+                map_view(|tile: TileId| viso_map::Reply::ready(Ok(Some(support::synthetic(tile)))))
+                    .camera(start)
+                    .style(style)
+                    .raster_source(
+                        "dem",
+                        RasterSource::new(
+                            move |tile: TileId| {
+                                viso_map::Reply::ready(Ok(Some(ridge_tile(
+                                    tile, ridge, 600.0, 6.0,
+                                ))))
+                            },
+                            0,
+                            12,
+                        ),
+                    )
+                    .marker(Marker::new(1, crest, red_box))
+                    .handle(slot)
+            },
+            redraws(50),
+        );
+        let name = if relief {
+            "tilt-marker-ridge"
+        } else {
+            "tilt-marker-flat"
+        };
+        let px = picture(&app, name);
+        // The lowest red row in the marker's column.
+        let at = handle.view().project(crest);
+        let bottom = (0..H as usize)
+            .rev()
+            .find(|&y| {
+                let c = rgb_at(&px, [at[0], y as f64]);
+                c[0] > 200 && c[1] < 60 && c[2] < 60
+            })
+            .unwrap_or_else(|| panic!("{name}: no marker over {at:?}"));
+        bottoms.push((bottom as f64, at[1]));
+    }
+    // Flat, it stands where the plane puts its place; on the ridge, higher.
+    let ((flat, plane), (raised, _)) = (bottoms[0], bottoms[1]);
+    assert!((flat - plane).abs() < 3.0, "{bottoms:?}");
+    assert!(raised + 15.0 < flat, "{bottoms:?}");
+}
+
 #[test]
 fn the_ground_drapes_over_the_terrain_and_shades_its_slopes() {
     let start = Camera::new(LngLat::new(13.40, 52.52), 12.5)

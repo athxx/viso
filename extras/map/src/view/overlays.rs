@@ -18,6 +18,7 @@ use viso_ui::{
 };
 
 use super::core::Core;
+use super::tilted::Lift;
 use crate::camera::{TILE_SIZE, View};
 use crate::geo::{LngLat, WorldPoint};
 use crate::overlay::{
@@ -457,6 +458,9 @@ impl Overlays {
 
     /// Writes the overlays into the tree for `view`, its tiles placed for
     /// level `band` about `anchor`; `placed` when they were placed anew.
+    /// Tilted over relief, `lift` stands the puck and the markers on the
+    /// ground under them.
+    #[allow(clippy::too_many_arguments)]
     pub fn apply(
         &mut self,
         s: &mut StructureCx<'_>,
@@ -465,15 +469,20 @@ impl Overlays {
         anchor: [f64; 2],
         placed: bool,
         me: &Weak<RefCell<Core>>,
+        lift: Option<&Lift<'_>>,
     ) {
+        let at = |w: WorldPoint| match lift {
+            Some(l) => l.to_view(view, w),
+            None => view.to_view(w),
+        };
         for node in self.free.drain(..) {
             let mut scratch = Vec::new();
             s.store.free_tree(node, s.effects, &mut scratch);
         }
         let cam = view.camera.center.to_world();
         self.apply_shapes(s, cam, band, anchor, placed);
-        self.apply_puck(s, view, cam, band, anchor, placed);
-        self.apply_markers(s, view, cam, band, me);
+        self.apply_puck(s, view, &at, cam, band, anchor, placed);
+        self.apply_markers(s, &at, cam, band, me);
     }
 
     fn apply_shapes(
@@ -536,10 +545,12 @@ impl Overlays {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn apply_puck(
         &mut self,
         s: &mut StructureCx<'_>,
         view: &View,
+        to_view: &dyn Fn(WorldPoint) -> [f64; 2],
         cam: WorldPoint,
         band: u8,
         anchor: [f64; 2],
@@ -590,7 +601,7 @@ impl Overlays {
         if let (Some(p), Some((node, _))) = (self.puck, self.puck_node) {
             let mut w = p.at.to_world();
             w.x += wrap_near(cam, w);
-            let at = view.to_view(w);
+            let at = to_view(w);
             let half = f64::from(PUCK_SIDE) / 2.0;
             s.store.set_translate(
                 node,
@@ -611,7 +622,7 @@ impl Overlays {
     fn apply_markers(
         &mut self,
         s: &mut StructureCx<'_>,
-        view: &View,
+        to_view: &dyn Fn(WorldPoint) -> [f64; 2],
         cam: WorldPoint,
         band: u8,
         me: &Weak<RefCell<Core>>,
@@ -652,12 +663,12 @@ impl Overlays {
             };
             let mut w = e.at;
             w.x += wrap_near(cam, w);
-            pin(s, node, view.to_view(w), &mut e.shown);
+            pin(s, node, to_view(w), &mut e.shown);
         }
         for c in &mut self.clusters {
             let mut w = c.at;
             w.x += wrap_near(cam, w);
-            pin(s, c.node, view.to_view(w), &mut c.shown);
+            pin(s, c.node, to_view(w), &mut c.shown);
         }
     }
 

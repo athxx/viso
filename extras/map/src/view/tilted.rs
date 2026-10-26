@@ -190,6 +190,11 @@ impl Lift<'_> {
         self.focus
     }
 
+    /// Where `view` shows world point `w` on the relief under it.
+    pub fn to_view(&self, view: &View, w: WorldPoint) -> [f64; 2] {
+        view.to_view_at(w, self.points(view, w, self.meters(w)))
+    }
+
     /// How far over the plane `view` projects onto ground `meters` high at
     /// `w` lies, in points of its zoom.
     pub fn points(&self, view: &View, w: WorldPoint, meters: f64) -> f64 {
