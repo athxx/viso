@@ -252,6 +252,7 @@ pub(crate) fn control_cells(
         look.border,
         look.shadow,
         look.backdrop,
+        look.ripple,
         semantics.label,
         semantics.hint,
         semantics.value,
@@ -340,8 +341,9 @@ pub(crate) fn control_cells(
 /// `options`, `free_text` and `empty_text` — a search field's `suggestions`
 /// are its `options` — a search field's `debounce`, an image's `animate`,
 /// a video's `playing`, `looping`, `muted`, `volume`, `rate`, `controls`
-/// and `fullscreen`, and a camera view's `mirror`.
-const SHOWN: usize = 78;
+/// and `fullscreen`, a camera view's `mirror`, and its `backdrop` and
+/// `ripple`.
+const SHOWN: usize = 79;
 
 /// The input of each value a node shows, in order.
 const SHOWN_INPUTS: [ControlInput; SHOWN] = [
@@ -423,15 +425,17 @@ const SHOWN_INPUTS: [ControlInput; SHOWN] = [
     ControlInput::Fullscreen,
     ControlInput::Mirror,
     ControlInput::Backdrop,
+    ControlInput::Ripple,
 ];
 
 /// Where a video's `controls` and `fullscreen` sit among the values a node
 /// shows.
-const CONTROLS: usize = SHOWN - 4;
-const FULLSCREEN: usize = SHOWN - 3;
+const CONTROLS: usize = SHOWN - 5;
+const FULLSCREEN: usize = SHOWN - 4;
 
-/// Where its `backdrop` sits among the values a node shows.
-const BACKDROP: usize = SHOWN - 1;
+/// Where its `backdrop` and `ripple` sit among the values a node shows.
+const BACKDROP: usize = SHOWN - 2;
+const RIPPLE: usize = SHOWN - 1;
 
 /// Where its `translate` sits among the values a node shows.
 const TRANSLATE: usize = 35;
@@ -736,6 +740,7 @@ impl Shown {
             fullscreen,
             mirror,
             backdrop,
+            ripple,
         ] = &shows;
         let access_key = access_key.as_str().and_then(|key| key.chars().next());
         let spanned = crate::text_style::spans(pieces);
@@ -1019,6 +1024,12 @@ impl Shown {
                 given => frost(given),
             };
             store.set_backdrop(self.node, backdrop);
+        }
+        // A press ripples a button or a chip the platform's way, unless its
+        // `ripple` says otherwise.
+        let rippled = ripples_natively(control.kind);
+        if (shown(RIPPLE) || rippled) && (first || changed(RIPPLE)) {
+            store.set_ripple(self.node, truth(ripple, rippled));
         }
         for (at, entry, value) in [
             (
@@ -2401,6 +2412,12 @@ pub(crate) fn easing(value: &Value) -> Easing {
 /// A `Bool` value, `default` when it is none.
 fn truth(value: &Value, default: bool) -> bool {
     value.as_int().map_or(default, |v| v != 0)
+}
+
+/// Whether a press on a node of `kind` ripples when its `ripple` says
+/// nothing: a button's or a chip's, where the platform's presses do.
+fn ripples_natively(kind: ControlKind) -> bool {
+    viso_ui::feedback::NATIVE_RIPPLE && matches!(kind, ControlKind::Button | ControlKind::Chip)
 }
 
 /// An `Offset`'s `x` and `y` terms; zero for a value that is none.

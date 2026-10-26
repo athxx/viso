@@ -55,8 +55,8 @@ use std::rc::Rc;
 use viso_ui::adaptive::LayoutDirection;
 use viso_ui::{
     Access, Align, Axis, BoxStyle, BuildCx, CheckMark, CheckShape, Component, EventCx, FlexStyle,
-    Inset, Justify, Key, LeafStyle, Length, NodeId, PointerButtons, PointerPhase, Rgba, Role,
-    SemanticState, Semantics, Size, StateId, StateValue,
+    Haptic, Inset, Justify, Key, LeafStyle, Length, NodeId, PointerButtons, PointerPhase, Rgba,
+    Role, SemanticState, Semantics, Size, StateId, StateValue,
 };
 
 use super::check::INK;
@@ -189,6 +189,7 @@ fn select(cb: &SharedChange, ev: &mut EventCx<'_>, cell: StateId, index: usize) 
         return;
     }
     ev.set(cell, next);
+    ev.feedback(Haptic::Selection);
     fire(cb, ev, index);
 }
 

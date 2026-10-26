@@ -487,8 +487,15 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
 
 ## W12 — Platform extras
 
-- [ ] Permissions: camera, microphone, location, photos.
-- [ ] Location service.
+- [x] Permissions: camera, microphone, location, photos: each plugin's own `permission()` /
+  `request_permission() -> Reply<PermissionState>` (`viso-common`'s `Granted | Denied |
+  Prompt`): `viso-camera`, `viso-audio`, `viso-geolocator`, `viso-local-notification`;
+  Android tells denied from never asked. Photos come through the system pickers, which
+  need none (`viso-file-picker`). Run on macOS, Android and the web; built for iOS, Windows
+  and Linux.
+- [x] Location service: `viso-ext/viso-geolocator`: a one-off and the last known position,
+  a watch with accuracy and distance filter that ends on denial and reports the service
+  turned off, the settings pages, and a mock; run on macOS, Android and the web.
 - [ ] Gamepad backend (GameController, XInput/GameInput, evdev, web Gamepad API) into the
   game input.
 - [ ] Rich clipboard: images and HTML.
@@ -507,7 +514,12 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
   renderer's frosted material under the box's fill, outside its own fade; `BlurView` is a
   column showing the standard glass, `blur_view` in Rust; the web export writes a
   `backdrop-filter` under a flat tint (seen in a headless snapshot over coloured rows).
-- [ ] Ink/ripple press feedback as a standard primitive; haptics wired into controls.
+- [x] Ink/ripple press feedback as a standard primitive; haptics wired into controls: a
+  `ripple: Bool` on every node (on for buttons and chips on Android) spreads ink from the
+  press over the box, clipped to its corners, fading once let go; a finger's change to a
+  toggle, chip, stepper, select, segmented control or stepped slider plays the
+  platform haptic, in the DSL controls and the Rust widgets alike. Not yet seen in a
+  pixel snapshot: the scenario language has no held press.
 
 ## W14 — 3D extended (after W1)
 

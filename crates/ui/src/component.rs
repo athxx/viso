@@ -804,6 +804,9 @@ pub struct NodeStore {
     pub(crate) shadows: crate::shadow::Shadows,
     /// Cold: the nodes whose boxes are glass.
     pub(crate) backdrops: crate::backdrop::Backdrops,
+    /// Cold: the nodes a press ripples, the ripples showing and the haptic
+    /// the frame plays.
+    pub(crate) feedback: crate::feedback::Feedback,
     /// Cold: the nodes' access keys and the window's menu bar.
     pub(crate) access: crate::access::AccessKeys,
     /// The viewports coasting after a flick, and how they coast.
@@ -979,6 +982,7 @@ impl NodeStore {
         self.wakes.clear();
         self.shadows.clear();
         self.backdrops.clear();
+        self.feedback.clear();
         self.ring.clear();
         self.access.clear();
         self.roving.clear();
@@ -5583,6 +5587,7 @@ impl NodeStore {
         self.anchors.forget(i as u32);
         self.shadows.forget(i as u32);
         self.backdrops.forget(i as u32);
+        self.feedback.forget(i as u32);
         self.ring.forget(i as u32);
         self.access.forget(i as u32);
         self.roving.forget(i as u32);
@@ -7650,6 +7655,13 @@ impl<'a> BuildCx<'a> {
     /// tints what lies behind it as `backdrop` says.
     pub fn backdrop(&mut self, handle: Handle, backdrop: crate::backdrop::Backdrop) -> Handle {
         self.store.set_backdrop(handle.id, Some(backdrop));
+        handle
+    }
+
+    /// Make a press on an already-declared node spread ink over its box, or
+    /// not (default: not).
+    pub fn ripple(&mut self, handle: Handle, on: bool) -> Handle {
+        self.store.set_ripple(handle.id, on);
         handle
     }
 

@@ -46,6 +46,7 @@ const LAYOUT: &[WidgetProperty] = &[
     look("border", "Option<Border>"),
     look("shadow", "Option<Shadow>"),
     look("backdrop", "Option<Backdrop>"),
+    look("ripple", "Bool"),
     prop("styles", "List<StyleRef<T>>"),
 ];
 

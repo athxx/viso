@@ -16,8 +16,8 @@ use std::rc::Rc;
 use viso_behavior::{Aggregate, Fault, FaultKind, Value};
 
 use viso_ui::{
-    Access, DispatchPhase, EventCx, FieldEvent, Key, KeyEvent, Modifiers, NodeId, NodeStore,
-    PointerButtons, PointerPhase, field_input, number_input,
+    Access, DispatchPhase, EventCx, FieldEvent, Haptic, Key, KeyEvent, Modifiers, NodeId,
+    NodeStore, PointerButtons, PointerPhase, field_input, number_input,
     slider::{SliderInput, SliderRange, Thumb, slider_input},
     stepper::stepper_input,
 };
@@ -60,7 +60,7 @@ impl Drive for Control {
         if cx.phase() == DispatchPhase::Capture {
             return None;
         }
-        match self.kind {
+        let change = match self.kind {
             ControlKind::Check | ControlKind::Switch => toggle(self, host, scope, cx),
             ControlKind::Chip => chip(self, host, scope, cx),
             ControlKind::Stepper => stepper(self, host, scope, cx),
@@ -101,7 +101,30 @@ impl Drive for Control {
             | ControlKind::Spinner
             | ControlKind::Badge
             | ControlKind::Avatar => None,
+        };
+        if let Some(haptic) = change
+            .as_ref()
+            .and_then(|&(route, _)| feel(self.kind, route))
+        {
+            cx.feedback(haptic);
         }
+        change
+    }
+}
+
+/// The haptic a finger feels as a control of `kind` reports `route`: a tick
+/// as a selection moves. A slider's
+/// ticks are its own, as only a stepped one has detents to tick at.
+fn feel(kind: ControlKind, route: EventRoute) -> Option<Haptic> {
+    match (kind, route) {
+        (
+            ControlKind::Check | ControlKind::Switch | ControlKind::Chip | ControlKind::Stepper,
+            EventRoute::Changed,
+        )
+        | (ControlKind::Select | ControlKind::Segmented, EventRoute::SelectedChanged) => {
+            Some(Haptic::Selection)
+        }
+        _ => None,
     }
 }
 
@@ -414,10 +437,11 @@ fn slider(
         cx.request_focus(node);
     }
     let input = slider_input(cx, node, Thumb::High)?;
+    let step = read(host, control.step, scope, cx).as_float();
     let grid = SliderRange::new(
         read(host, control.min, scope, cx).as_float().unwrap_or(0.0),
         read(host, control.max, scope, cx).as_float().unwrap_or(1.0),
-        read(host, control.step, scope, cx).as_float(),
+        step,
     );
     let current = read(host, control.value, scope, cx)
         .as_float()
@@ -430,6 +454,9 @@ fn slider(
             .filter(|o| *o != current),
         input => input.apply(current, &grid, Thumb::High),
     }?;
+    if step.is_some() {
+        cx.feedback(Haptic::Selection);
+    }
     Some((EventRoute::Changed, field(Value::Float(next))))
 }
 

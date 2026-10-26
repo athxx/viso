@@ -117,6 +117,9 @@ impl NodeStore {
     /// Records the node the primary button went down on, `None` once it came
     /// up or the press was taken from it.
     pub fn set_pressed(&mut self, node: Option<NodeId>) {
+        if self.interaction_states.pressed != node {
+            self.release_ripples();
+        }
         self.interaction_states.set_pressed(node);
     }
 

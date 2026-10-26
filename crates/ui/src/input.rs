@@ -638,6 +638,7 @@ fn route_sample(
             };
             store.count_click(pointer, target, root, [ev.x, ev.y], slop);
             store.press(target, pointer);
+            store.start_ripple(target, ev.x, ev.y);
             store.arm_drag(pointer, target, [ev.x, ev.y], contact.direct);
             store.arm_hold(pointer, target, [ev.x, ev.y], contact.direct);
             store.arm_drag_source(pointer, target, [ev.x, ev.y], contact.direct);

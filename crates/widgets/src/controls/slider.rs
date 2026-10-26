@@ -59,8 +59,8 @@ use viso_ui::slider::{
     slider_input,
 };
 use viso_ui::{
-    Axis, BoxStyle, BuildCx, Component, Content, DispatchPhase, EventCx, FocusChange, LeafStyle,
-    Length, Rgba, Role, SemanticState, Semantics, Size, StackStyle, StateId, StateValue,
+    Axis, BoxStyle, BuildCx, Component, Content, DispatchPhase, EventCx, FocusChange, Haptic,
+    LeafStyle, Length, Rgba, Role, SemanticState, Semantics, Size, StackStyle, StateId, StateValue,
 };
 
 /// What runs with a slider's new value.
@@ -306,6 +306,10 @@ impl Component for Slider {
                 };
                 if let Some(next) = next {
                     ev.set(cell, StateValue::Float(next as f32));
+                    // A stepped slider ticks at each detent it reaches.
+                    if grid.step.is_some() {
+                        ev.feedback(Haptic::Selection);
+                    }
                     if let Some(f) = cb.borrow_mut().as_mut() {
                         f(ev, next as f32);
                     }
@@ -506,6 +510,9 @@ impl Component for RangeSlider {
                     return;
                 }
                 ev.set(cells[i], StateValue::Float(next as f32));
+                if grid.step.is_some() {
+                    ev.feedback(Haptic::Selection);
+                }
                 let (lo, hi) = if i == 0 { (next, other) } else { (other, next) };
                 if let Some(f) = cb.borrow_mut().as_mut() {
                     f(ev, lo as f32, hi as f32);

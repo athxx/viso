@@ -490,6 +490,10 @@ fn paint_own(store: &NodeStore, node: NodeId, world: Rect, out: &mut Vec<Primiti
         };
         paint_shadow(shadow, inner, (radius - width).max(0.0), out);
     }
+    if store.is_rippling() {
+        let body = store.check_mark(node).and_then(|m| m.body_radius(world));
+        store.paint_ripples(node, world, body.unwrap_or(radius), style.fill, out);
+    }
     // Drawable content (text/image/path) paints over the node's background. Its
     // coordinates are node-local, so shift them by the node's world origin — a
     // scrolled or repositioned node then draws its content in the right place.

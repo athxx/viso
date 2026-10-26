@@ -359,6 +359,7 @@ impl ControlKind {
             (_, "border") => ControlInput::Border,
             (_, "shadow") => ControlInput::Shadow,
             (_, "backdrop") => ControlInput::Backdrop,
+            (_, "ripple") => ControlInput::Ripple,
             (_, "transition.background") => ControlInput::BackgroundTransition,
             (_, "transition.opacity") => ControlInput::OpacityTransition,
             (_, "translate") => ControlInput::Translate,
@@ -1175,6 +1176,8 @@ pub enum ControlInput {
     Mirror,
     /// The node's `backdrop`: how its box treats what lies behind it.
     Backdrop,
+    /// The node's `ripple`: whether a press spreads ink over its box.
+    Ripple,
 }
 
 /// A view-driven native node: its kind and the handler-table entries that
@@ -1443,7 +1446,7 @@ pub enum Switched {
 
 impl ControlInput {
     /// Every input, by wire tag.
-    pub const ALL: [ControlInput; 87] = [
+    pub const ALL: [ControlInput; 88] = [
         ControlInput::Value,
         ControlInput::Min,
         ControlInput::Max,
@@ -1531,6 +1534,7 @@ impl ControlInput {
         ControlInput::Fullscreen,
         ControlInput::Mirror,
         ControlInput::Backdrop,
+        ControlInput::Ripple,
     ];
 
     /// Its wire tag: its place in [`ControlInput::ALL`].
@@ -1572,6 +1576,8 @@ pub struct Look {
     pub shadow: Option<u32>,
     /// Its `backdrop`: a `Backdrop`, or `None` for an ordinary box.
     pub backdrop: Option<u32>,
+    /// Its `ripple`: a `Bool`, the platform's way when absent.
+    pub ripple: Option<u32>,
     /// Its `transition.background`: how a new background moves in.
     pub background_transition: Option<u32>,
     /// Its `transition.opacity`: how a new opacity moves in.
@@ -1677,6 +1683,7 @@ impl Control {
             ControlInput::Border => self.look.border,
             ControlInput::Shadow => self.look.shadow,
             ControlInput::Backdrop => self.look.backdrop,
+            ControlInput::Ripple => self.look.ripple,
             ControlInput::BackgroundTransition => self.look.background_transition,
             ControlInput::OpacityTransition => self.look.opacity_transition,
             ControlInput::Translate => self.look.translate,
@@ -1780,6 +1787,7 @@ impl Control {
             ControlInput::Border => &mut self.look.border,
             ControlInput::Shadow => &mut self.look.shadow,
             ControlInput::Backdrop => &mut self.look.backdrop,
+            ControlInput::Ripple => &mut self.look.ripple,
             ControlInput::BackgroundTransition => &mut self.look.background_transition,
             ControlInput::OpacityTransition => &mut self.look.opacity_transition,
             ControlInput::Translate => &mut self.look.translate,
@@ -1924,6 +1932,7 @@ impl Encode for Control {
             look.transform_origin,
             look.shadow,
             look.backdrop,
+            look.ripple,
             semantics.label,
             semantics.hint,
             semantics.value,
@@ -2071,6 +2080,7 @@ impl Decode for Control {
                 transform_origin: entry()?,
                 shadow: entry()?,
                 backdrop: entry()?,
+                ripple: entry()?,
             },
             arms: Box::new([]),
             semantics: SemanticEntries {
@@ -2382,6 +2392,7 @@ mod tests {
                 transform_origin: Some(25),
                 shadow: Some(26),
                 backdrop: None,
+                ripple: None,
             },
             arms: Box::new([LookArm {
                 target: Switched::Input(ControlInput::Border),

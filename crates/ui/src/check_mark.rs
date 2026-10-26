@@ -88,6 +88,8 @@ const CHIP_TICK: f32 = 0.6875;
 const CHIP_CROSS: f32 = 1.0625;
 const CHIP_ICON: f32 = 0.5625;
 const CHIP_INSET: f32 = 0.25;
+/// The radius of a chip's body's corners, as a share of its height.
+const CHIP_ROUND: f32 = 0.25;
 
 /// A segment's least height, the room over and under its caption together,
 /// and the room on each side of it.
@@ -357,6 +359,12 @@ impl CheckMark {
         matches!(self.shape, CheckShape::Chip { .. })
     }
 
+    /// The corner radius of the body it draws over a node's whole box of
+    /// `rect`, which a press's ink keeps within: a chip's.
+    pub(crate) fn body_radius(self, rect: Rect) -> Option<f32> {
+        matches!(self.shape, CheckShape::Chip { .. }).then_some(rect.h * CHIP_ROUND)
+    }
+
     /// Draws the mark into `rect` (world space) inked `ink`, `progress` of
     /// the way from unchecked to checked: a box's fill fades in and its tick
     /// draws along its stroke, a circle's fill fades in as its dot grows from
@@ -482,7 +490,7 @@ fn chip(rect: Rect, ink: Rgba, p: f32, removable: bool, rtl: bool, out: &mut Vec
     out.push(Primitive::Quad(Quad {
         rect,
         color: faded(ink, 0.16 * p),
-        radius: height * 0.25,
+        radius: height * CHIP_ROUND,
         border: if p >= 1.0 {
             Border::NONE
         } else {

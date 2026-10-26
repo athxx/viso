@@ -16,8 +16,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use viso_ui::{
-    Access, BoxStyle, BuildCx, CheckMark, CheckShape, EventCx, Key, LeafStyle, PointerButtons,
-    PointerPhase, Rgba, Role, SemanticState, Semantics, Size, StateId, StateValue,
+    Access, BoxStyle, BuildCx, CheckMark, CheckShape, EventCx, Haptic, Key, LeafStyle,
+    PointerButtons, PointerPhase, Rgba, Role, SemanticState, Semantics, Size, StateId, StateValue,
 };
 
 use crate::controls::mnemonic::Mnemonic;
@@ -56,6 +56,7 @@ fn fire(cb: &SharedChange, ev: &mut EventCx<'_>, checked: bool) {
 fn flip(ev: &mut EventCx<'_>, cell: StateId, cb: &SharedChange) {
     let next = !matches!(ev.get(cell), Some(StateValue::Bool(true)));
     ev.set(cell, StateValue::Bool(next));
+    ev.feedback(Haptic::Selection);
     fire(cb, ev, next);
 }
 

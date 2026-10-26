@@ -31,6 +31,7 @@ pub mod dirty;
 pub mod drag;
 pub mod drag_drop;
 mod edit_history;
+pub mod feedback;
 pub mod field_input;
 mod field_marks;
 pub mod flush;
@@ -190,6 +191,7 @@ pub use asset::{
 };
 pub use backdrop::Backdrop;
 pub use cursor::CursorIcon;
+pub use feedback::Haptic;
 pub use field_input::{FieldEvent, FieldKey, field_input, field_key, number_input};
 pub use field_marks::FieldMarks;
 pub use input_filter::InputFilter;

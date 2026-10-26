@@ -34,8 +34,8 @@ use std::rc::Rc;
 
 use viso_ui::stepper::{Stepper as Pill, can_step, stepper_input};
 use viso_ui::{
-    BoxStyle, BuildCx, Component, Content, EventCx, LeafStyle, Length, NodeId, NodeStore, Rgba,
-    Role, SemanticState, Semantics, Size, StateId, StateValue,
+    BoxStyle, BuildCx, Component, Content, EventCx, Haptic, LeafStyle, Length, NodeId, NodeStore,
+    Rgba, Role, SemanticState, Semantics, Size, StateId, StateValue,
 };
 
 use super::check::INK;
@@ -245,6 +245,7 @@ impl Component for Stepper {
                 };
                 let next = next as f32;
                 ev.set(cell, StateValue::Float(next));
+                ev.feedback(Haptic::Selection);
                 if let Some(f) = on_change.borrow_mut().as_mut() {
                     f(ev, next);
                 }

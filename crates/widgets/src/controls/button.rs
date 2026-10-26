@@ -40,6 +40,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use viso_ui::feedback::NATIVE_RIPPLE;
 use viso_ui::{
     Access, Align, Axis, BoxStyle, BuildCx, Component, DispatchPhase, EventCx, FlexStyle, Inset,
     InteractionStyle, Justify, Key, Length, PointerButtons, PointerPhase, Rgba, Role, Semantics,
@@ -113,6 +114,9 @@ pub struct ButtonStyle {
     pub hover: BoxStyle,
     /// The background box painted while the button is pressed.
     pub pressed: BoxStyle,
+    /// Whether a press spreads ink over the button from where it lands.
+    /// Defaults to the platform's way: on Android, off elsewhere.
+    pub ripple: bool,
 }
 
 impl Default for ButtonStyle {
@@ -125,6 +129,7 @@ impl Default for ButtonStyle {
             background: BoxStyle::solid(RESTING).with_radius(RADIUS),
             hover: BoxStyle::solid(HOVER).with_radius(RADIUS),
             pressed: BoxStyle::solid(PRESSED).with_radius(RADIUS),
+            ripple: NATIVE_RIPPLE,
         }
     }
 }
@@ -310,6 +315,7 @@ impl Component for Button {
 
         // Explicit Button role with the caption as its accessible name, so the
         // name matches the visible label.
+        cx.ripple(root, self.style.ripple);
         cx.semantics(root, Semantics::role(Role::Button).with_label(caption.text));
     }
 }
@@ -434,6 +440,19 @@ mod tests {
     fn child_count(store: &NodeStore, parent: NodeId) -> usize {
         let arena = store.arena();
         arena.children(parent).count()
+    }
+
+    /// A press ripples a button the platform's way, or as its style says.
+    #[test]
+    fn a_button_ripples_the_platforms_way_or_as_told() {
+        let mut rx = Reactive::new();
+        let native = rx.build(button("OK"));
+        assert_eq!(rx.store.ripples(native), NATIVE_RIPPLE);
+        let told = rx.build(button("OK").style(ButtonStyle {
+            ripple: true,
+            ..ButtonStyle::default()
+        }));
+        assert!(rx.store.ripples(told));
     }
 
     /// A button builds an interactive node: a pointer handler, a key handler, a

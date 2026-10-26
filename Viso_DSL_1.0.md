@@ -4569,6 +4569,7 @@ export enum Sizing { fixed(MixedLength); fill { weight: F32 = 1.0; }; fit; min_c
 | `border`        | `Option<Border>`      | `Option::None`       | `PAINT`           | —                             |
 | `shadow`        | `Option<Shadow>`      | `Option::None`       | `PAINT`           | —                             |
 | `backdrop`      | `Option<Backdrop>`    | `Option::None`       | `PAINT`           | —                             |
+| `ripple`        | `Bool`                | 平台惯例             | `PAINT`           | —                             |
 | `styles`        | `List<StyleRef<T>>`   | `[]`                 | `STYLE`           | —                             |
 
 ```viso
@@ -4595,6 +4596,7 @@ export record Backdrop {
 - `margin` 不折叠；`border` 在 Border Box 内侧描边，不参与布局；
 - `shadow` 是盒按 `corner_radius` 取圆角、按 `spread` 扩张（负值收缩）、按 `x`/`y` 偏移并按 `blur`（CSS 模糊半径）淡出的投影，画在盒下方，不参与布局与命中；`inset: true` 时落在盒内、`border` 之内，画在背景之上；`theme.elevation.*` 即 `Shadow`，可直接绑定；
 - `backdrop` 使盒成为玻璃：盒背后已绘制的内容按 `blur`（CSS 模糊半径）模糊、按 `saturation` 调整饱和度、按 `tint` 的 alpha 叠上 `tint`，再加 `noise`（0..1）颗粒，按 `corner_radius` 取圆角，画在 `background` 之下；节点自身 `opacity` 小于 1 时玻璃按该 opacity 淡出而保持模糊（嵌套在其他半透明祖先之内的玻璃不模糊）。同一背景上同一模糊的多块玻璃共用一次背景捕获与模糊。`BlurView` 是纵向排列子节点的 Flex 容器（属性同 `Column`），未给 `backdrop` 时为标准玻璃 `Backdrop {}`。Web 导出为 `backdrop-filter: blur(..) saturate(..)` 加一层 `tint` 平涂；
+- `ripple` 为 `true` 时，按下该节点（或其内未开 `ripple` 的后代）从按下点向外铺开一圈墨迹，约 0.3s 盖满整个盒，按 `corner_radius` 裁圆角，画在 `background` 之上、内容之下；松手或按压被平移手势接管后墨迹边扩边淡出（约 0.2s）。墨迹取盒的反差色：浅色或透明底上为暗墨，深色底上为亮墨。减少动态效果（reduced motion）时墨迹不扩散，一按即满并淡出。未给 `ripple` 时按平台惯例：Android 上 `Button`、`Chip` 默认开启，其他平台默认关闭；Web 导出不带墨迹。手指或触控笔改变控件时伴随系统触觉：`Toggle`/`CheckBox`/可选 `Chip`/`Stepper`/`Select`/`Segmented` 改变值时为 selection 轻触，设了 `step` 的 `Slider` 每到一个刻度一次；按钮点击、鼠标与键盘不触发触觉；
 - `min` 大于 `max` 时以 `min` 为准，Debug Runtime 报告 `E3105`；
 - `start`/`end` 在布局时按 `env.layout_direction` 解析为物理边；
 - `padding` 只作用于容器（`Row`、`Column`、`Flex`、`Stack`、`Absolute`、`Grid`）的内容盒；`padding` 可为常量（长度、`EdgeInsets::zero/all/axes` 或各字段为常量的 `EdgeInsets { .. }`）或读取值（见 U3.4 的绑定布局值），每条边按 §19.8 取非负，含 `%` 分量的边在布局时读到父内容盒后取非负；非容器节点上的 `padding` 报 `E3711`，不会被静默丢弃。纯 `dp` 且 `start` 与 `end` 相等的 `padding` 在编译期折叠为物理内边距；含 `px`/`sp`/`em` 分量或 `start` 与 `end` 不等的，随 §19.6 环境与 `env.layout_direction` 在布局时折叠，只有折叠结果变化的节点被标脏；

@@ -371,9 +371,33 @@ impl Rt {
 
     /// A primary press and release at `(x, y)`.
     fn press_at(&mut self, x: f32, y: f32) {
+        self.contact_at(
+            viso_ui::PointerContact::MOUSE,
+            x,
+            y,
+            &[PointerPhase::Down, PointerPhase::Up],
+        );
+    }
+
+    /// A finger's samples at `(x, y)`: its `phases`, in order.
+    pub fn touch_at(&mut self, x: f32, y: f32, phases: &[PointerPhase]) {
+        let finger = viso_ui::PointerContact {
+            id: viso_ui::PointerId(7),
+            direct: true,
+        };
+        self.contact_at(finger, x, y, phases);
+    }
+
+    fn contact_at(
+        &mut self,
+        contact: viso_ui::PointerContact,
+        x: f32,
+        y: f32,
+        phases: &[PointerPhase],
+    ) {
         let root = self.root.expect("mounted");
         let mut chain = Vec::new();
-        for phase in [PointerPhase::Down, PointerPhase::Up] {
+        for &phase in phases {
             let event = PointerEvent {
                 x,
                 y,
@@ -381,11 +405,12 @@ impl Rt {
                 buttons: PointerButtons::PRIMARY,
                 modifiers: Default::default(),
             };
-            PointerRouter::route(
+            PointerRouter::route_contact(
                 &mut self.store,
                 &mut self.states,
                 &self.bindings,
                 root,
+                contact,
                 event,
                 &mut chain,
             );

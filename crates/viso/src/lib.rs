@@ -1706,6 +1706,7 @@ impl WindowState {
             || self.store.is_scroll_moving()
             || self.store.is_spinning()
             || self.store.is_shimmering()
+            || self.store.is_rippling()
             || self.store.is_progressing()
             || self.store.is_sliding()
             || self.store.refreshes_due()
@@ -2754,6 +2755,20 @@ impl WindowState {
 /// What a drag carries out of the app: its text, link and files. A drop
 /// elsewhere may copy or move its text, and copy or link to its files, which
 /// stay where they are.
+/// The haptic service's pattern for a control's `haptic`.
+fn play(haptic: viso_ui::Haptic) -> services::Haptic {
+    use viso_ui::Haptic as H;
+    match haptic {
+        H::Selection => services::Haptic::Selection,
+        H::Light => services::Haptic::Light,
+        H::Medium => services::Haptic::Medium,
+        H::Heavy => services::Haptic::Heavy,
+        H::Success => services::Haptic::Success,
+        H::Warning => services::Haptic::Warning,
+        H::Error => services::Haptic::Error,
+    }
+}
+
 fn drag_out(data: &viso_ui::DragData) -> viso_platform::DragOut {
     let files = data.files().map(<[_]>::to_vec).unwrap_or_default();
     viso_platform::DragOut {
@@ -3968,6 +3983,10 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     if ws.store.is_shimmering() {
                         ws.store.tick_shimmers(cx.frame_delta());
                     }
+                    // The press ripples spread and fade.
+                    if ws.store.is_rippling() {
+                        ws.store.tick_ripples(cx.frame_delta());
+                    }
                     // The progress indicators run, or ease to their values.
                     if ws.store.is_progressing() {
                         ws.store.tick_progress(cx.frame_delta());
@@ -4046,7 +4065,8 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 }
 
                 // The links no handler kept open in the apps their URLs
-                // belong to; what the system answers is not the app's to see.
+                // belong to, and the haptic the frame's controls asked for;
+                // what the system answers is not the app's to see.
                 let services = self
                     .services
                     .as_deref()
@@ -4056,6 +4076,11 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         if let Some(services) = services {
                             drop(services.launcher().open_url(&url));
                         }
+                    }
+                    if let Some(haptic) = ws.store.take_haptic()
+                        && let Some(services) = services
+                    {
+                        drop(services.haptics().play(play(haptic)));
                     }
                 }
 

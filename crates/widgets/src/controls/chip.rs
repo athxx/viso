@@ -39,9 +39,11 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use viso_ui::feedback::NATIVE_RIPPLE;
 use viso_ui::{
-    Access, BoxStyle, BuildCx, CheckMark, CheckShape, Component, EventCx, Key, LeafStyle, Length,
-    PointerButtons, PointerPhase, Rgba, Role, SemanticState, Semantics, Size, StateId, StateValue,
+    Access, BoxStyle, BuildCx, CheckMark, CheckShape, Component, EventCx, Haptic, Key, LeafStyle,
+    Length, PointerButtons, PointerPhase, Rgba, Role, SemanticState, Semantics, Size, StateId,
+    StateValue,
 };
 
 use super::check::{INK, SharedChange};
@@ -59,6 +61,9 @@ pub struct ChipStyle {
     pub size: Size,
     /// The caption's color, which inks the body, its tick and its cross too.
     pub color: Rgba,
+    /// Whether a press spreads ink over the chip from where it lands.
+    /// Defaults to the platform's way: on Android, off elsewhere.
+    pub ripple: bool,
 }
 
 impl Default for ChipStyle {
@@ -69,6 +74,7 @@ impl Default for ChipStyle {
                 height: Length::Fit,
             },
             color: INK,
+            ripple: NATIVE_RIPPLE,
         }
     }
 }
@@ -178,6 +184,7 @@ impl Activate {
         if let Some(cell) = self.cell {
             let next = !matches!(ev.get(cell), Some(StateValue::Bool(true)));
             ev.set(cell, StateValue::Bool(next));
+            ev.feedback(Haptic::Selection);
             if let Some(f) = self.on_change.borrow_mut().as_mut() {
                 f(ev, next);
             }
@@ -204,6 +211,7 @@ impl Component for Chip {
                 checked: self.selected.unwrap_or(false),
             },
         );
+        cx.ripple(node, self.style.ripple);
         let role = if cell.is_some() {
             Role::CheckBox
         } else {

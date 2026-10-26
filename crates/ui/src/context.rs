@@ -536,6 +536,8 @@ pub enum StoreRequest {
     Plane(NodeId, crate::color_plane::PlaneChange),
     /// Mark the day of a week row the pointer is over, or none.
     HoverDay(NodeId, Option<u8>),
+    /// Play a haptic once the frame is done.
+    Haptic(crate::feedback::Haptic),
     /// Put text on the clipboard.
     Copy(String),
     /// Ask a video to play as a playback says.
@@ -581,6 +583,7 @@ impl StoreRequest {
             StoreRequest::ShowSlider(id, low, high) => store.show_slider(id, low, high),
             StoreRequest::Plane(id, change) => store.change_plane(id, change),
             StoreRequest::HoverDay(id, day) => store.hover_day(id, day),
+            StoreRequest::Haptic(haptic) => store.request_haptic(haptic),
             StoreRequest::Copy(text) => store.copy_text(text),
             StoreRequest::Playback(id, playback) => store.set_playback(id, playback),
             StoreRequest::Play(id, playing) => store.set_video_playing(id, playing),
@@ -1239,6 +1242,14 @@ impl<'a> EventCx<'a> {
     /// none ([`calendar`](crate::calendar)).
     pub fn hover_day(&mut self, id: NodeId, day: Option<u8>) {
         self.store_requests.push(StoreRequest::HoverDay(id, day));
+    }
+
+    /// Plays `haptic` once the handler returns, when a finger or a pen made
+    /// the change under dispatch: a mouse or a key plays none.
+    pub fn feedback(&mut self, haptic: crate::feedback::Haptic) {
+        if self.direct() {
+            self.store_requests.push(StoreRequest::Haptic(haptic));
+        }
     }
 
     /// Put `text` on the system clipboard once the handler returns: a
