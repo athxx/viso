@@ -146,13 +146,11 @@ fn viso_lsp_reports_diagnostics_hovers_and_definitions_and_follows_edits() {
     });
 }
 
-thread_local! {
-    static CLIENT: std::cell::RefCell<Option<Rc<LspClient>>> = const { std::cell::RefCell::new(None) };
-}
-
+/// The editor served by a `viso-lsp` of its own, as each build of it starts
+/// one: an app may build its view again, and a server's first report goes
+/// to the editor that asked for it.
 fn served(e: CodeEditor) -> CodeEditor {
-    let client = CLIENT.with(|c| c.borrow().clone()).expect("a client");
-    e.service(client)
+    e.service(Rc::new(viso_lsp("file:///work/e.vs", SOURCE)))
 }
 
 fn wait(ms: u64) -> Vec<RawEvent> {
@@ -163,8 +161,6 @@ fn wait(ms: u64) -> Vec<RawEvent> {
 
 #[test]
 fn the_editor_shows_what_viso_lsp_says() {
-    let client = Rc::new(viso_lsp("file:///work/e.vs", SOURCE));
-    CLIENT.with(|c| *c.borrow_mut() = Some(client));
     setup(Some(served));
     let _app = run(SOURCE, &[focus(), wait(200)]);
     let h = handle();
@@ -188,7 +184,6 @@ fn the_editor_shows_what_viso_lsp_says() {
         "a squiggle on line 4"
     );
     setup(None);
-    CLIENT.with(|c| *c.borrow_mut() = None);
 }
 
 /// rust-analyzer, from `VISO_RUST_ANALYZER` or the editors that ship it.

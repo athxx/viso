@@ -16,7 +16,8 @@
 //! draw and touches only what changed.
 //!
 //! The cell's width is measured, not guessed: a hidden run of the face's
-//! characters reports its width as the extent of a scroll box around it.
+//! characters is shaped in a scroll box, and each pass reads the box's
+//! extent; the box reports a change of it, so a run shaped late is read.
 //! Every handler edits the session and bumps one state cell; the structure
 //! hook on that cell draws the rows on screen again.
 //!
@@ -38,9 +39,9 @@ use std::time::Duration;
 use viso_ui::virtual_list::{ItemKey, watch_across};
 use viso_ui::{
     AbsoluteStyle, Axis, BoxStyle, BuildCx, Component, EventCx, FlexStyle, FontFamily, FontSize,
-    InputKind, LeafStyle, Length, LengthTerms, NodeId, Notice, NoticeKinds, Rect, Rgba, Role,
-    ScrollStyle, Semantics, Size, StateId, StateValue, StateWriter, StructureCx, TextEntryRequest,
-    TextRequest, TextSpan, TextStyle, Vec2, VirtualListStyle,
+    Handle, InputKind, LeafStyle, Length, LengthTerms, NodeId, Notice, NoticeKinds, Rect, Rgba,
+    Role, ScrollStyle, Semantics, Size, StateId, StateValue, StateWriter, StructureCx,
+    TextEntryRequest, TextRequest, TextSpan, TextStyle, Vec2, VirtualListStyle,
 };
 
 use crate::highlight::Language;
@@ -59,6 +60,11 @@ const BLINK: Duration = Duration::from_millis(530);
 
 /// The characters the cell is measured over.
 const PROBE: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+
+/// The characters past ASCII a run keeps on the grid, a few of each kind:
+/// Latin letters, Greek, Cyrillic and box drawing. Whether the face draws
+/// them a cell each is measured over them.
+const GRID_PROBE: &str = "\u{e0}\u{e9}\u{f1}\u{f6}\u{df}\u{f8}\u{107}\u{161}\u{142}\u{3b1}\u{3bb}\u{3a9}\u{436}\u{44f}\u{429}\u{2500}\u{2502}\u{250c}\u{2518}\u{253c}";
 
 /// A code editor over `text`.
 pub fn code_editor(text: impl Into<String>) -> CodeEditor {
@@ -217,8 +223,10 @@ pub(crate) struct Metrics {
     pub line_height: f32,
     /// The width of a cell.
     pub cell: f32,
-    /// Whether `cell` was measured, not estimated.
-    pub measured: bool,
+    /// Whether the face draws the letters and box drawing past ASCII a
+    /// cell each, so they run with ASCII; else each is drawn alone at its
+    /// cell.
+    pub grid_wide: bool,
     /// The gutter's width.
     pub gutter: f32,
     /// The room between the gutter and the text.
@@ -263,6 +271,10 @@ impl Metrics {
 pub(crate) struct Nodes {
     pub root: NodeId,
     pub list: NodeId,
+    /// The boxes a run of the face's ASCII, and of its letters past it,
+    /// are measured in.
+    pub probe: NodeId,
+    pub grid_probe: NodeId,
     pub revision: StateId,
 }
 
@@ -289,6 +301,8 @@ pub(crate) struct Shared {
     rows: RefCell<Vec<RowView>>,
     /// The list viewport's size and offset, as last laid out.
     pub viewport: Cell<Vec2>,
+    /// Whether a pass has read both probes shaped.
+    cell_read: Cell<bool>,
     pub scroll: Cell<Vec2>,
     /// How far the list is scrolled sideways: where the gutter sits.
     pub across: Cell<f32>,
@@ -542,8 +556,9 @@ impl Component for CodeEditor {
         let mut metrics = Metrics {
             font_size: self.font_size,
             line_height: lh,
+            // Until the probe is shaped.
             cell: (self.font_size * 0.6).max(1.0),
-            measured: false,
+            grid_wide: true,
             gutter: 0.0,
             pad: (self.font_size * 0.5).round(),
             digits: 0,
@@ -560,6 +575,7 @@ impl Component for CodeEditor {
             nodes: Cell::new(None),
             rows: RefCell::new(Vec::new()),
             viewport: Cell::new(Vec2::ZERO),
+            cell_read: Cell::new(false),
             scroll: Cell::new(Vec2::ZERO),
             across: Cell::new(0.0),
             focused: Cell::new(false),
@@ -597,32 +613,9 @@ impl Component for CodeEditor {
                         ..AbsoluteStyle::default()
                     },
                     |cx| {
-                        probe = Some(cx.scroll(
-                            ScrollStyle {
-                                axis: Axis::Row,
-                                size: Size::fixed(1.0, 1.0),
-                                bars: viso_ui::scroll_bar::ScrollBars::Hidden,
-                                ..ScrollStyle::default()
-                            },
-                            |cx| {
-                                let leaf = cx.leaf(LeafStyle {
-                                    size: Size {
-                                        width: Length::MaxContent,
-                                        height: Length::Fixed(lh),
-                                    },
-                                    style: BoxStyle::NONE,
-                                });
-                                cx.text_request(
-                                    leaf,
-                                    text_request(
-                                        &shared,
-                                        PROBE.into(),
-                                        shared.theme.text,
-                                        Vec::new(),
-                                    ),
-                                );
-                                cx.semantics(leaf, Semantics::role(Role::Label).with_hidden(true));
-                            },
+                        probe = Some((
+                            probe_box(&shared, cx, PROBE),
+                            probe_box(&shared, cx, GRID_PROBE),
                         ));
                     },
                 );
@@ -653,7 +646,7 @@ impl Component for CodeEditor {
                 }
             },
         );
-        let (Some(list_handle), Some(probe)) = (list, probe) else {
+        let (Some(list_handle), Some((probe, grid_probe))) = (list, probe) else {
             return;
         };
         let list = list_handle.id();
@@ -661,6 +654,8 @@ impl Component for CodeEditor {
         shared.nodes.set(Some(Nodes {
             root: root_id,
             list,
+            probe: probe.id(),
+            grid_probe: grid_probe.id(),
             revision,
         }));
         cx.focusable(root, true);
@@ -674,40 +669,40 @@ impl Component for CodeEditor {
         cx.on_key(root, move |ev| input::on_key(&keys, ev));
         let pointer = Rc::clone(&shared);
         cx.on_pointer(root, move |ev| input::on_pointer(&pointer, ev));
-        // The cell's width, once the probe is shaped.
-        let measure = Rc::clone(&shared);
-        cx.watch(
-            probe,
-            NoticeKinds::SCROLL,
-            Box::new(move |notice, states| {
-                if let Notice::Scroll { content, .. } = notice {
-                    let cell = content.x / PROBE.len() as f32;
-                    let mut m = measure.metrics.get();
-                    if cell > 0.0 && (cell - m.cell).abs() > 0.001 || !m.measured && cell > 0.0 {
-                        m.cell = cell;
-                        m.measured = true;
-                        measure.metrics.set(m);
+        // The probe's run shaped again, or shaped late: the next pass
+        // measures the cell from it.
+        for p in [probe, grid_probe] {
+            let measure = Rc::clone(&shared);
+            cx.watch(
+                p,
+                NoticeKinds::SCROLL,
+                Box::new(move |notice, states| {
+                    if let Notice::Scroll { .. } = notice {
                         measure.bump(states);
                     }
-                }
-            }),
-        );
+                }),
+            );
+        }
         // The viewport's size: what wraps and what a page is.
         let view = Rc::clone(&shared);
+        // The first range shown comes after the first layout, which shaped
+        // the probe: a pass then reads the cell, as the probe's own watch
+        // reports only a later change.
         cx.watch(
             list_handle,
-            NoticeKinds::SCROLL,
-            Box::new(move |notice, states| {
-                if let Notice::Scroll {
+            NoticeKinds::SCROLL | NoticeKinds::VISIBLE_RANGE,
+            Box::new(move |notice, states| match *notice {
+                Notice::Scroll {
                     offset, viewport, ..
-                } = *notice
-                {
+                } => {
                     view.scroll.set(offset);
                     if view.viewport.get() != viewport {
                         view.viewport.set(viewport);
                         view.bump(states);
                     }
                 }
+                Notice::VisibleRange { .. } if !view.cell_read.get() => view.bump(states),
+                _ => {}
             }),
         );
         let hook = Rc::clone(&shared);
@@ -730,6 +725,34 @@ impl Component for CodeEditor {
             *slot.borrow_mut() = Some(EditorHandle(Rc::clone(&shared)));
         }
     }
+}
+
+/// A run of `text` in the editor's face, in a scroll box whose extent is
+/// the run's width.
+fn probe_box(shared: &Shared, cx: &mut BuildCx<'_>, text: &str) -> Handle {
+    let lh = shared.metrics.get().line_height;
+    cx.scroll(
+        ScrollStyle {
+            axis: Axis::Row,
+            size: Size::fixed(1.0, 1.0),
+            bars: viso_ui::scroll_bar::ScrollBars::Hidden,
+            ..ScrollStyle::default()
+        },
+        |cx| {
+            let leaf = cx.leaf(LeafStyle {
+                size: Size {
+                    width: Length::MaxContent,
+                    height: Length::Fixed(lh),
+                },
+                style: BoxStyle::NONE,
+            });
+            cx.text_request(
+                leaf,
+                text_request(shared, text.into(), shared.theme.text, Vec::new()),
+            );
+            cx.semantics(leaf, Semantics::role(Role::Label).with_hidden(true));
+        },
+    )
 }
 
 /// The digits line numbers for `lines` lines take, at least two; none
@@ -771,6 +794,22 @@ fn update(shared: &Rc<Shared>, s: &mut StructureCx<'_>) {
     };
     let mut session = shared.session.borrow_mut();
     let mut m = shared.metrics.get();
+    // The cell as wide as the face draws a character. The probe is read
+    // here, where the pass draws, not only when it reports a change: a watch
+    // takes the extent it first sees as its start and says nothing of it.
+    let cell = s.store.content(nodes.probe).x / PROBE.len() as f32;
+    let grid = s.store.content(nodes.grid_probe).x / GRID_PROBE.chars().count() as f32;
+    if cell > 0.0 {
+        // A face lacking them draws them in a fallback's widths; until they
+        // are shaped they are taken to keep to the grid.
+        let grid_wide = grid <= 0.0 || (grid - cell).abs() <= cell * 0.01;
+        shared.cell_read.set(grid > 0.0);
+        if (cell - m.cell).abs() > 0.001 || grid_wide != m.grid_wide {
+            m.cell = cell;
+            m.grid_wide = grid_wide;
+            shared.metrics.set(m);
+        }
+    }
     // The gutter as wide as the last line's number.
     if shared.show_gutter {
         let digits = digits_for(session.doc().line_count(), shared.line_numbers);

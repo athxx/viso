@@ -38,9 +38,9 @@ pub struct EditorApp;
 
 impl Application for EditorApp {
     fn new(cx: &mut AppCx) -> Self {
-        cx.load_font(
-            &include_bytes!("../../../../crates/text/tests/fixtures/DejaVuSans-subset.ttf")[..],
-        );
+        // A monospace face for the text, and a proportional one it falls
+        // back to for letters past ASCII, in other widths.
+        cx.use_packaged_fonts(viso::packaged_fonts!("tests/fixtures"));
         EditorApp
     }
 
@@ -63,6 +63,7 @@ impl Application for EditorApp {
             },
             |cx| {
                 let mut editor = code_editor(text)
+                    .family(viso::ui::FontFamily::Named("DejaVu Sans Mono".into()))
                     .size(Size::fixed(600.0, 400.0))
                     .handle(&slot);
                 if let Some(setup) = SETUP.with(|s| s.get()) {

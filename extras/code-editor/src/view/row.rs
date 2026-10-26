@@ -6,7 +6,8 @@ use std::rc::Rc;
 
 use viso_ui::{
     AbsoluteStyle, BoxStyle, BuildCx, Content, DirtyClass, FontSlant, FontWeight, LeafStyle,
-    Length, NodeId, PathCmd, Point, Rgba, Size, SpanStyle, Stroke, StructureCx, TextSpan, Vec2,
+    Length, NodeId, PathCmd, Point, Rgba, Size, SpanStyle, Stroke, StructureCx, TextAlign,
+    TextSpan, Vec2,
 };
 
 use super::{Metrics, Shared, text_request};
@@ -24,6 +25,9 @@ pub(super) struct Seg {
     pub text: String,
     pub color: Rgba,
     pub spans: Vec<TextSpan>,
+    /// The width of the cells a grapheme drawn alone is centered in; `None`
+    /// for a run, as wide as it is shaped.
+    pub cells_w: Option<f32>,
 }
 
 /// One drawn rectangle, or a wavy line as wide.
@@ -64,6 +68,7 @@ struct TextKey {
     folded: bool,
     rows: usize,
     cell: f32,
+    grid_wide: bool,
     text_x: f32,
     font_size: f32,
 }
@@ -289,6 +294,7 @@ fn draw_text(
         folded: session.folds().at(line).is_some(),
         rows: rows.len(),
         cell: m.cell,
+        grid_wide: m.grid_wide,
         text_x: m.text_x(),
         font_size: m.font_size,
     };
@@ -319,10 +325,19 @@ fn draw_text(
                     text: key.text[a..end].to_owned(),
                     color: theme.text,
                     spans: token_spans(theme, &key.tokens, a..end),
+                    cells_w: None,
                 });
             }
         };
-        for item in layout::items(&key.text, *span, &inl.spans, tab) {
+        for mut item in layout::items(&key.text, *span, &inl.spans, tab) {
+            // Past ASCII, a face that draws in a fallback's widths would
+            // move the rest of the run off the grid.
+            if item.kind == ItemKind::Grid
+                && !m.grid_wide
+                && !key.text.as_bytes()[item.start].is_ascii()
+            {
+                item.kind = ItemKind::Glyph;
+            }
             match item.kind {
                 ItemKind::Grid => {
                     if run.is_none() {
@@ -345,6 +360,7 @@ fn draw_text(
                         text: shown,
                         color,
                         spans: Vec::new(),
+                        cells_w: Some(item.cells as f32 * m.cell),
                     });
                 }
                 ItemKind::Inlay(k) => {
@@ -356,43 +372,26 @@ fn draw_text(
                         cells: item.cells,
                         source,
                     });
-                    let (text, color, underline, pad) = match source {
-                        InlaySource::Inlay(_) => (
-                            texts[k].cloned().unwrap_or_default(),
-                            theme.inlay_text,
-                            false,
-                            m.cell * 0.5,
-                        ),
-                        InlaySource::Preedit => (
-                            key.preedit
-                                .as_ref()
-                                .map(|p| p.1.clone())
-                                .unwrap_or_default(),
-                            theme.text,
-                            true,
-                            0.0,
-                        ),
-                        InlaySource::Fold => {
-                            ("\u{22ef}".to_owned(), theme.fold_text, false, m.cell)
+                    // Centered in its cells, whatever widths its glyphs come in.
+                    let (text, color) = match source {
+                        InlaySource::Inlay(_) => {
+                            (texts[k].cloned().unwrap_or_default(), theme.inlay_text)
+                        }
+                        InlaySource::Fold => ("\u{22ef}".to_owned(), theme.fold_text),
+                        InlaySource::Preedit => {
+                            if let Some((_, p)) = &key.preedit {
+                                composition_segs(&m, theme, p, item.col, y, tab, &mut segs);
+                            }
+                            continue;
                         }
                     };
-                    let len = text.len();
                     segs.push(Seg {
-                        x: m.x(item.col) + pad,
+                        x: m.x(item.col),
                         y,
                         text,
                         color,
-                        spans: if underline {
-                            vec![TextSpan {
-                                range: 0..len,
-                                style: SpanStyle {
-                                    underline: true,
-                                    ..SpanStyle::default()
-                                },
-                            }]
-                        } else {
-                            Vec::new()
-                        },
+                        spans: Vec::new(),
+                        cells_w: Some(item.cells as f32 * m.cell),
                     });
                 }
             }
@@ -402,6 +401,74 @@ fn draw_text(
     sync_segs(shared, s, view.text, &mut view.segs, segs);
     view.inlay_boxes = boxes;
     view.key = key;
+}
+
+/// The segments of composition `text` from cell `col`, underlined: a run of
+/// what keeps to the grid, and each other grapheme centered in its cells,
+/// so the composition's caret, counted in cells, sits between its glyphs.
+fn composition_segs(
+    m: &Metrics,
+    theme: &Theme,
+    text: &str,
+    col: u32,
+    y: f32,
+    tab: u32,
+    segs: &mut Vec<Seg>,
+) {
+    let underlined = |len| {
+        vec![TextSpan {
+            range: 0..len,
+            style: SpanStyle {
+                underline: true,
+                ..SpanStyle::default()
+            },
+        }]
+    };
+    let span = RowSpan {
+        start: 0,
+        end: text.len(),
+        indent: col,
+        cells: 0,
+    };
+    let mut run: Option<(usize, u32)> = None;
+    let flush = |run: &mut Option<(usize, u32)>, end: usize, segs: &mut Vec<Seg>| {
+        if let Some((a, at)) = run.take()
+            && end > a
+        {
+            segs.push(Seg {
+                x: m.x(at),
+                y,
+                text: text[a..end].to_owned(),
+                color: theme.text,
+                spans: underlined(end - a),
+                cells_w: None,
+            });
+        }
+    };
+    for item in layout::items(text, span, &[], tab) {
+        let ascii = text.as_bytes()[item.start].is_ascii();
+        match item.kind {
+            ItemKind::Grid if ascii || m.grid_wide => {
+                if run.is_none() {
+                    run = Some((item.start, item.col));
+                }
+            }
+            ItemKind::Tab => flush(&mut run, item.start, segs),
+            _ => {
+                flush(&mut run, item.start, segs);
+                let g = &text[item.start..item.end];
+                segs.push(Seg {
+                    x: m.x(item.col),
+                    y,
+                    text: g.to_owned(),
+                    color: theme.text,
+                    spans: underlined(g.len()),
+                    cells_w: Some(item.cells as f32 * m.cell),
+                });
+            }
+        }
+    }
+    flush(&mut run, text.len(), segs);
 }
 
 /// Draws line `line`'s piece of the gutter: its number, its fold marker,
@@ -443,6 +510,7 @@ fn draw_gutter(
                 theme.line_number
             },
             spans: Vec::new(),
+            cells_w: None,
         });
     }
     sync_segs(shared, s, view.gutter, &mut view.numbers, numbers);
@@ -852,16 +920,31 @@ fn sync_segs(
     want: Vec<Seg>,
 ) {
     let lh = shared.metrics.get().line_height;
+    let size = |seg: &Seg| Size {
+        width: seg.cells_w.map_or(Length::MaxContent, Length::Fixed),
+        height: Length::Fixed(lh),
+    };
+    let request = |seg: &Seg| {
+        let mut r = text_request(shared, seg.text.clone(), seg.color, seg.spans.clone());
+        if seg.cells_w.is_some() {
+            r.style.align = TextAlign::Center;
+        }
+        r
+    };
     let mut added = false;
     let mut i = 0;
     for seg in want {
         if i < have.len() {
             let (node, old) = &mut have[i];
-            if old.text != seg.text || old.spans != seg.spans || old.color != seg.color {
-                s.store.set_text(
-                    *node,
-                    text_request(shared, seg.text.clone(), seg.color, seg.spans.clone()),
-                );
+            if old.cells_w != seg.cells_w {
+                s.store.set_fixed_size(*node, size(&seg));
+            }
+            if old.text != seg.text
+                || old.spans != seg.spans
+                || old.color != seg.color
+                || old.cells_w.is_some() != seg.cells_w.is_some()
+            {
+                s.store.set_text(*node, request(&seg));
             }
             if old.x != seg.x || old.y != seg.y {
                 s.store.set_translate(*node, Vec2 { x: seg.x, y: seg.y });
@@ -870,16 +953,10 @@ fn sync_segs(
         } else {
             let mut cx = BuildCx::with_parent(s.store, s.states, s.bindings, parent);
             let leaf = cx.leaf(LeafStyle {
-                size: Size {
-                    width: Length::MaxContent,
-                    height: Length::Fixed(lh),
-                },
+                size: size(&seg),
                 style: BoxStyle::NONE,
             });
-            cx.text_request(
-                leaf,
-                text_request(shared, seg.text.clone(), seg.color, seg.spans.clone()),
-            );
+            cx.text_request(leaf, request(&seg));
             let node = leaf.id();
             s.store.set_hittable(node, false);
             s.store.set_translate(node, Vec2 { x: seg.x, y: seg.y });

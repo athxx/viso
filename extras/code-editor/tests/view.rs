@@ -93,6 +93,208 @@ fn the_marks_a_frame_adds_are_laid_out_where_they_go() {
     );
 }
 
+fn find_stats(e: CodeEditor) -> CodeEditor {
+    e.setup(|s| s.find(viso_code_editor::Query::literal("Stats")))
+}
+
+#[test]
+fn marks_sit_on_the_glyphs_at_the_far_end_of_a_long_line() {
+    setup(Some(find_stats));
+    let theme = Theme::default();
+    let line = "fn(a:I64)->Stats{".repeat(7) + "Stats";
+    // The caret at the line's end scrolls it there.
+    let app = run(&line, &[focus(), key(Key::End)]);
+    let h = handle();
+    let drawn = h.drawn();
+    let row = &drawn[0];
+    assert_eq!(row.text.len(), 1, "one run for the line");
+    let (seg, _, _, text) = &row.text[0];
+    assert_eq!(text, &line);
+    let store = app.store();
+    let run_x = store.world(*seg).x;
+    let (glyphs, natural) = match store.content_payload(*seg) {
+        Some(viso::ui::Content::Text {
+            glyphs, natural, ..
+        }) => (glyphs.clone(), *natural),
+        _ => panic!("the run is shaped"),
+    };
+    // Where the shaper put the pen before each character: every glyph of
+    // the face is as wide, and the run is their sum. Boxes snap to the
+    // device pixel grid, half a pixel either way.
+    const SNAP: f32 = 0.55;
+    let advance = natural.x / line.len() as f32;
+    let pen = |col: usize| run_x + col as f32 * advance;
+    // The glyph of each character, none being a space.
+    assert_eq!(glyphs.len(), line.len());
+    let ink = |col: usize| {
+        let r = glyphs[col].rect;
+        (run_x + r.x, run_x + r.x + r.w)
+    };
+    // Each match on screen covers its characters' advances, and their ink.
+    let starts: Vec<usize> = line.match_indices("Stats").map(|(i, _)| i).collect();
+    let marks: Vec<viso::ui::Rect> = row
+        .marks
+        .iter()
+        .filter(|m| m.4 == theme.find_match || m.4 == theme.selection)
+        .map(|m| store.world(m.0))
+        .collect();
+    let last = *starts.last().unwrap();
+    assert!(
+        marks.iter().any(|r| (r.x - pen(last)).abs() < SNAP),
+        "the last match drawn: {marks:?}"
+    );
+    for r in &marks {
+        let col = starts
+            .iter()
+            .copied()
+            .min_by(|a, b| {
+                (pen(*a) - r.x)
+                    .abs()
+                    .partial_cmp(&(pen(*b) - r.x).abs())
+                    .unwrap()
+            })
+            .unwrap();
+        assert!((r.x - pen(col)).abs() < SNAP, "match at {col}: {r:?}");
+        assert!(
+            (r.x + r.w - pen(col + 5)).abs() < SNAP,
+            "match at {col}: {r:?}"
+        );
+        let (a, b) = (ink(col), ink(col + 4));
+        assert!(a.0 >= r.x && b.1 <= r.x + r.w + SNAP, "{r:?} {a:?} {b:?}");
+    }
+    // The caret straddles the pen after the last character.
+    let caret = row
+        .over
+        .iter()
+        .find(|o| o.4 == theme.caret)
+        .map(|o| store.world(o.0))
+        .expect("a caret");
+    assert!(
+        (caret.x + caret.w / 2.0 - pen(line.len())).abs() < SNAP,
+        "{caret:?} at {}",
+        pen(line.len())
+    );
+    // And the editor's cell is the face's advance, with no input to set it.
+    assert!((h.cell_size().0 - advance).abs() < 0.001);
+    setup(None);
+    let _app = run("x", &[]);
+    assert!((handle().cell_size().0 - advance).abs() < 0.001);
+}
+
+/// The ink of every glyph a row draws, left to right, in window space.
+fn row_ink(app: &DrivenApp<EditorApp>, row: &viso_code_editor::DrawnRow) -> Vec<(f32, f32)> {
+    let store = app.store();
+    let mut ink = Vec::new();
+    for (node, ..) in &row.text {
+        let at = store.world(*node);
+        if let Some(viso::ui::Content::Text {
+            glyphs,
+            color_glyphs,
+            ..
+        }) = store.content_payload(*node)
+        {
+            for g in glyphs.iter().chain(color_glyphs) {
+                ink.push((at.x + g.rect.x, at.x + g.rect.x + g.rect.w));
+            }
+        }
+    }
+    ink.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    ink
+}
+
+/// The cells of each character of `text` that inks, from cell `from`: wide
+/// ones take two.
+fn ink_cells(text: &str, from: u32) -> Vec<(u32, u32)> {
+    let mut col = from;
+    let mut out = Vec::new();
+    for c in text.chars() {
+        let cells = if ('\u{3000}'..'\u{a000}').contains(&c) {
+            2
+        } else {
+            1
+        };
+        if c != ' ' {
+            out.push((col, cells));
+        }
+        col += cells;
+    }
+    out
+}
+
+/// Whether ink `a..b` sits in cells `col..col + n`: its middle in their
+/// middle half, as a glyph a little wider or narrower than its cells is
+/// centered in them, and one off the grid by a cell or a fraction is not.
+fn in_cells(x: f32, cell: f32, (a, b): (f32, f32), col: u32, n: u32) -> bool {
+    let middle = x + (col as f32 + n as f32 / 2.0) * cell;
+    ((a + b) / 2.0 - middle).abs() <= n as f32 * cell / 4.0
+}
+
+#[test]
+fn glyphs_from_a_fallback_face_stay_in_their_cells() {
+    setup(None);
+    let (cell, _, x) = metrics();
+    // The test face draws ASCII alone: these letters come from a
+    // proportional fallback, each a different width, and the CJK from none
+    // (its missing glyph, a cell wide, in two cells).
+    let line = "let \u{df}\u{142}\u{f1} = \"\u{e9}\u{f8}\u{65e5}\u{672c}\"; Stats";
+    let app = run(line, &[focus(), key(Key::End)]);
+    let h = handle();
+    let drawn = h.drawn();
+    let ink = row_ink(&app, &drawn[0]);
+    let cells = ink_cells(line, 0);
+    assert_eq!(ink.len(), cells.len(), "{ink:?}");
+    let snap = 0.55;
+    for (i, ((a, b), (col, n))) in ink.iter().zip(&cells).enumerate() {
+        assert!(
+            in_cells(x, cell, (*a, *b), *col, *n),
+            "glyph {i} ink {a}..{b} out of cells {col}+{n}"
+        );
+    }
+    // A composition past the line's end: its glyphs in their cells, and its
+    // caret, counted in cells, between them.
+    let comp = "\u{65e5}\u{142}x";
+    let app = run(
+        line,
+        &[focus(), key(Key::End), preedit(comp, "\u{65e5}".len())],
+    );
+    let h = handle();
+    let drawn = h.drawn();
+    let ink = row_ink(&app, &drawn[0]);
+    let end = line
+        .chars()
+        .map(|c| {
+            if ('\u{3000}'..'\u{a000}').contains(&c) {
+                2
+            } else {
+                1
+            }
+        })
+        .sum::<u32>();
+    let mut cells = ink_cells(line, 0);
+    cells.extend(ink_cells(comp, end));
+    assert_eq!(ink.len(), cells.len(), "{ink:?}");
+    for (i, ((a, b), (col, n))) in ink.iter().zip(&cells).enumerate() {
+        assert!(
+            in_cells(x, cell, (*a, *b), *col, *n),
+            "glyph {i} ink {a}..{b} out of cells {col}+{n}"
+        );
+    }
+    let theme = Theme::default();
+    let caret = drawn[0]
+        .over
+        .iter()
+        .find(|o| o.4 == theme.caret)
+        .map(|o| app.store().world(o.0))
+        .expect("a caret");
+    let between = x + (end + 2) as f32 * cell;
+    assert!(
+        (caret.x + caret.w / 2.0 - between).abs() < snap,
+        "{caret:?} at {between}"
+    );
+    assert!(ink[ink.len() - 3].1 <= caret.x + caret.w / 2.0 + snap);
+    assert!(ink[ink.len() - 2].0 >= caret.x + caret.w / 2.0 - snap);
+}
+
 #[test]
 fn a_click_on_the_fold_marker_folds_and_the_caret_steps_over_the_fold() {
     setup(None);
