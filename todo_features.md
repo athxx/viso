@@ -673,7 +673,14 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
 ## W15 — Code editor widget (in `extras/`)
 
 - [ ] `CodeEditor`:
-  - [ ] rope document, multi-cursor, undo;
+  - [x] rope document, multi-cursor, undo: a B-tree rope with line counts (random edits
+    checked against a `String`), edits as change sets of one change a cursor with line
+    splices that every line array follows, sorted merged cursors keeping a column goal, and
+    a bounded history that folds a typing run at every cursor into one change each, broken
+    a word at a time; the widget draws only the lines on screen, as rows of a virtual list
+    keyed by line ids; headless facade tests type, compose, delete, break and indent lines,
+    click, drag, double-click, add cursors with Alt-click and Alt-Cmd-Down, cut once per
+    shortcut and paste a whole line, then undo and redo it all;
   - [ ] syntax highlighting through the `.vs` lexer and a TextMate-free token API;
   - [ ] line numbers, folding, wrapping, inlays and decorations, search/replace;
   - [ ] LSP client hookup.

@@ -3082,6 +3082,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "viso-code-editor"
+version = "0.0.0"
+dependencies = [
+ "icu_properties",
+ "regex",
+ "unicode-segmentation",
+ "viso",
+ "viso-ui",
+ "viso-widgets",
+]
+
+[[package]]
 name = "viso-dev-protocol"
 version = "0.0.0"
 dependencies = [

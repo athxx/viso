@@ -183,6 +183,16 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
                 dev: &["viso"],
             },
         ),
+        // The code editor is an optional extra over the widgets; its tests
+        // drive the facade headless.
+        (
+            "viso-code-editor",
+            Allowed {
+                dir: "extras/code-editor",
+                deps: &["viso-ui", "viso-widgets"],
+                dev: &["viso"],
+            },
+        ),
         // dsl works against a schema/registry, NOT concrete widgets or the
         // runtime: it emits schema data (`viso-schema`)
         // and dev-link patches (`viso-dev-protocol`), encodes them with

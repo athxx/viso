@@ -1,0 +1,24 @@
+[package]
+name = "viso-code-editor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# A code editor: a rope document edited with many cursors and an undo
+# history, highlighted through a token API (the `.vs` lexer built in), drawn a
+# visible line at a time with line numbers, folding, wrapping, inlays and
+# decorations, with search and replace and a language-service hook an LSP
+# client plugs into. Optional, outside the default widget set.
+[dependencies]
+viso-ui = { workspace = true }
+viso-widgets = { workspace = true }
+# Grapheme clusters for caret stops and deletion.
+unicode-segmentation = { workspace = true }
+# East Asian Width: the columns a character takes in the grid.
+icu_properties = { workspace = true }
+# Find and replace with regular expressions.
+regex = { workspace = true }
+
+[dev-dependencies]
+viso = { workspace = true, features = ["headless"] }
