@@ -40,9 +40,17 @@ pub struct MeshFragment {
     /// The unit normal's change one pixel right and one pixel down.
     pub normal_dx: [f32; 3],
     pub normal_dy: [f32; 3],
+    /// `world`'s change one pixel right and one pixel down: they span the
+    /// triangle's plane.
+    pub world_dx: [f32; 3],
+    pub world_dy: [f32; 3],
     /// Where on the target it is, in pixels from the top left: a pixel's
     /// centre is at `+ 0.5`.
     pub pixel: [f32; 2],
+    /// The program culls a one-sided material's back faces itself, by
+    /// [`faces_away`], rather than leaving it to the pipeline: a skinned
+    /// one, whose joints may mirror some triangles and not others.
+    pub face_test: bool,
 }
 
 impl Default for MeshFragment {
@@ -62,7 +70,10 @@ impl Default for MeshFragment {
             uv1_dy: [0.0; 2],
             normal_dx: [0.0; 3],
             normal_dy: [0.0; 3],
+            world_dx: [0.0; 3],
+            world_dy: [0.0; 3],
             pixel: [0.0; 2],
+            face_test: false,
         }
     }
 }
@@ -78,6 +89,20 @@ impl MeshFragment {
             (self.uv, self.uv_dx, self.uv_dy)
         }
     }
+}
+
+/// Whether fragment `f`, seen from `camera`, lies on the back of its
+/// triangle: its outward normal points away from the side of the
+/// triangle's plane the camera is on. The plane comes from the world
+/// position's derivatives, so neither the winding nor the screen's
+/// handedness enters; a plane seen edge on faces neither way.
+#[inline]
+pub fn faces_away(f: &MeshFragment, camera: [f32; 3]) -> bool {
+    let mut face = cross(f.world_dx, f.world_dy);
+    if dot(face, sub(camera, f.world)) < 0.0 {
+        face = scale(face, -1.0);
+    }
+    dot(f.normal, face) < 0.0
 }
 
 /// The irradiance over π at unit normal `n` of an environment whose nine
@@ -352,13 +377,18 @@ pub fn shade_depth(
 /// - sprite: the color as is, covering a disc across `uv`;
 ///
 /// then fog. The base color is the material's times its map's times the
-/// vertex color.
+/// vertex color; a [`face_test`](MeshFragment::face_test)ed fragment of a
+/// one-sided material that [`faces_away`] is discarded.
 pub fn shade_mesh(
     frame: &FrameUniforms,
     material: &MaterialUniforms,
     f: &MeshFragment,
     tex: &dyn SceneTextures,
 ) -> Option<[f32; 4]> {
+    let camera = [frame.camera[0], frame.camera[1], frame.camera[2]];
+    if f.face_test && material.flags() & MATERIAL_DOUBLE_SIDED == 0 && faces_away(f, camera) {
+        return None;
+    }
     let n_geom = normalize(f.normal);
     let sample = |slot: usize| {
         let (uv, dx, dy) = f.uv_of(material, slot);
@@ -381,7 +411,6 @@ pub fn shade_mesh(
         Alpha::Mask if base[3] < material.mode[2] => return None,
         _ => {}
     }
-    let camera = [frame.camera[0], frame.camera[1], frame.camera[2]];
     let to_eye = sub(camera, f.world);
     let distance = length(to_eye);
     let mut c = [base[0], base[1], base[2]];
@@ -728,6 +757,32 @@ mod tests {
         f.vertex_color[3] = 0.25;
         assert_eq!(shade_mesh(&frame(), &m, &f, &Coordinates), None);
         assert_eq!(shade_depth(&frame(), &m, &f, &Coordinates), None);
+    }
+
+    #[test]
+    fn a_face_tested_fragment_on_the_back_of_its_triangle_is_discarded() {
+        let m = material(Shading::Unlit);
+        // A triangle in the plane z = 0 seen from the camera at z = 5,
+        // whichever way its derivatives run.
+        let mut f = fragment([0.0, 0.0, 1.0], [0.5; 2]);
+        f.face_test = true;
+        for (dx, dy) in [
+            ([1.0, 0.0, 0.0], [0.0, -1.0, 0.0]),
+            ([0.0, 1.0, 0.0], [1.0, 0.0, 0.0]),
+        ] {
+            f.world_dx = dx;
+            f.world_dy = dy;
+            f.normal = [0.0, 0.0, 1.0];
+            assert!(shade_mesh(&frame(), &m, &f, &Plain).is_some());
+            f.normal = [0.2, 0.0, -1.0];
+            assert!(shade_mesh(&frame(), &m, &f, &Plain).is_none());
+        }
+        // Double-sided, or left to the pipeline, it stays.
+        let mut two = m;
+        two.mode[3] = MATERIAL_DOUBLE_SIDED as f32;
+        assert!(shade_mesh(&frame(), &two, &f, &Plain).is_some());
+        f.face_test = false;
+        assert!(shade_mesh(&frame(), &m, &f, &Plain).is_some());
     }
 
     #[test]

@@ -547,7 +547,10 @@ fn shade(
         uv1_dy: d2(v.uv1, down.uv1),
         normal_dx: d3(n, normalize(right.normal)),
         normal_dy: d3(n, normalize(down.normal)),
+        world_dx: d3(v.world, right.world),
+        world_dy: d3(v.world, down.world),
         pixel,
+        face_test: draw.program.skinned() && !draw.program.casts(),
     };
     let ndc = [v.world[0], v.world[1]];
     match draw.program {

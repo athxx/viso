@@ -692,8 +692,11 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
   `Renderer::create_scene_skinned_mesh` + `SceneFrame::push_skinned(mesh, material,
   instance, &joints, bounds)`, palette of up to 256 joints in the third uniform block,
   `SceneProgram::SkinnedMesh` / `SkinnedDepth` skin on the GPU (casting skinned shadows
-  too); `push_model` poses glTF skins, `SceneModel::bounds(&pose)`. Verified: CPU + Metal +
-  translated WGSL draw the same skinned scene, GLSL ES / HLSL compile, lane test, CesiumMan / Fox.
+  too); `push_model` poses glTF skins, `SceneModel::bounds(&pose)`. A palette whose joints
+  mirror culls front faces for the draw; joints mirroring some triangles and not others
+  draw unculled while the skinned programs discard back-facing fragments. Verified: CPU +
+  Metal + translated WGSL draw the same skinned scene, GLSL ES / HLSL compile, lane tests
+  (mirrored and mixed palettes, CPU and Metal), CesiumMan / Fox.
 - [x] SSAO and sky. — `SceneFrame::sky: Option<Sky>` draws a Preetham daylight sky (with
   night / twilight fade and sun disc) behind opaque meshes, `Environment::from_sky` lights the
   frame by it, `Lighting::sunlit(&sky)` gives the sun's direct light. `Lighting::occlusion:

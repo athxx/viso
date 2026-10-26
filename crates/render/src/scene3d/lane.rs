@@ -131,6 +131,9 @@ struct GpuMesh {
     skinned: bool,
     /// Each of its vertices carries a [`VertexExtra`].
     extra: bool,
+    /// The joints a skinned mesh's vertices follow with some weight, a bit
+    /// each.
+    joints: [u64; MAX_JOINTS / 64],
 }
 
 /// How a draw's placement turns the winding of its mesh's triangles.
@@ -140,6 +143,8 @@ enum Winding {
     Kept,
     /// Every triangle's winding is reversed: the placement mirrors.
     Mirrored,
+    /// Some triangles' joints mirror them and others' do not.
+    Mixed,
 }
 
 impl Winding {
@@ -149,6 +154,35 @@ impl Winding {
             Winding::Mirrored
         } else {
             Winding::Kept
+        }
+    }
+
+    /// A skinned mesh's whose vertices follow the joints `used` marks,
+    /// posed by palette `rows` (three a joint; a joint past them stays in
+    /// place) and placed by `instance`. A joint scaled flat turns nothing.
+    fn of_skin(instance: &SceneInstance, rows: &[[f32; 4]], used: &[u64]) -> Winding {
+        let (mut kept, mut mirrored) = (false, false);
+        for (w, &word) in used.iter().enumerate() {
+            let mut bits = word;
+            while bits != 0 {
+                let j = w * 64 + bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                let det = match rows.get(j * 3..j * 3 + 3) {
+                    Some(r) => {
+                        r[0][0] * (r[1][1] * r[2][2] - r[1][2] * r[2][1])
+                            - r[0][1] * (r[1][0] * r[2][2] - r[1][2] * r[2][0])
+                            + r[0][2] * (r[1][0] * r[2][1] - r[1][1] * r[2][0])
+                    }
+                    None => 1.0,
+                };
+                kept |= det > 0.0;
+                mirrored |= det < 0.0;
+            }
+        }
+        match (kept, mirrored, instance.mirrors()) {
+            (true, true, _) => Winding::Mixed,
+            (_, true, false) | (_, false, true) => Winding::Mirrored,
+            _ => Winding::Kept,
         }
     }
 }
@@ -172,11 +206,15 @@ struct GpuMaterial {
 impl GpuMaterial {
     /// The index in [`SceneLane::pipelines`] of its pipeline over `mesh`,
     /// placed with `winding`: a mirrored placement's faces wind the other
-    /// way, so a one-sided material culls its front faces instead.
+    /// way, so a one-sided material culls its front faces instead; where
+    /// joints mirror some triangles and not others, no face is culled by
+    /// its winding and the skinned program culls each fragment by its
+    /// facing.
     fn pipeline(&self, mesh: &GpuMesh, winding: Winding) -> usize {
         let cull = match winding {
             _ if self.double_sided => 1,
             Winding::Kept => 0,
+            Winding::Mixed => 1,
             Winding::Mirrored => 2,
         };
         usize::from(mesh.extra) * 12
@@ -471,7 +509,7 @@ impl SceneLane {
             v.write_to(out);
         }
         let bounds = Bounds::around(vertices.iter().map(|v| v.position));
-        self.add_mesh(backend, &bytes, vertices.len(), bounds, indices, false)
+        self.add_mesh(backend, &bytes, vertices.len(), bounds, indices, None)
     }
 
     /// Upload a mesh of `vertices`, each with its extra in `extras` (the
@@ -495,7 +533,7 @@ impl SceneLane {
             extra.write_to(&mut out[SceneVertex::SIZE..]);
         }
         let bounds = Bounds::around(vertices.iter().map(|v| v.position));
-        let id = self.add_mesh(backend, &bytes, vertices.len(), bounds, indices, false);
+        let id = self.add_mesh(backend, &bytes, vertices.len(), bounds, indices, None);
         self.mark_extra(id);
         id
     }
@@ -516,7 +554,15 @@ impl SceneLane {
             v.write_to(out);
         }
         let bounds = Bounds::around(vertices.iter().map(|v| v.position));
-        self.add_mesh(backend, &bytes, vertices.len(), bounds, indices, true)
+        let joints = used_joints(vertices);
+        self.add_mesh(
+            backend,
+            &bytes,
+            vertices.len(),
+            bounds,
+            indices,
+            Some(joints),
+        )
     }
 
     /// Upload a skinned mesh of `vertices` in their bind pose, each with its
@@ -540,7 +586,15 @@ impl SceneLane {
             extra.write_to(&mut out[SkinnedVertex::SIZE..]);
         }
         let bounds = Bounds::around(vertices.iter().map(|v| v.position));
-        let id = self.add_mesh(backend, &bytes, vertices.len(), bounds, indices, true);
+        let joints = used_joints(vertices);
+        let id = self.add_mesh(
+            backend,
+            &bytes,
+            vertices.len(),
+            bounds,
+            indices,
+            Some(joints),
+        );
         self.mark_extra(id);
         id
     }
@@ -552,7 +606,8 @@ impl SceneLane {
         }
     }
 
-    /// Upload a mesh of `count` vertices `vertex_bytes` inside `bounds`.
+    /// Upload a mesh of `count` vertices `vertex_bytes` inside `bounds`,
+    /// skinned when the joints its vertices follow are given.
     fn add_mesh<B: GpuBackend>(
         &mut self,
         backend: &mut B,
@@ -560,7 +615,7 @@ impl SceneLane {
         count: usize,
         bounds: Bounds,
         indices: &[u32],
-        skinned: bool,
+        joints: Option<[u64; MAX_JOINTS / 64]>,
     ) -> MeshId {
         let narrow = count <= usize::from(u16::MAX) + 1;
         let index_bytes: Vec<u8> = if narrow {
@@ -578,7 +633,8 @@ impl SceneLane {
         };
         let mut mesh = upload(backend, vertex_bytes, &index_bytes, format, indices.len());
         mesh.bounds = bounds;
-        mesh.skinned = skinned;
+        mesh.skinned = joints.is_some();
+        mesh.joints = joints.unwrap_or_default();
         let id = match self.free.pop() {
             Some(id) => id,
             None => {
@@ -1161,7 +1217,7 @@ impl SceneLane {
                 &d.bounds,
                 Some(skins),
                 &d.instance,
-                Winding::of(&d.instance),
+                Winding::of_skin(&d.instance, rows, &mesh.joints),
             );
             skins += 1;
         }
@@ -2125,5 +2181,23 @@ fn upload<B: GpuBackend>(
         bounds: Bounds::UNIT,
         skinned: false,
         extra: false,
+        joints: [0; MAX_JOINTS / 64],
     }
+}
+
+/// The joints `vertices` follow with some weight, a bit each; an index past
+/// the palette reads its last joint.
+fn used_joints(vertices: &[SkinnedVertex]) -> [u64; MAX_JOINTS / 64] {
+    let mut used = [0u64; MAX_JOINTS / 64];
+    for v in vertices {
+        let [a, b] = v.weights;
+        let weights = [a & 0xffff, a >> 16, b & 0xffff, b >> 16];
+        for (j, w) in v.joint_indices().into_iter().zip(weights) {
+            if w > 0 {
+                let j = j.min(MAX_JOINTS - 1);
+                used[j / 64] |= 1 << (j % 64);
+            }
+        }
+    }
+    used
 }

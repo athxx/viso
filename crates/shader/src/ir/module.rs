@@ -1462,7 +1462,7 @@ pub fn scene_skinned_ir() -> ShaderIr {
         &SCENE_SKINNED_MESH_BINDINGS,
         SCENE_SKINNED_VERTEX_BODY,
         SCENE_HELPERS,
-        SCENE_FRAGMENT_BODY,
+        SCENE_SKINNED_FRAGMENT_BODY,
     )
 }
 
@@ -1562,7 +1562,7 @@ pub fn scene_extra_skinned_ir() -> ShaderIr {
         &SCENE_SKINNED_MESH_BINDINGS,
         SCENE_EXTRA_SKINNED_VERTEX_BODY,
         SCENE_HELPERS,
-        SCENE_EXTRA_FRAGMENT_BODY,
+        SCENE_EXTRA_SKINNED_FRAGMENT_BODY,
     )
 }
 
@@ -3377,6 +3377,29 @@ uint bits = uint(mode.w);
     };
 }
 
+/// A skinned fragment of a one-sided material on the back of its triangle
+/// discarded: its outward normal points away from the side of the
+/// triangle's plane the camera is on. Its joints may mirror some triangles
+/// and not others, so no pipeline culls them by their winding.
+macro_rules! scene_fragment_face_test {
+    () => {
+        "\
+float3 world_dx = dfdx(in.world);
+float3 world_dy = dfdy(in.world);
+if ((bits & 2u) == 0u) {
+    float3 face = cross(world_dx, world_dy);
+    if (dot(face, float4(u.camera).xyz - in.world) < 0.0) {
+        face = -face;
+    }
+    if (dot(in.normal, face) < 0.0) {
+        discard_fragment();
+        return float4(0.0);
+    }
+}
+"
+    };
+}
+
 /// The rest of the mesh program's fragment.
 macro_rules! scene_fragment_rest {
     () => {
@@ -3576,9 +3599,21 @@ const SCENE_FRAGMENT_BODY: &str = concat!(
     scene_fragment_head!(),
     scene_fragment_rest!()
 );
+const SCENE_SKINNED_FRAGMENT_BODY: &str = concat!(
+    scene_fragment_plain!(),
+    scene_fragment_head!(),
+    scene_fragment_face_test!(),
+    scene_fragment_rest!()
+);
 const SCENE_EXTRA_FRAGMENT_BODY: &str = concat!(
     scene_fragment_extra!(),
     scene_fragment_head!(),
+    scene_fragment_rest!()
+);
+const SCENE_EXTRA_SKINNED_FRAGMENT_BODY: &str = concat!(
+    scene_fragment_extra!(),
+    scene_fragment_head!(),
+    scene_fragment_face_test!(),
     scene_fragment_rest!()
 );
 

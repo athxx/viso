@@ -67,7 +67,9 @@ pub enum SceneProgram {
     /// the cascade's tile of the shadow atlas, with reversed depth.
     Depth = 1,
     /// [`Mesh`](Self::Mesh), its vertices [`SkinnedVertex`]es moved by
-    /// their joints first ([`skin_vertex`]).
+    /// their joints first ([`skin_vertex`]). Its joints may mirror some
+    /// triangles and not others, so it discards a one-sided material's
+    /// fragments that [`faces_away`] itself; a pipeline may cull too.
     SkinnedMesh = 2,
     /// [`Depth`](Self::Depth) of a skinned mesh.
     SkinnedDepth = 3,
@@ -855,8 +857,8 @@ mod shade;
 pub use screen::{shade_ao, shade_ao_blur, shade_sky, sky_radiance};
 
 pub use shade::{
-    MeshFragment, SceneTextures, disc, env_atlas_uv, env_brdf, env_direction_uv, pack_depth,
-    sh_irradiance, shade_depth, shade_mesh, shadow_visibility, tonemap, unpack_depth,
+    MeshFragment, SceneTextures, disc, env_atlas_uv, env_brdf, env_direction_uv, faces_away,
+    pack_depth, sh_irradiance, shade_depth, shade_mesh, shadow_visibility, tonemap, unpack_depth,
 };
 
 #[inline]
