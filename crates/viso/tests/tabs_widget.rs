@@ -170,6 +170,8 @@ fn tabs_render_the_strip_and_selected_panel_and_match_golden() {
     let mut renderer = Renderer::new(&mut gpu, format);
 
     let mut store = NodeStore::new();
+    // The scene is dark, so it draws in the dark theme.
+    store.set_palette(viso::ui::Palette::dark());
     let root = build_scene(&mut store);
     attach_captions(&mut gpu, &mut store, root);
 

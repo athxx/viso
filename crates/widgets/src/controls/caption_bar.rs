@@ -37,6 +37,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use viso_ui::ColorToken;
 
 use viso_ui::{
     Align, Axis, BoxStyle, BuildCx, ChromeContext, Component, EventCx, FlexStyle, Inset,
@@ -58,20 +59,10 @@ use crate::label;
 const HEIGHT: f32 = 38.0;
 
 /// The default caption background: a neutral dark bar.
-const BACKGROUND: Rgba = Rgba {
-    r: 0.12,
-    g: 0.12,
-    b: 0.14,
-    a: 1.0,
-};
+const BACKGROUND: Rgba = ColorToken::Surface.rgba();
 
-/// The default title color: near-white for contrast against the bar.
-const TITLE: Rgba = Rgba {
-    r: 0.92,
-    g: 0.92,
-    b: 0.95,
-    a: 1.0,
-};
+/// The default title color: the theme's ink on a surface.
+const TITLE: Rgba = ColorToken::OnSurface.rgba();
 
 /// The default horizontal padding at each end of the bar.
 const PADDING: f32 = 8.0;
@@ -91,45 +82,20 @@ const GLYPH_STROKE: f32 = 1.0;
 
 /// The resting glyph color for the min/max buttons: a muted light gray that reads
 /// against the dark bar without competing with the title.
-const BUTTON_GLYPH: Rgba = Rgba {
-    r: 0.75,
-    g: 0.75,
-    b: 0.80,
-    a: 1.0,
-};
+const BUTTON_GLYPH: Rgba = ColorToken::Muted.rgba();
 
 /// The hover background for the min/max buttons: a subtle lightening of the bar.
-const BUTTON_HOVER_BG: Rgba = Rgba {
-    r: 0.24,
-    g: 0.24,
-    b: 0.27,
-    a: 1.0,
-};
+const BUTTON_HOVER_BG: Rgba = ColorToken::OnSurface.alpha(0.08);
 
 /// The pressed background for the min/max buttons: a touch darker than hover.
-const BUTTON_PRESSED_BG: Rgba = Rgba {
-    r: 0.30,
-    g: 0.30,
-    b: 0.34,
-    a: 1.0,
-};
+const BUTTON_PRESSED_BG: Rgba = ColorToken::OnSurface.alpha(0.16);
 
 /// The hover background for the close button: the platform-conventional red so
 /// the destructive action reads distinctly from minimize/maximize.
-const CLOSE_HOVER_BG: Rgba = Rgba {
-    r: 0.77,
-    g: 0.16,
-    b: 0.13,
-    a: 1.0,
-};
+const CLOSE_HOVER_BG: Rgba = ColorToken::Error.rgba();
 
 /// The pressed background for the close button: a darker red.
-const CLOSE_PRESSED_BG: Rgba = Rgba {
-    r: 0.60,
-    g: 0.11,
-    b: 0.09,
-    a: 1.0,
-};
+const CLOSE_PRESSED_BG: Rgba = ColorToken::Error.alpha(0.8);
 
 /// A shared, mutable window-action callback, cloned into both the pointer and key
 /// handlers of a self-drawn window button so a click and a keyboard activation
@@ -218,9 +184,9 @@ fn fire(cb: &WindowAction, ev: &mut EventCx<'_>) {
 /// The visual and layout parameters of a [`CaptionBar`]: the bar height, its
 /// background box, the end padding, and the title color. All fields are `Copy`.
 ///
-/// `height` defaults to a standard title-bar height, `background` to a neutral
-/// dark bar, `padding` to a small horizontal inset, and `title_color` to
-/// near-white.
+/// `height` defaults to a standard title-bar height, `background` to the
+/// theme's surface, `padding` to a small horizontal inset, and `title_color` to
+/// the theme's ink on a surface.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CaptionBarStyle {
     /// The bar's fixed height in logical points.
@@ -321,7 +287,7 @@ impl CaptionBar {
         self
     }
 
-    /// Set the title text color (defaults to near-white).
+    /// Set the title text color (defaults to the theme's ink on a surface).
     pub fn title_color(mut self, color: Rgba) -> Self {
         self.style.title_color = color;
         self

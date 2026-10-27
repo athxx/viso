@@ -49,6 +49,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use viso_ui::ColorToken;
 
 use viso_ui::{
     Align, Alignment2D, Axis, BoxStyle, BuildCx, Component, Controls, DirtyClass, DispatchPhase,
@@ -156,12 +157,7 @@ impl SheetParts {
 
 /// A translucent black wash — the default scrim dimming the scene behind an open
 /// sheet so the background reads as inert.
-const DEFAULT_SCRIM: Rgba = Rgba {
-    r: 0.0,
-    g: 0.0,
-    b: 0.0,
-    a: 0.32,
-};
+const DEFAULT_SCRIM: Rgba = ColorToken::Scrim.rgba();
 
 /// The default full extent of the panel along the slide axis.
 const DEFAULT_EXTENT: f32 = 320.0;
@@ -169,12 +165,7 @@ const DEFAULT_EXTENT: f32 = 320.0;
 /// The grabber's bar, its color, and the room it takes along the axis.
 const GRABBER: (f32, f32) = (36.0, 5.0);
 const GRABBER_ROOM: f32 = 17.0;
-const GRABBER_COLOR: Rgba = Rgba {
-    r: 0.56,
-    g: 0.56,
-    b: 0.58,
-    a: 0.6,
-};
+const GRABBER_COLOR: Rgba = ColorToken::Muted.alpha(0.6);
 
 /// The visual and layout parameters of a [`Sheet`].
 #[derive(Debug, Clone, Copy, PartialEq)]

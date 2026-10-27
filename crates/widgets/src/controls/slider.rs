@@ -53,6 +53,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use viso_ui::ColorToken;
 
 use viso_ui::slider::{
     SLIDER_SIZE, Slide, Slider as SliderMark, SliderInput, SliderRange, SliderShape, Thumb,
@@ -91,8 +92,8 @@ impl Default for SliderStyle {
                 width: Length::Fit,
                 height: Length::Fit,
             },
-            track: Rgba::new(0.47, 0.47, 0.5, 0.32),
-            fill: Rgba::new(0.22, 0.45, 0.85, 1.0),
+            track: ColorToken::Muted.alpha(0.32),
+            fill: ColorToken::Primary.rgba(),
             thumb: Rgba::new(1.0, 1.0, 1.0, 1.0),
         }
     }

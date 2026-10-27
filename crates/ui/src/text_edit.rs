@@ -1574,22 +1574,12 @@ impl Buffer {
 pub const CARET_WIDTH: f32 = 1.5;
 
 /// The highlight of a selection in a field with the focus in the active
-/// window: a translucent blue.
-const SELECTION: Rgba = Rgba {
-    r: 0.046,
-    g: 0.209,
-    b: 1.0,
-    a: 0.35,
-};
+/// window: the theme's primary, translucent.
+const SELECTION: Rgba = crate::ColorToken::Primary.alpha(0.35);
 
 /// The highlight of a selection in a field whose window is not the active
-/// one: a translucent grey.
-const INACTIVE_SELECTION: Rgba = Rgba {
-    r: 0.5,
-    g: 0.5,
-    b: 0.5,
-    a: 0.3,
-};
+/// one: the theme's muted color, translucent.
+const INACTIVE_SELECTION: Rgba = crate::ColorToken::Muted.alpha(0.3);
 
 /// The share of an em a selected line break highlights past its line's end.
 const BREAK_HIGHLIGHT: f32 = 0.3;

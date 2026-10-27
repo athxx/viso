@@ -56,6 +56,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use viso_ui::ColorToken;
 
 use viso_ui::{
     Align, Axis, BoxStyle, BuildCx, Component, Controls, DirtyClass, EventCx, FlexStyle, Inset,
@@ -128,12 +129,7 @@ impl ModalHandle {
 
 /// A translucent black wash — the default scrim dimming the scene behind an open
 /// modal so the background reads as inert.
-const DEFAULT_SCRIM: Rgba = Rgba {
-    r: 0.0,
-    g: 0.0,
-    b: 0.0,
-    a: 0.32,
-};
+const DEFAULT_SCRIM: Rgba = ColorToken::Scrim.rgba();
 
 /// The visual and layout parameters of a [`Modal`].
 ///

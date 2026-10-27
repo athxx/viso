@@ -876,10 +876,11 @@ impl NodeStore {
     /// Make node `id` draw `slider`. One that draws a slider of its shape
     /// already keeps where its thumbs stand and its drag, and eases from
     /// there to `slider`'s values.
-    pub fn set_slider(&mut self, id: NodeId, slider: Slider) {
+    pub fn set_slider(&mut self, id: NodeId, mut slider: Slider) {
         if !self.arena().is_live(id) {
             return;
         }
+        self.theme_part(id, [&mut slider.track, &mut slider.fill, &mut slider.thumb]);
         let next = match self.slider(id) {
             Some(was) if was.shape == slider.shape && was.range == slider.range => {
                 let next = Slider {

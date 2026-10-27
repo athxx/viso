@@ -115,6 +115,8 @@ fn sliders_draw_their_tracks_thumbs_marks_and_knob_and_match_golden() {
     let format = gpu.surface_format(surface);
     let mut renderer = Renderer::new(&mut gpu, format);
     let mut store = NodeStore::new();
+    // The scene is dark, so it draws in the dark theme.
+    store.set_palette(viso::ui::Palette::dark());
     let root = build_scene(&mut store);
     store.layout(root, surface_rect(), &mut Vec::new());
     let first = store.arena().first_child(root).unwrap();

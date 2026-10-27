@@ -32,6 +32,7 @@
 use std::cell::{Cell, OnceCell, RefCell};
 use std::num::NonZeroU32;
 use std::rc::Rc;
+use viso_ui::ColorToken;
 
 use viso_ui::{
     Align, AnchorAlign, Anchoring, Axis, BoxRules, BoxStyle, BuildCx, Component, Controls,
@@ -156,24 +157,20 @@ impl SelectKind {
     }
 }
 
-const fn rgba(r: f32, g: f32, b: f32, a: f32) -> Rgba {
-    Rgba { r, g, b, a }
-}
-
 impl Default for SelectStyle {
     fn default() -> Self {
         let border = viso_ui::Border {
             width: 1.0,
-            color: rgba(0.0, 0.0, 0.0, 0.16),
+            color: ColorToken::Outline.rgba(),
         };
         SelectStyle {
             field: BoxStyle {
                 border,
-                ..BoxStyle::solid(rgba(1.0, 1.0, 1.0, 1.0)).with_radius(6.0)
+                ..BoxStyle::solid(ColorToken::Background.rgba()).with_radius(6.0)
             },
             field_hover: BoxStyle {
                 border,
-                ..BoxStyle::solid(rgba(0.96, 0.96, 0.965, 1.0)).with_radius(6.0)
+                ..BoxStyle::solid(ColorToken::Surface.rgba()).with_radius(6.0)
             },
             field_padding: Inset {
                 left: 10.0,
@@ -183,14 +180,14 @@ impl Default for SelectStyle {
             },
             min_width: 120.0,
             font_size: 14.0,
-            ink: rgba(0.09, 0.09, 0.1, 1.0),
-            quiet: rgba(0.42, 0.42, 0.45, 1.0),
+            ink: ColorToken::Foreground.rgba(),
+            quiet: ColorToken::Muted.rgba(),
             panel: BoxStyle {
                 border: viso_ui::Border {
                     width: 1.0,
-                    color: rgba(0.0, 0.0, 0.0, 0.12),
+                    color: ColorToken::Outline.rgba(),
                 },
-                ..BoxStyle::solid(rgba(0.985, 0.985, 0.985, 1.0)).with_radius(8.0)
+                ..BoxStyle::solid(ColorToken::Surface.rgba()).with_radius(8.0)
             },
             shadow: Some(Shadow::FLOATING),
             padding: Inset::all(5.0),
@@ -200,7 +197,7 @@ impl Default for SelectStyle {
                 top: 5.0,
                 bottom: 5.0,
             },
-            highlight: BoxStyle::solid(rgba(0.23, 0.42, 0.94, 0.14)).with_radius(5.0),
+            highlight: BoxStyle::solid(ColorToken::Primary.alpha(0.14)).with_radius(5.0),
             disabled: 0.4,
             max_height: 320.0,
             kind: SelectKind::native(),

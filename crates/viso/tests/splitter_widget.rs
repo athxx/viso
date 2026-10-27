@@ -95,6 +95,8 @@ fn splitter_renders_two_panes_and_a_divider_and_matches_golden() {
     let mut renderer = Renderer::new(&mut gpu, format);
 
     let mut store = NodeStore::new();
+    // The scene is dark, so it draws in the dark theme.
+    store.set_palette(viso::ui::Palette::dark());
     let root = build_scene(&mut store);
 
     let mut scratch = Vec::new();

@@ -54,6 +54,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use viso_ui::ColorToken;
 
 use viso_ui::adaptive::EnvField;
 use viso_ui::calendar::{Date, Days, NO_DATE, Weekday, first_weekday};
@@ -71,10 +72,6 @@ type SharedChange = Rc<RefCell<Option<Box<dyn FnMut(&mut EventCx<'_>, Date)>>>>;
 
 /// Which days cannot be picked.
 type Refusal = Rc<dyn Fn(Date) -> bool>;
-
-const fn rgba(r: f32, g: f32, b: f32, a: f32) -> Rgba {
-    Rgba { r, g, b, a }
-}
 
 /// The weeks a month shows, and the days in each.
 const WEEKS: usize = 6;
@@ -205,11 +202,11 @@ impl Default for CalendarStyle {
             cell: 36.0,
             font_size: 14.0,
             title_size: 15.0,
-            ink: rgba(0.09, 0.09, 0.1, 1.0),
-            quiet: rgba(0.42, 0.42, 0.45, 1.0),
-            selected_ink: rgba(1.0, 1.0, 1.0, 1.0),
-            accent: rgba(0.22, 0.45, 0.85, 1.0),
-            hover: rgba(0.46, 0.46, 0.5, 0.14),
+            ink: ColorToken::Foreground.rgba(),
+            quiet: ColorToken::Muted.rgba(),
+            selected_ink: ColorToken::OnPrimary.rgba(),
+            accent: ColorToken::Primary.rgba(),
+            hover: ColorToken::Muted.alpha(0.14),
         }
     }
 }
@@ -460,13 +457,7 @@ impl Month {
                         (style.selected_ink, FontWeight(600))
                     }
                     Look::Selected | Look::Other => (style.quiet, FontWeight(400)),
-                    Look::Off => (
-                        Rgba {
-                            a: style.quiet.a * 0.45,
-                            ..style.quiet
-                        },
-                        FontWeight(400),
-                    ),
+                    Look::Off => (viso_ui::theme::fade(style.quiet, 0.45), FontWeight(400)),
                 };
                 s.store.set_text(
                     cell,

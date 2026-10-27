@@ -32,6 +32,7 @@ use crate::field_marks::{FieldMarks, HANDLE, HandleShape};
 use crate::layout::Vec2;
 use crate::node::NodeId;
 use crate::style::BoxStyle;
+use crate::theme::Palette;
 use crate::transform::TransformTable;
 use viso_render::{
     AnalyticEllipse, AnalyticRRect, AnalyticShadow, Border, Corners, GlyphInstanceData,
@@ -528,9 +529,9 @@ fn paint_own(store: &NodeStore, node: NodeId, world: Rect, out: &mut Vec<Primiti
             return;
         }
         let ring = if let Some(marks) = store.field_marks(node) {
-            paint_field(marks, content, world, out);
+            paint_field(marks, store.palette(), content, world, out);
             if marks.handles.is_some() {
-                paint_handles(store.field_handles(node), out);
+                paint_handles(store.field_handles(node), store.palette(), out);
             }
             marks.ring
         } else {
@@ -613,7 +614,13 @@ fn paint_focus_ring(
 /// A text field at `world`, clipped to it: its selection, its text `content`,
 /// its composition's underline and its caret, all shifted by its scroll.
 #[cold]
-fn paint_field(marks: &FieldMarks, content: &Content, world: Rect, out: &mut Vec<Primitive>) {
+fn paint_field(
+    marks: &FieldMarks,
+    palette: &Palette,
+    content: &Content,
+    world: Rect,
+    out: &mut Vec<Primitive>,
+) {
     out.push(Primitive::Layer(LayerClip {
         clip: world,
         opacity: 1.0,
@@ -633,7 +640,7 @@ fn paint_field(marks: &FieldMarks, content: &Content, world: Rect, out: &mut Vec
         marks
             .selection
             .iter()
-            .map(|r| quad(r, marks.selection_color)),
+            .map(|r| quad(r, palette.resolve(marks.selection_color))),
     );
     let text = Rect {
         x: ox,
@@ -641,20 +648,22 @@ fn paint_field(marks: &FieldMarks, content: &Content, world: Rect, out: &mut Vec
         ..world
     };
     paint_content(content, text, None, false, out);
-    out.extend(marks.underlines.iter().map(|r| quad(r, marks.ink)));
-    out.extend(marks.caret.iter().map(|r| quad(r, marks.ink)));
+    let ink = palette.resolve(marks.ink);
+    out.extend(marks.underlines.iter().map(|r| quad(r, ink)));
+    out.extend(marks.caret.iter().map(|r| quad(r, ink)));
     out.push(Primitive::LayerEnd);
 }
 
 /// A field's selection handles, over everything it draws and unclipped by
 /// its box.
 #[cold]
-fn paint_handles(handles: [Option<HandleShape>; 2], out: &mut Vec<Primitive>) {
+fn paint_handles(handles: [Option<HandleShape>; 2], palette: &Palette, out: &mut Vec<Primitive>) {
+    let color = palette.resolve(HANDLE);
     for shape in handles.into_iter().flatten() {
         if let Some(stem) = shape.stem {
             out.push(Primitive::Quad(Quad {
                 rect: stem,
-                color: HANDLE,
+                color,
                 radius: 0.0,
                 border: Border::NONE,
             }));
@@ -662,13 +671,13 @@ fn paint_handles(handles: [Option<HandleShape>; 2], out: &mut Vec<Primitive>) {
         out.push(match shape.tear {
             Some(radius) => Primitive::AnalyticRRect(AnalyticRRect {
                 rect: shape.knob,
-                color: HANDLE,
+                color,
                 radius,
                 border: Border::NONE,
             }),
             None => Primitive::AnalyticEllipse(AnalyticEllipse {
                 rect: shape.knob,
-                color: HANDLE,
+                color,
                 border: Border::NONE,
             }),
         });

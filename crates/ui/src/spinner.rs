@@ -324,7 +324,10 @@ impl NodeStore {
     }
 
     /// Ink node `id`'s spinner `color`.
-    pub fn set_spinner_color(&mut self, id: NodeId, color: Rgba) {
+    pub fn set_spinner_color(&mut self, id: NodeId, mut color: Rgba) {
+        if self.spinner(id).is_some() {
+            self.theme_part(id, [&mut color]);
+        }
         self.change_spinner(id, |s| s.color = color);
     }
 

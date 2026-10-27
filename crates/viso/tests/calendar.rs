@@ -346,6 +346,8 @@ fn a_calendar_marks_its_picked_day_and_today_and_matches_golden() {
     let format = gpu.surface_format(surface);
     let mut renderer = Renderer::new(&mut gpu, format);
     let mut store = NodeStore::new();
+    // The scene is dark, so it draws in the dark theme.
+    store.set_palette(viso::ui::Palette::dark());
     let mut states = StateStore::new();
     let mut bindings = BindingTable::new();
     let mut lists = VirtualLists::new();

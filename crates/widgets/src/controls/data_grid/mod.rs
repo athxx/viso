@@ -62,6 +62,7 @@ mod selection;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
+use viso_ui::ColorToken;
 
 use viso_ui::virtual_list::{set_sticky_of, watch_across};
 use viso_ui::{
@@ -185,10 +186,6 @@ pub struct DataGridStyle {
     pub cursor_width: f32,
 }
 
-const fn rgba(r: f32, g: f32, b: f32, a: f32) -> Rgba {
-    Rgba { r, g, b, a }
-}
-
 impl Default for DataGridStyle {
     fn default() -> Self {
         DataGridStyle {
@@ -197,17 +194,17 @@ impl Default for DataGridStyle {
             header_height: 32.0,
             padding: 8.0,
             font_size: 13.0,
-            text: rgba(0.12, 0.13, 0.15, 1.0),
-            header_text: rgba(0.3, 0.32, 0.36, 1.0),
-            background: rgba(1.0, 1.0, 1.0, 1.0),
-            header_fill: rgba(0.96, 0.965, 0.97, 1.0),
-            stripe: rgba(0.0, 0.0, 0.0, 0.025),
-            hover: rgba(0.0, 0.0, 0.0, 0.045),
-            line: rgba(0.0, 0.0, 0.0, 0.07),
-            header_line: rgba(0.0, 0.0, 0.0, 0.14),
-            selection: rgba(0.2, 0.47, 0.96, 0.18),
-            selection_idle: rgba(0.0, 0.0, 0.0, 0.08),
-            cursor: rgba(0.2, 0.47, 0.96, 1.0),
+            text: ColorToken::Foreground.rgba(),
+            header_text: ColorToken::Muted.rgba(),
+            background: ColorToken::Background.rgba(),
+            header_fill: ColorToken::Surface.rgba(),
+            stripe: ColorToken::Foreground.alpha(0.025),
+            hover: ColorToken::Foreground.alpha(0.045),
+            line: ColorToken::Foreground.alpha(0.07),
+            header_line: ColorToken::Outline.rgba(),
+            selection: ColorToken::Primary.alpha(0.18),
+            selection_idle: ColorToken::Foreground.alpha(0.08),
+            cursor: ColorToken::Primary.rgba(),
             cursor_width: 2.0,
         }
     }

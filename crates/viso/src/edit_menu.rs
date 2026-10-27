@@ -18,6 +18,7 @@
 
 use std::cell::Cell;
 use std::rc::Rc;
+use viso_ui::ColorToken;
 
 use viso_platform::{EditLabels, EditMenu};
 use viso_runtime::Key;
@@ -81,11 +82,11 @@ const BAR_FILL: Rgba = rgba(0.13, 0.13, 0.14, 0.96);
 const BAR_HOVER: Rgba = rgba(1.0, 1.0, 1.0, 0.12);
 const BAR_PRESSED: Rgba = rgba(1.0, 1.0, 1.0, 0.22);
 const BAR_INK: Rgba = rgba(1.0, 1.0, 1.0, 1.0);
-const LIST_FILL: Rgba = rgba(0.98, 0.98, 0.98, 1.0);
-const LIST_EDGE: Rgba = rgba(0.0, 0.0, 0.0, 0.16);
-const LIST_HOVER: Rgba = rgba(0.23, 0.42, 0.94, 1.0);
-const LIST_PRESSED: Rgba = rgba(0.18, 0.34, 0.80, 1.0);
-const LIST_INK: Rgba = rgba(0.1, 0.1, 0.1, 1.0);
+const LIST_FILL: Rgba = ColorToken::Surface.rgba();
+const LIST_EDGE: Rgba = ColorToken::Outline.rgba();
+const LIST_HOVER: Rgba = ColorToken::Primary.rgba();
+const LIST_PRESSED: Rgba = ColorToken::PrimaryPressed.rgba();
+const LIST_INK: Rgba = ColorToken::Foreground.rgba();
 /// A list item that cannot apply shows at this opacity.
 const DIMMED: f32 = 0.4;
 

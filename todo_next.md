@@ -658,9 +658,26 @@ Rules (as for `todo_features.md`):
     pixel at 800×600, as the WebGPU run does. After three clicks and after a resize to 640×420,
     the CPU and WebGPU frames are identical. The custom-shader example's brushes paint on the CPU.
     Clippy is clean on host, headless and wasm (with and without hot reload).
-- [ ] Controls take their default colors from the env `theme` instead of fixed dark-palette
+- [x] Controls take their default colors from the env `theme` instead of fixed dark-palette
   constants. Verify with snapshots under the light and dark themes, and that a theme swap marks
   PAINT only.
+  - Built:
+    - The default styles of `viso-widgets` and the `viso-ui` controls name `ColorToken`s, and so
+      do the DSL's unbound defaults, the edit menu's list and the window's background.
+    - The store resolves tokens on every color write, including the inks of rich-text spans,
+      and repaints them on `set_palette`. Text fields' selection, caret and handles resolve at
+      paint time.
+    - `fade` derives a tint from a token or a plain color. Part setters resolve before they
+      compare, so writing the same value stays a no-op.
+    - A scroll-bar style that only recolors no longer re-lays the bars out.
+  - Verified (`crates/viso/tests/theme_controls.rs`):
+    - A gallery of eleven controls is held to `theme_light.png` and `theme_dark.png`, and no
+      token reaches the paint.
+    - A system light→dark swap frame measures and lays out nothing, and draws the same pixels as
+      starting in dark.
+    - The per-widget goldens on dark scenes now draw in the dark palette and are re-blessed.
+    - A rich text's span ink and fill follow a palette swap with PAINT only, and a reflowed run
+      draws resolved too (`viso-ui` theme tests).
 - [ ] Assistive-technology scroll actions on scroll viewports and virtual lists (`ScrollDown`,
   `ScrollUp`, `ScrollIntoView`, iOS `accessibilityScroll`). Verify with an AccessKit request test
   that reaches an unmounted row of a 10k-row list.

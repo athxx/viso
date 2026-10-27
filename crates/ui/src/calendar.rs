@@ -625,10 +625,11 @@ impl NodeStore {
 
     /// Make node `id` draw `days` under its days; one drawing days already
     /// keeps the day the pointer is over.
-    pub fn set_days(&mut self, id: NodeId, days: Days) {
+    pub fn set_days(&mut self, id: NodeId, mut days: Days) {
         if !self.arena().is_live(id) {
             return;
         }
+        self.theme_part(id, [&mut days.accent, &mut days.hover_fill]);
         let next = match self.days(id) {
             Some(was) => Days {
                 hover: was.hover,

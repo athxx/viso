@@ -73,6 +73,7 @@ mod tree;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use viso_ui::ColorToken;
 
 use viso_ui::{BoxStyle, BuildCx, Component, ControlHandle, Rgba, Sizing};
 
@@ -90,20 +91,10 @@ pub type PanelContent = Box<dyn Fn(&mut BuildCx<'_>)>;
 
 /// The seam bar's fill — a neutral divider that reads against either pane, matching
 /// the standalone splitter's bar so a dock seam and a standalone splitter read alike.
-const SEAM_FILL: Rgba = Rgba {
-    r: 0.3,
-    g: 0.31,
-    b: 0.34,
-    a: 1.0,
-};
+const SEAM_FILL: Rgba = ColorToken::Outline.rgba();
 
 /// A tab chip's fill in the dock strip — a neutral chip against the strip.
-const TAB_FILL: Rgba = Rgba {
-    r: 0.16,
-    g: 0.17,
-    b: 0.20,
-    a: 1.0,
-};
+const TAB_FILL: Rgba = ColorToken::Surface.rgba();
 
 /// The visual and layout parameters of a [`Dock`]: the seam bar's fill, a tab
 /// chip's fill, and the control's own size request within its parent.

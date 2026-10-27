@@ -10,6 +10,7 @@
 //! assistive technology reads a slider of pages and steps it the same way.
 //! Read right to left, the first dot is the rightmost, as the first item is.
 
+use crate::ColorToken;
 use viso_render::{Border, Primitive, Quad, Rect, Rgba};
 
 use crate::adaptive::LayoutDirection;
@@ -38,8 +39,8 @@ pub struct PageDotsStyle {
 impl Default for PageDotsStyle {
     fn default() -> Self {
         PageDotsStyle {
-            color: Rgba::new(0.5, 0.5, 0.5, 0.35),
-            current_color: Rgba::new(0.5, 0.5, 0.5, 1.0),
+            color: ColorToken::Muted.alpha(0.35),
+            current_color: ColorToken::Muted.rgba(),
             dot: 7.0,
             gap: 9.0,
         }
@@ -262,9 +263,20 @@ impl NodeStore {
 mod tests {
     use super::*;
 
+    /// The default style as the light theme paints it.
+    fn style() -> PageDotsStyle {
+        let palette = crate::Palette::default();
+        let style = PageDotsStyle::default();
+        PageDotsStyle {
+            color: palette.resolve(style.color),
+            current_color: palette.resolve(style.current_color),
+            ..style
+        }
+    }
+
     fn dots(count: usize, current: usize, reversed: bool) -> PageDots {
         PageDots {
-            style: PageDotsStyle::default(),
+            style: style(),
             count,
             current,
             reversed,
@@ -301,7 +313,7 @@ mod tests {
             quads.iter().map(|q| q.0).collect::<Vec<_>>(),
             [30.5, 46.5, 62.5]
         );
-        let style = PageDotsStyle::default();
+        let style = style();
         assert_eq!(quads[1].1, style.current_color);
         assert_eq!(quads[0].1, style.color);
     }
@@ -310,7 +322,7 @@ mod tests {
     fn read_right_to_left_the_first_dot_is_the_rightmost() {
         let d = dots(3, 0, true);
         let quads = painted(&d);
-        assert_eq!(quads[2].1, PageDotsStyle::default().current_color);
+        assert_eq!(quads[2].1, style().current_color);
         assert_eq!(d.dot_at(70.0, 100.0), Some(0));
         assert_eq!(dots(3, 0, false).dot_at(70.0, 100.0), Some(2));
     }

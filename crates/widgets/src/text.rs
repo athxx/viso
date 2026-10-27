@@ -18,6 +18,7 @@
 use std::cell::RefCell;
 use std::num::NonZeroU32;
 use std::rc::Rc;
+use viso_ui::ColorToken;
 
 use viso_ui::{
     BoxStyle, BuildCx, Component, EventCx, FieldLook, FontFamily, FontSize, FontSlant, FontWeight,
@@ -29,12 +30,7 @@ use viso_ui::{
 const DEFAULT_FONT_SIZE: f32 = 14.0;
 
 /// A near-black default text color (straight linear RGBA).
-const DEFAULT_COLOR: Rgba = Rgba {
-    r: 0.05,
-    g: 0.05,
-    b: 0.06,
-    a: 1.0,
-};
+const DEFAULT_COLOR: Rgba = ColorToken::Foreground.rgba();
 
 /// The visual and layout parameters of a [`Label`]: the font size and color of
 /// the text, plus the leaf's own size request within its parent.
@@ -155,12 +151,7 @@ pub fn rich_text<S: AsRef<str>>(pieces: impl IntoIterator<Item = (S, SpanStyle)>
 }
 
 /// The ink of a [`link_label`]: the system link blue.
-const LINK: Rgba = Rgba {
-    r: 0.0,
-    g: 0.133,
-    b: 0.604,
-    a: 1.0,
-};
+const LINK: Rgba = ColorToken::Primary.rgba();
 
 /// A [`Label`] that is one link: `text`, underlined in the system link blue,
 /// leading to `url`. A click or Enter on it opens `url` in the app the URL
@@ -405,7 +396,7 @@ mod tests {
             .expect("label declares a text request on its leaf");
         assert_eq!(request.text, "Hello");
         assert_eq!(request.font_size, FontSize::Fixed(DEFAULT_FONT_SIZE));
-        assert_eq!(request.color, DEFAULT_COLOR);
+        assert_eq!(request.color, store.palette().resolve(DEFAULT_COLOR));
 
         let sem = store
             .semantics(root)

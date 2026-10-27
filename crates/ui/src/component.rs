@@ -3494,7 +3494,6 @@ impl NodeStore {
             classes |= DirtyClass::SEMANTICS;
         }
         let mut content = content;
-        self.theme_content(self.arena.slot(id), &mut content);
         self.arriving(id, &mut content);
         self.leave_content(id);
         self.content_payload[self.arena.slot(id)] = Some(Box::new(content));
@@ -4900,6 +4899,7 @@ impl NodeStore {
     /// A text content arriving while its color moves keeps the color shown
     /// and turns the move toward the color it brings.
     fn arriving(&mut self, id: NodeId, content: &mut Content) {
+        self.theme_content(self.arena.slot(id), content);
         if let Content::Text { color, .. } = content
             && self.is_moving(id, &LookValue::TextColor(*color))
         {
@@ -8681,6 +8681,11 @@ impl NodeStore {
             self.repaint_themed(node[0].0 as usize, &of_node);
         }
         self.theme_refs = refs;
+        // A field's marks keep the tokens they name and paint them resolved.
+        let fields: Vec<NodeId> = self.fields.nodes().collect();
+        for id in fields {
+            self.mark_dirty(id, DirtyClass::PAINT);
+        }
     }
 
     /// Writes the colors `refs` name, in the current palette, into node
@@ -8777,6 +8782,16 @@ impl NodeStore {
         }
     }
 
+    /// [`theme_color`](Self::theme_color) on a part's `colors`, in the order
+    /// [`Content::colors_mut`] visits them: a setter resolves what node `id`
+    /// is about to draw before it compares it with what it draws.
+    pub(crate) fn theme_part<const N: usize>(&mut self, id: NodeId, colors: [&mut Rgba; N]) {
+        let i = self.arena.slot(id);
+        for (n, color) in colors.into_iter().enumerate() {
+            self.theme_color(i, ColorSlot::Content(n as u8), color);
+        }
+    }
+
     /// [`theme_color`](Self::theme_color) on a box's fill and border.
     fn theme_box(&mut self, i: usize, fill: ColorSlot, border: ColorSlot, b: &mut BoxStyle) {
         self.theme_color(i, fill, &mut b.fill);
@@ -8784,19 +8799,21 @@ impl NodeStore {
     }
 
     /// [`theme_color`](Self::theme_color) on every color `content` paints
-    /// with: a text's run as the node's text color, the rest by position.
+    /// with: a text's own color as the node's text color, the rest by
+    /// position.
     fn theme_content(&mut self, i: usize, content: &mut Content) {
-        if let Content::Text { color, .. } = content {
-            self.theme_color(i, ColorSlot::Text, color);
-            return;
-        }
         if !self.themed.get(i) && !content.has_token() {
             return;
         }
+        let text = matches!(content, Content::Text { .. });
         let mut n = 0u8;
         content.colors_mut(|color| {
+            let slot = if text && n == 0 {
+                ColorSlot::Text
+            } else {
+                ColorSlot::Content(n)
+            };
             let (palette, refs, themed) = (&self.palette, &mut self.theme_refs, &mut self.themed);
-            let slot = ColorSlot::Content(n);
             if is_token(*color) {
                 refs.insert((i as u32, slot), *color);
                 themed.set(i, true);

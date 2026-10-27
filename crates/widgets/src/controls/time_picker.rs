@@ -49,6 +49,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use viso_ui::ColorToken;
 
 use viso_ui::adaptive::EnvField;
 use viso_ui::calendar::{HourCycle, NO_TIME, Time, hour_cycle};
@@ -61,10 +62,6 @@ use viso_ui::{
 
 /// What runs with a new time.
 type SharedChange = Rc<RefCell<Option<Box<dyn FnMut(&mut EventCx<'_>, Time)>>>>;
-
-const fn rgba(r: f32, g: f32, b: f32, a: f32) -> Rgba {
-    Rgba { r, g, b, a }
-}
 
 /// The names a time picker gives its parts.
 #[derive(Debug, Clone, PartialEq)]
@@ -114,9 +111,9 @@ impl Default for TimePickerStyle {
             field: BoxStyle {
                 border: viso_ui::Border {
                     width: 1.0,
-                    color: rgba(0.0, 0.0, 0.0, 0.16),
+                    color: ColorToken::Outline.rgba(),
                 },
-                ..BoxStyle::solid(rgba(1.0, 1.0, 1.0, 1.0)).with_radius(6.0)
+                ..BoxStyle::solid(ColorToken::Background.rgba()).with_radius(6.0)
             },
             field_padding: Inset {
                 left: 6.0,
@@ -125,10 +122,10 @@ impl Default for TimePickerStyle {
                 bottom: 4.0,
             },
             font_size: 14.0,
-            ink: rgba(0.09, 0.09, 0.1, 1.0),
-            quiet: rgba(0.42, 0.42, 0.45, 1.0),
-            accent: rgba(0.22, 0.45, 0.85, 1.0),
-            selected_ink: rgba(1.0, 1.0, 1.0, 1.0),
+            ink: ColorToken::Foreground.rgba(),
+            quiet: ColorToken::Muted.rgba(),
+            accent: ColorToken::Primary.rgba(),
+            selected_ink: ColorToken::OnPrimary.rgba(),
         }
     }
 }

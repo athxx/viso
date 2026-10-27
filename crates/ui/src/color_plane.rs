@@ -897,10 +897,11 @@ impl NodeStore {
 
     /// Make node `id` draw `plane`; one drawing a plane already keeps its
     /// drag and focus.
-    pub fn set_color_plane(&mut self, id: NodeId, plane: ColorPlane) {
+    pub fn set_color_plane(&mut self, id: NodeId, mut plane: ColorPlane) {
         if !self.arena().is_live(id) {
             return;
         }
+        self.theme_part(id, [&mut plane.accent]);
         let next = match self.color_plane(id) {
             Some(was) => ColorPlane {
                 drag: was.drag,

@@ -20,7 +20,7 @@
 //!
 //! ```
 //! use viso_widgets::button;
-//! use viso_ui::{SemanticProjector, BuildCx, BindingTable, Component, NodeStore, StateStore, TextEdits, VirtualLists};
+//! use viso_ui::{ColorToken, SemanticProjector, BuildCx, BindingTable, Component, NodeStore, StateStore, TextEdits, VirtualLists};
 //!
 //! let ok = button("Save").on_click(|_ev| {
 //!     // handle the click — e.g. write app state through the event context
@@ -39,6 +39,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use viso_ui::ColorToken;
 
 use viso_ui::feedback::NATIVE_RIPPLE;
 use viso_ui::{
@@ -55,39 +56,17 @@ use crate::controls::mnemonic::Mnemonic;
 /// concurrent, so the runtime never re-enters the `RefCell` borrow.
 type SharedClick = Rc<RefCell<Option<Box<dyn FnMut(&mut EventCx<'_>)>>>>;
 
-/// The button's neutral resting fill.
-const RESTING: Rgba = Rgba {
-    r: 0.22,
-    g: 0.45,
-    b: 0.85,
-    a: 1.0,
-};
+/// The button's resting fill: the theme's primary color.
+const RESTING: Rgba = ColorToken::Primary.rgba();
 
-/// The button's hover fill — a lighter shade of [`RESTING`] so mouse-over reads
-/// visually without changing layout.
-const HOVER: Rgba = Rgba {
-    r: 0.28,
-    g: 0.52,
-    b: 0.92,
-    a: 1.0,
-};
+/// The button's hover fill, so mouse-over reads without changing layout.
+const HOVER: Rgba = ColorToken::PrimaryHover.rgba();
 
-/// The button's pressed fill — a darker shade of [`RESTING`] so the press reads
-/// visually without changing layout.
-const PRESSED: Rgba = Rgba {
-    r: 0.14,
-    g: 0.30,
-    b: 0.60,
-    a: 1.0,
-};
+/// The button's pressed fill, darker than at rest.
+const PRESSED: Rgba = ColorToken::PrimaryPressed.rgba();
 
-/// The caption color: near-white for contrast against the fill.
-const CAPTION: Rgba = Rgba {
-    r: 0.98,
-    g: 0.98,
-    b: 1.0,
-    a: 1.0,
-};
+/// The caption color, the one on the primary color.
+const CAPTION: Rgba = ColorToken::OnPrimary.rgba();
 
 /// The default corner radius, giving the button a soft rounded box.
 const RADIUS: f32 = 6.0;

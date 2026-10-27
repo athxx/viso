@@ -101,6 +101,23 @@ impl ColorToken {
     }
 }
 
+/// `color` with its alpha scaled by `factor`, whether it names a token or
+/// is given by value.
+#[inline]
+pub const fn fade(color: Rgba, factor: f32) -> Rgba {
+    if color.a == TOKEN {
+        Rgba {
+            r: color.r * factor,
+            ..color
+        }
+    } else {
+        Rgba {
+            a: color.a * factor,
+            ..color
+        }
+    }
+}
+
 /// Which of a node's colors names a token: its box's fill or border, one of
 /// its interaction boxes' (resting, hover, pressed; fill then border), its
 /// text's, or its content's by position.
@@ -316,6 +333,77 @@ mod tests {
         store.mark_dirty(boxed, DirtyClass::STYLE);
         store.resolve_interaction_styles(&StateStore::new());
         assert_eq!(store.style(boxed).fill, dark.get(ColorToken::Surface));
+    }
+
+    /// A shaped text whose own color and whose span's ink and fill name
+    /// tokens.
+    fn rich_text() -> crate::Content {
+        use crate::{InkRun, TextInk, TextMark};
+        let rect = viso_render::Rect::new(0.0, 0.0, 4.0, 4.0);
+        crate::Content::Text {
+            ink: Some(Box::new(TextInk {
+                runs: vec![InkRun {
+                    end: 1,
+                    color: Some(ColorToken::Primary.rgba()),
+                }],
+                fills: vec![TextMark {
+                    rect,
+                    color: Some(ColorToken::Outline.alpha(0.5)),
+                }],
+                ..TextInk::default()
+            })),
+            glyphs: Vec::new(),
+            atlas: viso_render::TextureId::new(1),
+            lane: viso_render::GlyphLane::CoverageA8,
+            color_glyphs: Vec::new(),
+            color_atlas: None,
+            color: ColorToken::Foreground.rgba(),
+            natural: crate::Vec2::new(4.0, 4.0),
+            baseline: 0.0,
+            shaped_at_width: None,
+            width_use: crate::text_style::WidthUse::Ignored,
+            min_content: 4.0,
+            max_content: 4.0,
+        }
+    }
+
+    /// The text's own color, its run's ink and its fill's color.
+    fn inks(store: &NodeStore, id: crate::NodeId) -> [Rgba; 3] {
+        let Some(crate::Content::Text {
+            ink: Some(ink),
+            color,
+            ..
+        }) = store.content_payload(id)
+        else {
+            panic!("a rich text");
+        };
+        [
+            *color,
+            ink.runs[0].color.unwrap(),
+            ink.fills[0].color.unwrap(),
+        ]
+    }
+
+    #[test]
+    fn a_rich_text_s_span_inks_follow_the_palette() {
+        let mut store = NodeStore::new();
+        let node = BuildCx::new(&mut store).leaf(leaf(BoxStyle::NONE)).id();
+        store.set_content_payload(node, rich_text());
+        let expect = |palette: Palette| {
+            [
+                palette.get(ColorToken::Foreground),
+                palette.get(ColorToken::Primary),
+                palette.resolve(ColorToken::Outline.alpha(0.5)),
+            ]
+        };
+        assert_eq!(inks(&store, node), expect(Palette::light()));
+        store.clear_dirty();
+        store.set_palette(Palette::dark());
+        assert_eq!(inks(&store, node), expect(Palette::dark()));
+        assert_eq!(store.dirty(node), DirtyClass::PAINT);
+        // A reflowed run, shaped from the same tokens, draws resolved too.
+        store.set_reflowed_content(node, rich_text());
+        assert_eq!(inks(&store, node), expect(Palette::dark()));
     }
 
     #[test]

@@ -13,7 +13,7 @@
 //!
 //! ```
 //! use viso_widgets::stepper;
-//! use viso_ui::{SemanticProjector, BuildCx, BindingTable, Component, NodeStore, StateStore, TextEdits, VirtualLists};
+//! use viso_ui::{ColorToken, SemanticProjector, BuildCx, BindingTable, Component, NodeStore, StateStore, TextEdits, VirtualLists};
 //!
 //! let guests = stepper(2.0).range(1.0, 12.0).on_change(|_ev, guests| {
 //!     let _ = guests;
@@ -31,6 +31,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use viso_ui::ColorToken;
 
 use viso_ui::stepper::{Stepper as Pill, can_step, stepper_input};
 use viso_ui::{
@@ -64,7 +65,7 @@ impl Default for StepperStyle {
                 height: Length::Fit,
             },
             color: INK,
-            fill: Rgba { a: 0.12, ..INK },
+            fill: ColorToken::Foreground.alpha(0.12),
         }
     }
 }

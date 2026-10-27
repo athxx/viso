@@ -20,7 +20,7 @@
 //!
 //! ```
 //! use viso_widgets::segmented_control;
-//! use viso_ui::{SemanticProjector, BuildCx, BindingTable, Component, NodeStore, StateStore, TextEdits, VirtualLists};
+//! use viso_ui::{ColorToken, SemanticProjector, BuildCx, BindingTable, Component, NodeStore, StateStore, TextEdits, VirtualLists};
 //!
 //! let range = segmented_control(["Day", "Week", "Month"])
 //!     .selected(1)
@@ -40,6 +40,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use viso_ui::ColorToken;
 
 use viso_ui::adaptive::LayoutDirection;
 use viso_ui::segments::Segments;
@@ -85,9 +86,9 @@ impl Default for SegmentedStyle {
                 height: Length::Fit,
             },
             color: INK,
-            track: Rgba { a: 0.1, ..INK },
-            thumb: Rgba { a: 0.24, ..INK },
-            divider: Rgba { a: 0.2, ..INK },
+            track: ColorToken::Foreground.alpha(0.1),
+            thumb: ColorToken::Foreground.alpha(0.24),
+            divider: ColorToken::Foreground.alpha(0.2),
         }
     }
 }

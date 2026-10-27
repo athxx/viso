@@ -44,6 +44,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use viso_ui::ColorToken;
 
 use viso_ui::calendar::{Date, NO_DATE, Weekday};
 use viso_ui::{
@@ -58,10 +59,6 @@ use viso_ui::glyphs::calendar_glyph;
 
 /// What runs with a picked date.
 type SharedChange = Rc<RefCell<Option<Box<dyn FnMut(&mut EventCx<'_>, Date)>>>>;
-
-const fn rgba(r: f32, g: f32, b: f32, a: f32) -> Rgba {
-    Rgba { r, g, b, a }
-}
 
 /// How a date picker looks.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -85,16 +82,16 @@ impl Default for DatePickerStyle {
     fn default() -> Self {
         let border = viso_ui::Border {
             width: 1.0,
-            color: rgba(0.0, 0.0, 0.0, 0.16),
+            color: ColorToken::Outline.rgba(),
         };
         DatePickerStyle {
             field: BoxStyle {
                 border,
-                ..BoxStyle::solid(rgba(1.0, 1.0, 1.0, 1.0)).with_radius(6.0)
+                ..BoxStyle::solid(ColorToken::Background.rgba()).with_radius(6.0)
             },
             field_hover: BoxStyle {
                 border,
-                ..BoxStyle::solid(rgba(0.96, 0.96, 0.965, 1.0)).with_radius(6.0)
+                ..BoxStyle::solid(ColorToken::Surface.rgba()).with_radius(6.0)
             },
             field_padding: Inset {
                 left: 10.0,
@@ -103,14 +100,14 @@ impl Default for DatePickerStyle {
                 bottom: 5.0,
             },
             font_size: 14.0,
-            ink: rgba(0.09, 0.09, 0.1, 1.0),
-            quiet: rgba(0.42, 0.42, 0.45, 1.0),
+            ink: ColorToken::Foreground.rgba(),
+            quiet: ColorToken::Muted.rgba(),
             panel: BoxStyle {
                 border: viso_ui::Border {
                     width: 1.0,
-                    color: rgba(0.0, 0.0, 0.0, 0.12),
+                    color: ColorToken::Outline.rgba(),
                 },
-                ..BoxStyle::solid(rgba(0.985, 0.985, 0.985, 1.0)).with_radius(10.0)
+                ..BoxStyle::solid(ColorToken::Surface.rgba()).with_radius(10.0)
             },
             shadow: Some(Shadow::FLOATING),
             padding: Inset::all(10.0),

@@ -378,13 +378,7 @@ impl NodeStore {
                 f32::from(u8::from(s.open))
             };
             let node = s.node;
-            self.set_fill(
-                node,
-                Rgba {
-                    a: color.a * dim,
-                    ..color
-                },
-            );
+            self.set_fill(node, crate::theme::fade(color, dim));
         }
     }
 

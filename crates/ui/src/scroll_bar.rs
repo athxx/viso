@@ -445,14 +445,19 @@ impl NodeStore {
                 continue;
             }
             let track = self.layout_input_mut(bar.track).size_mut();
-            *match bar.axis {
+            let across = match bar.axis {
                 Axis::Column => &mut track.width,
                 Axis::Row => &mut track.height,
-            } = Length::Fixed(style.track);
-            self.mark_dirty(
-                bar.track,
-                crate::dirty::DirtyClass::MEASURE | crate::dirty::DirtyClass::LAYOUT,
-            );
+            };
+            // A style that only recolors the bar, as a light-dark swap does,
+            // leaves its layout be.
+            if *across != Length::Fixed(style.track) {
+                *across = Length::Fixed(style.track);
+                self.mark_dirty(
+                    bar.track,
+                    crate::dirty::DirtyClass::MEASURE | crate::dirty::DirtyClass::LAYOUT,
+                );
+            }
             self.set_scroll_gutter(bar.viewport, bar.axis, style.gutter());
             let under = if style.overlay {
                 Rgba::TRANSPARENT

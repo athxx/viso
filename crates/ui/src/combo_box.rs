@@ -31,6 +31,7 @@
 //! shows options and shapes again the labels whose matched letters moved;
 //! a highlight is a `PAINT` of one option's look.
 
+use crate::ColorToken;
 use std::cell::{Cell, OnceCell, RefCell};
 use std::ops::Range;
 use std::rc::Rc;
@@ -137,24 +138,20 @@ pub struct ComboBoxStyle {
     pub matched: SpanStyle,
 }
 
-const fn rgba(r: f32, g: f32, b: f32, a: f32) -> Rgba {
-    Rgba { r, g, b, a }
-}
-
 impl Default for ComboBoxStyle {
     fn default() -> Self {
         let border = crate::Border {
             width: 1.0,
-            color: rgba(0.0, 0.0, 0.0, 0.16),
+            color: ColorToken::Outline.rgba(),
         };
         ComboBoxStyle {
             field: BoxStyle {
                 border,
-                ..BoxStyle::solid(rgba(1.0, 1.0, 1.0, 1.0)).with_radius(6.0)
+                ..BoxStyle::solid(ColorToken::Background.rgba()).with_radius(6.0)
             },
             field_hover: BoxStyle {
                 border,
-                ..BoxStyle::solid(rgba(0.98, 0.98, 0.985, 1.0)).with_radius(6.0)
+                ..BoxStyle::solid(ColorToken::Surface.rgba()).with_radius(6.0)
             },
             field_padding: Inset {
                 left: 10.0,
@@ -164,14 +161,14 @@ impl Default for ComboBoxStyle {
             },
             min_width: 160.0,
             font_size: 14.0,
-            ink: rgba(0.09, 0.09, 0.1, 1.0),
-            quiet: rgba(0.42, 0.42, 0.45, 1.0),
+            ink: ColorToken::Foreground.rgba(),
+            quiet: ColorToken::Muted.rgba(),
             panel: BoxStyle {
                 border: crate::Border {
                     width: 1.0,
-                    color: rgba(0.0, 0.0, 0.0, 0.12),
+                    color: ColorToken::Outline.rgba(),
                 },
-                ..BoxStyle::solid(rgba(0.985, 0.985, 0.985, 1.0)).with_radius(8.0)
+                ..BoxStyle::solid(ColorToken::Surface.rgba()).with_radius(8.0)
             },
             shadow: Some(Shadow::FLOATING),
             padding: Inset::all(5.0),
@@ -181,7 +178,7 @@ impl Default for ComboBoxStyle {
                 top: 5.0,
                 bottom: 5.0,
             },
-            highlight: BoxStyle::solid(rgba(0.23, 0.42, 0.94, 0.14)).with_radius(5.0),
+            highlight: BoxStyle::solid(ColorToken::Primary.alpha(0.14)).with_radius(5.0),
             disabled: 0.4,
             max_height: 320.0,
             matched: SpanStyle::default().weight(FontWeight(600)),

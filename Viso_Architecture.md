@@ -3121,7 +3121,14 @@ motion.*
 
 字段与默认值见 DSL U12.2。Theme 值作为状态存储环境的 `theme` 字段发布；`set_theme` 原子替换并提升该字段的单元，读取 `theme` 的 Binding 按各自 Property 的失效类别重新求值，未读取的不受影响。未设置时发布 `default_theme()` 的浅色 Theme。
 
-Widget 默认引用语义 token，不直接固化 desktop dark/light 颜色。目标（尚未实现）：`viso-widgets` 的 Rust 控件默认样式仍是固定的深色调常量，应改为读取同一个 `theme`。
+Widget 默认引用语义 token，不直接固化 desktop dark/light 颜色。Rust 控件（`viso-widgets` 与 `viso-ui` 的控件）的默认样式写 `ColorToken`：`ColorToken::Primary.rgba()`、`ColorToken::Outline.alpha(0.5)` 是普通 `Rgba`，以负 alpha 标记 token（green 存序号，red 存 alpha 系数），可以放进 `const`。DSL 节点未绑定颜色时的默认值同样是 token。
+
+- **解析在写入时**：`NodeStore` 持有一份 `Palette`（`Theme.colors` 的 14 个线性色，加上 `PrimaryPressed`）。box 的 fill / border、交互三态 box、text 颜色、content 的各个颜色（含 rich text span 的 ink、fill、线）写入时都按当前 palette 解析成实际颜色，同时把 token 记在 `(节点, 颜色槽)` 表里。之后 paint 与渲染只见到普通颜色，热路径没有 token 分支。
+- **记录随写入更新**：写入等于当前解析值的字面颜色，记录保留（过渡动画、shaping 回写都是这种）；写入其它字面颜色，记录作废。槽被新节点复用时整行清掉。
+- **换 palette 只重画**：`set_palette` 遍历记录，重写颜色，被改到的节点只标 PAINT，不 measure、不 layout。文本框的选区、caret 和选区手柄在 paint 时解析，换 palette 时这些字段节点也标 PAINT。
+- **构建期派生**：控件在构建时对样式颜色做淡化，用 `viso_ui::fade(color, k)`，它对 token 和字面颜色都适用。setter 先比较再写入时，用 `theme_part` 先解析，所以同值写入仍然是 no-op。
+- **跟随系统配色**：`set_theme` 同时调用 `store.set_palette`。应用没设 theme（或用的是两个默认 theme 之一）时，系统配色变化会切换浅色 / 深色默认 theme。
+- **固定颜色**：头像的字、图片的不着色 tint、视频控件和全屏背板、阴影是固定颜色，不随 theme 变化。
 
 ---
 

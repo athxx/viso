@@ -40,6 +40,7 @@
 //! ```
 
 use std::time::Duration;
+use viso_ui::ColorToken;
 
 use viso_ui::{
     Align, Axis, BuildCx, Component, FlexStyle, Justify, Keyframe, Keyframes, Length, LookValue,
@@ -64,18 +65,8 @@ pub struct SkeletonStyle {
 impl Default for SkeletonStyle {
     fn default() -> Self {
         SkeletonStyle {
-            base: Rgba {
-                r: 0.0,
-                g: 0.0,
-                b: 0.0,
-                a: 0.2,
-            },
-            highlight: Rgba {
-                r: 1.0,
-                g: 1.0,
-                b: 1.0,
-                a: 0.5,
-            },
+            base: ColorToken::Foreground.alpha(0.2),
+            highlight: ColorToken::Background.alpha(0.5),
             radius: 4.0,
             line_height: 12.0,
             line_gap: 8.0,

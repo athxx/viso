@@ -62,6 +62,7 @@ mod state;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
+use viso_ui::ColorToken;
 
 use viso_ui::{
     Anchoring, BoxStyle, BuildCx, Component, ControlHandle, EventCx, Inset, Key, Modifiers, Rgba,
@@ -350,19 +351,15 @@ pub struct MenuStyle {
     pub placement: Anchoring,
 }
 
-const fn rgba(r: f32, g: f32, b: f32, a: f32) -> Rgba {
-    Rgba { r, g, b, a }
-}
-
 impl Default for MenuStyle {
     fn default() -> Self {
         MenuStyle {
             panel: BoxStyle {
                 border: viso_ui::Border {
                     width: 1.0,
-                    color: rgba(0.0, 0.0, 0.0, 0.12),
+                    color: ColorToken::Outline.rgba(),
                 },
-                ..BoxStyle::solid(rgba(0.985, 0.985, 0.985, 1.0)).with_radius(8.0)
+                ..BoxStyle::solid(ColorToken::Surface.rgba()).with_radius(8.0)
             },
             shadow: Some(Shadow::FLOATING),
             padding: Inset::all(5.0),
@@ -374,10 +371,10 @@ impl Default for MenuStyle {
             },
             min_width: 180.0,
             font_size: 14.0,
-            ink: rgba(0.09, 0.09, 0.1, 1.0),
-            quiet: rgba(0.42, 0.42, 0.45, 1.0),
-            highlight: BoxStyle::solid(rgba(0.23, 0.42, 0.94, 0.14)).with_radius(5.0),
-            rule: rgba(0.0, 0.0, 0.0, 0.1),
+            ink: ColorToken::Foreground.rgba(),
+            quiet: ColorToken::Muted.rgba(),
+            highlight: BoxStyle::solid(ColorToken::Primary.alpha(0.14)).with_radius(5.0),
+            rule: ColorToken::Outline.rgba(),
             disabled: 0.4,
             placement: Anchoring::default(),
         }

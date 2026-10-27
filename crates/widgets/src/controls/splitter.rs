@@ -51,11 +51,12 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use viso_ui::ColorToken;
 
 use viso_ui::{
     Align, Axis, BoxStyle, BuildCx, Component, CursorIcon, EventCx, FlexStyle, Handle,
     InteractionStyle, Justify, Key, LeafStyle, Length, NodeId, NodeStore, PointerButtons,
-    PointerPhase, Rect, Rgba, Role, SemanticState, Semantics, Sizing, StateId, StateValue,
+    PointerPhase, Rect, Role, SemanticState, Semantics, Sizing, StateId, StateValue,
 };
 
 /// Where a splitter's bar stands.
@@ -167,19 +168,15 @@ pub struct SplitterStyle {
     pub drag: BoxStyle,
 }
 
-const fn rgb(r: f32, g: f32, b: f32) -> Rgba {
-    Rgba { r, g, b, a: 1.0 }
-}
-
 impl Default for SplitterStyle {
     fn default() -> Self {
         SplitterStyle {
             axis: Axis::Row,
             size: Sizing::fill(),
             bar_size: 6.0,
-            bar: BoxStyle::solid(rgb(0.3, 0.31, 0.34)),
-            hover: BoxStyle::solid(rgb(0.4, 0.42, 0.47)),
-            drag: BoxStyle::solid(rgb(0.22, 0.45, 0.85)),
+            bar: BoxStyle::solid(ColorToken::Outline.rgba()),
+            hover: BoxStyle::solid(ColorToken::Muted.rgba()),
+            drag: BoxStyle::solid(ColorToken::Primary.rgba()),
         }
     }
 }

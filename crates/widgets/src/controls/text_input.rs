@@ -57,6 +57,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use viso_ui::ColorToken;
 
 use viso_ui::{
     BuildCx, Component, EventCx, FieldEvent, FieldLook, FontSize, InputFilter, InputKind,
@@ -73,13 +74,8 @@ type SharedChange = Rc<RefCell<Option<Box<dyn FnMut(&mut EventCx<'_>, &str)>>>>;
 /// Enter submits it; shared like [`SharedChange`].
 type SharedSubmit = Rc<RefCell<Option<Box<dyn FnMut(&mut EventCx<'_>)>>>>;
 
-/// The text color: near-white for contrast against a dark surface.
-const TEXT: Rgba = Rgba {
-    r: 0.98,
-    g: 0.98,
-    b: 1.0,
-    a: 1.0,
-};
+/// The text color: the theme's foreground.
+const TEXT: Rgba = ColorToken::Foreground.rgba();
 
 /// The default field width.
 const FIELD_W: f32 = 180.0;

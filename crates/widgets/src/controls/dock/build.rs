@@ -18,6 +18,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use viso_ui::ColorToken;
 
 use viso_ui::{
     Align, BoxStyle, BuildCx, DirtyClass, FlexStyle, Inset, Justify, LeafStyle, Length, NodeId,
@@ -139,12 +140,7 @@ pub(super) struct BuildOut {
 /// The drop-hint overlay's translucent tint — a faint highlight the drag toggles
 /// visible over the zone the pointer is over, the same shape the modal's scrim uses
 /// (an overlay leaf, hidden at build, shown by a deferred `set_hidden`).
-const HINT_TINT: viso_ui::Rgba = viso_ui::Rgba {
-    r: 0.30,
-    g: 0.55,
-    b: 0.95,
-    a: 0.30,
-};
+const HINT_TINT: viso_ui::Rgba = ColorToken::Primary.alpha(0.3);
 
 impl BuildOut {
     /// Mint an empty walk record: no seams or zones yet, empty intent/zone queues,

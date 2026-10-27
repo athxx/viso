@@ -26,18 +26,14 @@
 //! spinner().label("Loading").build(&mut cx);
 //! ```
 
+use viso_ui::ColorToken;
 use viso_ui::{
     BuildCx, Component, Length, NodeId, NodeStore, ProgressShape, Rgba, Role, SemanticState,
     Semantics, Sizing, SpinnerLook, StateId, StateValue, Vec2,
 };
 
 /// The fill of an indicator given no tint.
-const ACCENT: Rgba = Rgba {
-    r: 0.22,
-    g: 0.45,
-    b: 0.85,
-    a: 1.0,
-};
+const ACCENT: Rgba = ColorToken::Primary.rgba();
 
 /// The size a bar, a ring and a spinner measure to.
 const BAR: Vec2 = Vec2 { x: 160.0, y: 4.0 };

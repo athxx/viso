@@ -24,6 +24,7 @@
 use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::{Rc, Weak};
 use std::time::Duration;
+use viso_ui::ColorToken;
 
 use viso_ui::{
     Align, AnchorAlign, Anchoring, Axis, BoxStyle, BuildCx, Component, DispatchPhase, EventCx,
@@ -69,13 +70,7 @@ pub struct TooltipStyle {
 impl Default for TooltipStyle {
     fn default() -> Self {
         TooltipStyle {
-            bubble: BoxStyle::solid(Rgba {
-                r: 0.12,
-                g: 0.12,
-                b: 0.14,
-                a: 0.96,
-            })
-            .with_radius(6.0),
+            bubble: BoxStyle::solid(ColorToken::Foreground.alpha(0.96)).with_radius(6.0),
             shadow: Some(Shadow::below(
                 Rgba {
                     r: 0.0,
@@ -93,12 +88,7 @@ impl Default for TooltipStyle {
                 bottom: 5.0,
             },
             font_size: 12.0,
-            ink: Rgba {
-                r: 0.96,
-                g: 0.96,
-                b: 0.97,
-                a: 1.0,
-            },
+            ink: ColorToken::Background.rgba(),
             max_width: 280.0,
             delay: Duration::from_millis(500),
             placement: Anchoring {

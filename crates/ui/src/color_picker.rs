@@ -35,6 +35,7 @@
 //! shows on the planes, the bars, the swatch and the hex: a `PAINT` of each,
 //! a `SEMANTICS` of the parts, and the hex re-seeded.
 
+use crate::ColorToken;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -88,15 +89,15 @@ impl Default for ColorPickerStyle {
     fn default() -> Self {
         ColorPickerStyle {
             width: 232.0,
-            accent: rgba(0.22, 0.45, 0.85, 1.0),
-            field: BoxStyle::solid(rgba(0.46, 0.46, 0.5, 0.12)).with_radius(6.0),
+            accent: ColorToken::Primary.rgba(),
+            field: BoxStyle::solid(ColorToken::Muted.alpha(0.12)).with_radius(6.0),
             field_padding: Inset {
                 left: 8.0,
                 right: 8.0,
                 top: 5.0,
                 bottom: 5.0,
             },
-            ink: rgba(0.09, 0.09, 0.1, 1.0),
+            ink: ColorToken::Foreground.rgba(),
             font_size: 14.0,
         }
     }

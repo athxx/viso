@@ -58,6 +58,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use viso_ui::ColorToken;
 
 use viso_ui::{
     Align, Axis, Border, BoxStyle, BuildCx, Component, DispatchPhase, EventCx, FlexStyle, Handle,
@@ -77,10 +78,6 @@ type SharedMove = Rc<RefCell<Option<Box<dyn FnMut(&mut EventCx<'_>, usize, usize
 
 /// A panel's content builder.
 type PanelBuilder = Box<dyn Fn(&mut BuildCx<'_>)>;
-
-const fn rgba(r: f32, g: f32, b: f32, a: f32) -> Rgba {
-    Rgba { r, g, b, a }
-}
 
 /// How a [`Tabs`] looks.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -113,24 +110,30 @@ impl Default for TabsStyle {
             deselected: BoxStyle {
                 border: Border {
                     width: 1.0,
-                    color: rgba(0.45, 0.47, 0.52, 1.0),
+                    color: ColorToken::Outline.rgba(),
                 },
-                ..BoxStyle::solid(rgba(0.16, 0.17, 0.20, 1.0)).with_radius(4.0)
+                ..BoxStyle::solid(ColorToken::Surface.rgba()).with_radius(4.0)
             },
             hover: BoxStyle {
                 border: Border {
                     width: 1.0,
-                    color: rgba(0.55, 0.57, 0.62, 1.0),
+                    color: ColorToken::Muted.rgba(),
                 },
-                ..BoxStyle::solid(rgba(0.22, 0.23, 0.27, 1.0)).with_radius(4.0)
+                ..BoxStyle::solid(ColorToken::OnSurface.alpha(0.08)).with_radius(4.0)
             },
-            selected: BoxStyle::solid(rgba(0.22, 0.45, 0.85, 1.0)).with_radius(4.0),
+            selected: BoxStyle {
+                border: Border {
+                    width: 1.0,
+                    color: ColorToken::Primary.rgba(),
+                },
+                ..BoxStyle::solid(ColorToken::Primary.alpha(0.2)).with_radius(4.0)
+            },
             padding: Inset::all(6.0),
             gap: 4.0,
             area_gap: 8.0,
-            caption: rgba(0.98, 0.98, 1.0, 1.0),
-            close: rgba(0.85, 0.86, 0.9, 1.0),
-            close_hover: BoxStyle::solid(rgba(1.0, 1.0, 1.0, 0.16)).with_radius(4.0),
+            caption: ColorToken::Foreground.rgba(),
+            close: ColorToken::Muted.rgba(),
+            close_hover: BoxStyle::solid(ColorToken::OnSurface.alpha(0.16)).with_radius(4.0),
         }
     }
 }

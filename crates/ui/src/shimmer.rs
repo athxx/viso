@@ -184,10 +184,11 @@ impl NodeStore {
     }
 
     /// Make node `id` draw `shimmer`, on the store's clock.
-    pub fn set_shimmer(&mut self, id: NodeId, shimmer: Shimmer) {
+    pub fn set_shimmer(&mut self, id: NodeId, mut shimmer: Shimmer) {
         if !self.arena().is_live(id) {
             return;
         }
+        self.theme_part(id, [&mut shimmer.base, &mut shimmer.highlight]);
         let shimmer = Shimmer {
             time: self.shimmers.time,
             ..shimmer

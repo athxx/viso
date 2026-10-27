@@ -194,11 +194,21 @@ pub struct BrushImage {
 
 impl Content {
     /// Visits every color the content paints with that a theme may name, in
-    /// a fixed order: a text's run, an image's or asset's tint, a path's fill
-    /// and stroke, a control's parts. A plot's or drawing's are its data's.
+    /// a fixed order: a text's color then its spans' inks, an image's or
+    /// asset's tint, a path's fill and stroke, a control's parts. A plot's or drawing's are its data's.
     pub(crate) fn colors_mut(&mut self, mut f: impl FnMut(&mut Rgba)) {
         match self {
-            Content::Text { color, .. } => f(color),
+            Content::Text { color, ink, .. } => {
+                f(color);
+                if let Some(ink) = ink {
+                    let runs = ink.runs.iter_mut().filter_map(|r| r.color.as_mut());
+                    let marks = (ink.fills.iter_mut())
+                        .chain(ink.lines.iter_mut())
+                        .chain(ink.cues.iter_mut())
+                        .filter_map(|m| m.color.as_mut());
+                    runs.chain(marks).for_each(&mut f);
+                }
+            }
             Content::Image { tint, .. } => f(tint),
             Content::Path { fill, stroke, .. } => {
                 if let Some(fill) = fill {
@@ -208,12 +218,14 @@ impl Content {
                     f(&mut stroke.color);
                 }
             }
-            Content::Asset { tint, .. } => {
-                if let Some(tint) = tint {
-                    f(tint);
-                }
-            }
+            Content::Asset {
+                tint: Some(tint), ..
+            } => f(tint),
             Content::Spinner(s) => f(&mut s.color),
+            Content::PageDots(d) => {
+                f(&mut d.style.color);
+                f(&mut d.style.current_color);
+            }
             Content::Progress(p) => f(&mut p.color),
             Content::Stepper(s) => {
                 f(&mut s.ink);

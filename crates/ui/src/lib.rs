@@ -118,7 +118,7 @@ pub use animation::{
     Keyframes, LookTransition, LookValue, Pace, PlayDirection, ReducedMotion, Repeat, Spring,
     Timing,
 };
-pub use theme::{ColorToken, Palette};
+pub use theme::{ColorToken, Palette, fade};
 // The frame clock's time point (wasm-safe), named by timers and deadlines.
 pub use anchored::{AnchorAlign, AnchorPlacement, Anchoring, Side};
 pub use binding::{

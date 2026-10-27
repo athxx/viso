@@ -1970,10 +1970,18 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         if let Some(surface) = gpu.surface {
                             #[cfg(any(feature = "hot-reload", feature = "headless"))]
                             let before = gpu.renderer.damage_stats();
+                            // The window shows the theme's background under
+                            // what its views draw.
+                            let under = ws.store.palette().get(viso_ui::ColorToken::Background);
                             gpu.renderer.submit(
                                 &mut gpu.backend,
                                 surface,
-                                [0.1, 0.1, 0.1, 1.0],
+                                [
+                                    under.r * under.a,
+                                    under.g * under.a,
+                                    under.b * under.a,
+                                    under.a,
+                                ],
                                 viewport,
                             );
                             #[cfg(feature = "headless")]

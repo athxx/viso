@@ -714,7 +714,7 @@ impl Painted {
                 [world.x, world.y]
             });
             let first = runs.len();
-            to_runs(&source, &placed, color, shift, &mut runs);
+            to_runs(&source, &placed, color, store.palette(), shift, &mut runs);
             let made: Vec<usize> = (first..runs.len()).collect();
             match at {
                 Some(i) => replaced[i] = Some(made),
@@ -770,18 +770,20 @@ impl Painted {
     }
 }
 
-/// `placed`'s glyphs of `source` as runs of one face, size and color,
-/// shifted by `shift`; emoji left to the images that draw them.
+/// `placed`'s glyphs of `source` as runs of one face, size and color, a
+/// span's theme color as `palette` paints it, shifted by `shift`; emoji
+/// left to the images that draw them.
 fn to_runs(
     source: &str,
     placed: &[crate::text_content::PrintGlyph],
     color: viso_render::Rgba,
+    palette: &viso_ui::Palette,
     shift: [f32; 2],
     out: &mut Vec<TextRun>,
 ) {
     let mut run: Option<TextRun> = None;
     for g in placed.iter().filter(|g| !g.emoji) {
-        let color = g.color.unwrap_or(color);
+        let color = g.color.map_or(color, |c| palette.resolve(c));
         let face = g.face.0;
         let same = run
             .as_ref()

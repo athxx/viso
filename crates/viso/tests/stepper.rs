@@ -210,6 +210,8 @@ fn a_stepper_draws_its_pill_halves_and_dims_a_spent_one_and_matches_golden() {
     let format = gpu.surface_format(surface);
     let mut renderer = Renderer::new(&mut gpu, format);
     let mut store = NodeStore::new();
+    // The scene is dark, so it draws in the dark theme.
+    store.set_palette(viso::ui::Palette::dark());
     let mut states = StateStore::new();
     let mut bindings = BindingTable::new();
     let mut lists = VirtualLists::new();

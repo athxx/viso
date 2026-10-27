@@ -16,6 +16,7 @@
 //! measure. By default the outline is filled with a near-black foreground and not
 //! stroked.
 
+use viso_ui::ColorToken;
 use viso_ui::{
     BoxStyle, BuildCx, Component, LeafStyle, Length, PathCmd, Rgba, Role, Semantics, Sizing,
     Stroke, Vec2,
@@ -23,12 +24,7 @@ use viso_ui::{
 
 /// The default icon foreground: opaque near-black. Icons paint as a solid fill by
 /// default, matching the typical monochrome glyph-like icon.
-const FOREGROUND: Rgba = Rgba {
-    r: 0.1,
-    g: 0.1,
-    b: 0.1,
-    a: 1.0,
-};
+const FOREGROUND: Rgba = ColorToken::Foreground.rgba();
 
 /// The visual and layout parameters of an [`Icon`]: the interior fill color
 /// (`fill`), an optional outline (`stroke`), and the leaf's own size request
@@ -202,7 +198,7 @@ mod tests {
                 natural,
             } => {
                 assert_eq!(*c, cmds);
-                assert_eq!(*fill, Some(FOREGROUND));
+                assert_eq!(*fill, Some(store.palette().resolve(FOREGROUND)));
                 assert_eq!(*stroke, None);
                 assert_eq!(*natural, Vec2 { x: 20.0, y: 20.0 });
             }

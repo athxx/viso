@@ -58,6 +58,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use viso_ui::ColorToken;
 
 use std::cell::Cell;
 
@@ -257,12 +258,7 @@ pub fn popup() -> Popup {
 }
 
 /// The bubble a [`popover`]'s content sits in.
-const BUBBLE: Rgba = Rgba {
-    r: 0.16,
-    g: 0.17,
-    b: 0.19,
-    a: 1.0,
-};
+const BUBBLE: Rgba = ColorToken::Surface.rgba();
 
 /// Construct a popover: a [`Popup`] whose content sits in a rounded bubble
 /// below its anchor, centred on it, with an arrow pointing at it.

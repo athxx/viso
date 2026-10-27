@@ -175,6 +175,8 @@ fn button_renders_background_and_caption_and_matches_golden() {
     let mut renderer = Renderer::new(&mut gpu, format);
 
     let mut store = NodeStore::new();
+    // The scene is dark, so it draws in the dark theme.
+    store.set_palette(viso::ui::Palette::dark());
     let (root, _button_id, caption_id) = build_scene(&mut store);
     attach_caption(&mut gpu, &mut store, caption_id);
 

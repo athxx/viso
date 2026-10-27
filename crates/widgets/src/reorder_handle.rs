@@ -26,6 +26,7 @@
 //! row.build(&mut cx);
 //! ```
 
+use viso_ui::ColorToken;
 use viso_ui::{
     Align, Axis, BoxStyle, BuildCx, Component, CursorIcon, FlexStyle, Inset, Justify, LeafStyle,
     Rgba, Role, Semantics, Sizing,
@@ -48,12 +49,7 @@ impl Default for ReorderHandleStyle {
     fn default() -> Self {
         ReorderHandleStyle {
             size: Sizing::fixed(44.0, 44.0),
-            color: Rgba {
-                r: 0.56,
-                g: 0.56,
-                b: 0.58,
-                a: 1.0,
-            },
+            color: ColorToken::Muted.rgba(),
             bar: (18.0, 2.0),
             gap: 4.0,
         }

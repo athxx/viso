@@ -32,13 +32,8 @@ use crate::text_edit::{EditIntent, SelectionEnd, TouchEdit};
 /// How far the wheel scrolls for one step of a focused number field: a line.
 pub const WHEEL_PX: f32 = 16.0;
 
-/// A selection handle's color: the selection's blue, opaque.
-pub(crate) const HANDLE: Rgba = Rgba {
-    r: 0.046,
-    g: 0.209,
-    b: 1.0,
-    a: 1.0,
-};
+/// A selection handle's color: the theme's primary.
+pub(crate) const HANDLE: Rgba = crate::ColorToken::Primary.rgba();
 
 /// The width of an Apple handle's stem and the size of its knob.
 const STEM: f32 = 2.0;
@@ -219,6 +214,11 @@ pub(crate) struct Fields {
 }
 
 impl Fields {
+    /// The nodes that draw field marks.
+    pub(crate) fn nodes(&self) -> impl Iterator<Item = NodeId> + '_ {
+        self.marks.iter().map(|(id, _)| *id)
+    }
+
     pub(crate) fn clear(&mut self) {
         self.marks.clear();
         self.steppers.clear();

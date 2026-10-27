@@ -28,6 +28,7 @@ use std::collections::HashSet;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::time::Duration;
+use viso_ui::ColorToken;
 
 use viso_behavior::{Fault, FaultKind, Value};
 use viso_schema::view::route::EventRoute;
@@ -70,38 +71,18 @@ use crate::text_style::text_style;
 /// The font size of a text whose node resolves none, in logical pixels.
 const FONT_SIZE: f32 = 14.0;
 
-/// The color of a text whose node binds no `color`.
 /// The wash a dialog or a sheet with no `background` dims the scene behind
 /// it with.
-const SCRIM: Rgba = Rgba {
-    r: 0.0,
-    g: 0.0,
-    b: 0.0,
-    a: 0.32,
-};
+const SCRIM: Rgba = ColorToken::Scrim.rgba();
 
-const COLOR: Rgba = Rgba {
-    r: 0.05,
-    g: 0.05,
-    b: 0.06,
-    a: 1.0,
-};
+/// The color of a text whose node binds no `color`.
+const COLOR: Rgba = ColorToken::Foreground.rgba();
 
-/// The ink of a link label that binds no `color`: the system link blue.
-const LINK: Rgba = Rgba {
-    r: 0.0,
-    g: 0.133,
-    b: 0.604,
-    a: 1.0,
-};
+/// The ink of a link label that binds no `color`.
+const LINK: Rgba = ColorToken::Primary.rgba();
 
 /// The fill of a progress indicator or spinner that binds no `tint`.
-const ACCENT: Rgba = Rgba {
-    r: 0.22,
-    g: 0.45,
-    b: 0.85,
-    a: 1.0,
-};
+const ACCENT: Rgba = ColorToken::Primary.rgba();
 
 /// The size a progress bar, a progress ring and a spinner measure to where
 /// their layout gives none, in logical pixels.
@@ -109,12 +90,7 @@ const BAR: Vec2 = Vec2 { x: 160.0, y: 4.0 };
 const RING: Vec2 = Vec2 { x: 32.0, y: 32.0 };
 
 /// A slider's track and thumb.
-const SLIDER_TRACK: Rgba = Rgba {
-    r: 0.47,
-    g: 0.47,
-    b: 0.5,
-    a: 0.32,
-};
+const SLIDER_TRACK: Rgba = ColorToken::Muted.alpha(0.32);
 const SLIDER_THUMB: Rgba = Rgba {
     r: 1.0,
     g: 1.0,
@@ -1415,10 +1391,7 @@ impl Shown {
             ControlKind::Stepper => {
                 if first || changed(4) {
                     let ink = tint.as_int().map_or(COLOR, |_| color(tint));
-                    let fill = Rgba {
-                        a: ink.a * 0.08,
-                        ..ink
-                    };
+                    let fill = viso_ui::fade(ink, 0.08);
                     let stepper = viso_ui::stepper::Stepper::new(ink, fill);
                     store.set_content_payload(self.node, Content::Stepper(stepper));
                 }
@@ -1557,10 +1530,7 @@ impl Shown {
                 let at = value.as_int().unwrap_or(0);
                 if first || changed(4) {
                     let ink = tint.as_int().map_or(COLOR, |_| color(tint));
-                    let faded = |a: f32| Rgba {
-                        a: ink.a * a,
-                        ..ink
-                    };
+                    let faded = |a: f32| viso_ui::fade(ink, a);
                     let shown = u32::try_from(at).ok();
                     let segments = Segments::new(faded(0.24), faded(0.2), shown);
                     store.set_content_payload(self.node, Content::Segments(segments));

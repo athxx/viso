@@ -407,6 +407,8 @@ mod golden {
         let format = gpu.surface_format(surface);
         let mut renderer = Renderer::new(&mut gpu, format);
         let mut store = NodeStore::new();
+        // The scene is dark, so it draws in the dark theme.
+        store.set_palette(viso::ui::Palette::dark());
         let root = scene(&mut store);
         store.layout(
             root,

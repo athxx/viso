@@ -233,6 +233,8 @@ impl NodeStore {
         if !self.arena().is_live(id) {
             return;
         }
+        let mut color = color;
+        self.theme_part(id, [&mut color]);
         let value = value.map(|v| if v.is_nan() { 0.0 } else { v.clamp(0.0, 1.0) });
         let snap = self.reduced_motion();
         let next = match self.progress(id) {

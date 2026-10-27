@@ -16,7 +16,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use viso_ui::{
-    Access, BoxStyle, BuildCx, CheckMark, CheckShape, EventCx, Haptic, Key, LeafStyle,
+    Access, BoxStyle, BuildCx, CheckMark, CheckShape, ColorToken, EventCx, Haptic, Key, LeafStyle,
     PointerButtons, PointerPhase, Rgba, Role, SemanticState, Semantics, Sizing, StateId,
     StateValue,
 };
@@ -28,13 +28,8 @@ use crate::controls::mnemonic::Mnemonic;
 /// and keyboard input are never concurrent, so its borrow is never re-entered.
 pub(crate) type SharedChange = Rc<RefCell<Option<Box<dyn FnMut(&mut EventCx<'_>, bool)>>>>;
 
-/// The default caption and mark ink: near-white, to read on a dark surface.
-pub(crate) const INK: Rgba = Rgba {
-    r: 0.98,
-    g: 0.98,
-    b: 1.0,
-    a: 1.0,
-};
+/// The default caption and mark ink: the theme's foreground.
+pub(crate) const INK: Rgba = ColorToken::Foreground.rgba();
 
 /// What a check node is built from.
 pub(crate) struct Check<'a> {

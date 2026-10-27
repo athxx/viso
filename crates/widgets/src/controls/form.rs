@@ -57,6 +57,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
+use viso_ui::ColorToken;
 
 use viso_ui::{
     Align, Axis, Border, BoxStyle, BuildCx, Component, EventCx, FlexStyle, FocusChange, FontWeight,
@@ -164,34 +165,14 @@ pub struct FormStyle {
 
 impl Default for FormStyle {
     fn default() -> Self {
-        let line = Rgba {
-            r: 0.0,
-            g: 0.0,
-            b: 0.0,
-            a: 0.15,
-        };
+        let line = ColorToken::Outline.rgba();
         FormStyle {
             note_size: 12.0,
-            help: Rgba {
-                r: 0.42,
-                g: 0.44,
-                b: 0.48,
-                a: 1.0,
-            },
-            error: Rgba {
-                r: 0.76,
-                g: 0.13,
-                b: 0.13,
-                a: 1.0,
-            },
+            help: ColorToken::Muted.rgba(),
+            error: ColorToken::Error.rgba(),
             gap: 4.0,
             legend_size: 15.0,
-            legend: Rgba {
-                r: 0.12,
-                g: 0.13,
-                b: 0.15,
-                a: 1.0,
-            },
+            legend: ColorToken::Foreground.rgba(),
             frame: BoxStyle {
                 border: Border {
                     width: 1.0,

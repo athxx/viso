@@ -32,6 +32,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use viso_ui::ColorToken;
 
 use viso_ui::{
     Access, Align, Alignment2D, Axis, BoxRules, BoxStyle, BuildCx, Component, Controls, EventCx,
@@ -43,20 +44,10 @@ use viso_ui::{
 type TapHandler = Rc<RefCell<Box<dyn FnMut(&mut EventCx<'_>)>>>;
 
 /// A neutral action's fill.
-const NEUTRAL: Rgba = Rgba {
-    r: 0.56,
-    g: 0.56,
-    b: 0.58,
-    a: 1.0,
-};
+const NEUTRAL: Rgba = ColorToken::Muted.rgba();
 
 /// A destructive action's fill.
-const DESTRUCTIVE: Rgba = Rgba {
-    r: 1.0,
-    g: 0.23,
-    b: 0.19,
-    a: 1.0,
-};
+const DESTRUCTIVE: Rgba = ColorToken::Error.rgba();
 
 /// An action's caption color.
 const CAPTION: Rgba = Rgba {
