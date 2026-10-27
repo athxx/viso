@@ -2383,14 +2383,16 @@ define_class!(
             let _ = catch_unwind(AssertUnwindSafe(|| {
                 let text = any_to_string(string);
                 let ivars = self.ivars();
+                let selected_units = selected;
                 let at = |units: usize| super::utf16::byte_offset(&text, units);
                 let selected = (
                     at(selected.location),
                     at(selected.location.saturating_add(selected.length)),
                 );
+                let clauses = marked_clauses(string, &text, selected_units);
                 let mut ime = ivars.ime.borrow_mut();
                 let over = self.range_bytes(&ime, replacement);
-                let event = ime.set_marked(ivars.window, &text, selected, over);
+                let event = ime.set_marked(ivars.window, &text, selected, clauses, over);
                 drop(ime);
                 if let Some(event) = event {
                     self.push(event);
@@ -2456,9 +2458,14 @@ define_class!(
             .flatten()
         }
 
+        // The input method marks its clauses, and underlines the one it
+        // converts thick.
         #[unsafe(method_id(validAttributesForMarkedText))]
         fn valid_attributes(&self) -> Retained<NSArray<NSAttributedStringKey>> {
-            NSArray::new()
+            NSArray::from_retained_slice(&[
+                NSString::from_str(CLAUSE_SEGMENT),
+                NSString::from_str(UNDERLINE_STYLE),
+            ])
         }
 
         #[unsafe(method(firstRectForCharacterRange:actualRange:))]
@@ -3616,6 +3623,57 @@ fn class_cursor(sel: Sel) -> Option<Retained<NSCursor>> {
 
 /// Extract the string from an `NSString` or `NSAttributedString` argument (the
 /// two types AppKit passes to the text-input methods).
+/// The marked-text attribute numbering an input method's clauses.
+const CLAUSE_SEGMENT: &str = "NSMarkedClauseSegment";
+
+/// The underline-style attribute; the converting clause's is thick.
+const UNDERLINE_STYLE: &str = "NSUnderline";
+
+/// `NSUnderlineStyleThick`.
+const UNDERLINE_THICK: isize = 2;
+
+/// The clauses of marked text `string` (holding `text`): its clause
+/// segments, and the converting one, the stretch underlined thick, else
+/// `selected` (UTF-16) when it spans any text.
+fn marked_clauses(string: &AnyObject, text: &str, selected: NSRange) -> crate::PreeditClauses {
+    let selected = (selected.length > 0 && selected.location != NOT_FOUND)
+        .then(|| (selected.location, selected.location + selected.length));
+    let Some(marked) = string.downcast_ref::<NSAttributedString>() else {
+        return crate::PreeditClauses::from_utf16(text, &[], selected);
+    };
+    let runs = |name: &str| {
+        let key = NSString::from_str(name);
+        let len = marked.length();
+        let mut runs = Vec::new();
+        let mut at = 0;
+        while at < len {
+            let mut range = NSRange::new(at, 0);
+            // SAFETY: `range` is a live `NSRange` for AppKit to write the
+            // run's extent into; `at` is within the string.
+            let value = unsafe { marked.attribute_atIndex_effectiveRange(&key, at, &mut range) };
+            if range.length == 0 || range.location + range.length <= at {
+                break;
+            }
+            let style = value
+                .and_then(|v| v.downcast::<objc2_foundation::NSNumber>().ok())
+                .map(|n| n.integerValue());
+            runs.push(((range.location, range.location + range.length), style));
+            at = range.location + range.length;
+        }
+        runs
+    };
+    let clauses: Vec<_> = runs(CLAUSE_SEGMENT)
+        .into_iter()
+        .filter(|(_, n)| n.is_some())
+        .map(|(r, _)| r)
+        .collect();
+    let thick = runs(UNDERLINE_STYLE)
+        .into_iter()
+        .find(|(_, style)| style.is_some_and(|s| s & 0xff >= UNDERLINE_THICK))
+        .map(|(r, _)| r);
+    crate::PreeditClauses::from_utf16(text, &clauses, thick.or(selected))
+}
+
 /// `NSNotFound`: no such range or index.
 const NOT_FOUND: usize = isize::MAX as usize;
 

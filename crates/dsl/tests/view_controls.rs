@@ -495,6 +495,7 @@ fn a_text_field_writes_its_edited_text_back_and_submits() {
         rt.ime(ImeEvent::Preedit {
             text: "ni".into(),
             caret: 2,
+            clauses: Default::default(),
         });
         rt.ime(ImeEvent::Commit {
             text: "你好".into(),

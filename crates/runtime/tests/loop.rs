@@ -225,6 +225,7 @@ fn key_text_and_ime_preedit_each_reach_the_driver() {
             window: WindowId(1),
             text: "に".to_string(),
             caret: "に".len(),
+            clauses: viso_platform::PreeditClauses::default(),
         }),
         RawEvent::RedrawRequested {
             window: WindowId(1),

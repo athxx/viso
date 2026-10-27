@@ -152,10 +152,16 @@ impl TapeRecorder {
                 modifiers: modifiers(k.modifiers),
             },
             InputSample::Text(t) => TapeInput::Text(t.text.clone()),
-            InputSample::ImePreedit(p) => TapeInput::Preedit {
-                text: p.text.clone(),
-                caret: u32::try_from(p.caret).unwrap_or(u32::MAX),
-            },
+            InputSample::ImePreedit(p) => {
+                let at = |byte: usize| u32::try_from(byte).unwrap_or(u32::MAX);
+                let range = |(start, end): (usize, usize)| (at(start), at(end));
+                TapeInput::Preedit {
+                    text: p.text.clone(),
+                    caret: at(p.caret),
+                    clauses: p.clauses.clauses.iter().copied().map(range).collect(),
+                    selected: p.clauses.selected.map(range),
+                }
+            }
             InputSample::ImeEdit(e) => match &e.edit {
                 ImeEdit::Replace { range, text } => TapeInput::ImeReplace {
                     start: range.start as u64,
@@ -589,11 +595,23 @@ fn raw(window: WindowId, input: &TapeInput) -> Vec<viso_platform::RawEvent> {
             window,
             text: text.clone(),
         }),
-        TapeInput::Preedit { text, caret } => RawEvent::ImePreedit(RawImePreedit {
-            window,
-            text: text.clone(),
-            caret: *caret as usize,
-        }),
+        TapeInput::Preedit {
+            text,
+            caret,
+            clauses,
+            selected,
+        } => {
+            let range = |&(start, end): &(u32, u32)| (start as usize, end as usize);
+            RawEvent::ImePreedit(RawImePreedit {
+                window,
+                text: text.clone(),
+                caret: *caret as usize,
+                clauses: viso_platform::PreeditClauses {
+                    clauses: clauses.iter().map(range).collect(),
+                    selected: selected.as_ref().map(range),
+                },
+            })
+        }
         TapeInput::ImeReplace { start, end, text } => ime(ImeEdit::Replace {
             range: at(*start)..at(*end),
             text: text.clone(),

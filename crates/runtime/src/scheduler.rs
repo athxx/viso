@@ -477,6 +477,7 @@ impl<D: FrameDriver, C: FrameClock> Loop<D, C> {
                         window: p.window,
                         text: p.text,
                         caret: p.caret,
+                        clauses: p.clauses,
                     }),
                     self.clock.peek(),
                 );

@@ -756,6 +756,8 @@ pub struct RawImePreedit {
     pub text: String,
     /// Caret position within `text`, in bytes (a `text.len()` caret = end).
     pub caret: usize,
+    /// Its clauses and the one being converted.
+    pub clauses: PreeditClauses,
 }
 
 /// An input method's edit of the text around the caret, which it reads
@@ -789,6 +791,48 @@ pub enum ImeEdit {
 pub struct RawImeEdit {
     pub window: WindowId,
     pub edit: ImeEdit,
+}
+
+/// How an input method marks a composition: the clauses it splits it into,
+/// and the one it is converting now. Offsets are bytes of the preedit text.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PreeditClauses {
+    /// The clauses in order; empty when the whole preedit is one.
+    pub clauses: Vec<(usize, usize)>,
+    /// The clause being converted, if any.
+    pub selected: Option<(usize, usize)>,
+}
+
+impl PreeditClauses {
+    /// The clauses of `text` that UTF-16 ranges `clauses` and `selected`
+    /// name, on character boundaries, ordered and within it; empty ones
+    /// dropped.
+    pub fn from_utf16(
+        text: &str,
+        clauses: &[(usize, usize)],
+        selected: Option<(usize, usize)>,
+    ) -> PreeditClauses {
+        let byte = |units: usize| {
+            let mut seen = 0;
+            for (at, c) in text.char_indices() {
+                if seen >= units {
+                    return at;
+                }
+                seen += c.len_utf16();
+            }
+            text.len()
+        };
+        let span = |(a, b): (usize, usize)| {
+            let (a, b) = (byte(a), byte(b));
+            (a < b).then_some((a, b)).or((b < a).then_some((b, a)))
+        };
+        let mut clauses: Vec<_> = clauses.iter().filter_map(|&c| span(c)).collect();
+        clauses.sort_unstable();
+        PreeditClauses {
+            clauses,
+            selected: selected.and_then(span),
+        }
+    }
 }
 
 /// A raw, un-normalized platform event.
@@ -1044,6 +1088,7 @@ mod tests {
             window: WindowId(1),
             text: "にほ".to_string(),
             caret: "にほ".len(),
+            clauses: PreeditClauses::default(),
         };
         let event = RawEvent::ImePreedit(preedit.clone());
         // The event is still `Clone` with the new String-carrying variant.
@@ -1061,6 +1106,7 @@ mod tests {
             window: WindowId(1),
             text: String::new(),
             caret: 0,
+            clauses: PreeditClauses::default(),
         };
         assert!(cancel.text.is_empty());
         let _ = RawEvent::ImePreedit(cancel);

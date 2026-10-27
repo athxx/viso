@@ -487,6 +487,33 @@ pub(crate) fn reconvert_target(offset_bytes: u32, units: u32, len: u32) -> (usiz
     (start, start.saturating_add(units as usize).min(len))
 }
 
+/// The clauses of composition `text` an input method reports: `bounds`,
+/// the UTF-16 offsets between them (`GCS_COMPCLAUSE`), and the one whose
+/// units' attributes (`GCS_COMPATTR`) mark it as the target converting.
+pub(crate) fn composition_clauses(
+    text: &str,
+    bounds: &[u32],
+    attrs: &[u8],
+) -> crate::PreeditClauses {
+    const TARGET_CONVERTED: u32 = 1;
+    const TARGET_NOT_CONVERTED: u32 = 3;
+    let clauses: Vec<_> = bounds
+        .windows(2)
+        .map(|w| (w[0] as usize, w[1] as usize))
+        .collect();
+    let mut clauses = crate::PreeditClauses::from_utf16(
+        text,
+        if clauses.len() > 1 { &clauses } else { &[] },
+        None,
+    );
+    let attrs: Vec<u32> = attrs.iter().map(|&a| u32::from(a)).collect();
+    clauses.selected = crate::backend::ime_text::mark_runs(text, &attrs, char::len_utf16)
+        .into_iter()
+        .find(|&(_, a)| a == TARGET_CONVERTED || a == TARGET_NOT_CONVERTED)
+        .map(|(range, _)| range);
+    clauses
+}
+
 /// The contact id Viso reports for a Win32 touch/pen pointer id; the high bit
 /// keeps it clear of [`PointerId::MOUSE`].
 pub(crate) fn pointer_id(win32: u32) -> PointerId {
@@ -982,6 +1009,15 @@ mod tests {
         // An input method widening a bare caret to the word around it.
         assert_eq!(reconvert_target(0, 3, 5), (0, 3));
         assert_eq!(reconvert_target(8, 9, 5), (4, 5));
+    }
+
+    #[test]
+    fn composition_clauses_mark_the_target() {
+        let clauses = composition_clauses("今日は😀", &[0, 2, 5], &[2, 2, 1, 1, 1]);
+        assert_eq!(clauses.clauses, [(0, 6), (6, 13)]);
+        assert_eq!(clauses.selected, Some((6, 13)));
+        let one = composition_clauses("きょう", &[0, 3], &[0, 0, 0]);
+        assert_eq!(one, crate::PreeditClauses::default());
     }
 
     #[test]

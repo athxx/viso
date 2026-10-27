@@ -1637,6 +1637,7 @@ impl X11 {
                 window,
                 text,
                 caret,
+                clauses,
             } => {
                 if let Some(i) = self.index_xid(window) {
                     let caret = translate::char_to_byte(&text, caret);
@@ -1644,6 +1645,7 @@ impl X11 {
                         window: self.windows[i].id,
                         text,
                         caret,
+                        clauses,
                     }));
                 }
             }

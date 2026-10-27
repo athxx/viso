@@ -33,6 +33,7 @@ pub(super) enum ImeOut {
         window: Window,
         text: String,
         caret: usize,
+        clauses: crate::PreeditClauses,
     },
 }
 
@@ -59,6 +60,8 @@ struct Context {
     window: Window,
     ic: u16,
     preedit: String,
+    /// The server's feedback for each character of the preedit.
+    feedback: Vec<u32>,
     /// The spot (physical pixels, window-relative) the server places its
     /// candidate window at; `None` while no text field has focus.
     spot: Option<(i16, i16)>,
@@ -193,10 +196,12 @@ impl ImeState {
             let _ = client.unset_focus(im, ic);
             if !ctx.preedit.is_empty() {
                 ctx.preedit.clear();
+                ctx.feedback.clear();
                 self.out.push(ImeOut::Preedit {
                     window,
                     text: String::new(),
                     caret: 0,
+                    clauses: crate::PreeditClauses::default(),
                 });
             }
         }
@@ -303,6 +308,7 @@ impl ClientHandler<XimClient> for ImeState {
             window,
             ic,
             preedit: String::new(),
+            feedback: Vec::new(),
             spot: None,
         });
         self.sync_focus(client, window);
@@ -323,10 +329,12 @@ impl ClientHandler<XimClient> for ImeState {
             && !ctx.preedit.is_empty()
         {
             ctx.preedit.clear();
+            ctx.feedback.clear();
             self.out.push(ImeOut::Preedit {
                 window,
                 text: String::new(),
                 caret: 0,
+                clauses: crate::PreeditClauses::default(),
             });
         }
         self.out.push(ImeOut::Commit {
@@ -360,7 +368,7 @@ impl ClientHandler<XimClient> for ImeState {
         chg_len: i32,
         status: PreeditDrawStatus,
         preedit_string: &str,
-        _feedbacks: Vec<xim::Feedback>,
+        feedbacks: Vec<xim::Feedback>,
     ) -> Result<(), ClientError> {
         let Some(window) = self.window_of(ic) else {
             return Ok(());
@@ -374,13 +382,24 @@ impl ClientHandler<XimClient> for ImeState {
             preedit_string
         };
         ctx.preedit = splice_chars(&ctx.preedit, chg_first, chg_len, inserted);
+        let marks = feedbacks.iter().map(|f| f.bits());
+        splice_marks(
+            &mut ctx.feedback,
+            chg_first,
+            chg_len,
+            marks,
+            inserted.chars().count(),
+        );
         let len = ctx.preedit.chars().count();
+        ctx.feedback.resize(len, 0);
         let caret = usize::try_from(caret).unwrap_or(0).min(len);
         let text = ctx.preedit.clone();
+        let clauses = feedback_clauses(&text, &ctx.feedback);
         self.out.push(ImeOut::Preedit {
             window,
             text,
             caret,
+            clauses,
         });
         Ok(())
     }
@@ -398,10 +417,12 @@ impl ClientHandler<XimClient> for ImeState {
             && !ctx.preedit.is_empty()
         {
             ctx.preedit.clear();
+            ctx.feedback.clear();
             self.out.push(ImeOut::Preedit {
                 window,
                 text: String::new(),
                 caret: 0,
+                clauses: crate::PreeditClauses::default(),
             });
         }
         Ok(())
@@ -421,9 +442,54 @@ fn splice_chars(text: &str, first: i32, len: i32, insert: &str) -> String {
     out
 }
 
+/// `marks` with the `len` at `first` replaced by `count` from `insert`,
+/// 0 for any `insert` lacks; out of range positions clamp.
+fn splice_marks(
+    marks: &mut Vec<u32>,
+    first: i32,
+    len: i32,
+    insert: impl Iterator<Item = u32>,
+    count: usize,
+) {
+    let first = usize::try_from(first).unwrap_or(0).min(marks.len());
+    let len = usize::try_from(len).unwrap_or(0).min(marks.len() - first);
+    let insert = insert.chain(std::iter::repeat(0)).take(count);
+    marks.splice(first..first + len, insert);
+}
+
+/// The clauses the server's per-character `feedback` marks in `text`: its
+/// runs, and the one shown reversed or highlighted as the one converting.
+fn feedback_clauses(text: &str, feedback: &[u32]) -> crate::PreeditClauses {
+    let picked = (xim::Feedback::REVERSE | xim::Feedback::HIGHLIGHT).bits();
+    let runs = crate::backend::ime_text::mark_runs(text, feedback, |_| 1);
+    let selected = runs.iter().find(|(_, m)| m & picked != 0).map(|(r, _)| *r);
+    let clauses = if runs.len() > 1 {
+        runs.iter().map(|(r, _)| *r).collect()
+    } else {
+        Vec::new()
+    };
+    crate::PreeditClauses { clauses, selected }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feedback_marks_the_clause_being_converted() {
+        let mut marks = Vec::new();
+        splice_marks(&mut marks, 0, 0, [2, 2, 1, 1].into_iter(), 4);
+        assert_eq!(marks, [2, 2, 1, 1]);
+        splice_marks(&mut marks, 1, 1, std::iter::empty(), 2);
+        assert_eq!(marks, [2, 0, 0, 1, 1]);
+        let clauses = feedback_clauses("ab你好", &[2, 2, 1, 1]);
+        assert_eq!(clauses.clauses, [(0, 2), (2, 8)]);
+        assert_eq!(clauses.selected, Some((2, 8)));
+        assert_eq!(
+            feedback_clauses("ab", &[2, 2]),
+            crate::PreeditClauses::default()
+        );
+    }
 
     #[test]
     fn preedit_draws_replace_character_ranges() {

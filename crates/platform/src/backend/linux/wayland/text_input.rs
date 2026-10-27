@@ -92,7 +92,7 @@ pub(super) struct TextInput {
 /// State accumulated between `done` events.
 #[derive(Default)]
 struct Pending {
-    preedit: Option<(String, i32)>,
+    preedit: Option<(String, i32, i32)>,
     commit: Option<String>,
     /// Bytes to delete before and after the cursor.
     delete: Option<(u32, u32)>,
@@ -221,9 +221,12 @@ impl TextInput {
                 self.pending = Pending::default();
             }
             zwp_text_input_v3::Event::PreeditString {
-                text, cursor_begin, ..
+                text,
+                cursor_begin,
+                cursor_end,
             } => {
-                self.pending.preedit = Some((text.unwrap_or_default(), cursor_begin));
+                let text = text.unwrap_or_default();
+                self.pending.preedit = Some((text, cursor_begin, cursor_end));
             }
             zwp_text_input_v3::Event::CommitString { text } => {
                 self.pending.commit = text;
@@ -251,6 +254,7 @@ fn push_preedit(state: &mut State, window: WindowId, text: String, caret: usize)
         window,
         text,
         caret,
+        clauses: crate::PreeditClauses::default(),
     }));
 }
 
@@ -266,12 +270,21 @@ fn apply(pending: Pending, ime: &mut ImeText, window: WindowId) -> Vec<RawEvent>
     if let Some(commit) = pending.commit.filter(|t| !t.is_empty()) {
         out.extend(ime.insert(window, &commit, None));
     }
-    match pending.preedit.filter(|(text, _)| !text.is_empty()) {
-        Some((text, cursor)) => {
+    match pending.preedit.filter(|(text, ..)| !text.is_empty()) {
+        Some((text, begin, end)) => {
             // A negative cursor hides the caret: park it at the end.
-            let caret = usize::try_from(cursor)
-                .map_or(text.len(), |byte| translate::floor_boundary(&text, byte));
-            out.extend(ime.set_marked(window, &text, (caret, caret), None));
+            let at = |cursor: i32| {
+                usize::try_from(cursor)
+                    .map_or(text.len(), |byte| translate::floor_boundary(&text, byte))
+            };
+            let caret = at(begin);
+            // A ranged cursor highlights the clause being converted.
+            let end = at(end);
+            let clauses = crate::PreeditClauses {
+                clauses: Vec::new(),
+                selected: (begin >= 0 && caret < end).then_some((caret, end)),
+            };
+            out.extend(ime.set_marked(window, &text, (caret, caret), clauses, None));
         }
         None => out.extend(ime.cancel(window)),
     }
@@ -304,7 +317,7 @@ mod tests {
 
     fn pending(preedit: Option<(&str, i32)>, commit: Option<&str>) -> Pending {
         Pending {
-            preedit: preedit.map(|(t, c)| (t.to_owned(), c)),
+            preedit: preedit.map(|(t, c)| (t.to_owned(), c, c)),
             commit: commit.map(str::to_owned),
             delete: None,
         }
@@ -315,6 +328,7 @@ mod tests {
             window: W,
             text: text.into(),
             caret,
+            clauses: crate::PreeditClauses::default(),
         })
     }
 
@@ -347,6 +361,27 @@ mod tests {
             apply(pending(Some(("你好", -1)), None), &mut ime, W),
             [preedit("你好", 6)]
         );
+    }
+
+    #[test]
+    fn a_ranged_cursor_marks_the_clause_being_converted() {
+        let mut ime = ImeText::default();
+        let ranged = Pending {
+            preedit: Some(("日本ご".into(), 0, 6)),
+            ..Pending::default()
+        };
+        let [RawEvent::ImePreedit(p)] = &apply(ranged, &mut ime, W)[..] else {
+            panic!("one preedit");
+        };
+        assert_eq!((p.caret, p.clauses.selected), (0, Some((0, 6))));
+        let hidden = Pending {
+            preedit: Some(("日本ご".into(), -1, -1)),
+            ..Pending::default()
+        };
+        let [RawEvent::ImePreedit(p)] = &apply(hidden, &mut ime, W)[..] else {
+            panic!("one preedit");
+        };
+        assert_eq!((p.caret, p.clauses.selected), (9, None));
     }
 
     #[test]

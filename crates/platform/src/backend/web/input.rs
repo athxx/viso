@@ -459,6 +459,7 @@ fn on_input(page: &Page, _e: &Event) {
             window: WINDOW,
             text: value,
             caret,
+            clauses: crate::PreeditClauses::default(),
         }));
         drive();
     } else if !value.is_empty() {
@@ -473,6 +474,7 @@ fn on_composition_end(page: &Page, e: &Event) {
         window: WINDOW,
         text: String::new(),
         caret: 0,
+        clauses: crate::PreeditClauses::default(),
     }));
     if let Some(text) = e.data().filter(|t| !t.is_empty()) {
         push(RawEvent::Text(RawText {

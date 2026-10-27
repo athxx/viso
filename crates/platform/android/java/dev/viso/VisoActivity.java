@@ -776,7 +776,12 @@ public class VisoActivity extends Activity
     static native void nativePadMotion(int id, float x, float y, float z, float rz, float hatX,
             float hatY, float left, float right, float brake, float gas);
 
-    static native void nativePreedit(String text, int caret);
+    /**
+     * The composition, its caret, its clauses as start, end pairs and the
+     * one being converted (-1, -1 for none), UTF-16 within the text.
+     */
+    static native void nativePreedit(
+            String text, int caret, int[] clauses, int selectedStart, int selectedEnd);
 
     static native void nativeCommit(String text);
 

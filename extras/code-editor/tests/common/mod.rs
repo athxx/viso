@@ -134,6 +134,7 @@ pub fn preedit(text: &str, caret: usize) -> Vec<RawEvent> {
             window: WIN,
             text: text.into(),
             caret,
+            clauses: Default::default(),
         }),
         redraw(),
     ]

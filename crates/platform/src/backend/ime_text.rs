@@ -16,7 +16,32 @@
 // Each platform asks its own share of these questions.
 #![cfg_attr(not(test), allow(dead_code))]
 
-use crate::{ImeEdit, RawEvent, RawImeEdit, RawImePreedit, RawText, SurroundingText, WindowId};
+use crate::{
+    ImeEdit, PreeditClauses, RawEvent, RawImeEdit, RawImePreedit, RawText, SurroundingText,
+    WindowId,
+};
+
+/// The runs of `text` an input method marks piece by piece, each run's
+/// byte range and mark. A character spans `units(c)` marks and takes its
+/// first one's; a character past the end of `marks` takes 0.
+pub(crate) fn mark_runs(
+    text: &str,
+    marks: &[u32],
+    units: impl Fn(char) -> usize,
+) -> Vec<((usize, usize), u32)> {
+    let mut runs: Vec<((usize, usize), u32)> = Vec::new();
+    let mut at = 0;
+    for (byte, c) in text.char_indices() {
+        let mark = marks.get(at).copied().unwrap_or(0);
+        at += units(c);
+        let end = byte + c.len_utf8();
+        match runs.last_mut() {
+            Some((range, last)) if *last == mark => range.1 = end,
+            _ => runs.push(((byte, end), mark)),
+        }
+    }
+    runs
+}
 
 #[derive(Debug, Default, Clone)]
 pub(crate) struct ImeText {
@@ -31,6 +56,8 @@ pub(crate) struct ImeText {
     focus: usize,
     /// The composition under way.
     marked: Option<(usize, usize)>,
+    /// Its clauses, as the input method last marked them.
+    clauses: PreeditClauses,
 }
 
 impl ImeText {
@@ -144,15 +171,16 @@ impl ImeText {
         self.offset + a..self.offset + b
     }
 
-    /// Compose `text`, its selection `selected` (bytes into it), over the
-    /// composition, else over `over` (an autocorrect or a reconversion
-    /// taking up committed text), else over the selection. An empty text
-    /// drops the composition.
+    /// Compose `text`, its selection `selected` (bytes into it) and its
+    /// clauses `clauses`, over the composition, else over `over` (an
+    /// autocorrect or a reconversion taking up committed text), else over
+    /// the selection. An empty text drops the composition.
     pub(crate) fn set_marked(
         &mut self,
         window: WindowId,
         text: &str,
         selected: (usize, usize),
+        clauses: PreeditClauses,
         over: Option<(usize, usize)>,
     ) -> Option<RawEvent> {
         if text.is_empty() {
@@ -177,8 +205,10 @@ impl ImeText {
                 window,
                 text: text.to_owned(),
                 caret,
+                clauses: clauses.clone(),
             }),
         };
+        self.clauses = clauses;
         let (a, b) = over.filter(|_| self.shown).unwrap_or_else(|| self.target());
         self.place_marked(a, b, text, start, caret);
         Some(event)
@@ -228,6 +258,7 @@ impl ImeText {
             window,
             text: self.text[m0..m1].to_owned(),
             caret: self.focus.clamp(m0, m1) - m0,
+            clauses: self.clauses.clone(),
         }))
     }
 
@@ -260,6 +291,7 @@ impl ImeText {
             window,
             text: String::new(),
             caret: 0,
+            clauses: PreeditClauses::default(),
         }))
     }
 
@@ -292,15 +324,18 @@ impl ImeText {
                     window,
                     text: String::new(),
                     caret: 0,
+                    clauses: PreeditClauses::default(),
                 }));
             }
             self.marked = Some((m0, m1));
+            self.clauses = PreeditClauses::default();
             self.anchor = caret;
             self.focus = caret;
             return Some(RawEvent::ImePreedit(RawImePreedit {
                 window,
                 text: self.text[m0..m1].to_owned(),
                 caret: caret - m0,
+                clauses: PreeditClauses::default(),
             }));
         }
         if !self.shown {
@@ -413,6 +448,7 @@ mod tests {
             window: W,
             text: text.to_owned(),
             caret,
+            clauses: PreeditClauses::default(),
         })
     }
 
@@ -431,9 +467,13 @@ mod tests {
     fn a_composition_previews_then_commits_over_the_selection() {
         let mut t = ImeText::default();
         t.show(Some(&shown("ab cd", 100, 3, 5)));
-        assert_eq!(t.set_marked(W, "に", (3, 3), None), Some(preedit("に", 3)));
+        assert_eq!(
+            t.set_marked(W, "に", (3, 3), PreeditClauses::default(), None),
+            Some(preedit("に", 3))
+        );
         assert_eq!(t.text(), "ab に");
         assert_eq!(t.marked(), Some((3, 6)));
+        assert!(t.is_marked());
         assert_eq!(t.insert(W, "二", None), Some(commit("二")));
         assert_eq!(
             (t.text(), t.selection(), t.marked()),
@@ -449,14 +489,26 @@ mod tests {
         let (s0, s1) = t.selection();
         assert_eq!(&t.text()[s0..s1], "漢字");
         assert_eq!(
-            t.set_marked(W, "かんじ", (0, 9), Some((s0, s1))),
+            t.set_marked(
+                W,
+                "かんじ",
+                (0, 9),
+                PreeditClauses::default(),
+                Some((s0, s1))
+            ),
             Some(preedit("かんじ", 9))
         );
         // Over the word before the caret instead of the selection.
         let mut t = ImeText::default();
         t.show(Some(&shown("今日は漢字", 10, 15, 15)));
         assert_eq!(
-            t.set_marked(W, "かんじ", (9, 9), Some((9, 15))),
+            t.set_marked(
+                W,
+                "かんじ",
+                (9, 9),
+                PreeditClauses::default(),
+                Some((9, 15))
+            ),
             Some(edit(ImeEdit::Recompose {
                 range: 19..25,
                 text: "かんじ".into(),
@@ -506,7 +558,7 @@ mod tests {
         // A composition after the deleted text moves with it.
         let mut t = ImeText::default();
         t.show(Some(&shown("ab ", 0, 3, 3)));
-        t.set_marked(W, "cd", (2, 2), None);
+        t.set_marked(W, "cd", (2, 2), PreeditClauses::default(), None);
         t.delete_around(W, 1, 0);
         assert_eq!(
             (t.text(), t.marked(), t.selection()),
@@ -518,7 +570,7 @@ mod tests {
     fn a_composition_outlives_the_app_showing_text_from_before_it() {
         let mut t = ImeText::default();
         t.show(Some(&shown("ab", 0, 2, 2)));
-        t.set_marked(W, "x", (1, 1), None);
+        t.set_marked(W, "x", (1, 1), PreeditClauses::default(), None);
         // Shown again before the app took the preedit.
         t.show(Some(&shown("ab", 0, 2, 2)));
         assert_eq!((t.text(), t.marked()), ("abx", Some((2, 3))));
@@ -543,7 +595,7 @@ mod tests {
         t.show(None);
         assert_eq!(t.insert(W, "a", Some((0, 0))), Some(commit("a")));
         assert_eq!(t.select(W, 0, 0), None);
-        t.set_marked(W, "ab", (2, 2), None);
+        t.set_marked(W, "ab", (2, 2), PreeditClauses::default(), None);
         assert_eq!(t.replace(W, 1, 2, "c"), Some(preedit("ac", 2)));
         assert_eq!(t.unmark(W), Some(commit("ac")));
     }
@@ -560,7 +612,7 @@ mod tests {
             }))
         );
         assert_eq!(t.ends(), (0, 5));
-        t.set_marked(W, "ab", (2, 2), None);
+        t.set_marked(W, "ab", (2, 2), PreeditClauses::default(), None);
         assert_eq!(t.select(W, 1, 1), None);
     }
 
@@ -574,8 +626,18 @@ mod tests {
         // The app showing what the input method's edit made is no change.
         t.insert(W, "c", None);
         assert_eq!(t.change(Some(&shown("abc", 0, 3, 3))), (false, false));
-        t.set_marked(W, "xy", (1, 1), None);
+        t.set_marked(W, "xy", (1, 1), PreeditClauses::default(), None);
         assert_eq!(t.preedit(W), Some(preedit("xy", 1)));
+    }
+
+    #[test]
+    fn marks_run_over_characters() {
+        assert_eq!(
+            mark_runs("a你😀b", &[1, 2, 2, 2, 0], char::len_utf16),
+            vec![((0, 1), 1), ((1, 8), 2), ((8, 9), 0)]
+        );
+        assert_eq!(mark_runs("ab", &[3], |_| 1), vec![((0, 1), 3), ((1, 2), 0)]);
+        assert!(mark_runs("", &[1], |_| 1).is_empty());
     }
 
     #[test]

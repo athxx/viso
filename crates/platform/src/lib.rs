@@ -90,8 +90,9 @@ pub use drop::{
 pub use event::{
     AcceptCell, Appearance, ClipboardShortcut, ColorScheme, CursorIcon, DisplayFeature,
     DisplayFeatureKind, GesturePhase, ImeEdit, KeyCode, LogicalInsets, Modifiers, PointerButtons,
-    PointerId, PointerKind, PointerPhase, RawEvent, RawGesture, RawImeEdit, RawImePreedit, RawKey,
-    RawPointer, RawScroll, RawText, ScrollPhase, clipboard_shortcut, primary_is_logo,
+    PointerId, PointerKind, PointerPhase, PreeditClauses, RawEvent, RawGesture, RawImeEdit,
+    RawImePreedit, RawKey, RawPointer, RawScroll, RawText, ScrollPhase, clipboard_shortcut,
+    primary_is_logo,
 };
 pub use gamepad::{GamepadButton, GamepadEvent, GamepadId, GamepadInfo, GamepadState, Rumble};
 pub use handler::AppHandler;

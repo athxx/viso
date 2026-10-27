@@ -743,8 +743,30 @@ Rules (as for `todo_features.md`):
     - Not yet seen on a device: this Mac has no Japanese input source, and the API 37 emulator
       image offers no Vulkan, so macOS Japanese reconversion and Gboard autocorrect still need a
       hands-on check.
-- [ ] IME clause segments and the selected clause, drawn with a thicker underline on the active
+- [x] IME clause segments and the selected clause, drawn with a thicker underline on the active
   clause. Verify with headless preedit replay and a Japanese IME.
+  - Built:
+    - `PreeditClauses` (byte ranges within the preedit, and the one converting) rides every
+      preedit from the platform to `EditIntent::Compose` and into `ImeComposition`.
+    - macOS reads `NSMarkedClauseSegment` and thick-underline runs, falling back to a ranged
+      `selectedRange`; iOS uses a ranged `selectedRange`.
+    - Android reads the composing text's `UnderlineSpan` and `BackgroundColorSpan`.
+    - Windows reads `GCS_COMPCLAUSE` and `GCS_COMPATTR`; Wayland uses a ranged preedit cursor.
+    - X11 tracks XIM's per-character feedback through each draw and splits it into runs.
+    - Each clause gets its own thin underline with a gap between, and the converting one is
+      twice as thick. A selection with no clauses splits the composition in three.
+    - UI tapes record the clauses under a new tag; plain preedits keep the old one.
+  - Verified:
+    - `crates/viso/tests/ime_surrounding.rs` (headless): two clauses draw two underlines with a
+      gap, the converting one thicker; a plain preedit draws one. A recorded composition
+      round-trips through the tape's bytes and replays the same underlines.
+    - Unit tests: the marks for clauses and for a bare selection, mark runs over UTF-16, and
+      the tape's encoding and rejection of malformed clauses. X11 feedback splicing and the
+      Wayland ranged cursor pass in a Linux container; the Windows clause and attribute test
+      compiles but is not run here.
+    - The Android Java compiles. Clippy is clean on host, iOS, Android, Windows, Linux and wasm.
+    - Not yet seen with a real Japanese IME: this Mac has no Japanese input source and the
+      emulator has no Vulkan.
 - [ ] Merge the labels of a node marked as one element (such as a list row) into one semantics
   node. Verify in the headless semantics tree.
 - [ ] A wrapping Flow layout (`LayoutInput::Flow`, DSL `Wrap`). Verify with layout unit tests

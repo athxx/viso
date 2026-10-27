@@ -3059,17 +3059,14 @@ TextInputFocus  焦点节点是文本框时 facade 调 PlatformApp::set_text_ent
 
 IME 是文本子系统的一部分，不是 TextInput 的平台 patch：
 
-- **composition range**：`viso_text::ime::ImeComposition`（逻辑字节区间、clause、选中子区间、提交时替换的区间，带 revision；UTF-16 只在 composition 内桥接）由 `viso_ui::text_edit` 持有；平台以 `RawEvent::ImePreedit { text, caret }` 更新、`RawEvent::Text` 提交，空 preedit 为取消；
+- **composition range**：`viso_text::ime::ImeComposition`（逻辑字节区间、clause、选中子区间、提交时替换的区间，带 revision；UTF-16 只在 composition 内桥接）由 `viso_ui::text_edit` 持有；平台以 `RawEvent::ImePreedit { text, caret, clauses }` 更新、`RawEvent::Text` 提交，空 preedit 为取消；
+- **clause**：`PreeditClauses`（preedit 内的字节区间与正在转换的那段）随每次 preedit 到达，记进 `ImeComposition`。macOS 读 `NSMarkedClauseSegment` 与粗下划线的属性段（没有时用有长度的 `selectedRange`），iOS 用有长度的 `selectedRange`，Android 读 composing 文本的 `UnderlineSpan` 与 `BackgroundColorSpan`，Windows 读 `GCS_COMPCLAUSE` 与 `GCS_COMPATTR`（target 属性的那段为选中），Wayland 用有区间的 preedit 光标，X11 按 XIM 逐字符 feedback 分段（`REVERSE`/`HIGHLIGHT` 为选中）。每段各画一条细下划线、段间留空，正在转换的那段加粗一倍；只有选中段没有分段时按它把 composition 切成三段。UI tape 录下分段；
 - **candidate rect**：`TextEntry::caret`（逻辑点），取自 retained caret map；
 - **selection**：文本框自己的选区与编辑命令（`viso_ui::field_input`）；caret、选区与 composition 下划线由框架绘制；
 - **platform IME activation/deactivation**：`set_text_entry`（带 `secure`、`InputKind`、`multiline`）与 `show_soft_keyboard`；
 - **surrounding text**：焦点文本框（非 secret、非只读）在帧末经 `PlatformApp::set_surrounding_text` 发布 `SurroundingText`：选区前后各约 1 KiB 的一段文本（含 composition）、它在全文中的字节偏移、选区与 composition；只在文本 revision、选区或 composition 变化时重算，段起点在光标前移不远时保持不动，使输入法的偏移在连续编辑间保持含义；超过 16 KiB 的选区不发布。输入法在这段文本上的编辑以 `RawEvent::ImeEdit(ImeEdit)` 回来（`Replace` 替换区间、`Recompose` 把已提交文本重新变为 composition、`Select` 选区），偏移是全文字节；缓冲区按同一规则应用：与区间不相交的 composition 继续并随之平移，相交则先结束，选区不相交则保持原位。平台侧 `backend::ime_text::ImeText` 是这段文本的镜像：输入法的查询立即作答，它的每个编辑按应用侧同样的规则先作用于镜像，直到应用再次发布；composition 是否存在由镜像决定，周围文本以应用为准。macOS `selectedRange` / `markedRange` / `attributedSubstringForProposedRange` 与 `replacementRange`、iOS `UITextInput`（展示文本时打开自动更正与拼写检查，应用侧变化经 `inputDelegate` 通知）、Android 输入连接的 Editable 镜像（`getTextBeforeCursor`、`setComposingRegion`、`deleteSurroundingText`、`setSelection`；应用再次发布时只在与镜像不同时 `updateSelection`）、Windows `WM_IME_REQUEST`（`IMR_RECONVERTSTRING` / `IMR_CONFIRMRECONVERTSTRING` / `IMR_DOCUMENTFEED`）、Wayland `set_surrounding_text`（截到协议的 4000 字节内）与 `delete_surrounding_text` 都读写它。不发布文本的控件（secret、自己持有文档的控件）镜像里只有 composition，行为与原先相同；
 - **virtual keyboard inset**：`RawEvent::KeyboardInsetChanged` → `env.keyboard_inset`；
 - **keyboard avoidance**：`KeyboardAvoiding` / `SafeArea` 区域（`Avoid::{SafeArea, Keyboard}`）按被覆盖的部分加 padding；锚定层避开安全区与键盘。
-
-目标（尚未实现）：
-
-- **clause**：`RawImePreedit` 只带 text 与 caret，`ImeComposition` 的 clause 与选中 clause 平台不填，长句输入看不到当前转换段。
 
 ---
 

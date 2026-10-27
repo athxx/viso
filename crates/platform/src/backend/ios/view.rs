@@ -620,7 +620,13 @@ define_class!(
                     at(selected.location),
                     at(selected.location.saturating_add(selected.length)),
                 );
-                let event = self.ime_edit(|ime, w| ime.set_marked(w, &text, selected, None));
+                // A ranged selection is the clause being converted.
+                let clauses = crate::PreeditClauses {
+                    clauses: Vec::new(),
+                    selected: (selected.0 < selected.1).then_some(selected),
+                };
+                let event =
+                    self.ime_edit(|ime, w| ime.set_marked(w, &text, selected, clauses, None));
                 self.apply(event);
                 drive();
             });

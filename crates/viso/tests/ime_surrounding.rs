@@ -1,7 +1,7 @@
 //! The text around a field's caret that the input method reads, and the
 //! edits it makes there: an autocorrect replacing a typed word, a
 //! reconversion composing over committed text, deletions around a
-//! composition, and a selection it moves.
+//! composition, a selection it moves, and the clauses it marks.
 
 use std::cell::Cell;
 use std::time::Duration;
@@ -27,7 +27,8 @@ thread_local! {
 struct FieldApp;
 
 impl Application for FieldApp {
-    fn new(_cx: &mut AppCx) -> Self {
+    fn new(cx: &mut AppCx) -> Self {
+        cx.load_font(&include_bytes!("../../text/tests/fixtures/DejaVuSans-subset.ttf")[..]);
         FieldApp
     }
 
@@ -94,6 +95,7 @@ fn preedit(text: &str, caret: usize) -> RawEvent {
         window: WIN,
         text: text.into(),
         caret,
+        clauses: viso::platform::PreeditClauses::default(),
     })
 }
 
@@ -206,4 +208,59 @@ fn a_secret_shows_no_text() {
     SECURE.with(|s| s.set(false));
     assert!(app.text_entry().flatten().is_some());
     assert_eq!(app.surrounding_text(), None);
+}
+
+/// "にほんご" composed as two clauses, the second converting.
+#[cfg(feature = "headless")]
+fn clauses() -> RawEvent {
+    RawEvent::ImePreedit(RawImePreedit {
+        window: WIN,
+        text: "にほんご".into(),
+        caret: 12,
+        clauses: viso::platform::PreeditClauses {
+            clauses: vec![(0, 6), (6, 12)],
+            selected: Some((6, 12)),
+        },
+    })
+}
+
+#[cfg(feature = "headless")]
+fn assert_two_clauses(underlines: &[viso::ui::Rect]) {
+    let [first, second] = underlines else {
+        panic!("one underline a clause: {underlines:?}");
+    };
+    assert!(
+        first.x + first.w < second.x,
+        "a gap between: {underlines:?}"
+    );
+    assert_eq!(first.y, second.y);
+    assert!(second.h > first.h, "the converting clause is thicker");
+}
+
+/// Drawn marks need text shaped, which the headless build's raster does.
+#[cfg(feature = "headless")]
+#[test]
+fn each_clause_is_underlined_and_the_converting_one_thicker() {
+    let mut events = focused();
+    events.extend([clauses(), redraw()]);
+    let app = drive_scripted::<FieldApp>(events.clone(), STEP);
+    assert_eq!(app.focused_text(), Some("say tehにほんご"));
+    assert_two_clauses(app.focused_underlines().unwrap_or_default());
+    events.extend([preedit("にほんご", 12), redraw()]);
+    let app = drive_scripted::<FieldApp>(events, STEP);
+    assert_eq!(app.focused_underlines().map(<[_]>::len), Some(1));
+}
+
+#[cfg(feature = "headless")]
+#[test]
+fn a_recorded_composition_replays_its_clauses() {
+    use viso::__test_support::{UiTape, drive_recording, drive_tape};
+
+    let mut events = focused();
+    events.extend([clauses(), redraw()]);
+    let (_recorded, tape) = drive_recording::<FieldApp>(events, STEP);
+    let read = UiTape::from_bytes(&tape.to_bytes()).expect("decodes");
+    assert_eq!(read, tape);
+    let app = drive_tape::<FieldApp>(read);
+    assert_two_clauses(app.focused_underlines().unwrap_or_default());
 }

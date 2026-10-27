@@ -2,6 +2,8 @@ package dev.viso;
 
 import android.text.Editable;
 import android.text.Selection;
+import android.text.style.BackgroundColorSpan;
+import android.text.style.UnderlineSpan;
 import android.view.KeyEvent;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.CursorAnchorInfo;
@@ -19,6 +21,7 @@ import android.view.inputmethod.InputConnection;
  * each commit.
  */
 final class VisoInputConnection extends BaseInputConnection {
+    private static final int[] NO_CLAUSES = new int[0];
     private final VisoView view;
     private boolean composing;
     /** Whether the editable mirrors text the app shows. */
@@ -94,7 +97,7 @@ final class VisoInputConnection extends BaseInputConnection {
             String s = start >= 0 && end > start ? e.subSequence(start, end).toString() : "";
             composing = false;
             if (s.isEmpty()) {
-                VisoActivity.nativePreedit("", 0);
+                VisoActivity.nativePreedit("", 0, NO_CLAUSES, -1, -1);
             } else {
                 VisoActivity.nativeCommit(s);
             }
@@ -313,14 +316,34 @@ final class VisoInputConnection extends BaseInputConnection {
         }
         composing = true;
         int caret = Math.max(0, Math.min(Selection.getSelectionEnd(e), end) - start);
-        VisoActivity.nativePreedit(e.subSequence(start, end).toString(), caret);
+        // The input method underlines each clause and shades the one it
+        // is converting.
+        UnderlineSpan[] lines = e.getSpans(start, end, UnderlineSpan.class);
+        int[] clauses = new int[lines.length * 2];
+        for (int i = 0; i < lines.length; i++) {
+            clauses[2 * i] = Math.max(e.getSpanStart(lines[i]), start) - start;
+            clauses[2 * i + 1] = Math.min(e.getSpanEnd(lines[i]), end) - start;
+        }
+        int selectedStart = -1;
+        int selectedEnd = -1;
+        for (BackgroundColorSpan shade : e.getSpans(start, end, BackgroundColorSpan.class)) {
+            int from = Math.max(e.getSpanStart(shade), start);
+            int to = Math.min(e.getSpanEnd(shade), end);
+            if (from < to) {
+                selectedStart = from - start;
+                selectedEnd = to - start;
+                break;
+            }
+        }
+        VisoActivity.nativePreedit(
+                e.subSequence(start, end).toString(), caret, clauses, selectedStart, selectedEnd);
         updateSelection();
     }
 
     private void endComposition() {
         if (composing) {
             composing = false;
-            VisoActivity.nativePreedit("", 0);
+            VisoActivity.nativePreedit("", 0, NO_CLAUSES, -1, -1);
         }
     }
 

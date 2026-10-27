@@ -6,11 +6,12 @@ use std::rc::Rc;
 use ::windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use ::windows::Win32::Graphics::Gdi::{ScreenToClient, ValidateRect};
 use ::windows::Win32::UI::Input::Ime::{
-    CANDIDATEFORM, CFS_EXCLUDE, CFS_POINT, COMPOSITIONFORM, CPS_CANCEL, GCS_COMPSTR, GCS_CURSORPOS,
-    GCS_RESULTSTR, HIMC, IACE_DEFAULT, IME_COMPOSITION_STRING, IMR_CONFIRMRECONVERTSTRING,
-    IMR_DOCUMENTFEED, IMR_RECONVERTSTRING, ISC_SHOWUICOMPOSITIONWINDOW, ImmAssociateContextEx,
-    ImmGetCompositionStringW, ImmGetContext, ImmNotifyIME, ImmReleaseContext,
-    ImmSetCandidateWindow, ImmSetCompositionWindow, NI_COMPOSITIONSTR,
+    CANDIDATEFORM, CFS_EXCLUDE, CFS_POINT, COMPOSITIONFORM, CPS_CANCEL, GCS_COMPATTR,
+    GCS_COMPCLAUSE, GCS_COMPSTR, GCS_CURSORPOS, GCS_RESULTSTR, HIMC, IACE_DEFAULT,
+    IME_COMPOSITION_STRING, IMR_CONFIRMRECONVERTSTRING, IMR_DOCUMENTFEED, IMR_RECONVERTSTRING,
+    ISC_SHOWUICOMPOSITIONWINDOW, ImmAssociateContextEx, ImmGetCompositionStringW, ImmGetContext,
+    ImmNotifyIME, ImmReleaseContext, ImmSetCandidateWindow, ImmSetCompositionWindow,
+    NI_COMPOSITIONSTR,
 };
 use ::windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
@@ -751,23 +752,31 @@ impl ImeContext {
     }
 
     fn string(&self, kind: IME_COMPOSITION_STRING) -> String {
+        let units: Vec<u16> = self.read(kind);
+        String::from_utf16_lossy(&units)
+    }
+
+    /// The composition data of `kind` as items of `T`, whole items only.
+    fn read<T: Copy + Default>(&self, kind: IME_COMPOSITION_STRING) -> Vec<T> {
         // SAFETY: a size query (no buffer) on a live context.
         let bytes = unsafe { ImmGetCompositionStringW(self.himc, kind, None, 0) };
         let Ok(len) = usize::try_from(bytes) else {
-            return String::new();
+            return Vec::new();
         };
-        let mut units = vec![0u16; len / 2];
-        // SAFETY: `units` holds `len` bytes, the size just reported.
+        let size = std::mem::size_of::<T>();
+        let mut items = vec![T::default(); len / size];
+        // SAFETY: `items` holds at least `items.len() * size` bytes, no more
+        // than the size just reported, and `T` is plain data.
         let got = unsafe {
             ImmGetCompositionStringW(
                 self.himc,
                 kind,
-                Some(units.as_mut_ptr().cast()),
-                (units.len() * 2) as u32,
+                Some(items.as_mut_ptr().cast()),
+                (items.len() * size) as u32,
             )
         };
-        units.truncate(usize::try_from(got).unwrap_or(0) / 2);
-        String::from_utf16_lossy(&units)
+        items.truncate(usize::try_from(got).unwrap_or(0) / size);
+        items
     }
 
     /// The caret within the composition string, in UTF-16 units.
@@ -804,10 +813,18 @@ fn composition(state: &WindowState, hwnd: HWND, flags: u32) {
         } else {
             text.len()
         };
-        let event = state
-            .ime
-            .borrow_mut()
-            .set_marked(state.id, &text, (caret, caret), None);
+        let clauses = if flags & (GCS_COMPCLAUSE.0 | GCS_COMPATTR.0) != 0 {
+            let bounds: Vec<u32> = ime.read(GCS_COMPCLAUSE);
+            let attrs: Vec<u8> = ime.read(GCS_COMPATTR);
+            translate::composition_clauses(&text, &bounds, &attrs)
+        } else {
+            crate::PreeditClauses::default()
+        };
+        let event =
+            state
+                .ime
+                .borrow_mut()
+                .set_marked(state.id, &text, (caret, caret), clauses, None);
         if let Some(event) = event {
             state.push(event);
         }

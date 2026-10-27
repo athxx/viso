@@ -288,6 +288,8 @@ pub enum ImeEvent {
         text: String,
         /// Caret position within `text`, in bytes.
         caret: usize,
+        /// Its clauses and the one being converted.
+        clauses: crate::PreeditClauses,
     },
     /// A committed segment: the composition finished and this text is final.
     Commit { text: String },
@@ -4028,6 +4030,7 @@ mod tests {
             ImeEvent::Preedit {
                 text: "n".to_string(),
                 caret: 1,
+                clauses: crate::PreeditClauses::default(),
             },
             &mut chain,
         );

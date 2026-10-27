@@ -131,9 +131,13 @@ pub(super) enum Msg {
         meta: i32,
         text: Option<String>,
     },
+    /// A composition, its caret, clauses and the clause being converted,
+    /// UTF-16 within the text.
     Preedit {
         text: String,
         caret_utf16: usize,
+        clauses: Vec<(usize, usize)>,
+        selected: Option<(usize, usize)>,
     },
     Commit(String),
     /// An input method's edit of the text around the caret.
@@ -757,12 +761,26 @@ fn apply(msg: Msg) {
                 }
             }
         }
-        Msg::Preedit { text, caret_utf16 } => {
+        Msg::Preedit {
+            text,
+            caret_utf16,
+            clauses,
+            selected,
+        } => {
             let caret = byte_offset(&text, caret_utf16);
+            // One clause spanning everything says nothing a bare
+            // composition doesn't.
+            let clauses = if clauses.len() > 1 {
+                clauses
+            } else {
+                Vec::new()
+            };
+            let clauses = crate::PreeditClauses::from_utf16(&text, &clauses, selected);
             push_to_window(RawEvent::ImePreedit(RawImePreedit {
                 window: WINDOW,
                 text,
                 caret,
+                clauses,
             }));
         }
         Msg::Commit(text) => push_to_window(RawEvent::Text(RawText {

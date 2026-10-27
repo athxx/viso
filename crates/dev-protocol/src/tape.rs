@@ -224,8 +224,14 @@ pub enum TapeInput {
     },
     /// Committed text.
     Text(String),
-    /// An IME composition in progress, its caret a byte offset.
-    Preedit { text: String, caret: u32 },
+    /// An IME composition in progress, its caret, clauses and the clause
+    /// being converted byte offsets into it.
+    Preedit {
+        text: String,
+        caret: u32,
+        clauses: Vec<(u32, u32)>,
+        selected: Option<(u32, u32)>,
+    },
     /// An input method replaced bytes `start..end` of the field's text
     /// with `text`.
     ImeReplace { start: u64, end: u64, text: String },
@@ -458,10 +464,24 @@ impl Encode for TapeInput {
                 enc.write_u8(3);
                 enc.write_str(text);
             }
-            TapeInput::Preedit { text, caret } => {
-                enc.write_u8(4);
+            TapeInput::Preedit {
+                text,
+                caret,
+                clauses,
+                selected,
+            } => {
+                let plain = clauses.is_empty() && selected.is_none();
+                enc.write_u8(if plain { 4 } else { 17 });
                 enc.write_str(text);
                 enc.write_varint(u64::from(*caret));
+                if !plain {
+                    enc.write_varint(clauses.len() as u64);
+                    enc.write_u8(u8::from(selected.is_some()));
+                    for &(start, end) in clauses.iter().chain(selected) {
+                        enc.write_varint(u64::from(start));
+                        enc.write_varint(u64::from(end));
+                    }
+                }
             }
             TapeInput::Paste(text) => {
                 enc.write_u8(5);
@@ -629,14 +649,41 @@ impl Decode for TapeInput {
                 }
             }
             3 => TapeInput::Text(dec.read_str()?.to_owned()),
-            4 => {
+            tag @ (4 | 17) => {
                 let text = dec.read_str()?.to_owned();
-                let at = dec.position();
-                let caret = u32::try_from(dec.read_varint()?)
-                    .ok()
-                    .filter(|&c| text.is_char_boundary(c as usize))
-                    .ok_or(DecodeError::Malformed { offset: at })?;
-                TapeInput::Preedit { text, caret }
+                let offset = |dec: &mut Decoder<'_>| {
+                    let at = dec.position();
+                    u32::try_from(dec.read_varint()?)
+                        .ok()
+                        .filter(|&c| text.is_char_boundary(c as usize))
+                        .ok_or(DecodeError::Malformed { offset: at })
+                };
+                let caret = offset(dec)?;
+                let mut clauses = Vec::new();
+                let mut selected = None;
+                if tag == 17 {
+                    let count = bounded(dec, text.len())?;
+                    let has_selected = flag(dec)?;
+                    let range = |dec: &mut Decoder<'_>| {
+                        let at = dec.position();
+                        let (start, end) = (offset(dec)?, offset(dec)?);
+                        (start <= end)
+                            .then_some((start, end))
+                            .ok_or(DecodeError::Malformed { offset: at })
+                    };
+                    for _ in 0..count {
+                        clauses.push(range(dec)?);
+                    }
+                    if has_selected {
+                        selected = Some(range(dec)?);
+                    }
+                }
+                TapeInput::Preedit {
+                    text,
+                    caret,
+                    clauses,
+                    selected,
+                }
             }
             5 => TapeInput::Paste(dec.read_str()?.to_owned()),
             6 => TapeInput::Copy { cut: flag(dec)? },
@@ -785,6 +832,14 @@ mod tests {
                         TapeInput::Preedit {
                             text: "にほ".into(),
                             caret: 3,
+                            clauses: Vec::new(),
+                            selected: None,
+                        },
+                        TapeInput::Preedit {
+                            text: "にほん".into(),
+                            caret: 9,
+                            clauses: vec![(0, 3), (3, 9)],
+                            selected: Some((3, 9)),
                         },
                         TapeInput::Paste("x".into()),
                         TapeInput::ImeReplace {
@@ -884,17 +939,22 @@ mod tests {
             };
             assert!(UiTape::from_bytes(&tape.to_bytes()).is_err());
         }
-        // A caret inside a character.
-        let tape = UiTape {
-            frames: vec![TapeFrame {
-                delta_us: 0,
-                inputs: vec![TapeInput::Preedit {
-                    text: "é".into(),
-                    caret: 1,
+        // A caret inside a character, a clause ending inside one, a
+        // clause running backwards.
+        for (caret, clause) in [(1, (0, 2)), (0, (0, 1)), (0, (2, 0))] {
+            let tape = UiTape {
+                frames: vec![TapeFrame {
+                    delta_us: 0,
+                    inputs: vec![TapeInput::Preedit {
+                        text: "é".into(),
+                        caret,
+                        clauses: vec![clause],
+                        selected: None,
+                    }],
                 }],
-            }],
-            ..sample()
-        };
-        assert!(UiTape::from_bytes(&tape.to_bytes()).is_err());
+                ..sample()
+            };
+            assert!(UiTape::from_bytes(&tape.to_bytes()).is_err());
+        }
     }
 }

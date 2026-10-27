@@ -17,7 +17,7 @@
 pub use viso_platform::{
     ClipboardData, ClipboardImage, ClipboardKinds, ClipboardReply, DropAction, DropOffer,
     DropPhase, DropReply, GesturePhase, ImeEdit, KeyCode as Key, PasteReply, PointerId,
-    PointerKind, ScrollPhase, primary_is_logo,
+    PointerKind, PreeditClauses, ScrollPhase, primary_is_logo,
 };
 use viso_platform::{EditMenuAction, WindowId};
 
@@ -128,6 +128,8 @@ pub struct ImePreeditSample {
     pub text: String,
     /// Caret position within `text`, in bytes.
     pub caret: usize,
+    /// Its clauses and the one being converted.
+    pub clauses: PreeditClauses,
 }
 
 /// An input method's edit of the text around the caret.

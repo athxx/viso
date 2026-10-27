@@ -170,6 +170,14 @@ impl<A: Application> DrivenApp<A> {
         self.driver.windows[0].text_entry
     }
 
+    /// The underlines the focused field draws under its composition, in
+    /// the field's own coordinates.
+    pub fn focused_underlines(&self) -> Option<&[viso_ui::Rect]> {
+        let ws = &self.driver.windows[0];
+        let node = ws.focused_text_node()?;
+        Some(&ws.store.field_marks(node)?.underlines)
+    }
+
     /// The text around the focused field's selection last shown to the
     /// first window's input method.
     pub fn surrounding_text(&self) -> Option<&viso_platform::SurroundingText> {

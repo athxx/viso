@@ -225,6 +225,7 @@ fn ime_preedit_then_commit_route_to_focused() {
         ImeEvent::Preedit {
             text: "n".to_string(),
             caret: 1,
+            clauses: Default::default(),
         },
         &mut chain,
     );

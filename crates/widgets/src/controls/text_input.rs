@@ -747,12 +747,14 @@ mod tests {
         let preedit = ImeEvent::Preedit {
             text: "ni".into(),
             caret: 2,
+            clauses: Default::default(),
         };
         assert_eq!(
             rx.ime(root, preedit),
             vec![EditIntent::Compose {
                 text: "ni".into(),
-                caret: TextOffset(2)
+                caret: TextOffset(2),
+                clauses: Default::default(),
             }],
             "a preedit records a composing update"
         );

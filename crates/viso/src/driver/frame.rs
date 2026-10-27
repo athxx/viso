@@ -718,6 +718,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     ImeEvent::Preedit {
                         text: p.text,
                         caret: p.caret,
+                        clauses: p.clauses,
                     },
                     &mut ws.route_chain,
                 );

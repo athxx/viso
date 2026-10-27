@@ -193,6 +193,28 @@ impl ImeComposition {
         }
     }
 
+    /// Record the platform's clauses and the one it is converting, byte
+    /// ranges of the source. Clamped into the preedit range; empty or
+    /// reversed ones are dropped.
+    pub fn set_clauses(
+        &mut self,
+        clauses: impl IntoIterator<Item = (TextOffset, TextOffset)>,
+        selected: Option<(TextOffset, TextOffset)>,
+    ) {
+        self.clauses.clear();
+        for (start, end) in clauses {
+            let clause = CompositionClause {
+                range: (self.clamp_to_range(start), self.clamp_to_range(end)),
+            };
+            if clause.is_valid() {
+                self.clauses.push(clause);
+            }
+        }
+        self.selected = selected
+            .map(|(a, b)| (self.clamp_to_range(a), self.clamp_to_range(b)))
+            .filter(|(a, b)| a < b);
+    }
+
     /// Mark the actively selected (converting) subrange from UTF-16 bounds mapped
     /// through `bridge`. Clamped into the preedit range; an empty selection
     /// clears it.

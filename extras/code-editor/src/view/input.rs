@@ -60,7 +60,7 @@ pub(super) fn on_key(shared: &Rc<Shared>, ev: &mut EventCx<'_>) {
         {
             let mut s = shared.session.borrow_mut();
             match ime {
-                ImeEvent::Preedit { text, caret } => s.set_preedit(&text, caret),
+                ImeEvent::Preedit { text, caret, .. } => s.set_preedit(&text, caret),
                 ImeEvent::Commit { text } => {
                     s.set_preedit("", 0);
                     // Keys that are commands come as keys.
@@ -71,6 +71,9 @@ pub(super) fn on_key(shared: &Rc<Shared>, ev: &mut EventCx<'_>) {
                     }
                 }
                 ImeEvent::Paste { text } => s.paste(&text),
+                // The editor shows the input method no surrounding text, so
+                // it names no range of it to edit.
+                ImeEvent::Edit(_) => {}
             }
         }
         ev.stop_propagation();

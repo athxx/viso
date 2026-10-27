@@ -521,6 +521,7 @@ fn composition_state_survives_a_compatible_reload() {
     buffer.queue(viso_ui::EditIntent::Compose {
         text: "zhong".into(),
         caret: viso_ui::TextOffset(5),
+        clauses: Default::default(),
     });
     live.text_edits.register(input, Box::new(buffer));
     viso_ui::text_edit::reconcile(&mut live.store, &mut live.text_edits, None);

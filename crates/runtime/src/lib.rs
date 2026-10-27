@@ -33,7 +33,7 @@ pub use input::{
     DropOffer, DropPhase, DropReply, DropSample, EditMenuSample, GesturePhase, GestureSample,
     ImeEdit, ImeEditSample, ImePreeditSample, InputSample, Key, KeySample, Modifiers, PasteReply,
     PasteRequestSample, PasteSample, PointerId, PointerKind, PointerPhase, PointerSample,
-    ScrollPhase, ScrollSample, TextSample, primary_is_logo,
+    PreeditClauses, ScrollPhase, ScrollSample, TextSample, primary_is_logo,
 };
 pub use phase::FramePhase;
 pub use schedule::{FrameDecision, RedrawReason, RedrawReasons};

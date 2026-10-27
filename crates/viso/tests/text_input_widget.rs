@@ -447,6 +447,7 @@ fn ime_composition_commits_into_the_buffer() {
     assert!(ix.ime(ImeEvent::Preedit {
         text: "ni".to_string(),
         caret: 2,
+        clauses: Default::default(),
     }));
 
     // The commit replaces the composition with the final text.

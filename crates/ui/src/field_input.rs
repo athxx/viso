@@ -214,9 +214,14 @@ pub fn field_input(cx: &mut EventCx<'_>, multiline: bool) -> Option<FieldEvent> 
         };
     }
     let intent = match cx.ime()? {
-        ImeEvent::Preedit { text, caret } => EditIntent::Compose {
+        ImeEvent::Preedit {
+            text,
+            caret,
+            clauses,
+        } => EditIntent::Compose {
             text: text.clone(),
             caret: TextOffset(*caret),
+            clauses: clauses.clone(),
         },
         ImeEvent::Commit { text } => EditIntent::CommitCompose(text.clone()),
         ImeEvent::Paste { text } => EditIntent::Paste(text.clone()),

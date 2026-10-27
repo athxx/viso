@@ -67,7 +67,7 @@ use crate::node::NodeId;
 use crate::number_format::NumberFormat;
 use crate::text_style::{FontSize, TextOverflow, TextSpan, TextStyle};
 use viso_render::{Rect, Rgba};
-use viso_runtime::{ImeEdit, InputKind};
+use viso_runtime::{ImeEdit, InputKind, PreeditClauses};
 use viso_text::caret::Caret;
 use viso_text::hit_test::HitTester;
 use viso_text::ime::{ImeComposition, Revision};
@@ -309,7 +309,12 @@ pub enum EditIntent {
     /// selection, if no composition is active yet) with `text`, keeping it marked
     /// as composing with the caret at `caret` bytes into `text`. An empty `text`
     /// cancels the composition.
-    Compose { text: String, caret: TextOffset },
+    Compose {
+        text: String,
+        caret: TextOffset,
+        /// Its clauses and the one being converted, bytes of `text`.
+        clauses: PreeditClauses,
+    },
     /// Finalize the IME composition: keep the composed text as committed and end
     /// the composing state. `text` is the final segment (may differ from the last
     /// preedit). With no composition it is typed text.
@@ -906,7 +911,11 @@ impl Buffer {
                 }
             }
             EditIntent::SelectAt { x, y, unit } => self.select_at(placed, *x, *y, *unit),
-            EditIntent::Compose { text, caret } => self.compose(text, *caret),
+            EditIntent::Compose {
+                text,
+                caret,
+                clauses,
+            } => self.compose(text, *caret, clauses),
             EditIntent::CommitCompose(text) => self.commit_compose(text),
             EditIntent::Ime(edit) => self.ime_edit(edit),
             EditIntent::Undo => self.walk_history(true),
@@ -1532,9 +1541,10 @@ impl Buffer {
     }
 
     /// Update the IME composition: replace the composition range (or the
-    /// selection, if not composing yet) with `text`, keep it marked composing,
-    /// and place the caret `caret` bytes into it. Empty `text` cancels.
-    fn compose(&mut self, text: &str, caret: TextOffset) {
+    /// selection, if not composing yet) with `text`, keep it marked composing
+    /// with its `clauses`, and place the caret `caret` bytes into it. Empty
+    /// `text` cancels.
+    fn compose(&mut self, text: &str, caret: TextOffset, clauses: &PreeditClauses) {
         let (start, end) = if self.composition.is_active() {
             self.composition.range()
         } else {
@@ -1551,6 +1561,11 @@ impl Buffer {
         let composed_end = TextOffset(start.0 + text.len());
         self.composition
             .set_range(start, composed_end, self.revision);
+        let at = |(a, b): (usize, usize)| (TextOffset(start.0 + a), TextOffset(start.0 + b));
+        self.composition.set_clauses(
+            clauses.clauses.iter().copied().map(at),
+            clauses.selected.map(at),
+        );
         let mut caret = caret.0.min(text.len());
         while !text.is_char_boundary(caret) {
             caret -= 1;
@@ -1574,7 +1589,7 @@ impl Buffer {
                     anchor: TextPosition::downstream(start),
                     focus: TextPosition::upstream(end),
                 };
-                self.compose(text, TextOffset(*caret));
+                self.compose(text, TextOffset(*caret), &PreeditClauses::default());
             }
             ImeEdit::Select { anchor, focus } => {
                 self.history.close();
@@ -1781,21 +1796,41 @@ impl Buffer {
                 }
             }
             if self.composition.is_active() {
+                // Each clause underlined apart, the one converting thicker.
                 let (from, to) = self.composition.range();
-                let composed = Selection {
-                    anchor: self.drawn_position(TextPosition::downstream(from)),
-                    focus: self.drawn_position(TextPosition::upstream(to)),
-                };
-                let thickness = (fs / 16.0).max(1.0);
-                for (row, line) in layout.lines.iter().enumerate() {
-                    let y = layout.row_box(row).0 + baseline + thickness;
-                    for piece in composed.fragments(line) {
-                        marks.underlines.push(Rect {
-                            x: x_of(row, piece.left),
-                            y,
-                            w: piece.width() * fs,
-                            h: thickness,
-                        });
+                let selected = self.composition.selected();
+                let mut cuts = [from, to].to_vec();
+                cuts.extend(
+                    self.composition
+                        .clauses()
+                        .iter()
+                        .flat_map(|c| [c.range.0, c.range.1]),
+                );
+                cuts.extend(selected.into_iter().flat_map(|(a, b)| [a, b]));
+                cuts.sort_unstable();
+                cuts.dedup();
+                let thin = (fs / 16.0).max(1.0);
+                let inset = if cuts.len() > 2 { thin } else { 0.0 };
+                for span in cuts.windows(2) {
+                    let (start, end) = (span[0], span[1]);
+                    let picked = selected.is_some_and(|(a, b)| a <= start && end <= b);
+                    let thickness = if picked { 2.0 * thin } else { thin };
+                    let clause = Selection {
+                        anchor: self.drawn_position(TextPosition::downstream(start)),
+                        focus: self.drawn_position(TextPosition::upstream(end)),
+                    };
+                    for (row, line) in layout.lines.iter().enumerate() {
+                        let y = layout.row_box(row).0 + baseline + thin;
+                        for piece in clause.fragments(line) {
+                            let w = piece.width() * fs;
+                            let inset = if w > 4.0 * inset { inset } else { 0.0 };
+                            marks.underlines.push(Rect {
+                                x: x_of(row, piece.left) + inset,
+                                y,
+                                w: w - 2.0 * inset,
+                                h: thickness,
+                            });
+                        }
                     }
                 }
             }
@@ -2521,6 +2556,7 @@ mod tests {
                 EditIntent::Compose {
                     text: preedit.into(),
                     caret: TextOffset(preedit.len()),
+                    clauses: PreeditClauses::default(),
                 },
             );
         }
@@ -2675,6 +2711,7 @@ mod tests {
             EditIntent::Compose {
                 text: "cd".into(),
                 caret: TextOffset(2),
+                clauses: PreeditClauses::default(),
             },
         );
         let lines = lines_for("abcd");
@@ -2686,6 +2723,46 @@ mod tests {
             Vec2::ZERO,
         );
         assert_eq!(marks.underlines, vec![Rect::new(20.0, 10.0, 20.0, 1.0)]);
+    }
+
+    #[test]
+    fn each_clause_is_underlined_apart_and_the_converting_one_thicker() {
+        let underlines = |clauses: PreeditClauses| {
+            let mut b = buf("ab", 2);
+            apply(
+                &mut b,
+                EditIntent::Compose {
+                    text: "cdef".into(),
+                    caret: TextOffset(4),
+                    clauses,
+                },
+            );
+            let lines = lines_for("abcdef");
+            let view = Vec2 { x: 200.0, y: 12.0 };
+            marked(&b, layout("abcdef", &lines), view, SHOWN, Vec2::ZERO).underlines
+        };
+        assert_eq!(
+            underlines(PreeditClauses {
+                clauses: vec![(0, 2), (2, 4)],
+                selected: Some((2, 4)),
+            }),
+            vec![
+                Rect::new(21.0, 10.0, 18.0, 1.0),
+                Rect::new(41.0, 10.0, 18.0, 2.0),
+            ]
+        );
+        // A selected stretch with no clauses splits the composition.
+        assert_eq!(
+            underlines(PreeditClauses {
+                clauses: Vec::new(),
+                selected: Some((1, 3)),
+            }),
+            vec![
+                Rect::new(21.0, 10.0, 8.0, 1.0),
+                Rect::new(31.0, 10.0, 18.0, 2.0),
+                Rect::new(51.0, 10.0, 8.0, 1.0),
+            ]
+        );
     }
 
     #[test]
@@ -3191,6 +3268,7 @@ mod tests {
             EditIntent::Compose {
                 text: "n".into(),
                 caret: TextOffset(1),
+                clauses: PreeditClauses::default(),
             },
         );
         assert!(b.has_composition());
@@ -3200,6 +3278,7 @@ mod tests {
             EditIntent::Compose {
                 text: "ni".into(),
                 caret: TextOffset(2),
+                clauses: PreeditClauses::default(),
             },
         );
         assert_eq!(b.text, "ni");
@@ -3218,6 +3297,7 @@ mod tests {
             EditIntent::Compose {
                 text: "zhong".into(),
                 caret: TextOffset(5),
+                clauses: PreeditClauses::default(),
             },
         );
         let first = b.composition().revision();
@@ -3228,6 +3308,7 @@ mod tests {
             EditIntent::Compose {
                 text: "中".into(),
                 caret: TextOffset(3),
+                clauses: PreeditClauses::default(),
             },
         );
         assert_eq!(b.text, "a中b");
@@ -3249,6 +3330,7 @@ mod tests {
             EditIntent::Compose {
                 text: "中".into(),
                 caret: TextOffset(2),
+                clauses: PreeditClauses::default(),
             },
         );
         assert_eq!(at(&b), 0);
@@ -3262,6 +3344,7 @@ mod tests {
             EditIntent::Compose {
                 text: "n".into(),
                 caret: TextOffset(1),
+                clauses: PreeditClauses::default(),
             },
         );
         apply(
@@ -3269,6 +3352,7 @@ mod tests {
             EditIntent::Compose {
                 text: "".into(),
                 caret: TextOffset(0),
+                clauses: PreeditClauses::default(),
             },
         );
         assert!(!b.has_composition());
@@ -3309,6 +3393,7 @@ mod tests {
             EditIntent::Compose {
                 text: "６".into(),
                 caret: TextOffset(3),
+                clauses: PreeditClauses::default(),
             },
         );
         assert_eq!(b.text, "-345６", "a composition is not held back");

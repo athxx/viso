@@ -783,7 +783,7 @@ unsafe fn register_natives(env: *mut JNIEnv, class: jclass) -> bool {
         ),
         (
             c"nativePreedit",
-            c"(Ljava/lang/String;I)V",
+            c"(Ljava/lang/String;I[III)V",
             native_preedit as *mut c_void,
         ),
         (
@@ -1154,12 +1154,41 @@ extern "system" fn native_pad_motion(
     });
 }
 
-extern "system" fn native_preedit(env: *mut JNIEnv, _class: jclass, text: jstring, caret: jint) {
+extern "system" fn native_preedit(
+    env: *mut JNIEnv,
+    _class: jclass,
+    text: jstring,
+    caret: jint,
+    clauses: jintArray,
+    selected_start: jint,
+    selected_end: jint,
+) {
     // SAFETY: `text` is a live string or null.
     let text = unsafe { read_string(env, text) }.unwrap_or_default();
+    // SAFETY: `clauses` is a live `int[]`; the region read stays within the
+    // length the VM reports.
+    let bounds = unsafe {
+        let len = env_call!(env, GetArrayLength, clauses).max(0);
+        let mut values = vec![0; len as usize];
+        env_call!(env, GetIntArrayRegion, clauses, 0, len, values.as_mut_ptr());
+        if !check(env) {
+            return;
+        }
+        values
+    };
+    let unit = |v: jint| v.max(0) as usize;
+    let clauses = bounds
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&[a, b]| (unit(a), unit(b)))
+        .collect();
+    let selected = (selected_start >= 0).then(|| (unit(selected_start), unit(selected_end)));
     send(Msg::Preedit {
         text,
-        caret_utf16: caret.max(0) as usize,
+        caret_utf16: unit(caret),
+        clauses,
+        selected,
     });
 }
 
