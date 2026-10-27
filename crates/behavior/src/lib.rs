@@ -50,6 +50,7 @@ extern crate std;
 
 pub mod aot;
 mod arith;
+pub mod event;
 #[cfg(not(feature = "std"))]
 mod float;
 pub mod game;

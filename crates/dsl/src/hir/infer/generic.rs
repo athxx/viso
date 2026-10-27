@@ -260,6 +260,12 @@ impl InferCx<'_> {
             Lookup::None if recv == Ty::Animation => {
                 self.animation_method(&name, args, expected, node)
             }
+            Lookup::None
+                if matches!(recv, Ty::Named(..))
+                    && viso_behavior::event::EVENT_METHODS.contains(&&*name.text()) =>
+            {
+                self.event_method(&name, args, expected, node)
+            }
             Lookup::None => {
                 // A field holding a function is called as one.
                 if let Some(Ty::Fn(params, ret)) = self.member_ty(&recv, &name, None) {

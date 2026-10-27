@@ -28,6 +28,7 @@
 pub(crate) mod asset;
 pub(crate) mod body;
 mod carry;
+mod event;
 pub(crate) mod format;
 pub(crate) mod game;
 mod generic;

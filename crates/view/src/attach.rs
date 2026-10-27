@@ -338,6 +338,9 @@ fn handler(
             {
                 if let Some(tap) = held_tap(wait, route, phase, cx) {
                     host.dispatch(route.handler, tap, &scope, cx);
+                    if apply_asks(&mut host, cx) {
+                        break;
+                    }
                 }
                 continue;
             }
@@ -358,8 +361,25 @@ fn handler(
                 cx.prevent_default();
             }
             host.dispatch(route.handler, payload, &scope, cx);
+            if apply_asks(&mut host, cx) {
+                break;
+            }
         }
     }
+}
+
+/// Applies what the handler just dispatched asked of its event: the route
+/// stops, the default action does not happen. Whether the node's handlers
+/// after it are skipped too.
+fn apply_asks(host: &mut ViewHost, cx: &mut EventCx<'_>) -> bool {
+    let asks = host.take_event_asks();
+    if asks.stop {
+        cx.stop_propagation();
+    }
+    if asks.prevent_default {
+        cx.prevent_default();
+    }
+    asks.stop_immediate
 }
 
 /// The tap a node that waits runs on this dispatch: the one its wake lets

@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use viso_behavior::aot::{NativeCode, NativeCodeMismatch};
+use viso_behavior::event::{EventAsks, EventControl};
 use viso_behavior::game::{PERSIST_CAPABILITY, Persist, PersistReport, Persistence};
 use viso_behavior::native::{NativeLibrary, Natives, SchemaConflict, Services};
 use viso_behavior::{
@@ -1140,6 +1141,9 @@ impl ViewHost {
             }
         };
         self.sync(scope, &*cells);
+        if self.vm.services_mut().get_mut::<EventControl>().is_none() {
+            self.vm.services_mut().insert(EventControl::new());
+        }
         self.args.clear();
         self.args.push(payload);
         self.args.extend_from_slice(&scope.values);
@@ -1158,6 +1162,16 @@ impl ViewHost {
                 false
             }
         }
+    }
+
+    /// What the handlers dispatched since the last call asked of their event:
+    /// `e.stop_propagation()` and the rest, taken.
+    pub fn take_event_asks(&mut self) -> EventAsks {
+        self.vm
+            .services_mut()
+            .get_mut::<EventControl>()
+            .map(|control| control.take())
+            .unwrap_or_default()
     }
 
     /// Writes each state slot the committed call wrote to the cell that holds

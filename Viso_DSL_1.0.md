@@ -3790,6 +3790,8 @@ coalescing policy
 - 高频 Pointer Move 可以由 Schema 合并，但必须保留最后位置和累计 Delta；
 - 每个 Handler 在独立或共享 Event Transaction 中执行，Profile 必须固定策略；UI Profile 默认整个 Event Dispatch 共用一个外层 Transaction。
 
+当前实现：Handler 的事件参数有 `stop_propagation()`、`stop_immediate_propagation()` 与 `prevent_default()` 三个无参方法（带参数是 `E2103`；模块自己的 Record 声明了同名方法时用它的），降为 `viso::event` 的同名 action。View 宿主在 Handler 返回后应用请求：`stop_propagation` 停止后续节点，`stop_immediate_propagation` 还跳过同一节点余下的 Handler，`prevent_default` 取消默认动作——目前有默认动作的是 `link`（交给系统打开）。
+
 ---
 
 ## 91. Effect 调度

@@ -1,5 +1,6 @@
 //! The standard native libraries every registry holds: `viso::text`,
-//! `viso::math`, `viso::time`, `viso::clipboard`, `viso::i18n`, the scheduler traits of
+//! `viso::math`, `viso::time`, `viso::clipboard`, `viso::i18n`, the event methods of
+//! `viso::event`, the scheduler traits of
 //! `viso::game` and `viso::game::quick`, and the widgets of `viso::widgets`.
 
 use alloc::borrow::ToOwned;
@@ -25,6 +26,7 @@ pub static STANDARD: &[&NativeLibrary] = &[
     &crate::i18n::I18N,
     &crate::game::GAME,
     &crate::game::SESSION,
+    &crate::event::EVENT,
     &crate::game::quick::QUICK,
     &crate::game::kit::KIT,
     &super::widgets::WIDGETS,
