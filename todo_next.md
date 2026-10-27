@@ -629,6 +629,18 @@ Rules (as for `todo_features.md`):
     animation_tick/1 +0.6 ns, list_100k_scroll −2–4%. viso-ui, widgets and viso lib tests and the
     scroll/sheet/virtual-list tests pass; clippy is clean.
 
+- [x] Repair the viso integration tests that went stale: calendar, date_picker, menu, splitter,
+  tabs, time_picker and tooltip panic on the owner check; game_sheet departs from its golden;
+  keyboard_routing and pointer_routing find a node dirtied at write time.
+  - Built: the tests read a node off one scripted run and look it up on the next, which held while
+    handles were plain indices. Arena owners now count per thread, and the headless harness numbers
+    each run's trees from the first again, so identical scripts issue identical handles. Windows of
+    one run still differ. Taking a key or pointer handler re-derives a node's semantics, so the
+    routing tests assert that the write adds nothing to the node's dirt rather than that it has
+    none. The sheet's golden predates PBR shading; a bisect puts the change at the PBR materials
+    commit, and the golden is re-blessed.
+  - Verified: the ten suites pass unchanged in their scripts, and viso-ui's lib tests pass.
+
 ## N5 — Rendering, text, input and accessibility
 
 - [ ] On the web without WebGPU, draw through CpuRaster into the canvas (`putImageData`) instead of

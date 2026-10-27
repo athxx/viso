@@ -212,6 +212,9 @@ fn ime_preedit_then_commit_route_to_focused() {
     let mut scratch = Vec::new();
     store.layout(root, SURFACE, &mut scratch);
 
+    // Taking a key handler re-derives the leaf's semantics; the writes add
+    // nothing to that.
+    let before = store.dirty(a);
     let mut chain = Vec::new();
     let ran_preedit = KeyRouter::route_ime(
         &mut store,
@@ -240,10 +243,7 @@ fn ime_preedit_then_commit_route_to_focused() {
     assert!(ran_preedit && ran_commit, "both IME events reach the focus");
     // The handler ran twice (preedit + commit); the write is deferred until flush.
     assert_eq!(states.get(count), Some(StateValue::Int(2)));
-    assert!(
-        store.dirty(a).is_empty(),
-        "no node is dirtied at write time"
-    );
+    assert_eq!(store.dirty(a), before, "no node is dirtied at write time");
 
     let mut changed = Vec::new();
     states.take_pending(&mut changed);

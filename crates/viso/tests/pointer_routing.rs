@@ -83,6 +83,9 @@ fn click_bumps_bound_state_and_flush_dirties_only_the_bound_node() {
     let mut scratch = Vec::new();
     store.layout(root, SURFACE, &mut scratch);
 
+    // Taking a pointer handler re-derives the leaf's semantics (and so its
+    // ancestors'); the click and the flush add only what the binding names.
+    let (leaf_before, root_before) = (store.dirty(leaf.id()), store.dirty(root));
     // Synthesize a click inside the leaf and route it through the facade router.
     let mut chain = Vec::new();
     let ran = PointerRouter::route(
@@ -98,8 +101,9 @@ fn click_bumps_bound_state_and_flush_dirties_only_the_bound_node() {
     assert!(ran, "the click should reach the leaf's handler");
     assert_eq!(states.get(count), Some(StateValue::Int(1)));
     assert!(states.has_pending(), "the write is pending until the flush");
-    assert!(
-        store.dirty(leaf.id()).is_empty(),
+    assert_eq!(
+        store.dirty(leaf.id()),
+        leaf_before,
         "no node is dirtied at write time"
     );
 
@@ -114,9 +118,15 @@ fn click_bumps_bound_state_and_flush_dirties_only_the_bound_node() {
         store.dirty(leaf.id()).contains(DirtyClass::PAINT),
         "the bound leaf is paint-dirty after the flush"
     );
-    assert!(
-        store.dirty(root).is_empty(),
-        "the unbound container stays clean — invalidation is targeted"
+    assert_eq!(
+        store.dirty(leaf.id()),
+        leaf_before | DirtyClass::PAINT,
+        "the leaf only for paint"
+    );
+    assert_eq!(
+        store.dirty(root),
+        root_before,
+        "the unbound container takes nothing — invalidation is targeted"
     );
 }
 

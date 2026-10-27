@@ -295,7 +295,7 @@ pub fn drive_scripted_with_caps<A: Application>(
         script,
     ));
     app.set_capabilities(caps);
-    let driver = AppDriver::<A>::new(Some(crate::services::Services::unsupported()));
+    let driver = fresh_driver::<A>(Some(crate::services::Services::unsupported()));
     let clock = FixedStepClock::new(Instant::now(), step);
     let driver = Scheduler::with_clock(app, driver, clock).run_returning();
     DrivenApp { driver }
@@ -326,7 +326,7 @@ pub fn drive_gamepad_frames<A: Application>(
     app.set_framed_windows(true);
     app.frame_budget(frames);
     app.attach_gamepads(pads);
-    let driver = AppDriver::<A>::new(Some(crate::services::Services::unsupported()));
+    let driver = fresh_driver::<A>(Some(crate::services::Services::unsupported()));
     let clock = FixedStepClock::new(Instant::now(), step);
     let driver = Scheduler::with_clock(app, driver, clock).run_returning();
     DrivenApp { driver }
@@ -362,7 +362,7 @@ pub fn drive_recording<A: Application>(
         script,
     ));
     app.set_framed_windows(true);
-    let mut driver = AppDriver::<A>::new(Some(crate::services::Services::unsupported()));
+    let mut driver = fresh_driver::<A>(Some(crate::services::Services::unsupported()));
     driver.recorder = Some(crate::tape::TapeRecorder::new(None));
     let clock = FixedStepClock::new(Instant::now(), step);
     let driver = Scheduler::with_clock(app, driver, clock).run_returning();
@@ -387,7 +387,7 @@ pub fn drive_tape<A: Application>(tape: viso_view::tape::UiTape) -> DrivenApp<A>
         surface.height.round() as u32,
         f64::from(surface.scale),
     );
-    let mut driver = AppDriver::<A>::new(Some(crate::services::Services::unsupported()));
+    let mut driver = fresh_driver::<A>(Some(crate::services::Services::unsupported()));
     let clock = crate::tape::TapeClock::new(Instant::now());
     driver.player = Some(crate::tape::TapePlayer::new(
         tape,
@@ -397,6 +397,13 @@ pub fn drive_tape<A: Application>(tape: viso_view::tape::UiTape) -> DrivenApp<A>
     ));
     let driver = Scheduler::with_clock(app, driver, clock).run_returning();
     DrivenApp { driver }
+}
+
+/// A driver for a run that numbers its trees as every run on this thread
+/// does, so identical scripts give identical node handles.
+fn fresh_driver<A: Application>(services: Option<crate::services::Services>) -> AppDriver<A> {
+    viso_ui::node::restart_owners();
+    AppDriver::<A>::new(services)
 }
 
 fn drive_host<A: Application>(
@@ -414,7 +421,7 @@ fn drive_host<A: Application>(
         app.frame_budget(frames);
     }
     let services = services.unwrap_or_else(crate::services::Services::unsupported);
-    let driver = AppDriver::<A>::new(Some(services));
+    let driver = fresh_driver::<A>(Some(services));
     let clock = FixedStepClock::new(Instant::now(), step);
     let driver = Scheduler::with_clock(app, driver, clock).run_returning();
     DrivenApp { driver }

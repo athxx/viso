@@ -176,7 +176,7 @@ pub struct TreeLinks {
 }
 
 /// Which arena issued a handle, in a debug build: each arena takes the next
-/// number when it is made.
+/// number of its thread when it is made.
 #[cfg(debug_assertions)]
 struct Owner(u32);
 
@@ -187,11 +187,24 @@ impl Owner {
 }
 
 #[cfg(debug_assertions)]
+std::thread_local! {
+    static NEXT_OWNER: core::cell::Cell<u32> = const { core::cell::Cell::new(1) };
+}
+
+#[cfg(debug_assertions)]
 impl Default for Owner {
     fn default() -> Self {
-        static NEXT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(1);
-        Owner(NEXT.fetch_add(1, core::sync::atomic::Ordering::Relaxed))
+        Owner(NEXT_OWNER.with(|next| next.replace(next.get() + 1)))
     }
+}
+
+/// Numbers this thread's next arenas from the first again, so a scripted run
+/// repeated on it issues the same handles: a test may read a node off one run
+/// and look it up on the next.
+#[doc(hidden)]
+pub fn restart_owners() {
+    #[cfg(debug_assertions)]
+    NEXT_OWNER.with(|next| next.set(1));
 }
 
 /// The arena is full: it was built with [`NodeArena::with_fixed_capacity`] and
