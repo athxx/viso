@@ -155,6 +155,13 @@ Rules (as for `todo_features.md`):
 - [ ] Typed routes: a Rust `Route` enum, `Navigator<R>`, `RouterView` and `routes!` (DSL U11),
   serving `NavigationStack` and `on_open_url`. Verify with a DSL test and a UI scenario that push,
   pop, system back and a deep link keep the back-stack page's state.
+  - Rust side built: `viso_ui::router` provides `Navigator<R>` (a `Copy` control handle; reads
+    through `StateRead + Controls`, commands through any `StateWriter`), `RouterView` (pages
+    keyed by route value, one `Template` per variant, popped pages freed once they have left,
+    focus moved to the new page's heading, `on_back_requested` with `prevent_default`), and
+    `routes!`. `NodeStore::turn_page_from` turns between page nodes. The prelude exports them.
+    Verified by the router unit tests and `crates/viso/tests/router.rs` (deep links, system
+    back, and the inbox's state kept). Still to do: the DSL side.
 - [ ] Typed Rust access to named nodes from `view!`/`component!` (`nodes.save_button:
   Handle<Button>`). Verify with a trybuild test that a wrong-type use fails to compile.
 - [ ] `ui!` mounts any `viso::ui::Component`, so hand-written widgets and `component!` structs have

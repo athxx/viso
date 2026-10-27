@@ -5225,7 +5225,7 @@ Text { text: tr("inbox.unread", count: unread); }
 
 ## U11. 导航
 
-> **状态**：目标（尚未实现）。代码中还没有 `Navigator<R>`、`RouterView` 与 Rust 侧注册 Route→Page 映射的 `routes!`。现有导航是 Rust 控件 `NavigationStack`（程序驱动经 `NavHandle`）与 `Application::on_open_url` 深链接（Architecture §6.1）。本节是 typed route 的设计合同。
+> **状态**：Rust 侧已实现（`viso_ui::router`：`Navigator<R>`、`RouterView`、`routes!`，Architecture §6.1）；DSL 侧（`.vs` 中的 `Navigator<R>` 类型与 `RouterView` 出口）尚未实现。本节是 DSL 侧的设计合同。
 
 路由是 **Rust 中定义的类型化路由**（CLAUDE.md §32）。DSL 不声明路由表，只使用经 Native Schema 导入的 `Route` Enum 与宿主提供的句柄 `Navigator<R>`：
 

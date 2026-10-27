@@ -70,6 +70,7 @@ pub mod pointer_lock;
 pub mod progress;
 pub mod reactive;
 pub mod refresh;
+pub mod router;
 pub mod roving;
 pub mod row_gesture;
 pub mod scenes;
@@ -218,6 +219,7 @@ pub use reactive::{
     ProjectId, SemanticProjector,
 };
 pub use refresh::RefreshStyle;
+pub use router::{BackRequest, Navigator, RouterView, router_view};
 pub use scenes::{SceneSlots, SceneSync, SceneTarget};
 pub use scroll_bar::{ScrollBarStyle, ScrollBars};
 pub use scroll_motion::{FlingCurve, OverscrollStyle, ScrollPhysics};

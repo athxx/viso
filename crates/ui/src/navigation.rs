@@ -210,10 +210,53 @@ impl NodeStore {
         if was == page {
             return;
         }
-        self.land_heroes();
         let from = was.and_then(|i| self.page_at(stack, i));
-        let to = page.and_then(|i| self.page_at(stack, i));
         let back = matches!((was, page), (Some(a), Some(b)) if b < a);
+        self.turn_page(at, from, page, back, transition);
+    }
+
+    /// Shows the child of paged stack `stack` at `page`, turning from page
+    /// node `from` — which the caller may since have moved, as a router
+    /// reordering its pages does — back or forward as `back` says. Unlike
+    /// [`set_page`](Self::set_page) it turns even to the index the stack
+    /// shows, when another node now stands there. A stack not paged yet
+    /// takes `page` at once.
+    pub(crate) fn turn_page_from(
+        &mut self,
+        stack: NodeId,
+        from: Option<NodeId>,
+        page: Option<usize>,
+        back: bool,
+        transition: PageTransition,
+    ) {
+        if !self.arena().is_live(stack) {
+            return;
+        }
+        let Some(at) = self.paged.stacks.iter().position(|&(n, _)| n == stack) else {
+            self.set_page(stack, page, transition);
+            return;
+        };
+        let to = page.and_then(|i| self.page_at(stack, i));
+        if from == to {
+            self.paged.stacks[at].1 = page;
+            return;
+        }
+        self.turn_page(at, from, page, back, transition);
+    }
+
+    /// Turns the paged stack at `at` from page node `from` to its child at
+    /// `page`.
+    fn turn_page(
+        &mut self,
+        at: usize,
+        from: Option<NodeId>,
+        page: Option<usize>,
+        back: bool,
+        transition: PageTransition,
+    ) {
+        let stack = self.paged.stacks[at].0;
+        self.land_heroes();
+        let to = page.and_then(|i| self.page_at(stack, i));
         // A page turned back to as it leaves moves on from where it is.
         let entering = to.is_some_and(|to| !self.is_leaving(to));
         if let Some(to) = to {

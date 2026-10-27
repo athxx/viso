@@ -7024,6 +7024,13 @@ impl<'a> BuildCx<'a> {
         self.chrome
     }
 
+    /// Whether the cx holds the reactive stores: what it builds may allocate
+    /// state, bind and mount structure.
+    #[inline]
+    pub fn is_reactive(&self) -> bool {
+        self.states.is_some() && self.bindings.is_some()
+    }
+
     /// The root node declared during the build, if any.
     #[inline]
     pub fn root(&self) -> Option<NodeId> {

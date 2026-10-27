@@ -5341,6 +5341,8 @@ pub mod prelude {
         LeafStyle, Role, Semantics, SpanStyle, State, StateId, StateValue, TextRequest, TrackMax,
         TrackSizing, VirtualListStyle,
     };
+    // Typed routes: the back stack, its outlet, and the route → page table.
+    pub use viso_ui::{Navigator, router_view, routes};
 
     // Tier 1 widgets: the base layout container, the static text control, the
     // texture-backed image control, and the vector icon control — plus the Tier 2

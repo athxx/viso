@@ -519,7 +519,27 @@ struct App {
 }
 ```
 
-目标（尚未实现）：typed route——Rust 中定义的 `Route` enum、宿主句柄 `Navigator<R>` 与 DSL 的 `RouterView` 导航出口（`Viso_DSL_1.0.md` §U11），加上 Rust 侧注册 Route→Page 映射的 `routes!`。Viso 不提供全局 `Store` 类型；跨 feature 的共享状态是应用自己的 Rust 类型。
+Typed route（`viso_ui::router`）：路由是 app 自己的 `Clone + PartialEq` 类型，通常是一个 variant 携带页面参数的 enum。
+
+```rust
+let nav: Navigator<Route> = router_view(Route::Inbox, routes! {
+    Route::Inbox => inbox,
+    Route::Message { id } => |cx| message(cx, *id),
+})
+.on_back_requested(|ev, request| if unsaved(ev) { request.prevent_default() })
+.build(cx);
+
+nav.push(ev, Route::Message { id: 7 }); // 任意 StateWriter：handler、task、on_open_url
+```
+
+- `Navigator<R>` 是 `Copy` 的控件 handle（§78），可先 `cx.handle()` 铸造再 `.navigator(nav)` 绑定；读 `current` / `can_pop` / `depth` / `routes` 经 `StateRead + Controls`，在 effect / computed 中记录依赖；命令 `push` / `replace` / `pop` / `reset`；
+- 一个 transaction 内的多次导航只抬高一个 revision cell，`RouterView` 在 flush 的 structure hook 中 reconcile 一次：按路由值匹配已挂载的页面（保留节点与 state），挂载新页面（每种 variant 一个 `Template`），释放弹出的页面（显示中的页面先完成离场再释放），把子节点排成栈序，再翻到栈顶；
+- 显示已有页面向后翻、新页面向前翻，转场与 `NavigationStack` 相同；翻页后焦点移到新页面的首个 heading，没有时移到页面根；
+- 系统返回（Android Back、Escape、鼠标后退键）经 `back_target` 交给最内层显示多于一页的 `RouterView`：`on_back_requested` 可 `prevent_default`，否则 `pop`；只剩根页时交给宿主；
+- 深链接在 `Application::on_open_url` 中把 URL 解析为路由，再 `reset` / `push`；
+- `routes!` 展开为一个 `match`，缺少页面的路由是编译错误。
+
+DSL 侧的 `Navigator<R>` 类型与 `RouterView` 出口见 `Viso_DSL_1.0.md` §U11。Viso 不提供全局 `Store` 类型；跨 feature 的共享状态是应用自己的 Rust 类型。
 
 ### 6.2 推荐但不强制的应用分层
 
@@ -5160,7 +5180,7 @@ Tier 6: Markdown, PDF, Browser, Charts, Map, Video
 
 ## 72. Phase 8 — Platform Services / Async / App Framework
 
-**状态**：核心部分已完成：clipboard（`viso-platform`）、haptics / launcher / app data（`viso-services`，ADR 0031）、async task（ADR 0032，`cx.spawn_then`）、NavigationStack、safe area / keyboard inset / adaptive（facade `environment`）、lifecycle（§77）。非 UI 服务按设计不进核心，是 `viso-ext` 插件 crate：file picker、share、本地通知与 push、secure storage、定位、相机 provider（ADR 0050）、打印，权限随各插件；HTTP/WebSocket 的 `viso-ext/viso-net` 进行中（`todo_features.md` W11）。未实现：typed Route 与 `Navigator<R>` / `RouterView`（`Viso_DSL_1.0.md` U11）、`Application` 级 lifecycle hook。
+**状态**：核心部分已完成：clipboard（`viso-platform`）、haptics / launcher / app data（`viso-services`，ADR 0031）、async task（ADR 0032，`cx.spawn_then`）、NavigationStack、safe area / keyboard inset / adaptive（facade `environment`）、lifecycle（§77）。非 UI 服务按设计不进核心，是 `viso-ext` 插件 crate：file picker、share、本地通知与 push、secure storage、定位、相机 provider（ADR 0050）、打印，权限随各插件；HTTP/WebSocket 的 `viso-ext/viso-net` 进行中（`todo_features.md` W11）。Rust 侧 typed route（`Navigator<R>`、`RouterView`、`routes!`，§6.1）与 `Application::on_lifecycle` 已实现；未实现：DSL 侧的 `Navigator<R>` 与 `RouterView`（`Viso_DSL_1.0.md` U11）。
 
 ### 工作
 
