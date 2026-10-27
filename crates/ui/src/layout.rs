@@ -301,6 +301,12 @@ pub trait LayoutTree {
     fn measured(&self, index: u32) -> Measured;
     /// Write a node's measured natural size.
     fn set_measured(&mut self, index: u32, m: Measured);
+    /// Whether a node's measured size still holds: it was measured, and
+    /// nothing it measures from changed since. [`remeasure`] keeps such a
+    /// node's size and does not walk its subtree.
+    fn measure_settled(&self, _index: u32) -> bool {
+        false
+    }
     /// Write a node's resolved layout box.
     fn set_bounds(&mut self, index: u32, r: Rect);
     /// Record a scroll viewport's content extent (the laid-out size of its
@@ -568,12 +574,27 @@ fn relative_extent(fixed: f32, pct: f32, basis: f32, definite: bool, fallback: f
 /// before their parent reads them. `scratch` is a reusable child-id buffer so
 /// the walk allocates nothing per node.
 pub fn measure(tree: &mut impl LayoutTree, root: u32, scratch: &mut Vec<u32>) {
+    measure_from::<false>(tree, root, scratch);
+}
+
+/// [`measure`] `root`, keeping the size of each descendant whose size is
+/// [settled](LayoutTree::measure_settled) and not walking below it. Returns
+/// how many nodes it measured.
+pub fn remeasure(tree: &mut impl LayoutTree, root: u32, scratch: &mut Vec<u32>) -> u32 {
+    measure_from::<true>(tree, root, scratch)
+}
+
+fn measure_from<const KEEP: bool>(
+    tree: &mut impl LayoutTree,
+    root: u32,
+    scratch: &mut Vec<u32>,
+) -> u32 {
     // A hidden subtree folds out of layout: it measures to zero (contributing
     // nothing to a parent's main-axis sum) and its children are never walked, so
     // it reserves no scratch and does not recurse.
     if tree.hidden(root) || tree.out_of_flow(root) {
         tree.set_measured(root, Measured::default());
-        return;
+        return 1;
     }
     let start = scratch.len();
     tree.children(root, scratch);
@@ -581,9 +602,13 @@ pub fn measure(tree: &mut impl LayoutTree, root: u32, scratch: &mut Vec<u32>) {
 
     // Recurse first (post-order): measure children before folding them in.
     // Drain this node's slice as we go so nested measures reuse the tail.
+    let mut count = 1;
     for i in 0..child_count {
         let child = scratch[start + i];
-        measure(tree, child, scratch);
+        if KEEP && tree.measure_settled(child) {
+            continue;
+        }
+        count += measure_from::<KEEP>(tree, child, scratch);
     }
 
     let measured = match tree.input(root) {
@@ -791,6 +816,7 @@ pub fn measure(tree: &mut impl LayoutTree, root: u32, scratch: &mut Vec<u32>) {
     };
     tree.set_measured(root, measured);
     scratch.truncate(start);
+    count
 }
 
 /// A content box no percentage can read: both extents indefinite.

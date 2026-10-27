@@ -1,5 +1,6 @@
-//! A per-node column most nodes leave empty: four bytes a slot instead of a
-//! whole `Option<T>`, the values packed together.
+//! Per-node columns lighter than a value a slot: [`Sparse`], for a value
+//! most nodes leave empty, four bytes a slot instead of a whole `Option<T>`;
+//! and [`SlotBits`], one bit a slot.
 
 /// No value.
 const NONE: u32 = u32::MAX;
@@ -122,6 +123,44 @@ impl<T: Copy> Sparse<T> {
     }
 }
 
+/// One bit for each slot, off for a slot never set.
+#[derive(Default)]
+pub(crate) struct SlotBits(Vec<u64>);
+
+impl SlotBits {
+    /// Room for `slots` slots, so setting any of them never reallocates.
+    pub(crate) fn with_capacity(slots: usize) -> Self {
+        SlotBits(Vec::with_capacity(slots.div_ceil(64)))
+    }
+
+    #[inline(always)]
+    pub(crate) fn get(&self, i: usize) -> bool {
+        self.0.get(i / 64).is_some_and(|w| w >> (i % 64) & 1 == 1)
+    }
+
+    #[inline]
+    pub(crate) fn set(&mut self, i: usize, on: bool) {
+        let word = i / 64;
+        if word >= self.0.len() {
+            if !on {
+                return;
+            }
+            self.0.resize(word + 1, 0);
+        }
+        let bit = 1 << (i % 64);
+        if on {
+            self.0[word] |= bit;
+        } else {
+            self.0[word] &= !bit;
+        }
+    }
+
+    /// Turns every bit off, keeping the storage.
+    pub(crate) fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,5 +184,18 @@ mod tests {
         assert_eq!(column.len(), 2);
         *column.get_mut(5).unwrap() += 1;
         assert_eq!(column.get(5), Some(&51));
+    }
+
+    #[test]
+    fn a_slot_bit_reads_back_what_was_set_and_off_past_the_last() {
+        let mut bits = SlotBits::default();
+        bits.set(3, true);
+        bits.set(130, true);
+        bits.set(3, false);
+        bits.set(700, false);
+        let on: Vec<_> = (0..800).filter(|&i| bits.get(i)).collect();
+        assert_eq!(on, [130]);
+        bits.clear();
+        assert!(!bits.get(130));
     }
 }

@@ -38,7 +38,7 @@ use crate::node::{ArenaFull, NodeArena, NodeId, NodeIndex};
 use crate::reactive::{ComputeCx, EffectStore, SemanticProjector};
 use crate::semantics::{Role, SemanticState, Semantics, SemanticsNode, SemanticsTree};
 use crate::shader::ShaderSlots;
-use crate::sparse::Sparse;
+use crate::sparse::{SlotBits, Sparse};
 use crate::state::{StateId, StateKey, StateStore, StateValue};
 use crate::style::{BoxStyle, InteractionStyle};
 use crate::task::{Continuation, TaskFuture, TaskId, TaskOps};
@@ -655,8 +655,13 @@ pub struct NodeStore {
     layout: Vec<LayoutInput>,
     /// Warm: paint style.
     style: Vec<BoxStyle>,
-    /// Warm: measured natural size cache (recomputed each frame).
+    /// Warm: measured natural size cache, kept across frames: a relayout
+    /// re-measures only what is MEASURE-marked or was never measured.
     measured: Vec<Measured>,
+    /// By slot, whether `measured` holds a size measured since the node was
+    /// made and since its or a descendant's size inputs last changed; one bit
+    /// a node. See [`unsettle`](Self::unsettle).
+    settled: SlotBits,
     /// Hot: each node's yes/no properties, one byte a node (see
     /// [`NodeFlags`]).
     flags: Vec<NodeFlags>,
@@ -1019,6 +1024,7 @@ impl NodeStore {
         node_columns!(store.reserve_exact(n));
         store.dirty_lists.reserve_slots(n);
         store.redo_flag.reserve_exact(n);
+        store.settled = SlotBits::with_capacity(n);
         store.painting.get_mut().index.reserve_slots(n);
         store
     }
@@ -1052,6 +1058,7 @@ impl NodeStore {
     pub fn clear(&mut self) {
         self.arena.clear();
         node_columns!(self.clear());
+        self.settled.clear();
         self.row_lane.clear();
         self.disabled_count = 0;
         self.box_rules.clear();
@@ -2253,6 +2260,8 @@ impl NodeStore {
 
     /// The layout input of live node `id`.
     pub(crate) fn layout_input_mut(&mut self, id: NodeId) -> &mut LayoutInput {
+        // What is written may change what the node measures to.
+        self.unsettle(id.index());
         &mut self.layout[self.arena.slot(id)]
     }
 
@@ -2378,6 +2387,7 @@ impl NodeStore {
                 return;
             }
             *length = Length::Fixed(extent);
+            self.unsettle(canvas.index());
             self.request_moved(canvas);
         }
     }
@@ -5461,6 +5471,9 @@ impl NodeStore {
         // Everything lands on the node itself.
         self.dirty[self.arena.slot(id)] |= class;
         self.dirty_lists.note(id.index(), class);
+        if class.intersects(DirtyClass::MEASURE) {
+            self.unsettle(id.index());
+        }
 
         let bubbling = class & DirtyClass::BUBBLING;
         if bubbling.is_empty() {
@@ -5497,6 +5510,25 @@ impl NodeStore {
                 break;
             }
             current = parent;
+        }
+    }
+
+    /// Note that slot `index`'s size is to be measured again: it, and every
+    /// ancestor up to the first already unsettled, is no longer
+    /// [settled](layout::LayoutTree::measure_settled), so a re-measure from
+    /// any of them walks down to it. Past where MEASURE stops rising the
+    /// ancestors' sizes hold; walking them costs a node each. The bit stays
+    /// off until a measure, so a mark cleared at frame end unmeasured is not
+    /// forgotten.
+    fn unsettle(&mut self, index: u32) {
+        self.settled.set(index as usize, false);
+        let mut at = NodeIndex::new(index);
+        while let Some(parent) = self.arena.parent_of(at).get_some() {
+            if !self.settled.get(parent.slot()) {
+                break;
+            }
+            self.settled.set(parent.slot(), false);
+            at = parent;
         }
     }
 
@@ -5827,6 +5859,7 @@ impl NodeStore {
         self.layout[i] = input;
         self.style[i] = style;
         self.measured[i] = Measured::default();
+        self.settled.set(i, false);
         self.folds.forget(i as u32);
         self.paged.forget(i as u32);
         self.fields.forget(i as u32);
@@ -6149,6 +6182,7 @@ impl NodeStore {
 
         let mut measured = 0;
         let mut laid_out = 0;
+
         for redo in redo_roots.iter().copied() {
             if redo != root && self.is_layer(redo) {
                 self.lay_layer(redo, surface, scratch);
@@ -6157,8 +6191,7 @@ impl NodeStore {
                 continue;
             }
             scratch.clear();
-            layout::measure(self, redo.index(), scratch);
-            measured += self.subtree_len(redo);
+            measured += layout::remeasure(self, redo.index(), scratch);
             let bounds = if redo == root {
                 layout::root_box(self, redo.index(), surface)
             } else if let Some((canvas, axis)) = self.row_canvas(redo) {
@@ -6669,6 +6702,12 @@ impl LayoutTree for NodeStore {
     #[inline]
     fn set_measured(&mut self, index: u32, m: Measured) {
         self.measured[index as usize] = m;
+        self.settled.set(index as usize, true);
+    }
+
+    #[inline]
+    fn measure_settled(&self, index: u32) -> bool {
+        self.settled.get(index as usize)
     }
 
     #[inline]
@@ -8690,8 +8729,16 @@ mod tests {
             ((lcg >> 33) % u64::from(n)) as u32
         };
         let screen = surface(300.0, 600.0);
-        let mut alone = 0;
-        for seed in 0..24u32 {
+        /// One tree of the test: its root, every node, its rows and its
+        /// labels.
+        struct Twin {
+            store: NodeStore,
+            root: NodeId,
+            nodes: Vec<NodeId>,
+            rows: Vec<NodeId>,
+            labels: Vec<NodeId>,
+        }
+        let build = |seed: u32| {
             let mut store = NodeStore::new();
             let mut nodes = Vec::new();
             let mut rows = Vec::new();
@@ -8746,59 +8793,97 @@ mod tests {
                 )
                 .id()
             };
-            for &label in &labels {
-                store.set_content_payload(label, label_text(1 + below(9)));
-            }
             nodes.extend(&rows);
             nodes.extend(&labels);
             nodes.push(root);
+            Twin {
+                store,
+                root,
+                nodes,
+                rows,
+                labels,
+            }
+        };
+        let (mut alone, mut remeasured, mut below_roots) = (0, 0, 0);
+        for seed in 0..24u32 {
+            // `kept` only ever relayouts what is dirty, keeping its measured
+            // sizes from frame to frame; `whole` lays out whole each frame.
+            let (mut kept, mut whole) = (build(seed), build(seed));
+            for k in 0..kept.labels.len() {
+                let text = label_text(1 + below(9));
+                for t in [&mut kept, &mut whole] {
+                    t.store.set_content_payload(t.labels[k], text.clone());
+                }
+            }
             let mut scratch = Vec::new();
             let mut roots = Vec::new();
-            store.layout(root, screen, &mut scratch);
-            store.clear_dirty();
+            for t in [&mut kept, &mut whole] {
+                t.store.layout(t.root, screen, &mut scratch);
+                t.store.clear_dirty();
+            }
             for frame in 0..200 {
                 for _ in 0..1 + below(3) {
-                    match below(10) {
-                        0..=4 => {
-                            let label = labels[below(labels.len() as u32) as usize];
-                            store.set_content_payload(label, label_text(below(12)));
-                        }
-                        5 | 6 => {
-                            let node = if below(2) == 0 {
-                                rows[below(rows.len() as u32) as usize]
-                            } else {
-                                labels[below(labels.len() as u32) as usize]
-                            };
-                            store.set_hidden(node, !store.hidden(node));
-                        }
-                        7 | 8 => {
-                            let row = rows[below(rows.len() as u32) as usize];
-                            store.set_fixed_size(row, ROW_SIZES[below(6) as usize]);
-                        }
-                        _ => {
-                            let row = rows[below(rows.len() as u32) as usize];
-                            store.set_flex_child_weight(row, Axis::Column, 1.0 + below(3) as f32);
+                    let (kind, row, label) = (
+                        below(10),
+                        below(kept.rows.len() as u32) as usize,
+                        below(kept.labels.len() as u32) as usize,
+                    );
+                    let (pick, param) = (below(2), below(12));
+                    for t in [&mut kept, &mut whole] {
+                        let s = &mut t.store;
+                        match kind {
+                            0..=4 => s.set_content_payload(t.labels[label], label_text(param)),
+                            5 | 6 => {
+                                let node = if pick == 0 {
+                                    t.rows[row]
+                                } else {
+                                    t.labels[label]
+                                };
+                                s.set_hidden(node, !s.hidden(node));
+                            }
+                            7 | 8 => s.set_fixed_size(t.rows[row], ROW_SIZES[param as usize % 6]),
+                            _ => s.set_flex_child_weight(
+                                t.rows[row],
+                                Axis::Column,
+                                1.0 + (param % 3) as f32,
+                            ),
                         }
                     }
                 }
-                store.relayout_dirty(root, screen, &mut scratch, &mut roots);
+                let s = &mut kept.store;
+                let (measured, _) = s.relayout_dirty(kept.root, screen, &mut scratch, &mut roots);
                 alone += roots
                     .iter()
-                    .filter(|&&r| store.dirty(r).intersects(DirtyClass::MEASURE))
+                    .filter(|&&r| s.dirty(r).intersects(DirtyClass::MEASURE))
                     .count();
-                let incremental: Vec<Rect> = nodes.iter().map(|&n| store.bounds(n)).collect();
-                store.layout(root, screen, &mut scratch);
-                for (&node, kept) in nodes.iter().zip(&incremental) {
+                remeasured += measured;
+                below_roots += roots.iter().map(|&r| s.subtree_len(r)).sum::<u32>();
+                whole.store.layout(whole.root, screen, &mut scratch);
+                for (&node, &twin) in kept.nodes.iter().zip(&whole.nodes) {
+                    // Inside a hidden subtree nothing is seen, and a redo
+                    // there may leave boxes a whole layout does not.
+                    if kept
+                        .store
+                        .parent(node)
+                        .is_some_and(|p| !kept.store.shows(p))
+                    {
+                        continue;
+                    }
                     assert_eq!(
-                        *kept,
-                        store.bounds(node),
+                        kept.store.bounds(node),
+                        whole.store.bounds(twin),
                         "seed {seed} frame {frame}: {node:?} redone from {roots:?}"
                     );
                 }
-                store.clear_dirty();
+                kept.store.clear_dirty();
+                whole.store.clear_dirty();
             }
         }
         assert!(alone > 100, "{alone} re-measures placed alone");
+        assert!(
+            remeasured * 2 < below_roots,
+            "{remeasured} of the {below_roots} nodes under the redo roots re-measured"
+        );
     }
 
     fn leaf(w: f32, h: f32) -> LeafStyle {
@@ -9195,6 +9280,166 @@ mod tests {
                     );
                 }
                 store.clear_dirty();
+            }
+        }
+    }
+
+    #[test]
+    fn a_relayout_keeping_sizes_across_frames_places_stacks_and_absolutes_as_a_whole_one() {
+        let mut lcg = 0x2545_f491_4f6c_dd1du64;
+        let mut below = |n: u32| {
+            lcg = lcg
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((lcg >> 33) % u64::from(n)) as u32
+        };
+        const ALIGNED: [Alignment2D; 4] = [
+            Alignment2D::TopStart,
+            Alignment2D::Center,
+            Alignment2D::BottomEnd,
+            Alignment2D::Top,
+        ];
+        let screen = surface(300.0, 600.0);
+        let build = |seed: u32| {
+            let mut store = NodeStore::new();
+            let mut labels = Vec::new();
+            let mut nodes = Vec::new();
+            let root = {
+                let mut cx = BuildCx::new(&mut store);
+                cx.flex(
+                    FlexStyle {
+                        axis: Axis::Column,
+                        size: Sizing::fixed(300.0, 600.0),
+                        ..FlexStyle::default()
+                    },
+                    |cx| {
+                        for r in 0..6u32 {
+                            let size = if (r + seed).is_multiple_of(2) {
+                                Sizing::fixed(120.0, 60.0)
+                            } else {
+                                Sizing {
+                                    width: Length::Fit,
+                                    height: Length::Fit,
+                                }
+                            };
+                            let fill = |k: u32| BoxStyle::solid([RED, GREEN, BLUE][k as usize % 3]);
+                            let body = |cx: &mut BuildCx<'_>, labels: &mut Vec<NodeId>| {
+                                for k in 0..3 {
+                                    labels.push(
+                                        cx.leaf(LeafStyle {
+                                            style: fill(k + r),
+                                            ..LABEL
+                                        })
+                                        .id(),
+                                    );
+                                }
+                            };
+                            let node = if r % 3 == 2 {
+                                cx.absolute(
+                                    AbsoluteStyle {
+                                        size,
+                                        ..AbsoluteStyle::default()
+                                    },
+                                    |cx| body(cx, &mut labels),
+                                )
+                            } else {
+                                cx.stack(
+                                    StackStyle {
+                                        align: ALIGNED[(r + seed) as usize % 4],
+                                        size,
+                                        ..StackStyle::default()
+                                    },
+                                    |cx| body(cx, &mut labels),
+                                )
+                            };
+                            nodes.push(node.id());
+                        }
+                    },
+                )
+                .id()
+            };
+            nodes.extend(&labels);
+            (store, root, nodes, labels)
+        };
+        for seed in 0..12u32 {
+            let mut kept = build(seed);
+            let mut whole = build(seed);
+            for k in 0..kept.3.len() {
+                let text = label_text(1 + below(9));
+                kept.0.set_content_payload(kept.3[k], text.clone());
+                whole.0.set_content_payload(whole.3[k], text);
+            }
+            let mut scratch = Vec::new();
+            let mut roots = Vec::new();
+            kept.0.layout(kept.1, screen, &mut scratch);
+            kept.0.clear_dirty();
+            whole.0.layout(whole.1, screen, &mut scratch);
+            whole.0.clear_dirty();
+            for frame in 0..120 {
+                for _ in 0..1 + below(3) {
+                    let k = below(kept.3.len() as u32) as usize;
+                    let (kind, a, b, c, d) = (below(6), below(12), below(4), below(4), below(3));
+                    for (store, labels) in [(&mut kept.0, &kept.3), (&mut whole.0, &whole.3)] {
+                        let label = labels[k];
+                        match kind {
+                            0 | 1 => store.set_content_payload(label, label_text(a)),
+                            2 => store.set_hidden(label, !store.hidden(label)),
+                            3 => {
+                                let span = |n: u32| (n > 0).then(|| Span::dp(n as f32 * 3.0));
+                                let placement =
+                                    match store.layout_input(store.parent(label).unwrap()) {
+                                        LayoutInput::Absolute { .. } => {
+                                            Placement::Absolute(AbsoluteInsets {
+                                                top: span(a % 3),
+                                                end: span(b % 3),
+                                                bottom: span(c % 3),
+                                                start: span(d),
+                                            })
+                                        }
+                                        _ => Placement::Stack(StackPlacement {
+                                            align: (a % 2 == 0).then(|| ALIGNED[b as usize]),
+                                            layer: d as i32 - 1,
+                                        }),
+                                    };
+                                store.set_placement(label, placement);
+                            }
+                            4 => {
+                                let lengths = [
+                                    Length::Fit,
+                                    Length::Fixed(12.0),
+                                    Length::Fill { weight: 1.0 },
+                                    Length::Relative {
+                                        fixed: 4.0,
+                                        pct: 0.25,
+                                    },
+                                ];
+                                store.set_fixed_size(
+                                    label,
+                                    Sizing {
+                                        width: lengths[b as usize],
+                                        height: lengths[c as usize],
+                                    },
+                                );
+                            }
+                            _ => store.set_fill(label, [RED, GREEN, BLUE][d as usize]),
+                        }
+                    }
+                }
+                let (store, root, nodes) = (&mut kept.0, kept.1, &kept.2);
+                store.relayout_dirty(root, screen, &mut scratch, &mut roots);
+                whole.0.layout(whole.1, screen, &mut scratch);
+                for (&node, &twin) in nodes.iter().zip(&whole.2) {
+                    if store.parent(node).is_some_and(|p| !store.shows(p)) {
+                        continue;
+                    }
+                    assert_eq!(
+                        store.bounds(node),
+                        whole.0.bounds(twin),
+                        "seed {seed} frame {frame}: {node:?} redone from {roots:?}"
+                    );
+                }
+                store.clear_dirty();
+                whole.0.clear_dirty();
             }
         }
     }

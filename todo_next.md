@@ -423,8 +423,32 @@ Rules (as for `todo_features.md`):
     whole-tree bridge in lockstep. Deltas, published trees and targets are equal. Sabotage confirmed
     that the test catches a dropped `disabled` inheritance and a dropped error-relation mark.
   - The ui and viso lib tests, `access_keys`, `semantics_snapshot` and clippy pass.
-- [ ] Skip re-measuring clean subtrees inside a relayout root. Verify with the incremental-vs-full
+- [x] Skip re-measuring clean subtrees inside a relayout root. Verify with the incremental-vs-full
   differential test and a 2000-row Column bench.
+  - Built: one settled bit per node (`SlotBits`) is set when the node is measured. A MEASURE mark,
+    a `LayoutInput` write or an absolute-rows extent clears it on the node and its ancestors, up to
+    the first one already clear. This crosses layout boundaries, so a change inside a fixed box is
+    reached from a redo root above it. `layout::remeasure` walks only unsettled children, and
+    `relayout_dirty` uses it; the whole-tree `layout` still measures everything. A mark cleared
+    unconsumed at frame end leaves the bit clear.
+  - Built: `relayout_dirty` reports the nodes it actually measured.
+  - Verified: the flex differential test now runs twin stores. One only relayouts incrementally,
+    keeping its sizes across frames; the other lays out whole each frame. Bounds are compared on
+    shown nodes every frame for 24 seeds × 200 frames. Fewer than half the nodes under the redo
+    roots are re-measured.
+  - Verified: a new twin-store stacks/absolutes test checks the same for stacks and absolutes.
+  - Verified: the new `column_relayout` bench (2000 rows, one label change) runs 275 µs → 218 µs
+    at the default profile. Two interleaved runs.
+  - Found, not fixed: running the stacks/absolutes repaint check on one store across consecutive
+    incremental frames, with no whole layout between them, gives one paint-order mismatch (seed 3,
+    frame 114: a stack child shown again is spliced after a later row's child). This happens with
+    measure skipping disabled too, so the bug is in `paint::splice_walk` and predates this change.
+    Tracked below.
+  - The ui lib and integration tests, viso lib, dsl `virtual_list`/`hot_reload`/`node_refs` tests
+    and clippy pass.
+- [ ] Fix the incremental repaint splice that places a re-shown stack child after a later row's
+  primitives. Verify with the twin-store stacks/absolutes test checking `repaint_dirty` against
+  `paint_tree` every frame.
 - [ ] Drive glyph representation promotion at runtime: MTSDF for runs under sustained scale or
   rotation, settling back to A8, with real MTSDF pages. Verify with:
   - a scaled/rotated text golden;

@@ -2952,7 +2952,7 @@ Row/Column 是单轴 direct flex：一遍累计 fixed/fit 与 fill 权重，一�
 
 ## 23. Measure cache
 
-每个节点的 `Measured` 跨帧保存在 store 中。measure 不接收约束，所以缓存有效性就是 dirty bit：内容、长度、字体、子节点增删或隐藏变化时标 `MEASURE`，`MEASURE` 沿父链上传到 layout boundary（§23.1）；没有 `MEASURE` 的节点，其 `Measured` 一定有效。`NodeStore::relayout_dirty` 从 MEASURE / LAYOUT worklist 归约出最浅的 redo 根（§19.1），只重做这些子树，其余节点的 `measured` / `bounds` 原样复用；没有 layout dirt 的帧不访问任何节点。宽度相关的文本结果由 `Content::Text` 记录的 shaped 宽度与 viso-text 的 paragraph cache 复用（§37.4）。
+每个节点的 `Measured` 跨帧保存在 store 中。measure 不接收约束，所以缓存有效性就是 dirty bit：内容、长度、字体、子节点增删或隐藏变化时标 `MEASURE`，`MEASURE` 沿父链上传到 layout boundary（§23.1）；没有 `MEASURE` 的节点，其 `Measured` 一定有效。`NodeStore::relayout_dirty` 从 MEASURE / LAYOUT worklist 归约出最浅的 redo 根（§19.1），只重做这些子树，其余节点的 `measured` / `bounds` 原样复用；没有 layout dirt 的帧不访问任何节点。redo 根内的重测量也不走干净子树：每个节点有一个 settled bit（每节点 1 bit），测量后置位；标 `MEASURE`、改写 `LayoutInput` 或 absolute-rows 尺寸时，该节点及其祖先清位，直到遇到已清位的祖先为止（越过 layout boundary 直到根，所以 boundary 内部的改动从上面的 redo 根也走得到）。`layout::remeasure` 只递归进未 settled 的子节点，其余沿用缓存的 `Measured`；整树 `layout` 仍全量测量。位只在测量时置回，所以一帧结束时被清掉而未消费的 MEASURE 标记不会丢。差分测试让一个 store 只做增量 relayout、另一个每帧整树 layout，逐帧比较可见节点的 bounds，测量缓存跨帧保留。宽度相关的文本结果由 `Content::Text` 记录的 shaped 宽度与 viso-text 的 paragraph cache 复用（§37.4）。
 
 不以“前一帧已经计算”作为复用条件：复用只由 dirty bit 决定，差分测试逐帧比较增量 relayout 与整树 layout 的每个 bounds。
 
