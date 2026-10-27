@@ -54,6 +54,10 @@ use viso_dsl::view_behavior::{Control, GameQuery, Switched, ViewBehavior, When};
 /// field but the root and the static nodes, which the emitter supplies once the
 /// tree is built; `None` for a form that records no mount.
 ///
+/// `kinds` says which widget names are the standard widgets a named node is
+/// handed out as a typed handle of. The expression evaluates to the root's
+/// `Handle` and the id of each of the [`Named`] nodes it returns, in order.
+///
 /// Returns `Err` with the message if the view has other than one root, has a
 /// region but no behavior to run it, or binds a source `sources` does not name.
 pub fn emit_view(
@@ -62,7 +66,8 @@ pub fn emit_view(
     sources: &HashMap<SymbolId, Ident>,
     behavior: Option<&ViewBehavior>,
     record: Option<TokenStream>,
-) -> Result<TokenStream, String> {
+    kinds: &dyn Fn(&str) -> bool,
+) -> Result<(TokenStream, Vec<Named>), String> {
     // A view mounts one root; a multi-root view has no single Handle to return.
     // Reject it explicitly rather than silently drop siblings.
     if tree.items.len() != 1 {
@@ -96,6 +101,8 @@ pub fn emit_view(
                 .is_some_and(|b| !b.env.is_empty() || !b.named.is_empty() || !b.game.is_empty()),
         static_keys: Vec::new(),
         shown: Vec::new(),
+        kinds,
+        named: Vec::new(),
         missing_source: None,
         error: None,
     };
@@ -226,8 +233,27 @@ pub fn emit_view(
              the captured reactive sources"
         ));
     }
+    let count = ctx.named.len();
+    let root = quote! {
+        {
+            let mut __viso_named: [::core::option::Option<::viso::__private::viso_ui::NodeId>; #count] =
+                [::core::option::Option::None; #count];
+            let __viso_root = #root;
+            (__viso_root, __viso_named)
+        }
+    };
+    Ok((root, ctx.named))
+}
 
-    Ok(root)
+/// A named node of the view's own component that it builds once: the Rust
+/// field its handle is handed out in, and its kind.
+pub struct Named {
+    /// The node's name.
+    pub name: String,
+    /// The widget it is, a marker of `viso_ui::kind`.
+    pub kind: String,
+    /// Where the node is declared.
+    pub at: viso_dsl::syntax::TextRange,
 }
 
 /// The state threaded through the pre-order emit walk.
@@ -246,6 +272,10 @@ struct Emit<'a> {
     /// The control of each static node showing a view value, in the order the
     /// nodes record their ids.
     shown: Vec<TokenStream>,
+    /// Which widget names are standard widgets.
+    kinds: &'a dyn Fn(&str) -> bool,
+    /// The named nodes of the view's own component, in build order.
+    named: Vec<Named>,
     missing_source: Option<SymbolId>,
     /// The first node that cannot be built.
     error: Option<String>,
@@ -363,6 +393,18 @@ impl Emit<'_> {
         } else {
             quote! {}
         };
+        let named = match &node.local_name {
+            Some(name) if node.instance == 0 && (self.kinds)(&node.type_name) => {
+                let index = self.named.len();
+                self.named.push(Named {
+                    name: name.clone(),
+                    kind: node.type_name.clone(),
+                    at: node.origin,
+                });
+                quote! { __viso_named[#index] = ::core::option::Option::Some(#handle_ident.id()); }
+            }
+            _ => quote! {},
+        };
 
         // A leaf's builder takes no closure, so its children (there are none for a
         // real leaf) are dropped by `emit_builder_call`. Containers thread the child
@@ -380,6 +422,7 @@ impl Emit<'_> {
                 #binds
                 #attach
                 #record
+                #named
                 #show
                 #handle_ident
             }
@@ -606,7 +649,7 @@ impl Emit<'_> {
             NodeKind::Component => {
                 let path = syn::parse_str::<syn::Path>(&node.type_name)
                     .map_err(|_| format!("`{}` is not a Rust path", node.type_name))?;
-                quote! { #path::build(cx).1 }
+                quote! { #path::build(cx).1.root }
             }
         })
     }

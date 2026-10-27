@@ -157,7 +157,7 @@ fn fragment() -> Mounted {
 fn component() -> Mounted {
     Mounted::mount(|cx| {
         let (Counter { count, enabled }, root) = Counter::build(cx);
-        (root, Some([count, enabled]))
+        (root.root, Some([count, enabled]))
     })
 }
 
@@ -168,7 +168,7 @@ fn file() -> Mounted {
     let mut fresh = StateStore::new();
     let count = fresh.alloc(StateValue::Int(0));
     let enabled = fresh.alloc(StateValue::Bool(true));
-    Mounted::mount(|cx| (build(cx), Some([count, enabled])))
+    Mounted::mount(|cx| (build(cx).root, Some([count, enabled])))
 }
 
 #[test]

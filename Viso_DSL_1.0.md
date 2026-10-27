@@ -798,7 +798,9 @@ module_path      = identifier, { "::", label } ;
 - `ui!` 不接受 Top-level Declaration、Import 或 Component 成员；`component!` 不接受其他 Top-level Declaration；
 - `ui!` Fragment 按一个只声明该 View 的无状态 Component 检查与降级：Prelude 的类型、枚举值与函数照常解析（如 `align: TextAlign::center`），值名不读取外围 Rust 作用域的变量，Fragment 自身未声明的名称报 `E2001`；读取 State 的 View 使用 `component!`；
 - `.vs` 是规范外部文件格式；页面、Theme 与大型 Component 的热重载 SHOULD 使用 `view!`；内联宏的修改通常需要 Rust 增量编译，Runtime 不要求解析 Rust 源码来热重载内联宏；
-- 宏内源码的诊断 Span 映射回 Rust 源文件中的宏调用位置（§134）。
+- 宏内源码的诊断 Span 映射回 Rust 源文件中的宏调用位置（§134）；
+- `view!("x.vs", name: expr, ...)` 传入根组件的 Input（§U11）：未给的 Input 取默认值，无默认值的 Input 未给、未知名称与类型不符的 Rust 值都是编译错误（类型在 `cargo check` 即检查）；
+- `view!` 与 `component!` 交出根组件中只构建一次的具名节点的 typed handle：`view.nodes.save_button: Handle<kind::Button>`（Architecture §10.4.11）。
 
 ---
 

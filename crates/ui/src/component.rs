@@ -12,6 +12,7 @@
 use crate::layout::OnAxis;
 use core::time::Duration;
 use std::any::Any;
+use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -59,23 +60,105 @@ pub trait Component {
     fn build(&self, cx: &mut BuildCx<'_>);
 }
 
-/// A typed handle onto a built node. It carries only the [`NodeId`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Handle {
+/// A handle onto a built node. It carries only the [`NodeId`]; its type
+/// parameter is the kind of node it is, a [`kind`](crate::kind) marker for a
+/// named node of a `.vs` view (`Handle<kind::Button>`), or [`AnyNode`] for a
+/// node of any kind, which every builder returns.
+pub struct Handle<W: ?Sized = AnyNode> {
     id: NodeId,
+    kind: PhantomData<fn() -> W>,
 }
 
-impl Handle {
+/// The kind of a [`Handle`] onto a node of any kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AnyNode {}
+
+impl<W: ?Sized> Handle<W> {
     /// The node this handle refers to.
     #[inline]
     pub fn id(self) -> NodeId {
         self.id
     }
 
+    /// The handle as one onto a node of any kind.
+    #[inline]
+    pub fn any(self) -> Handle {
+        Handle::of(self.id)
+    }
+
+    /// The handle of node `id`, a node of kind `W`: what a `view!` hands out
+    /// for a named node of a kind its compiler checked.
+    #[doc(hidden)]
+    #[inline]
+    pub fn __of_kind(id: NodeId) -> Handle<W> {
+        Handle {
+            id,
+            kind: PhantomData,
+        }
+    }
+}
+
+impl Handle {
     /// The handle of node `id`, declared already.
     #[inline]
     pub(crate) fn of(id: NodeId) -> Handle {
-        Handle { id }
+        Handle {
+            id,
+            kind: PhantomData,
+        }
+    }
+}
+
+impl<W: ?Sized> Clone for Handle<W> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<W: ?Sized> Copy for Handle<W> {}
+
+impl<W: ?Sized> PartialEq for Handle<W> {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl<W: ?Sized> Eq for Handle<W> {}
+
+impl<W: ?Sized> core::hash::Hash for Handle<W> {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
+}
+
+impl<W: ?Sized> core::fmt::Debug for Handle<W> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Handle").field("id", &self.id).finish()
+    }
+}
+
+/// A view mounted from `.vs` (`view!`, `component!`): its root and the
+/// handles of its named nodes, a struct with a field per `node name: Kind`
+/// the view builds once, each a `Handle<kind::Kind>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MountedView<N> {
+    /// The view's root node.
+    pub root: Handle,
+    /// Its named nodes.
+    pub nodes: N,
+}
+
+impl<N> From<MountedView<N>> for Handle {
+    fn from(view: MountedView<N>) -> Handle {
+        view.root
+    }
+}
+
+impl<N> MountedView<N> {
+    /// The root's node.
+    #[inline]
+    pub fn id(&self) -> NodeId {
+        self.root.id()
     }
 }
 
@@ -7053,7 +7136,7 @@ impl<'a> BuildCx<'a> {
         self.stack.push(id);
         children(self);
         self.stack.pop();
-        Handle { id }
+        Handle::of(id)
     }
 
     /// Declare a stack and its children: each child sits in the stack's
@@ -7098,7 +7181,7 @@ impl<'a> BuildCx<'a> {
         children(self);
         self.stack.pop();
         self.pending_placement = None;
-        Handle { id }
+        Handle::of(id)
     }
 
     /// Declare `children` under the already-declared node `handle`, after
@@ -7195,7 +7278,7 @@ impl<'a> BuildCx<'a> {
         self.pending_placement = None;
         // Restore the enclosing grid's name tables (or clear, at the outermost grid).
         self.grid_names = outer_names;
-        Handle { id }
+        Handle::of(id)
     }
 
     /// Declare an [`LayoutInput::AbsoluteRows`] canvas and its children. The canvas
@@ -7229,7 +7312,7 @@ impl<'a> BuildCx<'a> {
         self.stack.push(id);
         children(self);
         self.stack.pop();
-        Handle { id }
+        Handle::of(id)
     }
 
     /// Declare where the next child sits in its parent: a [`GridPlacement`]
@@ -7312,7 +7395,7 @@ impl<'a> BuildCx<'a> {
         children(self);
         self.stack.pop();
         self.viewport_ways(id, &style);
-        Handle { id }
+        Handle::of(id)
     }
 
     /// Give viewport `id` its bars, tail, refresh, snapping and page dots,
@@ -7443,7 +7526,7 @@ impl<'a> BuildCx<'a> {
                 dots: style.dots,
             },
         );
-        Handle { id: viewport }
+        Handle::of(viewport)
     }
 
     /// Binds environment-dependent `lengths` to the node `handle` declared;
@@ -7467,7 +7550,7 @@ impl<'a> BuildCx<'a> {
     /// Declare a leaf node.
     pub fn leaf(&mut self, style: LeafStyle) -> Handle {
         let id = self.push_node(LayoutInput::Leaf { size: style.size }, style.style);
-        Handle { id }
+        Handle::of(id)
     }
 
     /// Declare an editable text leaf: a leaf node plus a retained edit
@@ -7502,7 +7585,7 @@ impl<'a> BuildCx<'a> {
             Some(edits) => edits.register(id, Box::new(buffer)),
             None => self.store.seed_text(id, seed),
         }
-        Handle { id }
+        Handle::of(id)
     }
 
     /// Leaves the nodes inside `handle` out of hit testing, so a press on
@@ -7852,7 +7935,7 @@ impl<'a> BuildCx<'a> {
         let mut stack = vec![handle.id];
         while let Some(node) = stack.pop() {
             if self.store.focusable(node) {
-                return Some(Handle { id: node });
+                return Some(Handle::of(node));
             }
             let at = stack.len();
             stack.extend(arena.children(node));

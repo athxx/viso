@@ -67,7 +67,7 @@ viso::component! {
 }
 ```
 
-`ui!` 与 `view!` 展开为 `|cx: &mut BuildCx| -> Handle` 的构建闭包；`component!` 展开为一个字段为各 `state` 的 `StateId` 的 struct，带 `build(cx) -> (Self, Handle)`。
+`ui!` 展开为 `|cx: &mut BuildCx| -> Handle` 的构建闭包；`view!` 展开为 `|cx| -> MountedView<_>` 的构建闭包（`root` 与 `nodes`：根组件每个只构建一次的具名节点一个 `Handle<kind::K>` 字段），可带根组件的 Input（`view!("x.vs", name: expr)`）；`component!` 展开为一个字段为各 `state` 的 `StateId` 的 struct 与具名节点的 `{Name}Nodes` struct，带 `build(cx) -> (Self, MountedView<{Name}Nodes>)`。
 
 这三个宏**不是三套语言**，而是同一个 Viso compiler（`viso_dsl::frontend`）的三个明确 parser entry point：
 
@@ -1547,11 +1547,14 @@ node save_button: Button { ... }
 
 `.vs` 中它在 Action、Task、Effect 与 Event Handler 作用域里是不可变绑定 `save_button: NodeRef<Button>`（DSL §49.1）。编译器把它定为一个稠密 key（所在内联实例在高 16 位、在该组件具名节点中的序号在低 16 位），`viso-view` 在 view（或 `for` 项）自己的按 key 有序表中找到 `NodeId`，没有字符串查找，也没有 dynamic downcast。
 
-Rust 侧 builder 返回的 `viso_ui::Handle` 只携带 `NodeId`，大型控件另有专用句柄（`ChartHandle`、`MapHandle` 等）。目标（尚未实现）：`view!` / `ui!` / `component!` 为具名节点生成 typed Rust 访问，例如：
+Rust 侧 builder 返回的 `viso_ui::Handle` 只携带 `NodeId`，大型控件另有专用句柄（`ChartHandle`、`MapHandle` 等）。`view!` / `component!` 为根组件中只构建一次的具名节点生成 typed Rust 访问：
 
 ```rust
-nodes.save_button   // Handle<Button>（§78）或等价的 compile-time typed key
+let view = viso::view!("editor.vs")(cx);
+let save: Handle<kind::Button> = view.nodes.save_button; // 构建时记下的 NodeId，无查找
 ```
+
+`if` / `for` / `match` 中的具名节点随其区域挂载，没有字段；内联子组件的具名节点不出现在外层；把一种节点的 handle 当作另一种用不能编译。`ui!` 片段只返回根 `Handle`。
 
 这条规则的目标不是隐藏 ID，而是**不要把编译期已知信息丢掉，再让运行时重新查找一次**。
 
@@ -5390,7 +5393,7 @@ let state: &mut T = handle.borrow_mut(cx); // no mutation bypassing invalidation
 
 当前形态：
 
-- `viso_ui::Handle`：`BuildCx` 的 builder 返回它，`Copy`，只含 `NodeId`，不带类型参数；
+- `viso_ui::Handle<K = AnyNode>`：`BuildCx` 的 builder 返回它，`Copy`，只含 `NodeId`；`K` 是节点的种类：`view!` / `component!` 为具名节点交出 `Handle<kind::Button>`（`view.nodes.save_button`，`viso_ui::kind` 每个标准 Widget 一个 marker），builder 返回 `Handle`（即 `AnyNode`），`.any()` 忘掉种类；
 - 控件 handle：需要被程序驱动的控件各有一个 handle 类型（`ModalHandle`、`PopupHandle`、`SheetHandle`、`ToastHandle`、`NavHandle`、`SearchFieldHandle`、`DataGridHandle`、`MapHandle` 等），由 `viso_ui::control_handle!` 声明：`Copy`，只含一个带 generation 的 `ControlId`，不拥有 widget heap object，不需要 `Rc<RefCell<_>>`。
 
 ```rust

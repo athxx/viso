@@ -12,7 +12,9 @@ use viso::ui::{
 use viso_gpu::{Backend, GpuBackend, ShaderLang};
 
 /// `build` built into a fresh store: the store and the root.
-fn mount(build: impl FnOnce(&mut BuildCx<'_>) -> viso::ui::Handle) -> (NodeStore, NodeId) {
+fn mount<H: Into<viso::ui::Handle>>(
+    build: impl FnOnce(&mut BuildCx<'_>) -> H,
+) -> (NodeStore, NodeId) {
     let mut store = NodeStore::new();
     let mut states = StateStore::new();
     let mut bindings = BindingTable::new();
@@ -28,7 +30,7 @@ fn mount(build: impl FnOnce(&mut BuildCx<'_>) -> viso::ui::Handle) -> (NodeStore
             &mut text_edits,
             &mut projectors,
         );
-        build(&mut cx).id()
+        build(&mut cx).into().id()
     };
     (store, root)
 }

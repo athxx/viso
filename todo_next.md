@@ -186,8 +186,19 @@ Rules (as for `todo_features.md`):
     `native_package` unit test. An `InputMap<E>` constant is found again now that native types
     carry type arguments (`game_acceptance`, `game_input`); the cross-platform snapshot hashes
     are repinned to the rebuilt modules.
-- [ ] Typed Rust access to named nodes from `view!`/`component!` (`nodes.save_button:
+- [x] Typed Rust access to named nodes from `view!`/`component!` (`nodes.save_button:
   Handle<Button>`). Verify with a trybuild test that a wrong-type use fails to compile.
+  - Built: `viso_ui::Handle<K = AnyNode>` with a `viso_ui::kind` marker per standard widget
+    (checked against the schema's widget table); `view!` returns `MountedView { root, nodes }`
+    and `component!` builds `(Self, MountedView<{Name}Nodes>)`, a `Handle<kind::K>` field per
+    named node of the root component that it builds once (none for nodes under `if`/`for`/
+    `match` or of inlined components). `view!` inputs now type-check by kind
+    (`ViewInput::Kind`), so a wrong-type value fails `cargo check`; an input with a default it
+    is not given holds the default. Docs: Architecture §10.4.11 and §78, DSL §22.1, AGENTS §6.3.
+  - Verified: `crates/viso/tests/named_nodes.rs` (the handles are the built nodes, by role and
+    label), `view_inputs.rs` (given and defaulted inputs), and the trybuild cases
+    `named_node_kind` (`Handle<kind::Text>` from a `Button` fails), `view_input_type` and
+    `view_input_missing`; the facade's 29 macro-using test binaries pass.
 - [ ] `ui!` mounts any `viso::ui::Component`, so hand-written widgets and `component!` structs have
   one shape. Verify with a `ui!` case naming a hand-written `impl Component`.
 - [ ] Add `Component`, `Sizing`, `Align`, `Justify`, `Axis`, `Inset`, `BoxStyle` and `Rgba` to the

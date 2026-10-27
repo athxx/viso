@@ -13,8 +13,8 @@ use viso_view::{MountRecord, take_mounts};
 
 /// Builds `build` into a fresh store and returns the store, the states, the
 /// root and the mounts recorded meanwhile.
-fn mount(
-    build: impl FnOnce(&mut BuildCx<'_>) -> Handle,
+fn mount<H: Into<Handle>>(
+    build: impl FnOnce(&mut BuildCx<'_>) -> H,
 ) -> (NodeStore, StateStore, NodeId, Vec<MountRecord>) {
     let mut store = NodeStore::new();
     let mut states = StateStore::new();
@@ -31,7 +31,7 @@ fn mount(
             &mut text_edits,
             &mut projectors,
         );
-        build(&mut cx).id()
+        build(&mut cx).into().id()
     };
     let mut mounts = Vec::new();
     take_mounts(&mut mounts);

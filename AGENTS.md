@@ -346,7 +346,7 @@ Public component handles should be typed and cheap to copy. They carry ids only,
 
 Current form (Architecture §78):
 
-- `viso_ui::Handle`: returned by `BuildCx` builders; `Copy`, holds only a generational `NodeId`, no type parameter;
+- `viso_ui::Handle<K = AnyNode>`: returned by `BuildCx` builders; `Copy`, holds only a generational `NodeId`. `K` is the node's kind: `view!`/`component!` hand out `Handle<kind::Button>` for a named node (`view.nodes.save_button`), builders return `Handle` (`AnyNode`);
 - per-control handles (`ModalHandle`, `PopupHandle`, `NavHandle`, `SearchFieldHandle`, `DataGridHandle`, `MapHandle`, …): `Copy`, a generational `ControlId` alone (`viso_ui::control_handle!`). The control's builder `build(cx)` returns it; for a closure declared before the control (its own handlers included), mint it first with `cx.handle()` and pass it to `.handle(h)`. Methods act through a context: writes take `&mut EventCx` (or `&mut dyn StateWriter`), reads take any `&impl Controls` (`EventCx`, `UpdateCx`, `EffectCx`, `BuildCx`, `StateStore`). A handle whose control is gone finds nothing: writes do nothing, reads answer `None` or empty.
 
 ```rust

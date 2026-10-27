@@ -49,8 +49,9 @@ missing:
     navigator's own revision cell, so every binding and computed value that reads `nav`
     depends on the navigation, with no dynamic dependency.
   - An input the macro is not given, and that has no default, is a compile error naming it.
-  - A Rust value of another type than the input's does not compile (a `const` assertion
-    on the value's `ViewInput::TY`).
+  - A Rust value of another type than the input's does not type-check (`ViewInput::Kind`);
+    a router view over another route type fails the build (a `const` assertion on the
+    route's path). An input with a default the macro is not given holds the default.
 - **The app's own native libraries.** The route enum is the app's. Native package
   discovery takes the app's own package as well when its manifest declares
   `[package.metadata.viso.natives]`: its library target names the libraries `crate::NATIVES`,

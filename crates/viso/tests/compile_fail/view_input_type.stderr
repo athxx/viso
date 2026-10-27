@@ -1,0 +1,14 @@
+error[E0271]: type mismatch resolving `<&str as ViewInput>::Kind == I32`
+ --> tests/compile_fail/view_input_type.rs:3:46
+  |
+3 |         viso::view!("input_shell.vs", count: "seven")(cx);
+  |         -------------------------------------^^^^^^^-
+  |         |                                    |
+  |         |                                    expected `I32`, found `String`
+  |         required by a bound introduced by this call
+  |
+note: required by a bound in `viso::__private::viso_view::__mount_input`
+ --> $WORKSPACE/crates/view/src/input.rs
+  |
+  | pub fn __mount_input<K, T: ViewInput<Kind = K>>(cx: &mut BuildCx<'_>, value: T) -> MountedInput {
+  |                                      ^^^^^^^^ required by this bound in `__mount_input`

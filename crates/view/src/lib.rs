@@ -62,7 +62,7 @@ pub use game::{
     mount_view_game, take_game_faults,
 };
 pub use host::{__embedded, HostError, StateCells, ViewHost, cell_value, vm_value};
-pub use input::{__InputType, __mount_input, InputTy, MountedInput, ViewInput};
+pub use input::{__Route, __mount_input, __mount_navigator, MountedInput, ViewInput, input_kind};
 #[cfg(feature = "inspect")]
 pub use mounts::{__mounted_view, MountRecord, take_mounts};
 pub use nodes::{__mount_nodes, mount_nodes};

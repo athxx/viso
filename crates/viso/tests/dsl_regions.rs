@@ -179,13 +179,13 @@ impl Mounted {
 fn component() -> Mounted {
     Mounted::mount(|cx| {
         let (Regions { picked, .. }, root) = Regions::build(cx);
-        (root, Some(picked))
+        (root.root, Some(picked))
     })
 }
 
 fn file() -> Mounted {
     let build = viso::view!("fixtures/regions.vs");
-    Mounted::mount(|cx| (build(cx), None))
+    Mounted::mount(|cx| (build(cx).root, None))
 }
 
 #[test]

@@ -103,7 +103,7 @@ struct Rt {
 
 impl Rt {
     /// The app a macro expansion builds.
-    fn built(build: impl FnOnce(&mut BuildCx<'_>) -> Handle) -> Self {
+    fn built<H: Into<Handle>>(build: impl FnOnce(&mut BuildCx<'_>) -> H) -> Self {
         let mut rt = Rt::default();
         let root = {
             let mut cx = BuildCx::with_reactive(
@@ -114,7 +114,7 @@ impl Rt {
                 &mut rt.text_edits,
                 &mut rt.projectors,
             );
-            build(&mut cx)
+            build(&mut cx).into()
         };
         rt.root = Some(root.id());
         rt

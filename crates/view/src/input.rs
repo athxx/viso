@@ -15,39 +15,23 @@ use viso_ui::{
     StateValue, structure::StructureCx,
 };
 
-/// The `.vs` type of a root input, as a Rust value given for it must match.
-#[derive(Debug, Clone, Copy)]
-pub enum InputTy {
+/// The `.vs` types of a root input, as the Rust types a [`ViewInput`] names:
+/// a value given for an input of another type does not type-check.
+pub mod input_kind {
     /// `Bool`.
-    Bool,
+    pub enum Bool {}
     /// `I32`.
-    I32,
+    pub enum I32 {}
     /// `F32`.
-    F32,
+    pub enum F32 {}
     /// `I64`.
-    I64,
+    pub enum I64 {}
     /// `F64`.
-    F64,
+    pub enum F64 {}
     /// `String`.
-    String,
-    /// `Navigator<R>`, `R` the native enum at this path.
-    Navigator(&'static str),
-}
-
-impl InputTy {
-    /// Whether it is `other`.
-    pub const fn is(self, other: InputTy) -> bool {
-        match (self, other) {
-            (InputTy::Bool, InputTy::Bool)
-            | (InputTy::I32, InputTy::I32)
-            | (InputTy::F32, InputTy::F32)
-            | (InputTy::I64, InputTy::I64)
-            | (InputTy::F64, InputTy::F64)
-            | (InputTy::String, InputTy::String) => true,
-            (InputTy::Navigator(a), InputTy::Navigator(b)) => same(a.as_bytes(), b.as_bytes()),
-            _ => false,
-        }
-    }
+    pub enum String {}
+    /// `Navigator<R>`, whatever `R`.
+    pub enum Navigator {}
 }
 
 const fn same(a: &[u8], b: &[u8]) -> bool {
@@ -80,10 +64,14 @@ impl MountedInput {
     }
 }
 
-/// A Rust value a view takes as a root input of type [`TY`](Self::TY).
+/// A Rust value a view takes as a root input of the `.vs` type
+/// [`Kind`](Self::Kind) names.
 pub trait ViewInput {
-    /// The input type it is.
-    const TY: InputTy;
+    /// The input type it is, a marker of [`input_kind`].
+    type Kind;
+
+    /// For a `Navigator<R>`, the native path of `R`.
+    const ROUTE: &'static str = "";
 
     /// Allocates what the view reads it through.
     fn mount(self, cx: &mut BuildCx<'_>) -> MountedInput;
@@ -99,7 +87,7 @@ fn held(cx: &mut BuildCx<'_>, value: StateValue, vm: Value) -> MountedInput {
 }
 
 impl ViewInput for bool {
-    const TY: InputTy = InputTy::Bool;
+    type Kind = input_kind::Bool;
 
     fn mount(self, cx: &mut BuildCx<'_>) -> MountedInput {
         held(cx, StateValue::Bool(self), Value::bool(self))
@@ -107,7 +95,7 @@ impl ViewInput for bool {
 }
 
 impl ViewInput for i32 {
-    const TY: InputTy = InputTy::I32;
+    type Kind = input_kind::I32;
 
     fn mount(self, cx: &mut BuildCx<'_>) -> MountedInput {
         held(cx, StateValue::Int(self), Value::Int(self.into()))
@@ -115,7 +103,7 @@ impl ViewInput for i32 {
 }
 
 impl ViewInput for f32 {
-    const TY: InputTy = InputTy::F32;
+    type Kind = input_kind::F32;
 
     fn mount(self, cx: &mut BuildCx<'_>) -> MountedInput {
         held(cx, StateValue::Float(self), Value::Float(self.into()))
@@ -123,7 +111,7 @@ impl ViewInput for f32 {
 }
 
 impl ViewInput for i64 {
-    const TY: InputTy = InputTy::I64;
+    type Kind = input_kind::I64;
 
     fn mount(self, cx: &mut BuildCx<'_>) -> MountedInput {
         held(cx, StateValue::Int(0), Value::Int(self))
@@ -131,7 +119,7 @@ impl ViewInput for i64 {
 }
 
 impl ViewInput for f64 {
-    const TY: InputTy = InputTy::F64;
+    type Kind = input_kind::F64;
 
     fn mount(self, cx: &mut BuildCx<'_>) -> MountedInput {
         held(cx, StateValue::Int(0), Value::Float(self))
@@ -139,7 +127,7 @@ impl ViewInput for f64 {
 }
 
 impl ViewInput for String {
-    const TY: InputTy = InputTy::String;
+    type Kind = input_kind::String;
 
     fn mount(self, cx: &mut BuildCx<'_>) -> MountedInput {
         held(cx, StateValue::Int(0), Value::str(&self))
@@ -147,7 +135,7 @@ impl ViewInput for String {
 }
 
 impl ViewInput for &str {
-    const TY: InputTy = InputTy::String;
+    type Kind = input_kind::String;
 
     fn mount(self, cx: &mut BuildCx<'_>) -> MountedInput {
         held(cx, StateValue::Int(0), Value::str(self))
@@ -157,7 +145,8 @@ impl ViewInput for &str {
 /// The router view becomes the view's `Navigator<R>`; a `RouterView` node of
 /// the view places it.
 impl<R: NativeData + Clone + PartialEq + 'static> ViewInput for RouterView<R> {
-    const TY: InputTy = InputTy::Navigator(R::PATH);
+    type Kind = input_kind::Navigator;
+    const ROUTE: &'static str = R::PATH;
 
     fn mount(mut self, cx: &mut BuildCx<'_>) -> MountedInput {
         let shared = self
@@ -176,20 +165,31 @@ impl<R: NativeData + Clone + PartialEq + 'static> ViewInput for RouterView<R> {
     }
 }
 
-/// The input of `view!` for the type `E` names, checked at compile time.
+/// Mounts `value` as a root input of the `.vs` type `K` names; a value of
+/// another type does not type-check.
 #[doc(hidden)]
-pub trait __InputType {
-    const TY: InputTy;
+pub fn __mount_input<K, T: ViewInput<Kind = K>>(cx: &mut BuildCx<'_>, value: T) -> MountedInput {
+    value.mount(cx)
 }
 
-/// Mounts `value` as a root input whose `.vs` type `E` names; a value of
-/// another type does not compile.
+/// The route type of a `Navigator<R>` input of `view!`.
 #[doc(hidden)]
-pub fn __mount_input<E: __InputType, T: ViewInput>(cx: &mut BuildCx<'_>, value: T) -> MountedInput {
+pub trait __Route {
+    /// The native path of `R`.
+    const PATH: &'static str;
+}
+
+/// Mounts `value` as a root `Navigator<R>` input, `E` naming `R`; a router
+/// view over routes of another type does not build.
+#[doc(hidden)]
+pub fn __mount_navigator<E: __Route, T: ViewInput<Kind = input_kind::Navigator>>(
+    cx: &mut BuildCx<'_>,
+    value: T,
+) -> MountedInput {
     const {
         assert!(
-            T::TY.is(E::TY),
-            "a root input of the view is given a Rust value of another type"
+            same(T::ROUTE.as_bytes(), E::PATH.as_bytes()),
+            "a navigator input of the view is given a router view over routes of another type"
         );
     }
     value.mount(cx)

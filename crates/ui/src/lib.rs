@@ -50,6 +50,7 @@ pub mod input_filter;
 pub mod inspect;
 pub mod interaction;
 pub mod key_scroll;
+pub mod kind;
 pub mod layer;
 pub mod layout;
 pub mod layout_value;
@@ -124,9 +125,9 @@ pub use binding::{
 pub use check_mark::{CheckMark, CheckShape};
 pub use clipboard::{ClipboardData, ClipboardImage, ClipboardKinds};
 pub use component::{
-    AbsoluteStyle, BuildCx, Component, FlexStyle, FrameRecompute, Handle, LeafStyle, NodeStore,
-    Painted, PointerHandler, ScrollBehavior, ScrollRequest, ScrollStyle, StackStyle,
-    VirtualListStyle,
+    AbsoluteStyle, AnyNode, BuildCx, Component, FlexStyle, FrameRecompute, Handle, LeafStyle,
+    MountedView, NodeStore, Painted, PointerHandler, ScrollBehavior, ScrollRequest, ScrollStyle,
+    StackStyle, VirtualListStyle,
 };
 pub use content::{BrushImage, Content, InkRun, LinkBox, TextInk, TextMark, TextRequest};
 pub use context::{EventCx, FocusChange, StateWriter};

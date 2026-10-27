@@ -54,7 +54,7 @@ struct Mounted {
 }
 
 impl Mounted {
-    fn mount(build: impl FnOnce(&mut BuildCx<'_>) -> Handle) -> Self {
+    fn mount<H: Into<Handle>>(build: impl FnOnce(&mut BuildCx<'_>) -> H) -> Self {
         let mut store = NodeStore::new();
         let mut states = StateStore::new();
         let mut bindings = BindingTable::new();
@@ -70,7 +70,7 @@ impl Mounted {
                 &mut text_edits,
                 &mut projectors,
             );
-            build(&mut cx)
+            build(&mut cx).into()
         };
         let mut mounted = Self {
             store,
@@ -161,7 +161,7 @@ fn a_component_reads_the_settled_environment() {
     let mut form = Mounted::mount(|cx| {
         let (Adaptive { taps: id }, root) = Adaptive::build(cx);
         taps = Some(id);
-        root
+        root.root
     });
     let taps = taps.expect("a component exposes its state");
     assert_eq!(form.region(1).len(), 1, "a zero-width window is compact");

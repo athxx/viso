@@ -222,7 +222,7 @@ impl Mounted {
 fn component() -> Mounted {
     Mounted::mount(|cx| {
         let (Clicker { count }, root) = Clicker::build(cx);
-        (root, count)
+        (root.into(), count)
     })
 }
 
@@ -230,7 +230,7 @@ fn file() -> Mounted {
     let build = viso::view!("fixtures/clicker.vs");
     let mut fresh = StateStore::new();
     let count = fresh.alloc(StateValue::Int(0));
-    Mounted::mount(|cx| (build(cx), count))
+    Mounted::mount(|cx| (build(cx).into(), count))
 }
 
 #[test]
@@ -256,7 +256,7 @@ fn a_click_outside_the_node_runs_nothing() {
 fn a_bound_toggle_writes_its_flip_back() {
     let mut form = Mounted::mount(|cx| {
         let (Switch { on }, root) = Switch::build(cx);
-        (root, on)
+        (root.into(), on)
     });
     form.click(10.0, 10.0);
     assert_eq!(form.count(), Some(StateValue::Bool(true)));
@@ -268,7 +268,7 @@ fn a_bound_toggle_writes_its_flip_back() {
 fn a_label_shows_its_text_at_build_and_after_a_write() {
     let mut form = Mounted::mount(|cx| {
         let (Tally { count }, root) = Tally::build(cx);
-        (root, count)
+        (root.into(), count)
     });
     assert_eq!(form.texts(), ["1 taps"]);
     form.click(20.0, 20.0);
@@ -282,7 +282,7 @@ fn a_label_shows_its_text_at_build_and_after_a_write() {
 fn a_bound_width_lays_out_at_build_and_after_a_write() {
     let mut form = Mounted::mount(|cx| {
         let (Widen { wide }, root) = Widen::build(cx);
-        (root, wide)
+        (root.into(), wide)
     });
     assert_eq!(form.width(1), 60.0);
     form.click(20.0, 20.0);
@@ -300,7 +300,7 @@ fn a_bound_width_lays_out_at_build_and_after_a_write() {
 fn a_text_style_reaches_the_request_at_build_and_after_a_write() {
     let mut form = Mounted::mount(|cx| {
         let (Heading { bold }, root) = Heading::build(cx);
-        (root, bold)
+        (root.into(), bold)
     });
     let style = |weight| TextStyle {
         weight,
