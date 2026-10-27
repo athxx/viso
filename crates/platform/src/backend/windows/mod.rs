@@ -177,8 +177,9 @@ struct WindowState {
     ime_enabled: Cell<bool>,
     /// The input scope last set, which picks the touch keyboard's layout.
     input_scope: Cell<i32>,
-    /// The composition currently shown as preedit is non-empty.
-    preedit_shown: Cell<bool>,
+    /// The text the input method edits: the focused field's around its
+    /// caret, and the composition under way.
+    ime: RefCell<super::ime_text::ImeText>,
     fullscreen: RefCell<Option<Restore>>,
     /// The context menu asked for, popped up from the message loop.
     context_menu: Cell<Option<(EditMenu, EditLabels)>>,
@@ -206,7 +207,7 @@ impl WindowState {
             ime_caret: Cell::new(None),
             ime_enabled: Cell::new(true),
             input_scope: Cell::new(0),
-            preedit_shown: Cell::new(false),
+            ime: RefCell::new(super::ime_text::ImeText::default()),
             fullscreen: RefCell::new(None),
             context_menu: Cell::new(None),
         }
@@ -897,6 +898,12 @@ impl PlatformApp for WinApp {
     fn set_text_entry(&mut self, window: WindowId, entry: Option<TextEntry>) {
         if let Some(state) = self.state(window) {
             proc::set_text_entry(state, entry);
+        }
+    }
+
+    fn set_surrounding_text(&mut self, window: WindowId, text: Option<&crate::SurroundingText>) {
+        if let Some(state) = self.state(window) {
+            state.ime.borrow_mut().show(text);
         }
     }
 

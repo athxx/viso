@@ -233,6 +233,15 @@ impl PlatformApp for WaylandApp {
         });
     }
 
+    fn set_surrounding_text(&mut self, window: WindowId, text: Option<&crate::SurroundingText>) {
+        self.with_state(|state| {
+            if let Some(i) = state.index(window) {
+                state.windows[i].surrounding = text.cloned();
+                state.update_text_input(window);
+            }
+        });
+    }
+
     fn show_soft_keyboard(&mut self, window: WindowId, show: bool) {
         // `text-input-v3` has no separate show request: re-enabling asks the
         // compositor's input method (and its on-screen keyboard) to appear.
@@ -401,6 +410,8 @@ pub(crate) struct Win {
     buttons: PointerButtons,
     last_caption_press: Option<(u32, f64, f64)>,
     text_entry: Option<TextEntry>,
+    /// The text around the focused field's caret its input method reads.
+    surrounding: Option<crate::SurroundingText>,
 }
 
 #[derive(Default)]
@@ -604,6 +615,7 @@ impl State {
             buttons: PointerButtons::NONE,
             last_caption_press: None,
             text_entry: None,
+            surrounding: None,
         });
         let i = self.windows.len() - 1;
         self.apply_scale(i, f64::from(scale), false);

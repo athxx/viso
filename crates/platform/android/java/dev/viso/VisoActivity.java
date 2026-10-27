@@ -410,6 +410,12 @@ public class VisoActivity extends Activity
                 () -> view.setTextInput(enabled, secure, kind, multiline, x, y, width, height));
     }
 
+    void setSurrounding(boolean shown, String text, long offset, int anchor, int focus,
+            int composeStart, int composeEnd) {
+        runOnUiThread(() -> view.setSurrounding(shown, text, offset, anchor, focus,
+                composeStart, composeEnd));
+    }
+
     void setEditMenu(boolean show, float x, float y, float width, float height, int items) {
         runOnUiThread(() -> view.setEditMenu(show, x, y, width, height, items));
     }
@@ -775,6 +781,14 @@ public class VisoActivity extends Activity
     static native void nativeCommit(String text);
 
     static native void nativeEdit(int action);
+
+    /**
+     * An input method's edit of the text around the caret: replace (0)
+     * bytes {@code start..end} of the field's text with {@code text},
+     * recompose (1) them as {@code text} with the caret {@code caret} bytes
+     * in, or select (2) from {@code start} to {@code end}.
+     */
+    static native void nativeImeEdit(int kind, long start, long end, String text, int caret);
 
     static native void nativeOpenUrl(String url);
 

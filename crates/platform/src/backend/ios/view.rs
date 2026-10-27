@@ -10,9 +10,10 @@
 //!   system; the rest are reported and passed on so the text system turns
 //!   them into `insertText:` or a composition. While a composition runs every
 //!   press goes to the text system, which owns the keys then.
-//! - The text system edits a shadow document ([`Composition`]) holding only
-//!   the composition in progress; its changes become preedit and commit
-//!   events.
+//! - The text system edits a mirror ([`ImeText`]) of the stretch of the
+//!   focused field's text the app shows, the composition included; its
+//!   edits become preedit, commit and ranged events. With the text shown
+//!   the keyboard corrects and predicts from it.
 //! - The soft keyboard is shown by the system whenever the first responder
 //!   takes text; hiding it swaps in an empty input view, so the view stays
 //!   first responder (and keeps hardware keys) either way.
@@ -47,19 +48,18 @@ use objc2_ui_kit::{
 };
 
 use super::{clipboard, drive, push, report_appearance};
-use crate::backend::ios_composition::{Composition, Edit};
+use crate::backend::ime_text::ImeText;
 use crate::backend::ios_translate::{
     REPEAT_DELAY_SECS, REPEAT_INTERVAL_SECS, TouchIds, is_command_key, key_code, keyboard_overlap,
     modifiers, pressure, repeats,
 };
 use crate::clipboard::{ClipboardReply, PasteReply};
 use crate::control::{
-    EditMenu, EditMenuAction, InputKind, LogicalRect, Loupe, TextEntry, WindowId,
+    EditMenu, EditMenuAction, InputKind, LogicalRect, Loupe, SurroundingText, TextEntry, WindowId,
 };
 use crate::event::{
     ClipboardShortcut, KeyCode, LogicalInsets, Modifiers, PointerButtons, PointerId, PointerKind,
-    PointerPhase, RawEvent, RawImePreedit, RawKey, RawPointer, RawScroll, RawText,
-    clipboard_shortcut,
+    PointerPhase, RawEvent, RawKey, RawPointer, RawScroll, clipboard_shortcut,
 };
 
 /// `UITextLayoutDirection` values toward the document's start.
@@ -76,11 +76,15 @@ pub(super) struct ViewIvars {
     touches: RefCell<TouchIds>,
     /// Indirect-pointer buttons held, as a [`PointerButtons`] mask.
     mouse_buttons: Cell<u8>,
-    composition: RefCell<Composition>,
+    /// The text the keyboard edits: UTF-16 offsets into it are the
+    /// document's positions.
+    ime: RefCell<ImeText>,
     /// The focused field's caret, logical points in this view.
     ime_caret: Cell<Option<LogicalRect>>,
     /// The focused field takes a secret.
     secure: Cell<bool>,
+    /// The focused field shows the keyboard its text.
+    shows_text: Cell<bool>,
     /// What the focused field holds.
     kind: Cell<InputKind>,
     /// The focused field holds lines.
@@ -414,14 +418,23 @@ define_class!(
     }
 
     unsafe impl UITextInputTraits for VisoView {
+        // The keyboard corrects and checks words only in text it can read.
         #[unsafe(method(autocorrectionType))]
         fn autocorrection_type(&self) -> UITextAutocorrectionType {
-            UITextAutocorrectionType::No
+            if self.corrects() {
+                UITextAutocorrectionType::Default
+            } else {
+                UITextAutocorrectionType::No
+            }
         }
 
         #[unsafe(method(spellCheckingType))]
         fn spell_checking_type(&self) -> UITextSpellCheckingType {
-            UITextSpellCheckingType::No
+            if self.corrects() {
+                UITextSpellCheckingType::Default
+            } else {
+                UITextSpellCheckingType::No
+            }
         }
 
         #[unsafe(method(smartQuotesType))]
@@ -489,12 +502,12 @@ define_class!(
         fn insert_text(&self, text: &NSString) {
             super::guarded(|| {
                 let text = text.to_string();
-                let composing = self.ivars().composition.borrow().is_marked();
+                let composing = self.ivars().ime.borrow().is_marked();
                 if text == "\n" && !composing {
                     self.tap_key(KeyCode::Enter);
                 } else {
-                    let edits = self.ivars().composition.borrow_mut().insert(&text);
-                    self.apply(edits);
+                    let event = self.ime_edit(|ime, w| ime.insert(w, &text, None));
+                    self.apply(event);
                 }
                 drive();
             });
@@ -503,22 +516,29 @@ define_class!(
         #[unsafe(method(deleteBackward))]
         fn delete_backward(&self) {
             super::guarded(|| {
-                let edits = {
-                    let mut doc = self.ivars().composition.borrow_mut();
-                    let (start, end) = doc.selection();
-                    if !doc.is_marked() {
-                        None
-                    } else if start != end {
-                        Some(doc.replace(start, end, ""))
-                    } else if start > 0 {
-                        Some(doc.replace(start - 1, start, ""))
-                    } else {
-                        Some(Vec::new())
-                    }
+                let window = self.ivars().window;
+                let mut ime = self.ivars().ime.borrow_mut();
+                let (start, end) = ime.selection();
+                let start = if start == end {
+                    ime.text()[..start]
+                        .char_indices()
+                        .next_back()
+                        .map_or(start, |(at, _)| at)
+                } else {
+                    start
                 };
-                match edits {
-                    Some(edits) => self.apply(edits),
-                    None => self.tap_key(KeyCode::Backspace),
+                if ime.is_marked() {
+                    let event = ime.replace(window, start, end, "");
+                    drop(ime);
+                    self.apply(event);
+                } else {
+                    // The app deletes by its own rules; the mirror guesses
+                    // a character until the app shows its text again.
+                    if ime.is_shown() && start < end {
+                        let _ = ime.replace(window, start, end, "");
+                    }
+                    drop(ime);
+                    self.tap_key(KeyCode::Backspace);
                 }
                 drive();
             });
@@ -529,7 +549,9 @@ define_class!(
         #[unsafe(method_id(textInRange:))]
         fn text_in_range(&self, range: &UITextRange) -> Option<Retained<NSString>> {
             range_of(range).map(|(start, end)| {
-                NSString::from_str(&self.ivars().composition.borrow().text_in(start, end))
+                let ime = self.ivars().ime.borrow();
+                let (a, b) = ime.span(ime.byte(start), ime.byte(end));
+                NSString::from_str(&ime.text()[a..b])
             })
         }
 
@@ -539,17 +561,21 @@ define_class!(
                 let Some((start, end)) = range_of(range) else {
                     return;
                 };
-                let edits =
-                    self.ivars().composition.borrow_mut().replace(start, end, &text.to_string());
-                self.apply(edits);
+                let text = text.to_string();
+                let event = self.ime_edit(|ime, w| {
+                    let (a, b) = (ime.byte(start), ime.byte(end));
+                    ime.replace(w, a, b, &text)
+                });
+                self.apply(event);
                 drive();
             });
         }
 
         #[unsafe(method_id(selectedTextRange))]
         fn selected_text_range(&self) -> Option<Retained<UITextRange>> {
-            let (start, end) = self.ivars().composition.borrow().selection();
-            Some(VisoTextRange::span(self.mtm(), start, end))
+            let ime = self.ivars().ime.borrow();
+            let (start, end) = ime.selection();
+            Some(VisoTextRange::span(self.mtm(), ime.units(start), ime.units(end)))
         }
 
         #[unsafe(method(setSelectedTextRange:))]
@@ -558,13 +584,13 @@ define_class!(
                 let Some((start, end)) = range.and_then(range_of) else {
                     return;
                 };
-                let edit = {
-                    let mut doc = self.ivars().composition.borrow_mut();
-                    doc.set_selection(start, end);
-                    doc.current()
-                };
-                if let Some(edit) = edit {
-                    self.apply(vec![edit]);
+                // Inside the composition the caret moves in the preedit.
+                let event = self.ime_edit(|ime, w| {
+                    let (a, b) = (ime.byte(start), ime.byte(end));
+                    ime.select(w, a, b).or_else(|| ime.preedit(w))
+                });
+                if event.is_some() {
+                    self.apply(event);
                     drive();
                 }
             });
@@ -572,8 +598,9 @@ define_class!(
 
         #[unsafe(method_id(markedTextRange))]
         fn marked_text_range(&self) -> Option<Retained<UITextRange>> {
-            let marked = self.ivars().composition.borrow().marked_range();
-            marked.map(|(start, end)| VisoTextRange::span(self.mtm(), start, end))
+            let ime = self.ivars().ime.borrow();
+            ime.marked()
+                .map(|(start, end)| VisoTextRange::span(self.mtm(), ime.units(start), ime.units(end)))
         }
 
         #[unsafe(method_id(markedTextStyle))]
@@ -588,12 +615,13 @@ define_class!(
         fn set_marked_text(&self, text: Option<&NSString>, selected: NSRange) {
             super::guarded(|| {
                 let text = text.map(|t| t.to_string()).unwrap_or_default();
-                let edit = self
-                    .ivars()
-                    .composition
-                    .borrow_mut()
-                    .set_marked(&text, (selected.location, selected.length));
-                self.apply(vec![edit]);
+                let at = |units: usize| super::super::utf16::byte_offset(&text, units);
+                let selected = (
+                    at(selected.location),
+                    at(selected.location.saturating_add(selected.length)),
+                );
+                let event = self.ime_edit(|ime, w| ime.set_marked(w, &text, selected, None));
+                self.apply(event);
                 drive();
             });
         }
@@ -601,8 +629,8 @@ define_class!(
         #[unsafe(method(unmarkText))]
         fn unmark_text(&self) {
             super::guarded(|| {
-                let edits = self.ivars().composition.borrow_mut().unmark();
-                self.apply(edits);
+                let event = self.ime_edit(ImeText::unmark);
+                self.apply(event);
                 drive();
             });
         }
@@ -614,7 +642,7 @@ define_class!(
 
         #[unsafe(method_id(endOfDocument))]
         fn end_of_document(&self) -> Retained<UITextPosition> {
-            VisoTextPosition::at(self.mtm(), self.ivars().composition.borrow().len())
+            VisoTextPosition::at(self.mtm(), self.ivars().ime.borrow().len_units())
         }
 
         #[unsafe(method_id(textRangeFromPosition:toPosition:))]
@@ -718,7 +746,7 @@ define_class!(
             position: &UITextPosition,
             direction: isize,
         ) -> Option<Retained<UITextRange>> {
-            let len = self.ivars().composition.borrow().len();
+            let len = self.ivars().ime.borrow().len_units();
             let backward = direction == DIRECTION_LEFT || direction == DIRECTION_UP;
             offset_of(position).map(|at| {
                 let (start, end) = if backward { (0, at) } else { (at, len) };
@@ -756,8 +784,8 @@ define_class!(
 
         #[unsafe(method_id(closestPositionToPoint:))]
         fn closest_position_to_point(&self, _point: CGPoint) -> Option<Retained<UITextPosition>> {
-            let (_, end) = self.ivars().composition.borrow().selection();
-            Some(VisoTextPosition::at(self.mtm(), end))
+            let ime = self.ivars().ime.borrow();
+            Some(VisoTextPosition::at(self.mtm(), ime.units(ime.selection().1)))
         }
 
         #[unsafe(method_id(closestPositionToPoint:withinRange:))]
@@ -791,9 +819,10 @@ impl VisoView {
             keyboard_height: Cell::new(0.0),
             touches: RefCell::new(TouchIds::default()),
             mouse_buttons: Cell::new(0),
-            composition: RefCell::new(Composition::default()),
+            ime: RefCell::new(ImeText::default()),
             ime_caret: Cell::new(None),
             secure: Cell::new(false),
+            shows_text: Cell::new(false),
             kind: Cell::new(InputKind::Text),
             multiline: Cell::new(false),
             soft_keyboard: Cell::new(false),
@@ -1018,13 +1047,16 @@ impl VisoView {
             if let Some(d) = &delegate {
                 d.textWillChange(Some(me));
             }
-            let edit = self.ivars().composition.borrow_mut().cancel();
+            let event = {
+                let mut ime = self.ivars().ime.borrow_mut();
+                let event = ime.cancel(self.ivars().window);
+                ime.show(None);
+                event
+            };
             if let Some(d) = &delegate {
                 d.textDidChange(Some(me));
             }
-            if let Some(edit) = edit {
-                self.apply(vec![edit]);
-            }
+            self.apply(event);
         } else if old != caret {
             // The candidate window follows the caret: have UIKit re-query it.
             if let Some(d) = self.ivars().input_delegate.borrow().load() {
@@ -1164,7 +1196,7 @@ impl VisoView {
     fn presses(&self, presses: &NSSet<UIPress>, pressed: bool) -> Vec<Retained<UIPress>> {
         let mtm = self.mtm();
         let window = self.ivars().window;
-        if self.ivars().composition.borrow().is_marked() {
+        if self.ivars().ime.borrow().is_marked() {
             return presses.iter().collect();
         }
         let mut forward = Vec::new();
@@ -1295,23 +1327,61 @@ impl VisoView {
         }
     }
 
-    fn apply(&self, edits: Vec<Edit>) {
-        let window = self.ivars().window;
-        for edit in edits {
-            push(match edit {
-                Edit::Preedit { text, caret } => RawEvent::ImePreedit(RawImePreedit {
-                    window,
-                    text,
-                    caret,
-                }),
-                Edit::Commit(text) => RawEvent::Text(RawText { window, text }),
-            });
+    /// Push the event an edit of the keyboard's text made, if any.
+    fn apply(&self, event: Option<RawEvent>) {
+        if let Some(event) = event {
+            push(event);
+        }
+    }
+
+    /// Make edit `f` to the keyboard's text.
+    fn ime_edit(
+        &self,
+        f: impl FnOnce(&mut ImeText, WindowId) -> Option<RawEvent>,
+    ) -> Option<RawEvent> {
+        f(&mut self.ivars().ime.borrow_mut(), self.ivars().window)
+    }
+
+    /// Whether the keyboard may correct and check words: the field shows
+    /// its text and holds words.
+    fn corrects(&self) -> bool {
+        let ivars = self.ivars();
+        ivars.shows_text.get()
+            && !ivars.secure.get()
+            && matches!(ivars.kind.get(), InputKind::Text | InputKind::Search)
+    }
+
+    /// Show the keyboard the text around the focused field's caret. UIKit
+    /// hears of a change the keyboard did not make itself, so it reads the
+    /// text again.
+    pub(super) fn set_surrounding_text(&self, text: Option<&SurroundingText>) {
+        let ivars = self.ivars();
+        let (text_changed, selection_changed) = ivars.ime.borrow().change(text);
+        let delegate = ivars.input_delegate.borrow().load();
+        let me = ProtocolObject::<dyn UITextInput>::from_ref(self);
+        if let Some(d) = &delegate {
+            if text_changed {
+                d.textWillChange(Some(me));
+            } else if selection_changed {
+                d.selectionWillChange(Some(me));
+            }
+        }
+        ivars.ime.borrow_mut().show(text);
+        if let Some(d) = &delegate {
+            if text_changed {
+                d.textDidChange(Some(me));
+            } else if selection_changed {
+                d.selectionDidChange(Some(me));
+            }
+        }
+        if ivars.shows_text.replace(text.is_some()) != text.is_some() && self.isFirstResponder() {
+            self.reloadInputViews();
         }
     }
 
     fn moved(&self, position: &UITextPosition, by: isize) -> Option<Retained<UITextPosition>> {
         let at = offset_of(position)? as isize + by;
-        let len = self.ivars().composition.borrow().len() as isize;
+        let len = self.ivars().ime.borrow().len_units() as isize;
         (0..=len)
             .contains(&at)
             .then(|| VisoTextPosition::at(self.mtm(), at as usize))

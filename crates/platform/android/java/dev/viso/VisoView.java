@@ -51,6 +51,16 @@ final class VisoView extends SurfaceView {
     private int kind;
     /** The focused field holds lines. */
     private boolean multiline;
+    /**
+     * The text around the focused field's caret the app shows the input
+     * method: whether it shows any, the stretch, where it starts in the
+     * field's text (bytes), and the selection and composition in it (UTF-16
+     * offsets; the composition -1 when there is none).
+     */
+    private boolean shows;
+    private String around = "";
+    private long aroundOffset;
+    private int aroundAnchor, aroundFocus, aroundComposeStart = -1, aroundComposeEnd = -1;
     /** Where the mouse last was, in pixels: where a captured mouse's presses land. */
     private float mouseX;
     private float mouseY;
@@ -475,9 +485,14 @@ final class VisoView extends SurfaceView {
         if (secure) {
             info.imeOptions |= EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING;
         }
-        info.initialSelStart = 0;
-        info.initialSelEnd = 0;
         connection = new VisoInputConnection(this);
+        connection.show(shows, around, aroundOffset, aroundAnchor, aroundFocus,
+                aroundComposeStart, aroundComposeEnd);
+        info.initialSelStart = shows ? Math.min(aroundAnchor, aroundFocus) : 0;
+        info.initialSelEnd = shows ? Math.max(aroundAnchor, aroundFocus) : 0;
+        if (shows && Build.VERSION.SDK_INT >= 30) {
+            info.setInitialSurroundingText(around);
+        }
         return connection;
     }
 
@@ -505,9 +520,10 @@ final class VisoView extends SurfaceView {
             case KIND_URL:
                 return EditorInfo.TYPE_CLASS_TEXT | EditorInfo.TYPE_TEXT_VARIATION_URI;
             default:
-                return multiline
-                        ? EditorInfo.TYPE_CLASS_TEXT | EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE
-                        : EditorInfo.TYPE_CLASS_TEXT;
+                // The keyboard corrects words only in text it can read.
+                int text = EditorInfo.TYPE_CLASS_TEXT
+                        | (shows ? EditorInfo.TYPE_TEXT_FLAG_AUTO_CORRECT : 0);
+                return multiline ? text | EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE : text;
         }
     }
 
@@ -533,6 +549,32 @@ final class VisoView extends SurfaceView {
         }
         if (enabled && cursorUpdates) {
             reportCursor();
+        }
+    }
+
+    /**
+     * Take the text around the focused field's caret the app shows, or with
+     * {@code shown} false none; the input method's view of it follows.
+     */
+    void setSurrounding(boolean shown, String text, long offset, int anchor, int focus,
+            int composeStart, int composeEnd) {
+        boolean restart = shown != shows && textInput;
+        shows = shown;
+        around = text;
+        aroundOffset = offset;
+        aroundAnchor = anchor;
+        aroundFocus = focus;
+        aroundComposeStart = composeStart;
+        aroundComposeEnd = composeEnd;
+        if (restart) {
+            // The keyboard's corrections follow whether it can read the text.
+            if (connection != null) {
+                connection.cancelComposition();
+            }
+            connection = null;
+            imm.restartInput(this);
+        } else if (connection != null) {
+            connection.show(shown, text, offset, anchor, focus, composeStart, composeEnd);
         }
     }
 

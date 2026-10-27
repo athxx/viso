@@ -68,10 +68,6 @@ pub mod ios;
 #[path = "ios/translate.rs"]
 pub(crate) mod ios_translate;
 
-#[cfg(any(target_os = "ios", test))]
-#[path = "ios/composition.rs"]
-pub(crate) mod ios_composition;
-
 #[cfg(target_os = "android")]
 pub mod android;
 

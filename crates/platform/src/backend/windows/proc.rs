@@ -7,9 +7,10 @@ use ::windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use ::windows::Win32::Graphics::Gdi::{ScreenToClient, ValidateRect};
 use ::windows::Win32::UI::Input::Ime::{
     CANDIDATEFORM, CFS_EXCLUDE, CFS_POINT, COMPOSITIONFORM, CPS_CANCEL, GCS_COMPSTR, GCS_CURSORPOS,
-    GCS_RESULTSTR, HIMC, IACE_DEFAULT, IME_COMPOSITION_STRING, ISC_SHOWUICOMPOSITIONWINDOW,
-    ImmAssociateContextEx, ImmGetCompositionStringW, ImmGetContext, ImmNotifyIME,
-    ImmReleaseContext, ImmSetCandidateWindow, ImmSetCompositionWindow, NI_COMPOSITIONSTR,
+    GCS_RESULTSTR, HIMC, IACE_DEFAULT, IME_COMPOSITION_STRING, IMR_CONFIRMRECONVERTSTRING,
+    IMR_DOCUMENTFEED, IMR_RECONVERTSTRING, ISC_SHOWUICOMPOSITIONWINDOW, ImmAssociateContextEx,
+    ImmGetCompositionStringW, ImmGetContext, ImmNotifyIME, ImmReleaseContext,
+    ImmSetCandidateWindow, ImmSetCompositionWindow, NI_COMPOSITIONSTR,
 };
 use ::windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
@@ -24,7 +25,7 @@ use ::windows::Win32::UI::WindowsAndMessaging::{
     PT_PEN, PT_TOUCH, PostMessageW, SW_MINIMIZE, SWP_NOACTIVATE, SWP_NOZORDER, SetTimer,
     SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_CAPTURECHANGED, WM_CHAR, WM_CLOSE, WM_COMMAND,
     WM_DESTROY, WM_DESTROYCLIPBOARD, WM_DPICHANGED, WM_ENTERSIZEMOVE, WM_ERASEBKGND,
-    WM_EXITSIZEMOVE, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_SETCONTEXT,
+    WM_EXITSIZEMOVE, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_REQUEST, WM_IME_SETCONTEXT,
     WM_IME_STARTCOMPOSITION, WM_INPUT, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN,
     WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL,
     WM_MOVE, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_POINTERCAPTURECHANGED, WM_POINTERDOWN,
@@ -40,8 +41,7 @@ use crate::clipboard::{ClipboardReply, PasteReply};
 use crate::control::ControlFlow;
 use crate::event::{
     AcceptCell, ClipboardShortcut, KeyCode, Modifiers, PointerButtons, PointerId, PointerKind,
-    PointerPhase, RawEvent, RawImePreedit, RawKey, RawPointer, RawScroll, RawText,
-    clipboard_shortcut,
+    PointerPhase, RawEvent, RawKey, RawPointer, RawScroll, RawText, clipboard_shortcut,
 };
 use crate::menu::SystemAction;
 use crate::{InputKind, Instant, TextEntry};
@@ -460,6 +460,7 @@ fn handle(
             clear_preedit(state);
             Some(LRESULT(0))
         }
+        WM_IME_REQUEST => Some(LRESULT(ime_request(state, wparam.0 as u32, lparam.0))),
         WM_SETTINGCHANGE | WM_THEMECHANGED | WM_SYSCOLORCHANGE => {
             system::refresh_settings(&state.shared);
             None
@@ -789,14 +790,11 @@ fn composition(state: &WindowState, hwnd: HWND, flags: u32) {
         return;
     };
     if flags & GCS_RESULTSTR.0 != 0 {
-        let text = ime.string(GCS_RESULTSTR);
         // A commit supersedes the preedit it replaces.
-        state.preedit_shown.set(false);
-        if !text.is_empty() {
-            state.push(RawEvent::Text(RawText {
-                window: state.id,
-                text,
-            }));
+        let text = ime.string(GCS_RESULTSTR);
+        let event = state.ime.borrow_mut().insert(state.id, &text, None);
+        if let Some(event) = event {
+            state.push(event);
         }
     }
     if flags & GCS_COMPSTR.0 != 0 {
@@ -806,27 +804,74 @@ fn composition(state: &WindowState, hwnd: HWND, flags: u32) {
         } else {
             text.len()
         };
-        if text.is_empty() && !state.preedit_shown.get() {
-            return;
+        let event = state
+            .ime
+            .borrow_mut()
+            .set_marked(state.id, &text, (caret, caret), None);
+        if let Some(event) = event {
+            state.push(event);
         }
-        state.preedit_shown.set(!text.is_empty());
-        state.push(RawEvent::ImePreedit(RawImePreedit {
-            window: state.id,
-            text,
-            caret,
-        }));
     }
     drop(ime);
     place_ime(state);
 }
 
 fn clear_preedit(state: &WindowState) {
-    if state.preedit_shown.replace(false) {
-        state.push(RawEvent::ImePreedit(RawImePreedit {
-            window: state.id,
-            text: String::new(),
-            caret: 0,
-        }));
+    let event = state.ime.borrow_mut().cancel(state.id);
+    if let Some(event) = event {
+        state.push(event);
+    }
+}
+
+/// Answer an input method's request about the text around the caret: the
+/// selection to reconvert, the stretch it settled on reconverting, or the
+/// text around the composition it predicts from. Nothing while the field
+/// shows no text.
+fn ime_request(state: &WindowState, request: u32, lparam: isize) -> isize {
+    match request {
+        IMR_RECONVERTSTRING | IMR_DOCUMENTFEED => {
+            let ime = state.ime.borrow();
+            let feed = request == IMR_DOCUMENTFEED;
+            if !ime.is_shown() || (!feed && ime.is_marked()) {
+                return 0;
+            }
+            let (a, b) = match ime.marked() {
+                Some(marked) if feed => marked,
+                _ => ime.selection(),
+            };
+            let units: Vec<u16> = ime.text().encode_utf16().collect();
+            let block = translate::reconvert_block(&units, (ime.units(a), ime.units(b)));
+            if lparam != 0 {
+                let to = lparam as *mut u8;
+                // SAFETY: a non-null `lparam` is the `RECONVERTSTRING` buffer
+                // the input method allocated, `dwSize` (its first field)
+                // bytes long; nothing is written past that.
+                unsafe {
+                    let room = to.cast::<u32>().read_unaligned() as usize;
+                    if room < block.len() {
+                        return 0;
+                    }
+                    std::ptr::copy_nonoverlapping(block.as_ptr(), to, block.len());
+                }
+            }
+            block.len() as isize
+        }
+        IMR_CONFIRMRECONVERTSTRING if lparam != 0 => {
+            // SAFETY: `lparam` is the `RECONVERTSTRING` this window filled,
+            // its fields adjusted by the input method; only they are read.
+            let fields: [u32; 8] = unsafe { (lparam as *const [u32; 8]).read_unaligned() };
+            let (start, end) = translate::reconvert_target(fields[5], fields[4], fields[2]);
+            // The composition to come replaces the stretch it settled on.
+            let mut ime = state.ime.borrow_mut();
+            let (a, b) = (ime.byte(start), ime.byte(end));
+            let event = ime.select(state.id, a, b);
+            drop(ime);
+            if let Some(event) = event {
+                state.push(event);
+            }
+            1
+        }
+        _ => 0,
     }
 }
 
@@ -913,6 +958,7 @@ pub(super) fn set_text_entry(state: &WindowState, entry: Option<TextEntry>) {
                 let _ = unsafe { ImmNotifyIME(ime.himc, NI_COMPOSITIONSTR, CPS_CANCEL, 0) };
             }
             clear_preedit(state);
+            state.ime.borrow_mut().show(None);
             // SAFETY: associating no context disables the IME for the window.
             let _ = unsafe { ImmAssociateContextEx(hwnd, HIMC::default(), 0) };
         }

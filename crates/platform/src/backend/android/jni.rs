@@ -47,6 +47,7 @@ unsafe impl<T> Sync for Global<T> {}
 struct Methods {
     set_soft_keyboard: Global<jmethodID>,
     set_text_input: Global<jmethodID>,
+    set_surrounding: Global<jmethodID>,
     set_edit_menu: Global<jmethodID>,
     set_loupe: Global<jmethodID>,
     set_pointer_icon: Global<jmethodID>,
@@ -312,6 +313,41 @@ pub(super) fn set_text_input(
             jvalue { f: h },
         ],
     );
+}
+
+/// Show the input method the text around the focused field's caret, its
+/// selection and composition as UTF-16 offsets into it, or with `None` none.
+pub(super) fn set_surrounding(text: Option<&crate::SurroundingText>) {
+    let empty = crate::SurroundingText::default();
+    let shown = text.unwrap_or(&empty);
+    let units = |at: usize| {
+        shown.text[..at.min(shown.text.len())]
+            .encode_utf16()
+            .count() as jint
+    };
+    let (c0, c1) = shown
+        .composition
+        .map_or((-1, -1), |(a, b)| (units(a), units(b)));
+    with_string(&shown.text, |s| {
+        call_void(
+            |m| m.set_surrounding,
+            &[
+                jvalue { z: text.is_some() },
+                jvalue { l: s },
+                jvalue {
+                    j: shown.offset as jlong,
+                },
+                jvalue {
+                    i: units(shown.anchor),
+                },
+                jvalue {
+                    i: units(shown.focus),
+                },
+                jvalue { i: c0 },
+                jvalue { i: c1 },
+            ],
+        )
+    });
 }
 
 /// Show the edit menu beside `at` (pixels: x, y, width, height) with the
@@ -662,6 +698,7 @@ pub unsafe extern "system" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void
         let methods = Methods {
             set_soft_keyboard: method(c"setSoftKeyboard", c"(Z)V"),
             set_text_input: method(c"setTextInput", c"(ZZIZFFFF)V"),
+            set_surrounding: method(c"setSurrounding", c"(ZLjava/lang/String;JIIII)V"),
             set_edit_menu: method(c"setEditMenu", c"(ZFFFFI)V"),
             set_loupe: method(c"setLoupe", c"(ZFF)V"),
             set_pointer_icon: method(c"setPointerIcon", c"(I)V"),
@@ -699,7 +736,7 @@ pub unsafe extern "system" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void
 /// `env` must be the calling thread's environment and `class` the
 /// `VisoActivity` class.
 unsafe fn register_natives(env: *mut JNIEnv, class: jclass) -> bool {
-    let natives: [(&CStr, &CStr, *mut c_void); 27] = [
+    let natives: [(&CStr, &CStr, *mut c_void); 28] = [
         (
             c"nativeStart",
             c"(Ldev/viso/VisoActivity;FIFLjava/lang/String;[Ljava/lang/String;)V",
@@ -755,6 +792,11 @@ unsafe fn register_natives(env: *mut JNIEnv, class: jclass) -> bool {
             native_commit as *mut c_void,
         ),
         (c"nativeEdit", c"(I)V", native_edit as *mut c_void),
+        (
+            c"nativeImeEdit",
+            c"(IJJLjava/lang/String;I)V",
+            native_ime_edit as *mut c_void,
+        ),
         (
             c"nativeOpenUrl",
             c"(Ljava/lang/String;)V",
@@ -1126,6 +1168,38 @@ extern "system" fn native_commit(env: *mut JNIEnv, _class: jclass, text: jstring
     if let Some(text) = unsafe { read_string(env, text) } {
         send(Msg::Commit(text));
     }
+}
+
+/// An input method's edit of the text around the caret: replace (0),
+/// recompose (1) or select (2), at byte offsets of the field's text.
+extern "system" fn native_ime_edit(
+    env: *mut JNIEnv,
+    _class: jclass,
+    kind: jint,
+    start: jlong,
+    end: jlong,
+    text: jstring,
+    caret: jint,
+) {
+    // SAFETY: `text` is a live string or null.
+    let text = unsafe { read_string(env, text) }.unwrap_or_default();
+    let at = |v: jlong| usize::try_from(v).unwrap_or(0);
+    let edit = match kind {
+        0 => crate::ImeEdit::Replace {
+            range: at(start)..at(end),
+            text,
+        },
+        1 => crate::ImeEdit::Recompose {
+            range: at(start)..at(end),
+            text,
+            caret: usize::try_from(caret).unwrap_or(0),
+        },
+        _ => crate::ImeEdit::Select {
+            anchor: at(start),
+            focus: at(end),
+        },
+    };
+    send(Msg::ImeEdit(edit));
 }
 
 extern "system" fn native_edit(_env: *mut JNIEnv, _class: jclass, action: jint) {

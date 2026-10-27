@@ -136,6 +136,8 @@ pub(super) enum Msg {
         caret_utf16: usize,
     },
     Commit(String),
+    /// An input method's edit of the text around the caret.
+    ImeEdit(crate::ImeEdit),
     /// A context-menu edit: copy 0, cut 1, paste 2.
     Edit(i32),
     /// A drag from another app moved over the view at `at`, in pixels,
@@ -767,6 +769,10 @@ fn apply(msg: Msg) {
             window: WINDOW,
             text,
         })),
+        Msg::ImeEdit(edit) => push_to_window(RawEvent::ImeEdit(crate::RawImeEdit {
+            window: WINDOW,
+            edit,
+        })),
         Msg::Edit(0) => copy(false),
         Msg::Edit(1) => copy(true),
         Msg::Edit(2) => paste(),
@@ -1246,6 +1252,12 @@ impl PlatformApp for AndroidApp {
             entry.map_or(InputKind::Text, |e| e.kind),
             entry.is_some_and(|e| e.multiline),
         );
+    }
+
+    fn set_surrounding_text(&mut self, window: WindowId, text: Option<&crate::SurroundingText>) {
+        if window == WINDOW {
+            jni::set_surrounding(text);
+        }
     }
 
     fn show_soft_keyboard(&mut self, window: WindowId, show: bool) {

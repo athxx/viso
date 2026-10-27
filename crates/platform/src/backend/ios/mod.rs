@@ -613,6 +613,12 @@ impl PlatformApp for IosApp {
         }
     }
 
+    fn set_surrounding_text(&mut self, window: WindowId, text: Option<&crate::SurroundingText>) {
+        if let Some(w) = self.window.as_ref().filter(|_| window == WINDOW) {
+            w.view.set_surrounding_text(text);
+        }
+    }
+
     fn show_soft_keyboard(&mut self, window: WindowId, show: bool) {
         if let Some(w) = self.window.as_ref().filter(|_| window == WINDOW) {
             w.view.show_soft_keyboard(show);

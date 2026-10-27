@@ -18,7 +18,7 @@
 
 use crate::{ImeEdit, RawEvent, RawImeEdit, RawImePreedit, RawText, SurroundingText, WindowId};
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct ImeText {
     /// The stretch of the field's text, with the composition as it stands.
     text: String,
@@ -219,6 +219,24 @@ impl ImeText {
         if !self.shown && self.marked.is_none() {
             *self = Self::default();
         }
+    }
+
+    /// The composition as it stands, its caret where the selection ends.
+    pub(crate) fn preedit(&self, window: WindowId) -> Option<RawEvent> {
+        let (m0, m1) = self.marked?;
+        Some(RawEvent::ImePreedit(RawImePreedit {
+            window,
+            text: self.text[m0..m1].to_owned(),
+            caret: self.focus.clamp(m0, m1) - m0,
+        }))
+    }
+
+    /// What taking `shown` changes: the text, else only the selection.
+    pub(crate) fn change(&self, shown: Option<&SurroundingText>) -> (bool, bool) {
+        let mut next = self.clone();
+        next.show(shown);
+        let text = next.text != self.text || next.marked != self.marked;
+        (text, !text && next.ends() != self.ends())
     }
 
     /// Accept the composition as it stands.
@@ -544,6 +562,20 @@ mod tests {
         assert_eq!(t.ends(), (0, 5));
         t.set_marked(W, "ab", (2, 2), None);
         assert_eq!(t.select(W, 1, 1), None);
+    }
+
+    #[test]
+    fn showing_text_tells_what_it_changes() {
+        let mut t = ImeText::default();
+        t.show(Some(&shown("ab", 0, 2, 2)));
+        assert_eq!(t.change(Some(&shown("ab", 0, 2, 2))), (false, false));
+        assert_eq!(t.change(Some(&shown("ab", 0, 0, 2))), (false, true));
+        assert_eq!(t.change(Some(&shown("abc", 0, 2, 2))), (true, false));
+        // The app showing what the input method's edit made is no change.
+        t.insert(W, "c", None);
+        assert_eq!(t.change(Some(&shown("abc", 0, 3, 3))), (false, false));
+        t.set_marked(W, "xy", (1, 1), None);
+        assert_eq!(t.preedit(W), Some(preedit("xy", 1)));
     }
 
     #[test]

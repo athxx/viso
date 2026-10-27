@@ -448,6 +448,45 @@ pub(crate) fn utf16_to_byte(text: &str, index: usize) -> usize {
     text.len()
 }
 
+/// The size of a `RECONVERTSTRING`'s fields, before its string.
+pub(crate) const RECONVERT_HEADER: usize = 32;
+
+/// A `RECONVERTSTRING` holding `text` (UTF-16 units) with the stretch
+/// `target` (units) to convert: its eight `u32` fields, then the string and
+/// its terminator. The stretch is both the composition and the target.
+pub(crate) fn reconvert_block(text: &[u16], target: (usize, usize)) -> Vec<u8> {
+    let size = RECONVERT_HEADER + (text.len() + 1) * 2;
+    let end = target.1.min(text.len());
+    let start = target.0.min(end);
+    let fields = [
+        size,
+        0,
+        text.len(),
+        RECONVERT_HEADER,
+        end - start,
+        start * 2,
+        end - start,
+        start * 2,
+    ];
+    let mut block = Vec::with_capacity(size);
+    for field in fields {
+        block.extend_from_slice(&(field as u32).to_le_bytes());
+    }
+    for unit in text.iter().chain(&[0]) {
+        block.extend_from_slice(&unit.to_le_bytes());
+    }
+    block
+}
+
+/// The stretch (UTF-16 units) a `RECONVERTSTRING` an input method adjusted
+/// names: its composition's byte offset into the string and length in
+/// units, within a string of `len` units.
+pub(crate) fn reconvert_target(offset_bytes: u32, units: u32, len: u32) -> (usize, usize) {
+    let len = len as usize;
+    let start = (offset_bytes as usize / 2).min(len);
+    (start, start.saturating_add(units as usize).min(len))
+}
+
 /// The contact id Viso reports for a Win32 touch/pen pointer id; the high bit
 /// keeps it clear of [`PointerId::MOUSE`].
 pub(crate) fn pointer_id(win32: u32) -> PointerId {
@@ -926,6 +965,23 @@ mod tests {
         assert!(matches!(plan.entries[1], MenuEntry::Popup { .. }));
         assert_eq!(plan.action(1), Some(MenuAction::Command(MenuCommandId(5))));
         assert_eq!(plan.action(2), Some(MenuAction::Command(MenuCommandId(6))));
+    }
+
+    #[test]
+    fn a_reconversion_block_holds_the_text_and_its_target() {
+        let text: Vec<u16> = "今日は漢字".encode_utf16().collect();
+        let block = reconvert_block(&text, (3, 5));
+        let field = |i: usize| u32::from_le_bytes(block[i * 4..i * 4 + 4].try_into().unwrap());
+        assert_eq!(block.len(), RECONVERT_HEADER + 12);
+        assert_eq!(field(0) as usize, block.len());
+        assert_eq!((field(2), field(3)), (5, 32));
+        assert_eq!((field(4), field(5), field(6), field(7)), (2, 6, 2, 6));
+        assert_eq!(&block[32 + 6..32 + 10], &[0x22, 0x6f, 0x57, 0x5b]);
+        assert_eq!(&block[block.len() - 2..], &[0, 0]);
+        assert_eq!(reconvert_target(field(5), field(4), field(2)), (3, 5));
+        // An input method widening a bare caret to the word around it.
+        assert_eq!(reconvert_target(0, 3, 5), (0, 3));
+        assert_eq!(reconvert_target(8, 9, 5), (4, 5));
     }
 
     #[test]
