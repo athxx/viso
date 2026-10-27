@@ -485,8 +485,18 @@ Rules (as for `todo_features.md`):
     on viso `hot-reload` native and wasm32.
 - [ ] Derive the inline work slice from the measured frame interval and share it across windows.
   Verify at 120 Hz emulation that the slice holds with N windows.
-- [ ] Cancel a freed node's tasks through a per-node chain instead of scanning every task. Verify
+- [x] Cancel a freed node's tasks through a per-node chain instead of scanning every task. Verify
   with a bench that frees 1k rows with 100 live tasks.
+  - Built: `TaskSet` keeps tasks in a slab, each owner's tasks on a doubly linked chain, with chain
+    heads sorted by owner key (`TaskOwner::key`, a node's slot). Wakers carry `(id, slot)` and
+    poll checks the id. `cancel_owned` walks only the owner's chain, and a slot's new node shares
+    the chain but keeps its own tasks. `NodeStore` cancels a freed node's tasks through it.
+  - Verified: the `ui/benches/task_cancel` A/B frees 1000 rows (3k nodes) one at a time with 100
+    pending tasks. Tasks on other nodes: 124 → 45.5 µs. Tasks on the freed rows: 91 → 54 µs. What
+    remains is the free itself.
+  - Verified: runtime chain tests cover cancels and finishes from the middle, slot reuse, and a
+    key sharer being spared. The ui test checks that freeing a subtree drops exactly its nodes'
+    tasks, including on a reused slot. viso `task_loop`/`dsl_tasks` pass, and clippy is clean.
 - [ ] Rust fragment functions generated at build time from Shader IR for CpuRaster user programs.
   Verify that they are bit-exact against `CpuShader` and faster in the `cpu_raster` bench.
 - [ ] The missing benches:

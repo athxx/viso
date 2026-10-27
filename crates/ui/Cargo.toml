@@ -81,5 +81,9 @@ harness = false
 name = "column_relayout"
 harness = false
 
+[[bench]]
+name = "task_cancel"
+harness = false
+
 [lints]
 workspace = true

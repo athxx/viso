@@ -32,7 +32,7 @@ impl TaskId {
 
 /// The ready list every task's waker writes to.
 struct WakeQueue {
-    woken: Mutex<Vec<TaskId>>,
+    woken: Mutex<Vec<(TaskId, u32)>>,
     /// Set by the first wake after a drain; the drain clears it before taking
     /// the list, so a wake that lands after the take kicks the loop again.
     signalled: AtomicBool,
@@ -41,6 +41,7 @@ struct WakeQueue {
 
 struct TaskWaker {
     id: TaskId,
+    slot: u32,
     queue: Arc<WakeQueue>,
 }
 
@@ -54,7 +55,7 @@ impl Wake for TaskWaker {
             .woken
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .push(self.id);
+            .push((self.id, self.slot));
         self.queue.signal();
     }
 }
@@ -69,29 +70,64 @@ impl WakeQueue {
     }
 }
 
+/// The empty end of an owner chain.
+const NIL: u32 = u32::MAX;
+
+/// A task's owner, named by a small key so the set can chain each owner's
+/// tasks and drop them without a scan. Owners that share a key (a slot reused
+/// under a new generation) share a chain; [`TaskSet::cancel_owned`] drops only
+/// the exact owner's tasks.
+pub trait TaskOwner: Copy + Eq {
+    /// The chain this owner's tasks hang on.
+    fn key(self) -> u32;
+}
+
+macro_rules! owner_is_itself {
+    ($($t:ty),*) => {$(
+        impl TaskOwner for $t {
+            #[inline]
+            fn key(self) -> u32 {
+                self as u32
+            }
+        }
+    )*};
+}
+owner_is_itself!(u8, u16, u32);
+
 struct Task<O, T> {
     id: TaskId,
     tag: T,
     future: Pin<Box<dyn Future<Output = O>>>,
     waker: Waker,
+    /// Neighbours on the owner's chain: slots, or [`NIL`].
+    prev: u32,
+    next: u32,
 }
 
 /// Loop-thread futures, each tagged with its owner, polled when woken.
 pub struct TaskSet<O, T> {
-    /// Sorted by id.
-    tasks: Vec<Task<O, T>>,
+    /// Live tasks by slot; an empty slot is on `free`.
+    slots: Vec<Option<Task<O, T>>>,
+    free: Vec<u32>,
+    /// `(id, slot)` of every live task, sorted by id.
+    by_id: Vec<(TaskId, u32)>,
+    /// `(owner key, first slot of its chain)`, sorted by key.
+    heads: Vec<(u32, u32)>,
     queue: Arc<WakeQueue>,
     /// Spawned since the last poll: due their first poll.
-    spawned: Vec<TaskId>,
-    /// Reused by `poll` for the ids it drains.
-    scratch: Vec<TaskId>,
+    spawned: Vec<(TaskId, u32)>,
+    /// Reused by `poll` for the tasks it drains.
+    scratch: Vec<(TaskId, u32)>,
 }
 
-impl<O, T: Copy> TaskSet<O, T> {
+impl<O, T: TaskOwner> TaskSet<O, T> {
     /// An empty set whose wakes kick `loop_waker`.
     pub fn new(loop_waker: LoopWaker) -> Self {
         Self {
-            tasks: Vec::new(),
+            slots: Vec::new(),
+            free: Vec::new(),
+            by_id: Vec::new(),
+            heads: Vec::new(),
             queue: Arc::new(WakeQueue {
                 woken: Mutex::new(Vec::new()),
                 signalled: AtomicBool::new(false),
@@ -106,43 +142,88 @@ impl<O, T: Copy> TaskSet<O, T> {
     /// next [`poll`](Self::poll); the spawn kicks the loop like a wake, so a
     /// frame comes to run it.
     pub fn spawn(&mut self, id: TaskId, tag: T, future: Pin<Box<dyn Future<Output = O>>>) {
+        let slot = self.free.pop().unwrap_or_else(|| {
+            self.slots.push(None);
+            (self.slots.len() - 1) as u32
+        });
         let waker = Waker::from(Arc::new(TaskWaker {
             id,
+            slot,
             queue: self.queue.clone(),
         }));
-        let at = self.tasks.partition_point(|t| t.id < id);
-        self.tasks.insert(
-            at,
-            Task {
-                id,
-                tag,
-                future,
-                waker,
-            },
-        );
-        self.spawned.push(id);
+        let key = tag.key();
+        let next = match self.heads.binary_search_by_key(&key, |&(k, _)| k) {
+            Ok(at) => {
+                let first = std::mem::replace(&mut self.heads[at].1, slot);
+                self.task_mut(first).prev = slot;
+                first
+            }
+            Err(at) => {
+                self.heads.insert(at, (key, slot));
+                NIL
+            }
+        };
+        self.slots[slot as usize] = Some(Task {
+            id,
+            tag,
+            future,
+            waker,
+            prev: NIL,
+            next,
+        });
+        // Ids are handed out in order, so this is nearly always a push.
+        let at = self.by_id.partition_point(|&(other, _)| other < id);
+        self.by_id.insert(at, (id, slot));
+        self.spawned.push((id, slot));
         self.queue.signal();
     }
 
     /// Drop task `id`'s future; `false` when no such task is live.
     pub fn cancel(&mut self, id: TaskId) -> bool {
-        match self.tasks.binary_search_by_key(&id, |t| t.id) {
+        match self.by_id.binary_search_by_key(&id, |&(id, _)| id) {
             Ok(at) => {
-                self.tasks.remove(at);
+                let slot = self.by_id[at].1;
+                self.remove(slot);
                 true
             }
             Err(_) => false,
         }
     }
 
+    /// Drop every task `owner` owns, walking its chain alone.
+    pub fn cancel_owned(&mut self, owner: T) {
+        let Ok(at) = self.heads.binary_search_by_key(&owner.key(), |&(k, _)| k) else {
+            return;
+        };
+        let mut slot = self.heads[at].1;
+        while slot != NIL {
+            let task = self.task_mut(slot);
+            let next = task.next;
+            if task.tag == owner {
+                self.remove(slot);
+            }
+            slot = next;
+        }
+    }
+
     /// Drop every task whose tag satisfies `owned`.
     pub fn cancel_where(&mut self, mut owned: impl FnMut(T) -> bool) {
-        self.tasks.retain(|t| !owned(t.tag));
+        for slot in 0..self.slots.len() as u32 {
+            if self.slots[slot as usize]
+                .as_ref()
+                .is_some_and(|task| owned(task.tag))
+            {
+                self.remove(slot);
+            }
+        }
     }
 
     /// Drop every task.
     pub fn clear(&mut self) {
-        self.tasks.clear();
+        self.slots.clear();
+        self.free.clear();
+        self.by_id.clear();
+        self.heads.clear();
         self.spawned.clear();
     }
 
@@ -164,17 +245,21 @@ impl<O, T: Copy> TaskSet<O, T> {
         if self.scratch.is_empty() {
             return;
         }
-        self.scratch.sort_unstable();
-        self.scratch.dedup();
-        for &id in &self.scratch {
-            // A task cancelled or finished since its wake is simply gone.
-            let Ok(at) = self.tasks.binary_search_by_key(&id, |t| t.id) else {
+        self.scratch.sort_unstable_by_key(|&(id, _)| id);
+        self.scratch.dedup_by_key(|&mut (id, _)| id);
+        for at in 0..self.scratch.len() {
+            let (id, slot) = self.scratch[at];
+            // A task cancelled or finished since its wake is gone, or its slot
+            // holds another task.
+            let Some(Some(task)) = self.slots.get_mut(slot as usize) else {
                 continue;
             };
-            let task = &mut self.tasks[at];
+            if task.id != id {
+                continue;
+            }
             let mut cx = Context::from_waker(&task.waker);
             if let Poll::Ready(output) = task.future.as_mut().poll(&mut cx) {
-                self.tasks.remove(at);
+                self.remove(slot);
                 out.push(output);
             }
         }
@@ -182,16 +267,51 @@ impl<O, T: Copy> TaskSet<O, T> {
 
     /// The number of live tasks.
     pub fn len(&self) -> usize {
-        self.tasks.len()
+        self.by_id.len()
     }
 
     /// Whether no task is live.
     pub fn is_empty(&self) -> bool {
-        self.tasks.is_empty()
+        self.by_id.is_empty()
+    }
+
+    fn task_mut(&mut self, slot: u32) -> &mut Task<O, T> {
+        self.slots[slot as usize]
+            .as_mut()
+            .expect("a chained slot holds a task")
+    }
+
+    /// Unchain the task in `slot`, forget its id and free the slot, dropping
+    /// its future.
+    fn remove(&mut self, slot: u32) {
+        let task = self.slots[slot as usize]
+            .take()
+            .expect("a removed slot holds a task");
+        if task.prev == NIL {
+            let key = task.tag.key();
+            let at = self
+                .heads
+                .binary_search_by_key(&key, |&(k, _)| k)
+                .expect("a chain's first task has a head");
+            if task.next == NIL {
+                self.heads.remove(at);
+            } else {
+                self.heads[at].1 = task.next;
+            }
+        } else {
+            self.task_mut(task.prev).next = task.next;
+        }
+        if task.next != NIL {
+            self.task_mut(task.next).prev = task.prev;
+        }
+        if let Ok(at) = self.by_id.binary_search_by_key(&task.id, |&(id, _)| id) {
+            self.by_id.remove(at);
+        }
+        self.free.push(slot);
     }
 }
 
-impl<O, T: Copy> Default for TaskSet<O, T> {
+impl<O, T: TaskOwner> Default for TaskSet<O, T> {
     fn default() -> Self {
         Self::new(LoopWaker::inert())
     }
@@ -351,6 +471,86 @@ mod tests {
         set.poll(&mut out);
         assert_eq!(out, [2]);
         assert!(set.is_empty());
+    }
+
+    /// An owner whose key outlives it, as a reused slot does.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    struct Slot {
+        key: u32,
+        generation: u32,
+    }
+
+    impl TaskOwner for Slot {
+        fn key(self) -> u32 {
+            self.key
+        }
+    }
+
+    #[test]
+    fn cancel_owned_drops_the_owner_s_chain_and_spares_a_key_sharer() {
+        let mut set: TaskSet<u32, Slot> = TaskSet::default();
+        let old = Slot {
+            key: 4,
+            generation: 0,
+        };
+        let new = Slot {
+            key: 4,
+            generation: 1,
+        };
+        let other = Slot {
+            key: 9,
+            generation: 0,
+        };
+        let mut opens = Vec::new();
+        let mut wakers = Vec::new();
+        for (value, owner) in [(1, old), (2, new), (3, old), (4, other), (5, old)] {
+            let (future, open, waker) = gate(value);
+            set.spawn(TaskId::fresh(), owner, Box::pin(future));
+            opens.push(open);
+            wakers.push(waker);
+        }
+        let mut out = Vec::new();
+        set.poll(&mut out);
+        set.cancel_owned(old);
+        assert_eq!(set.len(), 2);
+        set.cancel_owned(old);
+        assert_eq!(set.len(), 2, "a second cancel finds nothing");
+        for (open, waker) in opens.iter().zip(&wakers) {
+            open.store(true, Ordering::Release);
+            if let Some(waker) = waker.lock().unwrap().take() {
+                waker.wake();
+            }
+        }
+        set.poll(&mut out);
+        assert_eq!(out, [2, 4]);
+        assert!(set.is_empty());
+        set.cancel_owned(new);
+        set.cancel_owned(other);
+    }
+
+    #[test]
+    fn a_chain_survives_cancels_and_finishes_from_its_middle() {
+        let mut set: TaskSet<u32, u8> = TaskSet::default();
+        let ids: Vec<TaskId> = (0..5).map(|_| TaskId::fresh()).collect();
+        let mut opens = Vec::new();
+        for (n, &id) in ids.iter().enumerate() {
+            let (future, open, _) = gate(n as u32);
+            set.spawn(id, 1, Box::pin(future));
+            opens.push(open);
+        }
+        let mut out = Vec::new();
+        set.poll(&mut out);
+        assert!(set.cancel(ids[2]));
+        assert!(set.cancel(ids[4]));
+        assert!(set.cancel(ids[0]));
+        // A slot freed above is reused, and joins the same chain.
+        let (future, _open, _) = gate(9);
+        set.spawn(TaskId::fresh(), 1, Box::pin(future));
+        assert_eq!(set.len(), 3);
+        set.cancel_owned(1);
+        assert!(set.is_empty());
+        assert!(set.heads.is_empty());
+        assert_eq!(set.free.len(), set.slots.len());
     }
 
     #[test]

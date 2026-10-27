@@ -4392,7 +4392,7 @@ impl NodeStore {
     /// Drop every task `node` owns.
     fn cancel_tasks_for(&mut self, node: NodeId) {
         if !self.tasks.is_empty() {
-            self.tasks.cancel_where(|owner| owner == node);
+            self.tasks.cancel_owned(node);
         }
     }
 
@@ -8595,6 +8595,53 @@ mod tests {
         let again = cx.leaf(filled).id();
         assert!(store.arena().is_live(again));
         assert_eq!(store.take_refused(), None);
+    }
+
+    #[test]
+    fn freeing_a_subtree_drops_its_nodes_tasks_and_no_one_elses() {
+        let mut store = NodeStore::new();
+        let (branch, kept, inner) = {
+            let mut cx = BuildCx::new(&mut store);
+            let mut inner = Vec::new();
+            let mut kept = None;
+            let mut branch = None;
+            cx.flex(FlexStyle::default(), |cx| {
+                branch = Some(
+                    cx.flex(FlexStyle::default(), |cx| {
+                        for _ in 0..3 {
+                            inner.push(cx.leaf(LeafStyle::default()).id());
+                        }
+                    })
+                    .id(),
+                );
+                kept = Some(cx.leaf(LeafStyle::default()).id());
+            });
+            (branch.unwrap(), kept.unwrap(), inner)
+        };
+        let pending = || -> TaskFuture { Box::pin(std::future::pending()) };
+        for &owner in [branch, inner[0], inner[2], inner[2], kept].iter() {
+            store.spawn_task(owner, pending()).unwrap();
+        }
+        assert_eq!(store.task_count(), 5);
+
+        let (mut effects, mut scratch) = (crate::reactive::EffectStore::default(), Vec::new());
+        store.free_tree(branch, &mut effects, &mut scratch);
+        assert_eq!(store.task_count(), 1, "only the kept leaf's task lives");
+
+        // A node in a freed slot starts with no tasks, and its own go with it.
+        let fresh = BuildCx::new(&mut store).leaf(LeafStyle::default()).id();
+        assert!(
+            inner
+                .iter()
+                .chain([&branch])
+                .any(|old| old.index() == fresh.index())
+        );
+        store.spawn_task(fresh, pending()).unwrap();
+        assert_eq!(store.task_count(), 2);
+        store.free_tree(fresh, &mut effects, &mut scratch);
+        assert_eq!(store.task_count(), 1);
+        store.free_tree(kept, &mut effects, &mut scratch);
+        assert_eq!(store.task_count(), 0);
     }
 
     #[test]

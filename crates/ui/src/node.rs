@@ -86,6 +86,15 @@ impl core::hash::Hash for NodeId {
     }
 }
 
+/// A node's tasks chain on its slot; a reused slot's new node shares the
+/// chain but not the old node's tasks.
+impl viso_runtime::TaskOwner for NodeId {
+    #[inline]
+    fn key(self) -> u32 {
+        self.index
+    }
+}
+
 impl core::fmt::Debug for NodeId {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("NodeId")

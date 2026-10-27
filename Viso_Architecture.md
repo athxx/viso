@@ -2356,7 +2356,7 @@ Tokio/Smol adapter crate（`viso-tokio`、`viso-smol`）目标，尚未建立；
 ### 13.2 实现（ADR 0032）
 
 - `viso-platform` 的 `LoopWaker` 可跨线程 kick，loop 线程上收到一次 `RawEvent::Wakeup`；每个 backend 复用自己已有的唤醒通道。
-- `viso-runtime::task::TaskSet` 持有 task 与 wake queue。首次 wake 或 spawn 才 kick；没有 wake 的帧不加锁、不 poll。`FrameDriver::on_wakeup` 为有 task 被唤醒或 timer 到期的窗口请求重绘。
+- `viso-runtime::task::TaskSet` 持有 task 与 wake queue。首次 wake 或 spawn 才 kick；没有 wake 的帧不加锁、不 poll。task 存在 slab 里，按 owner 的 key（节点 slot）串成双向链，链头按 key 排序；waker 带 `(id, slot)`，poll 时按 id 校验，不查表。释放节点只走它自己的链（`cancel_owned`），不扫全部 task；slot 被复用时新旧节点共用一条链，只取消 tag 完全相等的那些。`FrameDriver::on_wakeup` 为有 task 被唤醒或 timer 到期的窗口请求重绘。
 - facade 在 `RunContinuations` 阶段 poll 被唤醒的 task 并运行完成者的续体，续体写入并入本帧 transaction（§11.2）。
 - `EventCx::spawn` / `spawn_then` / `cancel_task`：task 归 handler 所在节点所有，释放子树或清空 store 时随之取消。`spawn_then` 的续体在帧边界拿到 `UpdateCx`，因此 `.await` 期间不持有 arena 引用。
 - `UpdateCx` 与 `EffectCx` 只有以显式 owner 节点 spawn 的内部入口（供 `viso-view` 使用）和 `cancel_task`；`.vs` 的 `start` task（slot 策略 `keep_latest` / `drop_new` / `queue` / `parallel(n)`）与 `resource` loader 都建立在这套 owner-scoped UI task 之上（DSL §36、§38、§39、§92、§93）。
